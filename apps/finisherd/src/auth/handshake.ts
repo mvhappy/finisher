@@ -47,7 +47,7 @@ export interface HandshakeDeps {
 }
 
 const UNAUTHENTICATED_FIX =
-  "Run fin as the same user as the Finisher server, with that server's data, or give it a credential file through the FIN_CREDENTIAL variable.";
+  "Run the command as the same user as the Finisher server, with that server's data, or give it a credential file through the FIN_CREDENTIAL variable.";
 
 export function unauthenticated(reason: string): FinError {
   return finError("UNAUTHENTICATED", "this connection has not proved a credential", { reason }, UNAUTHENTICATED_FIX);

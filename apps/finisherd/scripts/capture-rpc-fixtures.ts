@@ -35,8 +35,8 @@ function write(name: string, client: NdjsonClient): void {
   process.stderr.write(`wrote ${name}.{request,response}.ndjson\n`);
 }
 
-async function scenario(name: string, run: (c: NdjsonClient) => Promise<void>): Promise<void> {
-  const c = await connectProved(server!);
+async function scenario(name: string, run: (c: NdjsonClient) => Promise<void>, credential: "local" | "console" = "local"): Promise<void> {
+  const c = await connectProved(server!, credential);
   await run(c);
   await c.close();
   write(name, c);
@@ -152,10 +152,15 @@ try {
     if (exit.ok || exit.error.code !== "HISTORY_REWOUND") throw new Error(`expected HISTORY_REWOUND, got ${JSON.stringify(exit)}`);
   });
 
-  // Already open here: relocate changes nothing, the answer is the usual ref.
-  await scenario("project-open-relocate", async (c) => {
-    ok(await c.call("project.open", { dir, relocate: true }));
-  });
+  // Already open here: relocate changes nothing, the answer is the usual ref. A relocation is a
+  // person's decision (5A Task 5): the console asks.
+  await scenario(
+    "project-open-relocate",
+    async (c) => {
+      ok(await c.call("project.open", { dir, relocate: true }));
+    },
+    "console",
+  );
 
   // The status now, then the client interrupts.
   await scenario("project-events", async (c) => {

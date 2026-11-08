@@ -11,6 +11,7 @@
 #![allow(dead_code)]
 
 pub mod auth;
+pub mod console;
 pub mod fontserver;
 pub mod settings;
 

@@ -12214,6 +12214,31 @@
           "type": "object"
         }
       ]
+    },
+    "WriteGuard": {
+      "additionalProperties": false,
+      "description": "The branches a write may change, by branch id (`br<n>`, `main`). The default guards\nnothing.",
+      "properties": {
+        "allowBranches": {
+          "description": "When set, the only branches a write may change (`BRANCH_NOT_ALLOWED` otherwise).",
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "denyBranches": {
+          "default": [],
+          "description": "Branches no write may change (`BRANCH_PROTECTED`).",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "type": "object"
     }
   },
   "$schema": "https://json-schema.org/draft/2020-12/schema",

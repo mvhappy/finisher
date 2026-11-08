@@ -19,7 +19,7 @@ use crate::branch::create::{check_key, key_reused, metadata_draft};
 use crate::branch::{index, lineage};
 use crate::commit::{check_args_hash, same_args_hash};
 use crate::db::{self, to_i64, to_u64};
-use crate::write::{WriteCtx, writable};
+use crate::write::WriteCtx;
 use crate::{Store, StoreError};
 
 /// [`Store::checkpoint`]'s request.
@@ -84,7 +84,7 @@ impl Store {
 fn plan(ctx: &mut WriteCtx<'_>, r: &CheckpointReq) -> Result<CommittedTx, StoreError> {
     let txn = ctx.txn;
     super::merge_id_taken(txn, &r.tx_id)?;
-    let branch = writable(txn, &r.branch)?.id;
+    let branch = ctx.target(&r.branch)?.id;
     if let Some((seq, tx_id)) = own(txn, &branch, &r.name)? {
         return Err(CoreError::new(
             "NAME_TAKEN",

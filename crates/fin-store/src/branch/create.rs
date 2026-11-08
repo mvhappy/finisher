@@ -264,6 +264,7 @@ pub(crate) fn plan_create_with(
 ) -> Result<BranchCreated, StoreError> {
     let txn = ctx.txn;
     crate::history_ops::merge_id_taken(txn, &r.tx_id)?;
+    // The parent is only read (the fork): not a target of the guard (`crate::guard`).
     let parent = writable(txn, &r.from)?.id;
     let head = ctx.head(&parent)?;
     let head_rev = head.rev;
@@ -340,6 +341,8 @@ fn plan_set(ctx: &mut WriteCtx<'_>, r: &BranchSet) -> Result<CommittedTx, StoreE
     let txn = ctx.txn;
     crate::history_ops::merge_id_taken(txn, &r.tx_id)?;
     let info = index::resolve(txn, &r.branch)?;
+    // The branch it changes, by its id now (the record goes on its parent's log).
+    ctx.guarded(&info)?;
     let Some(parent) = info.parent.clone() else {
         return Err(CoreError::new(
             "INVALID_OP",

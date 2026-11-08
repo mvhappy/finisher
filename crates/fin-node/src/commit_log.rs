@@ -37,7 +37,7 @@ use fin_store::{
 use serde::Serialize;
 use serde_json::Value;
 
-use crate::journal::ctx::{RawActor, RawCtx, actor_of_meta, ctx_of};
+use crate::journal::ctx::{RawActor, RawCtx, actor_of_meta, ctx_of, guard_of_meta};
 
 /// The most txIds one entry links (an `undo --to` of many units, a large merge).
 pub(crate) const MAX_LINKS: usize = 256;
@@ -429,8 +429,10 @@ impl Attempt {
     }
 }
 
-/// `tx.commit` inside `with_store`: the commit, `after` (the font rescan) on success, the
-/// reply encoded, then the `log.commit` entry. Returns the `CommittedTx` JSON.
+/// `tx.commit` inside `with_store`: the commit under `meta`'s write guard
+/// ([`guard_of_meta`]; a malformed one is `INVALID_OP` before anything is logged or written),
+/// `after` (the font rescan) on success, the reply encoded, then the `log.commit` entry.
+/// Returns the `CommittedTx` JSON.
 pub(crate) fn commit(
     s: &mut Store,
     j: &Journal,
@@ -439,9 +441,10 @@ pub(crate) fn commit(
     meta: Option<&str>,
     after: impl FnOnce(&Store, &CommittedTx),
 ) -> Result<String, CoreError> {
+    let guard = guard_of_meta(meta)?;
     let attempt = Attempt::edit(j, s.project_id(), &tx, meta);
     let _ = s.take_write_outcome();
-    let r = s.commit_at_generation(tx, generation);
+    let r = s.with_guard(guard, |s| s.commit_at_generation(tx, generation));
     let note = s.take_write_outcome();
     let micros = attempt.as_ref().map_or(0, Attempt::micros);
     match r {
@@ -463,9 +466,10 @@ pub(crate) fn commit(
     }
 }
 
-/// A branch, history or recovery call inside `with_store` (or a long call's store): `call`,
-/// the reply encoded, then the `log.commit` entry. `req`: the request's ids, `None` while the
-/// journal is off. Returns the result's JSON.
+/// A branch, history or recovery call inside `with_store` (or a long call's store): `call`
+/// under `meta`'s write guard (as [`commit`]), the reply encoded, then the `log.commit`
+/// entry. `req`: the request's ids, `None` while the journal is off. Returns the result's
+/// JSON.
 pub(crate) fn history<R: Logged + Serialize>(
     s: &mut Store,
     j: &Journal,
@@ -474,9 +478,10 @@ pub(crate) fn history<R: Logged + Serialize>(
     req: Option<Req>,
     call: impl FnOnce(&mut Store) -> Result<R, StoreError>,
 ) -> Result<String, CoreError> {
+    let guard = guard_of_meta(meta)?;
     let attempt = Attempt::history(j, record, s.project_id(), meta, req);
     let _ = s.take_write_outcome();
-    let r = call(s);
+    let r = s.with_guard(guard, call);
     let note = s.take_write_outcome();
     let micros = attempt.as_ref().map_or(0, Attempt::micros);
     match r {

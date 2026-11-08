@@ -3,8 +3,9 @@ import { type FinError, FinRpcs, PROTOCOL_VERSION, type Probe } from "@finisher/
 import { probe } from "@finisher/fin-node";
 import { Effect, Stream } from "effect";
 import { SERVER_VERSION } from "./config.ts";
-import { withAuthentication } from "./auth/gate.ts";
 import { HandshakeTag } from "./auth/handshake.ts";
+import { chainOf, OPEN_GUARD, withChain } from "./chain/chain.ts";
+import { AuditTag } from "./control/audit.ts";
 import { ConnectionsTag } from "./connections.ts";
 import { callMeta, Diagnostics, RpcSource } from "./diagnostics.ts";
 import { attemptJson, finError, toFinError } from "./errors.ts";
@@ -22,8 +23,9 @@ const defectsAsErrors = <A, R>(self: Effect.Effect<A, FinError, R>) =>
 /**
  * The handlers of one transport: built once per transport (`Layer.fresh`), with that transport's
  * `RpcSource` (local socket `fin`, WebSocket `ui`) and `Connections`. Every non-stream call is
- * timed into `rpc.stats` (`guard`); the stream handlers do not use it. Every RPC but the
- * handshake's passes the authentication stage first (`withAuthentication`).
+ * timed into `rpc.stats` (`guard`); the stream handlers do not use it. Every RPC passes the
+ * middleware chain first (`withChain`, 5A Task 5): authentication, resolvers, scopes, reach and
+ * policy; every write takes the chain's guard to the store (`meta`).
  */
 export const HandlersLive = FinRpcs.toLayer(
   Effect.gen(function* () {
@@ -33,8 +35,20 @@ export const HandlersLive = FinRpcs.toLayer(
     const source = yield* RpcSource;
     const connections = yield* ConnectionsTag;
     const handshake = yield* HandshakeTag;
+    const audit = yield* AuditTag;
     const guard = <A, R>(tag: string, self: Effect.Effect<A, FinError, R>) => diagnostics.timed(tag, defectsAsErrors(self));
-    return withAuthentication(FinRpcs.of({
+    /** A write's `metaJson`: its actor and the chain's write guard. */
+    const meta = (options: { readonly headers: unknown }) => ({
+      ...callMeta(options.headers, source),
+      guard: chainOf(options)?.guard ?? OPEN_GUARD,
+    });
+    const projects = {
+      isOpen: registry.isOpen,
+      dirOf: registry.dirOf,
+      resolveBranch: registry.resolveBranch,
+      branches: (projectId: string) => Effect.map(registry.branches(projectId, true), (r) => r.branches),
+    };
+    return withChain(FinRpcs.of({
       // Public: the handshake (5A Decisions 8 and 9).
       "server.hello": (req, { client }) =>
         guard(
@@ -54,8 +68,8 @@ export const HandlersLive = FinRpcs.toLayer(
         guard("project.open", Effect.flatMap(requireAbsolute("dir", dir), (d) => registry.open(d, relocate))),
       "asset.probe": ({ path }) =>
         guard("asset.probe", Effect.flatMap(requireAbsolute("path", path), (p) => attemptJson<Probe>(() => probe(p)))),
-      "tx.commit": ({ projectId, tx, generation }, { headers }) =>
-        guard("tx.commit", registry.commit(projectId, tx, generation, callMeta(headers, source))),
+      "tx.commit": ({ projectId, tx, generation }, options) =>
+        guard("tx.commit", registry.commit(projectId, tx, generation, meta(options))),
       "snapshot.get": ({ projectId, branch }) => guard("snapshot.get", registry.snapshot(projectId, branch)),
       // Errors (unknown project, bad range) travel in the stream's error channel.
       "ops.subscribe": ({ projectId, branch, fromRev, generation }) =>
@@ -69,31 +83,31 @@ export const HandlersLive = FinRpcs.toLayer(
       "project.verify": ({ projectId }) => guard("project.verify", registry.verify(projectId)),
       "project.rebuild": ({ projectId }) => guard("project.rebuild", registry.rebuild(projectId)),
       "project.compact": ({ projectId }) => guard("project.compact", registry.compact(projectId)),
-      "project.recover": (payload, { headers }) =>
+      "project.recover": (payload, options) =>
         guard(
           "project.recover",
           Effect.andThen(
             requireAbsoluteOpt("importDir", payload.importDir),
-            registry.history(payload.projectId, "recover", payload, callMeta(headers, source)),
+            registry.history(payload.projectId, "recover", payload, meta(options)),
           ),
         ),
-      "branch.create": (payload, { headers }) =>
-        guard("branch.create", registry.history(payload.projectId, "branchCreate", payload, callMeta(headers, source))),
+      "branch.create": (payload, options) =>
+        guard("branch.create", registry.history(payload.projectId, "branchCreate", payload, meta(options))),
       "branch.list": ({ projectId, all }) => guard("branch.list", registry.branches(projectId, all === true)),
-      "branch.set": (payload, { headers }) =>
-        guard("branch.set", registry.history(payload.projectId, "branchSet", payload, callMeta(headers, source))),
-      "history.undo": (payload, { headers }) =>
-        guard("history.undo", registry.history(payload.projectId, "undo", payload, callMeta(headers, source))),
-      "history.redo": (payload, { headers }) =>
-        guard("history.redo", registry.history(payload.projectId, "redo", payload, callMeta(headers, source))),
-      "history.checkpoint": (payload, { headers }) =>
-        guard("history.checkpoint", registry.history(payload.projectId, "checkpoint", payload, callMeta(headers, source))),
-      "history.merge": (payload, { headers }) =>
-        guard("history.merge", registry.history(payload.projectId, "merge", payload, callMeta(headers, source))),
-      "history.cherryPick": (payload, { headers }) =>
-        guard("history.cherryPick", registry.history(payload.projectId, "cherryPick", payload, callMeta(headers, source))),
-      "history.revert": (payload, { headers }) =>
-        guard("history.revert", registry.history(payload.projectId, "revert", payload, callMeta(headers, source))),
+      "branch.set": (payload, options) =>
+        guard("branch.set", registry.history(payload.projectId, "branchSet", payload, meta(options))),
+      "history.undo": (payload, options) =>
+        guard("history.undo", registry.history(payload.projectId, "undo", payload, meta(options))),
+      "history.redo": (payload, options) =>
+        guard("history.redo", registry.history(payload.projectId, "redo", payload, meta(options))),
+      "history.checkpoint": (payload, options) =>
+        guard("history.checkpoint", registry.history(payload.projectId, "checkpoint", payload, meta(options))),
+      "history.merge": (payload, options) =>
+        guard("history.merge", registry.history(payload.projectId, "merge", payload, meta(options))),
+      "history.cherryPick": (payload, options) =>
+        guard("history.cherryPick", registry.history(payload.projectId, "cherryPick", payload, meta(options))),
+      "history.revert": (payload, options) =>
+        guard("history.revert", registry.history(payload.projectId, "revert", payload, meta(options))),
       "project.acknowledgeRewind": ({ projectId, branch, generation }) =>
         guard("project.acknowledgeRewind", Effect.map(registry.acknowledgeRewind(projectId, branch, generation), (acknowledged) => ({ acknowledged }))),
       "project.acknowledgeSalvage": ({ projectId, copy }) =>
@@ -123,6 +137,6 @@ export const HandlersLive = FinRpcs.toLayer(
       "diagnostics.consent": ({ purpose, value }) => guard("diagnostics.consent", diagnostics.consent(source, purpose, value)),
       "diagnostics.record": (req, { client, headers }) =>
         guard("diagnostics.record", diagnostics.record(source, client.id, req, headers)),
-    }), connections, guard);
+    }), { connections, projects, audit, timed: guard });
   }),
 );

@@ -79,6 +79,10 @@ export interface ProjectRegistryShape {
   readonly fontsPlan: (projectId: string, branch: string, ops: ReadonlyArray<unknown>) => Effect.Effect<FontsPlan, FinError>;
   /** Fails with `PROJECT_NOT_FOUND` unless the project is known (opened on demand). */
   readonly ensure: (projectId: string) => Effect.Effect<void, FinError>;
+  /** The chain's view (5A Task 5): open here now; its folder; a branch reference's id. */
+  readonly isOpen: (projectId: string) => boolean;
+  readonly dirOf: (projectId: string) => string | undefined;
+  readonly resolveBranch: (projectId: string, branch: string) => Effect.Effect<string, FinError>;
   /** @internal Tests only: how many live fan-out channels exist. */
   readonly hubCount: () => { ops: number; events: number };
   /** @internal Tests only: the engine currently registered for `projectId`. */
@@ -498,6 +502,9 @@ export function makeProjectRegistry(
         ),
       acknowledgeSalvage: (projectId, copy) => on<boolean>(projectId, async (e) => String(await e.acknowledgeSalvage(copy))),
       ensure: (projectId) => Effect.asVoid(get(projectId)),
+      isOpen: (projectId) => byId.has(projectId),
+      dirOf: (projectId) => byId.get(projectId)?.dir,
+      resolveBranch,
       evalFrame: (projectId, requested, timeline, at) =>
         Effect.flatMap(resolveBranch(projectId, requested), (branch) =>
           on<FramePlan>(projectId, (e) => e.evalFrame(branch, timeline, at)),

@@ -123,9 +123,10 @@ fn plan(
     let txn = ctx.txn;
     // A txId that names a merge group would make the group's undo unit ambiguous.
     crate::history_ops::merge_id_taken(txn, &tx.tx_id)?;
-    // The branch by id (the stored intent holds it); an archived one takes no commits.
+    // The branch by id (the stored intent holds it); an archived or guarded one takes no
+    // commits.
     let tx = &Tx {
-        branch: crate::write::writable(txn, &tx.branch)?.id,
+        branch: ctx.target(&tx.branch)?.id,
         ..tx.clone()
     };
     // One head for the whole plan (`txn` is a copy of the reference, so it reads beside it).

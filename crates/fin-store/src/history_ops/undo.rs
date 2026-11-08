@@ -13,7 +13,7 @@ use crate::branch::create::{check_key, key_reused};
 use crate::branch::index;
 use crate::commit::{check_args_hash, same_args_hash};
 use crate::db::{self, Counters};
-use crate::write::{Draft, WriteCtx, writable};
+use crate::write::{Draft, WriteCtx};
 use crate::{HistoryResult, Store, StoreError};
 
 /// A history operation's request (`undo`, `redo`).
@@ -128,7 +128,7 @@ fn result(c: CommittedTx, dry_run: bool) -> HistoryResult {
 fn plan(ctx: &mut WriteCtx<'_>, r: &HistoryReq, which: Which) -> Result<CommittedTx, StoreError> {
     let txn = ctx.txn;
     super::merge_id_taken(txn, &r.tx_id)?;
-    let branch = writable(txn, &r.branch)?.id;
+    let branch = ctx.target(&r.branch)?.id;
     let mut ids = Counters::load(txn)?;
     let measurer = ctx.measurer.clone();
     let head = ctx.head(&branch)?;

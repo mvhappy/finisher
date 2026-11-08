@@ -1,6 +1,9 @@
 //! The one write path (plan 4B Task 7): [`Store::write`] runs a commit or a history
 //! operation in one SQLite transaction, and [`WriteCtx::append`] appends each of its records.
 //!
+//! Every operation resolves the branch it changes with [`WriteCtx::target`], which checks the
+//! store's [write guard](crate::guard) inside the transaction, dry runs included.
+//!
 //! A real write checks, in this order: the dedupe on its first txId, the read-only state, the
 //! lease fence (the full check runs before the database lock is taken, trusted for
 //! [`TRUSTS_CHECK`]), the dedupe again under the lock, the fence's answer; then runs the
@@ -81,9 +84,25 @@ pub(crate) struct WriteCtx<'a> {
     /// The store's measurer ([`crate::Store::set_measurer`]): what this write's re-runs
     /// check caption overflow with.
     pub measurer: Option<std::sync::Arc<dyn fin_core::layout::TextMeasurer>>,
+    /// The guard of [`Store::with_guard`] at the write's start ([`crate::guard`]).
+    guard: crate::WriteGuard,
 }
 
 impl WriteCtx<'_> {
+    /// The branch this write changes, for reference `r`: [`writable`], then the guard
+    /// ([`crate::guard`]: `BRANCH_PROTECTED`, `BRANCH_NOT_ALLOWED`), inside the transaction.
+    pub(crate) fn target(&self, r: &str) -> Result<BranchInfo, StoreError> {
+        let info = writable(self.txn, r)?;
+        self.guarded(&info)?;
+        Ok(info)
+    }
+
+    /// The guard's check of `info`, a branch this write changes through another branch's
+    /// log (a `branchSet` on its parent's).
+    pub(crate) fn guarded(&self, info: &BranchInfo) -> Result<(), StoreError> {
+        crate::guard::check(&self.guard, info)
+    }
+
     /// The head of `branch` as this write sees it: moved by its own appends, else the
     /// database's (`BRANCH_NOT_FOUND` when there is none).
     pub(crate) fn head(&mut self, branch: &str) -> Result<&Head, StoreError> {
@@ -261,6 +280,7 @@ impl Store {
         let measurer = self.measurer.clone();
         let mut ctx = WriteCtx {
             measurer,
+            guard: self.guard.clone(),
             txn: &txn,
             epoch,
             dry_run,

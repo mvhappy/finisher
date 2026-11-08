@@ -66,6 +66,11 @@ struct Conn {
 
 impl Conn {
     fn open(server: &Server, subst: &[(String, String)]) -> Conn {
+        Conn::open_as(server, subst, "local")
+    }
+
+    /// Proved as `credential` (`local`, or `console` for the human-only fixtures).
+    fn open_as(server: &Server, subst: &[(String, String)], credential: &str) -> Conn {
         let name = server
             .socket
             .as_str()
@@ -79,7 +84,7 @@ impl Conn {
             .unwrap();
         let mut io = BufReader::new(stream);
         // Since 5A Task 4 a connection proves before anything but the hello.
-        support::auth::prove(&mut io, &server.sd, &server.socket, "local");
+        support::auth::prove(&mut io, &server.sd, &server.socket, credential);
         Conn {
             io,
             subst: subst.to_vec(),
@@ -247,7 +252,8 @@ fn replay_storage(server: &Server, subst: &[(String, String)], project_id: &str)
         stale["exit"]["cause"][0]["error"]["details"]["reason"],
         "GENERATION"
     );
-    let relocated = Conn::open(server, subst).replay("project-open-relocate");
+    // A relocation is a person's decision (5A Task 5): the console replays it.
+    let relocated = Conn::open_as(server, subst, "console").replay("project-open-relocate");
     assert_eq!(relocated["exit"]["value"]["rev"], 4, "{relocated}");
     replay_events(server, subst);
     replay_history(server, subst, project_id);

@@ -5523,3 +5523,20 @@ export interface ValidationReport {
   manifest?: Manifest | null;
   ok: boolean;
 }
+/**
+ * The branches a write may change, by branch id (`br<n>`, `main`). The default guards
+ * nothing.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "WriteGuard".
+ */
+export interface WriteGuard {
+  /**
+   * When set, the only branches a write may change (`BRANCH_NOT_ALLOWED` otherwise).
+   */
+  allowBranches?: string[] | null;
+  /**
+   * Branches no write may change (`BRANCH_PROTECTED`).
+   */
+  denyBranches?: string[];
+}

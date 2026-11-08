@@ -6,8 +6,12 @@
 //! on the worker. A dry run plans against the local database and keeps nothing, on a follower
 //! too.
 //!
-//! Every napi method that writes takes an optional `metaJson` (`{actor}`, finisherd's
-//! `callMeta`): the actor of its `log.commit` entry ([`crate::commit_log`]).
+//! Every napi method that writes takes an optional `metaJson` (`{actor?, guard?}`): `actor`
+//! (finisherd's `callMeta`) is the actor of its `log.commit` entry ([`crate::commit_log`]);
+//! `guard` (a `WriteGuard`, `{denyBranches?, allowBranches?}` of branch ids, from the
+//! chain's policy stage) is checked by the store inside the write transaction against the
+//! branch the call changes (`BRANCH_PROTECTED`, `BRANCH_NOT_ALLOWED`). A `metaJson` or
+//! `guard` that does not decode is `INVALID_OP`; it is never ignored.
 
 use fin_core::CoreError;
 use fin_core::events::payloads::CommitRecord;
@@ -167,7 +171,10 @@ pub(crate) fn run(store: &Shared, call: Call) -> Result<Reply> {
 fn recover(s: &mut Store, j: &Journal, req_json: &str, meta: Option<&str>) -> Result<String> {
     let r = parse::<RecoverReq>("recover", req_json)?;
     if r.create.is_none() && r.dismiss.is_none() {
-        return encode(&s.recover(r).map_err(reject)?);
+        // A listing, an import or a dry run with them: under the guard too (a dry run plans
+        // through `Store::write`).
+        let guard = crate::journal::ctx::guard_of_meta(meta).map_err(reject)?;
+        return encode(&s.with_guard(guard, |s| s.recover(r)).map_err(reject)?);
     }
     // The recovery's first record, `<id>-1`, on every path (what `fin` reports).
     let q = req(j, &format!("{}-1", r.tx_id), &r.author, None);

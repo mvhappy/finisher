@@ -44,8 +44,12 @@ export declare class Engine {
    * Commits a `Tx` (JSON); resolves to the `CommittedTx` JSON. With `generationJson`
    * (`{"incarnation": string, "n": number}`, from `opsSinceAt` or `status`), rejects with
    * `HISTORY_REWOUND` when the branch was rewound or the database rebuilt since.
-   * `metaJson` (`{actor: {kind, session?, call?}}`, finisherd's `callMeta`) is the actor of the
-   * `log.commit` diagnostics entry; every writing branch and history call takes it too.
+   * `metaJson` (`{actor?: {kind, session?, call?}, guard?: WriteGuard}`): `actor` (finisherd's
+   * `callMeta`) is the actor of the `log.commit` diagnostics entry; `guard` (branch ids:
+   * `{denyBranches?, allowBranches?}`) is checked by the store inside the write transaction
+   * against the branch the call changes (`BRANCH_PROTECTED`, `BRANCH_NOT_ALLOWED`). A
+   * `metaJson` or `guard` that does not decode is `INVALID_OP`. Every writing branch and
+   * history call (and `recover`) takes it too.
    */
   commit(txJson: string, generationJson?: string, metaJson?: string): Promise<string>;
   /** Resolves to `{ rev, project, generation: { incarnation, n } }` JSON, read together. */

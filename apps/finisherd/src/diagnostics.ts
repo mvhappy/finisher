@@ -5,7 +5,7 @@
 import { arch, availableParallelism, hostname, platform, release, totalmem } from "node:os";
 import { relative } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { ConsentState, DiagnosticsReport, ExportPage, PurgeReport } from "@finisher/core-types";
+import type { ConsentState, DiagnosticsReport, ExportPage, PurgeReport, WriteGuard } from "@finisher/core-types";
 import { type FinError, PROTOCOL_VERSION } from "@finisher/contracts";
 import { Journal, kindNames, validatePrivacy } from "@finisher/fin-node";
 import { Context, Effect, Layer, type Scope } from "effect";
@@ -41,6 +41,8 @@ const ACTOR_KINDS: Readonly<Record<Source, ReadonlySet<string>>> = {
 /** The actor of a request (Decision 23a), from its `fin-actor-*` headers, validated. */
 export interface CallMeta {
   readonly actor: { readonly kind: string; readonly session?: string; readonly call?: string };
+  /** The chain's write guard (5A Task 5), checked by the store inside the write transaction. */
+  readonly guard?: WriteGuard;
 }
 
 /**

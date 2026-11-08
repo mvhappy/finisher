@@ -220,6 +220,7 @@ impl Store {
             compact: crate::compact::CompactState::default(),
             measurer: opts.measurer.clone(),
             write_outcome: None,
+            guard: crate::WriteGuard::default(),
             #[cfg(any(test, feature = "test-hooks"))]
             fail_after_apply: false,
         }

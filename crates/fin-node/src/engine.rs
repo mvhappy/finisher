@@ -272,8 +272,11 @@ impl Engine {
     /// Commits a `Tx` (JSON); resolves to the `CommittedTx` JSON. With `generation_json`
     /// (`{incarnation, n}`, as `opsSinceAt` or `status` gave it) the commit is refused with
     /// `HISTORY_REWOUND` when the branch was rewound or the database rebuilt since.
-    /// `meta_json` (`{actor: {kind, session?, call?}}`, finisherd's `callMeta`) is the actor
-    /// of the `log.commit` entry (`unknown` without it).
+    /// `meta_json` (`{actor?: {kind, session?, call?}, guard?: WriteGuard}`): `actor`
+    /// (finisherd's `callMeta`) is the actor of the `log.commit` entry (`unknown` without
+    /// it); `guard` (`{denyBranches?, allowBranches?}`, branch ids) is checked inside the
+    /// write transaction against the branch the tx resolves to (`BRANCH_PROTECTED`,
+    /// `BRANCH_NOT_ALLOWED`). A `meta_json` or `guard` that does not decode is `INVALID_OP`.
     #[napi(catch_unwind)]
     pub fn commit(
         &self,

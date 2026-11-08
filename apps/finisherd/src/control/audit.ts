@@ -6,8 +6,9 @@
 //
 // - `append` never throws: a failed write is logged to stderr and counted (`failures()`,
 //   reported by `server.status`); the request it records still gets its answer.
-// - `auth.fail` rows aggregate per `(credentialKind, remote)` per minute into one row with a
-//   `count`, so a flood of connections cannot flood the log.
+// - `auth.fail` rows, and `auth.denied` rows for `UNAUTHENTICATED` (requests from connections
+//   that never proved, 5A Task 5), aggregate per `(kind, credentialKind, remote)` per minute into
+//   one row with a `count`, so a flood of connections or requests cannot flood the log.
 // - Retention: 180 days or 100,000 rows, swept at start and hourly (`layerAudit`), in batches
 //   of ≤ 500 rows per `DELETE`, one batch per event-loop turn.
 import type { StatementSync } from "node:sqlite";
@@ -111,7 +112,7 @@ export class Audit {
   append(e: AuditInput): void {
     try {
       const at = this.#clock();
-      if (e.kind === "auth.fail" && this.#aggregate(e, at)) return;
+      if (aggregated(e) && this.#aggregate(e, at)) return;
       let details = e.details ?? {};
       if (!auditDetailsValid(e.kind, details)) {
         // A caller bug: the event is still recorded, without the details (never printed).
@@ -133,7 +134,7 @@ export class Audit {
         e.code ?? null,
         JSON.stringify(details),
       );
-      if (e.kind === "auth.fail") this.#failRows.set(failKey(e), Number(r.lastInsertRowid));
+      if (aggregated(e)) this.#failRows.set(failKey(e), Number(r.lastInsertRowid));
     } catch (err) {
       this.#failures++;
       process.stderr.write(`finisherd: warning: audit write failed (${e.kind}): ${String((err as Error)?.message ?? err)}\n`);
@@ -228,8 +229,13 @@ export class Audit {
   }
 }
 
+/** Rows counted per minute rather than written one by one. */
+function aggregated(e: AuditInput): boolean {
+  return e.kind === "auth.fail" || (e.kind === "auth.denied" && e.code === "UNAUTHENTICATED");
+}
+
 function failKey(e: AuditInput): string {
-  return `${e.credentialKind ?? ""}|`;
+  return `${e.kind}|${e.credentialKind ?? ""}|`;
 }
 
 export class AuditTag extends Context.Service<AuditTag, Audit>()("finisherd/Audit") {}

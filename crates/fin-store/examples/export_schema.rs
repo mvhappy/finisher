@@ -1,6 +1,7 @@
 //! Prints the JSON Schema of the TypeScript contract to stdout: `fin-core`'s types plus the
 //! envelope types the engine sends that live above it (fin-store's [`Generation`],
-//! [`EngineEvent`], [`TxSetAside`], [`HistoryResult`], [`MergeReport`], [`RecoverReport`];
+//! [`EngineEvent`], [`TxSetAside`], [`HistoryResult`], [`MergeReport`], [`RecoverReport`],
+//! and the [`WriteGuard`] finisherd sends with every write;
 //! fin-probe's [`Probe`]; fin-fonts' [`FontCatalog`], [`FileState`], [`FontsStatus`],
 //! [`FontsPlan`]). `FramePlan`, `AudioPlan`, `TextLayout` and `ParamSpec` come from fin-core, and
 //! so do the diagnostics event types (`events::Envelope`, `AnyPayload`, the kind-keyed
@@ -21,7 +22,7 @@ use fin_fonts::{FileState, FontCatalog, FontsPlan, FontsStatus};
 use fin_probe::Probe;
 use fin_store::{
     BranchCreated, BranchView, EngineEvent, Generation, HistoryResult, MergeReport, RecoverGroup,
-    RecoverReport, SkippedFile, TxSetAside,
+    RecoverReport, SkippedFile, TxSetAside, WriteGuard,
 };
 
 fn main() {
@@ -40,6 +41,7 @@ fn main() {
         g.subschema_for::<fin_core::history::Stacks>();
         g.subschema_for::<EngineEvent>();
         g.subschema_for::<TxSetAside>();
+        g.subschema_for::<WriteGuard>();
         g.subschema_for::<Probe>();
         g.subschema_for::<fin_core::TextLayout>();
         g.subschema_for::<FontCatalog>();
