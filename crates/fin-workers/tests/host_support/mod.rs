@@ -397,7 +397,13 @@ pub fn gone(pid: u32) -> bool {
         )
     };
     if h.is_null() {
-        return true;
+        // Access denied means the process exists but its DACL keeps us out (the spawn
+        // broker's grants SYSTEM only; an elevated test passes that check through
+        // `SeDebugPrivilege`, a non-elevated one does not). A pid that names no process is
+        // `ERROR_INVALID_PARAMETER`.
+        // SAFETY: the error of the call just made.
+        let err = unsafe { windows_sys::Win32::Foundation::GetLastError() };
+        return err != windows_sys::Win32::Foundation::ERROR_ACCESS_DENIED;
     }
     // SAFETY: a process handle we just opened.
     let running = unsafe { WaitForSingleObject(h, 0) } == WAIT_TIMEOUT;
