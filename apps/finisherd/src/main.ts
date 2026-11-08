@@ -56,7 +56,7 @@ import { ServerControlTag } from "./server-admin.ts";
 import { isServeCommand, runConsole } from "./console/main.ts";
 import { currentSandboxStatus, reporterFor, sandboxWarnings } from "./sandbox/status.ts";
 import { type AgentRuntimeParts, AgentRuntimeTag, type AgentServeOptions, buildAgentRuntime } from "./agent/wiring.ts";
-import { type AgentListener, agentConnections, agentEndpoint, makeAgentListener, makeAgentTcpServer } from "./agent/listener.ts";
+import { type AgentListener, agentConnections, agentEndpoint, makeAgentListener, makeAgentTcpServer, rateLimited } from "./agent/listener.ts";
 
 export interface ServeOptions {
   readonly serverData: string;
@@ -75,7 +75,7 @@ export interface ServeOptions {
   /** The agent listener (plan 7C Task 6), handed to tests and the session wiring once built. */
   readonly onAgentListener?: (listener: AgentListener) => void;
   /** The agent listener's handshake timeout and connection cap (tests lower them). */
-  readonly agentListener?: Partial<Pick<ListenerRules, "handshakeTimeoutMs" | "maxConnections">>;
+  readonly agentListener?: Partial<Pick<ListenerRules, "handshakeTimeoutMs" | "maxConnections" | "maxUnproved">>;
   /** Called once both transports listen and `finisherd.json` is written. */
   readonly onReady?: (info: ServerInfo) => void;
 }
@@ -322,24 +322,24 @@ export const serve = ({
       // What every transport's handlers are served with, built once: the agent listener's
       // handlers, built later, share it with the two built now.
       const served = yield* Layer.build(
-            Layer.mergeAll(
-              Layer.succeedContext(registryContext),
-              fontsLayer,
-              layerPlugins(serverData).pipe(Layer.provide(Layer.succeedContext(control)), Layer.provide(fontsLayer)),
-              Layer.succeed(Diagnostics, diagnostics),
-              Layer.succeedContext(control),
-              Layer.succeedContext(jobsContext),
-              Layer.succeed(LibrariesTag, library),
-              Layer.succeed(LibraryServiceTag, library),
-              Layer.succeed(KeysTag, keys),
-              Layer.succeed(HandshakeTag, handshake),
-              Layer.succeed(CredentialsTag, credentials),
-              Layer.succeed(TicketsTag, tickets),
-              Layer.succeed(ConnectionRegistryTag, everyConnection),
-              Layer.succeed(ServerControlTag, serverControl),
-              Layer.succeed(AgentCoreTag, agentCore),
-              Layer.succeed(AgentRuntimeTag, agentRuntime),
-            ),
+        Layer.mergeAll(
+          Layer.succeedContext(registryContext),
+          fontsLayer,
+          layerPlugins(serverData).pipe(Layer.provide(Layer.succeedContext(control)), Layer.provide(fontsLayer)),
+          Layer.succeed(Diagnostics, diagnostics),
+          Layer.succeedContext(control),
+          Layer.succeedContext(jobsContext),
+          Layer.succeed(LibrariesTag, library),
+          Layer.succeed(LibraryServiceTag, library),
+          Layer.succeed(KeysTag, keys),
+          Layer.succeed(HandshakeTag, handshake),
+          Layer.succeed(CredentialsTag, credentials),
+          Layer.succeed(TicketsTag, tickets),
+          Layer.succeed(ConnectionRegistryTag, everyConnection),
+          Layer.succeed(ServerControlTag, serverControl),
+          Layer.succeed(AgentCoreTag, agentCore),
+          Layer.succeed(AgentRuntimeTag, agentRuntime),
+        ),
       );
       yield* Layer.build(
         Layer.mergeAll(serveRpc(local, connections.local), serveRpc(ws, connections.ws)).pipe(Layer.provide(Layer.succeedContext(served))),
@@ -347,15 +347,29 @@ export const serve = ({
       // The agent listener (plan 7C Task 6): loopback TCP for sandboxed `fin`, started on first
       // need into this server's scope, so it stops with the server.
       let agentTcpEndpoint = "";
-      const agentTcp = everyConnection.add(agentConnections(() => agentTcpEndpoint, agentListenerRules));
+      const agentTcp = everyConnection.add(
+        agentConnections(() => agentTcpEndpoint, { ...agentListenerRules, onRefused: rateLimited(60_000, (n) => logSink("warning", `finisherd: agent listener: ${n} connection(s) refused at the cap since the last warning`)) }),
+      );
       const serverScope = yield* Effect.scope;
       const runInServer = Effect.runPromiseWith(yield* Effect.context<never>());
       const agentListener = makeAgentListener(() =>
         runInServer(
           Effect.gen(function* () {
-            const { server, port } = yield* Scope.provide(serverScope)(makeAgentTcpServer());
-            agentTcpEndpoint = agentEndpoint(port);
-            yield* Layer.buildWithScope(serveRpc(server, agentTcp).pipe(Layer.provide(Layer.succeedContext(served))), serverScope);
+            // A child of the server's scope: a start that fails part-way closes what it opened
+            // (a bound port) instead of leaving it to the server's end.
+            const scope = yield* Scope.fork(serverScope);
+            const started = yield* Effect.exit(
+              Effect.gen(function* () {
+                const { server, port } = yield* Scope.provide(scope)(makeAgentTcpServer());
+                yield* Layer.buildWithScope(serveRpc(server, agentTcp).pipe(Layer.provide(Layer.succeedContext(served))), scope);
+                return agentEndpoint(port);
+              }),
+            );
+            if (Exit.isFailure(started)) {
+              yield* Scope.close(scope, started);
+              return yield* Effect.failCause(started.cause);
+            }
+            agentTcpEndpoint = started.value;
             listeners.push({ transport: agentTcp.transport, endpoint: agentTcpEndpoint });
             yield* Effect.logInfo(`finisherd agent listener: ${agentTcpEndpoint}`);
             return agentTcpEndpoint;

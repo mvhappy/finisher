@@ -45,8 +45,8 @@ impl Endpoint {
         if let Some(addr) = spec.strip_prefix("tcp:") {
             let bad = |why: &str| {
                 usage(
-                    format!("{SERVER_ENV}=tcp:{addr} is not a loopback TCP address: {why}"),
-                    json!({ "env": SERVER_ENV, "endpoint": spec }),
+                    format!("the endpoint tcp:{addr} is not a loopback TCP address: {why}"),
+                    json!({ "endpoint": spec }),
                     "use tcp:127.0.0.1:<port>, the agent listener finisherd names in FIN_SERVER",
                 )
             };

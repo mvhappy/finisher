@@ -7,7 +7,11 @@
 // - Only `agent` and `mcp` principals are served: any other proof (`local`, `console`) is refused
 //   after it is checked and audited `auth.fail {reason: listenerKind}` (`auth/handshake.ts`).
 // - A connection that has not proved within `HANDSHAKE_TIMEOUT_MS` is closed; at most
-//   `MAX_AGENT_CONNECTIONS` are open at once (`Connections`' listener rules).
+//   `MAX_AGENT_CONNECTIONS` are open at once, of which at most `MAX_UNPROVED` unproved
+//   (`Connections`' listener rules), so another local user holding unproved connections cannot
+//   take the slots proved agents use. Refusals at a cap are logged, at most once a minute.
+//   Residual: such a user can still keep new agents' `fin` from connecting while it holds the
+//   unproved slots (each for up to the timeout), since loopback TCP has no peer credentials.
 // - It is started on first need (`AgentListener.ensure`, called by the session wiring for a
 //   sandboxed session or hook, plan Task 11), never at boot, and stops with the server. The
 //   built-in agent's `fin` tool stays on the local socket: it runs outside the OS sandbox
@@ -24,6 +28,8 @@ export const AGENT_LISTENER_KINDS: ReadonlySet<string> = new Set(["agent", "mcp"
 export const HANDSHAKE_TIMEOUT_MS = 10_000;
 /** Open connections at once (every session's `fin` calls share it). */
 export const MAX_AGENT_CONNECTIONS = 256;
+/** Of those, unproved at once (a handshake takes one round trip). */
+export const MAX_UNPROVED = 32;
 /** The only address it listens on. */
 export const AGENT_LISTENER_HOST = "127.0.0.1";
 
@@ -36,6 +42,7 @@ export function agentConnections(endpoint: () => string, rules: Partial<Listener
     admits: (p: Principal) => AGENT_LISTENER_KINDS.has(p.kind),
     handshakeTimeoutMs: HANDSHAKE_TIMEOUT_MS,
     maxConnections: MAX_AGENT_CONNECTIONS,
+    maxUnproved: MAX_UNPROVED,
     ...rules,
   });
 }
@@ -81,5 +88,18 @@ export function makeAgentListener(start: () => Promise<string>): AgentListener {
       return started;
     },
     current: () => endpoint,
+  };
+}
+
+/** Calls `report(n)` with the number of events since the last report, at most once per `ms`. */
+export function rateLimited(ms: number, report: (n: number) => void, now: () => number = Date.now): () => void {
+  let last = -Infinity;
+  let n = 0;
+  return () => {
+    n++;
+    if (now() - last < ms) return;
+    last = now();
+    report(n);
+    n = 0;
   };
 }

@@ -9,7 +9,7 @@ import { join } from "node:path";
 import type { Credential, CredentialFile } from "@finisher/contracts";
 import { Effect, Fiber } from "effect";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
-import { AGENT_LISTENER_KINDS, type AgentListener, agentConnections, agentEndpoint, makeAgentListener } from "../src/agent/listener.ts";
+import { AGENT_LISTENER_KINDS, type AgentListener, agentConnections, agentEndpoint, makeAgentListener, rateLimited } from "../src/agent/listener.ts";
 import { b64u, canonicalEndpoint, helloProof, proveMac, sameMac } from "../src/auth/crypto.ts";
 import type { Link } from "../src/connections.ts";
 import { serve, StderrLogger } from "../src/main.ts";
@@ -60,6 +60,33 @@ describe("listener rules (units)", () => {
     t.fire();
     expect([silent.closed, proved.closed, gone.closed]).toEqual([1, 0, 0]);
     expect(t.pending.length).toBe(0);
+  });
+
+  test("unproved_cap_keeps_slots_for_proved_agents", () => {
+    const refused: string[] = [];
+    const c = agentConnections(() => "e", { maxConnections: 4, maxUnproved: 2, timers: timers(), onRefused: (cap) => refused.push(cap) });
+    const agent = { ...LOCAL, kind: "agent", id: "a1" } as typeof LOCAL;
+    const ls = [link(), link(), link()];
+    ls.forEach((l, i) => c.attach(i + 1, l));
+    // The third unproved one is refused; a connection that arrives proved is not.
+    expect(ls.map((l) => l.closed)).toEqual([0, 0, 1]);
+    c.get(1)!.principal = agent;
+    const later = link();
+    c.attach(5, later);
+    expect(later.closed).toBe(0);
+    expect(refused).toEqual(["unproved"]);
+  });
+
+  test("refusals_are_logged_at_most_once_per_period", () => {
+    let t = 0;
+    const seen: number[] = [];
+    const f = rateLimited(1000, (n) => seen.push(n), () => t);
+    f();
+    f();
+    f();
+    t = 1500;
+    f();
+    expect(seen).toEqual([1, 3]);
   });
 
   test("connection_cap_holds", () => {
@@ -187,22 +214,30 @@ describe("the agent listener on a server", () => {
     }
     const audit = ok<{ entries: Array<{ kind: string; details: Record<string, unknown> }> }>(await (await console_()).call("auth.audit.list", {}));
     const refused = audit.entries.filter((e) => e.kind === "auth.fail" && e.details.reason === "listenerKind");
-    expect(refused.length).toBeGreaterThanOrEqual(1);
-    expect(refused.every((e) => e.details.transport === "agentTcp")).toBe(true);
+    expect(refused.map((e) => [(e as { credentialKind?: string }).credentialKind, e.details.transport]).sort()).toEqual([
+      ["console", "agentTcp"],
+      ["local", "agentTcp"],
+    ]);
   });
 
-  test("a_silent_client_is_cut_and_the_cap_holds", async () => {
-    const r = await start({ handshakeTimeoutMs: 200, maxConnections: 2 });
-    const endpoint = await r.listener.ensure();
-    const silent = await tcp(endpoint);
+  test("a_silent_client_is_cut_after_the_timeout", async () => {
+    const r = await start({ handshakeTimeoutMs: 200 });
+    const silent = await tcp(await r.listener.ensure());
     const t0 = Date.now();
     await silent.closed();
     expect(Date.now() - t0).toBeLessThan(5_000);
+  });
+
+  test("the_cap_holds", async () => {
+    // A long timeout: a refused connection closes at once, not by its timer.
+    const r = await start({ handshakeTimeoutMs: 60_000, maxConnections: 2 });
+    const endpoint = await r.listener.ensure();
     const a = await tcp(endpoint);
     const b = await tcp(endpoint);
     const over = await tcp(endpoint);
+    const t0 = Date.now();
     await over.closed();
-    // The two under the cap still answer.
+    expect(Date.now() - t0).toBeLessThan(10_000);
     for (const c of [a, b]) expect(code(await c.call("server.hello", {}))).toBeUndefined();
   });
 });

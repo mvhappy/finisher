@@ -42,6 +42,11 @@ fn fin_over_the_listener_with_an_agent_credential() {
         "{}",
         run.stdout
     );
+    assert_eq!(
+        run.json["error"]["details"]["reason"], "listenerKind",
+        "{}",
+        run.stdout
+    );
 }
 
 #[cfg(target_os = "linux")]
@@ -203,7 +208,11 @@ mod sandboxed {
         let run = sandboxed_fin(&c, &socket, None, &["whoami"]);
         if abi >= 9 {
             // Landlock `RESOLVE_UNIX`: the socket is not in the policy.
-            assert_ne!(run.code, 0, "{}", run.stdout);
+            assert_eq!(
+                run.json["error"]["code"], "SERVER_UNAVAILABLE",
+                "{}",
+                run.stdout
+            );
         } else {
             // Recorded residual (plan Task 4 deferred): below ABI 9 only the seccomp filter's
             // `AF_UNIX` refusal would stop this. It runs as the agent (its own credential), not

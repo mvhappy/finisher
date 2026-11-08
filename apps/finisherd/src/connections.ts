@@ -32,7 +32,15 @@ export type Transport = "socket" | "pipe" | "ws" | "agentTcp";
 export interface ListenerRules {
   readonly admits: (p: Principal) => boolean;
   readonly handshakeTimeoutMs: number;
+  /** Open connections at once, proved or not. */
   readonly maxConnections: number;
+  /**
+   * Unproved connections at once (≤ `maxConnections`): loopback TCP is open to every local user,
+   * so one that holds unproved connections cannot fill the slots proved agents need.
+   */
+  readonly maxUnproved: number;
+  /** A connection was refused at a cap (for a rate-limited log line). */
+  readonly onRefused?: (cap: "connections" | "unproved") => void;
   readonly timers?: { readonly set: (f: () => void, ms: number) => unknown; readonly clear: (h: unknown) => void };
 }
 
@@ -126,10 +134,19 @@ export class Connections {
   attach(clientId: number, link: Link, principal: Principal = this.initial, peer?: Peer): Connection {
     const c: Connection = { clientId, transport: this.transport, openedAt: this.now(), principal, failures: 0, ...(peer === undefined ? {} : { peer }) };
     const rules = this.rules;
-    if (rules !== undefined && this.#byId.size >= rules.maxConnections) {
-      // Over the cap: not registered, closed at once.
+    const full =
+      rules === undefined
+        ? undefined
+        : this.#byId.size >= rules.maxConnections
+          ? ("connections" as const)
+          : !isProved(principal) && this.#unproved() >= rules.maxUnproved
+            ? ("unproved" as const)
+            : undefined;
+    if (full !== undefined) {
+      // Over a cap: not registered, closed at once.
       c.principal = ANONYMOUS;
       link.close();
+      rules?.onRefused?.(full);
       return c;
     }
     this.#byId.set(clientId, c);
@@ -151,6 +168,13 @@ export class Connections {
       link.close();
     }
     return c;
+  }
+
+  /** Live connections that have not proved a credential. */
+  #unproved(): number {
+    let n = 0;
+    for (const c of this.#byId.values()) if (!isProved(c.principal)) n++;
+    return n;
   }
 
   /** Sets how this transport learns of revoked credentials (`ConnectionRegistry`). */

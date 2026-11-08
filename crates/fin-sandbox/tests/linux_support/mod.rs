@@ -172,11 +172,16 @@ pub fn failure(out: &std::process::Output) -> serde_json::Value {
 /// Makes `cmd`'s process inherit `file` as descriptor 4, without close-on-exec (as a careless
 /// parent would leak one). The returned descriptor must stay open until the spawn.
 pub fn inherit_fd4(cmd: &mut Command, file: std::fs::File) -> std::os::fd::OwnedFd {
+    use std::os::fd::FromRawFd;
     use std::os::fd::{AsRawFd, OwnedFd};
     use std::os::unix::process::CommandExt;
-    let fd = OwnedFd::from(file);
-    let raw = fd.as_raw_fd();
-    assert_ne!(raw, 3, "descriptor 3 is the request's");
+    // Above 4, so neither the request's dup onto 3 nor this one onto 4 overwrites the other.
+    // SAFETY: `F_DUPFD_CLOEXEC` makes a new descriptor owned below.
+    let raw = unsafe { libc::fcntl(file.as_raw_fd(), libc::F_DUPFD_CLOEXEC, 10) };
+    assert!(raw >= 10, "{}", std::io::Error::last_os_error());
+    // SAFETY: a fresh descriptor nobody else owns.
+    let fd = unsafe { OwnedFd::from_raw_fd(raw) };
+    drop(file);
     // SAFETY: only async-signal-safe calls in the child; `fd` lives until the spawn.
     unsafe {
         cmd.pre_exec(move || {
