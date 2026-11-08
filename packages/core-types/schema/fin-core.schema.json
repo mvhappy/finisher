@@ -1,5 +1,20 @@
 {
   "$defs": {
+    "Accept": {
+      "additionalProperties": false,
+      "description": "What a person accepted with an approval, beyond the permissions (spec §5.3).",
+      "properties": {
+        "copyleft": {
+          "default": false,
+          "type": "boolean"
+        },
+        "thirdPartyCode": {
+          "default": false,
+          "type": "boolean"
+        }
+      },
+      "type": "object"
+    },
     "Actor": {
       "description": "Who caused an entry: a person, an agent (with its session and the tool call that ran\n`fin`), a plugin or the system. `session` is the agent or UI session (`FIN_SESSION`), not\nthe envelope's process run; `call` is the harness's tool-call id (`FIN_CALL`).",
       "properties": {
@@ -448,6 +463,12 @@
         },
         {
           "$ref": "#/$defs/StorageState"
+        },
+        {
+          "$ref": "#/$defs/PluginLifecycle"
+        },
+        {
+          "$ref": "#/$defs/RegistryRefresh"
         },
         {
           "$ref": "#/$defs/ErrorInternal"
@@ -1399,6 +1420,31 @@
       ],
       "type": "object"
     },
+    "CaptionStyleContribution": {
+      "additionalProperties": false,
+      "description": "A caption style (`fin_core::CaptionStyle` JSON) that `fin style add --from\n@pub/pack:<name>` copies into a project.",
+      "properties": {
+        "file": {
+          "type": "string"
+        },
+        "name": {
+          "description": "`[a-z0-9][a-z0-9-]{0,63}`, unique in the pack.",
+          "type": "string"
+        },
+        "title": {
+          "description": "A message key in the `en` catalogue for the style's display name.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "name",
+        "file"
+      ],
+      "type": "object"
+    },
     "Capture": {
       "description": "How faithful a turn's content is (§12.6).",
       "oneOf": [
@@ -2019,6 +2065,60 @@
         "maxFall"
       ],
       "type": "object"
+    },
+    "Contributes": {
+      "additionalProperties": false,
+      "description": "Contributions by kind (spec §4.2): the kinds this host consumes. Validation refuses any\nother key as `PLUGIN_CONTRIBUTION_UNSUPPORTED`.",
+      "properties": {
+        "captionStyles": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/CaptionStyleContribution"
+          },
+          "type": "array"
+        },
+        "fontCatalogs": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/FontCatalogContribution"
+          },
+          "type": "array"
+        }
+      },
+      "type": "object"
+    },
+    "ContributionKind": {
+      "description": "Every key of spec §4.2, consumed or not.",
+      "enum": [
+        "fontCatalogs",
+        "captionStyles",
+        "commands",
+        "hooks",
+        "skills",
+        "prompts",
+        "roles",
+        "rubrics",
+        "analyzers",
+        "providers",
+        "codecBackends",
+        "matteProducers",
+        "audioProcessors",
+        "luts",
+        "effects",
+        "transitions",
+        "lottieTemplates",
+        "formatTemplates",
+        "exportPresets",
+        "qaProfiles",
+        "duckingRules",
+        "editPresets",
+        "ui",
+        "agentProviders",
+        "slots",
+        "importers",
+        "embedders"
+      ],
+      "type": "string"
     },
     "CoreError": {
       "description": "A structured, machine-readable error. `code` is a stable `SCREAMING_SNAKE` string.",
@@ -3101,6 +3201,50 @@
           "additionalProperties": false,
           "properties": {
             "kind": {
+              "const": "plugin.lifecycle",
+              "type": "string"
+            },
+            "kv": {
+              "const": 1,
+              "type": "integer"
+            },
+            "payload": {
+              "$ref": "#/$defs/PluginLifecycle"
+            }
+          },
+          "required": [
+            "kind",
+            "kv",
+            "payload"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "registry.refresh",
+              "type": "string"
+            },
+            "kv": {
+              "const": 1,
+              "type": "integer"
+            },
+            "payload": {
+              "$ref": "#/$defs/RegistryRefresh"
+            }
+          },
+          "required": [
+            "kind",
+            "kv",
+            "payload"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
               "const": "error.internal",
               "type": "string"
             },
@@ -3632,6 +3776,19 @@
       ],
       "type": "object"
     },
+    "FontCatalogContribution": {
+      "additionalProperties": false,
+      "description": "A font catalog file (`fin_fonts::FontCatalog` JSON) whose entries join the server's\ncatalog by entry id (8A Decision 22).",
+      "properties": {
+        "file": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "file"
+      ],
+      "type": "object"
+    },
     "FontFace": {
       "description": "One face of a font file, as `fin_text::font_info` reads it.",
       "properties": {
@@ -4066,6 +4223,22 @@
         "layers"
       ],
       "type": "object"
+    },
+    "FsAccess": {
+      "enum": [
+        "read",
+        "readWrite"
+      ],
+      "type": "string"
+    },
+    "FsScope": {
+      "oneOf": [
+        {
+          "const": "pluginData",
+          "description": "`<server-data>/plugins/data/<id>/<projectId|_>/` (spec §5.1). `workspace` is not in v1.",
+          "type": "string"
+        }
+      ]
     },
     "GainSegment": {
       "description": "Gain over `[from, to)` in dB: `db` are the end values of the keyframe span the segment\nlies in, `u` the segment's progress range through that span, so the dB at progress `x` of\nthe segment is `lerp(db[0], db[1], ease(lerp(u[0], u[1], x)))` with `ease` from `interp`\n(`hold`: `db[0]` throughout). The `shapes` multiply the amplitude.",
@@ -4550,6 +4723,165 @@
       ],
       "type": "string"
     },
+    "InstallPlan": {
+      "additionalProperties": false,
+      "description": "What a person approves: made by [`super::make_plan`], kept in `staging/<planId>/plan.json`\nbeside the staged tree, committed by [`crate::store::Store::commit`].",
+      "properties": {
+        "action": {
+          "$ref": "#/$defs/PlanAction"
+        },
+        "bytes": {
+          "description": "Unpacked bytes.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "diff": {
+          "$ref": "#/$defs/PermissionDiff"
+        },
+        "digest": {
+          "description": "BLAKE3 (hex) of the plan's canonical JSON with `digest` empty ([`super::plan_digest`]):\nit binds the permissions, risks, licence and the staged tree hash.",
+          "type": "string"
+        },
+        "expiresAt": {
+          "description": "Unix ms.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "from": {
+          "description": "The installed version an update or downgrade replaces.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "licence": {
+          "$ref": "#/$defs/PlanLicence"
+        },
+        "models": {
+          "items": {
+            "$ref": "#/$defs/PlanModel"
+          },
+          "type": "array"
+        },
+        "permissions": {
+          "description": "Every permission of the new version with its risk, in manifest order.",
+          "items": {
+            "$ref": "#/$defs/PlannedPermission"
+          },
+          "type": "array"
+        },
+        "planId": {
+          "type": "string"
+        },
+        "plugin": {
+          "$ref": "#/$defs/PlanPlugin"
+        },
+        "registryStaleDays": {
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "risk": {
+          "$ref": "#/$defs/Risk"
+        },
+        "source": {
+          "$ref": "#/$defs/PlanSource"
+        },
+        "targetSha256": {
+          "description": "The signed target's SHA-256, for registry plans.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "treeHash": {
+          "description": "`package::tree_hash` of the staged tree; re-checked at commit.",
+          "type": "string"
+        },
+        "warnings": {
+          "description": "`thirdPartyCode` first when present (spec §3.1), then the others.",
+          "items": {
+            "$ref": "#/$defs/PlanWarning"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "planId",
+        "digest",
+        "plugin",
+        "source",
+        "action",
+        "permissions",
+        "diff",
+        "risk",
+        "licence",
+        "bytes",
+        "treeHash",
+        "expiresAt"
+      ],
+      "type": "object"
+    },
+    "InstalledPlugin": {
+      "additionalProperties": false,
+      "description": "The installed version a plan is made against (from `control.db` in `finisherd`), and what a\ncommit returns.",
+      "properties": {
+        "dir": {
+          "description": "The package directory, relative to `<server-data>/plugins` (`/`-separated).",
+          "type": "string"
+        },
+        "id": {
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/$defs/PluginKind"
+        },
+        "permissions": {
+          "default": [],
+          "description": "The granted permissions.",
+          "items": {
+            "$ref": "#/$defs/Permission"
+          },
+          "type": "array"
+        },
+        "registryId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "source": {
+          "$ref": "#/$defs/SourceKind"
+        },
+        "targetSha256": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "treeHash": {
+          "type": "string"
+        },
+        "version": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "version",
+        "kind",
+        "source",
+        "treeHash",
+        "dir"
+      ],
+      "type": "object"
+    },
     "IntentOmitted": {
       "enum": [
         "tooLarge"
@@ -4659,6 +4991,27 @@
           "type": "object"
         }
       ]
+    },
+    "Invalid": {
+      "description": "One violation, shaped as an error `{code, message, details}`.",
+      "properties": {
+        "code": {
+          "type": "string"
+        },
+        "details": {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        "message": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "code",
+        "message",
+        "details"
+      ],
+      "type": "object"
     },
     "Item": {
       "description": "One item on a track. On the wire the body's `kind` and fields and the common fields sit\nnext to `id`, `start` and `duration` (both are flattened).",
@@ -6061,6 +6414,16 @@
       ],
       "type": "object"
     },
+    "LicenceClass": {
+      "enum": [
+        "permissive",
+        "weakCopyleft",
+        "copyleft",
+        "nonCommercial",
+        "unknown"
+      ],
+      "type": "string"
+    },
     "Limits": {
       "description": "The limits a process runs under.",
       "properties": {
@@ -6505,6 +6868,95 @@
       ],
       "type": "object"
     },
+    "Manifest": {
+      "additionalProperties": false,
+      "properties": {
+        "contributes": {
+          "$ref": "#/$defs/Contributes"
+        },
+        "hostApi": {
+          "description": "The host API range this plugin works with (`^1.0`).",
+          "type": "string"
+        },
+        "id": {
+          "$ref": "#/$defs/PluginId"
+        },
+        "kind": {
+          "$ref": "#/$defs/PluginKind"
+        },
+        "license": {
+          "description": "An SPDX expression.",
+          "type": "string"
+        },
+        "locales": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "manifestVersion": {
+          "description": "Always 1.",
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "messages": {
+          "description": "The package directory holding `<locale>.json` ICU catalogues.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "models": {
+          "items": {
+            "$ref": "#/$defs/ModelRef"
+          },
+          "type": "array"
+        },
+        "permissions": {
+          "items": {
+            "$ref": "#/$defs/Permission"
+          },
+          "type": "array"
+        },
+        "platforms": {
+          "description": "Code plugins only.",
+          "items": {
+            "$ref": "#/$defs/Platform"
+          },
+          "type": "array"
+        },
+        "publisher": {
+          "$ref": "#/$defs/Publisher"
+        },
+        "runtime": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Runtime"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Code plugins only."
+        },
+        "version": {
+          "description": "Semver 2.0 without build metadata, immutable once published.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "manifestVersion",
+        "id",
+        "version",
+        "kind",
+        "hostApi",
+        "license",
+        "publisher"
+      ],
+      "type": "object"
+    },
     "Marker": {
       "properties": {
         "at": {
@@ -6790,6 +7242,54 @@
         "excluded",
         "sourceState",
         "dryRun"
+      ],
+      "type": "object"
+    },
+    "ModelRef": {
+      "additionalProperties": false,
+      "description": "A model a code plugin needs (spec §8.2); never inside the package.",
+      "properties": {
+        "attribution": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "bytes": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "id": {
+          "type": "string"
+        },
+        "license": {
+          "type": "string"
+        },
+        "provenance": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "purpose": {
+          "description": "A message key in the `en` catalogue.",
+          "type": "string"
+        },
+        "sha256": {
+          "type": "string"
+        },
+        "url": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "url",
+        "sha256",
+        "bytes",
+        "license",
+        "purpose"
       ],
       "type": "object"
     },
@@ -7880,6 +8380,10 @@
         }
       ]
     },
+    "Origin": {
+      "description": "`https://host[:port]`.",
+      "type": "string"
+    },
     "OsFamily": {
       "enum": [
         "linux",
@@ -8242,6 +8746,231 @@
       ],
       "description": "A parameter value: finite numbers round-trip bit for bit through stored JSON (serde_json's\n`float_roundtrip`). Times, rationals, colours (`#rrggbb[aa]`) and enum values are text; an\nasset reference is `{\"asset\": id}`, so every id a value carries is found without the\nregistry (plan 4C Decision 24)."
     },
+    "Permission": {
+      "description": "One permission, tagged by `perm`. The set is closed: an unknown `perm` or field fails the\nparse (a unit permission with any other field too, which serde's tagged enums allow).",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "perm": {
+              "const": "project:read",
+              "type": "string"
+            }
+          },
+          "required": [
+            "perm"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "perm": {
+              "const": "project:write",
+              "type": "string"
+            }
+          },
+          "required": [
+            "perm"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "perm": {
+              "const": "media:read",
+              "type": "string"
+            }
+          },
+          "required": [
+            "perm"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "perm": {
+              "const": "media:file",
+              "type": "string"
+            }
+          },
+          "required": [
+            "perm"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "perm": {
+              "const": "jobs:submit",
+              "type": "string"
+            }
+          },
+          "required": [
+            "perm"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "perm": {
+              "const": "gpu",
+              "type": "string"
+            }
+          },
+          "required": [
+            "perm"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "origins": {
+              "items": {
+                "$ref": "#/$defs/Origin"
+              },
+              "type": "array"
+            },
+            "perm": {
+              "const": "net",
+              "type": "string"
+            }
+          },
+          "required": [
+            "perm",
+            "origins"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "mode": {
+              "$ref": "#/$defs/SecretMode"
+            },
+            "names": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "perm": {
+              "const": "secrets",
+              "type": "string"
+            }
+          },
+          "required": [
+            "perm",
+            "names",
+            "mode"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "access": {
+              "$ref": "#/$defs/FsAccess"
+            },
+            "perm": {
+              "const": "fs",
+              "type": "string"
+            },
+            "scope": {
+              "$ref": "#/$defs/FsScope"
+            }
+          },
+          "required": [
+            "perm",
+            "scope",
+            "access"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "hooks": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "perm": {
+              "const": "hooks:observe",
+              "type": "string"
+            }
+          },
+          "required": [
+            "perm",
+            "hooks"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "hooks": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "perm": {
+              "const": "hooks:modify",
+              "type": "string"
+            }
+          },
+          "required": [
+            "perm",
+            "hooks"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "PermissionDiff": {
+      "description": "What an update changes in a plugin's grants. Order inside lists never matters.",
+      "properties": {
+        "added": {
+          "description": "Permissions whose key the old set did not have.",
+          "items": {
+            "$ref": "#/$defs/Permission"
+          },
+          "type": "array"
+        },
+        "removed": {
+          "description": "Keys the new set no longer has.",
+          "items": {
+            "$ref": "#/$defs/Permission"
+          },
+          "type": "array"
+        },
+        "riskUp": {
+          "description": "The overall risk rose, or a kept permission's risk rose through a combination.",
+          "type": "boolean"
+        },
+        "widened": {
+          "description": "Permissions of one key where the new one grants more.",
+          "items": {
+            "$ref": "#/$defs/Widening"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "added",
+        "widened",
+        "removed",
+        "riskUp"
+      ],
+      "type": "object"
+    },
     "Placeholder": {
       "description": "A cloud placeholder (Decision 12): catalogued from metadata only, never opened unless the\nlibrary has `hydrate`.",
       "oneOf": [
@@ -8287,6 +9016,14 @@
         }
       ]
     },
+    "PlanAction": {
+      "enum": [
+        "install",
+        "update",
+        "downgrade"
+      ],
+      "type": "string"
+    },
     "PlanCrop": {
       "description": "A layer's crop, resolved at the plan's time: fractions of the item's size cut from each\nside, each in `[0, 1]`, every field present.",
       "properties": {
@@ -8312,6 +9049,98 @@
         "right",
         "top",
         "bottom"
+      ],
+      "type": "object"
+    },
+    "PlanLicence": {
+      "additionalProperties": false,
+      "properties": {
+        "class": {
+          "$ref": "#/$defs/LicenceClass"
+        },
+        "spdx": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "spdx",
+        "class"
+      ],
+      "type": "object"
+    },
+    "PlanModel": {
+      "additionalProperties": false,
+      "properties": {
+        "attribution": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "bytes": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "id": {
+          "type": "string"
+        },
+        "licence": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "bytes",
+        "licence"
+      ],
+      "type": "object"
+    },
+    "PlanPlugin": {
+      "additionalProperties": false,
+      "properties": {
+        "displayName": {
+          "description": "The id's name until manifests carry a display name.",
+          "type": "string"
+        },
+        "id": {
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/$defs/PluginKind"
+        },
+        "publisher": {
+          "description": "The manifest's publisher name (shown to people, never journaled).",
+          "type": "string"
+        },
+        "version": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "version",
+        "kind",
+        "displayName",
+        "publisher"
+      ],
+      "type": "object"
+    },
+    "PlanSource": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "$ref": "#/$defs/SourceKind"
+        },
+        "registryId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "kind"
       ],
       "type": "object"
     },
@@ -8405,6 +9234,197 @@
         }
       ],
       "description": "A resolved value (plan 4C Decision 12): colours are sRGB `[r, g, b, a]` in 0…1."
+    },
+    "PlanWarning": {
+      "additionalProperties": false,
+      "description": "A warning shown with the plan: `thirdPartyCode {confined}`, `yanked`, `advisory` (from the\nregistry), `lookalikeId {similar}`, `copyleft {spdx}`, `licenceUnknown {spdx}`,\n`registryStale {days}`.",
+      "properties": {
+        "code": {
+          "type": "string"
+        },
+        "details": {
+          "additionalProperties": true,
+          "default": {},
+          "type": "object"
+        }
+      },
+      "required": [
+        "code"
+      ],
+      "type": "object"
+    },
+    "PlannedPermission": {
+      "additionalProperties": false,
+      "properties": {
+        "permission": {
+          "$ref": "#/$defs/Permission"
+        },
+        "risk": {
+          "$ref": "#/$defs/Risk",
+          "description": "Within the whole set (combinations count, spec §4.3)."
+        }
+      },
+      "required": [
+        "permission",
+        "risk"
+      ],
+      "type": "object"
+    },
+    "Platform": {
+      "description": "The shipped OS and architecture pairs (the triples of `deny.toml`), in Node's spelling.",
+      "enum": [
+        "darwin-arm64",
+        "darwin-x64",
+        "linux-x64",
+        "linux-arm64",
+        "win32-x64",
+        "win32-arm64"
+      ],
+      "type": "string"
+    },
+    "PluginId": {
+      "description": "`@<publisher>/<name>` (8A Decision 2).",
+      "pattern": "^@[a-z0-9][a-z0-9-]{1,38}/[a-z0-9][a-z0-9-]{1,63}$",
+      "type": "string"
+    },
+    "PluginKind": {
+      "oneOf": [
+        {
+          "const": "content",
+          "description": "Data only, validated in Rust by the batch that consumes it.",
+          "type": "string"
+        },
+        {
+          "const": "code",
+          "description": "OS processes under the `plugin` sandbox profile (8B).",
+          "type": "string"
+        }
+      ]
+    },
+    "PluginKindName": {
+      "description": "`content` or `code`; `unknown` when the call failed before a manifest was read.",
+      "enum": [
+        "content",
+        "code",
+        "unknown"
+      ],
+      "type": "string"
+    },
+    "PluginLifecycle": {
+      "description": "`plugin.lifecycle`: one plugin call (plan, install, update, downgrade, remove, enable,\ndisable, revoke).",
+      "properties": {
+        "action": {
+          "$ref": "#/$defs/Name",
+          "description": "From `PLUGIN_ACTIONS`."
+        },
+        "bytesLog2": {
+          "description": "The package's unpacked bytes as a log₂ bucket ([`log2_bucket`]).",
+          "format": "uint8",
+          "maximum": 255,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "code": {
+          "$ref": "#/$defs/Code"
+        },
+        "kind": {
+          "$ref": "#/$defs/PluginKindName"
+        },
+        "micros": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "outcome": {
+          "$ref": "#/$defs/PluginOutcome"
+        },
+        "permissionsAdded": {
+          "description": "Permissions added or widened against the installed version (all of them for a first\ninstall), capped at 255.",
+          "format": "uint8",
+          "maximum": 255,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "plugin": {
+          "$ref": "#/$defs/PluginRef"
+        },
+        "risk": {
+          "$ref": "#/$defs/RiskName"
+        },
+        "source": {
+          "$ref": "#/$defs/PluginSourceName"
+        }
+      },
+      "required": [
+        "action",
+        "outcome",
+        "source",
+        "kind",
+        "permissionsAdded",
+        "risk",
+        "bytesLog2",
+        "micros"
+      ],
+      "type": "object"
+    },
+    "PluginOutcome": {
+      "description": "How a plugin or registry call ended.",
+      "oneOf": [
+        {
+          "enum": [
+            "ok"
+          ],
+          "type": "string"
+        },
+        {
+          "const": "refused",
+          "description": "Refused by a check (validation, a hash, TUF, a permission): `code` says which.",
+          "type": "string"
+        },
+        {
+          "const": "failed",
+          "description": "Failed for another reason (I/O, internal).",
+          "type": "string"
+        }
+      ]
+    },
+    "PluginRef": {
+      "description": "A plugin as the journal names it: a bundled plugin by its table name, any other by the\njournal's keyed hash of its id.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "bundled": {
+              "$ref": "#/$defs/Name"
+            }
+          },
+          "required": [
+            "bundled"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "hashed": {
+              "$ref": "#/$defs/Hashed"
+            }
+          },
+          "required": [
+            "hashed"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "PluginSourceName": {
+      "description": "Where an installed plugin came from (spec §5.2).",
+      "enum": [
+        "bundled",
+        "registry",
+        "dev"
+      ],
+      "type": "string"
     },
     "Primaries": {
       "oneOf": [
@@ -8748,6 +9768,24 @@
       ],
       "type": "string"
     },
+    "Publisher": {
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "url": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "type": "object"
+    },
     "PurgeReport": {
       "description": "What a purge removed.",
       "properties": {
@@ -9021,6 +10059,56 @@
       ],
       "type": "object"
     },
+    "RegistryRefresh": {
+      "description": "`registry.refresh`: one refresh of a registry's trusted metadata.",
+      "properties": {
+        "byHuman": {
+          "description": "A human principal asked for it (agents' and `system`'s refreshes install nothing).",
+          "type": "boolean"
+        },
+        "code": {
+          "$ref": "#/$defs/Code",
+          "description": "A `TUF_*` code, `CLOCK_SUSPECT`, `REGISTRY_UNREACHABLE`, ..."
+        },
+        "micros": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "outcome": {
+          "$ref": "#/$defs/PluginOutcome"
+        },
+        "rolesUpdated": {
+          "description": "Roles whose trusted version changed.",
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "staleDays": {
+          "description": "Days the registry's metadata is past its expiry (relaxed freshness), when it is.",
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "targetsLog2": {
+          "description": "Targets listed after the refresh, as a log₂ bucket.",
+          "format": "uint8",
+          "maximum": 255,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "outcome",
+        "rolesUpdated",
+        "targetsLog2",
+        "byHuman",
+        "micros"
+      ],
+      "type": "object"
+    },
     "Resolution": {
       "description": "Frame size in pixels.",
       "properties": {
@@ -9063,6 +10151,24 @@
     },
     "ReviewVerdict": {
       "type": "object"
+    },
+    "Risk": {
+      "enum": [
+        "low",
+        "medium",
+        "high"
+      ],
+      "type": "string"
+    },
+    "RiskName": {
+      "description": "The overall risk shown to people (spec §4.3); `unknown` as for [`PluginKindName`].",
+      "enum": [
+        "low",
+        "medium",
+        "high",
+        "unknown"
+      ],
+      "type": "string"
     },
     "Role": {
       "description": "Which side of a transition a layer is.",
@@ -9237,6 +10343,72 @@
         "histogram"
       ],
       "type": "object"
+    },
+    "Runtime": {
+      "description": "How a code plugin runs (spec §3.2). `python` and `wasm` are after v1.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "One executable per platform, by package path; its keys are the manifest's `platforms`.",
+          "properties": {
+            "exec": {
+              "additionalProperties": false,
+              "properties": {
+                "darwin-arm64": {
+                  "type": "string"
+                },
+                "darwin-x64": {
+                  "type": "string"
+                },
+                "linux-arm64": {
+                  "type": "string"
+                },
+                "linux-x64": {
+                  "type": "string"
+                },
+                "win32-arm64": {
+                  "type": "string"
+                },
+                "win32-x64": {
+                  "type": "string"
+                }
+              },
+              "type": "object"
+            },
+            "type": {
+              "const": "native",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "exec"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "One bundled `.mjs` file run by finisherd's own Node, which must satisfy `node`.",
+          "properties": {
+            "main": {
+              "type": "string"
+            },
+            "node": {
+              "type": "string"
+            },
+            "type": {
+              "const": "node",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "main",
+            "node"
+          ],
+          "type": "object"
+        }
+      ]
     },
     "SampleEntry": {
       "additionalProperties": false,
@@ -9471,6 +10643,20 @@
       "description": "Finisher-authored text with paths, the home, data and temp directories, the user name and the host name replaced by placeholders.",
       "type": "string",
       "x-fin-class": "scrubbed"
+    },
+    "SecretMode": {
+      "oneOf": [
+        {
+          "const": "brokered",
+          "description": "The host injects the secret into brokered requests; the plugin never sees it.",
+          "type": "string"
+        },
+        {
+          "const": "raw",
+          "description": "The plugin receives the secret's value.",
+          "type": "string"
+        }
+      ]
     },
     "SelfSandbox": {
       "description": "A requested self-sandbox: a profile name and its arguments.",
@@ -9803,6 +10989,14 @@
       ],
       "type": "string"
     },
+    "SourceKind": {
+      "enum": [
+        "bundled",
+        "registry",
+        "dev"
+      ],
+      "type": "string"
+    },
     "SourceRef": {
       "description": "An asset and the time to read from it, in seconds.",
       "properties": {
@@ -10035,6 +11229,60 @@
         "off"
       ],
       "type": "string"
+    },
+    "TargetCustom": {
+      "additionalProperties": false,
+      "description": "A target's signed custom metadata (`custom` in the delegated targets role).",
+      "properties": {
+        "bytesUnpacked": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "hostApi": {
+          "type": "string"
+        },
+        "id": {
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/$defs/PluginKind"
+        },
+        "license": {
+          "type": "string"
+        },
+        "manifestSha256": {
+          "description": "Lowercase hex SHA-256 of `finisher-plugin.json`.",
+          "type": "string"
+        },
+        "permissionsDigest": {
+          "description": "[`permissions_digest`] of the manifest's permissions.",
+          "type": "string"
+        },
+        "platforms": {
+          "items": {
+            "$ref": "#/$defs/Platform"
+          },
+          "type": "array"
+        },
+        "version": {
+          "type": "string"
+        },
+        "yanked": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "id",
+        "version",
+        "kind",
+        "hostApi",
+        "license",
+        "permissionsDigest",
+        "manifestSha256",
+        "bytesUnpacked"
+      ],
+      "type": "object"
     },
     "TestBadHelloParams": {
       "additionalProperties": false,
@@ -11394,6 +12642,35 @@
       ],
       "type": "string"
     },
+    "ValidationReport": {
+      "description": "`validateManifest`: the manifest when valid, else every violation.",
+      "properties": {
+        "errors": {
+          "items": {
+            "$ref": "#/$defs/Invalid"
+          },
+          "type": "array"
+        },
+        "manifest": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Manifest"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "ok": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "ok",
+        "errors"
+      ],
+      "type": "object"
+    },
     "Variable": {
       "additionalProperties": false,
       "properties": {
@@ -11608,6 +12885,22 @@
         "unknown"
       ],
       "type": "string"
+    },
+    "Widening": {
+      "description": "One permission an update widens: the same `perm`, granting more.",
+      "properties": {
+        "from": {
+          "$ref": "#/$defs/Permission"
+        },
+        "to": {
+          "$ref": "#/$defs/Permission"
+        }
+      },
+      "required": [
+        "from",
+        "to"
+      ],
+      "type": "object"
     },
     "Word": {
       "description": "One word; `start` and `end` are relative to the item's start (plan 4C Decision 13).",

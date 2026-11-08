@@ -518,6 +518,43 @@ export function libraryProbeStatus() {
   return native.libraryProbeStatus();
 }
 
+export class Registry {
+  #native;
+
+  constructor(nativeRegistry) {
+    if (!(nativeRegistry instanceof native.Registry)) throw new TypeError("use Registry.open");
+    this.#native = nativeRegistry;
+  }
+
+  static open(serverData) {
+    try {
+      return new Registry(native.Registry.open(serverData));
+    } catch (e) {
+      throw toFinError(e);
+    }
+  }
+
+  plan(reqJson) {
+    return call(this.#native.plan(reqJson));
+  }
+
+  commit(planId, digest, acceptJson) {
+    return call(this.#native.commit(planId, digest, acceptJson ?? null));
+  }
+
+  removePlugin(id, version, purgeData) {
+    return call(this.#native.removePlugin(id, version, purgeData === true));
+  }
+
+  sweep() {
+    return call(this.#native.sweep());
+  }
+}
+
+export function validateManifest(dir, source) {
+  return call(native.validateManifest(dir, source ?? null));
+}
+
 /** @internal Present only in binaries built with the `test-hooks` feature (`build:test`). */
 export const testHooks = native.writeFixtureMp4ForTest
   ? {
@@ -554,6 +591,13 @@ export const testHooks = native.writeFixtureMp4ForTest
       },
       libraryProbeStarted(root) {
         return native.libraryProbeStartedForTest(root);
+      },
+      packPlugin(src, out) {
+        try {
+          return native.packPluginForTest(src, out);
+        } catch (e) {
+          throw toFinError(e);
+        }
       },
     }
   : undefined;

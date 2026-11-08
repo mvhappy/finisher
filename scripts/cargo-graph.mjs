@@ -27,6 +27,24 @@ export function denyTargets(root) {
   return m ? [...m[1].matchAll(/"([^"]+)"/g)].map((x) => x[1]) : [];
 }
 
+/** Whether `node` (a resolve node of package `parent`) really depends on package `child`:
+ * `cargo metadata` also lists an optional dependency that only a weak feature (`dep?/feat`)
+ * names, though nothing enables it (cargo#10801). Such an edge is kept only when an enabled
+ * feature turns the dependency on (`dep:name`, `name/feat` or the implicit feature `name`). */
+function activated(parent, node, child) {
+  const decls = (parent?.dependencies ?? []).filter((x) => x.name === child?.name);
+  if (decls.length === 0 || decls.some((x) => !x.optional)) return true;
+  // `node.features` is every enabled feature, transitively; `features` maps each to its list
+  // (an optional dependency's implicit feature `name` is `["dep:name"]`).
+  const enabled = node.features ?? [];
+  const features = parent.features ?? {};
+  return decls.some((x) => {
+    const dep = x.rename ?? x.name;
+    if (enabled.includes(dep) && !Object.hasOwn(features, dep)) return true;
+    return enabled.some((f) => (features[f] ?? []).some((v) => v === `dep:${dep}` || v.startsWith(`${dep}/`)));
+  });
+}
+
 /** A dependency graph over one metadata document. Edges keep their kinds (null = normal). */
 export class Graph {
   constructor(doc) {
@@ -34,9 +52,12 @@ export class Graph {
     this.members = new Set(doc.workspace_members ?? []);
     this.edges = new Map();
     for (const node of doc.resolve?.nodes ?? []) {
+      const parent = this.packages.get(node.id);
       this.edges.set(
         node.id,
-        (node.deps ?? []).map((d) => ({ pkg: d.pkg, kinds: (d.dep_kinds ?? [{ kind: null }]).map((k) => k.kind ?? null) })),
+        (node.deps ?? [])
+          .filter((d) => activated(parent, node, this.packages.get(d.pkg)))
+          .map((d) => ({ pkg: d.pkg, kinds: (d.dep_kinds ?? [{ kind: null }]).map((k) => k.kind ?? null) })),
       );
     }
   }

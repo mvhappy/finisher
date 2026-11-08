@@ -1,0 +1,21 @@
+{
+  "createdAt": 1794095581,
+  "rootSha256": "74693b6de431884cfd0b1a6db634621c312f9b5706a000b3f1af1165455c094d",
+  "trusted": {
+    "maxStaleDays": 7,
+    "targets": [
+      {
+        "length": 435,
+        "name": "test-only/pack/1.0.0.finpkg",
+        "role": "test-only",
+        "sha256": "30efcca13c2bbda9de04d79abf37a0c45b11c7531599a1a947da25309c9f221a"
+      }
+    ],
+    "versions": [
+      1,
+      2,
+      2,
+      2
+    ]
+  }
+}

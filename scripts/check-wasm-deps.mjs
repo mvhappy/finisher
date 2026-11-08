@@ -4,12 +4,12 @@ import { fileURLToPath } from "node:url";
 import { rootArg } from "./walk.mjs";
 
 // `deny.toml` `[graph] targets` lists only the shipped OS triples, so cargo-deny never sees a
-// dependency that only wasm32 pulls in. fin-core, fin-text, fin-media, fin-container and
-// fin-compositor also build for `wasm32-unknown-unknown`: this gate fails if their wasm32
-// dependency tree holds a package that none of the shipped triples' trees holds
-// (WASM_ONLY_DEPENDENCY), so such a package cannot skip the licence check.
+// dependency that only wasm32 pulls in. fin-core, fin-text, fin-plugin-api, fin-media,
+// fin-container and fin-compositor also build for `wasm32-unknown-unknown`: this gate fails
+// if their wasm32 dependency tree holds a package that none of the shipped triples' trees
+// holds (WASM_ONLY_DEPENDENCY), so such a package cannot skip the licence check.
 
-export const CRATES = ["fin-core", "fin-text", "fin-media", "fin-container", "fin-compositor"];
+export const CRATES = ["fin-core", "fin-text", "fin-plugin-api", "fin-media", "fin-container", "fin-compositor"];
 export const WASM = "wasm32-unknown-unknown";
 export const NATIVE = ["x86_64-unknown-linux-gnu", "aarch64-apple-darwin", "x86_64-pc-windows-msvc"];
 

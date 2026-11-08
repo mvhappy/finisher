@@ -2,3 +2,6 @@
 *.png binary
 *.mp4 binary
 *.wav binary
+*.finpkg binary
+# Signed TUF vectors are compared byte for byte (hashes, signatures).
+crates/fin-registry/tests/fixtures/tuf/** -text

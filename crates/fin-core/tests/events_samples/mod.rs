@@ -89,8 +89,17 @@ pub fn hist() -> Histogram {
     }
 }
 
+#[path = "../events_support/plugin.rs"]
+mod plugin_samples;
+
 /// One payload of every kind, content fields filled.
 pub fn samples() -> Vec<AnyPayload> {
+    let mut v = samples_before_plugins();
+    plugin_samples::insert(&mut v, h('7'), code("PLUGIN_MANIFEST_INVALID"));
+    v
+}
+
+fn samples_before_plugins() -> Vec<AnyPayload> {
     let inline = |v: Value| Some(Content(Body::Inline(v)));
     vec![
         SessionStart {

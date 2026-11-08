@@ -243,3 +243,18 @@ pub fn write_fixture_for_test(kind: String, path: String) -> Result<()> {
         || {},
     )
 }
+
+/// Packs the unpacked plugin in `src` into `out` (`fin-registry`'s reproducible packer, the
+/// manifest's executables marked); resolves to the archive's SHA-256.
+#[napi(catch_unwind)]
+pub fn pack_plugin_for_test(src: String, out: String) -> Result<String> {
+    let src = Path::new(&src);
+    let executables = std::fs::read(src.join(fin_plugin_api::MANIFEST_FILE))
+        .ok()
+        .and_then(|b| serde_json::from_slice::<fin_plugin_api::Manifest>(&b).ok())
+        .map(|m| m.executables())
+        .unwrap_or_default();
+    fin_registry::package::pack(src, &executables, Path::new(&out))
+        .map(|info| info.sha256)
+        .map_err(|e| crate::reject(fin_core::CoreError::new("INVALID_OP", e.to_string())))
+}

@@ -42,6 +42,10 @@ fin-journal = { path = "../fin-journal" }
 fin-library = { path = "../fin-library" }
 # Only for `examples/export_schema.rs`: the media wire types (`MediaInfo`, sub-project 6).
 fin-media = { path = "../fin-media" }
+# Only for `examples/export_schema.rs`: the plugin manifest, permission, risk and licence
+# types (`fin_plugin_api::schema::register_schemas`).
+fin-plugin-api = { path = "../fin-plugin-api" }
+fin-registry = { path = "../fin-registry" }
 fin-probe = { path = "../fin-probe" }
 fin-store = { path = ".", features = ["test-hooks"] }
 # `tests/measure.rs`: real layouts from generated fonts.

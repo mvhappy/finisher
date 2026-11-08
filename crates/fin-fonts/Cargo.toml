@@ -30,4 +30,7 @@ ureq = { version = "3.5", default-features = false, features = ["rustls-no-provi
 [dev-dependencies]
 fin-fonts = { path = ".", features = ["test-hooks"] }
 fin-testfonts = { path = "../fin-testfonts" }
+# Both providers in the test binaries, as in a `fin-node` that also links `tough`
+# (`tests/provider.rs`).
+rustls = { version = "0.23", default-features = false, features = ["aws_lc_rs", "ring", "std"] }
 tempfile = "3"

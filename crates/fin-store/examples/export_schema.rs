@@ -9,10 +9,14 @@
 //! `PurgeSelector`, `PurgeReport`, `ProjectPolicy`, `DiagnosticsReport`, `ExportPage`;
 //! `CollectPolicy` is fin-core's), the media types of `fin-media` (`MediaInfo` and its
 //! parts, sub-project 6), the job envelope of `fin-jobs` with the test kinds' params and
-//! results (`JobDone` and `WorkerExit` are fin-core payloads, registered with the others), and
+//! results (`JobDone` and `WorkerExit` are fin-core payloads, registered with the others),
+//! the plugin model's (`fin-plugin-api`: `Manifest`, `Permission`, `PermissionDiff`, `Risk`,
+//! `LicenceClass`, `ContributionKind`, `Invalid`, by `schema::register_schemas`) and its
+//! store's (`fin-registry`: `InstallPlan`, `InstalledPlugin`, `Accept`, `ValidationReport`,
+//! `TargetCustom`), and
 //! the library indexer's wire types of `fin-library` (`RawRel`, `Expect`, `ScanEntry`,
-//! `DirDone`, `ScanBatch`, `KnownDir`, `VolumeIdentity`, `RootState`, `Placeholder`,
-//! sub-project 5D).
+//! `DirDone`, `ScanBatch`, `KnownDir`, `VolumeIdentity`, `RootState`, `Placeholder`, the
+//! `library` family's params, results and calls; sub-project 5D).
 //! `@finisher/core-types` is generated from it (`packages/core-types/scripts/generate.mjs`).
 //! Here, not in `fin-core`, because `fin-core` cannot depend on the crates above it.
 
@@ -72,6 +76,8 @@ fn main() {
         fin_library::params::register_schemas(g);
         fin_jobs::register_schemas(g);
         fin_jobs::test_kinds::register_schemas(g);
+        fin_plugin_api::schema::register_schemas(g);
+        fin_registry::schema::register_schemas(g);
     });
     println!(
         "{}",

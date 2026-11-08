@@ -296,6 +296,40 @@ export declare class FontManager {
   fetch(reqJson: string): Promise<string>;
 }
 
+/**
+ * A server's plugin store (`<serverData>/plugins`): install plans, commits, removals and the
+ * staging sweep. Every call runs on the registry's worker thread, one at a time. Values are
+ * JSON strings of the generated `@finisher/core-types` types. Nothing a package ships runs.
+ */
+export declare class Registry {
+  private constructor();
+  static open(serverData: string): Registry;
+  /**
+   * Makes a plan from `{ id, source: { kind: "registry", registry, version? }, update?,
+   * allowDowngrade?, installed?: InstalledPlugin, knownIds? }` JSON; resolves to the
+   * `InstallPlan` JSON. Until local registries exist (8A Task 7) a registry source is
+   * `REGISTRY_NOT_FOUND`; test builds also take `{ kind: "package", archive, registryId,
+   * staleDays?, yanked? }`.
+   */
+  plan(reqJson: string): Promise<string>;
+  /**
+   * Installs the plan with its digest (`Accept` JSON: `{ copyleft?, thirdPartyCode? }`);
+   * resolves to the `InstalledPlugin` JSON or rejects with `PLAN_EXPIRED`, `PLAN_MISMATCH`,
+   * `COPYLEFT_NOT_ACCEPTED` or `THIRD_PARTY_CODE_NOT_ACCEPTED`.
+   */
+  commit(planId: string, digest: string, acceptJson?: string): Promise<string>;
+  /** Deletes a version from the store (and the plugin's data with `purgeData`). */
+  removePlugin(id: string, version: string, purgeData: boolean): Promise<void>;
+  /** Deletes expired and broken plans; resolves to how many. */
+  sweep(): Promise<number>;
+}
+
+/**
+ * Validates the unpacked plugin in `dir` offline (`source`: `registry`, the default,
+ * `bundled` or `dev`); resolves to the `ValidationReport` JSON.
+ */
+export declare function validateManifest(dir: string, source?: "registry" | "bundled" | "dev"): Promise<string>;
+
 /** A held exclusive file lock; the descriptor stays open until `release()` or process exit. */
 export declare class ServerLock {
   private constructor();
@@ -395,5 +429,7 @@ export declare const testHooks:
         kind: "png" | "jpeg" | "webp" | "svg" | "dotlottie" | "cube" | "wav" | `wav:${number}` | "m4a",
         path: string,
       ): void;
+      /** Packs an unpacked plugin into a `.finpkg`; returns the archive's SHA-256. */
+      packPlugin(src: string, out: string): string;
     }
   | undefined;

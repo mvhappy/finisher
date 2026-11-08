@@ -1,0 +1,27 @@
+{
+  "createdAt": 1794095581,
+  "rootSha256": "acf6face2355f4c7fdbb961d61e5d71514856a6827bb4540a6bd6f9070b821f4",
+  "trusted": {
+    "maxStaleDays": 14,
+    "targets": [
+      {
+        "length": 435,
+        "name": "test-only/pack/1.0.0.finpkg",
+        "role": "test-only",
+        "sha256": "30efcca13c2bbda9de04d79abf37a0c45b11c7531599a1a947da25309c9f221a"
+      },
+      {
+        "length": 434,
+        "name": "test-only/pack/1.1.0.finpkg",
+        "role": "test-only",
+        "sha256": "77e1e8f0904b6686ca00bae8406e2300dbdc53371a9c805b13974c634ff95beb"
+      }
+    ],
+    "versions": [
+      3,
+      6,
+      4,
+      3
+    ]
+  }
+}
