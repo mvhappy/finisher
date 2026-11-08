@@ -85,7 +85,8 @@ fn stubbed() -> Option<Mechanism> {
 
 #[cfg(target_os = "linux")]
 const NEED: &str = crate::linux::landlock::NEED;
-#[cfg(not(target_os = "linux"))]
+// Only the test stub names a need off Linux.
+#[cfg(all(not(target_os = "linux"), feature = "test-hooks"))]
 const NEED: &str = "an OS sandbox this build implements";
 
 #[cfg(target_os = "linux")]

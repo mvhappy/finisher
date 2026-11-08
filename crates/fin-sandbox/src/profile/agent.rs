@@ -17,7 +17,7 @@ use fin_core::events::payloads::agent::{AgentMode, Harness};
 use super::{component, exactly, finish, inside, not_under, path, paths, sensitive_home};
 use crate::error::PolicyError;
 use crate::inputs::{AgentInput, FinEndpoint};
-use crate::policy::{Limits, Net, Os, Profile, ReadPolicy, SandboxPolicy, under};
+use crate::policy::{Limits, Net, Os, Profile, ReadPolicy, SandboxPolicy, headless_devices, under};
 
 /// The files and directories of the project only `finisherd` writes (arch §27.6, 7B rules).
 pub const PROJECT_STATE: &[&str] = &[
@@ -153,7 +153,7 @@ pub(crate) fn agent_on(os: Os, i: &AgentInput) -> Result<SandboxPolicy, PolicyEr
         net,
         // The macOS allow-lists are data from spike S9 B6 (plan 7C Task 8).
         mach: vec![],
-        devices: vec![],
+        devices: headless_devices(os),
         limits: Limits::default(),
     })
 }

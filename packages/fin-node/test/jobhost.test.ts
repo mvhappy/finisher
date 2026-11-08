@@ -15,9 +15,10 @@ import {
   jobKindVersions,
   resolveMemoryRule,
   validateJobParams,
+  sandboxExecPath,
   workersBinaryPath,
 } from "../index.js";
-import { workersBinaryPath as pathIn } from "../loader.js";
+import { sandboxExecPath as execPathIn, workersBinaryPath as pathIn } from "../loader.js";
 
 const BIN_DIR = dirname(workersBinaryPath());
 const WAIT_MS = 15_000;
@@ -559,5 +560,13 @@ describe("params, rules and paths", () => {
     expect(pathIn("/x/", "linux")).toBe("/x/fin-workers");
     expect(pathIn("C:\\x\\", "win32")).toBe("C:\\x\\fin-workers.exe");
     expect(workersBinaryPath("/y")).toBe(win ? "/y\\fin-workers.exe" : "/y/fin-workers");
+  });
+
+  test("sandbox_exec_path_finds_the_launcher", () => {
+    const p = sandboxExecPath();
+    expect(existsSync(p)).toBe(true);
+    expect(dirname(p)).toBe(BIN_DIR);
+    expect(execPathIn("/x/", "linux")).toBe("/x/fin-sandbox-exec");
+    expect(execPathIn("C:\\x\\", "win32")).toBe("C:\\x\\fin-sandbox-exec.exe");
   });
 });

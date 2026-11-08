@@ -20,8 +20,9 @@ pub enum Program {
     Path(PathBuf),
 }
 
-/// The names a `Program::Bundled` may take (Decision 2).
-pub const BUNDLED: &[&str] = &["fin-workers", "fin-analyze"];
+/// The names a `Program::Bundled` may take (Decision 2). `fin-sandbox-exec` is the 7C launcher
+/// (plan 7C Task 5), shipped beside the workers.
+pub const BUNDLED: &[&str] = &["fin-workers", "fin-analyze", "fin-sandbox-exec"];
 
 /// The sandbox profile a process runs under (sub-project 7).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -105,6 +105,31 @@ pub enum DeviceAccess {
     ReadWrite,
 }
 
+/// The device nodes `agent` and `hook` may open (plan 7C Decision 6a): read-write on the null,
+/// zero and full devices, read on the random devices. No `/dev/tty`, no `/dev/pts/*`: both
+/// profiles run headless and inherit their stdio as descriptors.
+pub const HEADLESS_DEVICES: &[(&str, DeviceAccess)] = &[
+    ("/dev/null", DeviceAccess::ReadWrite),
+    ("/dev/zero", DeviceAccess::ReadWrite),
+    ("/dev/full", DeviceAccess::ReadWrite),
+    ("/dev/random", DeviceAccess::Read),
+    ("/dev/urandom", DeviceAccess::Read),
+];
+
+/// [`HEADLESS_DEVICES`] as rules for `os` (none on Windows, which has no device paths).
+pub fn headless_devices(os: Os) -> Vec<DeviceRule> {
+    if os == Os::Windows {
+        return Vec::new();
+    }
+    HEADLESS_DEVICES
+        .iter()
+        .map(|(p, access)| DeviceRule {
+            path: PathBuf::from(p),
+            access: *access,
+        })
+        .collect()
+}
+
 /// Resource limits (plan 7C Decision 4a). `None` leaves the limit to the host's other
 /// mechanisms (5C's group memory limit, liveness).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -304,8 +329,13 @@ impl SandboxPolicy {
         if matches!(profile, Profile::Worker | Profile::Plugin) && !self.unix_sockets.is_empty() {
             return bad("no pathname socket is allowed");
         }
-        if matches!(profile, Profile::Agent | Profile::Hook) && !self.devices.is_empty() {
-            return bad("no device is allowed");
+        let headless = headless_devices(Os::Linux);
+        if matches!(profile, Profile::Agent | Profile::Hook)
+            && !self.devices.iter().all(|d| headless.contains(d))
+        {
+            return bad(
+                "only /dev/null, /dev/zero, /dev/full (read-write) and /dev/random, /dev/urandom (read) are allowed",
+            );
         }
         if profile == Profile::Worker && self.limits.processes != Some(1) {
             return bad("a worker runs as one process (processes = 1)");

@@ -110,3 +110,61 @@ pub fn listener() -> (std::net::TcpListener, u16) {
 pub fn s(p: &Path) -> String {
     p.to_string_lossy().into_owned()
 }
+
+pub const LAUNCHER: &str = env!("CARGO_BIN_EXE_fin-sandbox-exec");
+
+/// Runs `fin-sandbox-exec` with `request` on descriptor 3 (`None`: no descriptor) and `args`
+/// after its own flags, with exactly `env`.
+pub fn launch_raw(
+    request: Option<&[u8]>,
+    args: &[&str],
+    env: &[(&str, &str)],
+) -> std::process::Output {
+    let (mut cmd, _keep) = launch_cmd(request, args, env);
+    cmd.output().expect("run fin-sandbox-exec")
+}
+
+/// [`launch_raw`]'s command, not yet started, and the request pipe's read end, which must stay
+/// open until the command has started.
+pub fn launch_cmd(
+    request: Option<&[u8]>,
+    args: &[&str],
+    env: &[(&str, &str)],
+) -> (Command, Option<std::os::fd::OwnedFd>) {
+    use std::io::Write;
+    use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+    use std::os::unix::process::CommandExt;
+
+    let mut cmd = Command::new(LAUNCHER);
+    cmd.args(args).env_clear().envs(env.iter().copied());
+    let mut keep = None;
+    if let Some(bytes) = request {
+        let mut fds = [0; 2];
+        // SAFETY: a valid array for the two new descriptors.
+        assert_eq!(unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC) }, 0);
+        // SAFETY: both descriptors are fresh and owned here.
+        let (r, w) = unsafe { (OwnedFd::from_raw_fd(fds[0]), OwnedFd::from_raw_fd(fds[1])) };
+        assert!(bytes.len() < 60_000, "the pipe holds the whole request");
+        std::fs::File::from(w).write_all(bytes).unwrap();
+        let raw = r.as_raw_fd();
+        // SAFETY: only async-signal-safe calls in the child; `r` lives until the spawn.
+        unsafe {
+            cmd.pre_exec(move || {
+                if raw == 3 {
+                    libc::fcntl(3, libc::F_SETFD, 0);
+                } else if libc::dup2(raw, 3) < 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
+        keep = Some(r);
+    }
+    (cmd, keep)
+}
+
+/// The launcher's stderr line, parsed.
+pub fn failure(out: &std::process::Output) -> serde_json::Value {
+    let text = String::from_utf8_lossy(&out.stderr);
+    serde_json::from_str(text.lines().last().unwrap_or("")).unwrap_or(serde_json::Value::Null)
+}

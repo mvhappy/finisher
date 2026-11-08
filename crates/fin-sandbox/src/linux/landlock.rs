@@ -5,8 +5,8 @@
 //! - **read roots**: `READ_FILE`, `READ_DIR`, and `EXECUTE` for every profile but `worker`
 //!   (a worker applies its sandbox after its own `exec` and never starts a program);
 //! - **write roots**: the read rights, `WRITE_FILE`, `TRUNCATE`, `REMOVE_*`, `MAKE_DIR`,
-//!   `MAKE_REG`, `MAKE_SYM` and `REFER`; `MAKE_SOCK` and `MAKE_FIFO` for `agent` and `hook`;
-//!   `EXECUTE` for `agent` only (scripts in its workspace). `REFER` exists only here, so a link
+//!   `MAKE_REG`, `MAKE_SYM` and `REFER`; `MAKE_FIFO` for `agent` and `hook` (never
+//!   `MAKE_SOCK`, Decision 6a); `EXECUTE` for `agent` only (scripts in its workspace). `REFER` exists only here, so a link
 //!   or rename can only move a file between write roots, never in from a read-only, protected
 //!   or unlisted tree (the kernel also refuses any move that would gain a right);
 //! - **devices**: `READ_FILE` (and `READ_DIR` for a directory), plus `WRITE_FILE` and
@@ -15,8 +15,8 @@
 //!
 //! Every right the ABI knows is handled, so `MAKE_CHAR`, `MAKE_BLOCK` and anything not granted
 //! above is refused everywhere. At ABI ≥ 4 TCP is handled too: `connect` only to the ports of
-//! [`Net`] (and 80 and 443 for `agent`), `bind` never (for `agent`, `bind` is left to the
-//! launcher's task). At ABI ≥ 6 abstract sockets and signals are scoped to the domain.
+//! [`Net`] (and 80 and 443 for `agent`), `bind` never, for every profile (Decision 6a). At
+//! ABI ≥ 6 abstract sockets and signals are scoped to the domain.
 //!
 //! A root is opened `O_PATH` by `openat2` with `RESOLVE_NO_SYMLINKS | RESOLVE_NO_MAGICLINKS`;
 //! a link anywhere on its path is refused (the caller resolved links, and a parent swapped for
@@ -218,7 +218,7 @@ pub fn write_access(profile: Profile) -> BitFlags<AccessFs> {
         | AccessFs::MakeSym
         | AccessFs::Refer;
     if matches!(profile, Profile::Agent | Profile::Hook) {
-        w |= AccessFs::MakeSock | AccessFs::MakeFifo;
+        w |= AccessFs::MakeFifo;
     }
     if profile == Profile::Agent {
         w |= AccessFs::Execute;
@@ -234,12 +234,9 @@ fn device_access(a: DeviceAccess) -> BitFlags<AccessFs> {
     }
 }
 
-fn net_handled(profile: Profile) -> BitFlags<AccessNet> {
-    if profile == Profile::Agent {
-        AccessNet::ConnectTcp.into()
-    } else {
-        AccessNet::BindTcp | AccessNet::ConnectTcp
-    }
+/// TCP `connect` and `bind` are handled for every profile; no rule ever grants `bind`.
+fn net_handled(_profile: Profile) -> BitFlags<AccessNet> {
+    AccessNet::BindTcp | AccessNet::ConnectTcp
 }
 
 /// The TCP ports `connect` may reach (ABI ≥ 4).

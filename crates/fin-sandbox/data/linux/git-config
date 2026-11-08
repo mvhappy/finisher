@@ -1,0 +1,10 @@
+# The session's git configuration (spec §8.3; plan 7C Task 5). `finisherd` writes it to the
+# session directory's `git/config` and sets GIT_CONFIG_GLOBAL to it, with GIT_CONFIG_NOSYSTEM=1.
+[core]
+	fsmonitor = false
+[credential]
+	helper =
+[commit]
+	gpgsign = false
+[tag]
+	gpgsign = false

@@ -9,3 +9,9 @@ export type { SandboxMechanism, SandboxStatus };
  * is refused). Synchronous and cheap (one Landlock version query on Linux).
  */
 export declare function sandboxStatus(): SandboxStatus;
+
+/**
+ * The launcher `fin-sandbox-exec[.exe]` in `dir` (default: beside the loaded fin-node binary,
+ * where `scripts/copy-workers.mjs` puts it with `fin-workers`). Plan 7C Task 5.
+ */
+export declare function sandboxExecPath(dir?: string): string;

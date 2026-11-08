@@ -6,7 +6,7 @@
 use super::{finish, not_under, path, paths, sensitive_home};
 use crate::error::PolicyError;
 use crate::inputs::{FinEndpoint, HookInput};
-use crate::policy::{Limits, Net, Os, Profile, ReadPolicy, SandboxPolicy};
+use crate::policy::{Limits, Net, Os, Profile, ReadPolicy, SandboxPolicy, headless_devices};
 
 pub fn hook(i: &HookInput) -> Result<SandboxPolicy, PolicyError> {
     hook_on(Os::current(), i)
@@ -62,7 +62,7 @@ pub(crate) fn hook_on(os: Os, i: &HookInput) -> Result<SandboxPolicy, PolicyErro
         unix_sockets,
         net,
         mach: vec![],
-        devices: vec![],
+        devices: headless_devices(os),
         limits: Limits::default(),
     })
 }

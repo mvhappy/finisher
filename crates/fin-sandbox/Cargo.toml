@@ -19,6 +19,11 @@ name = "fin-sandbox-probe"
 path = "src/bin/fin-sandbox-probe.rs"
 required-features = ["test-hooks"]
 
+# The launcher for programs `finisherd` starts itself: agents and hooks (plan 7C Task 5).
+[[bin]]
+name = "fin-sandbox-exec"
+path = "src/bin/fin-sandbox-exec.rs"
+
 [dependencies]
 fin-core = { path = "../fin-core" }
 # `SelfSandbox`, the request the self-sandbox entry takes.
@@ -36,4 +41,6 @@ tempfile = "3"
 # Landlock (plan 7C Decision 10; MIT OR Apache-2.0) and the raw calls around it.
 [target.'cfg(target_os = "linux")'.dependencies]
 landlock = "=0.4.7"
+
+[target.'cfg(unix)'.dependencies]
 libc = "0.2.191"

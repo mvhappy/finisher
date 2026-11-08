@@ -13,7 +13,8 @@
 //! - ops: `read <file>`, `list <dir>`, `write <file>`, `create <file>`, `truncate <file>`,
 //!   `unlink <file>`, `rmdir <dir>`, `mkdir <dir>`, `mkfifo <path>`, `link <from> <to>`,
 //!   `rename <from> <to>`, `symlink <target> <link>`, `exec <file>`, `connect-tcp <port>`,
-//!   `bind-tcp <port>`, `signal-parent`.
+//!   `bind-tcp <port>`, `listen-tcp` (`listen` on an unbound socket), `bind-unix <path>`,
+//!   `connect-unix <path>`, `signal-parent`.
 //!
 //! Exit 0 when the attempt ran (whatever its result), 3 when the sandbox could not be applied
 //! (`{"apply": "<error>"}`), 2 for a usage error.
@@ -185,6 +186,46 @@ mod probe {
         }
     }
 
+    /// `listen` on an unbound TCP socket (the kernel binds an ephemeral port itself).
+    fn listen_tcp() -> Result<(), i32> {
+        // SAFETY: a socket we own.
+        unsafe {
+            let s = libc::socket(libc::AF_INET, libc::SOCK_STREAM | libc::SOCK_CLOEXEC, 0);
+            rc(s)?;
+            let out = rc(libc::listen(s, 1));
+            libc::close(s);
+            out
+        }
+    }
+
+    /// `bind` (which creates the socket file) or `connect` on a pathname socket.
+    fn unix(path: &str, bind: bool) -> Result<(), i32> {
+        let bytes = Path::new(path).as_os_str().as_bytes();
+        // SAFETY: a socket we own and a fully initialised address whose path fits.
+        unsafe {
+            let mut a: libc::sockaddr_un = std::mem::zeroed();
+            if bytes.len() >= a.sun_path.len() {
+                usage("the socket path is too long");
+            }
+            a.sun_family = libc::AF_UNIX as libc::sa_family_t;
+            for (d, b) in a.sun_path.iter_mut().zip(bytes) {
+                *d = *b as libc::c_char;
+            }
+            let s = libc::socket(libc::AF_UNIX, libc::SOCK_STREAM | libc::SOCK_CLOEXEC, 0);
+            rc(s)?;
+            let len = std::mem::size_of::<libc::sockaddr_un>() as libc::socklen_t;
+            let addr = (&raw const a).cast::<libc::sockaddr>();
+            let r = if bind {
+                libc::bind(s, addr, len)
+            } else {
+                libc::connect(s, addr, len)
+            };
+            let out = rc(r);
+            libc::close(s);
+            out
+        }
+    }
+
     fn attempt(args: &[String]) -> String {
         let op = args[0].as_str();
         let a = |i: usize| -> &str {
@@ -216,6 +257,9 @@ mod probe {
                 }
                 "connect-tcp" => tcp(port(1), false),
                 "bind-tcp" => tcp(port(1), true),
+                "listen-tcp" => listen_tcp(),
+                "bind-unix" => unix(a(1), true),
+                "connect-unix" => unix(a(1), false),
                 "signal-parent" => rc(libc::kill(libc::getppid(), 0)),
                 _ => usage(&format!("unknown op {op:?}")),
             }
