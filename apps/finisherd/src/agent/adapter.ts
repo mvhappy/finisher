@@ -2,7 +2,7 @@
 // `ProviderEvent`s, each bound to the instance (process or HTTP stream) that emitted it; the
 // runtime alone writes nodes, budgets and journal entries, and drops events from an instance
 // it replaced. No session fork (cut in revision 2).
-import { type FinError, type Harness, type Mode, ProviderEvent } from "@finisher/contracts";
+import { type AgentProvider, type FinError, type Harness, type Mode, ProviderEvent } from "@finisher/contracts";
 import { type Effect, Schema, type Scope, type Stream } from "effect";
 import { finError } from "../errors.ts";
 
@@ -39,6 +39,8 @@ export interface ProviderRef {
 export interface SessionSpec {
   readonly sessionId: string;
   readonly projectId: string;
+  /** The session's provider (the built-in agent's preset: `openrouter` or `local`). */
+  readonly provider?: AgentProvider;
   readonly model: string;
   readonly role: string;
   readonly mode: Mode;

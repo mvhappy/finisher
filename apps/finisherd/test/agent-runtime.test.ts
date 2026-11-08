@@ -159,6 +159,16 @@ describe("agent runtime", () => {
     expect(store.run(r!.id)).toMatchObject({ status: "completed", stopReason: "endTurn" });
   });
 
+  test("a_notice_event_becomes_a_notice_node", async () => {
+    const script: FakeScript = { turns: [[{ emit: [{ type: "notice", name: "retry", details: { attempt: 1, code: "PROVIDER_OVERLOADED", delayMs: 1000 } }, { type: "message", role: "assistant", blocks: [{ type: "text", text: "ok" }] }] }]] };
+    const h = harness(FakeAdapter([script]));
+    await h.runtime.boot();
+    const { session } = await run(h.runtime.start({ projectId: "P1", prompt: "go" }, PEOPLE, META));
+    await until(idle(session.id), "idle");
+    expect(kinds(session.id)).toEqual(["userMessage", "notice", "assistantMessage"]);
+    expect(payload(store.nodes(session.id)[1]!)).toEqual({ retry: { attempt: 1, code: "PROVIDER_OVERLOADED", delayMs: 1000 } });
+  });
+
   test("spawn_failure_fails_turn_provider_exited", async () => {
     const h = harness(FakeAdapter([fixture("spawn-fail")]));
     await h.runtime.boot();

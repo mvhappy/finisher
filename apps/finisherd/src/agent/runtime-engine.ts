@@ -288,6 +288,7 @@ export abstract class RuntimeEngine {
       {
         sessionId: s.id,
         projectId: s.projectId,
+        provider: s.provider,
         model: s.model,
         role: s.role,
         mode: s.mode,
@@ -425,6 +426,8 @@ export abstract class RuntimeEngine {
         return this.#turnFailed(live, runId, finError(e.error.code, e.error.message, e.error.details, e.error.fix));
       case "capture":
         return this.record("a capture", () => this.journal.capture({ session: this.session(sessionId), runId, request: e.request, response: e.response }));
+      case "notice":
+        return void (await node("notice", { [e.name]: e.details ?? true }));
       case "unknown":
         return void (await node("notice", { unknownEvent: e.name }));
     }

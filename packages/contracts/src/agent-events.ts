@@ -91,6 +91,11 @@ const TurnFailed = ev("turnFailed", { error: ErrorShape });
 const Exited = ev("exited", { code: Schema.NullOr(Schema.Number), signal: Schema.NullOr(Schema.String) });
 /** The exact model traffic of one call (built-in only): the body as sent and the response. */
 const Capture = ev("capture", { request: Schema.Unknown, response: Schema.Unknown });
+/**
+ * Something the adapter wants on the record that is not a turn's content (Decision 9: each
+ * model-call retry): becomes a `notice` node `{[name]: details}`.
+ */
+const Notice = ev("notice", { name: Schema.String, details: Schema.optionalKey(Schema.Unknown) });
 /** A provider message the adapter does not know: becomes a `notice` node, never a failure. */
 const UnknownEvent = ev("unknown", { name: Schema.String });
 
@@ -110,6 +115,7 @@ export const ProviderEvent = Schema.Union([
   TurnFailed,
   Exited,
   Capture,
+  Notice,
   UnknownEvent,
 ]);
 export type ProviderEvent = typeof ProviderEvent.Type;
@@ -131,5 +137,6 @@ export const PROVIDER_EVENT_TYPES = [
   "turnFailed",
   "exited",
   "capture",
+  "notice",
   "unknown",
 ] as const satisfies readonly ProviderEvent["type"][];

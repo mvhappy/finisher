@@ -7,7 +7,48 @@ use crate::output::usage;
 use crate::registry::{commands, find, groups, names};
 
 fn entry(c: &crate::registry::Command) -> Value {
-    json!({ "name": c.name, "usage": c.usage(), "summary": c.summary, "write": c.write, "input": (c.schema)() })
+    let mut e = json!({ "name": c.name, "usage": c.usage(), "summary": c.summary, "write": c.write, "input": (c.schema)() });
+    let kinds = arg_kinds(c.name);
+    if !kinds.is_empty() {
+        e["argKinds"] = Value::Object(kinds);
+    }
+    e
+}
+
+/// `argKinds`: the command's arguments that name a client-side file (`path`), plan 7A 14c.
+fn arg_kinds(name: &str) -> serde_json::Map<String, Value> {
+    crate::agent_paths::path_args(name)
+        .map(|a| (a.to_string(), json!("path")))
+        .collect()
+}
+
+/// `fin schema commands`: every command's name, whether it writes, and its path arguments with
+/// the flag (or the position) that carries each, from the command line itself. The built-in
+/// agent's `fin` tool reads it once per `fin` binary (plan 7A Decisions 11, 14c).
+pub fn index(cli: &clap::Command) -> Value {
+    let list: Vec<Value> = commands()
+        .map(|c| {
+            let mut cmd = Some(cli);
+            for word in c.name.split('.') {
+                cmd = cmd.and_then(|x| x.find_subcommand(word));
+            }
+            let paths: Vec<Value> = crate::agent_paths::path_args(c.name)
+                .map(|a| {
+                    let arg = cmd.and_then(|x| x.get_arguments().find(|g| g.get_id() == a));
+                    match arg.and_then(clap::Arg::get_long) {
+                        Some(long) => json!({ "arg": a, "flag": format!("--{long}") }),
+                        None => {
+                            let position =
+                                cmd.and_then(|x| x.get_positionals().position(|g| g.get_id() == a));
+                            json!({ "arg": a, "position": position })
+                        }
+                    }
+                })
+                .collect();
+            json!({ "name": c.name, "write": c.write, "paths": paths })
+        })
+        .collect();
+    json!({ "commands": list })
 }
 
 /// The commands of a group (or a single command by name), with usage and input schema.

@@ -3,16 +3,12 @@
 // branch created over RPC as the `local` starter (what the runtime does through the registry).
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import type { CredentialFile, Mode } from "@finisher/contracts";
-import type { BranchView } from "@finisher/core-types";
+import type { CredentialFile } from "@finisher/contracts";
 import { Effect, Fiber } from "effect";
 import { expect } from "vitest";
 import { b64u, canonicalEndpoint, helloProof, proveMac, sameMac } from "../../src/auth/crypto.ts";
 import type { AgentCore } from "../../src/agent/core.ts";
-import { openSession, type SessionBranchOps } from "../../src/agent/credentials.ts";
-import { toFinError } from "../../src/errors.ts";
 import { serve, StderrLogger } from "../../src/main.ts";
-import { LOCAL } from "../../src/principal.ts";
 import { connectProved, type Exit, hello, NdjsonClient, ok, type ServerInfo } from "./ndjson-client.ts";
 
 export function testClock(start = Date.now()) {
@@ -96,51 +92,7 @@ export function readCredential(path: string): CredentialFile {
   return JSON.parse(readFileSync(path, "utf8")) as CredentialFile;
 }
 
-/** `SessionBranchOps` over RPC, as `c` (the starter). */
-export function rpcBranchOps(c: NdjsonClient): SessionBranchOps {
-  const call = <A>(tag: string, payload: unknown) =>
-    Effect.flatMap(Effect.promise(() => c.call(tag, payload)), (e) => (e.ok ? Effect.succeed(e.value as A) : Effect.fail(toFinError(Object.assign(new Error(e.error.message), { ...e.error, finNode: true })))));
-  const branches = (projectId: string) => Effect.map(call<{ branches: BranchView[] }>("branch.list", { projectId, all: true }), (r) => r.branches);
-  return {
-    branches,
-    resolveBranch: (projectId, ref) =>
-      Effect.flatMap(branches(projectId), (bs) => {
-        const b = bs.find((x) => x.id === ref || x.name === ref || x.display === ref);
-        return b === undefined ? Effect.fail(toFinError(Object.assign(new Error("no branch"), { code: "BRANCH_NOT_FOUND", finNode: true }))) : Effect.succeed(b.id);
-      }),
-    createBranch: (projectId, req) => Effect.map(call<{ branch: BranchView }>("branch.create", { projectId, ...req }), (r) => r.branch),
-  };
-}
-
-export interface OpenOptions {
-  readonly mode?: Mode;
-  readonly role?: string;
-  readonly base?: string;
-  readonly root?: string;
-}
-
-/** Opens a session on `projectId` as `local` (Decision 15 steps 2–5). */
-export async function open(core: AgentCore, starter: NdjsonClient, projectId: string, o: OpenOptions = {}) {
-  return Effect.runPromise(
-    openSession(
-      { creds: core.credentials, store: core.store, ops: rpcBranchOps(starter), ids: core.ids },
-      {
-        projectId,
-        harness: "builtin",
-        provider: "openrouter",
-        model: "anthropic/claude-sonnet-5.5",
-        weights: "closed",
-        role: o.role ?? "editor",
-        mode: o.mode ?? "draft",
-        budget: {},
-        createdBy: { principal: { kind: "local", id: "local" } },
-        ...(o.base === undefined ? {} : { base: o.base }),
-        ...(o.root === undefined ? {} : { root: o.root }),
-      },
-      LOCAL,
-    ),
-  );
-}
+export { open, type OpenOptions, rpcBranchOps } from "./agent-open.ts";
 
 /** The `code` of a failed exit, `undefined` for a success. */
 export const code = (e: Exit) => (e.ok ? undefined : e.error.code);

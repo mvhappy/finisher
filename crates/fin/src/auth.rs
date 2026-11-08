@@ -243,6 +243,12 @@ fn read_private(path: &Path, credential_file: bool) -> Result<Option<String>, Co
     }
 }
 
+/// A credential file (`FIN_CREDENTIAL`'s): `Ok(None)` when it is missing, unreadable or
+/// malformed; an error when it is not private.
+pub fn read_credential(path: &Path) -> Result<Option<Credential>, CoreError> {
+    read_credential_file(path)
+}
+
 fn read_credential_file(path: &Path) -> Result<Option<Credential>, CoreError> {
     Ok(read_private(path, true)?.and_then(|text| parse_credential(&text)))
 }
@@ -267,7 +273,9 @@ fn parse_credential(text: &str) -> Option<Credential> {
 }
 
 /// `FIN_CREDENTIAL`, else `<server-data>/auth/local.key` (Decision 11). `Ok(None)`: none found
-/// (missing, unreadable or malformed); an error: one was found and is not private.
+/// (missing, unreadable or malformed); an error: one was found and is not private. With
+/// `FIN_CREDENTIAL` set there is no fallback (plan 7A Decision 14b): a credential file that
+/// cannot be used is no credential, never the local key, whatever `server_data` says.
 pub fn discover(server_data: Option<&Path>) -> Result<Option<Credential>, CoreError> {
     if let Some(file) = std::env::var_os(CREDENTIAL_ENV).filter(|v| !v.is_empty()) {
         return read_credential_file(&crate::paths::resolve(Path::new(&file)));
@@ -487,6 +495,9 @@ pub fn untrusted(endpoint: &Endpoint, reason: &str) -> CoreError {
 
 /// The `UNAUTHENTICATED` of a run that found no credential: fin sends the server nothing.
 pub fn no_credential(endpoint: &Endpoint) -> CoreError {
+    if std::env::var_os(CREDENTIAL_ENV).is_some_and(|v| !v.is_empty()) {
+        return credential_unusable(&endpoint.display());
+    }
     CoreError::new(
         "UNAUTHENTICATED",
         format!(
@@ -500,6 +511,21 @@ pub fn no_credential(endpoint: &Endpoint) -> CoreError {
          folder (the FIN_SERVER_DATA variable, or the default folder), or the credential file the \
          FIN_CREDENTIAL variable names. Run it as the user who runs the server, with that \
          server's data, or give it a credential file.",
+    )
+}
+
+/// `UNAUTHENTICATED` for a `FIN_CREDENTIAL` file that is missing, unreadable or malformed:
+/// fin never falls back to the server's local key while the variable is set (Decision 14b).
+pub fn credential_unusable(endpoint: &str) -> CoreError {
+    CoreError::new(
+        "UNAUTHENTICATED",
+        "the credential file FIN_CREDENTIAL names cannot be used",
+    )
+    .with_details(json!({ "reason": "credentialUnusable", "endpoint": endpoint }))
+    .with_fix(
+        "The file FIN_CREDENTIAL names is missing, unreadable or not a credential. fin does not \
+         fall back to the server's own key while FIN_CREDENTIAL is set. If this is an agent \
+         session, it may have ended: ask a person to resume or restart it.",
     )
 }
 

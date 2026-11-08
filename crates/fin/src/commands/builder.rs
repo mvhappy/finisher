@@ -36,6 +36,8 @@ pub struct Builder<'a> {
     pub(super) inputs: Vec<Value>,
     /// `--timeline`: the timeline commands that name none act on (default: the first).
     pub timeline: Option<String>,
+    /// `--project`: the folder an agent session's file arguments are confined to (14c).
+    pub project: Option<std::path::PathBuf>,
 }
 
 /// `$name` with a batch line's number: `$clip` → `$clip3`, `$split2` → `$split2_3`.
@@ -108,6 +110,7 @@ impl<'a> Builder<'a> {
             deferred: None,
             unplanned: None,
             inputs: Vec::new(),
+            project: globals.project.clone(),
             timeline: globals.timeline.clone(),
         })
     }

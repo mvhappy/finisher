@@ -333,6 +333,13 @@ impl Online {
         if let Some(id) = self.project_id.get() {
             return Ok(id.clone());
         }
+        // An agent session works on its own project (`project.open` is refused to it).
+        if crate::agent_session::active() {
+            let session = crate::agent_session::state(self)?;
+            crate::agent_session::check_folder(self.project.as_deref(), &session)?;
+            crate::diag::note_project(&session.project_id);
+            return Ok(self.project_id.get_or_init(|| session.project_id).clone());
+        }
         let dir = self.project.as_ref().ok_or_else(no_project)?;
         let opened: ProjectRef = self.call_as("project.open", json!({ "dir": dir }))?;
         crate::diag::note_project(&opened.project_id);
@@ -365,6 +372,10 @@ impl Backend for Online {
     }
 
     fn config_scope(&self) -> Result<Option<(PathBuf, String)>, CoreError> {
+        // Under an agent credential `fin-config.json` is neither read nor written (14a).
+        if crate::agent_session::active() {
+            return Ok(None);
+        }
         let project_id = self.project_ref()?;
         Ok(endpoint::server_data().map(|sd| (sd, project_id)))
     }
