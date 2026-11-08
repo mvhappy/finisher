@@ -16,7 +16,7 @@ import { basename, dirname, isAbsolute, relative } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import { parentPort, workerData } from "node:worker_threads";
 import { type BatchFileRef, readBatchFile } from "./batch-file.ts";
-import { type ApplyConn, type ApplyCounts, applyRows, checkChains, emptyCounts, prepareApply, resetApply, rowsOf } from "./core/apply.ts";
+import { type ApplyConn, type ApplyCounts, ROOT_DIR, applyRows, checkChains, emptyCounts, prepareApply, resetApply, rowsOf } from "./core/apply.ts";
 import { type DiffCtx, checkRootEmpty, settleHardlinks } from "./core/diff.ts";
 import { type Work, budget, settle } from "./core/steps.ts";
 import { DirChains } from "./core/rel.ts";
@@ -24,6 +24,8 @@ import { type CatalogExtensionRef, type LoadedExtensions, loadExtensions } from 
 import { ftsRemove, ftsSettle } from "./fts.ts";
 import { checkLibraryId, openCatalog } from "./open.ts";
 import { CatalogFailure, type Reply, type Request, nextTurn, toWire } from "./protocol.ts";
+import { Watches } from "../watch.ts";
+import { newSink, settleEvents } from "./core/file-events.ts";
 
 export interface IndexerData {
   readonly extensions: ReadonlyArray<CatalogExtensionRef>;
@@ -32,8 +34,12 @@ export interface IndexerData {
   readonly jobsRoot: string;
   /** Rows per transaction (default and maximum 2,000; tests lower it). */
   readonly txRows?: number;
-  /** Enables `testFault` (tests only). */
+  /** Enables `testFault` and `watchFault` (tests only). */
   readonly testHooks?: boolean;
+  /** Quiet time before a watch hint is posted (default 2 s; tests lower it). */
+  readonly watchQuietMs?: number;
+  /** `fs.inotify.max_user_watches` as the watches see it (tests; default: read from `/proc`). */
+  readonly watchMaxUserWatches?: number;
 }
 
 export const TX_ROWS = 2000;
@@ -55,6 +61,13 @@ const queues = new Map<string, Promise<unknown>>();
 const stats = { transactions: 0, maxTxRows: 0, maxStepRows: 0, batchFiles: 0 };
 /** `testFault`: the batch transaction (1-based, per library) that fails next. */
 const faults = new Map<string, number>();
+
+/** Local roots' watches (Decision 30): hints posted as `{event}` messages. */
+const watches = new Watches((event) => port.postMessage({ event }), {
+  ...(data.watchQuietMs === undefined ? {} : { quietMs: data.watchQuietMs }),
+  ...(data.watchMaxUserWatches === undefined ? {} : { maxUserWatches: () => data.watchMaxUserWatches }),
+  known: knownPrefix,
+});
 
 let exts: LoadedExtensions;
 try {
@@ -149,6 +162,7 @@ function open(a: Record<string, unknown>): unknown {
   const apply = prepareApply(opened.db);
   const meta = opened.db.prepare("SELECT value FROM meta WHERE key = 'offline'").get() as { value: string } | undefined;
   apply.diff.offline = meta?.value === "1";
+  apply.diff.dropGuard = (opened.db.prepare("SELECT value FROM meta WHERE key = 'dropGuard'").get() as { value: string } | undefined)?.value === "1";
   const last = opened.db
     .prepare(
       "SELECT max(coalesce((SELECT max(lastSeen) FROM files), 0), coalesce((SELECT max(lastSeen) FROM dirs), 0), " +
@@ -164,6 +178,7 @@ function close(a: Record<string, unknown>): unknown {
   const c = catalogs.get(lib);
   if (c === undefined) return { closed: false };
   catalogs.delete(lib);
+  watches.unwatch(lib);
   try {
     c.db.exec("PRAGMA wal_checkpoint(TRUNCATE)");
   } finally {
@@ -226,15 +241,20 @@ async function applyBatchFile(a: Record<string, unknown>): Promise<unknown> {
   checkRootEmpty(c.apply.diff, batches.flatMap((b) => b.dirsDone));
   const counts = emptyCounts();
   const ctx = { job, gen, at: stamp(c, at), startedAt };
+  const sink = newSink();
+  c.apply.diff.events = sink;
   try {
     await applyRowsInTx(c, lib, rows, ctx, counts, fault);
   } catch (e) {
     // The time was handed out even though the transaction rolled back: keep it (`attemptStart`).
     if (catalogs.get(lib) === c) tx(c, 1, () => c.db.prepare(CLOCK_SET).run(String(ctx.at)));
     throw e;
+  } finally {
+    c.apply.diff.events = undefined;
   }
   stats.batchFiles++;
-  return { ...counts, transactions: Math.ceil(rows.length / txRows) };
+  // Which rows changed, for `Libraries.onFile` (read after the last transaction committed).
+  return { ...counts, transactions: Math.ceil(rows.length / txRows), files: settleEvents(c.db, sink) };
 }
 
 async function applyRowsInTx(
@@ -270,18 +290,15 @@ function testFault(a: Record<string, unknown>): unknown {
 }
 
 /**
- * Writes the job's `in/dirs.ndjson` (Decision 27): one line per known directory (present,
+ * The lines of a job's `in/dirs.ndjson` (Decision 27): one per known directory (present,
  * unreadable, or offline under an unmounted nested mount)
  * `{dir: RawRel, mtimeNs: string | null, listed: bool, entries?, mountRoot, volume?}` (what
  * `fin_library::KnownDirs::from_ndjson` reads): `listed` when its last complete listing was in
  * generation `gen`, `entries` that listing's count (for the walker's N → 0 rule), `mountRoot`
  * for a nested mount point and `volume` its volume as last listed (for `ROOT_UNMOUNTED` and
- * `ROOT_VOLUME_CHANGED`). Created exclusively, 0600.
+ * `ROOT_VOLUME_CHANGED`).
  */
-function writeKnownDirs(a: Record<string, unknown>): unknown {
-  const c = catalog(a.lib);
-  const gen = int(a.gen, "gen");
-  const path = jobInputPath(a.path);
+function knownDirLines(c: Catalog, gen: number): string[] {
   type Row = { id: number; mtimeNs: string | null; listedGen: number | null; entries: number | null; mount: string | null; volume: string | null };
   const rows = c.db
     .prepare(
@@ -290,7 +307,7 @@ function writeKnownDirs(a: Record<string, unknown>): unknown {
     )
     .all() as Row[];
   const chains = new DirChains(c.db);
-  const lines = rows.map((r) =>
+  return rows.map((r) =>
     JSON.stringify({
       dir: { components: chains.of(r.id) },
       mtimeNs: r.mtimeNs,
@@ -300,8 +317,27 @@ function writeKnownDirs(a: Record<string, unknown>): unknown {
       ...(r.volume === null ? {} : { volume: JSON.parse(r.volume) as unknown }),
     }),
   );
-  writeFileSync(path, lines.length === 0 ? "" : `${lines.join("\n")}\n`, { flag: "wx", mode: 0o600 });
-  return { dirs: rows.length };
+}
+
+const ndjson = (lines: ReadonlyArray<string>): string => (lines.length === 0 ? "" : `${lines.join("\n")}\n`);
+
+/** Writes the job's `in/dirs.ndjson` at `path` (`knownDirLines`), created exclusively, 0600. */
+function writeKnownDirs(a: Record<string, unknown>): unknown {
+  const c = catalog(a.lib);
+  const gen = int(a.gen, "gen");
+  const path = jobInputPath(a.path);
+  const lines = knownDirLines(c, gen);
+  writeFileSync(path, ndjson(lines), { flag: "wx", mode: 0o600 });
+  return { dirs: lines.length };
+}
+
+/**
+ * The text of a job's `in/dirs.ndjson` (`knownDirLines`), for a kind's `prepare` to write
+ * through its `ctx.open` (hooks get no raw paths).
+ */
+function knownDirs(a: Record<string, unknown>): unknown {
+  const lines = knownDirLines(catalog(a.lib), int(a.gen, "gen"));
+  return { text: ndjson(lines), dirs: lines.length };
 }
 
 /**
@@ -369,6 +405,56 @@ function setOffline(a: Record<string, unknown>): unknown {
   return { offline };
 }
 
+/** Persists the mass-drop guard (after an accepted volume, until a full scan succeeds) and hands it to the diff. */
+function setDropGuard(a: Record<string, unknown>): unknown {
+  const c = catalog(a.lib);
+  if (typeof a.on !== "boolean") throw new CatalogFailure("CATALOG_ARGS_INVALID", "invalid catalog arguments", { at: "on" });
+  const on = a.on;
+  if (c.apply.diff.dropGuard === on) return { on };
+  tx(c, 1, () => {
+    c.db.prepare("INSERT INTO meta (key, value) VALUES ('dropGuard', ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value").run(on ? "1" : "0");
+  });
+  c.apply.diff.dropGuard = on;
+  return { on };
+}
+
+/** The deepest directory of `parts` the catalog knows, as base64 components (a watch hint's target). */
+function knownPrefix(lib: string, parts: ReadonlyArray<Uint8Array>): string[] {
+  const c = catalogs.get(lib);
+  const out: string[] = [];
+  if (c === undefined) return out;
+  let id = ROOT_DIR;
+  for (const p of parts) {
+    const row = c.apply.st.dirGet.get(id, p) as { id: number } | undefined;
+    if (row === undefined) break;
+    id = row.id;
+    out.push(Buffer.from(p.buffer, p.byteOffset, p.byteLength).toString("base64"));
+  }
+  return out;
+}
+
+/**
+ * `watch {lib, root}`: a local root's watch (the catalog must be open); its budget is the
+ * catalog's live directories (`watch.ts`).
+ */
+function watch(a: Record<string, unknown>): unknown {
+  const lib = checkLibraryId(a.lib);
+  const c = catalog(lib);
+  if (typeof a.root !== "string" || !isAbsolute(a.root)) throw new CatalogFailure("CATALOG_ARGS_INVALID", "invalid catalog arguments", { at: "root" });
+  const { n } = c.db.prepare("SELECT count(*) AS n FROM dirs WHERE state != 'missing'").get() as { n: number };
+  return watches.watch(lib, a.root, n);
+}
+
+function unwatch(a: Record<string, unknown>): unknown {
+  watches.unwatch(checkLibraryId(a.lib));
+  return {};
+}
+
+function watchFault(a: Record<string, unknown>): unknown {
+  if (data.testHooks !== true) throw new CatalogFailure("CATALOG_OP_UNKNOWN", "no such catalog method", { method: "watchFault" });
+  return { faulted: watches.fault(checkLibraryId(a.lib)) };
+}
+
 const METHODS: Record<string, (a: Record<string, unknown>) => unknown> = {
   open,
   close,
@@ -377,8 +463,13 @@ const METHODS: Record<string, (a: Record<string, unknown>) => unknown> = {
   attemptStart,
   testFault,
   writeKnownDirs,
+  knownDirs,
   purgeMissing,
   setOffline,
+  setDropGuard,
+  watch,
+  unwatch,
+  watchFault,
 };
 
 function reply(r: Reply): void {
@@ -402,6 +493,7 @@ function serial(lib: string, f: () => Promise<unknown>): Promise<unknown> {
 }
 
 function shutdown(): void {
+  watches.closeAll();
   for (const lib of [...catalogs.keys()]) {
     try {
       close({ lib });

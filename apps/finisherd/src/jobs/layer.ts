@@ -35,11 +35,6 @@ export interface JobEngineOptions {
         readonly families?: Readonly<Record<string, Partial<FamilySpec>>>;
         readonly helper?: Partial<Pick<HelperProgram, "onCall">>;
       };
-  /**
-   * Registers more families and kinds beside the test ones (`registerMediaKinds`, 6A Task 12:
-   * the caller holds the project registry the kind reads from).
-   */
-  readonly register?: (registry: KindRegistry) => void;
   readonly cores?: number;
   readonly totalMem?: number;
   readonly cgroups?: "auto" | "off";
@@ -54,6 +49,13 @@ export interface JobEngineOptions {
   /** Starts the job host (tests pass a fake; default fin-node's `JobHost.start`). */
   readonly jobHost?: JobHostFactory;
   readonly eventQueueBytes?: number;
+  /**
+   * Registers families and kinds beside the test ones before the engine starts (5D's `library`
+   * family; `registerMediaKinds`, 6A Task 12, whose caller holds the project registry the kind
+   * reads from): a restart reconciles the jobs it finds against the registry, so every kind must
+   * be known by then.
+   */
+  readonly register?: (kinds: KindRegistry) => void;
   /** The warm workers' held-files check (default: in test-hooks builds; a fake host's tests turn it off). */
   readonly heldFilesCheck?: boolean;
 }
@@ -76,7 +78,10 @@ export const buildJobEngine = (serverData: string, opts: JobEngineOptions = {}):
       const t = opts.testKinds === true ? {} : opts.testKinds;
       registerTestKinds(registry, { binaryDir, overrides: t.overrides ?? {}, families: t.families ?? {}, ...(t.helper === undefined ? {} : { helper: t.helper }) });
     }
-    opts.register?.(registry);
+    if (opts.register !== undefined) {
+      const register = opts.register;
+      yield* Effect.try({ try: () => register(registry), catch: startFailure });
+    }
     const root = yield* Effect.try({ try: () => ensureJobsRoot(serverData), catch: startFailure });
     const host = yield* Effect.tryPromise({
       try: () =>

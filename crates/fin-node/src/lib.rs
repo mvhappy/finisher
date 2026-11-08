@@ -80,7 +80,10 @@ pub use jobhost::{
     JobHost, JobKindVersion, job_kind_versions, resolve_memory_rule, validate_job_params,
 };
 pub use journal::{JournalHandle, kind_names, rpc_methods, validate_privacy};
-pub use library::{library_canonical_root, library_probe_root, library_probe_status};
+pub use library::{
+    LibraryWatch, library_canonical_root, library_probe_root, library_probe_status,
+    library_probe_version, library_watch_start,
+};
 #[cfg(feature = "test-hooks")]
 pub use library::{library_probe_hang_for_test, library_probe_started_for_test};
 pub use media::commit_job_output;

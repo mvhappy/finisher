@@ -8,6 +8,8 @@ import { CatalogFailure } from "../protocol.ts";
 import { decodeProbe } from "./probe-codec.ts";
 import { DirChains, base64 } from "./rel.ts";
 import { DisplayPaths } from "./search.ts";
+import { stageQueries } from "./stage-rows.ts";
+import { viewQueries } from "./view-queries.ts";
 
 const bad = (q: string, at: string): CatalogFailure =>
   new CatalogFailure("CATALOG_ARGS_INVALID", `catalog query core.${q}: invalid arguments`, { at });
@@ -175,9 +177,10 @@ function files(db: DatabaseSync, args: unknown): { dir?: DirRow; matches?: DirRo
 
 /**
  * `file {fileId} | {relKey}`: every row with that id or key (several → `PATH_AMBIGUOUS` for
- * the caller), each with its raw `rel` chain, and the stage rows of a single match.
+ * the caller), each with its raw `rel` chain, its `dev` and its NFC `display` path, and the
+ * stage rows of a single match.
  */
-function file(db: DatabaseSync, args: unknown): { matches: Array<FileRow & { rel: { components: string[] } }>; stages: unknown[] } {
+function file(db: DatabaseSync, args: unknown): { matches: Array<FileRow & { rel: { components: string[] }; display: string; dev: string | null }>; stages: unknown[] } {
   if (!isObj(args)) throw bad("file", "args");
   let rows: Array<Record<string, unknown>>;
   if (args.fileId !== undefined) {
@@ -187,7 +190,14 @@ function file(db: DatabaseSync, args: unknown): { matches: Array<FileRow & { rel
     rows = db.prepare(`SELECT ${FILE_COLS} FROM files WHERE relKey = ? ORDER BY id`).all(args.relKey) as Array<Record<string, unknown>>;
   } else throw bad("file", "fileId");
   const chains = new DirChains(db);
-  const matches = rows.map((r) => ({ ...fileRow(r), rel: chains.file(r.dirId as number, r.name as Uint8Array) }));
+  const paths = new DisplayPaths(db);
+  const devOf = db.prepare("SELECT dev FROM files WHERE id = ?");
+  const matches = rows.map((r) => ({
+    ...fileRow(r),
+    rel: chains.file(r.dirId as number, r.name as Uint8Array),
+    display: paths.file(r.dirId as number, r.nameNfc as string),
+    dev: ((devOf.get(r.id as number) as { dev: string | null } | undefined)?.dev ?? null) as string | null,
+  }));
   const fp = matches.length === 1 ? matches[0]?.fp : null;
   const stages =
     fp == null ? [] : db.prepare("SELECT stage, version, state, code, jobId, attempts, at FROM stages WHERE fp = ? ORDER BY stage").all(fp);
@@ -301,4 +311,70 @@ function stageCounts(db: DatabaseSync): { stages: Array<{ stage: string; version
   return { stages: rows as Array<{ stage: string; version: string; state: string; n: number }> };
 }
 
-export const coreQueries = { files, file, search, lookup, hashCandidates, counts, stageCounts };
+/** One line of a probe or hash job's `in/files.ndjson` (the generated `LibraryFileLine`). */
+export interface FileLineRow {
+  readonly id: number;
+  readonly rel: { components: string[] };
+  readonly expect: { size: number; mtimeNs: string; fileId?: string; dev?: string };
+}
+
+/** Rows a reader may open: live and not a placeholder (a placeholder only for a hydrating library). */
+const READABLE = ["present", "probeFailed", "skipped", "unreadable"];
+
+/**
+ * `fileLines {fileIds ≤ 1000, hydrate}`: the lines of a probe or hash job's `in/files.ndjson`
+ * (Decision 20) for the readable rows among `fileIds`, in their order: the raw chain and the
+ * `Expect` the opener checks (size, mtime, file id, and `dev` from `files.dev`: a nested mount's
+ * file carries its own device). `absent`: the ids with no readable row (gone, missing, offline,
+ * or `cloudOnly` without `hydrate`).
+ */
+function fileLines(db: DatabaseSync, args: unknown): { lines: FileLineRow[]; absent: number[] } {
+  if (!isObj(args) || !Array.isArray(args.fileIds) || args.fileIds.length > 1000 || !args.fileIds.every(isInt)) throw bad("fileLines", "fileIds");
+  if (typeof args.hydrate !== "boolean") throw bad("fileLines", "hydrate");
+  const states = args.hydrate ? [...READABLE, "cloudOnly"] : READABLE;
+  const get = db.prepare(
+    "SELECT id, dirId, name, size, CAST(mtimeNs AS TEXT) AS mtimeNs, fileId, dev, state FROM files WHERE id = ? " +
+      "AND state IN (SELECT value FROM json_each(?))",
+  );
+  const chains = new DirChains(db);
+  const lines: FileLineRow[] = [];
+  const absent: number[] = [];
+  const statesJson = JSON.stringify(states);
+  for (const id of args.fileIds as number[]) {
+    const r = get.get(id, statesJson) as Record<string, unknown> | undefined;
+    if (r === undefined) {
+      absent.push(id);
+      continue;
+    }
+    const fileId = r.fileId === null ? undefined : base64(r.fileId as Uint8Array);
+    const dev = (r.dev as string | null) ?? undefined;
+    lines.push({
+      id,
+      rel: chains.file(r.dirId as number, r.name as Uint8Array),
+      expect: { size: r.size as number, mtimeNs: r.mtimeNs as string, ...(fileId === undefined ? {} : { fileId }), ...(dev === undefined ? {} : { dev }) },
+    });
+  }
+  return { lines, absent };
+}
+
+/**
+ * `dirRel {dir: relKey} | {dirId}` → `{rel?}`: the raw chain of the one directory named (a
+ * listing's freshness pass lists exactly it, Decision 28); none when the key names none or
+ * several.
+ */
+function dirRel(db: DatabaseSync, args: unknown): { rel?: { components: string[] } } {
+  if (!isObj(args)) throw bad("dirRel", "args");
+  let ids: number[];
+  if (args.dir !== undefined) {
+    if (!isStr(args.dir)) throw bad("dirRel", "dir");
+    ids = (db.prepare("SELECT id FROM dirs WHERE relKey = ? AND state != 'missing'").all(args.dir) as Array<{ id: number }>).map((r) => r.id);
+  } else {
+    const id = args.dirId ?? 1;
+    if (!isInt(id)) throw bad("dirRel", "dirId");
+    ids = (db.prepare("SELECT id FROM dirs WHERE id = ?").all(id) as Array<{ id: number }>).map((r) => r.id);
+  }
+  if (ids.length !== 1) return {};
+  return { rel: { components: new DirChains(db).of(ids[0]!) } };
+}
+
+export const coreQueries = { files, file, search, lookup, hashCandidates, counts, stageCounts, fileLines, dirRel, ...viewQueries, ...stageQueries };

@@ -12,6 +12,7 @@ import { type DiffConn, EXCLUDED, mergeInto, prepareDiff, settleHardlinks } from
 import { drain, unlimited } from "./steps.ts";
 import { encodeProbe } from "./probe-codec.ts";
 import { DirChains } from "./rel.ts";
+import { type StagePendingFile, pendingStage, stageOps } from "./stage-rows.ts";
 
 const bad = (op: string, at: string): CatalogFailure =>
   new CatalogFailure("CATALOG_ARGS_INVALID", `catalog op core.${op}: invalid arguments`, { at });
@@ -67,9 +68,13 @@ function mergingOf(db: DatabaseSync): Merging {
  * inserted and not a pending rename, that equals a missing row's (never an `EXCLUDED` one: its
  * file still exists) is a **move** (Decision 25):
  * the missing row (latest `missingSince`, then lowest id) takes the new row's path and this
- * probe, keeps its id and history, and the new row is dropped. Answers `{updated, stale, moved}`.
+ * probe, keeps its id and history, and the new row is dropped. Answers `{updated, stale, moved,
+ * probed}` (`probed`: each row that landed, by its id after the apply, with its fingerprint).
  */
-function applyProbed(db: DatabaseSync, args: unknown): { updated: number; stale: number; moved: Array<{ from: number; to: number }> } {
+function applyProbed(
+  db: DatabaseSync,
+  args: unknown,
+): { updated: number; stale: number; moved: Array<{ from: number; to: number }>; probed: Array<{ fileId: number; fp: string | null }> } {
   const rows = list("applyProbed", args, "results", 256);
   const st = db.prepare(
     "UPDATE files SET fp = ?, probe = ?, probeVersion = ?, state = ?, code = ?, kind = ?, durationMs = ?, width = ?, height = ? " +
@@ -78,6 +83,7 @@ function applyProbed(db: DatabaseSync, args: unknown): { updated: number; stale:
   const m = mergingOf(db);
   let updated = 0;
   const moved: Array<{ from: number; to: number }> = [];
+  const probed: Array<{ fileId: number; fp: string | null }> = [];
   rows.forEach((r, i) => {
     const okRow =
       isInt(r.fileId) && isInt(r.size) && isStr(r.mtimeNs) && I64.test(r.mtimeNs) && isInt(r.probeVersion) &&
@@ -105,12 +111,18 @@ function applyProbed(db: DatabaseSync, args: unknown): { updated: number; stale:
       ).changes,
     );
     updated += n;
-    if (n !== 1 || fp === null || prior === undefined || prior.fp !== null || prior.renameOf !== null || prior.untouched !== 1) return;
+    if (n !== 1) return;
+    const landed = { fileId: r.fileId as number, fp };
+    probed.push(landed);
+    if (fp === null || prior === undefined || prior.fp !== null || prior.renameOf !== null || prior.untouched !== 1) return;
     const from = m.moveFrom.get(fp, r.fileId as number) as { id: number } | undefined;
-    if (from !== undefined && mergeInto(m.diff, m.fts, from.id, r.fileId as number, false)) moved.push({ from: r.fileId as number, to: from.id });
+    if (from !== undefined && mergeInto(m.diff, m.fts, from.id, r.fileId as number, false)) {
+      moved.push({ from: r.fileId as number, to: from.id });
+      landed.fileId = from.id;
+    }
   });
   drain(settleHardlinks(m.diff, unlimited()));
-  return { updated, stale: rows.length - updated, moved };
+  return { updated, stale: rows.length - updated, moved, probed };
 }
 
 const HASH = /^blake3:[0-9a-f]{64}$/;
@@ -129,7 +141,7 @@ function applyHashes(db: DatabaseSync, args: unknown): { updated: number; stale:
   return { updated, stale: rows.length - updated };
 }
 
-const STAGE_STATES = new Set(["queued", "running", "done", "failed", "stale"]);
+const STAGE_STATES = new Set(["queued", "running", "done", "failed", "stale", "skipped"]);
 
 /**
  * `stagesSet {rows ≤ 2000}`: upserts `{fp, stage, version, state, code?, jobId?, attempts?,
@@ -198,12 +210,12 @@ export interface PendingFile {
 /**
  * `pending {stage, limit ≤ 1000, …}`: the next files a stage would take, oldest change first.
  * - `probe` (with `probeVersion`, and `exts`: the library's `kinds` extensions, or `null` for
- *   all): present files never probed at this version;
- * - any other stage (with `version`, `maxAttempts`, default 3): present, fingerprinted files
- *   without a row at this version, or failed with attempts left, one per fingerprint.
- * The stage pump (Task 11) owns dependencies, in-flight sets and retry times.
+ *   all): present files never probed at this version, and probed-and-failed or skipped files
+ *   probed at an older one (a new `PROBE_VERSION` re-queues only the probe stage);
+ * - any other stage: `pendingStage` (`stage-rows.ts`).
+ * The stage pump (Task 11) owns in-flight sets, priorities and retry times.
  */
-function pending(db: DatabaseSync, args: unknown): { files: PendingFile[] } {
+function pending(db: DatabaseSync, args: unknown): { files: PendingFile[] | StagePendingFile[] } {
   const a = args as Record<string, unknown>;
   if (!isObj(args) || !isStr(a.stage) || !isInt(a.limit) || a.limit < 1 || a.limit > 1000) throw bad("pending", "args");
   let rows: Array<Record<string, unknown>>;
@@ -214,23 +226,14 @@ function pending(db: DatabaseSync, args: unknown): { files: PendingFile[] } {
     if (exts !== null && (!Array.isArray(exts) || !exts.every(isStr))) throw bad("pending", "exts");
     const filter = exts === null ? "" : `AND f.ext IN (SELECT value FROM json_each(?))`;
     const sql =
-      `SELECT ${cols} FROM files f WHERE f.state = 'present' AND (f.probeVersion IS NULL OR f.probeVersion < ?) ${filter} ` +
+      `SELECT ${cols} FROM files f WHERE ((f.state = 'present' AND (f.probeVersion IS NULL OR f.probeVersion < ?)) ` +
+      `OR (f.state IN ('probeFailed', 'skipped') AND f.probeVersion < ?)) ${filter} ` +
       "ORDER BY f.lastChange, f.id LIMIT ?";
-    const params: Array<number | string> = [a.probeVersion];
+    const params: Array<number | string> = [a.probeVersion, a.probeVersion];
     if (exts !== null) params.push(JSON.stringify(exts));
     params.push(a.limit);
     rows = db.prepare(sql).all(...params) as Array<Record<string, unknown>>;
-  } else {
-    if (!isStr(a.version) || !optInt(a.maxAttempts)) throw bad("pending", "version");
-    const max = (a.maxAttempts as number | undefined) ?? 3;
-    rows = db
-      .prepare(
-        `SELECT ${cols} FROM files f LEFT JOIN stages s ON s.fp = f.fp AND s.stage = ? ` +
-          "WHERE f.state = 'present' AND f.fp IS NOT NULL AND (s.fp IS NULL OR s.version != ? OR (s.state = 'failed' AND s.attempts < ?)) " +
-          "AND f.id = (SELECT min(g.id) FROM files g WHERE g.fp = f.fp AND g.state = 'present') ORDER BY f.lastChange, f.id LIMIT ?",
-      )
-      .all(a.stage, a.version, max, a.limit) as Array<Record<string, unknown>>;
-  }
+  } else return pendingStage(db, a);
   const chains = new DirChains(db);
   const files = rows.map((r) => ({
     fileId: r.id as number,
@@ -245,4 +248,40 @@ function pending(db: DatabaseSync, args: unknown): { files: PendingFile[] } {
   return { files };
 }
 
-export const coreOps = { applyProbed, applyHashes, stagesSet, finishScan, pending };
+/**
+ * `acceptUnmounted {dirs?: [{components}]}` → `{dirs}`: the owner removed nested mounts for good
+ * (Decision 17). Each offline mount point (`ROOT_UNMOUNTED`/`ROOT_VOLUME_CHANGED`; all of them,
+ * or the ones named) forgets that it was a mount and which volume it held, and its chain is
+ * answered: the service lists those directories, and their own complete listings bring them
+ * back like any directory (what is gone goes missing, after the usual empty confirmation).
+ */
+function acceptUnmounted(db: DatabaseSync, args: unknown): { dirs: Array<{ components: string[] }> } {
+  const a = args as Record<string, unknown>;
+  if (!isObj(args)) throw bad("acceptUnmounted", "args");
+  let only: Set<string> | undefined;
+  if (a.dirs !== undefined) {
+    if (!Array.isArray(a.dirs) || a.dirs.length > 1000) throw bad("acceptUnmounted", "dirs");
+    only = new Set(
+      a.dirs.map((d, i) => {
+        const c = isObj(d) ? d.components : undefined;
+        if (!Array.isArray(c) || !c.every(isStr)) throw bad("acceptUnmounted", `dirs[${i}]`);
+        return c.join("/");
+      }),
+    );
+  }
+  const chains = new DirChains(db);
+  const rows = db
+    .prepare("SELECT id FROM dirs WHERE state = 'offline' AND mount IS NOT NULL AND code IN ('ROOT_UNMOUNTED', 'ROOT_VOLUME_CHANGED') ORDER BY id")
+    .all() as Array<{ id: number }>;
+  const clear = db.prepare("UPDATE dirs SET mount = NULL, volume = NULL WHERE id = ?");
+  const dirs: Array<{ components: string[] }> = [];
+  for (const r of rows) {
+    const components = chains.of(r.id);
+    if (only !== undefined && !only.has(components.join("/"))) continue;
+    clear.run(r.id);
+    dirs.push({ components });
+  }
+  return { dirs };
+}
+
+export const coreOps = { applyProbed, applyHashes, stagesSet, finishScan, pending, acceptUnmounted, ...stageOps };

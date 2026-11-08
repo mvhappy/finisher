@@ -27,9 +27,15 @@ fn hello_lists_the_library_kinds() {
         (1, 0, Role::Worker, "library")
     );
     let kinds_served: Vec<&str> = h.kinds.iter().map(|k| k.kind.as_ref()).collect();
+    // The test binary also serves `test.stage`, the stage framework's test kind (Task 11).
     assert_eq!(
         kinds_served,
-        ["library.scan", "library.probe", "library.hash"]
+        [
+            "library.scan",
+            "library.probe",
+            "library.hash",
+            "test.stage"
+        ]
     );
     assert_eq!(h.envelope.as_deref(), Some(envelope_id()));
     assert!(!h.warm);
@@ -39,7 +45,12 @@ fn hello_lists_the_library_kinds() {
     for k in &h.kinds {
         assert!(JOB_KINDS.get(&k.kind).is_some(), "{}", k.kind);
         assert!(
-            kinds::find(&[PARAMS], &k.kind, k.version).is_some(),
+            kinds::find(
+                &[PARAMS, fin_library::params_test::PARAMS],
+                &k.kind,
+                k.version
+            )
+            .is_some(),
             "{}",
             k.kind
         );

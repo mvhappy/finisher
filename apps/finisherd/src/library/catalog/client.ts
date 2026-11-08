@@ -7,13 +7,16 @@ import { basename, dirname } from "node:path";
 import { Worker } from "node:worker_threads";
 import { FinError } from "@finisher/contracts";
 import { Context, Effect, Layer } from "effect";
-import type { FileRow, DirRow } from "./core/queries.ts";
+import type { FileRow, DirRow, FileLineRow } from "./core/queries.ts";
 import type { SearchPage, SearchRequest } from "./core/snapshot.ts";
 import type { PendingFile } from "./core/ops.ts";
+import type { StagePendingFile, StageRow } from "./core/stage-rows.ts";
 import type { ApplyCounts } from "./core/apply.ts";
+import type { FileChanges } from "./core/file-events.ts";
 import { guardedClock } from "./clock.ts";
 import { CATALOG_EXTENSIONS, type CatalogExtensionRegistry } from "./extensions.ts";
 import { CatalogFailure, type Ready, type Reply, type WireError, assertCloneable } from "./protocol.ts";
+import type { WatchEvent } from "../watch.ts";
 
 export interface CatalogThreadsOptions {
   /** `<server-data>`: catalogs live in `libraries/<id>/catalog.db`. */
@@ -34,8 +37,12 @@ export interface CatalogThreadsOptions {
   readonly onFatal?: (e: FinError) => void;
   /** Search snapshots (Decision 43): idle lifetime in ms and live count; tests lower them. */
   readonly snapshot?: { readonly ttlMs?: number; readonly max?: number };
-  /** Enables `IndexerClient.testFault` (tests only). */
+  /** Enables `IndexerClient.testFault` and `watchFault` (tests only). */
   readonly testHooks?: boolean;
+  /** Quiet time before a watch hint is posted (default 2 s, Decision 30). */
+  readonly watchQuietMs?: number;
+  /** `fs.inotify.max_user_watches` as the indexer's watches see it (tests). */
+  readonly watchMaxUserWatches?: number;
 }
 
 /** A thread's health: `dead` once it exited or failed after start. */
@@ -53,6 +60,8 @@ class Thread {
   #stopping = false;
   readonly posted = { count: 0 };
   readonly onFatal: (e: FinError) => void;
+  /** Unsolicited `{event}` messages (the indexer's watch hints). */
+  onEvent: (e: unknown) => void = () => {};
 
   private constructor(worker: Worker, onFatal: (e: FinError) => void) {
     this.#worker = worker;
@@ -75,7 +84,7 @@ class Thread {
       };
       worker.once("message", (m: Ready) => {
         if (!m.ready) return fail(toFin(m.error));
-        worker.on("message", (r: Reply) => thread.#settle(r));
+        worker.on("message", (r: Reply | { event: unknown }) => ("event" in r ? thread.onEvent(r.event) : thread.#settle(r)));
         thread.#started = true;
         resolve(thread);
       });
@@ -150,7 +159,10 @@ export interface CatalogCounts {
 export interface ProbedApplied {
   readonly updated: number;
   readonly stale: number;
+  /** `from`: the new row, deleted; `to`: the missing row that took its path and probe (it keeps its id). */
   readonly moved: ReadonlyArray<{ readonly from: number; readonly to: number }>;
+  /** Every row that landed, by its id after the apply (a moved one by `to`), with its fingerprint. */
+  readonly probed?: ReadonlyArray<{ readonly fileId: number; readonly fp: string | null }>;
 }
 
 /** Picks the one file a key names (Decision 11); see `ReaderClient.resolve`. */
@@ -168,6 +180,8 @@ export function pickMatch<R extends { readonly id: number; readonly state: strin
 
 export interface BatchApplied extends ApplyCounts {
   readonly transactions: number;
+  /** The rows the batch file changed, by what each became (`Libraries.onFile`, Task 11). */
+  readonly files?: FileChanges;
 }
 
 export interface ScanRecord {
@@ -201,7 +215,7 @@ export interface StageRowSet {
   readonly fp: string;
   readonly stage: string;
   readonly version: string;
-  readonly state: "queued" | "running" | "done" | "failed" | "stale";
+  readonly state: "queued" | "running" | "done" | "failed" | "stale" | "skipped";
   readonly code?: string | null;
   readonly jobId?: string | null;
   readonly attempts?: number | null;
@@ -210,7 +224,20 @@ export interface StageRowSet {
 
 export type PendingArgs =
   | { readonly stage: "probe"; readonly probeVersion: number; readonly exts: ReadonlyArray<string> | null; readonly limit: number }
-  | { readonly stage: string; readonly version: string; readonly maxAttempts?: number; readonly limit: number };
+  | {
+      readonly stage: string;
+      readonly version: string;
+      readonly maxAttempts?: number;
+      readonly limit: number;
+      /** Each must be `done` at its version. */
+      readonly dependsOn?: ReadonlyArray<{ readonly stage: string; readonly version: string }>;
+      /** Also `cloudOnly` files (a hydrating library). */
+      readonly hydrate?: boolean;
+      /** Failed rows only when they failed no later than this (the pump's retry time). */
+      readonly retryBefore?: number;
+      /** Only these fingerprints (≤ 256). */
+      readonly fps?: ReadonlyArray<string>;
+    };
 
 export interface IndexerClient {
   /** Runs `ext`'s op `op` in the indexer, inside one transaction. */
@@ -232,6 +259,8 @@ export interface IndexerClient {
    */
   applyBatchFile(lib: string, path: string, job: BatchJob): Effect.Effect<BatchApplied, FinError>;
   finishScan(lib: string, scan: ScanRecord): Effect.Effect<{ scanId: number }, FinError>;
+  /** Offline nested mount points the owner removed for good forget their mount (all, or `dirs`); answers their chains to list. */
+  acceptUnmounted(lib: string, dirs?: ReadonlyArray<{ readonly components: ReadonlyArray<string> }>): Effect.Effect<{ dirs: Array<{ components: string[] }> }, FinError>;
   /** Lands probe results; `moved`: new rows merged into the missing row of their fingerprint. */
   applyProbed(lib: string, results: ReadonlyArray<ProbedRow>): Effect.Effect<ProbedApplied, FinError>;
   applyHashes(
@@ -241,7 +270,13 @@ export interface IndexerClient {
   stagesSet(lib: string, rows: ReadonlyArray<StageRowSet>): Effect.Effect<{ set: number }, FinError>;
   /** Writes the job's `in/dirs.ndjson` (Decision 27) at `path`. */
   writeKnownDirs(lib: string, gen: number, path: string): Effect.Effect<{ dirs: number }, FinError>;
+  /** The text of a job's `in/dirs.ndjson` (Decision 27), for a `prepare` that writes it through `ctx.open`. */
+  knownDirs(lib: string, gen: number): Effect.Effect<{ text: string; dirs: number }, FinError>;
   pending(lib: string, args: PendingArgs): Effect.Effect<{ files: PendingFile[] }, FinError>;
+  /** A stage's next files (`pendingStage`). */
+  pendingStage(lib: string, args: Exclude<PendingArgs, { readonly stage: "probe" }>): Effect.Effect<{ files: StagePendingFile[] }, FinError>;
+  /** A stage's rows at other versions become `stale` (Decision 42). */
+  stagesStale(lib: string, stage: string, version: string): Effect.Effect<{ stale: number }, FinError>;
   /**
    * Deletes rows missing since before `before` and marked missing in a generation before
    * `beforeGen` (both: a clock jump alone purges nothing), ≤ 500 per transaction.
@@ -252,6 +287,20 @@ export interface IndexerClient {
    * no listing marks anything missing (Decision 18).
    */
   setOffline(lib: string, offline: boolean): Effect.Effect<{ offline: boolean }, FinError>;
+  /**
+   * Turns the mass-drop guard on (an accepted volume) or off (a full scan succeeded, or the
+   * owner confirmed): while on, a root listing that would mark more than half of the root's
+   * directories missing fails with `ROOT_DROP_SUSPECT` and marks nothing.
+   */
+  setDropGuard(lib: string, on: boolean): Effect.Effect<{ on: boolean }, FinError>;
+  /**
+   * Watches a local root in the indexer thread (Decision 30; the catalog must be open). Hints
+   * and degradations arrive through `Catalogs.onWatch`. `{ok: false, reason}`: the OS refused.
+   */
+  watch(lib: string, root: string): Effect.Effect<{ ok: true } | { ok: false; reason: string }, FinError>;
+  unwatch(lib: string): Effect.Effect<void, FinError>;
+  /** Tests (`testHooks`): the library's watcher fails as on an overflow. */
+  watchFault(lib: string): Effect.Effect<{ faulted: boolean }, FinError>;
   /** Tests (`testHooks`): the library's next batch file fails in its `transaction`-th transaction, after its writes. */
   testFault(lib: string, transaction: number): Effect.Effect<void, FinError>;
   /** `maxTxRows`: batch rows in one transaction; `maxStepRows`: rows written between two event-loop turns. */
@@ -272,7 +321,7 @@ export interface ReaderClient {
   file(
     lib: string,
     ref: { readonly fileId: number } | { readonly relKey: string },
-  ): Effect.Effect<{ matches: Array<FileRow & { rel: { components: string[] } }>; stages: unknown[] }, FinError>;
+  ): Effect.Effect<{ matches: Array<FileRow & { rel: { components: string[] }; display: string; dev: string | null }>; stages: unknown[] }, FinError>;
   search(lib: string, args: Record<string, unknown>): Effect.Effect<{ hits: Array<FileRow & { score: number }> }, FinError>;
   lookup(lib: string, args: { fingerprints?: string[]; hashes?: string[] }): Effect.Effect<{ matches: Array<{ key: string; display: string; file: FileRow }> }, FinError>;
   /**
@@ -291,11 +340,21 @@ export interface ReaderClient {
   searchPage(req: SearchRequest): Effect.Effect<SearchPage, FinError>;
   counts(lib: string): Effect.Effect<CatalogCounts, FinError>;
   /**
+   * The `in/files.ndjson` lines of a probe or hash job (Decision 20): raw chain and `Expect`
+   * (with `dev`) of each readable row among `fileIds` (≤ 1,000); `absent` the others.
+   */
+  fileLines(lib: string, args: { fileIds: number[]; hydrate: boolean }): Effect.Effect<{ lines: FileLineRow[]; absent: number[] }, FinError>;
+  /**
    * The one file at `relKey` (live rows first, then missing ones): several answer
    * `PATH_AMBIGUOUS` with `details.fileIds`, none `FILE_NOT_FOUND` (Decision 11).
    */
   resolve(lib: string, relKey: string): Effect.Effect<FileRow & { rel: { components: string[] } }, FinError>;
   stageCounts(lib: string): Effect.Effect<{ stages: Array<{ stage: string; version: string; state: string; n: number }> }, FinError>;
+  /** Stage rows by fingerprint, job, state or stage (`stageRows`). */
+  stageRows(
+    lib: string,
+    args: { readonly fps?: ReadonlyArray<string>; readonly jobIds?: ReadonlyArray<string>; readonly states?: ReadonlyArray<string>; readonly stage?: string; readonly limit?: number },
+  ): Effect.Effect<{ rows: StageRow[] }, FinError>;
   stats(): Effect.Effect<{ queries: number; searches: number; open: number; snapshots: number }, FinError>;
 }
 
@@ -306,6 +365,8 @@ export interface Catalogs {
   readonly posted: { readonly indexer: { count: number }; readonly reader: { count: number } };
   /** Dead once either thread exited or failed after start (it is never restarted silently). */
   health(): CatalogHealth;
+  /** Watch hints and degradations from the indexer thread (one listener; the service). */
+  onWatch(listener: (e: WatchEvent) => void): void;
   /** Closes every catalog and stops both threads. Idempotent. */
   shutdown(): Promise<void>;
 }
@@ -334,6 +395,8 @@ export async function startCatalogThreads(opts: CatalogThreadsOptions): Promise<
         jobsRoot: opts.jobsRoot,
         ...(opts.txRows === undefined ? {} : { txRows: opts.txRows }),
         ...(opts.testHooks === true ? { testHooks: true } : {}),
+        ...(opts.watchQuietMs === undefined ? {} : { watchQuietMs: opts.watchQuietMs }),
+        ...(opts.watchMaxUserWatches === undefined ? {} : { watchMaxUserWatches: opts.watchMaxUserWatches }),
       },
       onFatal,
     ),
@@ -370,14 +433,22 @@ export async function startCatalogThreads(opts: CatalogThreadsOptions): Promise<
         }),
       ),
     finishScan: (lib, scan) => core(lib, "finishScan", scan),
+    acceptUnmounted: (lib, dirs) => core(lib, "acceptUnmounted", dirs === undefined ? {} : { dirs }),
     applyProbed: (lib, results) => core(lib, "applyProbed", { results }),
     applyHashes: (lib, hashes) => core(lib, "applyHashes", { hashes }),
     stagesSet: (lib, rows) => core(lib, "stagesSet", { rows }),
     writeKnownDirs: (lib, gen, path) => fx(() => indexer.call("writeKnownDirs", { lib, gen, path })),
+    knownDirs: (lib, gen) => fx(() => indexer.call("knownDirs", { lib, gen })),
     pending: (lib, args) => core(lib, "pending", args),
+    pendingStage: (lib, args) => core(lib, "pending", args),
+    stagesStale: (lib, stage, version) => core(lib, "stagesStale", { stage, version }),
     purgeMissing: (lib, cutoff) => fx(() => indexer.call("purgeMissing", { lib, before: cutoff.before, beforeGen: cutoff.beforeGen })),
     testFault: (lib, transaction) => fx<void>(async () => void (await indexer.call("testFault", { lib, transaction }))),
     setOffline: (lib, offline) => fx(() => indexer.call("setOffline", { lib, offline })),
+    setDropGuard: (lib, on) => fx(() => indexer.call("setDropGuard", { lib, on })),
+    watch: (lib, root) => fx(() => indexer.call("watch", { lib, root })),
+    unwatch: (lib) => fx<void>(async () => void (await indexer.call("unwatch", { lib }))),
+    watchFault: (lib) => fx(() => indexer.call("watchFault", { lib })),
     stats: () => fx(() => indexer.call("stats", {})),
   };
   const readerClient: ReaderClient = {
@@ -389,11 +460,13 @@ export async function startCatalogThreads(opts: CatalogThreadsOptions): Promise<
     hashCandidates: (lib, args) => read(lib, "hashCandidates", args),
     searchPage: (req) => fx(() => reader.call("searchPage", req)),
     counts: (lib) => read(lib, "counts", {}),
+    fileLines: (lib, args) => read(lib, "fileLines", args),
     resolve: (lib, relKey) =>
       Effect.flatMap(read<{ matches: Array<FileRow & { rel: { components: string[] } }> }>(lib, "file", { relKey }), (r) =>
         Effect.try({ try: () => pickMatch(r.matches), catch: (e) => e as FinError }),
       ),
     stageCounts: (lib) => read(lib, "stageCounts", {}),
+    stageRows: (lib, args) => read(lib, "stageRows", args),
     stats: () => fx(() => reader.call("stats", {})),
   };
   let stopped: Promise<void> | undefined;
@@ -401,6 +474,9 @@ export async function startCatalogThreads(opts: CatalogThreadsOptions): Promise<
     indexer: indexerClient,
     reader: readerClient,
     posted: { indexer: indexer.posted, reader: reader.posted },
+    onWatch: (listener) => {
+      indexer.onEvent = (e) => listener(e as WatchEvent);
+    },
     health: () => {
       const error = indexer.dead ?? reader.dead;
       return error === undefined || stopped !== undefined ? { ok: true } : { ok: false, error };

@@ -36,7 +36,8 @@ test("rpc_scopes_cover_every_rpc", () => {
     const fields = Object.keys(rpc.payloadSchema.fields ?? {});
     for (const f of fields) {
       const need = f === "dir" ? (tag === "project.create" ? "createDir" : "openDir") : NEEDS[f];
-      if (need !== undefined) expect(rule.resolve ?? [], `${tag}.${f}`).toContain(need);
+      // `library.file`'s `path` and `library.files`' `dir` are relative to a library root, not a filesystem path to resolve.
+      if (need !== undefined && !(tag.startsWith("library.") && (f === "path" || f === "dir"))) expect(rule.resolve ?? [], `${tag}.${f}`).toContain(need);
     }
     // Every write target is a payload field the branch resolver covers.
     for (const w of [...(rule.writes ?? []), ...(rule.targets ?? [])]) expect(fields, tag).toContain(w.split(".")[0]);

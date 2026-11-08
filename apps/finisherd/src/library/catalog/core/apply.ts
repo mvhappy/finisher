@@ -33,6 +33,7 @@ import {
 } from "./diff.ts";
 import { checkChain, checkEntry } from "./entry-check.ts";
 import { type Budget, type Work, room } from "./steps.ts";
+import { noteFile } from "./file-events.ts";
 
 /** The root directory's row (created by `core` 0001). */
 export const ROOT_DIR = 1;
@@ -285,6 +286,7 @@ function applyFile(conn: ApplyConn, dir: DirRef, e: ScanEntry, ctx: ApplyCtx, co
     if (hint?.missing === true) {
       diff.st.takeOver.run(dir.id, name, e.nameNfc, lossy, e.relKey, ext, fileId, dev, placeholder, fresh, at, hint.id);
       ftsReplace(conn.fts, hint.id, e.nameNfc, dir.relKey);
+      noteFile(diff.events, "renamed", hint.id);
       counts.renamed++;
       return;
     }
@@ -292,6 +294,7 @@ function applyFile(conn: ApplyConn, dir: DirRef, e: ScanEntry, ctx: ApplyCtx, co
     // `run()`: its last insert rowid is this row's (RETURNING costs more per insert).
     const newId = Number(st.fileInsert.run(dir.id, name, e.nameNfc, lossy, e.relKey, ext, e.size, mtime, fileId, dev, placeholder, fresh, renameOf, at, at, at).lastInsertRowid);
     ftsAdd(conn.fts, newId, e.nameNfc, dir.relKey);
+    noteFile(diff.events, "added", newId);
     if (renameOf === null) counts.added++;
     else counts.renamePending++;
     return;
@@ -303,6 +306,7 @@ function applyFile(conn: ApplyConn, dir: DirRef, e: ScanEntry, ctx: ApplyCtx, co
     st.fileChanged.run(e.nameNfc, lossy, e.relKey, ext, e.size, mtime, fileId, dev, placeholder, fresh, at, at, known.id);
     touch(diff, known.fileId);
     touch(diff, fileId);
+    noteFile(diff.events, "changed", known.id);
     counts.changed++;
     return;
   }
@@ -315,6 +319,7 @@ function applyFile(conn: ApplyConn, dir: DirRef, e: ScanEntry, ctx: ApplyCtx, co
     touch(diff, known.fileId);
     touch(diff, fileId);
   }
+  if (wasMissing || state !== known.state) noteFile(diff.events, "changed", known.id);
   if (wasMissing) counts.reappeared++;
   else counts.seen++;
 }

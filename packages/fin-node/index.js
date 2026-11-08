@@ -9,6 +9,7 @@ export {
   validateJobParams,
   workersBinaryPath,
 } from "./jobhost.js";
+export { libraryProbeFile } from "./library.js";
 export { PipeServer } from "./pipe.js";
 
 export class Engine {
@@ -488,6 +489,14 @@ export function libraryProbeRoot(root, identityJson, timeoutMs) {
 
 export function libraryProbeStatus() {
   return native.libraryProbeStatus();
+}
+
+export function libraryProbeVersion() {
+  return native.libraryProbeVersion();
+}
+
+export function libraryWatchStart(root, maxWatches, callback) {
+  return sync(() => native.libraryWatchStart(root, maxWatches, callback));
 }
 
 /** The plugin store and registries of a server (`registry.js`). */

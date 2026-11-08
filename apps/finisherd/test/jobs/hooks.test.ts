@@ -45,6 +45,35 @@ describe("kind hooks", () => {
     expect((v.result as { files: Array<{ name: string; bytes: number }> }).files[0]).toMatchObject({ name: "in/data.txt", bytes: 5 });
   });
 
+  test("prepare_each_attempt_runs_before_every_attempt", async () => {
+    const clock = await testClock();
+    const seen: number[] = [];
+    const t = await testEngine({
+      clock: clock.clock,
+      testKinds: {
+        overrides: {
+          "test.files": {
+            prepareEachAttempt: true,
+            prepare: (ctx) =>
+              Effect.promise(async () => {
+                seen.push(ctx.attempt);
+                const fh = await ctx.open("in/data.txt", "w");
+                await fh.writeFile(`attempt ${ctx.attempt}\n`);
+                await fh.close();
+                return { extra: { attempt: ctx.attempt } };
+              }),
+          },
+        },
+      },
+    });
+    const v = await waitThroughBackoff(t, clock, (await t.submit("test.files", { failOnAttempt: 1 })).id);
+    expect(v.state).toBe("succeeded");
+    expect(seen).toEqual([1, 2]);
+    expect((t.jobs.row(v.id) as JobRow).extra).toEqual({ attempt: 2 });
+    // Rewritten, not appended: attempt 2's input is whole.
+    expect((v.result as { files: Array<{ name: string; bytes: number }> }).files[0]).toMatchObject({ name: "in/data.txt", bytes: 10 });
+  });
+
   test("prepare_failure_fails_the_job_without_a_process", async () => {
     const t = await testEngine({
       testKinds: { overrides: { "test.files": { prepare: () => Effect.fail(new FinError({ code: "PREP_BAD", message: "no", details: {} })) } } },

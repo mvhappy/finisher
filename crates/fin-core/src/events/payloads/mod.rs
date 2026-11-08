@@ -24,6 +24,7 @@ pub mod errors;
 pub mod fonts;
 pub mod jobs;
 pub mod journal;
+pub mod library;
 pub mod log;
 pub mod media;
 pub mod plugin;
@@ -45,6 +46,7 @@ pub use jobs::{
     ExitReason, JobDone, JobOutcome, JobPriority, ProcessHelperKind, ProcessRole, WorkerExit,
 };
 pub use journal::JournalDropped;
+pub use library::{LibraryScan, LibraryStorageName, ScanTrigger};
 pub use log::{CommitOutcome, CommitRecord, IntentOmitted, LogCommit};
 pub use media::{
     AdapterType, BackendEntry, CodecEntry, CopyPath, GpuEntry, JobMedia, MediaCapabilitiesEvent,
@@ -140,6 +142,7 @@ approx_fixed!(10 =>
     PanicThread, PanicWhere, FetchOutcome, CommitOutcome, CommitRecord, IntentOmitted,
     Arch, BuildProfile, OsFamily, StorageMode,
     JobOutcome, JobPriority, ProcessRole, ProcessHelperKind, ExitReason,
+    LibraryStorageName, ScanTrigger,
     PluginOutcome, PluginSourceName, PluginKindName, RiskName,
 );
 

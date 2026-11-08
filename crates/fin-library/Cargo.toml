@@ -11,6 +11,8 @@ repository.workspace = true
 test-hooks = []
 
 [dependencies]
+# `CoreError`: what `asset.probe` of a library file answers (`asset`).
+fin-core = { path = "../fin-core" }
 # The throttle of a probe or hash: `ReadBudget` (Decision 36).
 fin-jobs = { path = "../fin-jobs" }
 # `probe_reader` and `PROBE_VERSION` (Decision 35); fin-probe never opens a library file itself.

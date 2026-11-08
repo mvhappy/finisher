@@ -217,6 +217,22 @@ const VALIDATION_CODES: &[&str] = &[
     "PLUGIN_ALREADY_INSTALLED",
     "PLUGIN_DOWNGRADE_REFUSED",
     "PLUGIN_BUNDLED",
+    // Libraries (sub-project 5D Decision 51): a root that cannot be a library, one that
+    // overlaps another, a library or name the server does not know or already has, a file
+    // or a path the catalog cannot answer (`details.fileIds` for an ambiguous one), a search
+    // cursor that ran out or never was, a query the search refuses, a library that opens
+    // nothing, two names the volume folds into one key (a warning).
+    "LIBRARY_ROOT_INVALID",
+    "LIBRARY_OVERLAP",
+    "LIBRARY_NOT_FOUND",
+    "LIBRARY_NAME_TAKEN",
+    "FILE_NOT_FOUND",
+    "PATH_AMBIGUOUS",
+    "CURSOR_EXPIRED",
+    "CURSOR_INVALID",
+    "SEARCH_QUERY_INVALID",
+    "LIBRARY_METADATA_ONLY",
+    "NAME_COLLISION",
 ];
 
 /// Codes that mean "the project moved under you; read it again and retry" (exit 4).
@@ -249,6 +265,10 @@ const CONFLICT_CODES: &[&str] = &[
     // of Tasks 8–9, L4): the server's state refuses it, not the caller (only the owner mints),
     // and waiting changes nothing: revoke some, then mint again. A conflict, not exit 5.
     "CREDENTIAL_LIMIT",
+    // Libraries (5D): a file whose data is not on this machine (a placeholder; `hydrate` is
+    // the owner's call) and one that differs from its catalogued row (rescan, then retry).
+    "FILE_CLOUD_ONLY",
+    "FILE_CHANGED",
 ];
 
 /// Codes of a job that ended without succeeding (exit 4, 5C-1 Decision 41): its outcome, and
@@ -346,6 +366,25 @@ const UNAVAILABLE_CODES: &[&str] = &[
     "PLUGIN_RUNTIME_UNAVAILABLE",
     "TOO_MANY_PLANS",
     "TOO_MANY_SUGGESTIONS",
+    // Libraries (5D Decision 51): a library offline or paused, a root that cannot be read, a
+    // catalog newer than this build or unusable, and the reasons and warnings a status shows
+    // (`library.status`): wait, or the owner acts, then retry.
+    "LIBRARY_OFFLINE",
+    "LIBRARY_PAUSED",
+    "LIBRARY_ROOT_UNREADABLE",
+    "CATALOG_TOO_NEW",
+    "CATALOG_UNAVAILABLE",
+    "CATALOG_NOT_OPEN",
+    "ROOT_UNMOUNTED",
+    "ROOT_VOLUME_CHANGED",
+    "ROOT_EMPTY_SUSPECT",
+    "ROOT_TIMEOUT",
+    "ROOT_UNREACHABLE",
+    "DIR_EMPTY_SUSPECT",
+    "WATCH_DEGRADED",
+    "WATCH_OVERFLOW",
+    "WATCH_ERROR",
+    "ENUMERATION_FALLBACK",
 ];
 
 /// The one place error codes become exit codes.

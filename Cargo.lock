@@ -821,6 +821,7 @@ version = "0.0.0"
 dependencies = [
  "base64 0.23.1",
  "blake3",
+ "fin-core",
  "fin-jobs",
  "fin-library",
  "fin-probe",

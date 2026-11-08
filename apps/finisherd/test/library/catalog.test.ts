@@ -182,7 +182,7 @@ describe("batch files", () => {
         })),
       ),
     );
-    expect(probed).toEqual({ updated: 2, stale: 0, moved: [] });
+    expect(probed).toEqual({ updated: 2, stale: 0, moved: [], probed: ids.map((fileId, i) => ({ fileId, fp: `fp1:${i}` })) });
     const second = { seq: 2, entries: [entry([], "a.mov", { size: 11 }), entry([], "b.mov", { size: 20 })], dirsDone: [done([], 2)] };
     expect(await run(c.indexer.applyBatchFile(lib, writeBatch(s.outDir, [second]), applied(2)))).toMatchObject({ changed: 1, seen: 1 });
     const rows = (await run(c.reader.files(lib, { limit: 10 }))).files;
@@ -193,7 +193,7 @@ describe("batch files", () => {
     expect(rows[1]?.probe).toEqual({ kind: "media", fingerprint: "fp1:1", size: 20, media: { duration: "1" } });
     // A probe of the old size lands nowhere.
     const late = await run(c.indexer.applyProbed(lib, [{ fileId: ids[0]!, size: 10, mtimeNs: "1700000000000000000", fp: "fp1:old", probeVersion: 1, state: "present" }]));
-    expect(late).toEqual({ updated: 0, stale: 1, moved: [] });
+    expect(late).toEqual({ updated: 0, stale: 1, moved: [], probed: [] });
     expect((await run(c.reader.lookup(lib, { fingerprints: ["fp1:1", "fp1:old"] }))).matches.map((m) => m.key)).toEqual(["fp1:1"]);
   });
 

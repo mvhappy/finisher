@@ -35,6 +35,9 @@ import "./jobs/store.ts";
 import { JobEventSinkTag } from "./jobs/events.ts";
 import { journalSink } from "./jobs/journal-sink.ts";
 import { JobEngineTag, type JobEngineOptions, layerJobEngine } from "./jobs/layer.ts";
+import { LibrariesTag } from "./library/api.ts";
+import { CatalogsTag, layerCatalogs } from "./library/catalog/client.ts";
+import { LibraryServiceTag, librariesHolding, libraryWiring } from "./library/layer.ts";
 import { layerPlugins } from "./plugins/registries.ts";
 import { layerProjectRegistry, ProjectRegistry, type RegistryOptions } from "./projects.ts";
 import { registerMediaKinds } from "./jobs/kinds/media.look.ts";
@@ -82,31 +85,51 @@ export const serve = ({ serverData, onReady, registry, fonts, diagnostics: diagn
       const tickets = yield* makeTickets();
       // The journal opens under the settings already read, before any transport listens.
       const diagnostics = yield* makeDiagnostics(serverData, diagnosticsOptions);
+      const runLog = Effect.runForkWith(yield* Effect.context<never>()); // the server's (stderr) logger
+      const logSink = (level: "debug" | "warning", message: string) => void runLog(level === "debug" ? Effect.logDebug(message) : Effect.logWarning(message));
+      // 5D's catalog threads before the job engine (library jobs' hooks call the indexer until the
+      // engine stops them), the library service after it, so it closes first.
+      const jobsRoot = join(serverData, "jobs");
+      const catalogs = Context.get(
+        yield* Layer.build(layerCatalogs({ serverData, jobsRoot, onFatal: (e) => logSink("warning", `library catalogs: a thread died (${e.code})`) })),
+        CatalogsTag,
+      );
+      const libraries = libraryWiring({
+        serverData, jobsRoot, catalogs, control: Context.get(control, ControlStoreTag), audit: Context.get(control, AuditTag), journal: diagnostics.journal, log: logSink,
+      });
       // The job engine (5C-1) after the control store and the journal, so it closes before them
       // (its `close` stops every worker); `<server-data>/jobs/` is made private. Its events go
       // to the journal (D34).
-      const runLog = Effect.runForkWith(yield* Effect.context<never>()); // the server's (stderr) logger
-      const logSink = (level: "debug" | "warning", message: string) => void runLog(level === "debug" ? Effect.logDebug(message) : Effect.logWarning(message));
       // The project registry first: the `media.look` kind reads from it (its engine writes a
-      // job's inputs), and it closes after the job engine.
-      const registryContext = yield* Layer.build(layerProjectRegistry(serverData, registry));
+      // job's inputs), and it closes after the job engine. An open project holds the libraries
+      // its assets live in (5D): the library service starts after the engine, so the hook is
+      // bound once it has; a project opened before that holds none.
+      let libraryHold: ((paths: ReadonlyArray<string>) => { release(): void }) | undefined;
+      const registryContext = yield* Layer.build(
+        layerProjectRegistry(serverData, { ...registry, libraryUse: (paths) => libraryHold?.(paths) ?? { release: () => {} } }),
+      );
       const projects = Context.get(registryContext, ProjectRegistry);
+      const register = (r: Parameters<typeof libraries.register>[0]) => {
+        registerMediaKinds(r, { serverData, projects });
+        jobOptions?.register?.(r);
+        libraries.register(r);
+      };
       const jobsContext = yield* Layer.build(
-        layerJobEngine(serverData, {
-          diagnostics: () => diagnostics.enabled(),
-          ...jobOptions,
-          register: (r) => {
-            registerMediaKinds(r, { serverData, projects });
-            jobOptions?.register?.(r);
-          },
-        }).pipe(
+        layerJobEngine(serverData, { diagnostics: () => diagnostics.enabled(), ...jobOptions, register }).pipe(
           Layer.provide(Layer.mergeAll(Layer.succeedContext(control), Layer.succeed(JobEventSinkTag, journalSink(diagnostics.journal, logSink)))),
         ),
       );
-      const caps = Context.get(jobsContext, JobEngineTag).workers().caps;
+      const engine = Context.get(jobsContext, JobEngineTag);
+      const caps = engine.workers().caps;
       yield* Effect.logInfo(
         `finisherd job engine: killTree=${caps.killTree} watchdog=${caps.watchdog} cgroupMemory=${caps.cgroupMemory} leafLimits=${caps.leafLimits} sandbox=${caps.sandbox} sandboxed=${caps.sandboxed}`,
       );
+
+      const library = yield* Effect.acquireRelease(
+        Effect.tryPromise({ try: () => libraries.start(engine), catch: startFailure }),
+        (s) => Effect.sync(() => s.close()),
+      );
+      libraryHold = (paths) => library.use(librariesHolding(library.registry, paths));
 
       const audit = Context.get(control, AuditTag);
       // Windows: the native pipe listener (Task 11); a client of another user is refused
@@ -218,6 +241,8 @@ export const serve = ({ serverData, onReady, registry, fonts, diagnostics: diagn
               Layer.succeed(Diagnostics, diagnostics),
               Layer.succeedContext(control),
               Layer.succeedContext(jobsContext),
+              Layer.succeed(LibrariesTag, library),
+              Layer.succeed(LibraryServiceTag, library),
               Layer.succeed(KeysTag, keys),
               Layer.succeed(HandshakeTag, handshake),
               Layer.succeed(CredentialsTag, credentials),

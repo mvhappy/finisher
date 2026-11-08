@@ -51,6 +51,14 @@ async function startOf(job: string): Promise<number> {
 
 const batch = (entries: ScanEntry[], dirsDone: ScanBatch["dirsDone"]): ScanBatch[] => [{ seq: 1, entries, dirsDone }];
 
+/** One batch file of `job` (its own `out/`), `now` advanced first. */
+function writeBatchOf(job: string, entries: ScanEntry[], dirsDone: ScanBatch["dirsDone"]): string {
+  now += 1000;
+  const out = join(s.jobsRoot, job, "out");
+  mkdirSync(out, { recursive: true });
+  return writeBatch(out, batch(entries, dirsDone));
+}
+
 /** The catalog's file rows by display path (`dir/name`). */
 function rows(): Record<string, Record<string, unknown>> {
   const db = new DatabaseSync(catalogPath(s.serverData, lib), { readOnly: true });
@@ -155,6 +163,32 @@ describe("listings", () => {
     expect(dirRow("")).toMatchObject({ listedGen: 1 });
   });
 
+  test("root_drop_suspect_after_an_accept_marks_nothing", async () => {
+    // Four top-level directories, each with a file.
+    const top = ["A", "B", "C", "D"];
+    await apply("s1", batch([...top.map((d) => dirEntry([], d)), ...top.map((d) => entry([d], "x.mov"))], [done([], 4), ...top.map((d) => done([d], 1))]));
+    await run(c.indexer.setDropGuard(lib, true));
+    const before = rows();
+    // A root listing that keeps only A (three of four gone): refused, nothing marked.
+    expect(await failCode(c.indexer.applyBatchFile(lib, writeBatchOf("s2", [dirEntry([], "A")], [done([], 1)]), { gen: 2, startedAt: await startOf("s2") }))).toBe(
+      "ROOT_DROP_SUSPECT",
+    );
+    expect(rows()).toEqual(before);
+    // The guard survives a restart.
+    await c.shutdown();
+    c = await threads(s, { clock: () => now });
+    await run(c.indexer.open(lib));
+    expect(await failCode(c.indexer.applyBatchFile(lib, writeBatchOf("s3", [dirEntry([], "A")], [done([], 1)]), { gen: 2, startedAt: await startOf("s3") }))).toBe(
+      "ROOT_DROP_SUSPECT",
+    );
+    // Half gone is not more than half: it lands.
+    expect(await apply("s4", batch([dirEntry([], "A"), dirEntry([], "B")], [done([], 2)]))).toMatchObject({ missing: 2 });
+    // Without the guard (confirmed, or a full scan succeeded), a mass drop marks as usual.
+    await run(c.indexer.setDropGuard(lib, false));
+    await apply("s5", batch([dirEntry([], "Z")], [done([], 1)]));
+    expect(["A", "B", "C", "D"].map((d) => rows()[`${d}/x.mov`]?.state)).toEqual(["missing", "missing", "missing", "missing"]);
+  });
+
   test("a poll and a full scan listing one directory never undo each other", async () => {
     await seed();
     // The full scan's listing of A starts (a.mov only, b.mov deleted since), then a poll lists
@@ -242,7 +276,7 @@ describe("renames, hard links and moves", () => {
     await apply("s2", batch([entry(["A"], "x.mov"), entry(["B"], "copy.mov")], [done(["A"], 1), done(["B"], 1)]));
     const fresh = rows()["B/copy.mov"]!;
     expect(rows()["A/a.mov"]).toMatchObject({ state: "missing" });
-    expect(await run(probe(fresh.id as number, "fp1:same"))).toEqual({ updated: 1, stale: 0, moved: [{ from: fresh.id, to: old.id }] });
+    expect(await run(probe(fresh.id as number, "fp1:same"))).toEqual({ updated: 1, stale: 0, moved: [{ from: fresh.id, to: old.id }], probed: [{ fileId: old.id, fp: "fp1:same" }] });
     expect(rows()["B/copy.mov"]).toMatchObject({ id: old.id, firstSeen: old.firstSeen, state: "present", fp: "fp1:same" });
     expect(rows()["A/a.mov"]).toBeUndefined();
     // A second fingerprint of a row is no move.
@@ -526,5 +560,24 @@ describe("nested mounts (Decision 17)", () => {
     expect(dirRow("M")).toMatchObject({ state: "present", code: null });
     expect(state("M/b.mov")).toBe("present");
     expect(await apply("s7", batch([], [done(["M", "sub"], 0)]))).toMatchObject({ suspect: 1 });
+  });
+
+  test("accepting a removed mount (Task 10) clears it; its own listings then mark what is gone", async () => {
+    await apply("s1", batch([mountEntry, entry(["M"], "b.mov")], [done([], 1), done(["M"], 1, { volume })]));
+    await apply("s2", batch([dirEntry([], "M")], [done([], 1), done(["M"], 0, { complete: false, code: "ROOT_UNMOUNTED" })]));
+    expect(dirRow("M")).toMatchObject({ state: "offline", code: "ROOT_UNMOUNTED" });
+    // Naming another directory accepts nothing.
+    expect((await run(c.indexer.acceptUnmounted(lib, [rel("X")]))).dirs).toEqual([]);
+    expect((await run(c.indexer.acceptUnmounted(lib))).dirs).toEqual([rel("M")]);
+    // The walker now knows a plain directory: no mount root, no volume to compare.
+    const m = (await known(1)).find((l) => (l.dir as { components: string[] }).components.length === 1)!;
+    expect(m.mountRoot).toBe(false);
+    expect(m.volume).toBeUndefined();
+    // The bare mount point lists empty: first a suspect, then another job's listing ≥ 60 s later confirms.
+    expect(await apply("s3", batch([], [done(["M"], 0)]))).toMatchObject({ missing: 0 });
+    now += 61_000;
+    await apply("s4", batch([], [done(["M"], 0)]));
+    expect(state("M/b.mov")).toBe("missing");
+    expect((await run(c.indexer.acceptUnmounted(lib))).dirs).toEqual([]);
   });
 });

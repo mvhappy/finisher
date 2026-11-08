@@ -40,8 +40,18 @@ export interface KindSpec<P = unknown, R = unknown> {
   readonly helpers?: OrFn<P, ReadonlyArray<HelperSpec>>;
   /** Per group (Decision 20). */
   readonly memory?: OrFn<P, MemoryRule>;
-  /** Bounded by `hookTimeoutS`; interrupted by a stop request (9b review M3). */
+  /**
+   * Bounded by `hookTimeoutS`; interrupted by a stop request (9b review M3). Runs until it
+   * succeeded once for the job's directory, unless `prepareEachAttempt`.
+   */
   readonly prepare?: (ctx: PrepareCtx<P>) => Effect.Effect<{ readonly extra?: unknown } | void, FinError>;
+  /**
+   * `prepare` runs before every attempt (isolation runs and restarts included), not only
+   * until it first succeeded: for inputs that must be measured at the attempt's start (5D's
+   * scans take the catalog's `attemptStart` and its known directories there). It must then
+   * rewrite every file it writes (`open(name, "w")` truncates).
+   */
+  readonly prepareEachAttempt?: boolean;
   /** At least once; must be idempotent (Decision 40). */
   readonly onSucceeded?: (ctx: SucceededCtx<P, R>) => Effect.Effect<R | void, FinError>;
   readonly hookTimeoutS?: number;

@@ -5,7 +5,7 @@ import { readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
-import { libraryCanonicalRoot, libraryProbeRoot, libraryProbeStatus, testHooks } from "../index.js";
+import { libraryCanonicalRoot, libraryProbeRoot, libraryProbeStatus, libraryProbeVersion, testHooks } from "../index.js";
 
 interface Canonical {
   root: string;
@@ -146,4 +146,9 @@ describe("libraryProbeRoot", () => {
     expect((await probe(r, c.identity, 10_000)).state).toBe("online");
     expect(libraryProbeStatus().stuckProbes).toBe(stuck0);
   });
+});
+
+test("probe_version_is_exported", () => {
+  const v = libraryProbeVersion();
+  expect(Number.isInteger(v) && v >= 1).toBe(true);
 });

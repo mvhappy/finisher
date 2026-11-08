@@ -91,6 +91,29 @@ import {
 } from "./plugin-lifecycle.ts";
 import { PluginContentGetPayload, PluginContentGetSuccess } from "./plugin-content.ts";
 import {
+  LibraryAddPayload,
+  LibraryAddSuccess,
+  LibraryFilePayload,
+  LibraryFileSuccess,
+  LibraryFilesPayload,
+  LibraryFilesSuccess,
+  LibraryListSuccess,
+  LibraryLookupPayload,
+  LibraryLookupSuccess,
+  LibraryRemovePayload,
+  LibraryRemoveSuccess,
+  LibraryScanPayload,
+  LibraryScanSuccess,
+  LibrarySearchPayload,
+  LibrarySearchSuccess,
+  LibrarySetPayload,
+  LibrarySetSuccess,
+  LibraryStatusPayload,
+  LibraryStatusSuccess,
+  LibraryWatchEventSchema,
+  LibraryWatchPayload,
+} from "./library.ts";
+import {
   DiagnosticsConsentPayload,
   DiagnosticsConsentSuccess,
   DiagnosticsExportPayload,
@@ -537,4 +560,16 @@ export const FinRpcs = RpcGroup.make(
   Rpc.make("plugin.enable", { payload: PluginStatePayload, success: PluginStateSuccess, error: FinError }),
   Rpc.make("plugin.disable", { payload: PluginStatePayload, success: PluginStateSuccess, error: FinError }),
   Rpc.make("plugin.suggest", { payload: PluginSuggestPayload, success: PluginSuggestSuccess, error: FinError }),
+  // Libraries (sub-project 5D Task 13): the owner's folders of originals, their catalogs and search.
+  Rpc.make("library.add", { payload: LibraryAddPayload, success: LibraryAddSuccess, error: FinError }),
+  Rpc.make("library.remove", { payload: LibraryRemovePayload, success: LibraryRemoveSuccess, error: FinError }),
+  Rpc.make("library.set", { payload: LibrarySetPayload, success: LibrarySetSuccess, error: FinError }),
+  Rpc.make("library.list", { payload: Schema.Struct({}), success: LibraryListSuccess, error: FinError }),
+  Rpc.make("library.status", { payload: LibraryStatusPayload, success: LibraryStatusSuccess, error: FinError }),
+  Rpc.make("library.files", { payload: LibraryFilesPayload, success: LibraryFilesSuccess, error: FinError }),
+  Rpc.make("library.file", { payload: LibraryFilePayload, success: LibraryFileSuccess, error: FinError }),
+  Rpc.make("library.search", { payload: LibrarySearchPayload, success: LibrarySearchSuccess, error: FinError }),
+  Rpc.make("library.lookup", { payload: LibraryLookupPayload, success: LibraryLookupSuccess, error: FinError }),
+  Rpc.make("library.scan", { payload: LibraryScanPayload, success: LibraryScanSuccess, error: FinError }),
+  Rpc.make("library.watch", { payload: LibraryWatchPayload, success: LibraryWatchEventSchema, error: FinError, stream: true }),
 );

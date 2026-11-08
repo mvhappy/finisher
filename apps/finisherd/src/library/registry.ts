@@ -158,7 +158,7 @@ interface DbRow {
 }
 
 const MAX_NAME = 64;
-const STAGE_NAME = /^[a-z][a-zA-Z0-9.:-]{0,63}$/;
+export const STAGE_NAME = /^[a-z][a-zA-Z0-9.:-]{0,63}$/;
 
 function invalid(field: string, why: string): FinError {
   return finError("INVALID_REQUEST", `${field}: ${why}`, { field });
@@ -314,6 +314,10 @@ function validateNew(input: NewLibrary) {
 export class Registry {
   readonly #store: ControlStore;
   readonly #serverData: string;
+  /** The server data folder (`removeLibrary` deletes a catalog below it). */
+  get serverData(): string {
+    return this.#serverData;
+  }
   readonly #audit: Audit | undefined;
   readonly #tools: RootTools;
   readonly #clock: () => number;
@@ -530,6 +534,18 @@ export class Registry {
       at.lastPollAt ?? null,
       at.lastFullAt ?? null,
       id,
+    );
+  }
+
+  /**
+   * The root's volume measured now (fin-node's `libraryCanonicalRoot`), for an owner's
+   * `acceptVolume`: the root must still resolve to itself.
+   */
+  measure(row: LibraryRow): Effect.Effect<VolumeIdentity, FinError> {
+    return attempt(() => this.#tools.canonicalRoot(row.root, this.#serverData)).pipe(
+      Effect.flatMap((c) =>
+        c.rootKey === row.rootKey ? Effect.succeed(c.identity) : Effect.fail(finError("LIBRARY_ROOT_INVALID", "the folder now resolves elsewhere", { id: row.id })),
+      ),
     );
   }
 
