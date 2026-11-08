@@ -9,7 +9,7 @@ afterEach(closeTestEngines);
 
 describe("liveness through the engine", () => {
   test("hung_job_fails_worker_hung", async () => {
-    const t = await testEngine({ timing: { hungMs: 300 } });
+    const t = await testEngine({ timing: { hungMs: 1000 } });
     const v = await t.runJob("test.hang", {}, { maxAttempts: 1 });
     expect(v.state).toBe("failed");
     expect(v.error?.code).toBe("WORKER_HUNG");

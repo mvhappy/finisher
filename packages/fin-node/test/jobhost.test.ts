@@ -249,13 +249,15 @@ describe("JobHost", () => {
     for (const p of procs) await t.waitFor(isExit(p));
     lag.disable();
     for (const p of procs) expect(exitOf(t, p)).toMatchObject({ reason: "killed", kill: "cancel" });
-    // The event loop kept turning: its p99 delay (1 ms resolution included) stays small.
+    // The event loop kept turning: its p99 delay (1 ms resolution included) stays small. Beside
+    // other load the scheduler alone adds tens of ms to single turns, so the 6 ms bound is for
+    // `FIN_STRICT_TIMING=1`; otherwise 100 ms, which still catches a spawn or kill that blocks
+    // the thread (each of the 20 would show as a turn that long).
     // At least one sample every four timer periods of the run: 1 ms, or Windows' default timer
-    // granularity of about 15.6 ms (a fixed count fails there when the run is short).
+    // granularity of about 15.6 ms (a fixed count of 50 fails there when the run is short).
     const period = process.platform === "win32" ? 15.6 : 1;
     expect(lag.count).toBeGreaterThan(Math.min(50, (performance.now() - t0) / (4 * period) - 1));
-    // Windows' 15.6 ms timer period is in every sample there: 38 ms under the full suite.
-    expect(lag.percentile(99) / 1e6).toBeLessThan(strict ? 6 : process.platform === "win32" ? 60 : 25);
+    expect(lag.percentile(99) / 1e6).toBeLessThan(strict ? 6 : 100);
   });
 
   for (const [name, opts, lineBytes] of [
@@ -277,7 +279,11 @@ describe("JobHost", () => {
       // Before the JS thread takes anything: what waits for it is bounded.
       const grown = process.memoryUsage().rss - rss0;
       await t.waitFor(isResult(proc), 100_000);
-      const lines = t.seen.filter((s) => s.e.type === "stderr" && s.e.proc === proc);
+      // Stderr is its own pipe: the last lines can still be on their way when the result (stdout)
+      // arrives. They are all coming (the worker wrote them all), so wait for them with a deadline.
+      const isLine = (s: Seen) => s.e.type === "stderr" && s.e.proc === proc;
+      for (const end = Date.now() + 60_000; t.seen.filter(isLine).length < n && Date.now() < end; ) await new Promise((r) => setTimeout(r, 20));
+      const lines = t.seen.filter(isLine);
       const counter = (s: Seen) => (s.e.type === "stderr" ? Number(s.e.line.split(" ")[1]) : Number.NaN);
       // Nothing is taken while JS is blocked, so at most the bound is handed over meanwhile
       // (2 ms off each end: `Date.now` has whole milliseconds; on Windows 20 ms, since the stamp
@@ -469,7 +475,9 @@ describe("JobHost", () => {
     for (const r of await Promise.all(children)) expect(r.got).toBe(r.want);
     for (const j of jobs) await t.waitFor(isExit(j.proc));
     for (const j of jobs) {
-      expect(t.of(j.proc).some((e) => e.type === "message" && e.msg.t === "result")).toBe(true);
+      // Exits and messages travel on different queues: the result may reach JS after the exit
+      // does, so it is waited for (it is coming: the worker answered before it exited).
+      await t.waitFor(isResult(j.proc));
       expect(exitOf(t, j.proc)).toMatchObject({ reason: "exited", code: 0 });
     }
   });

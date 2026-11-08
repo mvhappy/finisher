@@ -76,7 +76,7 @@ test("reader_never_waits_for_writer", async () => {
   // Warm the reader's statements.
   for (let i = 0; i < 3; i++) await run(c.reader.search(lib, { query: "interv", limit: 50 }));
   let spinning = true;
-  const spin = run(c.indexer.exec(lib, "notes", "spin", { ms: 800 })).finally(() => {
+  const spin = run(c.indexer.exec(lib, "notes", "spin", { ms: 3000 })).finally(() => {
     spinning = false;
   });
   await new Promise((r) => setTimeout(r, 100));
@@ -88,14 +88,14 @@ test("reader_never_waits_for_writer", async () => {
     expect(hits.hits).toHaveLength(50);
   }
   expect(spinning).toBe(true);
-  // On a shared runner a scheduler hiccup can delay one or two reads: the median and the tail
-  // say whether the reader waited for the writer (it would take the whole 800 ms spin).
-  // `FIN_STRICT_TIMING=1` asks every read to be under 20 ms.
+  // A reader that waited for the writer would take the rest of the 3 s spin (2.9 s), so a
+  // read over 1 s says it did; below that the figures measure the machine (at load average 35
+  // three of ten reads took over 20 ms), so the median and the tail are generous. Every read
+  // under 20 ms is asked with `FIN_STRICT_TIMING=1`.
   const sorted = [...times].sort((a, b) => a - b);
   if (process.env.FIN_STRICT_TIMING === "1") expect(sorted.at(-1)).toBeLessThan(20);
-  expect(sorted[Math.floor(sorted.length / 2)]).toBeLessThan(20);
-  expect(times.filter((t) => t >= 20).length).toBeLessThanOrEqual(2);
-  expect(sorted.at(-1)).toBeLessThan(250);
+  expect(sorted[Math.floor(sorted.length / 2)]).toBeLessThan(100);
+  expect(sorted.at(-1)).toBeLessThan(1000);
   expect((await spin) as { n: number }).toHaveProperty("n");
 });
 

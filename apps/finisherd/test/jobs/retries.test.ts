@@ -150,7 +150,7 @@ describe("never bisected", () => {
   });
 
   test("hang_is_never_bisected", async () => {
-    const t = await testEngine({ timing: { hungMs: 300 }, testKinds: { overrides: { "test.hang": asBatch } } });
+    const t = await testEngine({ timing: { hungMs: 1000 }, testKinds: { overrides: { "test.hang": asBatch } } });
     const v = await t.runJob("test.hang", {}, { maxAttempts: 1 });
     expect(v).toMatchObject({ state: "failed", error: { code: "WORKER_HUNG" } });
     expect(t.sink.exits).toHaveLength(1);

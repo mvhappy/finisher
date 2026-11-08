@@ -46,15 +46,20 @@ fn the_actor_is_an_agent_only_with_a_session() {
     assert_eq!(actor_headers_from(Some(""), None).len(), 1);
 }
 
+// Asserts on the mapping, not on the process-wide `DISCOVERY` it feeds: other unit tests resolve
+// endpoints (which note a discovery file) on parallel threads, and would race a store and a load.
 #[test]
 fn the_discovery_file_gates_only_when_it_says_so() {
-    note_discovery(&json!({ "diagnostics": { "enabled": false } }));
-    assert_eq!(DISCOVERY.load(Ordering::Relaxed), DISABLED);
-    note_discovery(&json!({ "diagnostics": { "enabled": true } }));
-    assert_eq!(DISCOVERY.load(Ordering::Relaxed), ENABLED);
+    assert_eq!(
+        discovery_of(&json!({ "diagnostics": { "enabled": false } })),
+        DISABLED
+    );
+    assert_eq!(
+        discovery_of(&json!({ "diagnostics": { "enabled": true } })),
+        ENABLED
+    );
     // An older server wrote no `diagnostics`: send, and let the server's gate decide.
-    note_discovery(&json!({ "socket": "s" }));
-    assert_eq!(DISCOVERY.load(Ordering::Relaxed), UNKNOWN);
+    assert_eq!(discovery_of(&json!({ "socket": "s" })), UNKNOWN);
 }
 
 #[test]

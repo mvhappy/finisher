@@ -48,6 +48,8 @@ pub(crate) fn run(job: &StartJob, ctx: &mut JobCtx<'_>, served: u64) -> Result<V
         "test.hang" => {
             ctx.stop_alive_for_test();
             ctx.stop_reading_for_test();
+            // Tells the host the hang is in effect (a cancel sent before this is answered, not ridden out).
+            ctx.progress(Progress::new(0.0, ProgressUnit::Items));
             loop {
                 std::thread::sleep(Duration::from_secs(3600));
             }
@@ -230,6 +232,10 @@ fn nice() -> Option<i32> {
 
 fn warm(job: &StartJob, ctx: &mut JobCtx<'_>, served: u64) -> Result<Value, JobError> {
     let p: WarmParams = params(job)?;
+    if p.delay_ms.is_some_and(|ms| ms > 0) {
+        // The job is running (a cancel sent before this reaches a job that never started).
+        ctx.progress(Progress::new(0.0, ProgressUnit::Items));
+    }
     sleep_or_cancel(&ctx.cancel_token(), p.delay_ms.unwrap_or(0))?;
     if let Some(name) = &p.hold_file {
         // Breaks the warm contract on purpose: the file stays open past `ready`.

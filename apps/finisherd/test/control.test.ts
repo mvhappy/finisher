@@ -64,7 +64,8 @@ describe("control store", () => {
     expect(store().envId).toBe(envId);
   });
 
-  test("main_connection_never_autocheckpoints", async () => {
+  // 10k commits and the worker's truncate: well under the default 5 s test timeout alone, not at load average 20.
+  test("main_connection_never_autocheckpoints", { timeout: 60_000 }, async () => {
     const s = store({ checkpoint: { pollMs: 20, passiveMs: 60_000, idleTruncateMs: 400, walLimitBytes: 1 << 30 } });
     expect((s.db.prepare("PRAGMA wal_autocheckpoint").get() as { wal_autocheckpoint: number }).wal_autocheckpoint).toBe(0);
     s.db.exec("CREATE TABLE t (x TEXT)");
@@ -75,7 +76,7 @@ describe("control store", () => {
     const grown = wal();
     expect(grown).toBeGreaterThan(4 * 1024 * 1024);
     // The worker truncates once writes stop.
-    const deadline = Date.now() + 10_000;
+    const deadline = Date.now() + 30_000;
     while (wal() >= grown && Date.now() < deadline) await new Promise((r) => setTimeout(r, 50));
     expect(wal()).toBeLessThan(grown);
     expect((s.db.prepare("SELECT COUNT(*) AS n FROM t").get() as { n: number }).n).toBe(10_000);
@@ -249,13 +250,27 @@ describe("control store", () => {
     expect(turns).toBeGreaterThanOrEqual(4); // 5 batches of 500, 4 turns between them
   });
 
+  test("budgeted_statements_use_their_indexes", () => {
+    // The budget below is generous unless `FIN_STRICT_TIMING=1` (load adds as much as a missing
+    // index does), so what a statement that lost its index would show regardless of load is its plan:
+    // a scan of the whole table.
+    const s = store();
+    const plan = (sql: string, ...args: Array<string | number>) =>
+      s.db.prepare(`EXPLAIN QUERY PLAN ${sql}`).all(...args).map((r) => String(r.detail)).join("\n");
+    expect(plan("SELECT id FROM audit WHERE at < ? ORDER BY at LIMIT ?", 1, 500)).toMatch(/SEARCH audit USING (COVERING )?INDEX audit_at/);
+    expect(plan("SELECT id FROM audit WHERE kind = ? ORDER BY id DESC LIMIT ?", "x", 50)).toMatch(/SEARCH audit USING (COVERING )?INDEX audit_kind/);
+    expect(plan("SELECT id FROM audit WHERE id <= ? ORDER BY id LIMIT ?", 1, 500)).not.toMatch(/SCAN audit(?! USING)/);
+  });
+
   test("control_store_budget", { timeout: 120_000 }, async () => {
     // Load from other processes only adds time: the best of up to three runs per statement.
     // Under a full-suite run that load reaches a statement's tail (a 100k-row scan would move
     // the median too), so the strict p99 ≤ 5 ms is asked only with `FIN_STRICT_TIMING=1`;
-    // otherwise every median stays ≤ 1 ms and every p99 ≤ 50 ms.
+    // otherwise the bounds are generous (a median ≤ 25 ms, a p99 ≤ 250 ms: at load average 20 a
+    // median of 7 ms was seen), still far under a statement that lost its index and scans.
     const strict = process.env.FIN_STRICT_TIMING === "1";
-    const p99Bound = strict ? 5 : 50;
+    const p99Bound = strict ? 5 : 250;
+    const p50Bound = strict ? 1 : 25;
     let best: Record<string, number> = {};
     let bestP50: Record<string, number> = {};
     const min = (a: Record<string, number>, b: Record<string, number>) =>
@@ -270,7 +285,7 @@ describe("control store", () => {
       );
       if (Object.values(best).every((v) => v <= 5)) break;
     }
-    for (const [k, p50] of Object.entries(bestP50)) expect(p50, `${k} median`).toBeLessThanOrEqual(1);
+    for (const [k, p50] of Object.entries(bestP50)) expect(p50, `${k} median`).toBeLessThanOrEqual(p50Bound);
     for (const [k, p99] of Object.entries(best)) expect(p99, k).toBeLessThanOrEqual(p99Bound);
   });
 });

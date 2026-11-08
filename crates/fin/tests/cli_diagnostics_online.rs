@@ -7,13 +7,13 @@
 
 mod support;
 
-use std::ffi::OsString;
+use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 use support::console::{Console, error_code};
-use support::{Server, assert_error, fin, fin_cmd, fin_env, ok};
+use support::{Run, Server, assert_error, fin_cmd, ok};
 
 const SESSION: &str = "01ARZ3NDEKTSV4RRFFQ69G5FAV";
 const CALL: &str = "01ARZ3NDEKTSV4RRFFQ69G5FAW";
@@ -36,9 +36,24 @@ fn project(test: &str, env: Vec<(String, OsString)>) -> Option<(Server, PathBuf,
     Some((server, dir, id))
 }
 
+/// `fin` records its run within 50 ms and drops what it cannot send in time for good (polling
+/// cannot bring it back), which a loaded machine makes happen: these tests widen that budget.
+const BUDGET: (&str, &str) = ("FIN_TEST_DIAG_BUDGET_MS", "10000");
+
+fn fin_env(sd: &Path, cwd: &Path, args: &[&str], env: &[(&str, &OsStr)]) -> Run {
+    let mut all = vec![(BUDGET.0, OsStr::new(BUDGET.1))];
+    all.extend_from_slice(env);
+    support::fin_env(sd, cwd, args, &all)
+}
+
+fn fin(sd: &Path, cwd: &Path, args: &[&str]) -> Run {
+    fin_env(sd, cwd, args, &[])
+}
+
 /// Runs `fin`, returning the exit code and raw stdout (`export` prints JSONL).
 fn raw(sd: &Path, cwd: &Path, args: &[&str], env: &[(&str, &str)]) -> (i32, String) {
     let mut cmd = fin_cmd(sd, cwd, args);
+    cmd.env(BUDGET.0, BUDGET.1);
     for (k, v) in env {
         cmd.env(k, v);
     }
@@ -79,31 +94,6 @@ fn wait(sd: &Path, cwd: &Path, args: &[&str], want: impl Fn(&[Value]) -> bool) -
         }
         std::thread::sleep(Duration::from_millis(50));
     }
-}
-
-/// Runs `run` until `export args` satisfies `want`, up to 10 times. What `fin` records itself
-/// (`cli.command`, `error.panic`) is best effort within its 50 ms budget (connect, handshake,
-/// write), which a loaded machine can miss; a missed record is never sent, so waiting longer
-/// does not help.
-fn retried(
-    sd: &Path,
-    cwd: &Path,
-    args: &[&str],
-    want: impl Fn(&[Value]) -> bool,
-    run: &dyn Fn(),
-) -> Vec<Value> {
-    for _ in 0..10 {
-        run();
-        let end = Instant::now() + Duration::from_secs(3);
-        while Instant::now() < end {
-            let found = lines(sd, cwd, args);
-            if want(&found) {
-                return found;
-            }
-            std::thread::sleep(Duration::from_millis(50));
-        }
-    }
-    panic!("never recorded: {args:?}");
 }
 
 /// `fin` is not a person: each of these is `HUMAN_ONLY` (exit 7) and changes nothing.
@@ -454,17 +444,10 @@ fn export_is_redacted_for_fin_and_content_needs_a_person() {
         return;
     };
     let (sd, root) = (&server.sd, &server.root);
+    let (code, _) = raw(sd, &dir, &["status"], &[("FIN_TEST_PANIC", "1")]);
+    assert_eq!(code, 6);
     // Under training the panic's message is stored; `fin` is not a person and gets it removed.
-    let found = retried(
-        sd,
-        root,
-        &["--kind", "error.panic"],
-        |e| !e.is_empty(),
-        &|| {
-            let (code, _) = raw(sd, &dir, &["status"], &[("FIN_TEST_PANIC", "1")]);
-            assert_eq!(code, 6);
-        },
-    );
+    let found = wait(sd, root, &["--kind", "error.panic"], |e| e.len() == 1);
     assert!(found[0]["payload"].get("message").is_none(), "{}", found[0]);
     assert!(found[0]["payload"]["messageHash"].is_string());
     let r = fin(sd, root, &["diagnostics", "export", "--content"]);
@@ -933,19 +916,11 @@ fn help_schema_and_refusals_are_recorded_with_online_false() {
         return;
     };
     let (sd, root) = (&server.sd, &server.root);
-    let cli = ["--kind", "cli.command"];
-    let has = |name: &'static str| move |e: &[Value]| !commands(e, name).is_empty();
-    retried(sd, root, &cli, has("help"), &|| {
-        assert_eq!(fin(sd, root, &["help", "clip"]).code, 0)
-    });
-    retried(sd, root, &cli, has("other"), &|| {
-        assert_error(&fin(sd, root, &["clip", "insert"]), 2, "USAGE")
-    });
+    assert_eq!(fin(sd, root, &["help", "clip"]).code, 0);
+    assert_error(&fin(sd, root, &["clip", "insert"]), 2, "USAGE");
     // A refusal the client makes itself (the server was never asked), with a server running.
-    retried(sd, root, &cli, has("diagnostics.consent"), &|| {
-        let r = fin(sd, root, &["diagnostics", "consent", "training", "on"]);
-        assert_error(&r, 2, "USAGE");
-    });
+    let r = fin(sd, root, &["diagnostics", "consent", "training", "on"]);
+    assert_error(&r, 2, "USAGE");
     let found = wait(sd, root, &["--kind", "cli.command"], |e| {
         !commands(e, "help").is_empty()
             && !commands(e, "other").is_empty()

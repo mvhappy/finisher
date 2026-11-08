@@ -114,12 +114,17 @@ describe("libraryProbeRoot", () => {
     hooks().libraryProbeHang(r, true);
     const before = hooks().libraryProbeStarted(r);
     const calls = [probe(r, c.identity, 10_000), probe(r, c.identity, 10_000), probe(r, c.identity, 10_000)];
+    // The probe's thread starts when the scheduler lets it (a fixed 50 ms was not enough under
+    // load): wait for it, then give a second one (the bug) a moment to show. The count after the
+    // three callers have all been answered is the check that does not depend on timing.
+    for (const end = Date.now() + 10_000; hooks().libraryProbeStarted(r) - before < 1 && Date.now() < end; ) await new Promise((resolve) => setTimeout(resolve, 5));
     await new Promise((resolve) => setTimeout(resolve, 50));
     expect(hooks().libraryProbeStarted(r) - before).toBe(1);
     hooks().libraryProbeHang(r, false);
     // All three callers share the one measurement, each judged against its own identity.
     expect((await Promise.all(calls)).map((s) => s.state)).toEqual(["online", "online", "online"]);
     expect(hooks().libraryProbeStarted(r) - before).toBe(1);
+    // Once answered, the probe is gone: the next call measures anew.
     await probe(r, c.identity);
     expect(hooks().libraryProbeStarted(r) - before).toBe(2);
   });
