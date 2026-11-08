@@ -216,8 +216,9 @@ describe("destinations, by identity (review M1)", () => {
     for (const out of [".FINISHER/x", "a/.Finisher/b", ".finisher", join(dir, "sub", ".FiniSher")]) {
       expect(await code(out), out).toBe("EXPORT_DESTINATION");
     }
-    expect(existsSync(join(dir, ".FINISHER"))).toBe(false);
-    expect(existsSync(join(dir, "a"))).toBe(false);
+    // By name, not `existsSync`: the test's own `.finisher` answers to `.FINISHER` on a
+    // case-insensitive volume (NTFS, APFS by default).
+    expect(readdirSync(dir).sort()).toEqual([".finisher", "assets"]);
   });
 
   test.skipIf(process.platform === "win32")("a link to a protected folder or to any folder inside it is refused by identity", async () => {

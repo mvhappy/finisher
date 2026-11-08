@@ -1,6 +1,9 @@
 //! Outputs and inputs under the rules of a worker that may be hostile or still alive (plan 6A
 //! Task 11-12 review B1, B3 and L2): a copy commit never gives the destination the writer's
 //! inode, outputs are created new below no link, and inputs are written below no link.
+//! Most cases make symlinks or read inodes and are Unix-only; on Windows the helpers they share
+//! go unused.
+#![cfg_attr(not(unix), allow(unused_imports, dead_code))]
 
 use std::fs::{File, OpenOptions};
 use std::io::Write;
