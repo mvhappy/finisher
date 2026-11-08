@@ -43,7 +43,6 @@
 
 use std::io;
 use std::path::Path;
-use std::sync::mpsc;
 use std::time::Duration;
 
 use crate::source::{RawEntry, RootStat};
@@ -53,6 +52,10 @@ use crate::types::{EntryType, RootState, SampleEntry, VolumeIdentity};
 pub mod linux;
 #[cfg(target_os = "macos")]
 pub mod macos;
+mod probe;
+
+#[cfg(feature = "test-hooks")]
+pub use probe::hooks as probe_hooks;
 
 /// At most this many top-level entries are sampled.
 pub const SAMPLE_MAX: usize = 16;
@@ -72,15 +75,28 @@ pub fn key(fields: &[&[u8]]) -> String {
 
 /// A mount source without credentials: `//user:pass@server/share` → `//server/share`,
 /// `user@host:/path` → `host:/path` (SMB as macOS reports it, sshfs); a source without
-/// userinfo is returned unchanged.
+/// userinfo is returned unchanged. A password may hold `:`, `@` and `/`, so the userinfo runs
+/// to the **last** `@` before the host part:
+/// - `//…`: when the part before the first `/` holds a `:` (a password), the last `@` of the
+///   whole source (a share path holding `@` loses more than its userinfo, which is the safe
+///   way to be wrong); else the last `@` before the first `/` (`user;DOMAIN@server`);
+/// - `host:/path`: the last `@` before the first `:/`, else before the first `/`.
 pub fn strip_userinfo(source: &str) -> String {
     let (prefix, rest) = match source.strip_prefix("//") {
         Some(r) => ("//", r),
         None => ("", source),
     };
-    // The authority (where userinfo lives) ends at the first `/`; a password may hold `:`.
-    let end = rest.find('/').unwrap_or(rest.len());
-    match rest[..end].rfind('@') {
+    let first = rest.find('/').unwrap_or(rest.len());
+    let host = if !prefix.is_empty() && rest[..first].contains(':') {
+        rest.len()
+    } else if prefix.is_empty()
+        && let Some(i) = rest.find(":/")
+    {
+        i
+    } else {
+        first
+    };
+    match rest[..host].rfind('@') {
         Some(at) => format!("{prefix}{}", &rest[at + 1..]),
         None => source.to_owned(),
     }
@@ -137,11 +153,21 @@ pub fn sample_matches(stored: &[SampleEntry], now: &[SampleEntry]) -> usize {
 /// Whether a key change is confirmed harmless: the root's file id is unchanged (or unknown on
 /// either side) and at least half of the stored sample still matches.
 pub fn confirms(stored: &VolumeIdentity, now: &RootStat) -> bool {
-    let root_same = match (&stored.root_file_id, &now.root_file_id) {
-        (Some(a), Some(b)) => a == b,
+    confirmed(stored, now.root_file_id.as_deref(), &now.sample)
+}
+
+fn confirmed(stored: &VolumeIdentity, root_file_id: Option<&[u8]>, sample: &[SampleEntry]) -> bool {
+    let root_same = match (&stored.root_file_id, root_file_id) {
+        (Some(a), Some(b)) => a.as_slice() == b,
         _ => true,
     };
-    root_same && sample_matches(&stored.sample, &now.sample) * 2 >= stored.sample.len()
+    root_same && sample_matches(&stored.sample, sample) * 2 >= stored.sample.len()
+}
+
+/// Whether a nested mount's volume measured `now` is the `stored` one (Decision 17, per
+/// directory): the same key, or a different key that [`confirms`]' rule accepts.
+pub fn same_volume(stored: &VolumeIdentity, now: &VolumeIdentity) -> bool {
+    now.key == stored.key || confirmed(stored, now.root_file_id.as_deref(), &now.sample)
 }
 
 /// A root's state from its stored identity and its facts now (Decision 17). Unreachable and
@@ -205,9 +231,6 @@ pub fn identity(root: &Path) -> io::Result<VolumeIdentity> {
 
 /// The short code of an unreachable root (never a path).
 pub fn unreachable_code(e: &io::Error) -> &'static str {
-    if let Some(p) = crate::source::PartialListing::of(e) {
-        return unreachable_code(&p.error);
-    }
     #[cfg(unix)]
     if let Some(code) = e.raw_os_error() {
         match code {
@@ -234,25 +257,14 @@ pub fn unreachable_code(e: &io::Error) -> &'static str {
 
 /// A root's state now against its stored identity (Decision 17). The measurement runs on its
 /// own thread: past `timeout` (60 s for a first stat, spin-up included) the answer is
-/// `Timeout` and the thread is left to finish (a dead hard mount blocks only it).
+/// `Timeout` and the thread is left to finish (a dead hard mount blocks only it). **One
+/// measurement per root is in flight**: a call while one is pending waits on it rather than
+/// starting another, so a dead mount polled every few seconds keeps one stuck thread, not
+/// one per poll.
 pub fn root_state(root: &Path, stored: &VolumeIdentity, timeout: Duration) -> RootState {
-    let (tx, rx) = mpsc::channel();
-    let path = root.to_path_buf();
-    let spawned = std::thread::Builder::new()
-        .name("fin-library-root-stat".into())
-        .spawn(move || {
-            let _ = tx.send(root_stat(&path));
-        });
-    if spawned.is_err() {
-        return RootState::Unreachable {
-            code: "THREAD".into(),
-        };
-    }
-    match rx.recv_timeout(timeout) {
-        Ok(Ok(now)) => classify_root(stored, &now),
-        Ok(Err(e)) => RootState::Unreachable {
-            code: unreachable_code(&e).into(),
-        },
-        Err(_) => RootState::Timeout,
+    match probe::run(root, timeout) {
+        Some(Ok(now)) => classify_root(stored, &now),
+        Some(Err(code)) => RootState::Unreachable { code: code.into() },
+        None => RootState::Timeout,
     }
 }

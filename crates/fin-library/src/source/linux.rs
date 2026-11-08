@@ -13,7 +13,7 @@ use std::os::fd::{AsRawFd, IntoRawFd, OwnedFd, RawFd};
 use libc::{c_int, c_uint};
 
 use super::unix::{cname, cvt, ino_id, ns, reopen_dir, retry};
-use super::{Attrs, RawEntry, RootStat};
+use super::{Attrs, Listing, RawEntry, RootStat};
 use crate::types::EntryType;
 use crate::volume;
 
@@ -136,19 +136,16 @@ fn stat_name(dir: &OwnedFd, name: &[u8]) -> io::Result<Option<libc::statx>> {
 }
 
 /// A directory's entries; an entry that vanished between the listing and its stat is left
-/// out, any other failure fails the listing.
+/// out, one whose stat fails otherwise makes the listing partial ([`Listing::collect`]).
 /// `progress` is called after the names are read and after each entry's stat.
-pub(crate) fn list(dir: &OwnedFd, progress: &dyn Fn()) -> io::Result<Vec<RawEntry>> {
+pub(crate) fn list(dir: &OwnedFd, progress: &dyn Fn()) -> io::Result<Listing> {
     let names = names(dir)?;
     progress();
-    let mut out = Vec::with_capacity(names.len());
-    for n in names {
-        if let Some(st) = stat_name(dir, &n)? {
-            out.push(entry(n, &st));
-        }
-        progress();
-    }
-    Ok(out)
+    Listing::collect(
+        names,
+        |n| Ok(stat_name(dir, &n)?.map(|st| entry(n, &st))),
+        progress,
+    )
 }
 
 /// One entry of `dir` by name, with the listing's `statx` flags; `None` when it is gone.

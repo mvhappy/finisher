@@ -128,6 +128,7 @@ fn wire_forms_are_exact_in_javascript() {
                 complete: true,
                 code: None,
                 entries: 1,
+                volume: None,
             },
             DirDone {
                 dir: RawRel::root(),
@@ -135,6 +136,7 @@ fn wire_forms_are_exact_in_javascript() {
                 complete: false,
                 code: Some("TIMEOUT".into()),
                 entries: 0,
+                volume: None,
             },
         ],
     };
@@ -156,6 +158,7 @@ fn wire_forms_are_exact_in_javascript() {
         size: 10,
         mtime_ns: i64::MIN,
         file_id: None,
+        dev: None,
     };
     let v = serde_json::to_value(&x).unwrap();
     assert_eq!(v, json!({"size": 10, "mtimeNs": "-9223372036854775808"}));
@@ -168,6 +171,7 @@ fn expect_matches_by_size_mtime_and_file_id_when_both_have_one() {
         size: 10,
         mtime_ns: 5,
         file_id: Some(vec![1]),
+        dev: None,
     };
     assert!(x.matches(10, 5, Some(&[1])));
     assert!(x.matches(10, 5, None));
@@ -252,4 +256,20 @@ fn schemas_name_the_frozen_types() {
         defs["ScanEntry"]["properties"]["mtimeNs"]["type"],
         json!("string")
     );
+}
+
+#[test]
+fn unknown_fields_are_refused() {
+    let r = serde_json::from_value::<RawRel>(json!({"components": ["YQ=="], "extra": 1}));
+    assert!(r.is_err(), "{r:?}");
+    for j in [
+        json!({"state": "timeout", "extra": 1}),
+        json!({"state": "unmounted", "extra": 1}),
+        json!({"state": "online", "key": "k", "extra": 1}),
+        json!({"state": "unreachable", "code": "IO", "extra": 1}),
+        json!({"state": "volumeChanged", "key": "k", "extra": 1}),
+    ] {
+        let r = serde_json::from_value::<RootState>(j.clone());
+        assert!(r.is_err(), "{j} → {r:?}");
+    }
 }

@@ -11,13 +11,28 @@ use fin_library::{Expect, RawRel};
 #[cfg(target_os = "macos")]
 pub mod image;
 
-/// What the catalog would expect for the file at `path` (size, mtime, inode big-endian).
+/// What the catalog would expect for the file at `path` (size, mtime, inode big-endian, and
+/// its device as the OS's listing reports it).
 pub fn expect_of(path: &Path) -> Expect {
     let m = fs::symlink_metadata(path).unwrap();
     Expect {
         size: m.len(),
         mtime_ns: m.mtime() * 1_000_000_000 + m.mtime_nsec(),
         file_id: Some(m.ino().to_be_bytes().to_vec()),
+        dev: Some(dev_of(m.dev())),
+    }
+}
+
+/// `st_dev` as the source reports it (`ScanEntry.dev`): Linux `major:minor`, macOS decimal.
+pub fn dev_of(dev: u64) -> String {
+    #[cfg(target_os = "linux")]
+    {
+        let d = dev as libc::dev_t;
+        format!("{}:{}", libc::major(d), libc::minor(d))
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        (dev as i64 as i32).to_string()
     }
 }
 

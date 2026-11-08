@@ -206,6 +206,7 @@ fn placeholder_refused_before_open() {
         size: 10,
         mtime_ns: 1,
         file_id: None,
+        dev: None,
     };
     for name in [&b"x.mov"[..], b"o.mov", b"y.mov"] {
         for hydrate in [false, true] {

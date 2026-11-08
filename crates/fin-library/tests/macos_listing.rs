@@ -28,7 +28,7 @@ const NFC: &[u8] = "café.mov".as_bytes();
 fn list_with(p: &Path, progress: &dyn Fn()) -> Vec<RawEntry> {
     let src = NativeSource::new(p);
     let d = src.open_dir(&RawRel::root()).unwrap();
-    src.read_dir_with(&d, progress).unwrap()
+    src.read_dir_with(&d, progress).unwrap().strict().unwrap()
 }
 
 fn list(p: &Path) -> Vec<RawEntry> {
@@ -40,6 +40,7 @@ fn expect(e: &RawEntry) -> Expect {
         size: e.size,
         mtime_ns: e.mtime_ns,
         file_id: e.file_id.clone(),
+        dev: e.dev.clone(),
     }
 }
 

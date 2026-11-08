@@ -199,6 +199,13 @@ fn keys_and_sources() {
         ("//user;WORKGROUP@nas/media", "//nas/media"),
         ("//nas/media", "//nas/media"),
         ("//nas/a@b", "//nas/a@b"),
+        ("//user:pa/ss@nas/media", "//nas/media"),
+        ("//user:p@s/s@nas/media", "//nas/media"),
+        ("//user:p/a:s/s@nas/media", "//nas/media"),
+        ("//nas:445/media", "//nas:445/media"),
+        ("user:p/w@host:/srv/media", "host:/srv/media"),
+        ("user@host:/srv/a@b", "host:/srv/a@b"),
+        ("nas:/export/a@b", "nas:/export/a@b"),
         ("user@host:/srv/media", "host:/srv/media"),
         ("nas:/export/media", "nas:/export/media"),
         ("/dev/sda1", "/dev/sda1"),
@@ -221,37 +228,49 @@ fn keys_and_sources() {
     }
 }
 
-/// A partial listing's code is its first entry's error's (plan 5D M3); with the dataless
-/// policy off, macOS answers `EDEADLK` for a dataless directory: `CLOUD_ONLY` (M4).
 #[test]
-fn codes_of_partial_listings_and_dataless_refusals() {
-    use fin_library::{PartialListing, RawEntry, volume::unreachable_code};
-    use std::io;
+fn a_stuck_root_probe_is_not_repeated() {
+    use fin_library::root_state;
+    use fin_library::volume::probe_hooks;
+    use std::time::Duration;
 
-    let partial = |error: io::Error| {
-        io::Error::other(PartialListing {
-            entries: vec![RawEntry::new("a.mov", fin_library::EntryType::File, 1, 1)],
-            error,
-        })
-    };
-    let e = partial(io::Error::from(io::ErrorKind::PermissionDenied));
-    assert_eq!(unreachable_code(&e), "PERMISSION_DENIED");
-    assert_eq!(PartialListing::of(&e).unwrap().entries.len(), 1);
-    let p = PartialListing::take(e).unwrap();
-    assert_eq!(p.entries[0].name, b"a.mov");
-    assert!(PartialListing::take(io::Error::other("plain")).is_err());
-    #[cfg(unix)]
-    assert_eq!(
-        unreachable_code(&partial(io::Error::from_raw_os_error(libc::EIO))),
-        "IO"
-    );
-    #[cfg(target_os = "macos")]
-    {
-        let deadlk = io::Error::from_raw_os_error(libc::EDEADLK);
-        assert_eq!(
-            unreachable_code(&deadlk),
-            fin_library::walk::code::CLOUD_ONLY
-        );
-        assert_eq!(unreachable_code(&partial(deadlk)), "CLOUD_ONLY");
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("gone");
+    let stored = stored();
+    let short = Duration::from_millis(50);
+    let block = probe_hooks::block(&root);
+    // A dead mount: the first probe blocks, and every later call waits on it, spawning none.
+    for _ in 0..5 {
+        assert_eq!(root_state(&root, &stored, short), RootState::Timeout);
     }
+    assert_eq!(probe_hooks::started(&root), 1);
+    // The mount answers: the pending probe's answer is everyone's, then the next call probes
+    // afresh.
+    drop(block);
+    let code = |s| match s {
+        RootState::Unreachable { code } => code,
+        s => panic!("{s:?}"),
+    };
+    let long = Duration::from_secs(5);
+    assert_eq!(code(root_state(&root, &stored, long)), "NOT_FOUND");
+    assert_eq!(probe_hooks::started(&root), 1);
+    let mut n = 0;
+    while probe_hooks::started(&root) < 2 && n < 100 {
+        assert_eq!(code(root_state(&root, &stored, long)), "NOT_FOUND");
+        n += 1;
+    }
+    assert_eq!(probe_hooks::started(&root), 2);
+}
+
+/// With the dataless policy off, macOS answers `EDEADLK` for a dataless directory listed or
+/// a dataless file read: `CLOUD_ONLY` (plan 5D M4).
+#[cfg(target_os = "macos")]
+#[test]
+fn edeadlk_is_cloud_only() {
+    use fin_library::volume::unreachable_code;
+    let deadlk = std::io::Error::from_raw_os_error(libc::EDEADLK);
+    assert_eq!(
+        unreachable_code(&deadlk),
+        fin_library::walk::code::CLOUD_ONLY
+    );
 }

@@ -115,7 +115,7 @@ mod linux {
     use super::*;
     use fin_library::open::hooks::{self, Forced};
     use fin_library::source::NativeSource;
-    use fin_library::{EntryType, OpenError, RawRel, Source, open_for_read};
+    use fin_library::{EntryType, Expect, OpenError, RawRel, Source, open_for_read};
     use support::{bind, expect_of, rel, tmpfs, umount, userns};
 
     fn tree(base: &Path) -> (std::path::PathBuf, std::path::PathBuf) {
@@ -155,8 +155,8 @@ mod linux {
     }
 
     #[test]
-    fn nested_mount_reported_and_not_crossed() {
-        if !userns("linux::nested_mount_reported_and_not_crossed") {
+    fn nested_mount_reported_and_crossed() {
+        if !userns("linux::nested_mount_reported_and_crossed") {
             return;
         }
         let t = tempfile::tempdir().unwrap();
@@ -181,13 +181,57 @@ mod linux {
                 .unwrap()
                 .mount_root
         );
+        // Nested mounts are catalogued, so the opener crosses them: the handle is checked
+        // against the row's device (a bind mount shares it; another device is `Changed`). A
+        // row without a device must stay on the root's mount.
         let x = expect_of(&root.join("sub/x.mov"));
         let y = expect_of(&root.join("file.mov"));
+        let sub = entries.iter().find(|e| e.name == b"sub").unwrap();
+        assert_eq!(x.dev, sub.dev, "the row's device is the listing's");
+        // The walker catalogues the nested mount with its volume.
+        let mut dones = Vec::new();
+        fin_library::walk(
+            std::sync::Arc::new(NativeSource::new(&root)),
+            fin_library::WalkMode::Full {
+                generation: 1,
+                known: None,
+            },
+            &fin_library::WalkOpts::new(fin_library::Excludes::defaults(true)),
+            &mut |b| {
+                dones.extend(b.dirs_done);
+                Ok(())
+            },
+            &fin_library::CancelToken::new(),
+        )
+        .unwrap();
+        let done = dones.iter().find(|d| d.dir == rel(&[b"sub"])).unwrap();
+        assert!(done.complete && done.entries == 2, "{done:?}");
+        assert!(
+            done.volume.as_ref().is_some_and(|v| v.mount_root),
+            "{done:?}"
+        );
         let check = || {
-            let r = open_for_read(&root, &rel(&[b"sub", b"x.mov"]), &x, false);
-            assert!(matches!(r, Err(OpenError::Escapes)), "{r:?}");
-            let r = open_for_read(&root, &rel(&[b"file.mov"]), &y, false);
-            assert!(matches!(r, Err(OpenError::Escapes)), "{r:?}");
+            let xr = rel(&[b"sub", b"x.mov"]);
+            let yr = rel(&[b"file.mov"]);
+            let mut h = open_for_read(&root, &xr, &x, false).unwrap();
+            let mut got = Vec::new();
+            std::io::Read::read_to_end(&mut h, &mut got).unwrap();
+            assert_eq!(got, b"x");
+            assert!(open_for_read(&root, &yr, &y, false).is_ok());
+            let other = Expect {
+                dev: Some("0:0".into()),
+                ..x.clone()
+            };
+            let r = open_for_read(&root, &xr, &other, false);
+            assert!(matches!(r, Err(OpenError::Changed)), "{r:?}");
+            for (r_, e) in [(&xr, &x), (&yr, &y)] {
+                let no_dev = Expect {
+                    dev: None,
+                    ..e.clone()
+                };
+                let r = open_for_read(&root, r_, &no_dev, false);
+                assert!(matches!(r, Err(OpenError::Escapes)), "{r:?}");
+            }
         };
         check();
         for errno in [libc::ENOSYS, libc::EPERM] {
@@ -444,6 +488,7 @@ fn dataless_dir_not_descended() {
         size: f.size,
         mtime_ns: f.mtime_ns,
         file_id: f.file_id.clone(),
+        dev: f.dev.clone(),
     };
     let r = open_for_read(&dir, &RawRel(vec![b"f.bin".to_vec()]), &expect, false);
     assert!(matches!(r, Err(OpenError::CloudOnly)), "{r:?}");

@@ -2,7 +2,8 @@
 //! links, and every exclusion rule, in one place so every walk mode (Task 4) reports a
 //! listing the same way.
 //!
-//! Per entry, in raw-name order:
+//! Per entry, in raw-name order (the order stubs claim their targets in); the entries are
+//! then **sorted by their reported name**:
 //! 1. a Windows reparse point with a name-surrogate tag becomes `symlink` (Decision 8):
 //!    consumers then need one rule, "a symlink is skipped and never followed";
 //! 2. its placeholder ([`crate::placeholder::classify`]); a stub that stands for `<name>` is
@@ -24,7 +25,8 @@ use crate::reparse;
 use crate::source::RawEntry;
 use crate::types::{EntryType, ScanEntry};
 
-/// The scan entries of the listing of `dir`, sorted by raw name.
+/// The scan entries of the listing of `dir`, sorted by reported name (a stub's target, else
+/// its raw name; reported names are unique within a listing).
 pub fn entries(dir: &RawRel, mut raw: Vec<RawEntry>, excludes: &Excludes) -> Vec<ScanEntry> {
     raw.sort_by(|a, b| a.name.cmp(&b.name));
     let case_sensitive = excludes.case_sensitive();
@@ -82,5 +84,6 @@ pub fn entries(dir: &RawRel, mut raw: Vec<RawEntry>, excludes: &Excludes) -> Vec
             excluded: excluded.map(str::to_owned),
         });
     }
+    out.sort_by(|a, b| a.name.cmp(&b.name));
     out
 }

@@ -63,6 +63,7 @@ mod bench {
                         entries: d.entries,
                         listed_gen: Some(1),
                         mount_root: false,
+                        volume: d.volume,
                     });
                 }
                 Ok(())

@@ -19,7 +19,7 @@ use std::os::fd::{AsRawFd, OwnedFd};
 use libc::c_void;
 
 use super::unix::{cvt, fstat, ino_id, lstat_at, ns, reopen_dir, retry};
-use super::{Attrs, PartialListing, RawEntry, RootStat};
+use super::{Attrs, Listing, RawEntry, RootStat};
 use crate::types::EntryType;
 use crate::volume;
 
@@ -151,18 +151,10 @@ fn parse(rec: &[u8], dir_dev: i64) -> io::Result<Record> {
     }))
 }
 
-/// A directory's entries, in `getattrlistbulk` order; an entry whose attributes could not be
-/// read makes the error a [`PartialListing`] of the others.
-/// `progress` is called after each `getattrlistbulk` buffer.
-pub(crate) fn list(dir: &OwnedFd, progress: &dyn Fn()) -> io::Result<Vec<RawEntry>> {
-    match list_all(dir, progress)? {
-        (entries, None) => Ok(entries),
-        (entries, Some(error)) => Err(io::Error::other(PartialListing { entries, error })),
-    }
-}
-
-/// The readable entries and the first entry's error.
-fn list_all(dir: &OwnedFd, progress: &dyn Fn()) -> io::Result<(Vec<RawEntry>, Option<io::Error>)> {
+/// A directory's entries, in `getattrlistbulk` order. An entry whose attributes could not be
+/// read (its `ATTR_CMN_ERROR`) makes the listing partial ([`Listing::collect`]); a malformed
+/// record fails it. `progress` is called after each `getattrlistbulk` buffer.
+pub(crate) fn list(dir: &OwnedFd, progress: &dyn Fn()) -> io::Result<Listing> {
     let dir_dev = i64::from(fstat(dir.as_raw_fd())?.st_dev);
     let fresh = reopen_dir(dir)?;
     // SAFETY: `attrlist` is plain data; all-zero is valid.
@@ -173,8 +165,7 @@ fn list_all(dir: &OwnedFd, progress: &dyn Fn()) -> io::Result<(Vec<RawEntry>, Op
     al.fileattr = libc::ATTR_FILE_DATALENGTH;
     // u64 words: records are 4-byte aligned and read with byte copies.
     let mut buf = vec![0u64; BUF / 8];
-    let mut out = Vec::new();
-    let mut first_error = None;
+    let mut records = Vec::new();
     loop {
         let n = retry(|| {
             // SAFETY: `al` and `buf` are valid for the sizes passed.
@@ -199,18 +190,20 @@ fn list_all(dir: &OwnedFd, progress: &dyn Fn()) -> io::Result<(Vec<RawEntry>, Op
             let rec = bytes
                 .get(p..p + len)
                 .ok_or_else(|| bad("record past the buffer"))?;
-            match parse(rec, dir_dev)? {
-                Record::Entry(e) => out.push(e),
-                Record::Gone => {}
-                Record::Failed(e) => {
-                    first_error.get_or_insert(e);
-                }
-            }
+            records.push(parse(rec, dir_dev)?);
             p += len;
         }
         progress();
     }
-    Ok((out, first_error))
+    Listing::collect(
+        records,
+        |r| match r {
+            Record::Entry(e) => Ok(Some(e)),
+            Record::Gone => Ok(None),
+            Record::Failed(e) => Err(e),
+        },
+        progress,
+    )
 }
 
 /// One entry of `dir` by name, from `fstatat(AT_SYMLINK_NOFOLLOW)` (no listing, nothing
@@ -288,7 +281,7 @@ pub(crate) fn root_stat(fd: &OwnedFd) -> io::Result<RootStat> {
         || parent.as_ref().is_some_and(|p| p.st_dev != me.st_dev);
     // A root's identity does not depend on every entry: an unreadable one leaves the sample
     // to the others (the walker's listing of the root reports it).
-    let (entries, _) = list_all(fd, &|| {})?;
+    let entries = list(fd, &|| {})?.entries;
     Ok(RootStat {
         key: fields.key(),
         kind: fields.fstype.clone(),

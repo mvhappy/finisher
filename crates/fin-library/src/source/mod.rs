@@ -39,8 +39,8 @@ pub enum Attrs {
 /// One entry as the OS listed it. `name` is the raw component (Unix bytes; Windows UTF-16 as
 /// WTF-8, [`crate::raw::from_wide`]); `mtime_ns` is nanoseconds since the Unix epoch;
 /// `reparse_tag` is Windows' tag when `FILE_ATTRIBUTE_REPARSE_POINT` is set. An entry that
-/// vanished between the listing and its stat is left out; any other per-entry failure fails
-/// the listing.
+/// vanished between the listing and its stat is left out; any other per-entry failure makes
+/// the listing partial ([`Listing`]).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RawEntry {
     pub name: Vec<u8>,
@@ -85,51 +85,65 @@ impl RawEntry {
     }
 }
 
-/// A listing that read some entries but not all (macOS: an entry's `ATTR_CMN_ERROR` other than
-/// `ENOENT`). A source returns it as the payload of the listing's error
-/// (`io::Error::other(PartialListing { .. })`, found again with [`PartialListing::of`]) so the
-/// walker can report `entries` and close the directory `complete: false` with the code of
-/// `error` ([`crate::volume::unreachable_code`] reads through the payload).
-#[derive(Debug)]
-pub struct PartialListing {
-    /// The entries that were read, in the OS's order.
+/// A directory's listing as [`Source::read_dir_with`] reads it: the entries it could read and,
+/// when some entry could not be (its stat failed other than by the entry vanishing), the first
+/// such error. Such a listing is **partial**: the walker emits its entries and closes the
+/// directory `complete: false` (`ENTRY_UNREADABLE`), so nothing it could not read is marked
+/// missing. A source whose every entry failed fails the listing instead.
+#[derive(Debug, Default)]
+pub struct Listing {
     pub entries: Vec<RawEntry>,
-    /// The first entry's error.
-    pub error: io::Error,
+    pub unreadable: Option<io::Error>,
 }
 
-impl PartialListing {
-    /// The partial listing an error carries, if any.
-    pub fn of(e: &io::Error) -> Option<&PartialListing> {
-        e.get_ref()?.downcast_ref()
-    }
-
-    /// The partial listing an error carries, taken out of it (`Err`: the error as it was).
-    pub fn take(e: io::Error) -> Result<PartialListing, io::Error> {
-        if Self::of(&e).is_none() {
-            return Err(e);
+impl Listing {
+    /// The entries, or the first entry's error for a partial listing ([`Source::read_dir`]'s
+    /// all-or-nothing form).
+    pub fn strict(self) -> io::Result<Vec<RawEntry>> {
+        match self.unreadable {
+            Some(e) => Err(e),
+            None => Ok(self.entries),
         }
-        e.into_inner()
-            .and_then(|b| b.downcast::<PartialListing>().ok())
-            .map(|b| *b)
-            .ok_or_else(|| io::Error::other("partial listing lost"))
+    }
+
+    /// Collects a listing from its names: `stat` gives an entry, `None` for one that vanished,
+    /// or the entry's error; `progress` runs after each name. Every name failing is the
+    /// first one's error (the directory itself is likely unreadable).
+    pub fn collect<N>(
+        names: Vec<N>,
+        mut stat: impl FnMut(N) -> io::Result<Option<RawEntry>>,
+        progress: &dyn Fn(),
+    ) -> io::Result<Listing> {
+        let mut out = Listing {
+            entries: Vec::with_capacity(names.len()),
+            unreadable: None,
+        };
+        let mut failed = 0usize;
+        let total = names.len();
+        for n in names {
+            match stat(n) {
+                Ok(Some(e)) => out.entries.push(e),
+                Ok(None) => {}
+                Err(e) => {
+                    failed += 1;
+                    out.unreadable.get_or_insert(e);
+                }
+            }
+            progress();
+        }
+        match out.unreadable {
+            Some(e) if failed == total => Err(e),
+            _ => Ok(out),
+        }
     }
 }
 
-impl fmt::Display for PartialListing {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "listing incomplete after {} entries: {}",
-            self.entries.len(),
-            self.error
-        )
-    }
-}
-
-impl std::error::Error for PartialListing {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        Some(&self.error)
+impl From<Vec<RawEntry>> for Listing {
+    fn from(entries: Vec<RawEntry>) -> Self {
+        Self {
+            entries,
+            unreadable: None,
+        }
     }
 }
 
@@ -228,15 +242,17 @@ pub trait Source: Send + Sync {
     fn open_child(&self, parent: &DirHandle, name: &[u8]) -> io::Result<DirHandle> {
         self.open_dir(&parent.rel().join(name))
     }
-    /// Lists an open directory, in the OS's order.
+    /// Lists an open directory, in the OS's order; an entry that could not be read fails it.
     fn read_dir(&self, dir: &DirHandle) -> io::Result<Vec<RawEntry>>;
-    /// [`Source::read_dir`], calling `progress` as the listing advances (after each batch of
-    /// names and each entry's stat), so the walker's per-entry deadline (Decision 18: 30 s)
-    /// restarts on every step instead of covering a whole large directory. The default calls
-    /// `read_dir` without progress (the deadline then covers the whole call).
-    fn read_dir_with(&self, dir: &DirHandle, progress: &dyn Fn()) -> io::Result<Vec<RawEntry>> {
+    /// [`Source::read_dir`] as the walker reads it: an unreadable entry makes the listing
+    /// partial ([`Listing`]) instead of failing it, and `progress` is called as the listing
+    /// advances (after each batch of names and each entry's stat), so the walker's per-entry
+    /// deadline (Decision 18: 30 s) restarts on every step instead of covering a whole large
+    /// directory. The default calls `read_dir` without progress (the deadline then covers
+    /// the whole call).
+    fn read_dir_with(&self, dir: &DirHandle, progress: &dyn Fn()) -> io::Result<Listing> {
         let _ = progress;
-        self.read_dir(dir)
+        self.read_dir(dir).map(Listing::from)
     }
     /// The entry `name` of an open directory, stat'ed without listing it, following no link
     /// and triggering no automount; `None` when it does not exist. Polls (Task 4) re-stat

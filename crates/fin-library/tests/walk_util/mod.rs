@@ -93,6 +93,7 @@ pub fn known_from(batches: &[ScanBatch], generation: u64) -> KnownDirs {
             entries: d.entries,
             listed_gen: Some(generation),
             mount_root,
+            volume: d.volume,
         }
     }))
 }
