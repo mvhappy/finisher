@@ -126,7 +126,14 @@ fn look_no_wait_then_fin_wait_and_the_job_commands() {
         use std::os::unix::fs::PermissionsExt as _;
         std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o600)).unwrap();
     }
-    let agent_env = [("FIN_CREDENTIAL", file.as_os_str())];
+    // Under an agent credential the endpoint is FIN_SERVER alone and the project folder
+    // FIN_PROJECT_DIR (plan 7A Decisions 14b and 14c).
+    let socket = OsString::from(&server.socket);
+    let agent_env = [
+        ("FIN_CREDENTIAL", file.as_os_str()),
+        ("FIN_SERVER", socket.as_os_str()),
+        ("FIN_PROJECT_DIR", dir.as_os_str()),
+    ];
     let agent = |args: &[&str]| fin_env(sd, &dir, args, &agent_env);
     for args in [
         vec!["job", "show", &queued],
