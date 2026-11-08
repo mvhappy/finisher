@@ -25,6 +25,7 @@ fn guard_decodes_beside_the_actor() {
         WriteGuard {
             deny_branches: vec!["main".into()],
             allow_branches: Some(vec!["br2".into()]),
+            credential: None,
         }
     );
     // The actor is read as before.

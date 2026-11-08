@@ -30,6 +30,14 @@ import {
   ServerStatusSuccess,
   ServerStopSuccess,
 } from "./auth.ts";
+import {
+  CredentialListPayload,
+  CredentialListSuccess,
+  CredentialMintPayload,
+  CredentialMintSuccess,
+  CredentialRevokePayload,
+  CredentialRevokeSuccess,
+} from "./credentials.ts";
 import { FinError } from "./errors.ts";
 import {
   BranchCreatePayload,
@@ -397,6 +405,10 @@ export const FinRpcs = RpcGroup.make(
   Rpc.make("server.stop", { payload: Schema.Struct({}), success: ServerStopSuccess, error: FinError }),
   Rpc.make("auth.audit.list", { payload: AuditListPayload, success: AuditListSuccess, error: FinError }),
   Rpc.make("auth.audit.purge", { payload: AuditPurgePayload, success: AuditPurgeSuccess, error: FinError }),
+  // 5A Task 9: the owner's agent and MCP credentials.
+  Rpc.make("auth.credential.mint", { payload: CredentialMintPayload, success: CredentialMintSuccess, error: FinError }),
+  Rpc.make("auth.credential.list", { payload: CredentialListPayload, success: CredentialListSuccess, error: FinError }),
+  Rpc.make("auth.credential.revoke", { payload: CredentialRevokePayload, success: CredentialRevokeSuccess, error: FinError }),
   Rpc.make("project.create", {
     payload: ProjectCreatePayload,
     success: ProjectRefSuccess,

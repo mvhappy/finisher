@@ -4,6 +4,8 @@ import { Effect, Stream } from "effect";
 import { SERVER_VERSION } from "./config.ts";
 import { HandshakeTag, revokeSelf } from "./auth/handshake.ts";
 import { TicketsTag } from "./auth/tickets.ts";
+import { CredentialsTag } from "./auth/credentials.ts";
+import { revokeCredential } from "./auth/revoke.ts";
 import { chainOf, withChain, writeGuardOf } from "./chain/chain.ts";
 import { AuditTag } from "./control/audit.ts";
 import { ConnectionRegistryTag, ConnectionsTag } from "./connections.ts";
@@ -48,6 +50,7 @@ export const HandlersLive = FinRpcs.toLayer(
     const plugins = yield* PluginsTag;
     const tickets = yield* TicketsTag;
     const everyConnection = yield* ConnectionRegistryTag;
+    const credentials = yield* CredentialsTag;
     const admin: AdminDeps = { control: yield* ServerControlTag, audit, connections: everyConnection, journalEnabled: () => diagnostics.enabled() };
     /** The principal the chain bound to this call (`anonymous` outside it: fail closed). */
     const principalOf = (options: object) => chainOf(options)?.principal ?? connections.principalOf((options as { client: { id: number } }).client.id);
@@ -67,6 +70,7 @@ export const HandlersLive = FinRpcs.toLayer(
     const projects = {
       isOpen: registry.isOpen,
       dirOf: registry.dirOf,
+      indexedDirOf: registry.indexedDirOf,
       resolveBranch: registry.resolveBranch,
       branches: (projectId: string) => Effect.map(registry.branches(projectId, true), (r) => r.branches),
     };
@@ -131,6 +135,21 @@ export const HandlersLive = FinRpcs.toLayer(
       "server.stop": (_, options) => guard("server.stop", serverStop(admin, connections.link(options.client.id)?.afterReply)),
       "auth.audit.list": (req) => guard("auth.audit.list", auditList(admin, req)),
       "auth.audit.purge": (req, options) => guard("auth.audit.purge", auditPurge(admin, req, principalOf(options), connections.transport)),
+      // The owner's agent and MCP credentials (5A Task 9, `auth/credentials.ts`): revoking goes
+      // the one revoke path (the store, tickets, connections and streams, writes in flight).
+      "auth.credential.mint": (req, options) =>
+        guard("auth.credential.mint", Effect.try({ try: () => credentials.mint(principalOf(options), req), catch: toFinError })),
+      "auth.credential.list": ({ all }) => guard("auth.credential.list", Effect.sync(() => ({ credentials: credentials.list(all === true) }))),
+      "auth.credential.revoke": ({ id }) =>
+        guard(
+          "auth.credential.revoke",
+          Effect.sync(() => {
+            const kind = credentials.kindOf(id);
+            if (kind === undefined) return { revoked: false };
+            const deps = { audit, tickets, connections: everyConnection, revoke: (ref: { kind: "agent" | "mcp"; id: string }) => credentials.end(ref, "owner") };
+            return { revoked: revokeCredential(deps, { kind, id }, { rpc: "auth.credential.revoke", reason: "owner" }).revoked };
+          }),
+        ),
       // Paths are absolute and normalised, or `INVALID_PATH` (5A Decision 35), counted in rpc.stats.
       "project.create": ({ dir, name, rate, idemKey }) =>
         guard("project.create", Effect.flatMap(requireAbsolute("dir", dir), (d) => registry.create(d, name, rate, idemKey))),
@@ -240,6 +259,6 @@ export const HandlersLive = FinRpcs.toLayer(
           diagnostics.record({ principal: principalOf(options), connection: `${connections.transport}:${options.client.id}` }, req, options.headers),
         ),
       ...pluginHandlers({ plugins, audit, guard }),
-    }), { connections, projects, audit, timed: guard });
+    }), { connections, projects, audit, timed: guard, touch: (p) => credentials.touch(p.id) });
   }),
 );

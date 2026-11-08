@@ -96,6 +96,8 @@ export interface ProjectRegistryShape {
   /** The chain's view (5A Task 5): open here now; its folder; a branch reference's id. */
   readonly isOpen: (projectId: string) => boolean;
   readonly dirOf: (projectId: string) => string | undefined;
+  /** The folder `app.db` records for a project (where it would be reopened from). */
+  readonly indexedDirOf: (projectId: string) => string | undefined;
   readonly resolveBranch: (projectId: string, branch: string) => Effect.Effect<string, FinError>;
   /** @internal Tests only: how many live fan-out channels exist. */
   readonly hubCount: () => { ops: number; events: number };
@@ -542,6 +544,7 @@ export function makeProjectRegistry(
       ensure: (projectId) => Effect.asVoid(get(projectId)),
       isOpen: (projectId) => byId.has(projectId),
       dirOf: (projectId) => byId.get(projectId)?.dir,
+      indexedDirOf: (projectId) => (closed ? undefined : index.dirOf(projectId)),
       resolveBranch,
       evalFrame: (projectId, requested, timeline, at) =>
         Effect.flatMap(resolveBranch(projectId, requested), (branch) =>

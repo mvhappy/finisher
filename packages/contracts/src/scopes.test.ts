@@ -8,6 +8,7 @@ const OPTED_OUT: Record<string, "readOnly" | "service"> = {
   "console.challenge": "readOnly",
   "diagnostics.export": "readOnly",
   "auth.audit.list": "readOnly",
+  "auth.credential.list": "readOnly",
   "server.stop": "service",
 };
 

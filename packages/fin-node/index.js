@@ -434,6 +434,11 @@ export function makePrivateDir(path) {
   sync(() => native.makePrivateDir(path));
 }
 
+/** Ends an agent/MCP credential (`<kind>:<id>`) for every store write of this process (5A Task 9). */
+export function endCredential(credential) {
+  sync(() => native.endCredential(credential));
+}
+
 export function probe(path) {
   return call(native.probe(path));
 }

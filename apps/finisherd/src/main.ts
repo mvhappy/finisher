@@ -19,6 +19,8 @@ import {
 import { serverId } from "@finisher/fin-node";
 import { canonicalEndpoint } from "./auth/crypto.ts";
 import { Handshake, HandshakeTag } from "./auth/handshake.ts";
+import { Credentials, CredentialsTag } from "./auth/credentials.ts";
+import { sweepExpired } from "./auth/revoke.ts";
 import { KeysTag, rotateKeys } from "./auth/keys.ts";
 import { ConnectionRegistry, ConnectionRegistryTag, Connections } from "./connections.ts";
 import { AuditTag, layerAudit } from "./control/audit.ts";
@@ -40,6 +42,8 @@ export interface ServeOptions {
   readonly registry?: RegistryOptions;
   readonly fonts?: FontsOptions;
   readonly diagnostics?: DiagnosticsOptions;
+  /** Agent and MCP credentials (tests): the clock expiry reads and the sweep's period (60 s). */
+  readonly credentials?: { readonly clock?: () => number; readonly sweepMs?: number };
   /** Called once both transports listen and `finisherd.json` is written. */
   readonly onReady?: (info: ServerInfo) => void;
 }
@@ -48,7 +52,7 @@ export interface ServeOptions {
  * Runs the server until interrupted or `server.stop`; finalizers stop the transports, close
  * engines and remove `finisherd.json`.
  */
-export const serve = ({ serverData, onReady, registry, fonts, diagnostics: diagnosticsOptions }: ServeOptions) =>
+export const serve = ({ serverData, onReady, registry, fonts, diagnostics: diagnosticsOptions, credentials: credentialOptions }: ServeOptions) =>
   Effect.scoped(
     Effect.gen(function* () {
       yield* Effect.try({ try: () => ensureServerData(serverData), catch: startFailure });
@@ -102,9 +106,37 @@ export const serve = ({ serverData, onReady, registry, fonts, diagnostics: diagn
         // Each WebSocket carries its ticket's principal from its first frame (`upgrade.ts`).
         ws: everyConnection.add(new Connections("ws", () => wsEndpoint)),
       };
-      const handshake = new Handshake({ keys, envId, audit });
       // One font layer for the handlers and the plugins, which feed it the packs' catalogs.
       const fontsLayer = layerFonts(serverData, fonts);
+      // Agent and MCP credentials (5A Task 9): proved through the handshake while live; every
+      // request re-checks; expired ones are ended by the sweep, revoked ones at once.
+      const credentials = new Credentials(Context.get(control, ControlStoreTag), keys.credentialMaster, audit, credentialOptions?.clock);
+      everyConnection.useLiveness((p) => credentials.isLive(p));
+      const handshake = new Handshake({
+        keys,
+        envId,
+        audit,
+        credentials: (ref) => credentials.lookup(ref),
+        revoke: (ref) => credentials.end(ref, "self"),
+      });
+      const revokeDeps = { audit, tickets, connections: everyConnection, revoke: (ref: { kind: "agent" | "mcp"; id: string }) => credentials.end(ref, "expired") };
+      // A busy store fails one sweep, never the timer: the next one tries again.
+      const sweep = () => {
+        try {
+          sweepExpired(revokeDeps, () => credentials.expired());
+        } catch (e) {
+          process.stderr.write(`finisherd: warning: credential expiry sweep failed: ${String(e)}\n`);
+        }
+      };
+      sweep();
+      yield* Effect.acquireRelease(
+        Effect.sync(() => {
+          const timer = setInterval(sweep, credentialOptions?.sweepMs ?? 60_000);
+          timer.unref();
+          return timer;
+        }),
+        (timer) => Effect.sync(() => clearInterval(timer)),
+      );
       // `server.stop` (5A Task 8): `serve` returns, and its scope's finalizers stop everything.
       const stopped = Deferred.makeUnsafe<void>();
       const listeners = [
@@ -123,6 +155,7 @@ export const serve = ({ serverData, onReady, registry, fonts, diagnostics: diagn
               Layer.succeedContext(control),
               Layer.succeed(KeysTag, keys),
               Layer.succeed(HandshakeTag, handshake),
+              Layer.succeed(CredentialsTag, credentials),
               Layer.succeed(TicketsTag, tickets),
               Layer.succeed(ConnectionRegistryTag, everyConnection),
               Layer.succeed(ServerControlTag, serverControl),

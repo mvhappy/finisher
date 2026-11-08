@@ -281,6 +281,8 @@ const USAGE_CODES: &[&str] = &[
 const UNAVAILABLE_CODES: &[&str] = &[
     // Too many WebSocket tickets at once (5A, review of Task 6): wait and retry.
     "TICKET_LIMIT",
+    // The server holds as many live agent and MCP credentials as it keeps (5A Task 9).
+    "CREDENTIAL_LIMIT",
     "SERVER_UNAVAILABLE",
     "SERVER_RUNNING",
     "SERVER_START_FAILED",

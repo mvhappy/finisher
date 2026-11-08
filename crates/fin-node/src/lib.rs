@@ -136,6 +136,21 @@ fn now_ms() -> i64 {
         .map_or(0, |d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX))
 }
 
+/// Ends an `agent`/`mcp` credential (`"<kind>:<id>"`) for every store write of this process
+/// (sub-project 5A Task 9; `fin_store::end_credential`): a write made for it that has not
+/// committed yet is refused (`CREDENTIAL_REVOKED`); returns once the writes already past
+/// their check have committed.
+#[napi(catch_unwind)]
+pub fn end_credential(credential: String) -> Result<()> {
+    guarded(
+        || {
+            fin_store::end_credential(&credential);
+            Ok(())
+        },
+        || {},
+    )
+}
+
 /// Probes a file of any asset kind; resolves to `Probe` JSON (`{kind, duration?, video?,
 /// audio?, image?, lottie?, font?, lut?, fingerprint, size}`). Never blocks on a FIFO.
 #[napi(catch_unwind)]

@@ -464,6 +464,14 @@ export declare function checkPrivateDir(path: string): PrivateDirReport;
 export declare function makePrivateDir(path: string): void;
 
 /**
+ * Ends an `agent`/`mcp` credential (`"<kind>:<id>"`) for every store write of this process
+ * (sub-project 5A Task 9): a write whose guard names it and has not committed yet is refused
+ * with `CREDENTIAL_REVOKED` inside its transaction. Returns once every write already past that
+ * check has committed, so none lands afterwards.
+ */
+export declare function endCredential(credential: string): void;
+
+/**
  * Probes a media file (MP4/MOV/M4A/WAV), image (PNG/JPEG/WebP), SVG, dotLottie, font
  * (TTF/OTF/TTC) or `.cube` LUT; resolves to `Probe` JSON (`{ kind, duration?, video?, audio?,
  * image?, lottie?, font?, lut?, fingerprint, size }`). Never blocks: anything but a regular file

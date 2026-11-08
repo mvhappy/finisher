@@ -218,7 +218,7 @@ describe("the chain", () => {
       }
       expect(code(await h.call("tx.commit", commit("main")))).toBe("BRANCH_NOT_ALLOWED");
       // The handler gets the ids the store must re-check inside its write transaction.
-      for (const s of h.seen) expect(chainOf(s.options)?.guard).toEqual({ denyBranches: [], allowBranches: ["br3"] });
+      for (const s of h.seen) expect(chainOf(s.options)?.guard).toEqual({ denyBranches: [], allowBranches: ["br3"], credential: "agent:01agent000000000000000000a" });
     }
   });
 
@@ -324,7 +324,7 @@ describe("review of Task 5", () => {
     for (const tag of WRITE_RPCS) {
       const h = harness(limited());
       expect(code(await h.call(tag, ownWrite(tag))), tag).toBeUndefined();
-      expect(chainOf(h.seen[0]!.options)?.guard, tag).toEqual({ denyBranches: [], allowBranches: ["br5"] });
+      expect(chainOf(h.seen[0]!.options)?.guard, tag).toEqual({ denyBranches: [], allowBranches: ["br5"], credential: "agent:01agent000000000000000000a" });
     }
     // Unlimited principals: no allow-list.
     const local = harness(LOCAL);
@@ -340,7 +340,12 @@ describe("review of Task 5", () => {
     };
     expect(await die({})).toBe(true);
     expect(await die({ guard: { denyBranches: [] }, principal: limited() })).toBe(true);
-    expect(await Effect.runPromise(writeGuardOf({ guard: { denyBranches: [], allowBranches: [] }, principal: limited() }))).toEqual({ denyBranches: [], allowBranches: [] });
+    const own = { denyBranches: [], allowBranches: [], credential: "agent:01agent000000000000000000a" };
+    expect(await Effect.runPromise(writeGuardOf({ guard: own, principal: limited() }))).toEqual(own);
+    // Task 9: a credential's write names that credential, or it is a defect too.
+    expect(await die({ guard: { denyBranches: [], allowBranches: [] }, principal: limited() })).toBe(true);
+    expect(await die({ guard: { ...own, credential: "agent:01someoneelse000000000000" }, principal: limited() })).toBe(true);
+    expect(await die({ guard: { denyBranches: [], credential: "agent:x" }, principal: LOCAL })).toBe(true);
     expect(await Effect.runPromise(writeGuardOf({ guard: { denyBranches: [] }, principal: LOCAL }))).toEqual({ denyBranches: [] });
   });
 

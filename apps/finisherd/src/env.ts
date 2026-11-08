@@ -11,6 +11,11 @@ const ALLOWED_WINDOWS = ["Path", "USERPROFILE", "SYSTEMROOT", "SystemRoot", "TEM
 export interface ChildEnvExtra {
   readonly FIN_SERVER?: string | undefined;
   readonly FIN_SESSION?: string | undefined;
+  /**
+   * The path of an agent or MCP credential file (spec §4.1; arch §8.4 as amended): a path, not
+   * a secret, so it may be passed (5A Decision 34). `fin` in the child proves with it.
+   */
+  readonly FIN_CREDENTIAL?: string | undefined;
 }
 
 /** Never passed through, even if a future allow-list change would admit them. */
@@ -20,8 +25,8 @@ function denied(key: string): boolean {
 
 /**
  * Builds a child environment from the §27.7 allow-list: `PATH`, `HOME`, `LANG`, `LC_*`,
- * `TMPDIR` (plus the Windows system equivalents on win32), then `FIN_SERVER` and
- * `FIN_SESSION` from `extra`. Everything else — notably `ELECTRON_RUN_AS_NODE`,
+ * `TMPDIR` (plus the Windows system equivalents on win32), then `FIN_SERVER`, `FIN_SESSION`
+ * and `FIN_CREDENTIAL` from `extra`. Everything else — notably `ELECTRON_RUN_AS_NODE`,
  * `CLAUDECODE` and `CLAUDE_CODE_*` — is dropped.
  */
 export function childEnv(
@@ -37,5 +42,6 @@ export function childEnv(
   }
   if (extra.FIN_SERVER !== undefined) env.FIN_SERVER = extra.FIN_SERVER;
   if (extra.FIN_SESSION !== undefined) env.FIN_SESSION = extra.FIN_SESSION;
+  if (extra.FIN_CREDENTIAL !== undefined) env.FIN_CREDENTIAL = extra.FIN_CREDENTIAL;
   return env;
 }
