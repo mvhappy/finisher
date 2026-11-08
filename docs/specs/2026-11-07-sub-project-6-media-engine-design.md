@@ -368,7 +368,7 @@ The copy path stays as the fallback and is chosen automatically when an import f
 |---|---|---|
 | dav1d (VideoLAN) | AV1 decode | own minimal FFI through a small C shim, built from source at a pinned tag (arch §27.3) by `fin-dav1d-sys` with the `cc` crate (no meson or ninja), never a prebuilt download. Replaced `rav1d` after 6A-1 (as built below) |
 | SVT-AV1 | AV1 encode: proxies without a hardware encoder, every AV1 export, test fixtures | own minimal FFI, built from source at a pinned tag (arch §27.3), never a prebuilt download |
-| libvpx | VP9 decode where the OS has none | own minimal FFI, built from source at a pinned tag (decoder only) |
+| libvpx | VP9 decode where the OS has none (Linux; 6B-2, not 6B-1: 6B-1 plan Decision 16, 2026-11-08) | own minimal FFI, built from source at a pinned tag (decoder only) |
 | libopus | Opus decode/encode | own minimal FFI, built from source at a pinned tag |
 | symphonia | MP3, FLAC, ALAC, Vorbis, PCM, WAV/AIFF/Ogg/CAF readers; AAC-LC decode on Linux (decision 1) | crate, unmodified (MPL-2.0, §16.1) |
 | vo-aacenc | AAC-LC encode on Linux (decision 1; 6C) | vendored at a pinned commit under `third_party/vo-aacenc` (git submodule of Finisher's own maintained fork), own minimal FFI, built from source; dormant upstream since 2017, so Finisher owns its fixes; fed only PCM the mixer produced |
@@ -426,8 +426,8 @@ Revision 1 treated VA-API and D3D11VA like VideoToolbox. They are stateless, so 
 
 ### 7.3 Serving the client
 
-- `finisherd` serves cache entries over HTTP with range requests (`GET /media/<key>/<file>`). A request carries the connection's credential (cp §4.3); the server maps the key to the projects it serves (index, §7.2) and requires the principal's reach over one of them plus the `project.read` scope. Clients address media by key, never by path.
-- **Capability URLs** (moved here from sub-project 5, cp §1.2) for elements that cannot send headers (`<video>`, the share page later): `GET /media/cap/<token>/<file>`, where the token is an opaque random string held in memory, bound to `{key, principal, expiresAt ≤ 10 min}`, and revoked with the principal.
+- `finisherd` serves cache entries over HTTP with range requests, **only through capability URLs** (6B-1 plan Decision 13, 2026-11-08; the header-authenticated `GET /media/<key>/<file>` this section first described is dropped, because 5A removed bearer tokens from the HTTP side and a header form would need a new credential on every range request). A client calls `media.url {key, file}` over its authenticated RPC connection; the server maps the key to the projects it serves (index, §7.2) and requires the principal's reach over one of them plus the `project.read` scope. Clients address media by key, never by path.
+- **Capability URLs** (moved here from sub-project 5, cp §1.2), the one way to fetch media bytes (they also serve elements that cannot send headers, `<video>` and the share page later): `GET /media/cap/<token>/<file>`, where the token is 32 random bytes (base64url) held in memory, bound to `{key, file, principal, expiresAt ≤ 10 min}`, revoked with the principal, with `Host` and `Origin` checked as on the WebSocket upgrade.
 - The preview demuxes proxies itself (`fin-wasm` runs `fin-container`) and feeds WebCodecs; it fetches GOP-sized byte ranges ahead of the playhead.
 
 ## 8. Audio engine (`fin-audio`)
@@ -873,6 +873,7 @@ The owner answered the nine questions of revision 2 on 2026-11-07; every answer 
    - **(b) Templates:** **no built-in HEVC export template**; HEVC export only through the codec plugin.
    - **(c) Windows:** **Windows 10 is dropped; D31 becomes Windows 11 only.** Windows 10 22H2 has been out of support since 14 October 2025. The capability report states the N-edition requirement (the Media Feature Pack) and what LTSC editions lack (the Store codec extensions, HEVC and AV1) *(verify the LTSC part)*.
    - Trade-off accepted: Linux machines and Windows N machines without the Media Feature Pack export H.264 only through the plugin or fall back to AV1, which some platforms re-encode with quality loss. Counsel checks the encoder policy (6.9). Applied in §1, §6.1, §6.2, §9.2, §11.3, §13.3, §14, §16, §19.
+10. **Proxies carry video only in 6B-1 (2026-11-08, 6B-1 plan Decision 4).** Spec §7.1's Opus audio inside proxies waits for 6C (libopus, AAC decode): proxy recipe v1 is video-only MP4, and 6C adds Opus audio as proxy recipe v2, which invalidates v1 entries by key. Until then preview has no proxy audio (no client exists before 6F; the mixer uses `pcm48`, also 6C). Applied in §7.1 as a note in the 6B-1 plan; §7.1's text is amended when 6C lands.
 
 **Follow-up owner decisions (2026-11-07, later the same day; numbered F1–F4 across the specs, F1 being sub-project 7's, agent §20):**
 F3. **Proxy encoders (states the scope of decision 9).** The "OS vendors' encoders only" rule for H.264 and HEVC applies to **exports only**. Internal preview proxies (`media.proxy`), which are never distributed and never leave the cache of the user's installation, may use any hardware encoder, GPU-vendor ones included (NVENC, AMD's and Intel's MFTs, VA-API). QA renders (`media.render`) and mattes (`media.matteEncode`) follow the export rule. Counsel item 6.9 covers both halves, now worded this way. Applied in §6.1, §6.2, §7.1, §16.3.
