@@ -5711,7 +5711,8 @@ export interface Listing {
 export interface LookFrame {
   at: Rational;
   /**
-   * Relative to `out/`.
+   * Relative to `out/` in a worker's result; the frame's final absolute path in the job's
+   * stored result, once the kind's `onSucceeded` has moved it.
    */
   file: string;
   height: number;
@@ -5733,15 +5734,38 @@ export interface LookParams {
    */
   at: Rational[];
   /**
+   * The branch of the snapshot (an id, a name or `<name>#<id>`).
+   */
+  branch?: string | null;
+  /**
+   * Where the kind's `onSucceeded` moves the frames: absolute, or relative to the project
+   * folder; `workspace/shared/look/` when absent. Never inside `.finisher/` or `assets/`
+   * (`EXPORT_DESTINATION`). The worker ignores it.
+   */
+  outDir?: string | null;
+  /**
    * The stem of the files written: `out/<outName>-<i>.png`. `[A-Za-z0-9_-]`, 1 to
    * [`OUT_NAME_MAX`] characters.
    */
   outName: string;
   /**
    * One sample per time in `at` (spec §3.3: every time for `media.look`); a plan the worker
-   * evaluates differently is `PLAN_MISMATCH`.
+   * evaluates differently is `PLAN_MISMATCH`. A submitter leaves them out: the kind's
+   * `prepare` computes them from the snapshot it writes and hands them to the worker as
+   * `start.job.extra.planSamples` (and in `in/params.json`, with the rest of these params,
+   * for `--replay`).
    */
-  planSamples: PlanSample[];
+  planSamples?: PlanSample[];
+  /**
+   * The project the look is of. Only the host reads it (the kind's `dedupe` and `prepare`);
+   * the worker works from the job directory.
+   */
+  projectId?: string | null;
+  /**
+   * The branch's rev the submitter saw: part of the job's identity (`dedupe`). `prepare`
+   * snapshots the head it finds, and `in/snapshot.json` says which rev that was.
+   */
+  rev?: number | null;
   size?: Size2;
   timeline: string;
 }

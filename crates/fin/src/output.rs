@@ -70,6 +70,9 @@ const VALIDATION_CODES: &[&str] = &[
     "UNSUPPORTED_TRANSFORM",
     "MEDIA_CORRUPT",
     "MEDIA_LIMIT",
+    // A look's or export's destination is not writable or lies inside `.finisher/` or
+    // `assets/` (spec §17): the request names it.
+    "EXPORT_DESTINATION",
     "PROJECT_NOT_FOUND",
     "PROJECT_EXISTS",
     "PROJECT_INVALID",

@@ -78,5 +78,13 @@
   {
     "path": "crates/fin-node/tests/bundled.rs",
     "reason": "Reads the app's own bundled resources and temporary trees by path; not a library reader."
+  },
+  {
+    "path": "crates/fin-node/src/media/inputs.rs",
+    "reason": "Writes the job's own input files into its private job directory (never a library path)."
+  },
+  {
+    "path": "crates/fin-node/tests/media_inputs.rs",
+    "reason": "Tests build and inspect temporary trees by path; none is a library reader."
   }
 ]

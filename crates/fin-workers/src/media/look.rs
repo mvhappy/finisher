@@ -57,9 +57,17 @@ fn mismatch(t: fin_core::Rational, want: Option<&str>, got: &str) -> JobError {
 }
 
 pub fn run(job: &StartJob, ctx: &mut JobCtx<'_>, warm: &mut Warm) -> Result<Value, JobError> {
-    let params: LookParams = serde_json::from_value(job.params.clone())
+    let mut params: LookParams = serde_json::from_value(job.params.clone())
         .map_err(|e| JobError::new("JOB_PARAMS_INVALID", format!("params: {e}")))?;
     params.check().map_err(job_error)?;
+    // The kind's `prepare` computes the samples from the snapshot it writes and returns them as
+    // `extra.planSamples`; params that carry their own (replay, tests) win.
+    if params.plan_samples.is_empty()
+        && let Some(samples) = job.extra.as_ref().and_then(|e| e.get("planSamples"))
+    {
+        params.plan_samples = serde_json::from_value(samples.clone())
+            .map_err(|e| JobError::new("JOB_PARAMS_INVALID", format!("extra.planSamples: {e}")))?;
+    }
     let dir = inputs::job_dir(ctx)?;
     let snapshot: JobSnapshot = inputs::read_json(ctx, &dir, "in/snapshot.json", SNAPSHOT_CAP)?;
     let manifest: RenderManifest = inputs::read_json(ctx, &dir, "in/manifest.json", MANIFEST_CAP)?;

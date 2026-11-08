@@ -16,7 +16,7 @@ import type { Hello, JobHostExitInfo, JobHostKillReason, JobSpawnRequest } from 
 import type { FinError, JobView } from "@finisher/contracts";
 import { resolveMemoryRule } from "@finisher/fin-node";
 import { finError, toFinError } from "../errors.ts";
-import { childEnv } from "../env.ts";
+import { childEnv, passEnv } from "../env.ts";
 import { helloMismatch, sendWorkerExit } from "./attempt.ts";
 import type { Engine, WarmLease } from "./engine.ts";
 import { removeJobDir } from "./files.ts";
@@ -344,7 +344,7 @@ export class WarmPools {
         family: w.family.family,
         program: "path" in w.program ? { path: w.program.path } : { bundled: w.program.binary },
         args: [...w.program.args],
-        env: { ...childEnv(), TMPDIR: tmp, TEMP: tmp, TMP: tmp },
+        env: { ...childEnv(), ...passEnv(w.family.env), TMPDIR: tmp, TEMP: tmp, TMP: tmp },
         cwd: w.dir,
         // Its own directory, and the jobs root: the jobs it will serve are not known yet
         // (sub-project 7's sandbox narrows this per job).

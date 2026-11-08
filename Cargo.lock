@@ -861,6 +861,7 @@ dependencies = [
  "fin-plugin-api",
  "fin-probe",
  "fin-registry",
+ "fin-shm",
  "fin-store",
  "fin-testfonts",
  "fin-text",

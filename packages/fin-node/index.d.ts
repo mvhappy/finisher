@@ -22,6 +22,14 @@ export interface FinNodeError extends Error {
  * the lease; scheduling backups and compaction) until `close`. An engine garbage-collected
  * without `close` is closed (and flushed) on its worker thread.
  */
+/** The optional inputs of `Engine.prepareMediaJob`. */
+export interface PrepareMediaOptions {
+  /** The server's font cache root, recorded in the manifest. */
+  fontCache?: string | null;
+  /** The job's `LookParams` as JSON: `params.json` is these with `planSamples` filled in. */
+  paramsJson?: string | null;
+}
+
 export declare class Engine {
   private constructor();
   /**
@@ -131,6 +139,25 @@ export declare class Engine {
    * never an error, and the missing files are queued for fetching.
    */
   evalFrame(branch: string, timeline: string | null | undefined, at: string): Promise<string>;
+  /**
+   * Prepares a `media.look` job's inputs (plan 6A Task 12): evaluates the plan of `timeline` on
+   * `branch`'s head at every time of `at` (rational seconds), and writes `snapshot.json`
+   * (`JobSnapshot`), `manifest.json` (`RenderManifest`: the assets the plans reference, once
+   * each, with the facts the worker's opener checks, or `original: null` for a file that is
+   * missing; the font cache root `options.fontCache` and the project's font asset files) and,
+   * given `options.paramsJson` (the job's `LookParams`), `params.json` (the same with `planSamples` filled)
+   * into `inputDir` (the job's `in/` directory, which must exist). Resolves to
+   * `{ rev, planSamples: [{ at, blake3 }] }` as JSON: the rev snapshotted and the BLAKE3 of the
+   * plan's compact JSON (what `evalFrame` returns) at each time. Rejects as `evalFrame` does
+   * (`INVALID_RANGE` past the timeline's end, `NOT_FOUND` for an unknown timeline).
+   */
+  prepareMediaJob(
+    branch: string,
+    timeline: string,
+    at: string[],
+    inputDir: string,
+    options?: PrepareMediaOptions | null,
+  ): Promise<string>;
   /** Resolves to the `AudioPlan` JSON of `timeline` on `branch` over `[from, to)`. */
   evalAudio(branch: string, timeline: string | null | undefined, from: string, to: string): Promise<string>;
   /**
@@ -462,6 +489,16 @@ export declare function checkPrivateDir(path: string): PrivateDirReport;
  * mode 0700. Throws `SERVER_DATA_UNSAFE`.
  */
 export declare function makePrivateDir(path: string): void;
+
+/**
+ * Moves the finished file `from` (absolute, inside a job directory) to `to` (absolute; its
+ * directory must exist), replacing it: `fin_shm::commit_output` with `maxBytes` as the cap.
+ * Rejects with `SHM_REFUSED` (`details.file` is absolute, `details.reason`: `link`,
+ * `notRegular`, `hardLinked`, `overCap`, `changed`, `busy`, …) when `from` is not a plain
+ * file of the job or the arrival is not the file that was checked. Call it only once the
+ * worker can no longer write `from`.
+ */
+export declare function commitJobOutput(from: string, to: string, maxBytes: number): Promise<void>;
 
 /**
  * Probes a media file (MP4/MOV/M4A/WAV), image (PNG/JPEG/WebP), SVG, dotLottie, font

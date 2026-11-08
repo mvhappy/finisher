@@ -47,11 +47,31 @@ pub struct LookParams {
     #[schemars(with = "Size")]
     pub size: Option<Size>,
     /// One sample per time in `at` (spec §3.3: every time for `media.look`); a plan the worker
-    /// evaluates differently is `PLAN_MISMATCH`.
+    /// evaluates differently is `PLAN_MISMATCH`. A submitter leaves them out: the kind's
+    /// `prepare` computes them from the snapshot it writes and hands them to the worker as
+    /// `start.job.extra.planSamples` (and in `in/params.json`, with the rest of these params,
+    /// for `--replay`).
+    #[serde(default)]
     pub plan_samples: Vec<PlanSample>,
     /// The stem of the files written: `out/<outName>-<i>.png`. `[A-Za-z0-9_-]`, 1 to
     /// [`OUT_NAME_MAX`] characters.
     pub out_name: String,
+    /// The project the look is of. Only the host reads it (the kind's `dedupe` and `prepare`);
+    /// the worker works from the job directory.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_id: Option<String>,
+    /// The branch of the snapshot (an id, a name or `<name>#<id>`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub branch: Option<String>,
+    /// The branch's rev the submitter saw: part of the job's identity (`dedupe`). `prepare`
+    /// snapshots the head it finds, and `in/snapshot.json` says which rev that was.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rev: Option<u64>,
+    /// Where the kind's `onSucceeded` moves the frames: absolute, or relative to the project
+    /// folder; `workspace/shared/look/` when absent. Never inside `.finisher/` or `assets/`
+    /// (`EXPORT_DESTINATION`). The worker ignores it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub out_dir: Option<String>,
 }
 
 fn invalid(field: &str, message: String) -> CoreError {
@@ -109,7 +129,8 @@ impl LookParams {
 #[serde(rename_all = "camelCase")]
 pub struct LookFrame {
     pub at: Rational,
-    /// Relative to `out/`.
+    /// Relative to `out/` in a worker's result; the frame's final absolute path in the job's
+    /// stored result, once the kind's `onSucceeded` has moved it.
     pub file: String,
     pub width: u32,
     pub height: u32,
@@ -260,6 +281,10 @@ mod tests {
             size: None,
             plan_samples: vec![],
             out_name: "look".into(),
+            project_id: None,
+            branch: None,
+            rev: None,
+            out_dir: None,
         }
     }
 

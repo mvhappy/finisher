@@ -12,7 +12,7 @@ import type { FinError, HelperSpec, JobProgress, JobView, MappedFile } from "@fi
 import { resolveMemoryRule } from "@finisher/fin-node";
 import { Effect, type Fiber } from "effect";
 import { finError, toFinError } from "../errors.ts";
-import { childEnv } from "../env.ts";
+import { childEnv, passEnv } from "../env.ts";
 import { AttemptBase, type AttemptSpec, type Facts, helloMismatch, type KillReason, type Outcome, stopped } from "./attempt.ts";
 import type { JobEventSink } from "./events.ts";
 import type { RunFork } from "./calls.ts";
@@ -236,7 +236,7 @@ class ColdAttempt extends AttemptBase {
       family: family.family,
       program: "path" in program ? { path: program.path } : { bundled: program.binary },
       args: [...program.args],
-      env: { ...childEnv(), TMPDIR: dirs.tmp, TEMP: dirs.tmp, TMP: dirs.tmp },
+      env: { ...childEnv(), ...passEnv(family.env), TMPDIR: dirs.tmp, TEMP: dirs.tmp, TMP: dirs.tmp },
       cwd: dirs.job,
       // `tmp/` read-write and each mapped file at its own mode (9a review H1); not the job
       // directory itself, which holds the helpers' own directories (9b review L4).

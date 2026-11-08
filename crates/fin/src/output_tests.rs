@@ -21,6 +21,7 @@ fn exit_codes_follow_the_contract() {
         "UNSUPPORTED_TRANSFORM",
         "MEDIA_CORRUPT",
         "MEDIA_LIMIT",
+        "EXPORT_DESTINATION",
     ] {
         assert_eq!(exit_code(code), 3, "{code}");
     }

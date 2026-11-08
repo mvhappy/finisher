@@ -237,6 +237,10 @@ impl Fixture {
                 })
                 .collect(),
             out_name: "look".into(),
+            project_id: None,
+            branch: None,
+            rev: None,
+            out_dir: None,
         }
     }
 

@@ -154,6 +154,38 @@ fn a_wrong_or_missing_plan_sample_is_plan_mismatch() {
 }
 
 #[test]
+fn plan_samples_may_arrive_in_the_starts_extra() {
+    if !gpu_or_skip("plan_samples_may_arrive_in_the_starts_extra") {
+        return;
+    }
+    // A kind's `prepare` computes the samples and hands them over as `extra.planSamples`; the
+    // params the submitter wrote carry none.
+    let fx = Fixture::new();
+    let job = fx.job(None);
+    let mut p = warm_worker();
+    let mut params = fx.params(&[r("1"), r("3/2")]);
+    let samples = std::mem::take(&mut params.plan_samples);
+    let mut start = job.start(
+        "media.look",
+        serde_json::to_value(&params).unwrap(),
+        &["in/snapshot.json", "in/manifest.json", "out/"],
+    );
+    start.job.extra = Some(serde_json::json!({ "planSamples": samples, "rev": 1 }));
+    p.send(&HostMsg::Start(start.clone()));
+    assert_eq!(result(&p.drive(no_calls)).frames.len(), 2);
+    // Samples in the params win over the extra, and a wrong extra is the same mismatch.
+    start.job.extra = Some(
+        serde_json::json!({ "planSamples": [{ "at": "1", "blake3": "0".repeat(64) }, { "at": "3/2", "blake3": "0".repeat(64) }] }),
+    );
+    p.send(&HostMsg::Start(start));
+    let run = p.drive(no_calls);
+    assert_eq!(run.error().code, "PLAN_MISMATCH");
+    let mut kept = fx.params(&[r("1")]);
+    kept.project_id = Some("p1".into());
+    assert_eq!(result(&look(&mut p, &fx.job(None), &kept)).frames.len(), 1);
+}
+
+#[test]
 fn an_h264_asset_is_skipped_as_codec_unavailable() {
     if !gpu_or_skip("an_h264_asset_is_skipped_as_codec_unavailable") {
         return;

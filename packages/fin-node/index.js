@@ -156,6 +156,10 @@ export class Engine {
     return call(this.#native.fontsPlan(branch, opsJson));
   }
 
+  prepareMediaJob(branch, timeline, at, inputDir, options) {
+    return call(this.#native.prepareMediaJob(branch, timeline, at, inputDir, options ?? null));
+  }
+
   setCollect(collect) {
     return call(this.#native.setCollect(collect));
   }
@@ -440,6 +444,10 @@ export function probe(path) {
 
 export function probeBeneath(root, path) {
   return call(native.probeBeneath(root, path));
+}
+
+export function commitJobOutput(from, to, maxBytes) {
+  return call(native.commitJobOutput(from, to, maxBytes));
 }
 
 export function libraryCanonicalRoot(path, serverData, timeoutMs) {

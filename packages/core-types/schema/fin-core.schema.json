@@ -7675,7 +7675,7 @@
           "$ref": "#/$defs/Rational"
         },
         "file": {
-          "description": "Relative to `out/`.",
+          "description": "Relative to `out/` in a worker's result; the frame's final absolute path in the job's\nstored result, once the kind's `onSucceeded` has moved it.",
           "type": "string"
         },
         "height": {
@@ -7713,16 +7713,47 @@
           },
           "type": "array"
         },
+        "branch": {
+          "description": "The branch of the snapshot (an id, a name or `<name>#<id>`).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "outDir": {
+          "description": "Where the kind's `onSucceeded` moves the frames: absolute, or relative to the project\nfolder; `workspace/shared/look/` when absent. Never inside `.finisher/` or `assets/`\n(`EXPORT_DESTINATION`). The worker ignores it.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "outName": {
           "description": "The stem of the files written: `out/<outName>-<i>.png`. `[A-Za-z0-9_-]`, 1 to\n[`OUT_NAME_MAX`] characters.",
           "type": "string"
         },
         "planSamples": {
-          "description": "One sample per time in `at` (spec §3.3: every time for `media.look`); a plan the worker\nevaluates differently is `PLAN_MISMATCH`.",
+          "default": [],
+          "description": "One sample per time in `at` (spec §3.3: every time for `media.look`); a plan the worker\nevaluates differently is `PLAN_MISMATCH`. A submitter leaves them out: the kind's\n`prepare` computes them from the snapshot it writes and hands them to the worker as\n`start.job.extra.planSamples` (and in `in/params.json`, with the rest of these params,\nfor `--replay`).",
           "items": {
             "$ref": "#/$defs/PlanSample"
           },
           "type": "array"
+        },
+        "projectId": {
+          "description": "The project the look is of. Only the host reads it (the kind's `dedupe` and `prepare`);\nthe worker works from the job directory.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "rev": {
+          "description": "The branch's rev the submitter saw: part of the job's identity (`dedupe`). `prepare`\nsnapshots the head it finds, and `in/snapshot.json` says which rev that was.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
         },
         "size": {
           "$ref": "#/$defs/Size",
@@ -7735,7 +7766,6 @@
       "required": [
         "timeline",
         "at",
-        "planSamples",
         "outName"
       ],
       "type": "object"

@@ -114,6 +114,12 @@ export interface FamilySpec {
   readonly onCall?: OnCall;
   readonly diagKinds?: ReadonlyArray<string>;
   readonly pluginId?: string;
+  /**
+   * Names of variables copied from `finisherd`'s own environment into the family's processes,
+   * beside the `childEnv()` allow-list (`media`: `FIN_GPU`, which picks the adapter). A fixed
+   * list written in code; a variable that is not set is not passed.
+   */
+  readonly env?: ReadonlyArray<string>;
 }
 
 export interface HelperProgram {
