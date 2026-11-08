@@ -42,15 +42,18 @@ const FAKE_SERVER = "require('node:fs').writeFileSync(process.argv[1], String(pr
 
 function runWithFakeServer(env) {
   const dir = mkdtempSync(join(tmpdir(), "e2e-test-"));
-  const pidFile = join(dir, "pid");
-  const r = spawnSync(process.execPath, [SCRIPT, "--skip-build"], {
-    encoding: "utf8",
-    timeout: 30_000,
-    env: { ...process.env, E2E_SERVER_CMD: JSON.stringify([process.execPath, "-e", FAKE_SERVER, pidFile]), ...env },
-  });
-  const pid = Number(readFileSync(pidFile, "utf8"));
-  rmSync(dir, { recursive: true, force: true });
-  return { ...r, pid };
+  try {
+    const pidFile = join(dir, "pid");
+    const r = spawnSync(process.execPath, [SCRIPT, "--skip-build"], {
+      encoding: "utf8",
+      timeout: 30_000,
+      env: { ...process.env, E2E_SERVER_CMD: JSON.stringify([process.execPath, "-e", FAKE_SERVER, pidFile]), ...env },
+    });
+    const pid = existsSync(pidFile) ? Number(readFileSync(pidFile, "utf8")) : 0;
+    return { ...r, pid };
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 }
 
 function alive(pid) {
@@ -66,6 +69,7 @@ test("a server that never becomes ready is killed before the failure is reported
   const r = runWithFakeServer({ E2E_START_TIMEOUT_MS: "1000" });
   assert.equal(r.status, 1, r.stderr);
   assert.match(r.stderr, /e2e: FAIL: timed out waiting for finisherd\.json/);
+  assert.ok(r.pid > 0, `the fake server never started: ${r.stderr}`);
   assert.equal(alive(r.pid), false, `server pid ${r.pid} still running`);
 });
 
@@ -73,6 +77,7 @@ test("the watchdog kills the server and fails the run at the deadline", () => {
   const r = runWithFakeServer({ E2E_START_TIMEOUT_MS: "60000", E2E_DEADLINE_MS: "1500" });
   assert.equal(r.status, 1, r.stderr);
   assert.match(r.stderr, /e2e: FAIL: watchdog: the run did not finish within 1\.5s; killed finisherd/);
+  assert.ok(r.pid > 0, `the fake server never started: ${r.stderr}`);
   assert.equal(alive(r.pid), false, `server pid ${r.pid} still running`);
 });
 
