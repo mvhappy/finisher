@@ -57,7 +57,11 @@ export class World {
   readonly root: WDir = { kind: "dir", children: new Map(), unreadable: false, placeholder: false };
   #inodes = 0;
   #mtime = 1_700_000_000_000_000_000n;
-  constructor(readonly opts: WorldOptions) {}
+  readonly opts: WorldOptions;
+
+  constructor(opts: WorldOptions) {
+    this.opts = opts;
+  }
 
   newInode(size: number): Inode {
     const n = ++this.#inodes;

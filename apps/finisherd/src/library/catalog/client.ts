@@ -49,12 +49,11 @@ class Thread {
   #started = false;
   #stopping = false;
   readonly posted = { count: 0 };
+  readonly onFatal: (e: FinError) => void;
 
-  private constructor(
-    worker: Worker,
-    readonly onFatal: (e: FinError) => void,
-  ) {
+  private constructor(worker: Worker, onFatal: (e: FinError) => void) {
     this.#worker = worker;
+    this.onFatal = onFatal;
   }
 
   get dead(): FinError | undefined {
