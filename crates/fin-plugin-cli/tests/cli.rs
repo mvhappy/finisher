@@ -463,6 +463,32 @@ fn resign_timestamp_bumps_its_version() {
     assert_eq!(r.client().versions().1.unwrap(), after);
 }
 
+/// A key folder others can reach is refused with the command that fixes it (ssh-style).
+#[cfg(unix)]
+#[test]
+fn an_unprotected_key_folder_is_refused_with_a_fix() {
+    use std::os::unix::fs::PermissionsExt;
+    let r = registry();
+    std::fs::set_permissions(&r.keys, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let args = [
+        "registry",
+        "resign-timestamp",
+        &r.repo,
+        "--keys",
+        &r.keys,
+        "--expires",
+        "10",
+    ];
+    let o = r.env.run(&args);
+    assert_eq!(o.code, 3, "{}", o.stderr);
+    let e = o.err();
+    assert_eq!(e["code"], "KEY_UNPROTECTED");
+    assert_eq!(e["details"]["problems"], json!(["mode 0755"]));
+    assert_eq!(e["fix"], format!("chmod 700 '{}'", r.keys));
+    std::fs::set_permissions(&r.keys, std::fs::Permissions::from_mode(0o700)).unwrap();
+    r.env.ok(&args);
+}
+
 #[test]
 fn keys_dir_inside_registry_refused() {
     let env = Env::new();

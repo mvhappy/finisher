@@ -22,6 +22,7 @@ pub mod editor;
 pub mod error;
 pub mod package;
 pub mod plan;
+mod private;
 pub mod registry;
 pub mod schema;
 pub mod search;

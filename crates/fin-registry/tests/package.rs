@@ -561,3 +561,34 @@ fn tree_hash_changes_on_any_byte_or_mode() {
         );
     }
 }
+
+/// A source file named in NFD (what HFS+ stored and what APFS keeps as it was written) is
+/// refused by the packer on every OS, as the reader refuses it (spec §6.4): packing never
+/// renames, so the same tree packs, or is refused, alike on macOS and Linux.
+#[test]
+fn pack_refuses_nfd_source_names() {
+    let src = tempfile::tempdir().unwrap();
+    sample_tree(src.path(), false);
+    let out = tempfile::tempdir().unwrap();
+    let ok = pack(src.path(), &[], &out.path().join("ok.finpkg")).unwrap();
+    write_tree(src.path(), &[("styles/cafe\u{301}.json", b"{}")]);
+    let names: Vec<String> = std::fs::read_dir(src.path().join("styles"))
+        .unwrap()
+        .map(|e| e.unwrap().file_name().into_string().unwrap())
+        .collect();
+    assert!(
+        names.iter().any(|n| n == "cafe\u{301}.json"),
+        "the file system renamed the NFD file: {names:?}"
+    );
+    let e = pack(src.path(), &[], &out.path().join("nfd.finpkg")).unwrap_err();
+    assert_eq!(
+        (e.code, e.reason(), e.entry()),
+        (
+            "PACKAGE_UNSAFE",
+            Some("notNfc"),
+            Some("styles/cafe\u{301}.json")
+        )
+    );
+    assert_eq!(listing(out.path()), ["ok.finpkg"], "nothing written");
+    assert_eq!(ok.entries, 7);
+}
