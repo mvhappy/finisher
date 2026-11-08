@@ -134,21 +134,10 @@ pub enum Entry {
     Failed(LayerIssue),
 }
 
-/// Whether `a` and `b` are the same file (unix: device and inode; elsewhere size and mtime,
-/// the opener having checked the id against the manifest's already).
+/// Whether `a` and `b` are the same file: device and inode, or the Windows volume serial and
+/// file id (`fin_library::same_file`; size and mtime alone missed a swap there).
 fn same_file(a: &File, b: &File) -> bool {
-    let (Ok(x), Ok(y)) = (a.metadata(), b.metadata()) else {
-        return false;
-    };
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::MetadataExt;
-        x.dev() == y.dev() && x.ino() == y.ino()
-    }
-    #[cfg(not(unix))]
-    {
-        x.len() == y.len() && x.modified().ok() == y.modified().ok()
-    }
+    fin_library::same_file(a, b)
 }
 
 /// Whether the path `o` names still opens, under the manifest's checks, to the file `held`.

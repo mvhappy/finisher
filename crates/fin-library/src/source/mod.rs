@@ -32,6 +32,24 @@ pub use unix::NativeSource;
 #[cfg(windows)]
 pub use windows::NativeSource;
 
+/// Whether two open handles are the same file: device and inode on Unix; on Windows the volume
+/// serial and the 128-bit file id (`FileIdInfo`), which a file renamed over the path does not
+/// share however alike its size and mtime. A handle whose facts cannot be read is not the same.
+pub fn same_file(a: &std::fs::File, b: &std::fs::File) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let (Ok(x), Ok(y)) = (a.metadata(), b.metadata()) else {
+            return false;
+        };
+        x.dev() == y.dev() && x.ino() == y.ino()
+    }
+    #[cfg(windows)]
+    {
+        matches!((win::file_id(a), win::file_id(b)), (Ok(x), Ok(y)) if x == y)
+    }
+}
+
 /// The OS attribute word of an entry, tagged by its OS family so the pure rules
 /// ([`crate::placeholder`]) read it the same on every host.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
