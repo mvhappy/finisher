@@ -24,6 +24,7 @@ mod pipe_client;
 mod private_windows;
 mod registry;
 mod registry_edit;
+mod registry_library;
 mod registry_plugins;
 mod registry_settings;
 mod values;
@@ -50,6 +51,7 @@ use commands::history::{CheckpointArgs, CherryPickArgs, MergeArgs, RevertArgs, U
 use commands::item::ItemCmd;
 use commands::job::{JobCmd, WaitArgs};
 use commands::keyframe::KeyframeCmd;
+use commands::library::LibraryCmd;
 use commands::look::LookArgs;
 use commands::marker::MarkerCmd;
 use commands::media::{GraphicCmd, ImageCmd};
@@ -57,6 +59,7 @@ use commands::media_caps::MediaCmd;
 use commands::param::ParamCmd;
 use commands::plugin::{PluginCmd, RegistryCmd};
 use commands::project::ProjectCmd;
+use commands::search::SearchArgs;
 use commands::style::StyleCmd;
 use commands::timeline::TimelineCmd;
 use commands::track::TrackCmd;
@@ -116,6 +119,9 @@ enum Cmd {
     #[command(subcommand)]
     Job(JobCmd),
     Wait(WaitArgs),
+    #[command(subcommand)]
+    Library(LibraryCmd),
+    Search(SearchArgs),
     #[command(subcommand)]
     Media(MediaCmd),
     #[command(subcommand)]
@@ -308,6 +314,8 @@ fn run(args: Vec<OsString>) -> Result<Value, CoreError> {
         Some(Cmd::Look(a)) => commands::look::run(backend()?.as_ref(), g, &a),
         Some(Cmd::Job(c)) => commands::job::run(backend()?.as_ref(), &c),
         Some(Cmd::Wait(a)) => commands::job::wait(backend()?.as_ref(), &a),
+        Some(Cmd::Library(c)) => commands::library::run(backend()?.as_ref(), &c),
+        Some(Cmd::Search(a)) => commands::search::run(backend()?.as_ref(), &a),
         Some(Cmd::Media(c)) => commands::media_caps::run(backend()?.as_ref(), &c),
         Some(Cmd::Fonts(FontsCmd::Pin(a))) => edit(g, Edit::Font(FontEdit::Pin(a))),
         Some(Cmd::Fonts(FontsCmd::Repin(a))) => edit(g, Edit::Font(FontEdit::Repin(a))),
@@ -481,6 +489,14 @@ mod tests {
             "job pause --all",
             "job resume 01job",
             "wait 01job 01job2 --any --timeout 5",
+            "library ls",
+            "library status raw",
+            "library scan raw --full --dir clips",
+            "library files raw clips --state present --kind video --limit 5 --cursor c1",
+            "library show raw clips/a.mov",
+            "library search interview --lib raw --min-duration 90s --since 2026-11-01",
+            "library set raw --name Footage --include *.mov --poll 300 --pause",
+            "search interview --kind video --limit 5",
             "batch",
             "help clip",
             "whoami",

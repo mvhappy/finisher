@@ -71,6 +71,7 @@ export interface Harness {
   readonly watches: string[];
   readonly unwatches: string[];
   readonly dropGuards: Array<{ lib: string; on: boolean }>;
+  readonly emptyRoots: Array<{ lib: string; on: boolean }>;
   /** Jobs end before their submit answers (the submit/end race). */
   endOnSubmit: boolean;
   /** The next probe answers of a root (else `online` with its stored identity). */
@@ -103,6 +104,7 @@ export async function harness(opts: { counts?: CatalogCounts; deps?: Partial<Lib
     watches: [] as string[],
     unwatches: [] as string[],
     dropGuards: [] as Harness["dropGuards"],
+    emptyRoots: [] as Harness["emptyRoots"],
     probeAnswers: [] as RootState[],
     endOnSubmit: false,
     measured: undefined as VolumeIdentity | undefined,
@@ -186,6 +188,10 @@ export async function harness(opts: { counts?: CatalogCounts; deps?: Partial<Lib
       },
       setDropGuard: (lib: string, on: boolean) => {
         h.dropGuards.push({ lib, on });
+        return ok({ on });
+      },
+      setEmptyRootOk: (lib: string, on: boolean) => {
+        h.emptyRoots.push({ lib, on });
         return ok({ on });
       },
       close: () => ok(undefined),

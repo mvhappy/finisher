@@ -363,7 +363,7 @@ pub const COMMANDS: &[Command] = &[
 const LAST: &[&str] = &["batch", "meta"];
 
 /// Every command: the 4B ones, then the 4C edits and settings, the 8A plugin and registry
-/// commands, the 5C-2 job commands, then `batch`, `help` and `schema`.
+/// commands, the 5C-2 job commands, the 5D library commands, then `batch`, `help` and `schema`.
 pub fn commands() -> impl Iterator<Item = &'static Command> {
     let head = COMMANDS.iter().filter(|c| !LAST.contains(&c.group));
     let tail = COMMANDS.iter().filter(|c| LAST.contains(&c.group));
@@ -371,6 +371,7 @@ pub fn commands() -> impl Iterator<Item = &'static Command> {
         .chain(crate::registry_settings::SETTINGS_COMMANDS)
         .chain(crate::registry_plugins::PLUGIN_COMMANDS)
         .chain(crate::registry_plugins::JOB_COMMANDS)
+        .chain(crate::registry_library::LIBRARY_COMMANDS)
         .chain(tail)
 }
 

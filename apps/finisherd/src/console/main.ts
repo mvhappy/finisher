@@ -11,6 +11,7 @@ import { audit } from "./commands/audit.ts";
 import { auth } from "./commands/auth.ts";
 import type { CommandContext } from "./commands/context.ts";
 import { diagnostics } from "./commands/diagnostics.ts";
+import { library } from "./commands/library.ts";
 import { mcp } from "./commands/mcp.ts";
 import { project } from "./commands/project.ts";
 import { status } from "./commands/status.ts";
@@ -28,6 +29,7 @@ const COMMANDS: Record<string, (ctx: CommandContext) => Promise<number>> = {
   audit,
   diagnostics,
   project,
+  library,
   agent,
   provider,
   training,
@@ -60,6 +62,14 @@ short code, and goes ahead once you type the code back.
   agent mint --label <name> [--scope <scope>]... [--project <id>]... [--branch own|<id>]...
              [--idle <duration>] [--absolute <duration>|none] [--out <file>]
                                            a credential for an agent harness you run by hand
+  library add <dir> [--name <n>] [--storage local|network|sync] [--include <glob>]... [--exclude <glob>]...
+              [--kinds all|<kind>,...] [--poll demand|<s>] [--full daily|weekly|manual]
+              [--hydrate] [--bandwidth <MiB/s>] [--alias <path>]...
+                                           index a folder as a library and start its first scan
+  library rm <library>                     forget a library and delete its catalog (the files stay)
+  library set <library> [--hydrate on|off] [--bandwidth <MiB/s>|off] [--alias <path>]... [--no-aliases]
+              [--accept-volume] [--accept-unmounted <dir>] [--accept-empty-root]
+                                           the library settings only a person changes
   agent revoke <id>                        end a credential: its connections close now
   mcp setup --out <file> [--label <name>] [--scope <scope>]...
                                            a credential for the MCP adapter

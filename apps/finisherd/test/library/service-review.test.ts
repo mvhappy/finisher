@@ -5,7 +5,7 @@
 // A fake engine and a manual clock (`support/service.ts`).
 import type { JobView } from "@finisher/contracts";
 import { afterEach, describe, expect, test } from "vitest";
-import { acceptUnmounted, acceptVolume, scanLibrary } from "../../src/library/admin.ts";
+import { acceptEmptyRoot, acceptUnmounted, acceptVolume, scanLibrary } from "../../src/library/admin.ts";
 import { MAX_MERGED_DIRS } from "../../src/library/dirs-queue.ts";
 import { freshen } from "../../src/library/fresh.ts";
 import { ACTOR, cleanupHarnesses, type Harness, harness, identity, settle } from "./support/service.ts";
@@ -238,5 +238,31 @@ describe("submit and end", () => {
     // The next full scan is not blocked by a job that is already over.
     await h.svc.submitScan(lib.id, { mode: "full", trigger: "demand" });
     expect(scans(h, "full")).toHaveLength(2);
+  });
+});
+
+describe("accepting an empty root", () => {
+  test("accept_empty_root_needs_an_empty_root_and_brings_the_library_back", async () => {
+    const h = await rig();
+    const lib = await h.add("/nas/a");
+    await finishAll(h);
+    // An unmounted, changed or unreachable root is not an empty one: refused, nothing set.
+    for (const state of ["unmounted", "timeout"] as const) {
+      h.probeAnswers = [{ state }];
+      await expect(acceptEmptyRoot(h.svc, lib.id, ACTOR)).rejects.toMatchObject({ code: "LIBRARY_ROOT_SUSPECT", details: { state } });
+    }
+    expect(h.emptyRoots).toEqual([]);
+    await expect(acceptEmptyRoot(h.svc, "01none", ACTOR)).rejects.toMatchObject({ code: "LIBRARY_NOT_FOUND" });
+    // The scan that found the root empty put the library offline.
+    h.probeAnswers = [{ state: "empty" }];
+    h.svc.kindEvents.offline?.(lib.id, offlineJob(lib.id, { state: "empty" }));
+    await settle();
+    expect(h.registry.get(lib.id)).toMatchObject({ state: "offline", offlineReason: "ROOT_EMPTY_SUSPECT" });
+    const before = scans(h, "full").length;
+    h.probeAnswers = [{ state: "empty" }];
+    const view = await acceptEmptyRoot(h.svc, lib.id, ACTOR);
+    expect(h.emptyRoots).toEqual([{ lib: lib.id, on: true }]);
+    expect(view.state).toBe("scanning");
+    expect(scans(h, "full")).toHaveLength(before + 1);
   });
 });

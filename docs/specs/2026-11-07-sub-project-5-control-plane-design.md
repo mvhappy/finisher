@@ -284,7 +284,7 @@ A closed vocabulary in `@finisher/contracts` (`scopes.ts`). **`RPC_SCOPES`** (De
 | `review.write`, `review.decide` | 5E (§8.6) | — |
 | `jobs.read`, `jobs.submit`, `jobs.control` | the `jobs.*` RPCs (5C-2, §6.7): read, submit and act on one's own jobs, act on every owner's | — |
 | `library.read`, `library.scan` | 5D (§7.6) | — |
-| `library.admin` | `library.add`, `library.remove`, `library.set` of hydration or bandwidth | **human** |
+| `library.admin` | `library.add`, `library.remove`, `library.set` of hydration, bandwidth, aliases, an accepted volume, a removed nested mount (`acceptUnmounted`) or an empty root (`acceptEmptyRoot`) | **human** |
 | `diagnostics.read` | `diagnostics.status`, `diagnostics.export` without content, `diagnostics.project {collect: never}` | — |
 | `diagnostics.record` | `diagnostics.record` (it writes the journal) | — |
 | `diagnostics.admin` | `diagnostics.consent`, `diagnostics.purge`, `diagnostics.project {collect: default}`, escalation: `diagnostics.export {content: true}` | **human** (training on: `device` only, §3.4) |
@@ -939,7 +939,7 @@ The watchdog's cleanup time after host death, the macOS spawn times, and the p99
 
 | RPC | Scopes |
 |---|---|
-| `library.add`, `library.remove`, `library.set` (hydration, bandwidth) | `library.admin` (human) |
+| `library.add`, `library.remove`, `library.set` (hydration, bandwidth, aliases, `acceptVolume`, `acceptUnmounted`, `acceptEmptyRoot`) | `library.admin` (human) |
 | `library.set` (name, excludes, poll, schedule) | `library.scan` |
 | `library.list`, `library.status`, `library.files`, `library.file`, `library.search`, `library.lookup`, `library.watch` (stream) | `library.read` |
 | `library.scan {id, full?}` | `library.scan` (→ `{job}`, which also needs `jobs.submit`) |

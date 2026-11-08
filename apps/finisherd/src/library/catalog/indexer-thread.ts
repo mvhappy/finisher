@@ -163,6 +163,7 @@ function open(a: Record<string, unknown>): unknown {
   const meta = opened.db.prepare("SELECT value FROM meta WHERE key = 'offline'").get() as { value: string } | undefined;
   apply.diff.offline = meta?.value === "1";
   apply.diff.dropGuard = (opened.db.prepare("SELECT value FROM meta WHERE key = 'dropGuard'").get() as { value: string } | undefined)?.value === "1";
+  apply.diff.emptyRootOk = (opened.db.prepare("SELECT value FROM meta WHERE key = 'emptyRootOk'").get() as { value: string } | undefined)?.value === "1";
   const last = opened.db
     .prepare(
       "SELECT max(coalesce((SELECT max(lastSeen) FROM files), 0), coalesce((SELECT max(lastSeen) FROM dirs), 0), " +
@@ -238,7 +239,10 @@ async function applyBatchFile(a: Record<string, unknown>): Promise<unknown> {
   }
   const rows = rowsOf(batches);
   checkChains(c.apply, rows);
-  checkRootEmpty(c.apply.diff, batches.flatMap((b) => b.dirsDone));
+  const dones = batches.flatMap((b) => b.dirsDone);
+  checkRootEmpty(c.apply.diff, dones);
+  // A listing that found the root non-empty ends the owner's accept of an empty one.
+  if (c.apply.diff.emptyRootOk && dones.some((d) => d.dir.components.length === 0 && d.complete && d.entries > 0)) setEmptyRootFlag(c, false);
   const counts = emptyCounts();
   const ctx = { job, gen, at: stamp(c, at), startedAt };
   const sink = newSink();
@@ -312,7 +316,8 @@ function knownDirLines(c: Catalog, gen: number): string[] {
       dir: { components: chains.of(r.id) },
       mtimeNs: r.mtimeNs,
       listed: r.listedGen === gen,
-      ...(r.entries === null ? {} : { entries: r.entries }),
+      // An accepted empty root lists empty without the walker refusing it (`acceptEmptyRoot`).
+      ...(r.entries === null || (r.id === 1 && c.apply.diff.emptyRootOk) ? {} : { entries: r.entries }),
       mountRoot: r.mount !== null,
       ...(r.volume === null ? {} : { volume: JSON.parse(r.volume) as unknown }),
     }),
@@ -418,6 +423,21 @@ function setDropGuard(a: Record<string, unknown>): unknown {
   return { on };
 }
 
+function setEmptyRootFlag(c: Catalog, on: boolean): void {
+  tx(c, 1, () => {
+    c.db.prepare("INSERT INTO meta (key, value) VALUES ('emptyRootOk', ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value").run(on ? "1" : "0");
+  });
+  c.apply.diff.emptyRootOk = on;
+}
+
+/** Persists the owner's accept of a root that is empty for good (`acceptEmptyRoot`, human-only) and hands it to the diff. */
+function setEmptyRootOk(a: Record<string, unknown>): unknown {
+  const c = catalog(a.lib);
+  if (typeof a.on !== "boolean") throw new CatalogFailure("CATALOG_ARGS_INVALID", "invalid catalog arguments", { at: "on" });
+  if (c.apply.diff.emptyRootOk !== a.on) setEmptyRootFlag(c, a.on);
+  return { on: a.on };
+}
+
 /** The deepest directory of `parts` the catalog knows, as base64 components (a watch hint's target). */
 function knownPrefix(lib: string, parts: ReadonlyArray<Uint8Array>): string[] {
   const c = catalogs.get(lib);
@@ -467,6 +487,7 @@ const METHODS: Record<string, (a: Record<string, unknown>) => unknown> = {
   purgeMissing,
   setOffline,
   setDropGuard,
+  setEmptyRootOk,
   watch,
   unwatch,
   watchFault,
