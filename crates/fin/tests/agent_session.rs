@@ -157,6 +157,7 @@ fn fin_with_credential_never_uses_local_key() {
         id: "01JC0000000000000000000000".into(),
         credential: host.server.root.join("no-such-credential.json"),
         root: None,
+        project_dir: None,
     };
     for args in [&["view"][..], &["whoami"], INSERT] {
         let run = host.agent(&missing, &dir, args);

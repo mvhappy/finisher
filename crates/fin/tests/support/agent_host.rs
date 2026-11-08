@@ -1,7 +1,8 @@
 //! A real `finisherd` that can also open agent sessions for `fin`'s tests (plan 7A Task 8b):
 //! `apps/finisherd/test/support/agent-session-host.ts`, driven through request files.
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
+use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -14,6 +15,8 @@ pub struct AgentHost {
     pub server: Server,
     requests: PathBuf,
     next: Cell<u32>,
+    /// Project id → folder, for the `FIN_PROJECT_DIR` the runtime would set.
+    dirs: RefCell<HashMap<String, PathBuf>>,
 }
 
 /// An agent session: its id, credential file and root branch.
@@ -22,6 +25,8 @@ pub struct Session {
     pub id: String,
     pub credential: PathBuf,
     pub root: Option<String>,
+    /// The session's project folder (`FIN_PROJECT_DIR`, as the runtime sets it).
+    pub project_dir: Option<PathBuf>,
 }
 
 impl AgentHost {
@@ -39,6 +44,7 @@ impl AgentHost {
             server,
             requests,
             next: Cell::new(0),
+            dirs: RefCell::new(HashMap::new()),
         })
     }
 
@@ -73,6 +79,7 @@ impl AgentHost {
             id: v["sessionId"].as_str().unwrap().to_string(),
             credential: PathBuf::from(v["credential"].as_str().unwrap()),
             root: v["rootBranch"].as_str().map(str::to_string),
+            project_dir: self.dirs.borrow().get(project_id).cloned(),
         }
     }
 
@@ -92,12 +99,16 @@ impl AgentHost {
         super::fin(&self.server.sd, cwd, args)
     }
 
-    /// `fin` as the session: `FIN_CREDENTIAL` and `FIN_SERVER` set, plus `env`. Server data is
-    /// still given (`FIN_SERVER_DATA`): under a credential it must be ignored.
+    /// `fin` as the session: `FIN_CREDENTIAL`, `FIN_SERVER` and `FIN_PROJECT_DIR` set (as the
+    /// runtime sets them), plus `env`. Server data is still given (`FIN_SERVER_DATA`): under a
+    /// credential it must be ignored.
     pub fn agent_env(&self, s: &Session, cwd: &Path, args: &[&str], env: &[(&str, &OsStr)]) -> Run {
         let mut cmd = fin_cmd(&self.server.sd, cwd, args);
         cmd.env("FIN_CREDENTIAL", &s.credential)
             .env("FIN_SERVER", &self.server.socket);
+        if let Some(dir) = &s.project_dir {
+            cmd.env("FIN_PROJECT_DIR", dir);
+        }
         for (k, v) in env {
             cmd.env(k, v);
         }
@@ -119,6 +130,7 @@ impl AgentHost {
             .as_str()
             .unwrap()
             .to_string();
+        self.dirs.borrow_mut().insert(id.clone(), dir.clone());
         (dir, id)
     }
 

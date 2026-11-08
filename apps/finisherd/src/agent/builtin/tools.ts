@@ -5,7 +5,7 @@
 import { blake3Hex } from "@finisher/fin-node";
 import { finError } from "../../errors.ts";
 import type { ToolCall, ToolExecutor, ToolOutcome } from "../runtime-deps.ts";
-import { type FinIndex, finIndex, runFinTool } from "./fin-tool.ts";
+import { type FinIndex, finIndex, PROJECT_DIR_ENV, runFinTool } from "./fin-tool.ts";
 import type { ToolDef } from "./request.ts";
 import { WORKSPACE_TOOLS, type WorkspaceToolName, workspaceTool } from "./workspace-tools.ts";
 
@@ -70,16 +70,24 @@ export const TOOL_NAMES: ReadonlySet<string> = new Set(TOOL_DEFS.map((t) => t.na
 
 /**
  * Whether a call changes something, so runs alone and in order (spec §4.4): `workspace_write`,
- * and a `fin` command the index marks as a write or does not know. Reads may run in parallel.
+ * and a `fin` command the index marks as a write, does not know or cannot read. `--dry-run`
+ * makes a read only as a flag (`FinIndex.parse`: not a value, not after `--`). Reads may run
+ * in parallel.
  */
 export function isWrite(tool: string, input: unknown, index: FinIndex | undefined): boolean {
   if (tool === "workspace_read" || tool === "workspace_list") return false;
   if (tool !== FIN_TOOL) return true;
   const argv = (input as { argv?: unknown } | null)?.argv;
   if (!Array.isArray(argv) || !argv.every((a) => typeof a === "string")) return true;
-  if (argv.includes("--dry-run")) return false;
-  const cmd = index?.command(argv as string[]);
-  return cmd === undefined ? argv.length > 0 : cmd.write;
+  if (index === undefined) return argv.length > 0;
+  let parsed: ReturnType<FinIndex["parse"]>;
+  try {
+    parsed = index.parse(argv as string[]);
+  } catch {
+    return true;
+  }
+  if (parsed.command === undefined) return argv.length > 0;
+  return parsed.command.write && !parsed.dryRun;
 }
 
 export interface BuiltinToolsDeps {
@@ -131,17 +139,25 @@ async function runOne(deps: BuiltinToolsDeps, call: ToolCall, signal: AbortSigna
     }
     if (input.stdin !== undefined && typeof input.stdin !== "string") throw finError("USAGE", "stdin must be a string", { tool: call.tool });
     const project = deps.projectDirOf?.(call.projectId);
-    const index = await finIndex(deps.finPath).catch(() => undefined);
+    // Fail closed: a call is never run without the index its paths are checked with (a failed
+    // `fin schema commands` is tried again by the next call).
+    const index = await finIndex(deps.finPath).catch((e: unknown) => {
+      throw finError("PROVIDER_UNAVAILABLE", `the fin tool cannot read fin's command index: ${e instanceof Error ? e.message : String(e)}`, { finPath: deps.finPath }, "check agents.finPath");
+    });
+    // The project folder `fin` trusts comes from the runtime, never from the call.
+    const env: Record<string, string> = { ...call.env };
+    if (project === undefined) delete env[PROJECT_DIR_ENV];
+    else env[PROJECT_DIR_ENV] = project;
     return runFinTool(
       { callId: call.callId, argv: input.argv as string[], ...(input.stdin === undefined ? {} : { stdin: input.stdin as string }) },
       {
         finPath: deps.finPath,
         cwd: call.cwd,
-        env: call.env,
+        env,
         signal,
         ...(deps.timeoutMs === undefined ? {} : { timeoutMs: deps.timeoutMs }),
         roots: project === undefined ? [call.cwd] : [call.cwd, project],
-        ...(index === undefined ? {} : { index }),
+        index,
       },
     );
   }

@@ -128,19 +128,20 @@ pub fn folder_project_id(dir: &Path) -> Option<String> {
     doc.get("id").and_then(Value::as_str).map(str::to_string)
 }
 
-/// `PROJECT_NOT_FOUND` for a folder that names another project than the session's: a session
-/// works on its own project only (spec §5.6), and the answer does not say what the folder is.
+/// `PROJECT_NOT_FOUND` for a folder that does not name the session's project (another project's,
+/// or no readable `finisher.project.json`): a session works on its own project only (spec §5.6),
+/// and the answer does not say what the folder is.
 pub fn check_folder(dir: Option<&Path>, session: &SelfState) -> Result<(), CoreError> {
     let Some(dir) = dir else {
         return Ok(());
     };
     match folder_project_id(dir) {
-        Some(id) if id != session.project_id => Err(CoreError::new(
+        Some(id) if id == session.project_id => Ok(()),
+        _ => Err(CoreError::new(
             "PROJECT_NOT_FOUND",
             "this agent session works on its own project only",
         )
         .with_details(json!({ "dir": dir.display().to_string() }))
         .with_fix("run fin from the session's workspace, without --project")),
-        _ => Ok(()),
     }
 }

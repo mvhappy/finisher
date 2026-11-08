@@ -12,6 +12,11 @@ export interface ChildEnvExtra {
   readonly FIN_SERVER?: string | undefined;
   readonly FIN_SESSION?: string | undefined;
   /**
+   * An agent session's project folder (plan 7A Task 8b review B1): under an agent credential the
+   * only project folder `fin` trusts (a `--project` must name it), set by the runtime.
+   */
+  readonly FIN_PROJECT_DIR?: string | undefined;
+  /**
    * The path of an agent or MCP credential file (spec §4.1; arch §8.4 as amended): a path, not
    * a secret, so it may be passed (5A Decision 34). `fin` in the child proves with it.
    */
@@ -35,7 +40,7 @@ function denied(key: string): boolean {
 /**
  * Builds a child environment from the §27.7 allow-list: `PATH`, `HOME`, `LANG`, `LC_*`,
  * `TMPDIR` (plus the Windows system equivalents on win32), then `FIN_SERVER`, `FIN_SESSION`,
- * `FIN_CREDENTIAL` and `FIN_CALL` from `extra`. Everything else — notably `ELECTRON_RUN_AS_NODE`,
+ * `FIN_PROJECT_DIR`, `FIN_CREDENTIAL` and `FIN_CALL` from `extra`. Everything else — notably `ELECTRON_RUN_AS_NODE`,
  * `CLAUDECODE`, `CLAUDE_CODE_*` and [`NEVER_PASSED`] — is dropped.
  */
 export function childEnv(
@@ -51,6 +56,7 @@ export function childEnv(
   }
   if (extra.FIN_SERVER !== undefined) env.FIN_SERVER = extra.FIN_SERVER;
   if (extra.FIN_SESSION !== undefined) env.FIN_SESSION = extra.FIN_SESSION;
+  if (extra.FIN_PROJECT_DIR !== undefined) env.FIN_PROJECT_DIR = extra.FIN_PROJECT_DIR;
   if (extra.FIN_CREDENTIAL !== undefined) env.FIN_CREDENTIAL = extra.FIN_CREDENTIAL;
   if (extra.FIN_CALL !== undefined) env.FIN_CALL = extra.FIN_CALL;
   return env;

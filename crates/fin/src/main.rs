@@ -218,6 +218,7 @@ fn parse_named(args: Vec<OsString>) -> Result<(Cli, Option<String>), CoreError> 
     let cli = Cli::from_arg_matches(&matches).map_err(|e| clap_usage(&e))?;
     let name = agent_env::command_name(&matches);
     // Under an agent credential, file arguments are confined before anything opens them (14c).
+    agent_paths::check_project(cli.globals.project.as_deref())?;
     agent_paths::check_matches(&matches, name.as_deref(), cli.globals.project.as_deref())?;
     Ok((cli, name))
 }

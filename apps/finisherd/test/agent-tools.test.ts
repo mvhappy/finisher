@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { FinError } from "@finisher/contracts";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
-import { FinIndex, pathValues, runFinTool, type SessionEnv } from "../src/agent/builtin/fin-tool.ts";
+import { FinIndex, pathValues, runFinTool, type SessionEnv, STDOUT_MAX } from "../src/agent/builtin/fin-tool.ts";
 import { builtinEnvironment } from "../src/agent/builtin/environment.ts";
 import { builtinTools, isWrite, systemHash } from "../src/agent/builtin/tools.ts";
 import { confine, workspaceTool } from "../src/agent/builtin/workspace-tools.ts";
@@ -32,16 +32,38 @@ afterEach(() => rmSync(tmp, { recursive: true, force: true }));
 
 const posix = process.platform !== "win32";
 
-/** A stand-in `fin`: `echo` prints its argv and env, `json`/`text` print, `fail` exits 3, `spawn` hangs with a child. */
+const G = [
+  { long: "--project", values: 1 },
+  { long: "--idem-key", values: 1 },
+  { long: "--dry-run", values: 0 },
+  { long: "--branch", values: 1 },
+  { long: "--timeline", values: 1 },
+];
+/** The index the stand-in answers `fin schema commands` with: its commands, plus two with paths. */
+const INDEX = {
+  globals: G,
+  commands: [
+    ...["echo", "json", "text", "fail", "spawn", "mark", "orphan", "big"].map((name) => ({ name, write: false, paths: [], flags: G })),
+    { name: "caption.import", write: true, paths: [{ arg: "words", flag: "--words" }], flags: [...G, { long: "--words", values: 1 }, { long: "--track", values: 1 }, { long: "--style", values: 1 }] },
+    { name: "asset.add", write: true, paths: [{ arg: "path", position: 0 }], flags: [...G, { long: "--name", values: 1 }, { long: "--copy", values: 0 }] },
+  ],
+};
+
+/** A stand-in `fin`: `echo` prints its argv and env, `json`/`text` print, `fail` exits 3, `spawn` hangs with a child, `mark` writes a file. */
 function fakeFin(): string {
   const path = join(tmp, "fin");
   writeFileSync(
     path,
     `#!${process.execPath}
+const INDEX = ${JSON.stringify(INDEX)};
 const [cmd, ...rest] = process.argv.slice(2);
 const { spawn } = require("node:child_process");
 const fs = require("node:fs");
 if (cmd === undefined) { process.stdout.write('{"commands":["read: status view"]}\\n'); }
+else if (cmd === "schema" && rest[0] === "commands") { if (fs.existsSync(__filename + ".noindex")) process.exit(1); process.stdout.write(JSON.stringify(INDEX)); }
+else if (cmd === "mark") { fs.writeFileSync(rest[0], "ran"); }
+else if (cmd === "orphan") { const c = spawn("sleep", ["30"], { stdio: ["ignore", "inherit", "ignore"] }); c.unref(); fs.writeFileSync(rest[0], String(c.pid)); process.exit(0); }
+else if (cmd === "big") { process.stdout.write("x".repeat(3 * 1024 * 1024)); }
 else if (cmd === "echo") { process.stdout.write(JSON.stringify({ argv: process.argv.slice(2), env: process.env, cwd: process.cwd(), stdin: fs.readFileSync(0, "utf8") })); }
 else if (cmd === "json") { process.stdout.write('{"ok":1}\\n'); }
 else if (cmd === "text") { process.stdout.write("plain words\\n"); }
@@ -103,7 +125,8 @@ describe.skipIf(!posix)("fin tool", () => {
     const r = await runFinTool({ callId: CALL, argv: ["echo"] }, env(fin, { env: passed }));
     const seen = (r.output as { stdout: { env: Record<string, string> } }).stdout.env;
     const allowed = new Set(["PATH", "HOME", "LANG", "TMPDIR", "FIN_SERVER", "FIN_SESSION", "FIN_CREDENTIAL", "FIN_CALL", "FIN_CALL_IDEM"]);
-    for (const k of Object.keys(seen)) expect(allowed.has(k) || k.startsWith("LC_"), k).toBe(true);
+    // macOS adds `__CF_USER_TEXT_ENCODING` to every process it starts: the OS's, not passed by us.
+    for (const k of Object.keys(seen)) expect(allowed.has(k) || k.startsWith("LC_") || k === "__CF_USER_TEXT_ENCODING", k).toBe(true);
     expect(seen).toMatchObject({ FIN_CALL: CALL, FIN_CALL_IDEM: "1", FIN_CREDENTIAL: "/c.json", FIN_SERVER: "/s.sock", FIN_SESSION: "S1" });
     for (const k of ["FIN_TRAINING", "FIN_SERVER_DATA", "FIN_AUTHOR", "OPENROUTER_API_KEY"]) expect(seen[k], k).toBeUndefined();
     expect(base.FIN_SERVER_DATA).toBeUndefined();
@@ -162,11 +185,10 @@ describe.skipIf(!posix)("fin tool", () => {
 
   test("recognised_path_arguments_are_confined", async () => {
     const fin = fakeFin();
-    const index = new FinIndex([
-      { name: "caption.import", write: true, paths: [{ arg: "words", flag: "--words" }] },
-      { name: "asset.add", write: true, paths: [{ arg: "path", position: 0 }] },
-      { name: "echo", write: false, paths: [{ arg: "file", flag: "--file" }] },
-    ]);
+    const index = new FinIndex(
+      [...INDEX.commands.filter((c) => c.name !== "echo"), { name: "echo", write: false, paths: [{ arg: "file", flag: "--file" }], flags: [...G, { long: "--file", values: 1 }] }],
+      G,
+    );
     expect(pathValues(["caption", "import", "--track", "t2", "--words=w.json"], index)).toEqual(["w.json"]);
     expect(pathValues(["asset", "add", "take.mp4"], index)).toEqual(["take.mp4"]);
     const roots = [ws, project];
@@ -193,8 +215,137 @@ describe.skipIf(!posix)("fin tool", () => {
     expect(await code(exec.run({ ...base, tool: "shell", input: {} }, ac.signal))).toBe("USAGE");
     expect(await code(exec.run({ ...base, tool: "fin", input: { argv: "view" } }, ac.signal))).toBe("USAGE");
     expect(isWrite("workspace_read", {}, undefined)).toBe(false);
-    expect(isWrite("fin", { argv: ["item", "trim", "--dry-run"] }, undefined)).toBe(false);
+    // Without the index nothing is known to be a read: serial (review M5).
+    expect(isWrite("fin", { argv: ["item", "trim", "--dry-run"] }, undefined)).toBe(true);
     expect(isWrite("fin", { argv: ["view"] }, undefined)).toBe(true);
+  });
+
+  // Review findings (plan 7A Task 8b) ------------------------------------------------------
+
+  const INDEXED = () => new FinIndex(INDEX.commands, G);
+  const roots = () => [ws, project];
+
+  test("b1_global_flags_between_command_words_are_read", async () => {
+    const fin = fakeFin();
+    const index = INDEXED();
+    const run = (argv: string[]) => runFinTool({ callId: CALL, argv }, env(fin, { index, roots: roots() }));
+    // The review's shape: `--project /` between the command words, a file outside.
+    const shape = ["caption", "--project", "/", "import", "--words", "/etc/passwd", "--track", "t1"];
+    expect(index.parse(shape)).toMatchObject({ command: { name: "caption.import" }, paths: ["/etc/passwd"], project: ["/"] });
+    expect(await code(run(shape))).toBe("PROJECT_NOT_FOUND");
+    // Variants: the flag elsewhere, inline, another global between the words, the own project.
+    for (const argv of [
+      ["caption", "import", "--project=/", "--words", "/etc/passwd", "--track", "t1"],
+      ["caption", "import", "--words", "w.json", "--track", "t1", "--project", tmp],
+      ["caption", "--project", join(project, "workspace"), "import", "--words", "w.json"],
+    ]) {
+      expect(await code(run(argv)), argv.join(" ")).toBe("PROJECT_NOT_FOUND");
+    }
+    for (const argv of [
+      ["caption", "--branch", "b1", "import", "--words", "/etc/passwd", "--track", "t1"],
+      ["caption", "--dry-run", "import", "--words=/etc/passwd"],
+      ["caption", "--project", project, "import", "--words", "/etc/passwd"],
+      ["caption", "--project", join(project, "workspace", ".."), "--timeline", "tl", "import", "--words", "../../../server-data/auth/local.key"],
+    ]) {
+      expect(await code(run(argv)), argv.join(" ")).toBe("PATH_NOT_ALLOWED");
+    }
+    // A flag that is no global one before the command words are complete: refused, not guessed.
+    for (const argv of [
+      ["caption", "--words", "/etc/passwd", "import"],
+      ["caption", "-x", "import", "--words", "w.json"],
+      ["caption", "--", "import", "--words", "/etc/passwd"],
+    ]) {
+      expect(await code(run(argv)), argv.join(" ")).toBe("USAGE");
+    }
+    writeFileSync(join(ws, "w.json"), "[]");
+    expect((await run(["caption", "--project", project, "import", "--words", "w.json"])).ok).toBe(true);
+  });
+
+  test("h3_positionals_follow_flag_arity_and_double_dash", async () => {
+    const fin = fakeFin();
+    const index = INDEXED();
+    expect(pathValues(["asset", "add", "--branch", "b1", "/etc/passwd"], index)).toEqual(["/etc/passwd"]);
+    expect(pathValues(["asset", "add", "--name", "n", "--copy", "take.mp4"], index)).toEqual(["take.mp4"]);
+    expect(pathValues(["asset", "add", "--", "--name"], index)).toEqual(["--name"]);
+    expect(pathValues(["asset", "--idem-key", "k", "add", "take.mp4"], index)).toEqual(["take.mp4"]);
+    // What the tool cannot follow on a command with paths is refused (fin's own check is the authority).
+    for (const argv of [["asset", "add", "-x", "/etc/passwd"], ["asset", "add", "--unknown", "/etc/passwd"], ["asset", "add", "--copy=1", "a"], ["caption", "import", "--words"]]) {
+      expect(() => index.parse(argv), argv.join(" ")).toThrow(/cannot read/);
+    }
+    const run = (argv: string[]) => runFinTool({ callId: CALL, argv }, env(fin, { index, roots: roots() }));
+    expect(await code(run(["asset", "add", "--branch", "b1", "/etc/passwd"]))).toBe("PATH_NOT_ALLOWED");
+    expect(await code(run(["asset", "add", "--", "/etc/passwd"]))).toBe("PATH_NOT_ALLOWED");
+    expect(await code(run(["asset", "add", "-x", "/etc/passwd"]))).toBe("USAGE");
+  });
+
+  test("h2_no_index_fails_closed_and_is_retried", async () => {
+    const fin = fakeFin();
+    const exec = builtinTools({ finPath: fin, projectDirOf: () => project });
+    const base = { sessionId: "S1", projectId: "P1", runId: "R1", callId: CALL, providerId: "p", cwd: ws, env: { PATH: process.env.PATH ?? "" } };
+    const mark = join(tmp, "ran");
+    writeFileSync(`${fin}.noindex`, "");
+    expect(await code(exec.run({ ...base, tool: "fin", input: { argv: ["mark", mark] } }, new AbortController().signal))).toBe("PROVIDER_UNAVAILABLE");
+    expect(existsSync(mark)).toBe(false);
+    // runFinTool itself never runs a confined call without one.
+    expect(await code(runFinTool({ callId: CALL, argv: ["mark", mark] }, env(fin, { roots: roots() })))).toBe("PROVIDER_UNAVAILABLE");
+    expect(existsSync(mark)).toBe(false);
+    rmSync(`${fin}.noindex`);
+    expect(await exec.run({ ...base, tool: "fin", input: { argv: ["mark", mark] } }, new AbortController().signal)).toMatchObject({ ok: true });
+    expect(existsSync(mark)).toBe(true);
+    // And the runtime's project folder reaches fin, whatever the session env said.
+    const seen = await exec.run({ ...base, env: { ...base.env, FIN_PROJECT_DIR: "/" }, tool: "fin", input: { argv: ["echo"] } }, new AbortController().signal);
+    expect((seen.output as { stdout: { env: Record<string, string> } }).stdout.env.FIN_PROJECT_DIR).toBe(project);
+  });
+
+  test("m4_an_abort_during_the_path_check_starts_nothing", async () => {
+    const fin = fakeFin();
+    const mark = join(tmp, "ran");
+    const ac = new AbortController();
+    const running = runFinTool({ callId: CALL, argv: ["mark", mark] }, env(fin, { index: INDEXED(), roots: roots(), signal: ac.signal }));
+    ac.abort(new Error("stop"));
+    expect(await code(running)).toBe("SESSION_INTERRUPTED");
+    // Through the executor too: it answers at once and the call it was checking never starts.
+    const exec = builtinTools({ finPath: fin, projectDirOf: () => project });
+    const ac2 = new AbortController();
+    const base = { sessionId: "S1", projectId: "P1", runId: "R1", callId: CALL, providerId: "p", cwd: ws, env: { PATH: process.env.PATH ?? "" } };
+    const r2 = exec.run({ ...base, tool: "fin", input: { argv: ["mark", mark] } }, ac2.signal);
+    ac2.abort(new Error("stop"));
+    expect(await code(r2)).toBe("SESSION_INTERRUPTED");
+    await new Promise((res) => setTimeout(res, 300));
+    expect(existsSync(mark)).toBe(false);
+  });
+
+  test("m6_stdout_is_bounded_to_what_the_loop_uses", async () => {
+    const fin = fakeFin();
+    const r = await runFinTool({ callId: CALL, argv: ["big"] }, env(fin));
+    const out = r.output as { stdout: string; stdoutTruncated?: boolean };
+    expect(out.stdoutTruncated).toBe(true);
+    expect(Buffer.byteLength(out.stdout)).toBeLessThanOrEqual(STDOUT_MAX);
+    expect(STDOUT_MAX).toBe(1024 * 1024);
+  });
+
+  test("l10_a_child_holding_the_pipe_is_killed_at_the_timeout", async () => {
+    const fin = fakeFin();
+    const pidFile = join(tmp, "orphan.pid");
+    const t0 = Date.now();
+    const r = await runFinTool({ callId: CALL, argv: ["orphan", pidFile] }, env(fin, { timeoutMs: 400 }));
+    expect(Date.now() - t0).toBeLessThan(3000);
+    expect(r).toMatchObject({ ok: false, output: { error: { code: "TOOL_TIMEOUT" } } });
+    const child = Number(readFileSync(pidFile, "utf8"));
+    while (alive(child) && Date.now() - t0 < 3000) await new Promise((res) => setTimeout(res, 20));
+    expect(alive(child)).toBe(false);
+  });
+
+  test("m5_dry_run_is_a_read_only_as_a_flag", () => {
+    const index = INDEXED();
+    expect(isWrite("fin", { argv: ["asset", "add", "--dry-run", "a.mp4"] }, index)).toBe(false);
+    expect(isWrite("fin", { argv: ["caption", "--dry-run", "import", "--words", "w"] }, index)).toBe(false);
+    expect(isWrite("fin", { argv: ["asset", "add", "--", "--dry-run"] }, index)).toBe(true);
+    expect(isWrite("fin", { argv: ["asset", "add", "--name", "--dry-run", "a.mp4"] }, index)).toBe(true);
+    expect(isWrite("fin", { argv: ["caption", "import", "--words", "--dry-run"] }, index)).toBe(true);
+    expect(isWrite("fin", { argv: ["asset", "add", "-x", "--dry-run"] }, index)).toBe(true);
+    expect(isWrite("fin", { argv: ["echo", "x"] }, index)).toBe(false);
+    expect(isWrite("fin", { argv: ["nothing"] }, index)).toBe(true);
   });
 });
 
@@ -248,6 +399,8 @@ describe("workspace tools", () => {
     const lower = join(tmp, "ws");
     const upper = join(tmp, "WS");
     mkdirSync(lower);
+    // A case-insensitive volume (macOS by default) has one folder for both: nothing to compare.
+    if (existsSync(upper)) return;
     mkdirSync(upper);
     writeFileSync(join(upper, "f.md"), "x");
     symlinkSync(join(upper, "f.md"), join(lower, "f.md"));

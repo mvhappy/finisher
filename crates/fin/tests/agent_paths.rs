@@ -19,6 +19,7 @@ fn batch(host: &AgentHost, s: &Session, cwd: &Path, line: &str) -> Run {
     let mut cmd = support::fin_cmd(&host.server.sd, cwd, &["batch"]);
     cmd.env("FIN_CREDENTIAL", &s.credential)
         .env("FIN_SERVER", &host.server.socket)
+        .env("FIN_PROJECT_DIR", s.project_dir.as_ref().unwrap())
         .stdin(std::process::Stdio::piped());
     let mut child = cmd.spawn().unwrap();
     child
@@ -139,6 +140,154 @@ fn file_args_confined() {
         "{}",
         person.stdout
     );
+}
+
+/// Review B1: the roots come from the runtime (`FIN_PROJECT_DIR`), never from the model's
+/// `--project` or the working directory. `--project` naming any other folder (the filesystem
+/// root, a folder with no `finisher.project.json`, anywhere between command words) is
+/// `PROJECT_NOT_FOUND` before a file is read; naming the session's own folder works.
+#[test]
+fn project_flag_cannot_widen_the_roots() {
+    let Some(host) = AgentHost::start("project_flag_cannot_widen_the_roots") else {
+        return;
+    };
+    let (dir, project) = host.project();
+    let s = host.open(&project, "draft");
+    let ws = host.workspace(&dir, &s);
+    std::fs::write(ws.join("w.json"), "[]").unwrap();
+    let bare = host.server.root.join("bare");
+    std::fs::create_dir_all(&bare).unwrap();
+    std::fs::write(bare.join("w.json"), "[]").unwrap();
+    let bare_text = bare.display().to_string();
+    let bare_words = bare.join("w.json").display().to_string();
+    let not_this = |run: &Run| assert_error(run, 3, "PROJECT_NOT_FOUND");
+    for args in [
+        // The review's shape: a global flag between the command words.
+        &[
+            "caption",
+            "--project",
+            "/",
+            "import",
+            "--words",
+            "/etc/hosts",
+            "--style",
+            "s",
+            "--track",
+            "t1",
+        ][..],
+        &[
+            "--project",
+            "/",
+            "caption",
+            "import",
+            "--words",
+            "/etc/hosts",
+            "--style",
+            "s",
+            "--track",
+            "t1",
+        ],
+        &[
+            "caption",
+            "import",
+            "--project=/",
+            "--words",
+            "/etc/hosts",
+            "--style",
+            "s",
+            "--track",
+            "t1",
+        ],
+        &[
+            "caption",
+            "import",
+            "--words",
+            "/etc/hosts",
+            "--style",
+            "s",
+            "--track",
+            "t1",
+            "--project",
+            "/",
+        ],
+        &[
+            "caption",
+            "--project",
+            &bare_text,
+            "import",
+            "--words",
+            &bare_words,
+            "--style",
+            "s",
+            "--track",
+            "t1",
+        ],
+        &["asset", "--project", &bare_text, "add", &bare_words],
+        &["view", "--project", &bare_text],
+    ] {
+        let run = host.agent(&s, &ws, args);
+        not_this(&run);
+        assert!(
+            !run.stdout.contains("127.0.0.1"),
+            "{args:?}: {}",
+            run.stdout
+        );
+    }
+    // A working directory outside the project gives no root either.
+    refused(&host.agent(
+        &s,
+        &bare,
+        &[
+            "caption", "import", "--words", "w.json", "--style", "s", "--track", "t1",
+        ],
+    ));
+    // `--project` naming the session's own folder (another spelling of it) works.
+    let own = dir.join("workspace").join("..").display().to_string();
+    let run = host.agent(
+        &s,
+        &ws,
+        &[
+            "caption",
+            "--project",
+            &own,
+            "import",
+            "--words",
+            "w.json",
+            "--track",
+            "t9",
+            "--style",
+            "preset:bold",
+        ],
+    );
+    assert!(
+        !["PATH_NOT_ALLOWED", "PROJECT_NOT_FOUND", "USAGE"]
+            .contains(&run.json["error"]["code"].as_str().unwrap_or("")),
+        "{}",
+        run.stdout
+    );
+    // Without the runtime's FIN_PROJECT_DIR (or with a relative one) nothing is readable.
+    let no_dir = support::agent_host::Session {
+        project_dir: None,
+        ..s.clone()
+    };
+    let run = host.agent(
+        &no_dir,
+        &ws,
+        &[
+            "caption", "import", "--words", "w.json", "--style", "s", "--track", "t9",
+        ],
+    );
+    refused(&run);
+    assert_eq!(run.json["error"]["details"]["reason"], "noProject");
+    let relative = host.agent_env(
+        &no_dir,
+        &ws,
+        &[
+            "caption", "import", "--words", "w.json", "--style", "s", "--track", "t9",
+        ],
+        &[("FIN_PROJECT_DIR", std::ffi::OsStr::new("../.."))],
+    );
+    refused(&relative);
 }
 
 #[test]

@@ -36,6 +36,10 @@
     "reason": "Opens the server lock file in the server data directory."
   },
   {
+    "path": "crates/fin-node/src/test_registry.rs",
+    "reason": "Test-hooks builds only (never shipped): checks whether a publisher key file exists in the test's own keys folder, never a library path."
+  },
+  {
     "path": "crates/fin-node/src/registry/mod.rs",
     "reason": "Reads a plugin source directory's manifest in validateManifest; plugin sources are never library paths."
   },

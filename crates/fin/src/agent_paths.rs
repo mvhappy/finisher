@@ -127,15 +127,53 @@ pub(crate) fn confine_with(path: &Path, roots: &[&Path], fold: bool) -> Result<P
     }
 }
 
-/// The roots of this run under an agent credential: the session's workspace and the project
-/// folder `fin` found (`--project`, else the nearest ancestor holding `finisher.project.json`).
-/// `None` without an agent credential.
+/// The variable the runtime sets to the session's project folder (`finisherd`, never the
+/// model): under an agent credential it is the only project folder `fin` trusts.
+pub const PROJECT_DIR_ENV: &str = "FIN_PROJECT_DIR";
+
+/// The session's project folder as the runtime gave it (`FIN_PROJECT_DIR`, absolute), its links
+/// resolved; `None` when unset, empty or relative.
+pub fn session_project_dir() -> Option<PathBuf> {
+    let v = std::env::var_os(PROJECT_DIR_ENV).filter(|v| !v.is_empty())?;
+    let p = Path::new(&v);
+    p.is_absolute().then(|| real(p))
+}
+
+/// Under an agent credential, `--project` must name the session's own project folder (the
+/// runtime's `FIN_PROJECT_DIR`, compared after resolving links); anything else is
+/// `PROJECT_NOT_FOUND`. The model cannot widen what `fin` reads by naming another root.
+pub fn check_project(explicit: Option<&Path>) -> Result<(), CoreError> {
+    let Some(given) = explicit else {
+        return Ok(());
+    };
+    if !crate::agent_session::active() {
+        return Ok(());
+    }
+    let same = session_project_dir().is_some_and(|dir| {
+        let g = real(&crate::paths::expand_home(given));
+        parts(&g, FOLD) == parts(&dir, FOLD)
+    });
+    if same {
+        return Ok(());
+    }
+    Err(CoreError::new(
+        "PROJECT_NOT_FOUND",
+        "this agent session works on its own project only",
+    )
+    .with_details(json!({ "dir": given.display().to_string() }))
+    .with_fix("run fin from the session's workspace, without --project"))
+}
+
+/// The roots of this run under an agent credential: the session's workspace and its project
+/// folder, both from the runtime (`FIN_PROJECT_DIR`), never from `--project` or the working
+/// directory. `None` without an agent credential.
 pub fn roots(project: Option<&Path>) -> Result<Option<(PathBuf, PathBuf)>, CoreError> {
     let Some(session) = crate::agent_session::session_id() else {
         return Ok(None);
     };
-    let Some(dir) = crate::backend::project_dir(project)? else {
-        // No project folder: nothing to read from but the workspace, which is inside one.
+    check_project(project)?;
+    let Some(dir) = session_project_dir() else {
+        // No project folder from the runtime: nothing is readable (fail closed).
         return Err(not_allowed(".", "noProject"));
     };
     let workspace = dir.join("workspace").join(&session);
