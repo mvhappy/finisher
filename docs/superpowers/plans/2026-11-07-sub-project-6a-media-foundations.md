@@ -24,7 +24,7 @@
 **Tech stack:**
 - Rust 2024; `wgpu` 30 (MIT OR Apache-2.0); `rav1d` 1.1 (BSD-2-Clause); `mp4-atom` 0.17 (MIT OR Apache-2.0); SVT-AV1 C sources as a git submodule at a pinned release tag (BSD-3-Clause-Clear + AOMedia Patent License 1.0), built with `cmake`; `png` (MIT OR Apache-2.0); `memmap2` (MIT OR Apache-2.0); `libm` **pinned `=0.2.16`** (the version 4C resolves); `pollster` (Apache-2.0 OR MIT) to block on wgpu futures in the worker.
 - Each new crate is checked with `cargo deny` in the task that adds it; native sources and run-time-loaded libraries go into `third_party/native.json` and `third_party/runtime.json` (Task 1).
-- Node 24 (owner decision 2026-11-07, matching Electron's embedded Node; until TASKS.md's "switch repo Node 26 → 24" item lands, the version `.superpowers/env.sh` pins), Effect 4, vitest; CI adds `cmake` and `nasm` (Windows, Linux) and Mesa's lavapipe (Linux).
+- Node 24 (owner decision 2026-11-07, matching Electron's embedded Node; the repository is on 24.22.2 since 2026-11-08; `.superpowers/env.sh` pins it), Effect 4, vitest; CI adds `cmake` and `nasm` (Windows, Linux) and Mesa's lavapipe (Linux).
 
 ## Global Constraints
 

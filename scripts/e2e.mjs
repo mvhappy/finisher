@@ -64,7 +64,8 @@ async function main(argv) {
     build("pnpm", ["--filter", "@finisher/fin-node", "build"]);
     build("pnpm", ["--filter", "@finisher/fin-node", "build:test"]);
   }
-  assertNoTestHooks();
+  // A fake server (E2E_SERVER_CMD) never reaches `fin`, so the release binary is not needed (or checked).
+  if (!process.env.E2E_SERVER_CMD) assertNoTestHooks();
   // The builds run synchronously (a cold release build can take minutes in CI), so the
   // deadline covers the run itself.
   const names = argv.filter((a) => !a.startsWith("--"));

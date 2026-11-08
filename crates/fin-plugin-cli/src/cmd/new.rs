@@ -77,7 +77,7 @@ pub fn run(raw: &[String]) -> Result<Value, CliError> {
     } else {
         manifest["platforms"] = json!(fin_plugin_api::Platform::ALL);
         manifest["runtime"] =
-            json!({ "type": "node", "main": "dist/plugin.mjs", "node": ">=26.12" });
+            json!({ "type": "node", "main": "dist/plugin.mjs", "node": ">=24.22" });
         write(dir, "dist/plugin.mjs", b"// The plugin entry point.\n")?;
     }
     let mut text = serde_json::to_string_pretty(&manifest).expect("a manifest serialises");

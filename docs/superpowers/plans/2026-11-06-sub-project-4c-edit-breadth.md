@@ -60,7 +60,7 @@ Everything is driven and tested through `fin` → `finisherd`. There is no UI wo
   - **`fin-core` dev:** `blake3`.
   - **CI only:** `wasmtime` (Apache-2.0 WITH LLVM-exception).
 - **No font files are in the repository or in any package.** The initial catalog (Decision 30) lists upstream OFL-1.1 files at pinned commits or release tags.
-- Node 26, Effect 4, vitest.
+- Node 24, Effect 4, vitest.
 
 **Spec:** `docs/specs/2026-11-04-sub-project-4-core-breadth-design.md` §5 (4C). The plan also depends on:
 - §1–2;
@@ -129,7 +129,7 @@ Parent: `docs/specs/2026-11-01-finisher-architecture-design.md` §6.2–6.4, §7
 - **Every edit gets golden tests:** apply, inverse, shift map and `inverse_shifts_mirror` (Decision 23). **Every op with nested ids gets `ids_cover_every_id_in_json`** (Decision 24).
 - **Before each commit, every task runs** `rtk cargo test --workspace`, `rtk pnpm test` and `rtk pnpm gates`. Tasks that touch the TS side or `fin` also run `rtk pnpm e2e` once at the end.
 - Commits use Conventional Commits, author `mvhappy <333925574+mvhappy@users.noreply.github.com>`, trailer `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`.
-- Prefix shell commands with `rtk`, after `source .superpowers/env.sh` (Node 26).
+- Prefix shell commands with `rtk`, after `source .superpowers/env.sh` (Node 24).
 - **The repo is public:** no host names, IPs, user names or key names in tracked files, fixtures included. Cross-host details stay in `archive/hosts.md`. Spikes and scratch work go in `archive/`.
 - **Tracker:** each task ticks its line in `TASKS.md` under "Sub-project 4C: edit breadth", in the same commit.
 - **Batches** (spec §8). Each batch must be green before the next starts:

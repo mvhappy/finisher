@@ -1,7 +1,6 @@
 // The job engine's event sink (spec §6.8, 5C-1 plan Decision 42): `job.done`, `worker.exit`
-// and forwarded `diag` payloads. Until diagnostics D4 wires the journal into finisherd the
-// engine is given `memorySink()`; D4 replaces it with a journal sink, which hashes a
-// `pluginId` into `worker.exit`'s `plugin: Hashed`.
+// and forwarded `diag` payloads. `finisherd` gives the engine `journalSink` (`journal-sink.ts`,
+// D34, Task 12); the engine's tests read `memorySink()`.
 import type { JobDone, WorkerExit } from "@finisher/core-types";
 import { Context, Layer } from "effect";
 

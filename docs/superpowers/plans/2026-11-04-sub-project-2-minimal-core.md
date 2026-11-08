@@ -6,7 +6,7 @@
 
 **Architecture:** `fin-core` (pure Rust, WASM-clean) owns the model, rational time, four ops (`asset.add`, `clip.insert`, `clip.trim`, `clip.delete`), apply/invert/rebase and the JSON Schema. `fin-store` persists committed transactions in SQLite on local disk. `fin-node` exposes store + probe to Node via napi-rs. `finisherd` (TypeScript, Effect 4) serves one RPC protocol over WebSocket and a local socket. `fin` is a Rust CLI that links `fin-core` for offline validation and talks to `finisherd` over the local socket.
 
-**Tech Stack:** Rust 2024 (serde, schemars 1, rusqlite 0.41 bundled, napi 3 / napi-derive 3, clap 4, thiserror 2, mp4 0.14, blake3, interprocess 2), Node 26.12.1 (native TS type stripping, `node:sqlite`), pnpm 12, effect 4.0.x + @effect/platform-node 4.0.x, @napi-rs/cli 3, json-schema-to-typescript 16, vitest 5.
+**Tech Stack:** Rust 2024 (serde, schemars 1, rusqlite 0.41 bundled, napi 3 / napi-derive 3, clap 4, thiserror 2, mp4 0.14, blake3, interprocess 2), Node 24.22.2 (native TS type stripping, `node:sqlite`), pnpm 12, effect 4.0.x + @effect/platform-node 4.0.x, @napi-rs/cli 3, json-schema-to-typescript 16, vitest 5.
 
 **Spec:** `docs/specs/2026-11-01-finisher-architecture-design.md` — §4 (topology, rules), §6.1–6.5 (layout, model, ops, concurrency), §7 (boundary), §9 (`fin`), §19 (errors), §22 (testing), §24 row 2, §27.1 and §27.7.
 
@@ -23,7 +23,7 @@
 - The live database lives at `<server-data>/projects/<project-id>/project.fdb`, never in the project folder (§6.1, D27).
 - Child processes start from an explicit environment allow-list (§27.7).
 - Every task runs `cargo test --workspace`, `pnpm test`, `pnpm gates` before committing; Conventional Commits; author `mvhappy <333925574+mvhappy@users.noreply.github.com>`; trailer `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`.
-- Prefix shell commands with `rtk`. Node 26 via `source .superpowers/env.sh`.
+- Prefix shell commands with `rtk`. Node 24 via `source .superpowers/env.sh`.
 
 ## Decisions taken here (not in the spec; recorded in spec §27 by Task 0)
 

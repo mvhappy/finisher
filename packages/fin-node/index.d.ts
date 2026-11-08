@@ -549,6 +549,8 @@ export declare const testHooks:
         path: string,
         opts?: { seconds?: number; fps?: number; audio?: boolean; sampleRate?: number },
       ): void;
+      /** macOS: the paths process `pid` holds open or mapped (`proc_pidinfo`); throws `IO_ERROR` when they cannot be read, and elsewhere. */
+      heldPaths(pid: number): string[];
       /** While `hang` is true the stat of library root `root` blocks, as on a dead hard mount. */
       libraryProbeHang(root: string, hang: boolean): void;
       /** How many stats of library root `root` have started. */
