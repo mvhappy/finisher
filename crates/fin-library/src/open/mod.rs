@@ -11,7 +11,9 @@
 //!    RESOLVE_NO_MAGICLINKS)` from the root's descriptor (with `O_NOATIME` when we own the
 //!    file, dropped after one `EPERM`), falling back on `ENOSYS` or `EPERM` (seccomp in
 //!    containers) to per-component `openat(O_NOFOLLOW | O_DIRECTORY)`, each component checked
-//!    to be a directory; macOS `O_NOFOLLOW_ANY`. **Nested mounts below the root are crossed**:
+//!    to be a directory; macOS `O_NOFOLLOW_ANY`; Windows per-component relative opens with
+//!    `FILE_OPEN_REPARSE_POINT`, the file without it, the final path checked under the root
+//!    (`open::windows`). **Nested mounts below the root are crossed**:
 //!    the walker catalogues them (Decision 17, per directory), so the opened handle must be on
 //!    the row's device ([`Expect::check_volume`]: another device is [`OpenError::Changed`]);
 //!    a row without a device must be on the root's mount ([`OpenError::Escapes`]).
@@ -35,11 +37,15 @@ use crate::types::{Expect, OpenError};
 mod linux;
 #[cfg(target_os = "macos")]
 mod macos;
+#[cfg(windows)]
+mod windows;
 
 #[cfg(target_os = "linux")]
 use linux as os;
 #[cfg(target_os = "macos")]
 use macos as os;
+#[cfg(windows)]
+use windows as os;
 
 /// Opens the file at `rel` below `root` for reading (Decision 19). `rel` is the catalogued raw
 /// chain; `expect` the catalogued size, mtime and file id; `hydrate` the library's setting.
@@ -62,11 +68,11 @@ pub fn open_for_read(
             "the root is not a file",
         )));
     };
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[cfg(any(target_os = "linux", target_os = "macos", windows))]
     {
         os::open(root, dir, name, expect, hydrate)
     }
-    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
     {
         let _ = (root, dir, name, expect, hydrate);
         Err(OpenError::Io(io::Error::new(
@@ -78,7 +84,7 @@ pub fn open_for_read(
 
 /// The stub names that stand for `name` (Decision 12): `<name>.nextcloud`, `<name>.owncloud`,
 /// `.<name>.icloud`.
-#[cfg_attr(not(unix), allow(dead_code))]
+#[cfg_attr(not(any(unix, windows)), allow(dead_code))]
 pub(crate) fn stub_names(name: &[u8]) -> [Vec<u8>; 3] {
     [
         [name, b".nextcloud"].concat(),

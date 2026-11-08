@@ -5,6 +5,7 @@
 #![allow(dead_code)]
 
 use std::io::{BufRead, BufReader, Write};
+#[cfg(unix)]
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, ExitStatus, Stdio};
@@ -342,12 +343,30 @@ pub fn write_file(root: &Path, rel: &str, bytes: &[u8]) -> PathBuf {
 }
 
 /// What the catalog would expect for the file at `path`.
+#[cfg(unix)]
 pub fn expect_of(path: &Path) -> Expect {
     let m = std::fs::symlink_metadata(path).unwrap();
     Expect {
         size: m.len(),
         mtime_ns: m.mtime() * 1_000_000_000 + m.mtime_nsec(),
         file_id: Some(m.ino().to_be_bytes().to_vec()),
+        dev: None,
+    }
+}
+
+/// What the catalog would expect for the file at `path`: on Windows its entry as the native
+/// source lists it (size, 100 ns mtime, 128-bit id).
+#[cfg(windows)]
+pub fn expect_of(path: &Path) -> Expect {
+    use fin_library::Source;
+    let src = fin_library::source::NativeSource::new(path.parent().unwrap());
+    let dir = src.open_dir(&RawRel::root()).unwrap();
+    let name = path.file_name().unwrap().to_str().unwrap().as_bytes();
+    let e = src.stat_child(&dir, name).unwrap().expect("listed");
+    Expect {
+        size: e.size,
+        mtime_ns: e.mtime_ns,
+        file_id: e.file_id,
         dev: None,
     }
 }

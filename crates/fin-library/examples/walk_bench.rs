@@ -8,17 +8,17 @@
 //! `--create` or after the caches were dropped is the cold one (Linux `echo 3 >
 //! /proc/sys/vm/drop_caches`, as root; macOS `purge`).
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 fn main() {
     bench::main();
 }
 
-#[cfg(not(unix))]
+#[cfg(not(any(unix, windows)))]
 fn main() {
-    eprintln!("walk_bench runs on Linux and macOS");
+    eprintln!("walk_bench runs on Linux, macOS and Windows");
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 mod bench {
     use std::path::{Path, PathBuf};
     use std::sync::Arc;

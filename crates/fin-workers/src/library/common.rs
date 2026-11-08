@@ -62,8 +62,8 @@ pub fn policy_name() -> String {
     .to_owned()
 }
 
-/// The source a scan reads: the native one, behind the test overlay in test builds.
-#[cfg(unix)]
+/// The source a scan reads: the native one (Linux, macOS, Windows), behind the test overlay
+/// in test builds.
 pub fn source(root: &Path) -> Result<Arc<dyn Source>, JobError> {
     let native: Arc<dyn Source> = Arc::new(fin_library::source::NativeSource::new(root));
     #[cfg(feature = "test-hooks")]
@@ -75,15 +75,6 @@ pub fn source(root: &Path) -> Result<Arc<dyn Source>, JobError> {
     {
         Ok(native)
     }
-}
-
-/// Windows has no source yet (plan 5D Task 3).
-#[cfg(not(unix))]
-pub fn source(_root: &Path) -> Result<Arc<dyn Source>, JobError> {
-    Err(JobError::new(
-        "LIBRARY_UNSUPPORTED",
-        "library scans are not available on this OS yet",
-    ))
 }
 
 /// Sets a `fin_library` cancel flag when the job's token is set, for as long as it lives.

@@ -1,5 +1,6 @@
 //! What a scan reads a root through (Decision 4). Implementations: [`NativeSource`] (Linux
-//! `getdents64` + `statx` and macOS `getattrlistbulk`, Task 2; Windows, Task 3) and [`fake`]
+//! `getdents64` + `statx` and macOS `getattrlistbulk`, Task 2; Windows `NtQueryDirectoryFileEx`
+//! on directory handles, Task 3) and [`fake`]
 //! (feature `test-hooks`). A source **never opens a file**: it opens
 //! directories (without following links, always by their raw component chain from the root)
 //! and lists them with each entry's metadata.
@@ -19,9 +20,17 @@ pub(crate) mod linux;
 pub(crate) mod macos;
 #[cfg(unix)]
 pub(crate) mod unix;
+#[cfg(windows)]
+pub(crate) mod win;
+#[cfg(windows)]
+pub(crate) mod win_dir;
+#[cfg(windows)]
+pub(crate) mod windows;
 
 #[cfg(unix)]
 pub use unix::NativeSource;
+#[cfg(windows)]
+pub use windows::NativeSource;
 
 /// The OS attribute word of an entry, tagged by its OS family so the pure rules
 /// ([`crate::placeholder`]) read it the same on every host.

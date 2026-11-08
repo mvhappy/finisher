@@ -3,7 +3,9 @@
 use std::collections::HashSet;
 
 use fin_library::exclude::code;
-use fin_library::placeholder::{SF_DATALESS, Stub, classify, from_attrs, shadowed, stub, win::*};
+use fin_library::placeholder::{
+    SF_DATALESS, Stub, classify, dir_from_attrs, from_attrs, shadowed, stub, win::*,
+};
 use fin_library::reparse::*;
 use fin_library::{Attrs, EntryType, Excludes, Placeholder, RawEntry, RawRel, ScanEntry, listing};
 
@@ -165,6 +167,26 @@ fn classify_matrix() {
         assert_eq!(classify(&e, &none()), want, "{what}");
         assert_eq!(from_attrs(attrs), want, "{what}");
     }
+
+    // A directory is a placeholder only by a bit that says its listing is not local:
+    // `UNPINNED` alone ("free up space") leaves it populated (measured on Cloud Files).
+    let unpinned_dir = w(FILE_ATTRIBUTE_DIRECTORY | RP | FILE_ATTRIBUTE_UNPINNED);
+    let e = entry("d", Dir, unpinned_dir, Some(IO_REPARSE_TAG_CLOUD));
+    assert_eq!(classify(&e, &none()), None, "unpinned directory");
+    assert_eq!(dir_from_attrs(unpinned_dir), None);
+    assert_eq!(
+        from_attrs(unpinned_dir),
+        Some(Placeholder::Unpinned),
+        "the file rule"
+    );
+    // Cloud Files' not-yet-populated directory: OFFLINE | RECALL_ON_DATA_ACCESS.
+    let unpopulated = w(FILE_ATTRIBUTE_DIRECTORY
+        | RP
+        | FILE_ATTRIBUTE_OFFLINE
+        | 0x2000
+        | FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS);
+    let e = entry("d", Dir, unpopulated, Some(IO_REPARSE_TAG_CLOUD));
+    assert_eq!(classify(&e, &none()), Some(Placeholder::RecallOnData));
 }
 
 #[test]

@@ -51,6 +51,23 @@ fn main() {
             ),
             Err(e) => println!("fields: {e}"),
         }
+        #[cfg(windows)]
+        match fin_library::volume::windows::fields_of(path) {
+            Ok(f) => println!(
+                "fs={} serial={:016x} share={:?} remote={} volume_root={} case_sensitive={} file_id={}",
+                f.fs_name,
+                f.serial,
+                f.share,
+                f.remote,
+                f.volume_root,
+                f.case_sensitive,
+                f.file_id
+                    .iter()
+                    .map(|b| format!("{b:02x}"))
+                    .collect::<String>()
+            ),
+            Err(e) => println!("fields: {e}"),
+        }
         match fin_library::volume::root_stat(path) {
             Ok(s) => println!(
                 "key={} kind={} dev_id={} parent_dev_id={:?} mount_root={} case_sensitive={} remote={} root_file_id={:?} entries={} sample={:?}",

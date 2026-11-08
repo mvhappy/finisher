@@ -53,6 +53,8 @@ pub mod linux;
 #[cfg(target_os = "macos")]
 pub mod macos;
 mod probe;
+#[cfg(windows)]
+pub mod windows;
 
 #[cfg(feature = "test-hooks")]
 pub use probe::hooks as probe_hooks;
@@ -209,12 +211,12 @@ pub fn linux_case_sensitive(fstype: &str, options: &str) -> bool {
 
 /// A root's facts now ([`crate::source::Source::stat_root`] of the native source).
 pub fn root_stat(root: &Path) -> io::Result<RootStat> {
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     {
         use crate::source::Source as _;
         crate::source::NativeSource::new(root).stat_root()
     }
-    #[cfg(not(unix))]
+    #[cfg(not(any(unix, windows)))]
     {
         let _ = root;
         Err(io::Error::new(
@@ -243,6 +245,22 @@ pub fn unreachable_code(e: &io::Error) -> &'static str {
                 return "DISCONNECTED";
             }
             libc::EIO => return "IO",
+            _ => {}
+        }
+    }
+    #[cfg(windows)]
+    if let Some(code) = e.raw_os_error() {
+        match code {
+            // The Cloud Files range (`ERROR_CLOUD_FILE_*`): the provider would have to fetch.
+            358..=406 => return crate::walk::code::CLOUD_ONLY,
+            // UNEXP_NET_ERR, NETNAME_DELETED, BAD_NET_NAME, CONNECTION_UNAVAIL,
+            // NO_NET_OR_BAD_PATH, NETWORK_UNREACHABLE, HOST_UNREACHABLE, NOT_CONNECTED, and a
+            // removed or unready device (NOT_READY, DEV_NOT_EXIST).
+            59 | 64 | 67 | 1201 | 1203 | 1231 | 1232 | 2250 | 21 | 55 => return "DISCONNECTED",
+            // BAD_NETPATH: the server answers, the share is gone.
+            53 => return "NOT_FOUND",
+            // DIRECTORY_NAME_INVALID: the root is a file.
+            267 => return "NOT_A_DIRECTORY",
             _ => {}
         }
     }

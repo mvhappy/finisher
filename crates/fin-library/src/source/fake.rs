@@ -65,7 +65,7 @@ pub struct FakeSource {
 }
 
 fn is_placeholder(e: &RawEntry) -> bool {
-    crate::placeholder::from_attrs(e.attrs).is_some()
+    crate::placeholder::attrs_of(e.entry_type, e.attrs).is_some()
 }
 
 /// The nodes along `rel` (the last one is `rel`'s), or `NotFound`.

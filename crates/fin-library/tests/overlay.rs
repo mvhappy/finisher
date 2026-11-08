@@ -1,9 +1,9 @@
-//! The walker over the real Unix source, and the test overlay (plan 5D Task 4): a
+//! The walker over the real native source (Linux, macOS, Windows), and the test overlay
+//! (plan 5D Tasks 3–4): a
 //! `.fin-fake.json` at a real root marks paths as placeholders, automounts and mounts, delays
 //! and fails reads, and logs every `open_for_read` of a listed path outside the root.
 // Tests build and inspect trees by path; never a library reader (`scripts/clippy-allow.json`).
 #![allow(clippy::disallowed_methods)]
-#![cfg(unix)]
 
 mod support;
 mod walk_util;
@@ -39,20 +39,69 @@ fn real_tree(root: &Path) {
         write(&root.join(f), b"data");
     }
     fs::create_dir_all(root.join("net")).unwrap();
-    use std::os::unix::ffi::OsStrExt;
-    write(
-        &root.join("b").join(std::ffi::OsStr::from_bytes(ODD_NAME)),
-        b"x",
-    );
+    write(&odd_path(&root.join("b")), b"x");
+    #[cfg(unix)]
     std::os::unix::fs::symlink(root.join("a"), root.join("link")).unwrap();
+    #[cfg(windows)]
+    {
+        let (l, t) = (root.join("link"), root.join("a"));
+        let ok = std::process::Command::new("cmd")
+            .args([
+                "/C",
+                "mklink",
+                "/J",
+                l.to_str().unwrap(),
+                t.to_str().unwrap(),
+            ])
+            .output()
+            .unwrap()
+            .status
+            .success();
+        assert!(ok, "mklink /J");
+    }
+}
+
+/// Sets a directory's mtime (Windows opens a directory only with backup semantics, and
+/// needs write access to change its times).
+fn touch_dir(dir: &Path, when: SystemTime) {
+    #[cfg(unix)]
+    let f = fs::File::open(dir).unwrap();
+    #[cfg(windows)]
+    let f = {
+        use std::os::windows::fs::OpenOptionsExt;
+        fs::OpenOptions::new()
+            .write(true)
+            .custom_flags(0x0200_0000) // FILE_FLAG_BACKUP_SEMANTICS
+            .open(dir)
+            .unwrap()
+    };
+    f.set_modified(when).unwrap();
+}
+
+/// [`ODD_NAME`] below `dir`.
+fn odd_path(dir: &Path) -> std::path::PathBuf {
+    #[cfg(unix)]
+    {
+        use std::os::unix::ffi::OsStrExt;
+        dir.join(std::ffi::OsStr::from_bytes(ODD_NAME))
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::ffi::OsStringExt;
+        let wide = fin_library::raw::to_wide(ODD_NAME).unwrap();
+        dir.join(std::ffi::OsString::from_wide(&wide))
+    }
 }
 
 /// A name a byte-preserving walk must keep as listed: non-UTF-8 on Linux; on macOS (APFS and
 /// HFS+ refuse invalid UTF-8 with `EILSEQ`) an NFD name, which APFS stores and lists as given.
 #[cfg(target_os = "linux")]
 const ODD_NAME: &[u8] = b"caf\xe9.mov";
-#[cfg(not(target_os = "linux"))]
+#[cfg(target_os = "macos")]
 const ODD_NAME: &[u8] = b"cafe\xcc\x81.mov";
+/// Windows: a UTF-16 name with an unpaired surrogate (NTFS stores it), WTF-8 on the wire.
+#[cfg(windows)]
+const ODD_NAME: &[u8] = b"caf\xed\xa0\x80.mov";
 
 fn source(root: &Path) -> Arc<dyn Source> {
     overlay::wrap(root, Arc::new(NativeSource::new(root))).unwrap()
@@ -87,13 +136,15 @@ fn real_walk_lists_raw_names_and_skips_links() {
         s.identity.enumeration,
         if cfg!(target_os = "linux") {
             "getdents64"
+        } else if cfg!(windows) {
+            "FileIdExtdDirectoryInfo"
         } else {
             "getattrlistbulk"
         }
     );
     let es = entries(&batches);
     let odd = es.iter().find(|e| e.name == ODD_NAME).unwrap();
-    assert_eq!(odd.name_lossy, cfg!(target_os = "linux"));
+    assert_eq!(odd.name_lossy, !cfg!(target_os = "macos"));
     if !odd.name_lossy {
         assert_eq!(odd.name_nfc, "caf\u{e9}.mov");
     }
@@ -126,10 +177,17 @@ fn real_walk_is_deterministic_across_thread_counts() {
         assert_eq!((s.incomplete, s.timeouts), (0, 0), "threads {threads}");
         seen.push(serde_json::to_string(&batches).unwrap());
     }
-    assert!(
-        seen.windows(2).all(|w| w[0] == w[1]),
-        "batches differ by thread count"
-    );
+    for w in seen.windows(2) {
+        if let Some(i) = w[0].bytes().zip(w[1].bytes()).position(|(a, b)| a != b) {
+            let at = |s: &str| s[i.saturating_sub(200)..(i + 200).min(s.len())].to_owned();
+            panic!(
+                "batches differ by thread count:\n{}\n---\n{}",
+                at(&w[0]),
+                at(&w[1])
+            );
+        }
+        assert_eq!(w[0].len(), w[1].len(), "batches differ by thread count");
+    }
 }
 
 #[test]
@@ -153,10 +211,7 @@ fn real_poll_relists_only_the_changed_directory() {
     // A new file in a/y moves a/y's mtime (set explicitly: coarse clocks).
     write(&root.join("a/y/new.mov"), b"n");
     let later = SystemTime::now() + Duration::from_secs(5);
-    fs::File::open(root.join("a/y"))
-        .unwrap()
-        .set_modified(later)
-        .unwrap();
+    touch_dir(&root.join("a/y"), later);
     let (r, batches) = run(source(&root), WalkMode::Poll { known }, &opts(4));
     assert_eq!(r.unwrap().listed, 1);
     assert_eq!(done_paths(&batches), ["a/y"]);
@@ -222,10 +277,7 @@ fn fake_placeholders_open_counter_is_zero() {
     }
     // The root changed: a poll re-lists it and meets the placeholders again.
     write(&root.join("added.mov"), b"a");
-    fs::File::open(&root)
-        .unwrap()
-        .set_modified(SystemTime::now() + Duration::from_secs(5))
-        .unwrap();
+    touch_dir(&root, SystemTime::now() + Duration::from_secs(5));
     let (r, b) = run(source(&root), WalkMode::Poll { known }, &opts(4));
     r.unwrap();
     assert!(done_paths(&b).contains(&"cloud!CLOUD_ONLY".to_owned()));

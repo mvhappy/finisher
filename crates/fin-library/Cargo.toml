@@ -31,6 +31,25 @@ unicode-normalization = "0.1"
 # The Linux and macOS sources, volume identity and the safe opener (plan 5D Task 2).
 libc = "0.2.191"
 
+[target.'cfg(windows)'.dependencies]
+# The Windows source, volume identity and the safe opener (plan 5D Task 3): relative opens
+# (`NtCreateFile`), directory queries (`NtQueryDirectoryFileEx`) and handle facts.
+windows-sys = { version = "0.61", features = [
+    "Wdk_Foundation",
+    "Wdk_Storage_FileSystem",
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Storage_FileSystem",
+    "Win32_System_IO",
+] }
+
+[target.'cfg(windows)'.dev-dependencies]
+# A real Cloud Files sync root in the tests (`tests/cfapi_windows.rs`); never shipped.
+windows-sys = { version = "0.61", features = [
+    "Win32_Storage_CloudFilters",
+    "Win32_System_CorrelationVector",
+] }
+
 [dev-dependencies]
 fin-library = { path = ".", features = ["test-hooks"] }
 # `write_png` for the probe tests.

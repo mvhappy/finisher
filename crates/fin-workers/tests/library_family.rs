@@ -2,11 +2,11 @@
 //! policy and the rule that it starts no process.
 // Tests build and inspect trees by path; never a library reader (`scripts/clippy-allow.json`).
 #![allow(clippy::disallowed_methods)]
-#![cfg(unix)]
 
 mod support;
 
 use std::path::Path;
+#[cfg(target_os = "linux")]
 use std::time::Duration;
 
 use fin_core::events::names_jobs::{JOB_KINDS, WORKER_FAMILIES};
@@ -14,7 +14,9 @@ use fin_jobs::{Role, envelope_id, kinds};
 use fin_library::ExcludeSpec;
 use fin_library::params::{LibraryScanParams, PARAMS, ScanMode};
 use serde_json::json;
-use support::{Job, overlay, run_job, spawn, write_file};
+use support::{Job, run_job, spawn};
+#[cfg(target_os = "linux")]
+use support::{overlay, write_file};
 
 #[test]
 fn hello_lists_the_library_kinds() {

@@ -10,7 +10,11 @@
 //! Task 2 (Linux and macOS): the native [`source::NativeSource`] (`getdents64` + `statx`;
 //! `getattrlistbulk`), volume identity ([`identity`], [`root_state`]), the safe opener
 //! ([`open_for_read`], the only open of a file under a root) and the process's dataless
-//! policy ([`process`]). Windows is Task 3.
+//! policy ([`process`]).
+//!
+//! Task 3 (Windows): the same [`source::NativeSource`] from directory handles
+//! (`NtQueryDirectoryFileEx`, relative `NtCreateFile` opens that never follow a reparse
+//! point), volume identity from the volume serial and the UNC share, and the opener.
 //!
 //! Task 5: the budgeted reader ([`budget`]), the probe of one file ([`probe`], through
 //! `fin_probe::probe_reader`) and the on-demand whole-file hash ([`hash`]).
