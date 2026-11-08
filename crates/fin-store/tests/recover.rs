@@ -703,7 +703,19 @@ fn set_aside_child_branch_recovers_as_child_group() {
     let (p, c) = (&r.created[0], &r.created[1]);
     assert_eq!((p.parent.as_deref(), p.fork_seq), (Some(MAIN), 1));
     assert_eq!((c.parent.as_deref(), c.fork_seq), (Some(p.id.as_str()), 2));
-    assert_eq!(c.name, format!("{}-2", p.name), "{:?}", (&p.name, &c.name));
+    // Each name is `recovered-<server>-<stamp>`, stamped with its group's first commit second:
+    // in the same second the child takes `-2`, a second later a later stamp of its own.
+    let stamp = "YYYYMMDD-HHMMSS".len();
+    let server = &p.name[..p.name.len() - stamp];
+    if c.name.starts_with(&p.name) {
+        assert_eq!(c.name, format!("{}-2", p.name), "{:?}", (&p.name, &c.name));
+    } else {
+        assert!(
+            c.name.starts_with(server) && c.name.len() == p.name.len() && c.name > p.name,
+            "{:?}",
+            (&p.name, &c.name)
+        );
+    }
     assert_eq!(
         kinds(&r.committed),
         ["branch", "cherryPick", "branch", "cherryPick"]
