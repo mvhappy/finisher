@@ -1,6 +1,8 @@
 // Stage 4 of the chain (spec §4.4, §4.5, §4.6; plan 5A Decisions 18–21): every scope the RPC
 // needs (all of them), the human-only rule, and reach (the principal's projects and, for
 // principals with roots, every resolved path). In this order:
+//   0a. the principal kinds a rule allows (`kinds`: a session's own state, 7A's session driving):
+//      `SCOPE_DENIED` for any other kind, whatever scopes it holds;
 //   0. device-only payloads (training on, Decision 21): `CONSENT_UI_ONLY` for every other
 //      principal, the console too, before the human check;
 //   1. human-only, over every scope the call needs: its refusal tells a person what to do,
@@ -23,7 +25,7 @@ import {
   type Scope,
 } from "@finisher/contracts";
 import { Effect } from "effect";
-import { consentUiOnly, humanOnly, outOfReach, pathNotAllowed, scopeDenied } from "./fixes.ts";
+import { consentUiOnly, humanOnly, outOfReach, pathNotAllowed, scopeDenied, wrongKind } from "./fixes.ts";
 import { type ChainProjects, inside, type Resolved, rootsOf } from "./resolve.ts";
 
 /** The scope half of stage 4: human-only first, then every required scope. */
@@ -42,6 +44,8 @@ export function authorize(
   deps: ChainProjects,
 ): Effect.Effect<void, FinError> {
   return Effect.gen(function* () {
+    const kinds = ruleOf(tag).kinds;
+    if (kinds !== undefined && !kinds.includes(principal.kind)) return yield* Effect.fail(wrongKind(tag, principal, kinds));
     if (principal.kind !== "device" && ruleOf(tag).deviceOnly?.(payload as never) === true) {
       return yield* Effect.fail(consentUiOnly(tag, principal));
     }

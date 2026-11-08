@@ -4,6 +4,7 @@
 // `defaultScopes` in `auth.ts` (Decision 20).
 import { Schema } from "effect";
 import type { Rpc, RpcGroup } from "effect/rpc";
+import type { PrincipalKind } from "./auth.ts";
 import type { FinRpcs } from "./rpc.ts";
 
 export const SCOPES = [
@@ -33,6 +34,10 @@ export const SCOPES = [
   "plugin.install",
   "plugin.admin",
   "plugin.suggest",
+  "agent.read",
+  "agent.run",
+  "agent.approve",
+  "agent.admin",
 ] as const;
 
 export const ScopeSchema = Schema.Literals(SCOPES);
@@ -47,6 +52,11 @@ export const HUMAN_ONLY: ReadonlySet<Scope> = new Set<Scope>([
   "auth.admin",
   "plugin.install",
   "plugin.admin",
+  // Sub-project 7 (§3.5): answering approvals is a person's; deleting sessions and the provider
+  // settings are the owner's. `agent.run` and `agent.read` are not human-only: `fin` drives
+  // sessions as `local`, and 7B lets a parent agent drive its own children.
+  "agent.approve",
+  "agent.admin",
 ]);
 
 export type FinRpcTag = RpcGroup.Rpcs<typeof FinRpcs>["_tag"];
@@ -113,6 +123,14 @@ export interface RuleOf<T extends FinRpcTag> {
    */
   readonly unconfirmed?: "readOnly" | "service";
   /**
+   * The principal kinds that may call it, whatever scopes they hold; any other kind is
+   * `SCOPE_DENIED` (reason `principalKind`), before the human-only check. `agent.self` is the
+   * calling session's own, so only an `agent` credential has one; in 7A the session-driving
+   * calls are a person's, so an `agent` credential cannot hold them (7B opens them to a parent
+   * for its own children).
+   */
+  readonly kinds?: ReadonlyArray<PrincipalKind>;
+  /**
    * True for a payload only a `device` may send (the app's onboarding question: training on).
    * Every other principal is `CONSENT_UI_ONLY`, before the human-only check (Decision 21).
    */
@@ -128,11 +146,16 @@ export interface RpcRule {
   readonly targets?: ReadonlyArray<string>;
   readonly author?: string;
   readonly unconfirmed?: "readOnly" | "service";
+  readonly kinds?: ReadonlyArray<PrincipalKind>;
   readonly deviceOnly?: (payload: never) => boolean;
 }
 
 const PROJECT: ReadonlyArray<ResolverName> = ["project"];
 const BRANCH: ReadonlyArray<ResolverName> = ["project", "branch"];
+/** Who drives agent sessions in 7A: people, through `fin` (`local`), the console and the app (Decision 15). */
+const SESSION_DRIVERS: ReadonlyArray<PrincipalKind> = ["local", "console", "device"];
+/** The only kind with a session of its own. */
+const SESSION_OWN: ReadonlyArray<PrincipalKind> = ["agent"];
 
 /**
  * Every RPC's rule (spec §4.5 and §4.8); the mapped type makes a missing RPC a type error and
@@ -242,6 +265,36 @@ export const RPC_SCOPES: { readonly [T in FinRpcTag]: RuleOf<T> } = {
   "plugin.enable": { scopes: ["plugin.admin"] },
   "plugin.disable": { scopes: ["plugin.admin"] },
   "plugin.suggest": { scopes: ["plugin.suggest", "project.read"], resolve: PROJECT },
+  // The agent runtime (sub-project 7A Task 2, spec §3.5). Starting and driving sessions is
+  // `agent.run` and, in 7A, a person's through a human-driven kind (`SESSION_DRIVERS`); a start
+  // creates the root branch as the starter and mints the session's credential from the mode
+  // table, so the starter must itself hold `project.write` unless the session is `plan`.
+  // Reading sessions is `agent.read`; answering an approval is a person's (`agent.approve`,
+  // human-only), deleting a session the owner's (`agent.admin`), both with the typed code. A
+  // session's id is not a project: the handlers check the principal's reach.
+  "agent.session.start": {
+    scopes: ["agent.run"],
+    resolve: PROJECT,
+    escalate: (p) => (p.mode === "plan" ? ["project.read"] : ["project.read", "project.write"]),
+    kinds: SESSION_DRIVERS,
+  },
+  "agent.session.prompt": { scopes: ["agent.run"], kinds: SESSION_DRIVERS },
+  "agent.session.steer": { scopes: ["agent.run"], kinds: SESSION_DRIVERS },
+  "agent.session.interrupt": { scopes: ["agent.run"], kinds: SESSION_DRIVERS },
+  "agent.session.resume": { scopes: ["agent.run"], kinds: SESSION_DRIVERS },
+  "agent.session.end": { scopes: ["agent.run"], kinds: SESSION_DRIVERS },
+  "agent.session.list": { scopes: ["agent.read"], resolve: PROJECT },
+  "agent.session.get": { scopes: ["agent.read"] },
+  "agent.session.delete": { scopes: ["agent.admin"] },
+  "agent.watch": { scopes: ["agent.read"] },
+  "agent.approval.list": { scopes: ["agent.read"], resolve: PROJECT },
+  "agent.approval.answer": { scopes: ["agent.approve"] },
+  // Server facts: detection, sign-in state as reported, whether keys are set (never a value).
+  "agent.providers": { scopes: ["server.read"] },
+  // The calling session's own default branch and tries; `branch` is checked against the session's
+  // subtree by the handler (the payload names no project, so the policy stage cannot).
+  "agent.self": { scopes: ["project.read"], kinds: SESSION_OWN },
+  "agent.self.try": { scopes: ["project.write"], resolve: ["branch"], kinds: SESSION_OWN },
 };
 
 /** The RPCs that write through the store's guard: exactly the rules with `writes`. */

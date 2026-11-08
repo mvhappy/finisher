@@ -12,6 +12,7 @@ import { ConnectionRegistryTag, ConnectionsTag } from "./connections.ts";
 import { issueChallenge } from "./auth/challenges.ts";
 import { actorFor, type CallMeta, Diagnostics } from "./diagnostics.ts";
 import { attemptJson, finError, toFinError } from "./errors.ts";
+import { agentHandlers } from "./agent/rpc.ts";
 import { Fonts } from "./fonts.ts";
 import { requireAbsolute, requireAbsoluteOpt } from "./paths.ts";
 import { pluginHandlers } from "./plugins/rpc.ts";
@@ -259,6 +260,7 @@ export const HandlersLive = FinRpcs.toLayer(
           diagnostics.record({ principal: principalOf(options), connection: `${connections.transport}:${options.client.id}` }, req, options.headers),
         ),
       ...pluginHandlers({ plugins, audit, guard }),
+      ...agentHandlers({ guard }),
     }), { connections, projects, audit, timed: guard, touch: (p) => credentials.touch(p.id) });
   }),
 );

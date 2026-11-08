@@ -6,6 +6,7 @@ import type { RpcGroup } from "effect/rpc";
 export type FinRpcTag = RpcGroup.Rpcs<typeof FinRpcs>["_tag"];
 
 export const P = "01aaaaaaaaaaaaaaaaaaaaaaaa";
+const S = "01eeeeeeeeeeeeeeeeeeeeeeee";
 const W = { projectId: P, txId: "01bbbbbbbbbbbbbbbbbbbbbbbb", author: "test" };
 
 export const SAMPLE_PAYLOADS: { readonly [T in FinRpcTag]: Record<string, unknown> } = {
@@ -75,5 +76,20 @@ export const SAMPLE_PAYLOADS: { readonly [T in FinRpcTag]: Record<string, unknow
   "plugin.enable": { id: "@acme/pack" },
   "plugin.content.get": { id: "@acme/pack", kind: "captionStyle", name: "bold" },
   "plugin.disable": { id: "@acme/pack" },
+  "agent.session.start": { projectId: P },
+  "agent.session.prompt": { sessionId: S, text: "trim the intro" },
+  "agent.session.steer": { sessionId: S, text: "shorter" },
+  "agent.session.interrupt": { sessionId: S },
+  "agent.session.resume": { sessionId: S },
+  "agent.session.end": { sessionId: S },
+  "agent.session.list": {},
+  "agent.session.get": { sessionId: S },
+  "agent.session.delete": { sessionId: S },
+  "agent.watch": { sessionId: S },
+  "agent.approval.list": {},
+  "agent.approval.answer": { id: "01dddddddddddddddddddddddd", decision: "allow" },
+  "agent.providers": {},
+  "agent.self": {},
+  "agent.self.try": { action: "record", branch: "try-1" },
   "plugin.suggest": { id: "@acme/pack", reason: "captions in the house style", projectId: P },
 };

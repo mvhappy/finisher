@@ -80,7 +80,7 @@ function harness(principal: Principal, more: Partial<ChainDeps> = {}, real: Reco
     },
   };
   // Every writing RPC, and a read by id, record what reaches them too.
-  for (const t of [...WRITE_RPCS, "snapshot.get", "project.acknowledgeRewind", "diagnostics.consent", "diagnostics.purge", "diagnostics.project", "diagnostics.export"]) handlers[t] ??= unary(t);
+  for (const t of [...WRITE_RPCS, "snapshot.get", "project.acknowledgeRewind", "diagnostics.consent", "diagnostics.purge", "diagnostics.project", "diagnostics.export", "agent.approval.answer", "agent.session.delete", "agent.session.start", "agent.session.prompt", "agent.session.list", "agent.self", "agent.self.try"]) handlers[t] ??= unary(t);
   Object.assign(handlers, real);
   const audit = { append: (e: AuditInput) => audited.push(e) } as unknown as Audit;
   const chained = withChain(handlers, { connections, projects, audit, ...more }) as unknown as Record<string, (p: unknown, o: unknown) => unknown>;
@@ -146,6 +146,9 @@ describe("the chain", () => {
       ["diagnostics.purge", { selector: "all" }],
       ["diagnostics.project", { projectId: A, collect: "default" }],
       ["diagnostics.export", { content: true }],
+      // 7A Task 2: answering an approval is a person's, deleting a session the owner's.
+      ["agent.approval.answer", { id: "01dddddddddddddddddddddddd", decision: "allow" }],
+      ["agent.session.delete", { sessionId: "01eeeeeeeeeeeeeeeeeeeeeeee" }],
     ];
     for (const [tag, payload] of escalations) {
       for (const p of kinds) {
@@ -161,6 +164,57 @@ describe("the chain", () => {
     expect(code(await harness(LOCAL).call("project.takeover", { projectId: A, confirm: false }))).toBeUndefined();
     expect(code(await harness(LOCAL).call("diagnostics.project", { projectId: A, collect: "never" }))).toBeUndefined();
     expect(code(await harness(LOCAL).call("diagnostics.export", {}))).toBeUndefined();
+  });
+
+  test("agent_self_is_for_agent_credentials_only (7A Task 2)", async () => {
+    const SELF = [
+      ["agent.self", {}],
+      ["agent.self.try", { action: "record", branch: "mine" }],
+    ] as const;
+    const session = agent({ scopes: [...MINT] });
+    for (const [tag, payload] of SELF) {
+      // Every other kind is refused whatever it holds: `local` and the console hold both scopes.
+      for (const p of [LOCAL, CONSOLE, mcp()]) {
+        const h = harness(p);
+        const refused = error(await h.call(tag, payload));
+        expect(refused, `${tag} × ${p.kind}`).toMatchObject({ code: "SCOPE_DENIED", details: { reason: "principalKind", principal: p.kind } });
+        expect(h.seen, `${tag} × ${p.kind}`).toEqual([]);
+        expect(h.audited.at(-1), `${tag} × ${p.kind}`).toMatchObject({ kind: "auth.denied", code: "SCOPE_DENIED", details: { rpc: tag, rule: "scopes", reason: "principalKind" } });
+      }
+      const ok = harness(session);
+      expect(code(await ok.call(tag, payload)), tag).toBeUndefined();
+      expect(ok.seen.map((x) => x.tag)).toEqual([tag]);
+      // The scope is still required of the agent.
+      const bare = harness(agent({ scopes: ["server.read"] }));
+      expect(error(await bare.call(tag, payload)), tag).toMatchObject({ code: "SCOPE_DENIED" });
+      expect(code(await harness(ANONYMOUS).call(tag, payload)), tag).toBe("UNAUTHENTICATED");
+    }
+  });
+
+  test("agent_sessions_are_driven_by_people_in_7A (7A Task 2)", async () => {
+    open = new Set([A]);
+    const drive = { projectId: A };
+    // An agent credential never starts or drives a session, even one minted with `agent.run`.
+    const parent = harness(agent({ scopes: [...MINT, "agent.run", "agent.read"] }));
+    for (const [tag, payload] of [
+      ["agent.session.start", drive],
+      ["agent.session.prompt", { sessionId: "s", text: "x" }],
+    ] as const) {
+      expect(error(await parent.call(tag, payload)), tag).toMatchObject({ code: "SCOPE_DENIED", details: { reason: "principalKind" } });
+    }
+    expect(parent.seen).toEqual([]);
+    // `fin` (local) and the console do; a mode other than plan also needs project.write.
+    expect(code(await harness(LOCAL).call("agent.session.start", drive))).toBeUndefined();
+    expect(code(await harness(CONSOLE).call("agent.session.start", { ...drive, mode: "plan" }))).toBeUndefined();
+    const device: Principal = { kind: "device", id: "d1", scopes: ["agent.run", "project.read"], projects: "*", branches: "*", human: true };
+    expect(error(await harness(device).call("agent.session.start", drive))).toMatchObject({ code: "SCOPE_DENIED", details: { scopes: ["project.write"] } });
+    expect(code(await harness(device).call("agent.session.start", { ...drive, mode: "plan" }))).toBeUndefined();
+    // Reading sessions is open to any kind that holds `agent.read`, within its projects' reach.
+    const reader = agent({ scopes: ["agent.read"] });
+    expect(code(await harness(reader).call("agent.session.list", {}))).toBeUndefined();
+    expect(code(await harness(reader).call("agent.session.list", { projectId: A }))).toBeUndefined();
+    expect(code(await harness(reader).call("agent.session.list", { projectId: B }))).toBe("PROJECT_NOT_FOUND");
+    expect(code(await harness(agent({ scopes: MINT })).call("agent.session.list", {}))).toBe("SCOPE_DENIED");
   });
 
   test("all_listed_scopes_are_required", async () => {

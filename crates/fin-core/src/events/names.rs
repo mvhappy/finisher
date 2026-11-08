@@ -249,85 +249,6 @@ pub static CLI_FLAGS: NameTable = NameTable::new(
     ],
 );
 
-/// `finisherd` RPC methods (`@finisher/contracts` `FinRpcs`), plus the `diagnostics.*` RPCs of
-/// Task D4, the handshake's `auth.prove` (5A Task 3) and `auth.ticket`, `auth.whoami`,
-/// `auth.revokeSelf` (5A Task 6), `console.challenge` (5A Task 7), `server.status`, `server.stop`
-/// and `auth.audit.list|purge` (5A Task 8), `auth.credential.mint|list|revoke` (5A Task 9), and the
-/// plugin and registry RPCs (8A Tasks 9a and 9b).
-pub static RPC_METHODS: NameTable = NameTable::new(
-    "RPC_METHODS",
-    &[
-        "asset.probe",
-        "auth.audit.list",
-        "auth.audit.purge",
-        "auth.credential.list",
-        "auth.credential.mint",
-        "auth.credential.revoke",
-        "auth.prove",
-        "auth.revokeSelf",
-        "auth.ticket",
-        "auth.whoami",
-        "branch.create",
-        "branch.list",
-        "branch.set",
-        "console.challenge",
-        "diagnostics.consent",
-        "diagnostics.export",
-        "diagnostics.project",
-        "diagnostics.purge",
-        "diagnostics.record",
-        "diagnostics.status",
-        "eval.audio",
-        "eval.frame",
-        "fonts.catalog",
-        "fonts.fetch",
-        "fonts.plan",
-        "fonts.status",
-        "history.checkpoint",
-        "history.cherryPick",
-        "history.merge",
-        "history.redo",
-        "history.revert",
-        "history.undo",
-        "ops.subscribe",
-        "plugin.content.get",
-        "plugin.disable",
-        "plugin.discard",
-        "plugin.enable",
-        "plugin.info",
-        "plugin.install",
-        "plugin.list",
-        "plugin.plan",
-        "plugin.remove",
-        "plugin.search",
-        "plugin.suggest",
-        "project.acknowledgeRewind",
-        "project.acknowledgeSalvage",
-        "project.compact",
-        "project.create",
-        "project.events",
-        "project.open",
-        "project.rebuild",
-        "project.recover",
-        "project.status",
-        "project.takeover",
-        "project.verify",
-        "registry.add",
-        "registry.forget",
-        "registry.list",
-        "registry.refresh",
-        "registry.remove",
-        "registry.status",
-        "server.hello",
-        "server.status",
-        "server.stop",
-        "snapshot.get",
-        "tx.commit",
-        "tx.get",
-        "other",
-    ],
-);
-
 /// Media file extensions a [`super::class::PathRef`] may keep (lower case, no dot).
 pub static MEDIA_EXTS: NameTable = NameTable::new(
     "MEDIA_EXTS",
@@ -484,6 +405,7 @@ pub static DETAIL_KEYS: NameTable = NameTable::new(
 pub use super::agent_names::{
     AGENT_MODELS, AGENT_PROVIDERS, AGENT_ROLES, AGENT_TOOLS, AGENT_UPSTREAMS, agent_upstream,
 };
+pub use super::names_rpc::RPC_METHODS;
 
 /// Bundled plugins (sub-project 8 spec §11): the ids of the plugins the app ships, without
 /// the leading `@` (a [`Name`] starts with a letter). `fin-node`'s compiled-in

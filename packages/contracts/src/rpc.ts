@@ -14,6 +14,31 @@ import type {
 import { Schema } from "effect";
 import { Rpc, RpcGroup } from "effect/rpc";
 import {
+  AgentApprovalAnswerPayload,
+  AgentApprovalAnswerSuccess,
+  AgentApprovalListPayload,
+  AgentApprovalListSuccess,
+  AgentProvidersSuccess,
+  AgentSelfSuccess,
+  AgentSelfTryPayload,
+  AgentSessionControlPayload,
+  AgentSessionControlSuccess,
+  AgentSessionDeletePayload,
+  AgentSessionDeleteSuccess,
+  AgentSessionGetPayload,
+  AgentSessionGetSuccess,
+  AgentSessionListPayload,
+  AgentSessionListSuccess,
+  AgentSessionPromptPayload,
+  AgentSessionPromptSuccess,
+  AgentSessionStartPayload,
+  AgentSessionStartSuccess,
+  AgentSessionSteerPayload,
+  AgentSessionSteerSuccess,
+  AgentWatchPayload,
+  WatchItem,
+} from "./agent.ts";
+import {
   AuthProvePayload,
   AuthProveSuccess,
   AuthTicketPayload,
@@ -506,4 +531,21 @@ export const FinRpcs = RpcGroup.make(
   Rpc.make("plugin.enable", { payload: PluginStatePayload, success: PluginStateSuccess, error: FinError }),
   Rpc.make("plugin.disable", { payload: PluginStatePayload, success: PluginStateSuccess, error: FinError }),
   Rpc.make("plugin.suggest", { payload: PluginSuggestPayload, success: PluginSuggestSuccess, error: FinError }),
+  // The agent runtime (sub-project 7A Task 2): sessions, the watch stream, approvals and the
+  // calling session's own state.
+  Rpc.make("agent.session.start", { payload: AgentSessionStartPayload, success: AgentSessionStartSuccess, error: FinError }),
+  Rpc.make("agent.session.prompt", { payload: AgentSessionPromptPayload, success: AgentSessionPromptSuccess, error: FinError }),
+  Rpc.make("agent.session.steer", { payload: AgentSessionSteerPayload, success: AgentSessionSteerSuccess, error: FinError }),
+  Rpc.make("agent.session.interrupt", { payload: AgentSessionControlPayload, success: AgentSessionControlSuccess, error: FinError }),
+  Rpc.make("agent.session.resume", { payload: AgentSessionControlPayload, success: AgentSessionControlSuccess, error: FinError }),
+  Rpc.make("agent.session.end", { payload: AgentSessionControlPayload, success: AgentSessionControlSuccess, error: FinError }),
+  Rpc.make("agent.session.list", { payload: AgentSessionListPayload, success: AgentSessionListSuccess, error: FinError }),
+  Rpc.make("agent.session.get", { payload: AgentSessionGetPayload, success: AgentSessionGetSuccess, error: FinError }),
+  Rpc.make("agent.session.delete", { payload: AgentSessionDeletePayload, success: AgentSessionDeleteSuccess, error: FinError }),
+  Rpc.make("agent.watch", { payload: AgentWatchPayload, success: WatchItem, error: FinError, stream: true }),
+  Rpc.make("agent.approval.list", { payload: AgentApprovalListPayload, success: AgentApprovalListSuccess, error: FinError }),
+  Rpc.make("agent.approval.answer", { payload: AgentApprovalAnswerPayload, success: AgentApprovalAnswerSuccess, error: FinError }),
+  Rpc.make("agent.providers", { payload: Schema.Struct({}), success: AgentProvidersSuccess, error: FinError }),
+  Rpc.make("agent.self", { payload: Schema.Struct({}), success: AgentSelfSuccess, error: FinError }),
+  Rpc.make("agent.self.try", { payload: AgentSelfTryPayload, success: AgentSelfSuccess, error: FinError }),
 );

@@ -663,7 +663,14 @@ Plan: `docs/superpowers/plans/2026-11-07-sub-project-7a-runtime-core.md` (revisi
 
 ### 7A-2 (after 5A)
 
-- [ ] Tasks 2, 3b, 6b, 7, 8b, 10–15
+- [x] Task 2: contracts for the agent RPCs and their scopes (branch `sp7a2-t2`). As built:
+  - `@finisher/contracts` `agent.ts`: `Session` (with `weights`, `usage`, `rootBranch?` absent in `plan`, no `providerRef`), `Run`, `Node` (inline `payload` or `blobRef`, `callId`), `Approval`, `WatchItem` (`nodeAdded|delta|statusChanged|usageUpdated|approvalOpened`), `Capabilities`/`ProviderInfo` for `agent.providers` (a key set or not, the local preset and reachability, never a key or an address), `AgentSelfSuccess`/`AgentSelfTryPayload` (Decision 14a: `record|setDefault|clear`, each try keeps the default it replaced), and the 15 payload/success pairs; bounded text (200,000 chars), title (200), attachments (8), list pages (≤200)
+  - `FinRpcs` gains `agent.session.start|prompt|steer|interrupt|resume|end|list|get|delete`, `agent.watch` (stream, in `STREAM_RPCS`), `agent.approval.list|answer`, `agent.providers`, `agent.self`, `agent.self.try`; `RPC_METHODS` (now in `fin-core` `events/names_rpc.rs`, re-exported from `names.rs` to keep it under 600 lines) lists all 15 and the two drift tests pass
+  - scopes `agent.read`, `agent.run`, `agent.approve` and `agent.admin`; the last two are `HUMAN_ONLY` (so `local` and `agent` are refused, the console needs the typed code: both payloads carry `challenge`). `agent.run` and `agent.read` are not human-only: `fin` drives sessions as `local`. A start needs `agent.run`, plus `project.read` and `project.write` unless `mode: plan`
+  - new rule field `kinds`: the principal kinds that may call an RPC whatever they hold, else `SCOPE_DENIED {reason: principalKind}` (audited as `auth.denied`, before the human-only check). `agent.self` and `agent.self.try` allow `agent` only (scopes `project.read`/`project.write`); the session-driving RPCs (`agent.session.start|prompt|steer|interrupt|resume|end`) allow `local`, `console` and `device`, so an agent credential cannot start or drive a session in 7A even if minted with `agent.run` (7B relaxes it for a parent's own children)
+  - `apps/finisherd/src/agent/rpc.ts` is a placeholder: every agent call that passes the chain answers `SERVER_UNAVAILABLE {reason: agentRuntimeNotWired}`; **Task 12 replaces it**. Handlers must check a session id against the principal's project reach (the chain cannot: the payload names no project), and the subtree check of `agent.self.try`'s `branch` (Task 7)
+  - tests: `agent.test.ts` (round trips of every `WatchItem` variant and the records, bounds, the rule table, human-only and confirmation, the start escalation), `index.test.ts` (tags, streams), `chain.test.ts` (`human_only_matrix` gains `agent.approval.answer` and `agent.session.delete`; `agent_self_is_for_agent_credentials_only`; `agent_sessions_are_driven_by_people_in_7A`)
+- [ ] Tasks 3b, 6b, 7, 8b, 10–15
 
 ## Sub-project 9: frontend and desktop shell (not designed yet)
 
