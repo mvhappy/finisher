@@ -164,8 +164,11 @@ describe("plans", () => {
       const e = await failure(s.life.install({ planId: plan.planId, digest: plan.digest }, CONSOLE));
       expect([e?.code, (e?.details as { reason?: string }).reason]).toEqual(["HUMAN_ONLY", "planMaker"]);
       expect(snapshot()).toEqual(before);
-      expect(JSON.parse(await s.native.stagedPlan(plan.planId)).planId).toBe(plan.planId);
+      // The row is kept so an approval is refused for what it is; the staged files are gone (M2).
+      expect(s.tables.plan(plan.planId)).toMatchObject({ unusable: true });
+      expect(await s.native.stagedPlan(plan.planId).then(() => "staged", (e: { code?: string }) => e.code)).toBe("PLAN_EXPIRED");
     }
+    expect(readdirSync(join(serverData, "plugins", "staging"))).toEqual([]);
     const mine = (await run(s.life.plan({ id: "@acme/pack" }, CONSOLE))).plan;
     expect(s.tables.plan(mine.planId)).toMatchObject({ byKind: "console", byId: "console", human: true });
     expect((await run(s.life.install({ planId: mine.planId, digest: mine.digest }, CONSOLE))).plugin).toMatchObject({ id: "@acme/pack", version: "1.0.0", installedBy: "console:console" });
@@ -179,7 +182,7 @@ describe("plans", () => {
     expect(e?.code).toBe("HUMAN_ONLY");
     expect(e?.fix).toMatch(/plan you made/);
     expect(s.tables.installed()).toEqual([]);
-    expect(s.rows().filter((r) => r.kind === "plugin.install")).toEqual([{ kind: "plugin.install", principalKind: "console", outcome: "denied", code: "HUMAN_ONLY", details: { code: "HUMAN_ONLY" } }]);
+    expect(s.rows().filter((r) => r.kind === "plugin.install")).toEqual([{ kind: "plugin.install", principalKind: "console", outcome: "denied", code: "HUMAN_ONLY", details: { code: "HUMAN_ONLY", planId: plan.planId, pluginId: "@acme/pack" } }]);
   });
 
   test("digest_must_match", async () => {
@@ -277,6 +280,8 @@ describe("approval", () => {
     for (const r of risks) {
       for (const maker of makers) {
         for (const approver of approvers) {
+          // Plans a person did not use stay open for ten minutes: the cap is tested on its own.
+          control.db.exec("DELETE FROM plugin_plans");
           const { plan } = await run(s.life.plan({ id: r.id }, maker));
           expect(plan.risk).toBe(r.risk);
           // The chain refuses a non-human approver first; the lifecycle refuses it again.
@@ -432,7 +437,7 @@ describe("updates", () => {
     expect(s.tables.installedOne("@acme/pack")).toMatchObject({ version: "1.1.0", autoUpdate: true, enabled: true, state: "active" });
     // Automatic updates are off by default.
     expect(s.tables.installedOne("@acme/manual")?.version).toBe("1.0.0");
-    expect(s.rows().filter((r) => r.kind === "plugin.update").map((r) => [r.principalKind, r.details])).toEqual([["console", { pluginId: "@acme/pack", version: "1.1.0", registryId: "team", permissionsAdded: 0, risk: "low" }]]);
+    expect(s.rows().filter((r) => r.kind === "plugin.update").map((r) => [r.principalKind, r.details])).toEqual([["console", { pluginId: "@acme/pack", version: "1.1.0", registryId: "team", permissionsAdded: 0, risk: "low", auto: true }]]);
     // 1.2 turns into code with network access: that widens, so it waits for a person.
     publish(s.reg, { packages: [code("@acme/pack", "1.2.0", [NET])] });
     const second = await run(s.h["registry.refresh"]({ id: "team" }, as(CONSOLE)));
@@ -531,7 +536,7 @@ describe("audit and suggestions", () => {
     await run(s.h["plugin.remove"]({ id: "@acme/tool", purgeData: true }, as(CONSOLE)));
     const rows = s.rows();
     expect(new Set(rows.map((r) => r.kind))).toEqual(new Set(["plugin.install", "plugin.grant", "plugin.enable", "plugin.revoke", "plugin.remove"]));
-    const allowed = new Set(["pluginId", "version", "registryId", "rootSha256", "permissionsAdded", "risk", "code", "thirdPartyCode"]);
+    const allowed = new Set(["pluginId", "version", "registryId", "rootSha256", "permissionsAdded", "risk", "code", "thirdPartyCode", "auto", "planId"]);
     for (const r of rows) for (const k of Object.keys(r.details)) expect(allowed, `${r.kind}.${k}`).toContain(k);
     // Nothing was dropped by the closed schema, and no path or publisher name was written.
     expect(s.audit.failures()).toBe(0);
@@ -558,13 +563,14 @@ describe("audit and suggestions", () => {
 describe("registry paths", () => {
   test("registry_path_shown_to_people_only", async () => {
     const s = await setup({ packages: ["@acme/pack@1.0.0"] });
-    for (const by of [CONSOLE, LOCAL, DEVICE]) {
+    for (const by of [CONSOLE, DEVICE]) {
       expect((await run(s.h["registry.list"]({}, as(by)))).registries[0]?.path, by.kind).toBe(s.reg.dir);
       expect((await run(s.h["registry.status"]({ id: "team" }, as(by)))).path, by.kind).toBe(s.reg.dir);
       const r = (await run(s.h["registry.refresh"]({ id: "team" }, as(by)))).results[0];
       expect(r?.ok && r.status.path, by.kind).toBe(s.reg.dir);
     }
-    for (const by of [AGENT, MCP]) {
+    // `local` is not a person (Decision 20): an agent in a shell authenticates as it (L1).
+    for (const by of [LOCAL, AGENT, MCP]) {
       const list = await run(s.h["registry.list"]({}, as(by, ["plugin.read"])));
       expect(list.registries[0], by.kind).not.toHaveProperty("path");
       expect(list.registries[0]?.id).toBe("team");

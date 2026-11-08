@@ -66,6 +66,11 @@ pub struct PlanRequest {
     /// Other plugin ids people may confuse this one with (installed, bundled, listed).
     #[serde(default)]
     pub known_ids: Vec<String>,
+    /// The plan's registry is not the one the installed version came from (another id, or the
+    /// same id under another trust root): the plan carries a `registryChanged` warning, which
+    /// is part of its digest. `finisherd` decides; the plan only says so.
+    #[serde(default)]
+    pub registry_changed: bool,
     /// Tests only (`fin-node`'s `test-hooks` builds set it): mark the plan agent-facing, since
     /// no agent-facing kind is consumable in 8A and the update rule must still be tested
     /// (8A Decision 23).
@@ -184,6 +189,9 @@ fn build(
             "thirdPartyCode",
             json!({ "confined": false }),
         ));
+    }
+    if req.registry_changed {
+        warnings.push(PlanWarning::new("registryChanged", json!({})));
     }
     warnings.append(&mut registry_warnings);
     warnings.extend(checks::licence_warning(&licence));

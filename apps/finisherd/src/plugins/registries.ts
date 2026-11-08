@@ -15,6 +15,7 @@ import { Context, Effect, Layer } from "effect";
 import { ControlStoreTag } from "../control/db.ts";
 import { attempt, attemptJson, finError, toFinError } from "../errors.ts";
 import { type Installed, type Lifecycle, makeLifecycle } from "./lifecycle.ts";
+import { reconcileStore, type StoreProblem } from "./store-sync.ts";
 import { actorOf, PluginTables, type RegistryRow } from "./tables.ts";
 
 export { actorOf, PluginTables } from "./tables.ts";
@@ -42,6 +43,10 @@ export interface PluginsShape {
   /** Plans, approvals and the lifecycle (Task 9b). */
   readonly lifecycle: Lifecycle;
   readonly installed: () => Effect.Effect<InstalledRow[], FinError>;
+  /** Rows whose package folder is missing from the store, as the last start found them (L4). */
+  readonly problems: () => ReadonlyArray<StoreProblem>;
+  /** Aligns the store's folders with the rows: orphans are deleted, rows without a folder disabled. */
+  readonly reconcileStore: () => Effect.Effect<void, FinError>;
   readonly search: (q: PluginSearchRequest) => Effect.Effect<Listing[], FinError>;
   readonly info: (id: string) => Effect.Effect<PluginInfoResult, FinError>;
 }
@@ -63,6 +68,7 @@ function entryOf(status: RegistryStatus, row: RegistryRow | undefined): Registry
 }
 
 export interface MakePluginsOptions {
+
   /** Test builds only: plans for these ids are marked agent-facing (Decision 23). */
   readonly testAgentFacing?: (id: string) => boolean;
 }
@@ -91,6 +97,7 @@ export function makePlugins(native: Registry, tables: PluginTables, clock: () =>
         }),
     });
 
+  let problems: ReadonlyArray<StoreProblem> = [];
   const failed = (r: RefreshResult) => (r.ok ? undefined : finError(r.error.code, r.error.message, r.error.details, r.error.fix));
   const lifecycle = makeLifecycle({
     native,
@@ -147,6 +154,11 @@ export function makePlugins(native: Registry, tables: PluginTables, clock: () =>
         const updated = updates.map((u) => ({ id: u.plugin.id, from: u.plan.from ?? "", to: u.plugin.version }));
         return { byHuman: by.human, results, applied: { revoked, updated }, updates };
       }),
+    problems: () => problems,
+    reconcileStore: () =>
+      Effect.map(reconcileStore(native, tables, clock), (r) => {
+        problems = r.problems;
+      }),
     installed: () =>
       Effect.gen(function* () {
         const stale = new Map((yield* list()).registries.flatMap((r) => (r.staleDays === undefined ? [] : [[r.id, r.staleDays] as const])));
@@ -196,6 +208,7 @@ export const layerPlugins = (serverData: string, { clock = Date.now, sweepMs = 6
       const tables = new PluginTables(control);
       yield* reconcile(native, tables, clock);
       const plugins = makePlugins(native, tables, clock);
+      yield* plugins.reconcileStore();
       yield* Effect.ignore(plugins.lifecycle.sweep());
       yield* Effect.acquireRelease(
         Effect.sync(() => {

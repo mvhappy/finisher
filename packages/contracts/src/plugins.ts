@@ -96,7 +96,11 @@ export const InstalledRowSchema = Schema.Struct({
 export type InstalledRow = typeof InstalledRowSchema.Type;
 
 export const PluginListPayload = Schema.Struct({});
-export const PluginListSuccess = Schema.Struct({ plugins: Schema.Array(InstalledRowSchema) });
+export const PluginListSuccess = Schema.Struct({
+  plugins: Schema.Array(InstalledRowSchema),
+  /** Installed rows whose package folder is missing from the store (disabled at start). */
+  problems: Schema.optional(Schema.Array(Schema.Struct({ id: Schema.String, version: Schema.String, reason: Schema.Literals(["storeMissing"]) }))),
+});
 
 /** `plugin.search`: plugins the registries list; `registry` limits it to one. */
 export const PluginSearchPayload = Schema.Struct({

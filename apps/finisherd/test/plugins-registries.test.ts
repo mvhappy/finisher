@@ -85,9 +85,9 @@ describe("plugins chain", () => {
       expect(control.db.prepare(`SELECT COUNT(*) AS n FROM ${t}`).get(), t).toEqual({ n: 0 });
     }
     const meta = (k: string) => (control.db.prepare("SELECT value FROM meta WHERE key = ?").get(k) as { value: string } | undefined)?.value;
-    expect(meta("formatVersion.plugins")).toBe("2");
+    expect(meta("formatVersion.plugins")).toBe("3");
     expect(meta("minReaderVersion.plugins")).toBe("1");
-    expect(control.db.prepare("SELECT n FROM migrations WHERE chain = 'plugins' ORDER BY n").all()).toEqual([{ n: 1 }, { n: 2 }]);
+    expect(control.db.prepare("SELECT n FROM migrations WHERE chain = 'plugins' ORDER BY n").all()).toEqual([{ n: 1 }, { n: 2 }, { n: 3 }]);
     expect(control.db.prepare("SELECT COUNT(*) AS n FROM audit WHERE kind = 'listener.start'").get()).toEqual({ n: 1 });
   });
 

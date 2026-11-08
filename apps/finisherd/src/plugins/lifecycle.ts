@@ -43,6 +43,9 @@ export interface LifecycleDeps extends PlanDeps {
   readonly refreshOne: (id: string, by: Asker) => Effect.Effect<void, FinError>;
 }
 
+/** How many suggestions one principal may have for one project (review M2). */
+export const MAX_SUGGESTIONS = 20;
+
 const notInstalled = (id: string) => finError("PLUGIN_NOT_INSTALLED", `${id} is not installed`, { id }, "Check the plugin's id in the list of installed plugins.");
 
 export function makeLifecycle(deps: LifecycleDeps) {
@@ -50,10 +53,14 @@ export function makeLifecycle(deps: LifecycleDeps) {
   const lock = Semaphore.makeUnsafe(1);
   const locked = <A, E>(self: Effect.Effect<A, E>) => lock.withPermits(1)(self);
 
-  /** Revokes the versions of registry `id` a signed `disable` advisory names (any principal's refresh). */
+  /**
+   * Revokes the versions of registry `id` a signed `disable` advisory names (any principal's
+   * refresh). Only rows verified under the root `id` has now: another root's advisories say
+   * nothing about a package that root never signed (review M1).
+   */
   const revoke = (id: string): Effect.Effect<Revoked[], FinError> =>
     Effect.gen(function* () {
-      const rows = tables.installed().filter((p) => p.registryId === id && p.state !== "revoked");
+      const rows = tables.installed().filter((p) => p.registryId === id && p.state !== "revoked" && tables.installedRootMatches(p.id));
       if (rows.length === 0) return [];
       const hits = yield* attemptJson<Revoked[]>(() => native.revocations(id, JSON.stringify(rows.map((p) => ({ id: p.id, version: p.version })))));
       for (const h of hits) tables.setState(h.id, false, "revoked", clock());
@@ -96,6 +103,9 @@ export function makeLifecycle(deps: LifecycleDeps) {
         );
       }
       if (req.digest !== row.digest) return yield* Effect.fail(finError("PLAN_MISMATCH", "the digest is not this plan's", { reason: "digest" }, "Make a new plan."));
+      if (row.registryId !== undefined && tables.rootOf(row.registryId) !== row.rootSha256) {
+        return yield* Effect.fail(finError("PLAN_MISMATCH", `registry ${row.registryId} is not the registry the plan was made from`, { reason: "registry" }, "Make a new plan."));
+      }
       const changed = () => finError("PLAN_MISMATCH", `${row.pluginId}'s installed version or grants changed since the plan was made`, { reason: "installed" }, "Make a new plan.");
       if (baseOf(tables, row.pluginId) !== row.base) return yield* Effect.fail(changed());
       const staged = yield* attemptJson<InstallPlan>(() => native.stagedPlan(row.id));
@@ -109,7 +119,10 @@ export function makeLifecycle(deps: LifecycleDeps) {
       );
       const prev = tables.installedFull(row.pluginId);
       const now = clock();
-      const revokedNow = staged.warnings?.some((w) => w.code === "advisory" && w.details?.action === "disable") === true;
+      // A `disable` advisory that landed after the plan was made still stops this install from
+      // enabling anything: the trusted metadata is read again here, under the lock (review M3).
+      const advised = placed.registryId == null ? [] : yield* attemptJson<Revoked[]>(() => native.revocations(placed.registryId!, JSON.stringify([{ id: placed.id, version: placed.version }])));
+      const revokedNow = advised.length > 0 || staged.warnings?.some((w) => w.code === "advisory" && w.details?.action === "disable") === true;
       const content = placed.kind === "content";
       const keepOff = content && prev !== undefined && prev.state === "disabled";
       const enabled = content && !keepOff && !revokedNow;
@@ -121,6 +134,7 @@ export function makeLifecycle(deps: LifecycleDeps) {
         source: placed.source,
         ...(placed.registryId == null ? {} : { registryId: placed.registryId }),
         ...(placed.targetSha256 == null ? {} : { targetSha256: placed.targetSha256 }),
+        ...(row.rootSha256 === undefined || placed.registryId == null ? {} : { rootSha256: row.rootSha256 }),
         treeHash: placed.treeHash,
         dir: placed.dir,
         kind: placed.kind,
@@ -156,9 +170,13 @@ export function makeLifecycle(deps: LifecycleDeps) {
     Effect.gen(function* () {
       const out: Installed[] = [];
       if (!by.human) return out;
-      const rows = tables.installed().filter((p) => p.registryId === id && p.source === "registry" && p.kind === "content" && p.autoUpdate && p.state !== "revoked");
+      // Only what was verified under the root `id` has now updates by itself (review M1).
+      const rows = tables
+        .installed()
+        .filter((p) => p.registryId === id && p.source === "registry" && p.kind === "content" && p.autoUpdate && p.state !== "revoked")
+        .filter((p) => tables.installedRootMatches(p.id));
       for (const p of rows) {
-        const staged = yield* Effect.option(stagePlan(deps, { id: p.id, update: true, registry: id }, by, id));
+        const staged = yield* Effect.option(stagePlan(deps, { id: p.id, update: true, registry: id }, by, id, true));
         if (staged._tag === "None") continue;
         const plan = staged.value;
         if (!autoUpdatable(plan)) {
@@ -219,6 +237,14 @@ export function makeLifecycle(deps: LifecycleDeps) {
     suggest: (req: { readonly id: string; readonly reason: string; readonly projectId: string }, by: Asker): Effect.Effect<{ suggestionId: string }, FinError> =>
       Effect.try({
         try: () => {
+          // One suggestion per plugin, project and principal, and a bounded number per project:
+          // an agent cannot fill the table by asking again (review M2).
+          const mine = tables.suggestedBy(by, req.projectId);
+          const same = mine.find((x) => x.pluginId === req.id);
+          if (same !== undefined) return { suggestionId: same.id };
+          if (mine.length >= MAX_SUGGESTIONS) {
+            throw finError("TOO_MANY_SUGGESTIONS", `${by.kind} principals may have ${MAX_SUGGESTIONS} suggestions per project`, { limit: MAX_SUGGESTIONS }, "Wait for the owner to look at the ones you made.");
+          }
           const now = clock();
           const suggestionId = ulid(now);
           tables.addSuggestion({ id: suggestionId, pluginId: req.id, projectId: req.projectId, reason: req.reason, byKind: by.kind, byId: by.id, createdAt: now });

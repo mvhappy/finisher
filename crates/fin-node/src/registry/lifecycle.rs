@@ -40,6 +40,22 @@ impl Registry {
         })
     }
 
+    /// Every version directory in the store, readable or not: `[{id, version, dir}]` JSON
+    /// (`dir` as `control.db` records it). `finisherd` reconciles its rows with it at start.
+    #[napi(catch_unwind, ts_return_type = "Promise<string>")]
+    pub fn installed_dirs<'e>(&self, env: &'e Env) -> Result<Object<'e>> {
+        let inner = self.inner.clone();
+        on_worker(env, &self.worker, move || {
+            let out: Vec<serde_json::Value> = inner
+                .store
+                .installed_dirs()
+                .into_iter()
+                .map(|(id, version, dir)| serde_json::json!({ "id": id, "version": version, "dir": dir }))
+                .collect();
+            encode(&out)
+        })
+    }
+
     /// Deletes the plan `plan_id` and its staged files; resolves to whether there was one.
     #[napi(catch_unwind, ts_return_type = "Promise<boolean>")]
     pub fn discard_plan<'e>(&self, env: &'e Env, plan_id: String) -> Result<Object<'e>> {

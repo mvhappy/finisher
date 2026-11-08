@@ -98,6 +98,8 @@ struct PlanReq {
     installed: Option<InstalledPlugin>,
     #[serde(default)]
     known_ids: Vec<String>,
+    #[serde(default)]
+    registry_changed: bool,
     /// Mark the plan agent-facing (`PlanRequest::test_agent_facing`).
     #[cfg(feature = "test-hooks")]
     #[serde(default)]
@@ -184,6 +186,7 @@ impl Registry {
                     allow_downgrade: req.allow_downgrade,
                     installed: req.installed,
                     known_ids: req.known_ids,
+                    registry_changed: req.registry_changed,
                     #[cfg(feature = "test-hooks")]
                     test_agent_facing: req.test_agent_facing,
                     #[cfg(not(feature = "test-hooks"))]

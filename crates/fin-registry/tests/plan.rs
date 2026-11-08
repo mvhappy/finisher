@@ -422,3 +422,33 @@ fn catalog_id_taken_refused() {
         .unwrap_err();
     assert_eq!(e.reason(), Some("catalogIdTaken"));
 }
+
+/// Review M1: a plan whose registry is not where the installed version came from carries a
+/// `registryChanged` warning, and it is part of the digest.
+#[test]
+fn registry_changed_is_a_warning_in_the_digest() {
+    let fx = Fx::new();
+    let t = fx.target(&content("@acme/pack", "1.0.0"), &default_files());
+    let plain = fx
+        .plan(
+            PlanInput::Registry(Box::new(t.clone())),
+            &PlanRequest {
+                id: "@acme/pack".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    let changed = fx
+        .plan(
+            PlanInput::Registry(Box::new(t)),
+            &PlanRequest {
+                id: "@acme/pack".into(),
+                registry_changed: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    assert!(plain.warnings.iter().all(|w| w.code != "registryChanged"));
+    assert!(changed.warnings.iter().any(|w| w.code == "registryChanged"));
+    assert_ne!(plain.digest, changed.digest);
+}

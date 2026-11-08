@@ -339,6 +339,11 @@ export declare class Registry {
   /** Deletes expired and broken plans; resolves to how many. */
   sweep(): Promise<number>;
   /**
+   * Every version directory in the store, readable or not: `[{ id, version, dir }]` JSON, with
+   * `dir` as `control.db` records it (`store/@<publisher>/<name>/<version>-<hash12>`).
+   */
+  installedDirs(): Promise<string>;
+  /**
    * Every added registry's `RegistryStatus` as a `RegistryList` JSON (`{ registries,
    * problems }`): a registry that cannot be opened is a problem and hides no other.
    */

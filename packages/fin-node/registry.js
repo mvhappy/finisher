@@ -48,6 +48,10 @@ export function defineRegistry({ native, call, toFinError }) {
       return call(this.#native.sweep());
     }
 
+    installedDirs() {
+      return call(this.#native.installedDirs());
+    }
+
     registryList() {
       return call(this.#native.registryList());
     }

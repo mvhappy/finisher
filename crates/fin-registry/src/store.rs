@@ -235,7 +235,9 @@ impl Store {
             })
             .map(|e| e.path())
             .collect();
-        if found.is_empty() {
+        // A store folder that is already gone (an interrupted removal) still lets the data go
+        // when asked: a person who wants a plugin's data deleted gets it deleted.
+        if found.is_empty() && !purge_data {
             return Err(RegistryError::new(
                 "PLUGIN_NOT_INSTALLED",
                 format!("{id} {version} is not in the store"),
@@ -359,6 +361,41 @@ impl Store {
             return Ok(());
         }
         fs::rename(moving, dest).map_err(|e| RegistryError::io("rename", moving, e))
+    }
+
+    /// Every `store/@<publisher>/<name>/<version>-<hash12>` directory, readable manifest or
+    /// not: `(id, version, dir relative to the plugins folder)`. `finisherd` compares it with
+    /// its rows at start (orphans are removed, rows without a folder are flagged).
+    pub fn installed_dirs(&self) -> Vec<(String, String, String)> {
+        let mut out = Vec::new();
+        let name_of = |p: &Path| p.file_name().map(|f| f.to_string_lossy().into_owned());
+        for publisher in subdirs(&self.store_dir()) {
+            let Some(pubn) = name_of(&publisher).filter(|n| n.starts_with('@')) else {
+                continue;
+            };
+            for name in subdirs(&publisher) {
+                let Some(namen) = name_of(&name).filter(|n| !n.starts_with(".tmp-")) else {
+                    continue;
+                };
+                for dir in subdirs(&name) {
+                    let Some(dn) = name_of(&dir).filter(|n| !n.starts_with(".tmp-")) else {
+                        continue;
+                    };
+                    let Some((version, hash)) = dn.rsplit_once('-') else {
+                        continue;
+                    };
+                    if hash.len() != 12 {
+                        continue;
+                    }
+                    out.push((
+                        format!("{pubn}/{namen}"),
+                        version.to_string(),
+                        format!("store/{pubn}/{namen}/{dn}"),
+                    ));
+                }
+            }
+        }
+        out
     }
 
     /// Every installed package directory with its manifest (for the catalog-id check).
