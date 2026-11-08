@@ -612,6 +612,11 @@ status: used (sub-project 8A) as an npm dependency of `finisherd` (`ws` 8.22.0, 
 no runtime dependencies); no code is copied. It carries the console's and clients' sockets
 (`apps/finisherd/src/upgrade.ts`); `@types/ws` (MIT) is a development dependency and is not shipped.
 
+## jose (MIT) — DPoP proofs in `finisherd`
+status: used (sub-project 5B, Task 7) as an npm dependency of `finisherd` (`jose` 6.2.14, exact
+pin, no runtime dependencies); no code is copied. It verifies devices' DPoP proofs (ES256 JWS)
+and computes RFC 7638 key thumbprints (`apps/finisherd/src/auth/dpop.ts`).
+
 ## Other Cargo dependencies — everything else that ships
 status: used, as Cargo dependencies; no code is copied. These crates are in the shipped graph
 (`scripts/check-notices.mjs`: every workspace member but the dev-only ones, normal and build

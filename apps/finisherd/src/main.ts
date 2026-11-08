@@ -61,6 +61,7 @@ import { claimSocketPath, makeLocalServer, serveRpc } from "./transport.ts";
 import { makeTicketedWebSocketServer, makeUpgradeCheck, WebSocketSlots } from "./upgrade.ts";
 import { type FrontRefusal, makeFront, type Route } from "./http/front.ts";
 import { loopbackPolicy } from "./http/policy.ts";
+import { Nonces } from "./auth/nonces.ts";
 import { ServerControlTag } from "./server-admin.ts";
 import { isServeCommand, runConsole } from "./console/main.ts";
 import { currentSandboxStatus, reporterFor, sandboxWarnings } from "./sandbox/status.ts";
@@ -198,6 +199,8 @@ export const serve = ({
       const loopback = loopbackPolicy(() => wsPort, cachedOrigins(serverData));
       const check = makeUpgradeCheck({ policy: loopback, tickets });
       const httpRoutes: Record<string, Route> = {};
+      // DPoP's server nonces (Task 7): every answer of the front carries the current one.
+      const nonces = new Nonces();
       // One pool of WebSocket slots for every listener (Decision 12), the reserve included.
       const slots = new WebSocketSlots();
       const auditFront = (r: FrontRefusal) =>
@@ -217,7 +220,7 @@ export const serve = ({
           maxPayload: MAX_FRAME + 64 * 1024,
           slots,
           policy: loopback,
-          onRequest: makeFront(httpRoutes, loopback, undefined, { onRefused: auditFront }),
+          onRequest: makeFront(httpRoutes, loopback, nonces, { onRefused: auditFront }),
           onRefused: (r) => {
             if (r.reason === "badPath" || r.reason === "badVersion" || r.reason === "tooMany") return;
             audit.append({
