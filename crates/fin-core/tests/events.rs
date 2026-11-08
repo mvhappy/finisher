@@ -1359,3 +1359,51 @@ fn worker_exit_reasons_closed() {
     let reason = &schema["$defs"]["ExitReason"]["enum"];
     assert_eq!(reason.as_array().map(Vec::len), Some(12), "{schema}");
 }
+
+#[test]
+fn library_scan_payload_is_closed() {
+    let k = kind("library.scan", 1).expect("library.scan at v1");
+    assert!(!k.reserved && !k.training_only);
+    assert_eq!(k.sources, [Source::Finisherd]);
+    let schema = (k.schema)();
+    let props: BTreeSet<&str> = schema["properties"]
+        .as_object()
+        .expect("properties")
+        .keys()
+        .map(String::as_str)
+        .collect();
+    // No field names a library, a root or a path (Decision 50).
+    let want: BTreeSet<&str> = [
+        "storage",
+        "full",
+        "trigger",
+        "outcome",
+        "code",
+        "files",
+        "dirs",
+        "added",
+        "changed",
+        "missing",
+        "moved",
+        "placeholders",
+        "micros",
+    ]
+    .into_iter()
+    .collect();
+    assert_eq!(props, want, "{schema}");
+    let trigger = &schema["$defs"]["ScanTrigger"]["enum"];
+    assert_eq!(
+        trigger,
+        &json!(["add", "schedule", "demand", "watch", "mount"]),
+        "{schema}"
+    );
+    // An unknown field or trigger is refused.
+    let mut v = json!({
+        "storage": "local", "full": true, "trigger": "add", "outcome": "succeeded", "files": 3,
+        "dirs": 1, "added": 4, "changed": 0, "missing": 0, "moved": 0, "placeholders": 0,
+        "micros": 10,
+    });
+    assert!(decode_payload(k, &v).is_ok());
+    v["trigger"] = json!("cron");
+    assert!(decode_payload(k, &v).is_err());
+}

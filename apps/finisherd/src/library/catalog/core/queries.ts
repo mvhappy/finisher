@@ -347,4 +347,24 @@ function fileLines(db: DatabaseSync, args: unknown): { lines: FileLineRow[]; abs
   return { lines, absent };
 }
 
-export const coreQueries = { files, file, search, lookup, hashCandidates, counts, stageCounts, fileLines };
+/**
+ * `dirRel {dir: relKey} | {dirId}` → `{rel?}`: the raw chain of the one directory named (a
+ * listing's freshness pass lists exactly it, Decision 28); none when the key names none or
+ * several.
+ */
+function dirRel(db: DatabaseSync, args: unknown): { rel?: { components: string[] } } {
+  if (!isObj(args)) throw bad("dirRel", "args");
+  let ids: number[];
+  if (args.dir !== undefined) {
+    if (!isStr(args.dir)) throw bad("dirRel", "dir");
+    ids = (db.prepare("SELECT id FROM dirs WHERE relKey = ? AND state != 'missing'").all(args.dir) as Array<{ id: number }>).map((r) => r.id);
+  } else {
+    const id = args.dirId ?? 1;
+    if (!isInt(id)) throw bad("dirRel", "dirId");
+    ids = (db.prepare("SELECT id FROM dirs WHERE id = ?").all(id) as Array<{ id: number }>).map((r) => r.id);
+  }
+  if (ids.length !== 1) return {};
+  return { rel: { components: new DirChains(db).of(ids[0]!) } };
+}
+
+export const coreQueries = { files, file, search, lookup, hashCandidates, counts, stageCounts, fileLines, dirRel };

@@ -497,6 +497,9 @@
           "$ref": "#/$defs/WorkerExit"
         },
         {
+          "$ref": "#/$defs/LibraryScan"
+        },
+        {
           "$ref": "#/$defs/AgentSession"
         },
         {
@@ -3334,6 +3337,28 @@
             },
             "payload": {
               "$ref": "#/$defs/WorkerExit"
+            }
+          },
+          "required": [
+            "kind",
+            "kv",
+            "payload"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "library.scan",
+              "type": "string"
+            },
+            "kv": {
+              "const": 1,
+              "type": "integer"
+            },
+            "payload": {
+              "$ref": "#/$defs/LibraryScan"
             }
           },
           "required": [
@@ -6978,6 +7003,88 @@
       ],
       "type": "object"
     },
+    "LibraryScan": {
+      "description": "`library.scan` (`kv` 1).",
+      "properties": {
+        "added": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "changed": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "code": {
+          "$ref": "#/$defs/Code"
+        },
+        "dirs": {
+          "description": "The catalog's live directories after the scan, as a log₂ bucket.",
+          "format": "uint8",
+          "maximum": 255,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "files": {
+          "description": "The catalog's live files after the scan, as a log₂ bucket.",
+          "format": "uint8",
+          "maximum": 255,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "full": {
+          "description": "A full scan (else a poll, a targeted scan or a watch rescan).",
+          "type": "boolean"
+        },
+        "micros": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "missing": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "moved": {
+          "description": "Rows that kept their history under a new path (renames by file id).",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "outcome": {
+          "$ref": "#/$defs/JobOutcome"
+        },
+        "placeholders": {
+          "description": "Catalogued cloud-only files and directories after the scan.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "storage": {
+          "$ref": "#/$defs/LibraryStorageName"
+        },
+        "trigger": {
+          "$ref": "#/$defs/ScanTrigger"
+        }
+      },
+      "required": [
+        "storage",
+        "full",
+        "trigger",
+        "outcome",
+        "files",
+        "dirs",
+        "added",
+        "changed",
+        "missing",
+        "moved",
+        "placeholders",
+        "micros"
+      ],
+      "type": "object"
+    },
     "LibraryScanMode": {
       "description": "What a scan lists (`WalkMode`).",
       "oneOf": [
@@ -7138,6 +7245,15 @@
         "datalessPolicy"
       ],
       "type": "object"
+    },
+    "LibraryStorageName": {
+      "description": "A library's effective storage kind.",
+      "enum": [
+        "local",
+        "network",
+        "sync"
+      ],
+      "type": "string"
     },
     "Licence": {
       "additionalProperties": false,
@@ -11535,6 +11651,17 @@
         "automount"
       ],
       "type": "object"
+    },
+    "ScanTrigger": {
+      "description": "What started a scan: `add` (the first scan), `schedule` (the poll cadence or the full-scan\nschedule), `demand` (someone asked, a freshness pass, a file found changed), `watch` (a local\nroot's watcher), `mount` (the root came back online).",
+      "enum": [
+        "add",
+        "schedule",
+        "demand",
+        "watch",
+        "mount"
+      ],
+      "type": "string"
     },
     "Scope": {
       "description": "Where a parameter lives. An effect's paths are `<kind>.<param>`; on an item they are\naddressed as `effects.<fx>.<param>`.",

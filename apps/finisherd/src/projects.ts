@@ -32,6 +32,8 @@ interface OpenProject {
   readonly dir: string;
   /** Serializes commit + publish so hubs see revs in commit order. */
   readonly commitLock: Semaphore.Semaphore;
+  /** Releases the libraries its assets live in (5D Decision 28). */
+  release?: () => void;
 }
 
 export interface ProjectRegistryShape {
@@ -110,6 +112,21 @@ export class ProjectRegistry extends Context.Service<ProjectRegistry, ProjectReg
 export interface RegistryOptions {
   /** Per-hub buffer; a subscriber that falls further behind is caught up from the op log. */
   readonly hubCapacity?: number;
+  /** Holds the libraries holding these asset paths in use while the project is open (5D Decision 28). */
+  readonly libraryUse?: (assetPaths: ReadonlyArray<string>) => { release(): void };
+}
+
+/** Holds the libraries the project's assets (on `main`, at open) live in, until it closes. */
+function holdLibraries(p: OpenProject, use: NonNullable<RegistryOptions["libraryUse"]>): void {
+  void p.engine.snapshot(MAIN).then(
+    (json) => {
+      const assets = (JSON.parse(json) as { project?: { assets?: Record<string, { path?: unknown }> } }).project?.assets ?? {};
+      const held = use(Object.values(assets).flatMap((a) => (typeof a.path === "string" ? [a.path] : [])));
+      if (p.release === undefined) p.release = () => held.release();
+      else held.release();
+    },
+    () => undefined,
+  );
 }
 
 export const DEFAULT_HUB_CAPACITY = 1024;
@@ -171,7 +188,7 @@ function engineEvicted(projectId: string): FinError {
 
 export function makeProjectRegistry(
   serverData: string,
-  { hubCapacity = DEFAULT_HUB_CAPACITY }: RegistryOptions = {},
+  { hubCapacity = DEFAULT_HUB_CAPACITY, libraryUse }: RegistryOptions = {},
 ): Effect.Effect<ProjectRegistryShape, never, Scope.Scope> {
   return Effect.gen(function* () {
     const index = yield* Effect.acquireRelease(
@@ -197,7 +214,13 @@ export function makeProjectRegistry(
           [...byId.values()],
           (p) =>
             // Waiting for the commit lock means no commit is in flight when the engine closes.
-            p.commitLock.withPermits(1)(Effect.promise(() => p.engine.close().catch(() => undefined))),
+            p.commitLock.withPermits(1)(
+              Effect.promise(() => {
+                p.release?.();
+                p.release = () => {};
+                return p.engine.close().catch(() => undefined);
+              }),
+            ),
           { discard: true },
         );
       }),
@@ -272,6 +295,7 @@ export function makeProjectRegistry(
       byDir.set(dir, engine.projectId);
       index.touch(engine.projectId, dir);
       engine.onEvent((json) => onEngineEvent(project, json));
+      if (libraryUse !== undefined) holdLibraries(project, libraryUse);
       return project;
     };
 
@@ -287,6 +311,8 @@ export function makeProjectRegistry(
       for (const [dir, pid] of byDir) if (pid === id) byDir.delete(dir);
       hubs.endAll(id, 0, () => engineEvicted(id));
       hubs.endEvents(id, engineEvicted(id));
+      p.release?.();
+      p.release = () => {};
       void p.engine.close().catch(() => undefined);
     };
 

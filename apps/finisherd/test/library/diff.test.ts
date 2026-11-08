@@ -527,4 +527,23 @@ describe("nested mounts (Decision 17)", () => {
     expect(state("M/b.mov")).toBe("present");
     expect(await apply("s7", batch([], [done(["M", "sub"], 0)]))).toMatchObject({ suspect: 1 });
   });
+
+  test("accepting a removed mount (Task 10) clears it; its own listings then mark what is gone", async () => {
+    await apply("s1", batch([mountEntry, entry(["M"], "b.mov")], [done([], 1), done(["M"], 1, { volume })]));
+    await apply("s2", batch([dirEntry([], "M")], [done([], 1), done(["M"], 0, { complete: false, code: "ROOT_UNMOUNTED" })]));
+    expect(dirRow("M")).toMatchObject({ state: "offline", code: "ROOT_UNMOUNTED" });
+    // Naming another directory accepts nothing.
+    expect((await run(c.indexer.acceptUnmounted(lib, [rel("X")]))).dirs).toEqual([]);
+    expect((await run(c.indexer.acceptUnmounted(lib))).dirs).toEqual([rel("M")]);
+    // The walker now knows a plain directory: no mount root, no volume to compare.
+    const m = (await known(1)).find((l) => (l.dir as { components: string[] }).components.length === 1)!;
+    expect(m.mountRoot).toBe(false);
+    expect(m.volume).toBeUndefined();
+    // The bare mount point lists empty: first a suspect, then another job's listing ≥ 60 s later confirms.
+    expect(await apply("s3", batch([], [done(["M"], 0)]))).toMatchObject({ missing: 0 });
+    now += 61_000;
+    await apply("s4", batch([], [done(["M"], 0)]));
+    expect(state("M/b.mov")).toBe("missing");
+    expect((await run(c.indexer.acceptUnmounted(lib))).dirs).toEqual([]);
+  });
 });

@@ -206,6 +206,7 @@ registry! {
     ErrorPanic(p::ErrorPanic) = "error.panic" v 1 via w::ErrorPanicIn [Fin, Mcp, Finisherd, FinNode];
     JobDone(p::JobDone) = "job.done" v 1 [Finisherd];
     WorkerExit(p::WorkerExit) = "worker.exit" v 1 [Finisherd];
+    LibraryScan(p::LibraryScan) = "library.scan" v 1 [Finisherd];
     AgentSession(p::AgentSession) = "agent.session" v 1 via wa::AgentSessionIn [Agent];
     AgentTurn(p::AgentTurn) = "agent.turn" v 1 training_only true via wa::AgentTurnIn [Agent];
     AgentToolCall(p::AgentToolCall) = "agent.toolCall" v 1 training_only true via wa::AgentToolCallIn [Agent];
@@ -235,6 +236,7 @@ impl Payload for p::RegistryRefresh {}
 impl Payload for p::ErrorInternal {}
 impl Payload for p::JobDone {}
 impl Payload for p::WorkerExit {}
+impl Payload for p::LibraryScan {}
 impl Payload for p::ErrorPanic {
     fn rescrub(&mut self, ctx: &ScrubCtx) {
         if let Some(m) = &mut self.message {

@@ -218,6 +218,22 @@ fn samples_before_plugins() -> Vec<AnyPayload> {
             sandboxed: false,
         }
         .into(),
+        LibraryScan {
+            storage: LibraryStorageName::Network,
+            full: false,
+            trigger: ScanTrigger::Schedule,
+            outcome: JobOutcome::Succeeded,
+            code: None,
+            files: log2_bucket(12_000),
+            dirs: log2_bucket(300),
+            added: 4,
+            changed: 1,
+            missing: 2,
+            moved: 1,
+            placeholders: 0,
+            micros: 2_400_000,
+        }
+        .into(),
         typed::<AgentSession>(json!({
             "sessionId": SESSION, "phase": "ended", "harness": "builtin", "provider": "openrouter",
             "model": "other", "modelHash": h('1'), "weights": "unknown", "role": "editor",

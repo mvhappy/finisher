@@ -14,6 +14,7 @@ import type { ApplyCounts } from "./core/apply.ts";
 import { guardedClock } from "./clock.ts";
 import { CATALOG_EXTENSIONS, type CatalogExtensionRegistry } from "./extensions.ts";
 import { CatalogFailure, type Ready, type Reply, type WireError, assertCloneable } from "./protocol.ts";
+import type { WatchEvent } from "../watch.ts";
 
 export interface CatalogThreadsOptions {
   /** `<server-data>`: catalogs live in `libraries/<id>/catalog.db`. */
@@ -34,8 +35,10 @@ export interface CatalogThreadsOptions {
   readonly onFatal?: (e: FinError) => void;
   /** Search snapshots (Decision 43): idle lifetime in ms and live count; tests lower them. */
   readonly snapshot?: { readonly ttlMs?: number; readonly max?: number };
-  /** Enables `IndexerClient.testFault` (tests only). */
+  /** Enables `IndexerClient.testFault` and `watchFault` (tests only). */
   readonly testHooks?: boolean;
+  /** Quiet time before a watch hint is posted (default 2 s, Decision 30). */
+  readonly watchQuietMs?: number;
 }
 
 /** A thread's health: `dead` once it exited or failed after start. */
@@ -53,6 +56,8 @@ class Thread {
   #stopping = false;
   readonly posted = { count: 0 };
   readonly onFatal: (e: FinError) => void;
+  /** Unsolicited `{event}` messages (the indexer's watch hints). */
+  onEvent: (e: unknown) => void = () => {};
 
   private constructor(worker: Worker, onFatal: (e: FinError) => void) {
     this.#worker = worker;
@@ -75,7 +80,7 @@ class Thread {
       };
       worker.once("message", (m: Ready) => {
         if (!m.ready) return fail(toFin(m.error));
-        worker.on("message", (r: Reply) => thread.#settle(r));
+        worker.on("message", (r: Reply | { event: unknown }) => ("event" in r ? thread.onEvent(r.event) : thread.#settle(r)));
         thread.#started = true;
         resolve(thread);
       });
@@ -232,6 +237,8 @@ export interface IndexerClient {
    */
   applyBatchFile(lib: string, path: string, job: BatchJob): Effect.Effect<BatchApplied, FinError>;
   finishScan(lib: string, scan: ScanRecord): Effect.Effect<{ scanId: number }, FinError>;
+  /** Offline nested mount points the owner removed for good forget their mount (all, or `dirs`); answers their chains to list. */
+  acceptUnmounted(lib: string, dirs?: ReadonlyArray<{ readonly components: ReadonlyArray<string> }>): Effect.Effect<{ dirs: Array<{ components: string[] }> }, FinError>;
   /** Lands probe results; `moved`: new rows merged into the missing row of their fingerprint. */
   applyProbed(lib: string, results: ReadonlyArray<ProbedRow>): Effect.Effect<ProbedApplied, FinError>;
   applyHashes(
@@ -254,6 +261,14 @@ export interface IndexerClient {
    * no listing marks anything missing (Decision 18).
    */
   setOffline(lib: string, offline: boolean): Effect.Effect<{ offline: boolean }, FinError>;
+  /**
+   * Watches a local root in the indexer thread (Decision 30; the catalog must be open). Hints
+   * and degradations arrive through `Catalogs.onWatch`. `{ok: false, reason}`: the OS refused.
+   */
+  watch(lib: string, root: string): Effect.Effect<{ ok: true } | { ok: false; reason: string }, FinError>;
+  unwatch(lib: string): Effect.Effect<void, FinError>;
+  /** Tests (`testHooks`): the library's watcher fails as on an overflow. */
+  watchFault(lib: string): Effect.Effect<{ faulted: boolean }, FinError>;
   /** Tests (`testHooks`): the library's next batch file fails in its `transaction`-th transaction, after its writes. */
   testFault(lib: string, transaction: number): Effect.Effect<void, FinError>;
   /** `maxTxRows`: batch rows in one transaction; `maxStepRows`: rows written between two event-loop turns. */
@@ -313,6 +328,8 @@ export interface Catalogs {
   readonly posted: { readonly indexer: { count: number }; readonly reader: { count: number } };
   /** Dead once either thread exited or failed after start (it is never restarted silently). */
   health(): CatalogHealth;
+  /** Watch hints and degradations from the indexer thread (one listener; the service). */
+  onWatch(listener: (e: WatchEvent) => void): void;
   /** Closes every catalog and stops both threads. Idempotent. */
   shutdown(): Promise<void>;
 }
@@ -341,6 +358,7 @@ export async function startCatalogThreads(opts: CatalogThreadsOptions): Promise<
         jobsRoot: opts.jobsRoot,
         ...(opts.txRows === undefined ? {} : { txRows: opts.txRows }),
         ...(opts.testHooks === true ? { testHooks: true } : {}),
+        ...(opts.watchQuietMs === undefined ? {} : { watchQuietMs: opts.watchQuietMs }),
       },
       onFatal,
     ),
@@ -377,6 +395,7 @@ export async function startCatalogThreads(opts: CatalogThreadsOptions): Promise<
         }),
       ),
     finishScan: (lib, scan) => core(lib, "finishScan", scan),
+    acceptUnmounted: (lib, dirs) => core(lib, "acceptUnmounted", dirs === undefined ? {} : { dirs }),
     applyProbed: (lib, results) => core(lib, "applyProbed", { results }),
     applyHashes: (lib, hashes) => core(lib, "applyHashes", { hashes }),
     stagesSet: (lib, rows) => core(lib, "stagesSet", { rows }),
@@ -386,6 +405,9 @@ export async function startCatalogThreads(opts: CatalogThreadsOptions): Promise<
     purgeMissing: (lib, cutoff) => fx(() => indexer.call("purgeMissing", { lib, before: cutoff.before, beforeGen: cutoff.beforeGen })),
     testFault: (lib, transaction) => fx<void>(async () => void (await indexer.call("testFault", { lib, transaction }))),
     setOffline: (lib, offline) => fx(() => indexer.call("setOffline", { lib, offline })),
+    watch: (lib, root) => fx(() => indexer.call("watch", { lib, root })),
+    unwatch: (lib) => fx<void>(async () => void (await indexer.call("unwatch", { lib }))),
+    watchFault: (lib) => fx(() => indexer.call("watchFault", { lib })),
     stats: () => fx(() => indexer.call("stats", {})),
   };
   const readerClient: ReaderClient = {
@@ -410,6 +432,9 @@ export async function startCatalogThreads(opts: CatalogThreadsOptions): Promise<
     indexer: indexerClient,
     reader: readerClient,
     posted: { indexer: indexer.posted, reader: reader.posted },
+    onWatch: (listener) => {
+      indexer.onEvent = (e) => listener(e as WatchEvent);
+    },
     health: () => {
       const error = indexer.dead ?? reader.dead;
       return error === undefined || stopped !== undefined ? { ok: true } : { ok: false, error };

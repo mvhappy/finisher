@@ -174,6 +174,7 @@ export type AnyPayload =
   | ErrorPanic
   | JobDone
   | WorkerExit
+  | LibraryScan
   | AgentSession
   | AgentTurn
   | AgentToolCall
@@ -798,6 +799,22 @@ export type ExitReason =
  */
 export type ProcessRole = "worker" | "helper";
 /**
+ * A library's effective storage kind.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "LibraryStorageName".
+ */
+export type LibraryStorageName = "local" | "network" | "sync";
+/**
+ * What started a scan: `add` (the first scan), `schedule` (the poll cadence or the full-scan
+ * schedule), `demand` (someone asked, a freshness pass, a file found changed), `watch` (a local
+ * root's watcher), `mount` (the root came back online).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "ScanTrigger".
+ */
+export type ScanTrigger = "add" | "schedule" | "demand" | "watch" | "mount";
+/**
  * This interface was referenced by `FinCore`'s JSON-Schema
  * via the `definition` "ChangeKind".
  */
@@ -1214,6 +1231,11 @@ export type EventPayload =
       kind: "worker.exit";
       kv: 1;
       payload: WorkerExit;
+    }
+  | {
+      kind: "library.scan";
+      kv: 1;
+      payload: LibraryScan;
     }
   | {
       kind: "agent.session";
@@ -3333,6 +3355,42 @@ export interface WorkerExit {
   role: ProcessRole;
   sandboxed: boolean;
   signal?: Name;
+}
+/**
+ * `library.scan` (`kv` 1).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "LibraryScan".
+ */
+export interface LibraryScan {
+  added: number;
+  changed: number;
+  code?: Code;
+  /**
+   * The catalog's live directories after the scan, as a log₂ bucket.
+   */
+  dirs: number;
+  /**
+   * The catalog's live files after the scan, as a log₂ bucket.
+   */
+  files: number;
+  /**
+   * A full scan (else a poll, a targeted scan or a watch rescan).
+   */
+  full: boolean;
+  micros: number;
+  missing: number;
+  /**
+   * Rows that kept their history under a new path (renames by file id).
+   */
+  moved: number;
+  outcome: JobOutcome;
+  /**
+   * Catalogued cloud-only files and directories after the scan.
+   */
+  placeholders: number;
+  storage: LibraryStorageName;
+  trigger: ScanTrigger;
 }
 /**
  * This interface was referenced by `FinCore`'s JSON-Schema

@@ -533,6 +533,18 @@ export class Registry {
     );
   }
 
+  /**
+   * The root's volume measured now (fin-node's `libraryCanonicalRoot`), for an owner's
+   * `acceptVolume`: the root must still resolve to itself.
+   */
+  measure(row: LibraryRow): Effect.Effect<VolumeIdentity, FinError> {
+    return attempt(() => this.#tools.canonicalRoot(row.root, this.#serverData)).pipe(
+      Effect.flatMap((c) =>
+        c.rootKey === row.rootKey ? Effect.succeed(c.identity) : Effect.fail(finError("LIBRARY_ROOT_INVALID", "the folder now resolves elsewhere", { id: row.id })),
+      ),
+    );
+  }
+
   /** A library's root state now (fin-node's per-root probe thread, Decision 3). */
   probe(row: LibraryRow, timeoutMs?: number): Effect.Effect<RootState, FinError> {
     return attempt(() => this.#tools.probeRoot(row.root, row.volume, timeoutMs));

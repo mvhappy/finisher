@@ -245,4 +245,40 @@ function pending(db: DatabaseSync, args: unknown): { files: PendingFile[] } {
   return { files };
 }
 
-export const coreOps = { applyProbed, applyHashes, stagesSet, finishScan, pending };
+/**
+ * `acceptUnmounted {dirs?: [{components}]}` → `{dirs}`: the owner removed nested mounts for good
+ * (Decision 17). Each offline mount point (`ROOT_UNMOUNTED`/`ROOT_VOLUME_CHANGED`; all of them,
+ * or the ones named) forgets that it was a mount and which volume it held, and its chain is
+ * answered: the service lists those directories, and their own complete listings bring them
+ * back like any directory (what is gone goes missing, after the usual empty confirmation).
+ */
+function acceptUnmounted(db: DatabaseSync, args: unknown): { dirs: Array<{ components: string[] }> } {
+  const a = args as Record<string, unknown>;
+  if (!isObj(args)) throw bad("acceptUnmounted", "args");
+  let only: Set<string> | undefined;
+  if (a.dirs !== undefined) {
+    if (!Array.isArray(a.dirs) || a.dirs.length > 1000) throw bad("acceptUnmounted", "dirs");
+    only = new Set(
+      a.dirs.map((d, i) => {
+        const c = isObj(d) ? d.components : undefined;
+        if (!Array.isArray(c) || !c.every(isStr)) throw bad("acceptUnmounted", `dirs[${i}]`);
+        return c.join("/");
+      }),
+    );
+  }
+  const chains = new DirChains(db);
+  const rows = db
+    .prepare("SELECT id FROM dirs WHERE state = 'offline' AND mount IS NOT NULL AND code IN ('ROOT_UNMOUNTED', 'ROOT_VOLUME_CHANGED') ORDER BY id")
+    .all() as Array<{ id: number }>;
+  const clear = db.prepare("UPDATE dirs SET mount = NULL, volume = NULL WHERE id = ?");
+  const dirs: Array<{ components: string[] }> = [];
+  for (const r of rows) {
+    const components = chains.of(r.id);
+    if (only !== undefined && !only.has(components.join("/"))) continue;
+    clear.run(r.id);
+    dirs.push({ components });
+  }
+  return { dirs };
+}
+
+export const coreOps = { applyProbed, applyHashes, stagesSet, finishScan, pending, acceptUnmounted };

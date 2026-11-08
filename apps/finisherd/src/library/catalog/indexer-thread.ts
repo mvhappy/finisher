@@ -16,7 +16,7 @@ import { basename, dirname, isAbsolute, relative } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import { parentPort, workerData } from "node:worker_threads";
 import { type BatchFileRef, readBatchFile } from "./batch-file.ts";
-import { type ApplyConn, type ApplyCounts, applyRows, checkChains, emptyCounts, prepareApply, resetApply, rowsOf } from "./core/apply.ts";
+import { type ApplyConn, type ApplyCounts, ROOT_DIR, applyRows, checkChains, emptyCounts, prepareApply, resetApply, rowsOf } from "./core/apply.ts";
 import { type DiffCtx, checkRootEmpty, settleHardlinks } from "./core/diff.ts";
 import { type Work, budget, settle } from "./core/steps.ts";
 import { DirChains } from "./core/rel.ts";
@@ -24,6 +24,7 @@ import { type CatalogExtensionRef, type LoadedExtensions, loadExtensions } from 
 import { ftsRemove, ftsSettle } from "./fts.ts";
 import { checkLibraryId, openCatalog } from "./open.ts";
 import { CatalogFailure, type Reply, type Request, nextTurn, toWire } from "./protocol.ts";
+import { Watches } from "../watch.ts";
 
 export interface IndexerData {
   readonly extensions: ReadonlyArray<CatalogExtensionRef>;
@@ -32,8 +33,10 @@ export interface IndexerData {
   readonly jobsRoot: string;
   /** Rows per transaction (default and maximum 2,000; tests lower it). */
   readonly txRows?: number;
-  /** Enables `testFault` (tests only). */
+  /** Enables `testFault` and `watchFault` (tests only). */
   readonly testHooks?: boolean;
+  /** Quiet time before a watch hint is posted (default 2 s; tests lower it). */
+  readonly watchQuietMs?: number;
 }
 
 export const TX_ROWS = 2000;
@@ -55,6 +58,12 @@ const queues = new Map<string, Promise<unknown>>();
 const stats = { transactions: 0, maxTxRows: 0, maxStepRows: 0, batchFiles: 0 };
 /** `testFault`: the batch transaction (1-based, per library) that fails next. */
 const faults = new Map<string, number>();
+
+/** Local roots' watches (Decision 30): hints posted as `{event}` messages. */
+const watches = new Watches((event) => port.postMessage({ event }), {
+  ...(data.watchQuietMs === undefined ? {} : { quietMs: data.watchQuietMs }),
+  known: knownPrefix,
+});
 
 let exts: LoadedExtensions;
 try {
@@ -164,6 +173,7 @@ function close(a: Record<string, unknown>): unknown {
   const c = catalogs.get(lib);
   if (c === undefined) return { closed: false };
   catalogs.delete(lib);
+  watches.unwatch(lib);
   try {
     c.db.exec("PRAGMA wal_checkpoint(TRUNCATE)");
   } finally {
@@ -385,6 +395,39 @@ function setOffline(a: Record<string, unknown>): unknown {
   return { offline };
 }
 
+/** The deepest directory of `parts` the catalog knows, as base64 components (a watch hint's target). */
+function knownPrefix(lib: string, parts: ReadonlyArray<Uint8Array>): string[] {
+  const c = catalogs.get(lib);
+  const out: string[] = [];
+  if (c === undefined) return out;
+  let id = ROOT_DIR;
+  for (const p of parts) {
+    const row = c.apply.st.dirGet.get(id, p) as { id: number } | undefined;
+    if (row === undefined) break;
+    id = row.id;
+    out.push(Buffer.from(p.buffer, p.byteOffset, p.byteLength).toString("base64"));
+  }
+  return out;
+}
+
+/** `watch {lib, root}`: a local root's recursive watch (the catalog must be open). */
+function watch(a: Record<string, unknown>): unknown {
+  const lib = checkLibraryId(a.lib);
+  catalog(lib);
+  if (typeof a.root !== "string" || !isAbsolute(a.root)) throw new CatalogFailure("CATALOG_ARGS_INVALID", "invalid catalog arguments", { at: "root" });
+  return watches.watch(lib, a.root);
+}
+
+function unwatch(a: Record<string, unknown>): unknown {
+  watches.unwatch(checkLibraryId(a.lib));
+  return {};
+}
+
+function watchFault(a: Record<string, unknown>): unknown {
+  if (data.testHooks !== true) throw new CatalogFailure("CATALOG_OP_UNKNOWN", "no such catalog method", { method: "watchFault" });
+  return { faulted: watches.fault(checkLibraryId(a.lib)) };
+}
+
 const METHODS: Record<string, (a: Record<string, unknown>) => unknown> = {
   open,
   close,
@@ -396,6 +439,9 @@ const METHODS: Record<string, (a: Record<string, unknown>) => unknown> = {
   knownDirs,
   purgeMissing,
   setOffline,
+  watch,
+  unwatch,
+  watchFault,
 };
 
 function reply(r: Reply): void {
@@ -419,6 +465,7 @@ function serial(lib: string, f: () => Promise<unknown>): Promise<unknown> {
 }
 
 function shutdown(): void {
+  watches.closeAll();
   for (const lib of [...catalogs.keys()]) {
     try {
       close({ lib });

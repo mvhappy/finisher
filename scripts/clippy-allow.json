@@ -48,6 +48,10 @@
     "reason": "Reads a test plugin's manifest to pack it (test-hooks builds only)."
   },
   {
+    "path": "crates/fin-node/src/test_registry.rs",
+    "reason": "Test registries keep their publishers' keys in a keys folder outside the registry (test-hooks builds only); never a library path."
+  },
+  {
     "path": "crates/fin-workers/src/test_family/mod.rs",
     "reason": "The test families read and write the job's own files and process reports by path (test-hooks builds only)."
   },
