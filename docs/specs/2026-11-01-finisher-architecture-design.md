@@ -704,7 +704,7 @@ MyProject/                      (may live on local disk, NAS, or a cloud-synced 
 
 - **Project folders are portable by sync** (§6.7). Opening on another machine imports segments.
 - **Bundle export** (`.finisher-bundle`): op-log snapshot + segments, assets, optionally sources, and embeddable fonts. Proxies and caches are excluded because they can be regenerated. **Import** rebuilds the database and re-indexes in the background.
-- **Relinking:** sources are matched by fingerprint and then full hash across registered libraries. Library roots are mapped per machine (for example `/Volumes/NAS/Media` ↔ `\\nas\media` ↔ `/mnt/media`), stored per server, not in the project.
+- **Relinking:** sources are matched by fingerprint and then full hash across registered libraries. Library roots are mapped per machine (for example `/Volumes/NAS/Media` ↔ `\\nas\media` ↔ `/mnt/media`), stored per server, not in the project. A library's root belongs to one server; its aliases (the other machines' paths of the same root) resolve paths for the system only (`locate`) and never grant reach: reading a library file from a project needs a catalogued row (control-plane spec §7.8, 5D plan Decision 47).
 - **Remote ingest:** chunked, resumable uploads from a client to a remote server's project `sources/`, with progress and integrity checks.
 
 ---
@@ -1190,3 +1190,9 @@ Spike code, evidence and the report are throwaway and live in the git-ignored `a
     - **Recording:** metadata to the diagnostics journal, content only under training to the separate agent-trace store, with provenance on every session and turn; outcomes (merged, undone, reverted, abandoned) are tracked for 5E's `review.verdict`, which is not emitted until 5E registers it; the counsel gate `training.closedModelTargets` exists with the default `pendingCounsel`.
     - **Not a boundary yet:** before 7C every host runs agent tools unsandboxed, with the persistent warning `SANDBOX_DISABLED {reason: before7C}`.
     - **Still outstanding:** real-provider sessions and the cross-platform run on macOS and Windows 11 (7A Task 15); 7B–7H.
+
+21. **Sub-project 5D, the library indexer (as built, 2026-11-08):** the library design of §6.7 and §20 (scanning, volume identity, placeholders, the catalog, stages, search and lookup) as implemented is recorded in `docs/specs/2026-11-07-sub-project-5-control-plane-design.md` §7 (§7.8 maps every decision of its plan to As built or Deviation), which wins over this document where they differ.
+    - **Shape:** `fin-library` (types, raw paths, enumeration per OS, the walker, the safe opener, probe and hash entry points; no process of its own), the `library` family of `fin-workers`, root probes in `fin-node`; in `finisherd` one catalog writer thread and one reader thread, with `control.db` holding only the `libraries` table.
+    - **Every reader of a library file uses `fin_library::open_for_read`** (raw name chain, no links followed, placeholders refused, identity checked), enforced by clippy `disallowed-methods` in the crates that read originals; sub-projects 6 and 8 follow the same rule.
+    - **Deviations:** no listing refresh on macOS shares (libraries are read-only); Linux FUSE sync roots are metadata-only unless `hydrate`; pools per volume with a separate poll slot; library aliases never grant reach.
+    - **Still outstanding:** cold scans, the macOS and Windows end-to-end runs and the share figures (5D Task 17).
