@@ -31,7 +31,7 @@ use crate::ops::item_insert::check_body;
 use crate::ops::item_slide::START;
 use crate::ops::util::{
     OpDiff, TrackAt, carve, check_unlocked, clip_containing, frame_of, insert_inside,
-    invalid_range, item_index, members, place, ripple, track_index, wrong_op,
+    invalid_range, item_index, members, place, policy_frame, ripple, track_index, wrong_op,
 };
 use crate::ops::{Bindings, DeleteMode, InsertMode, ItemMove, ItemRemove, ItemRestore, Op};
 use crate::rebase::{Assoc, Footprint, StepMap, Touch};
@@ -152,7 +152,7 @@ pub(crate) fn apply(
     let legs = plan(project, m, bindings)?;
     match m.mode {
         InsertMode::Ripple => ripple_move(project, legs, bindings, diff),
-        InsertMode::Overwrite => overwrite_move(project, legs, diff),
+        InsertMode::Overwrite => overwrite_move(project, legs, bindings, diff),
     }
 }
 
@@ -245,6 +245,7 @@ fn ripple_move(
 fn overwrite_move(
     project: &mut Project,
     legs: Vec<Leg>,
+    bindings: &Bindings,
     diff: &mut OpDiff<'_>,
 ) -> Result<Vec<Op>, CoreError> {
     let mut lifted = Vec::new();
@@ -256,6 +257,7 @@ fn overwrite_move(
     let mut parts: Vec<Vec<Op>> = Vec::new();
     let mut restores: Vec<Op> = Vec::new();
     for (leg, from, item) in lifted {
+        let frame = policy_frame(project, leg.to, bindings)?;
         let dst = leg.to.get_mut(project);
         let mut part: Vec<Op> = vec![
             ItemRemove {
@@ -268,6 +270,7 @@ fn overwrite_move(
             dst,
             leg.at,
             leg.at.checked_add(item.duration)?,
+            frame,
             diff,
         )?);
         let mut placed = item.clone();

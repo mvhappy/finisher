@@ -1262,7 +1262,7 @@ Run 2026-11-06 on `sp4b-history` (c4ef8db plus the harness rows) and the 4A setu
 
 | Op | As built |
 |---|---|
-| `item.insert` | any kind, per-kind rules; `ripple` or `overwrite`. Overwrite carves: covered items are removed, overlapping ones trimmed; strictly containing an item is `OVERWRITE_SPLITS_ITEM` (`compose::overwrite` splits first). `INSERT_INSIDE_CLIP` keeps its name and gains `details.item` |
+| `item.insert` | any kind, per-kind rules; `ripple` or `overwrite`. Overwrite carves: covered items are removed, overlapping ones trimmed; strictly containing an item is `OVERWRITE_SPLITS_ITEM` (`compose::overwrite` splits first). A trimmed item keeps at least one frame: a range edge less than a frame inside it (a time off the frame grid) is `INVALID_RANGE` with `details.{item, remains, min}`, policy, for every carve (overwrite insert, move and trim; found by `props_ops_4c`, 2026-11-08). `INSERT_INSIDE_CLIP` keeps its name and gains `details.item` |
 | `item.move` | to a time and/or track; `ripple` (mirrored shifts) or `overwrite`; `MOVE_INTO_ITSELF`; linked legs that meet are `LINK_LEGS_OVERLAP` (structural) |
 | `item.split` | strictly inside the item; the right part copies effects with their ids, keyframes rebased, no link; on a caption `INVALID_OP` with `fix: caption.split`. A split of a linked item splits that item only (`compose::split_linked`) |
 | `item.delete` | `ripple` or `lift`; internal `item.remove`/`item.restore` (restores list every nested id) |

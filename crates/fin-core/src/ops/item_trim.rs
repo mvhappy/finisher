@@ -27,7 +27,7 @@ use crate::model::{Project, Track};
 use crate::ops::util::roll::{back, neighbour, roll};
 use crate::ops::util::{
     Limits, OpDiff, TrackAt, carve, check_delta, check_track, check_unlocked, edge_limits, end,
-    intersect, item_index, members, move_start_edge, ripple, wrong_op,
+    intersect, item_index, members, move_start_edge, policy_frame, ripple, wrong_op,
 };
 use crate::ops::{Bindings, Edge, ItemTrim, Op, TrimMode};
 use crate::rebase::{Footprint, Touch};
@@ -141,6 +141,7 @@ fn trim_one(
     diff: &mut OpDiff<'_>,
 ) -> Result<Vec<Op>, CoreError> {
     let plan = validate(project, t, id, bindings)?;
+    let frame = policy_frame(project, plan.track, bindings)?;
     let track = plan.track.get_mut(project);
     match (t.mode, plan.neighbour) {
         (TrimMode::Roll, Some(n)) => roll(track, plan.item, n, t, diff),
@@ -158,7 +159,7 @@ fn trim_one(
                 Edge::Start => (start.checked_add(t.delta)?, start),
             };
             let id = it.id.clone();
-            let carved = carve(track, range.0, range.1, diff)?;
+            let carved = carve(track, range.0, range.1, frame, diff)?;
             // Carving may have removed items before it.
             let index = track
                 .items

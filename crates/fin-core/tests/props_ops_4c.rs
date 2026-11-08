@@ -473,3 +473,55 @@ fn generators_reach_every_op_kind() {
         "never generated: {missing:?}\n{kinds:?}"
     );
 }
+
+/// Prop 6's shrunk case (found on 5A's Task 12 run, 2026-11-08; the seed was not kept): template
+/// 0 with flags 7, an overwrite `item.insert` at 1/1001 s for 2/5 s on `t2`, whose first item
+/// `c4` starts at 0, left `c4` 1/1001 s long (`shorter than a frame`). The overwrite carve now
+/// keeps one frame of what it trims (`INVALID_RANGE`, policy); replay still applies it.
+#[test]
+fn overwrite_at_a_sub_frame_time_keeps_a_frame_4c() {
+    let shape = gen4c::Shape {
+        lens: vec![vec![12; 3], vec![12; 3], vec![]],
+        linked: false,
+        transitions: true,
+        captions: 1,
+        effects: false,
+        pinned: false,
+    };
+    let p = base4c(&shape);
+    let mut pool: Vec<String> = p.entity_ids().into_iter().map(String::from).collect();
+    pool.extend(JUNK.iter().map(|s| s.to_string()));
+    // `Index::index`: a fixed-point multiply of the raw value by the pool's length.
+    let pick = |raw: u64| pool[((pool.len() as u128 * u128::from(raw)) >> 64) as usize].clone();
+    let (track, asset) = (
+        pick(4_471_937_957_262_921_604),
+        pick(10_061_860_403_841_573_609),
+    );
+    assert_eq!(track, "t2");
+    let (at, duration) = (
+        Rational::new(1, 1001).unwrap(),
+        Rational::new(2, 5).unwrap(),
+    );
+    let op: Op = ItemInsert {
+        id: "$n".into(),
+        track,
+        at,
+        duration,
+        mode: InsertMode::Overwrite,
+        body: ItemBody::Clip {
+            asset,
+            source_in: duration,
+            speed: Rational::from_int(1),
+        },
+    }
+    .into();
+    let t = tx(vec![op]);
+    let e = apply_tx_mode(&p, &t, &mut MemIds::after(&p), ApplyMode::Client).unwrap_err();
+    assert_eq!(
+        (e.code.as_str(), &e.details["item"]),
+        ("INVALID_RANGE", &serde_json::json!("c4")),
+        "{e:?}"
+    );
+    let a = apply_tx_mode(&p, &t, &mut MemIds::after(&p), ApplyMode::Replay).unwrap();
+    assert_invariants(&a.project, ApplyMode::Replay).unwrap();
+}
