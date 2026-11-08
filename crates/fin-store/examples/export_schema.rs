@@ -16,7 +16,8 @@
 //! the plugin model's (`fin-plugin-api`: `Manifest`, `Permission`, `PermissionDiff`, `Risk`,
 //! `LicenceClass`, `ContributionKind`, `Invalid`, by `schema::register_schemas`) and its
 //! store's (`fin-registry`: `InstallPlan`, `InstalledPlugin`, `Accept`, `ValidationReport`,
-//! `TargetCustom`), and
+//! `TargetCustom`), the sandbox profiles' typed inputs (`fin-sandbox`: `AgentInput`,
+//! `HookInput`, `WorkerInput`, `PluginInput`, `SandboxProfile`; sub-project 7C), and
 //! the library indexer's wire types of `fin-library` (`RawRel`, `Expect`, `ScanEntry`,
 //! `DirDone`, `ScanBatch`, `KnownDir`, `VolumeIdentity`, `RootState`, `Placeholder`, the
 //! `library` family's params, results and calls; sub-project 5D).
@@ -89,6 +90,7 @@ fn main() {
         fin_jobhost::wire::register_schemas(g);
         fin_plugin_api::schema::register_schemas(g);
         fin_registry::schema::register_schemas(g);
+        fin_sandbox::register_schemas(g);
     });
     println!(
         "{}",
