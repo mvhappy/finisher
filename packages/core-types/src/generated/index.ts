@@ -2029,6 +2029,25 @@ export type RootState =
       state: "timeout";
     };
 /**
+ * Whether `fin-sandbox-exec` can hide Unix sockets from `agent` and `hook` processes in a user
+ * and mount namespace on this host (plan 7C Decision 26). Only the launcher binary can tell
+ * (an AppArmor profile attaches to it by path), so `finisherd` asks it: `--probe`.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "SandboxNamespaces".
+ */
+export type SandboxNamespaces =
+  | {
+      kind: "available";
+    }
+  | {
+      kind: "unavailable";
+      reason: string;
+    }
+  | {
+      kind: "notApplicable";
+    };
+/**
  * What a profile gets on this host.
  *
  * This interface was referenced by `FinCore`'s JSON-Schema
@@ -6980,6 +6999,15 @@ export interface ManifestFonts1 {
    */
   cache?: string;
   files?: FontFileRef[];
+}
+/**
+ * What `fin-sandbox-exec --probe` prints.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "SandboxLauncherProbe".
+ */
+export interface SandboxLauncherProbe {
+  namespaces: SandboxNamespaces;
 }
 /**
  * Every profile's status on this host (`sandboxStatus()` in fin-node).

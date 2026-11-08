@@ -6,17 +6,24 @@
 //   sp8's name, for plugins), `SANDBOX_UNAVAILABLE {profile, os, need}` for one whose start is
 //   refused. F2 (owner decision): a disabled profile runs, unconfined and visibly so; there is
 //   no setting that silences a warning or opts out of an enforced profile;
+// - `SANDBOX_SOCKETS_EXPOSED {profile, os, reason, fix}` for an enforced `agent` or `hook`
+//   profile where the launcher cannot hide Unix sockets in a namespace (plan 7C Decision 26):
+//   those processes then reach the user's sockets (D-Bus, ssh-agent, docker.sock, fin.sock).
+//   Only the launcher binary can tell (an AppArmor profile attaches to it by path), so its
+//   `--probe` answer is read once per server process;
 // - the `sandbox.unconfined {profile, os, reason}` journal event, once per profile per server
 //   start and again when its reason changes (`SandboxReporter`).
-import type { SandboxProfile } from "@finisher/core-types";
+import { execFileSync } from "node:child_process";
+import type { SandboxLauncherProbe, SandboxNamespaces, SandboxProfile } from "@finisher/core-types";
 import type { SandboxMechanism, SandboxStatus } from "@finisher/fin-node";
 import { sandboxStatus } from "@finisher/fin-node";
+import { resolveSandboxExecPath } from "./exec.ts";
 
 export const SANDBOX_PROFILES: ReadonlyArray<SandboxProfile> = ["agent", "hook", "worker", "plugin"];
-export type { SandboxMechanism, SandboxProfile, SandboxStatus };
+export type { SandboxMechanism, SandboxNamespaces, SandboxProfile, SandboxStatus };
 
 export interface SandboxWarning {
-  readonly code: "SANDBOX_DISABLED" | "PLUGINS_UNCONFINED" | "SANDBOX_UNAVAILABLE";
+  readonly code: "SANDBOX_DISABLED" | "PLUGINS_UNCONFINED" | "SANDBOX_UNAVAILABLE" | "SANDBOX_SOCKETS_EXPOSED";
   readonly message: string;
   readonly details: Readonly<Record<string, unknown>>;
   readonly fix: string;
@@ -28,6 +35,22 @@ export const LANDLOCK_FIX =
 /** The `fix` of `reason: profileNotReady`. */
 export const NOT_READY_FIX =
   "This sandbox is not yet validated on this operating system; the release notes say when it is. Until then nothing turns this warning off.";
+
+/** The `fix` of `SANDBOX_SOCKETS_EXPOSED`. */
+export const SOCKETS_FIX =
+  "Let fin-sandbox-exec create user namespaces: on Ubuntu 24.04 and later install Finisher's AppArmor profile (resources/linux/apparmor/finisher-sandbox-exec, copied to /etc/apparmor.d/ and loaded with apparmor_parser -r; the installer does this); elsewhere enable unprivileged user namespaces.";
+
+const SOCKETS_EXPOSED: Partial<Record<SandboxProfile, string>> = {
+  agent: "Agent tools can connect to the Unix sockets your user can open (the D-Bus session bus, ssh-agent, docker.sock, the server's socket): this host does not let the sandbox hide them.",
+  hook: "Hooks can connect to the Unix sockets your user can open (the D-Bus session bus, ssh-agent, docker.sock) and send UDP: this host does not let the sandbox hide them.",
+};
+
+/** The warning for an enforced `agent` or `hook` profile whose sockets the launcher cannot hide. */
+export function socketsWarning(profile: SandboxProfile, os: string, m: SandboxMechanism, ns: SandboxNamespaces): SandboxWarning | undefined {
+  const message = SOCKETS_EXPOSED[profile];
+  if (message === undefined || m.kind !== "enforced" || ns.kind !== "unavailable") return undefined;
+  return { code: "SANDBOX_SOCKETS_EXPOSED", message, details: { profile, os, reason: ns.reason }, fix: SOCKETS_FIX };
+}
 
 const UNCONFINED: Record<SandboxProfile, string> = {
   agent: "Agent tools run as your user, without a sandbox: a tool can bypass the session's scopes (for example by using local.key). Run agents only on projects and prompts you trust.",
@@ -72,9 +95,53 @@ export function setSandboxStatusSource(next: () => SandboxStatus): () => Sandbox
   return prev;
 }
 
-/** The warnings of `profiles`, in that order. */
-export function sandboxWarnings(status: SandboxStatus, profiles: ReadonlyArray<SandboxProfile> = SANDBOX_PROFILES): SandboxWarning[] {
-  return profiles.flatMap((p) => profileWarning(p, status.os, status[p]) ?? []);
+/** What `fin-sandbox-exec --probe` answers here: run once, on first need. */
+export function probeLauncher(): SandboxNamespaces {
+  if (process.platform !== "linux") return { kind: "notApplicable" };
+  const stub = process.env.FIN_TEST_SANDBOX_NAMESPACES;
+  try {
+    const out = execFileSync(resolveSandboxExecPath(), ["--probe"], {
+      encoding: "utf8",
+      timeout: 10_000,
+      env: stub === undefined ? {} : { FIN_TEST_SANDBOX_NAMESPACES: stub },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    return (JSON.parse(out) as SandboxLauncherProbe).namespaces;
+  } catch (e) {
+    return { kind: "unavailable", reason: `the launcher's probe failed: ${(e as Error).message.split("\n")[0]}` };
+  }
+}
+
+let namespaces: SandboxNamespaces | undefined;
+let namespacesSource: () => SandboxNamespaces = probeLauncher;
+
+/** Whether the launcher hides Unix sockets on this host (cached for the process). */
+export function currentNamespaces(): SandboxNamespaces {
+  namespaces ??= namespacesSource();
+  return namespaces;
+}
+
+/** Replaces the namespace answer's source (tests) and forgets the cached one; returns the previous source. */
+export function setNamespacesSource(next: () => SandboxNamespaces): () => SandboxNamespaces {
+  const prev = namespacesSource;
+  namespacesSource = next;
+  namespaces = undefined;
+  return prev;
+}
+
+/**
+ * The warnings of `profiles`, in that order: each profile's status warning, then for an
+ * enforced `agent` or `hook` `SANDBOX_SOCKETS_EXPOSED` where the namespace is unavailable
+ * (`ns` is read only when one is enforced).
+ */
+export function sandboxWarnings(status: SandboxStatus, profiles: ReadonlyArray<SandboxProfile> = SANDBOX_PROFILES, ns?: SandboxNamespaces): SandboxWarning[] {
+  return profiles.flatMap((p) => {
+    const m = status[p];
+    const own = profileWarning(p, status.os, m);
+    if (m.kind !== "enforced" || SOCKETS_EXPOSED[p] === undefined) return own === undefined ? [] : [own];
+    const sockets = socketsWarning(p, status.os, m, ns ?? currentNamespaces());
+    return [own, sockets].filter((w): w is SandboxWarning => w !== undefined);
+  });
 }
 
 interface JournalLike {

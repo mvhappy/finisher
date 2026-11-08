@@ -49,6 +49,30 @@ pub struct SandboxStatus {
     pub plugin: Mechanism,
 }
 
+/// Whether `fin-sandbox-exec` can hide Unix sockets from `agent` and `hook` processes in a user
+/// and mount namespace on this host (plan 7C Decision 26). Only the launcher binary can tell
+/// (an AppArmor profile attaches to it by path), so `finisherd` asks it: `--probe`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+#[schemars(rename = "SandboxNamespaces")]
+pub enum Namespaces {
+    Available,
+    /// Today's behaviour (Landlock alone), with `SANDBOX_SOCKETS_EXPOSED`.
+    Unavailable {
+        reason: String,
+    },
+    /// Not Linux.
+    NotApplicable,
+}
+
+/// What `fin-sandbox-exec --probe` prints.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+#[schemars(rename = "SandboxLauncherProbe")]
+pub struct LauncherProbe {
+    pub namespaces: Namespaces,
+}
+
 /// The profiles that are the default on an OS, because their escape suite passes there
 /// (Decision 5; Task 16 adds each row as the suites pass on the validation hosts). Empty until
 /// then: the worker profile's Landlock phase is applied only where a sub-project requests it

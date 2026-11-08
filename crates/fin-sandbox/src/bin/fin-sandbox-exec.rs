@@ -16,7 +16,17 @@ fn fail(exit: i32, code: &str, profile: Option<Profile>, need: &str) -> ! {
 
 fn main() {
     let args: Vec<std::ffi::OsString> = std::env::args_os().skip(1).collect();
-    let args = launch::parse_args(&args).unwrap_or_else(|e| fail(EXIT_USAGE, "USAGE", None, &e));
+    let args = match launch::parse_command(&args) {
+        Ok(launch::Command::Launch(a)) => a,
+        Ok(launch::Command::Probe) => {
+            let probe = fin_sandbox::LauncherProbe {
+                namespaces: os::namespaces(),
+            };
+            println!("{}", serde_json::to_string(&probe).expect("serialisable"));
+            std::process::exit(0)
+        }
+        Err(e) => fail(EXIT_USAGE, "USAGE", None, &e),
+    };
     if let Some(v) = launch::refused_env(|v| std::env::var_os(v).is_some()) {
         fail(
             EXIT_USAGE,
@@ -49,6 +59,11 @@ fn main() {
             fail(EXIT_UNAVAILABLE, "SANDBOX_UNAVAILABLE", profile, &need)
         }
         Mechanism::Enforced { .. } => {
+            // Unix sockets hidden first (Decision 26): the mounts need the capabilities the
+            // namespace gives, which Landlock then keeps the program from using.
+            if let Err(e) = os::hide_sockets(&policy, req.home()) {
+                fail(EXIT_UNAVAILABLE, "SANDBOX_UNAVAILABLE", profile, &e);
+            }
             if let Err(e) = os::apply(&policy) {
                 fail(EXIT_UNAVAILABLE, "SANDBOX_UNAVAILABLE", profile, &e);
             }
@@ -116,6 +131,35 @@ mod os {
         Err("the launcher sandbox of this OS (macOS: plan 7C Task 8)".into())
     }
 
+    #[cfg(target_os = "linux")]
+    pub fn namespaces() -> fin_sandbox::Namespaces {
+        fin_sandbox::linux::namespace::probe()
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    pub fn namespaces() -> fin_sandbox::Namespaces {
+        fin_sandbox::Namespaces::NotApplicable
+    }
+
+    /// The namespace of Decision 26 where the probe shows this host can make it; where it
+    /// cannot, nothing (Landlock alone, as `SANDBOX_SOCKETS_EXPOSED` says). A failure after a
+    /// successful probe is an error.
+    #[cfg(target_os = "linux")]
+    pub fn hide_sockets(policy: &SandboxPolicy, home: &std::path::Path) -> Result<(), String> {
+        use fin_sandbox::linux::namespace;
+        if namespaces() != fin_sandbox::Namespaces::Available {
+            return Ok(());
+        }
+        let xdg = std::env::var_os("XDG_RUNTIME_DIR").map(std::path::PathBuf::from);
+        let layout = namespace::plan(policy, Some(home), xdg.as_deref());
+        namespace::enter(&layout).map_err(|e| format!("the socket namespace: {e}"))
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    pub fn hide_sockets(_policy: &SandboxPolicy, _home: &std::path::Path) -> Result<(), String> {
+        Ok(())
+    }
+
     /// `RLIMIT_NOFILE` to `n` (never above the current hard limit).
     #[cfg(target_os = "linux")]
     fn open_files(n: u32) -> Result<(), String> {
@@ -178,9 +222,15 @@ mod os {
         Ok(())
     }
 
-    /// Replaces the process with `argv`. Returns only on failure.
+    /// Replaces the process with `argv`, without [`launch::SOCKET_ENV`]. Returns only on
+    /// failure.
     pub fn exec(argv: &[std::ffi::OsString]) -> std::io::Error {
-        std::process::Command::new(&argv[0]).args(&argv[1..]).exec()
+        let mut cmd = std::process::Command::new(&argv[0]);
+        cmd.args(&argv[1..]);
+        for v in fin_sandbox::launch::SOCKET_ENV {
+            cmd.env_remove(v);
+        }
+        cmd.exec()
     }
 }
 
@@ -199,6 +249,14 @@ mod os {
     }
 
     pub fn cloexec_from_3() -> Result<(), String> {
+        Ok(())
+    }
+
+    pub fn namespaces() -> fin_sandbox::Namespaces {
+        fin_sandbox::Namespaces::NotApplicable
+    }
+
+    pub fn hide_sockets(_policy: &SandboxPolicy, _home: &std::path::Path) -> Result<(), String> {
         Ok(())
     }
 

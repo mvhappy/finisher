@@ -12839,6 +12839,18 @@
       ],
       "type": "string"
     },
+    "SandboxLauncherProbe": {
+      "description": "What `fin-sandbox-exec --probe` prints.",
+      "properties": {
+        "namespaces": {
+          "$ref": "#/$defs/SandboxNamespaces"
+        }
+      },
+      "required": [
+        "namespaces"
+      ],
+      "type": "object"
+    },
     "SandboxMechanism": {
       "description": "What a profile gets on this host.",
       "oneOf": [
@@ -12890,6 +12902,53 @@
           "required": [
             "kind",
             "need"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "SandboxNamespaces": {
+      "description": "Whether `fin-sandbox-exec` can hide Unix sockets from `agent` and `hook` processes in a user\nand mount namespace on this host (plan 7C Decision 26). Only the launcher binary can tell\n(an AppArmor profile attaches to it by path), so `finisherd` asks it: `--probe`.",
+      "oneOf": [
+        {
+          "properties": {
+            "kind": {
+              "const": "available",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Today's behaviour (Landlock alone), with `SANDBOX_SOCKETS_EXPOSED`.",
+          "properties": {
+            "kind": {
+              "const": "unavailable",
+              "type": "string"
+            },
+            "reason": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "reason"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Not Linux.",
+          "properties": {
+            "kind": {
+              "const": "notApplicable",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
           ],
           "type": "object"
         }

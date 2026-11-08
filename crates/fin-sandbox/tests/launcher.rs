@@ -18,6 +18,9 @@ use linux_support::{
     failure, inherit_fd4, landlock_or_skip, launch_cmd, launch_raw, tempdir, write,
 };
 
+/// Landlock alone: these cases check its denials (`EACCES`); the socket namespace
+/// (`namespace_linux.rs`) would answer `ENOENT` for hidden paths first.
+const NS_OFF: (&str, &str) = ("FIN_TEST_SANDBOX_NAMESPACES", "unavailable");
 const PATH: (&str, &str) = ("PATH", "/usr/bin:/bin");
 
 /// An agent request for a project and server data under `t`, with the base toolchain.
@@ -69,7 +72,7 @@ fn request_only_through_the_descriptor() {
         &["--policy-fd", "3", "--policy-fd", "3", "--", "true"],
         &["--policy-fd", "3"],
     ] {
-        let out = launch_raw(Some(&req), args, &[PATH]);
+        let out = launch_raw(Some(&req), args, &[PATH, NS_OFF]);
         assert_eq!(out.status.code(), Some(64), "{args:?}");
         assert_eq!(failure(&out)["code"], "USAGE", "{args:?}");
     }
@@ -100,14 +103,18 @@ fn invalid_request_is_sandbox_unavailable() {
         ),
         ("relative path", bytes(&relative)),
     ] {
-        let out = launch_raw(Some(&req), &["--policy-fd", "3", "--", "true"], &[PATH]);
+        let out = launch_raw(
+            Some(&req),
+            &["--policy-fd", "3", "--", "true"],
+            &[PATH, NS_OFF],
+        );
         assert_eq!(out.status.code(), Some(78), "{what}");
         let f = failure(&out);
         assert_eq!(f["code"], "SANDBOX_UNAVAILABLE", "{what}");
         assert_eq!(f["os"], "linux", "{what}");
     }
     // A descriptor that is not open.
-    let out = launch_raw(None, &["--policy-fd", "9", "--", "true"], &[PATH]);
+    let out = launch_raw(None, &["--policy-fd", "9", "--", "true"], &[PATH, NS_OFF]);
     assert_eq!(out.status.code(), Some(78));
 }
 
@@ -119,7 +126,7 @@ fn exit_code_and_signals_are_the_programs() {
     let (_d, t) = tempdir();
     let req = bytes(&agent(&t));
     let fd = ["--policy-fd", "3", "--"];
-    let run = |argv: &[&str]| launch_raw(Some(&req), &[&fd[..], argv].concat(), &[PATH]);
+    let run = |argv: &[&str]| launch_raw(Some(&req), &[&fd[..], argv].concat(), &[PATH, NS_OFF]);
     assert_eq!(run(&["sh", "-c", "exit 7"]).status.code(), Some(7));
     assert_eq!(
         run(&["sh", "-c", "kill -TERM $$"]).status.signal(),
@@ -132,7 +139,7 @@ fn exit_code_and_signals_are_the_programs() {
     let (mut cmd, keep) = launch_cmd(
         Some(&req),
         &[&fd[..], &["sh", "-c", "echo running; exec sleep 30"]].concat(),
-        &[PATH],
+        &[PATH, NS_OFF],
     );
     cmd.stdout(Stdio::piped());
     let mut child = cmd.spawn().unwrap();
@@ -158,7 +165,7 @@ fn the_program_runs_confined_and_inherits_no_descriptor() {
     let out = launch_raw(
         Some(&req),
         &["--policy-fd", "3", "--", "cat", &key(&t)],
-        &[PATH],
+        &[PATH, NS_OFF],
     );
     assert_ne!(out.status.code(), Some(0), "local.key was readable");
     assert!(
@@ -179,7 +186,7 @@ fn the_program_runs_confined_and_inherits_no_descriptor() {
     let (mut cmd, keep) = launch_cmd(
         Some(&req),
         &["--policy-fd", "3", "--", "sh", "-c", "cat <&4"],
-        &[PATH],
+        &[PATH, NS_OFF],
     );
     let _fd4 = inherit_fd4(&mut cmd, leaked());
     let out = cmd.output().unwrap();
@@ -204,7 +211,7 @@ fn the_program_runs_confined_and_inherits_no_descriptor() {
     let out = launch_raw(
         Some(&req),
         &["--policy-fd", "3", "--", &copy.to_string_lossy()],
-        &[PATH],
+        &[PATH, NS_OFF],
     );
     assert_eq!(out.status.code(), Some(126), "{out:?}");
     assert_eq!(failure(&out)["code"], "EXEC_FAILED");

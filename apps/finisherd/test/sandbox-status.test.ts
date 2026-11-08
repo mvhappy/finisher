@@ -15,8 +15,12 @@ import {
   NOT_READY_FIX,
   type SandboxMechanism,
   SandboxReporter,
+  type SandboxNamespaces,
   type SandboxStatus,
+  SOCKETS_FIX,
+  probeLauncher,
   sandboxWarnings,
+  setNamespacesSource,
   setSandboxStatusSource,
 } from "../src/sandbox/status.ts";
 import { serverStatus } from "../src/server-admin.ts";
@@ -38,8 +42,15 @@ const deps = (status: SandboxStatus, reporter?: SandboxReporter) => ({
 });
 
 const STUB = "FIN_TEST_SANDBOX_STATUS";
+const NS_STUB = "FIN_TEST_SANDBOX_NAMESPACES";
+const AVAILABLE: SandboxNamespaces = { kind: "available" };
+const NO_NS: SandboxNamespaces = { kind: "unavailable", reason: "mount --make-rprivate /: Permission denied (os error 13)" };
+// Every case answers "available" unless it sets its own: the host's real answer varies.
+const nsPrev = setNamespacesSource(() => AVAILABLE);
 afterEach(() => {
   delete process.env[STUB];
+  delete process.env[NS_STUB];
+  setNamespacesSource(() => AVAILABLE);
 });
 
 describe("sandbox status", () => {
@@ -145,6 +156,47 @@ describe("sandbox status", () => {
       readdirSync(dir).flatMap((n) => (statSync(join(dir, n)).isDirectory() ? files(join(dir, n)) : n.endsWith(".ts") ? [join(dir, n)] : []));
     const hits = files(src).filter((f) => /unsandboxed["']?\s*[:\]]|agents\.unsandboxed/.test(readFileSync(f, "utf8")));
     expect(hits).toEqual([]);
+  });
+});
+
+describe("sockets exposed (plan 7C Decision 26)", () => {
+  test("an_enforced_agent_or_hook_without_namespaces_warns_sockets_exposed", async () => {
+    const codes = (ns: SandboxNamespaces, m = ENFORCED) =>
+      sandboxWarnings(all(m), undefined, ns).map((w) => `${w.code}:${String(w.details.profile)}`);
+    expect(codes(NO_NS)).toEqual(["SANDBOX_SOCKETS_EXPOSED:agent", "SANDBOX_SOCKETS_EXPOSED:hook"]);
+    expect(codes(AVAILABLE)).toEqual([]);
+    expect(codes({ kind: "notApplicable" })).toEqual([]);
+    // A disabled or not-ready profile already warns that it runs unconfined: nothing more.
+    expect(codes(NO_NS, DISABLED)).not.toContain("SANDBOX_SOCKETS_EXPOSED:agent");
+    expect(codes(NO_NS, NOT_READY).filter((c) => c.startsWith("SANDBOX_SOCKETS"))).toEqual([]);
+    const [w] = sandboxWarnings(all(ENFORCED), ["agent"], NO_NS);
+    expect(w).toEqual({
+      code: "SANDBOX_SOCKETS_EXPOSED",
+      message: expect.stringContaining("ssh-agent"),
+      details: { profile: "agent", os: "linux", reason: NO_NS.reason },
+      fix: SOCKETS_FIX,
+    });
+    expect(SOCKETS_FIX).toContain("apparmor");
+  });
+
+  test("server_status_the_agent_runtime_and_finisherd_status_show_it", async () => {
+    setNamespacesSource(() => NO_NS);
+    const s = await Effect.runPromise(serverStatus(deps(all(ENFORCED))));
+    expect(s.warnings.filter((w) => w.code === "SANDBOX_SOCKETS_EXPOSED").map((w) => (w.details as { profile: string }).profile).sort()).toEqual(["agent", "hook"]);
+    expect(agentWarnings(all(ENFORCED))).toEqual([expect.objectContaining({ code: "SANDBOX_SOCKETS_EXPOSED", details: expect.objectContaining({ profile: "agent" }) })]);
+    const line = warningLine(agentWarnings(all(ENFORCED))[0] as never);
+    expect(line).toContain("SANDBOX_SOCKETS_EXPOSED (agent");
+    expect(line).toContain("apparmor");
+    setNamespacesSource(() => AVAILABLE);
+    expect(agentWarnings(all(ENFORCED))).toEqual([]);
+  });
+
+  test.runIf(process.platform === "linux")("the_launcher_probe_answers_and_follows_its_test_stub", () => {
+    process.env[NS_STUB] = "unavailable";
+    expect(probeLauncher()).toEqual({ kind: "unavailable", reason: "stubbed" });
+    delete process.env[NS_STUB];
+    expect(["available", "unavailable"]).toContain(probeLauncher().kind);
+    expect(nsPrev).toBe(probeLauncher);
   });
 });
 

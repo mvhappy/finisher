@@ -27,7 +27,9 @@ pub use policy::{
     SandboxPolicy, headless_devices,
 };
 pub use self_apply::self_apply;
-pub use status::{DisabledReason, Mechanism, READY, SandboxStatus, status};
+pub use status::{
+    DisabledReason, LauncherProbe, Mechanism, Namespaces, READY, SandboxStatus, status,
+};
 
 /// The types `@finisher/core-types` generates from this crate, registered by
 /// `crates/fin-store/examples/export_schema.rs`. The policy itself is not among them: it
@@ -39,4 +41,5 @@ pub fn register_schemas(g: &mut schemars::SchemaGenerator) {
     g.subschema_for::<PluginInput>();
     g.subschema_for::<Profile>();
     g.subschema_for::<SandboxStatus>();
+    g.subschema_for::<LauncherProbe>();
 }

@@ -206,7 +206,20 @@ mod sandboxed {
             ws: &ws,
         };
         let run = sandboxed_fin(&c, &socket, None, &["whoami"]);
-        if abi >= 9 {
+        let probe = std::process::Command::new(&launcher)
+            .arg("--probe")
+            .env_clear()
+            .output()
+            .unwrap();
+        let probe: serde_json::Value = serde_json::from_slice(&probe.stdout).unwrap();
+        if probe["namespaces"]["kind"] == "available" {
+            // Plan 7C Decision 26: server data's `run/` is hidden by the launcher's namespace.
+            assert_eq!(
+                run.json["error"]["code"], "SERVER_UNAVAILABLE",
+                "{}",
+                run.stdout
+            );
+        } else if abi >= 9 {
             // Landlock `RESOLVE_UNIX`: the socket is not in the policy.
             assert_eq!(
                 run.json["error"]["code"], "SERVER_UNAVAILABLE",
@@ -214,7 +227,8 @@ mod sandboxed {
                 run.stdout
             );
         } else {
-            // Recorded residual (plan Task 4 deferred): below ABI 9 only the seccomp filter's
+            // Recorded residual (plan Task 4 deferred; `SANDBOX_SOCKETS_EXPOSED` where the
+            // namespace is unavailable): below ABI 9 only the seccomp filter's
             // `AF_UNIX` refusal would stop this. It runs as the agent (its own credential), not
             // as `local`: `local.key` stays unreadable. When the filter lands, this must fail.
             assert_eq!(ok(run)["principal"]["kind"], "agent");

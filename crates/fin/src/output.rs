@@ -478,6 +478,8 @@ const UNAVAILABLE_CODES: &[&str] = &[
     // replies (`server.status`, a session's start), never the error a command exits with.
     "SANDBOX_DISABLED",
     "PLUGINS_UNCONFINED",
+    // The launcher cannot hide Unix sockets on this host (plan 7C Decision 26): a warning too.
+    "SANDBOX_SOCKETS_EXPOSED",
     "TOOL_TIMEOUT",
     "HOOK_TIMEOUT",
     "SECRET_STORE_BUSY",

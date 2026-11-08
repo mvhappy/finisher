@@ -195,3 +195,33 @@ pub fn inherit_fd4(cmd: &mut Command, file: std::fs::File) -> std::os::fd::Owned
     }
     fd
 }
+
+/// The launcher's `--probe` answer: can it hide Unix sockets in a namespace here (Decision 26)?
+pub fn launcher_namespaces(env: &[(&str, &str)]) -> fin_sandbox::Namespaces {
+    let out = Command::new(LAUNCHER)
+        .arg("--probe")
+        .env_clear()
+        .envs(env.iter().copied())
+        .output()
+        .expect("run fin-sandbox-exec --probe");
+    assert!(out.status.success(), "--probe: {out:?}");
+    let p: fin_sandbox::LauncherProbe = serde_json::from_slice(&out.stdout).expect("probe JSON");
+    p.namespaces
+}
+
+/// Whether the launcher makes its namespace here, with a printed reason when it cannot.
+/// `FIN_REQUIRE_NAMESPACES=1` turns "cannot" into a failure (the privileged-container run).
+pub fn namespaces_or_skip(test: &str) -> bool {
+    match launcher_namespaces(&[]) {
+        fin_sandbox::Namespaces::Available => true,
+        other => {
+            assert_ne!(
+                std::env::var("FIN_REQUIRE_NAMESPACES").as_deref(),
+                Ok("1"),
+                "{test}: FIN_REQUIRE_NAMESPACES=1 but the launcher answers {other:?}"
+            );
+            eprintln!("{test}: no socket namespace on this host ({other:?})");
+            false
+        }
+    }
+}

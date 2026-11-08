@@ -7,7 +7,11 @@
 //! typed input, from which [`LaunchRequest::policy`] builds the policy, so nothing outside this
 //! crate assembles one (Decision 1). The launcher reads the descriptor to its end and closes it,
 //! applies the policy (Linux: Landlock, then `RLIMIT_NOFILE` from the policy's limits; the
-//! seccomp filter is deferred, plan Task 4) and `exec`s the program. Because it `exec`s, the
+//! seccomp filter is deferred, plan Task 4) and `exec`s the program. Before Landlock, where it
+//! is enforced, the launcher hides Unix sockets in a user and mount namespace (Decision 26,
+//! [`crate::linux::namespace`]) when a forked probe shows it can, and in every mode it removes
+//! [`SOCKET_ENV`] from the program's environment. `--probe` prints whether the namespace is
+//! available (`finisherd`'s `SANDBOX_SOCKETS_EXPOSED`). Because it `exec`s, the
 //! program keeps the launcher's process: its exit code and the signals sent to it are the
 //! program's own, with nothing to relay.
 //!
@@ -49,6 +53,35 @@ pub const REFUSED_ENV: &[&str] = &[
     "FIN_SELF_SANDBOX",
 ];
 
+/// Variables that name a socket, an agent or a display (Decision 26): removed from the
+/// program's environment in every mode, with or without the namespace that hides the sockets
+/// themselves. `finisherd`'s own allow-list (`NEVER_PASSED`, Task 11) is the first layer.
+pub const SOCKET_ENV: &[&str] = &[
+    "SSH_AUTH_SOCK",
+    "SSH_AGENT_PID",
+    "GPG_AGENT_INFO",
+    "DBUS_SESSION_BUS_ADDRESS",
+    "DBUS_SYSTEM_BUS_ADDRESS",
+    "DOCKER_HOST",
+    "CONTAINER_HOST",
+    "XDG_RUNTIME_DIR",
+    "DISPLAY",
+    "WAYLAND_DISPLAY",
+    "XAUTHORITY",
+    "PULSE_SERVER",
+    "TMUX",
+    "TMUX_PANE",
+    "SWAYSOCK",
+    "I3SOCK",
+    "KITTY_LISTEN_ON",
+    "WEZTERM_UNIX_SOCKET",
+    "NVIM",
+    "NVIM_LISTEN_ADDRESS",
+    "VSCODE_IPC_HOOK_CLI",
+    "VSCODE_GIT_IPC_HANDLE",
+    "GNOME_KEYRING_CONTROL",
+];
+
 /// What the descriptor carries: a profile the launcher applies and its typed input.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", tag = "profile", content = "input")]
@@ -65,6 +98,14 @@ impl LaunchRequest {
         }
     }
 
+    /// The user's home directory the input names (hidden by the namespace, Decision 26).
+    pub fn home(&self) -> &std::path::Path {
+        match self {
+            LaunchRequest::Agent(i) => &i.home,
+            LaunchRequest::Hook(i) => &i.home,
+        }
+    }
+
     /// The policy, built by the profile's builder and validated.
     pub fn policy(&self) -> Result<SandboxPolicy, crate::PolicyError> {
         match self {
@@ -74,7 +115,22 @@ impl LaunchRequest {
     }
 }
 
-/// The parsed command line.
+/// The parsed command line: a launch, or `--probe` (prints a [`crate::LauncherProbe`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Command {
+    Launch(Args),
+    Probe,
+}
+
+/// [`parse_args`], or `--probe` alone.
+pub fn parse_command(args: &[OsString]) -> Result<Command, String> {
+    if args.len() == 1 && args[0] == "--probe" {
+        return Ok(Command::Probe);
+    }
+    parse_args(args).map(Command::Launch)
+}
+
+/// The parsed command line of a launch.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Args {
     pub policy_fd: i32,
@@ -178,6 +234,8 @@ mod tests {
         ] {
             assert!(parse_args(&s(bad)).is_err(), "{bad:?}");
         }
+        assert_eq!(parse_command(&s(&["--probe"])), Ok(Command::Probe));
+        assert!(parse_command(&s(&["--probe", "--", "sh"])).is_err());
     }
 
     #[cfg(unix)]
