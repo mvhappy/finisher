@@ -35,6 +35,7 @@ import { PluginsTag } from "./plugins/registries.ts";
 import { probeFor } from "./probe.ts";
 import { ProjectRegistry } from "./projects.ts";
 import { type AdminDeps, auditList, auditPurge, ServerControlTag, serverStatus, serverStop } from "./server-admin.ts";
+import { reporterFor } from "./sandbox/status.ts";
 
 /** Advertised in `server.hello`: the RPC tags this server implements. */
 export const CAPABILITIES: ReadonlyArray<string> = [...FinRpcs.requests.keys()].sort();
@@ -78,6 +79,7 @@ export const HandlersLive = FinRpcs.toLayer(
       connections: everyConnection,
       journalEnabled: () => diagnostics.enabled(),
       jobCaps: () => jobEngine.workers().caps,
+      sandboxReporter: reporterFor(diagnostics.journal),
     };
     /** The principal the chain bound to this call (`anonymous` outside it: fail closed). */
     const principalOf = (options: object) => chainOf(options)?.principal ?? connections.principalOf((options as { client: { id: number } }).client.id);

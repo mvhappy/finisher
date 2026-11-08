@@ -307,6 +307,15 @@ fn media_look_runs_under_the_worker_profile() {
             "frame at {t}"
         );
     }
+    // sp6 §15: the capabilities event names the sandbox in force.
+    let mut p = sandboxed("media", &input, &worker_env());
+    let mut start = job.start("media.capabilities", json!({}), &[]);
+    start.diagnostics = true;
+    p.send(&HostMsg::Start(start));
+    let run = p.drive(no_calls);
+    let caps = run.diags("media.capabilities");
+    assert_eq!(caps.len(), 1, "one capabilities event");
+    assert_eq!(caps[0]["sandbox"], "landlock", "{}", caps[0]);
 }
 
 #[test]
@@ -364,4 +373,43 @@ fn library_probe_runs_under_the_worker_profile() {
     let e = run.error();
     assert_eq!(e.code, "LIBRARY_OFFLINE", "{e:?}");
     assert_eq!(e.details["state"]["code"], "PERMISSION_DENIED", "{e:?}");
+}
+
+/// F2 (plan 7C Task 3): where Landlock is disabled the worker applies nothing, says so in
+/// `hello` (`selfSandbox: "none"`) and runs its jobs; where the host lacks what the profile
+/// needs it exits 78 before `hello`, naming the need.
+#[test]
+fn landlock_disabled_runs_unconfined_and_unavailable_refuses() {
+    use fin_sandbox::status::TEST_ENV;
+    let server = Server::new();
+    let job = server.job();
+    let key = server.root.join("auth/local.key");
+    let env = [
+        request(&server.input(&job, vec![])),
+        (TEST_ENV, "disabled".into()),
+    ];
+    let mut p = spawn_with(&["test"], &env);
+    assert_eq!(
+        p.hello().self_sandbox.as_deref(),
+        Some(fin_jobs::sandbox::NONE)
+    );
+    // Unconfined indeed: a path outside the profile opens.
+    let mut start: Start = job.start("test.files", json!({}), &[]);
+    start.files = vec![grant("x", &key, FileMode::Read)];
+    p.send(&HostMsg::Start(start));
+    assert_eq!(p.drive(no_calls).result()["files"][0]["bytes"], 3);
+
+    let out = std::process::Command::new(support::BIN)
+        .arg("test")
+        .env_clear()
+        .env("FIN_TEST_MARKER", "1")
+        .env(ENV, request(&server.input(&job, vec![])).1)
+        .env(TEST_ENV, "unavailable")
+        .stdin(std::process::Stdio::null())
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(EXIT_SELF_SANDBOX));
+    assert!(out.stdout.is_empty());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("kernel ≥ 6.2"), "{stderr}");
 }

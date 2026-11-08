@@ -205,6 +205,7 @@ export type AnyPayload =
   | JobDone
   | WorkerExit
   | LibraryScan
+  | SandboxUnconfined
   | AgentSession
   | AgentTurn
   | AgentToolCall
@@ -857,6 +858,27 @@ export type LibraryStorageName = "local" | "network" | "sync";
  */
 export type ScanTrigger = "add" | "schedule" | "demand" | "watch" | "mount";
 /**
+ * The operating system a sandbox applies on.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "SandboxOs".
+ */
+export type SandboxOs = "linux" | "macos" | "windows";
+/**
+ * A sandbox profile (spec §8.1).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "SandboxProfileName".
+ */
+export type SandboxProfileName = "agent" | "hook" | "worker" | "plugin";
+/**
+ * Why a profile runs unconfined (F2: both run, with persistent warnings).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "UnconfinedReason".
+ */
+export type UnconfinedReason = "landlockDisabled" | "profileNotReady";
+/**
  * Who provides a backend (spec §6.1): the export-encoder policy and the capability report key
  * on it.
  *
@@ -1324,6 +1346,11 @@ export type EventPayload =
       kind: "library.scan";
       kv: 1;
       payload: LibraryScan;
+    }
+  | {
+      kind: "sandbox.unconfined";
+      kv: 1;
+      payload: SandboxUnconfined;
     }
   | {
       kind: "agent.session";
@@ -2000,6 +2027,25 @@ export type RootState =
     }
   | {
       state: "timeout";
+    };
+/**
+ * What a profile gets on this host.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "SandboxMechanism".
+ */
+export type SandboxMechanism =
+  | {
+      detail: string;
+      kind: "enforced";
+    }
+  | {
+      kind: "disabled";
+      reason: UnconfinedReason;
+    }
+  | {
+      kind: "unavailable";
+      need: string;
     };
 /**
  * The four profiles (spec §8.10). `SandboxProfile` in TypeScript.
@@ -3636,6 +3682,17 @@ export interface LibraryScan {
   placeholders: number;
   storage: LibraryStorageName;
   trigger: ScanTrigger;
+}
+/**
+ * `sandbox.unconfined` (`kv` 1).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "SandboxUnconfined".
+ */
+export interface SandboxUnconfined {
+  os: SandboxOs;
+  profile: SandboxProfileName;
+  reason: UnconfinedReason;
 }
 /**
  * This interface was referenced by `FinCore`'s JSON-Schema
@@ -6923,6 +6980,19 @@ export interface ManifestFonts1 {
    */
   cache?: string;
   files?: FontFileRef[];
+}
+/**
+ * Every profile's status on this host (`sandboxStatus()` in fin-node).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "SandboxStatus".
+ */
+export interface SandboxStatus {
+  agent: SandboxMechanism;
+  hook: SandboxMechanism;
+  os: SandboxOs;
+  plugin: SandboxMechanism;
+  worker: SandboxMechanism;
 }
 /**
  * One batch file of a scan (Decision 26): up to 4,096 entries, in `seq` order per job.

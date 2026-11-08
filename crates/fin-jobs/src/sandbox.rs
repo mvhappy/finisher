@@ -3,7 +3,9 @@
 //! `Spawner` through [`ENV`] (JSON, no secret) and applied by the function sub-project 7's
 //! `fin-sandbox` registers here, before `hello`. It fails closed: a request with no function
 //! registered, an unreadable request, or a function that fails makes the process exit
-//! [`crate::EXIT_SELF_SANDBOX`] before `hello`.
+//! [`crate::EXIT_SELF_SANDBOX`] before `hello`. Where the OS mechanism is disabled (F2, spec
+//! §8.9) the function applies nothing and says so ([`SelfApplied::Nothing`]); `hello` then
+//! reports [`NONE`] instead of the profile, so the host never takes the process for confined.
 
 use std::sync::OnceLock;
 
@@ -23,8 +25,21 @@ pub struct SelfSandbox {
     pub args: Value,
 }
 
+/// `hello.selfSandbox` of a process that was asked for a sandbox and applied nothing.
+pub const NONE: &str = "none";
+
+/// What the apply function did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SelfApplied {
+    /// The requested profile is in force.
+    Applied,
+    /// The mechanism is disabled on this host (F2): nothing was applied and the process runs
+    /// unconfined, with the warnings the server shows.
+    Nothing,
+}
+
 /// Applies a sandbox to the calling process.
-pub type ApplyFn = fn(&SelfSandbox) -> Result<(), String>;
+pub type ApplyFn = fn(&SelfSandbox) -> Result<SelfApplied, String>;
 
 static APPLY: OnceLock<ApplyFn> = OnceLock::new();
 
@@ -34,7 +49,8 @@ pub fn register(f: ApplyFn) {
 }
 
 /// Applies the request `raw` (the value of [`ENV`], if set). `Ok(None)`: nothing requested;
-/// `Ok(Some(profile))`: applied; `Err`: the process must exit 78.
+/// `Ok(Some(profile))`: applied; `Ok(Some(NONE))`: requested, nothing applied (F2); `Err`: the
+/// process must exit 78.
 pub(crate) fn enter(raw: Option<&str>) -> Result<Option<String>, String> {
     let Some(raw) = raw else { return Ok(None) };
     let req: SelfSandbox =
@@ -45,8 +61,10 @@ pub(crate) fn enter(raw: Option<&str>) -> Result<Option<String>, String> {
             req.profile
         )
     })?;
-    apply(&req).map_err(|e| format!("self-sandbox {:?} failed: {e}", req.profile))?;
-    Ok(Some(req.profile))
+    match apply(&req).map_err(|e| format!("self-sandbox {:?} failed: {e}", req.profile))? {
+        SelfApplied::Applied => Ok(Some(req.profile)),
+        SelfApplied::Nothing => Ok(Some(NONE.to_owned())),
+    }
 }
 
 /// The request in this process's environment.

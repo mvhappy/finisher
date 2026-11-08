@@ -9,6 +9,7 @@ import type { ConnectionRegistry, Transport } from "./connections.ts";
 import type { Audit } from "./control/audit.ts";
 import { finError, toFinError } from "./errors.ts";
 import { agentWarnings } from "./agent/warnings.ts";
+import { currentSandboxStatus, profileWarning, sandboxWarnings, type SandboxReporter, type SandboxStatus } from "./sandbox/status.ts";
 
 /** What `serve` tells the admin RPCs about itself. */
 export interface ServerControl {
@@ -28,19 +29,23 @@ export interface AdminDeps {
   readonly journalEnabled: () => boolean;
   /** What the job host enforces (`JobEngine.workers().caps`, 5C-2). */
   readonly jobCaps: () => JobHostCaps;
+  /** The sandbox status source (default: fin-node's `sandboxStatus`). */
+  readonly sandbox?: () => SandboxStatus;
+  /** Records `sandbox.unconfined` when a profile's status changed since the last report. */
+  readonly sandboxReporter?: SandboxReporter;
 }
 
 /**
- * The standing warning while job workers and plugin processes run unconfined (5C-2 Decision 9,
- * spec §6.2): until sub-project 7's sandbox, or wherever its OS mechanism is disabled.
+ * The standing warning while job workers run unconfined (5C-2 Decision 9, spec §6.2; plan 7C
+ * Decision 23): the `worker` profile's status, with the job host's spawner (`sandbox`). A host
+ * whose spawner confines nothing warns even where the profile could be enforced.
  */
-export function sandboxWarning(caps: JobHostCaps): Record<string, unknown> | undefined {
-  if (caps.sandboxed) return undefined;
+export function sandboxWarning(caps: JobHostCaps, status: SandboxStatus = currentSandboxStatus()): Record<string, unknown> | undefined {
+  const w = profileWarning("worker", status.os, status.worker);
+  if (w === undefined && caps.sandboxed) return undefined;
   return {
-    code: "SANDBOX_DISABLED",
+    ...(w ?? profileWarning("worker", status.os, { kind: "disabled", reason: "profileNotReady" })),
     sandbox: caps.sandbox,
-    message: "job workers and plugin processes run without a sandbox: only the cleared environment, private job folders and the kill tree confine them",
-    fix: "run only plugins you trust until this machine's sandbox is available",
   };
 }
 
@@ -53,7 +58,9 @@ export interface AuditPurgeRequest {
 export function serverStatus(deps: AdminDeps) {
   return Effect.sync(() => {
     const caps = deps.jobCaps();
-    const sandbox = sandboxWarning(caps);
+    const status = (deps.sandbox ?? currentSandboxStatus)();
+    deps.sandboxReporter?.report(status);
+    const sandbox = sandboxWarning(caps, status);
     return {
       version: SERVER_VERSION,
       protocol: PROTOCOL_VERSION,
@@ -73,9 +80,13 @@ export function serverStatus(deps: AdminDeps) {
           sandboxed: caps.sandboxed,
         },
       },
-      // The job host's sandbox (5C-2), then the agent runtime's: agent tools run unsandboxed
-      // until 7C (owner decision F2).
-      warnings: [...(sandbox === undefined ? [] : [sandbox]), ...(agentWarnings() as Array<Record<string, unknown>>)],
+      // The job host's sandbox (5C-2), then plugins and hooks, then the agent runtime's: each
+      // profile not enforced on this host warns (plan 7C Decision 23, owner decision F2).
+      warnings: [
+        ...(sandbox === undefined ? [] : [sandbox]),
+        ...(sandboxWarnings(status, ["plugin", "hook"]) as unknown as Array<Record<string, unknown>>),
+        ...(agentWarnings(status) as Array<Record<string, unknown>>),
+      ],
     };
   });
 }

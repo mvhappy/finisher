@@ -22,7 +22,7 @@ doctest = false
 # The `test`, `testbad` and `testplugin` families and the test helper. fin-workers' own tests
 # enable it through the self dev-dependency below, and fin-node's `build:test` builds the
 # binary with it; release builds never do (`scripts/check-test-hooks.mjs`).
-test-hooks = ["fin-jobs/test-hooks", "fin-library/test-hooks", "dep:windows-sys"]
+test-hooks = ["fin-jobs/test-hooks", "fin-library/test-hooks", "fin-sandbox/test-hooks", "dep:windows-sys"]
 
 [dependencies]
 fin-jobs = { path = "../fin-jobs" }

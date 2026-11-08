@@ -255,6 +255,12 @@ const KILL_REASONS: Partial<Record<JobHostKillReason, ExitReason>> = {
   hung: "hung",
 };
 
+/** The self-sandbox failure a worker printed before exit 78 (its last stderr line, prefix removed). */
+export function sandboxNeed(stderrTail: string): string {
+  const line = stderrTail.trim().split("\n").at(-1) ?? "";
+  return line.replace(/^fin-jobs: /, "").slice(0, 500) || "unknown";
+}
+
 /**
  * The verdict for a process's exit. `ended`: the job already has its answer (`result` or
  * `error`), so a clean exit is `done`; otherwise the exit is the job's failure (Decision 31's
@@ -312,6 +318,18 @@ export function exitVerdict(info: JobHostExitInfo, ended: boolean): ExitVerdict 
     case "protocolError":
       return { reason: "protocolError", error: finError("WORKER_CRASHED", `the worker broke the protocol: ${info.what}`, { protocol: info.what, ...tail }) };
     case "spawnFailed":
+      // Exit 78 before `hello`: the requested self-sandbox could not be applied (fail closed,
+      // plan 7C). Its stderr line names what the host lacks.
+      if (info.what === "selfSandbox") {
+        return {
+          reason: "spawnFailed",
+          error: finError("SANDBOX_UNAVAILABLE", "the worker's sandbox could not be applied, so it did not start", {
+            profile: "worker",
+            os: process.platform,
+            need: sandboxNeed(info.stderrTail),
+          }),
+        };
+      }
       return { reason: "spawnFailed", error: finError("WORKER_UNAVAILABLE", `the worker could not start: ${info.what}`, { reason: "spawnFailed", what: info.what }) };
     case "protocolMismatch":
       return {

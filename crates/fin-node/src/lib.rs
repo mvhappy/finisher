@@ -68,6 +68,7 @@ mod pipe_win;
 mod private_dir;
 mod private_file;
 mod registry;
+mod sandbox;
 mod server_lock;
 mod tasks;
 #[cfg(feature = "test-hooks")]

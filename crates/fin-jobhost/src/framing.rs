@@ -114,7 +114,11 @@ impl Framing {
                 got: h.envelope.unwrap_or_else(|| "none".to_owned()),
             });
         }
-        if h.self_sandbox != self.expect.self_sandbox {
+        // A requested profile, or `none` where the mechanism is disabled on this host (F2): the
+        // process runs unconfined and says so. Anything else is a protocol error.
+        let unconfined = self.expect.self_sandbox.is_some()
+            && h.self_sandbox.as_deref() == Some(fin_jobs::sandbox::NONE);
+        if h.self_sandbox != self.expect.self_sandbox && !unconfined {
             return protocol("selfSandbox");
         }
         self.hello = true;
@@ -225,6 +229,17 @@ mod tests {
         });
         let h = WorkerMsg::Hello(hello(0, Some(fin_jobs::envelope_id())));
         assert_eq!(f.line(&line(1, &h), None), protocol("selfSandbox"));
+        // `none`: requested, nothing applied (F2). Unrequested, `none` is still a mismatch.
+        let mut hh = hello(0, Some(fin_jobs::envelope_id()));
+        hh.self_sandbox = Some(fin_jobs::sandbox::NONE.into());
+        let none = WorkerMsg::Hello(hh);
+        let mut f = Framing::new(Expect {
+            self_sandbox: Some("worker".into()),
+            ..expect(true)
+        });
+        assert!(matches!(f.line(&line(1, &none), None), Frame::Hello(_)));
+        let mut f = Framing::new(expect(true));
+        assert_eq!(f.line(&line(1, &none), None), protocol("selfSandbox"));
         let mut f = Framing::new(Expect {
             helper: true,
             ..expect(true)

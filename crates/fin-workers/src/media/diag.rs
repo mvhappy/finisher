@@ -204,7 +204,12 @@ pub fn capabilities_event(caps: &MediaCapabilities) -> MediaCapabilitiesEvent {
             .collect(),
         gpu: caps.gpu.as_ref().map(gpu_entry),
         copy_path: CopyPath::Copy,
-        sandbox: Sandbox::None,
+        // sp6 §15: `landlock` once the worker profile's Landlock phase restricted this process.
+        sandbox: if fin_sandbox::self_apply::applied() {
+            Sandbox::Landlock
+        } else {
+            Sandbox::None
+        },
         render_version: caps.worker.render_version,
     }
 }

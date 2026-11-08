@@ -474,6 +474,10 @@ const UNAVAILABLE_CODES: &[&str] = &[
     "PROVIDER_PROTOCOL",
     "MODEL_CONTEXT_EXCEEDED",
     "SANDBOX_UNAVAILABLE",
+    // A sandbox profile that runs unconfined on this host (F2, plan 7C Task 3): a warning in
+    // replies (`server.status`, a session's start), never the error a command exits with.
+    "SANDBOX_DISABLED",
+    "PLUGINS_UNCONFINED",
     "TOOL_TIMEOUT",
     "HOOK_TIMEOUT",
     "SECRET_STORE_BUSY",

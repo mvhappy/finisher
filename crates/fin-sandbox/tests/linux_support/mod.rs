@@ -58,10 +58,16 @@ impl Outcome {
 
 /// Runs the probe with `flags` (sandbox selection) and `op`.
 pub fn probe(flags: &[String], op: &[String]) -> Outcome {
+    probe_env(flags, op, &[])
+}
+
+/// [`probe`] with `env` set (the status stub).
+pub fn probe_env(flags: &[String], op: &[String], env: &[(&str, &str)]) -> Outcome {
     let out = Command::new(PROBE)
         .args(flags)
         .args(op)
         .env_clear()
+        .envs(env.iter().copied())
         .output()
         .expect("run fin-sandbox-probe");
     let stdout = String::from_utf8_lossy(&out.stdout).into_owned();

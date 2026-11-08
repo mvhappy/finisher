@@ -110,7 +110,7 @@ mod probe {
                     .map_err(|e| e.to_string()),
                 None => restrict_self(&p).map(|_| ()).map_err(|e| e.to_string()),
             },
-            Sandbox::SelfReq(r) => fin_sandbox::self_apply(&r),
+            Sandbox::SelfReq(r) => fin_sandbox::self_apply(&r).map(|_| ()),
             Sandbox::None => Ok(()),
         };
         if let Err(e) = applied {

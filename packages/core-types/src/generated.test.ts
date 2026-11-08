@@ -79,3 +79,11 @@ test("the sandbox profiles' inputs are generated, the policy is not (plan 7C Dec
   expect(ts).toMatch(/export type SandboxProfile = "agent" \| "hook" \| "worker" \| "plugin";/);
   expect(ts).not.toContain("export interface SandboxPolicy");
 });
+
+test("the sandbox status is generated (plan 7C Task 3)", () => {
+  expect(block("SandboxStatus")).toMatch(/worker: SandboxMechanism;/);
+  expect(block("SandboxStatus")).toMatch(/os: SandboxOs;/);
+  expect(ts).toMatch(/export type SandboxMechanism =[\s\S]*?kind: "enforced";[\s\S]*?kind: "disabled";[\s\S]*?kind: "unavailable";/);
+  expect(ts).toMatch(/export type UnconfinedReason = "landlockDisabled" \| "profileNotReady";/);
+  expect(block("SandboxUnconfined")).toMatch(/reason: UnconfinedReason;/);
+});

@@ -2,16 +2,42 @@
 //! `fin_jobs::sandbox::register`, run before `hello` when the host's `Spawner` asks for it
 //! through `FIN_SELF_SANDBOX`. Only `worker` is applied this way; the request's `args` are a
 //! [`WorkerInput`], from which [`crate::profile::worker`] builds the policy. Every failure
-//! is an `Err`, which `fin-jobs` turns into exit 78 before `hello` (fail closed).
+//! is an `Err`, which `fin-jobs` turns into exit 78 before `hello` (fail closed). The one
+//! exception is F2: where the mechanism is disabled on this host ([`crate::status::mechanism`]
+//! says `Disabled {landlockDisabled}`), nothing is applied and the worker's `hello` reports
+//! `selfSandbox: "none"`, so it runs, unconfined and visibly so.
 
-use fin_jobs::sandbox::SelfSandbox;
+use std::sync::atomic::{AtomicBool, Ordering};
+
+use fin_jobs::sandbox::{SelfApplied, SelfSandbox};
 
 use crate::inputs::WorkerInput;
 use crate::policy::SandboxPolicy;
+use crate::status::{DisabledReason, Mechanism, mechanism};
+
+static APPLIED: AtomicBool = AtomicBool::new(false);
 
 /// Builds the requested profile's policy and applies it to the calling process.
-pub fn self_apply(req: &SelfSandbox) -> Result<(), String> {
-    apply(&policy(req)?)
+pub fn self_apply(req: &SelfSandbox) -> Result<SelfApplied, String> {
+    let policy = policy(req)?;
+    match mechanism() {
+        Mechanism::Disabled {
+            reason: DisabledReason::LandlockDisabled,
+        } => return Ok(SelfApplied::Nothing),
+        Mechanism::Disabled { reason } => {
+            return Err(format!("no self-sandbox on this host ({reason:?})"));
+        }
+        Mechanism::Unavailable { need } => return Err(format!("the sandbox needs {need}")),
+        Mechanism::Enforced { .. } => {}
+    }
+    apply(&policy)?;
+    APPLIED.store(true, Ordering::SeqCst);
+    Ok(SelfApplied::Applied)
+}
+
+/// Whether [`self_apply`] restricted this process (`media.capabilities.sandbox`).
+pub fn applied() -> bool {
+    APPLIED.load(Ordering::SeqCst)
 }
 
 /// The policy a request names, built and validated.

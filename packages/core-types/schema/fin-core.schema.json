@@ -614,6 +614,9 @@
           "$ref": "#/$defs/LibraryScan"
         },
         {
+          "$ref": "#/$defs/SandboxUnconfined"
+        },
+        {
           "$ref": "#/$defs/AgentSession"
         },
         {
@@ -3642,6 +3645,28 @@
             },
             "payload": {
               "$ref": "#/$defs/LibraryScan"
+            }
+          },
+          "required": [
+            "kind",
+            "kv",
+            "payload"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "sandbox.unconfined",
+              "type": "string"
+            },
+            "kv": {
+              "const": 1,
+              "type": "integer"
+            },
+            "payload": {
+              "$ref": "#/$defs/SandboxUnconfined"
             }
           },
           "required": [
@@ -12814,6 +12839,71 @@
       ],
       "type": "string"
     },
+    "SandboxMechanism": {
+      "description": "What a profile gets on this host.",
+      "oneOf": [
+        {
+          "description": "Applied, with what (`landlock abi 8`).",
+          "properties": {
+            "detail": {
+              "type": "string"
+            },
+            "kind": {
+              "const": "enforced",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "detail"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Runs unconfined, with warnings (F2).",
+          "properties": {
+            "kind": {
+              "const": "disabled",
+              "type": "string"
+            },
+            "reason": {
+              "$ref": "#/$defs/UnconfinedReason"
+            }
+          },
+          "required": [
+            "kind",
+            "reason"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "The start is refused: the host lacks `need`.",
+          "properties": {
+            "kind": {
+              "const": "unavailable",
+              "type": "string"
+            },
+            "need": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "need"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "SandboxOs": {
+      "description": "The operating system a sandbox applies on.",
+      "enum": [
+        "linux",
+        "macos",
+        "windows"
+      ],
+      "type": "string"
+    },
     "SandboxProfile": {
       "description": "The four profiles (spec §8.10). `SandboxProfile` in TypeScript.",
       "enum": [
@@ -12823,6 +12913,64 @@
         "plugin"
       ],
       "type": "string"
+    },
+    "SandboxProfileName": {
+      "description": "A sandbox profile (spec §8.1).",
+      "enum": [
+        "agent",
+        "hook",
+        "worker",
+        "plugin"
+      ],
+      "type": "string"
+    },
+    "SandboxStatus": {
+      "description": "Every profile's status on this host (`sandboxStatus()` in fin-node).",
+      "properties": {
+        "agent": {
+          "$ref": "#/$defs/SandboxMechanism"
+        },
+        "hook": {
+          "$ref": "#/$defs/SandboxMechanism"
+        },
+        "os": {
+          "$ref": "#/$defs/SandboxOs"
+        },
+        "plugin": {
+          "$ref": "#/$defs/SandboxMechanism"
+        },
+        "worker": {
+          "$ref": "#/$defs/SandboxMechanism"
+        }
+      },
+      "required": [
+        "os",
+        "agent",
+        "hook",
+        "worker",
+        "plugin"
+      ],
+      "type": "object"
+    },
+    "SandboxUnconfined": {
+      "description": "`sandbox.unconfined` (`kv` 1).",
+      "properties": {
+        "os": {
+          "$ref": "#/$defs/SandboxOs"
+        },
+        "profile": {
+          "$ref": "#/$defs/SandboxProfileName"
+        },
+        "reason": {
+          "$ref": "#/$defs/UnconfinedReason"
+        }
+      },
+      "required": [
+        "profile",
+        "os",
+        "reason"
+      ],
+      "type": "object"
     },
     "ScanBatch": {
       "additionalProperties": false,
@@ -15094,6 +15242,21 @@
       "pattern": "^[0-7][0-9A-HJKMNP-TV-Z]{25}$",
       "type": "string",
       "x-fin-class": "meta"
+    },
+    "UnconfinedReason": {
+      "description": "Why a profile runs unconfined (F2: both run, with persistent warnings).",
+      "oneOf": [
+        {
+          "const": "landlockDisabled",
+          "description": "The OS mechanism is off on this host (Linux: `landlock` left out of `lsm=`, or a\ncontainer's seccomp profile refusing the Landlock calls).",
+          "type": "string"
+        },
+        {
+          "const": "profileNotReady",
+          "description": "The profile's escape suite has not yet passed on this OS (`fin_sandbox::READY`).",
+          "type": "string"
+        }
+      ]
     },
     "UnitEntry": {
       "description": "One entry of an undo or redo stack.\n\n- `id`: what an `undo` names in `undoes` (a record's txId, a merge group's `mergeId`, the\n  redo record's txId for a redo unit), or, on the redo stack, the undo record's txId;\n- `records`: the txIds of its records, oldest first: whose stored `inverse` an undo (or,\n  for an undo record, a redo) takes;\n- `last_seq`: the seq of its last record, the frame its inverses apply in.",
