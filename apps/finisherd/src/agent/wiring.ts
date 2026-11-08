@@ -183,7 +183,7 @@ export const buildAgentRuntime = (d: AgentWiringDeps): Effect.Effect<AgentRuntim
         if (dir === undefined) throw finError("PROJECT_NOT_FOUND", "the session's project is not open on this server", { projectId: s.projectId });
         const cwd = join(dir, "workspace", s.id);
         await mkdir(cwd, { recursive: true, mode: 0o700 });
-        return { system: rolePrompt(s.role), cwd, env: childEnv({ FIN_SERVER: d.endpoint, FIN_SESSION: s.id }) };
+        return { system: rolePrompt(s.role), cwd, env: childEnv({ FIN_SERVER: d.endpoint, FIN_SESSION: s.id, FIN_PROJECT_DIR: dir }) };
       },
     };
     const planner = sessionPlanner({

@@ -9,8 +9,8 @@ import type { FinError, Node, ProviderEvent } from "@finisher/contracts";
 import { Effect, Exit, Scope, Stream } from "effect";
 import { afterEach, describe, expect, test } from "vitest";
 import type { CallGate, ProviderSession, SessionSpec } from "../src/agent/adapter.ts";
-import { BuiltinAdapter, type BuiltinDeps, LOOP_LIMITS } from "../src/agent/builtin/loop.ts";
-import { historyFromNodes } from "../src/agent/builtin/loop-history.ts";
+import { BuiltinAdapter, type BuiltinDeps, LOOP_LIMITS, uniqueIds } from "../src/agent/builtin/loop.ts";
+import { boundOutput, historyFromNodes } from "../src/agent/builtin/loop-history.ts";
 import { type ModelClient, type ModelResult, type ModelStreamEvent, openrouterClient } from "../src/agent/builtin/compat.ts";
 import { FinIndex } from "../src/agent/builtin/fin-tool.ts";
 import type { ModelRequest, ToolCall } from "../src/agent/builtin/request.ts";
@@ -37,7 +37,7 @@ afterEach(async () => {
 
 // A scripted model client ------------------------------------------------------------------
 
-type Reply = { text?: string; calls?: Array<[string, string, unknown]>; usage?: Partial<typeof ZERO_USAGE>; stop?: ModelResult["stopReason"] };
+type Reply = { text?: string; calls?: Array<[string, string, unknown]>; usage?: Partial<typeof ZERO_USAGE>; stop?: ModelResult["stopReason"]; reasoning?: unknown[] };
 
 function result(r: Reply): ModelResult {
   const toolCalls: ToolCall[] = (r.calls ?? []).map(([id, name, input]) => ({ id, name, arguments: typeof input === "string" ? input : JSON.stringify(input) }));
@@ -45,7 +45,7 @@ function result(r: Reply): ModelResult {
     text: r.text ?? "",
     toolCalls,
     reasoningText: "",
-    reasoning: [],
+    reasoning: r.reasoning ?? [],
     stopReason: r.stop ?? (toolCalls.length > 0 ? "toolUse" : "endTurn"),
     usage: { ...ZERO_USAGE, input: 10, output: 5, ...r.usage },
     usageEstimated: false,
@@ -159,7 +159,7 @@ describe("built-in loop", () => {
     const d = await drive({ client });
     const end = await d.turn("tighten the intro", "Project P1, branch br1, mode draft.");
     expect(end).toEqual({ type: "turnCompleted", stopReason: "endTurn" });
-    expect(types(d.events)).toEqual(["turnStarted", "messageDelta", "usage", "capture", "message", "turnCompleted"]);
+    expect(types(d.events)).toEqual(["turnStarted", "messageDelta", "capture", "usage", "message", "turnCompleted"]);
     expect(client.requests).toHaveLength(1);
     const req = client.requests[0]!;
     // The system prompt is the role's alone; the run's facts head the user message (Decision 13).
@@ -367,7 +367,7 @@ describe("built-in loop", () => {
       n("toolResult", { ok: true, output: { exit: 0 } }, "c1"),
       n("toolResult", { ok: false, output: { code: "SESSION_INTERRUPTED", synthetic: true } }, "c2"),
       n("usage", { input: 1 }),
-    ]);
+    ], LOOP_LIMITS);
     expect(h).toEqual([
       { role: "user", content: [{ type: "text", text: "go" }] },
       {
@@ -382,6 +382,126 @@ describe("built-in loop", () => {
       { role: "tool", toolCallId: "c1", content: '{"exit":0}' },
       { role: "tool", toolCallId: "c2", content: '{"ok":false,"code":"SESSION_INTERRUPTED","synthetic":true}' },
     ]);
+  });
+});
+
+describe("built-in loop: review findings (Task 8b)", () => {
+  const index = async () => new FinIndex([{ name: "view", write: false, paths: [] }, { name: "item.trim", write: true, paths: [] }]);
+
+  test("task10_capture_then_usage_then_content_then_tool_calls", async () => {
+    const client = scripted([{ text: "Looking.", reasoning: [{ type: "reasoning.text", text: "hm" }], calls: [["c1", "fin", { argv: ["view"] }]] }, { text: "Done." }]);
+    const d = await drive({ client, index });
+    await d.turn("go");
+    const t = types(d.events);
+    const first = (x: string) => t.indexOf(x as ProviderEvent["type"]);
+    expect(first("capture")).toBeLessThan(first("usage"));
+    expect(first("usage")).toBeLessThan(first("reasoning"));
+    expect(first("reasoning")).toBeLessThan(first("message"));
+    expect(first("message")).toBeLessThan(first("toolStarted"));
+    // The second call: its capture, then its usage, before its message.
+    expect(t.slice(t.indexOf("toolCompleted") + 1).filter((x) => x !== "messageDelta")).toEqual(["capture", "usage", "message", "turnCompleted"]);
+    const cap = ofType(d.events, "capture")[0]!;
+    expect(cap.response).toMatchObject({ chunks: [], stopReason: "toolUse", latencyMs: 1 });
+  });
+
+  test("m8_duplicate_tool_call_ids_are_renamed", async () => {
+    expect(uniqueIds([{ id: "a", name: "fin", arguments: "" }, { id: "a", name: "fin", arguments: "" }, { id: "a_2", name: "fin", arguments: "" }, { id: "", name: "fin", arguments: "" }]).map((c) => c.id)).toEqual(["a", "a_3", "a_2", "call_3"]);
+    const client = scripted([{ calls: [["c1", "fin", { argv: ["view"] }], ["c1", "fin", { argv: ["view", "x"] }]] }, { text: "Done." }]);
+    const d = await drive({ client, index });
+    const end = await Promise.race([d.turn("go"), delay(3000).then(() => "hung")]);
+    expect(end).toEqual({ type: "turnCompleted", stopReason: "endTurn" });
+    expect(ofType(d.events, "toolStarted").map((e) => e.providerId)).toEqual(["c1", "c1_2"]);
+    const msgs = client.requests[1]!.messages;
+    expect(msgs.filter((m) => m.role === "tool").map((m) => (m as { toolCallId: string }).toolCallId)).toEqual(["c1", "c1_2"]);
+  });
+
+  test("m6_at_most_8_reads_at_once_and_stored_output_is_bounded", async () => {
+    const calls: Array<[string, string, unknown]> = Array.from({ length: 12 }, (_, i) => [`r${i}`, "fin", { argv: ["view", String(i)] }]);
+    const client = scripted([{ calls }, { text: "Done." }]);
+    let running = 0;
+    let most = 0;
+    const tool: Tool = async () => {
+      most = Math.max(most, ++running);
+      await delay(20);
+      running--;
+      return { ok: true, output: "x".repeat(2 * 1024 * 1024) };
+    };
+    const d = await drive({ client, index }, tool);
+    await d.turn("go");
+    expect(most).toBe(8);
+    for (const e of ofType(d.events, "toolCompleted")) expect(JSON.stringify(e.output).length).toBeLessThan(1024 * 1024 + 100);
+    expect(boundOutput({ a: 1 }, 100)).toEqual({ a: 1 });
+    expect(boundOutput("y".repeat(10), 4)).toEqual({ truncated: true, bytes: 10, head: "yyyy" });
+  });
+
+  test("l9_every_admitted_attempt_is_settled_once", async () => {
+    const throwing = (kind: "throw" | "end" | "retryThenThrow"): ModelClient => ({
+      preset: "openrouter",
+      warnings: [],
+      wireBody: (req) => req as unknown as Record<string, unknown>,
+      async *stream(): AsyncIterable<ModelStreamEvent> {
+        if (kind === "retryThenThrow") yield { type: "retry", attempt: 1, code: "PROVIDER_OVERLOADED", delayMs: 0, cost: { usage: null, usageEstimated: false } };
+        if (kind === "end") return;
+        throw new Error("the stream broke");
+      },
+    });
+    for (const [kind, attempts] of [["throw", 1], ["end", 1], ["retryThenThrow", 2]] as const) {
+      const d = await drive({ client: throwing(kind) });
+      const end = await d.turn("go");
+      expect(end.type, kind).toBe("turnFailed");
+      expect(d.gate.calls, kind).toBe(attempts);
+      expect(d.gate.releases, kind).toBe(attempts);
+    }
+  });
+
+  test("m7_resume_rebuilds_the_live_conversation_byte_for_byte", async () => {
+    // A reply with reasoning, text, a read, a write, an unknown tool and a big result; a steer
+    // taken in between; then a second reply with only calls; then the end.
+    const client = scripted([
+      { text: "Looking.", reasoning: [{ type: "reasoning.encrypted", data: "e1" }], calls: [["c1", "fin", { argv: ["view"] }], ["c2", "nope", {}], ["c3", "fin", { argv: ["item", "trim", "x"] }], ["c4", "fin", "{bad"]] },
+      { calls: [["c5", "fin", { argv: ["item", "trim", "y"] }], ["c6", "fin", { argv: ["item", "trim", "z"] }]] },
+      { text: "Done." },
+    ]);
+    let seq = 0;
+    const nodes: Node[] = [];
+    const node = (kind: Node["kind"], payload: unknown, providerId?: string) =>
+      nodes.push({ id: `n${++seq}`, runId: "R", sessionId: "S", seq, kind, payload, createdAt: 0, ...(providerId === undefined ? {} : { providerId }) });
+    let session: ProviderSession | null = null;
+    const tool: Tool = async (id, _t, input) => {
+      if (id === "c3") {
+        node("userMessage", { text: "also the outro", trigger: "steer" });
+        await Effect.runPromise(session!.steer({ text: "also the outro" }));
+      }
+      return id === "c1" ? { ok: true, output: { big: "z".repeat(40_000) } } : { ok: id !== "c6", output: { exit: id === "c6" ? 3 : 0, input } };
+    };
+    node("userMessage", { text: "go", trigger: "prompt" });
+    const d = await drive({ client, index }, tool);
+    session = d.session;
+    // The runtime's side: the nodes it writes for each event (`runtime-engine.ts`).
+    const stop = (async () => {
+      for (let seen = 0; ; ) {
+        while (seen < d.events.length) {
+          const e = d.events[seen++]!;
+          if (e.type === "usage") node("usage", { input: e.input });
+          else if (e.type === "reasoning") node("reasoning", { ...(e.encrypted ? { encrypted: e.encrypted } : {}) });
+          else if (e.type === "message") node("assistantMessage", { role: e.role, blocks: e.blocks });
+          else if (e.type === "toolStarted") node("toolCall", { tool: e.tool, input: e.input }, e.providerId);
+          else if (e.type === "toolCompleted") node("toolResult", { ok: e.ok, output: e.output }, e.providerId);
+          else if (e.type === "notice") node("notice", { [e.name]: e.details ?? true });
+          else if (e.type === "turnCompleted") return;
+        }
+        await delay(1);
+      }
+    })();
+    await d.turn("go");
+    await stop;
+    const live = client.requests.at(-1)!.messages;
+    const rebuilt = historyFromNodes(nodes, LOOP_LIMITS);
+    expect(JSON.stringify(rebuilt.slice(0, live.length))).toBe(JSON.stringify(live));
+    // The steer came after the first reply's results, as one user message.
+    expect(live.filter((m) => m.role === "user")).toHaveLength(2);
+    const c1 = live.find((m) => m.role === "tool" && m.toolCallId === "c1") as { content: string } | undefined;
+    expect(c1?.content).toContain("bytes cut here");
   });
 });
 

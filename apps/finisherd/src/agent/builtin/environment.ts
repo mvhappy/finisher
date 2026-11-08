@@ -2,7 +2,8 @@
 // prompt (the role's prompt and the `fin` map only, so it is byte-identical across a role's
 // sessions and `systemHash` deduplicates it), the working directory `workspace/<sessionId>/` in
 // the project folder (made, private), and the session environment from the allow-list with
-// `FIN_SERVER` and `FIN_SESSION`. The runtime adds `FIN_CREDENTIAL`; the `fin` tool adds
+// `FIN_SERVER`, `FIN_SESSION` and `FIN_PROJECT_DIR` (the project folder `fin` trusts under the
+// agent credential, never one the model names). The runtime adds `FIN_CREDENTIAL`; the `fin` tool adds
 // `FIN_CALL`. Task 12 wires it with the roles and the server's endpoint.
 import { execFile } from "node:child_process";
 import { mkdir, stat } from "node:fs/promises";
@@ -51,7 +52,7 @@ export function builtinEnvironment(deps: BuiltinEnvironmentDeps): SessionEnviron
       const map = await finMap(deps.finPath).catch((e: unknown) => {
         throw finError("PROVIDER_UNAVAILABLE", `cannot run fin for its map: ${e instanceof Error ? e.message : String(e)}`, { finPath: deps.finPath }, "check agents.finPath");
       });
-      return { system: systemPrompt(deps.rolePrompt(s.role), map), cwd, env: childEnv({ FIN_SERVER: deps.server, FIN_SESSION: s.id }) };
+      return { system: systemPrompt(deps.rolePrompt(s.role), map), cwd, env: childEnv({ FIN_SERVER: deps.server, FIN_SESSION: s.id, FIN_PROJECT_DIR: dir }) };
     },
   };
 }

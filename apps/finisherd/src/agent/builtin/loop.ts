@@ -14,8 +14,14 @@
 // - **Capture:** one `capture {request, response}` per model call: the exact body bytes as
 //   sent (a string; `bodyHash` is its BLAKE3) and the response chunks with the call's metadata.
 // - **Caps (Decision 10):** 60 model calls and 200 tool calls per run; each tool result shown to
-//   the model is at most 16 KiB (head 12 KiB + tail 4 KiB + a note); the run stops with
-//   `MODEL_CONTEXT_EXCEEDED` when a call's prompt would pass 85 % of the model's window.
+//   the model is at most 16 KiB (head 12 KiB + tail 4 KiB + a note), and at most 1 MiB of it is
+//   stored; at most 8 reads run at once; the run stops with `MODEL_CONTEXT_EXCEEDED` when a
+//   call's prompt would pass 85 % of the model's window.
+// - **Event order of a model call** (the journal's contract, `RuntimeJournal.capture`): its
+//   `capture`, then its `usage`, then its reasoning and message, then its `toolStarted`s.
+// - **Resume:** what the loop answers itself (an unknown tool, arguments that are not JSON, a
+//   call past the cap) is a `localToolResult` notice, and steers taken into the conversation a
+//   `steersTaken` notice, so `historyFromNodes` rebuilds the conversation byte for byte.
 import { FinError, type Node, type ProviderEvent } from "@finisher/contracts";
 import { type Cause, Effect, Queue, type Scope, Stream } from "effect";
 import { finError } from "../../errors.ts";
@@ -23,7 +29,7 @@ import { type BoundEvent, type Capabilities, NO_CAPABILITIES, type ProjectedUsag
 import type { Catalogue } from "../catalogue/catalogue.ts";
 import { type AttemptCost, type KeySource, type ModelClient, type ModelResult, noKey } from "./compat.ts";
 import type { FinIndex } from "./fin-tool.ts";
-import { historyFromNodes, renderResult } from "./loop-history.ts";
+import { boundOutput, historyFromNodes, INTERRUPTED_RESULT, renderResult } from "./loop-history.ts";
 import type { ModelMessage, ModelRequest, Preset, ToolCall } from "./request.ts";
 import { FIN_TOOL, isWrite, TOOL_DEFS, TOOL_NAMES } from "./tools.ts";
 
@@ -38,6 +44,10 @@ export interface LoopLimits {
   readonly contextRatio: number;
   /** `max_tokens` of each call (capped by the model's `maxOutput`). */
   readonly maxTokens: number;
+  /** Reads (and `fin --dry-run`s) running at once. */
+  readonly parallelReads: number;
+  /** Bytes of one tool result stored (`toolCompleted`); more is cut. */
+  readonly storedBytes: number;
 }
 
 export const LOOP_LIMITS: LoopLimits = {
@@ -48,6 +58,8 @@ export const LOOP_LIMITS: LoopLimits = {
   tailBytes: 4 * 1024,
   contextRatio: 0.85,
   maxTokens: 8192,
+  parallelReads: 8,
+  storedBytes: 1024 * 1024,
 };
 
 export interface BuiltinDeps {
@@ -103,7 +115,7 @@ export function BuiltinAdapter(deps: BuiltinDeps): ProviderAdapter {
       const maxTokens = Math.max(1, Math.min(limits.maxTokens, info.maxOutput || limits.maxTokens));
       const viewBudget = Math.max(200, Math.min(4000, Math.floor(info.window * 0.05)));
 
-      const history: ModelMessage[] = deps.nodes ? historyFromNodes(deps.nodes(spec.sessionId)) : [];
+      const history: ModelMessage[] = deps.nodes ? historyFromNodes(deps.nodes(spec.sessionId), limits) : [];
       const steers: string[] = [];
       const waits = new Map<string, { resolve: (a: ToolAnswer) => void; reject: (e: unknown) => void }>();
       const early = new Map<string, ToolAnswer>();
@@ -121,8 +133,10 @@ export function BuiltinAdapter(deps: BuiltinDeps): ProviderAdapter {
           }
           waits.set(id, { resolve, reject });
         }).then((a) => {
-          emit({ type: "toolCompleted", providerId: id, ok: a.ok, output: a.output });
-          return a;
+          // Stored as it is shown: cut to `storedBytes` first, so the resume reads the same.
+          const bounded = { ok: a.ok, output: boundOutput(a.output, limits.storedBytes) };
+          emit({ type: "toolCompleted", providerId: id, ok: bounded.ok, output: bounded.output });
+          return bounded;
         });
 
       /** The prompt tokens of `req`: the last call's count plus the new messages, else all of it. */
@@ -144,66 +158,89 @@ export function BuiltinAdapter(deps: BuiltinDeps): ProviderAdapter {
         return g === undefined || g.ok ? null : g.error;
       };
 
-      /** One model call with its retries; a refusal by the gate is returned, not thrown. */
+      /**
+       * One model call with its retries; a refusal by the gate is returned, not thrown. Every
+       * admitted attempt is charged exactly once: its `retry` or `failed` cost, the result's usage
+       * (emitted by the caller, after the capture), or — when the stream throws or ends without
+       * either — the gate's reservation is released (the `finally`).
+       */
       async function modelCall(req: ModelRequest, signal: AbortSignal): Promise<{ result: ModelResult } | { refused: FinError }> {
         const projected: ProjectedUsage = { input: promptTokens(req), output: req.maxTokens, cacheRead: 0, cacheWrite: 0, reasoning: 0 };
         const first = admit(projected);
         if (first) return { refused: first };
-        const it = client.stream(req, key, signal)[Symbol.asyncIterator]();
-        for (;;) {
-          const step = await it.next();
-          if (step.done) throw finError("PROVIDER_PROTOCOL", "the model stream ended without a result", {});
-          const ev = step.value;
-          switch (ev.type) {
-            case "textDelta":
-              emit({ type: "messageDelta", text: ev.text });
-              break;
-            case "reasoningDelta":
-              emit({ type: "reasoningDelta", text: ev.text });
-              break;
-            case "retry": {
-              settle(ev.cost);
-              emit({ type: "notice", name: "retry", details: { attempt: ev.attempt, code: ev.code, delayMs: ev.delayMs } });
-              const again = admit(projected);
-              if (again) {
-                await it.return?.();
-                return { refused: again };
+        let open = true;
+        const charge = (cost: AttemptCost) => {
+          open = false;
+          settle(cost);
+        };
+        try {
+          const it = client.stream(req, key, signal)[Symbol.asyncIterator]();
+          for (;;) {
+            const step = await it.next();
+            if (step.done) throw finError("PROVIDER_PROTOCOL", "the model stream ended without a result", {});
+            const ev = step.value;
+            switch (ev.type) {
+              case "textDelta":
+                emit({ type: "messageDelta", text: ev.text });
+                break;
+              case "reasoningDelta":
+                emit({ type: "reasoningDelta", text: ev.text });
+                break;
+              case "retry": {
+                charge(ev.cost);
+                emit({ type: "notice", name: "retry", details: { attempt: ev.attempt, code: ev.code, delayMs: ev.delayMs } });
+                const again = admit(projected);
+                if (again) {
+                  await it.return?.();
+                  return { refused: again };
+                }
+                open = true;
+                break;
               }
-              break;
-            }
-            case "failed":
-              settle(ev.cost);
-              break;
-            case "done": {
-              const r = ev.result;
-              emit({ type: "usage", ...r.usage, ...(r.costMicros === undefined ? {} : { costMicros: r.costMicros }) });
-              return { result: r };
+              case "failed":
+                charge(ev.cost);
+                break;
+              case "done":
+                open = false;
+                return { result: ev.result };
             }
           }
+        } finally {
+          if (open) spec.gate?.release();
         }
       }
 
-      /** Runs the calls of one reply: reads together, each write alone, results in call order. */
-      async function runTools(calls: readonly ToolCall[], used: { tools: number }, signal: AbortSignal): Promise<{ results: Map<string, string>; capped: boolean }> {
+      /** A call the loop answers itself (no runtime run): recorded so the resume has it. */
+      const answerLocally = (st: ToolsState, index: number, content: string) => {
+        const c = st.recorded[index]!;
+        st.results.set(c.id, content);
+        emit({ type: "notice", name: "localToolResult", details: { providerId: c.id, tool: c.name, arguments: c.arguments, index, content } });
+      };
+
+      /**
+       * Runs the calls of one reply: reads together (at most `parallelReads` at once), each write
+       * alone, results in call order. `st.recorded` becomes each call as announced (its
+       * arguments the JSON of the input the runtime ran) and `st.results` its result text.
+       */
+      async function runTools(st: ToolsState, used: { tools: number }, signal: AbortSignal): Promise<void> {
         const index = await deps.index?.().catch(() => undefined);
-        const results = new Map<string, string>();
-        let capped = false;
-        type Ready = { id: string; tool: string; input: unknown; write: boolean };
+        type Ready = { i: number; id: string; tool: string; input: unknown; write: boolean };
         const ready: Ready[] = [];
-        for (const c of calls) {
+        for (const [i, c] of st.recorded.entries()) {
           if (!TOOL_NAMES.has(c.name)) {
-            results.set(c.id, JSON.stringify({ ok: false, error: { code: "USAGE", message: `no tool named ${c.name}`, tools: [...TOOL_NAMES] } }));
+            answerLocally(st, i, JSON.stringify({ ok: false, error: { code: "USAGE", message: `no tool named ${c.name}`, tools: [...TOOL_NAMES] } }));
             continue;
           }
           let input: unknown;
           try {
             input = c.arguments.trim() === "" ? {} : JSON.parse(c.arguments);
           } catch {
-            results.set(c.id, JSON.stringify({ ok: false, error: { code: "USAGE", message: "the tool arguments are not JSON" } }));
+            answerLocally(st, i, JSON.stringify({ ok: false, error: { code: "USAGE", message: "the tool arguments are not JSON" } }));
             continue;
           }
           if (c.name === FIN_TOOL) input = withViewBudget(input, viewBudget);
-          ready.push({ id: c.id, tool: c.name, input, write: isWrite(c.name, input, index) });
+          st.recorded[i] = { id: c.id, name: c.name, arguments: JSON.stringify(input) ?? "null" };
+          ready.push({ i, id: c.id, tool: c.name, input, write: isWrite(c.name, input, index) });
         }
         let i = 0;
         while (i < ready.length) {
@@ -211,20 +248,23 @@ export function BuiltinAdapter(deps: BuiltinDeps): ProviderAdapter {
           // A run of reads, or one write.
           const batch = ready[i]!.write ? [ready[i]!] : takeWhile(ready, i, (r) => !r.write);
           i += batch.length;
-          const pending: Promise<void>[] = [];
-          for (const r of batch) {
-            if (used.tools >= limits.toolCalls) {
-              capped = true;
-              results.set(r.id, JSON.stringify({ ok: false, error: { code: "BUDGET_EXCEEDED", message: `the run's ${limits.toolCalls} tool calls are used up`, kind: "toolCalls" } }));
-              continue;
+          const queue = [...batch];
+          const worker = async () => {
+            for (let r = queue.shift(); r !== undefined; r = queue.shift()) {
+              if (signal.aborted) throw new Stopped();
+              if (used.tools >= limits.toolCalls) {
+                st.capped = true;
+                answerLocally(st, r.i, JSON.stringify({ ok: false, error: { code: "BUDGET_EXCEEDED", message: `the run's ${limits.toolCalls} tool calls are used up`, kind: "toolCalls" } }));
+                continue;
+              }
+              used.tools++;
+              emit({ type: "toolStarted", providerId: r.id, tool: r.tool, input: r.input });
+              const a = await waitFor(r.id);
+              st.results.set(r.id, renderResult(r.id, a, limits));
             }
-            used.tools++;
-            emit({ type: "toolStarted", providerId: r.id, tool: r.tool, input: r.input });
-            pending.push(waitFor(r.id).then((a) => void results.set(r.id, renderResult(r.id, a, limits))));
-          }
-          await Promise.all(pending);
+          };
+          await Promise.all(Array.from({ length: Math.min(Math.max(1, limits.parallelReads), batch.length) }, worker));
         }
-        return { results, capped };
       }
 
       async function runTurn(): Promise<void> {
@@ -233,7 +273,11 @@ export function BuiltinAdapter(deps: BuiltinDeps): ProviderAdapter {
         emit({ type: "turnStarted" });
         try {
           for (let calls = 0; ; calls++) {
-            if (steers.length > 0) history.push({ role: "user", content: [{ type: "text", text: steers.splice(0).join("\n\n") }] });
+            if (steers.length > 0) {
+              const taken = steers.splice(0);
+              history.push({ role: "user", content: [{ type: "text", text: taken.join("\n\n") }] });
+              emit({ type: "notice", name: "steersTaken", details: { count: taken.length } });
+            }
             if (calls >= limits.modelCalls) return emit({ type: "turnCompleted", stopReason: "modelCallCap" });
             const req: ModelRequest = { system: spec.system, tools: TOOL_DEFS, messages: [...history], model: spec.model, maxTokens };
             const tokens = promptTokens(req);
@@ -249,11 +293,13 @@ export function BuiltinAdapter(deps: BuiltinDeps): ProviderAdapter {
               return emit({ type: "turnFailed", error: { code: e.code, message: e.message, details: e.details ?? {}, ...(e.fix === undefined ? {} : { fix: e.fix }) } });
             }
             const r = answer.result;
+            // The journal's order: the capture, then the usage it joins, then the content.
             emit({
               type: "capture",
               request: r.capture.request,
               response: {
                 chunks: r.capture.response,
+                stopReason: r.stopReason,
                 bodyHash: r.bodyHash,
                 usageEstimated: r.usageEstimated,
                 latencyMs: r.latencyMs,
@@ -262,21 +308,37 @@ export function BuiltinAdapter(deps: BuiltinDeps): ProviderAdapter {
                 ...(r.generationId === undefined ? {} : { generationId: r.generationId }),
               },
             });
+            emit({ type: "usage", ...r.usage, ...(r.costMicros === undefined ? {} : { costMicros: r.costMicros }) });
             if (r.reasoningText !== "" || r.reasoning.length > 0) {
               emit({ type: "reasoning", ...(r.reasoningText === "" ? {} : { text: r.reasoningText }), ...(r.reasoning.length === 0 ? {} : { encrypted: r.reasoning }) });
             }
             if (r.text !== "") emit({ type: "message", role: "assistant", blocks: [{ type: "text", text: r.text }] });
-            history.push({
-              role: "assistant",
-              ...(r.text === "" ? {} : { text: r.text }),
-              ...(r.toolCalls.length === 0 ? {} : { toolCalls: r.toolCalls }),
-              ...(r.reasoning.length === 0 ? {} : { reasoning: r.reasoning }),
-            });
-            known = { tokens: r.usage.input + r.usage.cacheRead + r.usage.cacheWrite + r.usage.output, covers: history.length };
-            if (r.toolCalls.length === 0) return emit({ type: "turnCompleted", stopReason: r.stopReason });
-            const { results, capped } = await runTools(r.toolCalls, used, signal);
-            for (const c of r.toolCalls) history.push({ role: "tool", toolCallId: c.id, content: results.get(c.id) ?? "" });
-            if (capped) return emit({ type: "turnCompleted", stopReason: "toolCallCap" });
+            const tokensNow = r.usage.input + r.usage.cacheRead + r.usage.cacheWrite + r.usage.output;
+            /** The reply as the conversation keeps it (and `historyFromNodes` rebuilds it). */
+            const reply = (calls: readonly ToolCall[]) => {
+              if (r.text !== "" || calls.length > 0 || r.reasoning.length > 0) {
+                history.push({
+                  role: "assistant",
+                  ...(r.text === "" ? {} : { text: r.text }),
+                  ...(calls.length === 0 ? {} : { toolCalls: [...calls] }),
+                  ...(r.reasoning.length === 0 ? {} : { reasoning: r.reasoning }),
+                });
+              }
+              known = { tokens: tokensNow, covers: history.length };
+            };
+            if (r.toolCalls.length === 0) {
+              reply([]);
+              return emit({ type: "turnCompleted", stopReason: r.stopReason });
+            }
+            const st: ToolsState = { recorded: uniqueIds(r.toolCalls), results: new Map(), capped: false };
+            try {
+              await runTools(st, used, signal);
+            } finally {
+              // Even when stopped: every call keeps a result, so the next request is valid.
+              reply(st.recorded);
+              for (const c of st.recorded) history.push({ role: "tool", toolCallId: c.id, content: st.results.get(c.id) ?? INTERRUPTED_RESULT });
+            }
+            if (st.capped) return emit({ type: "turnCompleted", stopReason: "toolCallCap" });
           }
         } catch (e) {
           if (e instanceof Stopped || signal.aborted) return emit({ type: "turnCompleted", stopReason: "interrupted" });
@@ -347,6 +409,32 @@ export function BuiltinAdapter(deps: BuiltinDeps): ProviderAdapter {
       }),
     open: (spec) => open(spec) as Effect.Effect<ProviderSession, FinError, Scope.Scope>,
   };
+}
+
+interface ToolsState {
+  /** The reply's calls, ids made unique; each becomes the call as announced. */
+  recorded: ToolCall[];
+  readonly results: Map<string, string>;
+  capped: boolean;
+}
+
+/**
+ * The calls with unique ids (review M8): a repeated (or empty) id gets a suffix, so every call
+ * is announced, answered and waited for once. The conversation keeps the new ids.
+ */
+export function uniqueIds(calls: readonly ToolCall[]): ToolCall[] {
+  const given = new Set(calls.map((c) => c.id));
+  const used = new Set<string>();
+  return calls.map((c, i) => {
+    let id = c.id;
+    if (id === "" || used.has(id)) {
+      const base = id === "" ? `call_${i}` : id;
+      id = base;
+      for (let n = 2; used.has(id) || (id !== c.id && given.has(id)); n++) id = `${base}_${n}`;
+    }
+    used.add(id);
+    return id === c.id ? c : { ...c, id };
+  });
 }
 
 function takeWhile<T>(xs: readonly T[], from: number, p: (x: T) => boolean): T[] {

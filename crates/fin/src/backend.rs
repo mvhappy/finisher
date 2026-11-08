@@ -513,7 +513,12 @@ fn rebuild_here(sd: &Path, dir: &Path) -> Result<fin_store::RebuildReport, CoreE
 
 /// `--project <dir>` (with `~` expanded), else the nearest ancestor of the working directory
 /// that holds `finisher.project.json`.
+/// Under an agent credential: the runtime's `FIN_PROJECT_DIR` only (a `--project` must name it).
 pub fn project_dir(explicit: Option<&Path>) -> Result<Option<PathBuf>, CoreError> {
+    if crate::agent_session::active() {
+        crate::agent_paths::check_project(explicit)?;
+        return Ok(crate::agent_paths::session_project_dir());
+    }
     if let Some(dir) = explicit {
         return paths::resolve_checked(dir).map(Some);
     }

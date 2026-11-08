@@ -2,6 +2,14 @@
 // result cut to fit, and the conversation rebuilt from a session's stored nodes when the session
 // is opened again (a resume after an interrupt or a restart), so no tool runs twice: a call that
 // never got its result has the synthetic one recovery wrote.
+//
+// The rebuild matches the live conversation byte for byte (review M7): a `usage` node starts a
+// model call (the loop emits a call's `usage` before its content), so the call's reasoning,
+// text and tool calls form one assistant message, followed by its results in call order, each
+// rendered with the same limits as live. Calls the loop answered itself come from its
+// `localToolResult` notices (at their place in the reply), and steers enter where its
+// `steersTaken` notices say. (Not rebuilt: a turn's facts, which are not stored, and the exact
+// text of an interrupted call's result, which recovery writes.)
 import type { Node } from "@finisher/contracts";
 import type { ModelMessage, ToolCall } from "./request.ts";
 
@@ -10,6 +18,9 @@ export interface CutLimits {
   readonly headBytes: number;
   readonly tailBytes: number;
 }
+
+/** What a call without a result is answered with, live and rebuilt alike. */
+export const INTERRUPTED_RESULT = JSON.stringify({ ok: false, code: "SESSION_INTERRUPTED" });
 
 /** A tool result as the model reads it: JSON, cut to head + note + tail past `resultBytes`. */
 export function renderResult(providerId: string, a: { readonly ok: boolean; readonly output: unknown }, l: CutLimits): string {
@@ -20,62 +31,122 @@ export function renderResult(providerId: string, a: { readonly ok: boolean; read
   const cut = bytes.length - l.headBytes - l.tailBytes;
   const head = bytes.subarray(0, l.headBytes).toString("utf8");
   const tail = bytes.subarray(bytes.length - l.tailBytes).toString("utf8");
-  return `${head}\n[… ${cut} bytes cut here; the whole result is kept in this session as tool call ${providerId}'s result]\n${tail}`;
+  return `${head}\n[… ${cut} bytes cut here; the result is kept in this session as tool call ${providerId}'s result]\n${tail}`;
 }
 
-const asText = (v: unknown) => (typeof v === "string" ? v : JSON.stringify(v ?? null));
+/** `output`, or — past `max` bytes of JSON — its first `max` bytes as text, marked (review M6). */
+export function boundOutput(output: unknown, max: number): unknown {
+  const text = typeof output === "string" ? output : (JSON.stringify(output) ?? "null");
+  const bytes = Buffer.byteLength(text, "utf8");
+  if (bytes <= max) return output;
+  return { truncated: true, bytes, head: Buffer.from(text, "utf8").subarray(0, max).toString("utf8") };
+}
+
+type Slot = { readonly call: ToolCall; readonly index?: number; readonly content?: string };
+interface Reply {
+  text?: string;
+  readonly slots: Slot[];
+  reasoning?: unknown[];
+}
 
 /** The conversation of a session's nodes (user prompts, replies, tool calls and results). */
-export function historyFromNodes(nodes: ReadonlyArray<Node>): ModelMessage[] {
+export function historyFromNodes(nodes: ReadonlyArray<Node>, limits: CutLimits): ModelMessage[] {
   const out: ModelMessage[] = [];
-  let reply: { text?: string; toolCalls: ToolCall[]; reasoning?: unknown[] } | null = null;
+  const results = new Map<string, string>();
+  const steers: string[] = [];
+  let reply: Reply | null = null;
   let reasoning: unknown[] | undefined;
-  const answered = new Set<string>();
-  const flush = () => {
-    if (reply === null) return;
-    out.push({
-      role: "assistant",
-      ...(reply.text === undefined ? {} : { text: reply.text }),
-      ...(reply.toolCalls.length === 0 ? {} : { toolCalls: reply.toolCalls }),
-      ...(reply.reasoning === undefined ? {} : { reasoning: reply.reasoning }),
-    });
-    reply = null;
-  };
-  const open = () => {
+  let pending: Reply[] = [];
+  const open = (): Reply => {
     if (reply === null) {
-      reply = { toolCalls: [], ...(reasoning === undefined ? {} : { reasoning }) };
+      reply = { slots: [], ...(reasoning === undefined ? {} : { reasoning }) };
       reasoning = undefined;
     }
     return reply;
   };
+  /** Ends the model call being read; its results are written once they are all read. */
+  const flush = () => {
+    if (reply === null && reasoning !== undefined) open();
+    if (reply !== null) pending.push(reply);
+    reply = null;
+  };
+  /** Whether the model call being read has content already (a second message is another call). */
+  const started = (): boolean => {
+    const r = reply as Reply | null;
+    return r !== null && (r.text !== undefined || r.slots.length > 0);
+  };
+  const write = () => {
+    for (const r of pending) {
+      // The calls in reply order: the locally answered at their index, the announced around them.
+      const calls: Slot[] = [];
+      const placed = r.slots.filter((s) => s.index !== undefined).sort((a, b) => a.index! - b.index!);
+      const rest = r.slots.filter((s) => s.index === undefined);
+      for (const p of placed) {
+        while (calls.length < p.index! && rest.length > 0) calls.push(rest.shift()!);
+        calls.push(p);
+      }
+      calls.push(...rest);
+      if (r.text === undefined && calls.length === 0 && r.reasoning === undefined) continue;
+      out.push({
+        role: "assistant",
+        ...(r.text === undefined ? {} : { text: r.text }),
+        ...(calls.length === 0 ? {} : { toolCalls: calls.map((s) => s.call) }),
+        ...(r.reasoning === undefined ? {} : { reasoning: r.reasoning }),
+      });
+      for (const s of calls) out.push({ role: "tool", toolCallId: s.call.id, content: s.content ?? results.get(s.call.id) ?? INTERRUPTED_RESULT });
+    }
+    pending = [];
+  };
   for (const n of nodes) {
     const p = (n.payload ?? {}) as Record<string, unknown>;
     switch (n.kind) {
-      case "userMessage":
+      case "userMessage": {
+        const text = typeof p.text === "string" ? p.text : "";
+        if (p.trigger === "steer") {
+          // A steer enters the conversation where the loop took it (`steersTaken`).
+          steers.push(text);
+          break;
+        }
         flush();
-        out.push({ role: "user", content: [{ type: "text", text: typeof p.text === "string" ? p.text : "" }] });
+        write();
+        out.push({ role: "user", content: [{ type: "text", text }] });
         break;
-      case "reasoning":
+      }
+      case "usage":
         flush();
+        break;
+      case "notice": {
+        const taken = (p.steersTaken as { count?: unknown } | undefined)?.count;
+        if (typeof taken === "number" && taken > 0) {
+          flush();
+          write();
+          out.push({ role: "user", content: [{ type: "text", text: steers.splice(0, taken).join("\n\n") }] });
+        }
+        const local = p.localToolResult as { providerId?: unknown; tool?: unknown; arguments?: unknown; index?: unknown; content?: unknown } | undefined;
+        if (local && typeof local.providerId === "string" && typeof local.index === "number" && typeof local.content === "string") {
+          const call = { id: local.providerId, name: typeof local.tool === "string" ? local.tool : "", arguments: typeof local.arguments === "string" ? local.arguments : "" };
+          open().slots.push({ call, index: local.index, content: local.content });
+        }
+        break;
+      }
+      case "reasoning":
+        if (started()) flush();
         if (Array.isArray(p.encrypted)) reasoning = p.encrypted;
         break;
       case "assistantMessage": {
-        flush();
+        if (started()) flush();
         const blocks = Array.isArray(p.blocks) ? (p.blocks as Array<{ type?: string; text?: string }>) : [];
-        const text = blocks.filter((b) => b.type === "text").map((b) => b.text ?? "").join("");
-        open().text = text;
+        open().text = blocks.filter((b) => b.type === "text").map((b) => b.text ?? "").join("");
         break;
       }
       case "toolCall":
         if (n.providerId === undefined) break;
-        open().toolCalls.push({ id: n.providerId, name: typeof p.tool === "string" ? p.tool : "fin", arguments: JSON.stringify(p.input ?? {}) });
+        open().slots.push({ call: { id: n.providerId, name: typeof p.tool === "string" ? p.tool : "fin", arguments: p.input === undefined ? "{}" : (JSON.stringify(p.input) ?? "null") } });
         break;
       case "toolResult": {
-        flush();
         if (n.providerId === undefined) break;
-        answered.add(n.providerId);
-        const body = n.payload === undefined ? `[the result is stored as ${n.blobRef ?? "a blob"}]` : asText(p.ok === false ? { ok: false, ...((p.output ?? {}) as object) } : p.output);
-        out.push({ role: "tool", toolCallId: n.providerId, content: body });
+        const body = n.payload === undefined ? `[the result is stored as ${n.blobRef ?? "a blob"}]` : renderResult(n.providerId, { ok: p.ok !== false, output: p.output }, limits);
+        results.set(n.providerId, body);
         break;
       }
       default:
@@ -83,14 +154,6 @@ export function historyFromNodes(nodes: ReadonlyArray<Node>): ModelMessage[] {
     }
   }
   flush();
-  // A call without a result (it should have a synthetic one) is answered so the request is valid.
-  const fixed: ModelMessage[] = [];
-  for (const m of out) {
-    fixed.push(m);
-    if (m.role !== "assistant" || m.toolCalls === undefined) continue;
-    for (const c of m.toolCalls) {
-      if (!answered.has(c.id)) fixed.push({ role: "tool", toolCallId: c.id, content: JSON.stringify({ ok: false, code: "SESSION_INTERRUPTED" }) });
-    }
-  }
-  return fixed;
+  write();
+  return out;
 }
