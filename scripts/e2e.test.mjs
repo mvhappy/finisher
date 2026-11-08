@@ -11,7 +11,11 @@ import { clipsOf, failure } from "./e2e/history-lib.mjs";
 import { contentFields, contentProblems, kindDef, leaks, loadContentFields, parseJsonl } from "./e2e/diagnostics-lib.mjs";
 import { audioSummary, blessing, checkGolden, cubicBezier, engineProblem, firstDifference, frameGolden, hashTree, layerSummary } from "./e2e/reel-lib.mjs";
 import { realCache } from "./e2e/reel-real.mjs";
-import { handshakeMac } from "./e2e/lib.mjs";
+import { createServer } from "node:net";
+import { createServer as createHttpServer } from "node:http";
+import { statSync } from "node:fs";
+import { errorCode, handshakeMac, rawConnect } from "./e2e/lib.mjs";
+import { secretHits, wsUpgrade, writePrivate } from "./e2e/auth-lib.mjs";
 
 test("parseFrames splits one message carrying several NDJSON frames", () => {
   const text = `${JSON.stringify({ _tag: "Chunk", requestId: "1", values: [] })}\n${JSON.stringify({ _tag: "Exit", requestId: "1" })}\n`;
@@ -266,5 +270,76 @@ test("scenarioTmp keeps the socket path under 104 bytes whatever TMPDIR is", { s
     rmSync(dir, { recursive: true, force: true });
   } finally {
     rmSync(deep, { recursive: true, force: true });
+  }
+});
+
+// The auth scenario's helpers (5A Task 12).
+test("auth: errorCode finds the first error code in an Exit, an Error or a message", () => {
+  assert.equal(errorCode({ _tag: "Failure", cause: [{ error: { code: "UNAUTHENTICATED" } }] }), "UNAUTHENTICATED");
+  assert.equal(errorCode(new Error('auth.ticket failed: {"code":"TICKET_LIMIT"}')), "TICKET_LIMIT");
+  assert.equal(errorCode({ _tag: "Success", value: {} }), undefined);
+});
+
+test("auth: secretHits finds long needles anywhere and short ones only standing alone", () => {
+  const long = "k".repeat(43);
+  const sources = [
+    { name: "a", text: `x ${long} y` },
+    { name: "b", text: "code ABC123 here" },
+    { name: "c", text: "xABC123x" },
+    { name: "d", text: "nothing" },
+  ];
+  assert.deepEqual(
+    secretHits(sources, [long, "ABC123", ""]).map((h) => [h.source, h.needle.length > 0]),
+    [["a", true], ["b", true]],
+  );
+  assert.ok(!JSON.stringify(secretHits(sources, [long])).includes(long), "a hit never prints the secret");
+});
+
+test("auth: writePrivate creates an owner-only file", { skip: process.platform === "win32" }, () => {
+  const dir = mkdtempSync(join(tmpdir(), "e2e-priv-"));
+  try {
+    writePrivate(join(dir, "k"), "secret\n");
+    assert.equal(statSync(join(dir, "k")).mode & 0o777, 0o600);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("auth: rawConnect answers each call with its Exit and says when the connection ends", { skip: process.platform === "win32" }, async () => {
+  const dir = mkdtempSync(join(tmpdir(), "e2e-raw-"));
+  const path = join(dir, "s.sock");
+  const fake = createServer((sock) => {
+    sock.setEncoding("utf8").on("data", (d) => {
+      const req = JSON.parse(d.split("\n")[0]);
+      if (req.tag === "bye") return sock.end();
+      sock.write(`${JSON.stringify({ _tag: "Exit", requestId: req.id, exit: { _tag: "Success", value: { tag: req.tag } } })}\n`);
+    });
+  });
+  await new Promise((r) => fake.listen(path, r));
+  try {
+    const raw = await rawConnect({ info: { socket: path } });
+    assert.deepEqual(await raw.call("one", {}), { _tag: "Success", value: { tag: "one" } });
+    assert.deepEqual(await raw.call("bye", {}), { _tag: "Closed" });
+    await raw.closed;
+  } finally {
+    fake.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("auth: wsUpgrade sends the headers it is given and reports the status and body", async () => {
+  const seen = [];
+  const http = createHttpServer((req, res) => {
+    seen.push([req.headers.host, req.headers.origin, req.headers["sec-websocket-protocol"], req.url]);
+    res.writeHead(403, { "content-type": "text/plain" }).end("no");
+  });
+  await new Promise((r) => http.listen(0, "127.0.0.1", r));
+  try {
+    const server = { info: { wsPort: http.address().port } };
+    const r = await wsUpgrade(server, { protocols: ["finisher.v2", "finisher.ticket.t"], host: "evil.example:1", origin: "http://evil.example", path: "/rpc?x=1" });
+    assert.deepEqual([r.status, r.body], [403, "no"]);
+    assert.deepEqual(seen, [["evil.example:1", "http://evil.example", "finisher.v2, finisher.ticket.t", "/rpc?x=1"]]);
+  } finally {
+    http.close();
   }
 });
