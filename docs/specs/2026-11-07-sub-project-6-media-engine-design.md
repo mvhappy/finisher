@@ -1,6 +1,6 @@
 # Sub-project 6: Media engine — Design
 
-- **Status:** revision 3 (2026-11-07): the owner's decisions of 2026-11-07 are recorded in §21 and applied to the body; three follow-up decisions of the same day (the proxy encoder scope, Electron's ffmpeg made provisional, Landlock-disabled hosts) are in §21 and applied in §3.5.1, §6.1, §6.2, §7.1, §16.1 and §16.3. Revision 2 followed an independent review of revision 1 (`e6f7e64`); §24 maps each finding to its resolution. 6A-1 is built (branch `sp6a1-media-foundations`; "As built (6A-1)" notes in §5.1, §6.1, §6.4, §10.1, §13.4, §17); the rest is not implemented yet. The plan for the first sub-batch (6A) is `docs/superpowers/plans/2026-11-07-sub-project-6a-media-foundations.md`.
+- **Status:** revision 4 (2026-11-08). **Sub-batch 6A (6A-1 and 6A-2) is built**; §25 records it as built, each decision marked **As built** or **Deviation**, with the review fixes, the owner decisions as applied, the measured timings and the residuals; the "As built" notes in §3.3, §3.4, §5.1, §5.2, §6.1, §6.4, §10.1, §13.4, §15, §17 and §20 point there. Verified on Linux x64 (lavapipe), with compositor and `fin-shm` runs on Apple Silicon (Metal) and Windows 11 (WARP, D3D12); the cross-platform run of the whole of 6A (plan Task 16) is the checklist of §25.6, not yet run. 6B onward is not implemented. Revision 3 (2026-11-07) recorded the owner's decisions of 2026-11-07 in §21 and applied them to the body; three follow-up decisions of the same day (the proxy encoder scope, Electron's ffmpeg made provisional, Landlock-disabled hosts) are in §21 and applied in §3.5.1, §6.1, §6.2, §7.1, §16.1 and §16.3. Revision 2 followed an independent review of revision 1 (`e6f7e64`); §24 maps each finding to its resolution. The plan for the first sub-batch (6A) is `docs/superpowers/plans/2026-11-07-sub-project-6a-media-foundations.md`.
 - **Parent:** `docs/specs/2026-11-01-finisher-architecture-design.md` (cited below as *arch §n*). This document refines arch §4 (rule 3), §7, §12, §17 (performance budgets), §18, §21.1, §22 and §27.2–27.3 and §27.10 for sub-project 6. Where the two disagree, this document wins for sub-project 6, and arch §27 gets a pointer when a sub-batch merges.
 - **Builds on:** sub-project 4 (`docs/specs/2026-11-04-sub-project-4-core-breadth-design.md`, cited as *core §n*): `fin-core::eval` (core §5.4), captions and `fin-text` (core §5.5–5.6), the asset kinds (core §5.7), and the diagnostics journal (arch §21.1).
 - **Siblings** (all in revision; cited by branch): sub-project 5 (*cp §n*, `sp5-design`, `docs/specs/2026-11-07-sub-project-5-control-plane-design.md`): jobs, the worker binary, the library stage framework; sub-project 7 (*ar §n*, `sp7-design`): `fin-sandbox`; sub-project 8 (*pl §n*, `sp8-design`): plugins, analyzers, codec and matte interfaces. **Ownership splits fixed by the coordinator** are stated where they apply and summarised in §3.6.
@@ -118,6 +118,7 @@ Declared in `finisherd` (`jobs/kinds/media.*.ts`) with params and results genera
   - Why the worker evaluates instead of receiving plans: the job can be replayed alone (`fin-workers media --replay <jobdir>` reproduces a bug report), there is no per-frame IPC, and a remote worker pool needs nothing but the job directory. Eval is deterministic across platforms (core §5.4), and the samples prove it per job.
 - **Outputs** go to `out/` only; sub-project 6's `onSucceeded` handler moves them to the cache (by rename, after the `fin-shm` checks) or to their destination (temp-then-rename, arch §6.7) before 5C deletes the directory.
 - **Retries and poison** are 5C's (cp §6.4). A media input that is a poison item (`POISON_ITEM`) stays failed until its fingerprint or `RENDER_VERSION` changes, which 5C sees through the kind's `dedupe(params)` key.
+- *As built (6A-2):* only `media.look` and `media.capabilities` exist (both warm, on `interactive:media`); the `media` family forwards the one environment variable `FIN_GPU` (`FAMILY_ENV` refuses any other name, and any `env` for a plugin family); its memory rule is `{ramFraction 0.5, capMiB 6144}`. The job's params carry `projectId`, `branch`, `rev` and `outDir` beside the worker's (the worker ignores them), because `dedupe` and `prepare` see only the params. `prepare` snapshots the head it finds and reports that rev. Frames are named `<timeline>-<n>_<d>-<w>x<h>-<plan hash, 8 hex>.png`; the size is in the name because the plan hash does not cover it. Details and deviations: §25.1.
 
 ### 3.4 The mapped-file bulk channel (`fin-shm`)
 
@@ -132,6 +133,7 @@ Frames and PCM never go over the stdio envelope. `fin-shm` is a small crate (sub
 - **Copies are validated, not files:** an output read from a less-trusted writer is copied into private memory or a staging file first and validated as the copy (pl §3.5 rule 1); a short read is a typed error, never a `SIGBUS`.
 - **Size caps:** per kind (e.g. `media.frames` ≤ 256 MiB per ring), checked before creation and at every read.
 - **One crate, one rule set:** these are the rules of pl §3.5 (rings fixed-size and host-created, outputs validated after the writer exits or as copies, directories swept at start); `fin-shm` implements them once for media jobs, helpers and the plugin host.
+- *As built (6A-2), `fin-shm`:* every path is walked segment by segment without following links (unix `openat(O_NOFOLLOW)`, Linux `O_PATH`; Windows `FILE_FLAG_OPEN_REPARSE_POINT` per segment, with the final path re-checked); a FIFO or device is refused before it is opened. A warm worker outlives its job, so `media.look` moves a PNG by **copy** (`commit_output_copy`: the checked handle is copied into a host-created `O_EXCL` temporary beside the destination, synced and renamed over it), never by renaming a file the worker may still hold. Workers write their outputs with `create_output` (an entry of that name, a link too, is unlinked first), the host writes `in/` with `write_input`; `--replay` uses `create_new_output`. Refusals are `SHM_REFUSED {file, reason}` with `file` job-relative before it reaches a client. Rings are fixed-size seqlock slots (a 32-byte header, a `{seq, len}` table, slots from a 64-byte-aligned offset); 6A uses no ring yet. Details: §25.1.
 
 ### 3.5 Requirements on sub-project 7's `worker` sandbox profile
 
@@ -250,6 +252,7 @@ For each frame plan, bottom layer first:
 - **Sampling and downscaling** (defined identically in both compositors, §13.4):
   - magnification and scale ≥ ½: bilinear sampling of the source at the output pixel centre;
   - minification: each source gets a **mip chain by exact 2×2 box averaging** (our own pass; WebGPU generates no mipmaps), and the layer samples with an **explicit level** `L = log2(1 / s)` where `s` is the layer's smaller axis scale in output pixels per source pixel (constant per layer, since transforms are affine; computed in Rust with `libm`), bilinear in levels `⌊L⌋` and `⌈L⌉` blended by the fraction. No derivative-based LOD, which differs between GPUs.
+  - *As built (6A-2), deviation:* the mip levels are **separate textures**, sized like the reference's chain (`⌈w/2⌉`; WebGPU's own mip levels round down, which would change the average), and the layer shader mixes `textureSampleLevel(…, 0)` of `⌊L⌋` and `⌈L⌉` by the fraction. Both compositors share `placement` (quad, inverse, level, bounds, transition weight) and the layer walk with its skips, so they cannot disagree on which samples are taken.
 - **Edges without clamp-to-border:** WebGPU has no border colour, so samplers clamp to edge and the shader computes **coverage** per output pixel: for each of the quad's four edges (after crop), `clamp(d + 0.5, 0, 1)` where `d` is the signed distance in output pixels from the pixel centre to the edge (positive inside); coverage is their product and multiplies the layer's alpha. The CPU reference computes the same coverage, so rotated and fractional edges match.
 - **Pipelines and textures:** one pipeline per (stage, blend mode, target format), created on first use; a texture pool keyed by (size, format, usage) recycles intermediates; decoded frames live in a per-asset ring.
 - **Plugin effects later:** a WGSL effect (sub-project 8, pl §10.4) is a fragment function `fn effect(uv: vec2f, src: vec4f) -> vec4f` plus a uniform block generated from the plugin's `ParamSpec`s. The built-ins use the same ABI.
@@ -258,6 +261,7 @@ For each frame plan, bottom layer first:
 
 - **Backends:** Metal on macOS; D3D12 on Windows (Vulkan as an alternative); Vulkan on Linux. The adapter is chosen by the capability report: the discrete GPU for batch work unless the user picks another (Chromium ignores `powerPreference`, arch §27.2, but native wgpu does not).
 - **Shader compiler on D3D12:** wgpu's FXC path (`d3dcompiler_47.dll`, part of Windows) by default; DXC only if a measured need appears, and then its DLLs go through the run-time library gate (§16.3).
+  - *As built (6A-2):* wgpu 30.0.1 with FXC pinned; a loaded-module listing of the test processes shows `d3dcompiler_47.dll` and never `dxcompiler.dll`. `FIN_GPU=auto` prefers D3D12 on Windows, then the primary backends (it chose Vulkan before this was fixed, and FXC refused `blend.wgsl` for `overlay` once the blend mode was substituted, which a test now builds on every backend). `FIN_GPU=software` is `force_fallback_adapter` plus a CPU device type: lavapipe on Linux, WARP on Windows; macOS has no software adapter, so `software` skips there with a notice (`FIN_REQUIRE_GPU=1` fails it instead). Device loss and out-of-memory are typed (`GPU_DEVICE_LOST`, `GPU_OUT_OF_MEMORY`), never a panic.
 - **Without a GPU** (a NAS without one, a VM): lavapipe (Mesa, Vulkan) on Linux and WARP (D3D12) on Windows. The server Docker image includes Mesa's lavapipe (covered by the image's SBOM gate, §16.3). They are slow but correct, and the capability report says so.
 - **Readback** for PNG and software encoders: a staging buffer with 256-byte row alignment, mapped asynchronously; double-buffered so the GPU renders frame *n+1* while frame *n* is read.
 
@@ -657,6 +661,7 @@ Budgets are CI gates where CI hardware can measure them, and validation-task gat
 - **Path:** workers send diagnostics through 5C's envelope; `finisherd` forwards them to the `fin-node` journal, which stays the only writer. The `source` label is the diagnostics spec's to define (it owns the `Source` enum); sub-project 6 adds no variant.
 - **Owned by 5C:** `job.done` (cp §3.4) and `worker.exit`.
 - **Media fields in `job.done`** (the kind's `kv` 2, cp §3.4: an optional `media` object, all `meta`): `codec` and `backend` (names from static tables), `hw: bool`, `resolution` (bucket), `frames`, `rtFactor`, `cacheHit`, `copyPath: copy|zeroCopy`.
+  - *As built (6A-2):* `job.done` is `kv` 2 with `media {codec, backend, hw, resolution, frames, rtFactorMilli, cacheHit, copyPath}`; **deviation:** `rtFactorMilli` (integer thousandths: payloads carry no floats) replaces `rtFactor`. §25.1.
 - **Owned by sub-project 6:**
 
   | Kind | v | Payload (all `meta`) |
@@ -774,6 +779,8 @@ All errors use the one shape `{code, message, details, fix?}` (arch §19). Job-l
 
 *As built (6A-1):* `fin` maps `UNSUPPORTED_CONTAINER`, `UNSUPPORTED_TRANSFORM`, `MEDIA_CORRUPT` and `MEDIA_LIMIT` to exit 3 (validation), beside the existing `UNSUPPORTED_CONTAINER`; the plan's "2" is `USAGE`. The codec and GPU codes join `fin`'s table with `fin look` (6A-2).
 
+*As built (6A-2):* the `GPU_*` codes are exit 5 in `fin`, as is `SHM_REFUSED`; `EXPORT_DESTINATION` is exit 3. `PLAN_MISMATCH` carries `{at, reason: hash|noSample, want, got}` (never retried). `ORIGINALS_MISSING` is per layer, in `skipped`, with `{asset, reason: missing|notInManifest|notFound|changed|link|cloudOnly|escapes|io}`; `CODEC_UNAVAILABLE` is per layer too. `SOURCE_OUT_OF_RANGE` is not reported yet (the nearest end frame is drawn).
+
 ## 18. Crate and file map
 
 | Crate / package | New? | Responsibility | wasm32 |
@@ -820,6 +827,8 @@ Each sub-batch gets its own plan, is green on all three OSes before the next sta
 
 **Order:** 6A-1 runs now. **5C-1 runs alongside 6A-1** (owner decision 5; cp §6.8: it needs only 5A Tasks 1–2); 6A-2 starts when both are in. 6C and 6D can run in parallel after 6A-2 (they touch different crates); 6B-2 can run beside 6C/6D; 6E and 6F can run in parallel after their inputs.
 
+**Status (2026-11-08):** 6A-1 and 6A-2 are built; plan Task 16's cross-platform run is open (§25.6). 6B-1, 6C and 6D need only 6A-2 (above) and can start.
+
 ## 20. Decisions taken here
 
 | # | Decision | Where |
@@ -842,6 +851,8 @@ Each sub-batch gets its own plan, is green on all three OSes before the next sta
 | 16 | Mattes are `matte` assets encoded by `media.matteEncode` | §11.3 |
 | 17 | Every codec backend carries a vendor class (`os`, `gpu`, `software`, `plugin`); export, QA renders and mattes never use a `gpu` encoder | §6.1, §6.2, §9.2 |
 | 18 | Linux media workers confine themselves with Landlock (ABI 3) from 6B-1; hosts with Landlock disabled run unconfined with a persistent status warning and a diagnostics event (ar §8.9) | §3.5.1 |
+| 19 | A `media.look` frame's file name is `<timeline>-<n>_<d>-<w>x<h>-<plan hash 8>.png`, built only from the host's own values; the size is in the name because the plan hash does not cover it | §25.1 |
+| 20 | Without a sandbox, grants are not enforced; with one, warm kinds run cold. A warm kind that reads untrusted input (media) relies on that rule until 7C's per-job grants; no further warm untrusted-input kind is added without it | §25.5 |
 
 The owner's decisions are in §21; rows 17 and 18 follow from decisions 9 and 6.
 
@@ -933,3 +944,124 @@ F2. **Hosts where Landlock is disabled (amends decision 6).** On a Linux host wi
 | **M6** v1 cuts | §1 "Cut from v1"; §6.2, §10.1, §12 |
 | **M7** owner questions 1 and 6 | question 1 (vo-aacenc, AAC-LC only, Opus-in-MP4 acceptance); question 6 option (b) Landlock-only in 6B; both decided as recommended in revision 3 (§21, §3.5.1) |
 | Small: 29.97 fps offset; VP9 on macOS | §9.1 (≤ ½ sample, no drift), §6.2 (`VTRegisterSupplementalVideoDecoderIfAvailable`) |
+
+## 25. Sub-batch 6A as built (revision 4, 2026-11-08)
+
+6A-1 (foundations) and 6A-2 (first pixels) are built. **As built** below means the body of this document holds as written (with the detail given); **Deviation** means the build differs from the body or from the plan, and says how. Hardware and operating systems are named by class, never by machine.
+
+### 25.1 Decisions as built
+
+**Containers, probing, codecs (6A-1)**
+
+| Topic | Mark | What was built |
+|---|---|---|
+| Box layer (§6.1) | As built, with additions | `mp4-atom` 0.17.0 for leaf boxes (0.17.1 was under the 7-day rule at the time). Our box walker checks every size against its parent and every declared count against its box before `mp4-atom` decodes a leaf. `stz2`, `hdlr`, sample entries, `mdcv`, `clli` and `dvcC` are parsed by hand; `ctts` v0 offsets past `i32::MAX` read as negative. |
+| Muxer (§6.1) | Deviation | `mp4-atom` cannot encode an unknown sample entry and has no `mdcv`, `clli`, `dvcC` or `dvvC`, so `fin-container` nests the containers and writes those boxes itself. `Mp4Writer` needs `Read + Write + Seek` (a `moov` larger than its reserve is written after moving the media data forward). |
+| Limits (§6.1) | As built | `maxBoxes`, `maxBoxBytes`, `maxDepth`, `maxSamples` as in §6.1; edit lists capped at 1,024 entries (`maxEdits`); `maxPresentedFrames` is counted before any frame is stored; fragment samples are at most `min(maxSamples, file length)`; a zero-size video sample is refused; time arithmetic is checked (`MEDIA_CORRUPT`). |
+| Fragmented MP4 and Opus (§6.3) | Deviation | Sub-project 2 refused fragmented MP4; `fin-probe` now reads it and reports Opus audio. |
+| Probe (§6.3) | As built | `fin-probe` drops the `mp4` crate. `Probe.media: MediaInfo` is in the `asset.probe` answer only; `fin-node` refuses an `asset.add` carrying `media` (`INVALID_OP`). The model's fields keep their old meaning (sample-entry coded size, average rate, audio rate = track timescale). No media index files. |
+| Sampling rule (§10.2) | As built | `frame_at` compares `2·s·timescale` with `pts(i) + pts(i+1)` in `i128` (binary search, the earlier frame wins ties). `decode_start` compares media composition times, so repeated media and open GOPs agree. |
+| AV1 decode (§6.4, decision 6) | **Deviation: dav1d, not `rav1d`** | 6A-1 shipped `rav1d` 1.1.0 (aarch64 ran Rust paths 2.7–4.2× slower than dav1d because its package leaves out the headers its assembly needs; its debug checker caught two threads writing one region, so it ran on one thread). Replaced before 6A-2 by **dav1d 1.5.4** (`fin-dav1d-sys`, the `cc` crate only, a C shim of ours owns every dav1d struct, any other dav1d version fails the build until the source lists are re-checked). Multi-threaded (`DecodeThreads {threads, frame_delay}`), bit-exact with one thread, clean under ThreadSanitizer. |
+| AV1 encode (§6.4) | As built | SVT-AV1 v4.3.0, built once by the featureless `fin-svt-sys` behind a C shim that owns its configuration struct. `unsafe` only in `av1/dav1d_ffi.rs` and `av1/svt_ffi.rs`. `fin-codecs`, `fin-svt-sys` and `fin-dav1d-sys` are default workspace members and built explicitly in CI (submodules, cmake, nasm). |
+| Colour (§10.1) | As built | Wide-gamut SDR is converted and hard-clipped (the soft clip and HDR tone mapping are 6B's); BT.601 primaries are treated as Rec.709; identity-matrix (GBR) sources expand every channel as luma. Monochrome and 12-bit sources are `UNSUPPORTED_PIXEL_FORMAT`. |
+| CPU reference (§13.2) | As built | `fin-compositor::reference`, `f32` with the pinned `libm`, an opaque accumulation (no division by alpha exists in 6A because sources are opaque), the seven blend modes by the W3C formulas, mips by `⌈w/2⌉` box averages, 33 corpus cases. The float gate covers the render modules (`libm::` required; methods and SIMD refused) and `fin-compositor` is `cargo check`ed for wasm32 in `pnpm gates`. |
+
+**Compositor and `fin-shm` (6A-2)**
+
+| Topic | Mark | What was built |
+|---|---|---|
+| wgpu (§5.1, §5.2) | As built | wgpu **30.0.1**, features `std, parking_lot, wgsl, metal, dx12, vulkan, webgpu`, no GL; `pollster` blocks on its futures; not built for WASI (the `wasm32-wasip1` T0 run keeps the reference only). `Gpu` (`AdapterChoice` from `FIN_GPU=auto|software|<backend>`; uncaptured errors and device loss are recorded, never a panic) and `Compositor`. |
+| Mip levels (§5.1) | **Deviation** | Separate textures per level, sized like the reference chain; the shader mixes level `⌊L⌋` and `⌈L⌉` by the fraction (§5.1 note). |
+| Blends (§5.1) | As built | `normal`, `screen`, `add` are fixed-function and fused (one pass per layer); crossfades fold their weight into alpha so they stay fused; `dissolve` and `multiply`, `overlay`, `darken`, `lighten` go through `blend.wgsl` (a `MODE` override per pipeline) and the ping-pong target. |
+| T1 comparator (§13.2) | As built | PSNR over RGB and per-channel limits over RGBA. |
+| `fin-shm` (§3.4) | As built, with additions | `JobDir {root}` (`input()`, `output()`, `helper_output(id)`), `checked_open(path, cap)`, `commit_output` and, from review, `commit_output_copy`, `create_output`, `create_new_output`, `write_input`; rings (`RingSpec`, `RingWriter`, `RingReader::{open_untrusted, open_sealed}`, `SlotState`); `SHM_REFUSED {file, reason, cause?}` with reason one of `link|notRegular|hardLinked|overCap|sizeMismatch|truncated|changed|header|protocol|notAbsolute|badName|missing|exists|busy|io`. A `test-hooks` feature exposes the mapping and rename hooks the tests use. Fuzzed by `ring_header`. |
+| `fin-shm` use (plan) | Deviation | The plan kept `fin-shm` out of `fin-node`; `fin-node` links it (`commitJobOutput`, the input writer) and `check-crate-deps` allows exactly that (spec §18's own rule never forbade it). |
+| The `media` family (§3.3) | As built | `fin-workers media [--warm]` and `fin-workers media --replay <jobdir>` (params from `in/params.json`; `--originals-anywhere` lifts the confinement of originals to the directory). Per time: `begin`, `eval_frame` with the worker's measurer, BLAKE3 of the plan's compact JSON against the host's sample (`PLAN_MISMATCH`, never retried), the GPU render, the PNG (`png`, RGBA8, fast compression), an `item`. Cancel is honoured between frames. Workers start no process (a test checks it, and on Linux that no fd or mapping under the job directory outlives a job). |
+| `media.look` result and manifest (§3.3, §4.2) | Deviation | `LookResult` adds `stats {deviceReused, sourcesOpened, sourcesReused, workerJobs, media?}`; each `LookSkipped` carries its `at`. The manifest's `original` carries the stored path with size, mtime and file id (§4.2 says only the path); the opener refuses a file that changed. |
+| `media.look` params (§3.3) | Deviation | Extra optional fields `projectId`, `branch`, `rev`, `outDir` (the worker ignores them); `planSamples` is optional and normally comes from `start.job.extra` (`validateJobParams` refuses non-empty `planSamples`). The dedupe key is `(project, branch, rev, timeline, at, size, outName, outDir)`: without `outName` and `outDir`, two looks of the same state to different places would coalesce. |
+| Plan samples (§3.3) | Deviation | `prepare` does not pin the rev: it snapshots the head it finds and reports that rev. `LookParams.rev` is the submitter's view and part of the job's identity only. |
+| Destination and names (plan Decision 7) | **Deviation (changed after Task 15)** | Frames go to `workspace/shared/look/` or `outDir` (absolute, or relative to the project folder) as `<timeline>-<n>_<d>-<w>x<h>-<plan hash, 8 hex>.png`. Until this revision the name had no size, and because the plan hash does not depend on the size, two looks of the same times at different sizes into one folder overwrote each other. The size is the named `size` (the host's own param; the worker's frame must match it) or, when none is named, the frame's own width and height, checked as a pixel count of 1 to `LOOK_MAX_SIDE`. A test renders two sizes into one folder and keeps both. |
+| `media.capabilities` and `fin` (§15) | As built | A warm `media.capabilities` kind answers `MediaCapabilities {codecs, gpu, worker}`; the server caches the answer for its run (a failure is not kept); `gpu: null` when no adapter opens. `project.open` warms the `media` family. `fin look --at <t>[,<t>…] [--size WxH] [--out <dir>] [--no-wait]` and `fin media caps`. `media.look` needs `project.read` and `jobs.submit`; naming `out` also needs `project.write`; `media.capabilities` needs `server.read`. A time past the timeline is `INVALID_RANGE` (the handler checks: `eval_frame` past the end answers an empty plan). |
+| Diagnostics (§15) | As built, with deviations | `job.done` is `kv` 2 with the optional `media` object `{codec, backend, hw, resolution, frames, rtFactorMilli, cacheHit, copyPath}`; `media.capabilities` v1 and `render.stats` v1 (phase `decode|composite|readback|encode`, one-minute histograms, several entries may share a window), both source `finisherd`; reserved `preview.stats` v0 and `render.sample` v0 with empty payloads. **Deviations:** `rtFactorMilli` (no floats in payloads); no per-codec `profile` (the 6A capability table has none); `render.sample` and `preview.stats` carry no fields yet. **No adapter or driver name string and no path is recorded:** the GPU is its PCI vendor id, device id and the driver's major version (`driver_major`). With `start.diagnostics` off nothing is measured into a payload. A malformed `media` object makes the journal refuse the `job.done`; the sink then records it again without `media`. |
+| e2e `look` scenario and CI (§13.1) | As built, with deviations | `pnpm e2e look` (about 7 s on lavapipe): two generated clips (a CFR one and a VFR one tagged for 90° rotation), a project with a dissolve, an overlay with keyframes and `multiply`, and a caption; `fin look` at seven times including exact midpoints of the VFR clip; `skipped` holds only the caption (`LAYER_UNAVAILABLE {reason: notYet}`); plan hashes equal `plans.json`; frame ids read back from the PNGs equal the nearest-frame rule re-derived in JS; every PNG passes T1 against the CPU oracle and its T0 hashes equal `t0.json`; `--replay` writes byte-identical PNGs; a 64-frame look whose worker is killed after its first PNG is retried on a fresh worker; the journal's `job.done`, `media.capabilities` and `render.stats` entries are checked. **Deviations:** the oracle is `fin-workers`' `reference_render` example (the compositor cannot decode AV1); the job directory is copied aside by polling `<server-data>/jobs/*/in`; the worker is killed from outside (`SIGKILL` or PowerShell); `t0.json` holds one entry per fixture digest (SVT-AV1's bytes may differ per machine class), and a machine whose digest has no entry logs that it compared nothing (`E2E_LOOK_REQUIRE_T0=1` fails instead). CI installs cmake, nasm, Mesa's lavapipe and the Vulkan loader on Ubuntu, sets `FIN_GPU` (`software` on Ubuntu and Windows, `auto` on macOS) and `FIN_REQUIRE_GPU=1` on Ubuntu and Windows, and prints the encode golden's status. A nightly job fuzzes `demux` and `ring_header` for 60 s each, from **committed fuzz lockfiles** (§25.5) read with `cargo fetch --locked`. Nothing has run on GitHub yet. |
+| Error codes (§17) | As built | See §17. |
+
+### 25.2 Review fixes
+
+**6A-1 (review on x86_64 Linux).** Edit lists capped (`maxPresentedFrames` before storing, `maxEditWork`); fragment samples capped, zero-size video samples refused; checked time arithmetic; `decode_start` on composition times; exact pixel formats (`I422`, `I422p10`, `I444p10`; monochrome and 12-bit refused); GBR range; `c_char` in the FFI (aarch64 Linux type-checks); SVT-AV1 moved to the featureless `fin-svt-sys`; full licence texts in `THIRD_PARTY_NOTICES`; the native gates catch more native builds, version drift, aliased `libloading` and loader crates; a same-machine encode golden.
+
+**6A-2 Tasks 11–12 (the 11–12 review).**
+- **B1** A warm worker is alive after its job, so `onSucceeded` commits by copy (§3.4 note). The rule this records is decision 20 (§25.5).
+- **B2** A destination name is built from the host's own values: `at` from `params.at[i]` with `i` parsed from the worker's file name (which must be `<outName>-<i>.png` and equal the frame's position), the plan hash from `extra.planSamples[i]` (the frame's `plan` must be 64 lowercase hex and equal it, else `PLAN_MISMATCH`); `finalName` refuses a non-rational time or a non-digest hash; `dirname(to) === dest` is asserted.
+- **B3** Workers write with `create_output` (no-follow walk, `O_EXCL`); `out/` as a link is `SHM_REFUSED link`; `--replay` confines originals to the directory.
+- **M1** (owner decision) Naming `out` needs `project.write`; `lookDestination` compares the protected folders and the server's data by `(dev, ino)` against every ancestor of the resolved destination, and refuses any ancestor named `.finisher`, case-folded.
+- **M2** One byte-budgeted frame cache across the open sources (1 GiB, a quarter per source, least recently used first); the decoder's pixel limit on the worker path is `LOOK_MAX_SIDE`².
+- **M3** `LookParams::effective_size` applies `LOOK_MAX_SIDE` to the size actually drawn, in `prepare` and in the worker.
+- **M4** The warm source key has `fileId`; a reuse reopens the path through the no-follow opener and requires the same file as the held handle.
+- **L1–L5** `planSamples` refused in params; `prepare` writes `in/` through `write_input` (a missing `in/` is `SHM_REFUSED missing`); `OriginalFile` documented; `registerFamily` refuses `env` for a plugin family and any name but `FIN_GPU`; the font-cache gap of §25.5.
+
+**Other fixes found by running 6A** FXC refused `overlay` after `MODE` substitution and the frame reported only the follow-on validation error (frames now run in an internal scope, checked first); `FIN_GPU=auto` chose Vulkan over D3D12 on Windows (D3D12 first now); a racy `fin-jobhost` domain test; `fin-shm`'s non-absolute path test built `..` with `join`, which drops it from a verbatim Windows path; a `fin-library` test that creates non-UTF-8 names now skips with a notice on APFS (`FIN_REQUIRE_RAW_NAMES=1` fails it); SVT-AV1's `LOG_QUIET` macros need `/Zc:preprocessor` under MSVC.
+
+### 25.3 Owner decisions as applied in 6A
+
+| Decision | Applied in 6A |
+|---|---|
+| 1 Linux AAC | Not in 6A (6C). |
+| 2 Electron's ffmpeg, made provisional by **F4** | **As built:** the server, `fin` and the media engine contain no ffmpeg; the native and run-time library gates list what is linked. The desktop shell, and with it the exception, is sub-project 9's. |
+| 3 No hardware codec drivers in the image | Not in 6A. CI installs Mesa's software Vulkan driver on the runner only. |
+| 4 Default `contain` | **As built:** the base box is "contain" in `fin-core`'s plan docs and in both compositors (the anchor point lands at the frame centre plus `position`; rotation is clockwise about it). `fit` is 6D's. |
+| 5 5C-1 alongside 6A-1 | **As built:** 6A-1 needed nothing from 5C; 6A-2 started on 5C-1. |
+| 6 Sandbox timing | **As built:** from 6A workers run with 5C's cleared environment (plus `FIN_GPU`), no credentials and the `out/`-only write rule. Landlock is 6B-1's. |
+| 7 GPU ids as numbers | **As built:** vendor id, device id, backend, adapter type and driver major version only (§25.1). |
+| 8 Platform scope of 6B | Not in 6A. |
+| 9 Export encoders; Windows 11 only | **F3 as built by absence:** 6A writes no H.264 or HEVC and its only encoder is SVT-AV1 (software). Windows validation is on Windows 11. |
+| **F3** Proxy encoders | Not in 6A (no proxies). |
+| **F4** Electron provisional | See decision 2. |
+
+### 25.4 Measured
+
+All compositor rows use the 33-case corpus in debug builds; "within T1" means every case passed §13.2's tolerances.
+
+| Adapter (class) | Within T1 | Max \|Δ\| | PSNR range | Corpus, CPU reference vs GPU |
+|---|---|---|---|---|
+| Metal (Apple Silicon, M4) | 33 / 33 | 1 | 58.2–72.0 dB | 2.38 s vs 80 ms |
+| D3D12 (AMD RX 9070 XT-class, Windows 11) | 33 / 33 | 1 | 58.2–72.0 dB | 2.35 s vs 78 ms |
+| Vulkan (same GPU, amdvlk) | 33 / 33 | 1 | 58.2–72.0 dB | 2.35 s vs 66 ms |
+| WARP (D3D12 software, Windows 11) | 33 / 33 | 1 | 58.2–72.0 dB | 2.35 s vs 1.63 s |
+| lavapipe (Mesa 25.2, Ubuntu 24.04, 12 cores) | 33 / 33 | 1 | 58.3–71.6 dB | 2.4–2.6 s vs 216–231 ms (`mips-4k-into-1080p`: 1176 vs 37 ms) |
+
+Off-frame pixels are exact (PSNR infinite) everywhere. The worst case is not named per adapter in these runs; the e2e frames' worst on lavapipe is 57.9 dB with max \|Δ\| 1.
+
+- **Warm worker** (`media.look`, lavapipe, two 640×360 frames): the second job on a reused worker is faster than the first (debug 215 ms vs 265 ms; release 20 ms vs 63 ms), and its PNG bytes equal a fresh worker's.
+- **dav1d decode** (pattern clips, planes copied out): Apple M4, best observed on a shared machine, one thread ~1,000 fps at 540p and ~490 at 1080p (dav1d 1.5.3's CLI on the same input: 1,101 and 463); all cores with frame delay 4 ~1,900 and ~1,280; `rav1d` on one thread 215 and 22. Windows 11 (8-core/16-thread desktop), 1080p30 8-bit: one thread 270–310 fps, all cores at delay 4 ~685, at delay 1 ~320 (ffmpeg's libdav1d: 356 and 699). A 10-bit 720p clip decodes bit-exact with ffmpeg's.
+- **SVT-AV1** on Apple Silicon: 120 frames at 960×540, CRF 30, worst luma PSNR 51.9 dB; frame ids read 100 % at CRF 40 (540p and 1080p) and 60 of 60 at CRF 50 (540p).
+- **Fuzzing** (Linux x64, `cargo fuzz` on stable with `RUSTC_BOOTSTRAP=1 -s none`): `ring_header` 570 s, 914 M runs; `demux` 66.6 M runs (and 8.36 M in 10 minutes during 6A-1); no finding.
+- **Not measured yet** (the rows of §25.6): `fin look` latency p50/p95 over 50 runs at 1080p, warm and cold; worker spawn to `hello` p95 and warm dispatch p95; any number from a hardware Linux GPU or the D31-minimum machine; T1 on the e2e frames per adapter other than lavapipe.
+
+### 25.5 Residuals
+
+1. **The worker's font cache follows links.** `fin-fonts`' `FontCache` opens `<cache>/<sha256>` by path; the cache is the server's private directory and a file is kept only when its bytes hash to its name, so a swapped link can at most hide a font, not change what is drawn. Opening the cache through the no-follow opener belongs with the 6B-1 sandbox work.
+2. **The warm sandbox rule (decision 20).** Warm workers serve several jobs, so a sandbox cannot grant per-job paths until 7C: with a sandbox active, warm kinds run cold; without one, grants are not enforced at all. `media.look` reads untrusted media in a warm worker and relies on that. No further warm kind that reads untrusted input may be added without it.
+3. **Encode golden and T0 are Linux-only.** `fin-codecs/tests/golden/encode.json` has a macOS arm64 entry and a `linux-x86_64` entry (equal); there is none for Windows. The e2e `look` scenario's `t0.json` has the Linux entry only; a machine whose fixtures' digest has none compares nothing. The compositor's own T0 corpus (33 cases) matches on macOS arm64, x86_64 Linux and `wasm32-wasip1`; a Windows T0 result is not recorded (the Windows runs above recorded T1) and is in the §25.6 checklist.
+4. **Windows UNC and 8.3 spellings are untested.** `lookDestination` is tested with UNC spellings on Linux only; 8.3 names are off on the Windows volume checked, so a short-name `outDir` has not been run. A copy commit with a live writer, and `create_output` over a link, have not run on Windows: the Windows run of `fin-shm` predates `commit_output_copy` and `create_output`.
+5. **The real-GPU `driverMajor` check.** `driver_major` is the first number in wgpu's `driver_info`; it is unit-tested on sample strings and recorded on lavapipe and WARP. Its parse on a real Metal, AMD, NVIDIA or Intel `driver_info` string has to be read off hardware (a vendor that formats the string differently would record `null`, never a wrong number).
+6. **No hardware Linux GPU yet.** The Linux host has llvmpipe only, so `FIN_GPU=vulkan` lands on it too; a hardware Vulkan adapter (an Intel iGPU is the planned row), and an allocation failure on a hardware GPU (a job limit does not cap VRAM; the out-of-memory test ran on WARP in a 2 GiB Windows job), are unverified.
+7. **Smaller.** `SOURCE_OUT_OF_RANGE` is not reported; `--no-wait` followed by `fin wait` needs 5C-2; a rendered look has no RPC fixture (its answer names the GPU); aarch64 Windows builds dav1d's C paths only; SVT-AV1's cmake build writes its library into its submodule, so a read-only source tree cannot build it; scrubbing may want `frame_delay: 1` on seeks (the first frame after a seek waits for the frames in flight); the M4 decode numbers were taken on a shared machine and want an idle one.
+8. **Nightly fuzzing resolves from committed lockfiles** (`crates/fin-container/fuzz/Cargo.lock`, `crates/fin-shm/fuzz/Cargo.lock`), so the 7-day dependency-age rule covers it: `check:crate-age` reads every `crates/*/fuzz/Cargo.lock` beside the workspace one. `cargo fuzz` has no `--locked` flag, so the job runs `cargo fetch --locked` on each fuzz crate first, which fails if a lockfile is missing or out of date.
+
+### 25.6 Cross-platform validation (plan Task 16): checklist for the controller
+
+Each row is run on **macOS arm64**, **Windows 11 x64** with a discrete GPU, **Linux x64** (kernel ≥ 6.2) with an Intel iGPU, the software adapters (lavapipe, WARP), and the **D31-minimum machine** (§14) where one is available. Record numbers in `archive/sp6/6a-validation.md` (by role, never by host); put durable conclusions here. 6A is done when every row passes or has an accepted, recorded exception.
+
+- [ ] 1. `FIN_REQUIRE_SERVER=1 cargo test --workspace`, `pnpm test`, `pnpm test:gates`, `pnpm gates`, `pnpm e2e` (all scenarios, `FIN_GPU` and `FIN_REQUIRE_GPU=1` as CI sets them) green.
+- [ ] 2. Compositor T0 hashes identical on macOS, Windows and Linux (no Windows T0 result is recorded) and on `wasm32-wasip1`.
+- [ ] 3. T1 per adapter for the corpus **and the e2e frames**: PSNR, max \|Δ\|, the share of channels over 2/255; name the worst case (expect rotated edges or mips). Metal and the e2e frames on macOS, an Intel iGPU on Linux, the D31-minimum iGPU.
+- [ ] 4. `fin look` latency, **warm** and **cold**, p50/p95 over 50 runs at 1080p from originals (budgets §14: warm ≤ 300 ms p95 on reference machines and ≤ 600 ms on the D31-minimum; cold ≤ 1.5 s and ≤ 3 s). The 6A figure is from originals, the worse case.
+- [ ] 5. Worker spawn to `hello` p95 (≤ 150 ms; ≤ 300 ms D31-minimum) and warm dispatch (`start` to the first `begin`) p95.
+- [ ] 6. The dav1d decision of §25.1 stays recorded (done); re-measure the decode numbers on an idle Apple Silicon machine and run the Linux x64 and aarch64 builds once more with the final sources.
+- [ ] 7. Real-footage probe rows from `FIN_MEDIA_FIXTURES` with `FIN_REQUIRE_MEDIA=1`: an iPhone portrait HEVC clip reports rotation 90, HLG and Dolby Vision 8.4; a screen recording reports VFR; an edit-list export reports the trimmed start.
+- [ ] 8. e2e `look` on macOS and Windows: bless or compare `t0.json` for each fixtures digest (`E2E_LOOK_REQUIRE_T0=1` once the entries exist), and add a `windows-x86_64` entry to `encode.json` from the CI log's record line.
+- [ ] 9. Windows rows for `media.look`: UNC and 8.3 `outDir` spellings (an 8.3-enabled volume), a copy commit with a live writer, `create_output` over a link, through the kind and `fin look`.
+- [ ] 10. `driverMajor` and the adapter ids on real hardware: Metal, the AMD GPU, an NVIDIA GPU if one is at hand, the Intel iGPU; check the recorded `media.capabilities` entry names no string.
+- [ ] 11. A hardware Vulkan adapter on Linux (`FIN_GPU=vulkan` must not land on llvmpipe there); an allocation failure on a hardware GPU.
+- [ ] 12. CI: a green run of `ci.yml` on all three OSes and one manual run of `nightly.yml` (nothing has gone to GitHub yet).

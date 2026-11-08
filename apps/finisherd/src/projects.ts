@@ -12,6 +12,12 @@ import type { CallMeta } from "./diagnostics.ts";
 import { callEngine, type HistoryOp, type HistoryPayload, metaJson, publishResult } from "./history.ts";
 import { follower, Hubs, type Stamped } from "./hubs.ts";
 
+/** What `prepareMediaJob` resolves to: the rev written and the plan's BLAKE3 at each time. */
+export interface MediaJobPrepared {
+  readonly rev: number;
+  readonly planSamples: ReadonlyArray<{ readonly at: string; readonly blake3: string }>;
+}
+
 export interface ProjectRef {
   readonly projectId: string;
   readonly rev: number;
@@ -94,6 +100,20 @@ export interface ProjectRegistryShape {
   ) => Effect.Effect<AudioPlan, FinError>;
   /** `fonts.plan`: the pins to prepend to a tx of `ops` on `branch` (nothing is committed). */
   readonly fontsPlan: (projectId: string, branch: string, ops: ReadonlyArray<unknown>) => Effect.Effect<FontsPlan, FinError>;
+  /**
+   * A `media.look` job's inputs (plan 6A Task 12): `snapshot.json`, `manifest.json` and, with
+   * `paramsJson`, `params.json` written into `inputDir` (the job's existing `in/`), and the rev
+   * snapshotted with the plan hash at every time. `branch` is resolved to its id first.
+   */
+  readonly prepareMediaJob: (
+    projectId: string,
+    branch: string,
+    timeline: string,
+    at: ReadonlyArray<string>,
+    inputDir: string,
+    fontCache: string | undefined,
+    paramsJson: string | undefined,
+  ) => Effect.Effect<MediaJobPrepared, FinError>;
   /** Fails with `PROJECT_NOT_FOUND` unless the project is known (opened on demand). */
   readonly ensure: (projectId: string) => Effect.Effect<void, FinError>;
   /** The chain's view (5A Task 5): open here now; its folder; a branch reference's id. */
@@ -584,6 +604,11 @@ export function makeProjectRegistry(
       fontsPlan: (projectId, requested, ops) =>
         Effect.flatMap(resolveBranch(projectId, requested), (branch) =>
           on<FontsPlan>(projectId, (e) => e.fontsPlan(branch, JSON.stringify(ops))),
+        ),
+
+      prepareMediaJob: (projectId, requested, timeline, at, inputDir, fontCache, paramsJson) =>
+        Effect.flatMap(resolveBranch(projectId, requested), (branch) =>
+          on<MediaJobPrepared>(projectId, (e) => e.prepareMediaJob(branch, timeline, [...at], inputDir, { fontCache: fontCache ?? null, paramsJson: paramsJson ?? null })),
         ),
 
       hubCount: () => hubs.size,

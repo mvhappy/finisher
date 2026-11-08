@@ -8,8 +8,9 @@ use serde::{Deserialize, Serialize};
 use crate::events::approx::approx_struct;
 use crate::events::class::{Code, Hashed, Name};
 use crate::events::names_jobs;
+use crate::events::payloads::JobMedia;
 
-/// `job.done` (`kv` 1). Sub-project 6 adds its media fields as `kv` 2.
+/// `job.done` (`kv` 2: `kv` 1 plus the optional `media` object of sub-project 6).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct JobDone {
@@ -43,6 +44,11 @@ pub struct JobDone {
     pub isolated: bool,
     /// The helper processes started over all attempts.
     pub helpers: u32,
+    // What a media job did (`media.look`; absent for other kinds, for a failed job and when
+    // diagnostics were off at the worker).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "JobMedia")]
+    pub media: Option<JobMedia>,
 }
 approx_struct!(JobDone {
     kind,
@@ -57,7 +63,8 @@ approx_struct!(JobDone {
     items,
     items_failed,
     isolated,
-    helpers
+    helpers,
+    media
 });
 
 /// A job's terminal state.

@@ -3,6 +3,8 @@
 //! `lease.lock`), held while a file is fetched. Separate open handles conflict, so two
 //! fetchers in one process exclude each other as two processes do. Lock files are never
 //! deleted: unlinking a lock another process is about to take would let two holders in.
+// Only the fetcher takes locks; the read side only tries them.
+#![cfg_attr(not(feature = "fetch"), allow(dead_code))]
 
 use std::fs::{File, OpenOptions, TryLockError};
 use std::io;

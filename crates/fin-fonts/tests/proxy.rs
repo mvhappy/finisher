@@ -1,3 +1,4 @@
+#![cfg(feature = "fetch")]
 //! Proxies come from the environment (4C Decision 33). Its own test binary: it sets
 //! `HTTPS_PROXY` for the whole process before any fetcher exists.
 

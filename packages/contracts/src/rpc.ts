@@ -368,6 +368,31 @@ export const EvalAudioPayload = Schema.Struct({
   from: Schema.String,
   to: Schema.String,
 });
+/**
+ * Plan 6A Task 13: frames of a timeline as PNGs, rendered by a `media.look` job on the media
+ * worker. `at`: 1 to 64 rational times (`"12"`, `"1001/30000"`, canonical; past the timeline's
+ * end is `INVALID_RANGE`). `branch` defaults to `main`, `timeline` to the first. `out`: an
+ * absolute folder for the files (`workspace/shared/look/` of the project when absent; never
+ * inside `.finisher/`, `assets/` or the server's data, `EXPORT_DESTINATION`); naming it needs
+ * `project.write` on top of `project.read` and `jobs.submit`, and a principal with roots writes
+ * only inside its project's folder. `size`: each side 1 to 8192 (the timeline's resolution when
+ * absent). `wait` (default true) answers the `LookResult` (frames with their final paths, what
+ * was `skipped`, the adapter) once the job finished, or its error; `wait: false` answers
+ * `{job}` at once.
+ */
+export const MediaLookPayload = Schema.Struct({
+  projectId: Schema.String,
+  branch: Schema.optional(Schema.String),
+  timeline: Schema.optional(Schema.String),
+  at: Schema.Array(Schema.String),
+  out: Schema.optional(Schema.String),
+  size: Schema.optional(Schema.Struct({ width: Schema.Number, height: Schema.Number })),
+  wait: Schema.optional(Schema.Boolean),
+});
+/** The generated `LookResult` (`wait`), or `{job}` (the job's view: `wait: false`). */
+export const MediaLookSuccess = Schema.Unknown;
+/** The generated `MediaCapabilities`: `{codecs, gpu, worker}`. */
+export const MediaCapabilitiesSuccess = Schema.Unknown;
 /** fin-core's `FramePlan` / `AudioPlan` (the generated types). */
 export const FramePlanSchema = Schema.Unknown;
 export const AudioPlanSchema = Schema.Unknown;
@@ -506,6 +531,9 @@ export const FinRpcs = RpcGroup.make(
   Rpc.make("fonts.status", { payload: Schema.Struct({}), success: FontStatusSchema, error: FinError }),
   Rpc.make("fonts.fetch", { payload: FontsFetchPayload, success: FontStatusSchema, error: FinError }),
   Rpc.make("fonts.plan", { payload: FontsPlanPayload, success: FontsPlanSchema, error: FinError }),
+  /** Plan 6A Task 13: looks at a timeline, and what this machine's media worker can do. */
+  Rpc.make("media.look", { payload: MediaLookPayload, success: MediaLookSuccess, error: FinError }),
+  Rpc.make("media.capabilities", { payload: Schema.Struct({}), success: MediaCapabilitiesSuccess, error: FinError }),
   // Scope `diagnostics` (plan D, Decision 32).
   Rpc.make("diagnostics.status", { payload: DiagnosticsStatusPayload, success: DiagnosticsStatusSuccess, error: FinError }),
   Rpc.make("diagnostics.export", { payload: DiagnosticsExportPayload, success: DiagnosticsExportSuccess, error: FinError }),

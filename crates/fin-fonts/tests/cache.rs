@@ -1,3 +1,4 @@
+#![cfg(feature = "fetch")]
 //! The content-addressed font cache (4C Decision 32), against the local test server.
 
 mod support;

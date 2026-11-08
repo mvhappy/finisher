@@ -70,6 +70,7 @@ function harness(principal: Principal, more: Partial<ChainDeps> = {}, real: Reco
     "project.open": unary("project.open", (p) => ({ projectId: String(p.dir).endsWith("b") ? B : A, rev: 0 })),
     "project.takeover": unary("project.takeover"),
     "asset.probe": unary("asset.probe"),
+    "media.look": unary("media.look"),
     "tx.commit": unary("tx.commit"),
     "branch.create": unary("branch.create"),
     "fonts.status": unary("fonts.status"),
@@ -208,6 +209,36 @@ describe("the chain", () => {
     // The handler gets the canonical path.
     expect(h.seen[0]!.payload).toMatchObject({ path: join(dirA, "clip.png") });
     expect(code(await harness(LOCAL).call("asset.probe", { path: join(tmp, "outside.png") }))).toBeUndefined();
+  });
+
+  test("media_look_needs_jobs_submit_and_keeps_out_inside_the_project (6A Task 13)", async () => {
+    open = new Set([A, B]);
+    const look = (more: object = {}) => ({ projectId: A, at: ["0"], ...more });
+    const h = harness(agent());
+    expect(code(await h.call("media.look", look()))).toBeUndefined();
+    expect(code(await h.call("media.look", look({ out: join(dirA, "shots") })))).toBeUndefined();
+    // The handler gets the canonical folder, as a probe's path.
+    expect(h.seen.at(-1)!.payload).toMatchObject({ out: join(dirA, "shots") });
+    expect(code(await h.call("media.look", look({ out: join(tmp, "elsewhere-look") })))).toBe("PATH_NOT_ALLOWED");
+    expect(code(await h.call("media.look", look({ out: "relative" })))).toBe("INVALID_PATH");
+    // A project of the principal's, but another one's folder: only this project's folder counts.
+    const both = harness(agent({ projects: [A, B] }));
+    expect(code(await both.call("media.look", look({ out: join(dirB, "shots") })))).toBe("PATH_NOT_ALLOWED");
+    expect(code(await both.call("media.look", look({ projectId: B, out: join(dirB, "shots") })))).toBeUndefined();
+    // A symlink inside the project that leads out is followed.
+    if (!WIN) {
+      symlinkSync(tmp, join(dirA, "workspace", "looklink"));
+      expect(code(await h.call("media.look", look({ out: join(dirA, "workspace", "looklink", "x") })))).toBe("PATH_NOT_ALLOWED");
+    }
+    // Review M1: naming a folder takes `project.write`; a read-only token gets the default place.
+    const readOnly = harness(agent({ scopes: MINT.filter((s) => s !== "project.write") }));
+    expect(code(await readOnly.call("media.look", look()))).toBeUndefined();
+    expect(code(await readOnly.call("media.look", look({ out: join(dirA, "shots") })))).toBe("SCOPE_DENIED");
+    // Scopes: both `project.read` and `jobs.submit`; a project outside the reach.
+    expect(code(await harness(agent({ scopes: MINT.filter((s) => s !== "jobs.submit") })).call("media.look", look()))).toBe("SCOPE_DENIED");
+    expect(code(await harness(agent({ scopes: MINT.filter((s) => s !== "project.read") })).call("media.look", look()))).toBe("SCOPE_DENIED");
+    expect(code(await harness(agent()).call("media.look", look({ projectId: B })))).toBe("PROJECT_NOT_FOUND");
+    expect(code(await harness(LOCAL).call("media.look", look({ out: join(tmp, "anywhere") })))).toBeUndefined();
   });
 
   test("name_and_id_resolve_the_same", async () => {

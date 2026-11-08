@@ -50,8 +50,10 @@ export interface JobEngineOptions {
   readonly jobHost?: JobHostFactory;
   readonly eventQueueBytes?: number;
   /**
-   * Registers families and kinds before the engine starts (5D's `library` family): a restart
-   * reconciles the jobs it finds against the registry, so every kind must be known by then.
+   * Registers families and kinds beside the test ones before the engine starts (5D's `library`
+   * family; `registerMediaKinds`, 6A Task 12, whose caller holds the project registry the kind
+   * reads from): a restart reconciles the jobs it finds against the registry, so every kind must
+   * be known by then.
    */
   readonly register?: (kinds: KindRegistry) => void;
   /** The warm workers' held-files check (default: in test-hooks builds; a fake host's tests turn it off). */

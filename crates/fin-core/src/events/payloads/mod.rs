@@ -26,6 +26,7 @@ pub mod jobs;
 pub mod journal;
 pub mod library;
 pub mod log;
+pub mod media;
 pub mod plugin;
 pub mod reserved;
 pub mod session;
@@ -47,11 +48,15 @@ pub use jobs::{
 pub use journal::JournalDropped;
 pub use library::{LibraryScan, LibraryStorageName, ScanTrigger};
 pub use log::{CommitOutcome, CommitRecord, IntentOmitted, LogCommit};
+pub use media::{
+    AdapterType, BackendEntry, CodecEntry, CopyPath, GpuEntry, JobMedia, MediaCapabilitiesEvent,
+    RenderPhase, RenderStats, ResolutionBucket, Sandbox, SupportClass,
+};
 pub use plugin::{
     PluginKindName, PluginLifecycle, PluginOutcome, PluginRef, PluginSourceName, RegistryRefresh,
     RiskName, log2_bucket,
 };
-pub use reserved::{ReviewVerdict, UiAction};
+pub use reserved::{PreviewStats, RenderSample, ReviewVerdict, UiAction};
 pub use session::{Arch, BuildProfile, OsFamily, SessionEnd, SessionStart, SessionUnclean};
 pub use stats::{EvalStats, Histogram, RpcStats};
 pub use storage::{StorageMode, StorageState};

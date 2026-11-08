@@ -5,6 +5,7 @@
 
 use fin_core::events::names::{self, CLI_COMMANDS, MEDIA_TYPES, OP_KINDS};
 use fin_core::events::names_jobs;
+use fin_core::events::names_media::{MEDIA_BACKENDS, MEDIA_CODECS, backend_class};
 use fin_core::events::payloads::*;
 use fin_core::events::*;
 use serde_json::{Value, json};
@@ -190,19 +191,20 @@ fn samples_before_plugins() -> Vec<AnyPayload> {
         }
         .into(),
         JobDone {
-            kind: names_jobs::JOB_KINDS.get("test.crash").unwrap(),
-            family: names_jobs::WORKER_FAMILIES.get("test").unwrap(),
-            outcome: JobOutcome::Failed,
-            code: Some(code("POISON_ITEM")),
-            attempts: 2,
-            priority: JobPriority::Normal,
-            warm: false,
-            queued_ms: 120,
-            run_micros: 1_500_000,
-            items: Some(8),
-            items_failed: Some(1),
-            isolated: true,
+            kind: names_jobs::JOB_KINDS.get("media.look").unwrap(),
+            family: names_jobs::WORKER_FAMILIES.get("media").unwrap(),
+            outcome: JobOutcome::Succeeded,
+            code: None,
+            attempts: 1,
+            priority: JobPriority::Interactive,
+            warm: true,
+            queued_ms: 4,
+            run_micros: 220_000,
+            items: Some(3),
+            items_failed: Some(0),
+            isolated: false,
             helpers: 0,
+            media: Some(job_media()),
         }
         .into(),
         WorkerExit {
@@ -277,5 +279,89 @@ fn samples_before_plugins() -> Vec<AnyPayload> {
         .into(),
         UiAction {}.into(),
         ReviewVerdict {}.into(),
+        media_capabilities().into(),
+        render_stats().into(),
+        PreviewStats {}.into(),
+        RenderSample {}.into(),
     ]
+}
+
+pub fn job_media() -> JobMedia {
+    JobMedia {
+        codec: MEDIA_CODECS.get("av1").unwrap(),
+        backend: MEDIA_BACKENDS.get("dav1d").unwrap(),
+        hw: false,
+        resolution: ResolutionBucket::Hd1080,
+        frames: 3,
+        rt_factor_milli: 4_200,
+        cache_hit: true,
+        copy_path: CopyPath::Copy,
+    }
+}
+
+pub fn media_capabilities() -> MediaCapabilitiesEvent {
+    MediaCapabilitiesEvent {
+        codecs: vec![
+            CodecEntry {
+                codec: MEDIA_CODECS.get("av1").unwrap(),
+                decode: SupportClass::Sw,
+                encode: SupportClass::Sw,
+                backends: vec![
+                    BackendEntry {
+                        name: MEDIA_BACKENDS.get("dav1d").unwrap(),
+                        class: backend_class("dav1d"),
+                    },
+                    BackendEntry {
+                        name: MEDIA_BACKENDS.get("svt-av1").unwrap(),
+                        class: backend_class("svt-av1"),
+                    },
+                ],
+            },
+            CodecEntry {
+                codec: MEDIA_CODECS.get("h264").unwrap(),
+                decode: SupportClass::None,
+                encode: SupportClass::None,
+                backends: Vec::new(),
+            },
+        ],
+        gpu: Some(GpuEntry {
+            backend: MEDIA_BACKENDS.get("vulkan").unwrap(),
+            adapter_type: AdapterType::Cpu,
+            vendor_id: 0x10005,
+            device_id: 0,
+            driver_major: Some(25),
+            software: true,
+        }),
+        copy_path: CopyPath::Copy,
+        sandbox: Sandbox::None,
+        render_version: 1,
+    }
+}
+
+pub fn render_stats() -> RenderStats {
+    RenderStats {
+        phase: RenderPhase::Decode,
+        backend: MEDIA_BACKENDS.get("dav1d").unwrap(),
+        histogram: hist(),
+    }
+}
+
+/// A failed batch job, no media object.
+pub fn job_done_failed() -> JobDone {
+    JobDone {
+        kind: names_jobs::JOB_KINDS.get("test.crash").unwrap(),
+        family: names_jobs::WORKER_FAMILIES.get("test").unwrap(),
+        outcome: JobOutcome::Failed,
+        code: Some(code("POISON_ITEM")),
+        attempts: 2,
+        priority: JobPriority::Normal,
+        warm: false,
+        queued_ms: 120,
+        run_micros: 1_500_000,
+        items: Some(8),
+        items_failed: Some(1),
+        isolated: true,
+        helpers: 0,
+        media: None,
+    }
 }

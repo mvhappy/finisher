@@ -65,6 +65,8 @@ test("the group exposes exactly the protocol 2 RPC tags", () => {
       "library.set",
       "library.status",
       "library.watch",
+      "media.capabilities",
+      "media.look",
       "ops.subscribe",
       "plugin.content.get",
       "plugin.disable",

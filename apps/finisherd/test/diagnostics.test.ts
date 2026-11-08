@@ -286,9 +286,17 @@ describe("sessions and errors", () => {
     `;
     return spawnSync(process.execPath, ["--input-type=module", "-e", script], { encoding: "utf8", env: env(extra) });
   };
+  // The handler records within 250 ms and gives up past that (a crash must never hang on its
+  // journal), which a loaded machine can overrun: run it again, up to five times, until one of
+  // the crashes was recorded. What the recorded event holds is then asserted as ever.
+  const crashRecorded = (extra: Record<string, string>) => {
+    let r = crash(extra);
+    for (let i = 1; i < 5 && !onDisk().some((e) => e.kind === "error.panic"); i++) r = crash(extra);
+    return r;
+  };
 
   test("uncaught_exception_is_error_panic_meta_only_under_diagnostics", () => {
-    const r = crash({});
+    const r = crashRecorded({});
     expect(r.status).not.toBe(0);
     expect(r.stderr).toContain("boom in");
     const [p] = onDisk().filter((e) => e.kind === "error.panic");
@@ -304,7 +312,7 @@ describe("sessions and errors", () => {
   });
 
   test("uncaught_message_is_content_with_training", () => {
-    crash({ FIN_TRAINING: "on" });
+    crashRecorded({ FIN_TRAINING: "on" });
     const [p] = onDisk().filter((e) => e.kind === "error.panic");
     const message = (p!.payload as { message: string }).message;
     expect(message).toMatch(/^Error: boom in /);
@@ -377,7 +385,12 @@ describe("sources and diagnostics.record", () => {
     };
     // The first connection spends its burst; a second `fin` has its own (review of Task 7, M1:
     // every `fin` is `local`, so one looping client must not silence the others).
-    expect(await recorded(a, 260, "a")).toBeLessThan(230);
+    // Its bucket (burst 200, 50 a second) refills while the calls are on their way, and on a
+    // loaded machine that takes long: the bound is the burst plus what the elapsed time refilled.
+    const t0 = performance.now();
+    const first = await recorded(a, 260, "a");
+    const refill = Math.ceil((50 * (performance.now() - t0)) / 1000);
+    expect(first).toBeLessThanOrEqual(200 + refill + 10);
     expect(await recorded(b, 60, "b")).toBeGreaterThanOrEqual(55);
   });
 

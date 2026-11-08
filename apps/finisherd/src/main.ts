@@ -39,7 +39,8 @@ import { LibrariesTag } from "./library/api.ts";
 import { CatalogsTag, layerCatalogs } from "./library/catalog/client.ts";
 import { LibraryServiceTag, librariesHolding, libraryWiring } from "./library/layer.ts";
 import { layerPlugins } from "./plugins/registries.ts";
-import { layerProjectRegistry, type RegistryOptions } from "./projects.ts";
+import { layerProjectRegistry, ProjectRegistry, type RegistryOptions } from "./projects.ts";
+import { registerMediaKinds } from "./jobs/kinds/media.look.ts";
 import { MAX_FRAME } from "./protocol.ts";
 import { claimSocketPath, makeLocalServer, serveRpc } from "./transport.ts";
 import { makeTicketedWebSocketServer, makeUpgradeCheck } from "./upgrade.ts";
@@ -99,9 +100,19 @@ export const serve = ({ serverData, onReady, registry, fonts, diagnostics: diagn
       // The job engine (5C-1) after the control store and the journal, so it closes before them
       // (its `close` stops every worker); `<server-data>/jobs/` is made private. Its events go
       // to the journal (D34).
-      const register = (k: Parameters<typeof libraries.register>[0]) => {
-        jobOptions?.register?.(k);
-        libraries.register(k);
+      // The project registry first: the `media.look` kind reads from it (its engine writes a
+      // job's inputs), and it closes after the job engine. An open project holds the libraries
+      // its assets live in (5D): the library service starts after the engine, so the hook is
+      // bound once it has; a project opened before that holds none.
+      let libraryHold: ((paths: ReadonlyArray<string>) => { release(): void }) | undefined;
+      const registryContext = yield* Layer.build(
+        layerProjectRegistry(serverData, { ...registry, libraryUse: (paths) => libraryHold?.(paths) ?? { release: () => {} } }),
+      );
+      const projects = Context.get(registryContext, ProjectRegistry);
+      const register = (r: Parameters<typeof libraries.register>[0]) => {
+        registerMediaKinds(r, { serverData, projects });
+        jobOptions?.register?.(r);
+        libraries.register(r);
       };
       const jobsContext = yield* Layer.build(
         layerJobEngine(serverData, { diagnostics: () => diagnostics.enabled(), ...jobOptions, register }).pipe(
@@ -118,6 +129,7 @@ export const serve = ({ serverData, onReady, registry, fonts, diagnostics: diagn
         Effect.tryPromise({ try: () => libraries.start(engine), catch: startFailure }),
         (s) => Effect.sync(() => s.close()),
       );
+      libraryHold = (paths) => library.use(librariesHolding(library.registry, paths));
 
       const audit = Context.get(control, AuditTag);
       // Windows: the native pipe listener (Task 11); a client of another user is refused
@@ -223,7 +235,7 @@ export const serve = ({ serverData, onReady, registry, fonts, diagnostics: diagn
         Layer.mergeAll(serveRpc(local, connections.local), serveRpc(ws, connections.ws)).pipe(
           Layer.provide(
             Layer.mergeAll(
-              layerProjectRegistry(serverData, { ...registry, libraryUse: (paths) => library.use(librariesHolding(library.registry, paths)) }),
+              Layer.succeedContext(registryContext),
               fontsLayer,
               layerPlugins(serverData).pipe(Layer.provide(Layer.succeedContext(control)), Layer.provide(fontsLayer)),
               Layer.succeed(Diagnostics, diagnostics),

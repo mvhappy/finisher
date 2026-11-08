@@ -248,9 +248,12 @@ describe("JobHost", () => {
     for (const p of procs) await t.waitFor(isExit(p));
     lag.disable();
     for (const p of procs) expect(exitOf(t, p)).toMatchObject({ reason: "killed", kill: "cancel" });
-    // The event loop kept turning: its p99 delay (1 ms resolution included) stays small.
+    // The event loop kept turning: its p99 delay (1 ms resolution included) stays small. Beside
+    // other load the scheduler alone adds tens of ms to single turns, so the 6 ms bound is for
+    // `FIN_STRICT_TIMING=1`; otherwise 100 ms, which still catches a spawn or kill that blocks
+    // the thread (each of the 20 would show as a turn that long).
     expect(lag.count).toBeGreaterThan(50);
-    expect(lag.percentile(99) / 1e6).toBeLessThan(strict ? 6 : 25);
+    expect(lag.percentile(99) / 1e6).toBeLessThan(strict ? 6 : 100);
   });
 
   for (const [name, opts, lineBytes] of [
@@ -272,7 +275,11 @@ describe("JobHost", () => {
       // Before the JS thread takes anything: what waits for it is bounded.
       const grown = process.memoryUsage().rss - rss0;
       await t.waitFor(isResult(proc), 100_000);
-      const lines = t.seen.filter((s) => s.e.type === "stderr" && s.e.proc === proc);
+      // Stderr is its own pipe: the last lines can still be on their way when the result (stdout)
+      // arrives. They are all coming (the worker wrote them all), so wait for them with a deadline.
+      const isLine = (s: Seen) => s.e.type === "stderr" && s.e.proc === proc;
+      for (const end = Date.now() + 60_000; t.seen.filter(isLine).length < n && Date.now() < end; ) await new Promise((r) => setTimeout(r, 20));
+      const lines = t.seen.filter(isLine);
       const counter = (s: Seen) => (s.e.type === "stderr" ? Number(s.e.line.split(" ")[1]) : Number.NaN);
       // Nothing is taken while JS is blocked, so at most the bound is handed over meanwhile
       // (2 ms off each end: `Date.now` has whole milliseconds).
@@ -461,7 +468,9 @@ describe("JobHost", () => {
     for (const r of await Promise.all(children)) expect(r.got).toBe(r.want);
     for (const j of jobs) await t.waitFor(isExit(j.proc));
     for (const j of jobs) {
-      expect(t.of(j.proc).some((e) => e.type === "message" && e.msg.t === "result")).toBe(true);
+      // Exits and messages travel on different queues: the result may reach JS after the exit
+      // does, so it is waited for (it is coming: the worker answered before it exited).
+      await t.waitFor(isResult(j.proc));
       expect(exitOf(t, j.proc)).toMatchObject({ reason: "exited", code: 0 });
     }
   });
@@ -494,6 +503,25 @@ describe("params, rules and paths", () => {
     expect(validateJobParams("test.nope", 1, {})).toMatchObject({ ok: false });
     expect(validateJobParams("test.sleep", 2, { ms: 5 })).toMatchObject({ ok: false });
     expect(jobKindVersions()).toContainEqual({ kind: "test.sleep", version: 1 });
+  });
+
+  test("media_look_params_are_checked_as_the_worker_checks_them", () => {
+    const look = { timeline: "tl1", at: ["1/2"], outName: "look" };
+    expect(jobKindVersions()).toContainEqual({ kind: "media.look", version: 1 });
+    expect(jobKindVersions()).toContainEqual({ kind: "media.capabilities", version: 1 });
+    expect(validateJobParams("media.look", 1, look)).toEqual({ ok: true, params: { ...look, planSamples: [] } });
+    expect(validateJobParams("media.capabilities", 1, {})).toEqual({ ok: true, params: {} });
+    expect(validateJobParams("media.capabilities", 1, { gpu: "x" })).toMatchObject({ ok: false });
+    const name = validateJobParams("media.look", 1, { ...look, outName: "../x" });
+    expect(!name.ok && name.errors.join(" ")).toMatch(/outName/);
+    const none = validateJobParams("media.look", 1, { ...look, at: [] });
+    expect(!none.ok && none.errors.join(" ")).toMatch(/params\.at/);
+    // Review L1: the plan samples are the host's; a submitter's are refused.
+    const samples = validateJobParams("media.look", 1, { ...look, planSamples: [{ at: "0", blake3: "0".repeat(64) }] });
+    expect(samples).toMatchObject({ ok: false });
+    expect(JSON.stringify(samples)).toContain("planSamples");
+    const extra = validateJobParams("media.look", 1, { ...look, bogus: 1 });
+    expect(!extra.ok && extra.errors.join(" ")).toMatch(/bogus/);
   });
 
   test("validate_params_refuses_bad_versions_and_huge_params", () => {

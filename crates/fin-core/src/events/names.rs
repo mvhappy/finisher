@@ -108,9 +108,11 @@ pub static CLI_COMMANDS: NameTable = NameTable::new(
         "item.unlink",
         "keyframe.remove",
         "keyframe.set",
+        "look",
         "marker.add",
         "marker.remove",
         "marker.set",
+        "media.caps",
         "merge",
         "param.set",
         "plugin.disable",
@@ -211,6 +213,7 @@ pub static CLI_FLAGS: NameTable = NameTable::new(
         "name",
         "no-audio",
         "no-linked",
+        "no-wait",
         "out",
         "parent",
         "path",
@@ -232,6 +235,7 @@ pub static CLI_FLAGS: NameTable = NameTable::new(
         "scope",
         "set",
         "since",
+        "size",
         "skip-conflicting",
         "slot",
         "srt",
@@ -302,6 +306,8 @@ pub static RPC_METHODS: NameTable = NameTable::new(
         "library.set",
         "library.status",
         "library.watch",
+        "media.capabilities",
+        "media.look",
         "ops.subscribe",
         "plugin.content.get",
         "plugin.disable",
@@ -498,7 +504,7 @@ pub use super::agent_names::{
     AGENT_MODELS, AGENT_PROVIDERS, AGENT_ROLES, AGENT_TOOLS, AGENT_UPSTREAMS, agent_upstream,
 };
 
-pub use super::names_plugins::{BUNDLED_PLUGINS, PLUGIN_ACTIONS, bundled_plugin_name};
+pub use super::plugin_names::{BUNDLED_PLUGINS, PLUGIN_ACTIONS, bundled_plugin_name};
 
 /// Every table, for the pattern test.
 pub static TABLES: &[&NameTable] = &[
@@ -518,6 +524,8 @@ pub static TABLES: &[&NameTable] = &[
     &super::names_jobs::JOB_KINDS,
     &super::names_jobs::WORKER_FAMILIES,
     &super::names_jobs::SIGNALS,
+    &super::names_media::MEDIA_CODECS,
+    &super::names_media::MEDIA_BACKENDS,
     &BUNDLED_PLUGINS,
     &PLUGIN_ACTIONS,
 ];

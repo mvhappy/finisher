@@ -207,6 +207,27 @@ pub(crate) fn create(path: &Path) -> Result<Opened, Fail> {
     })
 }
 
+/// Unlinks the entry `path` names (a file or a link, never followed), below a no-follow walk.
+pub(crate) fn remove(path: &Path) -> Result<(), Fail> {
+    let (parent, name) = walk(path)?;
+    // SAFETY: valid descriptor and C string.
+    let r = unsafe { libc::unlinkat(parent.as_raw_fd(), name.as_ptr(), 0) };
+    if r < 0 {
+        return Err(Fail::io(io::Error::last_os_error()));
+    }
+    Ok(())
+}
+
+/// Renames the entry `from` names to `to_name` in the same directory, both below one
+/// no-follow walk (`renameat` on the directory's descriptor).
+pub(crate) fn rename_within(from: &Path, to_name: &OsStr) -> Result<(), Fail> {
+    let (parent, name) = walk(from)?;
+    let to = cname(to_name)?;
+    renameat(parent.as_raw_fd(), &name, parent.as_raw_fd(), &to).map_err(Fail::io)?;
+    sync_dir(&parent);
+    Ok(())
+}
+
 pub(crate) fn facts(file: &File) -> Result<Facts, Fail> {
     stat_fd(file.as_raw_fd())
         .map(|st| facts_of(&st))

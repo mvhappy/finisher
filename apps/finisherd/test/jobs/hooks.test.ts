@@ -7,18 +7,13 @@ import { Deferred, Effect } from "effect";
 import { afterEach, describe, expect, test } from "vitest";
 import type { JobEngine } from "../../src/jobs/engine.ts";
 import type { JobRow } from "../../src/jobs/store.ts";
-import { closeTestEngines, run, testEngine, until, testClock, waitThroughBackoff } from "../support/jobs.ts";
+import { closeTestEngines, processGone, run, testEngine, until, testClock, waitThroughBackoff } from "../support/jobs.ts";
 
 afterEach(closeTestEngines);
 
-function alive(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (e) {
-    return (e as { code?: string }).code === "EPERM";
-  }
-}
+// A killed worker that is not reaped yet is a zombie, which `kill(pid, 0)` still finds: under
+// load the reaping lags the group's exit, so "gone" counts a zombie as gone (`processGone`).
+const alive = (pid: number): boolean => !processGone(pid);
 
 describe("kind hooks", () => {
   test("prepare_writes_before_any_process", async () => {
@@ -89,7 +84,7 @@ describe("kind hooks", () => {
   });
 
   test("on_succeeded_runs_after_group_exit_before_delete", async () => {
-    const seen: { pidAlive?: boolean; dir?: boolean; dirPath?: string } = {};
+    const seen: { pidAlive?: boolean; exited?: boolean; dir?: boolean; dirPath?: string } = {};
     const t = await testEngine({
       testKinds: {
         overrides: {
@@ -97,6 +92,8 @@ describe("kind hooks", () => {
             onSucceeded: (ctx) =>
               Effect.sync(() => {
                 seen.pidAlive = alive((ctx.result as { pid: number }).pid);
+                // The worker's exit was reported before the hook ran: that order does not depend on timing.
+                seen.exited = t.sink.exits.some((x) => x.role === "worker");
                 seen.dirPath = join(t.serverData, "jobs", ctx.job.id);
                 seen.dir = existsSync(seen.dirPath);
               }),
@@ -106,7 +103,7 @@ describe("kind hooks", () => {
     });
     const v = await t.runJob("test.echo", { value: 1, report: ["pid"] });
     expect(v.state).toBe("succeeded");
-    expect(seen).toMatchObject({ pidAlive: false, dir: true });
+    expect(seen).toMatchObject({ pidAlive: false, exited: true, dir: true });
     await until(() => !existsSync(seen.dirPath!));
   });
 

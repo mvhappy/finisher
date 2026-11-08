@@ -147,7 +147,12 @@ fn any_payload_covers_every_kind() {
     for name in ["agent.turn", "agent.toolCall", "agent.toolResult"] {
         assert!(kind(name, 1).unwrap().training_only, "{name}");
     }
-    for name in ["ui.action", "review.verdict"] {
+    for name in [
+        "ui.action",
+        "review.verdict",
+        "preview.stats",
+        "render.sample",
+    ] {
         assert!(kind(name, 0).unwrap().reserved, "{name}");
     }
     let training_only: Vec<&str> = kinds()
@@ -157,7 +162,12 @@ fn any_payload_covers_every_kind() {
         .collect();
     assert_eq!(
         training_only,
-        ["agent.turn", "agent.toolCall", "agent.toolResult"]
+        [
+            "agent.turn",
+            "agent.toolCall",
+            "agent.toolResult",
+            "render.sample"
+        ]
     );
 }
 
@@ -822,7 +832,11 @@ fn redact_keeps_content_with_training() {
 
 #[test]
 fn training_only_kinds_keep_metadata_under_diagnostics() {
-    for p in samples().into_iter().filter(|p| p.kind().training_only) {
+    // A reserved kind (`render.sample`) has an empty payload: nothing to keep yet.
+    for p in samples()
+        .into_iter()
+        .filter(|p| p.kind().training_only && !p.kind().reserved)
+    {
         let spec = p.kind();
         let full = serde_json::to_value(&p).unwrap();
         let mut v = full.clone();
@@ -1285,9 +1299,10 @@ fn intent_content_holds_free_text_only_in_ops() {
 }
 
 #[test]
-fn job_kinds_registered_at_v1() {
-    for name in ["job.done", "worker.exit"] {
-        let k = kind(name, 1).unwrap_or_else(|| panic!("{name} at v1"));
+fn job_kinds_registered() {
+    // `job.done` is `kv` 2 (the optional `media` object), `worker.exit` still `kv` 1.
+    for (name, kv) in [("job.done", 2), ("worker.exit", 1)] {
+        let k = kind(name, kv).unwrap_or_else(|| panic!("{name} at v{kv}"));
         assert!(!k.reserved && !k.training_only, "{name}");
         assert_eq!(k.sources, [Source::Finisherd], "{name}");
     }
@@ -1305,13 +1320,13 @@ fn names_jobs_tables_valid() {
         let unique: BTreeSet<&str> = t.entries().iter().copied().collect();
         assert_eq!(unique.len(), t.entries().len(), "{} repeats", t.table);
     }
-    // `test.*` and 5D's `library.*`; sub-project 6 and 8C add theirs.
+    // `test.*`, 5D's `library.*` and sub-project 6's `media.*`; 8C adds its own.
     assert!(
-        JOB_KINDS
-            .entries()
-            .iter()
-            .all(|k| k.starts_with("test.") || k.starts_with("library."))
+        JOB_KINDS.entries().iter().all(|k| k.starts_with("test.")
+            || k.starts_with("library.")
+            || k.starts_with("media."))
     );
+    assert!(JOB_KINDS.get("media.look").is_some());
     for f in ["test", "library", "media", "analyze", "plugin"] {
         assert!(WORKER_FAMILIES.get(f).is_some(), "{f}");
     }

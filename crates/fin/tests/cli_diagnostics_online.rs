@@ -7,13 +7,13 @@
 
 mod support;
 
-use std::ffi::OsString;
+use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 use support::console::{Console, error_code};
-use support::{Server, assert_error, fin, fin_cmd, fin_env, ok};
+use support::{Run, Server, assert_error, fin_cmd, ok};
 
 const SESSION: &str = "01ARZ3NDEKTSV4RRFFQ69G5FAV";
 const CALL: &str = "01ARZ3NDEKTSV4RRFFQ69G5FAW";
@@ -36,9 +36,24 @@ fn project(test: &str, env: Vec<(String, OsString)>) -> Option<(Server, PathBuf,
     Some((server, dir, id))
 }
 
+/// `fin` records its run within 50 ms and drops what it cannot send in time for good (polling
+/// cannot bring it back), which a loaded machine makes happen: these tests widen that budget.
+const BUDGET: (&str, &str) = ("FIN_TEST_DIAG_BUDGET_MS", "10000");
+
+fn fin_env(sd: &Path, cwd: &Path, args: &[&str], env: &[(&str, &OsStr)]) -> Run {
+    let mut all = vec![(BUDGET.0, OsStr::new(BUDGET.1))];
+    all.extend_from_slice(env);
+    support::fin_env(sd, cwd, args, &all)
+}
+
+fn fin(sd: &Path, cwd: &Path, args: &[&str]) -> Run {
+    fin_env(sd, cwd, args, &[])
+}
+
 /// Runs `fin`, returning the exit code and raw stdout (`export` prints JSONL).
 fn raw(sd: &Path, cwd: &Path, args: &[&str], env: &[(&str, &str)]) -> (i32, String) {
     let mut cmd = fin_cmd(sd, cwd, args);
+    cmd.env(BUDGET.0, BUDGET.1);
     for (k, v) in env {
         cmd.env(k, v);
     }

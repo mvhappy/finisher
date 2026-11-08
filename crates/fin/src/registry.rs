@@ -4,7 +4,7 @@
 use schemars::JsonSchema;
 use serde_json::{Value, json};
 
-use crate::commands::{asset, branch, clip, history, project, try_cmd, view};
+use crate::commands::{asset, branch, clip, history, look, project, try_cmd, view};
 
 pub struct Command {
     /// Dotted name, e.g. "clip.insert" (also the `batch` cmd and op-style name).
@@ -156,6 +156,14 @@ pub const COMMANDS: &[Command] = &[
         summary: "branch, head, lease, read-only, exports, unmerged branches, timelines, fonts, warnings",
         write: false,
         schema: || schema_of::<view::StatusArgs>("status"),
+    },
+    Command {
+        name: "look",
+        group: "read",
+        args: "--at <t>[,<t>…] [--out <dir>] [--size WxH] [--no-wait]",
+        summary: "PNG frames of a timeline at times (server only; layers left out are in skipped)",
+        write: false,
+        schema: || schema_of::<look::LookArgs>("look"),
     },
     Command {
         name: "view",

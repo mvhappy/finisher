@@ -1,4 +1,5 @@
-//! The plugin name tables (8A, sub-project 8 spec §11), re-exported by [`super::names`].
+//! The plugin name tables (sub-project 8 spec §11): the bundled plugins and the
+//! `plugin.lifecycle` actions, re-exported by [`super::names`].
 
 use super::class::Name;
 use super::names::NameTable;
