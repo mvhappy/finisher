@@ -134,7 +134,9 @@ describe("the ticketed WebSocket", () => {
     const self = await c.call("auth.revokeSelf", { id: "01otherotherotherotherothe" });
     expect(!self.ok && self.error.code).toBe("INVALID_REQUEST");
     const minted = ok<{ ticket: string; expiresAt: number }>(await c.call("auth.ticket", { ttlS: 600 }));
-    expect(minted.expiresAt - Date.now()).toBeLessThanOrEqual(60_000);
+    // The server's `Date.now()` is another process's: on Windows V8 extrapolates it from the
+    // performance counter, and two processes can differ by about one 15.6 ms timer tick.
+    expect(minted.expiresAt - Date.now()).toBeLessThanOrEqual(60_000 + (process.platform === "win32" ? 50 : 0));
     await c.close();
   });
 });
