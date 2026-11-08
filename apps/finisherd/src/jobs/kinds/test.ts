@@ -16,6 +16,7 @@ import type {
 } from "@finisher/core-types";
 import { FinError } from "@finisher/contracts";
 import { Duration, Effect } from "effect";
+import { toFinError } from "../../errors.ts";
 import type { FamilySpec, HelperProgram, KindRegistry, KindSpec, OnCall } from "../kinds.ts";
 
 /** What `test.files`' `prepare` writes into its prepared input. */
@@ -121,11 +122,17 @@ export function registerTestKinds(
         { name: "out/", mode: "write" },
       ],
       prepare: (ctx) =>
-        Effect.promise(async () => {
-          const { mkdir, writeFile } = await import("node:fs/promises");
-          await mkdir(ctx.path("in"), { recursive: true });
-          await writeFile(ctx.path("in/data.txt"), TEST_FILES_INPUT, { mode: 0o600 });
-          return { extra: { prepared: true } };
+        Effect.tryPromise({
+          try: async () => {
+            const fh = await ctx.open("in/data.txt", "w");
+            try {
+              await fh.writeFile(TEST_FILES_INPUT);
+            } finally {
+              await fh.close();
+            }
+            return { extra: { prepared: true } };
+          },
+          catch: toFinError,
         }),
     }),
     kind<TestCheckpointParams>({ kind: "test.checkpoint", resumable: true }),

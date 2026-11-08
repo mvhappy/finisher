@@ -8,7 +8,7 @@ import { TestClock } from "effect/testing";
 import { type ControlStore, ControlStoreTag, openControlStore } from "../../src/control/db.ts";
 import { crashJobEngineForTest, Engine, type JobEngine, type JobEvent } from "../../src/jobs/engine.ts";
 import type { EngineHost } from "../../src/jobs/host.ts";
-import { JobEventSinkTag, type MemorySink, memorySink } from "../../src/jobs/events.ts";
+import { type JobEventSink, JobEventSinkTag, type MemorySink, memorySink } from "../../src/jobs/events.ts";
 import { buildJobEngine, type JobEngineOptions } from "../../src/jobs/layer.ts";
 import { JobStore } from "../../src/jobs/store.ts";
 
@@ -55,13 +55,15 @@ export async function failure<A>(e: Effect.Effect<A, FinError>): Promise<FinErro
  * An engine with the test kinds, cgroups off and short timers. `serverData` reuses a
  * directory (a second engine over the same data); otherwise a new temp one is made and removed.
  */
-export async function testEngine(opts: JobEngineOptions & { serverData?: string; keepData?: boolean } = {}): Promise<TestEngine> {
+export async function testEngine(
+  opts: JobEngineOptions & { serverData?: string; keepData?: boolean; wrapSink?: (s: MemorySink) => JobEventSink } = {},
+): Promise<TestEngine> {
   const own = opts.serverData === undefined;
   const serverData = opts.serverData ?? mkdtempSync(join(tmpdir(), "fin-jobs-"));
   const control = openControlStore(serverData, { serverId: "sid-test", checkpoint: false });
   const sink = memorySink();
-  const { serverData: _s, keepData: _k, ...engineOpts } = opts;
-  const layer = Layer.mergeAll(Layer.succeed(ControlStoreTag, control), Layer.succeed(JobEventSinkTag, sink));
+  const { serverData: _s, keepData: _k, wrapSink, ...engineOpts } = opts;
+  const layer = Layer.mergeAll(Layer.succeed(ControlStoreTag, control), Layer.succeed(JobEventSinkTag, wrapSink === undefined ? sink : wrapSink(sink)));
   const engine = await Effect.runPromise(
     buildJobEngine(serverData, {
       testKinds: true,

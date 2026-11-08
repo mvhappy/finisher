@@ -118,6 +118,10 @@ pub struct HostOptions {
     /// looks alive after its kill, so it is abandoned).
     #[cfg(feature = "test-hooks")]
     pub waiter_delay_for_test: Option<std::time::Duration>,
+    /// How long the kill wait sleeps between marking a process abandoned and reporting its
+    /// `Exit` (tests: the waiter sees the real exit in between).
+    #[cfg(feature = "test-hooks")]
+    pub abandon_emit_delay_for_test: Option<std::time::Duration>,
     /// Windows: called with each process while it is suspended in its Jobs; an error fails
     /// the spawn as a failed placement would (tests).
     #[cfg(all(windows, feature = "test-hooks"))]
@@ -182,6 +186,8 @@ impl HostOptions {
             resume_delay_for_test: None,
             #[cfg(feature = "test-hooks")]
             waiter_delay_for_test: None,
+            #[cfg(feature = "test-hooks")]
+            abandon_emit_delay_for_test: None,
             #[cfg(all(windows, feature = "test-hooks"))]
             suspended_hook_for_test: None,
             #[cfg(all(windows, feature = "test-hooks"))]

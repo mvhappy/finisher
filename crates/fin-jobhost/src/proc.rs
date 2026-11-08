@@ -182,13 +182,26 @@ impl Proc {
         }
     }
 
-    /// Marks it abandoned unless it already exited. `true` if it was.
-    pub fn abandon(&self) -> bool {
-        let mut st = self.state();
-        if st.exited || st.abandoned {
-            return false;
+    /// Marks it abandoned unless it already exited, and reports `info` as its `Exit`, both
+    /// under the emit lock: the waiter takes that lock before it reports `AbandonedExit`, so
+    /// the real exit never overtakes the `Exit {abandoned}` (9b review H2). `true` if it was.
+    pub fn abandon_with_exit(&self, info: ExitInfo, delay: Option<Duration>) -> bool {
+        let mut closed = lock(&self.emit);
+        {
+            let mut st = self.state();
+            if st.exited || st.abandoned {
+                return false;
+            }
+            st.abandoned = true;
         }
-        st.abandoned = true;
+        if let Some(d) = delay {
+            std::thread::sleep(d);
+        }
+        *closed = true;
+        self.sink.send(HostEvent::Exit {
+            proc: self.id,
+            info,
+        });
         true
     }
 
@@ -362,6 +375,8 @@ pub(crate) fn wait_exit(
                 p.id, p.pid
             ));
         }
+        // After the kill wait's `Exit {abandoned}`, which is sent under the emit lock.
+        drop(lock(&p.emit));
         p.sink.send(HostEvent::AbandonedExit { proc: p.id });
         return reap_leader(&p, reap);
     }

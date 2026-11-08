@@ -34,12 +34,13 @@ describe("job files", () => {
           "test.files": {
             onSucceeded: (ctx) =>
               Effect.sync(() => {
-                seen.size = statSync(ctx.path("out.bin")).size;
+                const dir = join(t.serverData, "jobs", ctx.job.id);
+                seen.size = statSync(join(dir, "out.bin")).size;
                 if (!win) {
-                  seen.dir = mode(ctx.dir);
-                  seen.tmp = mode(join(ctx.dir, "tmp"));
-                  seen.out = mode(ctx.path("out/"));
-                  seen.bin = mode(ctx.path("out.bin"));
+                  seen.dir = mode(dir);
+                  seen.tmp = mode(join(dir, "tmp"));
+                  seen.out = mode(join(dir, "out"));
+                  seen.bin = mode(join(dir, "out.bin"));
                 }
               }),
           },
@@ -85,8 +86,10 @@ describe("job files", () => {
           "test.files": {
             prepare: (ctx) =>
               Effect.sync(() => {
-                mkdirSync(ctx.path("in"), { recursive: true });
-                symlinkSync(elsewhere, ctx.path("in/data.txt"));
+                // A hook that ignores `ctx.open` and plants a link itself.
+                const dir = join(t.serverData, "jobs", ctx.job.id);
+                mkdirSync(join(dir, "in"), { recursive: true });
+                symlinkSync(elsewhere, join(dir, "in", "data.txt"));
               }),
           },
         },
@@ -155,7 +158,7 @@ describe("job files", () => {
     let kept: boolean | undefined;
     const t = await testEngine({
       serverData,
-      testKinds: { overrides: { "test.echo": { onSucceeded: (ctx) => Effect.sync(() => void (kept = lstatSync(join(ctx.dir, "tmp")).isDirectory())) } } },
+      testKinds: { overrides: { "test.echo": { onSucceeded: (ctx) => Effect.sync(() => void (kept = lstatSync(join(serverData, "jobs", ctx.job.id, "tmp")).isDirectory())) } } },
     });
     // The hook-phase job's directory survived the sweep for its hook's re-run (Decision 28).
     expect((await t.wait(hooks.id)).state).toBe("succeeded");

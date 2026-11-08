@@ -397,3 +397,27 @@ fn abandon_after_kill_wait() {
     );
     assert!(lines.iter().any(|l| l.contains("exited now")), "{lines:?}");
 }
+
+/// 9b review H2: the waiter sees the real exit while the kill wait is between marking the
+/// process abandoned and reporting it; `AbandonedExit` still comes after `Exit {abandoned}`.
+#[test]
+fn abandoned_exit_never_overtakes_the_abandoned_report() {
+    let mut h = host_with(|o| {
+        o.timing.kill_wait_ms = 300;
+        o.abandon_emit_delay_for_test = Some(Duration::from_millis(1200));
+    });
+    let g = h.group();
+    let p = h.worker(g);
+    h.hello(p);
+    // The killed process's exit is held 600 ms: abandoned at 300 ms, really gone at ~600 ms.
+    h.host.abandon_for_test(p, Duration::from_millis(600));
+    h.kill(g, KillReason::Cancel);
+    let events = h.events_within(Duration::from_millis(3500));
+    let at = |f: &dyn Fn(&HostEvent) -> bool| events.iter().position(f);
+    let exit = at(
+        &|e| matches!(e, HostEvent::Exit { proc, info } if *proc == p && info.reason == ExitReason::Abandoned),
+    );
+    let real = at(&|e| matches!(e, HostEvent::AbandonedExit { proc } if *proc == p));
+    assert!(exit.is_some() && real.is_some(), "{events:?}");
+    assert!(exit < real, "the abandoned report comes first: {events:?}");
+}

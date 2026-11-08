@@ -1,100 +1,53 @@
 // The job engine (spec §6.0–6.5, 5C-1 plan Tasks 9a, 9b): submit (Decision 27), the dispatch
 // loop over the pools and the scheduler, the transitions of a cold job's attempts, the hook
-// phase, `job.done` and the bus. Cancel, pause, resume and abandonment are in `control.ts`;
-// start-up recovery, retention and close in `restart.ts`. Until later tasks: a `warm` kind runs
-// cold and `warm(family)` does nothing (Task 11); a failure ends the job unless the worker
-// asked for a retry (Task 10).
-import { type FinError, type FinErrorData, type JobOwner, type JobProgress, type JobState, type JobView, type JobVia, type Priority } from "@finisher/contracts";
-import type { JobHostCaps } from "@finisher/fin-node";
-import { Context, Effect, type Fiber, PubSub, Stream } from "effect";
+// phase, `job.done` and the bus. Its public types are in `api.ts`; cancel, pause, resume,
+// abandonment and the hold of a job with an abandoned process in `control.ts`; start-up
+// recovery, retention and close in `restart.ts`. Until later tasks: a `warm` kind runs cold and
+// `warm(family)` does nothing (Task 11); a failure ends the job unless the worker asked for a
+// retry (Task 10).
+import type { FinError, FinErrorData, JobOwner, JobProgress, JobState, JobView } from "@finisher/contracts";
+import { Effect, type Fiber, PubSub, Stream } from "effect";
 import { finError, toFinError } from "../errors.ts";
-import type { RunFork } from "./calls.ts";
 import { Abandonment, cancelJob, pauseJobs, pausedAfterRun, resumeJobs } from "./control.ts";
-import type { JobEventSink } from "./events.ts";
 import { removeJobDir, jobDirs } from "./files.ts";
-import type { EngineHost, ProcView } from "./host.ts";
 import { type KindRegistry, type KindSpec, type PoolName, resolveOrFn } from "./kinds.ts";
-import { type PoolView, type Pools } from "./pools.ts";
 import { closeEngine, crashEngine, interruptRow, recover, runParams } from "./restart.ts";
 import { submitJob, waitJobs } from "./submit.ts";
-import { type AttemptOutcome, ALIVE_MS, RunControl, type RunnerEnv, runAttempt, runOnSucceeded } from "./runner.ts";
+import { runOnSucceeded } from "./hooks.ts";
+import { RunControl } from "./run-control.ts";
+import { type AttemptOutcome, ALIVE_MS, type RunnerEnv, runAttempt } from "./runner.ts";
 import { QueueIndex, type QueuedJob, schedule } from "./schedule.ts";
-import type { JobQuery, JobRow, JobStore, TransitionPatch } from "./store.ts";
-import type { Timers } from "./timers.ts";
+import { type JobQuery, type JobRow, type JobStore, type TransitionPatch, viewOf } from "./store.ts";
 import { type JobEvent, type RunStats, doneEvent, newStats, withProgress } from "./view.ts";
 
 export type { JobEvent } from "./view.ts";
+export { type EngineDeps, type JobEngine, JobEngineTag, type SubmitSpec, type WorkersView } from "./api.ts";
+import type { EngineDeps, JobEngine, SubmitSpec, WorkersView } from "./api.ts";
 
 export const QUEUE_LIMIT = 50_000;
+/** How long a job waits queued for an abandoned process of its last attempt to exit (9b review H1). */
+export const ABANDONED_HOLD_MS = 10 * 60_000;
+/** How long after start `onDone` listeners and `events()` subscribers get the start's re-announced jobs (9b review M5). */
+export const REPLAY_WINDOW_MS = 30_000;
 export const MAX_ATTEMPTS_LIMIT = 10;
 const PROGRESS_EVERY_MS = 250;
-
-export interface SubmitSpec {
-  readonly kind: string;
-  readonly params: unknown;
-  readonly priority?: Priority;
-  readonly idemKey?: string;
-  readonly project?: string;
-  readonly library?: string;
-  readonly parent?: string;
-  readonly via?: JobVia;
-  readonly rights?: unknown;
-  readonly maxAttempts?: number;
-}
-
-export interface WorkersView {
-  readonly pools: ReadonlyArray<PoolView>;
-  /** Warm workers (Task 11). */
-  readonly warm: ReadonlyArray<never>;
-  readonly processes: ReadonlyArray<ProcView>;
-  readonly stuck: ReadonlyArray<string>;
-  readonly caps: JobHostCaps;
-  /** `diag` messages dropped (diagnostics off, or a kind the family does not forward). */
-  readonly diagDropped: number;
-}
-
-export interface JobEngine {
-  readonly kinds: KindRegistry;
-  submit(owner: JobOwner, spec: SubmitSpec): Effect.Effect<JobView, FinError>;
-  get(id: string): Effect.Effect<JobView, FinError>;
-  list(q: JobQuery): { readonly jobs: JobView[]; readonly next?: string };
-  wait(ids: ReadonlyArray<string>, opts: { readonly any?: boolean; readonly timeoutMs: number }): Effect.Effect<ReadonlyArray<JobView>, FinError>;
-  cancel(id: string): Effect.Effect<JobView, FinError>;
-  pause(target: { readonly job: string } | { readonly all: true }): Effect.Effect<void, FinError>;
-  resume(target: { readonly job: string } | { readonly all: true }): Effect.Effect<void, FinError>;
-  warm(family: string): Effect.Effect<void, FinError>;
-  definePool(name: PoolName, size: number): void;
-  workers(): WorkersView;
-  events(): Stream.Stream<JobEvent>;
-  onDone(listener: (job: JobView) => void): () => void;
-  close(): Effect.Effect<void>;
-}
-
-export class JobEngineTag extends Context.Service<JobEngineTag, JobEngine>()("finisherd/JobEngine") {}
-
-/** What `makeJobEngine` is built from (`layer.ts` assembles it). */
-export interface EngineDeps {
-  readonly host: EngineHost;
-  readonly store: JobStore;
-  readonly registry: KindRegistry;
-  readonly pools: Pools;
-  readonly sink: JobEventSink;
-  readonly root: string;
-  readonly totalMem: number;
-  readonly now: () => number;
-  readonly run: RunFork;
-  readonly timers: Timers;
-  readonly log: RunnerEnv["log"];
-  readonly diagnostics: () => boolean;
-  readonly testHooks: boolean;
-  readonly queueLimit: number;
-}
 
 export const finished = (v: JobView): boolean => v.finishedAt !== undefined;
 
 /** A `FinError`'s stored form. */
 export function data(e: FinError): FinErrorData {
   return e.fix === undefined ? { code: e.code, message: e.message, details: e.details } : { code: e.code, message: e.message, details: e.details, fix: e.fix };
+}
+
+/**
+ * Whether a run stopped by a pause or close ended because of the stop: stopped before the
+ * worker started, or after the stop reached it without its own answer (an exit, a helper
+ * killed with the group, or the worker's `JOB_CANCELLED`).
+ */
+export function stoppedRun(o: AttemptOutcome): boolean {
+  if (o.ok) return false;
+  if (o.cause === "stopped") return true;
+  return o.stopSent && (o.cause === "exit" || o.cause === "helper" || (o.cause === "worker" && o.error.code === "JOB_CANCELLED"));
 }
 
 const promise = <A>(f: () => Promise<A>): Effect.Effect<A, FinError> => Effect.tryPromise({ try: f, catch: toFinError });
@@ -114,6 +67,10 @@ export class Engine implements JobEngine {
   readonly active = new Set<Promise<void>>();
   readonly resources = new Map<string, ReadonlyArray<string>>();
   readonly abandonment: Abandonment;
+  /** Queued jobs held back while a process of their last attempt is abandoned and alive (9b review H1). */
+  readonly held = new Map<string, () => void>();
+  /** Views re-announced at start, for listeners that attach just after it (9b review M5). */
+  #replay: JobView[] | undefined = [];
   readonly #stats = new Map<string, RunStats>();
   readonly #progress = new Map<string, { p: JobProgress; last: number; cancel?: (() => void) | undefined }>();
   readonly #listeners = new Set<(job: JobView) => void>();
@@ -124,6 +81,8 @@ export class Engine implements JobEngine {
   /** `pause {all}`: nothing is dispatched until `resume {all}`. */
   pausedAll = false;
   closing = false;
+  /** The first `close` (a second one waits for it). */
+  closeDone: Promise<void> | undefined;
   /** A simulated crash (tests): nothing more is written. */
   crashed = false;
   stopRetention: (() => void) | undefined;
@@ -135,7 +94,7 @@ export class Engine implements JobEngine {
     this.d = d;
     this.kinds = d.registry;
     this.#bus = Effect.runSync(PubSub.sliding<JobEvent>(4096));
-    this.abandonment = new Abandonment(d.pools, d.log, () => this.pump());
+    this.abandonment = new Abandonment(d.pools, d.log, () => this.pump(), (job) => this.#release(job));
     d.host.onAbandonedExit = (proc) => this.abandonment.exited(proc);
     this.env = {
       host: d.host,
@@ -169,6 +128,9 @@ export class Engine implements JobEngine {
   async start(): Promise<void> {
     await recover(this);
     this.unfinished = this.d.store.unfinishedCount();
+    // Real time: listeners attach once the engine is returned, whatever clock it runs on.
+    if (this.#replay !== undefined && this.#replay.length > 0) setTimeout(() => (this.#replay = undefined), REPLAY_WINDOW_MS).unref();
+    else this.#replay = undefined;
     this.pump();
   }
 
@@ -220,6 +182,10 @@ export class Engine implements JobEngine {
   enqueue(view: JobView, kind: KindSpec): void {
     const resources = resolveOrFn(kind.resources, view.params as never);
     this.resources.set(view.id, resources);
+    if (this.abandonment.holds(view.id)) {
+      this.#hold(view.id);
+      return;
+    }
     const q: QueuedJob = {
       id: view.id,
       priority: view.priority,
@@ -229,6 +195,30 @@ export class Engine implements JobEngine {
     };
     this.queue.add(q);
     if (q.nextRunAt !== undefined) this.#wakeAt(q.nextRunAt);
+  }
+
+  /** Holds a queued job until its abandoned process exits; past `ABANDONED_HOLD_MS` it fails `RESOURCE_STUCK`. */
+  #hold(id: string): void {
+    this.held.get(id)?.();
+    this.d.log("warning", `job ${id}: held until an abandoned process of its last attempt exits`);
+    const cancel = this.d.timers.after(ABANDONED_HOLD_MS, () => {
+      this.held.delete(id);
+      if (this.d.store.row(id)?.state !== "queued") return;
+      const error = finError("RESOURCE_STUCK", "a process of the job's last attempt did not exit", { job: id, reason: "abandoned", waitedMs: ABANDONED_HOLD_MS });
+      this.track(this.end(id, "failed", { error: data(error) }));
+    });
+    this.held.set(id, cancel);
+  }
+
+  /** The job's last abandoned process exited: a held job is queued for real. */
+  #release(id: string): void {
+    const cancel = this.held.get(id);
+    if (cancel === undefined) return;
+    cancel();
+    this.held.delete(id);
+    const row = this.d.store.row(id);
+    const kind = row === undefined ? undefined : this.kinds.kind(row.kind);
+    if (row?.state === "queued" && kind !== undefined) this.enqueue(row, kind);
   }
 
   #wakeAt(at: number): void {
@@ -316,16 +306,16 @@ export class Engine implements JobEngine {
 
   async #afterAttempt(id: string, row: JobRow, kind: KindSpec, outcome: AttemptOutcome, control: RunControl): Promise<void> {
     if (outcome.ok) return this.#succeed(id, kind, outcome.value);
-    switch (control.requested) {
-      case "cancel":
-        await this.end(id, "cancelled", { error: data(finError("JOB_CANCELLED", "the job was cancelled")) });
-        return;
-      case "pause":
-        pausedAfterRun(this, id);
-        return;
-      case "close":
-        await interruptRow(this, this.d.store.row(id) ?? row, kind);
-        return;
+    if (control.requested === "cancel") {
+      await this.end(id, "cancelled", { error: data(finError("JOB_CANCELLED", "the job was cancelled")) });
+      return;
+    }
+    // A pause or close takes over only a run it stopped; a definitive outcome (the worker's own
+    // error, a crash before the stop reached it) follows the policy (9b review M1).
+    if (control.requested !== undefined && stoppedRun(outcome)) {
+      if (control.pauseRequested) pausedAfterRun(this, id); // a pause asked before a close holds (9b review M2)
+      else await interruptRow(this, this.d.store.row(id) ?? row, kind, true);
+      return;
     }
     if (this.#retryable(row.attempts, row.maxAttempts, outcome)) {
       const view = this.transition(id, "queued", { error: data(outcome.error), nextRunAt: null });
@@ -373,11 +363,14 @@ export class Engine implements JobEngine {
    * at the next start).
    */
   async end(id: string, to: JobState, patch: TransitionPatch): Promise<void> {
-    const view = this.transition(id, to, { ...patch, phase: "announce" });
-    this.dropProgress(id);
-    this.resources.delete(id);
     const stats = this.#stats.get(id) ?? newStats();
     this.#stats.delete(id);
+    // The stats go with the terminal row: a `job.done` re-sent at the next start carries them (9b review M5).
+    const view = this.transition(id, to, { ...patch, phase: "announce", stats: { ...stats } });
+    this.dropProgress(id);
+    this.resources.delete(id);
+    this.held.get(id)?.();
+    this.held.delete(id);
     this.announce(view, stats);
     try {
       await removeJobDir(jobDirs(this.d.root, id).job);
@@ -386,24 +379,45 @@ export class Engine implements JobEngine {
     }
   }
 
-  /** `job.done` for a terminal row (once; a restart re-announces one whose mark is still set). */
-  announce(view: JobView, stats: RunStats = newStats()): void {
+  /**
+   * `job.done` for a terminal row. The row is marked announced only once the sink took it
+   * (9b review M4): a throwing sink leaves the mark, and the next start sends it again (at
+   * least once; the sink dedupes by job id).
+   */
+  #sendDone(view: JobView, stats: RunStats): void {
     try {
-      this.d.sink.jobDone(doneEvent(view, this.kinds.kind(view.kind), stats, (m) => this.d.log("warning", m)));
+      this.d.sink.jobDone(doneEvent(view, this.kinds.kind(view.kind), stats, (m) => this.d.log("warning", m)), view.id);
+      if (!this.crashed) this.d.store.announced(view.id);
     } catch (e) {
-      this.d.log("error", `job ${view.id}: job.done failed: ${toFinError(e).message}`);
+      this.d.log("error", `job ${view.id}: job.done failed (sent again at the next start): ${toFinError(e).message}`);
     }
-    if (!this.crashed) this.d.store.announced(view.id);
+  }
+
+  /** `job.done`, then the bus, `onDone` listeners, waiters and the next dispatch. */
+  announce(view: JobView, stats: RunStats = newStats()): void {
+    this.#sendDone(view, stats);
     this.publish({ type: "state", job: view });
-    for (const l of [...this.#listeners]) {
-      try {
-        l(view);
-      } catch (e) {
-        this.d.log("error", `a job onDone listener threw: ${(e as Error).stack ?? String(e)}`);
-      }
-    }
+    for (const l of [...this.#listeners]) this.#tell(l, view);
     this.wakeWaiters();
     this.pump();
+  }
+
+  /**
+   * At start, a terminal row whose `job.done` may not have gone out: `job.done` again with
+   * its stored stats; the bus and `onDone` get it once they can attach (9b review M5).
+   */
+  reannounce(row: JobRow): void {
+    const view = viewOf(row);
+    this.#sendDone(view, { ...newStats(), ...((row.stats as Partial<RunStats> | undefined) ?? {}) });
+    this.#replay?.push(view);
+  }
+
+  #tell(l: (job: JobView) => void, view: JobView): void {
+    try {
+      l(view);
+    } catch (e) {
+      this.d.log("error", `a job onDone listener threw: ${(e as Error).stack ?? String(e)}`);
+    }
   }
 
   /** Resolves once the job is finished or no run of it is in flight (it paused or was re-queued). */
@@ -479,12 +493,24 @@ export class Engine implements JobEngine {
     };
   }
 
+  /** The bus; a subscriber within `REPLAY_WINDOW_MS` of the start first gets the start's re-announced jobs. */
   events(): Stream.Stream<JobEvent> {
-    return Stream.fromPubSub(this.#bus);
+    const live = Stream.fromPubSub(this.#bus);
+    return Stream.suspend(() => {
+      const replay = (this.#replay ?? []).map((job): JobEvent => ({ type: "state", job }));
+      return replay.length === 0 ? live : Stream.concat(Stream.fromIterable(replay), live);
+    });
   }
 
+  /** A listener added within `REPLAY_WINDOW_MS` of the start is first told of the start's re-announced jobs. */
   onDone(listener: (job: JobView) => void): () => void {
     this.#listeners.add(listener);
+    const replay = [...(this.#replay ?? [])];
+    if (replay.length > 0) {
+      queueMicrotask(() => {
+        for (const v of replay) if (this.#listeners.has(listener)) this.#tell(listener, v);
+      });
+    }
     return () => {
       this.#listeners.delete(listener);
     };

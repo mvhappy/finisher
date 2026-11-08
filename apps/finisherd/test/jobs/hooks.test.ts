@@ -1,7 +1,7 @@
 // The kind hooks (5C-1 plan Decision 40): `prepare` before any process, `onSucceeded` after the
 // group is gone and before the directory is deleted, persisted first, at-least-once.
 import { existsSync } from "node:fs";
-import { mkdir, writeFile } from "node:fs/promises";
+import { join } from "node:path";
 import { FinError } from "@finisher/contracts";
 import { Deferred, Effect } from "effect";
 import { afterEach, describe, expect, test } from "vitest";
@@ -30,8 +30,9 @@ describe("kind hooks", () => {
             prepare: (ctx) =>
               Effect.promise(async () => {
                 holder.processes = holder.engine?.workers().processes.length;
-                await mkdir(ctx.path("in"), { recursive: true });
-                await writeFile(ctx.path("in/data.txt"), "mine\n");
+                const fh = await ctx.open("in/data.txt", "w");
+                await fh.writeFile("mine\n");
+                await fh.close();
                 return { extra: { from: "prepare", attempt: ctx.attempt } };
               }),
           },
@@ -65,8 +66,8 @@ describe("kind hooks", () => {
             onSucceeded: (ctx) =>
               Effect.sync(() => {
                 seen.pidAlive = alive((ctx.result as { pid: number }).pid);
-                seen.dir = existsSync(ctx.dir);
-                seen.dirPath = ctx.dir;
+                seen.dirPath = join(t.serverData, "jobs", ctx.job.id);
+                seen.dir = existsSync(seen.dirPath);
               }),
           },
         },

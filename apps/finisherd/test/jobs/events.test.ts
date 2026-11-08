@@ -30,7 +30,7 @@ const exit: WorkerExitEvent = {
 describe("job events", () => {
   test("memory_sink_caps_and_records", async () => {
     const s = memorySink(3);
-    for (let i = 0; i < 5; i++) s.jobDone({ ...done(i), extra: { i } });
+    for (let i = 0; i < 5; i++) s.jobDone({ ...done(i), extra: { i } }, `j${i}`);
     expect(s.done.map((d) => d.queuedMs)).toEqual([2, 3, 4]);
     expect(s.done[2]?.extra).toEqual({ i: 4 });
     s.workerExit(exit);
@@ -41,7 +41,7 @@ describe("job events", () => {
     const fromLayer = await Effect.runPromise(Effect.provide(Effect.gen(function* () {
       return yield* JobEventSinkTag;
     }), layerMemorySink(2)));
-    fromLayer.jobDone(done(1));
+    fromLayer.jobDone(done(1), "j1");
     expect((fromLayer as ReturnType<typeof memorySink>).done.length).toBe(1);
   });
 });

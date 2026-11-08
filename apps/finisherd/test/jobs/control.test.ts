@@ -162,11 +162,12 @@ describe("abandonment", () => {
   }, 30_000);
 
   test("stuck_clears_when_one_exits", async () => {
-    const { t } = await abandonTwo([3000, 12_000]);
+    // Holds well apart (9b review): the first exits long before the second, on a loaded machine too.
+    const { t } = await abandonTwo([6000, 20_000]);
     expect(t.engine.workers().stuck).toEqual(["io:lib"]);
-    await until(() => t.engine.workers().stuck.length === 0, 15_000);
+    await until(() => t.engine.workers().stuck.length === 0, 25_000);
     const v = await t.submit("test.hang", {}, { priority: "interactive" });
     expect(v.state).toBe("running");
     await run(t.engine.cancel(v.id));
-  }, 40_000);
+  }, 60_000);
 });

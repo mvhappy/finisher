@@ -4,7 +4,6 @@
 // The worker starts after every helper is attached. A helper that exits or sends `error`
 // before the worker's answer fails the job with `HELPER_FAILED {helper, code}`; after the
 // answer the helpers get `shutdown` and 2 s before their group is killed.
-import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import type { FileGrant, HelperGrant, HostMsg, WorkerMsg } from "@finisher/core-types";
 import type { FinError, HelperSpec, MappedFile } from "@finisher/contracts";
@@ -13,6 +12,7 @@ import { childEnv } from "../env.ts";
 import { CallRouter } from "./calls.ts";
 import type { WorkerExitEvent } from "./events.ts";
 import { type JobDirs, mappedPath } from "./files.ts";
+import { mkdirSafe } from "./fsafe.ts";
 import { type JobHostExitInfo, type JobSpawnRequest, type ProcEvent, exitVerdict } from "./host.ts";
 import type { HelperProgram } from "./kinds.ts";
 import type { RunnerEnv } from "./runner.ts";
@@ -102,12 +102,13 @@ export class Helpers {
       const program = this.#env.registry.helper(spec.kind, spec.id);
       if (program === undefined || !ID.test(spec.id)) throw helperFailed(spec, "WORKER_UNAVAILABLE", "no such helper is registered");
       const dirs = helperDirs(this.#dirs, spec.id);
-      await mkdir(dirs.tmp, { recursive: true, mode: 0o700 });
+      await mkdirSafe(this.#dirs.job, `helpers/${spec.id}/tmp`);
       const p: Proc = { spec, program, dirs, calls: undefined as unknown as CallRouter, attached: false, exited: false };
       p.calls = this.#router(p);
       this.#procs.push(p);
       await this.#spawn(p);
-      grants.push({ id: spec.id, kind: spec.kind, files: [...spec.files] });
+      // Only the kind's own mapped files are advertised to the worker (9b review L4).
+      grants.push({ id: spec.id, kind: spec.kind, files: spec.files.filter((name) => this.#files.some((f) => f.name === name)) });
     }
     return grants;
   }
@@ -143,9 +144,9 @@ export class Helpers {
       args: [...program.args],
       env: { ...childEnv(), TMPDIR: tmp, TEMP: tmp, TMP: tmp },
       cwd: p.dirs.dir,
-      // The job directory read-only, its own temp directory, its own files at their modes (9a review H1).
+      // Its own temp directory and its own files at their modes (9a review H1); not the job
+      // directory, which holds the other helpers' directories (9b review L4).
       grants: [
-        { path: this.#dirs.job, mode: "read" },
         { path: tmp, mode: "readWrite" },
         ...mine.map((f) => ({ path: mappedPath(this.#dirs.job, f.name), mode: f.mode })),
       ],
@@ -167,8 +168,10 @@ export class Helpers {
         p.proc ??= proc;
         if (e.type === "hello") {
           const h = e.hello;
-          if (h.role !== "helper" || h.id !== p.spec.id || h.kind !== p.spec.kind) {
-            const err = helperFailed(p.spec, "WORKER_PROTOCOL_MISMATCH", `its hello names ${h.role} ${h.kind ?? "?"}:${h.id ?? "?"}`);
+          // A helper's hello names no family and no worker kinds (9b review L4).
+          if (h.role !== "helper" || h.id !== p.spec.id || h.kind !== p.spec.kind || (h.family ?? "") !== "" || (h.kinds ?? []).length > 0) {
+            const what = h.family === undefined || h.family === "" ? "" : ` of family ${h.family}`;
+            const err = helperFailed(p.spec, "WORKER_PROTOCOL_MISMATCH", `its hello names ${h.role} ${h.kind ?? "?"}:${h.id ?? "?"}${what}`);
             this.#failed(err);
             settle(err);
             return;

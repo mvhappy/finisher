@@ -401,14 +401,20 @@ fn kill_wait_over(inner: &Inner, gid: GroupId) {
             .collect();
         (due, stuck)
     };
-    for p in stuck.into_iter().filter(|p| p.abandon()) {
+    #[cfg(feature = "test-hooks")]
+    let delay = inner.opts.abandon_emit_delay_for_test;
+    #[cfg(not(feature = "test-hooks"))]
+    let delay = None;
+    for p in stuck {
+        let mut info = inner.exit_info(&p, RawExit::default());
+        info.reason = ExitReason::Abandoned;
+        if !p.abandon_with_exit(info, delay) {
+            continue;
+        }
         inner.log(&format!(
             "{} (pid {}) is still alive {wait:?} after its kill: abandoned",
             p.id, p.pid
         ));
-        let mut info = inner.exit_info(&p, RawExit::default());
-        info.reason = ExitReason::Abandoned;
-        p.emit_exit(info);
         inner.exited(&p);
     }
     for (_, d) in due {

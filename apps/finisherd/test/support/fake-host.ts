@@ -48,7 +48,20 @@ export class FakeHost implements JobHostLike {
 
   send(proc: number, msg: HostMsg): "ok" | "full" | "gone" {
     this.sent.push({ proc, msg });
-    return this.#procs.get(proc)?.alive === true ? "ok" : "gone";
+    const alive = this.#procs.get(proc)?.alive === true;
+    if (alive && this.onSend !== undefined) {
+      const on = this.onSend;
+      setImmediate(() => on(this, proc, msg));
+    }
+    return alive ? "ok" : "gone";
+  }
+
+  /** Called (after the send returned) with each message to a live process: a scripted worker's reactions. */
+  onSend: ((host: FakeHost, proc: number, msg: HostMsg) => void) | undefined;
+
+  /** Whether the process is alive. */
+  alive(proc: number): boolean {
+    return this.#procs.get(proc)?.alive === true;
   }
 
   watch(_proc: number, _w: JobWatch | null): void {}

@@ -3,6 +3,7 @@
 // helpers' `HelperProgram`s here; the engine reads them. Params are validated by Rust
 // (`validateJobParams`), never here.
 import type { FinError, JobOwner, JobRights, JobView, JobVia, MappedFile, Priority, HelperSpec } from "@finisher/contracts";
+import type { FileHandle } from "node:fs/promises";
 import type { Effect } from "effect";
 
 export type PoolName = "cpu" | "gpu" | "hwenc" | "net" | `io:${string}`;
@@ -39,6 +40,7 @@ export interface KindSpec<P = unknown, R = unknown> {
   readonly helpers?: OrFn<P, ReadonlyArray<HelperSpec>>;
   /** Per group (Decision 20). */
   readonly memory?: OrFn<P, MemoryRule>;
+  /** Bounded by `hookTimeoutS`; interrupted by a stop request (9b review M3). */
   readonly prepare?: (ctx: PrepareCtx<P>) => Effect.Effect<{ readonly extra?: unknown } | void, FinError>;
   /** At least once; must be idempotent (Decision 40). */
   readonly onSucceeded?: (ctx: SucceededCtx<P, R>) => Effect.Effect<R | void, FinError>;
@@ -55,8 +57,14 @@ export interface BatchSpec<P> {
 
 export interface PrepareCtx<P> {
   readonly job: JobView & { params: P };
-  readonly dir: string;
-  path(name: string): string;
+  /**
+   * Opens one of the job's mapped files (9b review B1): `r` reads, `rw` reads and writes an
+   * existing file, `w` creates or truncates it (0600, its parents made). The name must be a
+   * mapped file or lie under a mapped directory; a link at any segment, a FIFO or other
+   * special file and a hard-linked file are refused (`JOB_FAILED`) before any byte moves.
+   * Hooks get no raw paths: a worker may have planted anything in its writable files.
+   */
+  open(name: string, how?: "r" | "w" | "rw"): Promise<FileHandle>;
   readonly attempt: number;
 }
 

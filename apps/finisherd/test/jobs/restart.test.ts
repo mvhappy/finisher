@@ -110,16 +110,19 @@ describe("restart", () => {
     let crashed: Promise<void> | undefined;
     const onSucceeded = (ctx: SucceededCtx<never, never>): Effect.Effect<void, FinError> =>
       Effect.suspend(() => {
-        calls.push({ rerun: ctx.rerun, dir: existsSync(ctx.dir), marker: existsSync(ctx.path("hook-was-here")) });
+        const dir = join(data, "jobs", ctx.job.id);
+        calls.push({ rerun: ctx.rerun, dir: existsSync(dir), marker: existsSync(join(dir, "marks", "hook-was-here")) });
         if (calls.length > 1) return Effect.void;
         // Half-way through: it leaves a trace in the directory, then the engine dies.
         return Effect.promise(async () => {
-          const { writeFile } = await import("node:fs/promises");
-          await writeFile(ctx.path("hook-was-here"), "1");
+          const fh = await ctx.open("marks/hook-was-here", "w");
+          await fh.writeFile("1");
+          await fh.close();
           crashed = first?.crash();
         }).pipe(Effect.andThen(Effect.never));
       });
-    const opts = { serverData: data, testKinds: { overrides: { "test.echo": { onSucceeded: onSucceeded as never } } } };
+    const files = [{ name: "marks/", mode: "write" as const }];
+    const opts = { serverData: data, testKinds: { overrides: { "test.echo": { onSucceeded: onSucceeded as never, files } } } };
     first = await testEngine(opts);
     const v = await first.submit("test.echo", { value: 1 });
     await until(() => crashed);

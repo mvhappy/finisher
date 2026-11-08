@@ -18,10 +18,12 @@ import { Effect } from "effect";
 import type { ControlStore } from "../control/db.ts";
 import { registerChain } from "../control/migrations.ts";
 import { jobs0001 } from "../control/migrations/jobs/0001.ts";
+import { jobs0002 } from "../control/migrations/jobs/0002.ts";
 import { ulid } from "../control/ulid.ts";
 import type { ItemOutcome } from "./kinds.ts";
 
-registerChain("jobs", [jobs0001], { formatVersion: 1, minReaderVersion: 1 });
+// 0002 only adds a column an older reader ignores: it still reads the chain.
+registerChain("jobs", [jobs0001, jobs0002], { formatVersion: 2, minReaderVersion: 1 });
 
 const DAY_MS = 86_400_000;
 export const RETENTION_MAX_AGE_MS = 7 * DAY_MS;
@@ -60,6 +62,8 @@ export interface TransitionPatch {
   readonly checkpoint?: unknown;
   readonly extra?: unknown;
   readonly isolation?: unknown;
+  /** With a terminal state: the job's run statistics, for a `job.done` re-sent at the next start. */
+  readonly stats?: unknown;
   readonly pausedFrom?: JobState | null;
   /** Only with a terminal state: `announce` marks a row whose `job.done` is not out yet (9a review H2). */
   readonly phase?: "announce";
@@ -79,6 +83,7 @@ export type JobRow = JobView & {
   readonly checkpoint?: unknown;
   readonly extra?: unknown;
   readonly isolation?: unknown;
+  readonly stats?: unknown;
   readonly pausedFrom?: JobState;
 };
 
@@ -131,6 +136,7 @@ interface Row {
   result: string | null;
   error: string | null;
   isolation: string | null;
+  stats: string | null;
   createdAt: number;
   startedAt: number | null;
   finishedAt: number | null;
@@ -176,6 +182,7 @@ function toRow(r: Row, itemErrors: ReadonlyArray<JobItemError>): JobRow {
   opt("checkpoint", parse(r.checkpoint));
   opt("extra", parse(r.extra));
   opt("isolation", parse(r.isolation));
+  opt("stats", parse(r.stats));
   opt("pausedFrom", r.pausedFrom);
   opt("startedAt", r.startedAt);
   opt("finishedAt", r.finishedAt);
@@ -186,13 +193,13 @@ function toRow(r: Row, itemErrors: ReadonlyArray<JobItemError>): JobRow {
 
 /** The public view of a row (the engine's own columns removed). */
 export function viewOf(row: JobRow): JobView {
-  const { phase: _p, checkpoint: _c, extra: _e, isolation: _i, pausedFrom: _f, ...view } = row;
+  const { phase: _p, checkpoint: _c, extra: _e, isolation: _i, stats: _s, pausedFrom: _f, ...view } = row;
   return view;
 }
 
 const COLUMNS =
   "id, kind, kindVersion, family, params, ownerKind, ownerId, via, rights, project, library, parent, priority, state, phase, " +
-  "pausedFrom, warm, attempts, maxAttempts, idemKey, dedupeKey, checkpoint, extra, result, error, isolation, createdAt, " +
+  "pausedFrom, warm, attempts, maxAttempts, idemKey, dedupeKey, checkpoint, extra, result, error, isolation, stats, createdAt, " +
   "startedAt, finishedAt, nextRunAt";
 
 export class JobStore {
@@ -227,7 +234,7 @@ export class JobStore {
       ),
       update: p(
         "UPDATE jobs SET state = ?, phase = ?, pausedFrom = ?, warm = ?, attempts = ?, priority = ?, checkpoint = ?, extra = ?, " +
-          "result = ?, error = ?, isolation = ?, startedAt = ?, finishedAt = ?, nextRunAt = ? WHERE id = ? AND state = ? AND phase = ?",
+          "result = ?, error = ?, isolation = ?, stats = ?, startedAt = ?, finishedAt = ?, nextRunAt = ? WHERE id = ? AND state = ? AND phase = ?",
       ),
       hooks: p("UPDATE jobs SET phase = 'hooks', result = ? WHERE id = ? AND state = 'running'"),
       checkpoint: p("UPDATE jobs SET checkpoint = ? WHERE id = ?"),
@@ -362,6 +369,7 @@ export class JobStore {
       json(pick("result", cur.result) ?? undefined),
       error === null || error === undefined ? null : JSON.stringify(errorData(error)),
       json(pick("isolation", cur.isolation) ?? undefined),
+      json(pick("stats", cur.stats) ?? undefined),
       startedAt,
       finishedAt,
       (pick("nextRunAt", cur.nextRunAt) as number | null | undefined) ?? null,

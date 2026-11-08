@@ -57,9 +57,9 @@ describe("helpers", () => {
     expect(attach?.t === "attach" ? attach.files?.map((f) => f.name) : undefined).toEqual(["helper.bin"]);
     const start = sent.find((s) => s.msg.t === "start")?.msg;
     expect(start?.t === "start" ? start.files?.map((f) => f.name) : undefined).toEqual(["helper.bin", "worker-only.bin"]);
-    // Its grants: the job directory read-only, its own temp directory, its own file.
+    // Its grants: its own temp directory and its own file; not the job directory (9b review L4).
     const helper = reqs.find((r) => r.role === "helper");
-    expect(helper?.grants?.map((g) => g.mode)).toEqual(["read", "readWrite", "readWrite"]);
+    expect(helper?.grants?.map((g) => g.mode)).toEqual(["readWrite", "readWrite"]);
     expect(helper?.cwd).toMatch(/helpers[\\/]test$/);
   });
 
@@ -79,8 +79,13 @@ describe("helpers", () => {
         overrides: {
           "test.helper": {
             onSucceeded: (ctx) =>
-              Effect.sync(() => {
-                pids = JSON.parse(readFileSync(ctx.path("helper.bin"), "utf8").replace(/\0+$/, "")) as typeof pids;
+              Effect.promise(async () => {
+                const fh = await ctx.open("helper.bin");
+                try {
+                  pids = JSON.parse((await fh.readFile("utf8")).replace(/\0+$/, "")) as typeof pids;
+                } finally {
+                  await fh.close();
+                }
               }),
           },
         },

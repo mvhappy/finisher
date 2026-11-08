@@ -9,11 +9,13 @@
 import type { CancelReason, Hello, HelperGrant, HostMsg, JobError as JobErrorMsg, Retry, StartJob, WorkerMsg } from "@finisher/core-types";
 import { FinError, type HelperSpec, type JobProgress, type JobView, type MappedFile } from "@finisher/contracts";
 import { resolveMemoryRule } from "@finisher/fin-node";
-import { Cause, Effect, Exit, type Fiber } from "effect";
+import { Effect, type Fiber } from "effect";
 import { finError, toFinError } from "../errors.ts";
 import { childEnv } from "../env.ts";
 import type { JobEventSink, WorkerExitEvent } from "./events.ts";
 import { CallRouter, type RunFork } from "./calls.ts";
+import { DEFAULT_HOOK_TIMEOUT_S, hookCtx, runHook } from "./hooks.ts";
+import type { RunControl, StopReason } from "./run-control.ts";
 import { checkNoLinks, checkPrepared, createFiles, createJobDir, isPrepared, type JobDirs, jobDirs, mappedPath, markPrepared } from "./files.ts";
 import { Helpers, helperNames } from "./helpers.ts";
 import { type EngineHost, type JobHostExitInfo, type JobSpawnRequest, type ProcEvent, exitVerdict } from "./host.ts";
@@ -23,7 +25,6 @@ import { CheckpointWriter, ItemWriter, type WriterEnv } from "./writers.ts";
 
 export const ALIVE_MS = 5000;
 export const DEFAULT_STALL_S = 600;
-export const DEFAULT_HOOK_TIMEOUT_S = 60;
 /** After a worker's answer, how long it may take to exit before its group is killed. */
 export const EXIT_GRACE_MS = 2000;
 /** The longest item name a worker may report (a longer one is a protocol error). */
@@ -78,30 +79,8 @@ export interface AttemptFacts {
   readonly runMicros: number;
   /** Helper processes started. */
   readonly helpers: number;
-}
-
-/** Why a run is stopped: `close` pauses it for the next start (Decision 29). */
-export type StopReason = "cancel" | "pause" | "close";
-const STOP_RANK: Record<StopReason, number> = { pause: 0, close: 1, cancel: 2 };
-
-/** The engine's handle on a running attempt: the strongest request wins (cancel > close > pause). */
-export class RunControl {
-  requested: StopReason | undefined;
-  #stop: ((reason: StopReason, graceMs: number) => void) | undefined;
-  #grace = 0;
-
-  request(reason: StopReason, graceMs: number): void {
-    if (this.requested !== undefined && STOP_RANK[this.requested] >= STOP_RANK[reason]) return;
-    this.requested = reason;
-    this.#grace = graceMs;
-    this.#stop?.(reason, graceMs);
-  }
-
-  /** The attempt's stop: called at once for a request made before. */
-  bind(stop: (reason: StopReason, graceMs: number) => void): void {
-    this.#stop = stop;
-    if (this.requested !== undefined) stop(this.requested, this.#grace);
-  }
+  /** A stop request reached the attempt before the worker answered (9b review M1). */
+  readonly stopSent: boolean;
 }
 
 /** The memory rule of a job's group: the kind's, else the family's for its class (Decision 20). */
@@ -112,62 +91,13 @@ export function memoryRule(kind: KindSpec, family: FamilySpec, view: JobView): M
 
 const jobErr = (e: JobErrorMsg): FinError => new FinError({ code: e.code, message: e.message, details: e.details ?? {} });
 
-/** Awaits a fiber's exit. */
-export function awaitFiber<A, E>(fiber: Fiber.Fiber<A, E>): Promise<Exit.Exit<A, E>> {
-  return new Promise((resolve) => fiber.addObserver(resolve));
-}
-
-/** Runs one of a kind's hooks: its value, or its failure as a `FinError` (a defect is `INTERNAL`). */
-async function runHook<A>(env: RunnerEnv, effect: Effect.Effect<A, FinError>, timeoutS?: number): Promise<{ ok: true; value: A } | { ok: false; error: FinError }> {
-  const bounded =
-    timeoutS === undefined
-      ? effect
-      : effect.pipe(
-          Effect.timeoutOrElse({
-            duration: Math.max(0, timeoutS * 1000),
-            orElse: () => Effect.fail(finError("JOB_TIMEOUT", `the kind's hook ran past ${timeoutS} s`, { hook: "onSucceeded", timeoutS })),
-          }),
-        );
-  const fiber = env.run(Effect.suspend(() => bounded)) as Fiber.Fiber<unknown, unknown>;
-  env.hooks.add(fiber);
-  const exit = (await awaitFiber(fiber)) as Exit.Exit<A, FinError>;
-  env.hooks.delete(fiber);
-  if (Exit.isSuccess(exit)) return { ok: true, value: exit.value };
-  return { ok: false, error: toFinError(Cause.squash(exit.cause)) };
-}
-
-/** The job's view with its params typed for a kind's hooks. */
-function hookCtx(view: JobView, dirs: JobDirs, attempt: number) {
-  return { job: view as JobView & { params: never }, dir: dirs.job, path: (name: string) => mappedPath(dirs.job, name), attempt };
-}
-
-/**
- * The success path's hook phase (Decision 40). The caller has persisted the result with
- * `phase: hooks` and every process that could write the directory has exited. Answers the
- * final result (the hook's replacement, if any) or the hook's failure.
- */
-export async function runOnSucceeded(
-  env: RunnerEnv,
-  row: JobRow,
-  kind: KindSpec,
-  result: unknown,
-  rerun: boolean,
-): Promise<{ ok: true; result: unknown } | { ok: false; error: FinError }> {
-  const hook = kind.onSucceeded;
-  if (hook === undefined) return { ok: true, result };
-  const dirs = jobDirs(env.root, row.id);
-  const ctx = { ...hookCtx(row, dirs, row.attempts), result: result as never, items: env.store.items(row.id), rerun };
-  const out = await runHook(env, Effect.suspend(() => hook(ctx)), kind.hookTimeoutS ?? DEFAULT_HOOK_TIMEOUT_S);
-  if (!out.ok) return out;
-  return { ok: true, result: out.value === undefined ? result : out.value };
-}
-
 const stopped = (): FinError => finError("JOB_CANCELLED", "the job was cancelled");
 
 interface Facts {
   done: string[];
   inFlight: Set<string>;
   helpers: number;
+  stopSent: boolean;
 }
 
 /**
@@ -176,8 +106,15 @@ interface Facts {
  */
 export async function runAttempt(env: RunnerEnv, row: JobRow, kind: KindSpec, family: FamilySpec, params: unknown, control: RunControl): Promise<AttemptOutcome> {
   const t0 = performance.now();
-  const facts: Facts = { done: [], inFlight: new Set<string>(), helpers: 0 };
-  const finish = (o: Outcome): AttemptOutcome => ({ ...o, done: facts.done, inFlight: [...facts.inFlight], helpers: facts.helpers, runMicros: (performance.now() - t0) * 1000 });
+  const facts: Facts = { done: [], inFlight: new Set<string>(), helpers: 0, stopSent: false };
+  const finish = (o: Outcome): AttemptOutcome => ({
+    ...o,
+    done: facts.done,
+    inFlight: [...facts.inFlight],
+    helpers: facts.helpers,
+    stopSent: facts.stopSent,
+    runMicros: (performance.now() - t0) * 1000,
+  });
   const dirs = jobDirs(env.root, row.id);
   let files: ReadonlyArray<MappedFile>;
   let helpers: ReadonlyArray<HelperSpec>;
@@ -193,10 +130,12 @@ export async function runAttempt(env: RunnerEnv, row: JobRow, kind: KindSpec, fa
   }
   try {
     await createFiles(dirs.job, files);
-    // `prepare` runs until it succeeded once for this directory (9a review M3).
+    // `prepare` runs until it succeeded once for this directory (9a review M3), bounded and stoppable (9b review M3).
     if (kind.prepare !== undefined && !(await isPrepared(dirs))) {
       const prepare = kind.prepare;
-      const out = await runHook(env, Effect.suspend(() => prepare(hookCtx(row, dirs, row.attempts))));
+      const ctx = hookCtx(row, dirs, files, row.attempts);
+      const out = await runHook(env, "prepare", Effect.suspend(() => prepare(ctx)), kind.hookTimeoutS ?? DEFAULT_HOOK_TIMEOUT_S, control);
+      if (control.requested !== undefined) return finish({ ok: false, error: stopped(), cause: "stopped" });
       if (!out.ok) return finish({ ok: false, error: out.error, cause: "prepare" });
       const value = out.value as { extra?: unknown } | undefined;
       if (value?.extra !== undefined && !env.dead()) {
@@ -207,7 +146,8 @@ export async function runAttempt(env: RunnerEnv, row: JobRow, kind: KindSpec, fa
     }
     await checkPrepared(dirs.job, files);
   } catch (e) {
-    return finish({ ok: false, error: toFinError(e), cause: "files" });
+    const err = toFinError(e);
+    return finish({ ok: false, error: err, cause: err.code === "JOB_FAILED" ? "tampered" : "files" });
   }
   if (control.requested !== undefined) return finish({ ok: false, error: stopped(), cause: "stopped" });
   return new Attempt({ env, row, kind, family, params, dirs, files, extra, facts, control }).run(helpers).then(finish);
@@ -245,6 +185,7 @@ class Attempt {
   #cancelKill: (() => void) | undefined;
   #diagnostics = false;
   #settle: (o: Outcome) => void = () => {};
+  #unbind: () => void = () => {};
 
   constructor(a: AttemptSpec) {
     this.#a = a;
@@ -283,14 +224,16 @@ class Attempt {
     const done = new Promise<Outcome>((resolve) => {
       this.#settle = resolve;
     });
-    control.bind((reason, graceMs) => this.#stop(reason, graceMs));
+    this.#unbind = control.bind((reason, graceMs) => this.#stop(reason, graceMs));
     let grants: HelperGrant[];
     try {
       grants = await this.#helpers.start(helpers);
     } catch (e) {
       this.#a.facts.helpers = this.#helpers.started;
       await this.#endGroup();
-      return { ok: false, error: toFinError(e), cause: control.requested !== undefined ? "stopped" : "helper" };
+      if (control.requested !== undefined) return { ok: false, error: stopped(), cause: "stopped" };
+      // The helper's own failure counts, not a later error it caused (9b review L3).
+      return this.#fault === undefined ? { ok: false, error: toFinError(e), cause: "helper" } : { ok: false, ...this.#fault };
     }
     this.#a.facts.helpers = this.#helpers.started;
     if (control.requested !== undefined || this.#fault !== undefined) {
@@ -307,6 +250,7 @@ class Attempt {
   }
 
   async #endGroup(): Promise<void> {
+    this.#unbind();
     try {
       await this.#a.env.host.killGroup(this.#group, "jobEnded");
     } catch (e) {
@@ -320,6 +264,7 @@ class Attempt {
   #stop(reason: StopReason, graceMs: number): void {
     const { env, row } = this.#a;
     if (this.#answer !== undefined) return; // it answered: the attempt ends on its own
+    this.#a.facts.stopSent = true;
     if (this.#started && this.#proc !== undefined) {
       const wire: CancelReason = reason === "cancel" ? "cancel" : "pause";
       env.host.send(this.#proc, { t: "cancel", job: row.id, reason: wire });
@@ -339,9 +284,9 @@ class Attempt {
       args: [...program.args],
       env: { ...childEnv(), TMPDIR: dirs.tmp, TEMP: dirs.tmp, TMP: dirs.tmp },
       cwd: dirs.job,
-      // The job directory read-only, `tmp/` read-write, each mapped file at its own mode (9a review H1).
+      // `tmp/` read-write and each mapped file at its own mode (9a review H1); not the job
+      // directory itself, which holds the helpers' own directories (9b review L4).
       grants: [
-        { path: dirs.job, mode: "read" },
         { path: dirs.tmp, mode: "readWrite" },
         ...files.map((f) => ({ path: mappedPath(dirs.job, f.name), mode: f.mode })),
       ],

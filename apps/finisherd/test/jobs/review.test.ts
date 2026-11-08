@@ -89,8 +89,8 @@ describe("9a review", () => {
     const v = await t.runJob("test.files", {});
     expect(v.state).toBe("succeeded");
     const dirs = jobDirs(join(t.serverData, "jobs"), v.id);
+    // Not the job directory itself, which holds the helpers' directories (9b review L4).
     expect(reqs[0]?.grants).toEqual([
-      { path: dirs.job, mode: "read" },
       { path: dirs.tmp, mode: "readWrite" },
       { path: join(dirs.job, "in", "data.txt"), mode: "read" },
       { path: join(dirs.job, "out.bin"), mode: "write" },
@@ -207,9 +207,9 @@ describe("9a review", () => {
             prepare: (ctx) =>
               Effect.promise(async () => {
                 calls++;
-                const { mkdir, writeFile } = await import("node:fs/promises");
-                await mkdir(ctx.path("in"), { recursive: true });
-                await writeFile(ctx.path("in/data.txt"), "x", { mode: 0o600 });
+                const fh = await ctx.open("in/data.txt", "w");
+                await fh.writeFile("x");
+                await fh.close();
                 return { extra: { call: calls } };
               }),
           },

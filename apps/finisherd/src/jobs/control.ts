@@ -93,20 +93,35 @@ export function resumeJobs(e: Engine, target: { readonly job: string } | { reado
   e.pump();
 }
 
-/** Abandoned processes (Decision 18) and the `io:` pools they make stuck. */
+/** How many early `abandonedExit`s are remembered (9b review H2). */
+const TOMBSTONES = 1024;
+
+/**
+ * Abandoned processes (Decision 18) and the `io:` pools they make stuck: two abandoned
+ * processes on a pool (of one job or several, 9b review L1). A job with an abandoned process
+ * is not run again until it really exits (`holds`, 9b review H1): `released` is called then.
+ */
 export class Abandonment {
   readonly #procs = new Map<number, { job: string; pools: ReadonlyArray<string> }>();
+  /** Processes whose real exit was reported before their abandonment (a host race, 9b review H2). */
+  readonly #tombstones = new Set<number>();
   readonly #pools: Pools;
   readonly #log: (level: "debug" | "warning" | "error", message: string) => void;
   readonly #pump: () => void;
+  readonly #released: (job: string) => void;
 
-  constructor(pools: Pools, log: (level: "debug" | "warning" | "error", message: string) => void, pump: () => void) {
+  constructor(pools: Pools, log: (level: "debug" | "warning" | "error", message: string) => void, pump: () => void, released: (job: string) => void = () => {}) {
     this.#pools = pools;
     this.#log = log;
     this.#pump = pump;
+    this.#released = released;
   }
 
   abandoned(proc: number, job: string, resources: ReadonlyArray<string>): void {
+    if (this.#tombstones.delete(proc)) {
+      this.#log("warning", `job ${job}: process ${proc} was abandoned after it had exited`);
+      return;
+    }
     this.#procs.set(proc, { job, pools: resources.filter((r) => r.startsWith("io:")) });
     this.#log("warning", `job ${job}: process ${proc} did not exit when killed: abandoned`);
     this.#recount();
@@ -115,23 +130,28 @@ export class Abandonment {
   /** The abandoned process `proc` has exited at last. */
   exited(proc: number): void {
     const was = this.#procs.get(proc);
-    if (!this.#procs.delete(proc)) return;
-    this.#log("warning", `job ${was?.job ?? "?"}: abandoned process ${proc} exited`);
+    if (was === undefined || !this.#procs.delete(proc)) {
+      this.#tombstones.add(proc);
+      if (this.#tombstones.size > TOMBSTONES) this.#tombstones.delete(this.#tombstones.values().next().value as number);
+      return;
+    }
+    this.#log("warning", `job ${was.job}: abandoned process ${proc} exited`);
     this.#recount();
+    if (!this.holds(was.job)) this.#released(was.job);
     this.#pump();
   }
 
+  /** Whether a process of `job` is abandoned and still alive. */
+  holds(job: string): boolean {
+    for (const p of this.#procs.values()) if (p.job === job) return true;
+    return false;
+  }
+
   #recount(): void {
-    const jobs = new Map<string, Set<string>>();
-    for (const { job, pools } of this.#procs.values()) {
-      for (const p of pools) {
-        const set = jobs.get(p) ?? new Set<string>();
-        set.add(job);
-        jobs.set(p, set);
-      }
-    }
+    const procs = new Map<string, number>();
+    for (const { pools } of this.#procs.values()) for (const p of pools) procs.set(p, (procs.get(p) ?? 0) + 1);
     for (const p of this.#pools.snapshot()) {
-      const stuck = (jobs.get(p.name)?.size ?? 0) >= 2;
+      const stuck = (procs.get(p.name) ?? 0) >= 2;
       if (stuck !== p.stuck) {
         this.#pools.markStuck(p.name, stuck);
         this.#log("warning", `resource pool ${p.name} ${stuck ? "is stuck: two abandoned processes hold it" : "is no longer stuck"}`);

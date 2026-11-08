@@ -223,14 +223,14 @@
     Then insert and dispatch in the same turn (a ready warm worker directly, Decision 35; otherwise `schedule()`).
 28. **Restart:** at start, every `running` row is examined:
     - **`phase: hooks`** (the worker had succeeded, its result is persisted, the hook may not have finished): its directory is kept and `onSucceeded` runs again, with no process, before the job ends `succeeded` (Decision 40);
-    - otherwise it becomes `interrupted`. One that is resumable (a `resumable` kind, or a batch kind with items left) and has attempts left goes back to `queued` from its checkpoint and recorded items (the interrupted run counts as an attempt). The others stay `interrupted` with `JOB_INTERRUPTED` and emit `job.done` with outcome `interrupted`.
+    - otherwise it becomes `interrupted`. One that is resumable (a `resumable` kind, or a batch kind with items left) and has attempts left goes back to `queued` from its checkpoint and recorded items (the interrupted run counts as an attempt: a row found `running` at start means a crash). The others stay `interrupted` with `JOB_INTERRUPTED` and emit `job.done` with outcome `interrupted`.
 
     `paused` rows stay paused. Every directory under `<server-data>/jobs/` is deleted except those of `phase: hooks` jobs.
 29. **Graceful close** (`engine.close`):
     - dispatch stops;
     - idle warm workers get `shutdown`;
     - jobs in `phase: hooks` finish their hook (bounded by its timeout);
-    - running jobs get `cancel {reason: pause}` and a 2 s grace, then their groups are killed and they are handled as Decision 28 handles them, at once, so a clean stop leaves no `running` row in `phase: run`;
+    - running jobs get `cancel {reason: pause}` and a 2 s grace, then their groups are killed and they are handled as Decision 28 handles them, at once, so a clean stop leaves no `running` row in `phase: run`; **except that the stopped run spends no attempt** (owner decision, 9b review L6): a resumable job goes back to `queued` with its attempts as before the run, as a pause leaves them; a job whose pause was asked before the close stays `paused` (9b review M2); a run that ended with its own definitive outcome before the stop reached it follows the retry policy (9b review M1);
     - then `Host::shutdown`.
 30. **Retention:** at start and hourly, finished jobs older than 7 days or beyond the newest 10,000 finished are deleted: their `job_items` first, then the rows, ≤ 500 rows per statement through `deleteInBatches`.
 
@@ -321,7 +321,7 @@
 
 ### Events and plugins
 
-42. **The sink** (spec §6.8): `JobEventSink {jobDone, workerExit, forward}`. Until diagnostics D4 wires the journal into `finisherd`, the engine is given `memorySink()` (tests read it; `finisherd` keeps the last 1,000 and logs them at debug). D4 replaces it with a journal sink (a TASKS follow-up).
+42. **The sink** (spec §6.8): `JobEventSink {jobDone, workerExit, forward}`. **`job.done` is at least once** (9b review M4): a terminal row is marked announced only after the sink took its `job.done`; a sink that throws, or a crash in between, has it sent again at the next start, with the run statistics stored with the terminal row (`jobs.stats`, chain step 2). Consumers dedupe by the job id, which `jobDone(event, job)` passes beside the payload (the journal payload has no id). Until diagnostics D4 wires the journal into `finisherd`, the engine is given `memorySink()` (tests read it; `finisherd` keeps the last 1,000 and logs them at debug). D4 replaces it with a journal sink (a TASKS follow-up).
     - **`job.done`** (`kv` 1), for every job that reaches a terminal state: `kind`, `family`, `outcome: succeeded|failed|cancelled|interrupted`, `code?`, `attempts`, `priority`, `warm`, `queuedMs`, `runMicros`, `items?`, `itemsFailed?`, `isolated`, `helpers`, plus the kind's `journal(job)` extra fields (sub-project 6's `kv` 2).
     - **`worker.exit`**, for every process 5C started, the watchdog excepted: `role`, `family`, `helperKind?`, `pluginId?` (the sink hashes it into `plugin: Hashed`), `reason`, `exitCode?`, `signal?`, `jobsServed`, `lifetimeS`, `sandboxed`. `reason` is one of `done|idleExpired|recycled|cancelled|killed|crashed|hung|stalled|abandoned|spawnFailed|oom|protocolError`; **`oom` and `protocolError` are added** here (the kind is new, so no bump).
     - **Name tables**, in `fin-core/src/events/names_jobs.rs`, with a drift test that keeps the registered kinds and families inside them:

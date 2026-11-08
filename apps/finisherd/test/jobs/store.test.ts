@@ -45,7 +45,7 @@ const meta = (s: ControlStore, key: string): string | undefined =>
 
 describe("job store", () => {
   test("jobs_chain_registers_and_migrates", async () => {
-    expect(CONTROL_CHAINS.get("jobs")?.formatVersion).toBe(1);
+    expect(CONTROL_CHAINS.get("jobs")?.formatVersion).toBe(2);
     // An existing database with `core` only gains the `jobs` chain at the next open.
     const coreOnly = new ChainRegistry();
     const core = CONTROL_CHAINS.get("core")!;
@@ -55,7 +55,7 @@ describe("job store", () => {
     await old.close();
     open.splice(0);
     const s = control();
-    expect(meta(s, "formatVersion.jobs")).toBe("1");
+    expect(meta(s, "formatVersion.jobs")).toBe("2");
     expect(meta(s, "minReaderVersion.jobs")).toBe("1");
     const tables = (s.db.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all() as Array<{ name: string }>).map((t) => t.name);
     expect(tables).toEqual(expect.arrayContaining(["jobs", "job_items"]));
@@ -72,7 +72,7 @@ describe("job store", () => {
     // A fresh database gets both chains at once.
     rmSync(dir, { recursive: true, force: true });
     dir = mkdtempSync(join(tmpdir(), "jobs-store-"));
-    expect(meta(control(), "formatVersion.jobs")).toBe("1");
+    expect(meta(control(), "formatVersion.jobs")).toBe("2");
   });
 
   test("insert_and_get_keep_every_field", () => {

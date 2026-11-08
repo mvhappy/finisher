@@ -11,6 +11,7 @@ import { join } from "node:path";
 import type { FinError, MappedFile } from "@finisher/contracts";
 import { ensurePrivateDir } from "../config.ts";
 import { finError } from "../errors.ts";
+import { mkdirSafe } from "./fsafe.ts";
 
 export const JOBS_DIR = "jobs";
 const REMOVE_TRIES = 20;
@@ -70,9 +71,10 @@ export async function createJobDir(dirs: JobDirs): Promise<boolean> {
   try {
     const created = !(await exists(dirs.job));
     await mkdir(dirs.job, { recursive: true, mode: 0o700 });
-    await mkdir(dirs.tmp, { recursive: true, mode: 0o700 });
+    await mkdirSafe(dirs.job, "tmp");
     return created;
   } catch (e) {
+    if ((e as { code?: unknown }).code === "JOB_FAILED") throw e;
     throw ioError(e, dirs.job, "jobDir");
   }
 }
@@ -86,9 +88,11 @@ export async function isPrepared(dirs: JobDirs): Promise<boolean> {
   }
 }
 
-/** Records that `prepare` succeeded: it does not run again for this directory. */
+/** Records that `prepare` succeeded: it does not run again for this directory (made anew, never through a link). */
 export async function markPrepared(dirs: JobDirs): Promise<void> {
-  const fh = await open(join(dirs.job, PREPARED_MARKER), constants.O_WRONLY | constants.O_CREAT | constants.O_TRUNC | (constants.O_NOFOLLOW ?? 0), 0o600);
+  const path = join(dirs.job, PREPARED_MARKER);
+  await rm(path, { force: true });
+  const fh = await open(path, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | (constants.O_NOFOLLOW ?? 0), 0o600);
   await fh.close();
 }
 
@@ -127,10 +131,15 @@ export async function checkNoLinks(dir: string, names: ReadonlyArray<string>): P
   }
 }
 
-/** Empties a writable directory by replacing it: `rm` removes a link itself, never its target. */
-async function emptyDir(path: string): Promise<void> {
-  await rm(path, { recursive: true, force: true });
-  await mkdir(path, { recursive: true, mode: 0o700 });
+/**
+ * Empties a writable directory by replacing it: `rm` removes a link itself, never its target;
+ * the parents and the directory are made with `mkdirSafe`, so no segment is followed (9b review H1).
+ */
+async function emptyDir(dir: string, name: string): Promise<void> {
+  const parent = name.split("/").filter((s) => s !== "").slice(0, -1).join("/");
+  await mkdirSafe(dir, parent, name);
+  await rm(mappedPath(dir, name), { recursive: true, force: true });
+  await mkdirSafe(dir, name);
 }
 
 /**
@@ -159,14 +168,14 @@ export async function createFiles(dir: string, files: ReadonlyArray<MappedFile>)
     const path = mappedPath(dir, f.name);
     try {
       if (isDirName(f.name)) {
-        if (writable(f)) await emptyDir(path);
-        else await mkdir(path, { recursive: true, mode: 0o700 });
+        if (writable(f)) await emptyDir(dir, f.name);
+        else await mkdirSafe(dir, f.name);
         continue;
       }
-      const parent = mappedPath(dir, f.name.split("/").slice(0, -1).join("/") || ".");
-      if (parent !== dir) await mkdir(parent, { recursive: true, mode: 0o700 });
+      await mkdirSafe(dir, f.name.split("/").slice(0, -1).join("/"), f.name);
       if (f.bytes !== undefined && (writable(f) || !(await exists(path)))) await sizedFile(path, f.bytes);
     } catch (e) {
+      if ((e as { code?: unknown }).code === "JOB_FAILED") throw e;
       throw ioError(e, path, f.name);
     }
   }
@@ -223,6 +232,28 @@ export async function sweep(root: string, keep: ReadonlySet<string>): Promise<st
   }
   for (const name of entries) {
     if (keep.has(name)) continue;
+    await removeJobDir(join(root, name));
+    removed.push(name);
+  }
+  return removed;
+}
+
+/**
+ * The hourly pass (Decision 38, 9b review L2): deletes every entry under the jobs root that is
+ * not the directory of a live job. The listing is read first and `live(id)` asked per entry
+ * after it, so a job made meanwhile (its row is written before its directory) is never hit.
+ */
+export async function sweepLeftovers(root: string, live: (id: string) => boolean): Promise<string[]> {
+  const removed: string[] = [];
+  let entries: string[];
+  try {
+    entries = await readdir(root);
+  } catch (e) {
+    if ((e as { code?: unknown }).code === "ENOENT") return removed;
+    throw e;
+  }
+  for (const name of entries) {
+    if (live(name)) continue;
     await removeJobDir(join(root, name));
     removed.push(name);
   }
