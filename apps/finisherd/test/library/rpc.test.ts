@@ -91,7 +91,7 @@ describe("scopes", () => {
     const a = credential("agent", ["library.scan"]);
     expect(await chainHarness(a).call("library.set", plain)).toBeUndefined();
     // Each field only a person decides adds `library.admin`, which is human-only.
-    for (const field of [{ hydrate: true }, { bandwidthMiBs: 40 }, { bandwidthMiBs: null }, { acceptVolume: true }, { aliases: ["/mnt/x"] }, { aliases: [] }]) {
+    for (const field of [{ hydrate: true }, { bandwidthMiBs: 40 }, { bandwidthMiBs: null }, { acceptVolume: true }, { acceptUnmounted: { dir: "mount" } }, { acceptEmptyRoot: true }, { aliases: ["/mnt/x"] }, { aliases: [] }]) {
       expect(requiredScopes("library.set", { id: "x", ...field }), JSON.stringify(field)).toEqual(["library.scan", "library.admin"]);
       expect(await chainHarness(credential("agent", [...SCOPES])).call("library.set", field), JSON.stringify(field)).toBe("HUMAN_ONLY");
       expect(await chainHarness(LOCAL).call("library.set", field)).toBe("HUMAN_ONLY");
@@ -111,7 +111,7 @@ describe("scopes", () => {
   });
 
   test("human_only_matrix_for_add_remove_aliases_and_admin_fields", async () => {
-    const calls: Array<[string, object]> = [["library.add", {}], ["library.remove", {}], ["library.set", { aliases: ["/mnt/x"] }], ["library.set", { hydrate: true }], ["library.set", { bandwidthMiBs: 5 }], ["library.set", { acceptVolume: true }]];
+    const calls: Array<[string, object]> = [["library.add", {}], ["library.remove", {}], ["library.set", { aliases: ["/mnt/x"] }], ["library.set", { hydrate: true }], ["library.set", { bandwidthMiBs: 5 }], ["library.set", { acceptVolume: true }], ["library.set", { acceptUnmounted: { dir: "mount" } }], ["library.set", { acceptEmptyRoot: true }]];
     for (const [tag, extra] of calls) {
       for (const p of [LOCAL, credential("agent", [...SCOPES]), credential("mcp", [...SCOPES])]) {
         const h = chainHarness(p);
@@ -229,6 +229,23 @@ describe("handlers", () => {
     expect((await h.fail("library.status", { id })).code).toBe("LIBRARY_NOT_FOUND");
   });
 
+  test("set_accepts_unmounted_dirs_and_empty_roots", { timeout: 90_000 }, async () => {
+    const root = join(liveRoots(), "raw");
+    tree(root, MEDIA);
+    const rig = await liveRig();
+    const { h, id } = await addAndScan(rig, root);
+    // A directory that is no mount point forgets nothing; unknown and root directories are refused.
+    const r = await h.call<{ library: { name: string }; unmounted?: number }>("library.set", { id, acceptUnmounted: { dir: "clips" } });
+    expect(r).toMatchObject({ library: { name: "Raw" }, unmounted: 0 });
+    expect((await h.fail("library.set", { id, acceptUnmounted: { dir: "nope" } })).code).toBe("FILE_NOT_FOUND");
+    expect((await h.fail("library.set", { id, acceptUnmounted: { dir: "" } })).code).toBe("INVALID_REQUEST");
+    expect((await h.fail("library.set", { id, acceptUnmounted: { dir: "../x" } })).code).toBe("INVALID_PATH");
+    // A root that is not empty and not unavailable accepts harmlessly (the flag ends with the next non-empty listing).
+    const e = await h.call<{ library: { state: string } }>("library.set", { id, acceptEmptyRoot: true });
+    expect(["scanning", "online"]).toContain(e.library.state);
+    expect((await h.fail("library.set", { id: "nope", acceptEmptyRoot: true })).code).toBe("LIBRARY_NOT_FOUND");
+  });
+
   test("files_refuses_escaping_paths", { timeout: 90_000 }, async () => {
     const root = join(liveRoots(), "raw");
     tree(root, MEDIA);
@@ -316,8 +333,15 @@ describe("handlers", () => {
     const rig = await liveRig({ audit: { append: (e: AuditInput) => void audited.push(e) } as unknown as Audit });
     const { h, id } = await addAndScan(rig, root, { name: "Secret Name", aliases: [alias], hydrate: true });
     await h.call("library.set", { id, hydrate: false, paused: true, name: "Other Secret" });
+    // The owner's accepts are audited by field name only: never the directory.
+    await h.call("library.set", { id, acceptUnmounted: { dir: "clips" } });
+    await h.call("library.set", { id, acceptEmptyRoot: true });
     await h.call("library.remove", { id });
-    expect(audited.map((a) => a.kind)).toEqual(["library.add", "library.set", "library.remove"]);
+    expect(audited.map((a) => a.kind)).toEqual(["library.add", "library.set", "library.set", "library.set", "library.remove"]);
+    expect(audited.slice(2, 4).map((a) => a.details)).toEqual([
+      { libraryId: id, storage: "local", fields: ["acceptUnmounted"] },
+      { libraryId: id, storage: "local", fields: ["acceptEmptyRoot"] },
+    ]);
     const everything = JSON.stringify([audited, rig.journal]);
     for (const word of ["Secret", "secret", root, alias, "Footage", "Other"]) expect(everything, word).not.toContain(word);
     expect(audited[1]!.details).toMatchObject({ libraryId: id, fields: ["hydrate"] });

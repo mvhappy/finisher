@@ -36,7 +36,10 @@ export interface Args {
 const VALUED = new Set([
   "server-data", "since", "kind", "limit", "before", "project", "label", "scope", "branch", "idle", "absolute", "out",
   "dir", "root", "root-sha256", "registry",
+  "name", "storage", "include", "exclude", "kinds", "poll", "full", "bandwidth", "alias", "accept-unmounted",
 ]);
+/** Flags whose value is optional: taken only when the next word is one of these (`--hydrate` or `--hydrate off`). */
+const OPTIONAL = new Map<string, ReadonlyArray<string>>([["hydrate", ["on", "off"]]]);
 
 export function usage(message: string, fix = "Run `finisherd help` to list the commands."): never {
   throw consoleError("USAGE", message, {}, fix);
@@ -55,6 +58,7 @@ export function parseArgs(argv: ReadonlyArray<string>): Args {
     const name = eq < 0 ? a.slice(2) : a.slice(2, eq);
     let value = "";
     if (eq >= 0) value = a.slice(eq + 1);
+    else if (OPTIONAL.get(name)?.includes(argv[i + 1] ?? "") === true) value = argv[++i]!;
     else if (VALUED.has(name)) {
       const next = argv[++i];
       if (next === undefined) usage(`--${name} needs a value`);

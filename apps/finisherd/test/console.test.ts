@@ -3,7 +3,7 @@
 // secret is printed. Commands run in-process through an injected `Prompt`, and spawned with
 // piped stdio for the cases a terminal decides.
 import { spawn } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -168,6 +168,9 @@ describe("the terminal gate and typed codes", () => {
     ["agent", "mint", "--label", "x"],
     ["agent", "revoke", "01aaaaaaaaaaaaaaaaaaaaaaaa"],
     ["mcp", "setup", "--out", "/nowhere/mcp.json"],
+    ["library", "add", "/nowhere/library"],
+    ["library", "rm", "nothing"],
+    ["library", "set", "nothing", "--hydrate", "on"],
   ];
 
   test("non_tty_is_console_needs_tty", { timeout: 60_000 }, async () => {
@@ -403,5 +406,101 @@ describe("read-only, service and confirmed commands", () => {
     const code = /: ([0-9A-Z]{6})$/.exec(p.shown.find((t) => t.startsWith("To go ahead"))!)![1]!;
     expect(printed).not.toContain(code);
     expect(printed).not.toMatch(/serverNonce|clientNonce|"mac"|"proof"|finisher\.ticket\./);
+  });
+});
+
+describe("library commands (plan 5D Task 14)", () => {
+  type Listed = { libraries: Array<{ id: string; name: string; state: string; hydrate: boolean; bandwidthMiBs?: number; aliases: string[] }> };
+  const library = async (): Promise<Listed["libraries"]> => {
+    const c = await connectProved(server!, "console");
+    try {
+      return ok<Listed>(await c.call("library.list", {})).libraries;
+    } finally {
+      await c.close();
+    }
+  };
+  const makeRoot = (name = "footage"): string => {
+    const root = join(tmp, name);
+    mkdirSync(join(root, "clips"), { recursive: true });
+    writeFileSync(join(root, "a.mov"), "x");
+    writeFileSync(join(root, "clips", "b.mov"), "y");
+    return root;
+  };
+
+  test("console_add_needs_tty_and_code", { timeout: 60_000 }, async () => {
+    await start();
+    const root = makeRoot();
+    // Not a terminal: refused before anything is sent; a wrong code adds nothing.
+    const refused = await run(["library", "add", root], NOT_A_TERMINAL);
+    expect(refused.code).toBe(7);
+    expect(refused.err).toMatch(/^finisherd: CONSOLE_NEEDS_TTY: /);
+    expect((await run(["library", "add", root], person(() => "ZZZZZZ"))).code).toBe(7);
+    expect(await library()).toEqual([]);
+    // Bad flags are usage errors (exit 2) before the terminal is asked.
+    for (const argv of [["library"], ["library", "add"], ["library", "add", root, "--storage", "cloud"], ["library", "add", root, "--poll", "soon"], ["library", "add", root, "--full", "hourly"], ["library", "add", root, "--bandwidth", "fast"], ["library", "add", root, "--hydrate", "maybe"], ["library", "add", root, "--bogus"], ["library", "set", "x"], ["library", "set", "x", "--alias", "/a", "--no-aliases"], ["library", "rm"]]) {
+      expect((await run(argv)).code, argv.join(" ")).toBe(2);
+    }
+  });
+
+  test("console_add_starts_first_scan", { timeout: 90_000 }, async () => {
+    await start();
+    const root = makeRoot();
+    const p = person();
+    const r = await run(["library", "add", root, "--name", "Footage", "--storage", "local", "--exclude", "*.tmp", "--poll", "120", "--full", "weekly", "--hydrate", "--bandwidth", "20", "--alias", "/mnt/footage"], p);
+    expect(r.code, r.err).toBe(0);
+    expect(p.asked).toBe(1);
+    expect(p.shown.join("\n")).toContain("downloaded to be read"); // --hydrate was given: the screen says what it means
+    const [lib] = await library();
+    expect(lib).toMatchObject({ name: "Footage", hydrate: true, bandwidthMiBs: 20, aliases: ["/mnt/footage"] });
+    const job = /job ([0-9a-z]{26})/.exec(r.out)?.[1];
+    expect(job, r.out).toBeDefined();
+    expect(r.out).toContain(lib!.id);
+    // The scan runs: wait for it, then the files are in the catalog.
+    const c = await connectProved(server!, "console");
+    const waited = ok<{ jobs: Array<{ state: string }> }>(await c.call("jobs.wait", { ids: [job], timeoutMs: 60_000 }));
+    expect(waited.jobs[0]!.state).toBe("succeeded");
+    const listing = ok<{ files: Array<{ display: string }> }>(await c.call("library.files", { id: lib!.id }));
+    expect(listing.files.map((f) => f.display)).toEqual(["a.mov"]);
+    await c.close();
+  });
+
+  test("console_rm_set_hydrate_and_aliases", { timeout: 90_000 }, async () => {
+    await start();
+    const root = makeRoot();
+    expect((await run(["library", "add", root, "--name", "Raw"])).code).toBe(0);
+    const id = (await library())[0]!.id;
+    const set = (...argv: string[]) => run(["library", "set", "Raw", ...argv]);
+    const p = person();
+    const first = await run(["library", "set", "raw", "--hydrate", "on", "--bandwidth", "5", "--alias", "/mnt/a", "--alias", "/mnt/b"], p);
+    expect(first.code, first.err).toBe(0);
+    expect(p.asked).toBe(1);
+    expect(first.out).toContain("Updated library Raw");
+    expect(await library()).toMatchObject([{ id, hydrate: true, bandwidthMiBs: 5, aliases: ["/mnt/a", "/mnt/b"] }]);
+    expect((await set("--hydrate", "off", "--bandwidth", "off", "--no-aliases")).code).toBe(0);
+    const [off] = await library();
+    expect(off).toMatchObject({ hydrate: false, aliases: [] });
+    expect(off).not.toHaveProperty("bandwidthMiBs");
+    // Accepting: a directory that is no nested mount forgets nothing; an unknown one is refused; an
+    // empty root is accepted harmlessly on a root that holds files.
+    const unmounted = await set("--accept-unmounted", "clips");
+    expect(unmounted.code, unmounted.err).toBe(0);
+    expect(unmounted.out).toContain("nothing was forgotten");
+    const missing = await set("--accept-unmounted", "nowhere");
+    expect(missing.code).toBe(3);
+    expect(missing.err).toContain("FILE_NOT_FOUND");
+    expect((await set("--accept-empty-root")).code).toBe(0);
+    expect((await set("--accept-volume")).code).toBe(0);
+    // Removing asks for a code and forgets the library; the files stay.
+    expect((await run(["library", "rm", "Raw"], person(() => "ZZZZZZ"))).code).toBe(7);
+    expect(await library()).toHaveLength(1);
+    const removed = await run(["library", "rm", "raw"]);
+    expect(removed.code, removed.err).toBe(0);
+    expect(await library()).toEqual([]);
+    expect(existsSync(join(root, "a.mov"))).toBe(true);
+    expect((await run(["library", "rm", "raw"])).code).toBe(3);
+    // From the CLI side the same fields are human-only: the console is the only way.
+    const c = await connectProved(server!, "local");
+    expect(codeOf(await c.call("library.set", { id: "raw", hydrate: true }))).toBe("HUMAN_ONLY");
+    await c.close();
   });
 });

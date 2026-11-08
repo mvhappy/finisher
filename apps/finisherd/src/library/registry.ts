@@ -36,7 +36,7 @@ export interface LibraryScan {
 /** The extension groups a library probes by default (Decision 37). */
 export const KIND_GROUPS = ["media", "image", "svg", "lottieTemplate", "font", "lut"] as const;
 /** Fields only a human may change (`library.admin`, Decision 47); the only `library.set` audit rows. */
-export const HUMAN_ONLY_FIELDS = ["hydrate", "bandwidthMiBs", "acceptVolume", "aliases"] as const;
+export const HUMAN_ONLY_FIELDS = ["hydrate", "bandwidthMiBs", "acceptVolume", "acceptUnmounted", "acceptEmptyRoot", "aliases"] as const;
 
 export interface CanonicalRoot {
   readonly root: string;
@@ -520,6 +520,15 @@ export class Registry {
         details: { libraryId: id, storage: row.storage, fields: ["acceptVolume"] },
       });
     }
+  }
+
+  /**
+   * Audits an owner's accept as `library.set {fields: [field]}` (`acceptUnmounted`,
+   * `acceptEmptyRoot`): the field's name only, never the directory.
+   */
+  auditAccept(id: string, field: "acceptUnmounted" | "acceptEmptyRoot", actor: Actor): void {
+    const row = this.#require(id);
+    this.#audit?.append({ kind: "library.set", principal: actor, outcome: "ok", details: { libraryId: id, storage: row.storage, fields: [field] } });
   }
 
   /** Allocates the generation of the next full scan (Decision 27). */

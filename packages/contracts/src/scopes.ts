@@ -50,7 +50,7 @@ export const HUMAN_ONLY: ReadonlySet<Scope> = new Set<Scope>([
 ]);
 
 /** The `library.set` fields only a person changes (`library.admin`; the only ones audited). */
-export const LIBRARY_ADMIN_FIELDS = ["hydrate", "bandwidthMiBs", "acceptVolume", "aliases"] as const;
+export const LIBRARY_ADMIN_FIELDS = ["hydrate", "bandwidthMiBs", "acceptVolume", "acceptUnmounted", "acceptEmptyRoot", "aliases"] as const;
 
 export type FinRpcTag = RpcGroup.Rpcs<typeof FinRpcs>["_tag"];
 
