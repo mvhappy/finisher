@@ -67,7 +67,10 @@ export const Session = Schema.Struct({
   weights: Weights,
   role: Schema.String,
   mode: Mode,
-  /** The branch the session writes (`agent/<role>-<n>`); absent in `plan` mode, which creates none. */
+  /**
+   * The id of the branch the session writes (named `agent.<role>-<n>`; 7A Task 7); absent in
+   * `plan` mode, which creates none.
+   */
   rootBranch: Schema.optionalKey(Schema.String),
   /** The branch and revision it was started from. */
   base: Schema.Struct({ branch: Schema.String, seq: Count }),

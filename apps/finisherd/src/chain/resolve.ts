@@ -24,8 +24,10 @@ export interface ChainProjects {
   indexedDirOf?(projectId: string): string | undefined;
   /** A branch reference (a name, an id or `name#id`) as its id, through the store. */
   resolveBranch(projectId: string, ref: string): Effect.Effect<string, FinError>;
-  /** Every branch with its author (`createdBy`), archived ones too. */
-  branches(projectId: string): Effect.Effect<ReadonlyArray<{ readonly id: string; readonly createdBy: string }>, FinError>;
+  /** Every branch with its author (`createdBy`) and parent (none for `main`), archived ones too. */
+  branches(
+    projectId: string,
+  ): Effect.Effect<ReadonlyArray<{ readonly id: string; readonly createdBy: string; readonly parent?: string | null | undefined }>, FinError>;
 }
 
 export interface Resolved {

@@ -14,7 +14,10 @@ import { ConnectionRegistryTag, ConnectionsTag } from "./connections.ts";
 import { issueChallenge, noteMinted } from "./auth/challenges.ts";
 import { actorFor, type CallMeta, Diagnostics } from "./diagnostics.ts";
 import { attemptJson, finError, toFinError } from "./errors.ts";
+import { AgentCoreTag } from "./agent/core.ts";
+import { agentChainHooks, BranchReach, PathReach } from "./agent/reach.ts";
 import { agentHandlers } from "./agent/rpc.ts";
+import { agentBranchLimitsExcept } from "./chain/policy.ts";
 import { Fonts } from "./fonts.ts";
 import { requireAbsolute, requireAbsoluteOpt } from "./paths.ts";
 import { metaJson } from "./history.ts";
@@ -55,6 +58,7 @@ export const HandlersLive = FinRpcs.toLayer(
     const tickets = yield* TicketsTag;
     const everyConnection = yield* ConnectionRegistryTag;
     const credentials = yield* CredentialsTag;
+    const agents = yield* AgentCoreTag;
     const admin: AdminDeps = { control: yield* ServerControlTag, audit, connections: everyConnection, journalEnabled: () => diagnostics.enabled() };
     /** The principal the chain bound to this call (`anonymous` outside it: fail closed). */
     const principalOf = (options: object) => chainOf(options)?.principal ?? connections.principalOf((options as { client: { id: number } }).client.id);
@@ -98,6 +102,16 @@ export const HandlersLive = FinRpcs.toLayer(
       resolveBranch: registry.resolveBranch,
       branches: (projectId: string) => Effect.map(registry.branches(projectId, true), (r) => r.branches),
     };
+    // Agent sessions (7A Task 7): branch reach over their root's subtree, path reach over their
+    // project folder and its libraries, the server's author, `session_txs` after every write.
+    const reach = new BranchReach(agents.store, agents.lineage, projects);
+    const hooks = agentChainHooks({ reach, paths: new PathReach(agents.store, projects), sessions: agents.store, clock: agents.clock.now });
+    const policies = [reach.policy, agentBranchLimitsExcept((p) => reach.covers(p))];
+    /** An agent session's default branch, for `auth.whoami` (Decision 14a); none for any other principal. */
+    const defaultBranchOf = (p: { readonly kind: string; readonly id: string }) => {
+      const s = p.kind === "agent" ? agents.store.get(p.id) : undefined;
+      return s === undefined ? {} : { defaultBranch: agents.store.state(s.id).defaultBranch };
+    };
     return withChain(FinRpcs.of({
       // Public: the handshake (5A Decisions 8 and 9).
       "server.hello": (req, { client }) =>
@@ -128,7 +142,14 @@ export const HandlersLive = FinRpcs.toLayer(
             return minted;
           }, catch: toFinError }),
         ),
-      "auth.whoami": (_, options) => guard("auth.whoami", Effect.sync(() => ({ principal: principalOf(options) }))),
+      "auth.whoami": (_, options) =>
+        guard(
+          "auth.whoami",
+          Effect.sync(() => {
+            const principal = principalOf(options);
+            return { principal, ...defaultBranchOf(principal) };
+          }),
+        ),
       "auth.revokeSelf": (_, options) =>
         guard(
           "auth.revokeSelf",
@@ -329,7 +350,7 @@ export const HandlersLive = FinRpcs.toLayer(
           diagnostics.record({ principal: principalOf(options), connection: `${connections.transport}:${options.client.id}` }, req, options.headers),
         ),
       ...pluginHandlers({ plugins, audit, guard }),
-      ...agentHandlers({ guard }),
-    }), { connections, projects, audit, timed: guard, touch: (p) => credentials.touch(p.id) });
+      ...agentHandlers({ guard, store: agents.store, reach }),
+    }), { connections, projects, audit, timed: guard, touch: (p) => credentials.touch(p.id), hooks, policies });
   }),
 );

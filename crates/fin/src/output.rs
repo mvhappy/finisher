@@ -248,6 +248,9 @@ const CONFLICT_CODES: &[&str] = &[
     // of Tasks 8–9, L4): the server's state refuses it, not the caller (only the owner mints),
     // and waiting changes nothing: revoke some, then mint again. A conflict, not exit 5.
     "CREDENTIAL_LIMIT",
+    // Another live agent session works on this root branch (7A Task 7): end it, or start from
+    // another branch.
+    "BRANCH_IN_USE",
 ];
 
 /// Codes of a job that ended without succeeding (exit 4, 5C-1 Decision 41): its outcome, and

@@ -16,7 +16,7 @@ export const USAGE_CODES: ReadonlyArray<string> = [
 
 export const CONFLICT_CODES: ReadonlyArray<string> = [
   "CONFLICT", "BASE_REV_AHEAD", "SEGMENT_COLLISION", "PROJECT_READ_ONLY", "LEASE_TAKEOVER_REFUSED", "LEASE_LOST",
-  "HISTORY_REWOUND", "TX_SET_ASIDE", "REGISTRY_EXISTS", "CREDENTIAL_LIMIT",
+  "HISTORY_REWOUND", "TX_SET_ASIDE", "REGISTRY_EXISTS", "CREDENTIAL_LIMIT", "BRANCH_IN_USE",
 ];
 
 /** A job that ended without succeeding (5C-1 Decision 41): exit 4, as `CONFLICT_CODES`. */

@@ -25,6 +25,7 @@ import {
   type Scope,
 } from "@finisher/contracts";
 import { Effect } from "effect";
+import type { ChainHooks } from "./hooks.ts";
 import { consentUiOnly, humanOnly, outOfReach, pathNotAllowed, scopeDenied, wrongKind } from "./fixes.ts";
 import { type ChainProjects, inside, type Resolved, rootsOf } from "./resolve.ts";
 
@@ -42,6 +43,7 @@ export function authorize(
   payload: unknown,
   resolved: Resolved,
   deps: ChainProjects,
+  hooks: ChainHooks = {},
 ): Effect.Effect<void, FinError> {
   return Effect.gen(function* () {
     const kinds = ruleOf(tag).kinds;
@@ -65,11 +67,14 @@ export function authorize(
       const outside = resolved.projects.find((p) => !allowed.includes(p));
       if (outside !== undefined) return yield* Effect.fail(outOfReach(outside));
     }
-    const roots = yield* rootsOf(principal, deps, resolved.pathsIn);
-    if (roots !== undefined) {
+    const folders = yield* rootsOf(principal, deps, resolved.pathsIn);
+    if (folders !== undefined) {
+      // Sub-project 7A: an agent session also reaches the libraries its project references.
+      const roots = [...folders, ...(hooks.extraRoots === undefined ? [] : yield* hooks.extraRoots(principal, resolved.pathsIn))];
       const outside = resolved.paths.find((p) => !roots.some((r) => inside(p, r)));
       if (outside !== undefined) return yield* Effect.fail(pathNotAllowed(tag, outside));
     }
+    if (hooks.authorize !== undefined) yield* hooks.authorize(tag, principal, resolved);
     const escalated = checkScopes(tag, escalatedScopes(tag, payload, resolved.facts), principal);
     if (escalated !== undefined) return yield* Effect.fail(escalated);
   });
