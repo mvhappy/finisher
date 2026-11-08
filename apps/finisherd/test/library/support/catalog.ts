@@ -1,6 +1,6 @@
 // Helpers for the catalog tests (plan 5D Task 7a): scan entries from readable names, batch
 // files in a job's `out/`, and catalog threads that are always shut down.
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { DirDone, ScanBatch, ScanEntry } from "@finisher/core-types";
@@ -66,8 +66,41 @@ export interface Scratch {
   cleanup(): void;
 }
 
+/** Every scratch lives under this directory, as `<pid>-<random>`. */
+export const SCRATCH_PARENT = join(tmpdir(), "finisher-catalog-tests");
+
+const alive = (pid: number): boolean => {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (e) {
+    return (e as NodeJS.ErrnoException).code === "EPERM";
+  }
+};
+
+/**
+ * Removes scratches whose test process is gone (a run killed before its `afterEach` or
+ * `afterAll`): a killed property test once left 6 GB behind.
+ */
+export function sweepScratches(): void {
+  let names: string[];
+  try {
+    names = readdirSync(SCRATCH_PARENT);
+  } catch {
+    return;
+  }
+  for (const name of names) {
+    const pid = Number(name.split("-")[0]);
+    if (Number.isSafeInteger(pid) && pid > 0 && pid !== process.pid && !alive(pid)) {
+      rmSync(join(SCRATCH_PARENT, name), { recursive: true, force: true });
+    }
+  }
+}
+
 export function scratch(): Scratch {
-  const root = mkdtempSync(join(tmpdir(), "catalog-"));
+  sweepScratches();
+  mkdirSync(SCRATCH_PARENT, { recursive: true });
+  const root = mkdtempSync(join(SCRATCH_PARENT, `${process.pid}-`));
   const serverData = join(root, "server");
   const jobsRoot = join(root, "jobs");
   const outDir = join(jobsRoot, "job1", "out");

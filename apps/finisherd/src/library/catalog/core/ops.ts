@@ -5,8 +5,10 @@
 //
 // Every op checks its arguments: they come from the main thread, which got them from
 // workers, whose output is untrusted (spec §6.5).
-import type { DatabaseSync } from "node:sqlite";
+import type { DatabaseSync, StatementSync } from "node:sqlite";
+import { type FtsStatements, prepareFts } from "../fts.ts";
 import { CatalogFailure } from "../protocol.ts";
+import { type DiffConn, mergeInto, prepareDiff, settleHardlinks } from "./diff.ts";
 import { encodeProbe } from "./probe-codec.ts";
 import { DirChains } from "./rel.ts";
 
@@ -31,19 +33,47 @@ function list(op: string, args: unknown, key: string, max: number): Array<Record
 
 const PROBED_STATES = new Set(["present", "probeFailed", "skipped"]);
 
+interface Merging {
+  readonly diff: DiffConn;
+  readonly fts: FtsStatements;
+  readonly before: StatementSync;
+  readonly moveFrom: StatementSync;
+}
+
+const merging = new WeakMap<DatabaseSync, Merging>();
+
+function mergingOf(db: DatabaseSync): Merging {
+  let m = merging.get(db);
+  if (m === undefined) {
+    m = {
+      diff: prepareDiff(db),
+      fts: prepareFts(db),
+      before: db.prepare("SELECT fp, renameOf, firstSeen = lastChange AS untouched FROM files WHERE id = ?"),
+      moveFrom: db.prepare("SELECT id FROM files WHERE fp = ? AND state = 'missing' AND id != ? ORDER BY missingSince DESC, id LIMIT 1"),
+    };
+    merging.set(db, m);
+  }
+  return m;
+}
+
 /**
  * `applyProbed {results ≤ 256}`: each `{fileId, size, mtimeNs, fp?, probe?, probeVersion,
  * state: present|probeFailed|skipped, code?, kind?, durationMs?, width?, height?}` lands only
  * when the row still has the probed size and mtime (a row changed since keeps its cleared
- * fields and is probed again). Answers `{updated, stale}`.
+ * fields and is probed again). A row's **first** fingerprint, on a row unchanged since it was
+ * inserted and not a pending rename, that equals a missing row's is a **move** (Decision 25):
+ * the missing row (latest `missingSince`, then lowest id) takes the new row's path and this
+ * probe, keeps its id and history, and the new row is dropped. Answers `{updated, stale, moved}`.
  */
-function applyProbed(db: DatabaseSync, args: unknown): { updated: number; stale: number } {
+function applyProbed(db: DatabaseSync, args: unknown): { updated: number; stale: number; moved: Array<{ from: number; to: number }> } {
   const rows = list("applyProbed", args, "results", 256);
   const st = db.prepare(
     "UPDATE files SET fp = ?, probe = ?, probeVersion = ?, state = ?, code = ?, kind = ?, durationMs = ?, width = ?, height = ? " +
       "WHERE id = ? AND size = ? AND mtimeNs = ? AND state NOT IN ('missing', 'cloudOnly', 'offline')",
   );
+  const m = mergingOf(db);
   let updated = 0;
+  const moved: Array<{ from: number; to: number }> = [];
   rows.forEach((r, i) => {
     const okRow =
       isInt(r.fileId) && isInt(r.size) && isStr(r.mtimeNs) && I64.test(r.mtimeNs) && isInt(r.probeVersion) &&
@@ -53,23 +83,30 @@ function applyProbed(db: DatabaseSync, args: unknown): { updated: number; stale:
     const fp = (r.fp as string | null | undefined) ?? null;
     const kind = (r.kind as string | null | undefined) ?? null;
     const probe = encodeProbe(r.probe, { fp, size: r.size as number, kind });
-    const n = st.run(
-      fp,
-      probe,
-      r.probeVersion as number,
-      r.state as string,
-      (r.code as string | null | undefined) ?? null,
-      kind,
-      (r.durationMs as number | null | undefined) ?? null,
-      (r.width as number | null | undefined) ?? null,
-      (r.height as number | null | undefined) ?? null,
-      r.fileId as number,
-      r.size as number,
-      BigInt(r.mtimeNs as string),
-    ).changes;
-    updated += Number(n);
+    const prior = m.before.get(r.fileId as number) as { fp: string | null; renameOf: number | null; untouched: number } | undefined;
+    const n = Number(
+      st.run(
+        fp,
+        probe,
+        r.probeVersion as number,
+        r.state as string,
+        (r.code as string | null | undefined) ?? null,
+        kind,
+        (r.durationMs as number | null | undefined) ?? null,
+        (r.width as number | null | undefined) ?? null,
+        (r.height as number | null | undefined) ?? null,
+        r.fileId as number,
+        r.size as number,
+        BigInt(r.mtimeNs as string),
+      ).changes,
+    );
+    updated += n;
+    if (n !== 1 || fp === null || prior === undefined || prior.fp !== null || prior.renameOf !== null || prior.untouched !== 1) return;
+    const from = m.moveFrom.get(fp, r.fileId as number) as { id: number } | undefined;
+    if (from !== undefined && mergeInto(m.diff, m.fts, from.id, r.fileId as number, false)) moved.push({ from: r.fileId as number, to: from.id });
   });
-  return { updated, stale: rows.length - updated };
+  settleHardlinks(m.diff);
+  return { updated, stale: rows.length - updated, moved };
 }
 
 const HASH = /^blake3:[0-9a-f]{64}$/;

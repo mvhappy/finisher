@@ -13,13 +13,30 @@ import type { DatabaseSync, StatementSync } from "node:sqlite";
 export interface FtsStatements {
   readonly insert: StatementSync;
   readonly delete: StatementSync;
+  readonly reset: StatementSync;
 }
 
+/**
+ * A deletion from a `contentless_delete` table writes tombstone pages whose rowids lie far
+ * above 2^53, and SQLite then reports one of them as the connection's last insert rowid:
+ * `node:sqlite`'s `run()` of **any** statement on the connection would throw converting it.
+ * So the FTS statements answer bigints, and after a deletion (and after each commit, which
+ * flushes pending tombstones) `ftsSettle` brings the connection's last rowid back to 0 with
+ * a one-row temp table.
+ */
 export function prepareFts(db: DatabaseSync): FtsStatements {
-  return {
+  db.exec("CREATE TEMP TABLE IF NOT EXISTS rowid_reset (x INTEGER PRIMARY KEY)");
+  const st = {
     insert: db.prepare("INSERT INTO names (rowid, name, dir) VALUES (?, ?, ?)"),
     delete: db.prepare("DELETE FROM names WHERE rowid = ?"),
+    reset: db.prepare("INSERT OR REPLACE INTO temp.rowid_reset (x) VALUES (0)"),
   };
+  for (const s of Object.values(st)) s.setReadBigInts(true);
+  return st;
+}
+
+export function ftsSettle(st: FtsStatements): void {
+  st.reset.run();
 }
 
 export function ftsAdd(st: FtsStatements, fileId: number, nameNfc: string, dirKey: string): void {
@@ -28,6 +45,7 @@ export function ftsAdd(st: FtsStatements, fileId: number, nameNfc: string, dirKe
 
 export function ftsRemove(st: FtsStatements, fileId: number): void {
   st.delete.run(fileId);
+  st.reset.run();
 }
 
 /** A rename or a move: the row's tokens are replaced. */

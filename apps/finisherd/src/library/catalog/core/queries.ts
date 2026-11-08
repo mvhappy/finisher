@@ -258,12 +258,20 @@ function lookup(db: DatabaseSync, args: unknown): { matches: Array<{ key: string
   return { matches: out };
 }
 
-/** `counts {}`: files per state, and directories per state. */
-function counts(db: DatabaseSync): { files: Record<string, number>; dirs: Record<string, number> } {
+/**
+ * `counts {}`: files per state, directories per state, and live rows with collision bits
+ * (the library's `NAME_COLLISION {count}`, Decision 11).
+ */
+function counts(db: DatabaseSync): { files: Record<string, number>; dirs: Record<string, number>; collisions: number } {
   const fold = (rows: unknown[]) => Object.fromEntries((rows as Array<{ state: string; n: number }>).map((r) => [r.state, r.n]));
+  const live = "collision != 0 AND state != 'missing'";
+  const collisions = db.prepare(`SELECT (SELECT count(*) FROM files WHERE ${live}) + (SELECT count(*) FROM dirs WHERE ${live}) AS n`).get() as {
+    n: number;
+  };
   return {
     files: fold(db.prepare("SELECT state, count(*) AS n FROM files GROUP BY state").all()),
     dirs: fold(db.prepare("SELECT state, count(*) AS n FROM dirs WHERE id != 1 GROUP BY state").all()),
+    collisions: collisions.n,
   };
 }
 

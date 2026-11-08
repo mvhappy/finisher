@@ -1,23 +1,28 @@
-// Applying scan batches to a catalog (plan 5D Task 7a; Task 7b adds the diff on top). Runs in
-// the indexer thread only, inside the transactions `indexer-thread.ts` opens (≤ 2,000 rows).
+// Applying scan batches to a catalog (plan 5D Tasks 7a, 7b). Runs in the indexer thread only,
+// inside the transactions `indexer-thread.ts` opens (≤ 2,000 rows each).
 //
-// What 7a does with a validated batch, entry by entry, in order:
+// A validated batch, row by row, in order (each line's entries, then its `dirsDone`):
 // - a `dir` entry upserts its row under its parent, keyed `(parent, raw name)`; its `mtimeNs`
 //   is **not** taken from the parent's listing: only the directory's own complete listing
-//   (`DirDone`) records it, so a poll compares against what was last listed;
-// - a `file` entry inserts or refreshes its row, keyed `(dirId, raw name)`; a different size,
-//   mtime or file id is a change (fingerprint, probe and every value derived from them cleared,
-//   `lastChange` set); a placeholder is `cloudOnly`; excluded files, symlinks and other
-//   entries are not catalogued;
-// - a `DirDone` records the listing's `mtimeNs`, `listedGen` (complete listings only) and
-//   `code`; an incomplete listing of a present directory makes it `unreadable`, a complete
-//   one makes an unreadable directory present again.
-// Marking rows missing, renames, moves, hard links, collisions and empty-listing suspicion
-// are 7b's diff (`diff.ts`), which runs at the same points.
+//   records it, so a poll compares against what was last listed. A placeholder directory's
+//   subtree becomes `cloudOnly`; an excluded directory's subtree is missing (`diff.ts`);
+// - a `file` entry inserts or refreshes its row, keyed `(dirId, raw name)`:
+//   - a missing row that comes back with its size and mtime is present again with its
+//     fingerprint (re-probed if it had none); anything else that differs (size, mtime, or two
+//     known file ids) is a change: fingerprint, probe and their derived values cleared,
+//     `lastChange` set;
+//   - a new name may be a rename (`diff.ts`: `dev:fileId` hints);
+//   - a placeholder is `cloudOnly`; excluded files, symlinks and others are not catalogued
+//     (a row of that name is then missing once the listing closes);
+// - every entry counts toward its `(job, dir)` listing, which its `DirDone` closes (`diff.ts`);
+// - a `DirDone` records `mtimeNs`, `listedGen` and `code` only for a listing that closed;
+//   an incomplete listing makes a present directory `unreadable`, a closed one makes an
+//   unreadable directory present again.
 import type { DatabaseSync, StatementSync } from "node:sqlite";
 import type { DirDone, RawRel, ScanBatch, ScanEntry } from "@finisher/core-types";
-import { type FtsStatements, ftsAdd, prepareFts } from "../fts.ts";
+import { type FtsStatements, ftsAdd, ftsReplace, prepareFts } from "../fts.ts";
 import { CatalogFailure } from "../protocol.ts";
+import { type DiffConn, cloudSubtree, closeListing, endListing, holds, listingOf, prefetchIds, markSubtree, prepareDiff, renameCandidate, touch, usableId } from "./diff.ts";
 
 /** The root directory's row (created by `core` 0001). */
 export const ROOT_DIR = 1;
@@ -32,6 +37,7 @@ export interface ApplyConn {
   readonly db: DatabaseSync;
   readonly st: ApplyStatements;
   readonly fts: FtsStatements;
+  readonly diff: DiffConn;
   /** Directory chain (base64 components joined by `,`) → row. */
   readonly dirs: Map<string, DirRef>;
 }
@@ -41,6 +47,7 @@ export interface ApplyStatements {
   readonly dirInsert: StatementSync;
   readonly dirUpdate: StatementSync;
   readonly dirDone: StatementSync;
+  readonly dirIncomplete: StatementSync;
   readonly fileGet: StatementSync;
   readonly fileInsert: StatementSync;
   readonly fileSeen: StatementSync;
@@ -49,7 +56,7 @@ export interface ApplyStatements {
 
 export function prepareApply(db: DatabaseSync): ApplyConn {
   const st: ApplyStatements = {
-    dirGet: db.prepare("SELECT id, relKey FROM dirs WHERE parent = ? AND name = ?"),
+    dirGet: db.prepare("SELECT id, relKey, state FROM dirs WHERE parent = ? AND name = ?"),
     dirInsert: db.prepare(
       "INSERT INTO dirs (parent, name, nameNfc, relKey, fileId, devId, mount, placeholder, state, code, lastSeen) " +
         "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id",
@@ -58,28 +65,38 @@ export function prepareApply(db: DatabaseSync): ApplyConn {
       "UPDATE dirs SET nameNfc = ?, relKey = ?, fileId = ?, devId = ?, mount = ?, placeholder = ?, state = ?, code = ?, lastSeen = ? WHERE id = ?",
     ),
     dirDone: db.prepare(
-      "UPDATE dirs SET mtimeNs = coalesce(?, mtimeNs), listedGen = CASE WHEN ? THEN ? ELSE listedGen END, code = ?, " +
-        "state = CASE WHEN ? THEN (CASE WHEN state = 'unreadable' THEN 'present' ELSE state END) " +
-        "WHEN state = 'present' THEN 'unreadable' ELSE state END, lastSeen = ? WHERE id = ?",
+      "UPDATE dirs SET mtimeNs = coalesce(?, mtimeNs), listedGen = ?, code = ?, emptySince = NULL, emptyJob = NULL, " +
+        "state = CASE WHEN state = 'unreadable' THEN 'present' ELSE state END, lastSeen = ? WHERE id = ?",
+    ),
+    dirIncomplete: db.prepare(
+      "UPDATE dirs SET code = ?, state = CASE WHEN state = 'present' THEN 'unreadable' ELSE state END, lastSeen = ? WHERE id = ?",
     ),
     fileGet: db.prepare(
-      "SELECT id, size, CAST(mtimeNs AS TEXT) AS mtimeNs, fileId, state, code FROM files WHERE dirId = ? AND name = ?",
+      "SELECT id, size, CAST(mtimeNs AS TEXT) AS mtimeNs, fileId, dev, fp, state, code FROM files WHERE dirId = ? AND name = ?",
     ),
     fileInsert: db.prepare(
-      "INSERT INTO files (dirId, name, nameNfc, nameLossy, relKey, ext, size, mtimeNs, fileId, placeholder, state, " +
-        "firstSeen, lastSeen, lastChange) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id",
+      "INSERT INTO files (dirId, name, nameNfc, nameLossy, relKey, ext, size, mtimeNs, fileId, dev, placeholder, state, renameOf, " +
+        "firstSeen, lastSeen, lastChange) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     ),
     fileSeen: db.prepare(
-      "UPDATE files SET nameNfc = ?, nameLossy = ?, relKey = ?, ext = ?, placeholder = ?, state = ?, code = ?, " +
-        "lastSeen = ?, missingSince = NULL WHERE id = ?",
+      "UPDATE files SET nameNfc = ?, nameLossy = ?, relKey = ?, ext = ?, fileId = ?, dev = ?, placeholder = ?, state = ?, code = ?, " +
+        "lastSeen = ?, missingSince = NULL, probeVersion = CASE WHEN ? AND fp IS NULL THEN NULL ELSE probeVersion END WHERE id = ?",
     ),
     fileChanged: db.prepare(
-      "UPDATE files SET nameNfc = ?, nameLossy = ?, relKey = ?, ext = ?, size = ?, mtimeNs = ?, fileId = ?, placeholder = ?, " +
+      "UPDATE files SET nameNfc = ?, nameLossy = ?, relKey = ?, ext = ?, size = ?, mtimeNs = ?, fileId = ?, dev = ?, placeholder = ?, " +
         "state = ?, code = NULL, fp = NULL, fullHash = NULL, kind = NULL, probe = NULL, probeVersion = NULL, durationMs = NULL, " +
-        "width = NULL, height = NULL, lastSeen = ?, lastChange = ?, missingSince = NULL WHERE id = ?",
+        "width = NULL, height = NULL, renameOf = NULL, lastSeen = ?, lastChange = ?, missingSince = NULL WHERE id = ?",
     ),
   };
-  return { db, st, fts: prepareFts(db), dirs: new Map([["", { id: ROOT_DIR, relKey: "" }]]) };
+  return { db, st, fts: prepareFts(db), diff: prepareDiff(db), dirs: new Map([["", { id: ROOT_DIR, relKey: "" }]]) };
+}
+
+/** Drops cached directory rows and open listings (after a rollback, or at close). */
+export function resetApply(conn: ApplyConn): void {
+  conn.dirs.clear();
+  conn.dirs.set("", { id: ROOT_DIR, relKey: "" });
+  conn.diff.listings.clear();
+  conn.diff.touched.clear();
 }
 
 /** A batch in apply order: each line's entries, then its `dirsDone`. */
@@ -141,9 +158,31 @@ export interface ApplyCounts {
   seen: number;
   skipped: number;
   listings: number;
+  /** Rows a missing row took over by `dev:fileId` (new path, same row). */
+  renamed: number;
+  /** New rows inserted with `renameOf` a live row. */
+  renamePending: number;
+  reappeared: number;
+  missing: number;
+  /** Listings that marked nothing: offline, or their state lost. */
+  incomplete: number;
+  /** Empty listings of directories with rows (`DIR_EMPTY_SUSPECT`). */
+  suspect: number;
+  /** Rows with collision bits in the listings this batch closed (`NAME_COLLISION`). */
+  collisions: number;
 }
 
-export const emptyCounts = (): ApplyCounts => ({ dirs: 0, added: 0, changed: 0, seen: 0, skipped: 0, listings: 0 });
+export const emptyCounts = (): ApplyCounts => ({
+  dirs: 0, added: 0, changed: 0, seen: 0, skipped: 0, listings: 0, renamed: 0, renamePending: 0, reappeared: 0, missing: 0,
+  incomplete: 0, suspect: 0, collisions: 0,
+});
+
+/** Who applies and when: the job's listings are its own; `at` never goes backwards. */
+export interface ApplyCtx {
+  readonly job: string;
+  readonly gen: number;
+  readonly at: number;
+}
 
 /** A file's extension for the `kinds` filter: lower-case, ≤ 16 characters, never a dot-file's name. */
 export function extOf(nameNfc: string): string | null {
@@ -159,90 +198,144 @@ function dirState(e: ScanEntry): { state: string; code: string | null } {
   return { state: "present", code: null };
 }
 
-function applyDir(conn: ApplyConn, parent: DirRef, e: ScanEntry, at: number, counts: ApplyCounts): void {
+function applyDir(conn: ApplyConn, parent: DirRef, e: ScanEntry, ctx: ApplyCtx, counts: ApplyCounts): void {
   const name = raw(e.name);
   const fileId = e.fileId == null ? null : raw(e.fileId);
   const mount = e.mountRoot ? (e.dev ?? "") : null;
   const { state, code } = dirState(e);
-  const known = conn.st.dirGet.get(parent.id, name) as { id: number } | undefined;
+  const known = conn.st.dirGet.get(parent.id, name) as { id: number; state: string } | undefined;
   let id: number;
   if (known === undefined) {
-    const row = conn.st.dirInsert.get(parent.id, name, e.nameNfc, e.relKey, fileId, e.dev ?? null, mount, e.placeholder ?? null, state, code, at) as {
+    const row = conn.st.dirInsert.get(parent.id, name, e.nameNfc, e.relKey, fileId, e.dev ?? null, mount, e.placeholder ?? null, state, code, ctx.at) as {
       id: number;
     };
     id = row.id;
   } else {
     id = known.id;
-    conn.st.dirUpdate.run(e.nameNfc, e.relKey, fileId, e.dev ?? null, mount, e.placeholder ?? null, state, code, at, id);
+    conn.st.dirUpdate.run(e.nameNfc, e.relKey, fileId, e.dev ?? null, mount, e.placeholder ?? null, state, code, ctx.at, id);
+    if (state === "excluded" && !conn.diff.offline) markSubtree(conn.diff, conn.fts, id, ctx.at, counts);
+    else if (state === "cloudOnly") cloudSubtree(conn.diff, id);
   }
   conn.dirs.set([...e.dir.components, e.name].join(","), { id, relKey: e.relKey });
   counts.dirs++;
 }
 
-function sameId(a: Uint8Array | null, b: Uint8Array | null): boolean {
-  if (a === null || b === null) return a === b;
-  return Buffer.compare(a, b) === 0;
+interface Known {
+  id: number;
+  size: number;
+  mtimeNs: string;
+  fileId: Uint8Array | null;
+  dev: string | null;
+  fp: string | null;
+  state: string;
+  code: string | null;
 }
 
-function applyFile(conn: ApplyConn, dir: DirRef, e: ScanEntry, at: number, counts: ApplyCounts): void {
+function sameId(a: Uint8Array | null, b: Uint8Array | null): boolean {
+  return a === null || b === null || Buffer.compare(a, b) === 0;
+}
+
+function applyFile(conn: ApplyConn, dir: DirRef, e: ScanEntry, ctx: ApplyCtx, counts: ApplyCounts): void {
   if (e.excluded != null) {
     counts.skipped++;
     return;
   }
+  const { st, diff } = conn;
+  const at = ctx.at;
   const name = raw(e.name);
-  const fileId = e.fileId == null ? null : raw(e.fileId);
+  const fileId = usableId(e.fileId);
+  const dev = e.dev ?? null;
   const mtime = BigInt(e.mtimeNs);
   const ext = extOf(e.nameNfc);
   const placeholder = e.placeholder ?? null;
   const lossy = e.nameLossy ? 1 : 0;
-  const known = conn.st.fileGet.get(dir.id, name) as
-    | { id: number; size: number; mtimeNs: string; fileId: Uint8Array | null; state: string; code: string | null }
-    | undefined;
+  const fresh = placeholder === null ? "present" : "cloudOnly";
+  const known = st.fileGet.get(dir.id, name) as Known | undefined;
   if (known === undefined) {
-    const state = placeholder === null ? "present" : "cloudOnly";
-    const row = conn.st.fileInsert.get(dir.id, name, e.nameNfc, lossy, e.relKey, ext, e.size, mtime, fileId, placeholder, state, at, at, at) as {
-      id: number;
-    };
-    ftsAdd(conn.fts, row.id, e.nameNfc, dir.relKey);
-    counts.added++;
+    const hint = renameCandidate(diff, fileId, dev, e.size, mtime);
+    holds(diff, fileId);
+    if (hint?.missing === true) {
+      diff.st.takeOver.run(dir.id, name, e.nameNfc, lossy, e.relKey, ext, fileId, dev, placeholder, fresh, at, hint.id);
+      ftsReplace(conn.fts, hint.id, e.nameNfc, dir.relKey);
+      counts.renamed++;
+      return;
+    }
+    const renameOf = hint?.id ?? null;
+    // `run()`: its last insert rowid is this row's (RETURNING costs more per insert).
+    const newId = Number(st.fileInsert.run(dir.id, name, e.nameNfc, lossy, e.relKey, ext, e.size, mtime, fileId, dev, placeholder, fresh, renameOf, at, at, at).lastInsertRowid);
+    ftsAdd(conn.fts, newId, e.nameNfc, dir.relKey);
+    if (renameOf === null) counts.added++;
+    else counts.renamePending++;
     return;
   }
-  const changed = known.size !== e.size || known.mtimeNs !== mtime.toString() || !sameId(known.fileId, fileId);
-  if (changed) {
-    const state = placeholder === null ? "present" : "cloudOnly";
-    conn.st.fileChanged.run(e.nameNfc, lossy, e.relKey, ext, e.size, mtime, fileId, placeholder, state, at, at, known.id);
+  holds(diff, fileId);
+  const sameSize = known.size === e.size && known.mtimeNs === mtime.toString();
+  const wasMissing = known.state === "missing";
+  if (!sameSize || (!wasMissing && !sameId(known.fileId, fileId))) {
+    st.fileChanged.run(e.nameNfc, lossy, e.relKey, ext, e.size, mtime, fileId, dev, placeholder, fresh, at, at, known.id);
+    touch(diff, known.fileId);
+    touch(diff, fileId);
     counts.changed++;
     return;
   }
-  // Unchanged: a probe's verdict (`probeFailed`, `skipped`) stands; anything else is present
-  // again (or still a placeholder).
-  const keep = placeholder === null && (known.state === "probeFailed" || known.state === "skipped");
-  const state = placeholder !== null ? "cloudOnly" : keep ? known.state : "present";
-  conn.st.fileSeen.run(e.nameNfc, lossy, e.relKey, ext, placeholder, state, keep ? known.code : null, at, known.id);
-  counts.seen++;
+  // Unchanged (or back with its size and mtime): a probe's verdict (`probeFailed`, `skipped`)
+  // stands while the row stays live; anything else is present again (or still a placeholder).
+  const keep = !wasMissing && placeholder === null && (known.state === "probeFailed" || known.state === "skipped");
+  const state = keep ? known.state : fresh;
+  st.fileSeen.run(e.nameNfc, lossy, e.relKey, ext, fileId, dev, placeholder, state, keep ? known.code : null, at, wasMissing ? 1 : 0, known.id);
+  if (wasMissing || !sameId(known.fileId, fileId) || (known.fileId === null) !== (fileId === null) || known.dev !== dev) {
+    touch(diff, known.fileId);
+    touch(diff, fileId);
+  }
+  if (wasMissing) counts.reappeared++;
+  else counts.seen++;
 }
 
-function applyDone(conn: ApplyConn, d: DirDone, gen: number, at: number, counts: ApplyCounts): void {
+function applyDone(conn: ApplyConn, d: DirDone, ctx: ApplyCtx, counts: ApplyCounts): void {
   const dir = findDir(conn, d.dir);
   if (dir === undefined) throw new CatalogFailure("LIBRARY_BATCH_INVALID", "the scan batch file is not valid", { reason: "unknownDir" });
-  const mtime = d.mtimeNs == null ? null : BigInt(d.mtimeNs);
-  const complete = d.complete ? 1 : 0;
-  conn.st.dirDone.run(d.complete ? mtime : null, complete, gen, d.code ?? null, complete, at, dir.id);
   counts.listings++;
+  if (!d.complete) {
+    endListing(conn.diff, ctx.job, dir.id);
+    if (!conn.diff.offline) conn.st.dirIncomplete.run(d.code ?? null, ctx.at, dir.id);
+    return;
+  }
+  const outcome = closeListing(conn.diff, conn.fts, dir.id, d.entries, ctx.job, ctx.at, counts);
+  if (outcome === "closed") {
+    const mtime = d.mtimeNs == null ? null : BigInt(d.mtimeNs);
+    conn.st.dirDone.run(mtime, ctx.gen, d.code ?? null, ctx.at, dir.id);
+  }
 }
 
 /** Applies `rows` (one transaction's worth, ≤ 2,000) in order. */
-export function applyRows(conn: ApplyConn, rows: ReadonlyArray<BatchRow>, gen: number, at: number, counts: ApplyCounts): void {
+export function applyRows(conn: ApplyConn, rows: ReadonlyArray<BatchRow>, ctx: ApplyCtx, counts: ApplyCounts): void {
+  const ids: string[] = [];
+  for (const row of rows) {
+    if ("entry" in row && row.entry.entryType === "file") {
+      const id = usableId(row.entry.fileId);
+      if (id !== null) ids.push(Buffer.from(id).toString("hex"));
+    }
+  }
+  prefetchIds(conn.diff, ids);
+  try {
+    applyEach(conn, rows, ctx, counts);
+  } finally {
+    conn.diff.ids = undefined;
+  }
+}
+
+function applyEach(conn: ApplyConn, rows: ReadonlyArray<BatchRow>, ctx: ApplyCtx, counts: ApplyCounts): void {
   for (const row of rows) {
     if ("done" in row) {
-      applyDone(conn, row.done, gen, at, counts);
+      applyDone(conn, row.done, ctx, counts);
       continue;
     }
     const e = row.entry;
     const dir = findDir(conn, e.dir);
     if (dir === undefined) throw new CatalogFailure("LIBRARY_BATCH_INVALID", "the scan batch file is not valid", { reason: "unknownDir" });
-    if (e.entryType === "dir") applyDir(conn, dir, e, at, counts);
-    else if (e.entryType === "file") applyFile(conn, dir, e, at, counts);
+    listingOf(conn.diff, ctx.job, dir.id, ctx.at).seen++;
+    if (e.entryType === "dir") applyDir(conn, dir, e, ctx, counts);
+    else if (e.entryType === "file") applyFile(conn, dir, e, ctx, counts);
     else counts.skipped++;
   }
 }

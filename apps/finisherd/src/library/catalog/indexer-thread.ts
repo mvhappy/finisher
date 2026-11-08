@@ -9,10 +9,11 @@ import { basename, dirname, isAbsolute, relative } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import { parentPort, workerData } from "node:worker_threads";
 import { type BatchFileRef, readBatchFile } from "./batch-file.ts";
-import { type ApplyConn, ROOT_DIR, applyRows, checkChains, emptyCounts, prepareApply, rowsOf } from "./core/apply.ts";
+import { type ApplyConn, applyRows, checkChains, emptyCounts, prepareApply, resetApply, rowsOf } from "./core/apply.ts";
+import { checkRootEmpty, settleHardlinks } from "./core/diff.ts";
 import { DirChains } from "./core/rel.ts";
 import { type CatalogExtensionRef, type LoadedExtensions, loadExtensions } from "./extensions.ts";
-import { ftsRemove } from "./fts.ts";
+import { ftsRemove, ftsSettle } from "./fts.ts";
 import { checkLibraryId, openCatalog } from "./open.ts";
 import { CatalogFailure, type Reply, type Request, nextTurn, toWire } from "./protocol.ts";
 
@@ -32,6 +33,8 @@ interface Catalog {
   readonly db: DatabaseSync;
   readonly path: string;
   readonly apply: ApplyConn;
+  /** The latest transaction time applied: batch times never go backwards (`diff.ts`). */
+  lastAt: number;
 }
 
 const data = workerData as IndexerData;
@@ -63,6 +66,7 @@ function tx<A>(c: Catalog, rows: number, f: () => A): A {
     const a = f();
     if (a instanceof Promise) throw new CatalogFailure("CATALOG_OP_FAILED", "catalog ops must be synchronous", {});
     c.db.exec("COMMIT");
+    ftsSettle(c.apply.fts);
     stats.transactions++;
     stats.maxTxRows = Math.max(stats.maxTxRows, rows);
     return a;
@@ -72,8 +76,9 @@ function tx<A>(c: Catalog, rows: number, f: () => A): A {
     } catch {
       // COMMIT failed after SQLite had already rolled back.
     }
-    c.apply.dirs.clear();
-    c.apply.dirs.set("", { id: ROOT_DIR, relKey: "" });
+    ftsSettle(c.apply.fts);
+    // Listings that saw rows in the rolled-back transaction mark nothing (`diff.ts`).
+    resetApply(c.apply);
     throw e;
   }
 }
@@ -103,7 +108,13 @@ function open(a: Record<string, unknown>): unknown {
   const known = catalogs.get(lib);
   if (known !== undefined) return { path: known.path, created: false };
   const opened = openCatalog(data.serverData, lib, exts, int(a.at, "at"));
-  catalogs.set(lib, { db: opened.db, path: opened.path, apply: prepareApply(opened.db) });
+  const apply = prepareApply(opened.db);
+  const meta = opened.db.prepare("SELECT value FROM meta WHERE key = 'offline'").get() as { value: string } | undefined;
+  apply.diff.offline = meta?.value === "1";
+  const last = opened.db
+    .prepare("SELECT max(coalesce((SELECT max(lastSeen) FROM files), 0), coalesce((SELECT max(lastSeen) FROM dirs), 0)) AS at")
+    .get() as { at: number };
+  catalogs.set(lib, { db: opened.db, path: opened.path, apply, lastAt: last.at });
   return { path: opened.path, created: opened.created, ...(opened.rebuilt === undefined ? {} : { rebuilt: opened.rebuilt.reason }) };
 }
 
@@ -129,23 +140,35 @@ function exec(a: Record<string, unknown>): unknown {
   return tx(c, 1, () => op(c.db, a.args));
 }
 
-/** Reads, validates, then applies a batch file in transactions of ≤ `txRows` rows. */
+/**
+ * Reads, validates, then applies a batch file in transactions of ≤ `txRows` rows. The job is
+ * the directory holding the file's `out/` (the diff's listings are per job), and an empty root
+ * listing while the catalog holds files fails the file before any write (`ROOT_EMPTY_SUSPECT`).
+ */
 async function applyBatchFile(a: Record<string, unknown>): Promise<unknown> {
   const c = catalog(a.lib);
   const gen = int(a.gen, "gen");
   const at = int(a.at, "at");
-  const batches = readBatchFile(obj(a.file) as unknown as BatchFileRef, data.jobsRoot);
+  const ref = obj(a.file) as unknown as BatchFileRef;
+  const batches = readBatchFile(ref, data.jobsRoot);
+  const job = basename(dirname(ref.outDir));
   if (a.seq !== undefined && batches.some((b) => b.seq !== a.seq)) {
     throw new CatalogFailure("LIBRARY_BATCH_INVALID", "the scan batch file is not valid", { reason: "seq" });
   }
   const rows = rowsOf(batches);
   checkChains(c.apply, rows);
+  checkRootEmpty(c.apply.diff, batches.flatMap((b) => b.dirsDone));
   const counts = emptyCounts();
   for (let i = 0; i < rows.length; i += txRows) {
     if (i > 0) await nextTurn();
     if (catalogs.get(checkLibraryId(a.lib)) !== c) throw new CatalogFailure("CATALOG_NOT_OPEN", "the library's catalog is not open", {});
     const chunk = rows.slice(i, i + txRows);
-    tx(c, chunk.length, () => applyRows(c.apply, chunk, gen, at, counts));
+    const ctx = { job, gen, at: Math.max(at, c.lastAt) };
+    tx(c, chunk.length, () => {
+      applyRows(c.apply, chunk, ctx, counts);
+      settleHardlinks(c.apply.diff);
+    });
+    c.lastAt = ctx.at;
   }
   stats.batchFiles++;
   return { ...counts, transactions: Math.ceil(rows.length / txRows) };
@@ -171,7 +194,8 @@ function writeKnownDirs(a: Record<string, unknown>): unknown {
 
 /**
  * Deletes rows missing since before `before` (Decision 25: 90 days), ≤ 500 per transaction,
- * with their FTS rows and the stage rows no remaining file shares.
+ * with their FTS rows and the stage rows no remaining file shares; then missing directories
+ * last seen before `before` that hold no rows any more, deepest first.
  */
 async function purgeMissing(a: Record<string, unknown>): Promise<unknown> {
   const c = catalog(a.lib);
@@ -196,7 +220,36 @@ async function purgeMissing(a: Record<string, unknown>): Promise<unknown> {
     if (rows.length < PURGE_BATCH) break;
     await nextTurn();
   }
-  return { deleted };
+  const emptyDirs = c.db.prepare(
+    "SELECT id FROM dirs d WHERE state = 'missing' AND lastSeen < ? AND id != 1 AND NOT EXISTS (SELECT 1 FROM files WHERE dirId = d.id) " +
+      "AND NOT EXISTS (SELECT 1 FROM dirs e WHERE e.parent = d.id) ORDER BY id LIMIT ?",
+  );
+  const delDir = c.db.prepare("DELETE FROM dirs WHERE id = ?");
+  let dirs = 0;
+  for (;;) {
+    if (catalogs.get(checkLibraryId(a.lib)) !== c) break;
+    const rows = emptyDirs.all(before, PURGE_BATCH) as Array<{ id: number }>;
+    if (rows.length === 0) break;
+    tx(c, rows.length, () => {
+      for (const r of rows) delDir.run(r.id);
+    });
+    dirs += rows.length;
+    await nextTurn();
+  }
+  if (dirs > 0) resetApply(c.apply);
+  return { deleted, dirs };
+}
+
+/** Persists the library's offline flag in `meta` and hands it to the diff (Decision 18). */
+function setOffline(a: Record<string, unknown>): unknown {
+  const c = catalog(a.lib);
+  if (typeof a.offline !== "boolean") throw new CatalogFailure("CATALOG_ARGS_INVALID", "invalid catalog arguments", { at: "offline" });
+  const offline = a.offline;
+  tx(c, 1, () => {
+    c.db.prepare("INSERT INTO meta (key, value) VALUES ('offline', ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value").run(offline ? "1" : "0");
+  });
+  c.apply.diff.offline = offline;
+  return { offline };
 }
 
 const METHODS: Record<string, (a: Record<string, unknown>) => unknown> = {
@@ -206,6 +259,7 @@ const METHODS: Record<string, (a: Record<string, unknown>) => unknown> = {
   applyBatchFile,
   writeKnownDirs,
   purgeMissing,
+  setOffline,
 };
 
 function reply(r: Reply): void {

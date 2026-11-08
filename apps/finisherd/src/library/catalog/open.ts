@@ -66,7 +66,9 @@ function connect(path: string): DatabaseSync {
     if (!ok) throw new Corrupt("quick_check");
     const mode = db.prepare("PRAGMA journal_mode = WAL").get() as { journal_mode: string };
     if (mode.journal_mode !== "wal") throw new Error(`journal_mode is ${mode.journal_mode}, not wal`);
-    db.exec("PRAGMA synchronous = NORMAL; PRAGMA foreign_keys = ON;");
+    // Statement journals and the indexer's temp table stay in memory (a temp file per
+    // multi-row UPDATE cost the scan apply ~10%).
+    db.exec("PRAGMA synchronous = NORMAL; PRAGMA foreign_keys = ON; PRAGMA temp_store = MEMORY;");
     return db;
   } catch (e) {
     db.close();

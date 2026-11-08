@@ -58,10 +58,11 @@ test("core_and_extension_migrations_apply_once_per_catalog", async () => {
     const rows = peek(path, (db) => db.prepare("SELECT chain, n FROM migrations ORDER BY chain").all());
     expect(rows).toEqual([
       { chain: "core", n: 1 },
+      { chain: "core", n: 2 },
       { chain: "notes", n: 1 },
     ]);
     const meta = peek(path, (db) => Object.fromEntries((db.prepare("SELECT key, value FROM meta").all() as Array<{ key: string; value: string }>).map((r) => [r.key, r.value])));
-    expect(meta).toMatchObject({ libraryId: lib, "formatVersion.core": "1", "minReaderVersion.core": "1", "formatVersion.notes": "1" });
+    expect(meta).toMatchObject({ libraryId: lib, "formatVersion.core": "2", "minReaderVersion.core": "1", "formatVersion.notes": "1" });
     if (process.platform !== "win32") expect(readFileSync(path).length).toBeGreaterThan(0);
   }
 });
@@ -86,7 +87,7 @@ test("corrupt_catalog_rebuilt", async () => {
   writeFileSync(catalogPath(s.serverData, lib), Buffer.alloc(8192, 0x5a));
   const c = await threads(s);
   expect(await run(c.indexer.open(lib))).toMatchObject({ created: true, rebuilt: "corrupt" });
-  expect(await run(c.reader.counts(lib))).toEqual({ files: {}, dirs: {} });
+  expect(await run(c.reader.counts(lib))).toEqual({ files: {}, dirs: {}, collisions: 0 });
   expect(readdirSync(join(s.serverData, "libraries", lib)).some((n) => /^catalog\.db\.corrupt-[0-9a-z]{26}$/.test(n))).toBe(true);
 });
 
@@ -132,7 +133,7 @@ describe("batch files", () => {
     await run(c.indexer.open(lib));
     const counts = await run(c.indexer.applyBatchFile(lib, writeBatch(s.outDir, tree()), 1, 1));
     expect(counts).toMatchObject({ dirs: 1, added: 4, skipped: 1, listings: 2, transactions: 1 });
-    expect(await run(c.reader.counts(lib))).toEqual({ files: { present: 3, cloudOnly: 1 }, dirs: { present: 1 } });
+    expect(await run(c.reader.counts(lib))).toEqual({ files: { present: 3, cloudOnly: 1 }, dirs: { present: 1 }, collisions: 0 });
     const listing = await run(c.reader.files(lib, { dir: "Interviews", limit: 2 }));
     expect(listing.files.map((f) => f.nameNfc)).toEqual(["Café.wav", "interview_take3.final.mov"]);
     expect(listing.next).toBeDefined();
@@ -180,7 +181,7 @@ describe("batch files", () => {
         })),
       ),
     );
-    expect(probed).toEqual({ updated: 2, stale: 0 });
+    expect(probed).toEqual({ updated: 2, stale: 0, moved: [] });
     const second = { seq: 2, entries: [entry([], "a.mov", { size: 11 }), entry([], "b.mov", { size: 20 })], dirsDone: [done([], 2)] };
     expect(await run(c.indexer.applyBatchFile(lib, writeBatch(s.outDir, [second]), 2))).toMatchObject({ changed: 1, seen: 1 });
     const rows = (await run(c.reader.files(lib, { limit: 10 }))).files;
@@ -191,7 +192,7 @@ describe("batch files", () => {
     expect(rows[1]?.probe).toEqual({ kind: "media", fingerprint: "fp1:1", size: 20, media: { duration: "1" } });
     // A probe of the old size lands nowhere.
     const late = await run(c.indexer.applyProbed(lib, [{ fileId: ids[0]!, size: 10, mtimeNs: "1700000000000000000", fp: "fp1:old", probeVersion: 1, state: "present" }]));
-    expect(late).toEqual({ updated: 0, stale: 1 });
+    expect(late).toEqual({ updated: 0, stale: 1, moved: [] });
     expect((await run(c.reader.lookup(lib, { fingerprints: ["fp1:1", "fp1:old"] }))).matches.map((m) => m.key)).toEqual(["fp1:1"]);
   });
 
@@ -240,7 +241,7 @@ describe("batch files", () => {
     // A seq other than the call's.
     expect(await run(c.indexer.applyBatchFile(lib, writeBatch(s.outDir, good), 1, 9)).catch((e: { details: { reason: string } }) => e.details.reason)).toBe("seq");
     // Nothing of the above was written.
-    expect(await run(c.reader.counts(lib))).toEqual({ files: {}, dirs: {} });
+    expect(await run(c.reader.counts(lib))).toEqual({ files: {}, dirs: {}, collisions: 0 });
   });
 
   test("the validator matches the generated schema field for field", () => {
@@ -324,7 +325,7 @@ describe("fts_rows_follow_inserts_renames_deletes", () => {
     db.exec("PRAGMA busy_timeout = 1000");
     db.prepare("UPDATE files SET state = 'missing', missingSince = 5 WHERE nameNfc = 'Café.wav'").run();
     db.close();
-    expect(await run(c.indexer.purgeMissing(lib, 10))).toEqual({ deleted: 1 });
+    expect(await run(c.indexer.purgeMissing(lib, 10))).toEqual({ deleted: 1, dirs: 0 });
     expect(await names("cafe")).toEqual([]);
   });
 

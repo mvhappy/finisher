@@ -112,6 +112,32 @@ export interface OpenInfo {
   readonly rebuilt?: "corrupt" | "foreign";
 }
 
+export interface CatalogCounts {
+  readonly files: Record<string, number>;
+  readonly dirs: Record<string, number>;
+  /** Live rows with collision bits (`NAME_COLLISION {count}`). */
+  readonly collisions: number;
+}
+
+export interface ProbedApplied {
+  readonly updated: number;
+  readonly stale: number;
+  readonly moved: ReadonlyArray<{ readonly from: number; readonly to: number }>;
+}
+
+/** Picks the one file a key names (Decision 11); see `ReaderClient.resolve`. */
+export function pickMatch<R extends { readonly id: number; readonly state: string }>(matches: ReadonlyArray<R>): R {
+  const live = matches.filter((m) => m.state !== "missing");
+  const pick = live.length > 0 ? live : matches;
+  if (pick.length === 1) return pick[0]!;
+  if (pick.length === 0) throw new FinError({ code: "FILE_NOT_FOUND", message: "no file in the library has this path", details: {} });
+  throw new FinError({
+    code: "PATH_AMBIGUOUS",
+    message: "several files in the library have this path; address one by its file id",
+    details: { fileIds: pick.map((m) => m.id) },
+  });
+}
+
 export interface BatchApplied extends ApplyCounts {
   readonly transactions: number;
 }
@@ -168,7 +194,8 @@ export interface IndexerClient {
   /** Reads, validates and applies a scan batch file at `path` (a plain name in a job's `out/`). */
   applyBatchFile(lib: string, path: string, gen: number, seq?: number): Effect.Effect<BatchApplied, FinError>;
   finishScan(lib: string, scan: ScanRecord): Effect.Effect<{ scanId: number }, FinError>;
-  applyProbed(lib: string, results: ReadonlyArray<ProbedRow>): Effect.Effect<{ updated: number; stale: number }, FinError>;
+  /** Lands probe results; `moved`: new rows merged into the missing row of their fingerprint. */
+  applyProbed(lib: string, results: ReadonlyArray<ProbedRow>): Effect.Effect<ProbedApplied, FinError>;
   applyHashes(
     lib: string,
     hashes: ReadonlyArray<{ fileId: number; size: number; mtimeNs: string; fullHash: string }>,
@@ -178,7 +205,12 @@ export interface IndexerClient {
   writeKnownDirs(lib: string, gen: number, path: string): Effect.Effect<{ dirs: number }, FinError>;
   pending(lib: string, args: PendingArgs): Effect.Effect<{ files: PendingFile[] }, FinError>;
   /** Deletes rows missing since before `before`, ≤ 500 per transaction. */
-  purgeMissing(lib: string, before: number): Effect.Effect<{ deleted: number }, FinError>;
+  purgeMissing(lib: string, before: number): Effect.Effect<{ deleted: number; dirs: number }, FinError>;
+  /**
+   * Marks the library offline or online for the diff (persisted in the catalog): while offline
+   * no listing marks anything missing (Decision 18).
+   */
+  setOffline(lib: string, offline: boolean): Effect.Effect<{ offline: boolean }, FinError>;
   stats(): Effect.Effect<{ transactions: number; maxTxRows: number; batchFiles: number; open: number }, FinError>;
 }
 
@@ -192,7 +224,12 @@ export interface ReaderClient {
   ): Effect.Effect<{ matches: Array<FileRow & { rel: { components: string[] } }>; stages: unknown[] }, FinError>;
   search(lib: string, args: Record<string, unknown>): Effect.Effect<{ hits: Array<FileRow & { score: number }> }, FinError>;
   lookup(lib: string, args: { fingerprints?: string[]; hashes?: string[] }): Effect.Effect<{ matches: Array<{ key: string; file: FileRow }> }, FinError>;
-  counts(lib: string): Effect.Effect<{ files: Record<string, number>; dirs: Record<string, number> }, FinError>;
+  counts(lib: string): Effect.Effect<CatalogCounts, FinError>;
+  /**
+   * The one file at `relKey` (live rows first, then missing ones): several answer
+   * `PATH_AMBIGUOUS` with `details.fileIds`, none `FILE_NOT_FOUND` (Decision 11).
+   */
+  resolve(lib: string, relKey: string): Effect.Effect<FileRow & { rel: { components: string[] } }, FinError>;
   stageCounts(lib: string): Effect.Effect<{ stages: Array<{ stage: string; version: string; state: string; n: number }> }, FinError>;
   stats(): Effect.Effect<{ queries: number; open: number }, FinError>;
 }
@@ -252,6 +289,7 @@ export async function startCatalogThreads(opts: CatalogThreadsOptions): Promise<
     writeKnownDirs: (lib, gen, path) => fx(() => indexer.call("writeKnownDirs", { lib, gen, path })),
     pending: (lib, args) => core(lib, "pending", args),
     purgeMissing: (lib, before) => fx(() => indexer.call("purgeMissing", { lib, before })),
+    setOffline: (lib, offline) => fx(() => indexer.call("setOffline", { lib, offline })),
     stats: () => fx(() => indexer.call("stats", {})),
   };
   const readerClient: ReaderClient = {
@@ -261,6 +299,10 @@ export async function startCatalogThreads(opts: CatalogThreadsOptions): Promise<
     search: (lib, args) => read(lib, "search", args),
     lookup: (lib, args) => read(lib, "lookup", args),
     counts: (lib) => read(lib, "counts", {}),
+    resolve: (lib, relKey) =>
+      Effect.flatMap(read<{ matches: Array<FileRow & { rel: { components: string[] } }> }>(lib, "file", { relKey }), (r) =>
+        Effect.try({ try: () => pickMatch(r.matches), catch: (e) => e as FinError }),
+      ),
     stageCounts: (lib) => read(lib, "stageCounts", {}),
     stats: () => fx(() => reader.call("stats", {})),
   };
