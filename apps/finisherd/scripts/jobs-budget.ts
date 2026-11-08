@@ -24,7 +24,7 @@ const asJson = process.argv.includes("--json");
 // After the binary is chosen: these load fin-node.
 const { openControlStore } = await import("../src/control/db.ts");
 const { JobStore } = await import("../src/jobs/store.ts");
-const { testEngine, until, closeTestEngines, run } = await import("../test/support/jobs.ts");
+const { testEngine, until, closeTestEngines, run, processGone } = await import("../test/support/jobs.ts");
 type JobHostFactory = import("../src/jobs/host.ts").JobHostFactory;
 
 interface Stat {
@@ -158,14 +158,7 @@ async function spawnBudget(label: string): Promise<void> {
 async function cancelBudget(): Promise<void> {
   if (process.platform === "win32") return;
   const t = await testEngine({ cgroups: "auto" });
-  const gone = (pid: number) => {
-    try {
-      process.kill(pid, 0);
-      return false;
-    } catch (e) {
-      return (e as { code?: string }).code === "ESRCH";
-    }
-  };
+  const gone = processGone;
   const lat: number[] = [];
   for (let i = 0; i < (quick ? 10 : 50); i++) {
     const v = await t.submit("test.spawn", { detach: "none", out: "pids.json" });

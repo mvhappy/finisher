@@ -8,7 +8,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, test } from "vitest";
-import { until } from "../support/jobs.ts";
+import { processGone, until } from "../support/jobs.ts";
 
 const CHILD = fileURLToPath(new URL("../support/engine-child.ts", import.meta.url));
 const WIN = process.platform === "win32";
@@ -75,14 +75,7 @@ function engineChild(data: string, ...jobs: string[]): EngineChild {
   };
 }
 
-function alive(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (e) {
-    return (e as { code?: string }).code === "EPERM";
-  }
-}
+const alive = (pid: number): boolean => !processGone(pid);
 
 /** The watchdog of host process `host` (`fin-workers watchdog <host pid>`), Unix only. */
 function watchdogOf(host: number): number | undefined {

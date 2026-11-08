@@ -13,9 +13,11 @@ import { QueueIndex, type QueuedJob, schedule } from "../../src/jobs/schedule.ts
 import { FakeHost } from "../support/fake-host.ts";
 import { closeTestEngines, run, testEngine, until } from "../support/jobs.ts";
 
-afterEach(closeTestEngines);
 const scratch: string[] = [];
-afterEach(() => {
+// Engines close before their data goes (Vitest runs `afterEach` hooks last-registered first,
+// so two hooks would remove a directory an open engine still writes into).
+afterEach(async () => {
+  await closeTestEngines();
   for (const d of scratch.splice(0)) rmSync(d, { recursive: true, force: true });
 });
 
@@ -114,6 +116,7 @@ describe("H2: temp state never crosses jobs", () => {
 
   test("a_stale_warm_dir_is_swept_at_start", async () => {
     const first = await testEngine({ keepData: true });
+    scratch.push(first.serverData);
     const stale = join(first.serverData, "jobs", "warm-1", "tmp");
     await first.close();
     mkdirSync(stale, { recursive: true });
@@ -128,6 +131,7 @@ describe("H2: temp state never crosses jobs", () => {
 
   test("close_waits_for_the_directories", async () => {
     const t = await testEngine({ keepData: true });
+    scratch.push(t.serverData);
     await t.runJob("test.warm", { value: 0 });
     expect(warmDirs(join(t.serverData, "jobs"))).toHaveLength(1);
     await t.close();
