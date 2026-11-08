@@ -280,8 +280,11 @@ describe("JobHost", () => {
       const lines = t.seen.filter((s) => s.e.type === "stderr" && s.e.proc === proc);
       const counter = (s: Seen) => (s.e.type === "stderr" ? Number(s.e.line.split(" ")[1]) : Number.NaN);
       // Nothing is taken while JS is blocked, so at most the bound is handed over meanwhile
-      // (2 ms off each end: `Date.now` has whole milliseconds).
-      const during = lines.filter((s) => s.handed > from + 2 && s.handed < to - 2).length;
+      // (2 ms off each end: `Date.now` has whole milliseconds; on Windows 20 ms, since the stamp
+      // is Rust's `SystemTime` and V8 extrapolates `Date.now` from the performance counter, so
+      // the two clocks can differ by about one 15.6 ms timer tick).
+      const edge = process.platform === "win32" ? 20 : 2;
+      const during = lines.filter((s) => s.handed > from + edge && s.handed < to - edge).length;
       const bound = "eventQueue" in opts ? opts.eventQueue : Math.ceil(opts.eventQueueBytes / lineBytes) + 1;
       expect(during).toBeLessThanOrEqual(bound);
       // The worker's own counter: it was blocked on its pipe, not running through the flood.
