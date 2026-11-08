@@ -875,6 +875,8 @@ Also reserved: `ui.action` (9) and `review.verdict` (10).
 | 11 | v1 features + hardening | Clip finder, reframe, caption templates, Lottie template packs, onboarding, signing/notarisation, release |
 | 12 | After v1 | Public registry, raw Lottie, background-removal plugin, mobile, `finisher-cloud`, copyleft plugin repo |
 
+**Mobile (owner decisions 2026-11-08):** native iOS/Android with limited offline editing becomes sub-project 12, "mobile core and offline editing" (not designed yet); see `docs/specs/2026-11-08-mobile-offline-editing-decisions.md`.
+
 **Spike (#1) measures**
 1. napi apply/rebase on a 10k-item project with 1k-op branches. **Electron ABI prebuild** on all three OSes; if it's problematic, evaluate the sidecar fallback.
 2. Render-plan size, against D24's "would change my mind" conditions.

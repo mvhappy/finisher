@@ -874,6 +874,12 @@ Plan: `docs/superpowers/plans/2026-11-07-sub-project-7a-runtime-core.md` (revisi
 
 - [ ] **Decide the desktop shell / Electron ffmpeg** (follow-up decision F4, arch D10, §18, sp6 §16.1): Electron with a documented ffmpeg exception plus the open-codecs build, Tauri or the OS webviews, or a custom build. Only the desktop app is affected (the server, `fin` and the media engine contain no ffmpeg). Until it is decided the Electron exception is provisional, `AGENTS.md` is unchanged, and the counsel item (6.2) waits for the result
 
+## Sub-project 12: mobile core and offline editing (decisions recorded; not designed)
+
+- Decisions of 2026-11-08 are in `docs/specs/2026-11-08-mobile-offline-editing-decisions.md`.
+- [ ] Follow-ups: 5B device-scoped branch sync RPC; 6B-1 phone-sized proxy tier; mobile in the determinism matrix; iOS/Android builds of `fin-core` and `fin-store`.
+- [ ] Design and plan the sub-project (later).
+
 ## Blocked on hardware or accounts
 
 - Linux real desktop (vsync, Wayland/X11) and Linux S3b latency
