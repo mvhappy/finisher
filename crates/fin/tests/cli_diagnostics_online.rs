@@ -56,9 +56,18 @@ fn lines(sd: &Path, cwd: &Path, args: &[&str]) -> Vec<Value> {
         .collect()
 }
 
-/// Polls `export` until `want` holds (the server writes entries a moment after the call).
+/// A whole number of seconds from the environment variable `k`, else `d`.
+fn env_secs(k: &str, d: u64) -> u64 {
+    std::env::var(k)
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(d)
+}
+
+/// Polls `export` until `want` holds (the server writes entries a moment after the call). The
+/// deadline is generous (60 s, `FIN_TEST_WAIT_SECS`): a loaded machine is slow, never wrong.
 fn wait(sd: &Path, cwd: &Path, args: &[&str], want: impl Fn(&[Value]) -> bool) -> Vec<Value> {
-    let end = Instant::now() + Duration::from_secs(15);
+    let end = Instant::now() + Duration::from_secs(env_secs("FIN_TEST_WAIT_SECS", 60));
     loop {
         let found = lines(sd, cwd, args);
         if want(&found) || Instant::now() > end {
