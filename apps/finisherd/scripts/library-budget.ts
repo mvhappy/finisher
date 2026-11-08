@@ -4,7 +4,7 @@
 // generated tree (`library-budget-tree.ts`):
 //   - full scan of 100k files in 5k directories, end to end (submit → the service noted its end):
 //     the first (empty catalog) and a repeat, both warm (the tree's metadata in the OS cache),
-//     ≤ 20 s; `--cold` drops the caches before a third (Linux: root; macOS: `purge`), recorded;
+//     ≤ 20 s; `--cold` drops the caches before a third (Linux: root or `sudo -n`; macOS: `purge`), recorded;
 //   - an unchanged poll of the 5k directories ≤ 1.5 s;
 //   - the indexer's apply ≥ 25k entries/s (the tree's batches into fresh catalogs);
 //   - search p95 ≤ 50 ms on the 100k library and ≤ 200 ms over five, first and later pages;
@@ -134,7 +134,12 @@ function dropCaches(): string | undefined {
   try {
     if (process.platform === "linux") {
       execFileSync("sync");
-      writeFileSync("/proc/sys/vm/drop_caches", "3");
+      try {
+        writeFileSync("/proc/sys/vm/drop_caches", "3");
+      } catch {
+        // Not root: `sudo -n` never asks for a password, it fails instead.
+        execFileSync("sudo", ["-n", "sh", "-c", "echo 3 > /proc/sys/vm/drop_caches"], { stdio: "ignore" });
+      }
       return undefined;
     }
     if (process.platform === "darwin") {
@@ -248,11 +253,6 @@ export async function measureLibraryBudget(opts: BudgetOptions = {}): Promise<Bu
     // `monitorEventLoopDelay` measures timer gaps, its 10 ms resolution included: stricter, not looser.
     line({ name: "event-loop lag p99 during scans", value: round(Math.max(first.p99, repeat.p99, poll.p99), 2), unit: "ms", budget: { limit: 20, kind: "max" }, note: "includes the 10 ms sampling interval" });
     line({ name: "worker RSS, peak", value: rss.stop(), unit: "MiB", budget: { limit: 256, kind: "max" }, ...(process.platform === "win32" ? { note: "not sampled on Windows" } : {}) });
-    if (opts.cold === true) {
-      const why = dropCaches();
-      if (why === undefined) line({ name: "full scan, repeat, cold", value: round((await scan(lib, "full")) / 1000, 2), unit: "s" });
-      else line({ name: "full scan, repeat, cold", value: null, unit: "s", note: why });
-    }
 
     // The catalog's size, with the probe pass's rows (WAL checkpointed by a close and reopen).
     await run(catalogs.indexer.close(lib));
@@ -307,6 +307,13 @@ export async function measureLibraryBudget(opts: BudgetOptions = {}): Promise<Bu
       const all = await searchP95([lib, ...others]);
       line({ name: `search p95, ${others.length + 1} libraries, first page`, value: all.first, unit: "ms", budget: { limit: 200, kind: "max" } });
       line({ name: `search p95, ${others.length + 1} libraries, later pages`, value: all.later, unit: "ms", budget: { limit: 200, kind: "max" } });
+    }
+
+    // Cold last: dropping the caches would make every measure after it a cold one too.
+    if (opts.cold === true) {
+      const why = dropCaches();
+      if (why === undefined) line({ name: "full scan, repeat, cold", value: round((await scan(lib, "full")) / 1000, 2), unit: "s" });
+      else line({ name: "full scan, repeat, cold", value: null, unit: "s", note: why });
     }
 
     if (share !== undefined) {
