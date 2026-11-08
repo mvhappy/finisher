@@ -17,6 +17,7 @@ import type { ModelRequest, ToolCall } from "../src/agent/builtin/request.ts";
 import { TOOL_DEFS, toolsHash } from "../src/agent/builtin/tools.ts";
 import { Catalogue, ZERO_USAGE } from "../src/agent/catalogue/catalogue.ts";
 import { manualClock } from "../src/agent/clock.ts";
+import { cataloguePricing } from "../src/agent/runtime-deps.ts";
 import { finError } from "../src/errors.ts";
 import { type FakeModelServer, sse, startFakeModelServer } from "./support/fake-model-server.ts";
 
@@ -24,6 +25,8 @@ const CATALOGUE = Catalogue.load(fileURLToPath(new URL("./fixtures/catalogue.tes
   extra: [
     { id: "acme-closed/small", window: 1000, maxOutput: 100 },
     { id: "acme-closed/notools", window: 8192, tools: false },
+    // Priced, so a session of it may start (`PRICING_UNKNOWN` otherwise).
+    { id: "acme-closed/big", window: 8192, price: { input: 1_000_000, output: 2_000_000, cacheRead: 100_000, cacheWrite: 1_250_000 } },
   ],
 });
 const MODEL = "acme-closed/big";
@@ -394,7 +397,7 @@ describe("built-in loop in the runtime", () => {
     const store = new AgentStore(control, dir, clock, systemIds(clock));
     const client = scripted([{ calls: [["c1", "fin", { argv: ["item", "trim", "c1"] }]] }, { text: "Trimmed." }]);
     const tool = new FinTool();
-    const h = makeRuntime({ store, control }, BuiltinAdapter({ catalogue: CATALOGUE, finPath: "/x", client: () => client }), { clock, tools: { builtin: tool }, tool });
+    const h = makeRuntime({ store, control }, BuiltinAdapter({ catalogue: CATALOGUE, finPath: "/x", client: () => client }), { clock, tools: { builtin: tool }, tool, pricing: cataloguePricing(CATALOGUE) });
     cleanups.push(async () => {
       await h.runtime.close();
       await control.close();

@@ -74,8 +74,8 @@
    - `budgets {sessionId, kind, limit, used, reserved}`.
    **Node payloads up to 4 KiB are inline**; larger ones are written to `<server-data>/agents/<sessionId>/blobs/<blake3-hex>` (temp-then-rename) first, then referenced.
 2. **The state machine** (`session.ts`, 7A-1) is a pure function `next(state, event) → {state, effects}` over the statuses of spec §3.2, tested by properties. Persistence (7A-2) applies its effects in one `ControlStore.tx`.
-3. **Crash recovery** at start: every `starting|running|waitingApproval` session → `interrupted` (`serverRestart`); every open run → `interrupted`; an open `toolCall` node without a result gets a synthetic `toolResult {ok: false, code: SESSION_INTERRUPTED}`.
-4. **Retention:** product state of `ended` sessions older than `agents.retentionDays` (default 90) is swept hourly with their blob directories. `agent.session.delete` (owner) removes one at once. Diagnostics purge and export never touch these tables.
+3. **Crash recovery** at start: every `starting|running|waitingApproval` session → `interrupted` (`serverRestart`); every open run → `interrupted`; an open `toolCall` node without a result gets a synthetic `toolResult {ok: false, code: SESSION_INTERRUPTED}`; every ledger reservation is returned (`budgets.reserved`, `budget_days.reserved` = 0) before the outbox drains; then every live session credential whose session has ended or is gone is revoked (a revocation lost before it was written).
+4. **Retention:** product state of `ended` sessions older than `agents.retentionDays` (default 90) is swept hourly with their blob directories, and every open approval past its `expiresAt` is expired (an answer after it is `APPROVAL_EXPIRED`). `agent.session.delete` (owner) removes one at once. **`session_txs` rows are kept** (owner decision, review of 3b/6b/7; spec §3.3): they carry the session's `projectId` (agent migration 0002) and are pruned only with their project or by an explicit admin purge (`AgentStore.purgeTxs`), so the outcome tracker (Task 11) attributes merges that land after a session is gone. Diagnostics purge and export never touch these tables.
 
 ### Providers and the built-in loop
 

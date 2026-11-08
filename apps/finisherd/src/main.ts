@@ -48,6 +48,7 @@ import { claimSocketPath, makeLocalSocketServer, serveRpc } from "./transport.ts
 import { makeTicketedWebSocketServer, makeUpgradeCheck } from "./upgrade.ts";
 import { ServerControlTag } from "./server-admin.ts";
 import { isServeCommand, runConsole } from "./console/main.ts";
+import { agentWarnings } from "./agent/warnings.ts";
 
 export interface ServeOptions {
   readonly serverData: string;
@@ -204,6 +205,10 @@ export const serve = ({
         revoke: { ...revokeDeps, revoke: (ref) => credentials.markEnded(ref, "owner") },
       });
       sessionCredentials.drain();
+      // A revocation lost before it was written (a busy store, then a crash) is done now.
+      sessionCredentials.reconcile();
+      // Owner decision F2: before 7C agent tools are never sandboxed; sessions run, warned.
+      for (const w of agentWarnings()) yield* Effect.logWarning(`finisherd: ${w.code}: ${w.message}`);
       const agentCore: AgentCore = { store: agentStore, credentials: sessionCredentials, lineage: new BranchLineage(), clock: agentClock, ids: agentIds };
       onAgentCore?.(agentCore);
       // One font layer for the handlers and the plugins, which feed it the packs' catalogs.

@@ -12,9 +12,10 @@
 //   node before anything runs; a harness whose tools the runtime runs (built-in, fake) gets the
 //   result back through `respond`, and the `toolResult` node is written from the adapter's
 //   `toolCompleted`. Nothing re-runs a call: recovery gives it a synthetic result (store).
-// - **Budgets:** charged from `usage` and `toolCompleted`; a stop waits for the calls in flight
-//   (the safe point), then interrupts the session with `BUDGET_EXCEEDED` and opens a `budget`
-//   approval.
+// - **Budgets:** charged from `usage` and `toolCompleted` (a non-local call that reports no cost
+//   and has no price is charged its projection, never 0); a stop waits for the calls in flight
+//   (the safe point) for at most `stopGraceMs` (30 s), then aborts them, interrupts the session
+//   with `BUDGET_EXCEEDED` and opens a `budget` approval.
 import type { Approval, BudgetState, FinError, Harness, ProviderEvent, Run, Session, Usage, WatchItem } from "@finisher/contracts";
 import { Effect } from "effect";
 import { finError, toFinError } from "../errors.ts";
@@ -26,8 +27,9 @@ import { type BranchRegistry, credentialPath } from "./credentials.ts";
 import type { Pricing, RuntimeJournal, SessionEnvironment, SessionPlanner, ToolExecutor } from "./runtime-deps.ts";
 import { budgetError, errorShape, harnessUnknown, limitsOf, NO_JOURNAL, parseRef, REPORTED_PRICING, runFacts } from "./runtime-deps.ts";
 import { call, closeLive, closeScope, type Live, openLive } from "./runtime-live.ts";
+import { OutboxDrainer } from "./runtime-outbox.ts";
 import type { SessionEvent } from "./session.ts";
-import type { AgentStore, Appended, Applied, NewNode, OutboxItem } from "./store.ts";
+import type { AgentStore, Appended, Applied, NewNode } from "./store.ts";
 import { sessionNotFound } from "./store-rows.ts";
 import { WatchHub } from "./watch-hub.ts";
 
@@ -49,6 +51,10 @@ export interface RuntimeDeps {
   readonly retentionDays?: number;
   /** How long a `budget` approval stays open (default 7 days). */
   readonly approvalTtlMs?: number;
+  /** How long a budget stop waits for the tool calls in flight before it aborts them (30 s). */
+  readonly stopGraceMs?: number;
+  /** How many items one `agent.watch` may hold unread before it ends `WATCH_LAGGING` (1000). */
+  readonly watchBufferSize?: number;
   /** Start the hourly retention sweep and the budget check at `boot` (default true). */
   readonly timers?: boolean;
   /** Where the engine reports what it could not do (an outbox effect, a late provider error). */
@@ -58,6 +64,7 @@ export interface RuntimeDeps {
 /** A provider failure that ends only the run; the session stays `idle` (Decision 10). */
 const RUN_ONLY_STOPS = new Set(["MODEL_CONTEXT_EXCEEDED"]);
 const DAY_MS = 86_400_000;
+const STOP_GRACE_MS = 30_000;
 
 /** Thrown into work queued after `abandon` (a simulated crash): nothing more is written. */
 class Abandoned extends Error {}
@@ -77,7 +84,7 @@ export abstract class RuntimeEngine {
   readonly #caps = new Map<Harness, Promise<Capabilities>>();
   readonly #budgets = new Map<string, Budget>();
   readonly #queues = new Map<string, Promise<unknown>>();
-  #draining: Promise<void> = Promise.resolve();
+  readonly #outbox: OutboxDrainer;
   protected dead = false;
   protected dropped = 0;
 
@@ -90,6 +97,13 @@ export abstract class RuntimeEngine {
     this.journal = deps.journal ?? NO_JOURNAL;
     this.pricing = deps.pricing ?? REPORTED_PRICING;
     for (const a of deps.adapters) this.#adapters.set(a.harness, a);
+    this.#outbox = new OutboxDrainer({
+      store: this.store,
+      credentials: this.core.credentials,
+      journal: this.journal,
+      dead: () => this.dead,
+      log: (m, d) => this.log(m, d),
+    });
   }
 
   protected log(message: string, details: Record<string, unknown>): void {
@@ -220,45 +234,7 @@ export abstract class RuntimeEngine {
 
   /** Delivers every queued effect, oldest first; one that fails holds its session's later ones. */
   protected drain(): Promise<void> {
-    const next = this.#draining.then(() => this.#drainOnce());
-    this.#draining = next.catch(() => {});
-    return next;
-  }
-
-  async #drainOnce(): Promise<void> {
-    const blocked = new Set<string>();
-    for (const item of this.store.outbox()) {
-      if (this.dead) return;
-      if (blocked.has(item.sessionId)) continue;
-      try {
-        // Credential effects are Task 7's (idempotent); the rest are the runtime's.
-        if (!this.core.credentials.handle(item)) await this.#deliver(item);
-        this.store.outboxDone(item.id);
-      } catch (e) {
-        blocked.add(item.sessionId);
-        this.log("agent runtime: an outbox effect failed; it is retried later", { sessionId: item.sessionId, kind: item.effect.kind, error: toFinError(e).code });
-      }
-    }
-  }
-
-  async #deliver(item: OutboxItem): Promise<void> {
-    const e = item.effect;
-    switch (e.kind) {
-      case "journal":
-        return void (await this.journal.session(item.sessionId, this.store.get(item.sessionId), e.phase, e.reason));
-      case "revokeCredential":
-      case "refreshCredential":
-        return; // `core.credentials.handle` took them
-      case "toolResult":
-        return this.journal.toolResult({
-          sessionId: item.sessionId,
-          runId: e.runId,
-          callId: e.callId,
-          ok: false,
-          output: { code: "SESSION_INTERRUPTED", synthetic: true },
-          synthetic: true,
-        });
-    }
+    return this.#outbox.drain();
   }
 
   // Live instances --------------------------------------------------------------------------
@@ -495,9 +471,15 @@ export abstract class RuntimeEngine {
   async #usage(live: Live, runId: string, e: Extract<ProviderEvent, { type: "usage" }>): Promise<void> {
     const s = this.session(live.sessionId);
     const tokens = { input: e.input, output: e.output, cacheRead: e.cacheRead, cacheWrite: e.cacheWrite, reasoning: e.reasoning };
-    const { micros, basis } = this.pricing.price(s, tokens, e.costMicros);
+    const priced = this.pricing.price(s, tokens, e.costMicros);
+    const reservation = live.reservations.shift() ?? null;
+    // A non-local call with neither a reported cost nor a price is charged what was held for
+    // it (its projection), never 0: an unknown price must not make the money budget fail open.
+    const projection = reservation?.micros ?? this.pricing.projected(s, tokens) ?? 0;
+    const micros = priced.basis === "unknown" && s.provider !== "local" ? Math.max(priced.micros, projection) : priced.micros;
+    const basis = priced.basis;
     const b = this.budget(s);
-    const crossings = b.charge(tokens, micros, { reservation: live.reservations.shift() ?? null });
+    const crossings = b.charge(tokens, micros, { reservation });
     const usage: Usage = { ...tokens, moneyMicros: micros, costBasis: basis };
     const { run, session } = this.store.addUsage(runId, usage);
     await this.append({ sessionId: s.id, runId, kind: "usage", payload: usage });
@@ -513,11 +495,27 @@ export abstract class RuntimeEngine {
     if (c.stop) await this.requestStop(live, c.stop);
   }
 
-  /** A budget stop: now, or once the calls in flight have their results (the safe point). */
+  /**
+   * A budget stop: now, or once the calls in flight have their results (the safe point), but
+   * no later than `stopGraceMs`: then the calls still running are aborted and the stop goes on
+   * (their calls get the interrupt's synthetic results).
+   */
   protected async requestStop(live: Live, r: Reading): Promise<void> {
     if (this.lives.get(live.sessionId) !== live || live.runId === null) return;
     if (live.calls.size > 0) {
       live.pendingStop ??= r;
+      if (live.stopDeadline === null) {
+        live.stopDeadline = setTimeout(() => {
+          live.stopDeadline = null;
+          if (this.dead) return;
+          this.background(live.sessionId, "a budget stop's deadline", async () => {
+            if (this.lives.get(live.sessionId) !== live || live.pendingStop === null) return;
+            for (const ac of live.running.values()) ac.abort(budgetError(live.pendingStop));
+            await this.stop(live, live.pendingStop);
+          });
+        }, this.deps.stopGraceMs ?? STOP_GRACE_MS);
+        live.stopDeadline.unref?.();
+      }
       return;
     }
     await this.stop(live, r);
@@ -526,6 +524,8 @@ export abstract class RuntimeEngine {
   protected async stop(live: Live, r: Reading): Promise<void> {
     const sessionId = live.sessionId;
     live.pendingStop = null;
+    if (live.stopDeadline !== null) clearTimeout(live.stopDeadline);
+    live.stopDeadline = null;
     const runId = live.runId;
     if (runId !== null) await this.append({ sessionId, runId, kind: "error", payload: errorShape(budgetError(r)) });
     live.runId = null;

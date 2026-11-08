@@ -191,6 +191,7 @@ export async function runFinTool(call: { callId: string; argv: string[]; stdin?:
   if (env.roots !== undefined && env.index !== undefined) {
     await checkPaths(pathValues(argv, env.index), env.cwd, env.roots, env.fold ?? (process.platform === "win32" || process.platform === "darwin"));
   }
+  if (env.signal?.aborted) throw finError("SESSION_INTERRUPTED", "the fin call was stopped before it started", {});
   const timeoutMs = env.timeoutMs ?? TOOL_TIMEOUT_MS;
   return new Promise<ToolOutcome>((done, fail) => {
     const child = spawn(env.finPath, argv, {

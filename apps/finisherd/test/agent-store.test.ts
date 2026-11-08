@@ -73,7 +73,7 @@ const count = (table: string, where = "1 = 1", ...args: string[]): number =>
 
 describe("agent store", () => {
   test("agent_chain_is_registered", () => {
-    expect(control.db.prepare("SELECT value FROM meta WHERE key = 'formatVersion.agent'").get()).toEqual({ value: "1" });
+    expect(control.db.prepare("SELECT value FROM meta WHERE key = 'formatVersion.agent'").get()).toEqual({ value: "2" });
     for (const t of ["sessions", "runs", "nodes", "session_txs", "session_state", "approvals", "budgets", "budget_days", "session_outbox"]) {
       expect(count(t)).toBe(0);
     }
@@ -302,7 +302,7 @@ describe("agent store", () => {
 
   test("approvals_open_answer_and_consume", async () => {
     const { s } = await running();
-    const { approval, session: w } = store.openApproval({ sessionId: s.id, kind: "budget", subject: { kind: "money", add: 5 }, argsHash: "h", expiresAt: 1 });
+    const { approval, session: w } = store.openApproval({ sessionId: s.id, kind: "budget", subject: { kind: "money", add: 5 }, argsHash: "h", expiresAt: clock.now() + DAY });
     expect(w.status).toBe("waitingApproval");
     expect(approval).toMatchObject({ status: "open", subject: { kind: "money", add: 5 } });
     const answered = store.answerApproval(approval.id, "allow", "console:console");
@@ -364,7 +364,7 @@ describe("agent store", () => {
     clock.advance(31 * DAY);
     expect(await store.sweep(clock.now())).toBe(1);
     expect(store.get(old.s.id)).toBeUndefined();
-    for (const t of ["runs", "nodes", "session_txs", "session_state", "budgets", "approvals"]) expect(count(t, "sessionId = ?", old.s.id)).toBe(0);
+    for (const t of ["runs", "nodes", "session_state", "budgets", "approvals"]) expect(count(t, "sessionId = ?", old.s.id)).toBe(0);
     expect(existsSync(join(dir, "agents", old.s.id))).toBe(false);
     expect(existsSync(join(dir, "agents", "01ORPHAN"))).toBe(false);
     expect(store.get(recent.s.id)).toBeDefined();
@@ -383,7 +383,9 @@ describe("agent store", () => {
     const { effects } = await store.delete(s.id);
     expect(effects.map((e) => e.kind)).toEqual(["closeOpenToolCalls", "closeRun", "expireApprovals", "stopProvider", "revokeCredential", "journal"]);
     expect(store.get(s.id)).toBeUndefined();
-    for (const t of ["runs", "nodes", "session_txs", "session_state", "budgets", "approvals"]) expect(count(t, "sessionId = ?", s.id)).toBe(0);
+    for (const t of ["runs", "nodes", "session_state", "budgets", "approvals"]) expect(count(t, "sessionId = ?", s.id)).toBe(0);
+    // Owner decision: `session_txs` outlive the session (late merges are still attributed).
+    expect(store.txsOfSession(s.id).map((t) => t.txId)).toEqual(["TD"]);
     expect(existsSync(join(dir, "agents", s.id))).toBe(false);
     // The revocation and the journal entry outlive the rows until they are done.
     expect(store.outbox(s.id).map((o) => o.effect.kind)).toEqual(["journal", "toolResult", "revokeCredential", "journal"]);

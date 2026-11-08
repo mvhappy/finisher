@@ -11,11 +11,16 @@
 //   expiry; both reach this module as `session_outbox` items (`handle`), at least once, so
 //   handling one twice changes nothing.
 // - **One live session per root branch:** `BRANCH_IN_USE` (exit 4).
+// - **A revocation is never lost:** its outbox item stays queued until the credential's end is
+//   written to `control.db` (a busy store keeps it in memory only, and a restart would bring
+//   the credential back); at start `reconcile` ends every live session credential whose
+//   session has ended or is gone.
+import { randomBytes } from "node:crypto";
 import { renameSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import type { BranchCreated, BranchView } from "@finisher/core-types";
 import type { BudgetSpec, CredentialFile, FinError, Mode, Principal, Scope, Session } from "@finisher/contracts";
-import { HUMAN_ONLY } from "@finisher/contracts";
+import { defaultScopes, HUMAN_ONLY } from "@finisher/contracts";
 import { createPrivateFile } from "@finisher/fin-node";
 import { Effect } from "effect";
 import type { Credentials } from "../auth/credentials.ts";
@@ -60,6 +65,8 @@ export const SESSION_IDLE_S = 30 * 86_400;
 
 const ROLE = /^[a-z][a-z0-9-]{0,31}$/;
 const CREDENTIAL_FILE = "credential.json";
+/** The label `mintForSession` gives a session's credential (`reconcile` recognises it by it). */
+const SESSION_LABEL = /^agent session \([a-z][a-z0-9-]{0,31}\)$/;
 
 /** `<server-data>/agents/<sessionId>/credential.json`. */
 export function credentialPath(agentsRoot: string, sessionId: string): string {
@@ -75,9 +82,12 @@ export function branchInUse(branch: string, sessionId: string): FinError {
   );
 }
 
-/** Writes `file` to `path` private from creation, then renames it into place (temp-then-rename). */
-function writeCredentialFile(path: string, file: CredentialFile, suffix: string): void {
-  const tmp = `${path}.${suffix}.tmp`;
+/**
+ * Writes `file` to `path` private from creation, then renames it into place (temp-then-rename).
+ * The temp name is random, so one a crash left behind never blocks a later write.
+ */
+function writeCredentialFile(path: string, file: CredentialFile): void {
+  const tmp = `${path}.${randomBytes(8).toString("hex")}.tmp`;
   const f = createPrivateFile(tmp);
   try {
     f.commit(`${JSON.stringify(file)}\n`);
@@ -110,7 +120,9 @@ export class SessionCredentials {
   mintForSession(s: Session, root: string | null, by: Principal): Effect.Effect<{ credentialId: string; path: string }, FinError> {
     return Effect.try({
       try: () => {
-        const scopes = MODE_SCOPES[s.mode];
+        // A session never holds more than its starter (but `local`, which holds every scope a
+        // mode can have): a device or console starter's scopes bound its session's.
+        const scopes = by.kind === "local" ? MODE_SCOPES[s.mode] : MODE_SCOPES[s.mode].filter((x) => by.scopes.includes(x));
         const { file } = this.#d.credentials.mintWithId(by, s.id, {
           kind: "agent",
           label: `agent session (${s.role})`,
@@ -123,7 +135,7 @@ export class SessionCredentials {
         });
         const path = credentialPath(this.#d.store.root, s.id);
         try {
-          writeCredentialFile(path, file, s.id);
+          writeCredentialFile(path, file);
         } catch (e) {
           // A credential no file holds is no use to anyone: ended at once.
           this.#revoke(s.id, "agent.session.start");
@@ -147,12 +159,21 @@ export class SessionCredentials {
 
   /**
    * Restarts the expiry of `s`'s credential (a resume, Decision 18); a session whose credential
-   * was never minted (a crash between its record and the mint) gets it now. An ended one is
-   * `CREDENTIAL_REVOKED` or `CREDENTIAL_EXPIRED`: the runtime refuses the resume.
+   * was never minted (a crash between its record and the mint: it never reached `idle`) gets it
+   * now. An ended one is `CREDENTIAL_REVOKED` or `CREDENTIAL_EXPIRED`: the runtime refuses the
+   * resume. A session that reached `idle` and has no credential row had one that ended and was
+   * pruned (180 days after its end): `CREDENTIAL_EXPIRED`, never a new one.
    */
   refreshForSession(s: Session): Effect.Effect<void, FinError> {
     if (this.#d.credentials.get(s.id) === undefined) {
-      const by: Principal = { kind: s.createdBy.principal.kind, id: s.createdBy.principal.id, scopes: [], projects: "*", branches: "*", human: false };
+      if (this.#d.store.everReady(s.id)) {
+        return Effect.fail(
+          finError("CREDENTIAL_EXPIRED", "this session's credential ended long ago", { id: s.id }, "Start a new session: an ended one cannot be resumed."),
+        );
+      }
+      // The starter's kind's scopes: what it held at the start is not recorded.
+      const kind = s.createdBy.principal.kind;
+      const by: Principal = { kind, id: s.createdBy.principal.id, scopes: defaultScopes(kind), projects: "*", branches: "*", human: false };
       return Effect.asVoid(this.mintForSession(s, s.rootBranch ?? null, by));
     }
     return Effect.try({ try: () => void this.#d.credentials.refresh(s.id), catch: toFinError });
@@ -162,12 +183,17 @@ export class SessionCredentials {
    * Does a credential effect the store queued (`revokeCredential`, `refreshCredential`): true
    * when it was one, false for any other (the runtime's). Idempotent: a revoked credential is
    * not revoked twice, and a refresh of an ended one is reported and dropped (the session
-   * cannot run as it, so its next request is refused).
+   * cannot run as it, so its next request is refused). A revocation whose end is not written
+   * yet (a busy store) throws `CONTROL_DB_BUSY`: the item stays queued and the next drain
+   * writes it again.
    */
   handle(item: OutboxItem): boolean {
     const e = item.effect;
     if (e.kind === "revokeCredential") {
       this.#revoke(item.sessionId, "agent.session.end");
+      if (this.#d.credentials.endUnsaved(item.sessionId)) {
+        throw finError("CONTROL_DB_BUSY", "the end of a session's credential is not written yet", { sessionId: item.sessionId });
+      }
       return true;
     }
     if (e.kind === "refreshCredential") {
@@ -181,13 +207,45 @@ export class SessionCredentials {
     return false;
   }
 
-  /** Every credential effect still owed (at start, and after each `apply`): done, then marked done. */
+  /**
+   * Every credential effect still owed (at start, and after each `apply`): done, then marked
+   * done. One that fails stays queued and holds its session's later items until the next drain.
+   */
   drain(sessionId?: string): number {
     let n = 0;
+    const blocked = new Set<string>();
     for (const item of this.#d.store.outbox(sessionId)) {
-      if (!this.handle(item)) continue;
+      if (blocked.has(item.sessionId)) continue;
+      try {
+        if (!this.handle(item)) continue;
+      } catch (e) {
+        blocked.add(item.sessionId);
+        process.stderr.write(`finisherd: warning: a credential effect of session ${item.sessionId} is retried later: ${toFinError(e).code}\n`);
+        continue;
+      }
       this.#d.store.outboxDone(item.id);
       n++;
+    }
+    return n;
+  }
+
+  /**
+   * At start, after the outbox drained: ends every live session credential (an `agent`
+   * credential this module minted, by its label) whose session has ended or no longer exists,
+   * so a revocation lost before it was written is done now. Answers how many it ended.
+   */
+  reconcile(): number {
+    let n = 0;
+    for (const c of this.#d.credentials.list()) {
+      if (c.kind !== "agent" || c.absoluteExpiryAt !== undefined || !SESSION_LABEL.test(c.label)) continue;
+      const s = this.#d.store.get(c.id);
+      if (s !== undefined && s.status !== "ended") continue;
+      try {
+        this.#revoke(c.id, "agent.session.end");
+        n++;
+      } catch (e) {
+        process.stderr.write(`finisherd: warning: cannot end session ${c.id}'s credential: ${toFinError(e).code}\n`);
+      }
     }
     return n;
   }

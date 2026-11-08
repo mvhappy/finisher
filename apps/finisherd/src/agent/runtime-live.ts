@@ -30,9 +30,11 @@ export interface Live {
   readonly running: Map<string, AbortController>;
   /** A budget stop waiting for the running tool calls to finish (the safe point). */
   pendingStop: Reading | null;
+  /** When a pending stop stops waiting and aborts the running calls (`stopGraceMs`). */
+  stopDeadline: ReturnType<typeof setTimeout> | null;
   /** Steers for a provider that cannot take them mid-run: the next run's prompt. */
   readonly held: string[];
-  /** Money held by `CallGate.beforeCall`, settled by `usage` events, oldest first. */
+  /** Tokens and money held by `CallGate.beforeCall`, settled by `usage` events, oldest first. */
   readonly reservations: (Reservation | null)[];
 }
 
@@ -68,6 +70,7 @@ export async function openLive(
     calls: new Map(),
     running: new Map(),
     pendingStop: null,
+    stopDeadline: null,
     held: [],
     reservations: [],
   };
@@ -83,6 +86,8 @@ export async function openLive(
 /** Stops the pump and closes the instance's scope (the adapter's finalizers end it). */
 export async function closeLive(live: Live): Promise<void> {
   live.closed = true;
+  if (live.stopDeadline !== null) clearTimeout(live.stopDeadline);
+  live.stopDeadline = null;
   const pump = live.pump;
   live.pump = null;
   if (pump) await Effect.runPromise(Fiber.interrupt(pump));

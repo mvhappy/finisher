@@ -120,6 +120,29 @@ describe.skipIf(!posix)("fin tool", () => {
     expect(alive(child)).toBe(false);
   });
 
+  test("an_abort_stops_the_call_and_its_tree", async () => {
+    // A budget stop past its grace aborts the running calls (6b review): the executor answers at
+    // once and `fin`'s process tree is gone.
+    const fin = fakeFin();
+    const pidFile = join(tmp, "child.pid");
+    const exec = builtinTools({ finPath: fin, projectDirOf: () => project });
+    const ac = new AbortController();
+    const base = { sessionId: "S1", projectId: "P1", runId: "R1", callId: CALL, providerId: "p", cwd: ws, env: { PATH: process.env.PATH ?? "" } };
+    const running = exec.run({ ...base, tool: "fin", input: { argv: ["spawn", pidFile] } }, ac.signal);
+    while (!existsSync(pidFile) || readFileSync(pidFile, "utf8") === "") await new Promise((res) => setTimeout(res, 10));
+    const t0 = Date.now();
+    ac.abort(new Error("budget"));
+    expect(await code(running)).toBe("SESSION_INTERRUPTED");
+    expect(Date.now() - t0).toBeLessThan(1000);
+    const child = Number(readFileSync(pidFile, "utf8"));
+    while (alive(child) && Date.now() - t0 < 3000) await new Promise((res) => setTimeout(res, 20));
+    expect(alive(child)).toBe(false);
+    // An aborted signal stops a call before it starts, the workspace tools' too.
+    expect(await code(exec.run({ ...base, tool: "workspace_write", input: { path: "late.md", content: "x" } }, ac.signal))).toBe("SESSION_INTERRUPTED");
+    expect(existsSync(join(ws, "late.md"))).toBe(false);
+    expect(await code(runFinTool({ callId: CALL, argv: ["json"] }, env(fin, { signal: ac.signal })))).toBe("SESSION_INTERRUPTED");
+  });
+
   test("json_stdout_parsed", async () => {
     const fin = fakeFin();
     expect(await runFinTool({ callId: CALL, argv: ["json"] }, env(fin))).toEqual({ ok: true, output: { exit: 0, stdout: { ok: 1 } } });

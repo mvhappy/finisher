@@ -91,35 +91,57 @@ export interface BuiltinToolsDeps {
   readonly projectDirOf?: (projectId: string) => string | undefined;
 }
 
-/** The executor the runtime runs the built-in loop's calls with (`RuntimeDeps.tools.builtin`). */
+const interrupted = () => finError("SESSION_INTERRUPTED", "the tool call was stopped", {});
+
+/**
+ * `p`, or `SESSION_INTERRUPTED` as soon as `signal` aborts (a budget stop past its grace, an
+ * interrupt). A workspace operation already under way finishes on its own, unheard: each write
+ * is temp-then-rename, so it lands whole or not at all.
+ */
+function abortable<A>(p: Promise<A>, signal: AbortSignal): Promise<A> {
+  if (signal.aborted) return Promise.reject(interrupted());
+  return new Promise<A>((resolve, reject) => {
+    const onAbort = () => reject(interrupted());
+    signal.addEventListener("abort", onAbort, { once: true });
+    p.then(resolve, reject).finally(() => signal.removeEventListener("abort", onAbort));
+  });
+}
+
+/**
+ * The executor the runtime runs the built-in loop's calls with (`RuntimeDeps.tools.builtin`). It
+ * honours the call's abort signal: `fin` is killed with its process tree (`runFinTool`), and
+ * every call answers `SESSION_INTERRUPTED` at once.
+ */
 export function builtinTools(deps: BuiltinToolsDeps): ToolExecutor {
   return {
-    async run(call: ToolCall, signal: AbortSignal): Promise<ToolOutcome> {
-      if (call.tool === FIN_TOOL) {
-        const input = (call.input ?? {}) as { argv?: unknown; stdin?: unknown };
-        if (!Array.isArray(input.argv) || !input.argv.every((a) => typeof a === "string")) {
-          throw finError("USAGE", "the fin tool takes {argv: string[], stdin?: string}", { tool: call.tool });
-        }
-        if (input.stdin !== undefined && typeof input.stdin !== "string") throw finError("USAGE", "stdin must be a string", { tool: call.tool });
-        const project = deps.projectDirOf?.(call.projectId);
-        const index = await finIndex(deps.finPath).catch(() => undefined);
-        return runFinTool(
-          { callId: call.callId, argv: input.argv as string[], ...(input.stdin === undefined ? {} : { stdin: input.stdin as string }) },
-          {
-            finPath: deps.finPath,
-            cwd: call.cwd,
-            env: call.env,
-            signal,
-            ...(deps.timeoutMs === undefined ? {} : { timeoutMs: deps.timeoutMs }),
-            roots: project === undefined ? [call.cwd] : [call.cwd, project],
-            ...(index === undefined ? {} : { index }),
-          },
-        );
-      }
-      if ((WORKSPACE_TOOLS as ReadonlyArray<string>).includes(call.tool)) {
-        return workspaceTool(call.tool as WorkspaceToolName, call.input, call.cwd);
-      }
-      throw finError("USAGE", `no tool named ${call.tool}`, { tool: call.tool, tools: [...TOOL_NAMES] });
-    },
+    run: (call: ToolCall, signal: AbortSignal) => abortable(runOne(deps, call, signal), signal),
   };
+}
+
+async function runOne(deps: BuiltinToolsDeps, call: ToolCall, signal: AbortSignal): Promise<ToolOutcome> {
+  if (call.tool === FIN_TOOL) {
+    const input = (call.input ?? {}) as { argv?: unknown; stdin?: unknown };
+    if (!Array.isArray(input.argv) || !input.argv.every((a) => typeof a === "string")) {
+      throw finError("USAGE", "the fin tool takes {argv: string[], stdin?: string}", { tool: call.tool });
+    }
+    if (input.stdin !== undefined && typeof input.stdin !== "string") throw finError("USAGE", "stdin must be a string", { tool: call.tool });
+    const project = deps.projectDirOf?.(call.projectId);
+    const index = await finIndex(deps.finPath).catch(() => undefined);
+    return runFinTool(
+      { callId: call.callId, argv: input.argv as string[], ...(input.stdin === undefined ? {} : { stdin: input.stdin as string }) },
+      {
+        finPath: deps.finPath,
+        cwd: call.cwd,
+        env: call.env,
+        signal,
+        ...(deps.timeoutMs === undefined ? {} : { timeoutMs: deps.timeoutMs }),
+        roots: project === undefined ? [call.cwd] : [call.cwd, project],
+        ...(index === undefined ? {} : { index }),
+      },
+    );
+  }
+  if ((WORKSPACE_TOOLS as ReadonlyArray<string>).includes(call.tool)) {
+    return workspaceTool(call.tool as WorkspaceToolName, call.input, call.cwd);
+  }
+  throw finError("USAGE", `no tool named ${call.tool}`, { tool: call.tool, tools: [...TOOL_NAMES] });
 }

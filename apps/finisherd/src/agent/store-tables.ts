@@ -67,7 +67,10 @@ export class SessionTxs {
 
   constructor(cs: ControlStore) {
     this.#s = prepare(cs, {
-      insert: "INSERT INTO session_txs (txId, sessionId, callId, attribution, at) VALUES (?, ?, ?, ?, ?) ON CONFLICT (txId) DO NOTHING",
+      // The project is the session's, kept on the row: the row outlives its session (agent 0002).
+      insert:
+        "INSERT INTO session_txs (txId, sessionId, callId, attribution, at, projectId) " +
+        "VALUES (?, ?, ?, ?, ?, (SELECT projectId FROM sessions WHERE id = ?)) ON CONFLICT (txId) DO NOTHING",
       of: `SELECT ${TX_COLUMNS} FROM session_txs WHERE txId IN (SELECT value FROM json_each(?))`,
       outcome: "UPDATE session_txs SET outcome = ? WHERE txId = ?",
       bySession: `SELECT ${TX_COLUMNS} FROM session_txs WHERE sessionId = ? AND at >= ? ORDER BY at, txId`,
@@ -82,7 +85,7 @@ export class SessionTxs {
    */
   record(t: Omit<SessionTx, "outcome">): void {
     if (!ATTRIBUTIONS.includes(t.attribution)) throw finError("INVALID_REQUEST", "unknown attribution", { attribution: t.attribution });
-    this.#s.insert!.run(t.txId, t.sessionId, t.callId, t.attribution, t.at);
+    this.#s.insert!.run(t.txId, t.sessionId, t.callId, t.attribution, t.at, t.sessionId);
   }
 
   /** The rows of those of `txIds` an agent made; the others are absent from the map. */

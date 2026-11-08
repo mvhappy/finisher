@@ -225,7 +225,20 @@ export const AgentSessionStartPayload = Schema.Struct({
   attachments: Schema.optionalKey(Attachments),
   budget: Schema.optionalKey(BudgetSpec),
 });
-export const AgentSessionStartSuccess = Schema.Struct({ session: Session, run: Schema.optionalKey(Run) });
+/**
+ * A persistent status warning (spec §8.9, §15): never an error, the call went ahead. Before 7C
+ * every server answers `SANDBOX_DISABLED` for agent tools (owner decision F2): they run as the
+ * user, unconfined, and can reach `local.key`, so agent scopes bind only well-behaved tools.
+ */
+export const AgentWarning = Schema.Struct({
+  code: Schema.String,
+  message: Schema.String,
+  details: Schema.Record(Schema.String, Schema.Unknown),
+  fix: Schema.optionalKey(Schema.String),
+});
+export type AgentWarning = typeof AgentWarning.Type;
+
+export const AgentSessionStartSuccess = Schema.Struct({ session: Session, run: Schema.optionalKey(Run), warnings: Schema.optionalKey(Schema.Array(AgentWarning)) });
 
 /** `agent.session.prompt`: starts a run; `SESSION_BUSY` while one runs (use `steer`). */
 export const AgentSessionPromptPayload = Schema.Struct({
@@ -327,6 +340,8 @@ export const AgentProvidersSuccess = Schema.Struct({
   providers: Schema.Array(ProviderInfo),
   openrouter: Schema.Struct({ keySet: Schema.Boolean }),
   local: Schema.Struct({ configured: Schema.Boolean, preset: Schema.optionalKey(LocalPreset), reachable: Schema.optionalKey(Schema.Boolean) }),
+  /** Persistent status warnings (`SANDBOX_DISABLED` until 7C). */
+  warnings: Schema.optionalKey(Schema.Array(AgentWarning)),
 });
 
 /** One recorded `fin try`: its branch and the default it replaced, restored when the try ends. */

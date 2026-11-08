@@ -408,6 +408,11 @@ export class Credentials {
     return this.#unsaved.size;
   }
 
+  /** Whether `id` was ended in memory and its end is not written yet (a restart would bring it back). */
+  endUnsaved(id: string): boolean {
+    return this.#unsaved.has(id);
+  }
+
   /**
    * Replaces `credential.master` with `master` (review of Tasks 8–9, M3): written first (a
    * failure changes nothing), then used for every key from now on, so no credential file made
