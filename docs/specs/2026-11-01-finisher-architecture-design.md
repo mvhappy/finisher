@@ -273,7 +273,9 @@ MyProject/                      (may live on local disk, NAS, or a cloud-synced 
 | `fin-audio` | Audio mixer (native + WASM), §12.7 |
 | `fin-codecs` | OS/hardware codecs + process-based backend trait |
 | `fin-captions` | Caption rasterisation |
-| `fin-workers` | Worker binaries (decode, encode, render, Lottie, SVG, analysis) |
+| `fin-jobs` | The job envelope (NDJSON protocol types, Rust → JSON Schema → generated TS) and the worker and helper runtimes every family links, with host calls and the self-sandbox entry; creates no process (sub-project 5C-1) |
+| `fin-jobhost` | The host side of the job system (an rlib linked into `fin-node` as its `jobhost` module): spawning behind the `Spawner` hook, host-owned kill domains on every OS, framing, timers, memory limits, the Unix watchdog client (sub-project 5C-1) |
+| `fin-workers` | The one worker binary, `fin-workers <family> [--warm]`, found beside the `fin-node` `.node` file; 5C-1 ships the `test` family (behind `test-hooks`), the Unix `watchdog` and the Windows `--spawn-broker`; sub-projects 5D, 6 and 8C add the `library`, `media` and `analyze` families (decode, encode, render, Lottie, SVG, analysis); a worker never starts a process |
 | `fin` | Agent CLI; links `fin-core` |
 
 - **TypeScript (Effect 4)** owns gateway, contracts, auth, environments, agent runtime, jobs, library indexer, plugin host, hooks, review workflow, broadcast and settings. It has its own SQLite for non-edit state, on local disk.
@@ -1162,3 +1164,9 @@ Spike code, evidence and the report are throwaway and live in the git-ignored `a
     - **Evaluation:** `fin-core::eval` produces deterministic frame and audio plans (`f64` with `+ − × ÷ sqrt` only, a float gate, a plan-hash corpus byte-identical on Linux, macOS, Windows and wasm32). The compositor and mixer of sub-project 6 consume only these plans.
     - **§27.10 amended: fonts are fetched and pinned, not bundled.** `fin-text` (cosmic-text, no swash) measures from fonts named by SHA-256: projects pin exact files, the server fetches them on demand from a pinned, licence-gated catalog into a content-addressed cache, and a missing font leaves a caption unmeasured without blocking an edit. Item 10's condition for identical output, "fonts always bundled, never taken from the system", now reads **"always pinned bytes, never taken from the system"**.
     - **Still outstanding:** cross-platform validation (sub-project 4 spec §5.10).
+
+16. **Sub-project 5C-1, the job engine (as built, 2026-11-08):** the shared job system of §9.9 as implemented is recorded in `docs/specs/2026-11-07-sub-project-5-control-plane-design.md` §6 (§6.0–6.6 and §6.8–6.12; §6.10 maps every decision of its plan to As built or Deviation), which wins over this document where they differ.
+    - **Shape:** `fin-jobs`, `fin-jobhost` and `fin-workers` (§7); spawning in `finisherd`'s process through `fin-node`, behind a `Spawner` hook that sub-project 7's `fin-sandbox` implements; jobs persisted in `control.db`; a pure, property-tested scheduler over resource pools; warm workers, helpers and mapped files; retries, poison handling and isolation; `job.done` and `worker.exit` into the diagnostics journal.
+    - **Kill trees are host-owned on every OS:** a host, group and leaf Job Object hierarchy on Windows (processes created suspended, spawned through a broker so no pipe handle is ever inheritable), delegated cgroup v2 on Linux where available, process groups elsewhere, and on Unix a watchdog process that reaps the groups if the host dies.
+    - **Deviations from this document and from the sub-project 5 design:** with process groups (macOS; Linux without a delegated cgroup) a `setsid` grandchild survives cancel and host death until sub-project 7 denies process creation to workers; a graceful stop spends no attempt of a resumable job; warm kinds run cold under a sandbox until 7C grants per-job paths.
+    - **Still outstanding:** the cross-platform run of the whole engine on macOS and Windows 11 (5C-1 Task 14), the held-files check there, an endpoint-security check of the Windows spawn broker, and the job RPCs (5C-2).

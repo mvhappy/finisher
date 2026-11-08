@@ -1122,7 +1122,7 @@ Decisions 31, 32.
   - the `setsid` gap; a spawn helper process if Task 12's large-heap spawn passes 150 ms;
   - sub-project 9: package and sign `fin-workers` beside `fin-node`.
 
-- [ ] **Step 1:** Write the as-built notes from the code, listing every deviation from spec revision 3. **Step 2: Run** the gates → PASS. **Commit** `docs: record sub-project 5C-1 as built`.
+- [x] **Step 1:** Write the as-built notes from the code, listing every deviation from spec revision 3. **Step 2: Run** the gates → PASS. **Commit** `docs: record sub-project 5C-1 as built`.
 
 ### Task 14: Cross-platform validation (controller-run; needs hosts) — tier: opus (controller)
 
