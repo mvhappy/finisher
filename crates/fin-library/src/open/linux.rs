@@ -11,7 +11,7 @@ use libc::c_int;
 
 use super::{hooks, map_errno, stub_names};
 use crate::source::linux::{ENTRY_FLAGS, dev_id, file_type, mtime_ns, same_mount, statx, statx_fd};
-use crate::source::unix::{O_NOATIME, cname, errno_is, ino_id, open_root, openat};
+use crate::source::unix::{O_NOATIME, cname, errno_is, ino_id, openat};
 use crate::types::{EntryType, Expect, OpenError};
 
 /// No `RESOLVE_NO_XDEV`: nested mounts below the root are catalogued, so an open crosses them;
@@ -196,6 +196,19 @@ fn missing(parent: RawFd, name: &[u8]) -> OpenError {
     OpenError::NotFound
 }
 
+/// The root as an `O_PATH` directory handle: the opener only resolves below it and reads its
+/// identity, never lists it, so under the `worker` sandbox a source granted as a single file
+/// (Landlock `READ_FILE` on the file, nothing on its directory) opens (plan 7C Decision 8).
+fn open_root_path(root: &Path) -> io::Result<OwnedFd> {
+    use std::os::unix::ffi::OsStrExt;
+    let c = cname(root.as_os_str().as_bytes())?;
+    openat(
+        libc::AT_FDCWD,
+        &c,
+        libc::O_PATH | libc::O_DIRECTORY | libc::O_CLOEXEC,
+    )
+}
+
 pub(super) fn open(
     root: &Path,
     dir: &[Vec<u8>],
@@ -203,7 +216,7 @@ pub(super) fn open(
     expect: &Expect,
     _hydrate: bool,
 ) -> Result<File, OpenError> {
-    let root_fd = open_root(root).map_err(map_errno)?;
+    let root_fd = open_root_path(root).map_err(map_errno)?;
     let root_st = statx_fd(root_fd.as_raw_fd())?;
     let parent = open_parent(&root_fd, dir)?;
     let pfd = parent.as_ref().unwrap_or(&root_fd).as_raw_fd();

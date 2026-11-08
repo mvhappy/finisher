@@ -1,0 +1,23 @@
+# The worker profile's base GPU rows for Linux (spec §8.10, plan 7C Decision 8), read by
+# `fin_sandbox::linux::gpu::devices`. One `<access> <path>` per line, access `r` or `rw`; a
+# trailing `*` matches the entries of the directory that start with the rest of the name.
+# Each path is canonicalised where it is used (on a merged-/usr system `/lib` is a link to
+# `usr/lib`) and skipped when it does not exist.
+# Source: the files the Vulkan loader, Mesa and lavapipe open for `media.look`, measured with
+# strace on the Linux VM (plan 7C Task 2). Sub-project 6 (6B-1) proves the hardware drivers'
+# rows on its GPUs and extends the list (`/sys/devices/pci*` for a real adapter, `/dev/nvidia*`
+# in 6G).
+rw /dev/dri/renderD*
+r /dev/dri
+r /usr/share/vulkan
+r /etc/vulkan
+r /usr/local/share/vulkan
+r /usr/share/drirc.d
+r /etc/drirc
+r /etc/ld.so.cache
+r /usr/lib
+r /usr/lib64
+r /usr/local/lib
+r /sys/class/drm
+r /sys/dev/char
+r /sys/devices/system/cpu

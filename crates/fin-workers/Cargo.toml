@@ -26,6 +26,8 @@ test-hooks = ["fin-jobs/test-hooks", "fin-library/test-hooks", "dep:windows-sys"
 
 [dependencies]
 fin-jobs = { path = "../fin-jobs" }
+# The self-sandbox entry (`fin_sandbox::self_apply`, plan 7C Decision 3).
+fin-sandbox = { path = "../fin-sandbox" }
 # The `media` family (sub-project 6 plan 6A Task 11): eval, the measurer over the read-only
 # font cache (no fetcher: workers never fetch), containers, codecs, the compositor and the job
 # directory's rules.

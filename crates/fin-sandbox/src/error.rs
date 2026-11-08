@@ -49,3 +49,31 @@ impl PolicyError {
         }
     }
 }
+
+/// A policy that could not be applied to a process. Every variant but [`ApplyError::Disabled`]
+/// refuses the start as `SANDBOX_UNAVAILABLE {profile, os, need}`; `Disabled` is F2's "the
+/// mechanism is off on this host" (spec §8.9), which the caller reports and decides on.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum ApplyError {
+    /// The OS mechanism is turned off (Linux: Landlock left out of `lsm=`, or a container's
+    /// seccomp profile refusing the Landlock calls).
+    #[error("the sandbox mechanism is disabled on this host ({reason})")]
+    Disabled { reason: String },
+    /// The OS lacks what the profile needs (Linux: Landlock ABI below 3).
+    #[error("the sandbox needs {need}")]
+    Unavailable { need: String },
+    #[error(transparent)]
+    Policy(#[from] PolicyError),
+    /// A rule could not be built for a path that exists.
+    #[error("{}: {error}", path.display())]
+    Rule { path: PathBuf, error: String },
+    /// The process has threads the restriction would not reach.
+    #[error("the process has {threads} threads; the sandbox must be applied while it has one")]
+    Threads { threads: usize },
+    /// A call of the mechanism failed.
+    #[error("{call}: {error}")]
+    Os { call: String, error: String },
+    /// The profile is not applied this way on this OS (yet).
+    #[error("{0}")]
+    NotSupported(String),
+}

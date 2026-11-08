@@ -277,3 +277,19 @@ fn edeadlk_is_cloud_only() {
         fin_library::walk::code::CLOUD_ONLY
     );
 }
+
+/// A held `/proc/self/mountinfo` handle (taken before the worker sandbox, plan 7C Task 2)
+/// reads the same live table as a fresh open, every time.
+#[cfg(target_os = "linux")]
+#[test]
+fn held_mountinfo_reads_the_live_table() {
+    use fin_library::volume::linux::{hold_mountinfo, mountinfo};
+    let fresh = mountinfo().unwrap();
+    hold_mountinfo().unwrap();
+    hold_mountinfo().unwrap();
+    for _ in 0..3 {
+        assert_eq!(mountinfo().unwrap(), fresh);
+    }
+    let root = tempfile::tempdir().unwrap();
+    assert!(fin_library::volume::linux::fields_of(root.path()).is_ok());
+}

@@ -110,11 +110,38 @@ pub fn parse_line(line: &str) -> Option<MountInfo> {
     })
 }
 
-/// Every mount of this process's mount namespace.
+/// `/proc/self/mountinfo`, opened by [`hold_mountinfo`] before a sandbox that does not grant
+/// `/proc` is applied (the `worker` profile, plan 7C Task 2). Reading it again from offset 0
+/// gives the live table (a `seq_file` regenerates it), so a held handle is never stale.
+static HELD: std::sync::OnceLock<std::sync::Mutex<std::fs::File>> = std::sync::OnceLock::new();
+
+/// Opens and keeps `/proc/self/mountinfo` for [`mountinfo`] (once; later calls do nothing).
+/// `fin-workers` calls it before its self-sandbox entry.
+pub fn hold_mountinfo() -> io::Result<()> {
+    if HELD.get().is_none() {
+        // `/proc` is never under a library root.
+        #[allow(clippy::disallowed_methods)]
+        let f = std::fs::File::open("/proc/self/mountinfo")?;
+        let _ = HELD.set(std::sync::Mutex::new(f));
+    }
+    Ok(())
+}
+
+/// Every mount of this process's mount namespace: through the held handle when there is one.
 pub fn mountinfo() -> io::Result<Vec<MountInfo>> {
-    // `/proc` is never under a library root.
-    #[allow(clippy::disallowed_methods)]
-    let text = std::fs::read_to_string("/proc/self/mountinfo")?;
+    let text = match HELD.get() {
+        Some(f) => {
+            use std::io::{Read, Seek, SeekFrom};
+            let mut f = f.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            f.seek(SeekFrom::Start(0))?;
+            let mut text = String::new();
+            f.read_to_string(&mut text)?;
+            text
+        }
+        // `/proc` is never under a library root.
+        #[allow(clippy::disallowed_methods)]
+        None => std::fs::read_to_string("/proc/self/mountinfo")?,
+    };
     Ok(text.lines().filter_map(parse_line).collect())
 }
 

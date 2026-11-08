@@ -524,8 +524,9 @@ fn self_sandbox_fails_closed() {
     let exit = h.exit(p);
     assert_eq!(exit.reason, ExitReason::SpawnFailed("selfSandbox".into()));
     assert_eq!(exit.code, Some(i64::from(fin_jobs::EXIT_SELF_SANDBOX)));
+    // `fin_sandbox::self_apply` is registered: a request it cannot read fails before `hello`.
     assert!(
-        exit.stderr_tail.contains("no sandbox is registered"),
+        exit.stderr_tail.contains("unreadable worker input"),
         "{}",
         exit.stderr_tail
     );
