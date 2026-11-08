@@ -14,7 +14,10 @@ let s: Scratch;
 let c: Catalogs;
 let now: number;
 let lib: string;
+/** Each job's attempt start, taken at its first file. */
+let starts: Map<string, number>;
 beforeEach(async () => {
+  starts = new Map();
   s = scratch();
   now = 1_800_000_000_000;
   c = await threads(s, { clock: () => now });
@@ -34,7 +37,16 @@ async function apply(job: string, batches: ScanBatch[], gen = 1) {
   now += 1000;
   const out = join(s.jobsRoot, job, "out");
   mkdirSync(out, { recursive: true });
-  return run(c.indexer.applyBatchFile(lib, writeBatch(out, batches), gen));
+  return run(c.indexer.applyBatchFile(lib, writeBatch(out, batches), { gen, startedAt: await startOf(job) }));
+}
+
+async function startOf(job: string): Promise<number> {
+  let t = starts.get(job);
+  if (t === undefined) {
+    t = await run(c.indexer.attemptStart(lib));
+    starts.set(job, t);
+  }
+  return t;
 }
 
 const batch = (entries: ScanEntry[], dirsDone: ScanBatch["dirsDone"]): ScanBatch[] => [{ seq: 1, entries, dirsDone }];
@@ -138,7 +150,7 @@ describe("listings", () => {
     const out = join(s.jobsRoot, "s2", "out");
     mkdirSync(out, { recursive: true });
     const file = writeBatch(out, [{ seq: 1, entries: [], dirsDone: [done([], 0), done(["A"], 0)] }]);
-    expect(await failCode(c.indexer.applyBatchFile(lib, file, 2))).toBe("ROOT_EMPTY_SUSPECT");
+    expect(await failCode(c.indexer.applyBatchFile(lib, file, { gen: 2, startedAt: await startOf("s2") }))).toBe("ROOT_EMPTY_SUSPECT");
     expect(rows()).toEqual(before);
     expect(dirRow("")).toMatchObject({ listedGen: 1 });
   });
@@ -293,9 +305,13 @@ describe("collisions", () => {
   });
 
   test("collision_never_fails_a_batch", async () => {
-    const names = Array.from({ length: 300 }, (_, i) => (i % 2 === 0 ? "dup.mov" : "DUP.mov"));
-    // 300 raw names, one key: every row kept, all flagged, nothing refused.
-    const entries = names.map((n, i) => ({ ...ci([], n, { raw: Buffer.from(`${n}${i}`) }), relKey: "dup.mov" }));
+    // 300 raw names, one key: case variants of `dup` times an invalid byte (each decodes to
+    // U+FFFD) on a case-insensitive root. Every row kept, all flagged, nothing refused.
+    const entries = Array.from({ length: 300 }, (_, i) => {
+      const stem = [..."dup"].map((ch, k) => ((i >> k) & 1 ? ch.toUpperCase() : ch)).join("");
+      const raw = Buffer.concat([Buffer.from(stem), Buffer.from([0x80 + (i >> 3)]), Buffer.from(".mov")]);
+      return { ...ci([], `${stem}\uFFFD.mov`, { raw }), nameLossy: true };
+    });
     const counts = await apply("s1", batch(entries, [done([], entries.length)]));
     expect(counts).toMatchObject({ added: 300, collisions: 300 });
     expect((await run(c.reader.counts(lib))).collisions).toBe(300);
@@ -311,10 +327,144 @@ test("missing_purged_after_90_days_in_batches", async () => {
   await apply("s3", batch([dirEntry([], "keep")], [done([], 1)]));
   expect((await run(c.reader.counts(lib))).files).toEqual({ missing: n });
   const before = (await run(c.indexer.stats())).transactions;
-  expect(await run(c.indexer.purgeMissing(lib, now - 1))).toEqual({ deleted: 0, dirs: 0 });
-  const purged = await run(c.indexer.purgeMissing(lib, now + 90 * 86_400_000));
+  expect(await run(c.indexer.purgeMissing(lib, { before: now - 1, beforeGen: 2 }))).toEqual({ deleted: 0, dirs: 0 });
+  // Days alone (a forward clock jump) purge nothing: a full scan generation must have passed.
+  expect(await run(c.indexer.purgeMissing(lib, { before: now + 90 * 86_400_000, beforeGen: 1 }))).toEqual({ deleted: 0, dirs: 0 });
+  const purged = await run(c.indexer.purgeMissing(lib, { before: now + 90 * 86_400_000, beforeGen: 2 }));
   expect(purged).toEqual({ deleted: n, dirs: 2 });
   const stats = await run(c.indexer.stats());
   expect(stats.transactions - before).toBeGreaterThanOrEqual(Math.ceil(n / 500) + 1);
   expect((await run(c.reader.counts(lib))).dirs).toEqual({ present: 1 });
+});
+
+describe("review fixes (7a/7b)", () => {
+  const dirAt = (relKey: string) => {
+    const db = new DatabaseSync(catalogPath(s.serverData, lib), { readOnly: true });
+    try {
+      return db.prepare("SELECT CAST(mtimeNs AS TEXT) AS mtimeNs, listedGen, listedAt FROM dirs WHERE relKey = ?").get(relKey) as Record<string, unknown>;
+    } finally {
+      db.close();
+    }
+  };
+  const code = (path: string) => {
+    const db = new DatabaseSync(catalogPath(s.serverData, lib), { readOnly: true });
+    try {
+      return (db.prepare("SELECT code FROM files WHERE relKey = ?").get(path) as { code: string | null }).code;
+    } finally {
+      db.close();
+    }
+  };
+
+  test("a full scan's batch applied after a poll keeps the poll's new file", async () => {
+    await seed();
+    // The scan's attempt starts and reads A = {a, b}; then c is created, a poll lists A = {a, b, c}
+    // and is applied first; the scan's older batch comes last.
+    await startOf("full");
+    await apply("poll", batch([entry(["A"], "a.mov"), entry(["A"], "b.mov"), entry(["A"], "c.mov")], [done(["A"], 3, { mtimeNs: "1700000000000000030" })]));
+    const pollListed = dirAt("A");
+    now += 5;
+    expect(await apply("full", batch([entry(["A"], "a.mov"), entry(["A"], "b.mov")], [done(["A"], 2, { mtimeNs: "1700000000000000020" })]), 2)).toMatchObject({ missing: 0 });
+    expect(rows()["A/c.mov"]).toMatchObject({ state: "present" });
+    // The older listing records neither its mtime nor its generation.
+    expect(dirAt("A")).toEqual(pollListed);
+    expect(pollListed).toMatchObject({ mtimeNs: "1700000000000000030", listedGen: 1 });
+  });
+
+  test("the empty confirmation counts from the confirming attempt's start", async () => {
+    await seed();
+    const t0 = now + 1000;
+    await apply("p1", batch([], [done(["A"], 0)]));
+    now = t0 + 10_000;
+    await startOf("p2"); // started 10 s after the suspicion, applied much later
+    now = t0 + 120_000;
+    expect(await apply("p2", batch([], [done(["A"], 0)]))).toMatchObject({ suspect: 1, missing: 0 });
+    expect(await apply("p3", batch([], [done(["A"], 0)]))).toMatchObject({ suspect: 0, missing: 2 });
+  });
+
+  test("an entry under a suspect directory clears the suspicion before its listing closes", async () => {
+    await seed();
+    await apply("p1", batch([], [done(["A"], 0)]));
+    expect(dirRow("A")).toMatchObject({ code: "DIR_EMPTY_SUSPECT" });
+    await apply("s2", batch([entry(["A"], "a.mov")], []));
+    expect(dirRow("A")).toMatchObject({ code: null, emptySince: null, emptyJob: null });
+  });
+
+  test("an excluded directory goes missing EXCLUDED once its parent's listing closes, and is no rename's old row", async () => {
+    await apply("s1", batch([dirEntry([], "A"), withDev(entry(["A"], "a.mov", { fileId: id(7) }))], [done([], 1), done(["A"], 1)]));
+    await apply("s2", batch([dirEntry([], "A", { excluded: "GLOB" })], []));
+    expect(rows()["A/a.mov"]).toMatchObject({ state: "present" });
+    expect(await apply("s2", batch([], [done([], 1)]))).toMatchObject({ missing: 1, excluded: 1 });
+    expect(rows()["A/a.mov"]).toMatchObject({ state: "missing" });
+    expect(code("A/a.mov")).toBe("EXCLUDED");
+    // The same file id elsewhere is a new row, not the excluded one taken over.
+    expect(await apply("s3", batch([dirEntry([], "B"), withDev(entry(["B"], "a.mov", { fileId: id(7) }))], []))).toMatchObject({ added: 1, renamed: 0 });
+    // An excluded file the same way.
+    await apply("s4", batch([entry(["B"], "a.mov", { excluded: "GLOB" })], [done(["B"], 1)]));
+    expect(code("B/a.mov")).toBe("EXCLUDED");
+  });
+
+  test("an excluded directory reported by an incomplete listing stays", async () => {
+    await apply("s1", batch([dirEntry([], "A"), entry(["A"], "a.mov")], [done([], 1), done(["A"], 1)]));
+    await apply("s2", batch([dirEntry([], "A", { excluded: "GLOB" })], [done([], 1, { complete: false, code: "TIMEOUT" })]));
+    expect(rows()["A/a.mov"]).toMatchObject({ state: "present" });
+  });
+
+  test("names and keys that do not match their raw name or parent are refused", async () => {
+    await seed();
+    const bad: Array<[string, ScanEntry]> = [
+      ["rawName", entry(["A"], "x.mov", { raw: Buffer.from("..") })],
+      ["rawName", entry(["A"], "x.mov", { raw: Buffer.from("x/y.mov") })],
+      ["rawName", entry(["A"], "x.mov", { raw: Buffer.from("x\0.mov") })],
+      ["nameNfc", { ...entry(["A"], "x.mov"), nameNfc: "other.mov" }],
+      ["nameLossy", { ...entry(["A"], "x.mov"), nameLossy: true }],
+      ["relKey", { ...entry(["A"], "x.mov"), relKey: "B/x.mov" }],
+      ["relKey", { ...entry(["A"], "x.mov"), relKey: "A/x.mov/../../y" }],
+      ["rawName", { ...entry(["A"], "x.mov"), dir: { components: [Buffer.from("..").toString("base64")] } }],
+    ];
+    for (const [reason, e] of bad) {
+      const got = (await apply("s2", batch([e], [])).then(
+        () => ({ code: "accepted", details: {} }),
+        (x: { code: string; details: unknown }) => x,
+      ));
+      expect(got.code, reason).toBe("LIBRARY_BATCH_INVALID");
+      expect(got.details, reason).toMatchObject({ reason });
+    }
+    // A folded key on a case-insensitive root, and a decomposed display name, are accepted.
+    expect(await apply("s3", batch([{ ...entry(["A"], "X.mov"), relKey: "A/x.mov" }, { ...entry(["A"], "e\u0301.mov"), nameNfc: "e\u0301.mov" }], []))).toMatchObject({ added: 2 });
+  });
+
+  test("a failed op does not drop the open listings; a failed batch does", async () => {
+    await seed();
+    await apply("s2", batch([entry(["A"], "a.mov")], []));
+    expect(await failCode(c.indexer.exec(lib, "core", "applyProbed", { results: "nope" }))).toBe("CATALOG_ARGS_INVALID");
+    expect(await apply("s2", batch([], [done(["A"], 1)]))).toMatchObject({ missing: 1, incomplete: 0 });
+    await apply("s3", batch([entry(["A"], "a.mov")], []));
+    await run(c.indexer.testFault(lib, 1));
+    expect(await apply("s4", batch([entry(["A"], "zz.mov")], [])).then(() => "ok", (e: { code: string }) => e.code)).toBe("CATALOG_TEST_FAULT");
+    expect(await apply("s3", batch([], [done(["A"], 1)]))).toMatchObject({ missing: 0, incomplete: 1 });
+  });
+
+  test("attemptStart is strictly after every write, even when the clock went back", async () => {
+    await seed();
+    const t1 = await run(c.indexer.attemptStart(lib));
+    now -= 3_600_000;
+    const t2 = await run(c.indexer.attemptStart(lib));
+    expect(t2).toBe(t1 + 1);
+    // And it survives a restart.
+    await c.shutdown();
+    c = await threads(s, { clock: () => now });
+    await run(c.indexer.open(lib));
+    expect(await run(c.indexer.attemptStart(lib))).toBe(t2 + 1);
+  });
+});
+
+test("a pending rename between two vanished siblings resolves the same whichever is marked first", async () => {
+  const f = (dir: string) => withDev(entry([dir], "a.mov", { fileId: id(9) }));
+  await apply("s1", batch([dirEntry([], "A"), dirEntry([], "B"), f("A")], [done([], 2), done(["A"], 1)]));
+  // A hard link (or copy keeping the id) appears in B: a pending rename of A/a.mov.
+  await apply("s2", batch([f("B")], [done(["B"], 1)]));
+  expect(rows()["B/a.mov"]).toMatchObject({ renameOf: rows()["A/a.mov"]!.id });
+  // Both directories vanish: two missing rows, nothing merged (the new row was gone as well).
+  expect(await apply("s3", batch([dirEntry([], "keep")], [done([], 1)]))).toMatchObject({ missing: 2, renamed: 0 });
+  expect(Object.values(rows()).map((r) => r.state)).toEqual(["missing", "missing"]);
 });

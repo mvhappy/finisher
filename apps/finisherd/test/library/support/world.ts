@@ -14,6 +14,8 @@ export interface WFile {
   readonly kind: "file";
   inode: Inode;
   placeholder: Placeholder | null;
+  /** Excluded by something other than its name (a glob, an automount). */
+  excluded?: boolean;
 }
 
 export interface WDir {
@@ -21,6 +23,7 @@ export interface WDir {
   readonly children: Map<string, WNode>;
   unreadable: boolean;
   placeholder: boolean;
+  excluded?: boolean;
 }
 
 export type WNode = WFile | WDir;
@@ -119,7 +122,7 @@ export class World {
   entry(chain: ReadonlyArray<string>, name: string, node: WNode): ScanEntry {
     const n = this.names(name, this.keyOf(chain));
     const dir = { components: chain.map((c) => Buffer.from(c, "hex").toString("base64")) };
-    const excluded = n.nameNfc.startsWith(".") ? { excluded: "DOTFILE" } : {};
+    const excluded = n.nameNfc.startsWith(".") ? { excluded: "DOTFILE" } : node.excluded === true ? { excluded: "GLOB" } : {};
     const dev = this.opts.ids === "none" ? {} : { dev: "64769" };
     const base = { dir, name: Buffer.from(name, "hex").toString("base64"), ...n, mountRoot: false, automount: false, ...excluded, ...dev };
     if (node.kind === "dir") {
@@ -200,6 +203,16 @@ export function cut(items: ReadonlyArray<Item>, sizes: ReadonlyArray<number>): S
     ]);
   }
   return files;
+}
+
+/** Every path in the world now: `d:<chain>` for directories, `f:<chain>|<name>` for files (hex). */
+export function paths(w: World): Set<string> {
+  const out = new Set<string>();
+  for (const l of w.all().slice(1)) {
+    if (l.node.kind === "dir") out.add(`d:${l.chain.join("/")}`);
+    else out.add(`f:${l.chain.slice(0, -1).join("/")}|${l.name}`);
+  }
+  return out;
 }
 
 /** The fingerprint a probe computes for a file's content (fp1 covers size and mtime). */

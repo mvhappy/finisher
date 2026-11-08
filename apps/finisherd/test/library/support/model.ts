@@ -15,6 +15,7 @@ export interface MDir {
   placeholder: string | null;
   mtimeNs: string | null;
   listedGen: number | null;
+  listedAt: number | null;
   emptySince: number | null;
   emptyJob: string | null;
   collision: number;
@@ -46,6 +47,7 @@ export interface MFile {
   lastSeen: number;
   lastChange: number;
   missingSince: number | null;
+  missingGen: number | null;
 }
 
 export interface ProbeResult {
@@ -61,6 +63,30 @@ export interface ProbeResult {
 const hex = (b64: string): string => Buffer.from(b64, "base64").toString("hex");
 const lossyDecode = (h: string): string => new TextDecoder().decode(Buffer.from(h, "hex"));
 const live = (r: { state: string }): boolean => r.state !== "missing";
+const EXCLUDED = "EXCLUDED";
+
+interface Saved {
+  readonly dirs: MDir[];
+  readonly files: MFile[];
+  readonly nextDir: number;
+  readonly nextFile: number;
+  readonly deleted: number;
+}
+
+interface MListing {
+  start: number;
+  seen: number;
+  excludedDirs: number[];
+  excludedFiles: number[];
+}
+
+/** Who applies: the job, its generation, the transaction time and the attempt's start. */
+interface Ctx {
+  readonly job: string;
+  readonly gen: number;
+  readonly at: number;
+  readonly startedAt: number;
+}
 
 function extOf(nfc: string): string | null {
   const i = nfc.lastIndexOf(".");
@@ -78,13 +104,24 @@ export class Model {
   #nextDir = 2;
   #nextFile = 1;
   #lastAt = 0;
-  readonly #listings = new Map<string, { start: number; seen: number }>();
+  #listings = new Map<string, MListing>();
 
   constructor() {
     this.dirs.push({
       id: 1, parent: null, name: "", nameNfc: "", relKey: "", state: "present", code: null, placeholder: null, mtimeNs: null,
-      listedGen: null, emptySince: null, emptyJob: null, collision: 0, lastSeen: 0,
+      listedGen: null, listedAt: null, emptySince: null, emptyJob: null, collision: 0, lastSeen: 0,
     });
+  }
+
+  /** `attemptStart`: strictly after every time handed out or written so far. */
+  attemptStart(now: number): number {
+    this.#lastAt = Math.max(now, this.#lastAt + 1);
+    return this.#lastAt;
+  }
+
+  /** The indexer restarted (or the catalog was reopened): every open listing is lost. */
+  restart(): void {
+    this.#listings = new Map();
   }
 
   dir(id: number): MDir {
@@ -116,8 +153,18 @@ export class Model {
     return out;
   }
 
-  /** Applies one batch file: answers the error code when the file is refused (nothing written). */
-  applyFile(batches: ReadonlyArray<ScanBatch>, job: string, gen: number, at0: number): string | undefined {
+  /**
+   * Applies one batch file in transactions of `txRows` rows: answers the error code when the
+   * file is refused (nothing written) or when transaction `fault` fails (the earlier ones stay,
+   * every open listing is lost).
+   */
+  applyFile(
+    batches: ReadonlyArray<ScanBatch>,
+    job: { job: string; gen: number; startedAt: number },
+    at0: number,
+    txRows: number,
+    fault?: number,
+  ): string | undefined {
     const rows: Array<{ e?: ScanEntry; d?: DirDone }> = [];
     for (const b of batches) {
       for (const e of b.entries) rows.push({ e });
@@ -134,23 +181,63 @@ export class Model {
     if (!this.offline && rootEmpty && this.files.some(live)) return "ROOT_EMPTY_SUSPECT";
     const at = Math.max(at0, this.#lastAt);
     this.#lastAt = at;
-    for (const r of rows) {
-      if (r.e !== undefined) this.#entry(r.e, job, at);
-      else this.#done(r.d!, job, gen, at);
+    const ctx: Ctx = { ...job, at };
+    for (let i = 0, n = 1; i < rows.length; i += txRows, n++) {
+      const saved = n === fault ? this.#save() : undefined;
+      for (const r of rows.slice(i, i + txRows)) {
+        if (r.e !== undefined) this.#entry(r.e, ctx);
+        else this.#done(r.d!, ctx);
+      }
+      this.#hardlinks();
+      if (saved !== undefined) {
+        this.#restore(saved);
+        this.restart();
+        return "CATALOG_TEST_FAULT";
+      }
     }
-    this.#hardlinks();
     return undefined;
   }
 
-  #entry(e: ScanEntry, job: string, at: number): void {
+  #save(): Saved {
+    return {
+      dirs: this.dirs.map((d) => ({ ...d })), files: this.files.map((f) => ({ ...f })), nextDir: this.#nextDir, nextFile: this.#nextFile,
+      deleted: this.deleted.length,
+    };
+  }
+
+  #restore(s: Saved): void {
+    this.dirs = s.dirs;
+    this.files = s.files;
+    this.#nextDir = s.nextDir;
+    this.#nextFile = s.nextFile;
+    this.deleted.length = s.deleted;
+  }
+
+  #listing(ctx: Ctx, dirId: number): MListing {
+    const key = `${ctx.job}\u0000${dirId}`;
+    let l = this.#listings.get(key);
+    if (l === undefined) {
+      l = { start: Math.min(ctx.at, ctx.startedAt), seen: 0, excludedDirs: [], excludedFiles: [] };
+      this.#listings.set(key, l);
+    }
+    return l;
+  }
+
+  #entry(e: ScanEntry, ctx: Ctx): void {
+    const at = ctx.at;
     const dir = this.findDir(e.dir.components)!;
-    const key = `${job}\u0000${dir.id}`;
-    const l = this.#listings.get(key) ?? { start: at, seen: 0 };
-    l.seen++;
-    this.#listings.set(key, l);
-    if (e.entryType === "dir") return this.#dirEntry(dir, e, at);
-    if (e.entryType !== "file" || e.excluded != null) return;
+    this.#listing(ctx, dir.id).seen++;
+    if (dir.emptySince !== null) {
+      Object.assign(dir, { emptySince: null, emptyJob: null, code: dir.code === "DIR_EMPTY_SUSPECT" ? null : dir.code });
+    }
+    if (e.entryType === "dir") return this.#dirEntry(dir, e, ctx);
+    if (e.entryType !== "file") return;
     const name = hex(e.name);
+    if (e.excluded != null) {
+      const row = this.files.find((f) => f.dirId === dir.id && f.name === name && live(f));
+      if (row !== undefined) this.#listing(ctx, dir.id).excludedFiles.push(row.id);
+      return;
+    }
     const id = e.fileId == null || /^0*$/.test(hex(e.fileId)) ? null : hex(e.fileId);
     const dev = e.dev ?? null;
     const placeholder = e.placeholder ?? null;
@@ -159,9 +246,13 @@ export class Model {
     const known = this.files.find((f) => f.dirId === dir.id && f.name === name);
     if (known === undefined) {
       const same = id === null ? [] : this.files.filter((f) => f.fileId === id && f.dev === dev && f.size === e.size && f.mtimeNs === e.mtimeNs);
-      const gone = same.filter((f) => !live(f)).sort((a, b) => (b.missingSince ?? 0) - (a.missingSince ?? 0) || a.id - b.id)[0];
+      const gone = same
+        .filter((f) => !live(f) && f.code !== EXCLUDED)
+        .sort((a, b) => (b.missingSince ?? 0) - (a.missingSince ?? 0) || a.id - b.id)[0];
       if (gone !== undefined) {
-        Object.assign(gone, names, { fileId: id, dev, placeholder, state: fresh, code: null, lastSeen: at, missingSince: null, renameOf: null });
+        Object.assign(gone, names, {
+          fileId: id, dev, placeholder, state: fresh, code: null, lastSeen: at, missingSince: null, missingGen: null, renameOf: null,
+        });
         if (gone.fp === null) gone.probeVersion = null;
         return;
       }
@@ -169,7 +260,7 @@ export class Model {
       this.files.push({
         id: this.#nextFile++, ...names, size: e.size, mtimeNs: e.mtimeNs, fileId: id, dev, placeholder, fp: null, probeVersion: null,
         kind: null, state: fresh, code: null, renameOf: was?.id ?? null, collision: 0, hardlink: false, firstSeen: at, lastSeen: at,
-        lastChange: at, missingSince: null,
+        lastChange: at, missingSince: null, missingGen: null,
       });
       return;
     }
@@ -179,18 +270,20 @@ export class Model {
     if (!sameStat || (!wasMissing && idDiffers)) {
       Object.assign(known, names, {
         size: e.size, mtimeNs: e.mtimeNs, fileId: id, dev, placeholder, state: fresh, code: null, fp: null, probeVersion: null, kind: null,
-        renameOf: null, lastSeen: at, lastChange: at, missingSince: null,
+        renameOf: null, lastSeen: at, lastChange: at, missingSince: null, missingGen: null,
       });
       return;
     }
     const keep = !wasMissing && placeholder === null && (known.state === "probeFailed" || known.state === "skipped");
     Object.assign(known, names, {
       fileId: id, dev, placeholder, state: keep ? known.state : fresh, code: keep ? known.code : null, lastSeen: at, missingSince: null,
+      missingGen: null,
     });
     if (wasMissing && known.fp === null) known.probeVersion = null;
   }
 
-  #dirEntry(parent: MDir, e: ScanEntry, at: number): void {
+  #dirEntry(parent: MDir, e: ScanEntry, ctx: Ctx): void {
+    const at = ctx.at;
     const state = e.excluded != null ? "excluded" : e.placeholder != null ? "cloudOnly" : "present";
     const fields = {
       nameNfc: e.nameNfc, relKey: e.relKey, state, code: e.excluded ?? null, placeholder: e.placeholder ?? null, lastSeen: at,
@@ -198,13 +291,13 @@ export class Model {
     const known = this.dirs.find((d) => d.parent === parent.id && d.name === hex(e.name));
     if (known === undefined) {
       this.dirs.push({
-        id: this.#nextDir++, parent: parent.id, name: hex(e.name), ...fields, mtimeNs: null, listedGen: null, emptySince: null,
-        emptyJob: null, collision: 0,
+        id: this.#nextDir++, parent: parent.id, name: hex(e.name), ...fields, mtimeNs: null, listedGen: null, listedAt: null,
+        emptySince: null, emptyJob: null, collision: 0,
       });
       return;
     }
     Object.assign(known, fields);
-    if (state === "excluded" && !this.offline) this.#goneBelow(known.id, at, true);
+    if (state === "excluded") this.#listing(ctx, parent.id).excludedDirs.push(known.id);
     if (state === "cloudOnly") {
       for (const d of this.#below(known.id)) if (!["missing", "excluded", "cloudOnly"].includes(d.state)) d.state = "cloudOnly";
       const ids = new Set([known.id, ...this.#below(known.id).map((d) => d.id)]);
@@ -212,19 +305,18 @@ export class Model {
     }
   }
 
-  /** Marks everything below `id` missing (with `id`'s own files when `withOwn`); answers the files. */
-  #goneBelow(id: number, at: number, resolve: boolean): MFile[] {
+  /** Marks every directory below `id` and every file in or below it missing; answers the files. */
+  #goneBelow(id: number, ctx: Ctx, code: string | null): MFile[] {
     const below = this.#below(id);
     for (const d of below) if (live(d)) d.state = "missing";
     const ids = new Set([id, ...below.map((d) => d.id)]);
     const files = this.files.filter((f) => ids.has(f.dirId) && live(f));
-    for (const f of files) this.#gone(f, at);
-    if (resolve) this.#resolve(files);
+    for (const f of files) this.#gone(f, ctx, code);
     return files;
   }
 
-  #gone(f: MFile, at: number): void {
-    Object.assign(f, { state: "missing", missingSince: at, renameOf: null, hardlink: false });
+  #gone(f: MFile, ctx: Ctx, code: string | null): void {
+    Object.assign(f, { state: "missing", missingSince: ctx.at, missingGen: ctx.gen, code: code ?? f.code, renameOf: null, hardlink: false });
   }
 
   #resolve(gone: ReadonlyArray<MFile>): void {
@@ -247,12 +339,14 @@ export class Model {
       placeholder: source.placeholder, lastSeen: source.lastSeen,
       state: keepProbe ? (source.placeholder !== null ? "cloudOnly" : "present") : source.state,
       code: keepProbe ? null : source.code, fp: p.fp, probeVersion: p.probeVersion, kind: p.kind, renameOf: null, missingSince: null,
+      missingGen: null,
     });
   }
 
-  #done(d: DirDone, job: string, gen: number, at: number): void {
+  #done(d: DirDone, ctx: Ctx): void {
+    const at = ctx.at;
     const dir = this.findDir(d.dir.components)!;
-    const key = `${job}\u0000${dir.id}`;
+    const key = `${ctx.job}\u0000${dir.id}`;
     const l = this.#listings.get(key);
     this.#listings.delete(key);
     if (this.offline) return;
@@ -262,12 +356,13 @@ export class Model {
       dir.lastSeen = at;
       return;
     }
+    const start = l?.start ?? Math.min(at, ctx.startedAt);
     const kids = this.files.some((f) => f.dirId === dir.id && live(f)) || this.dirs.some((c) => c.parent === dir.id && live(c));
     if (d.entries === 0 && kids) {
-      const ok = dir.emptySince !== null && dir.emptyJob !== job && at - dir.emptySince >= 60_000;
+      const ok = dir.emptySince !== null && dir.emptyJob !== ctx.job && start - dir.emptySince >= 60_000;
       if (!ok) {
         dir.emptySince ??= at;
-        dir.emptyJob ??= job;
+        dir.emptyJob ??= ctx.job;
         dir.code = "DIR_EMPTY_SUSPECT";
         dir.lastSeen = at;
         return;
@@ -276,20 +371,28 @@ export class Model {
       dir.lastSeen = at;
       return;
     }
-    const start = l?.start ?? at;
+    // An exclusion takes its rows out once the listing that reported it closes.
+    for (const id of l?.excludedFiles ?? []) {
+      const f = this.files.find((x) => x.id === id);
+      if (f !== undefined && live(f) && f.lastSeen < start) this.#gone(f, ctx, EXCLUDED);
+    }
+    for (const id of l?.excludedDirs ?? []) if (this.dir(id).state === "excluded") this.#goneBelow(id, ctx, EXCLUDED);
     const gone = this.files.filter((f) => f.dirId === dir.id && live(f) && f.lastSeen < start);
-    for (const f of gone) this.#gone(f, at);
+    for (const f of gone) this.#gone(f, ctx, null);
     for (const c of this.dirs.filter((c) => c.parent === dir.id && live(c) && c.lastSeen < start)) {
       c.state = "missing";
-      gone.push(...this.#goneBelow(c.id, at, false));
+      gone.push(...this.#goneBelow(c.id, ctx, null));
     }
     const seen = new Set(this.files.filter((f) => f.dirId === dir.id && live(f) && f.lastSeen >= start).map((f) => f.id));
     for (const f of this.files) if (f.renameOf !== null && seen.has(f.renameOf)) f.renameOf = null;
     this.#resolve(gone);
     this.#collisions(dir.id);
-    if (d.mtimeNs != null) dir.mtimeNs = d.mtimeNs;
-    Object.assign(dir, { listedGen: gen, code: d.code ?? null, emptySince: null, emptyJob: null, lastSeen: at });
-    if (dir.state === "unreadable") dir.state = "present";
+    if (dir.listedAt === null || start >= dir.listedAt) {
+      if (d.mtimeNs != null) dir.mtimeNs = d.mtimeNs;
+      Object.assign(dir, { listedGen: ctx.gen, listedAt: start, code: d.code ?? null });
+      if (dir.state === "unreadable") dir.state = "present";
+    } else if (dir.code === "DIR_EMPTY_SUSPECT") dir.code = null;
+    Object.assign(dir, { emptySince: null, emptyJob: null, lastSeen: at });
   }
 
   #collisions(dirId: number): void {
@@ -327,7 +430,7 @@ export class Model {
       Object.assign(f, { fp: r.fp, probeVersion: r.probeVersion, state: r.state, code: null, kind: r.kind ?? null });
       if (!first || r.fp === null) continue;
       const m = this.files
-        .filter((x) => x.state === "missing" && x.fp === r.fp && x.id !== f.id)
+        .filter((x) => x.state === "missing" && x.code !== EXCLUDED && x.fp === r.fp && x.id !== f.id)
         .sort((a, b) => (b.missingSince ?? 0) - (a.missingSince ?? 0) || a.id - b.id)[0];
       if (m !== undefined) {
         this.merge(m, f, false);

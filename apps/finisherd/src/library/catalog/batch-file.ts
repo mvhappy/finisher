@@ -5,13 +5,17 @@
 // together they hold ≤ 4,096 entries and the file is ≤ 8 MiB.
 //
 // The file is opened without following links (`O_NOFOLLOW` where the OS has it, and the
-// `lstat`/`fstat` identity everywhere), must be a regular file within the size cap, must be
-// valid UTF-8, and every line must match the generated schema exactly (no unknown keys, as
-// serde's `deny_unknown_fields`). Anything else is `LIBRARY_BATCH_INVALID` before a row is
-// written. `SPECS` lists the checked fields; `batch-file.test.ts` compares them with the
-// generated JSON schema, so the validator cannot drift from the Rust types.
-import { closeSync, constants, fstatSync, lstatSync, openSync, readSync } from "node:fs";
-import { basename, isAbsolute, join, relative } from "node:path";
+// `lstat`/`fstat` identity everywhere) from `out/`'s real path, which must lie under the jobs
+// root's real path; `out/` must still be the same directory (device and inode) once the file
+// is open, so swapping `out/` for a link mid-open is refused. The file must be a regular file
+// within the size cap, valid UTF-8, and every line must match the generated schema exactly (no
+// unknown keys, as serde's `deny_unknown_fields`). Anything else is `LIBRARY_BATCH_INVALID`
+// before a row is written. `SPECS` lists the checked fields; the "the batch validator matches
+// the generated schema" test in `test/library/catalog.test.ts` compares them with the
+// generated JSON schema, so the validator cannot drift from the Rust types. What the names
+// and keys mean is checked later, against the catalog (`core/entry-check.ts`).
+import { type Stats, closeSync, constants, fstatSync, lstatSync, openSync, readSync, realpathSync } from "node:fs";
+import { basename, dirname, isAbsolute, join, relative } from "node:path";
 import type { DirDone, Placeholder, ScanBatch, ScanEntry } from "@finisher/core-types";
 import { CatalogFailure } from "./protocol.ts";
 
@@ -30,16 +34,33 @@ function invalid(reason: string, details: Record<string, unknown> = {}): Catalog
   return new CatalogFailure("LIBRARY_BATCH_INVALID", "the scan batch file is not valid", { reason, ...details });
 }
 
-/**
- * Checks where the file is: `outDir` absolute, named `out`, inside `jobsRoot` when one is
- * configured, and not itself a link; `file` a plain name. Answers the full path.
- */
-export function batchPath(ref: BatchFileRef, jobsRoot?: string): string {
-  if (typeof ref.outDir !== "string" || !isAbsolute(ref.outDir) || basename(ref.outDir) !== "out") throw invalid("outDir");
-  if (jobsRoot !== undefined) {
-    const rel = relative(jobsRoot, ref.outDir);
-    if (rel === "" || rel.startsWith("..") || isAbsolute(rel)) throw invalid("outsideJobs");
+const inside = (root: string, p: string): boolean => {
+  const rel = relative(root, p);
+  return rel !== "" && !rel.startsWith("..") && !isAbsolute(rel);
+};
+
+const realpath = (p: string): string => {
+  try {
+    return realpathSync.native(p);
+  } catch {
+    throw invalid("outDir");
   }
+};
+
+/** Where a checked batch file is: its full path and its `out/` directory's identity. */
+export interface BatchLocation {
+  readonly path: string;
+  readonly outDir: Stats;
+}
+
+/**
+ * Checks where the file is: `outDir` absolute, named `out`, not itself a link, and (as
+ * given and resolved) inside `jobsRoot`; `file` a plain name. Answers the path under `out/`'s
+ * real path.
+ */
+export function batchPath(ref: BatchFileRef, jobsRoot: string): BatchLocation {
+  if (typeof ref.outDir !== "string" || !isAbsolute(ref.outDir) || basename(ref.outDir) !== "out") throw invalid("outDir");
+  if (!inside(jobsRoot, ref.outDir)) throw invalid("outsideJobs");
   if (typeof ref.file !== "string" || !PLAIN_NAME.test(ref.file) || ref.file.includes("..")) throw invalid("fileName");
   let dir;
   try {
@@ -48,12 +69,14 @@ export function batchPath(ref: BatchFileRef, jobsRoot?: string): string {
     throw invalid("outDir");
   }
   if (!dir.isDirectory()) throw invalid("outDir");
-  return join(ref.outDir, ref.file);
+  const real = realpath(ref.outDir);
+  if (!inside(realpath(jobsRoot), real)) throw invalid("outsideJobs");
+  return { path: join(real, ref.file), outDir: lstatSync(real) };
 }
 
 /** Reads a batch file safely (see the header) and answers its validated lines. */
-export function readBatchFile(ref: BatchFileRef, jobsRoot?: string): ScanBatch[] {
-  const path = batchPath(ref, jobsRoot);
+export function readBatchFile(ref: BatchFileRef, jobsRoot: string): ScanBatch[] {
+  const { path, outDir } = batchPath(ref, jobsRoot);
   let st;
   try {
     st = lstatSync(path);
@@ -73,6 +96,13 @@ export function readBatchFile(ref: BatchFileRef, jobsRoot?: string): ScanBatch[]
   try {
     const fst = fstatSync(fd);
     if (!fst.isFile() || fst.ino !== st.ino || fst.dev !== st.dev) throw invalid("replaced");
+    let dirNow;
+    try {
+      dirNow = lstatSync(dirname(path));
+    } catch {
+      throw invalid("replaced");
+    }
+    if (!dirNow.isDirectory() || dirNow.ino !== outDir.ino || dirNow.dev !== outDir.dev) throw invalid("replaced");
     if (fst.size > BATCH_MAX_BYTES) throw invalid("tooLarge", { bytes: fst.size });
     // One byte more than the cap: a file that grew past it is refused, not truncated.
     bytes = Buffer.alloc(Math.min(fst.size + 1, BATCH_MAX_BYTES + 1));

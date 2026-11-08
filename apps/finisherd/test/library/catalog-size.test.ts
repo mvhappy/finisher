@@ -7,7 +7,7 @@ import { DatabaseSync } from "node:sqlite";
 import type { ScanBatch, ScanEntry } from "@finisher/core-types";
 import { afterEach, beforeEach, expect, test } from "vitest";
 import { catalogPath } from "../../src/library/catalog/open.ts";
-import { type Scratch, dirEntry, done, entry, newLib, run, scratch, stopAll, threads, writeBatch } from "./support/catalog.ts";
+import { type Scratch, dirEntry, done, entry, newLib, run, scratch, stopAll, threads, writeBatch, applied } from "./support/catalog.ts";
 
 let s: Scratch;
 beforeEach(() => {
@@ -87,10 +87,10 @@ test("bytes_per_file_with_fts_dir", { timeout: 300_000 }, async () => {
   const files = batches().map((b) => writeBatch(s.outDir, [b]));
   const t0 = performance.now();
   let entries = 0;
-  for (const f of files) entries += (await run(c.indexer.applyBatchFile(lib, f, 1))).dirs + 0;
-  const applied = await run(c.reader.counts(lib));
+  for (const f of files) entries += (await run(c.indexer.applyBatchFile(lib, f, applied(1)))).dirs + 0;
+  const counted = await run(c.reader.counts(lib));
   const scanS = (performance.now() - t0) / 1000;
-  expect(applied.files).toEqual({ present: TOP * SUB * PER_DIR });
+  expect(counted.files).toEqual({ present: TOP * SUB * PER_DIR });
   expect(entries).toBe(TOP + TOP * SUB);
   const total = TOP * SUB * PER_DIR + TOP + TOP * SUB;
 

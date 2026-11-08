@@ -128,7 +128,7 @@ export function withNotes(): CatalogExtensionRegistry {
 const live: Catalogs[] = [];
 
 export async function threads(s: Scratch, opts: Partial<CatalogThreadsOptions> = {}): Promise<Catalogs> {
-  const c = await startCatalogThreads({ serverData: s.serverData, jobsRoot: s.jobsRoot, extensions: withNotes(), ...opts });
+  const c = await startCatalogThreads({ serverData: s.serverData, jobsRoot: s.jobsRoot, extensions: withNotes(), testHooks: true, ...opts });
   live.push(c);
   return c;
 }
@@ -146,3 +146,10 @@ export async function failCode<A, E>(e: Effect.Effect<A, E>): Promise<string> {
 }
 
 export const newLib = (): string => ulid();
+
+/**
+ * A batch job whose attempt started no earlier than its first listing was applied: for tests
+ * whose world never changes between a listing's read and its apply (the diff's `start` is
+ * then the apply time, `min(at, startedAt)`).
+ */
+export const applied = (gen: number, seq?: number) => ({ gen, startedAt: Number.MAX_SAFE_INTEGER, ...(seq === undefined ? {} : { seq }) });

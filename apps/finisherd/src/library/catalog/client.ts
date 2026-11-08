@@ -10,6 +10,7 @@ import { Context, Effect, Layer } from "effect";
 import type { FileRow, DirRow } from "./core/queries.ts";
 import type { PendingFile } from "./core/ops.ts";
 import type { ApplyCounts } from "./core/apply.ts";
+import { guardedClock } from "./clock.ts";
 import { CATALOG_EXTENSIONS, type CatalogExtensionRegistry } from "./extensions.ts";
 import { CatalogFailure, type Ready, type Reply, type WireError, assertCloneable } from "./protocol.ts";
 
@@ -17,13 +18,25 @@ export interface CatalogThreadsOptions {
   /** `<server-data>`: catalogs live in `libraries/<id>/catalog.db`. */
   readonly serverData: string;
   /** The engine's jobs root: batch files and `in/` files must lie under it. */
-  readonly jobsRoot?: string;
+  readonly jobsRoot: string;
   /** The extensions to load; default every `registerCatalogExtension`ed one. */
   readonly extensions?: CatalogExtensionRegistry;
   /** Rows per indexer transaction (≤ 2,000; tests lower it). */
   readonly txRows?: number;
+  /** Default `guardedClock()`: the wall clock with forward jumps held off. */
   readonly clock?: () => number;
+  /**
+   * Called once when a catalog thread dies after start (it is not restarted: every pending
+   * and later call fails with its `CATALOG_THREAD_EXITED`/`CATALOG_THREAD_FAILED`). Default: a
+   * line on stderr. The service turns it into a fatal health event.
+   */
+  readonly onFatal?: (e: FinError) => void;
+  /** Enables `IndexerClient.testFault` (tests only). */
+  readonly testHooks?: boolean;
 }
+
+/** A thread's health: `dead` once it exited or failed after start. */
+export type CatalogHealth = { readonly ok: true } | { readonly ok: false; readonly error: FinError };
 
 const toFin = (e: WireError): FinError => new FinError({ code: e.code, message: e.message, details: e.details });
 
@@ -33,23 +46,35 @@ class Thread {
   readonly #pending = new Map<number, { resolve: (v: unknown) => void; reject: (e: FinError) => void }>();
   #next = 1;
   #dead: FinError | undefined;
+  #started = false;
+  #stopping = false;
   readonly posted = { count: 0 };
 
-  private constructor(worker: Worker) {
+  private constructor(
+    worker: Worker,
+    readonly onFatal: (e: FinError) => void,
+  ) {
     this.#worker = worker;
   }
 
-  static start(file: string, name: string, workerData: unknown): Promise<Thread> {
+  get dead(): FinError | undefined {
+    return this.#dead;
+  }
+
+  static start(file: string, name: string, workerData: unknown, onFatal: (e: FinError) => void): Promise<Thread> {
     const worker = new Worker(new URL(file, import.meta.url), { name, workerData });
-    const thread = new Thread(worker);
+    const thread = new Thread(worker, onFatal);
     return new Promise((resolve, reject) => {
       const fail = (e: FinError) => {
+        const first = thread.#dead === undefined;
         thread.#die(e);
+        if (thread.#started && first && !thread.#stopping) thread.onFatal(e);
         reject(e);
       };
       worker.once("message", (m: Ready) => {
         if (!m.ready) return fail(toFin(m.error));
         worker.on("message", (r: Reply) => thread.#settle(r));
+        thread.#started = true;
         resolve(thread);
       });
       worker.on("error", (e) => fail(new FinError({ code: "CATALOG_THREAD_FAILED", message: `the ${name} thread failed`, details: { cause: String(e) } })));
@@ -91,6 +116,7 @@ class Thread {
 
   async stop(): Promise<void> {
     if (this.#dead !== undefined) return;
+    this.#stopping = true;
     const exited = new Promise<void>((resolve) => this.#worker.once("exit", () => resolve()));
     const timer = setTimeout(() => void this.#worker.terminate(), 5000);
     await this.call("shutdown", {}).catch(() => undefined);
@@ -191,8 +217,18 @@ export interface IndexerClient {
   open(lib: string): Effect.Effect<OpenInfo, FinError>;
   /** Detaches the reader, then closes the catalog. */
   close(lib: string): Effect.Effect<void, FinError>;
-  /** Reads, validates and applies a scan batch file at `path` (a plain name in a job's `out/`). */
-  applyBatchFile(lib: string, path: string, gen: number, seq?: number): Effect.Effect<BatchApplied, FinError>;
+  /**
+   * A job attempt's start in catalog time: strictly after every write so far. Take it before
+   * the attempt reads anything (the scan kind's `prepare`, each attempt) and pass it as
+   * `startedAt` with every batch file of the attempt.
+   */
+  attemptStart(lib: string): Effect.Effect<number, FinError>;
+  /**
+   * Reads, validates and applies a scan batch file at `path` (a plain name in a job's `out/`).
+   * `startedAt`: the attempt's `attemptStart` (a wall-clock attempt start works too, but a
+   * clock jump then makes the diff mark less until the clock catches up).
+   */
+  applyBatchFile(lib: string, path: string, job: BatchJob): Effect.Effect<BatchApplied, FinError>;
   finishScan(lib: string, scan: ScanRecord): Effect.Effect<{ scanId: number }, FinError>;
   /** Lands probe results; `moved`: new rows merged into the missing row of their fingerprint. */
   applyProbed(lib: string, results: ReadonlyArray<ProbedRow>): Effect.Effect<ProbedApplied, FinError>;
@@ -204,14 +240,27 @@ export interface IndexerClient {
   /** Writes the job's `in/dirs.ndjson` (Decision 27) at `path`. */
   writeKnownDirs(lib: string, gen: number, path: string): Effect.Effect<{ dirs: number }, FinError>;
   pending(lib: string, args: PendingArgs): Effect.Effect<{ files: PendingFile[] }, FinError>;
-  /** Deletes rows missing since before `before`, ≤ 500 per transaction. */
-  purgeMissing(lib: string, before: number): Effect.Effect<{ deleted: number; dirs: number }, FinError>;
+  /**
+   * Deletes rows missing since before `before` and marked missing in a generation before
+   * `beforeGen` (both: a clock jump alone purges nothing), ≤ 500 per transaction.
+   */
+  purgeMissing(lib: string, cutoff: { before: number; beforeGen: number }): Effect.Effect<{ deleted: number; dirs: number }, FinError>;
   /**
    * Marks the library offline or online for the diff (persisted in the catalog): while offline
    * no listing marks anything missing (Decision 18).
    */
   setOffline(lib: string, offline: boolean): Effect.Effect<{ offline: boolean }, FinError>;
-  stats(): Effect.Effect<{ transactions: number; maxTxRows: number; batchFiles: number; open: number }, FinError>;
+  /** Tests (`testHooks`): the library's next batch file fails in its `transaction`-th transaction, after its writes. */
+  testFault(lib: string, transaction: number): Effect.Effect<void, FinError>;
+  /** `maxTxRows`: batch rows in one transaction; `maxStepRows`: rows written between two event-loop turns. */
+  stats(): Effect.Effect<{ transactions: number; maxTxRows: number; maxStepRows: number; batchFiles: number; open: number }, FinError>;
+}
+
+/** One batch file's job: its generation, its attempt's start and (optionally) its `seq`. */
+export interface BatchJob {
+  readonly gen: number;
+  readonly startedAt: number;
+  readonly seq?: number;
 }
 
 export interface ReaderClient {
@@ -239,22 +288,40 @@ export interface Catalogs {
   readonly reader: ReaderClient;
   /** Messages posted to each thread (tests). */
   readonly posted: { readonly indexer: { count: number }; readonly reader: { count: number } };
+  /** Dead once either thread exited or failed after start (it is never restarted silently). */
+  health(): CatalogHealth;
   /** Closes every catalog and stops both threads. Idempotent. */
   shutdown(): Promise<void>;
 }
 
+const logFatal = (e: FinError): void => {
+  process.stderr.write(`finisherd: catalog thread died: ${e.code} ${JSON.stringify(e.details)}\n`);
+};
+
 /** Starts both threads; resolves once each has imported every extension. */
 export async function startCatalogThreads(opts: CatalogThreadsOptions): Promise<Catalogs> {
-  const clock = opts.clock ?? Date.now;
+  const clock = opts.clock ?? guardedClock();
   const extensions = (opts.extensions ?? CATALOG_EXTENSIONS).start();
+  let fatal = false;
+  const onFatal = (e: FinError) => {
+    if (fatal) return;
+    fatal = true;
+    (opts.onFatal ?? logFatal)(e);
+  };
   const [ix, rd] = await Promise.allSettled([
-    Thread.start("./indexer-thread.ts", "library-indexer", {
-      extensions,
-      serverData: opts.serverData,
-      ...(opts.jobsRoot === undefined ? {} : { jobsRoot: opts.jobsRoot }),
-      ...(opts.txRows === undefined ? {} : { txRows: opts.txRows }),
-    }),
-    Thread.start("./reader-thread.ts", "library-reader", { extensions }),
+    Thread.start(
+      "./indexer-thread.ts",
+      "library-indexer",
+      {
+        extensions,
+        serverData: opts.serverData,
+        jobsRoot: opts.jobsRoot,
+        ...(opts.txRows === undefined ? {} : { txRows: opts.txRows }),
+        ...(opts.testHooks === true ? { testHooks: true } : {}),
+      },
+      onFatal,
+    ),
+    Thread.start("./reader-thread.ts", "library-reader", { extensions }, onFatal),
   ]);
   if (ix.status === "rejected" || rd.status === "rejected") {
     if (ix.status === "fulfilled") await ix.value.stop();
@@ -278,9 +345,13 @@ export async function startCatalogThreads(opts: CatalogThreadsOptions): Promise<
         await reader.call("detach", { lib });
         await indexer.call("close", { lib });
       }),
-    applyBatchFile: (lib, path, gen, seq) =>
+    attemptStart: (lib) => fx<number>(async () => ((await indexer.call("attemptStart", { lib, at: clock() })) as { startedAt: number }).startedAt),
+    applyBatchFile: (lib, path, job) =>
       fx(() =>
-        indexer.call("applyBatchFile", { lib, file: { outDir: dirname(path), file: basename(path) }, gen, at: clock(), ...(seq === undefined ? {} : { seq }) }),
+        indexer.call("applyBatchFile", {
+          lib, file: { outDir: dirname(path), file: basename(path) }, gen: job.gen, startedAt: job.startedAt, at: clock(),
+          ...(job.seq === undefined ? {} : { seq: job.seq }),
+        }),
       ),
     finishScan: (lib, scan) => core(lib, "finishScan", scan),
     applyProbed: (lib, results) => core(lib, "applyProbed", { results }),
@@ -288,7 +359,8 @@ export async function startCatalogThreads(opts: CatalogThreadsOptions): Promise<
     stagesSet: (lib, rows) => core(lib, "stagesSet", { rows }),
     writeKnownDirs: (lib, gen, path) => fx(() => indexer.call("writeKnownDirs", { lib, gen, path })),
     pending: (lib, args) => core(lib, "pending", args),
-    purgeMissing: (lib, before) => fx(() => indexer.call("purgeMissing", { lib, before })),
+    purgeMissing: (lib, cutoff) => fx(() => indexer.call("purgeMissing", { lib, before: cutoff.before, beforeGen: cutoff.beforeGen })),
+    testFault: (lib, transaction) => fx<void>(async () => void (await indexer.call("testFault", { lib, transaction }))),
     setOffline: (lib, offline) => fx(() => indexer.call("setOffline", { lib, offline })),
     stats: () => fx(() => indexer.call("stats", {})),
   };
@@ -311,6 +383,10 @@ export async function startCatalogThreads(opts: CatalogThreadsOptions): Promise<
     indexer: indexerClient,
     reader: readerClient,
     posted: { indexer: indexer.posted, reader: reader.posted },
+    health: () => {
+      const error = indexer.dead ?? reader.dead;
+      return error === undefined || stopped !== undefined ? { ok: true } : { ok: false, error };
+    },
     shutdown: () => {
       stopped ??= (async () => {
         await reader.stop();
@@ -323,8 +399,12 @@ export async function startCatalogThreads(opts: CatalogThreadsOptions): Promise<
 
 export class CatalogsTag extends Context.Service<CatalogsTag, Catalogs>()("finisherd/LibraryCatalogs") {}
 
-/** Both catalog threads for the enclosing scope: started at build, stopped at release. */
-export const layerCatalogs = (opts: CatalogThreadsOptions): Layer.Layer<CatalogsTag, FinError> =>
+/**
+ * Both catalog threads for the enclosing scope: started at build, stopped at release. The
+ * production layer takes no test hooks, and `jobsRoot` is required: batch files outside it
+ * are refused.
+ */
+export const layerCatalogs = (opts: Omit<CatalogThreadsOptions, "testHooks" | "txRows"> & { readonly jobsRoot: string }): Layer.Layer<CatalogsTag, FinError> =>
   Layer.effect(
     CatalogsTag,
     Effect.acquireRelease(fx<Catalogs>(() => startCatalogThreads(opts)), (c) => Effect.promise(() => c.shutdown())),

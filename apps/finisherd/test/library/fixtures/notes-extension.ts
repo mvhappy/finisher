@@ -30,6 +30,8 @@ export const ops = {
     return { n };
   },
   returnsFunction: () => ({ f: () => 1 }),
+  /** Ends the indexer thread (a dead-thread test). */
+  crash: () => process.exit(3),
 };
 
 export const queries = {

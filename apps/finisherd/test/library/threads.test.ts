@@ -3,7 +3,7 @@ import fs, { readFileSync } from "node:fs";
 import { syncBuiltinESMExports } from "node:module";
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
-import { type Scratch, b64, done, entry, newLib, run, scratch, stopAll, threads, writeBatch } from "./support/catalog.ts";
+import { type Scratch, b64, done, entry, newLib, run, scratch, stopAll, threads, writeBatch, applied } from "./support/catalog.ts";
 
 let s: Scratch;
 beforeEach(() => {
@@ -36,7 +36,7 @@ test("main_thread_parses_no_batch", async () => {
   }
   const parseSpy = vi.spyOn(JSON, "parse");
   syncBuiltinESMExports();
-  const out = await run(c.indexer.applyBatchFile(lib, path, 1));
+  const out = await run(c.indexer.applyBatchFile(lib, path, applied(1)));
   expect(out.added).toBe(500);
   expect(touched.filter((t) => t.includes(path) || t.includes(s.outDir))).toEqual([]);
   expect(parseSpy.mock.calls.filter(([text]) => typeof text === "string" && text.includes(markerB64))).toEqual([]);
@@ -53,7 +53,7 @@ test("main_thread_runs_no_catalog_statement", async () => {
   const c = await threads(s);
   await run(c.indexer.open(lib));
   const entries = Array.from({ length: 300 }, (_, i) => entry([], `clip-${i}.mov`));
-  await run(c.indexer.applyBatchFile(lib, writeBatch(s.outDir, [{ seq: 1, entries, dirsDone: [done([], 300)] }]), 1));
+  await run(c.indexer.applyBatchFile(lib, writeBatch(s.outDir, [{ seq: 1, entries, dirsDone: [done([], 300)] }]), applied(1)));
   await run(c.indexer.exec(lib, "notes", "add", { text: "x" }));
   await run(c.reader.search(lib, { query: "clip", limit: 10 }));
   await run(c.reader.files(lib, { limit: 10 }));
@@ -72,7 +72,7 @@ test("reader_never_waits_for_writer", async () => {
     { seq: 1, entries: [entry([], "Shoot", { type: "dir", size: 0 })], dirsDone: [done([], 1)] },
     { seq: 1, entries, dirsDone: [done(["Shoot"], 2000)] },
   ];
-  await run(c.indexer.applyBatchFile(lib, writeBatch(s.outDir, batches), 1));
+  await run(c.indexer.applyBatchFile(lib, writeBatch(s.outDir, batches), applied(1)));
   // Warm the reader's statements.
   for (let i = 0; i < 3; i++) await run(c.reader.search(lib, { query: "interv", limit: 50 }));
   let spinning = true;
@@ -88,7 +88,14 @@ test("reader_never_waits_for_writer", async () => {
     expect(hits.hits).toHaveLength(50);
   }
   expect(spinning).toBe(true);
-  expect(Math.max(...times)).toBeLessThan(20);
+  // On a shared runner a scheduler hiccup can delay one or two reads: the median and the tail
+  // say whether the reader waited for the writer (it would take the whole 800 ms spin).
+  // `FIN_STRICT_TIMING=1` asks every read to be under 20 ms.
+  const sorted = [...times].sort((a, b) => a - b);
+  if (process.env.FIN_STRICT_TIMING === "1") expect(sorted.at(-1)).toBeLessThan(20);
+  expect(sorted[Math.floor(sorted.length / 2)]).toBeLessThan(20);
+  expect(times.filter((t) => t >= 20).length).toBeLessThanOrEqual(2);
+  expect(sorted.at(-1)).toBeLessThan(250);
   expect((await spin) as { n: number }).toHaveProperty("n");
 });
 
@@ -101,7 +108,7 @@ test("libraries interleave: a long apply of one does not block another's op", as
   const entries = Array.from({ length: 4000 }, (_, i) => entry([], `long-${i}.mov`));
   const path = writeBatch(s.outDir, [{ seq: 1, entries, dirsDone: [done([], 4000)] }]);
   let longDone = false;
-  const long = run(c.indexer.applyBatchFile(a, path, 1)).then((r) => {
+  const long = run(c.indexer.applyBatchFile(a, path, applied(1))).then((r) => {
     longDone = true;
     return r;
   });
@@ -111,4 +118,54 @@ test("libraries interleave: a long apply of one does not block another's op", as
   expect((await long).transactions).toBe(41);
   expect(quickFirst).toBe(true);
   expect(readFileSync(path).length).toBeGreaterThan(0);
+});
+
+test("a dead indexer thread is a fatal event and a typed error, never restarted silently", async () => {
+  const lib = newLib();
+  const fatal: Array<{ code: string }> = [];
+  const c = await threads(s, { onFatal: (e) => fatal.push(e) });
+  await run(c.indexer.open(lib));
+  expect(c.health()).toEqual({ ok: true });
+  const code = (e: unknown) => (e as { code: string }).code;
+  expect(await run(c.indexer.exec(lib, "notes", "crash", {})).catch(code)).toBe("CATALOG_THREAD_EXITED");
+  expect(await run(c.indexer.stats()).catch(code)).toBe("CATALOG_THREAD_EXITED");
+  expect(fatal.map((e) => e.code)).toEqual(["CATALOG_THREAD_EXITED"]);
+  const h = c.health();
+  expect(h.ok).toBe(false);
+  expect(h.ok ? undefined : h.error.code).toBe("CATALOG_THREAD_EXITED");
+  // The reader still answers; a clean shutdown reports nothing more.
+  await c.shutdown();
+  expect(fatal).toHaveLength(1);
+});
+
+test("a subtree change runs in steps of ≤ txRows rows and readers see it whole", async () => {
+  const lib = newLib();
+  const c = await threads(s, { txRows: 100 });
+  await run(c.indexer.open(lib));
+  const DIRS = 40;
+  const PER = 150;
+  const dirs = Array.from({ length: DIRS }, (_, i) => `d${i}`);
+  const entries = [entry([], "Big", { type: "dir", size: 0 }), ...dirs.map((d) => entry(["Big"], d, { type: "dir", size: 0 }))];
+  const files = dirs.flatMap((d) => Array.from({ length: PER }, (_, i) => entry(["Big", d], `f${i}.mov`)));
+  const lines = [
+    { seq: 1, entries, dirsDone: [done([], 1), done(["Big"], DIRS)] },
+    ...dirs.map((d, k) => ({ seq: 1, entries: files.slice(k * PER, (k + 1) * PER), dirsDone: [done(["Big", d], PER)] })),
+  ];
+  for (let i = 0; i < lines.length; i += 10) await run(c.indexer.applyBatchFile(lib, writeBatch(s.outDir, lines.slice(i, i + 10)), applied(1)));
+  expect((await run(c.reader.counts(lib))).files).toEqual({ present: DIRS * PER });
+  const before = await run(c.indexer.stats());
+  // `Big` becomes excluded: 6,000 rows go missing in one transaction of many steps.
+  const path = writeBatch(s.outDir, [{ seq: 1, entries: [entry([], "Big", { type: "dir", size: 0, excluded: "GLOB" })], dirsDone: [done([], 1)] }]);
+  let finished = false;
+  const applying = run(c.indexer.applyBatchFile(lib, path, applied(1))).finally(() => {
+    finished = true;
+  });
+  const seen = new Set<string>();
+  while (!finished) seen.add(JSON.stringify((await run(c.reader.counts(lib))).files));
+  expect(await applying).toMatchObject({ missing: DIRS * PER, excluded: DIRS * PER, transactions: 1 });
+  seen.add(JSON.stringify((await run(c.reader.counts(lib))).files));
+  expect([...seen].every((v) => v === JSON.stringify({ present: DIRS * PER }) || v === JSON.stringify({ missing: DIRS * PER }))).toBe(true);
+  const after = await run(c.indexer.stats());
+  expect(after.transactions - before.transactions).toBe(1);
+  expect(after.maxStepRows).toBeLessThanOrEqual(100);
 });

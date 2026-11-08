@@ -22,6 +22,7 @@ import {
   stopAll,
   threads,
   writeBatch,
+  applied,
 } from "./support/catalog.ts";
 
 let s: Scratch;
@@ -131,7 +132,7 @@ describe("batch files", () => {
     const lib = newLib();
     const c = await threads(s);
     await run(c.indexer.open(lib));
-    const counts = await run(c.indexer.applyBatchFile(lib, writeBatch(s.outDir, tree()), 1, 1));
+    const counts = await run(c.indexer.applyBatchFile(lib, writeBatch(s.outDir, tree()), applied(1, 1)));
     expect(counts).toMatchObject({ dirs: 1, added: 4, skipped: 1, listings: 2, transactions: 1 });
     expect(await run(c.reader.counts(lib))).toEqual({ files: { present: 3, cloudOnly: 1 }, dirs: { present: 1 }, collisions: 0 });
     const listing = await run(c.reader.files(lib, { dir: "Interviews", limit: 2 }));
@@ -156,8 +157,8 @@ describe("batch files", () => {
     const nfc = "Café.mov";
     const nfd = "Café.mov";
     const latin1 = Uint8Array.from([0x66, 0xe9, 0x2e, 0x6d, 0x6f, 0x76]);
-    const batch = { seq: 1, entries: [entry([], nfc), entry([], nfd), entry([], "f�.mov", { raw: latin1 })], dirsDone: [done([], 3)] };
-    await run(c.indexer.applyBatchFile(lib, writeBatch(s.outDir, [batch]), 1));
+    const batch = { seq: 1, entries: [entry([], nfc), entry([], nfd), { ...entry([], "f\uFFFD.mov", { raw: latin1 }), nameLossy: true }], dirsDone: [done([], 3)] };
+    await run(c.indexer.applyBatchFile(lib, writeBatch(s.outDir, [batch]), applied(1)));
     const twins = await run(c.reader.file(lib, { relKey: nfc }));
     expect(twins.matches).toHaveLength(2);
     expect(new Set(twins.matches.map((m) => m.name)).size).toBe(2);
@@ -170,7 +171,7 @@ describe("batch files", () => {
     const c = await threads(s);
     await run(c.indexer.open(lib));
     const first = { seq: 1, entries: [entry([], "a.mov", { size: 10 }), entry([], "b.mov", { size: 20 })], dirsDone: [done([], 2)] };
-    await run(c.indexer.applyBatchFile(lib, writeBatch(s.outDir, [first]), 1));
+    await run(c.indexer.applyBatchFile(lib, writeBatch(s.outDir, [first]), applied(1)));
     const ids = (await run(c.reader.files(lib, { limit: 10 }))).files.map((f) => f.id);
     const probed = await run(
       c.indexer.applyProbed(
@@ -183,7 +184,7 @@ describe("batch files", () => {
     );
     expect(probed).toEqual({ updated: 2, stale: 0, moved: [] });
     const second = { seq: 2, entries: [entry([], "a.mov", { size: 11 }), entry([], "b.mov", { size: 20 })], dirsDone: [done([], 2)] };
-    expect(await run(c.indexer.applyBatchFile(lib, writeBatch(s.outDir, [second]), 2))).toMatchObject({ changed: 1, seen: 1 });
+    expect(await run(c.indexer.applyBatchFile(lib, writeBatch(s.outDir, [second]), applied(2)))).toMatchObject({ changed: 1, seen: 1 });
     const rows = (await run(c.reader.files(lib, { limit: 10 }))).files;
     expect(rows.map((f) => [f.nameNfc, f.fp, f.kind, f.probeVersion])).toEqual([
       ["a.mov", null, null, null],
@@ -202,7 +203,7 @@ describe("batch files", () => {
     await run(c.indexer.open(lib));
     const good = tree();
     const reason = async (path: string) => {
-      const exit = await run(c.indexer.applyBatchFile(lib, path, 1).pipe((e) => e, (e) => e)).then(
+      const exit = await run(c.indexer.applyBatchFile(lib, path, applied(1)).pipe((e) => e, (e) => e)).then(
         () => "ok",
         (e: { code: string; details: { reason: string } }) => `${e.code}:${e.details.reason}`,
       );
@@ -239,7 +240,7 @@ describe("batch files", () => {
     // An entry whose directory the catalog does not know.
     expect(await reason(writeBatch(s.outDir, [good[1]!]))).toBe("LIBRARY_BATCH_INVALID:unknownDir");
     // A seq other than the call's.
-    expect(await run(c.indexer.applyBatchFile(lib, writeBatch(s.outDir, good), 1, 9)).catch((e: { details: { reason: string } }) => e.details.reason)).toBe("seq");
+    expect(await run(c.indexer.applyBatchFile(lib, writeBatch(s.outDir, good), applied(1, 9))).catch((e: { details: { reason: string } }) => e.details.reason)).toBe("seq");
     // Nothing of the above was written.
     expect(await run(c.reader.counts(lib))).toEqual({ files: {}, dirs: {}, collisions: 0 });
   });
@@ -264,7 +265,7 @@ test("transactions_capped_at_2000_rows", async () => {
   const c = await threads(s);
   await run(c.indexer.open(lib));
   const entries = Array.from({ length: 4096 }, (_, i) => entry([], `clip-${i}.mov`));
-  const out = await run(c.indexer.applyBatchFile(lib, writeBatch(s.outDir, [{ seq: 1, entries, dirsDone: [done([], 4096)] }]), 1));
+  const out = await run(c.indexer.applyBatchFile(lib, writeBatch(s.outDir, [{ seq: 1, entries, dirsDone: [done([], 4096)] }]), applied(1)));
   expect(out).toMatchObject({ added: 4096, listings: 1, transactions: 3 });
   const st = await run(c.indexer.stats());
   expect(st.maxTxRows).toBeLessThanOrEqual(2000);
@@ -314,7 +315,7 @@ describe("fts_rows_follow_inserts_renames_deletes", () => {
     const lib = newLib();
     const c = await threads(s);
     await run(c.indexer.open(lib));
-    await run(c.indexer.applyBatchFile(lib, writeBatch(s.outDir, tree()), 1));
+    await run(c.indexer.applyBatchFile(lib, writeBatch(s.outDir, tree()), applied(1)));
     const names = async (q: string) => (await run(c.reader.search(lib, { query: q, limit: 10 }))).hits.map((h) => h.nameNfc);
     expect(await names("take")).toEqual(["interview_take3.final.mov"]);
     // A directory's tokens match every file in it.
@@ -325,7 +326,7 @@ describe("fts_rows_follow_inserts_renames_deletes", () => {
     db.exec("PRAGMA busy_timeout = 1000");
     db.prepare("UPDATE files SET state = 'missing', missingSince = 5 WHERE nameNfc = 'Café.wav'").run();
     db.close();
-    expect(await run(c.indexer.purgeMissing(lib, 10))).toEqual({ deleted: 1, dirs: 0 });
+    expect(await run(c.indexer.purgeMissing(lib, { before: 10, beforeGen: 1 }))).toEqual({ deleted: 1, dirs: 0 });
     expect(await names("cafe")).toEqual([]);
   });
 
@@ -339,7 +340,7 @@ test("writeKnownDirs writes every known directory's raw chain", async () => {
   const lib = newLib();
   const c = await threads(s);
   await run(c.indexer.open(lib));
-  await run(c.indexer.applyBatchFile(lib, writeBatch(s.outDir, tree()), 3));
+  await run(c.indexer.applyBatchFile(lib, writeBatch(s.outDir, tree()), applied(3)));
   const path = join(s.inDir, "dirs.ndjson");
   expect(await run(c.indexer.writeKnownDirs(lib, 3, path))).toEqual({ dirs: 2 });
   const lines = readFileSync(path, "utf8").trim().split("\n").map((l) => JSON.parse(l) as unknown);
@@ -356,7 +357,7 @@ test("stages, scans and pending", async () => {
   const lib = newLib();
   const c = await threads(s);
   await run(c.indexer.open(lib));
-  await run(c.indexer.applyBatchFile(lib, writeBatch(s.outDir, tree()), 1));
+  await run(c.indexer.applyBatchFile(lib, writeBatch(s.outDir, tree()), applied(1)));
   const probe = await run(c.indexer.pending(lib, { stage: "probe", probeVersion: 1, exts: ["mov"], limit: 10 }));
   expect(probe.files.map((f) => f.rel)).toEqual([rel("Interviews", "interview_take3.final.mov")]);
   const all = await run(c.indexer.pending(lib, { stage: "probe", probeVersion: 1, exts: null, limit: 10 }));

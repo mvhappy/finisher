@@ -8,7 +8,8 @@
 import type { DatabaseSync, StatementSync } from "node:sqlite";
 import { type FtsStatements, prepareFts } from "../fts.ts";
 import { CatalogFailure } from "../protocol.ts";
-import { type DiffConn, mergeInto, prepareDiff, settleHardlinks } from "./diff.ts";
+import { type DiffConn, EXCLUDED, mergeInto, prepareDiff, settleHardlinks } from "./diff.ts";
+import { drain, unlimited } from "./steps.ts";
 import { encodeProbe } from "./probe-codec.ts";
 import { DirChains } from "./rel.ts";
 
@@ -49,7 +50,9 @@ function mergingOf(db: DatabaseSync): Merging {
       diff: prepareDiff(db),
       fts: prepareFts(db),
       before: db.prepare("SELECT fp, renameOf, firstSeen = lastChange AS untouched FROM files WHERE id = ?"),
-      moveFrom: db.prepare("SELECT id FROM files WHERE fp = ? AND state = 'missing' AND id != ? ORDER BY missingSince DESC, id LIMIT 1"),
+      moveFrom: db.prepare(
+        `SELECT id FROM files WHERE fp = ? AND state = 'missing' AND coalesce(code, '') != '${EXCLUDED}' AND id != ? ORDER BY missingSince DESC, id LIMIT 1`,
+      ),
     };
     merging.set(db, m);
   }
@@ -61,7 +64,8 @@ function mergingOf(db: DatabaseSync): Merging {
  * state: present|probeFailed|skipped, code?, kind?, durationMs?, width?, height?}` lands only
  * when the row still has the probed size and mtime (a row changed since keeps its cleared
  * fields and is probed again). A row's **first** fingerprint, on a row unchanged since it was
- * inserted and not a pending rename, that equals a missing row's is a **move** (Decision 25):
+ * inserted and not a pending rename, that equals a missing row's (never an `EXCLUDED` one: its
+ * file still exists) is a **move** (Decision 25):
  * the missing row (latest `missingSince`, then lowest id) takes the new row's path and this
  * probe, keeps its id and history, and the new row is dropped. Answers `{updated, stale, moved}`.
  */
@@ -105,7 +109,7 @@ function applyProbed(db: DatabaseSync, args: unknown): { updated: number; stale:
     const from = m.moveFrom.get(fp, r.fileId as number) as { id: number } | undefined;
     if (from !== undefined && mergeInto(m.diff, m.fts, from.id, r.fileId as number, false)) moved.push({ from: r.fileId as number, to: from.id });
   });
-  settleHardlinks(m.diff);
+  drain(settleHardlinks(m.diff, unlimited()));
   return { updated, stale: rows.length - updated, moved };
 }
 
