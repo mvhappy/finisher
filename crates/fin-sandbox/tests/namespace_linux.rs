@@ -1,7 +1,10 @@
 //! Unix sockets hidden by a namespace (plan 7C Decision 26, Task 5b): `fin-sandbox-exec`
 //! puts `agent` and `hook` processes in a user and mount namespace where `/run`, `/tmp`,
-//! `/dev/shm`, `$XDG_RUNTIME_DIR` and the home directory are empty, except for the policy's
-//! granted paths, and removes the socket variables from the environment. A hidden socket is
+//! `/var/tmp`, `/dev/shm`, `$XDG_RUNTIME_DIR`, the home directory and the policy's denied
+//! directories are empty, except for the policy's granted paths, drops every capability, and
+//! removes the socket variables from the environment. The test tree lives under
+//! `CARGO_TARGET_TMPDIR`, outside the fixed hidden roots, so the home and denied-directory
+//! rules each have a case that only they decide. A hidden socket is
 //! a denial only after an unsandboxed control connected to it, and the denial is `ENOENT`
 //! (the path does not exist in the namespace). Hosts that refuse user namespaces (Ubuntu's
 //! AppArmor restriction without Finisher's profile) skip the "available" cases with a printed
@@ -18,13 +21,13 @@ use fin_sandbox::launch::{LaunchRequest, SOCKET_ENV};
 use fin_sandbox::{AgentInput, FinEndpoint, HookFin, HookInput, Namespaces, Os};
 use linux_support::{
     LAUNCHER, Outcome, PROBE, landlock_or_skip, launch_raw, launcher_namespaces,
-    namespaces_or_skip, probe, s, tempdir, write,
+    namespaces_or_skip, probe, s, write,
 };
 
 const NS_OFF: (&str, &str) = ("FIN_TEST_SANDBOX_NAMESPACES", "unavailable");
 
-/// A project, server data and a home under one temporary root (itself in a hidden root:
-/// `/dev/shm` or `/tmp`), and a runtime directory outside every fixed hidden root.
+/// A project, server data and a home under one temporary root, and a runtime directory, both
+/// outside every fixed hidden root.
 struct Tree {
     _d: tempfile::TempDir,
     _x: tempfile::TempDir,
@@ -34,12 +37,14 @@ struct Tree {
 
 impl Tree {
     fn new() -> Tree {
-        let (_d, t) = tempdir();
+        let _d = tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR")).unwrap();
+        let t = std::fs::canonicalize(_d.path()).unwrap();
         let _x = tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR")).unwrap();
         let xdg = std::fs::canonicalize(_x.path()).unwrap();
         for (p, text) in [
             ("data/auth/local.key", "secret"),
             ("data/agents/s1/credential.json", "{}"),
+            ("data/agents/s1/tmp/note", "n"),
             ("p/sources/clip.mp4", "c"),
             ("p/hooks/check.sh", "#!/bin/sh\n"),
         ] {
@@ -50,6 +55,8 @@ impl Tree {
             "data/agents/s1/tmp",
             "data/agents/s1/provider",
             "home/.ssh",
+            "home/.cache",
+            "data/run",
             "hook-tmp",
         ] {
             std::fs::create_dir_all(t.join(d)).unwrap();
@@ -155,31 +162,48 @@ impl Drop for Unlink {
     }
 }
 
+/// A socket in `dir` named for this test process, removed on drop.
+fn socket_in(dir: &str, test: &str) -> Option<(Unlink, UnixListener)> {
+    let p = Path::new(dir).join(format!("fin-ns-{test}-{}.sock", std::process::id()));
+    let _ = std::fs::remove_file(&p);
+    UnixListener::bind(&p).ok().map(|l| (Unlink(p), l))
+}
+
 #[test]
-fn sockets_under_run_runtime_dir_and_home_are_hidden() {
-    let test = "sockets_under_run_runtime_dir_and_home_are_hidden";
+fn sockets_in_every_hidden_root_are_hidden() {
+    let test = "sockets_in_every_hidden_root_are_hidden";
     if landlock_or_skip(test).is_none() || !namespaces_or_skip(test) {
         return;
     }
     let t = Tree::new();
-    let mut socks = vec![t.xdg.join("bus"), t.p("home/.ssh/cm-host.sock")];
+    // The runtime directory, the home directory (not a sensitive path: only the home rule
+    // hides it) and server data (only the denied-directory rule hides it: `fin.sock`).
+    let mut socks = vec![
+        t.xdg.join("bus"),
+        t.p("home/.cache/ide.sock"),
+        t.p("data/run/fin.sock"),
+    ];
     let mut _keep: Vec<UnixListener> = socks
         .iter()
         .map(|p| UnixListener::bind(p).unwrap())
         .collect();
-    let _run = match run_socket() {
+    let mut _unlink = Vec::new();
+    for dir in ["/tmp", "/var/tmp", "/dev/shm"] {
+        let (u, l) = socket_in(dir, "fixed").unwrap_or_else(|| panic!("a socket in {dir}"));
+        socks.push(u.0.clone());
+        _keep.push(l);
+        _unlink.push(u);
+    }
+    match run_socket() {
         Some((p, l)) => {
             socks.push(p.clone());
             _keep.push(l);
-            Some(Unlink(p))
+            _unlink.push(Unlink(p));
         }
         None => {
-            eprintln!(
-                "{test}: no socket under /run can be made by this user; that case is skipped"
-            );
-            None
+            eprintln!("{test}: no socket under /run can be made by this user; that case is skipped")
         }
-    };
+    }
     for sock in &socks {
         control(&["connect-unix", &s(sock)]);
         for req in [t.agent(), t.hook(None)] {
@@ -198,6 +222,77 @@ fn sockets_under_run_runtime_dir_and_home_are_hidden() {
 }
 
 #[test]
+fn no_capability_survives_into_the_program() {
+    let test = "no_capability_survives_into_the_program";
+    if landlock_or_skip(test).is_none() || !namespaces_or_skip(test) {
+        return;
+    }
+    let t = Tree::new();
+    let sock = t.p("home/.cache/ide.sock");
+    let _l = UnixListener::bind(&sock).unwrap();
+    let home = s(&t.p("home"));
+    // `open_tree` copies the mounts below a directory as they are under any mount on top:
+    // with the namespace's capabilities (a program started as root) it would reach the
+    // hidden socket. Control: root can do it unsandboxed; another user has no capability.
+    // SAFETY: getuid cannot fail.
+    if unsafe { libc::getuid() } == 0 {
+        control(&["open-tree", &s(&t.t), "home/.cache/ide.sock"]);
+    }
+    let got = t.launched(
+        &t.agent(),
+        &["open-tree", &s(&t.t), "home/.cache/ide.sock"],
+        &[],
+    );
+    assert_eq!(
+        got,
+        Outcome::Ran(Some(libc::EPERM)),
+        "open_tree of {home}'s parent"
+    );
+    // No nested user namespace either (the per-namespace limit is 0).
+    let got = t.launched(&t.agent(), &["unshare-user"], &[]);
+    assert!(
+        matches!(got, Outcome::Ran(Some(e)) if e == libc::ENOSPC || e == libc::EPERM),
+        "{got:?}"
+    );
+}
+
+#[test]
+fn a_hidden_working_directory_is_left_for_the_root() {
+    let test = "a_hidden_working_directory_is_left_for_the_root";
+    if landlock_or_skip(test).is_none() || !namespaces_or_skip(test) {
+        return;
+    }
+    let t = Tree::new();
+    let dir = t.p("home/.cache");
+    let _l = UnixListener::bind(dir.join("x.sock")).unwrap();
+    let run = |env: &[(&str, &str)]| {
+        let bytes = serde_json::to_vec(&t.agent()).unwrap();
+        let (mut cmd, keep) = linux_support::launch_cmd(
+            Some(&bytes),
+            &[
+                "--policy-fd",
+                "3",
+                "--",
+                PROBE,
+                "--none",
+                "connect-unix",
+                "x.sock",
+            ],
+            env,
+        );
+        cmd.current_dir(&dir);
+        let out = cmd.output().unwrap();
+        drop(keep);
+        let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap_or_default();
+        v["errno"].as_i64()
+    };
+    // Control: without the namespace the relative path reaches the socket.
+    assert_eq!(run(&[NS_OFF]), None);
+    // With it, the hidden directory is left for `/`, where `x.sock` does not exist.
+    assert_eq!(run(&[]), Some(libc::ENOENT as i64));
+}
+
+#[test]
 fn granted_paths_under_hidden_roots_keep_their_content() {
     let test = "granted_paths_under_hidden_roots_keep_their_content";
     if landlock_or_skip(test).is_none() || !namespaces_or_skip(test) {
@@ -213,6 +308,8 @@ fn granted_paths_under_hidden_roots_keep_their_content() {
         ("read", t.xdg.join("granted/resolv.conf")),
         ("read", t.p("p/sources/clip.mp4")),
         ("read", PathBuf::from("/dev/null")),
+        // The session's directory in server data, which the denied-directory rule hides.
+        ("read", t.p("data/agents/s1/tmp/note")),
         ("connect-unix", own.clone()),
     ] {
         let got = t.launched(&agent, &[op, &s(&path)], &[]);
@@ -251,7 +348,8 @@ fn the_parents_root_does_not_reach_a_hidden_socket() {
     let t = Tree::new();
     let sock = t.xdg.join("bus");
     let _l = UnixListener::bind(&sock).unwrap();
-    // The launched process's parent is this test, outside the namespace.
+    // The launched process's parent is this test, outside the namespace. Landlock's ptrace
+    // scoping refuses its `/proc/<pid>/root` (EACCES): a guard, not the namespace's doing.
     let via = format!("/proc/{}/root{}", std::process::id(), s(&sock));
     control(&["connect-unix", &via]);
     let got = t.launched(&t.agent(), &["connect-unix", &via], &[]);

@@ -331,8 +331,9 @@ fin merge <branch>                           # take its work into your branch
 - **Linux sandbox limits.** On Linux the OS sandbox uses Landlock alone for now; the seccomp
   filter is an open hardening item. Landlock confines reads, writes, program starts, links and
   TCP ports. Agent and hook processes also start in a user and mount namespace where `/run`,
-  `/tmp`, `/var/tmp`, `/dev/shm`, `$XDG_RUNTIME_DIR` and your home directory are empty except
-  for the paths the sandbox grants, so the local Unix sockets your user may open (the D-Bus
+  `/tmp`, `/var/tmp`, `/dev/shm`, `$XDG_RUNTIME_DIR`, your home directory, the server's data
+  folder and the container managers' socket folders are empty except for the paths the
+  sandbox grants, so the local Unix sockets your user may open (the D-Bus
   session bus, `ssh-agent`, `gpg-agent`, `docker.sock`, `fin.sock`) are out of reach, and the
   variables that name them (`SSH_AUTH_SOCK`, `DBUS_SESSION_BUS_ADDRESS`, `DOCKER_HOST`, …) are
   removed; a hook without network gets an empty network namespace too. Ubuntu 24.04 and later
@@ -340,7 +341,7 @@ fin merge <branch>                           # take its work into your branch
   (`resources/linux/apparmor/finisher-sandbox-exec`, which the installer loads); where user
   namespaces are not available the server warns `SANDBOX_SOCKETS_EXPOSED` and those sockets
   stay reachable. Still open everywhere: a socket inside a folder the sandbox grants (a
-  project folder) stays reachable; agents (and hooks that use `fin`) can send UDP and accept
+  project folder) or in a place none of those folders covers stays reachable; agents (and hooks that use `fin`) can send UDP and accept
   TCP connections on an ephemeral port; job workers and plugins get no namespace yet (they
   can reach the sockets on kernels without Landlock's socket rule, and send UDP); and every
   profile keeps the rest of the kernel's interface (process creation, `io_uring`, 32-bit

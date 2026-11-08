@@ -5,8 +5,8 @@
 //! granted paths keep their real content. A `hook` without network also gets an empty network
 //! namespace.
 //!
-//! - [`layout`] is the pure plan: which roots to hide, which granted paths to bind back.
-//! - [`plan`] resolves it for a policy on this host.
+//! - [`layout`] (module) is the pure plan: which roots to hide, which granted paths to bind
+//!   back, in mount order; [`plan`] resolves it for a policy on this host.
 //! - [`probe`] tries the namespace in a forked child, so a half-made one (the AppArmor
 //!   restriction lets `unshare` succeed and then refuses the uid map) never reaches the
 //!   program; [`enter`] makes it for the calling process, which must have one thread.
@@ -20,77 +20,37 @@ use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 
 use crate::error::ApplyError;
-use crate::policy::{Net, Profile, SandboxPolicy};
 use crate::status::Namespaces;
 
-/// The roots hidden on every host, before the launcher's `$XDG_RUNTIME_DIR` and the input's
-/// home directory are added.
-pub const HIDDEN: &[&str] = &["/run", "/var/run", "/tmp", "/var/tmp", "/dev/shm"];
+pub mod caps;
+pub mod layout;
+
+pub use layout::{HIDDEN, Layout, Step, layout, plan, wants_net};
+
 /// The test hook's variable (`test-hooks` builds only).
 pub const TEST_ENV: &str = "FIN_TEST_SANDBOX_NAMESPACES";
 /// The options of each hiding `tmpfs`.
 const TMPFS_OPTS: &str = "mode=0755,size=64k";
+/// The errors that mean "this host does not let this process make the namespace" (the
+/// fallback of Decision 26); any other failure of the probe refuses the start, so a transient
+/// one (`EAGAIN` from a fork near `RLIMIT_NPROC`, `EMFILE`, `ENOMEM`) cannot drop the namespace.
+const NOT_PERMITTED: &[i32] = &[
+    libc::EPERM,
+    libc::EACCES,
+    libc::EINVAL,
+    libc::ENOSPC,
+    libc::ENOSYS,
+    libc::EUSERS,
+];
 
-/// What the namespace hides and keeps.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub struct Layout {
-    /// Each gets an empty `tmpfs`; sorted, none inside another or inside a granted root.
-    pub hide: Vec<PathBuf>,
-    /// Granted paths under a hidden root, bound back at their own path; shallowest first, none
-    /// inside another.
-    pub keep: Vec<PathBuf>,
-    /// An empty network namespace as well.
-    pub net: bool,
-}
-
-/// The plan for hiding `candidates` while `granted` keep their content (all canonical and
-/// existing). A candidate at or inside a granted root, or inside another candidate, is dropped.
-pub fn layout(candidates: &[PathBuf], granted: &[PathBuf], net: bool) -> Layout {
-    let mut hide: Vec<PathBuf> = candidates
-        .iter()
-        .filter(|c| !granted.iter().any(|g| c.starts_with(g)))
-        .cloned()
-        .collect();
-    hide.sort();
-    hide.dedup();
-    let nested = |p: &Path, set: &[PathBuf]| set.iter().any(|o| o != p && p.starts_with(o));
-    let hide: Vec<PathBuf> = hide.iter().filter(|h| !nested(h, &hide)).cloned().collect();
-    let mut keep: Vec<PathBuf> = granted
-        .iter()
-        .filter(|g| hide.iter().any(|h| g.starts_with(h)))
-        .cloned()
-        .collect();
-    keep.sort_by(|a, b| {
-        (a.components().count(), a.as_os_str()).cmp(&(b.components().count(), b.as_os_str()))
-    });
-    keep.dedup();
-    let keep = keep.iter().filter(|k| !nested(k, &keep)).cloned().collect();
-    Layout { hide, keep, net }
-}
-
-/// Does `policy` get an empty network namespace? A `hook` with no network at all (spec
-/// §8.10); pathname sockets (`unix_sockets`) still work across network namespaces.
-pub fn wants_net(policy: &SandboxPolicy) -> bool {
-    policy.profile == Profile::Hook && policy.net == Net::None
-}
-
-/// The layout for `policy` on this host: [`HIDDEN`], `xdg_runtime` and `home` resolved
-/// (missing ones skipped); the granted paths are the read and write roots, the sockets and the
-/// devices, resolved.
-pub fn plan(policy: &SandboxPolicy, home: Option<&Path>, xdg_runtime: Option<&Path>) -> Layout {
-    let resolve = |p: &Path| std::fs::canonicalize(p).ok();
-    let mut candidates: Vec<PathBuf> = HIDDEN.iter().map(Path::new).filter_map(resolve).collect();
-    candidates.extend(xdg_runtime.filter(|p| p.is_absolute()).and_then(resolve));
-    candidates.extend(home.and_then(resolve));
-    let granted: Vec<PathBuf> = policy
-        .read_roots()
-        .iter()
-        .chain(&policy.write)
-        .chain(&policy.unix_sockets)
-        .chain(policy.devices.iter().map(|d| &d.path))
-        .filter_map(|p| resolve(p))
-        .collect();
-    layout(&candidates, &granted, wants_net(policy))
+/// What [`probe_outcome`] found.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Outcome {
+    Available,
+    /// The host refuses the namespace: run with Landlock alone (`SANDBOX_SOCKETS_EXPOSED`).
+    NotPermitted(String),
+    /// Anything else: refuse the start (`SANDBOX_UNAVAILABLE`).
+    Failed(String),
 }
 
 fn cstr(p: &Path) -> Result<CString, ApplyError> {
@@ -140,14 +100,16 @@ fn errno() -> i32 {
 }
 
 /// The stages [`unshare_mapped`] and [`probe`] report, by number.
-const STAGES: [&str; 6] = [
+const STAGES: [&str; 7] = [
     "unshare",
     "setgroups",
     "uid_map",
     "gid_map",
     "mount --make-rprivate /",
     "mount tmpfs",
+    "the map helper",
 ];
+const HELPER: usize = 6;
 
 fn pipe() -> Result<(OwnedFd, OwnedFd), i32> {
     let mut fds = [0; 2];
@@ -166,12 +128,12 @@ fn pipe() -> Result<(OwnedFd, OwnedFd), i32> {
 fn unshare_mapped(flags: libc::c_int) -> Result<(), (usize, i32)> {
     // SAFETY: getpid cannot fail.
     let maps = id_maps(unsafe { libc::getpid() });
-    let (go_r, go_w) = pipe().map_err(|e| (0, e))?;
-    let (res_r, res_w) = pipe().map_err(|e| (0, e))?;
+    let (go_r, go_w) = pipe().map_err(|e| (HELPER, e))?;
+    let (res_r, res_w) = pipe().map_err(|e| (HELPER, e))?;
     // SAFETY: the caller is single-threaded; the helper makes raw calls and `_exit`s.
     let helper = unsafe { libc::fork() };
     if helper < 0 {
-        return Err((0, errno()));
+        return Err((HELPER, errno()));
     }
     if helper == 0 {
         drop(go_w);
@@ -217,7 +179,7 @@ fn unshare_mapped(flags: libc::c_int) -> Result<(), (usize, i32)> {
     match (ok, msg) {
         (true, [0, _]) => Ok(()),
         (true, [stage, e]) => Err((stage as usize, e)),
-        (false, _) => Err((1, libc::EIO)),
+        (false, _) => Err((HELPER, libc::EIO)),
     }
 }
 
@@ -226,30 +188,37 @@ fn reason((stage, e): (usize, i32)) -> String {
     format!("{stage}: {}", std::io::Error::from_raw_os_error(e))
 }
 
-/// Can this process make the namespace? Tried in a forked child, exactly as [`enter`] makes
-/// it: the user, mount and network namespaces, the ids mapped, a private `/` and one `tmpfs`
-/// over `/tmp`. Only for a single-threaded caller (the launcher).
+/// Can this process make the namespace? [`probe_outcome`] as `--probe` reports it.
 pub fn probe() -> Namespaces {
+    match probe_outcome() {
+        Outcome::Available => Namespaces::Available,
+        Outcome::NotPermitted(reason) | Outcome::Failed(reason) => {
+            Namespaces::Unavailable { reason }
+        }
+    }
+}
+
+/// Tries the namespace in a forked child, exactly as [`enter`] makes it: the user, mount and
+/// network namespaces, the ids mapped, a private `/` and one `tmpfs` over `/tmp`. The caller
+/// must have one thread (the launcher), else this is `Failed`.
+pub fn probe_outcome() -> Outcome {
     #[cfg(feature = "test-hooks")]
     if std::env::var(TEST_ENV).as_deref() == Ok("unavailable") {
-        return Namespaces::Unavailable {
-            reason: "stubbed".into(),
-        };
+        return Outcome::NotPermitted("stubbed".into());
+    }
+    if let Err(e) = single_threaded() {
+        return Outcome::Failed(e.to_string());
     }
     let (r, w) = match pipe() {
         Ok(p) => p,
         Err(e) => {
-            return Namespaces::Unavailable {
-                reason: format!("pipe: {}", std::io::Error::from_raw_os_error(e)),
-            };
+            return Outcome::Failed(format!("pipe: {}", std::io::Error::from_raw_os_error(e)));
         }
     };
     // SAFETY: the caller is single-threaded, so the child may run ordinary code; it `_exit`s.
     let pid = unsafe { libc::fork() };
     if pid < 0 {
-        return Namespaces::Unavailable {
-            reason: format!("fork: {}", std::io::Error::last_os_error()),
-        };
+        return Outcome::Failed(format!("fork: {}", std::io::Error::last_os_error()));
     }
     if pid == 0 {
         drop(r);
@@ -293,19 +262,38 @@ pub fn probe() -> Namespaces {
     // SAFETY: our own child.
     unsafe { libc::waitpid(pid, &mut status, 0) };
     match (n, msg) {
-        (8, [-1, 0]) => Namespaces::Available,
-        (8, [stage, e]) => Namespaces::Unavailable {
-            reason: reason((stage as usize, e)),
-        },
-        _ => Namespaces::Unavailable {
-            reason: format!("the probe child ended with status {status}"),
-        },
+        (8, [-1, 0]) => Outcome::Available,
+        (8, [stage, e]) if (stage as usize) < HELPER && NOT_PERMITTED.contains(&e) => {
+            Outcome::NotPermitted(reason((stage as usize, e)))
+        }
+        (8, [stage, e]) => Outcome::Failed(reason((stage as usize, e))),
+        _ => Outcome::Failed(format!("the probe child ended with status {status}")),
     }
 }
 
-/// Puts the calling process (one thread) in the namespace of `layout`. Any failure is an
-/// error: the caller probed first, so this one refuses the start.
+/// The calling process has one thread (`unshare(CLONE_NEWUSER)` and a safe `fork` need it).
+fn single_threaded() -> Result<(), ApplyError> {
+    let text = std::fs::read_to_string("/proc/self/status").map_err(|e| ApplyError::Os {
+        call: "/proc/self/status".into(),
+        error: e.to_string(),
+    })?;
+    let threads: usize = text
+        .lines()
+        .find_map(|l| l.strip_prefix("Threads:"))
+        .and_then(|n| n.trim().parse().ok())
+        .unwrap_or(0);
+    if threads == 1 {
+        Ok(())
+    } else {
+        Err(ApplyError::Threads { threads })
+    }
+}
+
+/// Puts the calling process (one thread) in the namespace of `layout`, then gives up every
+/// capability it holds there (see [`caps`]). Any failure is an error: the caller probed
+/// first, so this one refuses the start.
 pub fn enter(layout: &Layout) -> Result<(), ApplyError> {
+    single_threaded()?;
     let cwd = std::env::current_dir().ok();
 
     unshare_mapped(flags(layout.net)).map_err(|e| ApplyError::Os {
@@ -321,8 +309,8 @@ pub fn enter(layout: &Layout) -> Result<(), ApplyError> {
     )?;
     // Granted paths are opened before anything is hidden, inside the new mount namespace (a
     // bind source must be one of its mounts); they are bound back from these.
-    let mut kept = Vec::with_capacity(layout.keep.len());
-    for k in &layout.keep {
+    let mut kept = Vec::new();
+    for k in layout.kept() {
         let c = cstr(k)?;
         // SAFETY: a valid path; the descriptor is owned below.
         let fd = unsafe {
@@ -333,7 +321,7 @@ pub fn enter(layout: &Layout) -> Result<(), ApplyError> {
         };
         if fd < 0 {
             return Err(ApplyError::Rule {
-                path: k.clone(),
+                path: k.to_path_buf(),
                 error: std::io::Error::last_os_error().to_string(),
             });
         }
@@ -342,40 +330,51 @@ pub fn enter(layout: &Layout) -> Result<(), ApplyError> {
         let dir = std::fs::metadata(format!("/proc/self/fd/{}", fd.as_raw_fd()))
             .map(|m| m.is_dir())
             .map_err(|e| ApplyError::Rule {
-                path: k.clone(),
+                path: k.to_path_buf(),
                 error: e.to_string(),
             })?;
-        kept.push((k, fd, dir));
+        kept.push((k.to_owned(), fd, dir));
     }
     let tmpfs = Path::new("tmpfs");
     let hidden_flags = libc::MS_NOSUID | libc::MS_NODEV | libc::MS_NOEXEC;
-    let mut devs = Vec::with_capacity(layout.hide.len());
-    for h in &layout.hide {
-        mount(
-            Some(tmpfs),
-            h,
-            Some("tmpfs"),
-            hidden_flags,
-            Some(TMPFS_OPTS),
-        )?;
-        devs.push(dev_of(h)?);
+    let mut devs = Vec::new();
+    let mut kept = kept.into_iter();
+    for step in &layout.steps {
+        match step {
+            Step::Hide(h) => {
+                mount(
+                    Some(tmpfs),
+                    h,
+                    Some("tmpfs"),
+                    hidden_flags,
+                    Some(TMPFS_OPTS),
+                )?;
+                devs.push(dev_of(h)?);
+            }
+            Step::Keep(k) => {
+                let (_, fd, dir) = kept.next().expect("one descriptor per kept path");
+                mount_point(k, dir, &devs)?;
+                let src = PathBuf::from(format!("/proc/self/fd/{}", fd.as_raw_fd()));
+                mount(Some(&src), k, None, libc::MS_BIND | libc::MS_REC, None)?;
+            }
+        }
     }
-    for (k, fd, dir) in &kept {
-        mount_point(k, *dir, &devs)?;
-        let src = PathBuf::from(format!("/proc/self/fd/{}", fd.as_raw_fd()));
-        mount(Some(&src), k, None, libc::MS_BIND | libc::MS_REC, None)?;
-    }
-    for h in &layout.hide {
+    for h in layout.hidden() {
         let ro = libc::MS_REMOUNT | libc::MS_BIND | libc::MS_RDONLY | hidden_flags;
         mount(None, h, None, ro, None)?;
     }
-    drop(kept);
-    if let Some(cwd) = cwd {
-        // Back to the working directory by path, so it is the namespace's view of it; where
-        // it is hidden now, the process keeps the old one (Landlock still decides access).
-        let _ = std::env::set_current_dir(cwd);
+    // Back to the working directory by path, so it is the namespace's view of it. Where it is
+    // hidden now, `/`: the old directory is still the real one, and keeping it would leave its
+    // subtree (sockets included) reachable by relative paths.
+    let back = cwd.is_some_and(|c| std::env::set_current_dir(c).is_ok());
+    if !back {
+        std::env::set_current_dir("/").map_err(|e| ApplyError::Os {
+            call: "chdir /".into(),
+            error: e.to_string(),
+        })?;
     }
-    Ok(())
+    caps::no_nested_user_namespaces()?;
+    caps::drop_all()
 }
 
 fn mount(
@@ -447,54 +446,4 @@ fn mount_point(k: &Path, dir: bool, devs: &[u64]) -> Result<(), ApplyError> {
         })?;
     }
     Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn p(v: &[&str]) -> Vec<PathBuf> {
-        v.iter().map(PathBuf::from).collect()
-    }
-
-    #[test]
-    fn hidden_roots_skip_nested_and_granted() {
-        let l = layout(
-            &p(&["/run", "/run/user/1000", "/tmp", "/home/u", "/srv/x"]),
-            &p(&["/srv", "/usr"]),
-            false,
-        );
-        assert_eq!(l.hide, p(&["/home/u", "/run", "/tmp"]));
-        assert!(l.keep.is_empty());
-    }
-
-    #[test]
-    fn kept_paths_are_only_under_hidden_roots_shallowest_first() {
-        let l = layout(
-            &p(&["/run", "/home/u"]),
-            &p(&[
-                "/usr/bin",
-                "/home/u/proj/workspace/s1",
-                "/home/u/proj",
-                "/run/systemd/resolve/stub-resolv.conf",
-                "/home/u/.local/share/finisher/agents/s1/tmp",
-            ]),
-            true,
-        );
-        assert_eq!(
-            l.keep,
-            p(&[
-                "/home/u/proj",
-                "/run/systemd/resolve/stub-resolv.conf",
-                "/home/u/.local/share/finisher/agents/s1/tmp",
-            ])
-        );
-        assert!(l.net);
-    }
-
-    #[test]
-    fn a_granted_root_equal_to_a_candidate_is_not_hidden() {
-        let l = layout(&p(&["/tmp"]), &p(&["/tmp"]), false);
-        assert_eq!(l, Layout::default());
-    }
 }

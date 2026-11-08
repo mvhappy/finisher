@@ -161,7 +161,7 @@ describe("sandbox status", () => {
 
 describe("sockets exposed (plan 7C Decision 26)", () => {
   test("an_enforced_agent_or_hook_without_namespaces_warns_sockets_exposed", async () => {
-    const codes = (ns: SandboxNamespaces, m = ENFORCED) =>
+    const codes = (ns: SandboxNamespaces, m: SandboxMechanism = ENFORCED) =>
       sandboxWarnings(all(m), undefined, ns).map((w) => `${w.code}:${String(w.details.profile)}`);
     expect(codes(NO_NS)).toEqual(["SANDBOX_SOCKETS_EXPOSED:agent", "SANDBOX_SOCKETS_EXPOSED:hook"]);
     expect(codes(AVAILABLE)).toEqual([]);

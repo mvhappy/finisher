@@ -80,6 +80,16 @@ pub const SOCKET_ENV: &[&str] = &[
     "VSCODE_IPC_HOOK_CLI",
     "VSCODE_GIT_IPC_HANDLE",
     "GNOME_KEYRING_CONTROL",
+    "NOTIFY_SOCKET",
+    "LISTEN_FDS",
+    "LISTEN_PID",
+    "LISTEN_FDNAMES",
+    "AT_SPI_BUS_ADDRESS",
+    "DBUS_STARTER_ADDRESS",
+    "PIPEWIRE_REMOTE",
+    "WAYLAND_SOCKET",
+    "STY",
+    "ZELLIJ",
 ];
 
 /// What the descriptor carries: a profile the launcher applies and its typed input.

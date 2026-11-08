@@ -141,14 +141,16 @@ mod os {
         fin_sandbox::Namespaces::NotApplicable
     }
 
-    /// The namespace of Decision 26 where the probe shows this host can make it; where it
-    /// cannot, nothing (Landlock alone, as `SANDBOX_SOCKETS_EXPOSED` says). A failure after a
-    /// successful probe is an error.
+    /// The namespace of Decision 26 where the probe shows this host can make it; where the
+    /// host refuses it, nothing (Landlock alone, as `SANDBOX_SOCKETS_EXPOSED` says). Any other
+    /// probe failure, and a failure after a successful probe, is an error.
     #[cfg(target_os = "linux")]
     pub fn hide_sockets(policy: &SandboxPolicy, home: &std::path::Path) -> Result<(), String> {
-        use fin_sandbox::linux::namespace;
-        if namespaces() != fin_sandbox::Namespaces::Available {
-            return Ok(());
+        use fin_sandbox::linux::namespace::{self, Outcome};
+        match namespace::probe_outcome() {
+            Outcome::Available => {}
+            Outcome::NotPermitted(_) => return Ok(()),
+            Outcome::Failed(e) => return Err(format!("the socket namespace probe: {e}")),
         }
         let xdg = std::env::var_os("XDG_RUNTIME_DIR").map(std::path::PathBuf::from);
         let layout = namespace::plan(policy, Some(home), xdg.as_deref());

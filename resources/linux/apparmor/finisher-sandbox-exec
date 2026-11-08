@@ -5,9 +5,11 @@
 # user's Unix sockets (D-Bus, ssh-agent, docker.sock, fin.sock) from agent and hook processes;
 # without it, they run under Landlock alone and the server warns SANDBOX_SOCKETS_EXPOSED.
 #
-# This profile only names the launcher and allows it to create user namespaces, as Ubuntu's
-# own profiles for sandboxing tools do. Confinement comes from the launcher itself: Landlock,
-# the namespace's mounts, and no_new_privs.
+# This profile names the launcher and allows it to create user namespaces, as Ubuntu's own
+# profiles for sandboxing tools do. Confinement comes from the launcher itself: Landlock, the
+# namespace's mounts, no capabilities, and no_new_privs. Being unconfined, the profile stays
+# on the programs the launcher starts; inside the launcher's namespace they can create no
+# further user namespace (its max_user_namespaces is 0).
 #
 # Installer step (sub-project 9): rewrite the attachment paths to where the launcher is
 # installed, copy this file to /etc/apparmor.d/finisher-sandbox-exec, then run

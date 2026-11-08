@@ -14,7 +14,9 @@
 //!   `unlink <file>`, `rmdir <dir>`, `mkdir <dir>`, `mkfifo <path>`, `link <from> <to>`,
 //!   `rename <from> <to>`, `symlink <target> <link>`, `exec <file>`, `connect-tcp <port>`,
 //!   `bind-tcp <port>`, `listen-tcp` (`listen` on an unbound socket), `bind-unix <path>`,
-//!   `connect-unix <path>`, `send-udp <port>` (one datagram to loopback), `signal-parent`.
+//!   `connect-unix <path>`, `send-udp <port>` (one datagram to loopback), `signal-parent`,
+//!   `open-tree <dir> <rel>` (a clone of the mounts at `dir`, then `connect` to `rel` in it),
+//!   `unshare-user` (a nested user namespace).
 //!
 //! Exit 0 when the attempt ran (whatever its result), 3 when the sandbox could not be applied
 //! (`{"apply": "<error>"}`), 2 for a usage error.
@@ -217,6 +219,26 @@ mod probe {
         }
     }
 
+    /// `open_tree(<dir>, OPEN_TREE_CLONE)` (a copy of the mounts below `dir`, as they are
+    /// beneath any mount on top), then `connect` to `<rel>` inside the copy.
+    fn open_tree(dir: &str, rel: &str) -> Result<(), i32> {
+        let d = c(dir);
+        // SAFETY: a valid path; the descriptor is ours.
+        let fd = unsafe {
+            libc::syscall(
+                libc::SYS_open_tree,
+                libc::AT_FDCWD,
+                d.as_ptr(),
+                0x1 | libc::O_CLOEXEC as libc::c_long, // OPEN_TREE_CLONE | OPEN_TREE_CLOEXEC
+            )
+        };
+        rc(fd as i32)?;
+        let out = unix(&format!("/proc/self/fd/{fd}/{rel}"), false);
+        // SAFETY: our own descriptor.
+        unsafe { libc::close(fd as i32) };
+        out
+    }
+
     /// `bind` (which creates the socket file) or `connect` on a pathname socket.
     fn unix(path: &str, bind: bool) -> Result<(), i32> {
         let bytes = Path::new(path).as_os_str().as_bytes();
@@ -280,6 +302,8 @@ mod probe {
                 "bind-unix" => unix(a(1), true),
                 "connect-unix" => unix(a(1), false),
                 "send-udp" => udp(port(1)),
+                "open-tree" => open_tree(a(1), a(2)),
+                "unshare-user" => rc(libc::unshare(libc::CLONE_NEWUSER)),
                 "signal-parent" => rc(libc::kill(libc::getppid(), 0)),
                 _ => usage(&format!("unknown op {op:?}")),
             }
