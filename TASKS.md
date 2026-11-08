@@ -685,6 +685,8 @@ Spec: `docs/specs/2026-11-07-sub-project-7-agent-runtime-design.md` (revision 2,
 - [x] 7A-1 pure pieces, before 5A (plan Tasks 1, 3a, 4, 5, 6a, 8a, 9; branch `sp7a1-runtime`, see "Sub-project 7A: runtime core")
 - [ ] 7A-2 runtime core and the built-in agent, after 5A (plan Tasks 2, 3b, 6b, 7, 8b, 10–15)
 - [ ] 7B subagents, roles, rules, approvals · 7C OS sandbox (`fin-sandbox`: agent, hook, worker and plugin profiles; ACL broker) · 7D Claude Code · 7E Codex · 7F hooks · 7G workspace and the full `fin` · 7H eval harness
+- [ ] Plan 7B (written 2026-11-08, not started): `docs/superpowers/plans/2026-11-08-sub-project-7b-subagents-rules-approvals.md` (Tasks 1–14; 7B-1 needs 7A-2 merged, 7B-2 needs 5E; six questions for the owner at its end)
+- [ ] Plan 7C (written 2026-11-08, not started): `docs/superpowers/plans/2026-11-08-sub-project-7c-os-sandbox.md` (Tasks 0–16; 7C-1, the Linux Landlock `worker` profile, can start now and must land before 6B-1; its Task 0 is the S9 spike above; six questions for the owner at its end)
 
 ## Sub-project 7A: runtime core
 
