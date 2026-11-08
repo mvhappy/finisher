@@ -475,16 +475,35 @@ mod tests {
         assert_eq!(check(&g, Kind::File).unwrap(), None);
     }
 
-    /// A folder in the user's temp folder (owner, SYSTEM and Administrators, inherited) passes:
-    /// keys kept in the profile, as before, keep working.
+    /// A folder that inherits only the user, `SYSTEM` and Administrators, as a folder under the
+    /// user's profile does, passes: keys kept in the profile, as before, keep working. The
+    /// parent is built here rather than taken from `%TEMP%`, which carries machine-specific
+    /// ACEs (a stale SID, an AppContainer capability) that are rightly refused.
     #[test]
     fn the_profile_default_passes() {
         let tmp = tempfile::tempdir().unwrap();
-        let d = tmp.path().join("keys");
+        let profile = tmp.path().join("profile");
+        std::fs::create_dir(&profile).unwrap();
+        let user = current_user().unwrap();
+        cmd(&format!(
+            "icacls \"{}\" /grant:r *{user}:(OI)(CI)F *{SYSTEM}:(OI)(CI)F *{ADMINISTRATORS}:(OI)(CI)F && icacls \"{}\" /inheritance:r",
+            profile.display(),
+            profile.display()
+        ));
+        let d = profile.join("keys");
         std::fs::create_dir(&d).unwrap();
         std::fs::write(d.join("k.pem"), b"x").unwrap();
         assert_eq!(check(&d, Kind::Folder).unwrap(), None);
         assert_eq!(check(&d.join("k.pem"), Kind::File).unwrap(), None);
+        // The Administrators grant is what is under test: a stranger's inherited grant is not.
+        cmd(&format!(
+            "icacls \"{}\" /grant *S-1-5-32-545:(OI)(CI)R",
+            profile.display()
+        ));
+        let e = std::fs::create_dir(profile.join("later"))
+            .and_then(|()| check(&profile.join("later"), Kind::Folder));
+        let u = e.unwrap().expect("a Users grant is refused");
+        assert_eq!(u.problems, vec!["allows S-1-5-32-545".to_string()], "{u:?}");
     }
 
     #[test]
