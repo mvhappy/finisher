@@ -1155,6 +1155,18 @@ pub fn lifted_on(keyed: &[Keyed], since: &[CommittedTx]) -> bool {
 
 /// Our own shift-less relocation (slide, overwrite move) before a positional op.
 pub fn self_relocates(keyed: &[Keyed]) -> bool {
+    !self_drift(keyed).is_empty()
+}
+
+/// The ops of ours that *self relocation* covers (spec §4.3): a positional op after our own
+/// slide or overwrite move. It keeps the position it was written at, while the rebased
+/// relocation moves edges at the head without a shift. When the head put another item against
+/// that position (a committed ripple move closed the gap our anchor left), our relocation can
+/// move that item's edge across it, so the re-run lands inside an item and position policy
+/// refuses it ([`SELF_DRIFT_CODES`]) with nothing blamed: the head only shifted the item it
+/// lands in. That refusal is right for the op as mapped, so it is allowed here (fixed case
+/// `rebase_moves_props::slide_then_move_at_moved_anchor_refuses_unblamed`).
+pub fn self_drift(keyed: &[Keyed]) -> std::collections::BTreeSet<usize> {
     let first = keyed.iter().position(|k| {
         matches!(
             k,
@@ -1165,12 +1177,24 @@ pub fn self_relocates(keyed: &[Keyed]) -> bool {
                 }
         )
     });
-    first.is_some_and(|f| {
-        keyed[f + 1..]
-            .iter()
-            .any(|k| matches!(k, Keyed::Insert { .. } | Keyed::Move { .. }))
-    })
+    let Some(f) = first else {
+        return std::collections::BTreeSet::new();
+    };
+    keyed
+        .iter()
+        .enumerate()
+        .skip(f + 1)
+        .filter(|(_, k)| matches!(k, Keyed::Insert { .. } | Keyed::Move { .. }))
+        .map(|(i, _)| i)
+        .collect()
 }
+
+/// The policy codes of a position inside an item, the only refusals [`self_drift`] allows.
+pub const SELF_DRIFT_CODES: [&str; 3] = [
+    "INSERT_INSIDE_CLIP",
+    "MOVE_INTO_ITSELF",
+    "OVERWRITE_SPLITS_ITEM",
+];
 
 /// Ids (literal) mine's position anchors name.
 pub fn anchor_ids(keyed: &[Keyed]) -> Vec<String> {
@@ -1327,7 +1351,7 @@ pub fn check(
             );
         }
         (true, Err(e)) => {
-            let why = refusal_allowed(&e, &since, &partner_drift(&keyed, p));
+            let why = refusal_allowed(&e, &since, &partner_drift(&keyed, p), &self_drift(&keyed));
             prop_assert!(
                 why.is_ok(),
                 "stale refused ({:?}) where fresh applies\nours {:?}\nfresh {:?}",

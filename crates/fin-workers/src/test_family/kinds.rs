@@ -159,7 +159,7 @@ fn echo(job: &StartJob) -> Result<Value, JobError> {
             }
             EchoReport::Pdeathsig => r.pdeathsig = pdeathsig(),
             EchoReport::Nice => r.nice = nice(),
-            EchoReport::Cgroup => r.cgroup = std::fs::read_to_string("/proc/self/cgroup").ok(),
+            EchoReport::Cgroup => r.cgroup = super::start_cgroup(),
         }
     }
     out(r)
@@ -350,9 +350,65 @@ fn oom(job: &StartJob, ctx: &mut JobCtx<'_>) -> Result<Value, JobError> {
         held[i] = 1;
     }
     std::hint::black_box(&held);
+    // Unmapped when the job returns.
+    let _mapped = match &p.map_file {
+        Some(name) => Some(map_and_touch(&grant_path(ctx, name)).map_err(io)?),
+        None => None,
+    };
+    if let Some(name) = &p.ready_file {
+        std::fs::write(grant_path(ctx, name), b"1").map_err(io)?;
+    }
     sleep_or_cancel(&ctx.cancel_token(), p.hold_ms.unwrap_or(0))?;
     drop(held);
     out(OomResult { mib: p.mib })
+}
+
+/// A read-only private mapping of `path` with every page read (file-backed, reclaimable).
+#[cfg(unix)]
+fn map_and_touch(path: &std::path::Path) -> std::io::Result<Mapped> {
+    use std::os::fd::AsRawFd;
+    let file = File::open(path)?;
+    let len = file.metadata()?.len() as usize;
+    // SAFETY: maps a file we opened read-only; the mapping is unmapped by `Mapped`'s drop.
+    let ptr = unsafe {
+        libc::mmap(
+            std::ptr::null_mut(),
+            len,
+            libc::PROT_READ,
+            libc::MAP_PRIVATE,
+            file.as_raw_fd(),
+            0,
+        )
+    };
+    if ptr == libc::MAP_FAILED {
+        return Err(std::io::Error::last_os_error());
+    }
+    let mut sum = 0u8;
+    for i in (0..len).step_by(4096) {
+        // SAFETY: inside the mapping just made.
+        sum ^= unsafe { std::ptr::read_volatile(ptr.cast::<u8>().add(i)) };
+    }
+    std::hint::black_box(sum);
+    Ok(Mapped(ptr, len))
+}
+
+#[cfg(unix)]
+struct Mapped(*mut libc::c_void, usize);
+
+#[cfg(unix)]
+impl Drop for Mapped {
+    fn drop(&mut self) {
+        // SAFETY: unmaps the mapping `map_and_touch` made.
+        unsafe { libc::munmap(self.0, self.1) };
+    }
+}
+
+#[cfg(not(unix))]
+struct Mapped;
+
+#[cfg(not(unix))]
+fn map_and_touch(_path: &std::path::Path) -> std::io::Result<Mapped> {
+    Err(std::io::Error::other("mapFile is Unix-only"))
 }
 
 fn garbage(job: &StartJob, ctx: &mut JobCtx<'_>) -> Result<Value, JobError> {

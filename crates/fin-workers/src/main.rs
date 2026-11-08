@@ -5,7 +5,10 @@
 //! fin-workers <family> [--warm]        run a family's worker (stdin/stdout envelope); the engine
 //!                                       appends `--warm` for a warm spawn
 //! fin-workers --helper <name>:<variant> run a helper (test builds: test:ok|exitEarly|hang|spawn|call)
-//! fin-workers watchdog                  the Unix host watchdog (Task 4)
+//! fin-workers watchdog <host pid>       the Unix host watchdog (`watchdog.rs`)
+//! fin-workers --spawn-broker            the Windows host's spawn broker image: created
+//!                                       suspended and never resumed; exits 0 at once if it is
+//!                                       (first thing in `main`)
 //! fin-workers --version                 prints the envelope id
 //! ```
 //!
@@ -16,16 +19,29 @@
 mod families;
 #[cfg(feature = "test-hooks")]
 mod test_family;
+#[cfg(unix)]
+mod watchdog;
 
 const USAGE: i32 = 2;
 
 fn usage(msg: &str) -> ! {
     eprintln!("fin-workers: {msg}");
-    eprintln!("usage: fin-workers <family> [--warm] | --helper <name>:<variant> | --version");
+    eprintln!(
+        "usage: fin-workers <family> [--warm] | --helper <name>:<variant> | watchdog <host pid> | --version"
+    );
     std::process::exit(USAGE)
 }
 
 fn main() {
+    // The spawn broker (Windows) never runs; should something resume it, it does nothing.
+    if std::env::args_os()
+        .nth(1)
+        .is_some_and(|a| a == "--spawn-broker")
+    {
+        std::process::exit(0);
+    }
+    #[cfg(feature = "test-hooks")]
+    test_family::capture_start();
     let args: Vec<String> = std::env::args().skip(1).collect();
     #[cfg(feature = "test-hooks")]
     if let Some(code) = test_family::hidden_main(&args) {
@@ -35,6 +51,8 @@ fn main() {
     match first {
         None => usage("no family"),
         Some("--version") => println!("{}", fin_jobs::envelope_id()),
+        #[cfg(unix)]
+        Some("watchdog") => std::process::exit(watchdog::run(&args[1..])),
         Some("--helper") => {
             let spec = args
                 .get(1)
