@@ -20,6 +20,9 @@ hex = "0.4"
 jiff = "0.2"
 olpc-cjson = "0.1"
 pem = "3"
+# `editor::keys_inside` compares folder identities (volume and file id); already in the
+# tree through walkdir (MIT OR Unlicense).
+same-file = "1"
 schemars = { version = "1", features = ["semver1"] }
 semver = { version = "1", features = ["serde"] }
 serde = { version = "1", features = ["derive"] }
