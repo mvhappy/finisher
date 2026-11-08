@@ -328,6 +328,12 @@ fin merge <branch>                           # take its work into your branch
   user; the server warns `SANDBOX_DISABLED` on every session. The built-in agent's tools are
   `fin` and file tools confined to its workspace, but run agents only on projects and prompts
   you trust.
+- **Linux sandbox limits.** On Linux the OS sandbox uses Landlock alone for now; the seccomp
+  filter is an open hardening item. Landlock confines reads, writes, program starts, links and
+  TCP ports, but a sandboxed process can still connect to local Unix sockets its user may open
+  (the D-Bus session bus, `ssh-agent`, `docker.sock`) on kernels without Landlock's socket rule,
+  and keeps the rest of the kernel's interface (process creation, `io_uring`, 32-bit system
+  calls, namespaces).
 
 ## Plugins
 
