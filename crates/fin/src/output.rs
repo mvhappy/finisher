@@ -207,6 +207,10 @@ const UNAVAILABLE_CODES: &[&str] = &[
     "JOURNAL_UNAVAILABLE",
     "SETTINGS_INVALID",
     "SETTINGS_WRITE_FAILED",
+    // A job's mapped file failed `fin-shm`'s checks (a link, a hard link, a special file, a
+    // size against its ring header or cap, a truncation while read; sub-project 6 spec §17):
+    // the job failed, not the request.
+    "SHM_REFUSED",
 ];
 
 /// The one place error codes become exit codes.
@@ -326,6 +330,7 @@ mod tests {
         assert_eq!(exit_code("EVENT_TOO_LARGE"), 3);
         assert_eq!(exit_code("FONT_FETCH_FAILED"), 5);
         assert_eq!(exit_code("FONTS_DAMAGED"), 5);
+        assert_eq!(exit_code("SHM_REFUSED"), 5);
         assert_eq!(exit_code("TRACK_LOCKED"), 3);
         assert_eq!(exit_code("OVERWRITE_SPLITS_ITEM"), 3);
         assert_eq!(exit_code("NOT_ADJACENT"), 3);
