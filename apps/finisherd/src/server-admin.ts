@@ -6,7 +6,7 @@ import { Context, Effect } from "effect";
 import { SERVER_VERSION } from "./config.ts";
 import type { ConnectionRegistry, Transport } from "./connections.ts";
 import type { Audit } from "./control/audit.ts";
-import { finError } from "./errors.ts";
+import { finError, toFinError } from "./errors.ts";
 
 /** What `serve` tells the admin RPCs about itself. */
 export interface ServerControl {
@@ -71,8 +71,10 @@ export function auditList(deps: AdminDeps, req: { since?: number | undefined; ki
 }
 
 /**
- * `auth.audit.purge`: exactly one of `all: true` or `before` (ms). The purge is audited after
- * it (`audit.purge {reason, count}`), so the log always says it was purged and by whom.
+ * `auth.audit.purge`: exactly one of `all: true` or `before` (ms). `audit.purge` rows are never
+ * purged, and the purge is recorded (`audit.purge {reason, before?, count}`) in the same
+ * transaction (`Audit.ownerPurge`), so the log always says it was purged, how far back and by
+ * whom.
  */
 export function auditPurge(
   deps: AdminDeps,
@@ -94,14 +96,9 @@ export function auditPurge(
         ),
       );
     }
-    return Effect.map(deps.audit.purge(all ? { all: true } : { before: before! }), (removed) => {
-      deps.audit.append({
-        kind: "audit.purge",
-        principal: { kind: by.kind, id: by.id },
-        outcome: "ok",
-        details: { reason: all ? "all" : "before", count: removed, transport },
-      });
-      return { removed };
+    return Effect.try({
+      try: () => ({ removed: deps.audit.ownerPurge(all ? { all: true } : { before: Math.floor(before!) }, by, transport) }),
+      catch: toFinError,
     });
   });
 }

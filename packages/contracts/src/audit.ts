@@ -16,6 +16,8 @@ export const AUDIT_KINDS = [
   "credential.mint",
   "credential.revoke",
   "credential.expire",
+  // A new `credential.master` (review of 5A Tasks 8–9, M3): `count` credentials ended with it.
+  "credential.rotateMaster",
   "pair.offer",
   "pair.redeem",
   "pair.approve",
@@ -116,6 +118,8 @@ const COMMON = {
   projectId: Schema.optional(Id),
   deviceId: Schema.optional(Id),
   count: Schema.optional(Schema.Int),
+  /** `audit.purge`: the cutoff (ms) an owner's purge removed entries before. */
+  before: Schema.optional(Schema.Int),
   /** The transport a connection came over (5A Task 3). */
   transport: Schema.optional(Schema.Literals(["socket", "pipe", "ws"])),
 };

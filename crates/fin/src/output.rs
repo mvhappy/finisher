@@ -26,6 +26,9 @@ pub const DENIED_CODES: &[&str] = &[
     "BRANCH_PROTECTED",
     "BRANCH_NOT_ALLOWED",
     "CREDENTIAL_REVOKED",
+    // A credential that expired (review of 5A Tasks 8–9, L4): the server proved itself, then
+    // refused it; only the owner can mint a new one.
+    "CREDENTIAL_EXPIRED",
     "APPROVAL_REQUIRED",
     "CONSOLE_NEEDS_TTY",
     "CONFIRMATION_REQUIRED",
@@ -241,6 +244,13 @@ const CONFLICT_CODES: &[&str] = &[
     "TX_SET_ASIDE",
     // A registry with this id exists (8A Task 9a).
     "REGISTRY_EXISTS",
+    // The server holds as many live agent and MCP credentials as it keeps (5A Task 9; review
+    // of Tasks 8–9, L4): the server's state refuses it, not the caller (only the owner mints),
+    // and waiting changes nothing: revoke some, then mint again. A conflict, not exit 5.
+    "CREDENTIAL_LIMIT",
+    // Another live agent session works on this root branch (7A Task 7): end it, or start from
+    // another branch.
+    "BRANCH_IN_USE",
 ];
 
 /// Codes of a job that ended without succeeding (exit 4, 5C-1 Decision 41): its outcome, and
@@ -283,8 +293,6 @@ const USAGE_CODES: &[&str] = &[
 const UNAVAILABLE_CODES: &[&str] = &[
     // Too many WebSocket tickets at once (5A, review of Task 6): wait and retry.
     "TICKET_LIMIT",
-    // The server holds as many live agent and MCP credentials as it keeps (5A Task 9).
-    "CREDENTIAL_LIMIT",
     "SERVER_UNAVAILABLE",
     "SERVER_RUNNING",
     "SERVER_START_FAILED",

@@ -27,6 +27,18 @@ export function authorOf(p: Principal): string {
   return `${p.kind}:${p.id}`;
 }
 
+/** Principals that write for a credential (not a person, not `fin`): `agent`, `mcp`, and 5B's `device`, 8's `plugin`. */
+const CREDENTIAL_KINDS: ReadonlySet<string> = new Set(["agent", "mcp", "device", "plugin"]);
+
+/**
+ * Whether the author of `p`'s new branches is always `authorOf(p)`, whatever the payload says
+ * (review of Tasks 8–9, M1): every credential principal, branch-limited or not, so none can
+ * plant a branch another agent's `own` would then reach.
+ */
+export function stampsAuthor(p: Principal): boolean {
+  return CREDENTIAL_KINDS.has(p.kind);
+}
+
 const projectOf = (payload: unknown): string | undefined => {
   const v = (payload as { projectId?: unknown } | null)?.projectId;
   return typeof v === "string" ? v : undefined;
@@ -48,9 +60,16 @@ export function branchLimited(p: Principal): boolean {
  * A rule's `targets` (a branch acted on without a record, `project.acknowledgeRewind`) are
  * checked the same way.
  */
-export const agentBranchLimits: PolicyRule = ({ tag, rule, principal, payload, projects }) =>
+export const agentBranchLimits: PolicyRule = (input) => agentBranchLimitsExcept(() => false)(input);
+
+/**
+ * `agentBranchLimits` for every principal but those `skip` names: an agent session's
+ * credential reaches its root branch's whole subtree, which `agent/reach.ts` checks instead
+ * (sub-project 7A Decision 16).
+ */
+export const agentBranchLimitsExcept = (skip: (p: Principal) => boolean): PolicyRule => ({ tag, rule, principal, payload, projects }) =>
   Effect.gen(function* () {
-    if (!branchLimited(principal) || (rule.writes === undefined && rule.targets === undefined)) return undefined;
+    if (!branchLimited(principal) || skip(principal) || (rule.writes === undefined && rule.targets === undefined)) return undefined;
     const projectId = projectOf(payload);
     // Every writing RPC names its project; one that does not is refused, never left open.
     if (projectId === undefined) return { deny: branchNotAllowed(tag, "") };

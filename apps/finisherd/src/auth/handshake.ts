@@ -6,7 +6,10 @@
 //     → {principal}
 //
 // `K` is the named credential's key. An unknown credential, a foreign `env` or another endpoint
-// gets a `serverNonce` and no proof, so ids cannot be probed, and its prove fails. Each hello
+// gets a `serverNonce` and no proof, so ids cannot be probed, and its prove fails. A credential
+// that exists but has ended gets a proof (the server shows it is the one that minted it) and a
+// correct prove is then refused `CREDENTIAL_REVOKED` or `CREDENTIAL_EXPIRED` (exit 7; review of
+// Tasks 8–9, L4), so `fin` can say which instead of suspecting a squatter. Each hello
 // is answered by at most one prove; every failed prove is audited (`auth.fail`, aggregated per
 // credential kind per minute) and the fifth on one connection closes it. Nonces and MACs are
 // never logged, audited or put in an error.
@@ -18,7 +21,7 @@ import { finError } from "../errors.ts";
 import { CONSOLE, isProved, LOCAL } from "../principal.ts";
 import { b64u, helloProof, NONCE_BYTES, nonce, proveMac, sameMac } from "./crypto.ts";
 import type { Keys } from "./keys.ts";
-import { revokeCredential, type RevokeDeps } from "./revoke.ts";
+import { credentialExpired, credentialRevoked, revokeCredential, type RevokeDeps } from "./revoke.ts";
 
 /** Failed proves after which a connection is closed (Decision 9). */
 export const MAX_PROVE_FAILURES = 5;
@@ -37,8 +40,11 @@ export interface HelloAnswer {
   readonly proof?: string;
 }
 
-/** An `agent`/`mcp` credential's key and principal while it is live (Task 9); none before. */
-export type CredentialLookup = (ref: { kind: "agent" | "mcp"; id: string }) => { key: Buffer; principal: Principal } | undefined;
+/**
+ * An `agent`/`mcp` credential's key and principal (Task 9), with `ended` once it was revoked or
+ * expired; `undefined` for an unknown one.
+ */
+export type CredentialLookup = (ref: { kind: "agent" | "mcp"; id: string }) => { key: Buffer; principal: Principal; ended?: "revoked" | "expired" } | undefined;
 
 /** Revokes an `agent`/`mcp` credential (Task 9's store); false when it was not live. */
 export type CredentialRevoke = (ref: { kind: "agent" | "mcp"; id: string }) => boolean;
@@ -64,7 +70,7 @@ export class Handshake {
     this.deps = deps;
   }
 
-  #keyOf(ref: CredentialRef): { key: Buffer; principal: Principal } | undefined {
+  #keyOf(ref: CredentialRef): { key: Buffer; principal: Principal; ended?: "revoked" | "expired" } | undefined {
     switch (ref.kind) {
       case "local":
         return { key: this.deps.keys.local, principal: LOCAL };
@@ -123,24 +129,34 @@ export class Handshake {
       const expected = hello?.expected;
       if (hello !== undefined && expected !== undefined && mac !== null && sameMac(mac, expected)) {
         const named = this.#keyOf(hello.credential);
-        if (named !== undefined) {
+        if (named !== undefined && named.ended === undefined) {
           conn.principal = named.principal;
           return Effect.succeed({ principal: named.principal });
         }
+        // Ended (or ended since the hello): the caller holds its key, so it may know why.
+        if (named?.ended !== undefined) {
+          this.#fail(connections, clientId, conn, hello.credential.kind, named.ended);
+          return Effect.fail(named.ended === "revoked" ? credentialRevoked() : credentialExpired());
+        }
       }
       const reason = hello === undefined ? "noHello" : expected === undefined ? "noProof" : "badMac";
-      conn.failures++;
-      this.deps.audit.append({
-        kind: "auth.fail",
-        principal: { kind: "anonymous", id: "" },
-        credentialKind: hello?.credential.kind ?? "none",
-        outcome: "failed",
-        code: "UNAUTHENTICATED",
-        details: { reason, transport: conn.transport },
-      });
-      if (conn.failures >= MAX_PROVE_FAILURES) connections.link(clientId)?.closeAfterReply();
+      this.#fail(connections, clientId, conn, hello?.credential.kind ?? "none", reason);
       return Effect.fail(unauthenticated(reason));
     });
+  }
+
+  /** A failed prove: counted (the fifth closes the connection) and audited `auth.fail`. */
+  #fail(connections: Connections, clientId: number, conn: Connection, credentialKind: string, reason: string): void {
+    conn.failures++;
+    this.deps.audit.append({
+      kind: "auth.fail",
+      principal: { kind: "anonymous", id: "" },
+      credentialKind,
+      outcome: "failed",
+      code: reason === "revoked" ? "CREDENTIAL_REVOKED" : reason === "expired" ? "CREDENTIAL_EXPIRED" : "UNAUTHENTICATED",
+      details: { reason, transport: conn.transport },
+    });
+    if (conn.failures >= MAX_PROVE_FAILURES) connections.link(clientId)?.closeAfterReply();
   }
 }
 

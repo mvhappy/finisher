@@ -25,7 +25,7 @@ const agent = (id: string): Principal => ({ kind: "agent", id, scopes: [], proje
 const device: Principal = { kind: "device", id: "01devicedevicedevicedevice", scopes: [], projects: "*", branches: "*", human: true };
 
 /** A listener in its own scope; `check` decides every upgrade. */
-async function listener(check: (req: { headers: Record<string, unknown> }) => UpgradeResult, more: { maxUnauthenticated?: number; headersTimeoutMs?: number } = {}) {
+async function listener(check: (req: { headers: Record<string, unknown> }) => UpgradeResult, more: { maxUnauthenticated?: number; headersTimeoutMs?: number; atCapGraceMs?: number } = {}) {
   const scope = Effect.runSync(Scope.make());
   const { port } = await Effect.runPromise(
     Scope.provide(makeTicketedWebSocketServer({ check: check as never, maxPayload: 1024, ...more }), scope),
@@ -205,5 +205,34 @@ describe("settings origins", () => {
     writeFileSync(settingsPath(sd), JSON.stringify({ server: { origins: ["https://b.example", "https://c.example"] } }));
     expect(origins()).toEqual(["https://app2.example"]);
     expect(reads).toBe(2);
+  });
+});
+
+describe("review of Tasks 8–9: the unauthenticated slots at the cap", () => {
+  test("at the cap a new socket closes the ones that waited past the short grace, so a WebSocket still gets in", { timeout: 20_000 }, async () => {
+    const l = await listener(byHeader({ c: CONSOLE }), { maxUnauthenticated: 2, headersTimeoutMs: 10_000, atCapGraceMs: 200 });
+    try {
+      const held = await Promise.all(
+        [0, 1].map(
+          () =>
+            new Promise<ReturnType<typeof connect>>((r) => {
+              const s = connect({ host: "127.0.0.1", port: l.port }, () => r(s));
+              s.on("error", () => undefined);
+            }),
+        ),
+      );
+      const closed = held.map((s) => new Promise<void>((r) => s.once("close", () => r())));
+      // Within the grace a newcomer is still refused at once...
+      const early = await closedAfter(l.port, "GET /rpc HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n");
+      expect(early.data).toBe("");
+      // ...past it the idle ones go and the newcomer upgrades.
+      await new Promise((r) => setTimeout(r, 300));
+      const r = await open(l.port, "c");
+      expect(r.status).toBeUndefined();
+      r.ws!.close();
+      await Promise.all(closed);
+    } finally {
+      await l.close();
+    }
   });
 });

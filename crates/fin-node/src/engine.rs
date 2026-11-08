@@ -327,16 +327,31 @@ impl Engine {
     }
 
     /// Stops status reporting the rewind of `branch` that started generation `n`; resolves to
-    /// `false` when no such rewind is recorded.
+    /// `false` when no such rewind is recorded. `meta_json`'s guard names the credential, if
+    /// any, refused once ended (`CREDENTIAL_REVOKED`), as a write's is.
     #[napi(catch_unwind)]
-    pub fn acknowledge_rewind(&self, branch: String, generation: f64) -> AsyncTask<StoreTask> {
-        self.task(Call::AcknowledgeRewind { branch, generation })
+    pub fn acknowledge_rewind(
+        &self,
+        branch: String,
+        generation: f64,
+        meta_json: Option<String>,
+    ) -> AsyncTask<StoreTask> {
+        self.task(Call::AcknowledgeRewind {
+            branch,
+            generation,
+            meta_json,
+        })
     }
 
     /// Acknowledges an incomplete salvage of the kept copy `copy`; `false` when none is listed.
+    /// `meta_json` as for `acknowledge_rewind`.
     #[napi(catch_unwind)]
-    pub fn acknowledge_salvage(&self, copy: String) -> AsyncTask<StoreTask> {
-        self.task(Call::AcknowledgeSalvage { copy })
+    pub fn acknowledge_salvage(
+        &self,
+        copy: String,
+        meta_json: Option<String>,
+    ) -> AsyncTask<StoreTask> {
+        self.task(Call::AcknowledgeSalvage { copy, meta_json })
     }
 
     /// Takes the lease over; resolves to the `ProjectStatus` JSON (long call), with the font
@@ -375,9 +390,10 @@ impl Engine {
     /// Sets the project's collection flag (`default` or `never`) in `finisher.project.json`
     /// (needs the writer lease: `PROJECT_READ_ONLY` otherwise) and in the server's journal;
     /// `never` purges the project's entries. Resolves to `{"project", "collect"}` JSON.
+    /// `meta_json` as for `acknowledge_rewind`.
     #[napi(catch_unwind)]
-    pub fn set_collect(&self, collect: String) -> AsyncTask<StoreTask> {
-        self.task(Call::SetCollect { collect })
+    pub fn set_collect(&self, collect: String, meta_json: Option<String>) -> AsyncTask<StoreTask> {
+        self.task(Call::SetCollect { collect, meta_json })
     }
 
     /// Delivers every later store event (JSON string) to `callback`, replacing an earlier one.

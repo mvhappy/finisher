@@ -3,6 +3,7 @@
 // Usage: node apps/finisherd/src/main.ts [serve] [--server-data <dir>]
 //        node apps/finisherd/src/main.ts <command> …   (the owner's console, `console/main.ts`)
 // Serving logs to stderr only; stdout stays empty. Console commands answer on stdout.
+import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { runMain } from "@effect/platform-node/NodeRuntime";
 import { Cause, Context, Deferred, Effect, Exit, Layer, Logger } from "effect";
@@ -21,13 +22,17 @@ import { canonicalEndpoint } from "./auth/crypto.ts";
 import { Handshake, HandshakeTag } from "./auth/handshake.ts";
 import { Credentials, CredentialsTag } from "./auth/credentials.ts";
 import { sweepExpired } from "./auth/revoke.ts";
-import { KeysTag, rotateKeys } from "./auth/keys.ts";
+import { authDir, excludeFromBackups, KEY_FILES, KeysTag, rotateKeys, writeKeyFile } from "./auth/keys.ts";
 import { ConnectionRegistry, ConnectionRegistryTag, Connections } from "./connections.ts";
 import { AuditTag, layerAudit } from "./control/audit.ts";
 import { makeTickets, TicketsTag } from "./auth/tickets.ts";
 import { ControlStoreTag, layerControlStore } from "./control/db.ts";
 // Registers the `agent` control chain before the store opens (7A-2 Task 3b; 6b wires the runtime).
-import "./agent/store.ts";
+import { AgentStore } from "./agent/store.ts";
+import { systemClock, systemIds } from "./agent/clock.ts";
+import { type AgentCore, AgentCoreTag } from "./agent/core.ts";
+import { SessionCredentials } from "./agent/credentials.ts";
+import { BranchLineage } from "./agent/reach.ts";
 import { layerFonts, type FontsOptions } from "./fonts.ts";
 import { Diagnostics, type DiagnosticsOptions, makeDiagnostics } from "./diagnostics.ts";
 import { withServerLock } from "./lock.ts";
@@ -46,6 +51,8 @@ export interface ServeOptions {
   readonly diagnostics?: DiagnosticsOptions;
   /** Agent and MCP credentials (tests): the clock expiry reads and the sweep's period (60 s). */
   readonly credentials?: { readonly clock?: () => number; readonly sweepMs?: number };
+  /** The agent runtime's shared pieces, handed to tests once built (7A-2). */
+  readonly onAgentCore?: (core: AgentCore) => void;
   /** Called once both transports listen and `finisherd.json` is written. */
   readonly onReady?: (info: ServerInfo) => void;
 }
@@ -54,7 +61,7 @@ export interface ServeOptions {
  * Runs the server until interrupted or `server.stop`; finalizers stop the transports, close
  * engines and remove `finisherd.json`.
  */
-export const serve = ({ serverData, onReady, registry, fonts, diagnostics: diagnosticsOptions, credentials: credentialOptions }: ServeOptions) =>
+export const serve = ({ serverData, onReady, onAgentCore, registry, fonts, diagnostics: diagnosticsOptions, credentials: credentialOptions }: ServeOptions) =>
   Effect.scoped(
     Effect.gen(function* () {
       yield* Effect.try({ try: () => ensureServerData(serverData), catch: startFailure });
@@ -67,6 +74,9 @@ export const serve = ({ serverData, onReady, registry, fonts, diagnostics: diagn
       // New `local.key` and `console.key` (5A Task 2) before the socket is claimed: a key read
       // while this server listens is always this server's. `auth/` and `run/` are private.
       const keys = yield* Effect.try({ try: () => rotateKeys(serverData), catch: startFailure });
+      // `auth/` stays out of Time Machine (review of Tasks 8–9, M3): a backup of
+      // `credential.master` would outlive every rotation. Best effort: a warning if it fails.
+      excludeFromBackups(authDir(serverData));
       const socket = socketPath(serverData);
       yield* claimSocketPath(socket);
       const tickets = yield* makeTickets();
@@ -108,20 +118,33 @@ export const serve = ({ serverData, onReady, registry, fonts, diagnostics: diagn
         // Each WebSocket carries its ticket's principal from its first frame (`upgrade.ts`).
         ws: everyConnection.add(new Connections("ws", () => wsEndpoint)),
       };
-      // One font layer for the handlers and the plugins, which feed it the packs' catalogs.
-      const fontsLayer = layerFonts(serverData, fonts);
       // Agent and MCP credentials (5A Task 9): proved through the handshake while live; every
       // request re-checks; expired ones are ended by the sweep, revoked ones at once.
-      const credentials = new Credentials(Context.get(control, ControlStoreTag), keys.credentialMaster, audit, credentialOptions?.clock);
+      const credentials = new Credentials(Context.get(control, ControlStoreTag), keys.credentialMaster, audit, credentialOptions?.clock, (key) =>
+        writeKeyFile(join(authDir(serverData), KEY_FILES.credentialMaster), key),
+      );
       everyConnection.useLiveness((p) => credentials.isLive(p));
+      // One last write of ended credentials before the control store closes (it closes after).
+      yield* Effect.addFinalizer(() =>
+        Effect.sync(() => {
+          credentials.persist();
+          credentials.dispose();
+        }),
+      );
       const handshake = new Handshake({
         keys,
         envId,
         audit,
-        credentials: (ref) => credentials.lookup(ref),
-        revoke: (ref) => credentials.end(ref, "self"),
+        credentials: (ref) => credentials.forHello(ref),
+        revoke: (ref) => credentials.markEnded(ref, "self"),
       });
-      const revokeDeps = { audit, tickets, connections: everyConnection, revoke: (ref: { kind: "agent" | "mcp"; id: string }) => credentials.end(ref, "expired") };
+      const revokeDeps = {
+        audit,
+        tickets,
+        connections: everyConnection,
+        revoke: (ref: { kind: "agent" | "mcp"; id: string }) => credentials.markEnded(ref, "expired"),
+        persist: () => credentials.persist(),
+      };
       // A busy store fails one sweep, never the timer: the next one tries again.
       const sweep = () => {
         try {
@@ -139,6 +162,22 @@ export const serve = ({ serverData, onReady, registry, fonts, diagnostics: diagn
         }),
         (timer) => Effect.sync(() => clearInterval(timer)),
       );
+      // The agent runtime's shared pieces (7A-2): the session store, each session's credential
+      // (minted, refreshed and revoked through the one revoke path) and the branch lineage the
+      // chains read for branch reach. Credential effects a crash left in the outbox are done now.
+      const agentClock = credentialOptions?.clock === undefined ? systemClock : { now: credentialOptions.clock };
+      const agentIds = systemIds(agentClock);
+      const agentStore = new AgentStore(Context.get(control, ControlStoreTag), serverData, agentClock, agentIds);
+      const sessionCredentials = new SessionCredentials({
+        store: agentStore,
+        credentials,
+        revoke: { ...revokeDeps, revoke: (ref) => credentials.markEnded(ref, "owner") },
+      });
+      sessionCredentials.drain();
+      const agentCore: AgentCore = { store: agentStore, credentials: sessionCredentials, lineage: new BranchLineage(), clock: agentClock, ids: agentIds };
+      onAgentCore?.(agentCore);
+      // One font layer for the handlers and the plugins, which feed it the packs' catalogs.
+      const fontsLayer = layerFonts(serverData, fonts);
       // `server.stop` (5A Task 8): `serve` returns, and its scope's finalizers stop everything.
       const stopped = Deferred.makeUnsafe<void>();
       const listeners = [
@@ -161,6 +200,7 @@ export const serve = ({ serverData, onReady, registry, fonts, diagnostics: diagn
               Layer.succeed(TicketsTag, tickets),
               Layer.succeed(ConnectionRegistryTag, everyConnection),
               Layer.succeed(ServerControlTag, serverControl),
+              Layer.succeed(AgentCoreTag, agentCore),
             ),
           ),
         ),

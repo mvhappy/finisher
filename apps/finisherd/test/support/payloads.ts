@@ -23,6 +23,7 @@ export const SAMPLE_PAYLOADS: { readonly [T in FinRpcTag]: Record<string, unknow
   "auth.credential.mint": { kind: "agent", label: "sample" },
   "auth.credential.list": {},
   "auth.credential.revoke": { id: "01cccccccccccccccccccccccc" },
+  "auth.credential.rotateMaster": {},
   "project.create": { dir: "/nowhere/never-created", name: "X", rate: "30" },
   "project.open": { dir: "/nowhere/never-opened" },
   "asset.probe": { projectId: P, path: "/nowhere/a.png" },

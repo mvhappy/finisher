@@ -62,6 +62,8 @@ import {
   CredentialMintSuccess,
   CredentialRevokePayload,
   CredentialRevokeSuccess,
+  CredentialRotateMasterPayload,
+  CredentialRotateMasterSuccess,
 } from "./credentials.ts";
 import { FinError } from "./errors.ts";
 import {
@@ -434,6 +436,7 @@ export const FinRpcs = RpcGroup.make(
   Rpc.make("auth.credential.mint", { payload: CredentialMintPayload, success: CredentialMintSuccess, error: FinError }),
   Rpc.make("auth.credential.list", { payload: CredentialListPayload, success: CredentialListSuccess, error: FinError }),
   Rpc.make("auth.credential.revoke", { payload: CredentialRevokePayload, success: CredentialRevokeSuccess, error: FinError }),
+  Rpc.make("auth.credential.rotateMaster", { payload: CredentialRotateMasterPayload, success: CredentialRotateMasterSuccess, error: FinError }),
   Rpc.make("project.create", {
     payload: ProjectCreatePayload,
     success: ProjectRefSuccess,
