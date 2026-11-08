@@ -26,6 +26,7 @@ export type { JobEvent } from "./view.ts";
 export { stoppedRun, type WarmLease } from "./attempt-flow.ts";
 export { type EngineDeps, type JobEngine, JobEngineTag, type SubmitSpec, type WorkersView } from "./api.ts";
 import type { EngineDeps, JobEngine, SubmitSpec, WorkersView } from "./api.ts";
+import { jobNotFound } from "./access.ts";
 
 export const QUEUE_LIMIT = 50_000;
 /** How long a job waits queued for an abandoned process of its last attempt to exit (9b review H1). */
@@ -69,6 +70,7 @@ export class Engine implements JobEngine {
   readonly #stats = new Map<string, RunStats>();
   readonly #progress = new Map<string, { p: JobProgress; last: number; cancel?: (() => void) | undefined }>();
   readonly #listeners = new Set<(job: JobView) => void>();
+  readonly #eventListeners = new Set<(e: JobEvent) => void>();
   /** Called after every end and every run's end (`wait`, `settled`). */
   readonly waiters = new Set<() => void>();
   readonly #bus: PubSub.PubSub<JobEvent>;
@@ -134,7 +136,22 @@ export class Engine implements JobEngine {
   }
 
   publish(e: JobEvent): void {
-    if (!this.crashed) Effect.runSync(PubSub.publish(this.#bus, e));
+    if (this.crashed) return;
+    Effect.runSync(PubSub.publish(this.#bus, e));
+    for (const l of this.#eventListeners) {
+      try {
+        l(e);
+      } catch (err) {
+        this.d.log("warning", `a job event listener threw: ${String(err)}`);
+      }
+    }
+  }
+
+  onEvent(listener: (e: JobEvent) => void): () => void {
+    this.#eventListeners.add(listener);
+    return () => {
+      this.#eventListeners.delete(listener);
+    };
   }
 
   shutdownBus(): void {
@@ -415,7 +432,7 @@ export class Engine implements JobEngine {
   get(id: string): Effect.Effect<JobView, FinError> {
     return Effect.suspend(() => {
       const v = this.view(id);
-      return v === undefined ? Effect.fail(finError("JOB_NOT_FOUND", `no job ${id}`, { job: id })) : Effect.succeed(v);
+      return v === undefined ? Effect.fail(jobNotFound(id)) : Effect.succeed(v);
     });
   }
 

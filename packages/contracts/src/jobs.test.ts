@@ -55,5 +55,6 @@ test("fin_job_codes_are_all_in_job_error_codes", () => {
     ...LISTS.flatMap(list).filter((c) => /^(JOB|JOBHOST|WORKER)_/.test(c)),
   ]);
   expect(jobs.size).toBeGreaterThan(15);
+  expect(jobs.has("WATCH_LAGGING")).toBe(true);
   for (const code of jobs) expect(Object.keys(JOB_ERROR_CODES), code).toContain(code);
 });

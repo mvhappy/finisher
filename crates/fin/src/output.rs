@@ -327,13 +327,15 @@ const UNAVAILABLE_CODES: &[&str] = &[
     // Jobs (5C-1 Decision 41): 50,000 unfinished jobs; no worker could be started
     // (`details.reason`); a worker built for another envelope (`details.expected`, `got`); a
     // wait that timed out; an `io:` pool two abandoned processes hold (`details.pool`); a job's
-    // group over its memory limit (`details.limit`, `used`).
+    // group over its memory limit (`details.limit`, `used`); a `jobs.watch` reader that fell
+    // `details.buffer` events behind (5C-2: list again, then watch again).
     "JOB_QUEUE_FULL",
     "WORKER_UNAVAILABLE",
     "WORKER_PROTOCOL_MISMATCH",
     "WAIT_TIMEOUT",
     "RESOURCE_STUCK",
     "WORKER_OOM",
+    "WATCH_LAGGING",
     // A registry folder that cannot be read; the clock is more than a day before the last
     // refresh (`fix`: set the clock, then refresh) (8A Task 9a). `REGISTRY_STALE` is a warning.
     "REGISTRY_UNREACHABLE",

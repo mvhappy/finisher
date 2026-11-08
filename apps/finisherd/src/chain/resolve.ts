@@ -7,7 +7,7 @@
 import { constants } from "node:fs";
 import { open, realpath } from "node:fs/promises";
 import { basename, dirname, join, sep } from "node:path";
-import type { FinError, Principal, RpcRule, RuleFacts } from "@finisher/contracts";
+import type { FinError, Principal, RpcRule, RuleFacts, Scope } from "@finisher/contracts";
 import { Effect } from "effect";
 import { requireAbsolute, requireAbsoluteOpt } from "../paths.ts";
 
@@ -26,6 +26,14 @@ export interface ChainProjects {
   resolveBranch(projectId: string, ref: string): Effect.Effect<string, FinError>;
   /** Every branch with its author (`createdBy`), archived ones too. */
   branches(projectId: string): Effect.Effect<ReadonlyArray<{ readonly id: string; readonly createdBy: string }>, FinError>;
+}
+
+/** What the chain needs from the job engine (5C-2 Decision 4): it reads, never changes. */
+export interface ChainJobs {
+  /** Whose job `id` is to `principal`: `none` when unknown or not visible to it (`jobs/access.ts`). */
+  relation(principal: Principal, id: string): "own" | "other" | "none";
+  /** The scopes of `kind` when clients may submit it (`KindSpec.rpc`), else `undefined`. */
+  kindScopes(kind: string): ReadonlyArray<Scope> | undefined;
 }
 
 export interface Resolved {
@@ -101,7 +109,12 @@ export async function projectIdIn(dir: string): Promise<string | undefined> {
   }
 }
 
-export function resolve(rule: RpcRule, payload: unknown, deps: ChainProjects): Effect.Effect<Resolved, FinError> {
+export function resolve(
+  rule: RpcRule,
+  payload: unknown,
+  deps: ChainProjects,
+  job?: { readonly principal: Principal; readonly jobs?: ChainJobs | undefined },
+): Effect.Effect<Resolved, FinError> {
   return Effect.gen(function* () {
     const want = new Set(rule.resolve ?? []);
     const projects: string[] = [];
@@ -116,6 +129,22 @@ export function resolve(rule: RpcRule, payload: unknown, deps: ChainProjects): E
       }
       // Serving a project that is not open reopens it (Decision 15): `project.write`.
       if (projects.some((id) => !deps.isOpen(id))) facts = { ...facts, reopens: true };
+    }
+    // A job's project is checked for reach; nothing is opened for it.
+    if (want.has("jobProject")) {
+      const v = field(payload, "project");
+      if (typeof v === "string") projects.push(v);
+    }
+    // A kind clients may not submit has no scopes to add: its handler answers JOB_KIND_UNKNOWN.
+    if (want.has("jobKind")) {
+      const kind = field(payload, "kind");
+      const scopes = typeof kind === "string" ? job?.jobs?.kindScopes(kind) : undefined;
+      if (scopes !== undefined) facts = { ...facts, kindScopes: scopes };
+    }
+    if (want.has("job")) {
+      const id = field(payload, "job");
+      const rel = typeof id === "string" && job?.jobs !== undefined ? job.jobs.relation(job.principal, id) : "none";
+      facts = { ...facts, job: rel };
     }
     // The handler gets the canonical folder, so it opens what was checked (review H2).
     if (want.has("openDir")) {

@@ -21,8 +21,15 @@ export interface KindSpec<P = unknown, R = unknown> {
   readonly kind: string;
   readonly version: number;
   readonly family: string;
-  /** Checked by 5C-2. */
+  /** What submitting it takes beside `jobs.submit` (5C-2: the chain checks them on `jobs.submit`). */
   readonly scopes: ReadonlyArray<string>;
+  /**
+   * Clients may submit it with `jobs.submit` (5C-2 Decision 6); any other kind is
+   * `JOB_KIND_UNKNOWN` there and reached only through its own RPC or in-process callers. A kind
+   * that opts in must accept only params whose paths and project agree with the job's `project`:
+   * the chain checks the caller's reach over that `project`, never the params.
+   */
+  readonly rpc?: boolean;
   readonly resources: OrFn<P, ReadonlyArray<PoolName>>;
   readonly warm?: boolean;
   readonly defaultPriority: Priority;

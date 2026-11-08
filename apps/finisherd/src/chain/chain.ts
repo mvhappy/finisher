@@ -35,7 +35,7 @@ import { ulid } from "../control/ulid.ts";
 import { authorize } from "./authorize.ts";
 import { approvalRequired, outOfReach } from "./fixes.ts";
 import { authorOf, branchLimited, DEFAULT_POLICIES, type PolicyRule, runPolicies, stampsAuthor } from "./policy.ts";
-import { type ChainProjects, resolve } from "./resolve.ts";
+import { type ChainJobs, type ChainProjects, resolve } from "./resolve.ts";
 
 export type { Outcome, PolicyRule } from "./policy.ts";
 
@@ -99,6 +99,8 @@ export function keepApproval(approvals: Approvals, id: string, entry: { readonly
 export interface ChainDeps {
   readonly connections: Connections;
   readonly projects: ChainProjects;
+  /** The job engine's ownership and kind scopes, for the `jobs.*` rules (5C-2). */
+  readonly jobs?: ChainJobs;
   readonly audit?: Audit;
   /** Counts a unary refusal in `rpc.stats`. */
   readonly timed?: <A>(tag: string, self: Effect.Effect<A, FinError>) => Effect.Effect<A, FinError>;
@@ -185,7 +187,7 @@ export function withChain<H extends object>(handlers: H, deps: ChainDeps): H {
       if (deps.connections.revoked(clientId)) return yield* Effect.fail(credentialRevoked());
       if (!PUBLIC_RPCS.has(tag) && principal.kind === "anonymous") return yield* Effect.fail(unauthenticated("unproved"));
       if (credentialOf(principal) !== undefined) deps.touch?.(principal);
-      const resolved = yield* resolve(rule, payload, deps.projects);
+      const resolved = yield* resolve(rule, payload, deps.projects, { principal, jobs: deps.jobs });
       yield* authorize(tag, principal, payload, resolved, deps.projects);
       const outcome = yield* runPolicies(policies, { tag, rule, principal, payload: resolved.payload, projects: deps.projects });
       if ("deny" in outcome) return yield* Effect.fail(outcome.deny);

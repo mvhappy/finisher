@@ -15,7 +15,10 @@ export type JobState = typeof JobStateSchema.Type;
 /** The states a job ends in (`finishedAt` set). An `interrupted` job may be re-queued at restart. */
 export const TERMINAL_JOB_STATES: ReadonlyArray<JobState> = ["succeeded", "failed", "cancelled", "interrupted"];
 
-/** A job's owner: a principal kind (`local`, a credential, a device) or `system`; narrowed in 5C-2. */
+/**
+ * A job's owner: the submitting principal's `{kind, id}` (`local` runs share `local`; each
+ * credential, device and console is its own) or `system` for callers inside `finisherd`.
+ */
 export const JobOwnerSchema = Schema.Struct({ kind: Schema.String, id: Schema.String });
 export type JobOwner = typeof JobOwnerSchema.Type;
 
@@ -118,7 +121,8 @@ export type JobView = typeof JobViewSchema.Type;
  * The job engine's error codes and their `fin` exit class (5C-1 plan, Decision 41; the classes
  * live in `crates/fin/src/output.rs`): 3 the request (`JOBHOST_STATE`: a job host call on a
  * group or host the caller should know is gone), 4 a job that did not succeed and the
- * result codes it carries, 5 unavailable for now, 6 internal (`UNKNOWN_MESSAGE` and
+ * result codes it carries, 5 unavailable for now (`WATCH_LAGGING`: a `jobs.watch` reader fell
+ * `WATCH_BUFFER` events behind; list again, then watch again), 6 internal (`UNKNOWN_MESSAGE` and
  * `CALL_LIMIT` appear only in `reply` errors to a worker).
  */
 export const JOB_ERROR_CODES = {
@@ -142,6 +146,7 @@ export const JOB_ERROR_CODES = {
   WAIT_TIMEOUT: 5,
   RESOURCE_STUCK: 5,
   WORKER_OOM: 5,
+  WATCH_LAGGING: 5,
   UNKNOWN_MESSAGE: 6,
   CALL_LIMIT: 6,
 } as const satisfies Record<string, 3 | 4 | 5 | 6>;

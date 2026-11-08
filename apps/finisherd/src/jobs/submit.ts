@@ -8,6 +8,7 @@ import { Effect } from "effect";
 import { finError } from "../errors.ts";
 import { type Engine, finished, MAX_ATTEMPTS_LIMIT, type SubmitSpec } from "./engine.ts";
 import { resolveOrFn, validateMappedFiles } from "./kinds.ts";
+import { jobNotFound } from "./access.ts";
 
 export function submitJob(e: Engine, owner: JobOwner, spec: SubmitSpec): JobView {
   const { store } = e.d;
@@ -38,7 +39,8 @@ export function submitJob(e: Engine, owner: JobOwner, spec: SubmitSpec): JobView
   }
   const dedupeKey = kind.dedupe?.(params as never);
   if (dedupeKey !== undefined) {
-    const active = store.activeByDedupe(kind.kind, dedupeKey) ?? (kind.rememberPoison === true ? store.poisonedByDedupe(kind.kind, dedupeKey) : undefined);
+    // The owner's own only (5C-2 Decision 7): another owner's job is one this caller may not see.
+    const active = store.activeByDedupe(kind.kind, dedupeKey, owner) ?? (kind.rememberPoison === true ? store.poisonedByDedupe(kind.kind, dedupeKey, owner) : undefined);
     if (active !== undefined) return e.view(active.id) ?? active;
   }
   if (e.unfinished >= e.d.queueLimit) {
@@ -71,7 +73,7 @@ export function submitJob(e: Engine, owner: JobOwner, spec: SubmitSpec): JobView
 
 export function waitJobs(e: Engine, ids: ReadonlyArray<string>, opts: { readonly any?: boolean; readonly timeoutMs: number }): Effect.Effect<ReadonlyArray<JobView>, FinError> {
   return Effect.suspend(() => {
-    for (const id of ids) if (e.d.store.get(id) === undefined) return Effect.fail(finError("JOB_NOT_FOUND", `no job ${id}`, { job: id }));
+    for (const id of ids) if (e.d.store.get(id) === undefined) return Effect.fail(jobNotFound(id));
     const check = (): JobView[] | undefined => {
       const views = ids.map((id) => e.view(id) as JobView);
       const n = views.filter(finished).length;
@@ -93,7 +95,11 @@ export function waitJobs(e: Engine, ids: ReadonlyArray<string>, opts: { readonly
       };
       cancel = e.d.timers.after(opts.timeoutMs, () => {
         cleanup();
-        resume(Effect.fail(finError("WAIT_TIMEOUT", `the jobs did not finish within ${opts.timeoutMs} ms`, { jobs: ids, timeoutMs: opts.timeoutMs })));
+        resume(
+          Effect.fail(
+            finError("WAIT_TIMEOUT", `the jobs did not finish within ${opts.timeoutMs} ms`, { jobs: ids, timeoutMs: opts.timeoutMs }, "the jobs keep running: wait for them again, or cancel them"),
+          ),
+        );
       });
       e.waiters.add(onDone);
       return Effect.sync(cleanup);

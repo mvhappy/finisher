@@ -52,6 +52,11 @@ export interface JobEngine {
   definePool(name: PoolName, size: number): void;
   workers(): WorkersView;
   events(): Stream.Stream<JobEvent>;
+  /**
+   * Every event as it is published, synchronously, nothing dropped (5C-2's `jobs.watch` keeps its
+   * own bounded buffer); a throwing listener is logged. Returns the unsubscribe.
+   */
+  onEvent(listener: (e: JobEvent) => void): () => void;
   onDone(listener: (job: JobView) => void): () => void;
   close(): Effect.Effect<void>;
 }
