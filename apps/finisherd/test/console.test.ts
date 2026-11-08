@@ -12,7 +12,7 @@ import { answerChallenge, issueChallenge } from "../src/auth/challenges.ts";
 import { authDir } from "../src/auth/keys.ts";
 import { connectConsole } from "../src/console/client.ts";
 import { CONFIRM_TRIES } from "../src/console/confirm.ts";
-import { CONFLICT_CODES, DENIED_CODES, UNAVAILABLE_CODES, USAGE_CODES, VALIDATION_CODES } from "../src/console/exit-codes.ts";
+import { CONFLICT_CODES, DENIED_CODES, JOB_RESULT_CODES, UNAVAILABLE_CODES, USAGE_CODES, VALIDATION_CODES } from "../src/console/exit-codes.ts";
 import { isServeCommand, runConsole } from "../src/console/main.ts";
 import type { Prompt } from "../src/console/prompt.ts";
 import type { Connection } from "../src/connections.ts";
@@ -149,6 +149,7 @@ describe("dispatch and connection", () => {
     expect(DENIED_CODES).toEqual(list("DENIED_CODES"));
     expect(USAGE_CODES).toEqual(list("USAGE_CODES"));
     expect(CONFLICT_CODES).toEqual(list("CONFLICT_CODES"));
+    expect(JOB_RESULT_CODES).toEqual(list("JOB_RESULT_CODES"));
     expect(UNAVAILABLE_CODES).toEqual(list("UNAVAILABLE_CODES"));
     expect(VALIDATION_CODES).toEqual(list("VALIDATION_CODES"));
   });

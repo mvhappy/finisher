@@ -20,6 +20,7 @@ pub mod keyframe;
 pub mod marker;
 pub mod media;
 pub mod param;
+pub mod plugin;
 pub mod project;
 pub mod schema;
 pub mod style;

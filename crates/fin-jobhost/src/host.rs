@@ -77,6 +77,10 @@ pub struct Host {
 impl Host {
     /// Starts the host with this OS's kill domain.
     pub fn start(opts: HostOptions, events: EventSink) -> Result<Host, HostError> {
+        #[cfg(feature = "test-hooks")]
+        if opts.panic_on_start_for_test {
+            panic!("test: Host::start panics");
+        }
         let domain = crate::os::default_domain(&opts)?;
         Host::start_with(opts, events, domain)
     }

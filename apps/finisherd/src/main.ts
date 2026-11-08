@@ -29,6 +29,7 @@ import { ControlStoreTag, layerControlStore } from "./control/db.ts";
 import { layerFonts, type FontsOptions } from "./fonts.ts";
 import { Diagnostics, type DiagnosticsOptions, makeDiagnostics } from "./diagnostics.ts";
 import { withServerLock } from "./lock.ts";
+import { layerPlugins } from "./plugins/registries.ts";
 import { layerProjectRegistry, type RegistryOptions } from "./projects.ts";
 import { MAX_FRAME } from "./protocol.ts";
 import { claimSocketPath, makeLocalSocketServer, serveRpc } from "./transport.ts";
@@ -134,6 +135,8 @@ export const serve = ({ serverData, onReady, registry, fonts, diagnostics: diagn
         }),
         (timer) => Effect.sync(() => clearInterval(timer)),
       );
+      // One font layer for the handlers and the plugins, which feed it the packs' catalogs.
+      const fontsLayer = layerFonts(serverData, fonts);
       // `server.stop` (5A Task 8): `serve` returns, and its scope's finalizers stop everything.
       const stopped = Deferred.makeUnsafe<void>();
       const listeners = [
@@ -146,7 +149,8 @@ export const serve = ({ serverData, onReady, registry, fonts, diagnostics: diagn
           Layer.provide(
             Layer.mergeAll(
               layerProjectRegistry(serverData, registry),
-              layerFonts(serverData, fonts),
+              fontsLayer,
+              layerPlugins(serverData).pipe(Layer.provide(Layer.succeedContext(control)), Layer.provide(fontsLayer)),
               Layer.succeed(Diagnostics, diagnostics),
               Layer.succeedContext(control),
               Layer.succeed(KeysTag, keys),

@@ -14,7 +14,7 @@
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, Sender, channel};
-use std::sync::{Arc, Mutex, Weak};
+use std::sync::{Arc, Mutex, RwLock, Weak};
 use std::time::Duration;
 
 use fin_core::CoreError;
@@ -84,7 +84,8 @@ pub struct Fetcher {
 
 struct Inner {
     cache: Arc<FontCache>,
-    catalog: Arc<FontCatalog>,
+    /// Replaceable ([`Fetcher::set_catalog`]): each use takes the catalog current then.
+    catalog: RwLock<Arc<FontCatalog>>,
     opts: FetchOptions,
     /// [`FetchOptions::offline`], changeable at run time ([`Fetcher::set_offline`]).
     offline: AtomicBool,
@@ -104,7 +105,7 @@ impl Fetcher {
         Fetcher {
             inner: Arc::new(Inner {
                 cache,
-                catalog,
+                catalog: RwLock::new(catalog),
                 offline: AtomicBool::new(opts.offline),
                 opts,
                 http,
@@ -128,8 +129,20 @@ impl Fetcher {
         &self.inner.cache
     }
 
-    pub fn catalog(&self) -> &Arc<FontCatalog> {
-        &self.inner.catalog
+    /// The catalog now in use.
+    pub fn catalog(&self) -> Arc<FontCatalog> {
+        self.inner.catalog()
+    }
+
+    /// Replaces the catalog (the built-in one merged with plugin packs'): later requests,
+    /// fetches and archive siblings use it. Fetches under way finish against the catalog
+    /// they started with; files already cached stay whatever the catalog says.
+    pub fn set_catalog(&self, catalog: Arc<FontCatalog>) {
+        *self
+            .inner
+            .catalog
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = catalog;
     }
 
     /// Queues a background fetch unless the file is cached, queued, fetching or backing
@@ -137,7 +150,7 @@ impl Fetcher {
     pub fn request(&self, sha256: &str) {
         let inner = &self.inner;
         if inner.offline.load(Ordering::SeqCst)
-            || inner.catalog.by_sha(sha256).is_none()
+            || inner.catalog().by_sha(sha256).is_none()
             || inner.cache.has(sha256)
         {
             return;
@@ -161,7 +174,7 @@ impl Fetcher {
     /// `FONT_NOT_IN_CATALOG`, or `FONT_FETCH_FAILED {key, entry, style, sha256, reason,
     /// retryAt}`.
     pub fn fetch_now(&self, sha256: &str) -> Result<(), CoreError> {
-        if self.inner.catalog.by_sha(sha256).is_none() {
+        if self.inner.catalog().by_sha(sha256).is_none() {
             return Err(not_in_catalog(sha256));
         }
         if self.inner.cache.has(sha256) {
@@ -235,6 +248,13 @@ fn background(weak: &Weak<Inner>, sha: &str) {
 }
 
 impl Inner {
+    fn catalog(&self) -> Arc<FontCatalog> {
+        self.catalog
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
     fn publish(&self, sha: &str, state: FileState) {
         guard(&self.subs).retain(|tx| tx.send((sha.to_string(), state.clone())).is_ok());
     }
@@ -245,7 +265,8 @@ impl Inner {
     }
 
     fn run(&self, sha: &str) -> Result<(), CoreError> {
-        let Some((entry, style)) = self.catalog.by_sha(sha) else {
+        let catalog = self.catalog();
+        let Some((entry, style)) = catalog.by_sha(sha) else {
             return Err(not_in_catalog(sha));
         };
         match self.fetch_file(style) {
@@ -375,7 +396,7 @@ impl Inner {
         // placed under the archive's lock, not their own: a sibling fetch holding its lock is
         // waiting for this archive, and finds its file cached once it gets the archive's lock.
         // `FontCache::place` never replaces (see its rename fallback).
-        for (other, member) in self.catalog.archive_members(asha) {
+        for (other, member) in self.catalog().archive_members(asha) {
             let sha = &other.file.sha256;
             if result.is_ok() && sha != &file.sha256 && !self.cache.has(sha) {
                 let _ = archive::extract(&self.cache, &zip, &member.member, sha, other.file.size);

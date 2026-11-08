@@ -15,9 +15,21 @@ import { project } from "./commands/project.ts";
 import { status } from "./commands/status.ts";
 import { stop } from "./commands/stop.ts";
 import { one, type Output, parseArgs, printFailure, processOutput } from "./format.ts";
+import { plugin } from "./plugin.ts";
 import { type Prompt, ttyPrompt } from "./prompt.ts";
+import { registry } from "./registry.ts";
 
-const COMMANDS: Record<string, (ctx: CommandContext) => Promise<number>> = { status, stop, audit, diagnostics, project, agent, mcp };
+const COMMANDS: Record<string, (ctx: CommandContext) => Promise<number>> = {
+  status,
+  stop,
+  audit,
+  diagnostics,
+  project,
+  agent,
+  mcp,
+  plugin,
+  registry,
+};
 
 export const HELP = `Usage: finisherd [serve] [--server-data <dir>]
        finisherd <command> [--server-data <dir>]
@@ -48,6 +60,24 @@ short code, and goes ahead once you type the code back.
 
 Reading recorded content needs no code:
   diagnostics export --content [--kind <kind>]... [--since <date>] [--project <id>] [--limit <n>]
+
+Plugins and registries (spec §5):
+  plugin search [text] [--kind content|code] [--registry <id>] [--json]
+  plugin info <id> [--json]
+  plugin ls [--json]
+  registry ls|status <id>|refresh [<id>] [--json]
+These change something (each needs an interactive terminal and the typed code):
+  registry add <id> --dir <path> [--root <file> | --root-sha256 <hex>]
+                                           no root given: shows the root's SHA-256 and waits for you to type it back
+  registry rm <id>
+  registry forget --root <sha256>
+  plugin install <id>[@<version>] [--registry <id>] [--auto-update] [--accept-copyleft]
+                                           prints the plan with its risks and asks for yes; for third-party code
+                                           it warns first and asks for the plugin's id typed back
+  plugin update <id>[@<version>] [--registry <id>] [--allow-downgrade] [--auto-update | --no-auto-update]
+                                           --allow-downgrade needs the exact version
+  plugin rm <id> [--purge-data]
+  plugin enable|disable <id>
 
 A credential's file is its only copy: keep it where only you can read it. Durations are like
 90m, 24h or 7d; agent credentials expire after 24h unused or 7d, MCP ones after 30d unused.`;

@@ -11,7 +11,7 @@ use fin_registry::package::unpack;
 use fin_registry::target::{TargetCustom, custom_for};
 use fin_registry::transport::FsTransport;
 use fin_registry::tuf::{
-    FixedClock, PackageCustom, Policy, TrustStore, TrustedRepo, permissions_digest, sha256_hex,
+    FixedClock, Policy, TrustStore, TrustedRepo, permissions_digest, sha256_hex,
 };
 use serde_json::{Value, json};
 use support::tuf::Reg;
@@ -87,7 +87,7 @@ fn custom_metadata_round_trips() {
     assert_eq!(t, published);
     let dir = r.tmp.path().join("unpacked");
     let u = unpack(&pkg, &dir, |m| m.executables(), &Default::default()).unwrap();
-    let want = PackageCustom {
+    let want = TargetCustom {
         id: "@acme/pack".into(),
         version: "2.0.0".into(),
         kind: fin_plugin_api::PluginKind::Content,
@@ -104,7 +104,7 @@ fn custom_metadata_round_trips() {
         Value::Object(t.custom.clone()),
         json!({
             "id": "@acme/pack", "version": "2.0.0", "kind": "content", "hostApi": "^1.0",
-            "platforms": [], "license": "MIT", "permissionsDigest": want.permissions_digest,
+            "license": "MIT", "permissionsDigest": want.permissions_digest,
             "manifestSha256": want.manifest_sha256, "bytesUnpacked": want.bytes_unpacked,
         })
     );

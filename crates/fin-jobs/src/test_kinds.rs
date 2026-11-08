@@ -45,8 +45,9 @@ choice! {
     /// What `test.echo` reports about its own process.
     EchoReport as "TestEchoReport" { Pid, Env, Args, Fds, Cwd, Pdeathsig, Nice, Cgroup }
     /// How `test.crash` dies: `abort`, `SIGSEGV`/an access violation, `SIGBUS`/
-    /// `EXCEPTION_IN_PAGE_ERROR`, Windows `__fastfail`, or `exit(3)`.
-    CrashHow as "TestCrashHow" { Abort, Segv, Bus, Fastfail, Exit }
+    /// `EXCEPTION_IN_PAGE_ERROR`, Windows `__fastfail`, `exit(3)`, or by allocating until its
+    /// group's memory limit kills it (`oom`; it aborts past 2 GiB).
+    CrashHow as "TestCrashHow" { Abort, Segv, Bus, Fastfail, Exit, Oom }
     /// `test.spawn`: the grandchild stays in the group or leaves it with `setsid`.
     Detach as "TestDetach" { None, Setsid }
     /// `test.garbage`: the protocol violation to commit.
@@ -69,8 +70,14 @@ params! {
         #[serde(default)]
         pub report: Vec<EchoReport>,
     }
-    /// `test.progressFlood`: `n` progress messages as fast as it can.
-    ProgressFloodParams as "TestProgressFloodParams" { pub n: u64 }
+    /// `test.progressFlood`: `n` progress messages as fast as it can; with `stderrBytes`, `n`
+    /// stderr lines of that many bytes (`flood <i> ` then padding) instead.
+    ProgressFloodParams as "TestProgressFloodParams" {
+        pub n: u64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[schemars(with = "u32")]
+        pub stderr_bytes: Option<u32>,
+    }
     /// `test.warm` (warm): returns `value` with the pid and how many jobs the process served.
     WarmParams as "TestWarmParams" {
         pub value: Value,
@@ -98,6 +105,16 @@ params! {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         #[schemars(with = "u64")]
         pub item_ms: Option<u64>,
+    }
+    /// `test.fail`: answers `error {code, retry}` on every attempt up to `failUntil` (every
+    /// attempt without it), then succeeds with the attempt number.
+    FailParams as "TestFailParams" {
+        pub code: String,
+        #[serde(default)]
+        pub retry: crate::Retry,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[schemars(with = "u32")]
+        pub fail_until: Option<u32>,
     }
     /// `test.hang`: stops `alive`, stops reading stdin (EOF unseen, the pipe fills) and blocks.
     HangParams as "TestHangParams" {}
@@ -227,6 +244,7 @@ result! {
     }
     CheckpointResult as "TestCheckpointResult" { pub steps: u32, pub resumed_from: u32 }
     OomResult as "TestOomResult" { pub mib: u64 }
+    FailResult as "TestFailResult" { pub attempt: u32 }
     DiagResult as "TestDiagResult" { pub sent: bool }
     HelperResult as "TestHelperResult" { pub helpers: Vec<String> }
     PluginMinorResult as "TestPluginMinorResult" {
@@ -274,6 +292,7 @@ table! {
     "test.helper" => HelperParams,
     "test.badHello" => BadHelloParams,
     "test.pluginMinor" => PluginMinorParams,
+    "test.fail" => FailParams,
 }
 
 /// Adds every test params and result type to `g` (`export_schema`).
@@ -288,6 +307,7 @@ pub fn register_schemas(g: &mut SchemaGenerator) {
     g.subschema_for::<FilesResult>();
     g.subschema_for::<CheckpointResult>();
     g.subschema_for::<OomResult>();
+    g.subschema_for::<FailResult>();
     g.subschema_for::<DiagResult>();
     g.subschema_for::<HelperResult>();
     g.subschema_for::<PluginMinorResult>();

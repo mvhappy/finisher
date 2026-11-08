@@ -17,11 +17,12 @@ pub(crate) mod trusted;
 
 pub(crate) use checks::publisher_name_ok as checks_publisher_name;
 pub use clock::{CLOCK_SLACK_SECS, Clock, FixedClock, SystemClock};
-pub use custom::{DEFAULT_MAX_STALE_DAYS, MAX_STALE_DAYS_CAP, PackageCustom, permissions_digest};
+pub use custom::{DEFAULT_MAX_STALE_DAYS, MAX_STALE_DAYS_CAP, permissions_digest};
 pub use error::TufError;
 pub use store::{TrustState, TrustStore};
 pub use trusted::{TargetInfo, TrustedRepo, sha256_hex};
 
+use schemars::JsonSchema;
 use serde::Serialize;
 use serde_json::{Map, Value};
 
@@ -54,14 +55,14 @@ pub struct Policy {
 }
 
 /// A warning `{code, details}`, e.g. `REGISTRY_STALE {days, maxStaleDays, role}`.
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, JsonSchema)]
 pub struct Warning {
     pub code: &'static str,
     pub details: Map<String, Value>,
 }
 
 /// What a refresh found.
-#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct RefreshReport {
     pub root_version: u64,

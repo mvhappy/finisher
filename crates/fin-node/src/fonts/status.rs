@@ -128,7 +128,7 @@ impl Manager {
                         reason,
                         retry_at_ms,
                     } => {
-                        let (entry, style) = entry_of(&self.catalog, sha);
+                        let (entry, style) = entry_of(&self.catalog(), sha);
                         failed.push(json!({ "key": key, "sha256": sha, "reason": reason, "retryAt": retry_at_ms }));
                         warnings.push(warning(
                             "FONT_FETCH_FAILED",
@@ -170,7 +170,7 @@ impl Manager {
     fn missing_reason(&self, sha: &str) -> &'static str {
         if self.fetcher.is_none() {
             "damaged"
-        } else if self.catalog.by_sha(sha).is_none() {
+        } else if self.catalog().by_sha(sha).is_none() {
             "notInCatalog"
         } else if !self.auto_fetch() {
             "offline"
@@ -180,7 +180,7 @@ impl Manager {
     }
 
     fn size_of(&self, sha: &str) -> u64 {
-        self.catalog.by_sha(sha).map_or(0, |(_, s)| s.file.size)
+        self.catalog().by_sha(sha).map_or(0, |(_, s)| s.file.size)
     }
 
     /// The file's state in this server: the fetcher's, or `Missing` without one (a damaged

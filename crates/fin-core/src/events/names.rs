@@ -53,7 +53,7 @@ impl NameTable {
 }
 
 /// `fin` commands by registry name (dotted, as `fin`'s registry names them), plus the
-/// `fin diagnostics` commands of Task D6.
+/// `fin diagnostics` commands of Task D6 and the `fin plugin|registry` commands of 8A Task 12c.
 pub static CLI_COMMANDS: NameTable = NameTable::new(
     "CLI_COMMANDS",
     &[
@@ -113,6 +113,15 @@ pub static CLI_COMMANDS: NameTable = NameTable::new(
         "marker.set",
         "merge",
         "param.set",
+        "plugin.disable",
+        "plugin.enable",
+        "plugin.info",
+        "plugin.install",
+        "plugin.ls",
+        "plugin.rm",
+        "plugin.search",
+        "plugin.suggest",
+        "plugin.update",
         "project.acknowledge",
         "project.compact",
         "project.create",
@@ -123,6 +132,12 @@ pub static CLI_COMMANDS: NameTable = NameTable::new(
         "project.takeover",
         "project.verify",
         "redo",
+        "registry.add",
+        "registry.forget",
+        "registry.ls",
+        "registry.refresh",
+        "registry.rm",
+        "registry.status",
         "revert",
         "schema",
         "schema.param",
@@ -175,6 +190,7 @@ pub static CLI_FLAGS: NameTable = NameTable::new(
         "create",
         "curve",
         "detail",
+        "dir",
         "dismiss",
         "dry-run",
         "dur",
@@ -200,13 +216,18 @@ pub static CLI_FLAGS: NameTable = NameTable::new(
         "path",
         "pinned",
         "project",
+        "purge-data",
         "range",
         "rate",
+        "reason",
+        "registry",
         "relocate",
         "reset",
         "resolution",
         "restore",
         "rewind",
+        "root",
+        "root-sha256",
         "salvage",
         "scope",
         "set",
@@ -231,7 +252,8 @@ pub static CLI_FLAGS: NameTable = NameTable::new(
 /// `finisherd` RPC methods (`@finisher/contracts` `FinRpcs`), plus the `diagnostics.*` RPCs of
 /// Task D4, the handshake's `auth.prove` (5A Task 3) and `auth.ticket`, `auth.whoami`,
 /// `auth.revokeSelf` (5A Task 6), `console.challenge` (5A Task 7), `server.status`, `server.stop`
-/// and `auth.audit.list|purge` (5A Task 8), `auth.credential.mint|list|revoke` (5A Task 9).
+/// and `auth.audit.list|purge` (5A Task 8), `auth.credential.mint|list|revoke` (5A Task 9),
+/// and the plugin and registry RPCs (8A Tasks 9a and 9b).
 pub static RPC_METHODS: NameTable = NameTable::new(
     "RPC_METHODS",
     &[
@@ -268,6 +290,17 @@ pub static RPC_METHODS: NameTable = NameTable::new(
         "history.revert",
         "history.undo",
         "ops.subscribe",
+        "plugin.content.get",
+        "plugin.disable",
+        "plugin.discard",
+        "plugin.enable",
+        "plugin.info",
+        "plugin.install",
+        "plugin.list",
+        "plugin.plan",
+        "plugin.remove",
+        "plugin.search",
+        "plugin.suggest",
         "project.acknowledgeRewind",
         "project.acknowledgeSalvage",
         "project.compact",
@@ -279,6 +312,12 @@ pub static RPC_METHODS: NameTable = NameTable::new(
         "project.status",
         "project.takeover",
         "project.verify",
+        "registry.add",
+        "registry.forget",
+        "registry.list",
+        "registry.refresh",
+        "registry.remove",
+        "registry.status",
         "server.hello",
         "server.status",
         "server.stop",

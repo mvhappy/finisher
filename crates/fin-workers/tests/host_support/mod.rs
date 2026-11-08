@@ -84,11 +84,12 @@ pub fn base_env(dir: &Path) -> Vec<(OsString, OsString)> {
 
 pub fn proc_of(e: &HostEvent) -> Option<ProcId> {
     match e {
-        HostEvent::Hello { proc, .. }
+        HostEvent::Spawned { proc, .. }
+        | HostEvent::Hello { proc, .. }
         | HostEvent::Message { proc, .. }
         | HostEvent::Stderr { proc, .. }
         | HostEvent::Exit { proc, .. } => Some(*proc),
-        HostEvent::GroupEmpty { .. } => None,
+        HostEvent::GroupEmpty { .. } | HostEvent::AbandonedExit { .. } => None,
     }
 }
 
@@ -160,9 +161,12 @@ impl TestHost {
         }
     }
 
-    /// The next event of `proc` other than `Stderr`.
+    /// The next event of `proc` other than `Spawned` and `Stderr`.
     pub fn next_of(&mut self, proc: ProcId) -> HostEvent {
-        self.next(|e| proc_of(e) == Some(proc) && !matches!(e, HostEvent::Stderr { .. }))
+        self.next(|e| {
+            proc_of(e) == Some(proc)
+                && !matches!(e, HostEvent::Spawned { .. } | HostEvent::Stderr { .. })
+        })
     }
 
     pub fn hello(&mut self, proc: ProcId) -> Hello {

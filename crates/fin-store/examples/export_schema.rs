@@ -11,6 +11,7 @@
 //! `CollectPolicy` is fin-core's), the media types of `fin-media` (`MediaInfo` and its
 //! parts, sub-project 6), the job envelope of `fin-jobs` with the test kinds' params and
 //! results (`JobDone` and `WorkerExit` are fin-core payloads, registered with the others),
+//! the JSON shapes of fin-node's `JobHost` (`fin-jobhost`'s `wire`),
 //! the plugin model's (`fin-plugin-api`: `Manifest`, `Permission`, `PermissionDiff`, `Risk`,
 //! `LicenceClass`, `ContributionKind`, `Invalid`, by `schema::register_schemas`) and its
 //! store's (`fin-registry`: `InstallPlan`, `InstalledPlugin`, `Accept`, `ValidationReport`,
@@ -78,6 +79,7 @@ fn main() {
         fin_library::params::register_schemas(g);
         fin_jobs::register_schemas(g);
         fin_jobs::test_kinds::register_schemas(g);
+        fin_jobhost::wire::register_schemas(g);
         fin_plugin_api::schema::register_schemas(g);
         fin_registry::schema::register_schemas(g);
     });

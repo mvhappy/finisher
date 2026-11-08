@@ -1,9 +1,8 @@
 // The "storage" scenario: edit, export, delete the database, rebuild from the folder, and a
 // second server following the same folder read-only.
-import { existsSync, mkdtempSync, readdirSync, realpathSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, readdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
-import { assertEqual, connectWs, fin, finRaw, live, log, removeTmp, startServer, stopServer, waitFor } from "./lib.mjs";
+import { assertEqual, connectWs, fin, finRaw, live, log, removeTmp, scenarioTmp, startServer, stopServer, waitFor } from "./lib.mjs";
 import { writeFixture } from "./fixture.mjs";
 
 /** The model of a `snapshot.get` answer: without the generation and incarnation, which a rebuild changes. */
@@ -16,7 +15,7 @@ const step = (n, text) => log(`step ${n}: ${text}`);
 
 export async function run() {
   const started = Date.now();
-  const tmp = realpathSync(mkdtempSync(join(tmpdir(), "finisher-e2e-storage-")));
+  const tmp = scenarioTmp("finisher-e2e-stor-");
   live.tmp = tmp;
   const dataA = join(tmp, "server-a");
   const dataB = join(tmp, "server-b");

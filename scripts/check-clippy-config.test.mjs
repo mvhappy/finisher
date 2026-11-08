@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -88,7 +88,7 @@ test("the repository passes its own gate", () => {
   assert.equal(r.code, 0, r.out);
 });
 
-test("clippy_flags_each_disallowed_method", () => {
+test("clippy_flags_each_disallowed_method", (t) => {
   // A fixture crate whose clippy.toml is the shipped list, calling every method once.
   // `dunce::canonicalize` needs a dependency, so it is only checked by name above.
   const calls = DISALLOWED.filter((p) => !p.startsWith("dunce::")).map((p, i) => {
@@ -98,6 +98,7 @@ test("clippy_flags_each_disallowed_method", () => {
     return `    let _ = std::${path}(p);`;
   });
   const dir = mkdtempSync(join(tmpdir(), "fin-clippy-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
   mkdirSync(join(dir, "src"));
   writeFileSync(join(dir, "Cargo.toml"), '[package]\nname = "fixture"\nversion = "0.0.0"\nedition = "2024"\n[workspace]\n');
   writeFileSync(join(dir, "clippy.toml"), CLIPPY);

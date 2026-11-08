@@ -414,3 +414,59 @@ fn sweep_store_deletes_leftovers() {
     assert!(!fx.plugins().join("store/@gone").exists());
     assert_eq!(fx.store.sweep_store(), 0);
 }
+
+/// Review L3: a person who asks for a plugin's data to be deleted gets it deleted, also when
+/// the store folder is already gone.
+#[test]
+fn purge_deletes_data_when_the_store_folder_is_gone() {
+    let fx = Fx::new();
+    let id = PluginId::parse("@acme/pack").unwrap();
+    let v1 = semver::Version::new(1, 0, 0);
+    let t = fx.target(&content("@acme/pack", "1.0.0"), &default_files());
+    let plan = fx.plan_target(t).unwrap();
+    fx.store
+        .commit(&plan.plan_id, &plan.digest, &OK, NOW)
+        .unwrap();
+    let data = fx.store.data_dir(&id).join("_");
+    fs::create_dir_all(&data).unwrap();
+    fs::write(data.join("state.json"), b"{}").unwrap();
+    fx.store.remove(&id, &v1, false).unwrap();
+    assert!(data.join("state.json").exists());
+    // The folder is gone now: without a purge it is still `PLUGIN_NOT_INSTALLED`.
+    assert_eq!(
+        fx.store.remove(&id, &v1, false).unwrap_err().code,
+        "PLUGIN_NOT_INSTALLED"
+    );
+    fx.store.remove(&id, &v1, true).unwrap();
+    assert!(!fx.store.data_dir(&id).exists());
+}
+
+/// Review L4: every version folder is listed, readable manifest or not, as `control.db`
+/// records it; `.tmp-*` leftovers are not.
+#[test]
+fn installed_dirs_lists_versions_with_or_without_a_manifest() {
+    let fx = Fx::new();
+    for v in ["1.0.0", "1.1.0"] {
+        let t = fx.target(&content("@acme/pack", v), &default_files());
+        let plan = fx.plan_target(t).unwrap();
+        fx.store
+            .commit(&plan.plan_id, &plan.digest, &OK, NOW)
+            .unwrap();
+    }
+    let broken = fx.plugins().join("store/@acme/pack/2.0.0-0123456789ab");
+    fs::create_dir_all(&broken).unwrap();
+    fs::create_dir_all(fx.plugins().join("store/@acme/pack/.tmp-rm-aaaa")).unwrap();
+    let mut dirs = fx.store.installed_dirs();
+    dirs.sort();
+    let versions: Vec<_> = dirs.iter().map(|d| (d.0.as_str(), d.1.as_str())).collect();
+    assert_eq!(
+        versions,
+        [
+            ("@acme/pack", "1.0.0"),
+            ("@acme/pack", "1.1.0"),
+            ("@acme/pack", "2.0.0")
+        ]
+    );
+    assert!(dirs.iter().all(|d| d.2.starts_with("store/@acme/pack/")));
+    assert!(fx.plugins().join(&dirs[0].2).is_dir());
+}

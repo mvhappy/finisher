@@ -1,0 +1,6 @@
+{
+  "repo": "https://github.com/theupdateframework/tuf-conformance",
+  "sha": "8535468cf76f5395a579809c4e72ca5698a2a1cd",
+  "describe": "v2-13-g8535468 (main, 2026-11-02)",
+  "python": ">=3.10"
+}

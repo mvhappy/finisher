@@ -5,7 +5,7 @@ import { randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { hostname, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import type { Envelope, ExportPage, InstallPlan, InstalledPlugin, ValidationReport } from "@finisher/core-types";
+import type { Envelope, ExportPage, InstallPlan, InstalledPlugin, Listing, PluginInfo, RefreshReport, RegistryList, RegistryStatus, ValidationReport } from "@finisher/core-types";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { type FinNodeError, Journal, Registry, testHooks, validateManifest } from "../index.js";
 import { waitFor } from "./fontserver.ts";
@@ -43,12 +43,24 @@ function manifest(version = "1.0.0", extra: object = {}): object {
   };
 }
 
+/** A caption style file: a `CaptionStyle` without its `id`. */
+const STYLE = JSON.stringify({
+  name: "Bold",
+  text: { family: "Inter", weight: 700, italic: false, size: 64, lineHeight: 1.2, letterSpacing: 0, align: "center" },
+  color: "#ffffff",
+  position: { anchor: "bottom", offset: 0 },
+  safeZone: "generic-9x16",
+  maxChars: 32,
+  maxLines: 2,
+  gap: "1/2",
+});
+
 /** An unpacked plugin under `tmp/<name>` with `files` (path → bytes). */
 function tree(name: string, m: object, files: Record<string, Buffer | string> = {}): string {
   const dir = join(tmp, name);
   const all: Record<string, Buffer | string> = {
     "finisher-plugin.json": JSON.stringify(m),
-    "styles/bold.json": '{"text": {}}',
+    "styles/bold.json": STYLE,
     ...files,
   };
   for (const [path, bytes] of Object.entries(all)) {
@@ -131,6 +143,16 @@ describe("Registry", () => {
     const bad = await rejection(r.plan(planReq(pkg("p1", manifest("1.0.0", { license: "CC-BY-NC-4.0" })))));
     expect([bad.code, bad.details.reason]).toEqual(["PLUGIN_MANIFEST_INVALID", "licenceNonCommercial"]);
     expect((await rejection(r.plan("{}"))).code).toBe("INVALID_OP");
+    // A caption style file is a `CaptionStyle` without its id: the model's shape, not any JSON object.
+    for (const [name, file] of [
+      ["free", '{"v": 1}'],
+      ["id", JSON.stringify({ ...JSON.parse(STYLE), id: "preset:bold" })],
+      ["typo", JSON.stringify({ ...JSON.parse(STYLE), colour: "#fff" })],
+      ["range", JSON.stringify({ ...JSON.parse(STYLE), maxLines: 0 })],
+    ] as const) {
+      const e = await rejection(r.plan(planReq(pkg(`style-${name}`, manifest(), { "styles/bold.json": file }))));
+      expect([name, e.code, e.details.reason]).toEqual([name, "PLUGIN_MANIFEST_INVALID", "captionStyle"]);
+    }
     const stale = JSON.parse(await r.plan(planReq(pkg("p2", manifest()), {}, { staleDays: 2 }))) as InstallPlan;
     expect(stale.registryStaleDays).toBe(2);
     expect(stale.warnings?.map((w) => w.code)).toEqual(["registryStale"]);
@@ -218,5 +240,98 @@ describe("plugin.lifecycle", () => {
     await r.removePlugin(ID, "1.0.0", false);
     await rejection(r.plan(planReq(pkg("p2", manifest("2.0.0", { license: "CC-BY-NC-4.0" })))));
     expect(existsSync(join(serverData, "events"))).toBe(false);
+  });
+});
+
+/** A signed local-folder registry (test hook) and the pinning root. */
+function folder(name: string, spec: object): { dir: string; rootSha256: string; rootFile: string } {
+  const dir = join(tmp, name);
+  return { dir, ...(JSON.parse(hooks.buildRegistry(dir, join(tmp, `${name}-keys`), JSON.stringify(spec))) as { rootSha256: string; rootFile: string }) };
+}
+
+describe("registries", () => {
+  test("add_list_refresh_search_info_remove", async () => {
+    const r = Registry.open(serverData);
+    const reg = folder("reg", { packages: ["@acme/pack@1.0.0", "@acme/pack@1.1.0", "@beta/thing@2.0.0"] });
+    const none = JSON.parse(await r.registryList()) as RegistryList;
+    expect(none).toEqual({ registries: [], problems: [] });
+    // No root, no registry: a hash that is no root of the folder writes nothing.
+    const bad = await rejection(r.registryAdd(JSON.stringify({ id: "team", path: reg.dir }), JSON.stringify({ kind: "sha256", sha256: "0".repeat(64) })));
+    expect(bad.code).toBe("REGISTRY_UNTRUSTED");
+    expect(existsSync(join(serverData, "plugins/registries/team"))).toBe(false);
+    expect((await rejection(r.registryAdd(JSON.stringify({ id: "team", path: reg.dir, extra: 1 }), JSON.stringify({ kind: "sha256", sha256: reg.rootSha256 })))).code).toBe("INVALID_OP");
+
+    const added = JSON.parse(await r.registryAdd(JSON.stringify({ id: "team", path: reg.dir }), JSON.stringify({ kind: "file", path: reg.rootFile }))) as RegistryStatus;
+    expect(added).toMatchObject({ id: "team", kind: "local", rootSha256: reg.rootSha256, freshness: "relaxed", plugins: 0, trusted: { root: 1 } });
+    expect((await rejection(r.registryAdd(JSON.stringify({ id: "team", path: reg.dir }), JSON.stringify({ kind: "sha256", sha256: reg.rootSha256 })))).code).toBe("REGISTRY_EXISTS");
+
+    const refreshed = JSON.parse(await r.registryRefresh("team", true)) as { status: RegistryStatus; report: RefreshReport };
+    expect(refreshed.status).toMatchObject({ plugins: 2, advisories: 0, maxStaleDays: 7 });
+    expect(refreshed.status.lastRefreshAt).toBeGreaterThan(0);
+    expect(refreshed.report.changed).toBe(true);
+    expect(JSON.parse(await r.registryStatus("team"))).toEqual(refreshed.status);
+    expect((JSON.parse(await r.registryList()) as RegistryList).registries).toEqual([refreshed.status]);
+
+    const search = JSON.parse(await r.search(JSON.stringify({ text: "pack" }))) as Listing[];
+    expect(search.map((l) => [l.id, l.registryId, l.latest])).toEqual([["@acme/pack", "team", "1.1.0"]]);
+    expect((JSON.parse(await r.search(JSON.stringify({ kind: "code" }))) as Listing[]).length).toBe(0);
+    expect((await rejection(r.search(JSON.stringify({ registry: "nope" })))).code).toBe("REGISTRY_NOT_FOUND");
+    expect((await rejection(r.search("{"))).code).toBe("INVALID_OP");
+    const info = JSON.parse(await r.info("@beta/thing")) as PluginInfo[];
+    expect(info.map((i) => [i.registryId, i.versions.map((v) => v.version)])).toEqual([["team", ["2.0.0"]]]);
+    expect(JSON.parse(await r.info("@beta/none"))).toEqual([]);
+    expect((await rejection(r.info("nonsense"))).code).toBe("PLUGIN_NOT_FOUND");
+
+    // Removing keeps the trust (forget refuses while used, then deletes).
+    expect((await rejection(r.registryRefresh("nope", false))).code).toBe("REGISTRY_NOT_FOUND");
+    await r.registryRemove("team");
+    expect((await rejection(r.registryStatus("team"))).code).toBe("REGISTRY_NOT_FOUND");
+    expect(existsSync(join(serverData, "plugins/trust", reg.rootSha256))).toBe(true);
+    await r.registryForget(reg.rootSha256);
+    expect(existsSync(join(serverData, "plugins/trust", reg.rootSha256))).toBe(false);
+  });
+
+  test("a_stale_registry_refreshes_with_its_age", async () => {
+    const r = Registry.open(serverData);
+    const reg = folder("old", { packages: ["@acme/pack@1.0.0"], ageDays: 40, maxStaleDays: 60 });
+    await r.registryAdd(JSON.stringify({ id: "old", path: reg.dir }), JSON.stringify({ kind: "sha256", sha256: reg.rootSha256 }));
+    const done = JSON.parse(await r.registryRefresh("old", false)) as { status: RegistryStatus; report: RefreshReport };
+    expect(done.status.staleDays).toBeGreaterThanOrEqual(9);
+    expect(done.status.maxStaleDays).toBe(60);
+    expect(done.report.warnings.map((w) => w.code)).toContain("REGISTRY_STALE");
+    // Past `maxStaleDays` it is refused.
+    const dead = folder("dead", { packages: ["@acme/pack@1.0.0"], ageDays: 40, maxStaleDays: 1 });
+    await r.registryAdd(JSON.stringify({ id: "dead", path: dead.dir }), JSON.stringify({ kind: "sha256", sha256: dead.rootSha256 }));
+    expect((await rejection(r.registryRefresh("dead", false))).code).toBe("TUF_EXPIRED");
+  });
+
+  test("registry_refresh_journals_who_asked", async () => {
+    const j = Journal.open(serverData, null, hostname());
+    journals.push(j);
+    const r = Registry.open(serverData);
+    const reg = folder("reg", { packages: ["@acme/pack@1.0.0", "@acme/other@1.0.0"] });
+    await r.registryAdd(JSON.stringify({ id: "team", path: reg.dir }), JSON.stringify({ kind: "sha256", sha256: reg.rootSha256 }));
+    await r.registryRefresh("team", true);
+    await r.registryRefresh("team", false);
+    // A failed refresh: its code, nothing else.
+    const dead = folder("dead", { packages: [], ageDays: 40, maxStaleDays: 1 });
+    await r.registryAdd(JSON.stringify({ id: "dead", path: dead.dir }), JSON.stringify({ kind: "sha256", sha256: dead.rootSha256 }));
+    await rejection(r.registryRefresh("dead", false));
+    const lines = await waitFor(async () => {
+      const got = await entries(j, { kinds: ["registry.refresh"] });
+      return got.length >= 3 ? got : undefined;
+    }, 10_000, "registry.refresh");
+    const payloads = lines.map((l) => l.payload as Record<string, unknown>);
+    expect(payloads.map((p) => [p.outcome, p.code, p.byHuman])).toEqual([
+      ["ok", undefined, true],
+      ["ok", undefined, false],
+      ["refused", "TUF_EXPIRED", false],
+    ]);
+    // Timestamp, snapshot and targets moved on the first refresh (the root did not), none on
+    // the second; two targets are listed (log2 bucket 2).
+    expect(payloads[0]).toMatchObject({ rolesUpdated: 3, targetsLog2: 2 });
+    expect(payloads[1]).toMatchObject({ rolesUpdated: 0 });
+    const text = JSON.stringify(lines);
+    for (const leak of ["team", "dead", "acme", reg.dir, tmp, reg.rootSha256]) expect(text, leak).not.toContain(leak);
   });
 });

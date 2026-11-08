@@ -2,8 +2,8 @@
 //! chroma upsampling at the source's siting, range expansion, the source matrix, and the
 //! wide-gamut conversion to Rec.709 (spec §10.1).
 
+use fin_media::ChromaSiting;
 use fin_media::colour::convert::{convert_gamut, decode, primaries_to_709};
-use fin_media::{ChromaSiting, PixelFormat};
 
 use super::mipchain::Image;
 use crate::source::SourceFrame;
@@ -28,31 +28,7 @@ fn bilinear(plane: &[u8], stride: usize, w: usize, h: usize, fx: f32, fy: f32) -
     top + (bottom - top) * ty
 }
 
-/// Whether the reference can read `src`: 8-bit 4:2:0 (6A), a non-empty picture, planes as
-/// long as their strides and rows say. Otherwise the details of `UNSUPPORTED_PIXEL_FORMAT`.
-pub(crate) fn readable(src: &SourceFrame) -> Result<(), serde_json::Value> {
-    let (w, h) = (src.size.width as usize, src.size.height as usize);
-    let (cw, ch) = (w.div_ceil(2), h.div_ceil(2));
-    let fits = |k: usize, pw: usize, ph: usize| {
-        src.strides[k] >= pw
-            && ph
-                .checked_mul(src.strides[k])
-                .is_some_and(|n| src.planes[k].len() >= n)
-    };
-    if src.format != PixelFormat::I420 {
-        return Err(
-            serde_json::json!({ "format": src.format, "reason": "the reference reads 8-bit 4:2:0" }),
-        );
-    }
-    if w == 0 || h == 0 || !fits(0, w, h) || !fits(1, cw, ch) || !fits(2, cw, ch) {
-        return Err(
-            serde_json::json!({ "format": src.format, "reason": "the planes are smaller than the picture" }),
-        );
-    }
-    Ok(())
-}
-
-/// The source as R′G′B′ in its coded orientation; [`readable`] has checked it.
+/// The source as R′G′B′ in its coded orientation; `source::readable` has checked it.
 pub(crate) fn ingest(src: &SourceFrame) -> Image {
     let (w, h) = (src.size.width as usize, src.size.height as usize);
     let (cw, ch) = (w.div_ceil(2), h.div_ceil(2));

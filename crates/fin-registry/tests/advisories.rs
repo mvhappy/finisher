@@ -277,3 +277,18 @@ fn unparseable_signed_advisories_fail_the_refresh() {
     assert_eq!(support::tuf::Reg::files(&store), before);
     assert_eq!(ids(reg.advisories()), ["A-1"]);
 }
+
+/// Review M1 (Tasks 10 and 12): the editor refuses to sign text that could rewrite a terminal.
+#[test]
+fn editor_refuses_control_characters_in_an_advisory() {
+    let (mut r, acme, _) = two_publishers();
+    let mut a = advisory("ACME-9", "@acme/pack", "*", AdvisoryAction::Warn);
+    a.summary = "update now\u{1b}[2J".into();
+    let e = r.b.advise(a, &acme).unwrap_err();
+    assert_eq!(e.code, "REGISTRY_INVALID");
+    let mut long = advisory("ACME-9", "@acme/pack", "*", AdvisoryAction::Warn);
+    long.summary = "z".repeat(501);
+    assert!(r.b.advise(long, &acme).is_err());
+    // Nothing was signed.
+    assert!(added(&r).advisories().is_empty());
+}

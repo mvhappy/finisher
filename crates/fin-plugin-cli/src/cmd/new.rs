@@ -5,6 +5,20 @@ use serde_json::{Value, json};
 
 use crate::{Args, CliError};
 
+/// The scaffold's caption style: a `CaptionStyle` without its `id`, which the host checks when
+/// the pack installs (a style file is not free-form JSON).
+const DEFAULT_STYLE: &str = r##"{
+  "name": "Default",
+  "text": { "family": "Inter", "weight": 700, "italic": false, "size": 64.0, "lineHeight": 1.2, "letterSpacing": 0.0, "align": "center" },
+  "color": "#ffffff",
+  "position": { "anchor": "bottom", "offset": 0.0 },
+  "safeZone": "generic-9x16",
+  "maxChars": 32,
+  "maxLines": 2,
+  "gap": "1/2"
+}
+"##;
+
 /// A plugin name from a folder name: lowercase letters, digits and dashes.
 fn plugin_name(dir: &Path) -> String {
     let raw = dir.file_name().map(|n| n.to_string_lossy().to_lowercase());
@@ -59,7 +73,7 @@ pub fn run(raw: &[String]) -> Result<Value, CliError> {
     if kind == "content" {
         manifest["contributes"] =
             json!({ "captionStyles": [{ "name": "default", "file": "styles/default.json" }] });
-        write(dir, "styles/default.json", b"{}\n")?;
+        write(dir, "styles/default.json", DEFAULT_STYLE.as_bytes())?;
     } else {
         manifest["platforms"] = json!(fin_plugin_api::Platform::ALL);
         manifest["runtime"] =

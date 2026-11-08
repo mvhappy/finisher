@@ -58,6 +58,37 @@ import {
   RecoverReportSuccess,
 } from "./history.ts";
 import {
+  PluginInfoPayload,
+  PluginInfoSuccess,
+  PluginListPayload,
+  PluginListSuccess,
+  PluginSearchPayload,
+  PluginSearchSuccess,
+  RegistryAddPayload,
+  RegistryForgetPayload,
+  RegistryIdPayload,
+  RegistryRemovePayload,
+  RegistryListSuccess,
+  RegistryRefreshPayload,
+  RegistryRefreshSuccess,
+  RegistryStatusSuccess,
+} from "./plugins.ts";
+import {
+  PluginDiscardPayload,
+  PluginDiscardSuccess,
+  PluginStatePayload,
+  PluginInstallPayload,
+  PluginInstallSuccess,
+  PluginPlanPayload,
+  PluginPlanSuccess,
+  PluginRemovePayload,
+  PluginRemoveSuccess,
+  PluginStateSuccess,
+  PluginSuggestPayload,
+  PluginSuggestSuccess,
+} from "./plugin-lifecycle.ts";
+import { PluginContentGetPayload, PluginContentGetSuccess } from "./plugin-content.ts";
+import {
   DiagnosticsConsentPayload,
   DiagnosticsConsentSuccess,
   DiagnosticsExportPayload,
@@ -456,4 +487,23 @@ export const FinRpcs = RpcGroup.make(
   Rpc.make("diagnostics.project", { payload: DiagnosticsProjectPayload, success: DiagnosticsProjectSuccess, error: FinError }),
   Rpc.make("diagnostics.consent", { payload: DiagnosticsConsentPayload, success: DiagnosticsConsentSuccess, error: FinError }),
   Rpc.make("diagnostics.record", { payload: DiagnosticsRecordPayload, success: DiagnosticsRecordSuccess, error: FinError }),
+  // Plugins and registries (sub-project 8A Tasks 9a and 9b): the registries and what they
+  // offer, then plans, approvals and the lifecycle.
+  Rpc.make("registry.list", { payload: Schema.Struct({}), success: RegistryListSuccess, error: FinError }),
+  Rpc.make("registry.status", { payload: RegistryIdPayload, success: RegistryStatusSuccess, error: FinError }),
+  Rpc.make("registry.add", { payload: RegistryAddPayload, success: RegistryStatusSuccess, error: FinError }),
+  Rpc.make("registry.remove", { payload: RegistryRemovePayload, success: Schema.Struct({ removed: Schema.Boolean }), error: FinError }),
+  Rpc.make("registry.forget", { payload: RegistryForgetPayload, success: Schema.Struct({ forgotten: Schema.Boolean }), error: FinError }),
+  Rpc.make("registry.refresh", { payload: RegistryRefreshPayload, success: RegistryRefreshSuccess, error: FinError }),
+  Rpc.make("plugin.list", { payload: PluginListPayload, success: PluginListSuccess, error: FinError }),
+  Rpc.make("plugin.search", { payload: PluginSearchPayload, success: PluginSearchSuccess, error: FinError }),
+  Rpc.make("plugin.info", { payload: PluginInfoPayload, success: PluginInfoSuccess, error: FinError }),
+  Rpc.make("plugin.content.get", { payload: PluginContentGetPayload, success: PluginContentGetSuccess, error: FinError }),
+  Rpc.make("plugin.plan", { payload: PluginPlanPayload, success: PluginPlanSuccess, error: FinError }),
+  Rpc.make("plugin.discard", { payload: PluginDiscardPayload, success: PluginDiscardSuccess, error: FinError }),
+  Rpc.make("plugin.install", { payload: PluginInstallPayload, success: PluginInstallSuccess, error: FinError }),
+  Rpc.make("plugin.remove", { payload: PluginRemovePayload, success: PluginRemoveSuccess, error: FinError }),
+  Rpc.make("plugin.enable", { payload: PluginStatePayload, success: PluginStateSuccess, error: FinError }),
+  Rpc.make("plugin.disable", { payload: PluginStatePayload, success: PluginStateSuccess, error: FinError }),
+  Rpc.make("plugin.suggest", { payload: PluginSuggestPayload, success: PluginSuggestSuccess, error: FinError }),
 );

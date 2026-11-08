@@ -7,6 +7,20 @@
       "provider": "os",
       "license": "MIT",
       "note": "fin-node's N-API bindings: on Windows (MSVC) napi-sys resolves the N-API symbols from the Node.js process that loaded the addon, falling back to an already-loaded or loadable node/libnode library (libloading). Node.js is the host, not something Finisher ships in fin-node."
+    },
+    {
+      "crate": "wgpu-hal",
+      "loads": ["d3d12.dll", "dxgi.dll", "d3dcompiler_47.dll", "dcomp.dll", "kernelbase.dll", "renderdoc.dll", "librenderdoc.so", "libVkLayer_GLES_RenderDoc.so", "CoreGraphics"],
+      "provider": "os",
+      "license": "MIT OR Apache-2.0",
+      "note": "fin-compositor's wgpu (spec §5.2): the D3D12 backend loads d3d12.dll and dxgi.dll, shader compilation uses FXC's d3dcompiler_47.dll (fin-compositor pins Dx12Compiler::Fxc, so dxcompiler.dll is never loaded), dcomp.dll only for window surfaces (never created), kernelbase.dll already loaded; the RenderDoc libraries are only opened when RenderDoc has already injected them (RTLD_NOLOAD, open_already_loaded); CoreGraphics only for Metal window surfaces. All are part of the OS or of a debugger the user runs."
+    },
+    {
+      "crate": "ash",
+      "loads": ["vulkan-1.dll", "libvulkan.so.1", "libvulkan.so", "libvulkan.dylib"],
+      "provider": "driver",
+      "license": "MIT OR Apache-2.0",
+      "note": "wgpu's Vulkan backend loads the system Vulkan loader, installed with the GPU driver (or Mesa's lavapipe on GPU-less Linux, spec §5.2). Finisher bundles no Vulkan library."
     }
   ]
 }

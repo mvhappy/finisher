@@ -14,6 +14,8 @@ import { actorFor, type CallMeta, Diagnostics } from "./diagnostics.ts";
 import { attemptJson, finError, toFinError } from "./errors.ts";
 import { Fonts } from "./fonts.ts";
 import { requireAbsolute, requireAbsoluteOpt } from "./paths.ts";
+import { pluginHandlers } from "./plugins/rpc.ts";
+import { PluginsTag } from "./plugins/registries.ts";
 import { probeFor } from "./probe.ts";
 import { ProjectRegistry } from "./projects.ts";
 import { type AdminDeps, auditList, auditPurge, ServerControlTag, serverStatus, serverStop } from "./server-admin.ts";
@@ -45,6 +47,7 @@ export const HandlersLive = FinRpcs.toLayer(
     const connections = yield* ConnectionsTag;
     const handshake = yield* HandshakeTag;
     const audit = yield* AuditTag;
+    const plugins = yield* PluginsTag;
     const tickets = yield* TicketsTag;
     const everyConnection = yield* ConnectionRegistryTag;
     const credentials = yield* CredentialsTag;
@@ -255,6 +258,7 @@ export const HandlersLive = FinRpcs.toLayer(
           "diagnostics.record",
           diagnostics.record({ principal: principalOf(options), connection: `${connections.transport}:${options.client.id}` }, req, options.headers),
         ),
+      ...pluginHandlers({ plugins, audit, guard }),
     }), { connections, projects, audit, timed: guard, touch: (p) => credentials.touch(p.id) });
   }),
 );

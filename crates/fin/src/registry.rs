@@ -354,13 +354,14 @@ pub const COMMANDS: &[Command] = &[
 /// Groups listed after the edit commands.
 const LAST: &[&str] = &["batch", "meta"];
 
-/// Every command: the 4B ones, then the 4C edits and settings, then `batch`, `help` and
-/// `schema`.
+/// Every command: the 4B ones, then the 4C edits and settings, the 8A plugin and registry
+/// commands, then `batch`, `help` and `schema`.
 pub fn commands() -> impl Iterator<Item = &'static Command> {
     let head = COMMANDS.iter().filter(|c| !LAST.contains(&c.group));
     let tail = COMMANDS.iter().filter(|c| LAST.contains(&c.group));
     head.chain(crate::registry_edit::EDIT_COMMANDS)
         .chain(crate::registry_settings::SETTINGS_COMMANDS)
+        .chain(crate::registry_plugins::PLUGIN_COMMANDS)
         .chain(tail)
 }
 

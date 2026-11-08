@@ -29,7 +29,10 @@ export const SCOPES = [
   "diagnostics.admin",
   "settings.admin",
   "auth.admin",
+  "plugin.read",
   "plugin.install",
+  "plugin.admin",
+  "plugin.suggest",
 ] as const;
 
 export const ScopeSchema = Schema.Literals(SCOPES);
@@ -43,6 +46,7 @@ export const HUMAN_ONLY: ReadonlySet<Scope> = new Set<Scope>([
   "settings.admin",
   "auth.admin",
   "plugin.install",
+  "plugin.admin",
 ]);
 
 export type FinRpcTag = RpcGroup.Rpcs<typeof FinRpcs>["_tag"];
@@ -213,6 +217,31 @@ export const RPC_SCOPES: { readonly [T in FinRpcTag]: RuleOf<T> } = {
     deviceOnly: (p) => p.purpose === "training" && p.value === "on",
   },
   "diagnostics.record": { scopes: ["diagnostics.record"] },
+  // Plugins and registries (sub-project 8A Decision 29). Reads and refreshes are open to any
+  // principal with `plugin.read` (a refresh by a non-human installs nothing); the registries
+  // themselves are the owner's (`plugin.admin` is human-only).
+  "registry.list": { scopes: ["plugin.read"] },
+  "registry.status": { scopes: ["plugin.read"] },
+  "registry.add": { scopes: ["plugin.admin"] },
+  "registry.remove": { scopes: ["plugin.admin"] },
+  "registry.forget": { scopes: ["plugin.admin"] },
+  "registry.refresh": { scopes: ["plugin.read"] },
+  "plugin.list": { scopes: ["plugin.read"] },
+  "plugin.search": { scopes: ["plugin.read"] },
+  "plugin.info": { scopes: ["plugin.read"] },
+  "plugin.content.get": { scopes: ["plugin.read"] },
+  // The lifecycle (9b): anyone with `plugin.read` may plan (nothing runs, and only a person's
+  // plan installs); a downgrade is a person's choice. Installing, updating and removing are the
+  // owner's (`plugin.install`), enabling and disabling too (`plugin.admin`). A suggestion is
+  // about a project the caller reads.
+  "plugin.plan": { scopes: ["plugin.read"], escalate: (p) => (p.allowDowngrade === true ? ["plugin.install"] : []) },
+  // Giving up a plan is its maker's (the handler checks who made it); nothing else changes.
+  "plugin.discard": { scopes: ["plugin.read"] },
+  "plugin.install": { scopes: ["plugin.install"] },
+  "plugin.remove": { scopes: ["plugin.install"] },
+  "plugin.enable": { scopes: ["plugin.admin"] },
+  "plugin.disable": { scopes: ["plugin.admin"] },
+  "plugin.suggest": { scopes: ["plugin.suggest", "project.read"], resolve: PROJECT },
 };
 
 /** The RPCs that write through the store's guard: exactly the rules with `writes`. */

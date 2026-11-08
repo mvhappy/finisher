@@ -1,7 +1,8 @@
 //! napi-rs binding exposing `fin-store`, `fin-probe`, the server's fonts (`fin-fonts`,
 //! `fin-text`: the [`fonts`] manager, `FontManager`), its diagnostics journal
-//! (`fin-journal`: [`journal`], `Journal`) and its plugin store (`fin-registry`: [`registry`],
-//! `Registry`, `validateManifest`) to Node as `@finisher/fin-node`.
+//! (`fin-journal`: [`journal`], `Journal`), its plugin store (`fin-registry`: [`registry`],
+//! `Registry`, `validateManifest`) and its job host (`fin-jobhost`: [`jobhost`], `JobHost`,
+//! `validateJobParams`) to Node as `@finisher/fin-node`.
 //!
 //! # Threads
 //!
@@ -43,12 +44,14 @@ use napi::bindgen_prelude::*;
 use napi_derive::napi;
 use serde_json::json;
 
+mod bundled;
 mod commit_log;
 mod engine;
 mod eval;
 mod fonts;
 mod hash;
 mod history;
+mod jobhost;
 mod journal;
 mod library;
 mod maintenance;
@@ -58,10 +61,15 @@ mod server_lock;
 mod tasks;
 #[cfg(feature = "test-hooks")]
 mod test_hooks;
+#[cfg(feature = "test-hooks")]
+mod test_registry;
 mod worker;
 
 pub use engine::Engine;
 pub use fonts::napi::FontManager;
+pub use jobhost::{
+    JobHost, JobKindVersion, job_kind_versions, resolve_memory_rule, validate_job_params,
+};
 pub use journal::{JournalHandle, kind_names, rpc_methods, validate_privacy};
 pub use library::{library_canonical_root, library_probe_root, library_probe_status};
 #[cfg(feature = "test-hooks")]

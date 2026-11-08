@@ -14,7 +14,12 @@ export interface ForwardedEvent {
 }
 
 export interface JobEventSink {
-  jobDone(e: JobDoneEvent): void;
+  /**
+   * At least once per finished job (9b review M4): the engine marks the row announced only
+   * after this returns, so a throw, or a crash in between, has it sent again at the next
+   * start. Dedupe by `job` (the job's id; not part of the journal payload).
+   */
+  jobDone(e: JobDoneEvent, job: string): void;
   workerExit(e: WorkerExitEvent): void;
   forward(origin: { readonly family: string; readonly job?: string }, kind: string, payload: unknown): void;
 }
@@ -23,6 +28,8 @@ export class JobEventSinkTag extends Context.Service<JobEventSinkTag, JobEventSi
 
 export interface MemorySink extends JobEventSink {
   readonly done: ReadonlyArray<JobDoneEvent>;
+  /** The job id of each of `done`. */
+  readonly doneJobs: ReadonlyArray<string>;
   readonly exits: ReadonlyArray<WorkerExitEvent>;
   readonly forwarded: ReadonlyArray<ForwardedEvent>;
 }
@@ -31,6 +38,7 @@ export interface MemorySink extends JobEventSink {
 export function memorySink(cap = 1000): MemorySink {
   const size = Math.max(1, Math.floor(cap));
   const done: JobDoneEvent[] = [];
+  const doneJobs: string[] = [];
   const exits: WorkerExitEvent[] = [];
   const forwarded: ForwardedEvent[] = [];
   const push = <T>(list: T[], e: T): void => {
@@ -39,9 +47,13 @@ export function memorySink(cap = 1000): MemorySink {
   };
   return {
     done,
+    doneJobs,
     exits,
     forwarded,
-    jobDone: (e) => push(done, e),
+    jobDone: (e, job) => {
+      push(done, e);
+      push(doneJobs, job);
+    },
     workerExit: (e) => push(exits, e),
     forward: (origin, kind, payload) => push(forwarded, { origin, kind, payload }),
   };
