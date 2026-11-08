@@ -132,13 +132,22 @@ params! {
         #[schemars(with = "u64")]
         pub step_ms: Option<u64>,
     }
-    /// `test.oom`: allocates and touches `mib` MiB.
+    /// `test.oom`: allocates and touches `mib` MiB, maps `mapFile` (if given) read-only and
+    /// reads every page of it, writes `1` to `readyFile` (if given), then holds.
     OomParams as "TestOomParams" {
         pub mib: u64,
         /// Hold the memory this long before answering.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         #[schemars(with = "u64")]
         pub hold_ms: Option<u64>,
+        /// A file (mapped name, or under the job directory) to map: file-backed pages.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[schemars(with = "String")]
+        pub map_file: Option<String>,
+        /// A file to write once the memory is held.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[schemars(with = "String")]
+        pub ready_file: Option<String>,
     }
     /// `test.call`: one host call; returns the reply.
     CallParams as "TestCallParams" {

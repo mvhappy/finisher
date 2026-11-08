@@ -1,5 +1,5 @@
 //! The SVT-AV1 encoder calls, through `fin-svt-sys`' shim (which owns SVT-AV1's configuration
-//! struct), each wrapped once. This module and `rav1d_ffi.rs` are the only places with
+//! struct), each wrapped once. This module and `dav1d_ffi.rs` are the only places with
 //! `unsafe` in `fin-codecs`.
 
 use std::ffi::CString;

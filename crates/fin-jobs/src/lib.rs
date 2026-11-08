@@ -16,6 +16,7 @@ pub mod helper;
 pub mod kinds;
 pub mod msg_host;
 pub mod msg_worker;
+pub mod qos;
 pub mod sandbox;
 #[cfg(feature = "test-hooks")]
 pub mod test_kinds;

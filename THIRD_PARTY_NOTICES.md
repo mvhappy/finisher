@@ -36,8 +36,65 @@ status: planned
 ## LanceDB (Apache-2.0)
 status: planned
 
-## dav1d (BSD-2-Clause)
-status: planned
+## dav1d (BSD-2-Clause) — `fin-dav1d-sys` (AV1 decode)
+status: used (sub-project 6A), built from source: the git submodule `third_party/dav1d` at
+tag 1.5.4 (commit 54706fc6bc0cdecab7e9593974a4039cc038fca7), the decoder library only (8- and
+16-bit, no tools), linked statically through `fin-dav1d-sys` (whose `csrc/dav1d_shim.c` is
+Finisher's own, MIT). AV1 itself is under the Alliance for Open Media Patent License 1.0 (the
+SVT-AV1 section below has it in full). The compiled sources carry the licences below, in full;
+`third_party/native.json` pins each text by BLAKE3.
+
+### dav1d: BSD-2-Clause (`COPYING`)
+The library's licence. Individual files add copyright lines under the same text: Two Orioles,
+LLC; Martin Storsjo; Janne Grunau; VideoLabs; Niklas Haas; Matthias Dressel; Arm Limited;
+The rav1e contributors; Nathan Egge.
+```text
+Copyright © 2018-2025, VideoLAN and dav1d authors
+All rights reserved.
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are met:
+
+1. Redistributions of source code must retain the above copyright notice, this
+   list of conditions and the following disclaimer.
+
+2. Redistributions in binary form must reproduce the above copyright notice,
+   this list of conditions and the following disclaimer in the documentation
+   and/or other materials provided with the distribution.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
+ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE LIABLE FOR
+ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+(INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+(INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+```
+
+### dav1d: ISC for x264's `x86inc.asm` (`src/ext/x86/x86inc.asm`, x86_64 builds)
+```text
+Copyright (C) 2005-2024 x264 project
+
+Authors: Loren Merritt <lorenm@u.washington.edu>
+         Henrik Gramner <henrik@gramner.com>
+         Anton Mitrofanov <BugMaster@narod.ru>
+         Fiona Glaser <fiona@x264.com>
+
+Permission to use, copy, modify, and/or distribute this software for any
+purpose with or without fee is hereby granted, provided that the above
+copyright notice and this permission notice appear in all copies.
+
+THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES
+WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF
+MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR
+ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
+WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN
+ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
+OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
+```
 
 ## SVT-AV1 (BSD-3-Clause-Clear) — `fin-svt-sys` (AV1 encode)
 status: used (sub-project 6A), built from source: the git submodule `third_party/svt-av1` at
@@ -385,38 +442,6 @@ HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY,
 WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
 FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
 OTHER DEALINGS IN THE SOFTWARE.
-```
-
-## rav1d (BSD-2-Clause) — `fin-codecs` (AV1 decode)
-status: used (sub-project 6A), as a Cargo dependency (`rav1d` 1.1), the Rust port of dav1d,
-with its x86_64 assembly compiled by its build script. AV1 itself is under the Alliance for
-Open Media Patent License 1.0 (above). Its licence (`COPYING`), in full:
-
-```text
-Copyright © 2018-2019, VideoLAN and dav1d authors
-Copyright © 2023-2024, VideoLAN, dav1d authors, and Internet Security Research Group
-All rights reserved.
-
-Redistribution and use in source and binary forms, with or without
-modification, are permitted provided that the following conditions are met:
-
-1. Redistributions of source code must retain the above copyright notice, this
-   list of conditions and the following disclaimer.
-
-2. Redistributions in binary form must reproduce the above copyright notice,
-   this list of conditions and the following disclaimer in the documentation
-   and/or other materials provided with the distribution.
-
-THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
-ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
-WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
-DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE LIABLE FOR
-ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
-(INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
-LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
-ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
-(INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
-SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ```
 
 ## libvpx (BSD-3-Clause)
