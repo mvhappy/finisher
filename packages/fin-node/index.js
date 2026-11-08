@@ -487,6 +487,10 @@ export function libraryProbeVersion() {
   return native.libraryProbeVersion();
 }
 
+export function libraryWatchStart(root, maxWatches, callback) {
+  return sync(() => native.libraryWatchStart(root, maxWatches, callback));
+}
+
 /** The plugin store and registries of a server (`registry.js`). */
 export const Registry = defineRegistry({ native, call, toFinError });
 

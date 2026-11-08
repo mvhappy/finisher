@@ -26,6 +26,9 @@
 //! Task 13: `asset.probe` of a catalogued file ([`asset`]): [`fin_probe::probe_with`] over the
 //! safe opener, its refusals as the codes the RPC answers.
 //!
+//! Tasks 9–11 review (Linux): the per-directory inotify watch of a local root ([`mod@watch`]),
+//! on the root's mount only, off the JS thread.
+//!
 //! **Read-only roots:** nothing in this crate creates, writes, renames, locks or deletes
 //! anything under a root.
 
@@ -50,6 +53,8 @@ pub mod timing;
 pub mod types;
 pub mod volume;
 pub mod walk;
+#[cfg(target_os = "linux")]
+pub mod watch;
 
 #[cfg(feature = "test-hooks")]
 pub mod overlay;

@@ -69,6 +69,10 @@ export interface Harness {
   readonly offlineFlags: Array<{ lib: string; offline: boolean }>;
   readonly journal: Array<{ kind: string; payload: unknown }>;
   readonly watches: string[];
+  readonly unwatches: string[];
+  readonly dropGuards: Array<{ lib: string; on: boolean }>;
+  /** Jobs end before their submit answers (the submit/end race). */
+  endOnSubmit: boolean;
   /** The next probe answers of a root (else `online` with its stored identity). */
   probeAnswers: RootState[];
   measured?: VolumeIdentity;
@@ -97,7 +101,10 @@ export async function harness(opts: { counts?: CatalogCounts; deps?: Partial<Lib
     offlineFlags: [] as Harness["offlineFlags"],
     journal: [] as Harness["journal"],
     watches: [] as string[],
+    unwatches: [] as string[],
+    dropGuards: [] as Harness["dropGuards"],
     probeAnswers: [] as RootState[],
+    endOnSubmit: false,
     measured: undefined as VolumeIdentity | undefined,
   };
   const tools: RootTools = {
@@ -125,11 +132,28 @@ export async function harness(opts: { counts?: CatalogCounts; deps?: Partial<Lib
           priority: spec.priority ?? "background", state: "queued", attempts: 0, maxAttempts: 3, warm: false, createdAt: time.now,
         } as JobView;
         jobs.set(id, view);
+        if (h.endOnSubmit) {
+          // The job ends before its submit answers: `onDone` comes first, the answer still says `queued`.
+          const ended = { ...view, state: "succeeded", finishedAt: time.now } as JobView;
+          jobs.set(id, ended);
+          for (const l of done) l(ended);
+        }
         h.submits.push({ id, lib: p.library, kind: spec.kind, ...(p.mode === undefined ? {} : { mode: p.mode }), ...(spec.priority === undefined ? {} : { priority: spec.priority }) });
         return view;
       }),
     get: (id) => (jobs.has(id) ? Effect.succeed(jobs.get(id)!) : Effect.fail(new FinError({ code: "JOB_NOT_FOUND", message: "no job", details: {} }))),
-    cancel: (id) => Effect.sync(() => jobs.get(id)!),
+    cancel: (id) =>
+      Effect.sync(() => {
+        const v = jobs.get(id)!;
+        if (v.finishedAt !== undefined) return v;
+        // A cancel ends the job (as the engine's would), and its end is reported.
+        const ended = { ...v, state: "cancelled", finishedAt: time.now } as JobView;
+        jobs.set(id, ended);
+        queueMicrotask(() => {
+          for (const l of done) l(ended);
+        });
+        return ended;
+      }),
     wait: (ids, o) =>
       Effect.promise(async () => {
         const end = Date.now() + o.timeoutMs;
@@ -156,7 +180,14 @@ export async function harness(opts: { counts?: CatalogCounts; deps?: Partial<Lib
         h.watches.push(lib);
         return ok({ ok: true as const });
       },
-      unwatch: () => ok(undefined),
+      unwatch: (lib: string) => {
+        h.unwatches.push(lib);
+        return ok(undefined);
+      },
+      setDropGuard: (lib: string, on: boolean) => {
+        h.dropGuards.push({ lib, on });
+        return ok({ on });
+      },
       close: () => ok(undefined),
       setOffline: (lib: string, offline: boolean) => {
         h.offlineFlags.push({ lib, offline });
@@ -189,6 +220,12 @@ export async function harness(opts: { counts?: CatalogCounts; deps?: Partial<Lib
     },
     set probeAnswers(v: RootState[]) {
       h.probeAnswers = v;
+    },
+    get endOnSubmit() {
+      return h.endOnSubmit;
+    },
+    set endOnSubmit(v: boolean) {
+      h.endOnSubmit = v;
     },
     get measured() {
       return h.measured;

@@ -38,6 +38,8 @@ export interface IndexerData {
   readonly testHooks?: boolean;
   /** Quiet time before a watch hint is posted (default 2 s; tests lower it). */
   readonly watchQuietMs?: number;
+  /** `fs.inotify.max_user_watches` as the watches see it (tests; default: read from `/proc`). */
+  readonly watchMaxUserWatches?: number;
 }
 
 export const TX_ROWS = 2000;
@@ -63,6 +65,7 @@ const faults = new Map<string, number>();
 /** Local roots' watches (Decision 30): hints posted as `{event}` messages. */
 const watches = new Watches((event) => port.postMessage({ event }), {
   ...(data.watchQuietMs === undefined ? {} : { quietMs: data.watchQuietMs }),
+  ...(data.watchMaxUserWatches === undefined ? {} : { maxUserWatches: () => data.watchMaxUserWatches }),
   known: knownPrefix,
 });
 
@@ -159,6 +162,7 @@ function open(a: Record<string, unknown>): unknown {
   const apply = prepareApply(opened.db);
   const meta = opened.db.prepare("SELECT value FROM meta WHERE key = 'offline'").get() as { value: string } | undefined;
   apply.diff.offline = meta?.value === "1";
+  apply.diff.dropGuard = (opened.db.prepare("SELECT value FROM meta WHERE key = 'dropGuard'").get() as { value: string } | undefined)?.value === "1";
   const last = opened.db
     .prepare(
       "SELECT max(coalesce((SELECT max(lastSeen) FROM files), 0), coalesce((SELECT max(lastSeen) FROM dirs), 0), " +
@@ -401,6 +405,19 @@ function setOffline(a: Record<string, unknown>): unknown {
   return { offline };
 }
 
+/** Persists the mass-drop guard (after an accepted volume, until a full scan succeeds) and hands it to the diff. */
+function setDropGuard(a: Record<string, unknown>): unknown {
+  const c = catalog(a.lib);
+  if (typeof a.on !== "boolean") throw new CatalogFailure("CATALOG_ARGS_INVALID", "invalid catalog arguments", { at: "on" });
+  const on = a.on;
+  if (c.apply.diff.dropGuard === on) return { on };
+  tx(c, 1, () => {
+    c.db.prepare("INSERT INTO meta (key, value) VALUES ('dropGuard', ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value").run(on ? "1" : "0");
+  });
+  c.apply.diff.dropGuard = on;
+  return { on };
+}
+
 /** The deepest directory of `parts` the catalog knows, as base64 components (a watch hint's target). */
 function knownPrefix(lib: string, parts: ReadonlyArray<Uint8Array>): string[] {
   const c = catalogs.get(lib);
@@ -416,12 +433,16 @@ function knownPrefix(lib: string, parts: ReadonlyArray<Uint8Array>): string[] {
   return out;
 }
 
-/** `watch {lib, root}`: a local root's recursive watch (the catalog must be open). */
+/**
+ * `watch {lib, root}`: a local root's watch (the catalog must be open); its budget is the
+ * catalog's live directories (`watch.ts`).
+ */
 function watch(a: Record<string, unknown>): unknown {
   const lib = checkLibraryId(a.lib);
-  catalog(lib);
+  const c = catalog(lib);
   if (typeof a.root !== "string" || !isAbsolute(a.root)) throw new CatalogFailure("CATALOG_ARGS_INVALID", "invalid catalog arguments", { at: "root" });
-  return watches.watch(lib, a.root);
+  const { n } = c.db.prepare("SELECT count(*) AS n FROM dirs WHERE state != 'missing'").get() as { n: number };
+  return watches.watch(lib, a.root, n);
 }
 
 function unwatch(a: Record<string, unknown>): unknown {
@@ -445,6 +466,7 @@ const METHODS: Record<string, (a: Record<string, unknown>) => unknown> = {
   knownDirs,
   purgeMissing,
   setOffline,
+  setDropGuard,
   watch,
   unwatch,
   watchFault,

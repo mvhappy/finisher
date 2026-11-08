@@ -11,6 +11,8 @@
 //! - [`library_probe_version`]: `fin_probe::PROBE_VERSION`, for the catalog;
 //! - [`asset_probe::library_probe_file`] (Task 13): `asset.probe` of a catalogued file, opened
 //!   through `open_for_read` with its row.
+//! - [`library_watch_start`] (Linux): a local root's per-directory inotify watch, on a thread
+//!   of its own (`fin_library::watch`).
 //!
 //! Nothing here opens a file under a root, and nothing writes there. Values cross as JSON
 //! strings, like the rest of this crate.
@@ -31,6 +33,9 @@ use crate::{encode, reject};
 
 mod asset_probe;
 mod rootprobe;
+mod watch;
+
+pub use watch::{LibraryWatch, library_watch_start};
 
 /// This module's own results (`Result` here is napi's).
 type CoreResult<T> = std::result::Result<T, CoreError>;

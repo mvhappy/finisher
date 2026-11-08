@@ -3,7 +3,7 @@
 import type { JobView } from "@finisher/contracts";
 import { describe, expect, test } from "vitest";
 import { InFlight } from "../../src/library/inflight.ts";
-import { itemFates, rowOf } from "../../src/library/stage-outcome.ts";
+import { itemFates, rescanItems, rowOf } from "../../src/library/stage-outcome.ts";
 import { StageRegistry } from "../../src/library/stages.ts";
 
 type Ended = Pick<JobView, "state" | "result" | "error" | "itemErrors">;
@@ -19,16 +19,30 @@ describe("item fates", () => {
     const f = itemFates(job, ["a", "b", "c", "d", "e"], false);
     expect(Object.fromEntries(f)).toEqual({
       a: { fate: "done" },
-      b: { fate: "failed", code: "FILE_CHANGED", permanent: false },
+      // The catalog is behind the file: no attempt, its directory is listed again.
+      b: { fate: "pending", code: "FILE_CHANGED" },
       c: { fate: "failed", code: "POISON_ITEM", permanent: true },
       d: { fate: "pending", code: "LIBRARY_OFFLINE" },
       e: { fate: "failed", code: "STAGE_ITEM_UNANSWERED", permanent: false },
     });
     const base = { fp: "x", stage: "s", version: "v", at: 5 };
     expect(rowOf(f.get("a")!, base, 1)).toMatchObject({ state: "done", attempts: 1 });
-    expect(rowOf(f.get("b")!, base, 1)).toMatchObject({ state: "failed", attempts: 2 });
+    expect(rowOf(f.get("b")!, base, 1)).toMatchObject({ state: "stale", attempts: 1, code: "FILE_CHANGED" });
+    expect(rescanItems(f)).toEqual(["b"]);
     expect(rowOf(f.get("c")!, base, 0)).toMatchObject({ state: "failed", attempts: 3 });
     expect(rowOf(f.get("d")!, base, 1)).toMatchObject({ state: "stale", attempts: 1, code: "LIBRARY_OFFLINE" });
+  });
+
+  test("files_the_catalog_is_behind_on_cost_no_attempt", () => {
+    const job = {
+      state: "succeeded", result: { items: {} },
+      itemErrors: [{ item: "a", error: err("FILE_NOT_FOUND") }, { item: "b", error: err("FILE_CLOUD_ONLY") }, { item: "c", error: err("ASSET_UNREADABLE") }],
+    } as Ended;
+    const f = itemFates(job, ["a", "b", "c"], false);
+    expect(f.get("a")).toEqual({ fate: "pending", code: "FILE_NOT_FOUND" });
+    expect(f.get("b")).toEqual({ fate: "pending", code: "FILE_CLOUD_ONLY" });
+    expect(f.get("c")).toEqual({ fate: "failed", code: "ASSET_UNREADABLE", permanent: false });
+    expect(rescanItems(f)).toEqual(["a", "b"]);
   });
 
   test("whole_job_failures_and_free_cancels", () => {

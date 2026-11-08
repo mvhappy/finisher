@@ -10,8 +10,9 @@
 // A path whose only row is missing is answered only when neither the fingerprint nor the hash
 // finds a live file. `cloudOnly` rows are answered (6 refuses them at export with
 // `FILE_CLOUD_ONLY`). Aliases serve this system-internal resolution only: they never grant
-// reach (Decision 47). The `Located` carries the raw chain and the `Expect` (with `dev`) that
-// `open_for_read` needs.
+// reach (Decision 47): a caller's reach is applied as `reach`, a filter of the libraries
+// searched, and must never be derived from what `locate` answers. The `Located` carries the
+// raw chain and the `Expect` (with `dev`) that `open_for_read` needs.
 import { isAbsolute, win32 } from "node:path";
 import { FinError } from "@finisher/contracts";
 import type { FileState, Located } from "./api.ts";
@@ -24,7 +25,11 @@ export interface LocateDeps {
   readonly reader: Pick<ReaderClient, "file" | "lookup">;
   /** Whether the library's catalog is open (others are skipped). */
   readonly attached: (id: string) => boolean;
+  /** The libraries a caller may reach (default: all); the others are never searched. */
+  readonly reach?: (id: string) => boolean;
 }
+
+const searched = (d: LocateDeps, lib: LibraryRow): boolean => d.attached(lib.id) && (d.reach === undefined || d.reach(lib.id));
 
 export interface LocateRef {
   readonly path?: string;
@@ -105,7 +110,7 @@ const RANK: Record<string, number> = { present: 0, probeFailed: 1, skipped: 1, u
 async function byContent(d: LocateDeps, key: { fingerprints: string[] } | { hashes: string[] }, match: "fingerprint" | "hash"): Promise<Located | undefined> {
   let best: { lib: LibraryRow; id: number; rank: number } | undefined;
   for (const lib of d.registry.list()) {
-    if (!d.attached(lib.id)) continue;
+    if (!searched(d, lib)) continue;
     const { matches } = await exec(d.reader.lookup(lib.id, key)).catch(() => ({ matches: [] }));
     for (const m of matches) {
       const rank = RANK[m.file.state];
@@ -125,7 +130,7 @@ export async function locate(d: LocateDeps, ref: LocateRef): Promise<Located | u
     if (typeof ref.path !== "string" || !(isAbsolute(ref.path) || win32.isAbsolute(ref.path))) throw invalidPath("it is not absolute");
     let hit: { lib: LibraryRow; parts: string[]; match: "path" | "alias"; depth: number } | undefined;
     for (const lib of d.registry.list()) {
-      if (!d.attached(lib.id)) continue;
+      if (!searched(d, lib)) continue;
       for (const [base, match] of [[lib.root, "path"], ...lib.aliases.map((a) => [a, "alias"])] as Array<[string, "path" | "alias"]>) {
         const parts = relUnder(base, ref.path);
         const depth = base.length;

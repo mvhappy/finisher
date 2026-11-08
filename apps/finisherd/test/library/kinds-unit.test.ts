@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { FinError, type JobView } from "@finisher/contracts";
 import type { LibraryScanParams, ProbeOutcome, VolumeIdentity } from "@finisher/core-types";
-import { jobKindVersions } from "@finisher/fin-node";
+import { jobKindVersions, libraryProbeVersion } from "@finisher/fin-node";
 import { Effect, Exit } from "effect";
 import { afterEach, describe, expect, test } from "vitest";
 import type { CallCtx, ItemOutcome, KindRegistry, PrepareCtx } from "../../src/jobs/kinds.ts";
@@ -141,6 +141,10 @@ describe("host calls", () => {
     // Untrusted: a file outside the job, an unknown state, too many results.
     expect(await failCode(onCall(ctx, "library.probed", { results: [{ file: 8, probeVersion: 1, state: "present" }] }))).toBe("INVALID_REQUEST");
     expect(await failCode(onCall(ctx, "library.probed", { results: [{ file: 7, probeVersion: 1, state: "cancelled" }] }))).toBe("INVALID_REQUEST");
+    // A worker cannot claim another probe version (a higher one would keep the file from being probed again).
+    for (const probeVersion of [libraryProbeVersion() + 1, libraryProbeVersion() - 1, 1_000_000]) {
+      expect(await failCode(onCall(ctx, "library.probed", { results: [{ file: 7, probeVersion, state: "present" }] }))).toBe("INVALID_REQUEST");
+    }
     const many = Array.from({ length: 33 }, () => ({ file: 7, probeVersion: 1, state: "present" }));
     expect(await failCode(onCall(ctx, "library.probed", { results: many }))).toBe("INVALID_REQUEST");
   });

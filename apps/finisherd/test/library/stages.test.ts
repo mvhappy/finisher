@@ -300,6 +300,55 @@ describe("failures", () => {
   });
 });
 
+describe("review fixes", () => {
+  test("items_whose_file_changed_cost_no_attempt_and_rescan_their_dir", { timeout: 120_000 }, async () => {
+    let calls = 0;
+    const s = await setup({
+      names: ["a.png"],
+      stages: [testStage("t.changed", { knobs: (files): TestStageKnobs => (calls++ === 0 ? { failItems: Object.fromEntries(files.map((f) => [f.fp, "FILE_CHANGED"])) } : {}) })],
+    });
+    const fp = (await probed(s, ["a.png"]))["a.png"]!.fp!;
+    const rows = await settled(s, "t.changed", [fp], ["done"]);
+    expect(rows[0]).toMatchObject({ state: "done", attempts: 0 });
+    expect(calls).toBeGreaterThanOrEqual(2);
+    // The file's directory (the root) was listed again: nothing else lists a directory here.
+    const dirs = s.rig.t.jobs.list({ kind: "library.scan", library: s.lib, limit: 500 }).jobs.filter((j) => (j.params as { mode: string }).mode === "dirs");
+    expect(dirs.map((j) => (j.params as { dirs: unknown[] }).dirs)).toEqual([[{ components: [] }]]);
+  });
+
+  test("a_stage_job_that_ends_before_its_submit_answers_still_settles", { timeout: 120_000 }, async () => {
+    const s = await setup({ names: ["a.png"] });
+    const fp = (await probed(s, ["a.png"]))["a.png"]!.fp!;
+    const engine = s.rig.t.engine as unknown as { submit: (...a: unknown[]) => unknown };
+    const submit = engine.submit.bind(engine);
+    // A submit that answers only after the job ended (its `onDone` came first).
+    engine.submit = (owner, spec) =>
+      Effect.flatMap(submit(owner, spec) as Effect.Effect<JobView, never>, (view) =>
+        (spec as { kind: string }).kind === "test.stage" ? Effect.promise(() => s.rig.t.wait(view.id, WAIT).then(() => view)) : Effect.succeed(view),
+      );
+    s.rig.svc.registerStage(testStage("t.quick"));
+    const rows = await settled(s, "t.quick", [fp], ["done"]);
+    expect(rows[0]).toMatchObject({ state: "done", jobId: null });
+    expect(s.rig.svc.stages.inflight.jobsOf(s.lib).filter((c) => c.stage === "t.quick")).toEqual([]);
+  });
+
+  test("a_prioritized_stage_is_dropped_when_its_dependency_fails_for_good", { timeout: 120_000 }, async () => {
+    const s = await setup({
+      names: ["a.png"],
+      stages: [
+        testStage("t.dep", { knobs: (files) => ({ crashOn: files.map((f) => f.fp) }) }),
+        testStage("t.after", { dependsOn: ["t.dep"] }),
+      ],
+    });
+    const fp = (await probed(s, ["a.png"]))["a.png"]!.fp!;
+    await exec(s.rig.svc.prioritize(fp, "t.after"));
+    expect(s.rig.svc.stages.wanted()).toBe(1);
+    await eventually(async () => (await stageRows(s, "t.dep")).find((r) => r.state === "failed" && r.attempts >= 3));
+    await eventually(async () => s.rig.svc.stages.wanted() === 0);
+    expect((await stageRows(s, "t.after")).filter((r) => r.state === "done")).toEqual([]);
+  });
+});
+
 describe("priority and restarts", () => {
   test("prioritize_jumps_the_queue_with_dependencies", { timeout: 120_000 }, async () => {
     const names = ["a.png", "b.png", "c.png", "d.png", "e.png", "f.png"];

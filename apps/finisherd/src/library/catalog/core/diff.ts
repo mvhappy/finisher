@@ -94,6 +94,7 @@ export interface DiffStatements {
   readonly clearSeenRenames: S;
   readonly goneFiles: S;
   readonly goneDirs: S;
+  readonly rootDrop: S;
   readonly markFileIds: S;
   readonly markDirIds: S;
   readonly excludedLive: S;
@@ -135,6 +136,8 @@ export interface DiffConn {
   /** The rows the current batch file changed (`Libraries.onFile`); `undefined` outside one. */
   events: FileIdSink | undefined;
   offline: boolean;
+  /** Set after the owner accepted a volume, until a full scan succeeds (`checkMassDrop`). */
+  dropGuard: boolean;
 }
 
 const SUBTREE = "WITH RECURSIVE sub (id) AS (SELECT ? UNION ALL SELECT d.id FROM dirs d JOIN sub ON d.parent = sub.id)";
@@ -171,6 +174,7 @@ export function prepareDiff(db: DatabaseSync): DiffConn {
     // costs ~100 µs a statement, and almost every listing marks nothing.
     goneFiles: db.prepare("SELECT id, fileId FROM files WHERE dirId = ? AND state != 'missing' AND lastSeen < ? ORDER BY id LIMIT ?"),
     goneDirs: db.prepare("SELECT id FROM dirs WHERE parent = ? AND state NOT IN ('missing', 'offline') AND lastSeen < ? ORDER BY id LIMIT ?"),
+    rootDrop: db.prepare("SELECT count(*) AS live, sum(lastSeen < ?) AS gone FROM dirs WHERE parent = 1 AND id != 1 AND state NOT IN ('missing', 'offline', 'excluded')"),
     markFileIds: db.prepare(
       `UPDATE files SET state = 'missing', missingSince = ?, missingGen = ?, code = coalesce(?, code), renameOf = NULL, hardlink = 0 WHERE id ${IDS}`,
     ),
@@ -208,7 +212,7 @@ export function prepareDiff(db: DatabaseSync): DiffConn {
     idsPresent: db.prepare("SELECT DISTINCT hex(fileId) AS id FROM files WHERE fileId IN (SELECT unhex(value) FROM json_each(?))"),
   };
   return {
-    st, coll: prepareCollisions(db), listings: new Map(), touched: new Set(), unsuspected: new Set(), ids: undefined, events: undefined, offline: false,
+    st, coll: prepareCollisions(db), listings: new Map(), touched: new Set(), unsuspected: new Set(), ids: undefined, events: undefined, offline: false, dropGuard: false,
   };
 }
 
@@ -493,6 +497,7 @@ export function* closeListing(
     yield* markSubtree(diff, d, ctx, EXCLUDED, counts, b);
     counts.excluded += counts.missing - before;
   }
+  if (dirId === 1 && diff.dropGuard) checkMassDrop(diff, start);
   const files: Gone[] = [];
   for (;;) {
     const rows = diff.st.goneFiles.all(dirId, start, limit(b)) as Gone[];
@@ -515,6 +520,22 @@ export function* closeListing(
   counts.renamed += yield* resolveRenames(diff, fts, [...files, ...below], b);
   counts.collisions += recomputeCollisions(diff.coll, dirId);
   return { kind: "closed", start, fresh: e.listedAt === null || start >= e.listedAt };
+}
+
+/** Above this share of the root's live directories gone at once (after an accept), the listing is suspect. */
+export const MASS_DROP_SHARE = 0.5;
+
+/**
+ * `ROOT_DROP_SUSPECT` (the Tasks 9–11 review): after the owner accepted a volume, a root
+ * listing that would mark more than half of the root's live directories missing is refused
+ * (its transaction rolls back): a wrong volume accepted by mistake must not drop the library.
+ * The owner confirms with `acceptVolume {force: true}`, which lifts the guard.
+ */
+function checkMassDrop(diff: DiffConn, start: number): void {
+  const r = diff.st.rootDrop.get(start) as { live: number; gone: number | null };
+  if (r.live > 0 && (r.gone ?? 0) > r.live * MASS_DROP_SHARE) {
+    throw new CatalogFailure("ROOT_DROP_SUSPECT", "the root's listing would mark most of the library missing after an accepted volume", { live: r.live, gone: r.gone });
+  }
 }
 
 /** `ROOT_EMPTY_SUSPECT`: an empty, complete root listing while the catalog holds files. */

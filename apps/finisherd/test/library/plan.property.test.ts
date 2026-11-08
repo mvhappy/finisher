@@ -102,7 +102,9 @@ describe("plan", () => {
     const base = { storage: "network", scan: { poll: "demand", full: "daily" }, watch: "none" } as const;
     expect(pollInterval(base, true)).toBe(IN_USE_POLL_MS);
     expect(pollInterval(base, false)).toBe(IDLE_POLL_MS);
-    expect(pollInterval({ ...base, storage: "local", watch: "ok" }, true)).toBeUndefined();
+    // Watched: a safety-net poll every 6 hours, in use or not.
+    expect(pollInterval({ ...base, storage: "local", watch: "ok" }, true)).toBe(6 * 3_600_000);
+    expect(pollInterval({ ...base, storage: "local", watch: "ok" }, false)).toBe(6 * 3_600_000);
     expect(pollInterval({ ...base, storage: "local", watch: "degraded" }, false)).toBe(5 * 60_000);
     expect(pollInterval({ ...base, storage: "sync", scan: { poll: 600, full: "daily" } }, false)).toBe(600_000);
     const off: PlanLibrary = { id: "x", ...base, state: "offline", createdAt: T0, watch: "none", running: { full: false, poll: false, recheck: false }, lastRecheckAt: T0 };

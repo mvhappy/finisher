@@ -10,7 +10,10 @@
 //   goes so (`stop`): their rows return to pending without spending an attempt.
 // - A server-wide in-flight set (`inflight.ts`) keeps one fingerprint out of two jobs of one
 //   stage, across libraries: a library that finds one in another's job waits on it, and the
-//   job's end settles both rows.
+//   job's end settles both rows. A job's end is held until its rows say `queued`, and the
+//   engine is asked once they do, so a job that ended before it was recorded still settles.
+// - Items whose file is not what the catalog says cost no attempt; their directories are
+//   listed again (`rescan`). A prioritized stage whose dependency failed for good is dropped.
 // - `isDone(fp)` marks a row `done` without a job; `appliesTo` false marks it `skipped`.
 // - Completion comes from `JobEngine.onDone` (`stage-outcome.ts`); at attach the catalog's
 //   `queued`/`running` rows are reconciled with `engine.get(jobId)`.
@@ -29,7 +32,7 @@ import { type JobClaim, InFlight } from "./inflight.ts";
 import { PROBE_BATCH, hashParams, probeExtensions, probeParams } from "./kind-params.ts";
 import type { LibraryPoolBook } from "./pools.ts";
 import type { LibraryRow, Registry } from "./registry.ts";
-import { itemFates, rowOf } from "./stage-outcome.ts";
+import { itemFates, rescanItems, rowOf } from "./stage-outcome.ts";
 import { DEFAULT_MAX_IN_FLIGHT, MAX_ATTEMPTS, PROBE_STAGE, RETRY_AFTER_MS, type StageRegistry, stageFile } from "./stages.ts";
 import { SYSTEM_OWNER, type ServiceTimers, exec, toFin } from "./states.ts";
 
@@ -52,6 +55,8 @@ export interface PumpDeps {
   readonly attached: (id: string) => boolean;
   /** A stage job of another family ended `LIBRARY_OFFLINE` (Decision 33): the service puts the library offline. */
   readonly offline?: (lib: string, job: JobView) => void;
+  /** Files a stage job found changed, gone or cloud-only: the service lists their directories again. */
+  readonly rescan?: (lib: string, fileIds: ReadonlyArray<number>) => void;
 }
 
 const wantKey = (fp: string, stage: string): string => `${stage}\u0000${fp}`;
@@ -154,6 +159,11 @@ export class StagePump {
     })();
   }
 
+  /** Prioritized fingerprints waiting for a dependency (tests). */
+  wanted(): number {
+    return this.#wanted.size;
+  }
+
   /** Resolves once no turn runs (tests). */
   async idle(): Promise<void> {
     while (this.#turns.size > 0) await new Promise((r) => setImmediate(r));
@@ -187,6 +197,8 @@ export class StagePump {
       const r = await submitProbe(this.#d, row, ids);
       if (r.job !== undefined && r.job.finishedAt === undefined) {
         this.inflight.add({ jobId: r.job.id, library: id, stage: PROBE_STAGE, version: "", items: ids.map(String) });
+        // The job may have ended before it was recorded: its end found no claim.
+        await this.#ended(r.job.id);
       } else if (r.job === undefined && r.skipped === 0) return;
     }
   }
@@ -234,8 +246,9 @@ export class StagePump {
         }
         take.push(file);
       }
+      let job: string | undefined;
       if (take.length > 0) {
-        const job = await this.#submit(row, spec, take, priority ?? spec.priority ?? "background");
+        job = await this.#submit(row, spec, take, priority ?? spec.priority ?? "background");
         if (job === undefined) {
           if (rows.length > 0) await exec(this.#d.catalogs.indexer.stagesSet(id, rows));
           return submitted;
@@ -243,7 +256,11 @@ export class StagePump {
         submitted = true;
         for (const f of take) rows.push({ fp: f.fp, stage: spec.name, version: spec.version, state: "queued", jobId: job, at: now });
       }
-      if (rows.length > 0) await exec(this.#d.catalogs.indexer.stagesSet(id, rows));
+      try {
+        if (rows.length > 0) await exec(this.#d.catalogs.indexer.stagesSet(id, rows));
+      } finally {
+        if (job !== undefined) await this.#recorded(job);
+      }
       for (const f of done) this.#d.files.emit({ type: "stage", library: id, fileId: f.fileId, fp: f.fp, stage: spec.name });
       if (done.length > 0) this.#dependentsReady(done.map((f) => f.fp), spec.name);
       if (only !== undefined || take.length === 0 && rows.length === 0) return submitted;
@@ -271,6 +288,8 @@ export class StagePump {
       const params = spec.params(files, { library: row.id, pools });
       const view = await exec(this.#d.engine.submit(SYSTEM_OWNER, { kind: spec.jobKind, params, library: row.id, priority }));
       const claim = this.inflight.rename(reserved, view.id);
+      // Its end waits until its rows say `queued` (`#recorded`): a quick end must not be overwritten.
+      if (claim !== undefined) claim.recording = true;
       if (claim !== undefined && this.#usable(row.id) === undefined) {
         // Paused or offline while the submit ran: cancelled like the library's other jobs.
         claim.free = true;
@@ -284,10 +303,29 @@ export class StagePump {
     }
   }
 
+  /** A job's rows are written: an end that came meanwhile, or before its claim had its id, settles now. */
+  async #recorded(jobId: string): Promise<void> {
+    const claim = this.inflight.get(jobId);
+    if (claim === undefined) return;
+    claim.recording = false;
+    if (claim.ended !== undefined) return this.jobDone(claim.ended);
+    await this.#ended(jobId);
+  }
+
+  /** Settles `jobId` if the engine says it already ended (its `onDone` came before its claim). */
+  async #ended(jobId: string): Promise<void> {
+    const view = await exec(this.#d.engine.get(jobId)).catch(() => undefined);
+    if (view?.finishedAt !== undefined) this.jobDone(view);
+  }
+
   /** A job ended (wire to `JobEngine.onDone`). */
   jobDone(job: JobView): void {
     const claim = this.inflight.get(job.id);
     if (claim === undefined || this.#closed) return;
+    if (claim.recording) {
+      claim.ended = job;
+      return;
+    }
     this.inflight.release(job.id);
     if (claim.stage !== PROBE_STAGE && job.error?.code === "LIBRARY_OFFLINE" && job.family !== "library") this.#d.offline?.(claim.library, job);
     void this.#settle(job, claim).catch((e) => this.#d.log("warning", `stage pump: a job's end was not recorded: ${toFin(e).code}`));
@@ -307,6 +345,10 @@ export class StagePump {
       const attempts = new Map(stored.rows.map((r) => [r.fp, r.version === claim.version ? r.attempts : 0]));
       const rows = fps.map((fp) => rowOf(fates.get(fp)!, { fp, stage: claim.stage, version: claim.version, at: now }, attempts.get(fp) ?? 0));
       await exec(this.#d.catalogs.indexer.stagesSet(lib, rows));
+      const behind = rescanItems(fates).filter((fp) => files.has(fp)).map((fp) => files.get(fp)!);
+      if (behind.length > 0) this.#d.rescan?.(lib, behind);
+      // A prioritized stage waiting on a dependency that failed for good waits no more.
+      for (const r of rows) if (r.state === "failed" && r.attempts >= MAX_ATTEMPTS) this.#dropWanted(r.fp, claim.stage);
       for (const fp of fps) {
         if (fates.get(fp)?.fate !== "done") continue;
         ready.push(fp);
@@ -315,6 +357,17 @@ export class StagePump {
     }
     this.#dependentsReady(ready, claim.stage);
     for (const lib of libs.keys()) this.kick(lib);
+  }
+
+  /** Drops prioritized entries of `fp` for stages that depend on `stage`, directly or not. */
+  #dropWanted(fp: string, stage: string): void {
+    const after = (s: string, seen = new Set<string>()): boolean => {
+      if (seen.has(s)) return false;
+      seen.add(s);
+      const deps = this.#d.stages.get(s)?.dependsOn ?? [];
+      return deps.includes(stage) || deps.some((d) => after(d, seen));
+    };
+    for (const [key, w] of this.#wanted) if (w.fp === fp && after(w.stage)) this.#wanted.delete(key);
   }
 
   /** Prioritized stages waiting for `stage` of `fps` go now (their entries stay until `prioritize` submits). */

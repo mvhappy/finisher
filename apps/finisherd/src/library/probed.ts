@@ -61,13 +61,18 @@ export function mediaColumns(probe: unknown): Pick<ProbedRow, "kind" | "duration
   };
 }
 
-/** The checked outcomes of one `library.probed {results}` call (≤ 32). */
-export function decodeProbed(params: unknown, max: number): ProbeOutcome[] {
+/**
+ * The checked outcomes of one `library.probed {results}` call (≤ 32). `probeVersion`: this
+ * server's (`libraryProbeVersion()`); a result claiming any other is refused, so a worker can
+ * never mark a file probed at a version that keeps it from being probed again.
+ */
+export function decodeProbed(params: unknown, max: number, probeVersion: number): ProbeOutcome[] {
   if (!isObj(params) || !Array.isArray(params.results)) throw invalid("results must be a list", "results");
   if (params.results.length > max) throw invalid(`at most ${max} results per call`, "results");
   return params.results.map((r, i): ProbeOutcome => {
     const at = `results[${i}]`;
     if (!isObj(r) || !isInt(r.file) || !isInt(r.probeVersion) || r.probeVersion < 0 || typeof r.state !== "string") throw invalid("a malformed result", at);
+    if (r.probeVersion !== probeVersion) throw invalid(`probeVersion must be ${probeVersion}`, at);
     if (r.code != null && (typeof r.code !== "string" || !CODE.test(r.code))) throw invalid("a malformed code", at);
     if (r.fingerprint != null && (typeof r.fingerprint !== "string" || !FP.test(r.fingerprint))) throw invalid("a malformed fingerprint", at);
     if (r.probe != null && !isObj(r.probe)) throw invalid("a malformed probe", at);

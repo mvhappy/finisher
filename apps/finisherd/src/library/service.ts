@@ -15,7 +15,9 @@
 //   re-probed every 60 s (fin-node's per-root thread, ≤ 60 s for a spinning-up disk). An
 //   `online` answer brings the library back and starts a full scan (`trigger: mount`); a
 //   volume that changed (`ROOT_VOLUME_CHANGED`), an unmounted root or an empty one keep it
-//   offline until the owner accepts (`acceptVolume`) or the root returns.
+//   offline until the owner accepts (`acceptVolume`) or the root returns (`offline.ts`).
+//   Offline, nothing is submitted and the watch stops; online again, it restarts.
+// - **Targeted scans** go through `DirsQueue` (one queued per library, merged).
 // - **Volume identity** (Decisions 15, 17): refreshed from each successful full scan
 //   (`LibraryScanResult.identity`) and from an `online` re-probe (a silent key change the
 //   probe confirmed); a new key moves the library's pools.
@@ -30,12 +32,14 @@ import { FileEvents, type JournalLike, type ScanMode, batchEvents, journaled, li
 import type { RootHealth } from "./health.ts";
 import { scanParams } from "./kind-params.ts";
 import type { LibraryKindEvents } from "./kinds.ts";
+import { DirsQueue } from "./dirs-queue.ts";
+import { goOffline, goOnline, recheck, refreshVolume } from "./offline.ts";
 import { DAY_MS, type PlanLibrary, type WatchState, plan } from "./plan.ts";
 import { type LocateRef, locate } from "./locate.ts";
 import { type LibraryPools, LibraryPoolBook } from "./pools.ts";
 import { StagePump, submitHash } from "./pump.ts";
 import type { LibraryRow, Registry } from "./registry.ts";
-import { SYSTEM_OWNER, type ServiceTimers, WARNING_REASONS, exec, identityOf, offlineReason, realTimers, sameVolume, toFin } from "./states.ts";
+import { SYSTEM_OWNER, type ServiceTimers, WARNING_REASONS, exec, offlineReason, realTimers, toFin } from "./states.ts";
 import { StageRegistry } from "./stages.ts";
 import { Usage } from "./usage.ts";
 import type { WatchEvent } from "./watch.ts";
@@ -69,12 +73,13 @@ export interface LibraryServiceDeps {
 interface ScanJob {
   readonly mode: ScanMode;
   readonly trigger: Trigger;
+  readonly dirs?: ReadonlyArray<RawRel>;
   readonly gen: number;
   readonly startedAt: number;
   readonly applied: ApplyCounts;
 }
 
-interface Live {
+export interface Live {
   readonly jobs: Map<string, ScanJob>;
   /** Submits in flight, by pool kind. */
   readonly submitting: Set<"full" | "poll">;
@@ -94,6 +99,8 @@ export class LibraryService implements Libraries {
   readonly usage: Usage;
   /** The stage framework (Task 11). */
   readonly stages: StagePump;
+  /** Targeted scans: one queued per library (`dirs-queue.ts`). */
+  readonly dirsQueue: DirsQueue;
   readonly #d: LibraryServiceDeps;
   readonly #clock: () => number;
   readonly #timers: ServiceTimers;
@@ -119,6 +126,12 @@ export class LibraryService implements Libraries {
       registry: deps.registry, catalogs: deps.catalogs, engine: deps.engine, book: this.book, stages: new StageRegistry(), files: this.#files,
       clock: this.#clock, timers: this.#timers, log: (level, m) => this.log(level, m), attached: (id) => this.#attached.has(id),
       offline: (lib, job) => this.kindEvents.offline?.(lib, job),
+      rescan: (lib, fileIds) => void this.#rescanFiles(lib, fileIds),
+    });
+    this.dirsQueue = new DirsQueue({
+      get: (job) => exec(deps.engine.get(job)).catch(() => undefined),
+      cancel: (job) => exec(deps.engine.cancel(job)).then(() => undefined, () => undefined),
+      submit: (lib, req) => this.#submit(lib, req),
     });
     this.#unsubscribe = deps.engine.onDone((job) => {
       this.stages.jobDone(job);
@@ -143,6 +156,10 @@ export class LibraryService implements Libraries {
 
   now(): number {
     return this.#clock();
+  }
+
+  get closed(): boolean {
+    return this.#closed;
   }
 
   /** What the library kinds report (wire into `registerLibraryKinds`' `events`). */
@@ -181,7 +198,7 @@ export class LibraryService implements Libraries {
    * scan is its caller's (`trigger: add`). Answers whether the catalog was new or rebuilt.
    */
   async attach(row: LibraryRow, opts: { readonly isNew?: boolean } = {}): Promise<{ rebuilt: boolean }> {
-    const live = this.#liveOf(row.id);
+    const live = this.liveOf(row.id);
     this.book.add(row);
     let rebuilt = false;
     try {
@@ -208,7 +225,8 @@ export class LibraryService implements Libraries {
     return { rebuilt };
   }
 
-  #liveOf(id: string): Live {
+  /** The service's memory of `id` (`offline.ts`). */
+  liveOf(id: string): Live {
     let l = this.#live.get(id);
     if (l === undefined) {
       l = { jobs: new Map(), submitting: new Set(), watch: "none", lastRecheckAt: undefined, recheck: false, noChangePolls: 0 };
@@ -219,7 +237,7 @@ export class LibraryService implements Libraries {
 
   /** Watches a local root (Decision 30); other roots are polled. */
   async startWatch(row: LibraryRow): Promise<void> {
-    const live = this.#liveOf(row.id);
+    const live = this.liveOf(row.id);
     if (row.storage !== "local" || live.watch !== "none") return;
     try {
       const r = await exec(this.#d.catalogs.indexer.watch(row.id, row.root));
@@ -231,7 +249,7 @@ export class LibraryService implements Libraries {
   }
 
   #degrade(id: string, reason: string): void {
-    const live = this.#liveOf(id);
+    const live = this.liveOf(id);
     live.watch = "degraded";
     live.watchReason = reason;
     this.log("warning", `library service: library ${id}'s watch degraded (${reason}); polling every 5 minutes`);
@@ -297,7 +315,7 @@ export class LibraryService implements Libraries {
   }
 
   #planLibrary(row: LibraryRow): PlanLibrary {
-    const live = this.#liveOf(row.id);
+    const live = this.liveOf(row.id);
     return {
       id: row.id,
       storage: row.storage,
@@ -316,16 +334,28 @@ export class LibraryService implements Libraries {
   /**
    * Submits a scan of `id` (owner `system`; a full scan allocates a generation). Full scans and
    * polls are deduplicated per library by the kind (`dedupe`), so a due poll joins a queued
-   * one; targeted scans are not. Answers the job, or `undefined` when nothing was submitted.
+   * one; targeted scans by `DirsQueue` (one queued per library, merged). Nothing is submitted
+   * for a paused or offline library (a re-probe brings it back). Answers the job, or
+   * `undefined` when nothing was submitted.
    */
   async submitScan(
     id: string,
     req: { readonly mode: ScanMode; readonly trigger: Trigger; readonly dirs?: ReadonlyArray<RawRel>; readonly priority?: Priority },
   ): Promise<JobView | undefined> {
     const row = this.registry.get(id);
-    if (row === undefined || this.#closed || row.state === "paused") return undefined;
-    if (req.mode === "dirs" && (req.dirs ?? []).length === 0) return undefined;
-    const live = this.#liveOf(id);
+    if (row === undefined || this.#closed || row.state === "paused" || row.state === "offline") return undefined;
+    if (req.mode !== "dirs") return this.#submit(id, req);
+    if ((req.dirs ?? []).length === 0) return undefined;
+    return this.dirsQueue.request(id, { dirs: req.dirs ?? [], trigger: req.trigger, ...(req.priority === undefined ? {} : { priority: req.priority }) });
+  }
+
+  async #submit(
+    id: string,
+    req: { readonly mode: ScanMode; readonly trigger: Trigger; readonly dirs?: ReadonlyArray<RawRel>; readonly priority?: Priority },
+  ): Promise<JobView | undefined> {
+    const row = this.registry.get(id);
+    if (row === undefined || this.#closed || row.state === "paused" || row.state === "offline") return undefined;
+    const live = this.liveOf(id);
     if (req.mode === "full") {
       // One full scan at a time: the one queued or running answers (it keeps its generation).
       const running = [...live.jobs].find(([, j]) => j.mode === "full")?.[0];
@@ -343,9 +373,15 @@ export class LibraryService implements Libraries {
       );
       if (!live.jobs.has(view.id) && view.finishedAt === undefined) {
         const p = view.params as { gen: number };
-        live.jobs.set(view.id, { mode: req.mode, trigger: req.trigger, gen: p.gen, startedAt: this.#clock(), applied: emptyCounts() });
+        live.jobs.set(view.id, { mode: req.mode, trigger: req.trigger, ...(req.dirs === undefined ? {} : { dirs: req.dirs }), gen: p.gen, startedAt: this.#clock(), applied: emptyCounts() });
+        if (req.mode === "full" && this.registry.get(id)?.state === "online") this.registry.setState(id, "scanning");
+        // Its end may have come before it was recorded (and found nothing to clear).
+        const now = await exec(this.#d.engine.get(view.id)).catch(() => undefined);
+        const fullLeft = () => [...live.jobs.values()].some((j) => j.mode === "full");
+        if (now?.finishedAt !== undefined && live.jobs.delete(view.id) && this.registry.get(id)?.state === "scanning" && !fullLeft()) {
+          this.registry.setState(id, "online");
+        }
       }
-      if (req.mode === "full" && this.registry.get(id)?.state === "online") this.registry.setState(id, "scanning");
       return view;
     } catch (e) {
       const err = toFin(e);
@@ -375,14 +411,19 @@ export class LibraryService implements Libraries {
     const now = this.#clock();
     const outcome = job.state as "succeeded" | "failed" | "cancelled" | "interrupted";
     const code = job.error?.code;
+    const merged = this.dirsQueue.merged(job.id);
     if (outcome === "succeeded") {
       this.#d.health.note(id, "online");
       if (sj.mode === "full") {
         this.registry.touch(id, { lastFullAt: now, lastPollAt: now });
-        this.#refreshVolume(row, (job.result as LibraryScanResult | undefined)?.identity);
+        this.refreshVolume(row, (job.result as LibraryScanResult | undefined)?.identity);
         void exec(this.#d.catalogs.indexer.purgeMissing(id, { before: now - PURGE_AFTER_MS, beforeGen: sj.gen - 1 })).catch(() => undefined);
+        // A full scan after an accepted volume went through: no more mass-drop guard.
+        await exec(this.#d.catalogs.indexer.setDropGuard(id, false)).catch(() => undefined);
       } else if (sj.mode === "poll") this.registry.touch(id, { lastPollAt: now });
+      else this.dirsQueue.listed(id, sj.dirs ?? (job.params as { dirs?: RawRel[] }).dirs ?? [], now);
     } else if (code === "ROOT_EMPTY_SUSPECT") await this.goOffline(id, "ROOT_EMPTY_SUSPECT", "empty", false);
+    else if (code === "ROOT_DROP_SUSPECT") await this.goOffline(id, "ROOT_DROP_SUSPECT", "unreachable", false);
     if (this.registry.get(id)?.state === "scanning" && !this.#running(id, "full")) this.registry.setState(id, "online");
     await exec(
       this.#d.catalogs.indexer.finishScan(id, {
@@ -391,6 +432,7 @@ export class LibraryService implements Libraries {
       }),
     ).catch((e) => this.log("warning", `library service: finishScan failed: ${toFin(e).code}`));
     await this.#refreshCounts(id);
+    if (merged) return this.replan(); // cancelled into a later targeted scan: not a scan of its own
     live.lastScan = { at: now, mode: sj.mode, outcome, ...(code === undefined ? {} : { code }) };
     if (journaled(sj.mode, outcome, sj.applied)) {
       const payload = libraryScanPayload({
@@ -402,80 +444,44 @@ export class LibraryService implements Libraries {
     this.replan();
   }
 
+  /** Lists again the directories of files a stage job found changed, gone or cloud-only. */
+  async #rescanFiles(lib: string, fileIds: ReadonlyArray<number>): Promise<void> {
+    const { lines } = await exec(this.#d.catalogs.reader.fileLines(lib, { fileIds: [...fileIds], hydrate: true })).catch(() => ({ lines: [] }));
+    const dirs = new Map(lines.map((l) => [l.rel.components.slice(0, -1).join("/"), { components: l.rel.components.slice(0, -1) }]));
+    if (dirs.size > 0) await this.submitScan(lib, { mode: "dirs", dirs: [...dirs.values()], trigger: "demand" });
+  }
+
   async #refreshCounts(id: string): Promise<void> {
     try {
-      this.#liveOf(id).counts = await exec(this.#d.catalogs.reader.counts(id));
+      this.liveOf(id).counts = await exec(this.#d.catalogs.reader.counts(id));
     } catch {
       // A catalog that is not attached keeps its last counts.
     }
   }
 
   /** Stores a volume measured now (a full scan, an online re-probe); a new key moves the pools. */
-  #refreshVolume(row: LibraryRow, identity: VolumeIdentity | undefined): void {
-    if (identity === undefined || sameVolume(identity, row.volume)) return;
-    if (identity.key !== row.volume.key) this.log("debug", `library service: library ${row.id}'s volume key changed, confirmed by its file ids`);
-    this.registry.setVolume(row.id, identity);
-    const updated = this.registry.get(row.id);
-    if (updated !== undefined) this.book.add(updated);
+  refreshVolume(row: LibraryRow, identity: VolumeIdentity | undefined): void {
+    refreshVolume(this, row, identity);
   }
 
   /** Puts `id` offline with `reason` (Decision 18); `probed`: the root state comes from a probe just now. */
-  async goOffline(id: string, reason: string, state: RootState["state"], probed: boolean): Promise<void> {
-    const row = this.registry.get(id);
-    if (row === undefined || this.#closed) return;
-    const live = this.#liveOf(id);
-    this.#d.health.note(id, state === "online" ? "unreachable" : state);
-    if (probed) live.lastRecheckAt = this.#clock();
-    else live.lastRecheckAt = undefined;
-    if (row.state !== "paused" && (row.state !== "offline" || row.offlineReason !== reason)) {
-      this.registry.setState(id, "offline", reason);
-      this.log("warning", `library service: library ${id} is offline (${reason})`);
-    }
-    await exec(this.#d.catalogs.indexer.setOffline(id, true)).catch(() => undefined);
-    await this.stages.stop(id);
-    this.replan();
+  goOffline(id: string, reason: string, state: RootState["state"], probed: boolean): Promise<void> {
+    return goOffline(this, id, reason, state, probed);
   }
 
-  /** The root is usable again: online, the catalog may mark missing again, and a full scan (`mount`). */
-  async goOnline(id: string): Promise<void> {
-    const row = this.registry.get(id);
-    if (row === undefined || this.#closed) return;
-    if (row.state === "offline") this.registry.setState(id, "online");
-    this.#d.health.note(id, "online");
-    await exec(this.#d.catalogs.indexer.setOffline(id, false)).catch(() => undefined);
-    this.log("debug", `library service: library ${id} is online again`);
-    this.stages.kick(id);
-    await this.submitScan(id, { mode: "full", trigger: "mount" });
+  /** The root is usable again (`offline.ts`). */
+  goOnline(id: string): Promise<void> {
+    return goOnline(this, id);
   }
 
   /** Re-probes an offline library's root (≤ 60 s, Decision 18). */
-  async recheck(id: string): Promise<void> {
-    const live = this.#liveOf(id);
-    const row = this.registry.get(id);
-    if (row === undefined || live.recheck) return;
-    live.recheck = true;
-    live.lastRecheckAt = this.#clock();
-    let state: RootState;
-    try {
-      state = await exec(this.registry.probe(row, RECHECK_PROBE_MS));
-    } catch {
-      state = { state: "unreachable", code: "PROBE_FAILED" };
-    } finally {
-      live.recheck = false;
-    }
-    const now = this.registry.get(id);
-    if (now === undefined || now.state !== "offline" || this.#closed) return this.replan();
-    if (state.state === "online" && (now.offlineReason === undefined || !now.offlineReason.startsWith("CATALOG_"))) {
-      this.#refreshVolume(now, identityOf(state));
-      return this.goOnline(id);
-    }
-    if (state.state === "online") return this.replan();
-    await this.goOffline(id, offlineReason(state), state.state, true);
+  recheck(id: string): Promise<void> {
+    return recheck(this, id);
   }
 
   /** The service-side view of a library (Task 13 adds stages). */
   view(row: LibraryRow): LibraryView {
-    const live = this.#liveOf(row.id);
+    const live = this.liveOf(row.id);
     const warnings: LibraryWarning[] = [];
     if (row.offlineReason !== undefined && WARNING_REASONS.has(row.offlineReason)) warnings.push({ code: row.offlineReason });
     if (live.watch === "degraded") warnings.push({ code: "WATCH_DEGRADED" });
@@ -486,7 +492,7 @@ export class LibraryService implements Libraries {
 
   /** What `library.status` shows beyond the view (Task 13 adds stages). */
   status(id: string): { readonly jobs: string[]; readonly watch: WatchState; readonly watchReason?: string; readonly noChangePolls: number; readonly inUse: boolean; readonly holders: number } {
-    const live = this.#liveOf(id);
+    const live = this.liveOf(id);
     return {
       jobs: [...live.jobs.keys()],
       watch: live.watch,
@@ -501,6 +507,7 @@ export class LibraryService implements Libraries {
   forget(id: string): void {
     this.#attached.delete(id);
     this.stages.forget(id);
+    this.dirsQueue.forget(id);
     this.#live.delete(id);
     this.usage.forget(id);
     this.#d.health.forget(id);
@@ -548,9 +555,9 @@ export class LibraryService implements Libraries {
 
   // Task 11's members: locate and the stage framework.
 
-  locate(ref: LocateRef): Effect.Effect<Located | undefined, FinError> {
+  locate(ref: LocateRef, reach?: (library: string) => boolean): Effect.Effect<Located | undefined, FinError> {
     return Effect.tryPromise({
-      try: () => locate({ registry: this.registry, reader: this.#d.catalogs.reader, attached: (id) => this.#attached.has(id) }, ref),
+      try: () => locate({ registry: this.registry, reader: this.#d.catalogs.reader, attached: (id) => this.#attached.has(id), ...(reach === undefined ? {} : { reach }) }, ref),
       catch: toFin,
     });
   }
