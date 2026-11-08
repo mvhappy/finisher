@@ -57,29 +57,36 @@ const INSIDE: &str = "FIN_TEST_USERNS";
 
 /// Runs `test` (this test binary's test of that name) again inside a user and mount
 /// namespace where it may mount tmpfs and bind mounts: `unshare -Urm` where unprivileged user
-/// namespaces are allowed, else `bwrap` (Ubuntu's AppArmor restriction permits it). Answers
+/// namespaces are allowed, else `bwrap`. Each is first asked to mount a tmpfs: under Ubuntu's
+/// `kernel.apparmor_restrict_unprivileged_userns = 1` `unshare -Urm` cannot write its uid map,
+/// and `bwrap` starts but its children get no capabilities, so every mount is `EPERM`. Answers
 /// `true` inside the namespace (the caller then does the work); outside it runs the child,
-/// asserts it passed and answers `false`, or prints a skip notice naming the facility.
+/// asserts it passed and answers `false`, or prints a skip notice naming the facility. With
+/// `FIN_REQUIRE_USERNS=1` (CI where user namespaces may mount) a missing facility fails the
+/// test instead of skipping it.
 #[cfg(target_os = "linux")]
 pub fn userns(test: &str) -> bool {
     if std::env::var(INSIDE).as_deref() == Ok(test) {
         return true;
     }
     let exe = std::env::current_exe().unwrap();
-    let ok = |c: &mut Command| c.output().is_ok_and(|o| o.status.success());
-    let mut cmd = if ok(Command::new("unshare").args(["-Urm", "true"])) {
+    let mut cmd = if may_mount("unshare", &["-Urm"]) {
         let mut c = Command::new("unshare");
         c.arg("-Urm").arg(&exe);
         c
-    } else if ok(Command::new("bwrap").args(BWRAP).arg("true")) {
+    } else if may_mount("bwrap", BWRAP) {
         let mut c = Command::new("bwrap");
         c.args(BWRAP).arg(&exe);
         c
     } else {
-        skip(
-            test,
-            "no unprivileged user namespace (neither `unshare -Urm` nor `bwrap` works here)",
+        let why = "no unprivileged user namespace that may mount (neither `unshare -Urm` nor \
+                   `bwrap` can mount a tmpfs here, e.g. under \
+                   kernel.apparmor_restrict_unprivileged_userns = 1)";
+        assert!(
+            std::env::var(REQUIRE_USERNS).as_deref() != Ok("1"),
+            "{REQUIRE_USERNS}=1 but {why}"
         );
+        skip(test, &format!("{why}; {REQUIRE_USERNS}=1 fails instead"));
         return false;
     };
     let out = cmd
@@ -102,6 +109,25 @@ pub fn userns(test: &str) -> bool {
     );
     eprintln!("{test}: passed in a user namespace");
     false
+}
+
+/// Set (CI where unprivileged user namespaces may mount) to fail [`userns`] tests instead of
+/// skipping them.
+#[cfg(target_os = "linux")]
+pub const REQUIRE_USERNS: &str = "FIN_REQUIRE_USERNS";
+
+/// Whether `wrapper args…` gives its child a namespace in which a tmpfs mount succeeds.
+#[cfg(target_os = "linux")]
+fn may_mount(wrapper: &str, args: &[&str]) -> bool {
+    let Ok(dir) = tempfile::tempdir() else {
+        return false;
+    };
+    Command::new(wrapper)
+        .args(args)
+        .args(["sh", "-c", "mount -t tmpfs t \"$1\" && umount \"$1\"", "sh"])
+        .arg(dir.path())
+        .output()
+        .is_ok_and(|o| o.status.success())
 }
 
 #[cfg(target_os = "linux")]
