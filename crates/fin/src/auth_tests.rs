@@ -244,6 +244,60 @@ fn credential_files_must_be_private() {
     }
 }
 
+/// Windows (5A Task 9): a `FIN_CREDENTIAL` file whose DACL lets anyone else in is refused,
+/// read from the opened handle. The DACL is set explicitly: the temp folder's own may admit
+/// more (the host's `%TEMP%` can).
+#[cfg(windows)]
+#[test]
+fn credential_files_must_be_private_windows() {
+    let icacls = |file: &Path, args: &[&str]| {
+        let out = std::process::Command::new("icacls")
+            .arg(file)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "icacls {args:?}: {out:?}");
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("c.json");
+    let key = "RkFLRS1sb2NhbC1rZXktZm9yLXRlc3QtdmVjdG9ycyE";
+    write_private(
+        &file,
+        &format!(r#"{{"v":1,"kind":"agent","id":"01agent0000000000000000000","key":"{key}"}}"#),
+    );
+    let me = format!("{}:F", std::env::var("USERNAME").unwrap());
+    icacls(&file, &["/inheritance:r", "/grant:r", &me]);
+    assert!(read_credential_file(&file).unwrap().is_some());
+    // The local Users group may read it: refused, and the ACL entry is named.
+    icacls(&file, &["/grant", "*S-1-5-32-545:R"]);
+    let e = read_credential_file(&file).unwrap_err();
+    assert_eq!(e.code, "UNAUTHENTICATED");
+    assert_eq!(e.details["reason"], "credentialUnsafe");
+    assert_eq!(e.details["problem"], "notPrivate");
+    assert!(
+        e.details["acl"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|p| p == "allows S-1-5-32-545"),
+        "{:?}",
+        e.details
+    );
+    assert!(
+        !format!("{e:?}").contains(key),
+        "the error never shows the key"
+    );
+    // Everyone, too.
+    icacls(
+        &file,
+        &["/remove:g", "*S-1-5-32-545", "/grant", "*S-1-1-0:R"],
+    );
+    assert_eq!(
+        read_credential_file(&file).unwrap_err().details["problem"],
+        "notPrivate"
+    );
+}
+
 #[cfg(unix)]
 #[test]
 fn private_problem_checks_owner_then_mode() {
