@@ -1,9 +1,11 @@
 //! Where the key ring may live: never inside the registry folder, which is published or pushed
 //! (spec §5.6). Paths are compared after resolving them as the OS would, so `..`, symlinks,
-//! folders that do not exist yet and case-insensitive file systems cannot hide a key ring
-//! inside the registry.
+//! folders that do not exist yet and case- or normalisation-insensitive file systems cannot
+//! hide a key ring inside the registry.
 
 use std::path::{Component, Path, PathBuf};
+
+use unicode_normalization::UnicodeNormalization;
 
 /// `path` made absolute and resolved: the longest prefix that exists is canonicalised (the OS
 /// follows its symlinks and `..`), and the rest is normalised lexically (`new/../keys` of a
@@ -37,12 +39,21 @@ pub(crate) fn resolve(path: &Path) -> PathBuf {
     out
 }
 
-/// The components of `p`, case-folded: a case-insensitive file system (macOS and Windows by
-/// default) treats `Registry/keys` as inside `registry`. Folding on every OS refuses at most a
-/// key folder whose path differs from the registry's only by case.
+/// The components of `p`, in NFC and case-folded: a case-insensitive file system (macOS and
+/// Windows by default) treats `Registry/keys` as inside `registry`, and APFS treats an NFD
+/// `cafe\u{301}` as the NFC `caf\u{e9}`. Canonicalising gives an existing folder's name as
+/// stored, but a folder that does not exist yet keeps the spelling it was given. Folding on
+/// every OS refuses at most a key folder whose path differs from the registry's only by case
+/// or normalisation.
 fn folded(p: &Path) -> Vec<String> {
     p.components()
-        .map(|c| c.as_os_str().to_string_lossy().to_lowercase())
+        .map(|c| {
+            c.as_os_str()
+                .to_string_lossy()
+                .nfc()
+                .collect::<String>()
+                .to_lowercase()
+        })
         .collect()
 }
 
@@ -87,6 +98,15 @@ mod tests {
             &tmp.path().join("fresh/x/../registry/keys")
         ));
         assert!(!keys_inside(&fresh, &tmp.path().join("fresh/keys")));
+        // A registry and a key folder that do not exist yet, spelt in NFC and in NFD: one
+        // folder on APFS. Canonicalising cannot reconcile them (neither exists).
+        let nfc = tmp.path().join("new/caf\u{e9}");
+        assert!(keys_inside(&nfc, &tmp.path().join("new/cafe\u{301}/keys")));
+        assert!(keys_inside(
+            &tmp.path().join("new/cafe\u{301}"),
+            &nfc.join("keys")
+        ));
+        assert!(!keys_inside(&nfc, &tmp.path().join("new/cafe/keys")));
         #[cfg(unix)]
         {
             // A symlink outside that points inside the registry.
@@ -98,6 +118,23 @@ mod tests {
             let into = tmp.path().join("into-sub");
             std::os::unix::fs::symlink(reg.join("sub"), &into).unwrap();
             assert!(keys_inside(&reg, &into.join("../keys")));
+        }
+        #[cfg(target_os = "macos")]
+        {
+            // `/var` and `/tmp` are symlinks into `/private`: either spelling of a path under
+            // them is the same folder, existing or not.
+            let tmp = tempfile::tempdir_in("/tmp").unwrap();
+            let reg = tmp.path().join("registry");
+            std::fs::create_dir_all(&reg).unwrap();
+            let private = Path::new("/private").join(tmp.path().strip_prefix("/").unwrap());
+            for keys in [
+                private.join("registry/keys"),
+                private.join("registry/new/keys"),
+            ] {
+                assert!(keys_inside(&reg, &keys), "{}", keys.display());
+                assert!(keys_inside(&private.join("registry"), &reg.join("keys")));
+            }
+            assert!(!keys_inside(&reg, &private.join("keys")));
         }
     }
 }
