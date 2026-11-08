@@ -56,6 +56,10 @@
     "reason": "The test families read and write the job's own files and process reports by path (test-hooks builds only)."
   },
   {
+    "path": "crates/fin-workers/examples/reference_render.rs",
+    "reason": "A developer tool: reads a kept job directory and its originals by path (the e2e look scenario's CPU oracle); never a library reader."
+  },
+  {
     "path": "crates/fin-workers/tests",
     "reason": "Tests drive the worker binary and inspect job directories by path; none is a library reader."
   },
