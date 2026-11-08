@@ -7,7 +7,7 @@ import { basename, dirname } from "node:path";
 import { Worker } from "node:worker_threads";
 import { FinError } from "@finisher/contracts";
 import { Context, Effect, Layer } from "effect";
-import type { FileRow, DirRow } from "./core/queries.ts";
+import type { FileRow, DirRow, FileLineRow } from "./core/queries.ts";
 import type { SearchPage, SearchRequest } from "./core/snapshot.ts";
 import type { PendingFile } from "./core/ops.ts";
 import type { ApplyCounts } from "./core/apply.ts";
@@ -241,6 +241,8 @@ export interface IndexerClient {
   stagesSet(lib: string, rows: ReadonlyArray<StageRowSet>): Effect.Effect<{ set: number }, FinError>;
   /** Writes the job's `in/dirs.ndjson` (Decision 27) at `path`. */
   writeKnownDirs(lib: string, gen: number, path: string): Effect.Effect<{ dirs: number }, FinError>;
+  /** The text of a job's `in/dirs.ndjson` (Decision 27), for a `prepare` that writes it through `ctx.open`. */
+  knownDirs(lib: string, gen: number): Effect.Effect<{ text: string; dirs: number }, FinError>;
   pending(lib: string, args: PendingArgs): Effect.Effect<{ files: PendingFile[] }, FinError>;
   /**
    * Deletes rows missing since before `before` and marked missing in a generation before
@@ -290,6 +292,11 @@ export interface ReaderClient {
    */
   searchPage(req: SearchRequest): Effect.Effect<SearchPage, FinError>;
   counts(lib: string): Effect.Effect<CatalogCounts, FinError>;
+  /**
+   * The `in/files.ndjson` lines of a probe or hash job (Decision 20): raw chain and `Expect`
+   * (with `dev`) of each readable row among `fileIds` (≤ 1,000); `absent` the others.
+   */
+  fileLines(lib: string, args: { fileIds: number[]; hydrate: boolean }): Effect.Effect<{ lines: FileLineRow[]; absent: number[] }, FinError>;
   /**
    * The one file at `relKey` (live rows first, then missing ones): several answer
    * `PATH_AMBIGUOUS` with `details.fileIds`, none `FILE_NOT_FOUND` (Decision 11).
@@ -374,6 +381,7 @@ export async function startCatalogThreads(opts: CatalogThreadsOptions): Promise<
     applyHashes: (lib, hashes) => core(lib, "applyHashes", { hashes }),
     stagesSet: (lib, rows) => core(lib, "stagesSet", { rows }),
     writeKnownDirs: (lib, gen, path) => fx(() => indexer.call("writeKnownDirs", { lib, gen, path })),
+    knownDirs: (lib, gen) => fx(() => indexer.call("knownDirs", { lib, gen })),
     pending: (lib, args) => core(lib, "pending", args),
     purgeMissing: (lib, cutoff) => fx(() => indexer.call("purgeMissing", { lib, before: cutoff.before, beforeGen: cutoff.beforeGen })),
     testFault: (lib, transaction) => fx<void>(async () => void (await indexer.call("testFault", { lib, transaction }))),
@@ -389,6 +397,7 @@ export async function startCatalogThreads(opts: CatalogThreadsOptions): Promise<
     hashCandidates: (lib, args) => read(lib, "hashCandidates", args),
     searchPage: (req) => fx(() => reader.call("searchPage", req)),
     counts: (lib) => read(lib, "counts", {}),
+    fileLines: (lib, args) => read(lib, "fileLines", args),
     resolve: (lib, relKey) =>
       Effect.flatMap(read<{ matches: Array<FileRow & { rel: { components: string[] } }> }>(lib, "file", { relKey }), (r) =>
         Effect.try({ try: () => pickMatch(r.matches), catch: (e) => e as FinError }),

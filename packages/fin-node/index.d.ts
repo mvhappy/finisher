@@ -504,6 +504,9 @@ export declare function libraryProbeRoot(root: string, identityJson: string, tim
 
 /** What the root probes are doing: `stuckProbes` roots whose latest probe timed out. */
 export declare function libraryProbeStatus(): { stuckProbes: number };
+
+/** `fin_probe::PROBE_VERSION`: the probe version the catalog stores per file (a file probed at an older one is probed again). */
+export declare function libraryProbeVersion(): number;
 // The job host and the job params helpers (`jobhost.js`).
 export * from "./jobhost.js";
 

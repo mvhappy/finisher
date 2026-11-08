@@ -7,7 +7,8 @@
 //! - [`library_probe_root`] (every 60 s for an offline library, and before answers): the
 //!   root's [`fin_library::RootState`] against its stored identity, one outstanding stat per
 //!   root (`fin_library::root_state` is single-flight; [`rootprobe`]);
-//! - [`library_probe_status`]: how many roots' latest probe timed out.
+//! - [`library_probe_status`]: how many roots' latest probe timed out;
+//! - [`library_probe_version`]: `fin_probe::PROBE_VERSION`, for the catalog.
 //!
 //! Nothing here opens a file under a root, and nothing writes there. Values cross as JSON
 //! strings, like the rest of this crate.
@@ -248,6 +249,13 @@ pub fn library_probe_status() -> LibraryProbeStatus {
     LibraryProbeStatus {
         stuck_probes: rootprobe::stuck_roots(),
     }
+}
+
+/// `fin_probe::PROBE_VERSION`: what the catalog stores per probed file (Decision 35); a file
+/// probed at an older version is probed again.
+#[napi(catch_unwind)]
+pub fn library_probe_version() -> u32 {
+    fin_probe::PROBE_VERSION
 }
 
 /// Test builds only: while `hang` is true, the stat of `root` blocks, as on a dead hard mount.

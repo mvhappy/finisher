@@ -12,7 +12,7 @@ import { type JobEngine, JobEngineTag, makeJobEngine, QUEUE_LIMIT } from "./engi
 import { JobEventSinkTag } from "./events.ts";
 import { ensureJobsRoot } from "./files.ts";
 import { EngineHost, type JobHostFactory } from "./host.ts";
-import { type FamilySpec, type HelperProgram, type KindSpec, makeKindRegistry } from "./kinds.ts";
+import { type FamilySpec, type HelperProgram, type KindRegistry, type KindSpec, makeKindRegistry } from "./kinds.ts";
 import { registerTestKinds } from "./kinds/test.ts";
 import { defaultPools } from "./pools.ts";
 import { JobStore } from "./store.ts";
@@ -49,6 +49,11 @@ export interface JobEngineOptions {
   /** Starts the job host (tests pass a fake; default fin-node's `JobHost.start`). */
   readonly jobHost?: JobHostFactory;
   readonly eventQueueBytes?: number;
+  /**
+   * Registers families and kinds before the engine starts (5D's `library` family): a restart
+   * reconciles the jobs it finds against the registry, so every kind must be known by then.
+   */
+  readonly register?: (kinds: KindRegistry) => void;
 }
 
 /** The engine over `serverData`, its host started; the caller closes it. */
@@ -68,6 +73,10 @@ export const buildJobEngine = (serverData: string, opts: JobEngineOptions = {}):
     if (opts.testKinds !== undefined && opts.testKinds !== false) {
       const t = opts.testKinds === true ? {} : opts.testKinds;
       registerTestKinds(registry, { binaryDir, overrides: t.overrides ?? {}, families: t.families ?? {}, ...(t.helper === undefined ? {} : { helper: t.helper }) });
+    }
+    if (opts.register !== undefined) {
+      const register = opts.register;
+      yield* Effect.try({ try: () => register(registry), catch: startFailure });
     }
     const root = yield* Effect.try({ try: () => ensureJobsRoot(serverData), catch: startFailure });
     const host = yield* Effect.tryPromise({

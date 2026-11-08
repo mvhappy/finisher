@@ -454,6 +454,10 @@ export function libraryProbeStatus() {
   return native.libraryProbeStatus();
 }
 
+export function libraryProbeVersion() {
+  return native.libraryProbeVersion();
+}
+
 /** The plugin store and registries of a server (`registry.js`). */
 export const Registry = defineRegistry({ native, call, toFinError });
 

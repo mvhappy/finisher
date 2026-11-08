@@ -130,8 +130,9 @@ export async function runAttempt(env: RunnerEnv, row: JobRow, kind: KindSpec, fa
   }
   try {
     await createFiles(dirs.job, files);
-    // `prepare` runs until it succeeded once for this directory (9a review M3), bounded and stoppable (9b review M3).
-    if (kind.prepare !== undefined && !(await isPrepared(dirs))) {
+    // `prepare` runs until it succeeded once for this directory (9a review M3), or before every
+    // attempt when the kind asks; bounded and stoppable (9b review M3).
+    if (kind.prepare !== undefined && (kind.prepareEachAttempt === true || !(await isPrepared(dirs)))) {
       const prepare = kind.prepare;
       const ctx = hookCtx(row, dirs, files, row.attempts);
       const out = await runHook(env, "prepare", Effect.suspend(() => prepare(ctx)), kind.hookTimeoutS ?? DEFAULT_HOOK_TIMEOUT_S, control);

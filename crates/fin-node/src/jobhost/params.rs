@@ -8,6 +8,7 @@ use serde_json::{Value, json};
 
 /// Every family's params, in registration order. Families append theirs (6A-2: `fin_media`).
 static PARAMS: &[&[KindParams]] = &[
+    fin_library::params::PARAMS,
     #[cfg(feature = "test-hooks")]
     fin_jobs::test_kinds::PARAMS,
 ];
@@ -45,7 +46,7 @@ pub struct JobKindVersion {
     pub version: u32,
 }
 
-/// The kinds and versions `validateJobParams` knows (release builds: none yet).
+/// The kinds and versions `validateJobParams` knows.
 #[napi(catch_unwind)]
 pub fn job_kind_versions() -> Vec<JobKindVersion> {
     PARAMS

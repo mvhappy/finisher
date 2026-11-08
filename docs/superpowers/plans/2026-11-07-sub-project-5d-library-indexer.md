@@ -438,8 +438,8 @@ Decisions 11, 22, 25, 27.
 
 **Interfaces:** `scan`: `resources: [mode === "full" ? pools.scan : pools.poll]`, `qos: utility`, `stallS: 600`, `timeoutS: 86400`, `resumable` (full), `prepare` asks the indexer to write `in/dirs.ndjson`, `files: [{name: "out/", mode: "write"}]`, `dedupe: <library>:<mode>` for full scans and polls (targeted `dirs` scans are not deduplicated); `probe`: `batch` over file ids, `resources: [pools.read, "cpu"]`, `prepare` writes `in/files.ndjson` (raw paths and `expect`), no dedupe (the in-flight set, Decision 40); `hash`: `batch`, `onSucceeded` writes hashes; all `resourceHealthy: online(library)`; scopes `["library.scan"]`. Decisions 26, 27, 32–34, 38.
 
-- [ ] **Step 1: Write failing tests:** `full_scan_of_10k_tree_lands_in_catalog`, `scan_resumes_after_finisherd_restart_without_relisting`, `poll_job_touches_only_changed_dirs`, `poll_runs_beside_a_full_scan` (separate pools), `probe_poison_file_isolated_and_recorded`, `offline_mid_scan_marks_nothing_missing` (the overlay unmounts the root halfway), `resource_unhealthy_never_poisons`, `pools_shared_per_volume`, `on_call_passes_paths_only` (the main thread never opens a batch file), `bandwidth_splits_over_slots`.
-- [ ] **Step 2: Implement.** **Step 3: Run** the gates → PASS. **Commit** `feat(finisherd): library job kinds on the shared engine`.
+- [x] **Step 1: Write failing tests:** `full_scan_of_10k_tree_lands_in_catalog`, `scan_resumes_after_finisherd_restart_without_relisting`, `poll_job_touches_only_changed_dirs`, `poll_runs_beside_a_full_scan` (separate pools), `probe_poison_file_isolated_and_recorded`, `offline_mid_scan_marks_nothing_missing` (the overlay unmounts the root halfway), `resource_unhealthy_never_poisons`, `pools_shared_per_volume`, `on_call_passes_paths_only` (the main thread never opens a batch file), `bandwidth_splits_over_slots`.
+- [x] **Step 2: Implement.** **Step 3: Run** the gates → PASS. **Commit** `feat(finisherd): library job kinds on the shared engine`.
 
 ### Task 10: The library service: states, triggers, demand polling, watches, journal — tier: opus — after Task 9
 

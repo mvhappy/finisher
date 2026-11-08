@@ -270,18 +270,15 @@ function testFault(a: Record<string, unknown>): unknown {
 }
 
 /**
- * Writes the job's `in/dirs.ndjson` (Decision 27): one line per known directory (present,
+ * The lines of a job's `in/dirs.ndjson` (Decision 27): one per known directory (present,
  * unreadable, or offline under an unmounted nested mount)
  * `{dir: RawRel, mtimeNs: string | null, listed: bool, entries?, mountRoot, volume?}` (what
  * `fin_library::KnownDirs::from_ndjson` reads): `listed` when its last complete listing was in
  * generation `gen`, `entries` that listing's count (for the walker's N → 0 rule), `mountRoot`
  * for a nested mount point and `volume` its volume as last listed (for `ROOT_UNMOUNTED` and
- * `ROOT_VOLUME_CHANGED`). Created exclusively, 0600.
+ * `ROOT_VOLUME_CHANGED`).
  */
-function writeKnownDirs(a: Record<string, unknown>): unknown {
-  const c = catalog(a.lib);
-  const gen = int(a.gen, "gen");
-  const path = jobInputPath(a.path);
+function knownDirLines(c: Catalog, gen: number): string[] {
   type Row = { id: number; mtimeNs: string | null; listedGen: number | null; entries: number | null; mount: string | null; volume: string | null };
   const rows = c.db
     .prepare(
@@ -290,7 +287,7 @@ function writeKnownDirs(a: Record<string, unknown>): unknown {
     )
     .all() as Row[];
   const chains = new DirChains(c.db);
-  const lines = rows.map((r) =>
+  return rows.map((r) =>
     JSON.stringify({
       dir: { components: chains.of(r.id) },
       mtimeNs: r.mtimeNs,
@@ -300,8 +297,27 @@ function writeKnownDirs(a: Record<string, unknown>): unknown {
       ...(r.volume === null ? {} : { volume: JSON.parse(r.volume) as unknown }),
     }),
   );
-  writeFileSync(path, lines.length === 0 ? "" : `${lines.join("\n")}\n`, { flag: "wx", mode: 0o600 });
-  return { dirs: rows.length };
+}
+
+const ndjson = (lines: ReadonlyArray<string>): string => (lines.length === 0 ? "" : `${lines.join("\n")}\n`);
+
+/** Writes the job's `in/dirs.ndjson` at `path` (`knownDirLines`), created exclusively, 0600. */
+function writeKnownDirs(a: Record<string, unknown>): unknown {
+  const c = catalog(a.lib);
+  const gen = int(a.gen, "gen");
+  const path = jobInputPath(a.path);
+  const lines = knownDirLines(c, gen);
+  writeFileSync(path, ndjson(lines), { flag: "wx", mode: 0o600 });
+  return { dirs: lines.length };
+}
+
+/**
+ * The text of a job's `in/dirs.ndjson` (`knownDirLines`), for a kind's `prepare` to write
+ * through its `ctx.open` (hooks get no raw paths).
+ */
+function knownDirs(a: Record<string, unknown>): unknown {
+  const lines = knownDirLines(catalog(a.lib), int(a.gen, "gen"));
+  return { text: ndjson(lines), dirs: lines.length };
 }
 
 /**
@@ -377,6 +393,7 @@ const METHODS: Record<string, (a: Record<string, unknown>) => unknown> = {
   attemptStart,
   testFault,
   writeKnownDirs,
+  knownDirs,
   purgeMissing,
   setOffline,
 };

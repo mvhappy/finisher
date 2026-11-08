@@ -301,4 +301,50 @@ function stageCounts(db: DatabaseSync): { stages: Array<{ stage: string; version
   return { stages: rows as Array<{ stage: string; version: string; state: string; n: number }> };
 }
 
-export const coreQueries = { files, file, search, lookup, hashCandidates, counts, stageCounts };
+/** One line of a probe or hash job's `in/files.ndjson` (the generated `LibraryFileLine`). */
+export interface FileLineRow {
+  readonly id: number;
+  readonly rel: { components: string[] };
+  readonly expect: { size: number; mtimeNs: string; fileId?: string; dev?: string };
+}
+
+/** Rows a reader may open: live and not a placeholder (a placeholder only for a hydrating library). */
+const READABLE = ["present", "probeFailed", "skipped", "unreadable"];
+
+/**
+ * `fileLines {fileIds ≤ 1000, hydrate}`: the lines of a probe or hash job's `in/files.ndjson`
+ * (Decision 20) for the readable rows among `fileIds`, in their order: the raw chain and the
+ * `Expect` the opener checks (size, mtime, file id, and `dev` from `files.dev`: a nested mount's
+ * file carries its own device). `absent`: the ids with no readable row (gone, missing, offline,
+ * or `cloudOnly` without `hydrate`).
+ */
+function fileLines(db: DatabaseSync, args: unknown): { lines: FileLineRow[]; absent: number[] } {
+  if (!isObj(args) || !Array.isArray(args.fileIds) || args.fileIds.length > 1000 || !args.fileIds.every(isInt)) throw bad("fileLines", "fileIds");
+  if (typeof args.hydrate !== "boolean") throw bad("fileLines", "hydrate");
+  const states = args.hydrate ? [...READABLE, "cloudOnly"] : READABLE;
+  const get = db.prepare(
+    "SELECT id, dirId, name, size, CAST(mtimeNs AS TEXT) AS mtimeNs, fileId, dev, state FROM files WHERE id = ? " +
+      "AND state IN (SELECT value FROM json_each(?))",
+  );
+  const chains = new DirChains(db);
+  const lines: FileLineRow[] = [];
+  const absent: number[] = [];
+  const statesJson = JSON.stringify(states);
+  for (const id of args.fileIds as number[]) {
+    const r = get.get(id, statesJson) as Record<string, unknown> | undefined;
+    if (r === undefined) {
+      absent.push(id);
+      continue;
+    }
+    const fileId = r.fileId === null ? undefined : base64(r.fileId as Uint8Array);
+    const dev = (r.dev as string | null) ?? undefined;
+    lines.push({
+      id,
+      rel: chains.file(r.dirId as number, r.name as Uint8Array),
+      expect: { size: r.size as number, mtimeNs: r.mtimeNs as string, ...(fileId === undefined ? {} : { fileId }), ...(dev === undefined ? {} : { dev }) },
+    });
+  }
+  return { lines, absent };
+}
+
+export const coreQueries = { files, file, search, lookup, hashCandidates, counts, stageCounts, fileLines };
