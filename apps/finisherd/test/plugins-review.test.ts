@@ -181,7 +181,10 @@ describe("M3: an advisory between plan and install", () => {
 });
 
 describe("L2: no server paths for anyone but a person", () => {
-  const leaks = (text: string, s: Setup) => [s.reg.dir, f.serverData, f.tmp].filter((p) => text.includes(p));
+  // A path inside JSON text has its backslashes escaped (Windows), so each path is also looked
+  // for in its JSON form and with forward slashes.
+  const forms = (p: string) => [p, JSON.stringify(p).slice(1, -1), p.replaceAll("\\", "/")];
+  const leaks = (text: string, s: Setup) => [s.reg.dir, f.serverData, f.tmp].filter((p) => forms(p).some((x) => text.includes(x)));
 
   /** A registry whose config is corrupt: fin-registry's errors name its file, under the server data. */
   const corrupt = async () => {

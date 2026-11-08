@@ -92,7 +92,8 @@ describe("registry", () => {
 
   test("symlinked_roots_are_canonicalised", async () => {
     const real = dir("real");
-    symlinkSync(real, join(base, "libs", "link"));
+    // A junction on Windows: a directory symlink needs a privilege a non-elevated user lacks.
+    symlinkSync(real, join(base, "libs", "link"), process.platform === "win32" ? "junction" : "dir");
     const lib = await add({ root: join(base, "libs", "link") });
     expect(lib.root).toBe(real);
     // The same folder through its link overlaps itself.
@@ -115,7 +116,7 @@ describe("registry", () => {
   test("overlap_is_found_across_case_variants_on_case_insensitive_volumes", async () => {
     const lib = await add({ root: dir("Media", "A"), name: "A" });
     // The display root keeps the case it was resolved with; only the lookup key is folded.
-    expect(lib.root.endsWith("/Media/A")).toBe(true);
+    expect(lib.root.endsWith(join("Media", "A"))).toBe(true);
     if (lib.volume.caseSensitive) return; // `MEDIA` is another folder there: nothing to compare.
     for (const variant of [join(base, "libs", "MEDIA"), join(base, "libs", "media", "a"), join(base, "libs", "MEDIA", "a", "..")]) {
       expect((await failure(registry.add({ root: variant, name: "V" }, human))).code).toBe("LIBRARY_OVERLAP");

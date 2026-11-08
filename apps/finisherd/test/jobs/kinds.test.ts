@@ -110,7 +110,7 @@ describe("job kinds", () => {
     expect(r.family("testplugin")?.profile).toBe("plugin");
     const program = r.family("testplugin")?.program;
     expect(program).toMatchObject({ args: ["testplugin"] });
-    expect((program as { path: string }).path).toMatch(/^\/bin-dir[\\/]fin-workers(\.exe)?$/);
+    expect((program as { path: string }).path).toMatch(/^[\\/]bin-dir[\\/]fin-workers(\.exe)?$/);
     const job = { params: { key: "A" } } as never;
     expect(r.family("testplugin")?.warmKey?.(job)).toBe("A");
     expect(r.helper("codec", "test")?.resolve({ params: { helper: "spawn" } } as never)).toEqual({ binary: "fin-workers", args: ["--helper", "test:spawn"] });

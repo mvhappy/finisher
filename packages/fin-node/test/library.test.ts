@@ -49,7 +49,8 @@ const probe = async (r: string, stored: Canonical["identity"], ms?: number): Pro
 describe("libraryCanonicalRoot", () => {
   test("resolves links and reports identity, key and storage without opening files", async () => {
     const real = root("real");
-    symlinkSync(real, join(base, "link"));
+    // A junction on Windows: a directory symlink needs a privilege a non-elevated user lacks.
+    symlinkSync(real, join(base, "link"), process.platform === "win32" ? "junction" : "dir");
     const c = await canon(join(base, "link"));
     expect(c.root).toBe(real);
     // `root` is the display path and keeps its case; `rootKey` is a lookup and overlap key,

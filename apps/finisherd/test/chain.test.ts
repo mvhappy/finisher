@@ -28,6 +28,8 @@ const mcp = (): Principal => ({ ...agent(), kind: "mcp", id: "01mcp0000000000000
 
 let tmp: string;
 let dirA: string;
+/** Whether file symlinks can be made here (not on non-elevated Windows without Developer Mode). */
+let fileLinks = true;
 let dirB: string;
 let open: Set<string> = new Set();
 const BRANCHES: Record<string, string> = { main: "main", feature: "br3", "feature#br3": "br3", br3: "br3", mine: "br5", br5: "br5" };
@@ -108,7 +110,15 @@ beforeAll(() => {
   }
   writeFileSync(join(dirA, "clip.png"), "x");
   writeFileSync(join(tmp, "outside.png"), "x");
-  symlinkSync(join(tmp, "outside.png"), join(dirA, "workspace", "sneaky.png"));
+  try {
+    symlinkSync(join(tmp, "outside.png"), join(dirA, "workspace", "sneaky.png"));
+  } catch (e) {
+    // A file symlink on Windows needs SeCreateSymbolicLinkPrivilege (elevation or Developer
+    // Mode); a non-elevated run skips the cases that need one.
+    if (!WIN || (e as NodeJS.ErrnoException).code !== "EPERM") throw e;
+    fileLinks = false;
+    console.warn("chain.test: cannot create file symlinks here (non-elevated Windows); skipping the symlinked-file cases");
+  }
 });
 
 afterAll(() => rmSync(tmp, { recursive: true, force: true }));
@@ -203,7 +213,7 @@ describe("the chain", () => {
     expect(code(await h.call("asset.probe", { path: join(dirA, "workspace", "later.png") }))).toBeUndefined();
     expect(code(await h.call("asset.probe", { path: join(tmp, "outside.png") }))).toBe("PATH_NOT_ALLOWED");
     // A symlink inside the project is followed: its target is outside.
-    expect(code(await h.call("asset.probe", { path: join(dirA, "workspace", "sneaky.png") }))).toBe("PATH_NOT_ALLOWED");
+    if (fileLinks) expect(code(await h.call("asset.probe", { path: join(dirA, "workspace", "sneaky.png") }))).toBe("PATH_NOT_ALLOWED");
     expect(code(await h.call("asset.probe", { path: "relative.png" }))).toBe("INVALID_PATH");
     // The handler gets the canonical path.
     expect(h.seen[0]!.payload).toMatchObject({ path: join(dirA, "clip.png") });
