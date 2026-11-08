@@ -44,6 +44,9 @@ windows-sys = { version = "0.61", optional = true, features = [
     "Win32_Storage_FileSystem",
     "Win32_System_Console",
     "Win32_System_Diagnostics_Debug",
+    # `WriteFile` (its `OVERLAPPED` argument); without it only a workspace build, where another
+    # crate enables it, compiles the test family.
+    "Win32_System_IO",
     "Win32_System_JobObjects",
     "Win32_System_Threading",
 ] }

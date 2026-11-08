@@ -263,6 +263,35 @@ fn fixture_vectors_verify_identically() {
     }
 }
 
+/// The vectors' packages were packed on another OS; packing the same trees here must give
+/// the same bytes (8A Decision 7), so their signed hashes hold on every OS.
+#[test]
+fn fixture_packages_repack_to_the_same_bytes() {
+    let base = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/tuf/vectors");
+    let out = tempfile::tempdir().unwrap();
+    for (vector, version) in [
+        ("basic", "1.0.0"),
+        ("rotated", "1.0.0"),
+        ("rotated", "1.1.0"),
+    ] {
+        let pkg = support::tuf::content_pkg(out.path(), "@test-only/pack", version);
+        let bytes = std::fs::read(&pkg).unwrap();
+        let sha = sha256_hex(&bytes);
+        let committed = base.join(format!(
+            "{vector}/targets/test-only/pack/{sha}.{version}.finpkg"
+        ));
+        assert!(
+            committed.is_file(),
+            "{vector} {version}: packed to {sha}, which is not a committed target"
+        );
+        assert_eq!(
+            std::fs::read(&committed).unwrap(),
+            bytes,
+            "{vector} {version}"
+        );
+    }
+}
+
 /// `permissionsDigest` is BLAKE3 (hex) over the permissions' canonical JSON (sorted keys),
 /// the list sorted and deduplicated. Changing it changes every signed digest: regenerate the
 /// fixed vectors (`FIN_REGEN_TUF_VECTORS=1`) in the same change.

@@ -825,6 +825,7 @@ dependencies = [
  "olpc-cjson",
  "pem",
  "rustls",
+ "same-file",
  "schemars",
  "semver",
  "serde",
@@ -836,6 +837,7 @@ dependencies = [
  "unicode-normalization",
  "ureq",
  "url",
+ "windows-sys 0.61.2",
  "zip",
 ]
 

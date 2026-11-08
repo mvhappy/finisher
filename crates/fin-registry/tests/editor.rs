@@ -139,3 +139,111 @@ fn key_ring_inside_the_registry_refused() {
     let e = RepoBuilder::open(&repo, &repo.join("metadata")).unwrap_err();
     assert_eq!(e.details["reason"], "keysInside");
 }
+
+/// The key ring is owner-only from creation (spec §5.6): its folder, and every folder above
+/// it the editor creates, 0700, whichever write creates it first; every private key 0600.
+#[cfg(unix)]
+#[test]
+fn key_ring_folders_are_0700_and_keys_0600() {
+    use fin_registry::editor::KeyRing;
+    use std::os::unix::fs::PermissionsExt;
+    let mode = |p: &std::path::Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+    let pems = |d: &std::path::Path| -> Vec<std::path::PathBuf> {
+        std::fs::read_dir(d)
+            .unwrap()
+            .map(|e| e.unwrap().path())
+            .filter(|p| p.extension().is_some_and(|x| x == "pem"))
+            .collect()
+    };
+    let tmp = tempfile::tempdir().unwrap();
+    let ring = KeyRing::new(tmp.path().join("new/deeper/keys"));
+    let key = SigningKey::generate();
+    ring.add(&key).unwrap();
+    for d in ["new", "new/deeper", "new/deeper/keys"] {
+        assert_eq!(mode(&tmp.path().join(d)), 0o700, "{d}");
+    }
+    assert_eq!(pems(ring.dir()).len(), 1);
+
+    let mut r = Reg::new(None);
+    r.publisher("acme");
+    r.b.rotate(Role::Timestamp, &[SigningKey::generate()], 1)
+        .unwrap();
+    assert_eq!(mode(&r.keys), 0o700, "{}", r.keys.display());
+    let keys = pems(&r.keys);
+    assert!(keys.len() >= 4, "{keys:?}");
+    for p in keys {
+        assert_eq!(mode(&p), 0o600, "{}", p.display());
+    }
+
+    // A key folder that `delegate` creates first (the pending delegations file) is
+    // owner-only too, and so stays when a key is added to it later.
+    let fresh = tmp.path().join("fresh/keys");
+    let mut b = RepoBuilder::open(&r.repo, &fresh).unwrap();
+    b.delegate("other", &SigningKey::generate().public())
+        .unwrap();
+    for d in [tmp.path().join("fresh"), fresh.clone()] {
+        assert_eq!(mode(&d), 0o700, "{}", d.display());
+    }
+    KeyRing::new(&fresh).add(&SigningKey::generate()).unwrap();
+    assert_eq!(mode(&fresh), 0o700);
+}
+
+/// A manifest naming a file in another case or normalisation than the package stores it is
+/// refused on every OS: APFS and NTFS would find `Styles/Bold.json` as `styles/bold.json`,
+/// Linux would not, and a package must validate alike everywhere.
+#[test]
+fn publish_refuses_a_manifest_file_spelt_otherwise_than_the_package() {
+    use fin_plugin_api::PackageFiles;
+    let mut r = Reg::new(None);
+    let acme = r.publisher("acme");
+    let src = r.tmp.path().join("src");
+    let manifest = serde_json::to_vec(&serde_json::json!({
+        "manifestVersion": 1,
+        "id": "@acme/pack",
+        "version": "1.0.0",
+        "kind": "content",
+        "hostApi": "^1.0",
+        "license": "MIT",
+        "publisher": { "name": "Test" },
+        "contributes": { "captionStyles": [{ "name": "bold", "file": "Styles/Bold.json" }] },
+    }))
+    .unwrap();
+    support::write_tree(
+        &src,
+        &[
+            ("finisher-plugin.json", &manifest),
+            ("styles/bold.json", b"{\"weight\": 700}"),
+            ("caf\u{e9}.json", b"{}"),
+        ],
+    );
+    let pkg = r.tmp.path().join("pack.finpkg");
+    fin_registry::package::pack(&src, &[], &pkg).unwrap();
+    let before = Reg::files(&r.repo);
+    let e = r.b.publish(&pkg, &acme).unwrap_err();
+    assert_eq!(e.code, "PLUGIN_MANIFEST_INVALID", "{e:?}");
+    assert_eq!(
+        e.details["problems"][0]["details"]["reason"], "fileMissing",
+        "{e:?}"
+    );
+    assert_eq!(Reg::files(&r.repo), before);
+
+    // Both directory views answer by exact spelling.
+    let pkg_files = fin_registry::package::DirFiles(&src);
+    let plan_files = fin_registry::plan::DirFiles(&src);
+    let views: [&dyn PackageFiles; 2] = [&pkg_files, &plan_files];
+    for files in views {
+        assert!(files.exists("styles/bold.json"));
+        assert!(files.read("styles/bold.json").is_some());
+        assert!(files.exists("caf\u{e9}.json"));
+        for other in [
+            "Styles/Bold.json",
+            "styles/BOLD.json",
+            "STYLES/bold.json",
+            "cafe\u{301}.json",
+        ] {
+            assert!(!files.exists(other), "{other}");
+            assert!(files.read(other).is_none(), "{other}");
+        }
+        assert!(!files.exists("styles"), "a directory is not a file");
+    }
+}

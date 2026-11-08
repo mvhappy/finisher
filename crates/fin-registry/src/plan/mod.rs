@@ -296,12 +296,14 @@ pub fn canonical_json(v: &Value) -> String {
     }
 }
 
-/// An unpacked package on disk as [`PackageFiles`]; only package paths are read.
+/// An unpacked package on disk as [`PackageFiles`]; only package paths are read, spelt
+/// exactly as on disk (the same answer on case-insensitive file systems as on Linux).
 pub struct DirFiles<'a>(pub &'a Path);
 
 impl PackageFiles for DirFiles<'_> {
     fn exists(&self, path: &str) -> bool {
-        fin_plugin_api::validate::is_package_path(path) && self.0.join(path).is_file()
+        fin_plugin_api::validate::is_package_path(path)
+            && crate::package::is_exact_file(self.0, path)
     }
 
     fn read(&self, path: &str) -> Option<Vec<u8>> {

@@ -39,13 +39,16 @@ use state::State;
 /// An editor failure `{code, message, details}`: `KEY_INVALID`, `KEY_MISSING {role}`,
 /// `REGISTRY_EXISTS`, `REGISTRY_INVALID {reason}`, `PUBLISHER_NOT_DELEGATED {publisher}`,
 /// `PUBLISHER_EXISTS {publisher}`, `PLUGIN_VERSION_EXISTS {id, version}`,
-/// `PLUGIN_NOT_FOUND {id, version}`, `IO_ERROR {op, path}`, and the package reader's and
-/// manifest validation's codes for a package that cannot be published.
+/// `PLUGIN_NOT_FOUND {id, version}`, `KEY_UNPROTECTED {path, problems}`, `IO_ERROR {op, path}`,
+/// and the package reader's and manifest validation's codes for a package that cannot be
+/// published.
 #[derive(Debug, Clone, PartialEq)]
 pub struct EditorError {
     pub code: String,
     pub message: String,
     pub details: Map<String, Value>,
+    /// The command that fixes it, when it depends on the error (`KEY_UNPROTECTED`).
+    pub fix: Option<String>,
 }
 
 impl EditorError {
@@ -57,6 +60,7 @@ impl EditorError {
             code: code.into(),
             message: message.into(),
             details,
+            fix: None,
         }
     }
 
@@ -91,6 +95,7 @@ impl From<crate::package::PackageError> for EditorError {
             code: e.code.into(),
             message: e.message,
             details: e.details,
+            fix: None,
         }
     }
 }
@@ -173,6 +178,7 @@ impl RepoBuilder {
     pub fn open(dir: &Path, keys_dir: &Path) -> Result<RepoBuilder, EditorError> {
         state::refuse_keys_inside(dir, keys_dir)?;
         let keys = KeyRing::new(keys_dir);
+        keys.check()?;
         let st = State::load(dir, &keys)?;
         Ok(RepoBuilder {
             dir: dir.to_path_buf(),
