@@ -1,15 +1,17 @@
 //! Where `finisherd`'s local socket is (plan decisions 5 and 6).
 //!
-//! `FIN_SERVER` names it directly: a Unix socket path, or `pipe:<name>` for the Windows named
-//! pipe `\\.\pipe\<name>`. Otherwise `<server-data>/finisherd.json` (written by the running
+//! `FIN_SERVER` names it directly: a Unix socket path, `pipe:<name>` for the Windows named
+//! pipe `\\.\pipe\<name>`, or `tcp:<loopback address>:<port>` for the Linux agent listener
+//! (plan 7C Decision 13: the `agent` profile has no `AF_UNIX`; any other address is `USAGE`). Otherwise `<server-data>/finisherd.json` (written by the running
 //! server) gives its `socket`. Server-data is `FIN_SERVER_DATA`, else the per-OS default.
 
+use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 
 use fin_core::CoreError;
 use serde_json::{Value, json};
 
-use crate::output::unavailable;
+use crate::output::{unavailable, usage};
 use crate::paths;
 
 pub const SERVER_ENV: &str = "FIN_SERVER";
@@ -26,24 +28,45 @@ pub enum Endpoint {
     Socket(PathBuf),
     /// A Windows named pipe, as the full `\\.\pipe\<name>` path.
     Pipe(String),
+    /// The agent listener on a loopback address (Linux, plan 7C Decision 13).
+    Tcp(SocketAddr),
 }
 
 impl Endpoint {
-    /// `pipe:<name>` or a `\\.\pipe\...` path is a named pipe; anything else is a socket path.
-    pub fn parse(spec: &str) -> Endpoint {
+    /// `pipe:<name>` or a `\\.\pipe\...` path is a named pipe, `tcp:<ip>:<port>` the agent
+    /// listener (loopback only, else `USAGE`); anything else is a socket path.
+    pub fn parse(spec: &str) -> Result<Endpoint, CoreError> {
         if let Some(name) = spec.strip_prefix("pipe:") {
-            return Endpoint::Pipe(format!("{PIPE_PREFIX}{name}"));
+            return Ok(Endpoint::Pipe(format!("{PIPE_PREFIX}{name}")));
         }
         if spec.starts_with(PIPE_PREFIX) {
-            return Endpoint::Pipe(spec.to_string());
+            return Ok(Endpoint::Pipe(spec.to_string()));
         }
-        Endpoint::Socket(paths::resolve_str(spec))
+        if let Some(addr) = spec.strip_prefix("tcp:") {
+            let bad = |why: &str| {
+                usage(
+                    format!("{SERVER_ENV}=tcp:{addr} is not a loopback TCP address: {why}"),
+                    json!({ "env": SERVER_ENV, "endpoint": spec }),
+                    "use tcp:127.0.0.1:<port>, the agent listener finisherd names in FIN_SERVER",
+                )
+            };
+            let addr: SocketAddr = addr.parse().map_err(|_| bad("not <ip>:<port>"))?;
+            if !addr.ip().is_loopback() {
+                return Err(bad("only loopback addresses are allowed"));
+            }
+            if addr.port() == 0 {
+                return Err(bad("port 0 is not a port"));
+            }
+            return Ok(Endpoint::Tcp(addr));
+        }
+        Ok(Endpoint::Socket(paths::resolve_str(spec)))
     }
 
     pub fn display(&self) -> String {
         match self {
             Endpoint::Socket(p) => p.display().to_string(),
             Endpoint::Pipe(p) => p.clone(),
+            Endpoint::Tcp(a) => format!("tcp:{a}"),
         }
     }
 }
@@ -110,7 +133,7 @@ fn from_info(file: &Path, text: &str) -> Result<Endpoint, CoreError> {
             .with_details(json!({ "server": version, "client": PROTOCOL_VERSION, "infoFile": file.display().to_string() }))
             .with_fix("update fin or finisherd so both come from the same Finisher release"));
     }
-    Ok(Endpoint::parse(socket))
+    Endpoint::parse(socket)
 }
 
 /// The `envId` the running server published in `finisherd.json` (5A Task 2), unless `FIN_SERVER`
@@ -136,7 +159,7 @@ pub fn info_env_id() -> Option<String> {
 /// has published one.
 pub fn resolve() -> Result<Endpoint, CoreError> {
     if let Some(spec) = std::env::var_os(SERVER_ENV).filter(|v| !v.is_empty()) {
-        return Ok(Endpoint::parse(&spec.to_string_lossy()));
+        return Endpoint::parse(&spec.to_string_lossy());
     }
     if credential_set() {
         return Err(unavailable(json!({
@@ -167,19 +190,42 @@ mod tests {
     #[test]
     fn specs_parse_to_sockets_and_pipes() {
         assert_eq!(
-            Endpoint::parse("pipe:finisher-ann"),
+            Endpoint::parse("pipe:finisher-ann").unwrap(),
             Endpoint::Pipe(r"\\.\pipe\finisher-ann".into())
         );
         assert_eq!(
-            Endpoint::parse(r"\\.\pipe\finisher-ann"),
+            Endpoint::parse(r"\\.\pipe\finisher-ann").unwrap(),
             Endpoint::Pipe(r"\\.\pipe\finisher-ann".into())
         );
         #[cfg(unix)]
         assert_eq!(
-            Endpoint::parse("/tmp/sd/fin.sock"),
+            Endpoint::parse("/tmp/sd/fin.sock").unwrap(),
             Endpoint::Socket("/tmp/sd/fin.sock".into())
         );
-        assert!(matches!(Endpoint::parse("sd/fin.sock"), Endpoint::Socket(p) if p.is_absolute()));
+        assert!(
+            matches!(Endpoint::parse("sd/fin.sock").unwrap(), Endpoint::Socket(p) if p.is_absolute())
+        );
+    }
+
+    #[test]
+    fn tcp_is_loopback_only() {
+        let e = Endpoint::parse("tcp:127.0.0.1:4100").unwrap();
+        assert_eq!(e, Endpoint::Tcp("127.0.0.1:4100".parse().unwrap()));
+        assert_eq!(e.display(), "tcp:127.0.0.1:4100");
+        assert!(matches!(
+            Endpoint::parse("tcp:[::1]:9").unwrap(),
+            Endpoint::Tcp(_)
+        ));
+        for bad in [
+            "tcp:10.0.0.1:1",
+            "tcp:0.0.0.0:80",
+            "tcp:localhost:80",
+            "tcp:127.0.0.1",
+            "tcp:127.0.0.1:0",
+            "tcp:[::]:1",
+        ] {
+            assert_eq!(Endpoint::parse(bad).unwrap_err().code, "USAGE", "{bad}");
+        }
     }
 
     #[test]
@@ -188,7 +234,7 @@ mod tests {
         let ok = r#"{"pid":1,"wsPort":2,"socket":"/sd/fin.sock","protocolVersion":2}"#;
         assert_eq!(
             from_info(file, ok).unwrap().display(),
-            Endpoint::parse("/sd/fin.sock").display()
+            Endpoint::parse("/sd/fin.sock").unwrap().display()
         );
         assert_eq!(from_info(file, "{").unwrap_err().code, "SERVER_UNAVAILABLE");
         assert_eq!(

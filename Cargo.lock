@@ -699,6 +699,7 @@ dependencies = [
  "fin",
  "fin-core",
  "fin-probe",
+ "fin-sandbox",
  "fin-store",
  "fin-testfonts",
  "getrandom 0.3.4",

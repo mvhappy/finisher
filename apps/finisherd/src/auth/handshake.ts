@@ -129,6 +129,13 @@ export class Handshake {
       const expected = hello?.expected;
       if (hello !== undefined && expected !== undefined && mac !== null && sameMac(mac, expected)) {
         const named = this.#keyOf(hello.credential);
+        // A listener that serves only some principals (the agent listener: `agent` and `mcp`)
+        // refuses the others after the proof, so the refusal reveals nothing a prober lacks.
+        if (named !== undefined && named.ended === undefined && !connections.admits(named.principal)) {
+          this.#fail(connections, clientId, conn, hello.credential.kind, "listenerKind");
+          connections.link(clientId)?.closeAfterReply();
+          return Effect.fail(unauthenticated("listenerKind"));
+        }
         if (named !== undefined && named.ended === undefined) {
           conn.principal = named.principal;
           return Effect.succeed({ principal: named.principal });

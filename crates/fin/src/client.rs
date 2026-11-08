@@ -275,6 +275,12 @@ impl Client {
                     .map_err(failed)?;
                 TimedConn::new(stream, timeout)
             }
+            // The agent listener (plan 7C Task 6): the same framing over loopback TCP.
+            Endpoint::Tcp(addr) => {
+                let stream = std::net::TcpStream::connect_timeout(addr, wait).map_err(failed)?;
+                let _ = stream.set_nodelay(true);
+                TimedConn::new(stream, timeout)
+            }
             // Identification-level, least-access client end (5A Task 11, `pipe_client`).
             #[cfg(windows)]
             Endpoint::Pipe(p) => TimedConn::new(

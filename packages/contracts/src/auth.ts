@@ -109,7 +109,7 @@ export const ServerStatusSuccess = Schema.Struct({
   protocol: Schema.Number,
   envId: Schema.String,
   pid: Schema.Number,
-  listeners: Schema.Array(Schema.Struct({ transport: Schema.Literals(["socket", "pipe", "ws"]), endpoint: Schema.String })),
+  listeners: Schema.Array(Schema.Struct({ transport: Schema.Literals(["socket", "pipe", "ws", "agentTcp"]), endpoint: Schema.String })),
   connections: Schema.Record(Schema.String, Schema.Number),
   journal: Schema.Struct({ enabled: Schema.Boolean }),
   auditFailures: Schema.Number,

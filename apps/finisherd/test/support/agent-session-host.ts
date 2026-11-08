@@ -10,6 +10,7 @@
 //   {op: "revoke", sessionId}                      → {}
 //   {op: "txs", sessionId}                         → {txs: [{txId, callId, attribution}]}
 //   {op: "state", sessionId}                       → {defaultBranch, tries}
+//   {op: "listener"}                               → {endpoint}  (starts the agent listener, 7C Task 6)
 // A failure answers {error: {code, message}}.
 import { mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -17,6 +18,7 @@ import { parseArgs } from "node:util";
 import type { Mode } from "@finisher/contracts";
 import { Effect } from "effect";
 import type { AgentCore } from "../../src/agent/core.ts";
+import type { AgentListener } from "../../src/agent/listener.ts";
 import { toFinError } from "../../src/errors.ts";
 import { serve, StderrLogger } from "../../src/main.ts";
 import { open } from "./agent-open.ts";
@@ -28,6 +30,7 @@ const requests = values.requests;
 if (serverData === undefined || requests === undefined) throw new Error("--server-data and --requests are required");
 
 let core: AgentCore | undefined;
+let listener: AgentListener | undefined;
 let info: ServerInfo | undefined;
 let starter: NdjsonClient | undefined;
 
@@ -35,7 +38,8 @@ type Request =
   | { op: "open"; projectId: string; mode?: Mode; role?: string; base?: string }
   | { op: "revoke"; sessionId: string }
   | { op: "txs"; sessionId: string }
-  | { op: "state"; sessionId: string };
+  | { op: "state"; sessionId: string }
+  | { op: "listener" };
 
 async function handle(r: Request): Promise<unknown> {
   const c = core!;
@@ -56,6 +60,8 @@ async function handle(r: Request): Promise<unknown> {
       return { txs: c.store.txsOfSession(r.sessionId).map((t) => ({ txId: t.txId, callId: t.callId, attribution: t.attribution })) };
     case "state":
       return c.store.state(r.sessionId);
+    case "listener":
+      return { endpoint: await listener!.ensure() };
   }
 }
 
@@ -90,6 +96,7 @@ await Effect.runPromise(
   serve({
     serverData,
     onAgentCore: (c) => (core = c),
+    onAgentListener: (l) => (listener = l),
     onReady: (i) => (info = i as ServerInfo),
   }).pipe(Effect.provide(StderrLogger)),
 );

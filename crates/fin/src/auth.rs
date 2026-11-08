@@ -289,10 +289,12 @@ pub fn discover(server_data: Option<&Path>) -> Result<Option<Credential>, CoreEr
         .map(|key| Credential::new(CredentialKind::Local, None, None, key)))
 }
 
-/// The form both MACs bind (Decision 7): a socket's real path, a pipe's name lower-cased.
+/// The form both MACs bind (Decision 7): a socket's real path, a pipe's name lower-cased, the
+/// agent listener as `tcp:<ip>:<port>` (finisherd binds `tcp:127.0.0.1:<port>`).
 pub fn canonical_endpoint(endpoint: &Endpoint) -> String {
     match endpoint {
         Endpoint::Pipe(name) => name.to_lowercase(),
+        Endpoint::Tcp(addr) => format!("tcp:{addr}"),
         Endpoint::Socket(path) => std::fs::canonicalize(path)
             .unwrap_or_else(|_| PathBuf::from(path))
             .display()

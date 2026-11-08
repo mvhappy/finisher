@@ -6,7 +6,7 @@
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { runMain } from "@effect/platform-node/NodeRuntime";
-import { Cause, Context, Deferred, Effect, Exit, Layer, Logger } from "effect";
+import { Cause, Context, Deferred, Effect, Exit, Layer, Logger, Scope } from "effect";
 import {
   ensureServerData,
   parseArgs,
@@ -23,7 +23,7 @@ import { Handshake, HandshakeTag } from "./auth/handshake.ts";
 import { Credentials, CredentialsTag } from "./auth/credentials.ts";
 import { sweepExpired } from "./auth/revoke.ts";
 import { authDir, excludeFromBackups, KEY_FILES, KeysTag, rotateKeys, writeKeyFile } from "./auth/keys.ts";
-import { ConnectionRegistry, ConnectionRegistryTag, Connections } from "./connections.ts";
+import { ConnectionRegistry, ConnectionRegistryTag, Connections, type ListenerRules, type Transport } from "./connections.ts";
 import { AuditTag, layerAudit } from "./control/audit.ts";
 import { makeTickets, TicketsTag } from "./auth/tickets.ts";
 import { ControlStoreTag, layerControlStore } from "./control/db.ts";
@@ -56,6 +56,7 @@ import { ServerControlTag } from "./server-admin.ts";
 import { isServeCommand, runConsole } from "./console/main.ts";
 import { currentSandboxStatus, reporterFor, sandboxWarnings } from "./sandbox/status.ts";
 import { type AgentRuntimeParts, AgentRuntimeTag, type AgentServeOptions, buildAgentRuntime } from "./agent/wiring.ts";
+import { type AgentListener, agentConnections, agentEndpoint, makeAgentListener, makeAgentTcpServer } from "./agent/listener.ts";
 
 export interface ServeOptions {
   readonly serverData: string;
@@ -71,6 +72,10 @@ export interface ServeOptions {
   readonly onAgentRuntime?: (parts: AgentRuntimeParts) => void;
   /** The job engine's options (tests: the test kinds). */
   readonly jobs?: JobEngineOptions;
+  /** The agent listener (plan 7C Task 6), handed to tests and the session wiring once built. */
+  readonly onAgentListener?: (listener: AgentListener) => void;
+  /** The agent listener's handshake timeout and connection cap (tests lower them). */
+  readonly agentListener?: Partial<Pick<ListenerRules, "handshakeTimeoutMs" | "maxConnections">>;
   /** Called once both transports listen and `finisherd.json` is written. */
   readonly onReady?: (info: ServerInfo) => void;
 }
@@ -85,6 +90,8 @@ export const serve = ({
   onAgentCore,
   agents: agentOptions,
   onAgentRuntime,
+  onAgentListener,
+  agentListener: agentListenerRules,
   registry,
   fonts,
   diagnostics: diagnosticsOptions,
@@ -307,14 +314,14 @@ export const serve = ({
       const fontsLayer = layerFonts(serverData, fonts);
       // `server.stop` (5A Task 8): `serve` returns, and its scope's finalizers stop everything.
       const stopped = Deferred.makeUnsafe<void>();
-      const listeners = [
+      const listeners: Array<{ readonly transport: Transport; readonly endpoint: string }> = [
         { transport: connections.local.transport, endpoint: localEndpoint },
         { transport: connections.ws.transport, endpoint: wsEndpoint },
-      ] as const;
+      ];
       const serverControl = { envId, listeners: () => listeners, stop: () => void Deferred.doneUnsafe(stopped, Exit.void) };
-      yield* Layer.build(
-        Layer.mergeAll(serveRpc(local, connections.local), serveRpc(ws, connections.ws)).pipe(
-          Layer.provide(
+      // What every transport's handlers are served with, built once: the agent listener's
+      // handlers, built later, share it with the two built now.
+      const served = yield* Layer.build(
             Layer.mergeAll(
               Layer.succeedContext(registryContext),
               fontsLayer,
@@ -333,9 +340,29 @@ export const serve = ({
               Layer.succeed(AgentCoreTag, agentCore),
               Layer.succeed(AgentRuntimeTag, agentRuntime),
             ),
-          ),
+      );
+      yield* Layer.build(
+        Layer.mergeAll(serveRpc(local, connections.local), serveRpc(ws, connections.ws)).pipe(Layer.provide(Layer.succeedContext(served))),
+      );
+      // The agent listener (plan 7C Task 6): loopback TCP for sandboxed `fin`, started on first
+      // need into this server's scope, so it stops with the server.
+      let agentTcpEndpoint = "";
+      const agentTcp = everyConnection.add(agentConnections(() => agentTcpEndpoint, agentListenerRules));
+      const serverScope = yield* Effect.scope;
+      const runInServer = Effect.runPromiseWith(yield* Effect.context<never>());
+      const agentListener = makeAgentListener(() =>
+        runInServer(
+          Effect.gen(function* () {
+            const { server, port } = yield* Scope.provide(serverScope)(makeAgentTcpServer());
+            agentTcpEndpoint = agentEndpoint(port);
+            yield* Layer.buildWithScope(serveRpc(server, agentTcp).pipe(Layer.provide(Layer.succeedContext(served))), serverScope);
+            listeners.push({ transport: agentTcp.transport, endpoint: agentTcpEndpoint });
+            yield* Effect.logInfo(`finisherd agent listener: ${agentTcpEndpoint}`);
+            return agentTcpEndpoint;
+          }),
         ),
       );
+      onAgentListener?.(agentListener);
 
       const publish = (enabled: boolean) =>
         writeServerInfo(serverData, { pid: process.pid, wsPort, socket, envId, diagnostics: { enabled } });

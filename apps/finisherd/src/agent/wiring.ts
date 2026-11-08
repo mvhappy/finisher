@@ -81,7 +81,7 @@ export interface AgentWiringDeps {
   /** `control.db` (the store's), for the lookups `AgentStore` does not offer. */
   readonly db: ConstructorParameters<typeof AgentLookup>[0];
   readonly audit: Audit;
-  /** `FIN_SERVER` for the built-in `fin`: the local socket until 7C's agent listener. */
+  /** `FIN_SERVER` for the built-in `fin`: the local socket (it runs outside the OS sandbox, spec §8.9). */
   readonly endpoint: string;
   readonly log: (message: string) => void;
   readonly options?: AgentServeOptions;

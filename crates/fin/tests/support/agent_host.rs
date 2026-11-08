@@ -94,6 +94,14 @@ impl AgentHost {
             .clone()
     }
 
+    /// Starts the agent listener (plan 7C Task 6); its `tcp:127.0.0.1:<port>` endpoint.
+    pub fn listener(&self) -> String {
+        self.request(json!({ "op": "listener" }))["endpoint"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    }
+
     /// `fin` as a person (the local key).
     pub fn fin(&self, cwd: &Path, args: &[&str]) -> Run {
         super::fin(&self.server.sd, cwd, args)

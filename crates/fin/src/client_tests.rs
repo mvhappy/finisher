@@ -145,6 +145,7 @@ fn a_silent_server_is_a_typed_timeout_and_a_missing_one_is_unavailable() {
         let name = match ep {
             Endpoint::Socket(p) => p.as_path().to_fs_name::<GenericFilePath>(),
             Endpoint::Pipe(p) => p.as_str().to_fs_name::<GenericFilePath>(),
+            Endpoint::Tcp(_) => unreachable!("local sockets only"),
         };
         ListenerOptions::new()
             .name(name.unwrap())
@@ -233,4 +234,31 @@ fn a_full_socket_buffer_costs_at_most_the_budget() {
     );
     drop(client);
     held.join().unwrap();
+}
+
+/// The agent listener's transport (plan 7C Task 6): `fin` opens loopback TCP with the same
+/// framing, and a port nobody listens on is `SERVER_UNAVAILABLE`.
+#[test]
+fn tcp_endpoint_connects_and_frames() {
+    use std::io::BufRead;
+    let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = l.local_addr().unwrap();
+    let server = std::thread::spawn(move || {
+        let (s, _) = l.accept().unwrap();
+        let mut r = std::io::BufReader::new(s.try_clone().unwrap());
+        let mut line = String::new();
+        r.read_line(&mut line).unwrap();
+        line
+    });
+    let mut c = Client::open(&Endpoint::Tcp(addr), Duration::from_secs(5), None).unwrap();
+    c.conn.write_all(b"{\"x\":1}\n").unwrap();
+    assert_eq!(server.join().unwrap(), "{\"x\":1}\n");
+    drop(c);
+    let closed = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let gone = closed.local_addr().unwrap();
+    drop(closed);
+    let e = Client::open(&Endpoint::Tcp(gone), Duration::from_secs(5), None)
+        .err()
+        .unwrap();
+    assert_eq!(e.code, "SERVER_UNAVAILABLE");
 }
