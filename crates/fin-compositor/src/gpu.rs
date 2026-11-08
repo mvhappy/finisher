@@ -6,7 +6,7 @@
 //! converts to `rgba8unorm`, read back with 256-byte rows.
 //!
 //! Pipelines are made once per (stage, mode) on first use; intermediates come from the texture
-//! pool. Each frame runs inside out-of-memory and validation error scopes. After
+//! pool. Each frame runs inside out-of-memory, internal and validation error scopes. After
 //! `GPU_DEVICE_LOST`, make a new [`Gpu`] and a new `Compositor`.
 
 use std::collections::HashMap;
@@ -304,14 +304,19 @@ impl Compositor {
         let oom = gpu
             .device()
             .push_error_scope(wgpu::ErrorFilter::OutOfMemory);
+        // A pipeline the backend failed to compile (an FXC error) is an internal error, and
+        // the cause of the validation errors that follow it; it is reported first.
+        let internal = gpu.device().push_error_scope(wgpu::ErrorFilter::Internal);
         let validation = gpu.device().push_error_scope(wgpu::ErrorFilter::Validation);
         let encoded = self.encode(gpu, plan, src, out);
         let invalid = pollster::block_on(validation.pop());
+        let broken = pollster::block_on(internal.pop());
         let no_memory = pollster::block_on(oom.pop());
         self.pool.end_frame();
         let failed = gpu
             .check_lost()
             .and_then(|()| no_memory.map_or(Ok(()), |e| Err(map_error(&e))))
+            .and_then(|()| broken.map_or(Ok(()), |e| Err(map_error(&e))))
             .and_then(|()| invalid.map_or(Ok(()), |e| Err(map_error(&e))))
             .and_then(|()| gpu.take_uncaptured());
         if let Err(e) = failed {

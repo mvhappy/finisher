@@ -158,6 +158,38 @@ fn fixed_function_and_shader_blends_agree() {
     );
 }
 
+/// `blend.wgsl` builds for every `MODE` on this backend: with the override substituted, FXC
+/// (D3D12) refused `overlay` while Metal took it ("X3507: not all control paths return a
+/// value"). Shader blends route all seven modes through it.
+#[test]
+fn every_blend_mode_builds_on_this_backend() {
+    let Some(gpu) = gpu() else { return };
+    let mut c = Compositor::new(&gpu);
+    c.set_shader_blends(true);
+    let all = cases();
+    for name in [
+        "blend-normal",
+        "blend-multiply",
+        "blend-screen",
+        "blend-overlay",
+        "blend-add",
+        "blend-darken",
+        "blend-lighten",
+    ] {
+        let case = all.iter().find(|c| c.name == name).unwrap();
+        if let Err(e) = c.render(&gpu, &case.plan, &mut case.patterns(), case.size()) {
+            panic!("{name} on {:?}: {e:?}", gpu.info());
+        }
+    }
+    let stages = c.pipeline_stages();
+    for m in 0..7 {
+        assert!(
+            stages.contains(&Stage::Blend(m)),
+            "Blend({m}) in {stages:?}"
+        );
+    }
+}
+
 #[test]
 fn pipelines_are_created_once_per_stage_and_mode() {
     let Some(gpu) = gpu() else { return };

@@ -17,30 +17,29 @@ struct Blend {
 @group(0) @binding(1) var acc: texture_2d<f32>;
 @group(0) @binding(2) var layer: texture_2d<f32>;
 
+// One assignment per case and a single return: with `MODE` substituted, FXC (D3D12) rejects
+// returns inside the switch ("X3507: not all control paths return a value").
 fn mode_of(cb: f32, cs: f32) -> f32 {
+    var r = cs;
     switch MODE {
         case 1u: {
-            return cb * cs;
+            r = cb * cs;
         }
         case 2u: {
-            return cb + cs - cb * cs;
+            r = cb + cs - cb * cs;
         }
         case 3u: {
-            if cb <= 0.5 {
-                return 2.0 * cb * cs;
-            }
-            return 1.0 - 2.0 * (1.0 - cb) * (1.0 - cs);
+            r = select(1.0 - 2.0 * (1.0 - cb) * (1.0 - cs), 2.0 * cb * cs, cb <= 0.5);
         }
         case 5u: {
-            return min(cb, cs);
+            r = min(cb, cs);
         }
         case 6u: {
-            return max(cb, cs);
+            r = max(cb, cs);
         }
-        default: {
-            return cs;
-        }
+        default: {}
     }
+    return r;
 }
 
 fn mix_linear(d: f32, b: f32, w: f32) -> f32 {
