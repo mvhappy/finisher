@@ -55,17 +55,22 @@ export function ftsReplace(st: FtsStatements, fileId: number, nameNfc: string, d
 }
 
 /**
- * The terms of a query as `unicode61` splits text: runs of letters, numbers and marks (marks
- * stay inside a term, as they do for the tokenizer before it removes diacritics).
+ * The terms of a query as `unicode61` splits text: runs of letters, numbers, private-use
+ * characters and marks (marks stay inside a term, as they do for the tokenizer before it
+ * removes diacritics). The query is taken in NFC first, as the indexed names are, so a name
+ * typed or pasted decomposed (macOS) finds its composed twin. A run of marks alone (a stray
+ * combining accent) tokenises to nothing and is dropped.
  */
 export function queryTerms(query: string): string[] {
-  return query.normalize("NFC").match(/[\p{L}\p{N}\p{M}\p{Co}]+/gu) ?? [];
+  const runs = query.normalize("NFC").match(/[\p{L}\p{N}\p{M}\p{Co}]+/gu) ?? [];
+  return runs.filter((t) => /[\p{L}\p{N}\p{Co}]/u.test(t));
 }
 
 /**
- * An FTS5 `MATCH` expression of prefix terms (`"interv"* "take"*`, all required), or
- * `undefined` for a query without terms. Terms hold only letters, numbers and marks, so no
- * FTS syntax from the query survives quoting.
+ * An FTS5 `MATCH` expression of prefix terms (`"interv"* "take"*`, all required, in either
+ * column), or `undefined` for a query without terms. Terms hold only letters, numbers and
+ * marks, so no FTS syntax from the query survives quoting (`AND`, `NEAR`, `col:`, `-`, `^`,
+ * `*` and `"` are separators or literal words).
  */
 export function matchExpression(query: string): string | undefined {
   const terms = queryTerms(query);

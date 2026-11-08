@@ -6,18 +6,26 @@
 import { DatabaseSync } from "node:sqlite";
 import { parentPort, workerData } from "node:worker_threads";
 import { type CatalogExtensionRef, type LoadedExtensions, loadExtensions } from "./extensions.ts";
+import { Snapshots } from "./core/snapshot.ts";
 import { checkLibraryId } from "./open.ts";
 import { CatalogFailure, type Reply, type Request, toWire } from "./protocol.ts";
 
 export interface ReaderData {
   readonly extensions: ReadonlyArray<CatalogExtensionRef>;
+  /** Search snapshots: idle lifetime and count (defaults 5 minutes and 64; tests lower them). */
+  readonly snapshotTtlMs?: number;
+  readonly snapshotMax?: number;
 }
 
 const BUSY_MS = 1000;
 const data = workerData as ReaderData;
 const port = parentPort!;
 const conns = new Map<string, DatabaseSync>();
-const stats = { queries: 0 };
+const stats = { queries: 0, searches: 0 };
+const snapshots = new Snapshots(conns, {
+  ...(data.snapshotTtlMs === undefined ? {} : { ttlMs: data.snapshotTtlMs }),
+  ...(data.snapshotMax === undefined ? {} : { max: data.snapshotMax }),
+});
 
 let exts: LoadedExtensions;
 try {
@@ -57,7 +65,16 @@ function query(a: Record<string, unknown>): unknown {
   return value;
 }
 
-const METHODS: Record<string, (a: Record<string, unknown>) => unknown> = { attach, detach, query };
+/** `searchPage {libraries, args, cursor?, limit}`: one page of a search across libraries (Decision 43). */
+function searchPage(a: Record<string, unknown>): unknown {
+  if (!Array.isArray(a.libraries) || typeof a.limit !== "number" || (a.cursor !== undefined && typeof a.cursor !== "string")) {
+    throw new CatalogFailure("CATALOG_ARGS_INVALID", "invalid catalog arguments", { at: "searchPage" });
+  }
+  stats.searches++;
+  return snapshots.search({ libraries: a.libraries.map(checkLibraryId), args: a.args, limit: a.limit, ...(a.cursor === undefined ? {} : { cursor: a.cursor }) });
+}
+
+const METHODS: Record<string, (a: Record<string, unknown>) => unknown> = { attach, detach, query, searchPage };
 
 function reply(r: Reply): void {
   try {
@@ -68,7 +85,7 @@ function reply(r: Reply): void {
 }
 
 port.on("message", (msg: Request) => {
-  if (msg.method === "stats") return reply({ id: msg.id, ok: true, value: { ...stats, open: conns.size } });
+  if (msg.method === "stats") return reply({ id: msg.id, ok: true, value: { ...stats, open: conns.size, snapshots: snapshots.size } });
   if (msg.method === "shutdown") {
     for (const db of conns.values()) db.close();
     conns.clear();
