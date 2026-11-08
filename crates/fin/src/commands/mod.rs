@@ -26,6 +26,7 @@ pub mod param;
 pub mod plugin;
 pub mod project;
 pub mod schema;
+pub mod schema_registry;
 pub mod style;
 pub mod timeline;
 pub mod track;

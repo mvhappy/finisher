@@ -25,6 +25,8 @@ mod private_windows;
 mod registry;
 mod registry_edit;
 mod registry_plugins;
+mod registry_rpcs;
+mod registry_rpcs_edit;
 mod registry_settings;
 mod values;
 mod view;
@@ -148,6 +150,10 @@ enum Cmd {
         /// `fin schema param` only: keep the paths it starts.
         #[arg(long, value_name = "prefix")]
         path: Option<String>,
+        /// Every command, the RPCs it sends and what identifies it (committed as
+        /// `packages/contracts/registry.json`).
+        #[arg(long)]
+        registry: bool,
     },
 }
 
@@ -251,7 +257,16 @@ fn run(args: Vec<OsString>) -> Result<Value, CoreError> {
             command,
             scope,
             path,
+            registry,
         }) => match command.as_slice() {
+            [] if registry && scope.is_none() && path.is_none() => {
+                Ok(commands::schema_registry::registry())
+            }
+            _ if registry => Err(output::usage(
+                "--registry takes no command, --scope or --path",
+                json!({ "command": command }),
+                "run fin schema --registry alone",
+            )),
             [p] if p == "param" => commands::schema::params(scope.as_deref(), path.as_deref()),
             [c] if c == "commands" && scope.is_none() && path.is_none() => {
                 Ok(commands::schema::index(&configure(Cli::command())))

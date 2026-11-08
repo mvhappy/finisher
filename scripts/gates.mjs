@@ -10,6 +10,8 @@ const steps = [
   ["node", ["scripts/check-eval-floats.mjs"]],
   ["node", ["scripts/check-wasm-deps.mjs"]],
   ["node", ["scripts/check-generated-types.mjs"]],
+  // The exported command registry (7B Decision 1): regenerated with `fin schema --registry`.
+  ["node", ["scripts/check-registry.mjs"]],
   ["node", ["scripts/check-typecheck.mjs"]],
   ["node", ["scripts/check-strip-types.mjs"]],
   ["node", ["scripts/check-rust-fmt.mjs"]],
