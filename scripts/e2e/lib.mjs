@@ -328,6 +328,12 @@ export function consoleRpc(server, tag, payload, { confirm = true } = {}) {
 /** A mutating human-only call as the server's console makes it. */
 export const consoleCall = (server, tag, payload) => consoleRpc(server, tag, payload);
 
+/**
+ * `finisherd library add <root>` as the console runs it (5D Task 14): `library.add` with the
+ * console's typed code. Answers `{ library, job? }`, `job` being the first full scan.
+ */
+export const consoleLibraryAdd = (server, root, options = {}) => consoleCall(server, "library.add", { root, ...options });
+
 /** Every entry the journal stored (content included: the console is a person), oldest first. */
 export async function storedEntries(server, filter = {}) {
   const out = [];

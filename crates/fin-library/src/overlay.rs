@@ -320,7 +320,13 @@ impl Source for OverlaySource {
         self.inner.dir_mtime(dir)
     }
 
+    /// The native identity, with the path's `mountRoot`/`unmounted` mark applied as
+    /// [`Overlay::apply`] applies it to the entry: the walker checks a known mount point by both.
     fn volume(&self, dir: &DirHandle) -> io::Result<VolumeIdentity> {
-        self.inner.volume(dir)
+        let mut v = self.inner.volume(dir)?;
+        if let Some(p) = self.ov.get(dir.rel()) {
+            v.mount_root = (v.mount_root || p.mount_root) && !p.unmounted;
+        }
+        Ok(v)
     }
 }
