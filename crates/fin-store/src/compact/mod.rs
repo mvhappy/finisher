@@ -220,6 +220,17 @@ pub(crate) fn run(
     now_ms: i64,
     force: bool,
 ) -> Result<CompactReport, StoreError> {
+    run_bounded(store, now_ms, force, usize::MAX)
+}
+
+/// [`run`], doing at most `units` steps (a manifest's phase 2 or a branch's phase 1); what
+/// is left stays due for the next run.
+pub(crate) fn run_bounded(
+    store: &mut Store,
+    now_ms: i64,
+    force: bool,
+    mut units: usize,
+) -> Result<CompactReport, StoreError> {
     let mut report = CompactReport::default();
     if let Some(why) = cannot_run(store) {
         report.skipped = Some(why);
@@ -245,13 +256,17 @@ pub(crate) fn run(
         }
     };
     state::observe(store, &dir, &names, now, now_ms)?;
-    if phase2(store, &mut report, now)? {
+    if phase2(store, &mut report, now, &mut units)? {
         return Ok(report);
     }
     for branch in db::branches(&store.conn)? {
+        if units == 0 {
+            break;
+        }
         if !branch_due(store, &branch, now, force) {
             continue;
         }
+        units -= 1;
         if phase1(store, &mut report, &branch, now, now_ms)? {
             break;
         }
@@ -342,9 +357,18 @@ fn ready(store: &Store, now: Instant) -> Vec<(ManifestName, Manifest)> {
 }
 
 /// Phase 2 of every manifest past its grace period. `true`: stop (the lease is lost).
-fn phase2(store: &mut Store, report: &mut CompactReport, now: Instant) -> Result<bool, StoreError> {
+fn phase2(
+    store: &mut Store,
+    report: &mut CompactReport,
+    now: Instant,
+    units: &mut usize,
+) -> Result<bool, StoreError> {
     let due = ready(store, now);
     for (name, m) in due {
+        if *units == 0 {
+            break;
+        }
+        *units -= 1;
         let label = name.to_string();
         let path = store
             .project_dir

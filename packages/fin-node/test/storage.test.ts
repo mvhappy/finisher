@@ -4,6 +4,7 @@
 import { mkdtempSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { Engine, type FinNodeError } from "../index.js";
 
@@ -72,6 +73,15 @@ async function until<T>(f: () => T | undefined | Promise<T | undefined>, ms: num
 }
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+/** The engine's daily backups. */
+function dailies(engine: Engine): string[] {
+  try {
+    return readdirSync(join(serverData, "projects", engine.projectId, "backups")).filter((n) => n.startsWith("daily-"));
+  } catch {
+    return [];
+  }
+}
 
 /** Polls `status()` until a long call named `operation` has the store; returns that status. */
 async function busyStatus(engine: Engine, operation: string) {
@@ -183,20 +193,75 @@ describe("storage", () => {
     expect(JSON.parse(await engine.commit(tx("tx-1", 0, [addAsset]))).rev).toBe(1);
   });
 
-  test("the daily backup runs as a long call, off the tick", async () => {
+  test("the daily backup due at open never makes a call ENGINE_BUSY", async () => {
     const engine = keep(await Engine.create(serverData, projectDir, "Demo", "30"));
-    // Test engines start with the automatic work off (`setAutoWorkForTest`), so no backup holds
-    // the store in the other tests. Turned on, the first tick finds today's backup due; it runs
-    // on the worker, store taken out, and takes the delay (nothing else is queued to).
-    engine.delayNextLongCallForTest(1_000);
-    engine.setAutoWorkForTest(true);
-    await busyStatus(engine, "backup (auto)");
-    const busy = await rejection(engine.commit(tx("tx-1", 0, [addAsset])));
-    expect(busy.code).toBe("ENGINE_BUSY");
-    expect(busy.details.operation).toBe("backup (auto)");
-    await until(async () => (JSON.parse(await engine.status()).busy === null ? true : undefined), 3_000, "the backup");
-    expect(JSON.parse(await engine.commit(tx("tx-1", 0, [addAsset]))).rev).toBe(1);
-    expect(readdirSync(join(serverData, "projects", engine.projectId, "backups")).some((n) => n.startsWith("daily-"))).toBe(true);
+    // The worst case: the backup starts at the first tick (not after 30 quiet seconds), and
+    // stays inside its run for 1.5 s while the calls go on.
+    engine.setAutoIdleForTest(0);
+    engine.pauseAutoBackupForTest(1_500);
+    let rev = 0;
+    let during = 0;
+    const call = async (i: number) => {
+      const running = engine.autoBackupRunningForTest();
+      if (i % 2 === 0) {
+        rev = JSON.parse(await engine.commit(tx(`tx-${i}`, rev, [addAsset]))).rev;
+      } else {
+        expect(await engine.head("main")).toBe(rev);
+      }
+      if (running && engine.autoBackupRunningForTest()) during += 1;
+    };
+    // 50 short calls from the open on: the first right away, the rest once the backup runs.
+    for (let i = 0; i < 10; i++) await call(i);
+    await until(() => (engine.autoBackupRunningForTest() ? true : undefined), 5_000, "the backup to start");
+    for (let i = 10; i < 50; i++) await call(i);
+    expect(during).toBeGreaterThan(0);
+    expect(JSON.parse(await engine.status()).busy).toBeNull();
+    await until(() => (engine.autoBackupRunningForTest() ? undefined : true), 10_000, "the backup to finish");
+    const dir = join(serverData, "projects", engine.projectId, "backups");
+    const daily = readdirSync(dir).filter((n) => n.startsWith("daily-"));
+    expect(daily).toHaveLength(1);
+    expect(readdirSync(dir).filter((n) => n.endsWith(".tmp"))).toEqual([]);
+    const db = new DatabaseSync(join(dir, daily[0]!), { readOnly: true });
+    try {
+      expect(db.prepare("PRAGMA integrity_check").get()).toEqual({ integrity_check: "ok" });
+      // One snapshot: what was committed when the copy was taken.
+      const { n } = db.prepare("SELECT COUNT(*) AS n FROM txs").get() as { n: number };
+      expect(n).toBeLessThanOrEqual(25);
+    } finally {
+      db.close();
+    }
+  });
+
+  test("a long call cancels a running automatic backup; it is taken later", async () => {
+    const engine = keep(await Engine.create(serverData, projectDir, "Demo", "30"));
+    engine.setAutoIdleForTest(0);
+    engine.pauseAutoBackupForTest(60_000);
+    await until(() => (engine.autoBackupRunningForTest() ? true : undefined), 5_000, "the backup to start");
+    const started = Date.now();
+    expect(JSON.parse(await engine.verify()).ok).toBe(true);
+    expect(Date.now() - started).toBeLessThan(10_000);
+    expect(engine.autoBackupRunningForTest()).toBe(false);
+    const dir = join(serverData, "projects", engine.projectId, "backups");
+    expect(readdirSync(dir).filter((n) => n.startsWith("daily-") || n.endsWith(".tmp"))).toEqual([]);
+    engine.pauseAutoBackupForTest(0);
+    await until(
+      () => (readdirSync(dir).some((n) => n.startsWith("daily-")) ? true : undefined),
+      10_000,
+      "the backup taken again",
+    );
+  });
+
+  test("automatic work waits for a quiet engine", async () => {
+    const engine = keep(await Engine.create(serverData, projectDir, "Demo", "30"));
+    // Due at the first tick, but the engine has not been quiet for 30 s.
+    for (let i = 0; i < 6; i++) {
+      await sleep(250);
+      expect(engine.autoBackupRunningForTest()).toBe(false);
+    }
+    expect(dailies(engine)).toEqual([]);
+    // Quiet long enough (now 1 s): it starts.
+    engine.setAutoIdleForTest(1_000);
+    await until(() => (dailies(engine).length === 1 ? true : undefined), 10_000, "the backup");
   });
 
   test("restart with the same server data is writable at once", async () => {

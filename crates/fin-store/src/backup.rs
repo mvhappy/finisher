@@ -1,25 +1,34 @@
 //! Database backups (sub-project 4 spec §3.1, §3.8): `VACUUM INTO` a temp file in
-//! `<project-data>/backups/`, fsync it, move it into place without replacing anything. Never
-//! a raw file copy, which would miss the WAL.
+//! `<project-data>/backups/`, verify it (`PRAGMA quick_check`), fsync it, move it into place
+//! without replacing anything. Never a raw file copy, which would miss the WAL.
 //!
 //! - Pre-migration: `pre-migrate-<from>-<to>-<UTC ts>Z.fdb`, the last 3 kept.
 //! - Daily ([`daily`]): `daily-YYYY-MM-DD.fdb` (the **local** calendar date), at most one per
 //!   day while the project is open, the last 7 kept. Every server backs up its own
 //!   database, holder or follower: it is local state either way (a follower's is a rebuild
-//!   it need not redo), and the folder is not touched.
+//!   it need not redo), and the folder is not touched. An engine takes it off the store
+//!   ([`DailyBackup`], module `job`): on its own connection, from a WAL read snapshot, so the
+//!   store's calls go on meanwhile.
+//!
+//! A backup is only ever a whole, verified file: a crash leaves at most a `.~fin-*.tmp`
+//! (removed once stale), and a `daily-*` file that does not pass `quick_check` (damaged
+//! later, or copied in by hand) is not taken as the day's backup: it is replaced.
 //!
 //! Both: only strictly named files are pruned, the new backup is never pruned, and once it
 //! is durable a failure to clean up or prune is ignored (an extra old file is harmless).
+
+mod job;
 
 use std::fs::{self, File};
 use std::path::Path;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use fin_core::CoreError;
-use rusqlite::{Connection, params};
+use rusqlite::{Connection, OpenFlags, params};
 
 use crate::StoreError;
 use crate::fsio::sync_dir;
+pub use job::{BackupCancel, BackupOutcome, DailyBackup};
 
 /// How many `pre-migrate-*` backups are kept.
 const KEEP_PRE_MIGRATION: usize = 3;
@@ -28,11 +37,17 @@ const KEEP_DAILY: usize = 7;
 /// A backup temp file older than this was left by a crash (a live backup takes seconds).
 const STALE_TEMP: Duration = Duration::from_secs(10 * 60);
 
-/// A consistent copy of the database behind `conn` at `dest`, durable once this returns.
-/// `false` (nothing written) when `dest` already exists.
-pub(crate) fn backup_to(conn: &Connection, dest: &Path) -> Result<bool, StoreError> {
+/// A consistent copy of the database behind `conn` at `dest`, verified and durable once this
+/// returns. `false` (nothing written) when `dest` already exists. `cancel` is checked between
+/// the steps (and interrupts the copy itself); a cancelled backup leaves nothing behind.
+pub(crate) fn backup_to(
+    conn: &Connection,
+    dest: &Path,
+    cancel: Option<&BackupCancel>,
+) -> Result<bool, StoreError> {
     let dir = dest.parent().unwrap_or(Path::new("."));
     let tmp = dir.join(format!(".~fin-{}.tmp", ulid::Ulid::new()));
+    let stopped = || cancel.is_some_and(BackupCancel::cancelled);
     let result = (|| {
         let target = tmp.to_str().ok_or_else(|| {
             CoreError::new(
@@ -40,7 +55,22 @@ pub(crate) fn backup_to(conn: &Connection, dest: &Path) -> Result<bool, StoreErr
                 format!("backup path {} is not valid UTF-8", tmp.display()),
             )
         })?;
-        conn.execute("VACUUM INTO ?1", params![target])?;
+        if stopped() {
+            return Err(job::cancelled());
+        }
+        if let Err(e) = conn.execute("VACUUM INTO ?1", params![target]) {
+            return Err(if stopped() {
+                job::cancelled()
+            } else {
+                e.into()
+            });
+        }
+        if let Some(c) = cancel {
+            c.test_pause();
+        }
+        if stopped() {
+            return Err(job::cancelled());
+        }
         // A backup restored by hand is another database than the live one: callers holding
         // the live one's generations must not be accepted by it.
         {
@@ -56,6 +86,16 @@ pub(crate) fn backup_to(conn: &Connection, dest: &Path) -> Result<bool, StoreErr
                     params![crate::history::new_incarnation()],
                 )?;
             }
+        }
+        if !whole(&tmp) {
+            return Err(CoreError::new(
+                "DB_ERROR",
+                format!("the backup copy {} failed its quick_check", tmp.display()),
+            )
+            .into());
+        }
+        if stopped() {
+            return Err(job::cancelled());
         }
         // Windows' FlushFileBuffers needs a handle with write access.
         File::options()
@@ -77,6 +117,38 @@ pub(crate) fn backup_to(conn: &Connection, dest: &Path) -> Result<bool, StoreErr
     result
 }
 
+/// Whether `path` is a whole SQLite database: it opens read-only (immutable: no WAL, no
+/// locks, nothing created) and passes `PRAGMA quick_check`.
+pub(crate) fn whole(path: &Path) -> bool {
+    let Some(p) = path.to_str() else { return false };
+    let flags = OpenFlags::SQLITE_OPEN_READ_ONLY
+        | OpenFlags::SQLITE_OPEN_URI
+        | OpenFlags::SQLITE_OPEN_NO_MUTEX;
+    let uri = format!("file:{}?immutable=1", uri_path(p));
+    let Ok(conn) = Connection::open_with_flags(uri, flags) else {
+        return false;
+    };
+    conn.query_row("PRAGMA quick_check", [], |r| r.get::<_, String>(0))
+        .is_ok_and(|v| v == "ok")
+}
+
+/// `p` for a `file:` URI: percent-escaped where SQLite's URI parser would read it otherwise,
+/// with `/` separators (and a leading one before a Windows drive letter).
+fn uri_path(p: &str) -> String {
+    let mut out = String::with_capacity(p.len() + 1);
+    let p = p.replace('\\', "/");
+    if p.as_bytes().get(1) == Some(&b':') {
+        out.push('/');
+    }
+    for c in p.chars() {
+        match c {
+            '?' | '#' | '%' => out.push_str(&format!("%{:02X}", c as u32)),
+            c => out.push(c),
+        }
+    }
+    out
+}
+
 /// The daily backup for the local calendar day of unix ms `now_ms`
 /// (`<project_data>/backups/daily-YYYY-MM-DD.fdb`), unless that day has one; keeps the
 /// newest [`KEEP_DAILY`]. Returns the new backup's path.
@@ -84,17 +156,22 @@ pub(crate) fn daily(
     conn: &Connection,
     project_data: &Path,
     now_ms: i64,
+    cancel: Option<&BackupCancel>,
 ) -> Result<Option<std::path::PathBuf>, StoreError> {
     let (y, m, d) = crate::localdate::local_ymd(now_ms);
     let name = format!("daily-{y:04}-{m:02}-{d:02}.fdb");
     let dir = project_data.join("backups");
     let dest = dir.join(&name);
     if dest.exists() {
-        return Ok(None);
+        if whole(&dest) {
+            return Ok(None);
+        }
+        // Not a backup to rely on (module docs): today's is taken again in its place.
+        fs::remove_file(&dest).map_err(StoreError::io(&dest))?;
     }
     fs::create_dir_all(&dir).map_err(StoreError::io(&dir))?;
     remove_stale_temps(&dir);
-    if !backup_to(conn, &dest)? {
+    if !backup_to(conn, &dest, cancel)? {
         return Ok(None);
     }
     // A name dated after tomorrow (the clock was wrong when it was taken) must not hold a
@@ -146,7 +223,7 @@ pub(crate) fn pre_migration(
         }
         ms += 1;
     };
-    backup_to(conn, &dest)?;
+    backup_to(conn, &dest, None)?;
     let _ = prune(&dir, &name, KEEP_PRE_MIGRATION, &|n: &str| {
         pre_migration_ts(n).map(str::to_string)
     });
