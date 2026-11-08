@@ -163,6 +163,8 @@ export type AnyPayload =
   | EvalStats
   | FontsFetch
   | StorageState
+  | PluginLifecycle
+  | RegistryRefresh
   | ErrorInternal
   | ErrorPanic
   | JobDone
@@ -676,6 +678,48 @@ export type FetchOutcome = "ok" | "failed" | "cached";
  */
 export type StorageMode = "readOnly" | "writable";
 /**
+ * `content` or `code`; `unknown` when the call failed before a manifest was read.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "PluginKindName".
+ */
+export type PluginKindName = "content" | "code" | "unknown";
+/**
+ * How a plugin or registry call ended.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "PluginOutcome".
+ */
+export type PluginOutcome = "ok" | "refused" | "failed";
+/**
+ * A plugin as the journal names it: a bundled plugin by its table name, any other by the
+ * journal's keyed hash of its id.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "PluginRef".
+ */
+export type PluginRef =
+  | {
+      bundled: Name;
+    }
+  | {
+      hashed: Hashed;
+    };
+/**
+ * The overall risk shown to people (spec §4.3); `unknown` as for [`PluginKindName`].
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "RiskName".
+ */
+export type RiskName = "low" | "medium" | "high" | "unknown";
+/**
+ * Where an installed plugin came from (spec §5.2).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "PluginSourceName".
+ */
+export type PluginSourceName = "bundled" | "registry" | "dev";
+/**
  * This interface was referenced by `FinCore`'s JSON-Schema
  * via the `definition` "SrcLoc".
  */
@@ -932,6 +976,40 @@ export type TrainingState = "on" | "off" | "undecided";
  */
 export type ContainerKind = "mp4" | "mov";
 /**
+ * Every key of spec §4.2, consumed or not.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "ContributionKind".
+ */
+export type ContributionKind =
+  | "fontCatalogs"
+  | "captionStyles"
+  | "commands"
+  | "hooks"
+  | "skills"
+  | "prompts"
+  | "roles"
+  | "rubrics"
+  | "analyzers"
+  | "providers"
+  | "codecBackends"
+  | "matteProducers"
+  | "audioProcessors"
+  | "luts"
+  | "effects"
+  | "transitions"
+  | "lottieTemplates"
+  | "formatTemplates"
+  | "exportPresets"
+  | "qaProfiles"
+  | "duckingRules"
+  | "editPresets"
+  | "ui"
+  | "agentProviders"
+  | "slots"
+  | "importers"
+  | "embedders";
+/**
  * This interface was referenced by `FinCore`'s JSON-Schema
  * via the `definition` "ProjectId".
  */
@@ -1091,6 +1169,16 @@ export type EventPayload =
       payload: StorageState;
     }
   | {
+      kind: "plugin.lifecycle";
+      kv: 1;
+      payload: PluginLifecycle;
+    }
+  | {
+      kind: "registry.refresh";
+      kv: 1;
+      payload: RegistryRefresh;
+    }
+  | {
       kind: "error.internal";
       kv: 1;
       payload: ErrorInternal;
@@ -1186,6 +1274,16 @@ export type ItemKind = "clip" | "caption" | "graphic" | "image" | "adjustment" |
  */
 export type Role = "out" | "in";
 /**
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "FsAccess".
+ */
+export type FsAccess = "read" | "readWrite";
+/**
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "FsScope".
+ */
+export type FsScope = "pluginData";
+/**
  * A helper's kind.
  *
  * This interface was referenced by `FinCore`'s JSON-Schema
@@ -1233,6 +1331,128 @@ export type HostMsg =
  * via the `definition` "Retry".
  */
 export type Retry = "never" | "backoff" | "fresh";
+/**
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "PlanAction".
+ */
+export type PlanAction = "install" | "update" | "downgrade";
+/**
+ * One permission, tagged by `perm`. The set is closed: an unknown `perm` or field fails the
+ * parse (a unit permission with any other field too, which serde's tagged enums allow).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "Permission".
+ */
+export type Permission =
+  | {
+      perm: "project:read";
+    }
+  | {
+      perm: "project:write";
+    }
+  | {
+      perm: "media:read";
+    }
+  | {
+      perm: "media:file";
+    }
+  | {
+      perm: "jobs:submit";
+    }
+  | {
+      perm: "gpu";
+    }
+  | {
+      origins: Origin[];
+      perm: "net";
+    }
+  | {
+      mode: SecretMode;
+      names: string[];
+      perm: "secrets";
+    }
+  | {
+      access: FsAccess;
+      perm: "fs";
+      scope: FsScope;
+    }
+  | {
+      hooks: string[];
+      perm: "hooks:observe";
+    }
+  | {
+      hooks: string[];
+      perm: "hooks:modify";
+    };
+/**
+ * `https://host[:port]`.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "Origin".
+ */
+export type Origin = string;
+/**
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "SecretMode".
+ */
+export type SecretMode = "brokered" | "raw";
+/**
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "LicenceClass".
+ */
+export type LicenceClass = "permissive" | "weakCopyleft" | "copyleft" | "nonCommercial" | "unknown";
+/**
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "PluginKind".
+ */
+export type PluginKind = "content" | "code";
+/**
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "Risk".
+ */
+export type Risk = "low" | "medium" | "high";
+/**
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "SourceKind".
+ */
+export type SourceKind = "bundled" | "registry" | "dev";
+/**
+ * `@<publisher>/<name>` (8A Decision 2).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "PluginId".
+ */
+export type PluginId = string;
+/**
+ * The shipped OS and architecture pairs (the triples of `deny.toml`), in Node's spelling.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "Platform".
+ */
+export type Platform = "darwin-arm64" | "darwin-x64" | "linux-x64" | "linux-arm64" | "win32-x64" | "win32-arm64";
+/**
+ * How a code plugin runs (spec §3.2). `python` and `wasm` are after v1.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "Runtime".
+ */
+export type Runtime =
+  | {
+      exec: {
+        "darwin-arm64"?: string;
+        "darwin-x64"?: string;
+        "linux-arm64"?: string;
+        "linux-x64"?: string;
+        "win32-arm64"?: string;
+        "win32-x64"?: string;
+      };
+      type: "native";
+    }
+  | {
+      main: string;
+      node: string;
+      type: "node";
+    };
 /**
  * This interface was referenced by `FinCore`'s JSON-Schema
  * via the `definition` "VideoCodec".
@@ -1465,6 +1685,16 @@ export type WorkerMsg =
 
 export interface FinCore {
   [k: string]: unknown;
+}
+/**
+ * What a person accepted with an approval, beyond the permissions (spec §5.3).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "Accept".
+ */
+export interface Accept {
+  copyleft?: boolean;
+  thirdPartyCode?: boolean;
 }
 /**
  * Who caused an entry: a person, an agent (with its session and the tool call that ran
@@ -2722,6 +2952,65 @@ export interface StorageState {
   state: StorageMode;
 }
 /**
+ * `plugin.lifecycle`: one plugin call (plan, install, update, downgrade, remove, enable,
+ * disable, revoke).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "PluginLifecycle".
+ */
+export interface PluginLifecycle {
+  /**
+   * A name from code or a static table (fin-core events::names); "other" for a value not in the table.
+   */
+  action: string;
+  /**
+   * The package's unpacked bytes as a log₂ bucket ([`log2_bucket`]).
+   */
+  bytesLog2: number;
+  code?: Code;
+  kind: PluginKindName;
+  micros: number;
+  outcome: PluginOutcome;
+  /**
+   * Permissions added or widened against the installed version (all of them for a first
+   * install), capped at 255.
+   */
+  permissionsAdded: number;
+  plugin?: PluginRef;
+  risk: RiskName;
+  source: PluginSourceName;
+}
+/**
+ * `registry.refresh`: one refresh of a registry's trusted metadata.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "RegistryRefresh".
+ */
+export interface RegistryRefresh {
+  /**
+   * A human principal asked for it (agents' and `system`'s refreshes install nothing).
+   */
+  byHuman: boolean;
+  /**
+   * A `TUF_*` code, `CLOCK_SUSPECT`, `REGISTRY_UNREACHABLE`, ...
+   */
+  code?: string;
+  micros: number;
+  outcome: PluginOutcome;
+  /**
+   * Roles whose trusted version changed.
+   */
+  rolesUpdated: number;
+  /**
+   * Days the registry's metadata is past its expiry (relaxed freshness), when it is.
+   */
+  staleDays?: number;
+  /**
+   * Targets listed after the refresh, as a log₂ bucket.
+   */
+  targetsLog2: number;
+}
+/**
  * An `INTERNAL` error, or one of the store's unexpected codes, returned through `fin-node`.
  *
  * This interface was referenced by `FinCore`'s JSON-Schema
@@ -3361,6 +3650,24 @@ export interface WordPlan {
   text: string;
 }
 /**
+ * A caption style (`fin_core::CaptionStyle` JSON) that `fin style add --from
+ * @pub/pack:<name>` copies into a project.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "CaptionStyleContribution".
+ */
+export interface CaptionStyleContribution {
+  file: string;
+  /**
+   * `[a-z0-9][a-z0-9-]{0,63}`, unique in the pack.
+   */
+  name: string;
+  /**
+   * A message key in the `en` catalogue for the style's display name.
+   */
+  title?: string | null;
+}
+/**
  * This interface was referenced by `FinCore`'s JSON-Schema
  * via the `definition` "CatalogEntry".
  */
@@ -3548,6 +3855,27 @@ export interface ConsentState {
 export interface ContentLight {
   maxCll: number;
   maxFall: number;
+}
+/**
+ * Contributions by kind (spec §4.2): the kinds this host consumes. Validation refuses any
+ * other key as `PLUGIN_CONTRIBUTION_UNSUPPORTED`.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "Contributes".
+ */
+export interface Contributes {
+  captionStyles?: CaptionStyleContribution[];
+  fontCatalogs?: FontCatalogContribution[];
+}
+/**
+ * A font catalog file (`fin_fonts::FontCatalog` JSON) whose entries join the server's
+ * catalog by entry id (8A Decision 22).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "FontCatalogContribution".
+ */
+export interface FontCatalogContribution {
+  file: string;
 }
 /**
  * A structured, machine-readable error. `code` is a stable `SCREAMING_SNAKE` string.
@@ -4163,6 +4491,196 @@ export interface IgnoredTrack {
   id: number;
 }
 /**
+ * What a person approves: made by [`super::make_plan`], kept in `staging/<planId>/plan.json`
+ * beside the staged tree, committed by [`crate::store::Store::commit`].
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "InstallPlan".
+ */
+export interface InstallPlan {
+  action: PlanAction;
+  /**
+   * Unpacked bytes.
+   */
+  bytes: number;
+  diff: PermissionDiff;
+  /**
+   * BLAKE3 (hex) of the plan's canonical JSON with `digest` empty ([`super::plan_digest`]):
+   * it binds the permissions, risks, licence and the staged tree hash.
+   */
+  digest: string;
+  /**
+   * Unix ms.
+   */
+  expiresAt: number;
+  /**
+   * The installed version an update or downgrade replaces.
+   */
+  from?: string | null;
+  licence: PlanLicence;
+  models?: PlanModel[];
+  /**
+   * Every permission of the new version with its risk, in manifest order.
+   */
+  permissions: PlannedPermission[];
+  planId: string;
+  plugin: PlanPlugin;
+  registryStaleDays?: number | null;
+  risk: Risk;
+  source: PlanSource;
+  /**
+   * The signed target's SHA-256, for registry plans.
+   */
+  targetSha256?: string | null;
+  /**
+   * `package::tree_hash` of the staged tree; re-checked at commit.
+   */
+  treeHash: string;
+  /**
+   * `thirdPartyCode` first when present (spec §3.1), then the others.
+   */
+  warnings?: PlanWarning[];
+}
+/**
+ * What an update changes in a plugin's grants. Order inside lists never matters.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "PermissionDiff".
+ */
+export interface PermissionDiff {
+  /**
+   * Permissions whose key the old set did not have.
+   */
+  added: Permission[];
+  /**
+   * Keys the new set no longer has.
+   */
+  removed: Permission[];
+  /**
+   * The overall risk rose, or a kept permission's risk rose through a combination.
+   */
+  riskUp: boolean;
+  /**
+   * Permissions of one key where the new one grants more.
+   */
+  widened: Widening[];
+}
+/**
+ * One permission an update widens: the same `perm`, granting more.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "Widening".
+ */
+export interface Widening {
+  from: Permission;
+  to: Permission;
+}
+/**
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "PlanLicence".
+ */
+export interface PlanLicence {
+  class: LicenceClass;
+  spdx: string;
+}
+/**
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "PlanModel".
+ */
+export interface PlanModel {
+  attribution?: string | null;
+  bytes: number;
+  id: string;
+  licence: string;
+}
+/**
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "PlannedPermission".
+ */
+export interface PlannedPermission {
+  permission: Permission;
+  /**
+   * Within the whole set (combinations count, spec §4.3).
+   */
+  risk: "low" | "medium" | "high";
+}
+/**
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "PlanPlugin".
+ */
+export interface PlanPlugin {
+  /**
+   * The id's name until manifests carry a display name.
+   */
+  displayName: string;
+  id: string;
+  kind: PluginKind;
+  /**
+   * The manifest's publisher name (shown to people, never journaled).
+   */
+  publisher: string;
+  version: string;
+}
+/**
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "PlanSource".
+ */
+export interface PlanSource {
+  kind: SourceKind;
+  registryId?: string | null;
+}
+/**
+ * A warning shown with the plan: `thirdPartyCode {confined}`, `yanked`, `advisory` (from the
+ * registry), `lookalikeId {similar}`, `copyleft {spdx}`, `licenceUnknown {spdx}`,
+ * `registryStale {days}`.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "PlanWarning".
+ */
+export interface PlanWarning {
+  code: string;
+  details?: {
+    [k: string]: unknown;
+  };
+}
+/**
+ * The installed version a plan is made against (from `control.db` in `finisherd`), and what a
+ * commit returns.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "InstalledPlugin".
+ */
+export interface InstalledPlugin {
+  /**
+   * The package directory, relative to `<server-data>/plugins` (`/`-separated).
+   */
+  dir: string;
+  id: string;
+  kind: PluginKind;
+  /**
+   * The granted permissions.
+   */
+  permissions?: Permission[];
+  registryId?: string | null;
+  source: SourceKind;
+  targetSha256?: string | null;
+  treeHash: string;
+  version: string;
+}
+/**
+ * One violation, shaped as an error `{code, message, details}`.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "Invalid".
+ */
+export interface Invalid {
+  code: string;
+  details: {
+    [k: string]: unknown;
+  };
+  message: string;
+}
+/**
  * A failed item of a batch job (`itemErrors`).
  *
  * This interface was referenced by `FinCore`'s JSON-Schema
@@ -4205,6 +4723,74 @@ export interface JournalStatus {
    */
   skippedUnknownProject?: number;
   state: JournalState;
+}
+/**
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "Manifest".
+ */
+export interface Manifest {
+  contributes?: Contributes;
+  /**
+   * The host API range this plugin works with (`^1.0`).
+   */
+  hostApi: string;
+  id: PluginId;
+  kind: PluginKind;
+  /**
+   * An SPDX expression.
+   */
+  license: string;
+  locales?: string[];
+  /**
+   * Always 1.
+   */
+  manifestVersion: number;
+  /**
+   * The package directory holding `<locale>.json` ICU catalogues.
+   */
+  messages?: string | null;
+  models?: ModelRef[];
+  permissions?: Permission[];
+  /**
+   * Code plugins only.
+   */
+  platforms?: Platform[];
+  publisher: Publisher;
+  /**
+   * Code plugins only.
+   */
+  runtime?: Runtime | null;
+  /**
+   * Semver 2.0 without build metadata, immutable once published.
+   */
+  version: string;
+}
+/**
+ * A model a code plugin needs (spec §8.2); never inside the package.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "ModelRef".
+ */
+export interface ModelRef {
+  attribution?: string | null;
+  bytes: number;
+  id: string;
+  license: string;
+  provenance?: string | null;
+  /**
+   * A message key in the `en` catalogue.
+   */
+  purpose: string;
+  sha256: string;
+  url: string;
+}
+/**
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "Publisher".
+ */
+export interface Publisher {
+  name: string;
+  url?: string | null;
 }
 /**
  * What a media file is (spec §6.3).
@@ -4584,6 +5170,30 @@ export interface UnitEntry {
       };
 }
 /**
+ * A target's signed custom metadata (`custom` in the delegated targets role).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "TargetCustom".
+ */
+export interface TargetCustom {
+  bytesUnpacked: number;
+  hostApi: string;
+  id: string;
+  kind: PluginKind;
+  license: string;
+  /**
+   * Lowercase hex SHA-256 of `finisher-plugin.json`.
+   */
+  manifestSha256: string;
+  /**
+   * [`permissions_digest`] of the manifest's permissions.
+   */
+  permissionsDigest: string;
+  platforms?: Platform[];
+  version: string;
+  yanked?: boolean;
+}
+/**
  * `test.badHello` (family `testbad`): its `hello` claims another envelope.
  *
  * This interface was referenced by `FinCore`'s JSON-Schema
@@ -4910,4 +5520,15 @@ export interface TestWarmResult {
  */
 export interface TxSetAside {
   setAside: SetAside;
+}
+/**
+ * `validateManifest`: the manifest when valid, else every violation.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "ValidationReport".
+ */
+export interface ValidationReport {
+  errors: Invalid[];
+  manifest?: Manifest | null;
+  ok: boolean;
 }

@@ -1,0 +1,15 @@
+{
+  "manifestVersion": 1,
+  "id": "@acme/caption-pack",
+  "version": "1.2.0",
+  "kind": "content",
+  "hostApi": "^1.0",
+  "license": "MIT",
+  "publisher": { "name": "Acme", "url": "https://acme.example.org" },
+  "messages": "i18n",
+  "locales": ["en"],
+  "contributes": {
+    "fontCatalogs": [{ "file": "fonts/catalog.json" }],
+    "captionStyles": [{ "name": "bold-pop", "file": "styles/bold-pop.json", "title": "style.boldPop" }]
+  }
+}

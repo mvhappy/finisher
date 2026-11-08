@@ -454,7 +454,8 @@ status: used (sub-project 4C), as Cargo dependencies; no code is copied.
   (Zlib).
 
 Not used: `webpki-roots`/`webpki-root-certs` (CDLA-Permissive-2.0; only wasm32 and Android
-would pull them, which `deny.toml` `[graph] targets` leaves out) and `aws-lc-rs`.
+would pull them, which `deny.toml` `[graph] targets` leaves out). `aws-lc-rs` is used since
+sub-project 8A (`fin-registry`, below).
 
 ## imagesize and roxmltree — `fin-probe` (image and SVG sizes)
 status: used (sub-project 4C), as Cargo dependencies; no code is copied.
@@ -491,6 +492,14 @@ Finisher uses them under Apache-2.0.
 ### ring (Apache-2.0 AND ISC) — `ring` 0.17
 status: used (sub-project 4C), its bundled C and assembly compiled by its build script; see
 "ureq, rustls and ring" above.
+
+### AWS-LC (ISC AND Apache-2.0 AND MIT AND BSD-3-Clause) — `aws-lc-sys` 0.47, `aws-lc-rs` 1.19
+status: used (sub-project 8A, `fin-registry`): `tough` 0.24's signature checks and the
+registry editor's ed25519 keys. `aws-lc-sys` compiles AWS-LC's bundled C and assembly with its
+cc builder (on Windows x64, its bundled `prebuilt-nasm` objects); `aws-lc-rs` compiles nothing.
+AWS-LC is ISC (`aws-lc-rs`: ISC AND (Apache-2.0 OR ISC)), with Apache-2.0, MIT and
+BSD-3-Clause parts and parts under (Apache-2.0 OR ISC OR MIT) or (Apache-2.0 OR ISC OR MIT-0);
+all of them apply.
 
 ## MPL-2.0 §3.2 — source of MPL-licensed crates
 Finisher's executables include the MPL-2.0 crates listed here, unmodified. Under MPL-2.0 §3.2

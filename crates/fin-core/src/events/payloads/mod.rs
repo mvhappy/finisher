@@ -25,6 +25,7 @@ pub mod fonts;
 pub mod jobs;
 pub mod journal;
 pub mod log;
+pub mod plugin;
 pub mod reserved;
 pub mod session;
 pub mod stats;
@@ -44,6 +45,10 @@ pub use jobs::{
 };
 pub use journal::JournalDropped;
 pub use log::{CommitOutcome, CommitRecord, IntentOmitted, LogCommit};
+pub use plugin::{
+    PluginKindName, PluginLifecycle, PluginOutcome, PluginRef, PluginSourceName, RegistryRefresh,
+    RiskName, log2_bucket,
+};
 pub use reserved::{ReviewVerdict, UiAction};
 pub use session::{Arch, BuildProfile, OsFamily, SessionEnd, SessionStart, SessionUnclean};
 pub use stats::{EvalStats, Histogram, RpcStats};
@@ -130,6 +135,7 @@ approx_fixed!(10 =>
     PanicThread, PanicWhere, FetchOutcome, CommitOutcome, CommitRecord, IntentOmitted,
     Arch, BuildProfile, OsFamily, StorageMode,
     JobOutcome, JobPriority, ProcessRole, ProcessHelperKind, ExitReason,
+    PluginOutcome, PluginSourceName, PluginKindName, RiskName,
 );
 
 /// The [`BlobRef`]s of each content [`Body`] given, for `AnyPayload::blobs`.

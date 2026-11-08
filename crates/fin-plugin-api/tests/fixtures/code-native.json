@@ -1,0 +1,31 @@
+{
+  "manifestVersion": 1,
+  "id": "@acme/tools",
+  "version": "0.3.1-beta.2",
+  "kind": "code",
+  "hostApi": "^1.0",
+  "license": "Apache-2.0",
+  "publisher": { "name": "Acme" },
+  "messages": "i18n",
+  "locales": ["en", "de"],
+  "platforms": ["darwin-arm64", "linux-x64"],
+  "runtime": {
+    "type": "native",
+    "exec": { "darwin-arm64": "bin/darwin-arm64/tools", "linux-x64": "bin/linux-x64/tools" }
+  },
+  "permissions": [
+    { "perm": "project:read" },
+    { "perm": "net", "origins": ["https://api.example.org"] },
+    { "perm": "fs", "scope": "pluginData", "access": "readWrite" }
+  ],
+  "models": [
+    {
+      "id": "tiny-model",
+      "url": "https://models.example.org/tiny.onnx",
+      "sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+      "bytes": 1024,
+      "license": "Apache-2.0",
+      "purpose": "model.tiny"
+    }
+  ]
+}

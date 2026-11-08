@@ -1,5 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { fixtureRoot, runGate } from "./gate-helpers.mjs";
 
 const lib = { "Cargo.toml": '[package]\nname = "hooked"\nversion = "0.0.0"\nedition = "2024"\n\n[features]\ntest-hooks = []\n', "src/lib.rs": "" };
@@ -34,6 +36,15 @@ test("test-hooks in a normal dependency fails", () => {
   const r = gate(workspace(', features = ["test-hooks"]'));
   assert.equal(r.code, 1);
   assert.match(r.out, /TEST_HOOKS_IN_BUILD/);
+});
+
+test("test-http in a normal dependency fails", () => {
+  const root = workspace(', features = ["test-http"]');
+  const manifest = join(root, "hooked", "Cargo.toml");
+  writeFileSync(manifest, readFileSync(manifest, "utf8").replace("test-hooks = []", "test-http = []"));
+  const r = gate(root);
+  assert.equal(r.code, 1, r.out);
+  assert.match(r.out, /TEST_HOOKS_IN_BUILD.*test-http/);
 });
 
 const finCrate = (main, features = "") =>

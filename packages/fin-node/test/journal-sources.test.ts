@@ -625,9 +625,11 @@ describe("fonts.fetch", () => {
     const fonts = FontManager.open(serverData);
     await fonts.fetch(JSON.stringify({ entries: ["sans"] }));
     await rejection(fonts.fetch(JSON.stringify({ entries: ["gone"] })));
-    const all = await fetches();
-    expect(all.find((f) => f.outcome === "cached")).toMatchObject({ entry: ok.entry, bytes: 0 });
-    expect(all.find((f) => f.outcome === "failed")).toMatchObject({ code: "FONT_FETCH_FAILED", bytes: 0 });
+    // The journal writer batches on a timer (~2 s), so wait for both entries.
+    const cached = await waitFor(async () => (await fetches()).find((f) => f.outcome === "cached"), 10_000, "a cached fetch");
+    const failed = await waitFor(async () => (await fetches()).find((f) => f.outcome === "failed"), 10_000, "a failed fetch");
+    expect(cached).toMatchObject({ entry: ok.entry, bytes: 0 });
+    expect(failed).toMatchObject({ code: "FONT_FETCH_FAILED", bytes: 0 });
     // The family name itself is never stored.
     expect(JSON.stringify(await entries(j))).not.toContain("Test Sans");
   }, 20_000);
