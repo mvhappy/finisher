@@ -116,7 +116,11 @@ export const ServerStatusSuccess = Schema.Struct({
   warnings: Schema.Array(Schema.Record(Schema.String, Schema.Unknown)),
 });
 
-/** `server.stop {}` (`auth.admin`; a service command, spec §4.7): answers, then stops gracefully. */
+/**
+ * `server.stop {challenge?}` (`auth.admin`; a service command, spec §4.7): answers, then stops
+ * gracefully. The console needs no code; a paired device sends its connection's (5B).
+ */
+export const ServerStopPayload = Schema.Struct({ challenge: ChallengeField });
 export const ServerStopSuccess = Schema.Struct({ stopping: Schema.Literal(true) });
 
 /** At most this many audit entries per `auth.audit.list` page. */

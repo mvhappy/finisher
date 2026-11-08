@@ -235,3 +235,13 @@ test("device_rules_human_only: every write needs auth.admin or settings.admin; o
   expect(offer({})).toBeUndefined();
   expect(offer({ self: false })).toBeUndefined();
 });
+
+test("device_confirmed_rules_take_a_code (5B Task 4: the payload keeps `challenge`)", () => {
+  const device = { kind: "device" as const, human: true };
+  const confirmed = (Object.keys(RPC_SCOPES) as Array<keyof typeof RPC_SCOPES>).filter((t) => needsConfirmation(t, {}, {}, device));
+  expect(confirmed).toEqual(["server.stop"]);
+  for (const tag of confirmed) {
+    const rpc = FinRpcs.requests.get(tag) as unknown as { payloadSchema: { fields?: Record<string, unknown> } };
+    expect(Object.keys(rpc.payloadSchema.fields ?? {}), tag).toContain("challenge");
+  }
+});

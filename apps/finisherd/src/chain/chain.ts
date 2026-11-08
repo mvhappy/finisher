@@ -6,8 +6,9 @@
 //   4. authorise (`authorize.ts`): scopes (all), human-only, reach;
 //   5. policy (`policy.ts`): branch write targets resolved through the store, then
 //      `allow {guard} | deny | ask` (`ask` answers `APPROVAL_REQUIRED {approvalId}`); then a
-//      `console` principal's mutating human-only call must carry its connection's typed
-//      challenge (`auth/challenges.ts`, Decision 30: `CONFIRMATION_REQUIRED`);
+//      `console` principal's mutating human-only call, and a `device`'s `server.stop` (5B),
+//      must carry its connection's typed challenge (`auth/challenges.ts`, Decision 30:
+//      `CONFIRMATION_REQUIRED`);
 //   6. the handler, with the resolved payload and the guard (`options.guard`), which every
 //      write passes into `fin-node` for the store to check inside its write transaction;
 //   7. after (sub-project 7's hooks; nothing in 5A but `project.open`'s reach re-check).
@@ -219,15 +220,11 @@ export function withChain<H extends object>(handlers: H, deps: ChainDeps): H {
       // Every call that needs a human-only scope is confirmed, unless its rule opts out (L2).
       // A connection taking back a credential it minted needs no second code (M2 of the review of Tasks 8–9).
       const conn = deps.connections.get(clientId);
-      if (principal.kind === "console" && needsConfirmation(tag, payload, resolved.facts) && !undoesOwnMint(conn, tag, payload)) {
+      // A device confirms only `server.stop` (5B, owner decision of 2026-11-08): `needsConfirmation`.
+      const mintUndo = principal.kind === "console" && undoesOwnMint(conn, tag, payload);
+      if (needsConfirmation(tag, payload, resolved.facts, principal) && !mintUndo) {
         const refusal = answerChallenge(conn, (payload as { challenge?: unknown } | null)?.challenge);
-        if (refusal !== undefined) return yield* Effect.fail(confirmationRequired(tag, refusal));
-      }
-      // A `service` opt-out (`server.stop`) is for the console that service managers run; any
-      // other person's principal (5B's devices with `auth.admin`) must confirm it, and until
-      // 5B has a way to, it cannot (review of Tasks 8–9, Task 8).
-      if (rule.unconfirmed === "service" && principal.human && principal.kind !== "console") {
-        return yield* Effect.fail(confirmationRequired(tag, "missing"));
+        if (refusal !== undefined) return yield* Effect.fail(confirmationRequired(tag, refusal, principal.kind === "device" ? "app" : "console"));
       }
       // A credential's writes carry its own author, whatever it sent (M4; review of Tasks 8–9,
       // M1: whatever its branch limits, or it could plant an `own` branch for another; 7A

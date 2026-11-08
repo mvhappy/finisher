@@ -12,7 +12,7 @@ import { deviceHandlers, envHandlers } from "./auth/device-rpc.ts";
 import { chainOf, credentialOf, withChain, writeGuardOf } from "./chain/chain.ts";
 import { AuditTag } from "./control/audit.ts";
 import { ConnectionRegistryTag, ConnectionsTag } from "./connections.ts";
-import { issueChallenge, noteMinted } from "./auth/challenges.ts";
+import { issueChallenge, mayChallenge, noteMinted } from "./auth/challenges.ts";
 import { actorFor, type CallMeta, Diagnostics } from "./diagnostics.ts";
 import { attemptJson, finError, toFinError } from "./errors.ts";
 import { AgentCoreTag } from "./agent/core.ts";
@@ -205,8 +205,9 @@ export const HandlersLive = FinRpcs.toLayer(
           "console.challenge",
           Effect.suspend(() => {
             const c = connections.get(options.client.id);
-            if (principalOf(options).kind !== "console" || c === undefined) {
-              return Effect.fail(finError("INVALID_REQUEST", "console.challenge is for the server's console", { tag: "console.challenge" }));
+            // Every human principal (5B Decision 22): the console and paired devices.
+            if (!mayChallenge(principalOf(options)) || c === undefined) {
+              return Effect.fail(finError("INVALID_REQUEST", "console.challenge is for the server's console and paired devices", { tag: "console.challenge" }));
             }
             return Effect.succeed(issueChallenge(c));
           }),

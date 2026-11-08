@@ -79,6 +79,7 @@ import {
   ServerHelloPayload,
   ServerHelloSuccess,
   ServerStatusSuccess,
+  ServerStopPayload,
   ServerStopSuccess,
 } from "./auth.ts";
 import {
@@ -418,7 +419,7 @@ export const FinRpcs = RpcGroup.make(
   Rpc.make("console.challenge", { payload: Schema.Struct({}), success: ConsoleChallengeSuccess, error: FinError }),
   // 5A Task 8: the server's own state and graceful stop; the owner's audit log.
   Rpc.make("server.status", { payload: Schema.Struct({}), success: ServerStatusSuccess, error: FinError }),
-  Rpc.make("server.stop", { payload: Schema.Struct({}), success: ServerStopSuccess, error: FinError }),
+  Rpc.make("server.stop", { payload: ServerStopPayload, success: ServerStopSuccess, error: FinError }),
   Rpc.make("auth.audit.list", { payload: AuditListPayload, success: AuditListSuccess, error: FinError }),
   Rpc.make("auth.audit.purge", { payload: AuditPurgePayload, success: AuditPurgeSuccess, error: FinError }),
   // 5A Task 9: the owner's agent and MCP credentials.

@@ -139,7 +139,8 @@ export interface RuleOf<T extends FinRpcTag> {
    * `CONFIRMATION_REQUIRED`: on by default (owner decision, review of Task 7, L2). A rule opts
    * out only as `readOnly` (it changes nothing: reading content, asking for a code, listing the
    * audit) or `service` (`server.stop`, which service managers call without a terminal, spec
-   * §4.7).
+   * §4.7). A `device` (5B) confirms exactly the `service` rules: the opt-out is the console's,
+   * and stopping the server from the app takes the person's code (`needsConfirmation`).
    */
   readonly unconfirmed?: "readOnly" | "service";
   /**
@@ -203,7 +204,8 @@ export const RPC_SCOPES: { readonly [T in FinRpcTag]: RuleOf<T> } = {
   "auth.whoami": { scopes: ["server.read"] },
   // No id: a credential can revoke only itself.
   "auth.revokeSelf": { scopes: ["server.read"] },
-  // The console's typed confirmations (Decision 30); the handler serves `console` principals only.
+  // The typed confirmations (Decision 30); the handler serves the human principals only
+  // (`console` and, since 5B, `device`).
   "console.challenge": { scopes: ["auth.admin"], unconfirmed: "readOnly" },
   // 5A Task 8. Stopping is the owner's, but service managers call it without a terminal.
   "server.status": { scopes: ["server.read"] },
@@ -439,12 +441,32 @@ export function escalatedScopes(tag: FinRpcTag, payload: unknown, facts: RuleFac
   return [...new Set(more)].filter((s) => !r.scopes.includes(s));
 }
 
+/** The rule's opt-out for `payload`: its `unconfirmedIf` when that answers, else its `unconfirmed`. */
+export function optOutOf(tag: FinRpcTag, payload: unknown): "readOnly" | "service" | undefined {
+  const r = ruleOf(tag);
+  return r.unconfirmedIf?.(payload as never) ?? r.unconfirmed;
+}
+
 /**
- * Whether a `console` principal's call must carry its connection's typed code: it needs a
- * human-only scope and its rule does not opt out (`unconfirmed`).
+ * Whether a call must carry its connection's typed code (`console.challenge`):
+ * - a `console` principal's, when it needs a human-only scope and its rule does not opt out
+ *   (`unconfirmed`, or `unconfirmedIf` for this payload; 5A Decision 30, review of Task 7 L2);
+ * - a `device`'s, only for the rules a service manager calls without a terminal
+ *   (`unconfirmed: "service"`: `server.stop`; owner decision of 2026-11-08, narrowing 5B
+ *   Decision 22): a person in the app confirms stopping the server, and nothing else;
+ * - a non-human's never (it holds no human-only scope); a human kind this code does not know is
+ *   held to the console's rule, so a new kind fails closed.
+ * `principal` defaults to the console.
  */
-export function needsConfirmation(tag: FinRpcTag, payload: unknown, facts: RuleFacts = {}): boolean {
-  return ruleOf(tag).unconfirmed === undefined && requiredScopes(tag, payload, facts).some((s) => HUMAN_ONLY.has(s));
+export function needsConfirmation(
+  tag: FinRpcTag,
+  payload: unknown,
+  facts: RuleFacts = {},
+  principal: { readonly kind: PrincipalKind; readonly human: boolean } = { kind: "console", human: true },
+): boolean {
+  if (!principal.human) return false;
+  if (principal.kind === "device") return ruleOf(tag).unconfirmed === "service";
+  return optOutOf(tag, payload) === undefined && requiredScopes(tag, payload, facts).some((s) => HUMAN_ONLY.has(s));
 }
 
 /** Every scope `tag` needs for `payload`, given the resolved `facts`. */
