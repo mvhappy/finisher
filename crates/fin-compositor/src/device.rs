@@ -43,6 +43,19 @@ impl AdapterChoice {
         })
     }
 
+    /// The backend sets tried in order, the first with an adapter wins. `Auto` on Windows is
+    /// D3D12 first, Vulkan only without a D3D12 adapter (spec §5.2): of the primary backends
+    /// wgpu would otherwise pick Vulkan's high-performance adapter.
+    pub fn backends(self) -> Vec<wgpu::Backends> {
+        match self {
+            AdapterChoice::Backend(b) => vec![b],
+            AdapterChoice::Auto if cfg!(windows) => {
+                vec![wgpu::Backends::DX12, wgpu::Backends::PRIMARY]
+            }
+            AdapterChoice::Auto | AdapterChoice::Software => vec![wgpu::Backends::PRIMARY],
+        }
+    }
+
     /// The choice in `FIN_GPU` (`Auto` when unset).
     pub fn from_env() -> Result<AdapterChoice, CoreError> {
         AdapterChoice::parse(&std::env::var("FIN_GPU").unwrap_or_default())
@@ -84,19 +97,16 @@ impl Gpu {
         pollster::block_on(Gpu::open(choice))
     }
 
-    /// Opens the adapter `choice` names.
-    pub async fn open(choice: AdapterChoice) -> Result<Gpu, CoreError> {
-        let backends = match choice {
-            AdapterChoice::Backend(b) => b,
-            AdapterChoice::Auto | AdapterChoice::Software => wgpu::Backends::PRIMARY,
-        };
+    async fn adapter(
+        choice: AdapterChoice,
+        backends: wgpu::Backends,
+    ) -> Result<wgpu::Adapter, String> {
         let mut desc = wgpu::InstanceDescriptor::new_without_display_handle();
         desc.backends = backends;
         desc.flags = wgpu::InstanceFlags::empty();
         // FXC (part of Windows) compiles D3D12 shaders; DXC would be a shipped DLL (spec §5.2).
         desc.backend_options.dx12.shader_compiler = wgpu::Dx12Compiler::Fxc;
-        let instance = wgpu::Instance::new(desc);
-        let adapter = instance
+        wgpu::Instance::new(desc)
             .request_adapter(&wgpu::RequestAdapterOptions {
                 power_preference: wgpu::PowerPreference::HighPerformance,
                 force_fallback_adapter: choice == AdapterChoice::Software,
@@ -104,6 +114,23 @@ impl Gpu {
                 apply_limit_buckets: false,
             })
             .await
+            .map_err(|e| e.to_string())
+    }
+
+    /// Opens the adapter `choice` names.
+    pub async fn open(choice: AdapterChoice) -> Result<Gpu, CoreError> {
+        // A set that only has a CPU adapter (WARP) gives way to the next one's GPU.
+        let mut adapter = Err(String::new());
+        for backends in choice.backends() {
+            adapter = Gpu::adapter(choice, backends).await;
+            if adapter
+                .as_ref()
+                .is_ok_and(|a| a.get_info().device_type != wgpu::DeviceType::Cpu)
+            {
+                break;
+            }
+        }
+        let adapter = adapter
             .map_err(|e| unavailable(choice, "noAdapter", format!("no GPU adapter: {e}")))?;
         let info = adapter.get_info();
         let software = info.device_type == wgpu::DeviceType::Cpu;
@@ -251,6 +278,24 @@ mod tests {
         assert_eq!(
             AdapterChoice::parse("cuda").unwrap_err().code,
             "GPU_UNAVAILABLE"
+        );
+    }
+
+    #[test]
+    fn auto_prefers_d3d12_on_windows() {
+        let first = AdapterChoice::Auto.backends()[0];
+        if cfg!(windows) {
+            assert_eq!(first, wgpu::Backends::DX12);
+        } else {
+            assert_eq!(first, wgpu::Backends::PRIMARY);
+        }
+        assert_eq!(
+            AdapterChoice::Backend(wgpu::Backends::VULKAN).backends(),
+            [wgpu::Backends::VULKAN]
+        );
+        assert_eq!(
+            AdapterChoice::Software.backends(),
+            [wgpu::Backends::PRIMARY]
         );
     }
 

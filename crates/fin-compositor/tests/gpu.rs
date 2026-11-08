@@ -190,6 +190,17 @@ fn every_blend_mode_builds_on_this_backend() {
     }
 }
 
+/// `FIN_GPU=auto` on Windows renders on D3D12, not on Vulkan (spec §5.2).
+#[cfg(windows)]
+#[test]
+fn auto_is_d3d12_on_windows() {
+    if AdapterChoice::from_env().expect("FIN_GPU") != AdapterChoice::Auto {
+        return;
+    }
+    let Some(gpu) = gpu() else { return };
+    assert_eq!(gpu.info().backend, "dx12", "{:?}", gpu.info());
+}
+
 #[test]
 fn pipelines_are_created_once_per_stage_and_mode() {
     let Some(gpu) = gpu() else { return };
