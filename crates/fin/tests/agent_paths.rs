@@ -76,6 +76,15 @@ fn file_args_confined() {
     refused(&import("../../../server-data/auth/local.key"));
     refused(&import(&key_text));
     refused(&host.agent(&s, &ws, &["asset", "add", "/etc/hosts"]));
+    // 6A-2's `look --out` names a folder the worker writes to: confined the same way, before anything is sent.
+    refused(&host.agent(&s, &ws, &["look", "--at", "0", "--out", "/tmp"]));
+    refused(&host.agent(&s, &ws, &["look", "--at", "0", "--out", "../../../outside"]));
+    let inside = host.agent(&s, &ws, &["look", "--at", "0", "--out", "frames"]);
+    assert_ne!(
+        inside.json["error"]["code"], "PATH_NOT_ALLOWED",
+        "{}",
+        inside.stdout
+    );
     refused(&host.agent(
         &s,
         &ws,

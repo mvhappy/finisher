@@ -23,6 +23,8 @@ pub const PATH_ARGS: &[(&str, &str)] = &[
     ("asset.add", "path"),
     ("caption.import", "words"),
     ("caption.import", "srt"),
+    // 6A-2: the folder the media worker writes the PNGs to (sent to the server as a path).
+    ("look", "out"),
     ("project.create", "dir"),
     ("project.open", "dir"),
     ("project.recover", "import"),
