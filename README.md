@@ -11,7 +11,7 @@ the current plan is in [docs/plans/](docs/plans/).
 ## Development
 
 ```bash
-rtk npm install -g pnpm@12.15.0   # Node 26 ships no corepack; CI does the same
+rtk npm install -g pnpm@12.15.0   # CI installs pnpm the same way
 rtk pnpm install
 rtk cargo test                    # default members; the cross-host harness: cargo build -p fin-store-xhost
 rtk pnpm test
@@ -30,7 +30,7 @@ the `.deb` into a user directory and add its `usr/bin` to `PATH`).
 
 Sub-projects 2, 4A, 4B and 4C ship the core with durable storage, history and the full edit model: `finisherd` (the local server)
 and `fin` (the agent CLI, JSON on stdout). Build both, start the server, then edit through `fin`.
-Node 26, pnpm 12.15.0 (`npm install -g pnpm@12.15.0`) and the Rust toolchain from
+Node 24, pnpm 12.15.0 (`npm install -g pnpm@12.15.0`) and the Rust toolchain from
 `rust-toolchain.toml` are required.
 
 macOS / Linux:

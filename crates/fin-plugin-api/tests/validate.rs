@@ -22,7 +22,7 @@ fn content_pack_with_permissions_is_invalid() {
     let v = set(
         fixture("content-pack"),
         "/runtime",
-        json!({ "type": "node", "main": "dist/plugin.mjs", "node": ">=26.12" }),
+        json!({ "type": "node", "main": "dist/plugin.mjs", "node": ">=24.22" }),
     );
     assert_eq!(reasons(check(&v)), ["contentRuntime"]);
     let v = set(fixture("content-pack"), "/contributes", json!({}));
@@ -55,7 +55,7 @@ fn code_plugin_needs_runtime_and_platforms() {
 
 #[test]
 fn node_runtime_needs_min_version() {
-    for ok in [">=26.12", "^26", "26.*", "~26.12.1", ">=26.12, <30"] {
+    for ok in [">=24.22", "^24", "24.*", "~24.22.2", ">=24.22, <30"] {
         let v = set(fixture("code-node"), "/runtime/node", json!(ok));
         assert!(check(&v).is_ok(), "{ok}");
     }
@@ -322,7 +322,7 @@ fn compatibility_with_the_running_host() {
     assert_eq!(errs[0].details["host"], json!("1.0.0"));
     let mut c: ValidateCtx = ctx(SourceClass::Registry);
     c.platform = Some(Platform::Win32Arm64);
-    c.node = Some(Version::new(26, 11, 0));
+    c.node = Some(Version::new(24, 21, 0));
     let codes: Vec<String> = check_with(&fixture("code-node"), &MemFiles::full(), &c)
         .unwrap_err()
         .iter()
@@ -330,7 +330,7 @@ fn compatibility_with_the_running_host() {
         .collect();
     assert_eq!(codes, ["PLUGIN_PLATFORM", "PLUGIN_NODE_VERSION"]);
     c.platform = Some(Platform::LinuxArm64);
-    c.node = Some(Version::new(26, 12, 1));
+    c.node = Some(Version::new(24, 22, 2));
     assert!(check_with(&fixture("code-node"), &MemFiles::full(), &c).is_ok());
     // Content packs run anywhere.
     c.platform = Some(Platform::Win32Arm64);

@@ -213,7 +213,7 @@ fn plan_refuses_incompatible_host_api_platform_and_node() {
         ..Default::default()
     };
     let mut ctx = ctx(fin_plugin_api::SourceClass::Registry);
-    ctx.node = Some(semver::Version::new(26, 12, 1));
+    ctx.node = Some(semver::Version::new(24, 22, 2));
     let e = fin_registry::plan::make_plan(
         PlanInput::Registry(Box::new(t)),
         &fx.store,

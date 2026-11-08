@@ -27,7 +27,7 @@
 
 **Tech Stack:**
 - Rust 2024; `tough` 0.24 (MIT OR Apache-2.0; `http` feature off) and its `aws-lc-rs` crypto, or, if Task 1's gate fails, a fork of `tough` with its key parsing, signature verification and signing moved onto `ring`; `tokio` (a current-thread runtime inside `fin-registry` only); `zip` 9 (in the tree); `spdx`, `semver` (MIT OR Apache-2.0); `blake3`/`sha2` (in the tree); for `test-http` only, a minimal HTTP server and client already in the dev tree (Task 5 picks it and records the licence).
-- Node 24.22 (`node:sqlite`; the Node Electron embeds, and the repository's target once its TASKS switch from Node 26 lands), Effect 4.0.6, vitest. Only APIs present in Node 24.22 are used.
+- Node 24.22 (`node:sqlite`; the Node Electron embeds, and the repository's Node since 2026-11-08), Effect 4.0.6, vitest. Only APIs present in Node 24.22 are used.
 - **No other new dependency.** No `gix`, no `jsonschema` (8B), no `tuf`. Each task that adds one runs `cargo deny` and the JS licence gate and records the licence in its commit body.
 
 **Spec:** `docs/specs/2026-11-07-sub-project-8-plugins-design.md` §1, §3.7 (scopes), §4–6, §11–13, §15, §17–20. Parent: arch §8.3, §14, §15, §16, §18, §21.1. Related: sub-project 5 spec §3.1–3.3, §4.4–4.6 (branch `sp5-design`); sub-project 7 spec §7.2 (`deny plugin.install`), §10 (`SecretStore`) (branch `sp7-design`); the 4C plan Decision 30 (font catalogs).
