@@ -261,3 +261,16 @@ fn a_stuck_root_probe_is_not_repeated() {
     }
     assert_eq!(probe_hooks::started(&root), 2);
 }
+
+/// With the dataless policy off, macOS answers `EDEADLK` for a dataless directory listed or
+/// a dataless file read: `CLOUD_ONLY` (plan 5D M4).
+#[cfg(target_os = "macos")]
+#[test]
+fn edeadlk_is_cloud_only() {
+    use fin_library::volume::unreachable_code;
+    let deadlk = std::io::Error::from_raw_os_error(libc::EDEADLK);
+    assert_eq!(
+        unreachable_code(&deadlk),
+        fin_library::walk::code::CLOUD_ONLY
+    );
+}

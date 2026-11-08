@@ -10,6 +10,9 @@ use std::process::Command;
 
 use fin_library::{Expect, RawRel};
 
+#[cfg(target_os = "macos")]
+pub mod image;
+
 /// What the catalog would expect for the file at `path` (size, mtime, inode big-endian, and
 /// its device as the OS's listing reports it).
 pub fn expect_of(path: &Path) -> Expect {

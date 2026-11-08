@@ -228,11 +228,8 @@ impl Source for NativeSource {
         self.read_dir_with(dir, &|| {})?.strict()
     }
 
-    // Linux lists partially (a `Listing` already); macOS's listing is all or nothing (a
-    // `Vec`) until it does.
-    #[cfg_attr(target_os = "linux", allow(clippy::useless_conversion))]
     fn read_dir_with(&self, dir: &DirHandle, progress: &dyn Fn()) -> io::Result<Listing> {
-        os::list(Self::fd(dir)?, progress).map(Listing::from)
+        os::list(Self::fd(dir)?, progress)
     }
 
     fn stat_child(&self, parent: &DirHandle, name: &[u8]) -> io::Result<Option<RawEntry>> {

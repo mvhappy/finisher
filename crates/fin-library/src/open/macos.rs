@@ -18,20 +18,13 @@ use crate::types::{Expect, OpenError};
 
 const DIR_FLAGS: i32 = libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC;
 
-fn same_dev(fd: RawFd, root_dev: libc::dev_t) -> Result<(), OpenError> {
-    if fstat(fd)?.st_dev == root_dev {
-        Ok(())
-    } else {
-        Err(OpenError::Escapes)
-    }
-}
-
-/// The per-component walk, for a system without `O_NOFOLLOW_ANY` (`EINVAL`).
-fn walk_components(
-    root: &OwnedFd,
-    root_dev: libc::dev_t,
-    dir: &[Vec<u8>],
-) -> Result<OwnedFd, OpenError> {
+/// The per-component walk, should `O_NOFOLLOW_ANY` ever be refused (`EINVAL`). Not reached on
+/// a supported Mac: the flag exists since macOS 11, below `aarch64-apple-darwin`'s 11.0
+/// floor and the spec's (D31: macOS 14+, Apple Silicon). Nor would an older kernel refuse it:
+/// XNU does not validate unknown open bits (`0x20000000` was the obsolete `O_ALERT`), so
+/// before macOS 11 the open would follow links silently (by reading XNU; no such system was
+/// tested). That floor, not this walk, is what makes the flag safe.
+fn walk_components(root: &OwnedFd, dir: &[Vec<u8>]) -> Result<OwnedFd, OpenError> {
     let mut cur: Option<OwnedFd> = None;
     for c in dir {
         let base = cur.as_ref().unwrap_or(root).as_raw_fd();
@@ -43,27 +36,22 @@ fn walk_components(
                 map_errno(e)
             }
         })?;
-        same_dev(fd.as_raw_fd(), root_dev)?;
         cur = Some(fd);
     }
     cur.ok_or(OpenError::NotFound)
 }
 
-fn open_parent(
-    root: &OwnedFd,
-    root_dev: libc::dev_t,
-    dir: &[Vec<u8>],
-) -> Result<Option<OwnedFd>, OpenError> {
+/// The file's directory, from the root's descriptor, following no link. A nested mount below
+/// the root is crossed (its rows are catalogued); the opened file is checked against the row's
+/// device instead ([`Expect::check_volume`]).
+fn open_parent(root: &OwnedFd, dir: &[Vec<u8>]) -> Result<Option<OwnedFd>, OpenError> {
     if dir.is_empty() {
         return Ok(None);
     }
     let path = cname(&dir.join(&b'/'))?;
     match openat(root.as_raw_fd(), &path, DIR_FLAGS | libc::O_NOFOLLOW_ANY) {
-        Ok(fd) => {
-            same_dev(fd.as_raw_fd(), root_dev)?;
-            Ok(Some(fd))
-        }
-        Err(e) if errno_is(&e, libc::EINVAL) => walk_components(root, root_dev, dir).map(Some),
+        Ok(fd) => Ok(Some(fd)),
+        Err(e) if errno_is(&e, libc::EINVAL) => walk_components(root, dir).map(Some),
         Err(e) => Err(map_errno(e)),
     }
 }
@@ -113,7 +101,7 @@ pub(super) fn open(
 ) -> Result<File, OpenError> {
     let root_fd = open_root(root).map_err(map_errno)?;
     let root_dev = fstat(root_fd.as_raw_fd())?.st_dev;
-    let parent = open_parent(&root_fd, root_dev, dir)?;
+    let parent = open_parent(&root_fd, dir)?;
     let pfd = parent.as_ref().unwrap_or(&root_fd).as_raw_fd();
     let cn = cname(name)?;
 
@@ -137,11 +125,10 @@ pub(super) fn open(
         libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_NOCTTY | libc::O_CLOEXEC;
     let fd = openat(pfd, &cn, oflags).map_err(map_errno)?;
 
-    // 3. Identity (and the flags again: the residual window).
+    // 3. Identity: on the row's volume (a nested mount is crossed), then the file itself (and
+    // the flags again: the residual window).
     let st = fstat(fd.as_raw_fd())?;
-    if st.st_dev != root_dev {
-        return Err(OpenError::Escapes);
-    }
+    expect.check_volume(&st.st_dev.to_string(), || st.st_dev == root_dev)?;
     if st.st_mode & libc::S_IFMT != libc::S_IFREG {
         return Err(OpenError::Changed);
     }
