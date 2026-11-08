@@ -3,8 +3,8 @@
 // - `fin` links no media crate;
 // - `fin-node` never links `fin-codecs`, `fin-compositor`, `fin-graphics` or `wgpu` (it links
 //   `fin-media`, `fin-container` and, for the job-output move, `fin-shm`);
-// - only `fin-workers` links `fin-codecs` (and `fin-svt-sys`, through it), and only
-//   `fin-workers` and `fin-wasm` link `fin-compositor`;
+// - only `fin-workers` links `fin-codecs` (and `fin-svt-sys` and `fin-dav1d-sys`, through
+//   it), and only `fin-workers` and `fin-wasm` link `fin-compositor`;
 // - `fin-workers` takes `fin-fonts` with `default-features = false` and without `fetch`
 //   (workers never fetch).
 // Each breach is CRATE_DEPENDENCY naming the path's two ends.
@@ -21,6 +21,7 @@ export const RULES = [
 export const ONLY = [
   { crate: "fin-codecs", by: ["fin-workers"] },
   { crate: "fin-svt-sys", by: ["fin-codecs", "fin-workers"] },
+  { crate: "fin-dav1d-sys", by: ["fin-codecs", "fin-workers"] },
   { crate: "fin-compositor", by: ["fin-workers", "fin-wasm"] },
 ];
 
