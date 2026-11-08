@@ -18,8 +18,6 @@ use std::sync::{Arc, Mutex, RwLock, Weak};
 use std::time::Duration;
 
 use fin_core::CoreError;
-use schemars::JsonSchema;
-use serde::Serialize;
 use serde_json::json;
 
 use crate::cache::FontCache;
@@ -27,6 +25,7 @@ use crate::catalog::{CatalogSource, CatalogStyle, FontCatalog};
 use crate::download::{Target, download};
 use crate::http::{Failure, Http};
 use crate::slot::Slot;
+use crate::wire::FileState;
 use crate::{archive, lock, not_in_catalog, now_ms};
 
 #[derive(Debug, Clone)]
@@ -57,25 +56,6 @@ impl Default for FetchOptions {
             lock_wait: Duration::from_secs(10 * 60),
         }
     }
-}
-
-/// A catalog file's state in this server (Decision 34).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
-#[serde(tag = "state", rename_all = "camelCase")]
-pub enum FileState {
-    Cached,
-    /// Not cached and not queued: never requested, or background fetching is off.
-    Missing,
-    Queued,
-    Fetching {
-        bytes: u64,
-        total: u64,
-    },
-    #[serde(rename_all = "camelCase")]
-    Failed {
-        reason: String,
-        retry_at_ms: i64,
-    },
 }
 
 pub struct Fetcher {

@@ -496,6 +496,18 @@ describe("params, rules and paths", () => {
     expect(jobKindVersions()).toContainEqual({ kind: "test.sleep", version: 1 });
   });
 
+  test("media_look_params_are_checked_as_the_worker_checks_them", () => {
+    const look = { timeline: "tl1", at: ["1/2"], planSamples: [{ at: "1/2", blake3: "ab" }], outName: "look" };
+    expect(jobKindVersions()).toContainEqual({ kind: "media.look", version: 1 });
+    expect(validateJobParams("media.look", 1, look)).toEqual({ ok: true, params: look });
+    const name = validateJobParams("media.look", 1, { ...look, outName: "../x" });
+    expect(!name.ok && name.errors.join(" ")).toMatch(/outName/);
+    const none = validateJobParams("media.look", 1, { ...look, at: [] });
+    expect(!none.ok && none.errors.join(" ")).toMatch(/params\.at/);
+    const extra = validateJobParams("media.look", 1, { ...look, bogus: 1 });
+    expect(!extra.ok && extra.errors.join(" ")).toMatch(/bogus/);
+  });
+
   test("validate_params_refuses_bad_versions_and_huge_params", () => {
     for (const version of [1.5, -1, Number.NaN, 2 ** 32]) {
       expect(() => validateJobParams("test.sleep", version, { ms: 5 }), String(version)).toThrow(

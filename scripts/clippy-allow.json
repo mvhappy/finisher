@@ -28,6 +28,10 @@
     "reason": "real_directory resolves a root once at library.add (and the server data directory); never a file under a root."
   },
   {
+    "path": "crates/fin-node/src/test_registry.rs",
+    "reason": "The test-hooks registry checks for its own publisher key file, never a library path."
+  },
+  {
     "path": "crates/fin-node/src/private_dir.rs",
     "reason": "Inspects the server's private directories."
   },

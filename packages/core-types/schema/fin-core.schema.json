@@ -3872,6 +3872,22 @@
       ],
       "type": "object"
     },
+    "FontFileRef": {
+      "description": "A project font asset's file and the SHA-256 its asset pins.",
+      "properties": {
+        "original": {
+          "$ref": "#/$defs/OriginalFile"
+        },
+        "sha256": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "sha256",
+        "original"
+      ],
+      "type": "object"
+    },
     "FontFileStatus": {
       "description": "One font file. `entry` and `style` name its catalog style, when the catalog lists it;\n`keys` are the font keys (`<family>|<weight>|<normal|italic>`) open projects pin it as.",
       "properties": {
@@ -4318,6 +4334,43 @@
       "required": [
         "incarnation",
         "n"
+      ],
+      "type": "object"
+    },
+    "GpuAdapter": {
+      "description": "The GPU adapter frames were composited on (numeric ids, spec §21 decision 7).",
+      "properties": {
+        "backend": {
+          "type": "string"
+        },
+        "device": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "deviceType": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "software": {
+          "description": "A CPU adapter (lavapipe, WARP).",
+          "type": "boolean"
+        },
+        "vendor": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "backend",
+        "deviceType",
+        "name",
+        "vendor",
+        "device",
+        "software"
       ],
       "type": "object"
     },
@@ -6288,6 +6341,28 @@
       ],
       "type": "string"
     },
+    "JobSnapshot": {
+      "description": "`in/snapshot.json` (plan 6A Decision 2).",
+      "properties": {
+        "branch": {
+          "type": "string"
+        },
+        "project": {
+          "$ref": "#/$defs/Project"
+        },
+        "rev": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "branch",
+        "rev",
+        "project"
+      ],
+      "type": "object"
+    },
     "JobSpawnGrant": {
       "additionalProperties": false,
       "description": "A path the process may use (for a sandbox's rules).",
@@ -7593,6 +7668,171 @@
       ],
       "type": "object"
     },
+    "LookFrame": {
+      "description": "One rendered frame of a `media.look`.",
+      "properties": {
+        "at": {
+          "$ref": "#/$defs/Rational"
+        },
+        "file": {
+          "description": "Relative to `out/`.",
+          "type": "string"
+        },
+        "height": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "plan": {
+          "description": "The plan's BLAKE3 (lowercase hex).",
+          "type": "string"
+        },
+        "width": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "at",
+        "file",
+        "width",
+        "height",
+        "plan"
+      ],
+      "type": "object"
+    },
+    "LookParams": {
+      "additionalProperties": false,
+      "description": "`media.look` v1: frames of `timeline` at each time in `at`, as PNGs in `out/`.",
+      "properties": {
+        "at": {
+          "description": "Timeline times in seconds, 1 to [`LOOK_MAX_TIMES`] of them.",
+          "items": {
+            "$ref": "#/$defs/Rational"
+          },
+          "type": "array"
+        },
+        "outName": {
+          "description": "The stem of the files written: `out/<outName>-<i>.png`. `[A-Za-z0-9_-]`, 1 to\n[`OUT_NAME_MAX`] characters.",
+          "type": "string"
+        },
+        "planSamples": {
+          "description": "One sample per time in `at` (spec §3.3: every time for `media.look`); a plan the worker\nevaluates differently is `PLAN_MISMATCH`.",
+          "items": {
+            "$ref": "#/$defs/PlanSample"
+          },
+          "type": "array"
+        },
+        "size": {
+          "$ref": "#/$defs/Size",
+          "description": "The frame size; the timeline's resolution when absent. Each side 1 to\n[`LOOK_MAX_SIDE`]."
+        },
+        "timeline": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "timeline",
+        "at",
+        "planSamples",
+        "outName"
+      ],
+      "type": "object"
+    },
+    "LookResult": {
+      "description": "What `media.look` v1 answers.",
+      "properties": {
+        "adapter": {
+          "$ref": "#/$defs/GpuAdapter"
+        },
+        "frames": {
+          "description": "In `at` order.",
+          "items": {
+            "$ref": "#/$defs/LookFrame"
+          },
+          "type": "array"
+        },
+        "skipped": {
+          "description": "Every frame's, in `at` order, bottom layer first within a frame.",
+          "items": {
+            "$ref": "#/$defs/LookSkipped"
+          },
+          "type": "array"
+        },
+        "stats": {
+          "$ref": "#/$defs/LookStats"
+        }
+      },
+      "required": [
+        "frames",
+        "skipped",
+        "adapter",
+        "stats"
+      ],
+      "type": "object"
+    },
+    "LookSkipped": {
+      "description": "A layer, or an effect or mask of a drawn one, that a frame left out (spec §2.7).",
+      "properties": {
+        "at": {
+          "$ref": "#/$defs/Rational"
+        },
+        "code": {
+          "description": "`CODEC_UNAVAILABLE`, `ORIGINALS_MISSING`, `LAYER_UNAVAILABLE`, `MEDIA_CORRUPT`, …",
+          "type": "string"
+        },
+        "details": true,
+        "item": {
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/$defs/ItemKind"
+        }
+      },
+      "required": [
+        "at",
+        "item",
+        "kind",
+        "code",
+        "details"
+      ],
+      "type": "object"
+    },
+    "LookStats": {
+      "description": "What a warm worker reused (spec §3.2 item 1: caches keyed by content).",
+      "properties": {
+        "deviceReused": {
+          "description": "The GPU device and pipelines were made by an earlier job of this worker.",
+          "type": "boolean"
+        },
+        "sourcesOpened": {
+          "description": "Sources opened (container parsed, decoder made) by this job.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "sourcesReused": {
+          "description": "Sources an earlier job of this worker had open.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "workerJobs": {
+          "description": "Jobs this worker ran, this one included.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "deviceReused",
+        "sourcesOpened",
+        "sourcesReused",
+        "workerJobs"
+      ],
+      "type": "object"
+    },
     "LottieInfo": {
       "description": "A dotLottie template: its canvas, timing, replaceable slots and the font families it names.",
       "properties": {
@@ -7734,6 +7974,54 @@
         "license",
         "publisher"
       ],
+      "type": "object"
+    },
+    "ManifestAsset": {
+      "description": "One asset of the manifest.",
+      "properties": {
+        "asset": {
+          "type": "string"
+        },
+        "fingerprint": {
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/$defs/AssetKind"
+        },
+        "original": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/OriginalFile"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The file on this machine (plan 6A Decision 5: the model's stored path), `null` when it\nis missing."
+        }
+      },
+      "required": [
+        "asset",
+        "kind",
+        "fingerprint"
+      ],
+      "type": "object"
+    },
+    "ManifestFonts": {
+      "description": "Font bytes for captions (plan 6A Decision 3): the server's font cache, read-only, then the\nproject's font asset files by SHA-256.",
+      "properties": {
+        "cache": {
+          "description": "`<server-data>/fonts`.",
+          "type": "string"
+        },
+        "files": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/FontFileRef"
+          },
+          "type": "array"
+        }
+      },
       "type": "object"
     },
     "Marker": {
@@ -9163,6 +9451,32 @@
       "description": "`https://host[:port]`.",
       "type": "string"
     },
+    "OriginalFile": {
+      "description": "A file a worker opens, with what it looked like when the manifest was written. The worker\nopens it through `fin-library`'s no-follow opener, which refuses it once its size, mtime or\nfile id changed (`ORIGINALS_MISSING {reason: changed}`); `mtimeNs` and `fileId` are\nencoded as `fin-library`'s `Expect` encodes them (a decimal string; standard base64).",
+      "properties": {
+        "fileId": {
+          "type": "string"
+        },
+        "mtimeNs": {
+          "type": "string"
+        },
+        "path": {
+          "description": "Absolute.",
+          "type": "string"
+        },
+        "size": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "path",
+        "size",
+        "mtimeNs"
+      ],
+      "type": "object"
+    },
     "OsFamily": {
       "enum": [
         "linux",
@@ -9902,6 +10216,23 @@
         "kind",
         "displayName",
         "publisher"
+      ],
+      "type": "object"
+    },
+    "PlanSample": {
+      "additionalProperties": false,
+      "description": "The BLAKE3 of a frame plan at one time (plan 6A Decision 4): lowercase hex of the plan's\ncompact JSON, as `fin-core`'s eval corpus hashes it.",
+      "properties": {
+        "at": {
+          "$ref": "#/$defs/Rational"
+        },
+        "blake3": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "at",
+        "blake3"
       ],
       "type": "object"
     },
@@ -11091,6 +11422,35 @@
         "staleDays",
         "maxStaleDays",
         "lastRefreshAt"
+      ],
+      "type": "object"
+    },
+    "RenderManifest": {
+      "description": "`in/manifest.json` (spec §4.2): built by `fin-node` from the snapshot's asset table,\nnever by the worker.",
+      "properties": {
+        "assets": {
+          "description": "Every asset the snapshot references, once.",
+          "items": {
+            "$ref": "#/$defs/ManifestAsset"
+          },
+          "type": "array"
+        },
+        "fonts": {
+          "$ref": "#/$defs/ManifestFonts",
+          "default": {
+            "files": []
+          }
+        },
+        "version": {
+          "description": "[`MANIFEST_VERSION`].",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "version",
+        "assets"
       ],
       "type": "object"
     },

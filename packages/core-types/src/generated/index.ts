@@ -4403,6 +4403,34 @@ export interface FontCatalog {
   fallback: string[];
 }
 /**
+ * A project font asset's file and the SHA-256 its asset pins.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "FontFileRef".
+ */
+export interface FontFileRef {
+  original: OriginalFile;
+  sha256: string;
+}
+/**
+ * A file a worker opens, with what it looked like when the manifest was written. The worker
+ * opens it through `fin-library`'s no-follow opener, which refuses it once its size, mtime or
+ * file id changed (`ORIGINALS_MISSING {reason: changed}`); `mtimeNs` and `fileId` are
+ * encoded as `fin-library`'s `Expect` encodes them (a decimal string; standard base64).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "OriginalFile".
+ */
+export interface OriginalFile {
+  fileId?: string;
+  mtimeNs: string;
+  /**
+   * Absolute.
+   */
+  path: string;
+  size: number;
+}
+/**
  * One font file. `entry` and `style` name its catalog style, when the catalog lists it;
  * `keys` are the font keys (`<family>|<weight>|<normal|italic>`) open projects pin it as.
  *
@@ -4631,6 +4659,23 @@ export interface TransitionState {
 export interface Generation {
   incarnation: string;
   n: number;
+}
+/**
+ * The GPU adapter frames were composited on (numeric ids, spec §21 decision 7).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "GpuAdapter".
+ */
+export interface GpuAdapter {
+  backend: string;
+  device: number;
+  deviceType: string;
+  name: string;
+  /**
+   * A CPU adapter (lavapipe, WARP).
+   */
+  software: boolean;
+  vendor: number;
 }
 /**
  * What the `library.hash` kind reports for one file; `hash` is `blake3:<hex>`.
@@ -5153,6 +5198,17 @@ export interface JobMemoryRule {
   ramFraction?: number;
 }
 /**
+ * `in/snapshot.json` (plan 6A Decision 2).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "JobSnapshot".
+ */
+export interface JobSnapshot {
+  branch: string;
+  project: Project;
+  rev: number;
+}
+/**
  * A path the process may use (for a sandbox's rules).
  *
  * This interface was referenced by `FinCore`'s JSON-Schema
@@ -5647,6 +5703,126 @@ export interface Listing {
   versions: string[];
 }
 /**
+ * One rendered frame of a `media.look`.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "LookFrame".
+ */
+export interface LookFrame {
+  at: Rational;
+  /**
+   * Relative to `out/`.
+   */
+  file: string;
+  height: number;
+  /**
+   * The plan's BLAKE3 (lowercase hex).
+   */
+  plan: string;
+  width: number;
+}
+/**
+ * `media.look` v1: frames of `timeline` at each time in `at`, as PNGs in `out/`.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "LookParams".
+ */
+export interface LookParams {
+  /**
+   * Timeline times in seconds, 1 to [`LOOK_MAX_TIMES`] of them.
+   */
+  at: Rational[];
+  /**
+   * The stem of the files written: `out/<outName>-<i>.png`. `[A-Za-z0-9_-]`, 1 to
+   * [`OUT_NAME_MAX`] characters.
+   */
+  outName: string;
+  /**
+   * One sample per time in `at` (spec §3.3: every time for `media.look`); a plan the worker
+   * evaluates differently is `PLAN_MISMATCH`.
+   */
+  planSamples: PlanSample[];
+  size?: Size2;
+  timeline: string;
+}
+/**
+ * The BLAKE3 of a frame plan at one time (plan 6A Decision 4): lowercase hex of the plan's
+ * compact JSON, as `fin-core`'s eval corpus hashes it.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "PlanSample".
+ */
+export interface PlanSample {
+  at: Rational;
+  blake3: string;
+}
+/**
+ * The frame size; the timeline's resolution when absent. Each side 1 to
+ * [`LOOK_MAX_SIDE`].
+ */
+export interface Size2 {
+  height: number;
+  width: number;
+}
+/**
+ * What `media.look` v1 answers.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "LookResult".
+ */
+export interface LookResult {
+  adapter: GpuAdapter;
+  /**
+   * In `at` order.
+   */
+  frames: LookFrame[];
+  /**
+   * Every frame's, in `at` order, bottom layer first within a frame.
+   */
+  skipped: LookSkipped[];
+  stats: LookStats;
+}
+/**
+ * A layer, or an effect or mask of a drawn one, that a frame left out (spec §2.7).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "LookSkipped".
+ */
+export interface LookSkipped {
+  at: Rational;
+  /**
+   * `CODEC_UNAVAILABLE`, `ORIGINALS_MISSING`, `LAYER_UNAVAILABLE`, `MEDIA_CORRUPT`, …
+   */
+  code: string;
+  details: unknown;
+  item: string;
+  kind: ItemKind;
+}
+/**
+ * What a warm worker reused (spec §3.2 item 1: caches keyed by content).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "LookStats".
+ */
+export interface LookStats {
+  /**
+   * The GPU device and pipelines were made by an earlier job of this worker.
+   */
+  deviceReused: boolean;
+  /**
+   * Sources opened (container parsed, decoder made) by this job.
+   */
+  sourcesOpened: number;
+  /**
+   * Sources an earlier job of this worker had open.
+   */
+  sourcesReused: number;
+  /**
+   * Jobs this worker ran, this one included.
+   */
+  workerJobs: number;
+}
+/**
  * This interface was referenced by `FinCore`'s JSON-Schema
  * via the `definition` "Manifest".
  */
@@ -5713,6 +5889,36 @@ export interface ModelRef {
 export interface Publisher {
   name: string;
   url?: string | null;
+}
+/**
+ * One asset of the manifest.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "ManifestAsset".
+ */
+export interface ManifestAsset {
+  asset: string;
+  fingerprint: string;
+  kind: AssetKind;
+  /**
+   * The file on this machine (plan 6A Decision 5: the model's stored path), `null` when it
+   * is missing.
+   */
+  original?: OriginalFile | null;
+}
+/**
+ * Font bytes for captions (plan 6A Decision 3): the server's font cache, read-only, then the
+ * project's font asset files by SHA-256.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "ManifestFonts".
+ */
+export interface ManifestFonts {
+  /**
+   * `<server-data>/fonts`.
+   */
+  cache?: string;
+  files?: FontFileRef[];
 }
 /**
  * What a media file is (spec §6.3).
@@ -6073,6 +6279,35 @@ export interface TrustedVersions {
   timestamp: number;
 }
 /**
+ * `in/manifest.json` (spec §4.2): built by `fin-node` from the snapshot's asset table,
+ * never by the worker.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "RenderManifest".
+ */
+export interface RenderManifest {
+  /**
+   * Every asset the snapshot references, once.
+   */
+  assets: ManifestAsset[];
+  fonts?: ManifestFonts1;
+  /**
+   * [`MANIFEST_VERSION`].
+   */
+  version: number;
+}
+/**
+ * Font bytes for captions (plan 6A Decision 3): the server's font cache, read-only, then the
+ * project's font asset files by SHA-256.
+ */
+export interface ManifestFonts1 {
+  /**
+   * `<server-data>/fonts`.
+   */
+  cache?: string;
+  files?: FontFileRef[];
+}
+/**
  * One batch file of a scan (Decision 26): up to 4,096 entries, in `seq` order per job.
  *
  * This interface was referenced by `FinCore`'s JSON-Schema
@@ -6150,7 +6385,7 @@ export interface SetAside {
  * This interface was referenced by `FinCore`'s JSON-Schema
  * via the `definition` "Size".
  */
-export interface Size2 {
+export interface Size3 {
   height: number;
   width: number;
 }

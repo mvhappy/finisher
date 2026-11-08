@@ -106,10 +106,16 @@ pub struct Proc {
 }
 
 pub fn spawn(family: &str) -> Proc {
+    spawn_with(&[family], &[])
+}
+
+/// `fin-workers <args…>` with a cleared environment plus `env`.
+pub fn spawn_with(args: &[&str], env: &[(&str, String)]) -> Proc {
     let mut child = Command::new(BIN)
-        .arg(family)
+        .args(args)
         .env_clear()
         .env("FIN_TEST_MARKER", "1")
+        .envs(env.iter().map(|(k, v)| (*k, v.as_str())))
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())

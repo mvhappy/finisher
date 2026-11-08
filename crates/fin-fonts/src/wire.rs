@@ -6,8 +6,6 @@ use fin_core::{CoreError, Op};
 use schemars::JsonSchema;
 use serde::Serialize;
 
-use crate::FileState;
-
 /// `fonts.status`: every catalog file's state in this server, then the files pinned by open
 /// projects that the catalog does not list (font assets, files of another catalog).
 #[derive(Debug, Clone, PartialEq, Serialize, JsonSchema)]
@@ -50,4 +48,23 @@ pub struct FontFileStatus {
 pub struct FontsPlan {
     pub ops: Vec<Op>,
     pub notes: Vec<CoreError>,
+}
+
+/// A catalog file's state in this server (Decision 34).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
+#[serde(tag = "state", rename_all = "camelCase")]
+pub enum FileState {
+    Cached,
+    /// Not cached and not queued: never requested, or background fetching is off.
+    Missing,
+    Queued,
+    Fetching {
+        bytes: u64,
+        total: u64,
+    },
+    #[serde(rename_all = "camelCase")]
+    Failed {
+        reason: String,
+        retry_at_ms: i64,
+    },
 }
