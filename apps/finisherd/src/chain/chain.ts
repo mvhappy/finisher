@@ -30,7 +30,7 @@ import type { WriteGuard } from "@finisher/core-types";
 import { Effect, Stream } from "effect";
 import { answerChallenge, confirmationRequired, undoesOwnMint } from "../auth/challenges.ts";
 import { unauthenticated } from "../auth/handshake.ts";
-import { credentialRevoked } from "../auth/revoke.ts";
+import { credentialRevoked, deviceRevoked } from "../auth/revoke.ts";
 import type { Connections, Transport } from "../connections.ts";
 import type { Audit } from "../control/audit.ts";
 import { ulid } from "../control/ulid.ts";
@@ -209,7 +209,10 @@ export function withChain<H extends object>(handlers: H, deps: ChainDeps): H {
     const rule = ruleOf(tag);
     const stages = Effect.gen(function* () {
       // A credential revoked after this connection proved it (or took its ticket) runs nothing (M3).
-      if (deps.connections.revoked(clientId)) return yield* Effect.fail(credentialRevoked());
+      // (`principalOf` reads a revoked one as anonymous: the connection's own record says what it was.)
+      if (deps.connections.revoked(clientId)) {
+        return yield* Effect.fail(deps.connections.get(clientId)?.principal.kind === "device" ? deviceRevoked() : credentialRevoked());
+      }
       if (!PUBLIC_RPCS.has(tag) && principal.kind === "anonymous") return yield* Effect.fail(unauthenticated("unproved"));
       const refused = deps.refuse?.(principal);
       if (refused !== undefined) return yield* Effect.fail(refused);

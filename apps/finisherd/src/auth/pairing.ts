@@ -303,15 +303,21 @@ export class Pairing {
     const approver = offer.self ? this.#consoleOf(offer) : undefined;
     let device: Device | undefined;
     // The consume, the request and (for a self offer) the approval commit together or not at all.
-    this.#d.store.tx(() => {
-      if (!this.#writeOffer(offer, "used")) throw used();
-      this.#d.store.db
-        .prepare(
-          "INSERT INTO pair_pending (id, offerId, deviceName, platform, jwk, jkt, safetyCode, redeemedAt, remote, expiresAt, state) VALUES (?, ?, ?, ?, ?, ?, NULL, ?, NULL, ?, 'pending')",
-        )
-        .run(pending.id, offer.id, name, platform, JSON.stringify(key), jkt, now, pending.expiresAt);
-      if (approver !== undefined) device = this.#approveRows(approver, pending);
-    });
+    try {
+      this.#d.store.tx(() => {
+        if (!this.#writeOffer(offer, "used")) throw used();
+        this.#d.store.db
+          .prepare(
+            "INSERT INTO pair_pending (id, offerId, deviceName, platform, jwk, jkt, safetyCode, redeemedAt, remote, expiresAt, state) VALUES (?, ?, ?, ?, ?, ?, NULL, ?, NULL, ?, 'pending')",
+          )
+          .run(pending.id, offer.id, name, platform, JSON.stringify(key), jkt, now, pending.expiresAt);
+        if (approver !== undefined) device = this.#approveRows(approver, pending);
+      });
+    } catch (e) {
+      // Rolled back: an approval's device row went with it, whether or not `add` returned.
+      if (approver !== undefined) this.#d.devices.forgetByJkt(jkt);
+      throw e;
+    }
     this.#offerEnded(offer, "used");
     this.#pending.set(pending.id, pending);
     this.#audit("pair.redeem", { kind: "anonymous", id: "" }, { deviceName: name, platform, address: ctx.remote.slice(0, 64) });
@@ -344,6 +350,7 @@ export class Pairing {
   /** The approval in memory, the stream, the audit and the journal (after the commit). */
   #approved(by: Principal, p: Pending, device: Device): void {
     p.deviceId = device.id;
+    this.#d.devices.announceAdded(device);
     this.#pendingEnded(p, "approved");
     this.#audit("pair.approve", { kind: by.kind, id: by.id }, { deviceName: p.deviceName, deviceId: device.id, address: p.remote.slice(0, 64) });
     this.#journal({ outcome: "approved", platform: p.platform, route: p.route, micros: (this.#clock() - p.redeemedAt) * 1000 });
@@ -351,9 +358,19 @@ export class Pairing {
 
   approve(by: Principal, pendingId: string): Device {
     const p = this.#live(pendingId);
-    const device = this.#d.store.tx(() => this.#approveRows(by, p));
-    this.#approved(by, p, device);
-    return device;
+    let added: Device | undefined;
+    try {
+      this.#d.store.tx(() => {
+        added = this.#approveRows(by, p);
+      });
+    } catch (e) {
+      // Rolled back: the device's row went with it, so memory forgets it too (by its key: the
+      // write that failed may have come after `add` and before it returned).
+      this.#d.devices.forgetByJkt(p.jkt);
+      throw e;
+    }
+    this.#approved(by, p, added!);
+    return added!;
   }
 
   reject(by: Principal, pendingId: string): void {

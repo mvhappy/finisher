@@ -40,6 +40,11 @@ export interface DpopCheck {
    * the replay cache (review of Task 7). An unknown key is `DPOP_INVALID {reason: unknownKey}`.
    */
   readonly knownKey: (jkt: string) => boolean;
+  /**
+   * The caller's own refusal of a known key before its `jti` is remembered (a revoked device,
+   * a device past its rate limit: review of Task 9), so neither can fill the replay cache.
+   */
+  readonly admit?: (jkt: string) => { readonly code: string; readonly reason: string } | undefined;
 }
 
 export type DpopReason =
@@ -59,7 +64,11 @@ export type DpopReason =
   | "replayCache"
   | "unknownKey";
 
-export type DpopResult = { ok: true; jkt: string; jwk: JWK } | { ok: false; code: "DPOP_INVALID" | "DPOP_NONCE"; reason: DpopReason };
+export type DpopResult =
+  | { ok: true; jkt: string; jwk: JWK }
+  | { ok: false; code: "DPOP_INVALID" | "DPOP_NONCE"; reason: DpopReason }
+  /** `admit`'s refusal, passed through. */
+  | { ok: false; code: "ADMIT"; refusal: { readonly code: string; readonly reason: string }; jkt: string };
 
 const PRIVATE_MEMBERS = ["d", "p", "q", "dp", "dq", "qi", "k", "oth"];
 
@@ -68,7 +77,7 @@ export function athOf(token: string): string {
   return createHash("sha256").update(token, "ascii").digest("base64url");
 }
 
-export type DpopRefused = Extract<DpopResult, { ok: false }>;
+export type DpopRefused = Extract<DpopResult, { ok: false; code: "DPOP_INVALID" | "DPOP_NONCE" }>;
 
 const bad = (reason: DpopReason): DpopRefused => ({ ok: false, code: "DPOP_INVALID", reason });
 
@@ -148,6 +157,8 @@ export class DpopVerifier {
     const until = typeof nonce === "string" ? this.#nonces.expiresAt(nonce) : undefined;
     if (until === undefined) return { ok: false, code: "DPOP_NONCE", reason: "nonce" };
     if (!check.knownKey(proof.jkt)) return bad("unknownKey");
+    const refusal = check.admit?.(proof.jkt);
+    if (refusal !== undefined) return { ok: false, code: "ADMIT", refusal, jkt: proof.jkt };
     this.#forgetExpired(now);
     if (this.#seen.has(claims.jti)) return bad("replay");
     if (this.#seen.size >= this.#max) return bad("replayCache");

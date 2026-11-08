@@ -134,7 +134,7 @@ describe("DPoP", () => {
     c.advance(2 * NONCE_ROTATE_MS);
     const stale = await verifier.verify(await proof(k, { iat: iat(), nonce: old }), check);
     expect(stale).toMatchObject({ ok: false, code: "DPOP_NONCE" });
-    if (stale.ok) return;
+    if (stale.ok || stale.code === "ADMIT") return;
     const answer = dpopRefusal(stale);
     expect(answer.status).toBe(401);
     expect(answer.headers?.["WWW-Authenticate"]).toMatch(/^DPoP error="use_dpop_nonce"/);

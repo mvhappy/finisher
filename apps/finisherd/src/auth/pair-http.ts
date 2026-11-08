@@ -68,6 +68,7 @@ export function pairRoutes(d: PairHttpDeps): Record<string, Route> {
         knownKey: (jkt) => d.pairing.isPendingKey(jkt),
       });
       if (!proof.ok) {
+        if (proof.code === "ADMIT") throw finError("INTERNAL", "unexpected admission refusal", {});
         if (proof.code !== "DPOP_NONCE") fail(ctx, "dpop", proof.code, proof.reason);
         return dpopRefusal(proof);
       }

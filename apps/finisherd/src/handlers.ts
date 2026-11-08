@@ -10,6 +10,7 @@ import { KEY_BYTES } from "./auth/crypto.ts";
 import { revokeCredential } from "./auth/revoke.ts";
 import { deviceHandlers } from "./auth/device-rpc.ts";
 import { PairingTag } from "./auth/pairing.ts";
+import { DeviceAccessTag } from "./net/remote-wiring.ts";
 import { EnvironmentTag, envMoved } from "./env/descriptor.ts";
 import { envHandlers } from "./env/rpc.ts";
 import { chainOf, credentialOf, withChain, writeGuardOf } from "./chain/chain.ts";
@@ -79,6 +80,7 @@ export const HandlersLive = FinRpcs.toLayer(
     const agentRuntime = yield* AgentRuntimeTag;
     const environment = yield* EnvironmentTag;
     const pairing = yield* PairingTag;
+    const deviceAccess = yield* DeviceAccessTag;
     const admin: AdminDeps = {
       control: yield* ServerControlTag,
       audit,
@@ -187,8 +189,25 @@ export const HandlersLive = FinRpcs.toLayer(
             return { principal, ...defaultBranchOf(principal) };
           }),
         ),
-      "auth.revokeSelf": (_, options) =>
-        guard(
+      "auth.revokeSelf": (_, options) => {
+        const self = principalOf(options);
+        // A device revokes itself through the one device path (5B Decision 24); its own
+        // connection answers, then closes.
+        if (self.kind === "device") {
+          return guard(
+            "auth.revokeSelf",
+            Effect.sync(() => {
+              deviceAccess.revoke(self.id, {
+                reason: "self",
+                by: { kind: self.kind, id: self.id },
+                except: { transport: connections.transport, clientId: options.client.id },
+              });
+              connections.link(options.client.id)?.closeAfterReply();
+              return {};
+            }),
+          );
+        }
+        return guard(
           "auth.revokeSelf",
           revokeSelf(
             {
@@ -205,7 +224,8 @@ export const HandlersLive = FinRpcs.toLayer(
               closeAfterReply: () => connections.link(options.client.id)?.closeAfterReply(),
             },
           ),
-        ),
+        );
+      },
       // The console's confirmations (Decision 30): a code for this connection only, which the
       // console sends itself once the person has confirmed.
       "console.challenge": (_, options) =>
@@ -400,7 +420,7 @@ export const HandlersLive = FinRpcs.toLayer(
       ...jobHandlers({ engine: jobEngine, guard }),
       ...agentHandlers({ guard, store: agents.store, reach, agents: agentRuntime, principalOf }),
       // 5B: pairing, devices, settings writes and the environment.
-      ...deviceHandlers({ guard, pairing }),
+      ...deviceHandlers({ guard, pairing, access: deviceAccess, connections }),
       ...envHandlers({ guard, env: environment }),
     }), {
       connections,

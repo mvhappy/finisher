@@ -171,6 +171,18 @@ describe("pairing", () => {
     expect(await codeOf(() => after.status(pendingId, "another-jkt"))).toBe("NOT_FOUND");
   });
 
+  test("an approval whose transaction rolls back leaves no device in memory (review of Task 9)", async () => {
+    const { pairing, devices } = setup();
+    const { pendingId, key } = await redeemNew(pairing, pairing.offer(CONSOLE, {}).link);
+    // The request's state cannot be written: the transaction rolls back after the device's row.
+    store.db.exec("CREATE TRIGGER no_answer BEFORE UPDATE ON pair_pending BEGIN SELECT RAISE(ABORT, 'refused'); END;");
+    expect(await codeOf(() => pairing.approve(CONSOLE, pendingId))).toBeDefined();
+    expect(devices.byJkt(key.jkt)).toBeUndefined();
+    expect(store.db.prepare("SELECT COUNT(*) AS n FROM devices").get()).toEqual({ n: 0 });
+    store.db.exec("DROP TRIGGER no_answer");
+    expect(pairing.approve(CONSOLE, pendingId).jkt).toBe(key.jkt);
+  });
+
   test("bad_secret_does_not_consume", async () => {
     const { pairing } = setup();
     const offer = pairing.offer(CONSOLE, {});

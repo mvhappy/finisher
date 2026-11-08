@@ -41,6 +41,13 @@ export interface DeviceRow {
   revokedReason?: DeviceEndReason;
 }
 
+/** A change `auth.devices.watch` reports. */
+export type DeviceEvent =
+  | { readonly kind: "added"; readonly device: Device }
+  | { readonly kind: "renamed"; readonly device: Device }
+  | { readonly kind: "revoked"; readonly id: string }
+  | { readonly kind: "seen"; readonly id: string; readonly at: number; readonly route: RouteKind };
+
 export interface NewDevice {
   readonly name: string;
   readonly platform: Platform;
@@ -93,6 +100,7 @@ export class DeviceStore {
   readonly #seen: StatementSync;
   readonly #end: StatementSync;
   readonly #unsaved = new Set<string>();
+  readonly #listeners = new Set<(e: DeviceEvent) => void>();
   #retry: ReturnType<typeof setTimeout> | undefined;
   #backoffMs = 500;
 
@@ -170,6 +178,48 @@ export class DeviceStore {
     return this.#byJkt.get(jkt);
   }
 
+  /** Whether `jkt` is any kept device's key, live or revoked (a revoked one's proof says so). */
+  isKnownJkt(jkt: string): boolean {
+    if (this.#byJkt.has(jkt)) return true;
+    for (const r of this.#rows.values()) if (r.jkt === jkt) return true;
+    return false;
+  }
+
+  /** `auth.devices.watch` (Task 9): every change after it happened; the returned function stops it. */
+  onEvent(f: (e: DeviceEvent) => void): () => void {
+    this.#listeners.add(f);
+    return () => void this.#listeners.delete(f);
+  }
+
+  #emit(e: DeviceEvent): void {
+    for (const f of [...this.#listeners]) {
+      try {
+        f(e);
+      } catch {
+        // A watcher's failure is its own.
+      }
+    }
+  }
+
+  /** Announces a device `add` put in place, once its transaction committed (pairing calls it). */
+  announceAdded(d: Device): void {
+    this.#emit({ kind: "added", device: d });
+  }
+
+  /** Forgets the device of `jkt` added in a transaction that rolled back (memory only). */
+  forgetByJkt(jkt: string): void {
+    const row = this.#byJkt.get(jkt);
+    if (row !== undefined) this.forget(row.id);
+  }
+
+  /** Forgets a device whose `add` was rolled back with its transaction (memory only). */
+  forget(id: string): void {
+    const row = this.#rows.get(id);
+    if (row === undefined) return;
+    this.#rows.delete(id);
+    if (this.#byJkt.get(row.jkt) === row) this.#byJkt.delete(row.jkt);
+  }
+
   /** Live devices now. */
   liveCount(): number {
     return this.#byJkt.size;
@@ -209,6 +259,7 @@ export class DeviceStore {
     checkedName(name, "device name");
     this.#rename.run(name, id);
     row.name = name;
+    this.#emit({ kind: "renamed", device: this.view(row) });
     if (by !== undefined) {
       this.#audit.append({ kind: "device.rename", principal: { kind: by.kind, id: by.id }, outcome: "ok", details: { deviceId: id } });
     }
@@ -227,6 +278,7 @@ export class DeviceStore {
     row.lastRoute = route;
     if (now - (this.#written.get(id) ?? Number.NEGATIVE_INFINITY) < SEEN_WRITE_MS) return false;
     this.#written.set(id, now);
+    this.#emit({ kind: "seen", id, at: now, route });
     try {
       this.#seen.run(now, route, id);
     } catch (e) {
@@ -249,6 +301,7 @@ export class DeviceStore {
     row.revokedReason = reason;
     this.#byJkt.delete(row.jkt);
     this.#unsaved.add(id);
+    this.#emit({ kind: "revoked", id });
     return true;
   }
 
@@ -308,37 +361,4 @@ export class DeviceStore {
   principalOf(d: Pick<Device, "id">): Principal {
     return { kind: "device", id: d.id, scopes: [...SCOPES], projects: "*", branches: "*", human: true };
   }
-}
-
-/** `DEVICE_REVOKED` (exit 7, 401): the fix speaks to the person, in words. */
-export function deviceRevoked() {
-  return finError(
-    "DEVICE_REVOKED",
-    "this device is no longer paired with the server",
-    {},
-    "Pair this device with the server again: its owner makes a new pairing link or QR code.",
-  );
-}
-
-/**
- * Ends what a device ended in the store still holds (`markEnded` is done already): no ticket
- * or connection proves it again, its tickets are dropped, and every live connection it proved
- * ends with `DEVICE_REVOKED`. Task 9 adds its access tokens.
- */
-export function endDevice(
-  deps: {
-    readonly tickets: { dropWhere(pred: (p: Principal) => boolean): number };
-    readonly connections: {
-      revoke(ref: { readonly kind: string; readonly id: string }): void;
-      closeWhere(pred: (c: { readonly principal: Principal }) => boolean, error: ReturnType<typeof finError>): number;
-    };
-  },
-  id: string,
-): { tickets: number; connections: number } {
-  const ref = { kind: "device", id };
-  deps.connections.revoke(ref);
-  const mine = (p: Principal) => p.kind === "device" && p.id === id;
-  const tickets = deps.tickets.dropWhere(mine);
-  const connections = deps.connections.closeWhere((c) => mine(c.principal), deviceRevoked());
-  return { tickets, connections };
 }

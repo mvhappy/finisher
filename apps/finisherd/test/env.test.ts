@@ -8,7 +8,8 @@ import { type FinError, type Principal, SCOPES } from "@finisher/contracts";
 import { generateIdentityKey, spkiPin } from "@finisher/fin-node";
 import { Effect, Exit, Fiber } from "effect";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
-import { DeviceStore, endDevice } from "../src/auth/devices.ts";
+import { DeviceStore } from "../src/auth/devices.ts";
+import { revokeDevice } from "../src/auth/revoke.ts";
 import { withChain } from "../src/chain/chain.ts";
 import { Connections } from "../src/connections.ts";
 import type { Audit, AuditInput } from "../src/control/audit.ts";
@@ -321,29 +322,39 @@ describe("crash safety (review of Task 5)", () => {
     }
   });
 
-  test("endDevice drops a device's tickets and ends its connections", () => {
+  test("revokeDevice drops a device's tokens and tickets and ends its connections", () => {
     const dropped: Principal[] = [];
     const revoked: string[] = [];
+    const audited: unknown[] = [];
     let closed = 0;
+    let tokensDropped = 0;
     const live = [{ principal: DEVICE }, { principal: { ...DEVICE, id: "01other0000000000000000000" } }];
-    const r = endDevice(
-      {
-        tickets: { dropWhere: (pred) => [DEVICE].filter((p) => pred(p) && dropped.push(p)).length },
-        connections: {
-          revoke: (ref) => void revoked.push(`${ref.kind}:${ref.id}`),
-          closeWhere: (pred, error) => {
-            expect(error.code).toBe("DEVICE_REVOKED");
-            const n = live.filter(pred).length;
-            closed += n;
-            return n;
-          },
+    let ended = false;
+    const deps = {
+      tickets: { dropWhere: (pred: (p: Principal) => boolean) => [DEVICE].filter((p) => pred(p) && dropped.push(p)).length },
+      connections: {
+        revoke: (ref: { kind: string; id: string }) => void revoked.push(`${ref.kind}:${ref.id}`),
+        closeWhere: (pred: (c: never) => boolean, error: FinError) => {
+          expect(error.code).toBe("DEVICE_REVOKED");
+          const n = live.filter(pred as (c: unknown) => boolean).length;
+          closed += n;
+          return n;
         },
       },
-      DEVICE.id,
-    );
-    expect(r).toEqual({ tickets: 1, connections: 1 });
+      audit: { append: (e: unknown) => void audited.push(e) } as unknown as Audit,
+      devices: { get: () => ({ name: "Tablet" }), markEnded: () => !ended && (ended = true), persist: () => undefined },
+      tokens: { dropDevice: () => ++tokensDropped },
+    };
+    const r = revokeDevice(deps as never, DEVICE.id, { reason: "owner", by: { kind: "console", id: "console" }, remote: "127.0.0.1" });
+    expect(r).toEqual({ revoked: true, tickets: 1, connections: 1 });
     expect(revoked).toEqual([`device:${DEVICE.id}`]);
-    expect(closed).toBe(1);
+    expect([closed, tokensDropped]).toEqual([1, 1]);
+    expect(audited).toEqual([
+      { kind: "device.revoke", principal: { kind: "console", id: "console" }, outcome: "ok", details: { deviceId: DEVICE.id, deviceName: "Tablet", reason: "owner", count: 1, address: "127.0.0.1" } },
+    ]);
+    // A second revocation changes nothing and audits nothing.
+    expect(revokeDevice(deps as never, DEVICE.id, { reason: "owner", by: { kind: "console", id: "console" } }).revoked).toBe(false);
+    expect(audited).toHaveLength(1);
   });
 });
 

@@ -42,8 +42,11 @@ export interface EnvironmentDeps {
   readonly secrets: ServerSecrets;
   readonly routes: Routes;
   readonly capabilities: ReadonlyArray<string>;
-  /** Ends a device's tokens, tickets and live connections (`markEnded` is done already). */
-  readonly endDevice: (id: string) => void;
+  /**
+   * Revokes a device through the one path (`auth/revoke.ts` `revokeDevice`, without its own
+   * audit row: the reset's or rotation's row counts them): true when it was live.
+   */
+  readonly revokeDevice: (id: string, reason: "reset" | "rotation") => boolean;
   /** Revokes every agent and MCP credential through the one revoke path; how many ended. */
   readonly revokeCredentials: () => number;
   /** Writes `finisherd.json` again (its `envId`). */
@@ -156,19 +159,10 @@ export class Environment {
     return this.describe();
   }
 
-  /** Ends every live device: in memory first, then their connections, then the write. */
+  /** Revokes every live device through the one path. */
   #endAllDevices(reason: "reset" | "rotation"): number {
     let count = 0;
-    for (const d of this.#d.devices.list()) {
-      if (!this.#d.devices.markEnded(d.id, reason)) continue;
-      count++;
-      try {
-        this.#d.endDevice(d.id);
-      } catch (e) {
-        process.stderr.write(`finisherd: warning: cannot end a device's connections: ${String(e)}\n`);
-      }
-    }
-    this.#d.devices.persist();
+    for (const d of this.#d.devices.list()) if (this.#d.revokeDevice(d.id, reason)) count++;
     return count;
   }
 

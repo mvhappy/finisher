@@ -21,7 +21,7 @@ import { serverIdentity } from "@finisher/fin-node";
 import { canonicalEndpoint } from "./auth/crypto.ts";
 import { Handshake, HandshakeTag } from "./auth/handshake.ts";
 import { Credentials, CredentialsTag } from "./auth/credentials.ts";
-import { revokeCredential, sweepExpired } from "./auth/revoke.ts";
+import { sweepExpired } from "./auth/revoke.ts";
 import { authDir, excludeFromBackups, KEY_FILES, KeysTag, rotateKeys, writeKeyFile } from "./auth/keys.ts";
 import { ConnectionRegistry, ConnectionRegistryTag, Connections } from "./connections.ts";
 import { AuditTag, layerAudit } from "./control/audit.ts";
@@ -29,10 +29,7 @@ import { makeTickets, TicketsTag } from "./auth/tickets.ts";
 import { ControlStoreTag, layerControlStore } from "./control/db.ts";
 import { DeviceStore } from "./auth/devices.ts";
 import { openSecrets } from "./secrets/vault.ts";
-import { endDevice } from "./auth/devices.ts";
-import { Environment, EnvironmentTag } from "./env/descriptor.ts";
 import { checkMoved } from "./env/moved.ts";
-import { OS_ROUTES, ROUTES_POLL_MS, Routes } from "./net/routes.ts";
 import { CAPABILITIES } from "./handlers.ts";
 // Registers the `agent` control chain before the store opens (7A-2 Task 3b; 6b wires the runtime).
 import { AgentStore } from "./agent/store.ts";
@@ -60,10 +57,10 @@ import { MAX_FRAME } from "./protocol.ts";
 import { claimSocketPath, makeLocalServer, serveRpc } from "./transport.ts";
 import { makeTicketedWebSocketServer, makeUpgradeCheck, WebSocketSlots } from "./upgrade.ts";
 import { type FrontRefusal, makeFront, type Route } from "./http/front.ts";
-import { loopbackHosts, loopbackPolicy } from "./http/policy.ts";
-import { Pairing, PairingTag } from "./auth/pairing.ts";
-import { pairRoutes } from "./auth/pair-http.ts";
-import { DpopVerifier } from "./auth/dpop.ts";
+import { loopbackPolicy } from "./http/policy.ts";
+import { EnvironmentTag } from "./env/descriptor.ts";
+import { PairingTag } from "./auth/pairing.ts";
+import { DeviceAccessTag, wireRemoteAccess } from "./net/remote-wiring.ts";
 import { Nonces } from "./auth/nonces.ts";
 import { ServerControlTag } from "./server-admin.ts";
 import { isServeCommand, runConsole } from "./console/main.ts";
@@ -294,67 +291,25 @@ export const serve = ({
         }),
         (timer) => Effect.sync(() => clearInterval(timer)),
       );
-      // The environment (5B Task 5): routes, the descriptor, moved or copied server data.
-      const routes = new Routes(OS_ROUTES, { loopbackPort: () => wsPort });
-      yield* Effect.acquireRelease(
-        Effect.sync(() => {
-          const timer = setInterval(() => routes.poll(), ROUTES_POLL_MS);
-          timer.unref();
-          return timer;
-        }),
-        (timer) => Effect.sync(() => clearInterval(timer)),
-      );
-      const environment = new Environment({
+      // 5B: routes, the environment, pairing, DPoP, device tokens and their HTTP routes.
+      const { routes, environment, pairing, access } = yield* wireRemoteAccess({
         store: controlStore,
         audit,
         devices,
         secrets,
-        routes,
+        tickets,
+        connections: everyConnection,
+        credentials,
+        revokeDeps,
+        nonces,
         capabilities: CAPABILITIES,
-        endDevice: (deviceId) => endDevice({ tickets, connections: everyConnection }, deviceId),
-        revokeCredentials: () => {
-          let ended = 0;
-          const ownerRevoke = { ...revokeDeps, revoke: (ref: { kind: "agent" | "mcp"; id: string }) => credentials.markEnded(ref, "owner") };
-          for (const c of credentials.list()) {
-            if (revokeCredential(ownerRevoke, { kind: c.kind, id: c.id }, { rpc: "env.reset", reason: "owner" }).revoked) ended++;
-          }
-          return ended;
-        },
+        journal: diagnostics.journal,
+        loopbackPort: () => wsPort,
+        httpRoutes,
         rewriteInfo: () => {
           if (!removed) publish(diagnostics.enabled());
         },
       });
-      // `GET /.well-known/finisher` (anonymous, spec §5.5): the descriptor's public subset.
-      httpRoutes["GET /.well-known/finisher"] = async () => ({ status: 200, body: environment.wellKnown() });
-      // Pairing (Task 8): offers, redeems, approvals; `/pair/*` on the front; expiry every 10 s.
-      const pairing = new Pairing({ store: controlStore, devices, audit, env: environment, journal: diagnostics.journal });
-      yield* Effect.acquireRelease(
-        Effect.sync(() => {
-          const timer = setInterval(() => {
-            try {
-              pairing.sweep();
-            } catch (e) {
-              process.stderr.write(`finisherd: warning: pairing expiry sweep failed: ${String(e)}\n`);
-            }
-          }, 10_000);
-          timer.unref();
-          return timer;
-        }),
-        (timer) => Effect.sync(() => clearInterval(timer)),
-      );
-      const dpop = new DpopVerifier(nonces);
-      Object.assign(
-        httpRoutes,
-        pairRoutes({
-          pairing,
-          verifier: dpop,
-          env: environment,
-          audit,
-          // On loopback a proof names the loopback listener's own origins; the remote listener's are Task 10's.
-          allowedOrigins: () => loopbackHosts(wsPort).map((h) => `http://${h}`),
-          routeOf: (ctx) => (ctx.listener === "loopback" ? "loopback" : "other"),
-        }),
-      );
       if (checkMoved(environment, controlStore, identity.renewed)) {
         yield* Effect.logWarning("finisherd: this server data was copied or moved: paired devices wait until its owner adopts or resets it");
       }
@@ -448,6 +403,7 @@ export const serve = ({
               Layer.succeed(ServerControlTag, serverControl),
               Layer.succeed(EnvironmentTag, environment),
               Layer.succeed(PairingTag, pairing),
+              Layer.succeed(DeviceAccessTag, access),
               Layer.succeed(AgentCoreTag, agentCore),
               Layer.succeed(AgentRuntimeTag, agentRuntime),
             ),
