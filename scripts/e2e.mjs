@@ -40,7 +40,7 @@
 //
 // The "auth" scenario (scripts/e2e/auth*.mjs) drives principals and credentials over `fin.sock` and
 // the ticketed WebSocket: an unproved connection, `fin` as `local`, the human-only refusals and the
-// console's typed codes, ticket and Host/Origin checks, agent credentials (scopes, `branch own`,
+// console's challenge codes, ticket and Host/Origin checks, agent credentials (scopes, `branch own`,
 // journal actors, revocation ending live streams, expiry, `TICKET_LIMIT`), a squatted socket, a
 // restart that rotates the keys, the audit rows and a leak grep over every log and the journal.
 //

@@ -119,7 +119,7 @@ describe("scopes", () => {
         expect(h.seen).toEqual([]);
         expect(h.audited.map((a) => [a.kind, a.code, a.details?.rpc])).toEqual([["auth.denied", "HUMAN_ONLY", tag]]);
       }
-      // Only the console passes, with the connection's typed code, once.
+      // Only the console passes, with the connection's challenge code, once.
       const owner = chainHarness(CONSOLE);
       expect(await owner.call(tag, extra), tag).toBe("CONFIRMATION_REQUIRED");
       expect(await owner.call(tag, extra, owner.challenge()), tag).toBeUndefined();

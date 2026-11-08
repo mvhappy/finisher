@@ -322,7 +322,7 @@ describe("credentials on a server", () => {
     }
   });
 
-  test("mint_needs_a_human and a typed code; list reads without one; a credential cannot mint", async () => {
+  test("mint_needs_a_human and a challenge code; list reads without one; a credential cannot mint", async () => {
     await startInProcess();
     const local = await connectProved({ info: running!.info, serverData });
     clients.push(local);

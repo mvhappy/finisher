@@ -83,7 +83,7 @@ export class AgentServer {
     return this.connect("local");
   }
 
-  /** The owner's console connection (human-only calls with the typed code: `confirmed`). */
+  /** The owner's console connection (human-only calls with the challenge code: `confirmed`). */
   async console(): Promise<NdjsonClient> {
     return this.connect("console");
   }

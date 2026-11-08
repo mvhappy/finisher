@@ -1,5 +1,5 @@
 // The `library.*` RPCs (plan 5D Task 13): the handlers `handlers.ts` takes as call sites. Every
-// one passes the chain first (scopes, human-only and typed confirmation: `scopes.ts`), so these
+// one passes the chain first (scopes, human-only and the challenge code: `scopes.ts`), so these
 // only check what the chain cannot: that a library exists and is in the caller's reach (an
 // unknown library and one out of reach answer the same `LIBRARY_NOT_FOUND`), that a path
 // below a root is a plain relative path, and what each call's state allows.

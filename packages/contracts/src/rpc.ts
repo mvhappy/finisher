@@ -235,7 +235,7 @@ export const ProjectCreatePayload = Schema.Struct({
 export const ProjectOpenPayload = Schema.Struct({
   dir: Schema.String,
   relocate: Schema.optional(Schema.Boolean),
-  /** The console's typed confirmation of a relocation (5A Decision 30). */
+  /** The console's challenge code of a relocation (5A Decision 30). */
   challenge: ChallengeField,
 });
 export const ProjectRefSuccess = Schema.Struct({
@@ -340,7 +340,7 @@ export const ProjectTakeoverPayload = Schema.Struct({
   projectId: Schema.String,
   /** Needed on sync folders, which never take over without a person's say-so. */
   confirm: Schema.Boolean,
-  /** The console's typed confirmation of `confirm: true` (5A Decision 30). */
+  /** The console's challenge code of `confirm: true` (5A Decision 30). */
   challenge: ChallengeField,
 });
 export const ProjectAcknowledgeRewindPayload = Schema.Struct({

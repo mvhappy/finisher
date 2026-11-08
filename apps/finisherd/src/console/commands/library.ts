@@ -1,7 +1,9 @@
 // `finisherd library add|rm|set` (plan 5D Task 14; spec §4.7, §7): the owner's libraries. Every
 // one changes what the server indexes or trusts (a root to read, the fields only a person
-// decides, a catalog to delete), so each needs a terminal and the typed code, like
-// `agent mint`. Reading libraries is `fin library ls|status|files|show|search`.
+// decides, a catalog to delete), so each needs a terminal (owner decision of 2026-11-08): `add`
+// and most of `set` a `y`; `rm`, `set --accept-unmounted` and `set --accept-empty-root` (which
+// can mark files missing) the library's name typed back. Reading libraries is
+// `fin library ls|status|files|show|search`.
 //
 // - `library add <dir> [--name <n>] [--storage local|network|sync] [--include <glob>]…
 //   [--exclude <glob>]… [--kinds all|<kind>,…] [--poll demand|<s>] [--full daily|weekly|manual]
@@ -13,9 +15,10 @@
 //   `--no-aliases`, `--accept-volume`, `--accept-unmounted <dir>`, `--accept-empty-root`.
 //   `fin library set` changes the other fields (`--name`, `--include`, …).
 import { resolve } from "node:path";
-import type { LibraryAddResult, LibraryViewResult } from "@finisher/contracts";
+import type { LibraryAddResult, LibraryStatusResult, LibraryViewResult } from "@finisher/contracts";
 import { LIBRARY_STORAGES } from "@finisher/contracts";
-import { confirmed, requireTty } from "../confirm.ts";
+import { type ConsoleConnection, valueOf } from "../client.ts";
+import { confirmed, proceed, requireTty, typeName } from "../confirm.ts";
 import { all, has, one, onlyFlags, usage } from "../format.ts";
 import { safe } from "../safe.ts";
 import { type CommandContext, withConnection } from "./context.ts";
@@ -53,6 +56,11 @@ function hydrateOf(value: string | undefined): boolean {
   if (value === "" || value === "on") return true;
   if (value === "off") return false;
   return usage("--hydrate takes on or off");
+}
+
+/** The name of library `lib` (an id or a name), as the server knows it; its error when there is none. */
+async function nameOf(c: ConsoleConnection, lib: string): Promise<string> {
+  return valueOf<LibraryStatusResult>(await c.call("library.status", { id: lib })).library.name;
 }
 
 function libraryArg(command: string, rest: ReadonlyArray<string>): string {
@@ -98,6 +106,7 @@ async function add(ctx: CommandContext, rest: ReadonlyArray<string>): Promise<nu
       ctx.prompt,
       `This adds ${safe(root)} as a library and starts indexing it: Finisher reads the names, sizes and times of everything under it, and the media files' contents to tell what they are` +
         `${hydrate === true ? ", including files a sync service keeps in the cloud (they are downloaded to be read)" : ", but never downloads files a sync service keeps in the cloud"}. Nothing under it is ever changed.`,
+      proceed,
       "library.add",
       payload,
     ),
@@ -113,16 +122,19 @@ async function rm(ctx: CommandContext, rest: ReadonlyArray<string>): Promise<num
   onlyFlags(ctx.args, "library rm", []);
   const lib = libraryArg("library rm", rest);
   requireTty(ctx.prompt, "library rm");
-  await withConnection(ctx, (c) =>
-    confirmed<object>(
+  const name = await withConnection(ctx, async (c) => {
+    const name = await nameOf(c, lib);
+    await confirmed<object>(
       c,
       ctx.prompt,
-      `This removes the library ${safe(lib)}: its jobs are cancelled and its catalog is deleted. The files under its root are never touched; adding the root again indexes it from scratch.`,
+      `This removes the library ${safe(name)}: its jobs are cancelled and its catalog is deleted. The files under its root are never touched; adding the root again indexes it from scratch.`,
+      typeName("library's name", name),
       "library.remove",
       { id: lib },
-    ),
-  );
-  ctx.output.out(`Removed library ${safe(lib)}.`);
+    );
+    return name;
+  });
+  ctx.output.out(`Removed library ${safe(name)}.`);
   return 0;
 }
 
@@ -164,8 +176,17 @@ async function set(ctx: CommandContext, rest: ReadonlyArray<string>): Promise<nu
     usage("library set needs something to change: --hydrate, --bandwidth, --alias, --no-aliases, --accept-volume, --accept-unmounted or --accept-empty-root", "`fin library set` changes the library's name, filters, kinds, scan schedule and pause.");
   }
   requireTty(ctx.prompt, "library set");
-  const done = await withConnection(ctx, (c) =>
-    confirmed<{ library: LibraryViewResult; unmounted?: number }>(c, ctx.prompt, `This ${changes.join(", and ")}, for the library ${safe(lib)}.`, "library.set", payload),
+  // Accepting a gone mount or an empty root can mark files missing: the name typed back.
+  const marksMissing = unmounted !== undefined || has(ctx.args, "accept-empty-root");
+  const done = await withConnection(ctx, async (c) =>
+    confirmed<{ library: LibraryViewResult; unmounted?: number }>(
+      c,
+      ctx.prompt,
+      `This ${changes.join(", and ")}, for the library ${safe(lib)}.`,
+      marksMissing ? typeName("library's name", await nameOf(c, lib)) : proceed,
+      "library.set",
+      payload,
+    ),
   );
   ctx.output.out(`Updated library ${safe(done.library.name)} (${done.library.id}), now ${done.library.state}.`);
   if (done.unmounted !== undefined) {

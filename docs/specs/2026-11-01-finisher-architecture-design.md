@@ -734,7 +734,7 @@ MyProject/                      (may live on local disk, NAS, or a cloud-synced 
 | Phase | Delivers |
 |---|---|
 | Now (sub-project 4C branch) | Envelope, kinds and the payload enum, the journal and its blob lifecycle, consent and the project flag, the first sources (edits and history with their outcomes, intents and actors, `fin`, RPC, eval, fonts, errors, sessions), `fin diagnostics`, and the upload view (`export --as-upload`). No uploader, no network |
-| Sub-project 5A | Sources and actors from principals; export of content, purge, `project default` and consent changes human-only (the console confirms them with a typed code); exports redacted unless they ask for content, which only a person may (built, §27 item 18) |
+| Sub-project 5A | Sources and actors from principals; export of content, purge, `project default` and consent changes human-only (the console confirms them: y/N, or the target's name typed back for a purge, with the server's challenge code sent by the console itself); exports redacted unless they ask for content, which only a person may (built, §27 item 18) |
 | Sub-project 7 | Fills the reserved agent kinds (turns, tool calls and results, edit verdicts) and sets `FIN_CALL` |
 | Sub-project 9 | `ui.*` events, the UI's actor on commits, the onboarding consent question (content, no pre-selected answer) and the diagnostics notice, a "what we collect" page |
 | Sub-project 10 | `review.*` verdicts (marker resolve, accept/reject per transaction) |

@@ -1,14 +1,15 @@
 // `finisherd plugin search|info|ls|install|update|rm|enable|disable` (plan 8A Task 12b; spec §5.3,
 // Decisions 19–21): the owner's plugin lifecycle. Reading needs no terminal. Everything that
 // changes something needs one, and installs and updates go: `plugin.plan` (nothing runs; the plan
-// is staged and checked) → the plan printed with its risks → the owner types `yes` (or, for
-// third-party code, the plugin's id) → `plugin.install {planId, digest, accept}` with the
-// server's typed code. The digest is the one the server printed, so the owner approves exactly
+// is staged and checked) → the plan printed with its risks → the owner answers `y` (or, for
+// third-party code, types the plugin's id back) → `plugin.install {planId, digest, accept}` with a
+// fresh `console.challenge` code the console fetches itself. Removing with `--purge-data` deletes
+// the plugin's data, so it takes the plugin's id typed back too. The digest is the one the server printed, so the owner approves exactly
 // what was staged.
 import type { InstallPlan } from "@finisher/core-types";
 import type { InstalledRow, PluginInfoResult, PluginInstallResult, PluginSearchResult } from "@finisher/contracts";
 import { ConsoleError, consoleError, valueOf } from "./client.ts";
-import { confirmed, requireTty } from "./confirm.ts";
+import { ask, confirmed, proceed, requireTty, typeName, withChallenge } from "./confirm.ts";
 import type { CommandContext } from "./commands/context.ts";
 import { withConnection } from "./commands/context.ts";
 import { has, one, onlyFlags, usage } from "./format.ts";
@@ -124,7 +125,7 @@ function askForRegistry(e: ConsoleError): ConsoleError {
 async function plan(c: ConsoleConnection, ctx: CommandContext, request: Record<string, unknown>, downgrade: boolean): Promise<InstallPlan> {
   try {
     return downgrade
-      ? await confirmed<InstallPlan>(c, ctx.prompt, `This plans a DOWNGRADE of ${String(request.id)} to ${String(request.version)}. Nothing is installed until you approve the plan.`, "plugin.plan", request)
+      ? await confirmed<InstallPlan>(c, ctx.prompt, `This plans a DOWNGRADE of ${String(request.id)} to ${String(request.version)}. Nothing is installed until you approve the plan.`, proceed, "plugin.plan", request)
       : valueOf<InstallPlan>(await c.call("plugin.plan", request));
   } catch (e) {
     throw e instanceof ConsoleError && e.error.code === "REGISTRY_AMBIGUOUS" ? askForRegistry(e) : e;
@@ -160,14 +161,15 @@ async function install(ctx: CommandContext, rest: ReadonlyArray<string>, update:
       if (shown.copyleft && !has(ctx.args, "accept-copyleft")) {
         throw consoleError("USAGE", "this plugin is under copyleft terms: nothing was installed", { reason: "copyleft" }, "Read the licence, then run the command again with --accept-copyleft.");
       }
-      await approve(ctx, p, shown.thirdPartyCode);
+      const accepting = shown.thirdPartyCode ? ", and accepts the risk of its third-party code above" : "";
+      await ask(ctx.prompt, `This ${p.action}s ${safe(p.plugin.id)} ${safe(p.plugin.version)}, exactly as the plan above${accepting}.`, shown.thirdPartyCode ? typeName("plugin's id", p.plugin.id) : proceed, "plugin.install");
       const body = {
         planId: p.planId,
         digest: p.digest,
         accept: { ...(shown.copyleft ? { copyleft: true } : {}), ...(shown.thirdPartyCode ? { thirdPartyCode: true } : {}) },
         ...(autoUpdate === undefined ? {} : { autoUpdate }),
       };
-      const result = await confirmed<PluginInstallResult>(c, ctx.prompt, `This ${p.action}s ${safe(p.plugin.id)} ${safe(p.plugin.version)}, exactly as the plan above.`, "plugin.install", body);
+      const result = await withChallenge<PluginInstallResult>(c, "plugin.install", body);
       finished = true;
       return result;
     } finally {
@@ -181,25 +183,13 @@ async function install(ctx: CommandContext, rest: ReadonlyArray<string>, update:
   return 0;
 }
 
-/** The owner's explicit yes: `yes`, or the plugin's id typed back for third-party code. */
-async function approve(ctx: CommandContext, p: InstallPlan, thirdParty: boolean): Promise<void> {
-  if (thirdParty) {
-    ctx.prompt.show("Installing it accepts the risk above.");
-    const typed = (await ctx.prompt.ask(`Type the plugin's id (${safe(p.plugin.id)}) to accept third-party code and continue: `)).trim();
-    if (typed !== p.plugin.id) throw consoleError("CONFIRMATION_REQUIRED", `the plugin's id was not typed back, so nothing was ${p.action === "install" ? "installed" : "changed"}`, { reason: "cancelled" });
-    return;
-  }
-  const typed = (await ctx.prompt.ask(`Type yes to ${p.action} ${safe(p.plugin.id)} ${safe(p.plugin.version)}: `)).trim().toLowerCase();
-  if (typed !== "yes") throw consoleError("CONFIRMATION_REQUIRED", `you did not type yes, so nothing was ${p.action === "install" ? "installed" : "changed"}`, { reason: "cancelled" });
-}
-
 async function rm(ctx: CommandContext, rest: ReadonlyArray<string>): Promise<number> {
   onlyFlags(ctx.args, "plugin rm", ["purge-data"]);
   const { id } = idAndVersion("plugin rm", rest, false);
   const purge = has(ctx.args, "purge-data");
   requireTty(ctx.prompt, "plugin rm");
   await withConnection(ctx, (c) =>
-    confirmed(c, ctx.prompt, `This removes ${id} and its files${purge ? ", and deletes the data it stored" : "; the data it stored is kept"}.`, "plugin.remove", { id, ...(purge ? { purgeData: true } : {}) }),
+    confirmed(c, ctx.prompt, `This removes ${id} and its files${purge ? ", and deletes the data it stored" : "; the data it stored is kept"}.`, purge ? typeName("plugin's id", id) : proceed, "plugin.remove", { id, ...(purge ? { purgeData: true } : {}) }),
   );
   ctx.output.out(`Removed ${id}.`);
   return 0;
@@ -210,7 +200,7 @@ async function setEnabled(ctx: CommandContext, sub: "enable" | "disable", rest: 
   const { id } = idAndVersion(`plugin ${sub}`, rest, false);
   requireTty(ctx.prompt, `plugin ${sub}`);
   const { plugin: row } = await withConnection(ctx, (c) =>
-    confirmed<{ plugin: InstalledRow }>(c, ctx.prompt, `This ${sub}s ${id} on this server.`, `plugin.${sub}`, { id }),
+    confirmed<{ plugin: InstalledRow }>(c, ctx.prompt, `This ${sub}s ${id} on this server.`, proceed, `plugin.${sub}`, { id }),
   );
   ctx.output.out(`${safe(row.id)} is now ${row.enabled ? "enabled" : "disabled"}.`);
   return 0;

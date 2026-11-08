@@ -225,14 +225,27 @@ ticket over a proved connection and sends it when it connects.
 You do them in the Finisher app (later) or the server's console. `finisherd` with no argument
 serves. `finisherd help` lists the console commands. `finisherd status`, `audit`, `agent ls`,
 `agent credentials` and `stop` run anywhere. **Every command that changes something needs an
-interactive terminal**: it says what will happen, shows a short code from the server, and goes
-ahead only once you type the code back. A command run from a pipe or a script is refused with
-`CONSOLE_NEEDS_TTY`.
+interactive terminal**: it says what will happen and asks you to confirm. Most ask `Proceed? [y/N]`. What
+cannot be undone or destroys something asks you to type the target's name back, GitHub-style:
+the library's name for `library rm` (and for `library set --accept-unmounted` or
+`--accept-empty-root`, which can mark files missing), the registry's id for `registry rm`, the
+root's first 8 characters for `registry forget`, the plugin's id for `plugin rm --purge-data`
+and for third-party code, the word `audit` for `audit purge`, the word `diagnostics` for
+`diagnostics purge`, `credential.master` for `auth rotate-master`, the project id's first 8
+characters for `project takeover --confirm`, the folder's name for `project open --relocate`,
+the session id's first 8 characters for `agent delete`, the key id's first 8 characters for
+`provider key rm` and the word `local` for `provider local rm`.
+A command run from a pipe or a script is refused with `CONSOLE_NEEDS_TTY`. Once you confirm, the
+console fetches a one-time code from the server and sends it with the change; you never see it.
+The server still refuses a confirmed change without a fresh code from the same console session.
 
-**What the typed code protects against, and what it does not.** It stops `yes |` pipes, pasted
-scripts and an agent that runs `fin`. It does **not** stop a program running as your user that
-can read `<server-data>/auth/`: such a program can prove as the console itself, or drive a
-pseudo-terminal (`script`, `expect`) and type the code. **An agent harness you start in a plain
+**What the confirmation protects against, and what it does not.** The terminal rule stops pipes
+(`yes | finisherd …`), pasted scripts, cron jobs and an agent that runs `fin`. A `y` on its own
+would be satisfied by `yes |`, so for y/N actions the terminal rule is what keeps that pipe out;
+typing the name is the step a blind `y` cannot pass, in a pipe or in a terminal. It
+does **not** stop a program running as your user that can read `<server-data>/auth/`: such a
+program can prove as the console itself, or drive a pseudo-terminal (`script`, `expect`) and
+answer `y` or type the name it reads off the screen. **An agent harness you start in a plain
 shell runs as you**, so until Finisher sandboxes agents (a later version), human-only operations,
 scopes and branch limits bind only harnesses that go through `fin` or MCP with their own
 credential. They record who did what and prevent mistakes. They are not a wall against hostile
@@ -323,8 +336,8 @@ plugin. Plugins come from **registries**: signed folders (local, on a NAS or a s
 a clone of a git repository) that a publisher keeps.
 
 - **Only a person installs plugins**, through the app or the server console (`finisherd plugin
-  install <id>`, which prints the plan with every permission and its risk and asks for `yes`;
-  third-party code asks for the plugin's id typed back). Agents and `fin` can read and suggest,
+  install <id>`, which prints the plan with every permission and its risk and asks
+  `Proceed? [y/N]`; third-party code asks for the plugin's id typed back). Agents and `fin` can read and suggest,
   never install, update, enable or remove.
 - **Registry trust is the publisher's root hash.** `finisherd registry add <id> --dir <path>`
   shows the registry's root SHA-256 and the key ids behind it, and adds nothing until you paste
@@ -406,7 +419,7 @@ Changing consent, deleting what was recorded, clearing a project's `never` flag 
 recorded content are yours alone: `fin` (and any agent that runs it) is refused with
 `HUMAN_ONLY`. You make these changes in the Finisher app or the server's console
 (`finisherd diagnostics consent …`, `purge`, `project default`, `export --content`), which asks
-you to type a short code it shows before anything changes. Training cannot be turned on from
+`Proceed? [y/N]` before anything changes (a purge asks you to type `diagnostics`). Training cannot be turned on from
 the console either.
 
 Withdrawing a purpose takes effect before anything else is written. It stops the upload view

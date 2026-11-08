@@ -80,7 +80,7 @@ export const CredentialFileSchema = Schema.Struct({
 export type CredentialFile = typeof CredentialFileSchema.Type;
 
 /**
- * `auth.credential.mint` (`auth.admin`, a typed code from the console): `scopes` default to
+ * `auth.credential.mint` (`auth.admin`, a challenge code from the console): `scopes` default to
  * `MINT_DEFAULT_SCOPES` (a human-only one is `SCOPE_DENIED`); `projects` default to every
  * project (`"*"`), `branches` to every branch (`["own"]` or ids narrow them); `idleS` and
  * `absoluteS` (`null`: none) default per kind. The answer carries the file's contents once.
@@ -102,7 +102,7 @@ export const CredentialListPayload = Schema.Struct({ all: Schema.optional(Schema
 export const CredentialListSuccess = Schema.Struct({ credentials: Schema.Array(CredentialSchema) });
 
 /**
- * `auth.credential.revoke {id}` (`auth.admin`, a typed code): the one revoke path — the store,
+ * `auth.credential.revoke {id}` (`auth.admin`, a challenge code): the one revoke path — the store,
  * the credential's tickets, its live connections and streams, and its writes in flight.
  * `revoked: false` when it was not live (unknown, already revoked or expired).
  */
@@ -110,7 +110,7 @@ export const CredentialRevokePayload = Schema.Struct({ id: Schema.String, challe
 export const CredentialRevokeSuccess = Schema.Struct({ revoked: Schema.Boolean });
 
 /**
- * `auth.credential.rotateMaster {}` (`auth.admin`, a typed code; review of Tasks 8–9, M3): a new
+ * `auth.credential.rotateMaster {}` (`auth.admin`, a challenge code; review of Tasks 8–9, M3): a new
  * `credential.master` is written, so no key derived from the old one proves again, and every
  * credential not ended yet is revoked through the one revoke path. `ended` counts them. The
  * remedy when `credential.master` may have been copied, or an old `control.db` was restored

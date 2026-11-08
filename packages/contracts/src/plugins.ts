@@ -16,7 +16,7 @@ export const RegistryIdSchema = Schema.String.check(Schema.isPattern(/^[a-z0-9][
 const Sha256Schema = Schema.String.check(Schema.isPattern(/^[0-9a-fA-F]{64}$/));
 
 export const RegistryIdPayload = Schema.Struct({ id: RegistryIdSchema });
-/** `registry.remove` (owner): the console's typed confirmation rides along (5A Decision 30). */
+/** `registry.remove` (owner): the console's challenge code rides along (5A Decision 30). */
 export const RegistryRemovePayload = Schema.Struct({ id: RegistryIdSchema, challenge: ChallengeField });
 
 /**
@@ -30,7 +30,7 @@ export const RegistryAddPayload = Schema.Struct({
     Schema.Struct({ kind: Schema.Literal("file"), path: Schema.String }),
     Schema.Struct({ kind: Schema.Literal("sha256"), sha256: Sha256Schema }),
   ]),
-  /** The console's typed confirmation (5A Decision 30). */
+  /** The console's challenge code (5A Decision 30). */
   challenge: ChallengeField,
 });
 export type RegistryAddRequest = typeof RegistryAddPayload.Type;

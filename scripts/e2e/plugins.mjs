@@ -6,7 +6,7 @@
 //      its root's SHA-256 (a wrong hash is refused; `fin registry add` is `HUMAN_ONLY`);
 //   3. refresh (the owner's and `fin`'s, with and without an agent session), search and info;
 //   4. `fin plugin install` is `HUMAN_ONLY`; so is a person's install of a plan `fin` made;
-//   5. a person plans and installs a content pack through the console's typed code, and
+//   5. a person plans and installs a content pack through the console's challenge code, and
 //      `fin style add --from` copies its style (and the bundled pack's);
 //   6. a font pack merges into `fonts.catalog`; a pack whose face is named like a built-in
 //      family cannot be packed (review H1; the server's plan refuses it with the same code);
@@ -77,7 +77,7 @@ export async function run() {
   const list = () => console_("plugin.list", {});
   const row = async (id) => (await list()).plugins.find((p) => p.id === id);
   const audit = async (kind, pick = () => true) => (await auditRows(server, kind)).filter(pick);
-  /** A person's plan and install: the console's calls, with the typed code on the install. */
+  /** A person's plan and install: the console's calls, with the challenge code on the install. */
   const install = async (id, extra = {}, accept = {}) => {
     const plan = await console_("plugin.plan", { id, ...extra });
     const done = await asPerson("plugin.install", { planId: plan.planId, digest: plan.digest, accept });

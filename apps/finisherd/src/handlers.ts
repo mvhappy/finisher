@@ -198,7 +198,8 @@ export const HandlersLive = FinRpcs.toLayer(
             },
           ),
         ),
-      // The console's typed confirmations (Decision 30): a code for this connection only.
+      // The console's confirmations (Decision 30): a code for this connection only, which the
+      // console sends itself once the person has confirmed.
       "console.challenge": (_, options) =>
         guard(
           "console.challenge",

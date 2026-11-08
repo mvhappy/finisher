@@ -87,7 +87,7 @@ export const LibraryAddPayload = Schema.Struct({
   hydrate: Schema.optional(Schema.Boolean),
   bandwidthMiBs: Schema.optional(Schema.Number),
   aliases: Schema.optional(Schema.Array(Schema.String)),
-  /** The console's typed confirmation (5A Decision 30). */
+  /** The console's challenge code (5A Decision 30). */
   challenge: ChallengeField,
 });
 export type LibraryAddRequest = typeof LibraryAddPayload.Type;

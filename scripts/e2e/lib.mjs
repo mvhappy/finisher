@@ -296,8 +296,9 @@ export async function proveConnection(server, credential = "local", { keyFile } 
 
 /**
  * Proves `credential` over the server's socket and calls `tag` once (5A Decision 6): the same
- * handshake `fin` runs. With `confirm`, a console asks for a `console.challenge` first and types
- * its code back in `challenge` (5A Decision 30: the mutating human-only calls).
+ * handshake `fin` runs. With `confirm`, a console asks for a `console.challenge` first and sends
+ * its code in `challenge`, as `finisherd` does once the person has confirmed (5A Decision 30, owner
+ * decision of 2026-11-08: the mutating human-only calls).
  */
 export async function socketCall(server, tag, payload, credential = "local", { confirm = false, keyFile } = {}) {
   const conn = await proveConnection(server, credential, { keyFile });
@@ -318,7 +319,7 @@ export async function socketCall(server, tag, payload, credential = "local", { c
 
 /**
  * An RPC as the server's console makes it: proved as `console`, and for a mutation (the default)
- * with a fresh `console.challenge` of its own connection typed back; `{ confirm: false }` for a read.
+ * with a fresh `console.challenge` code of its own connection; `{ confirm: false }` for a read.
  */
 export function consoleRpc(server, tag, payload, { confirm = true } = {}) {
   return socketCall(server, tag, payload, "console", { confirm });

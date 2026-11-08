@@ -13,6 +13,7 @@ import type { FakeScript } from "../src/agent/fake.ts";
 import { runConsole } from "../src/console/main.ts";
 import type { Prompt } from "../src/console/prompt.ts";
 import { AgentServer } from "./support/agent-server.ts";
+import { type Person, person as confirming } from "./support/person.ts";
 import { addAsset, commit, type NdjsonClient, ok, tx } from "./support/ndjson-client.ts";
 
 let tmp: string;
@@ -50,24 +51,12 @@ afterEach(async () => {
   rmSync(tmp, { recursive: true, force: true });
 });
 
-/** A person at a terminal: types back each code shown; `secret` answers the key question. */
-function person(secret = ""): Prompt & { shown: string[]; secrets: number } {
-  const shown: string[] = [];
-  let last = "";
-  const p = {
-    shown,
-    secrets: 0,
-    isInteractive: () => true,
-    show: (text: string) => {
-      shown.push(text);
-      const m = /type this code within 60 seconds: ([0-9A-Z]{6})$/.exec(text);
-      if (m) last = m[1]!;
-    },
-    ask: async () => last,
-    secret: async () => {
-      p.secrets++;
-      return secret;
-    },
+/** A person at a terminal (`support/person.ts`) whose answer to the hidden key question is `secret`. */
+function person(secret = "", ...answers: string[]): Person & { secrets: number } {
+  const p = Object.assign(confirming(...answers), { secrets: 0 });
+  p.secret = async () => {
+    p.secrets++;
+    return secret;
   };
   return p;
 }
@@ -101,7 +90,7 @@ async function until(local: NdjsonClient, sessionId: string, status: Session["st
 }
 
 describe("agent sessions from the console", () => {
-  test("start by folder, ls, show, watch until the end, delete with the typed code", async () => {
+  test("start by folder, ls, show, watch until the end, delete with the id typed back", async () => {
     const local = await server.local();
     const p = await project(local);
     const started = await run(["agent", "start", "--project", p.dir, "--harness", "fake", "--prompt", "say hello", "--json"]);
@@ -127,14 +116,16 @@ describe("agent sessions from the console", () => {
     const lines = watched.out.trim().split("\n");
     expect(lines[0]).toMatch(/^#1 userMessage {2}you: say hello$/);
     expect(lines).toContain("-- ended (userEnded)");
-    // Deleting is the owner's: a terminal and the typed code.
+    // Deleting is the owner's: a terminal and the session id's first 8 characters typed back.
     const refused = await run(["agent", "delete", session.id]);
     expect(refused.code).toBe(7);
     expect(refused.err).toContain("CONSOLE_NEEDS_TTY");
+    expect((await run(["agent", "delete", session.id], person("", "y"))).err).toContain("CONFIRMATION_REQUIRED");
     const owner = person();
     const deleted = await run(["agent", "delete", session.id], owner);
     expect(deleted.code, deleted.err).toBe(0);
     expect(owner.shown[0]).toContain(`This deletes agent session ${session.id}`);
+    expect(owner.shown).toContain(`To confirm, type the session id's first 8 characters: ${session.id.slice(0, 8)}`);
     expect((await run(["agent", "show", session.id])).code).toBe(3);
   });
 
@@ -154,6 +145,7 @@ describe("agent sessions from the console", () => {
     const owner = person();
     const r = await run(["agent", "approve", approval!, "allow", "--add", "5k"], owner);
     expect(r.code, r.err).toBe(0);
+    expect(owner.asked).toEqual(["Proceed? [y/N] "]);
     expect(owner.shown[0]).toContain("raising its tokens budget by 5k, and resumes the session");
     expect(r.out).toContain("(allow)");
     expect((await until(local, session.id, "idle")).status).toBe("idle");
@@ -189,6 +181,7 @@ describe("provider keys, the local endpoint and the counsel gate from the consol
     const set = await run(["provider", "key", "set", "openrouter", "--label", "team"], owner);
     expect(set.code, set.err).toBe(0);
     expect(owner.secrets).toBe(1);
+    expect(owner.asked).toEqual(["Proceed? [y/N] "]);
     expect(set.out).toMatch(/Stored key \S+ \("team"\) as the server's default\./);
     const ls = await run(["provider", "key", "ls"]);
     expect(ls.out).toContain('"team"  server default');
@@ -198,7 +191,11 @@ describe("provider keys, the local endpoint and the counsel gate from the consol
     expect(owner.shown.join("\n")).not.toContain(KEY);
     expect((await run(["agent", "providers"])).out).toContain("openrouter key: set for the server");
     const id = /^(\S+)/.exec(ls.out)![1]!;
-    expect((await run(["provider", "key", "rm", id], person())).out).toContain(`Removed key ${id}.`);
+    // Removing takes the key id's first 8 characters typed back.
+    expect((await run(["provider", "key", "rm", id], person("", "y"))).err).toContain("CONFIRMATION_REQUIRED");
+    const removing = person();
+    expect((await run(["provider", "key", "rm", id], removing)).out).toContain(`Removed key ${id}.`);
+    expect(removing.asked).toEqual(["Type the key id's first 8 characters to confirm: "]);
   });
 
   test("provider key set refuses a terminal that cannot hide input instead of asking with an echo (L4)", async () => {
@@ -246,11 +243,13 @@ describe("provider keys, the local endpoint and the counsel gate from the consol
     const down = await run(["provider", "local", "test"]);
     expect(down.code).toBe(5);
     expect(down.err).not.toContain(new URL(url).port);
-    expect((await run(["provider", "local", "rm"], person())).out).toContain("Removed the local endpoint.");
+    const removing = person();
+    expect((await run(["provider", "local", "rm"], removing)).out).toContain("Removed the local endpoint.");
+    expect(removing.shown).toContain("To confirm, type the word: local");
     expect((await run(["provider", "local", "show"])).out).toContain("No local endpoint is set.");
   });
 
-  test("training closed-targets shows the gate and records it with the typed code", async () => {
+  test("training closed-targets shows the gate and records it with a y", async () => {
     expect((await run(["training", "closed-targets"])).out).toMatch(/^pendingCounsel: /);
     expect((await run(["training", "closed-targets", "cleared"])).code).toBe(7);
     expect((await run(["training", "closed-targets", "maybe"], person())).code).toBe(2);
@@ -258,6 +257,8 @@ describe("provider keys, the local endpoint and the counsel gate from the consol
     const r = await run(["training", "closed-targets", "excluded"], owner);
     expect(r.code, r.err).toBe(0);
     expect(owner.shown[0]).toContain("It is audited.");
+    expect(owner.asked).toEqual(["Proceed? [y/N] "]);
+    expect((await run(["training", "closed-targets", "cleared"], person("", "n"))).err).toContain("CONFIRMATION_REQUIRED");
     expect((await run(["training", "closed-targets", "--json"])).out.trim()).toBe(JSON.stringify({ state: "excluded" }));
     const settings = JSON.parse(readFileSync(join(server.serverData, "settings.json"), "utf8")) as { training: unknown };
     expect(settings.training).toEqual({ closedModelTargets: "excluded" });

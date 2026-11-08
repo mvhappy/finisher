@@ -134,7 +134,7 @@ export interface RuleOf<T extends FinRpcTag> {
    */
   readonly author?: string;
   /**
-   * Whenever a call needs a human-only scope, a `console` principal must send the typed code
+   * Whenever a call needs a human-only scope, a `console` principal must send the challenge code
    * of a fresh `console.challenge` of the same connection (`challenge`; Decision 30), or it is
    * `CONFIRMATION_REQUIRED`: on by default (owner decision, review of Task 7, L2). A rule opts
    * out only as `readOnly` (it changes nothing: reading content, asking for a code, listing the
@@ -196,14 +196,14 @@ export const RPC_SCOPES: { readonly [T in FinRpcTag]: RuleOf<T> } = {
   "auth.whoami": { scopes: ["server.read"] },
   // No id: a credential can revoke only itself.
   "auth.revokeSelf": { scopes: ["server.read"] },
-  // The console's typed confirmations (Decision 30); the handler serves `console` principals only.
+  // The console's confirmations (Decision 30); the handler serves `console` principals only.
   "console.challenge": { scopes: ["auth.admin"], unconfirmed: "readOnly" },
   // 5A Task 8. Stopping is the owner's, but service managers call it without a terminal.
   "server.status": { scopes: ["server.read"] },
   "server.stop": { scopes: ["auth.admin"], unconfirmed: "service" },
   "auth.audit.list": { scopes: ["auth.admin"], unconfirmed: "readOnly" },
   "auth.audit.purge": { scopes: ["auth.admin"] },
-  // 5A Task 9: minting and revoking are the owner's, with a typed code; listing reads only.
+  // 5A Task 9: minting and revoking are the owner's, with a challenge code; listing reads only.
   "auth.credential.mint": { scopes: ["auth.admin"] },
   "auth.credential.list": { scopes: ["auth.admin"], unconfirmed: "readOnly" },
   "auth.credential.revoke": { scopes: ["auth.admin"] },
@@ -330,7 +330,7 @@ export const RPC_SCOPES: { readonly [T in FinRpcTag]: RuleOf<T> } = {
   "plugin.enable": { scopes: ["plugin.admin"] },
   "plugin.disable": { scopes: ["plugin.admin"] },
   "plugin.suggest": { scopes: ["plugin.suggest", "project.read"], resolve: PROJECT },
-  // Libraries (5D Decision 47). Adding and removing are the owner's, with a typed code in the
+  // Libraries (5D Decision 47). Adding and removing are the owner's, with a challenge code in the
   // console; `library.set` needs `library.scan` for the ordinary fields and `library.admin`
   // (human-only) for the ones only a person decides. Everything that reads needs `library.read`
   // and reaches the libraries the caller reads (`libraryReach`); a scan also needs `jobs.submit`,
@@ -354,7 +354,7 @@ export const RPC_SCOPES: { readonly [T in FinRpcTag]: RuleOf<T> } = {
   // creates the root branch as the starter and mints the session's credential from the mode
   // table, so the starter must itself hold `project.write` unless the session is `plan`.
   // Reading sessions is `agent.read`; answering an approval is a person's (`agent.approve`,
-  // human-only), deleting a session the owner's (`agent.admin`), both with the typed code. A
+  // human-only), deleting a session the owner's (`agent.admin`), both with the challenge code. A
   // session's id is not a project: the handlers check the principal's reach.
   "agent.session.start": {
     scopes: ["agent.run"],
@@ -380,7 +380,7 @@ export const RPC_SCOPES: { readonly [T in FinRpcTag]: RuleOf<T> } = {
   "agent.self": { scopes: ["project.read"], kinds: SESSION_OWN },
   "agent.self.try": { scopes: ["project.write"], resolve: ["branch"], kinds: SESSION_OWN },
   // The owner's agent settings (Task 12): the key, the local endpoint (`agent.admin`) and the
-  // counsel gate (`settings.admin`), each change with the typed code; reading them needs none.
+  // counsel gate (`settings.admin`), each change with the challenge code; reading them needs none.
   // A key's project is checked for reach when named.
   "agent.key.set": { scopes: ["agent.admin"], resolve: PROJECT },
   "agent.key.list": { scopes: ["agent.admin"], unconfirmed: "readOnly" },
@@ -416,7 +416,7 @@ export function escalatedScopes(tag: FinRpcTag, payload: unknown, facts: RuleFac
 }
 
 /**
- * Whether a `console` principal's call must carry its connection's typed code: it needs a
+ * Whether a `console` principal's call must carry its connection's challenge code: it needs a
  * human-only scope and its rule does not opt out (`unconfirmed`).
  */
 export function needsConfirmation(tag: FinRpcTag, payload: unknown, facts: RuleFacts = {}): boolean {

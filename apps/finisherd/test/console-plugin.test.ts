@@ -1,5 +1,5 @@
 // The console's `plugin` and `registry` commands (plan 8A Task 12b): the install flow (plan →
-// printed with its risks → `yes` → the server's typed code → install), the typed id for
+// printed with its risks → `y` → install with a challenge code the console fetches itself), the typed id for
 // third-party code, a registry's root typed back (never trusted on first use), updates that show
 // what they widen, downgrades, ambiguity questions, and the terminal gate. Real server (child
 // process), real registries built by `fin-node`'s test hooks, and a scripted person.
@@ -12,6 +12,7 @@ import { testHooks } from "@finisher/fin-node";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { runConsole } from "../src/console/main.ts";
 import type { Prompt } from "../src/console/prompt.ts";
+import { person } from "./support/person.ts";
 import { type RunningServer, startServer } from "./support/ndjson-client.ts";
 
 const hooks = testHooks!;
@@ -55,27 +56,6 @@ function registry(spec: object): Built {
   return { dir, keys, rootSha256: r.rootSha256 };
 }
 const publish = (r: Built, spec: object) => hooks.publishToRegistry(r.dir, r.keys, JSON.stringify(spec));
-
-/** A person at a terminal: types the server's code when asked for it, else the next answer. */
-function person(...answers: string[]): Prompt & { shown: string[]; asked: string[] } {
-  const shown: string[] = [];
-  const asked: string[] = [];
-  let last = "";
-  return {
-    shown,
-    asked,
-    isInteractive: () => true,
-    show: (text) => {
-      shown.push(text);
-      const m = /type this code within 60 seconds: ([0-9A-Z]{6})$/.exec(text);
-      if (m) last = m[1]!;
-    },
-    ask: async (question) => {
-      asked.push(question);
-      return question === "Code: " ? last : (answers.shift() ?? "");
-    },
-  };
-}
 
 const NOT_A_TERMINAL: Prompt = { isInteractive: () => false, show: () => undefined, ask: async () => "" };
 
@@ -174,11 +154,12 @@ describe("registry add", () => {
     }
     expect((await run(["registry", "ls", "--json"], NOT_A_TERMINAL)).out).toContain('"registries":[]');
     expect(await audited("registry.trust")).toEqual([]);
-    // The hash typed back (upper case too) adds it, after the server's code, and lists its plugins.
-    const p = person(reg.rootSha256.toUpperCase());
+    // The hash typed back (upper case too) and a y add it, and list its plugins.
+    const p = person(reg.rootSha256.toUpperCase(), "y");
     const r = await run(["registry", "add", "team", "--dir", reg.dir], p);
     expect(r.err).toBe("");
     expect(r.code).toBe(0);
+    expect(p.asked).toEqual(["Root SHA-256: ", "Proceed? [y/N] "]);
     // Only now, matched, the root is described.
     expect(p.shown.join("\n")).toContain("That matches this folder's first root:");
     expect(p.shown.join("\n")).toMatch(/root keys: [0-9a-f]{64}.*\(1 must sign\)/);
@@ -219,15 +200,21 @@ describe("registry add", () => {
     await start();
     const reg = registry({ packages: ["@acme/pack@1.0.0"] });
     await addTeam(reg);
-    const gone = await run(["registry", "rm", "team"]);
+    expect((await run(["registry", "rm", "team"], person("y"))).code).toBe(7);
+    const removing = person();
+    const gone = await run(["registry", "rm", "team"], removing);
     expect(gone.code).toBe(0);
+    expect(removing.asked).toEqual(["Type the registry's id to confirm: "]);
     expect((await run(["registry", "status", "team"], NOT_A_TERMINAL)).code).toBe(3);
     // Adding it again resumes; forgetting its root drops what was trusted.
     await addTeam(reg);
     await run(["registry", "rm", "team"]);
+    // Both take the target typed back: the registry's id, the root's first 8 characters.
+    expect((await run(["registry", "forget", "--root", reg.rootSha256], person("y"))).code).toBe(7);
     const p = person();
     expect((await run(["registry", "forget", "--root", reg.rootSha256], p)).code).toBe(0);
     expect(p.shown.join("\n")).toContain(reg.rootSha256);
+    expect(p.shown).toContain(`To confirm, type the root's first 8 characters: ${reg.rootSha256.slice(0, 8)}`);
     expect((await audited("registry.forget")).map((e) => e.details.rootSha256)).toEqual([reg.rootSha256]);
   });
 });
@@ -236,15 +223,15 @@ describe("plugin install", () => {
   test("console_install_prints_plan_and_needs_yes", { timeout: 60_000 }, async () => {
     await start();
     await addTeam(registry({ packages: ["@acme/pack@1.0.0"] }));
-    // Anything but yes cancels, after the plan and before the code.
+    // Anything but y cancels, after the plan and before anything is sent.
     const no = person("no");
     const refused = await run(["plugin", "install", "@acme/pack"], no);
     expect(refused.code).toBe(7);
     expect(refused.err).toContain("CONFIRMATION_REQUIRED");
-    expect(no.asked).toEqual(["Type yes to install @acme/pack 1.0.0: "]);
-    expect(no.shown.join("\n")).not.toContain("type this code");
+    expect(no.asked).toEqual(["Proceed? [y/N] "]);
+    expect(no.shown.join("\n")).toContain("This installs @acme/pack 1.0.0, exactly as the plan above.");
     expect(await plugins()).toEqual(expect.not.arrayContaining([expect.objectContaining({ id: "@acme/pack" })]));
-    // yes, then the code.
+    // yes (or y): installed, with no code shown or asked for.
     const yes = person("yes");
     const r = await run(["plugin", "install", "@acme/pack"], yes);
     expect(r.err).toBe("");
@@ -256,7 +243,7 @@ describe("plugin install", () => {
     expect(shown).toContain("Risk: low");
     expect(shown).toContain("Permissions: none");
     expect(shown).not.toContain("THIRD-PARTY CODE");
-    expect(yes.asked).toEqual(["Type yes to install @acme/pack 1.0.0: ", "Code: "]);
+    expect(yes.asked).toEqual(["Proceed? [y/N] "]);
     expect(r.out).toContain("Installed @acme/pack 1.0.0 (enabled)");
     expect(await plugins()).toContainEqual(expect.objectContaining({ id: "@acme/pack", version: "1.0.0", enabled: true, autoUpdate: false }));
     expect(await audited("plugin.install")).toMatchObject([{ outcome: "ok", details: { pluginId: "@acme/pack", version: "1.0.0", registryId: "team" } }]);
@@ -293,12 +280,14 @@ describe("plugin install", () => {
   test("console_third_party_code_needs_typed_id", { timeout: 60_000 }, async () => {
     await start();
     await addTeam(registry({ packages: [code("1.0.0", [{ perm: "project:read" }, { perm: "gpu" }, NET])] }));
-    // `yes` is not enough: nothing installs.
+    // `yes` is not enough: the id must be typed back; nothing installs.
     const yes = person("yes");
     const refused = await run(["plugin", "install", ID], yes);
     expect(refused.code).toBe(7);
     expect(refused.err).toContain("CONFIRMATION_REQUIRED");
-    expect(yes.asked).toEqual([`Type the plugin's id (${ID}) to accept third-party code and continue: `]);
+    expect(yes.asked).toEqual(["Type the plugin's id to confirm: ", "Type the plugin's id to confirm: "]);
+    expect(yes.shown).toContain(`To confirm, type the plugin's id: ${ID}`);
+    expect(yes.shown.join("\n")).toContain("accepts the risk of its third-party code above");
     expect(await plugins()).toEqual(expect.not.arrayContaining([expect.objectContaining({ id: ID })]));
     // The warning comes before the plan, and each permission has its own line.
     const lines = yes.shown.flatMap((s) => s.split("\n"));
@@ -380,13 +369,13 @@ describe("plugin update", () => {
     expect((await run(["plugin", "update", "@acme/pack@1.0.0"], person("yes"))).err).toContain("PLUGIN_DOWNGRADE_REFUSED");
     expect((await run(["plugin", "update", "@acme/pack", "--allow-downgrade"])).code).toBe(2);
     expect((await run(["plugin", "install", "@acme/pack@1.0.0", "--allow-downgrade"])).code).toBe(2);
-    const p = person("yes");
+    const p = person("y", "y");
     const r = await run(["plugin", "update", "@acme/pack@1.0.0", "--allow-downgrade"], p);
     expect(r.err).toBe("");
     expect(r.code).toBe(0);
     expect(p.shown.join("\n")).toContain("DOWNGRADE @acme/pack 1.1.0 → 1.0.0");
-    // The plan and the install each ask for the server's code.
-    expect(p.asked).toEqual(["Code: ", "Type yes to downgrade @acme/pack 1.0.0: ", "Code: "]);
+    // The plan and the install are each confirmed.
+    expect(p.asked).toEqual(["Proceed? [y/N] ", "Proceed? [y/N] "]);
     expect(r.out).toContain("Downgraded @acme/pack 1.0.0");
   });
 
@@ -415,7 +404,7 @@ describe("plugin update", () => {
 });
 
 describe("plugin rm, enable and disable", () => {
-  test("they_change_the_plugin_after_the_code", { timeout: 60_000 }, async () => {
+  test("they_change_the_plugin_once_confirmed", { timeout: 60_000 }, async () => {
     await start();
     await addTeam(registry({ packages: ["@acme/pack@1.0.0"] }));
     expect((await run(["plugin", "install", "@acme/pack"], person("yes"))).code).toBe(0);
@@ -423,12 +412,15 @@ describe("plugin rm, enable and disable", () => {
     expect(off.out).toContain("@acme/pack is now disabled");
     expect(await plugins()).toContainEqual(expect.objectContaining({ id: "@acme/pack", enabled: false }));
     expect((await run(["plugin", "enable", "@acme/pack"])).out).toContain("is now enabled");
+    // Deleting its data takes the id typed back; a y is not enough.
+    expect((await run(["plugin", "rm", "@acme/pack", "--purge-data"], person("y"))).code).toBe(7);
     const p = person();
     const gone = await run(["plugin", "rm", "@acme/pack", "--purge-data"], p);
     expect(gone.code).toBe(0);
+    expect(p.asked).toEqual(["Type the plugin's id to confirm: "]);
     expect(p.shown.join("\n")).toContain("deletes the data it stored");
     expect(await plugins()).toEqual(expect.not.arrayContaining([expect.objectContaining({ id: "@acme/pack" })]));
-    // The wrong code does not remove anything that is not there; a missing plugin is an error.
+    // A plugin that is not there is an error; a bad id is a usage error.
     expect((await run(["plugin", "rm", "@acme/pack"])).code).not.toBe(0);
     expect((await run(["plugin", "rm", "not-an-id"])).code).toBe(2);
   });

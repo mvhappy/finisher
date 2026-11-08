@@ -1,8 +1,8 @@
 // `finisherd auth rotate-master` (review of 5A Tasks 8–9, M3): a new `credential.master`, which
-// ends every agent and MCP credential. Needs a terminal and the typed code; says what it ends
-// before it asks.
+// ends every agent and MCP credential. Needs a terminal and the key's name, `credential.master`,
+// typed back (it cannot be undone); says what it ends before it asks.
 import { valueOf } from "../client.ts";
-import { confirmed, requireTty } from "../confirm.ts";
+import { confirmed, requireTty, typeName } from "../confirm.ts";
 import { onlyFlags, usage } from "../format.ts";
 import { type CommandContext, withConnection } from "./context.ts";
 
@@ -19,6 +19,7 @@ export async function auth(ctx: CommandContext): Promise<number> {
       ctx.prompt,
       `This replaces the key every agent and MCP credential is made from. All ${credentials.length} live credential(s) stop working now, ` +
         "and so does every credential file made before, also one restored from a backup with an old control.db. Mint new ones afterwards.",
+      typeName("key's name", "credential.master"),
       "auth.credential.rotateMaster",
       {},
     );
