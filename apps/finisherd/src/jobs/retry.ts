@@ -136,10 +136,17 @@ function poison(e: Engine, row: JobRow, items: ReadonlyArray<string>, cause: Fin
 export async function afterFailure(e: Engine, row: JobRow, kind: KindSpec, outcome: AttemptOutcome & { ok: false }, items: ReadonlyArray<string>): Promise<void> {
   const cur = e.d.store.row(row.id) ?? row;
   const memo = memoOf(cur);
-  const facts = { cause: outcome.cause, error: outcome.error, ...(outcome.retry === undefined ? {} : { retry: outcome.retry }), ...(outcome.exit === undefined ? {} : { exit: outcome.exit }) };
+  const facts = {
+    cause: outcome.cause,
+    error: outcome.error,
+    ...(outcome.retry === undefined ? {} : { retry: outcome.retry }),
+    ...(outcome.exit === undefined ? {} : { exit: outcome.exit }),
+    ...(outcome.warmReused === true ? { warmReused: true } : {}),
+  };
   let c = classify(facts);
   const interactive = row.priority === "interactive";
-  const batch = kind.batch !== undefined && !interactive;
+  // Only cold batch jobs are isolated: a warm job never is (Decision 31).
+  const batch = kind.batch !== undefined && !interactive && cur.warm !== true;
   const ctx = { attempts: row.attempts, maxAttempts: row.maxAttempts, interactive, batch, inFlight: outcome.inFlight.length, freshUsed: memo.fresh === true };
   let step = nextStep(c.cls, ctx);
   // Asked before any POISON_ITEM verdict: an unhealthy resource makes the crash a resource fault.

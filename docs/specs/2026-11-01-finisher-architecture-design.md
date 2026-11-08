@@ -25,7 +25,7 @@ Finisher is a commercial, agent-first video editor for creators. It ships to ext
 6. Reviewer: deterministic QA gate, critic loop (optional per run), review markers, shareable review page.
 7. Clients: Electron desktop (macOS, Windows, Linux) and web client; headless server on all three OSes.
 8. Agents: **Codex (bundled)** and **Claude Code (user-installed)**, plus the built-in agent loop on user API keys.
-9. Plugins: full plugin system, with bundled plugins plus local-folder and git registries.
+9. Plugins: full plugin system, with bundled plugins plus local-folder registries (a git registry is a local folder the user pulls).
 
 **Deferred after v1:**
 - public signed registry (the protocol is designed in v1);
@@ -273,7 +273,9 @@ MyProject/                      (may live on local disk, NAS, or a cloud-synced 
 | `fin-audio` | Audio mixer (native + WASM), §12.7 |
 | `fin-codecs` | OS/hardware codecs + process-based backend trait |
 | `fin-captions` | Caption rasterisation |
-| `fin-workers` | Worker binaries (decode, encode, render, Lottie, SVG, analysis) |
+| `fin-jobs` | The job envelope (NDJSON protocol types, Rust → JSON Schema → generated TS) and the worker and helper runtimes every family links, with host calls and the self-sandbox entry; creates no process (sub-project 5C-1) |
+| `fin-jobhost` | The host side of the job system (an rlib linked into `fin-node` as its `jobhost` module): spawning behind the `Spawner` hook, host-owned kill domains on every OS, framing, timers, memory limits, the Unix watchdog client (sub-project 5C-1) |
+| `fin-workers` | The one worker binary, `fin-workers <family> [--warm]`, found beside the `fin-node` `.node` file; 5C-1 ships the `test` family (behind `test-hooks`), the Unix `watchdog` and the Windows `--spawn-broker`; sub-projects 5D, 6 and 8C add the `library`, `media` and `analyze` families (decode, encode, render, Lottie, SVG, analysis); a worker never starts a process |
 | `fin` | Agent CLI; links `fin-core` |
 
 - **TypeScript (Effect 4)** owns gateway, contracts, auth, environments, agent runtime, jobs, library indexer, plugin host, hooks, review workflow, broadcast and settings. It has its own SQLite for non-edit state, on local disk.
@@ -565,22 +567,22 @@ MyProject/                      (may live on local disk, NAS, or a cloud-synced 
 - **Third-party code plugins before sub-project 7C** (D8): allowed. Installing one shows a high-risk warning, its permissions need a person's explicit approval, and it never auto-updates. Until 7C's `plugin` sandbox profile exists, the env allow-list, the absence of credentials, brokered egress and the in/out rules are the boundary; the profile is then enforced on every code plugin automatically, with no reinstall.
 - **Python plugins:** **wheels only.** The package bundles a hash-pinned lockfile, and `uv` installs with `--no-build` and `--require-hashes`, so no sdist builds run at install.
 - **Versioning:** `host-api` range enforced; per-project lockfile pins versions and hashes.
-- **Developer loop:** `finisherd --plugin-dir`, `fin plugin validate`.
+- **Developer loop:** `finisherd --plugin-dir` (8B), `fin-plugin validate <dir>` (the publisher tool; `fin` does not link the font and catalog readers an offline check needs). The manifest, permissions, plans and approvals of this section are recorded as built in `docs/specs/2026-11-07-sub-project-8-plugins-design.md` §4–5 and §23 (item 17 of §27).
 - **SDKs (MIT):** Rust, TS, Python. `fin-plugin-test`; conformance suites for codec backends, generation providers and matte producers.
 
 ---
 
 ## 15. Registry
 
-- **v1:** bundled plugins, plus **local-folder and git registries**. The **public signed registry comes after v1**, with the protocol designed and implemented in the client from v1.
-- **Package:** signed archive with manifest, content hash, publisher, licence (copyleft flagged), permissions, `host-api` range, platforms, previews.
+- **v1:** bundled plugins, plus **local-folder registries**. **A git registry is a local folder** the user keeps current with `git pull` (or a sync tool): Finisher never runs git and trusts nothing about its history, and TUF refuses a pull that rolls the repository back. The **public signed registry comes after v1**, with the protocol designed and implemented in the client from v1.
+- **Package:** a zip archive (`.finpkg`) with the manifest (id, version, licence, permissions, `host-api` range, platforms); copyleft is flagged in the install plan. A package carries no signature of its own: its identity is the hash and length in signed TUF targets metadata, whose custom fields repeat the manifest's id, version, kind, licence and permissions digest.
 - **Trust model: TUF** (The Update Framework):
   - Roles: `root` (offline keys, threshold signing), `targets` (delegated per publisher scope `@publisher/*`), `snapshot`, `timestamp`.
   - First-party root: the owner holds 3 offline keys with a 2-of-3 threshold, created in a key ceremony before the first registry is published.
   - This gives key rotation, revocation, freshness and protection against rollback and freeze attacks, all serveable as static files.
   - Publisher keys are bound to scopes by `targets` delegations.
   - Optional Sigstore keyless signing with a transparency log for publishers via CI OIDC (after v1).
-- **Git and local registries** use the same package format and signature verification. Trust is per-registry, configured by the user or team policy.
+- **Local-folder registries** (git ones included) use the same package format and TUF verification as the public registry will. Trust is per root: the owner pins a root (a file or its SHA-256) when adding a registry, with no trust on first use, and the trusted metadata survives removing the registry.
 
 **Rules learned from npm, PyPI and crates.io**
 1. No install-time code execution (wheels-only for Python, no build scripts).
@@ -867,7 +869,7 @@ Also reserved: `ui.action` (9) and `review.verdict` (10).
 | 5 | Control plane breadth | Pairing/auth/environments, scopes, review workflow, jobs, library indexer |
 | 6 | Media engine | Codecs, proxies, compositor, `fin-audio`, captions, Lottie templates, SVG, masks, colour/VFR, export |
 | 7 | Agent runtime | Codex adapter (bundled), Claude Code CLI adapter, built-in agent, sessions/branches, subagents, roles, modes, OS sandbox, hooks, workspace artifacts, full `fin`, eval harness |
-| 8 | Plugins + registry | Host, manifest, SDKs, local/git registries with TUF verification, bundled analyzers (transcription + alignment, scenes, search, reframe, audio), generation providers, codec-backend and matte interfaces |
+| 8 | Plugins + registry | Host, manifest, SDKs, local-folder registries (git ones are folders) with TUF verification, bundled analyzers (transcription + alignment, scenes, search, reframe, audio), generation providers, codec-backend and matte interfaces |
 | 9 | Frontend + Electron | Editor, libraries UI, timeline, transcript view, branch bar, conversation, review mode; macOS/Windows/Linux packaging |
 | 10 | Reviewer + skills | QA gate, critic, markers, share page; Uncut skills/rubrics ported |
 | 11 | v1 features + hardening | Clip finder, reframe, caption templates, Lottie template packs, onboarding, signing/notarisation, release |
@@ -1162,3 +1164,14 @@ Spike code, evidence and the report are throwaway and live in the git-ignored `a
     - **Evaluation:** `fin-core::eval` produces deterministic frame and audio plans (`f64` with `+ − × ÷ sqrt` only, a float gate, a plan-hash corpus byte-identical on Linux, macOS, Windows and wasm32). The compositor and mixer of sub-project 6 consume only these plans.
     - **§27.10 amended: fonts are fetched and pinned, not bundled.** `fin-text` (cosmic-text, no swash) measures from fonts named by SHA-256: projects pin exact files, the server fetches them on demand from a pinned, licence-gated catalog into a content-addressed cache, and a missing font leaves a caption unmeasured without blocking an edit. Item 10's condition for identical output, "fonts always bundled, never taken from the system", now reads **"always pinned bytes, never taken from the system"**.
     - **Still outstanding:** cross-platform validation (sub-project 4 spec §5.10).
+
+16. **Sub-project 5C-1, the job engine (as built, 2026-11-08):** the shared job system of §9.9 as implemented is recorded in `docs/specs/2026-11-07-sub-project-5-control-plane-design.md` §6 (§6.0–6.6 and §6.8–6.12; §6.10 maps every decision of its plan to As built or Deviation), which wins over this document where they differ.
+    - **Shape:** `fin-jobs`, `fin-jobhost` and `fin-workers` (§7); spawning in `finisherd`'s process through `fin-node`, behind a `Spawner` hook that sub-project 7's `fin-sandbox` implements; jobs persisted in `control.db`; a pure, property-tested scheduler over resource pools; warm workers, helpers and mapped files; retries, poison handling and isolation; `job.done` and `worker.exit` into the diagnostics journal.
+    - **Kill trees are host-owned on every OS:** a host, group and leaf Job Object hierarchy on Windows (processes created suspended, spawned through a broker so no pipe handle is ever inheritable), delegated cgroup v2 on Linux where available, process groups elsewhere, and on Unix a watchdog process that reaps the groups if the host dies.
+    - **Deviations from this document and from the sub-project 5 design:** with process groups (macOS; Linux without a delegated cgroup) a `setsid` grandchild survives cancel and host death until sub-project 7 denies process creation to workers; a graceful stop spends no attempt of a resumable job; warm kinds run cold under a sandbox until 7C grants per-job paths.
+    - **Still outstanding:** the cross-platform run of the whole engine on macOS and Windows 11 (5C-1 Task 14), the held-files check there, an endpoint-security check of the Windows spawn broker, and the job RPCs (5C-2).
+
+17. **Sub-project 8A, packages, registries and lifecycle (as built, 2026-11-08):** the plugin manifest, `.finpkg` packages, local-folder TUF registries, install plans and approvals, bundled plugins and the first content consumers of §14 and §15 as implemented are recorded in `docs/specs/2026-11-07-sub-project-8-plugins-design.md` §4–6 and §23 (§23.1 maps every decision of its plan to As built or Deviation), which wins over this document where they differ.
+    - **Shape:** `fin-plugin-api` (pure), `fin-registry` (the TUF client and editor over `tough` 0.24 on `aws-lc-rs`, the strict package reader, the store, plans), `fin-plugin` (publisher tooling, not shipped); `fin-node` runs the registry on its worker thread; `finisherd` keeps registries, plugins, grants and plans in `control.db` and drives **plan, then approve, then install**. Nothing a plugin ships runs in 8A: font catalogs and caption styles are active at install, and code plugins install disabled until 8B.
+    - **Amendments to §14 and §15:** git registries are local folders (§15); packages carry no signature of their own; third-party code plugins install behind a high-risk `thirdPartyCode` warning and an explicit acceptance on every install and update (§14.4, D8); only a person's plan can be approved, and only a person approves it; registry folder paths are shown to people only; `fin-plugin validate`, not `fin plugin validate`, is the offline check.
+    - **Still outstanding:** the cross-platform run of 8A on macOS and Windows 11 (Task 15), the code-signature check of bundled plugins (`bundledIntegrity` is `hashesOnly` until sub-project 11), the first-party signing-key ceremony, and `finisherd --plugin-dir` and the code runtimes (8B).

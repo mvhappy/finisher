@@ -549,3 +549,125 @@ the `blake3` crate, already a dependency, exposed through fin-node; no code is c
 ## fast-check (MIT) — property tests
 status: used (sub-project 7A) as a development dependency of `finisherd` (4.10.2, with
 `pure-rand`, MIT); not shipped.
+
+## tough, spdx and semver — registries and plugin manifests (sub-project 8A)
+status: used (sub-project 8A) by `fin-registry`, `fin-plugin-api`, `fin-plugin-cli` and `fin-node`,
+as Cargo dependencies; no code is copied and nothing is modified.
+- `tough` 0.24 (MIT OR Apache-2.0), the TUF 1.0 client and signer, without its `http` feature
+  (Finisher's transports are its own). Its crypto is `aws-lc-rs` (see "AWS-LC" above), and its
+  tree adds `async-recursion`, `async-trait`, `globset`, `jiff`, `olpc-cjson`, `pem`,
+  `serde_plain`, `snafu`, `tokio` (rt only), `tokio-util`, `typed-path` and `url`, all listed
+  under "Other Cargo dependencies" below.
+- `spdx` 0.13 (**Apache-2.0** only), default features off: it parses and evaluates SPDX licence
+  expressions for plugin manifests and carries the SPDX licence list's ids and flags (the list is
+  published by SPDX under CC0-1.0); it carries no licence texts without its `text` feature.
+- `semver` 1 (MIT OR Apache-2.0): plugin and host API versions and ranges.
+
+## ws (MIT) — WebSocket server of `finisherd`
+status: used (sub-project 8A) as an npm dependency of `finisherd` (`ws` 8.22.0, exact pin,
+no runtime dependencies); no code is copied. It carries the console's and clients' sockets
+(`apps/finisherd/src/upgrade.ts`); `@types/ws` (MIT) is a development dependency and is not shipped.
+
+## Other Cargo dependencies — everything else that ships
+status: used, as Cargo dependencies; no code is copied. These crates are in the shipped graph
+(`scripts/check-notices.mjs`: every workspace member but the dev-only ones, normal and build
+edges, for each `deny.toml` target) and are named nowhere above. They are grouped by the licence
+expression in their `Cargo.toml`, with the count; each crate's licence text is its own
+`LICENSE-*` file in its package on crates.io. Where the expression has an `OR`, Finisher uses the
+crate under an alternative `deny.toml` allows.
+
+- MIT OR Apache-2.0 (130):
+  `allocator-api2` 0.2.21, `anstyle` 1.0.14, `arrayvec` 0.7.8, `ash` 0.38.0+1.3.281,
+  `base64` 0.22.1, 0.23.1, `bitflags` 2.13.2, `block-buffer` 0.12.1, `bstr` 1.13.1,
+  `cc` 1.10.0, `cfg-if` 1.0.5, `clap_builder` 4.6.7, `clap_derive` 4.6.7, `clap_lex` 1.1.1,
+  `clap` 4.6.7, `cmake` 0.1.58, `core-foundation-sys` 0.8.7, `core-foundation` 0.10.1,
+  `cpufeatures` 0.3.1, `crc32fast` 1.5.3, `crypto-common` 0.2.2, `digest` 0.11.3,
+  `displaydoc` 0.2.7, `document-features` 0.2.12, `dyn-clone` 1.0.20, `errno` 0.3.14,
+  `find-msvc-tools` 0.1.15, `font-types` 0.11.3, 0.12.7, `form_urlencoded` 1.2.2,
+  `futures-channel` 0.3.34, `futures-core` 0.3.34, `futures-executor` 0.3.34,
+  `futures-io` 0.3.34, `futures-macro` 0.3.34, `futures-sink` 0.3.34, `futures-task` 0.3.34,
+  `futures-util` 0.3.34, `futures` 0.3.34, `getrandom` 0.2.17, 0.3.4, 0.4.3,
+  `gpu-allocator` 0.28.0, `half` 2.7.1, `hashbrown` 0.15.5, 0.16.1, 0.17.1, `hashlink` 0.10.0,
+  `heck` 0.5.0, `hex` 0.4.3, `hmac` 0.13.0, `hybrid-array` 0.4.15, `idna` 1.1.0, `itoa` 1.0.18,
+  `jobserver` 0.1.35, `libc` 0.2.191, `litrs` 1.0.1, `lock_api` 0.4.14, `log` 0.4.34,
+  `memmap2` 0.9.12, `mp4-atom` 0.17.0, `naga-types` 30.0.1, `naga` 30.0.1, `num-bigint` 0.4.8,
+  `num-complex` 0.4.6, `num-integer` 0.1.47, `num-iter` 0.1.46, `num-rational` 0.4.2,
+  `num-traits` 0.2.19, `num` 0.4.3, `once_cell` 1.21.4, `openssl-probe` 0.2.2,
+  `parking_lot_core` 0.9.12, `parking_lot` 0.12.5, `pastey` 0.2.3, `percent-encoding` 2.3.2,
+  `pkg-config` 0.3.34, `polycool` 0.4.0, `ppv-lite86` 0.2.21, `presser` 0.3.1,
+  `proc-macro2` 1.0.107, `profiling` 1.0.18, `quote` 1.0.47, `rand_chacha` 0.9.0,
+  `rand_core` 0.10.1, 0.9.5, `rand` 0.9.5, `range-alloc` 0.1.5, `raw-window-metal` 1.1.0,
+  `ref-cast-impl` 1.0.27, `ref-cast` 1.0.27, `regex-automata` 0.4.18, `regex-syntax` 0.8.11,
+  `renderdoc-sys` 1.1.0, `rustc_version` 0.4.1, `scopeguard` 1.2.0,
+  `security-framework-sys` 2.17.0, `serde_core` 1.0.229, `serde_derive_internals` 0.30.0,
+  `serde_derive` 1.0.229, `serde_json` 1.0.154, `serde` 1.0.229, `shlex` 2.0.1,
+  `smallvec` 1.16.4, `smol_str` 0.3.7, `snafu-derive` 0.8.9, `stable_deref_trait` 1.2.1,
+  `static_assertions` 1.1.0, `syn` 2.0.119, 3.0.9, `tempfile` 3.27.0,
+  `thiserror-impl` 1.0.69, 2.0.21, `thiserror` 1.0.69, 2.0.21, `typenum` 1.20.1,
+  `unicode-width` 0.2.3, `utf8-zero` 0.8.1, `wgpu-core-deps-apple` 30.0.1,
+  `wgpu-core-deps-windows-linux-android` 30.0.1, `wgpu-core` 30.0.1, `wgpu-hal` 30.0.1,
+  `wgpu-naga-bridge` 30.0.1, `wgpu-types` 30.0.1, `wgpu` 30.0.1, `widestring` 1.2.1,
+  `windows-collections` 0.3.2, `windows-core` 0.62.2, `windows-future` 0.3.2,
+  `windows-implement` 0.60.2, `windows-interface` 0.59.3, `windows-link` 0.2.1,
+  `windows-numerics` 0.3.1, `windows-result` 0.4.1, `windows-strings` 0.5.1,
+  `windows-sys` 0.52.0, 0.61.2, `windows-targets` 0.52.6, `windows-threading` 0.2.1,
+  `windows_aarch64_msvc` 0.52.6, `windows` 0.62.2.
+- MIT (28):
+  `block2` 0.6.2, `bytes` 1.12.1, `cfg_aliases` 0.2.2, `convert_case` 0.12.0,
+  `derive_more-impl` 2.1.1, `derive_more` 2.1.1, `fs_extra` 1.3.0, `napi-build` 2.6.0,
+  `napi-derive-backend` 6.1.6, `napi-derive` 3.6.13, `napi-sys` 3.4.1, `napi` 3.15.0,
+  `nix` 0.31.3, `objc2-encode` 4.1.0, `objc2-foundation` 0.3.2, `objc2` 0.6.5,
+  `ordered-float` 5.5.1, `schemars_derive` 1.2.3, `schemars` 1.2.3, `simd-adler32` 0.3.10,
+  `slab` 0.4.12, `strsim` 0.11.1, `synstructure` 0.14.0, `tracing-attributes` 0.1.31,
+  `tracing-core` 0.1.36, `tracing` 0.1.44, `ulid` 1.2.1, `zmij` 1.0.23.
+- Apache-2.0 OR MIT (21):
+  `autocfg` 1.5.1, `bit-set` 0.10.0, `bit-vec` 0.9.1, `cmov` 0.5.4, `const-oid` 0.10.2,
+  `ctor` 1.0.13, `ctutils` 0.4.7, `equivalent` 1.0.3, `fastrand` 2.5.0, `idna_adapter` 1.2.2,
+  `indexmap` 2.14.2, `kurbo` 0.13.1, `linebender_resource_handle` 0.1.1, `nohash-hasher` 0.2.0,
+  `pin-project-internal` 1.1.13, `pin-project-lite` 0.2.17, `pin-project` 1.1.13,
+  `rustc-hash` 1.1.0, 2.1.3, `utf8_iter` 1.1.0, `utf_types` 1.0.0, `zeroize` 1.9.1.
+- Unicode-3.0 (18):
+  `icu_collections` 2.4.0, `icu_locale_core` 2.4.0, `icu_normalizer_data` 2.4.0,
+  `icu_normalizer` 2.4.0, `icu_properties_data` 2.4.0, `icu_properties` 2.4.0,
+  `icu_provider` 2.4.0, `litemap` 0.8.3, `potential_utf` 0.1.6, `tinystr` 0.8.5,
+  `writeable` 0.6.4, `yoke-derive` 0.8.4, `yoke` 0.8.4, `zerofrom-derive` 0.1.8,
+  `zerofrom` 0.1.8, `zerotrie` 0.2.5, `zerovec-derive` 0.11.7, `zerovec` 0.11.9.
+- Unlicense OR MIT (8):
+  `aho-corasick` 1.1.5, `jiff-core` 0.1.1, `jiff-static` 0.2.38, `jiff-tzdb-platform` 0.1.3,
+  `jiff-tzdb` 0.1.9, `memchr` 2.8.3, `termcolor` 1.4.1, `winapi-util` 0.1.11.
+- Zlib OR Apache-2.0 OR MIT (7):
+  `bytemuck_derive` 1.12.1, `bytemuck` 1.25.2, `objc2-core-foundation` 0.3.2,
+  `objc2-core-graphics` 0.3.2, `objc2-metal` 0.3.2, `objc2-quartz-core` 0.3.2,
+  `tinyvec` 1.13.3.
+- MIT/Apache-2.0 (5):
+  `fallible-iterator` 0.3.0, `fallible-streaming-iterator` 0.1.9, `rangemap` 1.8.0,
+  `vcpkg` 0.2.15, `version_check` 0.9.5.
+- (MIT OR Apache-2.0) AND Unicode-3.0 (2):
+  `unicode-ident` 1.0.27, `unicode-normalization` 0.1.26.
+- 0BSD (2):
+  `doctest-file` 1.1.1, `recvmsg` 1.0.0.
+- Apache-2.0 (2):
+  `codespan-reporting` 0.13.1, `spirv` 0.4.0+sdk-1.4.341.0.
+- Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT (2):
+  `linux-raw-sys` 0.12.1, `rustix` 1.1.6.
+- Apache-2.0/MIT (2):
+  `crc32c` 0.6.8, `pollster` 0.4.0.
+- BSD-2-Clause OR Apache-2.0 OR MIT (2):
+  `zerocopy-derive` 0.8.63, `zerocopy` 0.8.63.
+- CC0-1.0 OR MIT-0 OR Apache-2.0 (2):
+  `constant_time_eq` 0.4.2, `dunce` 1.0.5.
+- Unlicense/MIT (2):
+  `same-file` 1.0.6, `walkdir` 2.5.0.
+- Zlib (2):
+  `foldhash` 0.1.5, 0.2.0, `slotmap` 1.1.1.
+- 0BSD OR Apache-2.0 (1):
+  `interprocess` 2.4.7.
+- 0BSD OR MIT OR Apache-2.0 (1):
+  `adler2` 2.0.1.
+- ISC (1):
+  `libloading` 0.8.9, 0.9.0.
+- MIT OR Apache-2.0 OR Zlib (1):
+  `raw-window-handle` 0.6.2.
+- MIT OR Zlib OR Apache-2.0 (1):
+  `miniz_oxide` 0.9.1.
+

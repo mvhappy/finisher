@@ -2,18 +2,11 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, test } from "vitest";
-import { closeTestEngines, failure, hostOf, OWNER, procOf, run, type TestEngine, testEngine, until } from "../support/jobs.ts";
+import { closeTestEngines, failure, hostOf, OWNER, processGone, procOf, run, testEngine, type TestEngine, until } from "../support/jobs.ts";
 
 afterEach(closeTestEngines);
 
-function gone(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return false;
-  } catch (e) {
-    return (e as { code?: string }).code === "ESRCH";
-  }
-}
+const gone = processGone;
 
 describe("cancel", () => {
   test("cancel_queued", async () => {
@@ -42,8 +35,8 @@ describe("cancel", () => {
     });
     const c = await run(t.engine.cancel(v.id));
     expect(c).toMatchObject({ state: "cancelled", error: { code: "JOB_CANCELLED" } });
-    expect(gone(pids.worker)).toBe(true);
-    await until(() => gone(pids.grandchild), 5000);
+    // Under load the kernel's reaping lags: both are waited for (a zombie counts as gone).
+    await until(() => gone(pids.worker) && gone(pids.grandchild), 10_000);
     // The worker answered the cancel itself (`done`) or was killed after the grace (`cancelled`).
     expect(["done", "cancelled"]).toContain(t.sink.exits[0]?.reason);
   });

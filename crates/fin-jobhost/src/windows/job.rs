@@ -40,7 +40,7 @@ use windows_sys::Win32::System::JobObjects::{
 
 use super::broker::Broker;
 use super::iocp::Port;
-use super::jobapi::{assign, create, in_job, query, query_own, set_limits, terminate};
+use super::jobapi::{assign, create, query, query_own, set_limits, terminate};
 use super::{check, raw};
 use crate::domain::{ExitFacts, GroupHandle, KillDomain, LeafHandle, Placement};
 use crate::spawner::JobLimits;
@@ -235,6 +235,7 @@ impl JobObjects {
 
     #[cfg(feature = "test-hooks")]
     fn run_hook(&self, g: &GroupJob, l: &LeafJob, p: &Placement) -> io::Result<()> {
+        use super::jobapi::in_job;
         use windows_sys::Win32::System::Threading::{ResumeThread, SuspendThread};
         let Some(hook) = &self.hook else {
             return Ok(());

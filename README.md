@@ -11,7 +11,7 @@ the current plan is in [docs/plans/](docs/plans/).
 ## Development
 
 ```bash
-rtk npm install -g pnpm@12.15.0   # Node 26 ships no corepack; CI does the same
+rtk npm install -g pnpm@12.15.0   # CI installs pnpm the same way
 rtk pnpm install
 rtk cargo test                    # default members; the cross-host harness: cargo build -p fin-store-xhost
 rtk pnpm test
@@ -30,7 +30,7 @@ the `.deb` into a user directory and add its `usr/bin` to `PATH`).
 
 Sub-projects 2, 4A, 4B and 4C ship the core with durable storage, history and the full edit model: `finisherd` (the local server)
 and `fin` (the agent CLI, JSON on stdout). Build both, start the server, then edit through `fin`.
-Node 26, pnpm 12.15.0 (`npm install -g pnpm@12.15.0`) and the Rust toolchain from
+Node 24, pnpm 12.15.0 (`npm install -g pnpm@12.15.0`) and the Rust toolchain from
 `rust-toolchain.toml` are required.
 
 macOS / Linux:
@@ -194,6 +194,36 @@ and the next `finisherd` start replaces the file.
 
 `pnpm e2e` runs the whole flow (`fin` → `finisherd` → a WebSocket subscriber) in a temp
 directory.
+
+## Plugins
+
+A plugin adds something to Finisher: a content pack (styles, presets, templates) or a code
+plugin. Plugins come from **registries**: signed folders (local, on a NAS or a synced drive, or
+a clone of a git repository) that a publisher keeps.
+
+- **Only a person installs plugins**, through the app or the server console (`finisherd plugin
+  install <id>`, which prints the plan with every permission and its risk and asks for `yes`;
+  third-party code asks for the plugin's id typed back). Agents and `fin` can read and suggest,
+  never install, update, enable or remove.
+- **Registry trust is the publisher's root hash.** `finisherd registry add <id> --dir <path>`
+  shows the registry's root SHA-256 and the key ids behind it, and adds nothing until you paste
+  back the hash the publisher gave you (or pass `--root <file>` / `--root-sha256 <hex>`). There
+  is no trust on first use.
+- **Reading** is open to `fin`:
+
+```bash
+fin plugin search [text] [--kind content|code] [--registry <id>]
+fin plugin info <id>               # versions, permissions, licence, publisher
+fin plugin ls                      # what is installed
+fin registry ls                    # the added registries
+fin registry status <id>           # freshness, trusted version, problems
+fin registry refresh [<id>]        # fetch newer signed metadata (installs nothing)
+```
+
+- **Publishers** use `fin-plugin`: `fin-plugin new content|code <dir>`, `validate`, `pack <dir> -o
+  <file.finpkg>`, `keygen`, and `fin-plugin registry init|delegate|publish|yank|advise|rotate-key`
+  to build and sign a registry folder. `registry init` prints the root hash users pin. Private
+  keys stay in a folder outside the registry. `fin-plugin registry --help` has the details.
 
 ## Privacy and diagnostics
 
