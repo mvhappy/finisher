@@ -550,6 +550,7 @@ fn an_output_name_that_is_a_link_is_replaced_not_followed() {
     assert_eq!(size, OUT);
 }
 
+#[cfg(unix)] // its callers make symlinks
 fn replay(job: &Job, extra: &[&str]) -> std::process::Output {
     std::process::Command::new(support::BIN)
         .args(["media", "--replay", job.dir.path().to_str().unwrap()])
