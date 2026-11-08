@@ -173,7 +173,7 @@ export const buildAgentRuntime = (d: AgentWiringDeps): Effect.Effect<AgentRuntim
       }),
     );
     if (fakeAllowed()) adapters.set("fake", FakeAdapter(d.options?.fakeScripts ?? DEFAULT_FAKE));
-    const rolePrompt = (role: string) => (roles.get(role) ?? roles.get("editor"))!.prompt;
+    const rolePrompt = (role: string) => (roles.get(role) ?? roles.get("editor"))!.prompt.text;
     const builtinEnv = builtinEnvironment({ finPath, server: d.endpoint, projectDirOf: d.registry.dirOf, rolePrompt });
     const environment: SessionEnvironment = {
       async prepare(s) {

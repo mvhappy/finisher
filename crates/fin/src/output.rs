@@ -129,6 +129,7 @@ const VALIDATION_CODES: &[&str] = &[
     // above the role's ceiling; a bad `apply` list entry; an attachment too large or of a type
     // the model cannot take; the model catalogue or `agents.models` broken (`details`).
     "ROLE_UNKNOWN",
+    "ROLE_INVALID",
     "MODE_INVALID",
     "MODEL_UNKNOWN",
     "SAVED_PROMPT_UNKNOWN",
