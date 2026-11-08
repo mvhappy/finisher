@@ -300,6 +300,15 @@ fn raw_non_utf8_names_probe_by_their_chain() {
     let (dir, name): (&[u8], &[u8]) = (b"d\xff", b"f\xfe.png");
     #[cfg(windows)]
     let (dir, name): (&[u8], &[u8]) = (b"d\xed\xa0\x80", b"f\xed\xbf\xbf.png");
+    // APFS refuses such names; elsewhere on Unix and on Windows they are kept as given.
+    #[cfg(unix)]
+    if !support::raw_names(
+        "raw_non_utf8_names_probe_by_their_chain",
+        t.dir.path(),
+        &[dir, name],
+    ) {
+        return;
+    }
     #[cfg(unix)]
     let os = |b: &[u8]| std::ffi::OsStr::from_bytes(b).to_owned();
     #[cfg(windows)]
