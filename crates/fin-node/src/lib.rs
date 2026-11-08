@@ -44,6 +44,7 @@ use napi::bindgen_prelude::*;
 use napi_derive::napi;
 use serde_json::json;
 
+mod auto;
 mod bundled;
 mod commit_log;
 mod engine;

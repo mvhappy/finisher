@@ -18,8 +18,9 @@ export interface PrepareMediaOptions {
 /**
  * One project's op log. Short calls run on the libuv thread pool; long calls (`create`,
  * `open`, `takeover`, `verify`, `rebuild`, `compact`, `close`) run one at a time, in call
- * order, on the engine's own worker thread, as do the daily backup and compaction the
- * maintenance thread finds due (operations `"backup (auto)"`, `"compaction (auto)"`). While a
+ * order, on the engine's own worker thread. Automatic maintenance never holds the store that
+ * way: once the engine has been quiet for 30 s, the daily backup runs off the store (calls go
+ * on; a long call cancels it) and compaction one short step at a time. While a
  * long call runs, a short call waits up to 250 ms and then rejects with `ENGINE_BUSY`
  * (`details: { operation, sinceMs }`, transient); `status()` answers at once from a cached
  * status with `busy` set. Every method rejects with a
@@ -187,8 +188,12 @@ export declare class Engine {
   panicNextTickForTest(): void;
   /** @internal Test builds only: the next long call keeps the store `ms` longer. */
   delayNextLongCallForTest(ms: number): void;
-  /** @internal Test builds only: lets the maintenance thread queue the daily backup and compaction (off at open). */
-  setAutoWorkForTest(enabled: boolean): void;
+  /** @internal Test builds only: automatic work starts once the engine has been quiet for `ms` (30 s otherwise). */
+  setAutoIdleForTest(ms: number): void;
+  /** @internal Test builds only: each automatic backup waits `ms` between its copy and its checks. */
+  pauseAutoBackupForTest(ms: number): void;
+  /** @internal Test builds only: whether an automatic backup is running. */
+  autoBackupRunningForTest(): boolean;
   /** @internal Test builds only: emits a synthetic `rewound` event. */
   emitRewoundForTest(branch: string, fromRev: number): void;
   /** @internal Test builds only: whether the maintenance thread runs. */

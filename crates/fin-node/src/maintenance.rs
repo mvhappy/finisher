@@ -6,9 +6,9 @@
 //! a due export and reports a status change. Without these ticks a follower never follows, a
 //! lost lease is never re-acquired and nothing is exported before `close`.
 //!
-//! The ticks leave the heavy steps out (`TickOptions` off): a daily backup or compaction the
-//! tick finds due is queued on the worker as a long call (`backup (auto)`, `compaction
-//! (auto)`), so the mutex is not held through `VACUUM INTO` or compaction's folder work. The
+//! The ticks leave the heavy steps out (`TickOptions` off): after each tick, the daily backup
+//! or compaction it found due runs as automatic work (`crate::auto`): only once the engine is
+//! quiet, the backup off the store on a thread of its own, compaction one step at a time. The
 //! import itself still runs under the mutex (a long follower import delays short calls; the
 //! lock-only-around-DB-transactions rework is left for later).
 //!
@@ -28,8 +28,8 @@
 //!   that replace them); `{incarnation, n: generation}` is the branch's generation now;
 //! - `{"type":"rebuilt","incarnation"}`: the database was rebuilt (at open or by `rebuild`);
 //!   every rev read before may hold something else now (before the `applied` events after it);
-//! - `{"type":"error","error":CoreError,"fatal":bool}`: a tick or an automatic backup or
-//!   compaction failed; `fatal` when it panicked and the engine is dead;
+//! - `{"type":"error","error":CoreError,"fatal":bool}`: a tick or an automatic compaction
+//!   failed; `fatal` when it panicked and the engine is dead;
 //! - `{"type":"lagged","dropped":n}`: first after registration, when the buffer overflowed;
 //! - `{"type":"collect","collect":"default"|"never"}`: the project file's collection flag
 //!   changed (this server set it, or another did and a re-read found it); passed to the
@@ -56,9 +56,8 @@ use serde_json::json;
 
 use crate::engine::{Shared, State, lock};
 use crate::panic_error;
-use crate::worker::Worker;
 
-/// Ticks leave the daily backup and compaction to long calls (`worker::auto`).
+/// Ticks leave the daily backup and compaction to `crate::auto`.
 const LIGHT: TickOptions = TickOptions {
     backup: false,
     compaction: false,
@@ -140,7 +139,7 @@ pub(crate) struct Maintenance {
 }
 
 impl Maintenance {
-    pub(crate) fn start(inner: &Shared, worker: Worker) -> Result<Maintenance> {
+    pub(crate) fn start(inner: &Shared) -> Result<Maintenance> {
         let stop = Arc::new(Stop {
             stopped: Mutex::new(false),
             wake: Condvar::new(),
@@ -148,7 +147,7 @@ impl Maintenance {
         let (inner, signal) = (inner.clone(), stop.clone());
         let thread = std::thread::Builder::new()
             .name("fin-node-maintenance".to_string())
-            .spawn(move || run(&inner, &signal, &worker))
+            .spawn(move || run(&inner, &signal))
             .map_err(|e| {
                 crate::reject(CoreError::new(
                     "INTERNAL",
@@ -181,7 +180,7 @@ impl Maintenance {
     }
 }
 
-fn run(inner: &Shared, stop: &Stop, worker: &Worker) {
+fn run(inner: &Shared, stop: &Stop) {
     loop {
         let deadline = Instant::now() + TICK_EVERY;
         let mut stopped = lock(&stop.stopped);
@@ -200,10 +199,9 @@ fn run(inner: &Shared, stop: &Stop, worker: &Worker) {
             return;
         }
         drop(stopped);
-        if !tick(inner) {
+        if !tick(inner) || !crate::auto::after_tick(inner) {
             return;
         }
-        crate::worker::auto(inner, worker);
     }
 }
 

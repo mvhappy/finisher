@@ -2,9 +2,9 @@
 //!
 //! `create`/`open` (which may import a whole folder or rebuild the database), `takeover`,
 //! `verify`, `rebuild`, `compact` and `close` run here one at a time, in call order, and
-//! settle a napi deferred promise. They never occupy the libuv pool. So do the daily backup
-//! and compaction the maintenance thread finds due ([`auto`]: operations `backup (auto)` and
-//! `compaction (auto)`), and the close an engine garbage-collected without `close` sends.
+//! settle a napi deferred promise. They never occupy the libuv pool. So does the close an
+//! engine garbage-collected without `close` sends. Automatic maintenance is not a long call
+//! (`crate::auto`): a long call cancels a running automatic backup and waits for it to stop.
 //!
 //! A long call takes the store out of the shared state (which then reads `Busy`) and puts it
 //! back when done: a short call meanwhile waits up to [`crate::engine::BUSY_WAIT`] and then
@@ -18,7 +18,6 @@
 
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::PathBuf;
-use std::sync::atomic::Ordering;
 use std::sync::mpsc;
 
 use fin_core::{CoreError, Rational};
@@ -174,53 +173,6 @@ pub(crate) fn long<'e>(
     Ok(promise)
 }
 
-/// Queues the backup or compaction a tick found due (`Store::due_work`) as a long call,
-/// unless one is queued already. Its failure is a non-fatal `error` event; a panic, a fatal one.
-pub(crate) fn auto(inner: &Shared, worker: &Worker) {
-    #[cfg(feature = "test-hooks")]
-    if !inner.hooks.auto_work_enabled() {
-        return;
-    }
-    let due = {
-        let g = lock(&inner.state);
-        match &*g {
-            State::Open(s) => s.due_work(),
-            _ => return,
-        }
-    };
-    if !(due.backup || due.compaction) || inner.auto_queued.swap(true, Ordering::SeqCst) {
-        return;
-    }
-    let operation = if due.compaction {
-        "compaction (auto)"
-    } else {
-        "backup (auto)"
-    };
-    let job_inner = inner.clone();
-    let sent = worker.submit(Box::new(move || {
-        let inner = job_inner;
-        let done = run_long(&inner, operation, |s| {
-            let due = s.due_work();
-            if due.backup {
-                s.run_due_backup();
-            }
-            if due.compaction {
-                s.run_due_compaction().map_err(reject)?;
-            }
-            Ok(())
-        });
-        inner.auto_queued.store(false, Ordering::SeqCst);
-        if let Err(e) = done {
-            let fatal = matches!(*lock(&inner.state), State::Panicked);
-            let e = crate::error_value(&e);
-            inner.events.emit(crate::maintenance::error_json(&e, fatal));
-        }
-    }));
-    if sent.is_err() {
-        inner.auto_queued.store(false, Ordering::SeqCst);
-    }
-}
-
 fn run_long<T>(
     inner: &Shared,
     operation: &'static str,
@@ -241,6 +193,10 @@ fn run_long<T>(
             }
         }
     };
+    // After `Busy` is set: no new automatic backup starts until the store is back.
+    if let Some((job, outcome)) = crate::auto::stop_backup(inner) {
+        store.finish_backup(&job, &outcome);
+    }
     let result = catch_unwind(AssertUnwindSafe(|| {
         #[cfg(feature = "test-hooks")]
         inner.hooks.long_call_delay();
@@ -292,6 +248,8 @@ pub(crate) fn close_now(inner: &Shared) -> Result<()> {
     if let Some(m) = m {
         m.stop();
     }
+    // Maintenance has stopped, so no backup starts after this one.
+    drop(crate::auto::stop_backup(inner));
     let store = {
         let mut g = lock(&inner.state);
         match std::mem::replace(&mut *g, State::Closed) {

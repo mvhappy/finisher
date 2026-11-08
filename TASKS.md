@@ -131,7 +131,7 @@ Plan: `docs/superpowers/plans/2026-11-04-sub-project-4a-durable-storage.md`. Spe
 - **5E (from 7A Task 11):** register `review.verdict` at version 1 with `source: agent` among its sources and the fields 7 asks for (sp7 §1.7 item 5): `verdict` (`accepted|rejected|merged|dismissed|changesRequested|undone|reverted|abandoned`), `txIds`, `by` (`user|agent|critic|policy`), `via` (`undo|revert|archive|merge|critic|autoMerge`), `itemKind` (`none` for the tracker's), `sessionId?`, `openS`, training-only `reason`. Nothing else is needed: the outcome tracker (`apps/finisherd/src/agent/outcomes.ts`) looks the kind up with fin-node's `kindVersion("review.verdict", "agent")` before every outcome and emits `OutcomeVerdict` (`{verdict, txIds: [txId], by, via, itemKind: "none", sessionId, openS}`, ctx `{project, txId, actor: {kind: agent, session}}`) once it answers a version; until then outcomes are only in `session_txs.outcome` and `session_tx_outcomes` (`emitted: 0`; no backfill of earlier ones). 5E's own `review.merge` is not a history RPC, so the tracker never double-counts it; if 5E merges through `history.merge` RPCs instead, it must tell the tracker (the after hook sees the tag only). `by: policy`/`via: autoMerge` wait for sub-project 10
 
 ### Follow-ups from 4A
-- [ ] fin-store holds the store mutex across folder I/O in `tick` (import reads, export writes): take it only around DB transactions (read/verify segments outside, apply under; write packs outside; `VACUUM INTO` on a second connection). A big follower import delays short calls today
+- [ ] fin-store holds the store mutex across folder I/O in `tick` (import reads, export writes): take it only around DB transactions (read/verify segments outside, apply under; write packs outside). A big follower import delays short calls today. (`VACUUM INTO` on a second connection: done for the daily backup, `fin-node::auto`; an automatic compaction step still holds the mutex)
 - [ ] `ProjectStatus` (and the verify, rebuild and compact reports) still `Schema.Unknown` in contracts: generate them
 - [ ] `cargo clippy --workspace --all-targets -D warnings` is clean (Linux, 2026-11-05) but CI does not run it: add it to CI
 - [ ] Sweep orphan databases left in server data by a crash between create's DB rename and its project-file write
@@ -313,7 +313,7 @@ Plan: `docs/superpowers/plans/2026-11-06-sub-project-4c-edit-breadth.md`. Spec: 
 - [ ] `scripts/e2e/lib.mjs` ignores `CARGO_TARGET_DIR` (it runs `<repo>/target/release/fin`, possibly a stale build); found in Task 29
 - [ ] `packages/fin-node/package.json` has no `files` list: a pack would carry `test/` and the test-hooks binary (24 MB); fix before the package ships
 - [ ] `cargo clippy -p fin-journal` without `test-hooks` fails `default_constructed_unit_structs` (`Faults::default()`, `lib.rs:159`); CI runs no clippy
-- [ ] macOS timing flakes seen once in Task 29: `storage.test.ts` "ENGINE_BUSY is passed through" (an auto backup `busy` right after the verify) and `engine.test.ts` 500-commit event-loop gap 26.9 ms > 20 ms
+- [ ] macOS timing flakes seen once in Task 29: `storage.test.ts` "ENGINE_BUSY is passed through" (an auto backup `busy` right after the verify; automatic work can no longer cause it, see the 4A `backup (auto)` item) and `engine.test.ts` 500-commit event-loop gap 26.9 ms > 20 ms
 - [ ] **Partner drift** (spec §4.3, §5.11; merge `c42e9ae`): a stale positional op after our own overwrite move of a linked item can be refused by policy (`MOVE_INTO_ITSELF`), unblamed, where a fresh one succeeds, because an overwrite move records no shift and later ops anchored on a partner do not map with it. Fix: overwrite moves carry their partners' positions (a per-partner step), then drop the oracle's `keyed4c::partner_drift` allowance
 - [ ] Drop the `clip.*` client aliases at schema 3 (spec §3.2)
 - [ ] Nested-insert and mask edits (sub-project 6; plan Decision 48)
@@ -379,10 +379,25 @@ Notes for later tasks (review of Tasks 1, 2, 10):
 - Task 3: finisherd caps its own inbound lines at 16 MiB (socket and WebSocket, `FRAME_TOO_LARGE`); today only `fin` caps what it reads.
 - Sub-project 9 (packaging): the control store's checkpoint worker is started with `new Worker(new URL("./checkpoint-worker.ts", import.meta.url))` and relies on Node's type stripping; a bundled or packaged finisherd must ship that file (or a compiled `.js`, with the URL changed) next to `control/db.ts`.
 
-## Sub-project 5B: pairing, devices, remote access and environments (designed; not planned yet)
+## Sub-project 5B: pairing, devices, remote access and environments (planned 2026-11-08)
 
 Spec: control-plane spec §5. Needs 5A (built).
-- [ ] Plan 5B
+- [x] Plan 5B: `docs/superpowers/plans/2026-11-08-sub-project-5b-pairing-and-remote-access.md` (branch `sp5b-remote`; 15 tasks; four questions for the owner at its end: device confirmations, ports and SSH tunnels, self-pairing of the desktop renderer, trusted-certificate routes). One line per task below; each task ticks its line with as-built notes.
+- [ ] Task 1: contracts, the `devices` chain and the device principal
+- [ ] Task 2: the vault, the identity key and the secret box
+- [ ] Task 3: certificates, SPKI pins and QR codes
+- [ ] Task 4: confirmations for every human principal
+- [ ] Task 5: routes, the environment descriptor and moved server data
+- [ ] Task 6: the HTTP front and per-listener limits
+- [ ] Task 7: DPoP and server nonces
+- [ ] Task 8: pairing
+- [ ] Task 9: tokens, device tickets and revocation
+- [ ] Task 10: the remote listener, `settings.write` and `FIN_LISTEN`
+- [ ] Task 11: allowed roots for devices
+- [ ] Task 12: console commands
+- [ ] Task 13: e2e `remote` scenario and a device test client
+- [ ] Task 14: spec as built, architecture pointer, README and tracker
+- [ ] Task 15: cross-platform validation (controller-run)
 - [ ] Make `server.stop`, and every other confirmed call, confirmable by a device with `auth.admin` (the chain answers `CONFIRMATION_REQUIRED` until then; spec §4.7, §4.17)
 
 ## Sub-project 5C-1: job engine (in progress)
@@ -525,10 +540,23 @@ Plan: `docs/superpowers/plans/2026-11-07-sub-project-5d-library-indexer.md` (spe
 - [ ] Task 16: spec as built, architecture pointer, tracker
 - [ ] Task 17: cross-platform validation (controller-run)
 
-## Sub-project 5E: review workflow (designed; not planned yet)
+## Sub-project 5E: review workflow (planned 2026-11-08)
 
 Spec: control-plane spec §8. Needs 5A (built) and 4B. 5C-2 (the job RPCs) is tracked under 5C-1.
-- [ ] Plan 5E
+- [x] Plan 5E: `docs/superpowers/plans/2026-11-08-sub-project-5e-review-workflow.md` (branch `sp5e-review`; 13 tasks; four questions for the owner at its end: re-derived reviews, merging a stale review, the scope of "reject all", plugin suggestions). It registers `review.verdict` v1 with sources `finisherd` and `agent` (the 7A Task 11 note), moves 8A's `plugin_suggestions` into `pluginSuggestion` items, and keeps auto merge `AUTO_MERGE_UNAVAILABLE` until sub-project 10. One line per task below; each task ticks its line with as-built notes.
+- [ ] Task 1: the `drop` record kind and what is dropped
+- [ ] Task 2: format 3, the `drops` index and `Store::drop`
+- [ ] Task 3: merge limits and the review plan
+- [ ] Task 4: `review.verdict` v1
+- [ ] Task 5: contracts, the reviews store and `history.drop`
+- [ ] Task 6: protected branches and the policy
+- [ ] Task 7: the review workflow
+- [ ] Task 8: conflict items, re-derivation and plugin suggestions
+- [ ] Task 9: the internal auto-merge path
+- [ ] Task 10: `fin review` and the console
+- [ ] Task 11: e2e `review` scenario
+- [ ] Task 12: spec as built, architecture pointer, README and tracker
+- [ ] Task 13: cross-platform validation (controller-run)
 
 ## Sub-project 6: media engine (designed 2026-11-07, revision 2 after review)
 
@@ -583,6 +611,7 @@ Spec: `docs/specs/2026-11-07-sub-project-6-media-engine-design.md` (§24 maps th
   - [ ] 6A residuals (spec §25.5): the worker's font cache follows links (6B-1's sandbox work opens it no-follow); the warm sandbox rule (warm kinds run cold under a sandbox, unenforced without one; no new warm untrusted-input kind before 7C); encode golden and e2e T0 have Linux entries only; Windows UNC and 8.3 untested; `driverMajor` unchecked on real drivers; no hardware Linux GPU
   - [ ] Playback/scrubbing: `FrameReader::open` takes dav1d's default frame delay (⌈√threads⌉ frames in flight, `reader.rs`), so the first frame after a seek waits for them; scrubbing may want `frame_delay: 1` on seeks (Windows 1080p: delay 1 ~320 fps vs ~685 fps at delay 4)
 - [ ] 6B-1: stateful platform codecs and proxies
+  - [ ] Plan written (2026-11-08): `docs/superpowers/plans/2026-11-08-sub-project-6b1-platform-codecs-and-proxies.md` (22 tasks in batches A–G; branch `sp6b1-platform-codecs`). Task 18, the Linux Landlock worker profile, waits for 7C's Linux `worker` profile; Tasks 4–5 need a macOS host, 6–7 a Windows 11 host. Decided 2026-11-08: proxies are video-only in 6B-1 and 6C adds Opus as proxy recipe v2 (Decision 4, owner; spec §21 item 10); capability URLs are the only media HTTP auth, spec §7.3 amended (13, coordinator); under Landlock `fin look` is held to the cold budget until 7C Task 12 (per-job grants for warm workers), then warm again (15, coordinator); libvpx VP9 decode moves to 6B-2, VP9 is `CODEC_UNAVAILABLE` on Linux in 6B-1 (16, coordinator). Task 18 depends on 7C Tasks 2 and 7
 - [ ] 6B-2: stateless platform codecs (`cros-codecs`, VA-API, D3D11VA)
 - [ ] 6C: audio (incl. built-in audio effects, PCM feeds)
 - [ ] 6D: layers (effects, masks and mattes, nested, images, SVG, Lottie, captions raster)
@@ -601,6 +630,7 @@ Spec: `docs/specs/2026-11-07-sub-project-8-plugins-design.md`. Plan for 8A: `doc
 - [ ] Signing-key ceremony (decision 7): 3 offline root keys held by the owner, 2-of-3, before the first registry is published
 - [ ] 8A: packages, registries and lifecycle (Tasks 1–14 done and merged; Task 15, the cross-platform validation: Windows done 2026-11-08, macOS owed)
 - [ ] 8B: plugin host and SDKs (Rust, TS)
+  - [ ] Plan written (2026-11-08): `docs/superpowers/plans/2026-11-08-sub-project-8b-plugin-runtime.md` (20 tasks in batches A–H; branch `sp8b-plugin-runtime`). One wire: plugins speak the `fin-jobs` envelope (5C-1 Decision 44). Task 6's agent rows wait for 7A-2, Task 16 (confinement) for 7C's `plugin` profile, Task 17 (hooks) for 7F. Decided 2026-11-08 (all coordinator, no owner decision needed): plugin kinds are never submitted by RPC, plugins use a `job.submit` host call in 8C (Decision 6); `net.fetch` with every §9.3 rule but no secret injection, `ModelGateway` grant binding in 8G (10); no store re-hash before 7C, residual recorded (16); `PLUGINS_UNCONFINED` on every host while an enabled code plugin runs unconfined (17); 8B may merge without hook handlers, `hooks` unconsumable until a follow-up after 7F (20). Task 16 depends on 7C Tasks 7–9
   - 8B plan note (5C-1 batch A review, M3): the engine spawns a warm plugin process as `<path> <args…> --warm` (`Program::Path` included); the SDKs must read a trailing `--warm` as "send `ready` after each job"; a plugin family's `FamilySpec.program` is the cold argv only
 - [ ] 8C: analysis foundation and speech (transcription, alignment, boundary-correction retrain)
 - [ ] 8D: scenes and audio analysis
@@ -678,6 +708,7 @@ Spec: `docs/specs/2026-11-07-sub-project-7-agent-runtime-design.md` (revision 2,
 - [x] Owner decisions (2026-11-07, spec §20): 1 closed-model outputs MAY be training targets (against the recommendation): every example tagged with model provenance (provider, model, harness), counsel before the first training run or upload is mandatory; 2 CLI capture records the stream; 3 Linux minimum kernel 6.2+ (D31), no older-kernel fallbacks, Landlock-disabled hosts still handled (follow-up F2 below: they run everything, with warnings); 4 `auto` may merge into `main` under a per-project owner policy (off by default, human-only setting, QA gate and critic must pass, audited); 5 egress open in v1, proxy after v1, per-project API keys with spend limits; 6 the user signs in to the unmodified CLI themselves, Finisher never copies, stores or intermediates credentials (B7 reworked); 7 v1 providers: Claude Code and Codex on the user's own sign-in, the built-in agent on one OpenAI-compatible adapter (direct Anthropic and OpenAI adapters removed; follow-up F1 below adds local servers beside OpenRouter); Finisher stores only the pasted OpenRouter key
 - [x] Follow-up decisions F5 (model lists discovered from the CLIs or typed for OpenRouter, the catalogue a pricing cache, local priced at zero, diagnostics by table name or keyed hash) and F6 (OpenRouter routing: every upstream by default, opt-in `data_collection: deny`/ZDR) (2026-11-07, spec §20)
 - [x] Follow-up decision F1 (2026-11-07, spec §20): local models are allowed in v1 (OpenAI-compatible client with an OpenRouter preset and a local preset: Ollama, LM Studio or a user-supplied base URL; no API key for a local URL; loopback for the built-in agent only; diagnostics record the provider as `local`; training provenance `open` or `unknown`)
+- [x] Owner decisions on plans 7B and 7C (2026-11-08, spec §20, plans' Decisions): 7C: `RESOLVE_NO_XDEV` off (sandbox stops mounts and hard links); one warm worker per open project, grants per project; same-project other sessions' workspaces stay readable (reach, `fin` unchanged); installer excludes `fin-workers` and `fin-sandbox-exec` from WER; no plugin-tree re-hash (residual: unsandboxed tampering); no opt-out of enforced profiles. 7B: role prompts Finisher's own (inspired by Uncut, not copied); child default budget = role's capped at half the parent's remaining per kind; saved prompts from bundle, settings and the trusted project folder; `remember: project` writes the shared `finisher.rules.json` by default with a per-user local layer and folder trust (rules combine across layers: deny beats ask beats allow, whichever layer; managed cannot be overridden; untrusted project rules do not apply); consume-first grants accepted; rollback by people and by a parent for its own children only
 - [x] Follow-up decision F2 (2026-11-07, spec §8.9; also sp6 §3.5.1, sp8 §3.1): on hosts where Landlock is disabled (kernel ≥ 6.2, turned off) everything runs, with warnings: agents, hooks, media workers and plugins each show a persistent status warning (`server.status`, `fin status`) and record a diagnostics event; the `agents.unsandboxed` override is removed
 - [ ] S9 spike in `archive/` (plan Task 0): seccomp io_uring/x32 on a 6.2-series kernel and a Landlock-disabled boot (B5, which now checks the warn-and-run path), macOS mach-lookup allow-list (B6), B7 the user's own CLI sign-in shared in place and never copied (per-session config dirs linking one sign-in file; in-place updates; keychain keying; Windows links without elevation), H2 Claude Code without `--bare` (`--setting-sources user`, `--strict-mcp-config`), Windows capability SIDs, init/budget-flag checks
 - [ ] Auto merge needs sub-project 10: QA-gate and critic verdicts recorded on review items and bound to a snapshot (sp5 §8.5, agent §6.5); until then enabling the policy is `AUTO_MERGE_UNAVAILABLE`
@@ -686,6 +717,8 @@ Spec: `docs/specs/2026-11-07-sub-project-7-agent-runtime-design.md` (revision 2,
 - [x] 7A-1 pure pieces, before 5A (plan Tasks 1, 3a, 4, 5, 6a, 8a, 9; branch `sp7a1-runtime`, see "Sub-project 7A: runtime core")
 - [ ] 7A-2 runtime core and the built-in agent, after 5A (plan Tasks 2, 3b, 6b, 7, 8b, 10–15)
 - [ ] 7B subagents, roles, rules, approvals · 7C OS sandbox (`fin-sandbox`: agent, hook, worker and plugin profiles; ACL broker) · 7D Claude Code · 7E Codex · 7F hooks · 7G workspace and the full `fin` · 7H eval harness
+- [ ] Plan 7B (written 2026-11-08, not started): `docs/superpowers/plans/2026-11-08-sub-project-7b-subagents-rules-approvals.md` (Tasks 1–14; 7B-1 needs 7A-2 merged, 7B-2 needs 5E; six questions for the owner at its end)
+- [ ] Plan 7C (written 2026-11-08, not started): `docs/superpowers/plans/2026-11-08-sub-project-7c-os-sandbox.md` (Tasks 0–16; 7C-1, the Linux Landlock `worker` profile, can start now and must land before 6B-1; its Task 0 is the S9 spike above; six questions for the owner at its end)
 
 ## Sub-project 7A: runtime core
 
@@ -857,7 +890,8 @@ Plan: `docs/superpowers/plans/2026-11-07-sub-project-7a-runtime-core.md` (revisi
 
 ## Windows run follow-ups (2026-11-08, `xwin-fixes`)
 
-- [ ] 4A: `fin` tests fail `ENGINE_BUSY {operation: "backup (auto)"}` (exit 5) on Windows when `cargo test -p fin` runs alone: the first-open daily backup holds the engine while parallel tests write, and `VACUUM INTO` plus fsync is slower there. A user's first command after a start can meet the same; ties to the 4A follow-up "the store mutex across folder I/O" (take the backup outside the engine's lock, or let writes wait for it)
+- [x] 4A: `fin` tests fail `ENGINE_BUSY {operation: "backup (auto)"}` (exit 5) on Windows when `cargo test -p fin` runs alone: the first-open daily backup holds the engine while parallel tests write, and `VACUUM INTO` plus fsync is slower there. A user's first command after a start can meet the same; ties to the 4A follow-up "the store mutex across folder I/O" (take the backup outside the engine's lock, or let writes wait for it)
+  - Fixed (2026-11-08, `fin-node::auto`, spec §3.8/§3.10): automatic work starts only after 30 s with no short call (or 10 min after it fell due); the daily backup runs off the store on its own connection and thread (a WAL snapshot; `quick_check` before the no-replace rename; cancelled by any long call and retaken later); compaction runs one step per tick under the mutex. Neither takes the store out, so neither can cause `ENGINE_BUSY`. The test-build default that turned automatic work off (`setAutoWorkForTest`) is gone; tests set the quiet time (`setAutoIdleForTest`) where they need the work to run. New tests: 50 short calls during a backup due at open (vitest), a long call cancelling a running backup, the quiet-engine rule, and fin-store's `backup_job` (commits during the copy, cancels, truncated files, a process killed mid-backup). To re-check on Windows: `cargo test -p fin` alone
 - [ ] Windows vitest under the full suite: `control_store_budget` (median), `dispatch_p99_under_5ms_under_load` (p50), `engine.test` event loop: timing bounds that only hold unloaded; all pass alone (integration's `b876ef9` now gives every test 30 s unless `FIN_STRICT_TIMING=1`, which covers Windows' slower process start)
 - [ ] Non-elevated Windows has no symlink privilege (no Developer Mode): `chain.test.ts` skips its file-symlink case with a notice; directory cases use junctions
 - [ ] WER: decide whether `fin-workers` is excluded from WER at install (sub-project 9) and change `fastfail_dies_without_wer` to assert on a dialog or report (spec §6.12)

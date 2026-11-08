@@ -604,11 +604,14 @@ In 4B `chain_continuity` resolves each branch from the segments of its directory
 
 `SEGMENT_CORRUPT` is a verify finding, not an error code. Import treats a damaged file as not usable (and keeps observing it); it never fails on one.
 
-**Backups** (`fin-store::backup`; `VACUUM INTO` a temp file in `<project-data>/backups/`, fsync, rename without replacing; never a raw copy, which would miss the WAL)
+**Backups** (`fin-store::backup`; `VACUUM INTO` a temp file in `<project-data>/backups/`, `PRAGMA quick_check` of the copy, fsync, rename without replacing; never a raw copy, which would miss the WAL)
 - **Pre-migration:** `pre-migrate-<from>-<to>-<UTC ts>Z.fdb`, one per migration run (covering the whole range), the last 3 kept.
 - **Daily:** `daily-YYYY-MM-DD.fdb`, by the **local** calendar date (`localtime_r` after one `tzset` on unix, `SystemTimeToTzSpecificLocalTimeEx` with the current dynamic zone on Windows, which applies the zone's rules for the date converted; UTC fallback), at most one per day while open, the last 7 kept.
   - Taken by **every** server, holder or follower: it is a copy of local state, and no folder I/O is involved.
   - Checked once per poll; a failure is retried after 10 min.
+  - **Off the store** in an engine (`Store::take_due_backup` → `DailyBackup::run` → `Store::finish_backup`): the job opens its own connection and its `VACUUM INTO` reads one WAL snapshot, so the copy is consistent while the store's connection keeps committing (later commits are in the next day's backup). Same file format as before: a standalone rollback-journal database.
+  - **Cancellable** (`BackupCancel`: between steps, and `sqlite3_interrupt` inside `VACUUM INTO`). A cancelled backup leaves nothing and is due again at once (not a failure).
+  - **Only whole files count:** a crash leaves at most a `.~fin-*.tmp` (never a `daily-*` name: the copy is verified and fsynced before the no-replace rename). An existing `daily-*` file for today that fails `quick_check` (opened immutable) is not taken as the day's backup: it is removed and retaken. Tested by killing a process during its backup, by truncated `daily-*` and temp files, and by cancels before and during the copy.
   - Names dated after tomorrow sort oldest when pruning.
 - Both kinds: only strictly named files are pruned, the new backup is never pruned, and prune errors are ignored. A backup copy gets a fresh incarnation, so a restored backup is a new incarnation. Stale `.~fin-*.tmp` files older than 10 min are removed.
 - The folder export is itself the off-machine backup when the project lives on a NAS or sync folder.
@@ -662,10 +665,16 @@ In 4B `chain_continuity` resolves each branch from the segments of its directory
 - **Short calls** (`head`, `commit`, `snapshot`, `opsSince`, `opsSinceAt`, `status`, `txGet`, `acknowledgeRewind`, `acknowledgeSalvage`) are napi `AsyncTask`s.
 - **4B short calls** (`crates/fin-node/src/history.rs`): `branchCreate`, `branches(all)`, `branchSet`, `resolveBranch(name)`, `undo`, `redo`, `checkpoint`, `merge`, `cherryPick`, `revert`. Each takes the camelCase JSON of the `fin-store` request struct (`deny_unknown_fields`; a request that does not decode is `INVALID_OP` naming the field) and resolves to JSON. `recover` (listing included) is a long call.
 - **Long calls** (`create`/`open`, `takeover`, `verify`, `rebuild`, `compact`, `close`) run one at a time, FIFO, on a **per-engine worker thread** and resolve a napi deferred promise. They never occupy the libuv pool.
-- A long call moves the store out of the engine's mutex (`Busy {operation, sinceMs}`). Short calls wait up to **250 ms** for it (so the daily backup of a small DB doesn't fail commits), then reject with **`ENGINE_BUSY`** `{operation, sinceMs}` (exit 5, transient).
+- A long call moves the store out of the engine's mutex (`Busy {operation, sinceMs}`). Short calls wait up to **250 ms** for it, then reject with **`ENGINE_BUSY`** `{operation, sinceMs}` (exit 5, transient). Only calls someone made are long calls: **automatic maintenance never takes the store out**, so it never causes `ENGINE_BUSY` (below).
 - `status()` never waits: while busy it returns the cached status plus `busy`.
 - There is no cancellation mid-operation. Long calls after close are `ENGINE_CLOSED`.
-- **Maintenance thread:** a light `tick` every 500 ms under the mutex. Due daily backups and compactions are queued as long calls on the worker (`backup (auto)`, `compaction (auto)`), so they don't hold the mutex. Still under the mutex today: import passes, so a large follower import delays short calls (follow-up in TASKS).
+- **Maintenance thread:** a light `tick` every 500 ms under the mutex (backup and compaction off: `TickOptions`). Still under the mutex today: import passes, so a large follower import delays short calls (follow-up in TASKS).
+- **Automatic maintenance** (`fin-node::auto`, after each tick), for the daily backup and compaction a tick found due:
+  - **When:** only once the engine has been **quiet for 30 s** (no short call since, nor since the open; `status` does not count), or the work has waited 10 min since it was first found due. A fresh engine's first commands never meet it.
+  - **Backup:** off the store (§3.8) on its own thread; calls go on during it. A long call (`takeover`, `verify`, `rebuild`, `compact`, `recover`, `close`, …) cancels a running backup and waits for it to stop before it runs; the cancelled backup is due again and waits for a quiet engine again.
+  - **Compaction:** under the mutex on the maintenance thread, **one step per tick** (a manifest's phase 2 or a branch's phase 1; `Store::run_due_compaction_step`). Calls wait for the step as for an import, never `ENGINE_BUSY`.
+  - A compaction failure is a non-fatal `error` event, a panic a fatal one; a failed backup is retried after 10 min.
+  - Replaces the 4A design that queued them as long calls (`backup (auto)`, `compaction (auto)`): a fresh engine's first tick, 500 ms after open, found today's backup due and held the store, and a user's first commands failed `ENGINE_BUSY` where `VACUUM INTO` plus fsync took more than 250 ms (Windows, loaded machines). Test builds had turned the automatic work off by default, which hid it.
 - A panic in a tick is a fatal `error` event and stops the thread.
 - `close` stops and joins maintenance, then flushes the export (`Store::close`). A dropped engine queues a fire-and-forget close on the worker.
 - **Events** (`engine.onEvent`; the newest 1,024 are buffered until a callback registers): `applied {tx}`, `status {status}`, `rewound {branch, fromRev, quarantined, own, generation, incarnation}`, `rebuilt {incarnation}`, `lagged`, `error {error, fatal}`. Every import pass (open, takeover and rebuild included) queues `rewound` then `applied`, and the tick appends them before `status`. The JSON types are generated from `fin-store::wire` (`EngineEvent`, `TxSetAside`, `Generation`).
