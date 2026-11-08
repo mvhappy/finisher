@@ -223,7 +223,7 @@ export function withChain<H extends object>(handlers: H, deps: ChainDeps): H {
         keepApproval(approvals, approvalId, { tag, principal: `${principal.kind}:${principal.id}`, at: clock() });
         return yield* Effect.fail(approvalRequired(tag, approvalId, outcome.ask.reason));
       }
-      // Last, so that a typed code is used up only by a call that goes ahead.
+      // Last, so that a challenge code is used up only by a call that goes ahead.
       // Every call that needs a human-only scope is confirmed, unless its rule opts out (L2).
       // A connection taking back a credential it minted needs no second code (M2 of the review of Tasks 8–9).
       const conn = deps.connections.get(clientId);

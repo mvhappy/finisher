@@ -36,7 +36,7 @@ export const txsOf = (serverData, sessionId) =>
 export const outcomesOf = (serverData, sessionId) =>
   controlDb(serverData, (db) => db.prepare("SELECT txId, via, verdict, by FROM session_tx_outcomes WHERE sessionId = ? ORDER BY seq").all(sessionId));
 
-/** The session as `agent.session.get` answers it (a read: no typed code). */
+/** The session as `agent.session.get` answers it (a read: no challenge code). */
 export const getSession = async (server, sessionId) => (await consoleRpc(server, "agent.session.get", { sessionId }, { confirm: false })).session;
 
 /** Waits until the session's status is one of `statuses`; returns the session. */

@@ -71,6 +71,7 @@ mod private_dir;
 mod private_file;
 mod qr;
 mod registry;
+mod sandbox;
 mod server_lock;
 mod tasks;
 #[cfg(feature = "test-hooks")]

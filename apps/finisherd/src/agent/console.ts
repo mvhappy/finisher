@@ -1,8 +1,9 @@
 // `finisherd agent start|ls|show|prompt|steer|interrupt|resume|end|watch|approve|delete|providers`
 // (plan 7A Task 12; sub-project 7 §3.5): the owner's agent sessions from the console. Driving and
 // reading sessions needs no terminal (they are `agent.run`/`agent.read`, as `fin` has them);
-// answering an approval and deleting a session are a person's, with a terminal and the typed
-// code (`confirmed`). Text for people, `--json` for scripts; errors as the console prints them.
+// answering an approval and deleting a session are a person's, with a terminal and a confirmation
+// (`confirmed`, owner decision of 2026-11-08): a `y` to answer an approval, the session id's first
+// 8 characters typed back to delete one. Text for people, `--json` for scripts; errors as the console prints them.
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import type { Approval, Node, Run, Session, WatchItem } from "@finisher/contracts";
@@ -10,7 +11,7 @@ import { projectIdIn } from "../chain/resolve.ts";
 import { type ConsoleConnection, consoleError, valueOf } from "../console/client.ts";
 import { parseDuration } from "../console/commands/agent.ts";
 import { type CommandContext, withConnection } from "../console/commands/context.ts";
-import { confirmed, requireTty } from "../console/confirm.ts";
+import { confirmed, proceed, requireTty, typeName } from "../console/confirm.ts";
 import { has, one, onlyFlags, usage } from "../console/format.ts";
 import { safe } from "../console/safe.ts";
 
@@ -310,7 +311,7 @@ async function approve(ctx: CommandContext, rest: ReadonlyArray<string>): Promis
       decision === "deny"
         ? `This denies approval ${id} (${found.kind}) of session ${found.sessionId}.`
         : `This allows approval ${id} (${found.kind}) of session ${found.sessionId}${raise === undefined ? "" : `, raising its ${String(subject.kind)} budget by ${add}`}${found.kind === "budget" ? ", and resumes the session" : ""}.`;
-    return confirmed<{ approval: Approval }>(c, ctx.prompt, what, "agent.approval.answer", { id, decision, ...(raise === undefined ? {} : { add: raise }) });
+    return confirmed<{ approval: Approval }>(c, ctx.prompt, what, proceed, "agent.approval.answer", { id, decision, ...(raise === undefined ? {} : { add: raise }) });
   });
   if (has(ctx.args, "json")) ctx.output.out(JSON.stringify({ approval }));
   else ctx.output.out(`Approval ${approval.id}: ${approval.status}${approval.decision === undefined ? "" : ` (${approval.decision})`}.`);
@@ -327,6 +328,7 @@ async function remove(ctx: CommandContext, rest: ReadonlyArray<string>): Promise
       c,
       ctx.prompt,
       `This deletes agent session ${id} (${session.role}, ${session.status}): it ends now and its conversation, runs and approvals are removed. ${session.rootBranch === undefined ? "" : `Its branch ${session.rootBranch} stays. `}What the journal recorded under your consent stays too.`,
+      typeName("session id's first 8 characters", id.slice(0, 8)),
       "agent.session.delete",
       { sessionId: id },
     );

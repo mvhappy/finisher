@@ -405,6 +405,8 @@ export interface LibraryWatch {
 export declare function libraryWatchStart(root: string, maxWatches: number, callback: (json: string) => void): LibraryWatch;
 // The job host and the job params helpers (`jobhost.js`).
 export * from "./jobhost.js";
+// The sandbox status (`sandbox.js`).
+export * from "./sandbox.js";
 // `asset.probe` of a catalogued library file (`library.js`).
 export * from "./library.js";
 // The native Windows pipe listener (`pipe.js`).

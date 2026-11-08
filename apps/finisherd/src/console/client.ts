@@ -2,8 +2,7 @@
 // through `<server-data>/finisherd.json`, connects to its socket (or pipe) and proves itself as
 // `console` with `<server-data>/auth/console.key`, checking the server's proof first (a squatted
 // or foreign socket is `SERVER_UNTRUSTED`). Nothing secret is printed: not the key, the nonces,
-// the MACs or a ticket. The typed code of a confirmation is shown on the console's own terminal
-// only (`confirm.ts`).
+// the MACs or a ticket, nor the `console.challenge` code a confirmed call carries (`confirm.ts`).
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { b64u, canonicalEndpoint, helloProof, nonce, proveMac, sameMac } from "../auth/crypto.ts";

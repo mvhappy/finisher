@@ -2,7 +2,7 @@
 // 12): the OpenRouter key, the local model endpoint and the closed-model-targets counsel gate.
 // The console is their only client in 7A (the app's UI comes with sub-project 9). All are
 // `agent.admin` or `settings.admin`, human-only: `local` and `agent` principals are refused,
-// and the console sends the typed code (`challenge`) for every change.
+// and the console sends the challenge code (`challenge`) for every change.
 //
 // No answer holds a key: `agent.key.*` names keys by id, label, provider and project only. The
 // key itself travels once, in `agent.key.set`'s payload, over the console's own connection.

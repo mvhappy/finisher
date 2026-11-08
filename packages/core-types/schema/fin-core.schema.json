@@ -116,6 +116,91 @@
       ],
       "type": "object"
     },
+    "AgentInput": {
+      "additionalProperties": false,
+      "description": "A CLI agent session (spec §8.1, §8.5, §8.6; plan 7C Decision 6).",
+      "properties": {
+        "fin": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/FinEndpoint"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "harness": {
+          "$ref": "#/$defs/Harness",
+          "description": "`claudeCode`, `codex` or `fake`; the built-in agent needs no sandbox (spec §8.9)."
+        },
+        "home": {
+          "type": "string"
+        },
+        "libraryRoots": {
+          "default": [],
+          "description": "The roots of the libraries the project references (read-only).",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "mode": {
+          "$ref": "#/$defs/AgentMode"
+        },
+        "projectDir": {
+          "type": "string"
+        },
+        "serverData": {
+          "type": "string"
+        },
+        "sessionDir": {
+          "description": "`<serverData>/agents/<sessionId>`.",
+          "type": "string"
+        },
+        "sessionId": {
+          "description": "One path component (it names `workspace/<sessionId>/` and `agents/<sessionId>/`).",
+          "type": "string"
+        },
+        "sharedDir": {
+          "description": "`<projectDir>/workspace/shared`; written only outside `plan` mode.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "signInStore": {
+          "description": "The harness's sign-in store file, inside `<serverData>/providers/<harness>/home/`\n(spec §8.6): read and written in place, never its directory.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "toolchains": {
+          "default": [],
+          "description": "The base toolchain list plus the harness's own (files and directories, read-only).",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "workspaceDir": {
+          "description": "`<projectDir>/workspace/<sessionId>`.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "sessionId",
+        "mode",
+        "harness",
+        "projectDir",
+        "workspaceDir",
+        "sessionDir",
+        "serverData",
+        "home"
+      ],
+      "type": "object"
+    },
     "AgentMode": {
       "description": "The session's mode (§6.1).",
       "enum": [
@@ -527,6 +612,9 @@
         },
         {
           "$ref": "#/$defs/LibraryScan"
+        },
+        {
+          "$ref": "#/$defs/SandboxUnconfined"
         },
         {
           "$ref": "#/$defs/AgentSession"
@@ -2454,6 +2542,30 @@
       ],
       "type": "string"
     },
+    "DeviceAccess": {
+      "enum": [
+        "read",
+        "readWrite"
+      ],
+      "type": "string"
+    },
+    "DeviceRule": {
+      "additionalProperties": false,
+      "description": "A device node a profile may open (spec §8.10 GPU rows).",
+      "properties": {
+        "access": {
+          "$ref": "#/$defs/DeviceAccess"
+        },
+        "path": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "path",
+        "access"
+      ],
+      "type": "object"
+    },
     "DiagnosticsReport": {
       "description": "`diagnostics.status` (`fin diagnostics show`).",
       "properties": {
@@ -3546,6 +3658,28 @@
           "additionalProperties": false,
           "properties": {
             "kind": {
+              "const": "sandbox.unconfined",
+              "type": "string"
+            },
+            "kv": {
+              "const": 1,
+              "type": "integer"
+            },
+            "payload": {
+              "$ref": "#/$defs/SandboxUnconfined"
+            }
+          },
+          "required": [
+            "kind",
+            "kv",
+            "payload"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
               "const": "agent.session",
               "type": "string"
             },
@@ -4051,6 +4185,64 @@
         }
       },
       "type": "object"
+    },
+    "FinEndpoint": {
+      "description": "How `fin` inside the sandbox reaches `finisherd` (spec §8.2–8.4).",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "Linux: the loopback agent listener `tcp:127.0.0.1:<port>` (spec §8.3).",
+          "properties": {
+            "kind": {
+              "const": "tcp",
+              "type": "string"
+            },
+            "port": {
+              "format": "uint16",
+              "maximum": 65535,
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "kind",
+            "port"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "macOS: `<server-data>/run/fin.sock` (sp5 §4.11).",
+          "properties": {
+            "kind": {
+              "const": "unixSocket",
+              "type": "string"
+            },
+            "path": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "path"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Windows: the named pipe, reached through its DACL; nothing in the policy.",
+          "properties": {
+            "kind": {
+              "const": "pipe",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        }
+      ]
     },
     "FontCatalog": {
       "additionalProperties": false,
@@ -4977,6 +5169,73 @@
         "committed",
         "undone",
         "dryRun"
+      ],
+      "type": "object"
+    },
+    "HookFin": {
+      "additionalProperties": false,
+      "properties": {
+        "credential": {
+          "description": "The `plan`-scoped credential 7F mints for the call (read-only).",
+          "type": "string"
+        },
+        "endpoint": {
+          "$ref": "#/$defs/FinEndpoint"
+        }
+      },
+      "required": [
+        "credential",
+        "endpoint"
+      ],
+      "type": "object"
+    },
+    "HookInput": {
+      "additionalProperties": false,
+      "description": "A hook command (spec §8.10; plan 7C Decision 7).",
+      "properties": {
+        "fin": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/HookFin"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Present only when the hook declares `fin`: its credential file and the endpoint. Without\nit the hook has no network and no credential."
+        },
+        "home": {
+          "type": "string"
+        },
+        "hookFile": {
+          "description": "The hook's own file.",
+          "type": "string"
+        },
+        "projectDir": {
+          "description": "Read-only.",
+          "type": "string"
+        },
+        "serverData": {
+          "type": "string"
+        },
+        "tmp": {
+          "description": "A private temporary directory, the only write root.",
+          "type": "string"
+        },
+        "toolchains": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "projectDir",
+        "hookFile",
+        "tmp",
+        "serverData",
+        "home"
       ],
       "type": "object"
     },
@@ -6796,7 +7055,7 @@
       "type": "string"
     },
     "JobSpawnProgram": {
-      "description": "`bundled`: `fin-workers` or `fin-analyze` in `binaryDir`; `path`: plugin processes only.",
+      "description": "`bundled`: `fin-workers`, `fin-analyze` or `fin-sandbox-exec` in `binaryDir`; `path`: plugin processes only.",
       "oneOf": [
         {
           "additionalProperties": false,
@@ -10972,6 +11231,23 @@
       ],
       "type": "string"
     },
+    "PluginData": {
+      "additionalProperties": false,
+      "properties": {
+        "dir": {
+          "type": "string"
+        },
+        "write": {
+          "description": "`fs pluginData readWrite` (otherwise read-only).",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "dir",
+        "write"
+      ],
+      "type": "object"
+    },
     "PluginId": {
       "description": "`@<publisher>/<name>` (8A Decision 2).",
       "pattern": "^@[a-z0-9][a-z0-9-]{1,38}/[a-z0-9][a-z0-9-]{1,63}$",
@@ -11006,6 +11282,97 @@
         "id",
         "versions",
         "advisories"
+      ],
+      "type": "object"
+    },
+    "PluginInput": {
+      "additionalProperties": false,
+      "description": "A code plugin's process (sp8 §16.1, plan 7C Decisions 9 and 21).",
+      "properties": {
+        "callDir": {
+          "description": "The call's or job's directory: `in/` is read-only, `out/` writable.",
+          "type": "string"
+        },
+        "gpu": {
+          "default": [],
+          "description": "GPU device nodes; empty without the `gpu` grant. Never `/dev/dri/card*`.",
+          "items": {
+            "$ref": "#/$defs/DeviceRule"
+          },
+          "type": "array"
+        },
+        "home": {
+          "type": "string"
+        },
+        "memoryBytes": {
+          "description": "The manifest's declared memory need (default 2 GiB, at most 16 GiB; sp8 §3.3).",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "models": {
+          "default": [],
+          "description": "The model files the manifest names.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "onnxRuntime": {
+          "description": "ONNX Runtime's library.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "pluginData": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PluginData"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The per-project plugin data directory, when the manifest is granted `fs pluginData`."
+        },
+        "runtime": {
+          "default": [],
+          "description": "The runtime: finisherd's Node or the Electron framework, for `node` plugins.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "serverData": {
+          "type": "string"
+        },
+        "storeDir": {
+          "description": "The plugin's package directory inside `<serverData>/plugins/store/` (read-only).",
+          "type": "string"
+        },
+        "system": {
+          "default": [],
+          "description": "System libraries and frameworks (`/usr/lib`, `/lib`, `/System/Library`, `System32`).",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "tmp": {
+          "description": "A private temporary directory.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "storeDir",
+        "callDir",
+        "tmp",
+        "serverData",
+        "home"
       ],
       "type": "object"
     },
@@ -12471,6 +12838,139 @@
         "worker"
       ],
       "type": "string"
+    },
+    "SandboxMechanism": {
+      "description": "What a profile gets on this host.",
+      "oneOf": [
+        {
+          "description": "Applied, with what (`landlock abi 8`).",
+          "properties": {
+            "detail": {
+              "type": "string"
+            },
+            "kind": {
+              "const": "enforced",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "detail"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Runs unconfined, with warnings (F2).",
+          "properties": {
+            "kind": {
+              "const": "disabled",
+              "type": "string"
+            },
+            "reason": {
+              "$ref": "#/$defs/UnconfinedReason"
+            }
+          },
+          "required": [
+            "kind",
+            "reason"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "The start is refused: the host lacks `need`.",
+          "properties": {
+            "kind": {
+              "const": "unavailable",
+              "type": "string"
+            },
+            "need": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "need"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "SandboxOs": {
+      "description": "The operating system a sandbox applies on.",
+      "enum": [
+        "linux",
+        "macos",
+        "windows"
+      ],
+      "type": "string"
+    },
+    "SandboxProfile": {
+      "description": "The four profiles (spec §8.10). `SandboxProfile` in TypeScript.",
+      "enum": [
+        "agent",
+        "hook",
+        "worker",
+        "plugin"
+      ],
+      "type": "string"
+    },
+    "SandboxProfileName": {
+      "description": "A sandbox profile (spec §8.1).",
+      "enum": [
+        "agent",
+        "hook",
+        "worker",
+        "plugin"
+      ],
+      "type": "string"
+    },
+    "SandboxStatus": {
+      "description": "Every profile's status on this host (`sandboxStatus()` in fin-node).",
+      "properties": {
+        "agent": {
+          "$ref": "#/$defs/SandboxMechanism"
+        },
+        "hook": {
+          "$ref": "#/$defs/SandboxMechanism"
+        },
+        "os": {
+          "$ref": "#/$defs/SandboxOs"
+        },
+        "plugin": {
+          "$ref": "#/$defs/SandboxMechanism"
+        },
+        "worker": {
+          "$ref": "#/$defs/SandboxMechanism"
+        }
+      },
+      "required": [
+        "os",
+        "agent",
+        "hook",
+        "worker",
+        "plugin"
+      ],
+      "type": "object"
+    },
+    "SandboxUnconfined": {
+      "description": "`sandbox.unconfined` (`kv` 1).",
+      "properties": {
+        "os": {
+          "$ref": "#/$defs/SandboxOs"
+        },
+        "profile": {
+          "$ref": "#/$defs/SandboxProfileName"
+        },
+        "reason": {
+          "$ref": "#/$defs/UnconfinedReason"
+        }
+      },
+      "required": [
+        "profile",
+        "os",
+        "reason"
+      ],
+      "type": "object"
     },
     "ScanBatch": {
       "additionalProperties": false,
@@ -14743,6 +15243,21 @@
       "type": "string",
       "x-fin-class": "meta"
     },
+    "UnconfinedReason": {
+      "description": "Why a profile runs unconfined (F2: both run, with persistent warnings).",
+      "oneOf": [
+        {
+          "const": "landlockDisabled",
+          "description": "The OS mechanism is off on this host (Linux: `landlock` left out of `lsm=`, or a\ncontainer's seccomp profile refusing the Landlock calls).",
+          "type": "string"
+        },
+        {
+          "const": "profileNotReady",
+          "description": "The profile's escape suite has not yet passed on this OS (`fin_sandbox::READY`).",
+          "type": "string"
+        }
+      ]
+    },
     "UnitEntry": {
       "description": "One entry of an undo or redo stack.\n\n- `id`: what an `undo` names in `undoes` (a record's txId, a merge group's `mergeId`, the\n  redo record's txId for a redo unit), or, on the redo stack, the undo record's txId;\n- `records`: the txIds of its records, oldest first: whose stored `inverse` an undo (or,\n  for an undo record, a redo) takes;\n- `last_seq`: the seq of its last record, the frame its inverses apply in.",
       "properties": {
@@ -15314,6 +15829,44 @@
       ],
       "type": "object"
     },
+    "WorkerInput": {
+      "additionalProperties": false,
+      "description": "A media worker (spec §8.10; sp6 §3.5; plan 7C Decisions 8 and 19).",
+      "properties": {
+        "caches": {
+          "default": [],
+          "description": "The font and media caches (read-only).",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "devices": {
+          "default": [],
+          "description": "GPU device nodes and driver files (sub-project 6 adds them, 6B-1).",
+          "items": {
+            "$ref": "#/$defs/DeviceRule"
+          },
+          "type": "array"
+        },
+        "scope": {
+          "$ref": "#/$defs/WorkerScope"
+        },
+        "serverData": {
+          "type": "string"
+        },
+        "tmp": {
+          "description": "A private temporary directory (read and write).",
+          "type": "string"
+        }
+      },
+      "required": [
+        "tmp",
+        "serverData",
+        "scope"
+      ],
+      "type": "object"
+    },
     "WorkerMsg": {
       "description": "A message from a worker or a helper to its host. Any message counts as alive.",
       "oneOf": [
@@ -15535,6 +16088,65 @@
             "id",
             "method",
             "params"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "WorkerScope": {
+      "description": "What one worker serves.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "One job: its `in/` (read), its `out/` (write) and the manifest's source files.",
+          "properties": {
+            "jobDir": {
+              "description": "`<serverData>/jobs/<jobId>`.",
+              "type": "string"
+            },
+            "kind": {
+              "const": "cold",
+              "type": "string"
+            },
+            "sources": {
+              "default": [],
+              "description": "The manifest's sources, per file where the OS allows it (read-only).",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "kind",
+            "jobDir"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "A warm worker: its own directory (each job it serves is created under\n`<workerDir>/jobs/<jobId>/`, Decision 19), never the jobs root, and one project's\nsources and library roots (owner decision 2026-11-08: one warm worker per project).",
+          "properties": {
+            "kind": {
+              "const": "warm",
+              "type": "string"
+            },
+            "libraryRoots": {
+              "default": [],
+              "description": "The project's `sources/` and the library roots it references (read-only).",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "workerDir": {
+              "description": "`<serverData>/jobs/<name>`.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "workerDir"
           ],
           "type": "object"
         }

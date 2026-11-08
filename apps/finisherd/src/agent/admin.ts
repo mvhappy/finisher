@@ -33,7 +33,7 @@ export interface AdminDeps {
   readonly probeMs?: number;
 }
 
-/** What an API key looks like (the console checks the same before it asks for the typed code). */
+/** What an API key looks like (the console checks the same before it asks for a confirmation). */
 export const KEY_RULE = /^[\x21-\x7e]{8,1024}$/;
 export const KEY_RULE_TEXT = "an API key is 8–1024 printable characters without spaces";
 

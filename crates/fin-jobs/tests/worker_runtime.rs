@@ -8,7 +8,7 @@ use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
-use fin_jobs::sandbox::{self, SelfSandbox};
+use fin_jobs::sandbox::{self, SelfApplied, SelfSandbox};
 use fin_jobs::worker::{self, JobCtx};
 use fin_jobs::*;
 use serde_json::{Value, json};
@@ -352,14 +352,18 @@ fn ctx_exposes_files_dirs_limits_and_budget() {
 
 static APPLIED: AtomicBool = AtomicBool::new(false);
 
-fn test_sandbox(s: &SelfSandbox) -> Result<(), String> {
+fn test_sandbox(s: &SelfSandbox) -> Result<SelfApplied, String> {
     if s.profile == "fail" {
         return Err("refused".into());
+    }
+    if s.profile == "off" {
+        // The mechanism is disabled on this host (F2): nothing applied, the process runs.
+        return Ok(SelfApplied::Nothing);
     }
     // Slow, so a `hello` sent before the sandbox would be seen while it is not yet applied.
     std::thread::sleep(Duration::from_millis(200));
     APPLIED.store(true, Ordering::SeqCst);
-    Ok(())
+    Ok(SelfApplied::Applied)
 }
 
 #[test]
@@ -374,6 +378,13 @@ fn self_sandbox_entry_runs_before_hello() {
         "hello came before the sandbox"
     );
     assert_eq!(h.self_sandbox.as_deref(), Some("worker"));
+    rig.join();
+    // Applied nothing (F2): `hello` says so, so the host never takes it for confined.
+    let mut rig = Rig::worker_sandboxed(echo(), r#"{"profile":"off"}"#);
+    let WorkerMsg::Hello(h) = rig.recv_any() else {
+        panic!()
+    };
+    assert_eq!(h.self_sandbox.as_deref(), Some(sandbox::NONE));
     rig.join();
     // A function that fails, or an unreadable request, exits 78 before `hello`.
     for request in [r#"{"profile":"fail"}"#, "not json"] {

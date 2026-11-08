@@ -569,7 +569,9 @@ fn realise(p: &Project, what: u8, k: usize, k2: usize, n: i64, tag: usize) -> Op
         }
         .into(),
         13..=15 => {
-            let to = vt[k2 % vt.len()];
+            // No clip means no moving; no video track means no destination.
+            c?;
+            let to = *vt.get(k2 % vt.len().max(1))?;
             let at = to
                 .items
                 .get(k % to.items.len().max(1))
@@ -593,7 +595,7 @@ fn realise(p: &Project, what: u8, k: usize, k2: usize, n: i64, tag: usize) -> Op
         }
         .into(),
         17 => {
-            let other = clips[k2 % clips.len()];
+            let other = clips.get(k2 % clips.len().max(1))?;
             fin_core::ItemLink {
                 items: vec![c?.id.clone(), other.id.clone()],
                 id: "$lk".into(),
@@ -1052,5 +1054,31 @@ fn generator_reaches_4c_ops_font_pins_and_font_asset() {
     }
     for kind in KINDS {
         assert!(seen.contains(*kind), "never generated {kind}; saw {seen:?}");
+    }
+}
+
+/// Regression: with no clips (or no video track) the move and link arms indexed an empty
+/// collection (`k2 % 0`) instead of yielding no op.
+#[test]
+fn realise_without_clips_or_video_tracks_yields_no_op() {
+    let e = is::env();
+    let s = setup(&e);
+    let mut p = s.snapshot(MAIN).unwrap().1;
+    p.timelines[0]
+        .tracks
+        .iter_mut()
+        .for_each(|t| t.items.clear());
+    for what in [13, 14, 15, 17] {
+        assert!(
+            realise(&p, what, 3, 5, 1, 0).is_none(),
+            "empty items, arm {what}"
+        );
+    }
+    p.timelines[0].tracks.clear();
+    for what in [13, 14, 15, 17] {
+        assert!(
+            realise(&p, what, 3, 5, 1, 0).is_none(),
+            "no tracks, arm {what}"
+        );
     }
 }

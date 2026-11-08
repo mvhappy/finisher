@@ -456,7 +456,7 @@ describe("diagnostics RPCs", () => {
     expect(await exported(c, { project: projectId })).toHaveLength(0);
     const project = JSON.parse(readFileSync(join(tmp, "P", "finisher.project.json"), "utf8"));
     expect(project.collect).toBe("never");
-    // Clearing the flag and purging are a person's (5A Task 7): the console, with a typed code.
+    // Clearing the flag and purging are a person's (5A Task 7): the console, with a challenge code.
     const person = await client("console");
     ok(await confirmed(person, "diagnostics.project", { projectId, collect: "default" }));
 

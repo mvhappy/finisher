@@ -140,7 +140,7 @@ const AGENT_RPCS = [
 ] as const;
 type AgentTag = (typeof AGENT_RPCS)[number];
 
-/** The owner's agent settings (Task 12, `agent-admin.ts`): rule and whether a change takes the typed code. */
+/** The owner's agent settings (Task 12, `agent-admin.ts`): rule and whether a change takes the challenge code. */
 const ADMIN_RPCS = {
   "agent.key.set": { scopes: ["agent.admin"], confirmed: true },
   "agent.key.list": { scopes: ["agent.admin"], confirmed: false },
@@ -159,7 +159,7 @@ describe("the group", () => {
     expect([...FinRpcs.requests.keys()].filter((t) => t.startsWith("agent.") && !admin.has(t)).sort()).toEqual([...AGENT_RPCS].sort());
   });
 
-  it("the owner's agent settings are human-only, each change with the typed code, no key in an answer", () => {
+  it("the owner's agent settings are human-only, each change with the challenge code, no key in an answer", () => {
     for (const [tag, want] of Object.entries(ADMIN_RPCS) as [keyof typeof ADMIN_RPCS, (typeof ADMIN_RPCS)[keyof typeof ADMIN_RPCS]][]) {
       expect(ruleOf(tag).scopes, tag).toEqual(want.scopes);
       expect(needsConfirmation(tag, {}), tag).toBe(want.confirmed);

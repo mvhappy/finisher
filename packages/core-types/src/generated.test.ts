@@ -65,3 +65,25 @@ test("the envelope types above fin-core are generated too", () => {
 test("Tx carries the optional argsHash", () => {
   expect(block("Tx")).toMatch(/argsHash\?: string \| null;|argsHash\?: string;/);
 });
+
+test("the sandbox profiles' inputs are generated, the policy is not (plan 7C Decision 1)", () => {
+  for (const name of ["AgentInput", "HookInput", "HookFin", "WorkerInput", "PluginInput", "PluginData", "DeviceRule"]) {
+    expect(ts).toContain(`export interface ${name} {`);
+  }
+  expect(block("AgentInput")).toMatch(/sessionId: string;/);
+  expect(block("AgentInput")).toMatch(/mode: AgentMode;/);
+  expect(block("AgentInput")).toMatch(/fin\?: FinEndpoint \| null;/);
+  expect(block("WorkerInput")).toMatch(/scope: WorkerScope;/);
+  expect(ts).toMatch(/export type WorkerScope =[\s\S]*?kind: "cold";[\s\S]*?kind: "warm";/);
+  expect(ts).toMatch(/export type FinEndpoint =[\s\S]*?kind: "tcp";[\s\S]*?kind: "unixSocket";[\s\S]*?kind: "pipe";/);
+  expect(ts).toMatch(/export type SandboxProfile = "agent" \| "hook" \| "worker" \| "plugin";/);
+  expect(ts).not.toContain("export interface SandboxPolicy");
+});
+
+test("the sandbox status is generated (plan 7C Task 3)", () => {
+  expect(block("SandboxStatus")).toMatch(/worker: SandboxMechanism;/);
+  expect(block("SandboxStatus")).toMatch(/os: SandboxOs;/);
+  expect(ts).toMatch(/export type SandboxMechanism =[\s\S]*?kind: "enforced";[\s\S]*?kind: "disabled";[\s\S]*?kind: "unavailable";/);
+  expect(ts).toMatch(/export type UnconfinedReason = "landlockDisabled" \| "profileNotReady";/);
+  expect(block("SandboxUnconfined")).toMatch(/reason: UnconfinedReason;/);
+});

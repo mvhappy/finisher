@@ -183,6 +183,7 @@ fn spawn_in(
         bundled: matches!(req.program, Program::Bundled(_)),
         helper: matches!(req.role, Role::Helper { .. }),
         self_sandbox: self_sandbox.clone(),
+        unconfined_ok: inner.opts.unconfined_ok,
         host_minor: inner.opts.host_minor,
     };
     let (p, reap) = {

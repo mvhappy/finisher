@@ -22,6 +22,7 @@ import type { FinError } from "@finisher/contracts";
 import { JobHost, type JobHostSendResult } from "@finisher/fin-node";
 import { finError } from "../errors.ts";
 import { isResourceFault } from "./isolation.ts";
+import { currentSandboxStatus } from "../sandbox/status.ts";
 
 export type { JobHostExitInfo, JobSpawnRequest } from "@finisher/core-types";
 
@@ -256,6 +257,17 @@ const KILL_REASONS: Partial<Record<JobHostKillReason, ExitReason>> = {
 };
 
 /**
+ * What the host lacks, from the line a worker printed before exit 78 (`… the sandbox needs
+ * <need>`). Any other failure (a policy that would not build) names no path here: the full line
+ * stays in the server log through the worker's stderr.
+ */
+export function sandboxNeed(stderrTail: string): string {
+  const line = stderrTail.trim().split("\n").at(-1) ?? "";
+  const m = /the sandbox needs (.+)$/.exec(line);
+  return m?.[1] === undefined ? "a sandbox policy this host can apply" : m[1].slice(0, 200);
+}
+
+/**
  * The verdict for a process's exit. `ended`: the job already has its answer (`result` or
  * `error`), so a clean exit is `done`; otherwise the exit is the job's failure (Decision 31's
  * causes, classified by Task 10). A crash's `error.details` carry the exit code or signal and
@@ -312,6 +324,18 @@ export function exitVerdict(info: JobHostExitInfo, ended: boolean): ExitVerdict 
     case "protocolError":
       return { reason: "protocolError", error: finError("WORKER_CRASHED", `the worker broke the protocol: ${info.what}`, { protocol: info.what, ...tail }) };
     case "spawnFailed":
+      // Exit 78 before `hello`: the requested self-sandbox could not be applied (fail closed,
+      // plan 7C). Its stderr line names what the host lacks.
+      if (info.what === "selfSandbox") {
+        return {
+          reason: "spawnFailed",
+          error: finError("SANDBOX_UNAVAILABLE", "the worker's sandbox could not be applied, so it did not start", {
+            profile: "worker",
+            os: currentSandboxStatus().os,
+            need: sandboxNeed(info.stderrTail),
+          }),
+        };
+      }
       return { reason: "spawnFailed", error: finError("WORKER_UNAVAILABLE", `the worker could not start: ${info.what}`, { reason: "spawnFailed", what: info.what }) };
     case "protocolMismatch":
       return {

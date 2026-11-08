@@ -1,7 +1,8 @@
 // `finisherd registry add|ls|status|refresh|rm|forget` (plan 8A Task 12b; spec §5.1, Decision
 // 14 and 16): the owner's registries. Listing, status and refreshing read or only fetch (no
 // terminal needed); adding, removing and forgetting change what the server trusts, so each
-// needs a terminal and a typed code. No registry is ever trusted on first use: `add` takes a
+// needs a terminal: adding a `y`, removing the registry's id and forgetting the root's first 8
+// characters typed back (owner decision of 2026-11-08). No registry is ever trusted on first use: `add` takes a
 // root file or its SHA-256, or asks the owner to paste the SHA-256 the registry's publisher
 // published (obtained outside this folder) and only then, once it matches the folder's root,
 // shows that root's key ids (review L1: the hash is asked for before it is ever shown).
@@ -10,7 +11,7 @@ import { readFileSync } from "node:fs";
 import { isAbsolute, join, relative, resolve } from "node:path";
 import type { RefreshResult, RegistryEntry, RegistryListResult, RegistryRefreshResult } from "@finisher/contracts";
 import { consoleError, valueOf } from "./client.ts";
-import { confirmed, requireTty } from "./confirm.ts";
+import { confirmed, proceed, requireTty, typeName } from "./confirm.ts";
 import type { CommandContext } from "./commands/context.ts";
 import { withConnection } from "./commands/context.ts";
 import { has, one, onlyFlags, printFailure, usage } from "./format.ts";
@@ -134,6 +135,7 @@ async function add(ctx: CommandContext, rest: ReadonlyArray<string>): Promise<nu
       c,
       ctx.prompt,
       `This adds the registry ${id} from ${dir}, and trusts ${trusting}: whatever it signs under that root can be installed here, with your approval each time.`,
+      proceed,
       "registry.add",
       { cfg: { id, path: dir }, root },
     );
@@ -198,7 +200,7 @@ async function rm(ctx: CommandContext, rest: ReadonlyArray<string>): Promise<num
   const id = idArg("registry rm", rest);
   requireTty(ctx.prompt, "registry rm");
   await withConnection(ctx, (c) =>
-    confirmed(c, ctx.prompt, `This removes the registry ${id} from this server. Plugins installed from it stay; its trusted data is kept, so adding it again with the same root resumes where it left off.`, "registry.remove", { id }),
+    confirmed(c, ctx.prompt, `This removes the registry ${id} from this server. Plugins installed from it stay; its trusted data is kept, so adding it again with the same root resumes where it left off.`, typeName("registry's id", id), "registry.remove", { id }),
   );
   ctx.output.out(`Removed registry ${id}.`);
   return 0;
@@ -213,7 +215,7 @@ async function forget(ctx: CommandContext, rest: ReadonlyArray<string>): Promise
   requireTty(ctx.prompt, "registry forget");
   const rootSha256 = sha.toLowerCase();
   await withConnection(ctx, (c) =>
-    confirmed(c, ctx.prompt, `This deletes everything this server trusted under the root ${rootSha256}. A registry added with that root starts over.`, "registry.forget", { rootSha256 }),
+    confirmed(c, ctx.prompt, `This deletes everything this server trusted under the root ${rootSha256}. A registry added with that root starts over.`, typeName("root's first 8 characters", rootSha256.slice(0, 8)), "registry.forget", { rootSha256 }),
   );
   ctx.output.out(`Forgot the trust held under root ${rootSha256}.`);
   return 0;

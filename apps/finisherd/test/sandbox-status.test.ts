@@ -1,0 +1,161 @@
+// The sandbox status source and its warnings (plan 7C Task 3, F2): a disabled profile runs with
+// persistent warnings, `sandbox.unconfined` is recorded once per profile per start and again on
+// change, a worker whose sandbox cannot apply fails `SANDBOX_UNAVAILABLE`, and nothing opts out.
+import { readdirSync, readFileSync, statSync } from "node:fs";
+import { join } from "node:path";
+import { sandboxStatus } from "@finisher/fin-node";
+import { Effect } from "effect";
+import { afterEach, describe, expect, test } from "vitest";
+import { agentWarnings } from "../src/agent/warnings.ts";
+import { warningLine } from "../src/console/commands/status.ts";
+import type { Audit } from "../src/control/audit.ts";
+import { exitVerdict } from "../src/jobs/host.ts";
+import {
+  LANDLOCK_FIX,
+  NOT_READY_FIX,
+  type SandboxMechanism,
+  SandboxReporter,
+  type SandboxStatus,
+  sandboxWarnings,
+  setSandboxStatusSource,
+} from "../src/sandbox/status.ts";
+import { serverStatus } from "../src/server-admin.ts";
+
+const all = (m: SandboxMechanism, os = "linux"): SandboxStatus => ({ os, agent: m, hook: m, worker: m, plugin: m }) as SandboxStatus;
+const DISABLED: SandboxMechanism = { kind: "disabled", reason: "landlockDisabled" };
+const NOT_READY: SandboxMechanism = { kind: "disabled", reason: "profileNotReady" };
+const ENFORCED: SandboxMechanism = { kind: "enforced", detail: "landlock abi 8" };
+
+const caps = { killTree: "processGroup", watchdog: true, cgroupMemory: false, leafLimits: false, sandbox: "none", sandboxed: false } as const;
+const deps = (status: SandboxStatus, reporter?: SandboxReporter) => ({
+  control: { envId: "env", listeners: () => [], stop: () => {} },
+  audit: { failures: () => 0 } as unknown as Audit,
+  connections: { count: () => ({}) } as never,
+  journalEnabled: () => false,
+  jobCaps: () => caps as never,
+  sandbox: () => status,
+  ...(reporter === undefined ? {} : { sandboxReporter: reporter }),
+});
+
+const STUB = "FIN_TEST_SANDBOX_STATUS";
+afterEach(() => {
+  delete process.env[STUB];
+});
+
+describe("sandbox status", () => {
+  test("the_native_status_follows_the_test_stub", () => {
+    process.env[STUB] = "disabled";
+    const s = sandboxStatus();
+    for (const p of ["agent", "hook", "worker", "plugin"] as const) expect(s[p]).toEqual(DISABLED);
+    process.env[STUB] = "unavailable";
+    // `unavailable` refuses only a ready profile (none is yet: `READY` is empty) and `worker`,
+    // whose Landlock phase a sub-project may request before it is ready.
+    const u = sandboxStatus();
+    expect(u.worker).toMatchObject({ kind: "unavailable", need: expect.stringContaining("kernel ≥ 6.2") });
+    expect(u.agent).toEqual(NOT_READY);
+    delete process.env[STUB];
+    expect(["linux", "macos", "windows"]).toContain(sandboxStatus().os);
+  });
+
+  test("landlock_disabled_warns_for_every_profile_and_refuses_nothing", async () => {
+    const s = await Effect.runPromise(serverStatus(deps(all(DISABLED))));
+    expect(s.warnings[0]).toMatchObject({
+      code: "SANDBOX_DISABLED",
+      sandbox: "none",
+      details: { profile: "worker", os: "linux", reason: "landlockDisabled" },
+      fix: LANDLOCK_FIX,
+    });
+    expect(LANDLOCK_FIX).toContain("lsm=");
+    const byProfile = Object.fromEntries(s.warnings.map((w) => [(w.details as { profile: string }).profile, w.code]));
+    expect(byProfile).toEqual({ worker: "SANDBOX_DISABLED", plugin: "PLUGINS_UNCONFINED", hook: "SANDBOX_DISABLED", agent: "SANDBOX_DISABLED" });
+    expect(s.warnings.map((w) => w.code)).not.toContain("SANDBOX_UNAVAILABLE");
+    // The agent runtime answers the same warning.
+    expect(agentWarnings(all(DISABLED))).toEqual([expect.objectContaining({ code: "SANDBOX_DISABLED", details: { profile: "agent", os: "linux", reason: "landlockDisabled" } })]);
+  });
+
+  test("a_profile_not_ready_keeps_its_warning_and_an_enforced_one_has_none", async () => {
+    expect(sandboxWarnings(all(NOT_READY)).map((w) => w.fix)).toEqual([NOT_READY_FIX, NOT_READY_FIX, NOT_READY_FIX, NOT_READY_FIX]);
+    expect(sandboxWarnings(all(ENFORCED))).toEqual([]);
+    // Enforced, but the job host's spawner applies nothing yet: workers still warn.
+    const s = await Effect.runPromise(serverStatus(deps(all(ENFORCED))));
+    expect(s.warnings).toEqual([expect.objectContaining({ code: "SANDBOX_DISABLED", sandbox: "none", details: expect.objectContaining({ profile: "worker", reason: "spawnerUnconfined" }) })]);
+    const unavailable = sandboxWarnings(all({ kind: "unavailable", need: "kernel ≥ 6.2" }), ["worker"]);
+    expect(unavailable).toEqual([expect.objectContaining({ code: "SANDBOX_UNAVAILABLE", details: { profile: "worker", os: "linux", need: "kernel ≥ 6.2" } })]);
+  });
+
+  test("sandbox_unconfined_is_recorded_once_per_profile_per_start_and_on_change", async () => {
+    const records: Array<{ kind: string; payload: unknown }> = [];
+    const journal = { enabled: true, record: (kind: string, _kv: number, _ctx: string | null, payload: string) => void records.push({ kind, payload: JSON.parse(payload) }) };
+    const reporter = new SandboxReporter(journal);
+    await Effect.runPromise(serverStatus(deps(all(DISABLED), reporter)));
+    await Effect.runPromise(serverStatus(deps(all(DISABLED), reporter)));
+    expect(records).toEqual(
+      ["agent", "hook", "worker", "plugin"].map((profile) => ({ kind: "sandbox.unconfined", payload: { profile, os: "linux", reason: "landlockDisabled" } })),
+    );
+    records.length = 0;
+    reporter.report({ ...all(DISABLED), worker: NOT_READY });
+    expect(records).toEqual([{ kind: "sandbox.unconfined", payload: { profile: "worker", os: "linux", reason: "profileNotReady" } }]);
+    records.length = 0;
+    // Enforced, then disabled again: a change, recorded again.
+    reporter.report({ ...all(DISABLED), worker: ENFORCED });
+    reporter.report(all(DISABLED));
+    expect(records).toEqual([{ kind: "sandbox.unconfined", payload: { profile: "worker", os: "linux", reason: "landlockDisabled" } }]);
+    // A new start records again; a disabled journal records nothing.
+    records.length = 0;
+    new SandboxReporter(journal).report(all(DISABLED));
+    expect(records).toHaveLength(4);
+    records.length = 0;
+    const off = { ...journal, enabled: false };
+    const later = new SandboxReporter(off);
+    later.report(all(DISABLED));
+    expect(records).toEqual([]);
+    // Diagnostics turned on later in the same start: that start's events are still recorded.
+    off.enabled = true;
+    later.report(all(DISABLED));
+    expect(records).toHaveLength(4);
+  });
+
+  test("a_worker_whose_sandbox_cannot_apply_fails_sandbox_unavailable", () => {
+    const v = exitVerdict(
+      { reason: "spawnFailed", what: "selfSandbox", code: 78, stderrTail: 'fin-jobs: self-sandbox "worker" failed: the sandbox needs kernel ≥ 6.2\n', lifetimeMs: 3 } as never,
+      false,
+    );
+    expect(v.error).toMatchObject({
+      code: "SANDBOX_UNAVAILABLE",
+      details: { profile: "worker", os: sandboxStatus().os, need: "kernel ≥ 6.2" },
+    });
+    // A failure that is not a missing mechanism names no path.
+    const bad = exitVerdict({ reason: "spawnFailed", what: "selfSandbox", stderrTail: 'fin-jobs: self-sandbox "worker" failed: unreadable worker input: /home/x\n', lifetimeMs: 1 } as never, false);
+    expect(bad.error).toMatchObject({ code: "SANDBOX_UNAVAILABLE", details: { need: "a sandbox policy this host can apply" } });
+    // Any other spawn failure is still `WORKER_UNAVAILABLE`.
+    expect(exitVerdict({ reason: "spawnFailed", what: "thread", stderrTail: "", lifetimeMs: 1 } as never, false).error.code).toBe("WORKER_UNAVAILABLE");
+  });
+
+  test("finisherd_status_prints_the_reason_and_the_fix", () => {
+    const [w] = sandboxWarnings(all(DISABLED), ["worker"]);
+    const line = warningLine(w as never);
+    expect(line).toContain("SANDBOX_DISABLED (worker, landlockDisabled)");
+    expect(line).toContain("lsm=");
+  });
+
+  test("no_setting_opts_out_of_the_sandbox", () => {
+    // Spec §16.2: there is no `agents.unsandboxed` (or any other) opt-out to read.
+    const src = join(import.meta.dirname, "../src");
+    const files = (dir: string): string[] =>
+      readdirSync(dir).flatMap((n) => (statSync(join(dir, n)).isDirectory() ? files(join(dir, n)) : n.endsWith(".ts") ? [join(dir, n)] : []));
+    const hits = files(src).filter((f) => /unsandboxed["']?\s*[:\]]|agents\.unsandboxed/.test(readFileSync(f, "utf8")));
+    expect(hits).toEqual([]);
+  });
+});
+
+describe("statuses in use", () => {
+  test("the_default_source_is_fin_node", () => {
+    const prev = setSandboxStatusSource(() => all(DISABLED));
+    try {
+      expect(agentWarnings()).toHaveLength(1);
+    } finally {
+      setSandboxStatusSource(prev);
+    }
+    expect(prev).toBe(sandboxStatus);
+  });
+});

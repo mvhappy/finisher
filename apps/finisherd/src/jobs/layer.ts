@@ -17,6 +17,7 @@ import { registerTestKinds } from "./kinds/test.ts";
 import { defaultPools } from "./pools.ts";
 import { JobStore } from "./store.ts";
 import { clockTimers } from "./timers.ts";
+import { currentSandboxStatus } from "../sandbox/status.ts";
 
 export { JobEngineTag } from "./engine.ts";
 
@@ -102,7 +103,11 @@ export const buildJobEngine = (serverData: string, opts: JobEngineOptions = {}):
       catch: startFailure,
     });
     const caps = host.caps();
-    if (!caps.sandboxed) log("warning", `job engine: workers run unsandboxed (spawner ${caps.sandbox}); kill tree ${caps.killTree}`);
+    if (!caps.sandboxed) {
+      const worker = currentSandboxStatus().worker;
+      const why = worker.kind === "disabled" ? worker.reason : worker.kind === "unavailable" ? `needs ${worker.need}` : "profile enforced, spawner does not apply it";
+      log("warning", `job engine: workers run unsandboxed (spawner ${caps.sandbox}; worker profile: ${why}); kill tree ${caps.killTree}`);
+    }
     return yield* Effect.tryPromise({
       try: () =>
         makeJobEngine({

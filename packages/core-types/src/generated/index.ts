@@ -89,6 +89,24 @@ export type Body =
  */
 export type BlobHash = string;
 /**
+ * How `fin` inside the sandbox reaches `finisherd` (spec §8.2–8.4).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "FinEndpoint".
+ */
+export type FinEndpoint =
+  | {
+      kind: "tcp";
+      port: number;
+    }
+  | {
+      kind: "unixSocket";
+      path: string;
+    }
+  | {
+      kind: "pipe";
+    };
+/**
  * The session's mode (§6.1).
  *
  * This interface was referenced by `FinCore`'s JSON-Schema
@@ -187,6 +205,7 @@ export type AnyPayload =
   | JobDone
   | WorkerExit
   | LibraryScan
+  | SandboxUnconfined
   | AgentSession
   | AgentTurn
   | AgentToolCall
@@ -839,6 +858,27 @@ export type LibraryStorageName = "local" | "network" | "sync";
  */
 export type ScanTrigger = "add" | "schedule" | "demand" | "watch" | "mount";
 /**
+ * The operating system a sandbox applies on.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "SandboxOs".
+ */
+export type SandboxOs = "linux" | "macos" | "windows";
+/**
+ * A sandbox profile (spec §8.1).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "SandboxProfileName".
+ */
+export type SandboxProfileName = "agent" | "hook" | "worker" | "plugin";
+/**
+ * Why a profile runs unconfined (F2: both run, with persistent warnings).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "UnconfinedReason".
+ */
+export type UnconfinedReason = "landlockDisabled" | "profileNotReady";
+/**
  * Who provides a backend (spec §6.1): the export-encoder policy and the capability report key
  * on it.
  *
@@ -1110,6 +1150,11 @@ export type ProjectId = string;
  */
 export type DefaultValue = null | boolean | number | [number, number] | string;
 /**
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "DeviceAccess".
+ */
+export type DeviceAccess = "read" | "readWrite";
+/**
  * A project's policy as `fin diagnostics show` reports it.
  *
  * This interface was referenced by `FinCore`'s JSON-Schema
@@ -1301,6 +1346,11 @@ export type EventPayload =
       kind: "library.scan";
       kv: 1;
       payload: LibraryScan;
+    }
+  | {
+      kind: "sandbox.unconfined";
+      kv: 1;
+      payload: SandboxUnconfined;
     }
   | {
       kind: "agent.session";
@@ -1748,7 +1798,7 @@ export type JobHostQos = "normal" | "utility" | "background";
  */
 export type JobSpawnProfile = "worker" | "plugin";
 /**
- * `bundled`: `fin-workers` or `fin-analyze` in `binaryDir`; `path`: plugin processes only.
+ * `bundled`: `fin-workers`, `fin-analyze` or `fin-sandbox-exec` in `binaryDir`; `path`: plugin processes only.
  *
  * This interface was referenced by `FinCore`'s JSON-Schema
  * via the `definition` "JobSpawnProgram".
@@ -1979,6 +2029,32 @@ export type RootState =
       state: "timeout";
     };
 /**
+ * What a profile gets on this host.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "SandboxMechanism".
+ */
+export type SandboxMechanism =
+  | {
+      detail: string;
+      kind: "enforced";
+    }
+  | {
+      kind: "disabled";
+      reason: UnconfinedReason;
+    }
+  | {
+      kind: "unavailable";
+      need: string;
+    };
+/**
+ * The four profiles (spec §8.10). `SandboxProfile` in TypeScript.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "SandboxProfile".
+ */
+export type SandboxProfile = "agent" | "hook" | "worker" | "plugin";
+/**
  * How `test.crash` dies: `abort`, `SIGSEGV`/an access violation, `SIGBUS`/
  * `EXCEPTION_IN_PAGE_ERROR`, Windows `__fastfail`, `exit(3)`, or by allocating until its
  * group's memory limit kills it (`oom`; it aborts past 2 GiB).
@@ -2028,6 +2104,35 @@ export type UnitSource =
   | {
       kind: "redo";
       txId: string;
+    };
+/**
+ * What one worker serves.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "WorkerScope".
+ */
+export type WorkerScope =
+  | {
+      /**
+       * `<serverData>/jobs/<jobId>`.
+       */
+      jobDir: string;
+      kind: "cold";
+      /**
+       * The manifest's sources, per file where the OS allows it (read-only).
+       */
+      sources?: string[];
+    }
+  | {
+      kind: "warm";
+      /**
+       * The project's `sources/` and the library roots it references (read-only).
+       */
+      libraryRoots?: string[];
+      /**
+       * `<serverData>/jobs/<name>`.
+       */
+      workerDir: string;
     };
 
 export interface FinCore {
@@ -2098,6 +2203,52 @@ export interface BlobRef {
   bytes: number;
   hash: BlobHash;
   mediaType: Name;
+}
+/**
+ * A CLI agent session (spec §8.1, §8.5, §8.6; plan 7C Decision 6).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "AgentInput".
+ */
+export interface AgentInput {
+  fin?: FinEndpoint | null;
+  /**
+   * What runs the agent.
+   */
+  harness: "builtin" | "claudeCode" | "codex" | "fake" | "plugin";
+  home: string;
+  /**
+   * The roots of the libraries the project references (read-only).
+   */
+  libraryRoots?: string[];
+  mode: AgentMode;
+  projectDir: string;
+  serverData: string;
+  /**
+   * `<serverData>/agents/<sessionId>`.
+   */
+  sessionDir: string;
+  /**
+   * One path component (it names `workspace/<sessionId>/` and `agents/<sessionId>/`).
+   */
+  sessionId: string;
+  /**
+   * `<projectDir>/workspace/shared`; written only outside `plan` mode.
+   */
+  sharedDir?: string | null;
+  /**
+   * The harness's sign-in store file, inside `<serverData>/providers/<harness>/home/`
+   * (spec §8.6): read and written in place, never its directory.
+   */
+  signInStore?: string | null;
+  /**
+   * The base toolchain list plus the harness's own (files and directories, read-only).
+   */
+  toolchains?: string[];
+  /**
+   * `<projectDir>/workspace/<sessionId>`.
+   */
+  workspaceDir: string;
 }
 /**
  * `agent.session`: a session started, resumed, was interrupted or ended.
@@ -3533,6 +3684,17 @@ export interface LibraryScan {
   trigger: ScanTrigger;
 }
 /**
+ * `sandbox.unconfined` (`kv` 1).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "SandboxUnconfined".
+ */
+export interface SandboxUnconfined {
+  os: SandboxOs;
+  profile: SandboxProfileName;
+  reason: UnconfinedReason;
+}
+/**
  * This interface was referenced by `FinCore`'s JSON-Schema
  * via the `definition` "UiAction".
  */
@@ -4462,6 +4624,16 @@ export interface Ctx {
   txId?: IdRef;
 }
 /**
+ * A device node a profile may open (spec §8.10 GPU rows).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "DeviceRule".
+ */
+export interface DeviceRule {
+  access: DeviceAccess;
+  path: string;
+}
+/**
  * `diagnostics.status` (`fin diagnostics show`).
  *
  * This interface was referenced by `FinCore`'s JSON-Schema
@@ -5133,6 +5305,45 @@ export interface HistoryResult {
   noOp?: string | null;
   origins?: string[];
   undone: string[];
+}
+/**
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "HookFin".
+ */
+export interface HookFin {
+  /**
+   * The `plan`-scoped credential 7F mints for the call (read-only).
+   */
+  credential: string;
+  endpoint: FinEndpoint;
+}
+/**
+ * A hook command (spec §8.10; plan 7C Decision 7).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "HookInput".
+ */
+export interface HookInput {
+  /**
+   * Present only when the hook declares `fin`: its credential file and the endpoint. Without
+   * it the hook has no network and no credential.
+   */
+  fin?: HookFin | null;
+  home: string;
+  /**
+   * The hook's own file.
+   */
+  hookFile: string;
+  /**
+   * Read-only.
+   */
+  projectDir: string;
+  serverData: string;
+  /**
+   * A private temporary directory, the only write root.
+   */
+  tmp: string;
+  toolchains?: string[];
 }
 /**
  * `start`: the job, its limits, its mapped files, its helpers and directories.
@@ -6382,6 +6593,17 @@ export interface ParamSpec {
   unit?: string | null;
 }
 /**
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "PluginData".
+ */
+export interface PluginData {
+  dir: string;
+  /**
+   * `fs pluginData readWrite` (otherwise read-only).
+   */
+  write: boolean;
+}
+/**
  * Everything a registry signs about one plugin.
  *
  * This interface was referenced by `FinCore`'s JSON-Schema
@@ -6446,6 +6668,56 @@ export interface VersionInfo {
   target: string;
   version: string;
   yanked: boolean;
+}
+/**
+ * A code plugin's process (sp8 §16.1, plan 7C Decisions 9 and 21).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "PluginInput".
+ */
+export interface PluginInput {
+  /**
+   * The call's or job's directory: `in/` is read-only, `out/` writable.
+   */
+  callDir: string;
+  /**
+   * GPU device nodes; empty without the `gpu` grant. Never `/dev/dri/card*`.
+   */
+  gpu?: DeviceRule[];
+  home: string;
+  /**
+   * The manifest's declared memory need (default 2 GiB, at most 16 GiB; sp8 §3.3).
+   */
+  memoryBytes?: number | null;
+  /**
+   * The model files the manifest names.
+   */
+  models?: string[];
+  /**
+   * ONNX Runtime's library.
+   */
+  onnxRuntime?: string | null;
+  /**
+   * The per-project plugin data directory, when the manifest is granted `fs pluginData`.
+   */
+  pluginData?: PluginData | null;
+  /**
+   * The runtime: finisherd's Node or the Electron framework, for `node` plugins.
+   */
+  runtime?: string[];
+  serverData: string;
+  /**
+   * The plugin's package directory inside `<serverData>/plugins/store/` (read-only).
+   */
+  storeDir: string;
+  /**
+   * System libraries and frameworks (`/usr/lib`, `/lib`, `/System/Library`, `System32`).
+   */
+  system?: string[];
+  /**
+   * A private temporary directory.
+   */
+  tmp: string;
 }
 /**
  * `settings.json` `privacy` (Decision 8). Absent keys fall through to the defaults; unknown
@@ -6708,6 +6980,19 @@ export interface ManifestFonts1 {
    */
   cache?: string;
   files?: FontFileRef[];
+}
+/**
+ * Every profile's status on this host (`sandboxStatus()` in fin-node).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "SandboxStatus".
+ */
+export interface SandboxStatus {
+  agent: SandboxMechanism;
+  hook: SandboxMechanism;
+  os: SandboxOs;
+  plugin: SandboxMechanism;
+  worker: SandboxMechanism;
 }
 /**
  * One batch file of a scan (Decision 26): up to 4,096 entries, in `seq` order per job.
@@ -7227,6 +7512,28 @@ export interface ValidationReport {
   errors: Invalid[];
   manifest?: Manifest | null;
   ok: boolean;
+}
+/**
+ * A media worker (spec §8.10; sp6 §3.5; plan 7C Decisions 8 and 19).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "WorkerInput".
+ */
+export interface WorkerInput {
+  /**
+   * The font and media caches (read-only).
+   */
+  caches?: string[];
+  /**
+   * GPU device nodes and driver files (sub-project 6 adds them, 6B-1).
+   */
+  devices?: DeviceRule[];
+  scope: WorkerScope;
+  serverData: string;
+  /**
+   * A private temporary directory (read and write).
+   */
+  tmp: string;
 }
 /**
  * The branches a write may change, by branch id (`br<n>`, `main`). The default guards

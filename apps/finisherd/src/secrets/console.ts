@@ -1,6 +1,7 @@
 // `finisherd provider key set|ls|rm` and `provider local set|show|test|rm` (plan 7A Decision 24;
 // sub-project 7 §10): the owner's OpenRouter key and local model endpoint. Every change needs a
-// terminal and the typed code (`agent.admin` is human-only). **The key is read from the
+// terminal and a confirmation (`agent.admin` is human-only; owner decision of 2026-11-08): `set` a
+// `y`; removing a key its id's first 8 characters typed back, removing the endpoint the word `local`. **The key is read from the
 // terminal without echo, never from the command line**: `provider key set openrouter <key>` is
 // refused before anything is read or sent, so a key never lands in shell history or `ps`.
 // Listing names keys by id, label and project only. CLI sign-in (`provider signin`) is 7D/7E's.
@@ -9,7 +10,7 @@ import { KEY_RULE, KEY_RULE_TEXT } from "../agent/admin.ts";
 import { projectArg } from "../agent/console.ts";
 import { type ConsoleConnection, consoleError, valueOf } from "../console/client.ts";
 import { type CommandContext, withConnection } from "../console/commands/context.ts";
-import { confirmed, requireTty } from "../console/confirm.ts";
+import { confirmed, proceed, requireTty, typeName } from "../console/confirm.ts";
 import { has, one, onlyFlags, usage } from "../console/format.ts";
 import { safe } from "../console/safe.ts";
 
@@ -73,6 +74,7 @@ async function keySet(ctx: CommandContext, rest: ReadonlyArray<string>): Promise
       c,
       ctx.prompt,
       `This stores the OpenRouter key ${projectId === undefined ? "as the server's default (for every project without its own)" : `for project ${projectId}`}, replacing the one set there before. Built-in agent sessions spend from it.`,
+      proceed,
       "agent.key.set",
       { provider: providerName, key, ...(label === undefined ? {} : { label }), ...(projectId === undefined ? {} : { projectId }) },
     ),
@@ -104,7 +106,7 @@ async function keyRemove(ctx: CommandContext, rest: ReadonlyArray<string>): Prom
     const { keys } = await call<{ keys: ProviderKey[] }>(c, "agent.key.list", {});
     const found = keys.find((k) => k.id === id);
     if (found === undefined) return { removed: false };
-    return confirmed<{ removed: boolean }>(c, ctx.prompt, `This removes the key ${id} ("${safe(found.label)}"): sessions that used it get no model key until another is set.`, "agent.key.remove", { id });
+    return confirmed<{ removed: boolean }>(c, ctx.prompt, `This removes the key ${id} ("${safe(found.label)}"): sessions that used it get no model key until another is set.`, typeName("key id's first 8 characters", id.slice(0, 8)), "agent.key.remove", { id });
   });
   ctx.output.out(removed ? `Removed key ${id}.` : `No key ${id}: nothing changed.`);
   return 0;
@@ -120,6 +122,7 @@ async function localSet(ctx: CommandContext, rest: ReadonlyArray<string>): Promi
       c,
       ctx.prompt,
       `This points the built-in agent's local preset at ${safe(endpoint)}: sessions started with --provider local send their prompts and the project's content there.`,
+      proceed,
       "agent.local.set",
       { endpoint },
     ),
@@ -155,7 +158,7 @@ async function localRemove(ctx: CommandContext, rest: ReadonlyArray<string>): Pr
   if (rest.length > 0) usage("provider local rm takes no arguments");
   requireTty(ctx.prompt, "provider local rm");
   const { removed } = await withConnection(ctx, (c) =>
-    confirmed<{ removed: boolean }>(c, ctx.prompt, "This removes the local model endpoint: sessions with --provider local cannot start until one is set again.", "agent.local.remove", {}),
+    confirmed<{ removed: boolean }>(c, ctx.prompt, "This removes the local model endpoint: sessions with --provider local cannot start until one is set again.", typeName("word", "local"), "agent.local.remove", {}),
   );
   ctx.output.out(removed ? "Removed the local endpoint." : "No local endpoint was set: nothing changed.");
   return 0;

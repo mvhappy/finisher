@@ -1,22 +1,14 @@
-// Persistent status warnings of the agent runtime (owner decision F2; spec §8.9, §15). Until
-// 7C's OS sandbox, every host is unsandboxed for agent tools: sessions run, with this warning
-// on `agent.session.start`'s answer, in `agent.providers`, in `server.status` and at start.
+// Persistent status warnings of the agent runtime (owner decision F2; spec §8.9, §15), on
+// `agent.session.start`'s answer, in `agent.providers`, in `server.status` and at start. They
+// come from the one sandbox status source (`sandbox/status.ts`, plan 7C Decision 23): while the
+// `agent` profile is not enforced on this host (not yet ready on this OS, or Landlock off),
+// agent tools run as the user and a tool can read `local.key` and authenticate as `local`, so
+// the session's scopes, branch and path reach constrain only tools that use `FIN_CREDENTIAL`
+// as they should.
 import type { AgentWarning } from "@finisher/contracts";
+import { currentSandboxStatus, sandboxWarnings, type SandboxStatus } from "../sandbox/status.ts";
 
-/**
- * Before 7C an agent's tools run as the user: a tool can read `local.key` and authenticate as
- * `local`, so the session's scopes, branch and path reach constrain only tools that use
- * `FIN_CREDENTIAL` as they should.
- */
-export const AGENT_TOOLS_UNSANDBOXED: AgentWarning = Object.freeze({
-  code: "SANDBOX_DISABLED",
-  message:
-    "Agent tools run as your user, without a sandbox: a tool can bypass the session's scopes (for example by using local.key). Run agents only on projects and prompts you trust.",
-  details: Object.freeze({ profile: "agent", os: process.platform, reason: "before7C" }),
-  fix: "The OS sandbox for agent tools arrives with sub-project 7C; until then nothing turns this warning off.",
-});
-
-/** The agent runtime's warnings now (7A: always the unsandboxed one). */
-export function agentWarnings(): AgentWarning[] {
-  return [AGENT_TOOLS_UNSANDBOXED];
+/** The agent runtime's warnings now: the `agent` profile's, if it is not enforced. */
+export function agentWarnings(status: SandboxStatus = currentSandboxStatus()): AgentWarning[] {
+  return sandboxWarnings(status, ["agent"]);
 }

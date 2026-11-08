@@ -1,6 +1,6 @@
 // The agent RPCs' handlers (sub-project 7 §3.5; plan 7A Tasks 2, 7 and 12) over the runtime
 // `main.ts` builds (`wiring.ts`). The chain has checked scopes, kinds (`agent.session.*` driving
-// calls are a person's in 7A) and the human-only typed code before any of these runs.
+// calls are a person's in 7A) and the human-only challenge code before any of these runs.
 //
 // - **Reach:** a payload that names a session or an approval names no project, so every session
 //   and approval handler resolves it through `sessionInReach`/`approvalInReach` (out of reach
@@ -107,7 +107,7 @@ export function agentHandlers(deps: AgentRpcDeps) {
       onSession("agent.session.get", options, sessionId, (s) =>
         sync(() => ({ session: s, runs: store.runs(s.id), approvals: store.approvals(s.id).filter((a) => a.status === "open") })),
       ),
-    // The owner's (`agent.admin`, typed code): ends it, abandons its unmerged transactions (Task 11), removes it.
+    // The owner's (`agent.admin`, challenge code): ends it, abandons its unmerged transactions (Task 11), removes it.
     "agent.session.delete": ({ sessionId }: { sessionId: string }, options: Options) =>
       onSession("agent.session.delete", options, sessionId, (s, p) => Effect.as(runtime.delete(s.id, p), { deleted: true as const })),
     "agent.watch": ({ sessionId, fromNode }: { sessionId: string; fromNode?: string }, options: Options) =>
@@ -134,7 +134,7 @@ export function agentHandlers(deps: AgentRpcDeps) {
           }));
         return q.sessionId === undefined ? list() : Effect.flatMap(sessionInReach(store, p, q.sessionId), list);
       })),
-    // A person's (`agent.approve`, typed code). `remember` adds command rules, which arrive with 7B.
+    // A person's (`agent.approve`, challenge code). `remember` adds command rules, which arrive with 7B.
     "agent.approval.answer": (
       req: { id: string; decision: "allow" | "deny"; remember?: "session" | "project"; add?: { tokens?: number; moneyMicros?: number; wallMs?: number } },
       options: Options,

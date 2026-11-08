@@ -86,9 +86,21 @@ const PARAMETER_PATHS: &[&str] = &[
     "track.set",
 ];
 
+/// Arguments that name a place below a library's root, a file's id, or another machine's path
+/// for the root (5D): `fin` sends them as text and never opens them; the server resolves them
+/// under the library's root and its library reach checks them. Not client-side files.
+const LIBRARY_PATHS: &[(&str, &str)] = &[
+    ("library.files", "dir"),
+    ("library.scan", "dir"),
+    ("library.set", "accept_unmounted"),
+    ("library.set", "alias"),
+    ("library.show", "id"),
+    ("library.show", "path"),
+];
+
 /// The path arguments are exactly the arguments whose value names a file, a folder or a
-/// path (`--project` excepted: it must name the session's project, `agent_session`; and the
-/// parameter paths of [`PARAMETER_PATHS`]).
+/// path (`--project` excepted: it must name the session's project, `agent_session`; the
+/// parameter paths of [`PARAMETER_PATHS`]; and the library places of [`LIBRARY_PATHS`]).
 #[test]
 fn every_path_argument_is_marked() {
     let cli = crate::configure(crate::Cli::command());
@@ -102,6 +114,7 @@ fn every_path_argument_is_marked() {
         for arg in cmd.get_arguments() {
             if arg.get_id() == "project"
                 || (arg.get_id() == "path" && PARAMETER_PATHS.contains(&c.name))
+                || LIBRARY_PATHS.contains(&(c.name, arg.get_id().as_str()))
             {
                 continue;
             }

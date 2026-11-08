@@ -294,6 +294,12 @@ export interface IndexerClient {
    */
   setDropGuard(lib: string, on: boolean): Effect.Effect<{ on: boolean }, FinError>;
   /**
+   * The owner accepted a root that is empty for good (`acceptEmptyRoot`): while on, an empty
+   * root listing is not `ROOT_EMPTY_SUSPECT`; the root directory's files go missing after the
+   * usual `DIR_EMPTY_SUSPECT` confirmation. Turns itself off when a listing finds the root non-empty.
+   */
+  setEmptyRootOk(lib: string, on: boolean): Effect.Effect<{ on: boolean }, FinError>;
+  /**
    * Watches a local root in the indexer thread (Decision 30; the catalog must be open). Hints
    * and degradations arrive through `Catalogs.onWatch`. `{ok: false, reason}`: the OS refused.
    */
@@ -446,6 +452,7 @@ export async function startCatalogThreads(opts: CatalogThreadsOptions): Promise<
     testFault: (lib, transaction) => fx<void>(async () => void (await indexer.call("testFault", { lib, transaction }))),
     setOffline: (lib, offline) => fx(() => indexer.call("setOffline", { lib, offline })),
     setDropGuard: (lib, on) => fx(() => indexer.call("setDropGuard", { lib, on })),
+    setEmptyRootOk: (lib, on) => fx(() => indexer.call("setEmptyRootOk", { lib, on })),
     watch: (lib, root) => fx(() => indexer.call("watch", { lib, root })),
     unwatch: (lib) => fx<void>(async () => void (await indexer.call("unwatch", { lib }))),
     watchFault: (lib) => fx(() => indexer.call("watchFault", { lib })),

@@ -114,7 +114,7 @@ describe("agent session RPCs", () => {
     const after = await watchAll(local, { sessionId: id, fromNode: nodes[0]!.id });
     expect((after.items.find((i) => i.type === "nodeAdded") as { node: Node }).node.seq).toBe(nodes[0]!.seq + 1);
     expect(code((await watchAll(local, { sessionId: id, fromNode: "01zzzzzzzzzzzzzzzzzzzzzzzz" })).exit)).toBe("NOT_FOUND");
-    // Delete is the owner's, with the typed code: refused for `local`, done by the console.
+    // Delete is the owner's, with the challenge code: refused for `local`, done by the console.
     expect(code(await local.call("agent.session.delete", { sessionId: id }))).toMatch(/^(SCOPE_DENIED|HUMAN_ONLY)$/);
     const owner = await server.console();
     expect(ok(await confirmed(owner, "agent.session.delete", { sessionId: id }))).toEqual({ deleted: true });
@@ -273,7 +273,7 @@ describe("providers, keys, the local endpoint and the counsel gate", () => {
     expect(ok<Providers>(await local.call("agent.providers", {})).local).toEqual({ configured: false });
   });
 
-  test("keys: only OpenRouter's, only by a person with the typed code, never read back", async () => {
+  test("keys: only OpenRouter's, only by a person with the challenge code, never read back", async () => {
     seedListing(server.serverData, server.time.now());
     await server.start();
     const local = await server.local();
@@ -289,7 +289,7 @@ describe("providers, keys, the local endpoint and the counsel gate", () => {
     const tooLong = await confirmed(owner, "agent.key.set", { provider: "openrouter", key: huge });
     expect(code(tooLong)).toBe("SECRET_INVALID");
     expect(JSON.stringify(tooLong)).not.toContain("xxxxxxxx");
-    // No typed code: refused before anything is stored.
+    // No challenge code: refused before anything is stored.
     expect(code(await owner.call("agent.key.set", { provider: "openrouter", key: "sk-or-v1-abcdefgh01" }))).toBe("CONFIRMATION_REQUIRED");
     // `local` (fin) and an agent session are never allowed, code or not.
     const agent = await server.agent((await open(server.core, local, projectId)).credentialPath);

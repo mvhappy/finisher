@@ -200,7 +200,7 @@ try {
   });
 
   // Already open here: relocate changes nothing, the answer is the usual ref. A relocation is a
-  // person's decision (5A Task 5): the console asks, with its typed code (Task 7).
+  // person's decision (5A Task 5): the console asks, with its challenge code (Task 7).
   await confirmedScenario("project-open-relocate", async (c, code) => {
     ok(await c.call("project.open", { dir, relocate: true, challenge: code }));
   });

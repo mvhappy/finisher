@@ -9,6 +9,7 @@ import type { Audit } from "../src/control/audit.ts";
 import { canSee } from "../src/jobs/access.ts";
 import { watchJobs } from "../src/jobs/watch.ts";
 import { CONSOLE, LOCAL } from "../src/principal.ts";
+import { currentSandboxStatus, sandboxWarnings } from "../src/sandbox/status.ts";
 import { sandboxWarning, serverStatus } from "../src/server-admin.ts";
 import { closeTestEngines, testEngine, until } from "./support/jobs.ts";
 import { A, agent, B, code, err, normalised, rpc } from "./support/jobs-rpc.ts";
@@ -180,10 +181,15 @@ describe("server.status", () => {
   test("reports_the_job_hosts_caps_and_warns_while_unsandboxed", async () => {
     const s = await Effect.runPromise(serverStatus(deps(caps)));
     expect(s.jobs.caps).toEqual(caps);
-    // The job host's warning, then the agent runtime's (agent tools are unsandboxed until 7C).
-    expect(s.warnings).toEqual([sandboxWarning(caps as never), ...agentWarnings()]);
-    expect(s.warnings[0]).toMatchObject({ code: "SANDBOX_DISABLED", sandbox: "none" });
-    const boxed = await Effect.runPromise(serverStatus(deps({ ...caps, sandboxed: true, sandbox: "fin-sandbox" })));
-    expect(boxed.warnings).toEqual(agentWarnings());
+    // The job host's warning, then plugins', hooks' and the agent runtime's (plan 7C Decision 23).
+    const status = currentSandboxStatus();
+    expect(s.warnings).toEqual([sandboxWarning(caps as never, status), ...sandboxWarnings(status, ["plugin", "hook"]), ...agentWarnings(status)]);
+    expect(s.warnings[0]).toMatchObject({ code: "SANDBOX_DISABLED", sandbox: "none", details: { profile: "worker" } });
+    // A spawner that confines and an enforced worker profile: no worker warning.
+    const enforced = { kind: "enforced", detail: "test" } as const;
+    const boxed = await Effect.runPromise(
+      serverStatus({ ...deps({ ...caps, sandboxed: true, sandbox: "fin-sandbox" }), sandbox: () => ({ ...status, worker: enforced }) }),
+    );
+    expect(boxed.warnings).toEqual([...sandboxWarnings(status, ["plugin", "hook"]), ...agentWarnings(status)]);
   });
 });

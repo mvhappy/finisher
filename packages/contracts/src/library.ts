@@ -87,7 +87,7 @@ export const LibraryAddPayload = Schema.Struct({
   hydrate: Schema.optional(Schema.Boolean),
   bandwidthMiBs: Schema.optional(Schema.Number),
   aliases: Schema.optional(Schema.Array(Schema.String)),
-  /** The console's typed confirmation (5A Decision 30). */
+  /** The console's challenge code (5A Decision 30). */
   challenge: ChallengeField,
 });
 export type LibraryAddRequest = typeof LibraryAddPayload.Type;
@@ -101,8 +101,8 @@ export const LibraryRemoveSuccess = Schema.Struct({});
 
 /**
  * `library.set`: `name`, `include`, `exclude`, `kinds`, `scan`, `paused` and `stages` need
- * `library.scan`; `aliases`, `hydrate`, `bandwidthMiBs` and `acceptVolume` need `library.admin`
- * (human-only). `include` and `bandwidthMiBs` take `null` to clear them; an empty `stages`
+ * `library.scan`; `aliases`, `hydrate`, `bandwidthMiBs`, `acceptVolume`, `acceptUnmounted` and
+ * `acceptEmptyRoot` need `library.admin` (human-only). `include` and `bandwidthMiBs` take `null` to clear them; an empty `stages`
  * runs every registered stage.
  */
 export const LibrarySetPayload = Schema.Struct({
@@ -119,10 +119,22 @@ export const LibrarySetPayload = Schema.Struct({
   bandwidthMiBs: Schema.optional(Schema.NullOr(Schema.Number)),
   /** The owner accepts the volume now under the root (a changed volume, a root that is no longer a mount root). */
   acceptVolume: Schema.optional(Schema.Boolean),
+  /**
+   * The owner removed the nested mount at `dir` (a path below the root) for good: the mount
+   * point forgets its mount, and a scan of it lists what is there now (its files go missing
+   * after the usual empty-listing confirmation).
+   */
+  acceptUnmounted: Schema.optional(Schema.Struct({ dir: Schema.String })),
+  /**
+   * The owner accepts a root that is empty for good (`ROOT_EMPTY_SUSPECT`): the library comes
+   * back, and its files go missing after the usual empty-listing confirmation.
+   */
+  acceptEmptyRoot: Schema.optional(Schema.Boolean),
   challenge: ChallengeField,
 });
 export type LibrarySetRequest = typeof LibrarySetPayload.Type;
-export const LibrarySetSuccess = Schema.Struct({ library: LibraryViewSchema });
+/** `unmounted`: how many nested mount points an `acceptUnmounted` forgot (0: there was none offline at `dir`). */
+export const LibrarySetSuccess = Schema.Struct({ library: LibraryViewSchema, unmounted: Schema.optional(Schema.Number) });
 
 export const LibraryListSuccess = Schema.Struct({ libraries: Schema.Array(LibraryViewSchema) });
 

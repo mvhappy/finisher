@@ -23,6 +23,7 @@ test-hooks = [
     "fin-fonts/test-hooks",
     "fin-journal/test-hooks",
     "fin-library/test-hooks",
+    "fin-sandbox/test-hooks",
     "dep:fin-testfonts",
 ]
 
@@ -39,6 +40,8 @@ fin-jobhost = { path = "../fin-jobhost" }
 fin-jobs = { path = "../fin-jobs" }
 fin-journal = { path = "../fin-journal" }
 fin-library = { path = "../fin-library" }
+# The sandbox status (`sandboxStatus`, plan 7C Task 3).
+fin-sandbox = { path = "../fin-sandbox" }
 # `media.look` params (`validateJobParams`) and, from 6A Task 12, the media job inputs.
 fin-media = { path = "../fin-media" }
 fin-plugin-api = { path = "../fin-plugin-api" }

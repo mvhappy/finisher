@@ -14,9 +14,11 @@
 //! fin-workers --version                 prints the envelope id
 //! ```
 //!
-//! Exit 2 for usage errors and unknown families or helpers. No self-sandbox function is
-//! registered yet: sub-project 7's `fin-sandbox` will call `fin_jobs::sandbox::register` here,
-//! before any runtime starts, so until then a requested self-sandbox exits 78 (fail closed).
+//! Exit 2 for usage errors and unknown families or helpers. `fin_sandbox::self_apply` is
+//! registered as the self-sandbox entry before anything else runs: a `FIN_SELF_SANDBOX`
+//! request (the `worker` profile, plan 7C Decision 3) is applied before `hello` (to every
+//! thread from Landlock ABI 8; below it the process must still have one), and any failure
+//! exits 78 (fail closed).
 
 mod families;
 mod library;
@@ -44,6 +46,7 @@ fn main() {
     {
         std::process::exit(0);
     }
+    fin_jobs::sandbox::register(fin_sandbox::self_apply);
     #[cfg(feature = "test-hooks")]
     test_family::capture_start();
     let args: Vec<String> = std::env::args().skip(1).collect();

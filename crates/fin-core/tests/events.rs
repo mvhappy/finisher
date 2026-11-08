@@ -1423,3 +1423,32 @@ fn library_scan_payload_is_closed() {
     v["trigger"] = json!("cron");
     assert!(decode_payload(k, &v).is_err());
 }
+
+#[test]
+fn sandbox_unconfined_payload_is_closed() {
+    let k = kind("sandbox.unconfined", 1).expect("sandbox.unconfined at v1");
+    assert!(!k.reserved && !k.training_only);
+    assert_eq!(k.sources, [Source::Finisherd]);
+    let schema = (k.schema)();
+    let props: BTreeSet<&str> = schema["properties"]
+        .as_object()
+        .expect("properties")
+        .keys()
+        .map(String::as_str)
+        .collect();
+    // Metadata only: no path, host or process.
+    assert_eq!(
+        props,
+        BTreeSet::from(["profile", "os", "reason"]),
+        "{schema}"
+    );
+    let ok = json!({"profile": "worker", "os": "linux", "reason": "landlockDisabled"});
+    assert!(decode_payload(k, &ok).is_ok());
+    // The names are closed; there is no opt-out reason.
+    for bad in [
+        json!({"profile": "shell", "os": "linux", "reason": "landlockDisabled"}),
+        json!({"profile": "worker", "os": "linux", "reason": "userOptOut"}),
+    ] {
+        assert!(decode_payload(k, &bad).is_err(), "{bad}");
+    }
+}

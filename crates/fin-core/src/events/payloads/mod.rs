@@ -29,6 +29,7 @@ pub mod log;
 pub mod media;
 pub mod plugin;
 pub mod reserved;
+pub mod sandbox;
 pub mod session;
 pub mod stats;
 pub mod storage;
@@ -58,6 +59,7 @@ pub use plugin::{
     RiskName, log2_bucket,
 };
 pub use reserved::{PreviewStats, RenderSample, ReviewVerdict, UiAction};
+pub use sandbox::{SandboxOs, SandboxProfileName, SandboxUnconfined, UnconfinedReason};
 pub use session::{Arch, BuildProfile, OsFamily, SessionEnd, SessionStart, SessionUnclean};
 pub use stats::{EvalStats, Histogram, RpcStats};
 pub use storage::{StorageMode, StorageState};
@@ -145,6 +147,7 @@ approx_fixed!(10 =>
     JobOutcome, JobPriority, ProcessRole, ProcessHelperKind, ExitReason,
     LibraryStorageName, ScanTrigger,
     PluginOutcome, PluginSourceName, PluginKindName, RiskName,
+    SandboxProfileName, SandboxOs, UnconfinedReason,
 );
 
 /// The [`BlobRef`]s of each content [`Body`] given, for `AnyPayload::blobs`.

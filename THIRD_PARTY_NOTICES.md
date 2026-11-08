@@ -620,20 +620,21 @@ expression in their `Cargo.toml`, with the count; each crate's licence text is i
 `LICENSE-*` file in its package on crates.io. Where the expression has an `OR`, Finisher uses the
 crate under an alternative `deny.toml` allows.
 
-- MIT OR Apache-2.0 (130):
+- MIT OR Apache-2.0 (133):
   `allocator-api2` 0.2.21, `anstyle` 1.0.14, `arrayvec` 0.7.8, `ash` 0.38.0+1.3.281,
   `base64` 0.22.1, 0.23.1, `bitflags` 2.13.2, `block-buffer` 0.12.1, `bstr` 1.13.1,
   `cc` 1.10.0, `cfg-if` 1.0.5, `clap_builder` 4.6.7, `clap_derive` 4.6.7, `clap_lex` 1.1.1,
   `clap` 4.6.7, `cmake` 0.1.58, `core-foundation-sys` 0.8.7, `core-foundation` 0.10.1,
   `cpufeatures` 0.3.1, `crc32fast` 1.5.3, `crypto-common` 0.2.2, `digest` 0.11.3,
-  `displaydoc` 0.2.7, `document-features` 0.2.12, `dyn-clone` 1.0.20, `errno` 0.3.14,
+  `displaydoc` 0.2.7, `document-features` 0.2.12, `dyn-clone` 1.0.20,
+  `enumflags2_derive` 0.7.12, `enumflags2` 0.7.12, `errno` 0.3.14,
   `find-msvc-tools` 0.1.15, `font-types` 0.11.3, 0.12.7, `form_urlencoded` 1.2.2,
   `futures-channel` 0.3.34, `futures-core` 0.3.34, `futures-executor` 0.3.34,
   `futures-io` 0.3.34, `futures-macro` 0.3.34, `futures-sink` 0.3.34, `futures-task` 0.3.34,
   `futures-util` 0.3.34, `futures` 0.3.34, `getrandom` 0.2.17, 0.3.4, 0.4.3,
   `gpu-allocator` 0.28.0, `half` 2.7.1, `hashbrown` 0.15.5, 0.16.1, 0.17.1, `hashlink` 0.10.0,
   `heck` 0.5.0, `hex` 0.4.3, `hmac` 0.13.0, `hybrid-array` 0.4.15, `idna` 1.1.0, `itoa` 1.0.18,
-  `jobserver` 0.1.35, `libc` 0.2.191, `litrs` 1.0.1, `lock_api` 0.4.14, `log` 0.4.34,
+  `jobserver` 0.1.35, `landlock` 0.4.7, `libc` 0.2.191, `litrs` 1.0.1, `lock_api` 0.4.14, `log` 0.4.34,
   `memmap2` 0.9.12, `mp4-atom` 0.17.0, `naga-types` 30.0.1, `naga` 30.0.1, `num-bigint` 0.4.8,
   `num-complex` 0.4.6, `num-integer` 0.1.47, `num-iter` 0.1.46, `num-rational` 0.4.2,
   `num-traits` 0.2.19, `num` 0.4.3, `once_cell` 1.21.4, `openssl-probe` 0.2.2,

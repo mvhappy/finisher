@@ -61,7 +61,7 @@ import { claimSocketPath, makeLocalServer, serveRpc } from "./transport.ts";
 import { makeTicketedWebSocketServer, makeUpgradeCheck } from "./upgrade.ts";
 import { ServerControlTag } from "./server-admin.ts";
 import { isServeCommand, runConsole } from "./console/main.ts";
-import { agentWarnings } from "./agent/warnings.ts";
+import { currentSandboxStatus, reporterFor, sandboxWarnings } from "./sandbox/status.ts";
 import { type AgentRuntimeParts, AgentRuntimeTag, type AgentServeOptions, buildAgentRuntime } from "./agent/wiring.ts";
 
 export interface ServeOptions {
@@ -315,8 +315,11 @@ export const serve = ({
       sessionCredentials.drain();
       // A revocation lost before it was written (a busy store, then a crash) is done now.
       sessionCredentials.reconcile();
-      // Owner decision F2: before 7C agent tools are never sandboxed; sessions run, warned.
-      for (const w of agentWarnings()) yield* Effect.logWarning(`finisherd: ${w.code}: ${w.message}`);
+      // Owner decision F2 (plan 7C Decision 23): a profile not enforced on this host runs,
+      // warned; `sandbox.unconfined` is recorded once per profile for this start.
+      const sandbox = currentSandboxStatus();
+      reporterFor(diagnostics.journal, (m) => logSink("warning", m)).report(sandbox);
+      for (const w of sandboxWarnings(sandbox)) yield* Effect.logWarning(`finisherd: ${w.code} (${String(w.details.profile)}): ${w.message}`);
       // The outcome tracker (Task 11) emits 5E's `review.verdict` into this journal once the kind exists.
       const lineage = new BranchLineage();
       const outcomes = new OutcomeTracker({ store: agentStore, lineage, clock: agentClock.now, verdicts: journalVerdicts(diagnostics.journal) });

@@ -6,7 +6,7 @@
 // through the `fin` binary, and asserts the subscriber saw every committed rev in order and
 // that its last rev equals `snapshot.get`'s. The server and the temp dir are always cleaned up.
 //
-// Usage: node scripts/e2e.mjs [--skip-build] [basic|storage|history|reel|diagnostics|plugins|auth|look|agent ...]  (default: every scenario)
+// Usage: node scripts/e2e.mjs [--skip-build] [basic|storage|history|reel|diagnostics|plugins|auth|look|agent|library ...]  (default: every scenario)
 //
 // Builds go to `CARGO_TARGET_DIR` when it is set (else `target/`), and so does the run's
 // `fin` and `fin-plugin`. Scenario temp dirs fall back to `/tmp` when `TMPDIR` is so deep that the
@@ -40,7 +40,7 @@
 //
 // The "auth" scenario (scripts/e2e/auth*.mjs) drives principals and credentials over `fin.sock` and
 // the ticketed WebSocket: an unproved connection, `fin` as `local`, the human-only refusals and the
-// console's typed codes, ticket and Host/Origin checks, agent credentials (scopes, `branch own`,
+// console's challenge codes, ticket and Host/Origin checks, agent credentials (scopes, `branch own`,
 // journal actors, revocation ending live streams, expiry, `TICKET_LIMIT`), a squatted socket, a
 // restart that rotates the keys, the audit rows and a leak grep over every log and the journal.
 //
@@ -58,6 +58,12 @@
 // deltas, a `finisherd` killed during a tool call and resumed, a budget stop and its approval, and
 // the leak grep (plan 7A Task 13).
 //
+// The "library" scenario (scripts/e2e/library*.mjs) adds a library from the console, waits for its
+// scan with `fin wait`, lists, searches and shows its files, renames, moves, rewrites and deletes
+// some and scans again; NFC/NFD twins answer `PATH_AMBIGUOUS`, placeholders and a Nextcloud stub
+// stay `cloudOnly` and unopened, a nested mount unmounted through the test overlay goes offline
+// with nothing missing, and no scan changes a byte or a timestamp under the root (plan 5D Task 15).
+//
 // After the builds, the run has a deadline (E2E_DEADLINE_MS, default 180 s): when it passes,
 // the server is killed and the script exits non-zero. Test hooks (scripts/e2e.test.mjs):
 // E2E_SERVER_CMD (a JSON array, `{serverData}` substituted) replaces the finisherd command,
@@ -73,6 +79,7 @@ import { run as runPlugins } from "./e2e/plugins.mjs";
 import { run as runAuth } from "./e2e/auth.mjs";
 import { run as runLook } from "./e2e/look.mjs";
 import { run as runAgent } from "./e2e/agent.mjs";
+import { run as runLibrary } from "./e2e/library.mjs";
 
 // The servers of every scenario keep their secrets in files, never in the OS keychain (5B Decision 4).
 process.env.FIN_SECRETS ??= "file";
@@ -81,7 +88,7 @@ export { parseFrames } from "./e2e/lib.mjs";
 export { checkRevs };
 
 const DEADLINE_MS = Number(process.env.E2E_DEADLINE_MS ?? 180_000);
-const SCENARIOS = { basic: runBasic, storage: runStorage, history: runHistory, reel: runReel, diagnostics: runDiagnostics, plugins: runPlugins, auth: runAuth, look: runLook, agent: runAgent };
+const SCENARIOS = { basic: runBasic, storage: runStorage, history: runHistory, reel: runReel, diagnostics: runDiagnostics, plugins: runPlugins, auth: runAuth, look: runLook, agent: runAgent, library: runLibrary };
 
 async function main(argv) {
   const names = argv.filter((a) => !a.startsWith("--"));
