@@ -172,8 +172,9 @@ impl KeyRing {
         self.dir.join(format!("{key_id}.pem"))
     }
 
-    /// Saves `key` in the ring; a new ring folder is created owner-only (0700 on Unix).
-    pub fn add(&self, key: &SigningKey) -> Result<(), EditorError> {
+    /// Creates the ring folder, and any missing folder above it, owner-only (0700 on Unix).
+    /// Every write into the ring creates it through here: an existing folder keeps its mode.
+    pub(crate) fn create(&self) -> Result<(), EditorError> {
         let mut b = fs::DirBuilder::new();
         b.recursive(true);
         #[cfg(unix)]
@@ -182,7 +183,12 @@ impl KeyRing {
             b.mode(0o700);
         }
         b.create(&self.dir)
-            .map_err(|e| EditorError::io("create", &self.dir, e))?;
+            .map_err(|e| EditorError::io("create", &self.dir, e))
+    }
+
+    /// Saves `key` in the ring; a new ring folder is created owner-only (0700 on Unix).
+    pub fn add(&self, key: &SigningKey) -> Result<(), EditorError> {
+        self.create()?;
         key.write(&self.path(&key.public().key_id()))
     }
 

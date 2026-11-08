@@ -16,6 +16,7 @@ use std::path::PathBuf;
 use serde_json::{Map, Value, json};
 
 pub use files::DirFiles;
+pub(crate) use files::is_exact_file;
 pub use limits::Limits;
 pub use names::{check_component, check_path};
 pub use pack::{PackInfo, pack};
