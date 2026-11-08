@@ -26,7 +26,7 @@ import {
 } from "@finisher/contracts";
 import type { WriteGuard } from "@finisher/core-types";
 import { Effect, Stream } from "effect";
-import { answerChallenge, confirmationRequired } from "../auth/challenges.ts";
+import { answerChallenge, confirmationRequired, undoesOwnMint } from "../auth/challenges.ts";
 import { unauthenticated } from "../auth/handshake.ts";
 import { credentialRevoked } from "../auth/revoke.ts";
 import type { Connections, Transport } from "../connections.ts";
@@ -34,7 +34,7 @@ import type { Audit } from "../control/audit.ts";
 import { ulid } from "../control/ulid.ts";
 import { authorize } from "./authorize.ts";
 import { approvalRequired, outOfReach } from "./fixes.ts";
-import { authorOf, branchLimited, DEFAULT_POLICIES, type PolicyRule, runPolicies } from "./policy.ts";
+import { authorOf, branchLimited, DEFAULT_POLICIES, type PolicyRule, runPolicies, stampsAuthor } from "./policy.ts";
 import { type ChainProjects, resolve } from "./resolve.ts";
 
 export type { Outcome, PolicyRule } from "./policy.ts";
@@ -73,15 +73,25 @@ export function credentialOf(p: Principal): string | undefined {
 /** Approvals kept in memory at most, and for how long (review of Task 5, L6). */
 export const MAX_APPROVALS = 256;
 export const APPROVAL_TTL_MS = 10 * 60_000;
+/**
+ * Approvals one principal may have pending (review of Tasks 8–9, L5): past it a new one drops
+ * that principal's oldest, so one agent asking in a loop cannot push everyone else's out.
+ */
+export const MAX_APPROVALS_PER_PRINCIPAL = 16;
 
 type Approvals = Map<string, { readonly tag: string; readonly principal: string; readonly at: number }>;
 
-/** Records an approval asked for, dropping expired ones and then the oldest past the cap. */
+/**
+ * Records an approval asked for, dropping expired ones, then the principal's oldest past its
+ * quota, then the oldest of all past the cap.
+ */
 export function keepApproval(approvals: Approvals, id: string, entry: { readonly tag: string; readonly principal: string; readonly at: number }): void {
   for (const [k, v] of approvals) {
     if (entry.at - v.at < APPROVAL_TTL_MS) break;
     approvals.delete(k);
   }
+  const mine = [...approvals].filter(([, v]) => v.principal === entry.principal);
+  for (const [k] of mine.slice(0, Math.max(0, mine.length - MAX_APPROVALS_PER_PRINCIPAL + 1))) approvals.delete(k);
   while (approvals.size >= MAX_APPROVALS) approvals.delete(approvals.keys().next().value as string);
   approvals.set(id, entry);
 }
@@ -186,13 +196,22 @@ export function withChain<H extends object>(handlers: H, deps: ChainDeps): H {
       }
       // Last, so that a typed code is used up only by a call that goes ahead.
       // Every call that needs a human-only scope is confirmed, unless its rule opts out (L2).
-      if (principal.kind === "console" && needsConfirmation(tag, payload, resolved.facts)) {
-        const refusal = answerChallenge(deps.connections.get(clientId), (payload as { challenge?: unknown } | null)?.challenge);
+      // A connection taking back a credential it minted needs no second code (M2 of the review of Tasks 8–9).
+      const conn = deps.connections.get(clientId);
+      if (principal.kind === "console" && needsConfirmation(tag, payload, resolved.facts) && !undoesOwnMint(conn, tag, payload)) {
+        const refusal = answerChallenge(conn, (payload as { challenge?: unknown } | null)?.challenge);
         if (refusal !== undefined) return yield* Effect.fail(confirmationRequired(tag, refusal));
       }
-      // A branch-limited principal's new branches carry its own author, whatever it sent (M4).
+      // A `service` opt-out (`server.stop`) is for the console that service managers run; any
+      // other person's principal (5B's devices with `auth.admin`) must confirm it, and until
+      // 5B has a way to, it cannot (review of Tasks 8–9, Task 8).
+      if (rule.unconfirmed === "service" && principal.human && principal.kind !== "console") {
+        return yield* Effect.fail(confirmationRequired(tag, "missing"));
+      }
+      // A credential's new branches carry its own author, whatever it sent (M4; review of Tasks
+      // 8–9, M1: whatever its branch limits, or it could plant an `own` branch for another).
       const stamped =
-        rule.author !== undefined && branchLimited(principal)
+        rule.author !== undefined && stampsAuthor(principal)
           ? { ...(resolved.payload as Record<string, unknown>), [rule.author]: authorOf(principal) }
           : resolved.payload;
       const credential = credentialOf(principal);

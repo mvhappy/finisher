@@ -3,13 +3,17 @@
 // listing reads only and runs anywhere.
 //
 // A minted credential's file is the only copy of its key. With `--out` the console creates the
-// file (mode 0600, refusing one that exists) **before** it mints, so a mint never leaves a live
-// credential without its file, and removes it again when the mint does not happen. Without
+// file **before** it mints (`createPrivateFile`: new, owner-only from creation, and its open
+// file checked: owner and mode 0600 on Unix, owner and DACL on Windows; refused and removed
+// otherwise), so a mint never leaves a live credential without its file. The key is written
+// whole and fsynced; when that fails the credential is revoked on the same connection (no new
+// code: the server lets the connection that minted a credential take it back) and the file
+// removed. A cancelled code, Ctrl-C or any other failure removes the file too. Without
 // `--out` (`agent mint` only) the file's contents are shown once on this terminal.
-import { closeSync, openSync, rmSync, writeSync } from "node:fs";
 import { resolve } from "node:path";
 import type { Credential, CredentialFile, CredentialKind } from "@finisher/contracts";
 import { SCOPES } from "@finisher/contracts";
+import { createPrivateFile, type PrivateFile } from "@finisher/fin-node";
 import { consoleError, valueOf } from "../client.ts";
 import { confirmed, requireTty } from "../confirm.ts";
 import { all, has, one, onlyFlags, usage } from "../format.ts";
@@ -32,21 +36,37 @@ export function parseDuration(flag: string, value: string, noneAllowed: boolean)
   return Number(m[1]) * unit;
 }
 
-/** Creates `path` for the credential, private and new; `undefined` without `--out`. */
-function reserve(out: string | undefined): { path: string; fd: number } | undefined {
+/** Creates the credential's file, private and new (module docs); `undefined` without `--out`. */
+function reserve(out: string | undefined, create: (path: string) => PrivateFile = createPrivateFile): PrivateFile | undefined {
   if (out === undefined) return undefined;
   const path = resolve(out);
   try {
-    return { path, fd: openSync(path, "wx", 0o600) };
+    return create(path);
   } catch (e) {
-    const code = (e as NodeJS.ErrnoException).code;
+    const err = e as { code?: unknown; details?: { problems?: unknown } };
+    const problems = Array.isArray(err.details?.problems) ? (err.details.problems as unknown[]).map(String) : [];
     throw consoleError(
       "USAGE",
-      code === "EEXIST" ? `${path} already exists` : `cannot create ${path}`,
-      { path, ...(code === undefined ? {} : { cause: code }) },
+      err.code === "ALREADY_EXISTS"
+        ? `${path} already exists`
+        : err.code === "PRIVATE_FILE_UNSAFE"
+          ? `${path} would not be private (${problems.join(", ")}), so it was removed`
+          : `cannot create ${path}`,
+      { path, ...(typeof err.code === "string" ? { cause: err.code } : {}), ...(problems.length === 0 ? {} : { problems }) },
       "Choose a new file in a folder only you can read; the credential is written there once.",
     );
   }
+}
+
+/** What a mint grants, in words; `*` projects said plainly (review of Tasks 8–9, L6). */
+export function describeMint(kind: CredentialKind, label: string, scopes: ReadonlyArray<string>, projects: ReadonlyArray<string>, branches: ReadonlyArray<string>): string {
+  return (
+    `This creates ${kind === "agent" ? "an agent" : "an MCP"} credential "${label}" with ` +
+    `${scopes.length === 0 ? "the default scopes" : `the scopes ${scopes.join(", ")}`}, ` +
+    `${projects.length === 0 ? "ALL projects (*): every project on this server, and any folder path it names, to open or create projects in" : `the projects ${projects.join(", ")}`} and ` +
+    `${branches.length === 0 ? "every branch" : `the branches ${branches.join(", ")}`}. ` +
+    "Whoever holds its file can use Finisher with these rights until it expires or you revoke it."
+  );
 }
 
 export async function mint(ctx: CommandContext, kind: CredentialKind, rest: ReadonlyArray<string>): Promise<number> {
@@ -71,35 +91,47 @@ export async function mint(ctx: CommandContext, kind: CredentialKind, rest: Read
     ...(absolute === undefined ? {} : { absoluteS: parseDuration("absolute", absolute, true) }),
   };
   requireTty(ctx.prompt, command);
-  const file = reserve(one(ctx.args, "out"));
-  const what =
-    `This creates ${kind === "agent" ? "an agent" : "an MCP"} credential "${label}" with ` +
-    `${scopes.length === 0 ? "the default scopes" : `the scopes ${scopes.join(", ")}`}, ` +
-    `${projects.length === 0 ? "every project" : `the projects ${projects.join(", ")}`} and ` +
-    `${branches.length === 0 ? "every branch" : `the branches ${branches.join(", ")}`}. ` +
-    "Whoever holds its file can use Finisher with these rights until it expires or you revoke it.";
+  const file = reserve(one(ctx.args, "out"), ctx.createFile);
+  // Ctrl-C away from the question (while the server answers) removes the file too.
+  const interrupted = () => {
+    file?.discard();
+    process.exit(130);
+  };
+  if (file !== undefined) process.once("SIGINT", interrupted);
   let minted: { credential: Credential; file: CredentialFile };
   try {
-    minted = await withConnection(ctx, (c) => confirmed(c, ctx.prompt, what, "auth.credential.mint", payload));
+    minted = await withConnection(ctx, async (c) => {
+      const m = await confirmed<{ credential: Credential; file: CredentialFile }>(c, ctx.prompt, describeMint(kind, label, scopes, projects, branches), "auth.credential.mint", payload);
+      if (file === undefined) return m;
+      try {
+        file.commit(`${JSON.stringify(m.file)}\n`);
+      } catch (e) {
+        // Its only copy is lost: take the credential back at once, on this connection.
+        const undone = await c.call("auth.credential.revoke", { id: m.credential.id }).catch(() => undefined);
+        const revoked = undone?.ok === true && (undone.value as { revoked?: unknown }).revoked === true;
+        file.discard();
+        const why = (e as { message?: unknown }).message;
+        throw consoleError(
+          "IO_ERROR",
+          `cannot write ${file.path}${typeof why === "string" ? `: ${why}` : ""}; credential ${m.credential.id} was ${revoked ? "revoked" : "NOT revoked"}`,
+          { path: file.path, credentialId: m.credential.id, revoked },
+          revoked ? "Free some space or choose another folder, then mint it again." : `Revoke credential ${m.credential.id} yourself, then mint it again.`,
+        );
+      }
+      return m;
+    });
   } catch (e) {
-    if (file !== undefined) {
-      closeSync(file.fd);
-      rmSync(file.path, { force: true });
-    }
+    file?.discard();
     throw e;
+  } finally {
+    if (file !== undefined) process.off("SIGINT", interrupted);
   }
   const { credential } = minted;
-  const text = `${JSON.stringify(minted.file)}\n`;
   if (file === undefined) {
     ctx.output.out(`Minted ${credential.kind} credential ${credential.id} ("${credential.label}"). Its file, shown this once:`);
-    ctx.output.out(text.trimEnd());
+    ctx.output.out(JSON.stringify(minted.file));
     ctx.output.out("Save it as a file only you can read, and point the harness's FIN_CREDENTIAL variable at that file.");
     return 0;
-  }
-  try {
-    writeSync(file.fd, text);
-  } finally {
-    closeSync(file.fd);
   }
   ctx.output.out(`Minted ${credential.kind} credential ${credential.id} ("${credential.label}") into ${file.path}.`);
   ctx.output.out(`Point the ${kind === "agent" ? "harness's" : "MCP adapter's"} FIN_CREDENTIAL variable at that file.`);

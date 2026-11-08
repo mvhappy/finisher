@@ -95,8 +95,11 @@ pub fn credential_ended(credential: &str) -> bool {
 
 /// The read lock a write holds from its credential check through its commit, or
 /// `CREDENTIAL_REVOKED` when the guard's credential was ended. A guard without a credential
-/// holds nothing.
-pub(crate) fn live_credential(
+/// holds nothing. [`Store::write`] holds it; so does every other change a credential can make
+/// to a store outside it (`fin-node`'s `acknowledgeRewind`, `acknowledgeSalvage` and
+/// `setCollect`; review of 5A Tasks 8–9, L1). Hold it only for a short change: ending a
+/// credential waits for every holder, on `finisherd`'s main thread.
+pub fn live_credential(
     guard: &WriteGuard,
 ) -> Result<Option<RwLockReadGuard<'static, HashSet<String>>>, StoreError> {
     let Some(credential) = &guard.credential else {

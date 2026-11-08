@@ -173,13 +173,23 @@ export function inside(path: string, root: string): boolean {
 /**
  * The folders a principal with roots may use (`agent`, `mcp`, `device`: spec §4.4): its
  * projects' folders, each with its `workspace/`, canonical; an open project's from the
- * registry, one that is not open from the index it would be reopened from (the handler then
- * opens it and checks it is still that project; `probe.ts` re-reads the open folder); `only`:
- * just that project's (a probe for it). `undefined`: no roots (any path).
+ * registry, one that is not open from the index it would be reopened from, and only while that
+ * folder still names the project (review of Tasks 8–9, L6: an index entry is stale once the
+ * project moved, and `project.create` inside the old folder opens nothing that would notice;
+ * the handlers that open it check again, `probe.ts` re-reads the open folder); `only`: just
+ * that project's (a probe for it). `undefined`: no roots (any path).
  */
 export function rootsOf(principal: Principal, deps: ChainProjects, only?: string): Effect.Effect<ReadonlyArray<string> | undefined> {
   if (principal.projects === "*") return Effect.succeed(undefined);
   const ids = only === undefined ? principal.projects : principal.projects.filter((id) => id === only);
-  const dirs = ids.map((id) => deps.dirOf(id) ?? deps.indexedDirOf?.(id)).filter((d): d is string => d !== undefined);
-  return Effect.forEach(dirs, canonical);
+  return Effect.map(
+    Effect.forEach(ids, (id) => {
+      const open = deps.dirOf(id);
+      if (open !== undefined) return Effect.map(canonical(open), (d): string | undefined => d);
+      const indexed = deps.indexedDirOf?.(id);
+      if (indexed === undefined) return Effect.succeed(undefined);
+      return Effect.flatMap(canonical(indexed), (d) => Effect.map(Effect.promise(() => projectIdIn(d)), (named) => (named === id ? d : undefined)));
+    }),
+    (dirs) => dirs.filter((d): d is string => d !== undefined),
+  );
 }

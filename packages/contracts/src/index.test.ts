@@ -27,6 +27,7 @@ test("the group exposes exactly the protocol 2 RPC tags", () => {
       "auth.credential.list",
       "auth.credential.mint",
       "auth.credential.revoke",
+      "auth.credential.rotateMaster",
       "auth.prove",
       "auth.revokeSelf",
       "auth.ticket",

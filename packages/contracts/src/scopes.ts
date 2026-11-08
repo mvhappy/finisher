@@ -157,6 +157,8 @@ export const RPC_SCOPES: { readonly [T in FinRpcTag]: RuleOf<T> } = {
   "auth.credential.mint": { scopes: ["auth.admin"] },
   "auth.credential.list": { scopes: ["auth.admin"], unconfirmed: "readOnly" },
   "auth.credential.revoke": { scopes: ["auth.admin"] },
+  // Review of Tasks 8–9, M3: a new `credential.master`, which ends every credential.
+  "auth.credential.rotateMaster": { scopes: ["auth.admin"] },
   "project.create": { scopes: ["project.create"], resolve: ["createDir"] },
   // Attaching to a project already open here only reads it; loading one may take its lease.
   "project.open": {

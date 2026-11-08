@@ -27,14 +27,14 @@ use std::path::Path;
 
 /// What a key folder or key file is, for the fix text.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Kind {
+pub enum Kind {
     Folder,
     File,
 }
 
 /// Why a key folder or key file is not private, and the command that makes it so.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct Unprotected {
+pub struct Unprotected {
     /// `"mode 0755"` (Unix), `"owner <sid>"`, `"allows <sid>"`, `"null dacl"`,
     /// `"unsupported ace <type>"` (Windows).
     pub problems: Vec<String>,
@@ -42,18 +42,18 @@ pub(crate) struct Unprotected {
 }
 
 /// Creates the folder `path` (its parent must exist) owner-only from creation.
-pub(crate) fn create_dir(path: &Path) -> io::Result<()> {
+pub fn create_dir(path: &Path) -> io::Result<()> {
     imp::create_dir(path)
 }
 
 /// Creates the new file `path` for writing, owner-only from creation; an existing file is an
 /// `AlreadyExists` error.
-pub(crate) fn create_new(path: &Path) -> io::Result<File> {
+pub fn create_new(path: &Path) -> io::Result<File> {
     imp::create_new(path)
 }
 
 /// `Ok(None)` when only the current user (and the OS) can reach `path`.
-pub(crate) fn check(path: &Path, kind: Kind) -> io::Result<Option<Unprotected>> {
+pub fn check(path: &Path, kind: Kind) -> io::Result<Option<Unprotected>> {
     imp::check(path, kind)
 }
 

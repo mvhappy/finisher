@@ -56,6 +56,7 @@ mod journal;
 mod library;
 mod maintenance;
 mod private_dir;
+mod private_file;
 mod registry;
 mod server_lock;
 mod tasks;
@@ -75,6 +76,7 @@ pub use library::{library_canonical_root, library_probe_root, library_probe_stat
 #[cfg(feature = "test-hooks")]
 pub use library::{library_probe_hang_for_test, library_probe_started_for_test};
 pub use private_dir::{PrivateDirReport, check_private_dir, make_private_dir};
+pub use private_file::{PrivateFile, create_private_file};
 pub use registry::{Registry, validate_manifest};
 pub use server_lock::{ServerLock, lock_exclusive, server_id};
 pub use tasks::StoreTask;

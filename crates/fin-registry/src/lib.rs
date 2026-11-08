@@ -23,7 +23,7 @@ pub mod error;
 mod fetch;
 pub mod package;
 pub mod plan;
-mod private;
+pub mod private;
 pub mod registry;
 pub mod schema;
 pub mod search;

@@ -864,6 +864,7 @@ dependencies = [
  "fin-store",
  "fin-testfonts",
  "fin-text",
+ "libc",
  "napi",
  "napi-build",
  "napi-derive",
