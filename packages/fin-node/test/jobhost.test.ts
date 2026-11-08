@@ -249,7 +249,8 @@ describe("JobHost", () => {
     lag.disable();
     for (const p of procs) expect(exitOf(t, p)).toMatchObject({ reason: "killed", kill: "cancel" });
     // The event loop kept turning: its p99 delay (1 ms resolution included) stays small.
-    expect(lag.count).toBeGreaterThan(50);
+    // Windows' default timer granularity is about 15.6 ms, so a 1 ms timer samples ~16 times fewer.
+    expect(lag.count).toBeGreaterThan(process.platform === "win32" ? 10 : 50);
     expect(lag.percentile(99) / 1e6).toBeLessThan(strict ? 6 : 25);
   });
 

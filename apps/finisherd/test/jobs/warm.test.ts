@@ -35,6 +35,8 @@ interface Rec {
 function proxied(): { factory: JobHostFactory; rec: Rec } {
   let deliver: (e: JobHostEvent) => void = () => {};
   let holdNext = false;
+  /** Counts `release` calls: a spawn still in flight when one comes is not held after it. */
+  let releases = 0;
   const holding = new Set<number>();
   const held: JobHostEvent[] = [];
   const rec: Rec = {
@@ -45,6 +47,7 @@ function proxied(): { factory: JobHostFactory; rec: Rec } {
     readyMemory: undefined,
     holdNext: () => void (holdNext = true),
     release() {
+      releases++;
       holding.clear();
       for (const e of held.splice(0)) deliver(e);
     },
@@ -74,8 +77,10 @@ function proxied(): { factory: JobHostFactory; rec: Rec } {
       spawn: async (g, r) => {
         const hold = holdNext;
         holdNext = false;
+        const gen = releases;
         const proc = await h.spawn(g, r);
-        if (hold) holding.add(proc);
+        // A slow spawn (Windows: the broker, Defender's scan) can resolve after `release`.
+        if (hold && releases === gen) holding.add(proc);
         rec.spawns.push({ group: g, req: r, proc });
         return proc;
       },

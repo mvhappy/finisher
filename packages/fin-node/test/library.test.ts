@@ -55,7 +55,9 @@ describe("libraryCanonicalRoot", () => {
     expect(c.root).toBe(real);
     // `root` is the display path and keeps its case; `rootKey` is a lookup and overlap key,
     // lower-cased on a case-insensitive volume (macOS APFS default, Windows) and as-is elsewhere.
-    expect(c.rootKey).toBe(c.identity.caseSensitive ? real : real.toLowerCase());
+    // Keys use `/` separators on Windows too (Decision 10).
+    const unified = process.platform === "win32" ? real.replaceAll("\\", "/") : real;
+    expect(c.rootKey).toBe(c.identity.caseSensitive ? unified : unified.toLowerCase());
     if (process.platform === "darwin" && !c.identity.caseSensitive) expect(c.rootKey).not.toBe(real);
     expect(c.storage).toBe("local");
     expect(c.identity.key).toMatch(/^[0-9a-f]{32}$/);
