@@ -25,6 +25,8 @@ mod commands;
 mod domain;
 mod exit;
 mod framing;
+#[cfg(feature = "test-hooks")]
+pub mod held_paths;
 mod host;
 mod memory;
 mod proc;

@@ -1,6 +1,6 @@
 // The job engine (spec §6.0–6.5, 5C-1 plan Tasks 9a, 9b): submit (Decision 27), the dispatch
-// loop over the pools and the scheduler, the transitions of a cold job's attempts, the hook
-// phase, `job.done` and the bus. Its public types are in `api.ts`; cancel, pause, resume,
+// loop over the pools and the scheduler, the hook phase, `job.done` and the bus. A dispatched
+// job's run is in `attempt-flow.ts`; its public types are in `api.ts`; cancel, pause, resume,
 // abandonment and the hold of a job with an abandoned process in `control.ts`; start-up
 // recovery, retention and close in `restart.ts`; warm workers, their direct hand-off at submit
 // and `warm(family)` in `warm.ts` (Task 11). The retry policy and isolation (Decisions 31, 32)
@@ -8,22 +8,22 @@
 import type { FinError, FinErrorData, JobOwner, JobProgress, JobState, JobView } from "@finisher/contracts";
 import { Effect, type Fiber, PubSub, Stream } from "effect";
 import { finError, toFinError } from "../errors.ts";
-import { Abandonment, cancelJob, pauseJobs, pausedAfterRun, resumeJobs } from "./control.ts";
+import { Abandonment, cancelJob, pauseJobs, resumeJobs } from "./control.ts";
+import { runDispatched, type WarmLease } from "./attempt-flow.ts";
 import { removeJobDir, jobDirs } from "./files.ts";
 import { type KindRegistry, type KindSpec, type PoolName, resolveOrFn } from "./kinds.ts";
-import { closeEngine, crashEngine, interruptRow, recover } from "./restart.ts";
-import { afterFailure, afterSuccess, completeIsolation, runPlan } from "./retry.ts";
+import { closeEngine, crashEngine, recover } from "./restart.ts";
 import { submitJob, waitJobs } from "./submit.ts";
 import { runOnSucceeded } from "./hooks.ts";
 import { RunControl } from "./run-control.ts";
-import { type AttemptOutcome, ALIVE_MS, type RunnerEnv, runAttempt } from "./runner.ts";
+import { ALIVE_MS, type RunnerEnv } from "./runner.ts";
 import { QueueIndex, type QueuedJob, schedule } from "./schedule.ts";
 import { WarmPools } from "./warm.ts";
-import type { FamilySpec } from "./kinds.ts";
 import { type JobQuery, type JobRow, type JobStore, type TransitionPatch, viewOf } from "./store.ts";
 import { type JobEvent, type RunStats, doneEvent, newStats, withProgress } from "./view.ts";
 
 export type { JobEvent } from "./view.ts";
+export { stoppedRun, type WarmLease } from "./attempt-flow.ts";
 export { type EngineDeps, type JobEngine, JobEngineTag, type SubmitSpec, type WorkersView } from "./api.ts";
 import type { EngineDeps, JobEngine, SubmitSpec, WorkersView } from "./api.ts";
 
@@ -42,24 +42,7 @@ export function data(e: FinError): FinErrorData {
   return e.fix === undefined ? { code: e.code, message: e.message, details: e.details } : { code: e.code, message: e.message, details: e.details, fix: e.fix };
 }
 
-/**
- * Whether a run stopped by a pause or close ended because of the stop: stopped before the
- * worker started, or after the stop reached it without its own answer (an exit, a helper
- * killed with the group, or the worker's `JOB_CANCELLED`).
- */
-export function stoppedRun(o: AttemptOutcome): boolean {
-  if (o.ok) return false;
-  if (o.cause === "stopped") return true;
-  return o.stopSent && (o.cause === "exit" || o.cause === "helper" || (o.cause === "worker" && o.error.code === "JOB_CANCELLED"));
-}
-
 const promise = <A>(f: () => Promise<A>): Effect.Effect<A, FinError> => Effect.tryPromise({ try: f, catch: toFinError });
-
-/** A warm worker lent to one dispatch (`warm.ts`): `run` is its attempt; `release` gives it back unused. */
-export interface WarmLease {
-  run(row: JobRow, kind: KindSpec, family: FamilySpec, params: unknown, control: RunControl): Promise<AttemptOutcome>;
-  release(): void;
-}
 
 /**
  * The engine. Its members without `#` are internal: `control.ts` and `restart.ts` use them;
@@ -101,6 +84,8 @@ export class Engine implements JobEngine {
   /** Unfinished jobs, kept in memory (9a review L3). */
   unfinished = 0;
   #diagDropped = 0;
+  #pumping = false;
+  #pumpAgain = false;
 
   constructor(d: EngineDeps) {
     this.d = d;
@@ -121,6 +106,7 @@ export class Engine implements JobEngine {
       timers: d.timers,
       diagnostics: d.diagnostics,
       testHooks: d.testHooks,
+      heldFilesCheck: d.heldFilesCheck,
       aliveMs: ALIVE_MS,
       log: d.log,
       hooks: new Set<Fiber.Fiber<unknown, unknown>>(),
@@ -251,13 +237,30 @@ export class Engine implements JobEngine {
     this.#wake = undefined;
   }
 
-  /** Dispatches what can run now (synchronously: a submit's job starts in its own turn). */
+  /**
+   * Dispatches what can run now (synchronously: a submit's job starts in its own turn). A
+   * `pump` asked while one runs (a run that ends synchronously gives its slots back) makes the
+   * running one go round again instead of nesting: a nested pass would act on a schedule the
+   * outer one has half applied (Task 11 review M3).
+   */
   pump(): void {
-    if (this.closing || this.pausedAll || this.crashed) return;
-    for (const d of this.schedule({ queue: this.queue, pools: this.d.pools, warm: this.warmPools.schedState() }, this.d.now())) {
-      if (d.mode === "cold") this.dispatch(d.job);
-      else if (d.mode === "warm") this.warmPools.dispatchQueued(d.job, d.family, d.key);
-      else this.warmPools.spawnFor(d.family, d.key, d.retire);
+    if (this.#pumping) {
+      this.#pumpAgain = true;
+      return;
+    }
+    this.#pumping = true;
+    try {
+      do {
+        this.#pumpAgain = false;
+        if (this.closing || this.pausedAll || this.crashed) return;
+        for (const d of this.schedule({ queue: this.queue, pools: this.d.pools, warm: this.warmPools.schedState() }, this.d.now())) {
+          if (d.mode === "cold") this.dispatch(d.job);
+          else if (d.mode === "warm") this.warmPools.dispatchQueued(d.job, d.family, d.key);
+          else this.warmPools.spawnFor(d.family, d.key, d.retire);
+        }
+      } while (this.#pumpAgain);
+    } finally {
+      this.#pumping = false;
     }
   }
 
@@ -281,7 +284,7 @@ export class Engine implements JobEngine {
     this.publish({ type: "state", job: view });
     const control = new RunControl();
     this.runs.set(id, control);
-    this.track(this.#run(id, resources, control, lease));
+    this.track(runDispatched(this, id, resources, control, lease));
     return true;
   }
 
@@ -292,90 +295,13 @@ export class Engine implements JobEngine {
     void run.finally(() => this.active.delete(run));
   }
 
-  /** One attempt and what follows it. Whatever throws, the slots go back and the job ends (9a review H3). */
-  async #run(id: string, resources: ReadonlyArray<string>, control: RunControl, lease?: WarmLease): Promise<void> {
-    let given = false;
-    const give = (): void => {
-      if (given) return;
-      given = true;
-      this.d.pools.give(resources);
-      // The warm worker is ready again (or gone): what waits for it or for the slots goes now.
-      if (lease !== undefined) {
-        lease.release();
-        this.pump();
-      }
-    };
-    try {
-      const row = this.d.store.row(id);
-      const kind = row === undefined ? undefined : this.kinds.kind(row.kind);
-      const family = kind === undefined ? undefined : this.kinds.family(kind.family);
-      if (row === undefined || kind === undefined || family === undefined) {
-        give();
-        if (row !== undefined) await this.end(id, "failed", { error: data(finError("JOB_KIND_UNKNOWN", `no kind ${row.kind}`, { kind: row.kind })) });
-        return;
-      }
-      const plan = runPlan(this, row, kind);
-      if ("complete" in plan) {
-        give();
-        await completeIsolation(this, row, kind);
-        return;
-      }
-      const outcome = lease === undefined ? await runAttempt(this.env, row, kind, family, plan.params, control) : await lease.run(row, kind, family, plan.params, control);
-      const stats = this.#statsOf(id);
-      stats.runMicros += outcome.runMicros;
-      stats.helpers += outcome.helpers;
-      give();
-      if (this.crashed) return;
-      await this.#afterAttempt(id, row, kind, outcome, control, plan.items ?? []);
-    } catch (e) {
-      give();
-      if (this.crashed) return;
-      this.d.log("error", `job ${id}: the runner failed: ${(e as Error).stack ?? String(e)}`);
-      const row = this.d.store.row(id);
-      if (row !== undefined && !finished(row)) {
-        await this.end(id, "failed", { error: data(finError("INTERNAL", `the job's runner failed: ${toFinError(e).message}`)) });
-      }
-    } finally {
-      this.runs.delete(id);
-      this.wakeWaiters();
-    }
-  }
-
-  async #afterAttempt(id: string, row: JobRow, kind: KindSpec, outcome: AttemptOutcome, control: RunControl, items: ReadonlyArray<string>): Promise<void> {
-    if (outcome.ok) {
-      await afterSuccess(this, row, kind, outcome, items);
-      return this.#keepPause(id, control);
-    }
-    if (control.requested === "cancel") {
-      await this.end(id, "cancelled", { error: data(finError("JOB_CANCELLED", "the job was cancelled")) });
-      return;
-    }
-    // A pause or close takes over only a run it stopped; a definitive outcome (the worker's own
-    // error, a crash before the stop reached it) follows the policy (9b review M1).
-    if (control.requested !== undefined && stoppedRun(outcome)) {
-      if (control.pauseRequested) pausedAfterRun(this, id); // a pause asked before a close holds (9b review M2)
-      else await interruptRow(this, this.d.store.row(id) ?? row, kind, true);
-      return;
-    }
-    await afterFailure(this, row, kind, outcome, items);
-    this.#keepPause(id, control);
-  }
-
-  /** A pause asked during a run the policy re-queued (a retry, the next isolation run) still pauses the job. */
-  #keepPause(id: string, control: RunControl): void {
-    if (!control.pauseRequested || control.requested === "cancel" || this.closing || this.d.store.row(id)?.state !== "queued") return;
-    this.queue.remove(id);
-    this.held.get(id)?.();
-    this.held.delete(id);
-    this.publish({ type: "state", job: this.transition(id, "paused", { pausedFrom: "queued" }) });
-  }
-
   /** The job ran isolation (`job.done`'s `isolated`). */
   markIsolated(id: string): void {
-    this.#statsOf(id).isolated = true;
+    this.statsOf(id).isolated = true;
   }
 
-  #statsOf(id: string): RunStats {
+  /** The run statistics gathered for `job.done`. */
+  statsOf(id: string): RunStats {
     let s = this.#stats.get(id);
     if (s === undefined) {
       s = newStats();
@@ -411,6 +337,7 @@ export class Engine implements JobEngine {
     const view = this.transition(id, to, { ...patch, phase: "announce", stats: { ...stats } });
     this.dropProgress(id);
     this.resources.delete(id);
+    this.warmPools.forget(id);
     this.held.get(id)?.();
     this.held.delete(id);
     this.announce(view, stats);

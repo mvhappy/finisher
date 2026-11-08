@@ -45,6 +45,8 @@ export interface RunnerEnv extends WriterEnv {
   readonly diagnostics: () => boolean;
   /** fin-node is a test-hooks build: a non-`test` family that leaves foreign processes fails (Decision 22). */
   readonly testHooks: boolean;
+  /** After a warm worker's `ready`, the files it holds under the job directory are checked (Decision 36). */
+  readonly heldFilesCheck: boolean;
   readonly aliveMs: number;
   readonly log: Log;
   /** Hook fibers in flight (a simulated crash interrupts them). */

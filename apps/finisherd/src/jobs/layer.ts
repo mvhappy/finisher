@@ -54,6 +54,8 @@ export interface JobEngineOptions {
   /** Starts the job host (tests pass a fake; default fin-node's `JobHost.start`). */
   readonly jobHost?: JobHostFactory;
   readonly eventQueueBytes?: number;
+  /** The warm workers' held-files check (default: in test-hooks builds; a fake host's tests turn it off). */
+  readonly heldFilesCheck?: boolean;
 }
 
 /** The engine over `serverData`, its host started; the caller closes it. */
@@ -110,6 +112,7 @@ export const buildJobEngine = (serverData: string, opts: JobEngineOptions = {}):
           log,
           diagnostics: opts.diagnostics ?? (() => false),
           testHooks: testHooks !== undefined,
+          heldFilesCheck: opts.heldFilesCheck ?? testHooks !== undefined,
           queueLimit: opts.queueLimit ?? QUEUE_LIMIT,
         }),
       catch: (e) => {

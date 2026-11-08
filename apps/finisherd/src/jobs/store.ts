@@ -19,11 +19,12 @@ import type { ControlStore } from "../control/db.ts";
 import { registerChain } from "../control/migrations.ts";
 import { jobs0001 } from "../control/migrations/jobs/0001.ts";
 import { jobs0002 } from "../control/migrations/jobs/0002.ts";
+import { jobs0003 } from "../control/migrations/jobs/0003.ts";
 import { ulid } from "../control/ulid.ts";
 import type { ItemOutcome } from "./kinds.ts";
 
-// 0002 only adds a column an older reader ignores: it still reads the chain.
-registerChain("jobs", [jobs0001, jobs0002], { formatVersion: 2, minReaderVersion: 1 });
+// 0002 only adds a column an older reader ignores, 0003 only indexes: it still reads the chain.
+registerChain("jobs", [jobs0001, jobs0002, jobs0003], { formatVersion: 3, minReaderVersion: 1 });
 
 const DAY_MS = 86_400_000;
 export const RETENTION_MAX_AGE_MS = 7 * DAY_MS;

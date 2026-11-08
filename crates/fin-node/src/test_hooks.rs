@@ -259,3 +259,16 @@ pub fn pack_plugin_for_test(src: String, out: String) -> Result<String> {
         .map(|info| info.sha256)
         .map_err(|e| crate::reject(fin_core::CoreError::new("INVALID_OP", e.to_string())))
 }
+
+/// The paths process `pid` holds open or mapped, on macOS (`proc_pidinfo`; the warm workers'
+/// held-files check, 5C-1 Task 11 review L3). Throws `IO_ERROR` when they cannot be read, and
+/// on other systems.
+#[napi(catch_unwind)]
+pub fn held_paths_for_test(pid: u32) -> Result<Vec<String>> {
+    fin_jobhost::held_paths::held_paths(pid).map_err(|e| {
+        reject(CoreError::new(
+            "IO_ERROR",
+            format!("the open files of process {pid}: {e}"),
+        ))
+    })
+}
