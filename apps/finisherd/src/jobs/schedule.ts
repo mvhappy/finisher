@@ -85,15 +85,22 @@ function removeSorted(list: QueuedJob[], j: QueuedJob, cmp: (a: QueuedJob, b: Qu
 
 /** One FIFO: jobs with the same slots, warm key and base priority. */
 interface Bucket {
+  /** `warmId(family, key)` of its warm jobs; undefined for cold ones. */
+  readonly warm: string | undefined;
   /** Due now, by (createdAt, id). */
   readonly ready: QueuedJob[];
   /** With a `nextRunAt`, by (nextRunAt, createdAt, id). */
   readonly delayed: QueuedJob[];
 }
 
+/** A warm (family, key) as one string: any characters in either never collide (Task 11 review M1). */
+export function warmId(family: string, key: string): string {
+  return JSON.stringify([family, key]);
+}
+
 function bucketKey(j: QueuedJob): string {
-  const slots = [...slotCounts(j.resources)].sort(([a], [b]) => (a < b ? -1 : 1)).map(([n, c]) => `${n}*${c}`);
-  return `${j.warm ? `w:${j.warm.family}:${j.warm.key}` : "c"}|${slots.join(",")}|${j.priority}`;
+  const slots = [...slotCounts(j.resources)].sort(([a], [b]) => (a < b ? -1 : 1));
+  return JSON.stringify([j.warm === undefined ? null : warmId(j.warm.family, j.warm.key), slots, j.priority]);
 }
 
 /** The queued jobs, indexed by (resource set, warm key, priority). */
@@ -106,7 +113,7 @@ export class QueueIndex {
     const key = bucketKey(j);
     let b = this.#buckets.get(key);
     if (b === undefined) {
-      b = { ready: [], delayed: [] };
+      b = { warm: j.warm === undefined ? undefined : warmId(j.warm.family, j.warm.key), ready: [], delayed: [] };
       this.#buckets.set(key, b);
     }
     if (j.nextRunAt === undefined) insertSorted(b.ready, j, byAge);
@@ -135,14 +142,21 @@ export class QueueIndex {
 
   /** The first due warm job of `(family, key)`, by (createdAt, id). */
   warmHead(family: string, key: string, now: number): QueuedJob | undefined {
-    const prefix = `w:${family}:${key}|`;
+    const id = warmId(family, key);
     let best: QueuedJob | undefined;
-    for (const [k, b] of this.#buckets) {
-      if (!k.startsWith(prefix)) continue;
+    for (const b of this.#buckets.values()) {
+      if (b.warm !== id) continue;
       const first = dueStream(b, now).next();
       if (first.done !== true && (best === undefined || byAge(first.value, best) < 0)) best = first.value;
     }
     return best;
+  }
+
+  /** The ids of every queued warm job. */
+  warmIds(): string[] {
+    const out: string[] = [];
+    for (const b of this.#buckets.values()) if (b.warm !== undefined) for (const j of [...b.ready, ...b.delayed]) out.push(j.id);
+    return out;
   }
 
   /** Each FIFO's due jobs in order, lazily (for `schedule`). */
@@ -197,6 +211,11 @@ class Plan {
   readonly #warm = new Map<string, { slots: number; workers: PlanWorker[]; spawning: Set<string> }>();
   /** Per family, the keys with a due queued job (never retired, Decision 35). */
   readonly #dueKeys = new Map<string, Set<string>>();
+  /**
+   * The (family, key)s whose fresh retry waits for a worker that has served no job, in a full
+   * pool: no other job of the key takes the ready worker it would retire (Task 11 review M2).
+   */
+  readonly #freshWaiting = new Set<string>();
 
   constructor(state: SchedState) {
     this.#state = state;
@@ -249,8 +268,13 @@ class Plan {
     const pool = this.#warm.get(family);
     if (pool === undefined || !this.#fits(j.resources, this.#overrun)) return false;
     const fresh = j.warm.fresh === true;
+    const id = warmId(family, key);
+    if (!fresh && this.#freshWaiting.has(id)) return "wait";
     const ready = pool.workers.find((w) => w.key === key && w.state === "ready" && w.retiring !== true && (!fresh || (w.served ?? 0) === 0));
-    if (ready === undefined) return "wait";
+    if (ready === undefined) {
+      if (fresh && pool.workers.filter((w) => w.retiring !== true).length >= pool.slots) this.#freshWaiting.add(id);
+      return "wait";
+    }
     Object.assign(ready, { state: "busy" });
     this.#take(j.resources);
     this.out.push({ job: j.id, mode: "warm", family, key });

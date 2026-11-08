@@ -5,7 +5,9 @@
 // stays in the pool) or its exit (it is lost). Before the outcome counts, in test-hooks builds,
 // the worker must hold nothing under the job directory (`WORKER_CRASHED {heldFiles}`), and the
 // helpers shut down. A cancel the worker answers within the grace (`JOB_CANCELLED`, then
-// `ready`) keeps it; otherwise its group is killed with the job's helpers.
+// `ready`) keeps it; otherwise its group is killed with the job's helpers. A helper that fails
+// during the job gets the worker a `cancel` too, not a kill (Task 11 review L4): a `ready`
+// within the grace keeps it, and the attempt fails with the helper's error.
 import type { HelperGrant, JobHostKillReason } from "@finisher/core-types";
 import type { HelperSpec } from "@finisher/contracts";
 import { resolveMemoryRule } from "@finisher/fin-node";
@@ -17,6 +19,9 @@ import { type FamilySpec, type KindSpec, resolveOrFn } from "./kinds.ts";
 import type { RunControl } from "./run-control.ts";
 import { type AttemptOutcome, attemptWith, EXIT_GRACE_MS, type RunnerEnv } from "./runner.ts";
 import type { JobRow } from "./store.ts";
+
+/** How long a worker has to answer the `cancel` a failed helper sent it (interactive, Decision 23). */
+export const HELPER_CANCEL_GRACE_MS = 500;
 
 /** What the pool lends an attempt of its worker. */
 export interface WarmLink {
@@ -70,6 +75,9 @@ class WarmAttempt extends AttemptBase {
   #ending = false;
   #lost = false;
   #held: string[] = [];
+  #heldError: string | undefined;
+  /** A failed helper's `cancel` went to the worker; its kill waits for the grace. */
+  #helperCancel: (() => void) | undefined;
   kept = false;
   memory: number | undefined;
 
@@ -82,7 +90,16 @@ class WarmAttempt extends AttemptBase {
   /** The helpers' group, and the worker once it has the job (before its `start` it is not the job's). */
   protected kill(reason: KillReason): void {
     if (this.#helperGroup >= 0) void this.a.env.host.killGroup(this.#helperGroup, reason).catch(() => {});
-    if (this.started) this.#lose(reason);
+    if (!this.started) return;
+    if (reason === "helperFailed" && !this.#lost && this.#helperCancel === undefined) {
+      // The worker is not at fault: it may stop the job and stay (Task 11 review L4).
+      const { env, row } = this.a;
+      if (env.host.send(this.#link.proc, { t: "cancel", job: row.id, reason: "cancel" }) === "ok") {
+        this.#helperCancel = env.timers.after(HELPER_CANCEL_GRACE_MS, () => this.#lose("helperFailed"));
+        return;
+      }
+    }
+    this.#lose(reason);
   }
 
   #lose(reason: JobHostKillReason): void {
@@ -174,7 +191,16 @@ class WarmAttempt extends AttemptBase {
   }
 
   protected onReady(memory: number | undefined): void {
-    if (this.#ending || this.fault !== undefined) return;
+    if (this.#ending) return;
+    if (this.fault !== undefined) {
+      // Only a worker a failed helper cancelled ends its attempt by `ready`.
+      if (this.#helperCancel === undefined || this.#lost) return;
+      this.#helperCancel();
+      this.a.env.host.watch(this.#link.proc, null);
+      this.memory = memory;
+      void this.#afterReady().catch((e) => this.#finish({ ok: false, error: finError("INTERNAL", `the attempt's end failed: ${toFinError(e).message}`), cause: "exit" }));
+      return;
+    }
     if (this.answer === undefined) {
       this.failWith(finError("WORKER_CRASHED", "the warm worker sent ready before its answer", { protocol: "readyBeforeAnswer" }), "protocol", "jobEnded");
       return;
@@ -192,11 +218,22 @@ class WarmAttempt extends AttemptBase {
     await this.#endHelpers();
     // Decision 36: the worker closed every file and mapping under the job directory before
     // `ready` (checked once the helpers, which live in it, are gone).
-    if (env.testHooks && !this.#lost) this.#held = await heldFiles(this.#link.pid, dirs.job);
-    if (this.#held.length > 0) this.#lose("jobEnded");
+    if (env.heldFilesCheck && !this.#lost) {
+      try {
+        this.#held = await heldFiles(this.#link.pid, dirs.job);
+      } catch (e) {
+        // A check that cannot be made fails (Task 11 review L3).
+        this.#heldError = toFinError(e).message;
+      }
+    }
+    const held = this.#held.length > 0 || this.#heldError !== undefined;
+    if (held) this.#lose("jobEnded");
     this.kept = !this.#lost;
-    if (this.#held.length > 0) {
-      const error = finError("WORKER_CRASHED", "the warm worker held files of the job directory past its ready", { heldFiles: this.#held });
+    if (held) {
+      const error =
+        this.#heldError === undefined
+          ? finError("WORKER_CRASHED", "the warm worker held files of the job directory past its ready", { heldFiles: this.#held })
+          : finError("WORKER_CRASHED", "the warm worker's open files could not be checked", { heldFiles: [], checkFailed: this.#heldError });
       return this.#finish({ ok: false, error, cause: "heldFiles" });
     }
     this.#finish(this.outcomeOf(undefined, undefined));
@@ -209,6 +246,7 @@ class WarmAttempt extends AttemptBase {
     let outcome: Outcome | undefined;
     try {
       this.#cancelReady?.();
+      this.#helperCancel?.();
       this.cancelKill?.();
       if (info.reason === "abandoned") env.abandoned(this.#link.proc, row.id);
       await this.calls.close();
@@ -225,6 +263,8 @@ class WarmAttempt extends AttemptBase {
   }
 
   #finish(o: Outcome): void {
+    this.#helperCancel?.();
+    this.#cancelReady?.();
     this.#detach();
     this.flush();
     this.settle(o);

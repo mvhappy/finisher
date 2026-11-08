@@ -73,5 +73,7 @@ export interface EngineDeps {
   readonly log: RunnerEnv["log"];
   readonly diagnostics: () => boolean;
   readonly testHooks: boolean;
+  /** The warm workers' held-files check runs (test-hooks builds with real processes). */
+  readonly heldFilesCheck: boolean;
   readonly queueLimit: number;
 }

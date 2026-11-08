@@ -561,6 +561,7 @@ HelperSpec { kind: codec | plugin, id, profile: worker | plugin, files: [name] }
   - each job on a warm worker gets its own nested Job / cgroup for its helpers; the worker itself lives in a per-worker one;
   - a crash or kill during a job loses the worker: the job is retried once on a fresh worker (cold start), and the pool starts a replacement on the next interactive submit;
   - pre-warming: the pool starts a worker at the first interactive submit of a family and keeps it under the expiry rules; `jobs.warm {family}` (internal, used by sub-project 6 when a project opens) starts one ahead.
+  - **no warm worker under a sandbox (owner decision, 5C-1 Task 11 review H3):** a warm worker is granted the whole jobs root, since the jobs it will serve are not known when it starts. That grant never ships under a sandbox: while `caps().sandboxed` or a worker's `hello.selfSandbox` is set, warm kinds run cold (and a warm worker is never handed a second job). Sub-project 7C must grant each job's paths to its warm worker before warm workers are enabled there.
 - **Order:** priority, then FIFO, with aging (10 minutes waiting counts one level higher). The scheduler is a pure function `schedule(queue, pools, workers, now) → dispatches`, property-tested.
 - **Pause:** a job, or everything (`jobs.pause {job} | {all}`). Pausing stops dispatch; running resumable jobs checkpoint and stop; others finish; warm workers are kept until they expire.
 - **Limits:** 50,000 queued jobs (`JOB_QUEUE_FULL`); finished jobs kept 7 days or 10,000 rows.

@@ -69,6 +69,7 @@ export async function testEngine(
       testKinds: true,
       cgroups: "off",
       cores: 4,
+      ...((engineOpts.jobHost as { fake?: boolean } | undefined)?.fake === true ? { heldFilesCheck: false } : {}),
       ...engineOpts,
       timing: { killWaitMs: 2000, exitDrainMs: 100, ...(engineOpts.timing ?? {}) },
     }).pipe(Effect.provide(layer)),
