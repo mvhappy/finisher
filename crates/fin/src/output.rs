@@ -95,6 +95,8 @@ const VALIDATION_CODES: &[&str] = &[
     "JOB_PARAMS_INVALID",
     "JOB_NOT_FOUND",
     "JOBHOST_STATE",
+    // Agent sessions (7A-2 Task 3b): a session id the server does not know.
+    "SESSION_NOT_FOUND",
     // Stored history that this code cannot or will not read (sub-project 4).
     "DB_TOO_NEW",
     "NOT_A_PROJECT_DB",

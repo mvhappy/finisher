@@ -26,6 +26,8 @@ import { ConnectionRegistry, ConnectionRegistryTag, Connections } from "./connec
 import { AuditTag, layerAudit } from "./control/audit.ts";
 import { makeTickets, TicketsTag } from "./auth/tickets.ts";
 import { ControlStoreTag, layerControlStore } from "./control/db.ts";
+// Registers the `agent` control chain before the store opens (7A-2 Task 3b; 6b wires the runtime).
+import "./agent/store.ts";
 import { layerFonts, type FontsOptions } from "./fonts.ts";
 import { Diagnostics, type DiagnosticsOptions, makeDiagnostics } from "./diagnostics.ts";
 import { withServerLock } from "./lock.ts";
