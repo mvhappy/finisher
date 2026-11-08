@@ -19,6 +19,7 @@ import { createPrivateFile, type PrivateFile } from "@finisher/fin-node";
 import { consoleError, valueOf } from "../client.ts";
 import { confirmed, requireTty } from "../confirm.ts";
 import { agentSessions, SESSION_COMMANDS } from "../../agent/console.ts";
+import { agentRules } from "../../agent/console-rules.ts";
 import { all, has, one, onlyFlags, usage } from "../format.ts";
 import { type CommandContext, withConnection } from "./context.ts";
 
@@ -28,6 +29,7 @@ export async function agent(ctx: CommandContext): Promise<number> {
   if (sub === "credentials") return list(ctx, rest);
   if (sub === "revoke") return revoke(ctx, rest);
   if (sub !== undefined && SESSION_COMMANDS.has(sub)) return agentSessions(ctx, sub, rest);
+  if (sub === "rules") return agentRules(ctx, rest);
   return usage(sub === undefined ? "agent needs a command (finisherd help lists them)" : `unknown agent command: ${sub}`);
 }
 

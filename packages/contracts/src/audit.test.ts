@@ -29,6 +29,17 @@ describe("audit details", () => {
     expect(auditDetailsValid("consent.change", { registryId: "team" })).toBe(false);
   });
 
+  test("rule_kinds_take_a_rule_id_a_layer_and_a_rules_hash_never_the_pattern", () => {
+    const id = "01m6yfjx51brn5wdjt6gsrsq7g";
+    for (const kind of ["agent.rule.add", "agent.rule.remove", "agent.project.trust"] as const) {
+      expect(auditDetailsValid(kind, { rpc: "agent.rules.add", ruleId: id, layer: "local", value: "deny", projectId: id, sessionId: id, from: id }), kind).toBe(true);
+      expect(auditDetailsValid(kind, { rulesHash: `sha256:${"a".repeat(64)}` }), kind).toBe(true);
+      expect(auditDetailsValid(kind, { rulesHash: "none" }), kind).toBe(true);
+      for (const bad of [{ command: "render" }, { layer: "team" }, { rulesHash: "abc" }, { ruleId: "not an id" }]) expect(auditDetailsValid(kind, bad), `${kind} ${JSON.stringify(bad)}`).toBe(false);
+    }
+    expect(auditDetailsValid("settings.write", { ruleId: id })).toBe(false);
+  });
+
   test("free text, paths and unknown fields are refused", () => {
     for (const details of [
       { path: "/home/someone/film" },

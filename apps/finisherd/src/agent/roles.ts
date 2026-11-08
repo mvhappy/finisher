@@ -14,8 +14,9 @@
 //   source `role:<name>`, `createdAt` 0 (bundled data has no creation time). A role `allow`
 //   never overrides another layer's `ask` or `deny` (evaluation, `rules.ts`), so it cannot widen;
 //   a literal `allow` naming a human-only scope is refused here as an obvious authoring mistake
-//   (scopes gate on their own). The bundled `default.asset-add` asks on every agent `asset.add`
-//   until 7G adds its "download without a recorded licence" condition.
+//   (scopes gate on their own). The bundled `default.asset-add` asks on an `asset.add` of a
+//   download without a recorded licence (`where.unlicensedDownload`), which 7G resolves; until
+//   then the condition never holds, so the rule ships inert (7B Task 2).
 // - **Tools.** `tools.allow` is the allow-set of tool names: the built-in agent's (`fin`,
 //   `workspace_*`) and the Claude Code vocabulary 7D builds `--disallowedTools` from (everything
 //   the CLI lists that is not named here is denied, spec §4.5). A name outside that vocabulary

@@ -33,7 +33,10 @@
     {
       "id": "default.asset-add",
       "effect": "ask",
-      "command": "asset.add"
+      "command": "asset.add",
+      "where": {
+        "unlicensedDownload": true
+      }
     },
     {
       "id": "default.workspace-gc",

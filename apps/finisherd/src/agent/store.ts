@@ -18,6 +18,7 @@ import { registerChain } from "../control/migrations.ts";
 import { agent0001 } from "../control/migrations/agent/0001.ts";
 import { agent0002 } from "../control/migrations/agent/0002.ts";
 import { agent0003 } from "../control/migrations/agent/0003.ts";
+import { agent0004 } from "../control/migrations/agent/0004.ts";
 import { finError } from "../errors.ts";
 import { dirOlderThan, ensureAgentsRoot, listSessionDirs, makeSessionDirs, readBlob, removeBlob, removeSessionDir, sweepBlobs, writeBlob } from "./blobs.ts";
 import type { Clock, Ids } from "./clock.ts";
@@ -32,7 +33,7 @@ import { DbLedger, type SessionBranchState, type SessionTx, SessionStates, Sessi
 export type { Appended, Applied, NewApproval, NewNode, NewSession, OutboxEffect, OutboxItem, Recovery, RunStart, SessionQuery } from "./store-rows.ts";
 export type { SessionBranchState, SessionTx, SessionTryRow, TxOutcome } from "./store-tables.ts";
 
-registerChain("agent", [agent0001, agent0002, agent0003], { formatVersion: 3, minReaderVersion: 1 });
+registerChain("agent", [agent0001, agent0002, agent0003, agent0004], { formatVersion: 4, minReaderVersion: 4 });
 
 const DAY_MS = 86_400_000;
 /** `agents.retentionDays` default (Decision 4). */
@@ -592,7 +593,7 @@ export class AgentStore {
     this.#cs.tx(() => {
       const db = this.#cs.db;
       db.prepare("DELETE FROM nodes WHERE sessionId = ?").run(sessionId);
-      for (const t of ["runs", "approvals", "budgets", "session_state"]) db.prepare(`DELETE FROM ${t} WHERE sessionId = ?`).run(sessionId);
+      for (const t of ["runs", "approvals", "budgets", "session_state", "agent_rules"]) db.prepare(`DELETE FROM ${t} WHERE sessionId = ?`).run(sessionId);
       db.prepare("DELETE FROM sessions WHERE id = ?").run(sessionId);
     });
   }

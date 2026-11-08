@@ -891,9 +891,15 @@ Plan: `docs/superpowers/plans/2026-11-08-sub-project-7b-subagents-rules-approval
 - [x] Task 1: exported command registry (`fin schema --registry`, `packages/contracts/registry.json`, gate `check-registry`) and `commandOf`/`commandsOf` (`agent/command-of.ts`; the journal's argv mapping is `commandOfArgv` there)
   - wire-identical commands (`clip.trim`/`item.trim`, `try`/`branch.new`, `try.keep`/`merge`, …) all match: `commandsOf` returns every name, rules evaluate them all; `commandOf` is the first
   - plugin commands are named from `tx.via`, which stage 5 must read only after the server strips a client-sent `via`
-- [ ] Task 2: rules, layers, project trust and the policy stage
+- [x] Task 2: rules, layers, project trust and the policy stage (`agent/{glob,rules,rule-store,trust,rules-rpc,console-rules}.ts`, agent migration 0004 with `minReaderVersion` 4)
+  - all layers combine (deny > ask > allow, every `commandsOf` name); `agent` principals only (`mcp` exempt, as planned); session-less agent credentials meet the rules of every project the resolve stage found
+  - trust is `agent.project.trust {expectedHash}` (console `finisherd project trust <id>`, typed code): the hash the person was shown, refused if the file changed since; deleted or unreadable trusted file reads `changed`
+  - an unreadable or invalid managed, user or trusted project file denies every agent call (fail closed); files are cached on `(ino, size, mtime, ctime)`
+  - active `where`: `branch`, `mode`, `preset`, `bytesOver` (unknown size matches); inert until their source exists: `minutesOver` (no render kind yet), `costOver`, `unlicensedDownload` (7G)
+  - audit kinds `agent.rule.add|remove`, `agent.project.trust`; session-scoped local rules go with their session
+  - plugin rules are inert until sp8 passes a trusted `via`; `where.branch` ignores `agent.session.start`'s `base` (Task 6)
 - [x] Task 3: roles as complete data (schema v1, `rules`, `tools.allow`, `spawn`, models per harness; `ROLE_INVALID {file, field, reason}`); `packages/contracts/src/rules.ts` (`Rule`, `RuleLayer`)
-  - `default.asset-add` asks on every agent `asset.add` until 7G adds the "download without a recorded licence" condition
+  - `default.asset-add` carries the inert `where.unlicensedDownload` (Task 2) until 7G resolves it
   - role rule ids repeat across roles (`default.*`): a rule's key is `(source, id)`
 - [ ] Task 4: durable approvals for agent asks, quotas and exit 8
 - [ ] Task 5: one-time grants, waits, answers, `remember` and provider requests

@@ -38,6 +38,8 @@ const VALUED = new Set([
   "dir", "root", "root-sha256", "registry", "store",
   // Agent sessions (7A Task 12).
   "model", "role", "mode", "base", "title", "prompt", "prompt-file", "budget-usd", "budget-tokens", "provider", "harness", "status", "add",
+  // Command rules (7B Task 2).
+  "session", "preset", "bytes-over", "minutes-over",
 ]);
 
 export function usage(message: string, fix = "Run `finisherd help` to list the commands."): never {

@@ -137,6 +137,10 @@ const AGENT_RPCS = [
   "agent.providers",
   "agent.self",
   "agent.self.try",
+  "agent.rules.list",
+  "agent.rules.add",
+  "agent.rules.remove",
+  "agent.project.trust",
 ] as const;
 type AgentTag = (typeof AGENT_RPCS)[number];
 
@@ -201,6 +205,10 @@ const TABLE: Record<AgentTag, { scopes: string[]; kinds?: string[]; confirmed?: 
   "agent.providers": { scopes: ["server.read"] },
   "agent.self": { scopes: ["project.read"], kinds: ["agent"] },
   "agent.self.try": { scopes: ["project.write"], kinds: ["agent"] },
+  "agent.rules.list": { scopes: ["agent.read"] },
+  "agent.rules.add": { scopes: ["agent.admin"], kinds: ["console", "device"], confirmed: true },
+  "agent.rules.remove": { scopes: ["agent.admin"], kinds: ["console", "device"], confirmed: true },
+  "agent.project.trust": { scopes: ["agent.admin"], kinds: ["console", "device"], confirmed: true },
 };
 
 describe("scopes", () => {

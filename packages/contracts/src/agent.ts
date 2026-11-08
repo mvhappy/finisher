@@ -6,6 +6,7 @@
 import { Schema } from "effect";
 import { BudgetSpec, ContentBlock, Harness, Mode, NodeKind, SessionStatus } from "./agent-events.ts";
 import { ChallengeField, PrincipalKind } from "./auth.ts";
+import { ProjectRulesStatus } from "./rules.ts";
 
 const Count = Schema.Number.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(0));
 const Id = Schema.String;
@@ -267,7 +268,13 @@ export const AgentSessionListSuccess = Schema.Struct({ sessions: Schema.Array(Se
 
 /** `agent.session.get`: the session, its runs and the approvals still open. Nodes come through `agent.watch`. */
 export const AgentSessionGetPayload = SessionIdPayload;
-export const AgentSessionGetSuccess = Schema.Struct({ session: Session, runs: Schema.Array(Run), approvals: Schema.Array(Approval) });
+export const AgentSessionGetSuccess = Schema.Struct({
+  session: Session,
+  runs: Schema.Array(Run),
+  approvals: Schema.Array(Approval),
+  /** Whether the project's `finisher.rules.json` applies (7B): `untrusted` and `changed` mean it is ignored. */
+  projectRules: Schema.optionalKey(ProjectRulesStatus),
+});
 
 /** `agent.session.delete` (owner, typed code): removes the session's product state at once. */
 export const AgentSessionDeletePayload = Schema.Struct({ sessionId: Id, challenge: ChallengeField });

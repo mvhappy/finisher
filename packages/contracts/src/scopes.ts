@@ -183,6 +183,8 @@ const BRANCH: ReadonlyArray<ResolverName> = ["project", "branch"];
 const SESSION_DRIVERS: ReadonlyArray<PrincipalKind> = ["local", "console", "device"];
 /** The only kind with a session of its own. */
 const SESSION_OWN: ReadonlyArray<PrincipalKind> = ["agent"];
+/** People's own principals (7B Decision 7: rule writes and project trust; never `local`, `agent`, `mcp`). */
+const PEOPLE: ReadonlyArray<PrincipalKind> = ["console", "device"];
 
 /**
  * Every RPC's rule (spec §4.5 and §4.8); the mapped type makes a missing RPC a type error and
@@ -379,6 +381,13 @@ export const RPC_SCOPES: { readonly [T in FinRpcTag]: RuleOf<T> } = {
   // subtree by the handler (the payload names no project, so the policy stage cannot).
   "agent.self": { scopes: ["project.read"], kinds: SESSION_OWN },
   "agent.self.try": { scopes: ["project.write"], resolve: ["branch"], kinds: SESSION_OWN },
+  // Command rules (7B Decision 7): reading them is `agent.read`; the `local` layer and project
+  // trust are the owner's (`agent.admin`), people only (an agent is `SCOPE_DENIED` by kind), each
+  // change with the typed code. A rule's or trust's project is checked for reach.
+  "agent.rules.list": { scopes: ["agent.read"], resolve: PROJECT },
+  "agent.rules.add": { scopes: ["agent.admin"], resolve: PROJECT, kinds: PEOPLE },
+  "agent.rules.remove": { scopes: ["agent.admin"], kinds: PEOPLE },
+  "agent.project.trust": { scopes: ["agent.admin"], resolve: PROJECT, kinds: PEOPLE },
   // The owner's agent settings (Task 12): the key, the local endpoint (`agent.admin`) and the
   // counsel gate (`settings.admin`), each change with the typed code; reading them needs none.
   // A key's project is checked for reach when named.

@@ -124,7 +124,8 @@ export function commandOf(method: FinRpcTag, payload: unknown): string;         
 // apps/finisherd/src/agent/rules.ts
 export interface RuleSet { evaluate(input: { command: string; principal: Principal; session: Session; resolved: Resolved }): RuleOutcome }
 export type RuleOutcome = { effect: "allow" } | { effect: "deny"; rule: Rule; layer: Layer } | { effect: "ask"; rule: Rule; layer: Layer };
-export function commandRules(rules: RuleSource, approvals: Approvals): PolicyRule;  // appended in handlers.ts
+export function commandRules(rules: RuleSource, sessions: RuleSessions, options?: CommandRulesOptions): PolicyRule;  // appended in handlers.ts
+// Task 4 adds the approvals port (`Approvals`, below) to `commandRules` for durable `ask`.
 // apps/finisherd/src/agent/approvals.ts
 export interface Approvals {
   ask(s: Session, kind: "rule" | "provider", subject: Subject, argsHash: string): Effect<{ id: string }, FinError>;   // APPROVAL_LIMIT

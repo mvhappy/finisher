@@ -17,6 +17,8 @@ export interface PolicyInput {
   readonly principal: Principal;
   readonly payload: unknown;
   readonly projects: ChainProjects;
+  /** Every project the call names, as stage 3 resolved them (`Resolved.projects`). */
+  readonly projectIds?: ReadonlyArray<string>;
 }
 
 /** A rule's answer; `undefined`: no opinion. A `deny` or `ask` ends the stage. */

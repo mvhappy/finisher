@@ -105,7 +105,8 @@ export function agentHandlers(deps: AgentRpcDeps) {
       })),
     "agent.session.get": ({ sessionId }: { sessionId: string }, options: Options) =>
       onSession("agent.session.get", options, sessionId, (s) =>
-        sync(() => ({ session: s, runs: store.runs(s.id), approvals: store.approvals(s.id).filter((a) => a.status === "open") })),
+        // `projectRules`: whether the project's `finisher.rules.json` applies (7B Task 2: ignored while untrusted or changed).
+        sync(() => ({ session: s, runs: store.runs(s.id), approvals: store.approvals(s.id).filter((a) => a.status === "open"), projectRules: agents.rules.project(s.projectId).status })),
       ),
     // The owner's (`agent.admin`, typed code): ends it, abandons its unmerged transactions (Task 11), removes it.
     "agent.session.delete": ({ sessionId }: { sessionId: string }, options: Options) =>

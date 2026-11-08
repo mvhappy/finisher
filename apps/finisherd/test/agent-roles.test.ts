@@ -53,7 +53,7 @@ describe("bundled roles", () => {
       const by = (cmd: string) => role.rules.find((r) => r.command === cmd);
       expect(by("plugin.install")?.effect).toBe("deny");
       expect(by("render")).toMatchObject({ effect: "ask", where: { minutesOver: 10, mode: "draft" } });
-      expect(by("asset.add")?.effect).toBe("ask");
+      expect(by("asset.add")).toMatchObject({ effect: "ask", where: { unlicensedDownload: true } });
       expect(by("workspace.gc")?.effect).toBe("ask");
       for (const r of role.rules) {
         expect(r).toMatchObject({ layer: "role", source: `role:${role.name}` });

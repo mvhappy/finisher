@@ -163,6 +163,7 @@ const DENIALS = new Map<string, string>([
   ["BRANCH_NOT_ALLOWED", "agentBranchLimits"],
   ["BRANCH_PROTECTED", "protectedBranches"],
   ["APPROVAL_REQUIRED", "ask"],
+  ["RULE_DENIED", "commandRules"],
   ["CONSENT_UI_ONLY", "deviceOnly"],
   ["CONFIRMATION_REQUIRED", "confirmation"],
 ]);
@@ -208,7 +209,7 @@ export function withChain<H extends object>(handlers: H, deps: ChainDeps): H {
       if (credentialOf(principal) !== undefined) deps.touch?.(principal);
       const resolved = yield* resolve(rule, payload, deps.projects, { principal, jobs: deps.jobs });
       yield* authorize(tag, principal, payload, resolved, deps.projects, hooks);
-      const outcome = yield* runPolicies(policies, { tag, rule, principal, payload: resolved.payload, projects: deps.projects });
+      const outcome = yield* runPolicies(policies, { tag, rule, principal, payload: resolved.payload, projects: deps.projects, projectIds: resolved.projects });
       if ("deny" in outcome) return yield* Effect.fail(outcome.deny);
       if ("ask" in outcome) {
         const approvalId = ulid();

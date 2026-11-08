@@ -4,7 +4,8 @@ import { Schema } from "effect";
 
 /**
  * Every audit kind (spec §3.3); the six after `console.refused` are reserved for sub-projects 7
- * and 8, and the `plugin.*` and `registry.*` kinds are sub-project 8's (8A Decision 28).
+ * and 8, the `plugin.*` and `registry.*` kinds are sub-project 8's (8A Decision 28), and
+ * `agent.rule.*` and `agent.project.trust` are 7B's (Decisions 7 and 12).
  */
 export const AUDIT_KINDS = [
   "auth.fail",
@@ -61,6 +62,11 @@ export const AUDIT_KINDS = [
   "registry.trust",
   "registry.forget",
   "registry.verifyFail",
+  // Command rules (7B Decisions 7 and 12): a `local` rule added (by a person, or a remembered
+  // answer: `from`) or removed, and a project's rules file trusted (its `rulesHash`).
+  "agent.rule.add",
+  "agent.rule.remove",
+  "agent.project.trust",
 ] as const;
 
 export const AuditKindSchema = Schema.Literals(AUDIT_KINDS);
@@ -160,6 +166,18 @@ const PLUGIN_FIELDS = {
   thirdPartyCode: Schema.optional(Schema.Struct({ accepted: Schema.Boolean, confined: Schema.Boolean })),
 };
 const ADDRESS = { address: Schema.optional(Address), peer: Schema.optional(Peer) };
+/**
+ * What `agent.rule.*` and `agent.project.trust` rows may say: the rule's id and layer, the
+ * session it is scoped to, the approval it was remembered from, and a trusted file's hash.
+ * Never the command pattern or a path (the effect is `value`, the project `projectId`).
+ */
+const RULE_FIELDS = {
+  ruleId: Schema.optional(Id),
+  layer: Schema.optional(Schema.Literals(["managed", "local", "project", "user", "role"])),
+  sessionId: Schema.optional(Id),
+  from: Schema.optional(Id),
+  rulesHash: Schema.optional(Schema.String.check(Schema.isPattern(/^(?:sha256:[0-9a-f]{64}|none)$/))),
+};
 
 const PAIRING: ReadonlyArray<AuditKind> = ["pair.offer", "pair.redeem", "pair.approve", "pair.reject", "pair.expire"];
 /** Kinds whose details may name a device or credential. */
@@ -178,15 +196,20 @@ export const AUDIT_LIBRARY_KINDS: ReadonlySet<AuditKind> = new Set<AuditKind>(["
 
 const PlainDetails = Schema.Struct(COMMON);
 const PluginDetails = Schema.Struct({ ...COMMON, ...PLUGIN_FIELDS });
+const RuleDetails = Schema.Struct({ ...COMMON, ...RULE_FIELDS });
 const LibraryDetails = Schema.Struct({ ...COMMON, ...LIBRARY });
 const NamedDetails = Schema.Struct({ ...COMMON, ...NAMES });
 const AddressedDetails = Schema.Struct({ ...COMMON, ...NAMES, ...ADDRESS });
-type DetailsSchema = typeof PlainDetails | typeof LibraryDetails | typeof NamedDetails | typeof AddressedDetails | typeof PluginDetails;
+type DetailsSchema = typeof PlainDetails | typeof LibraryDetails | typeof NamedDetails | typeof AddressedDetails | typeof PluginDetails | typeof RuleDetails;
 
 /** Kinds whose details may name a plugin, a registry and a version. */
 export const AUDIT_PLUGIN_KINDS: ReadonlySet<AuditKind> = new Set<AuditKind>(AUDIT_KINDS.filter((k) => k.startsWith("plugin.") || k.startsWith("registry.")));
 
+/** Kinds whose details name a command rule or a trusted rules file. */
+export const AUDIT_RULE_KINDS: ReadonlySet<AuditKind> = new Set<AuditKind>(["agent.rule.add", "agent.rule.remove", "agent.project.trust"]);
+
 function detailsSchema(kind: AuditKind): DetailsSchema {
+  if (AUDIT_RULE_KINDS.has(kind)) return RuleDetails;
   if (AUDIT_PLUGIN_KINDS.has(kind)) return PluginDetails;
   if (AUDIT_ADDRESS_KINDS.has(kind)) return AddressedDetails;
   if (AUDIT_LIBRARY_KINDS.has(kind)) return LibraryDetails;
@@ -199,6 +222,7 @@ export const AUDIT_DETAILS: { readonly [K in AuditKind]: DetailsSchema } = Objec
 ) as { readonly [K in AuditKind]: DetailsSchema };
 
 const DECODE = {
+  rule: Schema.decodeUnknownExit(RuleDetails),
   plugin: Schema.decodeUnknownExit(PluginDetails),
   plain: Schema.decodeUnknownExit(PlainDetails),
   library: Schema.decodeUnknownExit(LibraryDetails),
@@ -208,14 +232,16 @@ const DECODE = {
 
 /** True when `details` fits `kind`'s schema exactly (no other field). */
 export function auditDetailsValid(kind: AuditKind, details: unknown): boolean {
-  const decode = AUDIT_PLUGIN_KINDS.has(kind)
-    ? DECODE.plugin
-    : AUDIT_ADDRESS_KINDS.has(kind)
-      ? DECODE.addressed
-      : AUDIT_LIBRARY_KINDS.has(kind)
-        ? DECODE.library
-        : AUDIT_NAME_KINDS.has(kind)
-          ? DECODE.named
-          : DECODE.plain;
+  const decode = AUDIT_RULE_KINDS.has(kind)
+    ? DECODE.rule
+    : AUDIT_PLUGIN_KINDS.has(kind)
+      ? DECODE.plugin
+      : AUDIT_ADDRESS_KINDS.has(kind)
+        ? DECODE.addressed
+        : AUDIT_LIBRARY_KINDS.has(kind)
+          ? DECODE.library
+          : AUDIT_NAME_KINDS.has(kind)
+            ? DECODE.named
+            : DECODE.plain;
   return decode(details, { onExcessProperty: "error" })._tag === "Success";
 }

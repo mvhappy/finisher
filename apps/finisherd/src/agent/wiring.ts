@@ -37,6 +37,8 @@ import { sessionPlanner } from "./planner.ts";
 import { BUNDLED_ROLES, type Role } from "./roles.ts";
 import { Runtime } from "./runtime.ts";
 import { cataloguePricing, type SessionEnvironment } from "./runtime-deps.ts";
+import { LayeredRules } from "./rules.ts";
+import { RuleStore } from "./rule-store.ts";
 import { readAgentSettings, resolveFinPath } from "./settings.ts";
 import type { AgentStore } from "./store.ts";
 import { AgentLookup } from "./store-lookup.ts";
@@ -62,6 +64,10 @@ export interface AgentRuntimeParts {
   readonly adapters: ReadonlyMap<Harness, ProviderAdapter>;
   readonly lookup: AgentLookup;
   readonly catalogue: Catalogue;
+  /** Command rules (7B Task 2): every layer, and the `local` layer and trust in `control.db`. */
+  readonly rules: LayeredRules;
+  readonly ruleStore: RuleStore;
+  readonly roles: ReadonlyMap<string, Role>;
 }
 
 export class AgentRuntimeTag extends Context.Service<AgentRuntimeTag, AgentRuntimeParts>()("finisherd/AgentRuntime") {}
@@ -77,7 +83,7 @@ const DEFAULT_FAKE: readonly FakeScript[] = [{ name: "echo", turns: [[{ emit: [{
 export interface AgentWiringDeps {
   readonly serverData: string;
   readonly core: AgentCore;
-  readonly registry: BranchRegistry & { readonly dirOf: (projectId: string) => string | undefined };
+  readonly registry: BranchRegistry & { readonly dirOf: (projectId: string) => string | undefined; readonly indexedDirOf?: (projectId: string) => string | undefined };
   /** `control.db` (the store's), for the lookups `AgentStore` does not offer. */
   readonly db: ConstructorParameters<typeof AgentLookup>[0];
   readonly audit: Audit;
@@ -216,5 +222,8 @@ export const buildAgentRuntime = (d: AgentWiringDeps): Effect.Effect<AgentRuntim
     const recovered = yield* Effect.promise(() => runtime.boot());
     if (recovered.interrupted.length > 0 || recovered.closedCalls > 0) log(`agent sessions recovered: ${recovered.interrupted.length} interrupted, ${recovered.closedCalls} open calls closed`);
     yield* Effect.addFinalizer(() => Effect.promise(() => runtime.close()));
-    return { runtime, admin, adapters, lookup: new AgentLookup(d.db), catalogue };
+    const ruleStore = new RuleStore(d.db);
+    const dirOf = (projectId: string) => d.registry.dirOf(projectId) ?? d.registry.indexedDirOf?.(projectId);
+    const rules = new LayeredRules({ serverData, store: ruleStore, roles, dirOf });
+    return { runtime, admin, adapters, lookup: new AgentLookup(d.db), catalogue, rules, ruleStore, roles };
   });

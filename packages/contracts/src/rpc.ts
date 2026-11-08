@@ -49,6 +49,16 @@ import {
   WatchItem,
 } from "./agent.ts";
 import {
+  AgentProjectTrustPayload,
+  AgentProjectTrustSuccess,
+  AgentRulesAddPayload,
+  AgentRulesAddSuccess,
+  AgentRulesListPayload,
+  AgentRulesListSuccess,
+  AgentRulesRemovePayload,
+  AgentRulesRemoveSuccess,
+} from "./rules.ts";
+import {
   AgentKeyListSuccess,
   AgentKeyRemovePayload,
   AgentKeyRemoveSuccess,
@@ -564,6 +574,11 @@ export const FinRpcs = RpcGroup.make(
   Rpc.make("agent.providers", { payload: Schema.Struct({}), success: AgentProvidersSuccess, error: FinError }),
   Rpc.make("agent.self", { payload: Schema.Struct({}), success: AgentSelfSuccess, error: FinError }),
   Rpc.make("agent.self.try", { payload: AgentSelfTryPayload, success: AgentSelfSuccess, error: FinError }),
+  // Command rules and project trust (sub-project 7B Task 2).
+  Rpc.make("agent.rules.list", { payload: AgentRulesListPayload, success: AgentRulesListSuccess, error: FinError }),
+  Rpc.make("agent.rules.add", { payload: AgentRulesAddPayload, success: AgentRulesAddSuccess, error: FinError }),
+  Rpc.make("agent.rules.remove", { payload: AgentRulesRemovePayload, success: AgentRulesRemoveSuccess, error: FinError }),
+  Rpc.make("agent.project.trust", { payload: AgentProjectTrustPayload, success: AgentProjectTrustSuccess, error: FinError }),
   // The owner's agent settings (Task 12; `agent-admin.ts`): the OpenRouter key, the local
   // endpoint and the closed-model-targets counsel gate. No answer holds a key.
   Rpc.make("agent.key.set", { payload: AgentKeySetPayload, success: AgentKeySetSuccess, error: FinError }),
