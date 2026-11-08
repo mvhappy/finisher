@@ -11,7 +11,7 @@ interface Canonical {
   root: string;
   rootKey: string;
   storage: string;
-  identity: { key: string; kind: string; sample: unknown[]; rootFileId?: string | null };
+  identity: { key: string; kind: string; caseSensitive: boolean; sample: unknown[]; rootFileId?: string | null };
 }
 
 let base: string;
@@ -52,7 +52,10 @@ describe("libraryCanonicalRoot", () => {
     symlinkSync(real, join(base, "link"));
     const c = await canon(join(base, "link"));
     expect(c.root).toBe(real);
-    expect(c.rootKey).toBe(real);
+    // `root` is the display path and keeps its case; `rootKey` is a lookup and overlap key,
+    // lower-cased on a case-insensitive volume (macOS APFS default, Windows) and as-is elsewhere.
+    expect(c.rootKey).toBe(c.identity.caseSensitive ? real : real.toLowerCase());
+    if (process.platform === "darwin" && !c.identity.caseSensitive) expect(c.rootKey).not.toBe(real);
     expect(c.storage).toBe("local");
     expect(c.identity.key).toMatch(/^[0-9a-f]{32}$/);
     expect(c.identity.sample).toHaveLength(1);

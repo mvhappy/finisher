@@ -112,6 +112,17 @@ describe("registry", () => {
     expect(registry.list()).toHaveLength(3);
   });
 
+  test("overlap_is_found_across_case_variants_on_case_insensitive_volumes", async () => {
+    const lib = await add({ root: dir("Media", "A"), name: "A" });
+    // The display root keeps the case it was resolved with; only the lookup key is folded.
+    expect(lib.root.endsWith("/Media/A")).toBe(true);
+    if (lib.volume.caseSensitive) return; // `MEDIA` is another folder there: nothing to compare.
+    for (const variant of [join(base, "libs", "MEDIA"), join(base, "libs", "media", "a"), join(base, "libs", "MEDIA", "a", "..")]) {
+      expect((await failure(registry.add({ root: variant, name: "V" }, human))).code).toBe("LIBRARY_OVERLAP");
+    }
+    expect(registry.list()).toHaveLength(1);
+  });
+
   test("key_containment_is_by_component", () => {
     expect(keyContains("/a/b", "/a/b/c")).toBe(true);
     expect(keyContains("/a/b", "/a/bc")).toBe(false);
