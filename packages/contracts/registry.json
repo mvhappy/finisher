@@ -1846,6 +1846,35 @@
     },
     {
       "argKinds": {},
+      "group": "approval",
+      "identity": [
+        "id"
+      ],
+      "name": "approval.wait",
+      "rpcs": [
+        {
+          "method": "agent.approval.wait"
+        }
+      ],
+      "write": false
+    },
+    {
+      "argKinds": {},
+      "group": "approval",
+      "identity": [
+        "sessionId",
+        "status"
+      ],
+      "name": "approval.ls",
+      "rpcs": [
+        {
+          "method": "agent.approval.list"
+        }
+      ],
+      "write": false
+    },
+    {
+      "argKinds": {},
       "group": "batch",
       "identity": [
         "projectId",

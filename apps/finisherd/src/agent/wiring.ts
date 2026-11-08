@@ -24,7 +24,11 @@ import { ModelGateway, type RunningSessions } from "../secrets/gateway.ts";
 import { FileSecretStore, type SecretStore } from "../secrets/store.ts";
 import type { ProviderAdapter } from "./adapter.ts";
 import { AgentAdmin, listLocalModels } from "./admin.ts";
-import { AgentApprovals, approvalKey } from "./approvals.ts";
+import { AgentApprovals, approvalKey, type GrantPort, grantPort } from "./approvals.ts";
+import { waitingOnApprovals } from "./builtin/approval-wait.ts";
+import { type ProviderPermissions, providerPermissions } from "./permissions.ts";
+import { ProviderRequests } from "./provider-requests.ts";
+import { remember } from "./remember.ts";
 import { builtinEnvironment } from "./builtin/environment.ts";
 import { localClient, type ModelClient, openrouterClient } from "./builtin/compat.ts";
 import { finIndex } from "./builtin/fin-tool.ts";
@@ -57,6 +61,8 @@ export interface AgentServeOptions {
   readonly roles?: ReadonlyMap<string, Role>;
   /** The runtime's hourly sweep and budget check (default on). */
   readonly timers?: boolean;
+  /** A test's crash point: runs after a one-time grant was consumed, before the handler (7B Task 5). */
+  readonly afterGrantConsumed?: (sessionId: string, idem: string) => Promise<void>;
 }
 
 /** What the handlers and the console RPCs use. */
@@ -73,6 +79,11 @@ export interface AgentRuntimeParts {
   /** Durable approvals for agents' asks (7B Task 4) and the key of their `argsHash`. */
   readonly approvals: AgentApprovals;
   readonly approvalKey: Buffer;
+  /** One-time grants for `commandRules` (7B Task 5). */
+  readonly grants: GrantPort;
+  /** Provider permission requests (7B Task 5). */
+  readonly permissions: ProviderPermissions;
+  readonly requests: ProviderRequests;
 }
 
 export class AgentRuntimeTag extends Context.Service<AgentRuntimeTag, AgentRuntimeParts>()("finisherd/AgentRuntime") {}
@@ -224,13 +235,24 @@ export const buildAgentRuntime = (d: AgentWiringDeps): Effect.Effect<AgentRuntim
       refreshListing: () =>
         prices.refreshIfStale(catalogue.openrouterBaseUrl, d.options?.fetch ?? fetch, AbortSignal.timeout(10_000), (e: unknown) => log(`OpenRouter's model list was not refreshed: ${String(e)}`)),
     });
+    // Rules, the approval key and provider requests before the runtime: its events reach them.
+    const ruleStore = new RuleStore(d.db);
+    const dirOf = (projectId: string) => d.registry.dirOf(projectId) ?? d.registry.indexedDirOf?.(projectId);
+    const rules = new LayeredRules({ serverData, store: ruleStore, roles, dirOf });
+    const key = approvalKey(serverData);
+    const permissions = providerPermissions({ rules, dirOf });
+    // The approvals need the runtime (their nodes, answers): made after it, looked up late.
+    let approvals: AgentApprovals | undefined;
+    const requests = new ProviderRequests({ permissions, approvals: () => approvals, key, consume: (id) => core.store.consumeApproval(id) });
     const runtime = new Runtime({
       core,
+      requests,
       registry: d.registry,
       adapters: [...adapters.values()],
       planner,
       environment,
-      tools: { builtin: builtinTools({ finPath, projectDirOf: d.registry.dirOf, ...(settings.toolTimeoutS === undefined ? {} : { timeoutMs: settings.toolTimeoutS * 1000 }) }) },
+      // A `fin` call that meets a card waits on it (7B Task 5).
+      tools: { builtin: waitingOnApprovals(builtinTools({ finPath, projectDirOf: d.registry.dirOf, ...(settings.toolTimeoutS === undefined ? {} : { timeoutMs: settings.toolTimeoutS * 1000 }) }), () => approvals) },
       journal: core.journal,
       pricing: cataloguePricing(catalogue),
       ...(settings.retentionDays === undefined ? {} : { retentionDays: settings.retentionDays }),
@@ -242,10 +264,15 @@ export const buildAgentRuntime = (d: AgentWiringDeps): Effect.Effect<AgentRuntim
     const recovered = yield* Effect.promise(() => runtime.boot());
     if (recovered.interrupted.length > 0 || recovered.closedCalls > 0) log(`agent sessions recovered: ${recovered.interrupted.length} interrupted, ${recovered.closedCalls} open calls closed`);
     yield* Effect.addFinalizer(() => Effect.promise(() => runtime.close()));
-    const ruleStore = new RuleStore(d.db);
-    const dirOf = (projectId: string) => d.registry.dirOf(projectId) ?? d.registry.indexedDirOf?.(projectId);
-    const rules = new LayeredRules({ serverData, store: ruleStore, roles, dirOf });
-    const key = approvalKey(serverData);
-    const approvals = new AgentApprovals({ control: d.control, store: core.store, clock: core.clock, opened: (s, a, node) => runtime.approvalOpened(s, a, node) });
-    return { runtime, admin, adapters, lookup: new AgentLookup(d.db), catalogue, rules, ruleStore, roles, approvals, approvalKey: key };
+    const made = new AgentApprovals({
+      control: d.control,
+      store: core.store,
+      clock: core.clock,
+      opened: (s, a, node) => runtime.approvalOpened(s, a, node),
+      approve: (id, decision, by) => runtime.approve(id, decision, {}, by),
+      remember: (a, decision, scope, by) => remember({ ruleStore, sessions: core.store, dirOf, audit: d.audit, clock: core.clock }, a, decision, scope, by),
+    });
+    approvals = made;
+    const grants = grantPort(made, core.store, key, d.options?.afterGrantConsumed);
+    return { runtime, admin, adapters, lookup: new AgentLookup(d.db), catalogue, rules, ruleStore, roles, approvals: made, approvalKey: key, grants, permissions, requests };
   });

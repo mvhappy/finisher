@@ -40,6 +40,8 @@ const VALUED = new Set([
   "model", "role", "mode", "base", "title", "prompt", "prompt-file", "budget-usd", "budget-tokens", "provider", "harness", "status", "add",
   // Command rules (7B Task 2).
   "session", "preset", "bytes-over", "minutes-over",
+  // Remembered answers (7B Task 5).
+  "remember",
 ]);
 
 export function usage(message: string, fix = "Run `finisherd help` to list the commands."): never {

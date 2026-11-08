@@ -44,3 +44,38 @@ export class OpenApprovals {
     return (this.#all.get(now) as { n: number }).n;
   }
 }
+
+/**
+ * One-time grants (sub-project 7B Decision 10; spec §7.3): an `allow` answer of a `rule` card
+ * not yet consumed and not past its `expiresAt` (a grant expires with its approval), keyed by
+ * exactly `(sessionId, command, argsHash)`. Consuming one records the call's idempotency key in
+ * the same statement, so a restore puts back exactly that call's grant, never another's.
+ */
+export class Grants {
+  readonly #consume: StatementSync;
+  readonly #restore: StatementSync;
+
+  constructor(db: DatabaseSync) {
+    // The oldest grant first; one statement, so two calls can never take the same row.
+    this.#consume = db.prepare(
+      "UPDATE approvals SET consumedAt = ?, grantIdem = ? WHERE id = (SELECT id FROM approvals WHERE sessionId = ? AND kind = 'rule' " +
+        "AND status = 'answered' AND decision = 'allow' AND consumedAt IS NULL AND argsHash = ? AND json_extract(subject, '$.command') = ? " +
+        "AND expiresAt > ? ORDER BY answeredAt, id LIMIT 1) RETURNING id",
+    );
+    // The latest one the call consumed (an earlier one under the same key, lost to a crash, stays lost).
+    this.#restore = db.prepare(
+      "UPDATE approvals SET consumedAt = NULL, grantIdem = NULL WHERE id = (SELECT id FROM approvals WHERE sessionId = ? AND kind = 'rule' " +
+        "AND grantIdem = ? AND (? IS NULL OR id = ?) ORDER BY consumedAt DESC, id DESC LIMIT 1) RETURNING id",
+    );
+  }
+
+  /** Consumes the oldest matching grant for the call `idem`; its approval id, or undefined. */
+  consume(sessionId: string, command: string, argsHash: string, idem: string, now: number): string | undefined {
+    return (this.#consume.get(now, idem, sessionId, argsHash, command, now) as { id: string } | undefined)?.id;
+  }
+
+  /** Puts back the grant the call `idem` consumed last (or exactly `approvalId`); whether one was. */
+  restore(sessionId: string, idem: string, approvalId?: string): boolean {
+    return this.#restore.get(sessionId, idem, approvalId ?? null, approvalId ?? null) !== undefined;
+  }
+}

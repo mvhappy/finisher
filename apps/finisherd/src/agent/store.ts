@@ -15,10 +15,7 @@ import type { Approval, ApprovalDecision, Node, Run, Session, Usage } from "@fin
 import { Effect } from "effect";
 import type { ControlStore } from "../control/db.ts";
 import { registerChain } from "../control/migrations.ts";
-import { agent0001 } from "../control/migrations/agent/0001.ts";
-import { agent0002 } from "../control/migrations/agent/0002.ts";
-import { agent0003 } from "../control/migrations/agent/0003.ts";
-import { agent0004 } from "../control/migrations/agent/0004.ts";
+import { AGENT_MIGRATIONS } from "../control/migrations/agent/index.ts";
 import { finError } from "../errors.ts";
 import { dirOlderThan, ensureAgentsRoot, listSessionDirs, makeSessionDirs, readBlob, removeBlob, removeSessionDir, sweepBlobs, writeBlob } from "./blobs.ts";
 import type { Clock, Ids } from "./clock.ts";
@@ -33,7 +30,7 @@ import { DbLedger, type SessionBranchState, type SessionTx, SessionStates, Sessi
 export type { Appended, Applied, NewApproval, NewNode, NewSession, OutboxEffect, OutboxItem, Recovery, RunStart, SessionQuery } from "./store-rows.ts";
 export type { SessionBranchState, SessionTx, SessionTryRow, TxOutcome } from "./store-tables.ts";
 
-registerChain("agent", [agent0001, agent0002, agent0003, agent0004], { formatVersion: 4, minReaderVersion: 4 });
+registerChain("agent", [...AGENT_MIGRATIONS], { formatVersion: 5, minReaderVersion: 4 });
 
 const DAY_MS = 86_400_000;
 /** `agents.retentionDays` default (Decision 4). */

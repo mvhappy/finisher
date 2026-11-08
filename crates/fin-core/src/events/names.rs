@@ -57,6 +57,8 @@ impl NameTable {
 pub static CLI_COMMANDS: NameTable = NameTable::new(
     "CLI_COMMANDS",
     &[
+        "approval.ls",
+        "approval.wait",
         "asset.add",
         "asset.move",
         "asset.remove",
@@ -242,6 +244,7 @@ pub static CLI_FLAGS: NameTable = NameTable::new(
         "root-sha256",
         "salvage",
         "scope",
+        "session",
         "set",
         "since",
         "size",
@@ -250,6 +253,7 @@ pub static CLI_FLAGS: NameTable = NameTable::new(
         "srt",
         "start",
         "state",
+        "status",
         "store",
         "style",
         "template",

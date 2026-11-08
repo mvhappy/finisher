@@ -81,7 +81,7 @@ Agent sessions (sub-project 7):
   provider local show|test [--json]        the local model endpoint, and whether it answers
   training closed-targets [--json]         the counsel gate on closed-model training targets
 These change something (each needs an interactive terminal and the typed code):
-  agent approve <approval> allow|deny [--add <amount>]
+  agent approve <approval> allow|deny [--add <amount>] [--remember session|project|projectLocal]
                                            --add raises a budget: USD, tokens (200k) or time (30m)
   agent delete <id>                        removes a session's conversation; its branch stays
   agent rules add allow|ask|deny <command> [--project <dir|id>] [--session <id>] [--branch <ref>]

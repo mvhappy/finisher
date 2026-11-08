@@ -231,6 +231,12 @@ pub const ROWS: &[Row] = &[
     row!("job.pause", rpc!("jobs.pause"), &["job"]),
     row!("job.resume", rpc!("jobs.resume"), &["job"]),
     row!("wait", rpc!("jobs.wait"), &["ids", "any"]),
+    row!("approval.wait", rpc!("agent.approval.wait"), &["id"]),
+    row!(
+        "approval.ls",
+        rpc!("agent.approval.list"),
+        &["sessionId", "status"]
+    ),
     row!("help", rpc!(), NONE),
     row!("whoami", rpc!(), NONE),
     row!("schema", rpc!(), NONE),

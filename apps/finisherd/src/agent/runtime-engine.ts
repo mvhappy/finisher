@@ -28,6 +28,7 @@ import type { Pricing, RuntimeJournal, SessionEnvironment, SessionPlanner, ToolE
 import { budgetError, errorShape, harnessUnknown, limitsOf, NO_JOURNAL, parseRef, REPORTED_PRICING, runFacts } from "./runtime-deps.ts";
 import { call, closeLive, closeScope, type Live, openLive } from "./runtime-live.ts";
 import { OutboxDrainer } from "./runtime-outbox.ts";
+import { handleRequest, type ProviderRequests } from "./provider-requests.ts";
 import type { SessionEvent } from "./session.ts";
 import type { AgentStore, Appended, Applied, NewNode } from "./store.ts";
 import { sessionNotFound } from "./store-rows.ts";
@@ -57,6 +58,8 @@ export interface RuntimeDeps {
   readonly watchBufferSize?: number;
   /** Start the hourly retention sweep and the budget check at `boot` (default true). */
   readonly timers?: boolean;
+  /** Provider permission requests (7B Task 5); none: every request is declined by policy. */
+  readonly requests?: ProviderRequests;
   /** Where the engine reports what it could not do (an outbox effect, a late provider error). */
   readonly log?: (message: string, details: Record<string, unknown>) => void;
 }
@@ -386,14 +389,15 @@ export abstract class RuntimeEngine {
         return this.#toolStarted(live, runId, e);
       case "toolCompleted":
         return this.#toolCompleted(live, e);
-      case "request": {
-        // Approvals answered by people arrive in 7B: until then the runtime declines.
-        await node("approval", { requestId: e.id, kind: e.kind, ...(e.tool === undefined ? {} : { tool: e.tool }), input: e.input ?? null, decision: "deny", by: "policy", reason: "approvalsUnavailable" });
-        const answer = e.kind === "approval" ? ({ kind: "approval", allow: false } as const) : ({ kind: "userInput", text: "No one can answer now: continue without it." } as const);
-        const err = await call(live.provider.respond(e.id, answer));
-        if (err) this.log("agent runtime: the provider refused an answer", { sessionId, code: err.code });
-        return;
-      }
+      case "request":
+        // Through the provider permissions (7B Task 5, `provider-requests.ts`).
+        return handleRequest(this.deps.requests, {
+          session: this.session(sessionId),
+          runId,
+          node: async (payload) => void (await node("approval", payload)),
+          respond: (a) => call(live.provider.respond(e.id, a)),
+          log: (m, d) => this.log(m, { sessionId, ...d }),
+        }, e);
       case "usage":
         return this.#usage(live, runId, e);
       case "turnCompleted":

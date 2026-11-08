@@ -27,7 +27,10 @@
 //   and layer for the chain's ask: a session with an active run gets a durable card and
 //   `APPROVAL_PENDING` (exit 8, `approvals.ts`), anything else 5A's `APPROVAL_REQUIRED`.
 //   A dry run (an RPC that takes `dryRun`, with it set: `fin --dry-run`) passes an `ask`, as
-//   it keeps nothing; a `deny` still refuses it.
+//   it keeps nothing; a `deny` still refuses it. **A one-time grant** (7B Task 5, Decision 10:
+//   a person's `allow` answer of exactly this session, command and arguments, not yet used)
+//   lets an `ask` through once: it is consumed here, before the handler, and given back
+//   (`Outcome.undo`) when the handler fails without committing (`approvals.ts`).
 // - **Who.** Only `agent` principals (sp5 §4.4 gives people their own confirmation path). A
 //   session's credential brings its session (project, role, mode); a hand-minted agent
 //   credential has none, so the managed, user and local layers apply to it, with the local and
@@ -40,7 +43,7 @@ import { Effect } from "effect";
 import type { Outcome, PolicyInput, PolicyRule } from "../chain/policy.ts";
 import { resolveWrites } from "../chain/resolve.ts";
 import { finError } from "../errors.ts";
-import { isDryRun } from "./approvals.ts";
+import { type GrantPort, isDryRun } from "./approvals.ts";
 import { commandsOf } from "./command-of.ts";
 import { globMatch } from "./glob.ts";
 import type { Role } from "./roles.ts";
@@ -193,6 +196,8 @@ export interface CommandRulesOptions {
   readonly minutes?: (tag: string, payload: unknown) => number | undefined;
   /** File sizes for `where.bytesOver` (tests); default: the size on disk. */
   readonly sizeOf?: (path: string) => Promise<number | undefined>;
+  /** One-time grants (7B Task 5): an `ask` a person allowed for exactly this call goes ahead once. */
+  readonly grants?: GrantPort;
 }
 
 const field = (payload: unknown, key: string): unknown => (payload !== null && typeof payload === "object" ? (payload as Record<string, unknown>)[key] : undefined);
@@ -290,6 +295,8 @@ export function commandRules(rules: RuleSource, sessions: RuleSessions, options:
       if (outcome.effect === "ask" && isDryRun(input.tag, input.payload)) return undefined;
       if (outcome.effect === "ask") {
         const ask = { reason: `rule ${outcome.rule.id} (${outcome.layer} layer) asks a person first`, command: outcome.command ?? names[0]!, rule: outcome.rule.id, layer: outcome.layer };
+        const undo = options.grants === undefined ? undefined : yield* options.grants(input, ask);
+        if (undo !== undefined) return { allow: true, guard: { denyBranches: [] }, undo } satisfies Outcome;
         return { ask } satisfies Outcome;
       }
       return undefined;

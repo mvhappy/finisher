@@ -3,6 +3,7 @@ import { Effect, Schema } from "effect";
 import { RpcSchema } from "effect/rpc";
 import { describe, expect, it } from "vitest";
 import {
+  AgentApprovalAnswerPayload,
   AgentApprovalWaitPayload,
   APPROVAL_WAIT_MAX_MS,
   Approval,
@@ -136,6 +137,7 @@ const AGENT_RPCS = [
   "agent.watch",
   "agent.approval.list",
   "agent.approval.answer",
+  "agent.approval.wait",
   "agent.providers",
   "agent.self",
   "agent.self.try",
@@ -204,6 +206,8 @@ const TABLE: Record<AgentTag, { scopes: string[]; kinds?: string[]; confirmed?: 
   "agent.watch": { scopes: ["agent.read"] },
   "agent.approval.list": { scopes: ["agent.read"] },
   "agent.approval.answer": { scopes: ["agent.approve"], confirmed: true },
+  // A session waits on its own cards (7B Task 5); people on any in reach.
+  "agent.approval.wait": { scopes: ["agent.read"], kinds: ["local", "console", "device", "agent"] },
   "agent.providers": { scopes: ["server.read"] },
   "agent.self": { scopes: ["project.read"], kinds: ["agent"] },
   "agent.self.try": { scopes: ["project.write"], kinds: ["agent"] },
@@ -263,7 +267,13 @@ describe("scopes", () => {
   });
 });
 
-describe("agent.approval.wait (7B Task 4: the payload; Task 5 the RPC)", () => {
+describe("agent.approval.wait and remember (7B Tasks 4 and 5)", () => {
+  it("remember takes session, project and projectLocal", () => {
+    const decode = Schema.decodeUnknownExit(AgentApprovalAnswerPayload);
+    for (const remember of ["session", "project", "projectLocal"]) expect(decode({ id: "a1", decision: "allow", remember, challenge: "c" })._tag, remember).toBe("Success");
+    expect(decode({ id: "a1", decision: "allow", remember: "forever", challenge: "c" })._tag).toBe("Failure");
+  });
+
   it("caps the wait at 90 s", () => {
     const decode = Schema.decodeUnknownExit(AgentApprovalWaitPayload);
     expect(APPROVAL_WAIT_MAX_MS).toBe(90_000);

@@ -2,6 +2,7 @@
 //! snapshot (so `end`, `after:` and placeholders from earlier steps resolve), then sent as one
 //! transaction — or, for `--dry-run` and the offline hook, applied locally with `MemIds`.
 
+pub mod approval;
 pub mod asset;
 pub mod bin;
 pub mod branch;

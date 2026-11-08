@@ -26,6 +26,8 @@ import {
 import {
   AgentApprovalAnswerPayload,
   AgentApprovalAnswerSuccess,
+  AgentApprovalWaitPayload,
+  AgentApprovalWaitSuccess,
   AgentApprovalListPayload,
   AgentApprovalListSuccess,
   AgentProvidersSuccess,
@@ -571,6 +573,7 @@ export const FinRpcs = RpcGroup.make(
   Rpc.make("agent.watch", { payload: AgentWatchPayload, success: WatchItem, error: FinError, stream: true }),
   Rpc.make("agent.approval.list", { payload: AgentApprovalListPayload, success: AgentApprovalListSuccess, error: FinError }),
   Rpc.make("agent.approval.answer", { payload: AgentApprovalAnswerPayload, success: AgentApprovalAnswerSuccess, error: FinError }),
+  Rpc.make("agent.approval.wait", { payload: AgentApprovalWaitPayload, success: AgentApprovalWaitSuccess, error: FinError }),
   Rpc.make("agent.providers", { payload: Schema.Struct({}), success: AgentProvidersSuccess, error: FinError }),
   Rpc.make("agent.self", { payload: Schema.Struct({}), success: AgentSelfSuccess, error: FinError }),
   Rpc.make("agent.self.try", { payload: AgentSelfTryPayload, success: AgentSelfSuccess, error: FinError }),

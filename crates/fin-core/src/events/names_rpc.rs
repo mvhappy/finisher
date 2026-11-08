@@ -16,6 +16,7 @@ pub static RPC_METHODS: NameTable = NameTable::new(
     &[
         "agent.approval.answer",
         "agent.approval.list",
+        "agent.approval.wait",
         "agent.key.list",
         "agent.key.remove",
         "agent.key.set",

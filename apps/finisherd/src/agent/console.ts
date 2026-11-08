@@ -294,13 +294,16 @@ function addFor(kind: unknown, v: string): Record<string, number> {
 }
 
 async function approve(ctx: CommandContext, rest: ReadonlyArray<string>): Promise<number> {
-  onlyFlags(ctx.args, "agent approve", ["add", "json"]);
+  onlyFlags(ctx.args, "agent approve", ["add", "remember", "json"]);
   const [id, decision, ...more] = rest;
   if (id === undefined || (decision !== "allow" && decision !== "deny") || more.length > 0) usage("agent approve needs an approval id and allow or deny");
   const add = one(ctx.args, "add");
   if (add !== undefined && decision === "deny") usage("--add goes with allow");
+  // 7B Task 5: a rule of exactly the card's command, for the session, the project's shared file or the project locally.
+  const remember = one(ctx.args, "remember");
+  if (remember !== undefined && remember !== "session" && remember !== "project" && remember !== "projectLocal") usage("--remember is session, project or projectLocal");
   requireTty(ctx.prompt, "agent approve");
-  const { approval } = await withConnection(ctx, async (c) => {
+  const { approval, rule, notice } = await withConnection(ctx, async (c) => {
     const { approvals } = await call<{ approvals: Approval[] }>(c, "agent.approval.list", { status: "open" });
     const found = approvals.find((a) => a.id === id);
     if (found === undefined) throw consoleError("APPROVAL_NOT_FOUND", "no open approval with that id", { id }, "list them with `finisherd agent show <session>`");
@@ -310,10 +313,23 @@ async function approve(ctx: CommandContext, rest: ReadonlyArray<string>): Promis
       decision === "deny"
         ? `This denies approval ${id} (${found.kind}) of session ${found.sessionId}.`
         : `This allows approval ${id} (${found.kind}) of session ${found.sessionId}${raise === undefined ? "" : `, raising its ${String(subject.kind)} budget by ${add}`}${found.kind === "budget" ? ", and resumes the session" : ""}.`;
-    return confirmed<{ approval: Approval }>(c, ctx.prompt, what, "agent.approval.answer", { id, decision, ...(raise === undefined ? {} : { add: raise }) });
+    const remembered = remember === undefined ? "" : ` It also adds a rule: ${decision} ${safe(String((found.subject as { command?: unknown } | null)?.command ?? found.kind))} ${remember === "session" ? "for this session" : remember === "project" ? "in the project's shared finisher.rules.json" : "for this project, on this server only"}.`;
+    return confirmed<{ approval: Approval; rule?: { id: string; layer: string }; notice?: string }>(c, ctx.prompt, `${what}${remembered}`, "agent.approval.answer", {
+      id,
+      decision,
+      ...(raise === undefined ? {} : { add: raise }),
+      ...(remember === undefined ? {} : { remember }),
+    });
   });
-  if (has(ctx.args, "json")) ctx.output.out(JSON.stringify({ approval }));
-  else ctx.output.out(`Approval ${approval.id}: ${approval.status}${approval.decision === undefined ? "" : ` (${approval.decision})`}.`);
+  if (has(ctx.args, "json")) ctx.output.out(JSON.stringify({ approval, ...(rule === undefined ? {} : { rule }), ...(notice === undefined ? {} : { notice }) }));
+  else {
+    ctx.output.out(`Approval ${approval.id}: ${approval.status}${approval.decision === undefined ? "" : ` (${approval.decision})`}.`);
+    if (rule !== undefined) {
+      const how = rule.layer === "project" ? "edit the project's finisher.rules.json" : `\`finisherd agent rules rm ${rule.id}\``;
+      ctx.output.out(`Rule ${rule.id} added (${rule.layer} layer); to remove it, ${how}.`);
+    }
+    if (notice !== undefined) ctx.output.out(safe(notice));
+  }
   return 0;
 }
 

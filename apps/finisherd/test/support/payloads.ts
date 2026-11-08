@@ -100,6 +100,7 @@ export const SAMPLE_PAYLOADS: { readonly [T in FinRpcTag]: Record<string, unknow
   "agent.watch": { sessionId: S },
   "agent.approval.list": {},
   "agent.approval.answer": { id: "01dddddddddddddddddddddddd", decision: "allow" },
+  "agent.approval.wait": { id: "01dddddddddddddddddddddddd", timeoutMs: 0 },
   "agent.providers": {},
   "agent.self": {},
   "agent.self.try": { action: "record", branch: "try-1" },

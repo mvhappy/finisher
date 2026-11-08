@@ -3,7 +3,7 @@
 // calls are a person's in 7A) and the human-only typed code before any of these runs.
 //
 // - **Reach:** a payload that names a session or an approval names no project, so every session
-//   and approval handler resolves it through `sessionInReach`/`approvalInReach` (out of reach
+//   and approval handler (`approvals-rpc.ts`) resolves it through `sessionInReach`/`approvalInReach` (out of reach
 //   answers exactly what a missing one does: `SESSION_NOT_FOUND`, `APPROVAL_NOT_FOUND`); lists
 //   filter by the caller's projects (`projectsFilter`).
 // - **Start** passes the call's actor and the chain's guard (`{...actorFor(by, headers), guard}`),
@@ -19,8 +19,9 @@ import { Effect, Stream } from "effect";
 import { chainOf } from "../chain/chain.ts";
 import { actorFor, type CallMeta } from "../diagnostics.ts";
 import { finError, toFinError } from "../errors.ts";
+import { approvalHandlers } from "./approvals-rpc.ts";
 import type { BranchReach } from "./reach.ts";
-import { approvalInReach, projectsFilter, sessionInReach } from "./session-access.ts";
+import { projectsFilter, sessionInReach } from "./session-access.ts";
 import type { AgentStore } from "./store.ts";
 import type { AgentRuntimeParts } from "./wiring.ts";
 
@@ -124,31 +125,8 @@ export function agentHandlers(deps: AgentRpcDeps) {
           ({ s, fromSeq }) => runtime.watch(s.id, fromSeq).pipe(Stream.mapError((e) => lagging(deps, s.id, e))),
         ),
       ).pipe(Stream.catchDefect((defect) => Stream.fail(toFinError(defect)))),
-    "agent.approval.list": (q: { sessionId?: string; projectId?: string; status?: "open" | "answered" | "expired" }, options: Options) =>
-      guard("agent.approval.list", Effect.suspend(() => {
-        const p = by(options);
-        const list = () =>
-          sync(() => ({
-            approvals: agents.lookup
-              .approvalIds({ ...q, ...(projectsFilter(p) === undefined ? {} : { projects: projectsFilter(p)! }) })
-              .flatMap((id) => store.approval(id) ?? []),
-          }));
-        return q.sessionId === undefined ? list() : Effect.flatMap(sessionInReach(store, p, q.sessionId), list);
-      })),
-    // A person's (`agent.approve`, typed code). `remember` adds command rules, which arrive with 7B.
-    "agent.approval.answer": (
-      req: { id: string; decision: "allow" | "deny"; remember?: "session" | "project"; add?: { tokens?: number; moneyMicros?: number; wallMs?: number } },
-      options: Options,
-    ) =>
-      guard("agent.approval.answer", Effect.suspend(() => {
-        if (req.remember !== undefined) {
-          return Effect.fail(finError("INVALID_REQUEST", "remembered answers are command rules, which arrive with sub-project 7B", { field: "remember", reason: "rulesIn7B" }, "answer without remember"));
-        }
-        const p = by(options);
-        return Effect.flatMap(approvalInReach(store, p, req.id), ({ approval }) =>
-          Effect.map(runtime.approve(approval.id, req.decision, req.add ?? {}, p), (r) => ({ approval: r.approval })),
-        );
-      })),
+    // `agent.approval.list|wait|answer` (7B Task 5: waits, answers by kind, `remember`).
+    ...approvalHandlers({ guard, store, lookup: agents.lookup, runtime, approvals: agents.approvals, principalOf: by }),
     "agent.providers": (_: unknown, options: Options) =>
       guard("agent.providers", Effect.suspend(() => admin.providers(agents.adapters, inReachOf(by(options))))),
     "agent.self": (_: unknown, options: Options) => guard("agent.self", Effect.flatMap(selfOf(store, options), (s) => sync(() => selfView(store, s)))),

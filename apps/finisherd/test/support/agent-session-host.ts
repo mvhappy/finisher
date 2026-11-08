@@ -10,6 +10,9 @@
 //   {op: "revoke", sessionId}                      → {}
 //   {op: "txs", sessionId}                         → {txs: [{txId, callId, attribution}]}
 //   {op: "state", sessionId}                       → {defaultBranch, tries}
+//   {op: "ask", sessionId, command}                → {rule}: a local `ask` rule for the session, and a run
+//   {op: "answer", id, decision}                   → {approval}: a person's answer (7B Task 5)
+//   {op: "expireAll"}                              → {}: every open approval expired (a clock past them all)
 // A failure answers {error: {code, message}}.
 import { mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -17,6 +20,7 @@ import { parseArgs } from "node:util";
 import type { Mode } from "@finisher/contracts";
 import { Effect } from "effect";
 import type { AgentCore } from "../../src/agent/core.ts";
+import type { AgentRuntimeParts } from "../../src/agent/wiring.ts";
 import { toFinError } from "../../src/errors.ts";
 import { serve, StderrLogger } from "../../src/main.ts";
 import { open } from "./agent-open.ts";
@@ -28,6 +32,7 @@ const requests = values.requests;
 if (serverData === undefined || requests === undefined) throw new Error("--server-data and --requests are required");
 
 let core: AgentCore | undefined;
+let agents: AgentRuntimeParts | undefined;
 let info: ServerInfo | undefined;
 let starter: NdjsonClient | undefined;
 
@@ -35,7 +40,10 @@ type Request =
   | { op: "open"; projectId: string; mode?: Mode; role?: string; base?: string }
   | { op: "revoke"; sessionId: string }
   | { op: "txs"; sessionId: string }
-  | { op: "state"; sessionId: string };
+  | { op: "state"; sessionId: string }
+  | { op: "ask"; sessionId: string; command: string }
+  | { op: "answer"; id: string; decision: "allow" | "deny" }
+  | { op: "expireAll" };
 
 async function handle(r: Request): Promise<unknown> {
   const c = core!;
@@ -56,12 +64,25 @@ async function handle(r: Request): Promise<unknown> {
       return { txs: c.store.txsOfSession(r.sessionId).map((t) => ({ txId: t.txId, callId: t.callId, attribution: t.attribution })) };
     case "state":
       return c.store.state(r.sessionId);
+    case "ask": {
+      const s = c.store.get(r.sessionId)!;
+      const rule = agents!.ruleStore.add({ id: c.ids.ulid(), effect: "ask", command: r.command, projectId: s.projectId, sessionId: s.id, source: "test", createdAt: c.clock.now() });
+      if (c.store.activeRun(s.id) === null) c.store.startRun(s.id, { trigger: "prompt" });
+      return { rule };
+    }
+    case "answer": {
+      const owner = { kind: "console", id: "owner", scopes: [], projects: "*", branches: "*", human: true } as const;
+      return Effect.runPromise(Effect.map(agents!.approvals.answer(r.id, r.decision, owner), (a) => ({ approval: a.approval })));
+    }
+    case "expireAll":
+      c.store.expireOverdueApprovals(Number.MAX_SAFE_INTEGER);
+      return {};
   }
 }
 
 let busy = false;
 async function poll(): Promise<void> {
-  if (busy || core === undefined || info === undefined) return;
+  if (busy || core === undefined || agents === undefined || info === undefined) return;
   busy = true;
   try {
     for (const name of readdirSync(requests!).filter((n) => n.endsWith(".req.json")).sort()) {
@@ -90,6 +111,7 @@ await Effect.runPromise(
   serve({
     serverData,
     onAgentCore: (c) => (core = c),
+    onAgentRuntime: (a) => (agents = a),
     onReady: (i) => (info = i as ServerInfo),
   }).pipe(Effect.provide(StderrLogger)),
 );

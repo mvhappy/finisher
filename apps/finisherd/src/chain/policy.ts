@@ -20,7 +20,12 @@ export interface Ask {
   readonly layer?: RuleLayer;
 }
 
-export type Outcome = { readonly allow: true; readonly guard: WriteGuard } | { readonly deny: FinError } | { readonly ask: Ask };
+/**
+ * `undo`: what an `allow` took that must be given back when the call goes no further (a
+ * one-time grant consumed for it, sub-project 7B Decision 10): run when a later rule denies
+ * or asks, and by the chain when the handler fails with a typed error that committed nothing.
+ */
+export type Outcome = { readonly allow: true; readonly guard: WriteGuard; readonly undo?: Effect.Effect<void> } | { readonly deny: FinError } | { readonly ask: Ask };
 
 export interface PolicyInput {
   readonly tag: FinRpcTag;
@@ -30,6 +35,8 @@ export interface PolicyInput {
   readonly projects: ChainProjects;
   /** Every project the call names, as stage 3 resolved them (`Resolved.projects`). */
   readonly projectIds?: ReadonlyArray<string>;
+  /** The call's headers (`fin-actor-call`: the `FIN_CALL` a grant is consumed for). */
+  readonly headers?: unknown;
 }
 
 /** A rule's answer; `undefined`: no opinion. A `deny` or `ask` ends the stage. */
@@ -104,20 +111,33 @@ export const agentBranchLimitsExcept = (skip: (p: Principal) => boolean): Policy
 
 export const DEFAULT_POLICIES: ReadonlyArray<PolicyRule> = [agentBranchLimits];
 
-/** Runs `rules` in order: the first `deny` or `ask` wins; the allows' guards are combined. */
+/**
+ * Runs `rules` in order: the first `deny` or `ask` wins (giving back what earlier allows took,
+ * their `undo`s); the allows' guards are combined, and so are their `undo`s.
+ */
 export function runPolicies(rules: ReadonlyArray<PolicyRule>, input: PolicyInput): Effect.Effect<Outcome, FinError> {
-  return Effect.gen(function* () {
+  const undos: Effect.Effect<void>[] = [];
+  const undoAll = Effect.suspend(() => Effect.forEach(undos.splice(0), (u) => u, { discard: true }));
+  const run = Effect.gen(function* () {
     const deny = new Set<string>();
     let allow: Set<string> | undefined;
     for (const r of rules) {
       const o = yield* r(input);
       if (o === undefined) continue;
-      if (!("allow" in o)) return o;
+      if (!("allow" in o)) {
+        yield* undoAll;
+        return o;
+      }
+      if (o.undo !== undefined) undos.push(o.undo);
       for (const b of o.guard.denyBranches ?? []) deny.add(b);
       const only = o.guard.allowBranches;
       if (only !== undefined) allow = allow === undefined ? new Set(only) : new Set([...allow].filter((b) => only.includes(b)));
     }
     const guard: WriteGuard = { denyBranches: [...deny], ...(allow === undefined ? {} : { allowBranches: [...allow] }) };
-    return { allow: true, guard } satisfies Outcome;
+    const given = undos.splice(0);
+    const undo = given.length === 0 ? {} : { undo: Effect.forEach(given, (u) => u, { discard: true }) };
+    return { allow: true, guard, ...undo } satisfies Outcome;
   });
+  // A rule that fails gives back what the rules before it took.
+  return Effect.tapError(run, () => undoAll);
 }

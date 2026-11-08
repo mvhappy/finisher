@@ -4,9 +4,10 @@
 //
 // - `boot()` first (Decision 3, the Task 3b order): crash recovery (reservations returned), the
 //   orphan sweep at grace 0 before any session work, the outbox drained, every live session
-//   credential of an ended or missing session ended; then the hourly sweep (overdue approvals
-//   expired, retention) and a budget check every few seconds (the wall clock moves without
-//   events).
+//   credential of an ended or missing session ended, overdue approvals expired; then the hourly
+//   sweep (overdue approvals expired, retention) and a budget check every few seconds (the wall
+//   clock moves without events). A provider card also expires at its own `expiresAt`
+//   (`provider-requests.ts`).
 // - A start of a non-local model without a price is refused (`PRICING_UNKNOWN`); every start
 //   answers the persistent warnings (`SANDBOX_DISABLED` until 7C, owner decision F2).
 // - Every command runs in its session's queue, after the events and commands before it.
@@ -67,6 +68,8 @@ export class Runtime extends RuntimeEngine {
 
   constructor(deps: RuntimeDeps) {
     super(deps);
+    // A provider card is settled at its `expiresAt`, not only by the hourly sweep (7B Task 5).
+    deps.requests?.bind({ clock: this.clock, expire: () => this.expireApprovals() });
   }
 
   /**
@@ -78,6 +81,8 @@ export class Runtime extends RuntimeEngine {
     const recovery = this.store.recoverAfterCrash();
     const orphans = await this.store.sweepOrphans(0);
     await this.drain();
+    // Cards already overdue (a budget card of an interrupted session) expire now, not within the hour.
+    this.expireApprovals();
     const credentialsEnded = this.core.credentials.reconcile();
     this.#booted = true;
     if (this.deps.timers ?? true) {
@@ -94,6 +99,7 @@ export class Runtime extends RuntimeEngine {
   async close(): Promise<void> {
     this.#closed = true;
     for (const t of this.#timers.splice(0)) clearInterval(t);
+    this.deps.requests?.close();
     const lives = [...this.lives.values()];
     this.lives.clear();
     await Promise.allSettled(lives.map((l) => closeLive(l)));
@@ -110,11 +116,18 @@ export class Runtime extends RuntimeEngine {
    * the retention sweep (Decision 4). Answers how many sessions the retention removed.
    */
   sweep(now = this.clock.now()): Promise<number> {
+    this.expireApprovals(now);
+    return this.store.sweep(now, this.deps.retentionDays);
+  }
+
+  /** Overdue approvals expired: their sessions' statuses, journal, and provider requests (a `deny`). */
+  expireApprovals(now = this.clock.now()): void {
+    if (this.#closed) return;
     for (const s of this.store.expireOverdueApprovals(now)) {
       this.publishStatus(s, this.store.activeRun(s.id));
       this.#journalExpired(s);
+      this.background(s.id, "a provider request's expiry", () => this.deps.requests?.settleSession(s.id, (id) => this.store.approval(id)) ?? Promise.resolve());
     }
-    return this.store.sweep(now, this.deps.retentionDays);
   }
 
   /** Charges the wall clock of running sessions and stops those over a budget. */
@@ -337,8 +350,9 @@ export class Runtime extends RuntimeEngine {
   }
 
   /**
-   * `agent.approval.answer` for a `budget` approval (Decision 21; console `agent approve`):
-   * `allow` raises the limits by `add`, marks the approval used and resumes the session.
+   * `agent.approval.answer` (Decision 21; console `agent approve`), by kind: a `budget` `allow`
+   * raises the limits by `add`, marks the approval used and resumes the session; a `provider`
+   * answer goes back to the waiting request; a `rule` answer is recorded (its grant, 7B).
    */
   approve(approvalId: string, decision: ApprovalDecision, add: BudgetRaise, by: Principal): Effect.Effect<{ approval: Approval; session: Session }, FinError> {
     return attempt(async () => {
@@ -359,7 +373,9 @@ export class Runtime extends RuntimeEngine {
         const { approval, session } = answered;
         this.record("an approval", () => this.journal.approval({ session, approval }));
         this.publishStatus(session);
-        if (approval.kind !== "budget" || decision !== "allow") return { approval, session };
+        // By kind (7B Task 5): a provider's request hears the answer; a rule's is a one-time grant.
+        if (approval.kind === "provider") await this.deps.requests?.settle(approval);
+        if (approval.kind !== "budget" || decision !== "allow") return { approval: this.store.approval(approvalId)!, session };
         const b = this.budget(session);
         if (add.tokens) b.raise("tokens", add.tokens);
         if (add.moneyMicros) b.raise("money", add.moneyMicros);

@@ -28,6 +28,11 @@ export function sessionInReach(store: SessionLookup, principal: Principal, sessi
   });
 }
 
+/** `APPROVAL_NOT_FOUND` (exit 3), for a missing approval and one out of reach alike. */
+export function approvalNotFound(id: string): FinError {
+  return finError("APPROVAL_NOT_FOUND", "no such approval", { id }, "list the approvals you can see with `fin approval ls` (a person: `finisherd agent show <session>`)");
+}
+
 /** The approval `id` and its session when in `principal`'s reach, else `APPROVAL_NOT_FOUND`. */
 export function approvalInReach(store: SessionLookup, principal: Principal, id: string): Effect.Effect<{ approval: Approval; session: Session }, FinError> {
   return Effect.suspend(() => {
@@ -35,7 +40,7 @@ export function approvalInReach(store: SessionLookup, principal: Principal, id: 
     const session = approval === undefined ? undefined : store.get(approval.sessionId);
     return approval !== undefined && session !== undefined && inReach(principal, session.projectId)
       ? Effect.succeed({ approval, session })
-      : Effect.fail(finError("APPROVAL_NOT_FOUND", "no such approval", { id }));
+      : Effect.fail(approvalNotFound(id));
   });
 }
 

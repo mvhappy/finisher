@@ -41,7 +41,9 @@ import type { AgentStore, NewSession, OutboxItem } from "./store.ts";
  * the session's `fin` record its own diagnostics, as every minted credential's default does.
  */
 export const MODE_SCOPES: { readonly [M in Mode]: ReadonlyArray<Scope> } = (() => {
-  const plan: ReadonlyArray<Scope> = ["server.read", "project.read", "library.read", "jobs.read", "diagnostics.read", "diagnostics.record"];
+  // `agent.read` (7B Task 5): a session waits on and lists its own approval cards; every other
+  // `agent.read` RPC stays people's (`SESSION_PEOPLE_READS`, `reach.ts`).
+  const plan: ReadonlyArray<Scope> = ["server.read", "project.read", "library.read", "jobs.read", "diagnostics.read", "diagnostics.record", "agent.read"];
   const draft: ReadonlyArray<Scope> = [...plan, "project.write"];
   return { plan, draft, auto: draft };
 })();

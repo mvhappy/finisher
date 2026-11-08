@@ -907,7 +907,13 @@ Plan: `docs/superpowers/plans/2026-11-08-sub-project-7b-subagents-rules-approval
   - `argsHash` is HMAC-SHA256 with `<server-data>/auth/approval.key` (never rotated) over the payload's declared fields and `tx`'s fin-core fields (no `txId`, `author`, `idemKey`, client `argsHash`, `via`); `baseRev` included; ops are hashed as sent (no TS op canonicaliser: a junk key inside an op shows on the card)
   - card args capped at 64 KiB for display (`truncated`), the hash covers the full args; `APPROVAL_PENDING` audited as `auth.denied` with outcome `pending` and the card id
   - a `waitingApproval` session keeps its model key (the built-in loop's next call)
-- [ ] Task 5: one-time grants, waits, answers, `remember` and provider requests
+- [x] Task 5: one-time grants, waits, answers, `remember` and provider requests (`agent/{permissions,provider-requests,remember,approvals-rpc}.ts`, `agent/builtin/approval-wait.ts`, agent migration 0005 `approvals.grantIdem`, `fin approval wait|ls`)
+  - a rule `ask` first consumes an unconsumed `allow` card for exactly `(session, command, argsHash)` (one SQL statement) before the handler; a typed handler failure other than `INTERNAL`/`ENGINE_CLOSED` restores it; a crash loses it (owner-accepted); restore key: `idemKey`, `txId`, `FIN_CALL`, fresh id
+  - `agent.approval.wait` (`agent.read`, a session's own cards; ≤ 90 s, 4 concurrent waits per card's session, abort on disconnect); sessions now hold `agent.read` in every mode, the other `agent.read` RPCs stay people's (`SESSION_PEOPLE_READS`)
+  - `remember`: `session`/`projectLocal` add a local rule (source `approval:<id>`), `project` appends to `finisher.rules.json` (atomic, regular files only, mode kept; trust follows only from the previous hash); a failed answer removes only its own rule
+  - **open (owner): a remembered `allow` has no effect under deny > ask > allow** (it never lifts the `ask` that raised the card); the answer's notice says so; Task 13's e2e assumes the opposite
+  - provider requests: tool deny → deny; `plan` write outside `workspace/<session>/` (textual check; symlinks and case are 7C's) → deny; tool ask → `provider` card (timer at `expiresAt`, answer through `respond`); else allow; inputs over 1 MiB are never allowed
+  - the built-in tool runner waits on a pending card (`waitingApproval`) and re-runs the call with the same `FIN_CALL` after `allow`
 - [ ] Tasks 6–10: subagents, carve-outs, rollback, compaction, saved prompts
 - [ ] Tasks 11–12 (7B-2, after 5E): review requests, the `auto` merge trigger
 - [ ] Tasks 13–14: e2e, spec as built, cross-platform validation

@@ -77,7 +77,6 @@ export const RPC_ONLY: ReadonlySet<FinRpcTag> = new Set<FinRpcTag>([
   "agent.session.get",
   "agent.session.delete",
   "agent.watch",
-  "agent.approval.list",
   "agent.approval.answer",
   "agent.providers",
   "agent.self",

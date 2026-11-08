@@ -6,7 +6,7 @@
 import { Schema } from "effect";
 import { BudgetSpec, ContentBlock, Harness, Mode, NodeKind, SessionStatus } from "./agent-events.ts";
 import { ChallengeField, PrincipalKind } from "./auth.ts";
-import { ProjectRulesStatus } from "./rules.ts";
+import { ListedRule, ProjectRulesStatus } from "./rules.ts";
 
 const Count = Schema.Number.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(0));
 const Id = Schema.String;
@@ -140,8 +140,12 @@ export type ApprovalDecision = typeof ApprovalDecision.Type;
 export const ApprovalStatus = Schema.Literals(["open", "answered", "expired"]);
 export type ApprovalStatus = typeof ApprovalStatus.Type;
 
-/** What an answer may add to a rule: for the session, or for the project (spec §7.3). */
-export const RememberScope = Schema.Literals(["session", "project"]);
+/**
+ * What an answer may add as a rule (spec §7.3; plan 7B Decision 12): `session` (the user's
+ * `local` layer, for this session), `projectLocal` (the `local` layer, for the project; never
+ * travels) or `project` (the shared `finisher.rules.json`, which travels with the project).
+ */
+export const RememberScope = Schema.Literals(["session", "project", "projectLocal"]);
 export type RememberScope = typeof RememberScope.Type;
 
 /** An `ask` waiting for a person (spec §7.3). The subject is written by the server, never by the agent. */
@@ -303,21 +307,30 @@ export const AgentApprovalAnswerPayload = Schema.Struct({
   ),
   challenge: ChallengeField,
 });
-export const AgentApprovalAnswerSuccess = Schema.Struct({ approval: Approval });
+/**
+ * `rule`: the rule a `remember` added; `notice`: why it does not apply now (a shared project
+ * file of an untrusted project: `projectUntrusted`), the answer's one-time grant still does.
+ */
+export const AgentApprovalAnswerSuccess = Schema.Struct({
+  approval: Approval,
+  rule: Schema.optionalKey(ListedRule),
+  notice: Schema.optionalKey(Schema.String),
+});
 
 /** The longest `agent.approval.wait` (spec §7.3): below every CLI tool timeout (120 s). */
 export const APPROVAL_WAIT_MAX_MS = 90_000;
 
 /**
  * `agent.approval.wait` (sub-project 7B Decision 11): blocks at most `timeoutMs` (≤ 90 s) for
- * an answer; `APPROVAL_PENDING` on timeout, repeatable. The schema is Task 4's; the RPC and its
- * handler are Task 5's.
+ * an answer; `APPROVAL_PENDING` on timeout, repeatable.
  */
 export const AgentApprovalWaitPayload = Schema.Struct({
   id: Id,
   timeoutMs: Count.check(Schema.isLessThanOrEqualTo(APPROVAL_WAIT_MAX_MS)),
 });
 export type AgentApprovalWaitPayload = typeof AgentApprovalWaitPayload.Type;
+/** An allowed approval (deny or expiry is `APPROVAL_DENIED`, a timeout `APPROVAL_PENDING`). */
+export const AgentApprovalWaitSuccess = Schema.Struct({ approval: Approval });
 
 /** What an adapter can do (spec §4.1). */
 export const Capabilities = Schema.Struct({

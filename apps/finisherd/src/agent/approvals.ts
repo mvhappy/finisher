@@ -43,12 +43,35 @@
 // - **Node and journal.** A new card becomes an `approval` node in the active run and an
 //   `approvalOpened` watch item (`Runtime.approvalOpened`); the journal's `agent.approval`
 //   (meta `kind: rule`) is written when it is answered or expires, as 7A's budget card is.
+// - **Grants (Task 5, Decision 10).** An `allow` answer is a one-time grant of exactly
+//   `(sessionId, command, argsHash)`, the hash computed as the card's was. When a rule asks
+//   again, `commandRules` (`grantPort`) consumes the oldest such grant in `control.db` before
+//   the handler runs, recording the call's idempotency key (the payload's `idemKey`, else the
+//   write's `txId`, else its `FIN_CALL`, else a fresh id), and the call goes ahead; a second
+//   identical request, other arguments or another session find none and ask. The write commits in the project's store,
+//   the grant in `control.db`: consuming first means a crash between them loses the grant (the
+//   agent asks again) and never doubles a write (owner decision 2026-11-08). A handler that
+//   fails without committing gives it back (`restoreGrant`, through the chain's `undo`). A grant
+//   expires with its approval.
+// - **Waits (Decision 11).** `wait(id, timeoutMs)` answers `allow`, `deny`, `expired` (also an
+//   open card past its `expiresAt`) or, at the deadline (by the injected clock, and in real
+//   time whatever that clock does), `pending`; an answer wakes it at once (`notify`), else it
+//   looks again every `WAIT_POLL_MS`. A wait ends when its fiber is interrupted (the RPC of a
+//   client that went away) or the caller's signal aborts; a session has at most
+//   `MAX_WAITS_PER_SESSION` waits at a time, past it `APPROVAL_LIMIT {waits, limit, scope}`.
+// - **Answers (Decision 12).** `answer` records a person's decision on a `rule` or `provider`
+//   card through the runtime (`approve`: the journal, the watchers, a provider request's
+//   `respond`), after a `remember` wrote its rule (`remember.ts`); a refused answer takes the
+//   rule back. A `budget` card is the runtime's own (`Runtime.approve` with its `add`).
 import { createHmac, randomBytes } from "node:crypto";
 import { join } from "node:path";
-import { type Approval, type FinError, FinRpcs, type FinRpcTag, type RuleLayer, type Session } from "@finisher/contracts";
+import { type Approval, type ApprovalDecision, type FinError, FinRpcs, type FinRpcTag, type ListedRule, type Principal, type RememberScope, type RuleLayer, type Session } from "@finisher/contracts";
 import { Effect } from "effect";
 import { authDir, readKeyFile, writeKeyFile } from "../auth/keys.ts";
 import type { AgentAsk } from "../chain/chain.ts";
+import type { Ask, PolicyInput } from "../chain/policy.ts";
+import { ulid } from "../control/ulid.ts";
+import { actorFor } from "../diagnostics.ts";
 import { approvalPending } from "../chain/fixes.ts";
 import { resolveWrites } from "../chain/resolve.ts";
 import { ensurePrivateDir } from "../config.ts";
@@ -57,7 +80,8 @@ import { finError, toFinError } from "../errors.ts";
 import { KEY_BYTES } from "../auth/crypto.ts";
 import type { Clock } from "./clock.ts";
 import type { AgentStore } from "./store.ts";
-import { OpenApprovals } from "./store-approvals.ts";
+import { approvalNotFound } from "./session-access.ts";
+import { Grants, OpenApprovals } from "./store-approvals.ts";
 
 /** How long a person has to answer a rule or provider card (spec §7.3). */
 export const RULE_APPROVAL_TTL_MS = 30 * 60_000;
@@ -68,6 +92,8 @@ export const MAX_OPEN_PER_SERVER = 256;
 export const APPROVAL_KEY_FILE = "approval.key";
 const HASH_LABEL = "fin/approval-args/v1";
 const TEXT_MAX = 1000;
+/** `agent.approval.wait`'s cap (spec §7.3). */
+const APPROVAL_WAIT_MAX = 90_000;
 /** The most canonical JSON of `args` a card holds (bytes); the hash covers all of it. */
 export const ARGS_DISPLAY_MAX = 64 * 1024;
 /** Fields that change on every retry of the same request: not its arguments. */
@@ -99,9 +125,35 @@ export interface Asked {
 /** `undefined`: the session's run ended before the card was written; nothing was kept. */
 export type AskResult = Asked | undefined;
 
-/** Task 4's part of the approvals port; Task 5 adds `consumeGrant`, `restoreGrant`, `wait`, `answer`. */
+/** Waits one session may have at a time (past it `APPROVAL_LIMIT`). */
+export const MAX_WAITS_PER_SESSION = 4;
+
+/** How often a wait looks at its card again when no answer woke it (ms of real time). */
+export const WAIT_POLL_MS = 250;
+
+export type WaitOutcome = "allow" | "deny" | "expired" | "pending";
+
+/** An answer: the approval, and what a `remember` added (`remember.ts`). */
+export interface Answered {
+  readonly approval: Approval;
+  readonly rule?: ListedRule;
+  readonly notice?: string;
+}
+
+/** The approvals port (plan 7B's frozen interface; `answer` also says what it remembered). */
 export interface Approvals {
   ask(s: Session, kind: "rule" | "provider", subject: Subject, argsHash: string): Effect.Effect<AskResult, FinError>;
+  consumeGrant(sessionId: string, command: string, argsHash: string, idem: string): Effect.Effect<boolean>;
+  restoreGrant(sessionId: string, idem: string): Effect.Effect<void>;
+  wait(id: string, timeoutMs: number, signal?: AbortSignal): Effect.Effect<WaitOutcome, FinError>;
+  answer(id: string, decision: ApprovalDecision, by: Principal, remember?: RememberScope): Effect.Effect<Answered, FinError>;
+}
+
+/** What a `remember` wrote, and how to take it back when the answer is refused. */
+export interface Remembered {
+  readonly rule: ListedRule;
+  readonly notice?: string;
+  readonly undo: () => void;
 }
 
 const plain = (v: unknown): v is Record<string, unknown> => v !== null && typeof v === "object" && !Array.isArray(v);
@@ -197,12 +249,26 @@ export function approvalLimit(open: number, limit: number, scope: "session" | "s
   );
 }
 
+/** `APPROVAL_LIMIT {waits, limit, scope}` (exit 4): a session already waits on `MAX_WAITS_PER_SESSION` cards. */
+function waitLimit(waits: number): FinError {
+  return finError(
+    "APPROVAL_LIMIT",
+    `this session already has ${waits} approval waits running, its most`,
+    { waits, limit: MAX_WAITS_PER_SESSION, scope: "session" },
+    "Wait on one approval at a time: let a running wait end before starting another.",
+  );
+}
+
 export interface ApprovalsDeps {
   readonly control: ControlStore;
   readonly store: AgentStore;
   readonly clock: Clock;
   /** A new card's node and watch item (`Runtime.approvalOpened`); best effort, the row stands. */
   readonly opened?: (s: Session, a: Approval, node: Record<string, unknown>) => void | Promise<void>;
+  /** Records a person's answer (`Runtime.approve`, which also settles a provider request). */
+  readonly approve?: (id: string, decision: ApprovalDecision, by: Principal) => Effect.Effect<{ approval: Approval }, FinError>;
+  /** Writes the rule a `remember` asks for (`remember.ts`). */
+  readonly remember?: (a: Approval, decision: ApprovalDecision, scope: RememberScope, by: Principal) => Remembered;
 }
 
 /** Thrown inside the ask's transaction to roll it back: no run is left to wait on the card. */
@@ -211,10 +277,119 @@ const RUN_GONE = Symbol("runGone");
 export class AgentApprovals implements Approvals {
   readonly #d: ApprovalsDeps;
   readonly #open: OpenApprovals;
+  readonly #grants: Grants;
+  readonly #waiters = new Map<string, Set<() => void>>();
+  /** Running waits by session (`MAX_WAITS_PER_SESSION`). */
+  readonly #waits = new Map<string, number>();
 
   constructor(d: ApprovalsDeps) {
     this.#d = d;
     this.#open = new OpenApprovals(d.control.db);
+    this.#grants = new Grants(d.control.db);
+  }
+
+  consumeGrant(sessionId: string, command: string, hash: string, idem: string): Effect.Effect<boolean> {
+    return Effect.map(this.takeGrant(sessionId, command, hash, idem), (id) => id !== undefined);
+  }
+
+  /** `consumeGrant`, answering the approval whose grant it consumed. */
+  takeGrant(sessionId: string, command: string, hash: string, idem: string): Effect.Effect<string | undefined> {
+    return Effect.sync(() => this.#grants.consume(sessionId, command, hash, idem, this.#d.clock.now()));
+  }
+
+  restoreGrant(sessionId: string, idem: string, approvalId?: string): Effect.Effect<void> {
+    return Effect.sync(() => void this.#grants.restore(sessionId, idem, approvalId));
+  }
+
+  /** Wakes the waits on `id` (an answer was recorded). */
+  notify(id: string): void {
+    for (const wake of this.#waiters.get(id) ?? []) wake();
+  }
+
+  #outcome(id: string, now: number): WaitOutcome {
+    const a = this.#d.store.approval(id);
+    if (a === undefined) throw approvalNotFound(id);
+    if (a.status === "answered") return a.decision ?? "deny";
+    if (a.status === "expired" || a.expiresAt <= now) return "expired";
+    return "pending";
+  }
+
+  /** How many waits are running (tests). */
+  get waiting(): number {
+    return [...this.#waits.values()].reduce((n, x) => n + x, 0);
+  }
+
+  wait(id: string, timeoutMs: number, signal?: AbortSignal): Effect.Effect<WaitOutcome, FinError> {
+    return Effect.tryPromise({
+      // `interrupted` aborts when the fiber is interrupted (a client that went away).
+      try: async (interrupted) => {
+        const a = this.#d.store.approval(id);
+        if (a === undefined) throw approvalNotFound(id);
+        const waits = this.#waits.get(a.sessionId) ?? 0;
+        if (waits >= MAX_WAITS_PER_SESSION) throw waitLimit(waits);
+        this.#waits.set(a.sessionId, waits + 1);
+        const stop = signal === undefined ? interrupted : AbortSignal.any([interrupted, signal]);
+        try {
+          return await this.#waitFor(id, timeoutMs, stop);
+        } finally {
+          const left = (this.#waits.get(a.sessionId) ?? 1) - 1;
+          if (left <= 0) this.#waits.delete(a.sessionId);
+          else this.#waits.set(a.sessionId, left);
+        }
+      },
+      catch: toFinError,
+    });
+  }
+
+  async #waitFor(id: string, timeoutMs: number, signal: AbortSignal): Promise<WaitOutcome> {
+    const clock = this.#d.clock;
+    const ms = Math.max(0, Math.min(timeoutMs, APPROVAL_WAIT_MAX));
+    // Due by the injected clock, and in real time whatever that clock does: a wait never blocks past 90 s.
+    const deadline = clock.now() + ms;
+    const realDeadline = Date.now() + ms;
+    for (;;) {
+      const now = clock.now();
+      const o = this.#outcome(id, now);
+      if (o !== "pending" || now >= deadline || Date.now() >= realDeadline || signal.aborted) return o;
+      await this.#sleep(id, Math.max(1, Math.min(WAIT_POLL_MS, deadline - now, realDeadline - Date.now())), signal);
+    }
+  }
+
+  #sleep(id: string, ms: number, signal: AbortSignal): Promise<void> {
+    return new Promise<void>((resolve) => {
+      let set = this.#waiters.get(id);
+      if (set === undefined) this.#waiters.set(id, (set = new Set()));
+      const done = () => {
+        clearTimeout(timer);
+        signal.removeEventListener("abort", done);
+        set!.delete(done);
+        if (set!.size === 0 && this.#waiters.get(id) === set) this.#waiters.delete(id);
+        resolve();
+      };
+      const timer = setTimeout(done, ms);
+      signal.addEventListener("abort", done, { once: true });
+      set.add(done);
+    });
+  }
+
+  answer(id: string, decision: ApprovalDecision, by: Principal, remember?: RememberScope): Effect.Effect<Answered, FinError> {
+    const d = this.#d;
+    const self = this;
+    return Effect.gen(function* () {
+      const a = d.store.approval(id);
+      if (a === undefined) return yield* Effect.fail(approvalNotFound(id));
+      if (remember !== undefined && a.kind !== "rule" && a.kind !== "provider") {
+        return yield* Effect.fail(finError("INVALID_REQUEST", "only a rule or provider approval can be remembered as a rule", { field: "remember", reason: "notARuleApproval", kind: a.kind }, "answer without remember"));
+      }
+      if (d.approve === undefined) return yield* Effect.die(new Error("approvals have no runtime to answer through"));
+      // An answer that cannot be recorded (answered, past its deadline) writes no rule.
+      const written = remember !== undefined && a.status === "open" && a.expiresAt > d.clock.now() && d.remember !== undefined
+        ? yield* Effect.try({ try: () => d.remember!(a, decision, remember, by), catch: toFinError })
+        : undefined;
+      const r = yield* Effect.tapError(d.approve(id, decision, by), () => Effect.sync(() => written?.undo()));
+      self.notify(id);
+      return { approval: r.approval, ...(written === undefined ? {} : { rule: written.rule, ...(written.notice === undefined ? {} : { notice: written.notice }) }) };
+    });
   }
 
   ask(s: Session, kind: "rule" | "provider", subject: Subject, hash: string): Effect.Effect<AskResult, FinError> {
@@ -270,18 +445,63 @@ export interface AskSessions {
  * The chain's `agentAsk` port (Decision 8): a rule `ask` of an agent session with an active run
  * becomes a durable card and `APPROVAL_PENDING`; anything else (`undefined`) keeps 5A's ask.
  */
-export function agentAsk(approvals: Approvals, sessions: AskSessions, key: Buffer): AgentAsk {
+export function agentAsk(approvals: Pick<Approvals, "ask">, sessions: AskSessions, key: Buffer): AgentAsk {
   return (input) =>
     Effect.gen(function* () {
       const { principal, ask } = input;
       if (principal.kind !== "agent" || ask.command === undefined || ask.rule === undefined || ask.layer === undefined) return undefined;
       const s = sessions.get(principal.id);
       if (s === undefined || sessions.activeRun(s.id) === null) return undefined;
-      // A branch that cannot be resolved fails the call: a card must name what it writes.
-      const branches = yield* resolveWrites(input.rule, input.payload, input.projects);
-      const subject = subjectOf({ command: ask.command, tag: input.tag, payload: input.payload, rule: ask.rule, layer: ask.layer, branches });
-      const hash = argsHash(key, { command: ask.command, rpc: input.tag, args: requestArgs(input.tag, input.payload), branches: subject.branches });
+      const { subject, hash } = yield* cardOf(input, { ...ask, command: ask.command, rule: ask.rule, layer: ask.layer }, key);
       const asked = yield* approvals.ask(s, "rule", subject, hash);
       return asked === undefined ? undefined : approvalPending(input.tag, asked.approval, ask.command, asked.reused);
+    });
+}
+
+/** A request's card and its hash, as the ask writes them and a grant is looked up by. */
+function cardOf(input: PolicyInput, ask: Required<Pick<Ask, "command" | "rule" | "layer">>, key: Buffer): Effect.Effect<{ subject: Subject; hash: string }, FinError> {
+  return Effect.map(
+    // A branch that cannot be resolved fails the call: a card must name what it writes.
+    resolveWrites(input.rule, input.payload, input.projects),
+    (branches) => {
+      const subject = subjectOf({ command: ask.command, tag: input.tag, payload: input.payload, rule: ask.rule, layer: ask.layer, branches });
+      return { subject, hash: argsHash(key, { command: ask.command, rpc: input.tag, args: requestArgs(input.tag, input.payload), branches: subject.branches }) };
+    },
+  );
+}
+
+/**
+ * The idempotency key a grant is consumed for (module docs, Decision 10): the payload's
+ * `idemKey` (`jobs.submit`, `--idem-key`), else the write's `txId` (`--idem-key`, or `FIN_CALL`
+ * under `FIN_CALL_IDEM=1`), else the call's `FIN_CALL`, else a fresh id.
+ */
+export function idemOf(input: Pick<PolicyInput, "payload" | "principal" | "headers">): string {
+  const p = plain(input.payload) ? input.payload : {};
+  const tx = plain(p.tx) ? p.tx : {};
+  const key = typeof p.idemKey === "string" && p.idemKey !== "" ? p.idemKey : undefined;
+  const txId = typeof p.txId === "string" ? p.txId : typeof tx.txId === "string" ? tx.txId : undefined;
+  return key ?? txId ?? actorFor(input.principal, input.headers).actor.call ?? `grant:${ulid()}`;
+}
+
+/** What `commandRules` asks of grants: one consumed for this call, and how to give it back. */
+export type GrantPort = (input: PolicyInput, ask: Required<Pick<Ask, "command" | "rule" | "layer">>) => Effect.Effect<Effect.Effect<void> | undefined, FinError>;
+
+/**
+ * The one-time grants for `commandRules` (Decision 10): an agent session's `ask` consumes a
+ * matching `allow` answer, if there is one, before the handler; the answer is the effect that
+ * restores it (`undefined`: no grant, the call asks). `afterConsume` is a test's crash point.
+ */
+export function grantPort(approvals: Pick<AgentApprovals, "takeGrant" | "restoreGrant">, sessions: Pick<AskSessions, "get">, key: Buffer, afterConsume?: (sessionId: string, idem: string) => Promise<void>): GrantPort {
+  return (input, ask) =>
+    Effect.gen(function* () {
+      if (input.principal.kind !== "agent") return undefined;
+      const s = sessions.get(input.principal.id);
+      if (s === undefined) return undefined;
+      const { hash } = yield* cardOf(input, ask, key);
+      const idem = idemOf(input);
+      const id = yield* approvals.takeGrant(s.id, ask.command, hash, idem);
+      if (id === undefined) return undefined;
+      if (afterConsume !== undefined) yield* Effect.promise(() => afterConsume(s.id, idem));
+      return approvals.restoreGrant(s.id, idem, id);
     });
 }

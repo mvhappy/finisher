@@ -138,8 +138,8 @@ export const HandlersLive = FinRpcs.toLayer(
     const reach = new BranchReach(agents.store, agents.lineage, projects);
     // Then the outcome tracker (Task 11), once the session's own rows are written.
     const hooks = withOutcomes(agentChainHooks({ reach, paths: new PathReach(agents.store, projects), sessions: agents.store, clock: agents.clock.now }), agents.outcomes, projects);
-    // Then command rules (7B Task 2), for agent principals only.
-    const policies = [reach.policy, agentBranchLimitsExcept((p) => reach.covers(p)), commandRules(agentRuntime.rules, agents.store)];
+    // Then command rules (7B Task 2), for agent principals only; a person's allow is a one-time grant (Task 5).
+    const policies = [reach.policy, agentBranchLimitsExcept((p) => reach.covers(p)), commandRules(agentRuntime.rules, agents.store, { grants: agentRuntime.grants })];
     // A running session's rule ask becomes a durable card (7B Task 4): `APPROVAL_PENDING`.
     const agentAsk = agentAskPort(agentRuntime.approvals, agents.store, agentRuntime.approvalKey);
     /** An agent session's default branch, for `auth.whoami` (Decision 14a); none for any other principal. */

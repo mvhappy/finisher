@@ -96,7 +96,8 @@ type Read = { readonly absent: true } | { readonly error: string } | { readonly 
 const cache = new Map<string, { readonly key: string; readonly read: Read }>();
 /** Not following a FIFO into a blocking open (Windows has no such flag: 0). */
 const NONBLOCK = constants.O_NONBLOCK ?? 0;
-const hashOf = (bytes: Buffer) => `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
+/** A rules file's hash as trust records it (`sha256:<hex>` of its bytes). */
+export const hashOf = (bytes: Buffer) => `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
 
 /** `path` read and parsed with `parse` (cached per `slot`, see the module docs). */
 function readRules(path: string, slot: string, parse: (json: unknown) => Rule[]): Read {

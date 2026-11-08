@@ -374,7 +374,10 @@ export const RPC_SCOPES: { readonly [T in FinRpcTag]: RuleOf<T> } = {
   "agent.session.delete": { scopes: ["agent.admin"] },
   "agent.watch": { scopes: ["agent.read"] },
   "agent.approval.list": { scopes: ["agent.read"], resolve: PROJECT },
+  // A person's, from any device or the console: never an agent's (`agent.approve` is human-only).
   "agent.approval.answer": { scopes: ["agent.approve"] },
+  // A session waits on its own cards (the handler checks it is its own), a person on any in reach.
+  "agent.approval.wait": { scopes: ["agent.read"], kinds: [...SESSION_DRIVERS, "agent"] },
   // Server facts: detection, sign-in state as reported, whether keys are set (never a value).
   "agent.providers": { scopes: ["server.read"] },
   // The calling session's own default branch and tries; `branch` is checked against the session's
