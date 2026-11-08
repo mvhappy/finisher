@@ -26,6 +26,7 @@ import { ControlStoreTag, layerControlStore } from "./control/db.ts";
 import { layerFonts, type FontsOptions } from "./fonts.ts";
 import { Diagnostics, type DiagnosticsOptions, makeDiagnostics } from "./diagnostics.ts";
 import { withServerLock } from "./lock.ts";
+import { layerPlugins } from "./plugins/registries.ts";
 import { layerProjectRegistry, type RegistryOptions } from "./projects.ts";
 import { claimSocketPath, makeLocalSocketServer, makeWebSocketServer, portOf, serveRpc } from "./transport.ts";
 
@@ -75,6 +76,7 @@ export const serve = ({ serverData, onReady, registry, fonts, diagnostics: diagn
             Layer.mergeAll(
               layerProjectRegistry(serverData, registry),
               layerFonts(serverData, fonts),
+              layerPlugins(serverData).pipe(Layer.provide(Layer.succeedContext(control))),
               Layer.succeed(Diagnostics, diagnostics),
               Layer.succeedContext(control),
               Layer.succeed(KeysTag, keys),

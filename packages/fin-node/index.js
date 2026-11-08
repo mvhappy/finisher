@@ -3,6 +3,7 @@ import { existsSync } from "node:fs";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import { nativeFileNames } from "./loader.js";
+import { defineRegistry } from "./registry.js";
 
 const require = createRequire(import.meta.url);
 const here = fileURLToPath(new URL(".", import.meta.url));
@@ -506,38 +507,8 @@ export function probe(path) {
   return call(native.probe(path));
 }
 
-export class Registry {
-  #native;
-
-  constructor(nativeRegistry) {
-    if (!(nativeRegistry instanceof native.Registry)) throw new TypeError("use Registry.open");
-    this.#native = nativeRegistry;
-  }
-
-  static open(serverData) {
-    try {
-      return new Registry(native.Registry.open(serverData));
-    } catch (e) {
-      throw toFinError(e);
-    }
-  }
-
-  plan(reqJson) {
-    return call(this.#native.plan(reqJson));
-  }
-
-  commit(planId, digest, acceptJson) {
-    return call(this.#native.commit(planId, digest, acceptJson ?? null));
-  }
-
-  removePlugin(id, version, purgeData) {
-    return call(this.#native.removePlugin(id, version, purgeData === true));
-  }
-
-  sweep() {
-    return call(this.#native.sweep());
-  }
-}
+/** The plugin store and registries of a server (`registry.js`). */
+export const Registry = defineRegistry({ native, call, toFinError });
 
 export function validateManifest(dir, source) {
   return call(native.validateManifest(dir, source ?? null));
@@ -577,6 +548,13 @@ export const testHooks = native.writeFixtureMp4ForTest
       packPlugin(src, out) {
         try {
           return native.packPluginForTest(src, out);
+        } catch (e) {
+          throw toFinError(e);
+        }
+      },
+      buildRegistry(dir, keysDir, specJson) {
+        try {
+          return native.buildRegistryForTest(dir, keysDir, specJson);
         } catch (e) {
           throw toFinError(e);
         }

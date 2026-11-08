@@ -34,6 +34,21 @@ import {
   RecoverReportSuccess,
 } from "./history.ts";
 import {
+  PluginInfoPayload,
+  PluginInfoSuccess,
+  PluginListPayload,
+  PluginListSuccess,
+  PluginSearchPayload,
+  PluginSearchSuccess,
+  RegistryAddPayload,
+  RegistryForgetPayload,
+  RegistryIdPayload,
+  RegistryListSuccess,
+  RegistryRefreshPayload,
+  RegistryRefreshSuccess,
+  RegistryStatusSuccess,
+} from "./plugins.ts";
+import {
   DiagnosticsConsentPayload,
   DiagnosticsConsentSuccess,
   DiagnosticsExportPayload,
@@ -414,4 +429,15 @@ export const FinRpcs = RpcGroup.make(
   Rpc.make("diagnostics.project", { payload: DiagnosticsProjectPayload, success: DiagnosticsProjectSuccess, error: FinError }),
   Rpc.make("diagnostics.consent", { payload: DiagnosticsConsentPayload, success: DiagnosticsConsentSuccess, error: FinError }),
   Rpc.make("diagnostics.record", { payload: DiagnosticsRecordPayload, success: DiagnosticsRecordSuccess, error: FinError }),
+  // Plugins and registries (sub-project 8A Task 9a): the registries and what they offer. Plans,
+  // installs and the lifecycle come with Task 9b.
+  Rpc.make("registry.list", { payload: Schema.Struct({}), success: RegistryListSuccess, error: FinError }),
+  Rpc.make("registry.status", { payload: RegistryIdPayload, success: RegistryStatusSuccess, error: FinError }),
+  Rpc.make("registry.add", { payload: RegistryAddPayload, success: RegistryStatusSuccess, error: FinError }),
+  Rpc.make("registry.remove", { payload: RegistryIdPayload, success: Schema.Struct({ removed: Schema.Boolean }), error: FinError }),
+  Rpc.make("registry.forget", { payload: RegistryForgetPayload, success: Schema.Struct({ forgotten: Schema.Boolean }), error: FinError }),
+  Rpc.make("registry.refresh", { payload: RegistryRefreshPayload, success: RegistryRefreshSuccess, error: FinError }),
+  Rpc.make("plugin.list", { payload: PluginListPayload, success: PluginListSuccess, error: FinError }),
+  Rpc.make("plugin.search", { payload: PluginSearchPayload, success: PluginSearchSuccess, error: FinError }),
+  Rpc.make("plugin.info", { payload: PluginInfoPayload, success: PluginInfoSuccess, error: FinError }),
 );

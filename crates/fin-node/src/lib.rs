@@ -57,6 +57,8 @@ mod server_lock;
 mod tasks;
 #[cfg(feature = "test-hooks")]
 mod test_hooks;
+#[cfg(feature = "test-hooks")]
+mod test_registry;
 mod worker;
 
 pub use engine::Engine;

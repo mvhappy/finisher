@@ -326,6 +326,38 @@ export declare class Registry {
   removePlugin(id: string, version: string, purgeData: boolean): Promise<void>;
   /** Deletes expired and broken plans; resolves to how many. */
   sweep(): Promise<number>;
+  /**
+   * Every added registry's `RegistryStatus` as a `RegistryList` JSON (`{ registries,
+   * problems }`): a registry that cannot be opened is a problem and hides no other.
+   */
+  registryList(): Promise<string>;
+  /** One registry's `RegistryStatus` JSON; rejects with `REGISTRY_NOT_FOUND`. */
+  registryStatus(id: string): Promise<string>;
+  /**
+   * Adds the local-folder registry `{ id, path }` (JSON) trusted through `rootJson`:
+   * `{ kind: "file", path }` (a root file of the folder) or `{ kind: "sha256", sha256 }`.
+   * Resolves to its `RegistryStatus` JSON; rejects with `REGISTRY_INVALID`,
+   * `REGISTRY_EXISTS` or `REGISTRY_UNTRUSTED` (the root is none of the folder's; nothing is
+   * written). Nothing is fetched: refresh next.
+   */
+  registryAdd(cfgJson: string, rootJson: string): Promise<string>;
+  /** Deletes the registry's config; its trusted metadata stays (Decision 14). */
+  registryRemove(id: string): Promise<void>;
+  /** Deletes the trusted metadata of a root no registry uses. */
+  registryForget(rootSha256: string): Promise<void>;
+  /**
+   * Refreshes the registry from its folder; resolves to `{ status, report }` JSON
+   * (`RegistryStatus`, `RefreshReport`) or rejects with `TUF_*`, `CLOCK_SUSPECT`,
+   * `REGISTRY_INVALID`. Journals `registry.refresh` with `byHuman`.
+   */
+  registryRefresh(id: string, byHuman: boolean): Promise<string>;
+  /**
+   * Plugins the registries list: `{ text?, kind?, registry? }` JSON; resolves to a `Listing`
+   * array JSON.
+   */
+  search(queryJson: string): Promise<string>;
+  /** What each registry signs about plugin `id`: a `PluginInfo` array JSON (empty when none). */
+  info(id: string): Promise<string>;
 }
 
 /**
@@ -406,5 +438,11 @@ export declare const testHooks:
       ): void;
       /** Packs an unpacked plugin into a `.finpkg`; returns the archive's SHA-256. */
       packPlugin(src: string, out: string): string;
+      /**
+       * Builds a signed local-folder registry in `dir` (keys in `keysDir`, outside it) from
+       * `{ packages?: ["@pub/name@1.0.0", ...], maxStaleDays?, ageDays? }` (content packs;
+       * `ageDays`: signed as of that many days ago); returns `{ rootSha256, rootFile }` JSON.
+       */
+      buildRegistry(dir: string, keysDir: string, specJson: string): string;
     }
   | undefined;

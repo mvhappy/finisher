@@ -12,6 +12,7 @@
 
 mod host;
 mod log;
+mod registries;
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -99,6 +100,8 @@ struct PlanReq {
 
 struct Inner {
     store: Store,
+    /// `<server-data>/plugins`: the registries' configs and trusted metadata.
+    base: PathBuf,
     /// The server data, canonical ([`crate::journal::server_key`]).
     key: PathBuf,
     node: Option<semver::Version>,
@@ -139,6 +142,7 @@ impl Registry {
         Ok(Registry {
             inner: Arc::new(Inner {
                 store,
+                base: data.join("plugins"),
                 key: crate::journal::server_key(data),
                 node,
             }),

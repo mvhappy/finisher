@@ -29,6 +29,16 @@ pub const DENIED_CODES: &[&str] = &[
     "APPROVAL_REQUIRED",
     "CONSOLE_NEEDS_TTY",
     "CONFIRMATION_REQUIRED",
+    // Plugin registries (sub-project 8A Task 9a, spec §13): a person must look. The root is not
+    // the pinned one, or signed metadata did not verify (`TUF_*`: signatures, thresholds,
+    // rollback, expiry beyond `maxStaleDays`, delegations, a target that is not what was signed).
+    "REGISTRY_UNTRUSTED",
+    "TUF_SIGNATURE",
+    "TUF_THRESHOLD",
+    "TUF_ROLLBACK",
+    "TUF_EXPIRED",
+    "TUF_DELEGATION",
+    "TUF_TARGET_MISMATCH",
 ];
 
 /// Codes that mean "the request was well-formed but rejected by validation" (exit 3).
@@ -162,6 +172,11 @@ const VALIDATION_CODES: &[&str] = &[
     "EVENT_KIND_UNKNOWN",
     "EVENT_INVALID",
     "EVENT_TOO_LARGE",
+    // Registries and plugins (sub-project 8A Task 9a): no such registry or plugin; a registry
+    // whose metadata does not parse, breaks a size cap or the layout (`details.reason`).
+    "REGISTRY_NOT_FOUND",
+    "REGISTRY_INVALID",
+    "PLUGIN_NOT_FOUND",
 ];
 
 /// Codes that mean "the project moved under you; read it again and retry" (exit 4).
@@ -188,6 +203,8 @@ const CONFLICT_CODES: &[&str] = &[
     "LEASE_LOST",
     "HISTORY_REWOUND",
     "TX_SET_ASIDE",
+    // A registry with this id exists (8A Task 9a).
+    "REGISTRY_EXISTS",
 ];
 
 /// Codes that mean "this request can never succeed as sent" (exit 2, like `USAGE`).
@@ -234,6 +251,10 @@ const UNAVAILABLE_CODES: &[&str] = &[
     "JOURNAL_UNAVAILABLE",
     "SETTINGS_INVALID",
     "SETTINGS_WRITE_FAILED",
+    // A registry folder that cannot be read; the clock is more than a day before the last
+    // refresh (`fix`: set the clock, then refresh) (8A Task 9a). `REGISTRY_STALE` is a warning.
+    "REGISTRY_UNREACHABLE",
+    "CLOCK_SUSPECT",
 ];
 
 /// The one place error codes become exit codes.
@@ -354,6 +375,25 @@ mod tests {
         assert_eq!(exit_code("EVENT_TOO_LARGE"), 3);
         assert_eq!(exit_code("FONT_FETCH_FAILED"), 5);
         assert_eq!(exit_code("FONTS_DAMAGED"), 5);
+        // Registries (8A Task 9a, spec §13): 3 for what is not there or malformed, 4 for a
+        // clash, 5 for unreachable or a suspect clock, 7 when a person must look.
+        for (code, exit) in [
+            ("REGISTRY_NOT_FOUND", 3),
+            ("REGISTRY_INVALID", 3),
+            ("PLUGIN_NOT_FOUND", 3),
+            ("REGISTRY_EXISTS", 4),
+            ("REGISTRY_UNREACHABLE", 5),
+            ("CLOCK_SUSPECT", 5),
+            ("REGISTRY_UNTRUSTED", 7),
+            ("TUF_SIGNATURE", 7),
+            ("TUF_THRESHOLD", 7),
+            ("TUF_ROLLBACK", 7),
+            ("TUF_EXPIRED", 7),
+            ("TUF_DELEGATION", 7),
+            ("TUF_TARGET_MISMATCH", 7),
+        ] {
+            assert_eq!(exit_code(code), exit, "{code}");
+        }
         assert_eq!(exit_code("TRACK_LOCKED"), 3);
         assert_eq!(exit_code("OVERWRITE_SPLITS_ITEM"), 3);
         assert_eq!(exit_code("NOT_ADJACENT"), 3);

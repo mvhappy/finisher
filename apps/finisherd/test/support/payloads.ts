@@ -48,4 +48,13 @@ export const SAMPLE_PAYLOADS: { readonly [T in FinRpcTag]: Record<string, unknow
   "diagnostics.project": { projectId: P, collect: "never" },
   "diagnostics.consent": { purpose: "diagnostics", value: "off" },
   "diagnostics.record": { kind: "cli.command", kv: 1, payload: {} },
+  "registry.list": {},
+  "registry.status": { id: "team" },
+  "registry.add": { cfg: { id: "team", path: "/nowhere/registry" }, root: { kind: "sha256", sha256: "0".repeat(64) } },
+  "registry.remove": { id: "team" },
+  "registry.forget": { rootSha256: "0".repeat(64) },
+  "registry.refresh": {},
+  "plugin.list": {},
+  "plugin.search": {},
+  "plugin.info": { id: "@acme/pack" },
 };

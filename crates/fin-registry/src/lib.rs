@@ -25,6 +25,7 @@ pub mod plan;
 pub mod registry;
 pub mod schema;
 pub mod search;
+pub mod status;
 pub mod store;
 pub mod target;
 pub mod transport;

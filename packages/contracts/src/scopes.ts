@@ -29,7 +29,10 @@ export const SCOPES = [
   "diagnostics.admin",
   "settings.admin",
   "auth.admin",
+  "plugin.read",
   "plugin.install",
+  "plugin.admin",
+  "plugin.suggest",
 ] as const;
 
 export const ScopeSchema = Schema.Literals(SCOPES);
@@ -43,6 +46,7 @@ export const HUMAN_ONLY: ReadonlySet<Scope> = new Set<Scope>([
   "settings.admin",
   "auth.admin",
   "plugin.install",
+  "plugin.admin",
 ]);
 
 export type FinRpcTag = RpcGroup.Rpcs<typeof FinRpcs>["_tag"];
@@ -142,6 +146,18 @@ export const RPC_SCOPES: { readonly [T in FinRpcTag]: RpcRule } = {
   "diagnostics.project": rule(["diagnostics.read"], { resolve: PROJECT }),
   "diagnostics.consent": rule(["diagnostics.read"]),
   "diagnostics.record": rule(["diagnostics.record"]),
+  // Plugins and registries (sub-project 8A Decision 29). Reads and refreshes are open to any
+  // principal with `plugin.read` (a refresh by a non-human installs nothing, 9b); the
+  // registries themselves are the owner's (`plugin.admin` is human-only).
+  "registry.list": rule(["plugin.read"]),
+  "registry.status": rule(["plugin.read"]),
+  "registry.add": rule(["plugin.admin"]),
+  "registry.remove": rule(["plugin.admin"]),
+  "registry.forget": rule(["plugin.admin"]),
+  "registry.refresh": rule(["plugin.read"]),
+  "plugin.list": rule(["plugin.read"]),
+  "plugin.search": rule(["plugin.read"]),
+  "plugin.info": rule(["plugin.read"]),
 };
 
 /** Every scope `tag` needs for `payload`, given the resolved `facts`. */

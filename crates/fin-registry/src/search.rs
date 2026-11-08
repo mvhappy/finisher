@@ -6,6 +6,7 @@
 use std::collections::BTreeMap;
 
 use fin_plugin_api::{Platform, PluginId, PluginKind};
+use schemars::JsonSchema;
 use semver::Version;
 use serde::Serialize;
 
@@ -21,7 +22,7 @@ pub struct SearchQuery {
 }
 
 /// One published version.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct VersionInfo {
     pub version: String,
@@ -40,7 +41,7 @@ pub struct VersionInfo {
 }
 
 /// A plugin in search results: its newest version that is not yanked.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct Listing {
     pub registry_id: String,
@@ -53,7 +54,7 @@ pub struct Listing {
 }
 
 /// Everything a registry signs about one plugin.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct PluginInfo {
     pub registry_id: String,

@@ -14,6 +14,7 @@ const WHAT: Partial<Record<Scope, string>> = {
   "settings.admin": "change this server's settings",
   "auth.admin": "manage credentials, devices and this server",
   "plugin.install": "install plugins",
+  "plugin.admin": "add, remove or distrust plugin registries and turn plugins on or off",
 };
 
 export function humanOnly(tag: string, scope: Scope, principal: Principal): FinError {

@@ -8,3 +8,4 @@ export * from "./diagnostics.ts";
 export * from "./auth.ts";
 export * from "./scopes.ts";
 export * from "./jobs.ts";
+export * from "./plugins.ts";

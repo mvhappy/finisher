@@ -11,6 +11,8 @@ import { callMeta, Diagnostics, RpcSource } from "./diagnostics.ts";
 import { attemptJson, finError, toFinError } from "./errors.ts";
 import { Fonts } from "./fonts.ts";
 import { requireAbsolute, requireAbsoluteOpt } from "./paths.ts";
+import { pluginHandlers } from "./plugins/rpc.ts";
+import { PluginsTag } from "./plugins/registries.ts";
 import { ProjectRegistry } from "./projects.ts";
 
 /** Advertised in `server.hello`: the RPC tags this server implements. */
@@ -36,6 +38,7 @@ export const HandlersLive = FinRpcs.toLayer(
     const connections = yield* ConnectionsTag;
     const handshake = yield* HandshakeTag;
     const audit = yield* AuditTag;
+    const plugins = yield* PluginsTag;
     const guard = <A, R>(tag: string, self: Effect.Effect<A, FinError, R>) => diagnostics.timed(tag, defectsAsErrors(self));
     /** A write's `metaJson`: its actor and the chain's write guard. */
     const meta = (options: { readonly headers: unknown }) => ({
@@ -137,6 +140,7 @@ export const HandlersLive = FinRpcs.toLayer(
       "diagnostics.consent": ({ purpose, value }) => guard("diagnostics.consent", diagnostics.consent(source, purpose, value)),
       "diagnostics.record": (req, { client, headers }) =>
         guard("diagnostics.record", diagnostics.record(source, client.id, req, headers)),
+      ...pluginHandlers({ plugins, audit, guard }),
     }), { connections, projects, audit, timed: guard });
   }),
 );

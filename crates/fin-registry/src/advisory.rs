@@ -2,9 +2,10 @@
 //! the publisher's role) and registry-wide in `advisories.json` (signed by top-level
 //! `targets`).
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub enum Severity {
     Low,
@@ -13,7 +14,7 @@ pub enum Severity {
     Critical,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub enum AdvisoryAction {
     /// Shown with the plugin; nothing changes.
@@ -22,7 +23,7 @@ pub enum AdvisoryAction {
     Disable,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Advisory {
     pub id: String,
@@ -45,7 +46,7 @@ pub struct AdvisoryFile {
 }
 
 /// An advisory with the role that signed it.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct SignedAdvisory {
     /// `targets` for registry-wide advisories, else the publisher.

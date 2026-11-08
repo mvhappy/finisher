@@ -2,7 +2,10 @@
 // `control.db` `audit`; they are read only by the owner (`auth.audit.list`, Task 8).
 import { Schema } from "effect";
 
-/** Every audit kind (spec §3.3); the last six are reserved for sub-projects 7 and 8. */
+/**
+ * Every audit kind (spec §3.3); the six after `console.refused` are reserved for sub-projects 7
+ * and 8, and the `plugin.*` and `registry.*` kinds are sub-project 8's (8A Decision 28).
+ */
 export const AUDIT_KINDS = [
   "auth.fail",
   "auth.denied",
@@ -43,6 +46,17 @@ export const AUDIT_KINDS = [
   "hook.modify",
   "sandbox.violation",
   "plugin.install",
+  "plugin.update",
+  "plugin.remove",
+  "plugin.enable",
+  "plugin.disable",
+  "plugin.revoke",
+  "plugin.grant",
+  "registry.add",
+  "registry.remove",
+  "registry.trust",
+  "registry.forget",
+  "registry.verifyFail",
 ] as const;
 
 export const AuditKindSchema = Schema.Literals(AUDIT_KINDS);
@@ -104,6 +118,25 @@ const COMMON = {
   transport: Schema.optional(Schema.Literals(["socket", "pipe", "ws"])),
 };
 const NAMES = { deviceName: Schema.optional(Name), label: Schema.optional(Name) };
+/** A plugin id (`@publisher/name`), a registry id and a version (8A Decision 28). */
+const PluginIdWord = Schema.String.check(Schema.isPattern(/^@[a-z0-9][a-z0-9-]{1,38}\/[a-z0-9][a-z0-9-]{1,63}$/));
+const RegistryIdWord = Schema.String.check(Schema.isPattern(/^[a-z0-9][a-z0-9-]{0,63}$/));
+const VersionWord = Schema.String.check(Schema.isMaxLength(64), Schema.isPattern(/^[0-9][0-9A-Za-z.+-]*$/));
+const Sha256Word = Schema.String.check(Schema.isPattern(/^[0-9a-f]{64}$/));
+/**
+ * What `plugin.*` and `registry.*` rows may say: ids, a version, counts, a risk word, an error
+ * code, a root's SHA-256 (`registry.forget`/`trust`) and the third-party-code acceptance. Never
+ * a path, a publisher's name or a manifest field.
+ */
+const PLUGIN_FIELDS = {
+  pluginId: Schema.optional(PluginIdWord),
+  version: Schema.optional(VersionWord),
+  registryId: Schema.optional(RegistryIdWord),
+  rootSha256: Schema.optional(Sha256Word),
+  permissionsAdded: Schema.optional(Schema.Int),
+  risk: Schema.optional(Schema.Literals(["low", "medium", "high"])),
+  thirdPartyCode: Schema.optional(Schema.Struct({ accepted: Schema.Boolean, confined: Schema.Boolean })),
+};
 const ADDRESS = { address: Schema.optional(Address) };
 
 const PAIRING: ReadonlyArray<AuditKind> = ["pair.offer", "pair.redeem", "pair.approve", "pair.reject", "pair.expire"];
@@ -119,11 +152,16 @@ export const AUDIT_NAME_KINDS: ReadonlySet<AuditKind> = new Set<AuditKind>([
 export const AUDIT_ADDRESS_KINDS: ReadonlySet<AuditKind> = new Set<AuditKind>([...PAIRING, "auth.fail"]);
 
 const PlainDetails = Schema.Struct(COMMON);
+const PluginDetails = Schema.Struct({ ...COMMON, ...PLUGIN_FIELDS });
 const NamedDetails = Schema.Struct({ ...COMMON, ...NAMES });
 const AddressedDetails = Schema.Struct({ ...COMMON, ...NAMES, ...ADDRESS });
-type DetailsSchema = typeof PlainDetails | typeof NamedDetails | typeof AddressedDetails;
+type DetailsSchema = typeof PlainDetails | typeof NamedDetails | typeof AddressedDetails | typeof PluginDetails;
+
+/** Kinds whose details may name a plugin, a registry and a version. */
+export const AUDIT_PLUGIN_KINDS: ReadonlySet<AuditKind> = new Set<AuditKind>(AUDIT_KINDS.filter((k) => k.startsWith("plugin.") || k.startsWith("registry.")));
 
 function detailsSchema(kind: AuditKind): DetailsSchema {
+  if (AUDIT_PLUGIN_KINDS.has(kind)) return PluginDetails;
   if (AUDIT_ADDRESS_KINDS.has(kind)) return AddressedDetails;
   return AUDIT_NAME_KINDS.has(kind) ? NamedDetails : PlainDetails;
 }
@@ -134,6 +172,7 @@ export const AUDIT_DETAILS: { readonly [K in AuditKind]: DetailsSchema } = Objec
 ) as { readonly [K in AuditKind]: DetailsSchema };
 
 const DECODE = {
+  plugin: Schema.decodeUnknownExit(PluginDetails),
   plain: Schema.decodeUnknownExit(PlainDetails),
   named: Schema.decodeUnknownExit(NamedDetails),
   addressed: Schema.decodeUnknownExit(AddressedDetails),
@@ -141,6 +180,12 @@ const DECODE = {
 
 /** True when `details` fits `kind`'s schema exactly (no other field). */
 export function auditDetailsValid(kind: AuditKind, details: unknown): boolean {
-  const decode = AUDIT_ADDRESS_KINDS.has(kind) ? DECODE.addressed : AUDIT_NAME_KINDS.has(kind) ? DECODE.named : DECODE.plain;
+  const decode = AUDIT_PLUGIN_KINDS.has(kind)
+    ? DECODE.plugin
+    : AUDIT_ADDRESS_KINDS.has(kind)
+      ? DECODE.addressed
+      : AUDIT_NAME_KINDS.has(kind)
+        ? DECODE.named
+        : DECODE.plain;
   return decode(details, { onExcessProperty: "error" })._tag === "Success";
 }
