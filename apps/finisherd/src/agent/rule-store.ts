@@ -7,6 +7,10 @@
 //   them (`agent.rules.add|remove`, human-only, and 7B's remembered answers).
 //   A session's own rules go with it (`AgentStore`'s delete and retention sweep remove its
 //   `agent_rules` rows with the session's other rows).
+// - **Remembered** (`agent_remembered`, agent migration 0006): the record of each rule a
+//   person's `remember` wrote (`remember.ts`), written only by `add(…, from)` and `remembered`,
+//   never by an RPC that takes a rule from its caller. It is what proves a remembered `allow`
+//   for the lift (`rules.ts`); a rule's `source` text proves nothing.
 // - **Trust** records the hash of a project's `finisher.rules.json` a person trusted
 //   (`trust.ts`), so a changed file stops applying until it is trusted again.
 import type { DatabaseSync, StatementSync } from "node:sqlite";
@@ -28,6 +32,18 @@ export interface NewLocalRule {
 
 /** A local rule with where it applies. */
 export type LocalRule = Rule & { readonly projectId?: string; readonly sessionId?: string };
+
+/** The record of a rule a `remember` wrote (agent migration 0006). */
+export interface RememberedRule {
+  readonly ruleId: string;
+  readonly layer: "local" | "project";
+  readonly projectId: string;
+  /** A `session`-scoped local rule's session. */
+  readonly sessionId?: string;
+  readonly command: string;
+  readonly approvalId: string;
+  readonly createdAt: number;
+}
 
 export interface ProjectTrust {
   readonly projectId: string;
@@ -55,6 +71,10 @@ const decodeWhere = Schema.decodeUnknownSync(RuleWhere);
 const SQL = {
   insert: `INSERT INTO agent_rules (${COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   remove: "DELETE FROM agent_rules WHERE id = ?",
+  record: "INSERT INTO agent_remembered (ruleId, layer, projectId, sessionId, command, approvalId, createdAt) VALUES (?, ?, ?, ?, ?, ?, ?)",
+  forget: "DELETE FROM agent_remembered WHERE layer = ? AND projectId = ? AND ruleId = ?",
+  forgetLocal: "DELETE FROM agent_remembered WHERE layer = 'local' AND ruleId = ?",
+  proves: "SELECT 1 AS ok FROM agent_remembered WHERE layer = ? AND projectId = ? AND ruleId = ? AND command = ? AND sessionId IS ?",
   get: `SELECT ${COLUMNS} FROM agent_rules WHERE id = ?`,
   all: `SELECT ${COLUMNS} FROM agent_rules ORDER BY createdAt, id`,
   applicable: `SELECT ${COLUMNS} FROM agent_rules WHERE (projectId IS NULL OR projectId = ?) AND (sessionId IS NULL OR sessionId = ?) ORDER BY createdAt, id`,
@@ -80,13 +100,66 @@ function toRule(r: RuleRow): LocalRule {
 
 export class RuleStore {
   readonly #s: Record<keyof typeof SQL, StatementSync>;
+  readonly #db: DatabaseSync;
 
   /** Over `control.db` (the agent chain's migration 0004 made the tables). */
   constructor(db: DatabaseSync) {
+    this.#db = db;
     this.#s = Object.fromEntries(Object.entries(SQL).map(([k, sql]) => [k, db.prepare(sql)])) as Record<keyof typeof SQL, StatementSync>;
   }
 
-  add(r: NewLocalRule): LocalRule {
+  /**
+   * Adds a local rule; with `from` (the approval a `remember` answered) also its record, in one
+   * transaction, so the rule never stands without the record that proves it (or the reverse).
+   */
+  add(r: NewLocalRule, from?: string): LocalRule {
+    if (from === undefined) return this.#insert(r);
+    if (r.projectId === undefined) throw new Error("a remembered rule names its project");
+    const projectId = r.projectId;
+    return this.#atomic(() => {
+      const rule = this.#insert(r);
+      this.remembered({ ruleId: r.id, layer: "local", projectId, ...(r.sessionId === undefined ? {} : { sessionId: r.sessionId }), command: r.command, approvalId: from, createdAt: r.createdAt });
+      return rule;
+    });
+  }
+
+  /** Records a rule a `remember` wrote (a project file's, or through `add`). */
+  remembered(m: RememberedRule): void {
+    this.#s.record.run(m.ruleId, m.layer, m.projectId, m.sessionId ?? null, m.command, m.approvalId, m.createdAt);
+  }
+
+  /** Drops the record of a project file's remembered rule (its write was taken back). */
+  forget(projectId: string, ruleId: string): void {
+    this.#s.forget.run("project", projectId, ruleId);
+  }
+
+  /**
+   * Whether `rule` is exactly what a `remember` wrote: an `allow` with no `where`, and a record
+   * of its id, layer, project, session and command. A local rule is checked against its own
+   * row's project and session; a project file's against the project whose file it is in.
+   */
+  proves(rule: Rule | LocalRule, projectId: string | undefined): boolean {
+    if (rule.effect !== "allow" || rule.where !== undefined) return false;
+    const l = rule as LocalRule;
+    if (rule.layer === "local") return l.projectId !== undefined && this.#s.proves.get("local", l.projectId, rule.id, rule.command, l.sessionId ?? null) !== undefined;
+    if (rule.layer === "project") return projectId !== undefined && this.#s.proves.get("project", projectId, rule.id, rule.command, null) !== undefined;
+    return false;
+  }
+
+  #atomic<A>(f: () => A): A {
+    this.#db.exec("SAVEPOINT remembered");
+    try {
+      const out = f();
+      this.#db.exec("RELEASE remembered");
+      return out;
+    } catch (e) {
+      this.#db.exec("ROLLBACK TO remembered");
+      this.#db.exec("RELEASE remembered");
+      throw e;
+    }
+  }
+
+  #insert(r: NewLocalRule): LocalRule {
     this.#s.insert.run(
       r.id,
       r.projectId ?? null,
@@ -108,6 +181,7 @@ export class RuleStore {
 
   /** Whether a rule was removed. */
   remove(id: string): boolean {
+    this.#s.forgetLocal.run(id);
     return Number(this.#s.remove.run(id).changes) > 0;
   }
 

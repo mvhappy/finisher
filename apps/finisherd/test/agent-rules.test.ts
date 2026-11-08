@@ -131,6 +131,31 @@ describe("units", () => {
     }
   });
 
+  test("remembered_allow_lifts_ask: an exact remembered allow lifts asks below managed, never a deny or a managed ask", () => {
+    // `remembered` is the set of allows whose record proves a person's `remember` wrote them.
+    const lift = rule("local", "allow", "render", undefined, "remembered");
+    const lifted = (rules: readonly Rule[], names: readonly string[] = ["render"], remembered: readonly Rule[] = [lift]) =>
+      new RuleSet([lift, ...rules], new Set(remembered)).decide(names, SESSION, NOTHING_RESOLVED);
+    for (const layer of ["local", "project", "user", "role"] as const) {
+      expect(lifted([rule(layer, "ask", "render")]).effect, `${layer} ask`).toBe("allow");
+      expect(lifted([rule(layer, "ask", "*")]).effect, `${layer} ask glob`).toBe("allow");
+      expect(lifted([rule(layer, "deny", "render")]), `${layer} deny`).toMatchObject({ effect: "deny", layer });
+      // Not remembered: an allow like any other.
+      expect(lifted([rule(layer, "ask", "render")], ["render"], []), `${layer} ask, plain allow`).toMatchObject({ effect: "ask", layer });
+    }
+    expect(lifted([rule("managed", "ask", "render")])).toMatchObject({ effect: "ask", layer: "managed" });
+    expect(lifted([rule("managed", "ask", "render"), rule("user", "ask", "render")])).toMatchObject({ effect: "ask", layer: "managed" });
+    expect(lifted([rule("managed", "deny", "**")])).toMatchObject({ effect: "deny", layer: "managed" });
+    // Another name of the same call: its ask stands.
+    expect(lifted([rule("user", "ask", "render"), rule("user", "ask", "rpc:jobs.submit")], ["render", "rpc:jobs.submit"])).toMatchObject({ effect: "ask", command: "rpc:jobs.submit" });
+    expect(lifted([rule("user", "ask", "**")], ["render", "rpc:jobs.submit"])).toMatchObject({ effect: "ask", command: "rpc:jobs.submit" });
+    // A remembered allow for another command, or one with a `where`, is not exact for this call.
+    const other = rule("local", "allow", "export", undefined, "remembered.export");
+    expect(lifted([rule("user", "ask", "render"), other], ["render"], [other])).toMatchObject({ effect: "ask" });
+    const narrowed = rule("local", "allow", "render", { mode: "draft" }, "remembered.where");
+    expect(lifted([rule("user", "ask", "render"), narrowed], ["render"], [narrowed])).toMatchObject({ effect: "ask" });
+  });
+
   test("every name a call could be is evaluated: the strictest wins", () => {
     // A transaction padded with an `asset.add` is `batch`, `asset.add` and `rpc:tx.commit`.
     const names = commandsOf("tx.commit", { tx: { ops: [{ op: "marker.add" }, { op: "asset.add" }] } });

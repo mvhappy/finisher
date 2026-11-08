@@ -30,7 +30,7 @@ import { DbLedger, type SessionBranchState, type SessionTx, SessionStates, Sessi
 export type { Appended, Applied, NewApproval, NewNode, NewSession, OutboxEffect, OutboxItem, Recovery, RunStart, SessionQuery } from "./store-rows.ts";
 export type { SessionBranchState, SessionTx, SessionTryRow, TxOutcome } from "./store-tables.ts";
 
-registerChain("agent", [...AGENT_MIGRATIONS], { formatVersion: 5, minReaderVersion: 4 });
+registerChain("agent", [...AGENT_MIGRATIONS], { formatVersion: 6, minReaderVersion: 4 });
 
 const DAY_MS = 86_400_000;
 /** `agents.retentionDays` default (Decision 4). */
@@ -590,7 +590,7 @@ export class AgentStore {
     this.#cs.tx(() => {
       const db = this.#cs.db;
       db.prepare("DELETE FROM nodes WHERE sessionId = ?").run(sessionId);
-      for (const t of ["runs", "approvals", "budgets", "session_state", "agent_rules"]) db.prepare(`DELETE FROM ${t} WHERE sessionId = ?`).run(sessionId);
+      for (const t of ["runs", "approvals", "budgets", "session_state", "agent_rules", "agent_remembered"]) db.prepare(`DELETE FROM ${t} WHERE sessionId = ?`).run(sessionId);
       db.prepare("DELETE FROM sessions WHERE id = ?").run(sessionId);
     });
   }

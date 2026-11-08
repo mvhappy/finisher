@@ -23,8 +23,12 @@
 //   moved to the file without the rule when it names the file as it is now (another answer's
 //   refresh, or a person's trust, covered all of it); else left alone.
 //
-// Evaluation stays Claude Code's (`rules.ts`: a deny anywhere, then an ask, then allow), so a
-// remembered `allow` does not lift the `ask` rule that asked; the answer's `notice` says so.
+// - **Proof.** Each rule written here is also recorded in `agent_remembered` (`RuleStore`: a
+//   local rule in the same transaction as its row; a project rule just before the file is
+//   replaced, dropped again when the write fails or is undone). That record, not the `approval:<id>` source, is what lets a
+//   remembered `allow` lift a matching `ask` (owner decision 2026-11-08, `rules.ts`): from the
+//   local, project, user and role layers, never a `deny`, never a managed `ask`. A remembered
+//   `deny` is a rule like any other.
 import { chmodSync, closeSync, constants, fstatSync, lstatSync, openSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { type Approval, type ApprovalDecision, type ListedRule, type Principal, type RememberScope, RuleCommand, type Session } from "@finisher/contracts";
@@ -121,7 +125,6 @@ function replaceFile(path: string, bytes: Buffer, mode: number): void {
 const NEW_MODE = 0o644;
 
 const NOTICE_UNTRUSTED = "The rule is written to finisher.rules.json and does not apply until a person trusts the project (finisherd project trust); this answer's one-time grant still applies.";
-const NOTICE_ALLOW = "An allow rule never lifts an ask or deny rule (deny beats ask beats allow): while the rule that asked stands, the same request asks again.";
 
 /** The rule a `remember` asks for, written where its scope says (module docs). */
 export function remember(d: RememberDeps, a: Approval, decision: ApprovalDecision, scope: RememberScope, by: Principal): Remembered {
@@ -139,7 +142,6 @@ export function remember(d: RememberDeps, a: Approval, decision: ApprovalDecisio
   const source = `approval:${a.id}`;
   const audit = (kind: "agent.rule.add" | "agent.project.trust", details: Record<string, string>) =>
     d.audit.append({ kind, principal: { kind: by.kind, id: by.id }, outcome: "ok", details: { rpc: "agent.approval.answer", ...details } });
-  const allowNotice = decision === "allow" ? NOTICE_ALLOW : undefined;
 
   if (scope !== "project") {
     const rule = d.ruleStore.add({
@@ -151,10 +153,10 @@ export function remember(d: RememberDeps, a: Approval, decision: ApprovalDecisio
       source,
       createdBy: who,
       createdAt: now,
-    });
+    }, a.id);
     audit("agent.rule.add", { ruleId: rule.id, layer: "local", value: decision, projectId: s.projectId, ...(scope === "session" ? { sessionId: s.id } : {}), from: a.id });
     const listed: ListedRule = { ...rule, applies: true };
-    return { rule: listed, ...(allowNotice === undefined ? {} : { notice: allowNotice }), undo: () => void d.ruleStore.remove(rule.id) };
+    return { rule: listed, undo: () => void d.ruleStore.remove(rule.id) };
   }
 
   const dir = d.dirOf(s.projectId);
@@ -166,7 +168,14 @@ export function remember(d: RememberDeps, a: Approval, decision: ApprovalDecisio
   const id = ulid(now);
   const next = encode(appended(before, { id, effect: decision, command }));
   if (next.length > RULES_FILE_MAX) throw finError("INVALID_REQUEST", `${RULES_FILE} would pass ${RULES_FILE_MAX} bytes`, { field: "remember", reason: "fileFull" }, "remove rules from the file, or remember with projectLocal");
-  replaceFile(path, next, mode);
+  // The record first: a failed write takes it back, so a rule in the file always has its proof.
+  d.ruleStore.remembered({ ruleId: id, layer: "project", projectId: s.projectId, command, approvalId: a.id, createdAt: now });
+  try {
+    replaceFile(path, next, mode);
+  } catch (e) {
+    d.ruleStore.forget(s.projectId, id);
+    throw e;
+  }
   const trust = d.ruleStore.trustOf(s.projectId);
   const previous = before === undefined ? NO_FILE : hashOf(before);
   const wrote = hashOf(next);
@@ -174,11 +183,10 @@ export function remember(d: RememberDeps, a: Approval, decision: ApprovalDecisio
   if (refreshed) d.ruleStore.trust(s.projectId, wrote, who, now);
   audit("agent.rule.add", { ruleId: id, layer: "project", value: decision, projectId: s.projectId, from: a.id });
   if (refreshed) audit("agent.project.trust", { projectId: s.projectId, rulesHash: wrote });
-  const notice = [refreshed ? undefined : NOTICE_UNTRUSTED, allowNotice].filter((x) => x !== undefined).join(" ");
   const listed: ListedRule = { id, effect: decision, command, layer: "project", source: RULES_FILE, createdBy: who, createdAt: now, applies: refreshed };
   return {
     rule: listed,
-    ...(notice === "" ? {} : { notice }),
+    ...(refreshed ? {} : { notice: NOTICE_UNTRUSTED }),
     // An answer refused after the write takes its own rule back out (module docs).
     undo: () => undoWrite(d, { projectId: s.projectId, path, id, before, next, wrote, prior: refreshed ? trust : undefined }),
   };
@@ -200,6 +208,7 @@ interface Written {
 
 /** Takes the rule of `w` back out of the file, and the trust with it (module docs). Best effort. */
 function undoWrite(d: RememberDeps, w: Written): void {
+  d.ruleStore.forget(w.projectId, w.id);
   let now: { bytes: Buffer; mode: number } | undefined;
   try {
     now = readFile(w.path);

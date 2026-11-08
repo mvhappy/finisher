@@ -531,12 +531,14 @@ describe("on a server", () => {
       const r2 = ok<{ rule: ListedRule; notice?: string }>(await answer(owner, id2, "allow", "projectLocal"));
       expect(r2.rule).toMatchObject({ effect: "allow", command: "checkpoint", layer: "local", projectId });
       expect(r2.rule.sessionId).toBeUndefined();
-      // An allow never lifts the ask that asked (deny beats ask beats allow): said in the notice.
-      expect(r2.notice).toContain("never lifts");
+      // A remembered allow lifts the ask that asked (owner decision 2026-11-08): no notice.
+      expect(r2.notice).toBeUndefined();
       const entries = await audits(owner);
       expect(entries.filter((e) => e.details.from !== undefined).map((e) => [e.details.from, e.details.layer]).sort()).toEqual([[id1, "local"], [id2, "local"]].sort());
-      // The answer's one-time grant still applies.
+      // The same request, and any other of the command, goes through (the lift, not the grant).
       expect(code(await checkpoint(a, projectId, root, "c2"))).toBeUndefined();
+      expect(code(await checkpoint(a, projectId, root, "c3"))).toBeUndefined();
+      expect(server.core.store.approval(id2)!.consumedAt).toBeUndefined();
     });
 
     test("project: the shared finisher.rules.json, atomically; trust refreshed only if trusted with the previous hash", async () => {

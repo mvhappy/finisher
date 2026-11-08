@@ -10,9 +10,21 @@
 //   Claude Code's model): every applicable rule of every layer is combined. **A `deny` in any
 //   layer wins, then an `ask`, then `allow`; no match is `allow`** within the scopes. Layer
 //   order only breaks ties (which rule a refusal names) and gates trust: a local `allow` never
-//   lifts a project `deny`, a role `allow` never lifts a user `ask`, and nothing lifts a managed
-//   `deny` or `ask`. `local` applies always, `project` only when trusted (`trust.ts`), `role`
+//   lifts a project `deny`, a role `allow` never lifts a user `ask` (only a remembered allow
+//   lifts an ask, below), and nothing lifts a managed `deny` or `ask`. `local` applies always, `project` only when trusted (`trust.ts`), `role`
 //   is the session's role's rules (`roles/*.json`).
+// - **A remembered allow lifts a matching ask** (owner decision 2026-11-08, Decisions 4 and 12):
+//   the one exception to deny > ask > allow. Per name, a `deny` anywhere still wins and a
+//   managed `ask` still stands; the asks of the other layers (local, project, user, role) are
+//   lifted when an applicable *remembered* `allow` names exactly that name (its command is the
+//   name, no glob, no `where`; its session or project scope already held to apply). Only that
+//   name: an ask raised on another name of the same call stands, and the strictest name wins.
+//   **Remembered is proven, never claimed**: the rule's id, layer, project, session and command
+//   must match the server's record of the `remember` that wrote it (`agent_remembered`,
+//   `RuleStore.proves`). A rule's `source` (`approval:<id>`) is display only: files never set
+//   it (the reader fills it), `agent.rules.add` writes its own, and a file rule reusing a
+//   remembered id or claiming a source matches no record of its layer and project. A project
+//   file's remembered rule lifts only while the file is trusted, as all its rules apply.
 // - **`where`** conditions hold only on values the server resolved at stage 5; all present must
 //   hold. Active now: `branch` (a reference resolved per project, against the branches the call
 //   writes, acts on, forks from or reads), `mode` and `preset` (the session's mode and
@@ -91,20 +103,33 @@ function holds(w: RuleWhere | undefined, session: Session | undefined, r: Resolv
 /** The applicable rules of one call, every layer together. */
 export class RuleSet {
   readonly rules: readonly Rule[];
+  readonly #remembered: ReadonlySet<Rule>;
 
-  constructor(rules: readonly Rule[]) {
+  /** `remembered`: the allows of `rules` proven to be a `remember`'s (module docs). */
+  constructor(rules: readonly Rule[], remembered: ReadonlySet<Rule> = new Set()) {
     this.rules = [...rules].sort((a, b) => RANK[a.layer] - RANK[b.layer]);
+    this.#remembered = remembered;
   }
 
-  /** One name's outcome: a `deny` anywhere, else an `ask`, else `allow`; the highest layer names it. */
+  /**
+   * One name's outcome: a `deny` anywhere, else a managed `ask`, else another layer's `ask`
+   * unless a remembered allow of exactly this name lifts it, else `allow`; the highest layer names it.
+   */
   evaluate(input: { readonly command: string; readonly principal?: Principal; readonly session?: Session; readonly resolved: Resolved }): RuleOutcome {
     let ask: Rule | undefined;
+    let lifted = false;
     for (const rule of this.rules) {
-      if (rule.effect === "allow" || !globMatch(rule.command, input.command) || !holds(rule.where, input.session, input.resolved)) continue;
+      if (rule.effect === "allow") {
+        lifted ||= this.#remembered.has(rule) && rule.where === undefined && rule.command === input.command;
+        continue;
+      }
+      if (!globMatch(rule.command, input.command) || !holds(rule.where, input.session, input.resolved)) continue;
       if (rule.effect === "deny") return { effect: "deny", rule, layer: rule.layer };
       ask ??= rule;
     }
-    return ask === undefined ? { effect: "allow" } : { effect: "ask", rule: ask, layer: ask.layer };
+    // Rules are in layer order: a managed ask, when there is one, is `ask`, and never lifted.
+    if (ask === undefined || (lifted && ask.layer !== "managed")) return { effect: "allow" };
+    return { effect: "ask", rule: ask, layer: ask.layer };
   }
 
   /** The strictest outcome over every name a call could be, with the name it was decided on. */
@@ -129,6 +154,8 @@ export interface RuleContext {
 /** Every applicable rule of a call, and whether each project's file applies. */
 export interface Layered {
   readonly rules: readonly Rule[];
+  /** The allows of `rules` proven to be a `remember`'s (`RuleStore.proves`). */
+  readonly remembered?: ReadonlySet<Rule>;
   readonly projects: ReadonlyMap<string, ProjectRules>;
 }
 
@@ -168,7 +195,11 @@ export class LayeredRules implements RuleSource {
     // The local rules of each project (those naming none come back for each: kept once).
     const local = new Map<string, Rule>();
     for (const id of ids.length === 0 ? [undefined] : ids) for (const r of this.#d.store.applicable(id, ctx.session?.id)) local.set(r.id, r);
+    // Proven remembered allows: a local rule by its own row, a project rule by its file's project.
+    const remembered = new Set<Rule>([...local.values()].filter((r) => this.#d.store.proves(r, undefined)));
+    for (const [id, p] of projects) for (const r of p.rules) if (this.#d.store.proves(r, id)) remembered.add(r);
     return {
+      remembered,
       rules: [
         ...managedRules(this.#d.serverData),
         ...local.values(),
@@ -284,9 +315,9 @@ export function commandRules(rules: RuleSource, sessions: RuleSessions, options:
       const payloadProject = field(input.payload, "projectId");
       const projectIds = [...new Set([...(input.projectIds ?? []), ...(typeof payloadProject === "string" ? [payloadProject] : [])])];
       const projectId = session?.projectId ?? (typeof payloadProject === "string" ? payloadProject : projectIds[0]);
-      const { rules: all } = yield* Effect.try({ try: () => rules.layers({ ...(session === undefined ? {} : { session }), projectIds }), catch: (e) => finError("INTERNAL", `command rules cannot be read: ${String(e)}`) });
+      const { rules: all, remembered } = yield* Effect.try({ try: () => rules.layers({ ...(session === undefined ? {} : { session }), projectIds }), catch: (e) => finError("INTERNAL", `command rules cannot be read: ${String(e)}`) });
       if (all.length === 0) return undefined;
-      const set = new RuleSet(all);
+      const set = new RuleSet(all, remembered);
       const names = commandsOf(input.tag, input.payload);
       const resolved = yield* resolveFor(set.rules, input, projectId, options);
       const outcome = set.decide(names, session, resolved);
