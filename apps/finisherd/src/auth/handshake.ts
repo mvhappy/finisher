@@ -39,12 +39,18 @@ export interface HelloAnswer {
 /** An `agent`/`mcp` credential's key and principal while it is live (Task 9); none before. */
 export type CredentialLookup = (ref: { kind: "agent" | "mcp"; id: string }) => { key: Buffer; principal: Principal } | undefined;
 
+/** Revokes an `agent`/`mcp` credential (Task 9's store); false when it was not live. */
+export type CredentialRevoke = (ref: { kind: "agent" | "mcp"; id: string }) => boolean;
+
 export interface HandshakeDeps {
   readonly keys: Keys;
   readonly envId: string;
   readonly audit: Audit;
   readonly credentials?: CredentialLookup;
+  readonly revoke?: CredentialRevoke;
 }
+
+const CREDENTIAL_ID = /^[0-9A-Za-z]{26}$/;
 
 const UNAUTHENTICATED_FIX =
   "Run the command as the same user as the Finisher server, with that server's data, or give it a credential file through the FIN_CREDENTIAL variable.";
@@ -54,7 +60,7 @@ export function unauthenticated(reason: string): FinError {
 }
 
 export class Handshake {
-  private readonly deps: HandshakeDeps;
+  readonly deps: HandshakeDeps;
   constructor(deps: HandshakeDeps) {
     this.deps = deps;
   }
@@ -137,6 +143,45 @@ export class Handshake {
       return Effect.fail(unauthenticated(reason));
     });
   }
+}
+
+/**
+ * `auth.revokeSelf` (spec §4.8): the calling `agent`/`mcp` credential revokes itself. It takes no
+ * id, so it cannot name another credential. Its tickets are dropped and this connection is
+ * closed after the reply; Task 9's store closes its other connections.
+ */
+export function revokeSelf(
+  deps: Pick<HandshakeDeps, "audit" | "revoke">,
+  principal: Principal,
+  close: () => void,
+  dropTickets: (pred: (p: Principal) => boolean) => void,
+): Effect.Effect<Record<string, never>, FinError> {
+  return Effect.suspend(() => {
+    const { kind, id } = principal;
+    if (kind !== "agent" && kind !== "mcp") {
+      return Effect.fail(
+        finError(
+          "INVALID_REQUEST",
+          `a ${kind} principal has no credential of its own to revoke`,
+          { kind },
+          "Only agent and MCP credentials can revoke themselves; the owner of this Finisher server revokes the others.",
+        ),
+      );
+    }
+    const revoked = deps.revoke?.({ kind, id }) ?? false;
+    dropTickets((p) => p.kind === kind && p.id === id);
+    if (revoked) {
+      deps.audit.append({
+        kind: "credential.revoke",
+        principal: { kind, id },
+        credentialKind: kind,
+        outcome: "ok",
+        details: { rpc: "auth.revokeSelf", reason: "self", ...(CREDENTIAL_ID.test(id) ? { credentialId: id } : {}) },
+      });
+    }
+    close();
+    return Effect.succeed({});
+  });
 }
 
 export class HandshakeTag extends Context.Service<HandshakeTag, Handshake>()("finisherd/Handshake") {}

@@ -428,8 +428,13 @@ impl Backend for Online {
                     .with_fix("rename the file to a UTF-8 name"),
             );
         };
-        // `asset.probe` answers without a path: the path is the one fin sent.
-        let p: Probed = self.call_as("asset.probe", json!({ "path": text }))?;
+        // `asset.probe` answers without a path: the path is the one fin sent. Protocol 2: the
+        // probe is for this project (a principal with roots probes only inside its folder).
+        let project_id = self.project_ref()?;
+        let p: Probed = self.call_as(
+            "asset.probe",
+            json!({ "projectId": project_id, "path": text }),
+        )?;
         Ok(Probed {
             path: text.to_string(),
             ..p

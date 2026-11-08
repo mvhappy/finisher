@@ -53,6 +53,26 @@ export const ServerHelloSuccess = Schema.Struct({
 export const AuthProvePayload = Schema.Struct({ mac: Schema.String });
 export const AuthProveSuccess = Schema.Struct({ principal: PrincipalSchema });
 
+/** The longest and the default life of a WebSocket ticket, in seconds (Decision 23). */
+export const TICKET_MAX_TTL_S = 60;
+export const TICKET_DEFAULT_TTL_S = 30;
+
+/**
+ * `auth.ticket {ttlS?}` (spec §4.3, Decision 23): a one-time ticket for one WebSocket upgrade,
+ * bound to the caller's principal. `ttlS` is capped at 60; `expiresAt` is in ms since the epoch.
+ */
+export const AuthTicketPayload = Schema.Struct({ ttlS: Schema.optional(Schema.Number) });
+export const AuthTicketSuccess = Schema.Struct({ ticket: Schema.String, expiresAt: Schema.Number });
+/** `auth.whoami`: the principal this connection runs as. */
+export const AuthWhoamiSuccess = Schema.Struct({ principal: PrincipalSchema });
+
+/**
+ * The WebSocket subprotocols (spec §4.3): a client offers `finisher.v2` and one
+ * `finisher.ticket.<ticket>`; the server answers `finisher.v2`.
+ */
+export const WS_PROTOCOL_PREFIX = "finisher.v";
+export const WS_TICKET_PREFIX = "finisher.ticket.";
+
 /** The RPCs a connection may call before it proves (spec §4.2). */
 export const PUBLIC_RPCS: ReadonlySet<string> = new Set(["server.hello", "auth.prove"]);
 

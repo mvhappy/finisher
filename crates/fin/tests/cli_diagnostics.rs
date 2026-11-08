@@ -100,7 +100,8 @@ impl Fake {
     fn discovery(&self, enabled: Option<bool>) -> PathBuf {
         let sd = self.root.join("sd");
         std::fs::create_dir_all(&sd).unwrap();
-        let mut info = json!({ "pid": 1, "wsPort": 2, "socket": self.socket, "token": "t", "protocolVersion": 1 });
+        let mut info =
+            json!({ "pid": 1, "wsPort": 2, "socket": self.socket, "protocolVersion": 2 });
         if let Some(on) = enabled {
             info["diagnostics"] = json!({ "enabled": on });
         }

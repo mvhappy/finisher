@@ -3,7 +3,8 @@ import { type FinError, FinRpcs, PROTOCOL_VERSION, type Probe } from "@finisher/
 import { probe } from "@finisher/fin-node";
 import { Effect, Stream } from "effect";
 import { SERVER_VERSION } from "./config.ts";
-import { HandshakeTag } from "./auth/handshake.ts";
+import { HandshakeTag, revokeSelf } from "./auth/handshake.ts";
+import { TicketsTag } from "./auth/tickets.ts";
 import { chainOf, OPEN_GUARD, withChain } from "./chain/chain.ts";
 import { AuditTag } from "./control/audit.ts";
 import { ConnectionsTag } from "./connections.ts";
@@ -36,6 +37,9 @@ export const HandlersLive = FinRpcs.toLayer(
     const connections = yield* ConnectionsTag;
     const handshake = yield* HandshakeTag;
     const audit = yield* AuditTag;
+    const tickets = yield* TicketsTag;
+    /** The principal the chain bound to this call (`anonymous` outside it: fail closed). */
+    const principalOf = (options: object) => chainOf(options)?.principal ?? connections.principalOf((options as { client: { id: number } }).client.id);
     const guard = <A, R>(tag: string, self: Effect.Effect<A, FinError, R>) => diagnostics.timed(tag, defectsAsErrors(self));
     /** A write's `metaJson`: its actor and the chain's write guard. */
     const meta = (options: { readonly headers: unknown }) => ({
@@ -61,13 +65,47 @@ export const HandlersLive = FinRpcs.toLayer(
           })),
         ),
       "auth.prove": (req, { client }) => guard("auth.prove", handshake.prove(connections, client.id, req)),
+      // One-time WebSocket tickets (5A Decision 23), bound to the caller's principal.
+      "auth.ticket": ({ ttlS }, options) =>
+        guard(
+          "auth.ticket",
+          Effect.sync(() => {
+            const principal = principalOf(options);
+            const minted = tickets.mint(principal, ttlS);
+            audit.append({
+              kind: "auth.ticket",
+              principal: { kind: principal.kind, id: principal.id },
+              outcome: "ok",
+              details: { transport: connections.transport },
+            });
+            return minted;
+          }),
+        ),
+      "auth.whoami": (_, options) => guard("auth.whoami", Effect.sync(() => ({ principal: principalOf(options) }))),
+      "auth.revokeSelf": (_, options) =>
+        guard(
+          "auth.revokeSelf",
+          revokeSelf(
+            handshake.deps,
+            principalOf(options),
+            () => connections.link(options.client.id)?.closeAfterReply(),
+            (pred) => tickets.dropWhere(pred),
+          ),
+        ),
       // Paths are absolute and normalised, or `INVALID_PATH` (5A Decision 35), counted in rpc.stats.
       "project.create": ({ dir, name, rate, idemKey }) =>
         guard("project.create", Effect.flatMap(requireAbsolute("dir", dir), (d) => registry.create(d, name, rate, idemKey))),
       "project.open": ({ dir, relocate }) =>
         guard("project.open", Effect.flatMap(requireAbsolute("dir", dir), (d) => registry.open(d, relocate))),
-      "asset.probe": ({ path }) =>
-        guard("asset.probe", Effect.flatMap(requireAbsolute("path", path), (p) => attemptJson<Probe>(() => probe(p)))),
+      // Protocol 2: the probe is for `projectId` (opened on demand, `PROJECT_NOT_FOUND` otherwise).
+      "asset.probe": ({ projectId, path }) =>
+        guard(
+          "asset.probe",
+          Effect.andThen(
+            registry.ensure(projectId),
+            Effect.flatMap(requireAbsolute("path", path), (p) => attemptJson<Probe>(() => probe(p))),
+          ),
+        ),
       "tx.commit": ({ projectId, tx, generation }, options) =>
         guard("tx.commit", registry.commit(projectId, tx, generation, meta(options))),
       "snapshot.get": ({ projectId, branch }) => guard("snapshot.get", registry.snapshot(projectId, branch)),

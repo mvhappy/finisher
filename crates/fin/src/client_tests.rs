@@ -26,7 +26,7 @@ fn only_exit(name: &str) -> Result<Value, CoreError> {
 #[test]
 fn success_fixtures_decode_to_their_values() {
     let hello = only_exit("hello").unwrap();
-    assert_eq!(hello["protocolVersion"], 1);
+    assert_eq!(hello["protocolVersion"], 2);
     assert!(
         hello["capabilities"]
             .as_array()

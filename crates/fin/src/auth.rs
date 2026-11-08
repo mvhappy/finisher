@@ -52,9 +52,8 @@ pub const LABEL_PROVE: &str = "fin/prove/v2";
 pub const KEY_BYTES: usize = 32;
 /// The most fin reads of a key or credential file; a longer one is malformed.
 pub const MAX_CREDENTIAL_BYTES: u64 = 4096;
-/// The protocol whose hello carries the handshake. A server below it that answers without the
-/// handshake's fields is from an older release (`versionMismatch`), not a squatter. Until 5A
-/// Task 6 this branch's own server still says protocol 1, so the missing fields decide.
+/// The protocol whose hello carries the handshake (5A Task 6). A server that says less (or no
+/// version) is from an older release (`versionMismatch`), not a squatter: no MAC is sent.
 pub const HANDSHAKE_PROTOCOL: u64 = 2;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -344,7 +343,7 @@ pub fn handshake(conn: &mut Client, cred: &Credential, expect: &Expect) -> Resul
     };
     let field = |k: &str| answer.get(k).and_then(Value::as_str);
     let version = answer.get("protocolVersion").and_then(Value::as_u64);
-    if version.is_none_or(|v| v < HANDSHAKE_PROTOCOL) && answer.get("serverNonce").is_none() {
+    if version.is_none_or(|v| v < HANDSHAKE_PROTOCOL) {
         return Err(Failure::Untrusted("versionMismatch"));
     }
     let Some(env) = field("envId") else {

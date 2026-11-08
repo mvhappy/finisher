@@ -36,7 +36,7 @@ export async function run() {
     const projectId = created.project.projectId;
     assertEqual(created.project.rev, 0, "new project rev");
 
-    ws = await connectWs(server.info);
+    ws = await connectWs(server);
     const seen = [];
     // With the generation it read rev 0 at: a rewind or rebuild in between ends the stream.
     const { generation } = await ws.call("snapshot.get", { projectId, branch: "main" });

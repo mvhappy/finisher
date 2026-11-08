@@ -3,24 +3,38 @@
 // Writes crates/fin/tests/fixtures/rpc/<scenario>.{request,response}.ndjson: every frame the
 // client wrote, and every frame the server wrote, one per line in wire order. Frames are
 // byte-for-byte the server's output except for two normalizations that keep the fixtures
-// stable across runs: the temp directory becomes `/fixture` and the project id becomes
-// `01fixtureproject0000000000` (same 26-char shape).
+// stable across runs: the temp directory becomes `/fixture`, the project id
+// `01fixtureproject0000000000` and the database's incarnation `01fixtureincarnation000000`
+// (same 26-char shape). Since protocol 2 every write and subscription carries a generation.
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { addAsset, connectProved, insert, NdjsonClient, ok, type RunningServer, startServer, tx } from "../test/support/ndjson-client.ts";
+import {
+  addAsset,
+  connectProved,
+  generationOf,
+  insert,
+  NdjsonClient,
+  ok,
+  type RunningServer,
+  startServer,
+  tx,
+} from "../test/support/ndjson-client.ts";
 
 const OUT = fileURLToPath(new URL("../../../crates/fin/tests/fixtures/rpc/", import.meta.url));
 const FIXTURE_PROJECT_ID = "01fixtureproject0000000000";
+const FIXTURE_INCARNATION = "01fixtureincarnation000000";
 
 const tmp = mkdtempSync(join(tmpdir(), "finisherd-fixtures-"));
 let server: RunningServer | undefined;
 let projectId = "";
+let incarnation = "";
 
 function normalize(line: string): string {
   let out = line.split(JSON.stringify(tmp).slice(1, -1)).join("/fixture");
   if (projectId) out = out.split(projectId).join(FIXTURE_PROJECT_ID);
+  if (incarnation) out = out.split(incarnation).join(FIXTURE_INCARNATION);
   return out;
 }
 
@@ -67,17 +81,23 @@ try {
     ok(await c.call("project.create", { dir, name: "Demo", rate: "30000/1001", idemKey: "create-1" }));
   });
 
+  // The generation a client reads before it writes (`snapshot.get`); not part of the scenarios.
+  const reader = await connectProved(server);
+  const generation = await generationOf(reader, projectId);
+  incarnation = generation.incarnation;
+  await reader.close();
+
   await scenario("tx-commit", async (c) => {
-    ok(await c.call("tx.commit", { projectId, tx: tx("tx-1", 0, [addAsset()]) }));
+    ok(await c.call("tx.commit", { projectId, tx: tx("tx-1", 0, [addAsset()]), generation }));
   });
 
   const setup = await connectProved(server);
-  ok(await setup.call("tx.commit", { projectId, tx: tx("tx-2", 1, [insert(0, 5)]) }));
-  ok(await setup.call("tx.commit", { projectId, tx: tx("tx-3", 2, [{ op: "clip.delete", clip: "c1" }]) }));
+  ok(await setup.call("tx.commit", { projectId, tx: tx("tx-2", 1, [insert(0, 5)]), generation }));
+  ok(await setup.call("tx.commit", { projectId, tx: tx("tx-3", 2, [{ op: "clip.delete", clip: "c1" }]), generation }));
   await setup.close();
 
   await scenario("conflict", async (c) => {
-    const exit = await c.call("tx.commit", { projectId, tx: tx("tx-late", 2, [{ op: "clip.delete", clip: "c1" }]) });
+    const exit = await c.call("tx.commit", { projectId, tx: tx("tx-late", 2, [{ op: "clip.delete", clip: "c1" }]), generation });
     if (exit.ok || exit.error.code !== "CONFLICT") throw new Error(`expected CONFLICT, got ${JSON.stringify(exit)}`);
   });
 
@@ -86,13 +106,13 @@ try {
     const seen: number[] = [];
     let live!: () => void;
     const gotLive = new Promise<void>((r) => (live = r));
-    const sub = c.stream("ops.subscribe", { projectId, branch: "main", fromRev: 1 }, (v) => {
+    const sub = c.stream("ops.subscribe", { projectId, branch: "main", fromRev: 1, generation }, (v) => {
       seen.push((v as { rev: number }).rev);
       if (seen.includes(4)) live();
     });
     while (seen.length < 2) await new Promise((r) => setTimeout(r, 10));
     const writer = await connectProved(server!);
-    ok(await writer.call("tx.commit", { projectId, tx: tx("tx-4", 3, [addAsset("$b")]) }));
+    ok(await writer.call("tx.commit", { projectId, tx: tx("tx-4", 3, [addAsset("$b")]), generation }));
     await writer.close();
     await gotLive;
     // Let the trailing Ack for the live chunk reach the server before interrupting.
@@ -102,7 +122,7 @@ try {
   });
 
   await scenario("subscribe-error", async (c) => {
-    const sub = c.stream("ops.subscribe", { projectId: "nope", branch: "main", fromRev: 0 }, () => undefined);
+    const sub = c.stream("ops.subscribe", { projectId: "nope", branch: "main", fromRev: 0, generation }, () => undefined);
     await sub.done;
   });
 
@@ -178,7 +198,9 @@ try {
   // scenarios (a clip, edits on `br1`, a second branch) is mirrored in `rpc_contract.rs`.
   const rpc = async (tag: string, payload: Record<string, unknown>) => {
     const c = await connectProved(server!);
-    ok(await c.call(tag, { projectId, ...payload }));
+    const branch = (payload.tx as { branch?: string } | undefined)?.branch;
+    const extra = tag === "tx.commit" ? { generation: await generationOf(c, projectId, branch ?? "main") } : {};
+    ok(await c.call(tag, { projectId, ...payload, ...extra }));
     await c.close();
   };
   const who = { author: "fixture" };

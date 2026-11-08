@@ -133,7 +133,7 @@ pub fn handshake_answer(frame: &Value, key: &[u8]) -> Option<Value> {
             let sn = [3u8; 32];
             let proof = mac(key, "finisherd/hello/v2", env, endpoint, &cn, &sn);
             Some(ok(
-                json!({ "protocolVersion": 1, "serverVersion": "0.0.0", "capabilities": [],
+                json!({ "protocolVersion": 2, "serverVersion": "0.0.0", "capabilities": [],
                 "envId": env, "endpoint": endpoint, "serverNonce": B64.encode(sn), "proof": B64.encode(proof) }),
             ))
         }

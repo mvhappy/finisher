@@ -32,6 +32,8 @@ export interface Resolved {
   readonly facts: RuleFacts;
   /** `project.open`: the project its folder names, when the folder says. */
   readonly openedProject?: string;
+  /** `asset.probe`: the project whose folder every path must be in (for principals with roots). */
+  readonly pathsIn?: string;
 }
 
 const field = (payload: unknown, path: string): unknown =>
@@ -78,10 +80,13 @@ export function resolve(rule: RpcRule, payload: unknown, deps: ChainProjects): E
     if (want.has("createDir")) {
       paths.push(yield* Effect.flatMap(requireAbsolute("dir", String(out.dir)), canonicalNew));
     }
+    let pathsIn: string | undefined;
     if (want.has("probePath")) {
       const path = yield* Effect.flatMap(requireAbsolute("path", String(out.path)), canonical);
       paths.push(path);
       out = { ...out, path };
+      // Protocol 2: the probe is for this project, so only its folder counts as a root.
+      if (typeof out.projectId === "string") pathsIn = out.projectId;
     }
     if (want.has("importDir")) {
       const dir = yield* requireAbsoluteOpt("importDir", out.importDir as string | undefined);
@@ -91,7 +96,14 @@ export function resolve(rule: RpcRule, payload: unknown, deps: ChainProjects): E
         out = { ...out, importDir: real };
       }
     }
-    return { payload: out, projects, paths, facts, ...(openedProject === undefined ? {} : { openedProject }) };
+    return {
+      payload: out,
+      projects,
+      paths,
+      facts,
+      ...(openedProject === undefined ? {} : { openedProject }),
+      ...(pathsIn === undefined ? {} : { pathsIn }),
+    };
   });
 }
 
@@ -110,10 +122,12 @@ export function inside(path: string, root: string): boolean {
 
 /**
  * The folders a principal with roots may use (`agent`, `mcp`, `device`: spec §4.4): its open
- * projects' folders, each with its `workspace/`, canonical. `undefined`: no roots (any path).
+ * projects' folders, each with its `workspace/`, canonical; `only`: just that project's (a probe
+ * for it). `undefined`: no roots (any path).
  */
-export function rootsOf(principal: Principal, deps: ChainProjects): Effect.Effect<ReadonlyArray<string> | undefined> {
+export function rootsOf(principal: Principal, deps: ChainProjects, only?: string): Effect.Effect<ReadonlyArray<string> | undefined> {
   if (principal.projects === "*") return Effect.succeed(undefined);
-  const dirs = principal.projects.map((id) => deps.dirOf(id)).filter((d): d is string => d !== undefined);
+  const ids = only === undefined ? principal.projects : principal.projects.filter((id) => id === only);
+  const dirs = ids.map((id) => deps.dirOf(id)).filter((d): d is string => d !== undefined);
   return Effect.forEach(dirs, canonical);
 }

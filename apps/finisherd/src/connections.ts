@@ -59,10 +59,7 @@ export class Connections {
   readonly #byId = new Map<number, Connection>();
   readonly #links = new Map<number, Link>();
 
-  /**
-   * `initial`: the principal a new connection carries: `anonymous` on the local socket; the
-   * WebSocket's bearer token (until Task 6's tickets) makes its connections `local`.
-   */
+  /** `initial`: the principal a new connection carries unless `attach` names one (`anonymous`). */
   readonly transport: Transport;
   readonly endpoint: () => string;
   private readonly initial: Principal;
@@ -87,9 +84,12 @@ export class Connections {
     return this.#byId.has(clientId);
   }
 
-  /** Registers the protocol's handle on a new connection (`protocol.ts`). */
-  attach(clientId: number, link: Link): Connection {
-    const c: Connection = { clientId, transport: this.transport, openedAt: this.now(), principal: this.initial, failures: 0 };
+  /**
+   * Registers the protocol's handle on a new connection (`protocol.ts`). `principal`: what it
+   * already proved before its first frame (a WebSocket's ticket, `upgrade.ts`).
+   */
+  attach(clientId: number, link: Link, principal: Principal = this.initial): Connection {
+    const c: Connection = { clientId, transport: this.transport, openedAt: this.now(), principal, failures: 0 };
     this.#byId.set(clientId, c);
     this.#links.set(clientId, link);
     return c;

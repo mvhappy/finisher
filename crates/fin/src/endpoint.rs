@@ -17,7 +17,7 @@ pub const SERVER_DATA_ENV: &str = "FIN_SERVER_DATA";
 const INFO_FILE: &str = "finisherd.json";
 const PIPE_PREFIX: &str = r"\\.\pipe\";
 /// The `protocolVersion` this client speaks (`@finisher/contracts` `PROTOCOL_VERSION`).
-pub const PROTOCOL_VERSION: u64 = 1;
+pub const PROTOCOL_VERSION: u64 = 2;
 
 /// A local socket address.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -169,7 +169,7 @@ mod tests {
     #[test]
     fn info_file_gives_the_socket_and_checks_the_protocol() {
         let file = Path::new("/sd/finisherd.json");
-        let ok = r#"{"pid":1,"wsPort":2,"socket":"/sd/fin.sock","token":"t","protocolVersion":1}"#;
+        let ok = r#"{"pid":1,"wsPort":2,"socket":"/sd/fin.sock","protocolVersion":2}"#;
         assert_eq!(
             from_info(file, ok).unwrap().display(),
             Endpoint::parse("/sd/fin.sock").display()
@@ -185,11 +185,13 @@ mod tests {
                 .code,
             "PROTOCOL_MISMATCH"
         );
-        let newer = r#"{"socket":"/sd/fin.sock","protocolVersion":2}"#;
-        assert_eq!(
-            from_info(file, newer).unwrap_err().code,
-            "PROTOCOL_MISMATCH"
-        );
+        for other in [1, 3] {
+            let text = format!(r#"{{"socket":"/sd/fin.sock","protocolVersion":{other}}}"#);
+            assert_eq!(
+                from_info(file, &text).unwrap_err().code,
+                "PROTOCOL_MISMATCH"
+            );
+        }
     }
 
     #[test]

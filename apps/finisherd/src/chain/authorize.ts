@@ -32,7 +32,7 @@ export function authorize(
       // A folder that names no project cannot be checked: closed, as an unknown project.
       if (tag === "project.open" && resolved.openedProject === undefined) return yield* Effect.fail(outOfReach(undefined));
     }
-    const roots = yield* rootsOf(principal, deps);
+    const roots = yield* rootsOf(principal, deps, resolved.pathsIn);
     if (roots !== undefined) {
       const outside = resolved.paths.find((p) => !roots.some((r) => inside(p, r)));
       if (outside !== undefined) return yield* Effect.fail(pathNotAllowed(tag, outside));

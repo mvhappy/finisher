@@ -35,7 +35,7 @@ fn fake_server(
     };
     let name = socket.as_path().to_fs_name::<GenericFilePath>().unwrap();
     let listener = ListenerOptions::new().name(name).create_sync().unwrap();
-    let info = json!({ "pid": 1, "wsPort": 1, "socket": socket.display().to_string(), "token": "t", "protocolVersion": 1, "envId": "01test0000000000000000000a" });
+    let info = json!({ "pid": 1, "wsPort": 1, "socket": socket.display().to_string(), "protocolVersion": 2, "envId": "01test0000000000000000000a" });
     std::fs::write(sd.join("finisherd.json"), info.to_string()).unwrap();
     std::thread::spawn(move || {
         let stream = listener.accept().unwrap();

@@ -11,6 +11,7 @@ import { clipsOf, failure } from "./e2e/history-lib.mjs";
 import { contentFields, contentProblems, kindDef, leaks, loadContentFields, parseJsonl } from "./e2e/diagnostics-lib.mjs";
 import { audioSummary, blessing, checkGolden, cubicBezier, engineProblem, firstDifference, frameGolden, hashTree, layerSummary } from "./e2e/reel-lib.mjs";
 import { realCache } from "./e2e/reel-real.mjs";
+import { handshakeMac } from "./e2e/lib.mjs";
 
 test("parseFrames splits one message carrying several NDJSON frames", () => {
   const text = `${JSON.stringify({ _tag: "Chunk", requestId: "1", values: [] })}\n${JSON.stringify({ _tag: "Exit", requestId: "1" })}\n`;
@@ -220,4 +221,14 @@ test("diagnostics: leaks finds needles and any unkeyed blake3 hash, skipping emp
     { file: "b.jsonl", needle: "blake3:" },
   ]);
   assert.deepEqual(parseJsonl('{"a":1}\n\n{"b":2}\n'), [{ a: 1 }, { b: 2 }]);
+});
+
+test("the e2e handshake MACs match the shared vectors (5A Task 6: connectWs proves over the socket)", () => {
+  const v = JSON.parse(readFileSync(new URL("../tests/fixtures/auth/handshake.json", import.meta.url), "utf8"));
+  for (const h of v.handshakes) {
+    const key = Buffer.from(v.keys[h.key], "base64url");
+    const [cn, sn] = [Buffer.from(h.clientNonce, "hex"), Buffer.from(h.serverNonce, "hex")];
+    assert.equal(handshakeMac(key, v.labels.hello, [h.envId, h.endpoint, cn, sn]).toString("hex"), h.proof, h.name);
+    assert.equal(handshakeMac(key, v.labels.prove, [h.envId, h.endpoint, sn, cn]).toString("hex"), h.mac, h.name);
+  }
 });

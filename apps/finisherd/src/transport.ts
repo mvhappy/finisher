@@ -1,8 +1,6 @@
-// RPC transports (plan decision 5): NDJSON over the local socket/pipe and over a
-// bearer-token WebSocket on 127.0.0.1.
-import { timingSafeEqual } from "node:crypto";
+// RPC transports (plan decision 5): NDJSON over the local socket/pipe and over a ticketed
+// WebSocket on 127.0.0.1 (`upgrade.ts`, 5A Task 6).
 import { chmodSync, existsSync, rmSync } from "node:fs";
-import type { IncomingMessage } from "node:http";
 import { connect } from "node:net";
 import * as NodeSocketServer from "@effect/platform-node/NodeSocketServer";
 import { FinRpcs } from "@finisher/contracts";
@@ -13,7 +11,7 @@ import { ServerStartError, startFailure } from "./config.ts";
 import { type Connections, ConnectionsTag } from "./connections.ts";
 import { RpcSource, type Source } from "./diagnostics.ts";
 import { HandlersLive } from "./handlers.ts";
-import { MAX_FRAME, makeFinProtocol } from "./protocol.ts";
+import { makeFinProtocol } from "./protocol.ts";
 
 /** One server per server-data: a live finisherd already owns the socket. */
 function serverRunning(socket: string): ServerStartError {
@@ -57,15 +55,6 @@ export const claimSocketPath = (
           }),
   );
 
-/** True when `req` carries `Authorization: Bearer <token>` (constant-time comparison). */
-export function hasBearer(req: Pick<IncomingMessage, "headers">, token: string): boolean {
-  const header = req.headers.authorization;
-  if (typeof header !== "string" || !header.startsWith("Bearer ")) return false;
-  const given = Buffer.from(header.slice("Bearer ".length));
-  const expected = Buffer.from(token);
-  return given.length === expected.length && timingSafeEqual(given, expected);
-}
-
 /**
  * Local socket server at `path`. The socket is created under umask 0177 (so it is 0600 from
  * the start) and chmod'ed 0600 again once listening; `EADDRINUSE` means `SERVER_RUNNING`.
@@ -94,30 +83,6 @@ export const makeLocalSocketServer = (path: string, platform: NodeJS.Platform = 
         if (previous !== undefined) process.umask(previous);
       }),
   );
-
-/**
- * WebSocket server on `127.0.0.1:0`. Requests without the bearer token get HTTP 401
- * before the upgrade (ws `verifyClient`).
- */
-export const makeWebSocketServer = (token: string) =>
-  NodeSocketServer.makeWebSocket({
-    host: "127.0.0.1",
-    port: 0,
-    // A message over the frame cap and its slack is dropped by ws (close 1009); one just over the
-    // cap reaches `protocol.ts`, which answers `FRAME_TOO_LARGE` first.
-    maxPayload: MAX_FRAME + 64 * 1024,
-    verifyClient: (info: { req: IncomingMessage }, cb: (ok: boolean, code?: number, message?: string) => void) => {
-      if (hasBearer(info.req, token)) cb(true);
-      else cb(false, 401, "Unauthorized");
-    },
-  });
-
-/** The port a WebSocket `SocketServer` is bound to. */
-export function portOf(server: SocketServer["Service"]): number {
-  const address = server.address;
-  if ("port" in address) return address.port;
-  throw new Error("websocket server is not bound to an inet address");
-}
 
 /** Error codes of a peer that went away while the server was reading or writing (Unix, Windows pipes). */
 const PEER_GONE = new Set(["ECONNRESET", "EPIPE", "ERR_STREAM_PREMATURE_CLOSE", "ERROR_NO_DATA", "ERROR_BROKEN_PIPE"]);

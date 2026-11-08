@@ -308,7 +308,7 @@ fn no_server_and_no_project_are_typed_errors() {
     assert_eq!(run.json["error"]["fix"], "start finisherd");
     // finisherd.json names a socket nobody listens on.
     std::fs::create_dir_all(&sd).unwrap();
-    let info = json!({ "pid": 1, "wsPort": 1, "socket": s(&sd.join("run").join("fin.sock")), "token": "t", "protocolVersion": 1 });
+    let info = json!({ "pid": 1, "wsPort": 1, "socket": s(&sd.join("run").join("fin.sock")), "protocolVersion": 2 });
     std::fs::write(sd.join("finisherd.json"), info.to_string()).unwrap();
     assert_error(
         &fin(&sd, &root, &["view", "--project", "."]),

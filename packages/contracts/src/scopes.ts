@@ -95,14 +95,18 @@ const BRANCH: ReadonlyArray<ResolverName> = ["project", "branch"];
 export const RPC_SCOPES: { readonly [T in FinRpcTag]: RpcRule } = {
   "server.hello": rule(["public"]),
   "auth.prove": rule(["public"]),
+  "auth.ticket": rule(["server.read"]),
+  "auth.whoami": rule(["server.read"]),
+  // No id: a credential can revoke only itself.
+  "auth.revokeSelf": rule(["server.read"]),
   "project.create": rule(["project.create"], { resolve: ["createDir"] }),
   // Attaching to a project already open here only reads it; loading one may take its lease.
   "project.open": rule<{ relocate?: boolean }>(["project.read"], {
     resolve: ["openDir"],
     escalate: (p, facts) => [...(facts.attached === true ? [] : (["project.write"] as const)), ...(p.relocate === true ? (["project.confirm"] as const) : [])],
   }),
-  // Protocol 2 (Task 6) adds `projectId`; until then the path's reach is the principal's projects.
-  "asset.probe": rule(["project.write"], { resolve: ["probePath"] }),
+  // Protocol 2: the probe is for `projectId`, and a principal with roots probes only inside its folder.
+  "asset.probe": rule(["project.write"], { resolve: ["project", "probePath"] }),
   "tx.commit": rule(["project.write"], { resolve: BRANCH, writes: ["tx.branch"] }),
   "snapshot.get": rule(["project.read"], { resolve: BRANCH }),
   "ops.subscribe": rule(["project.read"], { resolve: BRANCH }),
