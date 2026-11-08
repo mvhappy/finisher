@@ -254,7 +254,8 @@ describe("JobHost", () => {
     // granularity of about 15.6 ms (a fixed count fails there when the run is short).
     const period = process.platform === "win32" ? 15.6 : 1;
     expect(lag.count).toBeGreaterThan(Math.min(50, (performance.now() - t0) / (4 * period) - 1));
-    expect(lag.percentile(99) / 1e6).toBeLessThan(strict ? 6 : 25);
+    // Windows' 15.6 ms timer period is in every sample there: 38 ms under the full suite.
+    expect(lag.percentile(99) / 1e6).toBeLessThan(strict ? 6 : process.platform === "win32" ? 60 : 25);
   });
 
   for (const [name, opts, lineBytes] of [
