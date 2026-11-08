@@ -13,14 +13,19 @@ export interface BudgetResult {
   readonly rows: number;
   /** Per prepared statement (the spec's budget: p99 ≤ 1 ms). */
   readonly p99Ms: Record<string, number>;
+  /** Per prepared statement, the median: load from other processes moves the tail, not this. */
+  readonly p50Ms: Record<string, number>;
   /** One whole retention sweep, for information. */
   readonly sweepMs: number;
 }
 
-function p99(samples: number[]): number {
+function pct(samples: number[], p: number): number {
   const sorted = [...samples].sort((a, b) => a - b);
-  return Number((sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * 0.99))] ?? 0).toFixed(3));
+  return Number((sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * p))] ?? 0).toFixed(3));
 }
+
+const p99 = (samples: number[]): number => pct(samples, 0.99);
+const p50 = (samples: number[]): number => pct(samples, 0.5);
 
 function time(n: number, f: (i: number) => void): number[] {
   const out: number[] = [];
@@ -83,6 +88,7 @@ export async function measureControlBudget(dir: string, rows = 100_000): Promise
     return {
       rows,
       p99Ms: { append: p99(append), authFail: p99(fail), list: p99(page), listByKind: p99(byKind), listSince: p99(since), meta: p99(meta), sweepAge: p99(sweepAge), sweepMax: p99(sweepMax), sweepRows: p99(sweepRows) },
+      p50Ms: { append: p50(append), authFail: p50(fail), list: p50(page), listByKind: p50(byKind), listSince: p50(since), meta: p50(meta), sweepAge: p50(sweepAge), sweepMax: p50(sweepMax), sweepRows: p50(sweepRows) },
       sweepMs: p99(sweeps),
     };
   } finally {
