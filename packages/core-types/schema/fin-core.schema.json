@@ -5540,6 +5540,548 @@
       ],
       "type": "object"
     },
+    "JobGroupSpec": {
+      "additionalProperties": false,
+      "description": "`openGroup`'s spec.",
+      "properties": {
+        "label": {
+          "type": "string"
+        },
+        "memoryBytes": {
+          "default": null,
+          "description": "The group's memory limit: the sum of its processes (Decision 20).",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "qos": {
+          "$ref": "#/$defs/JobHostQos",
+          "default": "normal"
+        }
+      },
+      "required": [
+        "label"
+      ],
+      "type": "object"
+    },
+    "JobHostCaps": {
+      "description": "What this host can enforce.",
+      "properties": {
+        "cgroupMemory": {
+          "description": "Group memory limits are enforced by the kernel (cgroup `memory.max` or a Job).",
+          "type": "boolean"
+        },
+        "killTree": {
+          "$ref": "#/$defs/JobHostKillTree"
+        },
+        "leafLimits": {
+          "description": "Per-process limits are enforced (leaf Jobs or leaf cgroups).",
+          "type": "boolean"
+        },
+        "sandbox": {
+          "description": "The spawner's name (`none` unsandboxed).",
+          "type": "string"
+        },
+        "sandboxed": {
+          "type": "boolean"
+        },
+        "watchdog": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "killTree",
+        "watchdog",
+        "cgroupMemory",
+        "leafLimits",
+        "sandbox",
+        "sandboxed"
+      ],
+      "type": "object"
+    },
+    "JobHostCgroups": {
+      "enum": [
+        "auto",
+        "off"
+      ],
+      "type": "string"
+    },
+    "JobHostEvent": {
+      "description": "What the host reports. Per process: `spawned` (its `spawn` has resolved), `hello`, its\nmessages and `stderr` lines, then `exit`; `groupEmpty` follows the last `exit` of a group.\n`progress` is coalesced (at most every 250 ms, the newest value, and always before the\nnext other message); `alive` never arrives. `memory` (the worker group's bytes) comes with\n`ready` only.",
+      "oneOf": [
+        {
+          "properties": {
+            "group": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "proc": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "type": {
+              "const": "spawned",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "proc",
+            "group"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "hello": {
+              "$ref": "#/$defs/Hello"
+            },
+            "proc": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "type": {
+              "const": "hello",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "proc",
+            "hello"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "memory": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "msg": {
+              "$ref": "#/$defs/WorkerMsg"
+            },
+            "proc": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "type": {
+              "const": "message",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "proc",
+            "msg"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "line": {
+              "type": "string"
+            },
+            "proc": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "type": {
+              "const": "stderr",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "proc",
+            "line"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "info": {
+              "$ref": "#/$defs/JobHostExitInfo"
+            },
+            "proc": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "type": {
+              "const": "exit",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "proc",
+            "info"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "group": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "type": {
+              "const": "groupEmpty",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "group"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "JobHostExitInfo": {
+      "description": "An `exit` event's facts.",
+      "oneOf": [
+        {
+          "properties": {
+            "reason": {
+              "const": "exited",
+              "type": "string"
+            }
+          },
+          "required": [
+            "reason"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "kill": {
+              "$ref": "#/$defs/JobHostKillReason"
+            },
+            "reason": {
+              "const": "killed",
+              "type": "string"
+            }
+          },
+          "required": [
+            "reason",
+            "kill"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "reason": {
+              "const": "hung",
+              "type": "string"
+            }
+          },
+          "required": [
+            "reason"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "reason": {
+              "const": "stalled",
+              "type": "string"
+            }
+          },
+          "required": [
+            "reason"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "reason": {
+              "const": "timedOut",
+              "type": "string"
+            }
+          },
+          "required": [
+            "reason"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "reason": {
+              "const": "oom",
+              "type": "string"
+            }
+          },
+          "required": [
+            "reason"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "reason": {
+              "const": "resourceFault",
+              "type": "string"
+            }
+          },
+          "required": [
+            "reason"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "reason": {
+              "const": "protocolError",
+              "type": "string"
+            },
+            "what": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "reason",
+            "what"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "expected": {
+              "type": "string"
+            },
+            "got": {
+              "type": "string"
+            },
+            "reason": {
+              "const": "protocolMismatch",
+              "type": "string"
+            }
+          },
+          "required": [
+            "reason",
+            "expected",
+            "got"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "reason": {
+              "const": "noHello",
+              "type": "string"
+            }
+          },
+          "required": [
+            "reason"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "reason": {
+              "const": "spawnFailed",
+              "type": "string"
+            },
+            "what": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "reason",
+            "what"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "reason": {
+              "const": "abandoned",
+              "type": "string"
+            }
+          },
+          "required": [
+            "reason"
+          ],
+          "type": "object"
+        }
+      ],
+      "properties": {
+        "code": {
+          "description": "The exit code (Windows: the NTSTATUS or code; a process the host killed: 137).",
+          "format": "int64",
+          "type": "integer"
+        },
+        "foreign": {
+          "description": "Processes in the group the host did not start.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "lifetimeMs": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "memoryPeak": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "signal": {
+          "description": "Lower case without `SIG` (fin-core's `SIGNALS`; `other` outside them). Never on Windows.",
+          "type": "string"
+        },
+        "stderrTail": {
+          "description": "The last 8 KiB of stderr.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "stderrTail",
+        "lifetimeMs"
+      ],
+      "type": "object"
+    },
+    "JobHostKillReason": {
+      "description": "Why the host killed a group.",
+      "enum": [
+        "cancel",
+        "shutdown",
+        "recycle",
+        "idleExpired",
+        "helperFailed",
+        "jobEnded",
+        "hung",
+        "test"
+      ],
+      "type": "string"
+    },
+    "JobHostKillTree": {
+      "enum": [
+        "jobObject",
+        "cgroup",
+        "processGroup"
+      ],
+      "type": "string"
+    },
+    "JobHostOptions": {
+      "additionalProperties": false,
+      "description": "`JobHost.start`'s options. Timers in milliseconds; unset ones take the defaults.",
+      "properties": {
+        "binaryDir": {
+          "description": "Where `{ bundled }` programs resolve: the directory of `workersBinaryPath()`.",
+          "type": "string"
+        },
+        "cgroups": {
+          "$ref": "#/$defs/JobHostCgroups",
+          "description": "Delegated cgroups where they are ours (Linux; default `auto`)."
+        },
+        "eventQueue": {
+          "default": null,
+          "description": "Events waiting for the JS thread before the host's readers wait too (default 1,024).",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "eventQueueBytes": {
+          "default": null,
+          "description": "The summed JSON bytes of those events (default 16 MiB; one larger event still goes\nalone). `exit`, `spawned` and `groupEmpty` are not counted: a process has one of each.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "timing": {
+          "$ref": "#/$defs/JobHostTiming"
+        },
+        "watchdog": {
+          "default": null,
+          "description": "The Unix host watchdog (default on; ignored on Windows).",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "binaryDir"
+      ],
+      "type": "object"
+    },
+    "JobHostQos": {
+      "enum": [
+        "normal",
+        "utility",
+        "background"
+      ],
+      "type": "string"
+    },
+    "JobHostTiming": {
+      "additionalProperties": false,
+      "description": "The host's timers in milliseconds; unset ones take the defaults.",
+      "properties": {
+        "exitDrainMs": {
+          "default": null,
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "helloMs": {
+          "default": null,
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "hungMs": {
+          "default": null,
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "killWaitMs": {
+          "default": null,
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "rssSampleMs": {
+          "default": null,
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "type": "object"
+    },
+    "JobMemoryRule": {
+      "additionalProperties": false,
+      "description": "A group memory rule (Decision 20).",
+      "properties": {
+        "capMiB": {
+          "default": null,
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "fixedMiB": {
+          "default": null,
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "ramFraction": {
+          "default": null,
+          "format": "double",
+          "type": "number"
+        }
+      },
+      "type": "object"
+    },
     "JobOutcome": {
       "description": "A job's terminal state.",
       "enum": [
@@ -5558,6 +6100,167 @@
         "background"
       ],
       "type": "string"
+    },
+    "JobSpawnGrant": {
+      "additionalProperties": false,
+      "description": "A path the process may use (for a sandbox's rules).",
+      "properties": {
+        "mode": {
+          "$ref": "#/$defs/FileMode"
+        },
+        "path": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "path",
+        "mode"
+      ],
+      "type": "object"
+    },
+    "JobSpawnHelper": {
+      "additionalProperties": false,
+      "description": "A helper's `{kind, id}`.",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/$defs/HelperKind"
+        }
+      },
+      "required": [
+        "kind",
+        "id"
+      ],
+      "type": "object"
+    },
+    "JobSpawnProfile": {
+      "enum": [
+        "worker",
+        "plugin"
+      ],
+      "type": "string"
+    },
+    "JobSpawnProgram": {
+      "description": "`bundled`: `fin-workers` or `fin-analyze` in `binaryDir`; `path`: plugin processes only.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "bundled": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "bundled"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "path": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "path"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "JobSpawnRequest": {
+      "additionalProperties": false,
+      "description": "One process to start. `env` is its whole environment: nothing else is inherited. `helper`\nis required for a helper and refused for a worker.",
+      "properties": {
+        "args": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "cwd": {
+          "type": "string"
+        },
+        "env": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "default": {},
+          "type": "object"
+        },
+        "family": {
+          "type": "string"
+        },
+        "grants": {
+          "items": {
+            "$ref": "#/$defs/JobSpawnGrant"
+          },
+          "type": "array"
+        },
+        "helper": {
+          "$ref": "#/$defs/JobSpawnHelper"
+        },
+        "label": {
+          "default": "",
+          "type": "string"
+        },
+        "profile": {
+          "$ref": "#/$defs/JobSpawnProfile"
+        },
+        "program": {
+          "$ref": "#/$defs/JobSpawnProgram"
+        },
+        "qos": {
+          "$ref": "#/$defs/JobHostQos",
+          "default": "normal"
+        },
+        "role": {
+          "$ref": "#/$defs/JobSpawnRole"
+        }
+      },
+      "required": [
+        "role",
+        "family",
+        "program",
+        "cwd"
+      ],
+      "type": "object"
+    },
+    "JobSpawnRole": {
+      "enum": [
+        "worker",
+        "helper"
+      ],
+      "type": "string"
+    },
+    "JobWatch": {
+      "additionalProperties": false,
+      "description": "`watch`'s argument: `stallMs` without `begin`, `item` or `progress`; `timeoutMs` from now.",
+      "properties": {
+        "job": {
+          "type": "string"
+        },
+        "stallMs": {
+          "default": null,
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "timeoutMs": {
+          "default": null,
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "job"
+      ],
+      "type": "object"
     },
     "JournalDropped": {
       "properties": {
@@ -10788,10 +11491,15 @@
     },
     "TestProgressFloodParams": {
       "additionalProperties": false,
-      "description": "`test.progressFlood`: `n` progress messages as fast as it can.",
+      "description": "`test.progressFlood`: `n` progress messages as fast as it can; with `stderrBytes`, `n`\nstderr lines of that many bytes (`flood <i> ` then padding) instead.",
       "properties": {
         "n": {
           "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "stderrBytes": {
+          "format": "uint32",
           "minimum": 0,
           "type": "integer"
         }

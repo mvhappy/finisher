@@ -1,4 +1,14 @@
-import type { Hello, HostMsg, WorkerMsg } from "@finisher/core-types";
+import type {
+  HostMsg,
+  JobGroupSpec,
+  JobHostCaps,
+  JobHostEvent,
+  JobHostKillReason,
+  JobHostOptions,
+  JobMemoryRule,
+  JobSpawnRequest,
+  JobWatch,
+} from "@finisher/core-types";
 
 /** A rejected fin-node call: `message` is the core message; `code` is a stable SCREAMING_SNAKE code. */
 export interface FinNodeError extends Error {
@@ -384,87 +394,41 @@ export declare function makePrivateDir(path: string): void;
  */
 export declare function probe(path: string): Promise<string>;
 
-/** `JobHost.start`'s options (5C-1 plan, Task 6). Timers in milliseconds; unset ones take the defaults. */
-export interface JobHostOptions {
-  /** Where `{ bundled }` programs resolve: the directory of `workersBinaryPath()`. */
-  binaryDir: string;
-  timing?: Partial<{ helloMs: number; hungMs: number; killWaitMs: number; rssSampleMs: number; exitDrainMs: number }>;
-  /** Delegated cgroups where they are ours (Linux; default `auto`). */
-  cgroups?: "auto" | "off";
-  /** The Unix host watchdog (default on; ignored on Windows). */
-  watchdog?: boolean;
-  /** Events waiting for the JS thread before the host's readers wait too (default 1024). */
-  eventQueue?: number;
-}
+// The job host's JSON shapes are fin-jobhost's `wire` types, generated into core-types.
+export type {
+  JobGroupSpec,
+  JobHostCaps,
+  JobHostEvent,
+  JobHostExitInfo,
+  JobHostKillReason,
+  JobHostOptions,
+  JobHostQos,
+  JobMemoryRule,
+  JobSpawnRequest,
+  JobWatch,
+} from "@finisher/core-types";
 
-export type JobHostKillReason = "cancel" | "shutdown" | "recycle" | "idleExpired" | "helperFailed" | "jobEnded" | "hung" | "test";
-export type JobHostQos = "normal" | "utility" | "background";
-
-/** How a process ended. */
-export type JobHostExitReason =
-  | { reason: "exited" | "hung" | "stalled" | "timedOut" | "oom" | "resourceFault" | "noHello" | "abandoned" }
-  | { reason: "killed"; kill: JobHostKillReason }
-  | { reason: "protocolError" | "spawnFailed"; what: string }
-  | { reason: "protocolMismatch"; expected: string; got: string };
-
-export type JobHostExitInfo = JobHostExitReason & {
-  /** The exit code (Windows: the NTSTATUS or code; a process the host killed: 137). */
-  code?: number;
-  /** Lower case without `SIG` (fin-core's `SIGNALS`; `other` outside them). Never on Windows. */
-  signal?: string;
-  /** Processes in the group the host did not start. */
-  foreign?: number;
-  memoryPeak?: number;
-  /** The last 8 KiB of stderr. */
-  stderrTail: string;
-  lifetimeMs: number;
-};
-
-/**
- * Per process: `hello`, its messages and `stderr` lines, then `exit`; `groupEmpty` follows the
- * last `exit` of a group. `progress` is coalesced (at most every 250 ms, the newest value, and
- * always before the next other message); `alive` never arrives. `memory` (the worker group's
- * bytes) comes with `ready` only. A process's events may arrive before its `spawn` resolves.
- */
-export type JobHostEvent =
-  | { type: "hello"; proc: number; hello: Hello }
-  | { type: "message"; proc: number; msg: WorkerMsg; memory?: number }
-  | { type: "stderr"; proc: number; line: string }
-  | { type: "exit"; proc: number; info: JobHostExitInfo }
-  | { type: "groupEmpty"; group: number };
-
-/** One process to start. `env` is its whole environment: nothing else is inherited. */
-export interface JobSpawnRequest {
-  role: "worker" | "helper";
-  /** Required for a helper, refused for a worker. */
-  helper?: { kind: "codec" | "plugin"; id: string };
-  profile?: "worker" | "plugin";
-  family: string;
-  /** `bundled`: `fin-workers` or `fin-analyze` in `binaryDir`; `path`: plugin processes only. */
-  program: { bundled: string } | { path: string };
-  args?: string[];
-  env?: Record<string, string>;
-  cwd: string;
-  grants?: Array<{ path: string; mode: "read" | "write" | "readWrite" }>;
-  qos?: JobHostQos;
-  label?: string;
-}
-
-export interface JobHostCaps {
-  killTree: "jobObject" | "cgroup" | "processGroup";
-  watchdog: boolean;
-  cgroupMemory: boolean;
-  leafLimits: boolean;
-  /** The spawner's name (`none` unsandboxed). */
-  sandbox: string;
-  sandboxed: boolean;
-}
+/** What `JobHost.send` did: queued; `full` (the process is not reading its stdin and is being
+ * killed as hung); `gone` (it exited, its stdin is closed, or the id is unknown). Neither names
+ * how the process ends: that comes with its `exit` event. */
+export type JobHostSendResult = "ok" | "full" | "gone";
 
 /**
  * `fin-jobhost`'s host (spawning, kill trees, framing, timers). Nothing waits on the JS thread:
  * `start`, `spawn`, `killGroup` and `shutdown` settle from the host's threads; `openGroup`
- * allocates; `send` enqueues. Errors are `FinNodeError`s: `WORKER_UNAVAILABLE` (`details.reason`)
- * from the host, `INVALID_REQUEST` (`details.field`) for an argument it cannot read.
+ * allocates; `send` enqueues. Errors are `FinNodeError`s: `WORKER_UNAVAILABLE`
+ * (`details.reason`) when no process could be started, `JOBHOST_STATE` (`details.reason`:
+ * `unknownGroup`, `groupClosed`, `shutDown`) for a group or host the caller should know is
+ * gone, `INVALID_REQUEST` (`details.field`) for an argument it cannot read, `INTERNAL` for an
+ * answer the host lost (`details.reason: "unanswered"`).
+ *
+ * Events: per process `spawned`, `hello`, its messages and `stderr` lines, then `exit`
+ * (`JobHostEvent`). A process's `spawn` has resolved, and the code after an `await` of it has
+ * run, before its `spawned` reaches `onEvent`.
+ *
+ * The event callback is weak: a running host or process does not keep Node alive (pending
+ * `start`, `spawn`, `killGroup` and `shutdown` promises do). Keep the process alive by other
+ * means (a server, a timer) while jobs run.
  */
 export declare class JobHost {
   private constructor();
@@ -472,11 +436,12 @@ export declare class JobHost {
   static start(opts: JobHostOptions, onEvent: (e: JobHostEvent) => void): Promise<JobHost>;
   caps(): JobHostCaps;
   /** Allocates a group id; its OS objects are made at its first spawn. */
-  openGroup(spec: { label: string; memoryBytes?: number; qos: JobHostQos }): number;
+  openGroup(spec: JobGroupSpec): number;
+  /** Resolves to the process id before any event of the process reaches `onEvent`. */
   spawn(group: number, req: JobSpawnRequest): Promise<number>;
-  /** Enqueues; `false`: the queue is full (the process is being killed as hung) or it is gone. */
-  send(proc: number, msg: HostMsg): boolean;
-  watch(proc: number, w: { job: string; stallMs?: number; timeoutMs?: number } | null): void;
+  /** Enqueues `msg`; see `JobHostSendResult`. */
+  send(proc: number, msg: HostMsg): JobHostSendResult;
+  watch(proc: number, w: JobWatch | null): void;
   closeStdin(proc: number): void;
   killGroup(group: number, reason: JobHostKillReason): Promise<void>;
   /** Queues the group's release (later spawns fail; live processes are killed). */
@@ -490,7 +455,10 @@ export declare class JobHost {
   readonly pauseEventsForTest: ((ms: number) => void) | undefined;
 }
 
-/** Decodes `params` with the kind's Rust params type; errors name the field. */
+/**
+ * Decodes `params` with the kind's Rust params type; errors name the field. Params over 512 KiB
+ * of JSON are refused (`ok: false`); a `version` that is not a `u32` throws `INVALID_REQUEST`.
+ */
 export declare function validateJobParams(
   kind: string,
   version: number,
@@ -499,7 +467,7 @@ export declare function validateJobParams(
 /** The kinds and versions `validateJobParams` knows (release builds: none yet). */
 export declare function jobKindVersions(): Array<{ kind: string; version: number }>;
 /** A group memory rule (Decision 20) in bytes for `totalBytes` of RAM; `undefined` without a bound. */
-export declare function resolveMemoryRule(rule: { fixedMiB?: number; ramFraction?: number; capMiB?: number }, totalBytes: number): number | undefined;
+export declare function resolveMemoryRule(rule: JobMemoryRule, totalBytes: number): number | undefined;
 /** `fin-workers[.exe]` in `dir` (default: the directory the fin-node binary was loaded from). */
 export declare function workersBinaryPath(dir?: string): string;
 

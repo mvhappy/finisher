@@ -37,15 +37,19 @@ impl Host {
 
 impl Host {
     /// Kills one process (`SIGKILL` / `TerminateProcess`), as a crash would: the host did not
-    /// decide it, so it is reported `Exited`.
-    pub fn kill_proc_for_test(&self, proc: crate::ProcId) {
+    /// decide it, so it is reported `Exited`. `false`: it is unknown, exited or reaped (its
+    /// pid may belong to another process by now), so nothing was signalled.
+    pub fn kill_proc_for_test(&self, proc: crate::ProcId) -> bool {
         let Some(p) = self.inner.proc(proc) else {
-            return;
+            return false;
         };
-        if p.state().exited {
-            return;
+        // Under the state lock, which the waiter takes to mark the pid released.
+        let st = p.state();
+        if st.exited || st.reaped {
+            return false;
         }
         kill_pid(p.pid);
+        true
     }
 
     /// The process's waiter holds its observed exit for `hold`: a kill of its group then

@@ -109,7 +109,10 @@
     - Every blocking syscall retries on `EINTR`.
 11a. **The JS thread never blocks** (napi, Task 6).
     - `spawn`, `killGroup` and `shutdown` return promises settled from the spawner thread; `openGroup` only allocates an id (the OS objects are made on the spawner thread at the group's first spawn); `send` only enqueues.
-    - Events reach JS through one **bounded, blocking `ThreadsafeFunction`** (queue 1,024): when JS falls behind, the reader threads block, the pipes fill, and the worker blocks on its own writes. Backpressure reaches the worker; memory does not grow.
+    - Events reach JS through one **bounded `ThreadsafeFunction`** (1,024 events **and** 16 MiB of their JSON; one larger event still goes alone): when JS falls behind, the reader threads block, the pipes fill, and the worker blocks on its own writes. Backpressure reaches the worker; memory does not grow.
+    - Lifecycle events (`spawned`, `exit`, `groupEmpty`, a spawn's answer) go through the same queue but are not counted and never wait: a process has one of each (an `exit` carries ≤ 8 KiB of stderr tail), and most come from the spawn thread, which therefore does not stall kills, spawns and kill waits behind a lagging JS thread. What remains: an `exit` the spawn thread reports itself (an abandoned or unwaited process) waits for that process's own events lock while its reader waits on the queue, and a pending `progress` flushed before an `exit` is counted. Acceptable: both last only as long as the JS thread is behind, and it never waits on the host.
+    - A `spawn` resolves through the event queue, before the process's `spawned` and before its readers start: no event of a process reaches JS before its `spawn` resolves (the code after `await spawn(…)` has run, since Node drains microtasks between threadsafe-function calls).
+    - Every promise is settled: a dropped answer (a callback never run, a panic on a host thread, a thread that did not start) rejects `INTERNAL {reason: "unanswered"}` rather than leaving the promise pending and the event loop held.
     - The liveness timers count silence **only while a reader waits on its pipe**; time spent blocked handing events to JS does not count, so a slow event loop never makes a worker look hung.
     - **Progress is coalesced in Rust:** per process the newest `progress` is kept and forwarded at most 4 times a second. Any other message from that process first flushes the pending one, so order is kept. `alive` never reaches JS.
 12. **Linux:** `std::process::Command` with `CommandExt::pre_exec`. Every path, `CString` and fd the child needs is prepared before the fork: **no allocation and no lock in `pre_exec`**, only async-signal-safe syscalls, each retried on `EINTR`. In order:
@@ -314,7 +317,7 @@
     - 4: `JOB_FAILED`, `JOB_CANCELLED`, `JOB_INTERRUPTED`, and the result codes `WORKER_CRASHED`, `WORKER_HUNG`, `JOB_STALLED`, `JOB_TIMEOUT`, `POISON_ITEM`, `HELPER_FAILED`;
     - 5: `JOB_QUEUE_FULL`, `WORKER_UNAVAILABLE`, `WORKER_PROTOCOL_MISMATCH`, `WAIT_TIMEOUT`, `RESOURCE_STUCK`, **`WORKER_OOM`** (5C-1 enforces the limit, so it owns the code; 6A's plan maps it to 5 too);
     - internal (only in `reply` errors): `UNKNOWN_MESSAGE`, `CALL_LIMIT`;
-    - `JOBHOST_UNSUPPORTED` (5) exists only until Task 5.
+    - 3 also `JOBHOST_STATE`: a job host call on a group or host the caller should know is gone (`details.reason`: `unknownGroup`, `groupClosed`, `shutDown`), a caller's bug, never retried. (`JOBHOST_UNSUPPORTED` was removed with Task 5: every OS has a kill domain.)
 
 ### Events and plugins
 
@@ -825,7 +828,8 @@ The peak memory and limit violations come from `JOBOBJECT_EXTENDED_LIMIT_INFORMA
 // packages/fin-node/index.d.ts
 export interface JobHostOptions { binaryDir: string; timing?: Partial<{ helloMs: number; hungMs: number; killWaitMs: number; rssSampleMs: number; exitDrainMs: number }>;
   cgroups?: "auto" | "off"; watchdog?: boolean; eventQueue?: number /* 1024 */ }
-export type JobHostEvent =
+export type JobHostEvent =   // generated from fin-jobhost's `wire` (as are JobHostOptions, JobSpawnRequest, JobHostExitInfo, JobHostCaps)
+  | { type: "spawned"; proc: number; group: number }
   | { type: "hello"; proc: number; hello: Hello } | { type: "message"; proc: number; msg: WorkerMsg; memory?: number }
   | { type: "stderr"; proc: number; line: string } | { type: "exit"; proc: number; info: ExitInfo }
   | { type: "groupEmpty"; group: number };
@@ -834,7 +838,7 @@ export class JobHost {
   caps(): { killTree: "jobObject" | "cgroup" | "processGroup"; watchdog: boolean; cgroupMemory: boolean; leafLimits: boolean; sandbox: string; sandboxed: boolean };
   openGroup(spec: { label: string; memoryBytes?: number; qos: "normal" | "utility" | "background" }): number;   // allocates only
   spawn(group: number, req: JobSpawnRequest): Promise<number>;                  // req.program: {bundled: name} | {path}
-  send(proc: number, msg: HostMsg): boolean;                                    // enqueue; false = queue full (the process is being killed)
+  send(proc: number, msg: HostMsg): "ok" | "full" | "gone";                    // enqueue; full: being killed as hung; the cause comes with `exit`
   watch(proc: number, w: { job: string; stallMs?: number; timeoutMs?: number } | null): void;
   closeStdin(proc: number): void;
   killGroup(group: number, reason: "cancel" | "shutdown" | "recycle" | "idleExpired" | "helperFailed" | "jobEnded" | "hung" | "test"): Promise<void>;

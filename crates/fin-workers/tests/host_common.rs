@@ -29,6 +29,86 @@ fn spawn_hello_start_result_exit() {
     h.group_empty(g);
 }
 
+/// The spawn's callback runs, then `Spawned`, before any other event of the process: even
+/// one that exits at once (`--bogus`) or is killed by the spawn thread itself.
+#[test]
+fn spawned_leads_after_the_callback() {
+    use std::sync::{Arc, Mutex};
+    let log: Arc<Mutex<Vec<String>>> = Arc::default();
+    let seen = log.clone();
+    let mut h = host_observed(
+        |_| {},
+        move |e| {
+            let tag = match e {
+                HostEvent::Spawned { proc, .. } => format!("spawned {}", proc.0),
+                HostEvent::GroupEmpty { .. } => return,
+                e => format!("event {}", proc_of(e).unwrap().0),
+            };
+            seen.lock().unwrap().push(tag);
+        },
+    );
+    let g = h.group();
+    let mut procs = Vec::new();
+    for args in [&["test"][..], &["--bogus"][..]] {
+        let (tx, rx) = mpsc::channel();
+        let log = log.clone();
+        h.host.spawn(
+            g,
+            h.req(args),
+            Box::new(move |r| {
+                let p = r.expect("it spawns");
+                log.lock().unwrap().push(format!("done {}", p.0));
+                let _ = tx.send(p);
+            }),
+        );
+        procs.push(rx.recv_timeout(WAIT).unwrap());
+    }
+    h.host.kill_group(g, KillReason::Test, Box::new(|| {}));
+    for &p in &procs {
+        h.exit(p);
+        match h.next(|e| matches!(e, HostEvent::Spawned { proc, .. } if *proc == p)) {
+            HostEvent::Spawned { group, .. } => assert_eq!(group, g),
+            _ => unreachable!(),
+        }
+        let log = log.lock().unwrap();
+        let mine: Vec<&String> = log
+            .iter()
+            .filter(|l| l.ends_with(&format!(" {}", p.0)))
+            .collect();
+        assert_eq!(mine[0], &format!("done {}", p.0), "{log:?}");
+        assert_eq!(mine[1], &format!("spawned {}", p.0), "{log:?}");
+        assert!(mine[2..].iter().all(|l| l.starts_with("event")), "{log:?}");
+    }
+}
+
+/// Once its waiter reaped it, a process is never signalled by pid again (the pid may be
+/// reused), even while an abandoned process's exit is still held (`abandon_for_test`).
+#[test]
+fn kill_by_pid_skips_a_reaped_process() {
+    let mut h = host();
+    let g = h.group();
+    let leader = h.worker(g);
+    let p = h.worker(g);
+    h.hello(leader);
+    h.hello(p);
+    h.host.abandon_for_test(p, Duration::from_secs(5));
+    assert!(h.host.kill_proc_for_test(p), "a live process is signalled");
+    let until = std::time::Instant::now() + Duration::from_secs(3);
+    while h.host.kill_proc_for_test(p) {
+        assert!(
+            std::time::Instant::now() < until,
+            "still signalled 3 s after its kill, during the held exit"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(
+        h.events_within(Duration::ZERO)
+            .iter()
+            .all(|e| !matches!(e, HostEvent::Exit { proc, .. } if *proc == p)),
+        "the exit is still held"
+    );
+}
+
 #[test]
 fn bundled_program_resolves_only_known_names() {
     let h = host();
@@ -353,6 +433,7 @@ fn stderr_tail_is_kept_and_capped() {
         match h.next(|e| proc_of(e) == Some(p)) {
             HostEvent::Stderr { line, .. } => lines.push(line),
             HostEvent::Exit { info, .. } => break info,
+            HostEvent::Spawned { .. } => {}
             e => panic!("{e:?}"),
         }
     };

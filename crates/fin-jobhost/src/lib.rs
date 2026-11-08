@@ -34,6 +34,7 @@ mod test_hooks;
 #[cfg(test)]
 mod tests;
 mod timers;
+pub mod wire;
 mod writer;
 
 #[cfg(unix)]
@@ -136,6 +137,13 @@ pub struct HostOptions {
     /// The waiter thread of each spawn does not start (tests: the spawn thread's fallback).
     #[cfg(feature = "test-hooks")]
     pub fail_waiter_thread_for_test: bool,
+    /// [`Host::start`] panics (tests: a caller's answer that is never given).
+    #[cfg(feature = "test-hooks")]
+    pub panic_on_start_for_test: bool,
+    /// Each spawn command panics before it answers (tests: the spawn thread survives, the
+    /// dropped callback is the caller's to answer).
+    #[cfg(feature = "test-hooks")]
+    pub panic_on_spawn_for_test: bool,
 }
 
 /// See [`HostOptions::after_send_for_test`].
@@ -184,6 +192,10 @@ impl HostOptions {
             after_send_for_test: None,
             #[cfg(feature = "test-hooks")]
             fail_waiter_thread_for_test: false,
+            #[cfg(feature = "test-hooks")]
+            panic_on_start_for_test: false,
+            #[cfg(feature = "test-hooks")]
+            panic_on_spawn_for_test: false,
         }
     }
 }
@@ -271,11 +283,17 @@ pub struct Watch {
     pub timeout_ms: Option<u32>,
 }
 
-/// What the host reports. Per process the order is `Hello`, its messages and `Stderr` lines,
-/// then `Exit` (after the drain, Decision 19a); `GroupEmpty` follows the last `Exit` of a
-/// group.
+/// What the host reports. Per process the order is `Spawned`, `Hello`, its messages and
+/// `Stderr` lines, then `Exit` (after the drain, Decision 19a); `GroupEmpty` follows the last
+/// `Exit` of a group.
 #[derive(Debug, Clone, PartialEq)]
 pub enum HostEvent {
+    /// The process runs. Sent after its spawn's callback ran and before its readers start,
+    /// so no other event of the process comes before it or before the callback.
+    Spawned {
+        proc: ProcId,
+        group: GroupId,
+    },
     Hello {
         proc: ProcId,
         hello: Hello,
@@ -327,11 +345,11 @@ impl EventSink {
     }
 }
 
-/// Why a host call failed.
+/// Why a host call failed. `UnknownGroup`, `GroupClosed` and `ShutDown` are the caller's
+/// mistakes (`JOBHOST_STATE`); the others mean no process could be started
+/// (`WORKER_UNAVAILABLE`).
 #[derive(Debug)]
 pub enum HostError {
-    /// No kill domain on this OS: `JOBHOST_UNSUPPORTED`.
-    Unsupported,
     UnknownGroup(GroupId),
     /// The group is closing or closed.
     GroupClosed(GroupId),
@@ -356,7 +374,9 @@ pub enum HostError {
 impl HostError {
     pub fn code(&self) -> &'static str {
         match self {
-            HostError::Unsupported => "JOBHOST_UNSUPPORTED",
+            HostError::UnknownGroup(_) | HostError::GroupClosed(_) | HostError::ShutDown => {
+                "JOBHOST_STATE"
+            }
             _ => "WORKER_UNAVAILABLE",
         }
     }
@@ -407,7 +427,6 @@ impl std::error::Error for Refusal {}
 impl fmt::Display for HostError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            HostError::Unsupported => write!(f, "no job host on this OS"),
             HostError::UnknownGroup(g) => write!(f, "unknown group {g}"),
             HostError::GroupClosed(g) => write!(f, "group {g} is closed"),
             HostError::ShutDown => write!(f, "the job host is shutting down"),
@@ -423,7 +442,8 @@ impl fmt::Display for HostError {
 
 impl std::error::Error for HostError {}
 
-/// Why [`Host::send`] did not enqueue.
+/// Why [`Host::send`] did not enqueue. Neither `QueueFull` nor `Gone` names how the process
+/// ends: that comes with its `Exit`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SendError {
     /// 256 messages or 4 MiB wait: the process is not reading and is being killed as hung.

@@ -88,6 +88,8 @@ pub(crate) struct ProcState {
     /// The reason it will be reported with, once the host decided to kill it.
     pub kill: Option<ExitReason>,
     pub exited: bool,
+    /// The waiter released its pid (`waitpid`; not a Unix leader): the pid may be reused.
+    pub reaped: bool,
     /// Reported `Abandoned` after the kill wait; its real exit is only logged.
     pub abandoned: bool,
     /// The waiter holds the observed exit this long (tests: a kill that seems not to work,
@@ -147,6 +149,7 @@ impl Proc {
                 last_progress: started,
                 kill: None,
                 exited: false,
+                reaped: false,
                 abandoned: false,
                 #[cfg(feature = "test-hooks")]
                 hold_exit_for_test: None,
@@ -172,7 +175,7 @@ impl Proc {
         true
     }
 
-    fn emit(&self, e: HostEvent) {
+    pub(crate) fn emit(&self, e: HostEvent) {
         let closed = lock(&self.emit);
         if !*closed {
             self.sink.send(e);
@@ -337,6 +340,8 @@ pub(crate) fn wait_exit(
         code: None,
         signal: None,
     });
+    // Before any hold: a kill by pid must not reach a process that reused it.
+    p.state().reaped = !p.leader;
     #[cfg(feature = "test-hooks")]
     {
         let hold = p.state().hold_exit_for_test;

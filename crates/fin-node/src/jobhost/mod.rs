@@ -4,10 +4,14 @@
 //! The JS thread never waits for a process: `start`, `spawn`, `killGroup` and `shutdown`
 //! return promises settled from the host's own threads; `openGroup` only allocates an id;
 //! `send` only enqueues. Events go through [`events`] (one bounded queue, progress coalesced).
-//! Values cross as JSON strings; `packages/fin-node/index.js` parses them.
+//! Values cross as JSON strings in `fin_jobhost::wire`'s shapes; `packages/fin-node/jobhost.js`
+//! parses them. Every promise is a [`Settle`]: settled even when its answer is lost.
 //!
-//! Events of a process may reach JS before its `spawn` promise settles (they travel on
-//! different queues): the caller keys them by process id.
+//! A spawn resolves **through the event queue**: its answer (`{type: "_spawn", spawn, proc}`,
+//! consumed by `jobhost.js`) is handed over by the spawn thread before the process's
+//! `spawned` and before its readers start, so no event of a process reaches JS before its
+//! `spawn` resolves. The native promise only rejects (a refused spawn); on success it resolves
+//! with nothing.
 //!
 //! The host is never dropped on the JS thread: its drop joins the spawn thread, which may be
 //! handing an event to a JS thread that is busy dropping it.
@@ -15,33 +19,38 @@
 use std::sync::Arc;
 
 use fin_core::CoreError;
+use fin_jobhost::wire::{
+    JobGroupSpec, JobHostCaps, JobHostOptions, JobMemoryRule, JobSpawnRequest, JobWatch,
+};
 use fin_jobhost::{EventSink, GroupId, Host, HostError, HostOptions, ProcId, SendError};
 use fin_jobs::HostMsg;
 use napi::bindgen_prelude::*;
 use napi::threadsafe_function::ThreadsafeCallContext;
 use napi_derive::napi;
-use serde_json::json;
+use serde_json::{Value, json};
 
 use crate::{guarded, reject};
 
 mod events;
 mod napi_types;
 mod params;
+mod settle;
 
-use events::{EventFn, Events, Inflight};
-use napi_types::{GroupIn, Options, SpawnIn, WatchIn, decode, invalid, kill_reason};
+use events::{EventFn, Events, Handed, Inflight};
+use napi_types::{decode, decode_value, invalid, kill_reason, wire};
+use settle::Settle;
 
-pub use napi_types::JobHostCaps;
 pub use params::{JobKindVersion, job_kind_versions};
 
-/// The default bound of the event queue (Decision 11a).
+/// The default bounds of the event queue (Decision 11a): events, and their JSON bytes.
 const EVENT_QUEUE: usize = 1024;
+const EVENT_QUEUE_BYTES: usize = 16 << 20;
 
-/// A rejection for a host error: its code (`WORKER_UNAVAILABLE`, `JOBHOST_UNSUPPORTED`) with
-/// `details.reason` (the host's named reason, else the kind of failure) and `details.error`.
+/// A rejection for a host error: its code (`JOBHOST_STATE` for a group or host the caller
+/// should know is gone, else `WORKER_UNAVAILABLE`) with `details.reason` (the host's named
+/// reason, else the kind of failure) and `details.error`.
 fn host_error(e: &HostError) -> Error {
     let reason = e.reason().unwrap_or(match e {
-        HostError::Unsupported => "unsupported",
         HostError::UnknownGroup(_) => "unknownGroup",
         HostError::GroupClosed(_) => "groupClosed",
         HostError::ShutDown => "shutDown",
@@ -63,6 +72,48 @@ fn id(field: &str, n: f64) -> Result<u64> {
     } else {
         Err(reject(invalid(field, format!("{n} is not an id"))))
     }
+}
+
+/// A JS number as a `u32` (a version, a duration in ms).
+fn u32_of(field: &str, n: f64) -> Result<u32> {
+    let v = id(field, n)?;
+    u32::try_from(v).map_err(|_| reject(invalid(field, format!("{n} is over {}", u32::MAX))))
+}
+
+/// The ways `start` can be made to fail (`failForTest`, test builds).
+#[derive(Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(not(feature = "test-hooks"), allow(dead_code))]
+enum FailForTest {
+    None,
+    /// The `jobhost-start` thread does not start.
+    StartThread,
+    /// `Host::start` panics.
+    HostStart,
+    /// Every spawn command panics before it answers.
+    Spawn,
+}
+
+/// The options without `failForTest`, and what it asks.
+fn options(json_text: &str) -> std::result::Result<(JobHostOptions, FailForTest), CoreError> {
+    #[allow(unused_mut)]
+    let mut v: Value = decode("options", json_text)?;
+    #[allow(unused_mut)]
+    let mut fail = FailForTest::None;
+    #[cfg(feature = "test-hooks")]
+    if let Some(f) = v.as_object_mut().and_then(|o| o.remove("failForTest")) {
+        fail = match f.as_str() {
+            Some("startThread") => FailForTest::StartThread,
+            Some("hostStart") => FailForTest::HostStart,
+            Some("spawn") => FailForTest::Spawn,
+            _ => {
+                return Err(invalid(
+                    "options.failForTest",
+                    format!("{f} is not a failure"),
+                ));
+            }
+        };
+    }
+    Ok((decode_value("options", v)?, fail))
 }
 
 /// The host and its event path, dropped together off the JS thread.
@@ -89,8 +140,12 @@ impl Drop for JobHost {
 }
 
 impl JobHost {
+    fn running(&self) -> &Running {
+        self.running.as_ref().expect("a started host")
+    }
+
     fn host(&self) -> &Host {
-        &self.running.as_ref().expect("a started host").host
+        &self.running().host
     }
 }
 
@@ -104,108 +159,145 @@ impl JobHost {
         options_json: String,
         #[napi(ts_arg_type = "(json: string) => void")] callback: Function<String, ()>,
     ) -> Result<Object<'e>> {
-        let o: Options = decode("options", &options_json).map_err(reject)?;
+        let (o, fail) = options(&options_json).map_err(reject)?;
         let inflight = Inflight::new();
         let taken = inflight.clone();
         let tsfn: EventFn = callback
-            .build_threadsafe_function::<String>()
+            .build_threadsafe_function::<Handed>()
             .weak::<true>()
             .callee_handled::<false>()
-            .build_callback(move |ctx: ThreadsafeCallContext<String>| {
-                taken.take();
-                Ok(ctx.value)
+            .build_callback(move |ctx: ThreadsafeCallContext<Handed>| {
+                taken.take(&ctx.value);
+                Ok(ctx.value.json)
             })?;
-        let events = Events::start(tsfn, inflight, o.event_queue.unwrap_or(EVENT_QUEUE))?;
+        let bound = |n: Option<u32>, d: usize| n.map_or(d, |n| n as usize);
+        let events = Events::start(
+            tsfn,
+            inflight,
+            bound(o.event_queue, EVENT_QUEUE),
+            bound(o.event_queue_bytes, EVENT_QUEUE_BYTES),
+        )?;
         let mut opts = HostOptions::new(&o.binary_dir);
-        opts.timing = o.timing.timing();
+        opts.timing = o.timing.unwrap_or_default().timing();
         if let Some(c) = o.cgroups {
-            opts.cgroups = c.mode();
+            opts.cgroups = c.into();
         }
         if let Some(w) = o.watchdog {
             opts.watchdog = w;
         }
-        let (deferred, promise) = env.create_deferred::<JobHost, _>()?;
+        #[cfg(feature = "test-hooks")]
+        {
+            opts.panic_on_start_for_test = fail == FailForTest::HostStart;
+            opts.panic_on_spawn_for_test = fail == FailForTest::Spawn;
+        }
+        let (settle, promise) = Settle::<JobHost>::new(env, "JobHost.start")?;
         let unstarted = events.clone();
         let sink = {
             let events = events.clone();
             EventSink::new(move |e| events.on_event(e))
         };
-        let started = std::thread::Builder::new()
-            .name("jobhost-start".into())
-            .spawn(move || match Host::start(opts, sink) {
-                Ok(host) => deferred.resolve(move |_env| {
-                    Ok(JobHost {
-                        running: Some(Running { host, events }),
-                    })
-                }),
-                Err(e) => {
-                    events.close();
-                    deferred.reject(host_error(&e));
+        let run = move || match Host::start(opts, sink) {
+            Ok(host) => settle.resolve(move |_env| {
+                Ok(JobHost {
+                    running: Some(Running { host, events }),
+                })
+            }),
+            Err(e) => {
+                events.close();
+                settle.reject(host_error(&e));
+            }
+        };
+        let builder = std::thread::Builder::new().name("jobhost-start".into());
+        let started = if fail == FailForTest::StartThread {
+            drop(run);
+            Err(std::io::Error::other("test: no start thread"))
+        } else {
+            let closer = unstarted.clone();
+            builder.spawn(move || {
+                // A panic drops `settle` (rejecting the promise) and must not leave the events
+                // open.
+                if std::panic::catch_unwind(std::panic::AssertUnwindSafe(run)).is_err() {
+                    closer.close();
                 }
-            });
-        if let Err(e) = started {
+            })
+        };
+        if started.is_err() {
+            // `run` is dropped with its `settle`: the promise rejects `INTERNAL`.
             unstarted.close();
-            return Err(reject(CoreError::new(
-                "INTERNAL",
-                format!("cannot start the job host thread: {e}"),
-            )));
         }
         Ok(promise)
     }
 
-    /// What this host can enforce.
+    /// What this host can enforce (`JobHostCaps` JSON).
     #[napi(catch_unwind)]
-    pub fn caps(&self) -> JobHostCaps {
-        self.host().caps().into()
+    pub fn caps(&self) -> Result<String> {
+        crate::encode(&JobHostCaps::from(self.host().caps()))
     }
 
-    /// Allocates a group (`specJson`: `{label, memoryBytes?, qos}`); its OS objects are made
-    /// at its first spawn.
+    /// Allocates a group (`specJson`: `JobGroupSpec`); its OS objects are made at its first
+    /// spawn.
     #[napi(catch_unwind)]
     pub fn open_group(&self, spec_json: String) -> Result<f64> {
-        let spec: GroupIn = decode("spec", &spec_json).map_err(reject)?;
+        let spec: JobGroupSpec = decode("spec", &spec_json).map_err(reject)?;
         Ok(self.host().open_group(spec.into()).0 as f64)
     }
 
-    /// Spawns a process in `group` (`reqJson`: `JobSpawnRequest`); resolves to its id.
-    #[napi(catch_unwind, ts_return_type = "Promise<number>")]
-    pub fn spawn<'e>(&self, env: &'e Env, group: f64, req_json: String) -> Result<Object<'e>> {
+    /// Spawns a process in `group` (`reqJson`: `JobSpawnRequest`). Success is answered on the
+    /// event queue as `{type: "_spawn", spawn, proc}` (before any event of the process); the
+    /// promise rejects for a refused spawn and otherwise resolves with nothing.
+    #[napi(catch_unwind, ts_return_type = "Promise<void>")]
+    pub fn spawn<'e>(
+        &self,
+        env: &'e Env,
+        group: f64,
+        req_json: String,
+        spawn: f64,
+    ) -> Result<Object<'e>> {
         let group = GroupId(id("group", group)?);
-        let req = decode::<SpawnIn>("req", &req_json)
-            .and_then(SpawnIn::request)
+        let spawn = id("spawn", spawn)?;
+        let req = decode::<JobSpawnRequest>("req", &req_json)
+            .and_then(|r| r.request().map_err(wire))
             .map_err(reject)?;
-        let (deferred, promise) = env.create_deferred::<f64, _>()?;
+        let (settle, promise) = Settle::<()>::new(env, "JobHost.spawn")?;
+        let events = self.running().events.clone();
         self.host().spawn(
             group,
             req,
             Box::new(move |r| match r {
-                Ok(p) => deferred.resolve(move |_env| Ok(p.0 as f64)),
-                Err(e) => deferred.reject(host_error(&e)),
+                Ok(p) => {
+                    events.deliver_now(
+                        json!({ "type": "_spawn", "spawn": spawn, "proc": p.0 }).to_string(),
+                    );
+                    settle.resolve(|_env| Ok(()));
+                }
+                Err(e) => settle.reject(host_error(&e)),
             }),
         );
         Ok(promise)
     }
 
-    /// Enqueues a `HostMsg` (JSON). `false`: the queue is full (the process is being killed as
-    /// hung) or the process is gone. A message that is not a `HostMsg` or too long to frame
-    /// throws `INVALID_REQUEST`.
-    #[napi(catch_unwind)]
-    pub fn send(&self, proc: f64, msg_json: String) -> Result<bool> {
+    /// Enqueues a `HostMsg` (JSON): `ok`; `full` (the queue is full: the process is being
+    /// killed as hung); `gone` (it exited, its stdin is closed, or the id is unknown). How the
+    /// process ended comes with its `exit`. A message that is not a `HostMsg` or too long to
+    /// frame throws `INVALID_REQUEST`.
+    #[napi(catch_unwind, ts_return_type = "\"ok\" | \"full\" | \"gone\"")]
+    pub fn send(&self, proc: f64, msg_json: String) -> Result<String> {
         let proc = ProcId(id("proc", proc)?);
         let msg: HostMsg = decode("msg", &msg_json).map_err(reject)?;
         match self.host().send(proc, &msg) {
-            Ok(()) => Ok(true),
-            Err(SendError::QueueFull | SendError::Gone) => Ok(false),
+            Ok(()) => Ok("ok".into()),
+            Err(SendError::QueueFull) => Ok("full".into()),
+            Err(SendError::Gone) => Ok("gone".into()),
             Err(SendError::Encode(e)) => Err(reject(invalid("msg", e))),
         }
     }
 
-    /// Sets (`{job, stallMs?, timeoutMs?}` JSON) or clears (`null`) a running job's timers.
+    /// Sets (`JobWatch` JSON) or clears (`null`) a running job's timers.
     #[napi(catch_unwind)]
     pub fn watch(&self, proc: f64, watch_json: Option<String>) -> Result<()> {
         let proc = ProcId(id("proc", proc)?);
         let w = match watch_json {
-            Some(j) => Some(decode::<WatchIn>("watch", &j).map_err(reject)?.into()),
+            Some(j) => Some(decode::<JobWatch>("watch", &j).map_err(reject)?.into()),
             None => None,
         };
         self.host().watch(proc, w);
@@ -225,11 +317,11 @@ impl JobHost {
     pub fn kill_group<'e>(&self, env: &'e Env, group: f64, reason: String) -> Result<Object<'e>> {
         let group = GroupId(id("group", group)?);
         let reason = kill_reason(&reason).map_err(reject)?;
-        let (deferred, promise) = env.create_deferred::<(), _>()?;
+        let (settle, promise) = Settle::<()>::new(env, "JobHost.killGroup")?;
         self.host().kill_group(
             group,
             reason,
-            Box::new(move || deferred.resolve(|_env| Ok(()))),
+            Box::new(move || settle.resolve(|_env| Ok(()))),
         );
         Ok(promise)
     }
@@ -245,10 +337,11 @@ impl JobHost {
     /// Closes every stdin, kills what is left after `graceMs`, resolves once every process
     /// exited (or the kill wait passed). Later spawns fail.
     #[napi(catch_unwind, ts_return_type = "Promise<void>")]
-    pub fn shutdown<'e>(&self, env: &'e Env, grace_ms: u32) -> Result<Object<'e>> {
-        let (deferred, promise) = env.create_deferred::<(), _>()?;
+    pub fn shutdown<'e>(&self, env: &'e Env, grace_ms: f64) -> Result<Object<'e>> {
+        let grace_ms = u32_of("graceMs", grace_ms)?;
+        let (settle, promise) = Settle::<()>::new(env, "JobHost.shutdown")?;
         self.host()
-            .shutdown(grace_ms, Box::new(move || deferred.resolve(|_env| Ok(()))));
+            .shutdown(grace_ms, Box::new(move || settle.resolve(|_env| Ok(()))));
         Ok(promise)
     }
 }
@@ -284,38 +377,26 @@ impl JobHost {
 }
 
 /// `validateJobParams`: resolves the kind's Rust params type; answers `{ok, params}` or
-/// `{ok: false, errors}` as JSON.
+/// `{ok: false, errors}` as JSON. A `version` that is not a `u32` throws `INVALID_REQUEST`.
 #[napi(catch_unwind)]
-pub fn validate_job_params(kind: String, version: u32, params_json: String) -> Result<String> {
+pub fn validate_job_params(kind: String, version: f64, params_json: String) -> Result<String> {
     guarded(
         || {
-            let params: serde_json::Value = decode("params", &params_json).map_err(reject)?;
-            Ok(params::validate(&kind, version, &params).to_string())
+            let version = u32_of("version", version)?;
+            let params: Value = decode("params", &params_json).map_err(reject)?;
+            Ok(params::validate(&kind, version, &params, params_json.len()).to_string())
         },
         || {},
     )
 }
 
-/// A group memory rule (`{fixedMiB?, ramFraction?, capMiB?}` JSON) in bytes for a machine with
-/// `totalBytes` of RAM (Decision 20); `null` without any bound.
+/// A group memory rule (`JobMemoryRule` JSON) in bytes for a machine with `totalBytes` of RAM
+/// (Decision 20); `null` without any bound.
 #[napi(catch_unwind)]
 pub fn resolve_memory_rule(rule_json: String, total_bytes: f64) -> Result<Option<f64>> {
-    #[derive(serde::Deserialize)]
-    #[serde(deny_unknown_fields)]
-    struct RuleIn {
-        #[serde(rename = "fixedMiB", default)]
-        fixed_mib: Option<u64>,
-        #[serde(rename = "ramFraction", default)]
-        ram_fraction: Option<f64>,
-        #[serde(rename = "capMiB", default)]
-        cap_mib: Option<u64>,
-    }
-    let r: RuleIn = decode("rule", &rule_json).map_err(reject)?;
-    let rule = fin_jobhost::MemoryRule {
-        fixed_mib: r.fixed_mib,
-        ram_fraction: r.ram_fraction,
-        cap_mib: r.cap_mib,
-    };
+    let rule: fin_jobhost::MemoryRule = decode::<JobMemoryRule>("rule", &rule_json)
+        .map_err(reject)?
+        .into();
     Ok(rule
         .resolve(id("totalBytes", total_bytes)?)
         .map(|b| b as f64))
