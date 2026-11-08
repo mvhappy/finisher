@@ -590,3 +590,17 @@ Plan: `docs/superpowers/plans/2026-11-07-sub-project-7a-runtime-core.md` (revisi
 - S3b: 240 fps phone check of panel response; Bluetooth/AirPlay output
 - S11b: colour emoji in fin-text (COLRv1)
 - Cleanup when done: `~/finisher-spike` on the Linux VM (11 GB) and its `finisher-spike/gfx:1` image
+
+## Load-sensitive timing tests (patches for the owning branches)
+
+Pattern: statistic + generous bound, strict bound only under `FIN_STRICT_TIMING=1`. Done for `engine.test.ts` "event loop keeps ticking" on sp4c-edit-breadth. The two below live on other branches and need the same treatment there.
+
+- [ ] **`reader_never_waits_for_writer`** (`apps/finisherd/test/library/threads.test.ts`, home/sp5d-t7b; failed at 20.2 ms vs 20 ms). The writer spins 800 ms, so a reader that really waits for it takes about 700 ms. Replace `expect(Math.max(...times)).toBeLessThan(20)` with:
+  ```ts
+  const sorted = [...times].sort((a, b) => a - b);
+  expect(sorted[Math.floor(sorted.length / 2)]).toBeLessThan(20); // median
+  expect(sorted.filter((t) => t > 20).length).toBeLessThanOrEqual(2); // at most 2 of the 10 searches
+  expect(sorted[sorted.length - 1]).toBeLessThan(process.env.FIN_STRICT_TIMING === "1" ? 20 : 250);
+  ```
+  Keep `expect(spinning).toBe(true)`. Prove with a mutant that makes `reader.search` take the writer's lock (it must fail on the 250 ms bound or the median).
+- [ ] **`diagnostics_project_never_then_default`** (`crates/fin/tests/cli_diagnostics_online.rs`, home/sp5a-t3, fn at ~539; times out under load). The positive waits go through `wait()` with a fixed 15 s deadline. Make the deadline `Duration::from_secs(env_secs("FIN_TEST_WAIT_SECS", 60))` (60 s default; `fn env_secs(k, d) -> u64 { std::env::var(k).ok().and_then(|v| v.parse().ok()).unwrap_or(d) }`). The failure branch stays: `assert!(want(&found), "timed out: ...")` after the deadline. Leave the 400 ms sleep before "no new ones are written" alone (it is a negative check and load only makes it weaker, never flaky); keep each `fin` call's own timeout, if any, scaled by the same value.
