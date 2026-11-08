@@ -55,6 +55,7 @@ fn start_failed(path: &str, what: &str, e: &std::io::Error) -> Error {
     )
 }
 
+#[allow(clippy::disallowed_methods)] // the server lock file, never a library path
 fn open(path: &str) -> std::io::Result<File> {
     let mut options = OpenOptions::new();
     options.read(true).write(true).create(true).truncate(false);

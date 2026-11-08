@@ -16,18 +16,24 @@
 //!     "disk":    { "mountRoot": true },
 //!     "gone":    { "unmounted": true },
 //!     "slow":    { "readDelayMs": 50, "entryDelayMs": 5 },
-//!     "bad":     { "error": "io", "openError": null } } }
+//!     "bad":     { "error": "io", "openError": null },
+//!     "poison":  { "crashOnOpen": true } } }
 //! ```
 //!
 //! Paths are `/`-joined display names relative to the root (`""` is the root). A placeholder
 //! (`dataless`, `recallOnOpen`, `recallOnData`, `offline`, `unpinned`) sets the matching macOS
 //! or Windows attribute bit on the entry, whatever the host, and covers everything below it;
+//! `crashOnOpen` aborts the process at an [`crate::open_for_read`] of the path;
 //! `unmounted` reports the directory as no mount root, listed empty (the bare mount point);
 //! `error`/`openError` fail its listing or its open (error names as in the fake source).
 //! Log lines are `{"op": "open" | "openDir" | "readDir", "path", "hydrate"?, "refused"?}`:
 //! `open` for every `open_for_read` of a listed path (a placeholder is refused `CloudOnly`
 //! unless `hydrate`), `openDir`/`readDir` for every open or listing of a placeholder or
 //! automount directory. A correct walk and probe pass leave no line about a placeholder.
+
+// The overlay reads its own file by path and appends to its log: test builds only, never a
+// library file (`scripts/clippy-allow.json`).
+#![allow(clippy::disallowed_methods)]
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -66,6 +72,9 @@ struct PathSpec {
     mount_root: bool,
     #[serde(default)]
     automount: bool,
+    /// Aborts the process when the path is opened for reading (worker isolation tests).
+    #[serde(default)]
+    crash_on_open: bool,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -199,6 +208,9 @@ pub(crate) fn on_open(root: &Path, rel: &RawRel, hydrate: bool) -> Option<OpenEr
         Ok(None) => return None,
         Err(e) => return Some(OpenError::Io(e)),
     };
+    if ov.get(rel).is_some_and(|p| p.crash_on_open) {
+        std::process::abort();
+    }
     let placeholder = ov.placeholder(rel).is_some();
     let refuse = placeholder && !hydrate;
     if placeholder || ov.get(rel).is_some() {

@@ -15,6 +15,7 @@ use std::io;
 use std::path::Path;
 
 use fin_probe::{FileMeta, PROBE_VERSION, Probe};
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::budget::Throttle;
@@ -27,6 +28,8 @@ pub const MISSING: &str = "missing";
 pub const CLOUD_ONLY: &str = "cloudOnly";
 pub const UNREADABLE: &str = "unreadable";
 pub const PROBE_FAILED: &str = "probeFailed";
+/// The catalog's state of a file the worker did not read (Decision 37's extension filter).
+pub const SKIPPED: &str = "skipped";
 /// Not a stored file state: the file differs from its catalogued row (rescan its directory).
 pub const CHANGED: &str = "changed";
 /// Not a stored file state: the run was cancelled (drop the outcome).
@@ -53,7 +56,7 @@ impl FileRef<'_> {
 }
 
 /// What `library.probed` reports for one file.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct ProbeOutcome {
     pub file: i64,
@@ -67,6 +70,11 @@ pub struct ProbeOutcome {
 }
 
 impl ProbeOutcome {
+    /// A file the library's kinds table does not list: not opened, `skipped` with `code`.
+    pub fn skipped(file: i64, code: &str) -> Self {
+        Self::new(file, SKIPPED, Some(code))
+    }
+
     fn new(file: i64, state: &str, code: Option<&str>) -> Self {
         ProbeOutcome {
             file,

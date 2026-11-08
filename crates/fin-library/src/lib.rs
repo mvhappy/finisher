@@ -22,6 +22,7 @@
 //! **Read-only roots:** nothing in this crate creates, writes, renames, locks or deletes
 //! anything under a root.
 
+pub mod batchfile;
 pub mod budget;
 pub mod collide;
 pub mod exclude;
@@ -30,6 +31,7 @@ pub mod hash;
 pub mod listing;
 pub mod names;
 pub mod open;
+pub mod params;
 pub mod placeholder;
 pub mod probe;
 pub mod process;

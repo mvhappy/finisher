@@ -1,5 +1,7 @@
 //! Probe and hash of library files (plan 5D Task 5): one handle through the safe opener,
 //! the fingerprint kept across a failed probe, the budget and cloud-only rules.
+// Tests build and inspect trees by path; never a library reader (`scripts/clippy-allow.json`).
+#![allow(clippy::disallowed_methods)]
 #![cfg(unix)]
 
 mod support;

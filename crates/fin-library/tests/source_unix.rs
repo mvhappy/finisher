@@ -1,5 +1,7 @@
 //! The native Unix source (plan 5D Task 2): Linux `getdents64` + `statx`, macOS
 //! `getattrlistbulk`.
+// Tests build and inspect trees by path; never a library reader (`scripts/clippy-allow.json`).
+#![allow(clippy::disallowed_methods)]
 #![cfg(unix)]
 
 mod support;

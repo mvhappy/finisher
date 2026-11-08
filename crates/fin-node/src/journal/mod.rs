@@ -45,6 +45,7 @@ pub(super) static JOURNALS: Mutex<Vec<(PathBuf, fin_journal::Journal)>> = Mutex:
 /// and canonicalising only an existing path keyed the two apart wherever the canonical form
 /// differs (a symlink; macOS temp dirs behind `/var` → `/private/var`; Windows `\\?\`
 /// paths), so the engines found no journal and recorded nothing.
+#[allow(clippy::disallowed_methods)] // the server data directory
 fn key_of(server_data: &Path) -> PathBuf {
     let mut rest = Vec::new();
     let mut at = server_data;

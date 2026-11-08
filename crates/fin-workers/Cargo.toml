@@ -22,10 +22,12 @@ doctest = false
 # The `test`, `testbad` and `testplugin` families and the test helper. fin-workers' own tests
 # enable it through the self dev-dependency below, and fin-node's `build:test` builds the
 # binary with it; release builds never do (`scripts/check-test-hooks.mjs`).
-test-hooks = ["fin-jobs/test-hooks", "dep:libc", "dep:windows-sys"]
+test-hooks = ["fin-jobs/test-hooks", "fin-library/test-hooks", "dep:libc", "dep:windows-sys"]
 
 [dependencies]
 fin-jobs = { path = "../fin-jobs" }
+# The `library` family: the walker, the safe opener, probe and hash (plan 5D Decision 1).
+fin-library = { path = "../fin-library" }
 serde = "1"
 serde_json = "1"
 
@@ -41,4 +43,6 @@ windows-sys = { version = "0.61", optional = true, features = ["Win32_Foundation
 [dev-dependencies]
 fin-core = { path = "../fin-core" }
 fin-workers = { path = ".", features = ["test-hooks"] }
+# PNG fixtures for the library probe tests.
+fin-probe = { path = "../fin-probe", features = ["fixtures"] }
 tempfile = "3"

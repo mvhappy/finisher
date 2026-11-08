@@ -113,6 +113,7 @@ impl Attached {
 static MANAGERS: Mutex<Vec<(PathBuf, Weak<Manager>)>> = Mutex::new(Vec::new());
 
 /// The manager of `server_data`, made on first use.
+#[allow(clippy::disallowed_methods)] // the server data directory
 pub(crate) fn for_server(server_data: &Path) -> Arc<Manager> {
     let _ = std::fs::create_dir_all(server_data);
     let key = std::fs::canonicalize(server_data).unwrap_or_else(|_| server_data.to_path_buf());

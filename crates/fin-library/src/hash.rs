@@ -4,6 +4,7 @@
 
 use std::io::Read;
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::budget::Throttle;
@@ -12,7 +13,7 @@ use crate::probe::{CANCELLED, CHANGED, FileRef, PRESENT, io_refusal, refusal};
 const CHUNK: usize = 256 * 1024;
 
 /// What the `library.hash` kind reports for one file; `hash` is `blake3:<hex>`.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct HashOutcome {
     pub file: i64,

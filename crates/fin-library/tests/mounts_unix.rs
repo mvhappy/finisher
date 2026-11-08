@@ -1,6 +1,8 @@
 //! Volume identity, mount states and the dataless policy on Linux and macOS (plan 5D Task 2,
 //! Decisions 6, 15, 17). Linux mounts run in a user namespace (`support::userns`); macOS uses
 //! `hdiutil` disk images and, opt-in, iCloud Drive (`FIN_TEST_ICLOUD=1`).
+// Tests build and inspect trees by path; never a library reader (`scripts/clippy-allow.json`).
+#![allow(clippy::disallowed_methods)]
 #![cfg(unix)]
 
 mod support;

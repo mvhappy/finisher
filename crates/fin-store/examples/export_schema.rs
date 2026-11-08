@@ -69,6 +69,7 @@ fn main() {
         g.subschema_for::<fin_library::VolumeIdentity>();
         g.subschema_for::<fin_library::RootState>();
         g.subschema_for::<fin_library::Placeholder>();
+        fin_library::params::register_schemas(g);
         fin_jobs::register_schemas(g);
         fin_jobs::test_kinds::register_schemas(g);
     });

@@ -1,6 +1,7 @@
 //! The worker runtime (Decision 6), in order: the self-sandbox entry (Decision 9a); on
-//! Windows, crash UI off; `hello`. Then it reads `start`, runs the family's `run` with a
-//! [`JobCtx`], answers `result` or `error`, and exits 0 (cold) or sends `ready` (warm).
+//! Windows, crash UI off; the family's `init`; `hello`. Then it reads `start`, runs the
+//! family's `run` with a [`JobCtx`], answers `result` or `error`, and exits 0 (cold) or sends
+//! `ready` (warm).
 //!
 //! - stdin EOF at any time → exit [`crate::EXIT_HOST_GONE`] at once;
 //! - `cancel` sets the job's [`CancelToken`]; the family returns [`JobError::cancelled`];
@@ -19,7 +20,10 @@ use serde_json::Value;
 use crate::error::JobError;
 use crate::msg_host::Start;
 use crate::msg_worker::{Hello, KindVersion, Role, WorkerMsg};
-use crate::{EXIT_HOST_GONE, EXIT_HOST_PROTOCOL, EXIT_SELF_SANDBOX, MINOR, PROTOCOL, StartJob};
+use crate::{
+    EXIT_FAMILY_INIT, EXIT_HOST_GONE, EXIT_HOST_PROTOCOL, EXIT_SELF_SANDBOX, MINOR, PROTOCOL,
+    StartJob,
+};
 
 mod calls;
 mod ctx;
@@ -41,6 +45,13 @@ pub trait Family: Send {
         false
     }
     fn run(&mut self, job: &StartJob, ctx: &mut JobCtx<'_>) -> Result<Value, JobError>;
+
+    /// Runs once, after the self-sandbox entry and before `hello` (the `library` family
+    /// turns dataless materialisation off here, plan 5D Decision 6). `Err` ends the process
+    /// with [`crate::EXIT_FAMILY_INIT`] before anything is sent.
+    fn init(&mut self) -> Result<(), String> {
+        Ok(())
+    }
 
     /// Rewrites the `hello` before it is sent (test families' protocol violations).
     #[cfg(feature = "test-hooks")]
@@ -70,6 +81,10 @@ pub fn run_on(mut family: impl Family, chan: Channel) -> i32 {
         Ok(p) => p,
         Err(code) => return code,
     };
+    if let Err(e) = family.init() {
+        eprintln!("fin-jobs: {} could not start: {e}", family.name());
+        return EXIT_FAMILY_INIT;
+    }
     let shared = Shared::new(chan.output, chan.hard_exit, false);
     #[allow(unused_mut)]
     let mut hello = Hello {

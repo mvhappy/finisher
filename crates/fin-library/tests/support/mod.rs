@@ -1,4 +1,6 @@
 //! Helpers shared by the Unix source, opener and mount tests (plan 5D Task 2).
+// Tests build and inspect trees by path; never a library reader (`scripts/clippy-allow.json`).
+#![allow(clippy::disallowed_methods)]
 #![allow(dead_code)]
 
 use std::fs;

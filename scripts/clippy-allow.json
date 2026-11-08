@@ -1,0 +1,50 @@
+[
+  {
+    "path": "crates/fin-library/src/overlay.rs",
+    "reason": "The test overlay reads its own .fin-fake.json and appends to its open log by path (test-hooks builds only; never a library file)."
+  },
+  {
+    "path": "crates/fin-library/src/volume/linux.rs",
+    "reason": "Reads /proc/self/mountinfo, which is never under a library root."
+  },
+  {
+    "path": "crates/fin-library/tests",
+    "reason": "Tests build and inspect temporary trees by path; none is a library reader."
+  },
+  {
+    "path": "crates/fin-node/src/fonts/mod.rs",
+    "reason": "Canonicalises the server data directory for its manager key."
+  },
+  {
+    "path": "crates/fin-node/src/fonts/provider.rs",
+    "reason": "Reads project font assets (files of open projects), never a library path."
+  },
+  {
+    "path": "crates/fin-node/src/journal/mod.rs",
+    "reason": "Canonicalises the server data directory for its journal key."
+  },
+  {
+    "path": "crates/fin-node/src/library/mod.rs",
+    "reason": "real_directory resolves a root once at library.add (and the server data directory); never a file under a root."
+  },
+  {
+    "path": "crates/fin-node/src/private_dir.rs",
+    "reason": "Inspects the server's private directories."
+  },
+  {
+    "path": "crates/fin-node/src/server_lock.rs",
+    "reason": "Opens the server lock file in the server data directory."
+  },
+  {
+    "path": "crates/fin-workers/src/library/jobfiles.rs",
+    "reason": "Opens the job's own in/*.ndjson grants, paths the host handed the process; never a library path."
+  },
+  {
+    "path": "crates/fin-workers/src/test_family/mod.rs",
+    "reason": "The test families read and write the job's own files and process reports by path (test-hooks builds only)."
+  },
+  {
+    "path": "crates/fin-workers/tests",
+    "reason": "Tests drive the worker binary and inspect job directories by path; none is a library reader."
+  }
+]

@@ -1,6 +1,8 @@
 //! The walker over the real Unix source, and the test overlay (plan 5D Task 4): a
 //! `.fin-fake.json` at a real root marks paths as placeholders, automounts and mounts, delays
 //! and fails reads, and logs every `open_for_read` of a listed path outside the root.
+// Tests build and inspect trees by path; never a library reader (`scripts/clippy-allow.json`).
+#![allow(clippy::disallowed_methods)]
 #![cfg(unix)]
 
 mod support;

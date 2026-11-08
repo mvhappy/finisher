@@ -760,6 +760,8 @@ version = "0.0.0"
 dependencies = [
  "fin-core",
  "fin-jobs",
+ "fin-library",
+ "fin-probe",
  "fin-workers",
  "libc",
  "serde",

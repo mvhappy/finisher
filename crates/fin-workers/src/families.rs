@@ -12,6 +12,7 @@ pub fn run_family(family: &str, warm: bool) -> Option<Infallible> {
         "test" | "testbad" | "testplugin" => {
             fin_jobs::worker::run(crate::test_family::TestFamily::new(family, warm))
         }
+        "library" => fin_jobs::worker::run(crate::library::LibraryFamily::new(warm)),
         _ => None,
     }
 }

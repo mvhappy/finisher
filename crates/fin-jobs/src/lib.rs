@@ -41,6 +41,8 @@ pub const EXIT_HOST_GONE: i32 = 70;
 pub const EXIT_HOST_PROTOCOL: i32 = 65;
 /// A runtime's exit code when a requested self-sandbox cannot be applied (Decision 9a).
 pub const EXIT_SELF_SANDBOX: i32 = 78;
+/// A worker's exit code when its family's `init` fails (before `hello`).
+pub const EXIT_FAMILY_INIT: i32 = 71;
 /// The default `alive` interval before the first `start`.
 pub const DEFAULT_ALIVE_MS: u32 = 5000;
 

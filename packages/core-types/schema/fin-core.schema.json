@@ -3341,6 +3341,36 @@
         }
       ]
     },
+    "ExcludeSpec": {
+      "additionalProperties": false,
+      "description": "The library's patterns, as stored and as sent to a scan worker.",
+      "properties": {
+        "caseSensitive": {
+          "description": "The root's case sensitivity: keys and patterns are folded when `false`.",
+          "type": "boolean"
+        },
+        "exclude": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "include": {
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "caseSensitive"
+      ],
+      "type": "object"
+    },
     "ExitReason": {
       "description": "Why a process ended. A closed list (`worker_exit_reasons_closed`).",
       "enum": [
@@ -4133,6 +4163,36 @@
         "plugin"
       ],
       "type": "string"
+    },
+    "HashOutcome": {
+      "description": "What the `library.hash` kind reports for one file; `hash` is `blake3:<hex>`.",
+      "properties": {
+        "code": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "file": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "hash": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "state": {
+          "description": "As [`crate::probe::ProbeOutcome::state`]: `present`, or why there is no hash.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "file",
+        "state"
+      ],
+      "type": "object"
     },
     "Hashed": {
       "pattern": "^k1:[0-9a-f]{32}$",
@@ -5604,6 +5664,382 @@
         "crop",
         "opacity",
         "blend"
+      ],
+      "type": "object"
+    },
+    "LibraryBatchCall": {
+      "additionalProperties": false,
+      "description": "The `library.batch` call's params.",
+      "properties": {
+        "file": {
+          "description": "A plain file name inside the job's `out/`.",
+          "type": "string"
+        },
+        "seq": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "file",
+        "seq"
+      ],
+      "type": "object"
+    },
+    "LibraryFileLine": {
+      "additionalProperties": false,
+      "description": "One line of `in/files.ndjson`: a catalogued file to read (Decision 20).",
+      "properties": {
+        "expect": {
+          "$ref": "#/$defs/Expect"
+        },
+        "id": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "rel": {
+          "$ref": "#/$defs/RawRel"
+        }
+      },
+      "required": [
+        "id",
+        "rel",
+        "expect"
+      ],
+      "type": "object"
+    },
+    "LibraryHashParams": {
+      "additionalProperties": false,
+      "description": "`library.hash` (Decision 38): as [`LibraryProbeParams`], without the extension filter.",
+      "properties": {
+        "files": {
+          "default": "in/files.ndjson",
+          "type": "string"
+        },
+        "hydrate": {
+          "type": "boolean"
+        },
+        "items": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "library": {
+          "type": "string"
+        },
+        "readBps": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "root": {
+          "type": "string"
+        },
+        "volume": {
+          "$ref": "#/$defs/VolumeIdentity"
+        }
+      },
+      "required": [
+        "library",
+        "root",
+        "hydrate",
+        "volume",
+        "items"
+      ],
+      "type": "object"
+    },
+    "LibraryHashResult": {
+      "description": "What `library.hash` reports: one value per item (`blake3:<hex>`) went through `item`;\nhere only the counts.",
+      "properties": {
+        "changed": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "datalessPolicy": {
+          "type": "string"
+        },
+        "states": {
+          "additionalProperties": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "type": "object"
+        }
+      },
+      "required": [
+        "states",
+        "changed",
+        "datalessPolicy"
+      ],
+      "type": "object"
+    },
+    "LibraryProbeParams": {
+      "additionalProperties": false,
+      "description": "`library.probe` (Decision 34): items are catalog file ids (decimal strings); the\n`in/files.ndjson` grant holds a [`FileLine`] for each, and only the lines named by `items`\nrun (the engine's `restrict` narrows `items`, not the file).",
+      "properties": {
+        "extensions": {
+          "description": "Extensions to probe (lower case, no dot); absent probes everything (`kinds: all`).\nOthers are `skipped` with code [`KIND_FILTER`] (Decision 37).",
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "files": {
+          "default": "in/files.ndjson",
+          "description": "The grant that holds the lines.",
+          "type": "string"
+        },
+        "hydrate": {
+          "description": "The library's setting: a placeholder is read only when `true` (Decision 6).",
+          "type": "boolean"
+        },
+        "items": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "library": {
+          "type": "string"
+        },
+        "readBps": {
+          "description": "The library's bandwidth budget for this job's slot, in bytes per second (Decision 36).",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "root": {
+          "type": "string"
+        },
+        "volume": {
+          "$ref": "#/$defs/VolumeIdentity",
+          "description": "The stored identity the root is judged against before and during the job."
+        }
+      },
+      "required": [
+        "library",
+        "root",
+        "hydrate",
+        "volume",
+        "items"
+      ],
+      "type": "object"
+    },
+    "LibraryProbeResult": {
+      "description": "What `library.probe` reports: outcomes by state (the outcomes themselves went through\n`library.probed`).",
+      "properties": {
+        "changed": {
+          "description": "Files whose outcome was `changed`: their directories need a rescan (Task 5).",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "datalessPolicy": {
+          "type": "string"
+        },
+        "states": {
+          "additionalProperties": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "type": "object"
+        }
+      },
+      "required": [
+        "states",
+        "changed",
+        "datalessPolicy"
+      ],
+      "type": "object"
+    },
+    "LibraryProbedCall": {
+      "additionalProperties": false,
+      "description": "The `library.probed` call's params.",
+      "properties": {
+        "results": {
+          "items": {
+            "$ref": "#/$defs/ProbeOutcome"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "results"
+      ],
+      "type": "object"
+    },
+    "LibraryScanMode": {
+      "description": "What a scan lists (`WalkMode`).",
+      "oneOf": [
+        {
+          "const": "full",
+          "description": "Every directory; resumable by `gen` and `in/dirs.ndjson` (Decision 27).",
+          "type": "string"
+        },
+        {
+          "const": "dirs",
+          "description": "Exactly the directories in `dirs` (plus new subdirectories they report).",
+          "type": "string"
+        },
+        {
+          "const": "poll",
+          "description": "The known directories whose mtime changed, and new ones (Decision 28).",
+          "type": "string"
+        }
+      ]
+    },
+    "LibraryScanParams": {
+      "additionalProperties": false,
+      "description": "`library.scan`.",
+      "properties": {
+        "dirs": {
+          "description": "`mode: dirs`: the directories to list.",
+          "items": {
+            "$ref": "#/$defs/RawRel"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "excludes": {
+          "$ref": "#/$defs/ExcludeSpec"
+        },
+        "gen": {
+          "description": "The generation a full scan writes (`gen`; a word reserved in Rust 2024).",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "library": {
+          "type": "string"
+        },
+        "mode": {
+          "$ref": "#/$defs/LibraryScanMode"
+        },
+        "root": {
+          "description": "The library's canonical root: an absolute directory.",
+          "type": "string"
+        },
+        "threads": {
+          "description": "Read threads; absent means 64 (local roots), the service passes 32 for network and\nsync roots (Decision 9).",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "timing": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Timing"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Scaled deadlines. Test builds only: a release worker refuses the field."
+        },
+        "volume": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/VolumeIdentity"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The library's stored volume identity, which the first stat is judged against\n(Decision 17); absent for the first scan of a new library."
+        }
+      },
+      "required": [
+        "library",
+        "root",
+        "mode",
+        "gen",
+        "excludes"
+      ],
+      "type": "object"
+    },
+    "LibraryScanResult": {
+      "description": "What a scan did (`WalkSummary`, with the identity it measured).",
+      "properties": {
+        "batches": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "datalessPolicy": {
+          "description": "The process's dataless policy, as the OS reports it (`off` on macOS, Decision 6).",
+          "type": "string"
+        },
+        "entries": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "identity": {
+          "$ref": "#/$defs/VolumeIdentity",
+          "description": "The identity the first stat measured (refreshed into the library after a full scan)."
+        },
+        "incomplete": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "listed": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "skipped": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "stuck": {
+          "description": "Read threads still stuck in an abandoned read when the walk ended.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "timeouts": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "unchanged": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "identity",
+        "listed",
+        "incomplete",
+        "timeouts",
+        "unchanged",
+        "skipped",
+        "entries",
+        "batches",
+        "stuck",
+        "datalessPolicy"
       ],
       "type": "object"
     },
@@ -8142,6 +8578,53 @@
       ],
       "type": "object"
     },
+    "ProbeOutcome": {
+      "description": "What `library.probed` reports for one file.",
+      "properties": {
+        "code": {
+          "description": "The error code of a state other than `present`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "file": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "fingerprint": {
+          "description": "`fp1`, whenever the file could be read that far, even if the probe failed.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "probe": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Probe"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "probeVersion": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "state": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "file",
+        "probeVersion",
+        "state"
+      ],
+      "type": "object"
+    },
     "ProcessHelperKind": {
       "description": "A helper's kind.",
       "enum": [
@@ -10348,6 +10831,33 @@
       "required": [
         "timeline",
         "path"
+      ],
+      "type": "object"
+    },
+    "Timing": {
+      "additionalProperties": false,
+      "description": "How long the walker waits.\n\n- `first_stat`: the root's first stat of a walk, spin-up included (60 s); past it the\n  root is `timeout` and the walk answers offline;\n- `entry`: one step of a directory read (its open, a batch of names, one entry's stat;\n  30 s); a read with no step for that long leaves the directory `unreadable` with code\n  `TIMEOUT` and the walk goes on (its thread is left behind);\n- `flush`: a batch holding anything is handed to the sink at least this often (5 s), so a\n  slow walk still reports progress per directory.",
+      "properties": {
+        "entry": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "firstStat": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "flush": {
+          "default": 5000,
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "firstStat",
+        "entry"
       ],
       "type": "object"
     },
