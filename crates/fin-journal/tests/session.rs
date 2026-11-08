@@ -118,7 +118,9 @@ fn record_value_sync_is_on_disk_when_it_returns() {
             1,
             None,
             payload,
-            Duration::from_millis(250),
+            // What is tested is "on disk when it returns true"; 250 ms ran out under the full
+            // suite on Windows 11 (2026-11-08), which returns false by design.
+            Duration::from_secs(5),
         )
         .unwrap();
     assert!(ok);
