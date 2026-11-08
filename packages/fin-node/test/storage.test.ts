@@ -185,8 +185,11 @@ describe("storage", () => {
 
   test("the daily backup runs as a long call, off the tick", async () => {
     const engine = keep(await Engine.create(serverData, projectDir, "Demo", "30"));
-    // The first poll finds today's backup due; it runs on the worker, store taken out.
+    // Test engines start with the automatic work off (`setAutoWorkForTest`), so no backup holds
+    // the store in the other tests. Turned on, the first tick finds today's backup due; it runs
+    // on the worker, store taken out, and takes the delay (nothing else is queued to).
     engine.delayNextLongCallForTest(1_000);
+    engine.setAutoWorkForTest(true);
     await busyStatus(engine, "backup (auto)");
     const busy = await rejection(engine.commit(tx("tx-1", 0, [addAsset])));
     expect(busy.code).toBe("ENGINE_BUSY");

@@ -15,6 +15,14 @@
 //! - `brancher`, `merger` (the `history` row, see `history`): `brancher --data S --dir D
 //!   --secs N [--edits E] [--plain-ms T] [--branch x]`; `merger --data S --dir D --secs N
 //!   [--branch x] [--expect id=seq,…]`;
+//! - `upgrade --data S --dir D` (the `upgrade4c` row, see `upgrade`): a 4C server on the
+//!   server data a 4B `brancher` left: verify, its heads, an undo of a 4B record, export;
+//! - `editor --data S --dir D --secs N [--done-marker]` (the `edit4c` row, see `edit4c`): the
+//!   caption and font-pin edit script, then the hashes and frame plans (`plans4c`);
+//! - `holder --hold-secs H [--done-marker]`: holds and commits for H s from the moment it may
+//!   write, then exports and closes (`edit4c`); `follower --until-done L [--fonts
+//!   fetch|offline]`: follows until node L's done marker's heads, then fetches the pinned
+//!   fonts itself (`fetch`) or not (`offline`) and reports `plans4c` (`edit4c`);
 //! - `verify --data S --dir D`: opens (normally with fresh server data, so the database is
 //!   rebuilt from the folder), then reports `Store::verify`, the resolved chain, the
 //!   quarantine and the folder's segments and lease files, and the heads and hashes of every
@@ -37,11 +45,14 @@
 //!   record (`HangPoint::CheckAfterVerify`) until U has passed: a write in flight.
 
 mod db;
+mod edit4c;
 mod emit;
+mod fonts4c;
 mod hashes;
 mod history;
 mod node;
 mod ops;
+mod upgrade;
 mod verify;
 
 use std::path::PathBuf;
@@ -60,6 +71,14 @@ pub enum StallMode {
     Ticks,
     Beats,
     Check,
+}
+
+/// `--fonts`: what a 4C follower does about the pinned fonts (`edit4c`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FontsMode {
+    None,
+    Fetch,
+    Offline,
 }
 
 #[derive(Debug, Clone)]
@@ -93,6 +112,14 @@ pub struct Args {
     pub expect: Vec<(String, u64)>,
     /// Retry an open refused with `PROJECT_NOT_FOUND` for this long (`--open-retry-ms`).
     pub open_retry_ms: u64,
+    /// Follower: stop once node L's done marker's heads are reached (`--until-done L`).
+    pub until_done: Option<String>,
+    /// Follower: fetch the pinned fonts itself, or not (`--fonts fetch|offline`).
+    pub fonts: FontsMode,
+    /// Holder: write for this long from the moment it may (`--hold-secs`).
+    pub hold_secs: Option<f64>,
+    /// Holder, editor: write the done marker once exported (`--done-marker`).
+    pub done_marker: bool,
 }
 
 fn parse(argv: &[String]) -> Result<Args, String> {
@@ -121,6 +148,10 @@ fn parse(argv: &[String]) -> Result<Args, String> {
         branch: "x".into(),
         expect: Vec::new(),
         open_retry_ms: 0,
+        until_done: None,
+        fonts: FontsMode::None,
+        hold_secs: None,
+        done_marker: false,
     };
     let mut it = argv[1..].iter();
     while let Some(flag) = it.next() {
@@ -165,10 +196,25 @@ fn parse(argv: &[String]) -> Result<Args, String> {
                 }
             }
             "--open-retry-ms" => a.open_retry_ms = num(val()?)?.max(0) as u64,
+            "--until-done" => a.until_done = Some(val()?),
+            "--fonts" => {
+                a.fonts = match val()?.as_str() {
+                    "fetch" => FontsMode::Fetch,
+                    "offline" => FontsMode::Offline,
+                    m => return Err(format!("unknown --fonts {m}")),
+                }
+            }
+            "--hold-secs" => {
+                a.hold_secs = Some(val()?.parse().map_err(|e| format!("--hold-secs: {e}"))?)
+            }
+            "--done-marker" => a.done_marker = true,
             "--free" => a.free = true,
             "--active" => a.active = true,
             f => return Err(format!("unknown option {f}")),
         }
+    }
+    if a.fonts != FontsMode::None && a.until_done.is_none() {
+        return Err("--fonts needs --until-done".into());
     }
     if a.data.as_os_str().is_empty() || a.dir.as_os_str().is_empty() {
         return Err("--data and --dir are required".into());
@@ -223,7 +269,7 @@ fn main() -> ExitCode {
         Err(e) => {
             eprintln!("xhost: {e}");
             eprintln!(
-                "usage: xhost create|holder|contender|follower|brancher|merger|verify --data S --dir D [options]"
+                "usage: xhost create|holder|contender|follower|brancher|merger|upgrade|editor|verify --data S --dir D [options]"
             );
             return ExitCode::from(2);
         }
@@ -244,7 +290,11 @@ fn main() -> ExitCode {
     );
     let r = match a.cmd.as_str() {
         "create" => create(&a, &mut em),
+        "holder" if a.hold_secs.is_some() => edit4c::holder(&a, &mut em),
+        "follower" if a.until_done.is_some() => edit4c::follow(&a, &mut em),
         "holder" | "contender" | "follower" => node::run(&a, &mut em),
+        "editor" => edit4c::editor(&a, &mut em),
+        "upgrade" => upgrade::run(&a, &mut em),
         "brancher" => history::brancher(&a, &mut em),
         "merger" => history::merger(&a, &mut em),
         "verify" => verify::run(&a, &mut em),

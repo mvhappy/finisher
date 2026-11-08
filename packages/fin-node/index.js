@@ -236,6 +236,11 @@ export class Engine {
     this.#hook("delayNextLongCallForTest")(ms);
   }
 
+  /** @internal Test builds only: lets the maintenance thread queue the daily backup and compaction (off at open). */
+  setAutoWorkForTest(enabled) {
+    this.#hook("setAutoWorkForTest")(enabled);
+  }
+
   /** @internal Test builds only: emits a synthetic `rewound` event. */
   emitRewoundForTest(branch, fromRev) {
     this.#hook("emitRewoundForTest")(branch, fromRev);

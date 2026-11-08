@@ -6,7 +6,8 @@
 //   node tests/storage-xhost/run.mjs analyse <results dir>
 //
 // Scenarios: race, race-stale, stall, stall-short, stall-check, stall-sigstop, follow, skew,
-// history, mixed.
+// history, mixed; the 4C rows (plan 4C Task 29) upgrade4c, mixed4c, newer4c, edit4c, whose
+// 4B nodes take a 4B `xhost` in XHOST_<N>_BIN (README.md, "4C rows").
 // Host and share access come only from XHOST_* variables (README.md); nothing about hosts is
 // written into this repository.
 import { randomBytes } from "node:crypto";
@@ -15,6 +16,7 @@ import { mkdirSync, readFileSync, readdirSync, statSync, writeFileSync, createWr
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { analyseRound, summarise } from "./analyse.mjs";
+import { roundLine4c, reportLines4c } from "./analyse-edit4c.mjs";
 
 const REPO = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const env = process.env;
@@ -47,6 +49,11 @@ function node(name, storage) {
     base,
     data: k("DATA") ?? env.XHOST_DATA ?? (local ? join(REPO, "archive/spike/sp4a-xhost/data", name) : `xhost-data/${name}`),
   };
+}
+
+/** Two nodes that must be one host (the same `XHOST_<N>_HOST`). */
+function sameHost(x, y, what) {
+  if (x.host !== y.host) throw new Error(`${what} must be one host (XHOST_${x.name.toUpperCase()}_HOST = XHOST_${y.name.toUpperCase()}_HOST); got ${x.host} and ${y.host}`);
 }
 
 const sep = (n) => (n.os === "windows" ? "\\" : "/");
@@ -108,6 +115,8 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 /** The processes of one round of `scenario`, as [{node, role, args, label, delayMs, sigstop}]. */
 function plan(scenario, nodes, o, dir, round) {
+  // The 4C rows keep 4B and 4C server data apart (4B nodes use `*4b` directories), except
+  // upgrade4c, whose 4B server data is upgraded on purpose.
   const [a, b] = nodes;
   const c = nodes[2] ?? b;
   const d = (n, sub) => pjoin(n, n.data, sub);
@@ -196,6 +205,77 @@ function plan(scenario, nodes, o, dir, round) {
         ],
       };
     }
+    case "upgrade4c": {
+      // A 4B brancher (node a, XHOST_A_BIN: a 4B xhost) makes branch x and edits both lines,
+      // then stops; a 4C `upgrade` on node b opens the SAME server data (so its database is
+      // migrated in place), verifies, undoes a 4B record and exports; a fresh 4C verify on
+      // node b rebuilds from the folder alone. Nodes a and b must be one host.
+      sameHost(a, b, "upgrade4c: nodes a and b");
+      // Server data of its own each round: the upgrade migrates it, so 4B never reuses it.
+      const up = `upgrade-${dir.replaceAll("/", "-")}`;
+      return {
+        create: { node: a, args: ["create", "--data", d(a, "creator"), "--dir", P(a), "--label", "create", "--free"] },
+        procs: [
+          { node: a, role: "brancher", args: ["brancher", ...base(a, up, "a", Number(o.secs ?? 60)), "--commit-every-ms", o["commit-every-ms"] ?? 500, "--edits", o.edits ?? 8], delayMs: 0 },
+          // Node a's server data, run by node b's (4C) binary.
+          { node: b, role: "upgrade", args: ["upgrade", "--data", d(a, up), "--dir", P(b), "--label", "u", "--secs", 120], after: "a" },
+        ],
+        verifyOn: [b],
+      };
+    }
+    case "mixed4c": {
+      // Per NAS pair, hosts X and Y (nodes a,b,c,d): a 4B holder `a` on X (XHOST_A_BIN: 4B)
+      // writes for `--secs` (30) and closes; when it has ended a 4C holder `b` on Y takes over
+      // (the 45 s staleness, then the ordering rule) and writes for `--hold-secs` (20); a 4B
+      // follower `c` on Y (XHOST_C_BIN: 4B) follows throughout (`--follow-secs`, 120) and must
+      // turn read-only NEWER_FORMAT at b's first record; a 4C follower `d` on X follows until
+      // b's done marker. Fresh 4C verifiers on Y and X.
+      const [, , c4b, d4c] = nodes;
+      if (!c4b || !d4c) throw new Error("mixed4c needs four nodes: --nodes a,b,c,d");
+      sameHost(b, c4b, "mixed4c: nodes b and c");
+      sameHost(a, d4c, "mixed4c: nodes a and d");
+      return {
+        create: { node: a, args: ["create", "--data", d(a, "creator"), "--dir", P(a), "--label", "create", "--free"] },
+        procs: [
+          { node: a, role: "holder-4b", args: ["holder", ...base(a, "a4b", "a", Number(o.secs ?? 30)), "--commit-every-ms", o["commit-every-ms"] ?? 1000], delayMs: 0 },
+          { node: c4b, role: "follower-4b", args: ["follower", ...base(c4b, "o4b", "o", Number(o["follow-secs"] ?? 120)), "--open-retry-ms", o["open-retry-ms"] ?? 90_000], delayMs: 2000 },
+          { node: d4c, role: "follower-4c", args: ["follower", ...base(d4c, "f", "f", 400), "--until-done", "b", "--settle-ms", 3000, "--open-retry-ms", o["open-retry-ms"] ?? 90_000], delayMs: 2000 },
+          { node: b, role: "holder-4c", args: ["holder", ...base(b, "b", "b", 300), "--hold-secs", o["hold-secs"] ?? 20, "--commit-every-ms", o["commit-every-ms"] ?? 1000, "--done-marker", "--open-retry-ms", o["open-retry-ms"] ?? 90_000], after: "a" },
+        ],
+        verifyOn: [b, d4c],
+      };
+    }
+    case "newer4c": {
+      // A 4C holder on node a creates and writes for `--hold-secs` (10) and closes; then a 4B
+      // follower on node b (XHOST_B_BIN: 4B) follows for `--follow-secs` (15), and a 4B verify
+      // runs there: both must be read-only NEWER_FORMAT (or refuse the project) and write
+      // nothing. A fresh 4C verify on node a is the reference.
+      return {
+        create: { node: a, args: ["create", "--data", d(a, "creator"), "--dir", P(a), "--label", "create", "--free"] },
+        procs: [
+          { node: a, role: "holder-4c", args: ["holder", ...base(a, "a", "a", 120), "--hold-secs", o["hold-secs"] ?? 10, "--commit-every-ms", o["commit-every-ms"] ?? 1000], delayMs: 0 },
+          { node: b, role: "follower-4b", args: ["follower", ...base(b, "o4b", "o", Number(o["follow-secs"] ?? 15)), "--open-retry-ms", o["open-retry-ms"] ?? 90_000], after: "a" },
+        ],
+        verifyOn: [a, { node: b, role: "verify-4b" }],
+      };
+    }
+    case "edit4c": {
+      // The 4C edit row, per NAS pair: editor `a` (node a) pins fonts and sets captions
+      // (`xhost editor`) and writes its done marker; follower `f` (node b) follows until it,
+      // then fetches the pinned fonts itself (`--fonts fetch`); follower `o` (node c, else b)
+      // fetches nothing (`--fonts offline`). Fresh verifiers on nodes a and b.
+      const off = nodes[2] ?? b;
+      const follower = (n, data, mode) => ["follower", ...base(n, data, data, 400), "--until-done", "a", "--fonts", mode, "--settle-ms", 3000, "--open-retry-ms", o["open-retry-ms"] ?? 90_000];
+      return {
+        create: { node: a, args: ["create", "--data", d(a, "creator"), "--dir", P(a), "--label", "create", "--free"] },
+        procs: [
+          { node: a, role: "editor", args: ["editor", ...base(a, "a", "a", 300), "--commit-every-ms", o["commit-every-ms"] ?? 1000, "--done-marker"], delayMs: 0 },
+          { node: b, role: "follower-fetch", args: follower(b, "f", "fetch"), delayMs: 1000 },
+          { node: off, role: "follower-offline", args: follower(off, "o", "offline"), delayMs: 1000 },
+        ],
+        verifyOn: [a, b],
+      };
+    }
     default:
       throw new Error(`unknown scenario ${scenario}`);
   }
@@ -223,7 +303,10 @@ async function round(scenario, nodes, o, outDir, runId, k) {
   const running = p.procs.map(async (x) => {
     const label = labelOf(x);
     let args;
-    if (x.after) args = [...x.args, ...x.extra((await ended[x.after].promise).events)];
+    if (x.after) {
+      const prev = await ended[x.after].promise;
+      args = [...x.args, ...(x.extra ? x.extra(prev.events) : [])];
+    }
     else args = [...x.args, "--start-at-ms", t0 + x.delayMs];
     let pid = null;
     const r = run(x.node, args, join(rdir, `${label}.jsonl`), { onEvent: (e) => (e.ev === "start" ? (pid = e.pid) : null) });
@@ -241,10 +324,12 @@ async function round(scenario, nodes, o, outDir, runId, k) {
   });
   procs.push(...(await Promise.all(running)));
   // A fresh reader on each `verifyOn` node (default: the first): `verify`, `verify-<node>`.
-  for (const [i, v] of (p.verifyOn ?? [nodes[0]]).entries()) {
+  // An entry is a node, or `{node, role}` to tag that verifier with another role.
+  for (const [i, entry] of (p.verifyOn ?? [nodes[0]]).entries()) {
+    const v = entry.node ?? entry;
     const label = i === 0 ? "verify" : `verify-${v.name}`;
     const vr = await run(v, ["verify", "--data", pjoin(v, v.data, `${label}-${runId}-${scenario}-r${k}`), "--dir", pjoin(v, v.base, rel), "--label", label], join(rdir, `${label}.jsonl`));
-    procs.push(tag(v, i === 0 ? "verify" : "verify-other", label, vr));
+    procs.push(tag(v, entry.role ?? (i === 0 ? "verify" : "verify-other"), label, vr));
   }
   writeFileSync(join(rdir, "meta.json"), JSON.stringify({ scenario, round: k, rel, nodes: procs.map(({ events, ...m }) => m) }, null, 1));
   return procs;
@@ -278,6 +363,7 @@ function report(outDir, scenario, rounds, tolMs) {
   console.log(`  verify failures ${c.verifyFailed}; refusals ${JSON.stringify(s.refused)}; opens retried ${c.openRetries} (PROJECT_NOT_FOUND)`);
   if (c.historyViews !== undefined) console.log(`  history: merged ${c.historyMerged}, skipped ${c.historySkipped} (missing ${c.historySkippedMissing}), wrong merge count ${c.historyMergedWrong}, hash mismatches ${c.historyHashMismatches} over ${c.historyViews} views`);
   if (c.mixedEditOnly !== undefined) console.log(`  mixed: 4A follower followed ${c.mixedFollowed}/${c.mixedEditOnly} edit-only records (${c.mixedEditsInBranchSegment} more exported in the branch record's v2 segment), applied past the branch record ${c.mixedAppliedPastBranch}, NEWER_FORMAT in ${c.mixedNewerFormat} rounds`);
+  for (const line of reportLines4c(c)) console.log(`  ${line}`);
   console.log(`  follow latency ms: n=${s.latencyMs.n} p50=${s.latencyMs.p50} p95=${s.latencyMs.p95} max=${s.latencyMs.max}`);
   for (const p of s.problems.slice(0, 20)) console.log(`  problem: ${p}`);
   return out;
@@ -301,14 +387,14 @@ async function main() {
   // Time-sortable, plus a random suffix so controllers started in the same millisecond differ.
   const runId = `${new Date().toISOString().replace(/[:.]/g, "-")}-${randomBytes(3).toString("hex")}`;
   const outDir = o.out ?? join(REPO, env.XHOST_RESULTS ?? "archive/spike/sp4a-xhost", `${runId}-${storage}`);
-  const rounds = Number(o.rounds ?? (scenario === "race" ? 20 : scenario === "history" ? 5 : 1));
+  const rounds = Number(o.rounds ?? (scenario === "race" ? 20 : ["history", "edit4c"].includes(scenario) ? 5 : 1));
   const results = [];
   for (let k = 1; k <= rounds; k++) {
     const procs = await round(scenario, nodes, o, outDir, runId, k);
     const r = analyseRound(procs, { tolMs });
     results.push(r);
     const c = r.counts;
-    console.log(`${scenario} r${k}: dbl=${c.doubleHolders} early=${c.earlyTakeovers} staleApplied=${c.staleApplied} left=${c.staleLeftApplied} idReuse=${c.idReuse} lostAck=${c.lostAcked}(vanished ${c.lostAckedVanished}) rewinds=${c.rewinds} verifyFail=${c.verifyFailed} chain=${c.chain}${c.historyViews !== undefined ? ` merged=${c.historyMerged} skipped=${c.historySkipped} hashMismatch=${c.historyHashMismatches}` : ""}${c.mixedEditOnly !== undefined ? ` 4aFollowed=${c.mixedFollowed}/${c.mixedEditOnly} pastBranch=${c.mixedAppliedPastBranch} newer=${c.mixedNewerFormat}` : ""}${r.problems.length ? ` problems=${r.problems.length}` : ""}`);
+    console.log(`${scenario} r${k}: dbl=${c.doubleHolders} early=${c.earlyTakeovers} staleApplied=${c.staleApplied} left=${c.staleLeftApplied} idReuse=${c.idReuse} lostAck=${c.lostAcked}(vanished ${c.lostAckedVanished}) rewinds=${c.rewinds} verifyFail=${c.verifyFailed} chain=${c.chain}${c.historyViews !== undefined ? ` merged=${c.historyMerged} skipped=${c.historySkipped} hashMismatch=${c.historyHashMismatches}` : ""}${c.mixedEditOnly !== undefined ? ` 4aFollowed=${c.mixedFollowed}/${c.mixedEditOnly} pastBranch=${c.mixedAppliedPastBranch} newer=${c.mixedNewerFormat}` : ""}${roundLine4c(c)}${r.problems.length ? ` problems=${r.problems.length}` : ""}`);
   }
   report(outDir, scenario, results, tolMs);
   console.log(`results: ${outDir}`);
