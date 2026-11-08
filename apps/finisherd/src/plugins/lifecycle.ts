@@ -42,6 +42,12 @@ export interface Installed {
 export interface LifecycleDeps extends PlanDeps {
   /** Refreshes one registry (recording it); fails with the refresh's error. */
   readonly refreshOne: (id: string, by: Asker) => Effect.Effect<void, FinError>;
+  /**
+   * Runs after every change to the installed plugins, under the same lock, whether it
+   * succeeded or not (so it reads what really is installed): the content consumers follow
+   * the rows (Task 12a).
+   */
+  readonly changed?: Effect.Effect<void>;
 }
 
 /** How many suggestions one principal may have for one project (review M2). */
@@ -55,7 +61,7 @@ const notInstalled = (id: string) => finError("PLUGIN_NOT_INSTALLED", `${id} is 
 export function makeLifecycle(deps: LifecycleDeps) {
   const { native, tables, clock } = deps;
   const lock = Semaphore.makeUnsafe(1);
-  const locked = <A, E>(self: Effect.Effect<A, E>) => lock.withPermits(1)(self);
+  const locked = <A, E>(self: Effect.Effect<A, E>) => lock.withPermits(1)(deps.changed === undefined ? self : Effect.ensuring(self, deps.changed));
 
   /**
    * Revokes the versions of registry `id` a signed `disable` advisory names (any principal's

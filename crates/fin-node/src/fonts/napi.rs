@@ -28,6 +28,14 @@ pub(crate) struct FetchReq {
     pub(crate) pinned: Option<String>,
 }
 
+/// One pack of `setExtraCatalogs`: its id and the text of each font catalog file it ships.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct Pack {
+    id: String,
+    catalogs: Vec<String>,
+}
+
 /// A server data folder's font manager.
 #[napi]
 pub struct FontManager {
@@ -79,10 +87,50 @@ impl FontManager {
         self.manager.auto_fetch()
     }
 
+    /// The enabled plugin packs' font catalogs (8A Task 12a), replacing the previous set:
+    /// `[{id, catalogs: [<catalog.json text>]}]`, in the order they merge. Resolves to
+    /// `{rejected: [{id, code, message, details}]}`: a pack whose catalog does not validate
+    /// (the built-in catalog's rules: licences, https and immutable source URLs, source
+    /// hosts, SHA-256 pins) or clashes with the built-in catalog or an earlier pack (an entry
+    /// id taken, a file listed twice) is left out whole; the others merge. Pins are not
+    /// touched.
+    #[napi(catch_unwind)]
+    pub fn set_extra_catalogs(&self, packs_json: String) -> Result<String> {
+        let packs: Vec<Pack> = serde_json::from_str(&packs_json).map_err(|e| {
+            reject(
+                CoreError::new("INVALID_OP", format!("font packs do not decode: {e}"))
+                    .with_details(json!({ "reason": e.to_string() }))
+                    .with_fix("send [{id, catalogs}]"),
+            )
+        })?;
+        let mut rejected = Vec::new();
+        let mut parsed = Vec::new();
+        for p in packs {
+            let catalogs: std::result::Result<Vec<_>, CoreError> = p
+                .catalogs
+                .iter()
+                .map(|t| fin_fonts::FontCatalog::from_json(t))
+                .collect();
+            match catalogs {
+                Ok(c) => parsed.push((p.id, c)),
+                Err(error) => rejected.push(super::Rejected { id: p.id, error }),
+            }
+        }
+        rejected.extend(self.manager.set_extra_catalogs(parsed));
+        let rejected: Vec<_> = rejected
+            .into_iter()
+            .map(|r| {
+                json!({ "id": r.id, "code": r.error.code, "message": r.error.message,
+                        "details": r.error.details })
+            })
+            .collect();
+        encode(&json!({ "rejected": rejected }))
+    }
+
     /// The `FontCatalog` JSON this server uses.
     #[napi(catch_unwind)]
     pub fn catalog(&self) -> Result<String> {
-        encode(self.manager.catalog())
+        encode(&*self.manager.catalog())
     }
 
     /// Resolves to the `FontsStatus` JSON.

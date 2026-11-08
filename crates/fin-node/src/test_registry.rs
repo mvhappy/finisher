@@ -46,6 +46,17 @@ struct FullPackage {
     /// a font catalog instead of a caption style.
     #[serde(default)]
     fonts: Vec<String>,
+    /// Caption style names: each `styles/<name>.json` is the built-in `clean` style named
+    /// `<name> <version>`, so versions differ in bytes. Replaces the default `bold` style.
+    #[serde(default)]
+    styles: Vec<String>,
+    /// Files written as given (a path in the package → its text); with `contributes`, a pack
+    /// whose content the test states itself.
+    #[serde(default)]
+    files: BTreeMap<String, String>,
+    /// The manifest's `contributes`, instead of the generated one.
+    #[serde(default)]
+    contributes: Option<Value>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -93,6 +104,9 @@ fn full(p: &PackageSpec) -> Result<FullPackage> {
                 permissions: Vec::new(),
                 license: None,
                 fonts: Vec::new(),
+                styles: Vec::new(),
+                files: BTreeMap::new(),
+                contributes: None,
             }
         }
         PackageSpec::Full(f) => FullPackage {
@@ -102,6 +116,9 @@ fn full(p: &PackageSpec) -> Result<FullPackage> {
             permissions: f.permissions.clone(),
             license: f.license.clone(),
             fonts: f.fonts.clone(),
+            styles: f.styles.clone(),
+            files: f.files.clone(),
+            contributes: f.contributes.clone(),
         },
     })
 }
@@ -127,6 +144,18 @@ fn font_catalog(ids: &[String]) -> Result<Vec<u8>> {
         entries,
     };
     serde_json::to_vec(&catalog).map_err(|e| fail("a font catalog", e))
+}
+
+/// A caption style file: the built-in `clean` style named after the style and the version.
+fn style_file(name: &str, version: &str) -> Result<Vec<u8>> {
+    let clean = fin_core::captions::preset("preset:clean")
+        .ok_or_else(|| fail("the clean preset", "missing"))?;
+    let mut v = serde_json::to_value(clean).map_err(|e| fail("a caption style", e))?;
+    if let Some(o) = v.as_object_mut() {
+        o.remove("id");
+        o.insert("name".into(), json!(format!("{name} {version}")));
+    }
+    serde_json::to_vec(&v).map_err(|e| fail("a caption style", e))
 }
 
 /// Writes `p`'s unpacked tree under `scratch` and packs it; returns the archive.
@@ -155,16 +184,35 @@ fn pack(p: &FullPackage, scratch: &Path) -> Result<std::path::PathBuf> {
         manifest["runtime"] =
             json!({ "type": "node", "main": "dist/plugin.mjs", "node": ">=24.0" });
         write("dist/plugin.mjs", b"export {};\n")?;
-    } else if !p.fonts.is_empty() {
-        manifest["contributes"] = json!({ "fontCatalogs": [{ "file": "fonts/catalog.json" }] });
-        write("fonts/catalog.json", &font_catalog(&p.fonts)?)?;
+    } else if let Some(contributes) = &p.contributes {
+        manifest["contributes"] = contributes.clone();
     } else {
-        manifest["contributes"] =
-            json!({ "captionStyles": [{ "name": "bold", "file": "styles/bold.json" }] });
-        write(
-            "styles/bold.json",
-            format!("{{\"v\": \"{}\"}}", p.version).as_bytes(),
-        )?;
+        let mut contributes = serde_json::Map::new();
+        if !p.fonts.is_empty() {
+            contributes.insert(
+                "fontCatalogs".into(),
+                json!([{ "file": "fonts/catalog.json" }]),
+            );
+            write("fonts/catalog.json", &font_catalog(&p.fonts)?)?;
+        }
+        let styles: Vec<String> = match (p.styles.is_empty(), p.fonts.is_empty()) {
+            (false, _) => p.styles.clone(),
+            (true, true) => vec!["bold".into()],
+            (true, false) => Vec::new(),
+        };
+        if !styles.is_empty() {
+            let mut list = Vec::new();
+            for name in &styles {
+                let file = format!("styles/{name}.json");
+                write(&file, &style_file(name, &p.version)?)?;
+                list.push(json!({ "name": name, "file": file }));
+            }
+            contributes.insert("captionStyles".into(), Value::Array(list));
+        }
+        manifest["contributes"] = Value::Object(contributes);
+    }
+    for (path, text) in &p.files {
+        write(path, text.as_bytes())?;
     }
     write(
         fin_plugin_api::MANIFEST_FILE,

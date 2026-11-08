@@ -14,6 +14,7 @@
 //! publisher would sign it, standing in for a verified target).
 
 mod bundled;
+mod content;
 mod host;
 mod lifecycle;
 mod log;

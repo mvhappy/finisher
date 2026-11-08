@@ -12,8 +12,10 @@ use fin_plugin_api::{
 use fin_registry::Store;
 use fin_registry::plan::{DirFiles, PlanHost};
 
-/// Font catalogs are parsed and validated as `fin-fonts` reads them; a caption style is a
-/// JSON object until the 8A Task 12a consumer fixes its shape.
+/// Font catalogs are parsed and validated as `fin-fonts` reads them (the built-in catalog's
+/// rules: licences, https and immutable source URLs, source hosts, SHA-256 pins); a caption
+/// style is a `CaptionStyle` without its `id`, checked by `fin-core` as `style.add` checks
+/// the same values.
 pub(crate) struct Checks;
 
 impl ContentChecks for Checks {
@@ -25,7 +27,9 @@ impl ContentChecks for Checks {
     }
 
     fn caption_style(&self, bytes: &[u8]) -> Result<(), String> {
-        fin_plugin_api::StructuralChecks.caption_style(bytes)
+        fin_core::captions::parse_style_file(bytes)
+            .map(|_| ())
+            .map_err(|e| e.to_string())
     }
 }
 
@@ -142,13 +146,13 @@ pub(crate) fn staged_catalog_clash(
     mine.intersection(&taken).cloned().collect()
 }
 
-fn read_manifest(dir: &Path) -> Option<Manifest> {
+pub(super) fn read_manifest(dir: &Path) -> Option<Manifest> {
     let bytes = std::fs::read(dir.join(fin_plugin_api::MANIFEST_FILE)).ok()?;
     serde_json::from_slice(&bytes).ok()
 }
 
 /// `base/<rel>` for a `store/…` package directory, `/`-separated with no `.` or `..` part.
-fn package_dir(base: &Path, rel: &str) -> Option<std::path::PathBuf> {
+pub(super) fn package_dir(base: &Path, rel: &str) -> Option<std::path::PathBuf> {
     let mut parts = rel.split('/');
     if parts.next() != Some("store") {
         return None;

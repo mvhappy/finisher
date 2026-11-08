@@ -15,6 +15,7 @@ use crate::engine::lock;
 impl Manager {
     /// `fonts.status`: every catalog file, then pinned files the catalog does not list.
     pub(crate) fn status(&self) -> FontsStatus {
+        let catalog = self.catalog();
         let mut keys: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
         let mut assets: BTreeMap<String, PathBuf> = BTreeMap::new();
         for a in lock(&self.engines).values() {
@@ -27,8 +28,7 @@ impl Manager {
                 }
             }
         }
-        let mut files: Vec<FontFileStatus> = self
-            .catalog
+        let mut files: Vec<FontFileStatus> = catalog
             .styles()
             .map(|(e, s)| {
                 let face = s.face();
@@ -79,7 +79,7 @@ impl Manager {
             });
         }
         FontsStatus {
-            catalog_version: self.catalog.catalog_version.clone(),
+            catalog_version: catalog.catalog_version.clone(),
             auto_fetch: self.auto_fetch(),
             damaged: self.damaged.clone(),
             files,
@@ -89,9 +89,10 @@ impl Manager {
     /// `fonts.fetch`'s targets: SHA-256s, catalog entries (each of their styles), font keys
     /// (the catalog face), and what an open project pins (its catalog files).
     pub(crate) fn targets(&self, req: &FetchReq) -> Result<Vec<String>, CoreError> {
+        let catalog = self.catalog();
         let mut out = Vec::new();
         for sha in &req.sha256 {
-            if self.catalog.by_sha(sha).is_none() {
+            if catalog.by_sha(sha).is_none() {
                 return Err(not_in_catalog(
                     json!({ "sha256": sha }),
                     format!("no catalog file has SHA-256 {sha}"),
@@ -100,7 +101,7 @@ impl Manager {
             out.push(sha.clone());
         }
         for id in &req.entries {
-            let entry = self.catalog.entry(id).ok_or_else(|| {
+            let entry = catalog.entry(id).ok_or_else(|| {
                 not_in_catalog(
                     json!({ "entry": id }),
                     format!("the font catalog has no entry {id}"),
@@ -113,7 +114,7 @@ impl Manager {
             let (family, weight, slope) = (parts.next(), parts.next(), parts.next());
             let face = match (family, weight.and_then(|w| w.parse::<u16>().ok()), slope) {
                 (Some(f), Some(w), Some(s @ ("normal" | "italic"))) if parts.next().is_none() => {
-                    self.catalog.find_face(f, w, s == "italic")
+                    catalog.find_face(f, w, s == "italic")
                 }
                 _ => None,
             };
@@ -137,7 +138,7 @@ impl Manager {
             out.extend(
                 needs
                     .into_iter()
-                    .filter(|n| n.asset.is_none() && self.catalog.by_sha(&n.sha256).is_some())
+                    .filter(|n| n.asset.is_none() && catalog.by_sha(&n.sha256).is_some())
                     .map(|n| n.sha256),
             );
         }
@@ -164,7 +165,7 @@ impl Manager {
         let mut first = None;
         for sha in shas {
             if self.fetches.on() && fetcher.cache().has(sha) {
-                self.fetches.already_cached(&self.catalog, sha);
+                self.fetches.already_cached(&self.catalog(), sha);
             }
             if let Err(e) = fetcher.fetch_now(sha) {
                 first.get_or_insert(e);

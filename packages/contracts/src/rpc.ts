@@ -68,6 +68,7 @@ import {
   PluginSuggestPayload,
   PluginSuggestSuccess,
 } from "./plugin-lifecycle.ts";
+import { PluginContentGetPayload, PluginContentGetSuccess } from "./plugin-content.ts";
 import {
   DiagnosticsConsentPayload,
   DiagnosticsConsentSuccess,
@@ -464,6 +465,7 @@ export const FinRpcs = RpcGroup.make(
   Rpc.make("plugin.list", { payload: PluginListPayload, success: PluginListSuccess, error: FinError }),
   Rpc.make("plugin.search", { payload: PluginSearchPayload, success: PluginSearchSuccess, error: FinError }),
   Rpc.make("plugin.info", { payload: PluginInfoPayload, success: PluginInfoSuccess, error: FinError }),
+  Rpc.make("plugin.content.get", { payload: PluginContentGetPayload, success: PluginContentGetSuccess, error: FinError }),
   Rpc.make("plugin.plan", { payload: PluginPlanPayload, success: PluginPlanSuccess, error: FinError }),
   Rpc.make("plugin.install", { payload: PluginInstallPayload, success: PluginInstallSuccess, error: FinError }),
   Rpc.make("plugin.remove", { payload: PluginRemovePayload, success: PluginRemoveSuccess, error: FinError }),

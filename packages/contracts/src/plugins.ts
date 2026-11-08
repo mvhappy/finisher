@@ -109,8 +109,15 @@ export const PluginListSuccess = Schema.Struct({
       plugins: Schema.Array(Schema.Struct({ id: Schema.String, version: Schema.String, ok: Schema.Boolean, code: Schema.optional(Schema.String) })),
     }),
   ),
-  /** Installed rows whose package folder is missing from the store (disabled at start). */
-  problems: Schema.optional(Schema.Array(Schema.Struct({ id: Schema.String, version: Schema.String, reason: Schema.Literals(["storeMissing"]) }))),
+  /**
+   * Installed rows whose package folder is missing from the store (`storeMissing`, disabled at
+   * start), and content packs whose files no longer validate (`contentInvalid`) or whose font
+   * catalogs the server left out (`fontCatalogRejected`: an entry id taken, a file listed
+   * twice; `code` says which), so their contributions are not in use.
+   */
+  problems: Schema.optional(
+    Schema.Array(Schema.Struct({ id: Schema.String, version: Schema.String, reason: Schema.Literals(["storeMissing", "contentInvalid", "fontCatalogRejected"]), code: Schema.optional(Schema.String) })),
+  ),
 });
 
 /** `plugin.search`: plugins the registries list; `registry` limits it to one. */

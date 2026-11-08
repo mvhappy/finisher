@@ -64,6 +64,7 @@ export const SAMPLE_PAYLOADS: { readonly [T in FinRpcTag]: Record<string, unknow
   "plugin.install": { planId: "p" + "0".repeat(24), digest: "0".repeat(64) },
   "plugin.remove": { id: "@acme/pack" },
   "plugin.enable": { id: "@acme/pack" },
+  "plugin.content.get": { id: "@acme/pack", kind: "captionStyle", name: "bold" },
   "plugin.disable": { id: "@acme/pack" },
   "plugin.suggest": { id: "@acme/pack", reason: "captions in the house style", projectId: P },
 };

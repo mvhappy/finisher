@@ -43,12 +43,24 @@ function manifest(version = "1.0.0", extra: object = {}): object {
   };
 }
 
+/** A caption style file: a `CaptionStyle` without its `id`. */
+const STYLE = JSON.stringify({
+  name: "Bold",
+  text: { family: "Inter", weight: 700, italic: false, size: 64, lineHeight: 1.2, letterSpacing: 0, align: "center" },
+  color: "#ffffff",
+  position: { anchor: "bottom", offset: 0 },
+  safeZone: "generic-9x16",
+  maxChars: 32,
+  maxLines: 2,
+  gap: "1/2",
+});
+
 /** An unpacked plugin under `tmp/<name>` with `files` (path → bytes). */
 function tree(name: string, m: object, files: Record<string, Buffer | string> = {}): string {
   const dir = join(tmp, name);
   const all: Record<string, Buffer | string> = {
     "finisher-plugin.json": JSON.stringify(m),
-    "styles/bold.json": '{"text": {}}',
+    "styles/bold.json": STYLE,
     ...files,
   };
   for (const [path, bytes] of Object.entries(all)) {
@@ -131,6 +143,16 @@ describe("Registry", () => {
     const bad = await rejection(r.plan(planReq(pkg("p1", manifest("1.0.0", { license: "CC-BY-NC-4.0" })))));
     expect([bad.code, bad.details.reason]).toEqual(["PLUGIN_MANIFEST_INVALID", "licenceNonCommercial"]);
     expect((await rejection(r.plan("{}"))).code).toBe("INVALID_OP");
+    // A caption style file is a `CaptionStyle` without its id: the model's shape, not any JSON object.
+    for (const [name, file] of [
+      ["free", '{"v": 1}'],
+      ["id", JSON.stringify({ ...JSON.parse(STYLE), id: "preset:bold" })],
+      ["typo", JSON.stringify({ ...JSON.parse(STYLE), colour: "#fff" })],
+      ["range", JSON.stringify({ ...JSON.parse(STYLE), maxLines: 0 })],
+    ] as const) {
+      const e = await rejection(r.plan(planReq(pkg(`style-${name}`, manifest(), { "styles/bold.json": file }))));
+      expect([name, e.code, e.details.reason]).toEqual([name, "PLUGIN_MANIFEST_INVALID", "captionStyle"]);
+    }
     const stale = JSON.parse(await r.plan(planReq(pkg("p2", manifest()), {}, { staleDays: 2 }))) as InstallPlan;
     expect(stale.registryStaleDays).toBe(2);
     expect(stale.warnings?.map((w) => w.code)).toEqual(["registryStale"]);

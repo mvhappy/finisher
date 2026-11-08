@@ -10,3 +10,4 @@ export * from "./scopes.ts";
 export * from "./jobs.ts";
 export * from "./plugins.ts";
 export * from "./plugin-lifecycle.ts";
+export * from "./plugin-content.ts";

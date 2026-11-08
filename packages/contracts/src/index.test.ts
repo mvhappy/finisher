@@ -48,6 +48,7 @@ test("the group exposes exactly the protocol 2 RPC tags", () => {
       "history.revert",
       "history.undo",
       "ops.subscribe",
+      "plugin.content.get",
       "plugin.disable",
       "plugin.enable",
       "plugin.info",

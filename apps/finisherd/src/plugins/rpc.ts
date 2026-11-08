@@ -11,6 +11,8 @@
 // registries live, in a status or in an error (owner decision, 2026-11-08; review L1, L2).
 import type {
   FinError,
+  PluginContentGetRequest,
+  PluginContentResult,
   PluginInfoResult,
   PluginInstallRequest,
   PluginInstallResult,
@@ -167,6 +169,7 @@ export function pluginHandlers({ plugins, audit, guard }: PluginRpcDeps) {
       ),
     "plugin.search": (q: PluginSearchRequest) => guard("plugin.search", plugins.search(q)),
     "plugin.info": ({ id }: { readonly id: string }): Effect.Effect<PluginInfoResult, FinError> => guard("plugin.info", plugins.info(id)),
+    "plugin.content.get": (req: PluginContentGetRequest, _options: Options): Effect.Effect<PluginContentResult, FinError> => guard("plugin.content.get", plugins.content.get(req)),
     "plugin.plan": (req: PluginPlanRequest, options: Options): Effect.Effect<InstallPlan, FinError> => {
       const by = askerOf(options);
       return guard(

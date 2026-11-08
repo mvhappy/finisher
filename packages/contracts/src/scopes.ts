@@ -185,6 +185,7 @@ export const RPC_SCOPES: { readonly [T in FinRpcTag]: RuleOf<T> } = {
   "plugin.list": { scopes: ["plugin.read"] },
   "plugin.search": { scopes: ["plugin.read"] },
   "plugin.info": { scopes: ["plugin.read"] },
+  "plugin.content.get": { scopes: ["plugin.read"] },
   // The lifecycle (9b): anyone with `plugin.read` may plan (nothing runs, and only a person's
   // plan installs); a downgrade is a person's choice. Installing, updating and removing are the
   // owner's (`plugin.install`), enabling and disabling too (`plugin.admin`). A suggestion is

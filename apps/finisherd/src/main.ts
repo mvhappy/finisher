@@ -96,13 +96,15 @@ export const serve = ({ serverData, onReady, registry, fonts, diagnostics: diagn
         ws: new Connections("ws", () => wsEndpoint),
       };
       const handshake = new Handshake({ keys, envId, audit });
+      // One font layer for the handlers and the plugins, which feed it the packs' catalogs.
+      const fontsLayer = layerFonts(serverData, fonts);
       yield* Layer.build(
         Layer.mergeAll(serveRpc(local, "fin", connections.local), serveRpc(ws, "ui", connections.ws)).pipe(
           Layer.provide(
             Layer.mergeAll(
               layerProjectRegistry(serverData, registry),
-              layerFonts(serverData, fonts),
-              layerPlugins(serverData).pipe(Layer.provide(Layer.succeedContext(control))),
+              fontsLayer,
+              layerPlugins(serverData).pipe(Layer.provide(Layer.succeedContext(control)), Layer.provide(fontsLayer)),
               Layer.succeed(Diagnostics, diagnostics),
               Layer.succeedContext(control),
               Layer.succeed(KeysTag, keys),

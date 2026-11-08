@@ -440,6 +440,15 @@ export class FontManager {
     this.#native.setAutoFetch(on === true);
   }
 
+  /** `[{id, catalogs: [text]}]` JSON → `{rejected: [{id, code, message, details}]}` JSON. */
+  setExtraCatalogs(packsJson) {
+    try {
+      return this.#native.setExtraCatalogs(packsJson);
+    } catch (e) {
+      throw toFinError(e);
+    }
+  }
+
   catalog() {
     try {
       return this.#native.catalog();

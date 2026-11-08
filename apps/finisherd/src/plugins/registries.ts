@@ -15,8 +15,10 @@ import { Context, Effect, Layer } from "effect";
 import { type Audit, AuditTag } from "../control/audit.ts";
 import { ControlStoreTag } from "../control/db.ts";
 import { attempt, attemptJson, finError, toFinError } from "../errors.ts";
+import { Fonts } from "../fonts.ts";
 import { type Installed, type Lifecycle, makeLifecycle } from "./lifecycle.ts";
 import { type Bundled, type BundledStatus, defaultBundledRoot, makeBundled } from "./bundled.ts";
+import { type Content, type ContentProblem, type FontSink, makeContent } from "./content.ts";
 import { reconcileStore, type StoreProblem } from "./store-sync.ts";
 import { actorOf, PluginTables, type RegistryRow } from "./tables.ts";
 
@@ -45,8 +47,13 @@ export interface PluginsShape {
   /** Plans, approvals and the lifecycle (Task 9b). */
   readonly lifecycle: Lifecycle;
   readonly installed: () => Effect.Effect<InstalledRow[], FinError>;
-  /** Rows whose package folder is missing from the store, as the last start found them (L4). */
-  readonly problems: () => ReadonlyArray<StoreProblem>;
+  /**
+   * Rows whose package folder is missing from the store, as the last start found them (L4),
+   * and packs whose contributions are not in use (Task 12a).
+   */
+  readonly problems: () => ReadonlyArray<StoreProblem | ContentProblem>;
+  /** The content packs' contributions: `plugin.content.get`, and the font catalogs' sync. */
+  readonly content: Content;
   /** The bundled plugins' integrity, as the last start found it (Task 10). */
   readonly bundled: () => BundledStatus;
   /** Installs, updates and checks the plugins that come with the app (Task 10); runs at start. */
@@ -78,6 +85,8 @@ export interface MakePluginsOptions {
   readonly bundledRoot?: string;
   /** Audits the bundled installs (the layer passes the server's; tests without one skip it). */
   readonly audit?: Audit;
+  /** Where the enabled packs' font catalogs go (the layer passes the server's font manager). */
+  readonly fonts?: FontSink;
   /** Test builds only: plans for these ids are marked agent-facing (Decision 23). */
   readonly testAgentFacing?: (id: string) => boolean;
 }
@@ -110,11 +119,13 @@ export function makePlugins(native: Registry, tables: PluginTables, clock: () =>
     });
 
   let problems: ReadonlyArray<StoreProblem> = [];
+  const content = makeContent({ native, tables, fonts: options.fonts });
   const failed = (r: RefreshResult) => (r.ok ? undefined : finError(r.error.code, r.error.message, r.error.details, r.error.fix));
   const lifecycle = makeLifecycle({
     native,
     tables,
     clock,
+    changed: content.sync(),
     ...(options.testAgentFacing === undefined ? {} : { testAgentFacing: options.testAgentFacing }),
     refreshOne: (id, by) => Effect.flatMap(refreshOne(id, by), (r) => (r.ok ? Effect.void : Effect.fail(failed(r)!))),
   });
@@ -168,7 +179,8 @@ export function makePlugins(native: Registry, tables: PluginTables, clock: () =>
         const updated = updates.map((u) => ({ id: u.plugin.id, from: u.plan.from ?? "", to: u.plugin.version }));
         return { byHuman: by.human, results, applied: { revoked, updated }, updates };
       }),
-    problems: () => problems,
+    problems: () => [...problems, ...content.problems()],
+    content,
     bundled: bundled.status,
     syncBundled: () => bundled.sync(),
     reconcileStore: () =>
@@ -217,7 +229,7 @@ export interface PluginsOptions {
   readonly sweepMs?: number;
 }
 
-export const layerPlugins = (serverData: string, { clock = Date.now, sweepMs = 60_000, bundledRoot }: PluginsOptions = {}): Layer.Layer<PluginsTag, FinError, ControlStoreTag | AuditTag> =>
+export const layerPlugins = (serverData: string, { clock = Date.now, sweepMs = 60_000, bundledRoot }: PluginsOptions = {}): Layer.Layer<PluginsTag, FinError, ControlStoreTag | AuditTag | Fonts> =>
   Layer.effect(
     PluginsTag,
     Effect.gen(function* () {
@@ -226,10 +238,13 @@ export const layerPlugins = (serverData: string, { clock = Date.now, sweepMs = 6
       const tables = new PluginTables(control);
       yield* reconcile(native, tables, clock);
       const audit = yield* AuditTag;
-      const plugins = makePlugins(native, tables, clock, { audit, ...(bundledRoot === undefined ? {} : { bundledRoot }) });
+      const fonts = yield* Fonts;
+      const plugins = makePlugins(native, tables, clock, { audit, fonts: fonts.setExtraCatalogs, ...(bundledRoot === undefined ? {} : { bundledRoot }) });
       yield* plugins.reconcileStore();
       // The plugins that come with the app: installed, updated or revoked before anything is served.
       yield* Effect.catch(plugins.syncBundled(), (e) => Effect.logWarning(`finisherd: bundled plugins could not be checked: ${e.code}`));
+      // The enabled packs' font catalogs join the server's before anything is served.
+      yield* plugins.content.sync();
       yield* Effect.ignore(plugins.lifecycle.sweep());
       yield* Effect.acquireRelease(
         Effect.sync(() => {

@@ -288,7 +288,15 @@ export declare class FontManager {
   readonly autoFetch: boolean;
   /** `fonts.autoFetch`, at run time (`FIN_FONTS_OFFLINE=1` keeps it off). */
   setAutoFetch(on: boolean): void;
-  /** The `FontCatalog` JSON. */
+  /**
+   * Replaces the enabled plugin packs' font catalogs: `[{ id, catalogs: [<catalog.json
+   * text>] }]` JSON, in merge order; returns `{ rejected: [{ id, code, message, details }] }`
+   * JSON. A pack whose catalogs break the built-in catalog's rules, or clash with it or an
+   * earlier pack (`FONT_CATALOG_INVALID`, rule `catalogIdTaken` or `unique`), is left out
+   * whole; the others merge. Pins are untouched (a pinned font keeps its cached file).
+   */
+  setExtraCatalogs(packsJson: string): string;
+  /** The `FontCatalog` JSON: the built-in catalog and the enabled packs' entries. */
   catalog(): string;
   /** Resolves to the `FontsStatus` JSON: every file's state. */
   status(): Promise<string>;
@@ -346,6 +354,13 @@ export declare class Registry {
    * `dir` as `control.db` records it (`store/@<publisher>/<name>/<version>-<hash12>`).
    */
   installedDirs(): Promise<string>;
+  /**
+   * The contributions of the installed content pack in `dir` (as `control.db` records it):
+   * `{ id, version, fontCatalogs: [text], captionStyles: [{ name, title?, style }] }` JSON,
+   * every file validated again as at install (`PLUGIN_MANIFEST_INVALID {reason:
+   * contentInvalid}` when one no longer is).
+   */
+  packContent(dir: string): Promise<string>;
   /** The bundled plugins compiled into this binary: `[{ id, version, treeHash }]` JSON. */
   bundledList(): string;
   /**

@@ -34,7 +34,7 @@ mod status;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, Weak, mpsc};
+use std::sync::{Arc, Mutex, RwLock, Weak, mpsc};
 use std::time::{Duration, Instant};
 
 use fin_core::CoreError;
@@ -52,7 +52,11 @@ pub(crate) use status::Summary;
 pub(crate) const PROGRESS_EVERY: Duration = Duration::from_millis(250);
 
 pub(crate) struct Manager {
-    catalog: Arc<FontCatalog>,
+    /// The catalog this server starts from: the built-in one (a test build's
+    /// `FIN_FONT_CATALOG`). Plugin packs' catalogs are merged onto it.
+    base: Arc<FontCatalog>,
+    /// `base` merged with the enabled packs' catalogs ([`Manager::set_extra_catalogs`]).
+    catalog: RwLock<Arc<FontCatalog>>,
     /// `None` when the cache or the catalog could not be used ([`Manager::damaged`]).
     fetcher: Option<Fetcher>,
     damaged: Option<CoreError>,
@@ -70,6 +74,12 @@ pub(crate) struct Manager {
     jobs: mpsc::Sender<Job>,
     /// `fonts.fetch` entries from the fetcher's state changes.
     fetches: fetch_log::FetchLog,
+}
+
+/// A pack whose catalogs [`Manager::set_extra_catalogs`] left out, and why.
+pub(crate) struct Rejected {
+    pub(crate) id: String,
+    pub(crate) error: CoreError,
 }
 
 /// Work done on the `fin-node-fonts-jobs` thread, off the caller's locks.
@@ -188,7 +198,8 @@ impl Manager {
         let provider = Arc::new(Provider::new(cache));
         let (jobs, queue) = mpsc::channel();
         let m = Arc::new_cyclic(|weak| Manager {
-            catalog,
+            base: catalog.clone(),
+            catalog: RwLock::new(catalog),
             fetcher,
             damaged,
             env_offline,
@@ -220,7 +231,7 @@ impl Manager {
                     // Ends when the fetcher (owned by the manager) is gone.
                     while let Ok((sha, state)) = rx.recv() {
                         let Some(m) = weak.upgrade() else { return };
-                        m.fetches.changed(&m.catalog, &sha, &state);
+                        m.fetches.changed(&m.catalog(), &sha, &state);
                         m.file_changed(&sha);
                     }
                 });
@@ -228,8 +239,55 @@ impl Manager {
         m
     }
 
-    pub(crate) fn catalog(&self) -> &FontCatalog {
-        &self.catalog
+    /// The catalog in use now: the built-in one and the enabled packs' entries.
+    pub(crate) fn catalog(&self) -> Arc<FontCatalog> {
+        self.catalog
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
+    /// Replaces the packs' catalogs (8A Task 12a): `packs` are the enabled plugin packs'
+    /// font catalogs, each pack's together, in a fixed order. A pack merges whole or not at
+    /// all: one whose entries clash with the built-in catalog or an earlier pack is left out
+    /// and named in the answer (`catalogIdTaken`, a file listed twice), the others still
+    /// merge. Pins are untouched: a pinned font keeps its cached file and stays usable
+    /// whatever the catalog lists, and entries that left only stop being offered for new
+    /// pins. The catalog the fetcher uses changes with it, and what open projects pin that
+    /// the new catalog lists is queued for fetching again.
+    pub(crate) fn set_extra_catalogs(
+        &self,
+        packs: Vec<(String, Vec<FontCatalog>)>,
+    ) -> Vec<Rejected> {
+        let mut merged = (*self.base).clone();
+        let mut rejected = Vec::new();
+        for (id, catalogs) in packs {
+            match merged.merged(&catalogs) {
+                Ok(next) => merged = next,
+                Err(error) => rejected.push(Rejected { id, error }),
+            }
+        }
+        let merged = Arc::new(merged);
+        {
+            let mut current = self
+                .catalog
+                .write()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if **current == *merged {
+                return rejected;
+            }
+            *current = merged.clone();
+        }
+        if let Some(f) = &self.fetcher {
+            f.set_catalog(merged);
+        }
+        let needs: Vec<Need> = lock(&self.engines)
+            .values()
+            .flat_map(Attached::needs)
+            .collect();
+        self.post(Job::Need(needs));
+        self.post(Job::Refresh(None));
+        rejected
     }
 
     /// The shared measurer: eval's, and every open store's (the edit path's overflow check).

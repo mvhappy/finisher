@@ -14,7 +14,7 @@ import { ANONYMOUS, CONSOLE, LOCAL } from "../src/principal.ts";
 import { connectProved, type NdjsonClient, type RunningServer, startServer } from "./support/ndjson-client.ts";
 import { SAMPLE_PAYLOADS } from "./support/payloads.ts";
 
-const READS = ["registry.list", "registry.status", "registry.refresh", "plugin.list", "plugin.search", "plugin.info"] as const;
+const READS = ["registry.list", "registry.status", "registry.refresh", "plugin.list", "plugin.search", "plugin.info", "plugin.content.get"] as const;
 const ADMIN = ["registry.add", "registry.remove", "registry.forget"] as const;
 const NEW = [...READS, ...ADMIN] as const;
 
