@@ -240,6 +240,7 @@ describe("JobHost", () => {
     const t = await start();
     const lag = monitorEventLoopDelay({ resolution: 1 });
     lag.enable();
+    const t0 = performance.now();
     const groups = Array.from({ length: 20 }, () => t.host.openGroup({ label: "lag", qos: "normal" }));
     const procs = await Promise.all(groups.map((g) => t.host.spawn(g, worker(t))));
     for (const p of procs) await t.waitFor((e) => e.type === "hello" && e.proc === p);
@@ -249,8 +250,10 @@ describe("JobHost", () => {
     lag.disable();
     for (const p of procs) expect(exitOf(t, p)).toMatchObject({ reason: "killed", kill: "cancel" });
     // The event loop kept turning: its p99 delay (1 ms resolution included) stays small.
-    // Windows' default timer granularity is about 15.6 ms, so a 1 ms timer samples ~16 times fewer.
-    expect(lag.count).toBeGreaterThan(process.platform === "win32" ? 10 : 50);
+    // At least one sample every four timer periods of the run: 1 ms, or Windows' default timer
+    // granularity of about 15.6 ms (a fixed count fails there when the run is short).
+    const period = process.platform === "win32" ? 15.6 : 1;
+    expect(lag.count).toBeGreaterThan(Math.min(50, (performance.now() - t0) / (4 * period) - 1));
     expect(lag.percentile(99) / 1e6).toBeLessThan(strict ? 6 : 25);
   });
 
