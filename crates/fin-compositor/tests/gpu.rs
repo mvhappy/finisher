@@ -279,6 +279,76 @@ fn a_lost_device_is_gpu_device_lost() {
     assert_eq!(err.code, "GPU_DEVICE_LOST", "{err:?}");
 }
 
+/// Allocates 2D `rgba16float` textures of `w`×`h` until the adapter refuses one or
+/// `budget` bytes are held; true if it refused.
+fn fill(gpu: &Gpu, (w, h): (u32, u32), budget: &mut u64, held: &mut Vec<wgpu::Texture>) -> bool {
+    let size = u64::from(w) * u64::from(h) * 8;
+    while *budget >= size {
+        let scope = gpu
+            .device()
+            .push_error_scope(wgpu::ErrorFilter::OutOfMemory);
+        let t = gpu.device().create_texture(&wgpu::TextureDescriptor {
+            label: Some("fill"),
+            size: wgpu::Extent3d {
+                width: w,
+                height: h,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba16Float,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        if pollster::block_on(scope.pop()).is_some() {
+            return true;
+        }
+        held.push(t);
+        *budget -= size;
+    }
+    false
+}
+
+/// A real allocation failure is `GPU_OUT_OF_MEMORY`, and the compositor renders again once
+/// memory is back. Fills the adapter's memory with textures, at most `FIN_GPU_OOM_MIB` MiB:
+/// run it where that is more than the adapter has, e.g. WARP in a process with a job memory
+/// limit (Windows).
+#[test]
+#[ignore = "exhausts GPU memory: set FIN_GPU_OOM_MIB and cap the process"]
+fn running_out_of_memory_is_gpu_out_of_memory() {
+    let Some(gpu) = gpu() else { return };
+    let mut budget: u64 = std::env::var("FIN_GPU_OOM_MIB")
+        .expect("FIN_GPU_OOM_MIB")
+        .parse::<u64>()
+        .unwrap()
+        << 20;
+    let all = cases();
+    let case = all.iter().find(|c| c.name == "two-tracks").unwrap();
+    // The sources are made before memory runs out.
+    let mut src = case.patterns();
+    for l in &case.plan.layers {
+        if l.source.is_some() {
+            let _ = fin_compositor::SourceProvider::frame(&mut src, l);
+        }
+    }
+    let mut held = Vec::new();
+    let refused = fill(&gpu, (8192, 4096), &mut budget, &mut held)
+        && fill(&gpu, (512, 512), &mut budget, &mut held);
+    assert!(refused, "no allocation failed within FIN_GPU_OOM_MIB");
+    eprintln!("held {} textures", held.len());
+    let mut c = Compositor::new(&gpu);
+    let err = c
+        .render(&gpu, &case.plan, &mut src, case.size())
+        .unwrap_err();
+    assert_eq!(err.code, "GPU_OUT_OF_MEMORY", "{err:?}");
+    eprintln!("{err:?}");
+    drop(held);
+    let want = reference::render(&case.plan, &mut case.patterns(), case.size());
+    let got = c.render(&gpu, &case.plan, &mut src, case.size()).unwrap();
+    assert!(passes(&t1(&want.rgba8, &got.rgba8)), "renders again after");
+}
+
 #[test]
 fn an_empty_output_renders_nothing() {
     let Some(gpu) = gpu() else { return };
