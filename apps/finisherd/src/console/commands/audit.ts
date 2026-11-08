@@ -1,9 +1,9 @@
 // `finisherd audit [--since <date>] [--kind <kind>] [--limit <n>] [--json]` (read-only: runs
-// without a terminal) and `finisherd audit purge (--all | --before <date>)` (needs a terminal and
-// a typed code).
+// without a terminal) and `finisherd audit purge (--all | --before <date>)` (needs a terminal, and
+// the word `audit` typed back: a purge cannot be undone).
 import { AUDIT_KINDS, AUDIT_PAGE_MAX, type AuditEntry } from "@finisher/contracts";
 import { valueOf } from "../client.ts";
-import { confirmed, requireTty } from "../confirm.ts";
+import { confirmed, requireTty, typeName } from "../confirm.ts";
 import { auditLine, has, one, onlyFlags, parseCount, parseDate, usage } from "../format.ts";
 import { type CommandContext, withConnection } from "./context.ts";
 
@@ -52,7 +52,7 @@ async function purge(ctx: CommandContext, rest: ReadonlyArray<string>): Promise<
     ? "This removes every entry of the server's security audit log."
     : `This removes the audit log entries from before ${new Date(before!).toISOString()}.`;
   const { removed } = await withConnection(ctx, (c) =>
-    confirmed<{ removed: number }>(c, ctx.prompt, what, "auth.audit.purge", all ? { all: true } : { before }),
+    confirmed<{ removed: number }>(c, ctx.prompt, what, typeName("word", "audit"), "auth.audit.purge", all ? { all: true } : { before }),
   );
   ctx.output.out(`Removed ${removed} audit entries.`);
   return 0;

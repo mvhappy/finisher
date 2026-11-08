@@ -21,6 +21,28 @@ test("generation_is_required, probe_requires_project_id (protocol 2)", () => {
 test("the group exposes exactly the protocol 2 RPC tags", () => {
   expect([...FinRpcs.requests.keys()].sort()).toEqual(
     [
+      "agent.approval.answer",
+      "agent.approval.list",
+      "agent.key.list",
+      "agent.key.remove",
+      "agent.key.set",
+      "agent.local.remove",
+      "agent.local.set",
+      "agent.local.show",
+      "agent.local.test",
+      "agent.providers",
+      "agent.self",
+      "agent.self.try",
+      "agent.session.delete",
+      "agent.session.end",
+      "agent.session.get",
+      "agent.session.interrupt",
+      "agent.session.list",
+      "agent.session.prompt",
+      "agent.session.resume",
+      "agent.session.start",
+      "agent.session.steer",
+      "agent.watch",
       "asset.probe",
       "auth.audit.list",
       "auth.audit.purge",
@@ -109,14 +131,16 @@ test("the group exposes exactly the protocol 2 RPC tags", () => {
       "server.status",
       "server.stop",
       "snapshot.get",
+      "training.closedTargets.get",
+      "training.closedTargets.set",
       "tx.commit",
       "tx.get",
     ].sort(),
   );
 });
 
-test("ops.subscribe, project.events, jobs.watch and library.watch are streaming rpcs and the others are not", () => {
-  const streams = new Set(["ops.subscribe", "project.events", "jobs.watch", "library.watch"]);
+test("ops.subscribe, project.events, jobs.watch, library.watch and agent.watch are streaming rpcs and the others are not", () => {
+  const streams = new Set(["ops.subscribe", "project.events", "jobs.watch", "library.watch", "agent.watch"]);
   for (const [tag, rpc] of FinRpcs.requests) {
     expect(RpcSchema.isStreamSchema(rpc.successSchema), tag).toBe(streams.has(tag));
   }

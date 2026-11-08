@@ -2,8 +2,7 @@
 // through `<server-data>/finisherd.json`, connects to its socket (or pipe) and proves itself as
 // `console` with `<server-data>/auth/console.key`, checking the server's proof first (a squatted
 // or foreign socket is `SERVER_UNTRUSTED`). Nothing secret is printed: not the key, the nonces,
-// the MACs or a ticket. The typed code of a confirmation is shown on the console's own terminal
-// only (`confirm.ts`).
+// the MACs or a ticket, nor the `console.challenge` code a confirmed call carries (`confirm.ts`).
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { b64u, canonicalEndpoint, helloProof, nonce, proveMac, sameMac } from "../auth/crypto.ts";
@@ -77,6 +76,8 @@ export function valueOf<A = unknown>(exit: Exit): A {
 /** A proved `console` connection. */
 export interface ConsoleConnection {
   call(tag: string, payload: unknown): Promise<Exit>;
+  /** A streaming call (`agent.watch`): each value to `onValue`; `stop` interrupts it. */
+  stream(tag: string, payload: unknown, onValue: (v: unknown) => void): { done: Promise<Exit>; stop(): void };
   close(): Promise<void>;
 }
 
@@ -123,5 +124,12 @@ export async function connectConsole(serverData: string): Promise<ConsoleConnect
     await client.close();
     throw e;
   }
-  return { call: (tag, payload) => client.call(tag, payload), close: () => client.close() };
+  return {
+    call: (tag, payload) => client.call(tag, payload),
+    stream: (tag, payload, onValue) => {
+      const { id, done } = client.stream(tag, payload, onValue);
+      return { done, stop: () => client.interrupt(id) };
+    },
+    close: () => client.close(),
+  };
 }

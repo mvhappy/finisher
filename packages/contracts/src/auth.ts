@@ -65,14 +65,20 @@ export const TICKET_DEFAULT_TTL_S = 30;
 export const AuthTicketPayload = Schema.Struct({ ttlS: Schema.optional(Schema.Number) });
 export const AuthTicketSuccess = Schema.Struct({ ticket: Schema.String, expiresAt: Schema.Number });
 /** `auth.whoami`: the principal this connection runs as. */
-export const AuthWhoamiSuccess = Schema.Struct({ principal: PrincipalSchema });
+/**
+ * `defaultBranch`: an agent session's own default branch (sub-project 7A Decision 14a; its root,
+ * or a `fin try` it made the default), which `fin` writes when no `--branch` is given; absent
+ * for every other principal.
+ */
+export const AuthWhoamiSuccess = Schema.Struct({ principal: PrincipalSchema, defaultBranch: Schema.optionalKey(Schema.String) });
 
 /** How long a console challenge stays valid, in seconds (Decision 30). */
 export const CHALLENGE_TTL_S = 60;
 
 /**
- * The typed confirmation of a mutating human-only RPC from a `console` principal (Decision
- * 30): the code `console.challenge` issued to the same connection, typed back by the person.
+ * The challenge code of a mutating human-only RPC from a `console` principal (Decision
+ * 30): the code `console.challenge` issued to the same connection, which the console sends
+ * itself once the person has confirmed (owner decision of 2026-11-08).
  * Single use; ignored for every other principal.
  */
 export const ChallengeField = Schema.optional(Schema.String);

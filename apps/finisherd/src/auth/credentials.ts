@@ -68,6 +68,8 @@ export interface CredentialRef {
 }
 
 const PROJECT_ID = /^[0-9A-Za-z_-]{1,64}$/;
+/** A credential id: a ULID's 26 characters. */
+const CREDENTIAL_ID = /^[0-9A-Za-z]{26}$/;
 /** A branch id or name as `fin` accepts them, or `own`: no space or control character. */
 const BRANCH_RULE = /^[^\s\p{Cc}]{1,128}$/u;
 const CONTROL = /\p{Cc}/u;
@@ -182,6 +184,23 @@ export class Credentials {
    */
   mint(by: Principal, req: MintRequest): { credential: Credential; file: CredentialFile } {
     if (!by.human) throw humanOnly("auth.credential.mint", "auth.admin", by);
+    return this.#mint(by, req, ulid(this.#clock()), "auth.credential.mint");
+  }
+
+  /**
+   * Mints the `agent` credential of an agent session for the server itself (sub-project 7A
+   * Decision 15.3, spec §1.7 item 1): its id is the caller's (`id`, the session id), and `by`
+   * (the session's starter, who may be `local`) is recorded as its maker. Not an RPC: only the
+   * agent runtime calls it, with the scopes of the session's mode. A human-only scope is still
+   * `SCOPE_DENIED`, and an id already used is `INVALID_REQUEST`.
+   */
+  mintWithId(by: Principal, id: string, req: MintRequest): { credential: Credential; file: CredentialFile } {
+    if (!CREDENTIAL_ID.test(id)) throw invalid("a credential id is 26 letters and digits", { field: "id" });
+    if (this.#rows.has(id)) throw invalid("a credential with this id exists", { field: "id" });
+    return this.#mint(by, req, id, "agent.session.start");
+  }
+
+  #mint(by: Principal, req: MintRequest, id: string, tag: string): { credential: Credential; file: CredentialFile } {
     const label = req.label.trim();
     if (label.length === 0 || label.length > CREDENTIAL_LABEL_MAX || CONTROL.test(label)) {
       throw invalid(`the label must be 1 to ${CREDENTIAL_LABEL_MAX} characters, without control characters`, { field: "label" });
@@ -189,11 +208,11 @@ export class Credentials {
     const scopes = [...new Set(req.scopes ?? MINT_DEFAULT_SCOPES)];
     const human = scopes.filter((s) => HUMAN_ONLY.has(s));
     if (human.length > 0) {
-      const e = scopeDenied("auth.credential.mint", human, by);
+      const e = scopeDenied(tag, human, by);
       throw finError(
         "SCOPE_DENIED",
         `a credential cannot hold ${human.join(", ")}: only a person can`,
-        { tag: "auth.credential.mint", scopes: human },
+        { tag, scopes: human },
         e.fix,
       );
     }
@@ -210,7 +229,7 @@ export class Credentials {
         "Revoke credentials you no longer use, then mint this one again.");
     }
     const row: CredentialRow = {
-      id: ulid(now),
+      id,
       kind: req.kind,
       label,
       scopes,
@@ -278,6 +297,32 @@ export class Credentials {
   /** Whether `p` (an `agent`/`mcp` principal) still runs: its credential is live. */
   isLive(p: { readonly kind: string; readonly id: string }): boolean {
     return this.#live(p.kind, p.id) !== undefined;
+  }
+
+  /**
+   * Restarts a live credential's idle expiry now and writes it at once (sub-project 7A
+   * Decision 18: a resumed session keeps its credential). An ended credential is not brought
+   * back: `CREDENTIAL_REVOKED` or `CREDENTIAL_EXPIRED`; an unknown id is `CREDENTIAL_REVOKED`.
+   */
+  refresh(id: string): Credential {
+    const row = this.#rows.get(id);
+    const status = row === undefined ? "revoked" : this.#status(row, this.#clock());
+    if (row === undefined || status !== "live") {
+      throw status === "expired"
+        ? finError("CREDENTIAL_EXPIRED", "this credential expired", { id }, "Start a new session: an ended one cannot be resumed.")
+        : finError("CREDENTIAL_REVOKED", "this credential was revoked", { id }, "Start a new session: an ended one cannot be resumed.");
+    }
+    const now = this.#clock();
+    row.lastUsedAt = now;
+    this.#touch.run(now, id);
+    this.#written.set(id, now);
+    return this.view(row);
+  }
+
+  /** The credential `id`, live or ended, as the owner sees it. */
+  get(id: string): Credential | undefined {
+    const row = this.#rows.get(id);
+    return row === undefined ? undefined : this.view(row);
   }
 
   /** Notes a use of `id` now; written at most once a minute. */
@@ -361,6 +406,11 @@ export class Credentials {
   /** Ended rows not written yet (tests). */
   unsaved(): number {
     return this.#unsaved.size;
+  }
+
+  /** Whether `id` was ended in memory and its end is not written yet (a restart would bring it back). */
+  endUnsaved(id: string): boolean {
+    return this.#unsaved.has(id);
   }
 
   /**

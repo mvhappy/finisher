@@ -734,7 +734,7 @@ MyProject/                      (may live on local disk, NAS, or a cloud-synced 
 | Phase | Delivers |
 |---|---|
 | Now (sub-project 4C branch) | Envelope, kinds and the payload enum, the journal and its blob lifecycle, consent and the project flag, the first sources (edits and history with their outcomes, intents and actors, `fin`, RPC, eval, fonts, errors, sessions), `fin diagnostics`, and the upload view (`export --as-upload`). No uploader, no network |
-| Sub-project 5A | Sources and actors from principals; export of content, purge, `project default` and consent changes human-only (the console confirms them with a typed code); exports redacted unless they ask for content, which only a person may (built, §27 item 18) |
+| Sub-project 5A | Sources and actors from principals; export of content, purge, `project default` and consent changes human-only (the console confirms them: y/N, or the target's name typed back for a purge, with the server's challenge code sent by the console itself); exports redacted unless they ask for content, which only a person may (built, §27 item 18) |
 | Sub-project 7 | Fills the reserved agent kinds (turns, tool calls and results, edit verdicts) and sets `FIN_CALL` |
 | Sub-project 9 | `ui.*` events, the UI's actor on commits, the onboarding consent question (content, no pre-selected answer) and the diagnostics notice, a "what we collect" page |
 | Sub-project 10 | `review.*` verdicts (marker resolve, accept/reject per transaction) |
@@ -792,11 +792,7 @@ MyProject/                      (may live on local disk, NAS, or a cloud-synced 
 - `cli.command` (registry name, flag names, keyed `argsHash`, duration, exit code, error code, online, dry run, txIds);
 - `rpc.stats`, `eval.stats`, `fonts.fetch`, `storage.state`, `error.internal`, `error.panic` (location and message hash; the message as content), `journal.dropped`.
 
-**Reserved (v0) for sub-project 7:**
-- `agent.session` (provider, model, role, mode);
-- `agent.turn` (provider and model ids, input/output/cache tokens, latency, stop reason, cost; content: the new messages of the turn, system prompt and tool definitions by hash);
-- `agent.toolCall`, `agent.toolResult` (call id, command, argsHash, ok/code, duration, txIds; content: arguments and output, as blobs when large);
-- `agent.editVerdict` (txIds; `accepted|rejected|undone|merged|abandoned`; by user, critic or agent).
+**Agent kinds (sub-project 7):** the v0 reservations are replaced by version 1 of `agent.session`, `agent.turn`, `agent.toolCall` and `agent.toolResult`, the new `agent.approval`, and the retirement of `agent.editVerdict` (verdicts are `review.verdict`). The kinds, their provenance fields, the agent-trace store that holds their content and the join to commits are in `docs/specs/2026-11-07-sub-project-7-agent-runtime-design.md` §12 (as built by 7A, §24), which wins over this document.
 
 Also reserved: `ui.action` (9) and `review.verdict` (10).
 
@@ -874,6 +870,8 @@ Also reserved: `ui.action` (9) and `review.verdict` (10).
 | 10 | Reviewer + skills | QA gate, critic, markers, share page; Uncut skills/rubrics ported |
 | 11 | v1 features + hardening | Clip finder, reframe, caption templates, Lottie template packs, onboarding, signing/notarisation, release |
 | 12 | After v1 | Public registry, raw Lottie, background-removal plugin, mobile, `finisher-cloud`, copyleft plugin repo |
+
+**Mobile (owner decisions 2026-11-08):** native iOS/Android with limited offline editing becomes sub-project 12, "mobile core and offline editing" (not designed yet); see `docs/specs/2026-11-08-mobile-offline-editing-decisions.md`.
 
 **Spike (#1) measures**
 1. napi apply/rebase on a 10k-item project with 1k-op branches. **Electron ABI prebuild** on all three OSes; if it's problematic, evaluate the sidecar fallback.
@@ -1186,3 +1184,9 @@ Spike code, evidence and the report are throwaway and live in the git-ignored `a
     - **Shape:** `fin-media`, `fin-container` (over `mp4-atom`), `fin-codecs` (dav1d decode and SVT-AV1 encode, each behind a C shim), `fin-compositor` (a wgpu 30 compositor beside the CPU reference that is its oracle), `fin-shm` (the mapped-file channel); the `media` family of `fin-workers` with `media.look` and `media.capabilities`; `fin look` and `fin media caps`; media fields in `job.done` and the `media.capabilities` and `render.stats` diagnostics kinds.
     - **Amendments to §12.1 and §27.3:** AV1 decodes with dav1d (built with the `cc` crate; `rav1d` was measured and dropped); mip levels are separate textures; a frame's file name carries its size; workers write and the host moves outputs through `fin-shm`, by copy from a warm worker.
     - **Still outstanding:** the cross-platform run of 6A on macOS and Windows 11 and a hardware Linux GPU (spec §25.6), a green CI run on GitHub, the worker sandbox (6B-1 Landlock, 6G the full profile).
+20. **Sub-project 7A, the agent runtime core and the built-in agent (as built, 2026-11-08):** §8 (sessions, providers, the built-in agent, budgets), §9's `FIN_CALL` and agent credentials, §16's `ModelGateway` and secrets, and §21.1's agent kinds as implemented are recorded in `docs/specs/2026-11-07-sub-project-7-agent-runtime-design.md` §1–13 (each 7A part marked *As built (7A)*) and §24 (§24.1 maps every decision of its plan to As built or Deviation), which wins over this document where they differ.
+    - **Shape:** the runtime in `finisherd` (`apps/finisherd/src/agent/`): sessions, runs and nodes in `control.db` (the `agent` migration chain), interrupted on a crash and resumed without re-running a tool; one adapter contract with the scripted `fake` harness and the built-in loop over one OpenAI-compatible Chat Completions client with an OpenRouter preset (the pasted key, the only secret Finisher stores) and a local preset (no key); the tools `fin` (argv, no shell) and three workspace file tools.
+    - **Sessions are principals:** each has its own root branch (`agent.<role>-<n>`) and an `agent` credential whose id is the session id, scopes from its mode (`plan`, `draft`, `auto`), writes confined to its branch subtree and paths to its project, its workspace and its project's libraries; `fin` under that credential never falls back to `local.key`, keeps its default branch and tries per session on the server, and takes its project folder from `FIN_PROJECT_DIR`; the server sets every credential principal's author and records every agent commit in `session_txs`, kept for the project's life.
+    - **Recording:** metadata to the diagnostics journal, content only under training to the separate agent-trace store, with provenance on every session and turn; outcomes (merged, undone, reverted, abandoned) are tracked for 5E's `review.verdict`, which is not emitted until 5E registers it; the counsel gate `training.closedModelTargets` exists with the default `pendingCounsel`.
+    - **Not a boundary yet:** before 7C every host runs agent tools unsandboxed, with the persistent warning `SANDBOX_DISABLED {reason: before7C}`.
+    - **Still outstanding:** real-provider sessions and the cross-platform run on macOS and Windows 11 (7A Task 15); 7B–7H.

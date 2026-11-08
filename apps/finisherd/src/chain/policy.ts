@@ -60,9 +60,16 @@ export function branchLimited(p: Principal): boolean {
  * A rule's `targets` (a branch acted on without a record, `project.acknowledgeRewind`) are
  * checked the same way.
  */
-export const agentBranchLimits: PolicyRule = ({ tag, rule, principal, payload, projects }) =>
+export const agentBranchLimits: PolicyRule = (input) => agentBranchLimitsExcept(() => false)(input);
+
+/**
+ * `agentBranchLimits` for every principal but those `skip` names: an agent session's
+ * credential reaches its root branch's whole subtree, which `agent/reach.ts` checks instead
+ * (sub-project 7A Decision 16).
+ */
+export const agentBranchLimitsExcept = (skip: (p: Principal) => boolean): PolicyRule => ({ tag, rule, principal, payload, projects }) =>
   Effect.gen(function* () {
-    if (!branchLimited(principal) || (rule.writes === undefined && rule.targets === undefined)) return undefined;
+    if (!branchLimited(principal) || skip(principal) || (rule.writes === undefined && rule.targets === undefined)) return undefined;
     const projectId = projectOf(payload);
     // Every writing RPC names its project; one that does not is refused, never left open.
     if (projectId === undefined) return { deny: branchNotAllowed(tag, "") };

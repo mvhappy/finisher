@@ -5,7 +5,7 @@
 //   2. `fin` (local): create, three edits and an undo; `fin whoami` says `local`;
 //   3. human-only: `fin` is refused (exit 7 `HUMAN_ONLY`, fixes without a command line), the
 //      console without a terminal is `CONSOLE_NEEDS_TTY`, training on is `CONSENT_UI_ONLY`, and
-//      the console's typed code (`consoleRpc`) purges; `finisherd audit` lists the denials;
+//      the console's challenge code (`consoleRpc`) purges; `finisherd audit` lists the denials;
 //   4. a ticketed WebSocket streams step 2's ops; a reused ticket and a ticket in the query are
 //      401, Host and Origin are 403 and spend nothing, another protocol is 426;
 //   5. agent credentials minted through the console: read-only (`SCOPE_DENIED`), write with
@@ -77,7 +77,9 @@ export async function run() {
     /** `fin` as `local` (no credential file), expecting success. */
     const local = (args, cwd = project) => fin(sd, cwd, args, tempEnv);
     /** `fin` with a credential file, whatever the exit. */
-    const as = (file, args) => finRaw(sd, project, args, { ...tempEnv, FIN_CREDENTIAL: file });
+    // Under an agent credential `fin` reads no server data: the endpoint is FIN_SERVER alone
+    // (7A Decision 14b) and the project folder FIN_PROJECT_DIR alone (the 8b review).
+    const as = (file, args) => finRaw(sd, project, args, { ...tempEnv, FIN_CREDENTIAL: file, FIN_SERVER: server.info.socket, FIN_PROJECT_DIR: project });
     const refused = (r, code, what, status = 7) => {
       assertEqual([r.status, r.json?.error?.code], [status, code], what);
       if (r.json.error.fix !== undefined) assertEqual(COMMAND_IN_FIX.test(r.json.error.fix), false, `${what}: the fix names a command: ${r.json.error.fix}`);
@@ -114,7 +116,7 @@ export async function run() {
     const headRev = (await socketCall(server, "snapshot.get", { projectId, branch: "main" }, "local")).rev;
     assertEqual(headRev >= 3, true, `rev after the edits and the undo (${undone.rev})`);
 
-    step(3, "human-only: fin is refused, the console needs a terminal and a typed code");
+    step(3, "human-only: fin is refused, the console needs a terminal and a challenge code");
     const humanOnly = (args) => refused(finRaw(sd, project, args, tempEnv), "HUMAN_ONLY", `fin ${args.join(" ")}`);
     humanOnly(["diagnostics", "purge", "--all"]);
     humanOnly(["diagnostics", "consent", "diagnostics", "off"]);
@@ -126,7 +128,7 @@ export async function run() {
     assertEqual((await storedEntries(server)).length > 0, true, "the journal holds entries before the purge");
     // Entries up to now (the install key stays: step 5 reads the journal by it; `all` ends the scenario).
     const purged = await consoleRpc(server, "diagnostics.purge", { selector: { before: Date.now() + 1 } });
-    log(`console purge with a typed code: ${JSON.stringify(purged)}`);
+    log(`console purge with a challenge code: ${JSON.stringify(purged)}`);
     assertEqual((await storedEntries(server)).length, 0, "the journal after the purge");
     const denials = JSON.parse(consoleCli(sd, ["audit", "--json", "--kind", "auth.denied"]).stdout).entries;
     assertEqual(

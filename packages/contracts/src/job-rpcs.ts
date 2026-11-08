@@ -31,7 +31,7 @@ export const JOB_OWNER_LIMIT = 1000;
  * reach (`PROJECT_NOT_FOUND`), and a caller limited to some projects must name one
  * (`INVALID_REQUEST`). `params` at most `JOB_PARAMS_MAX_BYTES` serialised, `idemKey` at most
  * `IDEM_KEY_MAX` characters; `priority: interactive` is a person's only (anyone else gets the
- * kind's default). `challenge`: the console's typed code, needed only for a kind whose scopes
+ * kind's default). `challenge`: the console's challenge code, needed only for a kind whose scopes
  * include a human-only one.
  */
 export const JobsSubmitPayload = Schema.Struct({

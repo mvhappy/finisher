@@ -293,7 +293,7 @@ fn every_kind_fin_sends_has_a_wire_form() {
         .collect();
     assert!(fin.iter().all(|k| WIRE_KINDS.contains(k)), "{fin:?}");
     // `finisherd` sends the agent kinds through wire forms too (raw model ids and upstreams,
-    // unkeyed hashes; sub-project 7A review H1, H2, M3).
+    // unkeyed hashes, and the approvals' provenance; sub-project 7A review H1, H2, M3; Task 10 B1).
     assert_eq!(
         WIRE_KINDS,
         [
@@ -302,7 +302,8 @@ fn every_kind_fin_sends_has_a_wire_form() {
             "agent.session",
             "agent.turn",
             "agent.toolCall",
-            "agent.toolResult"
+            "agent.toolResult",
+            "agent.approval"
         ]
     );
 }

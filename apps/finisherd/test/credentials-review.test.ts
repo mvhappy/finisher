@@ -18,7 +18,7 @@ import { Tickets } from "../src/auth/tickets.ts";
 import { ConnectionRegistry } from "../src/connections.ts";
 import { describeMint } from "../src/console/commands/agent.ts";
 import { runConsole } from "../src/console/main.ts";
-import type { Prompt } from "../src/console/prompt.ts";
+import { person } from "./support/person.ts";
 import { Audit } from "../src/control/audit.ts";
 import { type ControlStore, openControlStore } from "../src/control/db.ts";
 import type { CallMeta } from "../src/diagnostics.ts";
@@ -90,22 +90,6 @@ async function proveAs(file: CredentialFile): Promise<{ client: NdjsonClient; pr
   const proved = proof !== null && sameMac(proof, helloProof(key, answer.envId, answer.endpoint, clientNonce, serverNonce));
   const mac = proveMac(key, answer.envId, answer.endpoint, serverNonce, clientNonce);
   return { client, proved, exit: await client.call("auth.prove", { mac: b64u.encode(mac) }) };
-}
-
-/** A person at a terminal who types back every code shown. */
-function person(): Prompt & { shown: string[] } {
-  const shown: string[] = [];
-  let last = "";
-  return {
-    shown,
-    isInteractive: () => true,
-    show: (text) => {
-      shown.push(text);
-      const m = /type this code within 60 seconds: ([0-9A-Z]{6})$/.exec(text);
-      if (m) last = m[1]!;
-    },
-    ask: async () => last,
-  };
 }
 
 async function consoleRun(argv: string[], more: { createFile?: (path: string) => PrivateFile } = {}) {

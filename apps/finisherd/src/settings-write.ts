@@ -55,6 +55,28 @@ export function mergeSettings(
   patch: PrivacyPatch,
   validate: (privacy: Record<string, unknown> | undefined) => string | undefined = () => undefined,
 ): Record<string, unknown> | undefined {
+  return patchSection(serverData, "privacy", patch, (privacy, file) => {
+    const refused = validate(privacy);
+    if (refused === undefined) return;
+    const key = /^(privacy\.[A-Za-z]+)/.exec(refused)?.[1] ?? "privacy";
+    throw finError("SETTINGS_INVALID", `${file} cannot be updated: ${refused}`, { file, key, reason: refused }, `fix or remove ${key} in ${file} by hand, then retry`);
+  });
+}
+
+/**
+ * Sets (or with `null` removes) keys of one top-level `section` of `settings.json`, keeping
+ * every other key, and returns the new section (`undefined` once empty and removed). The rules
+ * of `mergeSettings` hold: a file that does not parse is never overwritten (`SETTINGS_INVALID`),
+ * the write is temp-then-rename, 0600, fsynced (`SETTINGS_WRITE_FAILED`). `check` may refuse
+ * the merged section (throw) before anything is written. The agent settings (`agents.local`,
+ * `training.closedModelTargets`; 7A Task 12) are written through it, by the owner only.
+ */
+export function patchSection(
+  serverData: string,
+  section: string,
+  patch: Readonly<Record<string, unknown>>,
+  check: (merged: Record<string, unknown> | undefined, file: string) => void = () => {},
+): Record<string, unknown> | undefined {
   const file = settingsPath(serverData);
   let raw: unknown = {};
   let text: string | undefined;
@@ -72,22 +94,18 @@ export function mergeSettings(
   }
   if (raw === null || typeof raw !== "object" || Array.isArray(raw)) throw invalid(file, "it is not a JSON object");
   const settings = { ...(raw as Record<string, unknown>) };
-  const current = settings.privacy;
+  const current = settings[section];
   if (current !== undefined && (current === null || typeof current !== "object" || Array.isArray(current))) {
-    throw invalid(file, "privacy is not an object");
+    throw invalid(file, `${section} is not an object`);
   }
-  const privacy: Record<string, unknown> = { ...((current as Record<string, unknown> | undefined) ?? {}) };
+  const merged: Record<string, unknown> = { ...((current as Record<string, unknown> | undefined) ?? {}) };
   for (const [key, value] of Object.entries(patch)) {
-    if (value === null || value === undefined) delete privacy[key];
-    else privacy[key] = value;
+    if (value === null || value === undefined) delete merged[key];
+    else merged[key] = value;
   }
-  if (Object.keys(privacy).length === 0) delete settings.privacy;
-  else settings.privacy = privacy;
-  const refused = validate(settings.privacy as Record<string, unknown> | undefined);
-  if (refused !== undefined) {
-    const key = /^(privacy\.[A-Za-z]+)/.exec(refused)?.[1] ?? "privacy";
-    throw finError("SETTINGS_INVALID", `${file} cannot be updated: ${refused}`, { file, key, reason: refused }, `fix or remove ${key} in ${file} by hand, then retry`);
-  }
+  if (Object.keys(merged).length === 0) delete settings[section];
+  else settings[section] = merged;
+  check(settings[section] as Record<string, unknown> | undefined, file);
 
   const tmp = `${file}.${process.pid}.tmp`;
   try {
@@ -105,5 +123,5 @@ export function mergeSettings(
     rmSync(tmp, { force: true });
     throw writeFailed(file, e);
   }
-  return settings.privacy as Record<string, unknown> | undefined;
+  return settings[section] as Record<string, unknown> | undefined;
 }

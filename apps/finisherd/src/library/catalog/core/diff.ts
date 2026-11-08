@@ -138,6 +138,13 @@ export interface DiffConn {
   offline: boolean;
   /** Set after the owner accepted a volume, until a full scan succeeds (`checkMassDrop`). */
   dropGuard: boolean;
+  /**
+   * The owner accepted a root that is empty for good (`acceptEmptyRoot`): an empty root listing
+   * no longer fails the batch (`ROOT_EMPTY_SUSPECT`); the root directory is then a directory like
+   * any other, so its files go missing only after the usual confirmation (`DIR_EMPTY_SUSPECT`,
+   * a second empty listing 60 s later). Cleared when a listing finds the root non-empty.
+   */
+  emptyRootOk: boolean;
 }
 
 const SUBTREE = "WITH RECURSIVE sub (id) AS (SELECT ? UNION ALL SELECT d.id FROM dirs d JOIN sub ON d.parent = sub.id)";
@@ -212,7 +219,7 @@ export function prepareDiff(db: DatabaseSync): DiffConn {
     idsPresent: db.prepare("SELECT DISTINCT hex(fileId) AS id FROM files WHERE fileId IN (SELECT unhex(value) FROM json_each(?))"),
   };
   return {
-    st, coll: prepareCollisions(db), listings: new Map(), touched: new Set(), unsuspected: new Set(), ids: undefined, events: undefined, offline: false, dropGuard: false,
+    st, coll: prepareCollisions(db), listings: new Map(), touched: new Set(), unsuspected: new Set(), ids: undefined, events: undefined, offline: false, dropGuard: false, emptyRootOk: false,
   };
 }
 
@@ -540,7 +547,7 @@ function checkMassDrop(diff: DiffConn, start: number): void {
 
 /** `ROOT_EMPTY_SUSPECT`: an empty, complete root listing while the catalog holds files. */
 export function checkRootEmpty(diff: DiffConn, dones: ReadonlyArray<{ dir: { components: string[] }; complete: boolean; entries: number }>): void {
-  if (diff.offline) return;
+  if (diff.offline || diff.emptyRootOk) return;
   const empty = dones.some((d) => d.dir.components.length === 0 && d.complete && d.entries === 0);
   if (empty && (diff.st.anyFile.get() as { x: number }).x === 1) {
     throw new CatalogFailure("ROOT_EMPTY_SUSPECT", "the library's root listed empty while its catalog holds files", {});

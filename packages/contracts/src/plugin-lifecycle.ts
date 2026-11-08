@@ -25,7 +25,7 @@ export const PluginPlanPayload = Schema.Struct({
   registry: Schema.optional(RegistryIdSchema),
   update: Schema.optional(Schema.Boolean),
   allowDowngrade: Schema.optional(Schema.Boolean),
-  /** The console's typed confirmation of `allowDowngrade` (5A Decision 30). */
+  /** The console's challenge code of `allowDowngrade` (5A Decision 30). */
   challenge: ChallengeField,
 });
 export type PluginPlanRequest = typeof PluginPlanPayload.Type;
@@ -48,7 +48,7 @@ export const PluginInstallPayload = Schema.Struct({
   digest: Schema.String.check(Schema.isPattern(/^[0-9a-f]{64}$/)),
   accept: Schema.optional(PluginAcceptSchema),
   autoUpdate: Schema.optional(Schema.Boolean),
-  /** The console's typed confirmation (5A Decision 30). */
+  /** The console's challenge code (5A Decision 30). */
   challenge: ChallengeField,
 });
 export type PluginInstallRequest = typeof PluginInstallPayload.Type;
@@ -72,7 +72,7 @@ export const PluginDiscardSuccess = Schema.Struct({ discarded: Schema.Boolean })
 export const PluginRemovePayload = Schema.Struct({ id: PluginIdSchema, purgeData: Schema.optional(Schema.Boolean), challenge: ChallengeField });
 export const PluginRemoveSuccess = Schema.Struct({ removed: Schema.Boolean });
 
-/** `plugin.enable` / `plugin.disable` (`plugin.admin`, owner), per server: the id and the console's typed confirmation. */
+/** `plugin.enable` / `plugin.disable` (`plugin.admin`, owner), per server: the id and the console's challenge code. */
 export const PluginStatePayload = Schema.Struct({ id: PluginIdSchema, challenge: ChallengeField });
 export const PluginStateSuccess = Schema.Struct({ plugin: InstalledRowSchema });
 

@@ -4,6 +4,7 @@
 // `defaultScopes` in `auth.ts` (Decision 20).
 import { Schema } from "effect";
 import type { Rpc, RpcGroup } from "effect/rpc";
+import type { PrincipalKind } from "./auth.ts";
 import type { FinRpcs } from "./rpc.ts";
 
 export const SCOPES = [
@@ -33,6 +34,10 @@ export const SCOPES = [
   "plugin.install",
   "plugin.admin",
   "plugin.suggest",
+  "agent.read",
+  "agent.run",
+  "agent.approve",
+  "agent.admin",
 ] as const;
 
 export const ScopeSchema = Schema.Literals(SCOPES);
@@ -47,10 +52,15 @@ export const HUMAN_ONLY: ReadonlySet<Scope> = new Set<Scope>([
   "auth.admin",
   "plugin.install",
   "plugin.admin",
+  // Sub-project 7 (§3.5): answering approvals is a person's; deleting sessions and the provider
+  // settings are the owner's. `agent.run` and `agent.read` are not human-only: `fin` drives
+  // sessions as `local`, and 7B lets a parent agent drive its own children.
+  "agent.approve",
+  "agent.admin",
 ]);
 
 /** The `library.set` fields only a person changes (`library.admin`; the only ones audited). */
-export const LIBRARY_ADMIN_FIELDS = ["hydrate", "bandwidthMiBs", "acceptVolume", "aliases"] as const;
+export const LIBRARY_ADMIN_FIELDS = ["hydrate", "bandwidthMiBs", "acceptVolume", "acceptUnmounted", "acceptEmptyRoot", "aliases"] as const;
 
 export type FinRpcTag = RpcGroup.Rpcs<typeof FinRpcs>["_tag"];
 
@@ -124,7 +134,7 @@ export interface RuleOf<T extends FinRpcTag> {
    */
   readonly author?: string;
   /**
-   * Whenever a call needs a human-only scope, a `console` principal must send the typed code
+   * Whenever a call needs a human-only scope, a `console` principal must send the challenge code
    * of a fresh `console.challenge` of the same connection (`challenge`; Decision 30), or it is
    * `CONFIRMATION_REQUIRED`: on by default (owner decision, review of Task 7, L2). A rule opts
    * out only as `readOnly` (it changes nothing: reading content, asking for a code, listing the
@@ -132,6 +142,14 @@ export interface RuleOf<T extends FinRpcTag> {
    * §4.7).
    */
   readonly unconfirmed?: "readOnly" | "service";
+  /**
+   * The principal kinds that may call it, whatever scopes they hold; any other kind is
+   * `SCOPE_DENIED` (reason `principalKind`), before the human-only check. `agent.self` is the
+   * calling session's own, so only an `agent` credential has one; in 7A the session-driving
+   * calls are a person's, so an `agent` credential cannot hold them (7B opens them to a parent
+   * for its own children).
+   */
+  readonly kinds?: ReadonlyArray<PrincipalKind>;
   /**
    * True for a payload only a `device` may send (the app's onboarding question: training on).
    * Every other principal is `CONSENT_UI_ONLY`, before the human-only check (Decision 21).
@@ -154,12 +172,17 @@ export interface RpcRule {
   readonly targets?: ReadonlyArray<string>;
   readonly author?: string;
   readonly unconfirmed?: "readOnly" | "service";
+  readonly kinds?: ReadonlyArray<PrincipalKind>;
   readonly deviceOnly?: (payload: never) => boolean;
   readonly allProjects?: (payload: never) => boolean;
 }
 
 const PROJECT: ReadonlyArray<ResolverName> = ["project"];
 const BRANCH: ReadonlyArray<ResolverName> = ["project", "branch"];
+/** Who drives agent sessions in 7A: people, through `fin` (`local`), the console and the app (Decision 15). */
+const SESSION_DRIVERS: ReadonlyArray<PrincipalKind> = ["local", "console", "device"];
+/** The only kind with a session of its own. */
+const SESSION_OWN: ReadonlyArray<PrincipalKind> = ["agent"];
 
 /**
  * Every RPC's rule (spec §4.5 and §4.8); the mapped type makes a missing RPC a type error and
@@ -173,14 +196,14 @@ export const RPC_SCOPES: { readonly [T in FinRpcTag]: RuleOf<T> } = {
   "auth.whoami": { scopes: ["server.read"] },
   // No id: a credential can revoke only itself.
   "auth.revokeSelf": { scopes: ["server.read"] },
-  // The console's typed confirmations (Decision 30); the handler serves `console` principals only.
+  // The console's confirmations (Decision 30); the handler serves `console` principals only.
   "console.challenge": { scopes: ["auth.admin"], unconfirmed: "readOnly" },
   // 5A Task 8. Stopping is the owner's, but service managers call it without a terminal.
   "server.status": { scopes: ["server.read"] },
   "server.stop": { scopes: ["auth.admin"], unconfirmed: "service" },
   "auth.audit.list": { scopes: ["auth.admin"], unconfirmed: "readOnly" },
   "auth.audit.purge": { scopes: ["auth.admin"] },
-  // 5A Task 9: minting and revoking are the owner's, with a typed code; listing reads only.
+  // 5A Task 9: minting and revoking are the owner's, with a challenge code; listing reads only.
   "auth.credential.mint": { scopes: ["auth.admin"] },
   "auth.credential.list": { scopes: ["auth.admin"], unconfirmed: "readOnly" },
   "auth.credential.revoke": { scopes: ["auth.admin"] },
@@ -307,7 +330,7 @@ export const RPC_SCOPES: { readonly [T in FinRpcTag]: RuleOf<T> } = {
   "plugin.enable": { scopes: ["plugin.admin"] },
   "plugin.disable": { scopes: ["plugin.admin"] },
   "plugin.suggest": { scopes: ["plugin.suggest", "project.read"], resolve: PROJECT },
-  // Libraries (5D Decision 47). Adding and removing are the owner's, with a typed code in the
+  // Libraries (5D Decision 47). Adding and removing are the owner's, with a challenge code in the
   // console; `library.set` needs `library.scan` for the ordinary fields and `library.admin`
   // (human-only) for the ones only a person decides. Everything that reads needs `library.read`
   // and reaches the libraries the caller reads (`libraryReach`); a scan also needs `jobs.submit`,
@@ -326,6 +349,48 @@ export const RPC_SCOPES: { readonly [T in FinRpcTag]: RuleOf<T> } = {
   "library.lookup": { scopes: ["library.read"], escalate: (p) => (p.hashCandidates === true ? ["library.scan", "jobs.submit"] : []) },
   "library.scan": { scopes: ["library.scan", "jobs.submit"] },
   "library.watch": { scopes: ["library.read"] },
+  // The agent runtime (sub-project 7A Task 2, spec §3.5). Starting and driving sessions is
+  // `agent.run` and, in 7A, a person's through a human-driven kind (`SESSION_DRIVERS`); a start
+  // creates the root branch as the starter and mints the session's credential from the mode
+  // table, so the starter must itself hold `project.write` unless the session is `plan`.
+  // Reading sessions is `agent.read`; answering an approval is a person's (`agent.approve`,
+  // human-only), deleting a session the owner's (`agent.admin`), both with the challenge code. A
+  // session's id is not a project: the handlers check the principal's reach.
+  "agent.session.start": {
+    scopes: ["agent.run"],
+    resolve: PROJECT,
+    escalate: (p) => (p.mode === "plan" ? ["project.read"] : ["project.read", "project.write"]),
+    kinds: SESSION_DRIVERS,
+  },
+  "agent.session.prompt": { scopes: ["agent.run"], kinds: SESSION_DRIVERS },
+  "agent.session.steer": { scopes: ["agent.run"], kinds: SESSION_DRIVERS },
+  "agent.session.interrupt": { scopes: ["agent.run"], kinds: SESSION_DRIVERS },
+  "agent.session.resume": { scopes: ["agent.run"], kinds: SESSION_DRIVERS },
+  "agent.session.end": { scopes: ["agent.run"], kinds: SESSION_DRIVERS },
+  "agent.session.list": { scopes: ["agent.read"], resolve: PROJECT },
+  "agent.session.get": { scopes: ["agent.read"] },
+  "agent.session.delete": { scopes: ["agent.admin"] },
+  "agent.watch": { scopes: ["agent.read"] },
+  "agent.approval.list": { scopes: ["agent.read"], resolve: PROJECT },
+  "agent.approval.answer": { scopes: ["agent.approve"] },
+  // Server facts: detection, sign-in state as reported, whether keys are set (never a value).
+  "agent.providers": { scopes: ["server.read"] },
+  // The calling session's own default branch and tries; `branch` is checked against the session's
+  // subtree by the handler (the payload names no project, so the policy stage cannot).
+  "agent.self": { scopes: ["project.read"], kinds: SESSION_OWN },
+  "agent.self.try": { scopes: ["project.write"], resolve: ["branch"], kinds: SESSION_OWN },
+  // The owner's agent settings (Task 12): the key, the local endpoint (`agent.admin`) and the
+  // counsel gate (`settings.admin`), each change with the challenge code; reading them needs none.
+  // A key's project is checked for reach when named.
+  "agent.key.set": { scopes: ["agent.admin"], resolve: PROJECT },
+  "agent.key.list": { scopes: ["agent.admin"], unconfirmed: "readOnly" },
+  "agent.key.remove": { scopes: ["agent.admin"] },
+  "agent.local.set": { scopes: ["agent.admin"] },
+  "agent.local.show": { scopes: ["agent.admin"], unconfirmed: "readOnly" },
+  "agent.local.test": { scopes: ["agent.admin"], unconfirmed: "readOnly" },
+  "agent.local.remove": { scopes: ["agent.admin"] },
+  "training.closedTargets.get": { scopes: ["server.read"] },
+  "training.closedTargets.set": { scopes: ["settings.admin"] },
 };
 
 /** The RPCs that write through the store's guard: exactly the rules with `writes`. */
@@ -351,7 +416,7 @@ export function escalatedScopes(tag: FinRpcTag, payload: unknown, facts: RuleFac
 }
 
 /**
- * Whether a `console` principal's call must carry its connection's typed code: it needs a
+ * Whether a `console` principal's call must carry its connection's challenge code: it needs a
  * human-only scope and its rule does not opt out (`unconfirmed`).
  */
 export function needsConfirmation(tag: FinRpcTag, payload: unknown, facts: RuleFacts = {}): boolean {

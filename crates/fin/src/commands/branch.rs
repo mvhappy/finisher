@@ -201,6 +201,9 @@ pub fn find(views: &[Value], reference: &str) -> Result<Value, CoreError> {
 }
 
 fn default_cmd(backend: &dyn Backend, g: &Globals, a: &DefaultArgs) -> Result<Value, CoreError> {
+    if crate::agent_session::active() && !backend.dry_run_only() {
+        return session_default(backend, g, a);
+    }
     let (sd, project_id) = backend
         .config_scope()?
         .ok_or_else(|| crate::output::unavailable(json!({ "operation": "branch.default" })))?;
@@ -219,6 +222,32 @@ fn default_cmd(backend: &dyn Backend, g: &Globals, a: &DefaultArgs) -> Result<Va
         crate::config::set_default_branch(&sd, &project_id, (id != "main").then_some(id))?;
     }
     Ok(dry(json!({ "default": id, "branch": view }), g))
+}
+
+/// `fin branch default` in an agent session: the session's own default on the server (its root,
+/// or one of its tries); `--clear` goes back to the root (plan 7A Decision 14a).
+fn session_default(
+    backend: &dyn Backend,
+    g: &Globals,
+    a: &DefaultArgs,
+) -> Result<Value, CoreError> {
+    let state = crate::agent_session::state(backend)?;
+    let target = match (&a.name, a.clear) {
+        (_, true) => match &state.root_branch {
+            Some(root) => root.clone(),
+            None => return Ok(dry(json!({ "default": state.default_branch }), g)),
+        },
+        (Some(name), false) => {
+            let view = find(&list(backend, true)?, name)?;
+            view["id"].as_str().unwrap_or_default().to_string()
+        }
+        (None, false) => return Ok(json!({ "default": state.default_branch })),
+    };
+    if g.dry_run {
+        return Ok(dry(json!({ "default": target }), g));
+    }
+    let now = crate::agent_session::set_default(backend, &target)?;
+    Ok(json!({ "default": now.default_branch }))
 }
 
 fn dry(mut doc: Value, g: &Globals) -> Value {

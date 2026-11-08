@@ -85,6 +85,53 @@ fn a_known_model_is_named_and_any_other_is_hashed() {
 }
 
 #[test]
+fn trace_copies_carry_provenance_keyed_and_stream_turns_have_no_prompt_hashes() {
+    // Task 10 review B1: the agent-trace store stamps the session's provenance on its calls,
+    // results and approvals; a model id is named or hashed as on a session, never raw.
+    let prov = json!({ "harness": "claudeCode", "provider": "anthropic", "model": "acme/x", "weights": "closed" });
+    let call = json!({ "callId": "01JC0000000000000000000006", "turnId": "01JC0000000000000000000005",
+        "tool": "fin", "argsHash": B3, "provenance": prov });
+    let result = json!({ "callId": "01JC0000000000000000000006", "ok": true, "micros": 1,
+        "attribution": "inferred", "provenance": prov });
+    let approval = json!({ "approvalId": "01JC0000000000000000000008", "sessionId": SESSION,
+        "kind": "rule", "decision": "allow", "by": "user", "latencyMs": 3, "provenance": prov });
+    for (name, v) in [
+        ("agent.toolCall", call),
+        ("agent.toolResult", result),
+        ("agent.approval", approval),
+    ] {
+        let stored = serde_json::to_value(received(name, v)).unwrap();
+        assert_eq!(stored["provenance"]["harness"], "claudeCode", "{name}");
+        assert_eq!(stored["provenance"]["model"], "other", "{name}");
+        assert_eq!(
+            stored["provenance"]["modelHash"],
+            json!(keyed("acme/x")),
+            "{name}"
+        );
+        assert_eq!(stored["provenance"]["weights"], "closed", "{name}");
+        assert!(
+            !stored.to_string().contains("acme/x"),
+            "{name}: model stored raw"
+        );
+    }
+    // Task 10 review L1: a stream turn sends no system or tools hash, and stores none.
+    let mut stream = turn_in("acme/x", None);
+    let o = stream.as_object_mut().unwrap();
+    for k in ["systemHash", "toolsHash", "bodyHash"] {
+        o.remove(k);
+    }
+    o.insert("capture".into(), json!("stream"));
+    let stored = serde_json::to_value(received("agent.turn", stream)).unwrap();
+    assert!(stored.get("systemHash").is_none() && stored.get("toolsHash").is_none());
+    // Task 10 review H1: `bodyBlake3` is stored as sent (content, beside the body).
+    let mut exact = turn_in("acme/x", None);
+    exact["bodyBlake3"] = json!(B3);
+    let stored = serde_json::to_value(received("agent.turn", exact)).unwrap();
+    assert_eq!(stored["bodyBlake3"], B3);
+    assert_eq!(stored["bodyHash"], json!(keyed(B3)));
+}
+
+#[test]
 fn turns_key_their_hashes_and_normalise_the_upstream() {
     let AnyPayload::AgentTurn(t) = received("agent.turn", turn_in("acme/x", Some("Moonshot AI")))
     else {
@@ -92,8 +139,8 @@ fn turns_key_their_hashes_and_normalise_the_upstream() {
     };
     assert_eq!(t.upstream, AGENT_UPSTREAMS.get("moonshotai"));
     assert_eq!(t.upstream_hash, None);
-    assert_eq!(t.system_hash, keyed(B3));
-    assert_eq!(t.tools_hash, keyed(B3));
+    assert_eq!(t.system_hash, Some(keyed(B3)));
+    assert_eq!(t.tools_hash, Some(keyed(B3)));
     assert_eq!(t.body_hash, Some(keyed(B3)));
     assert_eq!(
         (t.model, t.model_hash),

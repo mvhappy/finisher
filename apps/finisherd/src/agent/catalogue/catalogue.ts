@@ -241,7 +241,7 @@ export class Catalogue {
         window: listed.window,
         maxOutput: listed.maxOutput,
         capabilities: caps(listed.tools, listed.thinking, listed.images),
-        price: listed.price,
+        ...(listed.price === undefined ? {} : { price: listed.price }),
         source: "openrouter",
       };
     }

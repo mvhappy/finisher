@@ -333,6 +333,12 @@ impl Online {
         if let Some(id) = self.project_id.get() {
             return Ok(id.clone());
         }
+        // An agent session works on its own project (`project.open` is refused to it).
+        if let Some(session) = crate::agent_session::session_state(self)? {
+            crate::agent_session::check_folder(self.project.as_deref(), &session)?;
+            crate::diag::note_project(&session.project_id);
+            return Ok(self.project_id.get_or_init(|| session.project_id).clone());
+        }
         let dir = self.project.as_ref().ok_or_else(no_project)?;
         let opened: ProjectRef = self.call_as("project.open", json!({ "dir": dir }))?;
         crate::diag::note_project(&opened.project_id);
@@ -365,6 +371,10 @@ impl Backend for Online {
     }
 
     fn config_scope(&self) -> Result<Option<(PathBuf, String)>, CoreError> {
+        // Under an agent credential `fin-config.json` is neither read nor written (14a).
+        if crate::agent_session::active() {
+            return Ok(None);
+        }
         let project_id = self.project_ref()?;
         Ok(endpoint::server_data().map(|sd| (sd, project_id)))
     }
@@ -503,7 +513,12 @@ fn rebuild_here(sd: &Path, dir: &Path) -> Result<fin_store::RebuildReport, CoreE
 
 /// `--project <dir>` (with `~` expanded), else the nearest ancestor of the working directory
 /// that holds `finisher.project.json`.
+/// Under an agent credential: the runtime's `FIN_PROJECT_DIR` only (a `--project` must name it).
 pub fn project_dir(explicit: Option<&Path>) -> Result<Option<PathBuf>, CoreError> {
+    if crate::agent_session::active() {
+        crate::agent_paths::check_project(explicit)?;
+        return Ok(crate::agent_paths::session_project_dir());
+    }
     if let Some(dir) = explicit {
         return paths::resolve_checked(dir).map(Some);
     }

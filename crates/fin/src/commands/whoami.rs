@@ -14,6 +14,11 @@ fn anonymous() -> Value {
 
 pub fn run() -> Result<Value, CoreError> {
     if auth::discover(endpoint::server_data().as_deref())?.is_none() {
+        // A credential file that cannot be used is a refusal, not `anonymous` (Decision 14b).
+        if std::env::var_os(auth::CREDENTIAL_ENV).is_some_and(|v| !v.is_empty()) {
+            let at = endpoint::resolve().map(|e| e.display()).unwrap_or_default();
+            return Err(auth::credential_unusable(&at));
+        }
         return Ok(json!({ "principal": anonymous() }));
     }
     let client = Client::connect(&endpoint::resolve()?, TIMEOUT)?;

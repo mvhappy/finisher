@@ -38,6 +38,22 @@ export function scopeDenied(tag: string, missing: ReadonlyArray<Scope>, principa
 }
 
 /**
+ * `SCOPE_DENIED` (reason `principalKind`) for a call only some kinds of principal may make
+ * (`RpcRule.kinds`), whatever scopes the caller holds: a session's own state is its credential's,
+ * and in 7A people start and drive sessions.
+ */
+export function wrongKind(tag: string, principal: Principal, allowed: ReadonlyArray<string>): FinError {
+  return finError(
+    "SCOPE_DENIED",
+    `${tag} is not available to a ${principal.kind} principal`,
+    { tag, scopes: [], principal: principal.kind, allowed: [...allowed], reason: "principalKind" },
+    allowed.includes("agent")
+      ? "This call is for a running agent session's own credential only."
+      : "Agent sessions are started and driven by a person, from the Finisher app or the console.",
+  );
+}
+
+/**
  * `SCOPE_DENIED {reason: reach}`: a call that acts beyond any one project (`ruleOf(tag).allProjects`)
  * from a principal that reaches only some (5C-2 review M2).
  */

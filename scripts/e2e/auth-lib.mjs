@@ -95,8 +95,9 @@ export function privateTemp(dir) {
  * resolves with `{ status, json, text, stderr }`.
  */
 export function finAsync(fin, serverData, cwd, args, extraEnv = {}) {
-  const env = { ...process.env, FIN_SERVER_DATA: serverData, ...extraEnv };
+  const env = { ...process.env, FIN_SERVER_DATA: serverData };
   delete env.FIN_SERVER;
+  Object.assign(env, extraEnv);
   return new Promise((resolve) => {
     const child = spawn(fin, args, { cwd, env, stdio: ["ignore", "pipe", "pipe"] });
     let text = "";

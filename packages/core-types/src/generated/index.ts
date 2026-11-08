@@ -44,6 +44,32 @@ export type ApprovalDecision = "allow" | "deny" | "expired";
  */
 export type ApprovalKind = "rule" | "budget" | "provider" | "plugin";
 /**
+ * What runs the agent.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "Harness".
+ */
+export type Harness = "builtin" | "claudeCode" | "codex" | "fake" | "plugin";
+/**
+ * A name from code or a static table (fin-core events::names); "other" for a value not in the table.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "Name".
+ */
+export type Name = string;
+/**
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "Hashed".
+ */
+export type Hashed = string;
+/**
+ * The model's weights class, from the catalogue at the time (§12.7).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "Weights".
+ */
+export type Weights = "open" | "closed" | "unknown";
+/**
  * Large or structured content (the agent kinds): inline JSON, or a [`BlobRef`] when
  * it would not fit an entry (Decision 20).
  *
@@ -62,13 +88,6 @@ export type Body =
  * via the `definition` "BlobHash".
  */
 export type BlobHash = string;
-/**
- * A name from code or a static table (fin-core events::names); "other" for a value not in the table.
- *
- * This interface was referenced by `FinCore`'s JSON-Schema
- * via the `definition` "Name".
- */
-export type Name = string;
 /**
  * How `fin` inside the sandbox reaches `finisherd` (spec §8.2–8.4).
  *
@@ -95,18 +114,6 @@ export type FinEndpoint =
  */
 export type AgentMode = "plan" | "draft" | "auto";
 /**
- * What runs the agent.
- *
- * This interface was referenced by `FinCore`'s JSON-Schema
- * via the `definition` "Harness".
- */
-export type Harness = "builtin" | "claudeCode" | "codex" | "fake" | "plugin";
-/**
- * This interface was referenced by `FinCore`'s JSON-Schema
- * via the `definition` "Hashed".
- */
-export type Hashed = string;
-/**
  * This interface was referenced by `FinCore`'s JSON-Schema
  * via the `definition` "SessionPhase".
  */
@@ -131,19 +138,17 @@ export type SignIn = "plan" | "key" | "unknown";
  */
 export type SessionTrigger = "user" | "savedPrompt" | "subagent" | "hook" | "eval";
 /**
- * The model's weights class, from the catalogue at the time (§12.7).
- *
- * This interface was referenced by `FinCore`'s JSON-Schema
- * via the `definition` "Weights".
- */
-export type Weights = "open" | "closed" | "unknown";
-/**
  * How a tool result's txIds were joined to its call (§12.3).
  *
  * This interface was referenced by `FinCore`'s JSON-Schema
  * via the `definition` "Attribution".
  */
 export type Attribution = "exact" | "inferred" | "ambiguous" | "none";
+/**
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "Blake3Hex".
+ */
+export type Blake3Hex = string;
 /**
  * How faithful a turn's content is (§12.6).
  *
@@ -2122,8 +2127,23 @@ export interface AgentApproval {
   decision: ApprovalDecision;
   kind: ApprovalKind;
   latencyMs: number;
+  provenance?: Provenance;
   sessionId: IdRef;
   subject?: Body;
+}
+/**
+ * A session's provenance, as the agent-trace store stamps it on every content entry that is
+ * not a session or a turn (those carry the same fields flat).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "Provenance".
+ */
+export interface Provenance {
+  harness: Harness;
+  model: Name;
+  modelHash?: Hashed;
+  provider: Name;
+  weights: Weights;
 }
 /**
  * Large content, stored as a blob (Decision 20): its content address, its length and its
@@ -2147,7 +2167,7 @@ export interface BlobRef {
 export interface AgentInput {
   fin?: FinEndpoint | null;
   /**
-   * `claudeCode`, `codex` or `fake`; the built-in agent needs no sandbox (spec §8.9).
+   * What runs the agent.
    */
   harness: "builtin" | "claudeCode" | "codex" | "fake" | "plugin";
   home: string;
@@ -2233,6 +2253,7 @@ export interface AgentToolCall {
   argsHash: Hashed;
   callId: IdRef;
   command?: Name;
+  provenance?: Provenance;
   tool: Name;
   turnId: IdRef;
 }
@@ -2250,6 +2271,7 @@ export interface AgentToolResult {
   micros: number;
   ok: boolean;
   output?: Body;
+  provenance?: Provenance;
   truncated?: boolean;
   /**
    * @maxItems 64
@@ -2265,6 +2287,7 @@ export interface AgentToolResult {
  * via the `definition` "AgentTurn".
  */
 export interface AgentTurn {
+  bodyBlake3?: Blake3Hex;
   bodyHash?: Hashed;
   cacheReadTokens: number;
   cacheWriteTokens: number;
@@ -2286,9 +2309,9 @@ export interface AgentTurn {
   seq: number;
   stopReason: StopReason;
   system?: Body;
-  systemHash: Hashed;
+  systemHash?: Hashed;
   tools?: Body;
-  toolsHash: Hashed;
+  toolsHash?: Hashed;
   ttftMs?: number;
   turnId: IdRef;
   upstream?: Name;
@@ -5211,6 +5234,10 @@ export interface HelperGrant {
  * reverses, or the merge group a revert reverts. `no_op`: why a cherry-pick or revert
  * committed nothing (`ALREADY_PRESENT`: the target holds the record's origin root;
  * `ALREADY_REVERTED`: the merge group's effect is gone there); absent otherwise.
+ * `origins`: the txIds the operation acted on, each with the records its `origin` chain
+ * leads to (a copy of a copy), first seen first: an undo's units, a cherry-pick's origin, a
+ * reverted group's records; empty (and omitted) for a redo and for nothing done (7A
+ * Decision 27).
  *
  * This interface was referenced by `FinCore`'s JSON-Schema
  * via the `definition` "HistoryResult".
@@ -5219,6 +5246,7 @@ export interface HistoryResult {
   committed: CommittedTx[];
   dryRun: boolean;
   noOp?: string | null;
+  origins?: string[];
   undone: string[];
 }
 /**
@@ -6461,9 +6489,10 @@ export interface MediaInfo1 {
  * they copy; `skipped`: the candidates that conflict and were left on the source (with
  * `skipConflicting`; they are offered again by the next merge); `excluded`: source records
  * never offered (`UNDOES_TARGET_RECORDS`); `source_state`: the source branch's state after
- * the merge. A retry of a committed merge answers from the log: its records and their
- * origins, `skipped` and `excluded` empty, `dry_run` false. Nothing left to merge is an
- * empty answer, not an error.
+ * the merge; `origins`: `merged` with the records their `origin` chains lead to (a copy of a
+ * copy), first seen first (7A Decision 27). A retry of a committed merge answers from the
+ * log: its records and their origins, `skipped` and `excluded` empty, `dry_run` false.
+ * Nothing left to merge is an empty answer, not an error.
  *
  * This interface was referenced by `FinCore`'s JSON-Schema
  * via the `definition` "MergeReport".
@@ -6474,6 +6503,7 @@ export interface MergeReport {
   excluded: Conflict[];
   mergeId: string;
   merged: string[];
+  origins?: string[];
   skipped: Conflict[];
   sourceState: BranchState;
 }
@@ -6649,6 +6679,14 @@ export interface PrivacySettings {
    * The age cap in days, 1–365 (default 30).
    */
   retentionDays?: number | null;
+  /**
+   * The agent-trace store's size cap in MiB, 64–65536 (default 2048).
+   */
+  tracesMaxMiB?: number | null;
+  /**
+   * The agent-trace store's age cap in days, 1–365 (default 90; sp7 §12.1).
+   */
+  tracesRetentionDays?: number | null;
   training?: Switch | null;
 }
 /**

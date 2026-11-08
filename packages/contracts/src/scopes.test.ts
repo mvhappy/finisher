@@ -10,6 +10,9 @@ const OPTED_OUT: Record<string, "readOnly" | "service"> = {
   "auth.audit.list": "readOnly",
   "auth.credential.list": "readOnly",
   "server.stop": "service",
+  "agent.key.list": "readOnly",
+  "agent.local.show": "readOnly",
+  "agent.local.test": "readOnly",
 };
 
 /** The resolver a payload field needs (spec §4.4 stage 3). */
@@ -95,7 +98,7 @@ test("confirmation_is_on_by_default_for_human_only_calls (Decision 30, review of
   const confirmed = needsHuman.filter((t) => ruleOf(t).unconfirmed === undefined);
   // The opt-outs change nothing (or are the service stop): each is named here on purpose.
   expect(Object.fromEntries(optedOut.map((t) => [t, ruleOf(t).unconfirmed]))).toEqual(OPTED_OUT);
-  // Every other human-only call takes the typed code, and asks for it through the rule.
+  // Every other human-only call takes the challenge code, and asks for it through the rule.
   for (const tag of confirmed) {
     const rpc = FinRpcs.requests.get(tag) as unknown as { payloadSchema: { fields?: Record<string, unknown> } };
     expect(Object.keys(rpc.payloadSchema.fields ?? {}), tag).toContain("challenge");

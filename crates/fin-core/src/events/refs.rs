@@ -331,7 +331,8 @@ impl KindName {
 
 pattern_string!(
     /// `fin`'s unkeyed `argsHash` as it arrives on the wire (`blake3:<64 hex>`, Decision 6).
-    /// Wire-only: never stored. [`super::wire`] keys it into a [`Hashed`].
+    /// [`super::wire`] keys it into a [`Hashed`]. Stored unkeyed only as content, beside what
+    /// it hashes (`agent.turn`'s `bodyBlake3`).
     Blake3Hex,
     r"^blake3:[0-9a-f]{64}$",
     is_blake3_hex

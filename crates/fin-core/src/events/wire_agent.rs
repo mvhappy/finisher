@@ -10,6 +10,10 @@
 //!   `toolsHash`, `bodyHash` and `argsHash` are stored keyed, so a hash of a prompt cannot be
 //!   checked against a guess without the install key.
 //! - **txIds** arrive raw (an idempotency key need not be a ULID) and become `IdRef`s.
+//! - **Provenance** on a tool call, a tool result and an approval (the agent-trace store's
+//!   copies) arrives with its model id raw, as on a session.
+//! - **`bodyBlake3`** (the agent-trace store's turns) is the one hash stored unkeyed: it is
+//!   content, beside the body it hashes, so it tells a reader nothing the body does not.
 
 use serde::{Deserialize, Deserializer, Serialize};
 
@@ -17,9 +21,10 @@ use super::class::{Blake3Hex, Code, Content, Hashed, IdRef, Name, RawId, ScrubCt
 use super::names::{self, AGENT_MODELS};
 use super::payloads::Body;
 use super::payloads::agent::{
-    AgentMode, AgentSession, AgentToolCall, AgentToolResult, AgentTurn, Attribution, Capture,
-    CostBasis, Harness, MAX_TOOL_TX_IDS, SessionPhase, SessionTotals, SessionTrigger, SignIn,
-    StopReason, Weights,
+    AgentApproval, AgentMode, AgentSession, AgentToolCall, AgentToolResult, AgentTurn,
+    ApprovalDecision, ApprovalKind, Attribution, Capture, CostBasis, DecidedBy, Harness,
+    MAX_TOOL_TX_IDS, Provenance, SessionPhase, SessionTotals, SessionTrigger, SignIn, StopReason,
+    Weights,
 };
 use super::wire::WireForm;
 
@@ -49,6 +54,30 @@ fn upstream_of(raw: Option<&RawId>, key: Key<'_>) -> (Option<Name>, Option<Hashe
 
 fn keyed(h: &Blake3Hex, key: Key<'_>) -> Hashed {
     Hashed::keyed(h.as_str().as_bytes(), key)
+}
+
+/// [`Provenance`] as `finisherd` sends it: the model id raw.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProvenanceIn {
+    pub harness: Harness,
+    #[serde(deserialize_with = "names::agent_provider")]
+    pub provider: Name,
+    pub model: RawId,
+    pub weights: Weights,
+}
+
+impl ProvenanceIn {
+    fn into_stored(self, key: Key<'_>) -> Provenance {
+        let (model, model_hash) = model_of(&self.model, key);
+        Provenance {
+            harness: self.harness,
+            provider: self.provider,
+            model,
+            model_hash,
+            weights: self.weights,
+        }
+    }
 }
 
 /// `agent.session` as `finisherd` sends it.
@@ -131,10 +160,14 @@ pub struct AgentTurnIn {
     pub cost_micros: Option<u64>,
     pub cost_basis: CostBasis,
     pub capture: Capture,
-    pub system_hash: Blake3Hex,
-    pub tools_hash: Blake3Hex,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub system_hash: Option<Blake3Hex>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tools_hash: Option<Blake3Hex>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub body_hash: Option<Blake3Hex>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub body_blake3: Option<Content<Blake3Hex>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub messages_delta: Option<Content<Body>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -174,9 +207,10 @@ impl WireForm for AgentTurnIn {
             cost_micros: self.cost_micros,
             cost_basis: self.cost_basis,
             capture: self.capture,
-            system_hash: keyed(&self.system_hash, key),
-            tools_hash: keyed(&self.tools_hash, key),
+            system_hash: self.system_hash.as_ref().map(|h| keyed(h, key)),
+            tools_hash: self.tools_hash.as_ref().map(|h| keyed(h, key)),
             body_hash: self.body_hash.as_ref().map(|h| keyed(h, key)),
+            body_blake3: self.body_blake3,
             messages_delta: self.messages_delta,
             output: self.output,
             system: self.system,
@@ -201,6 +235,8 @@ pub struct AgentToolCallIn {
     pub command: Option<Name>,
     pub args_hash: Blake3Hex,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provenance: Option<ProvenanceIn>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub args: Option<Content<Body>>,
 }
 
@@ -214,6 +250,7 @@ impl WireForm for AgentToolCallIn {
             tool: self.tool,
             command: self.command,
             args_hash: keyed(&self.args_hash, key),
+            provenance: self.provenance.map(|p| p.into_stored(key)),
             args: self.args,
         }
     }
@@ -237,6 +274,8 @@ pub struct AgentToolResultIn {
     )]
     pub tx_ids: Vec<RawId>,
     pub attribution: Attribution,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provenance: Option<ProvenanceIn>,
     #[serde(default)]
     pub truncated: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -270,8 +309,42 @@ impl WireForm for AgentToolResultIn {
                 .map(|id| id.into_id_ref(key))
                 .collect(),
             attribution: self.attribution,
+            provenance: self.provenance.map(|p| p.into_stored(key)),
             truncated: self.truncated,
             output: self.output,
+        }
+    }
+}
+
+/// `agent.approval` as `finisherd` sends it: the provenance's model id raw.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentApprovalIn {
+    pub approval_id: IdRef,
+    pub session_id: IdRef,
+    pub kind: ApprovalKind,
+    pub decision: ApprovalDecision,
+    pub by: DecidedBy,
+    pub latency_ms: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provenance: Option<ProvenanceIn>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subject: Option<Content<Body>>,
+}
+
+impl WireForm for AgentApprovalIn {
+    type Payload = AgentApproval;
+
+    fn into_payload(self, key: Key<'_>, _ctx: &ScrubCtx) -> AgentApproval {
+        AgentApproval {
+            approval_id: self.approval_id,
+            session_id: self.session_id,
+            kind: self.kind,
+            decision: self.decision,
+            by: self.by,
+            latency_ms: self.latency_ms,
+            provenance: self.provenance.map(|p| p.into_stored(key)),
+            subject: self.subject,
         }
     }
 }

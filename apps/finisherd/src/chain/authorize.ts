@@ -1,6 +1,8 @@
 // Stage 4 of the chain (spec §4.4, §4.5, §4.6; plan 5A Decisions 18–21): every scope the RPC
 // needs (all of them), the human-only rule, and reach (the principal's projects and, for
 // principals with roots, every resolved path). In this order:
+//   0a. the principal kinds a rule allows (`kinds`: a session's own state, 7A's session driving):
+//      `SCOPE_DENIED` for any other kind, whatever scopes it holds;
 //   0. device-only payloads (training on, Decision 21): `CONSENT_UI_ONLY` for every other
 //      principal, the console too, before the human check;
 //   1. human-only, over every scope the call needs: its refusal tells a person what to do,
@@ -26,7 +28,8 @@ import {
   type Scope,
 } from "@finisher/contracts";
 import { Effect } from "effect";
-import { consentUiOnly, humanOnly, outOfReach, pathNotAllowed, reachDenied, scopeDenied } from "./fixes.ts";
+import type { ChainHooks } from "./hooks.ts";
+import { consentUiOnly, humanOnly, outOfReach, pathNotAllowed, reachDenied, scopeDenied, wrongKind } from "./fixes.ts";
 import { type ChainProjects, inside, libraryReach, type Resolved, rootsOf } from "./resolve.ts";
 
 /** The scope half of stage 4: human-only first, then every required scope. */
@@ -43,8 +46,11 @@ export function authorize(
   payload: unknown,
   resolved: Resolved,
   deps: ChainProjects,
+  hooks: ChainHooks = {},
 ): Effect.Effect<void, FinError> {
   return Effect.gen(function* () {
+    const kinds = ruleOf(tag).kinds;
+    if (kinds !== undefined && !kinds.includes(principal.kind)) return yield* Effect.fail(wrongKind(tag, principal, kinds));
     if (principal.kind !== "device" && ruleOf(tag).deviceOnly?.(payload as never) === true) {
       return yield* Effect.fail(consentUiOnly(tag, principal));
     }
@@ -64,8 +70,10 @@ export function authorize(
       const outside = resolved.projects.find((p) => !allowed.includes(p));
       if (outside !== undefined) return yield* Effect.fail(outOfReach(outside));
     }
-    const roots = yield* rootsOf(principal, deps, resolved.pathsIn);
-    if (roots !== undefined) {
+    const folders = yield* rootsOf(principal, deps, resolved.pathsIn);
+    if (folders !== undefined) {
+      // Sub-project 7A: an agent session also reaches the libraries its project references.
+      const roots = [...folders, ...(hooks.extraRoots === undefined ? [] : yield* hooks.extraRoots(principal, resolved.pathsIn))];
       for (const p of resolved.paths) {
         if (roots.some((r) => inside(p, r))) continue;
         // 5D Decision 47: a library file is reached by its catalogued row, in a library the
@@ -77,6 +85,7 @@ export function authorize(
         return yield* Effect.fail(pathNotAllowed(tag, p));
       }
     }
+    if (hooks.authorize !== undefined) yield* hooks.authorize(tag, principal, resolved);
     const escalated = checkScopes(tag, escalatedScopes(tag, payload, resolved.facts), principal);
     if (escalated !== undefined) return yield* Effect.fail(escalated);
     if (principal.projects !== "*" && ruleOf(tag).allProjects?.(payload as never) === true) return yield* Effect.fail(reachDenied(tag, principal));

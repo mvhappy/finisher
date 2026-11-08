@@ -1,0 +1,11 @@
+{
+  "name": "mixer",
+  "title": "Mixer",
+  "prompt": "You are Finisher's mixer: you level dialogue, music and effects so speech stays clear and loudness is even, and you report the levels you set.",
+  "modeCeiling": "draft",
+  "defaultMode": "draft",
+  "models": {
+    "builtin": "anthropic/claude-sonnet-5.5"
+  },
+  "budget": {}
+}

@@ -8,6 +8,7 @@ import { SERVER_VERSION } from "./config.ts";
 import type { ConnectionRegistry, Transport } from "./connections.ts";
 import type { Audit } from "./control/audit.ts";
 import { finError, toFinError } from "./errors.ts";
+import { agentWarnings } from "./agent/warnings.ts";
 
 /** What `serve` tells the admin RPCs about itself. */
 export interface ServerControl {
@@ -72,7 +73,9 @@ export function serverStatus(deps: AdminDeps) {
           sandboxed: caps.sandboxed,
         },
       },
-      warnings: sandbox === undefined ? [] : [sandbox],
+      // The job host's sandbox (5C-2), then the agent runtime's: agent tools run unsandboxed
+      // until 7C (owner decision F2).
+      warnings: [...(sandbox === undefined ? [] : [sandbox]), ...(agentWarnings() as Array<Record<string, unknown>>)],
     };
   });
 }

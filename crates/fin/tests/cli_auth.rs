@@ -228,7 +228,11 @@ fn fin_credential_names_the_credential() {
         &fake.sd,
         &cwd(),
         &["whoami"],
-        &[("FIN_CREDENTIAL", file.as_os_str())],
+        // Under a credential the endpoint comes from FIN_SERVER alone (plan 7A Decision 14b).
+        &[
+            ("FIN_CREDENTIAL", file.as_os_str()),
+            ("FIN_SERVER", fake.socket.as_os_str()),
+        ],
     );
     assert_error(&run, 7, "SERVER_UNTRUSTED");
     // Clone the frames out: a guard held across a second `lock()` deadlocks.
@@ -343,7 +347,11 @@ fn agent_credential_proves_and_is_revoked() {
             use std::os::unix::fs::PermissionsExt as _;
             std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o600)).unwrap();
         }
-        let env = [("FIN_CREDENTIAL", file.as_os_str())];
+        let socket = PathBuf::from(&server.socket);
+        let env = [
+            ("FIN_CREDENTIAL", file.as_os_str()),
+            ("FIN_SERVER", socket.as_os_str()),
+        ];
         let who = ok(fin_env(&server.sd, &server.root, &["whoami"], &env));
         assert_eq!(who["principal"]["kind"], kind, "{who}");
         assert_eq!(who["principal"]["id"], id.as_str());
@@ -382,7 +390,10 @@ fn agent_credential_proves_and_is_revoked() {
             use std::os::unix::fs::PermissionsExt as _;
             std::fs::set_permissions(&unknown, std::fs::Permissions::from_mode(0o600)).unwrap();
         }
-        let env = [("FIN_CREDENTIAL", unknown.as_os_str())];
+        let env = [
+            ("FIN_CREDENTIAL", unknown.as_os_str()),
+            ("FIN_SERVER", socket.as_os_str()),
+        ];
         let run = fin_env(&server.sd, &server.root, &["whoami"], &env);
         assert_error(&run, 7, "SERVER_UNTRUSTED");
         assert_eq!(run.json["error"]["details"]["reason"], "noProof");

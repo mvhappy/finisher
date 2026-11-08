@@ -141,6 +141,10 @@ pub struct BranchCreated {
 /// reverses, or the merge group a revert reverts. `no_op`: why a cherry-pick or revert
 /// committed nothing (`ALREADY_PRESENT`: the target holds the record's origin root;
 /// `ALREADY_REVERTED`: the merge group's effect is gone there); absent otherwise.
+/// `origins`: the txIds the operation acted on, each with the records its `origin` chain
+/// leads to (a copy of a copy), first seen first: an undo's units, a cherry-pick's origin, a
+/// reverted group's records; empty (and omitted) for a redo and for nothing done (7A
+/// Decision 27).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct HistoryResult {
@@ -149,6 +153,8 @@ pub struct HistoryResult {
     pub dry_run: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub no_op: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub origins: Vec<String>,
 }
 
 /// The answer of [`Store::merge`](crate::Store::merge): merge group `merge_id`'s records on
@@ -156,9 +162,10 @@ pub struct HistoryResult {
 /// they copy; `skipped`: the candidates that conflict and were left on the source (with
 /// `skipConflicting`; they are offered again by the next merge); `excluded`: source records
 /// never offered (`UNDOES_TARGET_RECORDS`); `source_state`: the source branch's state after
-/// the merge. A retry of a committed merge answers from the log: its records and their
-/// origins, `skipped` and `excluded` empty, `dry_run` false. Nothing left to merge is an
-/// empty answer, not an error.
+/// the merge; `origins`: `merged` with the records their `origin` chains lead to (a copy of a
+/// copy), first seen first (7A Decision 27). A retry of a committed merge answers from the
+/// log: its records and their origins, `skipped` and `excluded` empty, `dry_run` false.
+/// Nothing left to merge is an empty answer, not an error.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct MergeReport {
@@ -169,6 +176,8 @@ pub struct MergeReport {
     pub excluded: Vec<Conflict>,
     pub source_state: BranchState,
     pub dry_run: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub origins: Vec<String>,
 }
 
 /// One group of quarantined records ([`Store::recover_groups`](crate::Store::recover_groups)).

@@ -27,6 +27,14 @@ import { ConnectionRegistry, ConnectionRegistryTag, Connections } from "./connec
 import { AuditTag, layerAudit } from "./control/audit.ts";
 import { makeTickets, TicketsTag } from "./auth/tickets.ts";
 import { ControlStoreTag, layerControlStore } from "./control/db.ts";
+// Registers the `agent` control chain before the store opens (7A-2 Task 3b; 6b wires the runtime).
+import { AgentStore } from "./agent/store.ts";
+import { systemClock, systemIds } from "./agent/clock.ts";
+import { type AgentCore, AgentCoreTag } from "./agent/core.ts";
+import { journalVerdicts, OutcomeTracker } from "./agent/outcomes.ts";
+import { AgentJournal } from "./agent/journal.ts";
+import { SessionCredentials } from "./agent/credentials.ts";
+import { BranchLineage } from "./agent/reach.ts";
 import { layerFonts, type FontsOptions } from "./fonts.ts";
 import { Diagnostics, type DiagnosticsOptions, makeDiagnostics } from "./diagnostics.ts";
 import { withServerLock } from "./lock.ts";
@@ -46,6 +54,8 @@ import { claimSocketPath, makeLocalServer, serveRpc } from "./transport.ts";
 import { makeTicketedWebSocketServer, makeUpgradeCheck } from "./upgrade.ts";
 import { ServerControlTag } from "./server-admin.ts";
 import { isServeCommand, runConsole } from "./console/main.ts";
+import { agentWarnings } from "./agent/warnings.ts";
+import { type AgentRuntimeParts, AgentRuntimeTag, type AgentServeOptions, buildAgentRuntime } from "./agent/wiring.ts";
 
 export interface ServeOptions {
   readonly serverData: string;
@@ -54,6 +64,11 @@ export interface ServeOptions {
   readonly diagnostics?: DiagnosticsOptions;
   /** Agent and MCP credentials (tests): the clock expiry reads and the sweep's period (60 s). */
   readonly credentials?: { readonly clock?: () => number; readonly sweepMs?: number };
+  /** The agent runtime's shared pieces, handed to tests once built (7A-2). */
+  readonly onAgentCore?: (core: AgentCore) => void;
+  /** The agent runtime's options (tests: the fake harness's scripts) and its parts once booted. */
+  readonly agents?: AgentServeOptions;
+  readonly onAgentRuntime?: (parts: AgentRuntimeParts) => void;
   /** The job engine's options (tests: the test kinds). */
   readonly jobs?: JobEngineOptions;
   /** Called once both transports listen and `finisherd.json` is written. */
@@ -64,7 +79,18 @@ export interface ServeOptions {
  * Runs the server until interrupted or `server.stop`; finalizers stop the transports, close
  * engines and remove `finisherd.json`.
  */
-export const serve = ({ serverData, onReady, registry, fonts, diagnostics: diagnosticsOptions, credentials: credentialOptions, jobs: jobOptions }: ServeOptions) =>
+export const serve = ({
+  serverData,
+  onReady,
+  onAgentCore,
+  agents: agentOptions,
+  onAgentRuntime,
+  registry,
+  fonts,
+  diagnostics: diagnosticsOptions,
+  credentials: credentialOptions,
+  jobs: jobOptions,
+}: ServeOptions) =>
   Effect.scoped(
     Effect.gen(function* () {
       yield* Effect.try({ try: () => ensureServerData(serverData), catch: startFailure });
@@ -222,6 +248,58 @@ export const serve = ({ serverData, onReady, registry, fonts, diagnostics: diagn
         }),
         (timer) => Effect.sync(() => clearInterval(timer)),
       );
+      // The agent runtime's shared pieces (7A-2): the session store, each session's credential
+      // (minted, refreshed and revoked through the one revoke path) and the branch lineage the
+      // chains read for branch reach. Credential effects a crash left in the outbox are done now.
+      const agentClock = credentialOptions?.clock === undefined ? systemClock : { now: credentialOptions.clock };
+      const agentIds = systemIds(agentClock);
+      const agentStore = new AgentStore(Context.get(control, ControlStoreTag), serverData, agentClock, agentIds);
+      const sessionCredentials = new SessionCredentials({
+        store: agentStore,
+        credentials,
+        revoke: { ...revokeDeps, revoke: (ref) => credentials.markEnded(ref, "owner") },
+      });
+      sessionCredentials.drain();
+      // A revocation lost before it was written (a busy store, then a crash) is done now.
+      sessionCredentials.reconcile();
+      // Owner decision F2: before 7C agent tools are never sandboxed; sessions run, warned.
+      for (const w of agentWarnings()) yield* Effect.logWarning(`finisherd: ${w.code}: ${w.message}`);
+      // The outcome tracker (Task 11) emits 5E's `review.verdict` into this journal once the kind exists.
+      const lineage = new BranchLineage();
+      const outcomes = new OutcomeTracker({ store: agentStore, lineage, clock: agentClock.now, verdicts: journalVerdicts(diagnostics.journal) });
+      // Its journal records metadata to the diagnostics journal and content to the trace store (D34).
+      const agentJournal = new AgentJournal({
+        diagnostics: diagnostics.journal,
+        traces: diagnostics.traces,
+        store: agentStore,
+        ids: agentIds,
+        clock: agentClock,
+        log: (message, fields) => logSink("warning", `${message} ${JSON.stringify(fields ?? {})}`),
+      });
+      const agentCore: AgentCore = {
+        store: agentStore,
+        credentials: sessionCredentials,
+        lineage,
+        outcomes,
+        clock: agentClock,
+        ids: agentIds,
+        journal: agentJournal,
+      };
+      onAgentCore?.(agentCore);
+      // The agent runtime over the project registry (7A Task 12): recovery, the outbox
+      // and the credential reconcile run here, before either transport serves a request.
+      const projectRegistry = projects; // built above, before the job engine
+      const agentRuntime = yield* buildAgentRuntime({
+        serverData,
+        core: agentCore,
+        registry: projectRegistry,
+        db: Context.get(control, ControlStoreTag).db,
+        audit,
+        endpoint: socket,
+        log: (message) => logSink("warning", `finisherd: agent runtime: ${message}`),
+        ...(agentOptions === undefined ? {} : { options: agentOptions }),
+      });
+      onAgentRuntime?.(agentRuntime);
       // One font layer for the handlers and the plugins, which feed it the packs' catalogs.
       const fontsLayer = layerFonts(serverData, fonts);
       // `server.stop` (5A Task 8): `serve` returns, and its scope's finalizers stop everything.
@@ -249,6 +327,8 @@ export const serve = ({ serverData, onReady, registry, fonts, diagnostics: diagn
               Layer.succeed(TicketsTag, tickets),
               Layer.succeed(ConnectionRegistryTag, everyConnection),
               Layer.succeed(ServerControlTag, serverControl),
+              Layer.succeed(AgentCoreTag, agentCore),
+              Layer.succeed(AgentRuntimeTag, agentRuntime),
             ),
           ),
         ),

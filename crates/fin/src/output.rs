@@ -14,6 +14,8 @@ pub const UNAVAILABLE: i32 = 5;
 pub const INTERNAL: i32 = 6;
 /// "This needs a different principal, usually a person" (spec §3.5): an agent must not retry.
 pub const DENIED: i32 = 7;
+/// "A person has been asked; wait, then repeat" (sub-project 7 §7.3, §15): never a denial.
+pub const PENDING: i32 = 8;
 
 /// Codes that mean denied (exit 7, spec §3.5 and §4.13): the server would not accept this
 /// caller, or this caller would not accept the server (`SERVER_UNTRUSTED`).
@@ -49,7 +51,22 @@ pub const DENIED_CODES: &[&str] = &[
     "PLUGIN_BUNDLED_MISMATCH",
     "COPYLEFT_NOT_ACCEPTED",
     "THIRD_PARTY_CODE_NOT_ACCEPTED",
+    // Agent sessions (7A-2 Task 6b): a session's token, money or wall-clock budget is used up
+    // (`details.kind`, `used`, `limit`); a person raises it (`finisherd agent approve`).
+    "BUDGET_EXCEEDED",
+    // Agent sessions (sub-project 7 §15; 7A-2 Task 12): a person refused the approval; a
+    // command rule (`details.rule`, `layer`) or the session's mode (`details.mode`, `command`)
+    // forbids it; a hook blocked it (`details.hook`, `reason`); a subagent too deep (7B).
+    "APPROVAL_DENIED",
+    "RULE_DENIED",
+    "MODE_FORBIDS",
+    "HOOK_BLOCKED",
+    "DEPTH_EXCEEDED",
 ];
+
+/// Codes that mean "a person has been asked" (exit 8, sub-project 7 §7.3): the `ask` stage
+/// opened `details.approval`, or `fin approval wait` timed out on it. Wait, then repeat.
+const PENDING_CODES: &[&str] = &["APPROVAL_PENDING"];
 
 /// Codes that mean "the request was well-formed but rejected by validation" (exit 3).
 const VALIDATION_CODES: &[&str] = &[
@@ -101,6 +118,35 @@ const VALIDATION_CODES: &[&str] = &[
     "JOB_PARAMS_INVALID",
     "JOB_NOT_FOUND",
     "JOBHOST_STATE",
+    // Agent sessions (7A-2 Task 3b): a session id the server does not know.
+    "SESSION_NOT_FOUND",
+    // Agent sessions (7A-2 Task 6b): no adapter for the harness on this server; an approval
+    // id the server does not know.
+    "HARNESS_UNKNOWN",
+    "APPROVAL_NOT_FOUND",
+    // Agent sessions (sub-project 7 §15; 7A-2 Task 12): a role, model or saved prompt the
+    // server does not know (`MODEL_UNKNOWN {reason: noTools}` for a model without tools); a mode
+    // above the role's ceiling; a bad `apply` list entry; an attachment too large or of a type
+    // the model cannot take; the model catalogue or `agents.models` broken (`details`).
+    "ROLE_UNKNOWN",
+    "MODE_INVALID",
+    "MODEL_UNKNOWN",
+    "SAVED_PROMPT_UNKNOWN",
+    "APPLY_INVALID",
+    "ASSET_TOO_LARGE",
+    "ASSET_TYPE_UNSUPPORTED",
+    "CATALOGUE_INVALID",
+    // The built-in agent's workspace tools (7A-2 Task 8b): a file that would pass the per-file
+    // cap; a file `workspace_write {mode: create}` finds already there.
+    "FILE_TOO_LARGE",
+    "ALREADY_EXISTS",
+    // The secret store (7A Task 5): no key with that id; a value it will not store (empty,
+    // too long, not text); a store file that does not parse; a store folder or file that is not
+    // private (`details.reason`).
+    "SECRET_NOT_FOUND",
+    "SECRET_INVALID",
+    "SECRET_CORRUPT",
+    "SECRET_STORE_UNSAFE",
     // Stored history that this code cannot or will not read (sub-project 4).
     "DB_TOO_NEW",
     "NOT_A_PROJECT_DB",
@@ -269,6 +315,19 @@ const CONFLICT_CODES: &[&str] = &[
     // the owner's call) and one that differs from its catalogued row (rescan, then retry).
     "FILE_CLOUD_ONLY",
     "FILE_CHANGED",
+    // Another live agent session works on this root branch (7A Task 7): end it, or start from
+    // another branch.
+    "BRANCH_IN_USE",
+    // Agent sessions (7A-2 Task 6b): a run is active (steer it, or wait); the session ended.
+    "SESSION_BUSY",
+    "SESSION_ENDED",
+    // An approval answered after its `expiresAt` (7A-2 review): it was expired instead; ask
+    // for it again.
+    "APPROVAL_EXPIRED",
+    // Sub-project 7 §6.5: the `auto` merge policy needs sub-project 10's QA gate and critic;
+    // the session's workspace holds its 256 MiB (7A-2 Task 8b): remove files first.
+    "AUTO_MERGE_UNAVAILABLE",
+    "WORKSPACE_FULL",
 ];
 
 /// Codes of a job that ended without succeeding (exit 4, 5C-1 Decision 41): its outcome, and
@@ -299,6 +358,8 @@ const USAGE_CODES: &[&str] = &[
     // registry's root changed, `details.reason: rootChanged`): name one with `--registry`.
     "MANIFEST_TOO_LARGE",
     "REGISTRY_AMBIGUOUS",
+    // Bad `fin agent` usage (sub-project 7 §15).
+    "AGENT_ARGS",
 ];
 
 /// Codes that mean "unavailable, in use, or try again later" (exit 5): no usable server, or
@@ -389,12 +450,41 @@ const UNAVAILABLE_CODES: &[&str] = &[
     "WATCH_OVERFLOW",
     "WATCH_ERROR",
     "ENUMERATION_FALLBACK",
+    // Agent sessions (7A-2 Task 6b): the session is interrupted (resume it); its provider
+    // exited or could not start (`details.code`, `signal`). Both are resumable.
+    "SESSION_INTERRUPTED",
+    "PROVIDER_EXITED",
+    // Agent sessions (7A-2 review): a non-local model without a price cannot keep its money
+    // budget (refresh the catalogue or pick another model); an `agent.watch` that fell
+    // behind (watch again from `details.lastSeq`).
+    "PRICING_UNKNOWN",
+    "WATCH_LAGGING",
+    // Providers (sub-project 7 §15; 7A-2 Task 12): not installed, or the local model server
+    // does not answer; a CLI below the version floor or missing a capability; not signed in,
+    // or the OpenRouter key missing or refused; the CLI reports another account; rate limited
+    // (`details.retryAfterMs`) or overloaded; a message the adapter cannot map (drift); the
+    // prompt would pass the model's window; a sandbox present but not applied; a tool or a
+    // blocking hook that ran past its time; the secret store busy or unusable on this host.
+    "PROVIDER_UNAVAILABLE",
+    "PROVIDER_VERSION",
+    "PROVIDER_AUTH",
+    "PROVIDER_ACCOUNT_CHANGED",
+    "PROVIDER_RATE_LIMITED",
+    "PROVIDER_OVERLOADED",
+    "PROVIDER_PROTOCOL",
+    "MODEL_CONTEXT_EXCEEDED",
+    "SANDBOX_UNAVAILABLE",
+    "TOOL_TIMEOUT",
+    "HOOK_TIMEOUT",
+    "SECRET_STORE_BUSY",
+    "SECRET_STORE_UNAVAILABLE",
 ];
 
 /// The one place error codes become exit codes.
 pub fn exit_code(code: &str) -> i32 {
     match code {
         c if DENIED_CODES.contains(&c) => DENIED,
+        c if PENDING_CODES.contains(&c) => PENDING,
         c if USAGE_CODES.contains(&c) => USAGE,
         c if CONFLICT_CODES.contains(&c) || JOB_RESULT_CODES.contains(&c) => CONFLICT,
         c if UNAVAILABLE_CODES.contains(&c) => UNAVAILABLE,

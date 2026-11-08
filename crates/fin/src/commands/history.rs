@@ -170,9 +170,13 @@ fn with_author(mut e: CoreError, branch: &str) -> CoreError {
             map.entry("author").or_insert(json!(who));
             map.entry("branch").or_insert(json!(branch));
         }
-        let note = format!(
-            "undo and redo act on edits by author {who:?} on {branch}; set FIN_AUTHOR to act as another author"
-        );
+        let note = if crate::agent_session::active() {
+            format!("an agent session's undo and redo act on its own edits on {branch} only")
+        } else {
+            format!(
+                "undo and redo act on edits by author {who:?} on {branch}; set FIN_AUTHOR to act as another author"
+            )
+        };
         e.fix = Some(match e.fix.take() {
             Some(f) => format!("{f}; {note}"),
             None => note,

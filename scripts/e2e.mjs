@@ -6,7 +6,7 @@
 // through the `fin` binary, and asserts the subscriber saw every committed rev in order and
 // that its last rev equals `snapshot.get`'s. The server and the temp dir are always cleaned up.
 //
-// Usage: node scripts/e2e.mjs [--skip-build] [basic|storage|history|reel|diagnostics|plugins|auth|look ...]  (default: every scenario)
+// Usage: node scripts/e2e.mjs [--skip-build] [basic|storage|history|reel|diagnostics|plugins|auth|look|agent ...]  (default: every scenario)
 //
 // Builds go to `CARGO_TARGET_DIR` when it is set (else `target/`), and so does the run's
 // `fin` and `fin-plugin`. Scenario temp dirs fall back to `/tmp` when `TMPDIR` is so deep that the
@@ -40,7 +40,7 @@
 //
 // The "auth" scenario (scripts/e2e/auth*.mjs) drives principals and credentials over `fin.sock` and
 // the ticketed WebSocket: an unproved connection, `fin` as `local`, the human-only refusals and the
-// console's typed codes, ticket and Host/Origin checks, agent credentials (scopes, `branch own`,
+// console's challenge codes, ticket and Host/Origin checks, agent credentials (scopes, `branch own`,
 // journal actors, revocation ending live streams, expiry, `TICKET_LIMIT`), a squatted socket, a
 // restart that rotates the keys, the audit rows and a leak grep over every log and the journal.
 //
@@ -51,6 +51,12 @@
 // per fixture set), `fin-workers media --replay`, `skipped`, and a worker killed mid-job and
 // retried (`E2E_LOOK_BLESS=1` rewrites the goldens, refused under CI). It needs a GPU adapter
 // (`FIN_GPU=software` on lavapipe) and is skipped without one unless `FIN_REQUIRE_GPU=1`.
+//
+// The "agent" scenario (scripts/e2e/agent*.mjs) runs a built-in agent session against a scripted model
+// server on loopback (the local preset, no key, no network): from the prompt to the merged verdict
+// with the session branch's commits and refusals, the journal's call join and replayable trace
+// deltas, a `finisherd` killed during a tool call and resumed, a budget stop and its approval, and
+// the leak grep (plan 7A Task 13).
 //
 // After the builds, the run has a deadline (E2E_DEADLINE_MS, default 180 s): when it passes,
 // the server is killed and the script exits non-zero. Test hooks (scripts/e2e.test.mjs):
@@ -66,12 +72,13 @@ import { run as runDiagnostics } from "./e2e/diagnostics.mjs";
 import { run as runPlugins } from "./e2e/plugins.mjs";
 import { run as runAuth } from "./e2e/auth.mjs";
 import { run as runLook } from "./e2e/look.mjs";
+import { run as runAgent } from "./e2e/agent.mjs";
 
 export { parseFrames } from "./e2e/lib.mjs";
 export { checkRevs };
 
 const DEADLINE_MS = Number(process.env.E2E_DEADLINE_MS ?? 180_000);
-const SCENARIOS = { basic: runBasic, storage: runStorage, history: runHistory, reel: runReel, diagnostics: runDiagnostics, plugins: runPlugins, auth: runAuth, look: runLook };
+const SCENARIOS = { basic: runBasic, storage: runStorage, history: runHistory, reel: runReel, diagnostics: runDiagnostics, plugins: runPlugins, auth: runAuth, look: runLook, agent: runAgent };
 
 async function main(argv) {
   const names = argv.filter((a) => !a.startsWith("--"));

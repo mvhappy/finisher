@@ -21,6 +21,7 @@ pub mod names;
 mod names_details;
 pub mod names_jobs;
 pub mod names_media;
+pub mod names_rpc;
 pub mod payloads;
 mod plugin_names;
 pub mod redact;

@@ -131,6 +131,15 @@ Every "before 7C" item in the specs and the tracker, and where it closes:
 23. **One status source** (`apps/finisherd/src/sandbox/status.ts`): `sandboxStatus()` from fin-node per profile → `server.status.warnings` entries `SANDBOX_DISABLED {profile, os, reason: landlockDisabled, fix}` (the `fix` names the `lsm=` boot parameter) for each disabled profile, `PLUGINS_UNCONFINED` for plugins (sp8's name), `SANDBOX_DISABLED {worker}` with `media.capabilities.sandbox: none` (sp6's names); the `sandbox.unconfined {profile, os, reason}` event once per profile per server start and on change. `agent/warnings.ts`'s constant `before7C` warning is replaced by a call into it. A profile not yet in `READY` on this OS keeps the warning its sub-project already shows (`reason: before7C` for agents becomes `reason: profileNotReady` with the same fix text pointing at the release notes).
 24. **Violations** (spec §8.8): only what the launcher or host observes (seccomp `SIGSYS`, job-object limit messages, a broker refusal, a failure to apply) becomes an audit entry `sandbox.violation {session?, jobId?, op, profile, rootKind}` and, for a session, a `notice` node. Paths are stored as root kind plus keyed hash. Finisher never reads the macOS unified log.
 
+### Node tools in a Windows container
+
+25. **Node piped stdio on Windows** (S9 Windows point 8). **Owner decision (2026-11-08): Node piped stdio on Windows.**
+    - **The problem.** Inside an AppContainer, libuv names its stdio pipes outside `\\.\pipe\LOCAL\` (`\\?\pipe\uv\…`). The container refuses those names and libuv retries forever, so a Node `child_process` spawn with piped stdio hangs (`spawn`, `spawnSync`, `execSync`; the `spawnSync` timeout does not fire). This hits npm scripts, Node hooks that run commands, and Node MCP servers started by a CLI. Pipes the parent makes outside the container, Rust `std::process` with pipes, and Bun (Claude Code) are unaffected.
+    - **Decision: ship with the limit, but fail fast.** On Windows, a Node process inside the container ends with a clear error naming the limit instead of freezing. The detection is the Node guard of Task 9 Step 3 (a preload that probes pipe creation from a worker thread, so a stuck main thread cannot hide it), with the launcher's wall-time limit as the backstop for a Node process that did not load the guard. Task 9 Step 3 records which detection was verified.
+    - **Node flags.** Node launched inside the container carries `--preserve-symlinks --preserve-symlinks-main` (S9 point 8a: Node's `realpath` `lstat`s `C:\`, which a container cannot read). Task 9 Step 3 also tests the `NODE_OPTIONS` form, so children of children inherit both the flags and the guard.
+    - **Upstream.** Task 9 Step 4 prepares a small libuv patch that creates stdio pipes under `\\.\pipe\LOCAL\` when running in an AppContainer. The patch stays in `archive/` (git-ignored) and **the owner files it upstream**. Agents must not open upstream issues or pull requests.
+    - **User-facing limit.** "Node tools that spawn child processes with piped stdio (npm scripts, Node hooks, Node MCP servers) fail with an error inside the Windows sandbox." Recorded in the README limits of Task 15. It lifts once Node ships the fix; the guard's probe then passes and stops blocking, so no Finisher change is needed.
+
 ## Frozen interfaces
 
 ```rust
@@ -193,11 +202,235 @@ export function assertSessionEnv(env: Readonly<Record<string, string | undefined
 
 **Files:** Create (git-ignored): `archive/s9/{notes.md, linux/, macos/, windows/, h2/}`. Modify: `TASKS.md` (the S9 line), spec §8.2–8.6 and §4.5–4.6 with the conclusions.
 
-- [ ] **Step 1 (B5, Linux; kernel ≥ 6.2):** on the Linux VM, a 6.2-series kernel, and a supported kernel booted with `landlock` left out of `lsm=`: a seccomp filter that checks the architecture and refuses x32/compat, io_uring, `AF_UNIX` and the other calls of Decision 11, each denial observed; libuv and the installed Codex and Claude Code still run (the io_uring fallback included); the per-CLI validation list of spec §8.3 (SSSD/LDAP user lookup, gpg-agent signing, git credential-cache, fsmonitor) and whether `AF_NETLINK`/`NETLINK_ROUTE` is needed; whether any newer Landlock ABI mediates pathname sockets; on the Landlock-disabled boot, that the status probe of Decision 12 says `Disabled` and a process runs. Record the base toolchain read list for `data/linux/toolchain-base.txt`.
-- [ ] **Step 2 (B6, macOS 14+):** under a log-only `(deny default)` profile, the minimal `mach-lookup` list per CLI and for `fin` and `fin-workers`; with default-deny, `open`, `osascript`, `launchctl` and `security` fail, nothing starts outside the sandbox, and a test keychain item created for the spike is unreadable. Record `data/macos/mach-*.txt` candidates and the base toolchain list.
-- [ ] **Step 3 (B7, the user's own sign-in, never copied):** with a test account a person signs in to through each CLI's own flow, in a sign-in home: where each CLI keeps its store per OS (file or keychain; keyed by config directory?); whether a per-session `CLAUDE_CONFIG_DIR`/`CODEX_HOME` holding a link to the store works and refreshes **in place**; parallel sessions refreshing at once; a file link on Windows without elevation; else the fallback of spec §8.6; that `system/init` and `account/read` report the sign-in kind and an account label; **per-session capability SIDs on a session directory under a normal AppContainer**, and that a second session's process cannot open it (decides Decision 16 or 17). No spike script opens a credential file.
-- [ ] **Step 4 (H2):** Claude Code under `-p` stream-JSON without `--bare` (`--setting-sources user` with a per-session config dir, `--strict-mcp-config`, the `CLAUDE.md`/`.claude/` read denial: planted settings, hooks, MCP servers and memory files observed not loaded); `--append-system-prompt`; `system/init` before the first prompt; `--max-budget-usd`; `--disallowedTools`; Codex `-c project_doc_max_bytes=0` and `developer_instructions` at the pinned version.
+- [~] **Step 1 (B5, Linux; kernel ≥ 6.2):** *Linux Landlock status query done (see S9 results (Linux)); seccomp moved to Task 4; the Landlock-disabled boot and the toolchain read list are still open.* on the Linux VM, a 6.2-series kernel, and a supported kernel booted with `landlock` left out of `lsm=`: a seccomp filter that checks the architecture and refuses x32/compat, io_uring, `AF_UNIX` and the other calls of Decision 11, each denial observed; libuv and the installed Codex and Claude Code still run (the io_uring fallback included); the per-CLI validation list of spec §8.3 (SSSD/LDAP user lookup, gpg-agent signing, git credential-cache, fsmonitor) and whether `AF_NETLINK`/`NETLINK_ROUTE` is needed; whether any newer Landlock ABI mediates pathname sockets; on the Landlock-disabled boot, that the status probe of Decision 12 says `Disabled` and a process runs. Record the base toolchain read list for `data/linux/toolchain-base.txt`.
+- [x] **Step 2 (B6, macOS 14+):** *done, see S9 results (macOS).* under a log-only `(deny default)` profile, the minimal `mach-lookup` list per CLI and for `fin` and `fin-workers`; with default-deny, `open`, `osascript`, `launchctl` and `security` fail, nothing starts outside the sandbox, and a test keychain item created for the spike is unreadable. Record `data/macos/mach-*.txt` candidates and the base toolchain list.
+- [ ] **Step 3 (B7, Windows still in progress elsewhere; the user's own sign-in, never copied):** with a test account a person signs in to through each CLI's own flow, in a sign-in home: where each CLI keeps its store per OS (file or keychain; keyed by config directory?); whether a per-session `CLAUDE_CONFIG_DIR`/`CODEX_HOME` holding a link to the store works and refreshes **in place**; parallel sessions refreshing at once; a file link on Windows without elevation; else the fallback of spec §8.6; that `system/init` and `account/read` report the sign-in kind and an account label; **per-session capability SIDs on a session directory under a normal AppContainer**, and that a second session's process cannot open it (decides Decision 16 or 17). No spike script opens a credential file.
+- [ ] **Step 4 (H2):** *moved to 7D/7E or a later S9 rerun.* Claude Code under `-p` stream-JSON without `--bare` (`--setting-sources user` with a per-session config dir, `--strict-mcp-config`, the `CLAUDE.md`/`.claude/` read denial: planted settings, hooks, MCP servers and memory files observed not loaded); `--append-system-prompt`; `system/init` before the first prompt; `--max-budget-usd`; `--disallowedTools`; Codex `-c project_doc_max_bytes=0` and `developer_instructions` at the pinned version.
 - [ ] **Step 5:** conclusions into the spec (each marked *verified on <host class>*), tick `TASKS.md`. **Commit** `docs: record spike S9 conclusions` (spec and `TASKS.md` only).
+
+#### S9 results (macOS)
+
+*Verified on Apple silicon (M4), macOS 27.0.1, non-elevated, 2026-11-08.* Versions: Node 24.22.2, Claude Code 2.1.319, Codex CLI 0.166.0, wgpu 30.0.1. Spike code and raw logs are kept outside the repo. This settles Step 2 (B6). Step 3 (B7) is only partly settled: the sign-in flows were run up to the point where a person must act, and nothing was signed in.
+
+**`sandbox-exec` and SBPL on this macOS.** The man page marks `sandbox-exec` DEPRECATED, but it works on 27.0.1: `-f`, `-p`, `-D` with `(param …)`, last match wins, and `(deny default)`. `sandbox_init_with_parameters` (the `self_apply` path) accepts the same profile text and parameters, and after it a process cannot fork or read outside the policy. Findings that shape the generator and its tests:
+- Rules match resolved paths. A rule on `/etc/hosts` is a no-op, and `/private/etc/hosts` works. The generator canonicalizes every path (`/etc`, `/var` and `/tmp` live under `/private`).
+- Denials are reported by default. `(with report)` on a deny rule is a profile error ("report modifier does not apply to deny action").
+- launchd's `denied lookup … Sandbox restriction` lines persist and `log show` finds them. The kernel's `Sandbox: proc(pid) deny(1) op …` lines for `sandbox-exec` processes appear only to a `log stream` started before the run, never to `log show`. Escape tests assert on errno and behaviour, not on logs.
+- The denial log is not the full list. A lookup only appears once the code gets that far: VideoToolbox encode logs no `videoencoder` lookup until `trustd.agent` is allowed. Every list below was confirmed by leave-one-out runs, not read off the log.
+- `(deny default)` refuses three things with no extra rule: exec of setuid binaries (`forbidden-exec-sugid`), `fork`, and `lsopen` (LaunchServices opening an app or URL).
+
+**Method.** Discovery ran under `(allow default)(deny mach-lookup)` with an allow-list, minimized by leave-one-out. Confirmation ran under a full `(deny default)` profile shaped like the target profile (`agent`: read roots, write roots, network; `worker` and `hook`: exec of the one binary only, no fork). Each run used an empty environment and a throwaway `HOME`. Credentials were dummies only.
+
+**Minimal `mach-lookup` per workload (full default-deny confirmed):**
+
+| Workload | Minimal `mach-lookup` | Other non-default rules it needed | Without it |
+|---|---|---|---|
+| Node 24.22.2, finisherd-like (fs, crypto, Intl, loopback HTTP, Unix-socket server, `sh` + `git` children, `worker_threads`, `os.userInfo`, DNS, TLS `fetch`) | `com.apple.system.opendirectoryd.libinfo` | `network-bind`/`network-outbound` on `(local\|remote unix-socket (subpath …))` for its own socket; `network-outbound (remote unix-socket (path-literal "/private/var/run/mDNSResponder"))` for DNS | `os.userInfo()` throws `ENOENT` (`uv_os_get_passwd`); everything else works. DNS uses the mDNSResponder **Unix socket**, not mach; TLS uses Node's bundled roots. |
+| Claude Code 2.1.319 (`auth status`, `-p` round trip to a 401 on a dummy key) | none (`libinfo` recommended for its shells and `git`) | `CLAUDE_CODE_TMPDIR` pointed into a write root | Nothing breaks. Denied lookups it attempts: `SecurityServer`, `securityd.xpc` (keychain), and `FSEvents` (settings hot reload will not fire). It also tries to exec `/usr/bin/security` 4 times. **Without `CLAUDE_CODE_TMPDIR` it exits with `EPERM` on `/tmp/claude-<uid>`**, which it uses whatever `TMPDIR` says. |
+| Codex CLI 0.166.0 (`login status`, `exec` round trip to a 401 on a dummy key) | `com.apple.cfprefsd.daemon`, `com.apple.cfprefsd.agent` (+ `libinfo` recommended) | `ipc-posix-shm-read-data (ipc-posix-name-prefix "apple.cfprefs.")`; `CODEX_CA_CERTIFICATE` or `SSL_CERT_FILE` set to `/etc/ssl/cert.pem` | Without either cfprefsd service it exits at start with "Failed to synchronize managed preferences". Without a CA bundle env var, its platform TLS verifier needs `com.apple.trustd.agent` **and** `com.apple.SecurityServer` (`stage=Tls` errors otherwise). It does not need `user-preference-read`: cfprefsd checks that operation itself, so allowing the lookup does not open other apps' preference domains. |
+| wgpu 30.0.1 on Metal (adapter, device, compute dispatch, readback) | `com.apple.MTLCompilerService` | `iokit-open-user-client` of `AGXDeviceUserClient` and `IOSurfaceRootUserClient` (`iokit-get-properties` not needed) | Without the compiler service: an adapter is found but `request_device` returns `Device(Lost)`. Without the user clients: no adapter. |
+| VideoToolbox hardware decode, H.264 and HEVC 1080p (`VTDecompressionSession` with hardware required, and `AVAssetReader` to BGRA) | `com.apple.coremedia.videodecoder` | `iokit-open-user-client` of `IOSurfaceRootUserClient` | Without the service: `VTDecompressionSessionCreate` returns −12911, and `AVAssetReader` reports −11821 "Cannot Decode". **Without `IOSurfaceRootUserClient` it fails silently: the session is created and reports hardware, but it delivers 0 frames with no error.** |
+| VideoToolbox hardware encode, H.264 and HEVC (`VTCompressionSession`; not in Task 0's list, but workers make proxies) | `com.apple.coremedia.videoencoder`, `com.apple.trustd.agent` | `IOSurfaceRootUserClient` | Without `trustd.agent`: −12908. Without `IOSurfaceRootUserClient`: a crash (SIGTRAP). |
+| `fin`-like Unix-socket client (Rust std `UnixStream`) | none | `network-outbound (remote unix-socket (path-literal "<fin.sock>"))` plus `file-read-metadata` on its ancestors | It works with no other server-data read, and a file next to the socket stays unreadable. `getpwuid` needs `libinfo`, so `fin` takes its paths from env and args, never from the passwd database. |
+
+Lookups attempted by every workload and denied with no observed effect: `com.apple.logd`, `com.apple.diagnosticd`, `com.apple.system.notification_center`, `com.apple.analyticsd`, `com.apple.bsd.dirhelper`, `com.apple.system.opendirectoryd.membership`, `com.apple.CoreServices.coreservicesd`, `com.apple.DiskArbitration.diskarbitrationd`, `com.apple.SystemConfiguration.{configd,DNSConfiguration}`, `com.apple.PerfPowerTelemetryClientRegistrationService`, `com.apple.powerlog.plxpclogger.xpc`, and, for `AVAssetReader`, `com.apple.tccd.system` and `com.apple.windowserver.active`.
+
+**Default-deny escape checks (agent-shaped profile):**
+- Exec of `open`, `osascript`, `launchctl` and `security` is denied (`EPERM`).
+- A mutant that allows those execs while mach stays default-deny shows the next layers:
+  - `open -a` and `open <url>` fail: the LaunchServices lookups (`lsd.mapdb`, `lsd.modifydb`, `coreservicesd`) are denied.
+  - `osascript` fails before any Apple Event, because it cannot load its scripting components.
+  - `launchctl submit` fails on the Seatbelt `job-creation` operation.
+  - `security` cannot reach the keychain.
+  - No marker file appeared, no launchd job was added, and no app started.
+- **Allowing `mach-lookup` globally still does not let `open` launch an app**, because `(deny default)` refuses `lsopen`.
+- A private named pasteboard (`NSPasteboard(name:)`, written outside the sandbox) reads as `nil` under the allow-list and returns the marker under global `mach-lookup`. It is the case that only the mach allow-list protects.
+- Keychain: a spike-only item created with `-A` (any application may read it) cannot be read under the profile. It became readable only when **both** `com.apple.SecurityServer` and `file-read*` on `~/Library/Keychains` were allowed. With all files readable, `SecurityServer` alone was enough. The two layers are independent. The item was deleted afterwards.
+- `ls ~/Library/Keychains` is denied.
+- With `(remote ip "localhost:<port>")` only that loopback port connects, and another listening port is refused.
+- With no IP rule (the `hook` shape), name resolution fails.
+- In the `worker` shape, `fork` and `exec` both return `EPERM`.
+
+**Sign-in observations (B7 partial, no account signed in):**
+- **Claude Code.** `claude auth login` with `open` denied prints the authorize URL and asks for a pasted code. It opens no loopback listener and makes no network call before the paste. With the keychain lookups denied, it reads the file store `.credentials.json` in `CLAUDE_CONFIG_DIR`: a dummy token showed `loggedIn: true`, `authMethod: claude.ai`. With `CLAUDE_CONFIG_DIR` and `HOME` both redirected, it still tries to read `.claude/CLAUDE.md` under the passwd home directory. The profile's `deny_read` of `~/.claude` (Decision 6) stopped it and is required.
+- **Codex.** `codex login status` with a fresh `CODEX_HOME` attempts no keychain lookup, so its store is the file by default. The browser flow (`codex login`) needs a loopback listener on `127.0.0.1:1455` plus LaunchServices, so it cannot run under the `agent` profile. `codex login --device-auth` reaches the code prompt with only the `agent` list above.
+
+**Base toolchain reads (`data/macos/toolchain-base.txt` candidate).** These are verified for the `agent` shape:
+- `literal "/"`, `/usr`, `/bin`, `/sbin`, `/System`, `/Library/Apple`, `/private/etc`, `/private/var/db/timezone`, `/private/var/db/dyld`, `/private/var/select/sh`, `/Library/Preferences/Logging`;
+- `/dev/{null,zero,random,urandom,tty,dtracehelper}`;
+- the active developer directory (`xcode-select -p`; only the whole subtree was verified);
+- `file-read-metadata`, `sysctl-read`, `system-socket`, `ipc-posix-shm` on the `apple.shm.notification_center` prefix, and the mDNSResponder socket above.
+
+The `worker` and `hook` shapes need `literal "/"` (dyld refuses to start without it), `/usr/lib`, `/System`, `/private/var/db/dyld`, and `/private/etc/ssl` only for TLS clients.
+
+The `/usr/bin` developer shims (`git` and friends) are a trap. With a fresh `HOME` or `TMPDIR`, the `xcrun` cache is empty, so the shim runs `xcodebuild`, which needs all of `Xcode.app` plus LaunchServices, FSEvents and configd. Under default-deny it fails ("developer directory … isn't accessible"). The real binary in `$(xcode-select -p)/usr/bin` needs only `libinfo`.
+
+**Recommendations for Task 8:**
+1. `mach-agent.txt`: `com.apple.system.opendirectoryd.libinfo`, `com.apple.cfprefsd.daemon`, `com.apple.cfprefsd.agent`, plus `ipc-posix-shm-read-data` on the `apple.cfprefs.` prefix. Keep `user-preference-read` denied.
+2. `mach-hook.txt`: empty, since `fin` needs none. Add `libinfo` only if hook shells need user lookups. They ran without it here.
+3. `mach-worker.txt`: `com.apple.coremedia.videodecoder`, `com.apple.coremedia.videoencoder`, `com.apple.trustd.agent` (encode only), and `com.apple.MTLCompilerService`. Add `iokit-open-user-client` of `IOSurfaceRootUserClient` (every media job) and `AGXDeviceUserClient` (wgpu). Only Apple silicon was tested; Intel and AMD Macs use other user-client classes.
+4. `mach-plugin.txt`: empty. The `gpu` grant adds the worker's GPU rows.
+5. Never put these in a profile list: `SecurityServer`, `securityd.xpc`, `lsd.*`, `coreservicesd`, `launchservicesd`, `windowserver.*`, `tccd*`, `pboard`, `FSEvents`. Decision 15 stands. Neither CLI tested needs the keychain:
+   - Claude Code reads its file store.
+   - Codex runs on the file store and a CA bundle.
+6. The adapters set these environment variables:
+   - 7D sets `CLAUDE_CODE_TMPDIR` to the session's `tmp/`.
+   - 7E sets `CODEX_CA_CERTIFICATE=/etc/ssl/cert.pem`.
+
+   A user whose TLS roots live only in the keychain (a corporate proxy) needs `trustd.agent` and `SecurityServer` in the Codex list, which is a per-provider opt-in under Decision 15.
+7. Resolve developer shims when the policy is built (`xcrun --find <tool>`) and put the real directory first on `PATH`. Never allow `xcodebuild`.
+8. The generator canonicalizes paths (`/private/...`) and never emits `(with report)` on a deny rule.
+9. The worker checks that decode returns a frame count above zero, because a missing `IOSurfaceRootUserClient` fails silently.
+10. Escape tests assert on errno and behaviour. Where a test needs a log, it starts `log stream` before the run.
+11. **The Step 2 mutant ("allow `mach-lookup` globally; the Terminal case must fail") does not trip on the Terminal case**: the exec denial and `lsopen` still block it. Add the private-pasteboard read as the case that must fail under that mutant. Keep the Terminal, `osascript` and `launchctl` cases for their own layers.
+
+**Not tested:**
+- B7 completion: a real sign-in and token refresh in place, parallel refreshes, and whether Claude Code writes `.credentials.json` at login when the keychain is denied (only the read path was tested).
+- The real `fin` and `fin-workers` binaries. Probes with the same APIs stood in: std `UnixStream`, wgpu, Swift VideoToolbox and AVFoundation.
+- macOS 14–26 and Intel or AMD GPUs.
+- Split DNS or VPN with `DNSConfiguration` denied.
+- ONNX Runtime and CoreML for `plugin` with `gpu`.
+- TCC prompts on Documents and Desktop. These are outside every read root, so file rules deny them first.
+- `appleevent-send` to Finder beyond `osascript` failing to start.
+- The Metal shader-cache cost of denying `bsd.dirhelper`.
+- Codex's keyring store mode.
+
+#### S9 results (Linux)
+
+**Tested** (Ubuntu 24.04, kernel 6.8.0 generic, glibc 2.39; active LSMs `lockdown,capability,landlock,yama,apparmor`):
+
+- `landlock_create_ruleset(NULL, 0, LANDLOCK_CREATE_RULESET_VERSION)` returns ABI **4**. The `ERRATA` flag returns 5, so the distro has backported fixes 1 and 3.
+- Kernel config: `CONFIG_IO_URING=y`, `CONFIG_X86_X32_ABI` not set, `CONFIG_SECCOMP_FILTER=y`.
+- Under Docker's default seccomp profile the Landlock version query still returns 4, but `prctl(PR_GET_SECCOMP)` returns 2 and `/proc/self/status` shows `Seccomp: 2`. With `seccomp=unconfined` it returns 0.
+
+**Recommendations for Task 3 / Decision 12:**
+
+- `PR_GET_SECCOMP == 2` must **not** be read as "Landlock disabled": every default Docker container reports it while Landlock works. The Landlock status comes from the version query alone.
+- Map `EPERM` from the version query to `Disabled`, as well as `ENOSYS` and `EOPNOTSUPP`. Some older container seccomp profiles answer unknown syscalls with `EPERM` (unverified).
+
+**Not tested yet:**
+
+- A real Landlock-disabled boot. A static status probe and kernels (6.8 and mainline 6.2) were prepared for a throwaway QEMU VM, but none was booted. Expectation, unverified: `EOPNOTSUPP` when Landlock is built in but left out of `lsm=`, `ENOSYS` when it is not built.
+- B5 seccomp (architecture/x32 check, io_uring refusal, the socket policy, and how a refused call appears to Rust, Node and glibc) **moves to Task 4**. Build and test it there with an established, permissively licensed Rust seccomp library (for example `seccompiler`, Apache-2.0, at least 7 days old), not a hand-written C filter. Note for Task 4: glibc 2.34+ falls back from `clone3` to `clone` only on `ENOSYS`, so refusing `clone3` with `EPERM` would likely break threads; use `ENOSYS` for refused syscalls that have a fallback (untested).
+- The base toolchain read list, and whether a newer Landlock ABI mediates pathname sockets.
+- H2, all of it (the Claude Code isolation flags, `system/init`, `--max-budget-usd`, `--disallowedTools`, the Codex `-c project_doc_max_bytes=0` and `developer_instructions` checks). It moves to 7D/7E or a later S9 rerun. Versions seen: Codex 0.167.0, Claude Code 2.1.319.
+
+#### S9 results (Windows)
+
+*Verified on a Windows 11 Pro host (build 26300; AMD discrete and integrated GPUs) on 2026-11-08: a non-elevated, medium-integrity user process in the console session (started through Task Scheduler), a normal AppContainer (not LPAC), Node 24.22.2, wgpu 30.0.1, `windows` 0.62.2. Spike code and raw logs stay outside the repository, on the host and on the VM. No credential file was opened: the sign-in checks used dummy store files, and Claude Code's behaviour was read from the embedded code of the installed 2.1.319 binary.*
+
+**Verdict: Decision 16 holds; Decision 17's fallback is not needed.** Capability SIDs derived from a name are honoured for a normal AppContainer, on files, directories and named pipes, and a process of session B cannot open session A's directory.
+
+1. **Capability SIDs (B7, Decision 16).**
+   - `DeriveCapabilitySidsFromName(n)` is `S-1-15-3-1024-` followed by the eight little-endian 32-bit words of SHA-256 over the UTF-16LE of **`n` upper-cased**. The derivation is case-insensitive, and Rust can compute it without the API (checked against an independent SHA-256 for three names).
+   - **Interaction with the owner-only DACL.** The session directory sits below `private_dir`'s protected owner-only DACL (`D:P(A;OICI;FA;;;<user>)(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)`) and carries an inheritable allow ACE (`0x1301bf`: modify, no `WRITE_DAC`/`WRITE_OWNER`) for session A's capability. Results:
+     - Project X's container with capability A can read, create, list and `mkdir` there.
+     - The same container with capability B, or with no session capability, is refused (`ERROR_ACCESS_DENIED`) for A's files and A's listing.
+     - Another project's container that carries capability A is admitted. A capability is not bound to a container; the launcher alone decides which capability a process gets.
+     - A grant to the container SID (a project directory) admits that project only.
+   - **Objects the container creates** inherit the capability ACE and the owner-only ACEs, and get a Low label (`S:(ML;;NW;;;LW)`). Capability B cannot read them.
+   - **Owner rights don't reach the container.** It can neither change the DACL (`WRITE_DAC` → 5) nor take ownership of the session directory or of its own files, although the user owns both.
+   - **Revoke** applies to the next open. Handles that are already open were not tested.
+   - **Ancestors.** The token keeps `SeChangeNotifyPrivilege` (with `SeIncreaseWorkingSetPrivilege` only), so open-by-path needs no grant on ancestors. `<server-data>` and `agents/` stay unlistable and un-stat-able.
+   - **Broker cost** per grant or revoke (process start subtracted): about 1 ms on an empty session directory, about 105 ms with 2,000 files below it (inheritance propagation).
+2. **Images and the toolchain.**
+   - The executable the launcher starts is opened with the launcher's token and needs no grant.
+   - Every image the container opens itself (a child process, a non-system DLL) needs read and execute. Without it, `CreateProcess` inside the container fails with 5.
+   - **One static capability SID granted RX once on the toolchain roots, and added to every sandboxed process, works** (a child exe started from inside through that grant alone). Per-container grants on large trees are therefore unnecessary.
+3. **The server pipe (Task 10).** The pipe used `pipe_sec::sddl`'s descriptor (`D:P(A;;GA;;;<user>)(A;;GA;;;SY)(A;;0x12008b;;;<container SID>)S:(ML;;NW;;;LW)`), and the client opened it with `GENERIC_READ | FILE_WRITE_DATA`, as `fin` does.
+   - Project X's container connects, and the server reads its container SID from the client's token.
+   - Project Y's container is refused with 5, whatever unrelated capabilities it holds.
+   - **`GENERIC_READ | GENERIC_WRITE` is refused** (the ACE grants no append, EA or attribute writes), so keep `fin`'s mask.
+   - Without the Low label the container still connected on this build. Keep the label.
+   - A capability SID in the pipe DACL works as well, but `peer_allowed` checks the container SID, so `PipeServer.allow(<container SID>)` per project stays the design.
+   - **A container cannot create a named pipe outside `\\.\pipe\LOCAL\`** (5). Inside `LOCAL\`, which redirects into its own namespace, it can.
+4. **Job objects.**
+   - **Nesting:** the launcher was already in a job (Task Scheduler's), and a launcher that puts itself in another job first can still give the container its own kill-on-close job.
+   - **Assignment at creation:** `PROC_THREAD_ATTRIBUTE_JOB_LIST` works together with `PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES`, so no suspended-then-assign window is needed.
+   - **Active-process limit:** with a limit of 1, every `CreateProcess` from inside fails with `ERROR_NOT_ENOUGH_QUOTA` (1816) and the completion port gets `ACTIVE_PROCESS_LIMIT` (3). With a limit of 3, two children start.
+   - **Memory limit:** at 64 MB, allocation fails at 62 MB and the port gets `JOB_MEMORY_LIMIT` (10).
+   - **Inside the container:** it can create a job and assign its own child (nested jobs are not blocked). `CREATE_BREAKAWAY_FROM_JOB` is refused (5) unless the job has `BREAKAWAY_OK`, which therefore must never be set.
+   - **Launcher death:** killing the launcher killed the container.
+   - **WER:** a WerFault started for the container is not counted in its job.
+5. **Desktop.**
+   - A **named** `CreateWindowStationW` fails with 5 from this non-elevated, medium-integrity context. An **unnamed** one (`NULL` name, as Chromium does; read the name back with `GetUserObjectInformationW`) works.
+   - Inside the container, `OpenInputDesktop` is refused.
+   - Without a private desktop, the container started on the user's `WinSta0\Default`.
+6. **Network.**
+   - With no capability, TCP to the internet fails with `WSAEACCES` (10013).
+   - With `internetClient`, it connects.
+   - Loopback to a listener of the same user timed out with and without `internetClient`; there is no exemption.
+7. **The environment block is rewritten.**
+   - **What changes:** creating an AppContainer process replaces `TEMP`, `TMP` and `LOCALAPPDATA` with `<LOCALAPPDATA of the block>\Packages\<container name>\AC\Temp` and `…\AC`, and the launcher's `TEMP` is ignored.
+   - **The leak:** by default `TEMP` is per container, that is per project, and session B read a file that session A wrote there.
+   - **The fix (verified):** the launcher sets `LOCALAPPDATA=<session>\localappdata` in the block and pre-creates `<session>\localappdata\Packages\finisher-<project-uuid>\AC\Temp`, which inherits the session's capability ACE. `TEMP` then lands in the session directory and session B is refused.
+   - **Nested processes:** a process the container starts keeps the `TEMP` it is given; there is no rewrite.
+   - Other per-container folders (`AC\INetCache`, cookies) were not tested.
+8. **Node 24.22.2 in the container.**
+   - **Works:** file operations in granted roots, rename, `fs.watch`, `worker_threads`, crypto, `os.userInfo`, `os.networkInterfaces`, `fs.realpathSync.native`, and a `net` client on the server pipe. DNS and HTTPS work only with `internetClient`. The server-data root stays unreadable. Child processes with `stdio: 'inherit'` or `'ignore'` work.
+   - **(a) Script paths fail.** Node's JS `realpath` (used for the main script and for every `require` by path) `lstat`s each ancestor, including the drive root. On this host `C:\` and `E:\` have no `ALL APPLICATION PACKAGES` ACE, and neither do `C:\Users`, the profile or `AppData`. So `node script.js` fails with `EPERM, lstat 'C:\'`. `--preserve-symlinks --preserve-symlinks-main` on the command line avoids it (main script plus relative `require` verified), and so does `node -e`. The `NODE_OPTIONS` form was not tested.
+   - **(b) Piped stdio hangs.** `spawn`, `spawnSync` and `execSync` with **piped stdio hang forever**, and the `spawnSync` timeout does not fire. libuv names its stdio pipes `\\?\pipe\uv\…`; the container may not create them (point 3), libuv reports `EADDRINUSE` and retries forever. So Node tools that spawn with pipes from inside a container hang: npm scripts, Node hooks that run commands, and Node MCP servers started by the CLI.
+   - **Unaffected:** pipes the parent creates outside the container (`finisherd` starting a Node plugin host). Rust `std::process` with pipes works inside, and Claude Code 2.1.319 (Bun) starts (`--version`). S8 ran real Claude Code turns with PowerShell.
+9. **wgpu over D3D12**, with no capability (toolchain read only): enumerates the discrete, integrated and WARP adapters, picks the discrete GPU, and runs a 1M-element compute pass with a correct readback. This holds on a private desktop and on the user's desktop.
+10. **Media Foundation**, with no capability:
+    - **Decode:** `SourceReader` decodes a 4 s 720p H.264 MP4 both through a D3D11 DXGI device manager (120/120 frames in DXGI surfaces, so DXVA) and in software.
+    - **Encode:** the vendor's hardware **encoder** MFTs (H.264, HEVC, AV1) enumerate and activate.
+    - **Sharing:** a D3D11 texture shared by NT handle opens on D3D12 (`OpenSharedHandle`).
+    - **Decoder MFTs:** hardware decoder MFT enumeration returns none on this GPU, unsandboxed as well; decode goes through DXVA.
+    - **Grants:** the media file itself needs a grant; without one, `0x80070005`.
+    - sp6's "to be proven in 6B's validation" is answered for this GPU only.
+11. **WER (Decision 22).**
+    - **Error mode set before `CreateProcess` and inherited:** an access violation in the container starts no WerFault and logs no Application Error event.
+    - **`__fastfail` (`int 0x29`) still reaches WER.** The service starts two headless `WerFault.exe -u` (one parented to the crashing process, one to the service). This holds with `JOB_OBJECT_LIMIT_DIE_ON_UNHANDLED_EXCEPTION`, and also with a per-user `WerAddExcludedApplication` entry.
+    - **No visible trace:** no window appeared (no WerFault had a main window), and no report directory appeared under the per-user or machine `ReportArchive`/`ReportQueue`.
+    - **Exclusion not provable here:** this host wrote no report for unsandboxed crashes either, so the exclusion's effect on reports could not be observed.
+    - **Without the error mode,** both crash kinds start WerFault and log event 1000.
+    - **Conclusion:** the inherited error mode is required, and the reworded `fastfail_dies_without_wer` assertion (no window, no report; not "no process") is the right one.
+12. **The sign-in store shared in place (B7, Windows).**
+    - **Links without elevation.** A file symbolic link is refused (no `SeCreateSymbolicLinkPrivilege`, Developer Mode off), so §8.6's Windows file symlink is unavailable on a default machine. A hard link works (same volume). The file has one DACL under both names: an ACE for one shared sign-in capability on the store file alone let sessions A and B read through their own links, and an in-place write through A's link was seen by B. A could not list the sign-in home or create a file in it, and without the capability it was refused. A directory junction can be created, but the target's ACL still applies.
+    - **Rename breaks the link.** A temp-and-rename write through A's hard link replaced A's name with a private file and left the home stale.
+    - **Claude Code 2.1.319: no link works.** The CLI's code applies on every OS.
+      - Its file store is `<dir>\.credentials.json`, with `<dir>` = `CLAUDE_SECURESTORAGE_CONFIG_DIR` when set, else the config directory.
+      - It writes by temp file (`<file>.tmp.<hex>`) and rename. Its in-place fallback **refuses a target with more than one link** (`EMLINK`, "it is hard-linked"), and its reader **refuses symlinks** (`O_NOFOLLOW`, "refused-symlink").
+      - The first refresh therefore replaces a hard link, and a symlink is refused.
+      - A server-side flag (`tengu_windows_credman`, cached in `.claude.json`) or `CLAUDE_CODE_FORCE_WINDOWS_CREDMAN=1` moves the Windows store to Credential Manager, under a target name keyed by the store directory (`Claude Code-credentials-<first 8 hex of SHA-256 of the dir>`). A container cannot reach Credential Manager (S8).
+    - **What should work instead (recommendation for 7D and spec §8.6; not exercised with a real sign-in):**
+      - The session gets a per-session `CLAUDE_CONFIG_DIR` plus `CLAUDE_SECURESTORAGE_CONFIG_DIR=<server-data>/providers/claude/store/`, a directory that holds only the store. The user's sign-in command sets both variables.
+      - The sandbox grants the shared sign-in capability modify on that one directory, since temp and rename need create and delete there, and nothing else of `providers/`.
+      - Claude Code loads nothing from that directory as configuration, so the persistence escape stays closed.
+      - The variable is undocumented, so re-validate it per CLI version; §8.6's fallback (the sign-in home as config directory) remains the fallback.
+    - **Codex** keeps `auth.json` as a file in its home. Its write pattern was not checked here (compiled binary); B7 on Linux/macOS decides, since the code is the same.
+
+**Recommendations for Task 9.**
+- **Capabilities:**
+  - Implement Decision 16 as written. Derive the session capability in Rust (SHA-256 of the upper-cased UTF-16LE `finisher-session-<id>`), and make point 1's matrix the escape test.
+  - Add two **static** capabilities to every sandboxed process: one for the read-only toolchain roots (granted once, point 2) and, for agents, one per harness for the sign-in store (point 12), instead of granting the store to every session's capability.
+- **Process set-up:**
+  - `desktop.rs` creates the window station unnamed.
+  - `launch.rs` sets `LOCALAPPDATA` in the block to a per-session directory and pre-creates the derived `AC\Temp`, and also sets `TMPDIR`.
+  - Assign the job with `PROC_THREAD_ATTRIBUTE_JOB_LIST`, and never set `BREAKAWAY_OK`.
+  - Map `ACTIVE_PROCESS_LIMIT`/1816 and `JOB_MEMORY_LIMIT` to `sandbox.violation`.
+- **`worker` profile:** it can stay capability-free for D3D12, DXVA decode and the MF encoders.
+- **Escape and compatibility suite:** add Node's root `lstat` and the hang on piped `spawn` from inside the container. **Decided (owner, 2026-11-08):** see Decision 25 and Task 9 Steps 3 and 4: ship with the limit but fail fast, carry `--preserve-symlinks --preserve-symlinks-main`, and prepare a libuv patch in `archive/` for the owner to file.
+
+**Recommendations for Task 10.**
+- **Session directories:**
+  - The broker creates them with the capability ACE already in the creating security descriptor (nothing to propagate).
+  - Their revoke is their deletion at session end, still recorded in the WAL for the sweep.
+  - Grants on existing trees cost about 50 ms per 1,000 files.
+- **Pipe:** `PipeServer.allow(<container SID>)` as planned. `fin` keeps `GENERIC_READ | FILE_WRITE_DATA`, and the Low label stays.
+
+**Not tested.**
+- Real sign-in, refresh in place and parallel refresh. `system/init` and `account/read` labels (they need a person signing in).
+- Codex's store writer.
+- `CLAUDE_SECURESTORAGE_CONFIG_DIR` with a real sign-in.
+- The `NODE_OPTIONS` form of the Node flags.
+- Bun's own piped spawn inside a container (relied on S8).
+- Other GPU vendors and hybrid laptops. HEVC without the extensions. Hardware decoder MFTs.
+- WER report creation on a host that keeps reports.
+- Handles that stay open across a revoke.
+- A second local account.
+- The other per-container folders.
 
 ### Task 1: `fin-sandbox`: the policy, the profiles and enumeration — tier: opus — 7C-1
 
@@ -315,9 +548,15 @@ export function assertSessionEnv(env: Readonly<Record<string, string | undefined
 - Create: `crates/fin-sandbox/src/windows/{mod.rs, appcontainer.rs, capability.rs, job.rs, desktop.rs, apply.rs, wer.rs}`, `crates/fin-sandbox/tests/escape_windows.rs`.
 - Modify: `launch.rs` (error mode before `CreateProcessW`, Decision 22), `spawner.rs` (Windows arm: the AppContainer token for `CreateProcessAsUserW` and the `PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES` attribute through `PlatformCommand.{token, attributes}`; the host's spawn broker keeps `HANDLE_LIST`, `crates/fin-jobhost/src/windows/{spawn.rs, broker.rs}`; `job_limits {active_processes: 1}` for `worker`), `crates/fin-workers/tests/host_windows.rs:240` and `crates/fin-jobs/tests/worker_runtime.rs:478-484` (`fastfail_dies_without_wer` asserts no window and no report, Decision 22), `TASKS.md`.
 
-- [ ] **Step 1: Write failing tests** (non-elevated session): container profile create/reuse/delete per project; capability SID derivation is stable and distinct per session; **a process of session B cannot open session A's directory** (Decision 16, or 17's fallback per Task 0 B7); the S8 Windows paths (junctions, ADS, 8.3 names, `\\?\`, admin shares, WMI, `schtasks`) refused; Credential Manager denied; server data unreadable; no loopback for any profile; `worker`: a second process is refused by the job's active-process limit; `plugin`: no network capability; the job object kills the tree when the launcher dies; **no window appears on any desktop for an access violation or a `__fastfail`** and no report lands in `ReportArchive`/`ReportQueue` (Decision 22).
+- [ ] **Step 1: Write failing tests** (non-elevated session): container profile create/reuse/delete per project; capability SID derivation is stable and distinct per session; **a process of session B cannot open session A's directory** (Decision 16, or 17's fallback per Task 0 B7); the S8 Windows paths (junctions, ADS, 8.3 names, `\\?\`, admin shares, WMI, `schtasks`) refused; Credential Manager denied; server data unreadable; no loopback for any profile; `worker`: a second process is refused by the job's active-process limit; `plugin`: no network capability; the job object kills the tree when the launcher dies; **no window appears on any desktop for an access violation or a `__fastfail`** and no report lands in `ReportArchive`/`ReportQueue` (Decision 22); **a Node child with piped stdio inside the container ends with the `WINDOWS_NODE_PIPES` error within the guard's timeout instead of hanging, and `node script.js` runs with the carried flags** (Decision 25).
 - [ ] **Step 2: Implement.**
-- [ ] **Step 3: Run** the gates on the Windows host through a non-elevated session → PASS; `cargo check` for the other targets. **Commit** `feat(sandbox): Windows AppContainer profiles, job objects and no-UI fault reporting`.
+- [ ] **Step 3 (Decision 25: fail fast on Node piped stdio):** build the Node guard and make the Windows launcher carry it. In `archive/` first, check these on the Windows host and keep the one that works; each is cheap to test:
+  - **Guard (the intended design).** A small CommonJS preload shipped with `fin-sandbox-exec` (`crates/fin-sandbox/data/windows/node-guard.cjs`, no dependencies). The launcher sets a marker variable in the container's environment. On the first `child_process` call with piped stdio the guard runs a probe in a `worker_threads` worker: create a named pipe with a libuv-style name (`\\?\pipe\uv\…`) and give up after about 2 s; if it cannot, the call throws an error with code `WINDOWS_NODE_PIPES` and a message naming the limit ("Node child processes with piped stdio are not supported inside the Windows sandbox until Node ships the AppContainer pipe fix; see the Finisher README"). The probe runs off the main thread because the hang is in `uv_spawn` on the calling thread and `spawnSync`'s timeout does not fire. A probe that succeeds caches the result and changes nothing, so the guard goes inert once Node is fixed.
+  - **Delivery.** Node started by the launcher gets `--preserve-symlinks --preserve-symlinks-main --require <guard>` on its command line. Also test the `NODE_OPTIONS` form (`--preserve-symlinks --preserve-symlinks-main --require <guard>`), which S9 did not: if it works, set it in the container environment so Node started by npm, hooks and MCP servers inherits both the flags and the guard. Bun and Rust children ignore it.
+  - **Backstop.** A Node process that did not load the guard still hangs, so the launcher's wall-time limit (`Limits.wall_ms`, Decision 4a) ends the job tree and reports `sandbox.violation {op: "nodePipes"}` if the tree was alive with no I/O progress at the end. Do not add a CPU-sampling heuristic: it would kill legitimate compute.
+  - **Tests:** `node_piped_spawn_fails_fast` (`spawn`, `spawnSync` and `execSync` with piped stdio from inside the container end within 5 s with `WINDOWS_NODE_PIPES`, the process exits non-zero), `node_inherit_and_ignore_stdio_still_work`, `node_script_runs_with_preserve_symlinks`, `guard_inert_when_pipes_work` (the probe against a pipe name the container may create passes and the call goes through).
+- [ ] **Step 4 (libuv patch, for the owner to file):** prepare the smallest patch to libuv that creates stdio pipes under `\\.\pipe\LOCAL\` when the process runs in an AppContainer (the pipe-name builder in `src/win/pipe.c`, selected by the process-token's AppContainer flag), with a reproduction (the S9 hang from inside a container) and a test, against a current libuv checkout and Node 24.22.2's bundled libuv. Put the patch, the repro and a short note in `archive/s9/windows/libuv-appcontainer-pipes/` (git-ignored). **The owner files it upstream. Agents must not open upstream issues or pull requests**, and must not push the patch anywhere. Check libuv's licence (MIT) before copying any code.
+- [ ] **Step 5: Run** the gates on the Windows host through a non-elevated session → PASS; `cargo check` for the other targets. **Commit** `feat(sandbox): Windows AppContainer profiles, job objects and no-UI fault reporting`.
 
 ### Task 10: The ACL broker and per-project pipe SIDs — tier: opus — 7C-4
 
@@ -377,7 +616,7 @@ export function assertSessionEnv(env: Readonly<Record<string, string | undefined
 
 ### Task 15: Spec as built, cross-references, tracker — tier: sonnet — after Task 14
 
-**Files:** Modify `docs/specs/2026-11-07-sub-project-7-agent-runtime-design.md` (§8 rewritten "as built": names, data files, codes, the `READY` table, Decisions 16/17 outcome; §1.4 7C row; §18 file map; §19 decisions; §8.9's `before7C` paragraph replaced), `docs/specs/2026-11-07-sub-project-5-control-plane-design.md` (§4.6, §4.17, §6.2, §6.3, §6.12: each "until 7C" marked closed with a pointer, or left open with the reason), `docs/specs/2026-11-07-sub-project-6-media-engine-design.md` §3.5.1 (the Landlock phase delivered), `docs/specs/2026-11-07-sub-project-8-plugins-design.md` §16.1 (the profile delivered; the store follow-up's outcome), `docs/specs/2026-11-01-finisher-architecture-design.md` (§27 pointer; §8.4 "bwrap fallback" removed), `README.md` (security model: what the sandbox now guarantees per OS, and what F2 hosts lack), `TASKS.md` (follow-ups).
+**Files:** Modify `docs/specs/2026-11-07-sub-project-7-agent-runtime-design.md` (§8 rewritten "as built": names, data files, codes, the `READY` table, Decisions 16/17 outcome; §1.4 7C row; §18 file map; §19 decisions; §8.9's `before7C` paragraph replaced), `docs/specs/2026-11-07-sub-project-5-control-plane-design.md` (§4.6, §4.17, §6.2, §6.3, §6.12: each "until 7C" marked closed with a pointer, or left open with the reason), `docs/specs/2026-11-07-sub-project-6-media-engine-design.md` §3.5.1 (the Landlock phase delivered), `docs/specs/2026-11-07-sub-project-8-plugins-design.md` §16.1 (the profile delivered; the store follow-up's outcome), `docs/specs/2026-11-01-finisher-architecture-design.md` (§27 pointer; §8.4 "bwrap fallback" removed), `README.md` (security model: what the sandbox now guarantees per OS, and what F2 hosts lack; **the limits list: on Windows, Node tools that spawn child processes with piped stdio fail fast with `WINDOWS_NODE_PIPES` (Decision 25), until Node ships the fix**), `TASKS.md` (follow-ups).
 
 - [ ] **Step 1: Write** the as-built sections from the code (names, defaults, codes), and every residual that stays open, with its reason.
 - [ ] **Step 2: Run** the gates → PASS. **Commit** `docs: record sub-project 7C as built`.
@@ -392,4 +631,4 @@ export function assertSessionEnv(env: Readonly<Record<string, string | undefined
 
 ## Questions for the owner
 
-**Answered (2026-11-08)**, each recorded in the Decision it concerns as "Owner decision (2026-11-08)": mounts and `RESOLVE_NO_XDEV` (Decision 20); one warm worker per open project (Decision 19); other sessions' workspaces (Decision 6); WER exclusion at install (Decision 22); no plugin-tree re-hash (Decision 21); no opt-out of enforced profiles (Decision 5). No open questions.
+**Answered (2026-11-08)**, each recorded in the Decision it concerns as "Owner decision (2026-11-08)": mounts and `RESOLVE_NO_XDEV` (Decision 20); one warm worker per open project (Decision 19); other sessions' workspaces (Decision 6); WER exclusion at install (Decision 22); no plugin-tree re-hash (Decision 21); no opt-out of enforced profiles (Decision 5); Node piped stdio on Windows (Decision 25: ship with the limit but fail fast, carry the symlink flags, libuv patch prepared in `archive/` for the owner to file). No open questions.

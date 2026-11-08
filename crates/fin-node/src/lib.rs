@@ -54,6 +54,7 @@ mod hash;
 mod history;
 mod jobhost;
 mod journal;
+mod kinds;
 mod library;
 mod maintenance;
 mod media;
@@ -81,6 +82,7 @@ pub use jobhost::{
     JobHost, JobKindVersion, job_kind_versions, resolve_memory_rule, validate_job_params,
 };
 pub use journal::{JournalHandle, kind_names, rpc_methods, validate_privacy};
+pub use kinds::kind_version;
 pub use library::{
     LibraryWatch, library_canonical_root, library_probe_root, library_probe_status,
     library_probe_version, library_watch_start,

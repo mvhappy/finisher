@@ -4,6 +4,7 @@
 import type { JobView } from "@finisher/contracts";
 import { Duration, Effect, Fiber, Stream } from "effect";
 import { afterEach, describe, expect, test } from "vitest";
+import { agentWarnings } from "../src/agent/warnings.ts";
 import type { Audit } from "../src/control/audit.ts";
 import { canSee } from "../src/jobs/access.ts";
 import { watchJobs } from "../src/jobs/watch.ts";
@@ -179,9 +180,10 @@ describe("server.status", () => {
   test("reports_the_job_hosts_caps_and_warns_while_unsandboxed", async () => {
     const s = await Effect.runPromise(serverStatus(deps(caps)));
     expect(s.jobs.caps).toEqual(caps);
-    expect(s.warnings).toEqual([sandboxWarning(caps as never)]);
+    // The job host's warning, then the agent runtime's (agent tools are unsandboxed until 7C).
+    expect(s.warnings).toEqual([sandboxWarning(caps as never), ...agentWarnings()]);
     expect(s.warnings[0]).toMatchObject({ code: "SANDBOX_DISABLED", sandbox: "none" });
     const boxed = await Effect.runPromise(serverStatus(deps({ ...caps, sandboxed: true, sandbox: "fin-sandbox" })));
-    expect(boxed.warnings).toEqual([]);
+    expect(boxed.warnings).toEqual(agentWarnings());
   });
 });

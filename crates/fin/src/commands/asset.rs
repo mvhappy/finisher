@@ -83,6 +83,8 @@ pub struct AddArgs {
 }
 
 pub fn plan_add(b: &mut Builder<'_>, a: &AddArgs, placeholder: &str) -> Result<Value, CoreError> {
+    // A `batch` line's path is confined like a typed one (agent credentials, 14c).
+    crate::agent_paths::check(&a.path, b.project.as_deref())?;
     let probed = b.backend.probe(&paths::resolve_checked_str(&a.path)?)?;
     let mut resolved = json!({ "path": probed.path, "kind": probed.kind });
     if let Some(d) = probed.duration {

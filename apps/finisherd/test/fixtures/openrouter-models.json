@@ -25,6 +25,14 @@
       "architecture": { "input_modalities": ["text"] },
       "pricing": { "prompt": "0.000001", "completion": "0.000004" }
     },
+    {
+      "id": "openrouter/auto",
+      "context_length": 2000000,
+      "top_provider": {},
+      "supported_parameters": ["tools"],
+      "architecture": { "input_modalities": ["text"] },
+      "pricing": { "prompt": "-1", "completion": "-1" }
+    },
     { "id": "acme-closed/no-window", "pricing": {} },
     { "context_length": 1000 }
   ]

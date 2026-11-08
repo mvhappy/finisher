@@ -3,6 +3,8 @@
 
 mod addr;
 mod agent_env;
+mod agent_paths;
+mod agent_session;
 mod auth;
 mod backend;
 mod client;
@@ -22,6 +24,7 @@ mod pipe_client;
 mod private_windows;
 mod registry;
 mod registry_edit;
+mod registry_library;
 mod registry_plugins;
 mod registry_settings;
 mod values;
@@ -48,6 +51,7 @@ use commands::history::{CheckpointArgs, CherryPickArgs, MergeArgs, RevertArgs, U
 use commands::item::ItemCmd;
 use commands::job::{JobCmd, WaitArgs};
 use commands::keyframe::KeyframeCmd;
+use commands::library::LibraryCmd;
 use commands::look::LookArgs;
 use commands::marker::MarkerCmd;
 use commands::media::{GraphicCmd, ImageCmd};
@@ -55,6 +59,7 @@ use commands::media_caps::MediaCmd;
 use commands::param::ParamCmd;
 use commands::plugin::{PluginCmd, RegistryCmd};
 use commands::project::ProjectCmd;
+use commands::search::SearchArgs;
 use commands::style::StyleCmd;
 use commands::timeline::TimelineCmd;
 use commands::track::TrackCmd;
@@ -114,6 +119,9 @@ enum Cmd {
     #[command(subcommand)]
     Job(JobCmd),
     Wait(WaitArgs),
+    #[command(subcommand)]
+    Library(LibraryCmd),
+    Search(SearchArgs),
     #[command(subcommand)]
     Media(MediaCmd),
     #[command(subcommand)]
@@ -225,7 +233,11 @@ fn parse_named(args: Vec<OsString>) -> Result<(Cli, Option<String>), CoreError> 
         .map_err(|e| clap_usage(&e))?;
     diag::note_matches(&cmd, &matches);
     let cli = Cli::from_arg_matches(&matches).map_err(|e| clap_usage(&e))?;
-    Ok((cli, agent_env::command_name(&matches)))
+    let name = agent_env::command_name(&matches);
+    // Under an agent credential, file arguments are confined before anything opens them (14c).
+    agent_paths::check_project(cli.globals.project.as_deref())?;
+    agent_paths::check_matches(&matches, name.as_deref(), cli.globals.project.as_deref())?;
+    Ok((cli, name))
 }
 
 #[cfg(test)]
@@ -247,6 +259,9 @@ fn run(args: Vec<OsString>) -> Result<Value, CoreError> {
             path,
         }) => match command.as_slice() {
             [p] if p == "param" => commands::schema::params(scope.as_deref(), path.as_deref()),
+            [c] if c == "commands" && scope.is_none() && path.is_none() => {
+                Ok(commands::schema::index(&configure(Cli::command())))
+            }
             _ if scope.is_some() || path.is_some() => Err(output::usage(
                 "--scope and --path belong to fin schema param",
                 json!({ "command": command }),
@@ -299,6 +314,8 @@ fn run(args: Vec<OsString>) -> Result<Value, CoreError> {
         Some(Cmd::Look(a)) => commands::look::run(backend()?.as_ref(), g, &a),
         Some(Cmd::Job(c)) => commands::job::run(backend()?.as_ref(), &c),
         Some(Cmd::Wait(a)) => commands::job::wait(backend()?.as_ref(), &a),
+        Some(Cmd::Library(c)) => commands::library::run(backend()?.as_ref(), &c),
+        Some(Cmd::Search(a)) => commands::search::run(backend()?.as_ref(), &a),
         Some(Cmd::Media(c)) => commands::media_caps::run(backend()?.as_ref(), &c),
         Some(Cmd::Fonts(FontsCmd::Pin(a))) => edit(g, Edit::Font(FontEdit::Pin(a))),
         Some(Cmd::Fonts(FontsCmd::Repin(a))) => edit(g, Edit::Font(FontEdit::Repin(a))),
@@ -472,6 +489,14 @@ mod tests {
             "job pause --all",
             "job resume 01job",
             "wait 01job 01job2 --any --timeout 5",
+            "library ls",
+            "library status raw",
+            "library scan raw --full --dir clips",
+            "library files raw clips --state present --kind video --limit 5 --cursor c1",
+            "library show raw clips/a.mov",
+            "library search interview --lib raw --min-duration 90s --since 2026-11-01",
+            "library set raw --name Footage --include *.mov --poll 300 --pause",
+            "search interview --kind video --limit 5",
             "batch",
             "help clip",
             "whoami",

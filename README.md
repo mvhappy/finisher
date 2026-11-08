@@ -223,16 +223,29 @@ ticket over a proved connection and sends it when it connects.
   server.
 
 You do them in the Finisher app (later) or the server's console. `finisherd` with no argument
-serves. `finisherd help` lists the console commands. `finisherd status`, `audit`, `agent ls`
-and `stop` run anywhere. **Every command that changes something needs an interactive
-terminal**: it says what will happen, shows a short code from the server, and goes ahead only
-once you type the code back. A command run from a pipe or a script is refused with
-`CONSOLE_NEEDS_TTY`.
+serves. `finisherd help` lists the console commands. `finisherd status`, `audit`, `agent ls`,
+`agent credentials` and `stop` run anywhere. **Every command that changes something needs an
+interactive terminal**: it says what will happen and asks you to confirm. Most ask `Proceed? [y/N]`. What
+cannot be undone or destroys something asks you to type the target's name back, GitHub-style:
+the library's name for `library rm` (and for `library set --accept-unmounted` or
+`--accept-empty-root`, which can mark files missing), the registry's id for `registry rm`, the
+root's first 8 characters for `registry forget`, the plugin's id for `plugin rm --purge-data`
+and for third-party code, the word `audit` for `audit purge`, the word `diagnostics` for
+`diagnostics purge`, `credential.master` for `auth rotate-master`, the project id's first 8
+characters for `project takeover --confirm`, the folder's name for `project open --relocate`,
+the session id's first 8 characters for `agent delete`, the key id's first 8 characters for
+`provider key rm` and the word `local` for `provider local rm`.
+A command run from a pipe or a script is refused with `CONSOLE_NEEDS_TTY`. Once you confirm, the
+console fetches a one-time code from the server and sends it with the change; you never see it.
+The server still refuses a confirmed change without a fresh code from the same console session.
 
-**What the typed code protects against, and what it does not.** It stops `yes |` pipes, pasted
-scripts and an agent that runs `fin`. It does **not** stop a program running as your user that
-can read `<server-data>/auth/`: such a program can prove as the console itself, or drive a
-pseudo-terminal (`script`, `expect`) and type the code. **An agent harness you start in a plain
+**What the confirmation protects against, and what it does not.** The terminal rule stops pipes
+(`yes | finisherd …`), pasted scripts, cron jobs and an agent that runs `fin`. A `y` on its own
+would be satisfied by `yes |`, so for y/N actions the terminal rule is what keeps that pipe out;
+typing the name is the step a blind `y` cannot pass, in a pipe or in a terminal. It
+does **not** stop a program running as your user that can read `<server-data>/auth/`: such a
+program can prove as the console itself, or drive a pseudo-terminal (`script`, `expect`) and
+answer `y` or type the name it reads off the screen. **An agent harness you start in a plain
 shell runs as you**, so until Finisher sandboxes agents (a later version), human-only operations,
 scopes and branch limits bind only harnesses that go through `fin` or MCP with their own
 credential. They record who did what and prevent mistakes. They are not a wall against hostile
@@ -246,10 +259,14 @@ finisherd agent mint --label my-harness --out ~/agent.cred           # default s
 finisherd agent mint --label reviewer --scope project.read --project <id> --out ~/r.cred
 finisherd agent mint --label writer --branch own --out ~/w.cred      # may write only branches it makes
 finisherd mcp setup --out ~/mcp.cred                                 # for the MCP adapter
-finisherd agent ls                                                   # live credentials (--all for ended ones)
+finisherd agent credentials                                          # live credentials (--all for ended ones)
 finisherd agent revoke <id>                                          # ends it now, with its connections
-FIN_CREDENTIAL=~/agent.cred fin whoami
+FIN_CREDENTIAL=~/agent.cred FIN_SERVER=<socket> FIN_PROJECT_DIR=<project> fin whoami
 ```
+
+Under an agent credential `fin` reads nothing of the server's data: it needs `FIN_SERVER` (the
+server's socket, as `finisherd.json` names it) and `FIN_PROJECT_DIR` (the project's folder)
+beside the credential, and it never falls back to your own key.
 
 - **Default scopes:** the server's status, read and write projects and reviews, read and submit jobs, read and scan
   libraries, read and record diagnostics. Never a human-only scope, and not `project.create`,
@@ -275,6 +292,43 @@ file may have leaked, run `finisherd auth rotate-master`. It ends every agent an
 The audit log (`finisherd audit`) records sign-in failures, refusals, credential changes and the
 other security events, locally and for you only.
 
+## Agents
+
+Finisher runs its own agent: a loop inside the server that edits a project through `fin`, on a
+model at [OpenRouter](https://openrouter.ai) (your key) or on a local OpenAI-compatible server
+such as Ollama or LM Studio (no key). Each session works on **its own branch** with its own
+credential, so it cannot write `main` or any branch but its own, and reads only its project.
+You review its branch and merge it yourself.
+
+```bash
+finisherd provider key set openrouter [--project <dir|id>]   # paste the key (not echoed)
+finisherd provider local set ollama                          # or lmstudio, or a base URL
+finisherd provider local test                                # lists the server's models
+finisherd agent providers                                    # what is set up (never a key)
+
+finisherd agent start --project <dir|id> --model <id> [--provider openrouter|local] \
+  [--mode plan|draft|auto] [--role editor] [--budget-usd 2] --prompt "tighten the intro"
+finisherd agent watch <session>              # follow it; exits when the session ends
+finisherd agent ls | show <session> [--nodes] | prompt <session> <text> | steer <session> <text>
+finisherd agent interrupt | resume | end <session>
+finisherd agent approve <approval> allow --add 1   # raise a budget it ran out of, then prompt again
+fin merge <branch>                           # take its work into your branch
+```
+
+- **Modes:** `plan` reads and proposes (no branch); `draft` edits its branch (the default);
+  `auto` is `draft` for now. A session never holds more than the person who started it.
+- **Budgets** (tokens, money, wall clock, calls per run) stop a session at a safe point and ask
+  you for more. A model with no known price is refused (`PRICING_UNKNOWN`); local models cost
+  nothing.
+- **Conversations stay on your server** in `control.db` for resume until you delete the
+  session (`finisherd agent delete`) or 90 days after it ends. Deleting recorded diagnostics
+  does not delete them. A session's metadata goes to the diagnostics journal while diagnostics
+  are on; its content is recorded only if you turned training on, and then in a separate store.
+- **Not sandboxed yet.** Until a later version adds the OS sandbox, an agent's tools run as your
+  user; the server warns `SANDBOX_DISABLED` on every session. The built-in agent's tools are
+  `fin` and file tools confined to its workspace, but run agents only on projects and prompts
+  you trust.
+
 ## Plugins
 
 A plugin adds something to Finisher: a content pack (styles, presets, templates) or a code
@@ -282,8 +336,8 @@ plugin. Plugins come from **registries**: signed folders (local, on a NAS or a s
 a clone of a git repository) that a publisher keeps.
 
 - **Only a person installs plugins**, through the app or the server console (`finisherd plugin
-  install <id>`, which prints the plan with every permission and its risk and asks for `yes`;
-  third-party code asks for the plugin's id typed back). Agents and `fin` can read and suggest,
+  install <id>`, which prints the plan with every permission and its risk and asks
+  `Proceed? [y/N]`; third-party code asks for the plugin's id typed back). Agents and `fin` can read and suggest,
   never install, update, enable or remove.
 - **Registry trust is the publisher's root hash.** `finisherd registry add <id> --dir <path>`
   shows the registry's root SHA-256 and the key ids behind it, and adds nothing until you paste
@@ -365,7 +419,7 @@ Changing consent, deleting what was recorded, clearing a project's `never` flag 
 recorded content are yours alone: `fin` (and any agent that runs it) is refused with
 `HUMAN_ONLY`. You make these changes in the Finisher app or the server's console
 (`finisherd diagnostics consent …`, `purge`, `project default`, `export --content`), which asks
-you to type a short code it shows before anything changes. Training cannot be turned on from
+`Proceed? [y/N]` before anything changes (a purge asks you to type `diagnostics`). Training cannot be turned on from
 the console either.
 
 Withdrawing a purpose takes effect before anything else is written. It stops the upload view
