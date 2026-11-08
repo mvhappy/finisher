@@ -5,9 +5,11 @@ import { rootArg, walk } from "./walk.mjs";
 
 // Test hooks must never reach a shipped binary.
 // - `test-hooks` features (`fin-store/test-hooks`: fault injection, the passive follower;
-//   `fin/test-hooks`: `FIN_OFFLINE_SNAPSHOT`, `FIN_TEST_COMMIT_GATE`): the normal (non-dev)
+//   `fin/test-hooks`: `FIN_OFFLINE_SNAPSHOT`, `FIN_TEST_COMMIT_GATE`) and
+//   `fin-registry/test-http` (the HTTP transport for `tuf-conformance`): the normal (non-dev)
 //   feature graph of the workspace's default members must not enable one (TEST_HOOKS_IN_BUILD).
-//   Only dev-dependencies (fin's self dev-dependency) and `fin-store-xhost`, built alone, do.
+//   Only dev-dependencies (fin's self dev-dependency), `fin-store-xhost`, built alone, and
+//   `fin-registry`'s own tests and conformance example do.
 // - fin's hook variables (`FIN_OFFLINE_SNAPSHOT`, any `FIN_TEST_*`) are read only through
 //   `backend::test_hook`, which is off without the feature: a direct `env::var`/`var_os` of
 //   one in `crates/fin/src`, by name or through its `*_ENV` constant, is TEST_HOOK_UNGUARDED.
@@ -23,9 +25,11 @@ if (r.error || r.status !== 0) {
   process.stderr.write(r.stderr ?? "");
   console.log(`TEST_HOOKS_IN_BUILD: cargo tree failed${r.error ? ` (${r.error.message})` : ""}`);
   failed = true;
-} else if (/ feature "test-hooks"/.test(r.stdout)) {
-  const lines = r.stdout.split("\n").filter((l) => l.includes('feature "test-hooks"'));
-  console.log(`TEST_HOOKS_IN_BUILD: the default members' build enables ${[...new Set(lines)].join(", ")}; keep crates that enable it out of default-members`);
+} else if (/ feature "(test-hooks|test-http)"/.test(r.stdout)) {
+  const lines = r.stdout
+    .split("\n")
+    .filter((l) => l.includes('feature "test-hooks"') || l.includes('feature "test-http"'));
+  console.log(`TEST_HOOKS_IN_BUILD: the default members' build enables ${[...new Set(lines)].join(", ")}; keep crates that enable them out of default-members`);
   failed = true;
 }
 

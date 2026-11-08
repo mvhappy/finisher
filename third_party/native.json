@@ -48,6 +48,20 @@
       "version": "0.17",
       "license": "Apache-2.0 AND ISC",
       "note": "the crate's bundled C and assembly (derived from BoringSSL), compiled by its build script"
+    },
+    {
+      "name": "AWS-LC",
+      "package": "aws-lc-sys",
+      "version": "0.47",
+      "license": "ISC AND (Apache-2.0 OR ISC) AND Apache-2.0 AND MIT AND BSD-3-Clause AND (Apache-2.0 OR ISC OR MIT) AND (Apache-2.0 OR ISC OR MIT-0)",
+      "note": "AWS-LC's bundled C and assembly, compiled by the crate's build script with its cc builder (no CMake); on Windows x64 the bundled `prebuilt-nasm` objects. `fin-registry` uses it through `aws-lc-rs` for TUF signatures and the editor's ed25519 keys (8A Decision 8)"
+    },
+    {
+      "name": "aws-lc-rs",
+      "package": "aws-lc-rs",
+      "version": "1.19",
+      "license": "ISC AND (Apache-2.0 OR ISC)",
+      "note": "its `links` key only ties it to one `aws-lc-sys` version; it compiles no C of its own"
     }
   ],
   "allow": [

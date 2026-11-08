@@ -1,0 +1,16 @@
+{
+  "manifestVersion": 1,
+  "id": "@acme/glue",
+  "version": "2.0.0",
+  "kind": "code",
+  "hostApi": "^1.0",
+  "license": "MIT OR Apache-2.0",
+  "publisher": { "name": "Acme" },
+  "platforms": ["darwin-arm64", "linux-x64", "linux-arm64", "win32-x64"],
+  "runtime": { "type": "node", "main": "dist/plugin.mjs", "node": ">=26.12" },
+  "permissions": [
+    { "perm": "hooks:observe", "hooks": ["PostCommand", "PreCommand"] },
+    { "perm": "hooks:modify", "hooks": ["PreCommand"] },
+    { "perm": "secrets", "names": ["example"], "mode": "brokered" }
+  ]
+}

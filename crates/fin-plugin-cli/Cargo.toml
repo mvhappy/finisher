@@ -1,0 +1,22 @@
+[package]
+name = "fin-plugin-cli"
+version = "0.0.0"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+description = "fin-plugin: publisher tooling to scaffold, validate and pack plugins and to run local-folder registries (not shipped with the app)."
+
+[[bin]]
+name = "fin-plugin"
+path = "src/main.rs"
+
+[dependencies]
+fin-plugin-api = { path = "../fin-plugin-api" }
+fin-registry = { path = "../fin-registry" }
+semver = "1"
+serde_json = "1"
+sha2 = "0.11"
+
+[dev-dependencies]
+tempfile = "3"
