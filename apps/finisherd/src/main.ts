@@ -58,7 +58,9 @@ import { layerProjectRegistry, ProjectRegistry, type RegistryOptions } from "./p
 import { registerMediaKinds } from "./jobs/kinds/media.look.ts";
 import { MAX_FRAME } from "./protocol.ts";
 import { claimSocketPath, makeLocalServer, serveRpc } from "./transport.ts";
-import { makeTicketedWebSocketServer, makeUpgradeCheck } from "./upgrade.ts";
+import { makeTicketedWebSocketServer, makeUpgradeCheck, WebSocketSlots } from "./upgrade.ts";
+import { type FrontRefusal, makeFront, type Route } from "./http/front.ts";
+import { loopbackPolicy } from "./http/policy.ts";
 import { ServerControlTag } from "./server-admin.ts";
 import { isServeCommand, runConsole } from "./console/main.ts";
 import { currentSandboxStatus, reporterFor, sandboxWarnings } from "./sandbox/status.ts";
@@ -191,13 +193,31 @@ export const serve = ({
       });
       // The WebSocket (Decision 24): a ticket in `Sec-WebSocket-Protocol`, Host and Origin checked first.
       let wsPort = 0;
-      const check = makeUpgradeCheck({ port: () => wsPort, tickets, origins: cachedOrigins(serverData) });
+      // The loopback listener (5A's lists exactly) and its HTTP front (5B Task 6): the routes are
+      // filled in once the pieces they answer from exist (the environment, below).
+      const loopback = loopbackPolicy(() => wsPort, cachedOrigins(serverData));
+      const check = makeUpgradeCheck({ policy: loopback, tickets });
+      const httpRoutes: Record<string, Route> = {};
+      // One pool of WebSocket slots for every listener (Decision 12), the reserve included.
+      const slots = new WebSocketSlots();
+      const auditFront = (r: FrontRefusal) =>
+        audit.append({
+          kind: "auth.fail",
+          principal: { kind: "anonymous", id: "" },
+          credentialKind: r.credentialKind,
+          outcome: "failed",
+          code: r.code,
+          details: { reason: r.reason, address: r.remote.slice(0, 64) },
+        });
       const { server: ws, port } = yield* Effect.mapError(
         makeTicketedWebSocketServer({
           check,
           // A message over the frame cap and its slack is dropped by ws (close 1009); one just over
           // the cap reaches `protocol.ts`, which answers `FRAME_TOO_LARGE` first.
           maxPayload: MAX_FRAME + 64 * 1024,
+          slots,
+          policy: loopback,
+          onRequest: makeFront(httpRoutes, loopback, undefined, { onRefused: auditFront }),
           onRefused: (r) => {
             if (r.reason === "badPath" || r.reason === "badVersion" || r.reason === "tooMany") return;
             audit.append({
@@ -298,6 +318,8 @@ export const serve = ({
           if (!removed) publish(diagnostics.enabled());
         },
       });
+      // `GET /.well-known/finisher` (anonymous, spec §5.5): the descriptor's public subset.
+      httpRoutes["GET /.well-known/finisher"] = async () => ({ status: 200, body: environment.wellKnown() });
       if (checkMoved(environment, controlStore, identity.renewed)) {
         yield* Effect.logWarning("finisherd: this server data was copied or moved: paired devices wait until its owner adopts or resets it");
       }

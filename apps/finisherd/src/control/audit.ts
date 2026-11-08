@@ -48,6 +48,8 @@ const DAY_MS = 86_400_000;
 const MINUTE_MS = 60_000;
 export const AUDIT_MAX_AGE_MS = 180 * DAY_MS;
 export const AUDIT_MAX_ROWS = 100_000;
+/** Distinct `auth.fail` addresses per credential kind and minute that get rows of their own. */
+export const AUDIT_ADDRESSES_PER_MINUTE = 64;
 const MAX_LIMIT = 1000;
 
 interface Row {
@@ -100,6 +102,9 @@ export class Audit {
   /** The current minute's aggregated rows (`failKey`) → row id. */
   #failMinute = -1;
   readonly #failRows = new Map<string, number>();
+  /** This minute's distinct `auth.fail` addresses per credential kind (review of 5B Task 6). */
+  #addressMinute = -1;
+  readonly #addresses = new Map<string, Set<string>>();
 
   constructor(store: ControlStore, clock: () => number = Date.now, opts: AuditOptions = {}) {
     this.#store = store;
@@ -112,6 +117,7 @@ export class Audit {
   append(e: AuditInput): void {
     try {
       const at = this.#clock();
+      e = this.#foldAddress(e, at);
       if (aggregated(e) && this.#aggregate(e, at)) return;
       let details = e.details ?? {};
       if (!auditDetailsValid(e.kind, details)) {
@@ -139,6 +145,30 @@ export class Audit {
       this.#failures++;
       process.stderr.write(`finisherd: warning: audit write failed (${e.kind}): ${String((err as Error)?.message ?? err)}\n`);
     }
+  }
+
+  /**
+   * At most `AUDIT_ADDRESSES_PER_MINUTE` distinct addresses per credential kind get rows of
+   * their own each minute; refusals from more fold into the kind's row without an address, so a
+   * host cycling addresses cannot flood the log and age out the pairing history.
+   */
+  #foldAddress(e: AuditInput, at: number): AuditInput {
+    const address = (e.details as { address?: unknown } | undefined)?.address;
+    if (e.kind !== "auth.fail" || typeof address !== "string") return e;
+    const minute = Math.floor(at / MINUTE_MS);
+    if (minute !== this.#addressMinute) {
+      this.#addressMinute = minute;
+      this.#addresses.clear();
+    }
+    const kind = e.credentialKind ?? "";
+    const seen = this.#addresses.get(kind) ?? new Set<string>();
+    this.#addresses.set(kind, seen);
+    if (seen.has(address) || seen.size < AUDIT_ADDRESSES_PER_MINUTE) {
+      seen.add(address);
+      return e;
+    }
+    const { address: _dropped, ...rest } = e.details as Record<string, unknown>;
+    return { ...e, details: rest };
   }
 
   /** Adds one to this minute's row for the same credential kind and remote, if there is one. */
@@ -272,7 +302,9 @@ function failKey(e: AuditInput): string {
     const rpc = (e.details as { rpc?: unknown } | undefined)?.rpc;
     return `${e.kind}|${e.principal.kind}:${e.principal.id}|${e.code ?? ""}|${typeof rpc === "string" ? rpc : ""}`;
   }
-  return `${e.kind}|${e.credentialKind ?? ""}|`;
+  // `auth.fail`: per credential kind and remote address (5B Decision 13; 5A's rows name none).
+  const address = (e.details as { address?: unknown } | undefined)?.address;
+  return `${e.kind}|${e.credentialKind ?? ""}|${typeof address === "string" ? address : ""}`;
 }
 
 export class AuditTag extends Context.Service<AuditTag, Audit>()("finisherd/Audit") {}
