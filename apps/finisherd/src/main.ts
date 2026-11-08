@@ -294,6 +294,7 @@ export const serve = ({
         core: agentCore,
         registry: projectRegistry,
         db: Context.get(control, ControlStoreTag).db,
+        control: Context.get(control, ControlStoreTag),
         audit,
         endpoint: socket,
         log: (message) => logSink("warning", `finisherd: agent runtime: ${message}`),

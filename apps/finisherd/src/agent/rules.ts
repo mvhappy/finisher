@@ -23,8 +23,11 @@
 //   holds, by design until 7G and a render job kind): `minutesOver` (a render's output minutes:
 //   no render job kind yet; `CommandRulesOptions.minutes` supplies it), `costOver` (no per-call
 //   cost estimate yet) and `unlicensedDownload` (7G records downloads and licences).
-// - **Outcomes.** `deny` is `RULE_DENIED {rule, layer}` (exit 7). `ask` answers through the
-//   chain's ask (5A's `APPROVAL_REQUIRED`) until Task 4's durable approvals take it over.
+// - **Outcomes.** `deny` is `RULE_DENIED {rule, layer}` (exit 7). `ask` names the command, rule
+//   and layer for the chain's ask: a session with an active run gets a durable card and
+//   `APPROVAL_PENDING` (exit 8, `approvals.ts`), anything else 5A's `APPROVAL_REQUIRED`.
+//   A dry run (an RPC that takes `dryRun`, with it set: `fin --dry-run`) passes an `ask`, as
+//   it keeps nothing; a `deny` still refuses it.
 // - **Who.** Only `agent` principals (sp5 §4.4 gives people their own confirmation path). A
 //   session's credential brings its session (project, role, mode); a hand-minted agent
 //   credential has none, so the managed, user and local layers apply to it, with the local and
@@ -37,6 +40,7 @@ import { Effect } from "effect";
 import type { Outcome, PolicyInput, PolicyRule } from "../chain/policy.ts";
 import { resolveWrites } from "../chain/resolve.ts";
 import { finError } from "../errors.ts";
+import { isDryRun } from "./approvals.ts";
 import { commandsOf } from "./command-of.ts";
 import { globMatch } from "./glob.ts";
 import type { Role } from "./roles.ts";
@@ -263,8 +267,8 @@ export interface RuleSessions {
 
 /**
  * The stage-5 `PolicyRule` (appended in `handlers.ts`): agent principals only; `deny` is
- * `RULE_DENIED`, `ask` the chain's ask, `allow` no opinion (the other policies' guards stand).
- * Task 4 adds the durable-approval port for `ask`.
+ * `RULE_DENIED`, `ask` the chain's ask (durable for a running session, `ChainDeps.agentAsk`),
+ * `allow` no opinion (the other policies' guards stand).
  */
 export function commandRules(rules: RuleSource, sessions: RuleSessions, options: CommandRulesOptions = {}): PolicyRule {
   return (input) =>
@@ -282,7 +286,12 @@ export function commandRules(rules: RuleSource, sessions: RuleSessions, options:
       const resolved = yield* resolveFor(set.rules, input, projectId, options);
       const outcome = set.decide(names, session, resolved);
       if (outcome.effect === "deny") return { deny: ruleDenied(outcome.command ?? names[0]!, outcome.rule, outcome.layer) } satisfies Outcome;
-      if (outcome.effect === "ask") return { ask: { reason: `rule ${outcome.rule.id} (${outcome.layer} layer) asks a person first` } } satisfies Outcome;
+      // A dry run keeps nothing: an ask lets it through (no card, no quota); a deny still refuses it.
+      if (outcome.effect === "ask" && isDryRun(input.tag, input.payload)) return undefined;
+      if (outcome.effect === "ask") {
+        const ask = { reason: `rule ${outcome.rule.id} (${outcome.layer} layer) asks a person first`, command: outcome.command ?? names[0]!, rule: outcome.rule.id, layer: outcome.layer };
+        return { ask } satisfies Outcome;
+      }
       return undefined;
     });
 }

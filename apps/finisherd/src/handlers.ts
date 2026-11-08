@@ -14,6 +14,7 @@ import { ConnectionRegistryTag, ConnectionsTag } from "./connections.ts";
 import { issueChallenge, noteMinted } from "./auth/challenges.ts";
 import { actorFor, type CallMeta, Diagnostics } from "./diagnostics.ts";
 import { attemptJson, finError, toFinError } from "./errors.ts";
+import { agentAsk as agentAskPort } from "./agent/approvals.ts";
 import { AgentCoreTag } from "./agent/core.ts";
 import { withOutcomes } from "./agent/outcomes.ts";
 import { agentChainHooks, BranchReach, PathReach } from "./agent/reach.ts";
@@ -139,6 +140,8 @@ export const HandlersLive = FinRpcs.toLayer(
     const hooks = withOutcomes(agentChainHooks({ reach, paths: new PathReach(agents.store, projects), sessions: agents.store, clock: agents.clock.now }), agents.outcomes, projects);
     // Then command rules (7B Task 2), for agent principals only.
     const policies = [reach.policy, agentBranchLimitsExcept((p) => reach.covers(p)), commandRules(agentRuntime.rules, agents.store)];
+    // A running session's rule ask becomes a durable card (7B Task 4): `APPROVAL_PENDING`.
+    const agentAsk = agentAskPort(agentRuntime.approvals, agents.store, agentRuntime.approvalKey);
     /** An agent session's default branch, for `auth.whoami` (Decision 14a); none for any other principal. */
     const defaultBranchOf = (p: { readonly kind: string; readonly id: string }) => {
       const s = p.kind === "agent" ? agents.store.get(p.id) : undefined;
@@ -393,6 +396,6 @@ export const HandlersLive = FinRpcs.toLayer(
       ...jobHandlers({ engine: jobEngine, guard }),
       ...agentHandlers({ guard, store: agents.store, reach, agents: agentRuntime, principalOf }),
       ...rulesHandlers({ guard, store: agents.store, rules: agentRuntime.rules, ruleStore: agentRuntime.ruleStore, audit, clock: agents.clock, dirOf: (id) => registry.dirOf(id) ?? registry.indexedDirOf(id), principalOf }),
-    }), { connections, projects, jobs: chainJobs(jobEngine), audit, timed: guard, touch: (p) => credentials.touch(p.id), hooks, policies });
+    }), { connections, projects, jobs: chainJobs(jobEngine), audit, timed: guard, touch: (p) => credentials.touch(p.id), hooks, policies, agentAsk });
   }),
 );

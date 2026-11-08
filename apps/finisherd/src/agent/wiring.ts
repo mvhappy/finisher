@@ -13,16 +13,18 @@
 //   credential reconcile, then its timers) before the transports serve; it closes on shutdown.
 import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
-import type { Harness, Node } from "@finisher/contracts";
+import type { Harness, Node, Session } from "@finisher/contracts";
 import { testHooks } from "@finisher/fin-node";
 import { Context, Effect, type Scope } from "effect";
 import { childEnv } from "../env.ts";
 import { finError } from "../errors.ts";
 import type { Audit } from "../control/audit.ts";
-import { ModelGateway } from "../secrets/gateway.ts";
+import type { ControlStore } from "../control/db.ts";
+import { ModelGateway, type RunningSessions } from "../secrets/gateway.ts";
 import { FileSecretStore, type SecretStore } from "../secrets/store.ts";
 import type { ProviderAdapter } from "./adapter.ts";
 import { AgentAdmin, listLocalModels } from "./admin.ts";
+import { AgentApprovals, approvalKey } from "./approvals.ts";
 import { builtinEnvironment } from "./builtin/environment.ts";
 import { localClient, type ModelClient, openrouterClient } from "./builtin/compat.ts";
 import { finIndex } from "./builtin/fin-tool.ts";
@@ -68,6 +70,9 @@ export interface AgentRuntimeParts {
   readonly rules: LayeredRules;
   readonly ruleStore: RuleStore;
   readonly roles: ReadonlyMap<string, Role>;
+  /** Durable approvals for agents' asks (7B Task 4) and the key of their `argsHash`. */
+  readonly approvals: AgentApprovals;
+  readonly approvalKey: Buffer;
 }
 
 export class AgentRuntimeTag extends Context.Service<AgentRuntimeTag, AgentRuntimeParts>()("finisherd/AgentRuntime") {}
@@ -86,6 +91,8 @@ export interface AgentWiringDeps {
   readonly registry: BranchRegistry & { readonly dirOf: (projectId: string) => string | undefined; readonly indexedDirOf?: (projectId: string) => string | undefined };
   /** `control.db` (the store's), for the lookups `AgentStore` does not offer. */
   readonly db: ConstructorParameters<typeof AgentLookup>[0];
+  /** `control.db` itself, for the approvals' check-and-insert transactions (7B Task 4). */
+  readonly control: ControlStore;
   readonly audit: Audit;
   /** `FIN_SERVER` for the built-in `fin`: the local socket until 7C's agent listener. */
   readonly endpoint: string;
@@ -111,6 +118,19 @@ function openSecrets(serverData: string, log: (m: string) => void): SecretStore 
     log(`agent keys unavailable: ${(e as Error).message}`);
     return undefined;
   }
+}
+
+/**
+ * The sessions the model gateway gives a key to: one in a run. A run waiting on a card is still
+ * the run (7B Task 4): its loop goes on meanwhile. Idle, interrupted or ended ones get none.
+ */
+export function gatewaySessions(store: { get(id: string): Session | undefined }): RunningSessions {
+  return {
+    isRunning: (id) => {
+      const status = store.get(id)?.status;
+      return status === "running" || status === "waitingApproval";
+    },
+  };
 }
 
 export const buildAgentRuntime = (d: AgentWiringDeps): Effect.Effect<AgentRuntimeParts, never, Scope.Scope> =>
@@ -141,7 +161,7 @@ export const buildAgentRuntime = (d: AgentWiringDeps): Effect.Effect<AgentRuntim
         ? undefined
         : new ModelGateway(
             secrets,
-            { isRunning: (id) => core.store.get(id)?.status === "running" },
+            gatewaySessions(core.store),
             {
               record: (g) =>
                 d.audit.append({
@@ -225,5 +245,7 @@ export const buildAgentRuntime = (d: AgentWiringDeps): Effect.Effect<AgentRuntim
     const ruleStore = new RuleStore(d.db);
     const dirOf = (projectId: string) => d.registry.dirOf(projectId) ?? d.registry.indexedDirOf?.(projectId);
     const rules = new LayeredRules({ serverData, store: ruleStore, roles, dirOf });
-    return { runtime, admin, adapters, lookup: new AgentLookup(d.db), catalogue, rules, ruleStore, roles };
+    const key = approvalKey(serverData);
+    const approvals = new AgentApprovals({ control: d.control, store: core.store, clock: core.clock, opened: (s, a, node) => runtime.approvalOpened(s, a, node) });
+    return { runtime, admin, adapters, lookup: new AgentLookup(d.db), catalogue, rules, ruleStore, roles, approvals, approvalKey: key };
   });

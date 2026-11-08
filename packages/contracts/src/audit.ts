@@ -72,7 +72,8 @@ export const AUDIT_KINDS = [
 export const AuditKindSchema = Schema.Literals(AUDIT_KINDS);
 export type AuditKind = typeof AuditKindSchema.Type;
 
-export const AuditOutcomeSchema = Schema.Literals(["ok", "denied", "failed"]);
+/** `pending`: a request waits for a person's answer on a durable card (7B's `APPROVAL_PENDING`), not denied. */
+export const AuditOutcomeSchema = Schema.Literals(["ok", "denied", "failed", "pending"]);
 export type AuditOutcome = typeof AuditOutcomeSchema.Type;
 
 /**
@@ -179,6 +180,9 @@ const RULE_FIELDS = {
   rulesHash: Schema.optional(Schema.String.check(Schema.isPattern(/^(?:sha256:[0-9a-f]{64}|none)$/))),
 };
 
+/** What an `auth.denied` row may say besides: the card an ask opened (`APPROVAL_PENDING`, 7B Decision 8). */
+const DENIAL_FIELDS = { approval: Schema.optional(Id) };
+
 const PAIRING: ReadonlyArray<AuditKind> = ["pair.offer", "pair.redeem", "pair.approve", "pair.reject", "pair.expire"];
 /** Kinds whose details may name a device or credential. */
 export const AUDIT_NAME_KINDS: ReadonlySet<AuditKind> = new Set<AuditKind>([
@@ -197,10 +201,11 @@ export const AUDIT_LIBRARY_KINDS: ReadonlySet<AuditKind> = new Set<AuditKind>(["
 const PlainDetails = Schema.Struct(COMMON);
 const PluginDetails = Schema.Struct({ ...COMMON, ...PLUGIN_FIELDS });
 const RuleDetails = Schema.Struct({ ...COMMON, ...RULE_FIELDS });
+const DenialDetails = Schema.Struct({ ...COMMON, ...DENIAL_FIELDS });
 const LibraryDetails = Schema.Struct({ ...COMMON, ...LIBRARY });
 const NamedDetails = Schema.Struct({ ...COMMON, ...NAMES });
 const AddressedDetails = Schema.Struct({ ...COMMON, ...NAMES, ...ADDRESS });
-type DetailsSchema = typeof PlainDetails | typeof LibraryDetails | typeof NamedDetails | typeof AddressedDetails | typeof PluginDetails | typeof RuleDetails;
+type DetailsSchema = typeof PlainDetails | typeof LibraryDetails | typeof NamedDetails | typeof AddressedDetails | typeof PluginDetails | typeof RuleDetails | typeof DenialDetails;
 
 /** Kinds whose details may name a plugin, a registry and a version. */
 export const AUDIT_PLUGIN_KINDS: ReadonlySet<AuditKind> = new Set<AuditKind>(AUDIT_KINDS.filter((k) => k.startsWith("plugin.") || k.startsWith("registry.")));
@@ -209,6 +214,7 @@ export const AUDIT_PLUGIN_KINDS: ReadonlySet<AuditKind> = new Set<AuditKind>(AUD
 export const AUDIT_RULE_KINDS: ReadonlySet<AuditKind> = new Set<AuditKind>(["agent.rule.add", "agent.rule.remove", "agent.project.trust"]);
 
 function detailsSchema(kind: AuditKind): DetailsSchema {
+  if (kind === "auth.denied") return DenialDetails;
   if (AUDIT_RULE_KINDS.has(kind)) return RuleDetails;
   if (AUDIT_PLUGIN_KINDS.has(kind)) return PluginDetails;
   if (AUDIT_ADDRESS_KINDS.has(kind)) return AddressedDetails;
@@ -223,6 +229,7 @@ export const AUDIT_DETAILS: { readonly [K in AuditKind]: DetailsSchema } = Objec
 
 const DECODE = {
   rule: Schema.decodeUnknownExit(RuleDetails),
+  denial: Schema.decodeUnknownExit(DenialDetails),
   plugin: Schema.decodeUnknownExit(PluginDetails),
   plain: Schema.decodeUnknownExit(PlainDetails),
   library: Schema.decodeUnknownExit(LibraryDetails),
@@ -232,7 +239,9 @@ const DECODE = {
 
 /** True when `details` fits `kind`'s schema exactly (no other field). */
 export function auditDetailsValid(kind: AuditKind, details: unknown): boolean {
-  const decode = AUDIT_RULE_KINDS.has(kind)
+  const decode = kind === "auth.denied"
+    ? DECODE.denial
+    : AUDIT_RULE_KINDS.has(kind)
     ? DECODE.rule
     : AUDIT_PLUGIN_KINDS.has(kind)
       ? DECODE.plugin

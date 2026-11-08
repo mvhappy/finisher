@@ -329,6 +329,10 @@ const CONFLICT_CODES: &[&str] = &[
     // the session's workspace holds its 256 MiB (7A-2 Task 8b): remove files first.
     "AUTO_MERGE_UNAVAILABLE",
     "WORKSPACE_FULL",
+    // Sub-project 7B Task 4: a session has 16 approvals waiting for a person, or the server
+    // 256 (`details.open`, `limit`, `scope`); refused, never dropping an older card. Wait for
+    // answers or expiries, then ask again.
+    "APPROVAL_LIMIT",
 ];
 
 /// Codes of a job that ended without succeeding (exit 4, 5C-1 Decision 41): its outcome, and

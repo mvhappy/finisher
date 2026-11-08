@@ -901,7 +901,12 @@ Plan: `docs/superpowers/plans/2026-11-08-sub-project-7b-subagents-rules-approval
 - [x] Task 3: roles as complete data (schema v1, `rules`, `tools.allow`, `spawn`, models per harness; `ROLE_INVALID {file, field, reason}`); `packages/contracts/src/rules.ts` (`Rule`, `RuleLayer`)
   - `default.asset-add` carries the inert `where.unlicensedDownload` (Task 2) until 7G resolves it
   - role rule ids repeat across roles (`default.*`): a rule's key is `(source, id)`
-- [ ] Task 4: durable approvals for agent asks, quotas and exit 8
+- [x] Task 4: durable approvals for agent asks, quotas and exit 8 (`agent/approvals.ts`, `agent/store-approvals.ts`, `ChainDeps.agentAsk`)
+  - a rule `ask` for an agent in a running session writes a card (30 min) and answers `APPROVAL_PENDING` (exit 8); people, session-less agent credentials and idle sessions keep 5A's `APPROVAL_REQUIRED` (exit 7); a dry run passes an `ask` (a `deny` still refuses it)
+  - identical `(session, command, argsHash)` reuses the open card; 16 per session and 256 per server (open, not yet due, `rule`/`provider` kinds) then `APPROVAL_LIMIT` (exit 4), never dropping one
+  - `argsHash` is HMAC-SHA256 with `<server-data>/auth/approval.key` (never rotated) over the payload's declared fields and `tx`'s fin-core fields (no `txId`, `author`, `idemKey`, client `argsHash`, `via`); `baseRev` included; ops are hashed as sent (no TS op canonicaliser: a junk key inside an op shows on the card)
+  - card args capped at 64 KiB for display (`truncated`), the hash covers the full args; `APPROVAL_PENDING` audited as `auth.denied` with outcome `pending` and the card id
+  - a `waitingApproval` session keeps its model key (the built-in loop's next call)
 - [ ] Task 5: one-time grants, waits, answers, `remember` and provider requests
 - [ ] Tasks 6–10: subagents, carve-outs, rollback, compaction, saved prompts
 - [ ] Tasks 11–12 (7B-2, after 5E): review requests, the `auto` merge trigger

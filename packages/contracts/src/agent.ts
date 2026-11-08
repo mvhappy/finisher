@@ -305,6 +305,20 @@ export const AgentApprovalAnswerPayload = Schema.Struct({
 });
 export const AgentApprovalAnswerSuccess = Schema.Struct({ approval: Approval });
 
+/** The longest `agent.approval.wait` (spec §7.3): below every CLI tool timeout (120 s). */
+export const APPROVAL_WAIT_MAX_MS = 90_000;
+
+/**
+ * `agent.approval.wait` (sub-project 7B Decision 11): blocks at most `timeoutMs` (≤ 90 s) for
+ * an answer; `APPROVAL_PENDING` on timeout, repeatable. The schema is Task 4's; the RPC and its
+ * handler are Task 5's.
+ */
+export const AgentApprovalWaitPayload = Schema.Struct({
+  id: Id,
+  timeoutMs: Count.check(Schema.isLessThanOrEqualTo(APPROVAL_WAIT_MAX_MS)),
+});
+export type AgentApprovalWaitPayload = typeof AgentApprovalWaitPayload.Type;
+
 /** What an adapter can do (spec §4.1). */
 export const Capabilities = Schema.Struct({
   steer: Schema.Boolean,

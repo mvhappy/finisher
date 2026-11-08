@@ -220,6 +220,18 @@ describe("the policy", () => {
     expect(await outcome([rule("user", "deny", "checkpoint", { preset: "openrouter" })], "history.checkpoint", { projectId: "01P", branch: "br1", name: "c" })).toMatchObject({ deny: {} });
   });
 
+  test("dry_run_passes_ask: a dry run keeps nothing, so an ask lets it through; a deny still denies it; only an RPC that takes dryRun", async () => {
+    const asks = [rule("local", "ask", "checkpoint")];
+    const cp = { projectId: "01P", branch: "br1", name: "c" };
+    expect(await outcome(asks, "history.checkpoint", cp)).toMatchObject({ ask: {} });
+    expect(await outcome(asks, "history.checkpoint", { ...cp, dryRun: true })).toBeUndefined();
+    expect(await outcome(asks, "history.checkpoint", { ...cp, dryRun: false })).toMatchObject({ ask: {} });
+    expect(await outcome([...asks, rule("user", "deny", "checkpoint")], "history.checkpoint", { ...cp, dryRun: true })).toMatchObject({ deny: { code: "RULE_DENIED" } });
+    // `tx.commit` takes no `dryRun` (`fin --dry-run` of an edit never sends one): one sent anyway is a real write and still asks.
+    const add = { projectId: "01P", tx: { branch: "br1", ops: [addAsset()] }, dryRun: true };
+    expect(await outcome([rule("local", "ask", "asset.add")], "tx.commit", add)).toMatchObject({ ask: {} });
+  });
+
   test("rules apply to agent principals only", async () => {
     const all = [rule("managed", "deny", "**")];
     for (const kind of ["local", "console", "device", "mcp"] as const) {
@@ -314,7 +326,7 @@ describe("rules on a server", () => {
     expect(audit.entries.some((e) => e.code === "RULE_DENIED" && e.details.rule === "commandRules")).toBe(true);
   });
 
-  test("an ask asks a person (5A's ask until Task 4); the editor's inert asset.add ask lets an add through", async () => {
+  test("an ask asks a person (a session with no run keeps 5A's ask: Task 4); the editor's inert asset.add ask lets an add through", async () => {
     const { owner, projectId, session, a } = await setUp();
     const add = () => commit(a, projectId, { ...tx(id(), 1, [addAsset(`$b${n}`)]), branch: session.rootBranch! });
     expect(code(await add())).toBeUndefined();

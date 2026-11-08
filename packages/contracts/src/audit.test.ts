@@ -1,5 +1,6 @@
 import { describe, expect, test } from "vitest";
-import { AUDIT_KINDS, auditDetailsValid } from "./audit.ts";
+import { Schema } from "effect";
+import { AUDIT_KINDS, AuditOutcomeSchema, auditDetailsValid } from "./audit.ts";
 
 describe("audit details", () => {
   test("every kind takes ids, words and counts", () => {
@@ -38,6 +39,14 @@ describe("audit details", () => {
       for (const bad of [{ command: "render" }, { layer: "team" }, { rulesHash: "abc" }, { ruleId: "not an id" }]) expect(auditDetailsValid(kind, bad), `${kind} ${JSON.stringify(bad)}`).toBe(false);
     }
     expect(auditDetailsValid("settings.write", { ruleId: id })).toBe(false);
+  });
+
+  test("an auth.denied row may name the card an ask opened (APPROVAL_PENDING, outcome pending); no other kind", () => {
+    const id = "01m6yfjx51brn5wdjt6gsrsq7g";
+    expect(auditDetailsValid("auth.denied", { rpc: "history.checkpoint", rule: "ask", approval: id })).toBe(true);
+    expect(auditDetailsValid("auth.denied", { approval: "not an id" })).toBe(false);
+    expect(auditDetailsValid("settings.write", { approval: id })).toBe(false);
+    expect(Schema.decodeUnknownSync(AuditOutcomeSchema)("pending")).toBe("pending");
   });
 
   test("free text, paths and unknown fields are refused", () => {

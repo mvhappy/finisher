@@ -5,6 +5,8 @@
 //     console.key          the console's key  — new at every start
 //     credential.master    derives agent/MCP credential keys — created once, kept until
 //                          `finisherd auth rotate-master` (which ends every credential)
+//     approval.key         keys agent approvals' `argsHash` (sub-project 7B, `agent/approvals.ts`)
+//                          — created once at the agent runtime's start, never rotated
 //   <server-data>/run/    (0700) only the Unix socket `fin.sock`
 //
 // Each file is base64url (no padding) of 32 random bytes plus `\n`, mode 0600, written to a

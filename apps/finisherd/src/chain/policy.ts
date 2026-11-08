@@ -3,13 +3,24 @@
 // (filling the guard's `denyBranches`), sub-project 7 command rules and hooks. The outcome's
 // guard goes with every write into `fin-node`, which checks it again inside the store's write
 // transaction (Decision 17).
-import type { FinError, FinRpcTag, Principal, RpcRule } from "@finisher/contracts";
+import type { FinError, FinRpcTag, Principal, RpcRule, RuleLayer } from "@finisher/contracts";
 import type { WriteGuard } from "@finisher/core-types";
 import { Effect } from "effect";
 import { branchNotAllowed } from "./fixes.ts";
 import { type ChainProjects, resolveWrites } from "./resolve.ts";
 
-export type Outcome = { readonly allow: true; readonly guard: WriteGuard } | { readonly deny: FinError } | { readonly ask: { readonly reason: string } };
+/**
+ * An `ask`: why, and for a command rule (sub-project 7B) the command it decided on and the rule
+ * and layer that asked, which an agent session's durable card shows (`ChainDeps.agentAsk`).
+ */
+export interface Ask {
+  readonly reason: string;
+  readonly command?: string;
+  readonly rule?: string;
+  readonly layer?: RuleLayer;
+}
+
+export type Outcome = { readonly allow: true; readonly guard: WriteGuard } | { readonly deny: FinError } | { readonly ask: Ask };
 
 export interface PolicyInput {
   readonly tag: FinRpcTag;

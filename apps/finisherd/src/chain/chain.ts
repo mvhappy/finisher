@@ -5,7 +5,8 @@
 //   3. resolve (`resolve.ts`): projects, directories and paths become current facts;
 //   4. authorise (`authorize.ts`): scopes (all), human-only, reach;
 //   5. policy (`policy.ts`): branch write targets resolved through the store, then
-//      `allow {guard} | deny | ask` (`ask` answers `APPROVAL_REQUIRED {approvalId}`); then a
+//      `allow {guard} | deny | ask` (`ask` answers `APPROVAL_REQUIRED {approvalId}`; an agent
+//      session's rule ask is durable instead, `APPROVAL_PENDING`, through `agentAsk`); then a
 //      `console` principal's mutating human-only call must carry its connection's typed
 //      challenge (`auth/challenges.ts`, Decision 30: `CONFIRMATION_REQUIRED`);
 //   6. the handler, with the resolved payload and the guard (`options.guard`), which every
@@ -36,10 +37,10 @@ import { ulid } from "../control/ulid.ts";
 import { authorize } from "./authorize.ts";
 import type { ChainHooks } from "./hooks.ts";
 import { approvalRequired, outOfReach } from "./fixes.ts";
-import { authorOf, branchLimited, DEFAULT_POLICIES, type PolicyRule, runPolicies, stampsAuthor } from "./policy.ts";
+import { type Ask, authorOf, branchLimited, DEFAULT_POLICIES, type PolicyInput, type PolicyRule, runPolicies, stampsAuthor } from "./policy.ts";
 import { type ChainJobs, type ChainProjects, resolve } from "./resolve.ts";
 
-export type { Outcome, PolicyRule } from "./policy.ts";
+export type { Ask, Outcome, PolicyRule } from "./policy.ts";
 
 /** The guard of a write no rule limits. */
 export const OPEN_GUARD: WriteGuard = { denyBranches: [] };
@@ -112,6 +113,13 @@ export function keepApproval(approvals: Approvals, id: string, entry: { readonly
   approvals.set(id, entry);
 }
 
+/**
+ * Sub-project 7B's durable ask (Decision 8; `agent/approvals.ts`): the refusal an `ask` answers
+ * instead of 5A's (`APPROVAL_PENDING`), or `undefined` to keep 5A's in-memory ask; a failure
+ * (`APPROVAL_LIMIT`) is the call's answer.
+ */
+export type AgentAsk = (input: PolicyInput & { readonly ask: Ask }) => Effect.Effect<FinError | undefined, FinError>;
+
 export interface ChainDeps {
   readonly connections: Connections;
   readonly projects: ChainProjects;
@@ -130,6 +138,8 @@ export interface ChainDeps {
   /** Notes a request of an `agent`/`mcp` credential (its idle expiry, Task 9). */
   readonly touch?: (p: Principal) => void;
   readonly clock?: () => number;
+  /** An agent session's durable ask (7B Task 4); none: every ask is 5A's. */
+  readonly agentAsk?: AgentAsk;
   /** What the chain asks of agent sessions (sub-project 7A Task 7); none: 5A's chain. */
   readonly hooks?: ChainHooks;
 }
@@ -163,6 +173,8 @@ const DENIALS = new Map<string, string>([
   ["BRANCH_NOT_ALLOWED", "agentBranchLimits"],
   ["BRANCH_PROTECTED", "protectedBranches"],
   ["APPROVAL_REQUIRED", "ask"],
+  ["APPROVAL_PENDING", "ask"],
+  ["APPROVAL_LIMIT", "ask"],
   ["RULE_DENIED", "commandRules"],
   ["CONSENT_UI_ONLY", "deviceOnly"],
   ["CONFIRMATION_REQUIRED", "confirmation"],
@@ -185,12 +197,14 @@ export function withChain<H extends object>(handlers: H, deps: ChainDeps): H {
       deps.audit?.append({
         kind: e.code === "CONFIRMATION_REQUIRED" ? "console.refused" : "auth.denied",
         principal: { kind: principal.kind, id: principal.id },
-        outcome: "denied",
+        // `APPROVAL_PENDING` is not a refusal: the request waits on a person's card.
+        outcome: e.code === "APPROVAL_PENDING" ? "pending" : "denied",
         code: e.code,
         details: {
           rpc: tag,
           transport,
           rule,
+          ...(e.code === "APPROVAL_PENDING" && typeof d.approval === "string" ? { approval: d.approval } : {}),
           ...(typeof d.scope === "string" ? { scope: d.scope } : {}),
           ...(Array.isArray(d.scopes) ? { scopes: d.scopes } : {}),
           ...(typeof d.reason === "string" && /^[a-z][a-zA-Z0-9]{0,47}$/.test(d.reason) ? { reason: d.reason } : {}),
@@ -209,9 +223,12 @@ export function withChain<H extends object>(handlers: H, deps: ChainDeps): H {
       if (credentialOf(principal) !== undefined) deps.touch?.(principal);
       const resolved = yield* resolve(rule, payload, deps.projects, { principal, jobs: deps.jobs });
       yield* authorize(tag, principal, payload, resolved, deps.projects, hooks);
-      const outcome = yield* runPolicies(policies, { tag, rule, principal, payload: resolved.payload, projects: deps.projects, projectIds: resolved.projects });
+      const input: PolicyInput = { tag, rule, principal, payload: resolved.payload, projects: deps.projects, projectIds: resolved.projects };
+      const outcome = yield* runPolicies(policies, input);
       if ("deny" in outcome) return yield* Effect.fail(outcome.deny);
       if ("ask" in outcome) {
+        const durable = deps.agentAsk === undefined ? undefined : yield* deps.agentAsk({ ...input, ask: outcome.ask });
+        if (durable !== undefined) return yield* Effect.fail(durable);
         const approvalId = ulid();
         keepApproval(approvals, approvalId, { tag, principal: `${principal.kind}:${principal.id}`, at: clock() });
         return yield* Effect.fail(approvalRequired(tag, approvalId, outcome.ask.reason));

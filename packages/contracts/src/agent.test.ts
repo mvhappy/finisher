@@ -3,6 +3,8 @@ import { Effect, Schema } from "effect";
 import { RpcSchema } from "effect/rpc";
 import { describe, expect, it } from "vitest";
 import {
+  AgentApprovalWaitPayload,
+  APPROVAL_WAIT_MAX_MS,
   Approval,
   AgentSessionStartPayload,
   AgentSelfTryPayload,
@@ -258,5 +260,15 @@ describe("scopes", () => {
     for (const payload of [{ projectId: "p" }, { projectId: "p", mode: "draft" }, { projectId: "p", mode: "auto" }]) {
       expect(requiredScopes("agent.session.start", payload), JSON.stringify(payload)).toEqual(["agent.run", "project.read", "project.write"]);
     }
+  });
+});
+
+describe("agent.approval.wait (7B Task 4: the payload; Task 5 the RPC)", () => {
+  it("caps the wait at 90 s", () => {
+    const decode = Schema.decodeUnknownExit(AgentApprovalWaitPayload);
+    expect(APPROVAL_WAIT_MAX_MS).toBe(90_000);
+    expect(decode({ id: "a1", timeoutMs: 0 })._tag).toBe("Success");
+    expect(decode({ id: "a1", timeoutMs: 90_000 })._tag).toBe("Success");
+    for (const bad of [90_001, -1, 1.5, "10"]) expect(decode({ id: "a1", timeoutMs: bad })._tag, String(bad)).toBe("Failure");
   });
 });

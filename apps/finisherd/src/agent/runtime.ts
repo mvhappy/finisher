@@ -374,6 +374,14 @@ export class Runtime extends RuntimeEngine {
     });
   }
 
+  /** A card the chain opened (7B Task 4, `approvals.ts`): its `approval` node in the active run, then the watchers. */
+  async approvalOpened(s: Session, a: Approval, node: Record<string, unknown>): Promise<void> {
+    const runId = this.store.activeRun(s.id);
+    if (runId !== null) await this.append({ sessionId: s.id, runId, kind: "approval", payload: node });
+    this.publish(s.id, { type: "approvalOpened", approval: a });
+    this.publishStatus(s, runId);
+  }
+
   /** Journals the session's expired approvals (the journal records each once). */
   #journalExpired(s: Session): void {
     for (const approval of this.store.approvals(s.id)) {
