@@ -14,10 +14,12 @@ doctest = false
 
 [features]
 # Test-only exports (`Engine.panicForTest`, the `writeFixture*ForTest` writers, generated test
-# fonts), loopback `http` and `FIN_FONT_CATALOG` in fin-fonts. The vitest build enables it; the
-# plain `build` script does not.
+# fonts, the job host's `*ForTest` methods and the test kinds' params), loopback `http` and
+# `FIN_FONT_CATALOG` in fin-fonts. The vitest build enables it; the plain `build` script does not.
 test-hooks = [
     "fin-probe/fixtures",
+    "fin-jobhost/test-hooks",
+    "fin-jobs/test-hooks",
     "fin-fonts/test-hooks",
     "fin-journal/test-hooks",
     "dep:fin-testfonts",
@@ -32,6 +34,8 @@ required-features = ["test-hooks"]
 blake3 = "1"
 fin-core = { path = "../fin-core" }
 fin-fonts = { path = "../fin-fonts" }
+fin-jobhost = { path = "../fin-jobhost" }
+fin-jobs = { path = "../fin-jobs" }
 fin-journal = { path = "../fin-journal" }
 fin-plugin-api = { path = "../fin-plugin-api" }
 fin-probe = { path = "../fin-probe" }

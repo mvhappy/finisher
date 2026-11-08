@@ -752,6 +752,8 @@ dependencies = [
  "blake3",
  "fin-core",
  "fin-fonts",
+ "fin-jobhost",
+ "fin-jobs",
  "fin-journal",
  "fin-plugin-api",
  "fin-probe",

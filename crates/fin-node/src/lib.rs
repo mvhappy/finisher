@@ -1,7 +1,8 @@
 //! napi-rs binding exposing `fin-store`, `fin-probe`, the server's fonts (`fin-fonts`,
 //! `fin-text`: the [`fonts`] manager, `FontManager`), its diagnostics journal
-//! (`fin-journal`: [`journal`], `Journal`) and its plugin store (`fin-registry`: [`registry`],
-//! `Registry`, `validateManifest`) to Node as `@finisher/fin-node`.
+//! (`fin-journal`: [`journal`], `Journal`), its plugin store (`fin-registry`: [`registry`],
+//! `Registry`, `validateManifest`) and its job host (`fin-jobhost`: [`jobhost`], `JobHost`,
+//! `validateJobParams`) to Node as `@finisher/fin-node`.
 //!
 //! # Threads
 //!
@@ -49,6 +50,7 @@ mod eval;
 mod fonts;
 mod hash;
 mod history;
+mod jobhost;
 mod journal;
 mod maintenance;
 mod private_dir;
@@ -61,6 +63,10 @@ mod worker;
 
 pub use engine::Engine;
 pub use fonts::napi::FontManager;
+pub use jobhost::{
+    JobHost, JobHostCaps, JobKindVersion, job_kind_versions, resolve_memory_rule,
+    validate_job_params,
+};
 pub use journal::{JournalHandle, kind_names, rpc_methods, validate_privacy};
 pub use private_dir::{PrivateDirReport, check_private_dir, make_private_dir};
 pub use registry::{Registry, validate_manifest};

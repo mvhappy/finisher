@@ -90,6 +90,10 @@ pub(crate) struct ProcState {
     pub exited: bool,
     /// Reported `Abandoned` after the kill wait; its real exit is only logged.
     pub abandoned: bool,
+    /// The waiter holds the observed exit this long (tests: a kill that seems not to work,
+    /// so the process is abandoned and exits later).
+    #[cfg(feature = "test-hooks")]
+    pub hold_exit_for_test: Option<Duration>,
 }
 
 pub(crate) struct Proc {
@@ -144,6 +148,8 @@ impl Proc {
                 kill: None,
                 exited: false,
                 abandoned: false,
+                #[cfg(feature = "test-hooks")]
+                hold_exit_for_test: None,
             }),
             emit: Mutex::new(false),
             sink,
@@ -331,6 +337,13 @@ pub(crate) fn wait_exit(
         code: None,
         signal: None,
     });
+    #[cfg(feature = "test-hooks")]
+    {
+        let hold = p.state().hold_exit_for_test;
+        if let Some(d) = hold {
+            std::thread::sleep(d);
+        }
+    }
     let abandoned = {
         let mut st = p.state();
         st.exited = true;

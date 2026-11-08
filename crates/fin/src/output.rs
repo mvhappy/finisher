@@ -49,6 +49,14 @@ const VALIDATION_CODES: &[&str] = &[
     "INVALID_NAME",
     // A path the server got was relative or had `.`/`..` segments (`details.field`).
     "INVALID_PATH",
+    // A frame the server could not take: not JSON, an unknown RPC, a payload its schema refuses
+    // (5A Decision 13).
+    "INVALID_REQUEST",
+    // Jobs (5C-1 Decision 41): a kind no family registered; params its Rust type refuses
+    // (`details.errors`); a job id the server does not know.
+    "JOB_KIND_UNKNOWN",
+    "JOB_PARAMS_INVALID",
+    "JOB_NOT_FOUND",
     // Stored history that this code cannot or will not read (sub-project 4).
     "DB_TOO_NEW",
     "NOT_A_PROJECT_DB",
@@ -169,6 +177,20 @@ const CONFLICT_CODES: &[&str] = &[
     "TX_SET_ASIDE",
 ];
 
+/// Codes of a job that ended without succeeding (exit 4, 5C-1 Decision 41): its outcome, and
+/// the result codes a failed job carries (`fin job` and `fin wait` report them).
+const JOB_RESULT_CODES: &[&str] = &[
+    "JOB_FAILED",
+    "JOB_CANCELLED",
+    "JOB_INTERRUPTED",
+    "WORKER_CRASHED",
+    "WORKER_HUNG",
+    "JOB_STALLED",
+    "JOB_TIMEOUT",
+    "POISON_ITEM",
+    "HELPER_FAILED",
+];
+
 /// Codes that mean "this request can never succeed as sent" (exit 2, like `USAGE`).
 /// `TX_TOO_LARGE`: a transaction whose record would not fit a segment; split it.
 /// `CONSENT_UI_ONLY` (plan D, Decision 14b): turning `training` on is a person's choice (the
@@ -207,13 +229,23 @@ const UNAVAILABLE_CODES: &[&str] = &[
     "JOURNAL_UNAVAILABLE",
     "SETTINGS_INVALID",
     "SETTINGS_WRITE_FAILED",
+    // Jobs (5C-1 Decision 41): 50,000 unfinished jobs; no worker could be started
+    // (`details.reason`); a worker built for another envelope (`details.expected`, `got`); a
+    // wait that timed out; an `io:` pool two abandoned processes hold (`details.pool`); a job's
+    // group over its memory limit (`details.limit`, `used`).
+    "JOB_QUEUE_FULL",
+    "WORKER_UNAVAILABLE",
+    "WORKER_PROTOCOL_MISMATCH",
+    "WAIT_TIMEOUT",
+    "RESOURCE_STUCK",
+    "WORKER_OOM",
 ];
 
 /// The one place error codes become exit codes.
 pub fn exit_code(code: &str) -> i32 {
     match code {
         c if USAGE_CODES.contains(&c) => USAGE,
-        c if CONFLICT_CODES.contains(&c) => CONFLICT,
+        c if CONFLICT_CODES.contains(&c) || JOB_RESULT_CODES.contains(&c) => CONFLICT,
         c if UNAVAILABLE_CODES.contains(&c) => UNAVAILABLE,
         c if VALIDATION_CODES.contains(&c) => VALIDATION,
         _ => INTERNAL,
@@ -410,6 +442,35 @@ mod tests {
         }
         for code in VALIDATION_CODES {
             assert_eq!(exit_code(code), 3, "{code}");
+        }
+    }
+
+    #[test]
+    fn job_codes_follow_decision_41() {
+        for code in [
+            "INVALID_REQUEST",
+            "JOB_KIND_UNKNOWN",
+            "JOB_PARAMS_INVALID",
+            "JOB_NOT_FOUND",
+        ] {
+            assert_eq!(exit_code(code), 3, "{code}");
+        }
+        for code in JOB_RESULT_CODES {
+            assert_eq!(exit_code(code), 4, "{code}");
+        }
+        for code in [
+            "JOB_QUEUE_FULL",
+            "WORKER_UNAVAILABLE",
+            "WORKER_PROTOCOL_MISMATCH",
+            "WAIT_TIMEOUT",
+            "RESOURCE_STUCK",
+            "WORKER_OOM",
+        ] {
+            assert_eq!(exit_code(code), 5, "{code}");
+        }
+        // Only in `reply` errors to a worker: never an exit of their own.
+        for code in ["UNKNOWN_MESSAGE", "CALL_LIMIT"] {
+            assert_eq!(exit_code(code), 6, "{code}");
         }
     }
 }

@@ -26,3 +26,14 @@ export function nativeFileNames(platform, arch, getReport) {
   }
   return [base, ...suffixes.map((s) => `${base}-${s}`)].map((s) => `fin-node.${s}.node`);
 }
+
+/** The worker binary's file name on `platform` (5C-1 plan, Decision 2). */
+export function workersFileName(platform) {
+  return platform === "win32" ? "fin-workers.exe" : "fin-workers";
+}
+
+/** `fin-workers[.exe]` in `dir`, the directory of the fin-node `.node` file it sits beside. */
+export function workersBinaryPath(dir, platform) {
+  const sep = platform === "win32" ? "\\" : "/";
+  return `${dir.replace(/[\\/]+$/, "")}${sep}${workersFileName(platform)}`;
+}
