@@ -4,11 +4,13 @@
 // Directories, paths and projects resolve before authorisation (reach needs them). Branch
 // references resolve after it (`resolveWrites`): they need the project's engine, which an
 // unauthorised caller must not get opened, and only the policy stage reads them.
-import { readFile, realpath } from "node:fs/promises";
+import { constants } from "node:fs";
+import { open, realpath } from "node:fs/promises";
 import { basename, dirname, join, sep } from "node:path";
 import type { FinError, Principal, RpcRule, RuleFacts } from "@finisher/contracts";
 import { Effect } from "effect";
 import { requireAbsolute, requireAbsoluteOpt } from "../paths.ts";
+import { pathNotAllowed } from "./fixes.ts";
 
 /** What the chain needs from the project registry. */
 export interface ChainProjects {
@@ -39,23 +41,69 @@ export interface Resolved {
 const field = (payload: unknown, path: string): unknown =>
   path.split(".").reduce<unknown>((v, k) => (v !== null && typeof v === "object" ? (v as Record<string, unknown>)[k] : undefined), payload);
 
-/** The real path of `p`, or `p` itself when it does not exist (the handler then answers). */
-const canonical = (p: string): Effect.Effect<string> => Effect.promise(() => realpath(p).catch(() => p));
+/**
+ * The real path of `p` (absolute and normalised). A path that does not exist (yet) is its
+ * nearest existing ancestor's real path joined with the rest, so a symlinked folder above a
+ * missing file is still followed (review of Task 5, M2); the rest has no symlink, as it does
+ * not exist. A path no ancestor of which resolves stays as given.
+ */
+export async function canonicalPath(p: string): Promise<string> {
+  const rest: string[] = [];
+  let at = p;
+  for (;;) {
+    try {
+      const real = await realpath(at);
+      return rest.length === 0 ? real : join(real, ...rest.reverse());
+    } catch {
+      const up = dirname(at);
+      if (up === at) return p;
+      rest.push(basename(at));
+      at = up;
+    }
+  }
+}
 
-/** A path to be created: its parent's real path joined with its name. */
-const canonicalNew = (p: string): Effect.Effect<string> =>
-  Effect.map(canonical(dirname(p)), (parent) => join(parent, basename(p)));
+const canonical = (p: string): Effect.Effect<string> => Effect.promise(() => canonicalPath(p));
 
-/** The project id `<dir>/finisher.project.json` names, if it can be read. */
-const projectIdIn = (dir: string): Effect.Effect<string | undefined> =>
-  Effect.promise(() =>
-    readFile(join(dir, "finisher.project.json"), "utf8")
-      .then((text) => {
-        const id = (JSON.parse(text) as { id?: unknown }).id;
-        return typeof id === "string" && id.length > 0 ? id : undefined;
-      })
-      .catch(() => undefined),
+/** `PATH_NOT_ALLOWED` when `path`, canonical when checked, no longer is (a swapped symlink). */
+export function stillCanonical(tag: string, path: string): Effect.Effect<void, FinError> {
+  return Effect.flatMap(
+    Effect.promise(() => canonicalPath(path)),
+    (now) => (now === path ? Effect.void : Effect.fail(pathNotAllowed(tag, path))),
   );
+}
+
+/** The most of `finisher.project.json` read before authorisation. */
+export const PROJECT_FILE_MAX = 64 * 1024;
+/** Not following a symlink, not blocking on a FIFO (Windows has neither flag: 0). */
+const NO_FOLLOW = (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0);
+
+/**
+ * The project id `<dir>/finisher.project.json` names, if it can be read: a regular file (not a
+ * symlink, FIFO or device), at most 64 KiB, read before any check, so it must not block or
+ * flood (review of Task 5, M3).
+ */
+export async function projectIdIn(dir: string): Promise<string | undefined> {
+  let handle;
+  try {
+    handle = await open(join(dir, "finisher.project.json"), constants.O_RDONLY | NO_FOLLOW);
+  } catch {
+    return undefined;
+  }
+  try {
+    const st = await handle.stat();
+    if (!st.isFile() || st.size > PROJECT_FILE_MAX) return undefined;
+    const buf = Buffer.alloc(PROJECT_FILE_MAX + 1);
+    const { bytesRead } = await handle.read(buf, 0, buf.length, 0);
+    if (bytesRead > PROJECT_FILE_MAX) return undefined;
+    const id = (JSON.parse(buf.toString("utf8", 0, bytesRead)) as { id?: unknown } | null)?.id;
+    return typeof id === "string" && id.length > 0 ? id : undefined;
+  } catch {
+    return undefined;
+  } finally {
+    await handle.close().catch(() => undefined);
+  }
+}
 
 export function resolve(rule: RpcRule, payload: unknown, deps: ChainProjects): Effect.Effect<Resolved, FinError> {
   return Effect.gen(function* () {
@@ -70,15 +118,21 @@ export function resolve(rule: RpcRule, payload: unknown, deps: ChainProjects): E
         const v = field(payload, k);
         if (typeof v === "string") projects.push(v);
       }
+      // Serving a project that is not open reopens it (Decision 15): `project.write`.
+      if (projects.some((id) => !deps.isOpen(id))) facts = { ...facts, reopens: true };
     }
+    // The handler gets the canonical folder, so it opens what was checked (review H2).
     if (want.has("openDir")) {
       const dir = yield* Effect.flatMap(requireAbsolute("dir", String(out.dir)), canonical);
-      openedProject = yield* projectIdIn(dir);
+      out = { ...out, dir };
+      openedProject = yield* Effect.promise(() => projectIdIn(dir));
       if (openedProject !== undefined) projects.push(openedProject);
       facts = { ...facts, attached: openedProject !== undefined && deps.isOpen(openedProject) };
     }
     if (want.has("createDir")) {
-      paths.push(yield* Effect.flatMap(requireAbsolute("dir", String(out.dir)), canonicalNew));
+      const dir = yield* Effect.flatMap(requireAbsolute("dir", String(out.dir)), canonical);
+      paths.push(dir);
+      out = { ...out, dir };
     }
     let pathsIn: string | undefined;
     if (want.has("probePath")) {

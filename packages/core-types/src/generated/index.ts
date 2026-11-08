@@ -5541,9 +5541,10 @@ export interface ValidationReport {
  */
 export interface WriteGuard {
   /**
-   * When set, the only branches a write may change (`BRANCH_NOT_ALLOWED` otherwise).
+   * When set, the only branches a write may change (`BRANCH_NOT_ALLOWED` otherwise). Absent
+   * means no allow-list; `null` is refused, so a sender's bug cannot open the guard.
    */
-  allowBranches?: string[] | null;
+  allowBranches?: string[];
   /**
    * Branches no write may change (`BRANCH_PROTECTED`).
    */

@@ -6,9 +6,9 @@
 //
 // - `append` never throws: a failed write is logged to stderr and counted (`failures()`,
 //   reported by `server.status`); the request it records still gets its answer.
-// - `auth.fail` rows, and `auth.denied` rows for `UNAUTHENTICATED` (requests from connections
-//   that never proved, 5A Task 5), aggregate per `(kind, credentialKind, remote)` per minute into
-//   one row with a `count`, so a flood of connections or requests cannot flood the log.
+// - `auth.fail` rows aggregate per `(credentialKind, remote)` and `auth.denied` rows per
+//   `(principal, code, rpc)`, per minute, into one row with a `count`, so a flood of
+//   connections or refused requests cannot flood the log (review of Task 5, M5).
 // - Retention: 180 days or 100,000 rows, swept at start and hourly (`layerAudit`), in batches
 //   of ≤ 500 rows per `DELETE`, one batch per event-loop turn.
 import type { StatementSync } from "node:sqlite";
@@ -97,7 +97,7 @@ export class Audit {
   #insert: StatementSync | undefined;
   #bump: StatementSync | undefined;
   readonly #lists = new Map<string, StatementSync>();
-  /** The current minute's `auth.fail` rows: `<credentialKind>|<remote>` → row id. */
+  /** The current minute's aggregated rows (`failKey`) → row id. */
   #failMinute = -1;
   readonly #failRows = new Map<string, number>();
 
@@ -229,12 +229,20 @@ export class Audit {
   }
 }
 
-/** Rows counted per minute rather than written one by one. */
+/**
+ * Rows counted per minute rather than written one by one: failed proofs per credential kind,
+ * and denials per principal, code and RPC, so no caller can flush the log by being refused
+ * (review of Task 5, M5).
+ */
 function aggregated(e: AuditInput): boolean {
-  return e.kind === "auth.fail" || (e.kind === "auth.denied" && e.code === "UNAUTHENTICATED");
+  return e.kind === "auth.fail" || e.kind === "auth.denied";
 }
 
 function failKey(e: AuditInput): string {
+  if (e.kind === "auth.denied") {
+    const rpc = (e.details as { rpc?: unknown } | undefined)?.rpc;
+    return `${e.kind}|${e.principal.kind}:${e.principal.id}|${e.code ?? ""}|${typeof rpc === "string" ? rpc : ""}`;
+  }
   return `${e.kind}|${e.credentialKind ?? ""}|`;
 }
 

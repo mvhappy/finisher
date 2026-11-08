@@ -52,6 +52,26 @@ describe("ProjectRegistry", () => {
     expect(revs).toEqual(Array.from({ length: N }, (_, i) => i + 2));
   });
 
+  test("open checks the project it was told to expect, before registering it (review of Task 5, H2)", async () => {
+    const r = await registry();
+    const [dirA, dirB] = [join(tmp, "a"), join(tmp, "b")];
+    const a = (await run(r.create(dirA, "A", "30"))).projectId;
+    const b = (await run(r.create(dirB, "B", "30"))).projectId;
+    // Open here already: the folder's engine is not the expected project.
+    expect(await failure(r.open(dirB, false, { projectId: a }))).toMatchObject({ code: "PROJECT_NOT_FOUND", details: { reason: "changed" } });
+    await Effect.runPromise(Scope.close(scope!, Exit.void));
+    scope = undefined;
+    const r2 = await registry();
+    // Loaded from disk: refused before it is registered (its lease is not kept).
+    expect(await failure(r2.open(dirB, false, { projectId: a }))).toMatchObject({ code: "PROJECT_NOT_FOUND", details: { reason: "changed" } });
+    expect(r2.isOpen(b)).toBe(false);
+    // Attach-only answers only from an engine open here.
+    expect((await failure(r2.open(dirA, false, { projectId: a, attachOnly: true }))).code).toBe("PROJECT_NOT_FOUND");
+    expect(r2.isOpen(a)).toBe(false);
+    expect((await run(r2.open(dirA, false, { projectId: a }))).projectId).toBe(a);
+    expect((await run(r2.open(dirA, false, { projectId: a, attachOnly: true }))).projectId).toBe(a);
+  });
+
   test("opening the same dir twice (even concurrently) yields one engine", async () => {
     const r = await registry();
     const dir = join(tmp, "p");

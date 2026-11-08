@@ -1,19 +1,21 @@
 // The middleware chain (plan 5A Task 5) in-process: fake handlers that record what reaches
 // them, a fake project registry, principals bound by hand.
+import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { defaultScopes, type FinError, HUMAN_ONLY, type Principal, type Scope, SCOPES } from "@finisher/contracts";
+import { defaultScopes, type FinError, HUMAN_ONLY, type Principal, type Scope, SCOPES, WRITE_RPCS } from "@finisher/contracts";
 import { Effect, Exit, Stream } from "effect";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import { unauthenticated } from "../src/auth/handshake.ts";
 import { checkScopes } from "../src/chain/authorize.ts";
-import { type ChainDeps, chainOf, type PolicyRule, withChain } from "../src/chain/chain.ts";
+import { type ChainDeps, chainOf, type PolicyRule, withChain, writeGuardOf } from "../src/chain/chain.ts";
 import { approvalRequired, branchNotAllowed, humanOnlyFixes, pathNotAllowed, scopeDenied } from "../src/chain/fixes.ts";
-import type { ChainProjects } from "../src/chain/resolve.ts";
+import { canonicalPath, type ChainProjects, PROJECT_FILE_MAX, projectIdIn } from "../src/chain/resolve.ts";
 import { Connections } from "../src/connections.ts";
 import type { Audit, AuditInput } from "../src/control/audit.ts";
 import { ANONYMOUS, CONSOLE, LOCAL } from "../src/principal.ts";
+import { SAMPLE_PAYLOADS } from "./support/payloads.ts";
 
 const A = "01aaaaaaaaaaaaaaaaaaaaaaaa";
 const B = "01bbbbbbbbbbbbbbbbbbbbbbbb";
@@ -24,7 +26,7 @@ const mcp = (): Principal => ({ ...agent(), kind: "mcp", id: "01mcp0000000000000
 let tmp: string;
 let dirA: string;
 let dirB: string;
-let open: Set<string>;
+let open: Set<string> = new Set();
 const BRANCHES: Record<string, string> = { main: "main", feature: "br3", "feature#br3": "br3", br3: "br3", mine: "br5", br5: "br5" };
 
 const projects: ChainProjects = {
@@ -60,7 +62,7 @@ function harness(principal: Principal, more: Partial<ChainDeps> = {}) {
       seen.push({ tag, payload, options });
       return answer(payload as Record<string, unknown>);
     });
-  const handlers = {
+  const handlers: Record<string, unknown> = {
     "project.create": unary("project.create"),
     "project.open": unary("project.open", (p) => ({ projectId: String(p.dir).endsWith("b") ? B : A, rev: 0 })),
     "project.takeover": unary("project.takeover"),
@@ -74,6 +76,8 @@ function harness(principal: Principal, more: Partial<ChainDeps> = {}) {
       return Stream.make(1, 2);
     },
   };
+  // Every writing RPC, and a read by id, record what reaches them too.
+  for (const t of [...WRITE_RPCS, "snapshot.get"]) handlers[t] ??= unary(t);
   const audit = { append: (e: AuditInput) => audited.push(e) } as unknown as Audit;
   const chained = withChain(handlers, { connections, projects, audit, ...more }) as unknown as Record<string, (p: unknown, o: unknown) => unknown>;
   const call = (tag: string, payload: unknown) =>
@@ -176,6 +180,7 @@ describe("the chain", () => {
     open = new Set([A]);
     const h = harness(agent());
     expect(code(await h.call("asset.probe", { path: join(dirA, "clip.png") }))).toBeUndefined();
+    // A file that does not exist yet is its nearest existing folder's real path plus the rest.
     expect(code(await h.call("asset.probe", { path: join(dirA, "workspace", "later.png") }))).toBeUndefined();
     expect(code(await h.call("asset.probe", { path: join(tmp, "outside.png") }))).toBe("PATH_NOT_ALLOWED");
     // A symlink inside the project is followed: its target is outside.
@@ -274,5 +279,137 @@ describe("the chain", () => {
       expect(e.details).toMatchObject({ where: "console" });
     }
     expect(defaultScopes("local")).not.toContain("project.confirm");
+  });
+});
+
+const WIN = process.platform === "win32";
+
+describe("review of Task 5", () => {
+  const limited = (more: Partial<Principal> = {}) => agent({ scopes: SCOPES.filter((x) => !HUMAN_ONLY.has(x)), branches: ["own"], ...more });
+  /** A payload for `tag` whose write targets are the agent's own branch (`mine`, br5). */
+  const ownWrite = (tag: string): Record<string, unknown> => {
+    const p: Record<string, unknown> = { ...SAMPLE_PAYLOADS[tag as keyof typeof SAMPLE_PAYLOADS], projectId: A, author: "someone-else" };
+    for (const f of ["branch", "into"]) if (f in p) p[f] = "mine";
+    if (tag === "tx.commit") p.tx = { txId: "t", branch: "mine", author: "a", ops: [] };
+    return p;
+  };
+
+  test("H1: a branch-limited principal's every write carries allowBranches", async () => {
+    open = new Set([A]);
+    for (const tag of WRITE_RPCS) {
+      const h = harness(limited());
+      expect(code(await h.call(tag, ownWrite(tag))), tag).toBeUndefined();
+      expect(chainOf(h.seen[0]!.options)?.guard, tag).toEqual({ denyBranches: [], allowBranches: ["br5"] });
+    }
+    // Unlimited principals: no allow-list.
+    const local = harness(LOCAL);
+    await local.call("project.recover", ownWrite("project.recover"));
+    expect(chainOf(local.seen[0]!.options)?.guard).toEqual({ denyBranches: [] });
+  });
+
+  test("H1/L3: a write outside the chain, or limited without an allow-list, is a defect", async () => {
+    // A defect: a failure with no typed error (the handler's `defectsAsErrors` makes it INTERNAL).
+    const die = async (options: object) => {
+      const exit = await Effect.runPromiseExit(writeGuardOf(options));
+      return Exit.isFailure(exit) && Exit.findErrorOption(exit)._tag === "None";
+    };
+    expect(await die({})).toBe(true);
+    expect(await die({ guard: { denyBranches: [] }, principal: limited() })).toBe(true);
+    expect(await Effect.runPromise(writeGuardOf({ guard: { denyBranches: [], allowBranches: [] }, principal: limited() }))).toEqual({ denyBranches: [], allowBranches: [] });
+    expect(await Effect.runPromise(writeGuardOf({ guard: { denyBranches: [] }, principal: LOCAL }))).toEqual({ denyBranches: [] });
+  });
+
+  test("M4: a branch-limited principal's new branches carry its own author", async () => {
+    open = new Set([A]);
+    for (const tag of ["branch.create", "project.recover"]) {
+      const h = harness(limited());
+      await h.call(tag, ownWrite(tag));
+      expect(h.seen[0]!.payload, tag).toMatchObject({ author: "agent:01agent000000000000000000a" });
+      const local = harness(LOCAL);
+      await local.call(tag, ownWrite(tag));
+      expect(local.seen[0]!.payload, tag).toMatchObject({ author: "someone-else" });
+    }
+  });
+
+  test("H2: project.open and project.create get the canonical folder and what was checked", async () => {
+    const link = join(tmp, "link-to-a");
+    symlinkSync(dirA, link, WIN ? "junction" : "dir");
+    open = new Set();
+    const h = harness(LOCAL);
+    await h.call("project.open", { dir: link });
+    expect(h.seen[0]!.payload).toMatchObject({ dir: dirA });
+    expect(chainOf(h.seen[0]!.options)).toMatchObject({ openedProject: A, facts: { attached: false } });
+    open = new Set([A]);
+    await h.call("project.open", { dir: link });
+    expect(chainOf(h.seen[1]!.options)).toMatchObject({ openedProject: A, facts: { attached: true } });
+    await h.call("project.create", { dir: join(link, "workspace", "fresh", "x"), name: "N", rate: "30" });
+    expect(h.seen[2]!.payload).toMatchObject({ dir: join(dirA, "workspace", "fresh", "x") });
+  });
+
+  test("M1: serving a project that is not open (a reopen) needs project.write", async () => {
+    const reader = agent({ scopes: ["project.read"] });
+    open = new Set([A]);
+    expect(code(await harness(reader).call("snapshot.get", { projectId: A, branch: "main" }))).toBeUndefined();
+    open = new Set();
+    expect(error(await harness(reader).call("snapshot.get", { projectId: A, branch: "main" }))).toMatchObject({ code: "SCOPE_DENIED", details: { scopes: ["project.write"] } });
+    expect(code(await harness(agent()).call("snapshot.get", { projectId: A, branch: "main" }))).toBeUndefined();
+  });
+
+  test("L1: reach is checked before the open state, so it leaks nothing", async () => {
+    const reader = agent({ scopes: ["project.read"] });
+    for (const state of [new Set<string>(), new Set([B])]) {
+      open = state;
+      expect(code(await harness(reader).call("project.open", { dir: dirB })), `B open: ${state.has(B)}`).toBe("PROJECT_NOT_FOUND");
+      expect(code(await harness(reader).call("snapshot.get", { projectId: B, branch: "main" })), `B open: ${state.has(B)}`).toBe("PROJECT_NOT_FOUND");
+    }
+  });
+
+  test("M2: a symlinked folder above a missing file is followed", async () => {
+    open = new Set([A]);
+    const outside = join(tmp, "elsewhere");
+    mkdirSync(outside, { recursive: true });
+    symlinkSync(outside, join(dirA, "workspace", "out"), WIN ? "junction" : "dir");
+    const h = harness(agent());
+    expect(code(await h.call("asset.probe", { projectId: A, path: join(dirA, "workspace", "out", "later.png") }))).toBe("PATH_NOT_ALLOWED");
+    expect(await canonicalPath(join(dirA, "workspace", "out", "a", "b.png"))).toBe(join(outside, "a", "b.png"));
+    expect(await canonicalPath(join(dirA, "clip.png"))).toBe(join(dirA, "clip.png"));
+    // Protocol 2: only the probe's own project's folder counts.
+    open = new Set([A, B]);
+    const both = harness(agent({ projects: [A, B] }));
+    expect(code(await both.call("asset.probe", { projectId: B, path: join(dirA, "clip.png") }))).toBe("PATH_NOT_ALLOWED");
+    expect(code(await both.call("asset.probe", { projectId: A, path: join(dirA, "clip.png") }))).toBeUndefined();
+  });
+
+  test("M3: finisher.project.json is read only as a small regular file", async () => {
+    const dir = join(tmp, "m3");
+    mkdirSync(dir);
+    const file = join(dir, "finisher.project.json");
+    writeFileSync(file, JSON.stringify({ id: A }));
+    expect(await projectIdIn(dir)).toBe(A);
+    writeFileSync(file, JSON.stringify({ id: A, pad: "x".repeat(PROJECT_FILE_MAX) }));
+    expect(await projectIdIn(dir)).toBeUndefined();
+    rmSync(file);
+    mkdirSync(file);
+    expect(await projectIdIn(dir)).toBeUndefined();
+    rmSync(file, { recursive: true });
+    if (!WIN) {
+      symlinkSync(join(dirA, "finisher.project.json"), file);
+      expect(await projectIdIn(dir)).toBeUndefined();
+      rmSync(file);
+      if (spawnSync("mkfifo", [file]).status === 0) {
+        const t0 = Date.now();
+        expect(await projectIdIn(dir)).toBeUndefined();
+        expect(Date.now() - t0).toBeLessThan(2_000);
+      }
+    }
+  });
+
+  test("M5: stream refusals are counted in rpc.stats", async () => {
+    const counted: string[] = [];
+    const timed = <A>(tag: string, self: Effect.Effect<A, FinError>) => Effect.tapError(self, (e) => Effect.sync(() => counted.push(`${tag}:${e.code}`)));
+    const h = harness(agent({ scopes: ["server.read"] }), { timed });
+    await h.stream("ops.subscribe", { projectId: A, branch: "main", fromRev: 0 });
+    await h.call("tx.commit", commit("main"));
+    expect(counted).toEqual(["ops.subscribe:SCOPE_DENIED", "tx.commit:SCOPE_DENIED"]);
   });
 });

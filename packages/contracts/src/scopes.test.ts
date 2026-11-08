@@ -1,7 +1,7 @@
 import { expect, test } from "vitest";
 import { defaultScopes } from "./auth.ts";
 import { FinRpcs } from "./rpc.ts";
-import { HUMAN_ONLY, RPC_SCOPES, requiredScopes, type ResolverName, SCOPES } from "./scopes.ts";
+import { HUMAN_ONLY, RPC_SCOPES, requiredScopes, type ResolverName, ruleOf, SCOPES, WRITE_RPCS } from "./scopes.ts";
 
 /** The resolver a payload field needs (spec §4.4 stage 3). */
 const NEEDS: Record<string, ResolverName> = {
@@ -19,7 +19,7 @@ test("rpc_scopes_cover_every_rpc", () => {
   const tags = [...FinRpcs.requests.keys()].sort();
   expect(Object.keys(RPC_SCOPES).sort()).toEqual(tags);
   for (const tag of tags) {
-    const rule = RPC_SCOPES[tag as keyof typeof RPC_SCOPES];
+    const rule = ruleOf(tag as keyof typeof RPC_SCOPES);
     expect(rule.scopes.length, tag).toBeGreaterThan(0);
     for (const s of rule.scopes) expect(SCOPES, tag).toContain(s);
     const rpc = FinRpcs.requests.get(tag) as unknown as { payloadSchema: { fields?: Record<string, unknown> } };
@@ -30,6 +30,7 @@ test("rpc_scopes_cover_every_rpc", () => {
     }
     // Every write target is a payload field the branch resolver covers.
     for (const w of rule.writes ?? []) expect(fields, tag).toContain(w.split(".")[0]);
+    if (rule.author !== undefined) expect(fields, tag).toContain(rule.author);
   }
   // Only the handshake is public.
   expect(tags.filter((t) => RPC_SCOPES[t as keyof typeof RPC_SCOPES].scopes.includes("public"))).toEqual(["auth.prove", "server.hello"]);
@@ -52,4 +53,45 @@ test("defaults_follow_owner_decision_5", () => {
   expect(defaultScopes("console")).toEqual(SCOPES);
   expect(defaultScopes("anonymous")).toEqual(["public"]);
   expect(defaultScopes("agent")).toEqual([]);
+});
+
+test("writes_required_on_writing_rules: exactly the RPCs whose handlers write through the guard", () => {
+  // The handlers that pass a write guard to the store (`meta(options)` in finisherd's handlers).
+  expect([...WRITE_RPCS].sort()).toEqual(
+    [
+      "branch.create",
+      "branch.set",
+      "history.checkpoint",
+      "history.cherryPick",
+      "history.merge",
+      "history.redo",
+      "history.revert",
+      "history.undo",
+      "project.recover",
+      "tx.commit",
+    ].sort(),
+  );
+  // A new branch's author is stamped by the server for branch-limited principals.
+  expect(ruleOf("branch.create").author).toBe("author");
+  expect(ruleOf("project.recover").author).toBe("author");
+});
+
+test("reopening_a_closed_project_needs_project_write", () => {
+  expect(requiredScopes("project.status", { projectId: "p" }, { reopens: false })).toEqual(["project.read"]);
+  expect(requiredScopes("project.status", { projectId: "p" }, { reopens: true })).toEqual(["project.read", "project.write"]);
+  expect(requiredScopes("tx.commit", { projectId: "p" }, { reopens: true })).toEqual(["project.write"]);
+});
+
+test("human_only_needs_follow_the_payload_alone (never whether a project is open)", () => {
+  const facts = [{}, { attached: true }, { attached: false }, { reopens: true }, { attached: true, reopens: true }];
+  const payloads: Array<[keyof typeof RPC_SCOPES, unknown]> = [
+    ["project.open", { dir: "/d" }],
+    ["project.open", { dir: "/d", relocate: true }],
+    ["project.takeover", { projectId: "p", confirm: true }],
+    ["project.takeover", { projectId: "p", confirm: false }],
+  ];
+  for (const [tag, payload] of payloads) {
+    const human = facts.map((f) => requiredScopes(tag, payload, f).filter((s) => HUMAN_ONLY.has(s)).join(","));
+    expect(new Set(human).size, `${tag} ${JSON.stringify(payload)}`).toBe(1);
+  }
 });

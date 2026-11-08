@@ -170,13 +170,39 @@ fn unsafe_credential(path: &Path, problem: &str, mode: u32) -> CoreError {
     )
 }
 
-/// The text of a key or credential file: `Ok(None)` when it cannot be read or is over
-/// [`MAX_CREDENTIAL_BYTES`]; an error when it is not private (Unix: the opened file's owner and
-/// mode, so a swap after the check reads nothing else).
+/// `O_NONBLOCK`: opening a FIFO put where a key file should be must not hang `fin`.
+#[cfg(any(target_os = "linux", target_os = "android"))]
+const O_NONBLOCK: i32 = 0o4000;
+#[cfg(all(unix, not(any(target_os = "linux", target_os = "android"))))]
+const O_NONBLOCK: i32 = 0x0004;
+
+/// Opens `path` for reading, never blocking on a FIFO (Unix).
+fn open_nonblocking(path: &Path) -> std::io::Result<std::fs::File> {
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        options.custom_flags(O_NONBLOCK);
+    }
+    options.open(path)
+}
+
+/// The text of a key or credential file: `Ok(None)` when it cannot be read, is not a regular
+/// file (a FIFO, a device, a directory) or is over [`MAX_CREDENTIAL_BYTES`]; an error when it is
+/// not private (Unix: the opened file's owner and mode, so a swap after the check reads nothing
+/// else).
 fn read_private(path: &Path) -> Result<Option<String>, CoreError> {
-    let Ok(file) = std::fs::File::open(path) else {
+    if !std::fs::metadata(path).is_ok_and(|m| m.is_file()) {
+        return Ok(None);
+    }
+    let Ok(file) = open_nonblocking(path) else {
         return Ok(None);
     };
+    // Checked again on what was opened: a swap after the first check is caught here.
+    if !file.metadata().is_ok_and(|m| m.is_file()) {
+        return Ok(None);
+    }
     #[cfg(unix)]
     {
         use std::os::unix::fs::MetadataExt as _;
