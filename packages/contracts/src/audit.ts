@@ -1,6 +1,7 @@
 // The security audit log's records (spec §3.3, plan 5A Decision 4). Rows live in
 // `control.db` `audit`; they are read only by the owner (`auth.audit.list`, Task 8).
 import { Schema } from "effect";
+import { PLATFORMS, ROUTE_KINDS, SETTINGS_PATHS } from "./devices.ts";
 
 /**
  * Every audit kind (spec §3.3); the six after `console.refused` are reserved for sub-projects 7
@@ -35,6 +36,8 @@ export const AUDIT_KINDS = [
   "env.moved",
   "env.adopted",
   "env.reset",
+  // A new identity key for the environment (5B Decision 30): every device was revoked with it.
+  "identity.rotate",
   "control.reset",
   "library.add",
   "library.remove",
@@ -105,6 +108,8 @@ const Code = Schema.String.check(Schema.isPattern(/^[A-Z][A-Z0-9_]{0,63}$/));
 const Name = Schema.String.check(Schema.isMaxLength(64));
 /** A remote address (5B), ≤ 64 characters. */
 const Address = Schema.String.check(Schema.isMaxLength(64));
+/** An SPKI pin: `base64url(SHA-256(SubjectPublicKeyInfo))`, 43 characters (5B Decision 6). */
+const Spki = Schema.String.check(Schema.isPattern(/^[A-Za-z0-9_-]{43}$/));
 /** A Windows SID (`S-1-…`), never an account name. */
 const Sid = Schema.String.check(Schema.isPattern(/^S-1-[0-9]+(-[0-9]+){0,15}$/));
 /** The process and token user of a pipe client (5A Task 11), as the OS reports them. */
@@ -125,8 +130,22 @@ const COMMON = {
   count: Schema.optional(Schema.Int),
   /** `audit.purge`: the cutoff (ms) an owner's purge removed entries before. */
   before: Schema.optional(Schema.Int),
-  /** The transport a connection came over (5A Task 3). */
-  transport: Schema.optional(Schema.Literals(["socket", "pipe", "ws"])),
+  /** The transport a connection came over (5A Task 3; `wss`: 5B's remote listener). */
+  transport: Schema.optional(Schema.Literals(["socket", "pipe", "ws", "wss"])),
+};
+// 5B: the remote listener (`listener.start {spki, mode, source}`), the environment
+// (`env.reset {devices, credentials}`), `settings.write {path}` and `identity.rotate {reason,
+// count}`. A route kind and a platform are closed words; never an address outside the
+// address kinds, never a setting's value.
+const SERVER = {
+  spki: Schema.optional(Spki),
+  mode: Schema.optional(Schema.Literals(["selfSigned", "files"])),
+  source: Schema.optional(Schema.Literals(["env", "settings"])),
+  path: Schema.optional(Schema.Literals(SETTINGS_PATHS)),
+  devices: Schema.optional(Schema.Int),
+  credentials: Schema.optional(Schema.Int),
+  platform: Schema.optional(Schema.Literals(PLATFORMS)),
+  route: Schema.optional(Schema.Literals(ROUTE_KINDS)),
 };
 // `library.add|remove|set` (plan 5D Decision 49): the library's id, its storage kind and the
 // field names a human-only `library.set` changed; never a library's name, root, alias or path.
@@ -166,21 +185,20 @@ const PAIRING: ReadonlyArray<AuditKind> = ["pair.offer", "pair.redeem", "pair.ap
 export const AUDIT_NAME_KINDS: ReadonlySet<AuditKind> = new Set<AuditKind>([
   ...PAIRING,
   "device.revoke",
-  "device.rename",
   "credential.revoke",
   "auth.fail",
 ]);
-/** Kinds whose details may hold a remote address. */
-export const AUDIT_ADDRESS_KINDS: ReadonlySet<AuditKind> = new Set<AuditKind>([...PAIRING, "auth.fail"]);
+/** Kinds whose details may hold a remote address (owner decision 4 of 5B: pairing, revocation, failures). */
+export const AUDIT_ADDRESS_KINDS: ReadonlySet<AuditKind> = new Set<AuditKind>([...PAIRING, "device.revoke", "auth.fail"]);
 
 /** Kinds whose details name a library by id. */
 export const AUDIT_LIBRARY_KINDS: ReadonlySet<AuditKind> = new Set<AuditKind>(["library.add", "library.remove", "library.set"]);
 
-const PlainDetails = Schema.Struct(COMMON);
+const PlainDetails = Schema.Struct({ ...COMMON, ...SERVER });
 const PluginDetails = Schema.Struct({ ...COMMON, ...PLUGIN_FIELDS });
 const LibraryDetails = Schema.Struct({ ...COMMON, ...LIBRARY });
-const NamedDetails = Schema.Struct({ ...COMMON, ...NAMES });
-const AddressedDetails = Schema.Struct({ ...COMMON, ...NAMES, ...ADDRESS });
+const NamedDetails = Schema.Struct({ ...COMMON, ...SERVER, ...NAMES });
+const AddressedDetails = Schema.Struct({ ...COMMON, ...SERVER, ...NAMES, ...ADDRESS });
 type DetailsSchema = typeof PlainDetails | typeof LibraryDetails | typeof NamedDetails | typeof AddressedDetails | typeof PluginDetails;
 
 /** Kinds whose details may name a plugin, a registry and a version. */

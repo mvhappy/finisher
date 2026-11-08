@@ -50,6 +50,14 @@ test("the group exposes exactly the protocol 2 RPC tags", () => {
       "auth.credential.mint",
       "auth.credential.revoke",
       "auth.credential.rotateMaster",
+      "auth.device.list",
+      "auth.device.rename",
+      "auth.device.revoke",
+      "auth.devices.watch",
+      "auth.pair.approve",
+      "auth.pair.offer",
+      "auth.pair.pending",
+      "auth.pair.reject",
       "auth.prove",
       "auth.revokeSelf",
       "auth.ticket",
@@ -64,6 +72,11 @@ test("the group exposes exactly the protocol 2 RPC tags", () => {
       "diagnostics.purge",
       "diagnostics.record",
       "diagnostics.status",
+      "env.adopt",
+      "env.describe",
+      "env.name",
+      "env.reset",
+      "env.rotateIdentity",
       "eval.audio",
       "eval.frame",
       "fonts.catalog",
@@ -130,6 +143,7 @@ test("the group exposes exactly the protocol 2 RPC tags", () => {
       "server.hello",
       "server.status",
       "server.stop",
+      "settings.write",
       "snapshot.get",
       "training.closedTargets.get",
       "training.closedTargets.set",
@@ -139,8 +153,8 @@ test("the group exposes exactly the protocol 2 RPC tags", () => {
   );
 });
 
-test("ops.subscribe, project.events, jobs.watch, library.watch and agent.watch are streaming rpcs and the others are not", () => {
-  const streams = new Set(["ops.subscribe", "project.events", "jobs.watch", "library.watch", "agent.watch"]);
+test("ops.subscribe, project.events, the watches and auth.pair.pending are streaming rpcs and the others are not", () => {
+  const streams = new Set(["ops.subscribe", "project.events", "jobs.watch", "library.watch", "agent.watch", "auth.pair.pending", "auth.devices.watch"]);
   for (const [tag, rpc] of FinRpcs.requests) {
     expect(RpcSchema.isStreamSchema(rpc.successSchema), tag).toBe(streams.has(tag));
   }

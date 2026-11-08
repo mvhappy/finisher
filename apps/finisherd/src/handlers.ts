@@ -8,6 +8,7 @@ import { TicketsTag } from "./auth/tickets.ts";
 import { CredentialsTag } from "./auth/credentials.ts";
 import { KEY_BYTES } from "./auth/crypto.ts";
 import { revokeCredential } from "./auth/revoke.ts";
+import { deviceHandlers, envHandlers } from "./auth/device-rpc.ts";
 import { chainOf, credentialOf, withChain, writeGuardOf } from "./chain/chain.ts";
 import { AuditTag } from "./control/audit.ts";
 import { ConnectionRegistryTag, ConnectionsTag } from "./connections.ts";
@@ -389,6 +390,9 @@ export const HandlersLive = FinRpcs.toLayer(
       // The job engine (5C-2): ownership and reach per job in `jobs/rpc.ts`.
       ...jobHandlers({ engine: jobEngine, guard }),
       ...agentHandlers({ guard, store: agents.store, reach, agents: agentRuntime, principalOf }),
+      // 5B: pairing, devices, settings writes and the environment.
+      ...deviceHandlers({ guard }),
+      ...envHandlers({ guard }),
     }), { connections, projects, jobs: chainJobs(jobEngine), audit, timed: guard, touch: (p) => credentials.touch(p.id), hooks, policies });
   }),
 );

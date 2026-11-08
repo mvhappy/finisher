@@ -143,6 +143,12 @@ export interface RuleOf<T extends FinRpcTag> {
    */
   readonly unconfirmed?: "readOnly" | "service";
   /**
+   * A payload-dependent opt-out, read like `unconfirmed` when it answers (5B Decision 21: a
+   * console's `self` pairing offer, which the desktop shell's main process makes without a
+   * terminal). `undefined`: the rule's own `unconfirmed` stands.
+   */
+  readonly unconfirmedIf?: (payload: PayloadOf<T>) => "readOnly" | "service" | undefined;
+  /**
    * The principal kinds that may call it, whatever scopes they hold; any other kind is
    * `SCOPE_DENIED` (reason `principalKind`), before the human-only check. `agent.self` is the
    * calling session's own, so only an `agent` credential has one; in 7A the session-driving
@@ -172,6 +178,7 @@ export interface RpcRule {
   readonly targets?: ReadonlyArray<string>;
   readonly author?: string;
   readonly unconfirmed?: "readOnly" | "service";
+  readonly unconfirmedIf?: (payload: never) => "readOnly" | "service" | undefined;
   readonly kinds?: ReadonlyArray<PrincipalKind>;
   readonly deviceOnly?: (payload: never) => boolean;
   readonly allProjects?: (payload: never) => boolean;
@@ -391,6 +398,23 @@ export const RPC_SCOPES: { readonly [T in FinRpcTag]: RuleOf<T> } = {
   "agent.local.remove": { scopes: ["agent.admin"] },
   "training.closedTargets.get": { scopes: ["server.read"] },
   "training.closedTargets.set": { scopes: ["settings.admin"] },
+  // 5B (plan Decision 1, spec §5.9): pairing, devices and the environment are the owner's
+  // (`auth.admin`, human-only); the streams and the device list only read. A console's `self`
+  // offer (the desktop shell pairing its own renderer) needs no typed code (Decision 21).
+  "auth.pair.offer": { scopes: ["auth.admin"], unconfirmedIf: (p) => (p.self === true ? "service" : undefined) },
+  "auth.pair.approve": { scopes: ["auth.admin"] },
+  "auth.pair.reject": { scopes: ["auth.admin"] },
+  "auth.pair.pending": { scopes: ["auth.admin"], unconfirmed: "readOnly" },
+  "auth.device.list": { scopes: ["auth.admin"], unconfirmed: "readOnly" },
+  "auth.device.rename": { scopes: ["auth.admin"] },
+  "auth.device.revoke": { scopes: ["auth.admin"] },
+  "auth.devices.watch": { scopes: ["auth.admin"], unconfirmed: "readOnly" },
+  "env.describe": { scopes: ["server.read"] },
+  "env.name": { scopes: ["auth.admin"] },
+  "env.adopt": { scopes: ["auth.admin"] },
+  "env.reset": { scopes: ["auth.admin"] },
+  "env.rotateIdentity": { scopes: ["auth.admin"] },
+  "settings.write": { scopes: ["settings.admin"] },
 };
 
 /** The RPCs that write through the store's guard: exactly the rules with `writes`. */

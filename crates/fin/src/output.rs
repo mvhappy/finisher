@@ -62,6 +62,19 @@ pub const DENIED_CODES: &[&str] = &[
     "MODE_FORBIDS",
     "HOOK_BLOCKED",
     "DEPTH_EXCEEDED",
+    // Devices (5B Decision 33): the owner rejected a pairing; a device's proof, nonce, token or
+    // ticket did not hold; a Host or Origin the listener does not serve; a revoked device; server
+    // data copied or moved until the owner adopts or resets it; a client's pinned SPKI differs.
+    "PAIRING_REJECTED",
+    "DPOP_INVALID",
+    "DPOP_NONCE",
+    "TOKEN_EXPIRED",
+    "TICKET_INVALID",
+    "ORIGIN_REFUSED",
+    "HOST_REFUSED",
+    "DEVICE_REVOKED",
+    "ENV_MOVED",
+    "TLS_PIN_MISMATCH",
 ];
 
 /// Codes that mean "a person has been asked" (exit 8, sub-project 7 §7.3): the `ask` stage
@@ -279,6 +292,14 @@ const VALIDATION_CODES: &[&str] = &[
     "SEARCH_QUERY_INVALID",
     "LIBRARY_METADATA_ONLY",
     "NAME_COLLISION",
+    // Devices and remote access (5B Decision 33): an expired offer; a non-loopback listener
+    // without TLS; certificate files that do not hold; the secrets of another server data; a
+    // wrapped secret store whose key does not open it.
+    "PAIRING_EXPIRED",
+    "LISTEN_NEEDS_TLS",
+    "TLS_FILES_INVALID",
+    "IDENTITY_MISMATCH",
+    "SECRETS_KEY_INVALID",
 ];
 
 /// Codes that mean "the project moved under you; read it again and retry" (exit 4).
@@ -328,6 +349,9 @@ const CONFLICT_CODES: &[&str] = &[
     // the session's workspace holds its 256 MiB (7A-2 Task 8b): remove files first.
     "AUTO_MERGE_UNAVAILABLE",
     "WORKSPACE_FULL",
+    // Devices (5B Decision 33): an offer someone already redeemed; 64 live devices (revoke some).
+    "PAIRING_USED",
+    "DEVICE_LIMIT",
 ];
 
 /// Codes of a job that ended without succeeding (exit 4, 5C-1 Decision 41): its outcome, and
@@ -478,6 +502,9 @@ const UNAVAILABLE_CODES: &[&str] = &[
     "HOOK_TIMEOUT",
     "SECRET_STORE_BUSY",
     "SECRET_STORE_UNAVAILABLE",
+    // Devices (5B Decision 13): too many pairing or token requests; wait for `Retry-After`.
+    "PAIRING_RATE_LIMITED",
+    "TOKEN_RATE_LIMITED",
 ];
 
 /// The one place error codes become exit codes.

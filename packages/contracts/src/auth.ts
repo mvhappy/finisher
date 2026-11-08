@@ -159,11 +159,12 @@ export const PUBLIC_RPCS: ReadonlySet<string> = new Set(["server.hello", "auth.p
 /**
  * A kind's default scopes (Decision 20): `console` every scope; `local` every scope but the
  * human-only ones; `agent`/`mcp` none by default (their credential lists them); `anonymous` only
- * `public`. `device` (5B) and `plugin` (8) hold none yet.
+ * `public`. A `device` (5B Decision 3) is the owner: every scope. `plugin` (8) holds none yet.
  */
 export function defaultScopes(kind: PrincipalKind): ReadonlyArray<Scope> {
   switch (kind) {
     case "console":
+    case "device":
       return SCOPES;
     case "local":
       return SCOPES.filter((s) => !HUMAN_ONLY.has(s));

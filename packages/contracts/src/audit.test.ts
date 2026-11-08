@@ -45,16 +45,19 @@ describe("audit details", () => {
 
   test("names and addresses only for pairing, revocation and auth failures", () => {
     const named = { deviceName: "Studio laptop" };
-    for (const kind of ["pair.redeem", "device.revoke", "device.rename", "credential.revoke", "auth.fail"] as const) {
+    for (const kind of ["pair.redeem", "device.revoke", "credential.revoke", "auth.fail"] as const) {
       expect(auditDetailsValid(kind, named), kind).toBe(true);
     }
-    for (const kind of ["auth.denied", "credential.mint", "consent.change", "diagnostics.purge", "control.reset"] as const) {
+    for (const kind of ["auth.denied", "credential.mint", "consent.change", "diagnostics.purge", "control.reset", "device.rename"] as const) {
       expect(auditDetailsValid(kind, named), kind).toBe(false);
       expect(auditDetailsValid(kind, { address: "remote-a" }), kind).toBe(false);
     }
     expect(auditDetailsValid("auth.fail", { address: "remote-a" })).toBe(true);
     expect(auditDetailsValid("pair.offer", { address: "remote-a" })).toBe(true);
-    expect(auditDetailsValid("device.revoke", { address: "remote-a" })).toBe(false);
+    // Owner decision 4 of 5B: revocations keep the remote address too.
+    expect(auditDetailsValid("device.revoke", { address: "remote-a" })).toBe(true);
+    expect(auditDetailsValid("device.rename", { address: "remote-a" })).toBe(false);
+    expect(auditDetailsValid("device.rename", { deviceId: "01device00000000000000000a" })).toBe(true);
     expect(auditDetailsValid("pair.redeem", { deviceName: "x".repeat(65) })).toBe(false);
   });
 
@@ -67,3 +70,32 @@ describe("audit details", () => {
     expect(auditDetailsValid("auth.fail", { peer: { pid: 1, user: "someone" } })).toBe(false);
   });
 });
+
+describe("5B kinds (Task 1)", () => {
+  test("audit_details_closed_for_new_kinds", () => {
+    const spki = "A".repeat(43);
+    expect(auditDetailsValid("listener.start", { spki, mode: "selfSigned", source: "settings" })).toBe(true);
+    expect(auditDetailsValid("listener.start", { spki: "short" })).toBe(false);
+    expect(auditDetailsValid("listener.start", { mode: "acme" })).toBe(false);
+    expect(auditDetailsValid("listener.stop", {})).toBe(true);
+    expect(auditDetailsValid("env.reset", { devices: 2, credentials: 3 })).toBe(true);
+    expect(auditDetailsValid("env.moved", { reason: "renewed" })).toBe(true);
+    expect(auditDetailsValid("identity.rotate", { reason: "lost", count: 4 })).toBe(true);
+    expect(auditDetailsValid("settings.write", { path: "server.remote" })).toBe(true);
+    // Never a setting's value, never a path outside the closed list.
+    expect(auditDetailsValid("settings.write", { path: "privacy" })).toBe(false);
+    expect(auditDetailsValid("settings.write", { value: "0.0.0.0:7311" })).toBe(false);
+    expect(auditDetailsValid("pair.redeem", { deviceName: "Studio tablet", platform: "ios", address: "127.0.0.1" })).toBe(true);
+    expect(auditDetailsValid("pair.redeem", { platform: "amiga" })).toBe(false);
+    expect(auditDetailsValid("pair.offer", { label: "for the tablet" })).toBe(true);
+    // Names and addresses: only pairing, device revocation and failures (owner decision 4).
+    for (const kind of ["listener.start", "env.reset", "identity.rotate", "settings.write", "env.moved"] as const) {
+      expect(auditDetailsValid(kind, { deviceName: "x" }), kind).toBe(false);
+      expect(auditDetailsValid(kind, { address: "127.0.0.1" }), kind).toBe(false);
+      expect(auditDetailsValid(kind, { label: "x" }), kind).toBe(false);
+    }
+    expect(auditDetailsValid("device.revoke", { deviceName: "x", address: "127.0.0.1", deviceId: "01device00000000000000000a" })).toBe(true);
+    expect(AUDIT_KINDS).toContain("identity.rotate");
+  });
+});
+

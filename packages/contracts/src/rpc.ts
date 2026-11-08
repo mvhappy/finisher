@@ -9,6 +9,7 @@ import type {
 import { Schema } from "effect";
 import { Rpc, RpcGroup } from "effect/rpc";
 import { TxSetAsideSchema } from "./tx-set-aside.ts";
+import { DEVICE_RPCS } from "./device-rpcs.ts";
 import {
   AudioPlanSchema,
   EvalAudioPayload,
@@ -575,4 +576,6 @@ export const FinRpcs = RpcGroup.make(
   Rpc.make("agent.local.remove", { payload: AgentLocalRemovePayload, success: AgentLocalRemoveSuccess, error: FinError }),
   Rpc.make("training.closedTargets.get", { payload: Schema.Struct({}), success: TrainingClosedTargetsSuccess, error: FinError }),
   Rpc.make("training.closedTargets.set", { payload: TrainingClosedTargetsSetPayload, success: TrainingClosedTargetsSuccess, error: FinError }),
+  // 5B: pairing, devices, the environment and settings writes (`device-rpcs.ts`).
+  ...DEVICE_RPCS,
 );
