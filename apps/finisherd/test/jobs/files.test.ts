@@ -152,9 +152,15 @@ describe("job files", () => {
     await control.close();
     for (const name of [hooks.id, "01OLDJOB", "stray"]) mkdirSync(join(serverData, "jobs", name, "tmp"), { recursive: true });
     writeFileSync(join(serverData, "jobs", "stray-file"), "x");
-    await testEngine({ serverData });
-    expect(readdirSync(join(serverData, "jobs"))).toEqual([hooks.id]);
-    expect(lstatSync(join(serverData, "jobs", hooks.id, "tmp")).isDirectory()).toBe(true);
+    let kept: boolean | undefined;
+    const t = await testEngine({
+      serverData,
+      testKinds: { overrides: { "test.echo": { onSucceeded: (ctx) => Effect.sync(() => void (kept = lstatSync(join(ctx.dir, "tmp")).isDirectory())) } } },
+    });
+    // The hook-phase job's directory survived the sweep for its hook's re-run (Decision 28).
+    expect((await t.wait(hooks.id)).state).toBe("succeeded");
+    expect(kept).toBe(true);
+    await until(() => readdirSync(join(serverData, "jobs")).length === 0);
   });
 
   test("sweep_and_remove_tolerate_missing_paths", async () => {

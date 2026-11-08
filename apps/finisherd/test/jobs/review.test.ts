@@ -238,10 +238,10 @@ describe("9a review", () => {
   // L3: the unfinished count is kept in memory and follows every transition.
   test("the_queue_limit_follows_ends", async () => {
     const t = await testEngine({ queueLimit: 2 });
-    const a = await t.submit("test.sleep", { ms: 300 });
+    const a = await t.submit("test.sleep", { ms: 60_000 });
     await t.submit("test.sleep", { ms: 60_000 });
     expect((await failure(t.engine.submit(OWNER, { kind: "test.echo", params: { value: 1 } }))).code).toBe("JOB_QUEUE_FULL");
-    await t.wait(a.id);
+    await run(t.engine.cancel(a.id));
     expect((await t.submit("test.echo", { value: 1 })).id).toBeDefined();
   });
 

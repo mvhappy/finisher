@@ -230,7 +230,9 @@ impl Events {
     /// Called by the host's threads (readers, waiters, the spawn thread).
     pub(crate) fn on_event(&self, e: HostEvent) {
         let proc = match &e {
-            HostEvent::GroupEmpty { .. } | HostEvent::Spawned { .. } => {
+            HostEvent::GroupEmpty { .. }
+            | HostEvent::Spawned { .. }
+            | HostEvent::AbandonedExit { .. } => {
                 return self.delivery.deliver(event_json(e), false);
             }
             HostEvent::Hello { proc, .. }

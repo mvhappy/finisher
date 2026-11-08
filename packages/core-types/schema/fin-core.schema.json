@@ -5743,6 +5743,25 @@
             "group"
           ],
           "type": "object"
+        },
+        {
+          "description": "A process whose `exit` said `abandoned` has really exited now (Decision 18).",
+          "properties": {
+            "proc": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "type": {
+              "const": "abandonedExit",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "proc"
+          ],
+          "type": "object"
         }
       ]
     },

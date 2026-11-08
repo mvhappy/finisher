@@ -41,7 +41,7 @@ fn spawned_leads_after_the_callback() {
         move |e| {
             let tag = match e {
                 HostEvent::Spawned { proc, .. } => format!("spawned {}", proc.0),
-                HostEvent::GroupEmpty { .. } => return,
+                HostEvent::GroupEmpty { .. } | HostEvent::AbandonedExit { .. } => return,
                 e => format!("event {}", proc_of(e).unwrap().0),
             };
             seen.lock().unwrap().push(tag);

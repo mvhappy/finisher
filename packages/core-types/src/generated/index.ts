@@ -1466,6 +1466,10 @@ export type JobHostEvent =
   | {
       group: number;
       type: "groupEmpty";
+    }
+  | {
+      proc: number;
+      type: "abandonedExit";
     };
 /**
  * A message from a worker or a helper to its host. Any message counts as alive.

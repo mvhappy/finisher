@@ -77,6 +77,8 @@ export class EngineHost {
   readonly #byProc = new Map<number, object>();
   readonly #clock: () => number;
   #log: Log = () => {};
+  /** A process reported `abandoned` has really exited (Decision 18). */
+  onAbandonedExit: (proc: number) => void = () => {};
 
   private constructor(host: JobHostLike, clock: () => number, router: { deliver: (e: JobHostEvent) => void }) {
     this.#host = host;
@@ -115,6 +117,13 @@ export class EngineHost {
         for (const w of waiters ?? []) w();
         return;
       }
+      case "abandonedExit":
+        try {
+          this.onAbandonedExit(e.proc);
+        } catch (err) {
+          this.#log("error", `the abandoned-exit handler threw: ${(err as Error).stack ?? String(err)}`);
+        }
+        return;
     }
     const listener = this.#listeners.get(e.proc);
     if (listener === undefined) {

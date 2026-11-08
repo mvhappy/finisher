@@ -89,7 +89,7 @@ pub fn proc_of(e: &HostEvent) -> Option<ProcId> {
         | HostEvent::Message { proc, .. }
         | HostEvent::Stderr { proc, .. }
         | HostEvent::Exit { proc, .. } => Some(*proc),
-        HostEvent::GroupEmpty { .. } => None,
+        HostEvent::GroupEmpty { .. } | HostEvent::AbandonedExit { .. } => None,
     }
 }
 

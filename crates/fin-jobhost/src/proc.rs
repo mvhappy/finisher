@@ -362,6 +362,7 @@ pub(crate) fn wait_exit(
                 p.id, p.pid
             ));
         }
+        p.sink.send(HostEvent::AbandonedExit { proc: p.id });
         return reap_leader(&p, reap);
     }
     let exit = Instant::now();

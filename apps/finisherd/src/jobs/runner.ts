@@ -1,12 +1,13 @@
-// One attempt of one cold job (spec §6.2–6.4, 5C-1 plan Task 9a): the job directory and its
-// files → `prepare` (until it succeeds once per directory) → the worker in its own group
-// (hello, kinds check, start) → its messages → result, error or exit → the group gone. Then,
-// for a success, the result and `phase: hooks` are persisted and `onSucceeded` runs (Decision
-// 40). The attempt's outcome carries what Task 10's isolation needs: the items acknowledged in
-// this run and the items begun without an `item` (a set: a family may acknowledge a group of
-// items after one reply, e.g. 5D's probe groups of up to 32).
-import type { Hello, HostMsg, JobError as JobErrorMsg, Retry, StartJob, WorkerMsg } from "@finisher/core-types";
-import { FinError, type JobProgress, type JobView, type MappedFile } from "@finisher/contracts";
+// One attempt of one cold job (spec §6.2–6.4, 5C-1 plan Tasks 9a, 9b): the job directory and
+// its files → `prepare` (until it succeeds once per directory) → the helpers (hello, attach) →
+// the worker in the job's group (hello, kinds check, start) → its messages → result, error or
+// exit → the helpers shut down → the group gone. Then, for a success, the result and
+// `phase: hooks` are persisted and `onSucceeded` runs (Decision 40). The attempt's outcome
+// carries what Task 10's isolation needs: the items acknowledged in this run and the items
+// begun without an `item` (a set: a family may acknowledge a group of items after one reply,
+// e.g. 5D's probe groups of up to 32). A `RunControl` stops the attempt (cancel, pause, close).
+import type { CancelReason, Hello, HelperGrant, HostMsg, JobError as JobErrorMsg, Retry, StartJob, WorkerMsg } from "@finisher/core-types";
+import { FinError, type HelperSpec, type JobProgress, type JobView, type MappedFile } from "@finisher/contracts";
 import { resolveMemoryRule } from "@finisher/fin-node";
 import { Cause, Effect, Exit, type Fiber } from "effect";
 import { finError, toFinError } from "../errors.ts";
@@ -14,6 +15,7 @@ import { childEnv } from "../env.ts";
 import type { JobEventSink, WorkerExitEvent } from "./events.ts";
 import { CallRouter, type RunFork } from "./calls.ts";
 import { checkNoLinks, checkPrepared, createFiles, createJobDir, isPrepared, type JobDirs, jobDirs, mappedPath, markPrepared } from "./files.ts";
+import { Helpers, helperNames } from "./helpers.ts";
 import { type EngineHost, type JobHostExitInfo, type JobSpawnRequest, type ProcEvent, exitVerdict } from "./host.ts";
 import { type FamilySpec, type ItemOutcome, type KindRegistry, type KindSpec, type MemoryRule, resolveOrFn } from "./kinds.ts";
 import type { JobRow } from "./store.ts";
@@ -43,13 +45,17 @@ export interface RunnerEnv extends WriterEnv {
   readonly testHooks: boolean;
   readonly aliveMs: number;
   readonly log: Log;
+  /** Hook fibers in flight (a simulated crash interrupts them). */
+  readonly hooks: Set<Fiber.Fiber<unknown, unknown>>;
   progress(job: string, p: JobProgress): void;
   item(job: string, item: string, outcome: ItemOutcome): void;
   diagDropped(): void;
+  /** A process of the job was abandoned (Decision 18). */
+  abandoned(proc: number, job: string): void;
 }
 
 /** Why an attempt failed, for the retry policy (Task 10 classifies it, Decision 31). */
-export type FailureCause = "files" | "tampered" | "prepare" | "spawn" | "mismatch" | "worker" | "exit" | "foreign" | "protocol";
+export type FailureCause = "files" | "tampered" | "prepare" | "spawn" | "mismatch" | "worker" | "exit" | "foreign" | "helper" | "protocol" | "stopped";
 
 type Outcome =
   | { readonly ok: true; readonly value: unknown }
@@ -70,6 +76,32 @@ export interface AttemptFacts {
   /** Items begun and not acknowledged when the run ended, in `begin` order (a set). */
   readonly inFlight: ReadonlyArray<string>;
   readonly runMicros: number;
+  /** Helper processes started. */
+  readonly helpers: number;
+}
+
+/** Why a run is stopped: `close` pauses it for the next start (Decision 29). */
+export type StopReason = "cancel" | "pause" | "close";
+const STOP_RANK: Record<StopReason, number> = { pause: 0, close: 1, cancel: 2 };
+
+/** The engine's handle on a running attempt: the strongest request wins (cancel > close > pause). */
+export class RunControl {
+  requested: StopReason | undefined;
+  #stop: ((reason: StopReason, graceMs: number) => void) | undefined;
+  #grace = 0;
+
+  request(reason: StopReason, graceMs: number): void {
+    if (this.requested !== undefined && STOP_RANK[this.requested] >= STOP_RANK[reason]) return;
+    this.requested = reason;
+    this.#grace = graceMs;
+    this.#stop?.(reason, graceMs);
+  }
+
+  /** The attempt's stop: called at once for a request made before. */
+  bind(stop: (reason: StopReason, graceMs: number) => void): void {
+    this.#stop = stop;
+    if (this.requested !== undefined) stop(this.requested, this.#grace);
+  }
 }
 
 /** The memory rule of a job's group: the kind's, else the family's for its class (Decision 20). */
@@ -96,7 +128,10 @@ async function runHook<A>(env: RunnerEnv, effect: Effect.Effect<A, FinError>, ti
             orElse: () => Effect.fail(finError("JOB_TIMEOUT", `the kind's hook ran past ${timeoutS} s`, { hook: "onSucceeded", timeoutS })),
           }),
         );
-  const exit = await awaitFiber(env.run(Effect.suspend(() => bounded)));
+  const fiber = env.run(Effect.suspend(() => bounded)) as Fiber.Fiber<unknown, unknown>;
+  env.hooks.add(fiber);
+  const exit = (await awaitFiber(fiber)) as Exit.Exit<A, FinError>;
+  env.hooks.delete(fiber);
   if (Exit.isSuccess(exit)) return { ok: true, value: exit.value };
   return { ok: false, error: toFinError(Cause.squash(exit.cause)) };
 }
@@ -127,26 +162,31 @@ export async function runOnSucceeded(
   return { ok: true, result: out.value === undefined ? result : out.value };
 }
 
+const stopped = (): FinError => finError("JOB_CANCELLED", "the job was cancelled");
+
 interface Facts {
   done: string[];
   inFlight: Set<string>;
+  helpers: number;
 }
 
 /**
  * One attempt of the running job `row` (already `running`, its `attempts` counting this one).
  * `params` are what the worker runs (a batch's remaining items).
  */
-export async function runAttempt(env: RunnerEnv, row: JobRow, kind: KindSpec, family: FamilySpec, params: unknown): Promise<AttemptOutcome> {
+export async function runAttempt(env: RunnerEnv, row: JobRow, kind: KindSpec, family: FamilySpec, params: unknown, control: RunControl): Promise<AttemptOutcome> {
   const t0 = performance.now();
-  const facts: Facts = { done: [], inFlight: new Set<string>() };
-  const finish = (o: Outcome): AttemptOutcome => ({ ...o, done: facts.done, inFlight: [...facts.inFlight], runMicros: (performance.now() - t0) * 1000 });
+  const facts: Facts = { done: [], inFlight: new Set<string>(), helpers: 0 };
+  const finish = (o: Outcome): AttemptOutcome => ({ ...o, done: facts.done, inFlight: [...facts.inFlight], helpers: facts.helpers, runMicros: (performance.now() - t0) * 1000 });
   const dirs = jobDirs(env.root, row.id);
   let files: ReadonlyArray<MappedFile>;
+  let helpers: ReadonlyArray<HelperSpec>;
   let extra = row.extra;
   try {
     files = resolveOrFn(kind.files ?? [], params as never);
+    helpers = resolveOrFn(kind.helpers ?? [], params as never);
     // A directory a worker used may hold links it planted: refused before anything follows them (9a review B1).
-    if (!(await createJobDir(dirs))) await checkNoLinks(dirs.job, ["tmp/", ...files.map((f) => f.name)]);
+    if (!(await createJobDir(dirs))) await checkNoLinks(dirs.job, ["tmp/", ...files.map((f) => f.name), ...helperNames(helpers)]);
   } catch (e) {
     const err = toFinError(e);
     return finish({ ok: false, error: err, cause: err.code === "JOB_FAILED" ? "tampered" : "files" });
@@ -169,7 +209,8 @@ export async function runAttempt(env: RunnerEnv, row: JobRow, kind: KindSpec, fa
   } catch (e) {
     return finish({ ok: false, error: toFinError(e), cause: "files" });
   }
-  return new Attempt({ env, row, kind, family, params, dirs, files, extra, facts }).run().then(finish);
+  if (control.requested !== undefined) return finish({ ok: false, error: stopped(), cause: "stopped" });
+  return new Attempt({ env, row, kind, family, params, dirs, files, extra, facts, control }).run(helpers).then(finish);
 }
 
 type Answer = { readonly value: unknown } | { readonly error: JobErrorMsg; readonly retry: Retry };
@@ -184,6 +225,7 @@ interface AttemptSpec {
   readonly files: ReadonlyArray<MappedFile>;
   readonly extra: unknown;
   readonly facts: Facts;
+  readonly control: RunControl;
 }
 
 class Attempt {
@@ -191,6 +233,7 @@ class Attempt {
   readonly #items: ItemWriter;
   readonly #checkpoints: CheckpointWriter;
   readonly #calls: CallRouter;
+  readonly #helpers: Helpers;
   #group = -1;
   #proc: number | undefined;
   #started = false;
@@ -199,6 +242,7 @@ class Attempt {
   #fault: { error: FinError; cause: FailureCause } | undefined;
   #foreign = 0;
   #cancelExit: (() => void) | undefined;
+  #cancelKill: (() => void) | undefined;
   #diagnostics = false;
   #settle: (o: Outcome) => void = () => {};
 
@@ -219,17 +263,19 @@ class Attempt {
       (msg) => (this.#proc === undefined ? "gone" : env.host.send(this.#proc, msg)),
       env.run,
     );
+    const qos = row.priority === "interactive" ? "normal" : a.kind.qos;
+    this.#helpers = new Helpers(env, row, a.dirs, a.files, { group: () => this.#group, qos, fail: (e) => this.#failWith(e, "helper", "helperFailed") });
   }
 
   /** Records the attempt's failure (the first one counts) and ends the job's group. */
-  #failWith(error: FinError, cause: FailureCause, kill: "jobEnded"): void {
+  #failWith(error: FinError, cause: FailureCause, kill: "helperFailed" | "jobEnded"): void {
     if (this.#fault !== undefined || this.#answer !== undefined) return;
     this.#fault = { error, cause };
     void this.#a.env.host.killGroup(this.#group, kill).catch(() => {});
   }
 
-  async run(): Promise<Outcome> {
-    const { env, row, kind, family } = this.#a;
+  async run(helpers: ReadonlyArray<HelperSpec>): Promise<Outcome> {
+    const { env, row, kind, family, control } = this.#a;
     const rule = memoryRule(kind, family, row);
     const memoryBytes = rule === undefined ? undefined : resolveMemoryRule(rule, env.totalMem);
     const qos = row.priority === "interactive" ? "normal" : kind.qos;
@@ -237,8 +283,22 @@ class Attempt {
     const done = new Promise<Outcome>((resolve) => {
       this.#settle = resolve;
     });
+    control.bind((reason, graceMs) => this.#stop(reason, graceMs));
+    let grants: HelperGrant[];
     try {
-      await env.host.spawn(this.#group, this.#request(), (e, proc) => this.#onEvent(e, proc, memoryBytes), row.id);
+      grants = await this.#helpers.start(helpers);
+    } catch (e) {
+      this.#a.facts.helpers = this.#helpers.started;
+      await this.#endGroup();
+      return { ok: false, error: toFinError(e), cause: control.requested !== undefined ? "stopped" : "helper" };
+    }
+    this.#a.facts.helpers = this.#helpers.started;
+    if (control.requested !== undefined || this.#fault !== undefined) {
+      await this.#endGroup();
+      return this.#fault === undefined ? { ok: false, error: stopped(), cause: "stopped" } : { ok: false, ...this.#fault };
+    }
+    try {
+      await env.host.spawn(this.#group, this.#request(), (e, proc) => this.#onEvent(e, proc, memoryBytes, grants), row.id);
     } catch (e) {
       await this.#endGroup();
       return { ok: false, error: toFinError(e), cause: "spawn" };
@@ -252,7 +312,20 @@ class Attempt {
     } catch (e) {
       this.#a.env.log("warning", `job ${this.#a.row.id}: ending its group failed: ${toFinError(e).message}`);
     }
+    await this.#helpers.closeCalls();
     this.#a.env.host.closeGroup(this.#group);
+  }
+
+  /** Cancel or pause (Decisions 23, 37): `cancel` to a started worker, its group killed after the grace. */
+  #stop(reason: StopReason, graceMs: number): void {
+    const { env, row } = this.#a;
+    if (this.#answer !== undefined) return; // it answered: the attempt ends on its own
+    if (this.#started && this.#proc !== undefined) {
+      const wire: CancelReason = reason === "cancel" ? "cancel" : "pause";
+      env.host.send(this.#proc, { t: "cancel", job: row.id, reason: wire });
+      this.#cancelKill?.();
+      this.#cancelKill = env.timers.after(graceMs, () => void env.host.killGroup(this.#group, "cancel").catch(() => {}));
+    } else void env.host.killGroup(this.#group, "cancel").catch(() => {});
   }
 
   #request(): JobSpawnRequest {
@@ -277,11 +350,11 @@ class Attempt {
     };
   }
 
-  #onEvent(e: ProcEvent, proc: number, memoryBytes: number | undefined): void {
+  #onEvent(e: ProcEvent, proc: number, memoryBytes: number | undefined, grants: HelperGrant[]): void {
     this.#proc ??= proc;
     switch (e.type) {
       case "hello":
-        return this.#onHello(e.hello, memoryBytes);
+        return this.#onHello(e.hello, memoryBytes, grants);
       case "message":
         return this.#onMessage(e.msg);
       case "stderr":
@@ -291,9 +364,13 @@ class Attempt {
     }
   }
 
-  #onHello(hello: Hello, memoryBytes: number | undefined): void {
-    const { kind, family } = this.#a;
+  #onHello(hello: Hello, memoryBytes: number | undefined, grants: HelperGrant[]): void {
+    const { kind, family, control } = this.#a;
     if (this.#started || this.#fault !== undefined || this.#proc === undefined) return;
+    if (control.requested !== undefined) {
+      void this.#a.env.host.killGroup(this.#group, "cancel").catch(() => {});
+      return;
+    }
     const kinds = hello.kinds ?? [];
     if (hello.role !== "worker" || hello.family !== family.family || !kinds.some((k) => k.kind === kind.kind && k.version === kind.version)) {
       const error = finError("WORKER_PROTOCOL_MISMATCH", `the worker does not serve ${family.family}'s ${kind.kind} v${kind.version}`, {
@@ -303,10 +380,10 @@ class Attempt {
       this.#failWith(error, "mismatch", "jobEnded");
       return;
     }
-    this.#start(memoryBytes);
+    this.#start(memoryBytes, grants);
   }
 
-  #start(memoryBytes: number | undefined): void {
+  #start(memoryBytes: number | undefined, helpers: HelperGrant[]): void {
     const { env, row, kind, dirs, files, params, extra } = this.#a;
     if (this.#proc === undefined) return;
     this.#started = true;
@@ -325,7 +402,7 @@ class Attempt {
       job,
       limits: { aliveMs: env.aliveMs, ...(memoryBytes === undefined ? {} : { memoryBytes }) },
       files: files.map((f) => ({ name: f.name, path: mappedPath(dirs.job, f.name), mode: f.mode, ...(f.bytes === undefined ? {} : { bytes: f.bytes }) })),
-      helpers: [],
+      helpers,
       dirs: { job: dirs.job, tmp: dirs.tmp },
       diagnostics: this.#diagnostics,
     };
@@ -405,6 +482,8 @@ class Attempt {
     if (this.#answer !== undefined || this.#fault !== undefined) return;
     this.#answer = a;
     this.#calls.refuse("after the job's answer");
+    this.#helpers.answered();
+    this.#cancelKill?.();
     if (this.#proc !== undefined) env.host.watch(this.#proc, null);
     // A cold worker exits once it answered; one that does not is ended with its group.
     this.#cancelExit = env.timers.after(EXIT_GRACE_MS, () => void env.host.killGroup(this.#group, "jobEnded").catch(() => {}));
@@ -415,6 +494,8 @@ class Attempt {
     let outcome: Outcome | undefined;
     try {
       this.#cancelExit?.();
+      this.#cancelKill?.();
+      if (info.reason === "abandoned" && this.#proc !== undefined) env.abandoned(this.#proc, row.id);
       // Open host calls end before anything that reads the directory runs (9a review M1).
       await this.#calls.close();
       const verdict = exitVerdict(info, this.#answer !== undefined);
@@ -435,7 +516,8 @@ class Attempt {
         env.log("error", `job ${row.id}: worker.exit failed: ${toFinError(e).message}`);
       }
       this.#foreign = info.foreign ?? 0;
-      // Every process of the group, the worker's leftovers too, is gone before the outcome counts.
+      if (this.#answer !== undefined && "value" in this.#answer) await this.#helpers.shutdown();
+      // Every process of the group, the worker's leftovers and the helpers too, is gone before the outcome counts.
       await this.#endGroup();
       if (this.#foreign > 0) env.log("warning", `job ${row.id} (${family.family}) left ${this.#foreign} foreign process(es)`);
       outcome = this.#outcome(info, verdict.error);

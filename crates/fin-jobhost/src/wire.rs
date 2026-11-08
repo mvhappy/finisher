@@ -464,6 +464,10 @@ pub enum JobHostEvent {
     GroupEmpty {
         group: u64,
     },
+    /// A process whose `exit` said `abandoned` has really exited now (Decision 18).
+    AbandonedExit {
+        proc: u64,
+    },
 }
 
 impl From<HostEvent> for JobHostEvent {
@@ -488,6 +492,7 @@ impl From<HostEvent> for JobHostEvent {
                 info: (&info).into(),
             },
             HostEvent::GroupEmpty { group } => JobHostEvent::GroupEmpty { group: group.0 },
+            HostEvent::AbandonedExit { proc } => JobHostEvent::AbandonedExit { proc: proc.0 },
         }
     }
 }

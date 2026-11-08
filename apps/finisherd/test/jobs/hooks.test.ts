@@ -144,14 +144,4 @@ describe("kind hooks", () => {
     expect(end.state).toBe("succeeded");
     expect(t.sink.done).toHaveLength(1);
   });
-
-  test("cancel_queued_and_running_before_9b", async () => {
-    const t = await testEngine({ cores: 2 });
-    const busy = await t.submit("test.sleep", { ms: 2000 });
-    const queued = await t.submit("test.sleep", { ms: 1 });
-    const c = await run(t.engine.cancel(queued.id));
-    expect(c).toMatchObject({ state: "cancelled", error: { code: "JOB_CANCELLED" } });
-    const e = await Effect.runPromiseExit(t.engine.cancel(busy.id));
-    expect(e._tag).toBe("Failure");
-  });
 });

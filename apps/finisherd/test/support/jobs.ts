@@ -6,7 +6,7 @@ import type { FinError, JobView } from "@finisher/contracts";
 import { type Clock, Duration, Effect, Exit, Fiber, Layer, Scope, Stream } from "effect";
 import { TestClock } from "effect/testing";
 import { type ControlStore, ControlStoreTag, openControlStore } from "../../src/control/db.ts";
-import { Engine, type JobEngine, type JobEvent } from "../../src/jobs/engine.ts";
+import { crashJobEngineForTest, Engine, type JobEngine, type JobEvent } from "../../src/jobs/engine.ts";
 import type { EngineHost } from "../../src/jobs/host.ts";
 import { JobEventSinkTag, type MemorySink, memorySink } from "../../src/jobs/events.ts";
 import { buildJobEngine, type JobEngineOptions } from "../../src/jobs/layer.ts";
@@ -28,6 +28,8 @@ export interface TestEngine {
   /** Submits and waits for the job's end. */
   runJob(kind: string, params: unknown, spec?: Record<string, unknown>): Promise<JobView>;
   wait(id: string, ms?: number): Promise<JobView>;
+  /** Stops the engine as if `finisherd` died (nothing more is written), keeping the data. */
+  crash(): Promise<void>;
   close(): Promise<void>;
 }
 
@@ -89,6 +91,13 @@ export async function testEngine(opts: JobEngineOptions & { serverData?: string;
     async wait(id, ms = WAIT_MS) {
       const [v] = await run(engine.wait([id], { timeoutMs: ms }));
       return v as JobView;
+    },
+    async crash() {
+      if (closed) return;
+      closed = true;
+      await crashJobEngineForTest(engine);
+      await Effect.runPromise(Fiber.interrupt(fiber));
+      await control.close();
     },
     async close() {
       if (closed) return;

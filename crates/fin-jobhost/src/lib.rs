@@ -285,7 +285,8 @@ pub struct Watch {
 
 /// What the host reports. Per process the order is `Spawned`, `Hello`, its messages and
 /// `Stderr` lines, then `Exit` (after the drain, Decision 19a); `GroupEmpty` follows the last
-/// `Exit` of a group.
+/// `Exit` of a group. A process whose `Exit` said `Abandoned` (Decision 18) sends
+/// `AbandonedExit` when it really exits, later.
 #[derive(Debug, Clone, PartialEq)]
 pub enum HostEvent {
     /// The process runs. Sent after its spawn's callback ran and before its readers start,
@@ -316,6 +317,11 @@ pub enum HostEvent {
     },
     GroupEmpty {
         group: GroupId,
+    },
+    /// A process reported abandoned earlier has exited now (Decision 18: an `io:` pool it held
+    /// is no longer stuck).
+    AbandonedExit {
+        proc: ProcId,
     },
 }
 

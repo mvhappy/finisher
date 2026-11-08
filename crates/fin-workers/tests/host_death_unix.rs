@@ -383,6 +383,12 @@ fn abandon_after_kill_wait() {
             .any(|e| matches!(e, HostEvent::Exit { proc, .. } if *proc == p)),
         "reported once: {later:?}"
     );
+    assert!(
+        later
+            .iter()
+            .any(|e| matches!(e, HostEvent::AbandonedExit { proc } if *proc == p)),
+        "its real exit is reported: {later:?}"
+    );
     let lines = lines.lock().unwrap();
     assert!(
         lines

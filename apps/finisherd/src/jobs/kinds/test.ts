@@ -16,7 +16,7 @@ import type {
 } from "@finisher/core-types";
 import { FinError } from "@finisher/contracts";
 import { Duration, Effect } from "effect";
-import type { FamilySpec, KindRegistry, KindSpec, OnCall } from "../kinds.ts";
+import type { FamilySpec, HelperProgram, KindRegistry, KindSpec, OnCall } from "../kinds.ts";
 
 /** What `test.files`' `prepare` writes into its prepared input. */
 export const TEST_FILES_INPUT = "prepared by test.files\n";
@@ -68,6 +68,8 @@ export function registerTestKinds(
     readonly binaryDir: string;
     readonly overrides?: Readonly<Record<string, Partial<KindSpec>>>;
     readonly families?: Readonly<Record<string, Partial<FamilySpec>>>;
+    /** Fields of the `codec:test` helper replaced (its `onCall`, for the engine's tests). */
+    readonly helper?: Partial<Pick<HelperProgram, "onCall">>;
   },
 ): void {
   const exe = process.platform === "win32" ? "fin-workers.exe" : "fin-workers";
@@ -93,6 +95,7 @@ export function registerTestKinds(
     profile: "worker",
     resolve: (job) => ({ binary: "fin-workers", args: ["--helper", `test:${(job.params as TestHelperParams).helper ?? "ok"}`] }),
     onCall: testOnCall,
+    ...(opts.helper ?? {}),
   });
 
   const kinds: KindSpec<never>[] = [

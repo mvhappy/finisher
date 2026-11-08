@@ -1,6 +1,5 @@
 // The job engine: submit and cold runs (5C-1 plan Task 9a, Decisions 26, 27, 42, 43).
 import { FinError } from "@finisher/contracts";
-import { Effect } from "effect";
 import { afterEach, describe, expect, test } from "vitest";
 import { closeTestEngines, failure, OWNER, run, testClock, testEngine, until } from "../support/jobs.ts";
 
@@ -33,10 +32,10 @@ describe("submit", () => {
 
   test("dedupe_returns_active", async () => {
     const t = await testEngine({ testKinds: { overrides: { "test.sleep": { dedupe: () => "same" } } } });
-    const a = await t.submit("test.sleep", { ms: 300 });
-    const b = await t.submit("test.sleep", { ms: 300 });
+    const a = await t.submit("test.sleep", { ms: 60_000 });
+    const b = await t.submit("test.sleep", { ms: 60_000 });
     expect(b.id).toBe(a.id);
-    await t.wait(a.id);
+    expect((await run(t.engine.cancel(a.id))).state).toBe("cancelled");
     const c = await t.submit("test.sleep", { ms: 1 });
     expect(c.id).not.toBe(a.id);
     expect(c.dedupeKey).toBe("same");
@@ -44,8 +43,8 @@ describe("submit", () => {
 
   test("queue_full_at_limit", async () => {
     const t = await testEngine({ queueLimit: 2 });
-    await t.submit("test.sleep", { ms: 2000 });
-    await t.submit("test.sleep", { ms: 2000 });
+    await t.submit("test.sleep", { ms: 60_000 });
+    await t.submit("test.sleep", { ms: 60_000 });
     const e = await failure(t.engine.submit(OWNER, { kind: "test.sleep", params: { ms: 1 } }));
     expect(e.code).toBe("JOB_QUEUE_FULL");
     expect(e.details).toEqual({ limit: 2 });
@@ -70,11 +69,13 @@ describe("submit", () => {
 
   test("jobs_wait_for_a_free_slot", async () => {
     const t = await testEngine({ cores: 2 });
-    const a = await t.submit("test.sleep", { ms: 300 });
+    const a = await t.submit("test.sleep", { ms: 60_000 });
     const b = await t.submit("test.sleep", { ms: 1 });
     expect(b.state).toBe("queued");
+    expect(t.jobs.get(b.id)?.state).toBe("queued");
+    await run(t.engine.cancel(a.id));
     const [va, vb] = await run(t.engine.wait([a.id, b.id], { timeoutMs: 20_000 }));
-    expect([va?.state, vb?.state]).toEqual(["succeeded", "succeeded"]);
+    expect([va?.state, vb?.state]).toEqual(["cancelled", "succeeded"]);
     expect(vb!.startedAt!).toBeGreaterThanOrEqual(va!.finishedAt!);
   });
 
@@ -114,6 +115,8 @@ describe("runs", () => {
     await tc.adjust(250);
     await until(() => progressEvents().length === 2);
     expect(progressEvents()[1]!.job.progress!.done).toBeGreaterThan(first);
+    await run(t.engine.cancel(v.id));
+    expect((await run(t.engine.get(v.id))).progress).toBeUndefined();
     await t.close();
     await tc.close();
   });
@@ -202,8 +205,5 @@ describe("runs", () => {
     expect(w.pools.find((p) => p.name === "cpu")).toEqual({ name: "cpu", size: 2, used: 0, stuck: false });
     expect(w.warm).toEqual([]);
     await run(t.engine.warm("test"));
-    const pause = await failure(t.engine.pause({ all: true }));
-    expect(pause).toMatchObject({ code: "WORKER_UNAVAILABLE", details: { notYet: "pause" } });
-    void Effect;
   });
 });

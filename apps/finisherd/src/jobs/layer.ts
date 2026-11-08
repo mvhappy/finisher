@@ -12,7 +12,7 @@ import { type JobEngine, JobEngineTag, makeJobEngine, QUEUE_LIMIT } from "./engi
 import { JobEventSinkTag } from "./events.ts";
 import { ensureJobsRoot } from "./files.ts";
 import { EngineHost, type JobHostFactory } from "./host.ts";
-import { type FamilySpec, type KindSpec, makeKindRegistry } from "./kinds.ts";
+import { type FamilySpec, type HelperProgram, type KindSpec, makeKindRegistry } from "./kinds.ts";
 import { registerTestKinds } from "./kinds/test.ts";
 import { defaultPools } from "./pools.ts";
 import { JobStore } from "./store.ts";
@@ -30,7 +30,11 @@ export interface JobEngineOptions {
    */
   readonly testKinds?:
     | boolean
-    | { readonly overrides?: Readonly<Record<string, Partial<KindSpec>>>; readonly families?: Readonly<Record<string, Partial<FamilySpec>>> };
+    | {
+        readonly overrides?: Readonly<Record<string, Partial<KindSpec>>>;
+        readonly families?: Readonly<Record<string, Partial<FamilySpec>>>;
+        readonly helper?: Partial<Pick<HelperProgram, "onCall">>;
+      };
   readonly cores?: number;
   readonly totalMem?: number;
   readonly cgroups?: "auto" | "off";
@@ -63,7 +67,7 @@ export const buildJobEngine = (serverData: string, opts: JobEngineOptions = {}):
     const registry = makeKindRegistry();
     if (opts.testKinds !== undefined && opts.testKinds !== false) {
       const t = opts.testKinds === true ? {} : opts.testKinds;
-      registerTestKinds(registry, { binaryDir, overrides: t.overrides ?? {}, families: t.families ?? {} });
+      registerTestKinds(registry, { binaryDir, overrides: t.overrides ?? {}, families: t.families ?? {}, ...(t.helper === undefined ? {} : { helper: t.helper }) });
     }
     const root = yield* Effect.try({ try: () => ensureJobsRoot(serverData), catch: startFailure });
     const host = yield* Effect.tryPromise({
