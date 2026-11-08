@@ -23,6 +23,8 @@ const NEEDS: Record<string, ResolverName> = {
   path: "probePath",
   importDir: "importDir",
   out: "outDir",
+  project: "jobProject",
+  job: "job",
 };
 
 test("rpc_scopes_cover_every_rpc", () => {
@@ -115,6 +117,33 @@ test("defaults_follow_owner_decision_5", () => {
   expect(defaultScopes("console")).toEqual(SCOPES);
   expect(defaultScopes("anonymous")).toEqual(["public"]);
   expect(defaultScopes("agent")).toEqual([]);
+});
+
+test("job_rpcs_need_jobs_scopes_by_ownership (5C-2 Decision 5)", () => {
+  expect(requiredScopes("jobs.submit", { kind: "k", params: {} })).toEqual(["jobs.submit"]);
+  expect(requiredScopes("jobs.submit", { kind: "k", params: {} }, { kindScopes: ["library.scan"] })).toEqual(["jobs.submit", "library.scan"]);
+  for (const t of ["jobs.get", "jobs.list", "jobs.wait", "jobs.watch"] as const) expect(requiredScopes(t, {}), t).toEqual(["jobs.read"]);
+  for (const t of ["jobs.cancel", "jobs.pause", "jobs.resume"] as const) {
+    expect(requiredScopes(t, { job: "j" }, { job: "own" }), t).toEqual(["jobs.read", "jobs.submit"]);
+    // An unknown or invisible job costs what one's own does: the answer leaks nothing.
+    expect(requiredScopes(t, { job: "j" }, { job: "none" }), t).toEqual(["jobs.read", "jobs.submit"]);
+    expect(requiredScopes(t, { job: "j" }, { job: "other" }), t).toEqual(["jobs.read", "jobs.control"]);
+  }
+  for (const t of ["jobs.pause", "jobs.resume"] as const) expect(requiredScopes(t, { all: true }), t).toEqual(["jobs.read", "jobs.control"]);
+  expect(requiredScopes("jobs.workers", {})).toEqual(["jobs.control"]);
+  // Review M2: `{all}` and `jobs.workers` act on every project, and are the only rules that do.
+  const all = (Object.keys(RPC_SCOPES) as Array<keyof typeof RPC_SCOPES>).filter((t) => ruleOf(t).allProjects !== undefined).sort();
+  expect(all).toEqual(["jobs.pause", "jobs.resume", "jobs.workers"]);
+  for (const t of ["jobs.pause", "jobs.resume"] as const) {
+    expect(ruleOf(t).allProjects?.({ all: true } as never), t).toBe(true);
+    expect(ruleOf(t).allProjects?.({ job: "j" } as never), t).toBe(false);
+  }
+  expect(ruleOf("jobs.workers").allProjects?.({} as never)).toBe(true);
+  // No job scope is human-only; a kind's human-only scope is confirmed by default.
+  for (const s of ["jobs.read", "jobs.submit", "jobs.control"] as const) expect(HUMAN_ONLY.has(s)).toBe(false);
+  expect(needsConfirmation("jobs.submit", { kind: "k", params: {} })).toBe(false);
+  expect(needsConfirmation("jobs.submit", { kind: "k", params: {} }, { kindScopes: ["library.admin"] })).toBe(true);
+  for (const t of ["jobs.submit", "jobs.cancel", "jobs.pause", "jobs.resume"] as const) expect(WRITE_RPCS.has(t), t).toBe(false);
 });
 
 test("writes_required_on_writing_rules: exactly the RPCs whose handlers write through the guard", () => {

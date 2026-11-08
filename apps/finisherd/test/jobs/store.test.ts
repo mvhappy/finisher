@@ -180,16 +180,18 @@ describe("job store", () => {
   test("dedupe_active_only", () => {
     const s = jobs();
     const a = s.insert(row({ dedupeKey: "d" }));
-    expect(s.activeByDedupe("test.echo", "d")?.id).toBe(a.id);
-    expect(s.activeByDedupe("test.sleep", "d")).toBeUndefined();
+    expect(s.activeByDedupe("test.echo", "d", owner)?.id).toBe(a.id);
+    expect(s.activeByDedupe("test.sleep", "d", owner)).toBeUndefined();
     s.transition(a.id, "paused");
-    expect(s.activeByDedupe("test.echo", "d")?.id).toBe(a.id);
+    expect(s.activeByDedupe("test.echo", "d", owner)?.id).toBe(a.id);
     s.transition(a.id, "cancelled");
-    expect(s.activeByDedupe("test.echo", "d")).toBeUndefined();
+    expect(s.activeByDedupe("test.echo", "d", owner)).toBeUndefined();
     now += 1;
     const b = s.insert(row({ dedupeKey: "d" }));
     s.transition(b.id, "running");
-    expect(s.activeByDedupe("test.echo", "d")?.id).toBe(b.id);
+    expect(s.activeByDedupe("test.echo", "d", owner)?.id).toBe(b.id);
+    // Another owner's job is never its (5C-2 Decision 7).
+    expect(s.activeByDedupe("test.echo", "d", { kind: "agent", id: "a1" })).toBeUndefined();
   });
 
   test("poison_memory", () => {
@@ -197,12 +199,13 @@ describe("job store", () => {
     const a = s.insert(row({ kind: "test.crash", dedupeKey: "file1" }));
     s.transition(a.id, "running");
     s.transition(a.id, "failed", { error: { code: "WORKER_CRASHED", message: "x", details: {} } });
-    expect(s.poisonedByDedupe("test.crash", "file1")).toBeUndefined();
+    expect(s.poisonedByDedupe("test.crash", "file1", owner)).toBeUndefined();
     const b = s.insert(row({ kind: "test.crash", dedupeKey: "file1" }));
     s.transition(b.id, "running");
     s.transition(b.id, "failed", { error: { code: "POISON_ITEM", message: "poison", details: { item: "file1" } } });
-    expect(s.poisonedByDedupe("test.crash", "file1")?.id).toBe(b.id);
-    expect(s.poisonedByDedupe("test.crash", "file2")).toBeUndefined();
+    expect(s.poisonedByDedupe("test.crash", "file1", owner)?.id).toBe(b.id);
+    expect(s.poisonedByDedupe("test.crash", "file2", owner)).toBeUndefined();
+    expect(s.poisonedByDedupe("test.crash", "file1", { kind: "agent", id: "a1" })).toBeUndefined();
   });
 
   test("items_batch_write_and_read", () => {

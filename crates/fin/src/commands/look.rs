@@ -10,8 +10,9 @@
 //!   stats}`. Layers a frame left out (a caption in 6A, a codec this machine lacks) are in
 //!   `skipped`, each with a `code`; that is information, not a failure (exit 0, spec §2.7).
 //!   A time past the timeline's end is `INVALID_RANGE`.
-//! - `--no-wait` answers `{timeline, at, job}` at once; the result is the job's (`fin wait`
-//!   once 5C-2's `jobs.*` are in).
+//! - `--no-wait` answers `{timeline, at, job}` at once; the result is the job's: `fin wait
+//!   <job.id>` waits for it and `fin job show <job.id>` reads it (its `result` is the
+//!   `LookResult`).
 //! - `--out` is a folder (relative to the current directory); without it the frames go to
 //!   `workspace/shared/look/` of the project. It needs `project.write`.
 

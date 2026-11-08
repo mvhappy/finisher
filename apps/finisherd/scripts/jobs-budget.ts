@@ -118,7 +118,7 @@ async function storeBudget(): Promise<void> {
     stat("store: writeItems (1)", time(n, (i) => store.writeItems(fresh[i] as string, [[`x${i}`, { value: i }]])), "p99", 1);
     stat("store: items", time(n, (i) => store.items(pick(i))), "p99", 1);
     stat("store: checkpoint", time(n, (i) => store.checkpoint(fresh[i] as string, { step: i })), "p99", 1);
-    stat("store: activeByDedupe", time(n, (i) => store.activeByDedupe("test.echo", `d${i % 10_000}`)), "p99", 1);
+    stat("store: activeByDedupe", time(n, (i) => store.activeByDedupe("test.echo", `d${i % 10_000}`, owner)), "p99", 1);
     stat("store: list (50)", time(n, () => store.list({ limit: 50 })), "p99", 1);
     stat("store: unfinishedCount", time(n, () => store.unfinishedCount()), "p99", 1);
   } finally {

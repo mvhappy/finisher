@@ -37,6 +37,19 @@ export function scopeDenied(tag: string, missing: ReadonlyArray<Scope>, principa
   );
 }
 
+/**
+ * `SCOPE_DENIED {reason: reach}`: a call that acts beyond any one project (`ruleOf(tag).allProjects`)
+ * from a principal that reaches only some (5C-2 review M2).
+ */
+export function reachDenied(tag: string, principal: Principal): FinError {
+  return finError(
+    "SCOPE_DENIED",
+    `${tag} acts on every project, and this ${principal.kind} credential reaches only some`,
+    { tag, scopes: [], reason: "reach", principal: principal.kind },
+    "Ask the owner of this Finisher server for a credential that reaches every project, or act on one job at a time.",
+  );
+}
+
 /** `PROJECT_NOT_FOUND` for a project outside a principal's reach: the same answer as an unknown one. */
 export function outOfReach(projectId: string | undefined): FinError {
   return finError(

@@ -16,6 +16,7 @@ import { actorFor, type CallMeta, Diagnostics } from "./diagnostics.ts";
 import { attemptJson, finError, toFinError } from "./errors.ts";
 import { Fonts } from "./fonts.ts";
 import { JobEngineTag } from "./jobs/layer.ts";
+import { chainJobs, jobHandlers } from "./jobs/rpc.ts";
 import { mediaCapabilities } from "./media/caps.ts";
 import { look as mediaLook } from "./media/look.ts";
 import { requireAbsolute, requireAbsoluteOpt } from "./paths.ts";
@@ -63,7 +64,13 @@ export const HandlersLive = FinRpcs.toLayer(
     const credentials = yield* CredentialsTag;
     const library = yield* LibraryServiceTag;
     const jobEngine = yield* JobEngineTag;
-    const admin: AdminDeps = { control: yield* ServerControlTag, audit, connections: everyConnection, journalEnabled: () => diagnostics.enabled() };
+    const admin: AdminDeps = {
+      control: yield* ServerControlTag,
+      audit,
+      connections: everyConnection,
+      journalEnabled: () => diagnostics.enabled(),
+      jobCaps: () => jobEngine.workers().caps,
+    };
     /** The principal the chain bound to this call (`anonymous` outside it: fail closed). */
     const principalOf = (options: object) => chainOf(options)?.principal ?? connections.principalOf((options as { client: { id: number } }).client.id);
     const guard = <A, R>(tag: string, self: Effect.Effect<A, FinError, R>) => diagnostics.timed(tag, defectsAsErrors(self));
@@ -353,6 +360,8 @@ export const HandlersLive = FinRpcs.toLayer(
         ),
       ...pluginHandlers({ plugins, audit, guard }),
       ...libraryHandlers({ service: library, engine: jobEngine, guard }),
-    }), { connections, projects, audit, timed: guard, touch: (p) => credentials.touch(p.id) });
+      // The job engine (5C-2): ownership and reach per job in `jobs/rpc.ts`.
+      ...jobHandlers({ engine: jobEngine, guard }),
+    }), { connections, projects, jobs: chainJobs(jobEngine), audit, timed: guard, touch: (p) => credentials.touch(p.id) });
   }),
 );

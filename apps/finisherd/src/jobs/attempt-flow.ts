@@ -74,7 +74,7 @@ export async function runDispatched(e: Engine, id: string, resources: ReadonlyAr
     }
   } finally {
     e.runs.delete(id);
-    e.wakeWaiters();
+    e.wakeWaiters(id);
   }
 }
 

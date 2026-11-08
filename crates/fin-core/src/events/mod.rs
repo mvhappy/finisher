@@ -18,6 +18,7 @@ pub mod class;
 pub mod intent;
 pub mod kinds;
 pub mod names;
+mod names_details;
 pub mod names_jobs;
 pub mod names_media;
 pub mod payloads;

@@ -9,17 +9,17 @@ import { finError } from "../errors.ts";
 import { data, type Engine, finished } from "./engine.ts";
 import type { Pools } from "./pools.ts";
 import { isResumable } from "./restart.ts";
+import { jobNotFound } from "./access.ts";
 
 export const CANCEL_GRACE_MS = 2000;
 export const CANCEL_GRACE_INTERACTIVE_MS = 500;
 export const PAUSE_GRACE_MS = 10_000;
 
-const notFound = (id: string) => finError("JOB_NOT_FOUND", `no job ${id}`, { job: id });
 
 /** Cancels a job; resolves with its view once it ended (or with the view of a finished one). */
 export async function cancelJob(e: Engine, id: string): Promise<JobView> {
   const row = e.d.store.row(id);
-  if (row === undefined) throw notFound(id);
+  if (row === undefined) throw jobNotFound(id);
   const view = (): JobView => e.view(id) ?? row;
   if (finished(row) || (row.state === "running" && row.phase === "hooks")) return view(); // too late (Decision 40)
   if (row.state === "queued" || row.state === "paused") {
@@ -50,7 +50,7 @@ export async function pauseJobs(e: Engine, target: { readonly job: string } | { 
     return;
   }
   const row = e.d.store.row(target.job);
-  if (row === undefined) throw notFound(target.job);
+  if (row === undefined) throw jobNotFound(target.job);
   if (row.state === "queued") {
     e.queue.remove(row.id);
     e.publish({ type: "state", job: e.transition(row.id, "paused", { pausedFrom: "queued" }) });
@@ -80,7 +80,7 @@ export function pausedAfterRun(e: Engine, id: string): void {
 /** Resume: a paused job is `queued` again with its original `createdAt`; `{all}` also restarts dispatch. */
 export function resumeJobs(e: Engine, target: { readonly job: string } | { readonly all: true }): void {
   const ids = "all" in target ? e.d.store.paused().map((j) => j.id) : [target.job];
-  if (!("all" in target) && e.d.store.row(target.job) === undefined) throw notFound(target.job);
+  if (!("all" in target) && e.d.store.row(target.job) === undefined) throw jobNotFound(target.job);
   if ("all" in target) e.pausedAll = false;
   for (const id of ids) {
     const row = e.d.store.row(id);

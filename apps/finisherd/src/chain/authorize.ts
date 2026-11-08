@@ -10,7 +10,9 @@
 //   3. reach;
 //   4. the scopes the resolved facts add (attaching or loading, a reopen), so that a refusal
 //      never tells a caller whether a project outside its reach is open here (review of
-//      Task 5, L1).
+//      Task 5, L1);
+//   5. a call that acts beyond any one project (`allProjects`) needs `projects: "*"`
+//      (5C-2 review M2: `SCOPE_DENIED {reason: reach}`).
 // Reach to a path outside a principal's roots is granted by one catalogued library row (5D).
 import {
   baseScopes,
@@ -24,7 +26,7 @@ import {
   type Scope,
 } from "@finisher/contracts";
 import { Effect } from "effect";
-import { consentUiOnly, humanOnly, outOfReach, pathNotAllowed, scopeDenied } from "./fixes.ts";
+import { consentUiOnly, humanOnly, outOfReach, pathNotAllowed, reachDenied, scopeDenied } from "./fixes.ts";
 import { type ChainProjects, inside, libraryReach, type Resolved, rootsOf } from "./resolve.ts";
 
 /** The scope half of stage 4: human-only first, then every required scope. */
@@ -77,5 +79,6 @@ export function authorize(
     }
     const escalated = checkScopes(tag, escalatedScopes(tag, payload, resolved.facts), principal);
     if (escalated !== undefined) return yield* Effect.fail(escalated);
+    if (principal.projects !== "*" && ruleOf(tag).allProjects?.(payload as never) === true) return yield* Effect.fail(reachDenied(tag, principal));
   });
 }

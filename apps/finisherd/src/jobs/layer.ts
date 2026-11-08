@@ -46,6 +46,8 @@ export interface JobEngineOptions {
   readonly diagnostics?: () => boolean;
   /** The unfinished-job limit (50,000; tests lower it). */
   readonly queueLimit?: number;
+  /** Unfinished jobs per agent, MCP or plugin owner (1,000; tests lower it). */
+  readonly ownerLimit?: number;
   /** Starts the job host (tests pass a fake; default fin-node's `JobHost.start`). */
   readonly jobHost?: JobHostFactory;
   readonly eventQueueBytes?: number;
@@ -119,6 +121,7 @@ export const buildJobEngine = (serverData: string, opts: JobEngineOptions = {}):
           testHooks: testHooks !== undefined,
           heldFilesCheck: opts.heldFilesCheck ?? testHooks !== undefined,
           queueLimit: opts.queueLimit ?? QUEUE_LIMIT,
+          ...(opts.ownerLimit === undefined ? {} : { ownerLimit: opts.ownerLimit }),
         }),
       catch: (e) => {
         void host.shutdown(0);

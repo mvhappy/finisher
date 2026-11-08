@@ -97,6 +97,11 @@ export interface JobQuery {
   readonly cursor?: string;
   /** Default 100, at most 500. */
   readonly limit?: number;
+  /**
+   * Only jobs in a caller's reach (5C-2 Decision 3): a job with a project only when `projects`
+   * names it (absent: every project); a job with a library only when `libraries` is true.
+   */
+  readonly reach?: { readonly projects?: ReadonlyArray<string>; readonly libraries: boolean };
 }
 
 /** Legal transitions (anything else is a bug). `running → running` starts another run in place. */
@@ -227,10 +232,10 @@ export class JobStore {
       ),
       byIdem: p(`SELECT ${COLUMNS} FROM jobs WHERE ownerKind = ? AND ownerId = ? AND idemKey = ?`),
       activeByDedupe: p(
-        `SELECT ${COLUMNS} FROM jobs WHERE kind = ? AND dedupeKey = ? AND state IN ('queued', 'running', 'paused') ORDER BY createdAt DESC LIMIT 1`,
+        `SELECT ${COLUMNS} FROM jobs WHERE kind = ? AND dedupeKey = ? AND ownerKind = ? AND ownerId = ? AND state IN ('queued', 'running', 'paused') ORDER BY createdAt DESC LIMIT 1`,
       ),
       poisonedByDedupe: p(
-        `SELECT ${COLUMNS} FROM jobs WHERE kind = ? AND dedupeKey = ? AND state = 'failed' AND json_extract(error, '$.code') = 'POISON_ITEM' ` +
+        `SELECT ${COLUMNS} FROM jobs WHERE kind = ? AND dedupeKey = ? AND ownerKind = ? AND ownerId = ? AND state = 'failed' AND json_extract(error, '$.code') = 'POISON_ITEM' ` +
           "ORDER BY finishedAt DESC LIMIT 1",
       ),
       update: p(
@@ -244,6 +249,7 @@ export class JobStore {
       items: p("SELECT item, value, error FROM job_items WHERE jobId = ? ORDER BY item"),
       writeItem: p("INSERT INTO job_items (jobId, item, value, error) VALUES (?, ?, ?, ?) ON CONFLICT (jobId, item) DO UPDATE SET value = excluded.value, error = excluded.error"),
       unfinished: p("SELECT COUNT(*) AS n FROM jobs WHERE finishedAt IS NULL"),
+      unfinishedByOwner: p("SELECT ownerKind, ownerId, COUNT(*) AS n FROM jobs WHERE finishedAt IS NULL GROUP BY ownerKind, ownerId"),
       inState: p(`SELECT ${COLUMNS} FROM jobs WHERE finishedAt IS NULL AND state = ? ORDER BY createdAt, id`),
       inHooks: p(`SELECT ${COLUMNS} FROM jobs WHERE finishedAt IS NULL AND state = 'running' AND phase = 'hooks' ORDER BY createdAt, id`),
       nthFinished: p("SELECT finishedAt FROM jobs WHERE finishedAt IS NOT NULL ORDER BY finishedAt DESC LIMIT 1 OFFSET ?"),
@@ -321,8 +327,9 @@ export class JobStore {
     return this.#view(this.#s1("byIdem").get(owner.kind, owner.id, idemKey) as Row | undefined);
   }
 
-  activeByDedupe(kind: string, key: string): JobView | undefined {
-    return this.#view(this.#s1("activeByDedupe").get(kind, key) as Row | undefined);
+  /** The owner's own active job of this dedupe key (5C-2 Decision 7: never another owner's). */
+  activeByDedupe(kind: string, key: string, owner: JobOwner): JobView | undefined {
+    return this.#view(this.#s1("activeByDedupe").get(kind, key, owner.kind, owner.id) as Row | undefined);
   }
 
   /**
@@ -331,10 +338,10 @@ export class JobStore {
    * *input*, and a media kind is one input per job, so its poison fails the job. A batch that
    * succeeds with a `POISON_ITEM` item error is not remembered: its dedupe key names the whole
    * batch, so matching it would refuse the batch's healthy items too, and the batch's owner
-   * (5D's placeholders) records the poisoned item itself.
+   * (5D's placeholders) records the poisoned item itself. The owner's own only, as above.
    */
-  poisonedByDedupe(kind: string, key: string): JobView | undefined {
-    return this.#view(this.#s1("poisonedByDedupe").get(kind, key) as Row | undefined);
+  poisonedByDedupe(kind: string, key: string, owner: JobOwner): JobView | undefined {
+    return this.#view(this.#s1("poisonedByDedupe").get(kind, key, owner.kind, owner.id) as Row | undefined);
   }
 
   #view(r: Row | undefined): JobView | undefined {
@@ -459,6 +466,11 @@ export class JobStore {
         params.push(value);
       }
     }
+    if (q.reach?.projects !== undefined) {
+      where.push("(project IS NULL OR project IN (SELECT value FROM json_each(?)))");
+      params.push(JSON.stringify(q.reach.projects));
+    }
+    if (q.reach !== undefined && !q.reach.libraries) where.push("library IS NULL");
     const sql = `SELECT ${COLUMNS} FROM jobs${where.length ? ` WHERE ${where.join(" AND ")}` : ""} ORDER BY createdAt DESC, id DESC LIMIT ?`;
     let stmt = this.#lists.get(sql);
     if (stmt === undefined) {
@@ -473,6 +485,12 @@ export class JobStore {
 
   unfinishedCount(): number {
     return Number((this.#s1("unfinished").get() as { n: number }).n);
+  }
+
+  /** Unfinished jobs per owner. */
+  unfinishedByOwner(): Array<{ owner: JobOwner; n: number }> {
+    const rows = this.#s1("unfinishedByOwner").all() as unknown as Array<{ ownerKind: string; ownerId: string; n: number }>;
+    return rows.map((r) => ({ owner: { kind: r.ownerKind, id: r.ownerId }, n: Number(r.n) }));
   }
 
   running(): JobView[] {
