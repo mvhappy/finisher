@@ -134,7 +134,9 @@ fn feature_off_in_default_members() {
             "features,normal",
             "--prefix",
             "none",
-            "--offline",
+            // Not `--offline`: a fresh host has only the crates it built so far, and the tree
+            // of the default members needs every one's manifest.
+            "--locked",
         ])
         .current_dir(root)
         .output()

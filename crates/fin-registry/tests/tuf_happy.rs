@@ -217,6 +217,46 @@ fn trusted_files_written_only_after_full_chain() {
     assert_eq!(TrustedRepo::open(store).unwrap().versions(), c.versions());
 }
 
+/// The committed vectors' packages are `content_pkg` output: packing the same tree again, on
+/// any OS, gives the same bytes (`pack` is reproducible across platforms, not just runs).
+#[test]
+fn vector_packages_repack_identically() {
+    let base = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/tuf/vectors");
+    let out = tempfile::tempdir().unwrap();
+    for (vector, version) in [
+        ("basic", "1.0.0"),
+        ("rotated", "1.0.0"),
+        ("rotated", "1.1.0"),
+    ] {
+        let dir = base.join(vector).join("targets/test-only/pack");
+        let committed = std::fs::read_dir(&dir)
+            .unwrap()
+            .map(|e| e.unwrap().path())
+            .find(|p| {
+                p.file_name()
+                    .unwrap()
+                    .to_string_lossy()
+                    .ends_with(&format!(".{version}.finpkg"))
+            })
+            .unwrap_or_else(|| panic!("{vector}: no {version} package"));
+        let fresh = support::tuf::content_pkg(out.path(), "@test-only/pack", version);
+        let (a, b) = (
+            std::fs::read(&committed).unwrap(),
+            std::fs::read(&fresh).unwrap(),
+        );
+        assert!(
+            a == b,
+            "{vector} {version}: packing again changed the bytes"
+        );
+        let name = committed
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
+        assert_eq!(name.split('.').next(), Some(sha256_hex(&b).as_str()));
+    }
+}
+
 #[test]
 fn fixture_vectors_verify_identically() {
     let base = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/tuf/vectors");
