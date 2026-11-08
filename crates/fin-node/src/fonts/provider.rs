@@ -44,6 +44,7 @@ pub(crate) struct Provider {
     hashed: Mutex<HashMap<PathBuf, (Stamp, String)>>,
 }
 
+#[allow(clippy::disallowed_methods)] // font asset files of projects, never a library path
 fn stamp(path: &Path) -> Option<Stamp> {
     let meta = fs::metadata(path).ok()?;
     meta.is_file().then(|| (meta.len(), meta.modified().ok()))
@@ -63,6 +64,7 @@ impl Provider {
     }
 
     /// The file's bytes when they hash to `sha256` now.
+    #[allow(clippy::disallowed_methods)] // project font assets, never a library path
     fn asset_bytes(&self, path: &Path, sha256: &str) -> Result<Arc<[u8]>, AssetProblem> {
         let before = stamp(path).ok_or(AssetProblem::NotFound)?;
         if before.0 > MAX_FILE_SIZE {

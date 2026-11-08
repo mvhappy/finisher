@@ -397,6 +397,31 @@ export declare function probe(path: string): Promise<string>;
  */
 export declare function probeBeneath(root: string, path: string): Promise<string>;
 
+/**
+ * Resolves a library root for `library.add` (plan 5D Decision 3), on a thread of its own:
+ * resolves to `{ root, rootKey, identity, storage }` JSON: the canonical absolute path (links
+ * resolved), its lookup key (NFC, `/` separators, lower-cased on a case-insensitive volume),
+ * the `VolumeIdentity` (`@finisher/core-types`) and the detected storage kind (`local`,
+ * `network`, `sync:<provider>`). Rejects `LIBRARY_ROOT_INVALID` (`details.reason`: `relative`,
+ * `notFound`, `notDirectory`, `notUtf8`, `serverData`: the root holds or lies inside
+ * `serverData`) or `LIBRARY_ROOT_UNREADABLE` (`details.code`; `TIMEOUT` past `timeoutMs`,
+ * default 60 s). Opens no file under the root.
+ */
+export declare function libraryCanonicalRoot(path: string, serverData: string, timeoutMs?: number): Promise<string>;
+
+/**
+ * A library root's state now against its stored `VolumeIdentity` JSON: resolves to the
+ * `RootState` JSON of `@finisher/core-types`. Never runs on the libuv pool or the JS thread.
+ * One stat per root is in flight (`fin_library::root_state` is single-flight): a call while one
+ * is pending waits on it. Past `timeoutMs` (default 60 s) it resolves `{ state: "timeout" }`
+ * and the stat thread is left to finish (that root counts in `libraryProbeStatus().stuckProbes`
+ * until a later probe of it answers anything else).
+ */
+export declare function libraryProbeRoot(root: string, identityJson: string, timeoutMs?: number): Promise<string>;
+
+/** What the root probes are doing: `stuckProbes` roots whose latest probe timed out. */
+export declare function libraryProbeStatus(): { stuckProbes: number };
+
 /** @internal Present only in binaries built with the `test-hooks` feature (`build:test`). */
 export declare const testHooks:
   | {
@@ -408,6 +433,10 @@ export declare const testHooks:
         path: string,
         opts?: { seconds?: number; fps?: number; audio?: boolean; sampleRate?: number },
       ): void;
+      /** While `hang` is true the stat of library root `root` blocks, as on a dead hard mount. */
+      libraryProbeHang(root: string, hang: boolean): void;
+      /** How many stats of library root `root` have started. */
+      libraryProbeStarted(root: string): number;
       /** Writes a small `png`/`jpeg`/`webp` (64x48), `svg` (640x360), `dotlottie`, `cube`
        * (4³), `wav` (1 s, 48 kHz stereo; `wav:<seconds>`, 1–600, for longer) or `m4a` (2 s,
        * 48 kHz stereo) fixture. */
