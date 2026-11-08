@@ -260,5 +260,5 @@ async function killedLook(sd, project, tmp, jobs) {
   assertEqual([r.json.stats.deviceReused, r.json.stats.workerJobs], [false, 1], "a fresh worker rendered the retry");
   const files = readdirSync(out).sort();
   assertEqual(files, r.json.frames.map((fr) => fr.file.split(/[\\/]/).pop()).sort(), "files in the look directory");
-  if (files.some((n) => !/^[A-Za-z0-9_-]+-\d+_\d+-[0-9a-f]{8}\.png$/.test(n))) throw new Error(`stray files in the look directory: ${files.join(", ")}`);
+  if (files.some((n) => !/^[A-Za-z0-9_-]+-\d+_\d+-\d+x\d+-[0-9a-f]{8}\.png$/.test(n))) throw new Error(`stray files in the look directory: ${files.join(", ")}`);
 }

@@ -157,12 +157,16 @@ describe("the kind", () => {
 
   test("frames are named for their timeline, time and plan", () => {
     const h = (c: string) => c.repeat(64);
-    expect(finalName("tl1", "37/5", "0123456789abcdef".repeat(4))).toBe("tl1-37_5-01234567.png");
-    expect(finalName("tl1", "12", h("f"))).toBe("tl1-12_1-ffffffff.png");
-    expect(finalName("a b/../c", "0", h("a"))).toBe("a_b____c-0_1-aaaaaaaa.png");
+    const hd = { width: 1920, height: 1080 };
+    expect(finalName("tl1", "37/5", hd, "0123456789abcdef".repeat(4))).toBe("tl1-37_5-1920x1080-01234567.png");
+    expect(finalName("tl1", "12", hd, h("f"))).toBe("tl1-12_1-1920x1080-ffffffff.png");
+    expect(finalName("a b/../c", "0", { width: 8, height: 8 }, h("a"))).toBe("a_b____c-0_1-8x8-aaaaaaaa.png");
+    // The plan hash does not cover the size, so the name must: same time and plan, two sizes.
+    expect(finalName("tl1", "0", hd, h("a"))).not.toBe(finalName("tl1", "0", { width: 1280, height: 720 }, h("a")));
     // Review B2: neither the time nor the hash may carry a path, whatever called this.
-    for (const at of ["..\\..\\x", "/../x", "1/../2", "a", "", "1/2/3"]) expect(() => finalName("tl1", at, h("a")), at).toThrow();
-    for (const plan of ["../../x", "abc", h("g"), `${h("a")}/`, h("A")]) expect(() => finalName("tl1", "0", plan), plan).toThrow();
+    for (const at of ["..\\..\\x", "/../x", "1/../2", "a", "", "1/2/3"]) expect(() => finalName("tl1", at, hd, h("a")), at).toThrow();
+    for (const plan of ["../../x", "abc", h("g"), `${h("a")}/`, h("A")]) expect(() => finalName("tl1", "0", hd, plan), plan).toThrow();
+    for (const [width, height] of [[0, 8], [8, 0], [-1, 8], [8.5, 8], [8193, 8], [8, Number.NaN]] as const) expect(() => finalName("tl1", "0", { width, height }, h("a")), `${width}x${height}`).toThrow();
   });
 });
 
@@ -255,14 +259,14 @@ describe("onSucceeded believes the host, not the worker (review B2)", () => {
   const h = (c: string): string => c.repeat(64);
 
   /** A kind over a fake job directory holding `out/look-0.png`, and the hook's ctx. */
-  function fixture(over: { at?: string[]; frames?: Array<Partial<LookFrame>>; samples?: string[] } = {}) {
+  function fixture(over: { at?: string[]; frames?: Array<Partial<LookFrame>>; samples?: string[]; size?: { width: number; height: number } } = {}) {
     const dir = realpathSync(mkdtempSync(join(work, "b2-proj-")));
     const jobsRoot = realpathSync(mkdtempSync(join(work, "b2-jobs-")));
     mkdirSync(join(jobsRoot, "j1", "out"), { recursive: true });
     writeFileSync(join(jobsRoot, "j1", "out", "look-0.png"), "png");
     const k = mediaLookKind({ serverData: join(work, "sd-none"), jobsRoot, projects: { prepareMediaJob: () => fail(0), dirOf: () => dir } });
     const at = over.at ?? ["0"];
-    const params = { timeline: "tl1", at, outName: "look", projectId: "p", branch: "main", rev: 1, planSamples: [] };
+    const params = { timeline: "tl1", at, outName: "look", projectId: "p", branch: "main", rev: 1, planSamples: [], ...(over.size ? { size: over.size } : {}) };
     const frames = (over.frames ?? [{}]).map((f) => ({ at: "0", file: "look-0.png", width: 8, height: 8, plan: h("a"), ...f }));
     const extra = { planSamples: (over.samples ?? [h("a")]).map((blake3, i) => ({ at: at[i] ?? "0", blake3 })), rev: 1 };
     const ctx = { job: { id: "j1", params }, result: { frames, skipped: [], adapter: {}, stats: {} }, extra, items: new Map(), rerun: false, attempt: 1, open: () => fail(0) };
@@ -284,8 +288,25 @@ describe("onSucceeded believes the host, not the worker (review B2)", () => {
     const f = fixture({ at: ["7/2"], frames: [{ at: "..\\..\\x" }] });
     const r = await f.ok();
     expect(r.frames).toHaveLength(1);
-    expect(r.frames[0]).toMatchObject({ at: "7/2", file: join(f.look, `tl1-7_2-${h("a").slice(0, 8)}.png`) });
-    expect(readdirSync(f.look)).toEqual([`tl1-7_2-aaaaaaaa.png`]);
+    expect(r.frames[0]).toMatchObject({ at: "7/2", file: join(f.look, `tl1-7_2-8x8-${h("a").slice(0, 8)}.png`) });
+    expect(readdirSync(f.look)).toEqual([`tl1-7_2-8x8-aaaaaaaa.png`]);
+  });
+
+  test("a frame of another size than the named one fails the job; an unnamed size is the frame's own", async () => {
+    const named = fixture();
+    // The fixture's params name no size: the frame's own is used (here 8 × 8).
+    expect((await named.ok()).frames[0]!.file).toBe(join(named.look, "tl1-0_1-8x8-aaaaaaaa.png"));
+    for (const frames of [[{ width: 9 }], [{ height: 9 }], [{ width: 0, height: 0 }]]) {
+      const f = fixture({ size: { width: 8, height: 8 }, frames });
+      expect(await f.run(), JSON.stringify(frames)).toMatchObject({ code: "JOB_FAILED" });
+      expect(readdirSync(f.look), JSON.stringify(frames)).toEqual([]);
+    }
+    const f = fixture({ size: { width: 16, height: 9 }, frames: [{ width: 16, height: 9 }] });
+    expect((await f.ok()).frames[0]!.file).toBe(join(f.look, "tl1-0_1-16x9-aaaaaaaa.png"));
+    // Not a pixel count, whatever the worker says: nothing is moved.
+    const odd = fixture({ frames: [{ width: 1e9 }] });
+    expect(await odd.run()).toMatchObject({ code: "JOB_FAILED" });
+    expect(readdirSync(odd.look)).toEqual([]);
   });
 
   test("a plan hash that is not the one the host sampled, or not a digest, fails the job", async () => {
@@ -321,13 +342,32 @@ describe("media.look jobs", () => {
     expect(readdirSync(dest).sort()).toEqual(result.frames.map((f) => basename(f.file)).sort());
     result.frames.forEach((f: LookFrame, i) => {
       expect(dirname(f.file)).toBe(dest);
-      expect(basename(f.file)).toBe(`tl1-${i === 0 ? "0_1" : "1_10"}-${f.plan.slice(0, 8)}.png`);
+      expect(basename(f.file)).toBe(`tl1-${i === 0 ? "0_1" : "1_10"}-80x45-${f.plan.slice(0, 8)}.png`);
       expect({ ...png(f.file) }).toEqual({ width: 80, height: 45 });
     });
     // `out/` was emptied by the moves, and 5C deleted the job directory after the hook.
     await until(() => !existsSync(join(s.serverData, "jobs", v.id)));
     // The plan hashes the worker checked are the ones `prepare` computed from the snapshot.
     expect(result.frames[0]!.plan).not.toBe(result.frames[1]!.plan);
+  });
+
+  test("two looks of the same time at different sizes into one folder keep both files", async () => {
+    const s = await setup();
+    const small = await s.look({ at: ["0"] as never, size: { width: 80, height: 45 } });
+    if (noGpu(small)) return;
+    const large = await s.look({ at: ["0"] as never, size: { width: 160, height: 90 } });
+    expect(small.state).toBe("succeeded");
+    expect(large.state).toBe("succeeded");
+    const a = (small.result as LookResult).frames[0]!;
+    const b = (large.result as LookResult).frames[0]!;
+    // The plan (and its hash) does not depend on the size; the names must.
+    expect(a.plan).toBe(b.plan);
+    expect(a.file).not.toBe(b.file);
+    expect(basename(a.file)).toBe(`tl1-0_1-80x45-${a.plan.slice(0, 8)}.png`);
+    expect(basename(b.file)).toBe(`tl1-0_1-160x90-${b.plan.slice(0, 8)}.png`);
+    expect(readdirSync(join(s.p.dir, "workspace", "shared", "look")).sort()).toEqual([basename(b.file), basename(a.file)].sort());
+    expect(png(a.file)).toEqual({ width: 80, height: 45 });
+    expect(png(b.file)).toEqual({ width: 160, height: 90 });
   });
 
   test("the second look of the same state coalesces and reuses its files", async () => {

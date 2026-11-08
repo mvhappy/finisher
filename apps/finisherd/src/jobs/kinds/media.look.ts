@@ -34,8 +34,11 @@ export const MEDIA_LOOK = "media.look";
  */
 export const MEDIA_MEMORY: MemoryRule = { ramFraction: 0.5, capMiB: 6144 };
 
+/** A look's longest side in pixels (`LOOK_MAX_SIDE` in `fin-media`). */
+export const LOOK_MAX_SIDE = 8192;
+
 /** The largest PNG `onSucceeded` moves: 8192 × 8192 RGBA8, uncompressed. */
-export const MAX_FRAME_BYTES = 8192 * 8192 * 4 + (1 << 20);
+export const MAX_FRAME_BYTES = LOOK_MAX_SIDE * LOOK_MAX_SIDE * 4 + (1 << 20);
 
 /** Where a look's frames go when the request names no directory (Decision 7). */
 export const LOOK_DIR = ["workspace", "shared", "look"] as const;
@@ -66,13 +69,20 @@ export function lookDedupe(p: LookJobParams): string | undefined {
 const RATIONAL = /^-?\d{1,38}(?:\/\d{1,38})?$/;
 const PLAN_HASH = /^[0-9a-f]{64}$/;
 
-/** `<timeline>-<n>_<d>-<plan hash, 8 hex>.png` (Decision 7). */
-export function finalName(timeline: string, at: string, plan: string): string {
+/**
+ * `<timeline>-<n>_<d>-<w>x<h>-<plan hash, 8 hex>.png` (Decision 7). The size is in the name
+ * because the plan hash does not cover it: two looks of the same times at different sizes into
+ * one folder must keep both files.
+ */
+export function finalName(timeline: string, at: string, size: { readonly width: number; readonly height: number }, plan: string): string {
   if (!RATIONAL.test(at)) throw finError("JOB_FAILED", "a frame time is not a rational number", { at });
+  for (const side of [size.width, size.height]) {
+    if (!Number.isSafeInteger(side) || side < 1 || side > LOOK_MAX_SIDE) throw finError("JOB_FAILED", "a frame size is not a pixel count", { width: size.width, height: size.height });
+  }
   if (!PLAN_HASH.test(plan)) throw finError("JOB_FAILED", "a frame's plan hash is not a BLAKE3 digest", { plan });
   const [n, d] = at.split("/");
   const safe = timeline.replace(/[^A-Za-z0-9_-]/g, "_");
-  return `${safe}-${n}_${d ?? "1"}-${plan.slice(0, 8)}.png`;
+  return `${safe}-${n}_${d ?? "1"}-${size.width}x${size.height}-${plan.slice(0, 8)}.png`;
 }
 
 const FOLD = process.platform === "win32" || process.platform === "darwin";
@@ -249,7 +259,7 @@ export function mediaLookKind(deps: MediaKindDeps): KindSpec<LookJobParams, Look
           const frames: LookFrame[] = [];
           for (const [position, f] of ctx.result.frames.entries()) {
             // The worker's own name for the file, `<outName>-<i>.png`, is all of its answer that
-            // is believed: the time, the plan hash and the destination come from the host's.
+            // is believed: the time, the plan hash, the size (when named) and the destination come from the host's.
             const i = Number(name.exec(f.file)?.[1] ?? Number.NaN);
             if (!Number.isSafeInteger(i) || i !== position || i >= p.at.length) throw finError("JOB_FAILED", "the worker named an output file oddly", { file: f.file });
             const at = String(p.at[i]);
@@ -257,7 +267,12 @@ export function mediaLookKind(deps: MediaKindDeps): KindSpec<LookJobParams, Look
             if (!PLAN_HASH.test(f.plan) || f.plan !== want) {
               throw finError("PLAN_MISMATCH", "the worker's frame does not carry the plan the host sampled", { frame: i, reason: PLAN_HASH.test(f.plan) ? "hash" : "malformed" });
             }
-            const to = join(dest, finalName(p.timeline, at, f.plan));
+            // The size drawn is the named one (the host's own param), else the timeline's
+            // resolution, which only the worker's frame says: it is checked as a pixel count.
+            if (p.size != null && (f.width !== p.size.width || f.height !== p.size.height)) {
+              throw finError("JOB_FAILED", "the worker drew a frame at another size than the one asked for", { frame: i });
+            }
+            const to = join(dest, finalName(p.timeline, at, { width: f.width, height: f.height }, f.plan));
             if (dirname(to) !== dest) throw finError("JOB_FAILED", "a frame's destination is outside its folder", { frame: i });
             try {
               await commitJobOutput(join(jobDir, "out", f.file), to, MAX_FRAME_BYTES, true);
