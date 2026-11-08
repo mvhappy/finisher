@@ -53,10 +53,13 @@ const VALIDATION_CODES: &[&str] = &[
     // (5A Decision 13).
     "INVALID_REQUEST",
     // Jobs (5C-1 Decision 41): a kind no family registered; params its Rust type refuses
-    // (`details.errors`); a job id the server does not know.
+    // (`details.errors`); a job id the server does not know; a job host call on a group or
+    // host the caller should know is gone (`details.reason`: `unknownGroup`, `groupClosed`,
+    // `shutDown`), a caller's bug rather than something to retry.
     "JOB_KIND_UNKNOWN",
     "JOB_PARAMS_INVALID",
     "JOB_NOT_FOUND",
+    "JOBHOST_STATE",
     // Stored history that this code cannot or will not read (sub-project 4).
     "DB_TOO_NEW",
     "NOT_A_PROJECT_DB",
@@ -452,6 +455,7 @@ mod tests {
             "JOB_KIND_UNKNOWN",
             "JOB_PARAMS_INVALID",
             "JOB_NOT_FOUND",
+            "JOBHOST_STATE",
         ] {
             assert_eq!(exit_code(code), 3, "{code}");
         }

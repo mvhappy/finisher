@@ -29,8 +29,17 @@ pub(crate) fn run(job: &StartJob, ctx: &mut JobCtx<'_>, served: u64) -> Result<V
         "test.echo" => echo(job),
         "test.progressFlood" => {
             let p: ProgressFloodParams = params(job)?;
-            for i in 1..=p.n {
-                ctx.progress(Progress::new(i as f64, ProgressUnit::Items).of(p.n as f64));
+            if let Some(bytes) = p.stderr_bytes {
+                let mut err = std::io::stderr().lock();
+                for i in 1..=p.n {
+                    let head = format!("flood {i} ");
+                    let pad = (bytes as usize).saturating_sub(head.len());
+                    writeln!(err, "{head}{}", "x".repeat(pad)).map_err(io)?;
+                }
+            } else {
+                for i in 1..=p.n {
+                    ctx.progress(Progress::new(i as f64, ProgressUnit::Items).of(p.n as f64));
+                }
             }
             out(CountResult { sent: p.n })
         }

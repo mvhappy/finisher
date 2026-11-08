@@ -64,8 +64,7 @@ mod worker;
 pub use engine::Engine;
 pub use fonts::napi::FontManager;
 pub use jobhost::{
-    JobHost, JobHostCaps, JobKindVersion, job_kind_versions, resolve_memory_rule,
-    validate_job_params,
+    JobHost, JobKindVersion, job_kind_versions, resolve_memory_rule, validate_job_params,
 };
 pub use journal::{JournalHandle, kind_names, rpc_methods, validate_privacy};
 pub use private_dir::{PrivateDirReport, check_private_dir, make_private_dir};

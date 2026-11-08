@@ -69,8 +69,14 @@ params! {
         #[serde(default)]
         pub report: Vec<EchoReport>,
     }
-    /// `test.progressFlood`: `n` progress messages as fast as it can.
-    ProgressFloodParams as "TestProgressFloodParams" { pub n: u64 }
+    /// `test.progressFlood`: `n` progress messages as fast as it can; with `stderrBytes`, `n`
+    /// stderr lines of that many bytes (`flood <i> ` then padding) instead.
+    ProgressFloodParams as "TestProgressFloodParams" {
+        pub n: u64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[schemars(with = "u32")]
+        pub stderr_bytes: Option<u32>,
+    }
     /// `test.warm` (warm): returns `value` with the pid and how many jobs the process served.
     WarmParams as "TestWarmParams" {
         pub value: Value,

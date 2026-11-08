@@ -27,22 +27,46 @@ export function resolveMemoryRule(rule, totalBytes) {
   return sync(() => native.resolveMemoryRule(json(rule), totalBytes)) ?? undefined;
 }
 
+/** A native call's synchronous throw, as the rejection of the promise it would return. */
+function promised(f) {
+  let promise;
+  try {
+    promise = f();
+  } catch (e) {
+    return call(Promise.reject(e));
+  }
+  return call(promise);
+}
+
 export class JobHost {
   #native;
+  /** Pending spawns: their number → `{ resolve, reject }`. */
+  #spawns;
+  #nextSpawn = 0;
 
   /** @internal Use `JobHost.start`. */
-  constructor(nativeHost) {
-    if (!(nativeHost instanceof native.JobHost)) throw new TypeError("use JobHost.start");
+  constructor(nativeHost, spawns) {
+    if (!(nativeHost instanceof native.JobHost) || !(spawns instanceof Map)) throw new TypeError("use JobHost.start");
     this.#native = nativeHost;
+    this.#spawns = spawns;
   }
 
   static async start(opts, onEvent) {
     if (typeof onEvent !== "function") throw new TypeError("JobHost.start needs an onEvent function");
+    const spawns = new Map();
     // A throw here would reach the threadsafe-function trampoline and become an
     // uncaughtException; it is reported as a process warning instead.
     const deliver = (text) => {
       try {
-        onEvent(JSON.parse(text));
+        const e = JSON.parse(text);
+        // A spawn's answer, handed over before any event of its process.
+        if (e.type === "_spawn") {
+          const pending = spawns.get(e.spawn);
+          spawns.delete(e.spawn);
+          pending?.resolve(e.proc);
+          return;
+        }
+        onEvent(e);
       } catch (e) {
         const err = e instanceof Error ? e : new Error(String(e));
         process.emitWarning(`a JobHost onEvent callback threw: ${err.message}`, {
@@ -51,12 +75,11 @@ export class JobHost {
         });
       }
     };
-    const started = sync(() => native.JobHost.start(json(opts), deliver));
-    return new JobHost(await call(started));
+    return new JobHost(await promised(() => native.JobHost.start(json(opts), deliver)), spawns);
   }
 
   caps() {
-    return sync(() => this.#native.caps());
+    return JSON.parse(sync(() => this.#native.caps()));
   }
 
   openGroup(spec) {
@@ -64,13 +87,15 @@ export class JobHost {
   }
 
   spawn(group, req) {
-    let promise;
-    try {
-      promise = this.#native.spawn(group, json(req));
-    } catch (e) {
-      return call(Promise.reject(e));
-    }
-    return call(promise);
+    const n = ++this.#nextSpawn;
+    const answered = new Promise((resolve, reject) => this.#spawns.set(n, { resolve, reject }));
+    // Resolves (with nothing) or rejects; the id comes with the `_spawn` answer.
+    promised(() => this.#native.spawn(group, json(req), n)).catch((e) => {
+      const pending = this.#spawns.get(n);
+      this.#spawns.delete(n);
+      pending?.reject(e);
+    });
+    return answered;
   }
 
   send(proc, msg) {
@@ -86,13 +111,7 @@ export class JobHost {
   }
 
   killGroup(group, reason) {
-    let promise;
-    try {
-      promise = this.#native.killGroup(group, reason);
-    } catch (e) {
-      return call(Promise.reject(e));
-    }
-    return call(promise);
+    return promised(() => this.#native.killGroup(group, reason));
   }
 
   closeGroup(group) {
@@ -100,7 +119,7 @@ export class JobHost {
   }
 
   shutdown(graceMs) {
-    return call(this.#native.shutdown(graceMs));
+    return promised(() => this.#native.shutdown(graceMs));
   }
 
   /** @internal Test builds only. */

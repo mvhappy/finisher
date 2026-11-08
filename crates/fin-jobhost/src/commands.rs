@@ -18,11 +18,12 @@ use crate::host::{Inner, ms_};
 use crate::os::{self, SpawnCtx};
 use crate::proc::{self, Proc};
 use crate::spawner::{self, Program, Role, SpawnRequest};
-use crate::{GroupId, GroupSpec, HostError, KillReason, ProcId};
+use crate::{GroupId, GroupSpec, HostError, HostEvent, KillReason, ProcId};
 
 /// A callback with no result.
 pub type Done = Box<dyn FnOnce() + Send>;
-/// A spawn's callback.
+/// A spawn's callback. On success it runs on the spawn thread before the process's
+/// `Spawned` and before its readers start, so it comes before every event of the process.
 pub type SpawnDone = Box<dyn FnOnce(Result<ProcId, HostError>) + Send>;
 
 pub(crate) enum Cmd {
@@ -65,7 +66,13 @@ pub(crate) fn run(inner: &Arc<Inner>, rx: Receiver<Cmd>) {
 
 fn one(inner: &Arc<Inner>, cmd: Cmd) {
     match cmd {
-        Cmd::Spawn(g, req, done) => done(spawn(inner, g, *req)),
+        Cmd::Spawn(g, req, done) => {
+            #[cfg(feature = "test-hooks")]
+            if inner.opts.panic_on_spawn_for_test {
+                panic!("test: a spawn command panics");
+            }
+            spawn(inner, g, *req, done)
+        }
         Cmd::Kill(g, reason, done) => kill(inner, g, reason, done),
         Cmd::KillFor(p, reason) => kill_for(inner, p, reason),
         Cmd::KillWaitOver(g) => kill_wait_over(inner, g),
@@ -78,44 +85,47 @@ fn one(inner: &Arc<Inner>, cmd: Cmd) {
     }
 }
 
-fn spawn(inner: &Arc<Inner>, gid: GroupId, req: SpawnRequest) -> Result<ProcId, HostError> {
-    let (handle, spec) = {
+fn spawn(inner: &Arc<Inner>, gid: GroupId, req: SpawnRequest, done: SpawnDone) {
+    let refused = {
         let mut t = inner.tables();
-        if t.shutting {
-            return Err(HostError::ShutDown);
+        let (next, shutting) = (t.next_group, t.shutting);
+        match t.groups.get_mut(&gid) {
+            _ if shutting => Err(HostError::ShutDown),
+            None if gid.0 <= next => Err(HostError::GroupClosed(gid)),
+            None => Err(HostError::UnknownGroup(gid)),
+            Some(g) if g.closing => Err(HostError::GroupClosed(gid)),
+            Some(g) => {
+                g.pending += 1;
+                Ok((g.handle.clone(), g.spec.clone()))
+            }
         }
-        let next = t.next_group;
-        let Some(g) = t.groups.get_mut(&gid) else {
-            return Err(if gid.0 <= next {
-                HostError::GroupClosed(gid)
-            } else {
-                HostError::UnknownGroup(gid)
-            });
-        };
-        if g.closing {
-            return Err(HostError::GroupClosed(gid));
-        }
-        g.pending += 1;
-        (g.handle.clone(), g.spec.clone())
     };
-    let r = spawn_in(inner, gid, handle, &spec, req);
-    if r.is_err() {
+    let (handle, spec) = match refused {
+        Ok(x) => x,
+        Err(e) => return done(Err(e)),
+    };
+    let mut done = Some(done);
+    if let Err(e) = spawn_in(inner, gid, handle, &spec, req, &mut done) {
         if let Some(g) = inner.tables().groups.get_mut(&gid) {
             g.pending -= 1;
         }
         // As after an exit: `GroupEmpty`, the kill callbacks, the release if closing.
         inner.settle(gid);
+        if let Some(d) = done.take() {
+            d(Err(e));
+        }
     }
-    r
 }
 
+/// Spawns the process; on success `done` has run (before the process's first event).
 fn spawn_in(
     inner: &Arc<Inner>,
     gid: GroupId,
     handle: Option<Arc<GroupHandle>>,
     spec: &GroupSpec,
     req: SpawnRequest,
-) -> Result<ProcId, HostError> {
+    done: &mut Option<SpawnDone>,
+) -> Result<(), HostError> {
     let handle = match handle {
         Some(h) => h,
         None => {
@@ -212,6 +222,15 @@ fn spawn_in(
         os: os_proc,
         ..
     } = spawned;
+    // The caller learns the id before any event of the process, then `Spawned` leads them.
+    if let Some(d) = done.take() {
+        let id = p.id;
+        inner.run_done(Box::new(move || d(Ok(id))));
+    }
+    p.emit(HostEvent::Spawned {
+        proc: p.id,
+        group: gid,
+    });
     // Kept here should the waiter not start (`no_waiter` then needs the process handle).
     let slot = Arc::new(std::sync::Mutex::new(Some(os_proc)));
     #[cfg(feature = "test-hooks")]
@@ -250,7 +269,7 @@ fn spawn_in(
         kill_for(inner, p.id, ExitReason::SpawnFailed("thread".into()));
     }
     inner.arm_hello(&p);
-    Ok(p.id)
+    Ok(())
 }
 
 /// The waiter did not start: kill the process and do the waiter's work here, so its `Exit`
