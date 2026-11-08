@@ -149,6 +149,10 @@ export const RPC_SCOPES: { readonly [T in FinRpcTag]: RuleOf<T> } = {
   "server.stop": { scopes: ["auth.admin"], unconfirmed: "service" },
   "auth.audit.list": { scopes: ["auth.admin"], unconfirmed: "readOnly" },
   "auth.audit.purge": { scopes: ["auth.admin"] },
+  // 5A Task 9: minting and revoking are the owner's, with a typed code; listing reads only.
+  "auth.credential.mint": { scopes: ["auth.admin"] },
+  "auth.credential.list": { scopes: ["auth.admin"], unconfirmed: "readOnly" },
+  "auth.credential.revoke": { scopes: ["auth.admin"] },
   "project.create": { scopes: ["project.create"], resolve: ["createDir"] },
   // Attaching to a project already open here only reads it; loading one may take its lease.
   "project.open": {

@@ -212,6 +212,8 @@ const USAGE_CODES: &[&str] = &[
 const UNAVAILABLE_CODES: &[&str] = &[
     // Too many WebSocket tickets at once (5A, review of Task 6): wait and retry.
     "TICKET_LIMIT",
+    // The server holds as many live agent and MCP credentials as it keeps (5A Task 9).
+    "CREDENTIAL_LIMIT",
     "SERVER_UNAVAILABLE",
     "SERVER_RUNNING",
     "SERVER_START_FAILED",
@@ -326,6 +328,7 @@ mod tests {
     fn exit_codes_follow_the_contract() {
         assert_eq!(exit_code("USAGE"), 2);
         assert_eq!(exit_code("TICKET_LIMIT"), 5);
+        assert_eq!(exit_code("CREDENTIAL_LIMIT"), 5);
         assert_eq!(exit_code("TX_TOO_LARGE"), 2);
         assert_eq!(exit_code("CONFLICT"), 4);
         assert_eq!(exit_code("SEGMENT_COLLISION"), 4);

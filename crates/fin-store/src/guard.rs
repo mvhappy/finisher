@@ -15,6 +15,21 @@
 //! reads (the fork), and the branch did not exist when the guard was computed, so it is in
 //! no list. Recovery makes its branches the same way and copies records only onto them; a
 //! `branchSet` it applies again to a live branch is checked as [`Store::set_branch`] is.
+//!
+//! **Credentials** (plan 5A Task 9; review of Task 7, M3): a write made for an `agent` or
+//! `mcp` credential names it (`credential: "<kind>:<id>"`). `finisherd` ends a credential
+//! with [`end_credential`] before it closes the credential's connections, and
+//! [`Store::write`] checks the write's credential while it holds [`live_credential`]'s read
+//! lock, **through the SQLite commit**: [`end_credential`] takes the write lock, so it
+//! returns only once every write already past the check has committed, and every write
+//! that checks after it is refused (`CREDENTIAL_REVOKED`) and writes nothing. A revoked
+//! credential's write already handed to a worker thread therefore cannot land after the
+//! revocation. The set is per process and only grows (credential ids are ULIDs, never
+//! reused); a credential revoked before this process started cannot prove a connection, so
+//! it needs no entry.
+
+use std::collections::HashSet;
+use std::sync::{LazyLock, PoisonError, RwLock, RwLockReadGuard};
 
 use fin_core::CoreError;
 use fin_core::branch::BranchInfo;
@@ -41,6 +56,65 @@ pub struct WriteGuard {
     )]
     #[schemars(with = "Vec<String>")]
     pub allow_branches: Option<Vec<String>>,
+    /// The credential the write is made for (`agent:<id>`, `mcp:<id>`), refused once it has
+    /// been ended ([`end_credential`]); absent for `local` and `console`. `null` is refused.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "some_string"
+    )]
+    #[schemars(with = "String")]
+    pub credential: Option<String>,
+}
+
+/// `credential` when present: a string, never `null`.
+fn some_string<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<String>, D::Error> {
+    String::deserialize(d).map(Some)
+}
+
+/// Credentials ended in this process (module docs).
+static ENDED: LazyLock<RwLock<HashSet<String>>> = LazyLock::new(|| RwLock::new(HashSet::new()));
+
+/// Ends `credential` (`<kind>:<id>`) for every store of this process: a write that checks it
+/// from now on is refused, and this returns only once every write already past its check has
+/// committed (module docs).
+pub fn end_credential(credential: &str) {
+    ENDED
+        .write()
+        .unwrap_or_else(PoisonError::into_inner)
+        .insert(credential.to_string());
+}
+
+/// Whether `credential` was ended in this process.
+pub fn credential_ended(credential: &str) -> bool {
+    ENDED
+        .read()
+        .unwrap_or_else(PoisonError::into_inner)
+        .contains(credential)
+}
+
+/// The read lock a write holds from its credential check through its commit, or
+/// `CREDENTIAL_REVOKED` when the guard's credential was ended. A guard without a credential
+/// holds nothing.
+pub(crate) fn live_credential(
+    guard: &WriteGuard,
+) -> Result<Option<RwLockReadGuard<'static, HashSet<String>>>, StoreError> {
+    let Some(credential) = &guard.credential else {
+        return Ok(None);
+    };
+    let ended = ENDED.read().unwrap_or_else(PoisonError::into_inner);
+    if ended.contains(credential) {
+        return Err(CoreError::new(
+            "CREDENTIAL_REVOKED",
+            "the credential this write was made for was revoked",
+        )
+        .with_fix(
+            "This credential no longer works. Ask the owner of this Finisher server for a new \
+             one.",
+        )
+        .into());
+    }
+    Ok(Some(ended))
 }
 
 /// `allowBranches` when present: a list, never `null`.
@@ -132,6 +206,7 @@ mod tests {
         let g = WriteGuard {
             deny_branches: vec!["br1".into()],
             allow_branches: Some(vec!["br1".into()]),
+            credential: None,
         };
         let e = CoreError::from(check(&g, &info("br1", "feature")).unwrap_err());
         assert_eq!(e.code, "BRANCH_PROTECTED");
@@ -143,6 +218,7 @@ mod tests {
         let g = WriteGuard {
             deny_branches: vec![],
             allow_branches: Some(vec!["feature".into()]),
+            credential: None,
         };
         let e = CoreError::from(check(&g, &info("br1", "feature")).unwrap_err());
         assert_eq!(e.code, "BRANCH_NOT_ALLOWED");
@@ -158,6 +234,7 @@ mod tests {
         let g = WriteGuard {
             deny_branches: vec!["br1".into()],
             allow_branches: Some(vec![]),
+            credential: None,
         };
         for target in [info("br1", "a"), info("br2", "b")] {
             let e = CoreError::from(check(&g, &target).unwrap_err());
@@ -186,5 +263,23 @@ mod tests {
             serde_json::to_value(WriteGuard::default()).unwrap(),
             json!({ "denyBranches": [] })
         );
+        let g: WriteGuard = serde_json::from_str(r#"{"credential":"agent:01X"}"#).unwrap();
+        assert_eq!(g.credential.as_deref(), Some("agent:01X"));
+        assert!(serde_json::from_str::<WriteGuard>(r#"{"credential":null}"#).is_err());
+    }
+
+    #[test]
+    fn ended_credential_is_refused() {
+        let g = WriteGuard {
+            credential: Some("agent:01GUARDUNITTEST0000000000".into()),
+            ..WriteGuard::default()
+        };
+        assert!(live_credential(&g).unwrap().is_some());
+        assert!(live_credential(&WriteGuard::default()).unwrap().is_none());
+        end_credential("agent:01GUARDUNITTEST0000000000");
+        assert!(credential_ended("agent:01GUARDUNITTEST0000000000"));
+        let e = CoreError::from(live_credential(&g).unwrap_err());
+        assert_eq!(e.code, "CREDENTIAL_REVOKED");
+        assert!(!e.fix.unwrap().contains('`'));
     }
 }

@@ -168,11 +168,25 @@ export class ConnectionRegistry {
    * registers and on every request; Task 9's store answers for earlier ones at the handshake.
    */
   readonly #revoked = new Set<string>();
+  /** Whether an `agent`/`mcp` credential is still live in the store (Task 9: not expired). */
+  #live: (p: Principal) => boolean = () => true;
 
   add(c: Connections): Connections {
-    c.useRevocations((p) => (p.kind === "agent" || p.kind === "mcp" || p.kind === "device") && this.#revoked.has(credentialKey(p)));
+    c.useRevocations(
+      (p) =>
+        (p.kind === "agent" || p.kind === "mcp" || p.kind === "device") &&
+        (this.#revoked.has(credentialKey(p)) || (p.kind !== "device" && !this.#live(p))),
+    );
     this.#all.push(c);
     return c;
+  }
+
+  /**
+   * Sets how a request learns whether its `agent`/`mcp` credential is live (Task 9's store):
+   * one that expired runs nothing more, before the sweep ends its connections.
+   */
+  useLiveness(live: (p: Principal) => boolean): void {
+    this.#live = live;
   }
 
   /** Marks a credential revoked for every transport, before its live connections are ended. */

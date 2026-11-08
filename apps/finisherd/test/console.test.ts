@@ -3,7 +3,7 @@
 // secret is printed. Commands run in-process through an injected `Prompt`, and spawned with
 // piped stdio for the cases a terminal decides.
 import { spawn } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -125,11 +125,17 @@ describe("dispatch and connection", () => {
     expect(r.out).toBe("");
   });
 
-  test("unknown commands are usage errors (agent and mcp come with Task 9)", async () => {
-    for (const argv of [["agent", "mint"], ["mcp", "setup"], ["nonsense"]]) {
-      const r = await run(argv);
+  test("unknown commands are usage errors; agent and mcp check their arguments first", async () => {
+    for (const [argv, said] of [
+      [["nonsense"], "unknown command"],
+      [["agent", "mint"], "agent mint needs --label"],
+      [["mcp", "setup"], "mcp setup needs --out"],
+      [["agent", "mint", "--label", "x", "--scope", "nope"], "unknown scope: nope"],
+      [["agent", "revoke"], "agent revoke needs one credential id"],
+    ] as const) {
+      const r = await run([...argv]);
       expect(r.code, argv.join(" ")).toBe(2);
-      expect(r.err).toContain("finisherd: USAGE: unknown command");
+      expect(r.err).toContain(`finisherd: USAGE: ${said}`);
     }
     expect((await run(["help"])).out).toContain("needs an interactive terminal");
   });
@@ -158,6 +164,9 @@ describe("the terminal gate and typed codes", () => {
     ["diagnostics", "project", "default", "01aaaaaaaaaaaaaaaaaaaaaaaa"],
     ["project", "takeover", "01aaaaaaaaaaaaaaaaaaaaaaaa", "--confirm"],
     ["project", "open", "/nowhere/project", "--relocate"],
+    ["agent", "mint", "--label", "x"],
+    ["agent", "revoke", "01aaaaaaaaaaaaaaaaaaaaaaaa"],
+    ["mcp", "setup", "--out", "/nowhere/mcp.json"],
   ];
 
   test("non_tty_is_console_needs_tty", { timeout: 60_000 }, async () => {
@@ -327,6 +336,47 @@ describe("read-only, service and confirmed commands", () => {
     }
     // Without the flag it is a usage error, before anything is asked.
     expect((await run(["project", "takeover", projectId])).code).toBe(2);
+  });
+
+  test("agent and mcp credentials through the console (Task 9)", { timeout: 30_000 }, async () => {
+    await start();
+    const out = join(tmp, "agent.json");
+    const minted = await run(["agent", "mint", "--label", "night run", "--scope", "server.read", "--scope", "project.read", "--branch", "own", "--idle", "2h", "--out", out]);
+    expect(minted.code, minted.err).toBe(0);
+    const file = JSON.parse(readFileSync(out, "utf8")) as { v: number; kind: string; id: string; key: string; env: string };
+    expect(file).toMatchObject({ v: 1, kind: "agent", env: server!.info.envId });
+    if (process.platform !== "win32") expect(statSync(out).mode & 0o777).toBe(0o600);
+    expect(minted.out).toContain(file.id);
+    expect(minted.out).not.toContain(file.key);
+    // An existing file is refused before anything is minted; a wrong code mints nothing and leaves no file.
+    expect((await run(["agent", "mint", "--label", "again", "--out", out])).code).toBe(2);
+    const other = join(tmp, "other.json");
+    expect((await run(["agent", "mint", "--label", "wrong", "--out", other], person(() => "ZZZZZZ"))).code).toBe(7);
+    expect(existsSync(other)).toBe(false);
+    // Listing needs no terminal.
+    const listed = await run(["agent", "ls", "--json"], NOT_A_TERMINAL);
+    expect(listed.code, listed.err).toBe(0);
+    const creds = (JSON.parse(listed.out) as { credentials: Array<Record<string, unknown>> }).credentials;
+    expect(creds).toHaveLength(1);
+    expect(creds[0]).toMatchObject({ id: file.id, label: "night run", scopes: ["server.read", "project.read"], branches: ["own"], idleExpiryS: 7200, status: "live" });
+    expect(listed.out).not.toContain(file.key);
+    expect((await run(["agent", "ls"], NOT_A_TERMINAL)).out).toContain(file.id);
+    // `mcp setup` writes an mcp credential; without --out `agent mint` shows the file once.
+    const mcpOut = join(tmp, "mcp.json");
+    expect((await run(["mcp", "setup", "--out", mcpOut])).code).toBe(0);
+    expect(JSON.parse(readFileSync(mcpOut, "utf8"))).toMatchObject({ v: 1, kind: "mcp" });
+    const shown = await run(["agent", "mint", "--label", "shown"]);
+    expect(shown.code, shown.err).toBe(0);
+    expect(shown.out).toMatch(/"v":1,"kind":"agent"/);
+    // Revoking asks for a code; the credential is gone from the live list, kept in --all.
+    const p = person();
+    const revoked = await run(["agent", "revoke", file.id], p);
+    expect(revoked.code, revoked.err).toBe(0);
+    expect(revoked.out).toContain(`Revoked credential ${file.id}`);
+    expect(p.asked).toBe(1);
+    expect((await run(["agent", "ls"], NOT_A_TERMINAL)).out).not.toContain(file.id);
+    expect((await run(["agent", "ls", "--all"], NOT_A_TERMINAL)).out).toMatch(new RegExp(`${file.id}  agent  revoked`));
+    expect((await run(["agent", "revoke", file.id])).out).toContain("nothing changed");
   });
 
   test("console_never_prints_secrets", async () => {

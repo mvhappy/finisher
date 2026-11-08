@@ -6,16 +6,18 @@
 import { resolve } from "node:path";
 import { defaultServerData } from "../config.ts";
 import { connectConsole, ConsoleError } from "./client.ts";
+import { agent } from "./commands/agent.ts";
 import { audit } from "./commands/audit.ts";
 import type { CommandContext } from "./commands/context.ts";
 import { diagnostics } from "./commands/diagnostics.ts";
+import { mcp } from "./commands/mcp.ts";
 import { project } from "./commands/project.ts";
 import { status } from "./commands/status.ts";
 import { stop } from "./commands/stop.ts";
 import { one, type Output, parseArgs, printFailure, processOutput } from "./format.ts";
 import { type Prompt, ttyPrompt } from "./prompt.ts";
 
-const COMMANDS: Record<string, (ctx: CommandContext) => Promise<number>> = { status, stop, audit, diagnostics, project };
+const COMMANDS: Record<string, (ctx: CommandContext) => Promise<number>> = { status, stop, audit, diagnostics, project, agent, mcp };
 
 export const HELP = `Usage: finisherd [serve] [--server-data <dir>]
        finisherd <command> [--server-data <dir>]
@@ -25,6 +27,7 @@ Commands for the running server, as its owner:
   stop                                     stop the server gracefully
   audit [--since <date>] [--kind <kind>] [--limit <n>] [--json]
                                            the security audit log, newest first
+  agent ls [--all] [--json]                agent and MCP credentials (live ones, or all)
 
 These change something: each needs an interactive terminal, shows what it will do and a
 short code, and goes ahead once you type the code back.
@@ -36,11 +39,18 @@ short code, and goes ahead once you type the code back.
   diagnostics project default <projectId>
   project takeover <dir|projectId> --confirm
   project open <dir> --relocate
+  agent mint --label <name> [--scope <scope>]... [--project <id>]... [--branch own|<id>]...
+             [--idle <duration>] [--absolute <duration>|none] [--out <file>]
+                                           a credential for an agent harness you run by hand
+  agent revoke <id>                        end a credential: its connections close now
+  mcp setup --out <file> [--label <name>] [--scope <scope>]...
+                                           a credential for the MCP adapter
 
 Reading recorded content needs no code:
   diagnostics export --content [--kind <kind>]... [--since <date>] [--project <id>] [--limit <n>]
 
-Agent and MCP credentials (agent mint|ls|revoke, mcp setup) come with a later version.`;
+A credential's file is its only copy: keep it where only you can read it. Durations are like
+90m, 24h or 7d; agent credentials expire after 24h unused or 7d, MCP ones after 30d unused.`;
 
 /** Decision 29: serve for no argument, `serve`, or flags only. */
 export function isServeCommand(argv: ReadonlyArray<string>): boolean {
