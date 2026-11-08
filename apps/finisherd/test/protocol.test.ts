@@ -140,7 +140,14 @@ describe("the handshake on a real server", () => {
     const rows = auditRows(serverData, "auth.fail");
     expect(rows.reduce((n, r) => n + r.count, 0) - before).toBe(5);
     expect(rows.at(-1)?.credentialKind).toBe("local");
-    expect(rows.map((r) => r.details).join()).not.toMatch(/[A-Za-z0-9_-]{43}/);
+    // No 32-byte value (base64url, 43 characters) in the details. A pipe client's `peer` (Task 11)
+    // is a pid and a SID, whose digits and dashes would match too: it is checked for its shape.
+    const details = rows.map((r) => JSON.parse(r.details) as { peer?: unknown });
+    expect(details.map(({ peer: _, ...rest }) => JSON.stringify(rest)).join()).not.toMatch(/[A-Za-z0-9_-]{43}/);
+    for (const d of details) {
+      if (WIN) expect(d.peer).toEqual({ pid: process.pid, sid: expect.stringMatching(/^S-1-5-21(-\d+)+$/) });
+      else expect(d.peer).toBeUndefined();
+    }
   });
 
   test("lines_after_the_fifth_failure_are_not_read", async () => {

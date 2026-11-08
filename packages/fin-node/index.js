@@ -9,6 +9,7 @@ export {
   validateJobParams,
   workersBinaryPath,
 } from "./jobhost.js";
+export { PipeServer } from "./pipe.js";
 
 export class Engine {
   #native;

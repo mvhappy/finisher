@@ -81,6 +81,7 @@ export function finRaw(serverData, cwd, args, extraEnv = {}) {
   const out = spawnSync(FIN, args, { cwd, encoding: "utf8", env, timeout: 60_000 });
   if (out.error) throw out.error;
   const text = out.stdout.trim();
+  outputs.push({ name: `fin ${args.join(" ")}`, text: `${out.stdout}\n${out.stderr}` });
   log(`fin ${args.join(" ")} (exit ${out.status}) → ${text.length > 160 ? `${text.slice(0, 160)}…` : text}`);
   let json;
   try {
@@ -182,65 +183,146 @@ export function handshakeMac(key, label, fields) {
   return createHmac("sha256", key).update(Buffer.concat(parts)).digest();
 }
 
+/** Secret strings this run saw (keys, nonces, proofs, MACs, tickets, challenge codes): the `auth` scenario's leak grep looks for them. */
+export const observed = new Set();
+const note = (v) => {
+  if (typeof v === "string" && v.length > 0) observed.add(v);
+};
+/** Every `fin` and console output of the run, named by its command line: the leak grep reads them too. */
+export const outputs = [];
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
 /**
- * Proves `credential` (`local` or `console`, `<server-data>/auth/<credential>.key`) over the
- * server's socket and calls `tag` once (5A Decision 6): the same handshake `fin` runs. With
- * `confirm`, a console asks for a `console.challenge` first and types its code back in
- * `challenge` (5A Decision 30: the mutating human-only calls).
+ * Connects to the server's socket (Windows: its pipe, waiting out `ERROR_PIPE_BUSY` while the
+ * listener has no free instance for a moment, which libuv reports as `EBUSY` or `EAGAIN`).
  */
-export function socketCall(server, tag, payload, credential = "local", { confirm = false } = {}) {
-  const key = Buffer.from(readFileSync(join(server.serverData, "auth", `${credential}.key`), "utf8").trim(), "base64url");
-  return new Promise((resolve, reject) => {
-    const sock = connect({ path: server.info.socket });
-    let buf = "";
-    const waiting = new Map();
-    let nextId = 1;
-    const call = (t, p) =>
+async function connectLocal(path) {
+  const deadline = Date.now() + (WIN ? 5_000 : 0);
+  for (;;) {
+    try {
+      return await new Promise((resolve, reject) => {
+        const sock = connect({ path });
+        sock.once("connect", () => resolve(sock));
+        sock.once("error", reject);
+      });
+    } catch (e) {
+      if (!WIN || !["EBUSY", "EAGAIN"].includes(e?.code) || Date.now() > deadline) throw e;
+      await sleep(25);
+    }
+  }
+}
+
+/** The first error code in an Exit, an error or a message: `"code":"X"`. */
+export const errorCode = (x) => /"code":"([A-Z_]+)"/.exec(typeof x === "string" ? x : x instanceof Error ? x.message : JSON.stringify(x))?.[1];
+
+/**
+ * A raw NDJSON connection to the server's socket with nothing proved (5A Task 12, step 1): `call`
+ * resolves with the answer's Exit frame, whatever it holds (`{_tag: "Closed"}` when the connection
+ * ends first); `closed` resolves when it ends.
+ */
+export async function rawConnect(server) {
+  const sock = await connectLocal(server.info.socket);
+  sock.setEncoding("utf8");
+  let buf = "";
+  let nextId = 1;
+  const waiting = new Map();
+  const closed = new Promise((resolve) => {
+    sock.once("close", () => {
+      for (const done of waiting.values()) done({ _tag: "Closed" });
+      waiting.clear();
+      resolve();
+    });
+  });
+  sock.on("error", () => {}); // a reset ends it; `closed` says so
+  sock.on("data", (d) => {
+    buf += d;
+    let nl;
+    while ((nl = buf.indexOf("\n")) >= 0) {
+      const frame = JSON.parse(buf.slice(0, nl));
+      buf = buf.slice(nl + 1);
+      if (frame._tag === "Exit") waiting.get(frame.requestId)?.(frame.exit);
+    }
+  });
+  return {
+    call: (tag, payload) =>
       new Promise((done) => {
         const id = String(nextId++);
         waiting.set(id, done);
-        sock.write(`${JSON.stringify({ _tag: "Request", id, tag: t, payload: p, headers: [] })}\n`);
-      });
-    const value = (exit, what) => {
-      if (exit._tag !== "Success") throw new Error(`${what} failed: ${JSON.stringify(exit)}`);
-      return exit.value;
-    };
-    sock.setEncoding("utf8");
-    sock.on("data", (d) => {
-      buf += d;
-      let nl;
-      while ((nl = buf.indexOf("\n")) >= 0) {
-        const frame = JSON.parse(buf.slice(0, nl));
-        buf = buf.slice(nl + 1);
-        if (frame._tag === "Exit") waiting.get(frame.requestId)?.(frame.exit);
-      }
-    });
-    sock.once("error", reject);
-    sock.once("connect", async () => {
-      try {
-        const cn = randomBytes(32);
-        const hello = value(await call("server.hello", { clientNonce: cn.toString("base64url"), credential: { kind: credential } }), "server.hello");
-        const sn = Buffer.from(hello.serverNonce, "base64url");
-        const proof = Buffer.from(hello.proof ?? "", "base64url");
-        const want = handshakeMac(key, "finisherd/hello/v2", [hello.envId, hello.endpoint, cn, sn]);
-        if (proof.length !== want.length || !timingSafeEqual(proof, want)) throw new Error("the server did not prove itself");
-        const mac = handshakeMac(key, "fin/prove/v2", [hello.envId, hello.endpoint, sn, cn]).toString("base64url");
-        value(await call("auth.prove", { mac }), "auth.prove");
-        const challenge = confirm ? { challenge: value(await call("console.challenge", {}), "console.challenge").code } : {};
-        resolve(value(await call(tag, { ...payload, ...challenge }), tag));
-      } catch (e) {
-        reject(e);
-      } finally {
-        sock.end();
-      }
-    });
-  });
+        sock.write(`${JSON.stringify({ _tag: "Request", id, tag, payload, headers: [] })}\n`);
+      }),
+    close: () => sock.end(),
+    closed,
+  };
 }
 
-/** A mutating human-only call as the server's console makes it: proved as `console`, confirmed. */
-export function consoleCall(server, tag, payload) {
-  return socketCall(server, tag, payload, "console", { confirm: true });
+const success = (exit, what) => {
+  if (exit._tag !== "Success") throw new Error(`${what} failed: ${JSON.stringify(exit)}`);
+  return exit.value;
+};
+
+/**
+ * Connects and runs the handshake `fin` runs (5A Decisions 6–9), checking the server's proof first.
+ * `credential` is `local` or `console` (`<server-data>/auth/<name>.key`, or `keyFile`) or a
+ * credential file's `{ kind, id, key }`. The connection's `call` answers Exit frames; `close` ends it.
+ */
+export async function proveConnection(server, credential = "local", { keyFile } = {}) {
+  const named = typeof credential === "string";
+  const key = Buffer.from(named ? readFileSync(keyFile ?? join(server.serverData, "auth", `${credential}.key`), "utf8").trim() : credential.key, "base64url");
+  const who = named ? { kind: credential } : { kind: credential.kind, id: credential.id };
+  const conn = await rawConnect(server);
+  try {
+    const cn = randomBytes(32);
+    const hello = success(await conn.call("server.hello", { clientNonce: cn.toString("base64url"), credential: who }), "server.hello");
+    const sn = Buffer.from(hello.serverNonce, "base64url");
+    note(hello.serverNonce);
+    note(hello.proof);
+    note(cn.toString("base64url"));
+    const proof = Buffer.from(hello.proof ?? "", "base64url");
+    const want = handshakeMac(key, "finisherd/hello/v2", [hello.envId, hello.endpoint, cn, sn]);
+    if (proof.length !== want.length || !timingSafeEqual(proof, want)) throw new Error("the server did not prove itself");
+    const mac = handshakeMac(key, "fin/prove/v2", [hello.envId, hello.endpoint, sn, cn]).toString("base64url");
+    note(mac);
+    const proved = success(await conn.call("auth.prove", { mac }), "auth.prove");
+    return { ...conn, principal: proved.principal };
+  } catch (e) {
+    conn.close();
+    throw e;
+  }
 }
+
+/**
+ * Proves `credential` over the server's socket and calls `tag` once (5A Decision 6): the same
+ * handshake `fin` runs. With `confirm`, a console asks for a `console.challenge` first and types
+ * its code back in `challenge` (5A Decision 30: the mutating human-only calls).
+ */
+export async function socketCall(server, tag, payload, credential = "local", { confirm = false, keyFile } = {}) {
+  const conn = await proveConnection(server, credential, { keyFile });
+  try {
+    let challenge = {};
+    if (confirm) {
+      const code = success(await conn.call("console.challenge", {}), "console.challenge").code;
+      note(code);
+      challenge = { challenge: code };
+    }
+    const value = success(await conn.call(tag, { ...payload, ...challenge }), tag);
+    if (tag === "auth.ticket") note(value.ticket);
+    return value;
+  } finally {
+    conn.close();
+  }
+}
+
+/**
+ * An RPC as the server's console makes it: proved as `console`, and for a mutation (the default)
+ * with a fresh `console.challenge` of its own connection typed back; `{ confirm: false }` for a read.
+ */
+export function consoleRpc(server, tag, payload, { confirm = true } = {}) {
+  return socketCall(server, tag, payload, "console", { confirm });
+}
+
+/** A mutating human-only call as the server's console makes it. */
+export const consoleCall = (server, tag, payload) => consoleRpc(server, tag, payload);
 
 /** Every entry the journal stored (content included: the console is a person), oldest first. */
 export async function storedEntries(server, filter = {}) {
@@ -270,6 +352,13 @@ export async function connectWs(server, credential = "local") {
   let nextId = 1;
   const exits = new Map();
   const chunks = new Map();
+  const closed = new Promise((resolve) => {
+    ws.onclose = () => {
+      for (const done of exits.values()) done({ _tag: "Closed" });
+      exits.clear();
+      resolve();
+    };
+  });
   ws.onmessage = (event) => {
     for (const frame of parseFrames(String(event.data))) {
       if (frame._tag === "Chunk") {
@@ -298,6 +387,8 @@ export async function connectWs(server, credential = "local") {
     subscribe(payload, onValue) {
       return request("ops.subscribe", payload, (values) => values.forEach(onValue));
     },
+    /** Resolves when the connection ends (a revocation closes it); pending requests then answer `{ _tag: "Closed" }`. */
+    closed,
     interrupt(id) {
       ws.send(`${JSON.stringify({ _tag: "Interrupt", requestId: id })}\n`);
     },

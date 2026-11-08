@@ -245,16 +245,6 @@ impl Client {
         let down = |reason: String| {
             unavailable(json!({ "endpoint": endpoint.display(), "reason": reason }))
         };
-        let name = match endpoint {
-            Endpoint::Socket(p) => p.as_path().to_fs_name::<GenericFilePath>(),
-            Endpoint::Pipe(p) if cfg!(windows) => p.as_str().to_fs_name::<GenericFilePath>(),
-            Endpoint::Pipe(_) => {
-                return Err(down(
-                    "named pipes exist only on Windows; set FIN_SERVER to a socket path".into(),
-                ));
-            }
-        }
-        .map_err(|e| down(e.to_string()))?;
         let wait = match deadline {
             Some(d) => timeout.min(d.at.saturating_duration_since(std::time::Instant::now())),
             None => timeout,
@@ -262,21 +252,43 @@ impl Client {
         if wait.is_zero() {
             return Err(deadline::exceeded(&deadline.unwrap(), &endpoint.display()));
         }
-        let stream = ConnectOptions::new()
-            .name(name)
-            .wait_mode(ConnectWaitMode::Timeout(wait))
-            .connect_sync()
-            .map_err(|e| {
-                if timed_out(&e) && wait < timeout {
-                    deadline::exceeded(&deadline.unwrap(), &endpoint.display())
-                } else if timed_out(&e) {
-                    timeout_error(endpoint, "accept the connection", timeout)
-                } else {
-                    down(format!("{:?}", e.kind()))
-                }
-            })?;
+        let failed = |e: io::Error| {
+            if timed_out(&e) && wait < timeout {
+                deadline::exceeded(&deadline.unwrap(), &endpoint.display())
+            } else if timed_out(&e) {
+                timeout_error(endpoint, "accept the connection", timeout)
+            } else {
+                down(format!("{:?}", e.kind()))
+            }
+        };
         // Read/write timeouts come from `TimedConn`: Windows named pipes have no OS-level ones.
-        let conn = TimedConn::new(stream, timeout).map_err(|e| down(e.to_string()))?;
+        let conn = match endpoint {
+            Endpoint::Socket(p) => {
+                let name = p
+                    .as_path()
+                    .to_fs_name::<GenericFilePath>()
+                    .map_err(|e| down(e.to_string()))?;
+                let stream = ConnectOptions::new()
+                    .name(name)
+                    .wait_mode(ConnectWaitMode::Timeout(wait))
+                    .connect_sync()
+                    .map_err(failed)?;
+                TimedConn::new(stream, timeout)
+            }
+            // Identification-level, least-access client end (5A Task 11, `pipe_client`).
+            #[cfg(windows)]
+            Endpoint::Pipe(p) => TimedConn::new(
+                crate::pipe_client::connect(p, wait).map_err(failed)?,
+                timeout,
+            ),
+            #[cfg(not(windows))]
+            Endpoint::Pipe(_) => {
+                return Err(down(
+                    "named pipes exist only on Windows; set FIN_SERVER to a socket path".into(),
+                ));
+            }
+        }
+        .map_err(|e| down(e.to_string()))?;
         Ok(Client {
             endpoint: endpoint.clone(),
             timeout,

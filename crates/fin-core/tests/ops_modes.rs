@@ -247,6 +247,62 @@ fn overwrite_inside_one_item_is_refused() {
     );
 }
 
+/// `props_ops_4c` (prop 6, found on 5A's Task 12 run): an overwrite whose range edge lies less
+/// than a frame inside an item it trims would leave that item shorter than a frame (an insert
+/// at 1/1001 s over an item at 0). Policy refuses it `INVALID_RANGE` for every op that carves
+/// (insert, move, trim), naming the item; exactly one frame left is fine; replay skips it.
+#[test]
+fn overwrite_never_leaves_an_item_shorter_than_a_frame() {
+    let p = with_clips(&[10, 10]);
+    let frame = fin_core::frame_duration(p.timelines[0].rate).unwrap();
+    let tick = Rational::new(1, 1001).unwrap();
+    let refused = |ops: Vec<Op>, item: &str| {
+        let e = err(&p, ops);
+        assert_eq!(e.code, "INVALID_RANGE", "{e:?}");
+        assert_eq!(e.details["item"], item, "{e:?}");
+        assert_eq!(e.details["remains"], json!(tick), "{e:?}");
+        assert_eq!(e.details["min"], json!(frame), "{e:?}");
+    };
+    // The case found: the head left behind, then the tail.
+    refused(vec![overwrite("$x", tick, secs(12), secs(0))], "c1");
+    let to_tail = (secs(10) - tick).unwrap();
+    refused(vec![overwrite("$x", secs(10), to_tail, secs(0))], "c2");
+    // An overwrite move and an overwrite trim carve the same way.
+    let mv = fin_core::ItemMove {
+        item: "c2".into(),
+        track: "t1".into(),
+        at: tick,
+        mode: InsertMode::Overwrite,
+    };
+    refused(vec![mv.into()], "c1");
+    refused(
+        vec![trim_in("c1", Edge::End, to_tail, TrimMode::Overwrite)],
+        "c2",
+    );
+    // One frame left, or the item covered whole, is an ordinary carve.
+    let a = golden_apply(&p, vec![overwrite("$x", frame, secs(12), secs(0))]);
+    assert_eq!(item(&a.project, "c1").duration, frame);
+    let a = golden_apply(
+        &p,
+        vec![overwrite(
+            "$x",
+            secs(0),
+            (secs(10) + tick).unwrap(),
+            secs(0),
+        )],
+    );
+    assert!(
+        a.project.timelines[0].tracks[0]
+            .items
+            .iter()
+            .all(|c| c.id != "c1")
+    );
+    assert_eq!(item(&a.project, "c2").duration, (secs(10) - tick).unwrap());
+    // Policy only: replay keeps what was committed.
+    let a = replay(&p, vec![overwrite("$x", tick, secs(12), secs(0))]).unwrap();
+    assert_eq!(item(&a.project, "c1").duration, tick);
+}
+
 #[test]
 fn compose_overwrite_splits_first() {
     let p = with_clips(&[10]);

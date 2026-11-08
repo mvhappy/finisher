@@ -55,9 +55,20 @@ serde_json = "1"
 [target.'cfg(unix)'.dependencies]
 libc = "0.2.191"
 
-# Private server-data directories (owner-only DACLs) on Windows (MIT OR Apache-2.0).
+# Private server-data directories (owner-only DACLs) and the native pipe listener (5A Task 11:
+# overlapped pipes, an I/O completion port, the client's token, `FilePipeLocalInformation`)
+# on Windows (MIT OR Apache-2.0).
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_System_Threading"] }
+windows-sys = { version = "0.61", features = [
+    "Wdk_Storage_FileSystem",
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Security_Authorization",
+    "Win32_Storage_FileSystem",
+    "Win32_System_IO",
+    "Win32_System_Pipes",
+    "Win32_System_Threading",
+] }
 
 [build-dependencies]
 # `build.rs` hashes the bundled plugin trees with the function the server re-hashes them with
@@ -69,3 +80,18 @@ serde_json = "1"
 [dev-dependencies]
 # `tests/bundled.rs` copies a bundled tree to tamper with it (already in the tree).
 tempfile = "3"
+
+# `tests/pipe_server.rs` (5A Task 11): restricted tokens, an AppContainer child, the pipe's
+# descriptor read back.
+[target.'cfg(windows)'.dev-dependencies]
+windows-sys = { version = "0.61", features = [
+    "Wdk_Storage_FileSystem",
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Security_Authorization",
+    "Win32_Security_Isolation",
+    "Win32_Storage_FileSystem",
+    "Win32_System_IO",
+    "Win32_System_Pipes",
+    "Win32_System_Threading",
+] }

@@ -19,6 +19,8 @@ mod map;
 mod output;
 mod paths;
 #[cfg(windows)]
+mod pipe_client;
+#[cfg(windows)]
 mod private_windows;
 mod registry;
 mod registry_edit;

@@ -57,4 +57,13 @@ describe("audit details", () => {
     expect(auditDetailsValid("device.revoke", { address: "remote-a" })).toBe(false);
     expect(auditDetailsValid("pair.redeem", { deviceName: "x".repeat(65) })).toBe(false);
   });
+
+  test("a pipe client's peer only for auth failures, as a pid and a SID", () => {
+    const peer = { pid: 4242, sid: "S-1-5-21-1000-2000-3000-1001" };
+    expect(auditDetailsValid("auth.fail", { reason: "badMac", transport: "pipe", peer })).toBe(true);
+    expect(auditDetailsValid("auth.fail", { reason: "peer", transport: "pipe", peer: { pid: 7 } })).toBe(true);
+    expect(auditDetailsValid("auth.denied", { peer })).toBe(false);
+    expect(auditDetailsValid("auth.fail", { peer: { pid: 1, sid: "DOMAIN\\someone" } })).toBe(false);
+    expect(auditDetailsValid("auth.fail", { peer: { pid: 1, user: "someone" } })).toBe(false);
+  });
 });

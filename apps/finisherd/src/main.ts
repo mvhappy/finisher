@@ -46,7 +46,7 @@ import { JobEngineTag, type JobEngineOptions, layerJobEngine } from "./jobs/laye
 import { layerPlugins } from "./plugins/registries.ts";
 import { layerProjectRegistry, type RegistryOptions } from "./projects.ts";
 import { MAX_FRAME } from "./protocol.ts";
-import { claimSocketPath, makeLocalSocketServer, serveRpc } from "./transport.ts";
+import { claimSocketPath, makeLocalServer, serveRpc } from "./transport.ts";
 import { makeTicketedWebSocketServer, makeUpgradeCheck } from "./upgrade.ts";
 import { ServerControlTag } from "./server-admin.ts";
 import { isServeCommand, runConsole } from "./console/main.ts";
@@ -116,8 +116,20 @@ export const serve = ({
         `finisherd job engine: killTree=${caps.killTree} watchdog=${caps.watchdog} cgroupMemory=${caps.cgroupMemory} leafLimits=${caps.leafLimits} sandbox=${caps.sandbox} sandboxed=${caps.sandboxed}`,
       );
 
-      const local = yield* makeLocalSocketServer(socket);
       const audit = Context.get(control, AuditTag);
+      // Windows: the native pipe listener (Task 11); a client of another user is refused
+      // before its first byte and audited.
+      const local = yield* makeLocalServer(socket, {
+        onRefused: (r) =>
+          audit.append({
+            kind: "auth.fail",
+            principal: { kind: "anonymous", id: "" },
+            credentialKind: "pipe",
+            outcome: "failed",
+            code: "UNAUTHENTICATED",
+            details: { reason: r.reason, transport: "pipe", peer: { pid: r.pid, ...(r.sid == null ? {} : { sid: r.sid }) } },
+          }),
+      });
       // The WebSocket (Decision 24): a ticket in `Sec-WebSocket-Protocol`, Host and Origin checked first.
       let wsPort = 0;
       const check = makeUpgradeCheck({ port: () => wsPort, tickets, origins: cachedOrigins(serverData) });
