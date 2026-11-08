@@ -5,7 +5,10 @@
 // never logged, audited or put in an error. Each principal holds at most `MAX_TICKETS_PER_PRINCIPAL`
 // live tickets (a new one drops its own oldest) and mints at most `MINT_RATE`; past the global
 // `MAX_LIVE_TICKETS` a mint is refused rather than another principal's ticket dropped (review of
-// Task 6, finding 4: one principal could evict the UI's ticket).
+// Task 6, finding 4: one principal could evict the UI's ticket). Every `fin` and tool of the
+// user is the one `local` principal, so `local`'s bucket and 8-ticket cap are per connection
+// (the minting connection, `transport:clientId`), under a larger cap and bucket for `local` as
+// a whole (review of Task 7, M1: one looping client must not lock out the others).
 import { createHash, randomBytes } from "node:crypto";
 import { type FinError, TICKET_DEFAULT_TTL_S, TICKET_MAX_TTL_S } from "@finisher/contracts";
 import { Context, Effect, type Scope } from "effect";
@@ -23,11 +26,28 @@ export const MAX_LIVE_TICKETS = 1024;
 export const MAX_TICKETS_PER_PRINCIPAL = 8;
 /** Mints per principal: a burst, then this many per second. */
 export const MINT_RATE = { perSecond: 4, burst: 16 } as const;
+/** Live tickets of `local` as a whole, every connection together: past it a mint is refused. */
+export const MAX_TICKETS_LOCAL = 64;
+/** Mints of `local` as a whole, every connection together. */
+export const LOCAL_MINT_RATE = { perSecond: 16, burst: 64 } as const;
 /** Principals with a mint bucket at once (oldest dropped past it). */
 const MAX_BUCKETS = 1024;
 
-/** A principal's own key: one bucket and one ticket cap per credential. */
-const ownerOf = (p: Principal): string => `${p.kind}:${p.id}`;
+/** The principal's key: `<kind>:<id>`. */
+export const principalKeyOf = (p: Principal): string => `${p.kind}:${p.id}`;
+
+/**
+ * Who holds a ticket for its caps: a credential, or for `local` the minting connection
+ * (`local:<transport>:<clientId>`; `local:` alone when the connection is not known).
+ */
+export const ownerOf = (p: Principal, connection?: string): string =>
+  p.kind === "local" ? `local:${connection ?? ""}` : principalKeyOf(p);
+
+/** A redeemed ticket: its principal and the owner it was minted by (`ownerOf`). */
+export interface Redeemed {
+  readonly principal: Principal;
+  readonly owner: string;
+}
 
 /** `TICKET_LIMIT` (exit 5): try again shortly. */
 function ticketLimit(reason: "rateLimited" | "full"): FinError {
@@ -42,7 +62,7 @@ function ticketLimit(reason: "rateLimited" | "full"): FinError {
 const digest = (ticket: string): string => createHash("sha256").update(ticket, "utf8").digest("base64url");
 
 export class Tickets {
-  readonly #live = new Map<string, { readonly principal: Principal; readonly owner: string; readonly expiresAt: number }>();
+  readonly #live = new Map<string, { readonly principal: Principal; readonly owner: string; readonly key: string; readonly expiresAt: number }>();
   readonly #buckets = new Map<string, { tokens: number; at: number }>();
   readonly #now: () => number;
 
@@ -52,34 +72,54 @@ export class Tickets {
 
   /**
    * A ticket for `principal`, live for `ttlS` seconds (default 30, at most 60, at least 1).
-   * Throws `TICKET_LIMIT` past the principal's mint rate or the global cap.
+   * Throws `TICKET_LIMIT` past the owner's or the principal's mint rate, `local`'s cap or the
+   * global cap. `connection` (`transport:clientId`) is the minting connection, the owner of a
+   * `local` ticket.
    */
-  mint(principal: Principal, ttlS: number = TICKET_DEFAULT_TTL_S): { ticket: string; expiresAt: number } {
+  mint(principal: Principal, ttlS: number = TICKET_DEFAULT_TTL_S, connection?: string): { ticket: string; expiresAt: number } {
     const ttl = Number.isFinite(ttlS) ? Math.min(TICKET_MAX_TTL_S, Math.max(1, Math.floor(ttlS))) : TICKET_DEFAULT_TTL_S;
-    const owner = ownerOf(principal);
-    if (!this.#take(owner)) throw ticketLimit("rateLimited");
-    // The principal's own oldest first (the map keeps insertion order).
+    const owner = ownerOf(principal, connection);
+    const key = principalKeyOf(principal);
+    const local = principal.kind === "local";
+    // `local` as a whole first, so a refused mint costs no connection's own token.
+    if (local && !this.#peek(key, LOCAL_MINT_RATE)) throw ticketLimit("rateLimited");
+    if (!this.#take(owner, MINT_RATE)) throw ticketLimit("rateLimited");
+    if (local) this.#take(key, LOCAL_MINT_RATE);
+    // The owner's own oldest first (the map keeps insertion order).
     const own = [...this.#live].filter(([, e]) => e.owner === owner);
-    for (const [key] of own.slice(0, Math.max(0, own.length - MAX_TICKETS_PER_PRINCIPAL + 1))) this.#live.delete(key);
+    for (const [k] of own.slice(0, Math.max(0, own.length - MAX_TICKETS_PER_PRINCIPAL + 1))) this.#live.delete(k);
+    if (local && [...this.#live.values()].filter((e) => e.key === key).length >= MAX_TICKETS_LOCAL) this.sweep();
+    if (local && [...this.#live.values()].filter((e) => e.key === key).length >= MAX_TICKETS_LOCAL) throw ticketLimit("full");
     if (this.#live.size >= MAX_LIVE_TICKETS) this.sweep();
     if (this.#live.size >= MAX_LIVE_TICKETS) throw ticketLimit("full");
     const ticket = randomBytes(TICKET_BYTES).toString("base64url");
     const expiresAt = this.#now() + ttl * 1000;
-    this.#live.set(digest(ticket), { principal, owner, expiresAt });
+    this.#live.set(digest(ticket), { principal, owner, key, expiresAt });
     return { ticket, expiresAt };
   }
 
-  /** One mint from `owner`'s bucket. */
-  #take(owner: string): boolean {
+  /** `id`'s bucket, refilled to now. */
+  #bucket(id: string, rate: { readonly perSecond: number; readonly burst: number }): { tokens: number; at: number } {
     const now = this.#now();
-    let b = this.#buckets.get(owner);
+    let b = this.#buckets.get(id);
     if (b === undefined) {
-      b = { tokens: MINT_RATE.burst, at: now };
-      this.#buckets.set(owner, b);
+      b = { tokens: rate.burst, at: now };
+      this.#buckets.set(id, b);
       if (this.#buckets.size > MAX_BUCKETS) this.#buckets.delete(this.#buckets.keys().next().value!);
     }
-    b.tokens = Math.min(MINT_RATE.burst, b.tokens + ((now - b.at) / 1000) * MINT_RATE.perSecond);
+    b.tokens = Math.min(rate.burst, b.tokens + ((now - b.at) / 1000) * rate.perSecond);
     b.at = now;
+    return b;
+  }
+
+  /** Whether `id`'s bucket holds a token, taking none. */
+  #peek(id: string, rate: { readonly perSecond: number; readonly burst: number }): boolean {
+    return this.#bucket(id, rate).tokens >= 1;
+  }
+
+  /** One mint from `id`'s bucket. */
+  #take(id: string, rate: { readonly perSecond: number; readonly burst: number }): boolean {
+    const b = this.#bucket(id, rate);
     if (b.tokens < 1) return false;
     b.tokens -= 1;
     return true;
@@ -87,12 +127,17 @@ export class Tickets {
 
   /** The principal of a live `ticket`, which is used up; `undefined` for an unknown or expired one. */
   take(ticket: string): Principal | undefined {
+    return this.redeem(ticket)?.principal;
+  }
+
+  /** `take`, with the owner the ticket was minted by (the WebSocket caps count per owner). */
+  redeem(ticket: string): Redeemed | undefined {
     if (!TICKET_SHAPE.test(ticket)) return undefined;
     const key = digest(ticket);
     const entry = this.#live.get(key);
     if (entry === undefined) return undefined;
     this.#live.delete(key);
-    return entry.expiresAt > this.#now() ? entry.principal : undefined;
+    return entry.expiresAt > this.#now() ? { principal: entry.principal, owner: entry.owner } : undefined;
   }
 
   /** Drops the tickets of the principals `pred` selects (a credential revoked). */

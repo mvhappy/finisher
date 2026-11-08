@@ -17,10 +17,9 @@
 import {
   type FinError,
   type FinRpcTag,
-  HUMAN_ONLY,
+  needsConfirmation,
   PUBLIC_RPCS,
   type Principal,
-  requiredScopes,
   type RuleFacts,
   ruleOf,
   STREAM_RPCS,
@@ -29,6 +28,7 @@ import type { WriteGuard } from "@finisher/core-types";
 import { Effect, Stream } from "effect";
 import { answerChallenge, confirmationRequired } from "../auth/challenges.ts";
 import { unauthenticated } from "../auth/handshake.ts";
+import { credentialRevoked } from "../auth/revoke.ts";
 import type { Connections, Transport } from "../connections.ts";
 import type { Audit } from "../control/audit.ts";
 import { ulid } from "../control/ulid.ts";
@@ -91,6 +91,7 @@ type Handler = (payload: unknown, options: { readonly client: { readonly id: num
 /** The codes stages 2–5 refuse with, audited as `auth.denied` with the rule that refused. */
 const DENIALS = new Map<string, string>([
   ["UNAUTHENTICATED", "authenticate"],
+  ["CREDENTIAL_REVOKED", "revoked"],
   ["HUMAN_ONLY", "humanOnly"],
   ["SCOPE_DENIED", "scopes"],
   ["PROJECT_NOT_FOUND", "reach"],
@@ -135,6 +136,8 @@ export function withChain<H extends object>(handlers: H, deps: ChainDeps): H {
     const principal = deps.connections.principalOf(clientId);
     const rule = ruleOf(tag);
     const stages = Effect.gen(function* () {
+      // A credential revoked after this connection proved it (or took its ticket) runs nothing (M3).
+      if (deps.connections.revoked(clientId)) return yield* Effect.fail(credentialRevoked());
       if (!PUBLIC_RPCS.has(tag) && principal.kind === "anonymous") return yield* Effect.fail(unauthenticated("unproved"));
       const resolved = yield* resolve(rule, payload, deps.projects);
       yield* authorize(tag, principal, payload, resolved, deps.projects);
@@ -146,7 +149,8 @@ export function withChain<H extends object>(handlers: H, deps: ChainDeps): H {
         return yield* Effect.fail(approvalRequired(tag, approvalId, outcome.ask.reason));
       }
       // Last, so that a typed code is used up only by a call that goes ahead.
-      if (rule.confirm === true && principal.kind === "console" && requiredScopes(tag, payload, resolved.facts).some((s) => HUMAN_ONLY.has(s))) {
+      // Every call that needs a human-only scope is confirmed, unless its rule opts out (L2).
+      if (principal.kind === "console" && needsConfirmation(tag, payload, resolved.facts)) {
         const refusal = answerChallenge(deps.connections.get(clientId), (payload as { challenge?: unknown } | null)?.challenge);
         if (refusal !== undefined) return yield* Effect.fail(confirmationRequired(tag, refusal));
       }

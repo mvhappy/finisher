@@ -126,4 +126,26 @@ mod unix {
         refused(&root.join("up").join("secret.png"));
         assert_eq!(probe(&link).unwrap().image.unwrap().width, 64);
     }
+
+    /// The root is opened without following it (review of Task 7, L3): a root swapped for a
+    /// symlink after the server canonicalised it is refused, even to a folder holding the file.
+    #[test]
+    fn a_symlinked_root_is_refused() {
+        use std::os::unix::fs::symlink;
+        let (_t, root) = setup();
+        let swapped = root.parent().unwrap().join("swapped");
+        symlink(&root, &swapped).unwrap();
+        let file = swapped.join("workspace").join("clip.png");
+        let err = probe_beneath(&swapped, &file).unwrap_err();
+        assert_eq!(err.code, "PATH_NOT_ALLOWED", "{err:?}");
+        assert_eq!(err.details["reason"], "symlink");
+        assert_eq!(
+            probe_beneath(&root, &root.join("workspace").join("clip.png"))
+                .unwrap()
+                .image
+                .unwrap()
+                .width,
+            64
+        );
+    }
 }

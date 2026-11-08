@@ -45,8 +45,14 @@ export const RECORD_KINDS: Readonly<Partial<Record<Source, ReadonlyArray<string>
   ui: [],
 };
 
-/** 50 events/s per principal, burst 200, shared by every connection of the principal. */
+/**
+ * 50 events/s, burst 200, per principal (shared by its connections), and for `local` per
+ * connection: every `fin` is `local`, so one looping client must not silence the others
+ * (review of Task 7, M1). `local` as a whole has `LOCAL_RECORD_RATE` above that.
+ */
 export const RECORD_RATE = { perSecond: 50, burst: 200 } as const;
+/** Every `local` connection together. */
+export const LOCAL_RECORD_RATE = { perSecond: 200, burst: 800 } as const;
 /** Principals with a rate-limit bucket at once; past it the least recently created goes. */
 export const MAX_BUCKETS = 1024;
 /** A `diagnostics.record` payload over this many bytes is refused `EVENT_TOO_LARGE`. */
@@ -115,9 +121,12 @@ export function actorFor(p: Principal, headers: unknown): CallMeta {
   }
 }
 
-/** The rate-limit key of a principal: `local`, `console`, `<kind>:<id>` for the others. */
-export function principalKey(p: Principal): string {
-  return p.kind === "local" || p.kind === "console" ? p.kind : `${p.kind}:${p.id}`;
+/**
+ * The rate-limit key of a principal's call: `local:<connection>` (per connection), `console`,
+ * `<kind>:<id>` for the others.
+ */
+export function principalKey(p: Principal, connection: string): string {
+  return p.kind === "local" ? `local:${connection}` : p.kind === "console" ? p.kind : `${p.kind}:${p.id}`;
 }
 
 /** A token bucket: `take()` is false once the burst is spent until the rate refills it. */
@@ -134,13 +143,21 @@ export class TokenBucket {
     this.#tokens = burst;
     this.#at = now();
   }
+  /** Whether a token is there now, taking none. */
+  peek(): boolean {
+    this.#refill();
+    return this.#tokens >= 1;
+  }
   take(): boolean {
-    const t = this.now();
-    this.#tokens = Math.min(this.burst, this.#tokens + ((t - this.#at) / 1000) * this.perSecond);
-    this.#at = t;
+    this.#refill();
     if (this.#tokens < 1) return false;
     this.#tokens -= 1;
     return true;
+  }
+  #refill(): void {
+    const t = this.now();
+    this.#tokens = Math.min(this.burst, this.#tokens + ((t - this.#at) / 1000) * this.perSecond);
+    this.#at = t;
   }
 }
 
@@ -365,10 +382,11 @@ export function makeDiagnostics(serverData: string, options: DiagnosticsOptions 
     );
 
     const now = options.now ?? (() => performance.now());
-    // One bucket per principal (`principalKey`), the newest MAX_BUCKETS kept.
+    // One bucket per key (`principalKey`), the newest MAX_BUCKETS kept; `local` as a whole has
+    // its own, kept apart from the per-key map so that it is never evicted.
     const buckets = new Map<string, TokenBucket>();
-    const bucketOf = (p: Principal) => {
-      const key = principalKey(p);
+    const localBucket = new TokenBucket(LOCAL_RECORD_RATE.perSecond, LOCAL_RECORD_RATE.burst, now);
+    const bucketOf = (key: string) => {
       let b = buckets.get(key);
       if (b === undefined) {
         b = new TokenBucket(RECORD_RATE.perSecond, RECORD_RATE.burst, now);
@@ -377,6 +395,9 @@ export function makeDiagnostics(serverData: string, options: DiagnosticsOptions 
       }
       return b;
     };
+    /** One event from the call's buckets (`local`: the whole first, so a refusal costs the connection nothing). */
+    const admit = (p: Principal, connection: string) =>
+      p.kind === "local" ? localBucket.peek() && bucketOf(principalKey(p, connection)).take() && localBucket.take() : bucketOf(principalKey(p, connection)).take();
     let rateLimited = 0;
     // One run id per connection (`fin` makes one connection per run), the newest 1024 kept.
     const sessions = new Map<string, string>();
@@ -418,7 +439,7 @@ export function makeDiagnostics(serverData: string, options: DiagnosticsOptions 
             );
           }
           if (!journal.enabled) return { recorded: false };
-          if (!bucketOf(principal).take()) {
+          if (!admit(principal, connection)) {
             rateLimited += 1;
             return { recorded: false };
           }

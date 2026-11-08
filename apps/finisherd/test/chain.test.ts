@@ -14,7 +14,7 @@ import { type ChainDeps, chainOf, type PolicyRule, withChain, writeGuardOf } fro
 import { confirmationRequired, issueChallenge } from "../src/auth/challenges.ts";
 import { approvalRequired, branchNotAllowed, consentUiOnly, humanOnlyFixes, pathNotAllowed, scopeDenied } from "../src/chain/fixes.ts";
 import { canonicalPath, type ChainProjects, PROJECT_FILE_MAX, projectIdIn } from "../src/chain/resolve.ts";
-import { Connections } from "../src/connections.ts";
+import { ConnectionRegistry, Connections } from "../src/connections.ts";
 import { probeFor } from "../src/probe.ts";
 import type { Audit, AuditInput } from "../src/control/audit.ts";
 import { ANONYMOUS, CONSOLE, LOCAL } from "../src/principal.ts";
@@ -483,5 +483,26 @@ describe("review of Task 5", () => {
     await h.stream("ops.subscribe", { projectId: A, branch: "main", fromRev: 0 });
     await h.call("tx.commit", commit("main"));
     expect(counted).toEqual(["ops.subscribe:SCOPE_DENIED", "tx.commit:SCOPE_DENIED"]);
+  });
+});
+
+describe("revocation (review of Task 7, M3)", () => {
+  test("a request on a connection whose credential was revoked is CREDENTIAL_REVOKED", async () => {
+    const registry = new ConnectionRegistry();
+    const connections = registry.add(new Connections("socket", () => "/sd/run/fin.sock"));
+    const me = agent({ scopes: ["server.read"] });
+    connections.attach(1, { close() {}, closeAfterReply() {}, terminate() {} }, me);
+    const audited: AuditInput[] = [];
+    const reached: string[] = [];
+    const chained = withChain(
+      { "fonts.status": () => Effect.sync(() => void reached.push("fonts.status")) },
+      { connections, projects, audit: { append: (e: AuditInput) => audited.push(e) } as unknown as Audit },
+    ) as unknown as Record<string, (p: unknown, o: unknown) => Effect.Effect<unknown, FinError>>;
+    const call = () => Effect.runPromiseExit(chained["fonts.status"]!({}, { client: { id: 1 }, headers: {} }));
+    expect(code(await call())).toBeUndefined();
+    registry.revoke(me);
+    expect(code(await call())).toBe("CREDENTIAL_REVOKED");
+    expect(reached).toEqual(["fonts.status"]);
+    expect(audited.at(-1)).toMatchObject({ kind: "auth.denied", code: "CREDENTIAL_REVOKED", details: { rule: "revoked" } });
   });
 });

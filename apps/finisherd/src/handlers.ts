@@ -85,7 +85,7 @@ export const HandlersLive = FinRpcs.toLayer(
           Effect.try({ try: () => {
             const principal = principalOf(options);
             // `TICKET_LIMIT` past the principal's mint rate or the global cap.
-            const minted = tickets.mint(principal, ttlS);
+            const minted = tickets.mint(principal, ttlS, `${connections.transport}:${options.client.id}`);
             audit.append({
               kind: "auth.ticket",
               principal: { kind: principal.kind, id: principal.id },
@@ -200,8 +200,9 @@ export const HandlersLive = FinRpcs.toLayer(
         guard("fonts.fetch", Effect.andThen(req.pinned === undefined ? Effect.void : registry.ensure(req.pinned), fonts.fetch(req))),
       "fonts.plan": ({ projectId, branch, ops }) => guard("fonts.plan", registry.fontsPlan(projectId, branch, ops)),
       "diagnostics.status": () => guard("diagnostics.status", diagnostics.status()),
-      // A caller that is not a person gets content removed (Decision 22); `content: true` is human-only.
-      "diagnostics.export": (req, options) => guard("diagnostics.export", diagnostics.export(req, !principalOf(options).human)),
+      // Content only on explicit request (`content: true`, human-only); otherwise, and for a caller
+      // that is not a person, it is removed (Decision 22; owner decision, review of Task 7 L4).
+      "diagnostics.export": (req, options) => guard("diagnostics.export", diagnostics.export(req, !principalOf(options).human || req.content !== true)),
       "diagnostics.purge": ({ selector }, options) =>
         guard(
           "diagnostics.purge",

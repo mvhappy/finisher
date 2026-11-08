@@ -13,6 +13,13 @@
 // `ws` runs in `noServer` mode behind our own `node:http` server on `127.0.0.1:0`, so the
 // upgrade request is ours; each accepted socket carries its ticket's principal
 // (`UpgradePrincipal`) into the protocol (`protocol.ts`).
+//
+// Limits (review of Task 7, M2): sockets that have not upgraded are capped on their own
+// (`MAX_UNAUTHENTICATED`) and closed if they do not upgrade within the header timeout, so a
+// loopback slowloris cannot use up the WebSockets' room; WebSockets are capped per ticket owner
+// (`MAX_WS_PER_OWNER`: a credential, or one `local` connection), for `local` as a whole and in
+// all, with `RESERVED_WS` of them only for `device` and `console` principals (the app and the
+// owner), so a principal minting tickets cannot lock out the UI.
 import { createServer, type IncomingMessage, type Server } from "node:http";
 import type { Duplex } from "node:stream";
 import { PROTOCOL_VERSION, WS_PROTOCOL_PREFIX, WS_TICKET_PREFIX } from "@finisher/contracts";
@@ -22,16 +29,17 @@ import * as Socket from "effect/socket/Socket";
 import { SocketServer, SocketServerError, SocketServerOpenError } from "effect/socket/SocketServer";
 import { WebSocketServer, type WebSocket } from "ws";
 import type { Principal } from "./principal.ts";
-import type { Tickets } from "./auth/tickets.ts";
+import { principalKeyOf, type Tickets } from "./auth/tickets.ts";
 
 export const RPC_PATH = "/rpc";
 export const WS_PROTOCOL = `${WS_PROTOCOL_PREFIX}${PROTOCOL_VERSION}` as const;
 
-export type UpgradeFailure = "badPath" | "badVersion" | "badHost" | "badOrigin" | "noTicket" | "badTicket";
+export type UpgradeFailure = "badPath" | "badVersion" | "badHost" | "badOrigin" | "noTicket" | "badTicket" | "tooMany";
 
 export type UpgradeResult =
-  | { ok: true; principal: Principal; protocol: typeof WS_PROTOCOL }
-  | { ok: false; status: 401 | 403 | 404 | 426; reason: UpgradeFailure; body?: unknown };
+  /** `owner`: who minted the ticket (`ownerOf` in `tickets.ts`), for the per-owner cap. */
+  | { ok: true; principal: Principal; owner: string; protocol: typeof WS_PROTOCOL }
+  | { ok: false; status: 401 | 403 | 404 | 426 | 503; reason: UpgradeFailure; body?: unknown };
 
 export interface UpgradeCheckOptions {
   /** The port the server is bound to (known once it listens). */
@@ -91,16 +99,22 @@ export function makeUpgradeCheck(opts: UpgradeCheckOptions): (req: Pick<Incoming
     }
     const tickets = protocols.filter((p) => p.startsWith(WS_TICKET_PREFIX));
     if (tickets.length !== 1) return { ok: false, status: 401, reason: "noTicket" };
-    const principal = opts.tickets.take(tickets[0]!.slice(WS_TICKET_PREFIX.length));
-    if (principal === undefined) return { ok: false, status: 401, reason: "badTicket" };
-    return { ok: true, principal, protocol: WS_PROTOCOL };
+    const redeemed = opts.tickets.redeem(tickets[0]!.slice(WS_TICKET_PREFIX.length));
+    if (redeemed === undefined) return { ok: false, status: 401, reason: "badTicket" };
+    return { ok: true, principal: redeemed.principal, owner: redeemed.owner, protocol: WS_PROTOCOL };
   };
 }
 
 /** The principal of the WebSocket a protocol connection runs on (its ticket's). */
 export class UpgradePrincipal extends Context.Service<UpgradePrincipal, Principal>()("finisherd/UpgradePrincipal") {}
 
-const STATUS_TEXT: Record<number, string> = { 401: "Unauthorized", 403: "Forbidden", 404: "Not Found", 426: "Upgrade Required" };
+const STATUS_TEXT: Record<number, string> = {
+  401: "Unauthorized",
+  403: "Forbidden",
+  404: "Not Found",
+  426: "Upgrade Required",
+  503: "Service Unavailable",
+};
 
 /** Writes a plain HTTP refusal on a socket that asked to upgrade, then ends it. */
 function refuse(socket: Duplex, status: number, body: unknown): void {
@@ -121,16 +135,74 @@ export interface WebSocketServerOptions {
   readonly onRefused?: (result: Extract<UpgradeResult, { ok: false }>) => void;
   readonly maxPayload: number;
   readonly host?: string;
-  /** How long a client may take to send its request headers (default `HEADERS_TIMEOUT_MS`). */
+  /** How long a client may take to upgrade, headers included (default `HEADERS_TIMEOUT_MS`). */
   readonly headersTimeoutMs?: number;
-  /** Open TCP connections at most, WebSockets included (default `MAX_HTTP_CONNECTIONS`). */
-  readonly maxConnections?: number;
+  /** Open sockets that have not upgraded at most (default `MAX_UNAUTHENTICATED`). */
+  readonly maxUnauthenticated?: number;
+  /** WebSockets at most, every principal together (default `MAX_WEBSOCKETS`). */
+  readonly maxWebSockets?: number;
 }
 
-/** Before authentication a client gets this long to send its headers (review of Task 6, finding 8). */
+/** Before authentication a client gets this long to upgrade (review of Task 6, finding 8). */
 export const HEADERS_TIMEOUT_MS = 10_000;
-/** Open connections to the loopback WebSocket listener at most: the UI and a few tools, never a flood. */
-export const MAX_HTTP_CONNECTIONS = 64;
+/** Open sockets that have not upgraded yet, at most: past it a new one is closed at once. */
+export const MAX_UNAUTHENTICATED = 16;
+/** WebSockets at most: the UI and a few tools, never a flood. */
+export const MAX_WEBSOCKETS = 64;
+/** Of `MAX_WEBSOCKETS`, the ones only `device` and `console` principals may take. */
+export const RESERVED_WS = 16;
+/** WebSockets per ticket owner (a credential, or one `local` connection). */
+export const MAX_WS_PER_OWNER = 8;
+/** WebSockets of `local` as a whole (every `fin` and tool of the user). */
+export const MAX_WS_LOCAL = 32;
+
+/** The principal kinds the reserved WebSockets are for. */
+const RESERVED_KINDS: ReadonlySet<string> = new Set(["device", "console"]);
+
+/**
+ * Live WebSockets by owner and by principal: `acquire` answers the release of a slot, or
+ * `undefined` when a cap is reached.
+ */
+export class WebSocketSlots {
+  readonly #byOwner = new Map<string, number>();
+  readonly #byPrincipal = new Map<string, number>();
+  #total = 0;
+  readonly #max: number;
+
+  constructor(max: number = MAX_WEBSOCKETS) {
+    this.#max = max;
+  }
+
+  acquire(principal: Principal, owner: string): (() => void) | undefined {
+    const key = principalKeyOf(principal);
+    const reserved = RESERVED_KINDS.has(principal.kind);
+    const room = reserved ? this.#max : Math.max(0, this.#max - RESERVED_WS);
+    if (this.#total >= room) return undefined;
+    if ((this.#byOwner.get(owner) ?? 0) >= MAX_WS_PER_OWNER) return undefined;
+    const perPrincipal = principal.kind === "local" ? MAX_WS_LOCAL : MAX_WS_PER_OWNER;
+    if ((this.#byPrincipal.get(key) ?? 0) >= perPrincipal) return undefined;
+    const bump = (m: Map<string, number>, k: string, d: number) => {
+      const n = (m.get(k) ?? 0) + d;
+      if (n === 0) m.delete(k);
+      else m.set(k, n);
+    };
+    bump(this.#byOwner, owner, 1);
+    bump(this.#byPrincipal, key, 1);
+    this.#total++;
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      bump(this.#byOwner, owner, -1);
+      bump(this.#byPrincipal, key, -1);
+      this.#total--;
+    };
+  }
+
+  get size(): number {
+    return this.#total;
+  }
+}
 
 /**
  * A `SocketServer` on `127.0.0.1:0` whose sockets passed `check`. `bind` reports the port once
@@ -143,9 +215,14 @@ export const makeTicketedWebSocketServer = (options: WebSocketServerOptions) =>
     const pending: Accepted[] = [];
     let onConnection = (a: Accepted) => void pending.push(a);
 
+    const timeout = options.headersTimeoutMs ?? HEADERS_TIMEOUT_MS;
+    const maxUnauthenticated = options.maxUnauthenticated ?? MAX_UNAUTHENTICATED;
+    const maxWebSockets = options.maxWebSockets ?? MAX_WEBSOCKETS;
+    const slots = new WebSocketSlots(maxWebSockets);
+    /** Sockets that have not upgraded, with what marks one upgraded (it stops counting). */
+    const unauthenticated = new Map<Duplex, () => void>();
     const http: Server = yield* Effect.acquireRelease(
       Effect.sync(() => {
-        const timeout = options.headersTimeoutMs ?? HEADERS_TIMEOUT_MS;
         // Slow or idle clients before the upgrade are cut off (checked every second); the
         // connection count bounds the rest.
         const server = createServer({ headersTimeout: timeout, requestTimeout: timeout, connectionsCheckingInterval: 1000 }, (req, res) => {
@@ -154,7 +231,8 @@ export const makeTicketedWebSocketServer = (options: WebSocketServerOptions) =>
           res.writeHead(status, { "content-type": "application/json", connection: "close" });
           res.end(status === 426 ? JSON.stringify({ protocol: { min: PROTOCOL_VERSION, max: PROTOCOL_VERSION } }) : "");
         });
-        server.maxConnections = options.maxConnections ?? MAX_HTTP_CONNECTIONS;
+        // A backstop only: the caps below decide first.
+        server.maxConnections = maxUnauthenticated + maxWebSockets;
         return server;
       }),
       (server) =>
@@ -166,6 +244,22 @@ export const makeTicketedWebSocketServer = (options: WebSocketServerOptions) =>
           server.close(() => resume(Effect.void));
         }),
     );
+    // Every socket starts unauthenticated: capped on its own, and closed unless it upgrades in
+    // time, whether it sends half a request or nothing at all.
+    http.on("connection", (socket: Duplex) => {
+      if (unauthenticated.size >= maxUnauthenticated) {
+        socket.destroy();
+        return;
+      }
+      const timer = setTimeout(() => socket.destroy(), timeout);
+      timer.unref();
+      const upgraded = () => {
+        clearTimeout(timer);
+        unauthenticated.delete(socket);
+      };
+      unauthenticated.set(socket, upgraded);
+      socket.once("close", upgraded);
+    });
     http.on("upgrade", (req: IncomingMessage, socket: Duplex, head: Buffer) => {
       socket.on("error", () => socket.destroy());
       let result: UpgradeResult;
@@ -180,6 +274,15 @@ export const makeTicketedWebSocketServer = (options: WebSocketServerOptions) =>
         return;
       }
       const { principal } = result;
+      const release = slots.acquire(principal, result.owner);
+      if (release === undefined) {
+        const tooMany = { ok: false, status: 503, reason: "tooMany" } as const;
+        options.onRefused?.(tooMany);
+        refuse(socket, tooMany.status, undefined);
+        return;
+      }
+      socket.once("close", release);
+      unauthenticated.get(socket)?.();
       wss.handleUpgrade(req, socket, head, (conn) => {
         // Paused until a handler reads it, so nothing is dropped.
         conn.pause();

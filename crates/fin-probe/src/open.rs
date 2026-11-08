@@ -153,8 +153,19 @@ mod sys {
     pub(super) fn open_beneath(root: &Path, rel: &Path) -> Result<File, Refused> {
         let dir = OpenOptions::new()
             .read(true)
-            .custom_flags(libc::O_DIRECTORY | libc::O_NONBLOCK)
-            .open(root)?;
+            // The root itself is not followed either (review of Task 7, L3): callers pass it
+            // canonical, so a symlink there was swapped in after their check.
+            .custom_flags(libc::O_DIRECTORY | libc::O_NONBLOCK | libc::O_NOFOLLOW)
+            .open(root)
+            .map_err(|e| match e.raw_os_error() {
+                // `O_DIRECTORY | O_NOFOLLOW` on a symlink is `ENOTDIR` on Linux, `ELOOP` elsewhere.
+                Some(libc::ENOTDIR)
+                    if std::fs::symlink_metadata(root).is_ok_and(|m| m.is_symlink()) =>
+                {
+                    Refused::Outside("symlink")
+                }
+                _ => refused(e),
+            })?;
         #[cfg(target_os = "linux")]
         match openat2(&dir, rel) {
             // No openat2 here: the walk decides the same.
@@ -267,10 +278,14 @@ mod sys {
 
     pub(super) fn open_beneath(root: &Path, rel: &Path) -> Result<File, Refused> {
         let flags = FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS;
+        // The root itself is not followed either (review of Task 7, L3).
         let dir = OpenOptions::new()
             .read(true)
-            .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
+            .custom_flags(flags)
             .open(root)?;
+        if dir.metadata()?.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+            return Err(Refused::Outside("symlink"));
+        }
         let file = OpenOptions::new()
             .read(true)
             .custom_flags(flags)

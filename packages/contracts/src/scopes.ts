@@ -100,11 +100,14 @@ export interface RuleOf<T extends FinRpcTag> {
    */
   readonly author?: string;
   /**
-   * A mutating operation: whenever the call needs a human-only scope, a `console` principal
-   * must send the typed code of a fresh `console.challenge` of the same connection
-   * (`challenge`; Decision 30), or it is `CONFIRMATION_REQUIRED`.
+   * Whenever a call needs a human-only scope, a `console` principal must send the typed code
+   * of a fresh `console.challenge` of the same connection (`challenge`; Decision 30), or it is
+   * `CONFIRMATION_REQUIRED`: on by default (owner decision, review of Task 7, L2). A rule opts
+   * out only as `readOnly` (it changes nothing: reading content, asking for a code, listing the
+   * audit) or `service` (`server.stop`, which service managers call without a terminal, spec
+   * §4.7).
    */
-  readonly confirm?: true;
+  readonly unconfirmed?: "readOnly" | "service";
   /**
    * True for a payload only a `device` may send (the app's onboarding question: training on).
    * Every other principal is `CONSENT_UI_ONLY`, before the human-only check (Decision 21).
@@ -120,7 +123,7 @@ export interface RpcRule {
   readonly writes?: ReadonlyArray<string>;
   readonly targets?: ReadonlyArray<string>;
   readonly author?: string;
-  readonly confirm?: true;
+  readonly unconfirmed?: "readOnly" | "service";
   readonly deviceOnly?: (payload: never) => boolean;
 }
 
@@ -140,14 +143,13 @@ export const RPC_SCOPES: { readonly [T in FinRpcTag]: RuleOf<T> } = {
   // No id: a credential can revoke only itself.
   "auth.revokeSelf": { scopes: ["server.read"] },
   // The console's typed confirmations (Decision 30); the handler serves `console` principals only.
-  "console.challenge": { scopes: ["auth.admin"] },
+  "console.challenge": { scopes: ["auth.admin"], unconfirmed: "readOnly" },
   "project.create": { scopes: ["project.create"], resolve: ["createDir"] },
   // Attaching to a project already open here only reads it; loading one may take its lease.
   "project.open": {
     scopes: ["project.read"],
     resolve: ["openDir"],
     escalate: (p, facts) => [...(facts.attached === true ? [] : (["project.write"] as const)), ...(p.relocate === true ? (["project.confirm"] as const) : [])],
-    confirm: true,
   },
   // Protocol 2: the probe is for `projectId`, and a principal with roots probes only inside its folder.
   "asset.probe": { scopes: ["project.write"], resolve: ["project", "probePath"] },
@@ -155,7 +157,7 @@ export const RPC_SCOPES: { readonly [T in FinRpcTag]: RuleOf<T> } = {
   "snapshot.get": { scopes: ["project.read"], resolve: BRANCH },
   "ops.subscribe": { scopes: ["project.read"], resolve: BRANCH },
   "project.status": { scopes: ["project.read"], resolve: PROJECT },
-  "project.takeover": { scopes: ["project.admin"], resolve: PROJECT, escalate: (p) => (p.confirm ? ["project.confirm"] : []), confirm: true },
+  "project.takeover": { scopes: ["project.admin"], resolve: PROJECT, escalate: (p) => (p.confirm ? ["project.confirm"] : []) },
   "project.verify": { scopes: ["project.read"], resolve: PROJECT },
   "project.rebuild": { scopes: ["project.admin"], resolve: PROJECT },
   "project.compact": { scopes: ["project.admin"], resolve: PROJECT },
@@ -184,19 +186,21 @@ export const RPC_SCOPES: { readonly [T in FinRpcTag]: RuleOf<T> } = {
   "fonts.plan": { scopes: ["project.read"], resolve: BRANCH },
   "diagnostics.status": { scopes: ["diagnostics.read"] },
   // Redacted for a caller that is not a person; the content itself is human-only (Decision 22).
-  "diagnostics.export": { scopes: ["diagnostics.read"], escalate: (p) => (p.content === true ? ["diagnostics.admin"] : []) },
-  "diagnostics.purge": { scopes: ["diagnostics.admin"], confirm: true },
+  "diagnostics.export": {
+    scopes: ["diagnostics.read"],
+    escalate: (p) => (p.content === true ? ["diagnostics.admin"] : []),
+    unconfirmed: "readOnly",
+  },
+  "diagnostics.purge": { scopes: ["diagnostics.admin"] },
   // Setting `never` stays open; clearing it binds every collaborator.
   "diagnostics.project": {
     scopes: ["diagnostics.read"],
     resolve: PROJECT,
     escalate: (p) => (p.collect === "default" ? ["diagnostics.admin"] : []),
-    confirm: true,
   },
   // Every consent change needs a person; training on, the app's onboarding question alone.
   "diagnostics.consent": {
     scopes: ["diagnostics.admin"],
-    confirm: true,
     deviceOnly: (p) => p.purpose === "training" && p.value === "on",
   },
   "diagnostics.record": { scopes: ["diagnostics.record"] },
@@ -222,6 +226,14 @@ export function escalatedScopes(tag: FinRpcTag, payload: unknown, facts: RuleFac
   const r = ruleOf(tag);
   const more = [...(r.escalate?.(payload as never, facts) ?? []), ...(facts.reopens === true ? (["project.write"] as const) : [])];
   return [...new Set(more)].filter((s) => !r.scopes.includes(s));
+}
+
+/**
+ * Whether a `console` principal's call must carry its connection's typed code: it needs a
+ * human-only scope and its rule does not opt out (`unconfirmed`).
+ */
+export function needsConfirmation(tag: FinRpcTag, payload: unknown, facts: RuleFacts = {}): boolean {
+  return ruleOf(tag).unconfirmed === undefined && requiredScopes(tag, payload, facts).some((s) => HUMAN_ONLY.has(s));
 }
 
 /** Every scope `tag` needs for `payload`, given the resolved `facts`. */

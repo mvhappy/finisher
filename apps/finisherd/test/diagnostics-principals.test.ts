@@ -14,7 +14,7 @@ import { withChain } from "../src/chain/chain.ts";
 import type { ChainProjects } from "../src/chain/resolve.ts";
 import { settingsPath } from "../src/config.ts";
 import { Connections } from "../src/connections.ts";
-import { actorFor, makeDiagnostics, RECORD_RATE, sourceOf } from "../src/diagnostics.ts";
+import { actorFor, LOCAL_RECORD_RATE, makeDiagnostics, RECORD_RATE, sourceOf } from "../src/diagnostics.ts";
 import { CONSOLE, LOCAL } from "../src/principal.ts";
 import { confirmed, connectProved, type Exit as RpcExit, NdjsonClient, ok, type RunningServer, startServer } from "./support/ndjson-client.ts";
 import { connectWs } from "./support/ws-client.ts";
@@ -148,21 +148,41 @@ describe("sources and actors", () => {
 
   test("rate_limit_is_per_principal", async () => {
     await inProcess(async (d) => {
-      const spend = async (principal: Principal, n: number) => {
+      const spend = async (principal: Principal, n: number, connection = "socket:1") => {
         let recorded = 0;
         for (let i = 0; i < n; i++) {
-          const r = await Effect.runPromise(d.record({ principal, connection: `socket:${i}` }, { kind: "cli.command", kv: 1, payload: cli(String(i)) }, {}));
+          const r = await Effect.runPromise(d.record({ principal, connection }, { kind: "cli.command", kv: 1, payload: cli(String(i)) }, {}));
           if (r.recorded) recorded++;
         }
         return recorded;
       };
       // The clock is frozen: each principal has its own burst, shared by its connections.
-      expect(await spend(LOCAL, RECORD_RATE.burst + 10)).toBe(RECORD_RATE.burst);
-      expect(await spend(LOCAL, 5)).toBe(0);
-      expect(await spend(mcp("01JC0000000000000000000MCA"), 5)).toBe(5);
+      expect(await spend(mcp("01JC0000000000000000000MCA"), RECORD_RATE.burst + 10)).toBe(RECORD_RATE.burst);
+      expect(await spend(mcp("01JC0000000000000000000MCA"), 5, "socket:2")).toBe(0);
       expect(await spend(mcp("01JC0000000000000000000MCB"), 5)).toBe(5);
       expect(await spend(agent(), 5)).toBe(5);
       expect(d.rateLimited()).toBe(15);
+    });
+  });
+
+  test("local is limited per connection, under a cap for local as a whole (review of Task 7, M1)", async () => {
+    await inProcess(async (d) => {
+      const spend = async (connection: string, n: number) => {
+        let recorded = 0;
+        for (let i = 0; i < n; i++) {
+          const r = await Effect.runPromise(d.record({ principal: LOCAL, connection }, { kind: "cli.command", kv: 1, payload: cli(String(i)) }, {}));
+          if (r.recorded) recorded++;
+        }
+        return recorded;
+      };
+      // One looping `fin` spends its own burst; another `fin` still records.
+      expect(await spend("socket:1", RECORD_RATE.burst + 10)).toBe(RECORD_RATE.burst);
+      expect(await spend("socket:1", 5)).toBe(0);
+      expect(await spend("socket:2", 5)).toBe(5);
+      // Every `local` connection together stops at LOCAL_RECORD_RATE's burst.
+      let total = RECORD_RATE.burst + 5;
+      for (let c = 3; c < 20; c++) total += await spend(`socket:${c}`, RECORD_RATE.burst);
+      expect(total).toBe(LOCAL_RECORD_RATE.burst);
     });
   });
 
@@ -281,9 +301,13 @@ describe("human-only diagnostics", () => {
     expect(find(redacted).payload).not.toHaveProperty("message");
     expect(find(redacted).payload).toHaveProperty("messageHash");
     expect(JSON.stringify(redacted)).not.toContain("secret caption");
-    // A person sees what was stored.
+    // A person sees what was stored, but only when asking for content (owner decision, review
+    // of Task 7, L4): an export without `content: true` is redacted for a person too.
     const person = await client("console");
-    const full = await exported(person, { kinds: ["error.panic"] });
+    const plain = await exported(person, { kinds: ["error.panic"] });
+    expect(plain.redacted).toBe(true);
+    expect(JSON.stringify(plain)).not.toContain("secret caption");
+    const full = await exported(person, { kinds: ["error.panic"] }, { content: true });
     expect(full.redacted).toBeUndefined();
     expect(JSON.stringify(find(full).payload)).toContain("secret caption");
   });

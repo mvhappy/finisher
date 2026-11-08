@@ -1,7 +1,13 @@
 import { expect, test } from "vitest";
 import { defaultScopes } from "./auth.ts";
 import { FinRpcs } from "./rpc.ts";
-import { HUMAN_ONLY, RPC_SCOPES, requiredScopes, type ResolverName, ruleOf, SCOPES, WRITE_RPCS } from "./scopes.ts";
+import { HUMAN_ONLY, needsConfirmation, RPC_SCOPES, requiredScopes, type ResolverName, ruleOf, SCOPES, WRITE_RPCS } from "./scopes.ts";
+
+/** The rules that opt out of the typed confirmation, and why. */
+const OPTED_OUT: Record<string, "readOnly" | "service"> = {
+  "console.challenge": "readOnly",
+  "diagnostics.export": "readOnly",
+};
 
 /** The resolver a payload field needs (spec §4.4 stage 3). */
 const NEEDS: Record<string, ResolverName> = {
@@ -59,16 +65,33 @@ test("diagnostics_admin_guards_consent_purge_project_default_and_content (5A Tas
   expect(Object.keys(RPC_SCOPES).filter((t) => ruleOf(t as keyof typeof RPC_SCOPES).deviceOnly !== undefined)).toEqual(["diagnostics.consent"]);
 });
 
-test("confirm_marks_the_mutating_human_only_rpcs (Decision 30)", () => {
-  const confirmed = Object.keys(RPC_SCOPES).filter((t) => ruleOf(t as keyof typeof RPC_SCOPES).confirm === true);
-  expect(confirmed.sort()).toEqual(["diagnostics.consent", "diagnostics.project", "diagnostics.purge", "project.open", "project.takeover"]);
-  // Each takes the typed code; reading content and asking for a code need none.
+/** The payloads that escalate to a human-only scope (each rule's escalations, by hand). */
+const ESCALATING: Array<[keyof typeof RPC_SCOPES, unknown]> = [
+  ["project.open", { dir: "/d", relocate: true }],
+  ["project.takeover", { projectId: "p", confirm: true }],
+  ["diagnostics.project", { projectId: "p", collect: "default" }],
+  ["diagnostics.export", { content: true }],
+];
+
+test("confirmation_is_on_by_default_for_human_only_calls (Decision 30, review of Task 7 L2)", () => {
+  const tags = Object.keys(RPC_SCOPES) as Array<keyof typeof RPC_SCOPES>;
+  const human = (t: keyof typeof RPC_SCOPES, p: unknown = {}) => requiredScopes(t, p).some((s) => HUMAN_ONLY.has(s));
+  const needsHuman = tags.filter((t) => human(t) || ESCALATING.some(([e, p]) => e === t && human(t, p)));
+  const optedOut = needsHuman.filter((t) => ruleOf(t).unconfirmed !== undefined);
+  const confirmed = needsHuman.filter((t) => ruleOf(t).unconfirmed === undefined);
+  // The opt-outs change nothing (or are the service stop): each is named here on purpose.
+  expect(Object.fromEntries(optedOut.map((t) => [t, ruleOf(t).unconfirmed]))).toEqual(OPTED_OUT);
+  // Every other human-only call takes the typed code, and asks for it through the rule.
   for (const tag of confirmed) {
     const rpc = FinRpcs.requests.get(tag) as unknown as { payloadSchema: { fields?: Record<string, unknown> } };
     expect(Object.keys(rpc.payloadSchema.fields ?? {}), tag).toContain("challenge");
+    const payload = ESCALATING.find(([e]) => e === tag)?.[1] ?? {};
+    expect(needsConfirmation(tag, payload), tag).toBe(true);
   }
-  expect(ruleOf("diagnostics.export").confirm).toBeUndefined();
-  expect(ruleOf("console.challenge").confirm).toBeUndefined();
+  expect(confirmed.length).toBeGreaterThan(0);
+  // A call that needs no human-only scope never needs a code.
+  expect(needsConfirmation("project.takeover", { projectId: "p", confirm: false })).toBe(false);
+  expect(needsConfirmation("diagnostics.export", { content: true })).toBe(false);
 });
 
 test("defaults_follow_owner_decision_5", () => {

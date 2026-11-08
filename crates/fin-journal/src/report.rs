@@ -43,13 +43,18 @@ pub struct ExportPage {
 
 impl ExportPage {
     /// Removes every content field, as the diagnostics-only upload view does (a training-only
-    /// kind keeps its metadata part), and marks the page `redacted`.
+    /// kind keeps its metadata part), and marks the page `redacted`. An entry of a kind (or
+    /// kind version) this build does not know is dropped, as the upload view drops it: its
+    /// content fields are unknown, so nothing of it can be shown safely (review of Task 7, L5).
     pub fn redact(&mut self) {
-        for e in &mut self.lines {
-            if let Some(spec) = kind(e.kind.as_str(), e.kv) {
-                redact(spec, &mut e.payload, Purposes::DIAGNOSTICS);
-            }
-        }
+        self.lines
+            .retain_mut(|e| match kind(e.kind.as_str(), e.kv) {
+                Some(spec) => {
+                    redact(spec, &mut e.payload, Purposes::DIAGNOSTICS);
+                    true
+                }
+                None => false,
+            });
         self.redacted = true;
     }
 }

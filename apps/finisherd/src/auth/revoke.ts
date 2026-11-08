@@ -18,7 +18,7 @@ export interface RevocableRef {
 
 export interface RevokeDeps {
   readonly tickets: Pick<Tickets, "dropWhere">;
-  readonly connections: Pick<ConnectionRegistry, "closeWhere">;
+  readonly connections: Pick<ConnectionRegistry, "closeWhere" | "revoke">;
   readonly audit: Audit;
   /** Marks the credential revoked in the store; true when it was live (Task 9). */
   readonly revoke?: (ref: RevocableRef) => boolean;
@@ -53,14 +53,20 @@ const holds = (p: Principal, ref: RevocableRef) => p.kind === ref.kind && p.id =
 
 /** Revokes `ref`: the store, its tickets, its live connections (but `except`), audited once. */
 export function revokeCredential(deps: RevokeDeps, ref: RevocableRef, options: RevokeOptions): RevokeReport {
-  const revoked = deps.revoke?.(ref) ?? false;
+  const stored = deps.revoke?.(ref);
+  // Before the sweep: a connection registering or a request arriving from here on is refused
+  // even if it took its ticket or started before (review of Task 7, M3).
+  deps.connections.revoke(ref);
   const tickets = deps.tickets.dropWhere((p) => holds(p, ref));
   const except = options.except;
   const connections = deps.connections.closeWhere(
     (c) => holds(c.principal, ref) && !(except !== undefined && c.transport === except.transport && c.clientId === except.clientId),
     credentialRevoked(),
   );
-  if (revoked) {
+  // 5A has no credential store (Task 9 adds it): without one every revocation is audited, so
+  // `auth.revokeSelf` leaves a row; with one, only a credential that was live.
+  const revoked = stored ?? false;
+  if (stored !== false) {
     deps.audit.append({
       kind: options.reason === "expired" ? "credential.expire" : "credential.revoke",
       principal: { kind: ref.kind, id: ref.id },

@@ -72,7 +72,7 @@ export const serve = ({ serverData, onReady, registry, fonts, diagnostics: diagn
           // the cap reaches `protocol.ts`, which answers `FRAME_TOO_LARGE` first.
           maxPayload: MAX_FRAME + 64 * 1024,
           onRefused: (r) => {
-            if (r.reason === "badPath" || r.reason === "badVersion") return;
+            if (r.reason === "badPath" || r.reason === "badVersion" || r.reason === "tooMany") return;
             audit.append({
               kind: "auth.fail",
               principal: { kind: "anonymous", id: "" },

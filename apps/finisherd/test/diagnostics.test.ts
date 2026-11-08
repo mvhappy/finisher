@@ -366,16 +366,17 @@ describe("sources and diagnostics.record", () => {
     expect(!bad.ok && bad.error.code).toBe("EVENT_INVALID");
   });
 
-  test("record_rate_limited_per_principal_across_connections", async () => {
+  test("record_rate_limited_per_local_connection", async () => {
     await start();
     const [a, b] = [await client(), await client()];
     const recorded = async (c: NdjsonClient, n: number, tag: string) => {
       const rs = await Promise.all(Array.from({ length: n }, (_, i) => record(c, cli(`${tag}${i}`))));
       return rs.map((r) => ok<{ recorded: boolean }>(r).recorded).filter(Boolean).length;
     };
-    // The first connection spends the burst; the second shares the same bucket.
-    expect(await recorded(a, 200, "a")).toBeGreaterThanOrEqual(195);
-    expect(await recorded(b, 60, "b")).toBeLessThan(30);
+    // The first connection spends its burst; a second `fin` has its own (review of Task 7, M1:
+    // every `fin` is `local`, so one looping client must not silence the others).
+    expect(await recorded(a, 260, "a")).toBeLessThan(230);
+    expect(await recorded(b, 60, "b")).toBeGreaterThanOrEqual(55);
   });
 
   test("local_actor_from_headers_validates_actor", async () => {

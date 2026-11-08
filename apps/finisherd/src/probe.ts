@@ -23,9 +23,10 @@ export function probeFor(
   projectId: string | undefined,
   path: string,
 ): Effect.Effect<Probe, FinError> {
-  if (principal?.projects === "*") return attemptJson<Probe>(() => probe(path));
   return Effect.gen(function* () {
-    const roots = principal === undefined ? [] : ((yield* rootsOf(principal, deps, projectId)) ?? []);
+    // "Restricted" is decided by `rootsOf` alone, as the chain decides it (review of Task 7, L3).
+    const roots = principal === undefined ? [] : yield* rootsOf(principal, deps, projectId);
+    if (roots === undefined) return yield* attemptJson<Probe>(() => probe(path));
     // The innermost root that holds it (projects' folders may nest).
     const root = roots.filter((r) => inside(path, r)).sort((a, b) => b.length - a.length)[0];
     if (root === undefined) return yield* Effect.fail(pathNotAllowed(TAG, path));
