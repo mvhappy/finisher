@@ -559,6 +559,13 @@ export const testHooks = native.writeFixtureMp4ForTest
           throw toFinError(e);
         }
       },
+      treeHash(dir) {
+        try {
+          return native.treeHashForTest(dir);
+        } catch (e) {
+          throw toFinError(e);
+        }
+      },
       publishToRegistry(dir, keysDir, specJson) {
         try {
           native.publishToRegistryForTest(dir, keysDir, specJson);

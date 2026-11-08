@@ -23,8 +23,9 @@ import type { InstallPlan, InstalledPlugin } from "@finisher/core-types";
 import { Effect, Semaphore } from "effect";
 import { ulid } from "../control/ulid.ts";
 import { attempt, attemptJson, finError, toFinError } from "../errors.ts";
-import { autoUpdatable, baseOf, canonical, type PlanDeps, precheck, registryFor, stagePlan } from "./plans.ts";
+import { autoUpdatable, baseOf, canonical, installedPlugin, type PlanDeps, precheck, registryFor, stagePlan } from "./plans.ts";
 import { actorOf, type Asker } from "./registries.ts";
+import type { PlanRow } from "./tables.ts";
 
 /** A version a refresh revoked. */
 export type Revoked = RefreshApplied["revoked"][number];
@@ -45,6 +46,9 @@ export interface LifecycleDeps extends PlanDeps {
 
 /** How many suggestions one principal may have for one project (review M2). */
 export const MAX_SUGGESTIONS = 20;
+
+/** Who installs the plugins that come with Finisher. */
+export const BUNDLED_BY: Asker = { kind: "system", id: "bundled", human: false };
 
 const notInstalled = (id: string) => finError("PLUGIN_NOT_INSTALLED", `${id} is not installed`, { id }, "Check the plugin's id in the list of installed plugins.");
 
@@ -106,15 +110,26 @@ export function makeLifecycle(deps: LifecycleDeps) {
       if (row.registryId !== undefined && tables.rootOf(row.registryId) !== row.rootSha256) {
         return yield* Effect.fail(finError("PLAN_MISMATCH", `registry ${row.registryId} is not the registry the plan was made from`, { reason: "registry" }, "Make a new plan."));
       }
+      const accept = { copyleft: req.accept?.copyleft === true, thirdPartyCode: req.accept?.thirdPartyCode === true };
+      return yield* place(row, accept, req.autoUpdate, by);
+    });
+
+  /**
+   * Steps 2–4 of an approval for a plan row that passed the checks of its maker: re-checks the
+   * installed state, places the version in the store and writes the row and grants in one
+   * transaction. Bundled installs at start come here too (Task 10), with the same lock and
+   * the same rows; the caller holds the lock.
+   */
+  const place = (row: PlanRow, accept: { copyleft: boolean; thirdPartyCode: boolean }, autoUpdateReq: boolean | undefined, by: Asker): Effect.Effect<Installed, FinError> =>
+    Effect.gen(function* () {
       const changed = () => finError("PLAN_MISMATCH", `${row.pluginId}'s installed version or grants changed since the plan was made`, { reason: "installed" }, "Make a new plan.");
       if (baseOf(tables, row.pluginId) !== row.base) return yield* Effect.fail(changed());
       const staged = yield* attemptJson<InstallPlan>(() => native.stagedPlan(row.id));
-      const accept = { copyleft: req.accept?.copyleft === true, thirdPartyCode: req.accept?.thirdPartyCode === true };
       const dirs = tables.installed().flatMap((p) => {
         const full = p.id === row.pluginId ? undefined : tables.installedFull(p.id);
         return full === undefined ? [] : [full.dir];
       });
-      const placed = yield* attemptJson<InstalledPlugin>(() => native.commit(row.id, req.digest, JSON.stringify(accept), JSON.stringify({ installedDirs: dirs }))).pipe(
+      const placed = yield* attemptJson<InstalledPlugin>(() => native.commit(row.id, row.digest, JSON.stringify(accept), JSON.stringify({ installedDirs: dirs }))).pipe(
         Effect.tapError((e) => Effect.sync(() => (e.code === "PLAN_EXPIRED" || (e.code === "PLAN_MISMATCH" && (e.details as { reason?: unknown } | undefined)?.reason !== "digest") ? tables.deletePlan(row.id) : undefined))),
       );
       const prev = tables.installedFull(row.pluginId);
@@ -127,7 +142,7 @@ export function makeLifecycle(deps: LifecycleDeps) {
       const keepOff = content && prev !== undefined && prev.state === "disabled";
       const enabled = content && !keepOff && !revokedNow;
       const state: InstalledRow["state"] = revokedNow ? "revoked" : enabled ? "active" : "disabled";
-      const autoUpdate = content && (req.autoUpdate ?? prev?.autoUpdate ?? false);
+      const autoUpdate = content && (autoUpdateReq ?? prev?.autoUpdate ?? false);
       const fields = {
         id: placed.id,
         version: placed.version,
@@ -222,8 +237,88 @@ export function makeLifecycle(deps: LifecycleDeps) {
       return row;
     });
 
+  /**
+   * Installs or updates the bundled plugin `entry` from the app's resources `root` without a
+   * person's approval: the app update was the approval, and the compiled-in hash the check
+   * (Task 10, Decision 24). Same lock, plan row and place as an approval, made by `system:bundled`.
+   * A widening is applied; the caller audits it with the plan's diff. Resolves to nothing when
+   * the installed row already is this version and tree.
+   */
+  const installBundled = (root: string, entry: { readonly id: string; readonly version: string; readonly treeHash: string }): Effect.Effect<Installed | undefined, FinError> =>
+    locked(
+      Effect.gen(function* () {
+        let prev = tables.installedFull(entry.id);
+        if (prev !== undefined && prev.source !== "bundled") {
+          return yield* Effect.fail(finError("PLUGIN_ALREADY_INSTALLED", `${entry.id} is installed from elsewhere`, { id: entry.id }, "Remove it to use the one that comes with Finisher."));
+        }
+        // Another start of the same app got here first: nothing to do.
+        if (prev !== undefined && prev.version === entry.version && prev.treeHash === entry.treeHash) return undefined;
+        if (prev !== undefined && prev.version === entry.version) {
+          // The same version with other bytes (the app was rebuilt): replaced, not updated.
+          yield* Effect.ignore(attempt(() => native.removePlugin(prev!.id, prev!.version, false)));
+          const gone = prev;
+          yield* Effect.try({ try: () => tables.store.tx(() => tables.deletePlugin(gone.id)), catch: toFinError });
+          prev = undefined;
+        }
+        const body = {
+          id: entry.id,
+          source: { kind: "bundled", root },
+          update: prev !== undefined,
+          // An older app than the installed version (a rollback) installs its own version.
+          allowDowngrade: prev !== undefined,
+          ...(prev === undefined ? {} : { installed: installedPlugin(prev, tables.grants(entry.id)) }),
+        };
+        const plan = yield* attemptJson<InstallPlan>(() => native.plan(JSON.stringify(body)));
+        const row: PlanRow = {
+          id: plan.planId,
+          digest: plan.digest,
+          pluginId: plan.plugin.id,
+          version: plan.plugin.version,
+          source: "bundled",
+          action: plan.action,
+          byKind: BUNDLED_BY.kind,
+          byId: BUNDLED_BY.id,
+          human: false,
+          base: baseOf(tables, entry.id),
+          unusable: false,
+          createdAt: clock(),
+          expiresAt: plan.expiresAt,
+        };
+        yield* Effect.try({ try: () => tables.addPlan(row), catch: toFinError });
+        return yield* place(row, { copyleft: false, thirdPartyCode: false }, false, BUNDLED_BY).pipe(
+          Effect.tapError(() =>
+            Effect.sync(() => tables.deletePlan(row.id)).pipe(Effect.andThen(Effect.ignore(attempt(() => native.discardPlan(row.id))))),
+          ),
+        );
+      }),
+    );
+
+  /** A bundled plugin whose resources no longer match the app: revoked, disabled. */
+  const revokeBundled = (id: string): Effect.Effect<boolean> =>
+    locked(
+      Effect.sync(() => {
+        const row = tables.installedOne(id);
+        if (row === undefined || row.source !== "bundled" || row.state === "revoked") return false;
+        return tables.setState(id, false, "revoked", clock());
+      }),
+    );
+
+  /** A revoked bundled plugin whose resources match the app again: back to the state a fresh install has. */
+  const restoreBundled = (id: string): Effect.Effect<boolean> =>
+    locked(
+      Effect.sync(() => {
+        const row = tables.installedOne(id);
+        if (row === undefined || row.source !== "bundled" || row.state !== "revoked") return false;
+        const content = row.kind === "content";
+        return tables.setState(id, content, content ? "active" : "disabled", clock());
+      }),
+    );
+
   return {
     plan,
+    installBundled,
+    revokeBundled,
+    restoreBundled,
     install: (req: PluginInstallRequest, by: Asker) => locked(commit(req, by)),
     remove: (id: string, purgeData: boolean) => locked(remove(id, purgeData)),
     enable: (id: string) => locked(changeState(id, true)),

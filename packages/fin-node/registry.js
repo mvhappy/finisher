@@ -52,6 +52,23 @@ export function defineRegistry({ native, call, toFinError }) {
       return call(this.#native.installedDirs());
     }
 
+    bundledList() {
+      try {
+        return this.#native.bundledList();
+      } catch (e) {
+        throw toFinError(e);
+      }
+    }
+
+    bundledVerify(root) {
+      return call(this.#native.bundledVerify(root));
+    }
+
+    setBundledForTest(listJson) {
+      if (typeof this.#native.setBundledForTest !== "function") throw new Error("setBundledForTest needs a test-hooks build");
+      this.#native.setBundledForTest(listJson ?? null);
+    }
+
     registryList() {
       return call(this.#native.registryList());
     }

@@ -248,7 +248,9 @@ describe("sessions and errors", () => {
     await start();
     await server!.stop();
     server = undefined;
-    let kinds = onDisk().map((e) => e.kind);
+    // The first start also journals the bundled plugins it installs (`plugin.lifecycle`, 8A Task 10).
+    const sessionKinds = () => onDisk().map((e) => e.kind).filter((k) => k.startsWith("session."));
+    let kinds = sessionKinds();
     expect(kinds).toEqual(["session.start", "session.end"]);
     const state = JSON.parse(readFileSync(join(serverData, "events", "state.json"), "utf8"));
     expect(state.openSession).toBeUndefined();
@@ -265,7 +267,7 @@ describe("sessions and errors", () => {
     await start();
     await server!.stop();
     server = undefined;
-    kinds = onDisk().map((e) => e.kind);
+    kinds = sessionKinds();
     expect(kinds.slice(2)).toEqual(["session.start", "session.unclean", "session.start", "session.end"]);
     const sessions = onDisk().filter((e) => e.kind === "session.start").map((e) => e.session);
     expect(onDisk().find((e) => e.kind === "session.unclean")?.payload).toEqual({ previous: sessions[1] });

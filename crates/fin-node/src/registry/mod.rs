@@ -8,9 +8,12 @@
 //!
 //! Sources: `registry` (an added local-folder registry: the version is resolved in its trusted
 //! metadata, fetched with its signed length as the cap and checked against its signed SHA-256,
-//! 8A Task 9b) and, in `test-hooks` builds only, `package` (a `.finpkg` file described as a
+//! 8A Task 9b); `bundled` (a tree of the app's resources, checked against the hash compiled
+//! into this binary, never one the caller names, 8A Task 10; see [`bundled`]) and, in
+//! `test-hooks` builds only, `package` (a `.finpkg` file described as a
 //! publisher would sign it, standing in for a verified target).
 
+mod bundled;
 mod host;
 mod lifecycle;
 mod log;
@@ -60,6 +63,8 @@ enum SourceReq {
         #[serde(default)]
         version: Option<semver::Version>,
     },
+    /// The compiled-in plugin `id` from `root/<name>` (the resources folder).
+    Bundled { root: String },
     #[cfg(feature = "test-hooks")]
     #[serde(rename_all = "camelCase")]
     Package {
@@ -78,6 +83,7 @@ impl SourceReq {
     fn version(&self) -> Option<semver::Version> {
         match self {
             SourceReq::Registry { version, .. } => version.clone(),
+            SourceReq::Bundled { .. } => None,
             #[cfg(feature = "test-hooks")]
             SourceReq::Package { version, .. } => version.clone(),
         }
@@ -122,6 +128,25 @@ struct Inner {
     /// The server data, canonical ([`crate::journal::server_key`]).
     key: PathBuf,
     node: Option<semver::Version>,
+    /// Test builds only: stands in for the compiled-in list ([`bundled::Entries`]).
+    #[cfg(feature = "test-hooks")]
+    bundled_override: std::sync::Mutex<Option<Vec<crate::bundled::Entry>>>,
+}
+
+impl Inner {
+    /// The bundled plugins this binary carries.
+    fn bundled_entries(&self) -> Vec<crate::bundled::Entry> {
+        #[cfg(feature = "test-hooks")]
+        if let Some(list) = self
+            .bundled_override
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+        {
+            return list;
+        }
+        crate::bundled::compiled()
+    }
 }
 
 /// A server data folder's plugin store.
@@ -162,6 +187,8 @@ impl Registry {
                 base: data.join("plugins"),
                 key: crate::journal::server_key(data),
                 node,
+                #[cfg(feature = "test-hooks")]
+                bundled_override: std::sync::Mutex::new(None),
             }),
             worker: Worker::spawn()?,
         })
@@ -175,7 +202,19 @@ impl Registry {
             let req: PlanReq =
                 serde_json::from_str(&req_json).map_err(|e| bad_request("the plan request", e))?;
             let started = Instant::now();
-            let version = req.source.version();
+            let version = match &req.source {
+                // A bundled plugin installs the version compiled in, nothing else.
+                SourceReq::Bundled { .. } => inner
+                    .bundled_entries()
+                    .iter()
+                    .find(|e| e.id == req.id)
+                    .and_then(|e| semver::Version::parse(&e.version).ok()),
+                other => other.version(),
+            };
+            let source_kind = match &req.source {
+                SourceReq::Bundled { .. } => SourceKind::Bundled,
+                _ => SourceKind::Registry,
+            };
             let out = plan(
                 &inner,
                 req.source,
@@ -198,7 +237,7 @@ impl Registry {
                 Err(e) => {
                     let about = About {
                         id: Some(&req.id),
-                        source: SourceKind::Registry,
+                        source: source_kind,
                         kind: None,
                         risk: None,
                         permissions_added: 0,
@@ -335,8 +374,12 @@ fn plan(
     source: SourceReq,
     req: &PlanRequest,
 ) -> std::result::Result<fin_registry::plan::InstallPlan, RegistryError> {
+    let class = match source {
+        SourceReq::Bundled { .. } => SourceClass::Bundled,
+        _ => SourceClass::Registry,
+    };
     let (src, fetched) = resolve(inner, source, req)?;
-    let ctx = host::ctx(SourceClass::Registry, inner.node.clone());
+    let ctx = host::ctx(class, inner.node.clone());
     let plan_host = host::Host {
         store: &inner.store,
     };
@@ -372,6 +415,27 @@ fn resolve(
                     Err(e)
                 }
             }
+        }
+        SourceReq::Bundled { root } => {
+            let entry = inner
+                .bundled_entries()
+                .into_iter()
+                .find(|e| e.id == req.id)
+                .ok_or_else(|| {
+                    RegistryError::new(
+                        "PLUGIN_NOT_FOUND",
+                        format!("{} is not a bundled plugin", req.id),
+                        json!({ "reason": "notBundled" }),
+                    )
+                })?;
+            let dir = Path::new(&root).join(entry.folder());
+            Ok((
+                PlanInput::Bundled {
+                    dir,
+                    tree_hash: entry.tree_hash,
+                },
+                None,
+            ))
         }
         #[cfg(feature = "test-hooks")]
         SourceReq::Package {

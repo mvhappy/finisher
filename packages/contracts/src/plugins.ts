@@ -98,6 +98,17 @@ export type InstalledRow = typeof InstalledRowSchema.Type;
 export const PluginListPayload = Schema.Struct({});
 export const PluginListSuccess = Schema.Struct({
   plugins: Schema.Array(InstalledRowSchema),
+  /**
+   * The plugins that come with the app (8A Task 10): whether their files match the hashes built
+   * into it (`ok`; else `code: PLUGIN_BUNDLED_MISMATCH`), and how far that is trusted:
+   * `hashesOnly` until sub-project 11 verifies the app's code signature (`signed`).
+   */
+  bundled: Schema.optional(
+    Schema.Struct({
+      integrity: Schema.Literals(["hashesOnly", "signed"]),
+      plugins: Schema.Array(Schema.Struct({ id: Schema.String, version: Schema.String, ok: Schema.Boolean, code: Schema.optional(Schema.String) })),
+    }),
+  ),
   /** Installed rows whose package folder is missing from the store (disabled at start). */
   problems: Schema.optional(Schema.Array(Schema.Struct({ id: Schema.String, version: Schema.String, reason: Schema.Literals(["storeMissing"]) }))),
 });

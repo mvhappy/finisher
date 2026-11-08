@@ -160,7 +160,11 @@ export function pluginHandlers({ plugins, audit, guard }: PluginRpcDeps) {
         ),
       );
     },
-    "plugin.list": () => guard("plugin.list", Effect.map(plugins.installed(), (list) => ({ plugins: list, ...(plugins.problems().length === 0 ? {} : { problems: plugins.problems() }) }))),
+    "plugin.list": () =>
+      guard(
+        "plugin.list",
+        Effect.map(plugins.installed(), (list) => ({ plugins: list, bundled: plugins.bundled(), ...(plugins.problems().length === 0 ? {} : { problems: plugins.problems() }) })),
+      ),
     "plugin.search": (q: PluginSearchRequest) => guard("plugin.search", plugins.search(q)),
     "plugin.info": ({ id }: { readonly id: string }): Effect.Effect<PluginInfoResult, FinError> => guard("plugin.info", plugins.info(id)),
     "plugin.plan": (req: PluginPlanRequest, options: Options): Effect.Effect<InstallPlan, FinError> => {

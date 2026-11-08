@@ -50,4 +50,12 @@ serde_json = "1"
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_System_Threading"] }
 
 [build-dependencies]
+# `build.rs` hashes the bundled plugin trees with the function the server re-hashes them with
+# (8A Task 10).
+fin-registry = { path = "../fin-registry" }
 napi-build = "2"
+serde_json = "1"
+
+[dev-dependencies]
+# `tests/bundled.rs` copies a bundled tree to tamper with it (already in the tree).
+tempfile = "3"

@@ -1,0 +1,11 @@
+{
+  "name": "Clean",
+  "text": { "family": "Inter", "weight": 400, "italic": false, "size": 56.0, "lineHeight": 1.2, "letterSpacing": 0.0, "align": "center" },
+  "color": "#ffffff",
+  "background": { "color": "#000000b3", "padding": 16.0, "radius": 12.0 },
+  "position": { "anchor": "bottom", "offset": 0.0 },
+  "safeZone": "reels",
+  "maxChars": 32,
+  "maxLines": 2,
+  "gap": "1/2"
+}

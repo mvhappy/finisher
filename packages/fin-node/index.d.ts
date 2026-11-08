@@ -313,7 +313,10 @@ export declare class Registry {
    * allowDowngrade?, installed?: InstalledPlugin, knownIds? }` JSON; resolves to the
    * `InstallPlan` JSON. A registry source is resolved in the registry's trusted metadata and
    * fetched with its signed length and SHA-256 checked (`REGISTRY_NOT_FOUND`,
-   * `PLUGIN_NOT_FOUND`, `TUF_TARGET_MISMATCH`); test builds also take `{ kind: "package",
+   * `PLUGIN_NOT_FOUND`, `TUF_TARGET_MISMATCH`); `{ kind: "bundled", root }` plans the
+   * compiled-in plugin `id` from `<root>/<name>` (the app's resources) against the hash built
+   * into this binary (`PLUGIN_BUNDLED_MISMATCH`, `PLUGIN_NOT_FOUND`) and installs only the
+   * compiled-in version; test builds also take `{ kind: "package",
    * archive, registryId, staleDays?, yanked? }` and `testAgentFacing`.
    */
   plan(reqJson: string): Promise<string>;
@@ -343,6 +346,16 @@ export declare class Registry {
    * `dir` as `control.db` records it (`store/@<publisher>/<name>/<version>-<hash12>`).
    */
   installedDirs(): Promise<string>;
+  /** The bundled plugins compiled into this binary: `[{ id, version, treeHash }]` JSON. */
+  bundledList(): string;
+  /**
+   * Re-hashes each bundled plugin's tree under `root` and compares it with the compiled-in
+   * hash: `[{ id, version, treeHash, ok, code?, reason? }]` JSON (`code` is
+   * `PLUGIN_BUNDLED_MISMATCH`; `reason` is `missing`, `unreadable` or `treeHash`).
+   */
+  bundledVerify(root: string): Promise<string>;
+  /** Test builds only: replaces the compiled-in list for this `Registry`; `null` restores it. */
+  setBundledForTest(listJson: string | null): void;
   /**
    * Every added registry's `RegistryStatus` as a `RegistryList` JSON (`{ registries,
    * problems }`): a registry that cannot be opened is a problem and hides no other.
@@ -462,6 +475,8 @@ export declare const testHooks:
        * permissions?, license?, fonts?: string[] }`; `ageDays`: signed as of that many days
        * ago. Returns `{ rootSha256, rootFile }` JSON.
        */
+      /** The tree hash of the files under `dir`: what `build.rs` puts in `BUNDLED_PLUGINS`. */
+      treeHash(dir: string): string;
       buildRegistry(dir: string, keysDir: string, specJson: string): string;
       /** Publishes more packages, yanks and advisories (the same spec) to a built registry. */
       publishToRegistry(dir: string, keysDir: string, specJson: string): void;

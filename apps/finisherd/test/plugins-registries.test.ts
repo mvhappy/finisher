@@ -318,7 +318,7 @@ describe("handlers", () => {
     await run(h["registry.refresh"]({ id: "team" }, as(LOCAL)));
     expect((await run(h["registry.list"]({}, as(LOCAL)))).registries).toHaveLength(1);
     expect((await run(h["registry.status"]({ id: "team" }, as(LOCAL)))).id).toBe("team");
-    expect(await run(h["plugin.list"]())).toEqual({ plugins: [] });
+    expect(await run(h["plugin.list"]())).toEqual({ plugins: [], bundled: { integrity: "hashesOnly", plugins: [] } });
     expect((await run(h["plugin.search"]({ text: "pack" }))).map((l) => l.id)).toEqual(["@acme/pack"]);
     expect((await run(h["plugin.info"]({ id: "@acme/pack" }))).registries).toHaveLength(1);
     expect(rows()).toHaveLength(before);

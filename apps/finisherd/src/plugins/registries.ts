@@ -12,9 +12,11 @@ import { Registry } from "@finisher/fin-node";
 import type { FinError, InstalledRow, PluginInfoResult, PluginSearchRequest, RefreshResult, RegistryAddRequest, RegistryEntry, RegistryListResult, RegistryRefreshResult } from "@finisher/contracts";
 import type { Listing, PluginInfo, RefreshReport, RegistryList, RegistryStatus } from "@finisher/core-types";
 import { Context, Effect, Layer } from "effect";
+import { type Audit, AuditTag } from "../control/audit.ts";
 import { ControlStoreTag } from "../control/db.ts";
 import { attempt, attemptJson, finError, toFinError } from "../errors.ts";
 import { type Installed, type Lifecycle, makeLifecycle } from "./lifecycle.ts";
+import { type Bundled, type BundledStatus, defaultBundledRoot, makeBundled } from "./bundled.ts";
 import { reconcileStore, type StoreProblem } from "./store-sync.ts";
 import { actorOf, PluginTables, type RegistryRow } from "./tables.ts";
 
@@ -45,6 +47,10 @@ export interface PluginsShape {
   readonly installed: () => Effect.Effect<InstalledRow[], FinError>;
   /** Rows whose package folder is missing from the store, as the last start found them (L4). */
   readonly problems: () => ReadonlyArray<StoreProblem>;
+  /** The bundled plugins' integrity, as the last start found it (Task 10). */
+  readonly bundled: () => BundledStatus;
+  /** Installs, updates and checks the plugins that come with the app (Task 10); runs at start. */
+  readonly syncBundled: () => Effect.Effect<BundledStatus, FinError>;
   /** Aligns the store's folders with the rows: orphans are deleted, rows without a folder disabled. */
   readonly reconcileStore: () => Effect.Effect<void, FinError>;
   readonly search: (q: PluginSearchRequest) => Effect.Effect<Listing[], FinError>;
@@ -68,10 +74,16 @@ function entryOf(status: RegistryStatus, row: RegistryRow | undefined): Registry
 }
 
 export interface MakePluginsOptions {
-
+  /** Where the app's bundled plugin folders are (default `defaultBundledRoot()`). */
+  readonly bundledRoot?: string;
+  /** Audits the bundled installs (the layer passes the server's; tests without one skip it). */
+  readonly audit?: Audit;
   /** Test builds only: plans for these ids are marked agent-facing (Decision 23). */
   readonly testAgentFacing?: (id: string) => boolean;
 }
+
+/** An audit log that records nothing, for services made without one. */
+const NO_AUDIT = { append: () => undefined } as unknown as Audit;
 
 export function makePlugins(native: Registry, tables: PluginTables, clock: () => number = Date.now, options: MakePluginsOptions = {}): PluginsShape {
   const list = () => attemptJson<RegistryList>(() => native.registryList());
@@ -106,6 +118,8 @@ export function makePlugins(native: Registry, tables: PluginTables, clock: () =>
     ...(options.testAgentFacing === undefined ? {} : { testAgentFacing: options.testAgentFacing }),
     refreshOne: (id, by) => Effect.flatMap(refreshOne(id, by), (r) => (r.ok ? Effect.void : Effect.fail(failed(r)!))),
   });
+
+  const bundled: Bundled = makeBundled({ native, tables, lifecycle, audit: options.audit ?? NO_AUDIT, root: options.bundledRoot ?? defaultBundledRoot() });
 
   /** One registry's refresh and what it changed in the installed plugins. */
   const refreshApplying = (id: string, by: Asker) =>
@@ -155,6 +169,8 @@ export function makePlugins(native: Registry, tables: PluginTables, clock: () =>
         return { byHuman: by.human, results, applied: { revoked, updated }, updates };
       }),
     problems: () => problems,
+    bundled: bundled.status,
+    syncBundled: () => bundled.sync(),
     reconcileStore: () =>
       Effect.map(reconcileStore(native, tables, clock), (r) => {
         problems = r.problems;
@@ -195,11 +211,13 @@ export function reconcile(native: Registry, tables: PluginTables, clock: () => n
 
 export interface PluginsOptions {
   readonly clock?: () => number;
+  /** Where the app's bundled plugin folders are (default `defaultBundledRoot()`). */
+  readonly bundledRoot?: string;
   /** How often expired plans are swept (Decision 18: every minute, and at start). */
   readonly sweepMs?: number;
 }
 
-export const layerPlugins = (serverData: string, { clock = Date.now, sweepMs = 60_000 }: PluginsOptions = {}): Layer.Layer<PluginsTag, FinError, ControlStoreTag> =>
+export const layerPlugins = (serverData: string, { clock = Date.now, sweepMs = 60_000, bundledRoot }: PluginsOptions = {}): Layer.Layer<PluginsTag, FinError, ControlStoreTag | AuditTag> =>
   Layer.effect(
     PluginsTag,
     Effect.gen(function* () {
@@ -207,8 +225,11 @@ export const layerPlugins = (serverData: string, { clock = Date.now, sweepMs = 6
       const native = yield* Effect.try({ try: () => Registry.open(serverData), catch: toFinError });
       const tables = new PluginTables(control);
       yield* reconcile(native, tables, clock);
-      const plugins = makePlugins(native, tables, clock);
+      const audit = yield* AuditTag;
+      const plugins = makePlugins(native, tables, clock, { audit, ...(bundledRoot === undefined ? {} : { bundledRoot }) });
       yield* plugins.reconcileStore();
+      // The plugins that come with the app: installed, updated or revoked before anything is served.
+      yield* Effect.catch(plugins.syncBundled(), (e) => Effect.logWarning(`finisherd: bundled plugins could not be checked: ${e.code}`));
       yield* Effect.ignore(plugins.lifecycle.sweep());
       yield* Effect.acquireRelease(
         Effect.sync(() => {

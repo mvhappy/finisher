@@ -58,8 +58,8 @@ export function plugins() {
     service(options: MakePluginsOptions = {}) {
       const native = Registry.open(f.serverData);
       const tables = new PluginTables(f.control);
-      const plugins = makePlugins(native, tables, () => f.now, options);
       const audit = new Audit(f.control, () => f.now);
+      const plugins = makePlugins(native, tables, () => f.now, { audit, ...options });
       const h = pluginHandlers({ plugins, audit, guard: (_tag, self) => self });
       const rows = () =>
         (f.control.db.prepare("SELECT kind, principalKind, outcome, code, details FROM audit WHERE kind LIKE 'plugin.%' OR kind LIKE 'registry.%' ORDER BY id").all() as Array<{ kind: string; principalKind: string; outcome: string; code: string | null; details: string }>).map((r) => ({

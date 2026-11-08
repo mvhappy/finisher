@@ -134,7 +134,11 @@ describe("on a server", () => {
     // `local` reads, and cannot add.
     expect(await local.call("registry.list", {})).toEqual({ ok: true, value: { registries: [], problems: [] } });
     expect(await local.call("registry.add", add)).toMatchObject({ ok: false, error: { code: "HUMAN_ONLY" } });
-    expect(await local.call("plugin.list", {})).toEqual({ ok: true, value: { plugins: [] } });
+    // The plugin that comes with the app is installed at start (8A Task 10), nothing else.
+    expect(await local.call("plugin.list", {})).toMatchObject({
+      ok: true,
+      value: { plugins: [{ id: "@finisher/captions-basic", source: "bundled", enabled: true }], bundled: { integrity: "hashesOnly", plugins: [{ id: "@finisher/captions-basic", ok: true }] } },
+    });
     // The owner adds it; `local` refreshes it (recorded as not a person) and searches it.
     expect(await owner.call("registry.add", add)).toMatchObject({ ok: true, value: { id: "team", addedBy: "console:console" } });
     const refreshed = await local.call("registry.refresh", {});

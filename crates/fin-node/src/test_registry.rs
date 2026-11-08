@@ -267,3 +267,10 @@ pub fn publish_to_registry_for_test(
         .with_clock(clock(spec.age_days));
     apply(&mut b, Path::new(&keys_dir), &spec)
 }
+
+/// The tree hash of the files under `dir` (`fin_registry::package::tree_hash`), the function
+/// `build.rs` makes `BUNDLED_PLUGINS` with: for tests that stand in their own bundled list.
+#[napi(catch_unwind)]
+pub fn tree_hash_for_test(dir: String) -> Result<String> {
+    fin_registry::package::tree_hash(Path::new(&dir)).map_err(|e| fail("the tree", e))
+}
