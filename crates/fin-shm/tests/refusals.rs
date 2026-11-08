@@ -48,16 +48,31 @@ fn a_regular_file_opens() {
 
 #[test]
 fn paths_that_are_not_absolute_or_have_dot_segments_are_refused() {
-    let (_t, root) = tmp();
+    let (t, root) = tmp();
     assert_eq!(
         reason(&checked_open(Path::new("rel/f"), CAP).unwrap_err()),
         "notAbsolute"
     );
-    let dotted = root.join("a").join("..").join("f");
-    assert_eq!(
-        reason(&checked_open(&dotted, CAP).unwrap_err()),
-        "notAbsolute"
-    );
+    // Spelled out, not joined: on Windows `PathBuf::push` drops a `..` pushed onto a verbatim
+    // (`\\?\`) path such as `canonicalize` answers, which would leave `root\f`. Both the
+    // verbatim root and the plain temporary path.
+    let sep = std::path::MAIN_SEPARATOR;
+    for base in [root.as_path(), t.path()] {
+        let mut dotted = base.as_os_str().to_owned();
+        dotted.push(format!("{sep}a{sep}..{sep}f"));
+        let dotted = Path::new(&dotted);
+        assert!(
+            dotted
+                .components()
+                .any(|c| c == std::path::Component::ParentDir),
+            "{dotted:?}"
+        );
+        assert_eq!(
+            reason(&checked_open(dotted, CAP).unwrap_err()),
+            "notAbsolute",
+            "{dotted:?}"
+        );
+    }
 }
 
 #[test]

@@ -259,6 +259,22 @@ mod tests {
             );
             assert!(check_path(Path::new("/a/b")).is_ok());
         }
+        #[cfg(windows)]
+        {
+            for p in [r"C:\a\..\b", r"\\?\C:\a\..\b", r"C:a\b", r"\a\b"] {
+                assert_eq!(
+                    check_path(Path::new(p)).unwrap_err().reason,
+                    Reason::NotAbsolute,
+                    "{p}"
+                );
+            }
+            assert_eq!(
+                check_path(Path::new(r"C:\")).unwrap_err().reason,
+                Reason::NotRegular
+            );
+            assert!(check_path(Path::new(r"\\?\C:\a\b")).is_ok());
+            assert!(check_path(Path::new(r"\\server\share\a")).is_ok());
+        }
     }
 
     #[test]
