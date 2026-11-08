@@ -2,9 +2,13 @@
 // runs and their provider instances over `AgentStore`. The commands an RPC handler or the
 // console calls; `runtime-engine.ts` holds the event handling, budgets and the outbox.
 //
-// - `boot()` first (Decision 3, the Task 3b order): crash recovery, the orphan sweep at grace 0
-//   before any session work, the outbox drained; then the hourly retention sweep and a budget
-//   check every few seconds (the wall clock moves without events).
+// - `boot()` first (Decision 3, the Task 3b order): crash recovery (reservations returned), the
+//   orphan sweep at grace 0 before any session work, the outbox drained, every live session
+//   credential of an ended or missing session ended; then the hourly sweep (overdue approvals
+//   expired, retention) and a budget check every few seconds (the wall clock moves without
+//   events).
+// - A start of a non-local model without a price is refused (`PRICING_UNKNOWN`); every start
+//   answers the persistent warnings (`SANDBOX_DISABLED` until 7C, owner decision F2).
 // - Every command runs in its session's queue, after the events and commands before it.
 // - A session's provider instance is opened at its first run (with its resume reference) and
 //   kept while the session is `idle`; interrupt, end and any provider exit close it.
@@ -12,16 +16,17 @@
 //   a start opens through its `openSession`, the outbox's credential effects go to
 //   `core.credentials.handle`, and a resume refreshes the credential first. The journal is
 //   Task 10's (`RuntimeJournal`); the built-in tools are 8b's (`ToolExecutor`).
-import type { Approval, ApprovalDecision, FinError, Principal, Run, RunTrigger, Session, WatchItem } from "@finisher/contracts";
+import type { AgentWarning, Approval, ApprovalDecision, FinError, Principal, Run, RunTrigger, Session, WatchItem } from "@finisher/contracts";
 import { Cause, Effect, Exit, Option, type Stream } from "effect";
 import type { CallMeta } from "../diagnostics.ts";
 import { finError, toFinError } from "../errors.ts";
 import { AgentCoreTag } from "./core.ts";
 import { openSession, registryBranchOps } from "./credentials.ts";
 import { type RuntimeDeps, RuntimeEngine } from "./runtime-engine.ts";
-import { budgetError, harnessUnknown, type StartRequest } from "./runtime-deps.ts";
+import { budgetError, harnessUnknown, pricingUnknown, type StartRequest } from "./runtime-deps.ts";
 import { call, closeLive } from "./runtime-live.ts";
 import type { Recovery } from "./store.ts";
+import { agentWarnings } from "./warnings.ts";
 
 export type { RuntimeDeps } from "./runtime-engine.ts";
 
@@ -69,10 +74,11 @@ export class Runtime extends RuntimeEngine {
    * `interrupted`, open calls get a synthetic result), the orphan sweep, the outbox drained;
    * then the timers.
    */
-  async boot(): Promise<Recovery & { orphans: number }> {
+  async boot(): Promise<Recovery & { orphans: number; credentialsEnded: number }> {
     const recovery = this.store.recoverAfterCrash();
     const orphans = await this.store.sweepOrphans(0);
     await this.drain();
+    const credentialsEnded = this.core.credentials.reconcile();
     this.#booted = true;
     if (this.deps.timers ?? true) {
       const hourly = setInterval(() => void this.sweep().catch(() => {}), HOUR_MS);
@@ -81,7 +87,7 @@ export class Runtime extends RuntimeEngine {
       budgets.unref?.();
       this.#timers.push(hourly, budgets);
     }
-    return { ...recovery, orphans };
+    return { ...recovery, orphans, credentialsEnded };
   }
 
   /** Shutdown: the timers stop and every instance closes. The next `boot` recovers the rest. */
@@ -99,8 +105,15 @@ export class Runtime extends RuntimeEngine {
     await this.close();
   }
 
-  /** The retention sweep (Decision 4), hourly from `boot`. */
+  /**
+   * Hourly from `boot`: overdue approvals expired (they leave their sessions' open lists), then
+   * the retention sweep (Decision 4). Answers how many sessions the retention removed.
+   */
   sweep(now = this.clock.now()): Promise<number> {
+    for (const s of this.store.expireOverdueApprovals(now)) {
+      this.publishStatus(s, this.store.activeRun(s.id));
+      this.#journalExpired(s);
+    }
     return this.store.sweep(now, this.deps.retentionDays);
   }
 
@@ -131,11 +144,13 @@ export class Runtime extends RuntimeEngine {
    * 2–5 in Task 7's `openSession` (the root branch `agent.<role>-<n>` created as the starter,
    * whose actor and guard `meta` carries; the record; the credential; `idle`), then the first run.
    */
-  start(req: StartRequest, by: Principal, meta: CallMeta): Effect.Effect<{ session: Session; run?: Run }, FinError> {
+  start(req: StartRequest, by: Principal, meta: CallMeta): Effect.Effect<{ session: Session; run?: Run; warnings: AgentWarning[] }, FinError> {
     return attempt(async () => {
       this.#guard();
       const plan = await this.deps.planner.plan(req, by);
       if (this.adapter(plan.harness) === undefined) harnessUnknown(plan.harness);
+      // A money budget without a price would fail open: refused before anything is made.
+      if (plan.provider !== "local" && !this.pricing.known(plan.provider, plan.model)) throw pricingUnknown(plan.provider, plan.model);
       const opened = await exitOf(
         openSession(
           { creds: this.core.credentials, store: this.store, ops: registryBranchOps(this.deps.registry, meta), ids: this.ids },
@@ -164,7 +179,7 @@ export class Runtime extends RuntimeEngine {
         await this.drain();
         this.publishStatus(this.session(id));
         const run = req.prompt === undefined ? undefined : await this.promptIn(id, req.prompt, "prompt", req.attachments);
-        return { session: this.session(id), ...(run === undefined ? {} : { run }) };
+        return { session: this.session(id), ...(run === undefined ? {} : { run }), warnings: agentWarnings() };
       });
     });
   }
@@ -329,7 +344,16 @@ export class Runtime extends RuntimeEngine {
         throw finError("APPROVAL_NOT_FOUND", "no such approval", { id: approvalId });
       })();
       return this.serial(found.sessionId, async () => {
-        const { approval, session } = this.store.answerApproval(approvalId, decision, principalRef(by));
+        let answered: { approval: Approval; session: Session };
+        try {
+          answered = this.store.answerApproval(approvalId, decision, principalRef(by));
+        } catch (e) {
+          // Past its deadline it expired instead (`APPROVAL_EXPIRED`): that is journaled.
+          const s = (e as { code?: unknown }).code === "APPROVAL_EXPIRED" ? this.store.get(found.sessionId) : undefined;
+          if (s !== undefined) this.#journalExpired(s);
+          throw e;
+        }
+        const { approval, session } = answered;
         this.record("an approval", () => this.journal.approval({ session, approval }));
         this.publishStatus(session);
         if (approval.kind !== "budget" || decision !== "allow") return { approval, session };
@@ -347,8 +371,15 @@ export class Runtime extends RuntimeEngine {
     });
   }
 
+  /** Journals the session's expired approvals (the journal records each once). */
+  #journalExpired(s: Session): void {
+    for (const approval of this.store.approvals(s.id)) {
+      if (approval.status === "expired") this.record("an approval", () => this.journal.approval({ session: s, approval }));
+    }
+  }
+
   /** `agent.watch`: the stored nodes from `fromSeq`, the status, then live items until `ended`. */
   watch(sessionId: string, fromSeq?: number): Stream.Stream<WatchItem, FinError> {
-    return this.hub.watch(this.store, sessionId, fromSeq);
+    return this.hub.watch(this.store, sessionId, fromSeq, this.deps.watchBufferSize);
   }
 }

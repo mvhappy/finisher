@@ -7,6 +7,7 @@ import { SERVER_VERSION } from "./config.ts";
 import type { ConnectionRegistry, Transport } from "./connections.ts";
 import type { Audit } from "./control/audit.ts";
 import { finError, toFinError } from "./errors.ts";
+import { agentWarnings } from "./agent/warnings.ts";
 
 /** What `serve` tells the admin RPCs about itself. */
 export interface ServerControl {
@@ -42,7 +43,8 @@ export function serverStatus(deps: AdminDeps) {
     connections: deps.connections.count(),
     journal: { enabled: deps.journalEnabled() },
     auditFailures: deps.audit.failures(),
-    warnings: [] as Array<Record<string, unknown>>,
+    // Persistent status warnings: agent tools run unsandboxed until 7C (owner decision F2).
+    warnings: agentWarnings() as Array<Record<string, unknown>>,
   }));
 }
 

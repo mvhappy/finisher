@@ -261,6 +261,9 @@ const CONFLICT_CODES: &[&str] = &[
     // Agent sessions (7A-2 Task 6b): a run is active (steer it, or wait); the session ended.
     "SESSION_BUSY",
     "SESSION_ENDED",
+    // An approval answered after its `expiresAt` (7A-2 review): it was expired instead; ask
+    // for it again.
+    "APPROVAL_EXPIRED",
 ];
 
 /// Codes of a job that ended without succeeding (exit 4, 5C-1 Decision 41): its outcome, and
@@ -362,6 +365,11 @@ const UNAVAILABLE_CODES: &[&str] = &[
     // exited or could not start (`details.code`, `signal`). Both are resumable.
     "SESSION_INTERRUPTED",
     "PROVIDER_EXITED",
+    // Agent sessions (7A-2 review): a non-local model without a price cannot keep its money
+    // budget (refresh the catalogue or pick another model); an `agent.watch` that fell
+    // behind (watch again from `details.lastSeq`).
+    "PRICING_UNKNOWN",
+    "WATCH_LAGGING",
 ];
 
 /// The one place error codes become exit codes.

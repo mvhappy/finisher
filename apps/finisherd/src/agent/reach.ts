@@ -14,6 +14,9 @@
 // - **Path reach:** the project folder (with `workspace/<sessionId>/` in it) and the roots of
 //   the libraries the project references; `project.open` and `project.create` are refused
 //   (`SCOPE_DENIED`): the session's project is opened by `finisherd` at start.
+// - **Nothing outside its branches changes:** `project.acknowledgeSalvage` (project state, no
+//   branch) and the diagnostics settings (`diagnostics.project`, `.consent`, `.purge`) are
+//   refused to sessions too (`SCOPE_DENIED {reason: agentSession}`); their reads stay open.
 // - **Author and `session_txs`:** every write carries the session's author
 //   (`agent:<role>:<sessionId>`), whatever it sent, and every commit, undo, redo, revert,
 //   cherry-pick and merge it makes is recorded in `session_txs` after the engine answers,
@@ -218,16 +221,26 @@ export class PathReach {
 }
 
 /**
- * `SCOPE_DENIED` for a session opening or creating a project (spec §5.6, §6.1): no mode holds
- * either; the session's own project is opened by `finisherd` at start.
+ * The RPCs no session may call whatever its scopes (spec §5.6, §6.1): opening or creating a
+ * project (the session's own is opened by `finisherd` at start), and the calls that change
+ * state outside any branch: a salvage acknowledgement and the diagnostics settings and consent.
  */
-function noProjectOpen(tag: string): FinError {
-  return finError(
-    "SCOPE_DENIED",
-    `${tag} is not available to an agent session`,
-    { tag, scopes: [], principal: "agent", reason: "agentSession" },
-    "An agent session works in the project it was started for, which Finisher opens for it.",
-  );
+export const SESSION_REFUSED_RPCS: ReadonlySet<string> = new Set([
+  "project.open",
+  "project.create",
+  "project.acknowledgeSalvage",
+  "diagnostics.project",
+  "diagnostics.consent",
+  "diagnostics.purge",
+]);
+
+/** `SCOPE_DENIED` for a session calling one of `SESSION_REFUSED_RPCS`. */
+function refusedToSessions(tag: string): FinError {
+  const fix =
+    tag === "project.open" || tag === "project.create"
+      ? "An agent session works in the project it was started for, which Finisher opens for it."
+      : "Only a person changes this: run it yourself, outside the agent session.";
+  return finError("SCOPE_DENIED", `${tag} is not available to an agent session`, { tag, scopes: [], principal: "agent", reason: "agentSession" }, fix);
 }
 
 export interface AgentHookDeps {
@@ -243,7 +256,7 @@ export function agentChainHooks(deps: AgentHookDeps): ChainHooks {
   return {
     extraRoots: (principal, only) => deps.paths.extra(principal, only),
     authorize: (tag, principal) =>
-      (tag === "project.open" || tag === "project.create") && deps.reach.covers(principal) ? Effect.fail(noProjectOpen(tag)) : Effect.void,
+      SESSION_REFUSED_RPCS.has(tag) && deps.reach.covers(principal) ? Effect.fail(refusedToSessions(tag)) : Effect.void,
     authorOf: (principal) => {
       const s = deps.reach.sessionOf(principal);
       return s === undefined ? undefined : sessionAuthor(s);

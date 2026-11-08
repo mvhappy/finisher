@@ -49,6 +49,7 @@ import { claimSocketPath, makeLocalSocketServer, serveRpc } from "./transport.ts
 import { makeTicketedWebSocketServer, makeUpgradeCheck } from "./upgrade.ts";
 import { ServerControlTag } from "./server-admin.ts";
 import { isServeCommand, runConsole } from "./console/main.ts";
+import { agentWarnings } from "./agent/warnings.ts";
 
 export interface ServeOptions {
   readonly serverData: string;
@@ -205,6 +206,10 @@ export const serve = ({
         revoke: { ...revokeDeps, revoke: (ref) => credentials.markEnded(ref, "owner") },
       });
       sessionCredentials.drain();
+      // A revocation lost before it was written (a busy store, then a crash) is done now.
+      sessionCredentials.reconcile();
+      // Owner decision F2: before 7C agent tools are never sandboxed; sessions run, warned.
+      for (const w of agentWarnings()) yield* Effect.logWarning(`finisherd: ${w.code}: ${w.message}`);
       // Its journal records metadata to the diagnostics journal and content to the trace store (D34).
       const agentJournal = new AgentJournal({
         diagnostics: diagnostics.journal,

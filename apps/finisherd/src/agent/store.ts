@@ -16,20 +16,21 @@ import { Effect } from "effect";
 import type { ControlStore } from "../control/db.ts";
 import { registerChain } from "../control/migrations.ts";
 import { agent0001 } from "../control/migrations/agent/0001.ts";
+import { agent0002 } from "../control/migrations/agent/0002.ts";
 import { finError } from "../errors.ts";
 import { dirOlderThan, ensureAgentsRoot, listSessionDirs, makeSessionDirs, readBlob, removeBlob, removeSessionDir, sweepBlobs, writeBlob } from "./blobs.ts";
 import type { Clock, Ids } from "./clock.ts";
 import type { LedgerStore } from "./ledger.ts";
 import { initialState, next, type SessionEffect, type SessionEvent, type SessionState } from "./session.ts";
 import type { Appended, ApprovalRow, NewApproval, NewNode, NewSession, NodeRow, OutboxEffect, OutboxItem, Recovery, RunRow, RunStart, SessionQuery, SessionRow } from "./store-rows.ts";
-import { type Applied, addUsage, INLINE_MAX, invalid, outboxOf, SESSION_COLUMNS, SYNTHETIC_RESULT, STORE_SQL, sessionNotFound, stateOf } from "./store-rows.ts";
-import { toApproval, toNode, toRun, toSession, ZERO_USAGE } from "./store-rows.ts";
+import { type Applied, addUsage, approvalExpired, INLINE_MAX, invalid, outboxOf, SYNTHETIC_RESULT, STORE_SQL, sessionNotFound, stateOf } from "./store-rows.ts";
+import { sessionInsertArgs, sessionListQuery, toApproval, toNode, toRun, toSession, ZERO_USAGE } from "./store-rows.ts";
 import { DbLedger, type SessionBranchState, type SessionTx, SessionStates, SessionTxs, type TxOutcome } from "./store-tables.ts";
 
 export type { Appended, Applied, NewApproval, NewNode, NewSession, OutboxEffect, OutboxItem, Recovery, RunStart, SessionQuery } from "./store-rows.ts";
 export type { SessionBranchState, SessionTx, SessionTryRow, TxOutcome } from "./store-tables.ts";
 
-registerChain("agent", [agent0001], { formatVersion: 1, minReaderVersion: 1 });
+registerChain("agent", [agent0001, agent0002], { formatVersion: 2, minReaderVersion: 1 });
 
 const DAY_MS = 86_400_000;
 /** `agents.retentionDays` default (Decision 4). */
@@ -87,28 +88,7 @@ export class AgentStore {
     await makeSessionDirs(this.root, s.id);
     return this.#cs.tx(() => {
       if (this.#s.exists!.get(s.id) !== undefined) throw finError("INVALID_REQUEST", "a session with this id exists", { sessionId: s.id });
-      this.#s.insertSession!.run(
-        s.id,
-        s.projectId,
-        s.harness,
-        s.provider,
-        s.model,
-        s.weights,
-        s.role,
-        s.mode,
-        s.rootBranch ?? null,
-        s.base.branch,
-        s.base.seq,
-        s.parent ?? null,
-        initialState.status,
-        s.id,
-        s.providerRef ?? null,
-        JSON.stringify(s.budget),
-        JSON.stringify(ZERO_USAGE),
-        JSON.stringify(s.createdBy),
-        this.#clock.now(),
-        s.title ?? null,
-      );
+      this.#s.insertSession!.run(...sessionInsertArgs(s, initialState.status, this.#clock.now()));
       this.#states.create(s.id, s.rootBranch ?? s.base.branch);
       return toSession(this.#row(s.id));
     });
@@ -121,19 +101,8 @@ export class AgentStore {
 
   /** Newest first. `next` is set when another page may follow. */
   list(q: SessionQuery = {}): { sessions: Session[]; next?: string } {
-    const limit = Math.min(Math.max(Math.trunc(q.limit ?? 50), 1), 200);
     if (q.projects !== undefined && q.projects.length === 0) return { sessions: [] };
-    const where: string[] = [];
-    const args: string[] = [];
-    const add = (clause: string, arg: string): void => {
-      where.push(clause);
-      args.push(arg);
-    };
-    if (q.projectId !== undefined) add("projectId = ?", q.projectId);
-    if (q.projects !== undefined) add("projectId IN (SELECT value FROM json_each(?))", JSON.stringify(q.projects));
-    if (q.status !== undefined) add("status = ?", q.status);
-    if (q.cursor !== undefined) add("id < ?", q.cursor);
-    const sql = `SELECT ${SESSION_COLUMNS} FROM sessions ${where.length > 0 ? `WHERE ${where.join(" AND ")}` : ""} ORDER BY id DESC LIMIT ?`;
+    const { sql, args, limit } = sessionListQuery(q);
     let stmt = this.#lists.get(sql);
     if (stmt === undefined) this.#lists.set(sql, (stmt = this.#cs.db.prepare(sql)));
     const rows = stmt.all(...args, limit + 1) as unknown as SessionRow[];
@@ -186,6 +155,7 @@ export class AgentStore {
     for (const effect of t.effects) this.#effect(row, t.state, effect, run, now);
     for (const o of outboxOf(t.effects)) this.#queue(sessionId, o, now);
     const s = t.state;
+    if (e.kind === "ready" && s.status === "idle") this.#s.markReady!.run(now, sessionId);
     this.#s.setState!.run(s.status, s.reason, s.runId, JSON.stringify(s.approvals), s.status === "ended" ? now : null, sessionId);
     return { session: toSession(this.#row(sessionId)), effects: t.effects };
   }
@@ -352,16 +322,54 @@ export class AgentStore {
     });
   }
 
-  /** Answers an open approval (`by`: `kind:id` of the principal, or `policy`); else `INVALID_REQUEST`. */
+  /**
+   * Answers an open approval (`by`: `kind:id` of the principal, or `policy`); else
+   * `INVALID_REQUEST`. One past its `expiresAt` is expired (and leaves the session's open list)
+   * instead, and the answer is `APPROVAL_EXPIRED`.
+   */
   answerApproval(id: string, decision: ApprovalDecision, by: string): { approval: Approval; session: Session } {
-    return this.#cs.tx(() => {
+    const answered = this.#cs.tx(() => {
       const a = this.#approval(id) ?? invalid("no such approval", { id });
-      if (Number(this.#s.answerApproval!.run(decision, by, this.#clock.now(), id).changes) === 0) {
+      const now = this.#clock.now();
+      if (a.status === "open" && a.expiresAt <= now) {
+        this.#expireIn(a.id, a.sessionId);
+        return null;
+      }
+      if (Number(this.#s.answerApproval!.run(decision, by, now, id).changes) === 0) {
         invalid(`the approval is ${a.status}`, { id, status: a.status });
       }
       const { session } = this.#applyIn(a.sessionId, { kind: "approvalAnswered", id }, {});
       return { approval: this.#approval(id)!, session };
     });
+    if (answered === null) throw approvalExpired(id);
+    return answered;
+  }
+
+  /**
+   * The hourly sweep's part (Decision 21): every open approval past its `expiresAt` is
+   * expired and leaves its session's open list. Answers the sessions it changed.
+   */
+  expireOverdueApprovals(now = this.#clock.now()): Session[] {
+    const changed = new Map<string, Session>();
+    for (;;) {
+      const rows = this.#s.overdueApprovals!.all(now, SWEEP_PAGE) as Array<{ id: string; sessionId: string }>;
+      for (const r of rows) {
+        const s = this.#cs.tx(() => this.#expireIn(r.id, r.sessionId));
+        if (s !== undefined) changed.set(s.id, s);
+      }
+      if (rows.length < SWEEP_PAGE) break;
+    }
+    return [...changed.values()];
+  }
+
+  /** Expires one open approval in the caller's tx; the session's state when it changed. */
+  #expireIn(id: string, sessionId: string): Session | undefined {
+    const row = this.#s.session!.get(sessionId) as unknown as SessionRow | undefined;
+    if (row === undefined || row.status === "ended") {
+      this.#s.expireApproval!.run(id);
+      return undefined;
+    }
+    return this.#applyIn(sessionId, { kind: "approvalExpired", id }, {}).session;
   }
 
   /** Marks an answered approval used (a one-time grant); false when it was not answered or is used. */
@@ -384,6 +392,15 @@ export class AgentStore {
 
   // Transactions and branch state -----------------------------------------------------------
 
+  /**
+   * Whether the session ever became `idle` (its credential was minted first). False only for
+   * one a crash stopped between its record and its credential.
+   */
+  everReady(sessionId: string): boolean {
+    const r = this.#s.readyAt!.get(sessionId) as { readyAt: number | null } | undefined;
+    return r !== undefined && r.readyAt !== null;
+  }
+
   /** Records an agent principal's transaction under its session (the principal id). */
   recordTx(t: { txId: string; sessionId: string; callId: string | null; attribution: SessionTx["attribution"]; at: number }): void {
     this.#txs.record(t);
@@ -403,6 +420,19 @@ export class AgentStore {
 
   setOutcome(txId: string, outcome: TxOutcome): boolean {
     return this.#txs.setOutcome(txId, outcome);
+  }
+
+  /**
+   * Removes `session_txs` rows (owner decision: they outlive their session, so the outcome
+   * tracker can attribute late merges): every row of a project that is removed, or of one
+   * session by an explicit admin purge. Neither a session's delete nor its retention sweep does.
+   * Answers how many rows went.
+   */
+  async purgeTxs(of: { readonly projectId: string } | { readonly sessionId: string }): Promise<number> {
+    const [column, value] = "projectId" in of ? ["projectId", of.projectId] : ["sessionId", of.sessionId];
+    return Effect.runPromise(
+      this.#cs.deleteInBatches(`DELETE FROM session_txs WHERE txId IN (SELECT txId FROM session_txs WHERE ${column} = ? LIMIT ?)`, [value]),
+    );
   }
 
   state(sessionId: string): SessionBranchState {
@@ -466,6 +496,12 @@ export class AgentStore {
   recoverAfterCrash(): Recovery {
     const interrupted: string[] = [];
     const before = this.#closed;
+    // Money and tokens held for model calls that died with the last process: no call settles
+    // them now, so they are returned before anything else (the outbox included) runs.
+    this.#cs.tx(() => {
+      this.#s.clearReserved!.run();
+      this.#s.clearDailyReserved!.run();
+    });
     for (const { id } of this.#s.live!.all() as Array<{ id: string }>) {
       this.#cs.tx(() => this.#applyIn(id, { kind: "interrupted", reason: SERVER_RESTART }, {}));
       interrupted.push(id);
@@ -536,12 +572,10 @@ export class AgentStore {
     return { effects };
   }
 
+  /** A session's product state; its `session_txs` rows stay (`purgeTxs`). */
   async #removeRows(sessionId: string): Promise<void> {
     await Effect.runPromise(
       this.#cs.deleteInBatches("DELETE FROM nodes WHERE id IN (SELECT id FROM nodes WHERE sessionId = ? LIMIT ?)", [sessionId]),
-    );
-    await Effect.runPromise(
-      this.#cs.deleteInBatches("DELETE FROM session_txs WHERE txId IN (SELECT txId FROM session_txs WHERE sessionId = ? LIMIT ?)", [sessionId]),
     );
     this.#cs.tx(() => {
       const db = this.#cs.db;

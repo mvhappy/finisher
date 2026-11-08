@@ -7,7 +7,7 @@ import type { AgentProvider, AgentSessionStartPayload, Approval, BudgetSpec, Cos
 import { finError } from "../errors.ts";
 import type { ProviderRef } from "./adapter.ts";
 import { type BudgetLimits, DEFAULT_BUDGET, type Reading } from "./budget.ts";
-import type { Usage as TokenUsage } from "./catalogue/catalogue.ts";
+import type { Catalogue, Usage as TokenUsage } from "./catalogue/catalogue.ts";
 import type { JournalPhase } from "./session.ts";
 
 /** `agent.session.start`'s payload. */
@@ -106,6 +106,11 @@ export const NO_JOURNAL: RuntimeJournal = {
 };
 
 export interface Pricing {
+  /**
+   * Whether the model has a price (a local model always does: zero). A session of a non-local
+   * model without one is refused at start (`PRICING_UNKNOWN`): its money budget could not hold.
+   */
+  known(provider: AgentProvider, model: string): boolean;
   /** The money of one model call: what the provider reported, else the catalogue's price. */
   price(s: Session, u: TokenUsage, reportedMicros: number | undefined): { micros: number; basis: CostBasis };
   /** A projected call's cost for the reservation, or null when the price is unknown. */
@@ -114,8 +119,12 @@ export interface Pricing {
   cacheReadWeight(s: Session): number;
 }
 
-/** Reported cost when there is one; local models cost nothing; anything else is unknown. */
+/**
+ * Reported cost when there is one; local models cost nothing; anything else is unknown, so only
+ * local sessions can start under it (the default until Task 12 passes `cataloguePricing`).
+ */
 export const REPORTED_PRICING: Pricing = {
+  known: (provider) => provider === "local",
   price: (s, _u, reported) => {
     if (reported !== undefined) return { micros: reported, basis: "reported" };
     if (s.provider === "local") return { micros: 0, basis: "priced" };
@@ -124,6 +133,25 @@ export const REPORTED_PRICING: Pricing = {
   projected: () => null,
   cacheReadWeight: () => 1,
 };
+
+/** `Pricing` from the model catalogue (its price cache; spec §4.7). */
+export function cataloguePricing(cat: Pick<Catalogue, "describe" | "price" | "projectedMicros" | "cacheReadWeight">): Pricing {
+  return {
+    known: (provider, model) => provider === "local" || cat.describe(provider, model).price !== undefined,
+    price: (s, u, reported) => cat.price(s.provider, s.model, u, reported),
+    projected: (s, u) => cat.projectedMicros(s.provider, s.model, u),
+    cacheReadWeight: (s) => cat.cacheReadWeight(s.provider, s.model),
+  };
+}
+
+export function pricingUnknown(provider: string, model: string): FinError {
+  return finError(
+    "PRICING_UNKNOWN",
+    `no price is known for ${model}, so its money budget cannot be kept`,
+    { provider, model },
+    "refresh the model catalogue (`finisherd agent providers`), pick a listed model, or set its price in `agents.models`",
+  );
+}
 
 /** The session's limits: its spec over the server's defaults. */
 export function limitsOf(spec: BudgetSpec, defaults: BudgetLimits = DEFAULT_BUDGET): BudgetLimits {

@@ -1,6 +1,6 @@
 // Rows of the `agent` chain and their mapping to the contracts' records (plan 7A Decision 1).
 // Only `store.ts` and `store-tables.ts` use it.
-import type { AgentProvider, Approval, ApprovalKind, Node, NodeKind, Run, RunStatus, RunTrigger, Session, Usage } from "@finisher/contracts";
+import type { AgentProvider, Approval, ApprovalKind, FinError, Node, NodeKind, Run, RunStatus, RunTrigger, Session, Usage } from "@finisher/contracts";
 import type { BudgetSpec, Harness, Mode, SessionStatus, Weights } from "@finisher/contracts";
 import { finError } from "../errors.ts";
 import type { SessionEffect, SessionState } from "./session.ts";
@@ -312,6 +312,37 @@ export function outboxOf(effects: ReadonlyArray<SessionEffect>): OutboxEffect[] 
   return out;
 }
 
+/** `insertSession`'s parameters for a new session, in column order. */
+export function sessionInsertArgs(s: NewSession, status: string, now: number): Array<string | number | null> {
+  return [
+    s.id, s.projectId, s.harness, s.provider, s.model, s.weights, s.role, s.mode, s.rootBranch ?? null, s.base.branch, s.base.seq,
+    s.parent ?? null, status, s.id, s.providerRef ?? null, JSON.stringify(s.budget), JSON.stringify(ZERO_USAGE), JSON.stringify(s.createdBy),
+    now, s.title ?? null,
+  ];
+}
+
+/** `AgentStore.list`'s statement for `q` (newest first, one row more than a page). */
+export function sessionListQuery(q: SessionQuery): { sql: string; args: string[]; limit: number } {
+  const limit = Math.min(Math.max(Math.trunc(q.limit ?? 50), 1), 200);
+  const where: string[] = [];
+  const args: string[] = [];
+  const add = (clause: string, arg: string): void => {
+    where.push(clause);
+    args.push(arg);
+  };
+  if (q.projectId !== undefined) add("projectId = ?", q.projectId);
+  if (q.projects !== undefined) add("projectId IN (SELECT value FROM json_each(?))", JSON.stringify(q.projects));
+  if (q.status !== undefined) add("status = ?", q.status);
+  if (q.cursor !== undefined) add("id < ?", q.cursor);
+  const sql = `SELECT ${SESSION_COLUMNS} FROM sessions ${where.length > 0 ? `WHERE ${where.join(" AND ")}` : ""} ORDER BY id DESC LIMIT ?`;
+  return { sql, args, limit };
+}
+
+/** An approval answered after its `expiresAt` (exit 4): it was expired instead. */
+export function approvalExpired(id: string): FinError {
+  return finError("APPROVAL_EXPIRED", "the approval expired before it was answered", { id }, "Ask for it again: repeat the request, or resume the session.");
+}
+
 /** Every statement `AgentStore` prepares, once, by name. */
 export const STORE_SQL: Readonly<Record<string, string>> = {
   insertSession: `INSERT INTO sessions (${SESSION_COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, '[]', ?, ?, ?, ?, ?, ?, NULL, ?)`,
@@ -343,6 +374,11 @@ export const STORE_SQL: Readonly<Record<string, string>> = {
   approval: `SELECT ${APPROVAL_COLUMNS} FROM approvals WHERE id = ?`,
   approvalsOf: `SELECT ${APPROVAL_COLUMNS} FROM approvals WHERE sessionId = ? ORDER BY requestedAt, id`,
   expireApproval: "UPDATE approvals SET status = 'expired' WHERE id = ? AND status = 'open'",
+  overdueApprovals: "SELECT id, sessionId FROM approvals WHERE status = 'open' AND expiresAt <= ? ORDER BY expiresAt, id LIMIT ?",
+  markReady: "UPDATE sessions SET readyAt = ? WHERE id = ? AND readyAt IS NULL",
+  readyAt: "SELECT readyAt FROM sessions WHERE id = ?",
+  clearReserved: "UPDATE budgets SET reserved = 0 WHERE reserved != 0",
+  clearDailyReserved: "UPDATE budget_days SET reserved = 0 WHERE reserved != 0",
   answerApproval: "UPDATE approvals SET status = 'answered', decision = ?, by = ?, answeredAt = ? WHERE id = ? AND status = 'open'",
   consumeApproval: "UPDATE approvals SET consumedAt = ? WHERE id = ? AND status = 'answered' AND consumedAt IS NULL",
   outboxAdd: "INSERT INTO session_outbox (sessionId, effect, at) VALUES (?, ?, ?)",

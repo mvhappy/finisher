@@ -40,6 +40,8 @@ export type SessionEvent =
   | { kind: "runEnded"; runId: string; stop: string }
   | { kind: "approvalOpened"; id: string }
   | { kind: "approvalAnswered"; id: string }
+  /** An open approval passed its `expiresAt` (the hourly sweep, or an answer that came too late). */
+  | { kind: "approvalExpired"; id: string }
   | { kind: "interrupted"; reason: string }
   | { kind: "resumed" }
   | { kind: "ended"; reason: string };
@@ -145,11 +147,14 @@ export function next(s: SessionState, e: SessionEvent): Transition {
       return { state: { ...s, status, approvals: [...s.approvals, e.id] }, effects: [] };
     }
 
-    case "approvalAnswered": {
-      if (!s.approvals.includes(e.id)) return unchanged(s);
+    case "approvalAnswered":
+    case "approvalExpired": {
+      // An expiry is an answer no one gave: the approval leaves the open list either way.
+      const expire: SessionEffect[] = e.kind === "approvalExpired" ? [{ kind: "expireApprovals", ids: [e.id] }] : [];
+      if (!s.approvals.includes(e.id)) return { state: s, effects: expire };
       const approvals = s.approvals.filter((a) => a !== e.id);
       const status = s.status === "waitingApproval" && approvals.length === 0 ? "running" : s.status;
-      return { state: { ...s, status, approvals }, effects: [] };
+      return { state: { ...s, status, approvals }, effects: expire };
     }
 
     case "interrupted":

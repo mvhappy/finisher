@@ -1,10 +1,10 @@
 // Session budgets (sub-project 7 §13; plan 7A Decisions 10, 20, 21): tokens, money and wall clock
 // per session in the ledger, money per server per UTC day, and the per-run caps on model and
-// tool calls. Checked before each model call (projected, and the projection is **reserved** in
-// the ledger until the call is charged, so concurrent calls cannot overspend together; review
-// H3) and after each turn and tool call: a notice once per kind at 80 %, a stop at 100 % (the
-// runtime stops after the running tool call and opens a budget approval). Failed and retried
-// attempts are charged too (review B2).
+// tool calls. Checked before each model call (projected, and the projection's tokens and money
+// are **reserved** in the ledger until the call is charged, so concurrent calls cannot overshoot
+// together; review H3 and the 3b/6b/7 review) and after each turn and tool call: a notice once
+// per kind at 80 %, a stop at 100 % (the runtime stops after the running tool call and opens a
+// budget approval). Failed and retried attempts are charged too (review B2).
 //
 // What resets (review L4): the per-run call counters belong to the run and start at zero with
 // each run, a resumed one included; the 80 % notices are remembered by this `Budget` only, so
@@ -43,9 +43,10 @@ export interface Reading {
   readonly limit: number;
 }
 
-/** Money held for one model call between `canCall` and `charge` (or `release`). */
+/** Tokens and money held for one model call between `canCall` and `charge` (or `release`). */
 export interface Reservation {
   readonly micros: number;
+  readonly tokens: number;
   readonly day: string;
 }
 
@@ -130,8 +131,9 @@ export class Budget {
   }
 
   /**
-   * Whether a model call projected to use `projected` fits every budget, counting money other
-   * calls hold. When it fits, its projected cost is reserved until `charge` or `release`.
+   * Whether a model call projected to use `projected` fits every budget, counting the tokens
+   * and money other calls hold. When it fits, its projected tokens and cost are reserved until
+   * `charge` or `release`.
    */
   canCall(projected: Usage): Allowance {
     this.tick();
@@ -141,8 +143,12 @@ export class Budget {
     const micros = Math.max(0, this.opts.price?.(projected) ?? 0);
     const wall = this.read("wallMs");
     if (wall.used >= wall.limit) return { ok: false, ...wall };
-    const tokens = this.read("tokens");
-    if (tokens.used + this.tokensOf(projected) > tokens.limit) return { ok: false, ...tokens };
+    const tokens = this.ledger.read(this.sessionId, "tokens");
+    const tokenLimit = tokens.limit ?? this.limits.tokens;
+    const wantTokens = this.tokensOf(projected);
+    if (tokens.used + tokens.reserved + wantTokens > tokenLimit) {
+      return { ok: false, kind: "tokens", used: tokens.used + tokens.reserved, limit: tokenLimit };
+    }
     const money = this.ledger.read(this.sessionId, "money");
     const moneyLimit = money.limit ?? this.limits.moneyMicros;
     if (money.used + money.reserved + micros > moneyLimit) {
@@ -153,17 +159,23 @@ export class Budget {
     if (daily.used + daily.reserved + micros > this.limits.dailyMoneyMicros) {
       return { ok: false, kind: "dailyMoney", used: daily.used + daily.reserved, limit: this.limits.dailyMoneyMicros };
     }
-    if (micros === 0) return { ok: true, reservation: null };
-    this.ledger.add(this.sessionId, "money", { reserved: micros });
-    this.ledger.addDaily(day, { reserved: micros });
-    return { ok: true, reservation: { micros, day } };
+    if (micros === 0 && wantTokens === 0) return { ok: true, reservation: null };
+    if (wantTokens > 0) this.ledger.add(this.sessionId, "tokens", { reserved: wantTokens });
+    if (micros > 0) {
+      this.ledger.add(this.sessionId, "money", { reserved: micros });
+      this.ledger.addDaily(day, { reserved: micros });
+    }
+    return { ok: true, reservation: { micros, tokens: wantTokens, day } };
   }
 
   /** Returns a reservation unused (the call never reached the model). */
   release(r: Reservation | null | undefined): void {
     if (!r) return;
-    this.ledger.add(this.sessionId, "money", { reserved: -r.micros });
-    this.ledger.addDaily(r.day, { reserved: -r.micros });
+    if (r.tokens > 0) this.ledger.add(this.sessionId, "tokens", { reserved: -r.tokens });
+    if (r.micros > 0) {
+      this.ledger.add(this.sessionId, "money", { reserved: -r.micros });
+      this.ledger.addDaily(r.day, { reserved: -r.micros });
+    }
   }
 
   /**
