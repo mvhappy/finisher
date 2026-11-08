@@ -56,6 +56,9 @@ pub struct Dav1dDecoder {
     polled: bool,
     /// `finish` was called: no more packets until `flush`.
     finished: bool,
+    /// A waiting packet failed to go in right after a picture came out: the picture is
+    /// returned first, the error on the next `receive`.
+    failed: Option<CoreError>,
 }
 
 impl Dav1dDecoder {
@@ -85,6 +88,7 @@ impl Dav1dDecoder {
             waiting: VecDeque::new(),
             polled: false,
             finished: false,
+            failed: None,
         })
     }
 
@@ -128,6 +132,9 @@ impl VideoDecoder for Dav1dDecoder {
     }
 
     fn receive(&mut self) -> Result<Option<DecodedFrame>, CoreError> {
+        if let Some(e) = self.failed.take() {
+            return Err(e);
+        }
         loop {
             // Asking twice with nothing sent in between waits on the frames in flight: only
             // at the end of the stream.
@@ -138,7 +145,9 @@ impl VideoDecoder for Dav1dDecoder {
             self.polled = true;
             match self.ctx.receive() {
                 Status::Done(f) => {
-                    self.pump()?;
+                    // The picture is out of dav1d already: a packet failing now must not
+                    // lose it.
+                    self.failed = self.pump().err();
                     return Ok(Some(f));
                 }
                 Status::Again => {
@@ -165,6 +174,7 @@ impl VideoDecoder for Dav1dDecoder {
         self.ctx.flush();
         self.polled = false;
         self.finished = false;
+        self.failed = None;
         Ok(())
     }
 

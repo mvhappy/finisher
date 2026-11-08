@@ -5,7 +5,10 @@
 use std::io::Cursor;
 
 use fin_codecs::fixture::{ClipSpec, pattern_clip};
-use fin_codecs::{Av1EncoderConfig, FrameReader, RawFrame, capabilities, open_av1_encoder};
+use fin_codecs::{
+    Av1EncoderConfig, DecodeThreads, FrameReader, RawFrame, capabilities, open_av1_encoder,
+    open_decoder_with,
+};
 use fin_container::{Demuxer, Limits};
 use fin_core::Rational;
 use fin_media::testing::{pattern, read_id_y};
@@ -87,6 +90,43 @@ fn a_truncated_sample_is_decode_failed_without_a_panic() {
     let e = failed.expect("a cut keyframe fails to decode");
     assert_eq!(e.code, "DECODE_FAILED");
     assert_eq!(e.details["backend"], "dav1d");
+}
+
+#[test]
+fn a_picture_out_before_a_bad_packet_is_kept() {
+    let file = pattern_clip(&ClipSpec {
+        frames: 3,
+        ..Default::default()
+    })
+    .unwrap();
+    let mut d = Demuxer::open(Cursor::new(file), &Limits::default()).unwrap();
+    let track = d.video().unwrap().clone();
+    let mut dec = open_decoder_with(&track, &capabilities(), DecodeThreads::SINGLE).unwrap();
+    let mut buf = Vec::new();
+    for i in 0..2 {
+        d.read_sample(track.track, i, &mut buf).unwrap();
+        dec.send(&buf, i as i64).unwrap();
+    }
+    // A frame OBU claiming 127 bytes it does not have. dav1d holds the second packet unparsed
+    // while the first picture waits, so this one waits too, and goes in (and fails) only once
+    // the second picture has come out of dav1d.
+    dec.send(&[0x32, 0x7f], 2).unwrap();
+    let mut pts = Vec::new();
+    let e = loop {
+        match dec.receive() {
+            Ok(Some(f)) => pts.push(f.pts),
+            Ok(None) => panic!("the bad packet is not reported (pictures {pts:?})"),
+            Err(e) => break e,
+        }
+    };
+    assert_eq!(
+        pts,
+        [0, 1],
+        "every picture before the bad packet comes out first"
+    );
+    assert_eq!(e.code, "DECODE_FAILED");
+    // Reported once.
+    assert!(dec.receive().unwrap().is_none());
 }
 
 #[test]
