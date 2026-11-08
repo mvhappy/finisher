@@ -28,6 +28,10 @@
     "reason": "real_directory resolves a root once at library.add (and the server data directory); never a file under a root."
   },
   {
+    "path": "crates/fin-node/src/test_registry.rs",
+    "reason": "The test-hooks registry checks for its own publisher key file, never a library path."
+  },
+  {
     "path": "crates/fin-node/src/private_dir.rs",
     "reason": "Inspects the server's private directories."
   },
@@ -50,6 +54,10 @@
   {
     "path": "crates/fin-workers/src/test_family/mod.rs",
     "reason": "The test families read and write the job's own files and process reports by path (test-hooks builds only)."
+  },
+  {
+    "path": "crates/fin-workers/examples/reference_render.rs",
+    "reason": "A developer tool: reads a kept job directory and its originals by path (the e2e look scenario's CPU oracle); never a library reader."
   },
   {
     "path": "crates/fin-workers/tests",
@@ -78,5 +86,13 @@
   {
     "path": "crates/fin-node/src/test_registry.rs",
     "reason": "The test registry checks for its own publisher key files (test-hooks builds only; never a library path)."
+  },
+  {
+    "path": "crates/fin-workers/src/media/open_cache.rs",
+    "reason": "Unit tests write fixture clips and stat them by path; the module itself opens originals only through fin-library's no-follow opener."
+  },
+  {
+    "path": "crates/fin-node/tests/media_inputs.rs",
+    "reason": "Tests build and inspect temporary trees by path; none is a library reader."
   }
 ]

@@ -4,6 +4,8 @@
 //! ```text
 //! fin-workers <family> [--warm]        run a family's worker (stdin/stdout envelope); the engine
 //!                                       appends `--warm` for a warm spawn
+//! fin-workers media --replay <jobdir> [--params <file>]
+//!                                       runs a media job directory without a host
 //! fin-workers --helper <name>:<variant> run a helper (test builds: test:ok|exitEarly|hang|spawn|call)
 //! fin-workers watchdog <host pid>       the Unix host watchdog (`watchdog.rs`)
 //! fin-workers --spawn-broker            the Windows host's spawn broker image: created
@@ -18,6 +20,7 @@
 
 mod families;
 mod library;
+mod media;
 #[cfg(feature = "test-hooks")]
 mod test_family;
 #[cfg(unix)]
@@ -28,7 +31,7 @@ const USAGE: i32 = 2;
 fn usage(msg: &str) -> ! {
     eprintln!("fin-workers: {msg}");
     eprintln!(
-        "usage: fin-workers <family> [--warm] | --helper <name>:<variant> | watchdog <host pid> | --version"
+        "usage: fin-workers <family> [--warm] | media --replay <jobdir> [--params <file>] | --helper <name>:<variant> | watchdog <host pid> | --version"
     );
     std::process::exit(USAGE)
 }
@@ -65,6 +68,9 @@ fn main() {
             if families::run_helper(spec).is_none() {
                 usage(&format!("unknown helper {spec:?}"));
             }
+        }
+        Some("media") if args.get(1).is_some_and(|a| a == "--replay") => {
+            std::process::exit(media::replay::main(&args[2..]))
         }
         Some(family) => {
             let warm = match args.get(1).map(String::as_str) {

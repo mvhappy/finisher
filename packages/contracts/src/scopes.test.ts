@@ -22,6 +22,7 @@ const NEEDS: Record<string, ResolverName> = {
   tx: "branch",
   path: "probePath",
   importDir: "importDir",
+  out: "outDir",
 };
 
 test("rpc_scopes_cover_every_rpc", () => {
@@ -51,6 +52,12 @@ test("escalations_add_the_human_only_scopes", () => {
   expect(requiredScopes("project.open", { dir: "/d" }, { attached: true })).toEqual(["project.read"]);
   expect(requiredScopes("project.open", { dir: "/d" }, { attached: false })).toEqual(["project.read", "project.write"]);
   expect(requiredScopes("project.open", { dir: "/d", relocate: true }, { attached: true })).toEqual(["project.read", "project.confirm"]);
+});
+
+test("media_look_needs_project_write_only_to_name_a_folder (6A Tasks 11-12 review M1)", () => {
+  expect(requiredScopes("media.look", { projectId: "p", at: ["0"] })).toEqual(["project.read", "jobs.submit"]);
+  expect(requiredScopes("media.look", { projectId: "p", at: ["0"], out: "/d" })).toEqual(["project.read", "jobs.submit", "project.write"]);
+  expect(requiredScopes("media.capabilities", {})).toEqual(["server.read"]);
 });
 
 test("diagnostics_admin_guards_consent_purge_project_default_and_content (5A Task 7)", () => {

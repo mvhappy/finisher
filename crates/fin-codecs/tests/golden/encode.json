@@ -7,6 +7,13 @@
       "recorded": "2026-11-07",
       "blake3": "5adee1c0d6e845461c18ba5b5393ab9c79985a0b56cc7d3f59fc5d1a8d093655",
       "bytes": 26109
+    },
+    {
+      "class": "linux-x86_64",
+      "machine": "AMD Ryzen 7 7800X3D, Ubuntu 24.04.5, gcc 13.3 via cmake 3.28, rustc 1.99.1",
+      "recorded": "2026-11-08",
+      "blake3": "5adee1c0d6e845461c18ba5b5393ab9c79985a0b56cc7d3f59fc5d1a8d093655",
+      "bytes": 26109
     }
   ]
 }

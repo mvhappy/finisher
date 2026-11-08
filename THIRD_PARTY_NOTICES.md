@@ -489,6 +489,12 @@ status: used (sub-project 4C), as Cargo dependencies; no code is copied.
 
 dotLottie archives use the `zip` and `flate2` stack listed under `fin-fonts`.
 
+## png and fdeflate — `fin-workers` (the `media.look` PNG writer)
+status: used (sub-project 6A, Task 11), as Cargo dependencies; no code is copied.
+- `png` 0.18 (MIT OR Apache-2.0): encodes and decodes PNG; `media.look` writes its frames with it;
+- `fdeflate` 0.3 (MIT OR Apache-2.0): `png`'s fast deflate; the rest of its stack (`flate2`,
+  `crc32fast`, `miniz_oxide`) is listed under `fin-fonts` and "Other Cargo dependencies".
+
 ## Catalog fonts (OFL-1.1) — fetched at run time, never distributed
 status: used (sub-project 4C) by URL only: `crates/fin-fonts/catalog/catalog.json` names
 upstream files by SHA-256 at pinned commits and release tags, and each machine downloads

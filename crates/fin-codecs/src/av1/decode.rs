@@ -75,12 +75,19 @@ impl Dav1dDecoder {
     }
 
     pub fn new(threads: DecodeThreads) -> Result<Dav1dDecoder, CoreError> {
+        Self::with_limit(threads, MAX_PIXELS)
+    }
+
+    /// [`Dav1dDecoder::new`] refusing pictures of more than `max_pixels` pixels (at most
+    /// [`MAX_PIXELS`]): the worker's own bound, since a picture it could not composite is not
+    /// worth allocating for.
+    pub fn with_limit(threads: DecodeThreads, max_pixels: u32) -> Result<Dav1dDecoder, CoreError> {
         // dav1d's limits: 256 threads, 256 frames in flight.
         let clamp = |n: u32| n.min(256) as i32;
         let ctx = Context::open(
             clamp(threads.threads),
             clamp(threads.frame_delay),
-            MAX_PIXELS,
+            max_pixels.min(MAX_PIXELS),
         )
         .map_err(|e| failed(e, "start"))?;
         Ok(Dav1dDecoder {

@@ -1,6 +1,6 @@
 //! The family and helper tables. Each entry runs its runtime and never returns; an unknown
 //! name answers `None`. The `test` families and helper exist only with `test-hooks`; 5D adds
-//! `library`, sub-project 6 `media`.
+//! `library`, sub-project 6 `media` (plan 6A Task 11).
 
 use std::convert::Infallible;
 
@@ -13,6 +13,7 @@ pub fn run_family(family: &str, warm: bool) -> Option<Infallible> {
             fin_jobs::worker::run(crate::test_family::TestFamily::new(family, warm))
         }
         "library" => fin_jobs::worker::run(crate::library::LibraryFamily::new(warm)),
+        "media" => fin_jobs::worker::run(crate::media::MediaFamily::new(warm)),
         _ => None,
     }
 }

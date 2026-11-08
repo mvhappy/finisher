@@ -1,3 +1,4 @@
+#![cfg(feature = "fetch")]
 //! The fetcher (4C Decisions 32 and 33), against the local test server with fault
 //! injection. No test touches the internet.
 

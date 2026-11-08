@@ -152,10 +152,23 @@ fn host_of(url: &str) -> Option<&str> {
     }
 }
 
+/// `http://` to `127.0.0.1`, `localhost` or `[::1]`.
+pub(crate) fn is_loopback_http(url: &str) -> bool {
+    let Some(rest) = url.strip_prefix("http://") else {
+        return false;
+    };
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
+    let host = match authority.strip_prefix('[') {
+        Some(v6) => v6.split(']').next().unwrap_or(""),
+        None => authority.split(':').next().unwrap_or(""),
+    };
+    matches!(host, "127.0.0.1" | "localhost" | "::1")
+}
+
 /// Whether a source URL's host is on the `sourceHosts` list (in `test-hooks` builds also a
 /// loopback `http` URL, the tests' local server).
 pub fn is_allowed_source_host(url: &str) -> bool {
-    if cfg!(feature = "test-hooks") && crate::http::is_loopback_http(url) {
+    if cfg!(feature = "test-hooks") && is_loopback_http(url) {
         return true;
     }
     host_of(url).is_some_and(|h| {
@@ -171,7 +184,7 @@ fn is_https(url: &str) -> bool {
     if url.starts_with("https://") && url.len() > "https://".len() {
         return true;
     }
-    cfg!(feature = "test-hooks") && crate::http::is_loopback_http(url)
+    cfg!(feature = "test-hooks") && is_loopback_http(url)
 }
 
 fn check_url(path: &str, url: &str) -> Result<(), CoreError> {

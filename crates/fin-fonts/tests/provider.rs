@@ -1,3 +1,4 @@
+#![cfg(feature = "fetch")]
 //! Two `rustls` providers in one process (sub-project 8 spec §6.6, 8A Task 1). `tough` brings
 //! `rustls` with `aws_lc_rs`; fin-fonts uses `ring`. With both compiled in and no process
 //! default, `rustls` panics wherever a `ClientConfig` is built without naming its provider.

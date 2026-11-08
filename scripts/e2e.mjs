@@ -6,7 +6,7 @@
 // through the `fin` binary, and asserts the subscriber saw every committed rev in order and
 // that its last rev equals `snapshot.get`'s. The server and the temp dir are always cleaned up.
 //
-// Usage: node scripts/e2e.mjs [--skip-build] [basic|storage|history|reel|diagnostics|plugins|auth ...]  (default: every scenario)
+// Usage: node scripts/e2e.mjs [--skip-build] [basic|storage|history|reel|diagnostics|plugins|auth|look ...]  (default: every scenario)
 //
 // Builds go to `CARGO_TARGET_DIR` when it is set (else `target/`), and so does the run's
 // `fin` and `fin-plugin`. Scenario temp dirs fall back to `/tmp` when `TMPDIR` is so deep that the
@@ -44,6 +44,14 @@
 // journal actors, revocation ending live streams, expiry, `TICKET_LIMIT`), a squatted socket, a
 // restart that rotates the keys, the audit rows and a leak grep over every log and the journal.
 //
+// The "look" scenario (scripts/e2e/look*.mjs) renders a project of two generated AV1 clips (CFR,
+// and VFR rotated 90°) with `fin look` through the real media worker: plan hashes against
+// `scripts/e2e/look-golden/`, frame ids read back from the PNGs against the nearest-frame rule,
+// every PNG against the CPU reference over a copy of the job directory (tolerance T1, T0 hashes
+// per fixture set), `fin-workers media --replay`, `skipped`, and a worker killed mid-job and
+// retried (`E2E_LOOK_BLESS=1` rewrites the goldens, refused under CI). It needs a GPU adapter
+// (`FIN_GPU=software` on lavapipe) and is skipped without one unless `FIN_REQUIRE_GPU=1`.
+//
 // After the builds, the run has a deadline (E2E_DEADLINE_MS, default 180 s): when it passes,
 // the server is killed and the script exits non-zero. Test hooks (scripts/e2e.test.mjs):
 // E2E_SERVER_CMD (a JSON array, `{serverData}` substituted) replaces the finisherd command,
@@ -57,25 +65,31 @@ import { run as runReel } from "./e2e/reel.mjs";
 import { run as runDiagnostics } from "./e2e/diagnostics.mjs";
 import { run as runPlugins } from "./e2e/plugins.mjs";
 import { run as runAuth } from "./e2e/auth.mjs";
+import { run as runLook } from "./e2e/look.mjs";
 
 export { parseFrames } from "./e2e/lib.mjs";
 export { checkRevs };
 
 const DEADLINE_MS = Number(process.env.E2E_DEADLINE_MS ?? 180_000);
-const SCENARIOS = { basic: runBasic, storage: runStorage, history: runHistory, reel: runReel, diagnostics: runDiagnostics, plugins: runPlugins, auth: runAuth };
+const SCENARIOS = { basic: runBasic, storage: runStorage, history: runHistory, reel: runReel, diagnostics: runDiagnostics, plugins: runPlugins, auth: runAuth, look: runLook };
 
 async function main(argv) {
+  const names = argv.filter((a) => !a.startsWith("--"));
   if (!argv.includes("--skip-build")) {
     build("cargo", ["build", "--release", "-p", "fin"]);
     build("cargo", ["build", "--release", "-p", "fin-plugin-cli"]); // publisher tooling: the plugins scenario builds registries with it
     build("pnpm", ["--filter", "@finisher/fin-node", "build"]);
     build("pnpm", ["--filter", "@finisher/fin-node", "build:test"]);
+    if (names.length === 0 || names.includes("look")) {
+      // The look scenario's fixture writer and CPU oracle (it runs them with `cargo run`, which finds them built).
+      build("cargo", ["build", "--release", "-p", "fin-codecs", "--features", "testing", "--example", "make_fixture"]);
+      build("cargo", ["build", "--release", "-p", "fin-workers", "--example", "reference_render"]);
+    }
   }
   // A fake server (E2E_SERVER_CMD) never reaches `fin`, so the release binary is not needed (or checked).
   if (!process.env.E2E_SERVER_CMD) assertNoTestHooks();
   // The builds run synchronously (a cold release build can take minutes in CI), so the
   // deadline covers the run itself.
-  const names = argv.filter((a) => !a.startsWith("--"));
   const unknown = names.filter((n) => !(n in SCENARIOS));
   if (unknown.length > 0) throw new Error(`unknown scenario ${unknown.join(", ")}; known: ${Object.keys(SCENARIOS).join(", ")}`);
   await withDeadline(

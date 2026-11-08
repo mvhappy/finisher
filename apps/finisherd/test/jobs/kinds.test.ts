@@ -35,6 +35,11 @@ describe("job kinds", () => {
     expect(() => r.registerKind(spec({ kind: "fam.never", timeoutS: 0 }))).toThrow(/timeoutS/);
     expect(() => r.registerFamily({ ...fam, family: "Fam" })).toThrow(/must match/);
     expect(() => r.registerFamily({ ...fam, family: "warm3", warm: { slots: 3 } })).toThrow(/slots/);
+    // Review L4: only built-in families take variables of finisherd's environment, and only listed ones.
+    expect(() => r.registerFamily({ ...fam, family: "envplugin", profile: "plugin", env: ["FIN_GPU"] })).toThrow(/plugin family cannot take variables/);
+    expect(() => r.registerFamily({ ...fam, family: "envplug2", pluginId: "@a/b", env: ["FIN_GPU"] })).toThrow(/plugin family cannot take variables/);
+    expect(() => r.registerFamily({ ...fam, family: "envbad", env: ["AWS_SECRET_ACCESS_KEY"] })).toThrow(/AWS_SECRET_ACCESS_KEY is not one of FIN_GPU/);
+    r.registerFamily({ ...fam, family: "envok", env: ["FIN_GPU"] });
     expect(() => r.registerFamily({ ...fam, family: "warmarg", program: { binary: "fin-workers", args: ["x", "--warm"] } })).toThrow(/engine appends --warm/);
     r.registerFamily({ ...fam, family: "dyn", program: (job) => ({ binary: "fin-workers", args: ["dyn", String(job.id)] }) });
     expect(r.program("dyn", { id: "j9" } as never, "warm")).toEqual({ binary: "fin-workers", args: ["dyn", "j9", "--warm"] });

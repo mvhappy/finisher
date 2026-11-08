@@ -14,7 +14,24 @@ jobs:
       fail-fast: false
       matrix:
         os: [macos-15, windows-2025, ubuntu-24.04]
+        include:
+          # The GPU the media tests and the look scenario render on (FIN_GPU, spec §5.2):
+          # lavapipe on Ubuntu and WARP on Windows are software adapters every runner has, so a
+          # missing one fails the run (FIN_REQUIRE_GPU=1) instead of skipping the GPU tests.
+          # macOS lets wgpu choose (Metal, when the runner exposes it) and skips without one.
+          - os: macos-15
+            gpu: auto
+            require-gpu: "0"
+          - os: windows-2025
+            gpu: software
+            require-gpu: "1"
+          - os: ubuntu-24.04
+            gpu: software
+            require-gpu: "1"
     runs-on: ${{ matrix.os }}
+    env:
+      FIN_GPU: ${{ matrix.gpu }}
+      FIN_REQUIRE_GPU: ${{ matrix.require-gpu }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -30,9 +47,15 @@ jobs:
         run: pnpm install --frozen-lockfile
       - name: Install Rust toolchain from rust-toolchain.toml
         run: rustup show active-toolchain || rustup toolchain install
-      - name: Install nasm (SVT-AV1's and dav1d's x86_64 assembly; cmake is on every runner)
+      - name: Install cmake and nasm (SVT-AV1's build and its and dav1d's x86_64 assembly) and Mesa's lavapipe
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y nasm
+        # mesa-vulkan-drivers is lavapipe (the software Vulkan adapter FIN_GPU=software picks);
+        # libvulkan1 is the loader the `ash` crate opens at run time.
+        run: sudo apt-get update && sudo apt-get install -y cmake nasm mesa-vulkan-drivers libvulkan1
+      - name: Check cmake (every runner image ships it; SVT-AV1 is built with it)
+        if: runner.os != 'Linux'
+        shell: bash
+        run: cmake --version
       - name: Install nasm (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
@@ -53,7 +76,9 @@ jobs:
         run: cargo run --release -p fin-fonts --example warm_cache -- "${{ runner.temp }}/fin-font-cache"
       - name: Rust tests
         # The default members: everything but the cross-host harness, whose `test-hooks`
-        # must not unify into fin or fin-node (scripts/check-test-hooks.mjs).
+        # must not unify into fin or fin-node (scripts/check-test-hooks.mjs). With
+        # FIN_REQUIRE_GPU=1 (Ubuntu, Windows) the compositor's and the media worker's GPU tests
+        # (media_look.rs, media_diag.rs) run on lavapipe or WARP and fail rather than skip.
         run: cargo test --release
         env:
           # fin's online and contract tests must run against a live finisherd, never skip.
@@ -61,8 +86,16 @@ jobs:
           # The real-font tests read the warmed cache and fail rather than skip without it.
           FIN_FONT_CACHE: ${{ runner.temp }}/fin-font-cache
           FIN_REQUIRE_FONTS: "1"
-      - name: Codecs (not a default member until 6A-2; needs cmake, nasm on x86_64, the submodules)
+      - name: Codecs (the fixture writers behind the `testing` feature; needs cmake, nasm on x86_64, the submodules)
         run: cargo test --release -p fin-codecs --features testing
+      - name: Encode golden of this machine class (informational, prints whether SVT-AV1's bytes match and the entry to record)
+        # The test asserts only with FIN_ENCODE_GOLDEN=1. A class without an entry in
+        # crates/fin-codecs/tests/golden/encode.json (Windows, until one is recorded from this
+        # log) shows up here as "no entry"; the record line is the JSON to add.
+        shell: bash
+        run: |
+          cargo test --release -p fin-codecs --features testing --test encode_golden -- --nocapture
+          FIN_ENCODE_GOLDEN=record cargo test --release -p fin-codecs --features testing --test encode_golden -- --nocapture
       - name: Install wasmtime (the wasm32 determinism runs)
         if: runner.os == 'Linux'
         uses: bytecodealliance/actions/wasmtime/setup@9152e710e9f7182e4c29ad218e4f335a7b203613 # v1.1.3
@@ -87,7 +120,7 @@ jobs:
         run: pnpm test
       - name: Gate tests
         run: pnpm test:gates
-      - name: End-to-end (fin → finisherd → WebSocket subscriber)
+      - name: End-to-end (fin → finisherd → WebSocket subscriber; the look scenario renders on FIN_GPU)
         run: pnpm e2e
         env:
           # The reel scenario's real-font pass seeds its server's cache from the warmed one.

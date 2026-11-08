@@ -1,6 +1,9 @@
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { ageDays, fetchCreatedAt, findViolations, isTooYoung, parseLock, resolveDates } from "./check-crate-age.mjs";
+import { ageDays, fetchCreatedAt, findViolations, isTooYoung, lockfiles, parseLock, parseLocks, resolveDates } from "./check-crate-age.mjs";
 
 const NOW = new Date("2026-11-07T12:00:00Z");
 const DAY = 86_400_000;
@@ -126,4 +129,24 @@ test("fetchCreatedAt waits and retries on 429, then fails on other errors", asyn
   assert.deepEqual(sleeps, [3000]);
   await assert.rejects(fetchCreatedAt("x", "1.0.0", { fetchFn: async () => reply(404, {}) }), /HTTP 404/);
   await assert.rejects(fetchCreatedAt("x", "1.0.0", { fetchFn: async () => reply(200, {}) }), /no version\.created_at/);
+});
+
+test("lockfiles lists the workspace lock and every committed fuzz lock, in name order", (t) => {
+  const root = mkdtempSync(join(tmpdir(), "fin-gate-crate-age-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  for (const c of ["fin-shm", "fin-container", "fin-core"]) mkdirSync(join(root, "crates", c, "fuzz"), { recursive: true });
+  writeFileSync(join(root, "crates", "fin-shm", "fuzz", "Cargo.lock"), "");
+  writeFileSync(join(root, "crates", "fin-container", "fuzz", "Cargo.lock"), "");
+  // fin-core has a fuzz directory but no lock: not listed.
+  assert.deepEqual(lockfiles(root), ["Cargo.lock", "crates/fin-container/fuzz/Cargo.lock", "crates/fin-shm/fuzz/Cargo.lock"]);
+  assert.deepEqual(lockfiles(join(root, "none")), ["Cargo.lock"]);
+});
+
+test("parseLocks merges several locks and drops duplicates", () => {
+  const other = LOCK + `\n[[package]]\nname = "libfuzzer-sys"\nversion = "0.4.13"\nsource = "registry+https://github.com/rust-lang/crates.io-index"\n`;
+  assert.deepEqual(parseLocks([LOCK, other]), [
+    { name: "libfuzzer-sys", version: "0.4.13" },
+    { name: "serde", version: "0.9.0" },
+    { name: "serde", version: "1.0.200" },
+  ]);
 });

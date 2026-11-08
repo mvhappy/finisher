@@ -69,9 +69,11 @@ function layout(kind: KindSpec, row: JobRow): { files: ReadonlyArray<MappedFile>
 
 /**
  * The success path's hook phase (Decision 40). The caller has persisted the result with
- * `phase: hooks` and every process that could write the directory has exited. The directory is
- * checked first (a link, FIFO or hard link a worker planted fails the job, `JOB_FAILED`, and
- * the hook never runs); then `onSucceeded`. Answers the final result (the hook's replacement,
+ * `phase: hooks`. A cold worker has exited by now; **a warm worker has not**: it is idle (its
+ * job ended with `ready`) and still holds whatever it opened, `out/` files included, so a hook
+ * that moves a file out of the directory must copy it (`commitJobOutput(…, copy)`), never rename
+ * it into the worker's reach. The directory is checked first (a link, FIFO or hard link a
+ * worker planted fails the job, `JOB_FAILED`, and the hook never runs); then `onSucceeded`. Answers the final result (the hook's replacement,
  * if any) or the failure. A restart's re-run (`rerun`) goes the same way.
  */
 export async function runOnSucceeded(
@@ -93,7 +95,7 @@ export async function runOnSucceeded(
   } catch (e) {
     return { ok: false, error: toFinError(e) };
   }
-  const ctx = { ...hookCtx(row, dirs, files, row.attempts), result: result as never, items: env.store.items(row.id), rerun };
+  const ctx = { ...hookCtx(row, dirs, files, row.attempts), result: result as never, items: env.store.items(row.id), rerun, extra: row.extra };
   const out = await runHook(env, "onSucceeded", Effect.suspend(() => hook(ctx)), kind.hookTimeoutS ?? DEFAULT_HOOK_TIMEOUT_S);
   if (!out.ok) return out;
   return { ok: true, result: out.value === undefined ? result : out.value };

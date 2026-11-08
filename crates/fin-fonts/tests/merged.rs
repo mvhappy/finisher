@@ -1,3 +1,4 @@
+#![cfg(feature = "fetch")]
 //! Plugin packs' font catalogs merged into the built-in one (8A Task 12a): new ids only, the
 //! merged catalog validated whole, the first pack catalog that does not merge (Task 12c), and a
 //! fetcher that follows a replaced catalog.
