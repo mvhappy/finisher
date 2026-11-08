@@ -43,10 +43,10 @@ export interface AdminDeps {
 export function sandboxWarning(caps: JobHostCaps, status: SandboxStatus = currentSandboxStatus()): Record<string, unknown> | undefined {
   const w = profileWarning("worker", status.os, status.worker);
   if (w === undefined && caps.sandboxed) return undefined;
-  return {
-    ...(w ?? profileWarning("worker", status.os, { kind: "disabled", reason: "profileNotReady" })),
-    sandbox: caps.sandbox,
-  };
+  if (w !== undefined) return { ...w, sandbox: caps.sandbox };
+  // The profile could be enforced, but the job host's spawner does not apply it yet (Task 7).
+  const base = profileWarning("worker", status.os, { kind: "disabled", reason: "profileNotReady" });
+  return { ...base, details: { ...base?.details, reason: "spawnerUnconfined" }, sandbox: caps.sandbox };
 }
 
 export interface AuditPurgeRequest {

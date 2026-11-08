@@ -6,7 +6,9 @@
 //!   this crate yet, so they answer `Disabled {profileNotReady}`.
 //! - [`status`] adds [`READY`]: a profile whose escape suite has not passed on this OS runs as
 //!   before 7C (`Disabled {profileNotReady}`), unless the mechanism itself is disabled, which
-//!   is the more useful warning (its fix is a boot parameter).
+//!   is the more useful warning (its fix is a boot parameter). `worker` reports an unavailable
+//!   mechanism as such even before it is ready: its Landlock phase is applied wherever a
+//!   sub-project requests it (6B-1), and refused where the host lacks it.
 //!
 //! `Disabled` runs unconfined with persistent warnings; `Unavailable` refuses the start
 //! (`SANDBOX_UNAVAILABLE {profile, os, need}`). There is no owner opt-out (owner decision
@@ -120,6 +122,9 @@ pub fn status(profile: Profile) -> Mechanism {
 pub fn status_with(profile: Profile, mechanism: Mechanism, ready: &[(Profile, Os)]) -> Mechanism {
     match mechanism {
         m @ Mechanism::Disabled { .. } => m,
+        // The worker profile's Landlock phase is applied wherever a sub-project requests it
+        // (6B-1), ready or not, and refused where the host lacks it: say so.
+        m @ Mechanism::Unavailable { .. } if profile == Profile::Worker => m,
         _ if !ready.contains(&(profile, Os::current())) => Mechanism::Disabled {
             reason: DisabledReason::ProfileNotReady,
         },

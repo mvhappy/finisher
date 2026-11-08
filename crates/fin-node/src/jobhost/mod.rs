@@ -185,6 +185,13 @@ impl JobHost {
         if let Some(w) = o.watchdog {
             opts.watchdog = w;
         }
+        // F2: only a host whose own mechanism is disabled accepts a worker's `selfSandbox: none`.
+        opts.unconfined_ok = matches!(
+            fin_sandbox::status::mechanism(),
+            fin_sandbox::Mechanism::Disabled {
+                reason: fin_sandbox::DisabledReason::LandlockDisabled
+            }
+        );
         #[cfg(feature = "test-hooks")]
         {
             opts.panic_on_start_for_test = fail == FailForTest::HostStart;

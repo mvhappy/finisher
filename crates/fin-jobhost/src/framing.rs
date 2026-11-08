@@ -16,6 +16,9 @@ pub(crate) struct Expect {
     pub helper: bool,
     /// The self-sandbox profile requested, which `hello.selfSandbox` must equal.
     pub self_sandbox: Option<String>,
+    /// `hello.selfSandbox: "none"` is accepted for a requested profile only when the host's own
+    /// mechanism is disabled (F2, [`crate::HostOptions::unconfined_ok`]).
+    pub unconfined_ok: bool,
     pub host_minor: u32,
 }
 
@@ -116,7 +119,8 @@ impl Framing {
         }
         // A requested profile, or `none` where the mechanism is disabled on this host (F2): the
         // process runs unconfined and says so. Anything else is a protocol error.
-        let unconfined = self.expect.self_sandbox.is_some()
+        let unconfined = self.expect.unconfined_ok
+            && self.expect.self_sandbox.is_some()
             && h.self_sandbox.as_deref() == Some(fin_jobs::sandbox::NONE);
         if h.self_sandbox != self.expect.self_sandbox && !unconfined {
             return protocol("selfSandbox");
@@ -138,6 +142,7 @@ mod tests {
             bundled,
             helper: false,
             self_sandbox: None,
+            unconfined_ok: false,
             host_minor: 0,
         }
     }
@@ -235,9 +240,16 @@ mod tests {
         let none = WorkerMsg::Hello(hh);
         let mut f = Framing::new(Expect {
             self_sandbox: Some("worker".into()),
+            unconfined_ok: true,
             ..expect(true)
         });
         assert!(matches!(f.line(&line(1, &none), None), Frame::Hello(_)));
+        // A host whose own mechanism is not disabled never takes `none` (review of Task 3, B1).
+        let mut f = Framing::new(Expect {
+            self_sandbox: Some("worker".into()),
+            ..expect(true)
+        });
+        assert_eq!(f.line(&line(1, &none), None), protocol("selfSandbox"));
         let mut f = Framing::new(expect(true));
         assert_eq!(f.line(&line(1, &none), None), protocol("selfSandbox"));
         let mut f = Framing::new(Expect {

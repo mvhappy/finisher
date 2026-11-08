@@ -45,10 +45,22 @@ fn a_profile_not_ready_runs_as_before_7c() {
             disabled(DisabledReason::ProfileNotReady)
         );
         assert_eq!(
-            status_with(Profile::Worker, m, &[]),
+            status_with(Profile::Plugin, m, &[]),
             disabled(DisabledReason::ProfileNotReady)
         );
     }
+    // Not ready, `worker` still reports what a request for its Landlock phase would meet.
+    assert_eq!(
+        status_with(Profile::Worker, enforced(), &[]),
+        disabled(DisabledReason::ProfileNotReady)
+    );
+    let unavailable = Mechanism::Unavailable {
+        need: "kernel ≥ 6.2".into(),
+    };
+    assert_eq!(
+        status_with(Profile::Worker, unavailable.clone(), &[]),
+        unavailable
+    );
 }
 
 #[test]

@@ -111,6 +111,10 @@ pub struct HostOptions {
     /// The envelope minor this host speaks ([`fin_jobs::MINOR`]); a plugin process above it
     /// is decoded leniently (Decision 3).
     pub host_minor: u32,
+    /// F2 (plan 7C Task 3): the OS sandbox mechanism is disabled on this host, so a process
+    /// asked for a self-sandbox may answer `hello.selfSandbox: "none"` (it applied nothing).
+    /// Off by default: a `none` is then a protocol error, never a silent unconfined start.
+    pub unconfined_ok: bool,
     pub log: LogFn,
     /// macOS and Windows: how long a spawned process stays suspended after its placement
     /// (tests).
@@ -183,6 +187,7 @@ impl HostOptions {
             cgroups: CgroupMode::Auto,
             watchdog: true,
             host_minor: fin_jobs::MINOR,
+            unconfined_ok: false,
             log: Arc::new(|line| eprintln!("fin-jobhost: {line}")),
             #[cfg(feature = "test-hooks")]
             resume_delay_for_test: None,

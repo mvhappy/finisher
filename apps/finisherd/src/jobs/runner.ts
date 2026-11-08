@@ -256,6 +256,8 @@ class ColdAttempt extends AttemptBase {
     this.proc ??= proc;
     switch (e.type) {
       case "hello":
+        // F2: asked for a sandbox, applied nothing (the host accepts it only where Landlock is off).
+        if (e.hello.selfSandbox === "none") this.a.env.log("warning", `[job ${this.a.row.id} ${this.a.family.family}] the worker runs unconfined: the sandbox mechanism is disabled on this host`);
         return this.#onHello(e.hello, memoryBytes, grants);
       case "message":
         return this.onMessage(e.msg);

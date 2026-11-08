@@ -22,6 +22,7 @@ import type { FinError } from "@finisher/contracts";
 import { JobHost, type JobHostSendResult } from "@finisher/fin-node";
 import { finError } from "../errors.ts";
 import { isResourceFault } from "./isolation.ts";
+import { currentSandboxStatus } from "../sandbox/status.ts";
 
 export type { JobHostExitInfo, JobSpawnRequest } from "@finisher/core-types";
 
@@ -255,10 +256,15 @@ const KILL_REASONS: Partial<Record<JobHostKillReason, ExitReason>> = {
   hung: "hung",
 };
 
-/** The self-sandbox failure a worker printed before exit 78 (its last stderr line, prefix removed). */
+/**
+ * What the host lacks, from the line a worker printed before exit 78 (`… the sandbox needs
+ * <need>`). Any other failure (a policy that would not build) names no path here: the full line
+ * stays in the server log through the worker's stderr.
+ */
 export function sandboxNeed(stderrTail: string): string {
   const line = stderrTail.trim().split("\n").at(-1) ?? "";
-  return line.replace(/^fin-jobs: /, "").slice(0, 500) || "unknown";
+  const m = /the sandbox needs (.+)$/.exec(line);
+  return m?.[1] === undefined ? "a sandbox policy this host can apply" : m[1].slice(0, 200);
 }
 
 /**
@@ -325,7 +331,7 @@ export function exitVerdict(info: JobHostExitInfo, ended: boolean): ExitVerdict 
           reason: "spawnFailed",
           error: finError("SANDBOX_UNAVAILABLE", "the worker's sandbox could not be applied, so it did not start", {
             profile: "worker",
-            os: process.platform,
+            os: currentSandboxStatus().os,
             need: sandboxNeed(info.stderrTail),
           }),
         };

@@ -8,12 +8,12 @@
 //   no setting that silences a warning or opts out of an enforced profile;
 // - the `sandbox.unconfined {profile, os, reason}` journal event, once per profile per server
 //   start and again when its reason changes (`SandboxReporter`).
+import type { SandboxProfile } from "@finisher/core-types";
 import type { SandboxMechanism, SandboxStatus } from "@finisher/fin-node";
 import { sandboxStatus } from "@finisher/fin-node";
 
-export const SANDBOX_PROFILES = ["agent", "hook", "worker", "plugin"] as const;
-export type SandboxProfile = (typeof SANDBOX_PROFILES)[number];
-export type { SandboxMechanism, SandboxStatus };
+export const SANDBOX_PROFILES: ReadonlyArray<SandboxProfile> = ["agent", "hook", "worker", "plugin"];
+export type { SandboxMechanism, SandboxProfile, SandboxStatus };
 
 export interface SandboxWarning {
   readonly code: "SANDBOX_DISABLED" | "PLUGINS_UNCONFINED" | "SANDBOX_UNAVAILABLE";
@@ -84,7 +84,8 @@ interface JournalLike {
 
 /**
  * Records `sandbox.unconfined` for each disabled profile: once per server start (one reporter
- * per start) and again when the reason changes. A profile that becomes enforced or unavailable
+ * per start) and again when the reason changes. A change is noticed when the status is read
+ * again (`server.status`), not by polling. A profile that becomes enforced or unavailable
  * is forgotten, so a later disable is recorded again. Never throws.
  */
 export class SandboxReporter {
@@ -105,8 +106,9 @@ export class SandboxReporter {
         continue;
       }
       if (this.#last.get(profile) === m.reason) continue;
-      this.#last.set(profile, m.reason);
+      // Remembered only once written, so diagnostics turned on later still get this start's event.
       if (this.#journal === undefined || !this.#journal.enabled) continue;
+      this.#last.set(profile, m.reason);
       try {
         this.#journal.record("sandbox.unconfined", 1, null, JSON.stringify({ profile, os: status.os, reason: m.reason }), "finisherd");
       } catch (e) {

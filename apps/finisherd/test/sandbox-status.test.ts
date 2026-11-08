@@ -48,8 +48,11 @@ describe("sandbox status", () => {
     const s = sandboxStatus();
     for (const p of ["agent", "hook", "worker", "plugin"] as const) expect(s[p]).toEqual(DISABLED);
     process.env[STUB] = "unavailable";
-    // `unavailable` refuses only a ready profile; none is ready yet (`READY` is empty).
-    expect(sandboxStatus().worker).toEqual(NOT_READY);
+    // `unavailable` refuses only a ready profile (none is yet: `READY` is empty) and `worker`,
+    // whose Landlock phase a sub-project may request before it is ready.
+    const u = sandboxStatus();
+    expect(u.worker).toMatchObject({ kind: "unavailable", need: expect.stringContaining("kernel ≥ 6.2") });
+    expect(u.agent).toEqual(NOT_READY);
     delete process.env[STUB];
     expect(["linux", "macos", "windows"]).toContain(sandboxStatus().os);
   });
@@ -75,7 +78,7 @@ describe("sandbox status", () => {
     expect(sandboxWarnings(all(ENFORCED))).toEqual([]);
     // Enforced, but the job host's spawner applies nothing yet: workers still warn.
     const s = await Effect.runPromise(serverStatus(deps(all(ENFORCED))));
-    expect(s.warnings).toEqual([expect.objectContaining({ code: "SANDBOX_DISABLED", sandbox: "none", details: expect.objectContaining({ profile: "worker", reason: "profileNotReady" }) })]);
+    expect(s.warnings).toEqual([expect.objectContaining({ code: "SANDBOX_DISABLED", sandbox: "none", details: expect.objectContaining({ profile: "worker", reason: "spawnerUnconfined" }) })]);
     const unavailable = sandboxWarnings(all({ kind: "unavailable", need: "kernel ≥ 6.2" }), ["worker"]);
     expect(unavailable).toEqual([expect.objectContaining({ code: "SANDBOX_UNAVAILABLE", details: { profile: "worker", os: "linux", need: "kernel ≥ 6.2" } })]);
   });
@@ -102,8 +105,14 @@ describe("sandbox status", () => {
     new SandboxReporter(journal).report(all(DISABLED));
     expect(records).toHaveLength(4);
     records.length = 0;
-    new SandboxReporter({ ...journal, enabled: false }).report(all(DISABLED));
+    const off = { ...journal, enabled: false };
+    const later = new SandboxReporter(off);
+    later.report(all(DISABLED));
     expect(records).toEqual([]);
+    // Diagnostics turned on later in the same start: that start's events are still recorded.
+    off.enabled = true;
+    later.report(all(DISABLED));
+    expect(records).toHaveLength(4);
   });
 
   test("a_worker_whose_sandbox_cannot_apply_fails_sandbox_unavailable", () => {
@@ -113,8 +122,11 @@ describe("sandbox status", () => {
     );
     expect(v.error).toMatchObject({
       code: "SANDBOX_UNAVAILABLE",
-      details: { profile: "worker", os: process.platform, need: 'self-sandbox "worker" failed: the sandbox needs kernel ≥ 6.2' },
+      details: { profile: "worker", os: sandboxStatus().os, need: "kernel ≥ 6.2" },
     });
+    // A failure that is not a missing mechanism names no path.
+    const bad = exitVerdict({ reason: "spawnFailed", what: "selfSandbox", stderrTail: 'fin-jobs: self-sandbox "worker" failed: unreadable worker input: /home/x\n', lifetimeMs: 1 } as never, false);
+    expect(bad.error).toMatchObject({ code: "SANDBOX_UNAVAILABLE", details: { need: "a sandbox policy this host can apply" } });
     // Any other spawn failure is still `WORKER_UNAVAILABLE`.
     expect(exitVerdict({ reason: "spawnFailed", what: "thread", stderrTail: "", lifetimeMs: 1 } as never, false).error.code).toBe("WORKER_UNAVAILABLE");
   });

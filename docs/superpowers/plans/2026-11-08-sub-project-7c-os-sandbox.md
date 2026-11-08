@@ -165,7 +165,7 @@ pub fn status(profile: Profile) -> Mechanism;
 pub const READY: &[(Profile, Os)];
 
 // crates/fin-sandbox/src/self_apply.rs — registered with fin_jobs::sandbox::register
-pub fn self_apply(req: &fin_jobs::sandbox::SelfSandbox) -> Result<(), String>;
+pub fn self_apply(req: &fin_jobs::sandbox::SelfSandbox) -> Result<fin_jobs::sandbox::SelfApplied, String>;   // Task 3: `Nothing` where Landlock is disabled (F2), so `hello` says `none`
 
 // crates/fin-sandbox/src/spawner.rs
 pub struct SandboxSpawner { /* status cache, compiled filters, broker handle (Windows) */ }
