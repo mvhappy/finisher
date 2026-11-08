@@ -2,7 +2,7 @@
 //! weight, italic and script coverage, Decision 38) and the whole file's SHA-256
 //! (Decision 37), which is what a pin of this asset names.
 
-use std::fs::File;
+use std::io::{Read, Seek};
 use std::path::Path;
 
 use fin_core::{AssetKind, CoreError, FontFace, FontFile, FontFormat};
@@ -46,8 +46,8 @@ fn offsets(b: &[u8], format: FontFormat) -> Option<Vec<usize>> {
         .collect()
 }
 
-pub(crate) fn probe(
-    file: &mut File,
+pub(crate) fn probe<R: Read + Seek>(
+    file: &mut R,
     size: u64,
     format: FontFormat,
     path: &Path,

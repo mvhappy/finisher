@@ -1091,6 +1091,16 @@ export type EngineEvent =
       type: "collect";
     };
 /**
+ * The type of a directory entry as listed (never by following a link). Windows reparse
+ * points with a name-surrogate tag (symlinks, junctions, mount points) are `symlink` in a
+ * [`ScanEntry`] (see [`crate::listing`]); anything that is neither a regular file, a
+ * directory nor a link (sockets, devices, FIFOs) is `other`.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "EntryType".
+ */
+export type EntryType = "file" | "dir" | "symlink" | "other";
+/**
  * This interface was referenced by `FinCore`'s JSON-Schema
  * via the `definition` "Ulid".
  */
@@ -1417,6 +1427,25 @@ export type Risk = "low" | "medium" | "high";
  */
 export type SourceKind = "bundled" | "registry" | "dev";
 /**
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "VideoCodec".
+ */
+export type VideoCodec = ("av1" | "h264" | "hevc" | "vp9" | "vp8" | "proRes") | "other";
+/**
+ * Clockwise display rotation in degrees, from the track matrix.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "Rotation".
+ */
+export type Rotation = 0 | 90 | 180 | 270;
+/**
+ * What a scan lists (`WalkMode`).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "LibraryScanMode".
+ */
+export type LibraryScanMode = "full" | "dirs" | "poll";
+/**
  * `@<publisher>/<name>` (8A Decision 2).
  *
  * This interface was referenced by `FinCore`'s JSON-Schema
@@ -1453,18 +1482,6 @@ export type Runtime =
       node: string;
       type: "node";
     };
-/**
- * This interface was referenced by `FinCore`'s JSON-Schema
- * via the `definition` "VideoCodec".
- */
-export type VideoCodec = ("av1" | "h264" | "hevc" | "vp9" | "vp8" | "proRes") | "other";
-/**
- * Clockwise display rotation in degrees, from the track matrix.
- *
- * This interface was referenced by `FinCore`'s JSON-Schema
- * via the `definition` "Rotation".
- */
-export type Rotation = 0 | 90 | 180 | 270;
 /**
  * Where a parameter lives. An effect's paths are `<kind>.<param>`; on an item they are
  * addressed as `effects.<fx>.<param>`.
@@ -1553,6 +1570,15 @@ export type ParamType =
       type: "assetRef";
     };
 /**
+ * A cloud placeholder (Decision 12): catalogued from metadata only, never opened unless the
+ * library has `hydrate`.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "Placeholder".
+ */
+export type Placeholder =
+  "dataless" | "icloudStub" | "nextcloud" | "owncloud" | "recallOnOpen" | "recallOnData" | "offline" | "unpinned";
+/**
  * The unit of a progress figure.
  *
  * This interface was referenced by `FinCore`'s JSON-Schema
@@ -1572,6 +1598,44 @@ export type PurgeSelector =
     }
   | {
       before: number;
+    };
+/**
+ * A root's state (Decision 17): `online` carries the identity measured now (its key may
+ * differ from the stored one when the change was confirmed harmless); every other state
+ * puts the library offline with its catalog intact (Decision 18).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "RootState".
+ */
+export type RootState =
+  | {
+      caseSensitive: boolean;
+      devId: string;
+      enumeration: string;
+      key: string;
+      kind: string;
+      mountRoot: boolean;
+      remote: boolean;
+      rootFileId?: string | null;
+      sample: SampleEntry[];
+      state: "online";
+    }
+  | {
+      code: string;
+      state: "unreachable";
+    }
+  | {
+      state: "unmounted";
+    }
+  | {
+      key: string;
+      state: "volumeChanged";
+    }
+  | {
+      state: "empty";
+    }
+  | {
+      state: "timeout";
     };
 /**
  * How `test.crash` dies: `abort`, `SIGSEGV`/an access violation, `SIGBUS`/
@@ -3951,6 +4015,73 @@ export interface DiagnosticsReport {
   state: JournalState;
 }
 /**
+ * Closes one listing of `dir` (Decision 25): every entry of that listing precedes it in the
+ * job's batches. `complete: false` (an error, a timeout, a placeholder or automount
+ * directory, a nested mount unmounted or replaced) marks nothing missing; `code` says why.
+ * `entries` counts the listing's entries. `volume`: the volume measured at `dir` when it is a
+ * nested mount root (Decision 17, per directory), which the indexer keeps as
+ * [`KnownDir::volume`].
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "DirDone".
+ */
+export interface DirDone {
+  code?: string | null;
+  complete: boolean;
+  dir: RawRel;
+  entries: number;
+  mtimeNs?: string | null;
+  volume?: VolumeIdentity | null;
+}
+/**
+ * Raw components below a library root, outermost first (empty for the root): base64 of each name's bytes (Unix bytes; Windows UTF-16 as WTF-8).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "RawRel".
+ */
+export interface RawRel {
+  components: string[];
+}
+/**
+ * A root's volume (Decision 15), measured at add and refreshed at each full scan.
+ *
+ * - `key`: BLAKE3-16 (hex) of the OS's identity fields ([`crate::volume::key`]); the raw
+ *   fields are never stored;
+ * - `kind`: the filesystem type (`apfs`, `smbfs`, `ext4`, `nfs4`, `NTFS`, …);
+ * - `dev_id`: the device id, informational only (never compared alone);
+ * - `mount_root`: the root is a mount root (Decision 17's unmount rule);
+ * - `enumeration`: how directories are read (`getdents64`, `getattrlistbulk`, a Windows
+ *   information class, `fake`);
+ * - `root_file_id`, `sample`: the root's file id and up to 16 top-level entries, to confirm a
+ *   key change.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "VolumeIdentity".
+ */
+export interface VolumeIdentity {
+  caseSensitive: boolean;
+  devId: string;
+  enumeration: string;
+  key: string;
+  kind: string;
+  mountRoot: boolean;
+  remote: boolean;
+  rootFileId?: string | null;
+  sample: SampleEntry[];
+}
+/**
+ * One top-level entry of a root, kept to confirm a volume change (Decision 17). No name:
+ * entries are matched by file id, size and mtime.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "SampleEntry".
+ */
+export interface SampleEntry {
+  fileId?: string | null;
+  mtimeNs: string;
+  size: number;
+}
+/**
  * A Dolby Vision configuration record (`dvcC`/`dvvC`).
  *
  * This interface was referenced by `FinCore`'s JSON-Schema
@@ -4009,6 +4140,38 @@ export interface Envelope {
    * [`ENVELOPE_VERSION`].
    */
   v: number;
+}
+/**
+ * The library's patterns, as stored and as sent to a scan worker.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "ExcludeSpec".
+ */
+export interface ExcludeSpec {
+  /**
+   * The root's case sensitivity: keys and patterns are folded when `false`.
+   */
+  caseSensitive: boolean;
+  exclude?: string[];
+  include?: string[] | null;
+}
+/**
+ * What an open must find (Decision 19 step 3): the catalogued size, mtime and, when the
+ * catalog has one, file id. TS `ExpectWire`.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "Expect".
+ */
+export interface Expect {
+  /**
+   * The catalogued entry's device (`ScanEntry.dev`). Nested mounts are catalogued, so the
+   * opener crosses them and checks the opened handle against this device; without one,
+   * the handle must be on the root's mount.
+   */
+  dev?: string | null;
+  fileId?: string | null;
+  mtimeNs: string;
+  size: number;
 }
 /**
  * One page of `diagnostics.export`, oldest first. `next` is an opaque position: pass it as
@@ -4293,6 +4456,21 @@ export interface TransitionState {
 export interface Generation {
   incarnation: string;
   n: number;
+}
+/**
+ * What the `library.hash` kind reports for one file; `hash` is `blake3:<hex>`.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "HashOutcome".
+ */
+export interface HashOutcome {
+  code?: string | null;
+  file: number;
+  hash?: string | null;
+  /**
+   * As [`crate::probe::ProbeOutcome::state`]: `present`, or why there is no hash.
+   */
+  state: string;
 }
 /**
  * HDR metadata a source carries (kept for HDR export later, spec §10.1).
@@ -4725,6 +4903,396 @@ export interface JournalStatus {
   state: JournalState;
 }
 /**
+ * One directory the catalog knows (Decision 27) as the walker holds it. A line of a scan
+ * job's `in/dirs.ndjson` is `{dir, mtimeNs, listed}` (written by the indexer; `listed`
+ * becomes `listed_gen` of the scan's generation) with these fields optional
+ * ([`crate::walk::KnownDirs::from_ndjson`]):
+ *
+ * - `mtime_ns`: the mtime its last listing recorded (`DirDone.mtime_ns`); a poll re-lists the
+ *   directory when it differs;
+ * - `entries`: how many entries that listing held: a listing that drops from N > 0 to 0 is
+ *   `DIR_EMPTY_SUSPECT` (Decision 25), the root's is `ROOT_EMPTY_SUSPECT` (Decision 18);
+ * - `listed_gen`: the full-scan generation in which it was last listed completely; a
+ *   resumed full scan of that generation skips its listing and still descends;
+ * - `mount_root`: it was the root of a nested mount; when it no longer is, its subtree is
+ *   `ROOT_UNMOUNTED` (Decision 17), never listed and never missing;
+ * - `volume`: that nested mount's volume as last listed (`DirDone.volume`); a different
+ *   volume there now (a different key its file ids and sample do not confirm,
+ *   [`crate::volume::same_volume`]) is `ROOT_VOLUME_CHANGED`, also never listed and never
+ *   missing.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "KnownDir".
+ */
+export interface KnownDir {
+  dir: RawRel;
+  entries?: number;
+  listedGen?: number | null;
+  mountRoot?: boolean;
+  mtimeNs?: string | null;
+  volume?: VolumeIdentity | null;
+}
+/**
+ * The `library.batch` call's params.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "LibraryBatchCall".
+ */
+export interface LibraryBatchCall {
+  /**
+   * A plain file name inside the job's `out/`.
+   */
+  file: string;
+  seq: number;
+}
+/**
+ * One line of `in/files.ndjson`: a catalogued file to read (Decision 20).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "LibraryFileLine".
+ */
+export interface LibraryFileLine {
+  expect: Expect;
+  id: number;
+  rel: RawRel;
+}
+/**
+ * `library.hash` (Decision 38): as [`LibraryProbeParams`], without the extension filter.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "LibraryHashParams".
+ */
+export interface LibraryHashParams {
+  files?: string;
+  hydrate: boolean;
+  items: string[];
+  library: string;
+  readBps?: number | null;
+  root: string;
+  volume: VolumeIdentity;
+}
+/**
+ * What `library.hash` reports: one value per item (`blake3:<hex>`) went through `item`;
+ * here only the counts.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "LibraryHashResult".
+ */
+export interface LibraryHashResult {
+  changed: number;
+  datalessPolicy: string;
+  states: {
+    [k: string]: number;
+  };
+}
+/**
+ * `library.probe` (Decision 34): items are catalog file ids (decimal strings); the
+ * `in/files.ndjson` grant holds a [`FileLine`] for each, and only the lines named by `items`
+ * run (the engine's `restrict` narrows `items`, not the file).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "LibraryProbeParams".
+ */
+export interface LibraryProbeParams {
+  /**
+   * Extensions to probe (lower case, no dot); absent probes everything (`kinds: all`).
+   * Others are `skipped` with code [`KIND_FILTER`] (Decision 37).
+   */
+  extensions?: string[] | null;
+  /**
+   * The grant that holds the lines.
+   */
+  files?: string;
+  /**
+   * The library's setting: a placeholder is read only when `true` (Decision 6).
+   */
+  hydrate: boolean;
+  items: string[];
+  library: string;
+  /**
+   * The library's bandwidth budget for this job's slot, in bytes per second (Decision 36).
+   */
+  readBps?: number | null;
+  root: string;
+  volume: VolumeIdentity1;
+}
+/**
+ * A root's volume (Decision 15), measured at add and refreshed at each full scan.
+ *
+ * - `key`: BLAKE3-16 (hex) of the OS's identity fields ([`crate::volume::key`]); the raw
+ *   fields are never stored;
+ * - `kind`: the filesystem type (`apfs`, `smbfs`, `ext4`, `nfs4`, `NTFS`, …);
+ * - `dev_id`: the device id, informational only (never compared alone);
+ * - `mount_root`: the root is a mount root (Decision 17's unmount rule);
+ * - `enumeration`: how directories are read (`getdents64`, `getattrlistbulk`, a Windows
+ *   information class, `fake`);
+ * - `root_file_id`, `sample`: the root's file id and up to 16 top-level entries, to confirm a
+ *   key change.
+ */
+export interface VolumeIdentity1 {
+  caseSensitive: boolean;
+  devId: string;
+  enumeration: string;
+  key: string;
+  kind: string;
+  mountRoot: boolean;
+  remote: boolean;
+  rootFileId?: string | null;
+  sample: SampleEntry[];
+}
+/**
+ * What `library.probe` reports: outcomes by state (the outcomes themselves went through
+ * `library.probed`).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "LibraryProbeResult".
+ */
+export interface LibraryProbeResult {
+  /**
+   * Files whose outcome was `changed`: their directories need a rescan (Task 5).
+   */
+  changed: number;
+  datalessPolicy: string;
+  states: {
+    [k: string]: number;
+  };
+}
+/**
+ * The `library.probed` call's params.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "LibraryProbedCall".
+ */
+export interface LibraryProbedCall {
+  results: ProbeOutcome[];
+}
+/**
+ * What `library.probed` reports for one file.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "ProbeOutcome".
+ */
+export interface ProbeOutcome {
+  /**
+   * The error code of a state other than `present`.
+   */
+  code?: string | null;
+  file: number;
+  /**
+   * `fp1`, whenever the file could be read that far, even if the probe failed.
+   */
+  fingerprint?: string | null;
+  probe?: Probe | null;
+  probeVersion: number;
+  state: string;
+}
+/**
+ * What the server needs to register an asset: its kind and that kind's fields (the
+ * `asset.add` fields, plan 4C Task 7). Its serde form is what `asset.probe` answers
+ * (`@finisher/core-types` exports it as `Probe`); absent fields are omitted.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "Probe".
+ */
+export interface Probe {
+  audio?: AudioInfo | null;
+  /**
+   * Seconds: `media` and `lottieTemplate` only.
+   */
+  duration?: Rational | null;
+  fingerprint: string;
+  /**
+   * A font's whole-file SHA-256, format and faces (Decision 37).
+   */
+  font?: FontFile | null;
+  /**
+   * `image` and `svg`: the pixel size.
+   */
+  image?: ImageInfo | null;
+  kind: AssetKind;
+  lottie?: LottieInfo | null;
+  lut?: LutInfo | null;
+  media?: MediaInfo;
+  size: number;
+  video?: VideoInfo | null;
+}
+/**
+ * MP4/MOV: what the file is (sub-project 6 spec §6.3): display size and rotation, colour,
+ * HDR, VFR, edit lists. In the `asset.probe` answer only: an `asset.add` never carries it
+ * (spec §4.4).
+ */
+export interface MediaInfo {
+  audio?: AudioTrackInfo;
+  container: ContainerKind;
+  /**
+   * Exact rational seconds in canonical form: "n/d" in lowest terms with d > 1, or "n" when d is 1; no leading zeros, no "+", no "-0".
+   */
+  duration: string;
+  fragmented?: boolean;
+  ignored?: IgnoredTrack[];
+  video?: VideoTrackInfo;
+}
+/**
+ * The first video track.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "VideoTrackInfo".
+ */
+export interface VideoTrackInfo {
+  bitDepth: number;
+  chroma: Chroma;
+  codec: VideoCodec;
+  coded: Size;
+  colour: ColourTags;
+  display: Size1;
+  /**
+   * The sample entry type (`av01`, `hvc1`, …).
+   */
+  fourcc: string;
+  /**
+   * Frames presented, after edit lists.
+   */
+  frames: number;
+  hdr?: HdrInfo;
+  /**
+   * An ICC profile was given instead of code points (`colr` `prof`/`rICC`).
+   */
+  icc?: boolean;
+  level?: number;
+  /**
+   * Exact rational seconds in canonical form: "n/d" in lowest terms with d > 1, or "n" when d is 1; no leading zeros, no "+", no "-0".
+   */
+  nominalRate: string;
+  /**
+   * Exact rational seconds in canonical form: "n/d" in lowest terms with d > 1, or "n" when d is 1; no leading zeros, no "+", no "-0".
+   */
+  pixelAspect: string;
+  profile?: number;
+  rotation: Rotation;
+  /**
+   * Frame durations differ by more than 0.1 % (the last frame ignored).
+   */
+  vfr: boolean;
+}
+/**
+ * The sample entry's coded size.
+ */
+export interface Size {
+  height: number;
+  width: number;
+}
+/**
+ * `coded` after the pixel aspect and the rotation ([`display_size`]).
+ */
+export interface Size1 {
+  height: number;
+  width: number;
+}
+/**
+ * `library.scan`.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "LibraryScanParams".
+ */
+export interface LibraryScanParams {
+  /**
+   * `mode: dirs`: the directories to list.
+   */
+  dirs?: RawRel[] | null;
+  excludes: ExcludeSpec;
+  /**
+   * The generation a full scan writes (`gen`; a word reserved in Rust 2024).
+   */
+  gen: number;
+  library: string;
+  mode: LibraryScanMode;
+  /**
+   * The library's canonical root: an absolute directory.
+   */
+  root: string;
+  /**
+   * Read threads; absent means 64 (local roots), the service passes 32 for network and
+   * sync roots (Decision 9).
+   */
+  threads?: number | null;
+  /**
+   * Scaled deadlines. Test builds only: a release worker refuses the field.
+   */
+  timing?: Timing | null;
+  /**
+   * The library's stored volume identity, which the first stat is judged against
+   * (Decision 17); absent for the first scan of a new library.
+   */
+  volume?: VolumeIdentity | null;
+}
+/**
+ * How long the walker waits.
+ *
+ * - `first_stat`: the root's first stat of a walk, spin-up included (60 s); past it the
+ *   root is `timeout` and the walk answers offline;
+ * - `entry`: one step of a directory read (its open, a batch of names, one entry's stat;
+ *   30 s); a read with no step for that long leaves the directory `unreadable` with code
+ *   `TIMEOUT` and the walk goes on (its thread is left behind);
+ * - `flush`: a batch holding anything is handed to the sink at least this often (5 s), so a
+ *   slow walk still reports progress per directory.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "Timing".
+ */
+export interface Timing {
+  entry: number;
+  firstStat: number;
+  flush?: number;
+}
+/**
+ * What a scan did (`WalkSummary`, with the identity it measured).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "LibraryScanResult".
+ */
+export interface LibraryScanResult {
+  batches: number;
+  /**
+   * The process's dataless policy, as the OS reports it (`off` on macOS, Decision 6).
+   */
+  datalessPolicy: string;
+  entries: number;
+  identity: VolumeIdentity2;
+  incomplete: number;
+  listed: number;
+  skipped: number;
+  /**
+   * Read threads still stuck in an abandoned read when the walk ended.
+   */
+  stuck: number;
+  timeouts: number;
+  unchanged: number;
+}
+/**
+ * A root's volume (Decision 15), measured at add and refreshed at each full scan.
+ *
+ * - `key`: BLAKE3-16 (hex) of the OS's identity fields ([`crate::volume::key`]); the raw
+ *   fields are never stored;
+ * - `kind`: the filesystem type (`apfs`, `smbfs`, `ext4`, `nfs4`, `NTFS`, …);
+ * - `dev_id`: the device id, informational only (never compared alone);
+ * - `mount_root`: the root is a mount root (Decision 17's unmount rule);
+ * - `enumeration`: how directories are read (`getdents64`, `getattrlistbulk`, a Windows
+ *   information class, `fake`);
+ * - `root_file_id`, `sample`: the root's file id and up to 16 top-level entries, to confirm a
+ *   key change.
+ */
+export interface VolumeIdentity2 {
+  caseSensitive: boolean;
+  devId: string;
+  enumeration: string;
+  key: string;
+  kind: string;
+  mountRoot: boolean;
+  remote: boolean;
+  rootFileId?: string | null;
+  sample: SampleEntry[];
+}
+/**
  * This interface was referenced by `FinCore`'s JSON-Schema
  * via the `definition` "Manifest".
  */
@@ -4798,7 +5366,7 @@ export interface Publisher {
  * This interface was referenced by `FinCore`'s JSON-Schema
  * via the `definition` "MediaInfo".
  */
-export interface MediaInfo {
+export interface MediaInfo1 {
   audio?: AudioTrackInfo;
   container: ContainerKind;
   /**
@@ -4808,62 +5376,6 @@ export interface MediaInfo {
   fragmented?: boolean;
   ignored?: IgnoredTrack[];
   video?: VideoTrackInfo;
-}
-/**
- * The first video track.
- *
- * This interface was referenced by `FinCore`'s JSON-Schema
- * via the `definition` "VideoTrackInfo".
- */
-export interface VideoTrackInfo {
-  bitDepth: number;
-  chroma: Chroma;
-  codec: VideoCodec;
-  coded: Size;
-  colour: ColourTags;
-  display: Size1;
-  /**
-   * The sample entry type (`av01`, `hvc1`, …).
-   */
-  fourcc: string;
-  /**
-   * Frames presented, after edit lists.
-   */
-  frames: number;
-  hdr?: HdrInfo;
-  /**
-   * An ICC profile was given instead of code points (`colr` `prof`/`rICC`).
-   */
-  icc?: boolean;
-  level?: number;
-  /**
-   * Exact rational seconds in canonical form: "n/d" in lowest terms with d > 1, or "n" when d is 1; no leading zeros, no "+", no "-0".
-   */
-  nominalRate: string;
-  /**
-   * Exact rational seconds in canonical form: "n/d" in lowest terms with d > 1, or "n" when d is 1; no leading zeros, no "+", no "-0".
-   */
-  pixelAspect: string;
-  profile?: number;
-  rotation: Rotation;
-  /**
-   * Frame durations differ by more than 0.1 % (the last frame ignored).
-   */
-  vfr: boolean;
-}
-/**
- * The sample entry's coded size.
- */
-export interface Size {
-  height: number;
-  width: number;
-}
-/**
- * `coded` after the pixel aspect and the rotation ([`display_size`]).
- */
-export interface Size1 {
-  height: number;
-  width: number;
 }
 /**
  * The answer of [`Store::merge`](crate::Store::merge): merge group `merge_id`'s records on
@@ -4933,52 +5445,6 @@ export interface PrivacySettings {
    */
   retentionDays?: number | null;
   training?: Switch | null;
-}
-/**
- * What the server needs to register an asset: its kind and that kind's fields (the
- * `asset.add` fields, plan 4C Task 7). Its serde form is what `asset.probe` answers
- * (`@finisher/core-types` exports it as `Probe`); absent fields are omitted.
- *
- * This interface was referenced by `FinCore`'s JSON-Schema
- * via the `definition` "Probe".
- */
-export interface Probe {
-  audio?: AudioInfo | null;
-  /**
-   * Seconds: `media` and `lottieTemplate` only.
-   */
-  duration?: Rational | null;
-  fingerprint: string;
-  /**
-   * A font's whole-file SHA-256, format and faces (Decision 37).
-   */
-  font?: FontFile | null;
-  /**
-   * `image` and `svg`: the pixel size.
-   */
-  image?: ImageInfo | null;
-  kind: AssetKind;
-  lottie?: LottieInfo | null;
-  lut?: LutInfo | null;
-  media?: MediaInfo1;
-  size: number;
-  video?: VideoInfo | null;
-}
-/**
- * MP4/MOV: what the file is (sub-project 6 spec §6.3): display size and rotation, colour,
- * HDR, VFR, edit lists. In the `asset.probe` answer only: an `asset.add` never carries it
- * (spec §4.4).
- */
-export interface MediaInfo1 {
-  audio?: AudioTrackInfo;
-  container: ContainerKind;
-  /**
-   * Exact rational seconds in canonical form: "n/d" in lowest terms with d > 1, or "n" when d is 1; no leading zeros, no "+", no "-0".
-   */
-  duration: string;
-  fragmented?: boolean;
-  ignored?: IgnoredTrack[];
-  video?: VideoTrackInfo;
 }
 /**
  * `progress`. The runtime fills `job` ([`crate::worker::JobCtx::progress`]).
@@ -5084,6 +5550,53 @@ export interface RecoverReport {
 export interface SkippedFile {
   path: string;
   reason: string;
+}
+/**
+ * One batch file of a scan (Decision 26): up to 4,096 entries, in `seq` order per job.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "ScanBatch".
+ */
+export interface ScanBatch {
+  dirsDone: DirDone[];
+  entries: ScanEntry[];
+  seq: number;
+}
+/**
+ * One entry of a directory listing, as a scan reports it (Decision 25 keys rows by
+ * `(dir, name)` on raw bytes).
+ *
+ * - `name`: the raw component the entry is opened by; for a Nextcloud, ownCloud or iCloud
+ *   stub it is the name the stub **stands for** (`placeholder` says which stub), so the row
+ *   survives hydration; a stub whose real file is also listed is `excluded` with
+ *   `STUB_SHADOWED` under its own name.
+ * - `name_nfc`, `name_lossy`: the NFC display name ([`crate::names`]); `rel_key`: the
+ *   lookup key, `/`-joined and case-folded on case-insensitive roots. Neither is unique.
+ * - `dev`, `file_id`: rename hints only (`dev:fileId`, Decision 22); `None` where the OS or
+ *   server gives none.
+ * - `mount_root`: the entry is the root of a nested mount; `automount`: an automount point,
+ *   never descended (`excluded: AUTOMOUNT`).
+ * - `excluded`: the exclusion code ([`crate::exclude::code`]) or `None`.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "ScanEntry".
+ */
+export interface ScanEntry {
+  automount: boolean;
+  dev?: string | null;
+  dir: RawRel;
+  entryType: EntryType;
+  excluded?: string | null;
+  fileId?: string | null;
+  mountRoot: boolean;
+  mtimeNs: string;
+  name: string;
+  nameLossy: boolean;
+  nameNfc: string;
+  placeholder?: Placeholder | null;
+  relKey: string;
+  reparseTag?: number | null;
+  size: number;
 }
 /**
  * A requested self-sandbox: a profile name and its arguments.

@@ -20,6 +20,7 @@ test-hooks = [
     "fin-probe/fixtures",
     "fin-fonts/test-hooks",
     "fin-journal/test-hooks",
+    "fin-library/test-hooks",
     "dep:fin-testfonts",
 ]
 
@@ -33,6 +34,7 @@ blake3 = "1"
 fin-core = { path = "../fin-core" }
 fin-fonts = { path = "../fin-fonts" }
 fin-journal = { path = "../fin-journal" }
+fin-library = { path = "../fin-library" }
 fin-plugin-api = { path = "../fin-plugin-api" }
 fin-probe = { path = "../fin-probe" }
 fin-registry = { path = "../fin-registry" }

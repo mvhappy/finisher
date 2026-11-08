@@ -2,7 +2,6 @@
 //! over the sample rate; other chunks are skipped. A `data` length of `0xFFFFFFFF` is a
 //! streamed (unfinalised) WAV: its data runs to the end of the file.
 
-use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
 
@@ -62,7 +61,11 @@ fn fmt(body: &[u8], path: &Path) -> Result<Fmt, CoreError> {
     Ok(f)
 }
 
-pub(crate) fn probe(file: &mut File, size: u64, path: &Path) -> Result<Probe, CoreError> {
+pub(crate) fn probe<R: Read + Seek>(
+    file: &mut R,
+    size: u64,
+    path: &Path,
+) -> Result<Probe, CoreError> {
     let io = |e: std::io::Error| match e.kind() {
         std::io::ErrorKind::UnexpectedEof => unsupported(path, "truncated WAV"),
         _ => io_error(path, &e),

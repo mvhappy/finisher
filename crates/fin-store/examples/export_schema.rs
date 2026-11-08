@@ -13,7 +13,10 @@
 //! the plugin model's (`fin-plugin-api`: `Manifest`, `Permission`, `PermissionDiff`, `Risk`,
 //! `LicenceClass`, `ContributionKind`, `Invalid`, by `schema::register_schemas`) and its
 //! store's (`fin-registry`: `InstallPlan`, `InstalledPlugin`, `Accept`, `ValidationReport`,
-//! `TargetCustom`).
+//! `TargetCustom`), and
+//! the library indexer's wire types of `fin-library` (`RawRel`, `Expect`, `ScanEntry`,
+//! `DirDone`, `ScanBatch`, `KnownDir`, `VolumeIdentity`, `RootState`, `Placeholder`, the
+//! `library` family's params, results and calls; sub-project 5D).
 //! `@finisher/core-types` is generated from it (`packages/core-types/scripts/generate.mjs`).
 //! Here, not in `fin-core`, because `fin-core` cannot depend on the crates above it.
 
@@ -61,6 +64,16 @@ fn main() {
         g.subschema_for::<fin_journal::DiagnosticsReport>();
         g.subschema_for::<fin_journal::ExportPage>();
         g.subschema_for::<fin_media::MediaInfo>();
+        g.subschema_for::<fin_library::RawRel>();
+        g.subschema_for::<fin_library::Expect>();
+        g.subschema_for::<fin_library::ScanEntry>();
+        g.subschema_for::<fin_library::DirDone>();
+        g.subschema_for::<fin_library::ScanBatch>();
+        g.subschema_for::<fin_library::KnownDir>();
+        g.subschema_for::<fin_library::VolumeIdentity>();
+        g.subschema_for::<fin_library::RootState>();
+        g.subschema_for::<fin_library::Placeholder>();
+        fin_library::params::register_schemas(g);
         fin_jobs::register_schemas(g);
         fin_jobs::test_kinds::register_schemas(g);
         fin_plugin_api::schema::register_schemas(g);

@@ -1,7 +1,6 @@
 //! PNG, JPEG and WebP: the pixel size from the header only (`imagesize`).
 
-use std::fs::File;
-use std::io::BufReader;
+use std::io::{BufReader, Read, Seek};
 use std::path::Path;
 
 use fin_core::{AssetKind, CoreError, ImageInfo};
@@ -9,7 +8,7 @@ use imagesize::ImageType;
 
 use crate::{MAX_DIMENSION, Probe, unsupported};
 
-pub(crate) fn probe(file: &mut File, path: &Path) -> Result<Probe, CoreError> {
+pub(crate) fn probe<R: Read + Seek>(file: &mut R, path: &Path) -> Result<Probe, CoreError> {
     let mut reader = BufReader::new(file);
     let bad = |e: imagesize::ImageError| unsupported(path, &format!("image header: {e}"));
     let kind = imagesize::reader_type(&mut reader).map_err(bad)?;

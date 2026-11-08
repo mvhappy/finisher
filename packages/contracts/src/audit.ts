@@ -99,6 +99,13 @@ const COMMON = {
   deviceId: Schema.optional(Id),
   count: Schema.optional(Schema.Int),
 };
+// `library.add|remove|set` (plan 5D Decision 49): the library's id, its storage kind and the
+// field names a human-only `library.set` changed; never a library's name, root, alias or path.
+const LIBRARY = {
+  libraryId: Schema.optional(Id),
+  storage: Schema.optional(Schema.Literals(["local", "network", "sync"])),
+  fields: Schema.optional(Schema.Array(Word)),
+};
 const NAMES = { deviceName: Schema.optional(Name), label: Schema.optional(Name) };
 const ADDRESS = { address: Schema.optional(Address) };
 
@@ -114,13 +121,18 @@ export const AUDIT_NAME_KINDS: ReadonlySet<AuditKind> = new Set<AuditKind>([
 /** Kinds whose details may hold a remote address. */
 export const AUDIT_ADDRESS_KINDS: ReadonlySet<AuditKind> = new Set<AuditKind>([...PAIRING, "auth.fail"]);
 
+/** Kinds whose details name a library by id. */
+export const AUDIT_LIBRARY_KINDS: ReadonlySet<AuditKind> = new Set<AuditKind>(["library.add", "library.remove", "library.set"]);
+
 const PlainDetails = Schema.Struct(COMMON);
+const LibraryDetails = Schema.Struct({ ...COMMON, ...LIBRARY });
 const NamedDetails = Schema.Struct({ ...COMMON, ...NAMES });
 const AddressedDetails = Schema.Struct({ ...COMMON, ...NAMES, ...ADDRESS });
-type DetailsSchema = typeof PlainDetails | typeof NamedDetails | typeof AddressedDetails;
+type DetailsSchema = typeof PlainDetails | typeof LibraryDetails | typeof NamedDetails | typeof AddressedDetails;
 
 function detailsSchema(kind: AuditKind): DetailsSchema {
   if (AUDIT_ADDRESS_KINDS.has(kind)) return AddressedDetails;
+  if (AUDIT_LIBRARY_KINDS.has(kind)) return LibraryDetails;
   return AUDIT_NAME_KINDS.has(kind) ? NamedDetails : PlainDetails;
 }
 
@@ -131,12 +143,19 @@ export const AUDIT_DETAILS: { readonly [K in AuditKind]: DetailsSchema } = Objec
 
 const DECODE = {
   plain: Schema.decodeUnknownExit(PlainDetails),
+  library: Schema.decodeUnknownExit(LibraryDetails),
   named: Schema.decodeUnknownExit(NamedDetails),
   addressed: Schema.decodeUnknownExit(AddressedDetails),
 };
 
 /** True when `details` fits `kind`'s schema exactly (no other field). */
 export function auditDetailsValid(kind: AuditKind, details: unknown): boolean {
-  const decode = AUDIT_ADDRESS_KINDS.has(kind) ? DECODE.addressed : AUDIT_NAME_KINDS.has(kind) ? DECODE.named : DECODE.plain;
+  const decode = AUDIT_ADDRESS_KINDS.has(kind)
+    ? DECODE.addressed
+    : AUDIT_LIBRARY_KINDS.has(kind)
+      ? DECODE.library
+      : AUDIT_NAME_KINDS.has(kind)
+        ? DECODE.named
+        : DECODE.plain;
   return decode(details, { onExcessProperty: "error" })._tag === "Success";
 }

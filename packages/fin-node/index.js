@@ -506,6 +506,18 @@ export function probe(path) {
   return call(native.probe(path));
 }
 
+export function libraryCanonicalRoot(path, serverData, timeoutMs) {
+  return call(native.libraryCanonicalRoot(path, serverData, timeoutMs ?? null));
+}
+
+export function libraryProbeRoot(root, identityJson, timeoutMs) {
+  return call(native.libraryProbeRoot(root, identityJson, timeoutMs ?? null));
+}
+
+export function libraryProbeStatus() {
+  return native.libraryProbeStatus();
+}
+
 export class Registry {
   #native;
 
@@ -574,6 +586,8 @@ export const testHooks = native.writeFixtureMp4ForTest
           throw toFinError(e);
         }
       },
+      libraryProbeHang: (root, hang) => native.libraryProbeHangForTest(root, hang),
+      libraryProbeStarted: (root) => native.libraryProbeStartedForTest(root),
       packPlugin(src, out) {
         try {
           return native.packPluginForTest(src, out);
