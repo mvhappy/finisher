@@ -1,0 +1,21 @@
+# The base toolchain read list for macOS (spec §8.1 item 1; plan 7C Decision 6).
+# Source: PLACEHOLDER from the spec's categories (the shell, coreutils, git, fin, system
+# libraries and frameworks, certificates, fonts, locale data). Spike S9 step B6 (plan 7C
+# Task 0) replaces it with the list measured on macOS 14+; Task 8 re-validates it.
+/bin
+/usr/bin
+/usr/lib
+/usr/libexec
+/usr/share
+/System/Library
+/Library/Developer/CommandLineTools
+/Library/Fonts
+/private/etc/ssl
+/private/etc/localtime
+/private/etc/hosts
+/private/etc/resolv.conf
+/private/var/db/timezone
+/opt/homebrew/bin
+/opt/homebrew/lib
+/opt/homebrew/opt
+/opt/homebrew/Cellar

@@ -687,7 +687,7 @@ Spec: `docs/specs/2026-11-07-sub-project-7-agent-runtime-design.md` (revision 2,
 - [ ] 7A-2 runtime core and the built-in agent, after 5A (plan Tasks 2, 3b, 6b, 7, 8b, 10–15)
 - [ ] 7B subagents, roles, rules, approvals · 7C OS sandbox (`fin-sandbox`: agent, hook, worker and plugin profiles; ACL broker) · 7D Claude Code · 7E Codex · 7F hooks · 7G workspace and the full `fin` · 7H eval harness
 - [ ] Plan 7B (written 2026-11-08, not started): `docs/superpowers/plans/2026-11-08-sub-project-7b-subagents-rules-approvals.md` (Tasks 1–14; 7B-1 needs 7A-2 merged, 7B-2 needs 5E; six questions for the owner at its end)
-- [ ] Plan 7C (written 2026-11-08, not started): `docs/superpowers/plans/2026-11-08-sub-project-7c-os-sandbox.md` (Tasks 0–16; 7C-1, the Linux Landlock `worker` profile, can start now and must land before 6B-1; its Task 0 is the S9 spike above; six questions for the owner at its end)
+- [ ] Plan 7C (written 2026-11-08, in progress, see "Sub-project 7C: OS sandbox"): `docs/superpowers/plans/2026-11-08-sub-project-7c-os-sandbox.md` (Tasks 0–16; 7C-1, the Linux Landlock `worker` profile, can start now and must land before 6B-1; its Task 0 is the S9 spike above; six questions for the owner at its end)
 
 ## Sub-project 7A: runtime core
 
@@ -717,6 +717,14 @@ Plan: `docs/superpowers/plans/2026-11-07-sub-project-7a-runtime-core.md` (revisi
 ### 7A-2 (after 5A)
 
 - [ ] Tasks 2, 3b, 6b, 7, 8b, 10–15
+
+## Sub-project 7C: OS sandbox
+
+Plan: `docs/superpowers/plans/2026-11-08-sub-project-7c-os-sandbox.md`. Batch 7C-1 (Tasks 1–3) must land before 6B-1.
+
+- [ ] Task 0: spike S9 in `archive/` (controller-run)
+- [x] Task 1: `fin-sandbox` policy, profiles and root enumeration (branch `sp7c-t1`). As built: `policy.rs` (`SandboxPolicy` of spec §8.1, `Profile`, `Os`, `ReadPolicy::Only` and, under `cfg(test)` or `test-hooks`, `Everything {except}`; `Net::{Open {loopback}, Loopback {ports}, None}`; `DeviceRule`; `Limits`; `validate` refuses relative and unnormalised paths, a write root at or under a protected root, a path both granted and denied, and each profile's disallowed rules (IP for `hook`/`worker`/`plugin` beyond a `hook`'s loopback ports, sockets for `worker`/`plugin`, devices for `agent`/`hook`, `worker` processes ≠ 1, a 0 limit or port, a `mach` name outside `[A-Za-z0-9._-]`); the reference model `readable`/`writable`: the most specific root wins, a tie denies, a root inside a denied root is a hole (the session's files in server data), and a directory holding an exclusion is not readable or writable as a whole); `enumerate.rs` (`enumerate(policy, &dyn Tree)`, `write_roots`/`read_roots(…, tree)`: expands a root around the exclusions inside it, never grants a link, junction or special file met while expanding, sorted and minimal; `Fs` lister; proptest `enumerate_props` against the model, 1,024 cases per run, 30,000 checked once; mutants "grant links" and "drop `protect`" fail it); `inputs.rs` (`AgentInput`, `HookInput {fin?: HookFin}`, `WorkerInput {scope: cold {jobDir, sources} | warm {workerDir, libraryRoots}}`, `PluginInput`, `FinEndpoint {tcp | unixSocket | pipe}`, in `@finisher/core-types` through `export_schema`, `Profile` as `SandboxProfile`; the policy is not exported); `profile/{agent,hook,worker,plugin}.rs` (owner decisions: other sessions' workspaces of the project readable, `finisher.rules.json` protected; layout checked: `workspace/<sessionId>`, `workspace/shared`, `agents/<sessionId>`, the store inside `providers/<harness>/home/`, a warm worker's directory strictly inside `jobs/`, a plugin's store directory inside `plugins/store/`, toolchains and project outside server data and the sensitive home paths); `data.rs` and `data/<os>/toolchain-base.txt` (placeholders until Task 0). Deviations: `Net::Open` carries the loopback ports (the agent listener's port, Decision 13); enumeration takes a `Tree` and returns `Result`; the worker input is a `cold | warm` enum; `PluginInput` has no store root (it is `<serverData>/plugins/store`). Tests: `policy.rs` 5, `enumerate_props.rs` 5, `profiles.rs` 12, unit 4, `generated.test.ts` +1
+- [ ] Tasks 2–16
 
 ## Sub-project 9: frontend and desktop shell (not designed yet)
 

@@ -962,6 +962,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "fin-sandbox"
+version = "0.0.0"
+dependencies = [
+ "fin-core",
+ "fin-sandbox",
+ "proptest",
+ "schemars",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "fin-shm"
 version = "0.0.0"
 dependencies = [
@@ -990,6 +1004,7 @@ dependencies = [
  "fin-plugin-api",
  "fin-probe",
  "fin-registry",
+ "fin-sandbox",
  "fin-store",
  "fin-testfonts",
  "fin-text",

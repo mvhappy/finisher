@@ -25,6 +25,7 @@ default-members = [
     "crates/fin-plugin-api",
     "crates/fin-probe",
     "crates/fin-registry",
+    "crates/fin-sandbox",
     "crates/fin-shm",
     "crates/fin-store",
     "crates/fin-svt-sys",

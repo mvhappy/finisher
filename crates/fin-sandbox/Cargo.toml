@@ -1,0 +1,25 @@
+[package]
+name = "fin-sandbox"
+version = "0.0.0"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+description = "The OS sandbox (sub-project 7C): one pure policy, the agent, hook, worker and plugin profiles, and root enumeration."
+
+[features]
+# Test-only parts (`ReadPolicy::Everything`; later the probe binary and status stubs). Never
+# enabled by a shipped build (`scripts/check-test-hooks.mjs`).
+test-hooks = []
+
+[dependencies]
+fin-core = { path = "../fin-core" }
+schemars = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+
+[dev-dependencies]
+fin-sandbox = { path = ".", features = ["test-hooks"] }
+proptest = "1"
+tempfile = "3"
