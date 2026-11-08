@@ -123,12 +123,18 @@ fn domain_is_driven_in_order() {
         std::thread::sleep(Duration::from_millis(10));
     }
     let calls = calls.lock().unwrap().clone();
-    let first: Vec<&str> = calls.iter().take(4).map(String::as_str).collect();
+    // The first process may exit (`exit_facts`) before the second one is placed; that is the
+    // exits' own order, so the placement order is read without them.
+    let placing: Vec<&str> = calls
+        .iter()
+        .map(String::as_str)
+        .filter(|c| !c.starts_with("exit_facts"))
+        .collect();
     assert_eq!(
-        first,
+        placing[..4],
         ["open_group g1", "open_leaf g1", "place g1", "placed g1"]
     );
-    assert_eq!(calls[4..6], ["open_leaf g1", "place g1"]);
+    assert_eq!(placing[4..6], ["open_leaf g1", "place g1"]);
     assert_eq!(
         calls.iter().filter(|c| c.starts_with("exit_facts")).count(),
         2

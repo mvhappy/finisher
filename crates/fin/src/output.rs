@@ -207,6 +207,11 @@ const UNAVAILABLE_CODES: &[&str] = &[
     "JOURNAL_UNAVAILABLE",
     "SETTINGS_INVALID",
     "SETTINGS_WRITE_FAILED",
+    // The compositor's GPU (sub-project 6 spec §17): no adapter, not even a software one; the
+    // device was lost; an allocation failed. 5C retries the last two on a fresh worker.
+    "GPU_UNAVAILABLE",
+    "GPU_DEVICE_LOST",
+    "GPU_OUT_OF_MEMORY",
 ];
 
 /// The one place error codes become exit codes.
@@ -325,6 +330,9 @@ mod tests {
         assert_eq!(exit_code("EVENT_INVALID"), 3);
         assert_eq!(exit_code("EVENT_TOO_LARGE"), 3);
         assert_eq!(exit_code("FONT_FETCH_FAILED"), 5);
+        for code in ["GPU_UNAVAILABLE", "GPU_DEVICE_LOST", "GPU_OUT_OF_MEMORY"] {
+            assert_eq!(exit_code(code), 5, "{code}");
+        }
         assert_eq!(exit_code("FONTS_DAMAGED"), 5);
         assert_eq!(exit_code("TRACK_LOCKED"), 3);
         assert_eq!(exit_code("OVERWRITE_SPLITS_ITEM"), 3);

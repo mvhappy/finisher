@@ -79,6 +79,41 @@ pub fn skip(test: &str, why: &str) {
     eprintln!("SKIP {test}: {why}");
 }
 
+/// Set (CI on a volume that keeps raw names, e.g. ext4 or tmpfs) to fail [`raw_names`] tests
+/// instead of skipping them.
+#[cfg(unix)]
+pub const REQUIRE_RAW_NAMES: &str = "FIN_REQUIRE_RAW_NAMES";
+
+/// Whether the volume under `dir` accepts every one of `names` as a file name, byte for byte.
+/// APFS refuses names that are not UTF-8 (`EILSEQ`, or `EINVAL`), so a test that builds such a
+/// tree cannot run on macOS: this answers `false` after printing a skip notice naming the
+/// volume's refusal. With `FIN_REQUIRE_RAW_NAMES=1` a refusal fails the test instead of
+/// skipping it. Any other error is a real failure.
+#[cfg(unix)]
+pub fn raw_names(test: &str, dir: &Path, names: &[&[u8]]) -> bool {
+    use std::os::unix::ffi::OsStrExt;
+    for name in names {
+        let probe = dir.join(std::ffi::OsStr::from_bytes(name));
+        match fs::create_dir(&probe) {
+            Ok(()) => fs::remove_dir(&probe).unwrap(),
+            Err(e) if matches!(e.raw_os_error(), Some(libc::EILSEQ | libc::EINVAL)) => {
+                let why = format!(
+                    "the volume under {} refuses the non-UTF-8 name {name:?} ({e})",
+                    dir.display()
+                );
+                assert!(
+                    std::env::var(REQUIRE_RAW_NAMES).as_deref() != Ok("1"),
+                    "{REQUIRE_RAW_NAMES}=1 but {why}"
+                );
+                skip(test, &format!("{why}; {REQUIRE_RAW_NAMES}=1 fails instead"));
+                return false;
+            }
+            Err(e) => panic!("creating the probe name {name:?} in {}: {e}", dir.display()),
+        }
+    }
+    true
+}
+
 const INSIDE: &str = "FIN_TEST_USERNS";
 
 /// Runs `test` (this test binary's test of that name) again inside a user and mount
