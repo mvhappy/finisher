@@ -34,6 +34,9 @@ export function ttyPrompt(stdin: NodeJS.ReadStream = process.stdin, stdout: Node
           rl.close();
           resolve(line);
         });
+        // Ctrl-C at the question cancels it, as end of input does (review of Tasks 8–9, M2:
+        // the command then cleans up, removing a reserved credential file).
+        rl.once("SIGINT", () => rl.close());
         rl.once("close", () => {
           if (!answered) resolve("");
         });

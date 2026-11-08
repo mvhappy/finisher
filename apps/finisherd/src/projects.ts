@@ -78,8 +78,9 @@ export interface ProjectRegistryShape {
   readonly rebuild: (projectId: string) => Effect.Effect<unknown, FinError>;
   readonly compact: (projectId: string) => Effect.Effect<unknown, FinError>;
   readonly txGet: (projectId: string, txId: string) => Effect.Effect<TxGetResult, FinError>;
-  readonly acknowledgeRewind: (projectId: string, branch: string, generation: number) => Effect.Effect<boolean, FinError>;
-  readonly acknowledgeSalvage: (projectId: string, copy: string) => Effect.Effect<boolean, FinError>;
+  /** `meta`'s guard names the caller's credential: refused once it is revoked (review of 5A Tasks 8–9, L1). */
+  readonly acknowledgeRewind: (projectId: string, branch: string, generation: number, meta?: CallMeta) => Effect.Effect<boolean, FinError>;
+  readonly acknowledgeSalvage: (projectId: string, copy: string, meta?: CallMeta) => Effect.Effect<boolean, FinError>;
   /** `eval.frame`: `branch` resolved first; `timeline` absent: the main timeline. */
   readonly evalFrame: (projectId: string, branch: string, timeline: string | undefined, at: string) => Effect.Effect<FramePlan, FinError>;
   readonly evalAudio: (
@@ -96,6 +97,8 @@ export interface ProjectRegistryShape {
   /** The chain's view (5A Task 5): open here now; its folder; a branch reference's id. */
   readonly isOpen: (projectId: string) => boolean;
   readonly dirOf: (projectId: string) => string | undefined;
+  /** The folder `app.db` records for a project (where it would be reopened from). */
+  readonly indexedDirOf: (projectId: string) => string | undefined;
   readonly resolveBranch: (projectId: string, branch: string) => Effect.Effect<string, FinError>;
   /** @internal Tests only: how many live fan-out channels exist. */
   readonly hubCount: () => { ops: number; events: number };
@@ -534,14 +537,15 @@ export function makeProjectRegistry(
       rebuild: (projectId) => on(projectId, (e) => e.rebuild()),
       compact: (projectId) => on(projectId, (e) => e.compact()),
       txGet: (projectId, txId) => on<TxGetResult>(projectId, async (e) => (await e.txGet(txId)) ?? "null"),
-      acknowledgeRewind: (projectId, requested, generation) =>
+      acknowledgeRewind: (projectId, requested, generation, meta) =>
         Effect.flatMap(resolveBranch(projectId, requested), (branch) =>
-          on<boolean>(projectId, async (e) => String(await e.acknowledgeRewind(branch, generation))),
+          on<boolean>(projectId, async (e) => String(await e.acknowledgeRewind(branch, generation, metaJson(meta)))),
         ),
-      acknowledgeSalvage: (projectId, copy) => on<boolean>(projectId, async (e) => String(await e.acknowledgeSalvage(copy))),
+      acknowledgeSalvage: (projectId, copy, meta) => on<boolean>(projectId, async (e) => String(await e.acknowledgeSalvage(copy, metaJson(meta)))),
       ensure: (projectId) => Effect.asVoid(get(projectId)),
       isOpen: (projectId) => byId.has(projectId),
       dirOf: (projectId) => byId.get(projectId)?.dir,
+      indexedDirOf: (projectId) => (closed ? undefined : index.dirOf(projectId)),
       resolveBranch,
       evalFrame: (projectId, requested, timeline, at) =>
         Effect.flatMap(resolveBranch(projectId, requested), (branch) =>

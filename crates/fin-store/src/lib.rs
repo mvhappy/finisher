@@ -76,7 +76,7 @@ pub use db::{SNAPSHOT_EVERY, replay_record};
 pub use export::ExportReport;
 #[cfg(any(test, feature = "test-hooks"))]
 pub use export::FailPoint;
-pub use guard::WriteGuard;
+pub use guard::{WriteGuard, credential_ended, end_credential, live_credential};
 pub use history::Generation;
 pub use history_ops::checkpoint::CheckpointReq;
 pub use history_ops::merge::MergeReq;

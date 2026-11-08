@@ -9,6 +9,7 @@ export {
   validateJobParams,
   workersBinaryPath,
 } from "./jobhost.js";
+export { PipeServer } from "./pipe.js";
 
 export class Engine {
   #native;
@@ -59,12 +60,12 @@ export class Engine {
     return call(this.#native.txGet(txId));
   }
 
-  acknowledgeRewind(branch, generation) {
-    return call(this.#native.acknowledgeRewind(branch, generation));
+  acknowledgeRewind(branch, generation, metaJson) {
+    return call(this.#native.acknowledgeRewind(branch, generation, metaJson));
   }
 
-  acknowledgeSalvage(copy) {
-    return call(this.#native.acknowledgeSalvage(copy));
+  acknowledgeSalvage(copy, metaJson) {
+    return call(this.#native.acknowledgeSalvage(copy, metaJson));
   }
 
   branchCreate(reqJson, metaJson) {
@@ -156,8 +157,8 @@ export class Engine {
     return call(this.#native.fontsPlan(branch, opsJson));
   }
 
-  setCollect(collect) {
-    return call(this.#native.setCollect(collect));
+  setCollect(collect, metaJson) {
+    return call(this.#native.setCollect(collect, metaJson));
   }
 
   async close() {
@@ -432,6 +433,33 @@ export function checkPrivateDir(path) {
 /** Creates `path` private to this user (protected owner-only DACL on Windows, 0700 elsewhere). */
 export function makePrivateDir(path) {
   sync(() => native.makePrivateDir(path));
+}
+
+/** A new file private to this user, checked before anything is written (5A Task 9, review M2). */
+class PrivateFile {
+  #native;
+  constructor(n) {
+    this.#native = n;
+  }
+  get path() {
+    return this.#native.path;
+  }
+  commit(text) {
+    sync(() => this.#native.commit(text));
+  }
+  discard() {
+    this.#native.discard();
+  }
+}
+
+/** Creates `path` new and private to this user; see `index.d.ts`. */
+export function createPrivateFile(path) {
+  return new PrivateFile(sync(() => native.createPrivateFile(path)));
+}
+
+/** Ends an agent/MCP credential (`<kind>:<id>`) for every store write of this process (5A Task 9). */
+export function endCredential(credential) {
+  sync(() => native.endCredential(credential));
 }
 
 export function probe(path) {

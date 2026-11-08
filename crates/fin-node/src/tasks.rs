@@ -32,12 +32,16 @@ pub(crate) enum Call {
     TxGet {
         tx_id: String,
     },
+    // These three change the store outside `Store::write`: each holds its credential's
+    // check (`fin_store::live_credential`) through the change, as a write does.
     AcknowledgeRewind {
         branch: String,
         generation: f64,
+        meta_json: Option<String>,
     },
     AcknowledgeSalvage {
         copy: String,
+        meta_json: Option<String>,
     },
     // The branch and history calls (`crate::history`); each `req_json` is the camelCase JSON
     // of the fin-store request, each `meta_json` the caller's actor (`log.commit`).
@@ -98,6 +102,7 @@ pub(crate) enum Call {
     /// `setCollect`: the project's collection flag (`default` or `never`).
     SetCollect {
         collect: String,
+        meta_json: Option<String>,
     },
     /// Test hook: panics while holding the store.
     #[cfg(feature = "test-hooks")]
@@ -247,7 +252,8 @@ fn status(store: &Shared) -> Result<Reply> {
 
 /// `setCollect`: the flag in the project file (the lease's), then in the journal at once
 /// (the `collect` event the store queued follows with the next tick).
-fn set_collect(store: &Shared, collect: &str) -> Result<Reply> {
+fn set_collect(store: &Shared, collect: &str, meta_json: Option<&str>) -> Result<Reply> {
+    let credential = credential_guard(meta_json)?;
     let policy: fin_store::CollectPolicy =
         serde_json::from_value(json!(collect)).map_err(|_| {
             reject(
@@ -259,6 +265,7 @@ fn set_collect(store: &Shared, collect: &str) -> Result<Reply> {
             )
         })?;
     with_store(store, |s| {
+        let _live = fin_store::live_credential(&credential).map_err(reject)?;
         s.set_collect(policy).map_err(reject)?;
         if let Some(g) = lock(&store.journal).as_ref() {
             g.update(policy);
@@ -267,6 +274,11 @@ fn set_collect(store: &Shared, collect: &str) -> Result<Reply> {
             &json!({ "project": s.project_id(), "collect": policy }),
         )?))
     })
+}
+
+/// The write guard of a call's `metaJson` (its credential is what these calls check).
+fn credential_guard(meta_json: Option<&str>) -> Result<fin_store::WriteGuard> {
+    crate::journal::ctx::guard_of_meta(meta_json).map_err(reject)
 }
 
 fn run(store: &Shared, call: Call) -> Result<Reply> {
@@ -325,17 +337,27 @@ fn run(store: &Shared, call: Call) -> Result<Reply> {
         Call::TxGet { tx_id } => with_store(store, |s| {
             tx_json(&tx_id, s.tx_status(&tx_id).map_err(reject)?)
         }),
-        Call::AcknowledgeRewind { branch, generation } => {
+        Call::AcknowledgeRewind {
+            branch,
+            generation,
+            meta_json,
+        } => {
             let generation = parse_count("generation", generation)?;
+            let credential = credential_guard(meta_json.as_deref())?;
             with_store(store, |s| {
+                let _live = fin_store::live_credential(&credential).map_err(reject)?;
                 Ok(Reply::Bool(
                     s.acknowledge_rewind(&branch, generation).map_err(reject)?,
                 ))
             })
         }
-        Call::AcknowledgeSalvage { copy } => with_store(store, |s| {
-            Ok(Reply::Bool(s.acknowledge_salvage(&copy).map_err(reject)?))
-        }),
+        Call::AcknowledgeSalvage { copy, meta_json } => {
+            let credential = credential_guard(meta_json.as_deref())?;
+            with_store(store, |s| {
+                let _live = fin_store::live_credential(&credential).map_err(reject)?;
+                Ok(Reply::Bool(s.acknowledge_salvage(&copy).map_err(reject)?))
+            })
+        }
         call @ (Call::BranchCreate { .. }
         | Call::Branches { .. }
         | Call::BranchSet { .. }
@@ -349,7 +371,9 @@ fn run(store: &Shared, call: Call) -> Result<Reply> {
         call @ (Call::EvalFrame { .. } | Call::EvalAudio { .. } | Call::FontsPlan { .. }) => {
             crate::eval::run(store, call)
         }
-        Call::SetCollect { collect } => set_collect(store, &collect),
+        Call::SetCollect { collect, meta_json } => {
+            set_collect(store, &collect, meta_json.as_deref())
+        }
         #[cfg(feature = "test-hooks")]
         Call::Panic => with_store(store, |_| panic!("fin-node test panic")),
     }

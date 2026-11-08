@@ -218,7 +218,7 @@ describe("the chain", () => {
       }
       expect(code(await h.call("tx.commit", commit("main")))).toBe("BRANCH_NOT_ALLOWED");
       // The handler gets the ids the store must re-check inside its write transaction.
-      for (const s of h.seen) expect(chainOf(s.options)?.guard).toEqual({ denyBranches: [], allowBranches: ["br3"] });
+      for (const s of h.seen) expect(chainOf(s.options)?.guard).toEqual({ denyBranches: [], allowBranches: ["br3"], credential: "agent:01agent000000000000000000a" });
     }
   });
 
@@ -324,7 +324,7 @@ describe("review of Task 5", () => {
     for (const tag of WRITE_RPCS) {
       const h = harness(limited());
       expect(code(await h.call(tag, ownWrite(tag))), tag).toBeUndefined();
-      expect(chainOf(h.seen[0]!.options)?.guard, tag).toEqual({ denyBranches: [], allowBranches: ["br5"] });
+      expect(chainOf(h.seen[0]!.options)?.guard, tag).toEqual({ denyBranches: [], allowBranches: ["br5"], credential: "agent:01agent000000000000000000a" });
     }
     // Unlimited principals: no allow-list.
     const local = harness(LOCAL);
@@ -340,7 +340,12 @@ describe("review of Task 5", () => {
     };
     expect(await die({})).toBe(true);
     expect(await die({ guard: { denyBranches: [] }, principal: limited() })).toBe(true);
-    expect(await Effect.runPromise(writeGuardOf({ guard: { denyBranches: [], allowBranches: [] }, principal: limited() }))).toEqual({ denyBranches: [], allowBranches: [] });
+    const own = { denyBranches: [], allowBranches: [], credential: "agent:01agent000000000000000000a" };
+    expect(await Effect.runPromise(writeGuardOf({ guard: own, principal: limited() }))).toEqual(own);
+    // Task 9: a credential's write names that credential, or it is a defect too.
+    expect(await die({ guard: { denyBranches: [], allowBranches: [] }, principal: limited() })).toBe(true);
+    expect(await die({ guard: { ...own, credential: "agent:01someoneelse000000000000" }, principal: limited() })).toBe(true);
+    expect(await die({ guard: { denyBranches: [], credential: "agent:x" }, principal: LOCAL })).toBe(true);
     expect(await Effect.runPromise(writeGuardOf({ guard: { denyBranches: [] }, principal: LOCAL }))).toEqual({ denyBranches: [] });
   });
 
@@ -353,6 +358,18 @@ describe("review of Task 5", () => {
       const local = harness(LOCAL);
       await local.call(tag, ownWrite(tag));
       expect(local.seen[0]!.payload, tag).toMatchObject({ author: "someone-else" });
+    }
+  });
+
+  test("review of Tasks 8–9, M1: an agent without branch limits cannot plant a branch for another", async () => {
+    open = new Set([A]);
+    const free = limited({ branches: "*" });
+    for (const p of [free, { ...free, kind: "mcp" as const, id: "01mcp00000000000000000000a" }, { ...free, kind: "device" as const, id: "01dev00000000000000000000a" }]) {
+      for (const tag of ["branch.create", "project.recover"]) {
+        const h = harness(p);
+        await h.call(tag, { ...ownWrite(tag), author: "agent:01victim0000000000000000a" });
+        expect(h.seen[0]!.payload, `${p.kind} ${tag}`).toMatchObject({ author: `${p.kind}:${p.id}` });
+      }
     }
   });
 
@@ -504,5 +521,29 @@ describe("revocation (review of Task 7, M3)", () => {
     expect(code(await call())).toBe("CREDENTIAL_REVOKED");
     expect(reached).toEqual(["fonts.status"]);
     expect(audited.at(-1)).toMatchObject({ kind: "auth.denied", code: "CREDENTIAL_REVOKED", details: { rule: "revoked" } });
+  });
+});
+
+describe("review of Tasks 8–9", () => {
+  test("L6: a principal's root from a stale index entry (the folder no longer names its project) is no root", async () => {
+    const moved = join(tmp, "moved-away");
+    mkdirSync(join(moved, "workspace"), { recursive: true });
+    writeFileSync(join(moved, "finisher.project.json"), JSON.stringify({ id: "01someoneelse000000000000x", name: "n", schemaVersion: 1 }));
+    open = new Set();
+    const creator = agent({ scopes: ["project.create"], projects: [B] });
+    const stale = harness(creator, { projects: { ...projects, isOpen: () => false, dirOf: () => undefined, indexedDirOf: () => moved } });
+    expect(code(await stale.call("project.create", { dir: join(moved, "workspace", "new"), name: "N", rate: "30" }))).toBe("PATH_NOT_ALLOWED");
+    // The index still right: the folder names the project, so it is a root.
+    const fresh = harness(creator, { projects: { ...projects, isOpen: () => false, dirOf: () => undefined, indexedDirOf: () => dirB } });
+    expect(code(await fresh.call("project.create", { dir: join(dirB, "workspace", "new"), name: "N", rate: "30" }))).toBeUndefined();
+  });
+
+  test("Task 8: server.stop needs no code from the console, but a device with auth.admin must confirm it", async () => {
+    const stop = { "server.stop": (_: unknown) => Effect.succeed({ stopping: true }) };
+    expect(code(await harness(CONSOLE, {}, stop).call("server.stop", {}))).toBeUndefined();
+    const device: Principal = { kind: "device", id: "01device00000000000000000a", scopes: ["auth.admin", "server.read"], projects: "*", branches: "*", human: true };
+    const h = harness(device, {}, stop);
+    expect(code(await h.call("server.stop", {}))).toBe("CONFIRMATION_REQUIRED");
+    expect(h.audited.map((e) => e.kind)).toEqual(["console.refused"]);
   });
 });

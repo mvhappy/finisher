@@ -18,6 +18,7 @@ fn allow(ids: &[&str]) -> WriteGuard {
     WriteGuard {
         deny_branches: vec![],
         allow_branches: Some(ids.iter().map(|s| s.to_string()).collect()),
+        credential: None,
     }
 }
 
@@ -25,6 +26,7 @@ fn deny(ids: &[&str]) -> WriteGuard {
     WriteGuard {
         deny_branches: ids.iter().map(|s| s.to_string()).collect(),
         allow_branches: None,
+        credential: None,
     }
 }
 
@@ -453,4 +455,86 @@ fn guard_is_restored_after_the_call() {
     // Unguarded again once `with_guard` returned, an error included.
     let tx = tx_on(&s, "g1", MAIN, vec![insert(10, "a1")]);
     s.commit(tx).unwrap();
+}
+
+fn as_credential(credential: &str) -> WriteGuard {
+    WriteGuard {
+        credential: Some(credential.into()),
+        ..WriteGuard::default()
+    }
+}
+
+/// Plan 5A Task 9 (review of Task 7, M3): a write for a credential that was ended is
+/// refused inside its transaction and writes nothing, on every write path.
+#[test]
+fn ended_credential_writes_nothing() {
+    let e = env();
+    let (mut s, feature, _) = project(&e);
+    let cred = "agent:01GUARDENDEDTEST000000000";
+    s.with_guard(as_credential(cred), |s| {
+        let tx = tx_on(s, "c1", MAIN, vec![insert(9, "a1")]);
+        s.commit(tx)
+    })
+    .unwrap();
+    fin_store::end_credential(cred);
+    let e = refused(&mut s, as_credential(cred), &mut |s: &mut Store| {
+        let tx = tx_on(s, "c2", MAIN, vec![insert(10, "a1")]);
+        s.commit(tx)
+    });
+    assert_eq!(e.code, "CREDENTIAL_REVOKED", "{e:?}");
+    let e = refused(&mut s, as_credential(cred), &mut |s: &mut Store| {
+        s.undo(history("u1", &feature, false))
+    });
+    assert_eq!(e.code, "CREDENTIAL_REVOKED", "{e:?}");
+    // Another credential, and none, still write.
+    s.with_guard(as_credential("agent:01GUARDOTHERTEST0000000000"), |s| {
+        let tx = tx_on(s, "c3", MAIN, vec![insert(11, "a1")]);
+        s.commit(tx)
+    })
+    .unwrap();
+}
+
+/// No write of an ended credential lands after `end_credential` returns: one already past
+/// its check commits before it returns, every later one is refused.
+#[test]
+fn end_credential_waits_for_writes_in_flight() {
+    let e = env();
+    let (s, _, _) = project(&e);
+    let db = s.db_path().to_path_buf();
+    let cred = "agent:01GUARDINFLIGHTTEST0000000";
+    let writer = std::thread::spawn(move || {
+        let mut s = s;
+        let mut n = 0u32;
+        loop {
+            let tx = tx_on(
+                &s,
+                &format!("w{n}"),
+                MAIN,
+                vec![insert(20 + i64::from(n), "a1")],
+            );
+            match s.with_guard(as_credential(cred), |s| s.commit(tx)) {
+                Ok(_) => n += 1,
+                Err(e) => {
+                    assert_eq!(CoreError::from(e).code, "CREDENTIAL_REVOKED");
+                    return n;
+                }
+            }
+        }
+    });
+    std::thread::sleep(std::time::Duration::from_millis(50));
+    fin_store::end_credential(cred);
+    let count = |p: &std::path::Path| -> i64 {
+        Connection::open(p)
+            .unwrap()
+            .query_row("SELECT count(*) FROM txs", [], |r| r.get(0))
+            .unwrap()
+    };
+    let at_end = count(&db);
+    let written = writer.join().unwrap();
+    assert!(written > 0, "the writer wrote before the revocation");
+    assert_eq!(
+        count(&db),
+        at_end,
+        "nothing landed after end_credential returned"
+    );
 }

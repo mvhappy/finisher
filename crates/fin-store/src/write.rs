@@ -321,6 +321,8 @@ impl Store {
             )
             .into());
         }
+        // Held through the commit: a credential ended meanwhile waits for it (`crate::guard`).
+        let _live = crate::guard::live_credential(&self.guard)?;
         txn.commit()?;
         self.heads.get_mut().extend(staged);
         self.write_outcome = Some(WriteOutcome::Written);

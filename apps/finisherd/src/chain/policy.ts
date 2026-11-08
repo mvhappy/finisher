@@ -27,6 +27,18 @@ export function authorOf(p: Principal): string {
   return `${p.kind}:${p.id}`;
 }
 
+/** Principals that write for a credential (not a person, not `fin`): `agent`, `mcp`, and 5B's `device`, 8's `plugin`. */
+const CREDENTIAL_KINDS: ReadonlySet<string> = new Set(["agent", "mcp", "device", "plugin"]);
+
+/**
+ * Whether the author of `p`'s new branches is always `authorOf(p)`, whatever the payload says
+ * (review of Tasks 8–9, M1): every credential principal, branch-limited or not, so none can
+ * plant a branch another agent's `own` would then reach.
+ */
+export function stampsAuthor(p: Principal): boolean {
+  return CREDENTIAL_KINDS.has(p.kind);
+}
+
 const projectOf = (payload: unknown): string | undefined => {
   const v = (payload as { projectId?: unknown } | null)?.projectId;
   return typeof v === "string" ? v : undefined;

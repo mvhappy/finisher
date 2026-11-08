@@ -26,7 +26,7 @@ import {
 } from "@finisher/contracts";
 import type { WriteGuard } from "@finisher/core-types";
 import { Effect, Stream } from "effect";
-import { answerChallenge, confirmationRequired } from "../auth/challenges.ts";
+import { answerChallenge, confirmationRequired, undoesOwnMint } from "../auth/challenges.ts";
 import { unauthenticated } from "../auth/handshake.ts";
 import { credentialRevoked } from "../auth/revoke.ts";
 import type { Connections, Transport } from "../connections.ts";
@@ -34,7 +34,7 @@ import type { Audit } from "../control/audit.ts";
 import { ulid } from "../control/ulid.ts";
 import { authorize } from "./authorize.ts";
 import { approvalRequired, outOfReach } from "./fixes.ts";
-import { authorOf, branchLimited, DEFAULT_POLICIES, type PolicyRule, runPolicies } from "./policy.ts";
+import { authorOf, branchLimited, DEFAULT_POLICIES, type PolicyRule, runPolicies, stampsAuthor } from "./policy.ts";
 import { type ChainProjects, resolve } from "./resolve.ts";
 
 export type { Outcome, PolicyRule } from "./policy.ts";
@@ -54,8 +54,46 @@ export function writeGuardOf(options: object): Effect.Effect<WriteGuard> {
     if (branchLimited(c.principal) && c.guard.allowBranches === undefined) {
       return Effect.die(new Error("a branch-limited principal's write has no allow-list"));
     }
+    if (credentialOf(c.principal) !== c.guard.credential) {
+      return Effect.die(new Error("a credential's write does not name its credential"));
+    }
     return Effect.succeed(c.guard);
   });
+}
+
+/**
+ * The credential a write is made for (`<kind>:<id>`), for `agent`/`mcp` principals: fin-store
+ * refuses it once the credential is revoked, inside the write's transaction (Task 9; review of
+ * Task 7, M3). `undefined` for every other principal.
+ */
+export function credentialOf(p: Principal): string | undefined {
+  return p.kind === "agent" || p.kind === "mcp" ? `${p.kind}:${p.id}` : undefined;
+}
+
+/** Approvals kept in memory at most, and for how long (review of Task 5, L6). */
+export const MAX_APPROVALS = 256;
+export const APPROVAL_TTL_MS = 10 * 60_000;
+/**
+ * Approvals one principal may have pending (review of Tasks 8–9, L5): past it a new one drops
+ * that principal's oldest, so one agent asking in a loop cannot push everyone else's out.
+ */
+export const MAX_APPROVALS_PER_PRINCIPAL = 16;
+
+type Approvals = Map<string, { readonly tag: string; readonly principal: string; readonly at: number }>;
+
+/**
+ * Records an approval asked for, dropping expired ones, then the principal's oldest past its
+ * quota, then the oldest of all past the cap.
+ */
+export function keepApproval(approvals: Approvals, id: string, entry: { readonly tag: string; readonly principal: string; readonly at: number }): void {
+  for (const [k, v] of approvals) {
+    if (entry.at - v.at < APPROVAL_TTL_MS) break;
+    approvals.delete(k);
+  }
+  const mine = [...approvals].filter(([, v]) => v.principal === entry.principal);
+  for (const [k] of mine.slice(0, Math.max(0, mine.length - MAX_APPROVALS_PER_PRINCIPAL + 1))) approvals.delete(k);
+  while (approvals.size >= MAX_APPROVALS) approvals.delete(approvals.keys().next().value as string);
+  approvals.set(id, entry);
 }
 
 export interface ChainDeps {
@@ -66,8 +104,14 @@ export interface ChainDeps {
   readonly timed?: <A>(tag: string, self: Effect.Effect<A, FinError>) => Effect.Effect<A, FinError>;
   /** The policy rules, in order (default: agent branch limits). */
   readonly policies?: ReadonlyArray<PolicyRule>;
-  /** Approvals asked for (`ask`), by id, in memory (sub-project 7 owns approving them). */
-  readonly approvals?: Map<string, { readonly tag: string; readonly principal: string; readonly at: number }>;
+  /**
+   * Approvals asked for (`ask`), by id, in memory, oldest first: at most `MAX_APPROVALS`, each
+   * for `APPROVAL_TTL_MS` (sub-project 7 owns approving them and may keep them longer).
+   */
+  readonly approvals?: Approvals;
+  /** Notes a request of an `agent`/`mcp` credential (its idle expiry, Task 9). */
+  readonly touch?: (p: Principal) => void;
+  readonly clock?: () => number;
 }
 
 /** What a handler sees in its options beside Effect's: the policy stage's guard and what was resolved. */
@@ -107,8 +151,9 @@ const DENIALS = new Map<string, string>([
 export function withChain<H extends object>(handlers: H, deps: ChainDeps): H {
   const streams = new Set<string>(STREAM_RPCS);
   const policies = deps.policies ?? DEFAULT_POLICIES;
-  const approvals = deps.approvals ?? new Map();
+  const approvals: Approvals = deps.approvals ?? new Map();
   const timed = deps.timed ?? ((_, self) => self);
+  const clock = deps.clock ?? Date.now;
 
   const deny = (tag: string, principal: Principal, transport: Transport) => (e: FinError) =>
     Effect.sync(() => {
@@ -139,27 +184,39 @@ export function withChain<H extends object>(handlers: H, deps: ChainDeps): H {
       // A credential revoked after this connection proved it (or took its ticket) runs nothing (M3).
       if (deps.connections.revoked(clientId)) return yield* Effect.fail(credentialRevoked());
       if (!PUBLIC_RPCS.has(tag) && principal.kind === "anonymous") return yield* Effect.fail(unauthenticated("unproved"));
+      if (credentialOf(principal) !== undefined) deps.touch?.(principal);
       const resolved = yield* resolve(rule, payload, deps.projects);
       yield* authorize(tag, principal, payload, resolved, deps.projects);
       const outcome = yield* runPolicies(policies, { tag, rule, principal, payload: resolved.payload, projects: deps.projects });
       if ("deny" in outcome) return yield* Effect.fail(outcome.deny);
       if ("ask" in outcome) {
         const approvalId = ulid();
-        approvals.set(approvalId, { tag, principal: `${principal.kind}:${principal.id}`, at: Date.now() });
+        keepApproval(approvals, approvalId, { tag, principal: `${principal.kind}:${principal.id}`, at: clock() });
         return yield* Effect.fail(approvalRequired(tag, approvalId, outcome.ask.reason));
       }
       // Last, so that a typed code is used up only by a call that goes ahead.
       // Every call that needs a human-only scope is confirmed, unless its rule opts out (L2).
-      if (principal.kind === "console" && needsConfirmation(tag, payload, resolved.facts)) {
-        const refusal = answerChallenge(deps.connections.get(clientId), (payload as { challenge?: unknown } | null)?.challenge);
+      // A connection taking back a credential it minted needs no second code (M2 of the review of Tasks 8–9).
+      const conn = deps.connections.get(clientId);
+      if (principal.kind === "console" && needsConfirmation(tag, payload, resolved.facts) && !undoesOwnMint(conn, tag, payload)) {
+        const refusal = answerChallenge(conn, (payload as { challenge?: unknown } | null)?.challenge);
         if (refusal !== undefined) return yield* Effect.fail(confirmationRequired(tag, refusal));
       }
-      // A branch-limited principal's new branches carry its own author, whatever it sent (M4).
+      // A `service` opt-out (`server.stop`) is for the console that service managers run; any
+      // other person's principal (5B's devices with `auth.admin`) must confirm it, and until
+      // 5B has a way to, it cannot (review of Tasks 8–9, Task 8).
+      if (rule.unconfirmed === "service" && principal.human && principal.kind !== "console") {
+        return yield* Effect.fail(confirmationRequired(tag, "missing"));
+      }
+      // A credential's new branches carry its own author, whatever it sent (M4; review of Tasks
+      // 8–9, M1: whatever its branch limits, or it could plant an `own` branch for another).
       const stamped =
-        rule.author !== undefined && branchLimited(principal)
+        rule.author !== undefined && stampsAuthor(principal)
           ? { ...(resolved.payload as Record<string, unknown>), [rule.author]: authorOf(principal) }
           : resolved.payload;
-      return { payload: stamped, guard: outcome.guard, principal, facts: resolved.facts, openedProject: resolved.openedProject };
+      const credential = credentialOf(principal);
+      const guard: WriteGuard = credential === undefined ? outcome.guard : { ...outcome.guard, credential };
+      return { payload: stamped, guard, principal, facts: resolved.facts, openedProject: resolved.openedProject };
     });
     return Effect.tapError(stages, deny(tag, principal, deps.connections.transport));
   };

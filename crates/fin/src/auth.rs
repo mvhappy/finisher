@@ -149,7 +149,14 @@ fn private_problem(mode: u32, uid: u32, euid: u32) -> Option<&'static str> {
     }
 }
 
+#[cfg_attr(not(unix), allow(dead_code))]
 fn unsafe_credential(path: &Path, problem: &str, mode: u32) -> CoreError {
+    unsafe_file(path, problem, json!(format!("{:03o}", mode & 0o777)))
+}
+
+/// `credentialUnsafe` with `details.problem` and how it shows (`mode` on Unix; the DACL's
+/// problems on Windows, as SIDs).
+fn unsafe_file(path: &Path, problem: &str, shown: Value) -> CoreError {
     CoreError::new(
         "UNAUTHENTICATED",
         format!(
@@ -161,12 +168,13 @@ fn unsafe_credential(path: &Path, problem: &str, mode: u32) -> CoreError {
         "reason": "credentialUnsafe",
         "path": path.display().to_string(),
         "problem": problem,
-        "mode": format!("{:03o}", mode & 0o777),
+        (if shown.is_array() { "acl" } else { "mode" }): shown,
     }))
     .with_fix(
         "A credential file must belong to you and be readable and writable by you alone (mode \
-         600), as for an SSH key, so other users cannot copy it. Change its owner or permissions \
-         that way, or ask for a new credential, then try again.",
+         600, or on Windows no access for any other account or group), as for an SSH key, so \
+         other users cannot copy it. Change its owner or permissions that way, or ask for a new \
+         credential, then try again.",
     )
 }
 
@@ -192,7 +200,7 @@ fn open_nonblocking(path: &Path) -> std::io::Result<std::fs::File> {
 /// file (a FIFO, a device, a directory) or is over [`MAX_CREDENTIAL_BYTES`]; an error when it is
 /// not private (Unix: the opened file's owner and mode, so a swap after the check reads nothing
 /// else).
-fn read_private(path: &Path) -> Result<Option<String>, CoreError> {
+fn read_private(path: &Path, credential_file: bool) -> Result<Option<String>, CoreError> {
     if !std::fs::metadata(path).is_ok_and(|m| m.is_file()) {
         return Ok(None);
     }
@@ -213,6 +221,18 @@ fn read_private(path: &Path) -> Result<Option<String>, CoreError> {
             return Err(unsafe_credential(path, problem, meta.mode()));
         }
     }
+    // Windows (5A Task 9): a `FIN_CREDENTIAL` file's owner and DACL, read from the open handle;
+    // `local.key` sits in the server's private `auth/` folder, which the server checks.
+    #[cfg(windows)]
+    if credential_file {
+        let problems = crate::private_windows::problems(&file)
+            .unwrap_or_else(|e| vec![format!("unreadable security info: {}", e.kind())]);
+        if !problems.is_empty() {
+            return Err(unsafe_file(path, "notPrivate", json!(problems)));
+        }
+    }
+    #[cfg(not(windows))]
+    let _ = credential_file;
     let mut text = String::new();
     match file
         .take(MAX_CREDENTIAL_BYTES + 1)
@@ -224,7 +244,7 @@ fn read_private(path: &Path) -> Result<Option<String>, CoreError> {
 }
 
 fn read_credential_file(path: &Path) -> Result<Option<Credential>, CoreError> {
-    Ok(read_private(path)?.and_then(|text| parse_credential(&text)))
+    Ok(read_private(path, true)?.and_then(|text| parse_credential(&text)))
 }
 
 fn parse_credential(text: &str) -> Option<Credential> {
@@ -255,7 +275,7 @@ pub fn discover(server_data: Option<&Path>) -> Result<Option<Credential>, CoreEr
     let Some(sd) = server_data else {
         return Ok(None);
     };
-    let text = read_private(&sd.join("auth").join("local.key"))?;
+    let text = read_private(&sd.join("auth").join("local.key"), false)?;
     Ok(text
         .and_then(|t| decode_key(&t))
         .map(|key| Credential::new(CredentialKind::Local, None, None, key)))
@@ -443,15 +463,26 @@ pub fn untrusted(endpoint: &Endpoint, reason: &str) -> CoreError {
              itself. Restart it from the same Finisher release as this command, then try again.",
         );
     }
+    // A server answers a credential it does not know without a proof, exactly as a squatter
+    // would (so ids cannot be probed): say both. One it minted and then revoked or that
+    // expired is proved and refused by name (`CREDENTIAL_REVOKED`, `CREDENTIAL_EXPIRED`;
+    // review of 5A Tasks 8–9, L4), so it never gets here.
+    let named =
+        reason == "noProof" && std::env::var_os(CREDENTIAL_ENV).is_some_and(|v| !v.is_empty());
     CoreError::new(
         "SERVER_UNTRUSTED",
         format!("the server at {at} did not prove it is your Finisher server"),
     )
     .with_details(details)
-    .with_fix(
+    .with_fix(if named {
+        "The server does not know the credential file named by FIN_CREDENTIAL: it may belong to \
+         another Finisher server, or have ended more than 180 days ago. Ask the owner of this \
+         Finisher server for a new credential. If that does not help, another program may be \
+         listening where your Finisher server should be."
+    } else {
         "Another program may be listening where your Finisher server should be. Stop it, or check \
-         that this command uses the same server data as your Finisher server, then try again.",
-    )
+         that this command uses the same server data as your Finisher server, then try again."
+    })
 }
 
 /// The `UNAUTHENTICATED` of a run that found no credential: fin sends the server nothing.

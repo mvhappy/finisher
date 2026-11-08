@@ -10,6 +10,7 @@ import { SocketServer } from "effect/socket/SocketServer";
 import { ServerStartError, startFailure } from "./config.ts";
 import { type Connections, ConnectionsTag } from "./connections.ts";
 import { HandlersLive } from "./handlers.ts";
+import { makePipeSocketServer, type PipeServerOptions } from "./pipe.ts";
 import { makeFinProtocol } from "./protocol.ts";
 
 /** One server per server-data: a live finisherd already owns the socket. */
@@ -34,28 +35,25 @@ export function isLive(path: string, timeoutMs = 1000): Promise<boolean> {
 
 /**
  * Makes `path` available for listening: fails if a live server answers on it, otherwise
- * removes a stale Unix socket file. Named pipes vanish with their owner, so only the
- * liveness check applies on Windows.
+ * removes a stale Unix socket file. On Windows there is nothing to claim: named pipes vanish
+ * with their owner, the server lock already refused a second server of this server data, and
+ * a pipe of the same name that exists anyway is a squatter the native listener's first
+ * instance refuses (`PIPE_SQUATTED`, `pipe.ts`).
  */
 export const claimSocketPath = (
   path: string,
   platform: NodeJS.Platform = process.platform,
 ): Effect.Effect<void, ServerStartError> =>
-  Effect.flatMap(
-    Effect.promise(() => (platform !== "win32" && !existsSync(path) ? Promise.resolve(false) : isLive(path))),
-    (live) =>
-      live
-        ? Effect.fail(serverRunning(path))
-        : Effect.try({
-            try: () => {
-              if (platform !== "win32") rmSync(path, { force: true });
-            },
-            catch: startFailure,
-          }),
-  );
+  platform === "win32"
+    ? Effect.void
+    : Effect.flatMap(
+        Effect.promise(() => (existsSync(path) ? isLive(path) : Promise.resolve(false))),
+        (live) =>
+          live ? Effect.fail(serverRunning(path)) : Effect.try({ try: () => rmSync(path, { force: true }), catch: startFailure }),
+      );
 
 /**
- * Local socket server at `path`. The socket is created under umask 0177 (so it is 0600 from
+ * Unix socket server at `path`. The socket is created under umask 0177 (so it is 0600 from
  * the start) and chmod'ed 0600 again once listening; `EADDRINUSE` means `SERVER_RUNNING`.
  */
 export const makeLocalSocketServer = (path: string, platform: NodeJS.Platform = process.platform) =>
@@ -82,6 +80,17 @@ export const makeLocalSocketServer = (path: string, platform: NodeJS.Platform = 
         if (previous !== undefined) process.umask(previous);
       }),
   );
+
+/**
+ * The local listener: on Windows the native pipe listener (`pipe.ts`, Task 11: its own
+ * security descriptor, first instance, remote clients rejected, peers checked), elsewhere the
+ * Unix socket. `onRefused`: a pipe client disconnected before its first byte.
+ */
+export const makeLocalServer = (
+  path: string,
+  options: Pick<PipeServerOptions, "onRefused"> = {},
+  platform: NodeJS.Platform = process.platform,
+) => (platform === "win32" ? makePipeSocketServer(path, options) : makeLocalSocketServer(path, platform));
 
 /** Error codes of a peer that went away while the server was reading or writing (Unix, Windows pipes). */
 const PEER_GONE = new Set(["ECONNRESET", "EPIPE", "ERR_STREAM_PREMATURE_CLOSE", "ERROR_NO_DATA", "ERROR_BROKEN_PIPE"]);

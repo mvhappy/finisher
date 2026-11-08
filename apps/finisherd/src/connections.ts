@@ -41,7 +41,13 @@ export interface Connection {
   principal: Principal;
   hello?: Hello | undefined;
   failures: number;
-  peer?: { pid?: number; sid?: string };
+  peer?: Peer;
+}
+
+/** Who is at the other end, as the OS reports it (the native pipe listener, Task 11). */
+export interface Peer {
+  readonly pid?: number;
+  readonly sid?: string;
 }
 
 /** What the protocol lets this module do to a live connection. */
@@ -95,8 +101,8 @@ export class Connections {
    * Registers the protocol's handle on a new connection (`protocol.ts`). `principal`: what it
    * already proved before its first frame (a WebSocket's ticket, `upgrade.ts`).
    */
-  attach(clientId: number, link: Link, principal: Principal = this.initial): Connection {
-    const c: Connection = { clientId, transport: this.transport, openedAt: this.now(), principal, failures: 0 };
+  attach(clientId: number, link: Link, principal: Principal = this.initial, peer?: Peer): Connection {
+    const c: Connection = { clientId, transport: this.transport, openedAt: this.now(), principal, failures: 0, ...(peer === undefined ? {} : { peer }) };
     this.#byId.set(clientId, c);
     this.#links.set(clientId, link);
     // A ticket taken before its credential was revoked must not bring a connection in after
@@ -168,11 +174,25 @@ export class ConnectionRegistry {
    * registers and on every request; Task 9's store answers for earlier ones at the handshake.
    */
   readonly #revoked = new Set<string>();
+  /** Whether an `agent`/`mcp` credential is still live in the store (Task 9: not expired). */
+  #live: (p: Principal) => boolean = () => true;
 
   add(c: Connections): Connections {
-    c.useRevocations((p) => (p.kind === "agent" || p.kind === "mcp" || p.kind === "device") && this.#revoked.has(credentialKey(p)));
+    c.useRevocations(
+      (p) =>
+        (p.kind === "agent" || p.kind === "mcp" || p.kind === "device") &&
+        (this.#revoked.has(credentialKey(p)) || (p.kind !== "device" && !this.#live(p))),
+    );
     this.#all.push(c);
     return c;
+  }
+
+  /**
+   * Sets how a request learns whether its `agent`/`mcp` credential is live (Task 9's store):
+   * one that expired runs nothing more, before the sweep ends its connections.
+   */
+  useLiveness(live: (p: Principal) => boolean): void {
+    this.#live = live;
   }
 
   /** Marks a credential revoked for every transport, before its live connections are ended. */
@@ -193,6 +213,9 @@ export class ConnectionRegistry {
 
 /** Every transport's connections (revocation reaches them all). */
 export class ConnectionRegistryTag extends Context.Service<ConnectionRegistryTag, ConnectionRegistry>()("finisherd/ConnectionRegistry") {}
+
+/** The peer of the connection being set up (provided per pipe connection, `pipe.ts`). */
+export class ConnectionPeer extends Context.Service<ConnectionPeer, Peer>()("finisherd/ConnectionPeer") {}
 
 /** The connections of the transport a handler serves (provided per transport, `transport.ts`). */
 export class ConnectionsTag extends Context.Service<ConnectionsTag, Connections>()("finisherd/Connections") {}
