@@ -282,13 +282,15 @@ describe("handlers", () => {
     expect(await code(h["registry.add"]({ cfg: { id: "x", path: "relative/path" }, root: wrong.root }, as(CONSOLE)))).toBe("INVALID_PATH");
     expect(rows().map((x) => [x.kind, x.principalKind, x.outcome, x.code])).toEqual([
       ["registry.add", "console", "denied", "REGISTRY_UNTRUSTED"],
+      ["registry.trust", "console", "ok", null],
       ["registry.add", "console", "ok", null],
       ["registry.remove", "console", "ok", null],
       ["registry.forget", "console", "ok", null],
       ["registry.add", "console", "failed", "INVALID_PATH"],
     ]);
-    expect(rows()[1]?.details).toEqual({ registryId: "team" });
-    expect(rows()[3]?.details).toEqual({ rootSha256: r.rootSha256 });
+    expect(rows()[1]?.details).toEqual({ registryId: "team", rootSha256: r.rootSha256 });
+    expect(rows()[2]?.details).toEqual({ registryId: "team" });
+    expect(rows()[4]?.details).toEqual({ rootSha256: r.rootSha256 });
     // Every row's details fit the closed schema: nothing was dropped.
     expect(audit.failures()).toBe(0);
     expect(JSON.stringify(rows())).not.toContain(r.dir);

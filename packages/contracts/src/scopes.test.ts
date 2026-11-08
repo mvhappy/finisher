@@ -73,6 +73,7 @@ const ESCALATING: Array<[keyof typeof RPC_SCOPES, unknown]> = [
   ["project.takeover", { projectId: "p", confirm: true }],
   ["diagnostics.project", { projectId: "p", collect: "default" }],
   ["diagnostics.export", { content: true }],
+  ["plugin.plan", { id: "@a/b", allowDowngrade: true }],
 ];
 
 test("confirmation_is_on_by_default_for_human_only_calls (Decision 30, review of Task 7 L2)", () => {

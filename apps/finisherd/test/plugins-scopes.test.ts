@@ -8,10 +8,11 @@ import { testHooks } from "@finisher/fin-node";
 import { Effect, Exit } from "effect";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { withChain } from "../src/chain/chain.ts";
+import { issueChallenge } from "../src/auth/challenges.ts";
 import { Connections } from "../src/connections.ts";
 import type { Audit, AuditInput } from "../src/control/audit.ts";
 import { ANONYMOUS, CONSOLE, LOCAL } from "../src/principal.ts";
-import { connectProved, type NdjsonClient, type RunningServer, startServer } from "./support/ndjson-client.ts";
+import { confirmed, connectProved, type NdjsonClient, type RunningServer, startServer } from "./support/ndjson-client.ts";
 import { SAMPLE_PAYLOADS } from "./support/payloads.ts";
 
 const READS = ["registry.list", "registry.status", "registry.refresh", "plugin.list", "plugin.search", "plugin.info"] as const;
@@ -30,11 +31,14 @@ function harness(principal: Principal) {
   const audit = { append: (e: AuditInput) => audited.push(e) } as unknown as Audit;
   const projects = { isOpen: () => false, dirOf: () => undefined, resolveBranch: () => Effect.succeed("main"), branches: () => Effect.succeed([]) };
   const chained = withChain(handlers, { connections, projects, audit }) as unknown as Record<string, (p: unknown, o: unknown) => Effect.Effect<unknown, FinError>>;
-  const call = async (tag: string) => {
-    const exit = await Effect.runPromiseExit(chained[tag]!(SAMPLE_PAYLOADS[tag as keyof typeof SAMPLE_PAYLOADS], { client: { id: 1 }, headers: {} }));
+  const call = async (tag: string, typed?: string) => {
+    const payload = { ...(SAMPLE_PAYLOADS[tag as keyof typeof SAMPLE_PAYLOADS] as object), ...(typed === undefined ? {} : { challenge: typed }) };
+    const exit = await Effect.runPromiseExit(chained[tag]!(payload, { client: { id: 1 }, headers: {} }));
     return Exit.isSuccess(exit) ? undefined : (Exit.findErrorOption(exit) as { value?: FinError }).value?.code;
   };
-  return { seen, audited, call };
+  /** A fresh `console.challenge` code of this connection. */
+  const challenge = () => issueChallenge(connections.get(1)!).code;
+  return { seen, audited, call, challenge };
 }
 
 describe("scopes", () => {
@@ -88,8 +92,11 @@ describe("through the chain", () => {
         expect(h.seen).toEqual([]);
         expect(h.audited.map((a) => [a.kind, a.code, a.details?.rpc])).toEqual([["auth.denied", "HUMAN_ONLY", tag]]);
       }
+      // The owner's console types the connection's code back (5A Decision 30), then gets in.
       const owner = harness(CONSOLE);
-      expect(await owner.call(tag)).toBeUndefined();
+      expect(await owner.call(tag), tag).toBe("CONFIRMATION_REQUIRED");
+      expect(owner.seen).toEqual([]);
+      expect(await owner.call(tag, owner.challenge())).toBeUndefined();
       expect(owner.seen).toEqual([tag]);
       expect(await harness(ANONYMOUS).call(tag)).toBe("UNAUTHENTICATED");
     }
@@ -140,7 +147,8 @@ describe("on a server", () => {
       value: { plugins: [{ id: "@finisher/captions-basic", source: "bundled", enabled: true }], bundled: { integrity: "hashesOnly", plugins: [{ id: "@finisher/captions-basic", ok: true }] } },
     });
     // The owner adds it; `local` refreshes it (recorded as not a person) and searches it.
-    expect(await owner.call("registry.add", add)).toMatchObject({ ok: true, value: { id: "team", addedBy: "console:console" } });
+    expect(await owner.call("registry.add", add)).toMatchObject({ ok: false, error: { code: "CONFIRMATION_REQUIRED" } });
+    expect(await confirmed(owner, "registry.add", add)).toMatchObject({ ok: true, value: { id: "team", addedBy: "console:console" } });
     const refreshed = await local.call("registry.refresh", {});
     expect(refreshed).toMatchObject({ ok: true, value: { byHuman: false, results: [{ id: "team", ok: true }] } });
     expect(await local.call("registry.status", { id: "team" })).toMatchObject({ ok: true, value: { plugins: 1, lastRefresh: { byHuman: false, by: "local:local", ok: true } } });
@@ -148,6 +156,6 @@ describe("on a server", () => {
     expect(await local.call("plugin.info", { id: "@acme/pack" })).toMatchObject({ ok: true, value: { id: "@acme/pack", registries: [{ registryId: "team" }] } });
     expect(await local.call("plugin.info", { id: "@acme/none" })).toMatchObject({ ok: false, error: { code: "PLUGIN_NOT_FOUND" } });
     expect(await local.call("registry.remove", { id: "team" })).toMatchObject({ ok: false, error: { code: "HUMAN_ONLY" } });
-    expect(await owner.call("registry.remove", { id: "team" })).toEqual({ ok: true, value: { removed: true } });
+    expect(await confirmed(owner, "registry.remove", { id: "team" })).toEqual({ ok: true, value: { removed: true } });
   });
 });

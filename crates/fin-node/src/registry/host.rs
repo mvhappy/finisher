@@ -2,6 +2,9 @@
 //! catalog ids already taken (the built-in catalog and installed packs), and the running
 //! host's API, platform and Node version.
 
+// Reads an installed plugin's manifest from the plugin store; never a library path.
+#![allow(clippy::disallowed_methods)]
+
 use std::collections::BTreeSet;
 use std::path::Path;
 

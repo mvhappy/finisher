@@ -4,6 +4,8 @@
 //! link natively, so this includes the napi-free `src/bundled.rs`.
 
 #![allow(dead_code)]
+// Reads the app's own resources/plugins/bundled folder and temporary trees by path.
+#![allow(clippy::disallowed_methods)]
 
 #[path = "../src/bundled.rs"]
 mod bundled;

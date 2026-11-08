@@ -122,7 +122,10 @@ export function pluginHandlers({ plugins, audit, guard }: PluginRpcDeps) {
           Effect.gen(function* () {
             const path = yield* requireAbsolute("cfg.path", req.cfg.path);
             const root = req.root.kind === "file" ? { ...req.root, path: yield* requireAbsolute("root.path", req.root.path) } : req.root;
-            return entryFor(by, yield* plugins.add({ cfg: { ...req.cfg, path }, root }, by));
+            const added = yield* plugins.add({ cfg: { ...req.cfg, path }, root }, by);
+            // The owner's trust decision, in the log: which root this registry is trusted through.
+            record(by, "registry.trust", "ok", { ...details, rootSha256: added.rootSha256 });
+            return entryFor(by, added);
           }),
         ),
       );

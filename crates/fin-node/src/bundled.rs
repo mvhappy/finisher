@@ -7,6 +7,9 @@
 //! rewrites both the resources and this binary is not detected (Decision 25), which is why
 //! `finisherd` reports `bundledIntegrity: hashesOnly`.
 
+// It stats and reads the app's own resources/plugins/bundled folder, never a library path.
+#![allow(clippy::disallowed_methods)]
+
 use std::path::Path;
 
 use fin_registry::package::tree_hash;

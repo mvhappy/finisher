@@ -4,6 +4,9 @@
 //! the plan calls. A refresh journals `registry.refresh`; trust is added only with a root
 //! (a root file or its SHA-256), never on first use.
 
+// Reads a registry's root file the owner named in registry.add; plugin registries are never library paths.
+#![allow(clippy::disallowed_methods)]
+
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
