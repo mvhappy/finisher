@@ -1305,7 +1305,13 @@ fn names_jobs_tables_valid() {
         let unique: BTreeSet<&str> = t.entries().iter().copied().collect();
         assert_eq!(unique.len(), t.entries().len(), "{} repeats", t.table);
     }
-    assert!(JOB_KINDS.entries().iter().all(|k| k.starts_with("test.")));
+    // `test.*` and 5D's `library.*`; sub-project 6 and 8C add theirs.
+    assert!(
+        JOB_KINDS
+            .entries()
+            .iter()
+            .all(|k| k.starts_with("test.") || k.starts_with("library."))
+    );
     for f in ["test", "library", "media", "analyze", "plugin"] {
         assert!(WORKER_FAMILIES.get(f).is_some(), "{f}");
     }

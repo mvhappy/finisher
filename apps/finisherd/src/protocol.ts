@@ -104,6 +104,8 @@ interface Client {
   /** Requests sent and not yet answered (their `Exit` not written). */
   readonly open: Set<string>;
   closing: boolean;
+  /** Run once the next reply has been written (`Link.afterReply`). */
+  readonly after: Array<() => void>;
 }
 
 export interface FinProtocolOptions {
@@ -198,6 +200,7 @@ export const makeFinProtocol = <R extends Rpc.Any>(group: RpcGroup.RpcGroup<R>, 
           closed,
           open: new Set(),
           closing: false,
+          after: [],
         };
         const close = () => Deferred.doneUnsafe(closed, Exit.void);
         // A WebSocket carries its ticket's principal (`upgrade.ts`); a socket starts anonymous.
@@ -208,6 +211,7 @@ export const makeFinProtocol = <R extends Rpc.Any>(group: RpcGroup.RpcGroup<R>, 
           closeAfterReply: () => {
             client.closing = true;
           },
+          afterReply: (f) => void client.after.push(f),
           terminate: (error) =>
             Effect.runFork(
               Effect.ensuring(
@@ -267,7 +271,9 @@ export const makeFinProtocol = <R extends Rpc.Any>(group: RpcGroup.RpcGroup<R>, 
           if (client === undefined) return Effect.void;
           if (response._tag !== "Exit") return client.write(response);
           client.open.delete(String(response.requestId));
-          const sent = client.write(response);
+          const after = client.after.splice(0);
+          const written = client.write(response);
+          const sent = after.length === 0 ? written : Effect.ensuring(written, Effect.sync(() => after.forEach((f) => f())));
           return client.closing ? Effect.ensuring(sent, Effect.sync(() => Deferred.doneUnsafe(client.closed, Exit.void))) : sent;
         },
         end: () => Effect.void,

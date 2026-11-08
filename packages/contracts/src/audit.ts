@@ -40,6 +40,8 @@ export const AUDIT_KINDS = [
   "history.drop",
   "review.merge",
   "console.refused",
+  // The owner purged the audit log (5A Task 8): written after the purge, with its count.
+  "audit.purge",
   "grant",
   "approval",
   "hook.block",
@@ -117,6 +119,13 @@ const COMMON = {
   /** The transport a connection came over (5A Task 3). */
   transport: Schema.optional(Schema.Literals(["socket", "pipe", "ws"])),
 };
+// `library.add|remove|set` (plan 5D Decision 49): the library's id, its storage kind and the
+// field names a human-only `library.set` changed; never a library's name, root, alias or path.
+const LIBRARY = {
+  libraryId: Schema.optional(Id),
+  storage: Schema.optional(Schema.Literals(["local", "network", "sync"])),
+  fields: Schema.optional(Schema.Array(Word)),
+};
 const NAMES = { deviceName: Schema.optional(Name), label: Schema.optional(Name) };
 /** A plugin id (`@publisher/name`), a registry id and a version (8A Decision 28). */
 const PluginIdWord = Schema.String.check(Schema.isPattern(/^@[a-z0-9][a-z0-9-]{1,38}\/[a-z0-9][a-z0-9-]{1,63}$/));
@@ -155,11 +164,15 @@ export const AUDIT_NAME_KINDS: ReadonlySet<AuditKind> = new Set<AuditKind>([
 /** Kinds whose details may hold a remote address. */
 export const AUDIT_ADDRESS_KINDS: ReadonlySet<AuditKind> = new Set<AuditKind>([...PAIRING, "auth.fail"]);
 
+/** Kinds whose details name a library by id. */
+export const AUDIT_LIBRARY_KINDS: ReadonlySet<AuditKind> = new Set<AuditKind>(["library.add", "library.remove", "library.set"]);
+
 const PlainDetails = Schema.Struct(COMMON);
 const PluginDetails = Schema.Struct({ ...COMMON, ...PLUGIN_FIELDS });
+const LibraryDetails = Schema.Struct({ ...COMMON, ...LIBRARY });
 const NamedDetails = Schema.Struct({ ...COMMON, ...NAMES });
 const AddressedDetails = Schema.Struct({ ...COMMON, ...NAMES, ...ADDRESS });
-type DetailsSchema = typeof PlainDetails | typeof NamedDetails | typeof AddressedDetails | typeof PluginDetails;
+type DetailsSchema = typeof PlainDetails | typeof LibraryDetails | typeof NamedDetails | typeof AddressedDetails | typeof PluginDetails;
 
 /** Kinds whose details may name a plugin, a registry and a version. */
 export const AUDIT_PLUGIN_KINDS: ReadonlySet<AuditKind> = new Set<AuditKind>(AUDIT_KINDS.filter((k) => k.startsWith("plugin.") || k.startsWith("registry.")));
@@ -167,6 +180,7 @@ export const AUDIT_PLUGIN_KINDS: ReadonlySet<AuditKind> = new Set<AuditKind>(AUD
 function detailsSchema(kind: AuditKind): DetailsSchema {
   if (AUDIT_PLUGIN_KINDS.has(kind)) return PluginDetails;
   if (AUDIT_ADDRESS_KINDS.has(kind)) return AddressedDetails;
+  if (AUDIT_LIBRARY_KINDS.has(kind)) return LibraryDetails;
   return AUDIT_NAME_KINDS.has(kind) ? NamedDetails : PlainDetails;
 }
 
@@ -178,6 +192,7 @@ export const AUDIT_DETAILS: { readonly [K in AuditKind]: DetailsSchema } = Objec
 const DECODE = {
   plugin: Schema.decodeUnknownExit(PluginDetails),
   plain: Schema.decodeUnknownExit(PlainDetails),
+  library: Schema.decodeUnknownExit(LibraryDetails),
   named: Schema.decodeUnknownExit(NamedDetails),
   addressed: Schema.decodeUnknownExit(AddressedDetails),
 };
@@ -188,8 +203,10 @@ export function auditDetailsValid(kind: AuditKind, details: unknown): boolean {
     ? DECODE.plugin
     : AUDIT_ADDRESS_KINDS.has(kind)
       ? DECODE.addressed
-      : AUDIT_NAME_KINDS.has(kind)
-        ? DECODE.named
-        : DECODE.plain;
+      : AUDIT_LIBRARY_KINDS.has(kind)
+        ? DECODE.library
+        : AUDIT_NAME_KINDS.has(kind)
+          ? DECODE.named
+          : DECODE.plain;
   return decode(details, { onExcessProperty: "error" })._tag === "Success";
 }

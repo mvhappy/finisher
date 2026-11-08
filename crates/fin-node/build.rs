@@ -5,6 +5,10 @@
 //! re-hashes the resources with at start. A build whose resources are not what the list says
 //! cannot exist: the list is made from the files.
 
+// The library rule (user media opens through `fin_library`) is not about this script: it reads the
+// repository's own `resources/` at build time, never a person's library.
+#![allow(clippy::disallowed_methods)]
+
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 

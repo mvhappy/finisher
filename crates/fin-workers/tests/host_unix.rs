@@ -2,6 +2,9 @@
 //! `EINTR`, inherited descriptors and QoS (5C-1 plan, Task 3). Step 0
 //! (`sigcont_resumes_start_suspended`) is macOS only.
 
+// Tests drive the host and inspect job directories and process state by path; none is a
+// library reader (`scripts/clippy-allow.json`).
+#![allow(clippy::disallowed_methods)]
 #![cfg(unix)]
 
 mod host_support;

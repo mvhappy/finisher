@@ -76,6 +76,7 @@ pub(crate) fn open<'e>(
     project_dir: PathBuf,
     create: Option<(String, String, Option<String>)>,
     relocate: bool,
+    expect_id: Option<String>,
 ) -> Result<Object<'e>> {
     let worker = Worker::spawn()?;
     let (deferred, promise) = env.create_deferred::<Engine, _>()?;
@@ -98,6 +99,7 @@ pub(crate) fn open<'e>(
                         OpenOptions {
                             relocate,
                             measurer: measurer.clone(),
+                            expect_id,
                             ..OpenOptions::default()
                         },
                     ),

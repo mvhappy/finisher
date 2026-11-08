@@ -8,7 +8,10 @@
 //!
 //! `--project` is the global flag: a project folder (as everywhere) or, here, a project id.
 //! Opting in to content is a person's choice: `consent training on` is a usage error that names
-//! the ways in, and the server refuses it from this socket as well (`CONSENT_UI_ONLY`).
+//! the ways in, and the server refuses it from this socket as well (`CONSENT_UI_ONLY`). The
+//! server serves `fin`, which is not a person (5A Task 7), redacted exports, and refuses consent
+//! changes, purges, `project default` and `export --content` with `HUMAN_ONLY` (exit 7): those
+//! are the owner's, in the Finisher app or the server's console.
 
 use clap::{Args, Subcommand, ValueEnum};
 use fin_core::CoreError;
@@ -66,8 +69,8 @@ pub enum Collect {
 #[serde(deny_unknown_fields)]
 pub struct ShowArgs {}
 
-/// JSONL of what is stored, oldest first (content included: it is your own data), or with
-/// `--as-upload` exactly what an uploader would get now.
+/// JSONL of what is stored, oldest first, with content removed (`--content` asks for it, which
+/// only a person may), or with `--as-upload` exactly what an uploader would get now.
 #[derive(Debug, Clone, Args, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ExportArgs {
@@ -87,6 +90,10 @@ pub struct ExportArgs {
     #[arg(long = "as-upload", value_name = "purpose")]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub as_upload: Option<Purpose>,
+    /// Include recorded content (human-only: refused to `fin`).
+    #[arg(long)]
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub content: bool,
 }
 
 /// Deletes recorded entries: `--all` (also the key and every blob), `--project <id>` or
@@ -174,9 +181,13 @@ fn export_page(
     filter: &Value,
     cursor: Option<&str>,
     as_upload: Option<Purpose>,
+    content: bool,
     limit: u32,
 ) -> Result<Value, CoreError> {
     let mut payload = json!({ "filter": filter, "limit": limit });
+    if content {
+        payload["content"] = json!(true);
+    }
     if let Some(c) = cursor {
         payload["cursor"] = json!(c);
     }
@@ -203,7 +214,14 @@ fn export(backend: &dyn Backend, g: &Globals, a: &ExportArgs) -> Result<Value, C
     output::streaming();
     let mut cursor: Option<String> = None;
     loop {
-        let page = export_page(backend, &filter, cursor.as_deref(), a.as_upload, 1000)?;
+        let page = export_page(
+            backend,
+            &filter,
+            cursor.as_deref(),
+            a.as_upload,
+            a.content,
+            1000,
+        )?;
         for line in page["lines"]
             .as_array()
             .map(Vec::as_slice)

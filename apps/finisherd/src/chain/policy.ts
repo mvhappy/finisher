@@ -45,10 +45,12 @@ export function branchLimited(p: Principal): boolean {
  * guard's `allowBranches`, so what the payload does not name (a recovery re-applying a
  * `branchSet`) is still limited inside the store (review of Task 5, H1). A new branch
  * (`branch.create`, recovery's) is in no list and not a target: it becomes the writer's own.
+ * A rule's `targets` (a branch acted on without a record, `project.acknowledgeRewind`) are
+ * checked the same way.
  */
 export const agentBranchLimits: PolicyRule = ({ tag, rule, principal, payload, projects }) =>
   Effect.gen(function* () {
-    if (!branchLimited(principal) || rule.writes === undefined) return undefined;
+    if (!branchLimited(principal) || (rule.writes === undefined && rule.targets === undefined)) return undefined;
     const projectId = projectOf(payload);
     // Every writing RPC names its project; one that does not is refused, never left open.
     if (projectId === undefined) return { deny: branchNotAllowed(tag, "") };

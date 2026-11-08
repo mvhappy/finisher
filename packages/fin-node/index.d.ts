@@ -36,7 +36,8 @@ export declare class Engine {
    * `relocate`: the project now lives in `projectDir` although the folder it was recorded at
    * cannot be reached (otherwise `PROJECT_ORIGINAL_UNREACHABLE`). Never set it automatically.
    */
-  static open(serverData: string, projectDir: string, options?: { relocate?: boolean }): Promise<Engine>;
+  /** `expectId`: the project the folder must hold, checked before the lease (`PROJECT_NOT_FOUND {reason: changed}`). */
+  static open(serverData: string, projectDir: string, options?: { relocate?: boolean; expectId?: string }): Promise<Engine>;
   readonly projectId: string;
   /** Head revision of `branch` (0 when it does not exist). */
   head(branch: string): Promise<number>;
@@ -226,8 +227,8 @@ export declare class Journal {
   status(): Promise<string>;
   /** The `JournalStatus` JSON as last published, without waiting. */
   statusNow(): string;
-  /** Resolves to one `ExportPage` JSON (`limit` 1–1000; `cursor`: a page's `next`). */
-  export(filterJson: string, cursor: string | null | undefined, limit: number, asUpload?: "diagnostics" | "training"): Promise<string>;
+  /** Resolves to one `ExportPage` JSON (`limit` 1–1000; `cursor`: a page's `next`; `redact`: content removed). */
+  export(filterJson: string, cursor: string | null | undefined, limit: number, asUpload?: "diagnostics" | "training" | null, redact?: boolean): Promise<string>;
   /** Purges (`PurgeSelector` JSON); resolves to the `PurgeReport` JSON. */
   purge(selectorJson: string): Promise<string>;
   /** What this server knows of a project's flag (`null`: unknown). Engines set it themselves. */
@@ -459,9 +460,44 @@ export declare function makePrivateDir(path: string): void;
 /**
  * Probes a media file (MP4/MOV/M4A/WAV), image (PNG/JPEG/WebP), SVG, dotLottie, font
  * (TTF/OTF/TTC) or `.cube` LUT; resolves to `Probe` JSON (`{ kind, duration?, video?, audio?,
- * image?, lottie?, font?, lut?, fingerprint, size }`).
+ * image?, lottie?, font?, lut?, fingerprint, size }`). Never blocks: anything but a regular file
+ * (a folder, FIFO, socket or device) rejects with `ASSET_UNREADABLE`, `details.reason: "NotAFile"`.
  */
 export declare function probe(path: string): Promise<string>;
+
+/**
+ * `probe` of a file that must be inside `root` (a canonical folder): `path` is `root` joined
+ * with plain components, none of them a symlink, decided on the open file (Linux `openat2`
+ * `RESOLVE_BENEATH | RESOLVE_NO_SYMLINKS`; elsewhere one no-follow open per component, or on
+ * Windows no reparse point and a final path inside the root). Otherwise rejects with
+ * `PATH_NOT_ALLOWED` (`details.reason`: `outsideRoot` or `symlink`).
+ */
+export declare function probeBeneath(root: string, path: string): Promise<string>;
+
+/**
+ * Resolves a library root for `library.add` (plan 5D Decision 3), on a thread of its own:
+ * resolves to `{ root, rootKey, identity, storage }` JSON: the canonical absolute path (links
+ * resolved), its lookup key (NFC, `/` separators, lower-cased on a case-insensitive volume),
+ * the `VolumeIdentity` (`@finisher/core-types`) and the detected storage kind (`local`,
+ * `network`, `sync:<provider>`). Rejects `LIBRARY_ROOT_INVALID` (`details.reason`: `relative`,
+ * `notFound`, `notDirectory`, `notUtf8`, `serverData`: the root holds or lies inside
+ * `serverData`) or `LIBRARY_ROOT_UNREADABLE` (`details.code`; `TIMEOUT` past `timeoutMs`,
+ * default 60 s). Opens no file under the root.
+ */
+export declare function libraryCanonicalRoot(path: string, serverData: string, timeoutMs?: number): Promise<string>;
+
+/**
+ * A library root's state now against its stored `VolumeIdentity` JSON: resolves to the
+ * `RootState` JSON of `@finisher/core-types`. Never runs on the libuv pool or the JS thread.
+ * One stat per root is in flight (`fin_library::root_state` is single-flight): a call while one
+ * is pending waits on it. Past `timeoutMs` (default 60 s) it resolves `{ state: "timeout" }`
+ * and the stat thread is left to finish (that root counts in `libraryProbeStatus().stuckProbes`
+ * until a later probe of it answers anything else).
+ */
+export declare function libraryProbeRoot(root: string, identityJson: string, timeoutMs?: number): Promise<string>;
+
+/** What the root probes are doing: `stuckProbes` roots whose latest probe timed out. */
+export declare function libraryProbeStatus(): { stuckProbes: number };
 
 /** @internal Present only in binaries built with the `test-hooks` feature (`build:test`). */
 export declare const testHooks:
@@ -474,6 +510,10 @@ export declare const testHooks:
         path: string,
         opts?: { seconds?: number; fps?: number; audio?: boolean; sampleRate?: number },
       ): void;
+      /** While `hang` is true the stat of library root `root` blocks, as on a dead hard mount. */
+      libraryProbeHang(root: string, hang: boolean): void;
+      /** How many stats of library root `root` have started. */
+      libraryProbeStarted(root: string): number;
       /** Writes a small `png`/`jpeg`/`webp` (64x48), `svg` (640x360), `dotlottie`, `cube`
        * (4³), `wav` (1 s, 48 kHz stereo; `wav:<seconds>`, 1–600, for longer) or `m4a` (2 s,
        * 48 kHz stereo) fixture. */

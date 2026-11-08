@@ -1,0 +1,26 @@
+# Plan 5D Decision 21: nothing under a library root is read by path except through
+# `fin_library::open_for_read` and the walker's `Source`. `scripts/check-clippy-config.mjs`
+# keeps this list identical in every listed crate; `scripts/clippy-allow.json` lists each
+# `allow(clippy::disallowed_methods)` with its reason.
+disallowed-methods = [
+    { path = "std::fs::File::open", reason = "library files open through fin_library::open_for_read" },
+    { path = "std::fs::OpenOptions::open", reason = "library files open through fin_library::open_for_read" },
+    { path = "std::fs::metadata", reason = "library paths are listed by the walker's Source" },
+    { path = "std::fs::symlink_metadata", reason = "library paths are listed by the walker's Source" },
+    { path = "std::fs::canonicalize", reason = "roots are canonicalised by fin-node's libraryCanonicalRoot" },
+    { path = "std::fs::read", reason = "library files open through fin_library::open_for_read" },
+    { path = "std::fs::read_to_string", reason = "library files open through fin_library::open_for_read" },
+    { path = "std::fs::read_dir", reason = "library directories are listed by the walker's Source" },
+    { path = "std::fs::read_link", reason = "library links are never followed" },
+    { path = "std::path::Path::exists", reason = "library paths are stat'ed by the walker's Source" },
+    { path = "std::path::Path::try_exists", reason = "library paths are stat'ed by the walker's Source" },
+    { path = "std::path::Path::is_file", reason = "library paths are stat'ed by the walker's Source" },
+    { path = "std::path::Path::is_dir", reason = "library paths are stat'ed by the walker's Source" },
+    { path = "std::path::Path::is_symlink", reason = "library paths are stat'ed by the walker's Source" },
+    { path = "std::path::Path::metadata", reason = "library paths are stat'ed by the walker's Source" },
+    { path = "std::path::Path::symlink_metadata", reason = "library paths are stat'ed by the walker's Source" },
+    { path = "std::path::Path::canonicalize", reason = "roots are canonicalised by fin-node's libraryCanonicalRoot" },
+    { path = "std::path::Path::read_dir", reason = "library directories are listed by the walker's Source" },
+    { path = "std::path::Path::read_link", reason = "library links are never followed" },
+    { path = "dunce::canonicalize", reason = "roots are canonicalised by fin-node's libraryCanonicalRoot" },
+]

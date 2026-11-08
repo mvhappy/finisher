@@ -1,24 +1,29 @@
 // `FinRpcs` handlers. Every failure reaches the client as `FinError { code, message, details, fix }`.
-import { type FinError, FinRpcs, PROTOCOL_VERSION, type Probe } from "@finisher/contracts";
-import { probe } from "@finisher/fin-node";
+import { type FinError, FinRpcs, PROTOCOL_VERSION } from "@finisher/contracts";
 import { Effect, Stream } from "effect";
 import { SERVER_VERSION } from "./config.ts";
 import { HandshakeTag, revokeSelf } from "./auth/handshake.ts";
 import { TicketsTag } from "./auth/tickets.ts";
 import { chainOf, withChain, writeGuardOf } from "./chain/chain.ts";
-import { stillCanonical } from "./chain/resolve.ts";
 import { AuditTag } from "./control/audit.ts";
-import { ConnectionsTag } from "./connections.ts";
-import { type CallMeta, callMeta, Diagnostics, RpcSource } from "./diagnostics.ts";
+import { ConnectionRegistryTag, ConnectionsTag } from "./connections.ts";
+import { issueChallenge } from "./auth/challenges.ts";
+import { actorFor, type CallMeta, Diagnostics } from "./diagnostics.ts";
 import { attemptJson, finError, toFinError } from "./errors.ts";
 import { Fonts } from "./fonts.ts";
 import { requireAbsolute, requireAbsoluteOpt } from "./paths.ts";
 import { pluginHandlers } from "./plugins/rpc.ts";
 import { PluginsTag } from "./plugins/registries.ts";
+import { probeFor } from "./probe.ts";
 import { ProjectRegistry } from "./projects.ts";
+import { type AdminDeps, auditList, auditPurge, ServerControlTag, serverStatus, serverStop } from "./server-admin.ts";
 
 /** Advertised in `server.hello`: the RPC tags this server implements. */
 export const CAPABILITIES: ReadonlyArray<string> = [...FinRpcs.requests.keys()].sort();
+
+/** The audit's word for a purge selector (never the project id or the date). */
+const purgeReason = (selector: unknown): string =>
+  selector === "all" ? "all" : selector !== null && typeof selector === "object" && "before" in selector ? "before" : "project";
 
 /** Defects (thrown exceptions, bugs) become `INTERNAL` instead of an RPC defect frame. */
 const defectsAsErrors = <A, R>(self: Effect.Effect<A, FinError, R>) =>
@@ -26,7 +31,8 @@ const defectsAsErrors = <A, R>(self: Effect.Effect<A, FinError, R>) =>
 
 /**
  * The handlers of one transport: built once per transport (`Layer.fresh`), with that transport's
- * `RpcSource` (local socket `fin`, WebSocket `ui`) and `Connections`. Every non-stream call is
+ * `Connections`. The journal's source and a call's actor come from the call's principal
+ * (`sourceOf`, `actorFor`; 5A Decision 27), never from the transport. Every non-stream call is
  * timed into `rpc.stats` (`guard`); the stream handlers do not use it. Every RPC passes the
  * middleware chain first (`withChain`, 5A Task 5): authentication, resolvers, scopes, reach and
  * policy; every write takes the chain's guard to the store (`meta`).
@@ -36,12 +42,13 @@ export const HandlersLive = FinRpcs.toLayer(
     const registry = yield* ProjectRegistry;
     const fonts = yield* Fonts;
     const diagnostics = yield* Diagnostics;
-    const source = yield* RpcSource;
     const connections = yield* ConnectionsTag;
     const handshake = yield* HandshakeTag;
     const audit = yield* AuditTag;
     const plugins = yield* PluginsTag;
     const tickets = yield* TicketsTag;
+    const everyConnection = yield* ConnectionRegistryTag;
+    const admin: AdminDeps = { control: yield* ServerControlTag, audit, connections: everyConnection, journalEnabled: () => diagnostics.enabled() };
     /** The principal the chain bound to this call (`anonymous` outside it: fail closed). */
     const principalOf = (options: object) => chainOf(options)?.principal ?? connections.principalOf((options as { client: { id: number } }).client.id);
     const guard = <A, R>(tag: string, self: Effect.Effect<A, FinError, R>) => diagnostics.timed(tag, defectsAsErrors(self));
@@ -51,7 +58,12 @@ export const HandlersLive = FinRpcs.toLayer(
      * (`INTERNAL`), never an open guard (review of Task 5, H1 and L3).
      */
     const withMeta = <A>(options: { readonly headers: unknown }, f: (meta: CallMeta) => Effect.Effect<A, FinError>) =>
-      Effect.flatMap(writeGuardOf(options), (guard) => f({ ...callMeta(options.headers, source), guard }));
+      Effect.flatMap(writeGuardOf(options), (guard) => f({ ...actorFor(principalOf(options), options.headers), guard }));
+    /** An `ok` audit row of `kind` for the call's principal (consent changes, purges). */
+    const auditAs = (options: object, kind: "consent.change" | "diagnostics.purge", details: Record<string, string>) => {
+      const p = principalOf(options);
+      audit.append({ kind, principal: { kind: p.kind, id: p.id }, outcome: "ok", details: { ...details, transport: connections.transport } });
+    };
     const projects = {
       isOpen: registry.isOpen,
       dirOf: registry.dirOf,
@@ -75,9 +87,10 @@ export const HandlersLive = FinRpcs.toLayer(
       "auth.ticket": ({ ttlS }, options) =>
         guard(
           "auth.ticket",
-          Effect.sync(() => {
+          Effect.try({ try: () => {
             const principal = principalOf(options);
-            const minted = tickets.mint(principal, ttlS);
+            // `TICKET_LIMIT` past the principal's mint rate or the global cap.
+            const minted = tickets.mint(principal, ttlS, `${connections.transport}:${options.client.id}`);
             audit.append({
               kind: "auth.ticket",
               principal: { kind: principal.kind, id: principal.id },
@@ -85,19 +98,39 @@ export const HandlersLive = FinRpcs.toLayer(
               details: { transport: connections.transport },
             });
             return minted;
-          }),
+          }, catch: toFinError }),
         ),
       "auth.whoami": (_, options) => guard("auth.whoami", Effect.sync(() => ({ principal: principalOf(options) }))),
       "auth.revokeSelf": (_, options) =>
         guard(
           "auth.revokeSelf",
           revokeSelf(
-            handshake.deps,
+            { audit, tickets, connections: everyConnection, ...(handshake.deps.revoke === undefined ? {} : { revoke: handshake.deps.revoke }) },
             principalOf(options),
-            () => connections.link(options.client.id)?.closeAfterReply(),
-            (pred) => tickets.dropWhere(pred),
+            {
+              transport: connections.transport,
+              clientId: options.client.id,
+              closeAfterReply: () => connections.link(options.client.id)?.closeAfterReply(),
+            },
           ),
         ),
+      // The console's typed confirmations (Decision 30): a code for this connection only.
+      "console.challenge": (_, options) =>
+        guard(
+          "console.challenge",
+          Effect.suspend(() => {
+            const c = connections.get(options.client.id);
+            if (principalOf(options).kind !== "console" || c === undefined) {
+              return Effect.fail(finError("INVALID_REQUEST", "console.challenge is for the server's console", { tag: "console.challenge" }));
+            }
+            return Effect.succeed(issueChallenge(c));
+          }),
+        ),
+      // The server itself and the owner's audit log (5A Task 8, `server-admin.ts`).
+      "server.status": () => guard("server.status", serverStatus(admin)),
+      "server.stop": (_, options) => guard("server.stop", serverStop(admin, connections.link(options.client.id)?.afterReply)),
+      "auth.audit.list": (req) => guard("auth.audit.list", auditList(admin, req)),
+      "auth.audit.purge": (req, options) => guard("auth.audit.purge", auditPurge(admin, req, principalOf(options), connections.transport)),
       // Paths are absolute and normalised, or `INVALID_PATH` (5A Decision 35), counted in rpc.stats.
       "project.create": ({ dir, name, rate, idemKey }) =>
         guard("project.create", Effect.flatMap(requireAbsolute("dir", dir), (d) => registry.create(d, name, rate, idemKey))),
@@ -112,18 +145,14 @@ export const HandlersLive = FinRpcs.toLayer(
           }),
         ),
       // Protocol 2: the probe is for `projectId` (opened on demand, `PROJECT_NOT_FOUND` otherwise).
-      // For a principal with roots the checked path is re-checked around the probe: a symlink
-      // swapped in after the chain's check is refused (review of Task 5, M2).
+      // For a principal with roots the file is opened beneath its project's folder, through no
+      // symlink: one swapped in after the chain's check, or a dangling one, is refused (`probe.ts`).
       "asset.probe": ({ projectId, path }, options) =>
         guard(
           "asset.probe",
           Effect.andThen(
             registry.ensure(projectId),
-            Effect.flatMap(requireAbsolute("path", path), (p) => {
-              const roots = chainOf(options)?.principal.projects !== "*";
-              const check = roots ? stillCanonical("asset.probe", p) : Effect.void;
-              return Effect.andThen(check, Effect.tap(attemptJson<Probe>(() => probe(p)), () => check));
-            }),
+            Effect.flatMap(requireAbsolute("path", path), (p) => probeFor(chainOf(options)?.principal, projects, projectId, p)),
           ),
         ),
       "tx.commit": ({ projectId, tx, generation }, options) =>
@@ -181,8 +210,16 @@ export const HandlersLive = FinRpcs.toLayer(
         guard("fonts.fetch", Effect.andThen(req.pinned === undefined ? Effect.void : registry.ensure(req.pinned), fonts.fetch(req))),
       "fonts.plan": ({ projectId, branch, ops }) => guard("fonts.plan", registry.fontsPlan(projectId, branch, ops)),
       "diagnostics.status": () => guard("diagnostics.status", diagnostics.status()),
-      "diagnostics.export": (req) => guard("diagnostics.export", diagnostics.export(req)),
-      "diagnostics.purge": ({ selector }) => guard("diagnostics.purge", diagnostics.purge(selector)),
+      // Content only on explicit request (`content: true`, human-only); otherwise, and for a caller
+      // that is not a person, it is removed (Decision 22; owner decision, review of Task 7 L4).
+      "diagnostics.export": (req, options) => guard("diagnostics.export", diagnostics.export(req, !principalOf(options).human || req.content !== true)),
+      "diagnostics.purge": ({ selector }, options) =>
+        guard(
+          "diagnostics.purge",
+          Effect.tap(diagnostics.purge(selector), () =>
+            Effect.sync(() => auditAs(options, "diagnostics.purge", { reason: purgeReason(selector) })),
+          ),
+        ),
       "diagnostics.project": ({ projectId, collect }) =>
         guard(
           "diagnostics.project",
@@ -192,9 +229,16 @@ export const HandlersLive = FinRpcs.toLayer(
             return attemptJson<{ project: string; collect: "default" | "never" }>(() => engine.setCollect(collect));
           }),
         ),
-      "diagnostics.consent": ({ purpose, value }) => guard("diagnostics.consent", diagnostics.consent(source, purpose, value)),
-      "diagnostics.record": (req, { client, headers }) =>
-        guard("diagnostics.record", diagnostics.record(source, client.id, req, headers)),
+      "diagnostics.consent": ({ purpose, value }, options) =>
+        guard(
+          "diagnostics.consent",
+          Effect.tap(diagnostics.consent(principalOf(options), purpose, value), () => Effect.sync(() => auditAs(options, "consent.change", { purpose, value }))),
+        ),
+      "diagnostics.record": (req, options) =>
+        guard(
+          "diagnostics.record",
+          diagnostics.record({ principal: principalOf(options), connection: `${connections.transport}:${options.client.id}` }, req, options.headers),
+        ),
       ...pluginHandlers({ plugins, audit, guard }),
     }), { connections, projects, audit, timed: guard });
   }),

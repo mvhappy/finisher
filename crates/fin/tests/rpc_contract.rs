@@ -15,6 +15,8 @@ use support::Server;
 
 const FIXTURE_PROJECT: &str = "01fixtureproject0000000000";
 const FIXTURE_INCARNATION: &str = "01fixtureincarnation000000";
+/// The console's typed code in the confirmed fixtures (replaced with this connection's own).
+const FIXTURE_CHALLENGE: &str = "0FIXTURECHALLENGE0";
 
 fn fixture(name: &str) -> Vec<String> {
     let path = format!("{}/tests/fixtures/rpc/{name}", env!("CARGO_MANIFEST_DIR"));
@@ -90,6 +92,17 @@ impl Conn {
             io,
             subst: subst.to_vec(),
         }
+    }
+
+    /// Asks this console connection for a `console.challenge` and substitutes its code for the
+    /// fixtures' `0FIXTURECHALLENGE0` (5A Decision 30: a code is bound to its connection).
+    fn confirming(mut self) -> Conn {
+        self.send(&json!({ "_tag": "Request", "id": "challenge", "tag": "console.challenge", "payload": {}, "headers": [] }));
+        let got = self.frame();
+        assert_eq!(got["exit"]["_tag"], "Success", "{got}");
+        let code = got["exit"]["value"]["code"].as_str().unwrap().to_string();
+        self.subst.push((FIXTURE_CHALLENGE.to_string(), code));
+        self
     }
 
     fn send_line(&mut self, line: &str) {
@@ -269,7 +282,9 @@ fn replay_storage(server: &Server, subst: &[(String, String)], project_id: &str)
         "GENERATION"
     );
     // A relocation is a person's decision (5A Task 5): the console replays it.
-    let relocated = Conn::open_as(server, subst, "console").replay("project-open-relocate");
+    let relocated = Conn::open_as(server, subst, "console")
+        .confirming()
+        .replay("project-open-relocate");
     assert_eq!(relocated["exit"]["value"]["rev"], 4, "{relocated}");
     replay_events(server, subst);
     replay_history(server, subst, project_id);
@@ -424,7 +439,12 @@ fn replay_diagnostics(server: &Server, subst: &[(String, String)], project_id: &
         refused["exit"]["cause"][0]["error"]["code"],
         "CONSENT_UI_ONLY"
     );
-    let consent = Conn::open(server, subst).replay_to("diagnostics-consent", REPORT_KEYS);
+    // Consent changes, `project default` and purges are a person's (5A Task 7): `fin` is
+    // refused, the console confirms each with its own code.
+    let human = Conn::open(server, subst).replay("diagnostics-consent-human-only");
+    assert_eq!(human["exit"]["cause"][0]["error"]["code"], "HUMAN_ONLY");
+    let console = || Conn::open_as(server, subst, "console").confirming();
+    let consent = console().replay_to("diagnostics-consent", REPORT_KEYS);
     assert_eq!(consent["exit"]["value"]["diagnostics"], "on", "{consent}");
     // Its `kinds` and `projects` are keyed by what this run holds: compared to the value's keys.
     let status = Conn::open(server, subst).replay_to("diagnostics-status", REPORT_KEYS - 1);
@@ -434,12 +454,13 @@ fn replay_diagnostics(server: &Server, subst: &[(String, String)], project_id: &
         page["exit"]["value"]["lines"][0]["kind"], "cli.command",
         "{page}"
     );
-    let project = Conn::open(server, subst).replay("diagnostics-project");
+    assert_eq!(page["exit"]["value"]["redacted"], true, "{page}");
+    let project = console().replay("diagnostics-project");
     assert_eq!(
         project["exit"]["value"],
         json!({ "project": project_id, "collect": "default" })
     );
-    Conn::open(server, subst).replay("diagnostics-purge");
+    console().replay("diagnostics-purge");
 }
 
 /// `project-events`: the first chunk (the status now), its ack, then the interrupt. Status

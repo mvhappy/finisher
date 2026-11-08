@@ -3,6 +3,9 @@
 //! `SIGKILL`; and, in process, the watchdog's own behaviour, foreign processes and
 //! abandonment.
 
+// Tests drive the host and inspect job directories and process state by path; none is a
+// library reader (`scripts/clippy-allow.json`).
+#![allow(clippy::disallowed_methods)]
 #![cfg(unix)]
 
 mod host_support;

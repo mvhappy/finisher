@@ -235,6 +235,7 @@ impl Engine {
             project_dir.into(),
             Some((name, rate, idem_key)),
             false,
+            None,
         )
     }
 
@@ -248,6 +249,7 @@ impl Engine {
         server_data: String,
         project_dir: String,
         relocate: Option<bool>,
+        expect_id: Option<String>,
     ) -> Result<Object<'e>> {
         worker::open(
             env,
@@ -255,6 +257,7 @@ impl Engine {
             project_dir.into(),
             None,
             relocate.unwrap_or(false),
+            expect_id,
         )
     }
 

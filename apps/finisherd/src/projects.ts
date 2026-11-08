@@ -305,9 +305,10 @@ export function makeProjectRegistry(
       }
       let pending = opening.get(dir);
       if (!pending) {
-        pending = Engine.open(serverData, dir, { relocate })
+        // The store checks the folder still holds `expected` before it locks or leases anything.
+        pending = Engine.open(serverData, dir, { relocate, ...(expected === undefined ? {} : { expectId: expected }) })
           .then((engine) => {
-            // Before `register`: a project other than the one checked is never taken on.
+            // And again before `register`: a project other than the one checked is never taken on.
             if (expected !== undefined && engine.projectId !== expected) {
               void engine.close().catch(() => undefined);
               throw changed(dir, expected);

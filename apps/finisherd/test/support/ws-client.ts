@@ -5,6 +5,8 @@ import { connectProved, ok, type ServerInfo } from "./ndjson-client.ts";
 
 export interface WsClient {
   call(tag: string, payload: unknown): Promise<Record<string, unknown>>;
+  /** `tag` with a fresh `console.challenge` of this connection typed back (a `console` ticket's socket). */
+  confirmed(tag: string, payload: Record<string, unknown>): Promise<Record<string, unknown>>;
   readonly protocol: string;
   close(): void;
 }
@@ -33,15 +35,21 @@ export function openWs(port: number, protocols: string[], headers: Record<string
     });
     sock.once("unexpected-response", (_req, res) => reject(Object.assign(new Error(`HTTP ${res.statusCode}`), { status: res.statusCode })));
     sock.once("error", reject);
+    const call = (tag: string, payload: unknown) =>
+      new Promise<Record<string, unknown>>((done) => {
+        const id = String(next++);
+        waiting.set(id, done);
+        sock.send(`${JSON.stringify({ _tag: "Request", id, tag, payload, headers: [] })}\n`);
+      });
     sock.once("open", () =>
       resolve({
         protocol: sock.protocol,
-        call: (tag, payload) =>
-          new Promise((done) => {
-            const id = String(next++);
-            waiting.set(id, done);
-            sock.send(`${JSON.stringify({ _tag: "Request", id, tag, payload, headers: [] })}\n`);
-          }),
+        call,
+        confirmed: async (tag, payload) => {
+          const exit = (await call("console.challenge", {})).exit as { _tag: string; value?: { code: string } };
+          if (exit._tag !== "Success") throw new Error(`console.challenge failed: ${JSON.stringify(exit)}`);
+          return call(tag, { ...payload, challenge: exit.value!.code });
+        },
         close: () => sock.close(),
       }),
     );
