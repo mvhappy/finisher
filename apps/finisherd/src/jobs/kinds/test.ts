@@ -16,7 +16,7 @@ import type {
 } from "@finisher/core-types";
 import { FinError } from "@finisher/contracts";
 import { Duration, Effect } from "effect";
-import type { KindRegistry, KindSpec, OnCall } from "../kinds.ts";
+import type { FamilySpec, KindRegistry, KindSpec, OnCall } from "../kinds.ts";
 
 /** What `test.files`' `prepare` writes into its prepared input. */
 export const TEST_FILES_INPUT = "prepared by test.files\n";
@@ -58,9 +58,18 @@ function kind<P>(k: Partial<KindSpec<P>> & { readonly kind: string }): KindSpec<
 /**
  * Registers `test`, `testbad` and `testplugin`, their kinds and the `codec:test` helper. The
  * programs here are the cold argv; a warm spawn takes `registry.program(family, job, "warm")`,
- * which appends `--warm` (`fin-workers test --warm`, `<path> testplugin --warm`).
+ * which appends `--warm` (`fin-workers test --warm`, `<path> testplugin --warm`). `overrides`
+ * replaces fields of kinds by name and `families` of families (the engine's tests: a short
+ * `stallS`, a hook, no `diagKinds`).
  */
-export function registerTestKinds(registry: KindRegistry, opts: { readonly binaryDir: string }): void {
+export function registerTestKinds(
+  registry: KindRegistry,
+  opts: {
+    readonly binaryDir: string;
+    readonly overrides?: Readonly<Record<string, Partial<KindSpec>>>;
+    readonly families?: Readonly<Record<string, Partial<FamilySpec>>>;
+  },
+): void {
   const exe = process.platform === "win32" ? "fin-workers.exe" : "fin-workers";
   registry.registerFamily({
     family: "test",
@@ -68,6 +77,7 @@ export function registerTestKinds(registry: KindRegistry, opts: { readonly binar
     program: { binary: "fin-workers", args: ["test"] },
     onCall: testOnCall,
     diagKinds: ["test.diag"],
+    ...(opts.families?.test ?? {}),
   });
   registry.registerFamily({ family: "testbad", profile: "worker", program: { binary: "fin-workers", args: ["testbad"] } });
   registry.registerFamily({
@@ -129,5 +139,5 @@ export function registerTestKinds(registry: KindRegistry, opts: { readonly binar
     kind({ kind: "test.badHello", family: "testbad" }),
     kind<TestPluginMinorParams>({ kind: "test.pluginMinor", family: "testplugin", warm: true }),
   ] as KindSpec<never>[];
-  for (const k of kinds) registry.registerKind(k);
+  for (const k of kinds) registry.registerKind({ ...k, ...(opts.overrides?.[k.kind] ?? {}) } as KindSpec<never>);
 }
