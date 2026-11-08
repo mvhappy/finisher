@@ -49,6 +49,9 @@ pub const DENIED_CODES: &[&str] = &[
     "PLUGIN_BUNDLED_MISMATCH",
     "COPYLEFT_NOT_ACCEPTED",
     "THIRD_PARTY_CODE_NOT_ACCEPTED",
+    // Agent sessions (7A-2 Task 6b): a session's token, money or wall-clock budget is used up
+    // (`details.kind`, `used`, `limit`); a person raises it (`finisherd agent approve`).
+    "BUDGET_EXCEEDED",
 ];
 
 /// Codes that mean "the request was well-formed but rejected by validation" (exit 3).
@@ -100,6 +103,10 @@ const VALIDATION_CODES: &[&str] = &[
     "JOBHOST_STATE",
     // Agent sessions (7A-2 Task 3b): a session id the server does not know.
     "SESSION_NOT_FOUND",
+    // Agent sessions (7A-2 Task 6b): no adapter for the harness on this server; an approval
+    // id the server does not know.
+    "HARNESS_UNKNOWN",
+    "APPROVAL_NOT_FOUND",
     // Stored history that this code cannot or will not read (sub-project 4).
     "DB_TOO_NEW",
     "NOT_A_PROJECT_DB",
@@ -251,6 +258,9 @@ const CONFLICT_CODES: &[&str] = &[
     // Another live agent session works on this root branch (7A Task 7): end it, or start from
     // another branch.
     "BRANCH_IN_USE",
+    // Agent sessions (7A-2 Task 6b): a run is active (steer it, or wait); the session ended.
+    "SESSION_BUSY",
+    "SESSION_ENDED",
 ];
 
 /// Codes of a job that ended without succeeding (exit 4, 5C-1 Decision 41): its outcome, and
@@ -348,6 +358,10 @@ const UNAVAILABLE_CODES: &[&str] = &[
     "PLUGIN_RUNTIME_UNAVAILABLE",
     "TOO_MANY_PLANS",
     "TOO_MANY_SUGGESTIONS",
+    // Agent sessions (7A-2 Task 6b): the session is interrupted (resume it); its provider
+    // exited or could not start (`details.code`, `signal`). Both are resumable.
+    "SESSION_INTERRUPTED",
+    "PROVIDER_EXITED",
 ];
 
 /// The one place error codes become exit codes.

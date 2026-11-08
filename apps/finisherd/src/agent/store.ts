@@ -141,6 +141,16 @@ export class AgentStore {
     return rows.length > limit ? { sessions, next: sessions[sessions.length - 1]!.id } : { sessions };
   }
 
+  /** The active run's id (`running`, `waitingApproval`), else null. */
+  activeRun(sessionId: string): string | null {
+    return this.#row(sessionId).runId;
+  }
+
+  /** The session's highest node seq (0 before its first node). */
+  lastSeq(sessionId: string): number {
+    return (this.#s.lastNodeSeq!.get(sessionId) as { seq: number } | undefined)?.seq ?? 0;
+  }
+
   providerRef(sessionId: string): string | undefined {
     return this.#row(sessionId).providerRef ?? undefined;
   }
@@ -357,6 +367,10 @@ export class AgentStore {
   /** Marks an answered approval used (a one-time grant); false when it was not answered or is used. */
   consumeApproval(id: string): boolean {
     return Number(this.#s.consumeApproval!.run(this.#clock.now(), id).changes) > 0;
+  }
+
+  approval(id: string): Approval | undefined {
+    return this.#approval(id);
   }
 
   approvals(sessionId: string): Approval[] {
