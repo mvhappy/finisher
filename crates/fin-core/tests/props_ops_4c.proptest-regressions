@@ -7,3 +7,6 @@
 #
 # A generator gap (an internal restore into a stale link group), kept as a regression.
 cc 5c9d10b491e2b75f3920c9090a63f5f01719cb01a12bf02783b2fde18949bd2e # shrinks to shape = Shape { lens: [[12], [12], []], linked: true, transitions: false, captions: 0, effects: false, pinned: false }, txs = [[Remove { t: 0, k: 0, lift: false }], [Restore { k: 0, fresh: false, lift: false }], [Restore { k: 0, fresh: true, lift: false }]]
+# Prop 6's overwrite at 1/1001 s that left an item shorter than a frame (2026-11-08) is the fixed
+# case `overwrite_at_a_sub_frame_time_keeps_a_frame_4c`: its seed was not kept, and 400,000 fresh
+# cases did not find it again.

@@ -14586,6 +14586,10 @@
           },
           "type": "array"
         },
+        "credential": {
+          "description": "The credential the write is made for (`agent:<id>`, `mcp:<id>`), refused once it has\nbeen ended ([`end_credential`]); absent for `local` and `console`. `null` is refused.",
+          "type": "string"
+        },
         "denyBranches": {
           "default": [],
           "description": "Branches no write may change (`BRANCH_PROTECTED`).",

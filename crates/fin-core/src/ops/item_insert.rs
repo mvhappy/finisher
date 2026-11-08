@@ -29,7 +29,7 @@ use crate::ops::util::param_check::check_value;
 use crate::ops::util::{
     OpDiff, TrackAt, asset, carve, check_caption, check_carve, check_frame, check_kind,
     check_source, check_speed, check_unlocked, clip_containing, frame_of, insert_inside,
-    invalid_range, kind_name, normalize_body, place, ripple, track_index, wrong_op,
+    invalid_range, kind_name, normalize_body, place, policy_frame, ripple, track_index, wrong_op,
 };
 use crate::ops::{Bindings, DeleteMode, InsertMode, ItemInsert, ItemRemove, Op};
 use crate::rebase::Footprint;
@@ -181,9 +181,11 @@ pub(crate) fn validate(
             return Err(insert_inside(other, i.at)?);
         }
     }
-    // Structural, and before the id is allocated (an op that fails takes no id).
+    // Structural (the one-frame remainder is policy), and before the id is allocated (an op
+    // that fails takes no id).
     if i.mode == InsertMode::Overwrite {
-        check_carve(track, i.at, i.at.checked_add(i.duration)?)?;
+        let frame = policy_frame(project, ti, bindings)?;
+        check_carve(track, i.at, i.at.checked_add(i.duration)?, frame)?;
     }
     bindings.check_new(project, &i.id, IdKind::of_item(&i.body))?;
     Ok(ti)
@@ -202,13 +204,14 @@ pub(crate) fn apply(
     normalize_body(&mut body)?;
     resolve_body(&mut body, bindings)?;
     let id = bindings.create(project, &i.id, IdKind::of_item(&body), ids)?;
+    let frame = policy_frame(project, ti, bindings)?;
     let track = ti.get_mut(project);
     let carved = match i.mode {
         InsertMode::Ripple => {
             ripple(track, i.at, i.duration)?;
             Vec::new()
         }
-        InsertMode::Overwrite => carve(track, i.at, i.at.checked_add(i.duration)?, diff)?,
+        InsertMode::Overwrite => carve(track, i.at, i.at.checked_add(i.duration)?, frame, diff)?,
     };
     place(track, Item::new(id.clone(), i.at, i.duration, body));
     diff.record_item(&track.id, &id, ChangeKind::Added);

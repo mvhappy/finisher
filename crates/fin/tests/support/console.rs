@@ -5,6 +5,7 @@
 //! will (Task 8). The mutating ones need the connection's typed challenge: [`Console::confirmed`].
 
 use std::io::{BufRead, BufReader, Write};
+#[cfg(unix)]
 use std::time::Duration;
 
 use interprocess::local_socket::prelude::*;

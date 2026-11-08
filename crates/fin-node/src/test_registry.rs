@@ -237,7 +237,7 @@ fn pack(p: &FullPackage, scratch: &Path) -> Result<std::path::PathBuf> {
 }
 
 /// The key of `publisher`, kept in `keys_dir`; a new publisher is generated and delegated.
-#[allow(clippy::disallowed_methods)] // a test registry's keys folder (test-hooks builds only)
+#[allow(clippy::disallowed_methods)] // the test registry's own key folder, never a library path
 fn publisher_key(
     b: &mut RepoBuilder,
     keys_dir: &Path,

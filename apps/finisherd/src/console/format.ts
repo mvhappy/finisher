@@ -33,7 +33,10 @@ export interface Args {
 }
 
 /** Flags that take a value; every other flag is a switch. */
-const VALUED = new Set(["server-data", "since", "kind", "limit", "before", "project", "dir", "root", "root-sha256", "registry"]);
+const VALUED = new Set([
+  "server-data", "since", "kind", "limit", "before", "project", "label", "scope", "branch", "idle", "absolute", "out",
+  "dir", "root", "root-sha256", "registry",
+]);
 
 export function usage(message: string, fix = "Run `finisherd help` to list the commands."): never {
   throw consoleError("USAGE", message, {}, fix);

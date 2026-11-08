@@ -6663,6 +6663,11 @@ export interface WriteGuard {
    */
   allowBranches?: string[];
   /**
+   * The credential the write is made for (`agent:<id>`, `mcp:<id>`), refused once it has
+   * been ended ([`end_credential`]); absent for `local` and `console`. `null` is refused.
+   */
+  credential?: string;
+  /**
    * Branches no write may change (`BRANCH_PROTECTED`).
    */
   denyBranches?: string[];

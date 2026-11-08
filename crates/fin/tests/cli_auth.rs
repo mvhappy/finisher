@@ -321,6 +321,82 @@ fn fin_works_as_local() {
     assert!(status.is_object());
 }
 
+/// 5A Task 9: a credential minted by the console proves through `FIN_CREDENTIAL` as `agent`
+/// (and `mcp`), holds exactly its scopes, and stops working once revoked (`CREDENTIAL_REVOKED`).
+#[test]
+fn agent_credential_proves_and_is_revoked() {
+    let Some(server) = Server::start("agent_credential_proves_and_is_revoked") else {
+        return;
+    };
+    let mut console = support::console::Console::open(&server);
+    let dir = tempfile::tempdir().unwrap();
+    for kind in ["agent", "mcp"] {
+        let minted = console.confirmed_ok(
+            "auth.credential.mint",
+            json!({ "kind": kind, "label": "test", "scopes": ["server.read"] }),
+        );
+        let id = minted["credential"]["id"].as_str().unwrap().to_string();
+        let file = dir.path().join(format!("{kind}.json"));
+        std::fs::write(&file, minted["file"].to_string()).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o600)).unwrap();
+        }
+        let env = [("FIN_CREDENTIAL", file.as_os_str())];
+        let who = ok(fin_env(&server.sd, &server.root, &["whoami"], &env));
+        assert_eq!(who["principal"]["kind"], kind, "{who}");
+        assert_eq!(who["principal"]["id"], id.as_str());
+        assert_eq!(who["principal"]["scopes"], json!(["server.read"]));
+        assert_eq!(who["principal"]["human"], false);
+        ok(fin_env(
+            &server.sd,
+            &server.root,
+            &["fonts", "status"],
+            &env,
+        ));
+        let run = fin_env(&server.sd, &server.root, &["diagnostics", "show"], &env);
+        assert_error(&run, 7, "SCOPE_DENIED");
+        let revoked = console.confirmed_ok("auth.credential.revoke", json!({ "id": id }));
+        assert_eq!(revoked, json!({ "revoked": true }));
+        // Review of Tasks 8–9, L4: the server still proves itself to a revoked credential, then
+        // refuses it by name (exit 7), so fin does not suspect a squatter.
+        let run = fin_env(&server.sd, &server.root, &["whoami"], &env);
+        assert_error(&run, 7, "CREDENTIAL_REVOKED");
+        assert!(
+            run.json["error"]["fix"]
+                .as_str()
+                .unwrap()
+                .contains("no longer works"),
+            "{}",
+            run.stdout
+        );
+        assert!(!run.stdout.contains(minted["file"]["key"].as_str().unwrap()));
+        // An id the server never minted gets no proof: SERVER_UNTRUSTED, as from a squatter.
+        let mut forged: serde_json::Value = minted["file"].clone();
+        forged["id"] = json!("01zzzzzzzzzzzzzzzzzzzzzzzz");
+        let unknown = dir.path().join(format!("{kind}-unknown.json"));
+        std::fs::write(&unknown, forged.to_string()).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            std::fs::set_permissions(&unknown, std::fs::Permissions::from_mode(0o600)).unwrap();
+        }
+        let env = [("FIN_CREDENTIAL", unknown.as_os_str())];
+        let run = fin_env(&server.sd, &server.root, &["whoami"], &env);
+        assert_error(&run, 7, "SERVER_UNTRUSTED");
+        assert_eq!(run.json["error"]["details"]["reason"], "noProof");
+        assert!(
+            run.json["error"]["fix"]
+                .as_str()
+                .unwrap()
+                .contains("does not know"),
+            "{}",
+            run.stdout
+        );
+    }
+}
+
 #[test]
 fn no_credential_is_unauthenticated() {
     let Some(server) = Server::start("no_credential_is_unauthenticated") else {

@@ -72,10 +72,13 @@ export declare class Engine {
    * `CONFLICT_COPY`; `origin`: `local`, `folder`, `foreign`, `salvage`); or `null` when unknown.
    */
   txGet(txId: string): Promise<string | null>;
-  /** Stops status reporting the rewind of `branch` that started `generation`; `false` if none. */
-  acknowledgeRewind(branch: string, generation: number): Promise<boolean>;
-  /** Acknowledges the incomplete salvage of kept copy `copy`; `false` if none is listed. */
-  acknowledgeSalvage(copy: string): Promise<boolean>;
+  /**
+   * Stops status reporting the rewind of `branch` that started `generation`; `false` if none.
+   * `metaJson`'s guard names the caller's credential, refused once ended (`CREDENTIAL_REVOKED`).
+   */
+  acknowledgeRewind(branch: string, generation: number, metaJson?: string): Promise<boolean>;
+  /** Acknowledges the incomplete salvage of kept copy `copy`; `false` if none is listed. `metaJson` as above. */
+  acknowledgeSalvage(copy: string, metaJson?: string): Promise<boolean>;
   /** Makes a branch: `BranchCreate` JSON (camelCase); resolves to the `BranchCreated` JSON. */
   branchCreate(reqJson: string, metaJson?: string): Promise<string>;
   /** Resolves to the `BranchView[]` JSON (`main` first; with `all`, archived ones too). */
@@ -142,9 +145,10 @@ export declare class Engine {
   /**
    * Sets the project's collection flag in `finisher.project.json` (needs the writer lease:
    * `PROJECT_READ_ONLY` otherwise) and in the server's journal; `never` purges the project's
-   * diagnostics entries. Resolves to `{ project, collect }` JSON.
+   * diagnostics entries. Resolves to `{ project, collect }` JSON. `metaJson` as for
+   * `acknowledgeRewind`.
    */
-  setCollect(collect: "default" | "never"): Promise<string>;
+  setCollect(collect: "default" | "never", metaJson?: string): Promise<string>;
   /**
    * Stops maintenance, flushes the export and closes the database (after long calls queued
    * before it); later calls reject with `ENGINE_CLOSED`. Idempotent.
@@ -463,6 +467,33 @@ export declare function checkPrivateDir(path: string): PrivateDirReport;
  */
 export declare function makePrivateDir(path: string): void;
 
+/** A file made by `createPrivateFile`, open for its one write. */
+export declare class PrivateFile {
+  private constructor();
+  readonly path: string;
+  /** Writes all of `text`, fsyncs and closes; removes the file when a step fails (`IO_ERROR`). */
+  commit(text: string): void;
+  /** Closes and removes the file (nothing once it was committed). Idempotent. */
+  discard(): void;
+}
+
+/**
+ * Creates the new file `path` private to this user from creation (mode 0600 with `O_EXCL`; on
+ * Windows `CREATE_NEW` with a protected owner-only DACL) and checks the open file before
+ * anything is written: on Unix `fstat` (a regular file with one link, owned by the effective
+ * user, no group or other bit), on Windows its owner and DACL. Throws `ALREADY_EXISTS`,
+ * `IO_ERROR`, or `PRIVATE_FILE_UNSAFE` (the file is removed again) with `details.problems`.
+ */
+export declare function createPrivateFile(path: string): PrivateFile;
+
+/**
+ * Ends an `agent`/`mcp` credential (`"<kind>:<id>"`) for every store write of this process
+ * (sub-project 5A Task 9): a write whose guard names it and has not committed yet is refused
+ * with `CREDENTIAL_REVOKED` inside its transaction. Returns once every write already past that
+ * check has committed, so none lands afterwards.
+ */
+export declare function endCredential(credential: string): void;
+
 /**
  * Probes a media file (MP4/MOV/M4A/WAV), image (PNG/JPEG/WebP), SVG, dotLottie, font
  * (TTF/OTF/TTC) or `.cube` LUT; resolves to `Probe` JSON (`{ kind, duration?, video?, audio?,
@@ -509,6 +540,8 @@ export declare function libraryProbeStatus(): { stuckProbes: number };
 export declare function libraryProbeVersion(): number;
 // The job host and the job params helpers (`jobhost.js`).
 export * from "./jobhost.js";
+// The native Windows pipe listener (`pipe.js`).
+export * from "./pipe.js";
 
 /** @internal Present only in binaries built with the `test-hooks` feature (`build:test`). */
 export declare const testHooks:

@@ -55,7 +55,15 @@ mod jobhost;
 mod journal;
 mod library;
 mod maintenance;
+#[cfg(windows)]
+mod pipe_loop;
+#[cfg(windows)]
+mod pipe_sec;
+mod pipe_server;
+#[cfg(windows)]
+mod pipe_win;
 mod private_dir;
+mod private_file;
 mod registry;
 mod server_lock;
 mod tasks;
@@ -76,7 +84,9 @@ pub use library::{
 };
 #[cfg(feature = "test-hooks")]
 pub use library::{library_probe_hang_for_test, library_probe_started_for_test};
+pub use pipe_server::{PipeOptions, PipeServer};
 pub use private_dir::{PrivateDirReport, check_private_dir, make_private_dir};
+pub use private_file::{PrivateFile, create_private_file};
 pub use registry::{Registry, validate_manifest};
 pub use server_lock::{ServerLock, lock_exclusive, server_id};
 pub use tasks::StoreTask;
@@ -136,6 +146,21 @@ fn now_ms() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX))
+}
+
+/// Ends an `agent`/`mcp` credential (`"<kind>:<id>"`) for every store write of this process
+/// (sub-project 5A Task 9; `fin_store::end_credential`): a write made for it that has not
+/// committed yet is refused (`CREDENTIAL_REVOKED`); returns once the writes already past
+/// their check have committed.
+#[napi(catch_unwind)]
+pub fn end_credential(credential: String) -> Result<()> {
+    guarded(
+        || {
+            fin_store::end_credential(&credential);
+            Ok(())
+        },
+        || {},
+    )
 }
 
 /// Probes a file of any asset kind; resolves to `Probe` JSON (`{kind, duration?, video?,

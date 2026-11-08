@@ -20,7 +20,9 @@ import {
 import { serverId } from "@finisher/fin-node";
 import { canonicalEndpoint } from "./auth/crypto.ts";
 import { Handshake, HandshakeTag } from "./auth/handshake.ts";
-import { KeysTag, rotateKeys } from "./auth/keys.ts";
+import { Credentials, CredentialsTag } from "./auth/credentials.ts";
+import { sweepExpired } from "./auth/revoke.ts";
+import { authDir, excludeFromBackups, KEY_FILES, KeysTag, rotateKeys, writeKeyFile } from "./auth/keys.ts";
 import { ConnectionRegistry, ConnectionRegistryTag, Connections } from "./connections.ts";
 import { AuditTag, layerAudit } from "./control/audit.ts";
 import { makeTickets, TicketsTag } from "./auth/tickets.ts";
@@ -39,7 +41,7 @@ import { LibraryServiceTag, librariesHolding, libraryWiring } from "./library/la
 import { layerPlugins } from "./plugins/registries.ts";
 import { layerProjectRegistry, type RegistryOptions } from "./projects.ts";
 import { MAX_FRAME } from "./protocol.ts";
-import { claimSocketPath, makeLocalSocketServer, serveRpc } from "./transport.ts";
+import { claimSocketPath, makeLocalServer, serveRpc } from "./transport.ts";
 import { makeTicketedWebSocketServer, makeUpgradeCheck } from "./upgrade.ts";
 import { ServerControlTag } from "./server-admin.ts";
 import { isServeCommand, runConsole } from "./console/main.ts";
@@ -49,6 +51,8 @@ export interface ServeOptions {
   readonly registry?: RegistryOptions;
   readonly fonts?: FontsOptions;
   readonly diagnostics?: DiagnosticsOptions;
+  /** Agent and MCP credentials (tests): the clock expiry reads and the sweep's period (60 s). */
+  readonly credentials?: { readonly clock?: () => number; readonly sweepMs?: number };
   /** The job engine's options (tests: the test kinds). */
   readonly jobs?: JobEngineOptions;
   /** Called once both transports listen and `finisherd.json` is written. */
@@ -59,7 +63,7 @@ export interface ServeOptions {
  * Runs the server until interrupted or `server.stop`; finalizers stop the transports, close
  * engines and remove `finisherd.json`.
  */
-export const serve = ({ serverData, onReady, registry, fonts, diagnostics: diagnosticsOptions, jobs: jobOptions }: ServeOptions) =>
+export const serve = ({ serverData, onReady, registry, fonts, diagnostics: diagnosticsOptions, credentials: credentialOptions, jobs: jobOptions }: ServeOptions) =>
   Effect.scoped(
     Effect.gen(function* () {
       yield* Effect.try({ try: () => ensureServerData(serverData), catch: startFailure });
@@ -72,6 +76,9 @@ export const serve = ({ serverData, onReady, registry, fonts, diagnostics: diagn
       // New `local.key` and `console.key` (5A Task 2) before the socket is claimed: a key read
       // while this server listens is always this server's. `auth/` and `run/` are private.
       const keys = yield* Effect.try({ try: () => rotateKeys(serverData), catch: startFailure });
+      // `auth/` stays out of Time Machine (review of Tasks 8–9, M3): a backup of
+      // `credential.master` would outlive every rotation. Best effort: a warning if it fails.
+      excludeFromBackups(authDir(serverData));
       const socket = socketPath(serverData);
       yield* claimSocketPath(socket);
       const tickets = yield* makeTickets();
@@ -112,8 +119,20 @@ export const serve = ({ serverData, onReady, registry, fonts, diagnostics: diagn
         (s) => Effect.sync(() => s.close()),
       );
 
-      const local = yield* makeLocalSocketServer(socket);
       const audit = Context.get(control, AuditTag);
+      // Windows: the native pipe listener (Task 11); a client of another user is refused
+      // before its first byte and audited.
+      const local = yield* makeLocalServer(socket, {
+        onRefused: (r) =>
+          audit.append({
+            kind: "auth.fail",
+            principal: { kind: "anonymous", id: "" },
+            credentialKind: "pipe",
+            outcome: "failed",
+            code: "UNAUTHENTICATED",
+            details: { reason: r.reason, transport: "pipe", peer: { pid: r.pid, ...(r.sid == null ? {} : { sid: r.sid }) } },
+          }),
+      });
       // The WebSocket (Decision 24): a ticket in `Sec-WebSocket-Protocol`, Host and Origin checked first.
       let wsPort = 0;
       const check = makeUpgradeCheck({ port: () => wsPort, tickets, origins: cachedOrigins(serverData) });
@@ -147,7 +166,50 @@ export const serve = ({ serverData, onReady, registry, fonts, diagnostics: diagn
         // Each WebSocket carries its ticket's principal from its first frame (`upgrade.ts`).
         ws: everyConnection.add(new Connections("ws", () => wsEndpoint)),
       };
-      const handshake = new Handshake({ keys, envId, audit });
+      // Agent and MCP credentials (5A Task 9): proved through the handshake while live; every
+      // request re-checks; expired ones are ended by the sweep, revoked ones at once.
+      const credentials = new Credentials(Context.get(control, ControlStoreTag), keys.credentialMaster, audit, credentialOptions?.clock, (key) =>
+        writeKeyFile(join(authDir(serverData), KEY_FILES.credentialMaster), key),
+      );
+      everyConnection.useLiveness((p) => credentials.isLive(p));
+      // One last write of ended credentials before the control store closes (it closes after).
+      yield* Effect.addFinalizer(() =>
+        Effect.sync(() => {
+          credentials.persist();
+          credentials.dispose();
+        }),
+      );
+      const handshake = new Handshake({
+        keys,
+        envId,
+        audit,
+        credentials: (ref) => credentials.forHello(ref),
+        revoke: (ref) => credentials.markEnded(ref, "self"),
+      });
+      const revokeDeps = {
+        audit,
+        tickets,
+        connections: everyConnection,
+        revoke: (ref: { kind: "agent" | "mcp"; id: string }) => credentials.markEnded(ref, "expired"),
+        persist: () => credentials.persist(),
+      };
+      // A busy store fails one sweep, never the timer: the next one tries again.
+      const sweep = () => {
+        try {
+          sweepExpired(revokeDeps, () => credentials.expired());
+        } catch (e) {
+          process.stderr.write(`finisherd: warning: credential expiry sweep failed: ${String(e)}\n`);
+        }
+      };
+      sweep();
+      yield* Effect.acquireRelease(
+        Effect.sync(() => {
+          const timer = setInterval(sweep, credentialOptions?.sweepMs ?? 60_000);
+          timer.unref();
+          return timer;
+        }),
+        (timer) => Effect.sync(() => clearInterval(timer)),
+      );
       // One font layer for the handlers and the plugins, which feed it the packs' catalogs.
       const fontsLayer = layerFonts(serverData, fonts);
       // `server.stop` (5A Task 8): `serve` returns, and its scope's finalizers stop everything.
@@ -171,6 +233,7 @@ export const serve = ({ serverData, onReady, registry, fonts, diagnostics: diagn
               Layer.succeed(LibraryServiceTag, library),
               Layer.succeed(KeysTag, keys),
               Layer.succeed(HandshakeTag, handshake),
+              Layer.succeed(CredentialsTag, credentials),
               Layer.succeed(TicketsTag, tickets),
               Layer.succeed(ConnectionRegistryTag, everyConnection),
               Layer.succeed(ServerControlTag, serverControl),

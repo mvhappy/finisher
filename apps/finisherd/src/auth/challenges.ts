@@ -76,3 +76,25 @@ export function confirmationRequired(tag: string, reason: ChallengeRefusal): Fin
     "This change needs the person at the server to confirm it: the server's console shows a short code, and the change goes ahead once that code is typed back in the same session.",
   );
 }
+
+/** Credentials each console connection minted (review of Tasks 8–9, M2). */
+const minted = new WeakMap<Connection, Set<string>>();
+
+/** Notes that `c` minted credential `id`: it may revoke it again without a new code. */
+export function noteMinted(c: Connection | undefined, id: string): void {
+  if (c === undefined) return;
+  const ids = minted.get(c) ?? new Set<string>();
+  ids.add(id);
+  minted.set(c, ids);
+}
+
+/**
+ * Whether `auth.credential.revoke` of `payload.id` takes back a credential this same connection
+ * minted (the console undoing a mint whose file it could not write): confirmed by that mint's
+ * code already, and revoking only takes rights away.
+ */
+export function undoesOwnMint(c: Connection | undefined, tag: string, payload: unknown): boolean {
+  if (tag !== "auth.credential.revoke" || c === undefined) return false;
+  const id = (payload as { id?: unknown } | null)?.id;
+  return typeof id === "string" && minted.get(c)?.has(id) === true;
+}

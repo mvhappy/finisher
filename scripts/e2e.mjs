@@ -6,7 +6,7 @@
 // through the `fin` binary, and asserts the subscriber saw every committed rev in order and
 // that its last rev equals `snapshot.get`'s. The server and the temp dir are always cleaned up.
 //
-// Usage: node scripts/e2e.mjs [--skip-build] [basic|storage|history|reel|diagnostics|plugins ...]  (default: every scenario)
+// Usage: node scripts/e2e.mjs [--skip-build] [basic|storage|history|reel|diagnostics|plugins|auth ...]  (default: every scenario)
 //
 // Builds go to `CARGO_TARGET_DIR` when it is set (else `target/`), and so does the run's
 // `fin` and `fin-plugin`. Scenario temp dirs fall back to `/tmp` when `TMPDIR` is so deep that the
@@ -38,6 +38,12 @@
 // code plugins, widening updates, advisories, a `TUF_ROLLBACK`, trust kept on removal, the bundled
 // pack's owner switch across tampering, the journal's free-text grep and each step's audit row.
 //
+// The "auth" scenario (scripts/e2e/auth*.mjs) drives principals and credentials over `fin.sock` and
+// the ticketed WebSocket: an unproved connection, `fin` as `local`, the human-only refusals and the
+// console's typed codes, ticket and Host/Origin checks, agent credentials (scopes, `branch own`,
+// journal actors, revocation ending live streams, expiry, `TICKET_LIMIT`), a squatted socket, a
+// restart that rotates the keys, the audit rows and a leak grep over every log and the journal.
+//
 // After the builds, the run has a deadline (E2E_DEADLINE_MS, default 180 s): when it passes,
 // the server is killed and the script exits non-zero. Test hooks (scripts/e2e.test.mjs):
 // E2E_SERVER_CMD (a JSON array, `{serverData}` substituted) replaces the finisherd command,
@@ -50,12 +56,13 @@ import { run as runHistory } from "./e2e/history.mjs";
 import { run as runReel } from "./e2e/reel.mjs";
 import { run as runDiagnostics } from "./e2e/diagnostics.mjs";
 import { run as runPlugins } from "./e2e/plugins.mjs";
+import { run as runAuth } from "./e2e/auth.mjs";
 
 export { parseFrames } from "./e2e/lib.mjs";
 export { checkRevs };
 
 const DEADLINE_MS = Number(process.env.E2E_DEADLINE_MS ?? 180_000);
-const SCENARIOS = { basic: runBasic, storage: runStorage, history: runHistory, reel: runReel, diagnostics: runDiagnostics, plugins: runPlugins };
+const SCENARIOS = { basic: runBasic, storage: runStorage, history: runHistory, reel: runReel, diagnostics: runDiagnostics, plugins: runPlugins, auth: runAuth };
 
 async function main(argv) {
   if (!argv.includes("--skip-build")) {

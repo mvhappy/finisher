@@ -3,6 +3,7 @@
 import type { ConsoleConnection } from "../client.ts";
 import type { Args, Output } from "../format.ts";
 import type { Prompt } from "../prompt.ts";
+import type { PrivateFile } from "@finisher/fin-node";
 
 export interface CommandContext {
   readonly args: Args;
@@ -10,6 +11,8 @@ export interface CommandContext {
   readonly prompt: Prompt;
   readonly output: Output;
   readonly connect: () => Promise<ConsoleConnection>;
+  /** Creates a credential's `--out` file (`createPrivateFile`; tests inject a failing one). */
+  readonly createFile?: ((path: string) => PrivateFile) | undefined;
 }
 
 /** Runs `f` on a fresh console connection, closed afterwards. */

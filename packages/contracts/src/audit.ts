@@ -16,6 +16,8 @@ export const AUDIT_KINDS = [
   "credential.mint",
   "credential.revoke",
   "credential.expire",
+  // A new `credential.master` (review of 5A Tasks 8–9, M3): `count` credentials ended with it.
+  "credential.rotateMaster",
   "pair.offer",
   "pair.redeem",
   "pair.approve",
@@ -90,7 +92,8 @@ export type AuditEntry = typeof AuditEntrySchema.Type;
 // Closed `details` per kind (review of 5A Task 1): every kind takes only ids, RPC tags,
 // scopes, rule and reason words and counts, so a name, a path or an address cannot slip into
 // a row. Names (`deviceName`, `label`) are possible only for pairing, revocation and
-// auth-failure kinds, addresses (`address`) only for pairing and auth-failure kinds.
+// auth-failure kinds, addresses (`address`, and a local pipe client's `peer`) only for pairing
+// and auth-failure kinds.
 
 /** A dotted lowerCamel word: an RPC tag (`history.cherryPick`), a scope, a rule, a reason. */
 const Word = Schema.String.check(Schema.isPattern(/^[a-z][a-zA-Z0-9]{0,47}(\.[a-z][a-zA-Z0-9]{0,47}){0,3}$/));
@@ -102,6 +105,10 @@ const Code = Schema.String.check(Schema.isPattern(/^[A-Z][A-Z0-9_]{0,63}$/));
 const Name = Schema.String.check(Schema.isMaxLength(64));
 /** A remote address (5B), ≤ 64 characters. */
 const Address = Schema.String.check(Schema.isMaxLength(64));
+/** A Windows SID (`S-1-…`), never an account name. */
+const Sid = Schema.String.check(Schema.isPattern(/^S-1-[0-9]+(-[0-9]+){0,15}$/));
+/** The process and token user of a pipe client (5A Task 11), as the OS reports them. */
+const Peer = Schema.Struct({ pid: Schema.optional(Schema.Int), sid: Schema.optional(Sid) });
 
 const COMMON = {
   rpc: Schema.optional(Word),
@@ -116,6 +123,8 @@ const COMMON = {
   projectId: Schema.optional(Id),
   deviceId: Schema.optional(Id),
   count: Schema.optional(Schema.Int),
+  /** `audit.purge`: the cutoff (ms) an owner's purge removed entries before. */
+  before: Schema.optional(Schema.Int),
   /** The transport a connection came over (5A Task 3). */
   transport: Schema.optional(Schema.Literals(["socket", "pipe", "ws"])),
 };
@@ -150,7 +159,7 @@ const PLUGIN_FIELDS = {
   risk: Schema.optional(Schema.Literals(["low", "medium", "high"])),
   thirdPartyCode: Schema.optional(Schema.Struct({ accepted: Schema.Boolean, confined: Schema.Boolean })),
 };
-const ADDRESS = { address: Schema.optional(Address) };
+const ADDRESS = { address: Schema.optional(Address), peer: Schema.optional(Peer) };
 
 const PAIRING: ReadonlyArray<AuditKind> = ["pair.offer", "pair.redeem", "pair.approve", "pair.reject", "pair.expire"];
 /** Kinds whose details may name a device or credential. */

@@ -200,6 +200,35 @@ export class Audit {
     );
   }
 
+  /**
+   * The owner's purge (`auth.audit.purge`; review of 5A Tasks 8–9, Task 8): deletes entries
+   * before `before` (ms), or all of them, **but never an `audit.purge` row**, and records this
+   * purge (`audit.purge {reason, before?, count, transport}`) in the same transaction, so the
+   * log can never lose the fact that, when, by whom and how far back it was purged. One
+   * `DELETE` (≤ 100,000 rows: a fraction of a second on the main thread, for a rare owner
+   * command). Throws `CONTROL_DB_BUSY` and changes nothing when the store is busy.
+   */
+  ownerPurge(q: { before: number } | { all: true }, by: { readonly kind: string; readonly id: string }, transport: string): number {
+    this.#failRows.clear();
+    return this.#store.tx(() => {
+      const removed = Number(
+        ("all" in q
+          ? this.#store.db.prepare("DELETE FROM audit WHERE kind != 'audit.purge'").run()
+          : this.#store.db.prepare("DELETE FROM audit WHERE kind != 'audit.purge' AND at < ?").run(q.before)
+        ).changes,
+      );
+      const details = { reason: "all" in q ? "all" : "before", ...("all" in q ? {} : { before: q.before }), count: removed, transport };
+      if (!auditDetailsValid("audit.purge", details)) throw new Error("audit.purge details do not fit their schema");
+      this.#store.db
+        .prepare(
+          "INSERT INTO audit (at, kind, principalKind, principalId, credentialKind, outcome, code, remote, count, details) " +
+            "VALUES (?, 'audit.purge', ?, ?, NULL, 'ok', NULL, NULL, 1, ?)",
+        )
+        .run(this.#clock(), by.kind, by.id, JSON.stringify(details));
+      return removed;
+    });
+  }
+
   /** Applies retention: older than the age limit, then the oldest rows past the row limit. */
   sweep(): Effect.Effect<void> {
     // Ids only grow, so everything at or below `max(id) - maxRows` is past the limit (with

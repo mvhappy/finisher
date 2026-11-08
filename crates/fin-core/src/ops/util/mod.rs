@@ -71,3 +71,13 @@ pub(crate) fn frame_of(
 ) -> Result<crate::time::Rational, CoreError> {
     crate::time::frame_duration(project.timelines[at.timeline].rate)
 }
+
+/// The frame length of the timeline `at` is on when `bindings` applies policy (`None` on
+/// replay): what [`carve`] keeps of the items it trims.
+pub(crate) fn policy_frame(
+    project: &crate::model::Project,
+    at: TrackAt,
+    bindings: &crate::ops::Bindings,
+) -> Result<Option<crate::time::Rational>, CoreError> {
+    bindings.policy().then(|| frame_of(project, at)).transpose()
+}

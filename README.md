@@ -147,7 +147,7 @@ Every write takes `--dry-run` (it works on a follower too) and `--idem-key <key>
 
 ```bash
 fin project status                   # lease, read-only reason, branches, export, warnings
-fin project takeover [--confirm]     # take the lease from a stopped server (--confirm on sync folders)
+fin project takeover                 # take the lease from a stopped server (a sync folder needs the console's --confirm)
 fin project verify                   # check database and folder, change nothing (VERIFY_FAILED, exit 3)
 fin project rebuild                  # rebuild the database from the folder (works with no server running)
 fin project compact                  # pack old segment files now (history is kept)
@@ -156,13 +156,14 @@ fin project recover --create all     # bring set-aside records back as recovered
 fin project recover --import <dir>   # read segment files moved out of the folder (after CHAIN_FORK)
 fin project acknowledge --rewind 2 --branch main   # clear a REWOUND / SPLIT_BRAIN_SUSPECTED warning (--branch is global)
 fin project acknowledge --salvage project.fdb.corrupt-<ts>   # clear SALVAGE_INCOMPLETE
-fin project open <dir> --relocate    # the project moved and its old folder cannot be reached
 ```
 
 A second server (its own server data, e.g. another machine on the same NAS share) that opens the
 same folder follows read-only (`readOnly.reason` `LEASE_HELD`) and takes over automatically once
-the first one has been stopped for about a minute; on a sync folder only `fin project takeover
---confirm` does. `fin project status` explains any read-only state and its fix.
+the first one has been stopped for about a minute; on a sync folder only a confirmed takeover
+does, which is yours to make from the server's console (`finisherd project takeover <dir> --confirm`).
+Likewise a project whose old folder cannot be reached is reopened from its new folder with
+`finisherd project open <dir> --relocate`. `fin project status` explains any read-only state and its fix.
 
 **Server data** (the project databases, `finisherd.json` with the server's pid, socket and
 WebSocket port, and the lock file) lives in:
@@ -178,22 +179,101 @@ write-once, hash-chained export of every edit (`segments/`), from which any serv
 the database. A project folder can therefore live on a NAS or in a sync folder and be opened
 by several servers: one writes, the others follow read-only.
 
-**Stop the server** with Ctrl+C in its terminal, or from elsewhere:
-
-```bash
-kill "$(node -p 'require(process.argv[1]).pid' "$HOME/Library/Application Support/Finisher/finisherd.json")"   # macOS; adjust the path on Linux
-```
-
-```powershell
-Stop-Process -Id (Get-Content "$env:LOCALAPPDATA\Finisher\finisherd.json" | ConvertFrom-Json).pid
-```
-
-`kill` (SIGTERM) shuts down cleanly. Windows has no SIGTERM: `Stop-Process` ends the
-process at once and leaves `finisherd.json` behind; `fin` then reports `SERVER_UNAVAILABLE`,
-and the next `finisherd` start replaces the file.
+**Stop the server** with Ctrl+C in its terminal, or from anywhere with `finisherd stop`
+(`node apps/finisherd/src/main.ts stop`, with the same `--server-data` if you passed one). It
+stops gracefully on every OS, Windows included, and needs no terminal, so a service manager
+can run it. `kill` (SIGTERM) also shuts down cleanly on macOS and Linux.
 
 `pnpm e2e` runs the whole flow (`fin` → `finisherd` → a WebSocket subscriber) in a temp
 directory.
+
+## Security model
+
+**Who can talk to the server.** Every connection proves who it is before the server does
+anything for it, and the server proves itself first, so a program that took over the socket
+or pipe name gets nothing. There are four kinds of callers today:
+
+- **`local`**: `fin` and scripts you run. They prove with `<server-data>/auth/local.key`.
+- **`console`**: you at the server, through `finisherd <command>`. It proves with
+  `<server-data>/auth/console.key`.
+- **`agent`** and **`mcp`**: an agent harness or the MCP adapter, with a credential you mint
+  for it (below).
+- Nothing else. A connection that has not proved anything can only say hello.
+
+`<server-data>/auth/` holds the keys (owner-only; `local.key` and `console.key` are replaced at
+every start). The Unix socket is `<server-data>/run/fin.sock`, alone in its folder. On Windows
+the server creates its named pipe itself, readable only by you, and turns away other accounts
+and remote clients. The WebSocket has no password in `finisherd.json`. A client gets a one-time
+ticket over a proved connection and sends it when it connects.
+
+`fin` exits **7** when it is refused because it is the wrong kind of caller (`HUMAN_ONLY`,
+`SCOPE_DENIED`, `BRANCH_NOT_ALLOWED`, `CREDENTIAL_REVOKED`, `CREDENTIAL_EXPIRED`,
+`SERVER_UNTRUSTED`, …). Retrying will not help: these need you. Without a key or credential
+`fin` sends nothing and says so.
+
+**Things only you can do.** These are refused with `HUMAN_ONLY` for `fin`, agents and MCP:
+
+- changing diagnostics or training consent (training is turned on only in the app, by hand in
+  `settings.json` or with `FIN_TRAINING`, never from a command line);
+- deleting recorded diagnostics, clearing a project's `never` flag, exporting recorded content
+  (an export holds content only when it asks for it);
+- a confirmed takeover and a relocation;
+- adding libraries, installing plugins;
+- minting, listing and revoking credentials, reading or purging the audit log, stopping the
+  server.
+
+You do them in the Finisher app (later) or the server's console. `finisherd` with no argument
+serves. `finisherd help` lists the console commands. `finisherd status`, `audit`, `agent ls`
+and `stop` run anywhere. **Every command that changes something needs an interactive
+terminal**: it says what will happen, shows a short code from the server, and goes ahead only
+once you type the code back. A command run from a pipe or a script is refused with
+`CONSOLE_NEEDS_TTY`.
+
+**What the typed code protects against, and what it does not.** It stops `yes |` pipes, pasted
+scripts and an agent that runs `fin`. It does **not** stop a program running as your user that
+can read `<server-data>/auth/`: such a program can prove as the console itself, or drive a
+pseudo-terminal (`script`, `expect`) and type the code. **An agent harness you start in a plain
+shell runs as you**, so until Finisher sandboxes agents (a later version), human-only operations,
+scopes and branch limits bind only harnesses that go through `fin` or MCP with their own
+credential. They record who did what and prevent mistakes. They are not a wall against hostile
+code.
+
+**Agent and MCP credentials** are the recommended way to run a harness by hand. They are not
+required: `fin` run by you needs none.
+
+```bash
+finisherd agent mint --label my-harness --out ~/agent.cred           # default scopes, all projects
+finisherd agent mint --label reviewer --scope project.read --project <id> --out ~/r.cred
+finisherd agent mint --label writer --branch own --out ~/w.cred      # may write only branches it makes
+finisherd mcp setup --out ~/mcp.cred                                 # for the MCP adapter
+finisherd agent ls                                                   # live credentials (--all for ended ones)
+finisherd agent revoke <id>                                          # ends it now, with its connections
+FIN_CREDENTIAL=~/agent.cred fin whoami
+```
+
+- **Default scopes:** the server's status, read and write projects and reviews, read and submit jobs, read and scan
+  libraries, read and record diagnostics. Never a human-only scope, and not `project.create`,
+  `project.admin`, `fonts.fetch`, `jobs.control`, `branch.protected` or `review.decide` unless
+  you ask for them. Without `--project` a credential reaches every project (the confirmation
+  says so).
+- **Expiry:** an agent credential ends after 24 hours unused or 7 days in all (`--idle`,
+  `--absolute`, `--absolute none`). An MCP credential ends after 30 days unused and has no total
+  limit. A credential that keeps being used never reaches its idle limit, so one with no total
+  limit lives until you revoke it.
+- **The file is a password.** It is created for you alone (0600; on Windows an owner-only ACL),
+  and `fin` refuses one others can read. Without `--out` its contents are shown once.
+- **Revoking** ends it at once on every connection, and its live streams. No store write it
+  sent lands afterwards. Calls of other kinds that were already running may finish.
+- **The limit** is 4,096 live credentials (`CREDENTIAL_LIMIT`, exit 4: revoke some, then retry).
+
+**Backups and restores.** Keep `<server-data>/auth/` out of backups. On macOS it is excluded
+from Time Machine automatically. On Windows, File History does not back up the default server
+data. Elsewhere, exclude it yourself. After restoring an older `control.db`, or if a credential
+file may have leaked, run `finisherd auth rotate-master`. It ends every agent and MCP credential
+(an older `control.db` would otherwise bring back credentials you revoked since).
+
+The audit log (`finisherd audit`) records sign-in failures, refusals, credential changes and the
+other security events, locally and for you only.
 
 ## Plugins
 

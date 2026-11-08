@@ -78,5 +78,9 @@
   {
     "path": "crates/fin-node/tests/bundled.rs",
     "reason": "Reads the app's own bundled resources and temporary trees by path; not a library reader."
+  },
+  {
+    "path": "crates/fin-node/src/test_registry.rs",
+    "reason": "The test registry checks for its own publisher key files (test-hooks builds only; never a library path)."
   }
 ]
