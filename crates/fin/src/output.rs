@@ -212,6 +212,10 @@ const UNAVAILABLE_CODES: &[&str] = &[
     "GPU_UNAVAILABLE",
     "GPU_DEVICE_LOST",
     "GPU_OUT_OF_MEMORY",
+    // A job's mapped file failed `fin-shm`'s checks (a link, a hard link, a special file, a
+    // size against its ring header or cap, a truncation while read; sub-project 6 spec §17):
+    // the job failed, not the request.
+    "SHM_REFUSED",
 ];
 
 /// The one place error codes become exit codes.
@@ -334,6 +338,7 @@ mod tests {
             assert_eq!(exit_code(code), 5, "{code}");
         }
         assert_eq!(exit_code("FONTS_DAMAGED"), 5);
+        assert_eq!(exit_code("SHM_REFUSED"), 5);
         assert_eq!(exit_code("TRACK_LOCKED"), 3);
         assert_eq!(exit_code("OVERWRITE_SPLITS_ITEM"), 3);
         assert_eq!(exit_code("NOT_ADJACENT"), 3);

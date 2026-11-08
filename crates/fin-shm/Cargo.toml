@@ -7,4 +7,32 @@ repository.workspace = true
 publish = false
 description = "The mapped-file channel for job directories: rings and open and mapping rules."
 
+[features]
+# Test hooks (`fin_shm::hooks`): count `mmap` calls, force the copy path of `commit_output`,
+# run a callback between its checks and its rename. Never enabled by a shipped build
+# (`scripts/check-test-hooks.mjs`).
+test-hooks = []
+
 [dependencies]
+# `CoreError` (`SHM_REFUSED {file, reason}`, sub-project 6 spec §17).
+fin-core = { path = "../fin-core" }
+# A writer maps its own ring; a reader maps another party's ring only once it is sealed.
+memmap2 = "0.9.12"
+serde_json = "1"
+
+[target.'cfg(unix)'.dependencies]
+# The no-follow walk (`openat(O_NOFOLLOW)` per segment), `fstatat`, `renameat`.
+libc = "0.2.191"
+
+[target.'cfg(windows)'.dependencies]
+# The no-reparse-point walk (`CreateFileW(FILE_FLAG_OPEN_REPARSE_POINT)` per segment), handle
+# facts and the handle-based rename of `commit_output`.
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Storage_FileSystem",
+] }
+
+[dev-dependencies]
+fin-shm = { path = ".", features = ["test-hooks"] }
+tempfile = "3"
