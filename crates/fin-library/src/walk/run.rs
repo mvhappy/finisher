@@ -363,7 +363,7 @@ impl<'a> Walker<'a> {
             Outcome::Unchanged { stats, handle } => {
                 self.sum.unchanged += 1;
                 for e in stats {
-                    let cloud = placeholder::from_attrs(e.attrs).is_some();
+                    let cloud = placeholder::dir_from_attrs(e.attrs).is_some();
                     let flags = (cloud, e.automount, e.mount_root, e.mtime_ns);
                     self.gate(rel.join(&e.name), flags, &mut kids, &mut dones);
                 }

@@ -1,7 +1,6 @@
 //! `library.probe` and `library.hash` over the real `fin-workers` binary (plan 5D Task 6).
 // Tests build and inspect trees by path; never a library reader (`scripts/clippy-allow.json`).
 #![allow(clippy::disallowed_methods)]
-#![cfg(unix)]
 
 mod support;
 

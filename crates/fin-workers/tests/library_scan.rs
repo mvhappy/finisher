@@ -2,7 +2,6 @@
 //! calls, progress, offline roots, modes and cancel.
 // Tests build and inspect trees by path; never a library reader (`scripts/clippy-allow.json`).
 #![allow(clippy::disallowed_methods)]
-#![cfg(unix)]
 
 mod support;
 

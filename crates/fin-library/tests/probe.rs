@@ -2,11 +2,11 @@
 //! the fingerprint kept across a failed probe, the budget and cloud-only rules.
 // Tests build and inspect trees by path; never a library reader (`scripts/clippy-allow.json`).
 #![allow(clippy::disallowed_methods)]
-#![cfg(unix)]
 
 mod support;
 
 use std::fs;
+#[cfg(unix)]
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -295,11 +295,21 @@ fn changed_identity_is_changed_not_probed() {
 #[test]
 fn raw_non_utf8_names_probe_by_their_chain() {
     let t = Tree::new();
-    let dir: &[u8] = b"d\xff";
-    let name: &[u8] = b"f\xfe.png";
-    let dp = t.dir.path().join(std::ffi::OsStr::from_bytes(dir));
+    // Unix: bytes that are not UTF-8; Windows: UTF-16 with unpaired surrogates (WTF-8).
+    #[cfg(unix)]
+    let (dir, name): (&[u8], &[u8]) = (b"d\xff", b"f\xfe.png");
+    #[cfg(windows)]
+    let (dir, name): (&[u8], &[u8]) = (b"d\xed\xa0\x80", b"f\xed\xbf\xbf.png");
+    #[cfg(unix)]
+    let os = |b: &[u8]| std::ffi::OsStr::from_bytes(b).to_owned();
+    #[cfg(windows)]
+    let os = |b: &[u8]| {
+        use std::os::windows::ffi::OsStringExt;
+        std::ffi::OsString::from_wide(&fin_library::raw::to_wide(b).unwrap())
+    };
+    let dp = t.dir.path().join(os(dir));
     fs::create_dir(&dp).unwrap();
-    let path = dp.join(std::ffi::OsStr::from_bytes(name));
+    let path = dp.join(os(name));
     png(&path);
     let r = rel(&[dir, name]);
     let expect = expect_of(&path);

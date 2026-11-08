@@ -1,9 +1,12 @@
-//! Helpers shared by the Unix source, opener and mount tests (plan 5D Task 2).
+//! Helpers shared by the source, opener and mount tests (plan 5D Tasks 2–3; the mount and
+//! namespace helpers are Unix-only).
 // Tests build and inspect trees by path; never a library reader (`scripts/clippy-allow.json`).
 #![allow(clippy::disallowed_methods)]
 #![allow(dead_code)]
 
+#[cfg(unix)]
 use std::fs;
+#[cfg(unix)]
 use std::os::unix::fs::MetadataExt;
 use std::path::Path;
 use std::process::Command;
@@ -15,6 +18,7 @@ pub mod image;
 
 /// What the catalog would expect for the file at `path` (size, mtime, inode big-endian, and
 /// its device as the OS's listing reports it).
+#[cfg(unix)]
 pub fn expect_of(path: &Path) -> Expect {
     let m = fs::symlink_metadata(path).unwrap();
     Expect {
@@ -26,6 +30,7 @@ pub fn expect_of(path: &Path) -> Expect {
 }
 
 /// `st_dev` as the source reports it (`ScanEntry.dev`): Linux `major:minor`, macOS decimal.
+#[cfg(unix)]
 pub fn dev_of(dev: u64) -> String {
     #[cfg(target_os = "linux")]
     {
@@ -38,11 +43,32 @@ pub fn dev_of(dev: u64) -> String {
     }
 }
 
+/// What the catalog would expect for the file at `path`: on Windows, its entry as the
+/// native source lists its directory (size, mtime, 128-bit id, volume serial).
+#[cfg(windows)]
+pub fn expect_of(path: &Path) -> Expect {
+    use fin_library::Source;
+    let src = fin_library::source::NativeSource::new(path.parent().unwrap());
+    let name = fin_library::raw::from_wide(
+        &std::os::windows::ffi::OsStrExt::encode_wide(path.file_name().unwrap())
+            .collect::<Vec<_>>(),
+    );
+    let dir = src.open_dir(&RawRel::root()).unwrap();
+    let e = src.stat_child(&dir, &name).unwrap().expect("listed");
+    Expect {
+        size: e.size,
+        mtime_ns: e.mtime_ns,
+        file_id: e.file_id,
+        dev: e.dev,
+    }
+}
+
 /// A raw chain from byte components.
 pub fn rel(parts: &[&[u8]]) -> RawRel {
     RawRel::new(parts.iter().map(|p| p.to_vec()).collect()).unwrap()
 }
 
+#[cfg(unix)]
 pub fn euid() -> u32 {
     // SAFETY: no preconditions.
     unsafe { libc::geteuid() }

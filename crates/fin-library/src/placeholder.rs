@@ -11,6 +11,13 @@
 //!   excluded by [`crate::listing`].
 //!
 //! An attribute placeholder wins over a name: a dataless `x.nextcloud` is `dataless`.
+//!
+//! **Directories** ([`dir_from_attrs`], Decision 13): only a bit that says the listing is
+//! not local makes a placeholder directory (macOS `SF_DATALESS`; Windows `RECALL_ON_OPEN`,
+//! `RECALL_ON_DATA_ACCESS`, `OFFLINE`, which Cloud Files sets together on a directory it has
+//! not populated). `UNPINNED` alone on a directory ("free up space") is a policy for its
+//! files: the directory is populated and is descended, and each file is judged by its own
+//! bits (measured, plan 5D Task 3).
 
 use std::collections::HashSet;
 
@@ -53,6 +60,21 @@ pub fn from_attrs(attrs: Attrs) -> Option<Placeholder> {
     }
 }
 
+/// The placeholder an attribute word marks on a **directory**: as [`from_attrs`], except that
+/// Windows `UNPINNED` alone does not (the directory's listing is local).
+pub fn dir_from_attrs(attrs: Attrs) -> Option<Placeholder> {
+    from_attrs(attrs).filter(|p| *p != Placeholder::Unpinned)
+}
+
+/// The placeholder an attribute word marks on an entry of `entry_type`.
+pub fn attrs_of(entry_type: EntryType, attrs: Attrs) -> Option<Placeholder> {
+    if entry_type == EntryType::Dir {
+        dir_from_attrs(attrs)
+    } else {
+        from_attrs(attrs)
+    }
+}
+
 /// A stub file name and the name it stands for.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Stub {
@@ -84,7 +106,7 @@ pub fn stub(name: &[u8]) -> Option<Stub> {
 /// listing (the entry's own name may be among them): a stub whose target is listed is
 /// shadowed and answers `None` (see [`shadowed`]).
 pub fn classify(entry: &RawEntry, siblings: &HashSet<&[u8]>) -> Option<Placeholder> {
-    if let Some(p) = from_attrs(entry.attrs) {
+    if let Some(p) = attrs_of(entry.entry_type, entry.attrs) {
         return Some(p);
     }
     if entry.entry_type != EntryType::File {

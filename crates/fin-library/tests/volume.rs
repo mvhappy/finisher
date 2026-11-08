@@ -254,9 +254,12 @@ fn a_stuck_root_probe_is_not_repeated() {
     let long = Duration::from_secs(5);
     assert_eq!(code(root_state(&root, &stored, long)), "NOT_FOUND");
     assert_eq!(probe_hooks::started(&root), 1);
+    // The finished probe leaves the pending map just after it answers: until then a call
+    // still gets its answer. Yield between calls so a loaded host schedules that thread.
     let mut n = 0;
-    while probe_hooks::started(&root) < 2 && n < 100 {
+    while probe_hooks::started(&root) < 2 && n < 10_000 {
         assert_eq!(code(root_state(&root, &stored, long)), "NOT_FOUND");
+        std::thread::yield_now();
         n += 1;
     }
     assert_eq!(probe_hooks::started(&root), 2);

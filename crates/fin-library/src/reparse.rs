@@ -17,6 +17,10 @@ pub const IO_REPARSE_TAG_NFS: u32 = 0x8000_0014;
 pub const IO_REPARSE_TAG_WOF: u32 = 0x8000_0017;
 pub const IO_REPARSE_TAG_APPEXECLINK: u32 = 0x8000_001B;
 pub const IO_REPARSE_TAG_AF_UNIX: u32 = 0x8000_0023;
+/// WSL special files (`LX_FIFO`, `LX_CHR`, `LX_BLK`).
+pub const IO_REPARSE_TAG_LX_FIFO: u32 = 0x8000_0024;
+pub const IO_REPARSE_TAG_LX_CHR: u32 = 0x8000_0025;
+pub const IO_REPARSE_TAG_LX_BLK: u32 = 0x8000_0026;
 /// `IO_REPARSE_TAG_CLOUD`; `CLOUD_1` … `CLOUD_F` set bits 12–15 (`0x9000_101A` …).
 pub const IO_REPARSE_TAG_CLOUD: u32 = 0x9000_001A;
 /// The bits that vary between the `CLOUD*` tags.
@@ -30,4 +34,18 @@ pub fn is_name_surrogate(tag: u32) -> bool {
 /// One of the Cloud Files tags (`IO_REPARSE_TAG_CLOUD` and `CLOUD_1` … `CLOUD_F`).
 pub fn is_cloud(tag: u32) -> bool {
     tag & !IO_REPARSE_TAG_CLOUD_MASK == IO_REPARSE_TAG_CLOUD
+}
+
+/// A tag that marks a special file, never data to read: AF_UNIX sockets, WSL FIFOs and
+/// device nodes, and app execution aliases (opening one starts nothing but fails). Such an
+/// entry is listed as `other`.
+pub fn is_special(tag: u32) -> bool {
+    matches!(
+        tag,
+        IO_REPARSE_TAG_AF_UNIX
+            | IO_REPARSE_TAG_LX_FIFO
+            | IO_REPARSE_TAG_LX_CHR
+            | IO_REPARSE_TAG_LX_BLK
+            | IO_REPARSE_TAG_APPEXECLINK
+    )
 }
