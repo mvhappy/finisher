@@ -20,6 +20,7 @@ test-hooks = [
     "fin-probe/fixtures",
     "fin-fonts/test-hooks",
     "fin-journal/test-hooks",
+    "fin-library/test-hooks",
     "dep:fin-testfonts",
 ]
 

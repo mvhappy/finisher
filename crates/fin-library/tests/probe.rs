@@ -13,7 +13,7 @@ use std::time::Duration;
 
 use fin_jobs::ReadBudget;
 use fin_jobs::budget::BudgetClock;
-use fin_library::{CancelToken, FileRef, Throttle, hash_file, probe_file};
+use fin_library::{CancelToken, Expect, FileRef, Throttle, hash_file, probe_file};
 use fin_probe::PROBE_VERSION;
 use support::{expect_of, rel};
 
@@ -208,6 +208,7 @@ fn cloud_only_refused_unless_hydrate() {
         size: 10,
         mtime_ns: 0,
         file_id: None,
+        dev: None,
     };
     let f = FileRef {
         file: 1,
@@ -219,6 +220,43 @@ fn cloud_only_refused_unless_hydrate() {
     };
     let o = probe_file(&f, &Throttle::default());
     assert_eq!(o.state, "cloudOnly");
+}
+
+#[test]
+fn wrong_device_is_changed_not_probed() {
+    // `Expect.dev` is the catalogued entry's device: a handle on another one is not the file
+    // the catalog read, so nothing is read from it.
+    let t = Tree::new();
+    png(&t.dir.path().join("a.png"));
+    let path = t.dir.path().join("a.png");
+    let r = rel(&[b"a.png"]);
+    let moved = Expect {
+        dev: Some("0:0".into()),
+        ..expect_of(&path)
+    };
+    let f = FileRef {
+        file: 4,
+        root: t.dir.path(),
+        rel: &r,
+        expect: &moved,
+        hydrate: false,
+        display: &path,
+    };
+    let o = probe_file(&f, &Throttle::default());
+    assert_eq!(
+        (o.state.as_str(), o.code.as_deref()),
+        ("changed", Some("FILE_CHANGED"))
+    );
+    assert_eq!((o.fingerprint, o.probe), (None, None));
+    let h = hash_file(&f, &Throttle::default());
+    assert_eq!((h.state.as_str(), h.hash), ("changed", None));
+    // Without a device the handle must be on the root's mount, which it is.
+    let none = Expect {
+        dev: None,
+        ..moved.clone()
+    };
+    let f = FileRef { expect: &none, ..f };
+    assert_eq!(probe_file(&f, &Throttle::default()).state, "present");
 }
 
 #[test]

@@ -547,5 +547,8 @@ export const testHooks = native.writeFixtureMp4ForTest
       libraryProbeHang(root, hang) {
         native.libraryProbeHangForTest(root, hang);
       },
+      libraryProbeStarted(root) {
+        return native.libraryProbeStartedForTest(root);
+      },
     }
   : undefined;

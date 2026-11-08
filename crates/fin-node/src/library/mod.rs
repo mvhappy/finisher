@@ -6,8 +6,8 @@
 //!   that the call abandons at its deadline;
 //! - [`library_probe_root`] (every 60 s for an offline library, and before answers): the
 //!   root's [`fin_library::RootState`] against its stored identity, one outstanding stat per
-//!   root ([`rootprobe`]);
-//! - [`library_probe_status`]: how many stat threads are stuck.
+//!   root (`fin_library::root_state` is single-flight; [`rootprobe`]);
+//! - [`library_probe_status`]: how many roots' latest probe timed out.
 //!
 //! Nothing here opens a file under a root, and nothing writes there. Values cross as JSON
 //! strings, like the rest of this crate.
@@ -238,21 +238,15 @@ pub fn library_probe_root<'e>(
 /// What the root probes are doing now.
 #[napi(object)]
 pub struct LibraryProbeStatus {
-    /// Stat threads past a caller's deadline and not yet returned.
+    /// Roots whose latest probe timed out: their stat thread may still be blocked (a dead
+    /// mount). A root leaves the count when a later probe of it answers anything else.
     pub stuck_probes: u32,
-    /// Roots with a stat thread running.
-    pub outstanding: u32,
-    /// Stat threads started since the process began.
-    pub started: u32,
 }
 
 #[napi(catch_unwind)]
 pub fn library_probe_status() -> LibraryProbeStatus {
-    let s = rootprobe::status();
     LibraryProbeStatus {
-        stuck_probes: s.stuck,
-        outstanding: s.outstanding,
-        started: s.started,
+        stuck_probes: rootprobe::stuck_roots(),
     }
 }
 
@@ -261,6 +255,13 @@ pub fn library_probe_status() -> LibraryProbeStatus {
 #[napi(catch_unwind)]
 pub fn library_probe_hang_for_test(root: String, hang: bool) {
     rootprobe::hooks::set_hung(&root, hang);
+}
+
+/// Test builds only: how many stats of `root` have started.
+#[cfg(feature = "test-hooks")]
+#[napi(catch_unwind)]
+pub fn library_probe_started_for_test(root: String) -> u32 {
+    rootprobe::hooks::started(&root)
 }
 
 #[cfg(test)]

@@ -98,7 +98,6 @@ describe("libraryProbeRoot", () => {
     const t0 = performance.now();
     await Promise.all([readFile(file), readFile(file), readFile(file), readFile(file), readFile(file)]);
     expect(performance.now() - t0).toBeLessThan(500);
-    expect(libraryProbeStatus().outstanding).toBeGreaterThanOrEqual(4);
     for (const r of roots) hooks().libraryProbeHang(r.path, false);
     expect((await Promise.all(pending)).map((s) => s.state)).toEqual(["online", "online", "online", "online"]);
   });
@@ -107,16 +106,16 @@ describe("libraryProbeRoot", () => {
     const r = root("single");
     const c = await canon(r);
     hooks().libraryProbeHang(r, true);
-    const before = libraryProbeStatus().started;
+    const before = hooks().libraryProbeStarted(r);
     const calls = [probe(r, c.identity, 10_000), probe(r, c.identity, 10_000), probe(r, c.identity, 10_000)];
     await new Promise((resolve) => setTimeout(resolve, 50));
-    expect(libraryProbeStatus().started - before).toBe(1);
+    expect(hooks().libraryProbeStarted(r) - before).toBe(1);
     hooks().libraryProbeHang(r, false);
     // All three callers share the one measurement, each judged against its own identity.
     expect((await Promise.all(calls)).map((s) => s.state)).toEqual(["online", "online", "online"]);
-    expect(libraryProbeStatus().started - before).toBe(1);
+    expect(hooks().libraryProbeStarted(r) - before).toBe(1);
     await probe(r, c.identity);
-    expect(libraryProbeStatus().started - before).toBe(2);
+    expect(hooks().libraryProbeStarted(r) - before).toBe(2);
   });
 
   test("timeout_leaves_thread_and_counts_it", async () => {
@@ -124,18 +123,16 @@ describe("libraryProbeRoot", () => {
     const c = await canon(r);
     const stuck0 = libraryProbeStatus().stuckProbes;
     hooks().libraryProbeHang(r, true);
-    const started = libraryProbeStatus().started;
+    const before = hooks().libraryProbeStarted(r);
     expect((await probe(r, c.identity, 50)).state).toBe("timeout");
     expect(libraryProbeStatus().stuckProbes).toBe(stuck0 + 1);
-    // While the thread is stuck a probe answers `timeout` at once and starts nothing.
-    const t0 = performance.now();
-    expect((await probe(r, c.identity, 10_000)).state).toBe("timeout");
-    expect(performance.now() - t0).toBeLessThan(1000);
-    expect(libraryProbeStatus().started - started).toBe(1);
-    // The mount comes back: the thread returns, the mark clears and the root is online.
+    // Asked again while the thread is stuck, it waits on that thread: nothing new starts.
+    expect((await probe(r, c.identity, 50)).state).toBe("timeout");
+    expect(hooks().libraryProbeStarted(r) - before).toBe(1);
+    expect(libraryProbeStatus().stuckProbes).toBe(stuck0 + 1);
+    // The mount comes back: the thread returns, and the next probe clears the count.
     hooks().libraryProbeHang(r, false);
-    for (let i = 0; i < 200 && libraryProbeStatus().stuckProbes !== stuck0; i++) await new Promise((resolve) => setTimeout(resolve, 10));
+    expect((await probe(r, c.identity, 10_000)).state).toBe("online");
     expect(libraryProbeStatus().stuckProbes).toBe(stuck0);
-    expect((await probe(r, c.identity)).state).toBe("online");
   });
 });

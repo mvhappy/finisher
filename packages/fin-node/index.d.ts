@@ -360,16 +360,16 @@ export declare function libraryCanonicalRoot(path: string, serverData: string, t
 
 /**
  * A library root's state now against its stored `VolumeIdentity` JSON: resolves to the
- * `RootState` JSON of `@finisher/core-types`. Never runs on the libuv pool: one stat thread
- * per root, one outstanding at a time; callers meanwhile join it. Past `timeoutMs` (default
- * 60 s) it resolves `{ state: "timeout" }` and leaves the thread to finish (counted in
- * `libraryProbeStatus().stuckProbes`); while a root's thread is stuck, probes of it resolve
- * `timeout` at once.
+ * `RootState` JSON of `@finisher/core-types`. Never runs on the libuv pool or the JS thread.
+ * One stat per root is in flight (`fin_library::root_state` is single-flight): a call while one
+ * is pending waits on it. Past `timeoutMs` (default 60 s) it resolves `{ state: "timeout" }`
+ * and the stat thread is left to finish (that root counts in `libraryProbeStatus().stuckProbes`
+ * until a later probe of it answers anything else).
  */
 export declare function libraryProbeRoot(root: string, identityJson: string, timeoutMs?: number): Promise<string>;
 
-/** What the root probes are doing: `stuckProbes` (past a deadline, not returned), `outstanding` roots, `started` threads. */
-export declare function libraryProbeStatus(): { stuckProbes: number; outstanding: number; started: number };
+/** What the root probes are doing: `stuckProbes` roots whose latest probe timed out. */
+export declare function libraryProbeStatus(): { stuckProbes: number };
 
 /** @internal Present only in binaries built with the `test-hooks` feature (`build:test`). */
 export declare const testHooks:
@@ -384,6 +384,8 @@ export declare const testHooks:
       ): void;
       /** While `hang` is true the stat of library root `root` blocks, as on a dead hard mount. */
       libraryProbeHang(root: string, hang: boolean): void;
+      /** How many stats of library root `root` have started. */
+      libraryProbeStarted(root: string): number;
       /** Writes a small `png`/`jpeg`/`webp` (64x48), `svg` (640x360), `dotlottie`, `cube`
        * (4³), `wav` (1 s, 48 kHz stereo; `wav:<seconds>`, 1–600, for longer) or `m4a` (2 s,
        * 48 kHz stereo) fixture. */
