@@ -1,6 +1,7 @@
 // The secret store, the seal/open seam and ModelGateway (plan 7A Task 5, Decisions 22–24).
 import { chmodSync, mkdtempSync, readdirSync, readFileSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
-import { lockExclusive } from "@finisher/fin-node";
+import { execFileSync } from "node:child_process";
+import { checkPrivateDir, lockExclusive } from "@finisher/fin-node";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -60,6 +61,9 @@ describe("FileSecretStore", () => {
     if (unix) {
       expect(statSync(sd).mode & 0o777).toBe(0o700);
       expect(statSync(store.path).mode & 0o777).toBe(0o600);
+    } else {
+      expect(checkPrivateDir(sd)).toMatchObject({ ok: true, problems: [] });
+      expect(checkPrivateDir(store.path)).toMatchObject({ ok: true, problems: [] });
     }
     const text = readFileSync(store.path, "utf8");
     expect(text).not.toContain(KEY);
@@ -171,8 +175,40 @@ describe("FileSecretStore: privacy and locking (review M2)", () => {
     expect(await code(() => store.list())).toBe("SECRET_STORE_UNSAFE");
   });
 
-  it("refuses to run on Windows until the keychain backend or an ACL helper exists", async () => {
-    expect(await code(() => new FileSecretStore(dir(), { platform: "win32" }))).toBe("SECRET_STORE_UNAVAILABLE");
+  it("takes the Windows path (DACL checks, no directory fsync) on any OS", async () => {
+    const sd = join(dir(), "win");
+    const store = new FileSecretStore(sd, { platform: "win32", clock: manualClock(), ids: ids() });
+    const id = await store.put({ provider: "openrouter", label: "k", value: Buffer.from(KEY) });
+    await store.put({ provider: "openrouter", label: "k2", projectId: P1, value: Buffer.from(OTHER) });
+    expect(store.list().map((m) => m.label)).toEqual(["k", "k2"]);
+    expect(store.reveal(id).toString()).toBe(KEY);
+    await store.remove(id);
+    expect(store.list().map((m) => m.label)).toEqual(["k2"]);
+    expect(readdirSync(sd).sort()).toEqual(["secrets.json", "secrets.lock"]);
+  });
+
+  // `*S-1-5-32-545` is the local Users group, which the host's own folders often admit.
+  const grantUsers = (path: string, inherit: boolean) =>
+    execFileSync("icacls", [path, "/grant", inherit ? "*S-1-5-32-545:(OI)(CI)R" : "*S-1-5-32-545:R"], { stdio: "ignore" });
+
+  it.skipIf(unix)("Windows: makes a new directory owner-only and repairs one that admits Users", async () => {
+    const sd = join(dir(), "server-data");
+    const store = new FileSecretStore(sd, { clock: manualClock(), ids: ids() });
+    expect(checkPrivateDir(sd).ok).toBe(true);
+    grantUsers(sd, true);
+    expect(checkPrivateDir(sd).ok).toBe(false);
+    await store.put({ provider: "openrouter", label: "k", value: Buffer.from(KEY) });
+    expect(checkPrivateDir(sd)).toMatchObject({ ok: true, problems: [] });
+    expect(checkPrivateDir(store.path)).toMatchObject({ ok: true, problems: [] });
+  });
+
+  it.skipIf(unix)("Windows: refuses a secrets.json that admits another account", async () => {
+    const d = dir();
+    const store = new FileSecretStore(d, { clock: manualClock(), ids: ids() });
+    await store.put({ provider: "openrouter", label: "k", value: Buffer.from(KEY) });
+    grantUsers(store.path, false);
+    expect(await code(() => store.list())).toBe("SECRET_STORE_UNSAFE");
+    expect(await code(() => new FileSecretStore(d))).toBe("SECRET_STORE_UNSAFE");
   });
 
   it("waits for another holder of the cross-process lock, then writes", async () => {

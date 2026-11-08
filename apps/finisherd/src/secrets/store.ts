@@ -7,15 +7,16 @@
 //
 // Protection is the private directory and the file mode, so both are checked (and repaired)
 // at every read and write: the directory is ours, not a link, and 0700; the file is ours, a
-// regular file, and 0600. Windows has no mode bits: until the keychain backend (5B) or 5A's
-// `ensurePrivateDir` (an owner-only ACL through fin-node's `makePrivateDir`/`checkPrivateDir`,
-// on `sp5a-principals`) is on this branch, the file backend refuses to run there.
-// TODO(5A): use `ensurePrivateDir` on Windows once 5A is merged, instead of refusing.
+// regular file, and 0600. Windows has no mode bits: there the directory gets 5A's protected
+// owner-only DACL (fin-node `makePrivateDir`, the helper behind `ensurePrivateDir`) and both the
+// directory and the file are read back with `checkPrivateDir` at every read and write; a loose
+// directory is repaired like a loose mode, a loose file or another owner is refused. The
+// keychain backend (5B) can seal for real later through the `SecretBox` seam.
 import { randomBytes } from "node:crypto";
 import { chmodSync, closeSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync } from "node:fs";
 import { open, rename, rm } from "node:fs/promises";
 import { join } from "node:path";
-import { lockExclusive } from "@finisher/fin-node";
+import { checkPrivateDir, lockExclusive, makePrivateDir } from "@finisher/fin-node";
 import { type Clock, type Ids, systemClock, systemIds } from "../agent/clock.ts";
 import { finError } from "../errors.ts";
 import { type Sealed, type SecretBox, identityBox } from "./box.ts";
@@ -81,7 +82,7 @@ export interface StoreOptions {
   readonly box?: SecretBox;
   readonly clock?: Clock;
   readonly ids?: Ids;
-  /** For tests of the Windows refusal. */
+  /** The platform whose protection applies (tests take the Windows path elsewhere). */
   readonly platform?: NodeJS.Platform;
 }
 
@@ -91,28 +92,24 @@ export class FileSecretStore implements SecretStore {
   private readonly clock: Clock;
   private readonly ids: Ids;
   private readonly dir: string;
+  private readonly windows: boolean;
   private queue: Promise<unknown> = Promise.resolve();
 
   constructor(dir: string, opts: StoreOptions = {}) {
     this.dir = dir;
-    if ((opts.platform ?? process.platform) === "win32") {
-      throw finError(
-        "SECRET_STORE_UNAVAILABLE",
-        "the file secret store cannot make its directory private on Windows yet",
-        { platform: "win32" },
-        "the OS keychain backend (sub-project 5B) stores the OpenRouter key on Windows",
-      );
-    }
+    this.windows = (opts.platform ?? process.platform) === "win32";
     this.box = opts.box ?? identityBox;
     this.clock = opts.clock ?? systemClock;
     this.ids = opts.ids ?? systemIds(this.clock);
-    mkdirSync(dir, { recursive: true, mode: 0o700 });
+    const created = mkdirSync(dir, { recursive: true, mode: 0o700 }) !== undefined;
+    if (created && this.windows) makePrivateDir(dir);
     this.path = join(dir, FILE);
     this.ensurePrivate();
   }
 
   /** The directory is ours, a real directory and 0700; the file, if any, ours, regular and 0600. */
   private ensurePrivate(): void {
+    if (this.windows) return this.ensurePrivateWindows();
     const uid = process.getuid?.();
     const d = lstatSync(this.dir);
     if (!d.isDirectory() || d.isSymbolicLink()) throw unsafe("the secrets directory is not a directory", { what: "dir" });
@@ -128,6 +125,34 @@ export class FileSecretStore implements SecretStore {
     if (!f.isFile()) throw unsafe("secrets.json is not a regular file", { what: "file" });
     if (uid !== undefined && f.uid !== uid) throw unsafe("secrets.json belongs to another user", { what: "file" });
     if ((f.mode & 0o077) !== 0) chmodSync(this.path, 0o600);
+  }
+
+  /**
+   * Windows: the same checks through the DACL. The directory is a real directory whose DACL
+   * admits only this user, SYSTEM and Administrators (`checkPrivateDir`); one that also admits
+   * others is made private again (`makePrivateDir`, as a loose mode is chmodded), one owned by
+   * another account is refused. The file must be a regular file, not a link, and admit nobody
+   * else: it inherits the directory's DACL, so an extra entry was put there on purpose.
+   */
+  private ensurePrivateWindows(): void {
+    const d = lstatSync(this.dir);
+    if (!d.isDirectory() || d.isSymbolicLink()) throw unsafe("the secrets directory is not a directory", { what: "dir" });
+    let report = checkPrivateDir(this.dir);
+    if (!report.ok && !report.problems.some((p) => p.startsWith("owner "))) {
+      makePrivateDir(this.dir);
+      report = checkPrivateDir(this.dir);
+    }
+    if (!report.ok) throw unsafe("other accounts can open the secrets directory", { what: "dir", problems: report.problems });
+    let f;
+    try {
+      f = lstatSync(this.path);
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code === "ENOENT") return;
+      throw e;
+    }
+    if (!f.isFile() || f.isSymbolicLink()) throw unsafe("secrets.json is not a regular file", { what: "file" });
+    const file = checkPrivateDir(this.path);
+    if (!file.ok) throw unsafe("other accounts can open secrets.json", { what: "file", problems: file.problems });
   }
 
   /** Runs `f` holding the cross-process lock (retried while another process holds it). */
@@ -253,7 +278,12 @@ export class FileSecretStore implements SecretStore {
     return doc;
   }
 
-  /** Temp-then-rename; the temp file is created 0600 before any byte is written; the directory is fsynced. */
+  /**
+   * Temp-then-rename; the temp file is created 0600 (on Windows it inherits the private
+   * directory's DACL) before any byte is written; the directory is fsynced. On Windows the
+   * rename is retried on sharing violations (a reader has the file open) and the directory is
+   * not fsynced: Node cannot open a directory for flushing there, and NTFS journals the rename.
+   */
   private async write(doc: FileDoc): Promise<void> {
     this.ensurePrivate();
     const tmp = `${this.path}.${randomBytes(6).toString("hex")}.tmp`;
@@ -267,12 +297,29 @@ export class FileSecretStore implements SecretStore {
       throw e;
     }
     await fh.close();
-    await rename(tmp, this.path);
+    await this.replace(tmp);
+    if (this.windows) return;
     const d = openSync(this.dir, "r");
     try {
       fsyncSync(d);
     } finally {
       closeSync(d);
+    }
+  }
+
+  private async replace(tmp: string): Promise<void> {
+    for (let attempt = 0; ; attempt++) {
+      try {
+        await rename(tmp, this.path);
+        return;
+      } catch (e) {
+        const code = (e as NodeJS.ErrnoException).code;
+        if (!this.windows || (code !== "EPERM" && code !== "EBUSY" && code !== "EACCES") || attempt >= 20) {
+          await rm(tmp, { force: true });
+          throw e;
+        }
+        await new Promise((r) => setTimeout(r, 25));
+      }
     }
   }
 }
