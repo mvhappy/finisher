@@ -33,10 +33,15 @@ export function isLive(path: string, timeoutMs = 1000): Promise<boolean> {
   });
 }
 
+/** The longest Unix socket path, in bytes: `sun_path` less its NUL (108 on Linux, 104 on macOS and the BSDs). */
+export const maxSocketPathBytes = (platform: NodeJS.Platform): number => (platform === "linux" ? 107 : 103);
+
 /**
  * Makes `path` available for listening: fails if a live server answers on it, otherwise
- * removes a stale Unix socket file. On Windows there is nothing to claim: named pipes vanish
- * with their owner, the server lock already refused a second server of this server data, and
+ * removes a stale Unix socket file. A path that cannot fit a socket address is
+ * `SOCKET_PATH_TOO_LONG` (`listen` would fail with a bare `EINVAL` on macOS, whose deep
+ * `TMPDIR` makes a server data under it likely). On Windows there is nothing to claim: named
+ * pipes vanish with their owner, the server lock already refused a second server of this server data, and
  * a pipe of the same name that exists anyway is a squatter the native listener's first
  * instance refuses (`PIPE_SQUATTED`, `pipe.ts`).
  */
@@ -46,11 +51,20 @@ export const claimSocketPath = (
 ): Effect.Effect<void, ServerStartError> =>
   platform === "win32"
     ? Effect.void
-    : Effect.flatMap(
-        Effect.promise(() => (existsSync(path) ? isLive(path) : Promise.resolve(false))),
-        (live) =>
-          live ? Effect.fail(serverRunning(path)) : Effect.try({ try: () => rmSync(path, { force: true }), catch: startFailure }),
-      );
+    : Buffer.byteLength(path) > maxSocketPathBytes(platform)
+      ? Effect.fail(
+          new ServerStartError(
+            "SOCKET_PATH_TOO_LONG",
+            `the socket path ${path} is ${Buffer.byteLength(path)} bytes; this OS allows ${maxSocketPathBytes(platform)}`,
+            { path, bytes: Buffer.byteLength(path), max: maxSocketPathBytes(platform) },
+            "use a server data folder with a shorter path",
+          ),
+        )
+      : Effect.flatMap(
+          Effect.promise(() => (existsSync(path) ? isLive(path) : Promise.resolve(false))),
+          (live) =>
+            live ? Effect.fail(serverRunning(path)) : Effect.try({ try: () => rmSync(path, { force: true }), catch: startFailure }),
+        );
 
 /**
  * Unix socket server at `path`. The socket is created under umask 0177 (so it is 0600 from
