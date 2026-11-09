@@ -277,7 +277,6 @@ pub(super) fn intent(tx_id: &str, author: &str, branch: &str, at: u64, ops: Vec<
         schema_version: SCHEMA_VERSION,
         ops,
         args_hash: None,
-        via: None,
     }
 }
 

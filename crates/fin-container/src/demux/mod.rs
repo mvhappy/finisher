@@ -14,8 +14,8 @@ use std::io::{Read, Seek, SeekFrom};
 
 use fin_core::{CoreError, Rational};
 use fin_media::{
-    AudioCodec, AudioTrackInfo, ColourTags, ContainerKind, IgnoredTrack, MediaInfo, Rotation,
-    SampleTable, VideoCodec, VideoTrackInfo, display_size,
+    AudioCodec, AudioTrackInfo, Chroma, ColourTags, ContainerKind, IgnoredTrack, MediaInfo,
+    Rotation, SampleTable, VideoCodec, VideoTrackInfo, display_size,
 };
 use mp4_atom::{Ftyp, Mdhd, Mvhd, Tkhd};
 use serde_json::json;
@@ -59,8 +59,27 @@ impl From<&Sample> for SampleInfo {
 pub struct VideoTrack {
     pub track: TrackRef,
     pub table: SampleTable,
+    /// The configuration record as bytes (`avcC`, `hvcC`, `av1C`, `vpcC`; ProRes and other
+    /// codecs without one are `Other {fourcc}`), for the decoder.
     pub config: CodecConfig,
+    /// What the sample entry and its record say (6B-1 Task 3: a backend is chosen by codec,
+    /// profile and bit depth).
+    pub params: CodecParams,
     samples: Vec<Sample>,
+}
+
+/// A video track's codec as its sample entry and configuration record describe it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CodecParams {
+    pub codec: VideoCodec,
+    /// The sample entry type (`avc1`, `hvc1`, `apch`, …).
+    pub fourcc: [u8; 4],
+    /// The record's profile number: `profile_idc` (H.264), `general_profile_idc` (HEVC),
+    /// `seq_profile` (AV1), the VP9 profile; absent without a record.
+    pub profile: Option<u8>,
+    pub level: Option<u8>,
+    pub bit_depth: u8,
+    pub chroma: Chroma,
 }
 
 impl VideoTrack {
@@ -420,6 +439,14 @@ fn parse<R: Read + Seek>(r: &mut R, limits: Limits) -> Result<Parsed, CoreError>
             track: TrackRef(t.id),
             table,
             config: e.config,
+            params: CodecParams {
+                codec: VideoCodec::from_fourcc(&e.fourcc),
+                fourcc: e.fourcc,
+                profile: e.profile,
+                level: e.level,
+                bit_depth: e.bit_depth,
+                chroma: e.chroma,
+            },
             samples,
         });
     }

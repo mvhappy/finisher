@@ -47,7 +47,6 @@ pub fn tx(ops: Vec<Op>) -> Tx {
         base_rev: 0,
         schema_version: SCHEMA_VERSION,
         args_hash: None,
-        via: None,
         ops,
     }
 }

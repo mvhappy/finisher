@@ -3,8 +3,8 @@
 
 use std::io::Cursor;
 
+use fin_codecs::FrameReader;
 use fin_codecs::fixture::{ClipSpec, pattern_clip};
-use fin_codecs::{FrameReader, capabilities};
 use fin_container::Limits;
 use fin_media::Size;
 use fin_media::testing::read_id_y;
@@ -23,7 +23,7 @@ fn readable(size: Size, crf: u8, frames: u32) -> u32 {
     let mut r = FrameReader::open(
         Cursor::new(pattern_clip(&spec).unwrap()),
         &Limits::default(),
-        &capabilities(),
+        &fin_codecs::ProbeResult::software_only(),
     )
     .unwrap();
     (0..frames as usize)

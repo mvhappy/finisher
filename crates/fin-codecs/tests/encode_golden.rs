@@ -5,11 +5,13 @@
 //! recorded entry for its class and asserts only with `FIN_ENCODE_GOLDEN=1`;
 //! `FIN_ENCODE_GOLDEN=record` prints the entry to add.
 
-use fin_codecs::{Av1EncoderConfig, RawFrame, open_av1_encoder};
+use fin_codecs::fixture::{ClipSpec, encode_all, fixture_config};
+use fin_codecs::{EncoderConfig, ProbeResult, RawFrame, open_encoder};
 use fin_container::CodecConfig;
 use fin_core::Rational;
+use fin_media::backend::EncodePurpose;
 use fin_media::testing::pattern;
-use fin_media::{ColourTags, Size};
+use fin_media::{Size, VideoCodec};
 use serde_json::Value;
 
 const GOLDEN: &str = include_str!("golden/encode.json");
@@ -17,30 +19,28 @@ const GOLDEN: &str = include_str!("golden/encode.json");
 /// 20 pattern frames (seed 9) at 320×180, preset 10, CRF 35, keyint 15, one thread: the
 /// av1C record then every packet, BLAKE3 and byte count.
 fn encode() -> (String, usize, usize) {
-    let cfg = Av1EncoderConfig {
+    let spec = ClipSpec {
         size: Size::new(320, 180),
         rate: Rational::from_int(30),
         preset: 10,
         crf: 35,
         keyint: 15,
-        threads: 1,
-        colour: ColourTags::BT709,
+        ..ClipSpec::default()
     };
-    let mut enc = open_av1_encoder(&cfg).unwrap();
-    let mut packets = Vec::new();
-    for i in 0..20 {
+    let mut enc = open_encoder(
+        &EncoderConfig {
+            purpose: EncodePurpose::TestFixture,
+            ..fixture_config(&spec, VideoCodec::Av1)
+        },
+        &ProbeResult::software_only(),
+    )
+    .unwrap();
+    let packets = encode_all(&mut enc, 20, |i| {
         let p = pattern(i, 320, 180, 9);
-        enc.send(&RawFrame::i420(cfg.size, p.y, p.u, p.v), i as i64, false)
-            .unwrap();
-        while let Some(pk) = enc.receive().unwrap() {
-            packets.push(pk);
-        }
-    }
-    enc.finish().unwrap();
-    while let Some(pk) = enc.receive().unwrap() {
-        packets.push(pk);
-    }
-    let CodecConfig::Av1 { av1c } = enc.config() else {
+        RawFrame::i420(spec.size, p.y, p.u, p.v)
+    })
+    .unwrap();
+    let CodecConfig::Av1 { av1c } = enc.config().unwrap() else {
         panic!("AV1")
     };
     let mut bytes = av1c;

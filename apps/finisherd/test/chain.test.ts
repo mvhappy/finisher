@@ -461,27 +461,6 @@ describe("review of Task 5", () => {
     }
   });
 
-  test("8B Task 3: a client's via never reaches the hooks, the policies, the stamped payload or the handler", async () => {
-    open = new Set([A]);
-    const via = { plugin: "@acme/tools@1.2.0", command: "trim-silence" };
-    for (const principal of [limited(), LOCAL]) {
-      const inputs: unknown[] = [];
-      const spy: PolicyRule = (input) => Effect.sync(() => void inputs.push(input.payload));
-      const authorized: unknown[] = [];
-      const h = harness(principal, { policies: [spy], hooks: { authorize: (_t, _p, resolved) => Effect.sync(() => void authorized.push(resolved.payload)) } });
-      const body = commit("main");
-      for (const v of [via, null]) {
-        expect(Exit.isSuccess(await h.call("tx.commit", { ...body, tx: { ...body.tx, via: v } }))).toBe(true);
-      }
-      expect(inputs).toHaveLength(2);
-      for (const seen of [...inputs, ...authorized, ...h.seen.map((s) => s.payload)]) {
-        expect("via" in (seen as { tx: object }).tx, principal.kind).toBe(false);
-      }
-      const author = principal.kind === "agent" ? "agent:01agent000000000000000000a" : "a";
-      expect(h.seen.map((s) => (s.payload as { tx: { author: string } }).tx.author)).toEqual([author, author]);
-    }
-  });
-
   test("review of Tasks 8–9, M1: an agent without branch limits cannot plant a branch for another", async () => {
     open = new Set([A]);
     const free = limited({ branches: "*" });

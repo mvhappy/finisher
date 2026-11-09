@@ -401,7 +401,6 @@ mod tests {
             base_rev: 0,
             schema_version: crate::model::SCHEMA_VERSION,
             args_hash: None,
-            via: None,
             ops,
         }
     }

@@ -227,7 +227,6 @@ impl<'a> Builder<'a> {
             base_rev: self.base.rev,
             schema_version: SCHEMA_VERSION,
             args_hash: None,
-            via: None,
             ops,
         }
     }

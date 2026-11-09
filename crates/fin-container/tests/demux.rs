@@ -404,3 +404,52 @@ fn real_files_from_the_fixture_cache() {
         "the edit list trims the start to 0"
     );
 }
+
+/// 6B-1 Task 3: the video track carries its codec, profile, level and bit depth, so a backend
+/// can be chosen by them; ProRes (no record) keeps its sample entry type.
+#[test]
+fn video_track_params_name_codec_profile_and_depth() {
+    let one = |config: CodecConfig| {
+        let mut w =
+            fin_container::Mp4Writer::new(Cursor::new(Vec::new()), Default::default()).unwrap();
+        let t = w
+            .add_video(fin_container::VideoTrackConfig {
+                config,
+                coded: Size::new(64, 64),
+                timescale: 30,
+                rotation: fin_media::Rotation::R0,
+                pixel_aspect: Rational::from_int(1),
+                colour: fin_media::ColourTags::BT709,
+                hdr: None,
+            })
+            .unwrap();
+        w.write(t, b"x", 0, 0, 1, true).unwrap();
+        open(w.finish().unwrap().into_inner())
+            .video()
+            .unwrap()
+            .params
+    };
+    let avc = one(CodecConfig::Avc {
+        avcc: vec![1, 100, 0, 40, 0xff, 0xe0, 0],
+    });
+    assert_eq!(
+        (avc.codec, avc.profile, avc.level, avc.bit_depth),
+        (VideoCodec::H264, Some(100), Some(40), 8)
+    );
+    let mut hvcc = vec![0u8; 23];
+    hvcc[0] = 1;
+    hvcc[1] = 2; // general_profile_idc: Main 10
+    hvcc[12] = 120;
+    hvcc[16] = 0xfc | 1; // 4:2:0
+    hvcc[17] = 0xf8 | 2; // luma 10-bit
+    let hevc = one(CodecConfig::Hevc { hvcc });
+    assert_eq!(
+        (hevc.codec, hevc.profile, hevc.bit_depth, hevc.chroma),
+        (VideoCodec::Hevc, Some(2), 10, fin_media::Chroma::Yuv420)
+    );
+    let prores = one(CodecConfig::Other { fourcc: *b"apch" });
+    assert_eq!(
+        (prores.codec, prores.fourcc, prores.profile),
+        (VideoCodec::ProRes, *b"apch", None)
+    );
+}

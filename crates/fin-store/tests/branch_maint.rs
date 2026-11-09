@@ -27,7 +27,6 @@ fn on(s: &mut Store, id: &str, branch: &str, ops: Vec<fin_core::Op>) -> Committe
         base_rev: base,
         schema_version: fin_core::SCHEMA_VERSION,
         args_hash: None,
-        via: None,
         ops,
     })
     .unwrap()

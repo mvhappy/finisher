@@ -30,7 +30,6 @@ fn on(s: &mut Store, id: &str, branch: &str, ops: Vec<Op>) -> CommittedTx {
         base_rev: base,
         schema_version: SCHEMA_VERSION,
         args_hash: None,
-        via: None,
         ops,
     })
     .unwrap()

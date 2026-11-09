@@ -7,38 +7,36 @@
 //   it), and only `fin-workers` and `fin-wasm` link `fin-compositor`;
 // - `fin-workers` takes `fin-fonts` with `default-features = false` and without `fetch`
 //   (workers never fetch).
+// - `fin-codecs`' platform codec crates are target-gated (6B-1 plan Global Constraints): the
+//   objc2 VideoToolbox, CoreMedia and CoreVideo bindings only under `cfg(target_os = "macos")`,
+//   `windows` (Media Foundation, D3D11) only under `cfg(windows)`.
 // - `fin-dataset-inputs` (the dataset builder's inputs; sp7 §12.1, §16.2) links no Finisher
 //   crate but `fin-core`: its readers reach the journal's files only, never `control.db` or
 //   any crate that opens it (`fin-node`, `fin-registry`, `fin-store`, …).
-// - the plugin SDK (`fin-plugin-sdk`, sp8b Task 1) links only `fin-core`, `fin-jobs`,
-//   `fin-plugin-api` and `fin-shm` of the workspace, and never wgpu: a plugin built on it carries
-//   nothing of the server (`fin-node`, `fin-registry`) or the media engine (`fin-codecs`);
-// - `fin` and `fin-node` link neither the SDK nor the harness (`fin-plugin-test`).
 // Each breach is CRATE_DEPENDENCY naming the path's two ends.
 import { fileURLToPath } from "node:url";
 import { Graph, documents, metadata } from "./cargo-graph.mjs";
 import { report, rootArg } from "./walk.mjs";
 
 export const MEDIA = ["fin-media", "fin-container", "fin-codecs", "fin-compositor", "fin-shm", "fin-graphics", "fin-audio", "fin-captions"];
-export const PLUGIN_TOOLING = ["fin-plugin-sdk", "fin-plugin-test"];
 export const RULES = [
   { from: "fin", forbid: MEDIA, why: "fin links no media crate" },
   { from: "fin-node", forbid: ["fin-codecs", "fin-compositor", "fin-graphics", "wgpu"], why: "fin-node never links codecs, the compositor or wgpu" },
-  { from: "fin", forbid: PLUGIN_TOOLING, why: "fin links neither the plugin SDK nor its harness" },
-  { from: "fin-node", forbid: PLUGIN_TOOLING, why: "fin-node links neither the plugin SDK nor its harness" },
-  { from: "fin-plugin-sdk", forbid: ["wgpu"], why: "a plugin built on the SDK carries no GPU stack" },
 ];
 /** Members whose closure may hold no other workspace member than the listed ones. */
-export const CONFINED = [
-  { crate: "fin-dataset-inputs", may: ["fin-core"], why: "the dataset builder reads the journal's files only, never control.db" },
-  { crate: "fin-plugin-sdk", may: ["fin-core", "fin-jobs", "fin-plugin-api", "fin-shm"], why: "a plugin built on the SDK carries nothing of the server or the media engine" },
-];
+export const CONFINED = [{ crate: "fin-dataset-inputs", may: ["fin-core"], why: "the dataset builder reads the journal's files only, never control.db" }];
 /** Crates only the listed members may link. */
 export const ONLY = [
   { crate: "fin-codecs", by: ["fin-workers"] },
   { crate: "fin-svt-sys", by: ["fin-codecs", "fin-workers"] },
   { crate: "fin-dav1d-sys", by: ["fin-codecs", "fin-workers"] },
   { crate: "fin-compositor", by: ["fin-workers", "fin-wasm"] },
+];
+
+/** Direct dependencies a member may declare only under the given `cfg` target. */
+export const TARGETED = [
+  { crate: "fin-codecs", deps: ["objc2", "objc2-core-foundation", "objc2-core-media", "objc2-core-video", "objc2-video-toolbox"], cfg: 'cfg(target_os = "macos")' },
+  { crate: "fin-codecs", deps: ["windows"], cfg: "cfg(windows)" },
 ];
 
 export function check(doc) {
@@ -70,6 +68,12 @@ export function check(doc) {
     for (const id of g.members) {
       const name = g.name(id);
       if (name !== c.crate && !c.may.includes(name) && reach(c.crate).has(name)) breach(c.crate, name, c.why);
+    }
+  }
+  for (const t of TARGETED) {
+    for (const d of g.packages.get(g.member(t.crate))?.dependencies ?? []) {
+      if (!t.deps.includes(d.name) || d.kind === "dev" || d.target === t.cfg) continue;
+      out.push(`CRATE_DEPENDENCY: ${t.crate} takes ${d.name} ${d.target ? `under ${d.target}` : "for every target"} (only under ${t.cfg})`);
     }
   }
   const workers = g.packages.get(g.member("fin-workers"));

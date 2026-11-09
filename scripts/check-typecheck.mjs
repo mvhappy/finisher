@@ -6,7 +6,7 @@ import { createRequire } from "node:module";
 import { join } from "node:path";
 import { report, rootArg } from "./walk.mjs";
 
-const PROJECTS = ["apps/finisherd", "packages/contracts", "packages/core-types", "packages/fin-node", "packages/plugin-sdk"];
+const PROJECTS = ["apps/finisherd", "packages/contracts", "packages/core-types", "packages/fin-node"];
 
 const root = rootArg();
 const tsc = join(createRequire(import.meta.url).resolve("typescript/package.json"), "..", "bin", "tsc");

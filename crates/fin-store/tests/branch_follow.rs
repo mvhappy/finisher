@@ -71,7 +71,6 @@ fn commit_on(s: &mut Store, id: &str, branch: &str, ops: Vec<Op>) -> CommittedTx
         base_rev: s.head(branch),
         schema_version: SCHEMA_VERSION,
         args_hash: None,
-        via: None,
         ops,
     })
     .unwrap()

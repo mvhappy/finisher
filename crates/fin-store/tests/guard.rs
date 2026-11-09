@@ -59,7 +59,6 @@ fn tx_on(s: &Store, id: &str, branch: &str, ops: Vec<Op>) -> Tx {
         base_rev: s.head(branch),
         schema_version: SCHEMA_VERSION,
         args_hash: None,
-        via: None,
         ops,
     }
 }

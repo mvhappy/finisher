@@ -9,7 +9,8 @@ use fin_jobs::worker::JobCtx;
 use fin_jobs::{JobError, StartJob};
 use fin_media::RENDER_VERSION;
 use fin_media::jobs::{
-    CapSupport, CapabilitiesParams, CodecCapabilities, CodecCaps, MediaCapabilities, WorkerInfo,
+    CapSupport, CapabilitiesParams, CodecCapabilities, LegacyCodecCaps, LegacyMediaCapabilities,
+    LegacyWorkerInfo,
 };
 use serde_json::Value;
 
@@ -25,8 +26,8 @@ fn support(s: Support) -> CapSupport {
     }
 }
 
-fn codec(c: &CodecSupport) -> CodecCaps {
-    CodecCaps {
+fn codec(c: &CodecSupport) -> LegacyCodecCaps {
+    LegacyCodecCaps {
         codec: c.codec,
         decode: support(c.decode),
         encode: support(c.encode),
@@ -42,12 +43,12 @@ pub fn run(job: &StartJob, ctx: &mut JobCtx<'_>, warm: &mut Warm) -> Result<Valu
         Err(e) if e.code == "GPU_UNAVAILABLE" => None,
         Err(e) => return Err(e),
     };
-    let result = MediaCapabilities {
+    let result = LegacyMediaCapabilities {
         codecs: CodecCapabilities {
             video: warm.caps.video.iter().map(codec).collect(),
         },
         gpu,
-        worker: WorkerInfo {
+        worker: LegacyWorkerInfo {
             version: env!("CARGO_PKG_VERSION").to_string(),
             render_version: RENDER_VERSION,
         },

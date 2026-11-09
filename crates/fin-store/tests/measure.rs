@@ -247,7 +247,6 @@ fn tx_as(s: &Store, id: &str, author: &str, base_rev: u64, ops: Vec<Op>) -> fin_
         base_rev,
         schema_version: fin_core::SCHEMA_VERSION,
         args_hash: None,
-        via: None,
         ops,
     }
 }

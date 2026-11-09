@@ -225,8 +225,8 @@ export type {
   TxSetAside,
 } from "@finisher/core-types";
 
-/** Narrowed `Schema.Unknown` payloads (Rust validates). A sent tx has no `via`; a stored one may. */
-export type TxPayload = Omit<Tx, "via">;
+/** Narrowed views of the `Schema.Unknown` payloads; runtime validation is Rust's job. */
+export type TxPayload = Tx;
 export type ProjectPayload = Project;
 export type CommittedTxPayload = CommittedTx;
 

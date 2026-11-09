@@ -164,7 +164,6 @@ pub fn try_commit(s: &mut Store, id: &str, ops: Vec<Op>) -> Result<CommittedTx, 
         base_rev: s.head(MAIN),
         schema_version: SCHEMA_VERSION,
         args_hash: None,
-        via: None,
         ops,
     })
     .map_err(CoreError::from)

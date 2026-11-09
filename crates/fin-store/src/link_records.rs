@@ -118,7 +118,6 @@ fn record(conn: &Connection, c: Cols) -> Result<LinkRec, StoreError> {
         schema_version: SCHEMA_VERSION,
         ops: Vec::new(),
         args_hash: None,
-        via: None,
     };
     let mut r = Record::new_edit(
         tx_id,

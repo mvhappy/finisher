@@ -7,7 +7,7 @@
 
 use std::time::Instant;
 
-use fin_codecs::Capabilities;
+use fin_codecs::ProbeResult;
 use fin_compositor::{LayerIssue, SourceFrame, SourceProvider};
 use fin_core::eval::Layer;
 use fin_media::jobs::RenderManifest;
@@ -20,7 +20,7 @@ use super::open_cache::{Entry, Got, OpenCache, missing};
 pub struct Sources<'a> {
     pub manifest: &'a RenderManifest,
     pub cache: &'a mut OpenCache,
-    pub caps: &'a Capabilities,
+    pub caps: &'a ProbeResult,
     /// Sources opened and reused while rendering (each layer that asked counts once per frame).
     pub opened: u32,
     pub reused: u32,
@@ -37,7 +37,7 @@ impl<'a> Sources<'a> {
     pub fn new(
         manifest: &'a RenderManifest,
         cache: &'a mut OpenCache,
-        caps: &'a Capabilities,
+        caps: &'a ProbeResult,
     ) -> Self {
         Sources {
             manifest,

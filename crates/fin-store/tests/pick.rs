@@ -84,7 +84,6 @@ fn edit(s: &mut Store, branch: &str, id: &str, author: &str, ops: Vec<Op>) -> Co
         base_rev: base,
         schema_version: SCHEMA_VERSION,
         args_hash: None,
-        via: None,
         ops,
     })
     .unwrap()

@@ -266,7 +266,6 @@ impl MemLog {
             schema_version: SCHEMA_VERSION,
             ops,
             args_hash: None,
-            via: None,
         }
     }
 

@@ -205,7 +205,6 @@ impl Script {
             base_rev: self.s.head(b),
             schema_version: SCHEMA_VERSION,
             args_hash: None,
-            via: None,
             ops: vec![op.clone()],
         };
         // Skipped when it would not apply to the head.

@@ -367,7 +367,6 @@ fn merge_of_4b_branch_after_upgrade() {
             base_rev: s.head("br1"),
             schema_version: SCHEMA_VERSION,
             args_hash: None,
-            via: None,
             ops: vec![insert],
         })
         .unwrap();

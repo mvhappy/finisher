@@ -109,7 +109,6 @@ fn tx(s: &Store, id: &str, ops: Vec<Op>) -> Tx {
         base_rev: s.head(MAIN),
         schema_version: SCHEMA_VERSION,
         args_hash: None,
-        via: None,
         ops,
     }
 }

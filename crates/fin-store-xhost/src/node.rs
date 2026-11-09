@@ -310,7 +310,6 @@ impl Node<'_> {
             base_rev: self.store.head(branch),
             schema_version: SCHEMA_VERSION,
             args_hash: None,
-            via: None,
             ops,
         };
         let before = self.lease();

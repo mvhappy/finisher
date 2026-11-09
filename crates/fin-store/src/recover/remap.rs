@@ -184,7 +184,6 @@ mod tests {
             schema_version: SCHEMA_VERSION,
             ops,
             args_hash: None,
-            via: None,
         };
         Record::new_edit(
             "x".into(),

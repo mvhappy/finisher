@@ -187,7 +187,6 @@ fn a_due_compaction_runs_one_step_at_a_time() {
             base_rev: a.head(branch),
             schema_version: fin_core::SCHEMA_VERSION,
             args_hash: None,
-            via: None,
             ops: vec![asset(&format!("/m/{}.mov", i + 1))],
         };
         a.commit(tx).unwrap();

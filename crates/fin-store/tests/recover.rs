@@ -30,7 +30,6 @@ fn on(s: &mut Store, id: &str, branch: &str, ops: Vec<Op>) -> CommittedTx {
         base_rev: base,
         schema_version: SCHEMA_VERSION,
         args_hash: None,
-        via: None,
         ops,
     })
     .unwrap()
@@ -354,7 +353,6 @@ fn craft(
         schema_version: SCHEMA_VERSION,
         ops: ops.clone(),
         args_hash: None,
-        via: None,
     };
     let bindings: std::collections::BTreeMap<String, String> = bindings
         .iter()

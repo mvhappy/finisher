@@ -153,11 +153,10 @@ function holds(payload: unknown, [path, expect]: Condition): boolean {
 /** `plugin:<id>/<command>` of a transaction the plugin host says a plugin committed. */
 function pluginCommand(trusted: TrustedContext | undefined): string | undefined {
   const via = trusted?.via;
-  if (via === undefined || via.command === "") return undefined;
-  // `<id>@<version>`, both non-empty; anything else is treated as no via.
+  if (via === undefined || via.plugin === "") return undefined;
   const at = via.plugin.lastIndexOf("@");
-  if (at <= 0 || at === via.plugin.length - 1) return undefined;
-  return `plugin:${via.plugin.slice(0, at)}/${via.command}`;
+  const id = at > 0 ? via.plugin.slice(0, at) : via.plugin;
+  return `plugin:${id}/${via.command}`;
 }
 
 /** Whether a `tx.commit` holds more than one op. */

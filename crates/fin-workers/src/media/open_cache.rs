@@ -24,7 +24,7 @@
 use std::fs::File;
 use std::path::{Path, PathBuf};
 
-use fin_codecs::{Capabilities, DecodeThreads, FrameReader};
+use fin_codecs::{DecodeThreads, FrameReader, ProbeResult};
 use fin_compositor::LayerIssue;
 use fin_container::Limits;
 use fin_library::{Expect, OpenError, RawRel};
@@ -173,7 +173,7 @@ impl OpenCache {
         &mut self,
         asset: &ManifestAsset,
         o: &OriginalFile,
-        caps: &Capabilities,
+        caps: &ProbeResult,
     ) -> (&mut Entry, Got) {
         let key = Key {
             fingerprint: asset.fingerprint.clone(),
@@ -249,7 +249,7 @@ fn transient(issue: &LayerIssue) -> bool {
     issue.code == "ORIGINALS_MISSING" || issue.code == "IO_ERROR"
 }
 
-fn open(asset: &str, o: &OriginalFile, caps: &Capabilities, confine: Option<&Path>) -> Entry {
+fn open(asset: &str, o: &OriginalFile, caps: &ProbeResult, confine: Option<&Path>) -> Entry {
     let file = match open_original_in(o, confine) {
         Ok(f) => f,
         Err(r) => return Entry::Failed(missing(asset, r.reason, Some(&r.message))),
@@ -289,7 +289,6 @@ fn open(asset: &str, o: &OriginalFile, caps: &Capabilities, confine: Option<&Pat
 #[allow(clippy::disallowed_methods)] // tests write fixtures and stat files by path
 mod tests {
     use super::*;
-    use fin_codecs::capabilities;
     use fin_codecs::fixture::{ClipSpec, pattern_clip};
     use fin_core::AssetKind;
     use std::time::UNIX_EPOCH;
@@ -332,13 +331,13 @@ mod tests {
     }
 
     fn get(cache: &mut OpenCache, o: &OriginalFile) -> (Got, bool) {
-        let (entry, got) = cache.get(&asset(o), o, &capabilities());
+        let (entry, got) = cache.get(&asset(o), o, &fin_codecs::ProbeResult::software_only());
         (got, matches!(entry, Entry::Open(_)))
     }
 
     /// Decodes frames `0..n` of the entry for `o`.
     fn decode(cache: &mut OpenCache, o: &OriginalFile, n: usize) {
-        let (entry, _) = cache.get(&asset(o), o, &capabilities());
+        let (entry, _) = cache.get(&asset(o), o, &fin_codecs::ProbeResult::software_only());
         let Entry::Open(open) = entry else {
             panic!("not open")
         };
@@ -460,7 +459,7 @@ mod tests {
         let mut reader = FrameReader::open_with_limit(
             file,
             &Limits::default(),
-            &capabilities(),
+            &ProbeResult::software_only(),
             DecodeThreads::default(),
             100 * 100,
         )

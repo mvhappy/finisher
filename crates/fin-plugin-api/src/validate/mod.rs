@@ -5,7 +5,7 @@
 //! - [`files`]: every referenced file is a safe package path and present;
 //! - [`messages`]: catalogues and message keys in the `en` catalogue;
 //! - [`content`]: contributions: unconsumable kinds refused, consumable ones checked through
-//!   the injected [`ContentChecks`], commands' names, timeouts and argument schemas;
+//!   the injected [`ContentChecks`];
 //! - licences (here): `nonCommercial` refused; `unknown` refused for bundled plugins.
 //!
 //! The parse stops at the first structural error (serde); the rule families then report
@@ -26,7 +26,6 @@ use crate::licence::{LicenceClass, classify};
 use crate::manifest::{Manifest, Platform};
 
 pub use files::is_package_path;
-pub(crate) use messages::key_ok as is_message_key;
 
 /// The largest manifest accepted (8A Decision 1).
 pub const MAX_MANIFEST_BYTES: usize = 256 * 1024;

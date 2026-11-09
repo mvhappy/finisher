@@ -243,7 +243,6 @@ pub(crate) fn metadata_draft(
             schema_version: SCHEMA_VERSION,
             ops: vec![],
             args_hash: None,
-            via: None,
         },
         inverse: vec![],
         bindings: BTreeMap::new(),

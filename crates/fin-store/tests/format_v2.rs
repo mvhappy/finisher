@@ -144,7 +144,6 @@ fn linked_record(tx_id: &str, seq: u64, parent: Option<String>, link: Link) -> R
         base_rev: seq - 1,
         schema_version: SCHEMA_VERSION,
         args_hash: None,
-        via: None,
         ops: vec![],
     };
     let mut r = Record::new_edit(
