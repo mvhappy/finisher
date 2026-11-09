@@ -11,46 +11,15 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::process::Stdio;
 
-use fin_core::events::payloads::agent::{AgentMode, Harness};
 use fin_sandbox::launch::LaunchRequest;
-use fin_sandbox::{AgentInput, Os};
 use linux_support::{
-    failure, inherit_fd4, landlock_or_skip, launch_cmd, launch_raw, tempdir, write,
+    agent, failure, inherit_fd4, landlock_or_skip, launch_cmd, launch_raw, tempdir,
 };
 
 /// Landlock alone: these cases check its denials (`EACCES`); the socket namespace
 /// (`namespace_linux.rs`) would answer `ENOENT` for hidden paths first.
 const NS_OFF: (&str, &str) = ("FIN_TEST_SANDBOX_NAMESPACES", "unavailable");
 const PATH: (&str, &str) = ("PATH", "/usr/bin:/bin");
-
-/// An agent request for a project and server data under `t`, with the base toolchain.
-fn agent(t: &Path) -> LaunchRequest {
-    let project = t.join("p");
-    let data = t.join("data");
-    for d in [
-        "p/workspace/s1",
-        "data/agents/s1/tmp",
-        "data/agents/s1/provider",
-    ] {
-        std::fs::create_dir_all(t.join(d)).unwrap();
-    }
-    write(&t.join("data/auth/local.key"), "k");
-    LaunchRequest::Agent(AgentInput {
-        session_id: "s1".into(),
-        mode: AgentMode::Draft,
-        harness: Harness::Codex,
-        workspace_dir: project.join("workspace").join("s1"),
-        shared_dir: None,
-        project_dir: project,
-        library_roots: vec![],
-        session_dir: data.join("agents").join("s1"),
-        sign_in_store: None,
-        toolchains: fin_sandbox::data::toolchain_base_resolved(Os::Linux),
-        server_data: data,
-        home: t.join("home"),
-        fin: None,
-    })
-}
 
 fn bytes(r: &LaunchRequest) -> Vec<u8> {
     serde_json::to_vec(r).unwrap()

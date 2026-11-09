@@ -14,10 +14,16 @@
 //   with the session environment and no sandbox, and the persistent warning says so;
 // - **refused** where the mechanism is unavailable: `SANDBOX_UNAVAILABLE`, nothing starts.
 // Every process starts in a process group of its own and the whole group is killed when its
-// leader exits or the scope closes (session end, or the instance replaced). **Residual:** a
-// process that leaves the group (`setsid`, `setpgid`) outlives both, still confined by
-// Landlock; neither the profile nor the specified seccomp filter refuses those calls (a
-// launcher that stays the parent as a subreaper, or a per-session cgroup, would close it).
+// leader exits or the scope closes (session end, or the instance replaced). On Linux the
+// launcher stays the program's parent, a subreaper (plan 7C Decision 3 as amended): it
+// forwards signals, passes the program's exit through and, when the program exits, is hung up
+// or loses its parent, kills every descendant, one that left the group (`setsid`, `setpgid`)
+// included, and the session's cgroup where one is delegated. So a kill with `SIGKILL` of a
+// process under the Linux launcher hangs it up (`SIGHUP`, which it never forwards) and falls
+// back to `SIGKILL` on its group after `REAP_GRACE_MS`; a `SIGKILL` would end the launcher
+// before it reaps. **Residual:** without the launcher (direct mode, where the profile is not
+// ready on this OS) a process that leaves its group outlives both, unconfined anyway; macOS
+// closes it in Task 8, Windows with the launcher's job object (Task 9).
 // What the launcher itself reports, a failure to apply the policy (its line written back on
 // descriptor 3 before exit 78; a program's own exit 78 writes none), goes to `onViolation`
 // (`sandbox.violation`, spec §8.8). A seccomp kill (`SIGSYS`) is not attributed: without the
@@ -38,6 +44,9 @@ import { sessionEnv } from "./sandbox-env.ts";
 import { ensureSessionDirs, linkSignInStore } from "./session-dirs.ts";
 
 export { assertSessionEnv, sessionEnv } from "./sandbox-env.ts";
+
+/** How long a hung-up Linux launcher may take to reap its session before its group is killed. */
+export const REAP_GRACE_MS = 2_000;
 
 /** The launcher's own exit code for `SANDBOX_UNAVAILABLE` (`launch.rs` `EXIT_UNAVAILABLE`). */
 export const LAUNCHER_UNAVAILABLE = 78;
@@ -238,6 +247,8 @@ function start(
   platform: NodeJS.Platform,
   onExit: (e: ChildExit, launcherFailed: boolean) => void,
 ): Promise<SandboxedChild> {
+  // The Linux launcher stays the parent and reaps the session (see the header).
+  const reaps = via !== undefined && platform === "linux";
   const [program, args] = via === undefined ? [argv[0]!, argv.slice(1)] : [via.launcher, ["--policy-fd", "3", "--", ...argv]];
   const child: ChildProcess = spawnChild(program, args, {
     cwd,
@@ -264,7 +275,8 @@ function start(
       gone = true;
       const e = { code, signal };
       // What the leader left running in its group goes with it, while the group's id cannot
-      // yet name another process's (a process that left the group is the residual above).
+      // yet name another process's (under the Linux launcher the group is the launcher alone,
+      // which has reaped the session).
       if (platform !== "win32" && child.pid !== undefined) {
         try {
           process.kill(-child.pid, "SIGKILL");
@@ -301,7 +313,18 @@ function start(
           if (gone) return;
           try {
             if (platform === "win32") child.kill(signal);
-            else process.kill(-pid, signal);
+            else if (reaps && signal === "SIGKILL") {
+              // The reaper's session end; its group alone if it does not end in time.
+              process.kill(-pid, "SIGHUP");
+              setTimeout(() => {
+                if (gone) return;
+                try {
+                  process.kill(-pid, "SIGKILL");
+                } catch {
+                  // Gone meanwhile.
+                }
+              }, REAP_GRACE_MS).unref();
+            } else process.kill(-pid, signal);
           } catch {
             // Already gone.
           }

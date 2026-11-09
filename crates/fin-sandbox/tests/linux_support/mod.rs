@@ -131,36 +131,69 @@ pub fn launch_cmd(
     args: &[&str],
     env: &[(&str, &str)],
 ) -> (Command, Option<std::os::fd::OwnedFd>) {
+    let mut cmd = Command::new(LAUNCHER);
+    cmd.args(args).env_clear().envs(env.iter().copied());
+    let keep = request.map(|bytes| give_request(&mut cmd, bytes));
+    (cmd, keep)
+}
+
+/// Makes `cmd`'s process inherit a pipe holding `bytes` as descriptor 3; the returned read
+/// end must stay open until the spawn.
+pub fn give_request(cmd: &mut Command, bytes: &[u8]) -> std::os::fd::OwnedFd {
     use std::io::Write;
     use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
     use std::os::unix::process::CommandExt;
 
-    let mut cmd = Command::new(LAUNCHER);
-    cmd.args(args).env_clear().envs(env.iter().copied());
-    let mut keep = None;
-    if let Some(bytes) = request {
-        let mut fds = [0; 2];
-        // SAFETY: a valid array for the two new descriptors.
-        assert_eq!(unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC) }, 0);
-        // SAFETY: both descriptors are fresh and owned here.
-        let (r, w) = unsafe { (OwnedFd::from_raw_fd(fds[0]), OwnedFd::from_raw_fd(fds[1])) };
-        assert!(bytes.len() < 60_000, "the pipe holds the whole request");
-        std::fs::File::from(w).write_all(bytes).unwrap();
-        let raw = r.as_raw_fd();
-        // SAFETY: only async-signal-safe calls in the child; `r` lives until the spawn.
-        unsafe {
-            cmd.pre_exec(move || {
-                if raw == 3 {
-                    libc::fcntl(3, libc::F_SETFD, 0);
-                } else if libc::dup2(raw, 3) < 0 {
-                    return Err(std::io::Error::last_os_error());
-                }
-                Ok(())
-            });
-        }
-        keep = Some(r);
+    let mut fds = [0; 2];
+    // SAFETY: a valid array for the two new descriptors.
+    assert_eq!(unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC) }, 0);
+    // SAFETY: both descriptors are fresh and owned here.
+    let (r, w) = unsafe { (OwnedFd::from_raw_fd(fds[0]), OwnedFd::from_raw_fd(fds[1])) };
+    assert!(bytes.len() < 60_000, "the pipe holds the whole request");
+    std::fs::File::from(w).write_all(bytes).unwrap();
+    let raw = r.as_raw_fd();
+    // SAFETY: only async-signal-safe calls in the child; `r` lives until the spawn.
+    unsafe {
+        cmd.pre_exec(move || {
+            if raw == 3 {
+                libc::fcntl(3, libc::F_SETFD, 0);
+            } else if libc::dup2(raw, 3) < 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
     }
-    (cmd, keep)
+    r
+}
+
+/// An agent request for a project and server data under `t`, with the base toolchain.
+pub fn agent(t: &Path) -> fin_sandbox::launch::LaunchRequest {
+    let project = t.join("p");
+    let data = t.join("data");
+    for d in [
+        "p/workspace/s1",
+        "data/agents/s1/tmp",
+        "data/agents/s1/provider",
+    ] {
+        std::fs::create_dir_all(t.join(d)).unwrap();
+    }
+    write(&t.join("data/auth/local.key"), "k");
+    use fin_core::events::payloads::agent::{AgentMode, Harness};
+    fin_sandbox::launch::LaunchRequest::Agent(fin_sandbox::AgentInput {
+        session_id: "s1".into(),
+        mode: AgentMode::Draft,
+        harness: Harness::Codex,
+        workspace_dir: project.join("workspace").join("s1"),
+        shared_dir: None,
+        project_dir: project,
+        library_roots: vec![],
+        session_dir: data.join("agents").join("s1"),
+        sign_in_store: None,
+        toolchains: fin_sandbox::data::toolchain_base_resolved(fin_sandbox::Os::Linux),
+        server_data: data,
+        home: t.join("home"),
+        fin: None,
+    })
 }
 
 /// The launcher's stderr line, parsed.

@@ -467,14 +467,30 @@ describe("a CLI session's processes (the fake harness's spawn step)", () => {
     expect(await violations()).toEqual([]);
   });
 
-  test("a_process_that_leaves_its_group_outlives_the_session", async () => {
-    // The residual of Task 11's review, asserted so it flips when it closes (a subreaper launcher).
-    const r = await run(() => [sh("setsid sh -c 'echo $$ > pid; exec sleep 300' >/dev/null 2>&1 < /dev/null & while [ ! -s pid ]; do sleep 0.05; done; cat pid")], NOT_READY);
+  test("a_process_that_leaves_its_group_goes_with_the_session", async () => {
+    // Task 11's review: a `setsid` grandchild left its group and outlived the session. The
+    // Linux launcher stays the parent and reaps it (Decision 3 as amended).
+    const escape = sh("setsid sh -c 'echo $$ > pid; exec sleep 300' >/dev/null 2>&1 < /dev/null & while [ ! -s pid ]; do sleep 0.05; done; cat pid");
+    // Control: without the launcher (the profile not ready on this OS), it outlives the session.
+    const direct = await run(() => [escape], NOT_READY);
+    const free = Number(direct.children[0]!.stdout.trim());
+    try {
+      ok(await direct.local.call("agent.session.end", { sessionId: direct.session!.id }));
+      await new Promise((res) => setTimeout(res, 200));
+      expect(alive(free)).toBe(true);
+    } finally {
+      if (alive(free)) process.kill(free, "SIGKILL");
+    }
+    await server!.stop();
+    if (restore !== undefined) setSandboxStatusSource(restore);
+    restore = undefined;
+    if (!enforced("a_process_that_leaves_its_group_goes_with_the_session")) return;
+    const r = await run(() => [escape]);
     const pid = Number(r.children[0]!.stdout.trim());
+    expect(pid).toBeGreaterThan(0);
     try {
       ok(await r.local.call("agent.session.end", { sessionId: r.session!.id }));
-      await new Promise((res) => setTimeout(res, 200));
-      expect(alive(pid)).toBe(true);
+      await until(() => (alive(pid) ? undefined : true));
     } finally {
       if (alive(pid)) process.kill(pid, "SIGKILL");
     }
@@ -529,11 +545,22 @@ describe("the sandbox under the real launcher", () => {
     expect(refused.exit.code).toBe(1);
     expect(refused.err).toMatch(/Permission denied/);
     expect(await read([extra])).toMatchObject({ exit: { code: 0 }, out: "harness\n" });
-    // A process under the launcher is killed, its group with it, when the scope closes.
-    const long = await Effect.runPromise(box.spawn(["/bin/sh", "-c", "sleep 300"], { cwd: box.workspace, stdio: "pipe" }));
-    await new Promise((r) => setTimeout(r, 100));
-    await Effect.runPromise(Scope.close(scope, Exit.void));
-    expect(await long.exited).toEqual({ code: null, signal: "SIGKILL" });
+    // A process under the launcher is killed, its group with it, when the scope closes, and
+    // so is a `setsid` grandchild that left the group (the launcher reaps it).
+    const long = await Effect.runPromise(
+      box.spawn(["/bin/sh", "-c", "setsid sh -c 'echo $$ > g.pid; exec sleep 300' >/dev/null 2>&1 < /dev/null & while [ ! -s g.pid ]; do sleep 0.02; done; cat g.pid; exec sleep 300"], { cwd: box.workspace, stdio: "pipe" }),
+    );
+    let said = "";
+    long.stdout.on("data", (b) => (said += String(b)));
+    const escaped = await until(() => (/^\d+\n/.test(said) ? Number(said.trim()) : undefined));
+    try {
+      expect(alive(escaped)).toBe(true);
+      await Effect.runPromise(Scope.close(scope, Exit.void));
+      expect(await long.exited).toEqual({ code: null, signal: "SIGKILL" });
+      await until(() => (alive(escaped) ? undefined : true));
+    } finally {
+      if (alive(escaped)) process.kill(escaped, "SIGKILL");
+    }
     // And the closed sandbox starts nothing more.
     const after = await Effect.runPromiseExit(box.spawn(["/bin/true"], { cwd: box.workspace, stdio: "pipe" }));
     expect(Exit.isFailure(after)).toBe(true);
