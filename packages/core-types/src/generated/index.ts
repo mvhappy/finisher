@@ -1225,12 +1225,12 @@ export type Switch = "on" | "off";
  */
 export type TrainingState = "on" | "off" | "undecided";
 /**
- * The container family, from `ftyp`'s brands.
+ * The container family, from `ftyp`'s brands or the EBML `DocType`.
  *
  * This interface was referenced by `FinCore`'s JSON-Schema
  * via the `definition` "ContainerKind".
  */
-export type ContainerKind = "mp4" | "mov";
+export type ContainerKind = "mp4" | "mov" | "webm" | "matroska";
 /**
  * Every key of spec §4.2, consumed or not.
  *

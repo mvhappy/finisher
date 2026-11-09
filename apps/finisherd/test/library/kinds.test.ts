@@ -4,6 +4,7 @@ import { appendFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import type { JobView } from "@finisher/contracts";
 import type { LibraryScanResult } from "@finisher/core-types";
+import { libraryProbeVersion } from "@finisher/fin-node";
 import { Effect } from "effect";
 import { afterEach, describe, expect, test } from "vitest";
 import { probeParams } from "../../src/library/kind-params.ts";
@@ -151,11 +152,11 @@ describe("library.probe and library.hash", () => {
     expect(errors[0]?.error.code).toBe("POISON_ITEM");
     const poisonId = Number(errors[0]?.item);
     const poison = await run(rig.catalogs.reader.file(lib.id, { fileId: poisonId }));
-    expect(poison.matches[0]).toMatchObject({ nameNfc: "p3.png", state: "probeFailed", code: "POISON_ITEM", probeVersion: 1 });
+    expect(poison.matches[0]).toMatchObject({ nameNfc: "p3.png", state: "probeFailed", code: "POISON_ITEM", probeVersion: libraryProbeVersion() });
     const rows = await run(rig.catalogs.reader.files(lib.id, { limit: 500 }));
     const good = rows.files.filter((f) => f.id !== poisonId);
     expect(good).toHaveLength(5);
-    for (const f of good) expect(f).toMatchObject({ state: "present", kind: "image", width: 1, height: 1, probeVersion: 1 });
+    for (const f of good) expect(f).toMatchObject({ state: "present", kind: "image", width: 1, height: 1, probeVersion: libraryProbeVersion() });
     for (const f of good) expect(f.fp).toMatch(/\S/);
     // Nothing is left for the probe stage: the poisoned file waits for a change.
     expect(await pendingIds(rig, lib.id)).toEqual([]);
