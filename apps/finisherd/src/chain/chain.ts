@@ -38,6 +38,7 @@ import type { Connections, Transport } from "../connections.ts";
 import type { Audit } from "../control/audit.ts";
 import { ulid } from "../control/ulid.ts";
 import { authorize } from "./authorize.ts";
+import { withoutClientVia } from "./client-via.ts";
 import type { ChainHooks } from "./hooks.ts";
 import { approvalRequired, outOfReach } from "./fixes.ts";
 import { type Ask, authorOf, branchLimited, DEFAULT_POLICIES, type PolicyInput, type PolicyRule, runPolicies, stampsAuthor } from "./policy.ts";
@@ -227,7 +228,9 @@ export function withChain<H extends object>(handlers: H, deps: ChainDeps): H {
     });
 
   /** Stages 2–5; the resolved payload and the guard, or the refusal. */
-  const check = (tag: FinRpcTag, payload: unknown, clientId: number, headers: unknown) => {
+  const check = (tag: FinRpcTag, sent: unknown, clientId: number, headers: unknown) => {
+    // Before anything reads it: a client's `via` would name a plugin it is not (spec §3.8).
+    const payload = withoutClientVia(tag, sent);
     const principal = deps.connections.principalOf(clientId);
     const rule = ruleOf(tag);
     const stages = Effect.gen(function* () {

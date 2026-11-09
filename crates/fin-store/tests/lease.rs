@@ -927,6 +927,7 @@ fn tx(id: &str, base_rev: u64) -> Tx {
         base_rev,
         schema_version: SCHEMA_VERSION,
         args_hash: None,
+        via: None,
         ops: vec![
             fin_core::AssetAdd::media(
                 "$a",

@@ -1193,6 +1193,23 @@ export type Range = "full" | "limited";
  */
 export type Transfer = ("srgb" | "linear" | "unknown") | "bt709" | "pq" | "hlg";
 /**
+ * What a command returns, at most one envelope line (1 MiB). `tx` is committed by the host
+ * under the invoker with `baseRev = rev` and `via` set by the host only; plugins propose,
+ * fin-core decides (spec §2.5).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "CommandOut".
+ */
+export type CommandOut =
+  | {
+      kind: "tx";
+      ops: Op[];
+    }
+  | {
+      kind: "data";
+      value: unknown;
+    };
+/**
  * One purpose's switch.
  *
  * This interface was referenced by `FinCore`'s JSON-Schema
@@ -1589,6 +1606,13 @@ export type HelperKind = "codec" | "plugin";
  */
 export type HelloRole = "worker" | "helper";
 /**
+ * The host methods of host API 1.1.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "HostMethod".
+ */
+export type HostMethod = "project.snapshot" | "project.view" | "net.fetch" | "net.read" | "log";
+/**
  * A message from the host to a worker or a helper.
  *
  * This interface was referenced by `FinCore`'s JSON-Schema
@@ -1622,6 +1646,11 @@ export type HostMsg =
  * via the `definition` "Retry".
  */
 export type Retry = "never" | "backoff" | "fresh";
+/**
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "HttpMethod".
+ */
+export type HttpMethod = "GET" | "HEAD" | "POST" | "PUT" | "PATCH" | "DELETE";
 /**
  * This interface was referenced by `FinCore`'s JSON-Schema
  * via the `definition` "PlanAction".
@@ -1953,6 +1982,11 @@ export type Rotation = 0 | 90 | 180 | 270;
  * via the `definition` "LibraryScanMode".
  */
 export type LibraryScanMode = "full" | "dirs" | "poll";
+/**
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "LogLevel".
+ */
+export type LogLevel = "debug" | "info" | "warn" | "error";
 /**
  * `@<publisher>/<name>` (8A Decision 2).
  *
@@ -4231,6 +4265,20 @@ export interface ArchiveMember {
   member: string;
 }
 /**
+ * One argument that does not match: `path` is a JSON pointer into the arguments, `reason`
+ * the failing keyword (`type`, `required`, `additionalProperties`, `enum`, `const`,
+ * `minimum`, `maximum`, `minLength`, `maxLength`, `pattern`, `minItems`, `maxItems`), or
+ * `schema` when the schema itself is outside the subset.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "ArgProblem".
+ */
+export interface ArgProblem {
+  message: string;
+  path: string;
+  reason: string;
+}
+/**
  * `attach`: a helper's job, its files only, and its directories.
  *
  * This interface was referenced by `FinCore`'s JSON-Schema
@@ -4495,6 +4543,39 @@ export interface Tx {
   ops: Op[];
   schemaVersion: number;
   txId: string;
+  via?: Via;
+}
+/**
+ * The plugin command a transaction came from: `plugin` is `<id>@<version>`. Only the host's
+ * plugin host (`apps/finisherd/src/plugins/host/commands.ts`) writes it; any other `via` is
+ * stripped. fin-core never validates it: to everything here it is unchecked data.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "Via".
+ */
+export interface Via {
+  command: string;
+  plugin: string;
+}
+/**
+ * The limits of this job's calls and results.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "CallLimits".
+ */
+export interface CallLimits {
+  /**
+   * The largest envelope line, in bytes.
+   */
+  messageBytes: number;
+  /**
+   * The largest page of a paged reply, in bytes before base64.
+   */
+  pageBytes: number;
+  /**
+   * The job's timeout in seconds (a command's own, at most 60).
+   */
+  timeoutS: number;
 }
 /**
  * `media.capabilities` v1 takes no params.
@@ -4778,6 +4859,58 @@ export interface ColourTags {
   transfer: Transfer;
 }
 /**
+ * A plugin command (spec §3.8, 8B Task 2), run as `plugin:<id>/<name>` through a
+ * `plugin.command` job.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "CommandContribution".
+ */
+export interface CommandContribution {
+  args: SchemaSubset;
+  /**
+   * `[a-z0-9][a-z0-9-]{0,63}`, unique in the plugin.
+   */
+  name: string;
+  /**
+   * Seconds, 1 to 60; 10 when absent.
+   */
+  timeoutS?: number | null;
+  /**
+   * A message key in the `en` catalogue.
+   */
+  title: string;
+  /**
+   * Whether the command returns a transaction (`project.write` for the invoker).
+   */
+  writes?: boolean;
+}
+/**
+ * A command's argument schema: the JSON Schema subset of 8B Decision 13 (an object schema with `additionalProperties: false` at every object).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "SchemaSubset".
+ */
+export interface SchemaSubset {
+  [k: string]: unknown;
+}
+/**
+ * A command run: the host has checked `args` against the command's schema and pinned `rev`
+ * to the head of `branch`.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "CommandRun".
+ */
+export interface CommandRun {
+  args: unknown;
+  branch: string;
+  /**
+   * The command's name in the manifest (not the `plugin:<id>/` registry name).
+   */
+  command: string;
+  project: string;
+  rev: number;
+}
+/**
  * One op that cannot be carried to the head: which op of which tx, why (a reason code), the
  * record to blame when there is one (else null), and what to do. A re-run failure keeps its
  * error's `details` (an `INVALID_RANGE`'s `min` and `max`, say); other conflicts have none.
@@ -4846,6 +4979,7 @@ export interface ContentLight {
  */
 export interface Contributes {
   captionStyles?: CaptionStyleContribution[];
+  commands?: CommandContribution[];
   fontCatalogs?: FontCatalogContribution[];
 }
 /**
@@ -5523,6 +5657,14 @@ export interface MasteringDisplay {
   whitePoint: [number, number];
 }
 /**
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "Header".
+ */
+export interface Header {
+  name: string;
+  value: string;
+}
+/**
  * `hello` (Decisions 3, 8). A worker names its `family`, `kinds` and `warm`; a helper its
  * helper `kind` and `id`. `envelope` is [`crate::envelope_id`] (bundled processes must send
  * it; plugin processes may omit it); `selfSandbox` the profile applied (Decision 9a).
@@ -5595,6 +5737,17 @@ export interface HistoryResult {
   noOp?: string | null;
   origins?: string[];
   undone: string[];
+}
+/**
+ * A hook handler (agent §9). Typed now; consumable once 7F's hook engine lands (8B
+ * Decision 20), refused as `PLUGIN_CONTRIBUTION_UNSUPPORTED` until then.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "HookContribution".
+ */
+export interface HookContribution {
+  event: string;
+  handler: string;
 }
 /**
  * This interface was referenced by `FinCore`'s JSON-Schema
@@ -5719,6 +5872,24 @@ export interface JobError {
   };
   message: string;
   retry?: Retry;
+}
+/**
+ * An HTTPS request to one of the plugin's approved `net` origins.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "HttpRequest".
+ */
+export interface HttpRequest {
+  /**
+   * At most 768 KiB before base64.
+   */
+  bodyB64?: string | null;
+  headers?: Header[];
+  method: HttpMethod;
+  /**
+   * An `https://` URL.
+   */
+  url: string;
 }
 /**
  * A track `fin-container` does not interpret (a second video or audio track, timecode, …).
@@ -6607,6 +6778,17 @@ export interface Listing {
   versions: string[];
 }
 /**
+ * `log`: rate-limited, scrubbed and capped by the host, written to the server log, never
+ * journaled.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "Log".
+ */
+export interface Log {
+  level: LogLevel;
+  msg: string;
+}
+/**
  * One rendered frame of a `media.look`.
  *
  * This interface was referenced by `FinCore`'s JSON-Schema
@@ -6935,6 +7117,62 @@ export interface NestedPlan1 {
   timeline: string;
 }
 /**
+ * `net.fetch`: brokered HTTPS egress (Decision 10). `grant` names a secret grant; in 8B
+ * every such request answers `SECRET_MISSING {name}` (injection is 8G's).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "NetFetch".
+ */
+export interface NetFetch {
+  grant?: string | null;
+  request: HttpRequest;
+}
+/**
+ * The response's head; the body (at most 64 MiB) stays with the host and is read by
+ * `net.read` through `handle` until the job ends (Decision 11).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "NetFetchReply".
+ */
+export interface NetFetchReply {
+  handle: string;
+  headers: Header[];
+  /**
+   * The body's length in bytes.
+   */
+  length: number;
+  /**
+   * A cross-origin redirect, returned unfollowed (its `location` is in `headers`).
+   */
+  redirectNotFollowed?: boolean | null;
+  status: number;
+}
+/**
+ * `net.read`: a page of a held response body.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "NetRead".
+ */
+export interface NetRead {
+  handle: string;
+  /**
+   * At most 768 KiB.
+   */
+  length: number;
+  offset: number;
+}
+/**
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "NetReadPage".
+ */
+export interface NetReadPage {
+  bytesB64: string;
+  /**
+   * Whether the page reaches the end of the body.
+   */
+  eof: boolean;
+}
+/**
  * One parameter: its path in its scope, type, whether keyframes may animate it, default, unit
  * and fix text (`{min}`, `{max}`, `{unit}` and `{path}` are filled in errors).
  *
@@ -6952,6 +7190,58 @@ export interface ParamSpec {
 }
 /**
  * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "PluginContext".
+ */
+export interface PluginContext {
+  dirs: PluginDirs;
+  /**
+   * The permissions granted to this plugin (the job's rights are the invoker's
+   * intersected with these, checked by the host on every call).
+   */
+  grants: Permission[];
+  /**
+   * The host API the running host implements.
+   */
+  hostApi: string;
+  limits: CallLimits;
+  /**
+   * The invoker's locale (a BCP 47 tag) for plugin-facing text.
+   */
+  locale: string;
+  plugin: PluginRefFull;
+}
+/**
+ * Directories the plugin may use, as absolute paths on the host.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "PluginDirs".
+ */
+export interface PluginDirs {
+  /**
+   * The per-project data directory, only when `fs pluginData` is granted.
+   */
+  data?: string | null;
+  /**
+   * The installed package (read-only).
+   */
+  plugin: string;
+  /**
+   * The process's private temporary directory.
+   */
+  tmp: string;
+}
+/**
+ * A plugin at one version.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "PluginRefFull".
+ */
+export interface PluginRefFull {
+  id: PluginId;
+  version: string;
+}
+/**
+ * This interface was referenced by `FinCore`'s JSON-Schema
  * via the `definition` "PluginData".
  */
 export interface PluginData {
@@ -6960,6 +7250,18 @@ export interface PluginData {
    * `fs pluginData readWrite` (otherwise read-only).
    */
   write: boolean;
+}
+/**
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "PluginError".
+ */
+export interface PluginError {
+  code: string;
+  details?: {
+    [k: string]: unknown;
+  };
+  fix?: string | null;
+  message: string;
 }
 /**
  * Everything a registry signs about one plugin.
@@ -7103,6 +7405,54 @@ export interface PrivacySettings {
    */
   tracesRetentionDays?: number | null;
   training?: Switch | null;
+}
+/**
+ * `project.snapshot`: one page of the call's project and branch at the job's pinned `rev`,
+ * as canonical JSON (page 0 when absent).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "ProjectSnapshot".
+ */
+export interface ProjectSnapshot {
+  page?: number | null;
+}
+/**
+ * One page of a snapshot; every page of one job has the same `rev`.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "ProjectSnapshotPage".
+ */
+export interface ProjectSnapshotPage {
+  /**
+   * At most 768 KiB before base64.
+   */
+  bytesB64: string;
+  page: number;
+  pages: number;
+  rev: number;
+}
+/**
+ * `project.view`: the `fin view` text of the call's branch, capped at 768 KiB.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "ProjectView".
+ */
+export interface ProjectView {
+  /**
+   * `fin view --budget`.
+   */
+  budget?: number | null;
+  /**
+   * `fin view --range` (`2s..5s`, `2s..`, `..5s`).
+   */
+  range?: string | null;
+}
+/**
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "ProjectViewText".
+ */
+export interface ProjectViewText {
+  text: string;
 }
 /**
  * What a purge removed.
@@ -7407,6 +7757,21 @@ export interface ScanEntry {
   relKey: string;
   reparseTag?: number | null;
   size: number;
+}
+/**
+ * Why a schema is outside the subset: `at` is a JSON pointer into the schema.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "SchemaError".
+ */
+export interface SchemaError {
+  at: string;
+  message: string;
+  /**
+   * `keyword`, `type`, `topType`, `additionalProperties`, `properties`, `required`,
+   * `items`, `bound`, `enum`, `const`, `pattern`, `description`, `depth` or `budget`.
+   */
+  problem: string;
 }
 /**
  * A requested self-sandbox: a profile name and its arguments.

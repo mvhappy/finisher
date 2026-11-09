@@ -85,6 +85,7 @@ fn commit(p: &Project, ops: Vec<Op>) -> Project {
         base_rev: 0,
         schema_version: fin_core::SCHEMA_VERSION,
         args_hash: None,
+        via: None,
         ops,
     };
     apply_tx(p, &tx, &mut MemIds::after(p)).unwrap().project
@@ -282,6 +283,7 @@ fn undo_of_an_import_with_planned_pins_is_exact() {
         base_rev: 1,
         schema_version: fin_core::SCHEMA_VERSION,
         args_hash: None,
+        via: None,
         ops,
     };
     let a = apply_tx(&before, &tx, &mut MemIds::after(&before)).unwrap();

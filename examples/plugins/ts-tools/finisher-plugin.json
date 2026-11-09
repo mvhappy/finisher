@@ -1,0 +1,17 @@
+{
+  "manifestVersion": 1,
+  "id": "@example/ts-tools",
+  "version": "0.1.0",
+  "kind": "code",
+  "hostApi": "^1.0",
+  "license": "MIT",
+  "publisher": { "name": "Finisher examples" },
+  "platforms": ["darwin-arm64", "linux-x64", "linux-arm64", "win32-x64"],
+  "runtime": { "type": "node", "main": "dist/plugin.mjs", "node": ">=24.22" },
+  "permissions": [
+    { "perm": "project:read" },
+    { "perm": "project:write" },
+    { "perm": "net", "origins": ["https://api.example.org"] },
+    { "perm": "fs", "scope": "pluginData", "access": "readWrite" }
+  ]
+}

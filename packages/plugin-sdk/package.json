@@ -1,0 +1,16 @@
+{
+  "name": "@finisher/plugin-sdk",
+  "version": "0.0.0",
+  "private": true,
+  "license": "MIT",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@finisher/core-types": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "24.19.2"
+  }
+}
