@@ -18,7 +18,7 @@ export {
   libraryWatchStart,
 } from "./library.js";
 export { PipeServer } from "./pipe.js";
-export { sandboxExecPath, sandboxStatus } from "./sandbox.js";
+export * from "./sandbox.js";
 
 export class Engine {
   #native;

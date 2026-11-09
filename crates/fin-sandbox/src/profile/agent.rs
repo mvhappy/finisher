@@ -47,7 +47,7 @@ fn harness_dir(h: Harness) -> Result<&'static str, PolicyError> {
     }
 }
 
-pub(crate) fn agent_on(os: Os, i: &AgentInput) -> Result<SandboxPolicy, PolicyError> {
+pub fn agent_on(os: Os, i: &AgentInput) -> Result<SandboxPolicy, PolicyError> {
     let harness = harness_dir(i.harness)?;
     component("sessionId", &i.session_id)?;
     if i.session_id == "shared" {
@@ -151,8 +151,8 @@ pub(crate) fn agent_on(os: Os, i: &AgentInput) -> Result<SandboxPolicy, PolicyEr
         deny_read: deny,
         unix_sockets,
         net,
-        // The macOS allow-lists are data from spike S9 B6 (plan 7C Task 8).
-        mach: vec![],
+        // The macOS allow-list, data from spike S9 B6 (plan 7C Task 8; empty elsewhere).
+        mach: crate::data::mach(os, Profile::Agent),
         devices: headless_devices(os),
         limits: Limits::default(),
     })
@@ -191,6 +191,10 @@ mod tests {
             (Os::Macos, "Library/Keychains"),
             (Os::Windows, "AppData/Roaming/Microsoft/Protect"),
         ] {
+            // Each OS's device paths are absolute only on its own family.
+            if cfg!(windows) != (os == Os::Windows) {
+                continue;
+            }
             let p = agent_on(os, &input(&root)).unwrap();
             assert!(
                 p.deny_read.contains(&under(&root.join("home"), rel)),

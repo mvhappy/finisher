@@ -11,12 +11,21 @@ use libc::c_void;
 use super::{map_errno, stub_names};
 use crate::placeholder::SF_DATALESS;
 use crate::source::macos::{VLNK, VREG};
-use crate::source::unix::{
-    cname, cvt, errno_is, fstat, ino_id, lstat_at, ns, open_root, openat, retry,
-};
+use crate::source::unix::{cname, cvt, errno_is, fstat, ino_id, lstat_at, ns, openat, retry};
 use crate::types::{Expect, OpenError};
 
-const DIR_FLAGS: i32 = libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC;
+/// `O_SEARCH` (`O_EXEC | O_DIRECTORY`), macOS's equivalent of Linux's `O_PATH` for a
+/// directory: the opener only resolves below the root and its directories and reads their
+/// identity, never lists them, so under the `worker` sandbox a source granted as a single file
+/// (Seatbelt `file-read*` on the file, nothing on its directories) opens (plan 7C Task 8).
+const DIR_FLAGS: i32 = libc::O_SEARCH | libc::O_CLOEXEC;
+
+/// The root as an `O_SEARCH` handle (see [`DIR_FLAGS`]).
+fn open_root_search(root: &Path) -> io::Result<OwnedFd> {
+    use std::os::unix::ffi::OsStrExt;
+    let c = cname(root.as_os_str().as_bytes())?;
+    openat(libc::AT_FDCWD, &c, DIR_FLAGS)
+}
 
 /// The per-component walk, should `O_NOFOLLOW_ANY` ever be refused (`EINVAL`). Not reached on
 /// a supported Mac: the flag exists since macOS 11, below `aarch64-apple-darwin`'s 11.0
@@ -99,7 +108,7 @@ pub(super) fn open(
     expect: &Expect,
     hydrate: bool,
 ) -> Result<File, OpenError> {
-    let root_fd = open_root(root).map_err(map_errno)?;
+    let root_fd = open_root_search(root).map_err(map_errno)?;
     let root_dev = fstat(root_fd.as_raw_fd())?.st_dev;
     let parent = open_parent(&root_fd, dir)?;
     let pfd = parent.as_ref().unwrap_or(&root_fd).as_raw_fd();

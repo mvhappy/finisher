@@ -50,6 +50,8 @@ export interface TurnHost {
   session(sessionId: string): Session;
   /** The session's provider instance, opened at need. */
   open(s: Session): Promise<Live>;
+  /** The opened instance's run is set, before its turn starts (the sandbox's notices). */
+  started(live: Live, runId: string): Promise<void>;
   /** The budget's run clock starts. */
   startClock(s: Session): void;
   facts(s: Session): string;
@@ -113,6 +115,7 @@ export class LiveLimits {
       throw e;
     }
     live.runId = runId;
+    await h.started(live, runId);
     const err = await call(live.provider.startTurn({ runId, text: q.texts[0]!, facts: h.facts(h.session(sessionId)) }));
     if (err) {
       live.runId = null;

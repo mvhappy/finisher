@@ -237,11 +237,49 @@ pub struct AppContainer {
     exe: PathBuf,
 }
 
+/// A process of this test binary running in an [`AppContainer`]; killed and closed on drop.
+pub struct Child {
+    pub process: HANDLE,
+    thread: HANDLE,
+}
+
+impl Child {
+    /// Waits for the exit (at most `ms`); the exit code.
+    pub fn wait(&self, ms: u32) -> u32 {
+        // SAFETY: the process handle this value owns.
+        unsafe {
+            assert_eq!(
+                WaitForSingleObject(self.process, ms),
+                WAIT_OBJECT_0,
+                "the child finished"
+            );
+            let mut code = 0u32;
+            GetExitCodeProcess(self.process, &mut code);
+            code
+        }
+    }
+}
+
+impl Drop for Child {
+    fn drop(&mut self) {
+        // SAFETY: the handles this value owns; terminating an exited process is harmless.
+        unsafe {
+            windows_sys::Win32::System::Threading::TerminateProcess(self.process, 1);
+            CloseHandle(self.thread);
+            CloseHandle(self.process);
+        }
+    }
+}
+
 impl AppContainer {
     /// `None` when the host cannot make one (profiles disabled, no access).
     pub fn create() -> Option<AppContainer> {
-        let name = format!("finisher.pipe-test.{}", std::process::id());
-        let w = wide(&name);
+        AppContainer::named(&format!("finisher.pipe-test.{}", std::process::id()))
+    }
+
+    /// The container `name` (created, or reused when it exists; deleted on drop).
+    pub fn named(name: &str) -> Option<AppContainer> {
+        let w = wide(name);
         let mut sid: PSID = null_mut();
         // SAFETY: NUL-terminated names; `sid` receives a SID freed in `Drop`.
         let hr = unsafe {
@@ -255,7 +293,7 @@ impl AppContainer {
         }
         let sid_str = crate::pipe_sec::sid_string(sid).ok()?;
         // A directory the container may read and run from (ALL APPLICATION PACKAGES: RX).
-        let dir = std::env::temp_dir().join(format!("fin-pipe-ac-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("fin-pipe-ac-{}-{name}", std::process::id()));
         std::fs::create_dir_all(&dir).ok()?;
         let exe = dir.join("pipe_server_child.exe");
         std::fs::copy(std::env::current_exe().ok()?, &exe).ok()?;
@@ -268,7 +306,7 @@ impl AppContainer {
             return None;
         }
         Some(AppContainer {
-            name,
+            name: name.to_owned(),
             sid: sid_str,
             sid_ptr: sid,
             dir,
@@ -278,6 +316,12 @@ impl AppContainer {
 
     /// Runs `appcontainer_child` in the container against `pipe`; its exit code.
     pub fn probe(&self, pipe: &str) -> u32 {
+        self.start("appcontainer_child", &[("FIN_PIPE_PROBE", pipe)])
+            .wait(30_000)
+    }
+
+    /// Starts this binary's ignored test `test` in the container with `env` added.
+    pub fn start(&self, test: &str, env: &[(&str, &str)]) -> Child {
         // SAFETY: the attribute list is sized by the first call and freed below; the
         // capabilities and the SID outlive `CreateProcessW`.
         unsafe {
@@ -306,15 +350,18 @@ impl AppContainer {
             let mut pi: PROCESS_INFORMATION = zeroed();
             let exe = self.exe.to_string_lossy().to_string();
             let mut cmd = wide(&format!(
-                "\"{exe}\" appcontainer_child --exact --ignored --test-threads=1"
+                "\"{exe}\" {test} --exact --ignored --test-threads=1"
             ));
-            let mut env: Vec<u16> = Vec::new();
-            for (k, v) in std::env::vars().filter(|(k, _)| k != "FIN_PIPE_PROBE") {
-                env.extend(format!("{k}={v}").encode_utf16());
-                env.push(0);
+            let mut block: Vec<u16> = Vec::new();
+            for (k, v) in std::env::vars().filter(|(k, _)| !env.iter().any(|(n, _)| n == k)) {
+                block.extend(format!("{k}={v}").encode_utf16());
+                block.push(0);
             }
-            env.extend(format!("FIN_PIPE_PROBE={pipe}").encode_utf16());
-            env.extend([0, 0]);
+            for (k, v) in env {
+                block.extend(format!("{k}={v}").encode_utf16());
+                block.push(0);
+            }
+            block.push(0);
             let dir = wide(&self.dir.to_string_lossy());
             let ok = CreateProcessW(
                 null(),
@@ -323,7 +370,7 @@ impl AppContainer {
                 null(),
                 0,
                 EXTENDED_STARTUPINFO_PRESENT | CREATE_UNICODE_ENVIRONMENT | CREATE_NO_WINDOW,
-                env.as_ptr().cast(),
+                block.as_ptr().cast(),
                 dir.as_ptr(),
                 &si.StartupInfo,
                 &mut pi,
@@ -335,16 +382,10 @@ impl AppContainer {
                 "CreateProcessW in the AppContainer: {}",
                 io::Error::last_os_error()
             );
-            assert_eq!(
-                WaitForSingleObject(pi.hProcess, 30_000),
-                WAIT_OBJECT_0,
-                "the child finished"
-            );
-            let mut code = 0u32;
-            GetExitCodeProcess(pi.hProcess, &mut code);
-            CloseHandle(pi.hThread);
-            CloseHandle(pi.hProcess);
-            code
+            Child {
+                process: pi.hProcess,
+                thread: pi.hThread,
+            }
         }
     }
 }

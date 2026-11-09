@@ -1,7 +1,7 @@
 // A warm worker's record and the parts of its life that need no pool (5C-1 plan Task 11; split
 // out of `warm.ts` in Task 12): the constants, the spawn request, emptying its `tmp/` after a
 // job (Task 11 review H2) and the outcome of an attempt that never ran.
-import { readdir, rm } from "node:fs/promises";
+import { lstat, readdir, rm } from "node:fs/promises";
 import { join } from "node:path";
 import type { Hello, JobHostExitInfo, JobSpawnRequest } from "@finisher/core-types";
 import type { FinError } from "@finisher/contracts";
@@ -44,6 +44,8 @@ export interface Worker {
   readonly group: number;
   readonly memoryBytes: number | undefined;
   readonly dir: string;
+  /** Under a sandbox, its project's read roots (`FamilySpec.warmReads`, plan 7C Decision 19), canonical. */
+  readonly reads: ReadonlyArray<string>;
   readonly spawnedAt: number;
   state: State;
   served: number;
@@ -52,6 +54,8 @@ export interface Worker {
   hello?: Hello;
   idleSince?: number;
   memory?: number;
+  /** The running attempt, settled once its job has left the worker's directory. */
+  visit?: Promise<void>;
   /** The running attempt's listener. */
   on?: ((e: ProcEvent) => void) | undefined;
   /** Why it was asked to go (its `worker.exit` reason). */
@@ -81,8 +85,11 @@ export const noRun = (error: FinError, cause: "exit" | "mismatch", exit?: JobHos
   runMicros: 0,
 });
 
-/** The spawn request of worker `w` (`root`: the jobs root). */
-export function spawnRequest(w: Worker, root: string): JobSpawnRequest {
+/** Where the jobs a warm worker serves visit it (plan 7C Decision 19): `<w.dir>/jobs/`. */
+export const VISIT_DIR = "jobs";
+
+/** The spawn request of worker `w`. */
+export function spawnRequest(w: Worker): JobSpawnRequest {
   const tmp = join(w.dir, "tmp");
   return {
     role: "worker",
@@ -92,23 +99,26 @@ export function spawnRequest(w: Worker, root: string): JobSpawnRequest {
     args: [...w.program.args],
     env: { ...childEnv(), ...passEnv(w.family.env), TMPDIR: tmp, TEMP: tmp, TMP: tmp },
     cwd: w.dir,
-    // Its own directory, and the jobs root: the jobs it will serve are not known yet. This
-    // grant never ships under a sandbox (warm kinds then run cold, Task 11 review H3);
-    // sub-project 7C must grant each job's paths before warm workers are enabled there.
-    grants: [
-      { path: tmp, mode: "readWrite" },
-      { path: root, mode: "readWrite" },
-    ],
+    // Its own directory, never the jobs root (plan 7C Decision 19): each job it serves is moved
+    // into `jobs/` for its attempt and out again after it. Under a sandbox, its one project's
+    // read roots, which the sandbox fixes at start.
+    grants: [{ path: tmp, mode: "readWrite" }, { path: join(w.dir, VISIT_DIR), mode: "readWrite" }, ...w.reads.map((path) => ({ path, mode: "read" as const }))],
     qos: "normal",
     label: `warm ${w.family.family}${w.key === "" ? "" : `:${w.key}`}`,
   };
 }
 
-/** Empties the worker's `tmp/` (false: it could not be emptied). */
+/**
+ * Empties the worker's `tmp/` and `jobs/` (false: they could not be emptied, or one is not a
+ * directory: never followed, Task 12 review B1). `rm` of an entry removes a link, not its target.
+ */
 export async function emptyTmp(w: Worker, log: (level: "warning", message: string) => void): Promise<boolean> {
-  const tmp = join(w.dir, "tmp");
   try {
-    for (const name of await readdir(tmp)) await rm(join(tmp, name), { recursive: true, force: true });
+    for (const sub of ["tmp", VISIT_DIR]) {
+      const dir = join(w.dir, sub);
+      if (!(await lstat(dir)).isDirectory()) throw new Error(`${sub}/ is not a directory`);
+      for (const name of await readdir(dir)) await rm(join(dir, name), { recursive: true, force: true });
+    }
     return true;
   } catch (err) {
     log("warning", `warm ${w.family.family} worker: its temp directory could not be emptied: ${toFinError(err).message}`);

@@ -5,6 +5,29 @@
  */
 
 /**
+ * How long a grant lives.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "AclScope".
+ */
+export type AclScope = "static" | "owner";
+/**
+ * Whom an ACE names: a SID (a capability's, derived here) or a container by name (its SID
+ * is Windows', [`super::appcontainer::sid`]).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "AclTrustee".
+ */
+export type AclTrustee =
+  | {
+      kind: "sid";
+      value: string;
+    }
+  | {
+      kind: "container";
+      value: string;
+    };
+/**
  * This interface was referenced by `FinCore`'s JSON-Schema
  * via the `definition` "IdRef".
  */
@@ -2180,6 +2203,18 @@ export interface FinCore {
 export interface Accept {
   copyleft?: boolean;
   thirdPartyCode?: boolean;
+}
+/**
+ * One allow ACE, inherited by the subtree.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "AclGrant".
+ */
+export interface AclGrant {
+  mask: number;
+  path: string;
+  scope: AclScope;
+  trustee: AclTrustee;
 }
 /**
  * Who caused an entry: a person, an agent (with its session and the tool call that ran
@@ -5374,6 +5409,11 @@ export interface HookInput {
   projectDir: string;
   serverData: string;
   /**
+   * The hook's time limit (`Limits.wall_ms`): the launcher ends the whole tree when it passes
+   * (on Windows also the backstop for a Node process stuck on piped stdio, Decision 25).
+   */
+  timeoutMs?: number | null;
+  /**
    * A private temporary directory, the only write root.
    */
   tmp: string;
@@ -7556,6 +7596,12 @@ export interface TestWarmParams {
    * A job-directory file kept open past `ready` (breaks the warm contract on purpose).
    */
   holdFile?: string;
+  /**
+   * Paths the worker tries to read (plan 7C Task 12): each answered with the errno of
+   * the attempt, `null` when it read. A path starting with `!` is renamed instead (to
+   * `<path>.moved`, and back when it worked): what replacing it with a link would need.
+   */
+  probe?: string[];
   value: unknown;
 }
 /**
@@ -7564,6 +7610,10 @@ export interface TestWarmParams {
  */
 export interface TestWarmResult {
   pid: number;
+  /**
+   * One errno (or `null`) per `probe` path, in order.
+   */
+  probes?: (number | null)[];
   served: number;
   value: unknown;
 }

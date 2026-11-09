@@ -236,11 +236,70 @@ fn unhandled_exception_dies_without_wer() {
     crash_without_wer("bus", 0xC000_0006);
 }
 
+/// What a crash of `exe` leaves for the user to see over the next `secs` seconds: a
+/// `WerFault.exe` with a window, or any report directory new in the per-user or machine
+/// `ReportArchive`/`ReportQueue` (WER shortens application names there, so none is filtered by
+/// name). One line each; nothing when there is neither.
+fn wer_trace_watch(secs: u32) -> std::process::Child {
+    let script = format!(
+        "$roots=@(\"$env:LOCALAPPDATA\\Microsoft\\Windows\\WER\\ReportArchive\", \
+                  \"$env:LOCALAPPDATA\\Microsoft\\Windows\\WER\\ReportQueue\", \
+                  \"$env:ProgramData\\Microsoft\\Windows\\WER\\ReportArchive\", \
+                  \"$env:ProgramData\\Microsoft\\Windows\\WER\\ReportQueue\"); \
+         $before=@{{}}; foreach($r in $roots){{ Get-ChildItem -LiteralPath $r -Directory -ErrorAction SilentlyContinue | ForEach-Object {{ $before[$_.FullName]=1 }} }}; \
+         $end=(Get-Date).AddSeconds({secs}); $hit=@{{}}; \
+         while((Get-Date) -lt $end) {{ \
+           Get-Process -Name WerFault -ErrorAction SilentlyContinue | Where-Object {{ $_.MainWindowHandle -ne 0 }} | \
+             ForEach-Object {{ $hit[\"window: $($_.Id) $($_.MainWindowTitle)\"]=1 }}; \
+           Start-Sleep -Milliseconds 100 }}; \
+         foreach($r in $roots){{ Get-ChildItem -LiteralPath $r -Directory -ErrorAction SilentlyContinue | \
+           Where-Object {{ -not $before.ContainsKey($_.FullName) }} | \
+           ForEach-Object {{ $hit[\"report: $($_.FullName)\"]=1 }} }}; \
+         $hit.Keys"
+    );
+    Command::new("powershell")
+        .args(["-NoProfile", "-NonInteractive", "-Command", &script])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("powershell runs")
+}
+
+/// A `__fastfail` still reaches the WER service, which may start a headless `WerFault.exe -u`
+/// (plan 7C Decision 22, S9 Windows point 11): what matters is that no window appears and no
+/// report is kept, not that no process starts.
+fn fastfail_without_trace(how: &str) {
+    let mut h = host();
+    let g = h.group();
+    let p = h.worker(g);
+    h.hello(p);
+    let watch = wer_trace_watch(8);
+    std::thread::sleep(Duration::from_millis(1500));
+    let t0 = Instant::now();
+    h.start(
+        p,
+        "test.crash",
+        json!({ "items": ["a"], "poison": ["a"], "how": how }),
+    );
+    let exit = h.exit(p);
+    let took = t0.elapsed();
+    assert_eq!(exit.reason, ExitReason::Exited, "{how}");
+    assert_eq!(exit.code, Some(0xC000_0409), "{how}: {exit:?}");
+    assert!(
+        took < Duration::from_secs(2),
+        "{how}: exited after {took:?}"
+    );
+    let out = watch.wait_with_output().unwrap();
+    let seen = String::from_utf8_lossy(&out.stdout);
+    assert!(seen.trim().is_empty(), "{how}: {seen}");
+}
+
 #[test]
 fn fastfail_dies_without_wer() {
-    crash_without_wer("fastfail", 0xC000_0409);
+    fastfail_without_trace("fastfail");
     // Rust's abort is a __fastfail too.
-    crash_without_wer("abort", 0xC000_0409);
+    fastfail_without_trace("abort");
 }
 
 /// 50 pipes whose write ends are inheritable in this process.

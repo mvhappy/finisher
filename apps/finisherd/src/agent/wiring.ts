@@ -11,6 +11,7 @@
 //   harness only in a test-hooks build run with `FIN_TEST_HOOKS=1`.
 // - The runtime gets the core's journal (Task 10) and boots (crash recovery, the outbox, the
 //   credential reconcile, then its timers) before the transports serve; it closes on shutdown.
+import { realpathSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import type { Harness, Node, Session } from "@finisher/contracts";
@@ -46,6 +47,8 @@ import { Runtime } from "./runtime.ts";
 import { cataloguePricing, type SessionEnvironment, type ToolExecutor } from "./runtime-deps.ts";
 import { LayeredRules } from "./rules.ts";
 import { RuleStore } from "./rule-store.ts";
+import type { AclBroker } from "../sandbox/broker.ts";
+import { sessionSandboxes } from "./sandbox.ts";
 import { readAgentSettings, resolveFinPath } from "./settings.ts";
 import type { AgentStore } from "./store.ts";
 import { AgentLookup } from "./store-lookup.ts";
@@ -68,6 +71,8 @@ export interface AgentServeOptions {
   readonly fakeTools?: ToolExecutor;
   readonly afterChildOpened?: (childId: string) => Promise<void>;
   readonly stopGraceMs?: number;
+  /** Another `fin-sandbox-exec` for sessions (tests: one that fails as the launcher does). */
+  readonly sandboxLauncher?: string;
 }
 
 /** What the handlers and the console RPCs use. */
@@ -112,8 +117,15 @@ export interface AgentWiringDeps {
   readonly audit: Audit;
   /** `FIN_SERVER` for the built-in `fin`: the local socket (it runs outside the OS sandbox, spec §8.9). */
   readonly endpoint: string;
+  /** The agent listener's endpoint, started on first need: `FIN_SERVER` of sandboxed sessions on Linux (plan 7C Task 11). */
+  readonly agentListener?: () => Promise<string>;
+  /** The libraries' roots (every library in v1: library reach is server-wide), read by sandboxed sessions (plan 7C Decision 6). */
+  readonly libraryRoots?: () => ReadonlyArray<string>;
   readonly log: (message: string) => void;
   readonly options?: AgentServeOptions;
+  /** Windows: the server's ACL broker and the pipe's `allow` (plan 7C Task 10). */
+  readonly acl?: AclBroker;
+  readonly allowPipe?: (sid: string) => void;
 }
 
 /** The node kinds `historyFromNodes` reads a payload of. */
@@ -258,6 +270,22 @@ export const buildAgentRuntime = (d: AgentWiringDeps): Effect.Effect<AgentRuntim
     // The approvals need the runtime (their nodes, answers): made after it, looked up late.
     let approvals: AgentApprovals | undefined;
     const requests = new ProviderRequests({ permissions, approvals: () => approvals, key, consume: (id) => core.store.consumeApproval(id) });
+    // Every CLI harness's process goes through its session sandbox (plan 7C Task 11); what the
+    // launcher observes is audited (`sandbox.violation`, spec §8.8: no path, the root kind).
+    const realData = realpathSync(serverData);
+    const sandboxes = sessionSandboxes({
+      serverData: realData,
+      projectDirOf: d.registry.dirOf,
+      finPath,
+      localEndpoint: d.endpoint,
+      ...(d.agentListener === undefined ? {} : { agentListener: d.agentListener }),
+      libraryRoots: async () => d.libraryRoots?.() ?? [],
+      ...(d.acl === undefined ? {} : { acl: d.acl }),
+      ...(d.allowPipe === undefined ? {} : { allowPipe: d.allowPipe }),
+      ...(d.options?.sandboxLauncher === undefined ? {} : { launcher: () => d.options!.sandboxLauncher! }),
+      onViolation: (v) =>
+        d.audit.append({ kind: "sandbox.violation", principal: { kind: "agent", id: v.sessionId }, outcome: "denied", details: { session: v.sessionId, op: v.op, profile: v.profile, rootKind: v.rootKind } }),
+    });
     const runtime = new Runtime({
       core,
       requests,
@@ -266,6 +294,7 @@ export const buildAgentRuntime = (d: AgentWiringDeps): Effect.Effect<AgentRuntim
       adapters: [...adapters.values()],
       planner,
       environment,
+      sandboxes,
       // A `fin` call that meets a card waits on it (7B Task 5).
       tools: {
         builtin: waitingOnApprovals(builtinTools({ finPath, projectDirOf: d.registry.dirOf, ...(settings.toolTimeoutS === undefined ? {} : { timeoutMs: settings.toolTimeoutS * 1000 }) }), () => approvals),

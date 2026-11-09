@@ -27,21 +27,38 @@ export interface ChildEnvExtra {
 
 /**
  * Never passed to a child, from the parent or from `extra` (sub-project 7 §8.5; plan 7A
- * Decisions 11 and 14b): server data (a child proves with its own credential, never the local
- * key), the author (the server sets an agent's) and the training switch (the server's own).
+ * Decisions 11 and 14b; plan 7C Task 11): server data (a child proves with its own credential,
+ * never the local key), the author (the server sets an agent's), the training and diagnostics
+ * switches (the server's own), and the variables that name an agent socket or a display (the
+ * launcher strips its longer `SOCKET_ENV` list as a second layer). The allow-list already drops
+ * them; the list makes the intent tested and holds even if the allow-list grows.
  */
-export const NEVER_PASSED = ["FIN_SERVER_DATA", "FIN_AUTHOR", "FIN_TRAINING"] as const;
+export const NEVER_PASSED = [
+  "FIN_SERVER_DATA",
+  "FIN_AUTHOR",
+  "FIN_TRAINING",
+  "FIN_DIAGNOSTICS",
+  "SSH_AUTH_SOCK",
+  "GPG_AGENT_INFO",
+  "DBUS_SESSION_BUS_ADDRESS",
+  "DOCKER_HOST",
+  "DISPLAY",
+  "WAYLAND_DISPLAY",
+] as const;
+
+/** A provider secret by name (§8.5): every `*_API_KEY`, and Claude Code's own variables (`CLAUDE_CODE_OAUTH_TOKEN`). */
+export const secretName = (key: string) => /_API_KEY$/i.test(key) || key === "CLAUDECODE" || key.startsWith("CLAUDE_CODE_");
 
 /** Never passed through, even if a future allow-list change would admit them. */
 function denied(key: string): boolean {
-  return (NEVER_PASSED as ReadonlyArray<string>).includes(key) || key === "ELECTRON_RUN_AS_NODE" || key === "CLAUDECODE" || key.startsWith("CLAUDE_CODE_");
+  return (NEVER_PASSED as ReadonlyArray<string>).includes(key) || key === "ELECTRON_RUN_AS_NODE" || secretName(key);
 }
 
 /**
  * Builds a child environment from the §27.7 allow-list: `PATH`, `HOME`, `LANG`, `LC_*`,
  * `TMPDIR` (plus the Windows system equivalents on win32), then `FIN_SERVER`, `FIN_SESSION`,
  * `FIN_PROJECT_DIR`, `FIN_CREDENTIAL` and `FIN_CALL` from `extra`. Everything else — notably `ELECTRON_RUN_AS_NODE`,
- * `CLAUDECODE`, `CLAUDE_CODE_*` and [`NEVER_PASSED`] — is dropped.
+ * `CLAUDECODE`, `CLAUDE_CODE_*`, `*_API_KEY` and [`NEVER_PASSED`] — is dropped.
  */
 export function childEnv(
   extra: ChildEnvExtra = {},

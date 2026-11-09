@@ -94,5 +94,17 @@
   {
     "path": "crates/fin-node/tests/media_inputs.rs",
     "reason": "Tests build and inspect temporary trees by path; none is a library reader."
+  },
+  {
+    "path": "crates/fin-node/src/acl_broker/mod.rs",
+    "reason": "The ACL broker writes its log under <server-data>/run/ and stats and canonicalises the paths it grants, to refuse protected roots (plan 7C Task 10); it never reads a library file."
+  },
+  {
+    "path": "crates/fin-node/src/sandbox_acl.rs",
+    "reason": "Canonicalises the server data directory to key the one ACL broker per server (plan 7C Task 10)."
+  },
+  {
+    "path": "crates/fin-node/tests/acl_broker.rs",
+    "reason": "Tests build and inspect temporary trees and the broker's log by path; none is a library reader."
   }
 ]

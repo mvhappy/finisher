@@ -7,11 +7,17 @@
 //! - `plugin` (Linux): the Landlock ruleset is built in `prepare`; the child's `pre_exec`
 //!   steps are `PR_SET_NO_NEW_PRIVS`, `landlock_restrict_self` on the prepared descriptor and
 //!   `RLIMIT_NOFILE`, raw calls that allocate nothing. The seccomp filter is deferred (Task 4).
+//!   macOS: the program is rewritten to `sandbox-exec -p <profile>` (Task 8).
+//! - Windows ([`windows`]): both profiles are created by the host in their AppContainer (the
+//!   security-capabilities attribute and a private desktop); the worker keeps its self-sandbox
+//!   request, which checks the token.
 //!
 //! Which profiles apply is decided once, at construction ([`decide`], Decision 5): a profile
 //! not ready on this OS passes through as [`fin_jobhost::Unsandboxed`] did.
 
 pub mod grants;
+#[cfg(windows)]
+pub mod windows;
 
 use std::path::{Path, PathBuf};
 
@@ -74,6 +80,8 @@ pub struct SandboxSpawner {
     home: Option<PathBuf>,
     worker: Decision,
     plugin: Decision,
+    #[cfg(windows)]
+    desktops: std::sync::Arc<windows::Desktops>,
 }
 
 impl SandboxSpawner {
@@ -84,7 +92,7 @@ impl SandboxSpawner {
         let ready = ready();
         Self::with(
             server_data,
-            std::env::var_os("HOME").map(PathBuf::from),
+            home_dir(),
             decide(Profile::Worker, &m, &ready),
             decide(Profile::Plugin, &m, &ready),
         )
@@ -102,6 +110,8 @@ impl SandboxSpawner {
             home,
             worker,
             plugin,
+            #[cfg(windows)]
+            desktops: Default::default(),
         }
     }
 
@@ -126,6 +136,15 @@ impl Spawner for SandboxSpawner {
             worker: self.worker.state(),
             plugin: self.plugin.state(),
         }
+    }
+
+    /// Where the `worker` profile is applied by a restriction made once at start that names
+    /// paths (Landlock): a warm worker granted its own `jobs/` sees only the job visiting it
+    /// (Decision 19). macOS follows once Task 8's Seatbelt worker profile exists (granting
+    /// `jobs/`, never the worker's directory); Windows needs the broker's per-job ACL grants
+    /// (Task 10). Both stay false until then, so warm kinds run cold there.
+    fn per_job_grants(&self) -> bool {
+        self.worker == Decision::Apply && cfg!(target_os = "linux")
     }
 
     fn prepare(&self, req: &SpawnRequest, cmd: &mut PlatformCommand) -> Result<(), SpawnError> {
@@ -154,6 +173,8 @@ impl Spawner for SandboxSpawner {
             Profile::Worker => {
                 let input = grants::worker_input(req, server_data).map_err(fail)?;
                 crate::profile::worker(&input).map_err(|e| fail(e.to_string()))?;
+                #[cfg(windows)]
+                let family = req.family.clone();
                 let req = SelfSandbox {
                     profile: "worker".into(),
                     args: serde_json::to_value(&input).map_err(|e| fail(e.to_string()))?,
@@ -166,6 +187,11 @@ impl Spawner for SandboxSpawner {
                         "the worker input is {len} bytes, over {MAX_SELF_SANDBOX} (too many sources granted one by one)"
                     )));
                 }
+                #[cfg(windows)]
+                {
+                    let plan = crate::windows::plan::worker(&input, &family).map_err(fail)?;
+                    windows::contain(&plan, &self.desktops, cmd).map_err(fail)?;
+                }
                 cmd.self_sandbox = Some(req);
                 cmd.job_limits.active_processes = Some(1);
                 Ok(())
@@ -177,6 +203,12 @@ impl Spawner for SandboxSpawner {
                 // Processes: the leaf's limit where it is enforced (`caps().leafLimits`);
                 // memory stays the group's limit of 5C (Decision 4a).
                 cmd.job_limits.active_processes = policy.limits.processes;
+                #[cfg(windows)]
+                {
+                    let plan = crate::windows::plan::plugin(&input).map_err(fail)?;
+                    windows::contain(&plan, &self.desktops, cmd).map_err(fail)
+                }
+                #[cfg(not(windows))]
                 plugin_steps(&policy, cmd).map_err(fail)
             }
         }
@@ -234,10 +266,28 @@ fn plugin_steps(policy: &crate::SandboxPolicy, cmd: &mut PlatformCommand) -> Res
     Ok(())
 }
 
-#[cfg(not(target_os = "linux"))]
+/// The host process's home directory (`HOME`; on Windows `USERPROFILE`).
+fn home_dir() -> Option<PathBuf> {
+    let var = if cfg!(windows) { "USERPROFILE" } else { "HOME" };
+    std::env::var_os(var).map(PathBuf::from)
+}
+
+/// macOS: the program is rewritten to `sandbox-exec -p <profile> -D… -- <program> <args…>`
+/// (the host starts children with `posix_spawn`, so there is no child-side step; the open-files
+/// limit is not applied on macOS, a recorded residual).
+#[cfg(target_os = "macos")]
+fn plugin_steps(policy: &crate::SandboxPolicy, cmd: &mut PlatformCommand) -> Result<(), String> {
+    let (program, args) = crate::macos::apply::plugin_command(policy, &cmd.program, &cmd.args)
+        .map_err(|e| e.to_string())?;
+    cmd.program = program;
+    cmd.args = args;
+    Ok(())
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
 fn plugin_steps(_policy: &crate::SandboxPolicy, _cmd: &mut PlatformCommand) -> Result<(), String> {
     Err(format!(
-        "the plugin profile is not implemented on {:?} yet (plan 7C Tasks 8 and 9)",
+        "the plugin profile is not implemented on {:?} yet",
         Os::current()
     ))
 }

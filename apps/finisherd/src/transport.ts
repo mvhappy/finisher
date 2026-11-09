@@ -88,7 +88,7 @@ export const makeLocalSocketServer = (path: string, platform: NodeJS.Platform = 
  */
 export const makeLocalServer = (
   path: string,
-  options: Pick<PipeServerOptions, "onRefused"> = {},
+  options: Pick<PipeServerOptions, "onRefused" | "onAllow"> = {},
   platform: NodeJS.Platform = process.platform,
 ) => (platform === "win32" ? makePipeSocketServer(path, options) : makeLocalSocketServer(path, platform));
 

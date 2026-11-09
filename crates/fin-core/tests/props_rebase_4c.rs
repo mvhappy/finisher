@@ -52,3 +52,121 @@ proptest! {
         check(&base_4c(&lens, false, false, extras), &committed, &mine)?;
     }
 }
+
+/// The shrunk case of a random run (spec §4.3 *group changed*): `c1` on t1 and `c2` on t2 are
+/// linked, and the head dissolves the group. Ours overwrite-trims `c2`'s end by a frame (where
+/// written, that trims its partner `c1` too), then overwrite-moves `c1` to its own end, written
+/// at frame 9. At the head the rebased trim leaves `c1` alone and records no shift, so the move
+/// stays at frame 9 where a fresh one goes to `c1`'s end at 10 (`keyed4c::group_changed`). The
+/// stale edit still applies, replays and undoes exactly.
+#[test]
+fn unlink_then_trim_and_move_at_former_partner() {
+    use keyed4c::Intent::{Move, Trim, Unlink};
+    let lens = [vec![10], vec![10], vec![], vec![]];
+    let committed = [(vec![Unlink { track: 0, clip: 0 }], false)];
+    let mine = [
+        Trim {
+            track: 1,
+            clip: 0,
+            start: false,
+            frames: -1,
+            mode: 2,
+        },
+        Move {
+            track: 0,
+            clip: 0,
+            to: 0,
+            before: None,
+            overwrite: true,
+        },
+    ];
+    check(
+        &base_4c(&lens, true, false, (0, false, false)),
+        &committed,
+        &mine,
+    )
+    .unwrap();
+}
+
+/// The shrunk case of a 30k-case run (spec §4.3 *lifted*, for edges): the head ripple-inserts
+/// `c2` (four frames) after `c1` on t1, then overwrite-trims `c2`'s end by a frame, which
+/// records no shift. Ours inserts after `c1`, written at frame 10: `Assoc::After` carries it
+/// past `c2`'s insert to 14, and the trim leaves it there, a frame past `c2`'s new end, where a
+/// fresh insert goes against `c1` (`keyed4c::concurrent_reedged`).
+#[test]
+fn trim_of_concurrent_insert_leaves_gap() {
+    use keyed4c::Intent::{Insert, Trim};
+    let lens = [vec![10], vec![], vec![], vec![]];
+    let committed = [
+        (
+            vec![Insert {
+                track: 0,
+                before: None,
+                len: 4,
+            }],
+            false,
+        ),
+        (
+            vec![Trim {
+                track: 0,
+                clip: 5,
+                start: false,
+                frames: -1,
+                mode: 2,
+            }],
+            false,
+        ),
+    ];
+    let mine = [Insert {
+        track: 0,
+        before: None,
+        len: 1,
+    }];
+    check(
+        &base_4c(&lens, false, false, (0, false, false)),
+        &committed,
+        &mine,
+    )
+    .unwrap();
+}
+
+/// The shrunk case of a 30k-case run: the head ripple-moves `c2` from t2 to t1's end, after
+/// `c1`. Ours splits `c2` a frame in, then ripple-moves `c1` to its own end, written at frame
+/// 10, which `Assoc::After` carries past all of `c2` at the head (frame 20). A fresh move goes
+/// past both of the parts our split cut from `c2`, to the same place (the keyed model's
+/// `Assoc::After` walk passes our own split parts of a concurrent item).
+#[test]
+fn split_of_concurrent_item_is_passed_after_anchor() {
+    use keyed4c::Intent::{Move, Split};
+    let lens = [vec![10], vec![10], vec![], vec![]];
+    let committed = [(
+        vec![Move {
+            track: 1,
+            clip: 0,
+            to: 0,
+            before: None,
+            overwrite: false,
+        }],
+        false,
+    )];
+    let mine = [
+        Split {
+            track: 1,
+            clip: 0,
+            eighths: 1,
+        },
+        Move {
+            track: 0,
+            clip: 0,
+            to: 0,
+            before: None,
+            overwrite: false,
+        },
+    ];
+    check(
+        &base_4c(&lens, false, false, (0, false, false)),
+        &committed,
+        &mine,
+    )
+    .unwrap();
+}

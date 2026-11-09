@@ -20,56 +20,23 @@ import type { Approval, BudgetState, FinError, Harness, ProviderEvent, Run, Sess
 import { Effect } from "effect";
 import { finError, toFinError } from "../errors.ts";
 import type { BoundEvent, CallGate, Capabilities, ProviderAdapter } from "./adapter.ts";
-import { Budget, type BudgetLimits, type Crossings, DEFAULT_BUDGET, type Reading } from "./budget.ts";
+import { Budget, type Crossings, DEFAULT_BUDGET, type Reading } from "./budget.ts";
 import type { Clock, Ids } from "./clock.ts";
 import type { AgentCore } from "./core.ts";
-import { type BranchRegistry, credentialPath } from "./credentials.ts";
-import type { Pricing, RuntimeJournal, SessionEnvironment, SessionPlanner, ToolExecutor } from "./runtime-deps.ts";
+import { credentialPath } from "./credentials.ts";
+import type { Pricing, RuntimeDeps, RuntimeJournal, ToolExecutor } from "./runtime-deps.ts";
 import { budgetError, errorShape, harnessUnknown, limitsOf, NO_JOURNAL, parseRef, REPORTED_PRICING, runFacts } from "./runtime-deps.ts";
 import { call, closeLive, closeScope, type Live, openLive } from "./runtime-live.ts";
 import { OutboxDrainer } from "./runtime-outbox.ts";
-import { handleRequest, type ProviderRequests } from "./provider-requests.ts";
-import type { Role } from "./roles.ts";
+import { handleRequest } from "./provider-requests.ts";
+import type { SessionSandboxes } from "./sandbox.ts";
 import type { SessionEvent } from "./session.ts";
-import type { SessionLimits } from "./settings.ts";
 import type { AgentStore, Appended, Applied, NewNode } from "./store.ts";
 import { sessionNotFound } from "./store-rows.ts";
 import { WatchHub } from "./watch-hub.ts";
 
-export interface RuntimeDeps {
-  /** Task 7's per-server pieces (`AgentCoreTag`): the one store and the session credentials. */
-  readonly core: AgentCore;
-  /** The project registry: branch heads, and the root branch created as the starter (`openSession`). */
-  readonly registry: BranchRegistry;
-  readonly adapters: ReadonlyArray<ProviderAdapter>;
-  readonly planner: SessionPlanner;
-  readonly environment: SessionEnvironment;
-  /** The harnesses whose tool calls the runtime runs (8b's built-in tools; a test's fake). */
-  readonly tools?: Partial<Record<Harness, ToolExecutor>>;
-  readonly journal?: RuntimeJournal;
-  readonly pricing?: Pricing;
-  /** `agents.defaultBudget` and `agents.dailyMoneyMicros` (Decision 20). */
-  readonly defaults?: BudgetLimits;
-  /** `agents.retentionDays` (Decision 4). */
-  readonly retentionDays?: number;
-  /** How long a `budget` approval stays open (default 7 days). */
-  readonly approvalTtlMs?: number;
-  /** How long a budget stop waits for the tool calls in flight before it aborts them (30 s). */
-  readonly stopGraceMs?: number;
-  /** How many items one `agent.watch` may hold unread before it ends `WATCH_LAGGING` (1000). */
-  readonly watchBufferSize?: number;
-  /** Start the hourly retention sweep and the budget check at `boot` (default true). */
-  readonly timers?: boolean;
-  /** The roles (a parent's `spawn.maxChildren`) and the session limits (7B Task 6, `settings.ts`). */
-  readonly roles?: ReadonlyMap<string, Role>;
-  readonly limits?: Partial<SessionLimits>;
-  /** Provider permission requests (7B Task 5); none: every request is declined by policy. */
-  readonly requests?: ProviderRequests;
-  /** A test's pause after a child's open, before its spawn re-reads the parent (7B Task 6). */
-  readonly afterChildOpened?: (childId: string) => Promise<void>;
-  /** Where the engine reports what it could not do (an outbox effect, a late provider error). */
-  readonly log?: (message: string, details: Record<string, unknown>) => void;
-}
+/** What the engine is built from (`runtime-deps.ts`). */
+export type { RuntimeDeps } from "./runtime-deps.ts";
 
 /** A provider failure that ends only the run; the session stays `idle` (Decision 10). */
 const RUN_ONLY_STOPS = new Set(["MODEL_CONTEXT_EXCEEDED"]);
@@ -287,6 +254,7 @@ export abstract class RuntimeEngine {
       caps,
       (b) => this.#onEvent(s.id, b),
       (l) => this.#onEnd(l),
+      this.sandboxFor(s),
     );
     holder.live = live;
     this.lives.set(s.id, live);
@@ -294,6 +262,9 @@ export abstract class RuntimeEngine {
     if (now !== null) this.store.setProviderRef(s.id, JSON.stringify(now));
     return live;
   }
+
+  /** The session sandbox a CLI harness's instance opens in its scope (none for the built-in agent). */
+  protected abstract sandboxFor(s: Session): ReturnType<SessionSandboxes["open"]>;
 
   /** Ends the session's instance (`stopProvider`); a tool still running finishes, unheard. */
   protected async stopLive(sessionId: string): Promise<void> {

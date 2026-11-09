@@ -26,6 +26,7 @@ import type { BranchReach } from "./reach.ts";
 import { rollbackGuard } from "./rollback.ts";
 import { projectsFilter, sessionInReach } from "./session-access.ts";
 import type { AgentStore } from "./store.ts";
+import { agentWarnings } from "./warnings.ts";
 import type { AgentRuntimeParts } from "./wiring.ts";
 
 type Guard = <A>(tag: string, self: Effect.Effect<A, FinError>) => Effect.Effect<A, FinError>;
@@ -128,8 +129,19 @@ export function agentHandlers(deps: AgentRpcDeps) {
       })),
     "agent.session.get": ({ sessionId }: { sessionId: string }, options: Options) =>
       onSession("agent.session.get", options, sessionId, (s) =>
-        // `projectRules`: whether the project's `finisher.rules.json` applies (7B Task 2: ignored while untrusted or changed).
-        sync(() => ({ session: s, runs: store.runs(s.id), approvals: store.approvals(s.id).filter((a) => a.status === "open"), projectRules: agents.rules.project(s.projectId).status })),
+        sync(() => {
+          // A CLI session's processes run in the `agent` profile: while it is not enforced, its
+          // warning is on every read of the session (F2, spec §8.9). `projectRules`: whether the
+          // project's `finisher.rules.json` applies (7B Task 2: ignored while untrusted or changed).
+          const warnings = s.harness === "builtin" ? [] : agentWarnings();
+          return {
+            session: s,
+            runs: store.runs(s.id),
+            approvals: store.approvals(s.id).filter((a) => a.status === "open"),
+            projectRules: agents.rules.project(s.projectId).status,
+            ...(warnings.length === 0 ? {} : { warnings }),
+          };
+        }),
       ),
     // The owner's (`agent.admin`, challenge code): ends it, abandons its unmerged transactions (Task 11), removes it.
     "agent.session.delete": ({ sessionId }: { sessionId: string }, options: Options) =>
