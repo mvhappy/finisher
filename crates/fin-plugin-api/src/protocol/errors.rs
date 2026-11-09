@@ -30,6 +30,20 @@ impl PluginError {
         self.details.insert(key.into(), value.into());
         self
     }
+    /// A command's failure that is not the plugin protocol's (a library's error, a parse that
+    /// failed): `PLUGIN_COMMAND_FAILED` with `e`'s text as the message and no details. Add a
+    /// `reason` with [`PluginError::with`]; never put a path in the details.
+    pub fn failed(e: impl std::fmt::Display) -> PluginError {
+        PluginError::new(codes::PLUGIN_COMMAND_FAILED, e.to_string())
+    }
+}
+
+/// An I/O failure in a command: `PLUGIN_COMMAND_FAILED {reason: io}` (so `?` works on
+/// `std::io` results).
+impl From<std::io::Error> for PluginError {
+    fn from(e: std::io::Error) -> PluginError {
+        PluginError::failed(e).with("reason", "io")
+    }
 }
 
 /// The codes of spec §13 that the protocol itself answers.
@@ -43,6 +57,12 @@ pub mod codes {
     pub const PLUGIN_CRASH_LOOP: &str = "PLUGIN_CRASH_LOOP";
     /// A malformed message or call (the process is not killed for a call).
     pub const PLUGIN_PROTOCOL: &str = "PLUGIN_PROTOCOL";
+    /// A command failed for a reason that is not the plugin protocol's (an I/O error, a
+    /// library's failure): `{reason?}` (never a path). Exit 4.
+    pub const PLUGIN_COMMAND_FAILED: &str = "PLUGIN_COMMAND_FAILED";
+    /// A job file the plugin wrote is not what was declared (`{reason: size | truncated |
+    /// link | notRegular}`). Exit 4.
+    pub const PLUGIN_OUTPUT_INVALID: &str = "PLUGIN_OUTPUT_INVALID";
     pub const PLUGIN_PERMISSION_DENIED: &str = "PLUGIN_PERMISSION_DENIED";
     pub const EGRESS_DENIED: &str = "EGRESS_DENIED";
     pub const EGRESS_NOT_HTTPS: &str = "EGRESS_NOT_HTTPS";

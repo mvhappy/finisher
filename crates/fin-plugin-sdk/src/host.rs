@@ -1,6 +1,6 @@
 //! Typed host calls (spec §3.6; plan 8B Decisions 5, 10, 11) over `fin_jobs::worker`'s
-//! `call`/`reply`. Every call checks the job's cancel token first, so a cancelled command's next
-//! call returns `JOB_CANCELLED` instead of reaching the host.
+//! `call`/`reply`. Calls are cancel-aware: after the job's `cancel` a call is not sent, and one
+//! in flight fails `JOB_CANCELLED` at once (`Reporter::call_until`).
 
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as B64;
@@ -91,7 +91,7 @@ impl Host {
         self.token.is_cancelled()
     }
 
-    /// One host call; blocks until its reply.
+    /// One host call; blocks until its reply or the job's cancel.
     fn call<T: DeserializeOwned>(
         &self,
         method: HostMethod,
@@ -104,7 +104,7 @@ impl Host {
             .map_err(|e| protocol("params", format!("{}: {e}", method.name())))?;
         let value = self
             .reporter
-            .call(method.name(), params)
+            .call_until(method.name(), params, &self.token)
             .map_err(error_from_job)?;
         serde_json::from_value(value).map_err(|e| {
             protocol(
@@ -116,8 +116,10 @@ impl Host {
     }
 
     /// The project at the job's pinned `rev` (`project.snapshot`, `project:read`): every page
-    /// fetched and joined. Each page must name its own index, the same page count and the job's
-    /// `rev`; otherwise `PLUGIN_PROTOCOL {reason: page | pages | revMismatch}`.
+    /// fetched and joined. Each page must name its own index, the same page count (at least 1)
+    /// and the job's `rev`; otherwise `PLUGIN_PROTOCOL {reason: snapshotPage | snapshotPages |
+    /// snapshotRev, page, expected, got}`; joined bytes that are not a project
+    /// `{reason: snapshotJson}`.
     pub fn snapshot(&self) -> Result<fin_core::model::Project, PluginError> {
         let method = HostMethod::ProjectSnapshot;
         let mut bytes = Vec::new();
@@ -128,31 +130,28 @@ impl Host {
                 page: (page > 0).then_some(page),
             };
             let got: ProjectSnapshotPage = self.call(method, ask)?;
-            let bad = |reason: &str, msg: String| {
+            let bad = |reason: &str, msg: String, expected: u64, got: u64| {
                 protocol(reason, msg)
                     .with("method", method.name())
                     .with("page", page)
+                    .with("expected", expected)
+                    .with("got", got)
             };
             if got.rev != self.rev {
-                return Err(bad(
-                    "revMismatch",
-                    format!(
-                        "page {page} is of rev {}, the job's is {}",
-                        got.rev, self.rev
-                    ),
-                )
-                .with("expected", self.rev)
-                .with("got", got.rev));
+                let msg = format!(
+                    "page {page} is of rev {}, the job's is {}",
+                    got.rev, self.rev
+                );
+                return Err(bad("snapshotRev", msg, self.rev, got.rev));
             }
             if got.page != page {
-                return Err(bad("page", format!("asked page {page}, got {}", got.page)));
+                let msg = format!("asked page {page}, got {}", got.page);
+                return Err(bad("snapshotPage", msg, page.into(), got.page.into()));
             }
             let total = *pages.get_or_insert(got.pages);
             if got.pages == 0 || got.pages != total {
-                return Err(bad(
-                    "pages",
-                    format!("page count {} after {total}", got.pages),
-                ));
+                let msg = format!("page count {} after {total}", got.pages);
+                return Err(bad("snapshotPages", msg, total.into(), got.pages.into()));
             }
             bytes.extend(decode_b64(&got.bytes_b64, method)?);
             page += 1;
@@ -161,7 +160,7 @@ impl Host {
             }
         }
         serde_json::from_slice(&bytes).map_err(|e| {
-            protocol("snapshot", format!("the snapshot does not decode: {e}"))
+            protocol("snapshotJson", format!("the snapshot does not decode: {e}"))
                 .with("method", method.name())
         })
     }
@@ -186,21 +185,35 @@ impl Host {
     }
 
     /// An HTTPS request through the host's broker (`net.fetch`, `net`), its body read in pages
-    /// (`net.read`) until `length` bytes or `eof`. A body that ends early, runs past `length`,
-    /// or a page that is empty before the end is `PLUGIN_PROTOCOL {reason: body}`.
+    /// (`net.read`) until `length` bytes or `eof`. `PLUGIN_PROTOCOL` when the body does not
+    /// add up: `{reason: bodyLength}` (it ends before or runs past `length`), `{reason:
+    /// bodyPage}` (an empty page before `eof`, or one longer than asked), `{reason:
+    /// bodyTooLarge}` (a `length` over [`MAX_BODY_BYTES`]).
     pub fn fetch(&self, request: HttpRequest) -> Result<HttpResponse, PluginError> {
+        self.fetch_with(request, None)
+    }
+
+    /// [`Host::fetch`] with a secret grant's name (`net.fetch {grant}`; in host API 1.1 every
+    /// such request answers `SECRET_MISSING {name}`, injection is 8G's).
+    pub fn fetch_with(
+        &self,
+        request: HttpRequest,
+        grant: Option<&str>,
+    ) -> Result<HttpResponse, PluginError> {
         let head: NetFetchReply = self.call(
             HostMethod::NetFetch,
             NetFetch {
                 request,
-                grant: None,
+                grant: grant.map(str::to_owned),
             },
         )?;
         if head.length > MAX_BODY_BYTES {
-            return Err(body_error(format!(
-                "a body of {} bytes passes {MAX_BODY_BYTES}",
-                head.length
-            )));
+            return Err(body_error(
+                "bodyTooLarge",
+                format!("a body of {} bytes passes {MAX_BODY_BYTES}", head.length),
+            )
+            .with("length", head.length)
+            .with("max", MAX_BODY_BYTES));
         }
         let page = u64::from(self.context.limits.page_bytes.clamp(1, PAGE_BYTES));
         let mut body = Vec::with_capacity(head.length as usize);
@@ -217,10 +230,11 @@ impl Host {
             )?;
             let bytes = decode_b64(&got.bytes_b64, HostMethod::NetRead)?;
             if bytes.len() as u64 > u64::from(length) || (bytes.is_empty() && !got.eof) {
-                return Err(body_error(format!(
-                    "asked {length} bytes at {offset}, got {}",
-                    bytes.len()
-                )));
+                let msg = format!("asked {length} bytes at {offset}, got {}", bytes.len());
+                return Err(body_error("bodyPage", msg)
+                    .with("offset", offset)
+                    .with("asked", length)
+                    .with("got", bytes.len()));
             }
             offset += bytes.len() as u64;
             body.extend(bytes);
@@ -229,10 +243,10 @@ impl Host {
             }
         }
         if offset != head.length {
-            return Err(body_error(format!(
-                "the body ended at {offset} of {} bytes",
-                head.length
-            )));
+            let msg = format!("the body ended at {offset} of {} bytes", head.length);
+            return Err(body_error("bodyLength", msg)
+                .with("length", head.length)
+                .with("got", offset));
         }
         Ok(HttpResponse {
             status: head.status,
@@ -243,20 +257,24 @@ impl Host {
     }
 
     /// A line in the server log (`log`; rate-limited, scrubbed and capped by the host, never
-    /// journaled). Best effort: a refused or failed `log` is dropped.
+    /// journaled). Fire and forget: it is not waited for, and its reply (a refusal included)
+    /// is dropped. Not sent once the job is cancelled.
     pub fn log(&self, level: LogLevel, msg: &str) {
-        let _ = self.call::<serde_json::Value>(
-            HostMethod::Log,
-            Log {
-                level,
-                msg: msg.to_owned(),
-            },
-        );
+        if self.cancelled() {
+            return;
+        }
+        let log = Log {
+            level,
+            msg: msg.to_owned(),
+        };
+        if let Ok(params) = serde_json::to_value(log) {
+            self.reporter.call_detached(HostMethod::Log.name(), params);
+        }
     }
 }
 
-fn body_error(message: String) -> PluginError {
-    protocol("body", message).with("method", HostMethod::NetRead.name())
+fn body_error(reason: &str, message: String) -> PluginError {
+    protocol(reason, message).with("method", HostMethod::NetRead.name())
 }
 
 fn decode_b64(text: &str, method: HostMethod) -> Result<Vec<u8>, PluginError> {

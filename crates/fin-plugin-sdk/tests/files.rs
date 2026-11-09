@@ -4,6 +4,7 @@ use std::path::Path;
 
 use fin_jobs::{FileGrant, FileMode};
 use fin_plugin_sdk::files::{create_output, read_input};
+use serde_json::json;
 
 fn grant(path: &Path, mode: FileMode, bytes: Option<u64>) -> FileGrant {
     FileGrant {
@@ -24,16 +25,60 @@ fn inputs_are_read_checked_and_capped() {
         read_input(&grant(&file, FileMode::Read, None), 64).unwrap(),
         b"abcdef"
     );
+    // An input that is not what the host granted is the host's fault: `PLUGIN_PROTOCOL
+    // {reason, file}`, the file by its grant name, never its path.
     let e = read_input(&grant(&file, FileMode::Read, None), 3).unwrap_err();
-    assert_eq!(e.code, "SHM_REFUSED");
+    assert_eq!(
+        (e.code.as_str(), e.details.clone()),
+        (
+            "PLUGIN_PROTOCOL",
+            json!({ "reason": "size", "file": "pcm.bin" })
+                .as_object()
+                .unwrap()
+                .clone()
+        )
+    );
+    let e = read_input(&grant(&file, FileMode::Read, Some(8)), 64).unwrap_err();
+    assert_eq!(
+        (e.code.as_str(), e.details["reason"].clone()),
+        ("PLUGIN_PROTOCOL", json!("size"))
+    );
+    let sub = root.join("d");
+    std::fs::create_dir(&sub).unwrap();
+    let e = read_input(&grant(&sub, FileMode::Read, None), 64).unwrap_err();
+    assert_eq!(
+        (e.code.as_str(), e.details["reason"].clone()),
+        ("PLUGIN_PROTOCOL", json!("notRegular"))
+    );
     let e = read_input(&grant(&file, FileMode::Write, None), 64).unwrap_err();
     assert_eq!(e.code, "PLUGIN_PERMISSION_DENIED");
+    assert_eq!(
+        (e.details["perm"].clone(), e.details["access"].clone()),
+        (json!("fs"), json!("read"))
+    );
     #[cfg(unix)]
     {
         let link = root.join("link.bin");
         std::os::unix::fs::symlink(&file, &link).unwrap();
         let e = read_input(&grant(&link, FileMode::Read, None), 64).unwrap_err();
-        assert_eq!(e.code, "SHM_REFUSED", "a link is never followed");
+        assert_eq!(e.code, "PLUGIN_PROTOCOL", "a link is never followed");
+        assert_eq!(e.details["reason"], "link");
+        assert!(
+            !e.details
+                .values()
+                .any(|v| v.as_str().is_some_and(|s| s.contains('/')))
+        );
+        // An output under a linked directory: `PLUGIN_OUTPUT_INVALID {reason: link}`.
+        let linked = root.join("out-link");
+        std::os::unix::fs::symlink(&sub, &linked).unwrap();
+        let out = linked.join("o.bin");
+        let e = create_output(&grant(&out, FileMode::Write, None), 6)
+            .err()
+            .unwrap();
+        assert_eq!(
+            (e.code.as_str(), e.details["reason"].clone()),
+            ("PLUGIN_OUTPUT_INVALID", json!("link"))
+        );
     }
 }
 
@@ -65,8 +110,10 @@ fn outputs_take_exactly_their_declared_size() {
         "size"
     );
     let read_only = grant(&out, FileMode::Read, None);
+    let e = create_output(&read_only, 4).err().unwrap();
+    assert_eq!(e.code, "PLUGIN_PERMISSION_DENIED");
     assert_eq!(
-        create_output(&read_only, 4).err().unwrap().code,
-        "PLUGIN_PERMISSION_DENIED"
+        (e.details["perm"].clone(), e.details["access"].clone()),
+        (json!("fs"), json!("write"))
     );
 }

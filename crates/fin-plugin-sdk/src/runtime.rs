@@ -2,10 +2,13 @@
 //! the runtime's plugin mode (plan 8B Decision 21). `fin_jobs` owns the wire: `hello`, the
 //! reader and its cancel routing, `alive`, `call`/`reply`, `result`/`error`, `ready` when warm,
 //! exit 0 after a cold job, exit 70 when the host is gone, a caught panic answered
-//! `WORKER_CRASHED` and exit 101.
+//! `WORKER_CRASHED` and exit 101. This module adds the plugin's own rules: a cancelled job
+//! ends `JOB_CANCELLED` whatever the command returns, and a result or error is checked
+//! against the 1 MiB line before `fin_jobs` sends it (`PLUGIN_PROTOCOL {reason: tooLarge}`).
 
+use fin_jobs::codec::{self, CodecError};
 use fin_jobs::worker::{Channel, Family, JobCtx};
-use fin_jobs::{JobError, KindVersion, StartJob};
+use fin_jobs::{JobError, KindVersion, StartJob, WorkerMsg};
 use fin_plugin_api::protocol::{COMMAND_KIND, COMMAND_KIND_VERSION, CommandRun, PluginContext};
 use serde_json::Value;
 
@@ -64,6 +67,16 @@ impl<P: Plugin + Send> Family for PluginFamily<P> {
     }
 
     fn run(&mut self, job: &StartJob, ctx: &mut JobCtx<'_>) -> Result<Value, JobError> {
+        let outcome = self.command(job, ctx);
+        if ctx.cancel_token().is_cancelled() {
+            return Err(error_to_job(cancelled()));
+        }
+        fit(&job.id, outcome)
+    }
+}
+
+impl<P: Plugin> PluginFamily<P> {
+    fn command(&mut self, job: &StartJob, ctx: &mut JobCtx<'_>) -> Result<Value, JobError> {
         let (call, context) = decode(job).map_err(error_to_job)?;
         #[allow(unused_mut)]
         let mut host = Host::new(ctx.reporter(), ctx.cancel_token(), context, call.rev);
@@ -75,11 +88,88 @@ impl<P: Plugin + Send> Family for PluginFamily<P> {
         let out = self.plugin.command(&host, call).map_err(error_to_job)?;
         serde_json::to_value(out).map_err(|e| {
             error_to_job(protocol(
-                "result",
+                "badResult",
                 format!("the result does not encode: {e}"),
             ))
         })
     }
+}
+
+/// The longest message an oversized error keeps, in bytes.
+const SHORT_MESSAGE: usize = 1024;
+
+/// `outcome` as it fits one envelope line: a result over the cap becomes `PLUGIN_PROTOCOL
+/// {reason: tooLarge, bytes}`; an error over it is retried with its message cut to 1 KiB and
+/// no details, then becomes that fixed error.
+fn fit(job: &str, outcome: Result<Value, JobError>) -> Result<Value, JobError> {
+    let error = match outcome {
+        Ok(value) => {
+            let msg = WorkerMsg::Result {
+                job: job.to_owned(),
+                value,
+            };
+            return match (oversize(&msg), msg) {
+                (None, WorkerMsg::Result { value, .. }) => Ok(value),
+                (Some(bytes), _) => Err(too_large(bytes)),
+                (None, _) => unreachable!("a result message"),
+            };
+        }
+        Err(error) => error,
+    };
+    let as_msg = |error| WorkerMsg::Error {
+        job: job.to_owned(),
+        error,
+        item_errors: None,
+    };
+    let msg = as_msg(error);
+    let Some(bytes) = oversize(&msg) else {
+        return Err(error_of(msg));
+    };
+    let mut short = error_of(msg);
+    short.message = cut(short.message, SHORT_MESSAGE);
+    short.details = Value::Object(Default::default());
+    let msg = as_msg(short);
+    match oversize(&msg) {
+        None => Err(error_of(msg)),
+        Some(_) => Err(too_large(bytes)),
+    }
+}
+
+/// The length of `msg`'s line when it passes the envelope's cap (`seq` counted at its widest).
+fn oversize(msg: &WorkerMsg) -> Option<usize> {
+    match codec::encode(u64::MAX, msg) {
+        Err(CodecError::TooLong { len }) => Some(len),
+        _ => None,
+    }
+}
+
+fn error_of(msg: WorkerMsg) -> JobError {
+    match msg {
+        WorkerMsg::Error { error, .. } => error,
+        _ => unreachable!("an error message"),
+    }
+}
+
+/// `text` cut to at most `max` bytes, on a character boundary.
+fn cut(mut text: String, max: usize) -> String {
+    if text.len() > max {
+        let end = (0..=max)
+            .rev()
+            .find(|&i| text.is_char_boundary(i))
+            .unwrap_or(0);
+        text.truncate(end);
+    }
+    text
+}
+
+fn too_large(bytes: usize) -> JobError {
+    error_to_job(
+        protocol(
+            "tooLarge",
+            format!("the answer is a line of {bytes} bytes, over 1 MiB"),
+        )
+        .with("bytes", bytes),
+    )
 }
 
 /// The job's command and context; `PLUGIN_PROTOCOL {reason: kind | params | context}`.

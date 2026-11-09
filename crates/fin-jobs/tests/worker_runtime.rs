@@ -222,6 +222,15 @@ fn plugin_mode_hello_and_unknown_host_types() {
 }
 
 #[test]
+fn plugin_mode_keeps_a_malformed_known_type_fatal() {
+    let mut rig = Rig::plugin(warm_toy(|job, _| Ok(job.params.clone())), 3);
+    rig.recv_any();
+    // A `start` without its job: a known type of a bad shape.
+    rig.send_raw(b"{\"v\":1,\"t\":\"start\",\"seq\":1}\n");
+    assert_eq!(rig.join_open(), EXIT_HOST_PROTOCOL);
+}
+
+#[test]
 fn pause_reason_reaches_the_family() {
     let mut rig = Rig::worker(toy(|_, ctx| {
         while ctx.cancelled().is_none() {

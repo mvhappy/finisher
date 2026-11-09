@@ -72,6 +72,32 @@ impl Plugin for TestPlugin {
                 return Ok(CommandOut::Tx { ops: vec![op] });
             }
             "panic" => panic!("boom"),
+            "typed-args" => {
+                #[derive(serde::Deserialize)]
+                struct Need {
+                    #[allow(dead_code)]
+                    n: u32,
+                }
+                call.args::<Need>()?;
+                json!("decoded")
+            }
+            "ignore-cancel" => {
+                while !host.cancelled() {
+                    std::thread::sleep(Duration::from_millis(2));
+                }
+                json!("done anyway")
+            }
+            "fetch-granted" => {
+                let r = host.fetch_with(http_get("https://api.example.org/x"), Some("example"))?;
+                json!(r.status)
+            }
+            "io-fail" => return Err(std::io::Error::other("disk full").into()),
+            "failed" => return Err(PluginError::failed("the library broke")),
+            "big-result" => json!("x".repeat(1 << 20)),
+            "big-error" => {
+                return Err(PluginError::new("MY_CODE", "m".repeat(2 << 20))
+                    .with("blob", "b".repeat(2 << 20)));
+            }
             _ => return Err(call.unknown()),
         };
         Ok(CommandOut::Data { value })
@@ -250,8 +276,12 @@ fn snapshot_pages_join() {
         });
         let e = error(m);
         assert_eq!(e.code, "PLUGIN_PROTOCOL");
-        assert_eq!(e.details["reason"], "revMismatch");
+        assert_eq!(e.details["reason"], "snapshotRev");
         assert_eq!(e.details["page"], bad_page);
+        assert_eq!(
+            (e.details["expected"].clone(), e.details["got"].clone()),
+            (json!(9), json!(10))
+        );
         assert_eq!(
             calls.len(),
             bad_page as usize + 1,
@@ -267,7 +297,45 @@ fn snapshot_pages_join() {
         }
         Ok(v)
     });
-    assert_eq!(error(m).details["reason"], "pages");
+    let e = error(m);
+    assert_eq!(e.details["reason"], "snapshotPages");
+    assert_eq!(
+        (e.details["expected"].clone(), e.details["got"].clone()),
+        (json!(pages), json!(99))
+    );
+
+    // A page that names another index.
+    let (m, calls) = run_one("snapshot", 9, |c| {
+        Ok(snapshot_page(&bytes, 100, asked_page(c).min(1) * 2, 9))
+    });
+    let e = error(m);
+    assert_eq!(e.details["reason"], "snapshotPage");
+    assert_eq!(
+        (e.details["expected"].clone(), e.details["got"].clone()),
+        (json!(1), json!(2))
+    );
+    assert_eq!(calls.len(), 2);
+
+    // Joined bytes that are not a project.
+    for bad in [&b"not json"[..], &b"{\"name\": 1}"[..]] {
+        let (m, _) = run_one("snapshot", 9, |c| {
+            Ok(snapshot_page(bad, 100, asked_page(c), 9))
+        });
+        let e = error(m);
+        assert_eq!(
+            (e.code.as_str(), e.details["reason"].clone()),
+            ("PLUGIN_PROTOCOL", json!("snapshotJson"))
+        );
+    }
+
+    // No pages at all.
+    let (m, calls) = run_one("snapshot", 9, |_| {
+        Ok(json!({ "bytesB64": "", "page": 0, "pages": 0, "rev": 9 }))
+    });
+    let e = error(m);
+    assert_eq!(e.details["reason"], "snapshotPages");
+    assert_eq!(e.details["got"], 0);
+    assert_eq!(calls.len(), 1);
 }
 
 #[test]
@@ -326,8 +394,65 @@ fn fetch_reads_body_pages() {
     let e = error(m);
     assert_eq!(
         (e.code.as_str(), e.details["reason"].clone()),
-        ("PLUGIN_PROTOCOL", json!("body"))
+        ("PLUGIN_PROTOCOL", json!("bodyLength"))
     );
+
+    // An empty page before `eof`.
+    let (m, calls) = run_one("fetch", 1, |c| match c.method.as_str() {
+        "net.fetch" => Ok(fetch_head(200, 10)),
+        _ => Ok(json!({ "bytesB64": "", "eof": false })),
+    });
+    assert_eq!(error(m).details["reason"], "bodyPage");
+    assert_eq!(calls.len(), 2, "no read after it");
+
+    // A page longer than asked.
+    let small_pages = |s: &mut fin_jobs::Start| {
+        s.job.extra.as_mut().unwrap()["limits"]["pageBytes"] = json!(4);
+    };
+    let (mut host, run) = start(false);
+    host.hello();
+    host.send(&command_with("j1", "fetch", json!({}), 1, small_pages));
+    let (m, calls) = host.serve(|c| match c.method.as_str() {
+        "net.fetch" => Ok(fetch_head(200, 10)),
+        _ => Ok(read_page(
+            b"0123456789",
+            &json!({ "offset": 0, "length": 10 }),
+        )),
+    });
+    run.join().unwrap();
+    assert_eq!(error(m).details["reason"], "bodyPage");
+    assert_eq!(calls[1].params["length"], 4);
+
+    // The 64 MiB cap: exactly 64 MiB is read (here the first read fails, so the job stops
+    // there), one byte more is refused before any read.
+    let cap = fin_plugin_sdk::host::MAX_BODY_BYTES as usize;
+    let (m, calls) = run_one("fetch", 1, |c| match c.method.as_str() {
+        "net.fetch" => Ok(fetch_head(200, cap)),
+        _ => Err(JobError::new("STOP", "enough")),
+    });
+    assert_eq!(error(m).code, "STOP");
+    assert_eq!(calls.len(), 2);
+    assert_eq!(
+        calls[1].params["length"],
+        fin_plugin_api::protocol::PAGE_BYTES
+    );
+    let (m, calls) = run_one("fetch", 1, |c| match c.method.as_str() {
+        "net.fetch" => Ok(fetch_head(200, cap + 1)),
+        m => panic!("{m}"),
+    });
+    let e = error(m);
+    assert_eq!(e.details["reason"], "bodyTooLarge");
+    assert_eq!(calls.len(), 1);
+}
+
+#[test]
+fn fetch_takes_an_optional_grant() {
+    let (m, calls) = run_one("fetch-granted", 1, |c| match c.method.as_str() {
+        "net.fetch" => Ok(fetch_head(204, 0)),
+        m => panic!("{m}"),
+    });
+    assert_eq!(result(m)["value"], 204);
+    assert_eq!(calls[0].params["grant"], "example");
 }
 
 #[test]
@@ -367,9 +492,33 @@ fn command_errors_map_to_job_errors() {
 
     let (m, _) = run_one("no-such", 1, unanswered);
     let e = error(m);
-    assert_eq!(e.code, "PLUGIN_COMMAND_ARGS");
-    assert_eq!(e.details["command"], "no-such");
-    assert_eq!(e.details["problems"][0]["reason"], "unknownCommand");
+    assert_eq!(e.code, "PLUGIN_PROTOCOL");
+    assert_eq!(
+        e.details,
+        json!({ "reason": "unknownCommand", "command": "no-such" })
+    );
+
+    // Arguments the plugin's own type cannot decode.
+    let (m, _) = run_one("typed-args", 1, unanswered);
+    let e = error(m);
+    assert_eq!(e.code, "PLUGIN_PROTOCOL");
+    assert_eq!(e.details["reason"], "args");
+    assert!(e.details["message"].as_str().unwrap().contains("`n`"));
+
+    // A non-plugin failure: `PLUGIN_COMMAND_FAILED`, an I/O error's with `reason: io`.
+    let (m, _) = run_one("io-fail", 1, unanswered);
+    let e = error(m);
+    assert_eq!(
+        (e.code.as_str(), e.details.clone()),
+        ("PLUGIN_COMMAND_FAILED", json!({ "reason": "io" }))
+    );
+    assert_eq!(e.message, "disk full");
+    let (m, _) = run_one("failed", 1, unanswered);
+    let e = error(m);
+    assert_eq!(
+        (e.code.as_str(), e.message.as_str(), e.details.clone()),
+        ("PLUGIN_COMMAND_FAILED", "the library broke", json!({}))
+    );
 
     // Both directions round-trip.
     let mut p = PluginError::new("X", "m").with("a", json!([1]));
@@ -377,6 +526,9 @@ fn command_errors_map_to_job_errors() {
     assert_eq!(error_from_job(error_to_job(p.clone())), p);
     let odd = error_from_job(JobError::new("X", "m").with_details(json!("text")));
     assert_eq!(odd.details["value"], "text");
+    // A `fix` that is not a string stays in `details`.
+    let odd = error_from_job(JobError::new("X", "m").with_details(json!({ "fix": 5 })));
+    assert_eq!((odd.fix, odd.details["fix"].clone()), (None, json!(5)));
 }
 
 type Edit = dyn FnOnce(&mut fin_jobs::Start);
@@ -418,13 +570,27 @@ fn results_context_and_log() {
         result(m)["value"],
         json!({ "locale": "en", "plugin": "@example/rust-tools" })
     );
-    // `log` is sent, and a refused one is not the command's failure.
-    let (m, calls) = run_one("log", 1, |_| {
-        Err(JobError::new("RATE_LIMITED", "slow down"))
+    // `log` is fire-and-forget: sent, never waited for (the host's reply, a refusal included,
+    // is dropped whenever it comes).
+    let (mut host, run) = start(true);
+    host.hello();
+    host.send(&command("j1", "log", json!({}), 1));
+    let WorkerMsg::Call { id, method, params } = host.recv() else {
+        panic!("the log call")
+    };
+    assert_eq!(method, "log");
+    assert_eq!(params, json!({ "level": "info", "msg": "hello" }));
+    assert_eq!(result(host.recv())["value"], "logged");
+    assert_eq!(host.recv(), WorkerMsg::Ready {});
+    host.send(&HostMsg::Reply {
+        id,
+        value: None,
+        error: Some(JobError::new("RATE_LIMITED", "slow down")),
     });
-    assert_eq!(result(m)["value"], "logged");
-    assert_eq!(calls[0].method, "log");
-    assert_eq!(calls[0].params, json!({ "level": "info", "msg": "hello" }));
+    host.send(&command("j2", "echo", json!({}), 1));
+    assert!(matches!(host.recv(), WorkerMsg::Result { job, .. } if job == "j2"));
+    host.close();
+    run.join().unwrap();
 }
 
 #[test]
@@ -434,4 +600,118 @@ fn a_panic_is_a_crash() {
     host.send(&command("j1", "panic", json!({}), 1));
     assert_eq!(error(host.recv()).code, "WORKER_CRASHED");
     assert_eq!(run.join().unwrap(), fin_jobs::worker::EXIT_PANIC);
+}
+
+#[test]
+fn cancel_ends_the_job_cancelled() {
+    // A host call in flight fails at once: the host holds its reply and cancels.
+    let (mut host, run) = start(true);
+    host.hello();
+    host.send(&command("j1", "view", json!({}), 1));
+    let WorkerMsg::Call { id, .. } = host.recv() else {
+        panic!("a call")
+    };
+    let sent = std::time::Instant::now();
+    host.send(&HostMsg::Cancel {
+        job: "j1".into(),
+        reason: fin_jobs::CancelReason::Cancel,
+    });
+    assert_eq!(error(host.recv()).code, "JOB_CANCELLED");
+    assert!(sent.elapsed() < Duration::from_secs(2), "promptly");
+    assert_eq!(host.recv(), WorkerMsg::Ready {});
+    // Its late reply is dropped.
+    host.send(&HostMsg::Reply {
+        id,
+        value: Some(json!({ "text": "late" })),
+        error: None,
+    });
+
+    // A command that returns Ok after the cancel still ends cancelled.
+    host.send(&command("j2", "ignore-cancel", json!({}), 1));
+    std::thread::sleep(Duration::from_millis(20));
+    host.send(&HostMsg::Cancel {
+        job: "j2".into(),
+        reason: fin_jobs::CancelReason::Cancel,
+    });
+    assert_eq!(error(host.recv()).code, "JOB_CANCELLED");
+    assert_eq!(host.recv(), WorkerMsg::Ready {});
+    host.close();
+    run.join().unwrap();
+}
+
+#[test]
+fn newer_host_fields_are_ignored() {
+    // A context, and replies, with a field this SDK does not know.
+    let future = |s: &mut fin_jobs::Start| {
+        let extra = s.job.extra.as_mut().unwrap();
+        extra["future"] = json!(1);
+        extra["limits"]["future"] = json!(1);
+        extra["dirs"]["future"] = json!(1);
+        extra["plugin"]["future"] = json!(1);
+        s.job.params["future"] = json!(1);
+    };
+    let (mut host, run) = start(false);
+    host.hello();
+    host.send(&command_with("j1", "context", json!({}), 1, future));
+    assert_eq!(
+        result(host.recv())["value"],
+        json!({ "locale": "en", "plugin": "@example/rust-tools" })
+    );
+    run.join().unwrap();
+
+    let (m, _) = run_one("view", 1, |_| {
+        Ok(json!({ "text": "timeline", "future": 1 }))
+    });
+    assert_eq!(result(m)["value"], "timeline");
+    let bytes = project_bytes(2);
+    let (m, _) = run_one("snapshot", 9, |c| {
+        let mut v = snapshot_page(&bytes, 1 << 20, asked_page(c), 9);
+        v["future"] = json!(1);
+        Ok(v)
+    });
+    assert_eq!(result(m)["value"]["items"], 2);
+    let (m, _) = run_one("fetch", 1, |c| {
+        let mut v = match c.method.as_str() {
+            "net.fetch" => fetch_head(200, 3),
+            _ => read_page(b"abc", &c.params),
+        };
+        v["future"] = json!(1);
+        Ok(v)
+    });
+    assert_eq!(result(m)["value"]["text"], "abc");
+}
+
+#[test]
+fn oversized_results_and_errors() {
+    // A result over 1 MiB is answered `tooLarge` with its size.
+    let (m, _) = run_one("big-result", 1, unanswered);
+    let e = error(m);
+    assert_eq!(e.code, "PLUGIN_PROTOCOL");
+    assert_eq!(e.details["reason"], "tooLarge");
+    assert!(e.details["bytes"].as_u64().unwrap() > 1 << 20);
+    // An oversized error keeps its code, its message cut to 1 KiB and its details dropped.
+    let (m, _) = run_one("big-error", 1, unanswered);
+    let e = error(m);
+    assert_eq!(e.code, "MY_CODE");
+    assert!(e.message.len() <= 1024 && e.message.starts_with("mmm"));
+    assert_eq!(e.details, json!({}));
+}
+
+#[test]
+fn page_size_is_capped() {
+    // A context asking for pages above `PAGE_BYTES` gets `PAGE_BYTES`.
+    let big_pages = |s: &mut fin_jobs::Start| {
+        s.job.extra.as_mut().unwrap()["limits"]["pageBytes"] = json!(1 << 20);
+    };
+    let (mut host, run) = start(false);
+    host.hello();
+    host.send(&command_with("j1", "fetch", json!({}), 1, big_pages));
+    let body = vec![b'a'; 800_000];
+    let (m, calls) = host.serve(|c| match c.method.as_str() {
+        "net.fetch" => Ok(fetch_head(200, body.len())),
+        _ => Ok(read_page(&body, &c.params)),
+    });
+    run.join().unwrap();
+    assert_eq!(result(m)["value"]["len"], 800_000);
+    assert_eq!(calls[1].params["length"], 774_144);
 }

@@ -5,7 +5,7 @@ use fin_jobs::JobError;
 use fin_plugin_api::protocol::errors::codes;
 use fin_plugin_api::protocol::{CommandOut, CommandRun, PluginError};
 use serde::de::DeserializeOwned;
-use serde_json::{Map, Value, json};
+use serde_json::{Map, Value};
 
 use crate::host::Host;
 
@@ -43,30 +43,23 @@ impl From<CommandRun> for CommandCall {
 
 impl CommandCall {
     /// The arguments as `T`. They passed the manifest schema already, so a failure here is the
-    /// plugin's own type disagreeing with its schema: `PLUGIN_COMMAND_ARGS {command, problems}`.
+    /// plugin's own type disagreeing with its schema: `PLUGIN_PROTOCOL {reason: args, message}`.
     pub fn args<T: DeserializeOwned>(&self) -> Result<T, PluginError> {
-        serde_json::from_value(self.args.clone())
-            .map_err(|e| self.args_error("decode", &format!("the arguments do not decode: {e}")))
+        serde_json::from_value(self.args.clone()).map_err(|e| {
+            let message = format!("the arguments of {:?} do not decode: {e}", self.name);
+            protocol("args", message.clone()).with("message", message)
+        })
     }
 
     /// The answer to a command this plugin does not implement (its manifest names one its code
-    /// lacks): `PLUGIN_COMMAND_ARGS {command, problems: [{reason: unknownCommand}]}`, spec §13
-    /// exit 3. (`INVALID_REQUEST` is the host's for a malformed request; the host only ever
-    /// sends a name from the manifest, so this is a plugin bug the caller can see.)
+    /// lacks, a plugin bug the caller can see): `PLUGIN_PROTOCOL {reason: unknownCommand,
+    /// command}`.
     pub fn unknown(&self) -> PluginError {
-        self.args_error(
+        protocol(
             "unknownCommand",
-            &format!("the plugin does not implement the command {:?}", self.name),
+            format!("the plugin does not implement the command {:?}", self.name),
         )
-    }
-
-    fn args_error(&self, reason: &str, message: &str) -> PluginError {
-        PluginError::new(codes::PLUGIN_COMMAND_ARGS, message)
-            .with("command", self.name.clone())
-            .with(
-                "problems",
-                json!([{ "path": "", "reason": reason, "message": message }]),
-            )
+        .with("command", self.name.clone())
     }
 }
 

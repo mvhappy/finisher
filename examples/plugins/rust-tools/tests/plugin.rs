@@ -116,6 +116,50 @@ fn trim_silence_returns_ops_from_the_snapshot() {
 }
 
 #[test]
+fn trim_silence_ripple_applies_under_fin_core() {
+    // V1's items stored out of start order: the ops still come by (track, start).
+    let mut p = project();
+    p.timelines[0].tracks[0].items.reverse();
+    let bytes = serde_json::to_vec(&p).unwrap();
+    let (mut host, mut child) = spawn(false);
+    host.hello();
+    host.send(&command(
+        "j1",
+        "trim-silence",
+        json!({ "mode": "ripple" }),
+        3,
+    ));
+    let (m, _) = host.serve(serve_snapshot(&bytes));
+    let WorkerMsg::Result { value, .. } = m else {
+        panic!("{m:?}")
+    };
+    assert!(child.wait().unwrap().success());
+    let ids: Vec<_> = value["ops"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|o| o["item"].as_str().unwrap())
+        .collect();
+    assert_eq!(ids, ["adj2", "adj3", "adj5", "adj6"]);
+    let tx: Tx = serde_json::from_value(json!({
+        "txId": "t1", "author": "local", "branch": "main", "baseRev": 3,
+        "schemaVersion": p.schema_version, "ops": value["ops"],
+    }))
+    .unwrap();
+    let applied = apply_tx(&p, &tx, &mut MemIds::after(&p)).unwrap();
+    let tracks = &applied.project.timelines[0].tracks;
+    let mut v1: Vec<_> = tracks[0]
+        .items
+        .iter()
+        .map(|i| (i.id.as_str(), i.start))
+        .collect();
+    v1.sort_by_key(|&(_, start)| start);
+    // Each gap closes on its own track: `adj4` (3 s) moves back by adj2 + adj3 (2 s) to 1 s.
+    assert_eq!(v1, [("adj1", t(0)), ("adj4", t(1))]);
+    assert!(tracks[1].items.is_empty());
+}
+
+#[test]
 fn trim_silence_takes_its_arguments_warm() {
     let bytes = serde_json::to_vec(&project()).unwrap();
     let (mut host, mut child) = spawn(true);
@@ -128,6 +172,13 @@ fn trim_silence_takes_its_arguments_warm() {
     };
     assert_eq!(value["ops"].as_array().unwrap().len(), 6);
     assert_eq!(value["ops"][0]["mode"], "ripple");
+    let ids: Vec<_> = value["ops"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|o| o["item"].as_str().unwrap())
+        .collect();
+    assert_eq!(ids, ["adj1", "adj2", "adj3", "adj4", "adj5", "adj6"]);
     assert_eq!(host.recv(), WorkerMsg::Ready {});
     // The same process serves the next job, here a name it does not implement.
     host.send(&command("j2", "nope", json!({}), 3));
@@ -135,7 +186,11 @@ fn trim_silence_takes_its_arguments_warm() {
     let WorkerMsg::Error { error, .. } = m else {
         panic!("{m:?}")
     };
-    assert_eq!(error.code, "PLUGIN_COMMAND_ARGS");
+    assert_eq!(error.code, "PLUGIN_PROTOCOL");
+    assert_eq!(
+        error.details,
+        json!({ "reason": "unknownCommand", "command": "nope" })
+    );
     assert_eq!(host.recv(), WorkerMsg::Ready {});
     host.send(&HostMsg::Shutdown {});
     assert!(child.wait().unwrap().success());

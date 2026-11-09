@@ -1564,7 +1564,6 @@
       "type": "string"
     },
     "CallLimits": {
-      "additionalProperties": false,
       "description": "The limits of this job's calls and results.",
       "properties": {
         "messageBytes": {
@@ -2518,8 +2517,7 @@
       ]
     },
     "CommandRun": {
-      "additionalProperties": false,
-      "description": "A command run: the host has checked `args` against the command's schema and pinned `rev`\nto the head of `branch`.",
+      "description": "A command run: the host has checked `args` against the command's schema and pinned `rev`\nto the head of `branch`. Decoded leniently (a field from a newer host is ignored).",
       "properties": {
         "args": true,
         "branch": {
@@ -6010,7 +6008,7 @@
       "description": "An HTTPS request to one of the plugin's approved `net` origins.",
       "properties": {
         "bodyB64": {
-          "description": "At most 768 KiB before base64.",
+          "description": "At most 756 KiB (`PAGE_BYTES`) before base64.",
           "type": [
             "string",
             "null"
@@ -10278,7 +10276,6 @@
       "type": "object"
     },
     "NetFetchReply": {
-      "additionalProperties": false,
       "description": "The response's head; the body (at most 64 MiB) stays with the host and is read by\n`net.read` through `handle` until the job ends (Decision 11).",
       "properties": {
         "handle": {
@@ -10326,7 +10323,7 @@
           "type": "string"
         },
         "length": {
-          "description": "At most 768 KiB.",
+          "description": "At most 756 KiB (`PAGE_BYTES`).",
           "format": "uint32",
           "minimum": 0,
           "type": "integer"
@@ -10345,7 +10342,6 @@
       "type": "object"
     },
     "NetReadPage": {
-      "additionalProperties": false,
       "properties": {
         "bytesB64": {
           "type": "string"
@@ -12469,7 +12465,6 @@
       "type": "string"
     },
     "PluginContext": {
-      "additionalProperties": false,
       "properties": {
         "dirs": {
           "$ref": "#/$defs/PluginDirs"
@@ -12524,7 +12519,6 @@
       "type": "object"
     },
     "PluginDirs": {
-      "additionalProperties": false,
       "description": "Directories the plugin may use, as absolute paths on the host.",
       "properties": {
         "data": {
@@ -12835,7 +12829,6 @@
       ]
     },
     "PluginRefFull": {
-      "additionalProperties": false,
       "description": "A plugin at one version.",
       "properties": {
         "id": {
@@ -13316,11 +13309,10 @@
       "type": "object"
     },
     "ProjectSnapshotPage": {
-      "additionalProperties": false,
       "description": "One page of a snapshot; every page of one job has the same `rev`.",
       "properties": {
         "bytesB64": {
-          "description": "At most 768 KiB before base64.",
+          "description": "At most 756 KiB (`PAGE_BYTES`) before base64.",
           "type": "string"
         },
         "page": {
@@ -13349,7 +13341,7 @@
     },
     "ProjectView": {
       "additionalProperties": false,
-      "description": "`project.view`: the `fin view` text of the call's branch, capped at 768 KiB.",
+      "description": "`project.view`: the `fin view` text of the call's branch, capped at 756 KiB (`PAGE_BYTES`).",
       "properties": {
         "budget": {
           "description": "`fin view --budget`.",
@@ -13371,7 +13363,6 @@
       "type": "object"
     },
     "ProjectViewText": {
-      "additionalProperties": false,
       "properties": {
         "text": {
           "type": "string"

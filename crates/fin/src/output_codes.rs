@@ -370,6 +370,10 @@ pub(super) const JOB_RESULT_CODES: &[&str] = &[
     "PLUGIN_CRASHED",
     "PLUGIN_TIMEOUT",
     "PLUGIN_PROTOCOL",
+    // A plugin process's own failures (8B cross-SDK contract): a command that failed for a
+    // non-protocol reason (`{reason?}`), a job file not as declared (`{reason}`, spec §13).
+    "PLUGIN_COMMAND_FAILED",
+    "PLUGIN_OUTPUT_INVALID",
 ];
 
 /// Codes that mean "this request can never succeed as sent" (exit 2, like `USAGE`).

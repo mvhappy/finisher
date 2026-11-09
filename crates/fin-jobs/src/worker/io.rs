@@ -299,6 +299,8 @@ fn read_loop(input: Box<dyn Read + Send>, shared: &Shared, tx: &Sender<Inbound>)
     let mut r = BufReader::new(input);
     let mut buf = Vec::new();
     let mut seq = 1u64;
+    // Unknown host types already reported: each is logged once, however often it comes.
+    let mut dropped = std::collections::HashSet::new();
     loop {
         if shared.stop_reading.load(Ordering::Relaxed) {
             // Never reads again: the host's writes fill the pipe, and EOF goes unseen.
@@ -322,7 +324,10 @@ fn read_loop(input: Box<dyn Read + Send>, shared: &Shared, tx: &Sender<Inbound>)
         let msg = match decoded {
             Ok(Decoded::Msg(m)) => m,
             Ok(Decoded::Unknown { t, .. }) => {
-                eprintln!("fin-jobs: dropped a host message of unknown type {t:?}");
+                if !dropped.contains(&t) {
+                    eprintln!("fin-jobs: dropped host messages of unknown type {t:?}");
+                    dropped.insert(t);
+                }
                 continue;
             }
             Err(e) => return protocol(shared, tx, &e),

@@ -2,9 +2,13 @@
 //!
 //! - `trim-silence` (`writes`): reads the project at the job's `rev` and proposes an
 //!   `item.delete` for every item of the main timeline's video and audio tracks that lies wholly
-//!   inside a marker span labelled `label` (default `silence`), in track order and then by
-//!   start; `mode` is `lift` (default) or `ripple`. It never edits markers, captions or other
-//!   timelines. No such item answers an empty transaction.
+//!   inside a marker span labelled `label` (default `silence`), sorted by (track order, start);
+//!   `mode` is `lift` (default) or `ripple`. It never edits markers, captions or other
+//!   timelines. No such item answers an empty transaction. `ripple` closes each gap on its own
+//!   track only (fin-core's `item.delete`), so tracks whose silent items differ end up shifted
+//!   by different amounts: an example of the op, not a sync-safe edit. (A linked item's delete
+//!   also takes its group's members, so a group with two silent members would name one twice;
+//!   the example assumes unlinked items.)
 //! - `fetch-title` (read-only): `GET https://api.example.org<path>` (default `/`) through the
 //!   host's broker and returns `{status, title}`, `title` being the trimmed text of the first
 //!   `<title>` element, or `null`.
@@ -65,19 +69,21 @@ fn silent_items(project: &Project, label: &str) -> Vec<String> {
         .filter(|m| m.label == label)
         .filter_map(|m| Some((m.at, m.at.checked_add(m.duration?).ok()?)))
         .collect();
-    let mut out = Vec::new();
-    for track in &timeline.tracks {
+    let mut found = Vec::new();
+    for (index, track) in timeline.tracks.iter().enumerate() {
         if track.kind == TrackKind::Caption {
             continue;
         }
         for item in &track.items {
             let Ok(end) = item.end() else { continue };
             if spans.iter().any(|&(a, b)| a <= item.start && end <= b) {
-                out.push(item.id.clone());
+                found.push((index, item.start, item.id.clone()));
             }
         }
     }
-    out
+    // Explicitly by (track, start): the snapshot's stored order is not relied on.
+    found.sort_by_key(|a| (a.0, a.1));
+    found.into_iter().map(|(_, _, id)| id).collect()
 }
 
 /// The trimmed text of the first `<title>` element (ASCII case-insensitive tag), if any.

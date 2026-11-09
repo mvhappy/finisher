@@ -62,10 +62,13 @@ impl FakeHost {
         }
     }
 
+    /// Writes to the process. A process that already exited (a cold plugin after its result,
+    /// with a fire-and-forget `log` reply still to send) is not an error.
     fn write(&mut self, bytes: &[u8]) {
         let to = self.to.as_mut().expect("stdin open");
-        to.write_all(bytes).unwrap();
-        to.flush().unwrap();
+        if let Err(e) = to.write_all(bytes).and_then(|()| to.flush()) {
+            assert_eq!(e.kind(), std::io::ErrorKind::BrokenPipe, "{e}");
+        }
     }
 
     pub fn send(&mut self, msg: &HostMsg) {
@@ -146,7 +149,7 @@ pub fn context() -> PluginContext {
         "grants": [{ "perm": "project:read" }, { "perm": "project:write" }, { "perm": "net", "origins": ["https://api.example.org"] }],
         "dirs": { "plugin": "/plugins/rust-tools", "tmp": "/plugins/tmp/k" },
         "locale": "en",
-        "limits": { "timeoutS": 10, "messageBytes": 1_048_576, "pageBytes": 786_432 }
+        "limits": { "timeoutS": 10, "messageBytes": 1_048_576, "pageBytes": 774_144 }
     }))
     .unwrap()
 }

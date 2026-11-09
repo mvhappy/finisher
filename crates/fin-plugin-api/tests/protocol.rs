@@ -1,6 +1,7 @@
 //! The plugin protocol's types (8B plan Task 2, Decision 2): every type round-trips through
-//! JSON unchanged, refuses unknown fields, and the manifest's `commands` and `hooks`
-//! contributions parse and validate as host API 1.1 orders.
+//! JSON unchanged; host → plugin payloads ignore unknown fields and the rest refuse them; and
+//! the manifest's `commands` and `hooks` contributions parse and validate as host API 1.1
+//! orders.
 
 mod support;
 
@@ -29,6 +30,15 @@ fn round<T: Serialize + DeserializeOwned + PartialEq + Debug>(v: Value) -> T {
     t
 }
 
+/// `v` with an extra field decodes, the field ignored: a host → plugin payload from a newer host
+/// (forward compatibility; the cross-SDK contract).
+fn accepts_extra<T: Serialize + DeserializeOwned + Debug>(mut v: Value) {
+    let plain = serde_json::to_value(serde_json::from_value::<T>(v.clone()).unwrap()).unwrap();
+    v.as_object_mut().unwrap().insert("future".into(), json!(1));
+    let t: T = serde_json::from_value(v.clone()).unwrap_or_else(|e| panic!("{v}: {e}"));
+    assert_eq!(serde_json::to_value(&t).unwrap(), plain, "{v}");
+}
+
 /// `v` with an extra field is refused.
 fn refuses_extra<T: DeserializeOwned + Debug>(mut v: Value) {
     v.as_object_mut()
@@ -44,7 +54,7 @@ fn context_json() -> Value {
         "grants": [{ "perm": "project:read" }, { "perm": "net", "origins": ["https://api.example.org"] }],
         "dirs": { "plugin": "/store/acme/tools/1.2.0", "data": "/data/acme/tools/p1", "tmp": "/tmp/p" },
         "locale": "en",
-        "limits": { "timeoutS": 10, "messageBytes": 1048576, "pageBytes": 786432 }
+        "limits": { "timeoutS": 10, "messageBytes": 1048576, "pageBytes": 774144 }
     })
 }
 
@@ -55,10 +65,10 @@ fn plugin_context_round_trips() {
     assert_eq!(c.plugin.id.to_string(), "@acme/tools");
     assert_eq!(c.grants.len(), 2);
     assert_eq!(c.dirs.data.as_deref(), Some("/data/acme/tools/p1"));
-    refuses_extra::<PluginContext>(context_json());
-    refuses_extra::<PluginDirs>(context_json()["dirs"].clone());
-    refuses_extra::<CallLimits>(context_json()["limits"].clone());
-    refuses_extra::<PluginRefFull>(context_json()["plugin"].clone());
+    accepts_extra::<PluginContext>(context_json());
+    accepts_extra::<PluginDirs>(context_json()["dirs"].clone());
+    accepts_extra::<CallLimits>(context_json()["limits"].clone());
+    accepts_extra::<PluginRefFull>(context_json()["plugin"].clone());
     // `data` is absent without `fs pluginData`.
     let mut v = context_json();
     v["dirs"].as_object_mut().unwrap().remove("data");
@@ -74,7 +84,7 @@ fn command_run_round_trips() {
     let v = json!({ "command": "trim-silence", "args": { "threshold": -40 }, "project": "p1", "branch": "main", "rev": 7 });
     let r: CommandRun = round(v.clone());
     assert_eq!(r.rev, 7);
-    refuses_extra::<CommandRun>(v);
+    accepts_extra::<CommandRun>(v);
 }
 
 #[test]
@@ -100,10 +110,11 @@ fn calls_round_trip() {
     refuses_extra::<calls::ProjectSnapshot>(json!({}));
     let page = json!({ "bytesB64": "e30=", "page": 0, "pages": 1, "rev": 9 });
     round::<calls::ProjectSnapshotPage>(page.clone());
-    refuses_extra::<calls::ProjectSnapshotPage>(page);
+    accepts_extra::<calls::ProjectSnapshotPage>(page);
     round::<calls::ProjectView>(json!({}));
     round::<calls::ProjectView>(json!({ "budget": 2000, "range": "2s..5s" }));
     round::<calls::ProjectViewText>(json!({ "text": "timeline main" }));
+    accepts_extra::<calls::ProjectViewText>(json!({ "text": "timeline main" }));
     let req = json!({
         "method": "POST", "url": "https://api.example.org/v1/x",
         "headers": [{ "name": "content-type", "value": "application/json" }],
@@ -127,12 +138,17 @@ fn calls_round_trip() {
         "handle": "h1", "length": 0, "redirectNotFollowed": true
     });
     round::<calls::NetFetchReply>(reply.clone());
-    refuses_extra::<calls::NetFetchReply>(reply);
+    accepts_extra::<calls::NetFetchReply>(reply);
     round::<calls::NetFetchReply>(
         json!({ "status": 200, "headers": [], "handle": "h2", "length": 12 }),
     );
-    round::<calls::NetRead>(json!({ "handle": "h2", "offset": 0, "length": 786432 }));
+    round::<calls::NetRead>(json!({ "handle": "h2", "offset": 0, "length": 774144 }));
     round::<calls::NetReadPage>(json!({ "bytesB64": "aGVsbG8=", "eof": true }));
+    accepts_extra::<calls::NetReadPage>(json!({ "bytesB64": "aGVsbG8=", "eof": true }));
+    // Plugin → host payloads stay strict.
+    refuses_extra::<calls::NetRead>(json!({ "handle": "h2", "offset": 0, "length": 1 }));
+    refuses_extra::<calls::Log>(json!({ "level": "info", "msg": "hi" }));
+    refuses_extra::<calls::ProjectView>(json!({}));
     for level in ["debug", "info", "warn", "error"] {
         round::<calls::Log>(json!({ "level": level, "msg": "hi" }));
     }
@@ -430,4 +446,23 @@ fn pattern_heavy_schema_refused_quickly_at_install() {
     assert_eq!(errs.len(), 1, "{errs:?}");
     assert_eq!(errs[0].reason(), Some("argsSchema"));
     assert_eq!(errs[0].details["problem"], json!("budget"));
+}
+
+#[test]
+fn a_base64_page_leaves_room_in_a_line() {
+    use fin_plugin_api::protocol::{MAX_MESSAGE_BYTES, PAGE_BYTES};
+    assert_eq!(PAGE_BYTES, 756 * 1024);
+    let b64 = PAGE_BYTES.div_ceil(3) * 4;
+    assert_eq!(b64, 1_032_192);
+    assert!(
+        MAX_MESSAGE_BYTES - b64 >= 16 * 1024,
+        "room for the reply's JSON"
+    );
+}
+
+#[test]
+fn plugin_codes_are_named() {
+    use fin_plugin_api::protocol::errors::codes;
+    assert_eq!(codes::PLUGIN_COMMAND_FAILED, "PLUGIN_COMMAND_FAILED");
+    assert_eq!(codes::PLUGIN_OUTPUT_INVALID, "PLUGIN_OUTPUT_INVALID");
 }
