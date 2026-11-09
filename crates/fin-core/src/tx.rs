@@ -37,7 +37,9 @@ pub struct Tx {
     pub via: Option<Box<Via>>,
 }
 
-/// The plugin command a transaction came from: `plugin` is `<id>@<version>`.
+/// The plugin command a transaction came from: `plugin` is `<id>@<version>`. Only the host's
+/// plugin host (`apps/finisherd/src/plugins/host/commands.ts`) writes it; any other `via` is
+/// stripped. fin-core never validates it: to everything here it is unchecked data.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct Via {

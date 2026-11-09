@@ -9,6 +9,7 @@ import { CredentialsTag } from "./auth/credentials.ts";
 import { KEY_BYTES } from "./auth/crypto.ts";
 import { revokeCredential } from "./auth/revoke.ts";
 import { chainOf, credentialOf, withChain, writeGuardOf } from "./chain/chain.ts";
+import { withoutVia } from "./chain/client-via.ts";
 import { AuditTag } from "./control/audit.ts";
 import { ConnectionRegistryTag, ConnectionsTag } from "./connections.ts";
 import { issueChallenge, noteMinted } from "./auth/challenges.ts";
@@ -48,16 +49,6 @@ export const CAPABILITIES: ReadonlyArray<string> = [...FinRpcs.requests.keys()].
 /** The audit's word for a purge selector (never the project id or the date). */
 const purgeReason = (selector: unknown): string =>
   selector === "all" ? "all" : selector !== null && typeof selector === "object" && "before" in selector ? "before" : "project";
-
-/**
- * A client's tx without `via` (spec §3.8): only the plugin host, which commits through the
- * registry, attributes a tx to a plugin, so no client can. Any value is dropped, even `null`.
- */
-const withoutVia = (tx: unknown): unknown => {
-  if (tx === null || typeof tx !== "object" || Array.isArray(tx) || !Object.hasOwn(tx, "via")) return tx;
-  const { via: _via, ...rest } = tx as Record<string, unknown>;
-  return rest;
-};
 
 /** Defects (thrown exceptions, bugs) become `INTERNAL` instead of an RPC defect frame. */
 const defectsAsErrors = <A, R>(self: Effect.Effect<A, FinError, R>) =>
@@ -315,6 +306,7 @@ export const HandlersLive = FinRpcs.toLayer(
             Effect.flatMap(requireAbsolute("path", path), (p) => probeFor(chainOf(options)?.principal, projects, projectId, p)),
           ),
         ),
+      // The chain already strips a client's `via`; this is the backstop for a chainless caller.
       "tx.commit": ({ projectId, tx, generation }, options) =>
         guard("tx.commit", withMeta(options, (m) => registry.commit(projectId, withoutVia(tx), generation, m))),
       "snapshot.get": ({ projectId, branch }) => guard("snapshot.get", registry.snapshot(projectId, branch)),

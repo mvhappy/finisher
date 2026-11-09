@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 
 use fin_core::tx::Via;
 use fin_core::{CommittedTx, Op, Rational, SCHEMA_VERSION, Tx, VideoInfo};
-use fin_store::{BranchCreate, CherryPickReq, MAIN, Store, db_path};
+use fin_store::{BranchCreate, CherryPickReq, MAIN, MergeReq, Store, db_path};
 use rusqlite::Connection;
 use tempfile::TempDir;
 
@@ -156,4 +156,65 @@ fn via_survives_commit_rebase_pick_export_import() {
         "imported pick"
     );
     assert_eq!(find(&b, MAIN, "s2").tx.via, None);
+}
+
+#[test]
+fn via_survives_merge() {
+    let tmp = TempDir::new().unwrap();
+    let mut s = Store::create(
+        &tmp.path().join("sd"),
+        &tmp.path().join("p"),
+        "Demo",
+        secs(30),
+        None,
+    )
+    .unwrap();
+    commit(&mut s, "s1", 0, vec![asset("/m/a.mov")], None);
+    let feature = s
+        .create_branch(BranchCreate {
+            tx_id: "b1".into(),
+            author: "alice".into(),
+            name: Some("feature".into()),
+            from: MAIN.into(),
+            at: None,
+            dry_run: false,
+            args_hash: None,
+        })
+        .unwrap()
+        .branch
+        .id;
+    let base = s.head(&feature);
+    s.commit(Tx {
+        tx_id: "f1".into(),
+        author: "alice".into(),
+        branch: feature.clone(),
+        base_rev: base,
+        schema_version: SCHEMA_VERSION,
+        args_hash: None,
+        via: Some(Box::new(via())),
+        ops: vec![insert(0)],
+    })
+    .unwrap();
+    // Main moves on, so the merge rebases the copy over it.
+    let head = s.head(MAIN);
+    commit(&mut s, "s2", head, vec![insert(20)], None);
+    let report = s
+        .merge(MergeReq {
+            tx_id: "m1".into(),
+            author: "carol".into(),
+            from: feature.clone(),
+            into: MAIN.into(),
+            skip_conflicting: false,
+            dry_run: false,
+            args_hash: None,
+        })
+        .unwrap();
+    assert_eq!(report.merged, vec!["f1".to_string()], "{report:?}");
+    let copy = report
+        .committed
+        .iter()
+        .find(|c| !c.tx.ops.is_empty())
+        .expect("the merged copy");
+    assert_eq!(copy.tx.author, "carol");
+    assert_eq!(copy.tx.via, Some(Box::new(via())), "the merge carries it");
 }
