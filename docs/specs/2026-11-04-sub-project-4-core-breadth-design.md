@@ -1473,7 +1473,7 @@ Run 2026-11-07 on `sp4c-t29-fixes`: the 4C and diagnostics integration de1a455 p
 
 ### 5.12 Amendment (2026-11-09, approved): stable keyframe ids
 
-*Status: approved by the owner on 2026-11-09; fix batch B in `TASKS.md` (review finding #1, P1) builds it. It replaces the `"<path>@<at>"` keyframe identity of §4.3 (the `Param` keys list) and of plan 4C Decision 20. Keyframes get stable ids in model v3, and conflicts follow the key, not its time.*
+*Status: approved by the owner on 2026-11-09 and implemented by fix batch B (`TASKS.md`, review finding #1, P1); this section describes it as built (§5.12.7 lists the details the build settled). It replaces the `"<path>@<at>"` keyframe identity of §4.3 (the `Param` keys list) and of plan 4C Decision 20. Keyframes get stable ids in model v3, and conflicts follow the key, not its time.*
 
 *Owner answers (2026-11-09).* No one has used the app yet, so nothing here keeps old user data working. The only v2 data that must still load is the repository's own: the frozen upcasters, the SP2/4A/4B store fixtures (which hold no keyframe), the eval corpus and the `fin view` golden. A newer format is still refused cleanly. A move is `keyframe.set` by id with a new time (no `keyframe.move`). Concurrent inserts at one time conflict with `KEYFRAME_EXISTS`. Ids and times show in `fin view --detail` (no `fin keyframe ls`), and every keyframe write echoes the key id. The DB format is bumped by a migration. The `clip.*` aliases stay. Two proposed parts are dropped as compatibility machinery: `kv` legacy ids with their legacy replay, and the time guard for branches that diverged before the upgrade (former Q1 and Q7).
 
@@ -1509,7 +1509,7 @@ Run 2026-11-07 on `sp4c-t29-fixes`: the 4C and diagnostics integration de1a455 p
 - **`keyframe.restore {item, path, key, at, value, interp}`** (new, internal, like `effect.restore`): the inverse of a removal. It puts the key back under its literal id at `at`; `KEYFRAME_EXISTS` when another key holds that time, `DUPLICATE_ID` when the item already holds the id.
 - **Inverses** are always key form: an insert's is `keyframe.remove {key}`; an edit's or a move's is `keyframe.set {key, at, value, interp}` with the old values; a removal's is `keyframe.restore`. `effect.remove`, `item.remove` and the other put-backs carry keys with their ids.
 - **Canonical form.** A tx is canonicalised where it is first applied (its base frame for a stale commit, the head for a fresh one): each time-form `keyframe.set`/`remove` is replaced by its key form, naming the key found at `at` (a key an earlier op of the tx inserted is named by that op's placeholder), or the generated placeholder `$kf<opIndex>` for an insert (`DUPLICATE_PLACEHOLDER` if the client already used that name). A set's `at` is kept. So **every v3 record stores key-form keyframe ops**: a rebase carries the key, not the time, and a stale time-form op is pinned to the key it met in its own frame. Internal and replay applies refuse time form (`INVALID_OP`).
-- **Wire and CLI.** Clients may keep sending the time form. `resolved` and `--dry-run` echo the key form with the id (`kf<n>` from the bindings for an insert). `fin keyframe set <i> <path> (--at <t> | --key <k> [--at <t>]) <value> [--interp]` and `fin keyframe remove <i> <path> (--at <t> | --key <k>)` echo `key`. The `argsHash` input leaves `--key` out when it is absent (Decision 7). `fin view --detail` lists each animated path's keys as `<key>@<at>`.
+- **Wire and CLI.** Clients may keep sending the time form. `resolved` and `--dry-run` echo the key form with the id (`kf<n>` from the bindings for an insert). `fin keyframe set <i> <path> (--at <t> | --key <k> [--at <t>]) <value> [--interp]` and `fin keyframe remove <i> <path> (--at <t> | --key <k>)` echo `key`. The `argsHash` input leaves `--key` out when it is absent (Decision 7). `fin view --detail` lists each animated path's keys with ids and times (`kf: opacity[kf1@2.0s,kf2@6.0s] effects.fx1.radius[kf3@2.0s]`); without it the line is unchanged (`kf: <paths>`). `KEYFRAME_EXISTS` exits 3.
 
 #### 5.12.4 Conflict semantics
 
@@ -1538,6 +1538,15 @@ Test-first; the validation repro is the regression test.
 - **Files:** `fin-core` (`ids.rs`, `model`, `ops/keyframe_{set,remove,restore}.rs`, the op table, new `ops/util/keys.rs` for canonicalisation, `rebase/{footprint,engine}` with blame in a new module, `upgrade/{snapshot_v2,record_v2}.rs`), `fin-store` (`counters.rs`, the migration), `fin` (`commands/keyframe.rs`, `view`), and the regenerated `packages/core-types`. No TypeScript outside `generated/` reads keyframes.
 - **Open branches:** `sp5e` (the migration number and the generated schema), `sp8b`/`sp6b1` (the generated schema), batch D (`fin` commands): mechanical.
 - **Alternatives rejected:** mapping footprints forward (time stays the identity, so a key removed and another inserted at one time are still one key; and it must follow splits and put-backs); per-list ordinal ids (they collide across branches); ids derived from the txId (long); ids folded into v2 without a version bump (one version must mean one shape, §3.2).
+
+#### 5.12.7 As built
+
+- **Where canonicalisation runs.** `fin_core::canonicalize(frame, tx)` rewrites the time-form ops; the store calls it on a fresh commit (at the head), `rebase_tx` on a stale one (at the base), and the applier canonicalises op by op in every mode but replay, so internal callers and tests that apply a time-form op get the same key form. Replay refuses the time form (`INVALID_OP`), which is what keeps every stored op in key form.
+- **Placeholders.** The first op of a tx that names a key placeholder binds it; a later `keyframe.set` or `keyframe.remove` naming the same placeholder edits or removes that key. `BoundIds`, recovery's id preset and `fin`'s builder skip the repeats. A generated `$kf<opIndex>` that an earlier op of the client's already bound is `DUPLICATE_PLACEHOLDER`.
+- **Schema-2 client txs** hold only shapes schema 3 accepts (time-form keyframe ops), so `normalize` commits them as schema 3; schema-1 txs still upgrade as before.
+- **Blame for `KEYFRAME_EXISTS`** is the last unmirrored record whose footprint touches `<path>#<existing>` (`rebase/rerun.rs`, which also holds the other re-run blame rules, moved out of `engine.rs`).
+- **Ids in id lists.** `Item::ids`/`refs_mut`, `Project::entity_ids` and every op that carries key lists (`effect.restore`, the put-backs) list key ids, so counters seed past them and recovery renames reach them.
+- **Upcast goldens:** `tests/upgrade_golden/corpus_05_v2.json` is corpus case 05 as it was at v2; it upcasts to the v3 corpus file exactly.
 
 ---
 
