@@ -22,9 +22,27 @@ pub const LINUX_LOCAL: [u64; 9] = [
     0x794C_7630, // overlayfs
 ];
 
+/// overlayfs (Docker's container filesystem): local to the restart shortcut, but it hides the
+/// disk under it, so server data on it is not a *known* local filesystem (`crate::locality`).
+pub const LINUX_OVERLAY: u64 = 0x794C_7630;
+
 /// Pure part, Linux.
 pub fn is_linux_local(f_type: u64) -> bool {
     LINUX_LOCAL.contains(&f_type)
+}
+
+/// The `statfs` filesystem type of `dir` (Linux), `None` when the probe fails.
+#[cfg(target_os = "linux")]
+pub fn linux_fs_type(dir: &Path) -> Option<u64> {
+    use std::os::unix::ffi::OsStrExt;
+    let c = std::ffi::CString::new(dir.as_os_str().as_bytes()).ok()?;
+    // SAFETY: `c` is a valid NUL-terminated path and `st` a properly sized out-parameter.
+    let mut st: libc::statfs = unsafe { std::mem::zeroed() };
+    if unsafe { libc::statfs(c.as_ptr(), &mut st) } != 0 {
+        return None;
+    }
+    #[allow(clippy::unnecessary_cast)]
+    Some((st.f_type as u64) & 0xFFFF_FFFF)
 }
 
 /// Pure part, macOS.
@@ -39,17 +57,7 @@ pub fn is_windows_local(fs_name: &str, fixed: bool) -> bool {
 
 #[cfg(target_os = "linux")]
 pub fn is_local_disk(dir: &Path) -> bool {
-    use std::os::unix::ffi::OsStrExt;
-    let Ok(c) = std::ffi::CString::new(dir.as_os_str().as_bytes()) else {
-        return false;
-    };
-    // SAFETY: `c` is a valid NUL-terminated path and `st` a properly sized out-parameter.
-    let mut st: libc::statfs = unsafe { std::mem::zeroed() };
-    if unsafe { libc::statfs(c.as_ptr(), &mut st) } != 0 {
-        return false;
-    }
-    #[allow(clippy::unnecessary_cast)]
-    is_linux_local((st.f_type as u64) & 0xFFFF_FFFF)
+    linux_fs_type(dir).is_some_and(is_linux_local)
 }
 
 #[cfg(target_os = "macos")]

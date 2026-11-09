@@ -430,6 +430,7 @@ impl Writer {
         self.buf.extend_from_slice(line);
         if let Some(m) = self.files.last_mut() {
             m.bytes += line.len() as u64;
+            m.start_ts = m.start_ts.min(ts);
             m.end_ts = m.end_ts.max(ts);
         }
         if self.buf.len() >= self.sh.opts.flush_bytes {

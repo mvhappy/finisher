@@ -76,6 +76,10 @@ describe("storage RPCs", () => {
     expect([got.rev, got.tx.txId]).toEqual([1, "tx-1"]);
     expect(ok(await c.call("tx.get", { projectId, txId: "tx-unknown" }))).toBeNull();
 
+    expect(ok(await c.call("project.close", { projectId }))).toEqual({ closed: true });
+    expect(ok(await c.call("project.close", { projectId }))).toEqual({ closed: false });
+    expect(ok<Status>(await c.call("project.status", { projectId })).readOnly).toBeNull();
+
     const missing = await c.call("project.status", { projectId: "nope" });
     expect(missing.ok ? undefined : missing.error.code).toBe("PROJECT_NOT_FOUND");
   });
@@ -275,6 +279,65 @@ describe("engine events in the registry", () => {
     expect(revs.every((rev) => rev <= 3)).toBe(true);
   }, 15_000);
 
+  /** A subscriber that takes rev 1 and then waits on `gate` before taking anything else. */
+  function pausedAfterFirst(r: ProjectRegistryShape, projectId: string) {
+    let release!: () => void;
+    const gate = new Promise<void>((res) => (release = res));
+    const revs: number[] = [];
+    const fiber = Effect.runFork(
+      Stream.runForEach(r.subscribe(projectId, "main", 0), (c) =>
+        Effect.andThen(
+          Effect.sync(() => revs.push(c.rev)),
+          c.rev === 1 ? Effect.promise(() => gate) : Effect.void,
+        ),
+      ),
+    );
+    return { revs, release, exit: () => Effect.runPromise(Fiber.await(fiber)) };
+  }
+
+  test("a gap refill after a rebuild ends with HISTORY_REWOUND before any record of the rebuilt database", async () => {
+    const r = await registry({ hubCapacity: 2 });
+    const { projectId } = await run(r.create(join(tmp, "p"), "Demo", "30"));
+    await run(r.commit(projectId, tx("tx-0", 0, [addAsset("$a0")])));
+    const events: string[] = [];
+    Effect.runFork(Stream.runForEach(r.events(projectId), (e) => Effect.sync(() => events.push(e.type))));
+    const sub = pausedAfterFirst(r, projectId);
+    await until(() => (sub.revs.length === 1 ? true : undefined), 5_000, "rev 1");
+    // Revs 2–6 overflow the 2-item hub of the paused subscriber: it will see a gap.
+    for (let i = 1; i < 6; i++) await run(r.commit(projectId, tx(`tx-${i}`, i, [addAsset(`$a${i}`)])));
+    await run(r.rebuild(projectId));
+    await until(() => (events.includes("rebuilt") ? true : undefined), 5_000, "the rebuilt event");
+    sub.release();
+    const exit = await within(sub.exit(), 5_000);
+    expect(exit, "the subscriber never ended").toBeDefined();
+    expect(failureOf(exit!)?.code).toBe("HISTORY_REWOUND");
+    expect(sub.revs).toEqual([1]);
+  });
+
+  test("a gap refill at a newer generation (a rewind) ends with HISTORY_REWOUND", async () => {
+    const r = await registry({ hubCapacity: 2 });
+    const { projectId } = await run(r.create(join(tmp, "p"), "Demo", "30"));
+    await run(r.commit(projectId, tx("tx-0", 0, [addAsset("$a0")])));
+    const sub = pausedAfterFirst(r, projectId);
+    await until(() => (sub.revs.length === 1 ? true : undefined), 5_000, "rev 1");
+    for (let i = 1; i < 6; i++) await run(r.commit(projectId, tx(`tx-${i}`, i, [addAsset(`$a${i}`)])));
+    // The branch is rewound before its event reaches the hub: the log answers at generation n + 1.
+    const engine = r.engineOf(projectId)!;
+    const opsSinceAt = engine.opsSinceAt.bind(engine);
+    engine.opsSinceAt = async (branch: string, rev: number) => {
+      const read = JSON.parse(await opsSinceAt(branch, rev)) as { generation: { n: number } };
+      read.generation.n += 1;
+      return JSON.stringify(read);
+    };
+    sub.release();
+    const exit = await within(sub.exit(), 5_000);
+    expect(exit, "the subscriber never ended").toBeDefined();
+    const e = failureOf(exit!);
+    expect(e?.code).toBe("HISTORY_REWOUND");
+    expect(e?.details).toMatchObject({ branch: "main", reason: "GENERATION" });
+    expect(sub.revs).toEqual([1]);
+  }, 15_000);
+
   test("an ending is skipped by a subscriber that already read the generation it produces", () => {
     const err = (reason: string): FinError => ({ code: "HISTORY_REWOUND", message: reason, details: {} }) as FinError;
     const channel = new Channel<number>(8);
@@ -331,6 +394,89 @@ describe("engine events in the registry", () => {
     await until(() => (again.revs.length === 1 ? true : undefined), 5_000, "rev 1 again");
     expect(r.engineOf(projectId)).not.toBe(engine);
   });
+
+  test("an idle engine is closed (lease released) and the next call reopens it", async () => {
+    const r = await registry({ idleCloseMs: 300 });
+    const { projectId } = await run(r.create(join(tmp, "p"), "Demo", "30"));
+    await run(r.commit(projectId, tx("tx-0", 0, [addAsset("$a0")])));
+    const first = r.engineOf(projectId)!;
+    await until(() => (r.engineOf(projectId) === undefined ? true : undefined), 5_000, "the idle close");
+    // Still known here with its folder (agents, jobs, device roots); no reopen yet.
+    expect(r.isOpen(projectId)).toBe(true);
+    expect(r.dirOf(projectId)).toBe(join(tmp, "p"));
+    expect(r.openDirs()).toEqual([join(tmp, "p")]);
+    // Closed means released: another engine takes the lease at once and sees the commit.
+    // Closed means the lease stopped: the reopened engine re-takes it at once (this process
+    // wrote the record), not after the ~60 s staleness wait.
+    const end = Date.now() + 10_000;
+    while (((await run(r.status(projectId))) as Status).lease.state !== "held") {
+      if (Date.now() > end) throw new Error("the reopened engine never took the lease");
+      await new Promise((res) => setTimeout(res, 100));
+    }
+    expect(r.engineOf(projectId)).not.toBe(first);
+    expect(((await run(r.snapshot(projectId, "main"))) as { rev: number }).rev).toBe(1);
+    await run(r.commit(projectId, tx("tx-1", 1, [addAsset("$a1")])));
+  });
+
+  test("a subscriber, or a long call, keeps an engine from closing idle", async () => {
+    const r = await registry({ idleCloseMs: 200 });
+    const { projectId } = await run(r.create(join(tmp, "p"), "Demo", "30"));
+    const engine = r.engineOf(projectId)!;
+    const sub = Effect.runFork(Stream.runDrain(r.subscribe(projectId, "main", 0)));
+    await new Promise((res) => setTimeout(res, 800));
+    expect(r.engineOf(projectId)).toBe(engine);
+    await Effect.runPromise(Fiber.interrupt(sub));
+    // A long call running past the timeout: still open while it runs.
+    engine.delayNextLongCallForTest(1_000);
+    const verifying = run(r.verify(projectId));
+    await new Promise((res) => setTimeout(res, 700));
+    expect(r.engineOf(projectId)).toBe(engine);
+    await verifying;
+    await until(() => (r.engineOf(projectId) === undefined ? true : undefined), 5_000, "the idle close");
+  });
+
+  test("project.close ends the streams with ENGINE_CLOSED; a commit after it reopens the project", async () => {
+    const r = await registry({ idleCloseMs: 0 });
+    const { projectId } = await run(r.create(join(tmp, "p"), "Demo", "30"));
+    await run(r.commit(projectId, tx("tx-0", 0, [addAsset("$a0")])));
+    const sub = subscribe(r, projectId, 0);
+    await until(() => (sub.revs.length === 1 ? true : undefined), 5_000, "rev 1");
+    expect(await run(r.close(projectId))).toEqual({ closed: true });
+    const e = failureOf(await sub.exit());
+    expect(e?.code).toBe("ENGINE_CLOSED");
+    expect(e?.details).toMatchObject({ projectId, reason: "closed" });
+    expect(r.engineOf(projectId)).toBeUndefined();
+    expect(await run(r.close(projectId))).toEqual({ closed: false });
+    // Attaching (the chain saw it as open here) reopens it.
+    expect(await run(r.open(join(tmp, "p"), false, { projectId, attachOnly: true }))).toEqual({ projectId, rev: 1 });
+    expect(r.engineOf(projectId)).toBeDefined();
+    expect((await run(r.commit(projectId, tx("tx-1", 1, [addAsset("$a1")])))).rev).toBe(2);
+  });
+
+  test("a commit racing project.close reopens the project instead of failing", async () => {
+    const r = await registry({ idleCloseMs: 0 });
+    const { projectId } = await run(r.create(join(tmp, "p"), "Demo", "30"));
+    const closing = run(r.close(projectId));
+    const commits = await Promise.all([0, 1, 2].map((i) => run(r.commit(projectId, tx(`tx-${i}`, 0, [addAsset(`$a${i}`)])))));
+    expect(await closing).toEqual({ closed: true });
+    expect(commits.map((c) => c.rev).sort()).toEqual([1, 2, 3]);
+  });
+
+  test("a commit queued behind project.close is retried on a reopened engine that holds the lease", async () => {
+    const r = await registry({ idleCloseMs: 0 });
+    const { projectId } = await run(r.create(join(tmp, "p"), "Demo", "30"));
+    // A recovery holds the commit lock (and the engine's worker) for a while.
+    r.engineOf(projectId)!.delayNextLongCallForTest(800);
+    const recovering = run(r.history(projectId, "recover", { projectId }));
+    await new Promise((res) => setTimeout(res, 100));
+    // The close waits for the lock; the commit resolved the same engine and waits behind it.
+    const closing = run(r.close(projectId));
+    const committing = run(r.commit(projectId, tx("tx-0", 0, [addAsset("$a0")])));
+    await recovering;
+    expect(await closing).toEqual({ closed: true });
+    // Not ENGINE_CLOSED, and not read-only: the reopen waited for the old engine to let go.
+    expect((await committing).rev).toBe(1);
+  }, 15_000);
 
   test("subscribe beyond head fails BASE_REV_AHEAD", async () => {
     const r = await registry();

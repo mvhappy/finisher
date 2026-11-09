@@ -232,7 +232,7 @@ pub struct RecoverGroup {
 }
 
 /// A file `import_dir` did not read: its path and why (`not a segment: …`, `another
-/// project`, `unreadable: …`).
+/// project`, `too large: …`, `unreadable: …`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SkippedFile {

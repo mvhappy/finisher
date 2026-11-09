@@ -3,15 +3,18 @@
 //! procedure) go into quarantine as `IMPORTED`, origin `foreign`, detail the file's path.
 //! They exist nowhere else, so they stay current until their record is in `txs`; recover
 //! then offers them as groups. Records the database holds are skipped; files that do not
-//! decode, or belong to another project, are left alone and listed (`skipped_files`). Writes only the local database, so
-//! it runs while the project is read-only.
+//! decode, are above the segment cap, or belong to another project, are left alone and
+//! listed (`skipped_files`). Writes only the local database, so it runs while the project is
+//! read-only.
 
+use std::io::Read as _;
 use std::path::{Path, PathBuf};
 
 use rusqlite::{Connection, OptionalExtension, params};
 
 use crate::db::hash_bytes;
 use crate::import::quarantine::IMPORTED;
+use crate::scan::SEGMENT_CAP;
 use crate::{SkippedFile, StoreError, segment};
 
 /// Every `.fseg` file under `dir` (recursively), sorted.
@@ -31,6 +34,19 @@ fn files(dir: &Path) -> Result<Vec<PathBuf>, StoreError> {
     }
     out.sort();
     Ok(out)
+}
+
+/// The bytes of `path`, or `None` when it is larger than [`SEGMENT_CAP`] (the scanner's
+/// limit). At most one byte past the cap is read, so a file growing after the size check is
+/// bounded and rejected too.
+fn read_capped(path: &Path) -> std::io::Result<Option<Vec<u8>>> {
+    let f = std::fs::File::open(path)?;
+    if f.metadata()?.len() > SEGMENT_CAP {
+        return Ok(None);
+    }
+    let mut bytes = Vec::new();
+    f.take(SEGMENT_CAP + 1).read_to_end(&mut bytes)?;
+    Ok((bytes.len() as u64 <= SEGMENT_CAP).then_some(bytes))
 }
 
 /// What [`run`] did: rows added or made current again, and the files it did not read.
@@ -69,8 +85,12 @@ pub(super) fn run(conn: &Connection, project_id: &str, dir: &Path) -> Result<Imp
                 reason,
             });
         };
-        let bytes = match std::fs::read(&path) {
-            Ok(b) => b,
+        let bytes = match read_capped(&path) {
+            Ok(Some(b)) => b,
+            Ok(None) => {
+                skip(format!("too large: above {SEGMENT_CAP} bytes"));
+                continue;
+            }
             Err(e) => {
                 skip(format!("unreadable: {e}"));
                 continue;

@@ -18,6 +18,7 @@ export {
   libraryWatchStart,
 } from "./library.js";
 export { PipeServer } from "./pipe.js";
+export { checkServerDataLocal, serverId } from "./server-data.js";
 export * from "./sandbox.js";
 export * from "./vault.js"; // 5B: the vault, the identity key; certificates and QR codes (`tls.js`)
 export class Engine {
@@ -464,11 +465,6 @@ export class FontManager {
  */
 export function lockExclusive(path) {
   return sync(() => native.lockExclusive(path));
-}
-
-/** This server data's `server-id` (created on first use; renewed for a copied server data). */
-export function serverId(serverData) {
-  return sync(() => native.serverId(serverData));
 }
 
 /** Windows: owner and DACL private to this user; elsewhere `{ ok: true }`. */

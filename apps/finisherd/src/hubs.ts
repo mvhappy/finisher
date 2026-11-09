@@ -155,6 +155,14 @@ export class Hubs {
     }
   }
 
+  /** Whether any subscriber holds a channel of the project (ops or events). */
+  holds(projectId: string): boolean {
+    if (this.#events.has(projectId)) return true;
+    const prefix = key(projectId, "");
+    for (const k of this.#ops.keys()) if (k.startsWith(prefix)) return true;
+    return false;
+  }
+
   /** The op channel of the branch, held until `releaseOps`. */
   acquireOps(projectId: string, branch: string): Channel<CommittedTx> {
     return this.#acquire(this.#ops, key(projectId, branch));
