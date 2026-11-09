@@ -197,10 +197,15 @@ fn in_flight(mut e: CoreError, tx_id: &str) -> CoreError {
     if e.code == "SERVER_UNAVAILABLE" {
         e.message = "the connection to the Finisher server was lost before it answered".into();
     }
-    e.fix = Some(format!(
+    let retry = format!(
         "the change may have landed; run the same command again with `--idem-key {tx_id}`: the \
          server answers a key it already applied from its log instead of applying it twice"
-    ));
+    );
+    // The run's overall deadline keeps its own advice (`FIN_DEADLINE_S`) beside the key's.
+    e.fix = Some(match e.fix.take() {
+        Some(f) if e.details.get("deadline").is_some() => format!("{f}; {retry}"),
+        _ => retry,
+    });
     e
 }
 
