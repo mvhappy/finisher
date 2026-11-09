@@ -8,13 +8,15 @@
 //! Administrators, `CREATOR OWNER` or `OWNER RIGHTS`: nothing for `Everyone`, `Users`,
 //! `Authenticated Users` or another account. Deny ACEs are fine; an ACE type this does not
 //! know is refused. These are the rules of `fin-registry`'s `private_windows.rs` (sub-project
-//! 8A) and of `fin-node`'s `checkPrivateDir`; this small copy keeps `fin` free of either
-//! crate. Problems name SIDs, never account names.
+//! 8A) and of `fin-node`'s `checkPrivateDir`; this small copy keeps `fin` free of both crates.
+//! Problems name SIDs, never account names.
 //!
 //! One more reader may be named by the caller (`reader`): a session's credential
 //! (`agents/<id>/credential.json`) carries the ACL broker's read-only grant for that session's
 //! capability SID (plan 7C Task 10), held only by the session's own sandboxed processes, which
-//! are the `fin`s that read it. Only a read mask is accepted for it.
+//! are the `fin`s that read it. Only a read mask is accepted for it. It adds no reader: Windows
+//! checks a container token's user and groups as well as its capabilities, and grants only what
+//! both allow, so the file stays readable by this user's own processes alone.
 
 use std::ffi::c_void;
 use std::fs::File;

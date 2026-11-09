@@ -345,10 +345,30 @@ fn a_sessions_credential_may_be_read_by_its_capability_alone_windows() {
     // Its session's capability, reading (the broker's grant): private still.
     icacls(&file, &["/grant", &format!("*{own}:R")]);
     assert!(read_credential_file(&file).unwrap().is_some());
-    // That capability writing: refused.
-    icacls(&file, &["/grant", &format!("*{own}:M")]);
-    let e = read_credential_file(&file).unwrap_err();
-    assert_eq!(e.details["problem"], "notPrivate");
+    // In generic form, reading: private still; writing: refused.
+    icacls(
+        &file,
+        &[
+            "/remove:g",
+            &format!("*{own}"),
+            "/grant",
+            &format!("*{own}:(GR)"),
+        ],
+    );
+    assert!(read_credential_file(&file).unwrap().is_some());
+    for w in ["M", "(GW)"] {
+        icacls(
+            &file,
+            &[
+                "/remove:g",
+                &format!("*{own}"),
+                "/grant",
+                &format!("*{own}:{w}"),
+            ],
+        );
+        let e = read_credential_file(&file).unwrap_err();
+        assert_eq!(e.details["problem"], "notPrivate", "{w}");
+    }
     // Another session's capability, reading: refused, and named.
     icacls(&file, &["/remove:g", &format!("*{own}")]);
     let other = fin_sandbox::windows::capability::capability_sid(
