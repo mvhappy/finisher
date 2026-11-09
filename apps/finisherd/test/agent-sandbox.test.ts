@@ -557,13 +557,13 @@ describe("a CLI session's processes (the fake harness's spawn step)", () => {
     const r = await run(() => [cmd("cd"), cmd("echo hi> ok.txt && type ok.txt"), cmd("echo %LOCALAPPDATA%"), cmd("echo %TEMP%"), [FIN, "whoami"], cmd("echo %FIN_SERVER%")]);
     // What the launch made outside its temp tree: the static grants (toolchain, `fin`, the
     // project) and the project's container profile.
+    const [data, container] = [realpathSyncNative(r.paths.serverData), sandboxProjectContainer(realpathSyncNative(r.paths.dir))];
     onTestFinished(async () => {
-      await aclRevoke(realpathSyncNative(r.paths.serverData), "static");
-      sandboxContainerDeleteForTest(sandboxProjectContainer(realpathSyncNative(r.paths.dir)));
+      await aclRevoke(data, "static");
+      sandboxContainerDeleteForTest(container);
     });
     expect(r.started.ok).toBe(true);
     const sid = r.session!.id;
-    const data = realpathSyncNative(r.paths.serverData);
     const workspace = realpathSyncNative(join(r.paths.dir, "workspace", sid));
     const lower = (c: Child | undefined) => line(c?.stdout ?? "").trim().toLowerCase();
     const [cwd, write, lad, temp, whoami, server] = r.children;
@@ -572,11 +572,11 @@ describe("a CLI session's processes (the fake harness's spawn step)", () => {
     expect(write, JSON.stringify(write)).toMatchObject({ code: 0 });
     expect(line(write!.stdout).trim()).toBe("hi");
     expect(readFileSync(join(workspace, "ok.txt"), "utf8").trim()).toBe("hi");
-    // `LOCALAPPDATA` is the session's own, and Windows puts `TEMP` under it (S9 point 7).
-    const own = join(data, "agents", sid, "localappdata").toLowerCase();
+    // `LOCALAPPDATA` is the session's own: Windows roots a container's under it
+    // (`Packages\<container>\AC`) and puts `TEMP` there (S9 point 7).
+    const own = `${join(data, "agents", sid, "localappdata").toLowerCase()}\\packages\\${container}\\ac`;
     expect(lower(lad)).toBe(own);
-    expect(lower(temp).startsWith(`${own}\\packages\\finisher-p-`), lower(temp)).toBe(true);
-    expect(lower(temp).endsWith("\\ac\\temp")).toBe(true);
+    expect(lower(temp)).toBe(`${own}\\temp`);
     // `fin` reaches the server over the pipe as the session's agent.
     expect(whoami, JSON.stringify(whoami)).toMatchObject({ code: 0 });
     expect(whoami!.stdout).toMatch(/"kind":"agent"/);
@@ -587,7 +587,8 @@ describe("a CLI session's processes (the fake harness's spawn step)", () => {
     // project's folder, for any owner. Server data stays owner-only.
     const MODIFY = 0x1301bf;
     const READ = 0x120089;
-    const grants = aclGrantsForTest(data);
+    // The broker records canonical (`\\?\`) paths.
+    const grants = aclGrantsForTest(data).map((g) => ({ ...g, path: g.path.replace(/^\\\\\?\\/, "") }));
     const mine = grants.filter((g) => g.owner === `session:${sid}`);
     const at = (rel: string) => mine.filter((g) => g.path.toLowerCase() === join(data, "agents", sid, rel).toLowerCase()).map((g) => g.mask);
     expect([at("tmp"), at("provider"), at("localappdata"), at("settings"), at("git")]).toEqual([[MODIFY], [MODIFY], [MODIFY], [READ], [READ]]);

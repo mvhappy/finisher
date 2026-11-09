@@ -134,7 +134,8 @@ describe("a real warm worker under the worker profile", () => {
     // Each live worker's own grants: its `tmp/` (modify) and its project's sources (read), never
     // its `jobs/`, the jobs root or the other project; no visit grant outlives its attempt.
     const lower = (p: string) => realpathSync.native(p).toLowerCase();
-    const live = aclGrantsForTest(e.serverData);
+    // The broker records canonical (`\\?\`) paths.
+    const live = aclGrantsForTest(e.serverData).map((g) => ({ ...g, path: g.path.replace(/^\\\\\?\\/, "") }));
     expect(live.filter((g) => g.owner.startsWith("job:"))).toEqual([]);
     const bySid = new Map<string, string[]>();
     for (const g of live.filter((x) => x.owner.startsWith("proc:"))) bySid.set(g.sid, [...(bySid.get(g.sid) ?? []), `${g.path.toLowerCase()} ${g.mask}`]);
