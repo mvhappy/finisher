@@ -412,10 +412,12 @@ pub fn merge_doc(report: &Value) -> Value {
     doc
 }
 
-/// Merges `from` into `into`.
+/// Merges `from` into `into`. `cmd` names the command for `argsHash`: `fin try keep` hashes
+/// as `try.keep`, so a key a plain `fin merge` used is `IDEM_KEY_REUSED` there (review #27).
 pub fn merge_refs(
     backend: &dyn Backend,
     g: &Globals,
+    cmd: &str,
     from: &str,
     into: &str,
     skip_conflicting: bool,
@@ -430,7 +432,7 @@ pub fn merge_refs(
         g,
         Req {
             tag: "history.merge",
-            cmd: "merge",
+            cmd,
             args,
             fields,
             hashed: true,
@@ -444,7 +446,7 @@ pub fn merge(backend: &dyn Backend, g: &Globals, a: &MergeArgs) -> Result<Value,
         Some(b) => b.clone(),
         None => target_branch(backend, g)?,
     };
-    let report = merge_refs(backend, g, &a.source, &into, a.skip_conflicting)?;
+    let report = merge_refs(backend, g, "merge", &a.source, &into, a.skip_conflicting)?;
     Ok(merge_doc(&report))
 }
 

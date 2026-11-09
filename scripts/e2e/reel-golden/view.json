@@ -1,5 +1,6 @@
 {
   "elided": [],
+  "lineTokens": 207,
   "lines": [
     "== tl1 \"Timeline 1\" 1080x1920 30fps 00:30.0  V1=t1 A1=t2 A2=t3 C1=t4 V2=t5",
     "00:00.0–00:10.0  V1  c1 clip a1 [0.0s+10.0s]  ⟷ lk1",
@@ -17,7 +18,7 @@
     "00:16.0–00:30.0  V1  c5 clip a1 [1.0s+14.0s]  ⟷ lk3",
     "00:16.0–00:30.0  A1  c6 clip a1 [1.0s+14.0s]  ⟷ lk3"
   ],
+  "responseTokens": 239,
   "rev": 21,
-  "timeline": null,
-  "tokens": 207
+  "timeline": null
 }

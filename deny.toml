@@ -38,3 +38,23 @@ multiple-versions = "warn"
 [sources]
 unknown-registry = "deny"
 unknown-git = "deny"
+
+# RustSec advisories (review #46), from the maintained advisory database cargo-deny fetches
+# (https://github.com/rustsec/advisory-db; `FIN_DENY_OFFLINE=1` uses the cached copy, `--offline`). Every
+# vulnerability, notice and unmaintained crate fails the gate unless it is listed below
+# with a reviewed reason. Bundled native engines (SQLite, ORT, codecs) are not covered by
+# RustSec: see the release checklist and `crates/fin-store/tests/sqlite_engine.rs`.
+[advisories]
+yanked = "warn"
+ignore = [
+  # Reviewed 2026-11-09. No safe upgrade: cosmic-text 0.19.0 (latest) needs fontdb 0.23,
+  # which parses faces with ttf-parser. Unmaintained, no known vulnerability; fonts are
+  # parsed in the font scan/shaping path only. Follow-up: drop when cosmic-text moves off it.
+  { id = "RUSTSEC-2026-0192", reason = "ttf-parser via cosmic-text/fontdb; no maintained release of cosmic-text avoids it yet" },
+  # Reviewed 2026-11-09. zbus 4 (keyring 3.6 / secret-service 4, Linux Secret Service only)
+  # uses the standalone zvariant/zbus_names crates, merged into zbus 6; keyring 4 still uses
+  # zbus 5 with them. Unmaintained, no known vulnerability. Follow-up: drop with zbus 6.
+  { id = "RUSTSEC-2026-0370", reason = "zvariant via zbus 4 (keyring); merged into zbus 6, which no keyring release uses yet" },
+  { id = "RUSTSEC-2026-0371", reason = "zbus_names via zbus 4 (keyring); merged into zbus 6, which no keyring release uses yet" },
+  { id = "RUSTSEC-2026-0372", reason = "zvariant_derive via zbus 4 (keyring); merged into zbus 6, which no keyring release uses yet" },
+]
