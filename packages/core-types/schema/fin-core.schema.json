@@ -13460,8 +13460,8 @@
       ]
     },
     "Rational": {
-      "description": "Exact rational seconds in canonical form: \"n/d\" in lowest terms with d > 1, or \"n\" when d is 1; no leading zeros, no \"+\", no \"-0\".",
-      "pattern": "^(0|-?[1-9]\\d*)(/[1-9]\\d*)?$",
+      "description": "Exact rational seconds in canonical form: \"n/d\" in lowest terms with d > 1, or \"n\" when d is 1; no leading zeros, no \"+\", no \"-0\". The pattern checks the shape; lowest terms is checked by the parser.",
+      "pattern": "^(0|-?[1-9]\\d*(/([2-9]\\d*|1\\d+))?)$",
       "type": "string"
     },
     "RawRel": {
