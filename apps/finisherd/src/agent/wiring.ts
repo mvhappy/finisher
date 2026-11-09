@@ -46,6 +46,7 @@ import { Runtime } from "./runtime.ts";
 import { cataloguePricing, type SessionEnvironment } from "./runtime-deps.ts";
 import { LayeredRules } from "./rules.ts";
 import { RuleStore } from "./rule-store.ts";
+import type { AclBroker } from "../sandbox/broker.ts";
 import { sessionSandboxes } from "./sandbox.ts";
 import { readAgentSettings, resolveFinPath } from "./settings.ts";
 import type { AgentStore } from "./store.ts";
@@ -117,6 +118,9 @@ export interface AgentWiringDeps {
   readonly libraryRoots?: () => ReadonlyArray<string>;
   readonly log: (message: string) => void;
   readonly options?: AgentServeOptions;
+  /** Windows: the server's ACL broker and the pipe's `allow` (plan 7C Task 10). */
+  readonly acl?: AclBroker;
+  readonly allowPipe?: (sid: string) => void;
 }
 
 /** Every stored node of a session, in order (the built-in loop rebuilds its history on resume). */
@@ -262,6 +266,8 @@ export const buildAgentRuntime = (d: AgentWiringDeps): Effect.Effect<AgentRuntim
       localEndpoint: d.endpoint,
       ...(d.agentListener === undefined ? {} : { agentListener: d.agentListener }),
       libraryRoots: async () => d.libraryRoots?.() ?? [],
+      ...(d.acl === undefined ? {} : { acl: d.acl }),
+      ...(d.allowPipe === undefined ? {} : { allowPipe: d.allowPipe }),
       ...(d.options?.sandboxLauncher === undefined ? {} : { launcher: () => d.options!.sandboxLauncher! }),
       onViolation: (v) =>
         d.audit.append({ kind: "sandbox.violation", principal: { kind: "agent", id: v.sessionId }, outcome: "denied", details: { session: v.sessionId, op: v.op, profile: v.profile, rootKind: v.rootKind } }),

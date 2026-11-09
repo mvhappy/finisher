@@ -54,6 +54,7 @@ import { claimSocketPath, makeLocalServer, serveRpc } from "./transport.ts";
 import { makeTicketedWebSocketServer, makeUpgradeCheck } from "./upgrade.ts";
 import { ServerControlTag } from "./server-admin.ts";
 import { isServeCommand, runConsole } from "./console/main.ts";
+import { aclBroker } from "./sandbox/broker.ts";
 import { currentSandboxStatus, reporterFor, sandboxWarnings } from "./sandbox/status.ts";
 import { type AgentRuntimeParts, AgentRuntimeTag, type AgentServeOptions, buildAgentRuntime } from "./agent/wiring.ts";
 import { type AgentListener, agentConnections, agentEndpoint, makeAgentListener, makeAgentTcpServer, rateLimited } from "./agent/listener.ts";
@@ -103,6 +104,11 @@ export const serve = ({
       yield* Effect.try({ try: () => ensureServerData(serverData), catch: startFailure });
       // Held until shutdown, before touching the socket: claim + listen is then race-free.
       yield* withServerLock(serverData);
+      // The ACL broker (plan 7C Task 10; Windows, a no-op elsewhere) completes what a crash left
+      // in its log and revokes every session, job and call grant before anything listens or
+      // grants: none of their processes outlives the server that started them.
+      const acl = aclBroker(serverData);
+      yield* Effect.tryPromise({ try: () => acl.sweep([]), catch: startFailure });
       // The control store (5A Task 1) before any listener: the environment id, the audit log.
       const id = yield* Effect.try({ try: () => serverId(serverData), catch: startFailure });
       const control = yield* Layer.build(Layer.provideMerge(layerAudit, layerControlStore(serverData, id)));
@@ -171,7 +177,13 @@ export const serve = ({
       const audit = Context.get(control, AuditTag);
       // Windows: the native pipe listener (Task 11); a client of another user is refused
       // before its first byte and audited.
+      // Each project's container SID is allowed on the pipe once its agents get a container.
+      let allowPipe: ((sid: string) => void) | undefined;
+      const allowed = new Set<string>();
       const local = yield* makeLocalServer(socket, {
+        onAllow: (allow) => {
+          allowPipe = allow;
+        },
         onRefused: (r) =>
           audit.append({
             kind: "auth.fail",
@@ -317,6 +329,12 @@ export const serve = ({
         agentListener: () => (agentListenerRef === undefined ? Promise.reject(new Error("the agent listener is not built yet")) : agentListenerRef.ensure()),
         log: (message) => logSink("warning", `finisherd: agent runtime: ${message}`),
         ...(agentOptions === undefined ? {} : { options: agentOptions }),
+        acl,
+        allowPipe: (sid) => {
+          if (allowed.has(sid) || allowPipe === undefined) return;
+          allowPipe(sid);
+          allowed.add(sid);
+        },
       });
       onAgentRuntime?.(agentRuntime);
       // One font layer for the handlers and the plugins, which feed it the packs' catalogs.

@@ -22,6 +22,11 @@
 // descriptor 3 before exit 78; a program's own exit 78 writes none), goes to `onViolation`
 // (`sandbox.violation`, spec §8.8). A seccomp kill (`SIGSYS`) is not attributed: without the
 // filter (plan Task 4) every `SIGSYS` is one a process sent, and so could be forged.
+// On Windows the launcher's AppContainer reaches only what the ACL broker granted (plan 7C
+// Task 10): the agent table (`sandboxAgentGrants`: the masks follow the policy) is granted
+// before the first process starts (re-granting an entry the broker already holds is a no-op),
+// the session's own entries revoked when the scope closes, and the project's container SID is
+// allowed on the pipe (`allowPipe`).
 import { type ChildProcess, spawn as spawnChild } from "node:child_process";
 import { mkdir, realpath } from "node:fs/promises";
 import { homedir } from "node:os";
@@ -29,9 +34,10 @@ import { join } from "node:path";
 import type { Readable, Writable } from "node:stream";
 import type { FinError, Harness, Session } from "@finisher/contracts";
 import type { AgentInput, FinEndpoint } from "@finisher/core-types";
-import { sandboxAgentCheck, sandboxToolchainBase } from "@finisher/fin-node";
+import { sandboxAgentCheck, sandboxAgentGrants, sandboxContainerSid, sandboxProjectContainer, sandboxToolchainBase } from "@finisher/fin-node";
 import { Effect, type Scope } from "effect";
 import { finError, toFinError } from "../errors.ts";
+import { type AclBroker, grantTable, sessionOwner } from "../sandbox/broker.ts";
 import { resolveSandboxExecPath } from "../sandbox/exec.ts";
 import { currentSandboxStatus, type SandboxMechanism, type SandboxStatus } from "../sandbox/status.ts";
 import { sessionEnv } from "./sandbox-env.ts";
@@ -105,6 +111,14 @@ export interface SessionSandboxDeps {
   readonly parent?: NodeJS.ProcessEnv;
   /** How long a killed process group may take to go at scope close (default 5 s). */
   readonly killGraceMs?: number;
+  /** Windows: the server's ACL broker (plan 7C Task 10). */
+  readonly acl?: AclBroker;
+  /** Windows: admits a container SID on the server's pipe (`PipeServer.allow`). */
+  readonly allowPipe?: (sid: string) => void;
+  /** The ACEs a launch needs (default: fin-node's `sandboxAgentGrants`). */
+  readonly agentGrants?: typeof sandboxAgentGrants;
+  /** A container's SID by name (default: fin-node's `sandboxContainerSid`; tests). */
+  readonly containerSid?: (name: string) => string | null;
 }
 
 /** How the `agent` profile's status starts processes, or the refusal. */
@@ -139,6 +153,14 @@ export function openSessionSandbox(s: Session, harness: Harness, deps: SessionSa
   const children = new Set<SandboxedChild>();
   // Set once the scope closes: a spawn still in flight is killed as it arrives.
   const closed = { v: false };
+  // Windows: the broker's grants are made under this owner (revoked at scope close).
+  const acl = platform === "win32" && deps.acl?.active === true ? deps.acl : undefined;
+  const owner = sessionOwner(s.id);
+  const grant = async (input: AgentInput) => {
+    if (acl === undefined) return;
+    const table = (deps.agentGrants ?? sandboxAgentGrants)(input);
+    await grantTable(acl, table, { owner, ...(deps.containerSid === undefined ? {} : { containerSid: deps.containerSid }) });
+  };
   const open = Effect.tryPromise({
     try: async (): Promise<SessionSandbox> => {
       const status = (deps.status ?? currentSandboxStatus)();
@@ -171,7 +193,21 @@ export function openSessionSandbox(s: Session, harness: Harness, deps: SessionSa
         home: await canonical(homedir()),
         ...(server.fin === undefined ? {} : { fin: server.fin }),
       };
-      if (mode === "launcher") check(base, status.os);
+      if (mode === "launcher") {
+        check(base, status.os);
+        // The project's container reaches `fin` over the pipe (spec §8.11): its SID is allowed
+        // there, whatever the grant table names.
+        if (acl !== undefined && deps.allowPipe !== undefined) {
+          const sid = (deps.containerSid ?? sandboxContainerSid)(sandboxProjectContainer(projectDir));
+          if (sid === null) throw finError("SANDBOX_UNAVAILABLE", "no SID for the project's container", { profile: "agent", os: status.os, need: "the project's container SID" });
+          deps.allowPipe(sid);
+        }
+        // Before any process: what the container may reach (a failure revokes what was granted).
+        await grant(base).catch(async (e: unknown) => {
+          await acl?.revoke(owner).catch(() => 0);
+          throw e;
+        });
+      }
       const launcher = mode === "launcher" ? (deps.launcher ?? resolveSandboxExecPath)() : "";
       return {
         env,
@@ -185,7 +221,10 @@ export function openSessionSandbox(s: Session, harness: Harness, deps: SessionSa
               let input = base;
               if (opts.extraRead !== undefined && opts.extraRead.length > 0) {
                 input = { ...base, toolchains: [...base.toolchains!, ...(await Promise.all(opts.extraRead.map(canonical)))] };
-                if (mode === "launcher") check(input, status.os);
+                if (mode === "launcher") {
+                  check(input, status.os);
+                  await grant(input);
+                }
               }
               if (closed.v) throw finError("SESSION_INTERRUPTED", "the session's sandbox is closed", { sessionId: s.id });
               const child = await start(mode === "launcher" ? { launcher, request: { profile: "agent", input } } : undefined, argv, opts.cwd, env, platform, (exit, launcherFailed) => {
@@ -206,9 +245,11 @@ export function openSessionSandbox(s: Session, harness: Harness, deps: SessionSa
     catch: toFinError,
   });
   return Effect.acquireRelease(open, () =>
-    Effect.promise(() => {
+    Effect.promise(async () => {
       closed.v = true;
-      return killAll(children, deps.killGraceMs ?? 5_000);
+      await killAll(children, deps.killGraceMs ?? 5_000);
+      // A revoke that fails stays in the broker's log; the next start's sweep completes it.
+      await acl?.revoke(owner).catch(() => 0);
     }),
   );
 }

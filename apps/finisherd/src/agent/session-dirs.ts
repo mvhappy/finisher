@@ -11,8 +11,9 @@
 // `readlink`, `rm` and `symlink` on the link's own name only).
 //
 // Windows: the ACL broker (plan 7C Task 10) grants these directories to the session's
-// capability SID; `ensureSessionDirs` takes that step as `grant` so this module stays free of
-// OS code.
+// capability SID with the masks the policy gives each (`sandbox.ts`, from fin-sandbox's grant
+// table: `settings/`, `git/` and `credential.json` read, `tmp/`, `provider/` and
+// `localappdata/` modify, `blobs/` nothing), so this module stays free of OS code.
 import { constants } from "node:fs";
 import { chmod, lstat, mkdir, open, readlink, rm, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -57,8 +58,6 @@ export function sessionDirs(agentsRoot: string, sessionId: string): SessionDirs 
 
 export interface EnsureOptions {
   readonly platform?: NodeJS.Platform;
-  /** Windows: the broker's grant of one directory to the session (Task 10). */
-  readonly grant?: (dir: string) => Promise<void>;
 }
 
 /**
@@ -98,7 +97,6 @@ export async function ensureSessionDirs(agentsRoot: string, sessionId: string, o
   // `git/` is not writable inside the sandbox, so its file cannot have been replaced.
   await writeFile(d.gitConfig, sandboxSessionGitConfig(), { mode: 0o600 });
   if (platform !== "win32") await chmod(d.gitConfig, 0o600);
-  if (opts.grant !== undefined) for (const p of dirs) await opts.grant(p);
   return d;
 }
 

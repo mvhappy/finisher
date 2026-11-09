@@ -15,6 +15,84 @@
       },
       "type": "object"
     },
+    "AclGrant": {
+      "description": "One allow ACE, inherited by the subtree.",
+      "properties": {
+        "mask": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "path": {
+          "type": "string"
+        },
+        "scope": {
+          "$ref": "#/$defs/AclScope"
+        },
+        "trustee": {
+          "$ref": "#/$defs/AclTrustee"
+        }
+      },
+      "required": [
+        "path",
+        "trustee",
+        "mask",
+        "scope"
+      ],
+      "type": "object"
+    },
+    "AclScope": {
+      "description": "How long a grant lives.",
+      "oneOf": [
+        {
+          "const": "static",
+          "description": "Shared by every launch of its kind (the toolchain, a project's folder, a sign-in\nstore): granted once, kept.",
+          "type": "string"
+        },
+        {
+          "const": "owner",
+          "description": "This session's or this call's own: revoked when it ends.",
+          "type": "string"
+        }
+      ]
+    },
+    "AclTrustee": {
+      "description": "Whom an ACE names: a SID (a capability's, derived here) or a container by name (its SID\nis Windows', [`super::appcontainer::sid`]).",
+      "oneOf": [
+        {
+          "properties": {
+            "kind": {
+              "const": "sid",
+              "type": "string"
+            },
+            "value": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "value"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "kind": {
+              "const": "container",
+              "type": "string"
+            },
+            "value": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "value"
+          ],
+          "type": "object"
+        }
+      ]
+    },
     "Actor": {
       "description": "Who caused an entry: a person, an agent (with its session and the tool call that ran\n`fin`), a plugin or the system. `session` is the agent or UI session (`FIN_SESSION`), not\nthe envelope's process run; `call` is the harness's tool-call id (`FIN_CALL`).",
       "properties": {

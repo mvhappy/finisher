@@ -45,4 +45,5 @@ pub fn register_schemas(g: &mut schemars::SchemaGenerator) {
     g.subschema_for::<Profile>();
     g.subschema_for::<SandboxStatus>();
     g.subschema_for::<LauncherProbe>();
+    g.subschema_for::<windows::grants::AclGrant>();
 }

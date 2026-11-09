@@ -13,6 +13,7 @@
 
 use std::path::PathBuf;
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use super::capability::{self, TOOLCHAIN, capability_sid};
@@ -30,16 +31,18 @@ pub const MODIFY: u32 = 0x0013_01BF;
 
 /// Whom an ACE names: a SID (a capability's, derived here) or a container by name (its SID
 /// is Windows', [`super::appcontainer::sid`]).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", tag = "kind", content = "value")]
+#[schemars(rename = "AclTrustee")]
 pub enum Trustee {
     Sid(String),
     Container(String),
 }
 
 /// How long a grant lives.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
+#[schemars(rename = "AclScope")]
 pub enum Scope {
     /// Shared by every launch of its kind (the toolchain, a project's folder, a sign-in
     /// store): granted once, kept.
@@ -49,7 +52,7 @@ pub enum Scope {
 }
 
 /// One allow ACE, inherited by the subtree.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct AclGrant {
     pub path: PathBuf,

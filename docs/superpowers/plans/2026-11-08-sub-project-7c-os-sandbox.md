@@ -602,8 +602,8 @@ The `/usr/bin` developer shims (`git` and friends) are a trap. With a fresh `HOM
 - Modify: `crates/fin-node/src/lib.rs`, `crates/fin-node/src/sandbox.rs` (`aclGrant`, `aclRevoke`, `aclSweep`), `apps/finisherd/src/main.ts` (sweep before any listener), `apps/finisherd/src/pipe.ts` call sites for `PipeServer.allow(sid)` per project, `TASKS.md`.
 - Test: `crates/fin-node/tests/acl_broker.rs`, `apps/finisherd/test/acl-broker.test.ts`.
 
-- [ ] **Step 1: Write failing tests:** grant then revoke leaves the DACL as before (read back); **a crash injected between WAL append and apply, and between apply and the done marker, is completed at the next start** (test hook kills the process at each point); the S8 lost-grant race (two concurrent grants on one directory both survive); a grant for a session or job that no longer exists is revoked by the sweep; a protected root is never granted (refused before the WAL); `PipeServer.allow(container SID)` lets that project's container open the pipe and another project's container still cannot (spec §8.11 Windows).
-- [ ] **Step 2: Implement.**
+- [x] **Step 1: Write failing tests:** grant then revoke leaves the DACL as before (read back); **a crash injected between WAL append and apply, and between apply and the done marker, is completed at the next start** (test hook kills the process at each point); the S8 lost-grant race (two concurrent grants on one directory both survive); a grant for a session or job that no longer exists is revoked by the sweep; a protected root is never granted (refused before the WAL); `PipeServer.allow(container SID)` lets that project's container open the pipe and another project's container still cannot (spec §8.11 Windows).
+- [x] **Step 2: Implement.** *(Linux-verified; the protected-root rule is in `acl_broker/protect.rs` and TASKS.md.)*
 - [ ] **Step 3: Run** the gates on Windows → PASS. **Commit** `feat(fin-node): ACL broker with a write-ahead log and per-project pipe SIDs`.
 
 ### Task 11: Session wiring: directories, environment, `spawnInSession` — tier: opus — 7C-5 (after 7A-2 merges)

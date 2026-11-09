@@ -1,7 +1,7 @@
 // Types of `sandbox.js` (re-exported by `index.d.ts`).
-import type { AgentInput, SandboxMechanism, SandboxStatus } from "@finisher/core-types";
+import type { AclGrant, AgentInput, HookInput, SandboxMechanism, SandboxStatus } from "@finisher/core-types";
 
-export type { SandboxMechanism, SandboxStatus };
+export type { AclGrant, SandboxMechanism, SandboxStatus };
 
 /**
  * Every sandbox profile's status on this host (`fin_sandbox::status::all`): `enforced`,
@@ -27,3 +27,48 @@ export declare function sandboxToolchainBase(): string[];
 
 /** `null` when `fin-sandbox` builds an `agent` policy from `input`, else why not. Plan 7C Task 11. */
 export declare function sandboxAgentCheck(input: AgentInput): string | null;
+
+/**
+ * One ACE the broker holds (plan 7C Task 10): `sid` gets `mask` on `path` (`inherit`: the
+ * subtree inherits it) for `owner` (`session:<id>`, `job:<id>`, `call:<id>`, or `static`:
+ * granted once and kept). The broker's argument, not a stored model.
+ */
+export interface AclBrokerGrant {
+  readonly path: string;
+  readonly sid: string;
+  readonly mask: number;
+  readonly inherit: boolean;
+  readonly owner: string;
+}
+
+/**
+ * Grants through the server's ACL broker: logged to `<serverData>/run/acl-broker.wal` and
+ * fsynced, applied (Windows: the DACL; elsewhere nothing), marked done. A protected root is
+ * refused first (`PATH_NOT_ALLOWED {reason: aclProtected}`), a missing path is `NOT_FOUND`,
+ * a pair another owner holds `INVALID_OP {reason: aclOwned}`.
+ */
+export declare function aclGrant(serverData: string, grant: AclBrokerGrant): Promise<void>;
+
+/** Revokes `owner`'s grants (only those on `path` when given); how many. */
+export declare function aclRevoke(serverData: string, owner: string, path?: string): Promise<number>;
+
+/**
+ * Revokes every grant whose owner is not in `liveOwners` (`static` always is); how many. The
+ * first call of a server opens the broker, completing what a crash left.
+ */
+export declare function aclSweep(serverData: string, liveOwners: Iterable<string>): Promise<number>;
+
+/** The ACEs an `agent` launch needs on Windows (`fin_sandbox::windows::grants::agent`; pure). */
+export declare function sandboxAgentGrants(input: AgentInput): AclGrant[];
+
+/** The ACEs a `hook` launch needs on Windows (`fin_sandbox::windows::grants::hook`; pure). */
+export declare function sandboxHookGrants(input: HookInput): AclGrant[];
+
+/** The AppContainer name of a project's agents and hooks (`finisher-p-<hash>`; pure). */
+export declare function sandboxProjectContainer(projectDir: string): string;
+
+/** The SID of the AppContainer `name` on Windows; `null` elsewhere. */
+export declare function sandboxContainerSid(name: string): string | null;
+
+/** @internal Test builds only: the broker's live grants. */
+export declare function aclGrantsForTest(serverData: string): AclBrokerGrant[];
