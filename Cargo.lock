@@ -663,6 +663,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "example-rust-tools"
+version = "0.1.0"
+dependencies = [
+ "fin-plugin-sdk",
+]
+
+[[package]]
 name = "fallible-iterator"
 version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -934,6 +941,27 @@ dependencies = [
  "serde_json",
  "sha2",
  "tempfile",
+]
+
+[[package]]
+name = "fin-plugin-sdk"
+version = "0.0.0"
+dependencies = [
+ "fin-core",
+ "fin-jobs",
+ "fin-plugin-api",
+ "fin-shm",
+ "serde_json",
+]
+
+[[package]]
+name = "fin-plugin-test"
+version = "0.0.0"
+dependencies = [
+ "fin-core",
+ "fin-jobs",
+ "fin-plugin-api",
+ "serde_json",
 ]
 
 [[package]]

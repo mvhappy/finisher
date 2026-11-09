@@ -241,6 +241,16 @@ importers:
         specifier: 24.19.2
         version: 24.19.2
 
+  packages/plugin-sdk:
+    dependencies:
+      '@finisher/core-types':
+        specifier: workspace:*
+        version: link:../core-types
+    devDependencies:
+      '@types/node':
+        specifier: 24.19.2
+        version: 24.19.2
+
 packages:
 
   '@apidevtools/json-schema-ref-parser@11.9.3':
