@@ -16,7 +16,7 @@ use std::sync::Arc;
 
 use fin_core::layout::TextMeasurer;
 use fin_core::rebase::reasons;
-use fin_core::{CommittedTx, Conflict, CoreError, Project, RecordKind};
+use fin_core::{CommittedTx, Conflict, CoreError, Project};
 use rusqlite::Connection;
 
 use super::groups::{Forest, Fork, Group, resolve_fork};
@@ -252,12 +252,10 @@ impl<'a, 'c, 'w> Runner<'a, 'c, 'w> {
             return Ok(());
         }
         let kids = self.tree_children(g);
-        let needs_branch = group.rows.iter().any(|&i| {
-            rows[i]
-                .record
-                .as_ref()
-                .is_some_and(|r| r.kind.has_ops() || r.kind == RecordKind::Checkpoint)
-        });
+        let needs_branch = group
+            .rows
+            .iter()
+            .any(|&i| rows[i].record.as_ref().is_some_and(|r| forest.in_place(r)));
         let fork_ids = entity_ids(&start.state);
         let mut state = start.state.clone();
         let mut remap = start.remap.clone();

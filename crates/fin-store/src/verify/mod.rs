@@ -44,8 +44,9 @@
 //! - `record_size`: no stored record is larger than `segment::MAX_RECORD_BYTES` (only a
 //!   migrated sub-project 2 record can be; export stops at it, `RECORD_TOO_LARGE`).
 //! - `branch_index` (plan 4B Decision 6): the `branches` table equals the index
-//!   `crate::derived::compute` derives from the log (`index`), and `record_links` the rows its
-//!   records give, inert marks included (`links`); every non-`main` index row has state
+//!   `crate::derived::compute` derives from the log (`index`), `record_links` the rows its
+//!   records give, inert marks included (`links`), and `drops` the rows its `drop` records
+//!   give (`drops`, plan 5E Task 2); every non-`main` index row has state
 //!   (`stateless`: such a branch cannot be read) and every branch with rows an index row
 //!   (`unindexed`: it refuses writes). Each branch directory's segments that do not name the
 //!   index's `branch` record (Decision 33) name one that is set aside here (an inert row or

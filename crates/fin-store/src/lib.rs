@@ -22,6 +22,7 @@ mod db;
 mod dblock;
 mod derived;
 mod diffs;
+mod drops_index;
 mod export;
 pub mod fsio;
 mod guard;
@@ -102,7 +103,7 @@ pub use status::{
 pub use tick::{DueWork, TickOptions, TickReport};
 pub use verify::{Check, VerifyReport};
 pub use wire::{
-    BranchCreated, BranchView, EngineEvent, HistoryResult, MergeReport, RecoverGroup,
+    BranchCreated, BranchView, DropReq, EngineEvent, HistoryResult, MergeReport, RecoverGroup,
     RecoverReport, SetAside, SkippedFile, TxSetAside,
 };
 pub use write::WriteOutcome;

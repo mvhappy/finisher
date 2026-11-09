@@ -143,6 +143,34 @@ describe("branches", () => {
 });
 
 describe("history", () => {
+  test("drop and undrop (plan 5E Task 2)", async () => {
+    const e = await project();
+    await e.branchCreate(req({ txId: "b1", name: "feature", from: "main" }));
+    await e.commit(tx("t-b1", "br1", 2, [insert(10)]));
+    await e.commit(tx("t-b2", "br1", 3, [insert(20)]));
+
+    const planned = await json(e.drop(req({ txId: "d1", into: "main", from: "feature", drops: ["t-b2"], dryRun: true })));
+    expect(planned.link).toEqual({ kind: "drop", from: "br1", drops: ["t-b2"] });
+    const dropped = await json(e.drop(req({ txId: "d1", into: "main", from: "feature", drops: ["t-b2"] })));
+    expect(dropped.tx.branch).toBe("main");
+    expect(dropped.link).toEqual({ kind: "drop", from: "br1", drops: ["t-b2"] });
+    expect(await json(e.drop(req({ txId: "d1", into: "main", from: "feature", drops: ["t-b2"] })))).toEqual(dropped);
+
+    const merged = await json(e.merge(req({ txId: "m1", from: "feature", into: "main" })));
+    expect(merged.merged).toEqual(["t-b1"]);
+    expect(merged.excluded.map((c: { txId: string; reason: string }) => [c.txId, c.reason])).toEqual([["t-b2", "DROPPED"]]);
+
+    const bad = await rejection(e.drop(req({ txId: "d2", into: "main", from: "feature", drops: ["t-c1"] })));
+    expect(bad.code).toBe("INVALID_OP");
+    expect(bad.details).toMatchObject({ reason: "notOnSource", txId: "t-c1" });
+    const unknown = await rejection(e.drop(req({ txId: "d2", into: "main", from: "feature", drops: ["t-b1"], extra: 1 })));
+    expect(unknown.code).toBe("INVALID_OP");
+
+    await e.drop(req({ txId: "d3", into: "main", from: "feature", undrops: ["t-b2"] }));
+    const again = await json(e.merge(req({ txId: "m2", from: "feature", into: "main" })));
+    expect(again.merged).toEqual(["t-b2"]);
+  });
+
   test("merge, undo, redo, revert", async () => {
     const e = await project();
     await e.branchCreate(req({ txId: "b1", name: "feature", from: "main" }));

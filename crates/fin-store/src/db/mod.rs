@@ -7,7 +7,8 @@
 //! txs; `ids` is the project-global id counter table, updated in the same SQLite transaction as
 //! the `txs` insert so a failed commit never consumes ids. `segments`, `lease_state` and
 //! `quarantine` belong to the project-folder export (sub-project 4A). `branches` and
-//! `record_links` are 4B's derived history tables, rebuildable from `txs`.
+//! `record_links` are 4B's derived history tables, and `drops` 5E's index of the origins `drop`
+//! records name ([`crate::drops_index`]), all rebuildable from `txs`.
 
 use std::path::Path;
 
@@ -98,6 +99,11 @@ CREATE TABLE IF NOT EXISTS quarantine_marks (
 );
 CREATE INDEX IF NOT EXISTS quarantine_marks_target ON quarantine_marks (kind, target) WHERE target IS NOT NULL;
 CREATE INDEX IF NOT EXISTS quarantine_counted ON quarantine (current, origin, reason);
+CREATE TABLE IF NOT EXISTS drops (
+    tx_id TEXT NOT NULL, branch TEXT NOT NULL, seq INTEGER NOT NULL, origin TEXT NOT NULL,
+    dropped INTEGER NOT NULL, PRIMARY KEY (tx_id, origin)
+);
+CREATE INDEX IF NOT EXISTS drops_at ON drops (branch, seq);
 ";
 
 /// The `main` row of `branches`, as migration 0002 writes it.

@@ -108,6 +108,8 @@ export declare class Engine {
   cherryPick(reqJson: string, metaJson?: string): Promise<string>;
   /** `RevertReq` JSON; resolves to the `HistoryResult` JSON. */
   revert(reqJson: string, metaJson?: string): Promise<string>;
+  /** `DropReq` JSON (drop or undrop origins of a source branch for a target); resolves to the `CommittedTx` JSON. */
+  drop(reqJson: string, metaJson?: string): Promise<string>;
   /** Long call: lists recoverable groups and, with `create`, makes their branches (`RecoverReq` JSON); resolves to the `RecoverReport` JSON. */
   recover(reqJson: string, metaJson?: string): Promise<string>;
   /** Long call: takes the lease over; resolves to the `ProjectStatus` JSON. */

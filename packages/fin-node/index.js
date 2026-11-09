@@ -20,6 +20,8 @@ export {
 export { PipeServer } from "./pipe.js";
 export * from "./sandbox.js";
 
+const HISTORY_CALLS = ["branchCreate", "branchSet", "undo", "redo", "checkpoint", "merge", "cherryPick", "revert", "drop", "recover"];
+
 export class Engine {
   #native;
 
@@ -27,6 +29,16 @@ export class Engine {
   constructor(nativeEngine) {
     if (!(nativeEngine instanceof native.Engine)) throw new TypeError("use Engine.create or Engine.open");
     this.#native = nativeEngine;
+  }
+
+  // The branch and history writes: `(reqJson, metaJson?)`, each the native call of its name
+  // (index.d.ts documents them one by one).
+  static {
+    for (const name of HISTORY_CALLS) {
+      Engine.prototype[name] = function (reqJson, metaJson) {
+        return call(this.#native[name](reqJson, metaJson ?? null));
+      };
+    }
   }
 
   static async create(serverData, projectDir, name, rate, options = {}) {
@@ -77,48 +89,12 @@ export class Engine {
     return call(this.#native.acknowledgeSalvage(copy, metaJson));
   }
 
-  branchCreate(reqJson, metaJson) {
-    return call(this.#native.branchCreate(reqJson, metaJson ?? null));
-  }
-
   branches(all) {
     return call(this.#native.branches(all === true));
   }
 
-  branchSet(reqJson, metaJson) {
-    return call(this.#native.branchSet(reqJson, metaJson ?? null));
-  }
-
   resolveBranch(name) {
     return call(this.#native.resolveBranch(name));
-  }
-
-  undo(reqJson, metaJson) {
-    return call(this.#native.undo(reqJson, metaJson ?? null));
-  }
-
-  redo(reqJson, metaJson) {
-    return call(this.#native.redo(reqJson, metaJson ?? null));
-  }
-
-  checkpoint(reqJson, metaJson) {
-    return call(this.#native.checkpoint(reqJson, metaJson ?? null));
-  }
-
-  merge(reqJson, metaJson) {
-    return call(this.#native.merge(reqJson, metaJson ?? null));
-  }
-
-  cherryPick(reqJson, metaJson) {
-    return call(this.#native.cherryPick(reqJson, metaJson ?? null));
-  }
-
-  revert(reqJson, metaJson) {
-    return call(this.#native.revert(reqJson, metaJson ?? null));
-  }
-
-  recover(reqJson, metaJson) {
-    return call(this.#native.recover(reqJson, metaJson ?? null));
   }
 
   takeover(confirm) {

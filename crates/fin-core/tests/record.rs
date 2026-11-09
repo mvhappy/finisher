@@ -277,16 +277,19 @@ fn every_link() -> Vec<Link> {
             from: "br2".into(),
             drops: vec!["o1".into(), "o2".into()],
             undrops: vec![],
+            recovers: None,
         },
         Link::Drop {
             from: "br2".into(),
             drops: vec![],
             undrops: vec!["o1".into()],
+            recovers: None,
         },
         Link::Drop {
             from: "br2".into(),
             drops: vec!["o2".into()],
             undrops: vec!["o1".into(), "o3".into()],
+            recovers: Some(H.into()),
         },
     ]
 }
@@ -599,6 +602,7 @@ fn drop_record_golden() {
             from: "br2".into(),
             drops: vec!["o1".into(), "o2".into()],
             undrops: vec!["o3".into()],
+            recovers: None,
         }
     );
     let record = linked(&link);

@@ -143,6 +143,15 @@ impl Forest {
             .collect()
     }
 
+    /// Whether a record standing for row record `r` goes in its place on the group's
+    /// recovered branch: records with ops, checkpoints, and a `drop` on a branch set aside
+    /// with it (a `drop` on a live branch is made again there, `rows`).
+    pub(crate) fn in_place(&self, r: &Record) -> bool {
+        r.kind.has_ops()
+            || r.kind == RecordKind::Checkpoint
+            || (r.kind == RecordKind::Drop && !self.makers(&r.intent.branch).is_empty())
+    }
+
     fn kids_of(&self, i: usize) -> &[usize] {
         self.kids.get(&self.rows[i].hash).map_or(&[], Vec::as_slice)
     }

@@ -100,6 +100,7 @@ pub enum CommitRecord {
     Branch,
     BranchSet,
     Recover,
+    Drop,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

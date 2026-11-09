@@ -17,8 +17,8 @@ use fin_core::CoreError;
 use fin_core::events::payloads::CommitRecord;
 use fin_journal::Journal;
 use fin_store::{
-    BranchCreate, BranchSet, CheckpointReq, CherryPickReq, HistoryReq, MergeReq, RecoverReq,
-    RevertReq, Store,
+    BranchCreate, BranchSet, CheckpointReq, CherryPickReq, DropReq, HistoryReq, MergeReq,
+    RecoverReq, RevertReq, Store,
 };
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
@@ -157,6 +157,16 @@ pub(crate) fn run(store: &Shared, call: Call) -> Result<Reply> {
                     s.revert(r)
                 })
             }
+            Call::Drop {
+                req_json,
+                meta_json,
+            } => {
+                let r = parse::<DropReq>("drop", &req_json)?;
+                let q = req(j, &r.tx_id, &r.author, Some(&r.into));
+                commit_log::history(s, j, CommitRecord::Drop, meta_json.as_deref(), q, |s| {
+                    s.drop(r)
+                })
+            }
             _ => unreachable!("not a history call"),
         }
         .map_err(reject)?;
@@ -269,6 +279,16 @@ impl Engine {
     #[napi(catch_unwind)]
     pub fn revert(&self, req_json: String, meta_json: Option<String>) -> AsyncTask<StoreTask> {
         self.task(Call::Revert {
+            req_json,
+            meta_json,
+        })
+    }
+
+    /// Drops (and undrops) origins of a source branch for a target (`DropReq` JSON); resolves
+    /// to the `CommittedTx` JSON of the `drop` record.
+    #[napi(catch_unwind)]
+    pub fn drop(&self, req_json: String, meta_json: Option<String>) -> AsyncTask<StoreTask> {
+        self.task(Call::Drop {
             req_json,
             meta_json,
         })

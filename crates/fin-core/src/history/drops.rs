@@ -74,3 +74,28 @@ pub fn dropped_for(log: &dyn LogView, lineage: &Lineage) -> Result<BTreeSet<Stri
         .filter_map(|(origin, dropped)| dropped.then_some(origin))
         .collect())
 }
+
+/// The origin roots a `drop` on `into` may name for source `from` (plan 5E Decision 5): the
+/// roots of the records a merge of `from` into `into` reads as its source path (`from`'s
+/// lineage after its common point with `into`) that a merge could copy (content records and
+/// `merge` copies, as [`super::candidates`] reads them). Empty when the two are one branch or
+/// share no history.
+pub fn source_roots(
+    log: &dyn LogView,
+    from: &str,
+    into: &str,
+) -> Result<BTreeSet<String>, CoreError> {
+    let (source_l, target_l) = (log.lineage(from)?, log.lineage(into)?);
+    let c = super::common_point(&source_l, &target_l);
+    if c.0.is_empty() || from == into {
+        return Ok(BTreeSet::new());
+    }
+    let mut out = BTreeSet::new();
+    for rec in super::merge::path_after(log, &source_l, &c)? {
+        let kind = rec.record.kind;
+        if kind.is_content() || kind == RecordKind::Merge {
+            out.insert(super::root_of(log, &rec)?);
+        }
+    }
+    Ok(out)
+}

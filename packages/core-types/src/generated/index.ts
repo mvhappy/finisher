@@ -737,7 +737,7 @@ export type CommitOutcome = "accepted" | "rebased" | "deduped" | "noOp" | "confl
  * via the `definition` "CommitRecord".
  */
 export type CommitRecord =
-  "edit" | "undo" | "redo" | "merge" | "pick" | "revert" | "checkpoint" | "branch" | "branchSet" | "recover";
+  "edit" | "undo" | "redo" | "merge" | "pick" | "revert" | "checkpoint" | "branch" | "branchSet" | "recover" | "drop";
 /**
  * This interface was referenced by `FinCore`'s JSON-Schema
  * via the `definition` "FetchOutcome".
@@ -1045,6 +1045,7 @@ export type Link =
       drops?: string[];
       from: string;
       kind: "drop";
+      recovers?: string | null;
       undrops?: string[];
     };
 /**
@@ -4838,6 +4839,32 @@ export interface DolbyVision {
   level: number;
   profile: number;
   rpu: boolean;
+}
+/**
+ * [`Store::drop`](crate::Store::drop)'s request (`history.drop`, plan 5E Decision 5).
+ *
+ * - `tx_id`: the idempotency key, the `drop` record's txId;
+ * - `author`: the record's author;
+ * - `into`: the branch the rejection binds (a reference; the record is written there);
+ * - `from`: the source branch (a reference; it may be archived);
+ * - `drops`, `undrops`: origin-root txIds of records on `from`'s lineage after its common
+ *   point with `into`, at least one in all; sorted and deduplicated at write;
+ * - `dry_run`: plan against the local database and keep nothing, on a follower too;
+ * - `args_hash`: the command input's hash, stored on the record's intent; a retry of the
+ *   txId with another hash is `IDEM_KEY_REUSED`.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "DropReq".
+ */
+export interface DropReq {
+  argsHash?: string | null;
+  author: string;
+  drops?: string[];
+  dryRun?: boolean;
+  from: string;
+  into: string;
+  txId: string;
+  undrops?: string[];
 }
 /**
  * One enabled effect with its parameters resolved at the plan's time. `params` holds the

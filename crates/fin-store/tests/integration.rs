@@ -192,8 +192,8 @@ fn newer_format_read_only() {
     let mut h = seg.header.clone();
     (h.first_seq, h.last_seq) = (2, 2);
     h.prev_segment_hash = Some(seg.hash.clone());
-    // 4B reads formats 1 and 2: 3 is newer.
-    (h.format_version, h.min_reader_version) = (3, 3);
+    // 5E reads formats 1 to 3: 4 is newer.
+    (h.format_version, h.min_reader_version) = (4, 4);
     let (bytes, hash) = fin_store::segment::encode(&h, &[b"{\"future\":true}".as_slice()]);
     let name =
         fin_store::names::SegmentName::new(1, 2, 2, fin_store::names::hash12(&hash).unwrap())

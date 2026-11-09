@@ -86,13 +86,16 @@ pub enum Link {
     },
     /// Drops (and undrops) origin roots of branch `from` for this record's branch: a merge
     /// into it leaves a dropped origin out (plan 5E Decisions 1–3). Each list sorted and
-    /// deduplicated, at least one non-empty, no id in both ([`Link::new_drop`]).
+    /// deduplicated, at least one non-empty, no id in both ([`Link::new_drop`]). `recovers`:
+    /// the quarantined `drop` record a recovery's record stands for (plan 5E Task 2).
     Drop {
         from: String,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         drops: Vec<String>,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         undrops: Vec<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        recovers: Option<String>,
     },
 }
 
@@ -137,6 +140,7 @@ impl Link {
             from: from.into(),
             drops,
             undrops,
+            recovers: None,
         })
     }
 
@@ -239,10 +243,12 @@ impl Fields {
                 from,
                 drops,
                 undrops,
+                recovers,
             } => {
                 f.from = Some(from);
                 f.drops = (!drops.is_empty()).then_some(drops);
                 f.undrops = (!undrops.is_empty()).then_some(undrops);
+                f.recovers = recovers;
             }
         }
         f
@@ -354,6 +360,7 @@ impl Record {
                     from: f.from.clone().ok_or_else(|| need("from"))?,
                     drops: f.drops.clone().unwrap_or_default(),
                     undrops: f.undrops.clone().unwrap_or_default(),
+                    recovers: f.recovers.clone(),
                 }
             }
         };

@@ -2218,7 +2218,8 @@
         "checkpoint",
         "branch",
         "branchSet",
-        "recover"
+        "recover",
+        "drop"
       ],
       "type": "string"
     },
@@ -2857,6 +2858,55 @@
         "enhancementLayer",
         "baseLayer",
         "compatibility"
+      ],
+      "type": "object"
+    },
+    "DropReq": {
+      "additionalProperties": false,
+      "description": "[`Store::drop`](crate::Store::drop)'s request (`history.drop`, plan 5E Decision 5).\n\n- `tx_id`: the idempotency key, the `drop` record's txId;\n- `author`: the record's author;\n- `into`: the branch the rejection binds (a reference; the record is written there);\n- `from`: the source branch (a reference; it may be archived);\n- `drops`, `undrops`: origin-root txIds of records on `from`'s lineage after its common\n  point with `into`, at least one in all; sorted and deduplicated at write;\n- `dry_run`: plan against the local database and keep nothing, on a follower too;\n- `args_hash`: the command input's hash, stored on the record's intent; a retry of the\n  txId with another hash is `IDEM_KEY_REUSED`.",
+      "properties": {
+        "argsHash": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "author": {
+          "type": "string"
+        },
+        "drops": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "dryRun": {
+          "default": false,
+          "type": "boolean"
+        },
+        "from": {
+          "type": "string"
+        },
+        "into": {
+          "type": "string"
+        },
+        "txId": {
+          "type": "string"
+        },
+        "undrops": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "txId",
+        "author",
+        "into",
+        "from"
       ],
       "type": "object"
     },
@@ -8421,7 +8471,7 @@
           "type": "object"
         },
         {
-          "description": "Drops (and undrops) origin roots of branch `from` for this record's branch: a merge\ninto it leaves a dropped origin out (plan 5E Decisions 1–3). Each list sorted and\ndeduplicated, at least one non-empty, no id in both ([`Link::new_drop`]).",
+          "description": "Drops (and undrops) origin roots of branch `from` for this record's branch: a merge\ninto it leaves a dropped origin out (plan 5E Decisions 1–3). Each list sorted and\ndeduplicated, at least one non-empty, no id in both ([`Link::new_drop`]). `recovers`:\nthe quarantined `drop` record a recovery's record stands for (plan 5E Task 2).",
           "properties": {
             "drops": {
               "items": {
@@ -8435,6 +8485,12 @@
             "kind": {
               "const": "drop",
               "type": "string"
+            },
+            "recovers": {
+              "type": [
+                "string",
+                "null"
+              ]
             },
             "undrops": {
               "items": {
