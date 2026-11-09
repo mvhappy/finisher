@@ -664,8 +664,8 @@ The `/usr/bin` developer shims (`git` and friends) are a trap. With a fresh `HOM
 
 **Files:** Modify `docs/specs/2026-11-07-sub-project-7-agent-runtime-design.md` (§8 rewritten "as built": names, data files, codes, the `READY` table, Decisions 16/17 outcome; §1.4 7C row; §18 file map; §19 decisions; §8.9's `before7C` paragraph replaced), `docs/specs/2026-11-07-sub-project-5-control-plane-design.md` (§4.6, §4.17, §6.2, §6.3, §6.12: each "until 7C" marked closed with a pointer, or left open with the reason), `docs/specs/2026-11-07-sub-project-6-media-engine-design.md` §3.5.1 (the Landlock phase delivered), `docs/specs/2026-11-07-sub-project-8-plugins-design.md` §16.1 (the profile delivered; the store follow-up's outcome), `docs/specs/2026-11-01-finisher-architecture-design.md` (§27 pointer; §8.4 "bwrap fallback" removed), `README.md` (security model: what the sandbox now guarantees per OS, and what F2 hosts lack; **the limits list: on Windows, Node tools that spawn child processes with piped stdio fail fast with `WINDOWS_NODE_PIPES` (Decision 25), until Node ships the fix**), `TASKS.md` (follow-ups).
 
-- [ ] **Step 1: Write** the as-built sections from the code (names, defaults, codes), and every residual that stays open, with its reason.
-- [ ] **Step 2: Run** the gates → PASS. **Commit** `docs: record sub-project 7C as built`.
+- [x] **Step 1: Write** the as-built sections from the code (names, defaults, codes), and every residual that stays open, with its reason.
+- [x] **Step 2: Run** the gates → PASS. **Commit** `docs: record sub-project 7C as built`.
 
 ### Task 16: Cross-platform validation (controller-run; needs hosts) — tier: opus (controller)
 

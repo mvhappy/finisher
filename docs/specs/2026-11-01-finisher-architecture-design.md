@@ -329,8 +329,10 @@ MyProject/                      (may live on local disk, NAS, or a cloud-synced 
   | OS | Mechanism | Rules |
   |---|---|---|
   | macOS | Seatbelt profile | writable `workspace/` + temp + the session's own provider config dir + the CLI's shared sign-in file (never its folder); read-only project; deny `.finisher/` and `assets/` |
-  | Linux | Landlock + seccomp (kernel ≥ 6.2, D31; no bwrap fallback, sub-project 7 spec §8.3; where Landlock is disabled everything runs unconfined with a status warning, D36) | same |
-  | Windows | restricted token / AppContainer with ACLs on `workspace/` | same; **feasibility validated in the spike** |
+  | Linux | Landlock + seccomp (kernel ≥ 6.2, D31; where Landlock is disabled everything runs unconfined with a status warning, D36) | same |
+  | Windows | AppContainer with ACLs on `workspace/` | same |
+
+  *As built (7C): sub-project 7 spec §25 and item 22 of §27.* No bubblewrap (LGPL; sub-project 7 spec §8.3). The seccomp half is deferred; agents and hooks get a user and mount namespace that hides the usual socket folders instead.
 
 - Provider permission rules (Claude Code allow/deny, Codex `workspace-write`) are a second layer, not the guarantee.
 - **Integrity regardless of sandbox:** assets are referenced by content hash, and the server verifies the hash whenever an asset is used. `.finisher/` and `assets/` are server-written only, so tampering is detected and rejected.
@@ -1196,3 +1198,8 @@ Spike code, evidence and the report are throwaway and live in the git-ignored `a
     - **Every reader of a library file uses `fin_library::open_for_read`** (raw name chain, no links followed, placeholders refused, identity checked), enforced by clippy `disallowed-methods` in the crates that read originals; sub-projects 6 and 8 follow the same rule.
     - **Deviations:** no listing refresh on macOS shares (libraries are read-only); Linux FUSE sync roots are metadata-only unless `hydrate`; pools per volume with a separate poll slot; library aliases never grant reach.
     - **Still outstanding:** cold scans, the macOS and Windows end-to-end runs and the share figures (5D Task 17).
+22. **Sub-project 7C, the OS sandbox (as built, 2026-11-09):** §8.4 as implemented is recorded in `docs/specs/2026-11-07-sub-project-7-agent-runtime-design.md` §25 (what is built, the deviations, the `READY` table and the residual risks), which wins over this document where they differ.
+    - **Shape:** `fin-sandbox` builds one `SandboxPolicy` per process from typed inputs and applies the `agent`, `hook`, `worker` and `plugin` profiles: Linux Landlock (ABI ≥ 3) through the launcher `fin-sandbox-exec` (which stays the parent as a subreaper), a worker's self-sandbox or a plugin's `pre_exec` steps; macOS Seatbelt; Windows AppContainer with per-session capability SIDs, job objects and the ACL broker in `fin-node`. 5C's job host spawns through `SandboxSpawner`; warm workers get per-job grants (Linux); `fin` reaches the server from a Linux sandbox over the loopback agent listener (`tcp:`).
+    - **Deviations:** the seccomp filter is deferred to a person (owner decision 2026-11-08), so Linux pathname sockets are hidden from agents and hooks by a namespace (where user namespaces work) instead of refused; the Windows suites prove the configuration and compute denials with `AccessCheck` (no escape attempts, owner decision); Node tools with piped stdio fail fast in a Windows container (`WINDOWS_NODE_PIPES`).
+    - **Not a boundary yet by default:** `fin_sandbox::READY` is empty until the validation hosts pass each profile (7C Task 16), so a release build still runs every profile unconfined with `SANDBOX_DISABLED {reason: profileNotReady}` (item 20's `before7C` is gone). Supersedes item 18's and item 20's "Not a boundary yet" on each OS once its profiles are in `READY`.
+    - **Still outstanding:** Task 16 (validation on the three OSes), the seccomp filter, the Windows escape tests, the macOS launcher's `setsid` handling, per-job grants on Windows.
