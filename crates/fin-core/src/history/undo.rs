@@ -332,13 +332,19 @@ pub(super) fn try_rebase_over(
         .collect::<Result<_, _>>()?;
     let steps = steps_from(&since.iter().collect::<Vec<_>>())?;
     let reads = super::FrameReads::read(&frame, &tx, ApplyMode::Internal)?;
+    let authors = super::Authors {
+        log,
+        recs: since.iter().map(|c| &c.tx),
+        own: (&tx.tx_id, &tx.author),
+    };
     Ok(rebase_apply(
         head,
         &Rebase::new(&tx, &own.diff, &steps)
             .with_env(super::env_of(log))
             .with_absorbs(absorbs)
             .with_places(&reads.places)
-            .with_anchors(&reads.anchors),
+            .with_anchors(&reads.anchors)
+            .with_history(log.when_lost()),
         ids,
         ApplyMode::Internal,
     )
@@ -349,7 +355,9 @@ pub(super) fn try_rebase_over(
             ..rebased.tx
         },
         applied: rebased.applied,
-    }))
+        placements: authors.fill(rebased.placements),
+    })
+    .map_err(|c| authors.fill_conflict(c)))
 }
 
 /// The own record `tx_id` (a unit's record): one the stacks were derived from.

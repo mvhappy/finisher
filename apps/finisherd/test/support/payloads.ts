@@ -31,6 +31,7 @@ export const SAMPLE_PAYLOADS: { readonly [T in FinRpcTag]: Record<string, unknow
   "snapshot.get": { projectId: P, branch: "main" },
   "ops.subscribe": { projectId: P, branch: "main", fromRev: 0, generation: { incarnation: "i", n: 0 } },
   "project.status": { projectId: P },
+  "project.close": { projectId: P },
   "project.takeover": { projectId: P, confirm: false },
   "project.verify": { projectId: P },
   "project.rebuild": { projectId: P },

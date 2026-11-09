@@ -164,6 +164,8 @@ impl Store {
         };
         let id = ulid::Ulid::new().to_string().to_ascii_lowercase();
         let project = new_project(id.clone(), name.to_string(), rate)?;
+        // Before anything is written: not into the project folder either (review #4).
+        opts.check_local(db_path(server_data, &id).parent().unwrap_or(server_data))?;
         if fs::symlink_metadata(paths::project_file(project_dir)).is_ok() {
             return existing(server_data, project_dir, &genesis, idem, opts);
         }

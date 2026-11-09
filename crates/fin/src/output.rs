@@ -87,24 +87,6 @@ pub fn error(e: &CoreError) -> i32 {
     exit_code(&e.code)
 }
 
-/// Turns panics into an `INTERNAL` error document (exit 6) instead of a stderr-only trace.
-pub fn install_panic_hook() {
-    std::panic::set_hook(Box::new(|info| {
-        // Best effort and within its budget (`diag`); then the usual document and exit 6.
-        crate::diag::report_panic(info);
-        let message = crate::diag::panic_message(info);
-        let location = info
-            .location()
-            .map(|l| format!("{}:{}", l.file(), l.line()));
-        let e = internal(
-            format!("fin crashed: {message}"),
-            json!({ "location": location }),
-        )
-        .with_fix("report this as a bug in fin");
-        std::process::exit(error(&e));
-    }));
-}
-
 #[cfg(test)]
 #[path = "output_tests.rs"]
 mod tests;

@@ -70,17 +70,34 @@ pub fn interpolate(kfs: &[Keyframe], at: Rational, base: &ParamValue, ty: ValueT
     mix(&a.value, &b.value, e, ty).unwrap_or_else(|| resolve(&a.value, ty))
 }
 
-/// `(at − a) / (b − a)` in `[0, 1]`: exact in rationals, then rounded once (an overflow falls
-/// back to `f64` division). `a < b`.
+/// `(at − a) / (b − a)` in `[0, 1]`: exact in rationals, then rounded once. When that
+/// overflows 64 bits (keyframes at near-`i64::MAX` denominators, review of 2026-11-09 #17) the
+/// two differences are taken exactly over i128 cross-products and divided in `f64`, which is
+/// finite since `a < b`; a value that is still not a number holds the earlier key (progress 0).
 pub(crate) fn progress(a: Rational, b: Rational, at: Rational) -> f64 {
     let exact = at
         .checked_sub(a)
         .and_then(|n| b.checked_sub(a).and_then(|d| n.checked_div(d)));
     let u = match exact {
         Ok(u) => u.to_f64(),
-        Err(_) => (at.to_f64() - a.to_f64()) / (b.to_f64() - a.to_f64()),
+        Err(_) => wide_progress(a, b, at),
     };
-    u.clamp(0.0, 1.0)
+    if u.is_nan() { 0.0 } else { u.clamp(0.0, 1.0) }
+}
+
+/// `(at − a) / (b − a)` without a 64-bit rational: with `x/y` for `x.num/x.den`,
+/// `at − a = p / (at.den·a.den)` and `b − a = q / (b.den·a.den)`, so the quotient is
+/// `(p / q) · (b.den / at.den)`. `p` and `q` are exact (each cross-product is below 2^126);
+/// only the two `f64` divisions and the product round.
+fn wide_progress(a: Rational, b: Rational, at: Rational) -> f64 {
+    let cross = |x: Rational, y: Rational| {
+        x.num() as i128 * y.den() as i128 - y.num() as i128 * x.den() as i128
+    };
+    let (p, q) = (cross(at, a), cross(b, a));
+    if q == 0 {
+        return f64::NAN;
+    }
+    (p as f64 / q as f64) * (b.den() as f64 / at.den() as f64)
 }
 
 /// `(1 − e)·a + e·b`, exact at both ends.

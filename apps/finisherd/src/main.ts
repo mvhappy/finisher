@@ -3,6 +3,7 @@
 // Usage: node apps/finisherd/src/main.ts [serve] [--server-data <dir>]
 //        node apps/finisherd/src/main.ts <command> …   (the owner's console, `console/main.ts`)
 // Serving logs to stderr only; stdout stays empty. Console commands answer on stdout.
+import { realpathSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { runMain } from "@effect/platform-node/NodeRuntime";
@@ -52,6 +53,8 @@ import { CatalogsTag, layerCatalogs } from "./library/catalog/client.ts";
 import { LibraryServiceTag, librariesHolding, libraryWiring } from "./library/layer.ts";
 import { makeMediaCache, MediaCacheTag } from "./media/cache.ts";
 import { layerPlugins } from "./plugins/registries.ts";
+import { makePluginHost } from "./plugins/host/processes.ts";
+import { PluginTables } from "./plugins/tables.ts";
 import { layerProjectRegistry, ProjectRegistry, type RegistryOptions } from "./projects.ts";
 import { registerMediaKinds } from "./jobs/kinds/media.look.ts";
 import { MAX_FRAME } from "./protocol.ts";
@@ -192,17 +195,23 @@ export const serve = ({
         } }),
       );
       const projects = Context.get(registryContext, ProjectRegistry);
+      // The code plugins' processes (sp8b Tasks 4, 5): the `plugin` family is registered with
+      // the engine's other families (a restart reconciles jobs against them), then bound to it.
+      const pluginHost = makePluginHost({ serverData: realpathSync(serverData), control: controlStore, tables: new PluginTables(controlStore), audit: Context.get(control, AuditTag) });
       const register = (r: Parameters<typeof libraries.register>[0]) => {
+        pluginHost.register(r);
         registerMediaKinds(r, { serverData, projects, libraryRoots: () => libraryRoots() });
         jobOptions?.register?.(r);
         libraries.register(r);
       };
       const jobsContext = yield* Layer.build(
-        layerJobEngine(serverData, { diagnostics: () => diagnostics.enabled(), ...jobOptions, register }).pipe(
+        // Windows: each job process's grants go through the broker (plan 7C Decision 18).
+        layerJobEngine(serverData, { diagnostics: () => diagnostics.enabled(), acl, ...jobOptions, register }).pipe(
           Layer.provide(Layer.mergeAll(Layer.succeedContext(control), Layer.succeed(JobEventSinkTag, journalSink(diagnostics.journal, logSink)))),
         ),
       );
       const engine = Context.get(jobsContext, JobEngineTag);
+      pluginHost.bind(engine);
       const caps = engine.workers().caps;
       yield* Effect.logInfo(
         `finisherd job engine: killTree=${caps.killTree} watchdog=${caps.watchdog} cgroupMemory=${caps.cgroupMemory} leafLimits=${caps.leafLimits} sandbox=${caps.sandbox} sandboxed=${caps.sandboxed}`,
@@ -460,7 +469,7 @@ export const serve = ({
         Layer.mergeAll(
           Layer.succeedContext(registryContext),
           fontsLayer,
-          layerPlugins(serverData).pipe(Layer.provide(Layer.succeedContext(control)), Layer.provide(fontsLayer)),
+          layerPlugins(serverData, { host: pluginHost.hooks }).pipe(Layer.provide(Layer.succeedContext(control)), Layer.provide(fontsLayer)),
           Layer.succeed(Diagnostics, diagnostics),
           Layer.succeedContext(control),
           Layer.succeedContext(jobsContext),

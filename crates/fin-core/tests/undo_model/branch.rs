@@ -84,6 +84,25 @@ impl MBranch {
         }
     }
 
+    /// Where a placement right after `after` on `t` goes (`rebase::placement`, owner decision
+    /// 2026-11-09): right after it while it is on the track and the model knows the track's
+    /// order. The engine resolves the left neighbour wherever it is, so this is certain on the
+    /// same branch and in a copy alike.
+    fn after_left(&self, t: usize, after: Option<&String>) -> Option<usize> {
+        let a = after?;
+        (!self.unsure[t])
+            .then(|| self.pos(t, a))
+            .flatten()
+            .map(|p| p + 1)
+    }
+
+    /// The clip right before index `i` of `t`, for a later left-first placement: none at the
+    /// start, after a gap, or on a track whose order the model does not know.
+    fn pred(&self, t: usize, i: usize, not: &str) -> Option<String> {
+        let p = &self.tracks[t].get(i.checked_sub(1)?)?.0;
+        (!self.unsure[t] && p != GAP && p != not).then(|| p.clone())
+    }
+
     /// [`Self::certain`] for a move's target; staying where it is (`before` the clip itself)
     /// is certain in a copy only on its own track, never moved or removed on either side.
     fn move_certain(&self, op: &LOp, copy: bool) -> bool {
@@ -148,16 +167,21 @@ impl MBranch {
         match op {
             LOp::Insert {
                 track,
+                after,
                 before,
                 stamp,
                 ns,
+                expect,
                 ..
             } => {
-                !self.certain(*track, before.as_ref(), *stamp, *ns, copy)
+                let left = expect.is_some() && self.after_left(*track, after.as_ref()).is_some();
+                !left
+                    && !self.certain(*track, before.as_ref(), *stamp, *ns, copy)
                     && (self.ns[*track] > 0 || *ns > 0)
             }
-            LOp::Move { to, ns, .. } => {
-                !self.move_certain(op, copy) && (self.ns[*to] > 0 || *ns > 0)
+            LOp::Move { to, ns, after, .. } => {
+                let left = copy && self.after_left(*to, after.as_ref()).is_some();
+                !left && !self.move_certain(op, copy) && (self.ns[*to] > 0 || *ns > 0)
             }
             LOp::RestoreLift { .. } => !self.lift_certain(op, copy),
             LOp::Trim {
@@ -221,6 +245,7 @@ impl MBranch {
                 track,
                 id,
                 dur,
+                after,
                 before,
                 stamp,
                 ns,
@@ -230,23 +255,46 @@ impl MBranch {
                 if self.find(&id).is_some() {
                     return Err(("DUPLICATE_ID", vec![id]));
                 }
-                let sure = self.certain(track, before.as_ref(), stamp, ns, copy);
-                let i = match &before {
-                    Some(b) if sure => self.pos(track, b).unwrap(),
+                // A restore goes right after its left neighbour first.
+                let left = expect
+                    .is_some()
+                    .then(|| self.after_left(track, after.as_ref()))
+                    .flatten();
+                let sure = left.is_some() || self.certain(track, before.as_ref(), stamp, ns, copy);
+                let i = match (&before, left) {
+                    (_, Some(i)) => i,
+                    (Some(b), None) if sure => self.pos(track, b).unwrap(),
                     _ => self.tracks[track].len(),
                 };
                 self.tracks[track].insert(i, (id.clone(), dur));
                 self.unsure[track] |= !sure;
+                // Placed after its left neighbour, it is before whatever follows it there (what
+                // a copy of the record reads as its right neighbour), not the clip planned.
+                let before = match left {
+                    Some(_) => self.tracks[track]
+                        .get(i + 1)
+                        .filter(|c| c.0 != GAP)
+                        .map(|c| c.0.clone()),
+                    None => before,
+                };
                 let stamp = if sure && !self.unsure[track] {
                     self.removals(before.as_ref())
                 } else {
                     UNSURE
                 };
                 let pre = self.edges.get(&id).cloned().unwrap_or_default();
+                // As made: the clip it landed after (what a copy of the record reads as its left
+                // neighbour), when the model knows it.
+                let after = if sure && !self.unsure[track] {
+                    self.pred(track, i, &id)
+                } else {
+                    None
+                };
                 Ok(LOp::Insert {
                     track,
                     id,
                     dur,
+                    after,
                     before,
                     stamp,
                     ns: self.ns[track],
@@ -256,6 +304,7 @@ impl MBranch {
             }
             LOp::Remove { id, .. } => {
                 let (t, i) = self.find(&id).ok_or_else(|| gone(&id))?;
+                let pred = self.pred(t, i, &id);
                 let (_, dur) = self.tracks[t].remove(i);
                 let (succ, stamp, ns) = self.after_gap(t, i);
                 *self.removals.entry(id.clone()).or_default() += 1;
@@ -265,6 +314,7 @@ impl MBranch {
                     track: t,
                     id,
                     dur,
+                    pred,
                     succ,
                     stamp,
                     ns,
@@ -308,15 +358,37 @@ impl MBranch {
                     post: hist.clone(),
                 })
             }
-            LOp::Move { id, to, before, .. } => {
+            LOp::Move {
+                id,
+                to,
+                before,
+                after: left_of,
+                ..
+            } => {
                 let (from, i) = self.find(&id).ok_or_else(|| gone(&id))?;
-                let sure = self.move_certain(op, copy);
                 let stay = before.as_deref() == Some(id.as_str());
+                // As made: the clip before the target (in the frame before the op), and the
+                // clip before it where it leaves.
+                let target = match &before {
+                    _ if stay => Some(i),
+                    Some(b) => self.pos(to, b),
+                    None => Some(self.tracks[to].len()),
+                };
+                let after = target.and_then(|j| self.pred(to, j, &id));
+                let spred = self.pred(from, i, &id);
                 let was = self.removals(Some(&id));
                 let (_, dur) = self.tracks[from].remove(i);
+                // A copy goes right after the clip it followed on its source first.
+                let left = if copy {
+                    self.after_left(to, left_of.as_ref())
+                } else {
+                    None
+                };
+                let sure = left.is_some() || self.move_certain(op, copy);
                 let (succ, sstamp, sns) = self.after_gap(from, i);
                 *self.removals.entry(id.clone()).or_default() += 1;
                 let j = match &before {
+                    _ if left.is_some() => left.unwrap(),
                     _ if stay && sure => i,
                     Some(b) if sure => self.pos(to, b).unwrap(),
                     _ => self.tracks[to].len(),
@@ -336,6 +408,8 @@ impl MBranch {
                 Ok(LOp::Move {
                     id,
                     to,
+                    after,
+                    spred,
                     before,
                     stamp,
                     ns: self.ns[to],

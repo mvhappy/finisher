@@ -17,7 +17,9 @@ use super::footprint::{
     Footprint, Touch, entity_conflict_in, footprint, overwrite_conflict, split_diff, unbind_own,
 };
 use super::map::{Assoc, Mapping, StepMap, Unmapped, content_of};
+use super::placement::{Ctx, Pending, Placement, WhenLost, item_of, left_first};
 use super::places::{Resolved, Slot, set_index};
+use super::rerun::{Ours, rerun_conflict};
 use super::steps::{Prepared, Step, steps_from};
 
 static NO_IDS: BTreeSet<String> = BTreeSet::new();
@@ -51,6 +53,10 @@ pub struct Rebase<'a> {
     /// Per op, per position, the item edge it was written against in its own frame
     /// (`anchors::anchors`; empty when none is read): the engine resolves it at the head.
     pub anchors: &'a [Vec<Option<Anchor>>],
+    /// A history path (undo, redo, copy): ripple restores and moves go back left neighbour
+    /// first and report their placement, with this policy for both neighbours gone
+    /// (`placement`); `None` for a stale commit.
+    pub history: Option<WhenLost>,
 }
 
 impl<'a> Rebase<'a> {
@@ -65,6 +71,15 @@ impl<'a> Rebase<'a> {
             absorbs: &NO_OPS,
             places: &[],
             anchors: &[],
+            history: None,
+        }
+    }
+
+    /// The rebase on a history path, with `when` for both neighbours gone (see [`Rebase`]).
+    pub fn with_history(self, when: WhenLost) -> Rebase<'a> {
+        Rebase {
+            history: Some(when),
+            ..self
         }
     }
 
@@ -101,6 +116,7 @@ pub struct PreparedRebase<'a> {
     pub absorbs: &'a BTreeSet<usize>,
     pub places: &'a [Option<Slot>],
     pub anchors: &'a [Vec<Option<Anchor>>],
+    pub history: Option<WhenLost>,
 }
 
 /// The rebased tx (positions mapped, placeholders kept: the intent to store) and the result of
@@ -109,6 +125,8 @@ pub struct PreparedRebase<'a> {
 pub struct Rebased {
     pub tx: Tx,
     pub applied: Applied,
+    /// On a history path, one per ripple restore or move, in op order (`placement`).
+    pub placements: Vec<Placement>,
 }
 
 /// Op by op: map positions (Assoc::After) through [inverse(our earlier ops), steps, our rebased
@@ -138,6 +156,7 @@ pub fn rebase_apply(
         absorbs: r.absorbs,
         places: r.places,
         anchors: r.anchors,
+        history: r.history,
     };
     rebase_prepared(head, &p, ids, mode)
 }
@@ -171,17 +190,40 @@ pub fn rebase_prepared(
             .then(|| r.steps[i - n].tx_id.to_string())
     };
     let mut run = Applier::new(head, r.tx.schema_version, mode, r.env).map_err(bad)?;
+    run.reserve(&r.tx.ops);
     let mut ops = Vec::with_capacity(n);
     let mut created = BTreeSet::new();
     // Our earlier ops' footprints: an entity one of them created is blamed through what that
     // op touched (the item our split cut, for the right part it made).
     let mut earlier: Vec<Footprint> = Vec::with_capacity(n);
+    let mut placements: Vec<Placement> = Vec::new();
     for (k, op) in r.tx.ops.iter().enumerate() {
         let mut op = op.clone();
         let anchored = r.anchors.get(k);
+        // The item by its real id (a copy names an item its own earlier op made by placeholder).
+        let item = item_of(&op).map(|i| super::places::real(&i, run.bound()).to_string());
+        let placing = r.history.filter(|_| left_first(&op)).zip(item);
+        let mut pending = placing.as_ref().map(|_| Pending::clean());
         for (j, (track, pos)) in op.positions_mut().into_iter().enumerate() {
+            let a = anchored.and_then(|v| v.get(j)).and_then(Option::as_ref);
+            // On a history path, left neighbour first (`placement`).
+            if let (Some((when, item)), Some(a)) = (&placing, a) {
+                let ctx = Ctx {
+                    project: run.project(),
+                    bound: run.bound(),
+                    theirs: &theirs,
+                    when: *when,
+                    item,
+                    earlier: &placements,
+                };
+                let shifted = mapping.map_from(n - k, &track, *pos, Assoc::After).ok();
+                if let Some((at, p)) = super::placement::resolve(&ctx, &track, *pos, a, shifted) {
+                    (*pos, pending) = (at, Some(p));
+                    continue;
+                }
+            }
             // The edge it was written against, where it is now; else shifts (`anchors`).
-            if let Some(Some(a)) = anchored.and_then(|v| v.get(j))
+            else if let Some(a) = a
                 && let Some(at) = a.resolve(run.project(), &track, run.bound())
             {
                 *pos = at;
@@ -257,6 +299,13 @@ pub fn rebase_prepared(
         if wrote && let Some((reason, against)) = overwrite_conflict(&fp, &created, &theirs) {
             return Err(Conflict::new(tx_id, k, reason, Some(against)));
         }
+        // A refusal (`NEIGHBOURS_GONE`) only once the entity rules and the re-run passed.
+        if let (Some(p), Some((_, item))) = (pending, &placing) {
+            if let Some(c) = p.refusal(tx_id, k, item) {
+                return Err(c);
+            }
+            placements.push(p.finish(run.project(), tx_id, k, item));
+        }
         created.extend(fp.creates.iter().cloned());
         let at = mapping.push(rebased_map(rerun, run.bound()));
         mapping.set_own_mirror(n - 1 - k, at);
@@ -275,7 +324,11 @@ pub fn rebase_prepared(
         ops,
         ..r.tx.clone()
     };
-    Ok(Rebased { tx, applied })
+    Ok(Rebased {
+        tx,
+        applied,
+        placements,
+    })
 }
 
 /// The map of one of our ops as re-run at the head (`rerun`: what it recorded there). Its
@@ -331,6 +384,9 @@ pub fn rebase_tx_env(
     let mut newer: Vec<&CommittedTx> = since.iter().filter(|c| c.rev > tx.base_rev).collect();
     newer.sort_by_key(|c| c.rev);
     let steps = steps_from(&newer)?;
+    // Keyframe ops name the keys they meet at the base (spec §5.12).
+    let canonical = crate::apply::canonicalize(base, tx);
+    let tx = canonical.as_ref().unwrap_or(tx);
     let own = match apply_tx_mode(base, tx, &mut MemIds::after(base), ApplyMode::Client) {
         Ok(own) => own,
         Err(e) => return Err(failed_at_base(base, head, tx, &steps, ids, e)),
@@ -373,6 +429,7 @@ fn failed_at_base(
         ops: tx.ops[..i].to_vec(),
         ..tx.clone()
     };
+    let prefix = crate::apply::canonicalize(base, &prefix).unwrap_or(prefix);
     let Ok(own) = apply_tx_mode(base, &prefix, &mut MemIds::after(base), ApplyMode::Client) else {
         return e;
     };
@@ -450,94 +507,6 @@ fn mirrored(steps: &[Prepared]) -> Result<Vec<bool>, CoreError> {
         out[s] = true;
     }
     Ok(out)
-}
-
-/// The op that failed to re-run, as [`rerun_conflict`] reads it: its footprint, the
-/// footprints of our earlier ops, and the placeholders bound so far.
-struct Ours<'a> {
-    fp: &'a Footprint,
-    earlier: &'a [Footprint],
-    bound: &'a std::collections::BTreeMap<String, String>,
-}
-
-/// A re-run failure of op `k`. `DUPLICATE_ID` is a copy meeting an id that is already taken
-/// (Decision 18). The step to blame is the one unmirrored step (if exactly one) that touched,
-/// created or removed an entity ours touches, would create (another pin of the key, for a
-/// `FONT_PINNED`) or the error names, or one an earlier op of ours touched to create such an
-/// entity (the item our split cut, for an overwrite meeting the right part); tracks and the
-/// assets ours only uses are left out, since nearly every step shares them.
-fn rerun_conflict(
-    e: &CoreError,
-    r: &PreparedRebase<'_>,
-    k: usize,
-    ours: &Ours<'_>,
-    theirs: &[(&str, &Footprint)],
-    head: &Project,
-) -> Conflict {
-    let mut named: BTreeSet<&str> = ours.fp.touches.iter().map(|(x, _)| x.as_str()).collect();
-    // What the op would create: a pin whose key another record pinned since (`FONT_PINNED`) is
-    // blamed on that record. A placeholder names no entity here.
-    named.extend(
-        ours.fp
-            .creates
-            .iter()
-            .map(String::as_str)
-            .filter(|x| !x.starts_with('$')),
-    );
-    for key in ["clip", "item", "id", "asset"] {
-        named.extend(e.details[key].as_str());
-    }
-    if let Some(clips) = e.details["clips"].as_array() {
-        named.extend(clips.iter().filter_map(Value::as_str));
-    }
-    // An entity we created (by placeholder, or the id it bound) is named through what the op
-    // that created it touched.
-    let creators: Vec<&str> = named
-        .iter()
-        .flat_map(|x| {
-            let placeholder = ours
-                .bound
-                .iter()
-                .find(|(_, id)| id.as_str() == *x)
-                .map(|(p, _)| p.as_str());
-            [Some(*x), placeholder]
-        })
-        .flatten()
-        .collect();
-    for f in ours.earlier {
-        if f.creates.iter().any(|c| creators.contains(&c.as_str())) {
-            named.extend(f.touches.iter().map(|(x, _)| x.as_str()));
-        }
-    }
-    for t in crate::ops::util::tracks(head) {
-        named.remove(t.id.as_str());
-    }
-    let blamed: BTreeSet<&str> = theirs
-        .iter()
-        .filter(|(_, f)| {
-            let changed = f
-                .touches
-                .iter()
-                .map(|(x, _)| x)
-                .chain(&f.creates)
-                .chain(&f.removes);
-            changed.into_iter().any(|x| named.contains(x.as_str()))
-        })
-        .map(|(tx, _)| *tx)
-        .collect();
-    let against = (blamed.len() == 1)
-        .then(|| blamed.first().map(|t| t.to_string()))
-        .flatten();
-    if e.code == "DUPLICATE_ID" {
-        let id = e.details["id"].as_str().unwrap_or_default();
-        let reason = if r.same_origin.contains(id) {
-            reasons::ALREADY_PRESENT
-        } else {
-            reasons::ID_COLLISION
-        };
-        return Conflict::new(r.tx.tx_id.as_str(), k, reason, against);
-    }
-    Conflict::from_rerun(e, &r.tx.tx_id, k, against)
 }
 
 fn overflow() -> CoreError {

@@ -71,11 +71,20 @@ export declare function sandboxAgentGrants(input: AgentInput, extraRead?: readon
 /** The ACEs a `hook` launch needs on Windows (`fin_sandbox::windows::grants::hook`; pure). */
 export declare function sandboxHookGrants(input: HookInput): AclGrant[];
 
+/**
+ * The ACE of a job visiting a warm worker for its attempt (plan 7C Decision 19; pure): its
+ * directory in `<workerDir>/jobs/` to the worker's capability. `INVALID_ARGS` elsewhere.
+ */
+export declare function sandboxVisitGrant(workerDir: string, jobDir: string): AclGrant;
+
 /** The AppContainer name of a project's agents and hooks (`finisher-p-<hash>`; pure). */
 export declare function sandboxProjectContainer(projectDir: string): string;
 
 /** The SID of the AppContainer `name` on Windows; `null` elsewhere. */
 export declare function sandboxContainerSid(name: string): string | null;
+
+/** @internal Test builds only: deletes a suite's AppContainer profile (a no-op off Windows). */
+export declare function sandboxContainerDeleteForTest(name: string): void;
 
 /** @internal Test builds only: the broker's live grants. */
 export declare function aclGrantsForTest(serverData: string): AclBrokerGrant[];

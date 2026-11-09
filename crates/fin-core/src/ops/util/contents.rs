@@ -119,6 +119,7 @@ pub(crate) fn returning_track(
             seen,
         )?;
         normalize_item(item)?;
+        super::keys::check_key_lists(&item.common.keyframes, [], !bindings.policy())?;
         resolve_body(&mut item.body, bindings)?;
     }
     for item in &track.items {

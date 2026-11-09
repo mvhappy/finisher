@@ -76,6 +76,9 @@ pub struct OpenOptions {
     /// `finisher.project.json` before authorising): another id is `PROJECT_NOT_FOUND {reason:
     /// changed}` before anything is rebuilt, locked or leased (review of 5A Task 6, finding 6).
     pub expect_id: Option<String>,
+    /// Accept project data that is not on a known local filesystem (review #4,
+    /// [`crate::locality`]). `None`: [`locality::ALLOW_NONLOCAL_ENV`](crate::locality::ALLOW_NONLOCAL_ENV) decides.
+    pub allow_nonlocal: Option<bool>,
 }
 
 impl std::fmt::Debug for OpenOptions {
@@ -86,11 +89,20 @@ impl std::fmt::Debug for OpenOptions {
             .field("relocate", &self.relocate)
             .field("measurer", &self.measurer.as_ref().map(|m| m.fingerprint()))
             .field("expect_id", &self.expect_id)
+            .field("allow_nonlocal", &self.allow_nonlocal)
             .finish()
     }
 }
 
 impl OpenOptions {
+    /// Refuses `data_dir` (a project's data folder) unless it is on a known local filesystem.
+    pub(crate) fn check_local(&self, data_dir: &Path) -> Result<(), StoreError> {
+        let allow = self
+            .allow_nonlocal
+            .unwrap_or_else(crate::locality::allowed_by_env);
+        crate::locality::check(data_dir, "project data", allow)
+    }
+
     pub(crate) fn params(&self, kind: StorageKind) -> Params {
         let mut p = Params::for_kind(kind);
         p.clock = self
@@ -135,6 +147,7 @@ impl Store {
             .into());
         }
         let db_path = db_path(server_data, &file.id);
+        opts.check_local(db_path.parent().unwrap_or(server_data))?;
         let identity = server_identity(server_data)?;
         let kind = storage_kind::resolve(project_dir, file.storage_override.as_ref());
         let plan = rebuild::Plan {
@@ -237,6 +250,7 @@ impl Store {
             measurer: opts.measurer.clone(),
             write_outcome: None,
             guard: crate::WriteGuard::default(),
+            when_lost: fin_core::rebase::placement::WhenLost::default(),
             #[cfg(any(test, feature = "test-hooks"))]
             fail_after_apply: false,
         }

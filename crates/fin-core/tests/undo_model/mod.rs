@@ -30,15 +30,22 @@
 //!   whatever else is there (`item_split`'s inverse, B4); a redo of that shrinks the left part
 //!   and lift-restores the right part into the gap.
 //!
-//! **Placement.** A reinsertion is certain while its successor is present and was neither
-//! removed nor moved since (a copy: never on either side); an insertion at the end, while its
+//! **Placement.** A reinsertion (a restore: an insert with `expect`) and a copied move go right
+//! after the clip that preceded them while that clip is on the track and the track's order is
+//! known (the left-neighbour rule, owner decision 2026-11-09; `rebase::placement`): certain on
+//! the same branch and in a copy alike, since the engine finds that neighbour wherever it is. A
+//! removal and a move record the clip before them, a restore the clips it landed between (what a
+//! copy of the record reads as its neighbours). Otherwise a reinsertion is certain while its
+//! successor is present and was neither removed nor moved since (a copy: never on either side); an insertion at the end, while its
 //! track saw no no-shift op (a split or its inverse: those leave positions where they were, so
 //! a removed boundary is not mapped away) since (a copy: ever, on either side). A lift restore
 //! goes right after the left part it was cut from (else at the end) and is certain on the same
 //! terms (right after: also while that track saw no no-shift op but the undo's and the redo's
 //! own strict trims), never in a copy. Otherwise the model checks membership and durations only, then
 //! takes the real order (the ProseMirror tie-break: Bob deletes c3, Alice deletes c2, Bob
-//! undoes, Alice undoes gives `c1, c3, c2`, which the recorded successors predict exactly).
+//! undoes, Alice undoes gives `c1, c2, c3`: c3's left neighbour is gone, so it goes to the end,
+//! and c2 goes right after c1). The model runs as a person (`WhenLost::Snap`); the agent's
+//! refusal is covered by `placement.rs` and `undo_redo_props`.
 //!
 //! **Two oracles for conflicts.**
 //! - *Independent* (`MBranch::verdict`): from the clip lists and edge histories alone, an op

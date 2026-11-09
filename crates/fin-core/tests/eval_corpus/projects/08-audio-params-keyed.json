@@ -31,7 +31,7 @@
   "project": {
     "id": "p1",
     "name": "Corpus",
-    "schemaVersion": 2,
+    "schemaVersion": 3,
     "rate": "30",
     "timelines": [
       {
@@ -80,6 +80,7 @@
                 "keyframes": {
                   "audio.gain": [
                     {
+                      "id": "kf1",
                       "at": "0",
                       "value": -24.0,
                       "interp": {
@@ -91,6 +92,7 @@
                       }
                     },
                     {
+                      "id": "kf2",
                       "at": "3",
                       "value": 0.0,
                       "interp": {
@@ -98,6 +100,7 @@
                       }
                     },
                     {
+                      "id": "kf3",
                       "at": "6",
                       "value": -6.0,
                       "interp": {
@@ -109,6 +112,7 @@
                       }
                     },
                     {
+                      "id": "kf4",
                       "at": "10",
                       "value": -96.0,
                       "interp": {
@@ -122,6 +126,7 @@
                   ],
                   "audio.pan": [
                     {
+                      "id": "kf5",
                       "at": "1",
                       "value": -1.0,
                       "interp": {
@@ -133,6 +138,7 @@
                       }
                     },
                     {
+                      "id": "kf6",
                       "at": "9",
                       "value": 1.0,
                       "interp": {

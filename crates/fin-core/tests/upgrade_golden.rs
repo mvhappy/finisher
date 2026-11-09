@@ -452,7 +452,7 @@ fn upcast_v1_record_golden_per_op() {
             json!([inverse]),
             "{v1}"
         );
-        assert_eq!((up.schema_version, up.intent.schema_version), (2, 2));
+        assert_eq!((up.schema_version, up.intent.schema_version), (3, 3));
     }
 }
 
@@ -514,22 +514,113 @@ fn golden(name: &str) -> Value {
     serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap()
 }
 
-/// The frozen snapshot step: `snapshot_v1.json` upcasts to `snapshot_v2.json`, compared as a
-/// decoded `Project` and as re-encoded JSON (the step's output is canonical v2 JSON).
+/// The frozen snapshot steps: `snapshot_v1.json` upcasts through v2 (`snapshot_v2.json`) to
+/// v3, compared as a decoded `Project` and as re-encoded JSON (each step's output is canonical
+/// JSON). The v2 golden holds no keyframe, so v2 → v3 only stamps the version.
 #[test]
 fn upcast_v1_snapshot_golden() {
     let got = upcast_snapshot(golden("snapshot_v1.json")).unwrap();
-    let want: Project = serde_json::from_value(golden("snapshot_v2.json")).unwrap();
+    let mut v3 = golden("snapshot_v2.json");
+    v3["schemaVersion"] = json!(3);
+    let want: Project = serde_json::from_value(v3.clone()).unwrap();
     assert_eq!(got, want);
-    assert_eq!(
-        serde_json::to_value(&got).unwrap(),
-        golden("snapshot_v2.json")
-    );
-    // The v2 golden is current: it reads as itself.
+    assert_eq!(serde_json::to_value(&got).unwrap(), v3);
     assert_eq!(upcast_snapshot(golden("snapshot_v2.json")).unwrap(), want);
 }
 
-/// A v1 snapshot the step cannot read is `INVALID_FORMAT`.
+/// The v2 → v3 snapshot step (spec §5.12.2): every key gets `kf<n>` in document order (items,
+/// then paths in order, effect paths included), and nothing else changes. `corpus_05_v2.json`
+/// is the v2 corpus case 05 (item and effect keys); the corpus holds it at v3.
+#[test]
+fn upcast_v2_snapshot_labels_keys_in_document_order() {
+    let case = |dir: &str, name: &str| -> Value {
+        let path = format!("{}/tests/{dir}/{name}", env!("CARGO_MANIFEST_DIR"));
+        let v: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        v["project"].clone()
+    };
+    let v2 = case("upgrade_golden", "corpus_05_v2.json");
+    let v3 = case("eval_corpus/projects", "05-bezier-lut-blur.json");
+    assert_eq!(v2["schemaVersion"], 2);
+    let got = upcast_snapshot(v2.clone()).unwrap();
+    assert_eq!(serde_json::to_value(&got).unwrap(), v3);
+    // Only ids and the version differ.
+    let mut stripped = v3.clone();
+    stripped["schemaVersion"] = json!(2);
+    for tl in stripped["timelines"].as_array_mut().unwrap() {
+        for tr in tl["tracks"].as_array_mut().unwrap() {
+            for it in tr["items"].as_array_mut().unwrap() {
+                for keys in it["keyframes"]
+                    .as_object_mut()
+                    .into_iter()
+                    .flat_map(|m| m.values_mut())
+                {
+                    for k in keys.as_array_mut().unwrap() {
+                        k.as_object_mut().unwrap().remove("id");
+                    }
+                }
+            }
+        }
+    }
+    assert_eq!(stripped, v2);
+    let ids: Vec<String> = got
+        .timelines
+        .iter()
+        .flat_map(|t| &t.tracks)
+        .flat_map(|t| &t.items)
+        .flat_map(|i| i.common.keyframes.values().flatten())
+        .map(|k| k.id.clone())
+        .collect();
+    assert!(!ids.is_empty());
+    assert_eq!(
+        ids,
+        (1..=ids.len())
+            .map(|n| format!("kf{n}"))
+            .collect::<Vec<_>>()
+    );
+    let effect_keys = got
+        .timelines
+        .iter()
+        .flat_map(|t| &t.tracks)
+        .flat_map(|t| &t.items)
+        .any(|i| i.common.keyframes.keys().any(|p| p.starts_with("effects.")));
+    assert!(effect_keys, "the golden holds effect keys too");
+}
+
+/// A v2 record whose ops and lists hold no keyframe upcasts unchanged but for its version; one
+/// with a keyframe op, or a key list nested in a put-back, is `SCHEMA_VERSION` (a pre-release
+/// format, spec §5.12.2).
+#[test]
+fn upcast_v2_record_refuses_keyframes() {
+    let v2 = |ops: Value| -> Value {
+        let mut r = v1_record(vec![], vec![], vec![], json!({}));
+        r["schemaVersion"] = json!(2);
+        r["intent"]["schemaVersion"] = json!(2);
+        r["intent"]["ops"] = ops.clone();
+        r["resolved"] = ops;
+        r
+    };
+    let plain = json!([{ "op": "marker.add", "id": "$m", "timeline": "tl1", "at": "1",
+                         "label": "x" }]);
+    let up = fin_core::upcast_record(v2(plain.clone())).unwrap();
+    assert_eq!((up.schema_version, up.intent.schema_version), (3, 3));
+    assert_eq!(serde_json::to_value(&up.intent.ops).unwrap(), plain);
+    let keyed = json!([{ "op": "keyframe.set", "item": "c1", "path": "opacity", "at": "1",
+                         "value": 0.5, "interp": { "type": "linear" } }]);
+    let e = fin_core::upcast_record(v2(keyed)).unwrap_err();
+    assert_eq!(
+        (e.code.as_str(), &e.details["schemaVersion"]),
+        ("SCHEMA_VERSION", &json!(2))
+    );
+    let nested = json!([{ "op": "item.restore", "track": "t1", "mode": "lift",
+        "item": { "id": "c1", "start": "0", "duration": "1", "kind": "adjustment",
+                  "keyframes": { "opacity": [{ "at": "0", "value": 1.0,
+                                               "interp": { "type": "hold" } }] } } }]);
+    assert_eq!(
+        fin_core::upcast_record(v2(nested)).unwrap_err().code,
+        "SCHEMA_VERSION"
+    );
+}
+
 #[test]
 fn malformed_v1_snapshot_is_invalid_format() {
     let base = golden("snapshot_v1.json");
@@ -550,8 +641,8 @@ fn malformed_v1_snapshot_is_invalid_format() {
     }
 }
 
-/// `new_project` is the upcast of 4B's rev-0 project (plan 4C Decision 5): same timeline,
-/// names, rate and 1080×1920, for any rate.
+/// `new_project` is the upcast of 4B's rev-0 project (plan 4C Decision 5), and of 4C's (spec
+/// §5.12.2): same timeline, names, rate and 1080×1920, for any rate.
 #[test]
 fn new_project_equals_upcast_genesis() {
     for rate in ["30", "30000/1001", "25", "60"] {
@@ -569,6 +660,10 @@ fn new_project_equals_upcast_genesis() {
             new_project("01m6r3sq1s34zp9esh9dtgwwjd".into(), "Genesis".into(), rate).unwrap();
         let up = upcast_snapshot(v1).unwrap();
         assert_eq!(up, fresh, "{rate}");
+        // And from v2: a rev-0 project holds no keyframe.
+        let mut v2 = serde_json::to_value(&fresh).unwrap();
+        v2["schemaVersion"] = json!(2);
+        assert_eq!(upcast_snapshot(v2).unwrap(), fresh, "{rate}");
         assert_eq!(
             serde_json::to_string(&up).unwrap(),
             serde_json::to_string(&fresh).unwrap()

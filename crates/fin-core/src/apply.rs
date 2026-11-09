@@ -9,6 +9,7 @@ use crate::error::CoreError;
 use crate::ids::IdAlloc;
 use crate::layout::TextMeasurer;
 use crate::model::{Project, SCHEMA_VERSION};
+use crate::ops::util::keys;
 use crate::ops::{self, Bindings, Op};
 use crate::tx::{Applied, Diff, Tx};
 
@@ -92,10 +93,37 @@ pub fn apply_tx_env(
     env: ApplyEnv<'_>,
 ) -> Result<Applied, CoreError> {
     let mut run = Applier::new(project, tx.schema_version, mode, env)?;
+    run.reserve(&tx.ops);
     for (i, op) in tx.ops.iter().enumerate() {
         run.op(i, op, ids)?;
     }
     run.finish()
+}
+
+/// `tx` in canonical form (spec §5.12): each client time-form `keyframe.set`/`remove` replaced
+/// by the key form it takes on `frame` (where the tx is first applied: the head for a fresh
+/// commit, the base for a stale one), so the committed intent names keys, not times. Applied
+/// as a client tx (internally when it holds an internal op), it errors as that apply would; a
+/// tx with no time-form op is returned as it is.
+pub fn canonicalize(frame: &Project, tx: &Tx) -> Result<Tx, CoreError> {
+    if !tx.ops.iter().any(keys::is_time_form) {
+        return Ok(tx.clone());
+    }
+    let mut ids = crate::ids::MemIds::after(frame);
+    let mode = if tx.ops.iter().any(Op::is_internal) {
+        ApplyMode::Internal
+    } else {
+        ApplyMode::Client
+    };
+    let mut run = Applier::new(frame, tx.schema_version, mode, ApplyEnv::default())?;
+    run.reserve(&tx.ops);
+    for (i, op) in tx.ops.iter().enumerate() {
+        run.op(i, op, &mut ids)?;
+    }
+    Ok(Tx {
+        ops: run.ran,
+        ..tx.clone()
+    })
 }
 
 /// One transaction applied op by op (the rebase engine re-runs each op as soon as its
@@ -113,6 +141,8 @@ pub(crate) struct Applier<'e> {
     before: Option<LayoutInputs>,
     /// The indices of the restore ops applied ([`is_restore`]).
     restores: BTreeSet<u32>,
+    /// The ops as they ran: a client time-form keyframe op in its key form (spec §5.12).
+    ran: Vec<Op>,
 }
 
 impl<'e> Applier<'e> {
@@ -135,6 +165,7 @@ impl<'e> Applier<'e> {
         Ok(Applier {
             before: measures.then(|| LayoutInputs::of(project)),
             restores: BTreeSet::new(),
+            ran: Vec::new(),
             project: project.clone(),
             bindings: Bindings::new(mode),
             diff: Diff::default(),
@@ -154,6 +185,16 @@ impl<'e> Applier<'e> {
     ) -> Result<Diff, CoreError> {
         let before = self.diff.shifts.len();
         let changes_before = self.diff.changes.len();
+        // A time-form keyframe op runs (and is committed) as its key form; history (replay)
+        // holds key forms only.
+        let keyed;
+        let op = if self.mode != ApplyMode::Replay && keys::is_time_form(op) {
+            keyed = keys::key_form(&self.project, &self.bindings, op, index)
+                .map_err(|e| at_op(e, index))?;
+            &keyed
+        } else {
+            op
+        };
         if is_restore(op) {
             self.restores.insert(op_index(index));
         }
@@ -205,7 +246,15 @@ impl<'e> Applier<'e> {
             })
         };
         self.inverses.push(applied.map_err(|e| at_op(e, index))?);
+        self.ran.push(op.clone());
         Ok(self.own_diff(changes_before, before))
+    }
+
+    /// Reserves every placeholder `ops` (the whole transaction) names, so a key placeholder the
+    /// applier generates for a time-form insert never is one the client uses later.
+    pub(crate) fn reserve(&mut self, ops: &[Op]) {
+        let names = ops.iter().flat_map(Op::ids).filter(|x| x.starts_with('$'));
+        self.bindings.reserved.extend(names.map(str::to_string));
     }
 
     /// The entries recorded since `changes` changes and `shifts` shifts.

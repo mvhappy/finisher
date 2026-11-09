@@ -288,6 +288,14 @@ export declare function serverId(serverData: string): string;
  */
 export declare function serverIdentity(serverData: string): { id: string; renewed?: "otherMachine" | "otherDirectory" };
 
+/**
+ * Review #4: throws `SERVER_DATA_NOT_LOCAL` (details `{path, resolved, filesystem, override}`)
+ * unless `path`, or its nearest existing ancestor with symlinks resolved, is on a known local
+ * filesystem: not a network share, FUSE, sync folder or overlayfs. `FIN_ALLOW_NONLOCAL_SERVER_DATA=1`
+ * accepts any.
+ */
+export declare function checkServerDataLocal(path: string): void;
+
 /** What `checkPrivateDir` found. */
 export interface PrivateDirReport {
   ok: boolean;

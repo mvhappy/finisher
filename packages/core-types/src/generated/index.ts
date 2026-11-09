@@ -417,6 +417,9 @@ export type Op =
   | (KeyframeRemove & {
       op: "keyframe.remove";
     })
+  | (KeyframeRestore & {
+      op: "keyframe.restore";
+    })
   | (EffectRestore & {
       op: "effect.restore";
     })
@@ -1124,6 +1127,13 @@ export type CapSupport = "hardware" | "software" | "none";
  */
 export type UnmeasuredReason = "fontMissing" | "fontFetchFailed" | "fontUnpinned" | "noMeasurer";
 /**
+ * How a neighbour changed since the op was written.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "NeighbourChange".
+ */
+export type NeighbourChange = "moved" | "removed";
+/**
  * Chroma subsampling.
  *
  * This interface was referenced by `FinCore`'s JSON-Schema
@@ -1627,6 +1637,13 @@ export type HelperKind = "codec" | "plugin";
  * via the `definition` "HelloRole".
  */
 export type HelloRole = "worker" | "helper";
+/**
+ * The placement outcome of one restored item.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "PlacementOutcome".
+ */
+export type PlacementOutcome = "clean" | "relocated" | "conflict";
 /**
  * The host methods of host API 1.1.
  *
@@ -3239,13 +3256,15 @@ export interface Effect {
   };
 }
 /**
- * A keyframe; `at` is relative to the item's start (plan 4C Decision 13).
+ * A keyframe; `at` is relative to the item's start (plan 4C Decision 13). `id` (`kf<n>`) is
+ * stable (spec §5.12): unique within the item, kept by trims, moves and splits.
  *
  * This interface was referenced by `FinCore`'s JSON-Schema
  * via the `definition` "Keyframe".
  */
 export interface Keyframe {
   at: Rational;
+  id: string;
   interp: Interp;
   value: ParamValue;
 }
@@ -3418,28 +3437,49 @@ export interface EffectMove {
   to: number;
 }
 /**
- * `keyframe.set`: the keyframe of `path` of `item` at `at`.
+ * `keyframe.set`: the key `key` (or, in the client time form, the key at `at`) of `path` of
+ * `item`, at `at` (default: where it is) with `value` and `interp`.
  *
  * This interface was referenced by `FinCore`'s JSON-Schema
  * via the `definition` "KeyframeSet".
  */
 export interface KeyframeSet {
-  at: Rational;
+  at?: Rational | null;
   interp: Interp;
   item: string;
+  /**
+   * A key id (`kf<n>`), or a `$name` placeholder for a new key.
+   */
+  key?: string | null;
   path: string;
   value: ParamValue;
 }
 /**
- * `keyframe.remove`: the keyframe of `path` of `item` at `at`.
+ * `keyframe.remove`: the key `key` (or, in the client time form, the key at `at`) of `path`
+ * of `item`.
  *
  * This interface was referenced by `FinCore`'s JSON-Schema
  * via the `definition` "KeyframeRemove".
  */
 export interface KeyframeRemove {
-  at: Rational;
+  at?: Rational | null;
   item: string;
+  key?: string | null;
   path: string;
+}
+/**
+ * `keyframe.restore` (internal): key `key` of `path` of `item` back at `at`.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "KeyframeRestore".
+ */
+export interface KeyframeRestore {
+  at: Rational;
+  interp: Interp;
+  item: string;
+  key: string;
+  path: string;
+  value: ParamValue;
 }
 /**
  * `effect.restore` (internal): `effect` back on `item` at `index`, with its `keyframes`.
@@ -4869,6 +4909,19 @@ export interface CatalogSource {
   url: string;
 }
 /**
+ * Why an item was relocated: the committed record that last moved or removed `neighbour`,
+ * and its author when the log knows it.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "Cause".
+ */
+export interface Cause {
+  author?: string;
+  change: NeighbourChange;
+  neighbour: string;
+  txId: string;
+}
+/**
  * What this machine can decode and encode: the shape of `fin-codecs`' `Capabilities`.
  *
  * This interface was referenced by `FinCore`'s JSON-Schema
@@ -5950,7 +6003,43 @@ export interface HistoryResult {
   dryRun: boolean;
   noOp?: string | null;
   origins?: string[];
+  /**
+   * Where the record put each item back that a ripple restore or move placed (owner
+   * decision 2026-11-09; `fin_core::rebase::placement`): `clean`, or `relocated` with where
+   * and why. Always in the answer (the generated type marks it optional, as `origins`); a
+   * retry answers with what the record stored.
+   */
+  placements?: Placement[];
   undone: string[];
+}
+/**
+ * The placement of one item an undo, redo or copy put back (module docs): which op of which
+ * record, the item, the outcome, and for a relocation where it landed and why.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "Placement".
+ */
+export interface Placement {
+  causes?: Cause[];
+  item: string;
+  landed?: Landed;
+  opIndex: number;
+  outcome: PlacementOutcome;
+  txId: string;
+}
+/**
+ * Where a relocated item landed: its track and start, the start as a whole frame of its
+ * timeline (when it is one), and its neighbours there.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "Landed".
+ */
+export interface Landed {
+  after?: string;
+  at: Rational;
+  before?: string;
+  frame?: number;
+  track: string;
 }
 /**
  * A hook handler (agent §9). Typed now; consumable once 7F's hook engine lands (8B
@@ -6477,6 +6566,16 @@ export interface JobSpawnHelper {
   kind: HelperKind;
 }
 /**
+ * A request's process limits ([`crate::spawner::ProcessLimits`]).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "JobSpawnLimits".
+ */
+export interface JobSpawnLimits {
+  openFiles?: number;
+  processes?: number;
+}
+/**
  * One process to start. `env` is its whole environment: nothing else is inherited. `helper`
  * is required for a helper and refused for a worker.
  *
@@ -6493,10 +6592,18 @@ export interface JobSpawnRequest {
   grants?: JobSpawnGrant[];
   helper?: JobSpawnHelper;
   label?: string;
+  limits?: JobSpawnLimits1;
   profile?: JobSpawnProfile;
   program: JobSpawnProgram;
   qos?: "normal" | "utility" | "background";
   role: JobSpawnRole;
+}
+/**
+ * Limits the host applies whatever the spawner does (sp8b Decision 9).
+ */
+export interface JobSpawnLimits1 {
+  openFiles?: number;
+  processes?: number;
 }
 /**
  * `watch`'s argument: `stallMs` without `begin`, `item` or `progress`; `timeoutMs` from now.
@@ -7252,6 +7359,12 @@ export interface MergeReport {
   mergeId: string;
   merged: string[];
   origins?: string[];
+  /**
+   * As [`HistoryResult::placements`], each with its copy's txId, plus the `conflict`
+   * placements of skipped candidates (a retry answers with the copies' stored ones only, as
+   * its `skipped` is empty).
+   */
+  placements?: Placement[];
   skipped: Conflict[];
   sourceState: BranchState;
 }
@@ -7773,7 +7886,7 @@ export interface RecoverReport {
 }
 /**
  * A file `import_dir` did not read: its path and why (`not a segment: …`, `another
- * project`, `unreadable: …`).
+ * project`, `too large: …`, `unreadable: …`).
  *
  * This interface was referenced by `FinCore`'s JSON-Schema
  * via the `definition` "SkippedFile".

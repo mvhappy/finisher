@@ -127,6 +127,7 @@ pub fn plan_cherry_pick(
         absorbs: &absorbs,
         places: &reads.places,
         anchors: &reads.anchors,
+        history: Some(log.when_lost()),
     };
     // Earlier source records stand in the steps as unmirrored inverses unless the target
     // holds a copy: what depends on them depends on a record not picked.
@@ -135,9 +136,15 @@ pub fn plan_cherry_pick(
         .map(|s| s.record.tx_id.as_str())
         .collect();
     let (head_seq, head) = log.head(into)?;
+    let authors = super::Authors {
+        log,
+        recs: target.iter().map(|r| &r.record.intent),
+        own: (tx_id, author),
+    };
     let rebased = BoundIds::new(&r.intent.ops, &r.bindings)
         .map_err(|e| Conflict::from_rerun(&e, tx_id, 0, None))
         .and_then(|mut ids| rebase_apply(&head, &rebase, &mut ids, mode))
+        .map_err(|c| authors.fill_conflict(c))
         .map_err(|c| CoreError::from(Conflicts::one(on_skipped(c, &before))))?;
     let from = root_rec.map_or_else(|| rec.branch.clone(), |r| r.branch);
     Ok(Outcome::Append(Planned {
@@ -155,6 +162,7 @@ pub fn plan_cherry_pick(
             ..rebased.tx
         },
         applied: rebased.applied,
+        placements: authors.fill(rebased.placements),
     }))
 }
 
@@ -282,34 +290,29 @@ fn in_effect(log: &dyn LogView, id: &str, since: &[LogRec]) -> Result<bool, Core
             _ => Vec::new(),
         });
     }
-    fn names(r: &LogRec) -> Vec<&str> {
-        let mut out = vec![r.record.tx_id.as_str()];
-        out.extend(r.record.merge_id.as_deref());
-        out
-    }
-    fn on(
-        ids: &[&str],
-        from: usize,
-        since: &[LogRec],
-        inverts: &[Vec<String>],
-        memo: &mut HashMap<usize, bool>,
-    ) -> bool {
-        for k in from..since.len() {
-            if inverts[k].iter().any(|u| ids.contains(&u.as_str())) {
-                let live = match memo.get(&k) {
-                    Some(&v) => v,
-                    None => {
-                        let v = on(&names(&since[k]), k + 1, since, inverts, memo);
-                        memo.insert(k, v);
-                        v
-                    }
-                };
-                if live {
-                    return false;
-                }
-            }
+    // Which records of `since` invert each unit id.
+    let mut by_unit: HashMap<&str, Vec<usize>> = HashMap::new();
+    for (k, units) in inverts.iter().enumerate() {
+        for u in units {
+            by_unit.entry(u.as_str()).or_default().push(k);
         }
-        true
     }
-    Ok(on(&[id], 0, since, &inverts, &mut HashMap::new()))
+    // Whether some live record after `from` inverts one of `ids`.
+    let inverted = |ids: &[&str], from: usize, live: &[bool]| {
+        ids.iter()
+            .filter_map(|u| by_unit.get(u))
+            .flatten()
+            .any(|&j| j >= from && live[j])
+    };
+    // `live[k]`: record `k` keeps its effect (no later live record inverts it). It depends
+    // only on later records, so one pass from the newest decides each (a loop: a chain of
+    // thousands of undo/redo cycles is that deep, review of 2026-11-09 #15).
+    let mut live = vec![false; since.len()];
+    for k in (0..since.len()).rev() {
+        let r = &since[k].record;
+        let mut names = vec![r.tx_id.as_str()];
+        names.extend(r.merge_id.as_deref());
+        live[k] = !inverted(&names, k + 1, &live);
+    }
+    Ok(!inverted(&[id], 0, &live))
 }

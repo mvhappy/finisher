@@ -14,7 +14,7 @@ import type { WorkerExitEvent } from "./events.ts";
 import { type JobDirs, mappedPath } from "./files.ts";
 import { mkdirSafe } from "./fsafe.ts";
 import { type JobHostExitInfo, type JobSpawnRequest, type ProcEvent, exitVerdict } from "./host.ts";
-import type { HelperProgram } from "./kinds.ts";
+import { exitPluginId, type HelperProgram } from "./kinds.ts";
 import type { RunnerEnv } from "./runner.ts";
 import type { JobRow } from "./store.ts";
 
@@ -227,6 +227,8 @@ export class Helpers {
     p.exited = true;
     if (info.reason === "abandoned" && p.proc !== undefined) this.#env.abandoned(p.proc, this.#row.id);
     const verdict = exitVerdict(info, this.#answered);
+    // The helper's plugin, else the job's (sp8b Decision 3b).
+    const plugin = exitPluginId(p.program, this.#row.via);
     try {
       const exit: WorkerExitEvent = {
         role: "helper",
@@ -238,7 +240,7 @@ export class Helpers {
         sandboxed: this.#env.host.caps().sandboxed,
         ...(info.code === undefined ? {} : { exitCode: info.code }),
         ...(info.signal === undefined ? {} : { signal: info.signal }),
-        ...(p.program.pluginId === undefined ? {} : { pluginId: p.program.pluginId }),
+        ...(plugin === undefined ? {} : { pluginId: plugin }),
       };
       this.#env.sink.workerExit(exit);
     } catch (e) {

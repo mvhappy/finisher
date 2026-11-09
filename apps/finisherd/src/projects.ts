@@ -8,7 +8,9 @@ import { Context, Effect, Layer, PubSub, type Scope, Semaphore, Stream } from "e
 import { attempt, attemptJson, finError, isEngineDead } from "./errors.ts";
 import type { CallMeta } from "./diagnostics.ts";
 import { callEngine, type HistoryOp, type HistoryPayload, metaJson, publishResult } from "./history.ts";
-import { follower, Hubs, type Stamped } from "./hubs.ts";
+import { follower, Hubs } from "./hubs.ts";
+import { engineEvicted, historyRewound, opStream } from "./op-stream.ts";
+import { holdLibraries, type OpenProject } from "./open-project.ts";
 import { ProjectIndex } from "./project-index.ts";
 
 /** What `prepareMediaJob` resolves to: the rev written, the plan's BLAKE3 at each time and the files the worker opens. */
@@ -31,16 +33,6 @@ export interface OpenExpect {
 /** The folder holds another project than the one checked (a swap between check and open). */
 const changed = (dir: string, projectId: string) =>
   finError("PROJECT_NOT_FOUND", `the folder ${dir} no longer holds project ${projectId}`, { dir, projectId, reason: "changed" }, "open the project by its folder again");
-
-/** One open project: its engine and a commit lock. */
-interface OpenProject {
-  readonly engine: Engine;
-  readonly dir: string;
-  /** Serializes commit + publish so hubs see revs in commit order. */
-  readonly commitLock: Semaphore.Semaphore;
-  /** Releases the libraries its assets live in (5D Decision 28). */
-  release?: () => void;
-}
 
 export interface ProjectRegistryShape {
   /** `idemKey`: a retry with the same key returns the project that create made. */
@@ -78,6 +70,12 @@ export interface ProjectRegistryShape {
     fromRev: number,
     generation?: Generation,
   ) => Stream.Stream<CommittedTx, FinError>;
+  /**
+   * `project.close`: ends its subscribers with `ENGINE_CLOSED {reason: closed}`, waits for the
+   * commit lock and closes the engine (in-flight calls finish; the export is flushed and the
+   * lease released). `false` when it was not open. The next call reopens it.
+   */
+  readonly close: (projectId: string) => Effect.Effect<{ closed: boolean }, FinError>;
   /** The status now, then every status change and rewind/rebuild/background error. */
   readonly events: (projectId: string) => Stream.Stream<ProjectEvent, FinError>;
   readonly status: (projectId: string) => Effect.Effect<unknown, FinError>;
@@ -118,7 +116,12 @@ export interface ProjectRegistryShape {
   readonly onBranch: <A>(projectId: string, branch: string, f: (engine: Engine, branch: string) => Promise<string>) => Effect.Effect<A, FinError>;
   /** Fails with `PROJECT_NOT_FOUND` unless the project is known (opened on demand). */
   readonly ensure: (projectId: string) => Effect.Effect<void, FinError>;
-  /** The chain's view (5A Task 5): open here now; its folder; a branch reference's id. */
+  /**
+   * The chain's view (5A Task 5): open here now; its folder; a branch reference's id. A project
+   * the registry closed (idle, `project.close`) still counts as open here, with its folder,
+   * until it reopens: reopening it on demand is the registry's housekeeping, so it needs no
+   * `project.write` and keeps a device's roots, an agent's and a job's folder as they were.
+   */
   readonly isOpen: (projectId: string) => boolean;
   readonly dirOf: (projectId: string) => string | undefined;
   /** The folders of the projects open here now (a device's roots, 5B Decision 32). */
@@ -141,50 +144,25 @@ export interface RegistryOptions {
   readonly hubCapacity?: number;
   /** Holds the libraries holding these asset paths in use (5D Decision 28), and the project's media cache entries (6B-1), while it is open. */
   readonly libraryUse?: (assetPaths: ReadonlyArray<string>, projectId: string) => { release(): void };
+  /**
+   * An engine with no subscriber and no call in flight (no commit lock held or awaited, no long
+   * call) for this long is closed (owner decision on review #11); the next call reopens it.
+   * Default `DEFAULT_IDLE_CLOSE_MS`; `0` never closes one.
+   */
+  readonly idleCloseMs?: number;
 }
 
-/** Holds the libraries the project's assets (on `main`, at open) live in, until it closes. */
-function holdLibraries(p: OpenProject, use: NonNullable<RegistryOptions["libraryUse"]>): void {
-  void p.engine.snapshot(MAIN).then(
-    (json) => {
-      const assets = (JSON.parse(json) as { project?: { assets?: Record<string, { path?: unknown }> } }).project?.assets ?? {};
-      const held = use(Object.values(assets).flatMap((a) => (typeof a.path === "string" ? [a.path] : [])), p.engine.projectId);
-      if (p.release === undefined) p.release = () => held.release();
-      else held.release();
-    },
-    () => undefined,
-  );
-}
+/** 10 minutes. */
+export const DEFAULT_IDLE_CLOSE_MS = 10 * 60_000;
 
 export const DEFAULT_HUB_CAPACITY = 1024;
 const MAIN = "main";
 
-/** A rewound history, as the op stream reports it to a subscriber that saw it. */
-function historyRewound(details: Record<string, unknown>): FinError {
-  const branch = String(details.branch);
-  const message =
-    details.reason === undefined
-      ? `the history of ${branch} from rev ${String(details.rev)} on was set aside`
-      : details.reason === "GENERATION"
-        ? `the history of ${branch} was rewound or rebuilt since the caller read it`
-        : `the project database was rebuilt (${String(details.reason)}); revs read before may hold something else`;
-  return finError("HISTORY_REWOUND", message, details, `read ${branch} again (snapshot.get) and subscribe from that rev`);
-}
-
-/** Ends the streams of an evicted engine: their clients reconnect, which reopens it. */
-function engineEvicted(projectId: string): FinError {
-  return finError(
-    "ENGINE_CLOSED",
-    "the project's engine stopped; its history may have changed since",
-    { projectId, reason: "evicted" },
-    "read the project again and subscribe again (that reopens it)",
-  );
-}
 
 
 export function makeProjectRegistry(
   serverData: string,
-  { hubCapacity = DEFAULT_HUB_CAPACITY, libraryUse }: RegistryOptions = {},
+  { hubCapacity = DEFAULT_HUB_CAPACITY, libraryUse, idleCloseMs = DEFAULT_IDLE_CLOSE_MS }: RegistryOptions = {},
 ): Effect.Effect<ProjectRegistryShape, never, Scope.Scope> {
   return Effect.gen(function* () {
     const index = yield* Effect.acquireRelease(
@@ -200,13 +178,17 @@ export function makeProjectRegistry(
     /** Creates with an idempotency key this process made, by folder (`create`'s retries). */
     const created = new Map<string, { idemKey: string; name: string; rate: string; projectId: string }>();
     const hubs = new Hubs(hubCapacity);
+    /** Engines still closing, by folder: an open of the folder waits for its old engine to let go. */
+    const closingDirs = new Map<string, Promise<void>>();
+    /** Projects the registry closed (idle, `project.close`) and their folders, until they reopen. */
+    const closedHere = new Map<string, string>();
     /** Set once shutdown starts: engines that finish opening later are closed at once. */
     let closed = false;
 
     yield* Effect.addFinalizer(() =>
       Effect.suspend(() => {
         closed = true;
-        return Effect.forEach(
+        const closes = Effect.forEach(
           [...byId.values()],
           (p) =>
             // Waiting for the commit lock means no commit is in flight when the engine closes.
@@ -219,6 +201,8 @@ export function makeProjectRegistry(
             ),
           { discard: true },
         );
+        // And the closes already under way (an idle close, `project.close`, an eviction).
+        return Effect.andThen(closes, Effect.promise(() => Promise.all([...closingDirs.values()])));
       }),
     );
 
@@ -286,8 +270,9 @@ export function makeProjectRegistry(
         byDir.set(dir, existing.engine.projectId);
         return existing;
       }
-      const project: OpenProject = { engine, dir, commitLock: Semaphore.makeUnsafe(1) };
+      const project: OpenProject = { engine, dir, commitLock: Semaphore.makeUnsafe(1), active: 0, lastUsed: Date.now(), retired: false };
       byId.set(engine.projectId, project);
+      closedHere.delete(engine.projectId);
       byDir.set(dir, engine.projectId);
       index.touch(engine.projectId, dir);
       engine.onEvent((json) => onEngineEvent(project, json));
@@ -301,20 +286,92 @@ export function makeProjectRegistry(
      * still had queued (a rewind, maybe) are lost, so they are treated like a rebuild.
      */
     const evict = (p: OpenProject): void => {
+      void forget(p, "evicted").catch(() => undefined);
+    };
+
+    /** Unregisters `p`, ends its streams and closes its engine (after its in-flight calls). */
+    const forget = (p: OpenProject, reason: "evicted" | "closed"): Promise<void> => {
       const id = p.engine.projectId;
-      if (byId.get(id) !== p) return;
+      if (byId.get(id) !== p) return Promise.resolve();
       byId.delete(id);
-      for (const [dir, pid] of byDir) if (pid === id) byDir.delete(dir);
-      hubs.endAll(id, 0, () => engineEvicted(id));
-      hubs.endEvents(id, engineEvicted(id));
+      p.retired = reason === "closed";
+      if (p.retired) closedHere.set(id, p.dir);
+      const dirs = new Set([p.dir]);
+      for (const [dir, pid] of byDir) {
+        if (pid !== id) continue;
+        byDir.delete(dir);
+        dirs.add(dir);
+      }
+      hubs.endAll(id, 0, () => engineEvicted(id, reason));
+      hubs.endEvents(id, engineEvicted(id, reason));
       p.release?.();
       p.release = () => {};
-      void p.engine.close().catch(() => undefined);
+      const closing = p.engine.close();
+      const settled = closing.then(
+        () => undefined,
+        () => undefined,
+      );
+      for (const dir of dirs) closingDirs.set(dir, settled);
+      void settled.then(() => {
+        for (const dir of dirs) if (closingDirs.get(dir) === settled) closingDirs.delete(dir);
+      });
+      return closing;
     };
+
+    /** `project.close` and the idle close: under the commit lock, so no commit is in flight. */
+    const closeProject = (p: OpenProject, onlyIfIdle: boolean): Effect.Effect<boolean, FinError> =>
+      p.commitLock.withPermits(1)(
+        Effect.suspend(() => {
+          if (byId.get(p.engine.projectId) !== p) return Effect.succeed(false);
+          if (onlyIfIdle && !idle(p, Date.now())) return Effect.succeed(false);
+          return Effect.as(attempt(() => forget(p, "closed")), true);
+        }),
+      );
+
+    const idle = (p: OpenProject, now: number): boolean =>
+      p.active === 0 && !hubs.holds(p.engine.projectId) && now - p.lastUsed >= idleCloseMs;
+
+    /** Marks `p` used now, e.g. when its last subscriber left. */
+    const touch = (projectId: string): void => {
+      const p = byId.get(projectId);
+      if (p !== undefined) p.lastUsed = Date.now();
+    };
+
+    if (idleCloseMs > 0) {
+      const sweep = setInterval(() => {
+        const now = Date.now();
+        for (const p of byId.values()) if (idle(p, now)) Effect.runFork(Effect.ignore(closeProject(p, true)));
+      }, Math.min(idleCloseMs, 60_000));
+      sweep.unref();
+      yield* Effect.addFinalizer(() => Effect.sync(() => clearInterval(sweep)));
+    }
+
+    /** `effect` counted as a call in flight on `p` (the idle close waits for it). */
+    const using = <A>(p: OpenProject, effect: Effect.Effect<A, FinError>): Effect.Effect<A, FinError> =>
+      Effect.ensuring(
+        Effect.andThen(Effect.sync(() => void (p.active += 1)), effect),
+        Effect.sync(() => void ((p.active -= 1), (p.lastUsed = Date.now()))),
+      );
 
     /** An engine call on `p`; a panic or a dead engine evicts `p`. */
     const call = <A>(p: OpenProject, f: (engine: Engine) => Promise<string>): Effect.Effect<A, FinError> =>
-      Effect.tapError(attemptJson<A>(() => f(p.engine)), (e) => Effect.sync(() => (isEngineDead(e) ? evict(p) : undefined)));
+      using(
+        p,
+        Effect.tapError(attemptJson<A>(() => f(p.engine)), (e) => Effect.sync(() => (isEngineDead(e) ? evict(p) : undefined))),
+      );
+
+    /** What a closed engine answers every call (`ENGINE_CLOSED {reason: closed}`). */
+    const closedUnder = (e: FinError): boolean =>
+      e.code === "ENGINE_CLOSED" && (e.details as { reason?: unknown } | null | undefined)?.reason === "closed";
+
+    /**
+     * `f` on the open project; when the registry closed the engine under it (between `get` and
+     * the call: a closed engine refuses a call before doing anything), once more on a reopened one.
+     */
+    const withOpen = <A>(projectId: string, f: (p: OpenProject) => Effect.Effect<A, FinError>): Effect.Effect<A, FinError> =>
+      Effect.flatMap(get(projectId), (p) =>
+        Effect.catchIf(f(p), (e) => p.retired && closedUnder(e), () => Effect.flatMap(get(projectId), f)),
+      );
 
     const openDir = (dir: string, relocate: boolean, expected?: string): Promise<OpenProject> => {
       if (closed) return Promise.reject(shuttingDown());
@@ -327,8 +384,10 @@ export function makeProjectRegistry(
       }
       let pending = opening.get(dir);
       if (!pending) {
-        // The store checks the folder still holds `expected` before it locks or leases anything.
-        pending = Engine.open(serverData, dir, { relocate, ...(expected === undefined ? {} : { expectId: expected }) })
+        // The store checks the folder still holds `expected` before it locks or leases anything;
+        // a closing engine of the folder lets go of its lease and database first.
+        pending = (closingDirs.get(dir) ?? Promise.resolve())
+          .then(() => Engine.open(serverData, dir, { relocate, ...(expected === undefined ? {} : { expectId: expected }) }))
           .then((engine) => {
             // And again before `register`: a project other than the one checked is never taken on.
             if (expected !== undefined && engine.projectId !== expected) {
@@ -376,14 +435,11 @@ export function makeProjectRegistry(
 
     /** `f` on the engine of `projectId`, its JSON answer parsed. */
     const on = <A>(projectId: string, f: (engine: Engine) => Promise<string>): Effect.Effect<A, FinError> =>
-      Effect.flatMap(get(projectId), (p) => call<A>(p, f));
+      withOpen(projectId, (p) => call<A>(p, f));
 
     /** The id a branch reference names (`BRANCH_NOT_FOUND` when none does); `main` needs no call. */
     const resolveBranch = (projectId: string, branch: string): Effect.Effect<string, FinError> =>
       branch === MAIN ? Effect.succeed(MAIN) : on<string>(projectId, (e) => e.resolveBranch(branch));
-
-    const opsSince = (projectId: string, branch: string, rev: number) =>
-      on<CommittedTx[]>(projectId, (e) => e.opsSince(branch, rev));
 
     return {
       create: (dir, name, rate, idemKey) =>
@@ -421,6 +477,8 @@ export function makeProjectRegistry(
         Effect.suspend(() => {
           if (expect.attachOnly === true && expect.projectId !== undefined) {
             const p = byId.get(expect.projectId);
+            // Closed here by the registry: attaching reopens it, as any call would.
+            if (p === undefined && closedHere.has(expect.projectId)) return Effect.flatMap(get(expect.projectId), ref);
             if (p === undefined) {
               const fix = "open the project by its folder again";
               return Effect.fail(finError("PROJECT_NOT_FOUND", `project ${expect.projectId} is not open here`, { projectId: expect.projectId, dir }, fix));
@@ -431,8 +489,8 @@ export function makeProjectRegistry(
         }),
 
       commit: (projectId, tx, generation, meta) =>
-        Effect.flatMap(get(projectId), (p) =>
-          p.commitLock.withPermits(1)(
+        withOpen(projectId, (p) =>
+          using(p, p.commitLock.withPermits(1)(
             Effect.uninterruptible(
               Effect.tap(
                 call<CommittedTx>(p, (e) =>
@@ -441,7 +499,7 @@ export function makeProjectRegistry(
                 (committed) => Effect.sync(() => hubs.publishTx(projectId, committed)),
               ),
             ),
-          ),
+          )),
         ),
 
       snapshot: (projectId, requested) =>
@@ -451,88 +509,30 @@ export function makeProjectRegistry(
         Effect.map(on<BranchView[]>(projectId, (e) => e.branches(all)), (branches) => ({ branches })),
 
       history: (projectId, op, payload, meta) =>
-        Effect.flatMap(get(projectId), (p) =>
-          p.commitLock.withPermits(1)(
+        withOpen(projectId, (p) =>
+          using(p, p.commitLock.withPermits(1)(
             Effect.uninterruptible(
               Effect.tap(
                 call<unknown>(p, (e) => callEngine(e, op, payload, metaJson(meta))),
                 (result) => Effect.sync(() => publishResult(hubs, projectId, result, payload.dryRun === true)),
               ),
             ),
-          ),
+          )),
         ),
 
       subscribe: (projectId, requested, fromRev, generation) =>
-        Stream.unwrap(
-          Effect.gen(function* () {
-            // Hubs are keyed by id: a name, or `<name>#<id>`, resolves before anything else.
-            const branch = yield* resolveBranch(projectId, requested);
-            const channel = yield* Effect.acquireRelease(
-              Effect.sync(() => hubs.acquireOps(projectId, branch)),
-              () => Effect.sync(() => hubs.releaseOps(projectId, branch)),
-            );
-            // Before subscribing: an ending published from now on is seen, as its marker or
-            // through the `seq` of any later item. One whose engine event lands after the
-            // backlog below was read at its new generation is skipped (`check` gets that
-            // generation): the subscriber already reads the new history.
-            const check = follower(channel, branch);
-            // Subscribe before reading the backlog: a commit landing in between is then
-            // both in the backlog and on the hub, and the rev filter below drops the copy.
-            const live = yield* PubSub.subscribe(channel.pubsub);
-            // Every engine call re-resolves the engine (`on`): an eviction between calls must
-            // not leave this stream talking to a closed engine. The head is read before the
-            // backlog; a rewind landing in between is caught by the generation check below.
-            const head = yield* on<number>(projectId, async (e) => String(await e.head(branch)));
-            const read = yield* on<{ generation: Generation; ops: CommittedTx[] }>(projectId, (e) => e.opsSinceAt(branch, fromRev));
-            if (
-              generation !== undefined &&
-              (generation.incarnation !== read.generation.incarnation || generation.n !== read.generation.n)
-            ) {
-              return yield* Effect.fail(
-                historyRewound({ branch, rev: 0, reason: "GENERATION", generation: read.generation, expected: generation }),
-              );
-            }
-            if (fromRev > head) {
-              return yield* Effect.fail(
-                finError(
-                  "BASE_REV_AHEAD",
-                  `fromRev ${fromRev} is ahead of the head of ${branch} (rev ${head})`,
-                  { branch, fromRev, head },
-                  `subscribe from a rev at most ${head} (snapshot.get reports the head)`,
-                ),
-              );
-            }
-            let last = fromRev;
-            const emit = (item: Stamped<CommittedTx>): Effect.Effect<ReadonlyArray<CommittedTx>, FinError> => {
-              const ended = check(item, last, read.generation);
-              if (ended !== undefined) return Effect.fail(ended);
-              const c = item.value;
-              if (c === undefined || c.rev <= last) return Effect.succeed([]);
-              if (c.rev === last + 1) {
-                last = c.rev;
-                return Effect.succeed([c]);
-              }
-              // A gap: the sliding hub dropped items for this slow subscriber. Fill from the log.
-              return Effect.map(opsSince(projectId, branch, last), (missing) => {
-                const out = missing.filter((m) => m.rev > last && m.rev <= c.rev);
-                if (out.length > 0) last = out[out.length - 1]!.rev;
-                return out;
-              });
-            };
-            const backlog = read.ops.map((tx): Stamped<CommittedTx> => ({ seq: -1, value: tx }));
-            return Stream.concat(Stream.fromIterable(backlog), Stream.fromSubscription(live)).pipe(
-              Stream.mapEffect(emit),
-              Stream.flattenIterable,
-            );
-          }),
-        ),
+        opStream({ hubs, resolveBranch, on, released: () => touch(projectId) }, projectId, requested, fromRev, generation),
 
       events: (projectId) =>
         Stream.unwrap(
           Effect.gen(function* () {
             const channel = yield* Effect.acquireRelease(
               Effect.sync(() => hubs.acquireEvents(projectId)),
-              () => Effect.sync(() => hubs.releaseEvents(projectId)),
+              () =>
+                Effect.sync(() => {
+                  hubs.releaseEvents(projectId);
+                  touch(projectId);
+                }),
             );
             const check = follower(channel, "");
             // Subscribe first: a change landing while the status is read is then not missed.
@@ -550,6 +550,11 @@ export function makeProjectRegistry(
             return Stream.concat(Stream.make(first), items);
           }),
         ),
+      close: (projectId) =>
+        Effect.suspend(() => {
+          const p = byId.get(projectId);
+          return Effect.map(p === undefined ? Effect.succeed(false) : closeProject(p, false), (closed) => ({ closed }));
+        }),
       status: (projectId) => on(projectId, (e) => e.status()),
       takeover: (projectId, confirm) => on(projectId, (e) => e.takeover(confirm)),
       verify: (projectId) => on(projectId, (e) => e.verify()),
@@ -562,9 +567,9 @@ export function makeProjectRegistry(
         ),
       acknowledgeSalvage: (projectId, copy, meta) => on<boolean>(projectId, async (e) => String(await e.acknowledgeSalvage(copy, metaJson(meta)))),
       ensure: (projectId) => Effect.asVoid(get(projectId)),
-      isOpen: (projectId) => byId.has(projectId),
-      dirOf: (projectId) => byId.get(projectId)?.dir,
-      openDirs: () => [...byId.values()].map((p) => p.dir),
+      isOpen: (projectId) => byId.has(projectId) || closedHere.has(projectId),
+      dirOf: (projectId) => byId.get(projectId)?.dir ?? closedHere.get(projectId),
+      openDirs: () => [...byId.values()].map((p) => p.dir).concat([...closedHere.values()]),
       indexedDirOf: (projectId) => (closed ? undefined : index.dirOf(projectId)),
       resolveBranch,
       evalFrame: (projectId, requested, timeline, at) =>

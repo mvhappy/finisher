@@ -48,6 +48,7 @@ fn a_worker_is_placed_in_its_family_container() {
         ],
         qos: Qos::Normal,
         label: "t".into(),
+        limits: Default::default(),
     };
     let s = SandboxSpawner::with(
         Some(sd.clone()),

@@ -20,6 +20,7 @@ fn exit_codes_follow_the_contract() {
     assert_eq!(exit_code("BRANCH_NOT_ALLOWED"), 7);
     assert_eq!(exit_code("TX_TOO_LARGE"), 2);
     assert_eq!(exit_code("CONFLICT"), 4);
+    assert_eq!(exit_code("NEIGHBOURS_GONE"), 4);
     assert_eq!(exit_code("SEGMENT_COLLISION"), 4);
     assert_eq!(exit_code("RECORD_TOO_LARGE"), 3);
     assert_eq!(exit_code("BASE_REV_AHEAD"), 4);
@@ -123,6 +124,7 @@ fn exit_codes_follow_the_contract() {
         "SLOT_UNKNOWN",
         "PARAM_ANIMATED",
         "PARAM_NOT_ANIMATABLE",
+        "KEYFRAME_EXISTS",
         "BIN_NOT_EMPTY",
         "BIN_CYCLE",
         "NESTED_CYCLE",
@@ -160,6 +162,7 @@ fn exit_codes_follow_the_contract() {
         "PROJECT_DB_MISSING",
         "PROJECT_DB_MISMATCH",
         "SERVER_DATA_UNSAFE",
+        "SERVER_DATA_NOT_LOCAL",
         "PROJECT_DIR_UNWRITABLE",
         "INVALID_NAME",
         "INVALID_PATH",

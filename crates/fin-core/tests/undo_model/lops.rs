@@ -11,11 +11,14 @@ pub enum LOp {
     /// `item.insert` (ripple), or the ripple `item.restore` of an inverse: before `before`,
     /// or at the track end. A restore puts the clip back whole, its end edge included:
     /// `expect`, the edge history it needs (as the removal or move it inverts left it);
-    /// `pre`, the history as made (what a copy needs).
+    /// `pre`, the history as made (what a copy needs). A restore (`expect` set) goes right
+    /// after `after`, the clip before it when it was taken out, while that is on the track
+    /// (`rebase::placement`, owner decision 2026-11-09); else before `before`.
     Insert {
         track: usize,
         id: String,
         dur: i64,
+        after: Option<String>,
         before: Option<String>,
         stamp: u32,
         ns: u32,
@@ -23,11 +26,13 @@ pub enum LOp {
         pre: Vec<String>,
     },
     /// `item.delete` (ripple), or the ripple `item.remove` of an inverse; `succ`: the clip
-    /// after it when made; `post`: its edge history then.
+    /// after it when made, `pred` the clip before it (none after a gap, or on a track whose
+    /// order the model did not know); `post`: its edge history then.
     Remove {
         track: usize,
         id: String,
         dur: i64,
+        pred: Option<String>,
         succ: Option<String>,
         stamp: u32,
         ns: u32,
@@ -50,10 +55,15 @@ pub enum LOp {
     /// `item.move` (ripple) to track `to`, before `before` (the clip itself: where it is) or
     /// at the end. As made: the track it left (`from`), its length (`dur`) and the clip
     /// after it there (`succ`, with `sstamp`/`sns`), which its inverse restores it before;
-    /// `post`: its edge history then (its inverse's restore needs it unchanged).
+    /// `post`: its edge history then (its inverse's restore needs it unchanged). `after`: the
+    /// clip before its target as made (never the clip itself), which a copy goes right after
+    /// while it is there; `spred`: the clip before it where it left, which its inverse's
+    /// restore goes right after.
     Move {
         id: String,
         to: usize,
+        after: Option<String>,
+        spred: Option<String>,
         before: Option<String>,
         stamp: u32,
         ns: u32,
@@ -186,6 +196,7 @@ impl LOp {
                 track,
                 id,
                 dur,
+                pred: None,
                 succ: None,
                 stamp: 0,
                 ns: 0,
@@ -195,6 +206,7 @@ impl LOp {
                 track,
                 id,
                 dur,
+                pred,
                 succ,
                 stamp,
                 ns,
@@ -203,6 +215,7 @@ impl LOp {
                 track,
                 id,
                 dur,
+                after: pred,
                 before: succ,
                 stamp,
                 ns,
@@ -232,6 +245,7 @@ impl LOp {
                 to,
                 from,
                 dur,
+                spred,
                 succ,
                 sstamp,
                 sns,
@@ -242,6 +256,7 @@ impl LOp {
                     track: to,
                     id: id.clone(),
                     dur,
+                    pred: None,
                     succ: None,
                     stamp: 0,
                     ns: 0,
@@ -251,6 +266,7 @@ impl LOp {
                     track: from,
                     id,
                     dur,
+                    after: spred,
                     before: succ,
                     stamp: sstamp,
                     ns: sns,

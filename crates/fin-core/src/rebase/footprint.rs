@@ -194,6 +194,7 @@ pub fn split_diff(ops: &[Op], diff: &Diff) -> Result<Vec<Diff>, CoreError> {
 /// `$p`'s is unknown, so they are dropped (the op's own rules still name `$p`). Every change of
 /// every op naming such an id follows. Shifts carry no ids and stay.
 pub(crate) fn unbind_own(ops: &[Op], mut own: Vec<Diff>) -> Vec<Diff> {
+    crate::ops::util::keys::unbind_keys(ops, &mut own);
     let mut bound: BTreeMap<String, Option<String>> = BTreeMap::new();
     for (op, d) in ops.iter().zip(&own) {
         let Some(p) = op.allocates() else { continue };

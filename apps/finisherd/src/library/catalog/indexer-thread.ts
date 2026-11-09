@@ -475,6 +475,11 @@ function watchFault(a: Record<string, unknown>): unknown {
   return { faulted: watches.fault(checkLibraryId(a.lib)) };
 }
 
+function watchReady(a: Record<string, unknown>): unknown {
+  if (data.testHooks !== true) throw new CatalogFailure("CATALOG_OP_UNKNOWN", "no such catalog method", { method: "watchReady" });
+  return { ready: watches.ready(checkLibraryId(a.lib)) };
+}
+
 const METHODS: Record<string, (a: Record<string, unknown>) => unknown> = {
   open,
   close,
@@ -491,6 +496,7 @@ const METHODS: Record<string, (a: Record<string, unknown>) => unknown> = {
   watch,
   unwatch,
   watchFault,
+  watchReady,
 };
 
 function reply(r: Reply): void {

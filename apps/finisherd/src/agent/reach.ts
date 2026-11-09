@@ -255,12 +255,13 @@ export class PathReach {
 
 /**
  * The RPCs no session may call whatever its scopes (spec §5.6, §6.1): opening or creating a
- * project (the session's own is opened by `finisherd` at start), and the calls that change
+ * project (the session's own is opened by `finisherd` at start) or closing one, and the calls that change
  * state outside any branch: a salvage acknowledgement and the diagnostics settings and consent.
  */
 export const SESSION_REFUSED_RPCS: ReadonlySet<string> = new Set([
   "project.open",
   "project.create",
+  "project.close",
   "project.acknowledgeSalvage",
   "diagnostics.project",
   "diagnostics.consent",

@@ -8,8 +8,15 @@
 //! Administrators, `CREATOR OWNER` or `OWNER RIGHTS`: nothing for `Everyone`, `Users`,
 //! `Authenticated Users` or another account. Deny ACEs are fine; an ACE type this does not
 //! know is refused. These are the rules of `fin-registry`'s `private_windows.rs` (sub-project
-//! 8A) and of `fin-node`'s `checkPrivateDir`; this small copy keeps `fin` free of either
-//! crate. Problems name SIDs, never account names.
+//! 8A) and of `fin-node`'s `checkPrivateDir`; this small copy keeps `fin` free of both crates.
+//! Problems name SIDs, never account names.
+//!
+//! One more reader may be named by the caller (`reader`): a session's credential
+//! (`agents/<id>/credential.json`) carries the ACL broker's read-only grant for that session's
+//! capability SID (plan 7C Task 10), held only by the session's own sandboxed processes, which
+//! are the `fin`s that read it. Only a read mask is accepted for it. It adds no reader: Windows
+//! checks a container token's user and groups as well as its capabilities, and grants only what
+//! both allow, so the file stays readable by this user's own processes alone.
 
 use std::ffi::c_void;
 use std::fs::File;
@@ -98,9 +105,13 @@ fn current_user() -> io::Result<String> {
     sid_string(user.User.Sid).ok_or_else(io::Error::last_os_error)
 }
 
+/// Every right beyond reading (`FILE_GENERIC_READ`, `0x120089`, and `GENERIC_READ`).
+const NOT_READ: u32 = !(0x0012_0089 | 0x8000_0000);
+
 /// Why the opened `file` is not private to this user (empty when it is): `"owner <sid>"`,
 /// `"allows <sid>"`, `"null dacl"`, `"unsupported ace <type>"`, `"unreadable ace <i>"`.
-pub(crate) fn problems(file: &File) -> io::Result<Vec<String>> {
+/// `reader` may hold a read-only allow ACE.
+pub(crate) fn problems(file: &File, reader: Option<&str>) -> io::Result<Vec<String>> {
     let user = current_user()?;
     let mut owner: PSID = null_mut();
     let mut dacl: *mut ACL = null_mut();
@@ -164,6 +175,7 @@ pub(crate) fn problems(file: &File) -> io::Result<Vec<String>> {
                 }
                 match sid_string(sid) {
                     Some(s) if trusted(&s) || OWNER_ALIASES.contains(&s.as_str()) => {}
+                    Some(s) if Some(s.as_str()) == reader && mask & NOT_READ == 0 => {}
                     Some(s) => {
                         let p = format!("allows {s}");
                         if !out.contains(&p) {

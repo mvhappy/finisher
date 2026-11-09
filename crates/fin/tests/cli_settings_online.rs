@@ -6,7 +6,7 @@ mod support;
 
 use serde_json::json;
 use support::fontserver::{self, CatalogFile, FontServer};
-use support::{assert_error, fin, media_av, ok};
+use support::{Server, assert_error, fin, media_av, ok};
 
 #[test]
 fn settings_commit_and_eval_reads_them() {
@@ -130,6 +130,96 @@ fn settings_commit_and_eval_reads_them() {
     assert_eq!(pins["pins"], json!([]), "{pins}");
     let view = run(&["view", "--track", "t3"]);
     assert_eq!(support::view_items(&view), [], "{view}");
+}
+
+/// The `kf:` part of c1's line in `fin view --detail` (its link part cut).
+fn keys(run: &dyn Fn(&[&str]) -> serde_json::Value) -> String {
+    let v = run(&["view", "--detail", "--track", "t1"]);
+    let lines = v["lines"].as_array().unwrap();
+    let line = lines
+        .iter()
+        .filter_map(|l| l.as_str())
+        .find(|l| l.contains(" c1 "))
+        .unwrap_or_else(|| panic!("{v}"));
+    let kf = line.split_once("kf: ").map_or("", |(_, k)| k);
+    kf.split("  ⟷").next().unwrap_or_default().to_string()
+}
+
+/// Spec §5.12.3: every keyframe write echoes its key's id; an insert's is the id the server
+/// minted (after an undo it is not the one the working copy would guess: removed ids are not
+/// reused), a dry run's the one it would mint. Keys are edited, moved and removed by id.
+#[test]
+fn keyframe_ids_are_echoed_and_named() {
+    let Some(server) = Server::start("keyframe_ids_are_echoed_and_named") else {
+        return;
+    };
+    let (sd, root) = (&server.sd, &server.root);
+    ok(fin(
+        sd,
+        root,
+        &["project", "create", "film", "--name", "Film"],
+    ));
+    let dir = root.join("film");
+    media_av(&dir.join("av.mp4"), 10);
+    let run = |args: &[&str]| ok(fin(sd, &dir, args));
+    run(&["asset", "add", "av.mp4"]);
+    run(&[
+        "clip", "insert", "--track", "t1", "--at", "0", "--asset", "a1", "--dur", "4s",
+    ]);
+
+    let k = run(&["keyframe", "set", "c1", "opacity", "--at", "0", "0"]);
+    assert_eq!(k["bindings"], json!({ "$kf0": "kf1" }), "{k}");
+    assert_eq!(k["resolved"]["key"], "kf1", "{k}");
+    let k = run(&["keyframe", "set", "c1", "opacity", "--at", "0", "0.5"]);
+    assert_eq!(k["resolved"]["key"], "kf1", "an edit keeps the id: {k}");
+    run(&["keyframe", "set", "c1", "opacity", "--at", "2s", "1"]);
+    run(&["undo"]);
+    let dry = run(&[
+        "--dry-run",
+        "keyframe",
+        "set",
+        "c1",
+        "opacity",
+        "--at",
+        "3s",
+        "1",
+    ]);
+    assert_eq!(dry["resolved"]["key"], dry["bindings"]["$kf0"], "{dry}");
+    let k = run(&["keyframe", "set", "c1", "opacity", "--at", "3s", "1"]);
+    assert_eq!(k["bindings"], json!({ "$kf0": "kf3" }), "{k}");
+    assert_eq!(k["resolved"]["key"], "kf3", "the minted id: {k}");
+    assert_eq!(keys(&run), "opacity[kf1@0.0s,kf3@3.0s]");
+
+    let r = fin(
+        sd,
+        &dir,
+        &[
+            "keyframe", "set", "c1", "opacity", "--key", "kf3", "--at", "0", "1",
+        ],
+    );
+    assert_error(&r, 3, "KEYFRAME_EXISTS");
+    assert_eq!(
+        r.json["error"]["details"]["existing"], "kf1",
+        "{}",
+        r.stdout
+    );
+    let k = run(&[
+        "keyframe", "set", "c1", "opacity", "--key", "kf3", "--at", "1s", "1",
+    ]);
+    assert_eq!(k["resolved"]["key"], "kf3", "{k}");
+    assert_eq!(k["resolved"]["at"], "1", "{k}");
+    let k = run(&["keyframe", "set", "c1", "opacity", "--key", "kf1", "0.25"]);
+    assert_eq!(k["resolved"]["at"], "0", "--key alone keeps the time: {k}");
+    assert_eq!(keys(&run), "opacity[kf1@0.0s,kf3@1.0s]");
+
+    let k = run(&["keyframe", "remove", "c1", "opacity", "--key", "kf1"]);
+    assert_eq!(
+        k["resolved"],
+        json!({ "item": "c1", "path": "opacity", "key": "kf1", "at": "0" })
+    );
+    let k = run(&["keyframe", "remove", "c1", "opacity", "--at", "1s"]);
+    assert_eq!(k["resolved"]["key"], "kf3", "{k}");
+    assert_eq!(keys(&run), "");
 }
 
 #[test]

@@ -128,6 +128,14 @@ pub struct Record {
     /// writes it, so only it marks a quarantine row recovered.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub recovers: Option<String>,
+    /// `undo`, `redo`, `cherryPick`, `revert`, `merge`: where each item a ripple restore or
+    /// move put back landed, and why when it was relocated (owner decision of 2026-11-09,
+    /// `rebase::placement`), so a retry answers with them. Ignored by replay. Absent when
+    /// empty, so every other record keeps its bytes. Part of the stored format: the placement
+    /// types' variants are frozen (a new one would read as damage on an older server), and the
+    /// list counts toward the record size limit (one entry per restored item).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub placements: Vec<crate::rebase::placement::Placement>,
     pub schema_version: u32,
     pub parent_hash: Option<String>,
     pub author: String,
@@ -171,6 +179,7 @@ impl Record {
             epoch: None,
             archived: None,
             recovers: None,
+            placements: Vec::new(),
             schema_version,
             parent_hash,
             author,

@@ -47,6 +47,20 @@ pub(crate) fn actor_of_meta(meta_json: Option<&str>) -> RawActor {
         .unwrap_or_default()
 }
 
+/// What a history call does with an item whose neighbours are both gone (owner decision of
+/// 2026-11-09; `fin_core::rebase::placement`), from its `metaJson` actor (which finisherd
+/// builds from the principal, `actorFor`): `user` (the console, a device, `fin` run by a user)
+/// snaps it to the nearest boundary; `agent` (agent and MCP credentials, `fin` under an agent
+/// session) and everything else (`unknown`, no meta, a meta that does not decode) refuses it,
+/// so an automated caller is never relocated silently.
+pub(crate) fn when_lost_of_meta(meta_json: Option<&str>) -> fin_core::rebase::placement::WhenLost {
+    use fin_core::rebase::placement::WhenLost;
+    match actor_of_meta(meta_json).kind.as_deref() {
+        Some("user") => WhenLost::Snap,
+        _ => WhenLost::Refuse,
+    }
+}
+
 /// The write guard of a call's `metaJson` (`{actor?, guard?: WriteGuard}`; sub-project 5A
 /// Decision 17): the default (no limit) without `metaJson` or without `guard`. Unlike the
 /// actor, it is never guessed: a `metaJson` that is not a JSON object, or a `guard` that is

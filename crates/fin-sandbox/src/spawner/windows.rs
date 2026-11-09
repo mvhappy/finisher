@@ -16,6 +16,7 @@ use std::ffi::OsString;
 use std::sync::{Arc, Mutex};
 
 use fin_jobhost::spawner::{PlatformCommand, UiLimits, WinAttribute};
+use windows_sys::Win32::Security::SECURITY_CAPABILITIES;
 use windows_sys::Win32::System::Threading::PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES;
 
 use crate::windows::apply::Container;
@@ -60,6 +61,9 @@ pub fn contain(
     cmd.attributes.push(WinAttribute {
         attribute: PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES as usize,
         value,
+        // Exactly the struct: the SIDs behind it are data it points at (a larger size is
+        // `ERROR_INVALID_PARAMETER`, found by `host_sandbox_windows.rs`).
+        size: size_of::<SECURITY_CAPABILITIES>(),
     });
     cmd.desktop = Some(desktops.of(&container)?.into());
     // Processes of one container belong to different jobs and calls (review B1).

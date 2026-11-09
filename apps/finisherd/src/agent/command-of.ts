@@ -46,6 +46,8 @@ export const RPC_ONLY: ReadonlySet<FinRpcTag> = new Set<FinRpcTag>([
   "plugin.discard",
   "ops.subscribe",
   "project.events",
+  // Server housekeeping: the engine reopens on the next call (review #11).
+  "project.close",
   "diagnostics.record",
   // Jobs are submitted by the server's own features; a `render` job is named `render`
   // (`SERVER_NAMED`) until a `fin` render command arrives with its row.

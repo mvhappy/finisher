@@ -168,7 +168,7 @@ pub const COMMANDS: &[Command] = &[
     Command {
         name: "view",
         group: "read",
-        args: "[--track <t>] [--range <a..b>] [--budget <tokens>]",
+        args: "[--track <t>] [--range <a..b>] [--budget <tokens>] [--detail]",
         summary: "screenplay lines of every timeline (or --timeline's), fit to a token budget",
         write: false,
         schema: || schema_of::<view::ViewArgs>("view"),

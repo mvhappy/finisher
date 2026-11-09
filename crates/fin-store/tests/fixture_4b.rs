@@ -41,7 +41,7 @@ fn fixture_4b_opens_with_relocate() {
         assert_eq!(rev, want["rev"].as_u64().unwrap(), "{branch} rev");
         assert_eq!(
             serde_json::to_value(&project).unwrap(),
-            want["project"],
+            current(&want["project"]),
             "{branch} project"
         );
         let stacks = store.undo_stacks(branch, "fixture").unwrap();
@@ -119,13 +119,16 @@ fn sp2_4a_4b_fixtures_open_equal_v2_goldens() {
             let up = upcast_snapshot(old["project"].clone()).unwrap();
             assert_eq!(
                 serde_json::to_value(&up).unwrap(),
-                new["project"],
+                current(&new["project"]),
                 "{name} {b1}"
             );
             let (rev, project) = store.snapshot(b1).unwrap();
             assert_eq!(rev, new["rev"].as_u64().unwrap(), "{name} {b1}");
             assert_eq!(project, up, "{name} {b1}");
-            assert_eq!(serde_json::to_value(&project).unwrap(), new["project"]);
+            assert_eq!(
+                serde_json::to_value(&project).unwrap(),
+                current(&new["project"])
+            );
         }
     }
 }
@@ -446,7 +449,7 @@ fn replay_of_upcast_records_equals_v2_golden() {
             let replayed = replay_to(&store, &db, &branch, rev);
             assert_eq!(
                 serde_json::to_value(&replayed).unwrap(),
-                want["project"],
+                current(&want["project"]),
                 "{name} {branch}"
             );
         }
@@ -463,9 +466,15 @@ fn replay_of_upcast_records_equals_v2_golden() {
             assert_eq!(rev, want["rev"].as_u64().unwrap(), "{name} {branch}");
             assert_eq!(
                 serde_json::to_value(&project).unwrap(),
-                want["project"],
+                current(&want["project"]),
                 "{name} {branch}"
             );
         }
     }
+}
+
+/// A v2 golden project as this Finisher reads it: upcast to the current model (the fixtures
+/// stay as written; spec §5.12.2).
+fn current(v: &serde_json::Value) -> serde_json::Value {
+    serde_json::to_value(fin_core::upcast_snapshot(v.clone()).unwrap()).unwrap()
 }

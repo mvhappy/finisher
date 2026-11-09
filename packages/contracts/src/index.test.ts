@@ -137,6 +137,7 @@ test("the group exposes exactly the protocol 2 RPC tags", () => {
       "plugin.suggest",
       "project.acknowledgeRewind",
       "project.acknowledgeSalvage",
+      "project.close",
       "project.compact",
       "project.create",
       "project.events",

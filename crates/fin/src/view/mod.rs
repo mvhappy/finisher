@@ -53,12 +53,14 @@ pub struct Section {
 }
 
 /// What [`sections`] keeps: one track, and a time range (half-open; a point marker counts
-/// when `from <= at < to`).
+/// when `from <= at < to`); and how much of an item it shows ([`Filter::detail`]).
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Filter<'a> {
     pub track: Option<&'a str>,
     pub from: Option<Rational>,
     pub to: Option<Rational>,
+    /// `--detail`: an item's keyframes are listed with their ids and times.
+    pub detail: bool,
 }
 
 impl Filter<'_> {
@@ -117,7 +119,7 @@ pub fn sections(
                 continue;
             }
             for it in &t.items {
-                let (head, detail) = lines::item_parts(it);
+                let (head, detail) = lines::item_parts(it, filter.detail);
                 let (words, tail) = match &it.body {
                     ItemBody::Caption { block } => {
                         let mut tail = format!("({})", block.style);

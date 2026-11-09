@@ -100,6 +100,8 @@ pub(super) const VALIDATION_CODES: &[&str] = &[
     "PROJECT_DB_MISSING",
     "PROJECT_DB_MISMATCH",
     "SERVER_DATA_UNSAFE",
+    // Server or project data off a known local filesystem (review #4, `fin_store::locality`).
+    "SERVER_DATA_NOT_LOCAL",
     "IDEM_KEY_REUSED",
     "PROJECT_DIR_UNWRITABLE",
     // A name the rules refuse: an empty or whitespace-only project name, or a branch or
@@ -197,6 +199,9 @@ pub(super) const VALIDATION_CODES: &[&str] = &[
     "SLOT_UNKNOWN",
     "PARAM_ANIMATED",
     "PARAM_NOT_ANIMATABLE",
+    // Stable keyframe ids (sub-project 4 §5.12): a key set or moved to a time another key of
+    // the path holds.
+    "KEYFRAME_EXISTS",
     // Library (sub-project 4C Task 13): a removal of a bin holding assets or bins; a bin
     // moved into itself or a bin inside it.
     "BIN_NOT_EMPTY",
@@ -236,6 +241,9 @@ pub(super) const VALIDATION_CODES: &[&str] = &[
     // A caption laid out from its pinned fonts overflows its style's lines or safe zone
     // (sub-project 4C Tasks 19–20: checked once at the end of a transaction).
     "CAPTION_OVERFLOW",
+    // A caption item would hold more than `fin_core::captions::MAX_CAPTION_WORDS` (5,000)
+    // words (`details.item`, `words`, `max`, `opIndex`; review finding #14).
+    "CAPTION_TOO_LONG",
     // `diagnostics.record` refused an event (plan D, Decision 33): seen only by direct callers.
     "EVENT_KIND_UNKNOWN",
     "EVENT_INVALID",
@@ -325,6 +333,10 @@ pub(super) const CONFLICT_CODES: &[&str] = &[
     // Another live agent session works on this root branch (7A Task 7): end it, or start from
     // another branch.
     "BRANCH_IN_USE",
+    // An agent's undo, redo or copy whose item lost both neighbours (owner decision 2026-11-09,
+    // SP4 §4.3): it arrives as `CONFLICT {reason: NEIGHBOURS_GONE}` (nothing changed; read the
+    // head and place the item yourself); listed so the reason maps to exit 4 as a code too.
+    "NEIGHBOURS_GONE",
     // Agent sessions (7A-2 Task 6b): a run is active (steer it, or wait); the session ended.
     "SESSION_BUSY",
     "SESSION_ENDED",
@@ -354,6 +366,10 @@ pub(super) const JOB_RESULT_CODES: &[&str] = &[
     "JOB_TIMEOUT",
     "POISON_ITEM",
     "HELPER_FAILED",
+    // A plugin job's process crashed, hung or broke the envelope (sp8 §13; sp8b Task 4).
+    "PLUGIN_CRASHED",
+    "PLUGIN_TIMEOUT",
+    "PLUGIN_PROTOCOL",
 ];
 
 /// Codes that mean "this request can never succeed as sent" (exit 2, like `USAGE`).
@@ -448,6 +464,8 @@ pub(super) const UNAVAILABLE_CODES: &[&str] = &[
     "REGISTRY_STALE",
     "PLUGIN_DISABLED",
     "PLUGIN_RUNTIME_UNAVAILABLE",
+    // A code plugin stopped after three crashes in ten minutes (sp8b Tasks 4, 5).
+    "PLUGIN_CRASH_LOOP",
     "TOO_MANY_PLANS",
     "TOO_MANY_SUGGESTIONS",
     // Libraries (5D Decision 51): a library offline or paused, a root that cannot be read, a

@@ -195,6 +195,23 @@ pub fn sandbox_hook_grants(input: String) -> Result<String> {
     })
 }
 
+/// The grant of a job visiting a warm worker for its attempt (`AclGrant` JSON; plan 7C
+/// Decision 19): the job's directory in `<workerDir>/jobs/` to the worker's capability.
+#[napi(catch_unwind)]
+pub fn sandbox_visit_grant(worker_dir: String, job_dir: String) -> Result<String> {
+    let g = fin_sandbox::windows::job_grants::visit(
+        std::path::Path::new(&worker_dir),
+        std::path::Path::new(&job_dir),
+    )
+    .map_err(|e| {
+        reject(CoreError::new(
+            "INVALID_ARGS",
+            format!("no visit grant: {e}"),
+        ))
+    })?;
+    encode(&g)
+}
+
 /// The AppContainer name of a project's agents and hooks (`finisher-p-<hash>`, pure).
 #[napi(catch_unwind)]
 pub fn sandbox_project_container(project_dir: String) -> String {
@@ -221,6 +238,23 @@ pub fn sandbox_container_sid(name: String) -> Result<Option<String>> {
         let _ = name;
         Ok(None)
     }
+}
+
+/// Deletes the AppContainer profile `name` (a suite's own containers; a no-op off Windows).
+/// Test hooks only.
+#[cfg(feature = "test-hooks")]
+#[napi(catch_unwind)]
+pub fn sandbox_container_delete_for_test(name: String) -> Result<()> {
+    #[cfg(windows)]
+    fin_sandbox::windows::appcontainer::delete(&name).map_err(|e| {
+        reject(CoreError::new(
+            "IO_ERROR",
+            format!("the container {name:?} was not deleted: {e}"),
+        ))
+    })?;
+    #[cfg(not(windows))]
+    let _ = name;
+    Ok(())
 }
 
 /// The broker's live grants (`{path, sid, mask, inherit, owner}[]` JSON). Test hooks only.

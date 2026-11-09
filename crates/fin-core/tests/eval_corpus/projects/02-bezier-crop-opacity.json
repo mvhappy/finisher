@@ -15,7 +15,7 @@
   "project": {
     "id": "p1",
     "name": "Corpus",
-    "schemaVersion": 2,
+    "schemaVersion": 3,
     "rate": "30",
     "timelines": [
       {
@@ -45,6 +45,7 @@
                 "keyframes": {
                   "crop.left": [
                     {
+                      "id": "kf4",
                       "at": "0",
                       "value": 0.0,
                       "interp": {
@@ -56,6 +57,7 @@
                       }
                     },
                     {
+                      "id": "kf5",
                       "at": "8",
                       "value": 0.5,
                       "interp": {
@@ -69,6 +71,7 @@
                   ],
                   "crop.right": [
                     {
+                      "id": "kf6",
                       "at": "1",
                       "value": 0.25,
                       "interp": {
@@ -80,6 +83,7 @@
                       }
                     },
                     {
+                      "id": "kf7",
                       "at": "3",
                       "value": 0.0,
                       "interp": {
@@ -91,6 +95,7 @@
                       }
                     },
                     {
+                      "id": "kf8",
                       "at": "7",
                       "value": 0.75,
                       "interp": {
@@ -104,6 +109,7 @@
                   ],
                   "crop.top": [
                     {
+                      "id": "kf9",
                       "at": "0",
                       "value": 0.0,
                       "interp": {
@@ -115,6 +121,7 @@
                       }
                     },
                     {
+                      "id": "kf10",
                       "at": "4",
                       "value": 1.0,
                       "interp": {
@@ -128,6 +135,7 @@
                   ],
                   "crop.bottom": [
                     {
+                      "id": "kf1",
                       "at": "2",
                       "value": 0.3,
                       "interp": {
@@ -135,6 +143,7 @@
                       }
                     },
                     {
+                      "id": "kf2",
                       "at": "5",
                       "value": 0.6,
                       "interp": {
@@ -146,6 +155,7 @@
                       }
                     },
                     {
+                      "id": "kf3",
                       "at": "8",
                       "value": 0.1,
                       "interp": {
@@ -159,6 +169,7 @@
                   ],
                   "opacity": [
                     {
+                      "id": "kf11",
                       "at": "0",
                       "value": 0.0,
                       "interp": {
@@ -170,6 +181,7 @@
                       }
                     },
                     {
+                      "id": "kf12",
                       "at": "2",
                       "value": 1.0,
                       "interp": {
@@ -177,6 +189,7 @@
                       }
                     },
                     {
+                      "id": "kf13",
                       "at": "6",
                       "value": 0.5,
                       "interp": {
@@ -188,6 +201,7 @@
                       }
                     },
                     {
+                      "id": "kf14",
                       "at": "8",
                       "value": 0.0,
                       "interp": {

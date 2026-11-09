@@ -184,7 +184,13 @@ pub(crate) fn spawn_suspended(
         size_of::<[HANDLE; 3]>(),
     )?;
     for a in &cmd.attributes {
-        list.set(a.attribute, a.value.as_ptr().cast(), a.value.len())?;
+        if a.size > a.value.len() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "a process attribute's size is larger than its value",
+            ));
+        }
+        list.set(a.attribute, a.value.as_ptr().cast(), a.size)?;
     }
     // SAFETY: a plain C struct; zeros are its defaults.
     let mut si: STARTUPINFOEXW = unsafe { zeroed() };

@@ -155,8 +155,11 @@ fn plan(
             .map_err(|e| with_tx_id(e, &tx.tx_id))?;
         (rebased.tx, rebased.applied)
     } else {
-        let applied = apply_tx_env(&head.project, tx, &mut ids, ApplyMode::Client, env)?;
-        (tx.clone(), applied)
+        // The intent names the keys its keyframe ops met (spec §5.12). A tx that cannot be
+        // canonicalised fails the apply below with the same error.
+        let tx = fin_core::canonicalize(&head.project, tx).unwrap_or_else(|_| tx.clone());
+        let applied = apply_tx_env(&head.project, &tx, &mut ids, ApplyMode::Client, env)?;
+        (tx, applied)
     };
     ids.save(txn)?;
     ctx.append(Draft {

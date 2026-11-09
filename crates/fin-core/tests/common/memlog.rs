@@ -1,7 +1,7 @@
 //! An in-memory log of branches for the history planners ([`LogView`]): each branch keeps its
 //! own records and the state after each of them, and forks from its parent at a seq.
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
 
 use fin_core::history::{
@@ -9,9 +9,10 @@ use fin_core::history::{
     plan_cherry_pick, plan_merge, plan_redo, plan_revert, plan_undo, plan_undo_to,
 };
 use fin_core::layout::TextMeasurer;
+use fin_core::rebase::placement::{Placement, WhenLost};
 use fin_core::{
     Applied, ApplyEnv, ApplyMode, BoundIds, CoreError, Diff, Link, MemIds, Op, Project, Record,
-    SCHEMA_VERSION, Tx, apply_tx_env, apply_tx_mode, rebase_tx_env, resolve_ops,
+    SCHEMA_VERSION, Tx, apply_tx_env, apply_tx_mode, canonicalize, rebase_tx_env, resolve_ops,
 };
 
 struct Br {
@@ -24,10 +25,19 @@ struct Br {
 
 pub struct MemLog {
     branches: BTreeMap<String, Br>,
+    /// txId → the (branch, index) of its first record in `branches` order: `find` without a
+    /// scan, so long histories (thousands of undo/redo cycles) stay linear to plan.
+    by_tx: HashMap<String, (String, usize)>,
+    /// mergeId → its records' (branch, index), in `branches` order.
+    by_merge: HashMap<String, Vec<(String, usize)>>,
     /// One id counter for the whole log, as the store's.
     pub ids: MemIds,
     /// What edits and the planners measure captions with (plan 4C Task 20); none by default.
     pub measurer: Option<Arc<dyn TextMeasurer>>,
+    /// What the planners do with an item whose neighbours are both gone (`Snap`: a person).
+    pub when_lost: WhenLost,
+    /// The placements of the last undo, redo, `undo --to`, pick, revert or merge planned.
+    pub placements: Vec<Placement>,
 }
 
 impl MemLog {
@@ -42,8 +52,12 @@ impl MemLog {
         };
         MemLog {
             branches: BTreeMap::from([("main".to_string(), main)]),
+            by_tx: HashMap::new(),
+            by_merge: HashMap::new(),
             ids,
             measurer: None,
+            when_lost: WhenLost::Snap,
+            placements: Vec::new(),
         }
     }
 
@@ -51,7 +65,7 @@ impl MemLog {
     /// read one).
     pub fn fork(&mut self, id: &str, parent: &str, at: u64) {
         let state = self.state_at(parent, at).unwrap();
-        self.branches.insert(
+        let old = self.branches.insert(
             id.to_string(),
             Br {
                 parent: Some(parent.to_string()),
@@ -60,6 +74,22 @@ impl MemLog {
                 states: vec![state],
             },
         );
+        if old.is_some_and(|b| !b.recs.is_empty()) {
+            // A branch made again: its old records leave the indexes.
+            self.by_tx.retain(|_, (b, _)| b != id);
+            self.by_merge
+                .values_mut()
+                .for_each(|g| g.retain(|(b, _)| b != id));
+            let mut first: HashMap<String, (String, usize)> = HashMap::new();
+            for (b, br) in &self.branches {
+                for (i, r) in br.recs.iter().enumerate() {
+                    first
+                        .entry(r.record.tx_id.clone())
+                        .or_insert((b.clone(), i));
+                }
+            }
+            self.by_tx = first;
+        }
     }
 
     fn br(&self, b: &str) -> Result<&Br, CoreError> {
@@ -93,6 +123,7 @@ impl MemLog {
     ) -> Result<LogRec, CoreError> {
         let tx = self.tx(b, tx_id, author, self.head_seq(b), ops);
         let env = ApplyEnv::measuring(self.measurer.as_deref());
+        let tx = canonicalize(&self.state(b), &tx)?;
         let applied = apply_tx_env(&self.state(b), &tx, &mut self.ids, ApplyMode::Client, env)?;
         Ok(self.push(b, Link::Edit, tx, applied))
     }
@@ -145,6 +176,7 @@ impl MemLog {
 
     /// A planned record appended at the head of `b`.
     pub fn append(&mut self, b: &str, p: Planned) -> LogRec {
+        self.placements = p.placements.clone();
         assert_eq!(p.intent.base_rev, self.head_seq(b), "planned at the head");
         self.push(b, p.link, p.intent, p.applied)
     }
@@ -199,6 +231,7 @@ impl MemLog {
         for p in plan.planned.clone() {
             self.append(into, p);
         }
+        self.placements = plan.placements.clone();
         Ok(plan)
     }
 
@@ -297,6 +330,17 @@ impl MemLog {
             diff: applied.diff,
         };
         let br = self.branches.get_mut(b).unwrap();
+        let at = (b.to_string(), br.recs.len());
+        if let Some(m) = &rec.record.merge_id {
+            let group = self.by_merge.entry(m.clone()).or_default();
+            group.push(at.clone());
+            group.sort();
+        }
+        let first = self
+            .by_tx
+            .entry(rec.record.tx_id.clone())
+            .or_insert(at.clone());
+        *first = first.clone().min(at);
         br.recs.push(rec.clone());
         br.states.push(applied.project);
         rec
@@ -306,6 +350,10 @@ impl MemLog {
 impl LogView for MemLog {
     fn measurer(&self) -> Option<&dyn TextMeasurer> {
         self.measurer.as_deref()
+    }
+
+    fn when_lost(&self) -> WhenLost {
+        self.when_lost
     }
 
     fn lineage(&self, branch: &str) -> Result<Lineage, CoreError> {
@@ -355,21 +403,17 @@ impl LogView for MemLog {
 
     fn find(&self, tx_id: &str) -> Result<Option<LogRec>, CoreError> {
         Ok(self
-            .branches
-            .values()
-            .flat_map(|b| &b.recs)
-            .find(|r| r.record.tx_id == tx_id)
-            .cloned())
+            .by_tx
+            .get(tx_id)
+            .map(|(b, i)| self.branches[b].recs[*i].clone()))
     }
 
     fn merge_group(&self, merge_id: &str) -> Result<Vec<LogRec>, CoreError> {
-        Ok(self
-            .branches
-            .values()
-            .flat_map(|b| &b.recs)
-            .filter(|r| r.record.merge_id.as_deref() == Some(merge_id))
-            .cloned()
-            .collect())
+        Ok(self.by_merge.get(merge_id).map_or_else(Vec::new, |at| {
+            at.iter()
+                .map(|(b, i)| self.branches[b].recs[*i].clone())
+                .collect()
+        }))
     }
 
     fn is_descendant(&self, a: &str, of: &str) -> Result<bool, CoreError> {

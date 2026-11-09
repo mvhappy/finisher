@@ -15,7 +15,7 @@
   "project": {
     "id": "p1",
     "name": "Corpus",
-    "schemaVersion": 2,
+    "schemaVersion": 3,
     "rate": "30",
     "timelines": [
       {
@@ -51,6 +51,7 @@
                 "keyframes": {
                   "effects.fx1.exposure": [
                     {
+                      "id": "kf4",
                       "at": "0",
                       "value": -2.0,
                       "interp": {
@@ -62,6 +63,7 @@
                       }
                     },
                     {
+                      "id": "kf5",
                       "at": "10",
                       "value": 2.0,
                       "interp": {
@@ -75,6 +77,7 @@
                   ],
                   "effects.fx1.contrast": [
                     {
+                      "id": "kf1",
                       "at": "2",
                       "value": 0.0,
                       "interp": {
@@ -86,6 +89,7 @@
                       }
                     },
                     {
+                      "id": "kf2",
                       "at": "6",
                       "value": 0.8,
                       "interp": {
@@ -97,6 +101,7 @@
                       }
                     },
                     {
+                      "id": "kf3",
                       "at": "9",
                       "value": -0.4,
                       "interp": {
@@ -110,6 +115,7 @@
                   ],
                   "effects.fx1.saturation": [
                     {
+                      "id": "kf6",
                       "at": "0",
                       "value": 1.0,
                       "interp": {
@@ -121,6 +127,7 @@
                       }
                     },
                     {
+                      "id": "kf7",
                       "at": "5",
                       "value": 0.0,
                       "interp": {
@@ -132,6 +139,7 @@
                       }
                     },
                     {
+                      "id": "kf8",
                       "at": "10",
                       "value": 2.0,
                       "interp": {
@@ -145,6 +153,7 @@
                   ],
                   "effects.fx1.temperature": [
                     {
+                      "id": "kf9",
                       "at": "3",
                       "value": -1.0,
                       "interp": {
@@ -156,6 +165,7 @@
                       }
                     },
                     {
+                      "id": "kf10",
                       "at": "7",
                       "value": 1.0,
                       "interp": {
@@ -169,6 +179,7 @@
                   ],
                   "effects.fx1.tint": [
                     {
+                      "id": "kf11",
                       "at": "0",
                       "value": 0.2,
                       "interp": {
@@ -176,6 +187,7 @@
                       }
                     },
                     {
+                      "id": "kf12",
                       "at": "4",
                       "value": -0.6,
                       "interp": {
@@ -187,6 +199,7 @@
                       }
                     },
                     {
+                      "id": "kf13",
                       "at": "8",
                       "value": 0.6,
                       "interp": {

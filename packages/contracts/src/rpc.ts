@@ -430,16 +430,10 @@ export const FinRpcs = RpcGroup.make(
   Rpc.make("auth.credential.list", { payload: CredentialListPayload, success: CredentialListSuccess, error: FinError }),
   Rpc.make("auth.credential.revoke", { payload: CredentialRevokePayload, success: CredentialRevokeSuccess, error: FinError }),
   Rpc.make("auth.credential.rotateMaster", { payload: CredentialRotateMasterPayload, success: CredentialRotateMasterSuccess, error: FinError }),
-  Rpc.make("project.create", {
-    payload: ProjectCreatePayload,
-    success: ProjectRefSuccess,
-    error: FinError,
-  }),
-  Rpc.make("project.open", {
-    payload: ProjectOpenPayload,
-    success: ProjectRefSuccess,
-    error: FinError,
-  }),
+  Rpc.make("project.create", { payload: ProjectCreatePayload, success: ProjectRefSuccess, error: FinError }),
+  Rpc.make("project.open", { payload: ProjectOpenPayload, success: ProjectRefSuccess, error: FinError }),
+  /** Review #11: closes the engine now (flushed, lease released); `false` when it was not open. The next call reopens it. */
+  Rpc.make("project.close", { payload: ProjectIdPayload, success: Schema.Struct({ closed: Schema.Boolean }), error: FinError }),
   Rpc.make("asset.probe", {
     payload: AssetProbePayload,
     success: AssetProbeSuccess,

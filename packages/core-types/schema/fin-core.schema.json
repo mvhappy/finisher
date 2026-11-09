@@ -2213,6 +2213,29 @@
       ],
       "type": "object"
     },
+    "Cause": {
+      "description": "Why an item was relocated: the committed record that last moved or removed `neighbour`,\nand its author when the log knows it.",
+      "properties": {
+        "author": {
+          "type": "string"
+        },
+        "change": {
+          "$ref": "#/$defs/NeighbourChange"
+        },
+        "neighbour": {
+          "type": "string"
+        },
+        "txId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "neighbour",
+        "change",
+        "txId"
+      ],
+      "type": "object"
+    },
     "Change": {
       "description": "One entity an op changed (plan 4C Decision 4). `op`: the index of the op in its transaction\nthat made the change. The optional fields are omitted on the wire when absent (never\n`null`):\n- `track`: for an item, the track it is on (after the op; for a removed item, the track it\n  was taken off), so a footprint and replay's track check see the tracks of ops that record\n  no shift (a lift, a strict or overwrite trim, a roll, a slip, a split); none for assets;\n- `edge`: the edge an `updated` change moved, if that is all it did to the entity;\n- `path`: the parameter an `updated` change set (a registry path), if that is all it did;\n- `by`: the content offset of a start-edge move: every item-relative time of the entity\n  moved by it (plan 4C Decision 13).",
       "properties": {
@@ -5963,6 +5986,14 @@
           },
           "type": "array"
         },
+        "placements": {
+          "default": [],
+          "description": "Where the record put each item back that a ripple restore or move placed (owner\ndecision 2026-11-09; `fin_core::rebase::placement`): `clean`, or `relocated` with where\nand why. Always in the answer (the generated type marks it optional, as `origins`); a\nretry answers with what the record stored.",
+          "items": {
+            "$ref": "#/$defs/Placement"
+          },
+          "type": "array"
+        },
         "undone": {
           "items": {
             "type": "string"
@@ -7991,6 +8022,25 @@
       ],
       "type": "object"
     },
+    "JobSpawnLimits": {
+      "additionalProperties": false,
+      "description": "A request's process limits ([`crate::spawner::ProcessLimits`]).",
+      "properties": {
+        "openFiles": {
+          "default": null,
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "processes": {
+          "default": null,
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "type": "object"
+    },
     "JobSpawnProfile": {
       "enum": [
         "worker",
@@ -8063,6 +8113,10 @@
         "label": {
           "default": "",
           "type": "string"
+        },
+        "limits": {
+          "$ref": "#/$defs/JobSpawnLimits",
+          "description": "Limits the host applies whatever the spawner does (sp8b Decision 9)."
         },
         "profile": {
           "$ref": "#/$defs/JobSpawnProfile"
@@ -8259,10 +8313,13 @@
       "type": "object"
     },
     "Keyframe": {
-      "description": "A keyframe; `at` is relative to the item's start (plan 4C Decision 13).",
+      "description": "A keyframe; `at` is relative to the item's start (plan 4C Decision 13). `id` (`kf<n>`) is\nstable (spec §5.12): unique within the item, kept by trims, moves and splits.",
       "properties": {
         "at": {
           "$ref": "#/$defs/Rational"
+        },
+        "id": {
+          "type": "string"
         },
         "interp": {
           "$ref": "#/$defs/Interp"
@@ -8272,6 +8329,7 @@
         }
       },
       "required": [
+        "id",
         "at",
         "value",
         "interp"
@@ -8279,13 +8337,26 @@
       "type": "object"
     },
     "KeyframeRemove": {
-      "description": "`keyframe.remove`: the keyframe of `path` of `item` at `at`.",
+      "description": "`keyframe.remove`: the key `key` (or, in the client time form, the key at `at`) of `path`\nof `item`.",
       "properties": {
         "at": {
-          "$ref": "#/$defs/Rational"
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Rational"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "item": {
           "type": "string"
+        },
+        "key": {
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "path": {
           "type": "string"
@@ -8293,13 +8364,12 @@
       },
       "required": [
         "item",
-        "path",
-        "at"
+        "path"
       ],
       "type": "object"
     },
-    "KeyframeSet": {
-      "description": "`keyframe.set`: the keyframe of `path` of `item` at `at`.",
+    "KeyframeRestore": {
+      "description": "`keyframe.restore` (internal): key `key` of `path` of `item` back at `at`.",
       "properties": {
         "at": {
           "$ref": "#/$defs/Rational"
@@ -8308,6 +8378,9 @@
           "$ref": "#/$defs/Interp"
         },
         "item": {
+          "type": "string"
+        },
+        "key": {
           "type": "string"
         },
         "path": {
@@ -8320,7 +8393,49 @@
       "required": [
         "item",
         "path",
+        "key",
         "at",
+        "value",
+        "interp"
+      ],
+      "type": "object"
+    },
+    "KeyframeSet": {
+      "description": "`keyframe.set`: the key `key` (or, in the client time form, the key at `at`) of `path` of\n`item`, at `at` (default: where it is) with `value` and `interp`.",
+      "properties": {
+        "at": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Rational"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "interp": {
+          "$ref": "#/$defs/Interp"
+        },
+        "item": {
+          "type": "string"
+        },
+        "key": {
+          "description": "A key id (`kf<n>`), or a `$name` placeholder for a new key.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "path": {
+          "type": "string"
+        },
+        "value": {
+          "$ref": "#/$defs/ParamValue"
+        }
+      },
+      "required": [
+        "item",
+        "path",
         "value",
         "interp"
       ],
@@ -8393,6 +8508,32 @@
       },
       "required": [
         "dir"
+      ],
+      "type": "object"
+    },
+    "Landed": {
+      "description": "Where a relocated item landed: its track and start, the start as a whole frame of its\ntimeline (when it is one), and its neighbours there.",
+      "properties": {
+        "after": {
+          "type": "string"
+        },
+        "at": {
+          "$ref": "#/$defs/Rational"
+        },
+        "before": {
+          "type": "string"
+        },
+        "frame": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "track": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "track",
+        "at"
       ],
       "type": "object"
     },
@@ -10230,6 +10371,14 @@
           },
           "type": "array"
         },
+        "placements": {
+          "default": [],
+          "description": "As [`HistoryResult::placements`], each with its copy's txId, plus the `conflict`\nplacements of skipped candidates (a retry answers with the copies' stored ones only, as\nits `skipped` is empty).",
+          "items": {
+            "$ref": "#/$defs/Placement"
+          },
+          "type": "array"
+        },
         "skipped": {
           "items": {
             "$ref": "#/$defs/Conflict"
@@ -10304,6 +10453,14 @@
       "pattern": "^[a-z][A-Za-z0-9_./-]{0,63}$",
       "type": "string",
       "x-fin-class": "meta"
+    },
+    "NeighbourChange": {
+      "description": "How a neighbour changed since the op was written.",
+      "enum": [
+        "moved",
+        "removed"
+      ],
+      "type": "string"
     },
     "NestedPlan": {
       "description": "The nested timeline of a group layer, the time evaluated on it (`sourceIn + local`) and\nits frame size.",
@@ -11146,7 +11303,7 @@
               "type": "object"
             }
           ],
-          "description": "Sets the keyframe of an item's parameter at an item-relative time."
+          "description": "Sets a keyframe of an item's parameter, by key id (or, from clients, by time): edits,\nmoves or inserts it."
         },
         {
           "allOf": [
@@ -11166,7 +11323,27 @@
               "type": "object"
             }
           ],
-          "description": "Removes the keyframe of an item's parameter at an item-relative time."
+          "description": "Removes a keyframe of an item's parameter, by key id (or, from clients, by time)."
+        },
+        {
+          "allOf": [
+            {
+              "$ref": "#/$defs/KeyframeRestore"
+            },
+            {
+              "properties": {
+                "op": {
+                  "const": "keyframe.restore",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "op"
+              ],
+              "type": "object"
+            }
+          ],
+          "description": "Internal (inverse of `keyframe.remove`): puts a keyframe back under its id."
         },
         {
           "allOf": [
@@ -12239,6 +12416,50 @@
           "type": "string"
         }
       ]
+    },
+    "Placement": {
+      "description": "The placement of one item an undo, redo or copy put back (module docs): which op of which\nrecord, the item, the outcome, and for a relocation where it landed and why.",
+      "properties": {
+        "causes": {
+          "items": {
+            "$ref": "#/$defs/Cause"
+          },
+          "type": "array"
+        },
+        "item": {
+          "type": "string"
+        },
+        "landed": {
+          "$ref": "#/$defs/Landed"
+        },
+        "opIndex": {
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "outcome": {
+          "$ref": "#/$defs/PlacementOutcome"
+        },
+        "txId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "txId",
+        "opIndex",
+        "item",
+        "outcome"
+      ],
+      "type": "object"
+    },
+    "PlacementOutcome": {
+      "description": "The placement outcome of one restored item.",
+      "enum": [
+        "clean",
+        "relocated",
+        "conflict"
+      ],
+      "type": "string"
     },
     "PlanAction": {
       "enum": [
@@ -15308,7 +15529,7 @@
     },
     "SkippedFile": {
       "additionalProperties": false,
-      "description": "A file `import_dir` did not read: its path and why (`not a segment: …`, `another\nproject`, `unreadable: …`).",
+      "description": "A file `import_dir` did not read: its path and why (`not a segment: …`, `another\nproject`, `too large: …`, `unreadable: …`).",
       "properties": {
         "path": {
           "type": "string"

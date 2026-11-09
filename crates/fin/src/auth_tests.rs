@@ -184,24 +184,9 @@ fn errors_name_no_secret_and_no_command() {
         fix.contains("FIN_CREDENTIAL") && fix.contains("server's data"),
         "{fix}"
     );
-    let old = untrusted(
-        &Endpoint::Socket("/sd/run/fin.sock".into()),
-        "versionMismatch",
-    );
-    assert_eq!(old.details["reason"], "versionMismatch");
-    assert!(
-        old.message.contains("older Finisher release"),
-        "{}",
-        old.message
-    );
     let unsafe_file = unsafe_credential(Path::new("/sd/c.json"), "readableByOthers", 0o100644);
     assert_eq!(unsafe_file.details["mode"], "644");
-    for f in [
-        e.fix.unwrap(),
-        fix,
-        old.fix.unwrap(),
-        unsafe_file.fix.unwrap(),
-    ] {
+    for f in [e.fix.unwrap(), fix, unsafe_file.fix.unwrap()] {
         assert!(
             !f.contains('`') && !f.contains("fin ") && !f.contains("finisherd "),
             "{f}"
@@ -295,6 +280,95 @@ fn credential_files_must_be_private_windows() {
     assert_eq!(
         read_credential_file(&file).unwrap_err().details["problem"],
         "notPrivate"
+    );
+}
+
+#[test]
+fn a_sessions_credential_names_its_capability_as_reader() {
+    let at = |p: &str| session_reader(Path::new(p));
+    let cap = fin_sandbox::windows::capability::capability_sid(
+        &fin_sandbox::windows::capability::session("01S0000000000000000000000A").unwrap(),
+    );
+    assert_eq!(
+        at("/d/agents/01S0000000000000000000000A/credential.json"),
+        Some(cap)
+    );
+    for p in [
+        "/d/agents/01S0000000000000000000000A/other.json",
+        "/d/other/01S0000000000000000000000A/credential.json",
+        "/d/agents/credential.json",
+        "/d/agents/bad id/credential.json",
+    ] {
+        assert_eq!(at(p), None, "{p}");
+    }
+}
+
+#[cfg(windows)]
+#[test]
+fn a_sessions_credential_may_be_read_by_its_capability_alone_windows() {
+    let icacls = |file: &Path, args: &[&str]| {
+        let out = std::process::Command::new("icacls")
+            .arg(file)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "icacls {args:?}: {out:?}");
+    };
+    let id = "01S0000000000000000000000A";
+    let dir = tempfile::tempdir().unwrap();
+    let agent = dir.path().join("agents").join(id);
+    std::fs::create_dir_all(&agent).unwrap();
+    let file = agent.join("credential.json");
+    let key = "RkFLRS1sb2NhbC1rZXktZm9yLXRlc3QtdmVjdG9ycyE";
+    write_private(
+        &file,
+        &format!(r#"{{"v":1,"kind":"agent","id":"01agent0000000000000000000","key":"{key}"}}"#),
+    );
+    let me = format!("{}:F", std::env::var("USERNAME").unwrap());
+    icacls(&file, &["/inheritance:r", "/grant:r", &me]);
+    let own = session_reader(&file).unwrap();
+    // Its session's capability, reading (the broker's grant): private still.
+    icacls(&file, &["/grant", &format!("*{own}:R")]);
+    assert!(read_credential_file(&file).unwrap().is_some());
+    // In generic form, reading: private still; writing: refused.
+    icacls(
+        &file,
+        &[
+            "/remove:g",
+            &format!("*{own}"),
+            "/grant",
+            &format!("*{own}:(GR)"),
+        ],
+    );
+    assert!(read_credential_file(&file).unwrap().is_some());
+    for w in ["M", "(GW)"] {
+        icacls(
+            &file,
+            &[
+                "/remove:g",
+                &format!("*{own}"),
+                "/grant",
+                &format!("*{own}:{w}"),
+            ],
+        );
+        let e = read_credential_file(&file).unwrap_err();
+        assert_eq!(e.details["problem"], "notPrivate", "{w}");
+    }
+    // Another session's capability, reading: refused, and named.
+    icacls(&file, &["/remove:g", &format!("*{own}")]);
+    let other = fin_sandbox::windows::capability::capability_sid(
+        &fin_sandbox::windows::capability::session("01S0000000000000000000000B").unwrap(),
+    );
+    icacls(&file, &["/grant", &format!("*{other}:R")]);
+    let e = read_credential_file(&file).unwrap_err();
+    assert!(
+        e.details["acl"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|p| *p == format!("allows {other}")),
+        "{:?}",
+        e.details
     );
 }
 

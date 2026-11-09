@@ -12,3 +12,7 @@ cc c61495a357c705c0d201ae404fdf93856bf6ffac33980165f05aa9deaae9370a # shrinks to
 # A copied move to the track's end went after the item it followed where written (moved to the
 # front on the target) instead of to the target's end (rebase::anchors, 2026-11-09).
 cc 694b78a4589f141bfb57583066758edd04d47fa9282a0874da60fa51e1c8fce7 # shrinks to script = [(0, Split { side: false, track: 0, k: 0, off: 0 }), (1, Move { side: true, track: 1, k: 1, to: 1, at: 0 }), (0, Insert { side: false, track: 0, at: 0, len: 5 }), (0, Insert { side: false, track: 0, at: 0, len: 5 }), (1, Move { side: false, track: 0, k: 0, to: 1, at: 2 }), (0, Merge { skip: false, down: true })]
+# Left-neighbour placement (2026-11-09): a merged copy of an undo of a move reads the clip the
+# undo landed after as its left neighbour (reference-model fix: the model kept the predecessor
+# it had planned).
+cc 46e36fd6679cede16966043c3f5e68d202e3497d6af729e851ed48bf49193d18 # shrinks to script = [(2, Move { side: true, track: 0, k: 0, to: 1, at: 0 }), (0, Trim { side: false, track: 1, k: 0, frames: -2 }), (2, Move { side: false, track: 1, k: 2, to: 0, at: 0 }), (0, Delete { side: true, track: 0, k: 0 }), (2, Trim { side: true, track: 0, k: 0, frames: -1 }), (2, Insert { side: true, track: 1, at: 1, len: 5 }), (0, Pick { k: 0 }), (2, Undo { side: false }), (0, Undo { side: false }), (2, Merge { skip: false, down: true })]

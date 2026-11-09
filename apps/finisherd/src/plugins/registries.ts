@@ -21,6 +21,7 @@ import { type Bundled, type BundledStatus, defaultBundledRoot, makeBundled } fro
 import { type Content, type ContentProblem, type FontSink, makeContent } from "./content.ts";
 import { reconcileStore, type StoreProblem } from "./store-sync.ts";
 import { actorOf, PluginTables, type RegistryRow } from "./tables.ts";
+import type { PluginHostHooks } from "./host/processes.ts";
 
 export { actorOf, PluginTables } from "./tables.ts";
 
@@ -89,6 +90,8 @@ export interface MakePluginsOptions {
   readonly fonts?: FontSink;
   /** Test builds only: plans for these ids are marked agent-facing (Decision 23). */
   readonly testAgentFacing?: (id: string) => boolean;
+  /** The code plugins' processes (sp8b Task 5; `main.ts` passes the server's). */
+  readonly host?: PluginHostHooks;
 }
 
 /** An audit log that records nothing, for services made without one. */
@@ -127,6 +130,7 @@ export function makePlugins(native: Registry, tables: PluginTables, clock: () =>
     clock,
     changed: content.sync(),
     ...(options.testAgentFacing === undefined ? {} : { testAgentFacing: options.testAgentFacing }),
+    ...(options.host === undefined ? {} : { host: options.host }),
     refreshOne: (id, by) => Effect.flatMap(refreshOne(id, by), (r) => (r.ok ? Effect.void : Effect.fail(failed(r)!))),
   });
 
@@ -190,9 +194,11 @@ export function makePlugins(native: Registry, tables: PluginTables, clock: () =>
     installed: () =>
       Effect.gen(function* () {
         const stale = new Map((yield* list()).registries.flatMap((r) => (r.staleDays === undefined ? [] : [[r.id, r.staleDays] as const])));
+        // A code plugin says whether its processes are confined (7C's `plugin` profile enforced).
+        const confined = options.host?.confined() ?? false;
         return tables.installed().map((p) => {
           const days = p.registryId === undefined ? undefined : stale.get(p.registryId);
-          return days === undefined ? p : { ...p, registryStaleDays: days };
+          return { ...p, ...(days === undefined ? {} : { registryStaleDays: days }), ...(p.kind === "code" ? { confined } : {}) };
         });
       }),
     search: (q) => attemptJson<Listing[]>(() => native.search(JSON.stringify(q))),
@@ -227,9 +233,10 @@ export interface PluginsOptions {
   readonly bundledRoot?: string;
   /** How often expired plans are swept (Decision 18: every minute, and at start). */
   readonly sweepMs?: number;
+  readonly host?: PluginHostHooks;
 }
 
-export const layerPlugins = (serverData: string, { clock = Date.now, sweepMs = 60_000, bundledRoot }: PluginsOptions = {}): Layer.Layer<PluginsTag, FinError, ControlStoreTag | AuditTag | Fonts> =>
+export const layerPlugins = (serverData: string, { clock = Date.now, sweepMs = 60_000, bundledRoot, host }: PluginsOptions = {}): Layer.Layer<PluginsTag, FinError, ControlStoreTag | AuditTag | Fonts> =>
   Layer.effect(
     PluginsTag,
     Effect.gen(function* () {
@@ -239,7 +246,7 @@ export const layerPlugins = (serverData: string, { clock = Date.now, sweepMs = 6
       yield* reconcile(native, tables, clock);
       const audit = yield* AuditTag;
       const fonts = yield* Fonts;
-      const plugins = makePlugins(native, tables, clock, { audit, fonts: fonts.setExtraCatalogs, ...(bundledRoot === undefined ? {} : { bundledRoot }) });
+      const plugins = makePlugins(native, tables, clock, { audit, fonts: fonts.setExtraCatalogs, ...(bundledRoot === undefined ? {} : { bundledRoot }), ...(host === undefined ? {} : { host }) });
       yield* plugins.reconcileStore();
       // The plugins that come with the app: installed, updated or revoked before anything is served.
       yield* Effect.catch(plugins.syncBundled(), (e) => Effect.logWarning(`finisherd: bundled plugins could not be checked: ${e.code}`));

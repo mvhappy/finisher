@@ -9,19 +9,40 @@ use super::{Lineage, LogRec, LogView, StackRec};
 use crate::error::CoreError;
 use crate::model::Project;
 use crate::record::RecordKind;
+use serde_json::json;
 
-/// How deep an origin chain is followed (a loop in stored links ends there).
-const MAX_CHAIN: usize = 1_000;
+/// How many `origin` links a chain may have. Copies of copies are rare (a merge of a merge of a
+/// branch …); the bound only stops a damaged log from costing unbounded reads.
+pub const MAX_CHAIN: usize = 100_000;
+
+/// `DB_ERROR` for an origin chain that loops back to a record it named (`originCycle`) or is
+/// longer than [`MAX_CHAIN`] (`originChainTooLong`), or for other stored links that loop
+/// (`linkCycle`): the log holds links no write makes.
+pub(super) fn chain_error(reason: &str, tx_id: &str, at: &str) -> CoreError {
+    CoreError::new(
+        "DB_ERROR",
+        format!("the origin chain of record {tx_id} cannot be followed ({reason} at {at})"),
+    )
+    .with_details(json!({ "reason": reason, "txId": tx_id, "at": at, "max": MAX_CHAIN }))
+    .with_fix("run `fin project verify`; the log's stored links are damaged")
+}
 
 /// The root of `rec`'s origin chain: its txId, and the root record when the log holds it.
-/// The txId is the last `origin` named, also when the log does not hold that record.
+/// The txId is the last `origin` named, also when the log does not hold that record. A chain
+/// that names a record twice, or has more than [`MAX_CHAIN`] links, is `DB_ERROR`
+/// ([`chain_error`]).
 pub fn root(log: &dyn LogView, rec: &LogRec) -> Result<(String, Option<LogRec>), CoreError> {
+    let start = rec.record.tx_id.as_str();
     let mut id = rec.record.tx_id.clone();
     let mut held = Some(rec.clone());
-    for _ in 0..MAX_CHAIN {
-        let Some(o) = held.as_ref().and_then(|r| r.record.origin.clone()) else {
-            break;
-        };
+    let mut seen = HashSet::from([id.clone()]);
+    while let Some(o) = held.as_ref().and_then(|r| r.record.origin.clone()) {
+        if !seen.insert(o.clone()) {
+            return Err(chain_error("originCycle", start, &o));
+        }
+        if seen.len() > MAX_CHAIN + 1 {
+            return Err(chain_error("originChainTooLong", start, &o));
+        }
         held = log.find(&o)?;
         id = o;
     }
@@ -110,7 +131,7 @@ impl Roots {
             out.present.push(on || copied.contains(id.as_str()));
             out.on_target.push(on);
             out.undoes_target
-                .push(ties.inverts_target(held.as_ref().unwrap_or(rec), 0)?);
+                .push(ties.inverts_target(held.as_ref().unwrap_or(rec))?);
             out.source.push(id);
         }
         Ok(out)
@@ -121,22 +142,27 @@ impl Roots {
 struct Ties<'a> {
     log: &'a dyn LogView,
     target_l: &'a Lineage,
-    /// Unit id → whether it holds such a record.
+    /// Unit id → whether it holds such a record, or inverts a unit that does.
     memo: HashMap<String, bool>,
+}
+
+/// One unit being decided by [`Ties::unit`]: the units its records invert, still to look at.
+struct Open {
+    id: String,
+    todo: Vec<String>,
+}
+
+/// A unit [`Ties::open`] read: decided at once, or with units to look at.
+enum Opened {
+    Decided(bool),
+    Pending(Open),
 }
 
 impl Ties<'_> {
     /// Whether `rec` (a root record) inverts a unit with a record from the target.
-    fn inverts_target(&mut self, rec: &LogRec, depth: usize) -> Result<bool, CoreError> {
-        let r = &rec.record;
-        let units: Vec<String> = match r.kind {
-            RecordKind::Undo => r.undoes.clone().unwrap_or_default(),
-            RecordKind::Redo => r.redoes.iter().cloned().collect(),
-            RecordKind::Revert => r.reverts.iter().cloned().collect(),
-            _ => return Ok(false),
-        };
-        for u in units {
-            if self.unit(&u, depth + 1)? {
+    fn inverts_target(&mut self, rec: &LogRec) -> Result<bool, CoreError> {
+        for u in units(rec) {
+            if self.unit(&u)? {
                 return Ok(true);
             }
         }
@@ -144,30 +170,89 @@ impl Ties<'_> {
     }
 
     /// Whether unit `id` (a txId or a mergeId) holds a record from the target, or one that
-    /// inverts such a unit.
-    fn unit(&mut self, id: &str, depth: usize) -> Result<bool, CoreError> {
-        if depth > MAX_CHAIN {
-            return Ok(false);
-        }
+    /// inverts such a unit, directly or through others (an undo of a redo of an undo …). Each
+    /// unit is decided once (`memo`), depth first from an explicit stack rather than by
+    /// recursion: a chain of thousands of undo/redo cycles is that deep (review of 2026-11-09,
+    /// #15). A unit met again while it is open (a loop of stored links) counts as `false`
+    /// there, as the recursion's guard did.
+    fn unit(&mut self, id: &str) -> Result<bool, CoreError> {
         if let Some(&v) = self.memo.get(id) {
             return Ok(v);
         }
-        self.memo.insert(id.to_string(), false);
+        let mut stack = match self.open(id)? {
+            Opened::Decided(v) => return Ok(v),
+            Opened::Pending(o) => vec![o],
+        };
+        let mut opened: HashSet<String> = HashSet::from([id.to_string()]);
+        while let Some(top) = stack.last_mut() {
+            let Some(u) = top.todo.pop() else {
+                // Every unit it inverts is decided, none true.
+                let done = stack.pop().expect("the top");
+                self.memo.insert(done.id, false);
+                continue;
+            };
+            let hit = match self.memo.get(&u) {
+                Some(&v) => v,
+                None if opened.contains(&u) => false,
+                None => match self.open(&u)? {
+                    Opened::Decided(v) => v,
+                    Opened::Pending(o) => {
+                        opened.insert(u);
+                        stack.push(o);
+                        false
+                    }
+                },
+            };
+            if hit {
+                // Every open unit inverts the next one up to `u`: all of them are true.
+                for o in stack.drain(..) {
+                    self.memo.insert(o.id, true);
+                }
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
+    /// Unit `id` read: `true` at once (and in `memo`) when one of its records (by origin
+    /// root) is on the target's lineage, `false` when it inverts nothing, else the units its
+    /// records invert, first first.
+    fn open(&mut self, id: &str) -> Result<Opened, CoreError> {
         let mut recs = self.log.merge_group(id)?;
         if recs.is_empty() {
             recs.extend(self.log.find(id)?);
         }
-        let mut v = false;
+        let mut todo = Vec::new();
         for rec in &recs {
             let (_, held) = root(self.log, rec)?;
             let base = held.as_ref().unwrap_or(rec);
-            if holds(self.target_l, &base.branch, base.seq) || self.inverts_target(base, depth)? {
-                v = true;
-                break;
+            if holds(self.target_l, &base.branch, base.seq) {
+                self.memo.insert(id.to_string(), true);
+                return Ok(Opened::Decided(true));
             }
+            todo.extend(units(base));
         }
-        self.memo.insert(id.to_string(), v);
-        Ok(v)
+        if todo.is_empty() {
+            self.memo.insert(id.to_string(), false);
+            return Ok(Opened::Decided(false));
+        }
+        // Popped from the end: the first unit is looked at first.
+        todo.reverse();
+        Ok(Opened::Pending(Open {
+            id: id.to_string(),
+            todo,
+        }))
+    }
+}
+
+/// The units `rec` inverts: an undo's, a redo's undo, a revert's group.
+fn units(rec: &LogRec) -> Vec<String> {
+    let r = &rec.record;
+    match r.kind {
+        RecordKind::Undo => r.undoes.clone().unwrap_or_default(),
+        RecordKind::Redo => r.redoes.iter().cloned().collect(),
+        RecordKind::Revert => r.reverts.iter().cloned().collect(),
+        _ => Vec::new(),
     }
 }
 
