@@ -24,7 +24,7 @@ fin-text = { path = "../fin-text" }
 # the feature never unifies into a shipped binary.
 fin-store = { path = "../fin-store", features = ["test-hooks"] }
 blake3 = "1.8.7"
-rusqlite = { version = "0.37", features = ["bundled"] }
+rusqlite = { version = "0.41", features = ["bundled", "fallible_uint"] }
 serde_json = "1"
 
 [target.'cfg(unix)'.dependencies]
