@@ -1038,7 +1038,12 @@ dependencies = [
 name = "example-rust-tools"
 version = "0.1.0"
 dependencies = [
+ "base64 0.23.1",
+ "fin-core",
+ "fin-jobs",
+ "fin-plugin-api",
  "fin-plugin-sdk",
+ "serde_json",
 ]
 
 [[package]]
@@ -1334,11 +1339,15 @@ dependencies = [
 name = "fin-plugin-sdk"
 version = "0.0.0"
 dependencies = [
+ "base64 0.23.1",
  "fin-core",
  "fin-jobs",
  "fin-plugin-api",
+ "fin-plugin-sdk",
  "fin-shm",
+ "serde",
  "serde_json",
+ "tempfile",
 ]
 
 [[package]]
