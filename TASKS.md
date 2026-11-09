@@ -159,13 +159,13 @@ Plan: `docs/superpowers/plans/2026-11-04-sub-project-4a-durable-storage.md`. Spe
 ### Follow-ups from 4A
 - [ ] fin-store holds the store mutex across folder I/O in `tick` (import reads, export writes): take it only around DB transactions (read/verify segments outside, apply under; write packs outside). A big follower import delays short calls today. (`VACUUM INTO` on a second connection: done for the daily backup, `fin-node::auto`; an automatic compaction step still holds the mutex)
 - [ ] `ProjectStatus` (and the verify, rebuild and compact reports) still `Schema.Unknown` in contracts: generate them
-- [ ] `cargo clippy --workspace --all-targets -D warnings` is clean (Linux, 2026-11-05) but CI does not run it: add it to CI
+- [x] `cargo clippy --workspace --all-targets -D warnings` is clean (Linux, 2026-11-05) but CI does not run it: add it to CI (CI now runs it, Linux only; macOS and Windows `cfg` code is still unlinted: run it there once)
 - [ ] Sweep orphan databases left in server data by a crash between create's DB rename and its project-file write
 - [ ] `meta.createKey` is lost when a rebuild has no old DB (the key is not in the folder)
-- [ ] Rational schema pattern `^(0|-?[1-9]\d*)(/[1-9]\d*)?$` accepts non-canonical `0/5` and `3/1` (the parser rejects them)
+- [x] Rational schema pattern `^(0|-?[1-9]\d*)(/[1-9]\d*)?$` accepts non-canonical `0/5` and `3/1` (the parser rejects them) (fixed: the pattern now rejects `0/n` and `n/1`; lowest terms stays the parser's check)
 - [ ] `Probe` TS type: optional fields vs `null` mismatch
-- [ ] RPC envelope check vs generated schema is a vitest test (`envelopes.test.ts`), not a `pnpm gates` gate
-- [ ] Typecheck gate: project list hardcoded in `scripts/check-typecheck.mjs`; core-types tests not typechecked
+- [x] RPC envelope check vs generated schema is a vitest test (`envelopes.test.ts`), not a `pnpm gates` gate (`pnpm gates` runs it as `check-envelopes`)
+- [x] Typecheck gate: project list hardcoded in `scripts/check-typecheck.mjs`; core-types tests not typechecked (the gate reads `pnpm-workspace.yaml`; core-types tests are typechecked)
 - [ ] fin-node `loadNative` untested
 - [ ] No e2e or RPC fixture for `tx.get` set-aside / `TX_SET_ASIDE` (unit tests only; a live server cannot produce `SALVAGED`/`SUPERSEDED` without fake clocks)
 - [ ] `BASE_REV_AHEAD` vs `HISTORY_REWOUND` precision for a subscriber whose `fromRev` is beyond a rewound head
@@ -240,7 +240,7 @@ Plan: `docs/superpowers/plans/2026-11-05-sub-project-4b-history.md`. Spec: `docs
 - [ ] `recoverDismissed` is local to a server and lost on a rebuild (dismissed groups come back)
 - [ ] `REBUILD_WOULD_LOSE.exportedThrough` reports only `main`'s
 - [ ] History commands need a running server, also for `--dry-run` (no offline planning)
-- [ ] `crates/fin/src/config.rs` module doc still shows the old flat `tries: {<branchId>: <parentId>}`; the file is per project (`tries: {<projectId>: {…}}`)
+- [x] `crates/fin/src/config.rs` module doc still shows the old flat `tries: {<branchId>: <parentId>}`; the file is per project (`tries: {<projectId>: {…}}`) (already fixed)
 - [ ] Squashing archived branches (deferred out of sub-project 4; needs a two-phase delete)
 - [ ] `BranchCreated`, `HistoryResult`, `MergeReport`, `RecoverReport` are `Schema.Unknown` in contracts (narrowed to generated types); generate Effect schemas with `ProjectStatus`
 
@@ -339,9 +339,9 @@ Plan: `docs/superpowers/plans/2026-11-06-sub-project-4c-edit-breadth.md`. Spec: 
     - `pnpm e2e` runs `<repo>/target/release/fin` whatever `CARGO_TARGET_DIR` says. Linked on Linux; run without it on macOS.
 
 ### Follow-ups from 4C
-- [ ] `scripts/e2e/lib.mjs` ignores `CARGO_TARGET_DIR` (it runs `<repo>/target/release/fin`, possibly a stale build); found in Task 29
-- [ ] `packages/fin-node/package.json` has no `files` list: a pack would carry `test/` and the test-hooks binary (24 MB); fix before the package ships
-- [ ] `cargo clippy -p fin-journal` without `test-hooks` fails `default_constructed_unit_structs` (`Faults::default()`, `lib.rs:159`); CI runs no clippy
+- [x] `scripts/e2e/lib.mjs` ignores `CARGO_TARGET_DIR` (it runs `<repo>/target/release/fin`, possibly a stale build); found in Task 29 (already fixed in `lib.mjs`; finisherd's own `fin`/`fin-sandbox-exec` lookups in `agent/settings.ts` and `sandbox/exec.ts` still search only `<repo>/target`)
+- [x] `packages/fin-node/package.json` has no `files` list: a pack would carry `test/` and the test-hooks binary (24 MB); fix before the package ships (fixed; `scripts/check-pack-files.mjs` gates it)
+- [x] `cargo clippy -p fin-journal` without `test-hooks` fails `default_constructed_unit_structs` (`Faults::default()`, `lib.rs:159`); CI runs no clippy (fixed: `Faults::new()`)
 - [ ] macOS timing flakes seen once in Task 29: `storage.test.ts` "ENGINE_BUSY is passed through" (an auto backup `busy` right after the verify; automatic work can no longer cause it, see the 4A `backup (auto)` item) and `engine.test.ts` 500-commit event-loop gap 26.9 ms > 20 ms
 - [ ] **Partner drift** (spec §4.3, §5.11; merge `c42e9ae`): a stale positional op after our own overwrite move of a linked item can be refused by policy (`MOVE_INTO_ITSELF`), unblamed, where a fresh one succeeds, because an overwrite move records no shift and later ops anchored on a partner do not map with it. Fix: overwrite moves carry their partners' positions (a per-partner step), then drop the oracle's `keyed4c::partner_drift` allowance
 - [ ] Drop the `clip.*` client aliases at schema 3 (spec §3.2)
