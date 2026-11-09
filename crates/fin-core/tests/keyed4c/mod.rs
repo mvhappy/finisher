@@ -1056,180 +1056,21 @@ pub fn transitions_valid(p: &Project) -> Result<(), String> {
     Ok(())
 }
 
-/// Known limitation (4C Tasks 9–10 review, not B1): a committed `item.link` grew the group of
-/// an item one of our moves names, so our rebased move also moves a partner on a track our
-/// move never touched where it was written; a later op of ours anchored at that partner maps
-/// over its close like any position (no mirror records where it went), not along with it.
-pub fn group_grew(keyed: &[Keyed], since: &[CommittedTx]) -> bool {
-    let joined: std::collections::BTreeSet<String> = since
+/// The records of `since` still in effect: neither undone by a later record nor an undo.
+pub fn in_effect(since: &[CommittedTx]) -> Vec<CommittedTx> {
+    let undone: std::collections::BTreeSet<&str> = since
         .iter()
-        .flat_map(|c| &c.diff.changes)
-        .filter(|ch| ch.path.as_deref() == Some("link"))
-        .map(|ch| ch.id.clone())
+        .filter_map(|c| match c.link.as_deref() {
+            Some(Link::Undo { undoes }) => Some(undoes.iter().map(String::as_str)),
+            _ => None,
+        })
+        .flatten()
         .collect();
-    let first = keyed
-        .iter()
-        .position(|k| matches!(k, Keyed::Move { clip: Key::Id(id), .. } if joined.contains(id)));
-    first.is_some_and(|f| {
-        keyed[f + 1..]
-            .iter()
-            .any(|k| matches!(k, Keyed::Insert { .. } | Keyed::Move { .. }))
-    })
-}
-
-/// Known limitation (4C Tasks 9–10 review): our ripple move of a linked item moves each partner
-/// by the named item's delta, which the head may change (a move's `at` maps over the head's
-/// edits on the named item's track only); a later op of ours anchored on another track, where
-/// a partner landed, then maps by the delta the move had where it was written.
-pub fn partner_anchor(keyed: &[Keyed], base: &Project) -> bool {
-    let linked: std::collections::BTreeSet<&str> = base.timelines[0]
-        .tracks
-        .iter()
-        .flat_map(|t| &t.items)
-        .filter(|c| c.common.link.is_some())
-        .map(|c| c.id.as_str())
-        .collect();
-    let mine_links = keyed.iter().any(|k| matches!(k, Keyed::Link { .. }));
-    keyed.iter().enumerate().any(|(f, k)| {
-        let Keyed::Move { clip, to, .. } = k else {
-            return false;
-        };
-        let grouped = mine_links || matches!(clip, Key::Id(id) if linked.contains(id.as_str()));
-        grouped
-            && keyed[f + 1..].iter().any(|later| match later {
-                Keyed::Insert { track, .. } => track != to,
-                Keyed::Move { to: t, .. } => t != to,
-                _ => false,
-            })
-    })
-}
-
-/// The ops of ours that [`partner_anchor`] covers after an overwrite move (no shift on any
-/// track, spec §4.3): a positional op on another track than the move's. At the head the
-/// rebased move carries each partner by the head's delta of the named item (the head may
-/// have put something at its anchor), while the later op's position maps through shifts only
-/// and none were recorded, so it keeps the delta the move had where it was written. It can
-/// then land inside the partner it names, and the re-run's policy refuses it
-/// (`MOVE_INTO_ITSELF`, with a fix naming the free places) although no committed record
-/// changed an entity the op names, so nothing is blamed. That refusal is right for the op as
-/// mapped, so it is allowed here.
-pub fn partner_drift(keyed: &[Keyed], base: &Project) -> std::collections::BTreeSet<usize> {
-    let linked: std::collections::BTreeSet<&str> = base.timelines[0]
-        .tracks
-        .iter()
-        .flat_map(|t| &t.items)
-        .filter(|c| c.common.link.is_some())
-        .map(|c| c.id.as_str())
-        .collect();
-    let mine_links = keyed.iter().any(|k| matches!(k, Keyed::Link { .. }));
-    let mut out = std::collections::BTreeSet::new();
-    for (f, k) in keyed.iter().enumerate() {
-        let Keyed::Move {
-            clip,
-            to,
-            overwrite: true,
-            ..
-        } = k
-        else {
-            continue;
-        };
-        if !(mine_links || matches!(clip, Key::Id(id) if linked.contains(id.as_str()))) {
-            continue;
-        }
-        for (i, later) in keyed.iter().enumerate().skip(f + 1) {
-            if let Keyed::Insert { track: t, .. } | Keyed::Move { to: t, .. } = later
-                && t != to
-            {
-                out.insert(i);
-            }
-        }
-    }
-    out
-}
-
-/// Known semantics (not a 4C review finding): a committed relocation without a shift (an
-/// overwrite move lifts its item, a slide moves it) leaves the positions past it where they
-/// were, gap included, so a stale positional op of ours on a track it touched can land past a
-/// gap a fresh one closes or skips.
-pub fn lifted_on(keyed: &[Keyed], since: &[CommittedTx]) -> bool {
-    let tracks = lifted_tracks(since);
-    keyed.iter().any(|k| match k {
-        Keyed::Insert { track, .. } | Keyed::Move { to: track, .. } => tracks.contains(track),
-        _ => false,
-    })
-}
-
-/// The tracks a committed shift-less relocation (overwrite move, slide) touched.
-pub fn lifted_tracks(since: &[CommittedTx]) -> std::collections::BTreeSet<&str> {
     since
         .iter()
-        .flat_map(|c| c.diff.changes.iter().map(move |ch| (c, ch)))
-        .filter(|(c, ch)| {
-            ch.path.as_deref() == Some("start")
-                && matches!(&c.tx.ops[ch.op as usize],
-                    Op::ItemMove(m) if m.mode == InsertMode::Overwrite)
-                || matches!(&c.tx.ops[ch.op as usize], Op::ItemSlide(_))
-        })
-        .filter_map(|(_, ch)| ch.track.as_deref())
+        .filter(|c| c.link.is_none() && !undone.contains(c.tx.tx_id.as_str()))
+        .cloned()
         .collect()
-}
-
-/// Our own shift-less relocation (slide, overwrite move) before a positional op.
-pub fn self_relocates(keyed: &[Keyed]) -> bool {
-    !self_drift(keyed).is_empty()
-}
-
-/// The ops of ours that *self relocation* covers (spec §4.3): a positional op after our own
-/// slide or overwrite move. It keeps the position it was written at, while the rebased
-/// relocation moves edges at the head without a shift. When the head put another item against
-/// that position (a committed ripple move closed the gap our anchor left), our relocation can
-/// move that item's edge across it, so the re-run lands inside an item and position policy
-/// refuses it ([`SELF_DRIFT_CODES`]) with nothing blamed: the head only shifted the item it
-/// lands in. That refusal is right for the op as mapped, so it is allowed here (fixed case
-/// `rebase_moves_props::slide_then_move_at_moved_anchor_refuses_unblamed`).
-pub fn self_drift(keyed: &[Keyed]) -> std::collections::BTreeSet<usize> {
-    let first = keyed.iter().position(|k| {
-        matches!(
-            k,
-            Keyed::Slide { .. }
-                | Keyed::Move {
-                    overwrite: true,
-                    ..
-                }
-        )
-    });
-    let Some(f) = first else {
-        return std::collections::BTreeSet::new();
-    };
-    keyed
-        .iter()
-        .enumerate()
-        .skip(f + 1)
-        .filter(|(_, k)| matches!(k, Keyed::Insert { .. } | Keyed::Move { .. }))
-        .map(|(i, _)| i)
-        .collect()
-}
-
-/// The policy codes of a position inside an item, the only refusals [`self_drift`] allows.
-pub const SELF_DRIFT_CODES: [&str; 3] = [
-    "INSERT_INSIDE_CLIP",
-    "MOVE_INTO_ITSELF",
-    "OVERWRITE_SPLITS_ITEM",
-];
-
-/// Ids (literal) mine's position anchors name.
-pub fn anchor_ids(keyed: &[Keyed]) -> Vec<String> {
-    let mut out = Vec::new();
-    for k in keyed {
-        let a = match k {
-            Keyed::Insert { before, .. } | Keyed::Move { before, .. } => before,
-            _ => continue,
-        };
-        if let Anchor::Before(Key::Id(id)) | Anchor::After(Key::Id(id)) = a {
-            out.push(id.clone());
-        }
-    }
-    out
 }
 
 /// Items a committed ripple move put somewhere (an insertion with a shift).
@@ -1324,7 +1165,10 @@ pub fn check(
         return Ok(());
     }
     let mut at_head = Realiser::with_ids(&head, ids.clone());
-    let moved = ripple_moved(&since);
+    // What the head placed, over the records still in effect: an undone record and its undo
+    // say nothing about who put an item where (the engine leaves mirrored pairs out).
+    let effect = in_effect(&since);
+    let moved = ripple_moved(&effect);
     let mut b: std::collections::BTreeSet<String> = p.timelines[0]
         .tracks
         .iter()
@@ -1332,7 +1176,11 @@ pub fn check(
         .map(|c| c.id.clone())
         .filter(|i| !moved.contains(i))
         .collect();
-    b.extend(relocated(&since).into_iter().filter(|i| !moved.contains(i)));
+    b.extend(
+        relocated(&effect)
+            .into_iter()
+            .filter(|i| !moved.contains(i)),
+    );
     at_head.base = Some(b);
     at_head.slips = slips(&since);
     let fresh_ok = keyed.iter().all(|k| at_head.realise(k).is_some());
@@ -1372,15 +1220,7 @@ pub fn check(
             );
         }
         (true, Err(e)) => {
-            let mut drifted = partner_drift(&keyed, p);
-            drifted.extend(anchor_drift(&keyed, &since));
-            let why = refusal_allowed(
-                &e,
-                &since,
-                &drifted,
-                &self_drift(&keyed),
-                &lifted_gap(&keyed, &since),
-            );
+            let why = refusal_allowed(&e, &since);
             prop_assert!(
                 why.is_ok(),
                 "stale refused ({:?}) where fresh applies\nours {:?}\nfresh {:?}",
@@ -1394,30 +1234,14 @@ pub fn check(
     Ok(())
 }
 
-/// Whether the stale and fresh states must be equal: none of the known limitations above
-/// applies (and no anchor at an empty track's zero, which the head may have filled).
-pub fn comparable(keyed: &[Keyed], since: &[CommittedTx], p: &Project) -> bool {
-    !keyed.iter().any(|k| {
-        matches!(
-            k,
-            Keyed::Insert {
-                before: Anchor::Zero,
-                ..
-            } | Keyed::Move {
-                before: Anchor::Zero,
-                ..
-            }
-        )
-    }) && !anchor_ids(keyed)
-        .iter()
-        .any(|i| relocated(since).contains(i))
-        && !self_relocates(keyed)
-        && !group_grew(keyed, since)
-        && !group_changed(keyed, since)
-        && !partner_anchor(keyed, p)
-        && !lifted_on(keyed, since)
-        && !concurrent_reedged(keyed, since, p)
-        && !index_in_changed_list(keyed, since)
+/// Whether the stale and fresh states must be equal: unless one of ours names an index into a
+/// list a committed record changed ([`index_in_changed_list`]), always. Positions map through
+/// the item edge they were written against (spec §4.3, `rebase::anchors`, 2026-11-09), so the
+/// shift-only limitations this used to leave out (an anchor at an empty track's zero, a
+/// relocated anchor, self relocation, group grew or changed, partner anchor, lifted, lifted
+/// edges) are compared like every other case.
+pub fn comparable(keyed: &[Keyed], since: &[CommittedTx], _p: &Project) -> bool {
+    !index_in_changed_list(keyed, since)
 }
 
 /// Whether one of ours names an index into an ordered list (an item's effects, the font

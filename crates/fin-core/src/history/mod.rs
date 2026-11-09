@@ -127,19 +127,45 @@ pub trait LogView {
 }
 
 /// The env a planner re-runs with at the head: the log's measurer.
-/// The places of a copy's index ops (`rebase::places`), read in the source's frame right
-/// before `rec`; none (and no frame read) when no op names an index.
-pub(crate) fn source_places(
+/// What a copy's planner reads in the source's frame right before `rec`: the places of its
+/// index ops (`rebase::places`) and the anchors of its positions (`rebase::anchors`); none
+/// (and no frame read) when no op names either.
+pub(crate) fn source_frame(
     log: &dyn LogView,
     rec: &LogRec,
     tx: &crate::tx::Tx,
     mode: crate::apply::ApplyMode,
-) -> Result<Vec<Option<crate::rebase::places::Slot>>, CoreError> {
-    if !crate::rebase::places::any(&tx.ops) {
-        return Ok(Vec::new());
+) -> Result<FrameReads, CoreError> {
+    let (index, at) = (
+        crate::rebase::places::any(&tx.ops),
+        crate::rebase::anchors::any(&tx.ops),
+    );
+    if !index && !at {
+        return Ok(FrameReads::default());
     }
     let frame = log.state_at(&rec.branch, rec.seq.saturating_sub(1))?;
-    crate::rebase::places::places(&frame, tx, mode)
+    FrameReads::read(&frame, tx, mode)
+}
+
+/// The places and anchors of a tx's ops, read in their own frame ([`source_frame`]).
+#[derive(Debug, Default)]
+pub(crate) struct FrameReads {
+    pub places: Vec<Option<crate::rebase::places::Slot>>,
+    pub anchors: crate::rebase::anchors::Anchors,
+}
+
+impl FrameReads {
+    /// Both, read in `frame`.
+    pub(crate) fn read(
+        frame: &crate::model::Project,
+        tx: &crate::tx::Tx,
+        mode: crate::apply::ApplyMode,
+    ) -> Result<FrameReads, CoreError> {
+        Ok(FrameReads {
+            places: crate::rebase::places::places(frame, tx, mode)?,
+            anchors: crate::rebase::anchors::anchors(frame, tx, mode)?,
+        })
+    }
 }
 
 pub(crate) fn env_of(log: &dyn LogView) -> ApplyEnv<'_> {

@@ -11,6 +11,7 @@ use crate::model::Project;
 use crate::ops::Op;
 use crate::tx::{Applied, CommittedTx, Diff, Tx};
 
+use super::anchors::{Anchor, Ours as AnchorOurs, Placed, split_parts};
 use super::conflict::{Conflict, Conflicts, reasons};
 use super::footprint::{
     Footprint, Touch, entity_conflict_in, footprint, overwrite_conflict, split_diff, unbind_own,
@@ -47,6 +48,9 @@ pub struct Rebase<'a> {
     /// Per op, the place an index op names in its own frame (`places::places`; empty when no
     /// op names one): the engine carries the index to the head by its neighbours.
     pub places: &'a [Option<Slot>],
+    /// Per op, per position, the item edge it was written against in its own frame
+    /// (`anchors::anchors`; empty when none is read): the engine resolves it at the head.
+    pub anchors: &'a [Vec<Option<Anchor>>],
 }
 
 impl<'a> Rebase<'a> {
@@ -60,7 +64,13 @@ impl<'a> Rebase<'a> {
             env: ApplyEnv::default(),
             absorbs: &NO_OPS,
             places: &[],
+            anchors: &[],
         }
+    }
+
+    /// The rebase with the position anchors `anchors` (see [`Rebase`]).
+    pub fn with_anchors(self, anchors: &'a [Vec<Option<Anchor>>]) -> Rebase<'a> {
+        Rebase { anchors, ..self }
     }
 
     /// The rebase with the index places `places` (see [`Rebase`]).
@@ -90,6 +100,7 @@ pub struct PreparedRebase<'a> {
     pub env: ApplyEnv<'a>,
     pub absorbs: &'a BTreeSet<usize>,
     pub places: &'a [Option<Slot>],
+    pub anchors: &'a [Vec<Option<Anchor>>],
 }
 
 /// The rebased tx (positions mapped, placeholders kept: the intent to store) and the result of
@@ -126,6 +137,7 @@ pub fn rebase_apply(
         env: r.env,
         absorbs: r.absorbs,
         places: r.places,
+        anchors: r.anchors,
     };
     rebase_prepared(head, &p, ids, mode)
 }
@@ -147,6 +159,14 @@ pub fn rebase_prepared(
         mapping.push(StepMap::from_diff(d).invert().map_err(bad)?);
     }
     let theirs = unmirrored_footprints(r.steps).map_err(bad)?;
+    // What the head placed since the frame, for the `End` walk of an anchor (`anchors`).
+    let placed = Placed::join(
+        r.steps
+            .iter()
+            .zip(mirrored(r.steps).map_err(bad)?)
+            .filter(|(_, paired)| !paired)
+            .map(|(s, _)| &*s.placed),
+    );
     for step in r.steps {
         let at = mapping.push(step.map.clone().map_err(bad)?);
         if let Some(j) = step.mirror_of {
@@ -166,7 +186,21 @@ pub fn rebase_prepared(
     let mut earlier: Vec<Footprint> = Vec::with_capacity(n);
     for (k, op) in r.tx.ops.iter().enumerate() {
         let mut op = op.clone();
-        for (track, pos) in op.positions_mut() {
+        let ours = AnchorOurs {
+            bound: run.bound(),
+            created: &created,
+            parts: split_parts(&ops, run.bound()),
+            placed: &placed,
+        };
+        let anchored = r.anchors.get(k);
+        for (j, (track, pos)) in op.positions_mut().into_iter().enumerate() {
+            // The edge it was written against, where it is now; else shifts (`anchors`).
+            if let Some(Some(a)) = anchored.and_then(|v| v.get(j))
+                && let Some(at) = a.resolve(run.project(), &track, &ours)
+            {
+                *pos = at;
+                continue;
+            }
             *pos = mapping
                 .map_from(n - k, &track, *pos, Assoc::After)
                 .map_err(|u| match u {
@@ -316,9 +350,11 @@ pub fn rebase_tx_env(
         Err(e) => return Err(failed_at_base(base, head, tx, &steps, ids, e)),
     };
     let places = super::places::places(base, tx, ApplyMode::Client)?;
+    let anchors = super::anchors::anchors(base, tx, ApplyMode::Client)?;
     let r = Rebase::new(tx, &own.diff, &steps)
         .with_env(env)
-        .with_places(&places);
+        .with_places(&places)
+        .with_anchors(&anchors);
     let mut out = rebase_apply(head, &r, ids, ApplyMode::Client)
         .map_err(|c| CoreError::from(Conflicts::one(c)))?;
     if let Some(last) = newer.last() {
@@ -354,9 +390,10 @@ fn failed_at_base(
     let Ok(own) = apply_tx_mode(base, &prefix, &mut MemIds::after(base), ApplyMode::Client) else {
         return e;
     };
+    let anchors = super::anchors::anchors(base, &prefix, ApplyMode::Client).unwrap_or_default();
     if let Err(c) = rebase_apply(
         head,
-        &Rebase::new(&prefix, &own.diff, steps),
+        &Rebase::new(&prefix, &own.diff, steps).with_anchors(&anchors),
         ids,
         ApplyMode::Client,
     ) {

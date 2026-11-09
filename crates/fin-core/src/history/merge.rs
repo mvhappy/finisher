@@ -329,7 +329,7 @@ pub fn plan_merge(
         };
         let mode = rerun_mode(r);
         let absorbs = super::absorbs::of_ops(log, src)?;
-        let places = super::source_places(log, src, &tx, mode)?;
+        let reads = super::source_frame(log, src, &tx, mode)?;
         let rebase = PreparedRebase {
             tx: &tx,
             own: &src.diff,
@@ -337,7 +337,8 @@ pub fn plan_merge(
             same_origin: &same_origin,
             env: super::env_of(log),
             absorbs: &absorbs,
-            places: &places,
+            places: &reads.places,
+            anchors: &reads.anchors,
         };
         let rerun = BoundIds::new(&r.intent.ops, &r.bindings)
             .map_err(|e| Conflict::from_rerun(&e, &r.tx_id, 0, None))
