@@ -4,8 +4,8 @@
 //! a time unit and says nothing about it.
 
 const RATES: [u32; 13] = [
-    96_000, 88_200, 64_000, 48_000, 44_100, 32_000, 24_000, 22_050, 16_000, 12_000, 11_025,
-    8_000, 7_350,
+    96_000, 88_200, 64_000, 48_000, 44_100, 32_000, 24_000, 22_050, 16_000, 12_000, 11_025, 8_000,
+    7_350,
 ];
 
 /// A descriptor's (tag, body) at `b[at..]`, and where the next one starts. The length is the
