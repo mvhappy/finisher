@@ -146,6 +146,12 @@ export interface FamilySpec {
   readonly warm?: { readonly slots?: number; readonly idleS?: number; readonly maxJobs?: number; readonly maxAgeS?: number };
   /** Decision 35. */
   readonly warmKey?: (job: JobView) => string;
+  /**
+   * Under a sandbox (plan 7C Decision 19): the roots a warm worker spawned for `job` may read,
+   * fixed at its start and shared by every job of its key (one project): canonical, outside
+   * server data. A job whose `reads` fall outside them runs cold.
+   */
+  readonly warmReads?: (job: JobView) => ReadonlyArray<string>;
   /** Decision 5a. */
   readonly onCall?: OnCall;
   readonly diagKinds?: ReadonlyArray<string>;

@@ -88,6 +88,10 @@ params! {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         #[schemars(with = "String")]
         pub hold_file: Option<String>,
+        /// Paths the worker tries to read (plan 7C Task 12): each answered with the errno of
+        /// the attempt, `null` when it read.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        pub probe: Vec<String>,
     }
     /// `test.crash` (batch): `begin`/`item` per item; crashes inside a poison item (before
     /// its `begin` with `between`), or inside the second item of any run of two or more with
@@ -225,7 +229,14 @@ result! {
     }
     SleepResult as "TestSleepResult" { pub slept_ms: u64 }
     CountResult as "TestCountResult" { pub sent: u64 }
-    WarmResult as "TestWarmResult" { pub value: Value, pub pid: u32, pub served: u64 }
+    WarmResult as "TestWarmResult" {
+        pub value: Value,
+        pub pid: u32,
+        pub served: u64,
+        /// One errno (or `null`) per `probe` path, in order.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        pub probes: Vec<Option<i32>>,
+    }
     CrashResult as "TestCrashResult" { pub done: Vec<String> }
     /// What `test.spawn` writes to its `out` file (JSON, then zero padding).
     SpawnPids as "TestSpawnPids" { pub worker: u32, pub mid: u32, pub grandchild: u32 }

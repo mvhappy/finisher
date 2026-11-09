@@ -242,10 +242,23 @@ fn warm(job: &StartJob, ctx: &mut JobCtx<'_>, served: u64) -> Result<Value, JobE
         let file = File::open(grant_path(ctx, name)).map_err(io)?;
         std::mem::forget(file);
     }
+    // A directory is listed, a file read: either way a denial is the errno.
+    let probes = p
+        .probe
+        .iter()
+        .map(|path| {
+            let r = match std::fs::metadata(path) {
+                Ok(m) if m.is_dir() => std::fs::read_dir(path).map(|_| ()),
+                _ => std::fs::read(path).map(|_| ()),
+            };
+            r.err().map(|e| e.raw_os_error().unwrap_or(-1))
+        })
+        .collect();
     out(WarmResult {
         value: p.value,
         pid: std::process::id(),
         served,
+        probes,
     })
 }
 

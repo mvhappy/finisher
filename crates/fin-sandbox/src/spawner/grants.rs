@@ -64,9 +64,28 @@ fn refuse(g: &PathGrant, why: &str) -> String {
     format!("grant {} ({:?}): {why}", g.path.display(), g.mode)
 }
 
-/// The `worker` input of a cold job's request (`cwd` = the job directory, strictly inside
-/// `<serverData>/jobs`). A warm worker's request (a grant on the jobs root) is refused: per-job
-/// grants are Task 12.
+/// The prefix of a warm worker's directory name under the jobs root (`warm-<run>-<n>`,
+/// `apps/finisherd/src/jobs/warm-worker.ts`).
+pub const WARM_DIR_PREFIX: &str = "warm-";
+
+/// Whether `req` is a warm worker's: `cwd` a `warm-…` directory directly in the jobs root,
+/// with a read-write grant on its own `jobs/` (where each job it serves visits, Decision 19).
+fn is_warm(req: &SpawnRequest, jobs: &Path) -> bool {
+    req.cwd.parent() == Some(jobs)
+        && req
+            .cwd
+            .file_name()
+            .and_then(|n| n.to_str())
+            .is_some_and(|n| n.starts_with(WARM_DIR_PREFIX))
+        && req
+            .grants
+            .iter()
+            .any(|g| g.path == req.cwd.join("jobs") && g.mode == FileMode::ReadWrite)
+}
+
+/// The `worker` input of a request: a cold job's (`cwd` = the job directory, strictly inside
+/// `<serverData>/jobs`) or a warm worker's (`cwd` = its own directory there, Decision 19: the
+/// directory and its `jobs/`, never the jobs root, plus the read roots of its one project).
 pub fn worker_input(req: &SpawnRequest, server_data: &Path) -> Result<WorkerInput, String> {
     if matches!(req.role, Role::Helper { .. }) {
         // A helper's directory is `<job>/helpers/<id>/` and its grants are its own files:
@@ -83,16 +102,20 @@ pub fn worker_input(req: &SpawnRequest, server_data: &Path) -> Result<WorkerInpu
         ));
     }
     let tmp = tmp(req)?;
+    let warm = is_warm(req, &jobs);
     let mut caches = Vec::new();
     let mut sources = Vec::new();
     for g in &req.grants {
-        if g.path == tmp || covered(job_dir, g) {
+        if g.path == tmp
+            || (warm && g.path == job_dir.join("jobs") && g.mode == FileMode::ReadWrite)
+            || (!warm && covered(job_dir, g))
+        {
             continue;
         }
         if g.path == jobs {
             return Err(refuse(
                 g,
-                "a warm worker's grant on the jobs root: per-job grants come with plan 7C Task 12",
+                "the jobs root (a warm worker gets its own directory, Decision 19)",
             ));
         }
         if writes(g.mode) || g.path.starts_with(job_dir) {
@@ -119,9 +142,16 @@ pub fn worker_input(req: &SpawnRequest, server_data: &Path) -> Result<WorkerInpu
             vec![]
         },
         server_data: server_data.to_owned(),
-        scope: WorkerScope::Cold {
-            job_dir: job_dir.clone(),
-            sources,
+        scope: if warm {
+            WorkerScope::Warm {
+                worker_dir: job_dir.clone(),
+                library_roots: sources,
+            }
+        } else {
+            WorkerScope::Cold {
+                job_dir: job_dir.clone(),
+                sources,
+            }
         },
     })
 }
@@ -307,8 +337,8 @@ mod tests {
         // No TMPDIR grant.
         assert!(worker_input(&req("t", "/srv/fin/jobs/j1", "/tmp", ok()), sd).is_err());
         for (bad, why) in [
-            (g("/srv/fin/jobs", FileMode::ReadWrite), "warm worker"),
-            (g("/srv/fin/jobs", FileMode::Read), "warm worker"),
+            (g("/srv/fin/jobs", FileMode::ReadWrite), "the jobs root"),
+            (g("/srv/fin/jobs", FileMode::Read), "the jobs root"),
             (
                 g("/srv/fin/jobs/j1/in/x", FileMode::Write),
                 "in/ is read-only",
@@ -331,7 +361,7 @@ mod tests {
             gs.push(bad);
             let e = worker_input(&req("t", "/srv/fin/jobs/j1", tmp, gs), sd).unwrap_err();
             assert!(e.contains("grant"), "{why}: {e}");
-            if why == "warm worker" {
+            if why == "the jobs root" {
                 assert!(e.contains(why), "{e}");
             }
         }
@@ -342,6 +372,70 @@ mod tests {
             id: "a".into(),
         };
         assert!(worker_input(&h, sd).unwrap_err().contains("helper"));
+    }
+
+    #[test]
+    fn a_warm_worker_gets_its_own_directory_and_its_projects_roots() {
+        let sd = Path::new(SD);
+        let w = "/srv/fin/jobs/warm-ab12-1";
+        let tmp = "/srv/fin/jobs/warm-ab12-1/tmp";
+        let base = || {
+            vec![
+                g(tmp, FileMode::ReadWrite),
+                g("/srv/fin/jobs/warm-ab12-1/jobs", FileMode::ReadWrite),
+                g("/srv/fin/fonts", FileMode::Read),
+                g("/home/u/p/sources", FileMode::Read),
+                g("/mnt/library", FileMode::Read),
+            ]
+        };
+        let i = worker_input(&req("media", w, tmp, base()), sd).unwrap();
+        assert_eq!(i.caches, [PathBuf::from("/srv/fin/fonts")]);
+        assert_eq!(
+            i.scope,
+            WorkerScope::Warm {
+                worker_dir: w.into(),
+                library_roots: vec!["/home/u/p/sources".into(), "/mnt/library".into()],
+            }
+        );
+        let policy = crate::profile::worker(&i).unwrap();
+        assert!(policy.write.contains(&PathBuf::from(w)));
+        assert!(!policy.write.contains(&PathBuf::from("/srv/fin/jobs")));
+        // Without its `jobs/` grant, or not named `warm-…`, or not directly in the jobs root,
+        // it is a cold request, whose `cwd` grant of `jobs/` is refused.
+        let mut no_jobs = base();
+        no_jobs.remove(1);
+        assert!(matches!(
+            worker_input(&req("media", w, tmp, no_jobs), sd)
+                .unwrap()
+                .scope,
+            WorkerScope::Cold { .. }
+        ));
+        for cwd in ["/srv/fin/jobs/j1", "/srv/fin/jobs/x/warm-ab12-1"] {
+            let gs = vec![
+                g(&format!("{cwd}/tmp"), FileMode::ReadWrite),
+                g(&format!("{cwd}/jobs"), FileMode::ReadWrite),
+            ];
+            assert!(
+                worker_input(&req("media", cwd, &format!("{cwd}/tmp"), gs), sd).is_err(),
+                "{cwd}"
+            );
+        }
+        // Never the jobs root, another job, a write elsewhere or server data outside the caches.
+        for bad in [
+            g("/srv/fin/jobs", FileMode::ReadWrite),
+            g("/srv/fin/jobs/j9/in", FileMode::Read),
+            g("/srv/fin/jobs/warm-ab12-2/jobs", FileMode::ReadWrite),
+            g("/home/u/p/sources", FileMode::ReadWrite),
+            g("/srv/fin/auth", FileMode::Read),
+            g("/srv/fin/jobs/warm-ab12-1", FileMode::Read),
+        ] {
+            let mut gs = base();
+            gs.push(bad.clone());
+            assert!(
+                worker_input(&req("media", w, tmp, gs), sd).is_err(),
+                "{bad:?}"
+            );
+        }
     }
 
     #[test]

@@ -179,7 +179,9 @@ pub trait Spawner: Send + Sync {
     fn profiles(&self) -> ProfileCaps {
         ProfileCaps::DISABLED
     }
-    /// A warm worker can be granted each job's paths, one job at a time (plan 7C Task 12).
+    /// A warm worker of the `worker` profile is confined to its own directory, where each job
+    /// it serves visits, and its project's read roots (plan 7C Task 12, Decision 19). Plugin
+    /// warm workers are not covered: they run cold under an applied `plugin` profile.
     fn per_job_grants(&self) -> bool {
         false
     }

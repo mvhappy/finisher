@@ -11,6 +11,7 @@
 //   (review B1). The name of every destination is built from the host's own params and plan
 //   samples (`p.at[i]`, `extra.planSamples[i]`), never from what the worker's answer says
 //   (review B2).
+import { realpathSync } from "node:fs";
 import { mkdir, realpath, stat } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { FinError, type JobView } from "@finisher/contracts";
@@ -53,6 +54,8 @@ export interface MediaKindDeps {
   readonly projects: Pick<ProjectRegistryShape, "prepareMediaJob" | "dirOf">;
   /** `<server-data>/jobs` (default: `join(serverData, "jobs")`, which `ensureJobsRoot` makes). */
   readonly jobsRoot?: string;
+  /** The libraries' roots (5D; every library in v1): what a confined warm media worker may read beside its project's `sources/`. */
+  readonly libraryRoots?: () => ReadonlyArray<string>;
 }
 
 /** The job's params as the kind reads them: `LookParams`, whose pins the submitter must set. */
@@ -191,11 +194,30 @@ const exists = (path: string): Promise<boolean> =>
     () => false,
   );
 
+/**
+ * A confined warm media worker's read roots (plan 7C Decision 19): its project's `sources/` and
+ * the libraries' roots, canonical (synchronous: once per warm worker spawned). A root that does
+ * not resolve is left out; a job reading below it then runs cold.
+ */
+export function mediaWarmReads(deps: Pick<MediaKindDeps, "projects" | "libraryRoots">, job: JobView): ReadonlyArray<string> {
+  const p = job.params as { projectId?: unknown } | null;
+  const dir = typeof p?.projectId === "string" ? deps.projects.dirOf(p.projectId) : undefined;
+  const roots = [...(dir === undefined ? [] : [join(dir, "sources")]), ...(deps.libraryRoots?.() ?? [])];
+  return roots.flatMap((r) => {
+    try {
+      return [realpathSync(r)];
+    } catch {
+      return [];
+    }
+  });
+}
+
 /** The `media` family (`fin-workers media`; `--warm` is appended by the engine). */
-export function registerMediaFamily(registry: KindRegistry): void {
+export function registerMediaFamily(registry: KindRegistry, deps?: Pick<MediaKindDeps, "projects" | "libraryRoots">): void {
   registry.registerFamily({
     family: MEDIA_FAMILY,
     profile: "worker",
+    ...(deps === undefined ? {} : { warmReads: (job: JobView) => mediaWarmReads(deps, job) }),
     program: { binary: "fin-workers", args: [MEDIA_FAMILY] },
     memory: { interactive: MEDIA_MEMORY, batch: MEDIA_MEMORY },
     // 5C clears a worker's environment; `FIN_GPU` picks the adapter (`software` for CI).
@@ -332,7 +354,7 @@ function planSamplesOf(extra: unknown): ReadonlyArray<string> {
 
 /** Registers the family and its kinds (`media.look`, `media.capabilities`). */
 export function registerMediaKinds(registry: KindRegistry, deps: MediaKindDeps): void {
-  registerMediaFamily(registry);
+  registerMediaFamily(registry, deps);
   registry.registerKind(mediaLookKind(deps));
   registry.registerKind(mediaCapabilitiesKind());
 }
