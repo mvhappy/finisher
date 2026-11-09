@@ -1,9 +1,10 @@
 // The job host's grants through the ACL broker (plan 7C Decision 18, the Windows side of Task
 // 12): each spawn's table is granted before the spawn, its own entries under the process's
-// owner revoked at its exit (and when the spawn fails), static entries kept; a job visiting a
-// confined warm worker is granted to it for the attempt and revoked before it moves back. A
-// recording broker and the scripted host, so every OS runs it; the Windows suites run the real
-// broker (`host_sandbox_windows.rs`, `agent-sandbox.test.ts`).
+// owner revoked at its exit (and when the spawn fails), static entries kept; a retry's grant
+// waits for its attempt's revoke; a job visiting a confined warm worker is granted to it for
+// the attempt and revoked before it moves back. A recording broker and the scripted host, so
+// every OS runs it; the Windows suites run the real broker (`host_sandbox_windows.rs`,
+// `warm-sandbox.test.ts`, `agent-sandbox.test.ts`).
 import { existsSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import type { AclGrant, HostMsg, JobSpawnRequest } from "@finisher/core-types";
@@ -22,27 +23,44 @@ const isWarm = (r: JobSpawnRequest) => r.args?.includes("--warm") === true;
 const MODIFY = 0x1301bf;
 const READ_EXECUTE = 0x1200a9;
 
-/** A broker that records each call (and what exists at the time, through `probe`). */
-function recordingBroker(active = true, probe?: (op: "grant" | "revoke", owner: string, path?: string) => void) {
+/** A process owner without its start's part (`proc:<start>-<n>` → `proc:<n>`). */
+const short = (owner: string) => owner.replace(/^proc:[0-9a-f]{8}-/, "proc:");
+
+interface BrokerOptions {
+  readonly active?: boolean;
+  /** Called at each call, before it does anything (what exists then). */
+  readonly probe?: (op: "grant" | "revoke", owner: string, path?: string) => void;
+  /** How long each revoke takes (ms). */
+  readonly slowRevoke?: number;
+  /** A grant to an owner it matches is refused. */
+  readonly failGrant?: RegExp;
+}
+
+/** A broker that records each completed call (owners `short`ened) and every owner it saw. */
+function recordingBroker(o: BrokerOptions = {}) {
   const ops: string[] = [];
   const held: AclBrokerGrant[] = [];
+  const owners: string[] = [];
   const acl: AclBroker = {
-    active,
+    active: o.active ?? true,
     grant: async (g) => {
-      probe?.("grant", g.owner, g.path);
-      ops.push(`grant ${g.owner} ${g.path}`);
+      o.probe?.("grant", g.owner, g.path);
+      if (!owners.includes(g.owner)) owners.push(g.owner);
+      if (o.failGrant?.test(g.owner) === true) throw finError("PATH_NOT_ALLOWED", "refused", {});
+      ops.push(`grant ${short(g.owner)} ${g.path}`);
       held.push(g);
     },
     revoke: async (owner) => {
-      probe?.("revoke", owner);
-      ops.push(`revoke ${owner}`);
+      o.probe?.("revoke", owner);
+      if ((o.slowRevoke ?? 0) > 0) await new Promise((r) => setTimeout(r, o.slowRevoke));
+      ops.push(`revoke ${short(owner)}`);
       const n = held.filter((g) => g.owner === owner).length;
       for (let i = held.length - 1; i >= 0; i--) if (held[i]!.owner === owner) held.splice(i, 1);
       return n;
     },
     sweep: async () => 0,
   };
-  return { acl, ops, held };
+  return { acl, ops, held, owners };
 }
 
 /** The scripted `test` worker of `warm-sandbox.test.ts`, answering a table per spawn. */
@@ -77,7 +95,7 @@ const TABLE = (r: JobSpawnRequest): AclGrant[] => [
 
 describe("the job host's grants (plan 7C Decision 18)", () => {
   test("a_spawns_table_is_granted_before_it_and_its_own_entries_revoked_at_its_exit", async () => {
-    const { acl, ops, held } = recordingBroker();
+    const { acl, ops, held, owners } = recordingBroker();
     const fake = host({ perJobGrants: false }, ops, TABLE);
     const t = await testEngine({ jobHost: fake.factory, acl });
     const v = await t.runJob("test.warm", { value: 1 }, { project: "A" });
@@ -90,6 +108,35 @@ describe("the job host's grants (plan 7C Decision 18)", () => {
     // The next process is another owner.
     await t.runJob("test.warm", { value: 2 }, { project: "A" });
     await until(() => (ops.includes("revoke proc:2") ? true : undefined));
+    // Owners carry their start: another engine's first process is another owner.
+    const other = recordingBroker();
+    const t2 = await testEngine({ jobHost: host({ perJobGrants: false }, other.ops, TABLE).factory, acl: other.acl });
+    await t2.runJob("test.warm", { value: 3 }, { project: "A" });
+    expect(owners[0]).toMatch(/^proc:[0-9a-f]{8}-1$/);
+    expect(other.owners[0]).toMatch(/^proc:[0-9a-f]{8}-1$/);
+    expect(other.owners[0]).not.toBe(owners[0]);
+  });
+
+  test("a_retry_waits_for_the_revoke_of_the_attempt_before_it", async () => {
+    // A retry grants the same pairs and the broker holds one owner per pair: the attempt's
+    // revoke must have ended before the retry's grant.
+    const { acl, ops } = recordingBroker({ slowRevoke: 200 });
+    const fake = host({ perJobGrants: false }, ops, TABLE);
+    const answer = fake.onSend!;
+    let first = true;
+    fake.onSend = (h, proc, msg) => {
+      if (msg.t === "start" && first) {
+        first = false;
+        return h.exit(proc, { reason: "exited", code: 139 });
+      }
+      answer(h, proc, msg);
+    };
+    const t = await testEngine({ jobHost: fake.factory, acl, testKinds: { overrides: { "test.warm": { maxAttempts: 2 } } } });
+    const v = await t.runJob("test.warm", { value: 1 }, { project: "A" });
+    expect([v.state, v.attempts]).toEqual(["succeeded", 2]);
+    const revoked = ops.indexOf("revoke proc:1");
+    expect(revoked).toBeGreaterThan(-1);
+    expect(revoked).toBeLessThan(ops.findIndex((o) => o.startsWith("grant proc:2 ")));
   });
 
   test("a_table_that_cannot_be_granted_starts_nothing_and_leaves_nothing", async () => {
@@ -124,7 +171,7 @@ describe("the job host's grants (plan 7C Decision 18)", () => {
       [false, TABLE],
       [true, undefined],
     ] as const) {
-      const { acl, ops } = recordingBroker(active);
+      const { acl, ops } = recordingBroker({ active });
       const fake = host({ perJobGrants: false }, ops, table);
       const t = await testEngine({ jobHost: fake.factory, acl });
       expect((await t.runJob("test.warm", { value: 1 }, { project: "A" })).state).toBe("succeeded");
@@ -137,12 +184,14 @@ describe("the job host's grants (plan 7C Decision 18)", () => {
     // Where each call finds the job's directory: at its visit place for both.
     const seen: string[] = [];
     let root = "";
-    const { acl, ops } = recordingBroker(true, (op, owner, path) => {
-      if (!owner.startsWith("job:")) return;
-      const id = owner.slice(4);
-      const warm = readdirSync(root).filter((n) => n.startsWith("warm-"));
-      const visiting = warm.some((w) => existsSync(join(root, w, "jobs", id)));
-      seen.push(`${op} ${visiting ? "visiting" : "home"}${path === undefined ? "" : ` ${path.endsWith(join("jobs", id)) ? "jobDir" : path}`}`);
+    const { acl, ops } = recordingBroker({
+      probe: (op, owner, path) => {
+        if (!owner.startsWith("job:")) return;
+        const id = owner.slice(4);
+        const warm = readdirSync(root).filter((n) => n.startsWith("warm-"));
+        const visiting = warm.some((w) => existsSync(join(root, w, "jobs", id)));
+        seen.push(`${op} ${visiting ? "visiting" : "home"}${path === undefined ? "" : ` ${path.endsWith(join("jobs", id)) ? "jobDir" : path}`}`);
+      },
     });
     const fake = host({ perJobGrants: true }, ops, TABLE);
     const t = await testEngine({ jobHost: fake.factory, acl });
@@ -154,6 +203,19 @@ describe("the job host's grants (plan 7C Decision 18)", () => {
     expect(seen).toEqual(["grant visiting jobDir", "revoke visiting"]);
     // The worker's own grants stay while it is in the pool.
     expect(ops.filter((o) => o.startsWith("revoke proc:"))).toEqual([]);
+  });
+
+  test("a_visit_grant_that_fails_fails_the_attempt_and_the_job_goes_home", async () => {
+    const { acl, ops } = recordingBroker({ failGrant: /^job:/ });
+    const fake = host({ perJobGrants: true }, ops, TABLE);
+    const t = await testEngine({ jobHost: fake.factory, acl, testKinds: { overrides: { "test.warm": { maxAttempts: 1 } } } });
+    const root = join(t.serverData, "jobs");
+    const v = await t.runJob("test.warm", { value: 1 }, { project: "A" });
+    expect([v.state, v.error?.code]).toEqual(["failed", "SANDBOX_UNAVAILABLE"]);
+    // Never started on the worker; nothing of the job stays in its directory; the owner revoked.
+    expect(fake.sent.filter((m) => m.msg.t === "start")).toEqual([]);
+    for (const w of readdirSync(root).filter((n) => n.startsWith("warm-"))) expect(readdirSync(join(root, w, "jobs"))).toEqual([]);
+    expect(ops).toContain(`revoke job:${v.id}`);
   });
 
   test("an_unconfined_warm_worker_gets_no_visit_grant", async () => {

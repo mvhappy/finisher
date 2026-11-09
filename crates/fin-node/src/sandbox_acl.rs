@@ -240,6 +240,23 @@ pub fn sandbox_container_sid(name: String) -> Result<Option<String>> {
     }
 }
 
+/// Deletes the AppContainer profile `name` (a suite's own containers; a no-op off Windows).
+/// Test hooks only.
+#[cfg(feature = "test-hooks")]
+#[napi(catch_unwind)]
+pub fn sandbox_container_delete_for_test(name: String) -> Result<()> {
+    #[cfg(windows)]
+    fin_sandbox::windows::appcontainer::delete(&name).map_err(|e| {
+        reject(CoreError::new(
+            "IO_ERROR",
+            format!("the container {name:?} was not deleted: {e}"),
+        ))
+    })?;
+    #[cfg(not(windows))]
+    let _ = name;
+    Ok(())
+}
+
 /// The broker's live grants (`{path, sid, mask, inherit, owner}[]` JSON). Test hooks only.
 #[cfg(feature = "test-hooks")]
 #[napi(catch_unwind)]

@@ -16,8 +16,8 @@ import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import { join, win32 } from "node:path";
 import type { Node, Session } from "@finisher/contracts";
-import { aclGrantsForTest, checkPrivateDir, makePrivateDir, sandboxStatus } from "@finisher/fin-node";
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from "vitest";
+import { aclGrantsForTest, aclRevoke, checkPrivateDir, makePrivateDir, sandboxContainerDeleteForTest, sandboxProjectContainer, sandboxStatus } from "@finisher/fin-node";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, onTestFinished, test } from "vitest";
 import type { FakeScript } from "../src/agent/fake.ts";
 import { Effect, Exit, Scope } from "effect";
 import { assertSessionEnv, openSessionSandbox, REAP_GRACE_MS, sandboxMode, sessionEnv } from "../src/agent/sandbox.ts";
@@ -236,8 +236,7 @@ describe("the session's directories (spec §8.5, §8.6)", () => {
     expect(git).toMatch(/helper =\s*$/m);
   });
 
-  test("a_planted_link_is_never_followed_on_windows", async () => {
-    if (!WIN) return;
+  test.runIf(WIN)("a_planted_link_is_never_followed_on_windows", async () => {
     // A container may make a junction (no privilege needed) or a file at `tmp/gnupg`.
     const agents = agentsRoot();
     const d = await ensureSessionDirs(agents, SESSION.id);
@@ -552,10 +551,16 @@ describe("a CLI session's processes (the fake harness's spawn step)", () => {
     }
   });
 
-  test("windows_agent_runs_in_its_container_with_the_sessions_grants", async () => {
-    if (!WIN || !enforced("windows_agent_runs_in_its_container_with_the_sessions_grants")) return;
+  test.runIf(WIN)("windows_agent_runs_in_its_container_with_the_sessions_grants", async () => {
+    if (!enforced("windows_agent_runs_in_its_container_with_the_sessions_grants")) return;
     const cmd = (c: string) => ["cmd.exe", "/d", "/s", "/c", c] as const;
     const r = await run(() => [cmd("cd"), cmd("echo hi> ok.txt && type ok.txt"), cmd("echo %LOCALAPPDATA%"), cmd("echo %TEMP%"), [FIN, "whoami"], cmd("echo %FIN_SERVER%")]);
+    // What the launch made outside its temp tree: the static grants (toolchain, `fin`, the
+    // project) and the project's container profile.
+    onTestFinished(async () => {
+      await aclRevoke(realpathSyncNative(r.paths.serverData), "static");
+      sandboxContainerDeleteForTest(sandboxProjectContainer(realpathSyncNative(r.paths.dir)));
+    });
     expect(r.started.ok).toBe(true);
     const sid = r.session!.id;
     const data = realpathSyncNative(r.paths.serverData);
@@ -565,8 +570,8 @@ describe("a CLI session's processes (the fake harness's spawn step)", () => {
     // It starts in its own workspace (granted; Node reads the `package.json` above it).
     expect(lower(cwd), JSON.stringify(cwd)).toBe(workspace.toLowerCase());
     expect(write, JSON.stringify(write)).toMatchObject({ code: 0 });
-    expect(line(write!.stdout)).toBe("hi");
-    expect(readFileSync(join(workspace, "ok.txt"), "utf8")).toBe("hi\r\n");
+    expect(line(write!.stdout).trim()).toBe("hi");
+    expect(readFileSync(join(workspace, "ok.txt"), "utf8").trim()).toBe("hi");
     // `LOCALAPPDATA` is the session's own, and Windows puts `TEMP` under it (S9 point 7).
     const own = join(data, "agents", sid, "localappdata").toLowerCase();
     expect(lower(lad)).toBe(own);
@@ -620,7 +625,9 @@ describe("the sandbox's scope", () => {
     mkdirSync(join(box.workspace, "sub"));
     expect(await quick(join(box.workspace, "sub"))).toBe(0);
     expect(await quick(join(dir, "workspace", "shared"))).toBe(0);
-    for (const cwd of [tmp, dir, join(dir, "workspace"), join(dir, "workspace", `${SESSION.id}x`)]) {
+    // A link in the workspace that leads out of it is resolved, not trusted (a junction on Windows).
+    symlinkSync(tmp, join(box.workspace, "out"), "junction");
+    for (const cwd of [tmp, dir, join(dir, "workspace"), join(dir, "workspace", `${SESSION.id}x`), join(box.workspace, "out")]) {
       const outside = await Effect.runPromiseExit(box.spawn([process.execPath, "-e", "0"], { cwd, stdio: "pipe" }));
       expect(Exit.isFailure(outside) && JSON.stringify(outside.cause), cwd).toMatch(/cwdOutsideWorkspace/);
     }

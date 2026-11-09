@@ -17,6 +17,8 @@
 // `git/` and `credential.json` read, `tmp/`, `provider/` and `localappdata/` modify, `blobs/`
 // nothing). An existing directory's DACL is left as it is: it holds the broker's live grants
 // of the session's other open scopes, which the broker does not re-apply (it trusts its log).
+// So a write root the container deleted (its mask includes delete) and an open made again is
+// made without its grant for the rest of the session: only the session itself loses it.
 // What a sandboxed process planted at a directory's name (a junction, a file link, a file) is
 // removed, never followed, as on Unix.
 import { constants } from "node:fs";
@@ -83,7 +85,10 @@ async function privateDir(p: string, platform: NodeJS.Platform): Promise<void> {
     if (st?.isDirectory() === true) return;
     // `rm` of a link or junction removes the link alone, never its target.
     if (st !== undefined) await rm(p, { force: true });
-    await mkdir(p);
+    await mkdir(p).catch(async (e: NodeJS.ErrnoException) => {
+      // Another open of the session made it meanwhile: a real directory is as good.
+      if (e.code !== "EEXIST" || (await lstat(p)).isDirectory() !== true) throw e;
+    });
     return;
   }
   await mkdir(p, { mode: 0o700 }).catch((e: NodeJS.ErrnoException) => {

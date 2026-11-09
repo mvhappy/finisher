@@ -7,9 +7,13 @@
 //!
 //! Proven by configuration and allowed paths only (owner decision 2026-11-08, plan Decision
 //! 27): the process's token holds exactly its container and capabilities (read back from its
-//! pid), the leaf Job gets the container's limits, a private desktop and the process DACL; the
-//! worker's self-sandbox check accepts its token, it reads and writes what it was granted, and
-//! what it was not granted is computed with `AccessCheck` on a copy of its token, never opened.
+//! pid); the spawner hands the host the container's leaf Job limits, a private desktop and the
+//! process DACL (read back from the command after `prepare`); the worker's self-sandbox check
+//! accepts its token, it reads and writes what it was granted, and what it was not granted is
+//! computed with `AccessCheck` on a copy of its token, never opened.
+//!
+//! The tests share `fin-workers.exe`, whose DACL each grants and revokes: they run one at a
+//! time (`SERIAL`). Each grant and container outlives the host (declared before it).
 #![cfg(windows)]
 // Tests drive the host and inspect job directories by path; none is a library reader.
 #![allow(clippy::disallowed_methods)]
@@ -26,7 +30,7 @@ use fin_jobhost::*;
 use fin_jobs::{FileGrant, FileMode, HostMsg, WorkerMsg};
 use fin_sandbox::SandboxSpawner;
 use fin_sandbox::windows::capability::{self, TOOLCHAIN, capability_sid};
-use fin_sandbox::windows::grants::{AclGrant, Trustee};
+use fin_sandbox::windows::grants::{AclGrant, Scope, Trustee};
 use fin_sandbox::windows::job::UI_LIMITS;
 use fin_sandbox::windows::sid::{Sid, current_user, string_of, wide};
 use fin_sandbox::windows::{acl, appcontainer};
@@ -53,6 +57,8 @@ const FILE_MAPPING: GENERIC_MAPPING = GENERIC_MAPPING {
     GenericAll: 0x001F_01FF,
 };
 
+static SERIAL: Mutex<()> = Mutex::new(());
+
 /// The forced-ready hook, the same value in every test of this binary.
 fn force_ready() {
     // SAFETY: every test of this binary sets the same value before it reads it.
@@ -60,6 +66,8 @@ fn force_ready() {
 }
 
 /// Server data with `private_dir`'s protected owner-only DACL, a key, two jobs and a plugin.
+/// Paths in Windows' own form (never `canonicalize`'s `\\?\` one, which `CreateProcessW`
+/// refuses as a working directory and in which `/` is no separator).
 struct Server {
     _d: tempfile::TempDir,
     sd: PathBuf,
@@ -68,7 +76,7 @@ struct Server {
 impl Server {
     fn new() -> Server {
         let _d = tempfile::tempdir().unwrap();
-        let sd = std::fs::canonicalize(_d.path()).unwrap();
+        let sd = _d.path().to_path_buf();
         let user = current_user().unwrap().string();
         acl::set_sddl(
             &sd,
@@ -86,17 +94,18 @@ impl Server {
             "jobs/c1/tmp",
             "plugins/store/acme-1",
         ] {
-            std::fs::create_dir_all(sd.join(d)).unwrap();
+            std::fs::create_dir_all(sd.join(d.replace('/', "\\"))).unwrap();
         }
-        std::fs::write(sd.join("auth/local.key"), b"key").unwrap();
-        std::fs::write(sd.join("jobs/j1/in/a.bin"), b"hello").unwrap();
-        std::fs::write(sd.join("jobs/j2/in/other.bin"), b"other").unwrap();
-        std::fs::write(sd.join("plugins/store/acme-1/plugin.json"), b"{}").unwrap();
-        Server { _d, sd }
+        let s = Server { _d, sd };
+        std::fs::write(s.p("auth/local.key"), b"key").unwrap();
+        std::fs::write(s.p("jobs/j1/in/a.bin"), b"hello").unwrap();
+        std::fs::write(s.p("jobs/j2/in/other.bin"), b"other").unwrap();
+        std::fs::write(s.p("plugins/store/acme-1/plugin.json"), b"{}").unwrap();
+        s
     }
 
     fn p(&self, rel: &str) -> PathBuf {
-        self.sd.join(rel)
+        self.sd.join(rel.replace('/', "\\"))
     }
 
     fn req(&self, profile: Profile, args: &str, dir: &str, extra: Vec<PathGrant>) -> SpawnRequest {
@@ -176,7 +185,13 @@ impl Granted {
             made: vec![],
             containers: also.to_vec(),
         };
-        for a in table.iter().filter(|a| a.path.exists()) {
+        for a in table {
+            // The process's own roots exist (a wrong entry must not pass unseen); a kept one
+            // may not yet, as the broker skips it.
+            if !a.path.exists() {
+                assert_eq!(a.scope, Scope::Static, "{} is missing", a.path.display());
+                continue;
+            }
             let sid = match &a.trustee {
                 Trustee::Sid(s) => Sid::parse(s).unwrap(),
                 Trustee::Container(c) => {
@@ -202,13 +217,18 @@ impl Drop for Granted {
     }
 }
 
-fn host(s: &Server) -> (TestHost, SandboxSpawner, Arc<Mutex<Vec<Prepared>>>) {
+/// The real spawner, with the forced-ready hook.
+fn spawner(s: &Server) -> SandboxSpawner {
     force_ready();
-    let spawner = SandboxSpawner::new(Some(s.sd.clone()));
+    SandboxSpawner::new(Some(s.sd.clone()))
+}
+
+/// A host over `spawner`, recording each `prepare`.
+fn host(spawner: &SandboxSpawner) -> (TestHost, Arc<Mutex<Vec<Prepared>>>) {
     let seen = Arc::new(Mutex::new(Vec::new()));
     let (inner, rec) = (spawner.clone(), seen.clone());
     let h = host_with(move |o| o.spawner = Arc::new(Recording { inner, seen: rec }));
-    (h, spawner, seen)
+    (h, seen)
 }
 
 fn owned(h: HANDLE) -> OwnedHandle {
@@ -376,22 +396,17 @@ fn expect_prepared(p: &Prepared, own: &str, processes: u32) {
 
 #[test]
 fn a_real_worker_runs_in_its_family_container_with_its_jobs_grants() {
+    let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let s = Server::new();
-    let (mut h, spawner, seen) = host(&s);
-    let caps = h.host.caps();
-    assert_eq!(
-        caps.profiles.worker,
-        ProfileState::Enforced,
-        "the forced-ready hook"
-    );
-    assert!(caps.per_job_grants);
+    let spawner = spawner(&s);
     let job = s.p("jobs/j1");
+    let a_bin = s.p("jobs/j1/in/a.bin");
     let req = s.req(
         Profile::Worker,
         "test",
         "jobs/j1",
         vec![PathGrant {
-            path: job.join("in/a.bin"),
+            path: a_bin.clone(),
             mode: FileMode::Read,
         }],
     );
@@ -399,6 +414,14 @@ fn a_real_worker_runs_in_its_family_container_with_its_jobs_grants() {
     let table = spawner.acl_grants(&req, &exe).unwrap();
     let family = capability::worker_container("test").unwrap();
     let _granted = Granted::new(&table, std::slice::from_ref(&family));
+    let (mut h, seen) = host(&spawner);
+    let caps = h.host.caps();
+    assert_eq!(
+        caps.profiles.worker,
+        ProfileState::Enforced,
+        "the forced-ready hook"
+    );
+    assert!(caps.per_job_grants);
     let g = h.group();
     let p = h.spawn(g, req).expect("spawns");
     let hello = h.hello(p);
@@ -423,18 +446,18 @@ fn a_real_worker_runs_in_its_family_container_with_its_jobs_grants() {
         &job,
         "test.files",
         vec![
-            ("in/a.bin", job.join("in/a.bin"), FileMode::Read),
-            ("out/", job.join("out"), FileMode::Write),
+            ("in/a.bin", a_bin.clone(), FileMode::Read),
+            ("out/", s.p("jobs/j1/out"), FileMode::Write),
         ],
     );
     assert_eq!(ok["files"][0]["bytes"], 5, "{ok}");
-    // What it was not granted, it cannot reach: computed on its token, never attempted.
     for (path, want) in [
-        (job.join("in/a.bin"), FILE_READ_DATA),
-        (job.join("out"), FILE_WRITE_DATA),
+        (a_bin, FILE_READ_DATA),
+        (s.p("jobs/j1/out"), FILE_WRITE_DATA),
     ] {
         assert_eq!(access(&tok, &path) & want, want, "{}", path.display());
     }
+    // What it was not granted, it cannot reach: computed on its token, never attempted.
     for path in [
         s.sd.clone(),
         s.p("auth/local.key"),
@@ -449,13 +472,17 @@ fn a_real_worker_runs_in_its_family_container_with_its_jobs_grants() {
             path.display()
         );
     }
+    // A cold worker exits after its job; the host goes before the grants do.
+    drop(tok);
+    assert_eq!(h.exit(p).reason, ExitReason::Exited);
+    drop(h);
 }
 
 #[test]
 fn a_real_plugin_runs_in_its_plugin_container_with_its_calls_grants() {
+    let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let s = Server::new();
-    let (mut h, spawner, seen) = host(&s);
-    assert_eq!(h.host.caps().profiles.plugin, ProfileState::Enforced);
+    let spawner = spawner(&s);
     let store = s.p("plugins/store/acme-1");
     let req = s.req(
         Profile::Plugin,
@@ -467,15 +494,10 @@ fn a_real_plugin_runs_in_its_plugin_container_with_its_calls_grants() {
         }],
     );
     let table = spawner.acl_grants(&req, Path::new(BIN)).unwrap();
-    let home = std::env::var_os("USERPROFILE").map(PathBuf::from).unwrap();
-    let input = fin_sandbox::spawner::grants::plugin_input(&req, &s.sd, &home).unwrap();
-    let processes = fin_sandbox::profile::plugin(&input)
-        .unwrap()
-        .limits
-        .processes
-        .unwrap();
     let container = capability::plugin_container(&store, None);
     let _granted = Granted::new(&table, std::slice::from_ref(&container));
+    let (mut h, seen) = host(&spawner);
+    assert_eq!(h.host.caps().profiles.plugin, ProfileState::Enforced);
     let g = h.group();
     let p = h.spawn(g, req).expect("spawns");
     let hello = h.hello(p);
@@ -490,7 +512,8 @@ fn a_real_plugin_runs_in_its_plugin_container_with_its_calls_grants() {
         (ac, caps),
         (appcontainer::sid(&container).unwrap().string(), want)
     );
-    expect_prepared(&seen.lock().unwrap()[0], &call, processes);
+    // The plugin profile's process limit (`profile::plugin`'s `PROCESSES`).
+    expect_prepared(&seen.lock().unwrap()[0], &call, 8);
     // It talks the plugin protocol from inside its container.
     let v = run(&mut h, p, &s.p("jobs/c1"), "test.pluginMinor", vec![]);
     assert_eq!(v["reply"]["error"]["code"], "UNKNOWN_MESSAGE", "{v}");
@@ -511,5 +534,7 @@ fn a_real_plugin_runs_in_its_plugin_container_with_its_calls_grants() {
             path.display()
         );
     }
+    drop(tok);
     assert_eq!(h.exit(p).reason, ExitReason::Exited);
+    drop(h);
 }

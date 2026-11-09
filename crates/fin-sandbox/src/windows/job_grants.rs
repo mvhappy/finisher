@@ -5,14 +5,20 @@
 //! [`visit`] for the attempt.
 //!
 //! - `worker`: its own capability (the job's when cold, the worker's when warm) on its write
-//!   roots ([`MODIFY`]: its private temp, the job's `out/` or the worker's `jobs/`) and read
-//!   roots ([`READ`]: the job's `in/` and sources, or its project's library roots); the family
-//!   container on the server's caches (shared by every job of the family, [`READ`]) and on the
-//!   program ([`READ_EXECUTE`]), both kept ([`Scope::Static`]).
+//!   roots ([`MODIFY`]: its private temp, the job's `out/`) and read roots ([`READ`]: the job's
+//!   `in/` and sources, or its project's library roots); the family container on the server's
+//!   caches (shared by every job of the family, [`READ`]) and on the program
+//!   ([`READ_EXECUTE`]), both kept ([`Scope::Static`]). A warm worker's `jobs/` is not granted:
+//!   each job visiting it is, alone ([`visit`]), so no inheritable ACE of the worker sits above
+//!   a job's directory. Windows recomputes inherited entries whenever an ACL is written, so one
+//!   there would be copied onto the job's directory by its visit grant and stay with it, after
+//!   the revoke, when it moves home (review of the Windows side of Task 12).
 //! - `plugin`: the call's capability on its directory's `in/` ([`READ`]), `out/` and its temp
-//!   ([`MODIFY`]); the (plugin, project) container on the package ([`READ_EXECUTE`]), the
-//!   models ([`READ`]) and the plugin's data (at its mode), kept; the toolchain capability on
-//!   the runtime, the system roots, the ONNX runtime and the program ([`READ_EXECUTE`]), kept.
+//!   ([`MODIFY`]) and on what else it reads outside server data ([`READ_EXECUTE`]: the host's
+//!   `system` roots); the (plugin, project) container on the program and the package
+//!   ([`READ_EXECUTE`]), the models ([`READ`]) and the plugin's data (at its mode), kept; the
+//!   toolchain capability only on the runtime and the ONNX runtime ([`READ_EXECUTE`], kept), so
+//!   nothing a plugin names becomes readable by every holder of the shared capability.
 //!
 //! Each group is enumerated against the profile's policy, as for agents and hooks.
 
@@ -60,13 +66,7 @@ pub fn worker_in(
             read.extend(sources.iter().cloned());
             (vec![i.tmp.clone(), job_dir.join("out")], read)
         }
-        WorkerScope::Warm {
-            worker_dir,
-            library_roots,
-        } => (
-            vec![i.tmp.clone(), worker_dir.join("jobs")],
-            library_roots.clone(),
-        ),
+        WorkerScope::Warm { library_roots, .. } => (vec![i.tmp.clone()], library_roots.clone()),
     };
     let groups = vec![
         group(write, &own, MODIFY, Scope::Owner),
@@ -100,12 +100,17 @@ pub fn plugin_in(
         .and_then(|c| c.name.clone())
         .ok_or("the plugin's plan names no capability of its own")?);
     let container = Trustee::Container(plan.container.clone());
-    let mut runtime = vec![program.to_owned()];
-    runtime.extend(i.runtime.iter().cloned());
-    runtime.extend(i.system.iter().cloned());
+    let mut runtime = i.runtime.clone();
     runtime.extend(i.onnx_runtime.iter().cloned());
     let mut groups = vec![
         toolchains(&runtime),
+        group(
+            vec![program.to_owned()],
+            &container,
+            READ_EXECUTE,
+            Scope::Static,
+        ),
+        group(i.system.clone(), &call, READ_EXECUTE, Scope::Owner),
         group(vec![i.call_dir.join("in")], &call, READ, Scope::Owner),
         group(
             vec![i.call_dir.join("out"), i.tmp.clone()],

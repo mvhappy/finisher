@@ -56,6 +56,12 @@ export function sandboxContainerSid(name) {
   return sync(() => native.sandboxContainerSid(name)) ?? null;
 }
 
+/** @internal Test builds only: deletes a suite's AppContainer profile (a no-op off Windows). */
+export function sandboxContainerDeleteForTest(name) {
+  if (!native.sandboxContainerDeleteForTest) throw new Error("fin-node was built without the test-hooks feature");
+  sync(() => native.sandboxContainerDeleteForTest(name));
+}
+
 /** @internal Test builds only: the broker's live grants. */
 export function aclGrantsForTest(serverData) {
   if (!native.aclGrantsForTest) throw new Error("fin-node was built without the test-hooks feature");

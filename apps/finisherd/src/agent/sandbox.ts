@@ -249,10 +249,11 @@ export function openSessionSandbox(s: Session, harness: Harness, deps: SessionSa
       const dir = deps.projectDirOf(s.projectId);
       if (dir === undefined) throw finError("PROJECT_NOT_FOUND", "the session's project is not open on this server", { projectId: s.projectId });
       const projectDir = await canonical(dir);
-      const workspace = join(projectDir, "workspace", s.id);
-      const shared = join(projectDir, "workspace", "shared");
-      await mkdir(workspace, { recursive: true, mode: 0o700 });
-      await mkdir(shared, { recursive: true, mode: 0o700 });
+      await mkdir(join(projectDir, "workspace", s.id), { recursive: true, mode: 0o700 });
+      await mkdir(join(projectDir, "workspace", "shared"), { recursive: true, mode: 0o700 });
+      // Links resolved (a `workspace/` the user put on another disk), as `spawn` resolves a cwd.
+      const workspace = await canonical(join(projectDir, "workspace", s.id));
+      const shared = await canonical(join(projectDir, "workspace", "shared"));
       const dirs = await ensureSessionDirs(join(deps.serverData, "agents"), s.id, { platform });
       const store = await linkSignInStore(harness, deps.serverData, dirs, { platform, ...(deps.symlink === undefined ? {} : { symlink: deps.symlink }) });
       const server = mode === "launcher" ? await launcherServer(deps, platform) : { env: deps.localEndpoint, fin: undefined };

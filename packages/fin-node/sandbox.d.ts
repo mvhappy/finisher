@@ -83,5 +83,8 @@ export declare function sandboxProjectContainer(projectDir: string): string;
 /** The SID of the AppContainer `name` on Windows; `null` elsewhere. */
 export declare function sandboxContainerSid(name: string): string | null;
 
+/** @internal Test builds only: deletes a suite's AppContainer profile (a no-op off Windows). */
+export declare function sandboxContainerDeleteForTest(name: string): void;
+
 /** @internal Test builds only: the broker's live grants. */
 export declare function aclGrantsForTest(serverData: string): AclBrokerGrant[];

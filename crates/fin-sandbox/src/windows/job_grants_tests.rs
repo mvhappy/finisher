@@ -91,8 +91,8 @@ fn a_warm_worker_gets_its_own_directory_never_the_jobs_root() {
     assert_eq!(
         sorted(got),
         sorted(vec![
+            // Not its `jobs/`: each visiting job is granted alone (`visit`).
             g(w.join("tmp"), own.clone(), MODIFY, Scope::Owner),
-            g(w.join("jobs"), own.clone(), MODIFY, Scope::Owner),
             g(r.join("p").join("sources"), own, READ, Scope::Owner),
             g(exe, family, READ_EXECUTE, Scope::Static),
         ])
@@ -118,7 +118,7 @@ fn a_worker_input_the_profile_refuses_grants_nothing() {
 }
 
 #[test]
-fn a_plugin_gets_its_call_its_package_and_the_toolchain_its_runtime() {
+fn a_plugin_gets_its_call_its_program_and_package_and_the_toolchain_only_its_runtime() {
     let r = root();
     let data = r.join("data");
     let store = data.join("plugins").join("store").join("acme-1");
@@ -126,13 +126,13 @@ fn a_plugin_gets_its_call_its_package_and_the_toolchain_its_runtime() {
     let i = PluginInput {
         store_dir: store.clone(),
         runtime: vec![r.join("node")],
-        system: vec![],
+        system: vec![r.join("sys")],
         onnx_runtime: None,
         models: vec![data.join("plugins").join("models").join("m1")],
         call_dir: call.clone(),
         tmp: call.join("tmp"),
         plugin_data: Some(PluginData {
-            dir: data.join("plugins").join("data").join("acme"),
+            dir: r.join("pdata").join("acme"),
             write: true,
         }),
         gpu: vec![],
@@ -140,19 +140,22 @@ fn a_plugin_gets_its_call_its_package_and_the_toolchain_its_runtime() {
         server_data: data.clone(),
         home: r.join("home"),
     };
-    let exe = r.join("node").join("node.exe");
+    let exe = r.join("bin").join("plugin.exe");
     let own = sid("finisher-call-c1");
     let tools = sid(TOOLCHAIN);
     let container = Trustee::Container(capability::plugin_container(
         &store,
-        Some(&data.join("plugins").join("data").join("acme")),
+        Some(&r.join("pdata").join("acme")),
     ));
     let got = plugin_in(&i, &exe, &Empty).unwrap();
     assert_eq!(
         sorted(got),
         sorted(vec![
-            // The program lies in the runtime: one grant covers both (the roots are minimal).
+            // The shared toolchain capability: the runtime alone.
             g(r.join("node"), tools, READ_EXECUTE, Scope::Static),
+            g(exe, container.clone(), READ_EXECUTE, Scope::Static),
+            // What else it reads is the call's own.
+            g(r.join("sys"), own.clone(), READ_EXECUTE, Scope::Owner),
             g(call.join("in"), own.clone(), READ, Scope::Owner),
             g(call.join("out"), own.clone(), MODIFY, Scope::Owner),
             g(call.join("tmp"), own, MODIFY, Scope::Owner),
@@ -164,7 +167,7 @@ fn a_plugin_gets_its_call_its_package_and_the_toolchain_its_runtime() {
                 Scope::Static
             ),
             g(
-                data.join("plugins").join("data").join("acme"),
+                r.join("pdata").join("acme"),
                 container,
                 MODIFY,
                 Scope::Static
