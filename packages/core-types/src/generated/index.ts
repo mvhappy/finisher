@@ -6358,7 +6358,8 @@ export interface JobMemoryRule {
   ramFraction?: number;
 }
 /**
- * A plugin job's rights: invoker ∩ grants (Decision 8).
+ * A plugin job's rights: invoker ∩ grants (Decision 8), with the authority they run under
+ * (class + `rights_hash` + `generation`, spec §3.3 and Decision 28).
  *
  * This interface was referenced by `FinCore`'s JSON-Schema
  * via the `definition` "JobRights".
@@ -6374,12 +6375,23 @@ export interface JobRights {
    */
   class: string;
   /**
+   * The class's policy generation when the rights were computed (spec §3.3): it increments
+   * when a credential of the class is narrowed or revoked or its agent session tree changes.
+   */
+  generation: number;
+  /**
    * The plugin's granted permissions at submit.
    */
   grants: Permission[];
   libraries: Reach;
   principal: RightsPrincipal;
   projects: Reach;
+  /**
+   * The hash of the plugin-relevant rights above (class, scopes, projects, branch, libraries,
+   * grants; not the principal, so callers of one class with identical rights share it): 32
+   * lower-case hex characters, computed by the host (spec §3.3's authority key, Decision 28).
+   */
+  rightsHash: string;
   /**
    * The invoker's scopes that the plugin's grants map to.
    */
@@ -7402,7 +7414,9 @@ export interface PluginContext {
  */
 export interface PluginDirs {
   /**
-   * The per-project data directory, only when `fs pluginData` is granted.
+   * The caller's `pluginData` directory, only when `fs pluginData` is granted (spec §5.1):
+   * `plugins/data/@pub/name/<projectId|_>/` for uniform `person`/`system` rights, else
+   * `plugins/authdata/@pub/name/<projectId|_>/<authorityKey>/`.
    */
   data?: string | null;
   /**

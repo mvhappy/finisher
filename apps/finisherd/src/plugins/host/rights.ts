@@ -11,6 +11,7 @@
 // from `grants`. No other scope is representable (`PluginScope` is a closed set of four), so
 // no plugin ever holds a human-only scope, `branch.protected`, `review.decide`,
 // `project.admin`, `auth.admin` or `diagnostics.*`.
+import { createHash } from "node:crypto";
 import type { FinError, JobOwner, Principal, Scope } from "@finisher/contracts";
 import { HUMAN_ONLY, SCOPES } from "@finisher/contracts";
 import type { HostMethod, JobRights, Permission, PluginScope, Reach } from "@finisher/core-types";
@@ -59,6 +60,44 @@ export function reaches(reach: Reach, id: string): boolean {
   return reach === "all" || reach.includes(id);
 }
 
+/** The rights an authority key hashes (spec §3.3): everything plugin-relevant but the principal. */
+export type HashedRights = Pick<JobRights, "class" | "scopes" | "projects" | "branch" | "libraries" | "grants">;
+
+/** JSON with object keys sorted and (with `sortLists`) string lists sorted. */
+function canonical(v: unknown, sortLists: boolean): string {
+  if (Array.isArray(v)) {
+    const items = sortLists && v.every((x) => typeof x === "string") ? [...new Set(v as string[])].sort() : v;
+    return `[${items.map((x) => canonical(x, sortLists)).join(",")}]`;
+  }
+  if (v !== null && typeof v === "object") {
+    const o = v as Record<string, unknown>;
+    return `{${Object.keys(o)
+      .filter((k) => o[k] !== undefined)
+      .sort()
+      .map((k) => `${JSON.stringify(k)}:${canonical(o[k], sortLists)}`)
+      .join(",")}}`;
+  }
+  return JSON.stringify(v);
+}
+
+/**
+ * The hash of the rights' authority (spec §3.3, Decision 28): the class, the scopes, the
+ * project, branch and library reach and the grants, order-insensitive, without the principal,
+ * so two callers of one class with identical rights hash the same and any difference splits
+ * them. 32 lower-case hex characters.
+ */
+export function rightsHash(r: HashedRights): string {
+  const core = {
+    class: r.class,
+    scopes: r.scopes,
+    projects: r.projects,
+    branch: r.branch ?? null,
+    libraries: r.libraries,
+    grants: r.grants.map((g) => canonical(g, true)).sort(),
+  };
+  return createHash("sha256").update(canonical(core, true)).digest("hex").slice(0, 32);
+}
+
 export interface RightsInput {
   readonly invoker: Invoker;
   /** The plugin's permissions as granted for the version the job runs (`plugin_grants`). */
@@ -67,6 +106,8 @@ export interface RightsInput {
   readonly class: string;
   /** An agent session's root branch (7A-2): the job's branch reach is its subtree. */
   readonly sessionRoot?: string | undefined;
+  /** The class's policy generation now (`AuthorityGenerations.of`); 0 when omitted. */
+  readonly generation?: number | undefined;
 }
 
 /** Decision 8: invoker ∩ grants, as the job stores it. */
@@ -81,8 +122,7 @@ export function rightsFor(input: RightsInput): JobRights {
   const sessionless = input.invoker.kind === "agent" && input.sessionRoot === undefined;
   // v1 library reach (`library/reach.ts`): `library.read` reaches every library of this server.
   const libraries: Reach = scopes.includes("library.read") && !sessionless ? "all" : [];
-  return {
-    principal: { kind: input.invoker.kind, id: input.invoker.id },
+  const hashed: HashedRights = {
     class: input.class,
     scopes,
     projects: sessionless ? [] : toReach(input.invoker.projects),
@@ -90,13 +130,16 @@ export function rightsFor(input: RightsInput): JobRights {
     libraries,
     grants: input.grants.map((g) => structuredClone(g)),
   };
+  return { principal: { kind: input.invoker.kind, id: input.invoker.id }, ...hashed, rightsHash: rightsHash(hashed), generation: input.generation ?? 0 };
 }
 
 /**
  * `rights` narrowed by the invoker as it is now (`live`): scopes, projects and libraries are
  * each intersected, so nothing the job was given at submit widens; a revoked or expired
  * invoker (`live` undefined) is `CREDENTIAL_REVOKED`. The grants are the job's own (an update
- * runs a new version under new rights; a revocation stops the plugin, Task 5).
+ * runs a new version under new rights; a revocation stops the plugin, Task 5). `rightsHash`
+ * and `generation` stay the job's: they name the authority (and process) the job runs under,
+ * not what one call may do now.
  */
 export function narrowRights(rights: JobRights, live: Invoker | undefined): JobRights | FinError {
   if (live === undefined || live.kind !== rights.principal.kind || live.id !== rights.principal.id) {

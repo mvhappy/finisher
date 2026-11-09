@@ -100,7 +100,8 @@ pub struct RightsBranch {
     pub subtree: bool,
 }
 
-/// A plugin job's rights: invoker ∩ grants (Decision 8).
+/// A plugin job's rights: invoker ∩ grants (Decision 8), with the authority they run under
+/// (class + `rights_hash` + `generation`, spec §3.3 and Decision 28).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct JobRights {
@@ -119,4 +120,11 @@ pub struct JobRights {
     pub libraries: Reach,
     /// The plugin's granted permissions at submit.
     pub grants: Vec<Permission>,
+    /// The hash of the plugin-relevant rights above (class, scopes, projects, branch, libraries,
+    /// grants; not the principal, so callers of one class with identical rights share it): 32
+    /// lower-case hex characters, computed by the host (spec §3.3's authority key, Decision 28).
+    pub rights_hash: String,
+    /// The class's policy generation when the rights were computed (spec §3.3): it increments
+    /// when a credential of the class is narrowed or revoked or its agent session tree changes.
+    pub generation: u64,
 }

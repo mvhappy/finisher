@@ -193,9 +193,17 @@ fn job_rights_round_trip() {
         "projects": ["p1"],
         "branch": { "root": "b1", "subtree": true },
         "libraries": "all",
-        "grants": [{ "perm": "project:read" }, { "perm": "project:write" }]
+        "grants": [{ "perm": "project:read" }, { "perm": "project:write" }],
+        "rightsHash": "0123456789abcdef0123456789abcdef",
+        "generation": 3
     });
     let r: JobRights = round(v.clone());
+    assert_eq!((r.rights_hash.len(), r.generation), (32, 3));
+    for field in ["rightsHash", "generation"] {
+        let mut w = v.clone();
+        w.as_object_mut().unwrap().remove(field);
+        assert!(serde_json::from_value::<JobRights>(w).is_err(), "{field}");
+    }
     assert!(r.projects.includes("p1") && !r.projects.includes("p2"));
     assert!(r.libraries.includes("any"));
     refuses_extra::<JobRights>(v.clone());

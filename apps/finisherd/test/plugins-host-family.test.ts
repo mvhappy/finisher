@@ -14,6 +14,7 @@ import { warmOverrun } from "../src/jobs/schedule.ts";
 import { mapPluginError, PLUGIN_LIMITS, pluginFamily, type PluginFamilyDeps, pluginProgram, registerPluginFamily } from "../src/plugins/host/family.ts";
 import { keyTmpDir, pluginWarmKey, principalClass, type RootSessionOf, sessionRoots } from "../src/plugins/host/keys.ts";
 import { rightsFor } from "../src/plugins/host/rights.ts";
+import { type AuthorityGenerations, authorityOfWarmKey, memoryGenerations } from "../src/plugins/host/authority.ts";
 import { manualClock, systemIds } from "../src/agent/clock.ts";
 import { AgentStore, type NewSession } from "../src/agent/store.ts";
 import { openControlStore } from "../src/control/db.ts";
@@ -56,12 +57,18 @@ function placeProbe(serverData: string, version: string, extra: Record<string, s
   return dir;
 }
 
+/** `sessionRoot`: an agent owner's session root branch (default `br1`); `projects`: the invoker's reach (default all). */
+type SubmitOpts = { owner?: JobOwner; project?: string; version?: string; priority?: "interactive" | "normal"; sessionRoot?: string; projects?: string[] };
+
 interface PluginEngine {
   readonly t: TestEngine;
   readonly serverData: string;
   readonly tables: PluginTables;
   install(version?: string, extra?: Record<string, string>): string;
-  submit(op: Record<string, unknown>, spec?: { owner?: JobOwner; project?: string; version?: string; priority?: "interactive" | "normal" }): Promise<JobView>;
+  readonly gens: AuthorityGenerations;
+  submit(op: Record<string, unknown>, spec?: SubmitOpts): Promise<JobView>;
+  /** The warm key a job of `spec` gets now. */
+  keyOf(spec?: SubmitOpts): string;
   echo(op: Record<string, unknown>, spec?: Parameters<PluginEngine["submit"]>[1]): Promise<Record<string, unknown>>;
 }
 
@@ -69,21 +76,37 @@ async function pluginEngine(): Promise<PluginEngine> {
   const serverData = tempData();
   let tables: PluginTables | undefined;
   let roots: RootSessionOf | undefined;
+  const gens = memoryGenerations();
   const t = await testEngine({
     serverData,
     testKinds: false,
     timing: { hungMs: 1500 },
     register: (r) => {
-      registerPluginFamily(r, { serverData, installed: (id) => tables?.installedFull(id), rootSessionOf: (id) => roots?.(id) });
+      registerPluginFamily(r, { serverData, installed: (id) => tables?.installedFull(id), rootSessionOf: (id) => roots?.(id), generations: gens });
       r.registerKind(ECHO);
     },
   });
   tables = new PluginTables(t.control);
   roots = sessionRoots(t.control);
+  const rootOf: RootSessionOf = (id) => roots?.(id);
+  const rightsOf = (spec: SubmitOpts) => {
+    const owner = spec.owner ?? PERSON;
+    const cls = principalClass(owner, rootOf);
+    return rightsFor({
+      invoker: { ...owner, scopes: [], projects: spec.projects ?? "*" },
+      grants: [],
+      class: cls,
+      sessionRoot: owner.kind === "agent" ? (spec.sessionRoot ?? "br1") : undefined,
+      generation: gens.of(cls),
+    });
+  };
   const pe: PluginEngine = {
     t,
     serverData,
     tables,
+    gens,
+    keyOf: (spec = {}) =>
+      pluginWarmKey({ id: "k", owner: spec.owner ?? PERSON, via: { plugin: `${ID}@${spec.version ?? "1.0.0"}` }, rights: rightsOf(spec), ...(spec.project === undefined ? {} : { project: spec.project }) } as unknown as JobView, rootOf, gens),
     install(version = "1.0.0", extra = {}) {
       const dir = placeProbe(serverData, version, extra);
       const row = { id: ID, version, source: "registry" as const, treeHash: "t", dir, kind: "code" as const, enabled: true, state: "active" as const };
@@ -97,12 +120,7 @@ async function pluginEngine(): Promise<PluginEngine> {
           kind: "test.echo",
           params: { value: op },
           via: { plugin: `${ID}@${spec.version ?? "1.0.0"}` },
-          rights: rightsFor({
-            invoker: { ...(spec.owner ?? PERSON), scopes: [], projects: "*" },
-            grants: [],
-            class: principalClass(spec.owner ?? PERSON, roots),
-            sessionRoot: spec.owner?.kind === "agent" ? "br1" : undefined,
-          }),
+          rights: rightsOf(spec),
           ...(spec.project === undefined ? {} : { project: spec.project }),
           ...(spec.priority === undefined ? {} : { priority: spec.priority }),
         }),
@@ -140,7 +158,13 @@ async function agentTree(control: ControlStore, dir: string): Promise<{ root: st
   return { root: root.id, child: child.id };
 }
 
-const job = (owner: JobOwner, project?: string, plugin = `${ID}@1.0.0`): JobView => ({ id: "j1", owner, via: { plugin }, ...(project === undefined ? {} : { project }) }) as unknown as JobView;
+/** A job of `owner` with rights of its class (no scopes, no grants; an agent's branch `br1`). */
+const job = (owner: JobOwner, project?: string, plugin = `${ID}@1.0.0`): JobView => {
+  const rights = rightsFor({ invoker: { ...owner, scopes: [], projects: "*" }, grants: [], class: principalClass(owner), sessionRoot: owner.kind === "agent" ? "br1" : undefined });
+  return { id: "j1", owner, via: { plugin }, rights, ...(project === undefined ? {} : { project }) } as unknown as JobView;
+};
+/** The authority part of `job(owner)`'s key. */
+const authOf = (owner: JobOwner): string => pluginWarmKey(job(owner)).split("|")[2] as string;
 
 describe("the plugin family's process", () => {
   test("plugin_env_is_the_allow_list", async () => {
@@ -154,7 +178,7 @@ describe("the plugin family's process", () => {
       const env = r.env as Record<string, string>;
       const allowed = new Set(["PATH", "HOME", "LANG", "TMPDIR", "TEMP", "TMP", "FIN_PLUGIN_PROTOCOL", ...(process.platform === "win32" ? ["Path", "USERPROFILE", "SYSTEMROOT", "SystemRoot", "LOCALAPPDATA"] : [])]);
       expect(Object.keys(env).filter((k) => !allowed.has(k) && !k.startsWith("LC_"))).toEqual([]);
-      const tmp = keyTmpDir(p.serverData, `${ID}@1.0.0|p1|person`);
+      const tmp = keyTmpDir(p.serverData, p.keyOf({ project: "p1" }));
       expect(env).toMatchObject({ FIN_PLUGIN_PROTOCOL: "1", TMPDIR: tmp, TEMP: tmp, TMP: tmp });
       expect(realpathSync(r.cwd as string)).toBe(tmp);
       if (process.platform !== "win32") expect(statSync(tmp).mode & 0o777).toBe(0o700);
@@ -199,7 +223,7 @@ describe("the plugin family's process", () => {
     const sibling = join(dirname(dir), "sibling");
     mkdirSync(sibling);
     writeFileSync(join(sibling, "secret"), "x");
-    const tmp = keyTmpDir(p.serverData, `${ID}@1.0.0|none|person`);
+    const tmp = keyTmpDir(p.serverData, p.keyOf());
     const r = await p.echo({ op: "probe", read: [join(dir, "main.mjs"), join(sibling, "secret"), join(p.serverData, "control.db")], write: [join(tmp, "ok"), join(dir, "planted")] });
     expect(r).toEqual({
       [`read ${join(dir, "main.mjs")}`]: "ok",
@@ -213,30 +237,48 @@ describe("the plugin family's process", () => {
     expect(existsSync(join(dir, "planted"))).toBe(false);
   });
 
-  test("warm_key_never_crosses: two projects, two classes, four processes", async () => {
+  test("warm_key_never_crosses: projects, classes, rights and generations each get their own process", async () => {
     const p = await pluginEngine();
     p.install();
     const tree = await agentTree(p.t.control, p.serverData);
-    const cls = (o: JobOwner) => (o === PERSON ? "person" : o === SYSTEM ? "system" : `agent:${tree.root}`);
-    const cases = [
+    const root: JobOwner = { kind: "agent", id: tree.root };
+    const child: JobOwner = { kind: "agent", id: tree.child };
+    const mcp: JobOwner = { kind: "mcp", id: "01mcp0000000000000000000000" };
+    const cases: SubmitOpts[] = [
       { project: "p1", owner: PERSON },
       { project: "p1", owner: SYSTEM },
       { project: "p2", owner: PERSON },
       { project: "p2", owner: SYSTEM },
-      { project: "p1", owner: { kind: "agent", id: tree.root } as JobOwner },
+      { project: "p1", owner: root, sessionRoot: "br1" },
+      // The child session: the root's class, its own root branch (narrower rights).
+      { project: "p1", owner: child, sessionRoot: "br2" },
+      // One MCP credential with two rights sets: two authorities.
+      { project: "p1", owner: mcp },
+      { project: "p1", owner: mcp, projects: ["p1"] },
     ];
+    const env = async (c: SubmitOpts) => (await p.echo({ op: "env" }, c)) as { pid: number; env: Record<string, string> };
     const first = [];
-    for (const c of cases) first.push((await p.echo({ op: "env" }, c)) as { pid: number; env: Record<string, string> });
-    expect(new Set(first.map((r) => r.pid)).size).toBe(5);
-    expect(new Set(first.map((r) => r.env.TMPDIR)).size).toBe(5);
-    // Each key's next job goes to its own process, never another key's; the agent's child
-    // session shares its root's class.
-    for (const [i, c] of cases.entries()) expect(((await p.echo({ op: "env" }, c)) as { pid: number }).pid).toBe(first[i]!.pid);
-    expect(((await p.echo({ op: "env" }, { project: "p1", owner: { kind: "agent", id: tree.child } })) as { pid: number }).pid).toBe(first[4]!.pid);
+    for (const c of cases) first.push(await env(c));
+    expect(new Set(first.map((r) => r.pid)).size).toBe(cases.length);
+    expect(new Set(first.map((r) => r.env.TMPDIR)).size).toBe(cases.length);
+    // The child shares its root's class but not its authority: never the root's process.
+    expect(p.keyOf(cases[5])).not.toBe(p.keyOf(cases[4]));
+    expect(authorityOfWarmKey(p.keyOf(cases[5]))?.slug).toBe(authorityOfWarmKey(p.keyOf(cases[4]))?.slug);
+    // Each key's next job goes to its own process, never another key's.
+    for (const [i, c] of cases.entries()) expect((await env(c)).pid).toBe(first[i]!.pid);
     const warm = p.t.engine.workers().warm.filter((w) => w.family === "plugin");
-    expect(warm.map((w) => w.key).sort()).toEqual(cases.map((c) => `${ID}@1.0.0|${c.project}|${cls(c.owner)}`).sort());
+    expect(warm.map((w) => w.key).sort()).toEqual(cases.map((c) => p.keyOf(c)).sort());
     // Each process's temp is its own key's, as the engine tagged it.
-    for (const [i, c] of cases.entries()) expect(first[i]!.env.TMPDIR).toBe(keyTmpDir(p.serverData, `${ID}@1.0.0|${c.project}|${cls(c.owner)}`));
+    for (const [i, c] of cases.entries()) expect(first[i]!.env.TMPDIR).toBe(keyTmpDir(p.serverData, p.keyOf(c)));
+    // One caller across a generation bump: a new key, process and temp (retiring the old
+    // process and removing its temp is the host's, `plugins-authority.test.ts`).
+    p.gens.bump(`agent:${tree.root}`);
+    const after = await env(cases[4]!);
+    expect(after.pid).not.toBe(first[4]!.pid);
+    expect(after.env.TMPDIR).not.toBe(first[4]!.env.TMPDIR);
+    expect(authorityOfWarmKey(p.keyOf(cases[4]))?.generation).toBe(1);
+    // The person class is untouched by an agent tree's bump.
+    expect((await env(cases[0]!)).pid).toBe(first[0]!.pid);
   });
 
   test("update_uses_a_new_process: the version is in the key", async () => {
@@ -327,7 +369,12 @@ describe("the plugin family's process", () => {
     const mcp: JobOwner = { kind: "mcp", id: "M" };
     const asPerson = rightsFor({ invoker: { ...mcp, scopes: [], projects: "*" }, grants: [], class: "person" });
     expect(await Effect.runPromise(Effect.flip(p.t.engine.submit(mcp, { kind: "test.echo", params: { value: { op: "pid" } }, via, rights: asPerson })))).toMatchObject({ details: { class: "person" } });
-    expect(pluginWarmKey({ ...job(PERSON, "P"), rights: { ...rights, class: "agent:R" } } as JobView)).toBe(`${ID}@1.0.0|P|person`);
+    expect(pluginWarmKey({ ...job(PERSON, "P"), rights: { ...rights, class: "agent:R" } } as JobView)).toBe(`${ID}@1.0.0|P|${authOf(PERSON)}`);
+    expect(authOf(PERSON)).toMatch(/^person\.[0-9a-f]{32}\.0$/);
+    // Rights whose hash is not theirs, or whose generation has not happened, are refused.
+    expect(await refused({ via, rights: { ...rights, rightsHash: "0".repeat(32) } })).toMatchObject({ details: { field: "rights", reason: "rightsHash" } });
+    expect(await refused({ via, rights: { ...rights, generation: 7 } })).toMatchObject({ details: { field: "rights", reason: "generation" } });
+    expect(await refused({ via, rights: { ...rights, generation: -1 } })).toMatchObject({ details: { field: "rights" } });
     // An agent's rights without its branch reach are not rights.
     const agent: JobOwner = { kind: "agent", id: "S" };
     const noBranch = { ...rightsFor({ invoker: { ...agent, scopes: [], projects: "*" }, grants: [], class: "agent:S" }) };
@@ -349,7 +396,7 @@ describe("the plugin family's configuration", () => {
     const program = pluginProgram(deps(sd), job(PERSON, "p1"));
     expect("path" in program && program.path).toBe(process.execPath);
     const own = "path" in program ? program.process : undefined;
-    const tmp = keyTmpDir(sd, `${ID}@1.0.0|p1|person`);
+    const tmp = keyTmpDir(sd, pluginWarmKey(job(PERSON, "p1")));
     const store = storeDirOf(sd, row());
     expect(own).toEqual({
       env: expect.objectContaining({ TMPDIR: tmp, FIN_PLUGIN_PROTOCOL: "1" }),
@@ -402,12 +449,15 @@ describe("the plugin family's configuration", () => {
     }
   });
 
-  test("warm keys: plugin@version, project or none, principal class", () => {
-    expect(pluginWarmKey(job(PERSON, "p1"))).toBe(`${ID}@1.0.0|p1|person`);
-    expect(pluginWarmKey(job({ kind: "console", id: "console" }))).toBe(`${ID}@1.0.0|none|person`);
-    expect(pluginWarmKey(job({ kind: "device", id: "d1" }))).toBe(`${ID}@1.0.0|none|person`);
-    expect(pluginWarmKey(job(SYSTEM))).toBe(`${ID}@1.0.0|none|system`);
-    expect(pluginWarmKey(job(PERSON, "p1", `${ID}@1.1.0`))).toBe(`${ID}@1.1.0|p1|person`);
+  test("warm keys: plugin@version, project or none, authority key", () => {
+    const person = authOf(PERSON);
+    expect(pluginWarmKey(job(PERSON, "p1"))).toBe(`${ID}@1.0.0|p1|${person}`);
+    expect(pluginWarmKey(job({ kind: "console", id: "console" }))).toBe(`${ID}@1.0.0|none|${person}`);
+    expect(pluginWarmKey(job({ kind: "device", id: "d1" }))).toBe(`${ID}@1.0.0|none|${person}`);
+    expect(authorityOfWarmKey(pluginWarmKey(job(SYSTEM)))).toMatchObject({ slug: "system", generation: 0 });
+    expect(pluginWarmKey(job(PERSON, "p1", `${ID}@1.1.0`))).toBe(`${ID}@1.1.0|p1|${person}`);
+    // A job without valid rights shares nothing: its key is its own.
+    expect(pluginWarmKey({ ...job(PERSON, "p1"), rights: undefined } as unknown as JobView)).toBe(`${ID}@1.0.0|p1|job-j1`);
     // An agent session tree shares its root's class; MCP is a class of its own.
     const roots = (id: string) => (id === "child" ? "root" : undefined);
     expect(principalClass({ kind: "agent", id: "child" }, roots)).toBe("agent:root");

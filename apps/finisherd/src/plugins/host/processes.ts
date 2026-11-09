@@ -5,11 +5,20 @@
 // old version's), removes a stopped key's temp directory, checks a code plugin can be enabled
 // on this host, and says whether its processes are confined. Only processes the engine started
 // are touched.
+//
+// Authority keys (spec §3.3, Decision 28; `authority.ts`): the host owns the classes' policy
+// generations (`control.db`'s `plugin_authority`). A credential minted or ended (an agent
+// session tree that starts, gains a child or ends; an MCP credential revoked or expired) bumps
+// its class, a device revoked bumps `person`; a bump retires the class's warm processes of
+// older generations, then (once they and the class's running jobs are gone) removes their temp
+// directories and the class's authority-keyed `pluginData`. The start sweeps both.
 import { rmSync } from "node:fs";
-import type { FinError, JobState } from "@finisher/contracts";
+import type { FinError, JobState, JobView } from "@finisher/contracts";
 import { validateManifest } from "@finisher/fin-node";
 import type { ValidationReport } from "@finisher/core-types";
 import { Effect } from "effect";
+import type { CredentialChange } from "../../auth/credentials.ts";
+import type { DeviceEvent } from "../../auth/devices.ts";
 import type { Audit } from "../../control/audit.ts";
 import type { ControlStore } from "../../control/db.ts";
 import { attemptJson, finError } from "../../errors.ts";
@@ -19,7 +28,9 @@ import { RETIRE_GRACE_MS } from "../../jobs/warm-worker.ts";
 import type { InstalledFull, PluginTables } from "../tables.ts";
 import { makeCrashLoop } from "./crash-loop.ts";
 import { PLUGIN_FAMILY, registerPluginFamily } from "./family.ts";
-import { keyTmpDir, sessionRoots } from "./keys.ts";
+import { type Authority, type AuthorityGenerations, authorityOfWarmKey, classSlug, jobAuthority, removeClassAuthData, storedGenerations, sweepAuthData } from "./authority.ts";
+import { pluginDataFor } from "./family.ts";
+import { keyTmpDir, pluginWarmKey, principalClass, sessionRoots } from "./keys.ts";
 import { storeDirOf } from "./program.ts";
 
 /** The host API a code plugin must accept to be enabled (sp8b Decision 14). */
@@ -54,10 +65,21 @@ export interface PluginHostDeps {
   readonly clock?: () => number;
 }
 
+/** How long a retired authority's temp and data wait for its last job (a command's 60 s ceiling, plus grace). */
+export const AUTHORITY_DRAIN_MS = 65_000;
+
+/** What bumps the classes' generations (`watch`). */
+export interface AuthoritySources {
+  readonly credentials?: { onChange(f: (c: CredentialChange) => void): () => void };
+  readonly devices?: { onEvent(f: (e: DeviceEvent) => void): () => void };
+}
+
 export function makePluginHost(d: PluginHostDeps) {
   const keys = new Set<string>();
   let engine: JobEngine | undefined;
   const clock = d.clock ?? Date.now;
+  const rootSessionOf = sessionRoots(d.control);
+  const generations: AuthorityGenerations = storedGenerations(d.control);
 
   const matcher = (id: string, version?: string) => (plugin: string) => (version === undefined ? plugin.startsWith(`${id}@`) : plugin === `${id}@${version}`);
 
@@ -99,6 +121,38 @@ export function makePluginHost(d: PluginHostDeps) {
       }
     });
 
+  /**
+   * `cls`'s policy generation moves on (spec §3.3): its warm processes of older generations are
+   * retired at once (a busy one after its job), and once none is left and no job of the class
+   * runs (at most `AUTHORITY_DRAIN_MS`), their temp directories and the class's
+   * authority-keyed `pluginData` are removed. Resolves after the removal.
+   */
+  const authorityChanged = (cls: string): Effect.Effect<number> =>
+    Effect.gen(function* () {
+      const generation = generations.bump(cls);
+      const slug = classSlug(cls);
+      const stale = (key: string) => {
+        const a = authorityOfWarmKey(key);
+        return a !== undefined && a.slug === slug && a.generation !== generation;
+      };
+      const e = engine;
+      if (e !== undefined) {
+        e.retireWarm(PLUGIN_FAMILY, stale);
+        const busy = () =>
+          e.workers().warm.some((w) => w.family === PLUGIN_FAMILY && stale(w.key)) ||
+          e.list({ state: ["running"], limit: 500 }).jobs.some((j) => j.family === PLUGIN_FAMILY && principalClass(j.owner, rootSessionOf) === cls);
+        for (let waited = 0; busy() && waited < AUTHORITY_DRAIN_MS; waited += 50) yield* Effect.sleep(50);
+      }
+      const still = new Set(e?.workers().warm.map((w) => w.key) ?? []);
+      for (const key of [...keys]) {
+        if (!stale(key) || still.has(key)) continue;
+        keys.delete(key);
+        yield* Effect.ignore(Effect.try(() => rmSync(keyTmpDir(d.serverData, key), { recursive: true, force: true })));
+      }
+      yield* Effect.ignore(Effect.try(() => removeClassAuthData(d.serverData, cls, generation)));
+      return generation;
+    });
+
   const crashLoop = makeCrashLoop({
     tables: d.tables,
     clock,
@@ -123,8 +177,36 @@ export function makePluginHost(d: PluginHostDeps) {
   return {
     /** Registers the `plugin` family (before the engine starts) and empties the keys' temp. */
     register(r: KindRegistry): void {
-      registerPluginFamily(r, { serverData: d.serverData, installed: (id) => d.tables.installedFull(id), rootSessionOf: sessionRoots(d.control), onKey: (k) => keys.add(k) });
+      registerPluginFamily(r, { serverData: d.serverData, installed: (id) => d.tables.installedFull(id), rootSessionOf, generations, onKey: (k) => keys.add(k) });
+      sweepAuthData(d.serverData, generations);
     },
+    /**
+     * Bumps the classes' generations from the credentials and devices: a credential minted or
+     * ended bumps its class (an agent's is its session tree's root), a device revoked `person`.
+     * Returns the unsubscribe.
+     */
+    watch(src: AuthoritySources): () => void {
+      const changed = (cls: string) => void Effect.runFork(authorityChanged(cls));
+      const offs = [
+        src.credentials?.onChange((c) => changed(principalClass({ kind: c.kind, id: c.id }, rootSessionOf))),
+        src.devices?.onEvent((ev) => {
+          if (ev.kind === "revoked") changed("person");
+        }),
+      ];
+      return () => {
+        for (const off of offs) off?.();
+      };
+    },
+    /** `cls`'s generation moves on now (`watch` calls it; tests too). */
+    authorityChanged,
+    /** The generations (tests; Task 7 compares a call's key with the job's live one). */
+    generations,
+    /** The authority `job` runs under now. */
+    authorityOf: (job: JobView): Authority | undefined => jobAuthority(job, principalClass(job.owner, rootSessionOf), generations),
+    /** `job`'s warm key now: a worker whose key differs serves a retired authority (Task 7). */
+    warmKeyOf: (job: JobView): string => pluginWarmKey(job, rootSessionOf, generations),
+    /** `PluginContext.dirs.data` of `job` (Task 7), created on first use; only with `fs pluginData`. */
+    dataDirOf: (job: JobView) => pluginDataFor({ serverData: d.serverData, rootSessionOf, generations }, job),
     /** Binds the started engine: stops go to it, its job ends feed the crash loop. */
     bind(e: JobEngine): void {
       engine = e;

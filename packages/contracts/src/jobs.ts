@@ -36,7 +36,9 @@ export const JobRightsSchema = Schema.Unknown;
 export type JobRights = GeneratedJobRights;
 
 const PLUGIN_SCOPE_NAMES: ReadonlySet<string> = new Set(["project.read", "project.write", "library.read", "jobs.submit"]);
-const RIGHTS_KEYS: ReadonlySet<string> = new Set(["principal", "class", "scopes", "projects", "branch", "libraries", "grants"]);
+const RIGHTS_KEYS: ReadonlySet<string> = new Set(["principal", "class", "scopes", "projects", "branch", "libraries", "grants", "rightsHash", "generation"]);
+/** The authority's rights hash: 32 lower-case hex characters (sp8 spec §3.3, Decision 28). */
+const RIGHTS_HASH = /^[0-9a-f]{32}$/;
 const isObj = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
 const isStr = (v: unknown): v is string => typeof v === "string";
 const isReach = (v: unknown): boolean => v === "all" || (Array.isArray(v) && v.every(isStr));
@@ -46,7 +48,9 @@ const isGrant = (g: unknown): boolean => isObj(g) && isStr(g.perm) && PERMS.has(
 
 /**
  * Whether `v` has `JobRights`' shape: no unknown field, scopes from the four a plugin may hold,
- * known permissions (a `net` grant with its origins), and a branch for an `agent` principal.
+ * known permissions (a `net` grant with its origins), a branch for an `agent` principal, and
+ * the authority's `rightsHash` (32 hex) and `generation` (a non-negative integer). Whether the
+ * hash matches the rights is the plugin family's check (`checkRights`).
  */
 export function isJobRights(v: unknown): v is GeneratedJobRights {
   if (!isObj(v) || Object.keys(v).some((k) => !RIGHTS_KEYS.has(k))) return false;
@@ -58,6 +62,9 @@ export function isJobRights(v: unknown): v is GeneratedJobRights {
   if (b !== undefined && b !== null && !(isObj(b) && isStr(b.root) && typeof b.subtree === "boolean" && Object.keys(b).length === 2)) return false;
   // An agent session's rights always carry its branch reach: without it reads would be unbounded.
   if (p.kind === "agent" && !isObj(b)) return false;
+  // The authority the job runs under: its rights hash and the class's policy generation.
+  if (!isStr(v.rightsHash) || !RIGHTS_HASH.test(v.rightsHash)) return false;
+  if (typeof v.generation !== "number" || !Number.isSafeInteger(v.generation) || v.generation < 0) return false;
   return Array.isArray(v.grants) && v.grants.every(isGrant);
 }
 

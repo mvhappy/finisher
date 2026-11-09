@@ -15,7 +15,7 @@ import { FakeHost } from "../support/fake-host.ts";
 import { closeTestEngines, failure, hostOf, OWNER, run, type TestEngine, testClock, testEngine, until } from "../support/jobs.ts";
 
 /** A plugin family's job names its plugin and carries rights for its owner (sp8b Task 6). */
-const PLUGIN_JOB = { via: { plugin: "@test/plugin@1.0.0" }, rights: { principal: OWNER, class: "person", scopes: [], projects: "all", libraries: [], grants: [] } } as const;
+const PLUGIN_JOB = { via: { plugin: "@test/plugin@1.0.0" }, rights: { principal: OWNER, class: "person", scopes: [], projects: "all", libraries: [], grants: [], rightsHash: "0".repeat(32), generation: 0 } } as const;
 
 afterEach(closeTestEngines);
 

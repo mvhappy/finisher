@@ -156,7 +156,7 @@ describe("runs", () => {
 
   test("owner_via_rights_are_kept", async () => {
     const t = await testEngine();
-    const rights = { principal: OWNER, class: "person", scopes: ["project.read"], projects: "all", libraries: [], grants: [{ perm: "project:read" }] };
+    const rights = { principal: OWNER, class: "person", scopes: ["project.read"], projects: "all", libraries: [], grants: [{ perm: "project:read" }], rightsHash: "0".repeat(32), generation: 0 };
     const done: unknown[] = [];
     t.engine.onDone((j) => done.push(j));
     const v = await t.runJob("test.call", { method: "test.echo", params: { x: 1 } }, { via: { plugin: "p.one" }, rights });

@@ -5259,7 +5259,7 @@
       "oneOf": [
         {
           "const": "pluginData",
-          "description": "`<server-data>/plugins/data/<id>/<projectId|_>/` (spec §5.1). `workspace` is not in v1.",
+          "description": "The caller's plugin data directory (spec §5.1): `<server-data>/plugins/data/<id>/<projectId|_>/`\nfor uniform `person`/`system` rights, else `plugins/authdata/<id>/<projectId|_>/<authorityKey>/`.\n`workspace` is not in v1.",
           "type": "string"
         }
       ]
@@ -7727,7 +7727,7 @@
     },
     "JobRights": {
       "additionalProperties": false,
-      "description": "A plugin job's rights: invoker ∩ grants (Decision 8).",
+      "description": "A plugin job's rights: invoker ∩ grants (Decision 8), with the authority they run under\n(class + `rights_hash` + `generation`, spec §3.3 and Decision 28).",
       "properties": {
         "branch": {
           "anyOf": [
@@ -7743,6 +7743,12 @@
         "class": {
           "description": "The principal class of the process key (spec §3.3): `person`, `agent:<root session>`,\n`system`, or `<kind>:<id>` for any other invoker.",
           "type": "string"
+        },
+        "generation": {
+          "description": "The class's policy generation when the rights were computed (spec §3.3): it increments\nwhen a credential of the class is narrowed or revoked or its agent session tree changes.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
         },
         "grants": {
           "description": "The plugin's granted permissions at submit.",
@@ -7761,6 +7767,10 @@
         "projects": {
           "$ref": "#/$defs/Reach"
         },
+        "rightsHash": {
+          "description": "The hash of the plugin-relevant rights above (class, scopes, projects, branch, libraries,\ngrants; not the principal, so callers of one class with identical rights share it): 32\nlower-case hex characters, computed by the host (spec §3.3's authority key, Decision 28).",
+          "type": "string"
+        },
         "scopes": {
           "description": "The invoker's scopes that the plugin's grants map to.",
           "items": {
@@ -7775,7 +7785,9 @@
         "scopes",
         "projects",
         "libraries",
-        "grants"
+        "grants",
+        "rightsHash",
+        "generation"
       ],
       "type": "object"
     },
@@ -12522,7 +12534,7 @@
       "description": "Directories the plugin may use, as absolute paths on the host.",
       "properties": {
         "data": {
-          "description": "The per-project data directory, only when `fs pluginData` is granted.",
+          "description": "The caller's `pluginData` directory, only when `fs pluginData` is granted (spec §5.1):\n`plugins/data/@pub/name/<projectId|_>/` for uniform `person`/`system` rights, else\n`plugins/authdata/@pub/name/<projectId|_>/<authorityKey>/`.",
           "type": [
             "string",
             "null"

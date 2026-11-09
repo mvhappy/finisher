@@ -26,7 +26,9 @@ pub struct PluginRefFull {
 pub struct PluginDirs {
     /// The installed package (read-only).
     pub plugin: String,
-    /// The per-project data directory, only when `fs pluginData` is granted.
+    /// The caller's `pluginData` directory, only when `fs pluginData` is granted (spec §5.1):
+    /// `plugins/data/@pub/name/<projectId|_>/` for uniform `person`/`system` rights, else
+    /// `plugins/authdata/@pub/name/<projectId|_>/<authorityKey>/`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub data: Option<String>,
     /// The process's private temporary directory.
