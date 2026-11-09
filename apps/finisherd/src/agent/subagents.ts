@@ -11,7 +11,8 @@
 //   root branch is created from the head of the parent's current default branch (its
 //   `session_state`), named `<parent root name>.<role>-<n>` (`credentials.ts`), as the parent;
 //   the child records `parent`, `rootSession` and `depth`; its credential is the mode's scopes
-//   within the parent's. The payload names no parent and no `base`: an agent cannot attach a
+//   within the parent's; its tokens and money are carved from the parent's remaining in the
+//   transaction that records it, and settle at its end (`carve.ts`, Task 7). The payload names no parent and no `base`: an agent cannot attach a
 //   session elsewhere. Spawns under one root are serialised, so two cannot both pass a limit,
 //   and so is a cascade's count of the children: none is made after it counted. A parent that
 //   stopped while its child was being opened stops the child as its cascade would, and the

@@ -5,5 +5,6 @@ import { agent0003 } from "./0003.ts";
 import { agent0004 } from "./0004.ts";
 import { agent0005 } from "./0005.ts";
 import { agent0006 } from "./0006.ts";
+import { agent0007 } from "./0007.ts";
 
-export const AGENT_MIGRATIONS = [agent0001, agent0002, agent0003, agent0004, agent0005, agent0006] as const;
+export const AGENT_MIGRATIONS = [agent0001, agent0002, agent0003, agent0004, agent0005, agent0006, agent0007] as const;

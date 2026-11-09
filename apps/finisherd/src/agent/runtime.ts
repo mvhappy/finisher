@@ -25,6 +25,8 @@ import type { AgentWarning, Approval, ApprovalDecision, ChildResult, FinError, P
 import { Cause, Effect, Exit, Option, type Stream } from "effect";
 import type { CallMeta } from "../diagnostics.ts";
 import { finError, toFinError } from "../errors.ts";
+import { DEFAULT_BUDGET } from "./budget.ts";
+import { childCarve } from "./carve.ts";
 import { AgentCoreTag } from "./core.ts";
 import { openSession, registryBranchOps } from "./credentials.ts";
 import { type RuntimeDeps, RuntimeEngine, STOP_GRACE_MS } from "./runtime-engine.ts";
@@ -203,6 +205,10 @@ export class Runtime extends RuntimeEngine {
       this.#guard();
       const plan = await this.deps.planner.plan(req, by, parent);
       const child: ChildOpen | undefined = parent === undefined ? undefined : this.subagents.childOf(parent);
+      // A child's budget is carved from its parent's remaining (7B Decision 22, `carve.ts`); the
+      // parent's `Budget` puts its limits in the ledger first. Re-checked as the child is recorded.
+      if (parent !== undefined) this.budget(parent);
+      const carved = parent === undefined ? undefined : childCarve(this.store.ledger(), parent.id, plan.budget, req.budget, this.deps.defaults ?? DEFAULT_BUDGET);
       if (this.adapter(plan.harness) === undefined) harnessUnknown(plan.harness);
       // A money budget without a price would fail open: refused before anything is made.
       if (plan.provider !== "local" && !this.pricing.known(plan.provider, plan.model)) throw pricingUnknown(plan.provider, plan.model);
@@ -217,7 +223,8 @@ export class Runtime extends RuntimeEngine {
             weights: plan.weights,
             role: plan.role,
             mode: plan.mode,
-            budget: plan.budget,
+            budget: carved?.budget ?? plan.budget,
+            ...(carved === undefined ? {} : { carve: carved.carve }),
             createdBy: { principal: { kind: by.kind, id: by.id } },
             ...(child === undefined ? {} : child),
             ...(req.base === undefined || child !== undefined ? {} : { base: req.base }),
@@ -416,6 +423,9 @@ export class Runtime extends RuntimeEngine {
       })();
       return this.serial(found.sessionId, async () => {
         let answered: { approval: Approval; session: Session };
+        // A child's raise must fit its parent's remaining (7B Decision 22): refused before it is answered.
+        const refused = found.kind === "budget" && decision === "allow" ? this.store.ledger().canRaise(found.sessionId, { tokens: add.tokens, money: add.moneyMicros, wallMs: add.wallMs }) : undefined;
+        if (refused !== undefined) throw refused;
         try {
           answered = this.store.answerApproval(approvalId, decision, principalRef(by));
         } catch (e) {

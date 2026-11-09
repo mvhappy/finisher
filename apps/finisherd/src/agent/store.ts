@@ -30,7 +30,7 @@ import { DbLedger, type SessionBranchState, type SessionTx, SessionStates, Sessi
 export type { Appended, Applied, NewApproval, NewNode, NewSession, OutboxEffect, OutboxItem, Recovery, RunStart, SessionQuery } from "./store-rows.ts";
 export type { SessionBranchState, SessionTx, SessionTryRow, TxOutcome } from "./store-tables.ts";
 
-registerChain("agent", [...AGENT_MIGRATIONS], { formatVersion: 6, minReaderVersion: 4 });
+registerChain("agent", [...AGENT_MIGRATIONS], { formatVersion: 7, minReaderVersion: 7 });
 
 const DAY_MS = 86_400_000;
 /** `agents.retentionDays` default (Decision 4). */
@@ -94,6 +94,7 @@ export class AgentStore {
     return this.#cs.tx(() => {
       if (this.#s.exists!.get(s.id) !== undefined) throw finError("INVALID_REQUEST", "a session with this id exists", { sessionId: s.id });
       this.#s.insertSession!.run(...sessionInsertArgs(s, initialState.status, this.#clock.now()));
+      if (s.carve !== undefined && s.parent !== undefined) this.#ledger.carve(s.parent, s.id, s.carve);
       this.#states.create(s.id, s.rootBranch ?? s.base.branch);
       return toSession(this.#row(s.id));
     });
@@ -161,6 +162,7 @@ export class AgentStore {
     for (const o of outboxOf(t.effects)) this.#queue(sessionId, o, now);
     const s = t.state;
     if (e.kind === "ready" && s.status === "idle") this.#s.markReady!.run(now, sessionId);
+    if (s.status === "ended") this.#ledger.settleCarve(sessionId);
     this.#s.setState!.run(s.status, s.reason, s.runId, JSON.stringify(s.approvals), s.status === "ended" ? now : null, sessionId);
     return { session: toSession(this.#row(sessionId)), effects: t.effects };
   }
@@ -510,10 +512,8 @@ export class AgentStore {
     const before = this.#closed;
     // Money and tokens held for model calls that died with the last process: no call settles
     // them now, so they are returned before anything else (the outbox included) runs.
-    this.#cs.tx(() => {
-      this.#s.clearReserved!.run();
-      this.#s.clearDailyReserved!.run();
-    });
+    // Children's carves are held again, and settled for children that have ended (`carve.ts`).
+    this.#cs.tx(() => this.#ledger.recover());
     for (const { id } of this.#s.live!.all() as Array<{ id: string }>) {
       this.#cs.tx(() => this.#applyIn(id, { kind: "interrupted", reason: SERVER_RESTART }, {}));
       interrupted.push(id);
@@ -592,7 +592,7 @@ export class AgentStore {
     this.#cs.tx(() => {
       const db = this.#cs.db;
       db.prepare("DELETE FROM nodes WHERE sessionId = ?").run(sessionId);
-      for (const t of ["runs", "approvals", "budgets", "session_state", "agent_rules", "agent_remembered"]) db.prepare(`DELETE FROM ${t} WHERE sessionId = ?`).run(sessionId);
+      for (const t of ["runs", "approvals", "budgets", "budget_carves", "session_state", "agent_rules", "agent_remembered"]) db.prepare(`DELETE FROM ${t} WHERE sessionId = ?`).run(sessionId);
       db.prepare("DELETE FROM sessions WHERE id = ?").run(sessionId);
     });
   }

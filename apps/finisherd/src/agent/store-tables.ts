@@ -1,10 +1,12 @@
 // The agent store's side tables (plan 7A Decisions 1, 14a, 21; spec §5.1, §5.2): `session_txs`,
-// `session_state` and the budget ledger (`budgets`, `budget_days`). `AgentStore` owns one of
-// each and answers them; nothing else touches these tables.
+// `session_state` and the budget ledger (`budgets`, `budget_days`, 7B's `budget_carves`).
+// `AgentStore` owns one of each and answers them; nothing else touches these tables.
 import type { StatementSync } from "node:sqlite";
 import type { Attribution } from "@finisher/core-types";
 import type { ControlStore } from "../control/db.ts";
 import { finError } from "../errors.ts";
+import type { FinError } from "@finisher/contracts";
+import { type Carve, type CarvedKind, carveIn, type CarveRecords, type CarveRow, type Raise, raiseIn, raiseRefused, settleIn } from "./carve.ts";
 import type { BudgetKind, Daily, Ledger, LedgerStore } from "./ledger.ts";
 
 /** What became of an agent's transaction (spec §12.5; `outcomes.ts`, Task 11, sets it). */
@@ -182,12 +184,65 @@ export class SessionStates {
   }
 }
 
-/** `LedgerStore` over `budgets` and `budget_days` (Task 4's interface; each call one statement). */
-export class DbLedger implements LedgerStore {
+/** `CarveRecords` over `budget_carves` (7B Task 7, agent 0007). */
+class DbCarves implements CarveRecords {
   readonly #s: Record<string, StatementSync>;
 
   constructor(cs: ControlStore) {
     this.#s = prepare(cs, {
+      open: "SELECT sessionId, parentId, kind, amount FROM budget_carves WHERE sessionId = ? AND settled = 0 ORDER BY kind",
+      record: "INSERT INTO budget_carves (sessionId, kind, parentId, amount) VALUES (?, ?, ?, ?)",
+      grow: "UPDATE budget_carves SET amount = amount + ? WHERE sessionId = ? AND kind = ? AND settled = 0",
+      settled: "UPDATE budget_carves SET settled = 1 WHERE sessionId = ? AND settled = 0",
+      heldBy: "SELECT COALESCE(SUM(amount), 0) AS n FROM budget_carves WHERE parentId = ? AND kind = ? AND settled = 0",
+      // Recovery: every open carve held on its parent again, then the children no longer live.
+      rehold:
+        "UPDATE budgets SET reserved = (SELECT SUM(c.amount) FROM budget_carves c WHERE c.parentId = budgets.sessionId AND c.kind = budgets.kind AND c.settled = 0) " +
+        "WHERE EXISTS (SELECT 1 FROM budget_carves c WHERE c.parentId = budgets.sessionId AND c.kind = budgets.kind AND c.settled = 0)",
+      notLive:
+        "SELECT DISTINCT c.sessionId FROM budget_carves c LEFT JOIN sessions s ON s.id = c.sessionId WHERE c.settled = 0 AND (s.id IS NULL OR s.status = 'ended') ORDER BY c.sessionId",
+    });
+  }
+
+  open(sessionId: string): CarveRow[] {
+    return this.#s.open!.all(sessionId) as unknown as CarveRow[];
+  }
+
+  record(r: CarveRow): void {
+    this.#s.record!.run(r.sessionId, r.kind, r.parentId, r.amount);
+  }
+
+  grow(sessionId: string, kind: CarvedKind, by: number): void {
+    this.#s.grow!.run(by, sessionId, kind);
+  }
+
+  settled(sessionId: string): void {
+    this.#s.settled!.run(sessionId);
+  }
+
+  heldBy(parentId: string, kind: CarvedKind): number {
+    return (this.#s.heldBy!.get(parentId, kind) as { n: number }).n;
+  }
+
+  /** After the per-call reservations were returned: the open carves held again; the children no longer live. */
+  rehold(): string[] {
+    this.#s.rehold!.run();
+    return (this.#s.notLive!.all() as Array<{ sessionId: string }>).map((r) => r.sessionId);
+  }
+}
+
+/** `LedgerStore` over `budgets` and `budget_days` (Task 4's interface; each call one statement), and 7B's carves. */
+export class DbLedger implements LedgerStore {
+  readonly #s: Record<string, StatementSync>;
+  readonly #cs: ControlStore;
+  readonly #carves: DbCarves;
+
+  constructor(cs: ControlStore) {
+    this.#cs = cs;
+    this.#carves = new DbCarves(cs);
+    this.#s = prepare(cs, {
+      clearReserved: "UPDATE budgets SET reserved = 0 WHERE reserved != 0",
+      clearDailyReserved: "UPDATE budget_days SET reserved = 0 WHERE reserved != 0",
       read: 'SELECT "limit" AS "limit", used, reserved FROM budgets WHERE sessionId = ? AND kind = ?',
       add:
         "INSERT INTO budgets (sessionId, kind, used, reserved) VALUES (?, ?, ?, MAX(0, ?)) ON CONFLICT (sessionId, kind) DO UPDATE SET " +
@@ -224,6 +279,32 @@ export class DbLedger implements LedgerStore {
     const reserved = delta.reserved ?? 0;
     const r = this.#s.addDaily!.get(utcDay, delta.used ?? 0, reserved, reserved) as unknown as Daily;
     return { used: r.used, reserved: r.reserved };
+  }
+  carve(parentId: string, sessionId: string, carve: Carve): void {
+    this.#cs.tx(() => carveIn(this, this.#carves, parentId, sessionId, carve));
+  }
+
+  settleCarve(sessionId: string): void {
+    this.#cs.tx(() => settleIn(this, this.#carves, sessionId));
+  }
+
+  raise(sessionId: string, add: Raise): void {
+    this.#cs.tx(() => raiseIn(this, this.#carves, sessionId, add));
+  }
+
+  canRaise(sessionId: string, add: Raise): FinError | undefined {
+    return raiseRefused(this, this.#carves, sessionId, add);
+  }
+
+  /**
+   * Recovery (spec §13.1; the caller's transaction, before anything else runs): every per-call
+   * reservation returns, every open carve is held on its parent again, and each carve whose
+   * child has ended or is gone is settled.
+   */
+  recover(): void {
+    this.#s.clearReserved!.run();
+    this.#s.clearDailyReserved!.run();
+    for (const id of this.#carves.rehold()) settleIn(this, this.#carves, id);
   }
 }
 

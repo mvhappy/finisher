@@ -3,6 +3,7 @@
 import type { AgentProvider, Approval, ApprovalKind, FinError, Node, NodeKind, Run, RunStatus, RunTrigger, Session, Usage } from "@finisher/contracts";
 import type { BudgetSpec, Harness, Mode, SessionStatus, Weights } from "@finisher/contracts";
 import { finError } from "../errors.ts";
+import type { Carve } from "./carve.ts";
 import type { SessionEffect, SessionState } from "./session.ts";
 
 /** Node payloads up to this many bytes of JSON are inline; larger ones are blobs (Decision 1). */
@@ -29,6 +30,8 @@ export interface NewSession {
   readonly rootSession?: string;
   readonly depth?: number;
   readonly budget: BudgetSpec;
+  /** A child's carve from `parent` (7B Task 7), reserved in the transaction that records it. */
+  readonly carve?: Carve;
   readonly createdBy: Session["createdBy"];
   readonly title?: string;
   readonly providerRef?: string;
@@ -387,8 +390,6 @@ export const STORE_SQL: Readonly<Record<string, string>> = {
   overdueApprovals: "SELECT id, sessionId FROM approvals WHERE status = 'open' AND expiresAt <= ? ORDER BY expiresAt, id LIMIT ?",
   markReady: "UPDATE sessions SET readyAt = ? WHERE id = ? AND readyAt IS NULL",
   readyAt: "SELECT readyAt FROM sessions WHERE id = ?",
-  clearReserved: "UPDATE budgets SET reserved = 0 WHERE reserved != 0",
-  clearDailyReserved: "UPDATE budget_days SET reserved = 0 WHERE reserved != 0",
   answerApproval: "UPDATE approvals SET status = 'answered', decision = ?, by = ?, answeredAt = ? WHERE id = ? AND status = 'open'",
   consumeApproval: "UPDATE approvals SET consumedAt = ? WHERE id = ? AND status = 'answered' AND consumedAt IS NULL",
   outboxAdd: "INSERT INTO session_outbox (sessionId, effect, at) VALUES (?, ?, ?)",

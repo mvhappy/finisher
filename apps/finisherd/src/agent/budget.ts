@@ -210,10 +210,12 @@ export class Budget {
     return this.crossings();
   }
 
-  /** Raises a session limit by `by` (an approved `budget` approval); its 80 % notice may come again. */
+  /**
+   * Raises a session limit by `by` (an approved `budget` approval); its 80 % notice may come again.
+   * A child's raise reserves as much on its parent, or fails `BUDGET_EXCEEDED` there (`carve.ts`).
+   */
   raise(kind: BudgetKind, by: number): void {
-    const { limit } = this.ledger.read(this.sessionId, kind);
-    this.ledger.setLimit(this.sessionId, kind, (limit ?? 0) + by);
+    this.ledger.raise(this.sessionId, { [kind]: by });
     this.noticed.delete(kind);
   }
 

@@ -19,8 +19,8 @@
 // - **A child** (7B Decision 17, `parent` given): its role must be in the parent role's
 //   `spawn.roles` (`ROLE_UNKNOWN` otherwise, also with no role named); its mode at most the
 //   parent's and the role's ceiling (`MODE_INVALID`; the default is the role's, lowered to the
-//   parent's); its harness and preset the parent's unless given. Its budget is the role's,
-//   lowered by the request (Task 7 replaces this with a carve from the parent's).
+//   parent's); its harness and preset the parent's unless given. Its budget here is the role's,
+//   lowered by the request; the runtime carves it from the parent's (Task 7, `carve.ts`).
 import type { Harness, Mode, Principal, Session, Weights } from "@finisher/contracts";
 import { finError } from "../errors.ts";
 import type { Catalogue } from "./catalogue/catalogue.ts";
