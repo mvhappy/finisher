@@ -33,7 +33,10 @@ pub(crate) fn run(root: &Path, timeout: Duration) -> Option<Answer> {
         let mut g = pending();
         let map = g.get_or_insert_with(HashMap::new);
         match map.get(root) {
-            Some(p) => Arc::clone(p),
+            Some(p) => {
+                hooks::on_join(root);
+                Arc::clone(p)
+            }
             None => {
                 let p = Arc::new(Probe::default());
                 let mine = Arc::clone(&p);
@@ -44,6 +47,7 @@ pub(crate) fn run(root: &Path, timeout: Duration) -> Option<Answer> {
                 if spawned.is_err() {
                     return Some(Err("THREAD"));
                 }
+                hooks::on_spawn(root);
                 map.insert(root.to_path_buf(), Arc::clone(&p));
                 p
             }
@@ -86,7 +90,9 @@ fn measure(path: &Path, probe: &Arc<Probe>) {
 }
 
 /// Test hooks (feature `test-hooks`): hold a root's probe before it measures, and count the
-/// probes started per root. Without the feature they are inert.
+/// probes spawned and the calls that joined a pending one, per root. Both are counted by the
+/// calling thread, so a test reads them without waiting on a probe thread's scheduling.
+/// Without the feature they are inert.
 #[cfg(feature = "test-hooks")]
 pub mod hooks {
     use std::collections::HashMap;
@@ -97,6 +103,21 @@ pub mod hooks {
 
     static GATES: Mutex<Option<HashMap<PathBuf, Gate>>> = Mutex::new(None);
     static STARTED: Mutex<Option<HashMap<PathBuf, u64>>> = Mutex::new(None);
+    static JOINED: Mutex<Option<HashMap<PathBuf, u64>>> = Mutex::new(None);
+
+    fn bump(counts: &Mutex<Option<HashMap<PathBuf, u64>>>, root: &Path) {
+        *counts
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get_or_insert_with(HashMap::new)
+            .entry(root.to_path_buf())
+            .or_default() += 1;
+    }
+
+    fn count(counts: &Mutex<Option<HashMap<PathBuf, u64>>>, root: &Path) -> u64 {
+        let g = counts.lock().unwrap_or_else(PoisonError::into_inner);
+        g.as_ref().and_then(|m| m.get(root).copied()).unwrap_or(0)
+    }
 
     /// While held, probes of `root` block before measuring (a dead mount); dropping it
     /// releases them.
@@ -127,19 +148,25 @@ pub mod hooks {
         }
     }
 
-    /// Probes of `root` started so far.
+    /// Probes of `root` started (their threads spawned) so far.
     pub fn started(root: &Path) -> u64 {
-        let g = STARTED.lock().unwrap_or_else(PoisonError::into_inner);
-        g.as_ref().and_then(|m| m.get(root).copied()).unwrap_or(0)
+        count(&STARTED, root)
+    }
+
+    /// Calls that found a probe of `root` pending and waited on it, so far.
+    pub fn joined(root: &Path) -> u64 {
+        count(&JOINED, root)
+    }
+
+    pub(crate) fn on_spawn(root: &Path) {
+        bump(&STARTED, root);
+    }
+
+    pub(crate) fn on_join(root: &Path) {
+        bump(&JOINED, root);
     }
 
     pub(crate) fn on_probe(root: &Path) {
-        *STARTED
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .get_or_insert_with(HashMap::new)
-            .entry(root.to_path_buf())
-            .or_default() += 1;
         let gate = GATES
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
@@ -156,5 +183,7 @@ pub mod hooks {
 
 #[cfg(not(feature = "test-hooks"))]
 mod hooks {
+    pub(crate) fn on_spawn(_: &std::path::Path) {}
+    pub(crate) fn on_join(_: &std::path::Path) {}
     pub(crate) fn on_probe(_: &std::path::Path) {}
 }

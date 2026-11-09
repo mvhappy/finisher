@@ -244,24 +244,29 @@ fn a_stuck_root_probe_is_not_repeated() {
         assert_eq!(root_state(&root, &stored, short), RootState::Timeout);
     }
     assert_eq!(probe_hooks::started(&root), 1);
+    assert_eq!(probe_hooks::joined(&root), 4);
     // The mount answers: the pending probe's answer is everyone's, then the next call probes
-    // afresh.
-    drop(block);
+    // afresh. The waiter has joined the probe (the hook says so) before the mount is released,
+    // whatever the host's scheduling does meanwhile.
     let code = |s| match s {
         RootState::Unreachable { code } => code,
         s => panic!("{s:?}"),
     };
-    let long = Duration::from_secs(5);
-    assert_eq!(code(root_state(&root, &stored, long)), "NOT_FOUND");
-    assert_eq!(probe_hooks::started(&root), 1);
-    // The finished probe leaves the pending map just after it answers: until then a call
-    // still gets its answer. Yield between calls so a loaded host schedules that thread.
-    let mut n = 0;
-    while probe_hooks::started(&root) < 2 && n < 10_000 {
-        assert_eq!(code(root_state(&root, &stored, long)), "NOT_FOUND");
+    let waiter = {
+        let (root, stored) = (root.clone(), stored.clone());
+        std::thread::spawn(move || root_state(&root, &stored, Duration::from_secs(60)))
+    };
+    let deadline = std::time::Instant::now() + Duration::from_secs(60);
+    while probe_hooks::joined(&root) < 5 {
+        assert!(std::time::Instant::now() < deadline, "the waiter never joined");
         std::thread::yield_now();
-        n += 1;
     }
+    drop(block);
+    assert_eq!(code(waiter.join().unwrap()), "NOT_FOUND");
+    assert_eq!(probe_hooks::started(&root), 1);
+    // The finished probe left the pending map before it published its answer, so the call after
+    // the answer starts a probe of its own.
+    assert_eq!(code(root_state(&root, &stored, Duration::from_secs(60))), "NOT_FOUND");
     assert_eq!(probe_hooks::started(&root), 2);
 }
 
