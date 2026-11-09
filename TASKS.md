@@ -723,7 +723,7 @@ Spec: `docs/specs/2026-11-07-sub-project-8-plugins-design.md`. Plan for 8A: `doc
 - [ ] 8E: semantic search (exact scan, then `usearch`)
 - [ ] 8F: reframe
 - [ ] 8G: generation providers (OpenRouter, fal.ai)
-- [ ] 8H: media interfaces (codec backends, mattes, effects with pins, schema version 3)
+- [ ] 8H: media interfaces (codec backends, mattes, effects with pins, schema version 5: renumbered from 3 on 2026-11-09, v3 being stable keyframe ids and v4 6B-1 Task 11)
 
 ### Sub-project 8A: packages, registries and lifecycle
 

@@ -62,7 +62,7 @@ Sub-project 8 makes Finisher extensible without trusting what extends it, and sh
 | **8E** Semantic search | chunking, SigLIP2 embeddings, an exact-scan vector index (then `usearch`), transcript full-text, hybrid `library.search`, `fin search` | 8C, 8D, 5D | sub-project 11 (clip finder) |
 | **8F** Reframe | face and person detection, tracking, shot-aware smoothing, crop paths, `compose::reframe` | 8D, 6B, 6D | sub-project 11 |
 | **8G** Generation providers | the provider contract, catalogs, brokered egress bound to `ModelGateway` grants, paid-call safety, provenance, the first-party providers OpenRouter and fal.ai (owner decision 5, §9.4) | 8B, 7A (`SecretStore`, grants); 7B and agent §13 for agent budgets and approvals | sub-project 11 |
-| **8H** Media interfaces | codec backends as plugins, matte producers and the key matte, WGSL effects, transitions and LUT packs with `plugin.pin`/`unpin`/`repin` and pinned ParamSpecs, offline audio processors, schema version 3 (with matte assets, owner decision 3) | 8B, 6B, 6D, 6E | copyleft repo, after-v1 background removal |
+| **8H** Media interfaces | codec backends as plugins, matte producers and the key matte, WGSL effects, transitions and LUT packs with `plugin.pin`/`unpin`/`repin` and pinned ParamSpecs, offline audio processors, schema version 5 (with matte assets, owner decision 3) | 8B, 6B, 6D, 6E | copyleft repo, after-v1 background removal |
 
 **8A status (2026-11-08): built and merged into the integration branch. Its cross-platform validation (8A Task 15) is partly done and still owed on macOS and Windows 11 (§23.5).**
 
@@ -228,7 +228,7 @@ Rules, all implemented once in **`fin-shm`**, which `fin-worker` and the plugin 
 | `Project.plugins: BTreeMap<PluginId, PluginPin {version, sha256, effects: [{kind, params: [ParamSpec]}]}>` | 8H | the pack's ParamSpecs are **stored in project state at pin time**; lookup is built-ins ∪ pinned, so the same op log validates identically on every machine whether or not the pack is installed |
 | `ParamSpec.path`, `Scope::Effect.kind` as `Cow<'static, str>` | 8H | built-ins stay `Borrowed`; pinned specs are `Owned`; serialisation unchanged |
 | `AssetKind::Matte`, `Mask.matte` naming an asset | 8H / 6D (owner decision 3) | a new enum variant changes the serialised shape |
-| **`SCHEMA_VERSION` 2 → 3** | 8H (or 6D if it lands first) | one bump carries `Project.plugins` and `AssetKind::Matte` together: an upgrade step (`snapshot_v2`, `record_v2`, frozen, with goldens) adds the empty `plugins` map; newer projects are refused by older code per core §2.6 |
+| **`SCHEMA_VERSION` 4 → 5** | 8H (or 6D if it lands first) | one bump carries `Project.plugins` and `AssetKind::Matte` together: an upgrade step (`snapshot_v4`, `record_v4`, frozen, with goldens) adds the empty `plugins` map (owner decision 2026-11-09, "bump per change": v3 went to stable keyframe ids, v4 to 6B-1's `VideoInfo` display fields and `asset.reprobe`, so 8 takes v5); newer projects are refused by older code per core §2.6 |
 
 ---
 
@@ -684,7 +684,7 @@ A fake HTTPS provider API: estimates match the catalog; a crash after submit nev
 
 - **Contribution:** `matteProducers: [{id, subjects: [person|foreground|object|key], prompted, temporal, maxSide, resources}]`.
 - **Protocol:** `matte.run {asset, range, size, prompts?}` in a job; rgb8 frames in through an `in/` ring, gray8 alpha out through an `out/` ring, **one per source frame, in order**; the host encodes the luma video with sub-project 6's encoder at the source rate (media §11.3).
-- **Where mattes live** (owner decision 3): a matte a mask uses is a project asset of kind `matte` in `assets/` (write-once, synced), and `Mask.matte` names that asset, so export on another machine never depends on a cache or on a model reproducing its pixels. `AssetKind::Matte` is part of the `SCHEMA_VERSION` 3 bump (§3.9); project folders grow by the encoded matte.
+- **Where mattes live** (owner decision 3): a matte a mask uses is a project asset of kind `matte` in `assets/` (write-once, synced), and `Mask.matte` names that asset, so export on another machine never depends on a cache or on a model reproducing its pixels. `AssetKind::Matte` is part of the `SCHEMA_VERSION` 5 bump (§3.9; renumbered from 3 on 2026-11-09); project folders grow by the encoded matte.
 - **Reference producer:** `@finisher/key-matte` (Rust, no model): chroma and luma keying with spill and edge controls; the conformance fixture and a v1 green-screen feature.
 - **Conformance (`matte` profile):** frame count and order, value range, size, declared determinism, cancel within 2 s, crash recovery.
 - **After v1:** background removal from BiRefNet (MIT), MODNet (Apache-2.0), SAM2 (Apache-2.0) or MediaPipe (Apache-2.0); excluded: RVM (GPL-3.0) and RMBG-2.0 (non-commercial).
@@ -793,7 +793,7 @@ No plugin is refused for lack of a sandbox: a host with Landlock disabled runs p
 | SDKs | example plugins of each SDK pass their conformance profiles | 8B |
 | Analyzers | **A0** pure Rust stages bit-exact by hash on three OSes and wasm32; **A1** ONNX stages on fixtures: identical transcript text across OSes, word times within ±10 ms, embeddings cosine ≥ 0.999, boxes within 2 px; **A2** quality metrics on evaluation sets as trends, the speech gate as a merge gate | 8C–8F |
 | Builders | golden ops, inverses, inclusion in the 4B property generators | fin-core |
-| Pins | the same op log with pinned ParamSpecs validates identically with and without the pack installed; schema 2 → 3 upgrade goldens | 8H |
+| Pins | the same op log with pinned ParamSpecs validates identically with and without the pack installed; schema 4 → 5 upgrade goldens | 8H |
 
 **As built (8A).**
 - *Manifest and packages:* `fin-plugin-api` unit tests per rule family; `hostile_archive_corpus` (refused archives built byte by byte in code, plus entry, byte, manifest and corrupt-archive cases), `pack_is_reproducible`, `tree_hash_changes_on_any_byte_or_mode`.
@@ -936,7 +936,7 @@ Agent §8 defines `SandboxPolicy` and its use for agents and hooks, with a worke
 | 6 | Every host call is reach-checked against project, branch subtree and library | §3.6 |
 | 7 | Plugin rights are invoker ∩ grants; jobs a plugin starts are owned by the invoker | §3.7 |
 | 8 | Plugin command names are `plugin:<id>/<cmd>`; `Tx.via` is set only by the host | §3.8 |
-| 9 | One `SCHEMA_VERSION` bump (to 3) carries pinned plugins and matte assets | §3.9 |
+| 9 | One `SCHEMA_VERSION` bump (to 5, renumbered 2026-11-09) carries pinned plugins and matte assets | §3.9 |
 | 10 | A contribution kind is accepted only once a batch consumes it | §4.2 |
 | 11 | `gpu` is medium risk; `hooks:observe` with `net` is high | §4.3 |
 | 12 | Install is plan → approve by a person; nothing runs at install | §5.3 |
@@ -972,7 +972,7 @@ The owner answered revision 2's seven questions on 2026-11-07. Decisions 1 and 5
    - **no `SANDBOX_UNAVAILABLE` gating** for registry plugins: no plugin is refused for lack of a sandbox (§13); a host where Landlock is disabled runs plugins unconfined and shows the persistent warning `PLUGINS_UNCONFINED` (`server.status`, `fin status`) with a diagnostics event.
    *Consequence, accepted:* until 7C, a malicious or exploited plugin runs with the user's rights (arch §16's second threat with only Node's permission flags and the host's own rules in the way); the plugin escape suite (§16.1) gates 7C, not 8B.
 2. **Do plugins ever see secrets?** **Brokered** (as recommended): the host injects credentials from `ModelGateway` grant handles bound to (plugin, secret name, origins) into HTTPS requests to those origins only, and the plugin never sees a key (§9.3); a raw per-call value exists only behind `secrets` with `mode: raw`, high risk and audited per call.
-3. **Do mattes travel with the project?** **Yes, as project assets** (as recommended): `AssetKind::Matte` in `assets/`, named by `Mask.matte`, carried by the `SCHEMA_VERSION` 3 bump together with `Project.plugins` (§3.9, §10.3). Sub-project 6 (6D) builds mask edits on it.
+3. **Do mattes travel with the project?** **Yes, as project assets** (as recommended): `AssetKind::Matte` in `assets/`, named by `Mask.matte`, carried by the `SCHEMA_VERSION` 5 bump (renumbered from 3, 2026-11-09) together with `Project.plugins` (§3.9, §10.3). Sub-project 6 (6D) builds mask edits on it.
 4. **Which models may ship as defaults?** **The weight licence governs** (as recommended): MIT, Apache-2.0, BSD, CC0 or CC-BY weights, with **no acceptable-use restriction** and no other limit on use; training-data provenance is recorded and shown, and models whose authors warn that their training data is copyrighted or licensed are not defaults (§18.2). The v1 defaults are Parakeet, whisper turbo, wav2vec2, Silero VAD, YAMNet, SigLIP2, BlazeFace and YOLOX.
 5. **Which generation providers ship first-party in v1** (arch §26 question 8)? **OpenRouter and fal.ai** (the owner's choice, replacing revision 2's ElevenLabs and OpenAI images), as bundled Node plugins with brokered egress and curated catalogs (§9.4). OpenRouter's key is the one the user pastes for the built-in agent (agent §10); fal.ai needs a second pasted key. *Known v1 gaps:* dubbing and voice cloning, unless the curated catalogs cover them (to be confirmed against the providers' catalogues at 8G start); any modality neither covers.
 6. **What evaluation data may Finisher use?** As recommended: (a) **retire the generated TTS clips** from selection and gating, and re-run the rule selection and the gate on human-labelled clips from permissive speech (Common Voice CC0, LibriSpeech and MLS CC BY 4.0) labelled for Finisher (§8.3); (b) **the owner's footage is evaluation-only**, never committed and never trained on, under a written licence from the owner to the project recorded in the data card; (c) **MUSAN filtered per file** to public domain, CC0 and CC BY, the file list in the data card, the AGENTS.md rule read as applying to the files used (§8.3, §15.3).
