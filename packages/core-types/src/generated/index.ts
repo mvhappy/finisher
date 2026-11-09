@@ -7166,7 +7166,8 @@ export interface MergeReport {
   origins?: string[];
   /**
    * As [`HistoryResult::placements`], each with its copy's txId, plus the `conflict`
-   * placements of skipped candidates.
+   * placements of skipped candidates (a retry answers with the copies' stored ones only, as
+   * its `skipped` is empty).
    */
   placements?: Placement[];
   skipped: Conflict[];

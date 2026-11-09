@@ -10011,7 +10011,7 @@
         },
         "placements": {
           "default": [],
-          "description": "As [`HistoryResult::placements`], each with its copy's txId, plus the `conflict`\nplacements of skipped candidates.",
+          "description": "As [`HistoryResult::placements`], each with its copy's txId, plus the `conflict`\nplacements of skipped candidates (a retry answers with the copies' stored ones only, as\nits `skipped` is empty).",
           "items": {
             "$ref": "#/$defs/Placement"
           },
