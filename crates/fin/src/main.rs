@@ -320,6 +320,9 @@ fn run(args: Vec<OsString>) -> Result<Value, CoreError> {
         }
         Some(Cmd::Asset(AssetCmd::Move(a))) => edit(g, Edit::Asset(AssetEdit::Move(a))),
         Some(Cmd::Asset(AssetCmd::Remove(a))) => edit(g, Edit::Asset(AssetEdit::Remove(a))),
+        Some(Cmd::Asset(AssetCmd::Reprobe(a))) => {
+            commands::asset::reprobe(backend()?.as_ref(), g, &a)
+        }
         Some(Cmd::Image(c)) => edit(g, Edit::Image(c)),
         Some(Cmd::Graphic(c)) => edit(g, Edit::Graphic(c)),
         Some(Cmd::Item(c)) => edit(g, Edit::Item(c)),

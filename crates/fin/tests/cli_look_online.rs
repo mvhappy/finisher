@@ -1,7 +1,7 @@
 //! `fin look`, `fin media caps` and `fin media probe` against a real finisherd and its `fin-workers media` (plan
 //! 6A Task 13): three times of a project rendered to PNGs, what a frame left out in `skipped`
 //! (the fixture clip is H.264, which 6A cannot decode), the error exits, `--no-wait`, and the
-//! worker's capabilities, and the decode-level probe of an asset (6B-1 Task 11). Rendering needs a GPU adapter: `FIN_GPU=software` (lavapipe, WARP)
+//! worker's capabilities, the decode-level probe of an asset and `fin asset reprobe` (6B-1 Task 11). Rendering needs a GPU adapter: `FIN_GPU=software` (lavapipe, WARP)
 //! is set for the server; a machine with none skips the rendering checks unless
 //! `FIN_REQUIRE_GPU=1`.
 
@@ -188,6 +188,81 @@ fn media_probe_reports_the_decoder_and_commits_nothing() {
     );
 }
 
+/// `fin asset reprobe` (6B-1 Task 11): the server probes the unchanged file again and commits
+/// one `asset.reprobe` record with the display geometry; a portrait clip (a 90° `tkhd`
+/// matrix) is recorded 180x320, rotated 90. `--deep` decodes first: a codec this machine
+/// cannot decode is `CODEC_UNAVAILABLE` (exit 5) and commits nothing. A changed file is
+/// `ASSET_CHANGED` (exit 3).
+#[test]
+fn asset_reprobe_commits_the_display_geometry() {
+    let Some(server) = Server::start_with("asset_reprobe", Vec::new(), None) else {
+        return;
+    };
+    let (sd, root) = (&server.sd, &server.root);
+    ok(fin(
+        sd,
+        root,
+        &["project", "create", "film", "--name", "Film"],
+    ));
+    let dir = root.join("film");
+    let clip = dir.join("portrait.mp4");
+    fin_probe::fixtures::write_fixture_mp4_rotated(
+        &clip,
+        fin_probe::fixtures::FixtureOpts::default(),
+        fin_core::Rotation::R90,
+    );
+    ok(fin(sd, &dir, &["asset", "add", "portrait.mp4"]));
+    let rev = ok(fin(sd, &dir, &["status"]))["rev"].as_u64().unwrap();
+
+    let doc = ok(fin(sd, &dir, &["asset", "reprobe", "a1"]));
+    assert_eq!(doc["asset"], "a1", "{doc}");
+    assert_eq!(
+        (&doc["video"]["rotation"], &doc["video"]["display"]),
+        (&json!(90), &json!({ "width": 180, "height": 320 })),
+        "{doc}"
+    );
+    assert_eq!(
+        (&doc["video"]["width"], &doc["video"]["height"]),
+        (&json!(320), &json!(180))
+    );
+    assert_eq!(doc["rev"], rev + 1, "{doc}");
+    assert!(doc["txId"].is_string(), "{doc}");
+    assert_eq!(ok(fin(sd, &dir, &["status"]))["rev"], rev + 1);
+
+    // A dry run probes and commits nothing.
+    let dry = ok(fin(sd, &dir, &["asset", "reprobe", "a1", "--dry-run"]));
+    assert_eq!(dry["dryRun"], true, "{dry}");
+    assert_eq!(ok(fin(sd, &dir, &["status"]))["rev"], rev + 1);
+
+    // The fixture is H.264: decodable here or not, the answer is typed.
+    let deep = fin(sd, &dir, &["asset", "reprobe", "a1", "--deep"]);
+    if deep.code == 0 {
+        assert_eq!(deep.json["deep"]["decodable"], true, "{}", deep.stdout);
+        assert_eq!(ok(fin(sd, &dir, &["status"]))["rev"], rev + 2);
+    } else {
+        assert_error(&deep, 5, "CODEC_UNAVAILABLE");
+        assert_eq!(
+            deep.json["error"]["details"]["asset"], "a1",
+            "{}",
+            deep.stdout
+        );
+        assert_eq!(ok(fin(sd, &dir, &["status"]))["rev"], rev + 1);
+    }
+
+    assert_error(
+        &fin(sd, &dir, &["asset", "reprobe", "a9"]),
+        3,
+        "ASSET_NOT_FOUND",
+    );
+    // Another file at the asset's path: a relink, not a reprobe.
+    media(&clip, 3);
+    assert_error(
+        &fin(sd, &dir, &["asset", "reprobe", "a1"]),
+        3,
+        "ASSET_CHANGED",
+    );
+}
+
 #[test]
 fn look_and_caps_are_unavailable_offline() {
     let snapshot = json!({ "rev": 1, "project": fin_core::new_project("p".into(), "P".into(), "30".parse().unwrap()).unwrap() });
@@ -196,6 +271,8 @@ fn look_and_caps_are_unavailable_offline() {
     let r = support::offline(&snapshot, &["media", "caps"]);
     assert_error(&r, 5, "SERVER_UNAVAILABLE");
     let r = support::offline(&snapshot, &["media", "probe", "a1"]);
+    assert_error(&r, 5, "SERVER_UNAVAILABLE");
+    let r = support::offline(&snapshot, &["asset", "reprobe", "a1"]);
     assert_error(&r, 5, "SERVER_UNAVAILABLE");
 }
 

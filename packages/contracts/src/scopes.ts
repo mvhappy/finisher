@@ -289,6 +289,13 @@ export const RPC_SCOPES: { readonly [T in FinRpcTag]: RuleOf<T> } = {
   "media.cache.gc": { scopes: ["settings.admin"] },
   // Plan 6B-1 Task 11: reads the project and submits a job; commits nothing.
   "media.probeDeep": { scopes: ["project.read", "jobs.submit"], resolve: BRANCH },
+  // 6B-1 Task 11: a write of the branch (one `asset.reprobe` record); `deep` also runs a job.
+  "asset.reprobe": {
+    scopes: ["project.write"],
+    resolve: BRANCH,
+    writes: ["branch"],
+    escalate: (p) => (p.deep === true ? (["jobs.submit"] as const) : []),
+  },
   // The job engine (5C-2, spec §6.7). None writes through the store's guard (no `writes`); none of
   // the job scopes is human-only, but a kind's own scopes join `jobs.submit` and may be (then the
   // confirmation applies by default). Ownership and reach are the handler's (`jobs/access.ts`).

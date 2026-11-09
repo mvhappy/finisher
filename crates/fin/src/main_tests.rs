@@ -69,6 +69,7 @@ fn every_registry_command_parses() {
         "bin remove b2",
         "asset move a1 --bin b1",
         "asset remove a1",
+        "asset reprobe a1 --deep",
         "param set c1 opacity 50%",
         "keyframe set c1 opacity --at 1s 0.5 --interp easeOut",
         "keyframe remove c1 opacity --at 1s",

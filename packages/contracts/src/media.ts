@@ -73,6 +73,29 @@ export const MediaProbeDeepPayload = Schema.Struct({
 });
 /** The generated `ProbeDeepResult`: `{asset, fingerprint, codec, decodable, backend?, class?, hw?, hdr?, hdrSource?, firstFrame?, failure?}`. */
 export const MediaProbeDeepSuccess = Schema.Unknown;
+/**
+ * 6B-1 Task 11: `asset.reprobe` probes a `media` asset's file again and commits one
+ * `asset.reprobe` op (schema 4) with what it found: `video` (display, rotation and pixel aspect
+ * included) and `audio`. `deep`: run `media.probeDeep` first and refuse an asset this machine
+ * cannot decode (`CODEC_UNAVAILABLE`). A write like the history writes: `txId` is the
+ * idempotency key, `author` the record's, `argsHash` stored; `dryRun` probes and commits nothing.
+ */
+export const AssetReprobePayload = Schema.Struct({
+  projectId: Schema.String,
+  asset: Schema.String,
+  branch: Schema.optional(Schema.String),
+  deep: Schema.optional(Schema.Boolean),
+  txId: Schema.String,
+  author: Schema.String,
+  dryRun: Schema.optional(Schema.Boolean),
+  argsHash: Schema.optional(Schema.String),
+});
+/**
+ * `{asset, video?, audio?, deep?, rev?, txId?, dryRun?}`: the streams committed (fin-core's
+ * `VideoInfo` and `AudioInfo`), the `media.probeDeep` answer with `deep`, and the record's `rev`
+ * and `txId` (none for a dry run).
+ */
+export const AssetReprobeSuccess = Schema.Unknown;
 /** fin-core's `FramePlan` / `AudioPlan` (the generated types). */
 export const FramePlanSchema = Schema.Unknown;
 export const AudioPlanSchema = Schema.Unknown;

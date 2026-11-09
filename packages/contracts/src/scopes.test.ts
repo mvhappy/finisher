@@ -166,6 +166,7 @@ test("writes_required_on_writing_rules: exactly the RPCs whose handlers write th
   // The handlers that pass a write guard to the store (`meta(options)` in finisherd's handlers).
   expect([...WRITE_RPCS].sort()).toEqual(
     [
+      "asset.reprobe",
       "branch.create",
       "branch.set",
       "history.checkpoint",

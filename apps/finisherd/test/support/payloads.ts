@@ -61,6 +61,7 @@ export const SAMPLE_PAYLOADS: { readonly [T in FinRpcTag]: Record<string, unknow
   "media.cache.status": {},
   "media.cache.gc": {},
   "media.probeDeep": { projectId: P, asset: "a1" },
+  "asset.reprobe": { ...W, asset: "a1", deep: true },
   "jobs.submit": { kind: "test.echo", params: { value: 1 } },
   "jobs.get": { job: "01dddddddddddddddddddddddd" },
   "jobs.list": {},

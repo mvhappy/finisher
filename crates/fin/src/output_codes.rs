@@ -429,6 +429,9 @@ pub(super) const UNAVAILABLE_CODES: &[&str] = &[
     "GPU_UNAVAILABLE",
     "GPU_DEVICE_LOST",
     "GPU_OUT_OF_MEMORY",
+    // No decoder for an asset's codec, profile or bit depth on this machine (spec §17;
+    // `fin asset reprobe --deep`, 6B-1 Task 11): `details.codec`, `failure`.
+    "CODEC_UNAVAILABLE",
     // An encoder stopped producing output twice in one job, or with no other encoder left
     // (6B-1 plan Decision 20): `details.backend`, `details.adapter` (numeric ids or null).
     "ENCODER_HUNG",

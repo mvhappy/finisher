@@ -1036,6 +1036,28 @@
     },
     {
       "argKinds": {},
+      "group": "asset",
+      "identity": [
+        "projectId",
+        "branch",
+        "asset"
+      ],
+      "name": "asset.reprobe",
+      "rpcs": [
+        {
+          "method": "asset.reprobe"
+        },
+        {
+          "match": {
+            "tx.ops.*.op": "asset.reprobe"
+          },
+          "method": "tx.commit"
+        }
+      ],
+      "write": true
+    },
+    {
+      "argKinds": {},
       "group": "param",
       "identity": [
         "projectId",

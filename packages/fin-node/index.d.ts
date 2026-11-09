@@ -455,10 +455,11 @@ export declare const testHooks:
       /** How many stats of library root `root` have started. */
       libraryProbeStarted(root: string): number;
       /** Writes a small `png`/`jpeg`/`webp` (64x48), `svg` (640x360), `dotlottie`, `cube`
-       * (4³), `wav` (1 s, 48 kHz stereo; `wav:<seconds>`, 1–600, for longer) or `m4a` (2 s,
-       * 48 kHz stereo) fixture. */
+       * (4³), `wav` (1 s, 48 kHz stereo; `wav:<seconds>`, 1–600, for longer), `m4a` (2 s,
+       * 48 kHz stereo) or `mp4-r90` (a portrait clip: 320x180 coded, a 90° `tkhd` matrix)
+       * fixture. */
       writeFixture(
-        kind: "png" | "jpeg" | "webp" | "svg" | "dotlottie" | "cube" | "wav" | `wav:${number}` | "m4a",
+        kind: "png" | "jpeg" | "webp" | "svg" | "dotlottie" | "cube" | "wav" | `wav:${number}` | "m4a" | "mp4-r90",
         path: string,
       ): void;
       /** Packs an unpacked plugin into a `.finpkg`; returns the archive's SHA-256. */

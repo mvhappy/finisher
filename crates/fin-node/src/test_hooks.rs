@@ -191,8 +191,8 @@ pub fn write_fixture_mp4_for_test(
 
 /// Writes a small fixture of `kind` to `path`: `png`, `jpeg` and `webp` (64x48), `svg`
 /// (640x360), `dotlottie` (the fixtures' sample template), `cube` (an identity 4³ LUT), `wav`
-/// (1 s of 48 kHz stereo PCM; `wav:<seconds>` for longer) or `m4a` (2 s of 48 kHz stereo AAC,
-/// no video).
+/// (1 s of 48 kHz stereo PCM; `wav:<seconds>` for longer), `m4a` (2 s of 48 kHz stereo AAC,
+/// no video) or `mp4-r90` (a portrait clip: 320x180 coded, rotated 90°).
 #[napi(catch_unwind)]
 pub fn write_fixture_for_test(kind: String, path: String) -> Result<()> {
     let path = Path::new(&path);
@@ -213,6 +213,12 @@ pub fn write_fixture_for_test(kind: String, path: String) -> Result<()> {
                 "dotlottie" => fixtures::write_dotlottie(path, &fixtures::sample_lottie(), true),
                 "cube" => fixtures::write_cube(path, 4),
                 "wav" => fixtures::write_wav(path, 48_000, 2, 48_000),
+                // A portrait phone clip: 2 s of 320x180 at 25 fps, a 90° `tkhd` matrix.
+                "mp4-r90" => fixtures::write_fixture_mp4_rotated(
+                    path,
+                    FixtureOpts::default(),
+                    fin_media::Rotation::R90,
+                ),
                 "m4a" => fixtures::write_m4a(
                     path,
                     FixtureOpts {

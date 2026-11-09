@@ -53,6 +53,7 @@ test("the group exposes exactly the protocol 2 RPC tags", () => {
       "agent.session.wait",
       "agent.watch",
       "asset.probe",
+      "asset.reprobe",
       "auth.audit.list",
       "auth.audit.purge",
       "auth.credential.list",

@@ -97,6 +97,21 @@ pub const EDIT_ROWS: &[Row] = &[
     row!("bin.remove", op!("bin.remove"), TX),
     row!("asset.move", op!("asset.move"), TX),
     row!("asset.remove", op!("asset.remove"), TX),
+    // The server probes and commits the op itself; a client may also send it in a tx.
+    row!(
+        "asset.reprobe",
+        &[
+            RpcUse {
+                method: "asset.reprobe",
+                matches: &[]
+            },
+            RpcUse {
+                method: "tx.commit",
+                matches: &[(OP, Match::Eq("asset.reprobe"))]
+            },
+        ],
+        &["projectId", "branch", "asset"]
+    ),
     row!("param.set", op!("param.set"), TX),
     row!("keyframe.set", op!("keyframe.set"), TX),
     row!("keyframe.remove", op!("keyframe.remove"), TX),
