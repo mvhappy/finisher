@@ -4,6 +4,7 @@
 // check the credential (L1); a revocation survives a busy store (L2); an ended credential is
 // refused by name after the server proved itself (L4); the owner's purge keeps its own trace.
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync } from "node:fs";
+import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Credential, CredentialFile, FinError } from "@finisher/contracts";
@@ -12,7 +13,7 @@ import { Effect, Exit, Fiber, Scope } from "effect";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { Credentials } from "../src/auth/credentials.ts";
 import { b64u, canonicalEndpoint, helloProof, proveMac, sameMac } from "../src/auth/crypto.ts";
-import { excludeFromBackups } from "../src/auth/keys.ts";
+import { BACKUP_EXCLUDE_HEX, excludeFromBackups } from "../src/auth/keys.ts";
 import { revokeCredential, sweepExpired } from "../src/auth/revoke.ts";
 import { Tickets } from "../src/auth/tickets.ts";
 import { ConnectionRegistry } from "../src/connections.ts";
@@ -184,11 +185,23 @@ describe("M3: credential.master", () => {
     const calls: Array<[string, ReadonlyArray<string>]> = [];
     const run = (status: number | null) => (c: string, a: ReadonlyArray<string>) => (calls.push([c, a]), status);
     expect(excludeFromBackups("/sd/auth", "darwin", run(0))).toBe(true);
-    expect(calls).toEqual([["/usr/bin/tmutil", ["addexclusion", "/sd/auth"]]]);
+    expect(calls).toEqual([["/usr/bin/xattr", ["-wx", "com.apple.metadata:com_apple_backup_excludeItem", BACKUP_EXCLUDE_HEX, "/sd/auth"]]]);
     expect(excludeFromBackups("/sd/auth", "darwin", run(1))).toBe(false);
     expect(excludeFromBackups("/sd/auth", "linux", run(0))).toBe(false);
     expect(excludeFromBackups("/sd/auth", "win32", run(0))).toBe(false);
     expect(calls).toHaveLength(2);
+  });
+
+  test("the real exclusion is quick and Time Machine reads it as excluded", { skip: process.platform !== "darwin" }, () => {
+    // `tmutil addexclusion` takes 11 s on some hosts (it waits on backupd), and the start waited
+    // for it; the sticky exclusion is the attribute it writes, so the start writes that itself.
+    const dir = join(tmp, "auth");
+    mkdirSync(dir);
+    const t0 = Date.now();
+    expect(excludeFromBackups(dir)).toBe(true);
+    expect(Date.now() - t0).toBeLessThan(2000);
+    const check = spawnSync("/usr/bin/tmutil", ["isexcluded", dir], { encoding: "utf8" });
+    expect(check.stdout).toMatch(/^\[Excluded\]/);
   });
 
   test("auth rotate-master needs a terminal, ends every credential, and old files never prove again", { timeout: 30_000 }, async () => {
