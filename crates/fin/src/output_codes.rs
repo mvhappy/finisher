@@ -462,6 +462,9 @@ pub(super) const UNAVAILABLE_CODES: &[&str] = &[
     "PLUGIN_RUNTIME_UNAVAILABLE",
     // A code plugin stopped after three crashes in ten minutes (sp8b Tasks 4, 5).
     "PLUGIN_CRASH_LOOP",
+    // A plugin call from a process whose authority key was retired by a policy generation
+    // change (sp8b Task 7, spec §3.3): run the command again, it starts under the new key.
+    "PLUGIN_AUTHORITY_RETIRED",
     "TOO_MANY_PLANS",
     "TOO_MANY_SUGGESTIONS",
     // Libraries (5D Decision 51): a library offline or paused, a root that cannot be read, a

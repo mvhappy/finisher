@@ -251,6 +251,23 @@ export declare class FontManager {
  */
 export declare function validateManifest(dir: string, source?: "registry" | "bundled" | "dev"): Promise<string>;
 
+/**
+ * A plugin host call's params decoded by its `fin-plugin-api` type (unknown fields refused):
+ * `{ok: true, params}` (canonical), `{ok: false, reserved}` (the batch a later method arrives
+ * in), `{ok: false, unknown: true}` or `{ok: false, error}` (sp8b Task 7).
+ */
+export declare function decodePluginCall(
+  method: string,
+  params: unknown,
+): { ok: true; params: unknown } | { ok: false; reserved: string } | { ok: false; unknown: true } | { ok: false; error: string };
+
+/**
+ * `fin view`'s screenplay of `projectJson` (a snapshot's project) without font file states:
+ * every timeline, limited to `range` (`2s..5s`), within `budget` tokens. Throws
+ * `INVALID_RANGE`/`INVALID_TIME` for a bad range.
+ */
+export declare function pluginProjectView(projectJson: string, range?: string, budget?: number): { lines: string[]; elided: unknown[]; tokens: number };
+
 /** A held exclusive file lock; the descriptor stays open until `release()` or process exit. */
 export declare class ServerLock {
   private constructor();

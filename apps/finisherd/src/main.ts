@@ -53,6 +53,7 @@ import { CatalogsTag, layerCatalogs } from "./library/catalog/client.ts";
 import { LibraryServiceTag, librariesHolding, libraryWiring } from "./library/layer.ts";
 import { layerPlugins } from "./plugins/registries.ts";
 import { makePluginHost } from "./plugins/host/processes.ts";
+import { pluginCallDeps } from "./plugins/host/serve.ts";
 import { PluginTables } from "./plugins/tables.ts";
 import { layerProjectRegistry, ProjectRegistry, type RegistryOptions } from "./projects.ts";
 import { registerMediaKinds } from "./jobs/kinds/media.look.ts";
@@ -190,7 +191,7 @@ export const serve = ({
       const projects = Context.get(registryContext, ProjectRegistry);
       // The code plugins' processes (sp8b Tasks 4, 5): the `plugin` family is registered with
       // the engine's other families (a restart reconciles jobs against them), then bound to it.
-      const pluginHost = makePluginHost({ serverData: realpathSync(serverData), control: controlStore, tables: new PluginTables(controlStore), audit: Context.get(control, AuditTag) });
+      const pluginHost = makePluginHost({ serverData: realpathSync(serverData), control: controlStore, tables: new PluginTables(controlStore), audit: Context.get(control, AuditTag), log: (l, m) => logSink(l === "warning" || l === "error" ? "warning" : "debug", m) });
       const register = (r: Parameters<typeof libraries.register>[0]) => {
         pluginHost.register(r);
         registerMediaKinds(r, { serverData, projects, libraryRoots: () => libraryRoots() });
@@ -227,15 +228,7 @@ export const serve = ({
         onAllow: (allow) => {
           allowPipe = allow;
         },
-        onRefused: (r) =>
-          audit.append({
-            kind: "auth.fail",
-            principal: { kind: "anonymous", id: "" },
-            credentialKind: "pipe",
-            outcome: "failed",
-            code: "UNAUTHENTICATED",
-            details: { reason: r.reason, transport: "pipe", peer: { pid: r.pid, ...(r.sid == null ? {} : { sid: r.sid }) } },
-          }),
+        onRefused: refusalAudits(audit).pipe,
       });
       // The WebSocket (Decision 24): a ticket in `Sec-WebSocket-Protocol`, Host and Origin checked first.
       let wsPort = 0;
@@ -389,6 +382,8 @@ export const serve = ({
       for (const w of sandboxWarnings(sandbox)) yield* Effect.logWarning(`finisherd: ${w.code} (${String(w.details.profile)}): ${w.message}`);
       // The outcome tracker (Task 11) emits 5E's `review.verdict` into this journal once the kind exists.
       const lineage = new BranchLineage();
+      // Plugin host calls (sp8b Task 7) read live invokers, session branch reach and snapshots.
+      pluginHost.serve(pluginCallDeps({ credentials, devices, sessions: agentStore, lineage, projects }));
       const outcomes = new OutcomeTracker({ store: agentStore, lineage, clock: agentClock.now, verdicts: journalVerdicts(diagnostics.journal) });
       // Its journal records metadata to the diagnostics journal and content to the trace store (D34).
       const agentJournal = new AgentJournal({

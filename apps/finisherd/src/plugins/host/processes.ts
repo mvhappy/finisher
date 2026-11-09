@@ -30,8 +30,11 @@ import { makeCrashLoop } from "./crash-loop.ts";
 import { PLUGIN_FAMILY, registerPluginFamily } from "./family.ts";
 import { type Authority, type AuthorityGenerations, authorityOfWarmKey, classSlug, jobAuthority, removeClassAuthData, storedGenerations, sweepAuthData } from "./authority.ts";
 import { pluginDataFor } from "./family.ts";
+import { type CallDeps, makeHostCalls, PAGE_BYTES } from "./calls.ts";
 import { keyTmpDir, pluginWarmKey, principalClass, sessionRoots } from "./keys.ts";
-import { storeDirOf } from "./program.ts";
+import { makePluginLog, type ServerLog } from "./log.ts";
+import { splitVia, storeDirOf } from "./program.ts";
+import type { PluginContext } from "@finisher/core-types";
 
 /** The host API a code plugin must accept to be enabled (sp8b Decision 14). */
 export const PLUGIN_HOST_API = "1.1.0";
@@ -65,7 +68,12 @@ export interface PluginHostDeps {
   readonly clock?: () => number;
   /** How long a bump's drain waits (tests); `AUTHORITY_DRAIN_MS` by default. */
   readonly drainMs?: number;
+  /** The server log plugins' `log` calls and stderr go to (Task 7); stderr of the host otherwise. */
+  readonly log?: ServerLog;
 }
+
+/** 5C's envelope line (Decision 5). */
+const MESSAGE_BYTES = 1 << 20;
 
 /** How long a retired authority's temp and data wait for its last job (a command's 60 s ceiling, plus grace). */
 export const AUTHORITY_DRAIN_MS = 65_000;
@@ -82,6 +90,20 @@ export function makePluginHost(d: PluginHostDeps) {
   const clock = d.clock ?? Date.now;
   const rootSessionOf = sessionRoots(d.control);
   const generations: AuthorityGenerations = storedGenerations(d.control);
+  /** Cold processes' keys and plugins by job (their calls and stderr), until the job ends. */
+  const cold = new Map<string, { readonly key: string; readonly plugin: string }>();
+  let callDeps: CallDeps | undefined;
+  const warmKeyOf = (job: JobView): string => pluginWarmKey(job, rootSessionOf, generations);
+  const pluginLog = makePluginLog({
+    write: d.log ?? ((level, message) => void process.stderr.write(`finisherd: ${level}: ${message}\n`)),
+    clock,
+    bundled: (id) => d.tables.installedFull(id)?.source === "bundled",
+  });
+  const calls = makeHostCalls({ deps: () => callDeps, keyNow: warmKeyOf, coldKey: (job) => cold.get(job)?.key, log: pluginLog });
+  const onStderr = (line: string, from: { readonly job?: string; readonly key?: string }): void => {
+    const plugin = from.key !== undefined ? (keyPlugin(from.key).split("|")[0] ?? "") : (cold.get(from.job ?? "")?.plugin ?? "");
+    pluginLog.stderr(from.key ?? `job:${from.job ?? ""}`, plugin, line);
+  };
 
   const matcher = (id: string, version?: string) => (plugin: string) => (version === undefined ? plugin.startsWith(`${id}@`) : plugin === `${id}@${version}`);
 
@@ -241,7 +263,18 @@ export function makePluginHost(d: PluginHostDeps) {
   return {
     /** Registers the `plugin` family (before the engine starts) and empties the keys' temp. */
     register(r: KindRegistry): void {
-      registerPluginFamily(r, { serverData: d.serverData, installed: (id) => d.tables.installedFull(id), rootSessionOf, generations, onKey: (k) => keys.add(k) });
+      registerPluginFamily(r, {
+        serverData: d.serverData,
+        installed: (id) => d.tables.installedFull(id),
+        rootSessionOf,
+        generations,
+        onKey: (k, c) => {
+          keys.add(k);
+          if (c !== undefined) cold.set(c.job, { key: k, plugin: c.plugin });
+        },
+        onCall: calls.onCall,
+        onStderr,
+      });
       sweepAuthData(d.serverData, generations);
     },
     /**
@@ -271,13 +304,41 @@ export function makePluginHost(d: PluginHostDeps) {
     /** The authority `job` runs under now. */
     authorityOf: (job: JobView): Authority | undefined => jobAuthority(job, principalClass(job.owner, rootSessionOf), generations),
     /** `job`'s warm key now: a worker whose key differs serves a retired authority (Task 7). */
-    warmKeyOf: (job: JobView): string => pluginWarmKey(job, rootSessionOf, generations),
+    warmKeyOf,
+    /** Serves host calls with `deps` (once the server's credentials, sessions and projects exist). */
+    serve(deps: CallDeps): void {
+      callDeps = deps;
+    },
+    /** The host calls (tests). */
+    calls,
+    /**
+     * `start.extra`'s `PluginContext` for `job` (Task 9's kind puts it in): the plugin, its
+     * grants, its package, the caller's `pluginData` (with `fs pluginData`) and the key's temp.
+     */
+    contextOf(job: JobView, opts: { readonly timeoutS: number; readonly locale?: string }): PluginContext {
+      const { id, version } = splitVia(job.via?.plugin ?? "");
+      const row = d.tables.installedFull(id);
+      if (row === undefined || row.version !== version) throw finError("PLUGIN_NOT_FOUND", `${id}@${version} is not installed`, { plugin: id, version });
+      const data = pluginDataFor({ serverData: d.serverData, rootSessionOf, generations }, job);
+      return {
+        hostApi: PLUGIN_HOST_API,
+        plugin: { id, version },
+        grants: isJobRights(job.rights) ? (job.rights.grants as PluginContext["grants"]) : [],
+        dirs: { plugin: storeDirOf(d.serverData, row), ...(data === undefined ? {} : { data: data.path }), tmp: keyTmpDir(d.serverData, warmKeyOf(job)) },
+        locale: opts.locale ?? "en",
+        limits: { timeoutS: opts.timeoutS, messageBytes: MESSAGE_BYTES, pageBytes: PAGE_BYTES },
+      };
+    },
     /** `PluginContext.dirs.data` of `job` (Task 7), created on first use; only with `fs pluginData`. */
     dataDirOf: (job: JobView) => pluginDataFor({ serverData: d.serverData, rootSessionOf, generations }, job),
     /** Binds the started engine: stops go to it, its job ends feed the crash loop. */
     bind(e: JobEngine): void {
       engine = e;
-      e.onDone((job) => crashLoop.onDone(job));
+      e.onDone((job) => {
+        calls.release(job.id);
+        cold.delete(job.id);
+        crashLoop.onDone(job);
+      });
       // A generation bump the store could not record must not be handed out again after a
       // restart: a job still queued under it raises its class back to it.
       for (let cursor: string | undefined, page = 0; page < 100; page++) {

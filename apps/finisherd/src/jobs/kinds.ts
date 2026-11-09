@@ -138,6 +138,8 @@ export interface CallCtx {
   readonly owner: JobOwner;
   readonly via?: JobVia;
   readonly rights?: JobRights;
+  /** The warm worker's key (`FamilySpec.warmKey`, `<project>/`-prefixed when confined); absent for a cold process. */
+  readonly workerKey?: string;
 }
 
 /**
@@ -178,6 +180,11 @@ export interface FamilySpec {
   readonly warmReads?: (job: JobView) => ReadonlyArray<string>;
   /** Decision 5a. */
   readonly onCall?: OnCall;
+  /**
+   * The family's processes' stderr lines (sp8b Task 7: plugins scrub and cap theirs); the
+   * engine's debug log otherwise. `job`: the job a line came during, `key`: a warm worker's.
+   */
+  readonly onStderr?: (line: string, from: { readonly job?: string; readonly key?: string }) => void;
   readonly diagKinds?: ReadonlyArray<string>;
   readonly pluginId?: string;
   /**
@@ -201,6 +208,22 @@ export interface HelperProgram {
   resolve(job: JobView): ProgramSpec;
   readonly onCall?: OnCall;
   readonly pluginId?: string;
+}
+
+/** A process's stderr line: the family's `onStderr`, else the debug log under `tag`. */
+export function familyStderr(
+  f: FamilySpec,
+  line: string,
+  from: { readonly job?: string; readonly key?: string },
+  log: (level: "debug" | "error", message: string) => void,
+  tag: string,
+): void {
+  if (f.onStderr === undefined) return log("debug", `${tag} ${line}`);
+  try {
+    f.onStderr(line, from);
+  } catch (e) {
+    log("error", `${tag} the stderr hook failed: ${e instanceof Error ? e.message : String(e)}`);
+  }
 }
 
 export interface KindRegistry {

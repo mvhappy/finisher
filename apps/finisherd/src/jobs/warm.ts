@@ -30,7 +30,7 @@ import type { Engine } from "./engine.ts";
 import { removeJobDir } from "./files.ts";
 import { mkdirSafe } from "./fsafe.ts";
 import { exitVerdict, type ProcEvent } from "./host.ts";
-import { exitPluginId, type FamilySpec, type KindSpec, type ProgramSpec, programFor, projectOfJob } from "./kinds.ts";
+import { exitPluginId, familyStderr, type FamilySpec, type KindSpec, type ProgramSpec, programFor, projectOfJob } from "./kinds.ts";
 import type { RunControl } from "./run-control.ts";
 import { type AttemptOutcome, runAttempt } from "./runner.ts";
 import { MAX_OVERRUN_SLOTS, type SchedState, type WarmWorkerView } from "./schedule.ts";
@@ -282,6 +282,7 @@ export class WarmPools {
     try {
       const running = runWarmAttempt(this.#e.env, row, kind, family, params, control, {
         proc: w.proc,
+        key: w.key,
         pid: w.pid,
         memoryBytes: w.memoryBytes,
         reused: w.served > 0,
@@ -448,7 +449,7 @@ export class WarmPools {
       return this.#gone(w, ev.info);
     }
     if (w.on !== undefined) return w.on(ev);
-    if (ev.type === "stderr") this.#e.d.log("debug", `[warm ${w.family.family}] ${ev.line}`);
+    if (ev.type === "stderr") familyStderr(w.family, ev.line, { key: w.key }, this.#e.d.log, `[warm ${w.family.family}]`);
     else if (ev.msg.t !== "alive" && ev.msg.t !== "ready") this.#e.d.log("debug", `warm ${w.family.family} worker: ${ev.msg.t} while idle is ignored`);
   }
 
