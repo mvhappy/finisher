@@ -1,5 +1,5 @@
 // A job engine over a temp server data and the test-hooks `fin-workers` (5C-1 plan Task 9a).
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { FinError, JobView } from "@finisher/contracts";
@@ -59,7 +59,7 @@ export async function testEngine(
   opts: JobEngineOptions & { serverData?: string; keepData?: boolean; wrapSink?: (s: MemorySink) => JobEventSink } = {},
 ): Promise<TestEngine> {
   const own = opts.serverData === undefined;
-  const serverData = opts.serverData ?? mkdtempSync(join(tmpdir(), "fin-jobs-"));
+  const serverData = opts.serverData ?? realpathSync(mkdtempSync(join(tmpdir(), "fin-jobs-"))); // resolved, as finisherd resolves its own (macOS: `/var` is a link)
   const control = openControlStore(serverData, { serverId: "sid-test", checkpoint: false });
   const sink = memorySink();
   const { serverData: _s, keepData: _k, wrapSink, ...engineOpts } = opts;

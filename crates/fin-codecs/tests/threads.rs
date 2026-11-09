@@ -7,7 +7,7 @@ use std::io::Cursor;
 use std::sync::Arc;
 
 use fin_codecs::fixture::{ClipSpec, pattern_clip};
-use fin_codecs::{DecodeThreads, DecodedFrame, FrameReader, capabilities, open_decoder_with};
+use fin_codecs::{DecodeThreads, DecodedFrame, FrameReader};
 use fin_container::{Demuxer, Limits};
 use fin_media::Size;
 use fin_media::testing::read_id_y;
@@ -31,7 +31,7 @@ fn reader(file: &[u8], threads: DecodeThreads) -> FrameReader<Cursor<Vec<u8>>> {
     FrameReader::open_with(
         Cursor::new(file.to_vec()),
         &Limits::default(),
-        &capabilities(),
+        &fin_codecs::ProbeResult::software_only(),
         threads,
     )
     .unwrap()
@@ -117,7 +117,14 @@ fn the_end_of_the_stream_drains_every_frame_in_flight() {
         threads: 8,
         frame_delay: 8,
     };
-    let mut dec = open_decoder_with(&track, &capabilities(), t).unwrap();
+    let mut dec = fin_codecs::open_decoder(
+        &fin_codecs::DecoderConfig {
+            threads: t,
+            ..fin_codecs::DecoderConfig::new(&track)
+        },
+        &fin_codecs::ProbeResult::software_only(),
+    )
+    .unwrap();
     let (mut out, mut buf) = (Vec::new(), Vec::new());
     for n in 0..track.sample_count() {
         d.read_sample(track.track, n as u32, &mut buf).unwrap();
@@ -160,7 +167,14 @@ fn frames_come_out_while_packets_keep_coming() {
     let track = d.video().unwrap().clone();
     for t in THREADED {
         let delay = fin_codecs::av1::Dav1dDecoder::frame_delay(t) as usize;
-        let mut dec = open_decoder_with(&track, &capabilities(), t).unwrap();
+        let mut dec = fin_codecs::open_decoder(
+            &fin_codecs::DecoderConfig {
+                threads: t,
+                ..fin_codecs::DecoderConfig::new(&track)
+            },
+            &fin_codecs::ProbeResult::software_only(),
+        )
+        .unwrap();
         let (mut out, mut buf) = (0usize, Vec::new());
         for n in 0..track.sample_count() {
             d.read_sample(track.track, n as u32, &mut buf).unwrap();

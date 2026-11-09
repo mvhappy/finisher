@@ -5,7 +5,7 @@
 // folder, writes only in the workspace. Each denial has an unsandboxed control (the profile not
 // ready on this OS: the same processes, started directly). `FIN_REQUIRE_LANDLOCK=1` turns the
 // skip on a host without Landlock into a failure.
-import fs, { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import fs, { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
@@ -49,6 +49,8 @@ afterEach(() => {
 });
 
 const SESSION = { id: "01S0000000000000000000000A", harness: "claudeCode" } as const;
+/** A denied read or write: Landlock answers EACCES, Seatbelt EPERM. */
+const DENIED = process.platform === "darwin" ? /Operation not permitted/ : /Permission denied/;
 
 describe("the session environment (spec §8.5)", () => {
   const parent = {
@@ -323,7 +325,7 @@ describe("a CLI session's processes (the fake harness's spawn step)", () => {
     const boxed = await run(argvs);
     expect(boxed.children).toHaveLength(2);
     expect(boxed.children[0]).toMatchObject({ code: 1 });
-    expect(boxed.children[0]!.stderr).toMatch(/Permission denied/);
+    expect(boxed.children[0]!.stderr).toMatch(DENIED);
     // `local.key` is unreadable, so `fin` is never `local`: it fails, or (where `fin.sock` is
     // reachable: no namespace and Landlock below ABI 9, the residual of Tasks 4 and 6) it is
     // `anonymous`, which holds only the `public` scope.
@@ -361,13 +363,15 @@ describe("a CLI session's processes (the fake harness's spawn step)", () => {
     expect(mismatch!.stdout, JSON.stringify(mismatch)).toMatch(/PATH_NOT_ALLOWED/);
     expect(mismatch!.stdout).toMatch(/projectMismatch/);
     expect(read).toMatchObject({ code: 1 });
-    expect(read!.stderr).toMatch(/Permission denied/);
+    expect(read!.stderr).toMatch(DENIED);
     expect(write!.stdout).toBe("hi\n");
-    expect(write!.stderr).toMatch(/Permission denied/);
+    expect(write!.stderr).toMatch(DENIED);
     expect(existsSync(join(boxed.paths.dir, "planted.txt"))).toBe(false);
     expect(whoami).toMatchObject({ code: 0 });
     expect(whoami!.stdout).toMatch(/"kind":"agent"/);
-    expect(whoami!.stdout).toMatch(/^tcp:127\.0\.0\.1:\d+$/m);
+    // Linux: the agent listener; macOS: `fin.sock` itself, resolved (what the handshake binds).
+    if (process.platform === "darwin") expect(whoami!.stdout.trim().split("\n").at(-1)).toBe(realpathSync(join(boxed.paths.serverData, "run", "fin.sock")));
+    else expect(whoami!.stdout).toMatch(/^tcp:127\.0\.0\.1:\d+$/m);
     await server!.stop();
     // Control: unsandboxed, the other project's folder is readable and the plant lands.
     const open = await run(argvs, NOT_READY);
@@ -469,8 +473,8 @@ describe("a CLI session's processes (the fake harness's spawn step)", () => {
 
   test("a_process_that_leaves_its_group_goes_with_the_session", async () => {
     // Task 11's review: a `setsid` grandchild left its group and outlived the session. The
-    // Linux launcher stays the parent and reaps it (Decision 3 as amended).
-    const escape = sh("setsid sh -c 'echo $$ > pid; exec sleep 300' >/dev/null 2>&1 < /dev/null & while [ ! -s pid ]; do sleep 0.05; done; cat pid");
+    // Linux and macOS launchers stay the parent and reap it (Decision 3 as amended).
+    const escape = sh(`${setsid("echo $$ > pid; exec sleep 300")} >/dev/null 2>&1 < /dev/null & while [ ! -s pid ]; do sleep 0.05; done; cat pid`);
     // Control: without the launcher (the profile not ready on this OS), it outlives the session.
     const direct = await run(() => [escape], NOT_READY);
     const free = Number(direct.children[0]!.stdout.trim());
@@ -517,9 +521,9 @@ describe("the sandbox's scope", () => {
   });
 });
 
-describe("the hang-up of a Linux launcher", () => {
+describe("the hang-up of a Linux or macOS launcher", () => {
   test("a_launcher_that_ignores_the_hang_up_is_killed_after_the_grace", async () => {
-    if (process.platform !== "linux") return;
+    if (process.platform !== "linux" && process.platform !== "darwin") return;
     // A launcher that never reaps: the session end hangs it up, then kills its group.
     const stuck = join(tmp, "stuck-launcher.sh");
     writeFileSync(stuck, "#!/bin/sh\ntrap '' HUP\ncat <&3 >/dev/null\nwhile :; do sleep 0.05; done\n", { mode: 0o755 });
@@ -571,12 +575,12 @@ describe("the sandbox under the real launcher", () => {
     // Not a read root: refused; named in `extraRead`: read.
     const refused = await read();
     expect(refused.exit.code).toBe(1);
-    expect(refused.err).toMatch(/Permission denied/);
+    expect(refused.err).toMatch(DENIED);
     expect(await read([extra])).toMatchObject({ exit: { code: 0 }, out: "harness\n" });
     // A process under the launcher is killed, its group with it, when the scope closes, and
     // so is a `setsid` grandchild that left the group (the launcher reaps it).
     const long = await Effect.runPromise(
-      box.spawn(["/bin/sh", "-c", "setsid sh -c 'echo $$ > g.pid; exec sleep 300' >/dev/null 2>&1 < /dev/null & while [ ! -s g.pid ]; do sleep 0.02; done; cat g.pid; exec sleep 300"], { cwd: box.workspace, stdio: "pipe" }),
+      box.spawn(["/bin/sh", "-c", `${setsid("echo $$ > g.pid; exec sleep 300")} >/dev/null 2>&1 < /dev/null & while [ ! -s g.pid ]; do sleep 0.02; done; cat g.pid; exec sleep 300`], { cwd: box.workspace, stdio: "pipe" }),
     );
     let said = "";
     long.stdout.on("data", (b) => (said += String(b)));
@@ -594,6 +598,12 @@ describe("the sandbox under the real launcher", () => {
     expect(Exit.isFailure(after)).toBe(true);
   });
 });
+
+/** A shell command that runs `/bin/sh -c <script>` in a session of its own (`script` holds no
+ * single quote; macOS has no `setsid` command). */
+function setsid(script: string): string {
+  return process.platform === "darwin" ? `perl -MPOSIX -e 'POSIX::setsid() > 0 or die; exec "/bin/sh", "-c", $ARGV[0]' '${script}'` : `setsid sh -c '${script}'`;
+}
 
 function alive(pid: number): boolean {
   try {

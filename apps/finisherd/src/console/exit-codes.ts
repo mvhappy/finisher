@@ -1,5 +1,5 @@
 // fin's exit codes (arch §17.1, `crates/fin/src/output.rs` `exit_code`): the console exits as `fin`
-// does. `console.test.ts` reads `output.rs` and checks these lists against it.
+// does. `console.test.ts` reads `output_codes.rs` and checks these lists against it.
 
 export const EXIT = { ok: 0, usage: 2, validation: 3, conflict: 4, unavailable: 5, internal: 6, denied: 7, pending: 8 } as const;
 
@@ -39,7 +39,7 @@ export const UNAVAILABLE_CODES: ReadonlyArray<string> = [
   "TICKET_LIMIT", "SERVER_UNAVAILABLE", "SERVER_RUNNING", "SERVER_START_FAILED", "SERVER_TIMEOUT", "ENGINE_CLOSED",
   "ENGINE_BUSY", "SERVER_SHUTTING_DOWN", "CANCELLED", "DB_IN_USE", "CONTROL_DB_BUSY", "FONT_FETCH_FAILED",
   "FONTS_DAMAGED", "JOURNAL_UNAVAILABLE", "SETTINGS_INVALID", "SETTINGS_WRITE_FAILED", "GPU_UNAVAILABLE",
-  "GPU_DEVICE_LOST", "GPU_OUT_OF_MEMORY", "SHM_REFUSED", "JOB_QUEUE_FULL", "WORKER_UNAVAILABLE", "WORKER_PROTOCOL_MISMATCH",
+  "GPU_DEVICE_LOST", "GPU_OUT_OF_MEMORY", "ENCODER_HUNG", "SHM_REFUSED", "JOB_QUEUE_FULL", "WORKER_UNAVAILABLE", "WORKER_PROTOCOL_MISMATCH",
   "WAIT_TIMEOUT", "RESOURCE_STUCK", "WORKER_OOM", "WATCH_LAGGING", "TOO_MANY_WATCHES", "REGISTRY_UNREACHABLE",
   "CLOCK_SUSPECT", "REGISTRY_STALE", "PLUGIN_DISABLED", "PLUGIN_RUNTIME_UNAVAILABLE", "TOO_MANY_PLANS", "TOO_MANY_SUGGESTIONS",
   // Libraries (5D Decision 51).

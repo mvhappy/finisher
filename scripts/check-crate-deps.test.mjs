@@ -77,3 +77,26 @@ test("the gate script reads a fake metadata document", () => {
   assert.equal(r.code, 1);
   assert.match(r.out, /fin reaches fin-media/);
 });
+
+test("fin-codecs' platform codec crates are target-gated (6B-1 Task 1)", () => {
+  const mac = { target: 'cfg(target_os = "macos")' };
+  const win = { target: "cfg(windows)" };
+  const gated = {
+    "fin-codecs": [
+      ["objc2-video-toolbox", null, mac],
+      ["objc2-core-media", null, mac],
+      ["objc2-core-video", null, mac],
+      ["windows", null, win],
+    ],
+    "fin-workers": [["fin-codecs"], ["fin-fonts", null, { uses_default_features: false }]],
+  };
+  assert.deepEqual(check(graph(MEMBERS, gated)), []);
+  const bare = { ...gated, "fin-codecs": [["objc2-video-toolbox"], ...gated["fin-codecs"].slice(1)] };
+  assert.deepEqual(check(graph(MEMBERS, bare)), [
+    'CRATE_DEPENDENCY: fin-codecs takes objc2-video-toolbox for every target (only under cfg(target_os = "macos"))',
+  ]);
+  const wrong = { ...gated, "fin-codecs": [...gated["fin-codecs"].slice(0, 3), ["windows", null, mac]] };
+  assert.deepEqual(check(graph(MEMBERS, wrong)), [
+    'CRATE_DEPENDENCY: fin-codecs takes windows under cfg(target_os = "macos") (only under cfg(windows))',
+  ]);
+});

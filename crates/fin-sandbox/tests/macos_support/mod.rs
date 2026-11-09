@@ -117,18 +117,37 @@ pub fn launch_at(
     args: &[&str],
     env: &[(&str, &str)],
 ) -> std::process::Output {
+    let mut full = vec!["--policy-fd", "3", "--"];
+    full.extend_from_slice(args);
+    let (mut cmd, keep) = launch_cmd(request, &full, env);
+    if let Some(d) = cwd {
+        cmd.current_dir(d);
+    }
+    let out = cmd.output().expect("run fin-sandbox-exec");
+    drop(keep);
+    out
+}
+
+/// The launcher with exactly `args` and `env`, not yet started, and the request pipe's read
+/// end, which must stay open until the command has started.
+pub fn launch_cmd(
+    request: &[u8],
+    args: &[&str],
+    env: &[(&str, &str)],
+) -> (Command, std::os::fd::OwnedFd) {
+    let mut cmd = Command::new(LAUNCHER);
+    cmd.args(args).env_clear().envs(env.iter().copied());
+    let keep = give_request(&mut cmd, request);
+    (cmd, keep)
+}
+
+/// Makes `cmd`'s process inherit a pipe holding `request` as descriptor 3; the returned read
+/// end must stay open until the spawn.
+pub fn give_request(cmd: &mut Command, request: &[u8]) -> std::os::fd::OwnedFd {
     use std::io::Write;
     use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
     use std::os::unix::process::CommandExt;
 
-    let mut cmd = Command::new(LAUNCHER);
-    cmd.args(["--policy-fd", "3", "--"])
-        .args(args)
-        .env_clear()
-        .envs(env.iter().copied());
-    if let Some(d) = cwd {
-        cmd.current_dir(d);
-    }
     let mut fds = [0; 2];
     // SAFETY: a valid array for the two new descriptors.
     assert_eq!(unsafe { libc::pipe(fds.as_mut_ptr()) }, 0);
@@ -152,7 +171,30 @@ pub fn launch_at(
             Ok(())
         });
     }
-    let out = cmd.output().expect("run fin-sandbox-exec");
-    drop(r);
-    out
+    r
+}
+
+/// An agent request for a project and server data under `t` (canonical), with the base
+/// toolchain.
+pub fn agent(t: &Path) -> fin_sandbox::launch::LaunchRequest {
+    use fin_core::events::payloads::agent::{AgentMode, Harness};
+    for d in ["p/workspace/s1", "data/agents/s1/tmp", "home"] {
+        std::fs::create_dir_all(t.join(d)).unwrap();
+    }
+    write(&t.join("data/auth/local.key"), "k");
+    fin_sandbox::launch::LaunchRequest::Agent(fin_sandbox::AgentInput {
+        session_id: "s1".into(),
+        mode: AgentMode::Draft,
+        harness: Harness::Codex,
+        project_dir: t.join("p"),
+        workspace_dir: t.join("p/workspace/s1"),
+        shared_dir: None,
+        library_roots: vec![],
+        session_dir: t.join("data/agents/s1"),
+        sign_in_store: None,
+        toolchains: fin_sandbox::data::toolchain_base_resolved(fin_sandbox::Os::Macos),
+        server_data: t.join("data"),
+        home: t.join("home"),
+        fin: None,
+    })
 }

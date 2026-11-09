@@ -34,7 +34,10 @@ const COMMON: &str = include_str!("shaders/common.wgsl");
 /// A pipeline's identity: one per (stage, blend mode); every target format is fixed by stage.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Stage {
+    /// Ingest of I420 (`IngestNv12`, `IngestP010`: of the platform decoders' layouts).
     Ingest,
+    IngestNv12,
+    IngestP010,
     Mip,
     /// The layer pass, fused with the blend of mode `Some(index)`, or to a scratch target.
     Layer(Option<u32>),
@@ -44,7 +47,8 @@ pub enum Stage {
 }
 
 struct Pipelines {
-    ingest: wgpu::ShaderModule,
+    /// By `ingest::SHADERS` index.
+    ingest: [wgpu::ShaderModule; 3],
     mip: wgpu::ShaderModule,
     layer: wgpu::ShaderModule,
     blend: wgpu::ShaderModule,
@@ -62,7 +66,8 @@ fn module(device: &wgpu::Device, label: &str, body: &str) -> wgpu::ShaderModule 
 impl Pipelines {
     fn new(device: &wgpu::Device) -> Pipelines {
         Pipelines {
-            ingest: module(device, "ingest", include_str!("shaders/ingest.wgsl")),
+            ingest: ingest::SHADERS
+                .map(|(l, fetch)| module(device, l, &[fetch, ingest::BODY].concat())),
             mip: module(device, "mip", include_str!("shaders/mip.wgsl")),
             layer: module(device, "layer", include_str!("shaders/layer.wgsl")),
             blend: module(device, "blend", include_str!("shaders/blend.wgsl")),
@@ -76,7 +81,10 @@ impl Pipelines {
             return p.clone();
         }
         let (module, entry, format, blend, constants): (_, _, _, _, &[(&str, f64)]) = match stage {
-            Stage::Ingest => (&self.ingest, "fs_main", ACC, None, &[]),
+            Stage::Ingest | Stage::IngestNv12 | Stage::IngestP010 => {
+                let m = &self.ingest[ingest::shader_index(stage)];
+                (m, "fs_main", ACC, None, &[])
+            }
             Stage::Mip => (&self.mip, "fs_main", ACC, None, &[]),
             Stage::Layer(fused) => (
                 &self.layer,
@@ -461,19 +469,12 @@ impl Compositor {
             .iter()
             .map(|&(w, h)| self.pool.acquire(device, level_key(w, h)))
             .collect();
-        let pi = self.pipelines.get(device, Stage::Ingest);
+        let pi = self.pipelines.get(device, ingest::stage(src.format));
         let ub = uniform(f.gpu, &ingest::uniforms(src));
-        let pv = planes.each_ref().map(view);
-        let g = bind(
-            device,
-            &pi,
-            vec![
-                ub.as_entire_binding(),
-                wgpu::BindingResource::TextureView(&pv[0]),
-                wgpu::BindingResource::TextureView(&pv[1]),
-                wgpu::BindingResource::TextureView(&pv[2]),
-            ],
-        );
+        let pv: Vec<_> = planes.iter().map(view).collect();
+        let mut res = vec![ub.as_entire_binding()];
+        res.extend(pv.iter().map(wgpu::BindingResource::TextureView));
+        let g = bind(device, &pi, res);
         pass(
             &mut f.enc,
             &levels[0],

@@ -13,7 +13,8 @@
 //   job's end settles both rows. A job's end is held until its rows say `queued`, and the
 //   engine is asked once they do, so a job that ended before it was recorded still settles.
 // - Items whose file is not what the catalog says cost no attempt; their directories are
-//   listed again (`rescan`). A prioritized stage whose dependency failed for good is dropped.
+//   listed again (`rescan`). A prioritized stage whose dependency failed for good is dropped,
+//   whether that failure came before the prioritize or after it.
 // - `isDone(fp)` marks a row `done` without a job; `appliesTo` false marks it `skipped`.
 // - Completion comes from `JobEngine.onDone` (`stage-outcome.ts`); at attach the catalog's
 //   `queued`/`running` rows are reconciled with `engine.get(jobId)`.
@@ -263,6 +264,8 @@ export class StagePump {
       }
       for (const f of done) this.#d.files.emit({ type: "stage", library: id, fileId: f.fileId, fp: f.fp, stage: spec.name });
       if (done.length > 0) this.#dependentsReady(done.map((f) => f.fp), spec.name);
+      // A stage that does not apply never becomes done: what waits on it is dropped.
+      for (const r of rows) if (r.state === "skipped") this.#dropWanted(r.fp, spec.name);
       if (only !== undefined || take.length === 0 && rows.length === 0) return submitted;
     }
     return submitted;
@@ -455,43 +458,76 @@ export class StagePump {
 
   /** Decision 41: `stage` of `fp` now, alone, at `normal` priority, after its dependencies. */
   prioritize(fp: string, stage: string): Effect.Effect<void, FinError> {
-    return Effect.tryPromise({ try: () => this.#prioritize(fp, stage, new Set()), catch: toFin });
+    return Effect.tryPromise({ try: () => this.#prioritize(fp, stage, new Set()).then(() => undefined), catch: toFin });
   }
 
-  async #prioritize(fp: string, stage: string, path: Set<string>): Promise<void> {
-    if (stage === PROBE_STAGE) return; // a known fingerprint was probed
+  /**
+   * Answers false when `stage` of `fp` can never run: it, or a dependency, failed for good.
+   * Such a stage is not kept waiting (nothing would ever submit or drop it).
+   */
+  async #prioritize(fp: string, stage: string, path: Set<string>): Promise<boolean> {
+    if (stage === PROBE_STAGE) return true; // a known fingerprint was probed
     const spec = this.#d.stages.get(stage);
     if (spec === undefined) throw new FinError({ code: "INVALID_REQUEST", message: "no such stage", details: { stage } });
     const key = wantKey(fp, stage);
-    if (path.has(stage)) return;
-    if (this.inflight.stageJob(fp, stage) !== undefined) return void this.#wanted.delete(key);
+    const unwanted = (going: boolean): boolean => {
+      this.#wanted.delete(key);
+      return going;
+    };
+    if (path.has(stage)) return true;
+    if (this.inflight.stageJob(fp, stage) !== undefined) return unwanted(true);
     path.add(stage);
     const holders = await this.#holders(fp, stage);
     if (holders.length === 0) {
-      this.#wanted.delete(key);
+      unwanted(false);
       throw notFound(fp);
     }
     const id = holders[0]!;
-    const states = await exec(this.#d.catalogs.reader.stageRows(id, { fps: [fp] }));
-    const doneAt = (s: string, v: string) => states.rows.some((r) => r.stage === s && r.version === v && r.state === "done");
-    if (doneAt(stage, spec.version)) return void this.#wanted.delete(key);
-    let waiting = false;
-    for (const dep of this.#d.stages.dependencies(spec) ?? []) {
-      if (doneAt(dep.stage, dep.version)) continue;
-      waiting = true;
-      await this.#prioritize(fp, dep.stage, path);
-    }
-    if (waiting || this.#d.stages.dependencies(spec) === undefined) {
+    const deps = this.#d.stages.dependencies(spec);
+    // `done`, `waiting` on dependencies not done yet, or `lost`: it, or a dependency, failed for
+    // good or does not apply (`skipped`), so it can never run.
+    const look = async (): Promise<"done" | "waiting" | "lost" | "ready"> => {
+      const states = await exec(this.#d.catalogs.reader.stageRows(id, { fps: [fp] }));
+      const rowAt = (st: string, v: string) => states.rows.find((r) => r.stage === st && r.version === v);
+      const lost = (st: string, v: string) => {
+        const r = rowAt(st, v);
+        return (r?.state === "failed" && r.attempts >= MAX_ATTEMPTS) || r?.state === "skipped";
+      };
+      if (rowAt(stage, spec.version)?.state === "done") return "done";
+      const waitingOn = (deps ?? []).filter((dep) => rowAt(dep.stage, dep.version)?.state !== "done");
+      if (lost(stage, spec.version) || waitingOn.some((dep) => lost(dep.stage, dep.version))) return "lost";
+      return waitingOn.length > 0 || deps === undefined ? "waiting" : "ready";
+    };
+    const first = await look();
+    if (first === "done") return unwanted(true);
+    if (first === "lost") return unwanted(false);
+    if (first === "waiting") {
+      // Wanted before its dependencies are submitted: one that ends at once (done, or failed for
+      // good) finds the entry to submit or drop; set after, it would wait forever.
       this.#wanted.set(key, { fp, stage });
-      return;
+      try {
+        for (const dep of deps ?? []) {
+          if (!(await this.#prioritize(fp, dep.stage, path))) return unwanted(false);
+        }
+      } catch (e) {
+        unwanted(false);
+        throw e;
+      }
+      // A dependency may have ended between the first look and the entry (its end then found
+      // no entry to act on): look again.
+      const now = await look();
+      if (now === "done") return unwanted(true);
+      if (now === "lost") return unwanted(false);
+      if (now === "waiting") return true;
     }
-    // Kept until the job is submitted: a pump turn that runs meanwhile (the end of the dependency
-    // kicks one) must still see the fingerprint as prioritized, not take it into a background batch.
+    // Still wanted until the submit holds it: a background pump turn between the two (the
+    // dependency's end kicks one) would otherwise take it into a background batch.
     try {
       await this.#pumpStage(id, spec, [fp], "normal");
     } finally {
-      this.#wanted.delete(key);
+      unwanted(true);
     }
+    return true;
   }
 
   /** Libraries (online, attached, not paused, running `stage`) holding a live file with `fp`. */

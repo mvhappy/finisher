@@ -43,6 +43,35 @@ afterEach(async () => {
   for (const d of temps.splice(0)) rmSync(d, { recursive: true, force: true });
 }, 60_000);
 
+/**
+ * Until the watch of `lib` has reported a write in `dir`, then forgets what it reported. macOS's
+ * FSEvents delivers the tail of what happened just before a recursive `fs.watch` started (the
+ * test's own `mkdir`s), and its stream starts after `watch` returns, so neither a sleep nor
+ * `ready` covers it; events come in order, so that tail is in the same report as the write.
+ */
+async function settle(w: Watches, events: WatchEvent[], lib: string, dir: string): Promise<void> {
+  await until(() => w.ready(lib), WAIT);
+  for (let i = 0; events.length === 0; i++) {
+    if (i === 10) throw new Error("the watch never reported a write");
+    writeFileSync(join(dir, `settle-${i}.mov`), "x");
+    await until(() => events.length > 0, 1500).catch(() => undefined);
+  }
+  events.length = 0;
+}
+
+/** `settle` for a watch whose quiet time `time` moves: the sentinel's events are counted, then flushed and forgotten. */
+async function settleCounted(w: Watches, lib: string, dir: string, armed: { n: number }, time: ManualTime, events: WatchEvent[]): Promise<void> {
+  await until(() => w.ready(lib), WAIT);
+  for (let i = 0; armed.n === 0; i++) {
+    if (i === 10) throw new Error("the watch never reported a write");
+    writeFileSync(join(dir, `settle-${i}.mov`), "x");
+    await until(() => armed.n > 0, 1500).catch(() => undefined);
+  }
+  await arrived(() => armed.n);
+  await time.advance(10_000);
+  events.length = 0;
+}
+
 describe("Watches", () => {
   test("split_raw_names", () => {
     expect(splitRaw(Buffer.from("a/b/c.mov"), false).map((p) => Buffer.from(p).toString())).toEqual(["a", "b", "c.mov"]);
@@ -59,12 +88,13 @@ describe("Watches", () => {
     const w = new Watches((e) => events.push(e), { quietMs: 400, maxDirs: 3, timers, known: (_lib, parts) => parts.map((p) => Buffer.from(p).toString("base64")) });
     expect(w.watch("01lib", root)).toEqual({ ok: true });
     try {
-      await until(() => w.ready("01lib"), WAIT);
+      await settleCounted(w, "01lib", join(root, "a"), armed, time, events);
+      const base = armed.n;
       writeFileSync(join(root, "a", "one.mov"), "x");
       writeFileSync(join(root, "a", "two.mov"), "x");
       writeFileSync(join(root, ".hidden"), "x");
       writeFileSync(join(root, ".cache", "deep", "x.mov"), "x");
-      await arrived(() => armed.n);
+      await arrived(() => armed.n - base);
       await time.advance(399);
       expect(events).toHaveLength(0); // still within the quiet time
       await time.advance(1);
@@ -129,6 +159,8 @@ describe("Watches", () => {
     temps.push(root);
     mkdirSync(join(root, "a"));
     mkdirSync(join(root, ".git"));
+    // Settled in a folder of its own: a late report of it cannot pass for `a/`'s event.
+    mkdirSync(join(root, "settle"));
     expect(dotPath(".git/x")).toBe(true);
     expect(dotPath("a/.x")).toBe(true);
     expect(dotPath("a/b.mov")).toBe(false);
@@ -141,15 +173,10 @@ describe("Watches", () => {
     const w = new Watches((e) => events.push(e), { quietMs: 200, native: false, known: (_lib, parts) => parts.map((p) => Buffer.from(p).toString("base64")) });
     expect(w.watch("01lib", root)).toEqual({ ok: true });
     try {
-      // `fs.watch` has no ready signal and a change made before it is set up is not reported: write
-      // again until one is (each write is followed by more than the quiet time, so none is lost).
-      const end = Date.now() + WAIT;
-      for (let i = 0; events.length === 0; i++) {
-        expect(Date.now(), "no event from fs.watch in time").toBeLessThan(end);
-        writeFileSync(join(root, ".git", "index"), String(i));
-        writeFileSync(join(root, "a", "x.mov"), String(i));
-        await new Promise((r) => setTimeout(r, 400));
-      }
+      await settle(w, events, "01lib", join(root, "settle"));
+      writeFileSync(join(root, ".git", "index"), "x");
+      writeFileSync(join(root, "a", "x.mov"), "x");
+      await until(() => events.length > 0, WAIT);
       expect(events[0]).toMatchObject({ type: "watch", all: false, dirs: [{ components: [b64("a")] }] });
     } finally {
       w.closeAll();

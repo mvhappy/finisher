@@ -1,6 +1,6 @@
 // Media job inputs (6A plan Task 12): `Engine.prepareMediaJob` writes a job's snapshot,
 // manifest and params, and `commitJobOutput` moves a finished file out of a job directory.
-import { closeSync, linkSync, mkdirSync, openSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync, writeSync } from "node:fs";
+import { closeSync, linkSync, mkdirSync, openSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync, writeSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
@@ -10,7 +10,8 @@ let tmp: string;
 let engine: Engine | undefined;
 
 beforeEach(() => {
-  tmp = mkdtempSync(join(tmpdir(), "fin-node-media-"));
+  // Resolved: no segment of a job path may be a link, and macOS answers `/var/…` for `/private/var/…`.
+  tmp = realpathSync(mkdtempSync(join(tmpdir(), "fin-node-media-")));
   process.env.FIN_FONTS_OFFLINE = "1";
 });
 

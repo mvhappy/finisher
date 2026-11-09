@@ -3,10 +3,10 @@ import { expect, test } from "vitest";
 import { JOB_ERROR_CODES } from "./jobs.ts";
 
 // `fin`'s exit classes, read from the Rust lists the way `exit_code` reads them.
-const output = readFileSync(new URL("../../../crates/fin/src/output.rs", import.meta.url), "utf8");
+const output = readFileSync(new URL("../../../crates/fin/src/output_codes.rs", import.meta.url), "utf8");
 function body(name: string): string {
   const m = output.match(new RegExp(`const ${name}: &\\[&str\\] = &\\[([\\s\\S]*?)\\];`));
-  if (!m) throw new Error(`no ${name} in output.rs`);
+  if (!m) throw new Error(`no ${name} in output_codes.rs`);
   return m[1]!;
 }
 function list(name: string): string[] {
