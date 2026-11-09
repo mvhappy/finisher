@@ -11,7 +11,7 @@ use super::names::NameTable;
 /// `auth.credential.rotateMaster` (review of 5A Tasks 8–9, M3), the plugin and registry RPCs
 /// (8A Tasks 9a and 9b), the `library.*` RPCs (5D), the `jobs.*` RPCs (5C-2), the `agent.*` RPCs (7A Task 2) and the owner's agent settings,
 /// `agent.key.*`, `agent.local.*` and `training.closedTargets.*` (7A Task 12), and 5B's pairing,
-/// device, environment and `settings.write` RPCs.
+/// device, environment and `settings.write` RPCs, and 6B-1's `media.cache.status|gc`.
 pub static RPC_METHODS: NameTable = NameTable::new(
     "RPC_METHODS",
     &[
@@ -112,6 +112,8 @@ pub static RPC_METHODS: NameTable = NameTable::new(
         "library.set",
         "library.status",
         "library.watch",
+        "media.cache.gc",
+        "media.cache.status",
         "media.capabilities",
         "media.look",
         "ops.subscribe",

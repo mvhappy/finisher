@@ -409,6 +409,8 @@ export * from "./jobhost.js";
 export * from "./sandbox.js";
 // `asset.probe` of a catalogued library file (`library.js`).
 export * from "./library.js";
+// The media cache (`media-cache.js`, 6B-1 Task 13).
+export * from "./media-cache.js";
 // The native Windows pipe listener (`pipe.js`).
 export * from "./pipe.js";
 // The vault and the identity key (`vault.js`, 5B).

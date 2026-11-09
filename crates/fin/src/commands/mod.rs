@@ -8,6 +8,7 @@ pub mod asset;
 pub mod bin;
 pub mod branch;
 mod builder;
+pub mod cache;
 pub mod caption;
 pub mod clip;
 pub mod diagnostics;

@@ -50,6 +50,7 @@ import { JobEngineTag, type JobEngineOptions, layerJobEngine } from "./jobs/laye
 import { LibrariesTag } from "./library/api.ts";
 import { CatalogsTag, layerCatalogs } from "./library/catalog/client.ts";
 import { LibraryServiceTag, librariesHolding, libraryWiring } from "./library/layer.ts";
+import { makeMediaCache, MediaCacheTag } from "./media/cache.ts";
 import { layerPlugins } from "./plugins/registries.ts";
 import { layerProjectRegistry, ProjectRegistry, type RegistryOptions } from "./projects.ts";
 import { registerMediaKinds } from "./jobs/kinds/media.look.ts";
@@ -170,6 +171,8 @@ export const serve = ({
       const libraries = libraryWiring({
         serverData, jobsRoot, catalogs, control: Context.get(control, ControlStoreTag), audit: Context.get(control, AuditTag), journal: diagnostics.journal, log: logSink,
       });
+      // The media cache (6B-1 Task 13) before the registry: an open project pins the entries serving it.
+      const mediaCache = yield* Effect.mapError(makeMediaCache(serverData, { log: (m) => logSink("warning", m) }), startFailure);
       // The job engine (5C-1) after the control store and the journal, so it closes before them
       // (its `close` stops every worker); `<server-data>/jobs/` is made private. Its events go
       // to the journal (D34).
@@ -182,7 +185,10 @@ export const serve = ({
       // confined warm media worker (Decision 19). Bound once the service runs.
       let libraryRoots: () => ReadonlyArray<string> = () => [];
       const registryContext = yield* Layer.build(
-        layerProjectRegistry(serverData, { ...registry, libraryUse: (paths) => libraryHold?.(paths) ?? { release: () => {} } }),
+        layerProjectRegistry(serverData, { ...registry, libraryUse: (paths, projectId) => {
+          const held = [libraryHold?.(paths), mediaCache.holdProject(projectId)];
+          return { release: () => held.forEach((h) => h?.release()) };
+        } }),
       );
       const projects = Context.get(registryContext, ProjectRegistry);
       const register = (r: Parameters<typeof libraries.register>[0]) => {
@@ -459,6 +465,7 @@ export const serve = ({
           Layer.succeedContext(jobsContext),
           Layer.succeed(LibrariesTag, library),
           Layer.succeed(LibraryServiceTag, library),
+          Layer.succeed(MediaCacheTag, mediaCache),
           Layer.succeed(KeysTag, keys),
           Layer.succeed(HandshakeTag, handshake),
           Layer.succeed(CredentialsTag, credentials),

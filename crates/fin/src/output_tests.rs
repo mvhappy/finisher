@@ -54,6 +54,7 @@ fn exit_codes_follow_the_contract() {
         "GPU_DEVICE_LOST",
         "GPU_OUT_OF_MEMORY",
         "ENCODER_HUNG",
+        "CACHE_IO",
     ] {
         assert_eq!(exit_code(code), 5, "{code}");
     }

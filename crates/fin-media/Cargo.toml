@@ -13,6 +13,9 @@ description = "Pure media types: pixel formats, colour tags, MediaInfo, the samp
 testing = []
 
 [dependencies]
+# The media cache key (6B-1 plan Decision 11; already in the tree; CC0-1.0 OR Apache-2.0 OR
+# Apache-2.0 WITH LLVM-exception). Pure Rust on wasm32.
+blake3 = "1"
 fin-core = { path = "../fin-core" }
 # Transfer functions on the hashed path (spec §13.4): pinned in the workspace.
 libm = { workspace = true }

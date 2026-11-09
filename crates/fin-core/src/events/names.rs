@@ -77,6 +77,8 @@ pub static CLI_COMMANDS: NameTable = NameTable::new(
         "branch.ls",
         "branch.new",
         "branch.rename",
+        "cache.gc",
+        "cache.status",
         "caption.import",
         "caption.merge",
         "caption.set-text",

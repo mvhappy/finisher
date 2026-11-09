@@ -45,6 +45,7 @@ use commands::approval::ApprovalCmd;
 use commands::asset::{AssetCmd, AssetEdit};
 use commands::bin::BinCmd;
 use commands::branch::BranchCmd;
+use commands::cache::CacheCmd;
 use commands::caption::CaptionCmd;
 use commands::clip::ClipCmd;
 use commands::diagnostics::DiagnosticsCmd;
@@ -132,6 +133,8 @@ enum Cmd {
     Search(SearchArgs),
     #[command(subcommand)]
     Media(MediaCmd),
+    #[command(subcommand)]
+    Cache(CacheCmd),
     #[command(subcommand)]
     Fonts(FontsCmd),
     #[command(subcommand)]
@@ -340,6 +343,7 @@ fn run(args: Vec<OsString>) -> Result<Value, CoreError> {
         Some(Cmd::Library(c)) => commands::library::run(backend()?.as_ref(), &c),
         Some(Cmd::Search(a)) => commands::search::run(backend()?.as_ref(), &a),
         Some(Cmd::Media(c)) => commands::media_caps::run(backend()?.as_ref(), &c),
+        Some(Cmd::Cache(c)) => commands::cache::run(backend()?.as_ref(), &c),
         Some(Cmd::Fonts(FontsCmd::Pin(a))) => edit(g, Edit::Font(FontEdit::Pin(a))),
         Some(Cmd::Fonts(FontsCmd::Repin(a))) => edit(g, Edit::Font(FontEdit::Repin(a))),
         Some(Cmd::Fonts(FontsCmd::Unpin(a))) => edit(g, Edit::Font(FontEdit::Unpin(a))),

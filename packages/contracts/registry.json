@@ -1361,6 +1361,32 @@
     },
     {
       "argKinds": {},
+      "group": "cache",
+      "identity": [],
+      "name": "cache.status",
+      "rpcs": [
+        {
+          "method": "media.cache.status"
+        }
+      ],
+      "write": false
+    },
+    {
+      "argKinds": {},
+      "group": "cache",
+      "identity": [
+        "toGiB"
+      ],
+      "name": "cache.gc",
+      "rpcs": [
+        {
+          "method": "media.cache.gc"
+        }
+      ],
+      "write": false
+    },
+    {
+      "argKinds": {},
       "group": "fonts",
       "identity": [],
       "name": "fonts.ls",

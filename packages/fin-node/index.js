@@ -2,13 +2,7 @@
 import { call, native, sync, toFinError } from "./native.js";
 import { defineRegistry } from "./registry.js";
 
-export {
-  JobHost,
-  jobKindVersions,
-  resolveMemoryRule,
-  validateJobParams,
-  workersBinaryPath,
-} from "./jobhost.js";
+export { JobHost, jobKindVersions, resolveMemoryRule, validateJobParams, workersBinaryPath } from "./jobhost.js";
 export {
   libraryCanonicalRoot,
   libraryProbeFile,
@@ -17,6 +11,7 @@ export {
   libraryProbeVersion,
   libraryWatchStart,
 } from "./library.js";
+export { MediaCache } from "./media-cache.js";
 export { PipeServer } from "./pipe.js";
 export * from "./sandbox.js";
 export * from "./vault.js"; // 5B: the vault, the identity key; certificates and QR codes (`tls.js`)

@@ -161,6 +161,8 @@ pub const ROWS: &[Row] = &[
         &["projectId", "branch", "timeline", "from", "to"]
     ),
     row!("media.caps", rpc!("media.capabilities"), NONE),
+    row!("cache.status", rpc!("media.cache.status"), NONE),
+    row!("cache.gc", rpc!("media.cache.gc"), &["toGiB"]),
     row!("fonts.ls", rpc!("fonts.catalog"), NONE),
     row!(
         "fonts.fetch",

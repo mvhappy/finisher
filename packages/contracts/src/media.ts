@@ -1,6 +1,7 @@
 // The evaluation, `media.*` and `fonts.*` payloads of `FinRpcs` (`rpc.ts`).
 import type { AudioPlan, FontCatalog, FontsPlan, FontsStatus, FramePlan } from "@finisher/core-types";
 import { Schema } from "effect";
+import { ChallengeField } from "./auth.ts";
 
 /**
  * Plan 4C Decisions 40–43: evaluation runs on the server. `branch` defaults to `main` (an id,
@@ -47,6 +48,18 @@ export const MediaLookPayload = Schema.Struct({
 export const MediaLookSuccess = Schema.Unknown;
 /** The generated `MediaCapabilities`: `{codecs, gpu, worker}`. */
 export const MediaCapabilitiesSuccess = Schema.Unknown;
+/**
+ * 6B-1 Task 13: the media cache (spec §7.2). `media.cache.status` (`server.read`) answers the
+ * generated `CacheStatus` (`{bytes, entries, capBytes, pinned, byRecipe}`); `media.cache.gc`
+ * (`settings.admin`, the owner's) evicts unpinned entries, least recently used first, down to
+ * the cap (`media.cacheMaxGiB` in `settings.json`, default `min(50 GiB, 15 % of the volume)`)
+ * or to `toGiB` when lower, and answers the generated `CacheGcResult` (`{evicted, freedBytes,
+ * bytes}`). Pinned entries (a running job's, an open project's) are never evicted.
+ */
+export const MediaCacheStatusSuccess = Schema.Unknown;
+/** `challenge`: the console's confirmation code (the owner's change, as `settings.write`). */
+export const MediaCacheGcPayload = Schema.Struct({ toGiB: Schema.optional(Schema.Number), challenge: ChallengeField });
+export const MediaCacheGcSuccess = Schema.Unknown;
 /** fin-core's `FramePlan` / `AudioPlan` (the generated types). */
 export const FramePlanSchema = Schema.Unknown;
 export const AudioPlanSchema = Schema.Unknown;

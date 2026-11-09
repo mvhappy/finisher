@@ -1,7 +1,9 @@
 //! The 4C settings, caption, style, eval and fonts commands' registry entries (plan 4C Task
 //! 24), listed after the structural edits in [`crate::registry::commands`].
 
-use crate::commands::{caption, diagnostics, effect, eval, fonts, keyframe, project, style, track};
+use crate::commands::{
+    cache, caption, diagnostics, effect, eval, fonts, keyframe, project, style, track,
+};
 use crate::registry::{Command, one_of, schema_of};
 
 const fn cmd(
@@ -172,6 +174,22 @@ pub const SETTINGS_COMMANDS: &[Command] = &[
         "codecs, GPU and worker versions of this machine's media worker (server only)",
         false,
         || schema_of::<project::NoArgs>("media.caps"),
+    ),
+    cmd(
+        "cache.status",
+        "cache",
+        "",
+        "the server's media cache: size against its cap, entries, pins, by recipe (server only)",
+        false,
+        || schema_of::<project::NoArgs>("cache.status"),
+    ),
+    cmd(
+        "cache.gc",
+        "cache",
+        "[--to <GiB>]",
+        "evict unpinned media cache entries down to the cap or lower (human-only: the server refuses fin, HUMAN_ONLY exit 7)",
+        false,
+        || schema_of::<cache::GcArgs>("cache.gc"),
     ),
     cmd(
         "fonts.ls",

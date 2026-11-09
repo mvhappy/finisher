@@ -137,8 +137,8 @@ export class ProjectRegistry extends Context.Service<ProjectRegistry, ProjectReg
 export interface RegistryOptions {
   /** Per-hub buffer; a subscriber that falls further behind is caught up from the op log. */
   readonly hubCapacity?: number;
-  /** Holds the libraries holding these asset paths in use while the project is open (5D Decision 28). */
-  readonly libraryUse?: (assetPaths: ReadonlyArray<string>) => { release(): void };
+  /** Holds the libraries holding these asset paths in use (5D Decision 28), and the project's media cache entries (6B-1), while it is open. */
+  readonly libraryUse?: (assetPaths: ReadonlyArray<string>, projectId: string) => { release(): void };
 }
 
 /** Holds the libraries the project's assets (on `main`, at open) live in, until it closes. */
@@ -146,7 +146,7 @@ function holdLibraries(p: OpenProject, use: NonNullable<RegistryOptions["library
   void p.engine.snapshot(MAIN).then(
     (json) => {
       const assets = (JSON.parse(json) as { project?: { assets?: Record<string, { path?: unknown }> } }).project?.assets ?? {};
-      const held = use(Object.values(assets).flatMap((a) => (typeof a.path === "string" ? [a.path] : [])));
+      const held = use(Object.values(assets).flatMap((a) => (typeof a.path === "string" ? [a.path] : [])), p.engine.projectId);
       if (p.release === undefined) p.release = () => held.release();
       else held.release();
     },

@@ -1563,6 +1563,75 @@
       ],
       "type": "string"
     },
+    "CacheGcResult": {
+      "description": "What one `gc` (or eviction pass) did.",
+      "properties": {
+        "bytes": {
+          "description": "What the cache holds afterwards (above the target only when the rest is pinned).",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "evicted": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "freedBytes": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "evicted",
+        "freedBytes",
+        "bytes"
+      ],
+      "type": "object"
+    },
+    "CacheStatus": {
+      "description": "`media.cache.status` (`fin cache status`): what the cache holds against its cap.",
+      "properties": {
+        "byRecipe": {
+          "additionalProperties": {
+            "$ref": "#/$defs/RecipeUsage"
+          },
+          "type": "object"
+        },
+        "bytes": {
+          "description": "Every entry's files and `meta.json`.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "capBytes": {
+          "description": "Eviction keeps `bytes` at or below this (Decision 12).",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "entries": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "pinned": {
+          "description": "Entries with at least one pin (never evicted).",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "bytes",
+        "entries",
+        "capBytes",
+        "pinned",
+        "byRecipe"
+      ],
+      "type": "object"
+    },
     "CallLimits": {
       "additionalProperties": false,
       "description": "The limits of this job's calls and results.",
@@ -3579,6 +3648,121 @@
         "font"
       ],
       "type": "string"
+    },
+    "EntryEncoder": {
+      "additionalProperties": false,
+      "description": "The encoder that made an entry (proxies), for diagnostics and the export rule that a\n`gpu`-encoded file never leaves the cache.",
+      "properties": {
+        "backend": {
+          "type": "string"
+        },
+        "class": {
+          "$ref": "#/$defs/VendorClass"
+        }
+      },
+      "required": [
+        "backend",
+        "class"
+      ],
+      "type": "object"
+    },
+    "EntryFile": {
+      "additionalProperties": false,
+      "description": "One payload file of an entry.",
+      "properties": {
+        "blake3": {
+          "description": "BLAKE3 of the file, 64 lower-case hex digits.",
+          "type": "string"
+        },
+        "bytes": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "name": {
+          "description": "`[A-Za-z0-9_][A-Za-z0-9._-]{0,63}`, not `meta.json`.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "bytes",
+        "blake3"
+      ],
+      "type": "object"
+    },
+    "EntryMeta": {
+      "additionalProperties": false,
+      "description": "An entry's `meta.json` (spec §7.2): the key and its input, the files and, for proxies, the\noriginal's `MediaInfo`.",
+      "properties": {
+        "createdAt": {
+          "description": "Unix milliseconds.",
+          "format": "int64",
+          "type": "integer"
+        },
+        "decoderClass": {
+          "$ref": "#/$defs/VendorClass"
+        },
+        "encoder": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/EntryEncoder"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "files": {
+          "items": {
+            "$ref": "#/$defs/EntryFile"
+          },
+          "type": "array"
+        },
+        "fingerprint": {
+          "type": "string"
+        },
+        "key": {
+          "type": "string"
+        },
+        "media": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/MediaInfo"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The original's `MediaInfo` (proxies: rotation and pixel aspect are applied from it)."
+        },
+        "params": true,
+        "recipe": {
+          "type": "string"
+        },
+        "recipeVersion": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "renderVersion": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "key",
+        "fingerprint",
+        "recipe",
+        "recipeVersion",
+        "params",
+        "renderVersion",
+        "decoderClass",
+        "files",
+        "createdAt"
+      ],
+      "type": "object"
     },
     "EntryType": {
       "description": "The type of a directory entry as listed (never by following a link). Windows reparse\npoints with a name-surrogate tag (symlinks, junctions, mount points) are `symlink` in a\n[`ScanEntry`] (see [`crate::listing`]); anything that is neither a regular file, a\ndirectory nor a link (sockets, devices, FIFOs) is `other`.",
@@ -7977,6 +8161,45 @@
         "blobs",
         "blobBytes",
         "dropped"
+      ],
+      "type": "object"
+    },
+    "KeyInput": {
+      "additionalProperties": false,
+      "description": "What a cache key is computed from (Decision 11).",
+      "properties": {
+        "decoderClass": {
+          "$ref": "#/$defs/VendorClass",
+          "description": "The vendor class of the backend that decoded the source."
+        },
+        "fingerprint": {
+          "description": "The source's fingerprint (the asset's `fingerprint`).",
+          "type": "string"
+        },
+        "params": {
+          "description": "The recipe's parameters (a tier, a codec, thumbnail times, …)."
+        },
+        "recipe": {
+          "type": "string"
+        },
+        "recipeVersion": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "renderVersion": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "fingerprint",
+        "recipe",
+        "recipeVersion",
+        "params",
+        "renderVersion",
+        "decoderClass"
       ],
       "type": "object"
     },
@@ -13257,6 +13480,26 @@
       },
       "required": [
         "components"
+      ],
+      "type": "object"
+    },
+    "RecipeUsage": {
+      "description": "One recipe's share of the cache.",
+      "properties": {
+        "bytes": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "entries": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "bytes",
+        "entries"
       ],
       "type": "object"
     },

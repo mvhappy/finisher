@@ -37,6 +37,7 @@ import { agentBranchLimitsExcept } from "./chain/policy.ts";
 import { Fonts } from "./fonts.ts";
 import { JobEngineTag } from "./jobs/layer.ts";
 import { chainJobs, jobHandlers } from "./jobs/rpc.ts";
+import { MediaCacheTag } from "./media/cache.ts";
 import { mediaCapabilities } from "./media/caps.ts";
 import { look as mediaLook } from "./media/look.ts";
 import { requireAbsolute, requireAbsoluteOpt } from "./paths.ts";
@@ -91,6 +92,7 @@ export const HandlersLive = FinRpcs.toLayer(
     const pairing = yield* PairingTag;
     const deviceAccess = yield* DeviceAccessTag;
     const remoteListener = yield* RemoteListenerTag;
+    const mediaCache = yield* MediaCacheTag;
     const admin: AdminDeps = {
       control: yield* ServerControlTag,
       audit,
@@ -399,6 +401,9 @@ export const HandlersLive = FinRpcs.toLayer(
         guard("eval.audio", registry.evalAudio(projectId, branch ?? "main", timeline, from, to)),
       "media.look": (req, options) => guard("media.look", mediaLook(mediaDeps, ownerOf(options), req)),
       "media.capabilities": (_, options) => guard("media.capabilities", capabilitiesOf(ownerOf(options))),
+      // The media cache (6B-1 Task 13): its state, and an eviction down to the cap or `toGiB`.
+      "media.cache.status": () => guard("media.cache.status", mediaCache.status()),
+      "media.cache.gc": ({ toGiB }) => guard("media.cache.gc", mediaCache.gc(toGiB)),
       "fonts.catalog": () => guard("fonts.catalog", fonts.catalog()),
       "fonts.status": () => guard("fonts.status", fonts.status()),
       // `pinned` needs the project open (its pins are the engine's): opened on demand.

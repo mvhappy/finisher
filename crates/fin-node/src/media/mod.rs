@@ -12,9 +12,13 @@
 //!   `onSucceeded` moves each finished file out of the job directory with it, after the
 //!   worker can no longer write (spec §3.3).
 //!
+//! - [`cache`]: the media cache (`MediaCache`, 6B-1 Task 13): its index, commits, pins and
+//!   eviction.
+//!
 //! `fin-node` links `fin-media` and `fin-shm` but no codec, compositor or GPU crate
 //! (`scripts/check-crate-deps.mjs`).
 
+pub mod cache;
 mod inputs;
 
 use std::path::{Path, PathBuf};

@@ -80,6 +80,11 @@ fn main() {
         g.subschema_for::<fin_media::jobs::MediaCapabilities>();
         g.subschema_for::<fin_media::jobs::JobSnapshot>();
         g.subschema_for::<fin_media::jobs::RenderManifest>();
+        // The media cache (6B-1 Task 13): `meta.json`, the key input, `media.cache.status|gc`.
+        g.subschema_for::<fin_media::cache::EntryMeta>();
+        g.subschema_for::<fin_media::cache::KeyInput>();
+        g.subschema_for::<fin_media::cache::CacheStatus>();
+        g.subschema_for::<fin_media::cache::CacheGcResult>();
         g.subschema_for::<fin_library::RawRel>();
         g.subschema_for::<fin_library::Expect>();
         g.subschema_for::<fin_library::ScanEntry>();

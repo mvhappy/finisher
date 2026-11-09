@@ -413,6 +413,10 @@ pub(super) const UNAVAILABLE_CODES: &[&str] = &[
     // An encoder stopped producing output twice in one job, or with no other encoder left
     // (6B-1 plan Decision 20): `details.backend`, `details.adapter` (numeric ids or null).
     "ENCODER_HUNG",
+    // The media cache could not take or keep an entry (6B-1 plan Decision 12): its volume is
+    // full (`details.reason: full`, `freeBytes`, `neededBytes`; the job fails without a retry),
+    // or its directory or index failed (`reason: io | index`).
+    "CACHE_IO",
     // A job's mapped file failed `fin-shm`'s checks (a link, a hard link, a special file, a
     // size against its ring header or cap, a truncation while read; sub-project 6 spec §17):
     // the job failed, not the request.

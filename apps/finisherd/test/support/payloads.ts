@@ -57,6 +57,8 @@ export const SAMPLE_PAYLOADS: { readonly [T in FinRpcTag]: Record<string, unknow
   "fonts.plan": { projectId: P, branch: "main", ops: [] },
   "media.look": { projectId: P, at: ["0"] },
   "media.capabilities": {},
+  "media.cache.status": {},
+  "media.cache.gc": {},
   "jobs.submit": { kind: "test.echo", params: { value: 1 } },
   "jobs.get": { job: "01dddddddddddddddddddddddd" },
   "jobs.list": {},

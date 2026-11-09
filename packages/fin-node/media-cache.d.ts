@@ -1,0 +1,69 @@
+// Types of `media-cache.js` (re-exported by `index.d.ts`): the server's media cache (6B-1 plan
+// Task 13; sub-project 6 spec §7.2).
+import type { CacheGcResult, CacheStatus, EntryMeta } from "@finisher/core-types";
+
+export type { CacheGcResult, CacheStatus, EntryMeta };
+
+/** What the adoption at open did. */
+export interface MediaCacheOpenReport {
+  /** Directories without a row whose `meta.json` validated, key recomputed and files matched. */
+  readonly adopted: number;
+  /** Directories (and other names under a shard) that did not, deleted. */
+  readonly deleted: number;
+  /** Rows whose directory was gone. */
+  readonly dropped: number;
+  /** The index did not open (another schema version, damaged) and was made anew. */
+  readonly indexReplaced: boolean;
+}
+
+/**
+ * `<server-data>/cache/media/`: entries are directories `<key[0..2]>/<key>/` (the payload and
+ * `meta.json`), indexed in `index.db` (SQLite, WAL) by fin-node only; workers never touch it.
+ * Every call runs in order on the cache's own thread. Errors: `CACHE_IO {reason: full |
+ * io | index, freeBytes?, neededBytes?}` (a full volume fails the job without a retry),
+ * `PLAN_MISMATCH {reason: cacheKey | cacheEntry, file?}` (an output that is not the entry it
+ * claims), `SHM_REFUSED` (fin-shm's checks), `INVALID_OP {field}` (a malformed holder,
+ * project id or byte count).
+ */
+export declare class MediaCache {
+  private constructor();
+  /**
+   * Opens (creating) the cache with a cap of `capBytes` (absent: `min(50 GiB, 15 % of the
+   * volume)`). Pins never outlive a server run: the server pins again what it opens. A row
+   * without its directory is dropped; a directory without a row is adopted only when its
+   * `meta.json` validates, its key recomputes and its files' hashes match, else deleted.
+   */
+  static open(serverData: string, capBytes?: number): Promise<MediaCache>;
+  openReport(): MediaCacheOpenReport;
+  /** Where the entry `key` lives (whether or not it exists); `null` for a malformed key. */
+  entryDir(key: string): string | null;
+  /** The entry, its last use set to now; `null` when there is none or its directory is gone. */
+  lookup(key: string): Promise<EntryMeta | null>;
+  /**
+   * Moves `<jobOutDir>/<key>/` into the cache (after the worker exited): fin-shm's checks,
+   * `meta.json` and every file's size and BLAKE3 verified, renamed into place, then indexed
+   * with the `projects` it serves (pinned for those open). An entry already there wins: its
+   * meta is answered and the projects are added. Evicts down to the cap afterwards.
+   */
+  commit(jobOutDir: string, key: string, projects: ReadonlyArray<string>): Promise<EntryMeta>;
+  /** Pins `key` for `holder` (`job:<id>`, `project:<id>`); false when there is no such entry. */
+  pin(key: string, holder: string): Promise<boolean>;
+  unpin(key: string, holder: string): Promise<boolean>;
+  /** Removes every pin of `holder` (a job's end hook); how many. */
+  release(holder: string): Promise<number>;
+  /** The project is open here: every entry serving it is pinned until `unpinProject`. */
+  pinProject(projectId: string): Promise<number>;
+  unpinProject(projectId: string): Promise<number>;
+  pinsOf(key: string): Promise<string[]>;
+  /** The entries made from the source with this fingerprint. */
+  entriesFor(asset: { readonly fingerprint: string }): Promise<EntryMeta[]>;
+  /** The projects `key` serves (reach for media bytes, spec §7.3). */
+  projectsOf(key: string): Promise<string[]>;
+  status(): Promise<CacheStatus>;
+  /** Evicts unpinned entries, least recently used first, down to `targetBytes` (at most the cap). */
+  gc(targetBytes?: number): Promise<CacheGcResult>;
+  /** Sets the cap (absent: the default) and evicts down to it. */
+  setCap(capBytes?: number): Promise<CacheGcResult>;
+  /** @internal Test builds only: a commit stops after its rename; the pre-move free-space check reads `freeBytes`. */
+  setFaultsForTest(faults: { readonly stopAfterRename?: boolean; readonly freeBytes?: number | null }): Promise<void>;
+}

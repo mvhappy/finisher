@@ -10,6 +10,7 @@ import { connectConsole, ConsoleError } from "./client.ts";
 import { agent } from "./commands/agent.ts";
 import { audit } from "./commands/audit.ts";
 import { auth } from "./commands/auth.ts";
+import { cache } from "./commands/cache.ts";
 import type { CommandContext } from "./commands/context.ts";
 import { devices, revoke } from "./commands/devices.ts";
 import { diagnostics } from "./commands/diagnostics.ts";
@@ -39,6 +40,7 @@ const COMMANDS: Record<string, (ctx: CommandContext) => Promise<number>> = {
   agent,
   provider,
   training,
+  cache,
   mcp,
   auth,
   plugin,
@@ -120,6 +122,7 @@ Agent sessions (sub-project 7):
   provider key ls [--json]                 the stored model keys (never their values)
   provider local show|test [--json]        the local model endpoint, and whether it answers
   training closed-targets [--json]         the counsel gate on closed-model training targets
+  cache status [--json]                    the media cache: its size against the cap, by recipe
 These change something (each needs an interactive terminal and your confirmation):
   agent approve <approval> allow|deny [--add <amount>] [--remember session|project|projectLocal]
                                            --add raises a budget: USD, tokens (200k) or time (30m)
@@ -134,6 +137,7 @@ These change something (each needs an interactive terminal and your confirmation
   provider local set <ollama|lmstudio|url>
   provider local rm
   training closed-targets pendingCounsel|cleared|excluded
+  cache gc [--to <GiB>]                    evict unpinned media cache entries down to the cap or lower
 
 Reading recorded content needs no code:
   diagnostics export --content [--store diagnostics|agentTraces] [--kind <kind>]... [--since <date>] [--project <id>] [--limit <n>]
