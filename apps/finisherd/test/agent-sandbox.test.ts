@@ -10,7 +10,6 @@ import { spawnSync } from "node:child_process";
 import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
 import type { Node, Session } from "@finisher/contracts";
 import { sandboxStatus } from "@finisher/fin-node";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from "vitest";
@@ -19,12 +18,14 @@ import { Effect, Exit, Scope } from "effect";
 import { assertSessionEnv, openSessionSandbox, sandboxMode, sessionEnv } from "../src/agent/sandbox.ts";
 import { sessionKeys } from "../src/agent/sandbox-env.ts";
 import { ensureSessionDirs, linkSignInStore, sessionDirs } from "../src/agent/session-dirs.ts";
+import { resolveFinPath } from "../src/agent/settings.ts";
 import { childEnv } from "../src/env.ts";
 import { type SandboxStatus, setSandboxStatusSource } from "../src/sandbox/status.ts";
 import { AgentServer } from "./support/agent-server.ts";
 import { addAsset, commit, type NdjsonClient, ok, tx } from "./support/ndjson-client.ts";
 
-const FIN = process.env.CARGO_TARGET_DIR === undefined ? fileURLToPath(new URL("../../../target/debug/fin", import.meta.url)) : join(process.env.CARGO_TARGET_DIR, "debug", "fin");
+// The `fin` the server's sessions are granted (beside the bundled binaries, else the checkout's).
+const FIN = resolveFinPath({ models: [] } as unknown as Parameters<typeof resolveFinPath>[0]);
 const require = process.env.FIN_REQUIRE_LANDLOCK === "1";
 const saved = { hooks: process.env.FIN_TEST_HOOKS, ready: process.env.FIN_TEST_SANDBOX_READY };
 
@@ -357,7 +358,7 @@ describe("a CLI session's processes (the fake harness's spawn step)", () => {
     ];
     const boxed = await run(argvs);
     const [mismatch, read, write, whoami] = boxed.children;
-    expect(mismatch!.stdout).toMatch(/PATH_NOT_ALLOWED/);
+    expect(mismatch!.stdout, JSON.stringify(mismatch)).toMatch(/PATH_NOT_ALLOWED/);
     expect(mismatch!.stdout).toMatch(/projectMismatch/);
     expect(read).toMatchObject({ code: 1 });
     expect(read!.stderr).toMatch(/Permission denied/);
