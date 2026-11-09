@@ -50,6 +50,8 @@ export interface RemoteWiringDeps {
   readonly httpRoutes: Record<string, Route>;
   /** Writes `finisherd.json` again (a reset's new `envId`). */
   readonly rewriteInfo: () => void;
+  /** The remote listener's proof origins (Task 10; made after this wiring, so read late). */
+  readonly remoteOrigins: () => ReadonlyArray<string>;
 }
 
 /** A timer for the server's lifetime. */
@@ -95,9 +97,15 @@ export const wireRemoteAccess = (d: RemoteWiringDeps) =>
     const pairing = new Pairing({ store: d.store, devices: d.devices, audit: d.audit, env: environment, journal: d.journal });
     yield* every(10_000, "pairing expiry sweep", () => pairing.sweep());
     const verifier = new DpopVerifier(d.nonces);
-    // On loopback a proof names the loopback listener's own origins; the remote listener's are Task 10's.
-    const allowedOrigins = (_ctx: HttpCtx) => loopbackHosts(d.loopbackPort()).map((h) => `http://${h}`);
-    const routeOf = (ctx: HttpCtx): RouteKind => (ctx.listener === "loopback" ? "loopback" : "other");
+    // A proof names the origin of the listener it came in on: loopback's own, or the remote
+    // listener's routes, `publicUrl` and its own names (Task 10).
+    const allowedOrigins = (ctx: HttpCtx) => (ctx.listener === "loopback" ? loopbackHosts(d.loopbackPort()).map((h) => `http://${h}`) : d.remoteOrigins());
+    // The kind of the route a request came over, by its Host (never its address).
+    const routeOf = (ctx: HttpCtx): RouteKind => {
+      if (ctx.listener === "loopback") return "loopback";
+      const r = routes.current().find((x) => x.kind !== "loopback" && new URL(x.url).host.toLowerCase() === ctx.host);
+      return r?.kind ?? "other";
+    };
     Object.assign(d.httpRoutes, {
       // `GET /.well-known/finisher` (anonymous, spec §5.5): the descriptor's public subset.
       "GET /.well-known/finisher": async () => ({ status: 200, body: environment.wellKnown() }),

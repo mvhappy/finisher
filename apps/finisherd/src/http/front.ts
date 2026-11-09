@@ -26,6 +26,8 @@ export interface HttpCtx {
   /** The peer's address (the audit's only). */
   readonly remote: string;
   readonly url: URL;
+  /** The request's `Host`, lower case (one the listener serves). */
+  readonly host: string;
   /** The request's normalised `Origin`, when a browser sent one (allowed by now). */
   readonly origin?: string;
 }
@@ -164,7 +166,7 @@ export function makeFront(
     if (path === RPC_PATH) return send({ status: 426, body: { protocol: { min: PROTOCOL_VERSION, max: PROTOCOL_VERSION } } }, origin);
     const route = routes[`${method} ${path}`];
     if (route === undefined) return send({ status: 404 }, origin);
-    const ctx: HttpCtx = { listener: policy.name, remote, url, ...(origin === undefined ? {} : { origin }) };
+    const ctx: HttpCtx = { listener: policy.name, remote, url, host: String(req.headers.host).toLowerCase(), ...(origin === undefined ? {} : { origin }) };
     void (async () => {
       let body: unknown;
       if (method === "POST") {

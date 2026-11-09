@@ -11,6 +11,8 @@ import { revokeCredential } from "./auth/revoke.ts";
 import { deviceHandlers } from "./auth/device-rpc.ts";
 import { PairingTag } from "./auth/pairing.ts";
 import { DeviceAccessTag } from "./net/remote-wiring.ts";
+import { RemoteListenerTag } from "./net/remote.ts";
+import { settingsHandlers } from "./net/settings-rpc.ts";
 import { EnvironmentTag, envMoved } from "./env/descriptor.ts";
 import { envHandlers } from "./env/rpc.ts";
 import { chainOf, credentialOf, withChain, writeGuardOf } from "./chain/chain.ts";
@@ -81,6 +83,7 @@ export const HandlersLive = FinRpcs.toLayer(
     const environment = yield* EnvironmentTag;
     const pairing = yield* PairingTag;
     const deviceAccess = yield* DeviceAccessTag;
+    const remoteListener = yield* RemoteListenerTag;
     const admin: AdminDeps = {
       control: yield* ServerControlTag,
       audit,
@@ -421,6 +424,7 @@ export const HandlersLive = FinRpcs.toLayer(
       ...agentHandlers({ guard, store: agents.store, reach, agents: agentRuntime, principalOf }),
       // 5B: pairing, devices, settings writes and the environment.
       ...deviceHandlers({ guard, pairing, access: deviceAccess, connections }),
+      ...settingsHandlers({ guard, serverData: admin.control.serverData ?? "", remote: remoteListener, audit }),
       ...envHandlers({ guard, env: environment }),
     }), {
       connections,

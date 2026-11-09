@@ -21,7 +21,7 @@ import type { FinError } from "@finisher/contracts";
 import { Context } from "effect";
 import { ANONYMOUS, type Principal } from "./principal.ts";
 
-export type Transport = "socket" | "pipe" | "ws";
+export type Transport = "socket" | "pipe" | "ws" | "wss";
 
 export type CredentialRef = { kind: "local" | "console" } | { kind: "agent" | "mcp"; id: string };
 

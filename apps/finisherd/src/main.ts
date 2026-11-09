@@ -58,6 +58,8 @@ import { claimSocketPath, makeLocalServer, serveRpc } from "./transport.ts";
 import { makeTicketedWebSocketServer, makeUpgradeCheck, WebSocketSlots } from "./upgrade.ts";
 import { type FrontRefusal, makeFront, type Route } from "./http/front.ts";
 import { loopbackPolicy } from "./http/policy.ts";
+import { RemoteListener, RemoteListenerTag } from "./net/remote.ts";
+import { readServerSettings, remoteConfigOf } from "./net/server-settings.ts";
 import { EnvironmentTag } from "./env/descriptor.ts";
 import { PairingTag } from "./auth/pairing.ts";
 import { DeviceAccessTag, wireRemoteAccess } from "./net/remote-wiring.ts";
@@ -81,6 +83,13 @@ export interface ServeOptions {
   readonly onAgentRuntime?: (parts: AgentRuntimeParts) => void;
   /** The job engine's options (tests: the test kinds). */
   readonly jobs?: JobEngineOptions;
+  /**
+   * The remote listener in tests (5B Decision 34): `forceTls` starts it on `listen` (e.g.
+   * `127.0.0.1:0`) whatever the settings say; `remoteOf` injects remote addresses.
+   */
+  readonly remote?: { readonly forceTls?: boolean; readonly listen?: string; readonly remoteOf?: (s: never) => string };
+  /** The remote listener, handed to tests once made. */
+  readonly onRemote?: (r: RemoteListener) => void;
   /** Called once both transports listen and `finisherd.json` is written. */
   readonly onReady?: (info: ServerInfo) => void;
 }
@@ -100,6 +109,8 @@ export const serve = ({
   diagnostics: diagnosticsOptions,
   credentials: credentialOptions,
   jobs: jobOptions,
+  remote: remoteOptions,
+  onRemote,
 }: ServeOptions) =>
   Effect.scoped(
     Effect.gen(function* () {
@@ -194,9 +205,12 @@ export const serve = ({
       });
       // The WebSocket (Decision 24): a ticket in `Sec-WebSocket-Protocol`, Host and Origin checked first.
       let wsPort = 0;
+      // `server.*` settings (5B Task 10): a fixed loopback port, the remote listener, project roots.
+      const serverSettings = readServerSettings(serverData);
       // The loopback listener (5A's lists exactly) and its HTTP front (5B Task 6): the routes are
       // filled in once the pieces they answer from exist (the environment, below).
-      const loopback = loopbackPolicy(() => wsPort, cachedOrigins(serverData));
+      const loopbackOrigins = cachedOrigins(serverData);
+      const loopback = loopbackPolicy(() => wsPort, loopbackOrigins);
       const check = makeUpgradeCheck({ policy: loopback, tickets });
       const httpRoutes: Record<string, Route> = {};
       // DPoP's server nonces (Task 7): every answer of the front carries the current one.
@@ -220,6 +234,7 @@ export const serve = ({
           maxPayload: MAX_FRAME + 64 * 1024,
           slots,
           policy: loopback,
+          ...(serverSettings.loopbackPort === undefined ? {} : { port: serverSettings.loopbackPort }),
           onRequest: makeFront(httpRoutes, loopback, nonces, { onRefused: auditFront }),
           onRefused: (r) => {
             if (r.reason === "badPath" || r.reason === "badVersion" || r.reason === "tooMany") return;
@@ -244,6 +259,8 @@ export const serve = ({
         local: everyConnection.add(new Connections(process.platform === "win32" ? "pipe" : "socket", () => localEndpoint)),
         // Each WebSocket carries its ticket's principal from its first frame (`upgrade.ts`).
         ws: everyConnection.add(new Connections("ws", () => wsEndpoint)),
+        // The remote listener's WebSockets (5B Task 10), when it runs.
+        wss: everyConnection.add(new Connections("wss", () => remote.info()?.endpoint ?? "")),
       };
       // Agent and MCP credentials (5A Task 9): proved through the handshake while live; every
       // request re-checks; expired ones are ended by the sweep, revoked ones at once.
@@ -309,7 +326,28 @@ export const serve = ({
         rewriteInfo: () => {
           if (!removed) publish(diagnostics.enabled());
         },
+        remoteOrigins: () => remote.originsOf(remote.info()?.port ?? 0),
       });
+      // The remote listener (Task 10): off unless `FIN_LISTEN`, the settings or a test asks.
+      const remote = new RemoteListener({
+        slots,
+        tickets,
+        audit,
+        secrets,
+        routes,
+        environment,
+        nonces,
+        httpRoutes,
+        maxPayload: MAX_FRAME + 64 * 1024,
+        origins: loopbackOrigins,
+        onRefused: auditFront,
+        onUpgradeRefused: (r) => {
+          if (r.reason === "badPath" || r.reason === "badVersion" || r.reason === "tooMany") return;
+          audit.append({ kind: "auth.fail", principal: { kind: "anonymous", id: "" }, credentialKind: "ticket", outcome: "failed", code: "UNAUTHENTICATED", details: { reason: r.reason, transport: "wss" } });
+        },
+        remoteOf: remoteOptions?.remoteOf,
+      });
+      onRemote?.(remote);
       if (checkMoved(environment, controlStore, identity.renewed)) {
         yield* Effect.logWarning("finisherd: this server data was copied or moved: paired devices wait until its owner adopts or resets it");
       }
@@ -378,13 +416,24 @@ export const serve = ({
         { transport: connections.ws.transport, endpoint: wsEndpoint },
       ] as const;
       const serverControl = {
+        serverData,
         get envId() {
           return controlStore.envId;
         },
         environment: () => ({ state: environment.state(), spki: environment.spki(), routes: [...routes.current()] }),
-        listeners: () => listeners, stop: () => void Deferred.doneUnsafe(stopped, Exit.void), warnings: secrets.warnings };
+        listeners: () => {
+          const r = remote.info();
+          return r === undefined ? listeners : [...listeners, { transport: "wss" as const, endpoint: r.endpoint, spki: r.spki, mode: r.mode, source: r.source }];
+        },
+        stop: () => void Deferred.doneUnsafe(stopped, Exit.void),
+        warnings: () => [
+          ...secrets.warnings(),
+          ...remote.warnings(),
+          ...serverSettings.invalid.map(({ key, code }) => ({ code, key, message: `settings.json ${key} is not used: it does not fit its schema` })),
+        ],
+      };
       yield* Layer.build(
-        Layer.mergeAll(serveRpc(local, connections.local), serveRpc(ws, connections.ws)).pipe(
+        Layer.mergeAll(serveRpc(local, connections.local), serveRpc(ws, connections.ws), serveRpc(remote.socketServer(), connections.wss)).pipe(
           Layer.provide(
             Layer.mergeAll(
               Layer.succeedContext(registryContext),
@@ -404,12 +453,25 @@ export const serve = ({
               Layer.succeed(EnvironmentTag, environment),
               Layer.succeed(PairingTag, pairing),
               Layer.succeed(DeviceAccessTag, access),
+              Layer.succeed(RemoteListenerTag, remote),
               Layer.succeed(AgentCoreTag, agentCore),
               Layer.succeed(AgentRuntimeTag, agentRuntime),
             ),
           ),
         ),
       );
+
+      // The remote listener starts once its transport serves (`FIN_LISTEN`, the settings or a test).
+      const remoteConfig = remoteOptions?.forceTls === true
+        ? { listen: remoteOptions.listen ?? "127.0.0.1:0", tls: { mode: "selfSigned" as const }, source: "test" as const }
+        : remoteConfigOf(serverSettings);
+      // Stopped before the RPC layers close (finalizers run last first).
+      yield* Effect.addFinalizer(() => remote.stop());
+      if (remoteConfig !== undefined && environment.state() !== "moved") {
+        // `FIN_LISTEN` (Docker) asked for it: a failure stops the start. From the settings it warns.
+        if (remoteConfig.source === "env") yield* remote.start(remoteConfig);
+        else yield* Effect.catch(remote.start(remoteConfig), (e) => Effect.sync(() => remote.noteStartFailure(e)));
+      }
 
       const publish = (enabled: boolean) =>
         writeServerInfo(serverData, { pid: process.pid, wsPort, socket, envId: controlStore.envId, diagnostics: { enabled } });

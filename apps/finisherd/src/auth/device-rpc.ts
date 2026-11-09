@@ -1,13 +1,11 @@
-// 5B's pairing, device and settings handlers, spread into `handlers.ts` (the `env.*` ones are
-// `env/rpc.ts`). Task 1 lands the contracts and
-// the `devices` store only: until each RPC's task, its handler answers `INTERNAL {reason:
-// notYet}` so the handler map stays complete. Importing this module registers the `devices`
+// 5B's pairing and device handlers, spread into `handlers.ts` (`env.*` is `env/rpc.ts`,
+// `settings.write` is `net/settings-rpc.ts`). Importing this module registers the `devices`
 // control chain (`devices.ts`).
 import type { FinError } from "@finisher/contracts";
 import { Effect, Stream } from "effect";
 import type { Principal } from "@finisher/contracts";
 import { chainOf } from "../chain/chain.ts";
-import { finError, toFinError } from "../errors.ts";
+import { toFinError } from "../errors.ts";
 import type { DevicesWatchItem } from "@finisher/contracts";
 import { PubSub } from "effect";
 import type { Transport } from "../connections.ts";
@@ -15,13 +13,8 @@ import type { DeviceAccess } from "../net/remote-wiring.ts";
 import type { Pairing } from "./pairing.ts";
 import "./devices.ts";
 
-const notYet = (tag: string): FinError =>
-  finError("INTERNAL", `${tag} is not available on this server yet`, { tag, reason: "notYet" });
-
 type Guard = <A, R>(tag: string, self: Effect.Effect<A, FinError, R>) => Effect.Effect<A, FinError, R>;
 
-const unary = (guard: Guard, tag: string) => () => guard(tag, Effect.fail(notYet(tag)));
-const stream = (tag: string) => () => Stream.fail(notYet(tag));
 
 /** The principal the chain bound to this call. */
 const principalOf = (options: object): Principal => {
@@ -85,6 +78,5 @@ export function deviceHandlers({ guard, pairing, access, connections }: { readon
         return { revoked: r.revoked };
       }),
     "auth.devices.watch": () => watchDevices(access),
-    "settings.write": unary(guard, "settings.write"),
   };
 }

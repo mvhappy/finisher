@@ -140,7 +140,7 @@ const COMMON = {
 const SERVER = {
   spki: Schema.optional(Spki),
   mode: Schema.optional(Schema.Literals(["selfSigned", "files"])),
-  source: Schema.optional(Schema.Literals(["env", "settings"])),
+  source: Schema.optional(Schema.Literals(["env", "settings", "test"])),
   path: Schema.optional(Schema.Literals(SETTINGS_PATHS)),
   devices: Schema.optional(Schema.Int),
   credentials: Schema.optional(Schema.Int),

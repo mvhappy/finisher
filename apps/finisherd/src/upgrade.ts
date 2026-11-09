@@ -25,6 +25,7 @@
 // all, with `RESERVED_WS` of them only for `device` and `console` principals (the app and the
 // owner), so a principal minting tickets cannot lock out the UI.
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
+import { createServer as createHttpsServer } from "node:https";
 import type { Duplex } from "node:stream";
 import { PROTOCOL_VERSION, WS_PROTOCOL_PREFIX, WS_TICKET_PREFIX } from "@finisher/contracts";
 import { Context, Effect, Exit, Fiber, Scope } from "effect";
@@ -149,6 +150,8 @@ export interface WebSocketServerOptions {
   readonly onRequest?: (req: IncomingMessage, res: ServerResponse) => void;
   /** The port to listen on (default 0: any). */
   readonly port?: number;
+  /** TLS (5B's remote listener): `node:https` with this key and certificate, TLS 1.2 or later. */
+  readonly tls?: { readonly key: string; readonly cert: string };
 }
 
 /** Before authentication a client gets this long to upgrade (review of Task 6, finding 8). */
@@ -246,7 +249,11 @@ export const makeTicketedWebSocketServer = (options: WebSocketServerOptions) =>
           res.writeHead(status, { "content-type": "application/json", connection: "close" });
           res.end(status === 426 ? JSON.stringify({ protocol: { min: PROTOCOL_VERSION, max: PROTOCOL_VERSION } }) : "");
         };
-        const server = createServer({ headersTimeout: timeout, requestTimeout: timeout, connectionsCheckingInterval: 1000 }, options.onRequest ?? plain);
+        const opts = { headersTimeout: timeout, requestTimeout: timeout, connectionsCheckingInterval: 1000 };
+        const server: Server =
+          options.tls === undefined
+            ? createServer(opts, options.onRequest ?? plain)
+            : (createHttpsServer({ ...opts, key: options.tls.key, cert: options.tls.cert, minVersion: "TLSv1.2" }, options.onRequest ?? plain) as unknown as Server);
         // A backstop only: the caps below decide first.
         server.maxConnections = maxUnauthenticated + maxWebSockets;
         return server;
@@ -322,7 +329,8 @@ export const makeTicketedWebSocketServer = (options: WebSocketServerOptions) =>
         return;
       }
       socket.once("close", release);
-      unauthenticated.get(socket)?.upgraded();
+      // Over TLS the upgrade comes on the `TLSSocket`; the pool tracked its raw socket (`_parent`).
+      (unauthenticated.get(socket) ?? unauthenticated.get((socket as Duplex & { _parent?: Duplex })._parent as Duplex))?.upgraded();
       wss.handleUpgrade(req, socket, head, (conn) => {
         // Paused until a handler reads it, so nothing is dropped.
         conn.pause();
@@ -367,5 +375,5 @@ export const makeTicketedWebSocketServer = (options: WebSocketServerOptions) =>
         ).pipe(Effect.ensuring(Scope.close(scope, Exit.void)));
       });
 
-    return { server: SocketServer.of({ address, run }), port: bound.port };
+    return { server: SocketServer.of({ address, run }), port: bound.port, http };
   });

@@ -30,7 +30,17 @@ export interface ChildEnvExtra {
  * Decisions 11 and 14b): server data (a child proves with its own credential, never the local
  * key), the author (the server sets an agent's) and the training switch (the server's own).
  */
-export const NEVER_PASSED = ["FIN_SERVER_DATA", "FIN_AUTHOR", "FIN_TRAINING"] as const;
+export const NEVER_PASSED = [
+  "FIN_SERVER_DATA",
+  "FIN_AUTHOR",
+  "FIN_TRAINING",
+  // 5B: the server's own listener, certificate files and secret store.
+  "FIN_LISTEN",
+  "FIN_TLS_CERT",
+  "FIN_TLS_KEY",
+  "FIN_SECRETS",
+  "FIN_SECRETS_KEY_FILE",
+] as const;
 
 /** Never passed through, even if a future allow-list change would admit them. */
 function denied(key: string): boolean {

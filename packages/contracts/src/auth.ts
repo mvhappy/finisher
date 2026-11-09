@@ -112,7 +112,16 @@ export const ServerStatusSuccess = Schema.Struct({
   /** 5B: the environment's state, its identity pin and its routes. */
   env: Schema.optional(Schema.Struct({ state: EnvStateSchema, spki: Schema.String, routes: Schema.Array(RouteSchema) })),
   pid: Schema.Number,
-  listeners: Schema.Array(Schema.Struct({ transport: Schema.Literals(["socket", "pipe", "ws"]), endpoint: Schema.String })),
+  /** 5B: the remote listener is `wss`, with its pin, its certificate mode and where its config came from. */
+  listeners: Schema.Array(
+    Schema.Struct({
+      transport: Schema.Literals(["socket", "pipe", "ws", "wss"]),
+      endpoint: Schema.String,
+      spki: Schema.optional(Schema.String),
+      mode: Schema.optional(Schema.Literals(["selfSigned", "files"])),
+      source: Schema.optional(Schema.Literals(["env", "settings", "test"])),
+    }),
+  ),
   connections: Schema.Record(Schema.String, Schema.Number),
   journal: Schema.Struct({ enabled: Schema.Boolean }),
   auditFailures: Schema.Number,

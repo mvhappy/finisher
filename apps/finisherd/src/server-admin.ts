@@ -14,6 +14,8 @@ import { currentSandboxStatus, profileWarning, sandboxWarnings, type SandboxRepo
 /** What `serve` tells the admin RPCs about itself. */
 export interface ServerControl {
   readonly envId: string;
+  /** The server data directory (`settings.write` writes its `settings.json`; `serve` sets it). */
+  readonly serverData?: string;
   /** The endpoints this server listens on (known once both listen). */
   readonly listeners: () => ReadonlyArray<{ readonly transport: Transport; readonly endpoint: string }>;
   /** Starts the graceful shutdown: `serve` returns, its finalizers run, the process exits 0. */
