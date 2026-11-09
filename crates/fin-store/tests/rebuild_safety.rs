@@ -587,3 +587,41 @@ fn segments_bind_the_genesis_and_a_rebuild_refuses_another() {
     let err = e.try_open_at("a", &e.dir).unwrap_err();
     assert_eq!(err.code, "GENESIS_MISMATCH", "{err:?}");
 }
+
+/// Review #36: a row whose columns do not decode is skipped alone; the healthy row right
+/// after it is salvaged too (the page search used to resume past it).
+#[test]
+fn salvage_keeps_the_healthy_row_after_an_undecodable_one() {
+    let e = env();
+    let mut a = e.create("a");
+    for (i, id) in ["t1", "t2", "t3", "t4"].into_iter().enumerate() {
+        commit(&mut a, id, vec![asset(&format!("/m/{i}.mov"))]);
+    }
+    let db = a.db_path().to_path_buf();
+    drop(a);
+    let segs = seg_dir(&e.dir);
+    if segs.exists() {
+        fs::remove_dir_all(&segs).unwrap();
+    }
+    let c = Connection::open(&db).unwrap();
+    c.execute("UPDATE txs SET exported = 0", []).unwrap();
+    // Two bad rows, each followed by a healthy one.
+    c.execute(
+        "UPDATE txs SET record_bytes = 123 WHERE tx_id IN ('t1', 't3')",
+        [],
+    )
+    .unwrap();
+    drop(c);
+    let r = fin_store::rebuild_project(&e.data("a"), &e.dir).unwrap();
+    assert!(!r.salvage_complete);
+    assert_eq!(r.salvage_errors.len(), 2, "{:?}", r.salvage_errors);
+    assert_eq!(r.salvaged, 2, "{r:?}");
+    let a = e.open("a");
+    for id in ["t2", "t4"] {
+        assert!(
+            matches!(a.tx_status(id).unwrap(), TxStatus::SetAside { ref origin, .. } if origin == "salvage"),
+            "{id}: {:?}",
+            a.tx_status(id)
+        );
+    }
+}
