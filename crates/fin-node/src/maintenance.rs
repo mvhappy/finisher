@@ -41,6 +41,11 @@
 //! They reach the `onEvent` callback through a weak (unref'd) threadsafe function, so a
 //! registered callback does not keep the process alive. Events emitted before the first
 //! `onEvent` are buffered, the newest [`BUFFERED`] kept.
+//!
+//! Each event is numbered as it is emitted (`seq`, from 1; `lagged` is 0), the callback's
+//! second argument. `statusAt()` answers with the last number its status covers (review #39):
+//! the events up to it were emitted before that status was read, so a `project.events`
+//! subscriber starting from it drops them instead of replaying older state after it.
 
 use std::collections::VecDeque;
 use std::panic::{AssertUnwindSafe, catch_unwind};
@@ -70,14 +75,24 @@ pub(crate) const TICK_EVERY: Duration = Duration::from_millis(500);
 pub(crate) const BUFFERED: usize = 1024;
 
 /// The `onEvent` callback: weak (does not keep the event loop alive), errors not passed in.
-pub(crate) type EventFn = ThreadsafeFunction<String, (), String, Status, false, true>;
+pub(crate) type EventFn = ThreadsafeFunction<EventArgs, (), EventArgs, Status, false, true>;
+
+/// What the callback is called with: the event's JSON and its `seq`.
+pub(crate) type EventArgs = FnArgs<(String, f64)>;
 
 #[derive(Default)]
 struct Sink {
     callback: Option<EventFn>,
-    buffered: VecDeque<String>,
+    buffered: VecDeque<(String, u64)>,
     /// Events dropped from a full buffer (reported as `lagged`).
     dropped: u64,
+    /// The last event's number.
+    seq: u64,
+}
+
+fn args(json: String, seq: u64) -> EventArgs {
+    // Exact as an f64 up to 2^53 events.
+    (json, seq as f64).into()
 }
 
 /// Where events go: the registered callback, or a bounded buffer until there is one.
@@ -89,19 +104,26 @@ pub(crate) struct EventSink {
 impl EventSink {
     pub(crate) fn emit(&self, json: String) {
         let mut s = lock(&self.sink);
+        s.seq += 1;
+        let seq = s.seq;
         match &s.callback {
             // Non-blocking: queued for the JS thread (the queue is unbounded).
             Some(cb) => {
-                cb.call(json, ThreadsafeFunctionCallMode::NonBlocking);
+                cb.call(args(json, seq), ThreadsafeFunctionCallMode::NonBlocking);
             }
             None => {
                 if s.buffered.len() == BUFFERED {
                     s.buffered.pop_front();
                     s.dropped += 1;
                 }
-                s.buffered.push_back(json);
+                s.buffered.push_back((json, seq));
             }
         }
+    }
+
+    /// The last event's number: every event up to it has been emitted.
+    pub(crate) fn seq(&self) -> u64 {
+        lock(&self.sink).seq
     }
 
     /// Registers `callback` (replacing an earlier one) and hands it the buffered events.
@@ -109,11 +131,11 @@ impl EventSink {
         let mut s = lock(&self.sink);
         if s.dropped > 0 {
             let lagged = to_json(&EngineEvent::Lagged { dropped: s.dropped });
-            callback.call(lagged, ThreadsafeFunctionCallMode::NonBlocking);
+            callback.call(args(lagged, 0), ThreadsafeFunctionCallMode::NonBlocking);
             s.dropped = 0;
         }
-        for json in std::mem::take(&mut s.buffered) {
-            callback.call(json, ThreadsafeFunctionCallMode::NonBlocking);
+        for (json, seq) in std::mem::take(&mut s.buffered) {
+            callback.call(args(json, seq), ThreadsafeFunctionCallMode::NonBlocking);
         }
         s.callback = Some(callback);
     }

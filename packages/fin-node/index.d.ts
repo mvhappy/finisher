@@ -75,6 +75,12 @@ export declare class Engine {
    */
   status(): Promise<string>;
   /**
+   * `{ status, seq }` JSON: `status()`'s answer and the number of the last event (`onEvent`'s
+   * `seq`) emitted before it was read. Events numbered up to `seq` are older than it (their
+   * changes are in it), later ones newer: a subscriber starting from it drops the former.
+   */
+  statusAt(): Promise<string>;
+  /**
    * What became of `txId`: the `CommittedTx` JSON; or, when it was set aside,
    * `{ "setAside": { txId, branch, reason, origin } }` JSON (`reason`: `SUPERSEDED`,
    * `DIVERGED_TAIL`, `SALVAGED`, `MISSING_FROM_FOLDER`, `STALE_EPOCH`, `MALFORMED`,
@@ -134,8 +140,10 @@ export declare class Engine {
    * - `{ type: "error", error: { code, message, details, fix? }, fatal: boolean }`: a tick or an
    *   automatic backup/compaction failed (`fatal`: it panicked and the engine is dead);
    * - `{ type: "lagged", dropped }`: first after registration when the buffer overflowed.
+   *
+   * `seq` numbers the events as they are emitted, from 1 (`lagged`: 0); see `statusAt`.
    */
-  onEvent(cb: (json: string) => void): void;
+  onEvent(cb: (json: string, seq: number) => void): void;
   /**
    * Resolves to the `FramePlan` JSON of `timeline` (`null`: the main timeline) on `branch` at
    * `at` (a rational time string). Captions are measured with the server's shared measurer;
