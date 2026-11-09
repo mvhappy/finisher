@@ -125,15 +125,30 @@ fn from_info(file: &Path, text: &str) -> Result<Endpoint, CoreError> {
         .ok_or_else(|| bad("no \"socket\""))?;
     let version = info.get("protocolVersion").and_then(Value::as_u64);
     if version != Some(PROTOCOL_VERSION) {
-        let shown = version.map_or_else(
-            || "no protocol version".to_string(),
-            |v| format!("protocol {v}"),
-        );
-        return Err(CoreError::new("PROTOCOL_MISMATCH", format!("finisherd speaks {shown}, fin speaks {PROTOCOL_VERSION}"))
-            .with_details(json!({ "server": version, "client": PROTOCOL_VERSION, "infoFile": file.display().to_string() }))
-            .with_fix("update fin or finisherd so both come from the same Finisher release"));
+        let at = json!({ "infoFile": file.display().to_string() });
+        return Err(protocol_mismatch(version, at));
     }
     Endpoint::parse(socket)
+}
+
+/// `PROTOCOL_MISMATCH`: the server speaks `version` (`None`: says none), not
+/// [`PROTOCOL_VERSION`]. `at` (an object) says where it was read: discovery's info file, or the
+/// endpoint whose hello said it (fin and finisherd ship version-locked, arch §21).
+pub fn protocol_mismatch(version: Option<u64>, at: Value) -> CoreError {
+    let shown = version.map_or_else(
+        || "no protocol version".to_string(),
+        |v| format!("protocol {v}"),
+    );
+    let mut details = json!({ "server": version, "client": PROTOCOL_VERSION });
+    if let (Some(map), Some(at)) = (details.as_object_mut(), at.as_object()) {
+        map.extend(at.clone());
+    }
+    CoreError::new(
+        "PROTOCOL_MISMATCH",
+        format!("finisherd speaks {shown}, fin speaks {PROTOCOL_VERSION}"),
+    )
+    .with_details(details)
+    .with_fix("update fin or finisherd so both come from the same Finisher release")
 }
 
 /// The `envId` the running server published in `finisherd.json` (5A Task 2), unless `FIN_SERVER`

@@ -38,6 +38,8 @@ enum Hello {
     Protocol1,
     /// Protocol 1 with every handshake field and a valid proof: still too old (5A Task 6).
     Protocol1WithProof,
+    /// Protocol 3 with every handshake field and a valid proof: too new (review #12).
+    Protocol3WithProof,
 }
 
 /// What a squatter would like fin to print and do.
@@ -137,7 +139,7 @@ fn hello(mode: Hello, endpoint: &str, payload: &Value) -> Value {
         Hello::NoProof | Hello::WrongKey | Hello::Fails | Hello::Protocol1 => {
             (ENV, endpoint.to_string(), vec![9u8; 32])
         }
-        Hello::Protocol1WithProof => (ENV, endpoint.to_string(), key()),
+        Hello::Protocol1WithProof | Hello::Protocol3WithProof => (ENV, endpoint.to_string(), key()),
         Hello::ForeignEnv => ("01otherenv0000000000000000", endpoint.to_string(), key()),
         Hello::OtherEndpoint => (ENV, "/elsewhere/run/fin.sock".to_string(), key()),
     };
@@ -148,6 +150,9 @@ fn hello(mode: Hello, endpoint: &str, payload: &Value) -> Value {
     }
     if matches!(mode, Hello::Protocol1WithProof) {
         answer["protocolVersion"] = json!(1);
+    }
+    if matches!(mode, Hello::Protocol3WithProof) {
+        answer["protocolVersion"] = json!(3);
     }
     answer
 }
@@ -164,8 +169,6 @@ fn fin_refuses_server_without_proof() {
         (Hello::ForeignEnv, "envMismatch"),
         (Hello::OtherEndpoint, "endpointMismatch"),
         (Hello::Fails, "helloFailed"),
-        (Hello::Protocol1, "versionMismatch"),
-        (Hello::Protocol1WithProof, "versionMismatch"),
     ] {
         let fake = Fake::start(mode);
         let run = fin(&fake.sd, &cwd(), &["fonts", "status"]);
@@ -197,6 +200,36 @@ fn fin_refuses_server_without_proof() {
                 .len(),
             32
         );
+    }
+}
+
+/// Review of 2026-11-09, #12: the handshake wants exactly fin's protocol, older or newer, through
+/// discovery or `FIN_SERVER` (the credentialed path skips discovery's own check): one hello, no
+/// prove, no write.
+#[test]
+fn handshake_refuses_any_other_protocol() {
+    for (mode, server) in [
+        (Hello::Protocol1, 1),
+        (Hello::Protocol1WithProof, 1),
+        (Hello::Protocol3WithProof, 3),
+    ] {
+        let fake = Fake::start(mode);
+        let file = fake.sd.join("agent.json");
+        let cred = json!({ "v": 1, "kind": "agent", "id": "01agent000000000000000000a", "key": FAKE_KEY, "env": ENV });
+        support::auth::write_private(&file, &cred.to_string());
+        let agent: &[(&str, &std::ffi::OsStr)] = &[
+            ("FIN_CREDENTIAL", file.as_os_str()),
+            ("FIN_SERVER", fake.socket.as_os_str()),
+        ];
+        for env in [&[][..], agent] {
+            fake.seen.lock().unwrap().clear();
+            let run = fin_env(&fake.sd, &cwd(), &["fonts", "status"], env);
+            assert_error(&run, 6, "PROTOCOL_MISMATCH");
+            let error = &run.json["error"];
+            assert_eq!(error["details"]["server"], server, "{mode:?}: {error}");
+            assert_eq!(error["details"]["client"], 2, "{mode:?}: {error}");
+            assert_eq!(fake.tags(), ["server.hello"], "{mode:?}");
+        }
     }
 }
 

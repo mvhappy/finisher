@@ -127,6 +127,11 @@ pub trait Backend {
     fn tx_get(&self, tx_id: &str) -> Result<TxLookup, CoreError>;
     /// A project-scoped RPC (`project.status`, …): `payload` gains the project's id.
     fn project_call(&self, tag: &str, payload: Value) -> Result<Value, CoreError>;
+    /// [`Backend::project_call`] for a write keyed by `tx_id`: a reply lost after the request
+    /// was sent carries `details.txId` (as `tx.commit`'s does, [`Client::call_tx`]).
+    fn project_tx(&self, tag: &str, payload: Value, _tx_id: &str) -> Result<Value, CoreError> {
+        self.project_call(tag, payload)
+    }
     /// Rebuilds the project database: through the server when one runs (it holds the
     /// database), else in this process. `Ok((report, offline))`.
     fn rebuild(&self) -> Result<(Value, bool), CoreError>;
@@ -416,6 +421,12 @@ impl Backend for Online {
         let project_id = self.project_ref()?;
         payload["projectId"] = json!(project_id);
         self.call(tag, payload)
+    }
+
+    fn project_tx(&self, tag: &str, mut payload: Value, tx_id: &str) -> Result<Value, CoreError> {
+        let project_id = self.project_ref()?;
+        payload["projectId"] = json!(project_id);
+        self.with_client(|c| c.call_tx(tag, payload, tx_id))
     }
 
     fn rebuild(&self) -> Result<(Value, bool), CoreError> {

@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { fixtureRoot, runGate } from "./gate-helpers.mjs";
 
-const PROJECTS = ["apps/finisherd", "packages/contracts", "packages/core-types", "packages/fin-node"];
+const PROJECTS = ["apps/finisherd", "packages/contracts", "packages/core-types", "packages/fin-node", "packages/plugin-sdk"];
 const tsconfig = JSON.stringify({ compilerOptions: { strict: true, noEmit: true, module: "NodeNext", moduleResolution: "NodeNext" }, include: ["src"] });
 const files = (broken) =>
   Object.fromEntries(
