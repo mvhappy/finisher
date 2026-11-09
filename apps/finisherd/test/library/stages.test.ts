@@ -352,23 +352,32 @@ describe("review fixes", () => {
 describe("priority and restarts", () => {
   test("prioritize_jumps_the_queue_with_dependencies", { timeout: 120_000 }, async () => {
     const names = ["a.png", "b.png", "c.png", "d.png", "e.png", "f.png"];
-    const s = await setup({
-      names,
-      stages: [
-        testStage("t.a", { batch: 1, maxInFlight: 1, knobs: () => ({ delayMs: 700 }) }),
-        testStage("t.b", { batch: 1, maxInFlight: 1, dependsOn: ["t.a"] }),
-      ],
-    });
+    // No stage yet: the probes (they share the read pool) run to their end first.
+    const s = await setup({ names });
     const by = await probed(s, names);
     const last = by["f.png"]!.fp!;
+    // The read pool is shut while the stages are registered and the file is prioritized, and has
+    // one slot when it opens: the queue is in the state the test wants, and the engine's order
+    // (priority first) decides what runs first, never how fast this process happens to be.
+    const read = s.rig.svc.book.pools(s.lib)!.read;
+    s.rig.t.engine.definePool(read, 0);
+    s.rig.svc.registerStage(testStage("t.a", { batch: 1, maxInFlight: 1, knobs: () => ({ delayMs: 200 }) }));
+    s.rig.svc.registerStage(testStage("t.b", { batch: 1, maxInFlight: 1, dependsOn: ["t.a"] }));
     await eventually(async () => active(s.rig).length > 0);
     await exec(s.rig.svc.prioritize(last, "t.b"));
+    // One background `t.a` (max in flight 1) and the prioritized one: nothing else was submitted.
+    expect(active(s.rig)).toHaveLength(2);
+    s.rig.t.engine.definePool(read, 1);
     const done = await settled(s, "t.b", [last], ["done"]);
     expect(done.find((r) => r.fp === last)?.state).toBe("done");
-    const aDone = (await stageRows(s, "t.a")).filter((r) => r.state === "done").length;
-    expect(aDone).toBeLessThan(names.length - 1);
-    const mine = stageJobs(s.rig).filter((j) => (j.params as { items: string[] }).items.includes(last));
+    // Both of its jobs ran at `normal`, and its `t.a` started before every other job did: with one
+    // slot a `normal` job always goes before a `background` one, however slow this process is.
+    const all = stageJobs(s.rig);
+    const mine = all.filter((j) => (j.params as { items: string[] }).items.includes(last)).sort((x, y) => x.createdAt - y.createdAt);
     expect(mine.map((j) => j.priority)).toEqual(["normal", "normal"]);
+    for (const j of all.filter((x) => !mine.includes(x))) {
+      expect(j.startedAt === undefined || j.startedAt >= mine[0]!.startedAt!, `${j.id} started before the prioritized file's t.a`).toBe(true);
+    }
     // Unknown stages and fingerprints are refused.
     expect((await Effect.runPromise(Effect.flip(s.rig.svc.prioritize(last, "t.none")))).code).toBe("INVALID_REQUEST");
     expect((await Effect.runPromise(Effect.flip(s.rig.svc.prioritize("fp1:nope", "t.a")))).code).toBe("FILE_NOT_FOUND");

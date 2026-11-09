@@ -485,8 +485,13 @@ export class StagePump {
       this.#wanted.set(key, { fp, stage });
       return;
     }
-    this.#wanted.delete(key);
-    await this.#pumpStage(id, spec, [fp], "normal");
+    // Kept until the job is submitted: a pump turn that runs meanwhile (the end of the dependency
+    // kicks one) must still see the fingerprint as prioritized, not take it into a background batch.
+    try {
+      await this.#pumpStage(id, spec, [fp], "normal");
+    } finally {
+      this.#wanted.delete(key);
+    }
   }
 
   /** Libraries (online, attached, not paused, running `stage`) holding a live file with `fp`. */
