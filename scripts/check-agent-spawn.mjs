@@ -19,8 +19,9 @@ export const FORBIDDEN = [
   new RegExp(String.raw`\bimport\s*\(\s*["']${MODULE}["']\s*\)`),
   new RegExp(String.raw`\brequire\s*\(\s*["']${MODULE}["']\s*\)`),
   new RegExp(String.raw`^\s*import\s*["']${MODULE}["']`),
-  // Bun's and Deno's own process APIs, and `process.binding("spawn_sync")`.
-  /\bBun\.spawn(?:Sync)?\b|\bDeno\.(?:Command|run)\b|process\.binding\s*\(/,
+  // Bun's and Deno's own process APIs, `process.binding("spawn_sync")` and a `require` made
+  // by hand. A lint, not a boundary: a helper module outside `agent/` still gets past it.
+  /\bBun\.spawn(?:Sync)?\b|\bDeno\.(?:Command|run)\b|process\.binding\s*\(|\bcreateRequire\b/,
 ];
 
 /** Whether `path` (repo-relative, "/") is checked. */

@@ -2,7 +2,7 @@
 // session's variables. `sessionEnv` builds it; `assertSessionEnv` is the contract a CLI
 // adapter (7D, 7E) checks its launch environment against, so a harness that sets its own
 // environment cannot drop `FIN_PROJECT_DIR` or pass a secret by accident.
-import { isAbsolute, join } from "node:path";
+import { posix, win32 } from "node:path";
 import type { Harness, Session } from "@finisher/contracts";
 import { childEnv, NEVER_PASSED, secretName } from "../env.ts";
 import { finError } from "../errors.ts";
@@ -88,48 +88,88 @@ export function sessionEnv(i: SessionEnvInput): Record<string, string> {
 export const NEVER_IN_SESSION: ReadonlyArray<string> = [...NEVER_PASSED, "CLAUDE_CODE_OAUTH_TOKEN", "FIN_CALL_IDEM"];
 
 export interface AssertOptions {
-  /** The exact values to hold the session's variables to (the runtime's own check). */
-  readonly expect?: { readonly projectDir?: string; readonly credential?: string; readonly server?: string };
-  /** Names the adapter may add beyond the session's (a CLI's own documented switches). */
+  /**
+   * The sandbox's own session environment (`SessionSandbox.env`): every session name must have
+   * exactly its value there (the strict check; without it only the shape is checked).
+   */
+  readonly expect?: Readonly<Record<string, string>>;
+  /**
+   * Names the adapter may add beyond the session's (a CLI's own documented switches, Claude
+   * Code's non-secret `CLAUDE_CODE_*` among them). Never a name of `NEVER_IN_SESSION` or a key.
+   */
   readonly extra?: ReadonlyArray<string>;
   readonly platform?: NodeJS.Platform;
 }
 
 const ALLOW_LIST = new Set(["PATH", "HOME", "LANG", "TMPDIR", "Path", "USERPROFILE", "SYSTEMROOT", "SystemRoot", "TEMP", "TMP", "LOCALAPPDATA"]);
+/** A key whatever an adapter declares: every `*_API_KEY` (§8.5). */
+const isKey = (k: string) => /_API_KEY$/i.test(k);
 
 /**
  * Throws `SANDBOX_ENV` (a `FinError`) unless `env` is a session environment of `s` (§8.5):
- * `FIN_SESSION` is the session's id, `FIN_CREDENTIAL` its `agents/<id>/credential.json`,
- * `FIN_PROJECT_DIR` an absolute folder, `FIN_SERVER` and `TMPDIR` set; no name of
- * `NEVER_IN_SESSION` and no secret; nothing outside the allow-list, `LC_*`, the session's
- * names, `FIN_CALL` and `opts.extra`. 7D and 7E call it on every launch environment.
+ * every name `sessionEnv` sets is present; `FIN_SESSION` is the session's id; the credential,
+ * `TMPDIR`, the provider directory, the git configuration and `GNUPGHOME` are the session's own
+ * paths under `agents/<id>/` (absolute); the git settings are exactly `GIT_OVERRIDES` with
+ * `GIT_CONFIG_NOSYSTEM=1`; `FIN_PROJECT_DIR` is absolute; no name of `NEVER_IN_SESSION` and no
+ * key; nothing outside the allow-list, `LC_*`, the session's names, `FIN_CALL` and
+ * `opts.extra`. With `opts.expect` (the sandbox's `env`), every session name has its value
+ * exactly. 7D and 7E call it on every launch environment.
  */
 export function assertSessionEnv(env: Readonly<Record<string, string | undefined>>, s: Pick<Session, "id" | "harness">, opts: AssertOptions = {}): void {
+  const platform = opts.platform ?? process.platform;
+  const path = platform === "win32" ? win32 : posix;
   const fail = (reason: string, name: string): never => {
     throw finError("SANDBOX_ENV", `the session environment is wrong: ${reason}`, { sessionId: s.id, name, reason });
   };
-  const keys = sessionKeys(s.harness, opts.platform);
+  const keys = sessionKeys(s.harness, platform);
   const extra = new Set(opts.extra ?? []);
   for (const [k, v] of Object.entries(env)) {
     if (v === undefined) continue;
     if (NEVER_IN_SESSION.includes(k)) fail("a variable that never passes", k);
+    if (isKey(k)) fail("a secret", k);
+    if (extra.has(k) && !keys.has(k)) continue;
     if (secretName(k)) fail("a secret", k);
-    if (!(ALLOW_LIST.has(k) || k.startsWith("LC_") || keys.has(k) || k === "FIN_CALL" || extra.has(k))) fail("a variable outside the session's", k);
+    if (!(ALLOW_LIST.has(k) || k.startsWith("LC_") || keys.has(k) || k === "FIN_CALL")) fail("a variable outside the session's", k);
   }
   const need = (k: string): string => {
     const v = env[k];
-    if (v === undefined || v === "") fail("a missing variable", k);
+    if (v === undefined || (v === "" && !k.startsWith("GIT_CONFIG_VALUE_"))) fail("a missing variable", k);
     return v!;
   };
+  for (const k of keys) need(k);
   if (need("FIN_SESSION") !== s.id) fail("another session's id", "FIN_SESSION");
-  const cred = need("FIN_CREDENTIAL");
-  if (!cred.endsWith(join("agents", s.id, "credential.json"))) fail("not the session's credential", "FIN_CREDENTIAL");
-  const dir = need("FIN_PROJECT_DIR");
-  if (!isAbsolute(dir)) fail("not an absolute folder", "FIN_PROJECT_DIR");
-  const server = need("FIN_SERVER");
-  need("TMPDIR");
-  const x = opts.expect;
-  if (x?.projectDir !== undefined && dir !== x.projectDir) fail("another project's folder", "FIN_PROJECT_DIR");
-  if (x?.credential !== undefined && cred !== x.credential) fail("not the session's credential", "FIN_CREDENTIAL");
-  if (x?.server !== undefined && server !== x.server) fail("another endpoint", "FIN_SERVER");
+  const own = (k: string, ...rel: string[]) => {
+    const v = need(k);
+    if (!path.isAbsolute(v) || path.normalize(v) !== v || !v.endsWith(path.sep + path.join("agents", s.id, ...rel))) fail("not the session's own path", k);
+    return v;
+  };
+  const cred = own("FIN_CREDENTIAL", "credential.json");
+  const base = cred.slice(0, cred.length - "credential.json".length - 1);
+  const under = (k: string, ...rel: string[]) => {
+    if (own(k, ...rel) !== path.join(base, ...rel)) fail("not the session's own path", k);
+  };
+  under("TMPDIR", "tmp");
+  under("GIT_CONFIG_GLOBAL", "git", "config");
+  under("GNUPGHOME", "tmp", "gnupg");
+  const provider = PROVIDER_DIR_ENV[s.harness];
+  if (provider !== undefined) under(provider, "provider");
+  if (platform === "win32") {
+    under("TEMP", "tmp");
+    under("TMP", "tmp");
+    under("LOCALAPPDATA", "localappdata");
+  }
+  if (s.harness === "claudeCode") {
+    const store = need("CLAUDE_SECURESTORAGE_CONFIG_DIR");
+    if (!path.isAbsolute(store) || !store.endsWith(path.sep + path.join("providers", "claudeCode", "home", "store"))) fail("not the harness's store", "CLAUDE_SECURESTORAGE_CONFIG_DIR");
+  }
+  if (need("GIT_CONFIG_NOSYSTEM") !== "1") fail("system git configuration read", "GIT_CONFIG_NOSYSTEM");
+  if (need("GIT_CONFIG_COUNT") !== String(GIT_OVERRIDES.length)) fail("not the session's git settings", "GIT_CONFIG_COUNT");
+  GIT_OVERRIDES.forEach(([k, v], n) => {
+    if (need(`GIT_CONFIG_KEY_${n}`) !== k) fail("not the session's git settings", `GIT_CONFIG_KEY_${n}`);
+    if (need(`GIT_CONFIG_VALUE_${n}`) !== v) fail("not the session's git settings", `GIT_CONFIG_VALUE_${n}`);
+  });
+  if (!path.isAbsolute(need("FIN_PROJECT_DIR"))) fail("not an absolute folder", "FIN_PROJECT_DIR");
+  if (opts.expect !== undefined) {
+    for (const k of keys) if (env[k] !== opts.expect[k]) fail("not the sandbox's value", k);
+  }
 }

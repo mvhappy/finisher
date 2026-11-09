@@ -14,9 +14,14 @@
 //   with the session environment and no sandbox, and the persistent warning says so;
 // - **refused** where the mechanism is unavailable: `SANDBOX_UNAVAILABLE`, nothing starts.
 // Every process starts in a process group of its own and the whole group is killed when its
-// leader exits or the scope closes (session end, or the instance replaced). What the launcher observes and
-// reports, a failure to apply (exit 78) or a seccomp kill (`SIGSYS`), goes to `onViolation`
-// (`sandbox.violation`, spec §8.8).
+// leader exits or the scope closes (session end, or the instance replaced). **Residual:** a
+// process that leaves the group (`setsid`, `setpgid`) outlives both, still confined by
+// Landlock; neither the profile nor the specified seccomp filter refuses those calls (a
+// launcher that stays the parent as a subreaper, or a per-session cgroup, would close it).
+// What the launcher itself reports, a failure to apply the policy (its line written back on
+// descriptor 3 before exit 78; a program's own exit 78 writes none), goes to `onViolation`
+// (`sandbox.violation`, spec §8.8). A seccomp kill (`SIGSYS`) is not attributed: without the
+// filter (plan Task 4) every `SIGSYS` is one a process sent, and so could be forged.
 import { type ChildProcess, spawn as spawnChild } from "node:child_process";
 import { mkdir, realpath } from "node:fs/promises";
 import { homedir } from "node:os";
@@ -76,7 +81,7 @@ export interface SessionSandbox {
 /** What the launcher observed (spec §8.8): no path, only the root kind. */
 export interface SandboxViolation {
   readonly sessionId: string;
-  readonly op: "apply" | "seccompKill";
+  readonly op: "apply";
   readonly profile: "agent";
   readonly rootKind: "none";
 }
@@ -132,6 +137,8 @@ const canonical = (p: string) => realpath(p).catch(() => p);
 export function openSessionSandbox(s: Session, harness: Harness, deps: SessionSandboxDeps): Effect.Effect<SessionSandbox, FinError, Scope.Scope> {
   const platform = deps.platform ?? process.platform;
   const children = new Set<SandboxedChild>();
+  // Set once the scope closes: a spawn still in flight is killed as it arrives.
+  const closed = { v: false };
   const open = Effect.tryPromise({
     try: async (): Promise<SessionSandbox> => {
       const status = (deps.status ?? currentSandboxStatus)();
@@ -180,13 +187,16 @@ export function openSessionSandbox(s: Session, harness: Harness, deps: SessionSa
                 input = { ...base, toolchains: [...base.toolchains!, ...(await Promise.all(opts.extraRead.map(canonical)))] };
                 if (mode === "launcher") check(input, status.os);
               }
-              const child = await start(mode === "launcher" ? { launcher, request: { profile: "agent", input } } : undefined, argv, opts.cwd, env, platform, (exit) => {
-                if (mode !== "launcher") return;
-                const op = exit.signal === "SIGSYS" ? "seccompKill" : exit.code === LAUNCHER_UNAVAILABLE ? "apply" : undefined;
-                if (op !== undefined) deps.onViolation?.({ sessionId: s.id, op, profile: "agent", rootKind: "none" });
+              if (closed.v) throw finError("SESSION_INTERRUPTED", "the session's sandbox is closed", { sessionId: s.id });
+              const child = await start(mode === "launcher" ? { launcher, request: { profile: "agent", input } } : undefined, argv, opts.cwd, env, platform, (exit, launcherFailed) => {
+                if (launcherFailed && exit.code === LAUNCHER_UNAVAILABLE) deps.onViolation?.({ sessionId: s.id, op: "apply", profile: "agent", rootKind: "none" });
               });
               children.add(child);
               void child.exited.then(() => children.delete(child));
+              if (closed.v) {
+                child.kill("SIGKILL");
+                throw finError("SESSION_INTERRUPTED", "the session's sandbox closed while the process started", { sessionId: s.id });
+              }
               return child;
             },
             catch: toFinError,
@@ -195,7 +205,12 @@ export function openSessionSandbox(s: Session, harness: Harness, deps: SessionSa
     },
     catch: toFinError,
   });
-  return Effect.acquireRelease(open, () => Effect.promise(() => killAll(children, deps.killGraceMs ?? 5_000)));
+  return Effect.acquireRelease(open, () =>
+    Effect.promise(() => {
+      closed.v = true;
+      return killAll(children, deps.killGraceMs ?? 5_000);
+    }),
+  );
 }
 
 /** `FIN_SERVER` and the policy's `fin` endpoint under the launcher, per OS. */
@@ -221,7 +236,7 @@ function start(
   cwd: string,
   env: Readonly<Record<string, string>>,
   platform: NodeJS.Platform,
-  onExit: (e: ChildExit) => void,
+  onExit: (e: ChildExit, launcherFailed: boolean) => void,
 ): Promise<SandboxedChild> {
   const [program, args] = via === undefined ? [argv[0]!, argv.slice(1)] : [via.launcher, ["--policy-fd", "3", "--", ...argv]];
   const child: ChildProcess = spawnChild(program, args, {
@@ -231,11 +246,25 @@ function start(
     detached: platform !== "win32",
     windowsHide: true,
   });
+  // The launcher's own failure line, written back on descriptor 3 (end of file alone: the exec happened).
+  let report = "";
+  const reported = new Promise<void>((resolve) => {
+    const r = via === undefined ? undefined : (child.stdio[3] as (Writable & Readable) | null);
+    if (r === undefined || r === null || typeof r.on !== "function") return resolve();
+    r.on("data", (c: Buffer) => {
+      if (report.length < 4096) report += c.toString("utf8");
+    });
+    r.on("error", () => resolve());
+    r.on("close", () => resolve());
+    r.on("end", () => resolve());
+  });
+  let gone = false;
   const exited = new Promise<ChildExit>((resolve) => {
     child.once("exit", (code, signal) => {
+      gone = true;
       const e = { code, signal };
       // What the leader left running in its group goes with it, while the group's id cannot
-      // yet name another process's (a process that left the group is a residual: no seccomp).
+      // yet name another process's (a process that left the group is the residual above).
       if (platform !== "win32" && child.pid !== undefined) {
         try {
           process.kill(-child.pid, "SIGKILL");
@@ -243,8 +272,10 @@ function start(
           // The group is gone.
         }
       }
-      onExit(e);
-      resolve(e);
+      void reported.then(() => {
+        onExit(e, /"code":"SANDBOX_UNAVAILABLE"/.test(report));
+        resolve(e);
+      });
     });
   });
   return new Promise((resolve, reject) => {
@@ -266,6 +297,8 @@ function start(
         stderr: child.stderr!,
         exited,
         kill: (signal = "SIGTERM") => {
+          // After the exit the group's id may name another process's group.
+          if (gone) return;
           try {
             if (platform === "win32") child.kill(signal);
             else process.kill(-pid, signal);

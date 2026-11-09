@@ -55,6 +55,8 @@ export interface AgentServeOptions {
   readonly roles?: ReadonlyMap<string, Role>;
   /** The runtime's hourly sweep and budget check (default on). */
   readonly timers?: boolean;
+  /** Another `fin-sandbox-exec` for sessions (tests: one that fails as the launcher does). */
+  readonly sandboxLauncher?: string;
 }
 
 /** What the handlers and the console RPCs use. */
@@ -87,6 +89,8 @@ export interface AgentWiringDeps {
   readonly endpoint: string;
   /** The agent listener's endpoint, started on first need: `FIN_SERVER` of sandboxed sessions on Linux (plan 7C Task 11). */
   readonly agentListener?: () => Promise<string>;
+  /** The libraries' roots (every library in v1: library reach is server-wide), read by sandboxed sessions (plan 7C Decision 6). */
+  readonly libraryRoots?: () => ReadonlyArray<string>;
   readonly log: (message: string) => void;
   readonly options?: AgentServeOptions;
 }
@@ -211,6 +215,8 @@ export const buildAgentRuntime = (d: AgentWiringDeps): Effect.Effect<AgentRuntim
       finPath,
       localEndpoint: d.endpoint,
       ...(d.agentListener === undefined ? {} : { agentListener: d.agentListener }),
+      libraryRoots: async () => d.libraryRoots?.() ?? [],
+      ...(d.options?.sandboxLauncher === undefined ? {} : { launcher: () => d.options!.sandboxLauncher! }),
       onViolation: (v) =>
         d.audit.append({ kind: "sandbox.violation", principal: { kind: "agent", id: v.sessionId }, outcome: "denied", details: { session: v.sessionId, op: v.op, profile: v.profile, rootKind: v.rootKind } }),
     });

@@ -26,7 +26,10 @@
 //! on those OSes before then.
 //!
 //! The descriptor is read to end of file: the parent must close its copy of the pipe's write
-//! end in the child (and its own after writing), or the launcher waits forever.
+//! end in the child (and its own after writing), or the launcher waits forever. It stays open,
+//! close-on-exec, until the `exec`: on a socketpair, each of the launcher's own failure lines is
+//! also written back on it, so the parent tells the launcher's exit 78 from a program's (plan
+//! 7C Task 11 review).
 
 use std::ffi::OsString;
 

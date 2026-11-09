@@ -149,8 +149,10 @@ export class Runtime extends RuntimeEngine {
       this.#guard();
       const plan = await this.deps.planner.plan(req, by);
       if (this.adapter(plan.harness) === undefined) harnessUnknown(plan.harness);
-      // A CLI harness whose sandbox cannot be applied here never starts (spec §8.9).
-      this.deps.sandboxes?.check(plan.harness);
+      // A CLI harness whose sandbox cannot be applied here never starts (spec §8.9), nor one
+      // the runtime has no sandboxes for (it would start its processes unconfined).
+      if (this.deps.sandboxes !== undefined) this.deps.sandboxes.check(plan.harness);
+      else if (plan.harness === "claudeCode" || plan.harness === "codex") throw finError("SANDBOX_UNAVAILABLE", "this runtime has no session sandbox for CLI harnesses", { profile: "agent", harness: plan.harness });
       // A money budget without a price would fail open: refused before anything is made.
       if (plan.provider !== "local" && !this.pricing.known(plan.provider, plan.model)) throw pricingUnknown(plan.provider, plan.model);
       const opened = await exitOf(

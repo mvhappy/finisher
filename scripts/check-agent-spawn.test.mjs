@@ -17,6 +17,7 @@ const FORBIDDEN = {
   sideEffect: 'import "node:child_process";\n',
   bun: "Bun.spawn(['sh']);\n",
   binding: 'process.binding("spawn_sync");\n',
+  createRequire: 'const r = createRequire(import.meta.url);\n',
 };
 
 for (const [name, text] of Object.entries(FORBIDDEN)) {
