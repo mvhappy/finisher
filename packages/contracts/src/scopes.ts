@@ -71,7 +71,10 @@ export type FinRpcTag = RpcGroup.Rpcs<typeof FinRpcs>["_tag"];
  *   (`finisher.project.json`) and whether that project is open here;
  * - `probePath` / `importDir`: the path, canonical and absolute (`INVALID_PATH` otherwise);
  * - `outDir`: the payload's `out`, an absolute folder the call writes files into (optional),
- *   canonical; for a principal with roots it must lie inside the call's project folder;
+ *   canonical; for an agent or MCP principal it must lie inside the call's project folder, for
+ *   a device inside the server's allowed roots (5B Decision 32);
+ * - `libraryRoot` / `registryPaths`: `library.add`'s root, `registry.add`'s folder and root
+ *   file: canonical, checked against a device's roots, never rewritten;
  * - `branch`: the payload's branch references (a name, an id or `name#id`), as ids through
  *   the store, when a policy reads them (5A: the write targets of `agent`/`mcp` principals
  *   with branch limits; 5E: protected branches);
@@ -81,7 +84,8 @@ export type FinRpcTag = RpcGroup.Rpcs<typeof FinRpcs>["_tag"];
  *   kind clients may submit;
  * - `job`: the payload's `job` as whose it is to the caller (`RuleFacts.job`).
  */
-export type ResolverName = "project" | "openDir" | "createDir" | "probePath" | "importDir" | "outDir" | "branch" | "jobProject" | "jobKind" | "job";
+/** `libraryRoot`, `registryPaths`: `library.add`'s root and `registry.add`'s folder and root file, checked against a device's roots (5B Decision 32). */
+export type ResolverName = "project" | "openDir" | "createDir" | "probePath" | "importDir" | "outDir" | "libraryRoot" | "registryPaths" | "branch" | "jobProject" | "jobKind" | "job";
 
 /** Resolved facts an escalation may read. */
 export interface RuleFacts {
@@ -227,7 +231,7 @@ export const RPC_SCOPES: { readonly [T in FinRpcTag]: RuleOf<T> } = {
     resolve: ["openDir"],
     escalate: (p, facts) => [...(facts.attached === true ? [] : (["project.write"] as const)), ...(p.relocate === true ? (["project.confirm"] as const) : [])],
   },
-  // Protocol 2: the probe is for `projectId`, and a principal with roots probes only inside its folder.
+  // Protocol 2: the probe is for `projectId`; an agent or MCP principal probes only inside its folder.
   "asset.probe": { scopes: ["project.write"], resolve: ["project", "probePath"] },
   "tx.commit": { scopes: ["project.write"], resolve: BRANCH, writes: ["tx.branch"] },
   "snapshot.get": { scopes: ["project.read"], resolve: BRANCH },
@@ -261,7 +265,7 @@ export const RPC_SCOPES: { readonly [T in FinRpcTag]: RuleOf<T> } = {
   "fonts.fetch": { scopes: ["fonts.fetch"], resolve: PROJECT },
   "fonts.plan": { scopes: ["project.read"], resolve: BRANCH },
   // Plan 6A Task 13. A look reads the project and submits a job (`jobs.submit` and the kind's own
-  // `project.read`, spec §6.7); its frames go to `out`, which a principal with roots may name only
+  // `project.read`, spec §6.7); its frames go to `out`, which an agent or MCP principal may name only
   // inside its project's folder. It commits nothing, so it takes no branch write guard.
   // A read-only token gets the default place only: naming a folder (`out`) writes files where
   // the caller chooses, which takes `project.write` (owner decision, review of Tasks 11-12, M1).
@@ -321,7 +325,7 @@ export const RPC_SCOPES: { readonly [T in FinRpcTag]: RuleOf<T> } = {
   // themselves are the owner's (`plugin.admin` is human-only).
   "registry.list": { scopes: ["plugin.read"] },
   "registry.status": { scopes: ["plugin.read"] },
-  "registry.add": { scopes: ["plugin.admin"] },
+  "registry.add": { scopes: ["plugin.admin"], resolve: ["registryPaths"] },
   "registry.remove": { scopes: ["plugin.admin"] },
   "registry.forget": { scopes: ["plugin.admin"] },
   "registry.refresh": { scopes: ["plugin.read"] },
@@ -346,7 +350,7 @@ export const RPC_SCOPES: { readonly [T in FinRpcTag]: RuleOf<T> } = {
   // (human-only) for the ones only a person decides. Everything that reads needs `library.read`
   // and reaches the libraries the caller reads (`libraryReach`); a scan also needs `jobs.submit`,
   // and so does hashing candidates, which submits jobs.
-  "library.add": { scopes: ["library.admin"] },
+  "library.add": { scopes: ["library.admin"], resolve: ["libraryRoot"] },
   "library.remove": { scopes: ["library.admin"] },
   "library.set": {
     scopes: ["library.scan"],

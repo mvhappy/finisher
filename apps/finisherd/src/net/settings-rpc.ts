@@ -56,6 +56,16 @@ export function settingsHandlers(d: { readonly guard: Guard; readonly serverData
       d.guard(
         "settings.write",
         Effect.gen(function* () {
+          // A device cannot widen its own reach (review of Task 11): its roots, or TLS files it
+          // would have the server read. The owner sets those from the console.
+          if (chainOf(options)?.principal.kind === "device") {
+            const files = path === "server.remote" && (value as { tls?: { mode?: unknown } } | null)?.tls?.mode === "files";
+            if (path === "server.projectRoots" || files) {
+              return yield* Effect.fail(
+                finError("PATH_NOT_ALLOWED", "a device cannot change the server's roots or certificate files", { reason: "deviceSettings", path }, "Change it from the console on the server: finisherd console."),
+              );
+            }
+          }
           const before = readSection(d.serverData, KEYS[path]);
           yield* Effect.try({ try: () => patchSettings(d.serverData, path, value), catch: asFinError });
           const env = d.env ?? process.env;

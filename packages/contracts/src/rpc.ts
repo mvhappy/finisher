@@ -257,7 +257,7 @@ export const ProjectRefSuccess = Schema.Struct({
   rev: Schema.Number,
 });
 
-/** Protocol 2: the probe is for `projectId` (reach: the path must be in that project's folder). */
+/** Protocol 2: the probe is for `projectId` (reach: in that project's folder for an agent or MCP principal; a device's allowed roots, 5B Decision 32). */
 export const AssetProbePayload = Schema.Struct({ projectId: Schema.String, path: Schema.String });
 const Optional = <S extends Schema.Top>(s: S) => Schema.optionalKey(Schema.NullOr(s));
 const ImageInfoSchema = Schema.Struct({ height: Schema.Number, width: Schema.Number });

@@ -54,6 +54,9 @@ test("rpc_scopes_cover_every_rpc", () => {
     for (const w of [...(rule.writes ?? []), ...(rule.targets ?? [])]) expect(fields, tag).toContain(w.split(".")[0]);
     if (rule.author !== undefined) expect(fields, tag).toContain(rule.author);
   }
+  // A library's root is a device's path to check (5B Decision 32).
+  expect(ruleOf("library.add").resolve).toContain("libraryRoot");
+  expect(ruleOf("registry.add").resolve).toContain("registryPaths");
   // Only the handshake is public.
   expect(tags.filter((t) => RPC_SCOPES[t as keyof typeof RPC_SCOPES].scopes.includes("public"))).toEqual(["auth.prove", "server.hello"]);
 });

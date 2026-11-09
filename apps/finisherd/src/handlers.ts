@@ -12,6 +12,7 @@ import { deviceHandlers } from "./auth/device-rpc.ts";
 import { PairingTag } from "./auth/pairing.ts";
 import { DeviceAccessTag } from "./net/remote-wiring.ts";
 import { RemoteListenerTag } from "./net/remote.ts";
+import { defaultProjectRoots, readServerSettings } from "./net/server-settings.ts";
 import { settingsHandlers } from "./net/settings-rpc.ts";
 import { EnvironmentTag, envMoved } from "./env/descriptor.ts";
 import { envHandlers } from "./env/rpc.ts";
@@ -145,6 +146,13 @@ export const HandlersLive = FinRpcs.toLayer(
       branches: (projectId: string) => Effect.map(registry.branches(projectId, true), (r) => r.branches),
       // 5D Decision 47: reach to a library file is a catalogued row, never a path prefix.
       libraryFile: (path: string) => cataloguedAt(library, path),
+      // 5B Decision 32: a device's roots, read live (`settings.write` changes them).
+      allowedRoots: () =>
+        Effect.sync(() => [
+          ...(admin.control.serverData === undefined ? defaultProjectRoots() : readServerSettings(admin.control.serverData).projectRoots),
+          ...library.registry.list().map((l) => l.root),
+          ...registry.openDirs(),
+        ]),
     };
     // Agent sessions (7A Task 7): branch reach over their root's subtree, path reach over their
     // project folder and its libraries, the server's author, `session_txs` after every write.
