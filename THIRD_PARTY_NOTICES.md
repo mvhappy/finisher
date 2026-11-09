@@ -495,6 +495,44 @@ status: used (sub-project 6A, Task 11), as Cargo dependencies; no code is copied
 - `fdeflate` 0.3 (MIT OR Apache-2.0): `png`'s fast deflate; the rest of its stack (`flate2`,
   `crc32fast`, `miniz_oxide`) is listed under `fin-fonts` and "Other Cargo dependencies".
 
+## keyring, secret-service and zbus — `fin-node` (the vault's OS keychain)
+status: used (sub-project 5B, Task 2), as Cargo dependencies; no code is copied.
+- `keyring` **=3.6.3** (MIT OR Apache-2.0), `default-features = false` with `apple-native`,
+  `windows-native`, `async-secret-service`, `async-io`, `crypto-rust`: the macOS Keychain
+  through `security-framework` 3 (MIT OR Apache-2.0), Windows Credential Manager through
+  `windows-sys` (MIT OR Apache-2.0), the Linux Secret Service through `secret-service` 4.0.0
+  (MIT OR Apache-2.0) over the pure-Rust D-Bus `zbus` 4.4.0, `zbus_names`, `zvariant` (MIT),
+  with `aes`, `cbc`, `hkdf`, `sha2` (MIT OR Apache-2.0) and the `async-io` executor stack
+  (`async-io`, `async-executor`, `async-channel`, `async-broadcast`, `event-listener`,
+  `futures-lite`, `polling`: Apache-2.0 OR MIT);
+- `secret-service` is also a direct dependency on Linux, only to ask whether the default
+  collection is locked before `keyring` reads it (so a locked keychain never prompts);
+- **not used:** `keyring`'s `sync-secret-service`/`linux-native` backends: `dbus` and
+  `libdbus-sys` (libdbus is AFL-2.1 OR GPL-2.0+) appear in `Cargo.lock` as unselected optional
+  dependencies and are never built (`crates/fin-node/tests/vault.rs` `no_dbus_feature`);
+- `ring` 0.17 (the identity key, the wrapped file store) and `base64` 0.22 (MIT OR Apache-2.0)
+  were already in the tree.
+- the rest of that graph, new with it (each crate's licence text is its own `LICENSE-*` file
+  in its package on crates.io):
+  - MIT OR Apache-2.0: `block-padding` 0.3.3, `cipher` 0.4.4, `crossbeam-utils` 0.8.23, `enumflags2_derive` 0.7.12, `enumflags2` 0.7.12, `inout` 0.1.4, `ordered-stream` 0.2.0, `piper` 0.2.5, `proc-macro-crate` 3.5.0, `serde_repr` 0.1.21, `sha1` 0.10.7, `toml_datetime` 1.1.2+spec-1.1.0, `toml_edit` 0.25.17+spec-1.1.0, `toml_parser` 1.1.5+spec-1.1.0, `windows_x86_64_msvc` 0.53.1;
+  - Apache-2.0 OR MIT: `async-fs` 2.2.0, `async-lock` 3.4.2, `async-task` 4.7.1, `atomic-waker` 1.1.2, `blocking` 1.7.0, `concurrent-queue` 2.5.0, `event-listener-strategy` 0.5.4, `parking` 2.2.1, `zeroize_derive` 1.5.0;
+  - MIT: `endi` 1.1.1, `generic-array` 0.14.7, `memoffset` 0.9.1, `winnow` 1.0.4, `xdg-home` 1.3.0, `zbus_macros` 4.4.0, `zvariant_derive` 4.2.0, `zvariant_utils` 2.1.0;
+  - Unlicense OR MIT: `byteorder` 1.5.0;
+
+## rcgen and qrcode — `fin-node` (remote-listener certificates and pairing QR codes)
+status: used (sub-project 5B, Task 3), as Cargo dependencies; no code is copied.
+- `rcgen` 0.14.10 (MIT OR Apache-2.0), `default-features = false` with `ring` and `pem`:
+  self-signed certificates from the identity key; with it `yasna` 0.6.0, `time` 0.3.55,
+  `time-core` 0.1.9, `time-macros` 0.2.32, `deranged` 0.5.9, `num-conv` 0.2.2, `powerfmt`
+  0.2.1 (all MIT OR Apache-2.0); `pem` is listed below;
+- `qrcode` 0.14.1 (MIT OR Apache-2.0), `default-features = false` with `svg` only (its Unicode
+  renderer needs no feature): the pairing link as SVG and as text;
+- tests only (never shipped): `rqrr` 0.11 ((MIT OR Apache-2.0) AND ISC) decodes the QR code
+  back, with `g2p`, `g2gen`, `g2poly`, `lru` and `hashbrown` (MIT or MIT OR Apache-2.0);
+- **not used:** `rcgen`'s `x509-parser` feature: `x509-parser`, `asn1-rs`, `der-parser`, `nom`
+  and `oid-registry` appear in `Cargo.lock` as unselected optional dependencies and are never
+  built.
+
 ## Catalog fonts (OFL-1.1) — fetched at run time, never distributed
 status: used (sub-project 4C) by URL only: `crates/fin-fonts/catalog/catalog.json` names
 upstream files by SHA-256 at pinned commits and release tags, and each machine downloads
@@ -573,6 +611,11 @@ as Cargo dependencies; no code is copied and nothing is modified.
 status: used (sub-project 8A) as an npm dependency of `finisherd` (`ws` 8.22.0, exact pin,
 no runtime dependencies); no code is copied. It carries the console's and clients' sockets
 (`apps/finisherd/src/upgrade.ts`); `@types/ws` (MIT) is a development dependency and is not shipped.
+
+## jose (MIT) — DPoP proofs in `finisherd`
+status: used (sub-project 5B, Task 7) as an npm dependency of `finisherd` (`jose` 6.2.14, exact
+pin, no runtime dependencies); no code is copied. It verifies devices' DPoP proofs (ES256 JWS)
+and computes RFC 7638 key thumbprints (`apps/finisherd/src/auth/dpop.ts`).
 
 ## Other Cargo dependencies — everything else that ships
 status: used, as Cargo dependencies; no code is copied. These crates are in the shipped graph

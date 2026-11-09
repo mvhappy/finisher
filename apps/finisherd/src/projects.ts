@@ -119,6 +119,8 @@ export interface ProjectRegistryShape {
   /** The chain's view (5A Task 5): open here now; its folder; a branch reference's id. */
   readonly isOpen: (projectId: string) => boolean;
   readonly dirOf: (projectId: string) => string | undefined;
+  /** The folders of the projects open here now (a device's roots, 5B Decision 32). */
+  readonly openDirs: () => ReadonlyArray<string>;
   /** The folder `app.db` records for a project (where it would be reopened from). */
   readonly indexedDirOf: (projectId: string) => string | undefined;
   readonly resolveBranch: (projectId: string, branch: string) => Effect.Effect<string, FinError>;
@@ -560,6 +562,7 @@ export function makeProjectRegistry(
       ensure: (projectId) => Effect.asVoid(get(projectId)),
       isOpen: (projectId) => byId.has(projectId),
       dirOf: (projectId) => byId.get(projectId)?.dir,
+      openDirs: () => [...byId.values()].map((p) => p.dir),
       indexedDirOf: (projectId) => (closed ? undefined : index.dirOf(projectId)),
       resolveBranch,
       evalFrame: (projectId, requested, timeline, at) =>

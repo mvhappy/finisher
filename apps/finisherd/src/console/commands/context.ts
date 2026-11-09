@@ -13,6 +13,8 @@ export interface CommandContext {
   readonly connect: () => Promise<ConsoleConnection>;
   /** Creates a credential's `--out` file (`createPrivateFile`; tests inject a failing one). */
   readonly createFile?: ((path: string) => PrivateFile) | undefined;
+  /** The terminal's width, when known (`pair` shows its QR code only when it fits). */
+  readonly columns?: (() => number | undefined) | undefined;
 }
 
 /** Runs `f` on a fresh console connection, closed afterwards. */

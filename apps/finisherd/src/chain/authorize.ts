@@ -16,6 +16,7 @@
 //   5. a call that acts beyond any one project (`allProjects`) needs `projects: "*"`
 //      (5C-2 review M2: `SCOPE_DENIED {reason: reach}`).
 // Reach to a path outside a principal's roots is granted by one catalogued library row (5D).
+// A device's roots are the server's allowed roots (5B Decision 32, `rootsOf`).
 import {
   baseScopes,
   escalatedScopes,
@@ -30,7 +31,7 @@ import {
 import { Effect } from "effect";
 import type { ChainHooks } from "./hooks.ts";
 import { consentUiOnly, humanOnly, outOfReach, pathNotAllowed, reachDenied, scopeDenied, wrongKind } from "./fixes.ts";
-import { type ChainProjects, inside, libraryReach, type Resolved, rootsOf } from "./resolve.ts";
+import { canonicalPath, type ChainProjects, inside, libraryReach, type Resolved, rootsOf } from "./resolve.ts";
 
 /** The scope half of stage 4: human-only first, then every required scope. */
 export function checkScopes(tag: string, required: ReadonlyArray<Scope>, principal: Principal): FinError | undefined {
@@ -70,11 +71,25 @@ export function authorize(
       const outside = resolved.projects.find((p) => !allowed.includes(p));
       if (outside !== undefined) return yield* Effect.fail(outOfReach(outside));
     }
-    const folders = yield* rootsOf(principal, deps, resolved.pathsIn);
+    // A device's `project.open` folder (5B Decision 32), and the recorded folder of a project
+    // its call reopens by id (a reopened folder would join its roots; review of Task 11).
+    // Other principals' folders are reach by their project's id.
+    const paths = [...resolved.paths];
+    if (principal.kind === "device") {
+      if (resolved.openDir !== undefined) paths.push(resolved.openDir);
+      if (resolved.facts.reopens === true) {
+        for (const id of resolved.projects) {
+          const dir = deps.isOpen(id) ? undefined : deps.indexedDirOf?.(id);
+          if (dir !== undefined) paths.push(yield* Effect.promise(() => canonicalPath(dir)));
+        }
+      }
+    }
+    // Roots are worked out only for a call that names a path.
+    const folders = paths.length === 0 ? undefined : yield* rootsOf(principal, deps, resolved.pathsIn);
     if (folders !== undefined) {
       // Sub-project 7A: an agent session also reaches the libraries its project references.
       const roots = [...folders, ...(hooks.extraRoots === undefined ? [] : yield* hooks.extraRoots(principal, resolved.pathsIn))];
-      for (const p of resolved.paths) {
+      for (const p of paths) {
         if (roots.some((r) => inside(p, r))) continue;
         // 5D Decision 47: a library file is reached by its catalogued row, in a library the
         // principal reaches (never by a prefix, never through an alias).

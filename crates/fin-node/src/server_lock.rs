@@ -117,3 +117,27 @@ pub fn server_id(server_data: String) -> Result<String> {
         || {},
     )
 }
+
+/// This server data's identity as `finisherd` reads it at start (5B Decision 31): the id, and
+/// when it was just renewed (the server data is a copy, or moved machines or directories) why,
+/// as a closed word (`otherMachine`, `otherDirectory`).
+#[napi(object)]
+pub struct ServerIdentityReport {
+    pub id: String,
+    pub renewed: Option<String>,
+}
+
+#[napi(catch_unwind)]
+pub fn server_identity(server_data: String) -> Result<ServerIdentityReport> {
+    guarded(
+        || {
+            fin_store::server_id::server_identity(std::path::Path::new(&server_data))
+                .map(|identity| ServerIdentityReport {
+                    id: identity.id,
+                    renewed: identity.renewed_reason.map(str::to_owned),
+                })
+                .map_err(reject)
+        },
+        || {},
+    )
+}
