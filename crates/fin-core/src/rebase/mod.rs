@@ -16,6 +16,7 @@ pub mod footprint;
 pub mod map;
 pub mod placement;
 pub mod places;
+mod rerun;
 mod steps;
 
 pub use conflict::{Conflict, Conflicts, reasons};

@@ -184,7 +184,13 @@ impl Offline {
             ))
         };
         let text = std::fs::read_to_string(path).map_err(|e| bad(e.to_string()))?;
-        let snapshot = serde_json::from_str(&text).map_err(|e| bad(e.to_string()))?;
+        // The project may be of an older schema: it is read as the store reads snapshots.
+        let mut v: Value = serde_json::from_str(&text).map_err(|e| bad(e.to_string()))?;
+        if let Some(project) = v.get_mut("project") {
+            let up = fin_core::upcast_snapshot(project.take()).map_err(|e| bad(e.message))?;
+            *project = serde_json::to_value(up).map_err(|e| bad(e.to_string()))?;
+        }
+        let snapshot = serde_json::from_value(v).map_err(|e| bad(e.to_string()))?;
         Ok(Offline { snapshot })
     }
 }

@@ -21,7 +21,9 @@ pub mod time;
 pub mod tx;
 pub mod upgrade;
 
-pub use apply::{ApplyEnv, ApplyMode, apply_internal, apply_tx, apply_tx_env, apply_tx_mode};
+pub use apply::{
+    ApplyEnv, ApplyMode, apply_internal, apply_tx, apply_tx_env, apply_tx_mode, canonicalize,
+};
 pub use error::CoreError;
 pub use ids::{ID_KINDS, IdAlloc, IdKind, MemIds};
 pub use layout::{FaceRef, Measured, TextLayout, TextMeasurer, TextRequest, TextStyle};
@@ -37,7 +39,10 @@ pub use ops::{
     CaptionMerge, CaptionSetStyle, CaptionSetText, CaptionSetWords, CaptionSplit, FontPinOp,
     FontRepin, FontUnpin, StyleAdd, StyleRemove, StyleSet,
 };
-pub use ops::{EffectAdd, EffectMove, EffectRemove, EffectRestore, KeyframeRemove, KeyframeSet};
+pub use ops::{
+    EffectAdd, EffectMove, EffectRemove, EffectRestore, KeyframeRemove, KeyframeRestore,
+    KeyframeSet,
+};
 pub use rebase::{Conflict, Conflicts, rebase_tx, rebase_tx_env};
 pub use record::{
     Link, MIN_READER, RECORD_FORMAT, Record, RecordKind, encode_record, kind_name, resolve_ops,

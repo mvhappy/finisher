@@ -96,6 +96,11 @@ pub fn normalize(mut tx: Tx) -> Result<Tx, CoreError> {
         }
         tx.schema_version = SCHEMA_VERSION;
     }
+    // A schema-2 client tx holds only shapes schema 3 still accepts (time-form keyframe ops,
+    // spec §5.12), so it is committed as schema 3.
+    if tx.schema_version == 2 {
+        tx.schema_version = SCHEMA_VERSION;
+    }
     if tx.schema_version == SCHEMA_VERSION {
         for (i, op) in tx.ops.iter_mut().enumerate() {
             if op.is_alias() {

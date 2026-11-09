@@ -12,6 +12,7 @@ mod check;
 mod content;
 pub(crate) mod contents;
 mod group;
+pub(crate) mod keys;
 mod limits;
 pub(crate) mod lists;
 mod lock;

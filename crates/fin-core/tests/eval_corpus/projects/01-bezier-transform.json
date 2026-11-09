@@ -15,7 +15,7 @@
   "project": {
     "id": "p1",
     "name": "Corpus",
-    "schemaVersion": 2,
+    "schemaVersion": 3,
     "rate": "30",
     "timelines": [
       {
@@ -42,6 +42,7 @@
                 "keyframes": {
                   "transform.position": [
                     {
+                      "id": "kf3",
                       "at": "0",
                       "value": [
                         0.0,
@@ -56,6 +57,7 @@
                       }
                     },
                     {
+                      "id": "kf4",
                       "at": "4",
                       "value": [
                         320.5,
@@ -70,6 +72,7 @@
                       }
                     },
                     {
+                      "id": "kf5",
                       "at": "10",
                       "value": [
                         -40.0,
@@ -86,6 +89,7 @@
                   ],
                   "transform.scale": [
                     {
+                      "id": "kf9",
                       "at": "1",
                       "value": [
                         1.0,
@@ -100,6 +104,7 @@
                       }
                     },
                     {
+                      "id": "kf10",
                       "at": "6",
                       "value": [
                         2.5,
@@ -114,6 +119,7 @@
                       }
                     },
                     {
+                      "id": "kf11",
                       "at": "9",
                       "value": [
                         1.25,
@@ -130,6 +136,7 @@
                   ],
                   "transform.rotation": [
                     {
+                      "id": "kf6",
                       "at": "0",
                       "value": 0.0,
                       "interp": {
@@ -141,6 +148,7 @@
                       }
                     },
                     {
+                      "id": "kf7",
                       "at": "5",
                       "value": 359.5,
                       "interp": {
@@ -152,6 +160,7 @@
                       }
                     },
                     {
+                      "id": "kf8",
                       "at": "10",
                       "value": -90.0,
                       "interp": {
@@ -165,6 +174,7 @@
                   ],
                   "transform.anchor": [
                     {
+                      "id": "kf1",
                       "at": "2",
                       "value": [
                         0.5,
@@ -179,6 +189,7 @@
                       }
                     },
                     {
+                      "id": "kf2",
                       "at": "8",
                       "value": [
                         0.0,

@@ -329,7 +329,8 @@ pub fn key_op(item: &str, path: &str, at: Rational, v: f64) -> Op {
     KeyframeSet {
         item: item.into(),
         path: path.into(),
-        at,
+        key: None,
+        at: Some(at),
         value: ParamValue::Number(v),
         interp: Interp::Linear,
     }
@@ -1002,10 +1003,34 @@ impl World {
                     _ => -(v as f64),
                 };
                 let n = it.duration.num() * 30 / it.duration.den();
+                let real = match fin_core::params::effect_path(&path) {
+                    Some((fx, rest)) => {
+                        let fx = self.bound.get(fx).map_or(fx, String::as_str);
+                        format!("effects.{fx}.{rest}")
+                    }
+                    None => path.clone(),
+                };
+                // Sometimes the key form (spec §5.12): an edit, or a move, of a key the base
+                // holds (keys this run minted are named by placeholders the 1-op applies reuse).
+                let key = (v % 4 == 3)
+                    .then(|| {
+                        it.common
+                            .keyframes
+                            .get(&real)?
+                            .first()
+                            .map(|x| x.id.clone())
+                    })
+                    .flatten()
+                    .filter(|id| self.key(id) == *id);
+                let at = match (&key, at % 2) {
+                    (Some(_), 0) => None,
+                    _ => Some(frames(at % n.max(1))),
+                };
                 KeyframeSet {
                     item: self.key(&it.id),
                     path,
-                    at: frames(at % n.max(1)),
+                    key,
+                    at,
                     value: ParamValue::Number(value),
                     interp: match interp {
                         0 => Interp::Linear,
@@ -1022,21 +1047,24 @@ impl World {
             }
             G::KeyRemove { t, k, j } => {
                 let it = self.item(t, k)?;
-                let all: Vec<(&String, Rational)> = it
+                let all: Vec<(&String, Rational, &String)> = it
                     .common
                     .keyframes
                     .iter()
-                    .flat_map(|(p, ks)| ks.iter().map(move |x| (p, x.at)))
+                    .flat_map(|(p, ks)| ks.iter().map(move |x| (p, x.at, &x.id)))
                     .collect();
-                let (path, at) = pick(&all, j)?;
+                let (path, at, id) = pick(&all, j)?;
                 let path = match fin_core::params::effect_path(path) {
                     Some((fx, rest)) => format!("effects.{}.{rest}", self.key(fx)),
                     None => (*path).clone(),
                 };
+                // The key form for a key the base holds, sometimes; else by time.
+                let keyed = j % 2 == 1 && self.key(id) == **id;
                 KeyframeRemove {
                     item: self.key(&it.id),
                     path,
-                    at: *at,
+                    key: keyed.then(|| (*id).clone()),
+                    at: (!keyed).then_some(*at),
                 }
                 .into()
             }

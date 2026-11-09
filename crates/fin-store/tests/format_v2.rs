@@ -476,7 +476,10 @@ fn migration_0002_from_4a_fixture() {
     let store = open_4a(&e, &data, &folder);
     let (rev, project) = store.snapshot(MAIN).unwrap();
     assert_eq!(rev, expected["rev"].as_u64().unwrap());
-    assert_eq!(serde_json::to_value(&project).unwrap(), expected["project"]);
+    assert_eq!(
+        serde_json::to_value(&project).unwrap(),
+        current(&expected["project"])
+    );
     let conn = read_only(store.db_path());
     let v: i64 = conn
         .query_row("PRAGMA user_version", [], |r| r.get(0))
@@ -514,7 +517,10 @@ fn sp2_fixture_migrates_through_0002() {
         serde_json::from_slice(&fs::read(tmp.path().join("expected_v2.json")).unwrap()).unwrap();
     let (rev, head) = store.snapshot(MAIN).unwrap();
     assert_eq!(rev, expected["rev"].as_u64().unwrap());
-    assert_eq!(serde_json::to_value(&head).unwrap(), expected["project"]);
+    assert_eq!(
+        serde_json::to_value(&head).unwrap(),
+        current(&expected["project"])
+    );
     drop(store);
     let db = fin_store::db_path(&data, SP2_ID);
     let conn = read_only(&db);
@@ -583,4 +589,10 @@ fn v1_segment_with_a_4b_kind_is_corrupt() {
         segment::decode_with_reader(&bytes, 1),
         Err(SegError::Corrupt(_))
     ));
+}
+
+/// A v2 golden project as this Finisher reads it: upcast to the current model (the fixtures
+/// stay as written; spec §5.12.2).
+fn current(v: &serde_json::Value) -> serde_json::Value {
+    serde_json::to_value(fin_core::upcast_snapshot(v.clone()).unwrap()).unwrap()
 }

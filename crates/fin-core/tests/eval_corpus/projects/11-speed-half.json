@@ -15,7 +15,7 @@
   "project": {
     "id": "p1",
     "name": "Corpus",
-    "schemaVersion": 2,
+    "schemaVersion": 3,
     "rate": "30",
     "timelines": [
       {
@@ -43,6 +43,7 @@
                 "keyframes": {
                   "opacity": [
                     {
+                      "id": "kf1",
                       "at": "0",
                       "value": 0.25,
                       "interp": {
@@ -54,6 +55,7 @@
                       }
                     },
                     {
+                      "id": "kf2",
                       "at": "8",
                       "value": 1.0,
                       "interp": {
@@ -67,6 +69,7 @@
                   ],
                   "transform.scale": [
                     {
+                      "id": "kf3",
                       "at": "0",
                       "value": [
                         1.0,
@@ -81,6 +84,7 @@
                       }
                     },
                     {
+                      "id": "kf4",
                       "at": "4",
                       "value": [
                         1.5,

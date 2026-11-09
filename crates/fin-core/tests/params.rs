@@ -579,6 +579,7 @@ fn param_set_on_animated_path_refused() {
     item_mut(&mut p, "c1").common.keyframes.insert(
         "opacity".into(),
         vec![Keyframe {
+            id: "kf1".into(),
             at: secs(0),
             value: ParamValue::Number(0.0),
             interp: Interp::Linear,

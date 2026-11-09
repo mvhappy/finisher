@@ -9,7 +9,7 @@
 //! `font.pin|unpin|repin`, `caption.setText|split|merge|setStyle` (and the
 //! `clip.*` aliases of `item.insert`, `item.trim` and `item.delete`, [`alias`]). Internal ops
 //! exist only as inverses (`item.remove`, `item.restore`, `track.restore`,
-//! `timeline.restore`, `effect.restore`, `caption.setWords`, and `item.trim` in `strict` mode
+//! `timeline.restore`, `effect.restore`, `keyframe.restore`, `caption.setWords`, and `item.trim` in `strict` mode
 //! or `alone`, `item.slide` with `sides`, `item.link` with a literal id); clients sending them
 //! get `INVALID_OP`.
 //!
@@ -61,6 +61,7 @@ mod item_split;
 mod item_trim;
 mod item_unlink;
 mod keyframe_remove;
+mod keyframe_restore;
 mod keyframe_set;
 mod marker_add;
 mod marker_remove;
@@ -106,6 +107,7 @@ pub use font_pin::FontPinOp;
 pub use font_repin::FontRepin;
 pub use font_unpin::FontUnpin;
 pub use keyframe_remove::KeyframeRemove;
+pub use keyframe_restore::KeyframeRestore;
 pub use keyframe_set::KeyframeSet;
 pub use marker_add::MarkerAdd;
 pub use marker_remove::MarkerRemove;
@@ -406,6 +408,7 @@ fn prunes(op: &Op) -> bool {
                 | Op::EffectMove(_)
                 | Op::KeyframeSet(_)
                 | Op::KeyframeRemove(_)
+                | Op::KeyframeRestore(_)
                 | Op::StyleAdd(_)
                 | Op::StyleSet(_)
                 | Op::StyleRemove(_)
@@ -519,6 +522,7 @@ ops_table! {
     EffectMove => effect_move,
     KeyframeSet => keyframe_set,
     KeyframeRemove => keyframe_remove,
+    KeyframeRestore => keyframe_restore,
     EffectRestore => effect_restore,
     StyleAdd => style_add,
     StyleSet => style_set,

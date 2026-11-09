@@ -12,7 +12,7 @@ use fin_core::layout::TextMeasurer;
 use fin_core::rebase::placement::{Placement, WhenLost};
 use fin_core::{
     Applied, ApplyEnv, ApplyMode, BoundIds, CoreError, Diff, Link, MemIds, Op, Project, Record,
-    SCHEMA_VERSION, Tx, apply_tx_env, apply_tx_mode, rebase_tx_env, resolve_ops,
+    SCHEMA_VERSION, Tx, apply_tx_env, apply_tx_mode, canonicalize, rebase_tx_env, resolve_ops,
 };
 
 struct Br {
@@ -100,6 +100,7 @@ impl MemLog {
     ) -> Result<LogRec, CoreError> {
         let tx = self.tx(b, tx_id, author, self.head_seq(b), ops);
         let env = ApplyEnv::measuring(self.measurer.as_deref());
+        let tx = canonicalize(&self.state(b), &tx)?;
         let applied = apply_tx_env(&self.state(b), &tx, &mut self.ids, ApplyMode::Client, env)?;
         Ok(self.push(b, Link::Edit, tx, applied))
     }

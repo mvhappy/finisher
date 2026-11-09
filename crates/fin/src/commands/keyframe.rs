@@ -113,7 +113,8 @@ pub fn plan(b: &mut Builder<'_>, cmd: &KeyframeCmd) -> Result<Value, CoreError> 
             b.push(Op::from(KeyframeSet {
                 item: a.item.clone(),
                 path: a.path.clone(),
-                at,
+                key: None,
+                at: Some(at),
                 value: value.clone(),
                 interp,
             }))?;
@@ -128,7 +129,8 @@ pub fn plan(b: &mut Builder<'_>, cmd: &KeyframeCmd) -> Result<Value, CoreError> 
             b.push(Op::from(KeyframeRemove {
                 item: a.item.clone(),
                 path: a.path.clone(),
-                at,
+                key: None,
+                at: Some(at),
             }))?;
             Ok(json!({ "item": a.item, "path": a.path, "at": at }))
         }

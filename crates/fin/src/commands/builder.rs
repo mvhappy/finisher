@@ -194,7 +194,11 @@ impl<'a> Builder<'a> {
     pub fn push(&mut self, op: Op) -> Result<(), CoreError> {
         let mut local = op.clone();
         // New-entity placeholders stay as written: the work copy binds them itself.
-        let allocated = local.allocates().map(str::to_string);
+        // A placeholder an earlier step bound names that entity (a later `keyframe.set` of it).
+        let allocated = local
+            .allocates()
+            .filter(|p| !self.bound.contains_key(*p))
+            .map(str::to_string);
         local.for_each_ref(|r| {
             if allocated.as_deref() != Some(r.as_str()) {
                 *r = self.id(r);

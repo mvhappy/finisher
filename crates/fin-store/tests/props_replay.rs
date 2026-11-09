@@ -669,7 +669,8 @@ fn realise(p: &Project, what: u8, k: usize, k2: usize, n: i64, tag: usize) -> Op
         27 | 28 => fin_core::KeyframeSet {
             item: c?.id.clone(),
             path: "opacity".into(),
-            at: ["0", "1/2", "1"][k2 % 3].parse().unwrap(),
+            key: None,
+            at: Some(["0", "1/2", "1"][k2 % 3].parse().unwrap()),
             value: ParamValue::Number(f64::from((n + 3) as i32) / 7.0),
             interp: if n % 2 == 0 {
                 fin_core::Interp::Linear
@@ -688,7 +689,8 @@ fn realise(p: &Project, what: u8, k: usize, k2: usize, n: i64, tag: usize) -> Op
             fin_core::KeyframeRemove {
                 item: it.id.clone(),
                 path: path.clone(),
-                at: list.get(k2 % list.len().max(1))?.at,
+                key: None,
+                at: Some(list.get(k2 % list.len().max(1))?.at),
             }
             .into()
         }
@@ -879,7 +881,8 @@ fn setup(e: &is::Env) -> Store {
             fin_core::KeyframeSet {
                 item: first,
                 path: "opacity".into(),
-                at: secs(0),
+                key: None,
+                at: Some(secs(0)),
                 value: ParamValue::Number(0.5),
                 interp: fin_core::Interp::Linear,
             }

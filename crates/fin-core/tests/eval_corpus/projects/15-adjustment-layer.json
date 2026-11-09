@@ -15,7 +15,7 @@
   "project": {
     "id": "p1",
     "name": "Corpus",
-    "schemaVersion": 2,
+    "schemaVersion": 3,
     "rate": "30",
     "timelines": [
       {
@@ -85,6 +85,7 @@
                 "keyframes": {
                   "effects.fx2.radius": [
                     {
+                      "id": "kf3",
                       "at": "0",
                       "value": 0.0,
                       "interp": {
@@ -96,6 +97,7 @@
                       }
                     },
                     {
+                      "id": "kf4",
                       "at": "8",
                       "value": 24.0,
                       "interp": {
@@ -109,6 +111,7 @@
                   ],
                   "effects.fx1.exposure": [
                     {
+                      "id": "kf1",
                       "at": "2",
                       "value": 0.0,
                       "interp": {
@@ -116,6 +119,7 @@
                       }
                     },
                     {
+                      "id": "kf2",
                       "at": "6",
                       "value": 1.0,
                       "interp": {

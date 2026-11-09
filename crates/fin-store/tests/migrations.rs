@@ -145,7 +145,10 @@ fn sp2_fixture_migrates_to_identical_state() {
     let store = sp2.open().unwrap();
     let (rev, head) = store.snapshot(MAIN).unwrap();
     assert_eq!(rev, expected["rev"].as_u64().unwrap());
-    assert_eq!(serde_json::to_value(&head).unwrap(), expected["project"]);
+    assert_eq!(
+        serde_json::to_value(&head).unwrap(),
+        current(&expected["project"])
+    );
     drop(store);
 
     let conn = read_only(&sp2.db());
@@ -780,4 +783,10 @@ fn db_v3_is_refused_by_a_v2_reader() {
         assert_eq!(e.code, "DB_TOO_NEW");
         assert_eq!(e.details["minReaderVersion"], 4);
     }
+}
+
+/// A v2 golden project as this Finisher reads it: upcast to the current model (the fixtures
+/// stay as written; spec §5.12.2).
+fn current(v: &serde_json::Value) -> serde_json::Value {
+    serde_json::to_value(fin_core::upcast_snapshot(v.clone()).unwrap()).unwrap()
 }

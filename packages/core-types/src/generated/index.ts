@@ -417,6 +417,9 @@ export type Op =
   | (KeyframeRemove & {
       op: "keyframe.remove";
     })
+  | (KeyframeRestore & {
+      op: "keyframe.restore";
+    })
   | (EffectRestore & {
       op: "effect.restore";
     })
@@ -3238,13 +3241,15 @@ export interface Effect {
   };
 }
 /**
- * A keyframe; `at` is relative to the item's start (plan 4C Decision 13).
+ * A keyframe; `at` is relative to the item's start (plan 4C Decision 13). `id` (`kf<n>`) is
+ * stable (spec §5.12): unique within the item, kept by trims, moves and splits.
  *
  * This interface was referenced by `FinCore`'s JSON-Schema
  * via the `definition` "Keyframe".
  */
 export interface Keyframe {
   at: Rational;
+  id: string;
   interp: Interp;
   value: ParamValue;
 }
@@ -3417,28 +3422,49 @@ export interface EffectMove {
   to: number;
 }
 /**
- * `keyframe.set`: the keyframe of `path` of `item` at `at`.
+ * `keyframe.set`: the key `key` (or, in the client time form, the key at `at`) of `path` of
+ * `item`, at `at` (default: where it is) with `value` and `interp`.
  *
  * This interface was referenced by `FinCore`'s JSON-Schema
  * via the `definition` "KeyframeSet".
  */
 export interface KeyframeSet {
-  at: Rational;
+  at?: Rational | null;
   interp: Interp;
   item: string;
+  /**
+   * A key id (`kf<n>`), or a `$name` placeholder for a new key.
+   */
+  key?: string | null;
   path: string;
   value: ParamValue;
 }
 /**
- * `keyframe.remove`: the keyframe of `path` of `item` at `at`.
+ * `keyframe.remove`: the key `key` (or, in the client time form, the key at `at`) of `path`
+ * of `item`.
  *
  * This interface was referenced by `FinCore`'s JSON-Schema
  * via the `definition` "KeyframeRemove".
  */
 export interface KeyframeRemove {
-  at: Rational;
+  at?: Rational | null;
   item: string;
+  key?: string | null;
   path: string;
+}
+/**
+ * `keyframe.restore` (internal): key `key` of `path` of `item` back at `at`.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "KeyframeRestore".
+ */
+export interface KeyframeRestore {
+  at: Rational;
+  interp: Interp;
+  item: string;
+  key: string;
+  path: string;
+  value: ParamValue;
 }
 /**
  * `effect.restore` (internal): `effect` back on `item` at `index`, with its `keyframes`.

@@ -108,6 +108,7 @@ fn item_mut<'a>(p: &'a mut Project, id: &str) -> &'a mut Item {
 fn keyframes(at: &[i64]) -> Vec<Keyframe> {
     at.iter()
         .map(|&a| Keyframe {
+            id: "kf1".into(),
             at: secs(a),
             value: ParamValue::Number(0.5),
             interp: Interp::Linear,

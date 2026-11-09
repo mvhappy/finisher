@@ -38,6 +38,7 @@ fn kind_name(kind: IdKind) -> &'static str {
         IdKind::Effect => "effect",
         IdKind::Link => "link",
         IdKind::Style => "style",
+        IdKind::Keyframe => "keyframe",
     }
 }
 
@@ -273,7 +274,7 @@ mod tests {
             ID_KINDS.map(|k| c.next(k)),
             [
                 "a1", "t3", "c1", "tl2", "br1", "cap1", "g1", "img1", "adj1", "nst1", "m1", "tr1",
-                "b1", "fx1", "lk1", "st1"
+                "b1", "fx1", "lk1", "st1", "kf1"
             ]
             .map(String::from)
         );
@@ -290,7 +291,7 @@ mod tests {
         c.saw("$x");
         c.saw("cap7");
         c.saw("fx2");
-        assert_eq!(c.next, [1, 3, 10, 2, 4, 8, 1, 1, 1, 1, 1, 1, 1, 3, 1, 1]);
+        assert_eq!(c.next, [1, 3, 10, 2, 4, 8, 1, 1, 1, 1, 1, 1, 1, 3, 1, 1, 1]);
     }
 
     /// The `ids` rows are keyed by these names: one per kind, never renamed.
@@ -314,7 +315,8 @@ mod tests {
                 "bin",
                 "effect",
                 "link",
-                "style"
+                "style",
+                "keyframe"
             ]
         );
     }

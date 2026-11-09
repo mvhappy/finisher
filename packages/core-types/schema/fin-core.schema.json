@@ -8035,10 +8035,13 @@
       "type": "object"
     },
     "Keyframe": {
-      "description": "A keyframe; `at` is relative to the item's start (plan 4C Decision 13).",
+      "description": "A keyframe; `at` is relative to the item's start (plan 4C Decision 13). `id` (`kf<n>`) is\nstable (spec §5.12): unique within the item, kept by trims, moves and splits.",
       "properties": {
         "at": {
           "$ref": "#/$defs/Rational"
+        },
+        "id": {
+          "type": "string"
         },
         "interp": {
           "$ref": "#/$defs/Interp"
@@ -8048,6 +8051,7 @@
         }
       },
       "required": [
+        "id",
         "at",
         "value",
         "interp"
@@ -8055,13 +8059,26 @@
       "type": "object"
     },
     "KeyframeRemove": {
-      "description": "`keyframe.remove`: the keyframe of `path` of `item` at `at`.",
+      "description": "`keyframe.remove`: the key `key` (or, in the client time form, the key at `at`) of `path`\nof `item`.",
       "properties": {
         "at": {
-          "$ref": "#/$defs/Rational"
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Rational"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "item": {
           "type": "string"
+        },
+        "key": {
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "path": {
           "type": "string"
@@ -8069,13 +8086,12 @@
       },
       "required": [
         "item",
-        "path",
-        "at"
+        "path"
       ],
       "type": "object"
     },
-    "KeyframeSet": {
-      "description": "`keyframe.set`: the keyframe of `path` of `item` at `at`.",
+    "KeyframeRestore": {
+      "description": "`keyframe.restore` (internal): key `key` of `path` of `item` back at `at`.",
       "properties": {
         "at": {
           "$ref": "#/$defs/Rational"
@@ -8084,6 +8100,9 @@
           "$ref": "#/$defs/Interp"
         },
         "item": {
+          "type": "string"
+        },
+        "key": {
           "type": "string"
         },
         "path": {
@@ -8096,7 +8115,49 @@
       "required": [
         "item",
         "path",
+        "key",
         "at",
+        "value",
+        "interp"
+      ],
+      "type": "object"
+    },
+    "KeyframeSet": {
+      "description": "`keyframe.set`: the key `key` (or, in the client time form, the key at `at`) of `path` of\n`item`, at `at` (default: where it is) with `value` and `interp`.",
+      "properties": {
+        "at": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Rational"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "interp": {
+          "$ref": "#/$defs/Interp"
+        },
+        "item": {
+          "type": "string"
+        },
+        "key": {
+          "description": "A key id (`kf<n>`), or a `$name` placeholder for a new key.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "path": {
+          "type": "string"
+        },
+        "value": {
+          "$ref": "#/$defs/ParamValue"
+        }
+      },
+      "required": [
+        "item",
+        "path",
         "value",
         "interp"
       ],
@@ -10964,7 +11025,7 @@
               "type": "object"
             }
           ],
-          "description": "Sets the keyframe of an item's parameter at an item-relative time."
+          "description": "Sets a keyframe of an item's parameter, by key id (or, from clients, by time): edits,\nmoves or inserts it."
         },
         {
           "allOf": [
@@ -10984,7 +11045,27 @@
               "type": "object"
             }
           ],
-          "description": "Removes the keyframe of an item's parameter at an item-relative time."
+          "description": "Removes a keyframe of an item's parameter, by key id (or, from clients, by time)."
+        },
+        {
+          "allOf": [
+            {
+              "$ref": "#/$defs/KeyframeRestore"
+            },
+            {
+              "properties": {
+                "op": {
+                  "const": "keyframe.restore",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "op"
+              ],
+              "type": "object"
+            }
+          ],
+          "description": "Internal (inverse of `keyframe.remove`): puts a keyframe back under its id."
         },
         {
           "allOf": [

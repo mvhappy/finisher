@@ -33,8 +33,8 @@ pub use timeline::{
     Bin, Curve, Marker, Resolution, Timeline, Track, TrackKind, Transition, TransitionKind,
 };
 
-/// Version of the serialized model and op format.
-pub const SCHEMA_VERSION: u32 = 2;
+/// Version of the serialized model and op format. 3: stable keyframe ids (spec §5.12).
+pub const SCHEMA_VERSION: u32 = 3;
 
 /// The resolution of a new project's timeline, and of a pre-4C project's (owner decision,
 /// plan 4C Decision 9): vertical 1080×1920.
@@ -83,6 +83,13 @@ impl Project {
                     out.push(item.id.as_str());
                     out.extend(item.common.effects.iter().map(|e| e.id.as_str()));
                     out.extend(item.common.link.as_deref());
+                    out.extend(
+                        item.common
+                            .keyframes
+                            .values()
+                            .flatten()
+                            .map(|k| k.id.as_str()),
+                    );
                 }
             }
         }

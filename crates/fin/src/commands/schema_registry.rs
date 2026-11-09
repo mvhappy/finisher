@@ -131,6 +131,7 @@ mod tests {
             "effect.restore",
             "item.remove",
             "item.restore",
+            "keyframe.restore",
             "timeline.restore",
             "track.restore",
         ];

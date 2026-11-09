@@ -16,7 +16,7 @@
   "project": {
     "id": "p1",
     "name": "Corpus",
-    "schemaVersion": 2,
+    "schemaVersion": 3,
     "rate": "30",
     "timelines": [
       {
@@ -49,6 +49,7 @@
                 "keyframes": {
                   "slots.size": [
                     {
+                      "id": "kf1",
                       "at": "0",
                       "value": 12.0,
                       "interp": {
@@ -60,6 +61,7 @@
                       }
                     },
                     {
+                      "id": "kf2",
                       "at": "3",
                       "value": 96.0,
                       "interp": {
@@ -71,6 +73,7 @@
                       }
                     },
                     {
+                      "id": "kf3",
                       "at": "6",
                       "value": 48.0,
                       "interp": {
@@ -84,6 +87,7 @@
                   ],
                   "slots.tint": [
                     {
+                      "id": "kf4",
                       "at": "0",
                       "value": "#000000",
                       "interp": {
@@ -95,6 +99,7 @@
                       }
                     },
                     {
+                      "id": "kf5",
                       "at": "4",
                       "value": "#ff8000ff",
                       "interp": {
@@ -106,6 +111,7 @@
                       }
                     },
                     {
+                      "id": "kf6",
                       "at": "6",
                       "value": "#3366cc80",
                       "interp": {
@@ -119,6 +125,7 @@
                   ],
                   "transform.position": [
                     {
+                      "id": "kf7",
                       "at": "0",
                       "value": [
                         0.0,
@@ -133,6 +140,7 @@
                       }
                     },
                     {
+                      "id": "kf8",
                       "at": "2",
                       "value": [
                         0.0,

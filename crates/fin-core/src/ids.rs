@@ -35,6 +35,9 @@ pub enum IdKind {
     Link,
     /// Project caption styles.
     Style,
+    /// Keyframes, from one project-wide counter, addressed as `(item, path, key)` (spec
+    /// §5.12): a split copies keys with their ids.
+    Keyframe,
 }
 
 impl IdKind {
@@ -56,6 +59,7 @@ impl IdKind {
             IdKind::Effect => "fx",
             IdKind::Link => "lk",
             IdKind::Style => "st",
+            IdKind::Keyframe => "kf",
         }
     }
 
@@ -94,7 +98,7 @@ pub trait IdAlloc {
 }
 
 /// Every kind, in declaration order.
-pub const ID_KINDS: [IdKind; 16] = [
+pub const ID_KINDS: [IdKind; 17] = [
     IdKind::Asset,
     IdKind::Track,
     IdKind::Clip,
@@ -111,6 +115,7 @@ pub const ID_KINDS: [IdKind; 16] = [
     IdKind::Effect,
     IdKind::Link,
     IdKind::Style,
+    IdKind::Keyframe,
 ];
 
 /// In-memory counters, one per kind; the next id is one past the last allocated.
