@@ -14980,7 +14980,7 @@
     },
     "SkippedFile": {
       "additionalProperties": false,
-      "description": "A file `import_dir` did not read: its path and why (`not a segment: …`, `another\nproject`, `unreadable: …`).",
+      "description": "A file `import_dir` did not read: its path and why (`not a segment: …`, `another\nproject`, `too large: …`, `unreadable: …`).",
       "properties": {
         "path": {
           "type": "string"
