@@ -11,7 +11,8 @@
 //   6. a font pack merges into `fonts.catalog`; a pack whose face is named like a built-in
 //      family cannot be packed (review H1; the server's plan refuses it with the same code);
 //   7. a code plugin: the `thirdPartyCode` warning, `THIRD_PARTY_CODE_NOT_ACCEPTED` until
-//      accepted, installed switched off, `PLUGIN_RUNTIME_UNAVAILABLE` on enable;
+//      accepted, installed switched off; since 8B Task 5 the owner enables it (unconfined
+//      before 7C) and disables it again;
 //   8. plans are the maker's to discard and capped (review M3);
 //   9. an update that adds `net` needs the acceptance again; an agent's refresh installs nothing,
 //      a person's applies the automatic update;
@@ -158,7 +159,14 @@ export async function run() {
     await failure(asPerson("plugin.install", { planId: toolPlan.planId, digest: toolPlan.digest, accept: {} }), "THIRD_PARTY_CODE_NOT_ACCEPTED");
     const tool = await asPerson("plugin.install", { planId: toolPlan.planId, digest: toolPlan.digest, accept: { thirdPartyCode: true } });
     assertEqual([tool.plugin.kind, tool.plugin.enabled], ["code", false], "the code plugin's row");
-    await failure(asPerson("plugin.enable", { id: "@acme/tool" }), "PLUGIN_RUNTIME_UNAVAILABLE");
+    // 8B Task 5: code plugins are enableable by the owner (owner decision 1), unconfined until
+    // 7C's plugin profile is ready on this OS; disabled again so the later steps start as before.
+    const on = await asPerson("plugin.enable", { id: "@acme/tool" });
+    assertEqual([on.plugin.enabled, on.plugin.state], [true, "active"], "the enabled code plugin");
+    const listed = (await console_("plugin.list", {})).plugins.find((p) => p.id === "@acme/tool");
+    assertEqual(listed?.confined, false, "plugin.list marks the code plugin unconfined");
+    const off = await asPerson("plugin.disable", { id: "@acme/tool" });
+    assertEqual(off.plugin.enabled, false, "the disabled code plugin");
     need((await audit("plugin.install")).some((r) => r.details.pluginId === "@acme/tool" && r.details.thirdPartyCode?.accepted === true), "no acceptance on the install row");
 
     step(8, "plans are the maker's to discard, and capped");
