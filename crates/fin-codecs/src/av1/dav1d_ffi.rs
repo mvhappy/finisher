@@ -195,6 +195,7 @@ fn copy_picture(p: &sys::FinDav1dPicture) -> Result<DecodedFrame, CoreError> {
         size: Size::new(w, h),
         planes: [plane(0, w, h), plane(1, cw, ch), plane(2, cw, ch)],
         colour: colour(p),
+        hw: false,
     })
 }
 

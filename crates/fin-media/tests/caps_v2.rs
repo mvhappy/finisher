@@ -134,3 +134,50 @@ fn the_schema_names_the_v2_types() {
         assert!(defs.contains_key(name), "{name}");
     }
 }
+
+#[test]
+fn profiles_from_stream_numbers() {
+    use fin_media::Chroma::{Yuv420, Yuv422};
+    let of = |c, f: &[u8; 4], p, d, ch| Profile::of(c, *f, p, d, ch);
+    assert_eq!(
+        of(VideoCodec::H264, b"avc1", Some(100), 8, Yuv420),
+        Some(Profile::High)
+    );
+    assert_eq!(
+        of(VideoCodec::H264, b"avc1", Some(122), 10, Yuv422),
+        Some(Profile::High422)
+    );
+    assert_eq!(
+        of(VideoCodec::H264, b"avc1", Some(244), 8, Yuv420),
+        Some(Profile::Other)
+    );
+    assert_eq!(
+        of(VideoCodec::Hevc, b"hvc1", Some(2), 10, Yuv420),
+        Some(Profile::Main10)
+    );
+    assert_eq!(
+        of(VideoCodec::Hevc, b"hvc1", Some(4), 10, Yuv422),
+        Some(Profile::Main422_10)
+    );
+    assert_eq!(
+        of(VideoCodec::Hevc, b"hvc1", Some(4), 12, Yuv422),
+        Some(Profile::Other)
+    );
+    assert_eq!(
+        of(VideoCodec::Av1, b"av01", Some(0), 10, Yuv420),
+        Some(Profile::Main)
+    );
+    assert_eq!(
+        of(VideoCodec::Vp9, b"vp09", Some(2), 10, Yuv420),
+        Some(Profile::Profile2)
+    );
+    assert_eq!(
+        of(VideoCodec::ProRes, b"ap4x", None, 12, Yuv422),
+        Some(Profile::ProRes4444)
+    );
+    assert_eq!(
+        of(VideoCodec::ProRes, b"apcn", None, 10, Yuv422),
+        Some(Profile::ProRes422)
+    );
+    assert_eq!(of(VideoCodec::H264, b"avc1", None, 8, Yuv420), None);
+}

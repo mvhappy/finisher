@@ -12,8 +12,9 @@ use fin_media::{MediaInfo, SampleTable, decode_start};
 use serde_json::json;
 
 use crate::av1::DecodeThreads;
-use crate::caps::{Capabilities, open_decoder_limited};
+use crate::config::DecoderConfig;
 use crate::frame::DecodedFrame;
+use crate::registry::{ProbeResult, open_decoder};
 use crate::traits::{BackendId, VideoDecoder};
 
 /// Decoded frames kept for reuse.
@@ -46,7 +47,7 @@ pub struct FrameReader<R: Read + Seek> {
 
 impl<R: Read + Seek> FrameReader<R> {
     /// Opens the file's first video track with a decoder from `caps` (default threading).
-    pub fn open(r: R, limits: &Limits, caps: &Capabilities) -> Result<Self, CoreError> {
+    pub fn open(r: R, limits: &Limits, caps: &ProbeResult) -> Result<Self, CoreError> {
         Self::open_with(r, limits, caps, DecodeThreads::default())
     }
 
@@ -54,7 +55,7 @@ impl<R: Read + Seek> FrameReader<R> {
     pub fn open_with(
         r: R,
         limits: &Limits,
-        caps: &Capabilities,
+        caps: &ProbeResult,
         threads: DecodeThreads,
     ) -> Result<Self, CoreError> {
         Self::open_with_limit(r, limits, caps, threads, crate::av1::MAX_PIXELS)
@@ -65,7 +66,7 @@ impl<R: Read + Seek> FrameReader<R> {
     pub fn open_with_limit(
         r: R,
         limits: &Limits,
-        caps: &Capabilities,
+        caps: &ProbeResult,
         threads: DecodeThreads,
         max_pixels: u32,
     ) -> Result<Self, CoreError> {
@@ -74,7 +75,15 @@ impl<R: Read + Seek> FrameReader<R> {
             CoreError::new("NOT_FOUND", "the file has no video track")
                 .with_details(json!({ "kind": "videoTrack" }))
         })?;
-        let decoder = open_decoder_limited(&track, caps, threads, max_pixels)?;
+        let decoder = open_decoder(
+            &DecoderConfig {
+                track: &track,
+                threads,
+                max_pixels,
+                adapter: None,
+            },
+            caps,
+        )?;
         Ok(FrameReader {
             demux,
             track,

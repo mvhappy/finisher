@@ -11,8 +11,8 @@ use std::fs::File;
 use std::io::Cursor;
 use std::path::{Path, PathBuf};
 
+use fin_codecs::FrameReader;
 use fin_codecs::fixture::{ClipSpec, pattern_clip};
-use fin_codecs::{FrameReader, capabilities};
 use fin_compositor::{AdapterChoice, Gpu, LayerIssue, SourceFrame, SourceProvider};
 use fin_container::{CodecConfig, Limits, Mp4Options, Mp4Writer, VideoTrackConfig};
 use fin_core::eval::{FramePlan, Layer, eval_frame};
@@ -273,7 +273,7 @@ impl Fixture {
         let reader = FrameReader::open(
             File::open(&self.av1).unwrap(),
             &Limits::default(),
-            &capabilities(),
+            &fin_codecs::ProbeResult::software_only(),
         )
         .unwrap();
         frame_at(reader.table(), s.time).index as u32
@@ -319,7 +319,7 @@ impl SourceProvider for Decoded {
             let reader = FrameReader::open(
                 File::open(path).unwrap(),
                 &Limits::default(),
-                &capabilities(),
+                &fin_codecs::ProbeResult::software_only(),
             )
             .map_err(|e| issue(&e.code))?;
             self.readers.insert(s.asset.clone(), reader);

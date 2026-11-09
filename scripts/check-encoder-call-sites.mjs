@@ -5,7 +5,8 @@
 //   `VTCompressionSessionCreate` in `apple/encode.rs`; Microsoft's H.264 encoder MFT, the video
 //   encoder MFT category and the encoder `CODECAPI_AVEnc*` properties in `mf/encode.rs` and
 //   `mf/codecapi.rs`; SVT-AV1's bindings (`fin_svt_sys`) in `av1/svt_ffi.rs`, and its safe
-//   wrapper (`svt_ffi`) in `av1/svt.rs` (the `fin-svt-sys` crate itself is not scanned);
+//   wrapper (`svt_ffi`) in `av1/svt.rs` (the `fin-svt-sys` crate itself is not scanned), and
+//   its opener (`open_av1_encoder`) in `av1/svt.rs` and the registry backend `av1/backends.rs`;
 // - every file that calls `open_encoder(` names an `EncodePurpose::` variant (its config's
 //   `purpose`); `open_encoder` is never renamed (`as`) or taken as a value, so every call is
 //   seen; and `EncoderConfig` has no `Default`, so its `purpose` field (required, no default)
@@ -27,6 +28,7 @@ export const PRIMITIVES = [
   { name: "an encoder CODECAPI property", re: /\bCODECAPI_AVEnc\w*/, files: [`${CODECS}mf/encode.rs`, `${CODECS}mf/codecapi.rs`] },
   { name: "SVT-AV1's bindings", re: /\bfin_svt_sys\b/, files: [`${CODECS}av1/svt_ffi.rs`] },
   { name: "SVT-AV1's encoder wrapper", re: /\bsvt_ffi\b/, files: [`${CODECS}av1/svt.rs`, `${CODECS}av1/mod.rs`] },
+  { name: "SVT-AV1's opener (use open_encoder)", re: /\bopen_av1_encoder\b/, files: [`${CODECS}av1/svt.rs`, `${CODECS}av1/backends.rs`] },
 ];
 const CALL = /(?<!fn\s+)\bopen_encoder\s*\(/;
 const PURPOSE = /\bEncodePurpose\s*::\s*\w+/;

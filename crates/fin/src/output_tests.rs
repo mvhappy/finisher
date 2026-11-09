@@ -49,7 +49,12 @@ fn exit_codes_follow_the_contract() {
     assert_eq!(exit_code("EVENT_INVALID"), 3);
     assert_eq!(exit_code("EVENT_TOO_LARGE"), 3);
     assert_eq!(exit_code("FONT_FETCH_FAILED"), 5);
-    for code in ["GPU_UNAVAILABLE", "GPU_DEVICE_LOST", "GPU_OUT_OF_MEMORY"] {
+    for code in [
+        "GPU_UNAVAILABLE",
+        "GPU_DEVICE_LOST",
+        "GPU_OUT_OF_MEMORY",
+        "ENCODER_HUNG",
+    ] {
         assert_eq!(exit_code(code), 5, "{code}");
     }
     assert_eq!(exit_code("FONTS_DAMAGED"), 5);

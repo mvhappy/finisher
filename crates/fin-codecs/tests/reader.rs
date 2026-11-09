@@ -3,8 +3,8 @@
 
 use std::io::Cursor;
 
+use fin_codecs::FrameReader;
 use fin_codecs::fixture::{ClipSpec, pattern_clip};
-use fin_codecs::{FrameReader, capabilities};
 use fin_container::Limits;
 use fin_media::testing::read_id_y;
 use fin_media::{Size, frame_at};
@@ -13,7 +13,7 @@ fn open(spec: &ClipSpec) -> FrameReader<Cursor<Vec<u8>>> {
     FrameReader::open(
         Cursor::new(pattern_clip(spec).unwrap()),
         &Limits::default(),
-        &capabilities(),
+        &fin_codecs::ProbeResult::software_only(),
     )
     .unwrap()
 }

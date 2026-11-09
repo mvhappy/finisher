@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 
 use super::GpuAdapter;
 use crate::backend::VendorClass;
-use crate::format::{AudioCodec, VideoCodec};
+use crate::format::{AudioCodec, Chroma, VideoCodec};
 
 /// `media.capabilities` v1 takes no params.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
@@ -101,6 +101,46 @@ pub enum Profile {
     /// A profile with no row of its own: never served by a backend that claims only named
     /// profiles (`CODEC_UNAVAILABLE`, `codecPlugin` guidance).
     Other,
+}
+
+impl Profile {
+    /// The profile a stream's sample entry and record name: `profile` is the record's number
+    /// (H.264 `profile_idc`, HEVC `general_profile_idc`, AV1 `seq_profile`, the VP9 profile),
+    /// `fourcc` the sample entry type (ProRes has no record). `None` when the stream names
+    /// none (no record); a number with no row of its own is [`Profile::Other`].
+    pub fn of(
+        codec: VideoCodec,
+        fourcc: [u8; 4],
+        profile: Option<u8>,
+        bit_depth: u8,
+        chroma: Chroma,
+    ) -> Option<Profile> {
+        if codec == VideoCodec::ProRes {
+            return Some(match &fourcc {
+                b"ap4h" | b"ap4x" => Profile::ProRes4444,
+                _ => Profile::ProRes422,
+            });
+        }
+        let p = profile?;
+        Some(match (codec, p) {
+            (VideoCodec::H264, 66) => Profile::Baseline,
+            (VideoCodec::H264, 77) => Profile::Main,
+            (VideoCodec::H264, 100) => Profile::High,
+            (VideoCodec::H264, 110) => Profile::High10,
+            (VideoCodec::H264, 122) => Profile::High422,
+            (VideoCodec::Hevc, 1) => Profile::Main,
+            (VideoCodec::Hevc, 2) => Profile::Main10,
+            // Range extensions: only 4:2:2 at 10 bits or less has a row.
+            (VideoCodec::Hevc, 4) if chroma == Chroma::Yuv422 && bit_depth <= 10 => {
+                Profile::Main422_10
+            }
+            (VideoCodec::Av1, 0) => Profile::Main,
+            (VideoCodec::Av1, 1) => Profile::High,
+            (VideoCodec::Vp9, 0) => Profile::Profile0,
+            (VideoCodec::Vp9, 2) => Profile::Profile2,
+            _ => Profile::Other,
+        })
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

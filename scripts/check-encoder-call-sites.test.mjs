@@ -28,10 +28,11 @@ test("each encoder primitive is allowed only in its backend's file", () => {
     "crates/fin-codecs/src/probe/mf.rs": "fn g() { api.SetValue(&CODECAPI_AVEncCommonMeanBitRate, &v); }\n",
     "crates/fin-codecs/src/reader.rs": "use fin_svt_sys::Encoder;\n",
     "crates/fin-workers/src/media/x.rs": "use fin_codecs::av1::svt_ffi::Encoder;\n",
+    "crates/fin-codecs/src/fixture.rs": "fn f() { open_av1_encoder(&c); }\n",
   });
   const r = gate(bad);
   assert.equal(r.code, 1);
-  assert.equal(r.out.trim().split("\n").filter((l) => l.startsWith("ENCODER_CALL_SITE")).length, 4, r.out);
+  assert.equal(r.out.trim().split("\n").filter((l) => l.startsWith("ENCODER_CALL_SITE")).length, 5, r.out);
 });
 
 test("open_encoder callers name an EncodePurpose", () => {
