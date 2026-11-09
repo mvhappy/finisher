@@ -37,6 +37,7 @@ pub(crate) struct SqlLog<'a> {
     conn: &'a Connection,
     head: Option<(&'a str, u64, &'a Project)>,
     measurer: Option<&'a dyn TextMeasurer>,
+    when_lost: fin_core::rebase::placement::WhenLost,
 }
 
 impl<'a> SqlLog<'a> {
@@ -45,6 +46,7 @@ impl<'a> SqlLog<'a> {
             conn,
             head: None,
             measurer: None,
+            when_lost: Default::default(),
         }
     }
 
@@ -66,6 +68,16 @@ impl<'a> SqlLog<'a> {
             conn,
             head: Some((branch, rev, project)),
             measurer: None,
+            when_lost: Default::default(),
+        }
+    }
+
+    /// The log whose planners do `when` with an item whose neighbours are both gone (the
+    /// write's [`crate::Store::with_when_lost`]).
+    pub(crate) fn losing(self, when: fin_core::rebase::placement::WhenLost) -> SqlLog<'a> {
+        SqlLog {
+            when_lost: when,
+            ..self
         }
     }
 
@@ -235,6 +247,10 @@ fn log_rec(branch: &str, seq: u64, bytes: &[u8], diff: &str) -> Result<LogRec, S
 impl LogView for SqlLog<'_> {
     fn measurer(&self) -> Option<&dyn TextMeasurer> {
         self.measurer
+    }
+
+    fn when_lost(&self) -> fin_core::rebase::placement::WhenLost {
+        self.when_lost
     }
 
     fn lineage(&self, branch: &str) -> Result<Lineage, CoreError> {

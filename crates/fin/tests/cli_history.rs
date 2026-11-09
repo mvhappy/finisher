@@ -862,3 +862,54 @@ fn recover_dismiss_of_an_unknown_group_is_not_found() {
         "NOT_FOUND",
     );
 }
+
+/// Owner decisions of 2026-11-09 (SP4 §4.3 *Placement of restored items*), as `fin` shows
+/// them. c1 c2 c3; the author deletes c2, bob deletes c1 and c3. Under an agent session
+/// (`FIN_SESSION`) the undo is exit 4 `CONFLICT` with reason `NEIGHBOURS_GONE` and changes
+/// nothing; run by the user it goes back at the nearest boundary with a `notice`.
+#[test]
+fn undo_with_both_neighbours_gone_by_agent_and_by_user() {
+    let (server, dir) = setup!("undo_with_both_neighbours_gone_by_agent_and_by_user");
+    let t = T(&server, &dir);
+    for _ in 0..3 {
+        t.insert(&[], "t1");
+    }
+    let session = [
+        ("FIN_SESSION", OsStr::new("sess-1")),
+        ("FIN_AUTHOR", OsStr::new("agent")),
+    ];
+    ok(fin_env(
+        &server.sd,
+        &dir,
+        &["clip", "delete", "c2"],
+        &session,
+    ));
+    ok(t.as_author("bob", &["clip", "delete", "c1"]));
+    ok(t.as_author("bob", &["clip", "delete", "c3"]));
+    let refused = fin_env(&server.sd, &dir, &["undo"], &session);
+    assert_error(&refused, 4, "CONFLICT");
+    let e = &refused.json["error"];
+    assert_eq!(e["details"]["reason"], "NEIGHBOURS_GONE", "{e}");
+    assert_eq!(
+        e["details"]["conflicts"][0]["details"]["placement"]["causes"][0]["author"], "bob",
+        "{e}"
+    );
+    assert!(e["fix"].as_str().unwrap().contains("decide"), "{e}");
+    assert_eq!(t.clips(&[]), Vec::<String>::new());
+    let done = ok(t.as_author("agent", &["undo"]));
+    assert_eq!(done["placements"][0]["outcome"], "relocated", "{done}");
+    assert!(
+        done["notice"]
+            .as_str()
+            .unwrap()
+            .starts_with("relocated: c2"),
+        "{done}"
+    );
+    assert_eq!(t.clips(&[]), ["c2"]);
+    // A clean undo carries the placements and no notice.
+    t.insert(&[], "t1");
+    ok(t.as_author("agent", &["clip", "delete", "c2"]));
+    let clean = ok(t.as_author("agent", &["undo"]));
+    assert_eq!(clean["placements"][0]["outcome"], "clean", "{clean}");
+    assert!(clean.get("notice").is_none(), "{clean}");
+}

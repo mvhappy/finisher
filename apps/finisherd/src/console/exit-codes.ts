@@ -23,7 +23,9 @@ export const USAGE_CODES: ReadonlyArray<string> = [
 export const CONFLICT_CODES: ReadonlyArray<string> = [
   "CONFLICT", "BASE_REV_AHEAD", "SEGMENT_COLLISION", "PROJECT_READ_ONLY", "LEASE_TAKEOVER_REFUSED", "LEASE_LOST",
   "HISTORY_REWOUND", "TX_SET_ASIDE", "REGISTRY_EXISTS", "CREDENTIAL_LIMIT", "FILE_CLOUD_ONLY", "FILE_CHANGED",
-  "BRANCH_IN_USE", "SESSION_BUSY", "SESSION_ENDED",
+  // `NEIGHBOURS_GONE`: an agent's undo, redo or copy whose item lost both neighbours (owner
+  // decision 2026-11-09); it arrives as `CONFLICT {reason}`, listed so it maps to 4 as a code too.
+  "BRANCH_IN_USE", "NEIGHBOURS_GONE", "SESSION_BUSY", "SESSION_ENDED",
   "APPROVAL_EXPIRED", "AUTO_MERGE_UNAVAILABLE", "WORKSPACE_FULL", "APPROVAL_LIMIT",
   // 5B (Decision 33).
   "PAIRING_USED", "DEVICE_LIMIT",

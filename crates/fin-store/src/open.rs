@@ -237,6 +237,7 @@ impl Store {
             measurer: opts.measurer.clone(),
             write_outcome: None,
             guard: crate::WriteGuard::default(),
+            when_lost: fin_core::rebase::placement::WhenLost::default(),
             #[cfg(any(test, feature = "test-hooks"))]
             fail_after_apply: false,
         }

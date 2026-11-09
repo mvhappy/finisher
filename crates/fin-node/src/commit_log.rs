@@ -37,7 +37,9 @@ use fin_store::{
 use serde::Serialize;
 use serde_json::Value;
 
-use crate::journal::ctx::{RawActor, RawCtx, actor_of_meta, ctx_of, guard_of_meta};
+use crate::journal::ctx::{
+    RawActor, RawCtx, actor_of_meta, ctx_of, guard_of_meta, when_lost_of_meta,
+};
 
 /// The most txIds one entry links (an `undo --to` of many units, a large merge).
 pub(crate) const MAX_LINKS: usize = 256;
@@ -479,9 +481,10 @@ pub(crate) fn history<R: Logged + Serialize>(
     call: impl FnOnce(&mut Store) -> Result<R, StoreError>,
 ) -> Result<String, CoreError> {
     let guard = guard_of_meta(meta)?;
+    let when_lost = when_lost_of_meta(meta);
     let attempt = Attempt::history(j, record, s.project_id(), meta, req);
     let _ = s.take_write_outcome();
-    let r = s.with_guard(guard, call);
+    let r = s.with_guard(guard, |s| s.with_when_lost(when_lost, call));
     let note = s.take_write_outcome();
     let micros = attempt.as_ref().map_or(0, Attempt::micros);
     match r {

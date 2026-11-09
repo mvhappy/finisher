@@ -218,3 +218,52 @@ The second review ran `props_history` and found a merge that reversed the source
   - The parity property goes with the walk. The oracle's walk, its base set, `ripple_moved`, `relocated` and `in_effect` are removed, and `After(last)` is realised as the track end.
 - **Removed carve-outs:** unchanged.
 - **New named cases:** `merge_keeps_the_source_order_past_an_earlier_copy` and `merged_move_to_the_end_goes_to_the_targets_end` (`tests/rebase_anchors.rs`), plus the two seeds in the history regression files.
+
+## Owner decisions (2026-11-09): undo, redo and copy placement under concurrent edits
+
+The owner decided these on 2026-11-09, after research on collaborative undo (summarised in SP4 §4.3 *Placement of restored items*). They change D9's "before the item that followed it" for the history paths. Stale commits keep D1–D8 unchanged.
+
+1. **Anchor on the left neighbour.** An undone, redone or copied ripple delete or ripple move puts B back **right after A**, the item that preceded it, wherever A is now. When A is gone and C (the item that followed) is still there, B goes before C. The old timecode is only a fallback hint.
+2. **Both neighbours gone.** For a person (the console, the desktop app, a paired device, `fin` run by a user), B goes back at the old time, snapped to the nearest clip boundary, and the outcome is `relocated`. For an agent (an agent or MCP credential, or `fin` under an agent session), the op is a typed conflict and B is not restored: the agent decides. A track or asset that is gone is a typed conflict for everyone.
+3. **Report only when relocated.** Undo, redo, cherry-pick and merge results carry a placement outcome per restored item: `clean | relocated | conflict`. A relocation also says where the item landed (track, time and frame, neighbour) and why (the committed record that moved or removed the neighbour, and its author when known). `fin` shows a notice only for a relocation. The JSON always carries the field. A merge's relocations become light review items once the 5E review store exists; it does not exist on integration yet, so that is a follow-up (SP4 §5.11). A clean restore says nothing.
+4. **Determinism.** The undo record stores where B actually landed, so a redo puts it back exactly there. Property: n undos followed by n redos give back the same timeline, also when others moved the neighbours.
+
+### Design (as planned)
+
+- **P1. Which ops.** On the history paths (undo, redo, `undo --to`, cherry-pick, revert, merge: every caller of `history::FrameReads`), a ripple `item.restore` and a ripple `item.move` take the **left-first** rule. These are the inverses of ripple deletes and moves (`item.move` inverts to `item.remove` + ripple `item.restore`), a redo of an undone insert, and copies of moves. Inserts (`item.insert`, `clip.insert`) keep D2, and so do lift restores (a time span, D1 rule 5) and overwrite moves. A stale commit keeps D2 for every op.
+- **P2. Left-first resolution** (`Anchor::resolve_left`), at the evolving head, on the op's own track:
+  1. `end` (A, the item whose end touches the position in the op's frame), at A's end, whatever starts there now;
+  2. else `start` (C), at C's start;
+  3. else the track start, when the item was first (no A, a C written, at 0);
+  4. else `empty`, at the position as written, while the track is still empty;
+  5. else **lost**.
+
+  An item that the op itself moves is never its own neighbour. A move to its own end or start reads the item on its other side. `track_end` is not used: "after the last item" means after A.
+- **P3. Lost.** The position maps through shifts (the old timecode, D2's fallback), or it takes the position as written when shifts say `REMOVED`. Then the policy decides (`rebase::placement::WhenLost`, read from `LogView::when_lost`):
+  - `Snap` (a person) puts it at the nearest boundary (an item start or end) on the track at the head, the earlier on a tie, and the outcome is `relocated`;
+  - `Refuse` (an agent) gives the conflict `NEIGHBOURS_GONE`, blamed on the record that removed A (else C), with `details.placement`. It is raised only after the entity rules and the re-run have passed (review finding 1).
+
+  A track that is gone fails the re-run (`NOT_FOUND`), and an asset that is gone fails the entity rule (`REMOVED`). Both apply to everyone, as before, and both come before `NEIGHBOURS_GONE`.
+- **P4. Outcome.** A placement is `clean` when the neighbour that decided is the one written first, and no unmirrored record moved or removed it since: a removal, a touch of it as a whole, of its `start`, or of the edge facing the item. So an insert next to it is no relocation (review finding 2: comparing with shifts called every insert at the cut a relocation). It is `relocated` otherwise:
+  - the neighbour moved (another record moved, slid or trimmed it);
+  - A was gone, so B went before C;
+  - both were gone and B snapped;
+  - the neighbour is an item an earlier op of the same record put back relocated, whose outcome and causes it inherits (review finding 5).
+
+  `causes` lists, for each neighbour that moved or is gone, the last unmirrored record that changed it (a touch, a removal), with its author when the log knows it (`LogRec`'s intent author). A position with no left-first anchor (a gap away from every edge) maps by shifts and is `clean`. Ops outside P1 report nothing.
+- **P5. Where the principal kind comes from.** Core takes a policy, never a principal. `LogView::when_lost()` defaults to `Snap`. The store's `SqlLog` takes the store's per-call policy (`Store::with_when_lost`, set like the write guard). fin-node derives it from the call's `metaJson` actor, which the server builds from the principal (`actorFor`): kind `user` is `Snap`, and covers the console, a device, and `fin` run by a user; `agent` is `Refuse`, and covers agent and MCP credentials and `fin` with `FIN_SESSION`; anything else (`unknown`, no meta, a meta that does not decode) is also `Refuse`. The request JSON has no such field. For a `local` principal the kind is the `fin-actor-kind` header the client sends, which nothing verifies (as with every actor claim, D6). So a local client that runs without `FIN_SESSION` gets `Snap` (review finding 3). The risk is a reported relocation, never a silent loss.
+- **P6. Results.** `Planned.placements`, `HistoryResult.placements` and `MergeReport.placements` (always serialised; generated TS types). A placement is `{txId, opIndex, item, outcome, landed?, causes?}`, with `landed = {track, at, frame?, after?, before?}` (`frame` when the timeline's rate makes `at` a whole frame) and `causes = [{neighbour, change: moved|removed, txId, author?}]`. A conflict placement rides in the conflict's `details.placement`. A merge with `skipConflicting` also lists it in `placements`. `fin undo|redo|cherry-pick|merge` carry `placements` (capped at 20), plus `notice` only when one is relocated.
+- **P7. Determinism.** The planned record's intent is the rebased tx, whose positions are where each op landed (D8), and its inverse is what the re-run at the head recorded. The record also stores its placements (`Record::placements`, absent when empty and ignored by replay, like `Tx.via`), so a retry answers with them. *As built:* a retry answered from the log first came back with no placements; the store tests caught it. A redo of that undo reads its anchors in the frame right after the undo, which the head equals while nothing else came between. New property `undo_redo_props`: random edits by one author, interleaved with other authors' ripple moves and deletes of the neighbours, then n undos and n redos, give the timeline from before the undos (rev by rev, both directions).
+- **P8. Oracle.** The undo model (`tests/undo_model`) places a restore (`LOp::Insert` with `expect`, and a copied `LOp::Move`) right after its recorded predecessor while that predecessor is on the track (certain). Otherwise it uses the old successor rule, and uncertain is uncertain, as before. A removal and a move record the predecessor they had (none after a gap).
+- **Known limits.**
+  - The members of a link group are restored one op each (`item.delete` and ripple `item.move` invert per member), so each anchors on its own track. When only one track's neighbour moved, the members land at different times (review finding 4; the old rule had the same gap). This is a follow-up in SP4 §5.11.
+  - A redo of an undone insert is a ripple `item.restore`, so it takes the left-first rule too. A copy of the insert itself keeps D2 (review finding 6; to confirm with the owner).
+- **Exit codes.** `NEIGHBOURS_GONE` is a reason inside `CONFLICT`, which is exit 4 in `crates/fin/src/output.rs` and in `apps/finisherd/src/console/exit-codes.ts`. Both tables gain a test row for it, and its fix tells the agent to read the head and decide where the item goes.
+
+### Tasks
+
+- [x] T1: docs (this section; SP4 §4.3 *Placement of restored items*, §5.11 follow-ups).
+- [x] T2: core: `rebase::placement` (policy, outcome types, left-first resolution, snap, causes); the engine reports placements; history planners fill authors; `LogView::when_lost`. TDD: fixed cases in `tests/placement.rs`. Update `rebase_anchors.rs`'s D9 cases (the new expectations, explained).
+- [x] T3: oracle: the undo model's predecessor rule (P8); the property `undo_redo_props`; the history suites at 2000 cases.
+- [x] T4: store, fin-node, contracts and fin: the policy plumbing, the result fields, generated types, `fin` notice, and both exit tables.
+- [x] T5: goldens (RPC fixtures, generated types), the full checks, and the strict properties at 100k × 3.

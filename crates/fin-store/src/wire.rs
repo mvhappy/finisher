@@ -6,6 +6,7 @@
 use std::collections::BTreeMap;
 
 use fin_core::branch::BranchState;
+use fin_core::rebase::placement::Placement;
 use fin_core::{CommittedTx, Conflict, CoreError};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -155,6 +156,12 @@ pub struct HistoryResult {
     pub no_op: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub origins: Vec<String>,
+    /// Where the record put each item back that a ripple restore or move placed (owner
+    /// decision 2026-11-09; `fin_core::rebase::placement`): `clean`, or `relocated` with where
+    /// and why. Always in the answer (the generated type marks it optional, as `origins`); a
+    /// retry answers with what the record stored.
+    #[serde(default)]
+    pub placements: Vec<Placement>,
 }
 
 /// The answer of [`Store::merge`](crate::Store::merge): merge group `merge_id`'s records on
@@ -178,6 +185,11 @@ pub struct MergeReport {
     pub dry_run: bool,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub origins: Vec<String>,
+    /// As [`HistoryResult::placements`], each with its copy's txId, plus the `conflict`
+    /// placements of skipped candidates (a retry answers with the copies' stored ones only, as
+    /// its `skipped` is empty).
+    #[serde(default)]
+    pub placements: Vec<Placement>,
 }
 
 /// One group of quarantined records ([`Store::recover_groups`](crate::Store::recover_groups)).

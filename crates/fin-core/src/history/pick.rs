@@ -127,6 +127,7 @@ pub fn plan_cherry_pick(
         absorbs: &absorbs,
         places: &reads.places,
         anchors: &reads.anchors,
+        history: Some(log.when_lost()),
     };
     // Earlier source records stand in the steps as unmirrored inverses unless the target
     // holds a copy: what depends on them depends on a record not picked.
@@ -135,9 +136,15 @@ pub fn plan_cherry_pick(
         .map(|s| s.record.tx_id.as_str())
         .collect();
     let (head_seq, head) = log.head(into)?;
+    let authors = super::Authors {
+        log,
+        recs: target.iter().map(|r| &r.record.intent),
+        own: (tx_id, author),
+    };
     let rebased = BoundIds::new(&r.intent.ops, &r.bindings)
         .map_err(|e| Conflict::from_rerun(&e, tx_id, 0, None))
         .and_then(|mut ids| rebase_apply(&head, &rebase, &mut ids, mode))
+        .map_err(|c| authors.fill_conflict(c))
         .map_err(|c| CoreError::from(Conflicts::one(on_skipped(c, &before))))?;
     let from = root_rec.map_or_else(|| rec.branch.clone(), |r| r.branch);
     Ok(Outcome::Append(Planned {
@@ -155,6 +162,7 @@ pub fn plan_cherry_pick(
             ..rebased.tx
         },
         applied: rebased.applied,
+        placements: authors.fill(rebased.placements),
     }))
 }
 

@@ -95,6 +95,10 @@ impl Store {
         for id in ids {
             committed.extend(db::find_tx(&self.conn, &id)?);
         }
+        let mut placements = Vec::new();
+        for c in &committed {
+            placements.extend(db::placements_of(&self.conn, &c.tx.tx_id)?);
+        }
         Ok(MergeReport {
             merge_id: r.tx_id.clone(),
             merged: committed.iter().filter_map(origin).collect(),
@@ -104,6 +108,7 @@ impl Store {
             source_state: state_of(&self.conn, &from)?,
             dry_run: false,
             origins: Vec::new(),
+            placements,
         })
     }
 }
@@ -145,8 +150,11 @@ fn plan(ctx: &mut WriteCtx<'_>, r: &MergeReq) -> Result<MergeReport, StoreError>
     let from = index::resolve(txn, &r.from)?.id;
     let into = ctx.target(&r.into)?.id;
     let measurer = ctx.measurer.clone();
+    let when_lost = ctx.when_lost;
     let head = ctx.head(&into)?;
-    let log = SqlLog::with_head(txn, &into, head.rev, &head.project).measuring(measurer.as_deref());
+    let log = SqlLog::with_head(txn, &into, head.rev, &head.project)
+        .measuring(measurer.as_deref())
+        .losing(when_lost);
     let plan = plan_merge(&log, &from, &into, &r.author, &r.tx_id, r.skip_conflicting)?;
     let mut committed = Vec::with_capacity(plan.planned.len());
     for (n, p) in plan.planned.into_iter().enumerate() {
@@ -155,15 +163,18 @@ fn plan(ctx: &mut WriteCtx<'_>, r: &MergeReq) -> Result<MergeReport, StoreError>
             args_hash: if n == 0 { r.args_hash.clone() } else { None },
             ..p.intent
         };
-        committed.push(ctx.append(Draft {
-            branch: into.clone(),
-            link: p.link,
-            intent,
-            inverse: p.applied.inverse,
-            bindings: p.applied.bindings,
-            diff: p.applied.diff,
-            project: p.applied.project,
-        })?);
+        committed.push(ctx.append_placed(
+            Draft {
+                branch: into.clone(),
+                link: p.link,
+                intent,
+                inverse: p.applied.inverse,
+                bindings: p.applied.bindings,
+                diff: p.applied.diff,
+                project: p.applied.project,
+            },
+            p.placements,
+        )?);
     }
     // The source's state after the copies (Decision 21).
     ctx.settle()?;
@@ -176,5 +187,6 @@ fn plan(ctx: &mut WriteCtx<'_>, r: &MergeReq) -> Result<MergeReport, StoreError>
         source_state: state_of(txn, &from)?,
         dry_run: ctx.dry_run,
         origins: Vec::new(),
+        placements: plan.placements,
     })
 }

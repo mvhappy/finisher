@@ -95,9 +95,11 @@ impl Store {
             let txn = ctx.txn;
             let into = ctx.target(&r.into)?.id;
             let measurer = ctx.measurer.clone();
+            let when_lost = ctx.when_lost;
             let head = ctx.head(&into)?;
             let log = SqlLog::with_head(txn, &into, head.rev, &head.project)
-                .measuring(measurer.as_deref());
+                .measuring(measurer.as_deref())
+                .losing(when_lost);
             let mut p = match plan_cherry_pick(&log, &r.origin, &into, &r.author, &r.tx_id)? {
                 Outcome::Append(p) => p,
                 Outcome::Nothing(why) => return Ok(Err(why)),
@@ -132,9 +134,11 @@ impl Store {
             let branch = ctx.target(&r.branch)?.id;
             let mut ids = Counters::load(txn)?;
             let measurer = ctx.measurer.clone();
+            let when_lost = ctx.when_lost;
             let head = ctx.head(&branch)?;
             let log = SqlLog::with_head(txn, &branch, head.rev, &head.project)
-                .measuring(measurer.as_deref());
+                .measuring(measurer.as_deref())
+                .losing(when_lost);
             let planned = plan_revert(&log, &r.merge_id, &branch, &r.author, &r.tx_id, &mut ids)?;
             ids.save(txn)?;
             Ok(match planned {
@@ -171,19 +175,23 @@ impl Store {
                     Ok(planned) => planned,
                     Err(why) => return Ok(Err(why)),
                 };
-                ctx.append(Draft {
-                    branch,
-                    link: p.link,
-                    intent: Tx {
-                        args_hash: c.args_hash.map(str::to_string),
-                        ..p.intent
+                let placements = p.placements;
+                ctx.append_placed(
+                    Draft {
+                        branch,
+                        link: p.link,
+                        intent: Tx {
+                            args_hash: c.args_hash.map(str::to_string),
+                            ..p.intent
+                        },
+                        inverse: p.applied.inverse,
+                        bindings: p.applied.bindings,
+                        diff: p.applied.diff,
+                        project: p.applied.project,
                     },
-                    inverse: p.applied.inverse,
-                    bindings: p.applied.bindings,
-                    diff: p.applied.diff,
-                    project: p.applied.project,
-                })
-                .map(Ok)
+                    placements.clone(),
+                )
+                .map(|c| Ok((c, placements)))
             })?;
             if let Some(out) = wrote {
                 return self.pick_origins(result(out, c.dry_run));
@@ -193,15 +201,29 @@ impl Store {
                 if existing.link.as_deref().map(Link::kind) != Some(which.kind()) {
                     return Err(key_reused(&existing));
                 }
-                let r = result(Ok(same_args_hash(c.args_hash, existing)?), false);
+                let r = result(
+                    Ok((
+                        same_args_hash(c.args_hash, existing)?,
+                        db::placements_of(&self.conn, c.tx_id)?,
+                    )),
+                    false,
+                );
                 return self.pick_origins(r);
             }
         }
     }
 }
 
-/// The answer: the record, or nothing and why (`noOp`).
-fn result(c: Result<CommittedTx, &'static str>, dry_run: bool) -> HistoryResult {
+/// The answer: the record and where its items went back (a retry: as the record stored them),
+/// or nothing and why (`noOp`).
+fn result(
+    c: Result<(CommittedTx, Vec<fin_core::rebase::placement::Placement>), &'static str>,
+    dry_run: bool,
+) -> HistoryResult {
+    let (c, placements) = match c {
+        Ok((c, p)) => (Ok(c), p),
+        Err(why) => (Err(why), Vec::new()),
+    };
     let undone = match c.as_ref().ok().and_then(|c| c.link.as_deref()) {
         Some(Link::Revert { reverts }) => vec![reverts.clone()],
         _ => vec![],
@@ -213,6 +235,7 @@ fn result(c: Result<CommittedTx, &'static str>, dry_run: bool) -> HistoryResult 
         dry_run,
         no_op,
         origins: Vec::new(),
+        placements,
     }
 }
 

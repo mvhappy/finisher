@@ -322,6 +322,10 @@ pub(super) const CONFLICT_CODES: &[&str] = &[
     // Another live agent session works on this root branch (7A Task 7): end it, or start from
     // another branch.
     "BRANCH_IN_USE",
+    // An agent's undo, redo or copy whose item lost both neighbours (owner decision 2026-11-09,
+    // SP4 §4.3): it arrives as `CONFLICT {reason: NEIGHBOURS_GONE}` (nothing changed; read the
+    // head and place the item yourself); listed so the reason maps to exit 4 as a code too.
+    "NEIGHBOURS_GONE",
     // Agent sessions (7A-2 Task 6b): a run is active (steer it, or wait); the session ended.
     "SESSION_BUSY",
     "SESSION_ENDED",

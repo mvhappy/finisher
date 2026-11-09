@@ -75,6 +75,7 @@ pub fn plan_undo_to(
     let (mut ops, mut undoes, mut conflicts) = (Vec::new(), Vec::new(), Vec::new());
     let mut skipped: HashSet<String> = HashSet::new();
     let mut offset = 0;
+    let mut placements = Vec::new();
     for unit in units {
         let inverse = unit_inverse(&own, unit)?;
         let n = inverse.len();
@@ -96,6 +97,10 @@ pub fn plan_undo_to(
         match rebase_steps(log, &head, &since, (&tx, &absorbs), &mut scratch)? {
             Ok(rebased) => {
                 seq += 1;
+                placements.extend(rebased.placements.iter().cloned().map(|mut p| {
+                    p.op_index += ops.len();
+                    p
+                }));
                 ops.extend(rebased.tx.ops.iter().cloned());
                 planned.push(CommittedTx {
                     rev: seq,
@@ -120,6 +125,15 @@ pub fn plan_undo_to(
         undoes.push(unit.id.clone());
         offset += n;
     }
+    let authors = super::Authors {
+        log,
+        recs: own.iter().map(|r| &r.record.intent),
+        own: (tx_id, author),
+    };
+    let conflicts = conflicts
+        .into_iter()
+        .map(|c| authors.fill_conflict(c))
+        .collect();
     if let Some(all) = Conflicts::new(conflicts) {
         return Err(all.into());
     }
@@ -134,6 +148,7 @@ pub fn plan_undo_to(
         link: Link::Undo { undoes },
         intent: tx,
         applied,
+        placements: authors.fill(placements),
     })
 }
 
@@ -178,7 +193,8 @@ fn rebase_steps(
             .with_env(super::env_of(log))
             .with_absorbs(absorbs)
             .with_places(&reads.places)
-            .with_anchors(&reads.anchors),
+            .with_anchors(&reads.anchors)
+            .with_history(log.when_lost()),
         ids,
         ApplyMode::Internal,
     ))
@@ -282,6 +298,10 @@ fn in_record(mut c: Conflict, offset: usize, unit: &str) -> Conflict {
         Some(Value::Object(m)) => m,
         _ => serde_json::Map::new(),
     };
+    // A refused placement names the op too (`NEIGHBOURS_GONE`).
+    if let Some(Value::Object(p)) = d.get_mut("placement") {
+        p.insert("opIndex".into(), json!(c.op_index));
+    }
     d.insert("unit".into(), json!(unit));
     c.details = Some(Box::new(Value::Object(d)));
     c

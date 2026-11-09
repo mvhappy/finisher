@@ -201,11 +201,76 @@ pub fn record_doc(c: &Value, dry: bool) -> Value {
     doc
 }
 
-/// `{[<key>: [...],] rev, txId, noOp?, dryRun?}` of a `HistoryResult`. `rev` is null when the
-/// operation committed nothing (`noOp` says why).
+/// `placements` (owner decision 2026-11-09: where each item a ripple restore or move put back
+/// went; always present, capped) and, only when one was relocated, a one-line `notice`.
+fn with_placements(doc: &mut Value, r: &Value) {
+    let placements = r.get("placements").cloned().unwrap_or_else(|| json!([]));
+    if let Some(n) = notice(&placements) {
+        doc["notice"] = json!(n);
+    }
+    doc["placements"] = placements;
+    cap(doc, "placements");
+}
+
+/// What a person reads about the relocated items: where each went and why; `None` when every
+/// item went back where it was.
+pub fn notice(placements: &Value) -> Option<String> {
+    let lines: Vec<String> = placements
+        .as_array()?
+        .iter()
+        .filter(|p| p["outcome"] == "relocated")
+        .map(|p| {
+            let l = &p["landed"];
+            let place = match (l["after"].as_str(), l["before"].as_str()) {
+                (Some(a), _) => format!("after {a}"),
+                (None, Some(b)) => format!("before {b}"),
+                (None, None) => format!("at {}", l["at"].as_str().unwrap_or("?")),
+            };
+            let frame = l["frame"]
+                .as_i64()
+                .map_or_else(String::new, |f| format!(", frame {f}"));
+            let track = l["track"].as_str().unwrap_or("?");
+            let why: Vec<String> = p["causes"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .map(|c| {
+                    let by = c["author"]
+                        .as_str()
+                        .map_or_else(String::new, |a| format!(" ({a})"));
+                    format!(
+                        "{} was {} by {}{by}",
+                        c["neighbour"].as_str().unwrap_or("?"),
+                        c["change"].as_str().unwrap_or("changed"),
+                        c["txId"].as_str().unwrap_or("?"),
+                    )
+                })
+                .collect();
+            let why = if why.is_empty() {
+                String::new()
+            } else {
+                format!(": {}", why.join(", "))
+            };
+            let item = p["item"].as_str().unwrap_or("?");
+            format!("{item} went back {place} on {track}{frame}{why}")
+        })
+        .collect();
+    // A person reads a few; the rest are in `placements`.
+    const SHOWN: usize = 3;
+    let more = lines.len().saturating_sub(SHOWN);
+    let mut text = lines.into_iter().take(SHOWN).collect::<Vec<_>>().join("; ");
+    if more > 0 {
+        text.push_str(&format!("; and {more} more (placements)"));
+    }
+    (!text.is_empty()).then(|| format!("relocated: {text}"))
+}
+
+/// `{[<key>: [...],] rev, txId, noOp?, dryRun?, placements, notice?}` of a `HistoryResult`.
+/// `rev` is null when the operation committed nothing (`noOp` says why).
 fn result_doc(r: &Value, named: Option<(&str, &str)>) -> Value {
     let (rev, tx_id) = last_of(&r["committed"]);
     let mut doc = json!({ "rev": rev, "txId": tx_id });
+    with_placements(&mut doc, r);
     if let Some((key, source)) = named {
         doc[key] = r[source].clone();
     }
@@ -310,6 +375,7 @@ pub fn merge_doc(report: &Value) -> Value {
         );
     }
     let mut doc = json!({ "merge": merge });
+    with_placements(&mut doc["merge"], report);
     for key in ["merged", "skipped", "excluded"] {
         cap(&mut doc["merge"], key);
     }
@@ -400,6 +466,35 @@ pub fn revert(backend: &dyn Backend, g: &Globals, a: &RevertArgs) -> Result<Valu
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Owner decision 2026-11-09: a notice only when an item was relocated; the placements
+    /// always.
+    #[test]
+    fn notice_only_when_relocated() {
+        let clean = json!({ "committed": [], "placements": [{ "txId": "u1", "opIndex": 0,
+            "item": "c2", "outcome": "clean" }] });
+        let doc = result_doc(&clean, None);
+        assert!(doc.get("notice").is_none(), "{doc}");
+        assert_eq!(doc["placements"][0]["outcome"], "clean");
+        let none = result_doc(&json!({ "committed": [] }), None);
+        assert_eq!(none["placements"], json!([]));
+        let moved = json!({ "committed": [], "placements": [{ "txId": "u1", "opIndex": 0,
+            "item": "c2", "outcome": "relocated",
+            "landed": { "track": "t1", "at": "30", "frame": 900, "after": "c1" },
+            "causes": [{ "neighbour": "c1", "change": "moved", "txId": "b1", "author": "bob" }] }] });
+        let doc = result_doc(&moved, None);
+        assert_eq!(
+            doc["notice"],
+            "relocated: c2 went back after c1 on t1, frame 900: c1 was moved by b1 (bob)"
+        );
+        let merged = merge_doc(&json!({ "committed": [], "placements": moved["placements"] }));
+        assert!(
+            merged["merge"]["notice"]
+                .as_str()
+                .unwrap()
+                .starts_with("relocated: c2")
+        );
+    }
 
     #[test]
     fn long_lists_are_cut_with_a_total() {

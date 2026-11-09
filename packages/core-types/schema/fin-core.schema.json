@@ -2144,6 +2144,29 @@
       ],
       "type": "object"
     },
+    "Cause": {
+      "description": "Why an item was relocated: the committed record that last moved or removed `neighbour`,\nand its author when the log knows it.",
+      "properties": {
+        "author": {
+          "type": "string"
+        },
+        "change": {
+          "$ref": "#/$defs/NeighbourChange"
+        },
+        "neighbour": {
+          "type": "string"
+        },
+        "txId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "neighbour",
+        "change",
+        "txId"
+      ],
+      "type": "object"
+    },
     "Change": {
       "description": "One entity an op changed (plan 4C Decision 4). `op`: the index of the op in its transaction\nthat made the change. The optional fields are omitted on the wire when absent (never\n`null`):\n- `track`: for an item, the track it is on (after the op; for a removed item, the track it\n  was taken off), so a footprint and replay's track check see the tracks of ops that record\n  no shift (a lift, a strict or overwrite trim, a roll, a slip, a split); none for assets;\n- `edge`: the edge an `updated` change moved, if that is all it did to the entity;\n- `path`: the parameter an `updated` change set (a registry path), if that is all it did;\n- `by`: the content offset of a start-edge move: every item-relative time of the entity\n  moved by it (plan 4C Decision 13).",
       "properties": {
@@ -5724,6 +5747,14 @@
           },
           "type": "array"
         },
+        "placements": {
+          "default": [],
+          "description": "Where the record put each item back that a ripple restore or move placed (owner\ndecision 2026-11-09; `fin_core::rebase::placement`): `clean`, or `relocated` with where\nand why. Always in the answer (the generated type marks it optional, as `origins`); a\nretry answers with what the record stored.",
+          "items": {
+            "$ref": "#/$defs/Placement"
+          },
+          "type": "array"
+        },
         "undone": {
           "items": {
             "type": "string"
@@ -8141,6 +8172,32 @@
       ],
       "type": "object"
     },
+    "Landed": {
+      "description": "Where a relocated item landed: its track and start, the start as a whole frame of its\ntimeline (when it is one), and its neighbours there.",
+      "properties": {
+        "after": {
+          "type": "string"
+        },
+        "at": {
+          "$ref": "#/$defs/Rational"
+        },
+        "before": {
+          "type": "string"
+        },
+        "frame": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "track": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "track",
+        "at"
+      ],
+      "type": "object"
+    },
     "Layer": {
       "description": "One item drawn at the plan's time. `local` is the time from the item's start: negative for\na transition's incoming item before its cut, past `duration` for the outgoing one after it.\nAn adjustment layer carries effects only (its transform and crop are the defaults); a\nnested item is a group layer whose `children` are its timeline's layers.",
       "properties": {
@@ -9975,6 +10032,14 @@
           },
           "type": "array"
         },
+        "placements": {
+          "default": [],
+          "description": "As [`HistoryResult::placements`], each with its copy's txId, plus the `conflict`\nplacements of skipped candidates (a retry answers with the copies' stored ones only, as\nits `skipped` is empty).",
+          "items": {
+            "$ref": "#/$defs/Placement"
+          },
+          "type": "array"
+        },
         "skipped": {
           "items": {
             "$ref": "#/$defs/Conflict"
@@ -10049,6 +10114,14 @@
       "pattern": "^[a-z][A-Za-z0-9_./-]{0,63}$",
       "type": "string",
       "x-fin-class": "meta"
+    },
+    "NeighbourChange": {
+      "description": "How a neighbour changed since the op was written.",
+      "enum": [
+        "moved",
+        "removed"
+      ],
+      "type": "string"
     },
     "NestedPlan": {
       "description": "The nested timeline of a group layer, the time evaluated on it (`sourceIn + local`) and\nits frame size.",
@@ -11932,6 +12005,50 @@
           "type": "string"
         }
       ]
+    },
+    "Placement": {
+      "description": "The placement of one item an undo, redo or copy put back (module docs): which op of which\nrecord, the item, the outcome, and for a relocation where it landed and why.",
+      "properties": {
+        "causes": {
+          "items": {
+            "$ref": "#/$defs/Cause"
+          },
+          "type": "array"
+        },
+        "item": {
+          "type": "string"
+        },
+        "landed": {
+          "$ref": "#/$defs/Landed"
+        },
+        "opIndex": {
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "outcome": {
+          "$ref": "#/$defs/PlacementOutcome"
+        },
+        "txId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "txId",
+        "opIndex",
+        "item",
+        "outcome"
+      ],
+      "type": "object"
+    },
+    "PlacementOutcome": {
+      "description": "The placement outcome of one restored item.",
+      "enum": [
+        "clean",
+        "relocated",
+        "conflict"
+      ],
+      "type": "string"
     },
     "PlanAction": {
       "enum": [
