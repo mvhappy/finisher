@@ -111,7 +111,7 @@ fn rec709_representable_colours_pass_through() {
         }
         assert!(checked > 3000, "{p:?}: {checked}");
         // On the boundary itself (Rec.709's primaries and secondaries, sent in the wider
-        // gamut) the zero channels lift by a few code values at most.
+        // gamut) the zero channels lift by a few code values at most (BT.2020's red: 8.7).
         for c in [
             [1.0, 0.0, 0.0],
             [0.0, 1.0, 0.0],
@@ -121,7 +121,7 @@ fn rec709_representable_colours_pass_through() {
             let out = code(convert_gamut(in_primaries(c, p), &g));
             let want = code(c);
             let worst = (0..3).map(|k| out[k].abs_diff(want[k])).max().unwrap();
-            assert!(worst <= 10, "{p:?} {c:?} → {out:?}");
+            assert!(worst <= 9, "{p:?} {c:?} → {out:?}");
         }
     }
 }
@@ -251,4 +251,51 @@ fn identity_gamut_changes_nothing() {
     }
     // Above 1.0 a channel clips at the encode (the HDR path keeps max(R, G, B) ≤ 1 anyway).
     assert_eq!(linear_to_709([1.5, 0.2, 0.0], &IDENTITY)[0], 1.0);
+}
+
+/// The hard-coded reach is each gamut's true furthest encoded distance: a sweep of the three
+/// faces of the source's unit cube (where `max` = 1; the distance does not change with scale)
+/// never exceeds it and comes within the grid's 1e-3 of it. Most maxima lie inside a face, not at a
+/// corner (Display P3's G at about (0.955, 0, 1)).
+#[test]
+fn reach_bounds_every_source_colour() {
+    const N: u32 = 200;
+    for p in WIDE {
+        let m = primaries_to_709(p).unwrap();
+        let mut worst = [0.0f32; 3];
+        for face in 0..3 {
+            for i in 0..=N {
+                for j in 0..=N {
+                    let mut s = [0.0f32; 3];
+                    let (u, w) = ((face + 1) % 3, (face + 2) % 3);
+                    s[face] = 1.0;
+                    s[u] = i as f32 / N as f32;
+                    s[w] = j as f32 / N as f32;
+                    let l = s.map(to_linear);
+                    let e: [f32; 3] = std::array::from_fn(|k| {
+                        encode_signed(m[k][0] * l[0] + m[k][1] * l[1] + m[k][2] * l[2])
+                    });
+                    let a = e[0].max(e[1]).max(e[2]);
+                    for k in 0..3 {
+                        worst[k] = worst[k].max((a - e[k]) / a);
+                    }
+                }
+            }
+        }
+        let r = reach(p);
+        for k in 0..3 {
+            assert!(
+                worst[k] <= r[k],
+                "{p:?} channel {k}: {} > {}",
+                worst[k],
+                r[k]
+            );
+            assert!(
+                r[k] - worst[k] < 1e-4,
+                "{p:?} channel {k}: {} vs {}",
+                worst[k],
+                r[k]
+            );
+        }
+    }
 }

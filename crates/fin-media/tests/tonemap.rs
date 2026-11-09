@@ -292,7 +292,7 @@ fn hdr_reference_white_lands_near_sdr_white() {
     };
     assert_eq!(p.gamut.compression, NONE);
     assert!(close(to_sdr([203.0; 3], &p)[0], 0.949_2, 1e-3));
-    // A 4,000-nit master (mdcv) keeps more highlight range below SDR white.
+    // A 4,000-nit master (clli MaxCLL) keeps more highlight range below SDR white.
     let bright = HdrInfo {
         mastering: None,
         content_light: Some(ContentLight {

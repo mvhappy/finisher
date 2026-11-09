@@ -305,6 +305,8 @@ impl EncoderSession { pub fn send(..); pub fn receive(..); pub fn finish(..); pu
 
 ### Task 10: HDR tone mapping and the wide-gamut soft clip — tier: opus
 
+> **Superseded in part (owner decision 2026-11-09, spec 6 §10.1):** the per-channel soft clip described below was replaced by an edge-only gamut compression (ACES RGC curve on encoded distance; in-gamut colours pass through) and `softclip_continuous_and_monotonic` by `fin-media/tests/gamut.rs`. The EETF and transfers stand as written.
+
 **Depends on:** Task 3.
 
 **Files:**
