@@ -7548,6 +7548,12 @@ export interface TestWarmParams {
    * A job-directory file kept open past `ready` (breaks the warm contract on purpose).
    */
   holdFile?: string;
+  /**
+   * Paths the worker tries to read (plan 7C Task 12): each answered with the errno of
+   * the attempt, `null` when it read. A path starting with `!` is renamed instead (to
+   * `<path>.moved`, and back when it worked): what replacing it with a link would need.
+   */
+  probe?: string[];
   value: unknown;
 }
 /**
@@ -7556,6 +7562,10 @@ export interface TestWarmParams {
  */
 export interface TestWarmResult {
   pid: number;
+  /**
+   * One errno (or `null`) per `probe` path, in order.
+   */
+  probes?: (number | null)[];
   served: number;
   value: unknown;
 }

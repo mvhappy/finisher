@@ -259,7 +259,7 @@ pub struct HostCaps {
     pub sandboxed: bool,
     /// What each sandbox profile gets (plan 7C Decision 4).
     pub profiles: spawner::ProfileCaps,
-    /// Warm workers can be granted per job (plan 7C Task 12).
+    /// Warm workers of the `worker` profile are confined per job (plan 7C Task 12).
     pub per_job_grants: bool,
 }
 

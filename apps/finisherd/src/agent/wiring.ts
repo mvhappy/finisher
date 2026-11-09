@@ -11,18 +11,25 @@
 //   harness only in a test-hooks build run with `FIN_TEST_HOOKS=1`.
 // - The runtime gets the core's journal (Task 10) and boots (crash recovery, the outbox, the
 //   credential reconcile, then its timers) before the transports serve; it closes on shutdown.
+import { realpathSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
-import type { Harness, Node } from "@finisher/contracts";
+import type { Harness, Node, Session } from "@finisher/contracts";
 import { testHooks } from "@finisher/fin-node";
 import { Context, Effect, type Scope } from "effect";
 import { childEnv } from "../env.ts";
 import { finError } from "../errors.ts";
 import type { Audit } from "../control/audit.ts";
-import { ModelGateway } from "../secrets/gateway.ts";
+import type { ControlStore } from "../control/db.ts";
+import { ModelGateway, type RunningSessions } from "../secrets/gateway.ts";
 import { FileSecretStore, type SecretStore } from "../secrets/store.ts";
 import type { ProviderAdapter } from "./adapter.ts";
 import { AgentAdmin, listLocalModels } from "./admin.ts";
+import { AgentApprovals, approvalKey, type GrantPort, grantPort } from "./approvals.ts";
+import { waitingOnApprovals } from "./builtin/approval-wait.ts";
+import { type ProviderPermissions, providerPermissions } from "./permissions.ts";
+import { ProviderRequests } from "./provider-requests.ts";
+import { remember } from "./remember.ts";
 import { builtinEnvironment } from "./builtin/environment.ts";
 import { localClient, type ModelClient, openrouterClient } from "./builtin/compat.ts";
 import { finIndex } from "./builtin/fin-tool.ts";
@@ -37,6 +44,9 @@ import { sessionPlanner } from "./planner.ts";
 import { BUNDLED_ROLES, type Role } from "./roles.ts";
 import { Runtime } from "./runtime.ts";
 import { cataloguePricing, type SessionEnvironment } from "./runtime-deps.ts";
+import { LayeredRules } from "./rules.ts";
+import { RuleStore } from "./rule-store.ts";
+import { sessionSandboxes } from "./sandbox.ts";
 import { readAgentSettings, resolveFinPath } from "./settings.ts";
 import type { AgentStore } from "./store.ts";
 import { AgentLookup } from "./store-lookup.ts";
@@ -53,6 +63,10 @@ export interface AgentServeOptions {
   readonly roles?: ReadonlyMap<string, Role>;
   /** The runtime's hourly sweep and budget check (default on). */
   readonly timers?: boolean;
+  /** A test's crash point: runs after a one-time grant was consumed, before the handler (7B Task 5). */
+  readonly afterGrantConsumed?: (sessionId: string, idem: string) => Promise<void>;
+  /** Another `fin-sandbox-exec` for sessions (tests: one that fails as the launcher does). */
+  readonly sandboxLauncher?: string;
 }
 
 /** What the handlers and the console RPCs use. */
@@ -62,6 +76,18 @@ export interface AgentRuntimeParts {
   readonly adapters: ReadonlyMap<Harness, ProviderAdapter>;
   readonly lookup: AgentLookup;
   readonly catalogue: Catalogue;
+  /** Command rules (7B Task 2): every layer, and the `local` layer and trust in `control.db`. */
+  readonly rules: LayeredRules;
+  readonly ruleStore: RuleStore;
+  readonly roles: ReadonlyMap<string, Role>;
+  /** Durable approvals for agents' asks (7B Task 4) and the key of their `argsHash`. */
+  readonly approvals: AgentApprovals;
+  readonly approvalKey: Buffer;
+  /** One-time grants for `commandRules` (7B Task 5). */
+  readonly grants: GrantPort;
+  /** Provider permission requests (7B Task 5). */
+  readonly permissions: ProviderPermissions;
+  readonly requests: ProviderRequests;
 }
 
 export class AgentRuntimeTag extends Context.Service<AgentRuntimeTag, AgentRuntimeParts>()("finisherd/AgentRuntime") {}
@@ -77,12 +103,18 @@ const DEFAULT_FAKE: readonly FakeScript[] = [{ name: "echo", turns: [[{ emit: [{
 export interface AgentWiringDeps {
   readonly serverData: string;
   readonly core: AgentCore;
-  readonly registry: BranchRegistry & { readonly dirOf: (projectId: string) => string | undefined };
+  readonly registry: BranchRegistry & { readonly dirOf: (projectId: string) => string | undefined; readonly indexedDirOf?: (projectId: string) => string | undefined };
   /** `control.db` (the store's), for the lookups `AgentStore` does not offer. */
   readonly db: ConstructorParameters<typeof AgentLookup>[0];
+  /** `control.db` itself, for the approvals' check-and-insert transactions (7B Task 4). */
+  readonly control: ControlStore;
   readonly audit: Audit;
   /** `FIN_SERVER` for the built-in `fin`: the local socket (it runs outside the OS sandbox, spec §8.9). */
   readonly endpoint: string;
+  /** The agent listener's endpoint, started on first need: `FIN_SERVER` of sandboxed sessions on Linux (plan 7C Task 11). */
+  readonly agentListener?: () => Promise<string>;
+  /** The libraries' roots (every library in v1: library reach is server-wide), read by sandboxed sessions (plan 7C Decision 6). */
+  readonly libraryRoots?: () => ReadonlyArray<string>;
   readonly log: (message: string) => void;
   readonly options?: AgentServeOptions;
 }
@@ -105,6 +137,19 @@ function openSecrets(serverData: string, log: (m: string) => void): SecretStore 
     log(`agent keys unavailable: ${(e as Error).message}`);
     return undefined;
   }
+}
+
+/**
+ * The sessions the model gateway gives a key to: one in a run. A run waiting on a card is still
+ * the run (7B Task 4): its loop goes on meanwhile. Idle, interrupted or ended ones get none.
+ */
+export function gatewaySessions(store: { get(id: string): Session | undefined }): RunningSessions {
+  return {
+    isRunning: (id) => {
+      const status = store.get(id)?.status;
+      return status === "running" || status === "waitingApproval";
+    },
+  };
 }
 
 export const buildAgentRuntime = (d: AgentWiringDeps): Effect.Effect<AgentRuntimeParts, never, Scope.Scope> =>
@@ -135,7 +180,7 @@ export const buildAgentRuntime = (d: AgentWiringDeps): Effect.Effect<AgentRuntim
         ? undefined
         : new ModelGateway(
             secrets,
-            { isRunning: (id) => core.store.get(id)?.status === "running" },
+            gatewaySessions(core.store),
             {
               record: (g) =>
                 d.audit.append({
@@ -173,7 +218,7 @@ export const buildAgentRuntime = (d: AgentWiringDeps): Effect.Effect<AgentRuntim
       }),
     );
     if (fakeAllowed()) adapters.set("fake", FakeAdapter(d.options?.fakeScripts ?? DEFAULT_FAKE));
-    const rolePrompt = (role: string) => (roles.get(role) ?? roles.get("editor"))!.prompt;
+    const rolePrompt = (role: string) => (roles.get(role) ?? roles.get("editor"))!.prompt.text;
     const builtinEnv = builtinEnvironment({ finPath, server: d.endpoint, projectDirOf: d.registry.dirOf, rolePrompt });
     const environment: SessionEnvironment = {
       async prepare(s) {
@@ -198,13 +243,39 @@ export const buildAgentRuntime = (d: AgentWiringDeps): Effect.Effect<AgentRuntim
       refreshListing: () =>
         prices.refreshIfStale(catalogue.openrouterBaseUrl, d.options?.fetch ?? fetch, AbortSignal.timeout(10_000), (e: unknown) => log(`OpenRouter's model list was not refreshed: ${String(e)}`)),
     });
+    // Rules, the approval key and provider requests before the runtime: its events reach them.
+    const ruleStore = new RuleStore(d.db);
+    const dirOf = (projectId: string) => d.registry.dirOf(projectId) ?? d.registry.indexedDirOf?.(projectId);
+    const rules = new LayeredRules({ serverData, store: ruleStore, roles, dirOf });
+    const key = approvalKey(serverData);
+    const permissions = providerPermissions({ rules, dirOf });
+    // The approvals need the runtime (their nodes, answers): made after it, looked up late.
+    let approvals: AgentApprovals | undefined;
+    const requests = new ProviderRequests({ permissions, approvals: () => approvals, key, consume: (id) => core.store.consumeApproval(id) });
+    // Every CLI harness's process goes through its session sandbox (plan 7C Task 11); what the
+    // launcher observes is audited (`sandbox.violation`, spec §8.8: no path, the root kind).
+    const realData = realpathSync(serverData);
+    const sandboxes = sessionSandboxes({
+      serverData: realData,
+      projectDirOf: d.registry.dirOf,
+      finPath,
+      localEndpoint: d.endpoint,
+      ...(d.agentListener === undefined ? {} : { agentListener: d.agentListener }),
+      libraryRoots: async () => d.libraryRoots?.() ?? [],
+      ...(d.options?.sandboxLauncher === undefined ? {} : { launcher: () => d.options!.sandboxLauncher! }),
+      onViolation: (v) =>
+        d.audit.append({ kind: "sandbox.violation", principal: { kind: "agent", id: v.sessionId }, outcome: "denied", details: { session: v.sessionId, op: v.op, profile: v.profile, rootKind: v.rootKind } }),
+    });
     const runtime = new Runtime({
       core,
+      requests,
       registry: d.registry,
       adapters: [...adapters.values()],
       planner,
       environment,
-      tools: { builtin: builtinTools({ finPath, projectDirOf: d.registry.dirOf, ...(settings.toolTimeoutS === undefined ? {} : { timeoutMs: settings.toolTimeoutS * 1000 }) }) },
+      // A `fin` call that meets a card waits on it (7B Task 5).
+      sandboxes,
+      tools: { builtin: waitingOnApprovals(builtinTools({ finPath, projectDirOf: d.registry.dirOf, ...(settings.toolTimeoutS === undefined ? {} : { timeoutMs: settings.toolTimeoutS * 1000 }) }), () => approvals) },
       journal: core.journal,
       pricing: cataloguePricing(catalogue),
       ...(settings.retentionDays === undefined ? {} : { retentionDays: settings.retentionDays }),
@@ -216,5 +287,15 @@ export const buildAgentRuntime = (d: AgentWiringDeps): Effect.Effect<AgentRuntim
     const recovered = yield* Effect.promise(() => runtime.boot());
     if (recovered.interrupted.length > 0 || recovered.closedCalls > 0) log(`agent sessions recovered: ${recovered.interrupted.length} interrupted, ${recovered.closedCalls} open calls closed`);
     yield* Effect.addFinalizer(() => Effect.promise(() => runtime.close()));
-    return { runtime, admin, adapters, lookup: new AgentLookup(d.db), catalogue };
+    const made = new AgentApprovals({
+      control: d.control,
+      store: core.store,
+      clock: core.clock,
+      opened: (s, a, node) => runtime.approvalOpened(s, a, node),
+      approve: (id, decision, by) => runtime.approve(id, decision, {}, by),
+      remember: (a, decision, scope, by) => remember({ ruleStore, sessions: core.store, dirOf, audit: d.audit, clock: core.clock }, a, decision, scope, by),
+    });
+    approvals = made;
+    const grants = grantPort(made, core.store, key, d.options?.afterGrantConsumed);
+    return { runtime, admin, adapters, lookup: new AgentLookup(d.db), catalogue, rules, ruleStore, roles, approvals: made, approvalKey: key, grants, permissions, requests };
   });

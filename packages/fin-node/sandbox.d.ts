@@ -1,5 +1,5 @@
 // Types of `sandbox.js` (re-exported by `index.d.ts`).
-import type { SandboxMechanism, SandboxStatus } from "@finisher/core-types";
+import type { AgentInput, SandboxMechanism, SandboxStatus } from "@finisher/core-types";
 
 export type { SandboxMechanism, SandboxStatus };
 
@@ -15,3 +15,15 @@ export declare function sandboxStatus(): SandboxStatus;
  * where `scripts/copy-workers.mjs` puts it with `fin-workers`). Plan 7C Task 5.
  */
 export declare function sandboxExecPath(dir?: string): string;
+
+/** The session's git configuration (`<session>/git/config`, named by `GIT_CONFIG_GLOBAL`). Plan 7C Task 11. */
+export declare function sandboxSessionGitConfig(): string;
+
+/**
+ * This OS's base toolchain read list: links resolved, missing and nested entries dropped
+ * (Linux, macOS); as written on Windows. Plan 7C Task 11.
+ */
+export declare function sandboxToolchainBase(): string[];
+
+/** `null` when `fin-sandbox` builds an `agent` policy from `input`, else why not. Plan 7C Task 11. */
+export declare function sandboxAgentCheck(input: AgentInput): string | null;

@@ -23,6 +23,8 @@ export interface SessionPlan {
   readonly mode: Mode;
   /** The effective budget: the role's, lowered or set by the starter. */
   readonly budget: BudgetSpec;
+  /** The role's tool allow-set (what a CLI harness leaves enabled, spec §4.5). */
+  readonly tools?: readonly string[];
 }
 
 export interface SessionPlanner {

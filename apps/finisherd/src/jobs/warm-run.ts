@@ -8,17 +8,21 @@
 // `ready`) keeps it; otherwise its group is killed with the job's helpers. A helper that fails
 // during the job gets the worker a `cancel` too, not a kill (Task 11 review L4): a `ready`
 // within the grace keeps it, and the attempt fails with the helper's error.
+import { lstat, rename, rm } from "node:fs/promises";
+import { join, sep } from "node:path";
 import type { HelperGrant, JobHostKillReason } from "@finisher/core-types";
-import type { HelperSpec } from "@finisher/contracts";
+import type { FinError, HelperSpec } from "@finisher/contracts";
 import { resolveMemoryRule } from "@finisher/fin-node";
 import { finError, toFinError } from "../errors.ts";
 import { AttemptBase, type AttemptSpec, type KillReason, type Outcome, stopped } from "./attempt.ts";
+import { type JobDirs, jobDirs, PREPARED_MARKER } from "./files.ts";
 import { heldFiles } from "./held-files.ts";
 import { exitVerdict, type JobHostExitInfo, type ProcEvent } from "./host.ts";
 import { type FamilySpec, type KindSpec, resolveOrFn } from "./kinds.ts";
 import type { RunControl } from "./run-control.ts";
 import { type AttemptOutcome, attemptWith, EXIT_GRACE_MS, type RunnerEnv } from "./runner.ts";
 import type { JobRow } from "./store.ts";
+import { VISIT_DIR } from "./warm-worker.ts";
 
 /** How long a worker has to answer the `cancel` a failed helper sent it (interactive, Decision 23). */
 export const HELPER_CANCEL_GRACE_MS = 500;
@@ -26,6 +30,10 @@ export const HELPER_CANCEL_GRACE_MS = 500;
 /** What the pool lends an attempt of its worker. */
 export interface WarmLink {
   readonly proc: number;
+  /** The worker's own directory: the job visits its `jobs/` for the attempt (plan 7C Decision 19). */
+  readonly dir: string;
+  /** A confined worker's read roots (fixed at its start); `undefined`: not confined. */
+  readonly reads?: ReadonlyArray<string> | undefined;
   readonly pid: number | undefined;
   /** The worker group's limit (the family's interactive rule, Decision 20). */
   readonly memoryBytes: number | undefined;
@@ -42,9 +50,24 @@ export interface WarmLink {
 export type WarmOutcome = AttemptOutcome & {
   /** The worker is still good for the next job (it sent `ready` and holds nothing). */
   readonly kept: boolean;
+  /** The job reads outside the confined worker's roots: it was not started there (`warmReach`). */
+  readonly reach?: true;
   /** The worker group's figure attached to its `ready` (Decision 20). */
   readonly memory?: number;
 };
+
+/** `rename`, retried on Windows while a scanner or a closing handle holds the directory. */
+async function renameRetrying(from: string, to: string): Promise<void> {
+  for (let i = 0; ; i++) {
+    try {
+      return await rename(from, to);
+    } catch (e) {
+      const code = (e as { code?: unknown }).code;
+      if (process.platform !== "win32" || i >= 20 || !(code === "EPERM" || code === "EBUSY" || code === "EACCES")) throw e;
+      await new Promise((r) => setTimeout(r, 25));
+    }
+  }
+}
 
 /** One attempt of `row` on the pool's worker behind `link`. */
 export async function runWarmAttempt(
@@ -57,14 +80,57 @@ export async function runWarmAttempt(
   link: WarmLink,
 ): Promise<WarmOutcome> {
   let attempt: WarmAttempt | undefined;
-  const o = await attemptWith(env, row, kind, params, control, (p) => {
-    attempt = new WarmAttempt({ env, row, kind, family, params, control, ...p }, link);
+  let reach = false;
+  let visit: { readonly home: JobDirs; readonly here: JobDirs } | undefined;
+  const o = await attemptWith(env, row, kind, params, control, async (p): Promise<Outcome> => {
+    // A confined worker reads only the roots it started with (Decision 19).
+    const outside = link.reads === undefined ? [] : (kind.reads?.(p.extra, params as never) ?? []).filter((r) => !link.reads!.some((root) => r === root || r.startsWith(root + sep)));
+    if (outside.length > 0) {
+      reach = true;
+      return { ok: false, error: finError("WORKER_UNAVAILABLE", "the job reads files the warm worker of its project cannot", { reason: "warmReach", count: outside.length }), cause: "worker", retry: "fresh" };
+    }
+    // The job's directory visits the worker's own for the attempt, and nothing else does.
+    const here = jobDirs(join(link.dir, VISIT_DIR), row.id);
+    try {
+      await rm(here.job, { recursive: true, force: true });
+      await rename(p.dirs.job, here.job);
+    } catch (e) {
+      return { ok: false, error: finError("IO_ERROR", `the job directory could not be moved to its warm worker: ${toFinError(e).message}`, { step: "visit" }), cause: "files" };
+    }
+    visit = { home: p.dirs, here };
+    attempt = new WarmAttempt({ env, row, kind, family, params, control, ...p, dirs: here }, link);
     return attempt.run(p.helpers);
   });
   // A failure before the worker's part (files, `prepare`) leaves the worker untouched.
-  const kept = attempt === undefined ? true : attempt.kept;
+  let kept = attempt === undefined ? true : attempt.kept;
   const memory = attempt?.memory;
-  return { ...o, warmReused: link.reused, kept, ...(memory === undefined ? {} : { memory }) };
+  let out: AttemptOutcome = o;
+  if (visit !== undefined) {
+    // Back home, so the job's end (`onSucceeded`, its cleanup) finds it where a cold job's is
+    // and the worker keeps nothing of it. The pool removes a lost worker's directory only
+    // after this (`Worker.visit`). The worker could write `jobs/`: what sits at the job's name
+    // must be a directory, never a link it planted (Task 12 review S4).
+    const failed = (error: FinError, cause: "files" | "tampered") => {
+      // A worker that may still hold the job's directory is not kept (S3).
+      if (kept) link.lose("jobEnded");
+      kept = false;
+      out = { ...o, ok: false, error, cause } as AttemptOutcome;
+    };
+    const st = await lstat(visit.here.job).catch(() => undefined);
+    if (st !== undefined && !st.isDirectory()) {
+      await rm(visit.here.job, { force: true }).catch(() => {});
+      failed(finError("JOB_FAILED", "the warm worker replaced its job's directory", { problem: "link" }, "the worker must not replace its job directory"), "tampered");
+    } else {
+      try {
+        await renameRetrying(visit.here.job, visit.home.job);
+        // `prepare` runs again before another attempt: the worker could write `in/` (N1).
+        await rm(join(visit.home.job, PREPARED_MARKER), { force: true });
+      } catch (e) {
+        failed(finError("IO_ERROR", `the job directory could not be moved back from its warm worker: ${toFinError(e).message}`, { step: "visitBack" }), "files");
+      }
+    }
+  }
+  return { ...out, warmReused: link.reused, kept, ...(reach ? { reach: true as const } : {}), ...(memory === undefined ? {} : { memory }) };
 }
 
 class WarmAttempt extends AttemptBase {

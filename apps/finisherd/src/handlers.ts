@@ -14,10 +14,13 @@ import { ConnectionRegistryTag, ConnectionsTag } from "./connections.ts";
 import { issueChallenge, noteMinted } from "./auth/challenges.ts";
 import { actorFor, type CallMeta, Diagnostics } from "./diagnostics.ts";
 import { attemptJson, finError, toFinError } from "./errors.ts";
+import { agentAsk as agentAskPort } from "./agent/approvals.ts";
 import { AgentCoreTag } from "./agent/core.ts";
 import { withOutcomes } from "./agent/outcomes.ts";
 import { agentChainHooks, BranchReach, PathReach } from "./agent/reach.ts";
 import { agentHandlers } from "./agent/rpc.ts";
+import { commandRules } from "./agent/rules.ts";
+import { rulesHandlers } from "./agent/rules-rpc.ts";
 import { AgentRuntimeTag } from "./agent/wiring.ts";
 import { agentBranchLimitsExcept } from "./chain/policy.ts";
 import { Fonts } from "./fonts.ts";
@@ -137,7 +140,10 @@ export const HandlersLive = FinRpcs.toLayer(
     const reach = new BranchReach(agents.store, agents.lineage, projects);
     // Then the outcome tracker (Task 11), once the session's own rows are written.
     const hooks = withOutcomes(agentChainHooks({ reach, paths: new PathReach(agents.store, projects), sessions: agents.store, clock: agents.clock.now }), agents.outcomes, projects);
-    const policies = [reach.policy, agentBranchLimitsExcept((p) => reach.covers(p))];
+    // Then command rules (7B Task 2), for agent principals only; a person's allow is a one-time grant (Task 5).
+    const policies = [reach.policy, agentBranchLimitsExcept((p) => reach.covers(p)), commandRules(agentRuntime.rules, agents.store, { grants: agentRuntime.grants })];
+    // A running session's rule ask becomes a durable card (7B Task 4): `APPROVAL_PENDING`.
+    const agentAsk = agentAskPort(agentRuntime.approvals, agents.store, agentRuntime.approvalKey);
     /** An agent session's default branch, for `auth.whoami` (Decision 14a); none for any other principal. */
     const defaultBranchOf = (p: { readonly kind: string; readonly id: string }) => {
       const s = p.kind === "agent" ? agents.store.get(p.id) : undefined;
@@ -392,6 +398,7 @@ export const HandlersLive = FinRpcs.toLayer(
       // The job engine (5C-2): ownership and reach per job in `jobs/rpc.ts`.
       ...jobHandlers({ engine: jobEngine, guard }),
       ...agentHandlers({ guard, store: agents.store, reach, agents: agentRuntime, principalOf }),
-    }), { connections, projects, jobs: chainJobs(jobEngine), audit, timed: guard, touch: (p) => credentials.touch(p.id), hooks, policies });
+      ...rulesHandlers({ guard, store: agents.store, rules: agentRuntime.rules, ruleStore: agentRuntime.ruleStore, audit, clock: agents.clock, dirOf: (id) => registry.dirOf(id) ?? registry.indexedDirOf(id), principalOf }),
+    }), { connections, projects, jobs: chainJobs(jobEngine), audit, timed: guard, touch: (p) => credentials.touch(p.id), hooks, policies, agentAsk });
   }),
 );

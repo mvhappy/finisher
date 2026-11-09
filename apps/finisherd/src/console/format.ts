@@ -38,6 +38,10 @@ const VALUED = new Set([
   "dir", "root", "root-sha256", "registry", "store",
   // Agent sessions (7A Task 12).
   "model", "role", "mode", "base", "title", "prompt", "prompt-file", "budget-usd", "budget-tokens", "provider", "harness", "status", "add",
+  // Command rules (7B Task 2).
+  "session", "preset", "bytes-over", "minutes-over",
+  // Remembered answers (7B Task 5).
+  "remember",
   "name", "storage", "include", "exclude", "kinds", "poll", "full", "bandwidth", "alias", "accept-unmounted",
 ]);
 /** Flags whose value is optional: taken only when the next word is one of these (`--hydrate` or `--hydrate off`). */

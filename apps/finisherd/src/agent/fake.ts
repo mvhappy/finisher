@@ -28,7 +28,13 @@ export type FakeStep =
   /** The process exits: emit `exited` and end the instance. */
   | { readonly crash: { readonly code: number | null; readonly signal: string | null } }
   /** Events this instance emits after the session is opened again (replaced). */
-  | { readonly late: readonly unknown[] };
+  | { readonly late: readonly unknown[] }
+  /**
+   * Starts `argv` in the workspace through the session sandbox (a scripted stand-in for a CLI
+   * agent's process, plan 7C Task 11) and emits a `notice` named `child` with its exit and
+   * output (each at most 4 KiB): what the process could and could not do under the profile.
+   */
+  | { readonly spawn: readonly string[] };
 
 export interface FakeScript {
   readonly name?: string;
@@ -129,6 +135,8 @@ export function FakeAdapter(scripts: readonly FakeScript[]): ProviderAdapter & {
               yield* emit({ type: "toolCompleted", providerId: step.awaitTool, ok: a.ok, output: a.output });
             } else if ("awaitAnswer" in step) {
               yield* waitFor(step.awaitAnswer);
+            } else if ("spawn" in step) {
+              yield* emit({ type: "notice", name: "child", details: yield* runChild(spec, step.spawn) });
             } else if ("late" in step) {
               late.push(...step.late);
             } else if ("crash" in step) {
@@ -215,6 +223,27 @@ export function FakeAdapter(scripts: readonly FakeScript[]): ProviderAdapter & {
       }),
     open: (spec) => open(spec) as Effect.Effect<ProviderSession, FinError, Scope.Scope>,
   };
+}
+
+/** Runs one scripted child in `spec`'s sandbox and answers its exit and output. */
+function runChild(spec: SessionSpec, argv: readonly string[]): Effect.Effect<Record<string, unknown>> {
+  const box = spec.sandbox;
+  if (box === undefined) return Effect.succeed({ error: "NO_SANDBOX" });
+  return box.spawn(argv, { cwd: spec.cwd, stdio: "pipe" }).pipe(
+    Effect.flatMap((child) =>
+      Effect.promise(async () => {
+        child.stdin.end();
+        const read = async (r: AsyncIterable<Buffer | string>) => {
+          let out = "";
+          for await (const c of r) out += String(c);
+          return out.slice(0, 4096);
+        };
+        const [stdout, stderr, exit] = await Promise.all([read(child.stdout), read(child.stderr), child.exited]);
+        return { code: exit.code, signal: exit.signal, stdout, stderr };
+      }),
+    ),
+    Effect.catch((e) => Effect.succeed({ error: e.code, message: e.message })),
+  );
 }
 
 /** A late event that does not decode is still bound to its instance, as a notice-able event. */

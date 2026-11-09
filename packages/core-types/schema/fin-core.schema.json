@@ -14608,6 +14608,13 @@
           "description": "A job-directory file kept open past `ready` (breaks the warm contract on purpose).",
           "type": "string"
         },
+        "probe": {
+          "description": "Paths the worker tries to read (plan 7C Task 12): each answered with the errno of\nthe attempt, `null` when it read. A path starting with `!` is renamed instead (to\n`<path>.moved`, and back when it worked): what replacing it with a link would need.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
         "value": true
       },
       "required": [
@@ -14621,6 +14628,17 @@
           "format": "uint32",
           "minimum": 0,
           "type": "integer"
+        },
+        "probes": {
+          "description": "One errno (or `null`) per `probe` path, in order.",
+          "items": {
+            "format": "int32",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "type": "array"
         },
         "served": {
           "format": "uint64",

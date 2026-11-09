@@ -234,6 +234,13 @@ export const SESSION_REFUSED_RPCS: ReadonlySet<string> = new Set([
   "diagnostics.purge",
 ]);
 
+/**
+ * The `agent.read` RPCs a session may not call although its mode holds `agent.read` (7B Task
+ * 5: it holds it for its own approval cards, `agent.approval.wait|list`): other sessions'
+ * transcripts and state, and the rules, stay people's.
+ */
+export const SESSION_PEOPLE_READS: ReadonlySet<string> = new Set(["agent.session.list", "agent.session.get", "agent.watch", "agent.rules.list"]);
+
 /** `SCOPE_DENIED` for a session calling one of `SESSION_REFUSED_RPCS`. */
 function refusedToSessions(tag: string): FinError {
   const fix =
@@ -256,7 +263,7 @@ export function agentChainHooks(deps: AgentHookDeps): ChainHooks {
   return {
     extraRoots: (principal, only) => deps.paths.extra(principal, only),
     authorize: (tag, principal) =>
-      SESSION_REFUSED_RPCS.has(tag) && deps.reach.covers(principal) ? Effect.fail(refusedToSessions(tag)) : Effect.void,
+      (SESSION_REFUSED_RPCS.has(tag) || SESSION_PEOPLE_READS.has(tag)) && deps.reach.covers(principal) ? Effect.fail(refusedToSessions(tag)) : Effect.void,
     authorOf: (principal) => {
       const s = deps.reach.sessionOf(principal);
       return s === undefined ? undefined : sessionAuthor(s);

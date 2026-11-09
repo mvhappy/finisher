@@ -1,8 +1,9 @@
 //! The `worker` profile (spec §8.10, sp6 §3.5; plan 7C Decisions 8 and 19).
 //!
 //! Cold: the manifest's sources, the caches and the job's `in/` read-only; the job's `out/` and
-//! a private temp writable. Warm: the worker's own directory (its jobs are created under it),
-//! never the jobs root, and one project's sources and library roots. No network, one process
+//! a private temp writable. Warm: the `jobs/` of the worker's own directory (each job it serves
+//! visits it), never the directory itself (its `tmp/` and `jobs/` could otherwise be replaced by
+//! links `finisherd` then follows) nor the jobs root, and one project's sources and library roots. No network, one process
 //! (creation denied by the OS layers), no pathname socket. GPU rows come from sub-project 6.
 
 use std::path::PathBuf;
@@ -46,7 +47,7 @@ pub fn worker_on(os: Os, i: &WorkerInput) -> Result<SandboxPolicy, PolicyError> 
             inside("scope.workerDir", worker_dir, &jobs)?;
             not_under("scope.libraryRoots", library_roots, &deny)?;
             read.extend(library_roots.iter().cloned());
-            write.push(worker_dir.clone());
+            write.push(worker_dir.join("jobs"));
         }
     }
 

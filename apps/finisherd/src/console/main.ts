@@ -86,13 +86,19 @@ Agent sessions (sub-project 7):
   agent interrupt|resume|end <id>          a session's branch stays when it is interrupted or ended
   agent watch <id> [--json]                its conversation as it happens, until the session ends
   agent providers [--json]                 the harnesses, whether keys are set, the local endpoint
+  agent rules ls [--project <dir|id>] [--session <id>] [--json]
+                                           command rules of every layer, and which apply
   provider key ls [--json]                 the stored model keys (never their values)
   provider local show|test [--json]        the local model endpoint, and whether it answers
   training closed-targets [--json]         the counsel gate on closed-model training targets
 These change something (each needs an interactive terminal and your confirmation):
-  agent approve <approval> allow|deny [--add <amount>]
+  agent approve <approval> allow|deny [--add <amount>] [--remember session|project|projectLocal]
                                            --add raises a budget: USD, tokens (200k) or time (30m)
   agent delete <id>                        removes a session's conversation; its branch stays
+  agent rules add allow|ask|deny <command> [--project <dir|id>] [--session <id>] [--branch <ref>]
+              [--mode plan|draft|auto] [--preset <p>] [--bytes-over <n>] [--minutes-over <n>]
+  agent rules rm <id>                      a local rule (the other layers live in their files)
+  project trust <dir|id>                   its finisher.rules.json applies, until the file changes
   provider key set openrouter [--project <dir|id>] [--label <name>]
                                            asks for the key without showing it (never an argument)
   provider key rm <id>

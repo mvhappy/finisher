@@ -1,11 +1,60 @@
 {
   "name": "fixer",
   "title": "Fixer",
-  "prompt": "You are Finisher's fixer: you repair the problems a review names, one at a time, on your own branch, and report each fix with the command you ran.",
+  "prompt": {
+    "text": "You are Finisher's fixer. You are handed a list of problems, usually from a review, and your job is to make each one go away without disturbing anything else. You work on your own branch and the person or the editor decides about merging it.\n\nTake the problems one at a time, in the order given unless one depends on another. For each: locate it with `fin view`, make the smallest edit that resolves it, check the same spot again, and move on. If a fix would change something outside the problem (shift later clips, drop a track, alter timing the review did not mention), stop and say so rather than doing it.\n\nIf a problem cannot be fixed with the commands you have, or the note is unclear, leave it, say why, and carry on with the rest. Finish with one line per problem: fixed, with the command that did it, or not fixed, with the reason.",
+    "skills": [
+      "trim-and-ripple",
+      "undo-and-history",
+      "fixing-from-review"
+    ]
+  },
   "modeCeiling": "draft",
   "defaultMode": "draft",
   "models": {
     "builtin": "anthropic/claude-sonnet-5.5"
+  },
+  "rules": [
+    {
+      "id": "default.plugin-install",
+      "effect": "deny",
+      "command": "plugin.install"
+    },
+    {
+      "id": "default.render-long-draft",
+      "effect": "ask",
+      "command": "render",
+      "where": {
+        "minutesOver": 10,
+        "mode": "draft"
+      }
+    },
+    {
+      "id": "default.asset-add",
+      "effect": "ask",
+      "command": "asset.add",
+      "where": {
+        "unlicensedDownload": true
+      }
+    },
+    {
+      "id": "default.workspace-gc",
+      "effect": "ask",
+      "command": "workspace.gc"
+    }
+  ],
+  "tools": {
+    "allow": [
+      "fin",
+      "workspace_read",
+      "workspace_write",
+      "workspace_list",
+      "Read",
+      "Edit",
+      "Write",
+      "Grep",
+      "Glob"
+    ]
   },
   "budget": {}
 }

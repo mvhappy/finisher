@@ -11,10 +11,13 @@
 // worker that dies before its `hello` fails the attempt of its key's oldest queued job, as a
 // cold spawn would, and so does one whose `hello` is not a warm worker of its family (Task 11
 // review B1). Each worker has its own group (the family's interactive memory rule) and
-// directory (`warm-<run>-<n>/`, its cwd; `tmp/` in it, emptied after each job, H2). Under a
-// sandbox (`caps().sandboxed`, or a `hello` with `selfSandbox`) warm kinds run cold (owner
-// decision, H3): a warm worker is granted the whole jobs root, which only per-job grants from
-// sub-project 7C may narrow. Times come from the engine's clock.
+// directory (`warm-<run>-<n>/`, its cwd; `tmp/` in it, emptied after each job, H2), and is
+// granted that directory, never the jobs root: each job visits its `jobs/` for the attempt and
+// leaves after (plan 7C Decision 19, `warm-run.ts`). Under an applied profile a warm key is per
+// project and the worker reads only that project's roots (`FamilySpec.warmReads`); with the
+// host's `perJobGrants` (the `worker` profile on Linux) warm kinds run warm, without them
+// (Windows until the ACL broker's per-job grants, warm plugins) they run cold (owner decision,
+// H3). Times come from the engine's clock.
 import { randomBytes } from "node:crypto";
 import { basename, join } from "node:path";
 import type { Hello, JobHostExitInfo, JobHostKillReason } from "@finisher/core-types";
@@ -27,13 +30,13 @@ import type { Engine } from "./engine.ts";
 import { removeJobDir } from "./files.ts";
 import { mkdirSafe } from "./fsafe.ts";
 import { exitVerdict, type ProcEvent } from "./host.ts";
-import { type FamilySpec, type KindSpec, type ProgramSpec, programFor } from "./kinds.ts";
+import { type FamilySpec, type KindSpec, type ProgramSpec, programFor, projectOfJob } from "./kinds.ts";
 import type { RunControl } from "./run-control.ts";
-import type { AttemptOutcome } from "./runner.ts";
+import { type AttemptOutcome, runAttempt } from "./runner.ts";
 import type { SchedState, WarmWorkerView } from "./schedule.ts";
 import type { JobRow } from "./store.ts";
 import { runWarmAttempt } from "./warm-run.ts";
-import { emptyTmp, noRun, RECYCLE_MEMORY_SHARE, RETIRE_GRACE_MS, spawnRequest, WARM_DIR_PREFIX, WARM_IDLE_S, WARM_MAX_AGE_S, WARM_MAX_JOBS, WARM_SLOTS, type WarmWorkerInfo, type Worker } from "./warm-worker.ts";
+import { emptyTmp, noRun, RECYCLE_MEMORY_SHARE, RETIRE_GRACE_MS, spawnRequest, VISIT_DIR, WARM_DIR_PREFIX, WARM_IDLE_S, WARM_MAX_AGE_S, WARM_MAX_JOBS, WARM_SLOTS, type WarmWorkerInfo, type Worker } from "./warm-worker.ts";
 
 export { RECYCLE_MEMORY_SHARE, RETIRE_GRACE_MS, WARM_DIR_PREFIX, WARM_IDLE_S, WARM_MAX_AGE_S, WARM_MAX_JOBS, WARM_SLOTS, type WarmWorkerInfo } from "./warm-worker.ts";
 
@@ -48,8 +51,12 @@ export class WarmPools {
   readonly #runId = randomBytes(4).toString("hex");
   /** Jobs whose last attempt lost its worker: their retry takes a fresh one (M2). */
   readonly #lostOn = new Set<string>();
+  /** Jobs a confined warm worker could not serve (their reads are outside its roots): cold from now on. */
+  readonly #coldOnly = new Set<string>();
   /** A worker's `hello` reported a self-applied sandbox: warm kinds run cold from now on (H3). */
   #selfSandboxed = false;
+  /** The directories of lost workers not yet removed (the hourly sweep keeps them, S5). */
+  readonly #removing = new Set<string>();
   /** Directory removals in flight (`close` waits for them, H2). */
   readonly #removals = new Set<Promise<void>>();
 
@@ -88,9 +95,26 @@ export class WarmPools {
    * counts for every family.
    */
   sandboxed(profile: "worker" | "plugin"): boolean {
-    if (this.#selfSandboxed) return true;
     const caps = this.#e.d.host.caps();
-    return !caps.perJobGrants && caps.profiles[profile] === "enforced";
+    // Per-job grants cover the `worker` profile only (plan 7C Task 12): warm plugins stay cold.
+    const perJob = caps.perJobGrants && profile === "worker";
+    if (this.#selfSandboxed && !perJob) return true;
+    return !perJob && caps.profiles[profile] === "enforced";
+  }
+
+  /**
+   * Whether `profile`'s warm workers run confined (applied by the spawner, or self-applied):
+   * then a warm key is per project and the worker is granted its project's read roots at
+   * start (plan 7C Decision 19; owner decision: one warm worker per project and family).
+   */
+  #confined(profile: "worker" | "plugin"): boolean {
+    return this.#selfSandboxed || this.#e.d.host.caps().profiles[profile] === "enforced";
+  }
+
+  /** A worker of `profile` is expected to confine itself: the spawner applies it, with per-job grants. */
+  #expected(profile: "worker" | "plugin"): boolean {
+    const caps = this.#e.d.host.caps();
+    return caps.perJobGrants && profile === "worker" && caps.profiles.worker === "enforced";
   }
 
   /** A job's warm tag: a `warm` kind at `interactive` priority (Decision 35), else `undefined`. */
@@ -98,18 +122,23 @@ export class WarmPools {
     if (kind.warm !== true || row.priority !== "interactive") return undefined;
     const f = this.families().get(kind.family);
     if (f === undefined || this.sandboxed(f.profile)) return undefined;
+    // A job whose sources a warm worker could not read runs cold (`warmReach`, Decision 19).
+    if (this.#coldOnly.has(row.id)) return undefined;
     let key = "";
     try {
       key = f.warmKey?.(row) ?? "";
     } catch (e) {
       this.#e.d.log("warning", `job ${row.id}: the warm key of ${f.family} failed: ${toFinError(e).message}`);
     }
+    // The same field the family's read roots come from (N2).
+    if (this.#confined(f.profile)) key = `${projectOfJob(row) ?? ""}/${key}`;
     return { family: f.family, key, ...(this.#lostOn.has(row.id) ? { fresh: true as const } : {}) };
   }
 
   /** The job ended: nothing more to remember of it. */
   forget(id: string): void {
     this.#lostOn.delete(id);
+    this.#coldOnly.delete(id);
   }
 
   /** The cpu slots warm dispatches may take beyond the pool (Decision 35's `warmOverrun`). */
@@ -182,12 +211,25 @@ export class WarmPools {
       if (head !== undefined) e.dispatch(head.id, { run: async () => noRun(error, "exit"), release: () => {} });
       return;
     }
-    this.#spawn(f, key, program);
+    this.#spawn(f, key, program, this.#readsFor(f, row));
+  }
+
+  /** A confined worker's read roots, from the job it is spawned for (canonical; none unconfined). */
+  #readsFor(f: FamilySpec, row: JobRow | undefined): ReadonlyArray<string> {
+    if (row === undefined || f.warmReads === undefined || !this.#confined(f.profile)) return [];
+    try {
+      return f.warmReads(row);
+    } catch (e) {
+      this.#e.d.log("warning", `job ${row.id}: the warm read roots of ${f.family} failed: ${toFinError(e).message}`);
+      return [];
+    }
   }
 
   /** `warm(family)`: one worker now when the pool has none (Decision 36's pre-warming). */
   prewarm(f: FamilySpec): void {
-    if (this.sandboxed(f.profile) || (this.#byFamily.get(f.family) ?? []).some((w) => w.state !== "retiring")) return;
+    // A confined worker belongs to one project, which only a job names.
+    if (this.sandboxed(f.profile) || this.#confined(f.profile)) return;
+    if ((this.#byFamily.get(f.family) ?? []).some((w) => w.state !== "retiring")) return;
     if (f.warmKey !== undefined) {
       // A `""`-key worker would serve no job of a keyed family (L5).
       this.#e.d.log("debug", `warm(${f.family}): its workers are keyed by job; the first job spawns its worker`);
@@ -197,7 +239,7 @@ export class WarmPools {
       this.#e.d.log("debug", `warm(${f.family}): its program depends on the job; the first job spawns its worker`);
       return;
     }
-    this.#spawn(f, "", programFor(f.program, "warm"));
+    this.#spawn(f, "", programFor(f.program, "warm"), []);
   }
 
   #lease(w: Worker): WarmLease {
@@ -225,11 +267,13 @@ export class WarmPools {
     let started = false;
     let out: Awaited<ReturnType<typeof runWarmAttempt>>;
     try {
-      out = await runWarmAttempt(this.#e.env, row, kind, family, params, control, {
+      const running = runWarmAttempt(this.#e.env, row, kind, family, params, control, {
         proc: w.proc,
         pid: w.pid,
         memoryBytes: w.memoryBytes,
         reused: w.served > 0,
+        dir: w.dir,
+        reads: this.#confined(w.family.profile) ? w.reads : undefined,
         bind: (on) => (w.on = on),
         started: () => {
           started = true;
@@ -237,6 +281,12 @@ export class WarmPools {
         },
         lose: (reason) => this.#kill(w, reason),
       });
+      // Its directory outlives a crash until the job has left it (Decision 19).
+      w.visit = running.then(
+        () => {},
+        () => {},
+      );
+      out = await running;
     } catch (err) {
       // H1: the worker never stays `busy`; one that got the `start` may hold the job's state.
       w.on = undefined;
@@ -246,11 +296,21 @@ export class WarmPools {
       } else this.#idle(w, undefined, false);
       throw err;
     }
+    if (out.reach) {
+      // Cold now, in this attempt (Task 12 review S2: no attempt spent on the warm miss), and
+      // from now on for this job.
+      this.#coldOnly.add(row.id);
+      if (!(await emptyTmp(w, this.#e.d.log))) this.#kill(w, "jobEnded");
+      else this.#idle(w, undefined, false);
+      // The job's `warm` says how it runs: cold.
+      if (!this.#e.crashed) this.#e.d.store.transition(row.id, "running", { warm: false });
+      return runAttempt(this.#e.env, row, kind, family, params, control);
+    }
     if (!out.kept) {
       this.#lostOn.add(row.id);
       return out;
     }
-    // Under a sandbox a worker is never handed another job (H3): its grant covers every job.
+    // Without per-job grants a confined worker is never handed another job (H3).
     if (this.sandboxed(w.family.profile)) {
       this.#retire(w, "done");
       return out;
@@ -285,7 +345,7 @@ export class WarmPools {
   /** The replacement first; the worker serves until its `hello` (Decision 36). */
   #recycle(w: Worker): void {
     if (w.replacement !== undefined || w.retire !== undefined) return;
-    const r = this.#spawn(w.family, w.key, w.program);
+    const r = this.#spawn(w.family, w.key, w.program, w.reads);
     if (r === undefined) return;
     r.replaces = w;
     w.replacement = r;
@@ -322,7 +382,7 @@ export class WarmPools {
   }
 
   /** A new worker (none while the engine closes, L1). */
-  #spawn(f: FamilySpec, key: string, program: ProgramSpec): Worker | undefined {
+  #spawn(f: FamilySpec, key: string, program: ProgramSpec, reads: ReadonlyArray<string>): Worker | undefined {
     const e = this.#e;
     if (e.closing || e.crashed || this.sandboxed(f.profile)) return undefined;
     const id = this.#nextId++;
@@ -330,7 +390,7 @@ export class WarmPools {
     const memoryBytes = rule === undefined ? undefined : resolveMemoryRule(rule, e.d.totalMem);
     const group = e.d.host.openGroup({ label: `warm ${f.family} ${id}`, qos: "normal", ...(memoryBytes === undefined ? {} : { memoryBytes }) });
     const name = `${WARM_DIR_PREFIX}${this.#runId}-${id}`;
-    const w: Worker = { id, family: f, key, program, group, memoryBytes, dir: join(e.d.root, name), spawnedAt: e.d.now(), state: "spawning", served: 0, gone: false, cameUp: false };
+    const w: Worker = { id, family: f, key, program, group, memoryBytes, dir: join(e.d.root, name), reads, spawnedAt: e.d.now(), state: "spawning", served: 0, gone: false, cameUp: false };
     this.#list(f.family).push(w);
     void this.#start(w);
     return w;
@@ -342,9 +402,10 @@ export class WarmPools {
       // A leftover of this name is removed first (H2): a worker starts with an empty directory.
       await removeJobDir(w.dir);
       await mkdirSafe(e.d.root, `${basename(w.dir)}/tmp`);
+      await mkdirSafe(e.d.root, `${basename(w.dir)}/${VISIT_DIR}`);
       // The engine began closing meanwhile: no process (L1).
       if (e.closing || e.crashed || w.gone) return this.#drop(w);
-      const req = spawnRequest(w, e.d.root);
+      const req = spawnRequest(w);
       w.proc = await e.d.host.spawn(w.group, req, (ev) => this.#onEvent(w, ev));
     } catch (err) {
       this.#gone(w, { reason: "spawnFailed", what: toFinError(err).message, stderrTail: "", lifetimeMs: 0 });
@@ -381,7 +442,10 @@ export class WarmPools {
     w.hello = hello;
     if (w.state !== "spawning") return;
     // `none`: a sandbox was asked for and nothing applied (F2, Landlock off): not confined.
-    if (hello.selfSandbox !== undefined && hello.selfSandbox !== "" && hello.selfSandbox !== "none") return this.#sandboxFound(w, hello.selfSandbox);
+    // A sandbox the spawner applied with per-job grants is the expected case (plan 7C Task 12).
+    if (hello.selfSandbox !== undefined && hello.selfSandbox !== "" && hello.selfSandbox !== "none" && !this.#expected(w.family.profile)) {
+      return this.#sandboxFound(w, hello.selfSandbox);
+    }
     if (hello.role !== "worker" || hello.family !== w.family.family || hello.warm !== true) {
       w.mismatch = finError("WORKER_PROTOCOL_MISMATCH", `the worker is not a warm ${w.family.family} worker`, {
         expected: { role: "worker", family: w.family.family, warm: true },
@@ -411,7 +475,7 @@ export class WarmPools {
   #sandboxFound(w: Worker, profile: string): void {
     const e = this.#e;
     this.#selfSandboxed = true;
-    e.d.log("warning", `warm ${w.family.family} worker applied the ${profile} sandbox: warm kinds run cold until per-job grants exist (sub-project 7C)`);
+    e.d.log("warning", `warm ${w.family.family} worker applied the ${profile} sandbox: warm kinds run cold (the host has no per-job grants for it)`);
     // First the queue, so no exit below finds a warm job to spawn for.
     for (const id of e.queue.warmIds()) {
       const row = e.d.store.row(id);
@@ -440,6 +504,7 @@ export class WarmPools {
     w.cancelKill?.();
     const list = this.#list(w.family.family);
     list.splice(list.indexOf(w), 1);
+    this.#removing.add(basename(w.dir));
     if (w.replaces !== undefined) w.replaces.replacement = undefined;
     if (w.replacement !== undefined) w.replacement.replaces = undefined;
     const base = exitVerdict(info, true).reason;
@@ -450,8 +515,10 @@ export class WarmPools {
     const removal = (async () => {
       await e.d.host.killGroup(w.group, "jobEnded").catch(() => {});
       e.d.host.closeGroup(w.group);
+      // The job it held leaves the directory first (its attempt moves it back, Decision 19).
+      await w.visit;
       await removeJobDir(w.dir).catch((err) => e.d.log("warning", `warm worker directory ${w.dir}: ${toFinError(err).message}`));
-    })();
+    })().finally(() => this.#removing.delete(basename(w.dir)));
     this.#removals.add(removal);
     void removal.finally(() => this.#removals.delete(removal));
     if (e.closing || e.crashed) return;
@@ -467,6 +534,8 @@ export class WarmPools {
 
   /** Whether `name` under the jobs root is a live warm worker's directory (the hourly sweep keeps it). */
   owns(name: string): boolean {
+    // A lost worker's directory stays until its job has left it (Task 12 review S5).
+    if (this.#removing.has(name)) return true;
     for (const list of this.#byFamily.values()) if (list.some((w) => basename(w.dir) === name)) return true;
     return false;
   }

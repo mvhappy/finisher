@@ -3,6 +3,9 @@ import { Effect, Schema } from "effect";
 import { RpcSchema } from "effect/rpc";
 import { describe, expect, it } from "vitest";
 import {
+  AgentApprovalAnswerPayload,
+  AgentApprovalWaitPayload,
+  APPROVAL_WAIT_MAX_MS,
   Approval,
   AgentSessionStartPayload,
   AgentSelfTryPayload,
@@ -134,9 +137,14 @@ const AGENT_RPCS = [
   "agent.watch",
   "agent.approval.list",
   "agent.approval.answer",
+  "agent.approval.wait",
   "agent.providers",
   "agent.self",
   "agent.self.try",
+  "agent.rules.list",
+  "agent.rules.add",
+  "agent.rules.remove",
+  "agent.project.trust",
 ] as const;
 type AgentTag = (typeof AGENT_RPCS)[number];
 
@@ -198,9 +206,15 @@ const TABLE: Record<AgentTag, { scopes: string[]; kinds?: string[]; confirmed?: 
   "agent.watch": { scopes: ["agent.read"] },
   "agent.approval.list": { scopes: ["agent.read"] },
   "agent.approval.answer": { scopes: ["agent.approve"], confirmed: true },
+  // A session waits on its own cards (7B Task 5); people on any in reach.
+  "agent.approval.wait": { scopes: ["agent.read"], kinds: ["local", "console", "device", "agent"] },
   "agent.providers": { scopes: ["server.read"] },
   "agent.self": { scopes: ["project.read"], kinds: ["agent"] },
   "agent.self.try": { scopes: ["project.write"], kinds: ["agent"] },
+  "agent.rules.list": { scopes: ["agent.read"] },
+  "agent.rules.add": { scopes: ["agent.admin"], kinds: ["console", "device"], confirmed: true },
+  "agent.rules.remove": { scopes: ["agent.admin"], kinds: ["console", "device"], confirmed: true },
+  "agent.project.trust": { scopes: ["agent.admin"], kinds: ["console", "device"], confirmed: true },
 };
 
 describe("scopes", () => {
@@ -250,5 +264,21 @@ describe("scopes", () => {
     for (const payload of [{ projectId: "p" }, { projectId: "p", mode: "draft" }, { projectId: "p", mode: "auto" }]) {
       expect(requiredScopes("agent.session.start", payload), JSON.stringify(payload)).toEqual(["agent.run", "project.read", "project.write"]);
     }
+  });
+});
+
+describe("agent.approval.wait and remember (7B Tasks 4 and 5)", () => {
+  it("remember takes session, project and projectLocal", () => {
+    const decode = Schema.decodeUnknownExit(AgentApprovalAnswerPayload);
+    for (const remember of ["session", "project", "projectLocal"]) expect(decode({ id: "a1", decision: "allow", remember, challenge: "c" })._tag, remember).toBe("Success");
+    expect(decode({ id: "a1", decision: "allow", remember: "forever", challenge: "c" })._tag).toBe("Failure");
+  });
+
+  it("caps the wait at 90 s", () => {
+    const decode = Schema.decodeUnknownExit(AgentApprovalWaitPayload);
+    expect(APPROVAL_WAIT_MAX_MS).toBe(90_000);
+    expect(decode({ id: "a1", timeoutMs: 0 })._tag).toBe("Success");
+    expect(decode({ id: "a1", timeoutMs: 90_000 })._tag).toBe("Success");
+    for (const bad of [90_001, -1, 1.5, "10"]) expect(decode({ id: "a1", timeoutMs: bad })._tag, String(bad)).toBe("Failure");
   });
 });

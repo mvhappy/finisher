@@ -35,6 +35,7 @@ import type { Approval, Session, Usage } from "@finisher/contracts";
 import { FIN_ERROR_CODES } from "../console/exit-codes.ts";
 import type { AgentApproval, AgentSession, AgentToolCall, AgentToolResult, AgentTurn, Attribution, Body, SessionTotals } from "@finisher/core-types";
 import type { Journal } from "@finisher/fin-node";
+import { commandOfArgv } from "./command-of.ts";
 import type { Clock, Ids } from "./clock.ts";
 import { blobOf, bodyOf, type CaptureMeta, captureMeta, hashOf, splitRequest } from "./journal-content.ts";
 import type { RuntimeJournal } from "./runtime-deps.ts";
@@ -81,18 +82,6 @@ export function resultCodeOf(code: unknown): string | undefined {
   if (code === undefined || code === null) return undefined;
   const c = typeof code === "string" ? codeOf(code) : undefined;
   return c !== undefined && FIN_ERROR_CODES.has(c) ? c : "OTHER";
-}
-
-/** The `fin` command of an argv (`["item", "trim", "c1"]` → `item.trim`); the journal maps unknown ones to `other`. */
-export function commandOf(input: unknown): string | undefined {
-  const argv = (input as { argv?: unknown } | null)?.argv;
-  if (!Array.isArray(argv)) return undefined;
-  const words: string[] = [];
-  for (const a of argv) {
-    if (typeof a !== "string" || a.startsWith("-") || !/^[a-z][a-zA-Z0-9-]*$/.test(a) || words.length === 2) break;
-    words.push(a);
-  }
-  return words.length === 0 ? undefined : words.join(".");
 }
 
 /** A tool's `AGENT_TOOLS` name (the built-in `workspace_*` tools are `workspace`). */
@@ -324,7 +313,7 @@ export class AgentJournal implements RuntimeJournal {
       const run = this.#run(r.runId, s.id);
       const turnId = run.lastTurnId ?? (run.nextTurnId ??= this.#d.ids.ulid());
       this.#calls.set(r.callId, { turnId, at: this.#d.clock.now() });
-      const command = r.tool === "fin" ? commandOf(r.input) : undefined;
+      const command = r.tool === "fin" ? commandOfArgv(r.input) : undefined;
       const meta: AgentToolCall = {
         callId: r.callId,
         turnId,

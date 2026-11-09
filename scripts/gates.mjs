@@ -10,12 +10,15 @@ const steps = [
   ["node", ["scripts/check-eval-floats.mjs"]],
   ["node", ["scripts/check-wasm-deps.mjs"]],
   ["node", ["scripts/check-generated-types.mjs"]],
+  // The exported command registry (7B Decision 1): regenerated with `fin schema --registry`.
+  ["node", ["scripts/check-registry.mjs"]],
   ["node", ["scripts/check-typecheck.mjs"]],
   ["node", ["scripts/check-strip-types.mjs"]],
   ["node", ["scripts/check-rust-fmt.mjs"]],
   ["node", ["scripts/check-test-hooks.mjs"]],
   // Workers never start processes (5C-1 plan Decision 24).
   ["node", ["scripts/check-worker-spawn.mjs"]],
+  ["node", ["scripts/check-agent-spawn.mjs"]],
   ["node", ["scripts/check-native-deps.mjs"]],
   ["node", ["scripts/check-notices.mjs"]],
   ["node", ["scripts/check-runtime-libs.mjs"]],

@@ -1,9 +1,9 @@
 //! The 8A `plugin` and `registry` commands' registry entries (plan 8A Task 12c), listed after
 //! the settings commands in [`crate::registry::commands`]. The human-only ones are listed too:
 //! `fin` sends them and the server refuses them with `HUMAN_ONLY` (exit 7). Then the 5C-2 `job`
-//! commands and `wait`.
+//! commands and `wait`, then the 7B `approval` commands.
 
-use crate::commands::{job, plugin, project};
+use crate::commands::{approval, job, plugin, project};
 use crate::registry::{Command, schema_of};
 
 const fn cmd(
@@ -173,5 +173,22 @@ pub const JOB_COMMANDS: &[Command] = &[
         "<id>… [--any] [--timeout <s>]",
         "wait for jobs: exit 0 succeeded, 4 JOB_FAILED, 5 WAIT_TIMEOUT",
         || schema_of::<job::WaitArgs>("wait"),
+    ),
+];
+
+pub const APPROVAL_COMMANDS: &[Command] = &[
+    cmd(
+        "approval.wait",
+        "approval",
+        "<id> [--timeout <s>]",
+        "wait <=90 s for a person's answer: exit 0 allowed, 7 APPROVAL_DENIED, 8 still pending",
+        || schema_of::<approval::WaitArgs>("approval.wait"),
+    ),
+    cmd(
+        "approval.ls",
+        "approval",
+        "[--status open|answered|expired] [--session <id>]",
+        "this session's approvals, newest first",
+        || schema_of::<approval::LsArgs>("approval.ls"),
     ),
 ];

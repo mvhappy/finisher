@@ -269,8 +269,10 @@ function aggregated(e: AuditInput): boolean {
 
 function failKey(e: AuditInput): string {
   if (e.kind === "auth.denied") {
-    const rpc = (e.details as { rpc?: unknown } | undefined)?.rpc;
-    return `${e.kind}|${e.principal.kind}:${e.principal.id}|${e.code ?? ""}|${typeof rpc === "string" ? rpc : ""}`;
+    const { rpc, approval } = (e.details ?? {}) as { rpc?: unknown; approval?: unknown };
+    // A pending ask's card (7B) keeps its own row: at most the open-card quota of them.
+    const card = typeof approval === "string" ? `|${approval}` : "";
+    return `${e.kind}|${e.principal.kind}:${e.principal.id}|${e.code ?? ""}|${typeof rpc === "string" ? rpc : ""}${card}`;
   }
   return `${e.kind}|${e.credentialKind ?? ""}|`;
 }

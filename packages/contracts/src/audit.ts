@@ -4,7 +4,8 @@ import { Schema } from "effect";
 
 /**
  * Every audit kind (spec §3.3); the six after `console.refused` are reserved for sub-projects 7
- * and 8, and the `plugin.*` and `registry.*` kinds are sub-project 8's (8A Decision 28).
+ * and 8, the `plugin.*` and `registry.*` kinds are sub-project 8's (8A Decision 28), and
+ * `agent.rule.*` and `agent.project.trust` are 7B's (Decisions 7 and 12).
  */
 export const AUDIT_KINDS = [
   "auth.fail",
@@ -61,12 +62,18 @@ export const AUDIT_KINDS = [
   "registry.trust",
   "registry.forget",
   "registry.verifyFail",
+  // Command rules (7B Decisions 7 and 12): a `local` rule added (by a person, or a remembered
+  // answer: `from`) or removed, and a project's rules file trusted (its `rulesHash`).
+  "agent.rule.add",
+  "agent.rule.remove",
+  "agent.project.trust",
 ] as const;
 
 export const AuditKindSchema = Schema.Literals(AUDIT_KINDS);
 export type AuditKind = typeof AuditKindSchema.Type;
 
-export const AuditOutcomeSchema = Schema.Literals(["ok", "denied", "failed"]);
+/** `pending`: a request waits for a person's answer on a durable card (7B's `APPROVAL_PENDING`), not denied. */
+export const AuditOutcomeSchema = Schema.Literals(["ok", "denied", "failed", "pending"]);
 export type AuditOutcome = typeof AuditOutcomeSchema.Type;
 
 /**
@@ -160,6 +167,35 @@ const PLUGIN_FIELDS = {
   thirdPartyCode: Schema.optional(Schema.Struct({ accepted: Schema.Boolean, confined: Schema.Boolean })),
 };
 const ADDRESS = { address: Schema.optional(Address), peer: Schema.optional(Peer) };
+/**
+ * What `agent.rule.*` and `agent.project.trust` rows may say: the rule's id and layer, the
+ * session it is scoped to, the approval it was remembered from, and a trusted file's hash.
+ * Never the command pattern or a path (the effect is `value`, the project `projectId`).
+ */
+const RULE_FIELDS = {
+  ruleId: Schema.optional(Id),
+  layer: Schema.optional(Schema.Literals(["managed", "local", "project", "user", "role"])),
+  sessionId: Schema.optional(Id),
+  from: Schema.optional(Id),
+  rulesHash: Schema.optional(Schema.String.check(Schema.isPattern(/^(?:sha256:[0-9a-f]{64}|none)$/))),
+};
+
+/** What an `auth.denied` row may say besides: the card an ask opened (`APPROVAL_PENDING`, 7B Decision 8). */
+const DENIAL_FIELDS = { approval: Schema.optional(Id) };
+
+/**
+ * `sandbox.violation` (spec §8.8; plan 7C Decision 24): what the launcher or the host observed,
+ * for a session or a job: the operation, the profile and the kind of root it touched, never a
+ * path (a keyed hash when one is needed).
+ */
+const SANDBOX = {
+  session: Schema.optional(Id),
+  jobId: Schema.optional(Id),
+  op: Schema.optional(Word),
+  profile: Schema.optional(Schema.Literals(["agent", "hook", "worker", "plugin"])),
+  rootKind: Schema.optional(Word),
+  pathHash: Schema.optional(Schema.String.check(Schema.isPattern(/^[0-9a-f]{16,64}$/))),
+};
 
 const PAIRING: ReadonlyArray<AuditKind> = ["pair.offer", "pair.redeem", "pair.approve", "pair.reject", "pair.expire"];
 /** Kinds whose details may name a device or credential. */
@@ -178,15 +214,24 @@ export const AUDIT_LIBRARY_KINDS: ReadonlySet<AuditKind> = new Set<AuditKind>(["
 
 const PlainDetails = Schema.Struct(COMMON);
 const PluginDetails = Schema.Struct({ ...COMMON, ...PLUGIN_FIELDS });
+const RuleDetails = Schema.Struct({ ...COMMON, ...RULE_FIELDS });
+const DenialDetails = Schema.Struct({ ...COMMON, ...DENIAL_FIELDS });
+const SandboxDetails = Schema.Struct({ ...COMMON, ...SANDBOX });
 const LibraryDetails = Schema.Struct({ ...COMMON, ...LIBRARY });
 const NamedDetails = Schema.Struct({ ...COMMON, ...NAMES });
 const AddressedDetails = Schema.Struct({ ...COMMON, ...NAMES, ...ADDRESS });
-type DetailsSchema = typeof PlainDetails | typeof LibraryDetails | typeof NamedDetails | typeof AddressedDetails | typeof PluginDetails;
+type DetailsSchema = typeof PlainDetails | typeof LibraryDetails | typeof NamedDetails | typeof AddressedDetails | typeof PluginDetails | typeof RuleDetails | typeof DenialDetails | typeof SandboxDetails;
 
 /** Kinds whose details may name a plugin, a registry and a version. */
 export const AUDIT_PLUGIN_KINDS: ReadonlySet<AuditKind> = new Set<AuditKind>(AUDIT_KINDS.filter((k) => k.startsWith("plugin.") || k.startsWith("registry.")));
 
+/** Kinds whose details name a command rule or a trusted rules file. */
+export const AUDIT_RULE_KINDS: ReadonlySet<AuditKind> = new Set<AuditKind>(["agent.rule.add", "agent.rule.remove", "agent.project.trust"]);
+
 function detailsSchema(kind: AuditKind): DetailsSchema {
+  if (kind === "sandbox.violation") return SandboxDetails;
+  if (kind === "auth.denied") return DenialDetails;
+  if (AUDIT_RULE_KINDS.has(kind)) return RuleDetails;
   if (AUDIT_PLUGIN_KINDS.has(kind)) return PluginDetails;
   if (AUDIT_ADDRESS_KINDS.has(kind)) return AddressedDetails;
   if (AUDIT_LIBRARY_KINDS.has(kind)) return LibraryDetails;
@@ -199,6 +244,9 @@ export const AUDIT_DETAILS: { readonly [K in AuditKind]: DetailsSchema } = Objec
 ) as { readonly [K in AuditKind]: DetailsSchema };
 
 const DECODE = {
+  sandbox: Schema.decodeUnknownExit(SandboxDetails),
+  rule: Schema.decodeUnknownExit(RuleDetails),
+  denial: Schema.decodeUnknownExit(DenialDetails),
   plugin: Schema.decodeUnknownExit(PluginDetails),
   plain: Schema.decodeUnknownExit(PlainDetails),
   library: Schema.decodeUnknownExit(LibraryDetails),
@@ -208,14 +256,20 @@ const DECODE = {
 
 /** True when `details` fits `kind`'s schema exactly (no other field). */
 export function auditDetailsValid(kind: AuditKind, details: unknown): boolean {
-  const decode = AUDIT_PLUGIN_KINDS.has(kind)
-    ? DECODE.plugin
-    : AUDIT_ADDRESS_KINDS.has(kind)
-      ? DECODE.addressed
-      : AUDIT_LIBRARY_KINDS.has(kind)
-        ? DECODE.library
-        : AUDIT_NAME_KINDS.has(kind)
-          ? DECODE.named
-          : DECODE.plain;
+  const decode = kind === "sandbox.violation"
+    ? DECODE.sandbox
+    : kind === "auth.denied"
+    ? DECODE.denial
+    : AUDIT_RULE_KINDS.has(kind)
+    ? DECODE.rule
+    : AUDIT_PLUGIN_KINDS.has(kind)
+      ? DECODE.plugin
+      : AUDIT_ADDRESS_KINDS.has(kind)
+        ? DECODE.addressed
+        : AUDIT_LIBRARY_KINDS.has(kind)
+          ? DECODE.library
+          : AUDIT_NAME_KINDS.has(kind)
+            ? DECODE.named
+            : DECODE.plain;
   return decode(details, { onExcessProperty: "error" })._tag === "Success";
 }

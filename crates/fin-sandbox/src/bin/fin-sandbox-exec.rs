@@ -1,7 +1,9 @@
 //! `fin-sandbox-exec --policy-fd <n> -- <program> [args…]`: confines a program `finisherd` starts
 //! itself (an agent harness, a hook command) and becomes it. See `fin_sandbox::launch`.
 
-use std::io::Read;
+use std::fs::File;
+use std::io::{Read, Write};
+use std::sync::Mutex;
 
 use fin_sandbox::launch::{
     self, EXIT_CANNOT_EXEC, EXIT_NOT_FOUND, EXIT_UNAVAILABLE, EXIT_USAGE, MAX_REQUEST,
@@ -9,8 +11,20 @@ use fin_sandbox::launch::{
 use fin_sandbox::policy::Profile;
 use fin_sandbox::status::{DisabledReason, Mechanism, mechanism};
 
+/// The request descriptor, kept after reading it (marked close-on-exec with the rest): one of
+/// the launcher's own failures is also written back on it, so the parent can tell the
+/// launcher's exit 78 from the program's (a socketpair; on a plain pipe the write fails and is
+/// ignored). End of file with nothing written means the program was started.
+static REPORT: Mutex<Option<File>> = Mutex::new(None);
+
 fn fail(exit: i32, code: &str, profile: Option<Profile>, need: &str) -> ! {
-    eprintln!("{}", launch::failure_line(code, profile, need));
+    let line = launch::failure_line(code, profile, need);
+    eprintln!("{line}");
+    if let Ok(mut held) = REPORT.lock()
+        && let Some(f) = held.as_mut()
+    {
+        let _ = writeln!(f, "{line}");
+    }
     std::process::exit(exit)
 }
 
@@ -83,13 +97,18 @@ fn main() {
     )
 }
 
-/// Reads the request from the inherited descriptor to its end and closes it.
+/// Reads the request from the inherited descriptor to its end; the descriptor is kept for
+/// [`REPORT`] and closes at `exec` (close-on-exec) or exit.
 fn read_fd(fd: i32) -> Result<Vec<u8>, String> {
-    let file = os::take_fd(fd)?;
+    let mut file = os::take_fd(fd)?;
     let mut bytes = Vec::new();
-    file.take(MAX_REQUEST + 1)
+    (&mut file)
+        .take(MAX_REQUEST + 1)
         .read_to_end(&mut bytes)
         .map_err(|e| format!("descriptor {fd}: {e}"))?;
+    if let Ok(mut held) = REPORT.lock() {
+        *held = Some(file);
+    }
     if bytes.len() as u64 > MAX_REQUEST {
         return Err(format!("the request is larger than {MAX_REQUEST} bytes"));
     }

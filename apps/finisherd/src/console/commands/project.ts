@@ -1,11 +1,13 @@
 // `finisherd project takeover <dir|projectId> --confirm` and `finisherd project open <dir>
-// --relocate` (spec §4.6): a person's decisions about a project's lease and where it lives.
-// Both need a terminal and the target typed back (owner decision of 2026-11-08): a takeover the
-// project id's first 8 characters, a relocation the folder's name.
+// --relocate` (spec §4.6): a person's decisions about a project's lease and where it lives;
+// `finisherd project trust <dir|id>` (sub-project 7B, `agent/console-rules.ts`): its rules file.
+// All need a terminal and a confirmation (owner decision of 2026-11-08): a takeover the project
+// id's first 8 characters typed back, a relocation the folder's name; trust as `projectTrust` says.
 import { basename, isAbsolute, resolve } from "node:path";
 import { valueOf } from "../client.ts";
 import { confirmed, requireTty, typeName } from "../confirm.ts";
 import { has, onlyFlags, usage } from "../format.ts";
+import { projectTrust } from "../../agent/console-rules.ts";
 import { type CommandContext, withConnection } from "./context.ts";
 
 /** A folder rather than a project id: a path (with a separator, or `.`/`..`). */
@@ -16,6 +18,7 @@ export async function project(ctx: CommandContext): Promise<number> {
   if (target === undefined || more.length > 0) usage(`project ${sub ?? ""} needs one folder or project id`.replace("  ", " "));
   if (sub === "takeover") return takeover(ctx, target);
   if (sub === "open") return open(ctx, target);
+  if (sub === "trust") return projectTrust(ctx, target);
   return usage(sub === undefined ? "project needs a command" : `unknown project command: ${sub}`);
 }
 

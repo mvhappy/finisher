@@ -4,9 +4,10 @@
 //
 // - `boot()` first (Decision 3, the Task 3b order): crash recovery (reservations returned), the
 //   orphan sweep at grace 0 before any session work, the outbox drained, every live session
-//   credential of an ended or missing session ended; then the hourly sweep (overdue approvals
-//   expired, retention) and a budget check every few seconds (the wall clock moves without
-//   events).
+//   credential of an ended or missing session ended, overdue approvals expired; then the hourly
+//   sweep (overdue approvals expired, retention) and a budget check every few seconds (the wall
+//   clock moves without events). A provider card also expires at its own `expiresAt`
+//   (`provider-requests.ts`).
 // - A start of a non-local model without a price is refused (`PRICING_UNKNOWN`); every start
 //   answers the persistent warnings (`SANDBOX_DISABLED` until 7C, owner decision F2).
 // - Every command runs in its session's queue, after the events and commands before it.
@@ -24,7 +25,7 @@ import { AgentCoreTag } from "./core.ts";
 import { openSession, registryBranchOps } from "./credentials.ts";
 import { type RuntimeDeps, RuntimeEngine } from "./runtime-engine.ts";
 import { budgetError, harnessUnknown, pricingUnknown, type StartRequest } from "./runtime-deps.ts";
-import { call, closeLive } from "./runtime-live.ts";
+import { call, closeLive, type Live } from "./runtime-live.ts";
 import type { Recovery } from "./store.ts";
 import { agentWarnings } from "./warnings.ts";
 
@@ -67,6 +68,8 @@ export class Runtime extends RuntimeEngine {
 
   constructor(deps: RuntimeDeps) {
     super(deps);
+    // A provider card is settled at its `expiresAt`, not only by the hourly sweep (7B Task 5).
+    deps.requests?.bind({ clock: this.clock, expire: () => this.expireApprovals() });
   }
 
   /**
@@ -78,6 +81,8 @@ export class Runtime extends RuntimeEngine {
     const recovery = this.store.recoverAfterCrash();
     const orphans = await this.store.sweepOrphans(0);
     await this.drain();
+    // Cards already overdue (a budget card of an interrupted session) expire now, not within the hour.
+    this.expireApprovals();
     const credentialsEnded = this.core.credentials.reconcile();
     this.#booted = true;
     if (this.deps.timers ?? true) {
@@ -94,6 +99,7 @@ export class Runtime extends RuntimeEngine {
   async close(): Promise<void> {
     this.#closed = true;
     for (const t of this.#timers.splice(0)) clearInterval(t);
+    this.deps.requests?.close();
     const lives = [...this.lives.values()];
     this.lives.clear();
     await Promise.allSettled(lives.map((l) => closeLive(l)));
@@ -110,11 +116,18 @@ export class Runtime extends RuntimeEngine {
    * the retention sweep (Decision 4). Answers how many sessions the retention removed.
    */
   sweep(now = this.clock.now()): Promise<number> {
+    this.expireApprovals(now);
+    return this.store.sweep(now, this.deps.retentionDays);
+  }
+
+  /** Overdue approvals expired: their sessions' statuses, journal, and provider requests (a `deny`). */
+  expireApprovals(now = this.clock.now()): void {
+    if (this.#closed) return;
     for (const s of this.store.expireOverdueApprovals(now)) {
       this.publishStatus(s, this.store.activeRun(s.id));
       this.#journalExpired(s);
+      this.background(s.id, "a provider request's expiry", () => this.deps.requests?.settleSession(s.id, (id) => this.store.approval(id)) ?? Promise.resolve());
     }
-    return this.store.sweep(now, this.deps.retentionDays);
   }
 
   /** Charges the wall clock of running sessions and stops those over a budget. */
@@ -149,6 +162,10 @@ export class Runtime extends RuntimeEngine {
       this.#guard();
       const plan = await this.deps.planner.plan(req, by);
       if (this.adapter(plan.harness) === undefined) harnessUnknown(plan.harness);
+      // A CLI harness whose sandbox cannot be applied here never starts (spec §8.9), nor one
+      // the runtime has no sandboxes for (it would start its processes unconfined).
+      if (this.deps.sandboxes !== undefined) this.deps.sandboxes.check(plan.harness);
+      else if (plan.harness === "claudeCode" || plan.harness === "codex") throw finError("SANDBOX_UNAVAILABLE", "this runtime has no session sandbox for CLI harnesses", { profile: "agent", harness: plan.harness });
       // A money budget without a price would fail open: refused before anything is made.
       if (plan.provider !== "local" && !this.pricing.known(plan.provider, plan.model)) throw pricingUnknown(plan.provider, plan.model);
       const opened = await exitOf(
@@ -212,6 +229,7 @@ export class Runtime extends RuntimeEngine {
       throw e;
     }
     live.runId = run.id;
+    await this.#sandboxNotices(live, run.id);
     const err = await call(live.provider.startTurn({ runId: run.id, text, facts: this.facts(this.session(sessionId)) }));
     if (err) {
       live.runId = null;
@@ -219,6 +237,27 @@ export class Runtime extends RuntimeEngine {
       throw err;
     }
     return this.store.run(run.id)!;
+  }
+
+  protected sandboxFor(s: Session) {
+    return this.deps.sandboxes?.open(s, (v) =>
+      this.background(v.sessionId, "a sandbox violation", async () => {
+        const runId = this.store.activeRun(v.sessionId);
+        if (runId !== null) await this.append({ sessionId: v.sessionId, runId, kind: "notice", payload: { sandboxViolation: { op: v.op, profile: v.profile, rootKind: v.rootKind } } });
+      }),
+    );
+  }
+
+  /**
+   * Once per opened instance of a sandboxed session: a `notice` per persistent warning of the
+   * `agent` profile (F2: `SANDBOX_DISABLED`, spec §8.9), so a person sees it on the session.
+   */
+  async #sandboxNotices(live: Live, runId: string): Promise<void> {
+    if (live.sandbox === undefined || live.noticed) return;
+    live.noticed = true;
+    for (const w of agentWarnings()) {
+      await this.append({ sessionId: live.sessionId, runId, kind: "notice", payload: { sandbox: { code: w.code, ...w.details } } });
+    }
   }
 
   /** A branch's head seq (by id), for `headAtStart`; undefined when it cannot be read. */
@@ -337,8 +376,9 @@ export class Runtime extends RuntimeEngine {
   }
 
   /**
-   * `agent.approval.answer` for a `budget` approval (Decision 21; console `agent approve`):
-   * `allow` raises the limits by `add`, marks the approval used and resumes the session.
+   * `agent.approval.answer` (Decision 21; console `agent approve`), by kind: a `budget` `allow`
+   * raises the limits by `add`, marks the approval used and resumes the session; a `provider`
+   * answer goes back to the waiting request; a `rule` answer is recorded (its grant, 7B).
    */
   approve(approvalId: string, decision: ApprovalDecision, add: BudgetRaise, by: Principal): Effect.Effect<{ approval: Approval; session: Session }, FinError> {
     return attempt(async () => {
@@ -359,7 +399,9 @@ export class Runtime extends RuntimeEngine {
         const { approval, session } = answered;
         this.record("an approval", () => this.journal.approval({ session, approval }));
         this.publishStatus(session);
-        if (approval.kind !== "budget" || decision !== "allow") return { approval, session };
+        // By kind (7B Task 5): a provider's request hears the answer; a rule's is a one-time grant.
+        if (approval.kind === "provider") await this.deps.requests?.settle(approval);
+        if (approval.kind !== "budget" || decision !== "allow") return { approval: this.store.approval(approvalId)!, session };
         const b = this.budget(session);
         if (add.tokens) b.raise("tokens", add.tokens);
         if (add.moneyMicros) b.raise("money", add.moneyMicros);
@@ -372,6 +414,14 @@ export class Runtime extends RuntimeEngine {
         return { approval: this.store.approval(approvalId)!, session: resumed };
       });
     });
+  }
+
+  /** A card the chain opened (7B Task 4, `approvals.ts`): its `approval` node in the active run, then the watchers. */
+  async approvalOpened(s: Session, a: Approval, node: Record<string, unknown>): Promise<void> {
+    const runId = this.store.activeRun(s.id);
+    if (runId !== null) await this.append({ sessionId: s.id, runId, kind: "approval", payload: node });
+    this.publish(s.id, { type: "approvalOpened", approval: a });
+    this.publishStatus(s, runId);
   }
 
   /** Journals the session's expired approvals (the journal records each once). */
