@@ -228,6 +228,9 @@ importers:
 
   packages/core-types:
     devDependencies:
+      '@types/node':
+        specifier: 24.19.2
+        version: 24.19.2
       json-schema-to-typescript:
         specifier: 16.0.0
         version: 16.0.0
