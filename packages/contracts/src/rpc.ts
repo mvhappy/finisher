@@ -10,6 +10,7 @@ import { Schema } from "effect";
 import { Rpc, RpcGroup } from "effect/rpc";
 import { TxSetAsideSchema } from "./tx-set-aside.ts";
 import { DEVICE_RPCS } from "./device-rpcs.ts";
+import { REVIEW_RPCS } from "./review-rpcs.ts";
 import {
   AudioPlanSchema,
   EvalAudioPayload,
@@ -127,6 +128,7 @@ import {
   BranchSetPayload,
   HistoryCheckpointPayload,
   HistoryCherryPickPayload,
+  HistoryDropPayload,
   HistoryMergePayload,
   HistoryRedoPayload,
   HistoryResultSuccess,
@@ -484,6 +486,7 @@ export const FinRpcs = RpcGroup.make(
   Rpc.make("history.merge", { payload: HistoryMergePayload, success: MergeReportSuccess, error: FinError }),
   Rpc.make("history.cherryPick", { payload: HistoryCherryPickPayload, success: HistoryResultSuccess, error: FinError }),
   Rpc.make("history.revert", { payload: HistoryRevertPayload, success: HistoryResultSuccess, error: FinError }),
+  Rpc.make("history.drop", { payload: HistoryDropPayload, success: RecordSuccess, error: FinError }),
   Rpc.make("project.acknowledgeRewind", {
     payload: ProjectAcknowledgeRewindPayload,
     success: AcknowledgeSuccess,
@@ -591,4 +594,5 @@ export const FinRpcs = RpcGroup.make(
   Rpc.make("training.closedTargets.get", { payload: Schema.Struct({}), success: TrainingClosedTargetsSuccess, error: FinError }),
   Rpc.make("training.closedTargets.set", { payload: TrainingClosedTargetsSetPayload, success: TrainingClosedTargetsSuccess, error: FinError }),
   ...DEVICE_RPCS, // 5B: pairing, devices, the environment and settings writes (`device-rpcs.ts`)
+  ...REVIEW_RPCS, // 5E: the review workflow and its policy (`review-rpcs.ts`)
 );

@@ -54,6 +54,14 @@ export interface ChainJobs {
   kindScopes(kind: string): ReadonlyArray<Scope> | undefined;
 }
 
+/** What the chain needs from the reviews store (5E Decisions 16–17, 23): it reads, never changes. */
+export interface ChainReviews {
+  /** An item's project and branch ids, or `undefined` when there is no such item. */
+  item(id: string): { readonly projectId: string; readonly source?: string | undefined; readonly target?: string | undefined } | undefined;
+  /** The branch ids the project's policy protects. */
+  protectedBranches(projectId: string): ReadonlyArray<string>;
+}
+
 export interface Resolved {
   /** The payload the handler receives (canonical paths in place of the given ones). */
   readonly payload: unknown;
@@ -138,7 +146,7 @@ export function resolve(
   rule: RpcRule,
   payload: unknown,
   deps: ChainProjects,
-  job?: { readonly principal: Principal; readonly jobs?: ChainJobs | undefined },
+  job?: { readonly principal: Principal; readonly jobs?: ChainJobs | undefined; readonly reviews?: ChainReviews | undefined },
 ): Effect.Effect<Resolved, FinError> {
   return Effect.gen(function* () {
     const want = new Set(rule.resolve ?? []);
@@ -177,6 +185,22 @@ export function resolve(
       const id = field(payload, "job");
       const rel = typeof id === "string" && job !== undefined && job.jobs !== undefined ? job.jobs.relation(job.principal, id) : "none";
       facts = { ...facts, job: rel };
+    }
+    // A review item: its project is checked for reach, and its branches join the payload (5E
+    // Decision 23). An item outside the caller's reach is `REVIEW_NOT_FOUND`, as an unknown one.
+    if (want.has("review")) {
+      if (job?.reviews === undefined) {
+        return yield* Effect.fail(finError("INTERNAL", "a reviews rule reached the chain without the reviews store", { reason: "noReviews" }));
+      }
+      const id = field(payload, "itemId");
+      const item = typeof id === "string" ? job.reviews.item(id) : undefined;
+      const reach = item !== undefined && (job.principal.projects === "*" || job.principal.projects.includes(item.projectId));
+      if (item === undefined || !reach) {
+        return yield* Effect.fail(finError("REVIEW_NOT_FOUND", "no such review item", { itemId: typeof id === "string" ? id : null }, "Check the item's id with a list of the project's reviews."));
+      }
+      projects.push(item.projectId);
+      if (!deps.isOpen(item.projectId)) facts = { ...facts, reopens: true };
+      out = { ...out, projectId: item.projectId, ...(item.source === undefined ? {} : { source: item.source }), ...(item.target === undefined ? {} : { target: item.target }) };
     }
     // The handler gets the canonical folder, so it opens what was checked (review H2).
     if (want.has("openDir")) {
@@ -228,6 +252,16 @@ export function resolve(
     if (want.has("registryPaths")) {
       yield* checkOnly((out.cfg as { path?: unknown } | undefined)?.path);
       yield* checkOnly((out.root as { path?: unknown } | undefined)?.path);
+    }
+    // A write into a protected branch needs another scope (5E Decision 17): read from the policy,
+    // for a project the caller reaches only (nothing is opened for one it does not).
+    if (rule.protectedNeeds !== undefined && job?.reviews !== undefined) {
+      const pid = typeof out.projectId === "string" ? out.projectId : undefined;
+      const ref = typeof out.target === "string" ? out.target : typeof out.into === "string" ? out.into : undefined;
+      if (pid !== undefined && ref !== undefined && (job.principal.projects === "*" || job.principal.projects.includes(pid))) {
+        const target = yield* Effect.orElseSucceed(deps.resolveBranch(pid, ref), () => undefined);
+        if (target !== undefined) facts = { ...facts, protectedTarget: job.reviews.protectedBranches(pid).includes(target) };
+      }
     }
     return {
       payload: out,

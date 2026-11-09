@@ -18,9 +18,6 @@ import { CAPABILITIES } from "../src/handlers.ts";
 import { CONSOLE, LOCAL } from "../src/principal.ts";
 import { confirmed, connectProved, NdjsonClient, ok, type RunningServer, startServer } from "./support/ndjson-client.ts";
 
-/** 5E Task 4 put the review RPCs into fin-core's table; Task 5 adds them to FinRpcs and deletes this set. */
-const REVIEW_RPCS_PENDING = new Set(["history.drop", "review.close", "review.comment", "review.decide", "review.get", "review.list", "review.merge", "review.policy", "review.policy.get", "review.refresh", "review.request", "review.watch"]);
-
 const WIN = process.platform === "win32";
 let tmp: string;
 let serverData: string;
@@ -359,9 +356,7 @@ describe("rpc timing", () => {
   });
 
   test("rpc_methods_table_matches_capabilities", () => {
-    expect(rpcMethods().filter((m) => m !== "other" && !REVIEW_RPCS_PENDING.has(m)).sort()).toEqual([...CAPABILITIES].sort());
-    // The pending set is exactly what fin-core lists and the server lacks: Task 5 must delete it.
-    for (const m of REVIEW_RPCS_PENDING) expect([rpcMethods().includes(m), CAPABILITIES.includes(m)]).toEqual([true, false]);
+    expect(rpcMethods().filter((m) => m !== "other").sort()).toEqual([...CAPABILITIES].sort());
     expect([...FinRpcs.requests.keys()].sort()).toEqual([...CAPABILITIES].sort());
   });
 });

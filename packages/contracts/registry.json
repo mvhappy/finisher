@@ -348,6 +348,24 @@
       "group": "history",
       "identity": [
         "projectId",
+        "from",
+        "into",
+        "drops",
+        "undrops"
+      ],
+      "name": "drop",
+      "rpcs": [
+        {
+          "method": "history.drop"
+        }
+      ],
+      "write": true
+    },
+    {
+      "argKinds": {},
+      "group": "history",
+      "identity": [
+        "projectId",
         "mergeId",
         "branch"
       ],

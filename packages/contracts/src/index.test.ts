@@ -93,6 +93,7 @@ test("the group exposes exactly the protocol 2 RPC tags", () => {
       "fonts.plan",
       "fonts.status",
       "history.cherryPick",
+      "history.drop",
       "history.checkpoint",
       "history.merge",
       "history.redo",
@@ -150,6 +151,17 @@ test("the group exposes exactly the protocol 2 RPC tags", () => {
       "registry.refresh",
       "registry.remove",
       "registry.status",
+      "review.close",
+      "review.comment",
+      "review.decide",
+      "review.get",
+      "review.list",
+      "review.merge",
+      "review.policy",
+      "review.policy.get",
+      "review.refresh",
+      "review.request",
+      "review.watch",
       "server.hello",
       "server.status",
       "server.stop",
@@ -164,7 +176,7 @@ test("the group exposes exactly the protocol 2 RPC tags", () => {
 });
 
 test("ops.subscribe, project.events, the watches and auth.pair.pending are streaming rpcs and the others are not", () => {
-  const streams = new Set(["ops.subscribe", "project.events", "jobs.watch", "library.watch", "agent.watch", "auth.pair.pending", "auth.devices.watch"]);
+  const streams = new Set(["ops.subscribe", "project.events", "jobs.watch", "library.watch", "agent.watch", "auth.pair.pending", "auth.devices.watch", "review.watch"]);
   for (const [tag, rpc] of FinRpcs.requests) {
     expect(RpcSchema.isStreamSchema(rpc.successSchema), tag).toBe(streams.has(tag));
   }

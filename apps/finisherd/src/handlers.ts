@@ -40,7 +40,7 @@ import { chainJobs, jobHandlers } from "./jobs/rpc.ts";
 import { mediaCapabilities } from "./media/caps.ts";
 import { look as mediaLook } from "./media/look.ts";
 import { requireAbsolute, requireAbsoluteOpt } from "./paths.ts";
-import { metaJson } from "./history.ts";
+import { dropPayload, metaJson } from "./history.ts";
 import { LibraryServiceTag } from "./library/layer.ts";
 import { cataloguedAt } from "./library/reach.ts";
 import { libraryHandlers } from "./library/rpc.ts";
@@ -50,6 +50,8 @@ import { probeFor } from "./probe.ts";
 import { ProjectRegistry } from "./projects.ts";
 import { type AdminDeps, auditList, auditPurge, ServerControlTag, serverStatus, serverStop } from "./server-admin.ts";
 import { reporterFor } from "./sandbox/status.ts";
+import { reviewHandlers } from "./reviews/rpc.ts";
+import { ReviewsTag } from "./reviews/service.ts";
 
 /** Advertised in `server.hello`: the RPC tags this server implements. */
 export const CAPABILITIES: ReadonlyArray<string> = [...FinRpcs.requests.keys()].sort();
@@ -87,6 +89,7 @@ export const HandlersLive = FinRpcs.toLayer(
     const jobEngine = yield* JobEngineTag;
     const agents = yield* AgentCoreTag;
     const agentRuntime = yield* AgentRuntimeTag;
+    const reviews = yield* ReviewsTag;
     const environment = yield* EnvironmentTag;
     const pairing = yield* PairingTag;
     const deviceAccess = yield* DeviceAccessTag;
@@ -122,7 +125,7 @@ export const HandlersLive = FinRpcs.toLayer(
         return f({ ...actorFor(c.principal, options.headers), guard: { denyBranches: [], ...(credential === undefined ? {} : { credential }) } });
       });
     /** An `ok` audit row of `kind` for the call's principal (consent changes, purges). */
-    const auditAs = (options: object, kind: "consent.change" | "diagnostics.purge", details: Record<string, string>) => {
+    const auditAs = (options: object, kind: "consent.change" | "diagnostics.purge" | "history.drop", details: Record<string, string | number>) => {
       const p = principalOf(options);
       audit.append({ kind, principal: { kind: p.kind, id: p.id }, outcome: "ok", details: { ...details, transport: connections.transport } });
     };
@@ -386,6 +389,15 @@ export const HandlersLive = FinRpcs.toLayer(
         guard("history.cherryPick", withMeta(options, (m) => registry.history(payload.projectId, "cherryPick", payload, m))),
       "history.revert": (payload, options) =>
         guard("history.revert", withMeta(options, (m) => registry.history(payload.projectId, "revert", payload, m))),
+      // 5E: a rejection that outlives the review. Audited with a count only: no review text, no txIds.
+      "history.drop": (payload, options) =>
+        guard(
+          "history.drop",
+          Effect.tap(
+            withMeta(options, (m) => registry.history(payload.projectId, "drop", dropPayload(payload), m)),
+            () => Effect.sync(() => (payload.dryRun === true ? undefined : auditAs(options, "history.drop", { count: (payload.drops?.length ?? 0) + (payload.undrops?.length ?? 0) }))),
+          ),
+        ),
       // Not records, but changes a revoked credential must not make either (L1): the guard's credential.
       "project.acknowledgeRewind": ({ projectId, branch, generation }, options) =>
         guard(
@@ -444,6 +456,7 @@ export const HandlersLive = FinRpcs.toLayer(
       ...rulesHandlers({ guard, store: agents.store, rules: agentRuntime.rules, ruleStore: agentRuntime.ruleStore, audit, clock: agents.clock, roles: agentRuntime.roles, dirOf: (id) => registry.dirOf(id) ?? registry.indexedDirOf(id), principalOf }),
       ...savedPromptHandlers({ guard, runtime: agentRuntime.runtime, principalOf, prompts: new SavedPrompts({ serverData: agentRuntime.rules.serverData, roles: agentRuntime.roles, dirOf: (id) => registry.dirOf(id) ?? registry.indexedDirOf(id), trustOf: (id) => agentRuntime.ruleStore.trustOf(id) }) }),
       // 5B: pairing, devices, settings writes and the environment.
+      ...reviewHandlers({ guard, reviews }),
       ...deviceHandlers({ guard, pairing, access: deviceAccess, connections }),
       ...settingsHandlers({ guard, serverData: admin.control.serverData ?? "", remote: remoteListener, audit }),
       ...envHandlers({ guard, env: environment }),
@@ -451,6 +464,7 @@ export const HandlersLive = FinRpcs.toLayer(
       connections,
       projects,
       jobs: chainJobs(jobEngine),
+      reviews: reviews.chain,
       audit,
       timed: guard,
       touch: (p) => credentials.touch(p.id),

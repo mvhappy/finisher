@@ -193,6 +193,25 @@ fn exit_codes_follow_the_contract() {
     }
 }
 
+/// 5E Decision 26: the review codes and the protected-branch refusal.
+#[test]
+fn review_codes_follow_decision_26() {
+    for code in ["REVIEW_NOT_FOUND", "REVIEW_UNDECIDED"] {
+        assert_eq!(exit_code(code), 3, "{code}");
+    }
+    for code in [
+        "REVIEW_STALE",
+        "REVIEW_HAS_CONFLICTS",
+        "REVIEW_CLOSED",
+        "REVIEW_LIMIT",
+        "AUTO_MERGE_UNAVAILABLE",
+    ] {
+        assert_eq!(exit_code(code), 4, "{code}");
+    }
+    assert_eq!(exit_code("POLICY_BUSY"), 5);
+    assert_eq!(exit_code("BRANCH_PROTECTED"), 7);
+}
+
 #[test]
 fn job_codes_follow_decision_41() {
     for code in [

@@ -42,7 +42,7 @@ import { withoutClientVia } from "./client-via.ts";
 import type { ChainHooks } from "./hooks.ts";
 import { approvalRequired, outOfReach } from "./fixes.ts";
 import { type Ask, authorOf, branchLimited, DEFAULT_POLICIES, type PolicyInput, type PolicyRule, runPolicies, stampsAuthor } from "./policy.ts";
-import { type ChainJobs, type ChainProjects, resolve } from "./resolve.ts";
+import { type ChainJobs, type ChainProjects, type ChainReviews, resolve } from "./resolve.ts";
 
 export type { Ask, Outcome, PolicyRule } from "./policy.ts";
 
@@ -129,6 +129,8 @@ export interface ChainDeps {
   readonly projects: ChainProjects;
   /** The job engine's ownership and kind scopes, for the `jobs.*` rules (5C-2). */
   readonly jobs?: ChainJobs;
+  /** The reviews store's reads, for the `review` resolver and protected branches (5E). */
+  readonly reviews?: ChainReviews;
   readonly audit?: Audit;
   /** Counts a unary refusal in `rpc.stats`. */
   readonly timed?: <A>(tag: string, self: Effect.Effect<A, FinError>) => Effect.Effect<A, FinError>;
@@ -243,7 +245,7 @@ export function withChain<H extends object>(handlers: H, deps: ChainDeps): H {
       const refused = deps.refuse?.(principal);
       if (refused !== undefined) return yield* Effect.fail(refused);
       if (credentialOf(principal) !== undefined) deps.touch?.(principal);
-      const resolved = yield* resolve(rule, payload, deps.projects, { principal, jobs: deps.jobs });
+      const resolved = yield* resolve(rule, payload, deps.projects, { principal, jobs: deps.jobs, reviews: deps.reviews });
       yield* authorize(tag, principal, payload, resolved, deps.projects, hooks);
       const input: PolicyInput = { tag, rule, principal, payload: resolved.payload, projects: deps.projects, projectIds: resolved.projects, headers };
       const outcome = yield* runPolicies(policies, input);

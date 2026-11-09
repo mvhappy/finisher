@@ -55,6 +55,9 @@ interface Seen {
   options: Record<string, unknown>;
 }
 
+/** Every review item is project A's, from `other` into the agent's own branch `mine` (5E); `main` is protected. */
+const reviews = { item: () => ({ projectId: A, source: "other", target: "mine" }), protectedBranches: () => ["main"] };
+
 /** A chain over recording handlers; `principal` is bound to client 1. */
 function harness(principal: Principal, more: Partial<ChainDeps> = {}, real: Record<string, unknown> = {}) {
   const seen: Seen[] = [];
@@ -86,7 +89,7 @@ function harness(principal: Principal, more: Partial<ChainDeps> = {}, real: Reco
   for (const t of [...WRITE_RPCS, "snapshot.get", "project.acknowledgeRewind", "diagnostics.consent", "diagnostics.purge", "diagnostics.project", "diagnostics.export", "agent.approval.answer", "agent.session.delete", "agent.session.start", "agent.session.prompt", "agent.session.resume", "agent.session.list", "agent.self", "agent.self.try"]) handlers[t] ??= unary(t);
   Object.assign(handlers, real);
   const audit = { append: (e: AuditInput) => audited.push(e) } as unknown as Audit;
-  const chained = withChain(handlers, { connections, projects, audit, ...more }) as unknown as Record<string, (p: unknown, o: unknown) => unknown>;
+  const chained = withChain(handlers, { connections, projects, audit, reviews, ...more }) as unknown as Record<string, (p: unknown, o: unknown) => unknown>;
   const call = (tag: string, payload: unknown) =>
     Effect.runPromiseExit(chained[tag]!(payload, { client: { id: 1 }, headers: {} }) as Effect.Effect<unknown, FinError>);
   const stream = (tag: string, payload: unknown) =>

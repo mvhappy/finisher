@@ -125,6 +125,22 @@ export const HistoryMergePayload = Schema.Struct({
     Schema.Number.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(0), Schema.isLessThanOrEqualTo(Number.MAX_SAFE_INTEGER)),
   ),
 });
+/** The most origin roots one `drop` record names, `drops` and `undrops` together (fin-core's `MAX_DROP_IDS`). */
+export const DROP_IDS_MAX = 4096;
+
+/**
+ * `history.drop` (5E Decision 5): write a `drop` record on `into` that keeps the origin roots in
+ * `drops` out of every merge of `from` (and its descendants), or lifts a drop (`undrops`). At
+ * least one list is non-empty; the server always sets `argsHash`. Needs `review.decide` on a
+ * protected target, `project.write` elsewhere.
+ */
+export const HistoryDropPayload = Schema.Struct({
+  ...Write,
+  from: Schema.String,
+  into: Schema.String,
+  drops: Schema.optional(Schema.Array(Schema.String.check(Schema.isMaxLength(TX_ID_MAX))).check(Schema.isMaxLength(DROP_IDS_MAX))),
+  undrops: Schema.optional(Schema.Array(Schema.String.check(Schema.isMaxLength(TX_ID_MAX))).check(Schema.isMaxLength(DROP_IDS_MAX))),
+});
 export const HistoryCherryPickPayload = Schema.Struct({ ...Write, origin: Schema.String, into: Schema.String });
 export const HistoryRevertPayload = Schema.Struct({ ...Write, mergeId: Schema.String, branch: Schema.String });
 /** The `CommittedTx` a `branch.set` or `history.checkpoint` answers with. */

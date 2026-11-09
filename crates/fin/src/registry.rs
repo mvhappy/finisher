@@ -4,7 +4,7 @@
 use schemars::JsonSchema;
 use serde_json::{Value, json};
 
-use crate::commands::{asset, branch, clip, history, look, project, try_cmd, view};
+use crate::commands::{asset, branch, clip, drop, history, look, project, try_cmd, view};
 
 pub struct Command {
     /// Dotted name, e.g. "clip.insert" (also the `batch` cmd and op-style name).
@@ -252,6 +252,14 @@ pub const COMMANDS: &[Command] = &[
         summary: "copy one record onto a branch",
         write: true,
         schema: || schema_of::<history::CherryPickArgs>("cherry-pick"),
+    },
+    Command {
+        name: "drop",
+        group: "history",
+        args: "<txId>… --from <b> [--into <b>] [--undo]",
+        summary: "keep a rejected change out of every merge into a branch (--undo brings it back)",
+        write: true,
+        schema: || schema_of::<drop::DropArgs>("drop"),
     },
     Command {
         name: "revert",

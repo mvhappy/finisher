@@ -45,6 +45,8 @@ export const AUDIT_KINDS = [
   "library.set",
   "history.drop",
   "review.merge",
+  // The owner changed a project's branch policy (5E Decision 18): the old and the new, as ids and booleans.
+  "review.policy",
   "console.refused",
   // The owner purged the audit log (5A Task 8): written after the purge, with its count.
   "audit.purge",
@@ -202,6 +204,21 @@ const RULE_FIELDS = {
   promptsHash: Schema.optional(Schema.String.check(Schema.isPattern(/^(?:sha256:[0-9a-f]{64}|none)$/))),
 };
 
+/**
+ * `history.drop {item?, count}`, `review.merge {item, protected, auto}` and `review.policy {old,
+ * new}` (5E Decision 26): a review item's id, counts, booleans and branch ids; never a title,
+ * summary, comment or reason (review text is content).
+ */
+const BranchIdWord = Schema.String.check(Schema.isPattern(/^[0-9A-Za-z]{1,64}$/));
+const PolicyWord = Schema.Struct({ protected: Schema.Array(BranchIdWord), requireReview: Schema.Boolean, autoMerge: Schema.Boolean });
+const REVIEW_FIELDS = {
+  item: Schema.optional(Schema.String.check(Schema.isPattern(/^[0-9A-Za-z]{26}$/))),
+  protected: Schema.optional(Schema.Boolean),
+  auto: Schema.optional(Schema.Boolean),
+  old: Schema.optional(PolicyWord),
+  new: Schema.optional(PolicyWord),
+};
+
 /** What an `auth.denied` row may say besides: the card an ask opened (`APPROVAL_PENDING`, 7B Decision 8). */
 const DENIAL_FIELDS = { approval: Schema.optional(Id) };
 
@@ -219,6 +236,7 @@ const SANDBOX = {
   pathHash: Schema.optional(Schema.String.check(Schema.isPattern(/^[0-9a-f]{16,64}$/))),
 };
 
+const REVIEW_KINDS_AUDITED: ReadonlyArray<AuditKind> = ["history.drop", "review.merge", "review.policy"];
 const PAIRING: ReadonlyArray<AuditKind> = ["pair.offer", "pair.redeem", "pair.approve", "pair.reject", "pair.expire"];
 /** Kinds whose details may name a device or credential. */
 export const AUDIT_NAME_KINDS: ReadonlySet<AuditKind> = new Set<AuditKind>([
@@ -231,6 +249,8 @@ export const AUDIT_NAME_KINDS: ReadonlySet<AuditKind> = new Set<AuditKind>([
 export const AUDIT_ADDRESS_KINDS: ReadonlySet<AuditKind> = new Set<AuditKind>([...PAIRING, "device.revoke", "auth.fail"]);
 
 /** Kinds whose details name a library by id. */
+export const AUDIT_REVIEW_KINDS: ReadonlySet<AuditKind> = new Set<AuditKind>(REVIEW_KINDS_AUDITED);
+
 export const AUDIT_LIBRARY_KINDS: ReadonlySet<AuditKind> = new Set<AuditKind>(["library.add", "library.remove", "library.set"]);
 
 const PlainDetails = Schema.Struct({ ...COMMON, ...SERVER });
@@ -239,9 +259,10 @@ const RuleDetails = Schema.Struct({ ...COMMON, ...RULE_FIELDS });
 const DenialDetails = Schema.Struct({ ...COMMON, ...DENIAL_FIELDS });
 const SandboxDetails = Schema.Struct({ ...COMMON, ...SANDBOX });
 const LibraryDetails = Schema.Struct({ ...COMMON, ...LIBRARY });
+const ReviewDetails = Schema.Struct({ ...COMMON, ...REVIEW_FIELDS });
 const NamedDetails = Schema.Struct({ ...COMMON, ...SERVER, ...NAMES });
 const AddressedDetails = Schema.Struct({ ...COMMON, ...SERVER, ...NAMES, ...ADDRESS });
-type DetailsSchema = typeof PlainDetails | typeof LibraryDetails | typeof NamedDetails | typeof AddressedDetails | typeof PluginDetails | typeof RuleDetails | typeof DenialDetails | typeof SandboxDetails;
+type DetailsSchema = typeof PlainDetails | typeof LibraryDetails | typeof NamedDetails | typeof AddressedDetails | typeof PluginDetails | typeof RuleDetails | typeof DenialDetails | typeof SandboxDetails | typeof ReviewDetails;
 
 /** Kinds whose details may name a plugin, a registry and a version. */
 export const AUDIT_PLUGIN_KINDS: ReadonlySet<AuditKind> = new Set<AuditKind>(AUDIT_KINDS.filter((k) => k.startsWith("plugin.") || k.startsWith("registry.")));
@@ -253,6 +274,7 @@ function detailsSchema(kind: AuditKind): DetailsSchema {
   if (kind === "sandbox.violation") return SandboxDetails;
   if (kind === "auth.denied") return DenialDetails;
   if (AUDIT_RULE_KINDS.has(kind)) return RuleDetails;
+  if (AUDIT_REVIEW_KINDS.has(kind)) return ReviewDetails;
   if (AUDIT_PLUGIN_KINDS.has(kind)) return PluginDetails;
   if (AUDIT_ADDRESS_KINDS.has(kind)) return AddressedDetails;
   if (AUDIT_LIBRARY_KINDS.has(kind)) return LibraryDetails;
@@ -271,6 +293,7 @@ const DECODE = {
   plugin: Schema.decodeUnknownExit(PluginDetails),
   plain: Schema.decodeUnknownExit(PlainDetails),
   library: Schema.decodeUnknownExit(LibraryDetails),
+  review: Schema.decodeUnknownExit(ReviewDetails),
   named: Schema.decodeUnknownExit(NamedDetails),
   addressed: Schema.decodeUnknownExit(AddressedDetails),
 };
@@ -283,6 +306,8 @@ export function auditDetailsValid(kind: AuditKind, details: unknown): boolean {
     ? DECODE.denial
     : AUDIT_RULE_KINDS.has(kind)
     ? DECODE.rule
+    : AUDIT_REVIEW_KINDS.has(kind)
+    ? DECODE.review
     : AUDIT_PLUGIN_KINDS.has(kind)
       ? DECODE.plugin
       : AUDIT_ADDRESS_KINDS.has(kind)

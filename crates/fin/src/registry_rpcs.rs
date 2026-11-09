@@ -134,6 +134,11 @@ pub const ROWS: &[Row] = &[
         &["projectId", "origin", "into"]
     ),
     row!(
+        "drop",
+        rpc!("history.drop"),
+        &["projectId", "from", "into", "drops", "undrops"]
+    ),
+    row!(
         "revert",
         rpc!("history.revert"),
         &["projectId", "mergeId", "branch"]

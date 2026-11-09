@@ -45,6 +45,7 @@ import { Diagnostics, type DiagnosticsOptions, makeDiagnostics } from "./diagnos
 import { withServerLock } from "./lock.ts";
 // Registers the `jobs` migration chain: imported before the control store opens.
 import "./jobs/store.ts";
+import { makeReviews, ReviewsTag } from "./reviews/service.ts";
 import { JobEventSinkTag } from "./jobs/events.ts";
 import { journalSink } from "./jobs/journal-sink.ts";
 import { JobEngineTag, type JobEngineOptions, layerJobEngine } from "./jobs/layer.ts";
@@ -480,6 +481,7 @@ export const serve = ({
           Layer.succeed(RemoteListenerTag, remote),
           Layer.succeed(AgentCoreTag, agentCore),
           Layer.succeed(AgentRuntimeTag, agentRuntime),
+          Layer.succeed(ReviewsTag, makeReviews(controlStore)),
         ),
       );
       yield* Layer.build(

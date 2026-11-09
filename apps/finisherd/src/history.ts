@@ -1,7 +1,7 @@
 // Branch and history calls (plan 4B Task 18): which engine call serves each RPC, how a payload
 // becomes the engine's request JSON, and which records of a result are published to which hub.
 import type { CommittedTx } from "@finisher/core-types";
-import type { Engine } from "@finisher/fin-node";
+import { blake3Hex, type Engine } from "@finisher/fin-node";
 import type { Hubs } from "./hubs.ts";
 
 /** The engine calls that take a request JSON and write (or, for `recover`, may). */
@@ -14,6 +14,7 @@ export type HistoryOp =
   | "merge"
   | "cherryPick"
   | "revert"
+  | "drop"
   | "recover";
 
 /** An RPC payload of a history call: the project, `dryRun` and the request's own fields. */
@@ -32,6 +33,21 @@ export function requestJson(payload: object): string {
 /** A call's actor (`actorFor(principal, headers)`) as the engine's `metaJson`: its `log.commit` actor. */
 export function metaJson(meta: { readonly actor: object } | undefined): string | undefined {
   return meta === undefined ? undefined : JSON.stringify(meta);
+}
+
+/**
+ * `history.drop` always carries an `argsHash` (5E Task 2 review): a client's own (`fin` sends one
+ * for every write), else one made here from the request's fields, so a retry of a `txId` with
+ * other arguments is `IDEM_KEY_REUSED`, never the first record's answer. The origin lists are
+ * sorted first: the order they were named in is not part of the request.
+ */
+export function dropPayload<P extends { readonly argsHash?: string | undefined }>(
+  payload: P & { readonly from: string; readonly into: string; readonly drops?: ReadonlyArray<string> | undefined; readonly undrops?: ReadonlyArray<string> | undefined },
+): P {
+  if (payload.argsHash !== undefined) return payload;
+  const sorted = (l: ReadonlyArray<string> | undefined) => [...new Set(l ?? [])].sort();
+  const args = { cmd: "drop", args: { from: payload.from, into: payload.into, drops: sorted(payload.drops), undrops: sorted(payload.undrops) } };
+  return { ...payload, argsHash: `blake3:${blake3Hex(Buffer.from(JSON.stringify(args)))}` };
 }
 
 export function callEngine(engine: Engine, op: HistoryOp, payload: object, meta?: string): Promise<string> {

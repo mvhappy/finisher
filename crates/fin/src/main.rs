@@ -48,6 +48,7 @@ use commands::branch::BranchCmd;
 use commands::caption::CaptionCmd;
 use commands::clip::ClipCmd;
 use commands::diagnostics::DiagnosticsCmd;
+use commands::drop::DropArgs;
 use commands::effect::EffectCmd;
 use commands::eval::EvalCmd;
 use commands::fonts::{FontEdit, FontsCmd};
@@ -147,6 +148,7 @@ enum Cmd {
     Checkpoint(CheckpointArgs),
     Merge(MergeArgs),
     CherryPick(CherryPickArgs),
+    Drop(DropArgs),
     Revert(RevertArgs),
     Try(TryArgs),
     Batch,
@@ -353,6 +355,7 @@ fn run(args: Vec<OsString>) -> Result<Value, CoreError> {
         Some(Cmd::Checkpoint(a)) => commands::history::checkpoint(backend()?.as_ref(), g, &a),
         Some(Cmd::Merge(a)) => commands::history::merge(backend()?.as_ref(), g, &a),
         Some(Cmd::CherryPick(a)) => commands::history::cherry_pick(backend()?.as_ref(), g, &a),
+        Some(Cmd::Drop(a)) => commands::drop::run(backend()?.as_ref(), g, &a),
         Some(Cmd::Revert(a)) => commands::history::revert(backend()?.as_ref(), g, &a),
         Some(Cmd::Try(a)) => commands::try_cmd::run(backend()?.as_ref(), g, &a),
         Some(Cmd::Whoami) => commands::whoami::run(),

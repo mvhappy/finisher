@@ -11,6 +11,7 @@ mod builder;
 pub mod caption;
 pub mod clip;
 pub mod diagnostics;
+pub mod drop;
 pub mod edit;
 pub mod effect;
 pub mod eval;

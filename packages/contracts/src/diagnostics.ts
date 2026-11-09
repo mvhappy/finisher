@@ -26,6 +26,7 @@ export const STREAM_RPCS: ReadonlyArray<string> = [
   "agent.watch",
   "auth.pair.pending",
   "auth.devices.watch",
+  "review.watch",
 ];
 
 export const DiagnosticsStatusPayload = Schema.Struct({});

@@ -293,6 +293,9 @@ pub(super) const VALIDATION_CODES: &[&str] = &[
     "TLS_FILES_INVALID",
     "IDENTITY_MISMATCH",
     "SECRETS_KEY_INVALID",
+    // Reviews (5E Decision 26): no such item (or not in reach); pending entries under `requireReview`.
+    "REVIEW_NOT_FOUND",
+    "REVIEW_UNDECIDED",
 ];
 
 /// Codes that mean "the project moved under you; read it again and retry" (exit 4).
@@ -349,6 +352,12 @@ pub(super) const CONFLICT_CODES: &[&str] = &[
     // Devices (5B Decision 33): an offer someone already redeemed; 64 live devices (revoke some).
     "PAIRING_USED",
     "DEVICE_LIMIT",
+    // Reviews (5E Decision 26): the snapshot moved since the view the decision was made on; the
+    // merge has conflicts; the item is closed; 256 open items (or 1,000 comments).
+    "REVIEW_STALE",
+    "REVIEW_HAS_CONFLICTS",
+    "REVIEW_CLOSED",
+    "REVIEW_LIMIT",
 ];
 
 /// Codes of a job that ended without succeeding (exit 4, 5C-1 Decision 41): its outcome, and
@@ -517,4 +526,6 @@ pub(super) const UNAVAILABLE_CODES: &[&str] = &[
     // Devices (5B Decision 13): too many pairing or token requests; wait for `Retry-After`.
     "PAIRING_RATE_LIMITED",
     "TOKEN_RATE_LIMITED",
+    // A branch policy change waits for the project's writes in flight (5E Decision 18): try again.
+    "POLICY_BUSY",
 ];

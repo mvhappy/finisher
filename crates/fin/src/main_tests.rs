@@ -34,6 +34,7 @@ fn every_registry_command_parses() {
         "redo",
         "merge b --into main --skip-conflicting",
         "cherry-pick tx1 --into b",
+        "drop tx1 tx2 --from b --into main",
         "revert m1",
         "try t",
         "try keep",
