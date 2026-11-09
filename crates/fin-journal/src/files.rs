@@ -1,6 +1,8 @@
 //! The journal's files (plan D, Decisions 16 and 17): `j-<yyyymmdd>-<ulid>.jsonl`, the date
 //! being the UTC date of the file's first entry and the ULID its timestamp; 0600 files in a
 //! 0700 directory; torn-tail repair; the age and size caps over whole files, oldest first.
+//! "Oldest first" is write order: the files sort by their ULID, which the writer keeps
+//! monotonic, not by name (after the clock goes back, a newer file's date sorts earlier).
 
 use std::fs::{self, DirBuilder, File, OpenOptions};
 use std::io::{self, ErrorKind, Read, Seek, SeekFrom};
@@ -53,7 +55,7 @@ pub(crate) fn parse_name(name: &str) -> Option<Ulid> {
     (id.to_string() == rest[9..]).then_some(id)
 }
 
-/// The journal files in `dir`, oldest first; none when it does not exist.
+/// The journal files in `dir`, oldest (first written) first; none when it does not exist.
 pub(crate) fn list(dir: &Path) -> io::Result<Vec<(String, Ulid, u64)>> {
     let rd = match fs::read_dir(dir) {
         Ok(rd) => rd,
@@ -76,7 +78,7 @@ pub(crate) fn list(dir: &Path) -> io::Result<Vec<(String, Ulid, u64)>> {
             Err(e) => return Err(e),
         }
     }
-    out.sort_by(|a, b| a.0.cmp(&b.0));
+    out.sort_by(|a, b| a.1.cmp(&b.1).then_with(|| a.0.cmp(&b.0)));
     Ok(out)
 }
 
@@ -92,6 +94,12 @@ pub(crate) fn paths(dir: &Path) -> Vec<PathBuf> {
 /// The `ts` of the last whole line of `path` that parses as an entry of this envelope
 /// version (one a later build wrote is passed over, as the reader passes it over).
 pub(crate) fn last_ts(path: &Path, len: u64) -> Option<u64> {
+    last_entry(path, len).map(|(ts, _)| ts)
+}
+
+/// [`last_ts`] and that entry's id (the writer's id floor at open: ids keep growing across a
+/// reopen even after the clock went back).
+pub(crate) fn last_entry(path: &Path, len: u64) -> Option<(u64, Option<Ulid>)> {
     const TAIL: u64 = 128 * 1024;
     let mut f = File::open(path).ok()?;
     let from = len.saturating_sub(TAIL);
@@ -103,7 +111,7 @@ pub(crate) fn last_ts(path: &Path, len: u64) -> Option<u64> {
         .filter(|l| !l.is_empty())
         .filter_map(|l| serde_json::from_slice::<Envelope>(l).ok())
         .find(|e| e.v == ENVELOPE_VERSION)
-        .map(|e| e.ts)
+        .map(|e| (e.ts, Ulid::from_string(e.id.as_str()).ok()))
 }
 
 /// Truncates `path` after its last `\n` (a torn last line from a crash). Returns the new

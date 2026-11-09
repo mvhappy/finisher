@@ -23,6 +23,8 @@ impl Writer {
     /// Makes the active file ready for a `len`-byte line at `ts`: the first write scans the
     /// directory and opens a file, reusing an empty newest file of the same UTC day (a
     /// suspended journal's retries make no new files); a full file or a new UTC day rotates.
+    /// A clock that went back does not rotate (its day is not later than the file's): the
+    /// entries go on into the active file, whose `start_ts` and `end_ts` widen to hold them.
     pub fn prepare(&mut self, ts: u64, len: u64) -> io::Result<()> {
         if !self.scanned {
             self.scan()?;
@@ -104,8 +106,8 @@ impl Writer {
                 len
             };
             let start_ts = id.timestamp_ms();
-            let end_ts = files::last_ts(&path, len).unwrap_or(start_ts);
-            self.last_id = self.last_id.max(id);
+            let (end_ts, last) = files::last_entry(&path, len).unwrap_or((start_ts, None));
+            self.last_id = self.last_id.max(id).max(last.unwrap_or(id));
             self.files.push(FileMeta {
                 name,
                 id,
@@ -212,7 +214,7 @@ impl Writer {
         s.suspended = self.suspended.as_ref().map(|s| s.code);
         s.files = self.files.len() as u64;
         s.bytes = self.files.iter().map(|f| f.bytes).sum();
-        s.oldest = self.files.first().map(|f| f.start_ts);
+        s.oldest = self.files.iter().map(|f| f.start_ts).min();
         s.newest = self.files.iter().map(|f| f.end_ts).max();
         s.blobs = self.blobs.count();
         s.blob_bytes = self.blobs.total_bytes();

@@ -190,3 +190,105 @@ fn size_cap_applies_while_off() {
     assert!(total <= 4096, "{total}");
     assert!(!files(&events(&dir)).is_empty(), "the newest files stay");
 }
+
+fn newest(j: &Journal) -> Vec<u64> {
+    let f = fin_journal::Filter {
+        limit: Some(1),
+        ..Default::default()
+    };
+    j.read(&f)
+        .map(|e| e.payload["micros"].as_u64().unwrap())
+        .collect()
+}
+
+fn sizes(dir: &std::path::Path) -> Vec<u64> {
+    files(dir)
+        .iter()
+        .map(|p| std::fs::metadata(p).unwrap().len())
+        .collect()
+}
+
+/// Files are in write order (their monotonic ULID), not name order: after the clock goes
+/// back a day and the journal reopens, the new file's name sorts first, yet it is the newest.
+/// The size cap then removes the file written first.
+#[test]
+fn write_order_survives_a_clock_back_and_reopen() {
+    let dir = tempfile::tempdir().unwrap();
+    let c = clock();
+    let o = opts(&c);
+    let j = Journal::open(&events(&dir), diagnostics(), o.clone());
+    j.record(Source::FinNode, None, commit(1));
+    j.close();
+    c.set(T0 - 12 * 3_600_000);
+    let j = Journal::open(&events(&dir), diagnostics(), o.clone());
+    j.record(Source::FinNode, None, commit(2));
+    j.record(Source::FinNode, None, commit(3));
+    j.flush().unwrap();
+    let n = names(&events(&dir));
+    assert!(n[0].starts_with("j-20261106-"), "{n:?}");
+    assert_eq!(micros(&j), [1, 2, 3]);
+    assert_eq!(newest(&j), [3]);
+    // Entry ids keep growing across the reopen, so an export page's cursor holds.
+    let ids: Vec<String> = read_all(&j)
+        .iter()
+        .map(|e| e.id.as_str().to_owned())
+        .collect();
+    assert!(ids.windows(2).all(|w| w[0] < w[1]), "{ids:?}");
+    j.close();
+
+    let keep = *sizes(&events(&dir)).iter().max().unwrap();
+    let small = JournalOptions {
+        max_total_bytes: keep,
+        ..o
+    };
+    let j = Journal::open(&events(&dir), diagnostics(), small);
+    assert_eq!(micros(&j), [2, 3], "the file written first went");
+}
+
+/// The same after a size rotation while the clock is back: the rotated-to file is the newest.
+#[test]
+fn write_order_survives_a_clock_back_and_size_rotation() {
+    let dir = tempfile::tempdir().unwrap();
+    let c = clock();
+    let o = JournalOptions {
+        max_file_bytes: 1024,
+        ..opts(&c)
+    };
+    let j = Journal::open(&events(&dir), diagnostics(), o);
+    j.record(Source::FinNode, None, commit(0));
+    j.flush().unwrap();
+    c.set(T0 - 12 * 3_600_000);
+    for i in 1..20 {
+        j.record(Source::FinNode, None, commit(i));
+    }
+    j.flush().unwrap();
+    let n = names(&events(&dir));
+    assert!(n.len() > 2, "{n:?}");
+    assert!(n[0].starts_with("j-20261106-"), "{n:?}");
+    assert_eq!(micros(&j), (0..20).collect::<Vec<_>>());
+    assert_eq!(newest(&j), [19]);
+}
+
+/// The age cap removes every closed file past it, not only a leading run: after a clock-back
+/// the file written later can hold the older entries.
+#[test]
+fn age_cap_removes_old_files_out_of_write_order() {
+    let dir = tempfile::tempdir().unwrap();
+    let c = clock();
+    let o = opts(&c);
+    let j = Journal::open(&events(&dir), diagnostics(), o.clone());
+    j.record(Source::FinNode, None, commit(1));
+    j.close();
+    c.set(T0 - 12 * 3_600_000);
+    let j = Journal::open(&events(&dir), diagnostics(), o.clone());
+    j.record(Source::FinNode, None, commit(2));
+    j.close();
+    // Cutoff at T0 - 10 h: the second file's entry is past it, the first file's is not.
+    c.set(T0 + 10 * 3_600_000);
+    let aged = JournalOptions {
+        max_age: std::time::Duration::from_secs(20 * 3600),
+        ..o
+    };
+    let j = Journal::open(&events(&dir), diagnostics(), aged);
+    assert_eq!(micros(&j), [1]);
+}

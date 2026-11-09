@@ -5,6 +5,7 @@
 //! removed and deletes the blobs left at zero. Retention and `maxMiB` delete whole files,
 //! oldest first, counting blobs, through the same blob bookkeeping.
 
+use std::collections::BTreeSet;
 use std::fs;
 use std::io::{self, ErrorKind};
 use std::sync::atomic::Ordering::Relaxed;
@@ -52,8 +53,10 @@ fn lines(text: &[u8]) -> impl Iterator<Item = &[u8]> {
 }
 
 impl Writer {
-    /// Retention and `maxMiB` (whole closed files, oldest first; blobs count, and go with
-    /// their last reference), then the blobs nothing references.
+    /// Retention and `maxMiB` (whole closed files; blobs count, and go with their last
+    /// reference), then the blobs nothing references. Retention removes every closed file
+    /// whose last entry is past it (after the clock went back, a later file can hold older
+    /// entries); `maxMiB` then removes the first written ones until the total fits.
     pub fn apply_caps(&mut self, now: u64) -> io::Result<()> {
         self.next_caps = now + CAPS_EVERY_MS;
         let max_age = self.sh.caps_age.load(Relaxed);
@@ -61,39 +64,58 @@ impl Writer {
         let closed =
             self.files.len() - usize::from(self.active.is_some() && !self.files.is_empty());
         let cutoff = now.saturating_sub(max_age);
-        let mut n = self.files[..closed]
+        let mut gone: Vec<bool> = self.files[..closed]
             .iter()
-            .take_while(|f| f.end_ts < cutoff)
-            .count();
+            .map(|f| f.end_ts < cutoff)
+            .collect();
         let files_total: u64 = self.files.iter().map(|f| f.bytes).sum();
         let blobs_live = self.blobs.total_bytes() - self.blobs.orphan_bytes();
-        let freed = |w: &Writer, n: usize| {
-            w.files[..n].iter().map(|f| f.bytes).sum::<u64>()
-                + w.blobs
-                    .freed_by(w.files[..n].iter().map(|f| f.name.as_str()))
+        let freed = |w: &Writer, gone: &[bool]| {
+            let sel = || {
+                w.files
+                    .iter()
+                    .zip(gone)
+                    .filter(|(_, g)| **g)
+                    .map(|(f, _)| f)
+            };
+            sel().map(|f| f.bytes).sum::<u64>() + w.blobs.freed_by(sel().map(|f| f.name.as_str()))
         };
-        while n < closed && files_total + blobs_live - freed(self, n) > max_total {
-            n += 1;
+        let mut next = 0;
+        while files_total + blobs_live - freed(self, &gone) > max_total {
+            let Some(i) = (next..closed).find(|i| !gone[*i]) else {
+                break;
+            };
+            gone[i] = true;
+            next = i + 1;
         }
-        let sessions = match self.sh.opts.whole_sessions && n > 0 {
-            true => self.sessions_in(&self.files[..n])?,
+        let doomed: Vec<FileMeta> = self.files[..closed]
+            .iter()
+            .zip(&gone)
+            .filter(|(_, g)| **g)
+            .map(|(f, _)| f.clone())
+            .collect();
+        let sessions = match self.sh.opts.whole_sessions && !doomed.is_empty() {
+            true => self.sessions_in(&doomed)?,
             false => Default::default(),
         };
         let mut result = Ok(());
-        let mut removed = 0;
-        for f in &self.files[..n] {
+        let mut removed = BTreeSet::new();
+        for f in &doomed {
             match files::remove(&self.dir.join(&f.name)) {
-                Ok(()) => removed += 1,
+                Ok(()) => {
+                    removed.insert(f.name.clone());
+                }
                 Err(e) => {
                     result = Err(e);
                     break;
                 }
             }
         }
-        for f in self.files.drain(..removed) {
-            self.blobs.drop_file(&f.name);
-        }
-        if removed > 0 {
+        if !removed.is_empty() {
+            self.files.retain(|f| !removed.contains(&f.name));
+            for name in &removed {
+                self.blobs.drop_file(name);
+            }
             result = result.and(files::sync_dir(&self.dir));
         }
         if result.is_ok() {
