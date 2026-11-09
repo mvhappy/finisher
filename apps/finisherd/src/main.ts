@@ -299,6 +299,7 @@ export const serve = ({
       // The agent runtime over the project registry (7A Task 12): recovery, the outbox
       // and the credential reconcile run here, before either transport serves a request.
       const projectRegistry = projects; // built above, before the job engine
+      let agentListenerRef: AgentListener | undefined;
       const agentRuntime = yield* buildAgentRuntime({
         serverData,
         core: agentCore,
@@ -306,6 +307,8 @@ export const serve = ({
         db: Context.get(control, ControlStoreTag).db,
         audit,
         endpoint: socket,
+        // Built below, after the transports; a session sandbox asks for it only once a run starts.
+        agentListener: () => (agentListenerRef === undefined ? Promise.reject(new Error("the agent listener is not built yet")) : agentListenerRef.ensure()),
         log: (message) => logSink("warning", `finisherd: agent runtime: ${message}`),
         ...(agentOptions === undefined ? {} : { options: agentOptions }),
       });
@@ -376,6 +379,7 @@ export const serve = ({
           }),
         ),
       );
+      agentListenerRef = agentListener;
       onAgentListener?.(agentListener);
 
       const publish = (enabled: boolean) =>

@@ -16,6 +16,7 @@ const steps = [
   ["node", ["scripts/check-test-hooks.mjs"]],
   // Workers never start processes (5C-1 plan Decision 24).
   ["node", ["scripts/check-worker-spawn.mjs"]],
+  ["node", ["scripts/check-agent-spawn.mjs"]],
   ["node", ["scripts/check-native-deps.mjs"]],
   ["node", ["scripts/check-notices.mjs"]],
   ["node", ["scripts/check-runtime-libs.mjs"]],

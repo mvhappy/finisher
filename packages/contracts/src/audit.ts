@@ -160,6 +160,19 @@ const PLUGIN_FIELDS = {
   thirdPartyCode: Schema.optional(Schema.Struct({ accepted: Schema.Boolean, confined: Schema.Boolean })),
 };
 const ADDRESS = { address: Schema.optional(Address), peer: Schema.optional(Peer) };
+/**
+ * `sandbox.violation` (spec §8.8; plan 7C Decision 24): what the launcher or the host observed,
+ * for a session or a job: the operation, the profile and the kind of root it touched, never a
+ * path (a keyed hash when one is needed).
+ */
+const SANDBOX = {
+  session: Schema.optional(Id),
+  jobId: Schema.optional(Id),
+  op: Schema.optional(Word),
+  profile: Schema.optional(Schema.Literals(["agent", "hook", "worker", "plugin"])),
+  rootKind: Schema.optional(Word),
+  pathHash: Schema.optional(Schema.String.check(Schema.isPattern(/^[0-9a-f]{16,64}$/))),
+};
 
 const PAIRING: ReadonlyArray<AuditKind> = ["pair.offer", "pair.redeem", "pair.approve", "pair.reject", "pair.expire"];
 /** Kinds whose details may name a device or credential. */
@@ -178,15 +191,17 @@ export const AUDIT_LIBRARY_KINDS: ReadonlySet<AuditKind> = new Set<AuditKind>(["
 
 const PlainDetails = Schema.Struct(COMMON);
 const PluginDetails = Schema.Struct({ ...COMMON, ...PLUGIN_FIELDS });
+const SandboxDetails = Schema.Struct({ ...COMMON, ...SANDBOX });
 const LibraryDetails = Schema.Struct({ ...COMMON, ...LIBRARY });
 const NamedDetails = Schema.Struct({ ...COMMON, ...NAMES });
 const AddressedDetails = Schema.Struct({ ...COMMON, ...NAMES, ...ADDRESS });
-type DetailsSchema = typeof PlainDetails | typeof LibraryDetails | typeof NamedDetails | typeof AddressedDetails | typeof PluginDetails;
+type DetailsSchema = typeof PlainDetails | typeof LibraryDetails | typeof NamedDetails | typeof AddressedDetails | typeof PluginDetails | typeof SandboxDetails;
 
 /** Kinds whose details may name a plugin, a registry and a version. */
 export const AUDIT_PLUGIN_KINDS: ReadonlySet<AuditKind> = new Set<AuditKind>(AUDIT_KINDS.filter((k) => k.startsWith("plugin.") || k.startsWith("registry.")));
 
 function detailsSchema(kind: AuditKind): DetailsSchema {
+  if (kind === "sandbox.violation") return SandboxDetails;
   if (AUDIT_PLUGIN_KINDS.has(kind)) return PluginDetails;
   if (AUDIT_ADDRESS_KINDS.has(kind)) return AddressedDetails;
   if (AUDIT_LIBRARY_KINDS.has(kind)) return LibraryDetails;
@@ -199,6 +214,7 @@ export const AUDIT_DETAILS: { readonly [K in AuditKind]: DetailsSchema } = Objec
 ) as { readonly [K in AuditKind]: DetailsSchema };
 
 const DECODE = {
+  sandbox: Schema.decodeUnknownExit(SandboxDetails),
   plugin: Schema.decodeUnknownExit(PluginDetails),
   plain: Schema.decodeUnknownExit(PlainDetails),
   library: Schema.decodeUnknownExit(LibraryDetails),
@@ -208,7 +224,9 @@ const DECODE = {
 
 /** True when `details` fits `kind`'s schema exactly (no other field). */
 export function auditDetailsValid(kind: AuditKind, details: unknown): boolean {
-  const decode = AUDIT_PLUGIN_KINDS.has(kind)
+  const decode = kind === "sandbox.violation"
+    ? DECODE.sandbox
+    : AUDIT_PLUGIN_KINDS.has(kind)
     ? DECODE.plugin
     : AUDIT_ADDRESS_KINDS.has(kind)
       ? DECODE.addressed
