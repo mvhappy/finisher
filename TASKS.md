@@ -10,7 +10,7 @@ Done and merged into `sp4c-edit-breadth` before the pause: 5B (Tasks 11–14), m
 The streams cut off by the limit were finished the same evening on a second account:
 - **5E:** Task 4 (`review.verdict` v1) done, `home/sp5e` at `06b9d9ff`; Task 5 next. `sp5e` predates the flaky-test fixes (`ec33360d`), so `library/stages.test.ts` can still fail there until it merges integration.
 - **8B:** Task 6 (plugin rights and reach) done, `home/sp8b` at `537a8975`; Task 7 next (it must also implement the authority keying below).
-- **6B-1:** Tasks 10–13 being finished on `sp6b1` (partial work was saved on `home/wip/sp6b1-*`).
+- **6B-1:** Tasks 10, 12 and 13 done, `home/sp6b1` at `66f1a7b6` (wip branches deleted). Task 11 is built except the parts needing a `SCHEMA_VERSION` bump; that and Task 10's soft clip wait on owner decisions (on their lines in `sp6b1`'s `TASKS.md`).
 
 ## External review of 2026-11-09: validated findings and fix batches
 
