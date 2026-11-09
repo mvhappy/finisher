@@ -3,6 +3,11 @@
 // stop its processes and audit `plugin.crashLoop`. Its queued jobs then fail
 // `PLUGIN_CRASH_LOOP` when they are dispatched (`program.ts` `unusable`, checked at warm
 // dispatch and at every spawn). Only the owner's `plugin.enable` clears it.
+//
+// Counted: jobs that end `PLUGIN_CRASHED`. A warm process that dies while idle fails no job,
+// so it is not counted (its next job spawns a fresh process). The owner's enable starts the
+// count again (`clear`), also after a disable without a loop; a disable keeps `problem` on a
+// crash-looped plugin, since only the owner's enable clears it (Decision 15).
 import type { JobView } from "@finisher/contracts";
 import type { Audit } from "../../control/audit.ts";
 import type { PluginTables } from "../tables.ts";
@@ -20,9 +25,10 @@ export interface CrashLoopDeps {
 }
 
 /** `onDone` for the job engine: counts the plugin family's `PLUGIN_CRASHED` ends. */
-export function makeCrashLoop(d: CrashLoopDeps): { onDone(job: JobView): void } {
+export function makeCrashLoop(d: CrashLoopDeps): { onDone(job: JobView): void; clear(id: string): void } {
   const crashes = new Map<string, number[]>();
   return {
+    clear: (id) => void crashes.delete(id),
     onDone(job) {
       if (job.family !== "plugin" || job.error?.code !== "PLUGIN_CRASHED" || job.via === undefined) return;
       let id: string;

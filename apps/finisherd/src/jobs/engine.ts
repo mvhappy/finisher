@@ -8,7 +8,7 @@
 import type { FinError, FinErrorData, JobOwner, JobProgress, JobState, JobView } from "@finisher/contracts";
 import { Effect, type Fiber, PubSub, Stream } from "effect";
 import { finError, toFinError } from "../errors.ts";
-import { Abandonment, cancelJob, pauseJobs, resumeJobs } from "./control.ts";
+import { Abandonment, cancelJob, failQueuedJob, pauseJobs, resumeJobs } from "./control.ts";
 import { runDispatched, type WarmLease } from "./attempt-flow.ts";
 import { removeJobDir, jobDirs } from "./files.ts";
 import { type KindRegistry, type KindSpec, type PoolName, resolveOrFn } from "./kinds.ts";
@@ -497,6 +497,10 @@ export class Engine implements JobEngine {
 
   cancel(id: string): Effect.Effect<JobView, FinError> {
     return promise(() => cancelJob(this, id));
+  }
+
+  failQueued(id: string, error: FinError): Effect.Effect<JobView, FinError> {
+    return promise(() => failQueuedJob(this, id, error));
   }
 
   pause(target: { readonly job: string } | { readonly all: true }): Effect.Effect<void, FinError> {

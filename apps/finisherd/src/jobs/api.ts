@@ -46,6 +46,8 @@ export interface JobEngine {
   list(q: JobQuery): { readonly jobs: JobView[]; readonly next?: string };
   wait(ids: ReadonlyArray<string>, opts: { readonly any?: boolean; readonly timeoutMs: number }): Effect.Effect<ReadonlyArray<JobView>, FinError>;
   cancel(id: string): Effect.Effect<JobView, FinError>;
+  /** A queued or paused job fails with `error` now (sp8b Task 5); a started or ended one is left alone. */
+  failQueued(id: string, error: FinError): Effect.Effect<JobView, FinError>;
   pause(target: { readonly job: string } | { readonly all: true }): Effect.Effect<void, FinError>;
   resume(target: { readonly job: string } | { readonly all: true }): Effect.Effect<void, FinError>;
   warm(family: string): Effect.Effect<void, FinError>;

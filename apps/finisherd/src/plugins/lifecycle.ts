@@ -70,7 +70,7 @@ export function makeLifecycle(deps: LifecycleDeps) {
   const lock = Semaphore.makeUnsafe(1);
   const locked = <A, E>(self: Effect.Effect<A, E>) => lock.withPermits(1)(deps.changed === undefined ? self : Effect.ensuring(self, deps.changed));
   /** A code plugin's processes stop (none run for content packs). */
-  const stopCode = (id: string, opts?: { readonly version?: string; readonly drain?: boolean }) => (deps.host === undefined ? Effect.void : deps.host.stop(id, opts));
+  const stopCode = (id: string, opts?: Parameters<PluginHostHooks["stop"]>[1]) => (deps.host === undefined ? Effect.void : deps.host.stop(id, opts));
 
   /**
    * Revokes the versions of registry `id` a signed `disable` advisory names (any principal's
@@ -84,7 +84,7 @@ export function makeLifecycle(deps: LifecycleDeps) {
       const hits = yield* attemptJson<Revoked[]>(() => native.revocations(id, JSON.stringify(rows.map((p) => ({ id: p.id, version: p.version })))));
       for (const h of hits) {
         tables.setState(h.id, false, "revoked", clock());
-        yield* stopCode(h.id);
+        yield* stopCode(h.id, { fail: finError("PLUGIN_REVOKED", `${h.id} is revoked`, { plugin: h.id }) });
       }
       return hits;
     });
@@ -249,14 +249,16 @@ export function makeLifecycle(deps: LifecycleDeps) {
           }
           yield* deps.host.enableCheck(tables.installedFull(id)!);
         }
-        // The owner's enable also clears a crash loop.
+        // The owner's enable also clears a crash loop and its count.
         tables.store.tx(() => {
           tables.setState(id, true, "active", clock());
           tables.setProblem(id, null);
         });
+        deps.host?.enabled(id);
       } else {
+        // A crash-looped plugin keeps its `problem`: only the owner's enable clears it (Decision 15).
         if (row.state !== "revoked") tables.setState(id, false, "disabled", clock());
-        if (row.kind === "code") yield* stopCode(id);
+        if (row.kind === "code") yield* stopCode(id, { fail: finError(row.state === "revoked" ? "PLUGIN_REVOKED" : "PLUGIN_DISABLED", `${id} is ${row.state === "revoked" ? "revoked" : "disabled"}`, { plugin: id }) });
       }
       return tables.installedOne(id)!;
     });
@@ -266,7 +268,7 @@ export function makeLifecycle(deps: LifecycleDeps) {
       const row = tables.installedOne(id);
       if (row === undefined) return yield* Effect.fail(notInstalled(id));
       if (row.source === "bundled") return yield* Effect.fail(finError("PLUGIN_BUNDLED", `${id} comes with Finisher and cannot be removed`, { id }, "Disable it instead."));
-      if (row.kind === "code") yield* stopCode(id);
+      if (row.kind === "code") yield* stopCode(id, { fail: finError("PLUGIN_NOT_FOUND", `${id} is not installed`, { plugin: id }) });
       // A row whose store directory is already gone (a removal interrupted after it) is removed too.
       yield* attempt(() => native.removePlugin(id, row.version, purgeData)).pipe(Effect.catchIf((e) => e.code === "PLUGIN_NOT_INSTALLED", () => Effect.void));
       yield* Effect.try({ try: () => tables.store.tx(() => tables.deletePlugin(id)), catch: toFinError });

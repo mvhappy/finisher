@@ -4,7 +4,7 @@
 // call resolves once the run has ended. A job in its hook phase is past stopping: it ends as
 // its hook decides. Two abandoned processes of different jobs on one `io:` pool mark the pool
 // stuck until one of them exits.
-import type { JobView } from "@finisher/contracts";
+import type { FinError, JobView } from "@finisher/contracts";
 import { finError } from "../errors.ts";
 import { data, type Engine, finished } from "./engine.ts";
 import type { Pools } from "./pools.ts";
@@ -15,6 +15,20 @@ export const CANCEL_GRACE_MS = 2000;
 export const CANCEL_GRACE_INTERACTIVE_MS = 500;
 export const PAUSE_GRACE_MS = 10_000;
 
+
+/**
+ * Fails a queued or paused job with `error` at once (sp8b Task 5: a plugin disabled, revoked or
+ * in a crash loop); a job that already started or ended is left alone. Its view.
+ */
+export async function failQueuedJob(e: Engine, id: string, error: FinError): Promise<JobView> {
+  const row = e.d.store.row(id);
+  if (row === undefined) throw jobNotFound(id);
+  if (row.state === "queued" || row.state === "paused") {
+    e.queue.remove(id);
+    await e.end(id, "failed", { error: data(error), pausedFrom: null });
+  }
+  return e.view(id) ?? row;
+}
 
 /** Cancels a job; resolves with its view once it ended (or with the view of a finished one). */
 export async function cancelJob(e: Engine, id: string): Promise<JobView> {
