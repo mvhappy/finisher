@@ -181,6 +181,7 @@ impl Script {
             dry_run: false,
             args_hash: None,
             to: None,
+            after_seq: None,
         }
     }
 

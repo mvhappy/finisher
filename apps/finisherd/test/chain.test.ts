@@ -83,7 +83,7 @@ function harness(principal: Principal, more: Partial<ChainDeps> = {}, real: Reco
     },
   };
   // Every writing RPC, and a read by id, record what reaches them too.
-  for (const t of [...WRITE_RPCS, "snapshot.get", "project.acknowledgeRewind", "diagnostics.consent", "diagnostics.purge", "diagnostics.project", "diagnostics.export", "agent.approval.answer", "agent.session.delete", "agent.session.start", "agent.session.prompt", "agent.session.list", "agent.self", "agent.self.try"]) handlers[t] ??= unary(t);
+  for (const t of [...WRITE_RPCS, "snapshot.get", "project.acknowledgeRewind", "diagnostics.consent", "diagnostics.purge", "diagnostics.project", "diagnostics.export", "agent.approval.answer", "agent.session.delete", "agent.session.start", "agent.session.prompt", "agent.session.resume", "agent.session.list", "agent.self", "agent.self.try"]) handlers[t] ??= unary(t);
   Object.assign(handlers, real);
   const audit = { append: (e: AuditInput) => audited.push(e) } as unknown as Audit;
   const chained = withChain(handlers, { connections, projects, audit, ...more }) as unknown as Record<string, (p: unknown, o: unknown) => unknown>;
@@ -166,7 +166,9 @@ describe("the chain", () => {
         const h = harness(p);
         // The console types its connection's code back (Decision 30).
         const got = code(await h.call(tag, p.kind === "console" ? { ...payload, challenge: h.challenge() } : payload));
-        const want = p.kind === "console" ? undefined : p.kind === "anonymous" ? "UNAUTHENTICATED" : "HUMAN_ONLY";
+        // 7B Task 6: a delete is people's kinds only, so an agent or MCP client is refused by kind first.
+        const byKind = tag === "agent.session.delete" && (p.kind === "agent" || p.kind === "mcp");
+        const want = p.kind === "console" ? undefined : p.kind === "anonymous" ? "UNAUTHENTICATED" : byKind ? "SCOPE_DENIED" : "HUMAN_ONLY";
         expect(got, `${tag} × ${p.kind}`).toBe(want);
         expect(h.seen.length, `${tag} × ${p.kind}`).toBe(want === undefined ? 1 : 0);
       }
@@ -202,18 +204,20 @@ describe("the chain", () => {
     }
   });
 
-  test("agent_sessions_are_driven_by_people_in_7A (7A Task 2)", async () => {
+  test("agent_sessions_are_driven_by_people_in_7A (7A Task 2), and by parent sessions in 7B (Task 6)", async () => {
     open = new Set([A]);
     const drive = { projectId: A };
-    // An agent credential never starts or drives a session, even one minted with `agent.run`.
-    const parent = harness(agent({ scopes: [...MINT, "agent.run", "agent.read"] }));
+    // An agent credential never resumes or deletes a session, even one minted with `agent.run`;
+    // 7B lets it start and drive (the hooks keep it to a session's own children, `agent-subagents.test.ts`).
+    const parent = harness(agent({ scopes: [...MINT, "agent.run", "agent.read", "agent.admin"] }));
     for (const [tag, payload] of [
-      ["agent.session.start", drive],
-      ["agent.session.prompt", { sessionId: "s", text: "x" }],
+      ["agent.session.resume", { sessionId: "s" }],
+      ["agent.session.delete", { sessionId: "s" }],
     ] as const) {
       expect(error(await parent.call(tag, payload)), tag).toMatchObject({ code: "SCOPE_DENIED", details: { reason: "principalKind" } });
     }
     expect(parent.seen).toEqual([]);
+    expect(error(await harness(mcp()).call("agent.session.start", drive))).toMatchObject({ code: "SCOPE_DENIED", details: { reason: "principalKind" } });
     // `fin` (local) and the console do; a mode other than plan also needs project.write.
     expect(code(await harness(LOCAL).call("agent.session.start", drive))).toBeUndefined();
     expect(code(await harness(CONSOLE).call("agent.session.start", { ...drive, mode: "plan" }))).toBeUndefined();

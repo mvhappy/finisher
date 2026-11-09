@@ -1994,6 +1994,88 @@
     },
     {
       "argKinds": {},
+      "group": "agent",
+      "identity": [
+        "role"
+      ],
+      "name": "agent.spawn",
+      "rpcs": [
+        {
+          "method": "agent.session.start"
+        }
+      ],
+      "write": false
+    },
+    {
+      "argKinds": {},
+      "group": "agent",
+      "identity": [
+        "ids"
+      ],
+      "name": "agent.wait",
+      "rpcs": [
+        {
+          "method": "agent.session.wait"
+        }
+      ],
+      "write": false
+    },
+    {
+      "argKinds": {},
+      "group": "agent",
+      "identity": [],
+      "name": "agent.ls",
+      "rpcs": [
+        {
+          "method": "agent.session.list"
+        }
+      ],
+      "write": false
+    },
+    {
+      "argKinds": {},
+      "group": "agent",
+      "identity": [
+        "sessionId"
+      ],
+      "name": "agent.send",
+      "rpcs": [
+        {
+          "method": "agent.session.steer"
+        }
+      ],
+      "write": false
+    },
+    {
+      "argKinds": {},
+      "group": "agent",
+      "identity": [
+        "sessionId"
+      ],
+      "name": "agent.stop",
+      "rpcs": [
+        {
+          "method": "agent.session.end"
+        }
+      ],
+      "write": false
+    },
+    {
+      "argKinds": {},
+      "group": "agent",
+      "identity": [
+        "sessionId"
+      ],
+      "name": "agent.rollback",
+      "rpcs": [
+        {
+          "method": "agent.session.rollback"
+        }
+      ],
+      "write": false
+    },
+    {
+      "argKinds": {},
       "group": "batch",
       "identity": [
         "projectId",

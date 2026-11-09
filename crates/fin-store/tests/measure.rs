@@ -280,6 +280,7 @@ fn commits_and_history_recheck_overflow() {
         author: "test".into(),
         branch: MAIN.into(),
         to: None,
+        after_seq: None,
         dry_run: false,
         args_hash: None,
     });

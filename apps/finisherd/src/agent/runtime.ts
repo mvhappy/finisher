@@ -11,22 +11,33 @@
 // - A start of a non-local model without a price is refused (`PRICING_UNKNOWN`); every start
 //   answers the persistent warnings (`SANDBOX_DISABLED` until 7C, owner decision F2).
 // - Every command runs in its session's queue, after the events and commands before it.
+// - Children (7B Task 6, `subagents.ts`): `spawnChild` starts one for a parent session,
+//   `waitChildren` waits on them; after every transition the subagents see it (a brief's end,
+//   the parent's `subagent` node, the cascade; a root's end waits for a descendant's calls in
+//   flight, `settled`) and the live limits (`live-limits.ts`) admit runs and start their turns.
 // - A session's provider instance is opened at its first run (with its resume reference) and
 //   kept while the session is `idle`; interrupt, end and any provider exit close it.
 // - The store and session credentials are Task 7's `AgentCore` (one per server, `AgentCoreTag`);
 //   a start opens through its `openSession`, the outbox's credential effects go to
 //   `core.credentials.handle`, and a resume refreshes the credential first. The journal is
 //   Task 10's (`RuntimeJournal`); the built-in tools are 8b's (`ToolExecutor`).
-import type { AgentWarning, Approval, ApprovalDecision, FinError, Principal, Run, RunTrigger, Session, WatchItem } from "@finisher/contracts";
+import type { AgentWarning, Approval, ApprovalDecision, ChildResult, FinError, Principal, Run, RunTrigger, Session, WatchItem } from "@finisher/contracts";
 import { Cause, Effect, Exit, Option, type Stream } from "effect";
 import type { CallMeta } from "../diagnostics.ts";
 import { finError, toFinError } from "../errors.ts";
+import { DEFAULT_BUDGET } from "./budget.ts";
+import { childCarve } from "./carve.ts";
 import { AgentCoreTag } from "./core.ts";
 import { openSession, registryBranchOps } from "./credentials.ts";
-import { type RuntimeDeps, RuntimeEngine } from "./runtime-engine.ts";
+import { type RuntimeDeps, RuntimeEngine, STOP_GRACE_MS } from "./runtime-engine.ts";
 import { budgetError, harnessUnknown, pricingUnknown, type StartRequest } from "./runtime-deps.ts";
 import { call, closeLive, type Live } from "./runtime-live.ts";
-import type { Recovery } from "./store.ts";
+import { LiveLimits } from "./live-limits.ts";
+import { BUNDLED_ROLES } from "./roles.ts";
+import { DEFAULT_LIMITS } from "./settings.ts";
+import type { Applied, Recovery } from "./store.ts";
+import { type ChildOpen, Subagents } from "./subagents.ts";
+import type { ConversationOps, RollbackResult, Rollbacks } from "./rollback.ts";
 import { agentWarnings } from "./warnings.ts";
 
 export type { RuntimeDeps } from "./runtime-engine.ts";
@@ -55,7 +66,10 @@ async function exitOf<A>(e: Effect.Effect<A, FinError>): Promise<A> {
 }
 
 /** The runtime over the server's `AgentCore` (Task 12 builds it in `main.ts`, after the core). */
-export const makeRuntime = (deps: Omit<RuntimeDeps, "core">): Effect.Effect<Runtime, never, AgentCoreTag> =>
+/** The runtime's deps: the engine's, and the rollbacks (7B Task 8, `rollback.ts`). */
+type Deps = RuntimeDeps & { readonly rollbacks?: Rollbacks };
+
+export const makeRuntime = (deps: Omit<Deps, "core">): Effect.Effect<Runtime, never, AgentCoreTag> =>
   Effect.gen(function* () {
     const core = yield* AgentCoreTag;
     return new Runtime({ ...deps, core });
@@ -65,9 +79,44 @@ export class Runtime extends RuntimeEngine {
   #timers: ReturnType<typeof setInterval>[] = [];
   #booted = false;
   #closed = false;
+  readonly #limits: LiveLimits;
+  readonly subagents: Subagents;
+  readonly #rollbacks: Rollbacks | undefined;
 
-  constructor(deps: RuntimeDeps) {
+  constructor(deps: Deps) {
     super(deps);
+    this.#rollbacks = deps.rollbacks;
+    const limits = () => ({ ...DEFAULT_LIMITS, ...deps.limits });
+    this.#limits = new LiveLimits({
+      max: () => ({ builtin: limits().maxLiveBuiltin, provider: limits().maxLiveProviders }),
+      active: () => this.store.tree.active(),
+      current: (id, runId) => this.store.get(id)?.status === "running" && this.store.activeRun(id) === runId,
+      turns: {
+        session: (id) => this.session(id),
+        open: (s) => this.ensureLive(s),
+        started: (live, runId) => this.#sandboxNotices(live, runId),
+        startClock: (s) => this.budget(s).startRun(),
+        facts: (s) => this.facts(s),
+        append: async (n) => void (await this.append(n)),
+        interrupt: async (id, reason) => void (await this.apply(id, { kind: "interrupted", reason })),
+      },
+    });
+    const sub = { store: this.store, roles: deps.roles ?? BUNDLED_ROLES, limits, live: this.#limits, clock: this.clock, graceMs: deps.stopGraceMs ?? STOP_GRACE_MS };
+    this.subagents = new Subagents({ ...sub, ...(deps.afterChildOpened === undefined ? {} : { afterOpened: deps.afterChildOpened }) });
+    this.subagents.bind({
+      background: (id, what, f) => this.background(id, what, f),
+      inFlight: (id) => this.lives.get(id)?.calls.size ?? 0,
+      endIn: async (id, reason) => {
+        if (this.store.get(id)?.status !== "ended") await this.#endIn(id, reason);
+        this.forgetBudget(id);
+      },
+      interruptIn: async (id, reason) => {
+        const st = this.store.get(id)?.status;
+        if (st !== undefined && st !== "interrupted" && st !== "ended") await this.#interruptIn(id, reason);
+      },
+      append: async (n) => void (await this.append(n)),
+      startQueued: (q) => this.background(q.sessionId, "a queued run", () => this.#limits.begin(q).catch(() => {})),
+    });
     // A provider card is settled at its `expiresAt`, not only by the hourly sweep (7B Task 5).
     deps.requests?.bind({ clock: this.clock, expire: () => this.expireApprovals() });
   }
@@ -99,6 +148,7 @@ export class Runtime extends RuntimeEngine {
   async close(): Promise<void> {
     this.#closed = true;
     for (const t of this.#timers.splice(0)) clearInterval(t);
+    this.subagents.close();
     this.deps.requests?.close();
     const lives = [...this.lives.values()];
     this.lives.clear();
@@ -157,10 +207,15 @@ export class Runtime extends RuntimeEngine {
    * 2–5 in Task 7's `openSession` (the root branch `agent.<role>-<n>` created as the starter,
    * whose actor and guard `meta` carries; the record; the credential; `idle`), then the first run.
    */
-  start(req: StartRequest, by: Principal, meta: CallMeta): Effect.Effect<{ session: Session; run?: Run; warnings: AgentWarning[] }, FinError> {
+  start(req: StartRequest, by: Principal, meta: CallMeta, parent?: Session, trigger?: "savedPrompt"): Effect.Effect<{ session: Session; run?: Run; warnings: AgentWarning[] }, FinError> {
     return attempt(async () => {
       this.#guard();
-      const plan = await this.deps.planner.plan(req, by);
+      const plan = await this.deps.planner.plan(req, by, parent);
+      const child: ChildOpen | undefined = parent === undefined ? undefined : this.subagents.childOf(parent);
+      // A child's budget is carved from its parent's remaining (7B Decision 22, `carve.ts`); the
+      // parent's `Budget` puts its limits in the ledger first. Re-checked as the child is recorded.
+      if (parent !== undefined) this.budget(parent);
+      const carved = parent === undefined ? undefined : childCarve(this.store.ledger(), parent.id, plan.budget, req.budget, this.deps.defaults ?? DEFAULT_BUDGET);
       if (this.adapter(plan.harness) === undefined) harnessUnknown(plan.harness);
       // A CLI harness whose sandbox cannot be applied here never starts (spec §8.9), nor one
       // the runtime has no sandboxes for (it would start its processes unconfined).
@@ -179,10 +234,13 @@ export class Runtime extends RuntimeEngine {
             weights: plan.weights,
             role: plan.role,
             mode: plan.mode,
-            budget: plan.budget,
+            budget: carved?.budget ?? plan.budget,
+            ...(carved === undefined ? {} : { carve: carved.carve }),
             createdBy: { principal: { kind: by.kind, id: by.id } },
-            ...(req.base === undefined ? {} : { base: req.base }),
+            ...(child === undefined ? {} : child),
+            ...(req.base === undefined || child !== undefined ? {} : { base: req.base }),
             ...(req.title === undefined ? {} : { title: req.title }),
+            ...(trigger === undefined ? {} : { trigger }),
           },
           by,
         ),
@@ -195,8 +253,46 @@ export class Runtime extends RuntimeEngine {
       return this.serial(id, async () => {
         await this.drain();
         this.publishStatus(this.session(id));
+        // A parent that stopped while the child was opened stops it, and the spawn fails.
+        if (child !== undefined) await this.subagents.adopt(child.parent, id);
         const run = req.prompt === undefined ? undefined : await this.promptIn(id, req.prompt, "prompt", req.attachments);
         return { session: this.session(id), ...(run === undefined ? {} : { run }), warnings: agentWarnings() };
+      });
+    });
+  }
+
+  /**
+   * `agent.session.start` from a session (7B Decision 16): a child of `parent` (`subagents.ts`),
+   * its brief its first run; spawns under one root session one at a time.
+   */
+  spawnChild(parent: Session, req: StartRequest, by: Principal, meta: CallMeta): Effect.Effect<{ session: Session; run?: Run; warnings: AgentWarning[] }, FinError> {
+    return attempt(() => this.subagents.serialSpawn(parent, () => exitOf(this.start(req, by, meta, this.session(parent.id)))));
+  }
+
+  /** `agent.session.wait` (7B Decision 21): `WAIT_TIMEOUT` when not done in time. */
+  waitChildren(by: Principal, ids: ReadonlyArray<string>, any: boolean, timeoutMs: number): Effect.Effect<ChildResult[], FinError> {
+    return Effect.tryPromise({ try: (signal) => this.subagents.wait(by, ids, any, timeoutMs, signal), catch: toFinError });
+  }
+
+  /**
+   * `agent.session.rollback` (7B Decision 23, `rollback.ts`): in the session's queue, so no run
+   * starts meanwhile; `meta` is the caller's actor and the guard of the session's reach.
+   */
+  rollback(sessionId: string, toRun: number, by: Principal, meta: CallMeta): Effect.Effect<RollbackResult & { session: Session }, FinError> {
+    return attempt(() => {
+      this.#guard();
+      const rb = this.#rollbacks;
+      if (rb === undefined) throw finError("SERVER_UNAVAILABLE", "rollback is not wired on this server", { reason: "noRollback" });
+      return this.serial(sessionId, async () => {
+        const ops: ConversationOps = {
+          caps: async (s) => this.lives.get(s.id)?.caps ?? (await exitOf((this.adapter(s.harness) ?? harnessUnknown(s.harness)).detect())).capabilities,
+          live: (id) => this.lives.get(id)?.provider,
+          open: async (s) => (await this.ensureLive(s)).provider,
+          close: (id) => this.stopLive(id),
+          append: async (n) => void (await this.append(n)),
+        };
+        const r = await rb.rollback(this.session(sessionId), toRun, by, meta, ops);
+        return { ...r, session: this.session(sessionId) };
       });
     });
   }
@@ -219,23 +315,9 @@ export class Runtime extends RuntimeEngine {
     const head = await this.#head(s.projectId, s.rootBranch ?? s.base.branch);
     const { run } = this.store.startRun(sessionId, { trigger, ...(head === undefined ? {} : { headAtStart: head }) });
     this.publishStatus(this.session(sessionId), run.id);
-    b.startRun();
     await this.append({ sessionId, runId: run.id, kind: "userMessage", payload: { text, trigger, ...(attachments?.length ? { attachments } : {}) } });
-    let live;
-    try {
-      live = await this.ensureLive(s);
-    } catch (e) {
-      await this.#failRun(sessionId, run.id, toFinError(e));
-      throw e;
-    }
-    live.runId = run.id;
-    await this.#sandboxNotices(live, run.id);
-    const err = await call(live.provider.startTurn({ runId: run.id, text, facts: this.facts(this.session(sessionId)) }));
-    if (err) {
-      live.runId = null;
-      await this.#failRun(sessionId, run.id, err);
-      throw err;
-    }
+    // Its turn, or over the server's live limit a wait for a slot (7B Decision 19, `live-limits.ts`).
+    await this.#limits.enter(s, run.id, text);
     return this.store.run(run.id)!;
   }
 
@@ -273,12 +355,6 @@ export class Runtime extends RuntimeEngine {
     if (err) throw err;
   }
 
-  /** The run could not start on its provider: an `error` node, and the session `interrupted`. */
-  async #failRun(sessionId: string, runId: string, e: FinError): Promise<void> {
-    await this.append({ sessionId, runId, kind: "error", payload: { code: e.code, message: e.message, details: e.details ?? {} } });
-    await this.apply(sessionId, { kind: "interrupted", reason: e.code });
-  }
-
   /**
    * `agent.session.steer` (Decision 6): into the running turn when the provider takes steers
    * (the built-in loop appends it before its next model call), else held for the next run
@@ -290,6 +366,8 @@ export class Runtime extends RuntimeEngine {
       return this.serial(sessionId, async () => {
         const s = this.session(sessionId);
         const live = this.lives.get(sessionId);
+        // A run waiting for a slot takes the steer into its first turn.
+        if (await this.#limits.hold(sessionId, text)) return { queued: true };
         if ((s.status === "running" || s.status === "waitingApproval") && live?.runId) {
           if (!live.caps.steer) {
             live.held.push(text);
@@ -310,16 +388,29 @@ export class Runtime extends RuntimeEngine {
   interrupt(sessionId: string, _by: Principal): Effect.Effect<Session, FinError> {
     return attempt(() => {
       this.#guard();
-      return this.serial(sessionId, async () => {
-        const live = this.lives.get(sessionId);
-        if (live) {
-          live.runId = null;
-          live.pendingStop = null;
-          await call(live.provider.interrupt());
-        }
-        return (await this.apply(sessionId, { kind: "interrupted", reason: "userInterrupt" })).session;
-      });
+      return this.serial(sessionId, () => this.#interruptIn(sessionId, "userInterrupt"));
     });
+  }
+
+  async #interruptIn(sessionId: string, reason: string): Promise<Session> {
+    const live = this.lives.get(sessionId);
+    if (live) {
+      live.runId = null;
+      live.pendingStop = null;
+      await call(live.provider.interrupt());
+    }
+    return (await this.apply(sessionId, { kind: "interrupted", reason })).session;
+  }
+
+  /** The calls in flight have their results: a root's end waiting for them goes on (7B Decision 20), else a budget stop. */
+  protected override async settled(live: Live): Promise<void> {
+    if (!(await this.subagents.settled(live.sessionId))) await super.settled(live);
+  }
+
+  /** Every transition: then the children and the live limits see it (7B Task 6). */
+  protected override async after(sessionId: string, applied: Applied): Promise<void> {
+    await super.after(sessionId, applied);
+    this.subagents.observe(applied);
   }
 
   /**
@@ -387,26 +478,37 @@ export class Runtime extends RuntimeEngine {
         throw finError("APPROVAL_NOT_FOUND", "no such approval", { id: approvalId });
       })();
       return this.serial(found.sessionId, async () => {
-        let answered: { approval: Approval; session: Session };
-        try {
-          answered = this.store.answerApproval(approvalId, decision, principalRef(by));
-        } catch (e) {
-          // Past its deadline it expired instead (`APPROVAL_EXPIRED`): that is journaled.
-          const s = (e as { code?: unknown }).code === "APPROVAL_EXPIRED" ? this.store.get(found.sessionId) : undefined;
+        const raising = found.kind === "budget" && decision === "allow";
+        // The session's `Budget` puts its limits in the ledger first, outside the transaction below.
+        const b = raising ? this.budget(this.session(found.sessionId)) : undefined;
+        // The answer and every raise are one transaction (7B Decision 22): a child's raise past
+        // its parent's remaining, or any failure, answers nothing and raises nothing.
+        const out = this.store.ledger().tx(() => {
+          let answered: { approval: Approval; session: Session };
+          try {
+            answered = this.store.answerApproval(approvalId, decision, principalRef(by));
+          } catch (e) {
+            // Past its deadline it expired instead (`APPROVAL_EXPIRED`): kept, and journaled below.
+            if ((e as { code?: unknown }).code === "APPROVAL_EXPIRED") return { expired: e };
+            throw e;
+          }
+          if (b !== undefined) {
+            b.raiseAll({ tokens: add.tokens, money: add.moneyMicros, wallMs: add.wallMs });
+            this.store.consumeApproval(approvalId);
+          }
+          return { answered };
+        });
+        if ("expired" in out) {
+          const s = this.store.get(found.sessionId);
           if (s !== undefined) this.#journalExpired(s);
-          throw e;
+          throw out.expired;
         }
-        const { approval, session } = answered;
+        const { approval, session } = out.answered;
         this.record("an approval", () => this.journal.approval({ session, approval }));
         this.publishStatus(session);
         // By kind (7B Task 5): a provider's request hears the answer; a rule's is a one-time grant.
         if (approval.kind === "provider") await this.deps.requests?.settle(approval);
-        if (approval.kind !== "budget" || decision !== "allow") return { approval: this.store.approval(approvalId)!, session };
-        const b = this.budget(session);
-        if (add.tokens) b.raise("tokens", add.tokens);
-        if (add.moneyMicros) b.raise("money", add.moneyMicros);
-        if (add.wallMs) b.raise("wallMs", add.wallMs);
-        this.store.consumeApproval(approvalId);
+        if (!raising) return { approval: this.store.approval(approvalId)!, session };
         const now = this.session(session.id);
         if (now.status !== "interrupted") return { approval: this.store.approval(approvalId)!, session: now };
         await this.#refresh(now);

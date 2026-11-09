@@ -1,4 +1,4 @@
-// `finisherd agent start|ls|show|prompt|steer|interrupt|resume|end|watch|approve|delete|providers`
+// `finisherd agent start|ls|show|prompt|steer|interrupt|resume|end|rollback|watch|approve|delete|providers`
 // (plan 7A Task 12; sub-project 7 §3.5): the owner's agent sessions from the console. Driving and
 // reading sessions needs no terminal (they are `agent.run`/`agent.read`, as `fin` has them);
 // answering an approval and deleting a session are a person's, with a terminal and a confirmation
@@ -15,7 +15,7 @@ import { confirmed, proceed, requireTty, typeName } from "../console/confirm.ts"
 import { has, one, onlyFlags, usage } from "../console/format.ts";
 import { safe } from "../console/safe.ts";
 
-export const SESSION_COMMANDS = new Set(["start", "ls", "list", "show", "prompt", "steer", "interrupt", "resume", "end", "watch", "approve", "delete", "providers"]);
+export const SESSION_COMMANDS = new Set(["start", "ls", "list", "show", "prompt", "steer", "interrupt", "resume", "end", "rollback", "watch", "approve", "delete", "providers"]);
 
 const ULID = /^[0-9A-HJKMNP-TV-Za-hjkmnp-tv-z]{26}$/;
 const STATUSES = new Set(["starting", "idle", "running", "waitingApproval", "interrupted", "ended"]);
@@ -46,6 +46,8 @@ export async function agentSessions(ctx: CommandContext, sub: string, rest: Read
     case "resume":
     case "end":
       return control(ctx, sub, rest);
+    case "rollback":
+      return rollback(ctx, rest);
     case "watch":
       return watch(ctx, rest);
     case "approve":
@@ -183,11 +185,13 @@ export function nodeLine(n: Node): string {
         return `${p.ok === true ? "ok" : "failed"} ${text(p.output, 300)}`;
       case "error":
         return `${text(p.code, 64)}: ${text(p.message)}`;
+      case "summary":
+        return `summary (${text(p.prompt, 32)}): ${text(p.text)}`;
       default:
         return text(p, 300);
     }
   })();
-  return `#${n.seq} ${n.kind}  ${body}`;
+  return `#${n.seq} ${n.kind}  ${body}${n.rolledBack === true ? "  (rolled back)" : ""}`;
 }
 
 function itemLine(i: WatchItem): string | undefined {
@@ -260,6 +264,27 @@ async function control(ctx: CommandContext, verb: "interrupt" | "resume" | "end"
   const { session } = await withConnection(ctx, (c) => call<{ session: Session }>(c, `agent.session.${verb}`, { sessionId: id }));
   if (has(ctx.args, "json")) ctx.output.out(JSON.stringify({ session }));
   else ctx.output.out(`${sessionLine(session)}${verb === "end" && session.rootBranch !== undefined ? "  (its branch stays)" : ""}`);
+  return 0;
+}
+
+/** `agent rollback <id> --to-run <seq>` (7B Task 8): the session back to the end of that run. */
+async function rollback(ctx: CommandContext, rest: ReadonlyArray<string>): Promise<number> {
+  onlyFlags(ctx.args, "agent rollback", ["to-run", "json"]);
+  const id = idOf("rollback", rest);
+  const to = one(ctx.args, "to-run");
+  if (to === undefined || !/^\d+$/.test(to)) usage("agent rollback needs --to-run <seq>, a run's number (0: before the first)", "List the runs with `finisherd agent show <id>`.");
+  type Answer = { session: Session; undone: string[]; branches: string[]; conversation: "rolledBack" | "kept"; restored?: string[]; archived?: string[]; warning?: string };
+  const r = await withConnection(ctx, (c) => call<Answer>(c, "agent.session.rollback", { sessionId: id, toRun: Number(to) }));
+  if (has(ctx.args, "json")) {
+    ctx.output.out(JSON.stringify(r));
+    return 0;
+  }
+  ctx.output.out(`Rolled ${id} back to run ${to}: ${r.undone.length} transaction(s) undone on ${r.branches.length} branch(es).`);
+  if ((r.restored ?? []).length > 0) ctx.output.out(`Redid ${r.restored!.length} of its later undo(s): what they took back is back.`);
+  if ((r.archived ?? []).length > 0) ctx.output.out(`Left archived branch(es) as they were: ${safe(r.archived!.join(", "))}.`);
+  if (r.conversation === "kept") ctx.output.out("Its provider keeps the later runs in its own history (it cannot roll back); the session goes on from there.");
+  if (r.warning !== undefined) ctx.output.err(`finisherd: warning: ${safe(r.warning)}`);
+  ctx.output.out(sessionLine(r.session));
   return 0;
 }
 

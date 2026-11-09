@@ -3,6 +3,7 @@
 import type { AgentProvider, Approval, ApprovalKind, FinError, Node, NodeKind, Run, RunStatus, RunTrigger, Session, Usage } from "@finisher/contracts";
 import type { BudgetSpec, Harness, Mode, SessionStatus, Weights } from "@finisher/contracts";
 import { finError } from "../errors.ts";
+import type { Carve } from "./carve.ts";
 import type { SessionEffect, SessionState } from "./session.ts";
 
 /** Node payloads up to this many bytes of JSON are inline; larger ones are blobs (Decision 1). */
@@ -25,7 +26,14 @@ export interface NewSession {
   readonly rootBranch?: string;
   readonly base: { readonly branch: string; readonly seq: number };
   readonly parent?: string;
+  /** `savedPrompt`: started from a saved prompt (7B Task 10). */
+  readonly trigger?: "savedPrompt";
+  /** A child's (7B Task 6): the top of its tree and its depth below it; a root names neither. */
+  readonly rootSession?: string;
+  readonly depth?: number;
   readonly budget: BudgetSpec;
+  /** A child's carve from `parent` (7B Task 7), reserved in the transaction that records it. */
+  readonly carve?: Carve;
   readonly createdBy: Session["createdBy"];
   readonly title?: string;
   readonly providerRef?: string;
@@ -101,11 +109,14 @@ export interface SessionRow {
   createdAt: number;
   endedAt: number | null;
   title: string | null;
+  rootSession: string | null;
+  depth: number;
+  trigger: string | null;
 }
 
 export const SESSION_COLUMNS =
   "id, projectId, harness, provider, model, weights, role, mode, rootBranch, baseBranch, baseSeq, parent, status, " +
-  "statusReason, runId, approvals, credentialId, providerRef, budget, usage, createdBy, createdAt, endedAt, title";
+  "statusReason, runId, approvals, credentialId, providerRef, budget, usage, createdBy, createdAt, endedAt, title, rootSession, depth, trigger";
 
 export interface RunRow {
   id: string;
@@ -133,9 +144,13 @@ export interface NodeRow {
   payload: string | null;
   blobRef: string | null;
   createdAt: number;
+  /** Agent 0008: its run was rolled back (7B Task 8). */
+  rolledBack: number;
 }
 
 export const NODE_COLUMNS = "id, runId, sessionId, seq, kind, providerId, callId, payload, blobRef, createdAt";
+/** What a node's reads select: its columns and `rolledBack`, which an insert leaves at 0. */
+const NODE_SELECT = `${NODE_COLUMNS}, rolledBack`;
 
 export interface ApprovalRow {
   id: string;
@@ -170,6 +185,8 @@ export function toSession(r: SessionRow): Session {
     ...opt("rootBranch", r.rootBranch),
     base: { branch: r.baseBranch, seq: r.baseSeq },
     ...opt("parent", r.parent),
+    // A root is its own root at depth 0: only a child names them.
+    ...(r.parent === null ? {} : { ...opt("rootSession", r.rootSession), depth: r.depth }),
     status: r.status as SessionStatus,
     ...opt("statusReason", r.statusReason),
     credentialId: r.credentialId,
@@ -179,6 +196,7 @@ export function toSession(r: SessionRow): Session {
     createdAt: r.createdAt,
     ...opt("endedAt", r.endedAt),
     ...opt("title", r.title),
+    ...(r.trigger === "savedPrompt" ? { trigger: "savedPrompt" as const } : {}),
   };
 }
 
@@ -219,6 +237,7 @@ export function toNode(r: NodeRow): Node {
     ...(r.payload === null ? {} : { payload: JSON.parse(r.payload) as unknown }),
     ...opt("blobRef", r.blobRef),
     createdAt: r.createdAt,
+    ...(r.rolledBack === 1 ? { rolledBack: true } : {}),
   };
 }
 
@@ -258,6 +277,8 @@ export interface SessionQuery {
   /** Only these projects (the caller's reach); an empty list matches nothing. */
   readonly projects?: ReadonlyArray<string>;
   readonly status?: SessionStatus;
+  /** Only this session's children (7B Task 6: what a session may list). */
+  readonly parent?: string;
   /** A page's `next`: the last id it held. */
   readonly cursor?: string;
   readonly limit?: number;
@@ -317,7 +338,7 @@ export function sessionInsertArgs(s: NewSession, status: string, now: number): A
   return [
     s.id, s.projectId, s.harness, s.provider, s.model, s.weights, s.role, s.mode, s.rootBranch ?? null, s.base.branch, s.base.seq,
     s.parent ?? null, status, s.id, s.providerRef ?? null, JSON.stringify(s.budget), JSON.stringify(ZERO_USAGE), JSON.stringify(s.createdBy),
-    now, s.title ?? null,
+    now, s.title ?? null, s.rootSession ?? null, s.depth ?? 0, s.trigger ?? null,
   ];
 }
 
@@ -333,6 +354,7 @@ export function sessionListQuery(q: SessionQuery): { sql: string; args: string[]
   if (q.projectId !== undefined) add("projectId = ?", q.projectId);
   if (q.projects !== undefined) add("projectId IN (SELECT value FROM json_each(?))", JSON.stringify(q.projects));
   if (q.status !== undefined) add("status = ?", q.status);
+  if (q.parent !== undefined) add("parent = ?", q.parent);
   if (q.cursor !== undefined) add("id < ?", q.cursor);
   const sql = `SELECT ${SESSION_COLUMNS} FROM sessions ${where.length > 0 ? `WHERE ${where.join(" AND ")}` : ""} ORDER BY id DESC LIMIT ?`;
   return { sql, args, limit };
@@ -345,7 +367,7 @@ export function approvalExpired(id: string): FinError {
 
 /** Every statement `AgentStore` prepares, once, by name. */
 export const STORE_SQL: Readonly<Record<string, string>> = {
-  insertSession: `INSERT INTO sessions (${SESSION_COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, '[]', ?, ?, ?, ?, ?, ?, NULL, ?)`,
+  insertSession: `INSERT INTO sessions (${SESSION_COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, '[]', ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?)`,
   session: `SELECT ${SESSION_COLUMNS} FROM sessions WHERE id = ?`,
   setState: "UPDATE sessions SET status = ?, statusReason = ?, runId = ?, approvals = ?, endedAt = COALESCE(endedAt, ?) WHERE id = ?",
   live: "SELECT id FROM sessions WHERE status IN ('starting', 'running', 'waitingApproval') ORDER BY id",
@@ -362,11 +384,11 @@ export const STORE_SQL: Readonly<Record<string, string>> = {
   runUsage: "UPDATE runs SET usage = ? WHERE id = ?",
   lastNodeSeq: "SELECT seq FROM nodes WHERE sessionId = ? ORDER BY seq DESC LIMIT 1",
   insertNode: `INSERT INTO nodes (${NODE_COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-  nodes: `SELECT ${NODE_COLUMNS} FROM nodes WHERE sessionId = ? AND seq >= ? ORDER BY seq LIMIT ?`,
-  nodeById: `SELECT ${NODE_COLUMNS} FROM nodes WHERE id = ?`,
+  nodes: `SELECT ${NODE_SELECT} FROM nodes WHERE sessionId = ? AND seq >= ? ORDER BY seq LIMIT ?`,
+  nodeById: `SELECT ${NODE_SELECT} FROM nodes WHERE id = ?`,
   // The repeated `kind IN (…)` is `nodes_call`'s own predicate: without it the partial index is not used.
-  callNode: `SELECT ${NODE_COLUMNS} FROM nodes WHERE callId = ? AND kind = ? AND kind IN ('toolCall', 'toolResult')`,
-  openCalls: `SELECT ${NODE_COLUMNS} FROM nodes c WHERE c.runId = ? AND c.kind = 'toolCall' AND NOT EXISTS ` +
+  callNode: `SELECT ${NODE_SELECT} FROM nodes WHERE callId = ? AND kind = ? AND kind IN ('toolCall', 'toolResult')`,
+  openCalls: `SELECT ${NODE_SELECT} FROM nodes c WHERE c.runId = ? AND c.kind = 'toolCall' AND NOT EXISTS ` +
       "(SELECT 1 FROM nodes r WHERE r.callId = c.callId AND r.kind = 'toolResult' AND r.kind IN ('toolCall', 'toolResult')) ORDER BY c.seq",
   blobRefs: "SELECT DISTINCT blobRef FROM nodes WHERE sessionId = ? AND blobRef IS NOT NULL",
   blobUsed: "SELECT 1 AS x FROM nodes WHERE sessionId = ? AND blobRef = ? LIMIT 1",
@@ -377,8 +399,6 @@ export const STORE_SQL: Readonly<Record<string, string>> = {
   overdueApprovals: "SELECT id, sessionId FROM approvals WHERE status = 'open' AND expiresAt <= ? ORDER BY expiresAt, id LIMIT ?",
   markReady: "UPDATE sessions SET readyAt = ? WHERE id = ? AND readyAt IS NULL",
   readyAt: "SELECT readyAt FROM sessions WHERE id = ?",
-  clearReserved: "UPDATE budgets SET reserved = 0 WHERE reserved != 0",
-  clearDailyReserved: "UPDATE budget_days SET reserved = 0 WHERE reserved != 0",
   answerApproval: "UPDATE approvals SET status = 'answered', decision = ?, by = ?, answeredAt = ? WHERE id = ? AND status = 'open'",
   consumeApproval: "UPDATE approvals SET consumedAt = ? WHERE id = ? AND status = 'answered' AND consumedAt IS NULL",
   outboxAdd: "INSERT INTO session_outbox (sessionId, effect, at) VALUES (?, ?, ?)",

@@ -45,6 +45,7 @@ fn history(id: &str, author: &str, b: &str) -> HistoryReq {
         dry_run: false,
         args_hash: None,
         to: None,
+        after_seq: None,
     }
 }
 

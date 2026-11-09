@@ -42,6 +42,8 @@ const VALUED = new Set([
   "session", "preset", "bytes-over", "minutes-over",
   // Remembered answers (7B Task 5).
   "remember",
+  // Saved prompts (7B Task 10).
+  "param",
   "name", "storage", "include", "exclude", "kinds", "poll", "full", "bandwidth", "alias", "accept-unmounted",
 ]);
 /** Flags whose value is optional: taken only when the next word is one of these (`--hydrate` or `--hydrate off`). */

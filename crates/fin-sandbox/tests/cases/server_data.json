@@ -1,0 +1,28 @@
+{
+  "about": "Spec §8.11 'Server data' and the S8 core, for every profile (plan 7C Task 13), run by tests/escape_common.rs. $T is the shared fixture of that file: data/ is server data, p/ the project, q/ an unlisted folder, home/ the user's home. 'deny' passes only on an observed denial (Linux EACCES or EXDEV, macOS EPERM or EACCES), and the same attempt must then succeed unsandboxed on a fresh fixture (the control). Each profile's 'allow' case proves the sandbox is not refusing everything.",
+  "cases": [
+    { "name": "read auth/local.key", "profiles": ["agent", "hook", "worker", "plugin"], "op": ["read", "$T/data/auth/local.key"], "expect": "deny" },
+    { "name": "read auth/console.key", "profiles": ["agent", "hook", "worker", "plugin"], "op": ["read", "$T/data/auth/console.key"], "expect": "deny" },
+    { "name": "read auth/credential.master", "profiles": ["agent", "hook", "worker", "plugin"], "op": ["read", "$T/data/auth/credential.master"], "expect": "deny" },
+    { "name": "read settings.json", "profiles": ["agent", "hook", "worker", "plugin"], "op": ["read", "$T/data/settings.json"], "expect": "deny" },
+    { "name": "read control.db", "profiles": ["agent", "hook", "worker", "plugin"], "op": ["read", "$T/data/control.db"], "expect": "deny" },
+    { "name": "read the journal", "profiles": ["agent", "hook", "worker", "plugin"], "op": ["read", "$T/data/diagnostics/journal-0001.seg"], "expect": "deny" },
+    { "name": "read the agent-trace store", "profiles": ["agent", "hook", "worker", "plugin"], "op": ["read", "$T/data/agent-traces/traces.db"], "expect": "deny" },
+    { "name": "read the audit log", "profiles": ["agent", "hook", "worker", "plugin"], "op": ["read", "$T/data/audit/audit.log"], "expect": "deny" },
+    { "name": "list auth/", "profiles": ["agent", "hook", "worker", "plugin"], "op": ["list", "$T/data/auth"], "expect": "deny" },
+    { "name": "list server data", "profiles": ["agent", "hook", "worker", "plugin"], "op": ["list", "$T/data"], "expect": "deny" },
+    { "name": "overwrite settings.json", "profiles": ["agent", "hook", "worker", "plugin"], "op": ["write", "$T/data/settings.json"], "expect": "deny" },
+    { "name": "create a key in auth/", "profiles": ["agent", "hook", "worker", "plugin"], "op": ["create", "$T/data/auth/extra.key"], "expect": "deny" },
+    { "name": "unlink auth/local.key", "profiles": ["agent", "hook", "worker", "plugin"], "op": ["unlink", "$T/data/auth/local.key"], "expect": "deny" },
+    { "name": "read an ssh key in home", "profiles": ["agent", "hook", "worker", "plugin"], "op": ["read", "$T/home/.ssh/id_ed25519"], "expect": "deny" },
+    { "name": "read an unlisted folder", "profiles": ["agent", "hook", "worker", "plugin"], "op": ["read", "$T/q/other.txt"], "expect": "deny" },
+    { "name": "write the project's state", "profiles": ["agent", "hook"], "op": ["write", "$T/p/.finisher/segment"], "expect": "deny" },
+    { "name": "write the project file", "profiles": ["agent", "hook"], "op": ["write", "$T/p/finisher.project.json"], "expect": "deny" },
+
+    { "name": "write its own workspace", "profiles": ["agent"], "op": ["create", "$T/p/workspace/s1/out.txt"], "expect": "allow" },
+    { "name": "write its own temp", "profiles": ["hook"], "op": ["create", "$T/hook-tmp/out.txt"], "expect": "allow" },
+    { "name": "write its job's out/", "profiles": ["worker"], "op": ["create", "$T/data/jobs/j1/out/frame.png"], "expect": "allow" },
+    { "name": "write its call's out/", "profiles": ["plugin"], "op": ["create", "$T/data/jobs/p1/out/result.json"], "expect": "allow" },
+    { "name": "read its call's in/", "profiles": ["plugin"], "op": ["read", "$T/data/jobs/p1/in/request.json"], "expect": "allow" }
+  ]
+}

@@ -50,8 +50,12 @@ export interface WarmLink {
 export type WarmOutcome = AttemptOutcome & {
   /** The worker is still good for the next job (it sent `ready` and holds nothing). */
   readonly kept: boolean;
-  /** The job reads outside the confined worker's roots: it was not started there (`warmReach`). */
-  readonly reach?: true;
+  /**
+   * The job reads outside the confined worker's roots: it was not started there (`warmReach`).
+   * `extra` is the job's as this attempt had it, `prepare`'s when it ran: the cold run that
+   * follows starts from it, since `prepare` does not run again for the directory.
+   */
+  readonly reach?: { readonly extra: unknown };
   /** The worker group's figure attached to its `ready` (Decision 20). */
   readonly memory?: number;
 };
@@ -80,13 +84,13 @@ export async function runWarmAttempt(
   link: WarmLink,
 ): Promise<WarmOutcome> {
   let attempt: WarmAttempt | undefined;
-  let reach = false;
+  let reach: { readonly extra: unknown } | undefined;
   let visit: { readonly home: JobDirs; readonly here: JobDirs } | undefined;
   const o = await attemptWith(env, row, kind, params, control, async (p): Promise<Outcome> => {
     // A confined worker reads only the roots it started with (Decision 19).
     const outside = link.reads === undefined ? [] : (kind.reads?.(p.extra, params as never) ?? []).filter((r) => !link.reads!.some((root) => r === root || r.startsWith(root + sep)));
     if (outside.length > 0) {
-      reach = true;
+      reach = { extra: p.extra };
       return { ok: false, error: finError("WORKER_UNAVAILABLE", "the job reads files the warm worker of its project cannot", { reason: "warmReach", count: outside.length }), cause: "worker", retry: "fresh" };
     }
     // The job's directory visits the worker's own for the attempt, and nothing else does.
@@ -130,7 +134,7 @@ export async function runWarmAttempt(
       }
     }
   }
-  return { ...out, warmReused: link.reused, kept, ...(reach ? { reach: true as const } : {}), ...(memory === undefined ? {} : { memory }) };
+  return { ...out, warmReused: link.reused, kept, ...(reach === undefined ? {} : { reach }), ...(memory === undefined ? {} : { memory }) };
 }
 
 class WarmAttempt extends AttemptBase {

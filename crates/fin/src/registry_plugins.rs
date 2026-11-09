@@ -1,9 +1,9 @@
 //! The 8A `plugin` and `registry` commands' registry entries (plan 8A Task 12c), listed after
 //! the settings commands in [`crate::registry::commands`]. The human-only ones are listed too:
 //! `fin` sends them and the server refuses them with `HUMAN_ONLY` (exit 7). Then the 5C-2 `job`
-//! commands and `wait`, then the 7B `approval` commands.
+//! commands and `wait`, then the 7B `approval` and `agent` commands.
 
-use crate::commands::{approval, job, plugin, project};
+use crate::commands::{agent, approval, job, plugin, project};
 use crate::registry::{Command, schema_of};
 
 const fn cmd(
@@ -190,5 +190,46 @@ pub const APPROVAL_COMMANDS: &[Command] = &[
         "[--status open|answered|expired] [--session <id>]",
         "this session's approvals, newest first",
         || schema_of::<approval::LsArgs>("approval.ls"),
+    ),
+];
+
+pub const AGENT_COMMANDS: &[Command] = &[
+    cmd(
+        "agent.spawn",
+        "agent",
+        "--role <r> --brief <text|@file> [--mode <m>] [--budget <tokens|usd>] [--model <m>]",
+        "start a child session on a child branch of yours: {session, branch} at once",
+        || schema_of::<agent::SpawnArgs>("agent.spawn"),
+    ),
+    cmd(
+        "agent.wait",
+        "agent",
+        "<id>... [--any] [--timeout <s>]",
+        "wait <=90 s for children to be done: status, branch, summary; exit 5 WAIT_TIMEOUT, repeat",
+        || schema_of::<agent::WaitArgs>("agent.wait"),
+    ),
+    cmd("agent.ls", "agent", "", "your children", || {
+        schema_of::<agent::LsArgs>("agent.ls")
+    }),
+    cmd(
+        "agent.send",
+        "agent",
+        "<id> <text>",
+        "prompt an idle child, steer a running one",
+        || schema_of::<agent::SendArgs>("agent.send"),
+    ),
+    cmd(
+        "agent.stop",
+        "agent",
+        "<id>",
+        "end a child (its branch stays: fin merge <branch> into yours)",
+        || schema_of::<agent::StopArgs>("agent.stop"),
+    ),
+    cmd(
+        "agent.rollback",
+        "agent",
+        "<id> --to-run <seq>",
+        "undo a child's runs after <seq>, all or nothing (CONFLICT: nothing changed)",
+        || schema_of::<agent::RollbackArgs>("agent.rollback"),
     ),
 ];

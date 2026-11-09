@@ -47,6 +47,8 @@ import {
   AgentSessionStartSuccess,
   AgentSessionSteerPayload,
   AgentSessionSteerSuccess,
+  AgentSessionWaitPayload, AgentSessionWaitSuccess,
+  AgentSessionRollbackPayload, AgentSessionRollbackSuccess,
   AgentWatchPayload,
   WatchItem,
 } from "./agent.ts";
@@ -60,6 +62,7 @@ import {
   AgentRulesRemovePayload,
   AgentRulesRemoveSuccess,
 } from "./rules.ts";
+import { AgentSavedPromptListPayload, AgentSavedPromptListSuccess, AgentSavedPromptRunPayload, AgentSavedPromptRunSuccess } from "./saved-prompts.ts";
 import {
   AgentKeyListSuccess,
   AgentKeyRemovePayload,
@@ -559,14 +562,15 @@ export const FinRpcs = RpcGroup.make(
   Rpc.make("library.lookup", { payload: LibraryLookupPayload, success: LibraryLookupSuccess, error: FinError }),
   Rpc.make("library.scan", { payload: LibraryScanPayload, success: LibraryScanSuccess, error: FinError }),
   Rpc.make("library.watch", { payload: LibraryWatchPayload, success: LibraryWatchEventSchema, error: FinError, stream: true }),
-  // The agent runtime (sub-project 7A Task 2): sessions, the watch stream, approvals and the
-  // calling session's own state.
+  // The agent runtime (7A Task 2): sessions, the watch stream, approvals, the session's own state.
   Rpc.make("agent.session.start", { payload: AgentSessionStartPayload, success: AgentSessionStartSuccess, error: FinError }),
   Rpc.make("agent.session.prompt", { payload: AgentSessionPromptPayload, success: AgentSessionPromptSuccess, error: FinError }),
   Rpc.make("agent.session.steer", { payload: AgentSessionSteerPayload, success: AgentSessionSteerSuccess, error: FinError }),
   Rpc.make("agent.session.interrupt", { payload: AgentSessionControlPayload, success: AgentSessionControlSuccess, error: FinError }),
   Rpc.make("agent.session.resume", { payload: AgentSessionControlPayload, success: AgentSessionControlSuccess, error: FinError }),
   Rpc.make("agent.session.end", { payload: AgentSessionControlPayload, success: AgentSessionControlSuccess, error: FinError }),
+  Rpc.make("agent.session.wait", { payload: AgentSessionWaitPayload, success: AgentSessionWaitSuccess, error: FinError }),
+  Rpc.make("agent.session.rollback", { payload: AgentSessionRollbackPayload, success: AgentSessionRollbackSuccess, error: FinError }),
   Rpc.make("agent.session.list", { payload: AgentSessionListPayload, success: AgentSessionListSuccess, error: FinError }),
   Rpc.make("agent.session.get", { payload: AgentSessionGetPayload, success: AgentSessionGetSuccess, error: FinError }),
   Rpc.make("agent.session.delete", { payload: AgentSessionDeletePayload, success: AgentSessionDeleteSuccess, error: FinError }),
@@ -577,13 +581,13 @@ export const FinRpcs = RpcGroup.make(
   Rpc.make("agent.providers", { payload: Schema.Struct({}), success: AgentProvidersSuccess, error: FinError }),
   Rpc.make("agent.self", { payload: Schema.Struct({}), success: AgentSelfSuccess, error: FinError }),
   Rpc.make("agent.self.try", { payload: AgentSelfTryPayload, success: AgentSelfSuccess, error: FinError }),
-  // Command rules and project trust (sub-project 7B Task 2).
+  // Command rules and project trust (7B Task 2); saved prompts (Task 10).
   Rpc.make("agent.rules.list", { payload: AgentRulesListPayload, success: AgentRulesListSuccess, error: FinError }),
   Rpc.make("agent.rules.add", { payload: AgentRulesAddPayload, success: AgentRulesAddSuccess, error: FinError }),
   Rpc.make("agent.rules.remove", { payload: AgentRulesRemovePayload, success: AgentRulesRemoveSuccess, error: FinError }),
   Rpc.make("agent.project.trust", { payload: AgentProjectTrustPayload, success: AgentProjectTrustSuccess, error: FinError }),
-  // The owner's agent settings (Task 12; `agent-admin.ts`): the OpenRouter key, the local
-  // endpoint and the closed-model-targets counsel gate. No answer holds a key.
+  Rpc.make("agent.savedPrompt.list", { payload: AgentSavedPromptListPayload, success: AgentSavedPromptListSuccess, error: FinError }),
+  Rpc.make("agent.savedPrompt.run", { payload: AgentSavedPromptRunPayload, success: AgentSavedPromptRunSuccess, error: FinError }),
   Rpc.make("agent.key.set", { payload: AgentKeySetPayload, success: AgentKeySetSuccess, error: FinError }),
   Rpc.make("agent.key.list", { payload: Schema.Struct({}), success: AgentKeyListSuccess, error: FinError }),
   Rpc.make("agent.key.remove", { payload: AgentKeyRemovePayload, success: AgentKeyRemoveSuccess, error: FinError }),

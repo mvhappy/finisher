@@ -53,12 +53,11 @@ proptest! {
     }
 }
 
-/// The shrunk case of a random run (spec §4.3 *group changed*): `c1` on t1 and `c2` on t2 are
+/// The shrunk case of a random run (formerly *group changed*): `c1` on t1 and `c2` on t2 are
 /// linked, and the head dissolves the group. Ours overwrite-trims `c2`'s end by a frame (where
-/// written, that trims its partner `c1` too), then overwrite-moves `c1` to its own end, written
-/// at frame 9. At the head the rebased trim leaves `c1` alone and records no shift, so the move
-/// stays at frame 9 where a fresh one goes to `c1`'s end at 10 (`keyed4c::group_changed`). The
-/// stale edit still applies, replays and undoes exactly.
+/// written, that trims its partner `c1` too), then overwrite-moves `c1` to its own end, written at
+/// frame 9. At the head the rebased trim leaves `c1` alone; the move is anchored at `c1`'s end, so
+/// it goes to 10, as a fresh one does.
 #[test]
 fn unlink_then_trim_and_move_at_former_partner() {
     use keyed4c::Intent::{Move, Trim, Unlink};
@@ -88,11 +87,11 @@ fn unlink_then_trim_and_move_at_former_partner() {
     .unwrap();
 }
 
-/// The shrunk case of a 30k-case run (spec §4.3 *lifted*, for edges): the head ripple-inserts
-/// `c2` (four frames) after `c1` on t1, then overwrite-trims `c2`'s end by a frame, which
-/// records no shift. Ours inserts after `c1`, written at frame 10: `Assoc::After` carries it
-/// past `c2`'s insert to 14, and the trim leaves it there, a frame past `c2`'s new end, where a
-/// fresh insert goes against `c1` (`keyed4c::concurrent_reedged`).
+/// The shrunk case of a 30k-case run (formerly *lifted, for edges*): the head ripple-inserts `c2`
+/// (four frames) after `c1` on t1, then overwrite-trims `c2`'s end by a frame (no shift). Ours
+/// inserts after `c1`, written at 10. Through shifts it went past `c2`'s insert to 14, a frame past
+/// `c2`'s new end. As an append (the end of t1's last item where written) it goes to t1's end
+/// at the head: 13, `c2`'s end, as a fresh one.
 #[test]
 fn trim_of_concurrent_insert_leaves_gap() {
     use keyed4c::Intent::{Insert, Trim};
@@ -132,9 +131,8 @@ fn trim_of_concurrent_insert_leaves_gap() {
 
 /// The shrunk case of a 30k-case run: the head ripple-moves `c2` from t2 to t1's end, after
 /// `c1`. Ours splits `c2` a frame in, then ripple-moves `c1` to its own end, written at frame
-/// 10, which `Assoc::After` carries past all of `c2` at the head (frame 20). A fresh move goes
-/// past both of the parts our split cut from `c2`, to the same place (the keyed model's
-/// `Assoc::After` walk passes our own split parts of a concurrent item).
+/// 10: an append, so it goes to t1's end at the head, past both parts of `c2` (frame 20), as a
+/// fresh move does.
 #[test]
 fn split_of_concurrent_item_is_passed_after_anchor() {
     use keyed4c::Intent::{Move, Split};
@@ -163,6 +161,130 @@ fn split_of_concurrent_item_is_passed_after_anchor() {
             overwrite: false,
         },
     ];
+    check(
+        &base_4c(&lens, false, false, (0, false, false)),
+        &committed,
+        &mine,
+    )
+    .unwrap();
+}
+
+/// Open seed `cc 5b02bc6b` (2026-11-09): t3 holds `c2`, t4 holds `c3`; the head ripple-moves `c3`
+/// to t3's end. Ours overwrite-trims `c2`'s end by a frame, then ripple-moves `c1` (t2) to t3's
+/// end, written at 11 (`c2`'s end). Through shifts it went to 21, a frame past `c3`; anchored at
+/// `c2`'s end, an append: it goes to t3's end at the head, past the ripple-moved `c3`: 20, as a
+/// fresh one.
+#[test]
+fn seed_5b02bc6b_trim_then_move_to_track_filled_since() {
+    use keyed4c::Intent::{Move, Trim};
+    let lens = [vec![], vec![10], vec![10], vec![10]];
+    let committed = [(
+        vec![Move {
+            track: 3,
+            clip: 0,
+            to: 2,
+            before: None,
+            overwrite: false,
+        }],
+        false,
+    )];
+    let mine = [
+        Trim {
+            track: 2,
+            clip: 0,
+            start: false,
+            frames: 1,
+            mode: 2,
+        },
+        Move {
+            track: 1,
+            clip: 0,
+            to: 2,
+            before: None,
+            overwrite: false,
+        },
+    ];
+    check(
+        &base_4c(&lens, false, false, (0, false, false)),
+        &committed,
+        &mine,
+    )
+    .unwrap();
+}
+
+/// Plan review finding 1: the head inserts `c2` after `c1`, then overwrite-trims it and undoes
+/// the trim. Ours appends after `c1`: both sides go to t1's end, after `c2`.
+#[test]
+fn undone_trim_of_concurrent_insert_says_nothing() {
+    use keyed4c::Intent::{Insert, Trim};
+    let lens = [vec![10], vec![], vec![], vec![]];
+    let committed = [
+        (
+            vec![Insert {
+                track: 0,
+                before: None,
+                len: 4,
+            }],
+            false,
+        ),
+        (
+            vec![Trim {
+                track: 0,
+                clip: 1,
+                start: false,
+                frames: -1,
+                mode: 2,
+            }],
+            true,
+        ),
+    ];
+    let mine = [Insert {
+        track: 0,
+        before: None,
+        len: 1,
+    }];
+    check(
+        &base_4c(&lens, false, false, (0, false, false)),
+        &committed,
+        &mine,
+    )
+    .unwrap();
+}
+
+/// Plan review finding 1: the head ripple-moves `c1` to the end of t1 and undoes it, then
+/// ripple-moves `c2` before `c1`. Ours appends after `c2` (t1's last item where written): both
+/// sides go to t1's end at the head, after `c1`.
+#[test]
+fn undone_ripple_move_does_not_make_an_item_concurrent() {
+    use keyed4c::Intent::{Insert, Move};
+    let lens = [vec![10, 10], vec![], vec![], vec![]];
+    let committed = [
+        (
+            vec![Move {
+                track: 0,
+                clip: 0,
+                to: 0,
+                before: None,
+                overwrite: false,
+            }],
+            true,
+        ),
+        (
+            vec![Move {
+                track: 0,
+                clip: 1,
+                to: 0,
+                before: Some(0),
+                overwrite: false,
+            }],
+            false,
+        ),
+    ];
+    let mine = [Insert {
+        track: 0,
+        before: None,
+        len: 3,
+    }];
     check(
         &base_4c(&lens, false, false, (0, false, false)),
         &committed,
