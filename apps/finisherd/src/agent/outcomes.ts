@@ -6,7 +6,8 @@
 //
 // - `history.merge` / `history.cherryPick` copying an agent transaction (the result's
 //   `origins`: what it copied, with the origin chains of copies) onto a branch outside that
-//   session's subtree → `merged`, `via: merge`; inside the subtree, nothing;
+//   session's subtree → `merged`, `via: merge`; inside the subtree, nothing (for a child, 7B:
+//   the subtree of its root session's root, so a parent's merge of its child is no outcome);
 // - `history.undo` / `history.revert` naming one (`origins`: an undo's units, a reverted
 //   group's records, with their origin chains) → `undone` / `reverted`, `via: undo|revert`, or
 //   `via: critic` when a critic session did it;
@@ -155,7 +156,9 @@ export class OutcomeTracker {
     return Effect.gen({ self: this }, function* () {
       const inside = new Map<string, boolean>();
       for (const row of rows) {
-        const root = this.#d.store.get(row.sessionId)?.rootBranch ?? row.rootBranch;
+        const s = this.#d.store.get(row.sessionId);
+        const top = s?.rootSession === undefined ? undefined : this.#d.store.get(s.rootSession);
+        const root = top?.rootBranch ?? s?.rootBranch ?? row.rootBranch;
         if (root === undefined) continue;
         let within = inside.get(root);
         if (within === undefined) {

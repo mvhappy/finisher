@@ -29,7 +29,9 @@ import { budgetError, errorShape, harnessUnknown, limitsOf, NO_JOURNAL, parseRef
 import { call, closeLive, closeScope, type Live, openLive } from "./runtime-live.ts";
 import { OutboxDrainer } from "./runtime-outbox.ts";
 import { handleRequest, type ProviderRequests } from "./provider-requests.ts";
+import type { Role } from "./roles.ts";
 import type { SessionEvent } from "./session.ts";
+import type { SessionLimits } from "./settings.ts";
 import type { AgentStore, Appended, Applied, NewNode } from "./store.ts";
 import { sessionNotFound } from "./store-rows.ts";
 import { WatchHub } from "./watch-hub.ts";
@@ -58,6 +60,9 @@ export interface RuntimeDeps {
   readonly watchBufferSize?: number;
   /** Start the hourly retention sweep and the budget check at `boot` (default true). */
   readonly timers?: boolean;
+  /** The roles (a parent's `spawn.maxChildren`) and the session limits (7B Task 6, `settings.ts`). */
+  readonly roles?: ReadonlyMap<string, Role>;
+  readonly limits?: Partial<SessionLimits>;
   /** Provider permission requests (7B Task 5); none: every request is declined by policy. */
   readonly requests?: ProviderRequests;
   /** Where the engine reports what it could not do (an outbox effect, a late provider error). */

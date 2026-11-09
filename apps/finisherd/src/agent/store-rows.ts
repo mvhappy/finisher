@@ -25,6 +25,9 @@ export interface NewSession {
   readonly rootBranch?: string;
   readonly base: { readonly branch: string; readonly seq: number };
   readonly parent?: string;
+  /** A child's (7B Task 6): the top of its tree and its depth below it; a root names neither. */
+  readonly rootSession?: string;
+  readonly depth?: number;
   readonly budget: BudgetSpec;
   readonly createdBy: Session["createdBy"];
   readonly title?: string;
@@ -101,11 +104,13 @@ export interface SessionRow {
   createdAt: number;
   endedAt: number | null;
   title: string | null;
+  rootSession: string | null;
+  depth: number;
 }
 
 export const SESSION_COLUMNS =
   "id, projectId, harness, provider, model, weights, role, mode, rootBranch, baseBranch, baseSeq, parent, status, " +
-  "statusReason, runId, approvals, credentialId, providerRef, budget, usage, createdBy, createdAt, endedAt, title";
+  "statusReason, runId, approvals, credentialId, providerRef, budget, usage, createdBy, createdAt, endedAt, title, rootSession, depth";
 
 export interface RunRow {
   id: string;
@@ -170,6 +175,8 @@ export function toSession(r: SessionRow): Session {
     ...opt("rootBranch", r.rootBranch),
     base: { branch: r.baseBranch, seq: r.baseSeq },
     ...opt("parent", r.parent),
+    // A root is its own root at depth 0: only a child names them.
+    ...(r.parent === null ? {} : { ...opt("rootSession", r.rootSession), depth: r.depth }),
     status: r.status as SessionStatus,
     ...opt("statusReason", r.statusReason),
     credentialId: r.credentialId,
@@ -258,6 +265,8 @@ export interface SessionQuery {
   /** Only these projects (the caller's reach); an empty list matches nothing. */
   readonly projects?: ReadonlyArray<string>;
   readonly status?: SessionStatus;
+  /** Only this session's children (7B Task 6: what a session may list). */
+  readonly parent?: string;
   /** A page's `next`: the last id it held. */
   readonly cursor?: string;
   readonly limit?: number;
@@ -317,7 +326,7 @@ export function sessionInsertArgs(s: NewSession, status: string, now: number): A
   return [
     s.id, s.projectId, s.harness, s.provider, s.model, s.weights, s.role, s.mode, s.rootBranch ?? null, s.base.branch, s.base.seq,
     s.parent ?? null, status, s.id, s.providerRef ?? null, JSON.stringify(s.budget), JSON.stringify(ZERO_USAGE), JSON.stringify(s.createdBy),
-    now, s.title ?? null,
+    now, s.title ?? null, s.rootSession ?? null, s.depth ?? 0,
   ];
 }
 
@@ -333,6 +342,7 @@ export function sessionListQuery(q: SessionQuery): { sql: string; args: string[]
   if (q.projectId !== undefined) add("projectId = ?", q.projectId);
   if (q.projects !== undefined) add("projectId IN (SELECT value FROM json_each(?))", JSON.stringify(q.projects));
   if (q.status !== undefined) add("status = ?", q.status);
+  if (q.parent !== undefined) add("parent = ?", q.parent);
   if (q.cursor !== undefined) add("id < ?", q.cursor);
   const sql = `SELECT ${SESSION_COLUMNS} FROM sessions ${where.length > 0 ? `WHERE ${where.join(" AND ")}` : ""} ORDER BY id DESC LIMIT ?`;
   return { sql, args, limit };
@@ -345,7 +355,7 @@ export function approvalExpired(id: string): FinError {
 
 /** Every statement `AgentStore` prepares, once, by name. */
 export const STORE_SQL: Readonly<Record<string, string>> = {
-  insertSession: `INSERT INTO sessions (${SESSION_COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, '[]', ?, ?, ?, ?, ?, ?, NULL, ?)`,
+  insertSession: `INSERT INTO sessions (${SESSION_COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, '[]', ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?)`,
   session: `SELECT ${SESSION_COLUMNS} FROM sessions WHERE id = ?`,
   setState: "UPDATE sessions SET status = ?, statusReason = ?, runId = ?, approvals = ?, endedAt = COALESCE(endedAt, ?) WHERE id = ?",
   live: "SELECT id FROM sessions WHERE status IN ('starting', 'running', 'waitingApproval') ORDER BY id",

@@ -7,7 +7,9 @@
 //   answers exactly what a missing one does: `SESSION_NOT_FOUND`, `APPROVAL_NOT_FOUND`); lists
 //   filter by the caller's projects (`projectsFilter`).
 // - **Start** passes the call's actor and the chain's guard (`{...actorFor(by, headers), guard}`),
-//   so the root branch is created exactly as the starter's own `branch.create` would be.
+//   so the root branch is created exactly as the starter's own `branch.create` would be. From a
+//   session it spawns a child of that session (7B Task 6; a `base` is refused: a child starts
+//   from its parent's branch); `agent.session.list` from a session lists its own children.
 // - **Watch** takes `fromNode` (a node id) as the seq after it, and a `WATCH_LAGGING` names the
 //   last node delivered (`lastNode`) beside its seq, so the client watches again from it.
 // - `agent.self` and `agent.self.try` (Task 7, Decision 14a): the calling session's own default
@@ -88,7 +90,17 @@ export function agentHandlers(deps: AgentRpcDeps) {
 
   return {
     "agent.session.start": (req: Parameters<typeof runtime.start>[0], options: Options) =>
-      guard("agent.session.start", Effect.suspend(() => runtime.start(req, by(options), metaOf(options)))),
+      guard("agent.session.start", Effect.suspend(() => {
+        const p = by(options);
+        const parent = p.kind === "agent" ? store.get(p.id) : undefined;
+        if (parent === undefined) return runtime.start(req, p, metaOf(options));
+        if (req.base !== undefined) return Effect.fail(finError("INVALID_REQUEST", "a child starts from its parent's branch", { field: "base", reason: "subagent" }, "spawn it without base"));
+        // Reach keeps a session to its project; a child is of its parent's in any case.
+        if (req.projectId !== parent.projectId) return Effect.fail(finError("PROJECT_NOT_FOUND", "no such project", { projectId: req.projectId }, "spawn children in your own project"));
+        return runtime.spawnChild(parent, req, p, metaOf(options));
+      })),
+    "agent.session.wait": ({ ids, any, timeoutMs }: { ids: ReadonlyArray<string>; any?: boolean; timeoutMs: number }, options: Options) =>
+      guard("agent.session.wait", Effect.map(runtime.waitChildren(by(options), ids, any === true, timeoutMs), (children) => ({ children }))),
     "agent.session.prompt": ({ sessionId, text, attachments }: { sessionId: string; text: string; attachments?: ReadonlyArray<unknown> }, options: Options) =>
       onSession("agent.session.prompt", options, sessionId, (s, p) => Effect.map(runtime.prompt(s.id, text, p, attachments), (run) => ({ run }))),
     "agent.session.steer": ({ sessionId, text }: { sessionId: string; text: string }, options: Options) =>
@@ -101,8 +113,11 @@ export function agentHandlers(deps: AgentRpcDeps) {
       onSession("agent.session.end", options, sessionId, (s, p) => Effect.map(runtime.end(s.id, p), (session) => ({ session }))),
     "agent.session.list": (q: { projectId?: string; status?: Session["status"]; cursor?: string; limit?: number }, options: Options) =>
       guard("agent.session.list", sync(() => {
-        const projects = projectsFilter(by(options));
-        return store.list({ ...q, ...(projects === undefined ? {} : { projects }) });
+        const p = by(options);
+        const projects = projectsFilter(p);
+        // A session sees its own children only (7B Task 6: `fin agent ls`).
+        const own = p.kind === "agent" && store.get(p.id) !== undefined ? { parent: p.id } : {};
+        return store.list({ ...q, ...(projects === undefined ? {} : { projects }), ...own });
       })),
     "agent.session.get": ({ sessionId }: { sessionId: string }, options: Options) =>
       onSession("agent.session.get", options, sessionId, (s) =>

@@ -5,6 +5,8 @@ import { describe, expect, it } from "vitest";
 import {
   AgentApprovalAnswerPayload,
   AgentApprovalWaitPayload,
+  AgentSessionWaitPayload,
+  SubagentNodePayload,
   APPROVAL_WAIT_MAX_MS,
   Approval,
   AgentSessionStartPayload,
@@ -131,6 +133,7 @@ const AGENT_RPCS = [
   "agent.session.interrupt",
   "agent.session.resume",
   "agent.session.end",
+  "agent.session.wait",
   "agent.session.list",
   "agent.session.get",
   "agent.session.delete",
@@ -194,15 +197,17 @@ describe("the group", () => {
 
 /** Every agent RPC: its own scopes and who may call it (spec §3.5; plan 7A Task 2). */
 const TABLE: Record<AgentTag, { scopes: string[]; kinds?: string[]; confirmed?: boolean }> = {
-  "agent.session.start": { scopes: ["agent.run"], kinds: ["local", "console", "device"] },
-  "agent.session.prompt": { scopes: ["agent.run"], kinds: ["local", "console", "device"] },
-  "agent.session.steer": { scopes: ["agent.run"], kinds: ["local", "console", "device"] },
-  "agent.session.interrupt": { scopes: ["agent.run"], kinds: ["local", "console", "device"] },
+  "agent.session.start": { scopes: ["agent.run"], kinds: ["local", "console", "device", "agent"] },
+  "agent.session.prompt": { scopes: ["agent.run"], kinds: ["local", "console", "device", "agent"] },
+  "agent.session.steer": { scopes: ["agent.run"], kinds: ["local", "console", "device", "agent"] },
+  "agent.session.interrupt": { scopes: ["agent.run"], kinds: ["local", "console", "device", "agent"] },
   "agent.session.resume": { scopes: ["agent.run"], kinds: ["local", "console", "device"] },
-  "agent.session.end": { scopes: ["agent.run"], kinds: ["local", "console", "device"] },
+  "agent.session.end": { scopes: ["agent.run"], kinds: ["local", "console", "device", "agent"] },
+  // 7B Decision 16: a parent drives its own children (the stage-4 check); waits on them too.
+  "agent.session.wait": { scopes: ["agent.run"], kinds: ["local", "console", "device", "agent"] },
   "agent.session.list": { scopes: ["agent.read"] },
   "agent.session.get": { scopes: ["agent.read"] },
-  "agent.session.delete": { scopes: ["agent.admin"], confirmed: true },
+  "agent.session.delete": { scopes: ["agent.admin"], kinds: ["local", "console", "device"], confirmed: true },
   "agent.watch": { scopes: ["agent.read"] },
   "agent.approval.list": { scopes: ["agent.read"] },
   "agent.approval.answer": { scopes: ["agent.approve"], confirmed: true },
@@ -264,6 +269,23 @@ describe("scopes", () => {
     for (const payload of [{ projectId: "p" }, { projectId: "p", mode: "draft" }, { projectId: "p", mode: "auto" }]) {
       expect(requiredScopes("agent.session.start", payload), JSON.stringify(payload)).toEqual(["agent.run", "project.read", "project.write"]);
     }
+  });
+});
+
+describe("agent.session.wait and the subagent node (7B Task 6)", () => {
+  it("caps the wait at 90 s and 16 sessions", () => {
+    const decode = Schema.decodeUnknownExit(AgentSessionWaitPayload);
+    expect(decode({ ids: ["s1"], timeoutMs: 90_000 })._tag).toBe("Success");
+    expect(decode({ ids: ["s1", "s2"], any: true, timeoutMs: 0 })._tag).toBe("Success");
+    for (const bad of [{ ids: [], timeoutMs: 1 }, { ids: ["s1"], timeoutMs: 90_001 }, { ids: Array.from({ length: 17 }, (_, i) => `s${i}`), timeoutMs: 1 }]) {
+      expect(decode(bad)._tag, JSON.stringify(bad).slice(0, 40)).toBe("Failure");
+    }
+  });
+
+  it("a subagent node names the child, its status, branch and summary", () => {
+    const decode = Schema.decodeUnknownExit(SubagentNodePayload);
+    expect(decode({ child: "c1", status: "ended", reason: "briefDone", branch: "br3", summary: "done" })._tag).toBe("Success");
+    expect(decode({ child: "c1", status: "gone" })._tag).toBe("Failure");
   });
 });
 

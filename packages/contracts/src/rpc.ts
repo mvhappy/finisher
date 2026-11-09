@@ -47,6 +47,8 @@ import {
   AgentSessionStartSuccess,
   AgentSessionSteerPayload,
   AgentSessionSteerSuccess,
+  AgentSessionWaitPayload,
+  AgentSessionWaitSuccess,
   AgentWatchPayload,
   WatchItem,
 } from "./agent.ts";
@@ -567,6 +569,7 @@ export const FinRpcs = RpcGroup.make(
   Rpc.make("agent.session.interrupt", { payload: AgentSessionControlPayload, success: AgentSessionControlSuccess, error: FinError }),
   Rpc.make("agent.session.resume", { payload: AgentSessionControlPayload, success: AgentSessionControlSuccess, error: FinError }),
   Rpc.make("agent.session.end", { payload: AgentSessionControlPayload, success: AgentSessionControlSuccess, error: FinError }),
+  Rpc.make("agent.session.wait", { payload: AgentSessionWaitPayload, success: AgentSessionWaitSuccess, error: FinError }),
   Rpc.make("agent.session.list", { payload: AgentSessionListPayload, success: AgentSessionListSuccess, error: FinError }),
   Rpc.make("agent.session.get", { payload: AgentSessionGetPayload, success: AgentSessionGetSuccess, error: FinError }),
   Rpc.make("agent.session.delete", { payload: AgentSessionDeletePayload, success: AgentSessionDeleteSuccess, error: FinError }),

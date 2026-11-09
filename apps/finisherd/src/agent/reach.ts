@@ -17,6 +17,13 @@
 // - **Nothing outside its branches changes:** `project.acknowledgeSalvage` (project state, no
 //   branch) and the diagnostics settings (`diagnostics.project`, `.consent`, `.purge`) are
 //   refused to sessions too (`SCOPE_DENIED {reason: agentSession}`); their reads stay open.
+// - **Children (7B Decisions 16, 18):** a session drives its own children only: a
+//   `agent.session.prompt|steer|interrupt|end|wait` naming any other session (a sibling, its
+//   parent, another tree's) is `SESSION_NOT_FOUND`, as a missing one; an `agent` credential
+//   that is no session's drives none (`SCOPE_DENIED {reason: noSession}`). A live session's
+//   root branch and the branches beneath it are that session's alone: every other session's
+//   reach (its parent's, whose subtree holds it) excludes them until it ends; reads stay open,
+//   so a parent merges a child's branch into its own.
 // - **Author and `session_txs`:** every write carries the session's author
 //   (`agent:<role>:<sessionId>`), whatever it sent, and every commit, undo, redo, revert,
 //   cherry-pick and merge it makes is recorded in `session_txs` after the engine answers,
@@ -37,6 +44,8 @@ import type { SessionTx } from "./store-tables.ts";
 /** What reach reads of the agent store (`AgentStore` is one). */
 export interface SessionSource {
   get(sessionId: string): Session | undefined;
+  /** The root branches of a project's sessions that have not ended (`SessionTree.liveRoots`). */
+  readonly tree?: { liveRoots(projectId: string): ReadonlyArray<{ readonly id: string; readonly rootBranch: string }> };
   recordTx(t: { txId: string; sessionId: string; callId: string | null; attribution: SessionTx["attribution"]; at: number }): void;
 }
 
@@ -157,10 +166,26 @@ export class BranchReach {
       // from `main` would be outside its subtree from birth).
       const from = (payload as { from?: unknown } | null)?.from;
       if (tag === "branch.create" && typeof from === "string") targets.push(yield* this.#projects.resolveBranch(projectId, from));
-      const sub = yield* this.#lineage.subtree(this.#projects, projectId, session.rootBranch, targets);
+      const sub = yield* this.#reach(session, targets);
       const outside = targets.find((t) => !sub.has(t));
       if (outside !== undefined) return yield* Effect.fail(branchNotAllowed(tag, outside));
       return [...sub];
+    });
+  }
+
+  /**
+   * `session`'s subtree without the subtrees rooted at other live sessions' roots (its live
+   * children's, Decision 18). `want`: branches the call names (a new one reads the index again).
+   */
+  #reach(session: Session, want: ReadonlyArray<string>): Effect.Effect<Set<string>, FinError> {
+    return Effect.gen({ self: this }, function* () {
+      const projectId = session.projectId;
+      const sub = new Set(yield* this.#lineage.subtree(this.#projects, projectId, session.rootBranch!, want));
+      for (const other of this.#sessions.tree?.liveRoots(projectId) ?? []) {
+        if (other.id === session.id || other.rootBranch === session.rootBranch || !sub.has(other.rootBranch)) continue;
+        for (const b of yield* this.#lineage.subtree(this.#projects, projectId, other.rootBranch)) sub.delete(b);
+      }
+      return sub;
     });
   }
 
@@ -169,7 +194,7 @@ export class BranchReach {
     return Effect.gen({ self: this }, function* () {
       if (session.rootBranch === undefined) return yield* Effect.fail(branchNotAllowed(tag, branch));
       const id = yield* this.#projects.resolveBranch(session.projectId, branch);
-      const sub = yield* this.#lineage.subtree(this.#projects, session.projectId, session.rootBranch, [id]);
+      const sub = yield* this.#reach(session, [id]);
       return sub.has(id) ? id : yield* Effect.fail(branchNotAllowed(tag, id));
     });
   }
@@ -239,7 +264,31 @@ export const SESSION_REFUSED_RPCS: ReadonlySet<string> = new Set([
  * 5: it holds it for its own approval cards, `agent.approval.wait|list`): other sessions'
  * transcripts and state, and the rules, stay people's.
  */
-export const SESSION_PEOPLE_READS: ReadonlySet<string> = new Set(["agent.session.list", "agent.session.get", "agent.watch", "agent.rules.list"]);
+export const SESSION_PEOPLE_READS: ReadonlySet<string> = new Set(["agent.session.get", "agent.watch", "agent.rules.list"]);
+
+/** The RPCs a session calls on its own children only (7B Decision 16): `sessionId`, or `ids` of a wait. */
+export const CHILD_RPCS: ReadonlySet<string> = new Set(["agent.session.prompt", "agent.session.steer", "agent.session.interrupt", "agent.session.end", "agent.session.wait"]);
+
+/**
+ * Stage 4 for the session RPCs an agent may call (Decision 16): a session starts children and
+ * drives its own; an `agent` credential that is no session's does neither.
+ */
+function childCheck(tag: string, principal: Principal, payload: unknown, deps: AgentHookDeps): Effect.Effect<void, FinError> {
+  if (principal.kind !== "agent" || (tag !== "agent.session.start" && !CHILD_RPCS.has(tag))) return Effect.void;
+  if (!deps.reach.covers(principal)) {
+    return Effect.fail(finError("SCOPE_DENIED", `${tag} is for a session's own children`, { tag, scopes: [], principal: "agent", reason: "noSession" }, "Run it from inside an agent session, or as a person."));
+  }
+  if (tag === "agent.session.start") return Effect.void;
+  const p = payload as { sessionId?: unknown; ids?: unknown } | null;
+  const ids = tag === "agent.session.wait" ? (Array.isArray(p?.ids) ? p.ids : []) : [p?.sessionId];
+  for (const id of ids) {
+    const s = typeof id === "string" ? deps.sessions.get(id) : undefined;
+    if (s?.parent !== principal.id) {
+      return Effect.fail(finError("SESSION_NOT_FOUND", "no such agent session", { sessionId: typeof id === "string" ? id : "" }, "list your children with `fin agent ls`"));
+    }
+  }
+  return Effect.void;
+}
 
 /** `SCOPE_DENIED` for a session calling one of `SESSION_REFUSED_RPCS`. */
 function refusedToSessions(tag: string): FinError {
@@ -262,8 +311,10 @@ export function agentChainHooks(deps: AgentHookDeps): ChainHooks {
   const clock = deps.clock ?? Date.now;
   return {
     extraRoots: (principal, only) => deps.paths.extra(principal, only),
-    authorize: (tag, principal) =>
-      (SESSION_REFUSED_RPCS.has(tag) || SESSION_PEOPLE_READS.has(tag)) && deps.reach.covers(principal) ? Effect.fail(refusedToSessions(tag)) : Effect.void,
+    authorize: (tag, principal, resolved) =>
+      (SESSION_REFUSED_RPCS.has(tag) || SESSION_PEOPLE_READS.has(tag)) && deps.reach.covers(principal)
+        ? Effect.fail(refusedToSessions(tag))
+        : childCheck(tag, principal, resolved.payload, deps),
     authorOf: (principal) => {
       const s = deps.reach.sessionOf(principal);
       return s === undefined ? undefined : sessionAuthor(s);

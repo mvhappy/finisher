@@ -16,7 +16,12 @@
 //   same field, and the CLI lists its own models, so a bundled role names none for them.
 // - **Tools**: the role's allow-set rides on the plan (7D builds `--disallowedTools` from it).
 // - **Budget**: the role's, which the starter may lower or fill in.
-import type { Harness, Principal, Weights } from "@finisher/contracts";
+// - **A child** (7B Decision 17, `parent` given): its role must be in the parent role's
+//   `spawn.roles` (`ROLE_UNKNOWN` otherwise, also with no role named); its mode at most the
+//   parent's and the role's ceiling (`MODE_INVALID`; the default is the role's, lowered to the
+//   parent's); its harness and preset the parent's unless given. Its budget is the role's,
+//   lowered by the request (Task 7 replaces this with a carve from the parent's).
+import type { Harness, Mode, Principal, Session, Weights } from "@finisher/contracts";
 import { finError } from "../errors.ts";
 import type { Catalogue } from "./catalogue/catalogue.ts";
 import { OPENROUTER_ID } from "./catalogue/prices.ts";
@@ -46,14 +51,18 @@ function modelUnknown(model: string | undefined, reason: string, fix: string): n
 
 export function sessionPlanner(deps: PlannerDeps): SessionPlanner {
   return {
-    async plan(req: StartRequest, _by: Principal): Promise<SessionPlan> {
-      const roleName = req.role ?? "editor";
+    async plan(req: StartRequest, _by: Principal, parent?: Session): Promise<SessionPlan> {
+      const roleName = req.role ?? (parent === undefined ? "editor" : "");
+      if (parent !== undefined) childRole(deps.roles, parent, roleName);
       const role = deps.roles.get(roleName) ?? roleUnknown(roleName, deps.roles);
-      const mode = req.mode ?? role.defaultMode;
+      const mode = req.mode ?? (parent === undefined ? role.defaultMode : lower(role.defaultMode, parent.mode));
+      if (parent !== undefined && MODE_RANK[mode] > MODE_RANK[parent.mode]) {
+        throw finError("MODE_INVALID", `a child works in its parent's ${parent.mode} mode at most`, { mode, parentMode: parent.mode, role: role.name }, `spawn it in ${parent.mode} mode or below`);
+      }
       if (MODE_RANK[mode] > MODE_RANK[role.modeCeiling]) {
         throw finError("MODE_INVALID", `the ${role.name} role works in ${role.modeCeiling} mode at most`, { mode, ceiling: role.modeCeiling, role: role.name }, `start it in ${role.modeCeiling} mode or below`);
       }
-      const harness = req.harness ?? "builtin";
+      const harness = req.harness ?? parent?.harness ?? "builtin";
       if (!deps.harnesses().has(harness)) harnessUnknown(harness);
       const budget = budgetFor(role, req.budget);
       const base = { harness, role: role.name, mode, budget, tools: role.tools.allow };
@@ -62,7 +71,7 @@ export function sessionPlanner(deps: PlannerDeps): SessionPlanner {
         return { ...base, provider: "local", model: req.model ?? "fake", weights: "unknown" };
       }
       if (harness !== "builtin") harnessUnknown(harness);
-      const preset = req.provider ?? "openrouter";
+      const preset = req.provider ?? (parent?.provider === "local" ? "local" : "openrouter");
       if (preset === "local") return { ...base, provider: "local", ...(await localModel(deps, req.model ?? roleModel(role, harness, "local"))) };
       const model = req.model ?? roleModel(role, harness, "openrouter");
       if (model === undefined || !OPENROUTER_ID.test(model)) {
@@ -79,6 +88,20 @@ export function sessionPlanner(deps: PlannerDeps): SessionPlanner {
       return { ...base, provider: "openrouter", model, weights: info.weights as Weights };
     },
   };
+}
+
+const lower = (a: Mode, b: Mode): Mode => (MODE_RANK[a] <= MODE_RANK[b] ? a : b);
+
+/** `ROLE_UNKNOWN` unless `parent`'s role may spawn `name` (7B Decision 17). */
+function childRole(roles: ReadonlyMap<string, Role>, parent: Session, name: string): void {
+  const allowed = roles.get(parent.role)?.spawn?.roles ?? [];
+  if (allowed.includes(name) && roles.has(name)) return;
+  throw finError(
+    "ROLE_UNKNOWN",
+    name === "" ? "a child needs a role" : `a ${parent.role} session may not spawn a ${name} child`,
+    { role: name, parentRole: parent.role, roles: [...allowed] },
+    allowed.length === 0 ? `a ${parent.role} session spawns no children` : `spawn one of: ${allowed.join(", ")}`,
+  );
 }
 
 async function localModel(deps: PlannerDeps, model: string | undefined): Promise<{ model: string; weights: Weights }> {

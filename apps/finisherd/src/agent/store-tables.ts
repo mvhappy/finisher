@@ -226,3 +226,64 @@ export class DbLedger implements LedgerStore {
     return { used: r.used, reserved: r.reserved };
   }
 }
+
+/**
+ * The session tree (7B Task 6): parents, children and what is live, over `sessions`
+ * (`parent`, `rootSession`, `depth`, agent migration 0004), and a session's last assistant
+ * message (a child's summary).
+ */
+export class SessionTree {
+  readonly #s: Record<string, StatementSync>;
+
+  constructor(store: ControlStore) {
+    const sql: Record<string, string> = {
+      children: "SELECT id FROM sessions WHERE parent = ? ORDER BY id",
+      liveChildren: "SELECT id FROM sessions WHERE parent = ? AND status != 'ended' ORDER BY id",
+      liveBelow: "SELECT COUNT(*) AS n FROM sessions WHERE rootSession = ? AND id != ? AND status != 'ended'",
+      liveBelowIds: "SELECT id FROM sessions WHERE rootSession = ? AND id != ? AND status != 'ended' ORDER BY depth DESC, id",
+      liveRoots: "SELECT id, rootBranch FROM sessions WHERE projectId = ? AND status != 'ended' AND rootBranch IS NOT NULL",
+      active: "SELECT id, harness FROM sessions WHERE status IN ('running', 'waitingApproval')",
+      lastAssistant: "SELECT seq FROM nodes WHERE sessionId = ? AND kind = 'assistantMessage' ORDER BY seq DESC LIMIT 1",
+    };
+    this.#s = Object.fromEntries(Object.entries(sql).map(([k, q]) => [k, store.db.prepare(q)]));
+  }
+
+  #ids(name: string, ...args: string[]): string[] {
+    return (this.#s[name]!.all(...args) as { id: string }[]).map((r) => r.id);
+  }
+
+  /** Every child of `parent`, ended ones too, oldest first. */
+  children(parent: string): string[] {
+    return this.#ids("children", parent);
+  }
+
+  /** The children of `parent` that have not ended. */
+  liveChildren(parent: string): string[] {
+    return this.#ids("liveChildren", parent);
+  }
+
+  /** How many sessions below the root session `root` have not ended. */
+  liveDescendants(root: string): number {
+    return (this.#s.liveBelow!.get(root, root) as { n: number }).n;
+  }
+
+  /** The sessions below `root` that have not ended, deepest first. */
+  liveDescendantIds(root: string): string[] {
+    return this.#ids("liveBelowIds", root, root);
+  }
+
+  /** The root branches of `projectId`'s sessions that have not ended (Decision 18). */
+  liveRoots(projectId: string): Array<{ readonly id: string; readonly rootBranch: string }> {
+    return this.#s.liveRoots!.all(projectId) as Array<{ id: string; rootBranch: string }>;
+  }
+
+  /** The sessions in a run (`running`, `waitingApproval`) and their harnesses (Decision 19). */
+  active(): Array<{ readonly id: string; readonly harness: string }> {
+    return this.#s.active!.all() as Array<{ id: string; harness: string }>;
+  }
+
+  /** The seq of the session's last `assistantMessage` node, if any. */
+  lastAssistantSeq(sessionId: string): number | undefined {
+    return (this.#s.lastAssistant!.get(sessionId) as { seq: number } | undefined)?.seq;
+  }
+}

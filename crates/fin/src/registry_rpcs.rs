@@ -261,6 +261,12 @@ pub const ROWS: &[Row] = &[
         rpc!("agent.approval.list"),
         &["sessionId", "status"]
     ),
+    // 7B Task 6: `send` is a steer, which prompts an idle child itself; `ls` lists children.
+    row!("agent.spawn", rpc!("agent.session.start"), &["role"]),
+    row!("agent.wait", rpc!("agent.session.wait"), &["ids"]),
+    row!("agent.ls", rpc!("agent.session.list"), NONE),
+    row!("agent.send", rpc!("agent.session.steer"), &["sessionId"]),
+    row!("agent.stop", rpc!("agent.session.end"), &["sessionId"]),
     row!("help", rpc!(), NONE),
     row!("whoami", rpc!(), NONE),
     row!("schema", rpc!(), NONE),

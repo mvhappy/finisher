@@ -32,9 +32,11 @@ export interface SessionPlanner {
    * Decision 15.1: role (`editor`), mode (`draft`, at most the role's ceiling), harness
    * (`builtin`), preset (`openrouter`), model and weights; the OpenRouter key or the local
    * endpoint checked. Fails `ROLE_UNKNOWN`, `MODE_INVALID`, `MODEL_UNKNOWN`, `PROVIDER_AUTH`,
-   * `PROVIDER_UNAVAILABLE` as a `FinError`.
+   * `PROVIDER_UNAVAILABLE` as a `FinError`. With `parent` (a child, 7B Decision 17): the role
+   * must be one the parent's role may spawn (`ROLE_UNKNOWN`), the mode at most the parent's
+   * (`MODE_INVALID`), the harness and preset the parent's unless given.
    */
-  plan(req: StartRequest, by: Principal): Promise<SessionPlan>;
+  plan(req: StartRequest, by: Principal, parent?: Session): Promise<SessionPlan>;
 }
 
 /** What a provider instance is opened with (spec §4.1, §8.5). */

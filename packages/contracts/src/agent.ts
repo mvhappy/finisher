@@ -76,6 +76,9 @@ export const Session = Schema.Struct({
   /** The branch and revision it was started from. */
   base: Schema.Struct({ branch: Schema.String, seq: Count }),
   parent: Schema.optionalKey(Id),
+  /** A child's (7B): the session at the top of its tree, and how far below it (1–3). Absent on a root. */
+  rootSession: Schema.optionalKey(Id),
+  depth: Schema.optionalKey(Count),
   status: SessionStatus,
   /** The code that interrupted or ended it (`serverRestart`, `BUDGET_EXCEEDED`, …). */
   statusReason: Schema.optionalKey(Schema.String),
@@ -331,6 +334,39 @@ export const AgentApprovalWaitPayload = Schema.Struct({
 export type AgentApprovalWaitPayload = typeof AgentApprovalWaitPayload.Type;
 /** An allowed approval (deny or expiry is `APPROVAL_DENIED`, a timeout `APPROVAL_PENDING`). */
 export const AgentApprovalWaitSuccess = Schema.Struct({ approval: Approval });
+
+/** At most this many sessions in one `agent.session.wait`. */
+export const AGENT_WAIT_IDS_MAX = 16;
+/** The longest `agent.session.wait` (7B Decision 21), as `agent.approval.wait`'s. */
+export const SESSION_WAIT_MAX_MS = APPROVAL_WAIT_MAX_MS;
+
+/**
+ * What became of a child (7B Decisions 20, 21): its status (`ended` with reason `briefDone`
+ * when its brief ran to the end), its root branch (absent in `plan`) and its summary, the final
+ * assistant message of its last run. Also the payload of the parent's `subagent` node.
+ */
+export const ChildResult = Schema.Struct({
+  child: Id,
+  status: SessionStatus,
+  reason: Schema.optionalKey(Schema.String),
+  branch: Schema.optionalKey(Schema.String),
+  summary: Schema.optionalKey(Schema.String),
+});
+export type ChildResult = typeof ChildResult.Type;
+export const SubagentNodePayload = ChildResult;
+
+/**
+ * `agent.session.wait {ids, any, timeoutMs ≤ 90000}` (`fin agent wait`): blocks until every child
+ * (`any`: one) is done (idle after a run, interrupted or ended), at most `timeoutMs`; then
+ * `WAIT_TIMEOUT` (exit 5, repeatable). A session waits on its own children only.
+ */
+export const AgentSessionWaitPayload = Schema.Struct({
+  ids: Schema.Array(Id).check(Schema.isMinLength(1), Schema.isMaxLength(AGENT_WAIT_IDS_MAX)),
+  any: Schema.optionalKey(Schema.Boolean),
+  timeoutMs: Count.check(Schema.isLessThanOrEqualTo(SESSION_WAIT_MAX_MS)),
+});
+export type AgentSessionWaitPayload = typeof AgentSessionWaitPayload.Type;
+export const AgentSessionWaitSuccess = Schema.Struct({ children: Schema.Array(ChildResult) });
 
 /** What an adapter can do (spec §4.1). */
 export const Capabilities = Schema.Struct({

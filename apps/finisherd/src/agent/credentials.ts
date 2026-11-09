@@ -34,8 +34,9 @@ import type { AgentStore, NewSession, OutboxItem } from "./store.ts";
 
 /**
  * The scopes of each mode (spec §6.1), as far as 7A has them: `jobs.submit` waits for 5C and
- * `review.write` for 5E, `auto`'s render and critic jobs for 5C and sub-project 10, and a
- * parent's `agent.run` for its children for 7B. No mode holds `project.create`, a human-only
+ * `review.write` for 5E, `auto`'s render and critic jobs for 5C and sub-project 10. `draft`
+ * and `auto` hold `agent.run` (7B Decision 16): a session starts and drives its own children
+ * only (`reach.ts`); a credential minted before 7B keeps its scopes, so it cannot spawn. No mode holds `project.create`, a human-only
  * scope, `branch.protected`, `review.decide`, `jobs.control`, `project.admin` or `fonts.fetch`;
  * `project.open` is refused to sessions by the chain (`reach.ts`). `diagnostics.record` lets
  * the session's `fin` record its own diagnostics, as every minted credential's default does.
@@ -44,7 +45,7 @@ export const MODE_SCOPES: { readonly [M in Mode]: ReadonlyArray<Scope> } = (() =
   // `agent.read` (7B Task 5): a session waits on and lists its own approval cards; every other
   // `agent.read` RPC stays people's (`SESSION_PEOPLE_READS`, `reach.ts`).
   const plan: ReadonlyArray<Scope> = ["server.read", "project.read", "library.read", "jobs.read", "diagnostics.read", "diagnostics.record", "agent.read"];
-  const draft: ReadonlyArray<Scope> = [...plan, "project.write"];
+  const draft: ReadonlyArray<Scope> = [...plan, "project.write", "agent.run"];
   return { plan, draft, auto: draft };
 })();
 
@@ -310,21 +311,33 @@ export interface OpenSession extends Omit<NewSession, "id" | "rootBranch" | "bas
    * another live session's root (`BRANCH_IN_USE`). `base` is then that branch.
    */
   readonly root?: string;
+  /**
+   * A child's (7B Task 6): the parent's root branch (an id), whose name prefixes the new root's:
+   * `<parent root name>.<role>-<n>`.
+   */
+  readonly under?: string;
   readonly budget: BudgetSpec;
 }
 
+/** fin-store's longest branch name (`fin-core` `NAME_MAX`). */
+const BRANCH_NAME_MAX = 64;
+
 /**
- * The next free `agent.<role>-<n>` (display only; ids stay `br<n>`). The spec's
- * `agent/<role>-<n>` cannot be a branch name: fin-store allows letters, digits, `.`, `_`, `-`.
+ * The next free `<prefix>.<role>-<n>` (display only; ids stay `br<n>`), `prefix` `agent` for a
+ * root and the parent root's name for a child (7B). The spec's `agent/<role>-<n>` and
+ * `<parent>/<role>-<n>` cannot be branch names: fin-store allows letters, digits, `.`, `_`, `-`.
+ * A child's name longer than fin-store allows falls back to `agent.<role>-<n>`.
  */
-export function nextBranchName(branches: ReadonlyArray<{ readonly name: string }>, role: string): string {
-  const re = new RegExp(`^agent\\.${role}-(\\d+)$`);
+export function nextBranchName(branches: ReadonlyArray<{ readonly name: string }>, role: string, prefix = "agent"): string {
+  const esc = prefix.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const re = new RegExp(`^${esc}\\.${role}-(\\d+)$`);
   let n = 0;
   for (const b of branches) {
     const m = re.exec(b.name);
     if (m !== null) n = Math.max(n, Number(m[1]));
   }
-  return `agent.${role}-${n + 1}`;
+  const name = `${prefix}.${role}-${n + 1}`;
+  return name.length <= BRANCH_NAME_MAX || prefix === "agent" ? name : nextBranchName(branches, role);
 }
 
 /**
@@ -353,13 +366,13 @@ export function openSession(
       const made = yield* deps.ops.createBranch(req.projectId, {
         txId: deps.ids.ulid(),
         author: sessionAuthor({ role: req.role, id }),
-        name: nextBranchName(branches, req.role),
+        name: nextBranchName(branches, req.role, req.under === undefined ? undefined : branches.find((b) => b.id === req.under)?.name),
         from: base.id,
         at: { seq: base.head },
       });
       root = made.id;
     }
-    const { base: _base, root: _root, ...rest } = req;
+    const { base: _base, root: _root, under: _under, ...rest } = req;
     const session = yield* Effect.tryPromise({
       try: () => deps.store.createSession({ ...rest, id, base: { branch: base.id, seq: base.head }, ...(root === undefined ? {} : { rootBranch: root }) }),
       catch: toFinError,

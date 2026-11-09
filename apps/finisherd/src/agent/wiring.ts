@@ -255,6 +255,9 @@ export const buildAgentRuntime = (d: AgentWiringDeps): Effect.Effect<AgentRuntim
       tools: { builtin: waitingOnApprovals(builtinTools({ finPath, projectDirOf: d.registry.dirOf, ...(settings.toolTimeoutS === undefined ? {} : { timeoutMs: settings.toolTimeoutS * 1000 }) }), () => approvals) },
       journal: core.journal,
       pricing: cataloguePricing(catalogue),
+      // Children's roles and limits, live limits (7B Task 6).
+      roles,
+      ...(settings.limits === undefined ? {} : { limits: settings.limits }),
       ...(settings.retentionDays === undefined ? {} : { retentionDays: settings.retentionDays }),
       ...(d.options?.timers === undefined ? {} : { timers: d.options.timers }),
       log: (message, details) => log(`${message} ${JSON.stringify(details)}`),

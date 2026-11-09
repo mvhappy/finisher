@@ -40,6 +40,7 @@ pub static RPC_METHODS: NameTable = NameTable::new(
         "agent.session.resume",
         "agent.session.start",
         "agent.session.steer",
+        "agent.session.wait",
         "agent.watch",
         "asset.probe",
         "auth.audit.list",

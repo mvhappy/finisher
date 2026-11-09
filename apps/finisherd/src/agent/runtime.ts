@@ -11,13 +11,17 @@
 // - A start of a non-local model without a price is refused (`PRICING_UNKNOWN`); every start
 //   answers the persistent warnings (`SANDBOX_DISABLED` until 7C, owner decision F2).
 // - Every command runs in its session's queue, after the events and commands before it.
+// - Children (7B Task 6, `subagents.ts`): `spawnChild` starts one for a parent session,
+//   `waitChildren` waits on them; after every transition the subagents see it (a brief's end,
+//   the parent's `subagent` node, the cascade) and the live limits (`live-limits.ts`) start
+//   the queued runs a freed slot admits.
 // - A session's provider instance is opened at its first run (with its resume reference) and
 //   kept while the session is `idle`; interrupt, end and any provider exit close it.
 // - The store and session credentials are Task 7's `AgentCore` (one per server, `AgentCoreTag`);
 //   a start opens through its `openSession`, the outbox's credential effects go to
 //   `core.credentials.handle`, and a resume refreshes the credential first. The journal is
 //   Task 10's (`RuntimeJournal`); the built-in tools are 8b's (`ToolExecutor`).
-import type { AgentWarning, Approval, ApprovalDecision, FinError, Principal, Run, RunTrigger, Session, WatchItem } from "@finisher/contracts";
+import type { AgentWarning, Approval, ApprovalDecision, ChildResult, FinError, Principal, Run, RunTrigger, Session, WatchItem } from "@finisher/contracts";
 import { Cause, Effect, Exit, Option, type Stream } from "effect";
 import type { CallMeta } from "../diagnostics.ts";
 import { finError, toFinError } from "../errors.ts";
@@ -26,7 +30,11 @@ import { openSession, registryBranchOps } from "./credentials.ts";
 import { type RuntimeDeps, RuntimeEngine } from "./runtime-engine.ts";
 import { budgetError, harnessUnknown, pricingUnknown, type StartRequest } from "./runtime-deps.ts";
 import { call, closeLive } from "./runtime-live.ts";
-import type { Recovery } from "./store.ts";
+import { LiveLimits } from "./live-limits.ts";
+import { BUNDLED_ROLES } from "./roles.ts";
+import { DEFAULT_LIMITS } from "./settings.ts";
+import type { Applied, Recovery } from "./store.ts";
+import { type ChildOpen, Subagents } from "./subagents.ts";
 import { agentWarnings } from "./warnings.ts";
 
 export type { RuntimeDeps } from "./runtime-engine.ts";
@@ -65,9 +73,31 @@ export class Runtime extends RuntimeEngine {
   #timers: ReturnType<typeof setInterval>[] = [];
   #booted = false;
   #closed = false;
+  readonly #limits: LiveLimits;
+  readonly subagents: Subagents;
 
   constructor(deps: RuntimeDeps) {
     super(deps);
+    const limits = () => ({ ...DEFAULT_LIMITS, ...deps.limits });
+    this.#limits = new LiveLimits({
+      max: () => ({ builtin: limits().maxLiveBuiltin, provider: limits().maxLiveProviders }),
+      active: () => this.store.tree.active(),
+      current: (id, runId) => this.store.get(id)?.status === "running" && this.store.activeRun(id) === runId,
+    });
+    this.subagents = new Subagents({ store: this.store, roles: deps.roles ?? BUNDLED_ROLES, limits, live: this.#limits, clock: this.clock });
+    this.subagents.bind({
+      background: (id, what, f) => this.background(id, what, f),
+      endIn: async (id, reason) => {
+        if (this.store.get(id)?.status !== "ended") await this.#endIn(id, reason);
+        this.forgetBudget(id);
+      },
+      interruptIn: async (id, reason) => {
+        const st = this.store.get(id)?.status;
+        if (st !== undefined && st !== "interrupted" && st !== "ended") await this.#interruptIn(id, reason);
+      },
+      append: async (n) => void (await this.append(n)),
+      startQueued: (q) => this.background(q.sessionId, "a queued run", () => this.#begin(q.sessionId, q.runId, q.texts[0]!, q.texts.slice(1)).catch(() => {})),
+    });
     // A provider card is settled at its `expiresAt`, not only by the hourly sweep (7B Task 5).
     deps.requests?.bind({ clock: this.clock, expire: () => this.expireApprovals() });
   }
@@ -157,10 +187,11 @@ export class Runtime extends RuntimeEngine {
    * 2–5 in Task 7's `openSession` (the root branch `agent.<role>-<n>` created as the starter,
    * whose actor and guard `meta` carries; the record; the credential; `idle`), then the first run.
    */
-  start(req: StartRequest, by: Principal, meta: CallMeta): Effect.Effect<{ session: Session; run?: Run; warnings: AgentWarning[] }, FinError> {
+  start(req: StartRequest, by: Principal, meta: CallMeta, parent?: Session): Effect.Effect<{ session: Session; run?: Run; warnings: AgentWarning[] }, FinError> {
     return attempt(async () => {
       this.#guard();
-      const plan = await this.deps.planner.plan(req, by);
+      const plan = await this.deps.planner.plan(req, by, parent);
+      const child: ChildOpen | undefined = parent === undefined ? undefined : this.subagents.childOf(parent);
       if (this.adapter(plan.harness) === undefined) harnessUnknown(plan.harness);
       // A money budget without a price would fail open: refused before anything is made.
       if (plan.provider !== "local" && !this.pricing.known(plan.provider, plan.model)) throw pricingUnknown(plan.provider, plan.model);
@@ -177,7 +208,8 @@ export class Runtime extends RuntimeEngine {
             mode: plan.mode,
             budget: plan.budget,
             createdBy: { principal: { kind: by.kind, id: by.id } },
-            ...(req.base === undefined ? {} : { base: req.base }),
+            ...(child === undefined ? {} : child),
+            ...(req.base === undefined || child !== undefined ? {} : { base: req.base }),
             ...(req.title === undefined ? {} : { title: req.title }),
           },
           by,
@@ -195,6 +227,19 @@ export class Runtime extends RuntimeEngine {
         return { session: this.session(id), ...(run === undefined ? {} : { run }), warnings: agentWarnings() };
       });
     });
+  }
+
+  /**
+   * `agent.session.start` from a session (7B Decision 16): a child of `parent` (`subagents.ts`),
+   * its brief its first run; spawns under one root session one at a time.
+   */
+  spawnChild(parent: Session, req: StartRequest, by: Principal, meta: CallMeta): Effect.Effect<{ session: Session; run?: Run; warnings: AgentWarning[] }, FinError> {
+    return attempt(() => this.subagents.serialSpawn(parent, () => exitOf(this.start(req, by, meta, this.session(parent.id)))));
+  }
+
+  /** `agent.session.wait` (7B Decision 21): `WAIT_TIMEOUT` when not done in time. */
+  waitChildren(by: Principal, ids: ReadonlyArray<string>, any: boolean, timeoutMs: number): Effect.Effect<ChildResult[], FinError> {
+    return Effect.tryPromise({ try: (signal) => this.subagents.wait(by, ids, any, timeoutMs, signal), catch: toFinError });
   }
 
   /** `agent.session.prompt`: a run; `SESSION_BUSY` while one runs, `BUDGET_EXCEEDED` when nothing is left. */
@@ -215,23 +260,44 @@ export class Runtime extends RuntimeEngine {
     const head = await this.#head(s.projectId, s.rootBranch ?? s.base.branch);
     const { run } = this.store.startRun(sessionId, { trigger, ...(head === undefined ? {} : { headAtStart: head }) });
     this.publishStatus(this.session(sessionId), run.id);
-    b.startRun();
     await this.append({ sessionId, runId: run.id, kind: "userMessage", payload: { text, trigger, ...(attachments?.length ? { attachments } : {}) } });
+    // Over the server's live limit the run waits for a slot (7B Decision 19): never a failure.
+    const admitted = this.#limits.admit(sessionId, s.harness, run.id, text);
+    if (!admitted.admitted) {
+      const { kind, limit, position } = admitted;
+      await this.append({ sessionId, runId: run.id, kind: "notice", payload: { code: "SESSION_QUEUED", kind, limit, position } });
+      return this.store.run(run.id)!;
+    }
+    await this.#begin(sessionId, run.id, text);
+    return this.store.run(run.id)!;
+  }
+
+  /**
+   * The run's provider turn (its budget's run clock starts here); a failure fails the run.
+   * `steers`: those held while it waited for a slot, steered in now as any steer is.
+   */
+  async #begin(sessionId: string, runId: string, text: string, steers: readonly string[] = []): Promise<void> {
+    if (this.store.get(sessionId)?.status !== "running" || this.store.activeRun(sessionId) !== runId) return;
+    const s = this.session(sessionId);
+    this.budget(s).startRun();
     let live;
     try {
       live = await this.ensureLive(s);
     } catch (e) {
-      await this.#failRun(sessionId, run.id, toFinError(e));
+      await this.#failRun(sessionId, runId, toFinError(e));
       throw e;
     }
-    live.runId = run.id;
-    const err = await call(live.provider.startTurn({ runId: run.id, text, facts: this.facts(this.session(sessionId)) }));
+    live.runId = runId;
+    const err = await call(live.provider.startTurn({ runId, text, facts: this.facts(this.session(sessionId)) }));
     if (err) {
       live.runId = null;
-      await this.#failRun(sessionId, run.id, err);
+      await this.#failRun(sessionId, runId, err);
       throw err;
     }
-    return this.store.run(run.id)!;
+    for (const t of steers) {
+      if (!live.caps.steer) live.held.push(t);
+      else if (await call(live.provider.steer({ text: t }))) live.held.push(t);
+    }
   }
 
   /** A branch's head seq (by id), for `headAtStart`; undefined when it cannot be read. */
@@ -264,6 +330,12 @@ export class Runtime extends RuntimeEngine {
       return this.serial(sessionId, async () => {
         const s = this.session(sessionId);
         const live = this.lives.get(sessionId);
+        // A run waiting for a slot takes the steer into its first turn.
+        const queued = s.status === "running" ? this.store.activeRun(sessionId) : null;
+        if (queued !== null && this.#limits.hold(sessionId, text)) {
+          await this.append({ sessionId, runId: queued, kind: "userMessage", payload: { text, trigger: "steer" } });
+          return { queued: true };
+        }
         if ((s.status === "running" || s.status === "waitingApproval") && live?.runId) {
           if (!live.caps.steer) {
             live.held.push(text);
@@ -284,16 +356,24 @@ export class Runtime extends RuntimeEngine {
   interrupt(sessionId: string, _by: Principal): Effect.Effect<Session, FinError> {
     return attempt(() => {
       this.#guard();
-      return this.serial(sessionId, async () => {
-        const live = this.lives.get(sessionId);
-        if (live) {
-          live.runId = null;
-          live.pendingStop = null;
-          await call(live.provider.interrupt());
-        }
-        return (await this.apply(sessionId, { kind: "interrupted", reason: "userInterrupt" })).session;
-      });
+      return this.serial(sessionId, () => this.#interruptIn(sessionId, "userInterrupt"));
     });
+  }
+
+  async #interruptIn(sessionId: string, reason: string): Promise<Session> {
+    const live = this.lives.get(sessionId);
+    if (live) {
+      live.runId = null;
+      live.pendingStop = null;
+      await call(live.provider.interrupt());
+    }
+    return (await this.apply(sessionId, { kind: "interrupted", reason })).session;
+  }
+
+  /** Every transition: then the children and the live limits see it (7B Task 6). */
+  protected override async after(sessionId: string, applied: Applied): Promise<void> {
+    await super.after(sessionId, applied);
+    this.subagents.observe(applied);
   }
 
   /**
