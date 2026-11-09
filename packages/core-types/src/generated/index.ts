@@ -6704,7 +6704,8 @@ export interface MediaInfo1 {
  * Decision 6; omitted when empty); `source_state`: the source branch's state after
  * the merge; `origins`: `merged` with the records their `origin` chains lead to (a copy of a
  * copy), first seen first (7A Decision 27). A retry of a committed merge answers from the
- * log: its records and their origins, `skipped` and `excluded` empty, `dry_run` false.
+ * log: its records and their origins, `skipped`, `excluded` and `not_included` empty,
+ * `dry_run` false.
  * Nothing left to merge is an empty answer, not an error.
  *
  * This interface was referenced by `FinCore`'s JSON-Schema

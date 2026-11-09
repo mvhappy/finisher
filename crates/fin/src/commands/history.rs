@@ -52,7 +52,7 @@ pub struct MergeArgs {
     #[serde(default, rename = "skipConflicting")]
     pub skip_conflicting: bool,
     /// Copy only these origin txIds (a reviewed change list); the rest stay on the source.
-    #[arg(long, value_name = "txId", num_args = 1..)]
+    #[arg(long, value_name = "txId", value_delimiter = ',')]
     #[serde(default)]
     pub include: Option<Vec<String>>,
     /// Copy no record of the source branch itself above this seq (records it holds from its
@@ -348,6 +348,10 @@ pub fn merge_refs(
     }
     // Only when given, so a plain merge's argsHash (its idempotency) is what it was.
     if let Some(include) = limits.include {
+        // Sorted and deduplicated: the argsHash must not depend on the order given.
+        let mut include = include.to_vec();
+        include.sort();
+        include.dedup();
         args["include"] = json!(include);
         fields["include"] = json!(include);
     }

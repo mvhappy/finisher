@@ -876,13 +876,23 @@ fn cli_merge_include_and_up_to() {
     let (a, b_rev, b, c) = (id(&a), b["rev"].as_u64().unwrap(), id(&b), id(&c));
     // c is named but above --up-to; b is under it but not named.
     let up_to = b_rev.to_string();
-    let m = t.run(&["merge", "side", "--include", &a, &c, "--up-to", &up_to]);
+    let m = t.run(&[
+        "merge",
+        "side",
+        "--include",
+        &format!("{c},{a}"),
+        "--include",
+        &a,
+        "--up-to",
+        &up_to,
+    ]);
     assert_eq!(m["merge"]["merged"], json!([a]), "{m}");
     assert_eq!(m["merge"]["notIncluded"], json!([b, c]), "{m}");
     assert_eq!(m["merge"]["records"], 1);
     assert_eq!(t.clips(&[]), ["c1"]);
-    // --up-to alone bounds the source branch: b merges, c stays.
-    let m = t.run(&["merge", "side", "--up-to", &up_to]);
+    // --include takes one id per flag, so the positional after it stays the source;
+    // --up-to bounds the source branch: b merges, c stays.
+    let m = t.run(&["merge", "--include", &b, "side", "--up-to", &up_to]);
     assert_eq!(m["merge"]["merged"], json!([b]), "{m}");
     assert_eq!(m["merge"]["notIncluded"], json!([c]), "{m}");
     // Without limits the rest merges and nothing is left out.

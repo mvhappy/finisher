@@ -105,6 +105,8 @@ export const HistoryCheckpointPayload = Schema.Struct({ ...Write, branch: Schema
  * entries at most, so a review merge can include every entry it lists.
  */
 export const MERGE_INCLUDE_MAX = 10_000;
+/** The longest txId on the wire (fin-core's `MAX_RAW_ID`, bytes). */
+export const TX_ID_MAX = 256;
 
 /**
  * Merge `from` into `into`. `include`: copy only the candidates whose origin root is named
@@ -118,8 +120,10 @@ export const HistoryMergePayload = Schema.Struct({
   from: Schema.String,
   into: Schema.String,
   skipConflicting: Schema.optional(Schema.Boolean),
-  include: Schema.optional(Schema.Array(Schema.String).check(Schema.isMaxLength(MERGE_INCLUDE_MAX))),
-  sourceUpTo: Schema.optional(Schema.Number.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(0))),
+  include: Schema.optional(Schema.Array(Schema.String.check(Schema.isMaxLength(TX_ID_MAX))).check(Schema.isMaxLength(MERGE_INCLUDE_MAX))),
+  sourceUpTo: Schema.optional(
+    Schema.Number.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(0), Schema.isLessThanOrEqualTo(Number.MAX_SAFE_INTEGER)),
+  ),
 });
 export const HistoryCherryPickPayload = Schema.Struct({ ...Write, origin: Schema.String, into: Schema.String });
 export const HistoryRevertPayload = Schema.Struct({ ...Write, mergeId: Schema.String, branch: Schema.String });

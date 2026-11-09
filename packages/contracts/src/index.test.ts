@@ -208,6 +208,9 @@ test("history payloads decode what finisherd needs and the results are not strea
   await expect(decode("history.merge", { ...merge, include: many })).rejects.toThrow();
   await expect(decode("history.merge", { ...merge, sourceUpTo: -1 })).rejects.toThrow();
   await expect(decode("history.merge", { ...merge, sourceUpTo: 1.5 })).rejects.toThrow();
+  await expect(decode("history.merge", { ...merge, sourceUpTo: 2 ** 53 })).rejects.toThrow();
+  await expect(decode("history.merge", { ...merge, include: ["x".repeat(257)] })).rejects.toThrow();
+  expect(await decode("history.merge", { ...merge, include: ["x".repeat(256)], sourceUpTo: Number.MAX_SAFE_INTEGER })).toBeTruthy();
   // `project.recover` lists with just the project.
   expect(await decode("project.recover", { projectId: "p" })).toEqual({ projectId: "p" });
 });
