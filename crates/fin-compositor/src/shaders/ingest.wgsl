@@ -1,7 +1,8 @@
 // Ingest (spec §5.1 step 2): Y′CbCr 4:2:0 code values to display-encoded R′G′B′ in an
 // `rgba16float` texture of the coded size: bilinear chroma at the source's siting (clamped to
-// the edge), range expansion, the source matrix, the wide-gamut conversion to Rec.709. The
-// coefficients are fin-media's, passed from Rust. A layout prefix (`ingest_*.wgsl`) declares
+// the edge), range expansion, the source matrix, then the conversion to the Rec.709 SDR
+// working space (`tonemap.wgsl`): the wide-gamut matrix and soft clip, or the HDR tone mapping.
+// The coefficients are fin-media's, passed from Rust. A layout prefix (`ingest_*.wgsl`) declares
 // the planes at bindings 1… and `code(k, p)`: plane k's (0 Y, 1 Cb, 2 Cr) code value at texel p.
 
 struct Ingest {
@@ -9,12 +10,16 @@ struct Ingest {
     chroma: vec4f,
     // Y′ offset and scale, the chroma midpoint and scale (code values).
     range: vec4f,
-    // Kr, Kb; 1 for the identity (GBR) matrix; 1 when a gamut conversion applies.
+    // Kr, Kb; 1 for the identity (GBR) matrix; the conversion: 0 none, 1 wide-gamut SDR,
+    // 2 PQ, 3 HLG (`tonemap::Conversion`).
     coef: vec4f,
     // The linear-light primaries conversion, row by row.
     gamut0: vec4f,
     gamut1: vec4f,
     gamut2: vec4f,
+    // The EETF (`tonemap::Eetf`): black, range, max_lum, min_lum; then knee, the target peak.
+    tone0: vec4f,
+    tone1: vec4f,
 }
 
 @group(0) @binding(0) var<uniform> u: Ingest;
@@ -70,16 +75,21 @@ fn fs_main(@builtin(position) pos: vec4f) -> @location(0) vec4f {
         let g = (l - kr * r - kb * b) / (1.0 - kr - kb);
         rgb = vec3f(r, g, b);
     }
-    if u.coef.w > 0.5 {
-        let lin = vec3f(to_linear(rgb.r), to_linear(rgb.g), to_linear(rgb.b));
-        let r = u.gamut0.x * lin.r + u.gamut0.y * lin.g + u.gamut0.z * lin.b;
-        let g = u.gamut1.x * lin.r + u.gamut1.y * lin.g + u.gamut1.z * lin.b;
-        let b = u.gamut2.x * lin.r + u.gamut2.y * lin.g + u.gamut2.z * lin.b;
-        rgb = vec3f(
-            from_linear(clamp(r, 0.0, 1.0)),
-            from_linear(clamp(g, 0.0, 1.0)),
-            from_linear(clamp(b, 0.0, 1.0)),
-        );
+    let g0 = u.gamut0.xyz;
+    let g1 = u.gamut1.xyz;
+    let g2 = u.gamut2.xyz;
+    let mode = u.coef.w;
+    if mode > 0.5 && mode < 1.5 {
+        rgb = linear_to_709(vec3f(to_linear(rgb.r), to_linear(rgb.g), to_linear(rgb.b)), g0, g1, g2);
+    } else if mode > 1.5 {
+        let c = Eetf(u.tone0.x, u.tone0.y, u.tone0.z, u.tone0.w, u.tone1.x);
+        var nits: vec3f;
+        if mode < 2.5 {
+            nits = vec3f(pq_eotf(rgb.r), pq_eotf(rgb.g), pq_eotf(rgb.b));
+        } else {
+            nits = hlg_ootf(vec3f(hlg_inverse_oetf(rgb.r), hlg_inverse_oetf(rgb.g), hlg_inverse_oetf(rgb.b)));
+        }
+        rgb = to_sdr(nits, c, u.tone1.y, g0, g1, g2);
     }
     return vec4f(rgb, 1.0);
 }

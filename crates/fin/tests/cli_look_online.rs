@@ -137,7 +137,7 @@ fn media_caps_reports_codecs_gpu_and_versions() {
         (av1["decode"].clone(), av1["encode"].clone()),
         (json!("software"), json!("software"))
     );
-    assert_eq!(doc["worker"]["renderVersion"], 1);
+    assert_eq!(doc["worker"]["renderVersion"], 2);
     assert!(
         doc["gpu"].is_null() || doc["gpu"]["vendor"].is_number(),
         "{doc}"

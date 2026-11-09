@@ -76,6 +76,7 @@ impl SourceProvider for Decoded<'_> {
             strides: [f.planes[0].stride, f.planes[1].stride, f.planes[2].stride],
             // The container's tags (the fixtures' bitstream agrees with them), then spec §10.1's rule.
             colour: video.colour.resolve_defaults(f.size.height),
+            hdr: video.hdr,
             rotation: video.rotation,
             pixel_aspect: video.pixel_aspect,
         })

@@ -148,6 +148,7 @@ impl SourceProvider for Sources<'_> {
             planes: [&f.planes[0].data, &f.planes[1].data, &f.planes[2].data],
             strides: [f.planes[0].stride, f.planes[1].stride, f.planes[2].stride],
             colour,
+            hdr: video.hdr,
             rotation: video.rotation,
             pixel_aspect: video.pixel_aspect,
         })
