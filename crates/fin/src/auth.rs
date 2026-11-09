@@ -244,10 +244,9 @@ fn read_private(path: &Path, credential_file: bool) -> Result<Option<String>, Co
     }
 }
 
-/// The one reader besides this user a credential file may name on Windows: for a session's
-/// `<server-data>/agents/<sessionId>/credential.json`, that session's capability SID, which the
-/// ACL broker grants it read-only so the session's sandboxed `fin` can read it (plan 7C Task
-/// 10). Pure, so every OS answers.
+/// The one other reader a credential file may name on Windows: for `agents/<sessionId>/
+/// credential.json`, that session's capability SID, granted read-only by the ACL broker for the
+/// session's sandboxed `fin` (plan 7C Task 10). Pure.
 #[cfg(any(windows, test))]
 pub(crate) fn session_reader(path: &Path) -> Option<String> {
     fn name(p: Option<&Path>) -> Option<&str> {
