@@ -6,7 +6,8 @@
 //! `INVALID_RANGE {item, word, start, end, duration}`, never silently hidden: extend the
 //! caption first. (Timing against the shown words only would make the result depend on
 //! concurrent trims, so a trim and a `caption.setText` would not converge.) No words, or a
-//! control character, is `INVALID_OP`; a locked track `TRACK_LOCKED` (policy).
+//! control character, is `INVALID_OP`; a locked track `TRACK_LOCKED` (policy); more than
+//! [`crate::captions::MAX_CAPTION_WORDS`] words `CAPTION_TOO_LONG` (policy, before aligning).
 //! The transcript source is kept: the caption still covers the same transcript words. The diff
 //! records the item's `caption.words`; the inverse is the internal `caption.setWords` with the
 //! old words.
@@ -21,7 +22,8 @@ use crate::ids::IdAlloc;
 use crate::model::Project;
 use crate::ops::caption_set_words::CaptionSetWords;
 use crate::ops::util::{
-    OpDiff, block_mut, caption_at, check_caption_words, check_unlocked, invalid_range, wrong_op,
+    OpDiff, block_mut, caption_at, check_caption_words, check_unlocked, check_word_count,
+    invalid_range, wrong_op,
 };
 use crate::ops::{Bindings, Op};
 use crate::rebase::{Footprint, Touch};
@@ -60,6 +62,8 @@ pub(crate) fn apply(
     check_unlocked(ti.get(project), Some(&id), bindings)?;
     let track = ti.get(project).id.clone();
     let duration = ti.get(project).items[i].duration;
+    // Refused before the text is aligned against the old words.
+    check_word_count(&id, s.text.split_whitespace().count(), bindings)?;
     let block = block_mut(project, ti, i)?;
     let words = align_text(&block.words, &s.text)?;
     check_caption_words(&words, None)?;

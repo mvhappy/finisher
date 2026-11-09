@@ -3,7 +3,8 @@
 //! overlapping (structural); times outside the item are kept (an undo restores what a start
 //! trim moved out, Decision 13). The word times are item-relative, so a rebase maps them
 //! through the content offsets of the steps between (Decision 16). The diff records the
-//! item's `caption.words`; the inverse sets the old words.
+//! item's `caption.words`; the inverse sets the old words. More than
+//! [`crate::captions::MAX_CAPTION_WORDS`] words is `CAPTION_TOO_LONG` (policy).
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -12,7 +13,9 @@ use crate::error::CoreError;
 use crate::ids::IdAlloc;
 use crate::model::{CaptionSource, Project, Word};
 use crate::ops::caption_set_text::WORDS;
-use crate::ops::util::{OpDiff, block_mut, caption_at, check_caption_words, wrong_op};
+use crate::ops::util::{
+    OpDiff, block_mut, caption_at, check_caption_words, check_word_count, wrong_op,
+};
 use crate::ops::{Bindings, Op};
 use crate::rebase::{Footprint, Touch};
 use crate::time::Rational;
@@ -49,6 +52,7 @@ pub(crate) fn apply(
     let id = bindings.resolve(&s.item)?;
     let (ti, i) = caption_at(project, &id)?;
     check_caption_words(&s.words, None)?;
+    check_word_count(&id, s.words.len(), bindings)?;
     let track = ti.get(project).id.clone();
     let block = block_mut(project, ti, i)?;
     let old = std::mem::replace(&mut block.words, s.words.clone());

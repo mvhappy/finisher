@@ -16,6 +16,7 @@ pub(crate) mod align;
 mod blocks;
 mod check;
 mod file;
+mod lcs;
 mod overflow;
 mod presets;
 mod shown;
@@ -29,6 +30,12 @@ pub use overflow::{caption_request, check_overflow, measure_caption};
 pub use presets::{SafeZone, preset, presets, safe_box, safe_zone, safe_zones};
 pub use shown::{hidden_after_end, hidden_before_start, is_shown, shown_words};
 pub use srt::{Srt, SrtWarning, parse_srt};
+
+/// The most words one caption item may hold (policy, review finding #14): more is
+/// `CAPTION_TOO_LONG {item, words, max, opIndex}`, on every edit that makes a caption's words
+/// (`item.insert`, `caption.setText` before its text is aligned, `caption.setWords`, the
+/// result of `caption.merge`).
+pub const MAX_CAPTION_WORDS: usize = 5_000;
 
 /// The prefix of the built-in styles' ids.
 pub const PRESET_PREFIX: &str = "preset:";
