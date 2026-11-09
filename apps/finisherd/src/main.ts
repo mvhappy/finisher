@@ -5,7 +5,6 @@
 // Serving logs to stderr only; stdout stays empty. Console commands answer on stdout.
 import { realpathSync } from "node:fs";
 import { join } from "node:path";
-import { pathToFileURL } from "node:url";
 import { runMain } from "@effect/platform-node/NodeRuntime";
 import { Cause, Context, Deferred, Effect, Exit, Layer, Logger, Scope } from "effect";
 import {
@@ -20,6 +19,7 @@ import {
 } from "./config.ts";
 import { serverIdentity } from "@finisher/fin-node";
 import { canonicalEndpoint } from "./auth/crypto.ts";
+import { isEntry } from "./entry.ts";
 import { Handshake, HandshakeTag } from "./auth/handshake.ts";
 import { Credentials, CredentialsTag } from "./auth/credentials.ts";
 import { sweepExpired } from "./auth/revoke.ts";
@@ -592,4 +592,4 @@ function main(argv: ReadonlyArray<string>): void {
   });
 }
 
-if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) main(process.argv.slice(2));
+if (isEntry(import.meta.url, process.argv[1])) main(process.argv.slice(2));
