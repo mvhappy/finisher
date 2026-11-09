@@ -39,6 +39,7 @@ fn tx(id: &str, base_rev: u64, ops: Vec<Op>) -> Tx {
         base_rev,
         schema_version: SCHEMA_VERSION,
         args_hash: None,
+        via: None,
         ops,
     }
 }
@@ -831,7 +832,10 @@ fn sp2_fixture_opens_and_replays_to_expected_state() {
     let store = Store::open(&tmp.path().join("server-data"), &tmp.path().join("folder")).unwrap();
     let (rev, head) = store.snapshot(MAIN).unwrap();
     assert_eq!(rev, expected["rev"].as_u64().unwrap());
-    assert_eq!(serde_json::to_value(&head).unwrap(), expected["project"]);
+    assert_eq!(
+        serde_json::to_value(&head).unwrap(),
+        current(&expected["project"])
+    );
 
     let history = store.ops_since(MAIN, 0).unwrap();
     assert_eq!(history.len() as u64, rev);
@@ -880,4 +884,10 @@ fn commit_through_write_keeps_4a_order() {
     );
     assert_eq!(err.code, "BASE_REV_AHEAD", "{err:?}");
     assert_eq!((a.head(MAIN), b.head(MAIN)), (2, 2));
+}
+
+/// A v2 golden project as this Finisher reads it: upcast to the current model (the fixtures
+/// stay as written; spec §5.12.2).
+fn current(v: &serde_json::Value) -> serde_json::Value {
+    serde_json::to_value(fin_core::upcast_snapshot(v.clone()).unwrap()).unwrap()
 }

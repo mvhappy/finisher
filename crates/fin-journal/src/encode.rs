@@ -88,6 +88,10 @@ pub(crate) fn restamp(
     let Ok(mut e) = serde_json::from_slice::<Envelope>(line) else {
         return (None, Vec::new());
     };
+    // Only this build's lines are buffered; another envelope version is unknown, like a kind.
+    if e.v != fin_core::events::ENVELOPE_VERSION {
+        return (None, Vec::new());
+    }
     let Some(spec) = kind(e.kind.as_str(), e.kv) else {
         return (None, Vec::new());
     };
@@ -110,7 +114,9 @@ pub(crate) fn restamp(
     }
 }
 
-/// The blob references of an encoded line (none when it does not parse).
+/// The blob references of an encoded line (none when it does not parse). A later build's
+/// envelope version is read with this build's spec on purpose: its blobs stay referenced
+/// rather than collected.
 pub(crate) fn line_blobs(line: &[u8]) -> Vec<BlobRef> {
     let Ok(e) = serde_json::from_slice::<Envelope>(line) else {
         return Vec::new();

@@ -115,6 +115,50 @@ impl SandboxSpawner {
         }
     }
 
+    /// The ACL broker's grants `req` needs on Windows (plan 7C Decision 18; the Windows side
+    /// of Task 12), its program resolved to `program` ([`crate::windows::job_grants`]): none
+    /// where its profile passes, the refusal [`Spawner::prepare`] would give where it cannot
+    /// be placed. Pure, so every OS answers; `finisherd` grants them before the spawn where
+    /// the broker is active (Windows) and revokes the process's own ones at its exit.
+    pub fn acl_grants(
+        &self,
+        req: &SpawnRequest,
+        program: &Path,
+    ) -> Result<Vec<crate::windows::grants::AclGrant>, SpawnError> {
+        let (profile, decision) = match req.profile {
+            HostProfile::Worker => (Profile::Worker, &self.worker),
+            HostProfile::Plugin => (Profile::Plugin, &self.plugin),
+        };
+        match decision {
+            Decision::Pass => return Ok(vec![]),
+            Decision::Refuse(need) => {
+                return Err(SpawnError(format!(
+                    "SANDBOX_UNAVAILABLE: the {} profile needs {need}",
+                    profile_name(profile)
+                )));
+            }
+            Decision::Apply => {}
+        }
+        let fail = |e: String| {
+            SpawnError(format!(
+                "SANDBOX_UNAVAILABLE: the {} profile: {e}",
+                profile_name(profile)
+            ))
+        };
+        let server_data = self.server_data()?;
+        match profile {
+            Profile::Worker => {
+                let input = grants::worker_input(req, server_data).map_err(fail)?;
+                crate::windows::job_grants::worker(&input, &req.family, program).map_err(fail)
+            }
+            _ => {
+                let home = self.home.as_deref().ok_or_else(|| fail("no HOME".into()))?;
+                let input = grants::plugin_input(req, server_data, home).map_err(fail)?;
+                crate::windows::job_grants::plugin(&input, program).map_err(fail)
+            }
+        }
+    }
+
     fn server_data(&self) -> Result<&Path, SpawnError> {
         self.server_data
             .as_deref()
@@ -138,13 +182,14 @@ impl Spawner for SandboxSpawner {
         }
     }
 
-    /// Where the `worker` profile is applied by a restriction made once at start that names
-    /// paths (Landlock): a warm worker granted its own `jobs/` sees only the job visiting it
-    /// (Decision 19). macOS follows once Task 8's Seatbelt worker profile exists (granting
-    /// `jobs/`, never the worker's directory); Windows needs the broker's per-job ACL grants
-    /// (Task 10). Both stay false until then, so warm kinds run cold there.
+    /// Where the `worker` profile confines a warm worker to the job visiting it (Decision 19):
+    /// on Linux by a restriction made once at start that names paths (Landlock: its own
+    /// `jobs/`); on Windows by the ACL broker, which `finisherd` asks to grant each visiting
+    /// job's directory to the worker's capability for the attempt ([`crate::windows::
+    /// job_grants::visit`]: a moved directory keeps its own access). macOS follows once Task 8's
+    /// Seatbelt worker profile exists; it stays false there, so warm kinds run cold.
     fn per_job_grants(&self) -> bool {
-        self.worker == Decision::Apply && cfg!(target_os = "linux")
+        self.worker == Decision::Apply && cfg!(any(target_os = "linux", windows))
     }
 
     fn prepare(&self, req: &SpawnRequest, cmd: &mut PlatformCommand) -> Result<(), SpawnError> {
@@ -273,16 +318,70 @@ fn home_dir() -> Option<PathBuf> {
 }
 
 /// macOS: the program is rewritten to `sandbox-exec -p <profile> -D… -- <program> <args…>`
-/// (the host starts children with `posix_spawn`, so there is no child-side step; the open-files
-/// limit is not applied on macOS, a recorded residual).
+/// (the host starts children with `posix_spawn`, so there is no child-side step). The profile
+/// carries a fresh Seatbelt mark, which the host's group kill sweeps (Decision 3, macOS
+/// amendment). `posix_spawn` has no resource-limit attribute either, so where the policy has
+/// an open-files limit `/bin/sh` sets it (soft and hard, never above the host's own hard
+/// limit) and `exec`s `sandbox-exec`: `/bin/sh -c 'ulimit -n "$0" && exec "$@"' <n>
+/// /usr/bin/sandbox-exec …` (invoked as `sh`, it reads no startup file).
 #[cfg(target_os = "macos")]
 fn plugin_steps(policy: &crate::SandboxPolicy, cmd: &mut PlatformCommand) -> Result<(), String> {
-    let (program, args) = crate::macos::apply::plugin_command(policy, &cmd.program, &cmd.args)
-        .map_err(|e| e.to_string())?;
-    cmd.program = program;
-    cmd.args = args;
+    let mark = fin_jobhost::seatbelt_mark::new_mark().map_err(|e| format!("getentropy: {e}"))?;
+    let (program, args) =
+        crate::macos::apply::plugin_command(policy, &cmd.program, &cmd.args, &mark)
+            .map_err(|e| e.to_string())?;
+    // Test builds: the wrapper also opens the session's guard file as descriptor 9 (every
+    // sweep of a test build requires it, `fin_jobhost::seatbelt_mark`) and always runs.
+    #[cfg(feature = "test-hooks")]
+    let guard = {
+        fin_jobhost::seatbelt_mark::make_guard(&mark).map_err(|e| format!("test guard: {e}"))?;
+        Some(fin_jobhost::seatbelt_mark::guard_path(&mark))
+    };
+    #[cfg(not(feature = "test-hooks"))]
+    let guard: Option<PathBuf> = None;
+    cmd.seatbelt_mark = Some(mark);
+    let limit = match policy.limits.open_files {
+        Some(n) => {
+            // SAFETY: plain data, written by getrlimit before use.
+            let mut r: libc::rlimit = unsafe { std::mem::zeroed() };
+            // SAFETY: a valid out pointer.
+            if unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut r) } != 0 {
+                return Err(format!("getrlimit: {}", std::io::Error::last_os_error()));
+            }
+            Some(libc::rlim_t::from(n).min(r.rlim_max))
+        }
+        None => None,
+    };
+    if limit.is_none() && guard.is_none() {
+        cmd.program = program;
+        cmd.args = args;
+        return Ok(());
+    }
+    // `$0` is the limit (or `-`), then the guard where there is one, then the command.
+    let mut script = String::new();
+    if guard.is_some() {
+        script.push_str("exec 9<\"$1\" && shift && ");
+    }
+    if limit.is_some() {
+        script.push_str("ulimit -n \"$0\" && ");
+    }
+    script.push_str("exec \"$@\"");
+    let mut wrapped: Vec<std::ffi::OsString> = vec![
+        "-c".into(),
+        script.into(),
+        limit.map_or("-".into(), |n| n.to_string()).into(),
+    ];
+    wrapped.extend(guard.map(PathBuf::into_os_string));
+    wrapped.push(program.into_os_string());
+    wrapped.extend(args);
+    cmd.program = PathBuf::from(SHELL);
+    cmd.args = wrapped;
     Ok(())
 }
+
+/// The shell that sets a macOS plugin's open-files limit.
+#[cfg(target_os = "macos")]
+const SHELL: &str = "/bin/sh";
 
 #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
 fn plugin_steps(_policy: &crate::SandboxPolicy, _cmd: &mut PlatformCommand) -> Result<(), String> {

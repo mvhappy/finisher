@@ -380,6 +380,7 @@
 
 34. **The dataset builder** (out of scope; spec §21.1) **runs locally,** on the user's machine, over the journal plus the op log. A future uploader ships the examples it built, plus the metadata entries of the upload view. Raw journals and op logs never leave the machine.
     - **examples:** the state at `log.commit.baseRev`, rebuilt from the op log and rendered like `fin view`; the instruction from the `agent.turn` linked through `actor.call`, or the `cli.command` with the same txIds; the intent (`log.commit.intent`, or the op log's by txId);
+    - **Amendment (2026-11-09, owner decision "consented capture only", spec §21.1; supersedes the op-log reads above and in the `intentOmitted` and "no snapshot" notes of Task 4):** the builder never reads the op log. An example's context is only what the journal or agent-trace store captured under training consent (agent edits: the agent's own `fin view` and tool results; human edits: ops, intent and label only, no reconstructed state). An intent left out as `tooLarge` is simply absent from its example. Built examples are a regenerable cache keyed by source entry ids, deleted by purge, consent withdrawal and `collect: never`. Matches `crates/fin-dataset-inputs` (journal-only).
     - **labels:** kept, undone or reverted (and how soon), merged, abandoned, conflict and its resolution, and verdicts;
     - frames and audio, later, from blobs;
     - only from `purposes ∋ training` entries.

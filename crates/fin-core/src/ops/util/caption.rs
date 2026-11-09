@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 
 use serde_json::json;
 
-use crate::captions::{PRESET_PREFIX, find_style};
+use crate::captions::{MAX_CAPTION_WORDS, PRESET_PREFIX, find_style};
 use crate::error::CoreError;
 use crate::layout::check_words;
 use crate::model::{
@@ -126,6 +126,28 @@ pub(crate) fn check_caption_words(
         }
     }
     Ok(())
+}
+
+/// At most [`MAX_CAPTION_WORDS`] words for caption `item` in what a client sends: more is
+/// `CAPTION_TOO_LONG {item, words, max}`. Internal applies (undo, redo, revert, recovery) and
+/// replay only re-run words a committed record held, so they are not re-judged: an edit of a
+/// caption written before the limit stays undoable.
+pub(crate) fn check_word_count(
+    item: &str,
+    words: usize,
+    bindings: &Bindings,
+) -> Result<(), CoreError> {
+    if bindings.internal() || words <= MAX_CAPTION_WORDS {
+        return Ok(());
+    }
+    Err(CoreError::new(
+        "CAPTION_TOO_LONG",
+        format!("caption {item} would hold {words} words, more than {MAX_CAPTION_WORDS}"),
+    )
+    .with_details(json!({ "item": item, "words": words, "max": MAX_CAPTION_WORDS }))
+    .with_fix(format!(
+        "keep a caption to {MAX_CAPTION_WORDS} words: split the text over several captions"
+    )))
 }
 
 /// A caption body: its style exists (structural `NOT_FOUND`; `block.style` resolved through

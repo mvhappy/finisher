@@ -121,6 +121,33 @@
       ],
       "type": "string"
     },
+    "AdapterId": {
+      "description": "A GPU by numeric ids only (owner decision 7): never a name or driver string. This is the\nwire and journal form; binding a session to an adapter (Windows' LUID, plan 6B-1 Task 6)\nis `fin-codecs`' own, never serialised, so no per-boot id reaches a report.",
+      "properties": {
+        "deviceId": {
+          "description": "The PCI device id.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "driverMajor": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "vendorId": {
+          "description": "The PCI vendor id.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "vendorId",
+        "deviceId"
+      ],
+      "type": "object"
+    },
     "AdapterType": {
       "description": "A GPU adapter's type (`wgpu::DeviceType`).",
       "enum": [
@@ -698,6 +725,9 @@
           "$ref": "#/$defs/SandboxUnconfined"
         },
         {
+          "$ref": "#/$defs/AuthPair"
+        },
+        {
           "$ref": "#/$defs/AgentSession"
         },
         {
@@ -808,6 +838,27 @@
       "required": [
         "format",
         "member"
+      ],
+      "type": "object"
+    },
+    "ArgProblem": {
+      "additionalProperties": false,
+      "description": "One argument that does not match: `path` is a JSON pointer into the arguments, `reason`\nthe failing keyword (`type`, `required`, `additionalProperties`, `enum`, `const`,\n`minimum`, `maximum`, `minLength`, `maxLength`, `pattern`, `minItems`, `maxItems`), or\n`schema` when the schema itself is outside the subset.",
+      "properties": {
+        "message": {
+          "type": "string"
+        },
+        "path": {
+          "type": "string"
+        },
+        "reason": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "path",
+        "reason",
+        "message"
       ],
       "type": "object"
     },
@@ -989,6 +1040,39 @@
         }
       ]
     },
+    "AudioCodecCaps": {
+      "description": "One audio codec on this machine (none decode or encode before 6C; the rows carry the\nguidance, plan 6B-1 Decision 1).",
+      "properties": {
+        "backends": {
+          "items": {
+            "$ref": "#/$defs/CapBackend"
+          },
+          "type": "array"
+        },
+        "codec": {
+          "$ref": "#/$defs/AudioCodec"
+        },
+        "decode": {
+          "$ref": "#/$defs/CapLevel"
+        },
+        "encode": {
+          "$ref": "#/$defs/CapLevel"
+        },
+        "guidance": {
+          "items": {
+            "$ref": "#/$defs/Guidance"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "codec",
+        "decode",
+        "encode",
+        "backends"
+      ],
+      "type": "object"
+    },
     "AudioInfo": {
       "properties": {
         "channels": {
@@ -1155,6 +1239,49 @@
       ],
       "type": "object"
     },
+    "AuthPair": {
+      "description": "`auth.pair` (`kv` 1).",
+      "properties": {
+        "micros": {
+          "description": "From the redeem to the owner's answer (`approved`, `rejected`).",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "outcome": {
+          "$ref": "#/$defs/PairOutcome"
+        },
+        "platform": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PairPlatform"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The device's platform, once a device redeemed the offer."
+        },
+        "route": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PairRoute"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "How the device reached the server, once it redeemed."
+        }
+      },
+      "required": [
+        "outcome"
+      ],
+      "type": "object"
+    },
     "BackendClass": {
       "description": "Who provides a backend (spec §6.1): the export-encoder policy and the capability report key\non it.",
       "oneOf": [
@@ -1196,6 +1323,18 @@
         "default",
         "env",
         "user"
+      ],
+      "type": "string"
+    },
+    "Batch": {
+      "description": "The sub-project 6 batch that closes a `laterBatch` gap.",
+      "enum": [
+        "6B-2",
+        "6C",
+        "6D",
+        "6E",
+        "6F",
+        "6G"
       ],
       "type": "string"
     },
@@ -1424,11 +1563,76 @@
       ],
       "type": "string"
     },
+    "CallLimits": {
+      "additionalProperties": false,
+      "description": "The limits of this job's calls and results.",
+      "properties": {
+        "messageBytes": {
+          "description": "The largest envelope line, in bytes.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "pageBytes": {
+          "description": "The largest page of a paged reply, in bytes before base64.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "timeoutS": {
+          "description": "The job's timeout in seconds (a command's own, at most 60).",
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "timeoutS",
+        "messageBytes",
+        "pageBytes"
+      ],
+      "type": "object"
+    },
     "CancelReason": {
       "description": "Why a `cancel` was sent.",
       "enum": [
         "cancel",
         "pause"
+      ],
+      "type": "string"
+    },
+    "CapBackend": {
+      "description": "A backend that serves a codec row, by its `fin_media::backend` name.",
+      "properties": {
+        "class": {
+          "$ref": "#/$defs/VendorClass"
+        },
+        "direction": {
+          "$ref": "#/$defs/Direction"
+        },
+        "hw": {
+          "description": "Runs on hardware (a hardware MFT, VideoToolbox's hardware decoder).",
+          "type": "boolean"
+        },
+        "name": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "class",
+        "direction",
+        "hw"
+      ],
+      "type": "object"
+    },
+    "CapLevel": {
+      "description": "How a codec direction is served (v2): in hardware, in software, or not at all.",
+      "enum": [
+        "hw",
+        "sw",
+        "none"
       ],
       "type": "string"
     },
@@ -1940,6 +2144,29 @@
       ],
       "type": "object"
     },
+    "Cause": {
+      "description": "Why an item was relocated: the committed record that last moved or removed `neighbour`,\nand its author when the log knows it.",
+      "properties": {
+        "author": {
+          "type": "string"
+        },
+        "change": {
+          "$ref": "#/$defs/NeighbourChange"
+        },
+        "neighbour": {
+          "type": "string"
+        },
+        "txId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "neighbour",
+        "change",
+        "txId"
+      ],
+      "type": "object"
+    },
     "Change": {
       "description": "One entity an op changed (plan 4C Decision 4). `op`: the index of the op in its transaction\nthat made the change. The optional fields are omitted on the wire when absent (never\n`null`):\n- `track`: for an item, the track it is on (after the op; for a removed item, the track it\n  was taken off), so a footprint and replay's track check see the tracks of ops that record\n  no shift (a lift, a strict or overwrite trim, a roll, a slip, a split); none for assets;\n- `edge`: the edge an `updated` change moved, if that is all it did to the entity;\n- `path`: the parameter an `updated` change set (a registry path), if that is all it did;\n- `by`: the content offset of a start-edge move: every item-relative time of the entity\n  moved by it (plan 4C Decision 13).",
       "properties": {
@@ -2086,7 +2313,7 @@
       "properties": {
         "video": {
           "items": {
-            "$ref": "#/$defs/CodecCaps"
+            "$ref": "#/$defs/LegacyCodecCaps"
           },
           "type": "array"
         }
@@ -2097,23 +2324,38 @@
       "type": "object"
     },
     "CodecCaps": {
-      "description": "One codec's support: the shape of `fin-codecs`' `CodecSupport`.",
+      "description": "One codec (and profile and bit depth, when the row is about one) on this machine.",
       "properties": {
         "backends": {
-          "description": "The backends that would be used, decode first.",
+          "description": "The backends that would serve it, decode first, in the order they are tried.",
           "items": {
-            "type": "string"
+            "$ref": "#/$defs/CapBackend"
           },
           "type": "array"
+        },
+        "bitDepth": {
+          "format": "uint8",
+          "maximum": 255,
+          "minimum": 0,
+          "type": "integer"
         },
         "codec": {
           "$ref": "#/$defs/VideoCodec"
         },
         "decode": {
-          "$ref": "#/$defs/CapSupport"
+          "$ref": "#/$defs/CapLevel"
         },
         "encode": {
-          "$ref": "#/$defs/CapSupport"
+          "$ref": "#/$defs/CapLevel"
+        },
+        "guidance": {
+          "items": {
+            "$ref": "#/$defs/Guidance"
+          },
+          "type": "array"
+        },
+        "profile": {
+          "$ref": "#/$defs/Profile"
         }
       },
       "required": [
@@ -2192,6 +2434,116 @@
         "matrix",
         "range",
         "siting"
+      ],
+      "type": "object"
+    },
+    "CommandContribution": {
+      "additionalProperties": false,
+      "description": "A plugin command (spec §3.8, 8B Task 2), run as `plugin:<id>/<name>` through a\n`plugin.command` job.",
+      "properties": {
+        "args": {
+          "$ref": "#/$defs/SchemaSubset"
+        },
+        "name": {
+          "description": "`[a-z0-9][a-z0-9-]{0,63}`, unique in the plugin.",
+          "type": "string"
+        },
+        "timeoutS": {
+          "description": "Seconds, 1 to 60; 10 when absent.",
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "title": {
+          "description": "A message key in the `en` catalogue.",
+          "type": "string"
+        },
+        "writes": {
+          "default": false,
+          "description": "Whether the command returns a transaction (`project.write` for the invoker).",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "name",
+        "title",
+        "args"
+      ],
+      "type": "object"
+    },
+    "CommandOut": {
+      "description": "What a command returns, at most one envelope line (1 MiB). `tx` is committed by the host\nunder the invoker with `baseRev = rev` and `via` set by the host only; plugins propose,\nfin-core decides (spec §2.5).",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "A transaction of fin-core ops (only from a command whose manifest says `writes`).",
+          "properties": {
+            "kind": {
+              "const": "tx",
+              "type": "string"
+            },
+            "ops": {
+              "items": {
+                "$ref": "#/$defs/Op"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "kind",
+            "ops"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Data returned to the caller as is.",
+          "properties": {
+            "kind": {
+              "const": "data",
+              "type": "string"
+            },
+            "value": true
+          },
+          "required": [
+            "kind",
+            "value"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "CommandRun": {
+      "additionalProperties": false,
+      "description": "A command run: the host has checked `args` against the command's schema and pinned `rev`\nto the head of `branch`.",
+      "properties": {
+        "args": true,
+        "branch": {
+          "type": "string"
+        },
+        "command": {
+          "description": "The command's name in the manifest (not the `plugin:<id>/` registry name).",
+          "type": "string"
+        },
+        "project": {
+          "type": "string"
+        },
+        "rev": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "command",
+        "args",
+        "project",
+        "branch",
+        "rev"
       ],
       "type": "object"
     },
@@ -2427,6 +2779,13 @@
           "default": [],
           "items": {
             "$ref": "#/$defs/CaptionStyleContribution"
+          },
+          "type": "array"
+        },
+        "commands": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/CommandContribution"
           },
           "type": "array"
         },
@@ -2803,6 +3162,13 @@
       ],
       "type": "object"
     },
+    "Direction": {
+      "enum": [
+        "decode",
+        "encode"
+      ],
+      "type": "string"
+    },
     "Dirs": {
       "description": "The job directory and the process's private temp directory.",
       "properties": {
@@ -3062,6 +3428,51 @@
         "item",
         "effect",
         "index"
+      ],
+      "type": "object"
+    },
+    "EncoderCaps": {
+      "description": "An encoder that encoded the capability probe's test clip (plan 6B-1 Decision 19).",
+      "properties": {
+        "adapter": {
+          "$ref": "#/$defs/AdapterId"
+        },
+        "backend": {
+          "type": "string"
+        },
+        "class": {
+          "$ref": "#/$defs/VendorClass"
+        },
+        "codec": {
+          "$ref": "#/$defs/VideoCodec"
+        },
+        "hw": {
+          "description": "Runs on hardware (VideoToolbox, a hardware MFT, Microsoft's own hardware MFT); the\n`hwenc` pool and the proxy kind's resources key on it (Tasks 9, 14).",
+          "type": "boolean"
+        },
+        "intraFps": {
+          "description": "Intra-only frames per second at 540p, measured on the test clip (Decision 8).",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "intraOnly": {
+          "description": "Can encode every frame as a keyframe.",
+          "type": "boolean"
+        },
+        "sessionLimit": {
+          "description": "Concurrent sessions that opened, up to 4; absent when not counted.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "backend",
+        "class",
+        "codec",
+        "hw",
+        "intraOnly"
       ],
       "type": "object"
     },
@@ -3833,6 +4244,28 @@
             },
             "payload": {
               "$ref": "#/$defs/SandboxUnconfined"
+            }
+          },
+          "required": [
+            "kind",
+            "kv",
+            "payload"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "auth.pair",
+              "type": "string"
+            },
+            "kv": {
+              "const": 1,
+              "type": "integer"
+            },
+            "payload": {
+              "$ref": "#/$defs/AuthPair"
             }
           },
           "required": [
@@ -5088,6 +5521,65 @@
       ],
       "type": "object"
     },
+    "Guidance": {
+      "description": "One line of guidance for a gap: what to do about it.",
+      "properties": {
+        "batch": {
+          "$ref": "#/$defs/Batch"
+        },
+        "code": {
+          "$ref": "#/$defs/GuidanceCode"
+        },
+        "fix": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "code",
+        "fix"
+      ],
+      "type": "object"
+    },
+    "GuidanceCode": {
+      "description": "What a gap in the report is about: one closed table (`fin-codecs`' `probe/guidance.rs`\nholds the text).",
+      "oneOf": [
+        {
+          "const": "hevcExtensions",
+          "description": "Windows: the HEVC Video Extensions are not installed.",
+          "type": "string"
+        },
+        {
+          "const": "av1Extension",
+          "description": "Windows: the AV1 Video Extension is not installed.",
+          "type": "string"
+        },
+        {
+          "const": "mediaFeaturePack",
+          "description": "Windows N: the Media Feature Pack is not installed.",
+          "type": "string"
+        },
+        {
+          "const": "ltscStoreCodecs",
+          "description": "Windows LTSC may lack the Store codec extensions.",
+          "type": "string"
+        },
+        {
+          "const": "gpuDriver",
+          "description": "A GPU without a hardware decoder or encoder: its driver may be missing or old.",
+          "type": "string"
+        },
+        {
+          "const": "codecPlugin",
+          "description": "The codec plugin adds it (spec §6.5).",
+          "type": "string"
+        },
+        {
+          "const": "laterBatch",
+          "description": "A later batch of sub-project 6 adds it (`batch`).",
+          "type": "string"
+        }
+      ]
+    },
     "Harness": {
       "description": "What runs the agent.",
       "enum": [
@@ -5147,6 +5639,22 @@
           "$ref": "#/$defs/MasteringDisplay"
         }
       },
+      "type": "object"
+    },
+    "Header": {
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "value": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "value"
+      ],
       "type": "object"
     },
     "Hello": {
@@ -5324,6 +5832,14 @@
           },
           "type": "array"
         },
+        "placements": {
+          "default": [],
+          "description": "Where the record put each item back that a ripple restore or move placed (owner\ndecision 2026-11-09; `fin_core::rebase::placement`): `clean`, or `relocated` with where\nand why. Always in the answer (the generated type marks it optional, as `origins`); a\nretry answers with what the record stored.",
+          "items": {
+            "$ref": "#/$defs/Placement"
+          },
+          "type": "array"
+        },
         "undone": {
           "items": {
             "type": "string"
@@ -5335,6 +5851,23 @@
         "committed",
         "undone",
         "dryRun"
+      ],
+      "type": "object"
+    },
+    "HookContribution": {
+      "additionalProperties": false,
+      "description": "A hook handler (agent §9). Typed now; consumable once 7F's hook engine lands (8B\nDecision 20), refused as `PLUGIN_CONTRIBUTION_UNSUPPORTED` until then.",
+      "properties": {
+        "event": {
+          "type": "string"
+        },
+        "handler": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "event",
+        "handler"
       ],
       "type": "object"
     },
@@ -5413,6 +5946,36 @@
         "home"
       ],
       "type": "object"
+    },
+    "HostMethod": {
+      "description": "The host methods of host API 1.1.",
+      "oneOf": [
+        {
+          "const": "project.snapshot",
+          "description": "[`ProjectSnapshot`] → [`ProjectSnapshotPage`] (`project:read`).",
+          "type": "string"
+        },
+        {
+          "const": "project.view",
+          "description": "[`ProjectView`] → [`ProjectViewText`] (`project:read`).",
+          "type": "string"
+        },
+        {
+          "const": "net.fetch",
+          "description": "[`NetFetch`] → [`NetFetchReply`] (`net`).",
+          "type": "string"
+        },
+        {
+          "const": "net.read",
+          "description": "[`NetRead`] → [`NetReadPage`] (`net`).",
+          "type": "string"
+        },
+        {
+          "const": "log",
+          "description": "[`Log`] → `{}`.",
+          "type": "string"
+        }
+      ]
     },
     "HostMsg": {
       "description": "A message from the host to a worker or a helper.",
@@ -5515,6 +6078,48 @@
           "type": "object"
         }
       ]
+    },
+    "HttpMethod": {
+      "enum": [
+        "GET",
+        "HEAD",
+        "POST",
+        "PUT",
+        "PATCH",
+        "DELETE"
+      ],
+      "type": "string"
+    },
+    "HttpRequest": {
+      "additionalProperties": false,
+      "description": "An HTTPS request to one of the plugin's approved `net` origins.",
+      "properties": {
+        "bodyB64": {
+          "description": "At most 768 KiB before base64.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "headers": {
+          "items": {
+            "$ref": "#/$defs/Header"
+          },
+          "type": "array"
+        },
+        "method": {
+          "$ref": "#/$defs/HttpMethod"
+        },
+        "url": {
+          "description": "An `https://` URL.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "method",
+        "url"
+      ],
+      "type": "object"
     },
     "IdRef": {
       "pattern": "^([0-7][0-9A-HJKMNP-TV-Z]{25}|k1:[0-9a-f]{32})$",
@@ -7263,6 +7868,25 @@
       ],
       "type": "object"
     },
+    "JobSpawnLimits": {
+      "additionalProperties": false,
+      "description": "A request's process limits ([`crate::spawner::ProcessLimits`]).",
+      "properties": {
+        "openFiles": {
+          "default": null,
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "processes": {
+          "default": null,
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "type": "object"
+    },
     "JobSpawnProfile": {
       "enum": [
         "worker",
@@ -7335,6 +7959,10 @@
         "label": {
           "default": "",
           "type": "string"
+        },
+        "limits": {
+          "$ref": "#/$defs/JobSpawnLimits",
+          "description": "Limits the host applies whatever the spawner does (sp8b Decision 9)."
         },
         "profile": {
           "$ref": "#/$defs/JobSpawnProfile"
@@ -7492,10 +8120,13 @@
       "type": "object"
     },
     "Keyframe": {
-      "description": "A keyframe; `at` is relative to the item's start (plan 4C Decision 13).",
+      "description": "A keyframe; `at` is relative to the item's start (plan 4C Decision 13). `id` (`kf<n>`) is\nstable (spec §5.12): unique within the item, kept by trims, moves and splits.",
       "properties": {
         "at": {
           "$ref": "#/$defs/Rational"
+        },
+        "id": {
+          "type": "string"
         },
         "interp": {
           "$ref": "#/$defs/Interp"
@@ -7505,6 +8136,7 @@
         }
       },
       "required": [
+        "id",
         "at",
         "value",
         "interp"
@@ -7512,13 +8144,26 @@
       "type": "object"
     },
     "KeyframeRemove": {
-      "description": "`keyframe.remove`: the keyframe of `path` of `item` at `at`.",
+      "description": "`keyframe.remove`: the key `key` (or, in the client time form, the key at `at`) of `path`\nof `item`.",
       "properties": {
         "at": {
-          "$ref": "#/$defs/Rational"
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Rational"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "item": {
           "type": "string"
+        },
+        "key": {
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "path": {
           "type": "string"
@@ -7526,13 +8171,12 @@
       },
       "required": [
         "item",
-        "path",
-        "at"
+        "path"
       ],
       "type": "object"
     },
-    "KeyframeSet": {
-      "description": "`keyframe.set`: the keyframe of `path` of `item` at `at`.",
+    "KeyframeRestore": {
+      "description": "`keyframe.restore` (internal): key `key` of `path` of `item` back at `at`.",
       "properties": {
         "at": {
           "$ref": "#/$defs/Rational"
@@ -7541,6 +8185,9 @@
           "$ref": "#/$defs/Interp"
         },
         "item": {
+          "type": "string"
+        },
+        "key": {
           "type": "string"
         },
         "path": {
@@ -7553,7 +8200,49 @@
       "required": [
         "item",
         "path",
+        "key",
         "at",
+        "value",
+        "interp"
+      ],
+      "type": "object"
+    },
+    "KeyframeSet": {
+      "description": "`keyframe.set`: the key `key` (or, in the client time form, the key at `at`) of `path` of\n`item`, at `at` (default: where it is) with `value` and `interp`.",
+      "properties": {
+        "at": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Rational"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "interp": {
+          "$ref": "#/$defs/Interp"
+        },
+        "item": {
+          "type": "string"
+        },
+        "key": {
+          "description": "A key id (`kf<n>`), or a `$name` placeholder for a new key.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "path": {
+          "type": "string"
+        },
+        "value": {
+          "$ref": "#/$defs/ParamValue"
+        }
+      },
+      "required": [
+        "item",
+        "path",
         "value",
         "interp"
       ],
@@ -7629,6 +8318,32 @@
       ],
       "type": "object"
     },
+    "Landed": {
+      "description": "Where a relocated item landed: its track and start, the start as a whole frame of its\ntimeline (when it is one), and its neighbours there.",
+      "properties": {
+        "after": {
+          "type": "string"
+        },
+        "at": {
+          "$ref": "#/$defs/Rational"
+        },
+        "before": {
+          "type": "string"
+        },
+        "frame": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "track": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "track",
+        "at"
+      ],
+      "type": "object"
+    },
     "Layer": {
       "description": "One item drawn at the plan's time. `local` is the time from the item's start: negative for\na transition's incoming item before its cut, past `duration` for the outgoing one after it.\nAn adjustment layer carries effects only (its transform and crop are the defaults); a\nnested item is a group layer whose `children` are its timeline's layers.",
       "properties": {
@@ -7701,6 +8416,80 @@
         "crop",
         "opacity",
         "blend"
+      ],
+      "type": "object"
+    },
+    "LegacyCodecCaps": {
+      "description": "v1: one codec's support, the shape of `fin-codecs`' `CodecSupport`.",
+      "properties": {
+        "backends": {
+          "description": "The backends that would be used, decode first.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "codec": {
+          "$ref": "#/$defs/VideoCodec"
+        },
+        "decode": {
+          "$ref": "#/$defs/CapSupport"
+        },
+        "encode": {
+          "$ref": "#/$defs/CapSupport"
+        }
+      },
+      "required": [
+        "codec",
+        "decode",
+        "encode",
+        "backends"
+      ],
+      "type": "object"
+    },
+    "LegacyMediaCapabilities": {
+      "description": "What `media.capabilities` v1 answers (plan 6A Task 13): codecs, the GPU a render would use\n(`null` when no adapter, not even a software one, can be opened) and the worker's versions.",
+      "properties": {
+        "codecs": {
+          "$ref": "#/$defs/CodecCapabilities"
+        },
+        "gpu": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/GpuAdapter"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "worker": {
+          "$ref": "#/$defs/LegacyWorkerInfo"
+        }
+      },
+      "required": [
+        "codecs",
+        "worker"
+      ],
+      "type": "object"
+    },
+    "LegacyWorkerInfo": {
+      "description": "v1: the worker binary's versions.",
+      "properties": {
+        "renderVersion": {
+          "description": "[`RENDER_VERSION`](crate::RENDER_VERSION): part of every cache key (spec §2.5).",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "version": {
+          "description": "The `fin-workers` crate's version.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "version",
+        "renderVersion"
       ],
       "type": "object"
     },
@@ -8578,6 +9367,23 @@
       ],
       "type": "object"
     },
+    "Log": {
+      "additionalProperties": false,
+      "description": "`log`: rate-limited, scrubbed and capped by the host, written to the server log, never\njournaled.",
+      "properties": {
+        "level": {
+          "$ref": "#/$defs/LogLevel"
+        },
+        "msg": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "level",
+        "msg"
+      ],
+      "type": "object"
+    },
     "LogCommit": {
       "properties": {
         "baseRev": {
@@ -8659,6 +9465,15 @@
         "micros"
       ],
       "type": "object"
+    },
+    "LogLevel": {
+      "enum": [
+        "debug",
+        "info",
+        "warn",
+        "error"
+      ],
+      "type": "string"
     },
     "LookFrame": {
       "description": "One rendered frame of a `media.look`.",
@@ -9257,10 +10072,25 @@
       ]
     },
     "MediaCapabilities": {
-      "description": "What `media.capabilities` v1 answers (plan 6A Task 13): codecs, the GPU a render would use\n(`null` when no adapter, not even a software one, can be opened) and the worker's versions.",
+      "description": "What `media.capabilities` v2 answers: per codec, profile and bit depth what this machine\ndecodes and encodes and through which backend (with guidance for every gap), the audio\ncodecs, the encoders that passed their test clip, the GPU a render would use and the worker.",
       "properties": {
+        "audio": {
+          "items": {
+            "$ref": "#/$defs/AudioCodecCaps"
+          },
+          "type": "array"
+        },
         "codecs": {
-          "$ref": "#/$defs/CodecCapabilities"
+          "items": {
+            "$ref": "#/$defs/CodecCaps"
+          },
+          "type": "array"
+        },
+        "encoders": {
+          "items": {
+            "$ref": "#/$defs/EncoderCaps"
+          },
+          "type": "array"
         },
         "gpu": {
           "anyOf": [
@@ -9278,6 +10108,8 @@
       },
       "required": [
         "codecs",
+        "audio",
+        "encoders",
         "worker"
       ],
       "type": "object"
@@ -9387,6 +10219,14 @@
           },
           "type": "array"
         },
+        "placements": {
+          "default": [],
+          "description": "As [`HistoryResult::placements`], each with its copy's txId, plus the `conflict`\nplacements of skipped candidates (a retry answers with the copies' stored ones only, as\nits `skipped` is empty).",
+          "items": {
+            "$ref": "#/$defs/Placement"
+          },
+          "type": "array"
+        },
         "skipped": {
           "items": {
             "$ref": "#/$defs/Conflict"
@@ -9462,6 +10302,14 @@
       "type": "string",
       "x-fin-class": "meta"
     },
+    "NeighbourChange": {
+      "description": "How a neighbour changed since the op was written.",
+      "enum": [
+        "moved",
+        "removed"
+      ],
+      "type": "string"
+    },
     "NestedPlan": {
       "description": "The nested timeline of a group layer, the time evaluated on it (`sourceIn + local`) and\nits frame size.",
       "properties": {
@@ -9479,6 +10327,109 @@
         "timeline",
         "time",
         "resolution"
+      ],
+      "type": "object"
+    },
+    "NetFetch": {
+      "additionalProperties": false,
+      "description": "`net.fetch`: brokered HTTPS egress (Decision 10). `grant` names a secret grant; in 8B\nevery such request answers `SECRET_MISSING {name}` (injection is 8G's).",
+      "properties": {
+        "grant": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "request": {
+          "$ref": "#/$defs/HttpRequest"
+        }
+      },
+      "required": [
+        "request"
+      ],
+      "type": "object"
+    },
+    "NetFetchReply": {
+      "additionalProperties": false,
+      "description": "The response's head; the body (at most 64 MiB) stays with the host and is read by\n`net.read` through `handle` until the job ends (Decision 11).",
+      "properties": {
+        "handle": {
+          "type": "string"
+        },
+        "headers": {
+          "items": {
+            "$ref": "#/$defs/Header"
+          },
+          "type": "array"
+        },
+        "length": {
+          "description": "The body's length in bytes.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "redirectNotFollowed": {
+          "description": "A cross-origin redirect, returned unfollowed (its `location` is in `headers`).",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "status": {
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "status",
+        "headers",
+        "handle",
+        "length"
+      ],
+      "type": "object"
+    },
+    "NetRead": {
+      "additionalProperties": false,
+      "description": "`net.read`: a page of a held response body.",
+      "properties": {
+        "handle": {
+          "type": "string"
+        },
+        "length": {
+          "description": "At most 768 KiB.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "offset": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "handle",
+        "offset",
+        "length"
+      ],
+      "type": "object"
+    },
+    "NetReadPage": {
+      "additionalProperties": false,
+      "properties": {
+        "bytesB64": {
+          "type": "string"
+        },
+        "eof": {
+          "description": "Whether the page reaches the end of the body.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "bytesB64",
+        "eof"
       ],
       "type": "object"
     },
@@ -10200,7 +11151,7 @@
               "type": "object"
             }
           ],
-          "description": "Sets the keyframe of an item's parameter at an item-relative time."
+          "description": "Sets a keyframe of an item's parameter, by key id (or, from clients, by time): edits,\nmoves or inserts it."
         },
         {
           "allOf": [
@@ -10220,7 +11171,27 @@
               "type": "object"
             }
           ],
-          "description": "Removes the keyframe of an item's parameter at an item-relative time."
+          "description": "Removes a keyframe of an item's parameter, by key id (or, from clients, by time)."
+        },
+        {
+          "allOf": [
+            {
+              "$ref": "#/$defs/KeyframeRestore"
+            },
+            {
+              "properties": {
+                "op": {
+                  "const": "keyframe.restore",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "op"
+              ],
+              "type": "object"
+            }
+          ],
+          "description": "Internal (inverse of `keyframe.remove`): puts a keyframe back under its id."
         },
         {
           "allOf": [
@@ -10578,6 +11549,43 @@
         "linux",
         "macos",
         "windows",
+        "other"
+      ],
+      "type": "string"
+    },
+    "PairOutcome": {
+      "description": "A pairing step.",
+      "enum": [
+        "offered",
+        "redeemed",
+        "approved",
+        "rejected",
+        "expired",
+        "revoked"
+      ],
+      "type": "string"
+    },
+    "PairPlatform": {
+      "description": "What a device runs on (`PLATFORMS`).",
+      "enum": [
+        "macos",
+        "windows",
+        "linux",
+        "ios",
+        "android",
+        "web",
+        "other"
+      ],
+      "type": "string"
+    },
+    "PairRoute": {
+      "description": "How a device reached the server (`ROUTE_KINDS`): a kind, never an address.",
+      "enum": [
+        "loopback",
+        "lan",
+        "tailscale",
+        "public",
+        "connect",
         "other"
       ],
       "type": "string"
@@ -11205,6 +12213,50 @@
         }
       ]
     },
+    "Placement": {
+      "description": "The placement of one item an undo, redo or copy put back (module docs): which op of which\nrecord, the item, the outcome, and for a relocation where it landed and why.",
+      "properties": {
+        "causes": {
+          "items": {
+            "$ref": "#/$defs/Cause"
+          },
+          "type": "array"
+        },
+        "item": {
+          "type": "string"
+        },
+        "landed": {
+          "$ref": "#/$defs/Landed"
+        },
+        "opIndex": {
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "outcome": {
+          "$ref": "#/$defs/PlacementOutcome"
+        },
+        "txId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "txId",
+        "opIndex",
+        "item",
+        "outcome"
+      ],
+      "type": "object"
+    },
+    "PlacementOutcome": {
+      "description": "The placement outcome of one restored item.",
+      "enum": [
+        "clean",
+        "relocated",
+        "conflict"
+      ],
+      "type": "string"
+    },
     "PlanAction": {
       "enum": [
         "install",
@@ -11488,6 +12540,44 @@
       ],
       "type": "string"
     },
+    "PluginContext": {
+      "additionalProperties": false,
+      "properties": {
+        "dirs": {
+          "$ref": "#/$defs/PluginDirs"
+        },
+        "grants": {
+          "description": "The permissions granted to this plugin (the job's rights are the invoker's\nintersected with these, checked by the host on every call).",
+          "items": {
+            "$ref": "#/$defs/Permission"
+          },
+          "type": "array"
+        },
+        "hostApi": {
+          "description": "The host API the running host implements.",
+          "type": "string"
+        },
+        "limits": {
+          "$ref": "#/$defs/CallLimits"
+        },
+        "locale": {
+          "description": "The invoker's locale (a BCP 47 tag) for plugin-facing text.",
+          "type": "string"
+        },
+        "plugin": {
+          "$ref": "#/$defs/PluginRefFull"
+        }
+      },
+      "required": [
+        "hostApi",
+        "plugin",
+        "grants",
+        "dirs",
+        "locale",
+        "limits"
+      ],
+      "type": "object"
+    },
     "PluginData": {
       "additionalProperties": false,
       "properties": {
@@ -11502,6 +12592,59 @@
       "required": [
         "dir",
         "write"
+      ],
+      "type": "object"
+    },
+    "PluginDirs": {
+      "additionalProperties": false,
+      "description": "Directories the plugin may use, as absolute paths on the host.",
+      "properties": {
+        "data": {
+          "description": "The per-project data directory, only when `fs pluginData` is granted.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "plugin": {
+          "description": "The installed package (read-only).",
+          "type": "string"
+        },
+        "tmp": {
+          "description": "The process's private temporary directory.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "plugin",
+        "tmp"
+      ],
+      "type": "object"
+    },
+    "PluginError": {
+      "additionalProperties": false,
+      "properties": {
+        "code": {
+          "type": "string"
+        },
+        "details": {
+          "additionalProperties": true,
+          "default": {},
+          "type": "object"
+        },
+        "fix": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "message": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "code",
+        "message"
       ],
       "type": "object"
     },
@@ -11762,6 +12905,23 @@
           "type": "object"
         }
       ]
+    },
+    "PluginRefFull": {
+      "additionalProperties": false,
+      "description": "A plugin at one version.",
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/PluginId"
+        },
+        "version": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "version"
+      ],
+      "type": "object"
     },
     "PluginSourceName": {
       "description": "Where an installed plugin came from (spec §5.2).",
@@ -12030,6 +13190,71 @@
       ],
       "type": "string"
     },
+    "Profile": {
+      "description": "A codec profile a capability row is about (absent: the codec as a whole).",
+      "oneOf": [
+        {
+          "const": "baseline",
+          "description": "H.264 Constrained Baseline / Baseline.",
+          "type": "string"
+        },
+        {
+          "const": "main",
+          "description": "H.264 Main, HEVC Main, AV1 Main.",
+          "type": "string"
+        },
+        {
+          "const": "high",
+          "description": "H.264 High, AV1 High.",
+          "type": "string"
+        },
+        {
+          "const": "main10",
+          "description": "HEVC Main 10.",
+          "type": "string"
+        },
+        {
+          "const": "profile0",
+          "description": "VP9 profile 0 (8-bit 4:2:0).",
+          "type": "string"
+        },
+        {
+          "const": "profile2",
+          "description": "VP9 profile 2 (10/12-bit 4:2:0).",
+          "type": "string"
+        },
+        {
+          "const": "high10",
+          "description": "H.264 High 10 (10-bit 4:2:0; cameras, rarely in hardware).",
+          "type": "string"
+        },
+        {
+          "const": "high422",
+          "description": "H.264 High 4:2:2 (10-bit 4:2:2 cameras).",
+          "type": "string"
+        },
+        {
+          "const": "main422_10",
+          "description": "HEVC Main 4:2:2 10 (range extensions; cameras).",
+          "type": "string"
+        },
+        {
+          "const": "proRes422",
+          "description": "ProRes 422 (Proxy, LT, standard, HQ).",
+          "type": "string"
+        },
+        {
+          "const": "proRes4444",
+          "description": "ProRes 4444 and 4444 XQ.",
+          "type": "string"
+        },
+        {
+          "const": "other",
+          "description": "A profile with no row of its own: never served by a backend that claims only named\nprofiles (`CODEC_UNAVAILABLE`, `codecPlugin` guidance).",
+          "type": "string"
+        }
+      ]
+    },
     "Progress": {
       "description": "`progress`. The runtime fills `job` ([`crate::worker::JobCtx::progress`]).",
       "properties": {
@@ -12136,6 +13361,88 @@
         "unknown"
       ],
       "type": "string"
+    },
+    "ProjectSnapshot": {
+      "additionalProperties": false,
+      "description": "`project.snapshot`: one page of the call's project and branch at the job's pinned `rev`,\nas canonical JSON (page 0 when absent).",
+      "properties": {
+        "page": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "ProjectSnapshotPage": {
+      "additionalProperties": false,
+      "description": "One page of a snapshot; every page of one job has the same `rev`.",
+      "properties": {
+        "bytesB64": {
+          "description": "At most 768 KiB before base64.",
+          "type": "string"
+        },
+        "page": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "pages": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "rev": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "bytesB64",
+        "page",
+        "pages",
+        "rev"
+      ],
+      "type": "object"
+    },
+    "ProjectView": {
+      "additionalProperties": false,
+      "description": "`project.view`: the `fin view` text of the call's branch, capped at 768 KiB.",
+      "properties": {
+        "budget": {
+          "description": "`fin view --budget`.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "range": {
+          "description": "`fin view --range` (`2s..5s`, `2s..`, `..5s`).",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "ProjectViewText": {
+      "additionalProperties": false,
+      "properties": {
+        "text": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "text"
+      ],
+      "type": "object"
     },
     "Provenance": {
       "description": "A session's provenance, as the agent-trace store stamps it on every content entry that is\nnot a session or a turn (those carry the same fields flat).",
@@ -13629,6 +14936,33 @@
       ],
       "type": "string"
     },
+    "SchemaError": {
+      "additionalProperties": false,
+      "description": "Why a schema is outside the subset: `at` is a JSON pointer into the schema.",
+      "properties": {
+        "at": {
+          "type": "string"
+        },
+        "message": {
+          "type": "string"
+        },
+        "problem": {
+          "description": "`keyword`, `type`, `topType`, `additionalProperties`, `properties`, `required`,\n`items`, `bound`, `enum`, `const`, `pattern`, `description`, `depth` or `budget`.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "at",
+        "problem",
+        "message"
+      ],
+      "type": "object"
+    },
+    "SchemaSubset": {
+      "additionalProperties": true,
+      "description": "A command's argument schema: the JSON Schema subset of 8B Decision 13 (an object schema with `additionalProperties: false` at every object).",
+      "type": "object"
+    },
     "Scope": {
       "description": "Where a parameter lives. An effect's paths are `<kind>.<param>`; on an item they are\naddressed as `effects.<fx>.<param>`.",
       "oneOf": [
@@ -14067,7 +15401,7 @@
     },
     "SkippedFile": {
       "additionalProperties": false,
-      "description": "A file `import_dir` did not read: its path and why (`not a segment: …`, `another\nproject`, `unreadable: …`).",
+      "description": "A file `import_dir` did not read: its path and why (`not a segment: …`, `another\nproject`, `too large: …`, `unreadable: …`).",
       "properties": {
         "path": {
           "type": "string"
@@ -15761,6 +17095,9 @@
         },
         "txId": {
           "type": "string"
+        },
+        "via": {
+          "$ref": "#/$defs/Via"
         }
       },
       "required": [
@@ -15959,6 +17296,31 @@
       ],
       "type": "object"
     },
+    "VendorClass": {
+      "description": "Who provides a backend (spec §6.1).",
+      "oneOf": [
+        {
+          "const": "os",
+          "description": "Part of the OS, from the OS vendor.",
+          "type": "string"
+        },
+        {
+          "const": "gpu",
+          "description": "A GPU vendor's codec (fail closed: a hardware MFT that reports no vendor id is `gpu`).",
+          "type": "string"
+        },
+        {
+          "const": "software",
+          "description": "Built from source in Finisher.",
+          "type": "string"
+        },
+        {
+          "const": "plugin",
+          "description": "The codec plugin (spec §6.5).",
+          "type": "string"
+        }
+      ]
+    },
     "Verdict": {
       "description": "What was decided or became of the work.",
       "enum": [
@@ -16061,6 +17423,22 @@
         "target",
         "length",
         "sha256"
+      ],
+      "type": "object"
+    },
+    "Via": {
+      "description": "The plugin command a transaction came from: `plugin` is `<id>@<version>`. Only the host's\nplugin host (`apps/finisherd/src/plugins/host/commands.ts`) writes it; any other `via` is\nstripped. fin-core never validates it: to everything here it is unchecked data.",
+      "properties": {
+        "command": {
+          "type": "string"
+        },
+        "plugin": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "plugin",
+        "command"
       ],
       "type": "object"
     },
@@ -16404,13 +17782,16 @@
       "type": "object"
     },
     "WorkerInfo": {
-      "description": "The worker binary's versions.",
+      "description": "The worker binary's versions and confinement (v2).",
       "properties": {
         "renderVersion": {
           "description": "[`RENDER_VERSION`](crate::RENDER_VERSION): part of every cache key (spec §2.5).",
           "format": "uint32",
           "minimum": 0,
           "type": "integer"
+        },
+        "sandbox": {
+          "$ref": "#/$defs/WorkerSandbox"
         },
         "version": {
           "description": "The `fin-workers` crate's version.",
@@ -16419,7 +17800,8 @@
       },
       "required": [
         "version",
-        "renderVersion"
+        "renderVersion",
+        "sandbox"
       ],
       "type": "object"
     },
@@ -16684,6 +18066,27 @@
             "params"
           ],
           "type": "object"
+        }
+      ]
+    },
+    "WorkerSandbox": {
+      "description": "The OS confinement the worker applied to itself (spec §3.5.1).",
+      "oneOf": [
+        {
+          "enum": [
+            "none"
+          ],
+          "type": "string"
+        },
+        {
+          "const": "landlock",
+          "description": "7C's Linux Landlock `worker` profile (6B-1 Task 18).",
+          "type": "string"
+        },
+        {
+          "const": "worker",
+          "description": "7C's full `worker` profile on every OS (6G).",
+          "type": "string"
         }
       ]
     },

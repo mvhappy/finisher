@@ -233,22 +233,26 @@ class ColdAttempt extends AttemptBase {
   #request(): JobSpawnRequest {
     const { env, row, family, kind, dirs, files } = this.a;
     const program = env.registry.program(family.family, row, "cold");
+    // A plugin family starts its process its own way (sp8b Task 4): its environment, `cwd`,
+    // grants and limits, never the job directory's `tmp/`.
+    const own = "path" in program ? program.process : undefined;
     return {
       role: "worker",
       profile: family.profile,
       family: family.family,
       program: "path" in program ? { path: program.path } : { bundled: program.binary },
       args: [...program.args],
-      env: { ...childEnv(), ...passEnv(family.env), TMPDIR: dirs.tmp, TEMP: dirs.tmp, TMP: dirs.tmp },
-      cwd: dirs.job,
+      env: own?.env ?? { ...childEnv(), ...passEnv(family.env), TMPDIR: dirs.tmp, TEMP: dirs.tmp, TMP: dirs.tmp },
+      cwd: own?.cwd ?? dirs.job,
       // `tmp/` read-write and each mapped file at its own mode (9a review H1); not the job
       // directory itself, which holds the helpers' own directories (9b review L4).
       grants: [
-        { path: dirs.tmp, mode: "readWrite" },
+        ...(own?.grants ?? [{ path: dirs.tmp, mode: "readWrite" as const }]),
         ...files.map((f) => ({ path: mappedPath(dirs.job, f.name), mode: f.mode })),
         // What the worker reads outside its directory (sources, caches; plan 7C Task 7).
         ...(kind.reads?.(this.a.extra, this.a.params as never) ?? []).map((path) => ({ path, mode: "read" as const })),
       ],
+      ...(own?.limits === undefined ? {} : { limits: own.limits }),
       qos: row.priority === "interactive" ? "normal" : kind.qos,
       label: `${kind.kind} ${row.id}`,
     };

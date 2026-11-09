@@ -230,6 +230,7 @@ export async function rawConnect(server) {
   let buf = "";
   let nextId = 1;
   const waiting = new Map();
+  const chunks = new Map();
   const closed = new Promise((resolve) => {
     sock.once("close", () => {
       for (const done of waiting.values()) done({ _tag: "Closed" });
@@ -244,10 +245,24 @@ export async function rawConnect(server) {
     while ((nl = buf.indexOf("\n")) >= 0) {
       const frame = JSON.parse(buf.slice(0, nl));
       buf = buf.slice(nl + 1);
-      if (frame._tag === "Exit") waiting.get(frame.requestId)?.(frame.exit);
+      if (frame._tag === "Chunk" && chunks.has(frame.requestId)) {
+        chunks.get(frame.requestId)(frame.values);
+        sock.write(`${JSON.stringify({ _tag: "Ack", requestId: frame.requestId })}\n`);
+      } else if (frame._tag === "Exit") {
+        chunks.delete(frame.requestId);
+        waiting.get(frame.requestId)?.(frame.exit);
+      }
     }
   });
   return {
+    /** A streaming call: each chunk's values to `onValues`; resolves with its Exit. */
+    stream: (tag, payload, onValues) =>
+      new Promise((done) => {
+        const id = String(nextId++);
+        chunks.set(id, onValues);
+        waiting.set(id, done);
+        sock.write(`${JSON.stringify({ _tag: "Request", id, tag, payload, headers: [] })}\n`);
+      }),
     call: (tag, payload) =>
       new Promise((done) => {
         const id = String(nextId++);

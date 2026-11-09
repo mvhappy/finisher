@@ -26,8 +26,12 @@ pub struct DecodedFrame {
     pub pts: i64,
     pub format: PixelFormat,
     pub size: Size,
+    /// `I420`/`I444` (and 10-bit) three planes; `Nv12`/`P010` the Y plane and the
+    /// interleaved UV plane, the third empty.
     pub planes: [Plane; 3],
     pub colour: ColourTags,
+    /// Decoded on hardware.
+    pub hw: bool,
 }
 
 /// A picture for an encoder (8-bit 4:2:0 in 6A).

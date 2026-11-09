@@ -176,6 +176,25 @@ impl Store {
             Err(panic) => std::panic::resume_unwind(panic),
         }
     }
+
+    /// Runs `f` with `when` as what its undos, redos and copies do with an item whose
+    /// neighbours are both gone (`fin_core::rebase::placement`; owner decision 2026-11-09):
+    /// `Snap` for a person, `Refuse` for an agent. The caller decides from who asked (fin-node:
+    /// the call's actor); the default, outside such a call, is `Snap`. The previous value is
+    /// put back, also when `f` fails or panics.
+    pub fn with_when_lost<R>(
+        &mut self,
+        when: fin_core::rebase::placement::WhenLost,
+        f: impl FnOnce(&mut Store) -> R,
+    ) -> R {
+        let previous = std::mem::replace(&mut self.when_lost, when);
+        let out = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| f(self)));
+        self.when_lost = previous;
+        match out {
+            Ok(r) => r,
+            Err(panic) => std::panic::resume_unwind(panic),
+        }
+    }
 }
 
 #[cfg(test)]

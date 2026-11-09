@@ -40,7 +40,7 @@ fn sp2_project_gets_its_genesis_and_a_fresh_server_rebuilds_it_exactly() {
     let (rev, project) = a.snapshot(MAIN).unwrap();
     assert_eq!(
         serde_json::json!({ "rev": rev, "project": project }),
-        expected
+        current_state(&expected)
     );
     // The holder exports its history; a server without a database rebuilds it from there.
     assert!(a.close().unwrap().segments_written >= 1);
@@ -49,7 +49,7 @@ fn sp2_project_gets_its_genesis_and_a_fresh_server_rebuilds_it_exactly() {
     let (rev, project) = b.snapshot(MAIN).unwrap();
     assert_eq!(
         serde_json::json!({ "rev": rev, "project": project }),
-        expected
+        current_state(&expected)
     );
     assert_eq!(b.status().quarantine.count, 0);
     let rows = |data: &str| -> Vec<(u64, Vec<u8>)> {
@@ -330,4 +330,15 @@ fn a_project_file_with_a_newer_schema_makes_read_only_at_the_next_poll() {
     });
     e.poll(&mut a);
     assert_eq!(a.read_only(), Some(fin_store::ReadOnlyReason::NewerFormat));
+}
+
+/// A v2 golden project as this Finisher reads it: upcast to the current model (the fixtures
+/// stay as written; spec §5.12.2).
+fn current(v: &serde_json::Value) -> serde_json::Value {
+    serde_json::to_value(fin_core::upcast_snapshot(v.clone()).unwrap()).unwrap()
+}
+
+/// A v2 golden `{rev, project}` with its project upcast to the current model.
+fn current_state(v: &serde_json::Value) -> serde_json::Value {
+    serde_json::json!({ "rev": v["rev"], "project": current(&v["project"]) })
 }

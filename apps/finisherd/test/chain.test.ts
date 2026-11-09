@@ -393,6 +393,7 @@ describe("the chain", () => {
       unauthenticated("unproved"),
       consentUiOnly("diagnostics.consent", p),
       confirmationRequired("diagnostics.purge", "missing"),
+      confirmationRequired("server.stop", "wrong", "app"),
     ];
     for (const e of all) {
       expect(e.fix, e.code).toBeDefined();
@@ -457,6 +458,27 @@ describe("review of Task 5", () => {
       const local = harness(LOCAL);
       await local.call(tag, ownWrite(tag));
       expect(local.seen[0]!.payload, tag).toMatchObject({ author: "someone-else" });
+    }
+  });
+
+  test("8B Task 3: a client's via never reaches the hooks, the policies, the stamped payload or the handler", async () => {
+    open = new Set([A]);
+    const via = { plugin: "@acme/tools@1.2.0", command: "trim-silence" };
+    for (const principal of [limited(), LOCAL]) {
+      const inputs: unknown[] = [];
+      const spy: PolicyRule = (input) => Effect.sync(() => void inputs.push(input.payload));
+      const authorized: unknown[] = [];
+      const h = harness(principal, { policies: [spy], hooks: { authorize: (_t, _p, resolved) => Effect.sync(() => void authorized.push(resolved.payload)) } });
+      const body = commit("main");
+      for (const v of [via, null]) {
+        expect(Exit.isSuccess(await h.call("tx.commit", { ...body, tx: { ...body.tx, via: v } }))).toBe(true);
+      }
+      expect(inputs).toHaveLength(2);
+      for (const seen of [...inputs, ...authorized, ...h.seen.map((s) => s.payload)]) {
+        expect("via" in (seen as { tx: object }).tx, principal.kind).toBe(false);
+      }
+      const author = principal.kind === "agent" ? "agent:01agent000000000000000000a" : "a";
+      expect(h.seen.map((s) => (s.payload as { tx: { author: string } }).tx.author)).toEqual([author, author]);
     }
   });
 
@@ -637,12 +659,14 @@ describe("review of Tasks 8–9", () => {
     expect(code(await fresh.call("project.create", { dir: join(dirB, "workspace", "new"), name: "N", rate: "30" }))).toBeUndefined();
   });
 
-  test("Task 8: server.stop needs no code from the console, but a device with auth.admin must confirm it", async () => {
+  test("Task 8: server.stop needs no code from the console; a device with auth.admin confirms it (5B Task 4)", async () => {
     const stop = { "server.stop": (_: unknown) => Effect.succeed({ stopping: true }) };
     expect(code(await harness(CONSOLE, {}, stop).call("server.stop", {}))).toBeUndefined();
     const device: Principal = { kind: "device", id: "01device00000000000000000a", scopes: ["auth.admin", "server.read"], projects: "*", branches: "*", human: true };
     const h = harness(device, {}, stop);
     expect(code(await h.call("server.stop", {}))).toBe("CONFIRMATION_REQUIRED");
     expect(h.audited.map((e) => e.kind)).toEqual(["console.refused"]);
+    // With its own connection's code, it stops.
+    expect(code(await h.call("server.stop", { challenge: h.challenge() }))).toBeUndefined();
   });
 });

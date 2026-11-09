@@ -130,10 +130,11 @@ pub fn send_flagged(
     if globals.dry_run {
         payload["dryRun"] = json!(true);
     }
-    if req.hashed && globals.idem_key.is_some() {
+    // Always hashed: a retry with the key a lost reply names, but other args, is
+    // `IDEM_KEY_REUSED`, never the earlier command's answer.
+    if req.hashed {
         payload["argsHash"] = json!(args_hash(&[json!({ "cmd": req.cmd, "args": req.args })]));
     }
-    let retry_safe = globals.idem_key.is_some() && !globals.dry_run;
     let mut committed = false;
     if globals.idem_key.is_some() && !backend.dry_run_only() {
         // A retry whose record was set aside is reported, never sent again blindly.
@@ -144,14 +145,43 @@ pub fn send_flagged(
         };
         committed = lookup(backend, &first)?.is_some();
     }
-    let answer = match backend.project_call(req.tag, payload.clone()) {
-        // The answer was lost: the server answers the same txId from the log.
-        Err(e) if retry_safe && IN_FLIGHT_CODES.contains(&e.code.as_str()) => {
-            backend.project_call(req.tag, payload)
+    // A merge group's records are `{txId}-1`…; the key to retry with is still `tx_id`.
+    let call = |p: Value| {
+        if globals.dry_run {
+            backend.project_call(req.tag, p)
+        } else {
+            backend.project_tx(req.tag, p, &tx_id)
+        }
+    };
+    let answer = match call(payload.clone()) {
+        // The answer was lost after the request was sent (the error names the key): retry once
+        // with the same key, which the server answers from its log if it applied it. Not
+        // `project recover` (unhashed): its dismiss and import run before the key's dedupe.
+        Err(e)
+            if req.hashed
+                && IN_FLIGHT_CODES.contains(&e.code.as_str())
+                && e.details["txId"] == tx_id =>
+        {
+            call(payload).map_err(|again| unanswered(e, again, &tx_id))
         }
         other => other,
     }?;
     Ok((answer, globals.dry_run && !committed))
+}
+
+/// The retry's error, unless it failed without reaching a server that answered (reconnect,
+/// handshake, deadline): then the first error, which names the key to retry with.
+fn unanswered(first: CoreError, again: CoreError, tx_id: &str) -> CoreError {
+    let unreached = IN_FLIGHT_CODES.contains(&again.code.as_str())
+        || matches!(
+            again.code.as_str(),
+            "SERVER_UNTRUSTED" | "UNAUTHENTICATED" | "PROTOCOL_MISMATCH"
+        );
+    if unreached && again.details["txId"] != tx_id {
+        first
+    } else {
+        again
+    }
 }
 
 /// Lists longer than this are cut to their first [`CAP`] entries; `<key>Total` has the count.
@@ -210,11 +240,76 @@ pub fn record_doc(c: &Value, dry: bool) -> Value {
     doc
 }
 
-/// `{[<key>: [...],] rev, txId, noOp?, dryRun?}` of a `HistoryResult`. `rev` is null when the
-/// operation committed nothing (`noOp` says why).
+/// `placements` (owner decision 2026-11-09: where each item a ripple restore or move put back
+/// went; always present, capped) and, only when one was relocated, a one-line `notice`.
+fn with_placements(doc: &mut Value, r: &Value) {
+    let placements = r.get("placements").cloned().unwrap_or_else(|| json!([]));
+    if let Some(n) = notice(&placements) {
+        doc["notice"] = json!(n);
+    }
+    doc["placements"] = placements;
+    cap(doc, "placements");
+}
+
+/// What a person reads about the relocated items: where each went and why; `None` when every
+/// item went back where it was.
+pub fn notice(placements: &Value) -> Option<String> {
+    let lines: Vec<String> = placements
+        .as_array()?
+        .iter()
+        .filter(|p| p["outcome"] == "relocated")
+        .map(|p| {
+            let l = &p["landed"];
+            let place = match (l["after"].as_str(), l["before"].as_str()) {
+                (Some(a), _) => format!("after {a}"),
+                (None, Some(b)) => format!("before {b}"),
+                (None, None) => format!("at {}", l["at"].as_str().unwrap_or("?")),
+            };
+            let frame = l["frame"]
+                .as_i64()
+                .map_or_else(String::new, |f| format!(", frame {f}"));
+            let track = l["track"].as_str().unwrap_or("?");
+            let why: Vec<String> = p["causes"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .map(|c| {
+                    let by = c["author"]
+                        .as_str()
+                        .map_or_else(String::new, |a| format!(" ({a})"));
+                    format!(
+                        "{} was {} by {}{by}",
+                        c["neighbour"].as_str().unwrap_or("?"),
+                        c["change"].as_str().unwrap_or("changed"),
+                        c["txId"].as_str().unwrap_or("?"),
+                    )
+                })
+                .collect();
+            let why = if why.is_empty() {
+                String::new()
+            } else {
+                format!(": {}", why.join(", "))
+            };
+            let item = p["item"].as_str().unwrap_or("?");
+            format!("{item} went back {place} on {track}{frame}{why}")
+        })
+        .collect();
+    // A person reads a few; the rest are in `placements`.
+    const SHOWN: usize = 3;
+    let more = lines.len().saturating_sub(SHOWN);
+    let mut text = lines.into_iter().take(SHOWN).collect::<Vec<_>>().join("; ");
+    if more > 0 {
+        text.push_str(&format!("; and {more} more (placements)"));
+    }
+    (!text.is_empty()).then(|| format!("relocated: {text}"))
+}
+
+/// `{[<key>: [...],] rev, txId, noOp?, dryRun?, placements, notice?}` of a `HistoryResult`.
+/// `rev` is null when the operation committed nothing (`noOp` says why).
 fn result_doc(r: &Value, named: Option<(&str, &str)>) -> Value {
     let (rev, tx_id) = last_of(&r["committed"]);
     let mut doc = json!({ "rev": rev, "txId": tx_id });
+    with_placements(&mut doc, r);
     if let Some((key, source)) = named {
         doc[key] = r[source].clone();
     }
@@ -319,6 +414,7 @@ pub fn merge_doc(report: &Value) -> Value {
         );
     }
     let mut doc = json!({ "merge": merge });
+    with_placements(&mut doc["merge"], report);
     for key in ["merged", "skipped", "excluded", "notIncluded"] {
         cap(&mut doc["merge"], key);
     }
@@ -434,6 +530,35 @@ pub fn revert(backend: &dyn Backend, g: &Globals, a: &RevertArgs) -> Result<Valu
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Owner decision 2026-11-09: a notice only when an item was relocated; the placements
+    /// always.
+    #[test]
+    fn notice_only_when_relocated() {
+        let clean = json!({ "committed": [], "placements": [{ "txId": "u1", "opIndex": 0,
+            "item": "c2", "outcome": "clean" }] });
+        let doc = result_doc(&clean, None);
+        assert!(doc.get("notice").is_none(), "{doc}");
+        assert_eq!(doc["placements"][0]["outcome"], "clean");
+        let none = result_doc(&json!({ "committed": [] }), None);
+        assert_eq!(none["placements"], json!([]));
+        let moved = json!({ "committed": [], "placements": [{ "txId": "u1", "opIndex": 0,
+            "item": "c2", "outcome": "relocated",
+            "landed": { "track": "t1", "at": "30", "frame": 900, "after": "c1" },
+            "causes": [{ "neighbour": "c1", "change": "moved", "txId": "b1", "author": "bob" }] }] });
+        let doc = result_doc(&moved, None);
+        assert_eq!(
+            doc["notice"],
+            "relocated: c2 went back after c1 on t1, frame 900: c1 was moved by b1 (bob)"
+        );
+        let merged = merge_doc(&json!({ "committed": [], "placements": moved["placements"] }));
+        assert!(
+            merged["merge"]["notice"]
+                .as_str()
+                .unwrap()
+                .starts_with("relocated: c2")
+        );
+    }
 
     #[test]
     fn long_lists_are_cut_with_a_total() {

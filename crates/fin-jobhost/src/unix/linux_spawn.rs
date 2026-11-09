@@ -2,7 +2,7 @@
 //! prepared before the fork; the child-side steps allocate nothing and take no lock, and each
 //! is an async-signal-safe syscall retried on `EINTR`. In order: `setpgid`,
 //! `PR_SET_PDEATHSIG`, the `getppid` check, the domain's writes (a leaf `cgroup.procs`),
-//! `setpriority`, `close_range(3, ~0, CLOEXEC)` (or `FD_CLOEXEC` up to `RLIMIT_NOFILE`), then
+//! `setpriority`, the request's `RLIMIT_NOFILE`, `close_range(3, ~0, CLOEXEC)` (or `FD_CLOEXEC` up to `RLIMIT_NOFILE`), then
 //! the spawner's steps. Nothing of the worker runs before it is in its group.
 
 use std::io;
@@ -21,6 +21,9 @@ struct ChildSteps {
     nice: Option<libc::c_int>,
     /// The highest fd to mark close-on-exec when `close_range` is missing.
     nofile: libc::c_int,
+    /// The request's `RLIMIT_NOFILE` (soft and hard, never above the hard limit; sp8b
+    /// Decision 9).
+    open_files: Option<libc::rlim_t>,
     writes: Vec<(OwnedFd, &'static [u8])>,
     extra: Vec<PreExec>,
 }
@@ -65,6 +68,16 @@ impl ChildSteps {
             if let Some(n) = self.nice {
                 // Best effort: a host already niced further may not lower it.
                 libc::setpriority(libc::PRIO_PROCESS, 0, n);
+            }
+            if let Some(n) = self.open_files {
+                let mut r: libc::rlimit = std::mem::zeroed();
+                check(libc::getrlimit(libc::RLIMIT_NOFILE, &mut r))?;
+                let n = n.min(r.rlim_max);
+                let r = libc::rlimit {
+                    rlim_cur: n,
+                    rlim_max: n,
+                };
+                check(libc::setrlimit(libc::RLIMIT_NOFILE, &r))?;
             }
         }
         cloexec_from_3(self.nofile);
@@ -119,6 +132,7 @@ pub(super) fn spawn(cmd: PlatformCommand, ctx: &SpawnCtx<'_>) -> io::Result<Spaw
         host_pid: ctx.host_pid as libc::pid_t,
         nice: nice_of(ctx.qos),
         nofile: nofile(),
+        open_files: cmd.job_limits.open_files.map(libc::rlim_t::from),
         writes: place.child_writes,
         extra: cmd.pre_exec,
     };

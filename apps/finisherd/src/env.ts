@@ -38,6 +38,12 @@ export const NEVER_PASSED = [
   "FIN_AUTHOR",
   "FIN_TRAINING",
   "FIN_DIAGNOSTICS",
+  // 5B: the server's own listener, certificate files and secret store.
+  "FIN_LISTEN",
+  "FIN_TLS_CERT",
+  "FIN_TLS_KEY",
+  "FIN_SECRETS",
+  "FIN_SECRETS_KEY_FILE",
   "SSH_AUTH_SOCK",
   "GPG_AGENT_INFO",
   "DBUS_SESSION_BUS_ADDRESS",

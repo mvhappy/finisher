@@ -242,6 +242,13 @@ fn samples_before_plugins() -> Vec<AnyPayload> {
             reason: UnconfinedReason::LandlockDisabled,
         }
         .into(),
+        AuthPair {
+            outcome: PairOutcome::Approved,
+            platform: Some(PairPlatform::Ios),
+            route: Some(PairRoute::Lan),
+            micros: Some(12_000_000),
+        }
+        .into(),
         typed::<AgentSession>(json!({
             "sessionId": SESSION, "phase": "ended", "harness": "builtin", "provider": "openrouter",
             "model": "other", "modelHash": h('1'), "weights": "unknown", "role": "editor",

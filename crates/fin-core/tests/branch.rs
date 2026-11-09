@@ -17,6 +17,7 @@ fn record(branch: &str, seq: u64, link: Link) -> Record {
         schema_version: SCHEMA_VERSION,
         ops: vec![],
         args_hash: None,
+        via: None,
     };
     let mut r = Record::new_edit(
         intent.tx_id.clone(),

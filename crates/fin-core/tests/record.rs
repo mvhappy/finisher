@@ -845,8 +845,8 @@ proptest::proptest! {
         clip.common.transform.rotation = xs[1];
         clip.common.transform.position[0] = xs[2];
         clip.common.keyframes.insert("opacity".into(), vec![
-            Keyframe { at: secs(0), value: ParamValue::Number(xs[3]), interp: Interp::Linear },
-            Keyframe { at: secs(1), value: ParamValue::Vec2([xs[4], xs[5]]), interp: Interp::Hold },
+            Keyframe { id: "kf1".into(), at: secs(0), value: ParamValue::Number(xs[3]), interp: Interp::Linear },
+            Keyframe { id: "kf2".into(), at: secs(1), value: ParamValue::Vec2([xs[4], xs[5]]), interp: Interp::Hold },
         ]);
         clip.common.effects.push(Effect {
             id: "fx1".into(),

@@ -30,6 +30,7 @@ fn on(s: &mut Store, id: &str, branch: &str, ops: Vec<Op>) -> CommittedTx {
         base_rev: base,
         schema_version: SCHEMA_VERSION,
         args_hash: None,
+        via: None,
         ops,
     })
     .unwrap()
@@ -353,6 +354,7 @@ fn craft(
         schema_version: SCHEMA_VERSION,
         ops: ops.clone(),
         args_hash: None,
+        via: None,
     };
     let bindings: std::collections::BTreeMap<String, String> = bindings
         .iter()
@@ -1325,6 +1327,29 @@ fn import_reports_skipped_files_and_counts_new_rows() {
     missing.import_dir = Some(moved.join("nowhere"));
     let err = fin_core::CoreError::from(f.recover(missing).unwrap_err());
     assert_eq!(err.code, "IO_ERROR");
+    drop(a);
+}
+
+/// A `.fseg` above the scanner's segment cap is skipped as too large, never read whole.
+#[test]
+fn import_skips_a_segment_above_the_cap() {
+    let e = env();
+    let a = e.create("a");
+    let mut f = e.open("f");
+    let moved = e.root.join("moved");
+    fs::create_dir_all(&moved).unwrap();
+    let huge = fs::File::create(moved.join("huge.fseg")).unwrap();
+    huge.set_len(64 << 20).unwrap();
+    let mut imp = req("imp", None);
+    imp.import_dir = Some(moved);
+    let r = f.recover(imp).unwrap();
+    assert_eq!(r.imported, 0);
+    assert_eq!(r.skipped_files.len(), 1, "{:?}", r.skipped_files);
+    assert!(
+        r.skipped_files[0].reason.starts_with("too large"),
+        "{:?}",
+        r.skipped_files
+    );
     drop(a);
 }
 

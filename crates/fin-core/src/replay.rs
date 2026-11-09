@@ -26,10 +26,14 @@ impl<'a> BoundIds<'a> {
     /// The ids `bindings` gives the placeholders that `ops` allocate, in op order. A placeholder
     /// without a binding is `UNBOUND_PLACEHOLDER`.
     pub fn new(ops: &[Op], bindings: &'a BTreeMap<String, String>) -> Result<Self, CoreError> {
+        // A placeholder is bound by the first op that names it (a later `keyframe.set` of it
+        // edits that key).
+        let mut seen = std::collections::BTreeSet::new();
         let queue = ops
             .iter()
             .enumerate()
             .filter_map(|(i, op)| op.allocates().map(|p| (i, p)))
+            .filter(|(_, p)| seen.insert(*p))
             .map(|(i, p)| {
                 bindings.get(p).map(String::as_str).ok_or_else(|| {
                     CoreError::new(

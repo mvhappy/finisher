@@ -14,8 +14,9 @@
 //! - `image` (an `image`/`svg` asset), `graphic` (a `lottieTemplate` asset) and `adjustment`
 //!   go on video tracks; `caption` goes on caption tracks;
 //! - a caption's style exists and its overrides are style values (structural; ranges policy),
-//!   its words are at least one, ordered and not overlapping (structural) and inside the item
-//!   (policy, plan 4C Task 19);
+//!   its words are at least one, ordered and not overlapping (structural), inside the item
+//!   (policy, plan 4C Task 19) and at most [`crate::captions::MAX_CAPTION_WORDS`]
+//!   (`CAPTION_TOO_LONG`, policy);
 //! - `nested` is `INVALID_OP` (its edits arrive in sub-project 6);
 //! - a graphic's slots must be its template's (`SLOT_UNKNOWN`) with values of the slot's kind
 //!   (`PARAM_TYPE`), both structural, in range (policy; plan 4C Task 11).
@@ -28,8 +29,9 @@ use crate::model::{Asset, AssetKind, Item, ItemBody, ParamValue, Project, Track,
 use crate::ops::util::param_check::check_value;
 use crate::ops::util::{
     OpDiff, TrackAt, asset, carve, check_caption, check_carve, check_frame, check_kind,
-    check_source, check_speed, check_unlocked, clip_containing, frame_of, insert_inside,
-    invalid_range, kind_name, normalize_body, place, policy_frame, ripple, track_index, wrong_op,
+    check_source, check_speed, check_unlocked, check_word_count, clip_containing, frame_of,
+    insert_inside, invalid_range, kind_name, normalize_body, place, policy_frame, ripple,
+    track_index, wrong_op,
 };
 use crate::ops::{Bindings, DeleteMode, InsertMode, ItemInsert, ItemRemove, Op};
 use crate::rebase::Footprint;
@@ -160,8 +162,10 @@ pub(crate) fn validate(
         frame_of(project, ti)?,
         bindings,
     )?;
-    // Words of a new caption lie inside it (policy; later edits may move them out, Decision 13).
+    // Words of a new caption lie inside it (policy; later edits may move them out, Decision 13),
+    // and are at most `MAX_CAPTION_WORDS`.
     if let ItemBody::Caption { block } = &i.body {
+        check_word_count(&i.id, block.words.len(), bindings)?;
         check_caption(project, block, Some(i.duration), bindings)?;
     }
     // Policy (skipped on replay). An insert inside an item also overlaps it, which replay

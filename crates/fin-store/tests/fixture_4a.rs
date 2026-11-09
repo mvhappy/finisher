@@ -24,5 +24,14 @@ fn fixture_4a_opens_with_relocate() {
     .unwrap();
     let (rev, project) = store.snapshot(MAIN).unwrap();
     assert_eq!(rev, expected["rev"].as_u64().unwrap());
-    assert_eq!(serde_json::to_value(&project).unwrap(), expected["project"]);
+    assert_eq!(
+        serde_json::to_value(&project).unwrap(),
+        current(&expected["project"])
+    );
+}
+
+/// A v2 golden project as this Finisher reads it: upcast to the current model (the fixtures
+/// stay as written; spec §5.12.2).
+fn current(v: &serde_json::Value) -> serde_json::Value {
+    serde_json::to_value(fin_core::upcast_snapshot(v.clone()).unwrap()).unwrap()
 }

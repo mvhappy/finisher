@@ -144,6 +144,7 @@ fn linked_record(tx_id: &str, seq: u64, parent: Option<String>, link: Link) -> R
         base_rev: seq - 1,
         schema_version: SCHEMA_VERSION,
         args_hash: None,
+        via: None,
         ops: vec![],
     };
     let mut r = Record::new_edit(
@@ -475,20 +476,24 @@ fn migration_0002_from_4a_fixture() {
     let store = open_4a(&e, &data, &folder);
     let (rev, project) = store.snapshot(MAIN).unwrap();
     assert_eq!(rev, expected["rev"].as_u64().unwrap());
-    assert_eq!(serde_json::to_value(&project).unwrap(), expected["project"]);
+    assert_eq!(
+        serde_json::to_value(&project).unwrap(),
+        current(&expected["project"])
+    );
     let conn = read_only(store.db_path());
     let v: i64 = conn
         .query_row("PRAGMA user_version", [], |r| r.get(0))
         .unwrap();
-    // 0003 (4C's version bump) and 0004 (5E's drops index) run after 0002.
-    assert_eq!((v, DB_VERSION), (4, 4));
-    assert_eq!(meta(&conn, "formatVersion").as_deref(), Some("4"));
-    assert_eq!(meta(&conn, "minReaderVersion").as_deref(), Some("4"));
+    // 0003 (4C's version bump), 0004 (5E's drops index) and 0005 (the keyframe-ids bump) run
+    // after 0002.
+    assert_eq!((v, DB_VERSION), (5, 5));
+    assert_eq!(meta(&conn, "formatVersion").as_deref(), Some("5"));
+    assert_eq!(meta(&conn, "minReaderVersion").as_deref(), Some("5"));
     assert_eq!(branch_rows(&conn), main_only());
     assert!(link_rows(&conn).is_empty());
     let names = backups(store.db_path());
     assert!(
-        names.iter().any(|n| n.starts_with("pre-migrate-1-4-")),
+        names.iter().any(|n| n.starts_with("pre-migrate-1-5-")),
         "{names:?}"
     );
     // The records 4A wrote are kept byte for byte.
@@ -513,22 +518,26 @@ fn sp2_fixture_migrates_through_0002() {
         serde_json::from_slice(&fs::read(tmp.path().join("expected_v2.json")).unwrap()).unwrap();
     let (rev, head) = store.snapshot(MAIN).unwrap();
     assert_eq!(rev, expected["rev"].as_u64().unwrap());
-    assert_eq!(serde_json::to_value(&head).unwrap(), expected["project"]);
+    assert_eq!(
+        serde_json::to_value(&head).unwrap(),
+        current(&expected["project"])
+    );
     drop(store);
     let db = fin_store::db_path(&data, SP2_ID);
     let conn = read_only(&db);
     let v: i64 = conn
         .query_row("PRAGMA user_version", [], |r| r.get(0))
         .unwrap();
-    // 0003 (4C's version bump) and 0004 (5E's drops index) run after 0002.
-    assert_eq!(v, 4);
-    assert_eq!(meta(&conn, "formatVersion").as_deref(), Some("4"));
-    assert_eq!(meta(&conn, "minReaderVersion").as_deref(), Some("4"));
+    // 0003 (4C's version bump), 0004 (5E's drops index) and 0005 (the keyframe-ids bump) run
+    // after 0002.
+    assert_eq!(v, 5);
+    assert_eq!(meta(&conn, "formatVersion").as_deref(), Some("5"));
+    assert_eq!(meta(&conn, "minReaderVersion").as_deref(), Some("5"));
     assert_eq!(branch_rows(&conn), main_only());
     assert!(link_rows(&conn).is_empty());
     let names = backups(&db);
     assert_eq!(names.len(), 1, "{names:?}");
-    assert!(names[0].starts_with("pre-migrate-0-4-"), "{names:?}");
+    assert!(names[0].starts_with("pre-migrate-0-5-"), "{names:?}");
 }
 
 #[test]
@@ -537,8 +546,8 @@ fn fresh_project_has_main_branch_row() {
     let a = e.create("a");
     let conn = read_only(a.db_path());
     assert_eq!(branch_rows(&conn), main_only());
-    assert_eq!(meta(&conn, "formatVersion").as_deref(), Some("4"));
-    assert_eq!(meta(&conn, "minReaderVersion").as_deref(), Some("4"));
+    assert_eq!(meta(&conn, "formatVersion").as_deref(), Some("5"));
+    assert_eq!(meta(&conn, "minReaderVersion").as_deref(), Some("5"));
 }
 
 #[test]
@@ -582,4 +591,10 @@ fn v1_segment_with_a_4b_kind_is_corrupt() {
         segment::decode_with_reader(&bytes, 1),
         Err(SegError::Corrupt(_))
     ));
+}
+
+/// A v2 golden project as this Finisher reads it: upcast to the current model (the fixtures
+/// stay as written; spec §5.12.2).
+fn current(v: &serde_json::Value) -> serde_json::Value {
+    serde_json::to_value(fin_core::upcast_snapshot(v.clone()).unwrap()).unwrap()
 }

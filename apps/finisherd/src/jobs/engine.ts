@@ -8,7 +8,7 @@
 import type { FinError, FinErrorData, JobOwner, JobProgress, JobState, JobView } from "@finisher/contracts";
 import { Effect, type Fiber, PubSub, Stream } from "effect";
 import { finError, toFinError } from "../errors.ts";
-import { Abandonment, cancelJob, pauseJobs, resumeJobs } from "./control.ts";
+import { Abandonment, cancelJob, failQueuedJob, pauseJobs, resumeJobs } from "./control.ts";
 import { runDispatched, type WarmLease } from "./attempt-flow.ts";
 import { removeJobDir, jobDirs } from "./files.ts";
 import { type KindRegistry, type KindSpec, type PoolName, resolveOrFn } from "./kinds.ts";
@@ -368,6 +368,7 @@ export class Engine implements JobEngine {
    * at the next start).
    */
   async end(id: string, to: JobState, patch: TransitionPatch): Promise<void> {
+    if (to === "failed" && patch.error != null) patch = { ...patch, error: this.#familyError(id, patch.error) };
     const stats = this.#stats.get(id) ?? newStats();
     this.#stats.delete(id);
     // The stats go with the terminal row: a `job.done` re-sent at the next start carries them (9b review M5).
@@ -382,6 +383,19 @@ export class Engine implements JobEngine {
       await removeJobDir(jobDirs(this.d.root, id).job);
     } catch (e) {
       this.d.log("warning", `job ${id}: its directory could not be deleted: ${toFinError(e).message}`);
+    }
+  }
+
+  /** A failed job's error as its family names it (`FamilySpec.mapError`, sp8b Task 4). */
+  #familyError(id: string, error: FinErrorData): FinErrorData {
+    const family = this.d.store.row(id)?.family;
+    const map = family === undefined ? undefined : this.kinds.family(family)?.mapError;
+    if (map === undefined) return error;
+    try {
+      return map(error);
+    } catch (e) {
+      this.d.log("error", `job ${id}: the family's error mapping failed: ${toFinError(e).message}`);
+      return error;
     }
   }
 
@@ -485,6 +499,10 @@ export class Engine implements JobEngine {
     return promise(() => cancelJob(this, id));
   }
 
+  failQueued(id: string, error: FinError): Effect.Effect<JobView, FinError> {
+    return promise(() => failQueuedJob(this, id, error));
+  }
+
   pause(target: { readonly job: string } | { readonly all: true }): Effect.Effect<void, FinError> {
     return promise(() => pauseJobs(this, target));
   }
@@ -503,6 +521,11 @@ export class Engine implements JobEngine {
       this.warmPools.prewarm(f);
       return Effect.void;
     });
+  }
+
+  /** `retireWarm` (sp8b Task 5): the family's warm workers whose key `match`es go; how many. */
+  retireWarm(family: string, match: (key: string) => boolean): number {
+    return this.warmPools.retireMatching(family, match);
   }
 
   definePool(name: PoolName, size: number): void {

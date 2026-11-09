@@ -27,7 +27,7 @@
 //!
 //! [`steps_from`]: crate::rebase::steps_from
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use serde_json::{Value, json};
 
@@ -75,6 +75,7 @@ pub fn plan_undo_to(
     let (mut ops, mut undoes, mut conflicts) = (Vec::new(), Vec::new(), Vec::new());
     let mut skipped: HashSet<String> = HashSet::new();
     let mut offset = 0;
+    let mut placements = Vec::new();
     for unit in units {
         let inverse = unit_inverse(&own, unit)?;
         let n = inverse.len();
@@ -96,6 +97,10 @@ pub fn plan_undo_to(
         match rebase_steps(log, &head, &since, (&tx, &absorbs), &mut scratch)? {
             Ok(rebased) => {
                 seq += 1;
+                placements.extend(rebased.placements.iter().cloned().map(|mut p| {
+                    p.op_index += ops.len();
+                    p
+                }));
                 ops.extend(rebased.tx.ops.iter().cloned());
                 planned.push(CommittedTx {
                     rev: seq,
@@ -120,6 +125,15 @@ pub fn plan_undo_to(
         undoes.push(unit.id.clone());
         offset += n;
     }
+    let authors = super::Authors {
+        log,
+        recs: own.iter().map(|r| &r.record.intent),
+        own: (tx_id, author),
+    };
+    let conflicts = conflicts
+        .into_iter()
+        .map(|c| authors.fill_conflict(c))
+        .collect();
     if let Some(all) = Conflicts::new(conflicts) {
         return Err(all.into());
     }
@@ -134,6 +148,7 @@ pub fn plan_undo_to(
         link: Link::Undo { undoes },
         intent: tx,
         applied,
+        placements: authors.fill(placements),
     })
 }
 
@@ -171,13 +186,15 @@ fn rebase_steps(
     // The inverses' own maps, in their frame (they name literal ids: nothing is allocated).
     let own = apply_tx_mode(&frame, tx, &mut MemIds::after(&frame), ApplyMode::Internal)?;
     let steps = steps_from(&since.iter().collect::<Vec<_>>())?;
-    let places = crate::rebase::places::places(&frame, tx, ApplyMode::Internal)?;
+    let reads = super::FrameReads::read(&frame, tx, ApplyMode::Internal)?;
     Ok(rebase_apply(
         head,
         &Rebase::new(tx, &own.diff, &steps)
             .with_env(super::env_of(log))
             .with_absorbs(absorbs)
-            .with_places(&places),
+            .with_places(&reads.places)
+            .with_anchors(&reads.anchors)
+            .with_history(log.when_lost()),
         ids,
         ApplyMode::Internal,
     ))
@@ -240,8 +257,55 @@ impl Made<'_> {
 
     /// The oldest and newest seq at which the units redo record `redo` recreated were made:
     /// the redo's own seq when its undo is at or before the checkpoint (the checkpoint's
-    /// state lacks them), else theirs, recursively through earlier redos.
+    /// state lacks them), else theirs, through earlier redos. A redo unit names only records
+    /// older than itself, so the redos reached are decided oldest first, each once, in a loop
+    /// (a chain of thousands of undo/redo cycles is that deep, review of 2026-11-09 #15).
     fn redo(&self, redo: &str) -> Option<(u64, u64)> {
+        // Every redo the answer depends on, by seq.
+        let mut reached: BTreeMap<u64, &str> = BTreeMap::new();
+        let mut todo = vec![redo];
+        while let Some(id) = todo.pop() {
+            let Some(r) = self.by_id.get(id) else {
+                continue;
+            };
+            if reached.insert(r.seq, id).is_some() {
+                continue;
+            }
+            todo.extend(self.earlier_redos(r));
+        }
+        let mut done: HashMap<&str, Option<(u64, u64)>> = HashMap::new();
+        for (_, id) in reached {
+            let range = self.redo_step(id, &done);
+            done.insert(id, range);
+        }
+        done.get(redo).copied().flatten()
+    }
+
+    /// The redo units the undo of redo record `r` names (each older than `r`), when that
+    /// undo is after the checkpoint.
+    fn earlier_redos<'b>(&'b self, r: &LogRec) -> Vec<&'b str> {
+        let Some(undo) = r.record.redoes.as_deref().and_then(|u| self.by_id.get(u)) else {
+            return Vec::new();
+        };
+        if undo.seq <= self.checkpoint_seq {
+            return Vec::new();
+        }
+        undo.record
+            .undoes
+            .iter()
+            .flatten()
+            .filter_map(|id| self.by_id.get_key_value(id.as_str()))
+            .filter(|(_, c)| c.record.kind == RecordKind::Redo && c.seq < r.seq)
+            .map(|(k, _)| *k)
+            .collect()
+    }
+
+    /// [`Made::redo`] for `redo`, the earlier redos it reaches already in `done`.
+    fn redo_step(
+        &self,
+        redo: &str,
+        done: &HashMap<&str, Option<(u64, u64)>>,
+    ) -> Option<(u64, u64)> {
         let r = self.by_id.get(redo)?;
         let undo = self.by_id.get(r.record.redoes.as_deref()?)?;
         if undo.seq <= self.checkpoint_seq {
@@ -252,9 +316,11 @@ impl Made<'_> {
             let (lo, hi) = match self.by_id.get(id.as_str()) {
                 // A redo unit again: it names a record older than this one (seqs only go
                 // down).
-                Some(c) if c.record.kind == RecordKind::Redo && c.seq < r.seq => {
-                    self.redo(id).unwrap_or((c.seq, c.seq))
-                }
+                Some(c) if c.record.kind == RecordKind::Redo && c.seq < r.seq => done
+                    .get(id.as_str())
+                    .copied()
+                    .flatten()
+                    .unwrap_or((c.seq, c.seq)),
                 Some(c) => (c.seq, c.seq),
                 // A merge group's id: the group's last record.
                 None => {
@@ -281,6 +347,10 @@ fn in_record(mut c: Conflict, offset: usize, unit: &str) -> Conflict {
         Some(Value::Object(m)) => m,
         _ => serde_json::Map::new(),
     };
+    // A refused placement names the op too (`NEIGHBOURS_GONE`).
+    if let Some(Value::Object(p)) = d.get_mut("placement") {
+        p.insert("opIndex".into(), json!(c.op_index));
+    }
     d.insert("unit".into(), json!(unit));
     c.details = Some(Box::new(Value::Object(d)));
     c

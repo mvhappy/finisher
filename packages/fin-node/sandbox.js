@@ -44,12 +44,22 @@ export function sandboxHookGrants(input) {
   return JSON.parse(sync(() => native.sandboxHookGrants(JSON.stringify(input))));
 }
 
+export function sandboxVisitGrant(workerDir, jobDir) {
+  return JSON.parse(sync(() => native.sandboxVisitGrant(workerDir, jobDir)));
+}
+
 export function sandboxProjectContainer(projectDir) {
   return native.sandboxProjectContainer(projectDir);
 }
 
 export function sandboxContainerSid(name) {
   return sync(() => native.sandboxContainerSid(name)) ?? null;
+}
+
+/** @internal Test builds only: deletes a suite's AppContainer profile (a no-op off Windows). */
+export function sandboxContainerDeleteForTest(name) {
+  if (!native.sandboxContainerDeleteForTest) throw new Error("fin-node was built without the test-hooks feature");
+  sync(() => native.sandboxContainerDeleteForTest(name));
 }
 
 /** @internal Test builds only: the broker's live grants. */

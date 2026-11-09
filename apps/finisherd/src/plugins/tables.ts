@@ -8,8 +8,9 @@ import { registerChain } from "../control/migrations.ts";
 import { plugins0001 } from "../control/migrations/plugins/0001.ts";
 import { plugins0002 } from "../control/migrations/plugins/0002.ts";
 import { plugins0003 } from "../control/migrations/plugins/0003.ts";
+import { plugins0004 } from "../control/migrations/plugins/0004.ts";
 
-registerChain("plugins", [plugins0001, plugins0002, plugins0003], { formatVersion: 3, minReaderVersion: 1 });
+registerChain("plugins", [plugins0001, plugins0002, plugins0003, plugins0004], { formatVersion: 4, minReaderVersion: 1 });
 
 /** `<kind>:<id>` of a principal, as stored in `addedBy`, `installedBy` and `lastRefreshBy`. */
 export const actorOf = (p: { readonly kind: string; readonly id: string }): string => `${p.kind}:${p.id}`;
@@ -118,6 +119,7 @@ interface PluginDbRow {
   autoUpdate: number;
   installedBy: string;
   installedAt: number;
+  problem: string | null;
 }
 
 function toRegistryRow(r: RegistryDbRow): RegistryRow {
@@ -147,6 +149,7 @@ function toInstalled(r: PluginDbRow): InstalledRow {
     autoUpdate: r.autoUpdate === 1,
     installedBy: r.installedBy,
     installedAt: r.installedAt,
+    ...(r.problem === null ? {} : { problem: r.problem }),
   };
 }
 
@@ -158,7 +161,7 @@ export class PluginTables {
     this.store = store;
     const p = (sql: string): StatementSync => store.db.prepare(sql);
     const REG = "id, kind, rootSha256, freshness, addedBy, addedAt, lastRefreshAt, lastRefreshBy, lastRefreshByHuman, lastRefreshOk, lastRefreshCode";
-    const PLG = "id, version, source, registryId, kind, enabled, state, autoUpdate, installedBy, installedAt";
+    const PLG = "id, version, source, registryId, kind, enabled, state, autoUpdate, installedBy, installedAt, problem";
     this.#s = {
       registries: p(`SELECT ${REG} FROM registries ORDER BY id`),
       registry: p(`SELECT ${REG} FROM registries WHERE id = ?`),
@@ -178,6 +181,7 @@ export class PluginTables {
         "UPDATE plugins SET version = ?, source = ?, registryId = ?, targetSha256 = ?, rootSha256 = ?, treeHash = ?, dir = ?, kind = ?, enabled = ?, state = ?, autoUpdate = ?, updatedAt = ? WHERE id = ?",
       ),
       setState: p("UPDATE plugins SET enabled = ?, state = ?, updatedAt = ? WHERE id = ?"),
+      setProblem: p("UPDATE plugins SET problem = ? WHERE id = ?"),
       deletePlugin: p("DELETE FROM plugins WHERE id = ?"),
       grants: p("SELECT permission FROM plugin_grants WHERE pluginId = ? ORDER BY rowid"),
       deleteGrants: p("DELETE FROM plugin_grants WHERE pluginId = ?"),
@@ -290,6 +294,11 @@ export class PluginTables {
 
   setState(id: string, enabled: boolean, state: InstalledRow["state"], at: number): boolean {
     return Number(this.#s.setState!.run(enabled ? 1 : 0, state, at, id).changes) > 0;
+  }
+
+  /** Why a code plugin does not run (sp8b Task 5), or `null` once it may again. */
+  setProblem(id: string, problem: string | null): void {
+    this.#s.setProblem!.run(problem, id);
   }
 
   deletePlugin(id: string): void {

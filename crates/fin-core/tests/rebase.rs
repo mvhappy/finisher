@@ -503,6 +503,8 @@ fn copy_with_bound_ids_duplicate_is_already_present() {
             env: Default::default(),
             absorbs: &std::collections::BTreeSet::new(),
             places: &[],
+            anchors: &[],
+            history: None,
         };
         let mut ids = BoundIds::new(&source.tx.ops, &source.bindings).unwrap();
         rebase_apply(&target, &r, &mut ids, ApplyMode::Internal).unwrap_err()
@@ -526,6 +528,8 @@ fn copy_with_bound_ids_duplicate_is_already_present() {
         env: Default::default(),
         absorbs: &std::collections::BTreeSet::new(),
         places: &[],
+        anchors: &[],
+        history: None,
     };
     let mut ids = BoundIds::new(&source.tx.ops, &source.bindings).unwrap();
     let copied = rebase_apply(&p, &r, &mut ids, ApplyMode::Internal).unwrap();
@@ -557,6 +561,8 @@ fn mirrored_steps_are_not_judged() {
         env: Default::default(),
         absorbs: &std::collections::BTreeSet::new(),
         places: &[],
+        anchors: &[],
+        history: None,
     };
     let e = rebase_apply(&p2, &unmirrored, &mut MemIds::after(&p2), ApplyMode::Client).unwrap_err();
     assert_eq!(
@@ -572,6 +578,8 @@ fn mirrored_steps_are_not_judged() {
         env: Default::default(),
         absorbs: &std::collections::BTreeSet::new(),
         places: &[],
+        anchors: &[],
+        history: None,
     };
     let done = rebase_apply(&p2, &mirrored, &mut MemIds::after(&p2), ApplyMode::Client).unwrap();
     assert_eq!(done.tx.ops, b.ops);

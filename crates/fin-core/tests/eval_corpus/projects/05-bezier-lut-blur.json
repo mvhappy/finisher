@@ -15,7 +15,7 @@
   "project": {
     "id": "p1",
     "name": "Corpus",
-    "schemaVersion": 2,
+    "schemaVersion": 3,
     "rate": "30",
     "timelines": [
       {
@@ -67,6 +67,7 @@
                 "keyframes": {
                   "effects.fx1.intensity": [
                     {
+                      "id": "kf1",
                       "at": "0",
                       "value": 0.0,
                       "interp": {
@@ -78,6 +79,7 @@
                       }
                     },
                     {
+                      "id": "kf2",
                       "at": "4",
                       "value": 1.0,
                       "interp": {
@@ -89,6 +91,7 @@
                       }
                     },
                     {
+                      "id": "kf3",
                       "at": "8",
                       "value": 0.25,
                       "interp": {
@@ -102,6 +105,7 @@
                   ],
                   "effects.fx2.radius": [
                     {
+                      "id": "kf4",
                       "at": "1",
                       "value": 0.0,
                       "interp": {
@@ -113,6 +117,7 @@
                       }
                     },
                     {
+                      "id": "kf5",
                       "at": "7",
                       "value": 199.5,
                       "interp": {
@@ -126,6 +131,7 @@
                   ],
                   "effects.fx3.radius": [
                     {
+                      "id": "kf6",
                       "at": "0",
                       "value": 10.0,
                       "interp": {
@@ -133,6 +139,7 @@
                       }
                     },
                     {
+                      "id": "kf7",
                       "at": "8",
                       "value": 20.0,
                       "interp": {

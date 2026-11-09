@@ -10,7 +10,9 @@ use super::names::NameTable;
 /// and `auth.audit.list|purge` (5A Task 8), `auth.credential.mint|list|revoke` (5A Task 9),
 /// `auth.credential.rotateMaster` (review of 5A Tasks 8–9, M3), the plugin and registry RPCs
 /// (8A Tasks 9a and 9b), the `library.*` RPCs (5D), the `jobs.*` RPCs (5C-2), the `agent.*` RPCs (7A Task 2) and the owner's agent settings,
-/// `agent.key.*`, `agent.local.*` and `training.closedTargets.*` (7A Task 12) and the review RPCs with `history.drop` (5E Task 4).
+/// `agent.key.*`, `agent.local.*` and `training.closedTargets.*` (7A Task 12), 5B's pairing,
+/// device, environment and `settings.write` RPCs, and the review RPCs with `history.drop`
+/// (5E Task 4).
 pub static RPC_METHODS: NameTable = NameTable::new(
     "RPC_METHODS",
     &[
@@ -52,6 +54,14 @@ pub static RPC_METHODS: NameTable = NameTable::new(
         "auth.credential.mint",
         "auth.credential.revoke",
         "auth.credential.rotateMaster",
+        "auth.device.list",
+        "auth.device.rename",
+        "auth.device.revoke",
+        "auth.devices.watch",
+        "auth.pair.approve",
+        "auth.pair.offer",
+        "auth.pair.pending",
+        "auth.pair.reject",
         "auth.prove",
         "auth.revokeSelf",
         "auth.ticket",
@@ -66,6 +76,11 @@ pub static RPC_METHODS: NameTable = NameTable::new(
         "diagnostics.purge",
         "diagnostics.record",
         "diagnostics.status",
+        "env.adopt",
+        "env.describe",
+        "env.name",
+        "env.reset",
+        "env.rotateIdentity",
         "eval.audio",
         "eval.frame",
         "fonts.catalog",
@@ -115,6 +130,7 @@ pub static RPC_METHODS: NameTable = NameTable::new(
         "plugin.suggest",
         "project.acknowledgeRewind",
         "project.acknowledgeSalvage",
+        "project.close",
         "project.compact",
         "project.create",
         "project.events",
@@ -144,6 +160,7 @@ pub static RPC_METHODS: NameTable = NameTable::new(
         "server.hello",
         "server.status",
         "server.stop",
+        "settings.write",
         "snapshot.get",
         "training.closedTargets.get",
         "training.closedTargets.set",

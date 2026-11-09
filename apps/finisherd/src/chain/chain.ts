@@ -7,8 +7,9 @@
 //   5. policy (`policy.ts`): branch write targets resolved through the store, then
 //      `allow {guard} | deny | ask` (`ask` answers `APPROVAL_REQUIRED {approvalId}`; an agent
 //      session's rule ask is durable instead, `APPROVAL_PENDING`, through `agentAsk`); then a
-//      `console` principal's mutating human-only call must carry its connection's typed
-//      challenge (`auth/challenges.ts`, Decision 30: `CONFIRMATION_REQUIRED`);
+//      `console` principal's mutating human-only call, and a `device`'s `server.stop` (5B),
+//      must carry its connection's typed challenge (`auth/challenges.ts`, Decision 30:
+//      `CONFIRMATION_REQUIRED`);
 //   6. the handler, with the resolved payload and the guard (`options.guard`), which every
 //      write passes into `fin-node` for the store to check inside its write transaction; when
 //      it fails with a typed error that committed nothing (`UNCOMMITTED`), what the policy
@@ -32,11 +33,12 @@ import type { WriteGuard } from "@finisher/core-types";
 import { Effect, Stream } from "effect";
 import { answerChallenge, confirmationRequired, undoesOwnMint } from "../auth/challenges.ts";
 import { unauthenticated } from "../auth/handshake.ts";
-import { credentialRevoked } from "../auth/revoke.ts";
+import { credentialRevoked, deviceRevoked } from "../auth/revoke.ts";
 import type { Connections, Transport } from "../connections.ts";
 import type { Audit } from "../control/audit.ts";
 import { ulid } from "../control/ulid.ts";
 import { authorize } from "./authorize.ts";
+import { withoutClientVia } from "./client-via.ts";
 import type { ChainHooks } from "./hooks.ts";
 import { approvalRequired, outOfReach } from "./fixes.ts";
 import { type Ask, authorOf, branchLimited, DEFAULT_POLICIES, type PolicyInput, type PolicyRule, runPolicies, stampsAuthor } from "./policy.ts";
@@ -144,6 +146,11 @@ export interface ChainDeps {
   readonly agentAsk?: AgentAsk;
   /** What the chain asks of agent sessions (sub-project 7A Task 7); none: 5A's chain. */
   readonly hooks?: ChainHooks;
+  /**
+   * A refusal of the principal itself before anything is resolved (5B: a device while the
+   * server data is moved, `ENV_MOVED`); `undefined` lets it through.
+   */
+  readonly refuse?: (p: Principal) => FinError | undefined;
 }
 
 /** What a handler sees in its options beside Effect's: the policy stage's guard and what was resolved. */
@@ -221,13 +228,20 @@ export function withChain<H extends object>(handlers: H, deps: ChainDeps): H {
     });
 
   /** Stages 2–5; the resolved payload and the guard, or the refusal. */
-  const check = (tag: FinRpcTag, payload: unknown, clientId: number, headers: unknown) => {
+  const check = (tag: FinRpcTag, sent: unknown, clientId: number, headers: unknown) => {
+    // Before anything reads it: a client's `via` would name a plugin it is not (spec §3.8).
+    const payload = withoutClientVia(tag, sent);
     const principal = deps.connections.principalOf(clientId);
     const rule = ruleOf(tag);
     const stages = Effect.gen(function* () {
       // A credential revoked after this connection proved it (or took its ticket) runs nothing (M3).
-      if (deps.connections.revoked(clientId)) return yield* Effect.fail(credentialRevoked());
+      // (`principalOf` reads a revoked one as anonymous: the connection's own record says what it was.)
+      if (deps.connections.revoked(clientId)) {
+        return yield* Effect.fail(deps.connections.get(clientId)?.principal.kind === "device" ? deviceRevoked() : credentialRevoked());
+      }
       if (!PUBLIC_RPCS.has(tag) && principal.kind === "anonymous") return yield* Effect.fail(unauthenticated("unproved"));
+      const refused = deps.refuse?.(principal);
+      if (refused !== undefined) return yield* Effect.fail(refused);
       if (credentialOf(principal) !== undefined) deps.touch?.(principal);
       const resolved = yield* resolve(rule, payload, deps.projects, { principal, jobs: deps.jobs });
       yield* authorize(tag, principal, payload, resolved, deps.projects, hooks);
@@ -245,15 +259,11 @@ export function withChain<H extends object>(handlers: H, deps: ChainDeps): H {
       // Every call that needs a human-only scope is confirmed, unless its rule opts out (L2).
       // A connection taking back a credential it minted needs no second code (M2 of the review of Tasks 8–9).
       const conn = deps.connections.get(clientId);
-      if (principal.kind === "console" && needsConfirmation(tag, payload, resolved.facts) && !undoesOwnMint(conn, tag, payload)) {
+      // A device confirms only `server.stop` (5B, owner decision of 2026-11-08): `needsConfirmation`.
+      const mintUndo = principal.kind === "console" && undoesOwnMint(conn, tag, payload);
+      if (needsConfirmation(tag, payload, resolved.facts, principal) && !mintUndo) {
         const refusal = answerChallenge(conn, (payload as { challenge?: unknown } | null)?.challenge);
-        if (refusal !== undefined) return yield* Effect.fail(confirmationRequired(tag, refusal));
-      }
-      // A `service` opt-out (`server.stop`) is for the console that service managers run; any
-      // other person's principal (5B's devices with `auth.admin`) must confirm it, and until
-      // 5B has a way to, it cannot (review of Tasks 8–9, Task 8).
-      if (rule.unconfirmed === "service" && principal.human && principal.kind !== "console") {
-        return yield* Effect.fail(confirmationRequired(tag, "missing"));
+        if (refusal !== undefined) return yield* Effect.fail(confirmationRequired(tag, refusal, principal.kind === "device" ? "app" : "console"));
       }
       // A credential's writes carry its own author, whatever it sent (M4; review of Tasks 8–9,
       // M1: whatever its branch limits, or it could plant an `own` branch for another; 7A

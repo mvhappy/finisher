@@ -15,11 +15,12 @@
 //!   that another user owns is refused, as ssh refuses such a key (`reason: credentialUnsafe`);
 //!   neither file is read past 4 KiB.
 //! - **Nothing an unproved server says is believed:** an error answer to `server.hello` is
-//!   `helloFailed` (its code, message and fix are dropped: they would be the squatter's), and a
-//!   server from before the handshake is `versionMismatch`. Only fin's own transport and timeout
-//!   errors pass through before the proof.
+//!   `helloFailed` (its code, message and fix are dropped: they would be the squatter's). A
+//!   hello whose `protocolVersion` is not exactly fin's is `PROTOCOL_MISMATCH` (no MAC sent, no
+//!   retry; review of 2026-11-09, #12). Only fin's own transport and timeout errors, and that
+//!   number, pass through before the proof.
 //! - **The retry:** when the server cannot prove itself (`noProof`, `badProof`, `envMismatch`,
-//!   `endpointMismatch`, `helloFailed`, `versionMismatch`), fin re-reads `finisherd.json` and the
+//!   `endpointMismatch`, `helloFailed`), fin re-reads `finisherd.json` and the
 //!   key **once**, reconnects and
 //!   retries: a restart between reading the key and connecting is invisible. A retry that
 //!   succeeds through a changed key is noted as `keyStale` on the connection (`fin whoami`
@@ -52,9 +53,6 @@ pub const LABEL_PROVE: &str = "fin/prove/v2";
 pub const KEY_BYTES: usize = 32;
 /// The most fin reads of a key or credential file; a longer one is malformed.
 pub const MAX_CREDENTIAL_BYTES: u64 = 4096;
-/// The protocol whose hello carries the handshake (5A Task 6). A server that says less (or no
-/// version) is from an older release (`versionMismatch`), not a squatter: no MAC is sent.
-pub const HANDSHAKE_PROTOCOL: u64 = 2;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CredentialKind {
@@ -225,7 +223,8 @@ fn read_private(path: &Path, credential_file: bool) -> Result<Option<String>, Co
     // `local.key` sits in the server's private `auth/` folder, which the server checks.
     #[cfg(windows)]
     if credential_file {
-        let problems = crate::private_windows::problems(&file)
+        let reader = session_reader(path);
+        let problems = crate::private_windows::problems(&file, reader.as_deref())
             .unwrap_or_else(|e| vec![format!("unreadable security info: {}", e.kind())]);
         if !problems.is_empty() {
             return Err(unsafe_file(path, "notPrivate", json!(problems)));
@@ -241,6 +240,25 @@ fn read_private(path: &Path, credential_file: bool) -> Result<Option<String>, Co
         Ok(n) if n as u64 <= MAX_CREDENTIAL_BYTES => Ok(Some(text)),
         _ => Ok(None),
     }
+}
+
+/// The one other reader a credential file may name on Windows: for `agents/<sessionId>/
+/// credential.json`, that session's capability SID, granted read-only by the ACL broker for the
+/// session's sandboxed `fin` (plan 7C Task 10). Pure.
+#[cfg(any(windows, test))]
+pub(crate) fn session_reader(path: &Path) -> Option<String> {
+    fn name(p: Option<&Path>) -> Option<&str> {
+        p?.file_name()?.to_str()
+    }
+    if name(Some(path))? != "credential.json" {
+        return None;
+    }
+    let dir = path.parent()?;
+    if name(dir.parent())? != "agents" {
+        return None;
+    }
+    let cap = fin_sandbox::windows::capability::session(name(Some(dir))?).ok()?;
+    Some(fin_sandbox::windows::capability::capability_sid(&cap))
 }
 
 /// A credential file (`FIN_CREDENTIAL`'s): `Ok(None)` when it is missing, unreadable or
@@ -399,8 +417,9 @@ pub fn handshake(conn: &mut Client, cred: &Credential, expect: &Expect) -> Resul
     };
     let field = |k: &str| answer.get(k).and_then(Value::as_str);
     let version = answer.get("protocolVersion").and_then(Value::as_u64);
-    if version.is_none_or(|v| v < HANDSHAKE_PROTOCOL) {
-        return Err(Failure::Untrusted("versionMismatch"));
+    if version != Some(endpoint::PROTOCOL_VERSION) {
+        let at = json!({ "endpoint": expect.endpoint });
+        return Err(Failure::Other(endpoint::protocol_mismatch(version, at)));
     }
     let Some(env) = field("envId") else {
         return Err(Failure::Untrusted("noProof"));
@@ -462,17 +481,6 @@ fn gate() {
 pub fn untrusted(endpoint: &Endpoint, reason: &str) -> CoreError {
     let at = endpoint.display();
     let details = json!({ "endpoint": at, "reason": reason });
-    if reason == "versionMismatch" {
-        return CoreError::new(
-            "SERVER_UNTRUSTED",
-            format!("the server at {at} is from an older Finisher release and cannot prove it is your Finisher server"),
-        )
-        .with_details(details)
-        .with_fix(
-            "Your Finisher server is older than this command and does not know how to prove \
-             itself. Restart it from the same Finisher release as this command, then try again.",
-        );
-    }
     // A server answers a credential it does not know without a proof, exactly as a squatter
     // would (so ids cannot be probed): say both. One it minted and then revoked or that
     // expired is proved and refused by name (`CREDENTIAL_REVOKED`, `CREDENTIAL_EXPIRED`;

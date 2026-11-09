@@ -30,6 +30,8 @@ pub mod held_paths;
 mod host;
 mod memory;
 mod proc;
+#[cfg(target_os = "macos")]
+pub mod seatbelt_mark;
 pub mod spawner;
 #[cfg(feature = "test-hooks")]
 mod test_hooks;
@@ -58,8 +60,8 @@ pub use exit::{ExitInfo, ExitReason, KillReason};
 pub use host::Host;
 pub use memory::MemoryRule;
 pub use spawner::{
-    JobLimits, PathGrant, PlatformCommand, Profile, ProfileCaps, ProfileState, Program, Qos, Role,
-    SpawnError, SpawnRequest, Spawner, UiLimits, Unsandboxed,
+    JobLimits, PathGrant, PlatformCommand, ProcessLimits, Profile, ProfileCaps, ProfileState,
+    Program, Qos, Role, SpawnError, SpawnRequest, Spawner, UiLimits, Unsandboxed,
 };
 
 /// The host's timers, in milliseconds (Decisions 18, 19, 19a, 20). Tests shorten them.

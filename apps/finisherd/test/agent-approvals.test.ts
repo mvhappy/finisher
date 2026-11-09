@@ -128,6 +128,8 @@ describe("the approvals store", () => {
     const refused = failure(await ask(s, "c16"));
     expect(refused).toMatchObject({ code: "APPROVAL_LIMIT", details: { open: 16, limit: 16, scope: "session" } });
     expect(exitCodeOf("APPROVAL_LIMIT")).toBe(4);
+    expect(exitCodeOf("CONFLICT")).toBe(4);
+    expect(exitCodeOf("NEIGHBOURS_GONE")).toBe(4);
     for (const id of ids) expect(store.approval(id)!.status).toBe("open");
     expect(openList(s.id)).toEqual(ids);
     // A repeat of an open one still answers its card.

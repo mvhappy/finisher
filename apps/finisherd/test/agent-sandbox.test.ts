@@ -5,14 +5,19 @@
 // folder, writes only in the workspace. Each denial has an unsandboxed control (the profile not
 // ready on this OS: the same processes, started directly). `FIN_REQUIRE_LANDLOCK=1` turns the
 // skip on a host without Landlock into a failure.
-import fs, { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+// Windows (plan 7C Decision 27): the session's processes run in the project's AppContainer
+// under the real launcher, and the suite proves what they are given (their working directory,
+// `LOCALAPPDATA`, the broker's grants, `fin` over the pipe as the session's agent); what they
+// must not reach is proven by configuration (no grant on it, server data owner-only), never
+// by an attempt. `FIN_REQUIRE_SANDBOX=1` turns a skip there into a failure.
+import fs, { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, win32 } from "node:path";
 import type { Node, Session } from "@finisher/contracts";
-import { sandboxStatus } from "@finisher/fin-node";
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from "vitest";
+import { aclGrantsForTest, aclRevoke, checkPrivateDir, makePrivateDir, sandboxContainerDeleteForTest, sandboxProjectContainer, sandboxStatus } from "@finisher/fin-node";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, onTestFinished, test } from "vitest";
 import type { FakeScript } from "../src/agent/fake.ts";
 import { Effect, Exit, Scope } from "effect";
 import { assertSessionEnv, openSessionSandbox, REAP_GRACE_MS, sandboxMode, sessionEnv } from "../src/agent/sandbox.ts";
@@ -26,7 +31,8 @@ import { addAsset, commit, type NdjsonClient, ok, tx } from "./support/ndjson-cl
 
 // The `fin` the server's sessions are granted (beside the bundled binaries, else the checkout's).
 const FIN = resolveFinPath({ models: [] } as unknown as Parameters<typeof resolveFinPath>[0]);
-const require = process.env.FIN_REQUIRE_LANDLOCK === "1";
+const require = process.env.FIN_REQUIRE_LANDLOCK === "1" || process.env.FIN_REQUIRE_SANDBOX === "1";
+const WIN = process.platform === "win32";
 const saved = { hooks: process.env.FIN_TEST_HOOKS, ready: process.env.FIN_TEST_SANDBOX_READY };
 
 let tmp: string;
@@ -49,6 +55,8 @@ afterEach(() => {
 });
 
 const SESSION = { id: "01S0000000000000000000000A", harness: "claudeCode" } as const;
+/** A denied read or write: Landlock answers EACCES, Seatbelt EPERM. */
+const DENIED = process.platform === "darwin" ? /Operation not permitted/ : /Permission denied/;
 
 describe("the session environment (spec §8.5)", () => {
   const parent = {
@@ -73,7 +81,7 @@ describe("the session environment (spec §8.5)", () => {
     EDITOR: "vi",
   };
   const make = (over: Partial<Parameters<typeof sessionEnv>[0]> = {}) => {
-    const dirs = sessionDirs("/data/agents", SESSION.id);
+    const dirs = sessionDirs("/data/agents", SESSION.id, over.platform ?? "linux");
     return sessionEnv({ session: SESSION, server: "tcp:127.0.0.1:4100", projectDir: "/p/P", dirs, store: { grant: "/data/providers/claudeCode/home/store", env: { name: "CLAUDE_SECURESTORAGE_CONFIG_DIR", value: "/data/providers/claudeCode/home/store" } }, parent, platform: "linux", ...over });
   };
 
@@ -106,8 +114,12 @@ describe("the session environment (spec §8.5)", () => {
     expect(codex.CODEX_HOME).toBe(`/data/agents/${SESSION.id}/provider`);
     expect(codex.CLAUDE_CONFIG_DIR).toBeUndefined();
     // Windows: the session's temp and LOCALAPPDATA (spike S9 point 7).
-    const win = make({ platform: "win32", parent: { ...parent, TEMP: "C:\\T", TMP: "C:\\T", LOCALAPPDATA: "C:\\L" } });
-    expect([win.TEMP, win.TMP, win.LOCALAPPDATA]).toEqual([win.TMPDIR, win.TMPDIR, join(`/data/agents/${SESSION.id}`, "localappdata")]);
+    const store = "C:\\data\\providers\\claudeCode\\home\\store";
+    const win = make({ platform: "win32", parent: { ...parent, TEMP: "C:\\T", TMP: "C:\\T", LOCALAPPDATA: "C:\\L" }, store: { grant: store, env: { name: "CLAUDE_SECURESTORAGE_CONFIG_DIR", value: store } } });
+    expect([win.TEMP, win.TMP, win.LOCALAPPDATA]).toEqual([win.TMPDIR, win.TMPDIR, win32.join(`/data/agents/${SESSION.id}`, "localappdata")]);
+    // Spelled for the platform named, whatever the host.
+    expect(win.TMPDIR).toBe(`\\data\\agents\\${SESSION.id}\\tmp`);
+    expect(() => assertSessionEnv(win, SESSION, { expect: win, platform: "win32" })).not.toThrow();
   });
 
   test("never_passed_variables_are_dropped_by_child_env_itself", () => {
@@ -173,10 +185,11 @@ describe("the session environment (spec §8.5)", () => {
 
   test("git_settings_beat_a_repositorys_own_configuration", async () => {
     // A repository's `.git/config` overrides `GIT_CONFIG_GLOBAL`; `GIT_CONFIG_COUNT` does not.
-    const d = await ensureSessionDirs(join(tmp, "agents"), SESSION.id, { platform: "linux" });
+    const d = await ensureSessionDirs(join(tmp, "agents"), SESSION.id);
     const repo = join(tmp, "repo");
     mkdirSync(repo);
-    const env = sessionEnv({ session: SESSION, server: "tcp:127.0.0.1:1", projectDir: repo, dirs: d, parent: { PATH: process.env.PATH ?? "/usr/bin:/bin", HOME: tmp }, platform: "linux" });
+    const parent = WIN ? { Path: process.env.Path ?? process.env.PATH ?? "", SystemRoot: process.env.SystemRoot ?? "C:\\Windows", USERPROFILE: tmp } : { PATH: process.env.PATH ?? "/usr/bin:/bin", HOME: tmp };
+    const env = sessionEnv({ session: SESSION, server: "tcp:127.0.0.1:1", projectDir: repo, dirs: d, parent });
     const git = (...a: string[]) => spawnSync("git", ["-C", repo, ...a], { env, encoding: "utf8" });
     expect(git("init", "-q").status).toBe(0);
     expect(git("config", "core.fsmonitor", "/bin/planted").status).toBe(0);
@@ -195,18 +208,58 @@ describe("the session environment (spec §8.5)", () => {
 });
 
 describe("the session's directories (spec §8.5, §8.6)", () => {
+  /** `agents/` inside a private server data, as `finisherd` makes it. */
+  const agentsRoot = () => {
+    const data = join(tmp, "data");
+    mkdirSync(data, { mode: 0o700 });
+    if (WIN) makePrivateDir(data);
+    return join(data, "agents");
+  };
+
   test("session_dirs_are_private_and_hold_the_git_configuration", async () => {
-    const agents = join(tmp, "agents");
+    const agents = agentsRoot();
     mkdirSync(join(agents, SESSION.id, "tmp"), { recursive: true, mode: 0o755 });
-    const d = await ensureSessionDirs(agents, SESSION.id, { platform: "linux" });
-    for (const p of [d.dir, d.settings, d.tmp, d.provider, d.git, d.blobs, d.gnupg]) expect(statSync(p).mode & 0o777, p).toBe(0o700);
-    expect(statSync(d.gitConfig).mode & 0o777).toBe(0o600);
+    const d = await ensureSessionDirs(agents, SESSION.id);
+    const all = [d.dir, d.settings, d.tmp, d.provider, d.git, d.blobs, d.gnupg, ...(WIN ? [d.localAppData] : [])];
+    if (WIN) {
+      // No modes: each is a real directory that only this user, SYSTEM and Administrators
+      // open (inherited from server data's protected DACL).
+      for (const p of [...all, d.gitConfig]) expect(checkPrivateDir(p), p).toMatchObject({ ok: true, problems: [] });
+      for (const p of all) expect(lstatSync(p).isDirectory(), p).toBe(true);
+      expect(existsSync(d.localAppData)).toBe(true);
+    } else {
+      for (const p of all) expect(statSync(p).mode & 0o777, p).toBe(0o700);
+      expect(statSync(d.gitConfig).mode & 0o777).toBe(0o600);
+      // `localappdata/` is Windows' alone.
+      expect(existsSync(d.localAppData)).toBe(false);
+    }
     const git = readFileSync(d.gitConfig, "utf8");
     expect(git).toMatch(/fsmonitor = false/);
     expect(git).toMatch(/helper =\s*$/m);
   });
 
-  test("a_planted_link_is_never_followed", async () => {
+  test.runIf(WIN)("a_planted_link_is_never_followed_on_windows", async () => {
+    // A container may make a junction (no privilege needed) or a file at `tmp/gnupg`.
+    const agents = agentsRoot();
+    const d = await ensureSessionDirs(agents, SESSION.id);
+    const victim = join(tmp, "victim");
+    mkdirSync(victim);
+    writeFileSync(join(victim, "keep.txt"), "x");
+    rmSync(d.gnupg, { recursive: true });
+    symlinkSync(victim, d.gnupg, "junction");
+    await ensureSessionDirs(agents, SESSION.id);
+    expect(lstatSync(d.gnupg).isSymbolicLink()).toBe(false);
+    expect(lstatSync(d.gnupg).isDirectory()).toBe(true);
+    expect(fs.readdirSync(d.gnupg)).toEqual([]);
+    expect(readFileSync(join(victim, "keep.txt"), "utf8")).toBe("x");
+    expect(checkPrivateDir(d.gnupg).ok).toBe(true);
+    rmSync(d.gnupg, { recursive: true });
+    writeFileSync(d.gnupg, "x");
+    await ensureSessionDirs(agents, SESSION.id);
+    expect(lstatSync(d.gnupg).isDirectory()).toBe(true);
+  });
+
+  test.skipIf(WIN)("a_planted_link_is_never_followed", async () => {
     // `tmp/` is a write root: a sandboxed process may replace `tmp/gnupg` with a link.
     const agents = join(tmp, "agents");
     const d = await ensureSessionDirs(agents, SESSION.id, { platform: "linux" });
@@ -226,7 +279,8 @@ describe("the session's directories (spec §8.5, §8.6)", () => {
     expect(lstatSync(d.gnupg).isDirectory()).toBe(true);
   });
 
-  test("sign_in_store_is_linked_in_place", async () => {
+  // Windows without the symlink privilege leaves the CLI signed out (`acl-broker.test.ts`).
+  test.skipIf(WIN)("sign_in_store_is_linked_in_place", async () => {
     const data = join(tmp, "data");
     const d = await ensureSessionDirs(join(data, "agents"), SESSION.id, { platform: "linux" });
     const target = join(data, "providers", "codex", "home", "auth.json");
@@ -286,6 +340,16 @@ describe("a CLI session's processes (the fake harness's spawn step)", () => {
     const local = await server.local();
     const projectId = await project(local, paths.dir, "P");
     await project(local, paths.otherDir, "Q");
+    if (WIN) {
+      // What a launch made outside the temp tree: the static grants (toolchain, `fin`, the
+      // project) and the projects' container profiles.
+      const data = realpathSyncNative(paths.serverData);
+      const containers = [paths.dir, paths.otherDir].map((d) => sandboxProjectContainer(realpathSyncNative(d)));
+      onTestFinished(async () => {
+        await aclRevoke(data, "static").catch(() => 0);
+        for (const c of containers) sandboxContainerDeleteForTest(c);
+      });
+    }
     const started = await local.call("agent.session.start", { projectId, harness: "fake", prompt: "go" });
     if (!started.ok) return { started, local, paths, children: [] as Child[], nodes: [] as Node[], session: undefined };
     const { session, warnings } = started.value as { session: Session; warnings?: unknown[] };
@@ -311,19 +375,22 @@ describe("a CLI session's processes (the fake harness's spawn step)", () => {
   }
 
   const sh = (script: string) => ["/bin/sh", "-c", script] as const;
+  /** `echo <w>` on this OS (its output is `<w>` and a line end). */
+  const echo = (w: string) => (WIN ? (["cmd.exe", "/d", "/s", "/c", `echo ${w}`] as const) : sh(`echo ${w}`));
+  const line = (s: string) => s.replace(/\r?\n$/, "");
   const violations = async () => {
     const audit = ok<{ entries: Array<{ kind: string; outcome: string; details: Record<string, unknown> }> }>(await (await server!.console()).call("auth.audit.list", {}));
     return audit.entries.filter((e) => e.kind === "sandbox.violation");
   };
   const notices = (nodes: Node[], k: string) => nodes.filter((n) => n.kind === "notice" && (n.payload as Record<string, unknown>)[k] !== undefined).map((n) => (n.payload as Record<string, unknown>)[k]);
 
-  test("agent_child_cannot_read_local_key", async () => {
+  test.skipIf(WIN)("agent_child_cannot_read_local_key", async () => {
     if (!enforced("agent_child_cannot_read_local_key")) return;
     const argvs = (p: Paths) => [sh(`cat '${p.key}'`), sh(`env -u FIN_CREDENTIAL -u FIN_SERVER FIN_SERVER_DATA='${p.serverData}' '${FIN}' whoami`)];
     const boxed = await run(argvs);
     expect(boxed.children).toHaveLength(2);
     expect(boxed.children[0]).toMatchObject({ code: 1 });
-    expect(boxed.children[0]!.stderr).toMatch(/Permission denied/);
+    expect(boxed.children[0]!.stderr).toMatch(DENIED);
     // `local.key` is unreadable, so `fin` is never `local`: it fails, or (where `fin.sock` is
     // reachable: no namespace and Landlock below ABI 9, the residual of Tasks 4 and 6) it is
     // `anonymous`, which holds only the `public` scope.
@@ -344,7 +411,7 @@ describe("a CLI session's processes (the fake harness's spawn step)", () => {
     expect(open.children[1]!.stdout).toMatch(/"kind":"local"/);
   });
 
-  test("harness_with_wrong_project_dir_reads_nothing", async () => {
+  test.skipIf(WIN)("harness_with_wrong_project_dir_reads_nothing", async () => {
     if (!enforced("harness_with_wrong_project_dir_reads_nothing")) return;
     const argvs = (p: Paths) => [
       // `fin` checks the folder against the session's project (`agent_paths.rs`).
@@ -361,13 +428,15 @@ describe("a CLI session's processes (the fake harness's spawn step)", () => {
     expect(mismatch!.stdout, JSON.stringify(mismatch)).toMatch(/PATH_NOT_ALLOWED/);
     expect(mismatch!.stdout).toMatch(/projectMismatch/);
     expect(read).toMatchObject({ code: 1 });
-    expect(read!.stderr).toMatch(/Permission denied/);
+    expect(read!.stderr).toMatch(DENIED);
     expect(write!.stdout).toBe("hi\n");
-    expect(write!.stderr).toMatch(/Permission denied/);
+    expect(write!.stderr).toMatch(DENIED);
     expect(existsSync(join(boxed.paths.dir, "planted.txt"))).toBe(false);
     expect(whoami).toMatchObject({ code: 0 });
     expect(whoami!.stdout).toMatch(/"kind":"agent"/);
-    expect(whoami!.stdout).toMatch(/^tcp:127\.0\.0\.1:\d+$/m);
+    // Linux: the agent listener; macOS: `fin.sock` itself, resolved (what the handshake binds).
+    if (process.platform === "darwin") expect(whoami!.stdout.trim().split("\n").at(-1)).toBe(realpathSync(join(boxed.paths.serverData, "run", "fin.sock")));
+    else expect(whoami!.stdout).toMatch(/^tcp:127\.0\.0\.1:\d+$/m);
     await server!.stop();
     // Control: unsandboxed, the other project's folder is readable and the plant lands.
     const open = await run(argvs, NOT_READY);
@@ -376,7 +445,7 @@ describe("a CLI session's processes (the fake harness's spawn step)", () => {
     expect(existsSync(join(open.paths.dir, "planted.txt"))).toBe(true);
   });
 
-  test("sign_in_store_never_opened", async () => {
+  test.skipIf(WIN)("sign_in_store_never_opened", async () => {
     // A spy on every call that opens, reads or inspects a path, over the whole session: start,
     // a child's run and the end. The store's link is made with `symlink` and `lstat` of the
     // link's own name in `agents/<id>/provider/`, never under `providers/`.
@@ -413,7 +482,7 @@ describe("a CLI session's processes (the fake harness's spawn step)", () => {
     expect(seen).toEqual([]);
   });
 
-  test("a_leaders_group_goes_with_it", async () => {
+  test.skipIf(WIN)("a_leaders_group_goes_with_it", async () => {
     // What a process leaves running in its group is killed when it exits.
     const r = await run(() => [sh("sleep 300 & echo $!")], NOT_READY);
     const pid = Number(r.children[0]!.stdout.trim());
@@ -422,8 +491,8 @@ describe("a CLI session's processes (the fake harness's spawn step)", () => {
   });
 
   test("disabled_host_runs_with_notice", async () => {
-    const r = await run(() => [sh("echo ran")], withAgent({ kind: "disabled", reason: "landlockDisabled" }));
-    expect(r.children[0]!.stdout).toBe("ran\n");
+    const r = await run(() => [echo("ran")], withAgent({ kind: "disabled", reason: "landlockDisabled" }));
+    expect(line(r.children[0]!.stdout)).toBe("ran");
     expect(r.warnings).toEqual([expect.objectContaining({ code: "SANDBOX_DISABLED", details: expect.objectContaining({ profile: "agent", reason: "landlockDisabled" }) })]);
     expect(notices(r.nodes, "sandbox")).toEqual([expect.objectContaining({ code: "SANDBOX_DISABLED", profile: "agent", reason: "landlockDisabled" })]);
     const got = ok<{ warnings?: Array<{ code: string; details: { reason: string } }> }>(await r.local.call("agent.session.get", { sessionId: r.session!.id }));
@@ -431,7 +500,7 @@ describe("a CLI session's processes (the fake harness's spawn step)", () => {
   });
 
   test("unavailable_refuses_start", async () => {
-    const r = await run(() => [sh("echo ran")], withAgent({ kind: "unavailable", need: "kernel ≥ 6.2" }));
+    const r = await run(() => [echo("ran")], withAgent({ kind: "unavailable", need: "kernel ≥ 6.2" }));
     expect(r.started.ok).toBe(false);
     expect(!r.started.ok && r.started.error).toMatchObject({ code: "SANDBOX_UNAVAILABLE", details: { profile: "agent", need: "kernel ≥ 6.2" } });
     const sessions = ok<{ sessions: Session[] }>(await r.local.call("agent.session.list", {})).sessions;
@@ -439,13 +508,13 @@ describe("a CLI session's processes (the fake harness's spawn step)", () => {
   });
 
   test("profile_not_ready_keeps_warning", async () => {
-    const r = await run(() => [sh("echo ran")], NOT_READY);
-    expect(r.children[0]!.stdout).toBe("ran\n");
+    const r = await run(() => [echo("ran")], NOT_READY);
+    expect(line(r.children[0]!.stdout)).toBe("ran");
     expect(r.warnings).toEqual([expect.objectContaining({ code: "SANDBOX_DISABLED", details: expect.objectContaining({ profile: "agent", reason: "profileNotReady" }) })]);
     expect(notices(r.nodes, "sandbox")).toEqual([expect.objectContaining({ code: "SANDBOX_DISABLED", reason: "profileNotReady" })]);
   });
 
-  test("violation_is_audited", async () => {
+  test.skipIf(WIN)("violation_is_audited", async () => {
     // Only what the launcher itself reports (its failure line on descriptor 3, then exit 78).
     // A launcher that fails to apply, as the real one does when Landlock refuses the policy.
     const failing = join(tmp, "failing-launcher.sh");
@@ -467,10 +536,10 @@ describe("a CLI session's processes (the fake harness's spawn step)", () => {
     expect(await violations()).toEqual([]);
   });
 
-  test("a_process_that_leaves_its_group_goes_with_the_session", async () => {
+  test.skipIf(WIN)("a_process_that_leaves_its_group_goes_with_the_session", async () => {
     // Task 11's review: a `setsid` grandchild left its group and outlived the session. The
-    // Linux launcher stays the parent and reaps it (Decision 3 as amended).
-    const escape = sh("setsid sh -c 'echo $$ > pid; exec sleep 300' >/dev/null 2>&1 < /dev/null & while [ ! -s pid ]; do sleep 0.05; done; cat pid");
+    // Linux and macOS launchers stay the parent and reap it (Decision 3 as amended).
+    const escape = sh(`${setsid("echo $$ > pid; exec sleep 300")} >/dev/null 2>&1 < /dev/null & while [ ! -s pid ]; do sleep 0.05; done; cat pid`);
     // Control: without the launcher (the profile not ready on this OS), it outlives the session.
     const direct = await run(() => [escape], NOT_READY);
     const free = Number(direct.children[0]!.stdout.trim());
@@ -495,6 +564,52 @@ describe("a CLI session's processes (the fake harness's spawn step)", () => {
       if (alive(pid)) process.kill(pid, "SIGKILL");
     }
   });
+
+  test.runIf(WIN)("windows_agent_runs_in_its_container_with_the_sessions_grants", async () => {
+    if (!enforced("windows_agent_runs_in_its_container_with_the_sessions_grants")) return;
+    const cmd = (c: string) => ["cmd.exe", "/d", "/s", "/c", c] as const;
+    const r = await run(() => [cmd("cd"), cmd("echo hi> ok.txt && type ok.txt"), cmd("echo %LOCALAPPDATA%"), cmd("echo %TEMP%"), [FIN, "whoami"], cmd("echo %FIN_SERVER%")]);
+    const [data, container] = [realpathSyncNative(r.paths.serverData), sandboxProjectContainer(realpathSyncNative(r.paths.dir))];
+    expect(r.started.ok).toBe(true);
+    const sid = r.session!.id;
+    const workspace = realpathSyncNative(join(r.paths.dir, "workspace", sid));
+    const lower = (c: Child | undefined) => line(c?.stdout ?? "").trim().toLowerCase();
+    const [cwd, write, lad, temp, whoami, server] = r.children;
+    // It starts in its own workspace (granted; Node reads the `package.json` above it).
+    expect(lower(cwd), JSON.stringify(cwd)).toBe(workspace.toLowerCase());
+    expect(write, JSON.stringify(write)).toMatchObject({ code: 0 });
+    expect(line(write!.stdout).trim()).toBe("hi");
+    expect(readFileSync(join(workspace, "ok.txt"), "utf8").trim()).toBe("hi");
+    // `LOCALAPPDATA` is the session's own: Windows roots a container's under it
+    // (`Packages\<container>\AC`) and puts `TEMP` there (S9 point 7).
+    const own = `${join(data, "agents", sid, "localappdata").toLowerCase()}\\packages\\${container}\\ac`;
+    expect(lower(lad)).toBe(own);
+    expect(lower(temp)).toBe(`${own}\\temp`);
+    // `fin` reaches the server over the pipe as the session's agent.
+    expect(whoami, JSON.stringify(whoami)).toMatchObject({ code: 0 });
+    expect(whoami!.stdout).toMatch(/"kind":"agent"/);
+    expect(lower(server)).toMatch(/^\\\\\.\\pipe\\/);
+    expect(((r.warnings ?? []) as Array<{ code: string }>).map((w) => w.code)).toEqual([]);
+    // The broker's grants (plan 7C Task 10): the session's directories to its capability, at
+    // the policy's masks; nothing on `blobs/`, on server data or its keys, or on the other
+    // project's folder, for any owner. Server data stays owner-only.
+    const MODIFY = 0x1301bf;
+    const READ = 0x120089;
+    // The broker records canonical (`\\?\`) paths.
+    const grants = aclGrantsForTest(data).map((g) => ({ ...g, path: g.path.replace(/^\\\\\?\\/, "") }));
+    const mine = grants.filter((g) => g.owner === `session:${sid}`);
+    const at = (rel: string) => mine.filter((g) => g.path.toLowerCase() === join(data, "agents", sid, rel).toLowerCase()).map((g) => g.mask);
+    expect([at("tmp"), at("provider"), at("localappdata"), at("settings"), at("git")]).toEqual([[MODIFY], [MODIFY], [MODIFY], [READ], [READ]]);
+    expect(new Set(mine.map((g) => g.sid)).size).toBe(1);
+    const reaches = (p: string) => grants.some((g) => p.toLowerCase() === g.path.toLowerCase() || p.toLowerCase().startsWith(`${g.path.toLowerCase()}\\`));
+    for (const p of [data, join(data, "auth"), join(data, "auth", "local.key"), join(data, "agents", sid, "blobs"), realpathSyncNative(r.paths.otherDir)]) expect(reaches(p), p).toBe(false);
+    expect(checkPrivateDir(data)).toMatchObject({ ok: true });
+    // The project folder is read through its view capability, a static grant.
+    expect(grants.some((g) => g.owner === "static" && g.path.toLowerCase() === realpathSyncNative(r.paths.dir).toLowerCase() && g.mask === 0x1200a9)).toBe(true);
+    // The session's own grants go with it.
+    ok(await r.local.call("agent.session.end", { sessionId: sid }));
+    await until(() => (aclGrantsForTest(data).some((g) => g.owner === `session:${sid}`) ? undefined : true), 10_000);
+  });
 });
 
 describe("the sandbox's scope", () => {
@@ -507,8 +622,24 @@ describe("the sandbox's scope", () => {
     const scope = await Effect.runPromise(Scope.make());
     const box = await Effect.runPromise(Scope.provide(scope)(openSessionSandbox(s, "fake", { serverData: data, projectDirOf: () => dir, finPath: "/bin/sh", localEndpoint: join(data, "run", "fin.sock"), status: NOT_READY, killGraceMs: 2000 })));
     expect(box.mode).toBe("direct");
-    const child = await Effect.runPromise(box.spawn(["/bin/sh", "-c", "sleep 300"], { cwd: box.workspace, stdio: "pipe" }));
+    const child = await Effect.runPromise(box.spawn([process.execPath, "-e", "setTimeout(() => {}, 300000)"], { cwd: box.workspace, stdio: "pipe" }));
     expect(alive(child.pid)).toBe(true);
+    // A process starts in the session's workspace or the shared one, at any depth, and nowhere
+    // else (on Windows its working directory must be granted; plan 7C Task 9 follow-up).
+    const quick = async (cwd: string) => {
+      const c = await Effect.runPromise(box.spawn([process.execPath, "-e", "0"], { cwd, stdio: "pipe" }));
+      c.stdin.end();
+      return (await c.exited).code;
+    };
+    mkdirSync(join(box.workspace, "sub"));
+    expect(await quick(join(box.workspace, "sub"))).toBe(0);
+    expect(await quick(join(dir, "workspace", "shared"))).toBe(0);
+    // A link in the workspace that leads out of it is resolved, not trusted (a junction on Windows).
+    symlinkSync(tmp, join(box.workspace, "out"), "junction");
+    for (const cwd of [tmp, dir, join(dir, "workspace"), join(dir, "workspace", `${SESSION.id}x`), join(box.workspace, "out")]) {
+      const outside = await Effect.runPromiseExit(box.spawn([process.execPath, "-e", "0"], { cwd, stdio: "pipe" }));
+      expect(Exit.isFailure(outside) && JSON.stringify(outside.cause), cwd).toMatch(/cwdOutsideWorkspace/);
+    }
     await Effect.runPromise(Scope.close(scope, Exit.void));
     expect(await child.exited).toEqual({ code: null, signal: "SIGKILL" });
     // A refused profile opens nothing.
@@ -517,9 +648,9 @@ describe("the sandbox's scope", () => {
   });
 });
 
-describe("the hang-up of a Linux launcher", () => {
+describe("the hang-up of a Linux or macOS launcher", () => {
   test("a_launcher_that_ignores_the_hang_up_is_killed_after_the_grace", async () => {
-    if (process.platform !== "linux") return;
+    if (process.platform !== "linux" && process.platform !== "darwin") return;
     // A launcher that never reaps: the session end hangs it up, then kills its group.
     const stuck = join(tmp, "stuck-launcher.sh");
     writeFileSync(stuck, "#!/bin/sh\ntrap '' HUP\ncat <&3 >/dev/null\nwhile :; do sleep 0.05; done\n", { mode: 0o755 });
@@ -546,7 +677,7 @@ describe("the hang-up of a Linux launcher", () => {
 });
 
 describe("the sandbox under the real launcher", () => {
-  test("extra_read_roots_and_the_scope_kill_hold_under_the_launcher", async () => {
+  test.skipIf(WIN)("extra_read_roots_and_the_scope_kill_hold_under_the_launcher", async () => {
     if (!enforced("extra_read_roots_and_the_scope_kill_hold_under_the_launcher")) return;
     const data = join(tmp, "data");
     const dir = join(tmp, "P");
@@ -571,12 +702,12 @@ describe("the sandbox under the real launcher", () => {
     // Not a read root: refused; named in `extraRead`: read.
     const refused = await read();
     expect(refused.exit.code).toBe(1);
-    expect(refused.err).toMatch(/Permission denied/);
+    expect(refused.err).toMatch(DENIED);
     expect(await read([extra])).toMatchObject({ exit: { code: 0 }, out: "harness\n" });
     // A process under the launcher is killed, its group with it, when the scope closes, and
     // so is a `setsid` grandchild that left the group (the launcher reaps it).
     const long = await Effect.runPromise(
-      box.spawn(["/bin/sh", "-c", "setsid sh -c 'echo $$ > g.pid; exec sleep 300' >/dev/null 2>&1 < /dev/null & while [ ! -s g.pid ]; do sleep 0.02; done; cat g.pid; exec sleep 300"], { cwd: box.workspace, stdio: "pipe" }),
+      box.spawn(["/bin/sh", "-c", `${setsid("echo $$ > g.pid; exec sleep 300")} >/dev/null 2>&1 < /dev/null & while [ ! -s g.pid ]; do sleep 0.02; done; cat g.pid; exec sleep 300`], { cwd: box.workspace, stdio: "pipe" }),
     );
     let said = "";
     long.stdout.on("data", (b) => (said += String(b)));
@@ -594,6 +725,12 @@ describe("the sandbox under the real launcher", () => {
     expect(Exit.isFailure(after)).toBe(true);
   });
 });
+
+/** A shell command that runs `/bin/sh -c <script>` in a session of its own (`script` holds no
+ * single quote; macOS has no `setsid` command). */
+function setsid(script: string): string {
+  return process.platform === "darwin" ? `perl -MPOSIX -e 'POSIX::setsid() > 0 or die; exec "/bin/sh", "-c", $ARGV[0]' '${script}'` : `setsid sh -c '${script}'`;
+}
 
 function alive(pid: number): boolean {
   try {

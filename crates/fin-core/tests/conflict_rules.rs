@@ -23,6 +23,7 @@ type Verdict = Option<(&'static str, String)>;
 fn commit(p: &Project, ops: Vec<Op>, tx_id: &str) -> (CommittedTx, Project) {
     let mut t = tx(ops);
     t.tx_id = tx_id.into();
+    let t = fin_core::canonicalize(p, &t).unwrap();
     let mut ids = MemIds::after(p);
     let a = if t.ops.iter().any(Op::is_internal) {
         apply_internal(p, &t, &mut ids)
@@ -296,7 +297,8 @@ fn every_op_has_a_footprint() {
         fin_core::KeyframeSet {
             item: "c3".into(),
             path: "opacity".into(),
-            at: secs(at),
+            key: None,
+            at: Some(secs(at)),
             value: fin_core::ParamValue::Number(0.5),
             interp: fin_core::Interp::Linear,
         }
@@ -312,6 +314,10 @@ fn every_op_has_a_footprint() {
             }
             .into(),
         ],
+    );
+    let unkey = apply(
+        &busy,
+        vec![fin_core::KeyframeRemove::timed("c3", "opacity", secs(1)).into()],
     );
     let cases = [
         (p.clone(), av_asset("$b", secs(10)), vec![]),
@@ -414,12 +420,14 @@ fn every_op_has_a_footprint() {
             fin_core::KeyframeRemove {
                 item: "c3".into(),
                 path: "opacity".into(),
-                at: secs(1),
+                key: None,
+                at: Some(secs(1)),
             }
             .into(),
             vec!["t2"],
         ),
         (unfx.project.clone(), unfx.inverse[0].clone(), vec!["t1"]),
+        (unkey.project.clone(), unkey.inverse[0].clone(), vec!["t2"]),
     ];
     let linked = apply(&p, vec![link(&["c1", "c3"], "$g")]).project;
     let more = [
@@ -750,13 +758,23 @@ fn every_op_has_a_footprint() {
                     && f.uses == [format!("c2/{}", m.effect), "c2#effects".into()]
             }
             Op::KeyframeSet(k) => {
-                f.touches == [("c3".to_string(), Touch::Param(format!("opacity@{}", k.at)))]
+                let key = k.key.as_deref().unwrap();
+                f.touches == [("c3".to_string(), Touch::Param(format!("opacity#{key}")))]
             }
             // The path's last keyframe: the path itself changes too.
             Op::KeyframeRemove(k) => {
+                let key = k.key.as_deref().unwrap();
                 f.touches
                     == [
-                        ("c3".to_string(), Touch::Param(format!("opacity@{}", k.at))),
+                        ("c3".to_string(), Touch::Param(format!("opacity#{key}"))),
+                        ("c3".to_string(), Touch::Param("opacity".into())),
+                    ]
+            }
+            // A path's first keyframe back: the path itself changes too.
+            Op::KeyframeRestore(k) => {
+                f.touches
+                    == [
+                        ("c3".to_string(), Touch::Param(format!("opacity#{}", k.key))),
                         ("c3".to_string(), Touch::Param("opacity".into())),
                     ]
             }
@@ -828,7 +846,7 @@ fn every_op_has_a_footprint() {
             "{f:?}"
         );
     }
-    assert_eq!(seen.len(), 49);
+    assert_eq!(seen.len(), 50);
 }
 
 /// The style and font ops (plan 4C Task 18), each at a project where it applies; none is on

@@ -14,18 +14,17 @@
 //   with the session environment and no sandbox, and the persistent warning says so;
 // - **refused** where the mechanism is unavailable: `SANDBOX_UNAVAILABLE`, nothing starts.
 // Every process starts in a process group of its own and the whole group is killed when its
-// leader exits or the scope closes (session end, or the instance replaced). On Linux the
-// launcher stays the program's parent, a subreaper (plan 7C Decision 3 as amended): it
-// forwards signals, passes the program's exit through and, when the program exits, is hung up
-// or loses its parent, kills every descendant, one that left the group (`setsid`, `setpgid`)
-// included, and the session's cgroup where one is delegated. So a kill with `SIGKILL` of a
-// process under the Linux launcher hangs it up (`SIGHUP`, which it never forwards) and falls
-// back to `SIGKILL` on its group after `REAP_GRACE_MS`; a `SIGKILL` would end the launcher
-// before it reaps. **Residual:** without the launcher (direct mode, where the profile is not
-// ready on this OS) a process that leaves its group outlives both, unconfined anyway. The
-// macOS launcher (Task 8) still `exec`s, so there it outlives the session too (a Task 8
-// follow-up, plan Decision 3 amendment); Windows closes it with the launcher's job object
-// (Task 9).
+// leader exits or the scope closes (session end, or the instance replaced). On Linux and
+// macOS the launcher stays the program's parent (plan 7C Decision 3 as amended): it forwards
+// signals, passes the program's exit through and, when the program exits, is hung up or loses
+// its parent, kills every descendant, one that left the group (`setsid`, `setpgid`) included:
+// on Linux as a subreaper (and with the session's cgroup where one is delegated), on macOS by
+// the session's Seatbelt mark, which every descendant inherits. So a kill with `SIGKILL` of a
+// process under either launcher hangs it up (`SIGHUP`, which it never forwards) and falls back
+// to `SIGKILL` on its group after `REAP_GRACE_MS`; a `SIGKILL` would end the launcher before it
+// reaps. **Residual:** without the launcher (direct mode, where the profile is not ready on
+// this OS) a process that leaves its group outlives both, unconfined anyway. Windows closes it
+// with the launcher's job object (Task 9).
 // What the launcher itself reports, a failure to apply the policy (its line written back on
 // descriptor 3 before exit 78; a program's own exit 78 writes none), goes to `onViolation`
 // (`sandbox.violation`, spec §8.8). A seccomp kill (`SIGSYS`) is not attributed: without the
@@ -41,12 +40,13 @@
 import { type ChildProcess, spawn as spawnChild } from "node:child_process";
 import { mkdir, realpath } from "node:fs/promises";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { isAbsolute, join, relative, sep } from "node:path";
 import type { Readable, Writable } from "node:stream";
 import type { FinError, Harness, Session } from "@finisher/contracts";
 import type { AgentInput, FinEndpoint } from "@finisher/core-types";
 import { sandboxAgentCheck, sandboxAgentGrants, sandboxContainerSid, sandboxProjectContainer, sandboxToolchainBase } from "@finisher/fin-node";
 import { Effect, type Scope } from "effect";
+import { canonicalEndpoint } from "../auth/crypto.ts";
 import { finError, toFinError } from "../errors.ts";
 import { type AclBroker, grantTable, sessionOwner } from "../sandbox/broker.ts";
 import { resolveSandboxExecPath } from "../sandbox/exec.ts";
@@ -81,6 +81,11 @@ export interface SandboxedChild {
 export type SandboxMode = "launcher" | "direct";
 
 export interface SpawnOptions {
+  /**
+   * Inside the session's workspace or the shared workspace, both granted (spec §8.5): on
+   * Windows a container's process needs its working directory granted, and Node reads the
+   * nearest `package.json` above it (S9 point 8), so it never starts elsewhere.
+   */
   readonly cwd: string;
   readonly stdio: "pipe";
   /** Read roots this process needs beyond the session's (a harness's own files). */
@@ -202,6 +207,12 @@ export function sandboxMode(m: SandboxMechanism, os: string): SandboxMode | FinE
 
 const canonical = (p: string) => realpath(p).catch(() => p);
 
+/** `p` is `dir` or inside it (both canonical). */
+function within(p: string, dir: string): boolean {
+  const r = relative(dir, p);
+  return r === "" || (r !== ".." && !r.startsWith(`..${sep}`) && !isAbsolute(r));
+}
+
 /**
  * Opens `s`'s sandbox in the current scope (spec §8.5, §8.6): its directories, the sign-in
  * store link, the environment and the profile input, checked by `fin-sandbox` now so a bad
@@ -238,10 +249,11 @@ export function openSessionSandbox(s: Session, harness: Harness, deps: SessionSa
       const dir = deps.projectDirOf(s.projectId);
       if (dir === undefined) throw finError("PROJECT_NOT_FOUND", "the session's project is not open on this server", { projectId: s.projectId });
       const projectDir = await canonical(dir);
-      const workspace = join(projectDir, "workspace", s.id);
-      const shared = join(projectDir, "workspace", "shared");
-      await mkdir(workspace, { recursive: true, mode: 0o700 });
-      await mkdir(shared, { recursive: true, mode: 0o700 });
+      await mkdir(join(projectDir, "workspace", s.id), { recursive: true, mode: 0o700 });
+      await mkdir(join(projectDir, "workspace", "shared"), { recursive: true, mode: 0o700 });
+      // Links resolved (a `workspace/` the user put on another disk), as `spawn` resolves a cwd.
+      const workspace = await canonical(join(projectDir, "workspace", s.id));
+      const shared = await canonical(join(projectDir, "workspace", "shared"));
       const dirs = await ensureSessionDirs(join(deps.serverData, "agents"), s.id, { platform });
       const store = await linkSignInStore(harness, deps.serverData, dirs, { platform, ...(deps.symlink === undefined ? {} : { symlink: deps.symlink }) });
       const server = mode === "launcher" ? await launcherServer(deps, platform) : { env: deps.localEndpoint, fin: undefined };
@@ -290,6 +302,10 @@ export function openSessionSandbox(s: Session, harness: Harness, deps: SessionSa
           Effect.tryPromise({
             try: async () => {
               if (argv.length === 0) throw finError("USAGE", "nothing to start", { sessionId: s.id });
+              const cwd = await canonical(opts.cwd);
+              if (!within(cwd, workspace) && !within(cwd, shared)) {
+                throw finError("USAGE", "a session's process starts in its workspace", { sessionId: s.id, reason: "cwdOutsideWorkspace" });
+              }
               let input = base;
               if (opts.extraRead !== undefined && opts.extraRead.length > 0) {
                 const extra = await Promise.all(opts.extraRead.map(canonical));
@@ -301,7 +317,7 @@ export function openSessionSandbox(s: Session, harness: Harness, deps: SessionSa
                 }
               }
               if (closed.v) throw finError("SESSION_INTERRUPTED", "the session's sandbox is closed", { sessionId: s.id });
-              const child = await start(mode === "launcher" ? { launcher, request: { profile: "agent", input } } : undefined, argv, opts.cwd, env, platform, (exit, launcherFailed) => {
+              const child = await start(mode === "launcher" ? { launcher, request: { profile: "agent", input } } : undefined, argv, cwd, env, platform, (exit, launcherFailed) => {
                 if (launcherFailed && exit.code === LAUNCHER_UNAVAILABLE) deps.onViolation?.({ sessionId: s.id, op: "apply", profile: "agent", rootKind: "none" });
               });
               children.add(child);
@@ -331,7 +347,17 @@ export function openSessionSandbox(s: Session, harness: Harness, deps: SessionSa
 /** `FIN_SERVER` and the policy's `fin` endpoint under the launcher, per OS. */
 async function launcherServer(deps: SessionSandboxDeps, platform: NodeJS.Platform): Promise<{ env: string; fin: FinEndpoint | undefined }> {
   if (platform === "win32") return { env: deps.localEndpoint, fin: { kind: "pipe" } };
-  if (platform === "darwin") return { env: deps.localEndpoint, fin: { kind: "unixSocket", path: deps.localEndpoint } };
+  if (platform === "darwin") {
+    // Resolved, as the handshake binds it: a sandboxed `fin` may not resolve a link on the way
+    // (`/tmp`, `/var`), and the endpoint it compares would then be the link's (`endpointMismatch`).
+    let socket = deps.localEndpoint;
+    try {
+      socket = canonicalEndpoint(socket, platform);
+    } catch {
+      // Not there (yet): `fin` meets the same unresolved path.
+    }
+    return { env: socket, fin: { kind: "unixSocket", path: socket } };
+  }
   if (deps.agentListener === undefined) throw finError("SANDBOX_UNAVAILABLE", "the agent listener is not available", { profile: "agent", os: "linux", need: "the agent listener" });
   const endpoint = await deps.agentListener();
   const port = Number(/^tcp:127\.0\.0\.1:(\d+)$/.exec(endpoint)?.[1]);
@@ -353,8 +379,8 @@ function start(
   platform: NodeJS.Platform,
   onExit: (e: ChildExit, launcherFailed: boolean) => void,
 ): Promise<SandboxedChild> {
-  // The Linux launcher stays the parent and reaps the session (see the header).
-  const reaps = via !== undefined && platform === "linux";
+  // The Linux and macOS launchers stay the parent and reap the session (see the header).
+  const reaps = via !== undefined && (platform === "linux" || platform === "darwin");
   const [program, args] = via === undefined ? [argv[0]!, argv.slice(1)] : [via.launcher, ["--policy-fd", "3", "--", ...argv]];
   const child: ChildProcess = spawnChild(program, args, {
     cwd,

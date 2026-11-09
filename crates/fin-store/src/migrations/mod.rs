@@ -4,7 +4,8 @@
 //!   version; `meta` carries `formatVersion` and `minReaderVersion`.
 //! - Version 1 is sub-project 4A ([`m0001_records`]); version 2 adds 4B's derived history
 //!   tables ([`m0002_history`]); version 3 is 4C's version bump only ([`m0003_version`]);
-//!   version 4 adds 5E's derived `drops` index ([`m0004_drops`]).
+//!   version 4 adds 5E's derived `drops` index ([`m0004_drops`]); version 5 is the
+//!   stable-keyframe-ids bump (model v3, [`m0005_keyframe_ids`]).
 //! - The sub-project 2 layout predates both: `application_id` 0, `user_version` 0, a `meta`
 //!   table and a `txs.json` column. It is version 0.
 //! - [`check`] reads all of this through a read-only connection, so a database this code
@@ -17,6 +18,7 @@ mod m0001_records;
 mod m0002_history;
 mod m0003_version;
 mod m0004_drops;
+mod m0005_keyframe_ids;
 
 use std::path::{Path, PathBuf};
 
@@ -31,9 +33,9 @@ use crate::{StoreError, backup};
 /// `PRAGMA application_id` of a Finisher project database: "FIN1".
 pub const APPLICATION_ID: i32 = 0x4649_4E31;
 /// The database schema version this code writes (`PRAGMA user_version`).
-pub const DB_VERSION: u32 = 4;
+pub const DB_VERSION: u32 = 5;
 /// The oldest code (by `DB_VERSION`) that can read what this code writes.
-pub(crate) const MIN_READER_VERSION: u32 = 4;
+pub(crate) const MIN_READER_VERSION: u32 = 5;
 
 /// One migration: the database at `from` → `from + 1`. `run` must not touch `user_version`.
 struct Step {
@@ -57,6 +59,10 @@ const STEPS: &[Step] = &[
     Step {
         from: 3,
         run: m0004_drops::run,
+    },
+    Step {
+        from: 4,
+        run: m0005_keyframe_ids::run,
     },
 ];
 

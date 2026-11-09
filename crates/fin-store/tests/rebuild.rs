@@ -500,6 +500,7 @@ fn a_rebuilt_database_refuses_callers_of_the_old_one() {
         base_rev: 1,
         schema_version: SCHEMA_VERSION,
         args_hash: None,
+        via: None,
         ops: vec![asset(&format!("/m/{id}.mov"))],
     };
     let err: CoreError = a
@@ -553,7 +554,7 @@ fn sp2_fixture_rebuilds_and_verifies() {
     let (rev, project) = a.snapshot(MAIN).unwrap();
     assert_eq!(
         serde_json::json!({ "rev": rev, "project": project }),
-        expected
+        current_state(&expected)
     );
     let v = a.verify();
     assert!(v.ok, "{v:?}");
@@ -604,4 +605,15 @@ fn daily_backup_once_per_day_keeps_seven() {
         .unwrap();
     assert_eq!(n, 1);
     assert!(db_path(&e.data("a"), a.project_id()).is_file());
+}
+
+/// A v2 golden project as this Finisher reads it: upcast to the current model (the fixtures
+/// stay as written; spec §5.12.2).
+fn current(v: &serde_json::Value) -> serde_json::Value {
+    serde_json::to_value(fin_core::upcast_snapshot(v.clone()).unwrap()).unwrap()
+}
+
+/// A v2 golden `{rev, project}` with its project upcast to the current model.
+fn current_state(v: &serde_json::Value) -> serde_json::Value {
+    serde_json::json!({ "rev": v["rev"], "project": current(&v["project"]) })
 }

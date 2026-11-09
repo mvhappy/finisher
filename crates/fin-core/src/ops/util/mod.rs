@@ -12,6 +12,7 @@ mod check;
 mod content;
 pub(crate) mod contents;
 mod group;
+pub(crate) mod keys;
 mod limits;
 pub(crate) mod lists;
 mod lock;
@@ -28,7 +29,8 @@ mod values;
 pub(crate) use alone::{dissolve_alone, split_dissolved};
 pub(crate) use caption::{
     base_style, block_mut, caption_at, check_caption, check_caption_words, check_name,
-    check_overrides, check_style_value, merge_source, project_style, split_source,
+    check_overrides, check_style_value, check_word_count, merge_source, project_style,
+    split_source,
 };
 pub(crate) use carve::{carve, check_carve};
 pub(crate) use check::{

@@ -177,6 +177,7 @@ pub fn places(frame: &Project, tx: &Tx, mode: ApplyMode) -> Result<Vec<Option<Sl
     }
     let mut out = Vec::with_capacity(tx.ops.len());
     let mut run = Applier::new(frame, tx.schema_version, mode, ApplyEnv::default())?;
+    run.reserve(&tx.ops);
     let ids = &mut MemIds::after(frame);
     for (k, op) in tx.ops.iter().enumerate() {
         out.push(slot(run.project(), op, run.bound()));
@@ -244,12 +245,12 @@ struct Found {
 }
 
 /// `id` as the project names it: a placeholder an earlier op bound is its id.
-fn real<'a>(id: &'a str, bound: &'a Bound) -> &'a str {
+pub(super) fn real<'a>(id: &'a str, bound: &'a Bound) -> &'a str {
     bound.get(id).map_or(id, String::as_str)
 }
 
 /// `id` canonical: the placeholder that bound it, if an earlier op of the transaction did.
-fn canonical(id: &str, bound: &Bound) -> String {
+pub(super) fn canonical(id: &str, bound: &Bound) -> String {
     bound
         .iter()
         .find(|(_, v)| v.as_str() == id)

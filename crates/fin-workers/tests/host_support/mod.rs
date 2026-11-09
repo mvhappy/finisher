@@ -119,6 +119,7 @@ impl TestHost {
             grants: Vec::new(),
             qos: Qos::Normal,
             label: "test".into(),
+            limits: Default::default(),
         }
     }
 

@@ -4,9 +4,15 @@
 //! the self-sandbox entry, before `hello`. Plugins: [`plugin_command`] rewrites the program to
 //! `/usr/bin/sandbox-exec -p <profile> -D… -- <program> <args…>` (the job host starts its
 //! children with `posix_spawn`, so nothing runs between `fork` and `exec`).
+//!
+//! A session's profile carries its mark ([`fin_jobhost::seatbelt_mark`], plan 7C Decision 3's
+//! macOS amendment): the rule is appended to the generated text and the mark passed as a
+//! parameter, so the goldens are unchanged. [`mark_only`] marks an unconfined session.
 
 use std::ffi::{CString, OsString, c_char, c_int};
 use std::path::{Path, PathBuf};
+
+use fin_jobhost::seatbelt_mark;
 
 use super::sbpl::{Sbpl, check_read_links, render, render_for, resolve_real};
 use crate::error::ApplyError;
@@ -33,13 +39,40 @@ pub fn profile(policy: &SandboxPolicy) -> Result<Sbpl, ApplyError> {
     render(policy, &resolve_real)
 }
 
+/// `sbpl` with the rule that carries `mark` appended.
+pub fn with_mark(mut sbpl: Sbpl, mark: &str) -> Sbpl {
+    sbpl.text.push_str(seatbelt_mark::RULE);
+    sbpl.params.extend(seatbelt_mark::params(mark));
+    sbpl
+}
+
 /// Confines the calling process (and everything it `exec`s or starts) to `policy`. `program`
 /// is the binary the process keeps running (a worker's own, which it may read and whose
 /// directory it may list; see [`super::sbpl::rules_for`]); the launcher, which `exec`s another
-/// program, passes `None`.
-pub fn restrict_self(policy: &SandboxPolicy, program: Option<&Path>) -> Result<(), ApplyError> {
+/// program, passes `None` and its session's `mark`.
+pub fn restrict_self(
+    policy: &SandboxPolicy,
+    program: Option<&Path>,
+    mark: Option<&str>,
+) -> Result<(), ApplyError> {
     check_read_links(policy)?;
-    let sbpl = render_for(policy, &resolve_real, program)?;
+    let mut sbpl = render_for(policy, &resolve_real, program)?;
+    if let Some(m) = mark {
+        sbpl = with_mark(sbpl, m);
+    }
+    init(sbpl)
+}
+
+/// Marks the calling process (and everything it starts) with `mark` and nothing else: an
+/// unconfined session (the mechanism stubbed disabled) is still found by its mark.
+pub fn mark_only(mark: &str) -> Result<(), ApplyError> {
+    init(Sbpl {
+        text: seatbelt_mark::MARK_ONLY.into(),
+        params: seatbelt_mark::params(mark).into(),
+    })
+}
+
+fn init(sbpl: Sbpl) -> Result<(), ApplyError> {
     let os = |error: String| ApplyError::Os {
         call: "sandbox_init_with_parameters".into(),
         error,
@@ -74,13 +107,14 @@ pub fn restrict_self(policy: &SandboxPolicy, program: Option<&Path>) -> Result<(
 }
 
 /// The program and arguments that start `program args…` under `policy` through
-/// `sandbox-exec` (a plugin, Decision 3).
+/// `sandbox-exec` (a plugin, Decision 3), its profile carrying `mark`.
 pub fn plugin_command(
     policy: &SandboxPolicy,
     program: &Path,
     args: &[OsString],
+    mark: &str,
 ) -> Result<(PathBuf, Vec<OsString>), ApplyError> {
-    let sbpl = profile(policy)?;
+    let sbpl = with_mark(profile(policy)?, mark);
     let mut out: Vec<OsString> = vec!["-p".into(), sbpl.text.clone().into()];
     for d in sbpl.defines() {
         out.push("-D".into());

@@ -4,7 +4,7 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { CredentialFile } from "@finisher/contracts";
-import { Effect, Fiber } from "effect";
+import { Cause, Effect, Exit as Ended, Fiber } from "effect";
 import { expect } from "vitest";
 import { b64u, canonicalEndpoint, helloProof, proveMac, sameMac } from "../../src/auth/crypto.ts";
 import type { AgentCore } from "../../src/agent/core.ts";
@@ -68,7 +68,13 @@ export class AgentServer {
         onReady: (i) => ready(i as ServerInfo),
       }).pipe(Effect.provide(StderrLogger)),
     );
-    const got = await info;
+    // A start that fails (a socket path too long for macOS's deep `TMPDIR`, say) fails here, not
+    // with the test's timeout.
+    const ended = Effect.runPromise(Fiber.await(fiber)).then((exit) => {
+      throw new Error(`finisherd ended before it was ready: ${Ended.isFailure(exit) ? Cause.pretty(exit.cause) : "no failure"}`);
+    });
+    const got = await Promise.race([info, ended]);
+    ended.catch(() => undefined);
     this.#running = { fiber, info: got, core: core!, agents: agents! };
   }
 

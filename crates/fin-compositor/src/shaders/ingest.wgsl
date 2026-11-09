@@ -1,7 +1,8 @@
-// Ingest (spec §5.1 step 2): 8-bit Y′CbCr 4:2:0 planes to display-encoded R′G′B′ in an
+// Ingest (spec §5.1 step 2): Y′CbCr 4:2:0 code values to display-encoded R′G′B′ in an
 // `rgba16float` texture of the coded size: bilinear chroma at the source's siting (clamped to
 // the edge), range expansion, the source matrix, the wide-gamut conversion to Rec.709. The
-// coefficients are fin-media's, passed from Rust.
+// coefficients are fin-media's, passed from Rust. A layout prefix (`ingest_*.wgsl`) declares
+// the planes at bindings 1… and `code(k, p)`: plane k's (0 Y, 1 Cb, 2 Cr) code value at texel p.
 
 struct Ingest {
     // Chroma plane width and height; the chroma siting offset in luma pixels (x, y).
@@ -17,30 +18,27 @@ struct Ingest {
 }
 
 @group(0) @binding(0) var<uniform> u: Ingest;
-@group(0) @binding(1) var plane_y: texture_2d<f32>;
-@group(0) @binding(2) var plane_u: texture_2d<f32>;
-@group(0) @binding(3) var plane_v: texture_2d<f32>;
 
-// A code value (0…255) at a clamped chroma texel.
-fn code_at(t: texture_2d<f32>, x: i32, y: i32) -> f32 {
+// Chroma plane k's code value at a clamped texel.
+fn code_at(k: i32, x: i32, y: i32) -> f32 {
     let w = i32(u.chroma.x);
     let h = i32(u.chroma.y);
     let p = vec2i(clamp(x, 0, w - 1), clamp(y, 0, h - 1));
-    return round(textureLoad(t, p, 0).r * 255.0);
+    return code(k, p);
 }
 
 // Bilinear at chroma coordinates (fx, fy), in the reference's order.
-fn chroma_at(t: texture_2d<f32>, fx: f32, fy: f32) -> f32 {
+fn chroma_at(k: i32, fx: f32, fy: f32) -> f32 {
     let x0 = floor(fx);
     let y0 = floor(fy);
     let tx = fx - x0;
     let ty = fy - y0;
     let xi = i32(x0);
     let yi = i32(y0);
-    let a = code_at(t, xi, yi);
-    let b = code_at(t, xi + 1, yi);
-    let c = code_at(t, xi, yi + 1);
-    let d = code_at(t, xi + 1, yi + 1);
+    let a = code_at(k, xi, yi);
+    let b = code_at(k, xi + 1, yi);
+    let c = code_at(k, xi, yi + 1);
+    let d = code_at(k, xi + 1, yi + 1);
     let top = a + (b - a) * tx;
     let bottom = c + (d - c) * tx;
     return top + (bottom - top) * ty;
@@ -50,9 +48,9 @@ fn chroma_at(t: texture_2d<f32>, fx: f32, fy: f32) -> f32 {
 fn fs_main(@builtin(position) pos: vec4f) -> @location(0) vec4f {
     let x = floor(pos.x);
     let y = floor(pos.y);
-    let yv = round(textureLoad(plane_y, vec2i(i32(x), i32(y)), 0).r * 255.0);
-    let cb = chroma_at(plane_u, (x - u.chroma.z) / 2.0, (y - u.chroma.w) / 2.0);
-    let cr = chroma_at(plane_v, (x - u.chroma.z) / 2.0, (y - u.chroma.w) / 2.0);
+    let yv = code(0, vec2i(i32(x), i32(y)));
+    let cb = chroma_at(1, (x - u.chroma.z) / 2.0, (y - u.chroma.w) / 2.0);
+    let cr = chroma_at(2, (x - u.chroma.z) / 2.0, (y - u.chroma.w) / 2.0);
     var rgb: vec3f;
     if u.coef.z > 0.5 {
         // Identity: Y is G, Cb is B, Cr is R, each expanded as luma.

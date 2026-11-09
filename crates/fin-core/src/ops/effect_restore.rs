@@ -18,6 +18,7 @@ use crate::error::CoreError;
 use crate::ids::{IdAlloc, IdKind};
 use crate::model::{Effect, Keyframe, ParamValue, Project};
 use crate::ops::effect_remove::prefix;
+use crate::ops::util::keys::check_key_lists;
 use crate::ops::util::{
     OpDiff, check_unlocked, item_index, normalize_interp, normalize_value, wrong_op,
 };
@@ -101,6 +102,13 @@ pub(crate) fn apply(
             )
             .with_details(json!({ "id": effect.id, "item": item })));
         }
+        let held = it
+            .common
+            .keyframes
+            .values()
+            .flatten()
+            .map(|k| k.id.as_str());
+        check_key_lists(&keyframes, held, !bindings.policy())?;
         let own = prefix(&effect.id);
         if let Some(p) = keyframes
             .keys()
@@ -194,12 +202,10 @@ pub(crate) fn refs_mut(op: &mut Op) -> Vec<&mut String> {
             } = &mut **r;
             let mut out = vec![item];
             out.extend(effect.refs_mut());
-            out.extend(
-                keyframes
-                    .values_mut()
-                    .flatten()
-                    .filter_map(|k| k.value.asset_mut()),
-            );
+            for k in keyframes.values_mut().flatten() {
+                out.push(&mut k.id);
+                out.extend(k.value.asset_mut());
+            }
             out
         }
         _ => Vec::new(),
@@ -212,12 +218,10 @@ pub(crate) fn ids(op: &Op) -> Vec<&str> {
         Op::EffectRestore(r) => {
             let mut out = vec![r.item.as_str()];
             out.extend(r.effect.ids());
-            out.extend(
-                r.keyframes
-                    .values()
-                    .flatten()
-                    .filter_map(|k| k.value.asset()),
-            );
+            for k in r.keyframes.values().flatten() {
+                out.push(k.id.as_str());
+                out.extend(k.value.asset());
+            }
             out
         }
         _ => Vec::new(),

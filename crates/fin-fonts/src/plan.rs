@@ -71,6 +71,7 @@ pub fn plan_pins(
         schema_version: SCHEMA_VERSION,
         ops: ops.to_vec(),
         args_hash: None,
+        via: None,
     })?;
     let mut after = fin_core::apply_tx(head, &tx, &mut MemIds::after(head))?.project;
     let (mut planned, mut notes) = (Vec::new(), Vec::new());

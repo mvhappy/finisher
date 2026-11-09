@@ -31,7 +31,18 @@ registerChain("core", [core0001], { formatVersion: CONTROL_FORMAT_VERSION, minRe
 
 export interface ControlStore {
   readonly db: DatabaseSync;
+  /** The environment's id: minted once, renewed only by `renewEnv` (5B `env.reset`). */
   readonly envId: string;
+  /** This start's `server-id`. */
+  readonly serverId: string;
+  /**
+   * Writes a new `envId` (5B Decision 31, `env.reset`: the data is a copy, so it becomes another
+   * environment) to `meta` and maps this `server-id` to it in `server_ids`; the other server ids
+   * keep the old one. It writes inside the caller's transaction (`tx`); `useEnvId` switches what
+   * `envId` reads once that transaction committed.
+   */
+  renewEnv(next: string): void;
+  useEnvId(next: string): void;
   /**
    * Runs `f` in `BEGIN IMMEDIATE … COMMIT`, rolling back if it throws (nested calls use a
    * savepoint). A lock held past the 250 ms busy timeout throws `FinError CONTROL_DB_BUSY`.
@@ -223,7 +234,7 @@ export function openControlStore(serverData: string, opts: OpenControlOptions): 
       db.prepare("INSERT OR IGNORE INTO server_ids (serverId, envId, since) VALUES (?, ?, ?)").run(opts.serverId, envId, now);
     });
     if (reset !== undefined) process.stderr.write(`finisherd: warning: control.db was damaged; moved to ${reset.aside} and started empty\n`);
-    return makeStore(db, path, envId, opts.checkpoint);
+    return makeStore(db, path, envId, opts.checkpoint, opts.serverId, clock);
   } catch (e) {
     db.close();
     if (e instanceof ServerStartError) throw e;
@@ -278,14 +289,36 @@ function runTx<A>(db: DatabaseSync, f: () => A): A {
 /** One event-loop turn (not just a fiber yield), so I/O and timers run between batches. */
 const nextTurn = Effect.promise(() => new Promise<void>((resolve) => setImmediate(resolve)));
 
-function makeStore(db: DatabaseSync, path: string, envId: string, checkpoint: CheckpointOptions | false | undefined): ControlStore {
+function makeStore(
+  db: DatabaseSync,
+  path: string,
+  firstEnvId: string,
+  checkpoint: CheckpointOptions | false | undefined,
+  serverId: string,
+  clock: () => number,
+): ControlStore {
+  let envId = firstEnvId;
   const worker = checkpoint === false ? undefined : startCheckpointWorker(path, checkpoint ?? {});
   let closed: Promise<void> | undefined;
   // Prepared once per SQL text (the callers pass a few fixed statements).
   const statements = new Map<string, StatementSync>();
   return {
     db,
-    envId,
+    get envId() {
+      return envId;
+    },
+    serverId,
+    renewEnv: (next) => {
+      db.prepare("UPDATE meta SET value = ? WHERE key = 'envId'").run(next);
+      db.prepare("INSERT INTO server_ids (serverId, envId, since) VALUES (?, ?, ?) ON CONFLICT (serverId) DO UPDATE SET envId = excluded.envId, since = excluded.since").run(
+        serverId,
+        next,
+        clock(),
+      );
+    },
+    useEnvId: (next) => {
+      envId = next;
+    },
     tx: (f) => runTx(db, f),
     deleteInBatches: (sql, params, batch = MAX_BATCH) =>
       Effect.suspend(() => {

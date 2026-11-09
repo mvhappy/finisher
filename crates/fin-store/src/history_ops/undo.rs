@@ -5,6 +5,7 @@
 //! other record: nothing is re-planned there.
 
 use fin_core::history::{LogView, Stacks, derive_stacks, plan_redo, plan_undo, plan_undo_to};
+use fin_core::rebase::placement::Placement;
 use fin_core::{CommittedTx, CoreError, Link, Tx};
 use serde_json::json;
 
@@ -133,9 +134,13 @@ impl Store {
             if let Some(existing) = db::find_tx(&self.conn, &r.tx_id)? {
                 let out = match (which, existing.link.as_deref()) {
                     (Which::Undo, Some(Link::Undo { .. }))
-                    | (Which::Redo, Some(Link::Redo { .. })) => {
-                        result(same_args_hash(r.args_hash.as_deref(), existing)?, false)
-                    }
+                    | (Which::Redo, Some(Link::Redo { .. })) => result(
+                        (
+                            same_args_hash(r.args_hash.as_deref(), existing)?,
+                            db::placements_of(&self.conn, &r.tx_id)?,
+                        ),
+                        false,
+                    ),
                     _ => return Err(key_reused(&existing)),
                 };
                 return self.undo_origins(which, out);
@@ -144,25 +149,33 @@ impl Store {
     }
 }
 
-fn result(c: CommittedTx, dry_run: bool) -> HistoryResult {
+/// The answer: the record and where its items went back (a retry: as the record stored them).
+fn result((c, placements): (CommittedTx, Vec<Placement>), dry_run: bool) -> HistoryResult {
     HistoryResult {
         undone: targets(c.link.as_deref()),
         committed: vec![c],
         dry_run,
         no_op: None,
         origins: Vec::new(),
+        placements,
     }
 }
 
-fn plan(ctx: &mut WriteCtx<'_>, r: &HistoryReq, which: Which) -> Result<CommittedTx, StoreError> {
+fn plan(
+    ctx: &mut WriteCtx<'_>,
+    r: &HistoryReq,
+    which: Which,
+) -> Result<(CommittedTx, Vec<Placement>), StoreError> {
     let txn = ctx.txn;
     super::merge_id_taken(txn, &r.tx_id)?;
     let branch = ctx.target(&r.branch)?.id;
     let mut ids = Counters::load(txn)?;
     let measurer = ctx.measurer.clone();
+    let when_lost = ctx.when_lost;
     let head = ctx.head(&branch)?;
-    let log =
-        SqlLog::with_head(txn, &branch, head.rev, &head.project).measuring(measurer.as_deref());
+    let log = SqlLog::with_head(txn, &branch, head.rev, &head.project)
+        .measuring(measurer.as_deref())
+        .losing(when_lost);
     let planned = match (which, &r.to, r.after_seq) {
         (Which::Undo, Some(name), _) => {
             let (_, seq) = super::checkpoint::find(txn, &branch, name)?;
@@ -175,16 +188,21 @@ fn plan(ctx: &mut WriteCtx<'_>, r: &HistoryReq, which: Which) -> Result<Committe
         (Which::Redo, _, _) => plan_redo(&log, &branch, &r.author, &r.tx_id, &mut ids),
     }?;
     ids.save(txn)?;
-    ctx.append(Draft {
-        branch,
-        link: planned.link,
-        intent: Tx {
-            args_hash: r.args_hash.clone(),
-            ..planned.intent
+    let placements = planned.placements;
+    ctx.append_placed(
+        Draft {
+            branch,
+            link: planned.link,
+            intent: Tx {
+                args_hash: r.args_hash.clone(),
+                ..planned.intent
+            },
+            inverse: planned.applied.inverse,
+            bindings: planned.applied.bindings,
+            diff: planned.applied.diff,
+            project: planned.applied.project,
         },
-        inverse: planned.applied.inverse,
-        bindings: planned.applied.bindings,
-        diff: planned.applied.diff,
-        project: planned.applied.project,
-    })
+        placements.clone(),
+    )
+    .map(|c| (c, placements))
 }

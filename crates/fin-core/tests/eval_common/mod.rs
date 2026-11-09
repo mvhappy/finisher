@@ -126,8 +126,16 @@ pub fn with_speed(mut item: Item, s: Rational) -> Item {
     item
 }
 
+/// A key with a fresh id (eval ignores ids).
 pub fn kf(at: Rational, value: ParamValue, interp: Interp) -> Keyframe {
-    Keyframe { at, value, interp }
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    Keyframe {
+        id: format!("kf{n}"),
+        at,
+        value,
+        interp,
+    }
 }
 
 pub fn num(n: f64) -> ParamValue {

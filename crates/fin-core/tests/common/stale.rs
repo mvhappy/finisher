@@ -10,6 +10,7 @@ use super::tx;
 pub fn committed(p: &Project, ops: Vec<Op>, tx_id: &str) -> (Project, CommittedTx) {
     let mut t = tx(ops);
     t.tx_id = tx_id.into();
+    let t = fin_core::canonicalize(p, &t).unwrap();
     let a = fin_core::apply_tx(p, &t, &mut MemIds::after(p)).unwrap();
     let c = CommittedTx {
         rev: 1,

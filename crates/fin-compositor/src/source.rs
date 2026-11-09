@@ -7,10 +7,19 @@ use serde_json::{Value, json};
 
 use crate::output::Skipped;
 
-/// A decoded source picture as a compositor reads it: coded orientation, planes with strides.
+/// A decoded source picture as a compositor reads it: coded orientation, planes with strides
+/// (in bytes).
+///
+/// - `I420` (dav1d): `planes` are Y, U and V, one byte per sample.
+/// - `Nv12` (platform decoders): `planes[0]` is Y, `planes[1]` interleaved UV (U then V, one
+///   byte each, so a row holds 2 × chroma width bytes); `planes[2]` is unused (empty, stride 0).
+/// - `P010` (platform decoders): as `Nv12` in little-endian 16-bit words, the 10-bit value in
+///   the high bits (`word >> 6`).
+///
+/// Strides are whole texels: a UV pair for interleaved chroma, a word for P010.
 #[derive(Debug, Clone, Copy)]
 pub struct SourceFrame<'a> {
-    /// `I420` in 6A.
+    /// `I420`, `Nv12` or `P010`.
     pub format: PixelFormat,
     pub size: Size,
     pub planes: [&'a [u8]; 3],
@@ -33,21 +42,32 @@ pub trait SourceProvider {
     fn frame(&mut self, layer: &Layer) -> Result<SourceFrame<'_>, LayerIssue>;
 }
 
-/// Whether a compositor can read `src`: 8-bit 4:2:0 (6A), a non-empty picture, planes as long
-/// as their strides and rows say. Otherwise the details of `UNSUPPORTED_PIXEL_FORMAT`.
+/// Whether a compositor can read `src`: 4:2:0 as `I420`, `Nv12` or `P010` (see
+/// [`SourceFrame`]), a non-empty picture, planes as long as their strides and rows say, strides
+/// whole texels (an NV12 or P010 UV pair, a P010 word: the GPU copies texel rows). Otherwise the details of `UNSUPPORTED_PIXEL_FORMAT`.
 pub(crate) fn readable(src: &SourceFrame) -> Result<(), Value> {
     let (w, h) = (src.size.width as usize, src.size.height as usize);
     let (cw, ch) = (w.div_ceil(2), h.div_ceil(2));
-    let fits = |k: usize, pw: usize, ph: usize| {
+    // A plane `k` of `ph` rows of `pw` bytes, its stride a multiple of `unit` bytes.
+    let fits = |k: usize, pw: usize, ph: usize, unit: usize| {
         src.strides[k] >= pw
+            && src.strides[k].is_multiple_of(unit)
             && ph
                 .checked_mul(src.strides[k])
                 .is_some_and(|n| src.planes[k].len() >= n)
     };
-    if src.format != PixelFormat::I420 {
-        return Err(json!({ "format": src.format, "reason": "the compositor reads 8-bit 4:2:0" }));
-    }
-    if w == 0 || h == 0 || !fits(0, w, h) || !fits(1, cw, ch) || !fits(2, cw, ch) {
+    let ok = match src.format {
+        PixelFormat::I420 => fits(0, w, h, 1) && fits(1, cw, ch, 1) && fits(2, cw, ch, 1),
+        PixelFormat::Nv12 => fits(0, w, h, 1) && fits(1, 2 * cw, ch, 2),
+        PixelFormat::P010 => fits(0, 2 * w, h, 2) && fits(1, 4 * cw, ch, 4),
+        _ => {
+            return Err(json!({
+                "format": src.format,
+                "reason": "the compositor reads 4:2:0 as I420, NV12 or P010"
+            }));
+        }
+    };
+    if w == 0 || h == 0 || !ok {
         return Err(
             json!({ "format": src.format, "reason": "the planes are smaller than the picture" }),
         );

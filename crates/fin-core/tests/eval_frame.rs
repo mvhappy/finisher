@@ -1007,3 +1007,28 @@ fn mask_feather_and_choke_clamp_at_zero() {
     let m = frame(&p, "1")[0].mask.clone().unwrap();
     assert_eq!((m.feather, m.choke), (0.0, 0.0));
 }
+
+/// External review of 2026-11-09, #17: an opacity keyed at `(M−1)/M` and `M/(M−1)` evaluates
+/// (it was `INTERNAL` at `/layers/0/opacity`, a NaN).
+#[test]
+fn keyframes_with_near_max_denominators_evaluate() {
+    let m = i64::MAX;
+    let (a, b) = (
+        Rational::new(m - 1, m).unwrap(),
+        Rational::new(m, m - 1).unwrap(),
+    );
+    let c = keyed(
+        clip("c1", secs(0), secs(0), secs(10)),
+        "opacity",
+        vec![
+            kf(a, num(0.0), Interp::Linear),
+            kf(b, num(1.0), Interp::Linear),
+        ],
+    );
+    let p = project_with(vec![timeline(
+        "tl1",
+        vec![track("t1", TrackKind::Video, vec![c])],
+    )]);
+    let o = one(&p, "1").opacity;
+    assert!((o - 0.5).abs() < 1e-12, "{o}");
+}

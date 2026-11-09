@@ -72,6 +72,19 @@ pub struct SpawnRequest {
     pub qos: Qos,
     /// For logs.
     pub label: String,
+    /// Limits the host applies to the process whatever the spawner does (sp8b Decision 9:
+    /// a plugin process's 8 processes and 1,024 open files before sub-project 7C's profile).
+    pub limits: ProcessLimits,
+}
+
+/// Limits a request asks for (sp8b Decision 9). `processes` goes to the leaf kill domain's
+/// active-process limit (a cgroup's `pids.max`, a leaf Job; not enforced with process
+/// groups), `open_files` to `RLIMIT_NOFILE` (soft and hard) on Linux; macOS `posix_spawn`
+/// sets no rlimit and Windows has no open-handle limit, so it is not applied there.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct ProcessLimits {
+    pub processes: Option<u32>,
+    pub open_files: Option<u32>,
 }
 
 /// Windows `JOB_OBJECT_UILIMIT_*` flags for a leaf Job.
@@ -84,16 +97,23 @@ pub struct UiLimits(pub u32);
 pub struct JobLimits {
     pub active_processes: Option<u32>,
     pub ui: Option<UiLimits>,
+    /// `RLIMIT_NOFILE` (soft and hard, never above the host's hard limit), set in the child
+    /// on Linux; not applied on macOS or Windows (see [`ProcessLimits`]).
+    pub open_files: Option<u32>,
 }
 
-/// A Windows process-thread attribute (`UpdateProcThreadAttribute`): its id and value bytes
-/// (sub-project 7 is its only producer). `PROC_THREAD_ATTRIBUTE_HANDLE_LIST` and
+/// A Windows process-thread attribute (`UpdateProcThreadAttribute`): its id, value bytes and
+/// size (sub-project 7 is its only producer). `PROC_THREAD_ATTRIBUTE_HANDLE_LIST` and
 /// `PROC_THREAD_ATTRIBUTE_PARENT_PROCESS` are the host's own and are refused.
 #[cfg(windows)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WinAttribute {
     pub attribute: usize,
     pub value: Box<[u8]>,
+    /// The attribute's `cbSize`: the struct at the start of `value`, which may hold more (the
+    /// data its pointers aim at: `SECURITY_CAPABILITIES` and its SIDs, whose size Windows
+    /// requires exactly, plan 7C Task 9 follow-up). At most `value.len()`.
+    pub size: usize,
 }
 
 /// A child-side step run after the host's own (Linux `pre_exec`). It must not allocate or
@@ -125,6 +145,11 @@ pub struct PlatformCommand {
     /// it runs. `None`: the token's default.
     #[cfg(windows)]
     pub dacl: Option<String>,
+    /// The Seatbelt session mark the process's profile carries ([`crate::seatbelt_mark`]):
+    /// the group's kill also takes every process that carries it, one that left the group
+    /// with `setsid` included (plan 7C Decision 3, macOS amendment).
+    #[cfg(target_os = "macos")]
+    pub seatbelt_mark: Option<String>,
 }
 
 impl fmt::Debug for PlatformCommand {
@@ -245,7 +270,11 @@ pub(crate) fn command(binary_dir: &Path, req: &SpawnRequest) -> Result<PlatformC
         args: req.args.clone(),
         env: req.env.clone(),
         cwd: req.cwd.clone(),
-        job_limits: JobLimits::default(),
+        job_limits: JobLimits {
+            active_processes: req.limits.processes,
+            open_files: req.limits.open_files,
+            ..JobLimits::default()
+        },
         self_sandbox: None,
         #[cfg(target_os = "linux")]
         pre_exec: Vec::new(),
@@ -257,6 +286,8 @@ pub(crate) fn command(binary_dir: &Path, req: &SpawnRequest) -> Result<PlatformC
         desktop: None,
         #[cfg(windows)]
         dacl: None,
+        #[cfg(target_os = "macos")]
+        seatbelt_mark: None,
     })
 }
 

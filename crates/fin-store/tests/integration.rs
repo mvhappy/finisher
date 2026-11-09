@@ -418,6 +418,7 @@ fn idem_args_hash_is_checked_on_other_servers() {
         schema_version: fin_core::SCHEMA_VERSION,
         ops: vec![asset("/m/a.mov")],
         args_hash: h,
+        via: None,
     };
     let e = env();
     let mut a = e.create("a");

@@ -23,8 +23,11 @@ proptest! {
     }
 }
 
-/// The tie-break the model allows (plan 4B Task 12 review): Bob deletes c3, Alice deletes c2,
-/// Bob undoes, Alice undoes → `c1, c3, c2`. The recorded successors predict it.
+/// The tie-break the model allows (plan 4B Task 12 review), under the left-neighbour rule
+/// (owner decision 2026-11-09): Bob deletes c3, Alice deletes c2, Bob undoes, Alice undoes.
+/// Bob's c3 had c2 on its left, which is gone, so it goes before its right neighbour (none:
+/// the end); Alice's c2 goes right after c1: `c1, c2, c3`, the original order. Under the
+/// earlier successor rule it was `c1, c3, c2`.
 #[test]
 fn prosemirror_tie_break_is_the_models_order() {
     let mut log = MemLog::new(with_clips(&[10, 10, 10]));
@@ -36,5 +39,5 @@ fn prosemirror_tie_break_is_the_models_order() {
         .into_iter()
         .map(|(id, _)| id)
         .collect();
-    assert_eq!(order, ["c1", "c3", "c2"]);
+    assert_eq!(order, ["c1", "c2", "c3"]);
 }

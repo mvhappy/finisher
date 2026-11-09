@@ -91,6 +91,9 @@ fn content_kind(m: &Manifest, out: &mut Vec<Invalid>) {
     if !m.models.is_empty() {
         refuse("/models", "contentModels", "models");
     }
+    if !m.contributes.commands.is_empty() {
+        refuse("/contributes/commands", "contentCommands", "commands");
+    }
     if m.contributes.is_empty() {
         out.push(Invalid::manifest(
             "/contributes",

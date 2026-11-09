@@ -77,3 +77,46 @@ test("the gate script reads a fake metadata document", () => {
   assert.equal(r.code, 1);
   assert.match(r.out, /fin reaches fin-media/);
 });
+
+test("fin-codecs' platform codec crates are target-gated (6B-1 Task 1)", () => {
+  const mac = { target: 'cfg(target_os = "macos")' };
+  const win = { target: "cfg(windows)" };
+  const gated = {
+    "fin-codecs": [
+      ["objc2-video-toolbox", null, mac],
+      ["objc2-core-media", null, mac],
+      ["objc2-core-video", null, mac],
+      ["windows", null, win],
+    ],
+    "fin-workers": [["fin-codecs"], ["fin-fonts", null, { uses_default_features: false }]],
+  };
+  assert.deepEqual(check(graph(MEMBERS, gated)), []);
+  const bare = { ...gated, "fin-codecs": [["objc2-video-toolbox"], ...gated["fin-codecs"].slice(1)] };
+  assert.deepEqual(check(graph(MEMBERS, bare)), [
+    'CRATE_DEPENDENCY: fin-codecs takes objc2-video-toolbox for every target (only under cfg(target_os = "macos"))',
+  ]);
+  const wrong = { ...gated, "fin-codecs": [...gated["fin-codecs"].slice(0, 3), ["windows", null, mac]] };
+  assert.deepEqual(check(graph(MEMBERS, wrong)), [
+    'CRATE_DEPENDENCY: fin-codecs takes windows under cfg(target_os = "macos") (only under cfg(windows))',
+  ]);
+});
+
+test("fin-plugin-sdk depending on fin-node is one failure (sp8b Task 1)", () => {
+  const members = [...MEMBERS, "fin-core", "fin-jobs", "fin-plugin-api", "fin-plugin-sdk", "fin-plugin-test"];
+  const allowed = { "fin-plugin-sdk": [["fin-core"], ["fin-jobs"], ["fin-plugin-api"], ["fin-shm"]], "fin-jobs": [["fin-core"]], "fin-shm": [["fin-core"]] };
+  assert.deepEqual(check(graph(members, allowed)), []);
+  assert.deepEqual(check(graph(members, { ...allowed, "fin-plugin-sdk": [...allowed["fin-plugin-sdk"], ["fin-node"]] })), [
+    "CRATE_DEPENDENCY: fin-plugin-sdk reaches fin-node (a plugin built on the SDK carries nothing of the server or the media engine)",
+  ]);
+});
+
+test("fin and fin-node link neither the plugin SDK nor the harness; the SDK links no wgpu", () => {
+  const members = [...MEMBERS, "fin-core", "fin-plugin-sdk", "fin-plugin-test"];
+  const out = check(graph(members, { fin: [["fin-plugin-test"]], "fin-node": [["fin-plugin-sdk"]], "fin-plugin-sdk": [["wgpu"]] }));
+  assert.deepEqual(out.sort(), [
+    "CRATE_DEPENDENCY: fin reaches fin-plugin-test (fin links neither the plugin SDK nor its harness)",
+    "CRATE_DEPENDENCY: fin-node reaches fin-plugin-sdk (fin-node links neither the plugin SDK nor its harness)",
+    "CRATE_DEPENDENCY: fin-node reaches wgpu (fin-node never links codecs, the compositor or wgpu)",
+    "CRATE_DEPENDENCY: fin-plugin-sdk reaches wgpu (a plugin built on the SDK carries no GPU stack)",
+  ]);
+});

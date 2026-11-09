@@ -33,6 +33,9 @@ pub mod reasons {
     /// `undo --to`: a redo unit stands for units made on both sides of the checkpoint, so
     /// neither undoing it nor keeping it gives the checkpoint's state.
     pub const STRADDLES_CHECKPOINT: &str = "STRADDLES_CHECKPOINT";
+    /// Both neighbours of an item an undo, redo or copy puts back are gone, and the caller is
+    /// not a person (`rebase::placement`, owner decision 2026-11-09).
+    pub const NEIGHBOURS_GONE: &str = "NEIGHBOURS_GONE";
     /// Not a conflict: why a revert plans nothing (the merge group's effect is gone already).
     pub const ALREADY_REVERTED: &str = "ALREADY_REVERTED";
 }
@@ -106,6 +109,10 @@ fn fix_for(reason: &str) -> &'static str {
             "the same edit was made since; read the project at the current head and decide"
         }
         reasons::DEPENDS_ON_SKIPPED => "resolve the skipped record's conflict first",
+        reasons::NEIGHBOURS_GONE => {
+            "the items around it are gone since (details.placement.causes); read the project at \
+             the current head and decide where it goes, then place it with an edit"
+        }
         reasons::ALREADY_PRESENT => "the change is already present; skip it",
         reasons::ID_COLLISION => "the entity id is taken; recreate the entity under a new id",
         reasons::UNDOES_TARGET_RECORDS => "undo the change on the target branch itself",

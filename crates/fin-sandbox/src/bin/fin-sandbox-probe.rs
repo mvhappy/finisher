@@ -16,7 +16,9 @@
 //!   `connect-ip <ipv4> <port>`, `bind-tcp <port>`, `listen-tcp` (`listen` on an unbound socket), `bind-unix <path>`,
 //!   `connect-unix <path>`, `send-udp <port>` (one datagram to loopback), `signal-parent`,
 //!   `open-tree <dir> <rel>` (a clone of the mounts at `dir`, then `connect` to `rel` in it),
-//!   `unshare-user` (a nested user namespace), `fork` (a child that exits at once); macOS only:
+//!   `unshare-user` (a nested user namespace), `fork` (a child that exits at once),
+//!   `setsid-child <file>` (a child in a session of its own that says its pid in `file` and
+//!   sleeps, left behind); macOS only:
 //!   `mach-lookup <service>` (`bootstrap_look_up`; a refusal is reported as `EPERM`),
 //!   `shm-open <name>` (read-only), `sysctl <name>`, `system-socket` (`PF_SYSTEM`),
 //!   `signal-self`.
@@ -79,7 +81,7 @@ mod probe {
         if abi.is_some() {
             usage("--abi is Linux only");
         }
-        fin_sandbox::macos::apply::restrict_self(p, None).map_err(|e| e.to_string())
+        fin_sandbox::macos::apply::restrict_self(p, None, None).map_err(|e| e.to_string())
     }
 
     /// `socket(2)` with close-on-exec.
@@ -336,6 +338,55 @@ mod probe {
         Ok(())
     }
 
+    /// A child that leaves the probe's process group and session (`setsid`), writes its pid
+    /// to `<file>.tmp`, renames it to `file` and sleeps 300 s; the probe returns once `file`
+    /// exists (at most 5 s), leaving the child behind (the reaper suites check that it goes).
+    fn setsid_child(file: &str) -> Result<(), i32> {
+        let path = c(file);
+        let tmp = c(&format!("{file}.tmp"));
+        // SAFETY: the child calls only async-signal-safe functions on data made before the
+        // fork; the pid is formatted on the stack.
+        unsafe {
+            let pid = libc::fork();
+            rc(pid)?;
+            if pid == 0 {
+                if libc::setsid() < 0 {
+                    libc::_exit(1);
+                }
+                let mut digits = [0u8; 12];
+                let mut n = libc::getpid() as u32;
+                let mut i = digits.len();
+                loop {
+                    i -= 1;
+                    digits[i] = b'0' + (n % 10) as u8;
+                    n /= 10;
+                    if n == 0 {
+                        break;
+                    }
+                }
+                let flags = libc::O_WRONLY | libc::O_CREAT | libc::O_TRUNC;
+                let fd = libc::open(tmp.as_ptr(), flags, 0o600);
+                if fd < 0 {
+                    libc::_exit(1);
+                }
+                libc::write(fd, digits[i..].as_ptr().cast(), digits.len() - i);
+                libc::close(fd);
+                if libc::rename(tmp.as_ptr(), path.as_ptr()) != 0 {
+                    libc::_exit(1);
+                }
+                libc::sleep(300);
+                libc::_exit(0);
+            }
+            for _ in 0..500 {
+                if libc::access(path.as_ptr(), libc::F_OK) == 0 {
+                    return Ok(());
+                }
+                libc::usleep(10_000);
+            }
+        }
+        Err(libc::ETIMEDOUT)
+    }
+
     #[cfg(target_os = "macos")]
     unsafe extern "C" {
         static bootstrap_port: libc::mach_port_t;
@@ -406,6 +457,7 @@ mod probe {
                 #[cfg(target_os = "linux")]
                 "unshare-user" => rc(libc::unshare(libc::CLONE_NEWUSER)),
                 "fork" => fork(),
+                "setsid-child" => setsid_child(a(1)),
                 #[cfg(target_os = "macos")]
                 "mach-lookup" => mach_lookup(a(1)),
                 #[cfg(target_os = "macos")]

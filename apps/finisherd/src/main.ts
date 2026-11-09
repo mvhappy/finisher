@@ -3,6 +3,7 @@
 // Usage: node apps/finisherd/src/main.ts [serve] [--server-data <dir>]
 //        node apps/finisherd/src/main.ts <command> …   (the owner's console, `console/main.ts`)
 // Serving logs to stderr only; stdout stays empty. Console commands answer on stdout.
+import { realpathSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { runMain } from "@effect/platform-node/NodeRuntime";
@@ -17,7 +18,7 @@ import {
   socketPath,
   writeServerInfo,
 } from "./config.ts";
-import { serverId } from "@finisher/fin-node";
+import { serverIdentity } from "@finisher/fin-node";
 import { canonicalEndpoint } from "./auth/crypto.ts";
 import { Handshake, HandshakeTag } from "./auth/handshake.ts";
 import { Credentials, CredentialsTag } from "./auth/credentials.ts";
@@ -27,6 +28,10 @@ import { ConnectionRegistry, ConnectionRegistryTag, Connections, type ListenerRu
 import { AuditTag, layerAudit } from "./control/audit.ts";
 import { makeTickets, TicketsTag } from "./auth/tickets.ts";
 import { ControlStoreTag, layerControlStore } from "./control/db.ts";
+import { DeviceStore } from "./auth/devices.ts";
+import { openSecrets } from "./secrets/vault.ts";
+import { checkMoved } from "./env/moved.ts";
+import { CAPABILITIES } from "./handlers.ts";
 // Registers the `agent` control chain before the store opens (7A-2 Task 3b; 6b wires the runtime).
 import { AgentStore } from "./agent/store.ts";
 import { systemClock, systemIds } from "./agent/clock.ts";
@@ -47,11 +52,21 @@ import { LibrariesTag } from "./library/api.ts";
 import { CatalogsTag, layerCatalogs } from "./library/catalog/client.ts";
 import { LibraryServiceTag, librariesHolding, libraryWiring } from "./library/layer.ts";
 import { layerPlugins } from "./plugins/registries.ts";
+import { makePluginHost } from "./plugins/host/processes.ts";
+import { PluginTables } from "./plugins/tables.ts";
 import { layerProjectRegistry, ProjectRegistry, type RegistryOptions } from "./projects.ts";
 import { registerMediaKinds } from "./jobs/kinds/media.look.ts";
 import { MAX_FRAME } from "./protocol.ts";
 import { claimSocketPath, makeLocalServer, serveRpc } from "./transport.ts";
-import { makeTicketedWebSocketServer, makeUpgradeCheck } from "./upgrade.ts";
+import { makeTicketedWebSocketServer, makeUpgradeCheck, WebSocketSlots } from "./upgrade.ts";
+import { makeFront, refusalAudits, type Route } from "./http/front.ts";
+import { loopbackPolicy } from "./http/policy.ts";
+import { RemoteListener, RemoteListenerTag } from "./net/remote.ts";
+import { readServerSettings } from "./net/server-settings.ts";
+import { EnvironmentTag } from "./env/descriptor.ts";
+import { PairingTag } from "./auth/pairing.ts";
+import { DeviceAccessTag, serverControlOf, startRemote, wireRemoteAccess } from "./net/remote-wiring.ts";
+import { Nonces } from "./auth/nonces.ts";
 import { ServerControlTag } from "./server-admin.ts";
 import { isServeCommand, runConsole } from "./console/main.ts";
 import { aclBroker, sweepAtStart } from "./sandbox/broker.ts";
@@ -73,6 +88,13 @@ export interface ServeOptions {
   readonly onAgentRuntime?: (parts: AgentRuntimeParts) => void;
   /** The job engine's options (tests: the test kinds). */
   readonly jobs?: JobEngineOptions;
+  /**
+   * The remote listener in tests (5B Decision 34): `forceTls` starts it on `listen` (e.g.
+   * `127.0.0.1:0`) whatever the settings say; `remoteOf` injects remote addresses.
+   */
+  readonly remote?: { readonly forceTls?: boolean; readonly listen?: string; readonly remoteOf?: (s: never) => string };
+  /** The remote listener, handed to tests once made. */
+  readonly onRemote?: (r: RemoteListener) => void;
   /** The agent listener (plan 7C Task 6), handed to tests and the session wiring once built. */
   readonly onAgentListener?: (listener: AgentListener) => void;
   /** The agent listener's handshake timeout and connection cap (tests lower them). */
@@ -98,6 +120,8 @@ export const serve = ({
   diagnostics: diagnosticsOptions,
   credentials: credentialOptions,
   jobs: jobOptions,
+  remote: remoteOptions,
+  onRemote,
 }: ServeOptions) =>
   Effect.scoped(
     Effect.gen(function* () {
@@ -112,9 +136,20 @@ export const serve = ({
       const acl = aclBroker(serverData);
       yield* sweepAtStart(acl);
       // The control store (5A Task 1) before any listener: the environment id, the audit log.
-      const id = yield* Effect.try({ try: () => serverId(serverData), catch: startFailure });
+      // The id, and why it was just renewed (a copy, or moved): 5B's moved check reads it below.
+      const identity = yield* Effect.try({ try: () => serverIdentity(serverData), catch: startFailure });
+      const id = identity.id;
       const control = yield* Layer.build(Layer.provideMerge(layerAudit, layerControlStore(serverData, id)));
-      const envId = Context.get(control, ControlStoreTag).envId;
+      // `env.reset` (5B) renews the environment's id while the server runs: read it live.
+      const controlStore = Context.get(control, ControlStoreTag);
+      // Paired devices (5B Task 1) and the vault with the identity key (Task 2): after the control
+      // store, before any listener. A lost identity key revokes every device (a rotation).
+      const devices = new DeviceStore(Context.get(control, ControlStoreTag), Context.get(control, AuditTag), credentialOptions?.clock);
+      yield* Effect.addFinalizer(() => Effect.sync(() => devices.dispose()));
+      const secrets = yield* Effect.try({
+        try: () => openSecrets({ serverData, store: Context.get(control, ControlStoreTag), audit: Context.get(control, AuditTag), devices }),
+        catch: startFailure,
+      });
       // New `local.key` and `console.key` (5A Task 2) before the socket is claimed: a key read
       // while this server listens is always this server's. `auth/` and `run/` are private.
       const keys = yield* Effect.try({ try: () => rotateKeys(serverData), catch: startFailure });
@@ -153,17 +188,23 @@ export const serve = ({
         layerProjectRegistry(serverData, { ...registry, libraryUse: (paths) => libraryHold?.(paths) ?? { release: () => {} } }),
       );
       const projects = Context.get(registryContext, ProjectRegistry);
+      // The code plugins' processes (sp8b Tasks 4, 5): the `plugin` family is registered with
+      // the engine's other families (a restart reconciles jobs against them), then bound to it.
+      const pluginHost = makePluginHost({ serverData: realpathSync(serverData), control: controlStore, tables: new PluginTables(controlStore), audit: Context.get(control, AuditTag) });
       const register = (r: Parameters<typeof libraries.register>[0]) => {
+        pluginHost.register(r);
         registerMediaKinds(r, { serverData, projects, libraryRoots: () => libraryRoots() });
         jobOptions?.register?.(r);
         libraries.register(r);
       };
       const jobsContext = yield* Layer.build(
-        layerJobEngine(serverData, { diagnostics: () => diagnostics.enabled(), ...jobOptions, register }).pipe(
+        // Windows: each job process's grants go through the broker (plan 7C Decision 18).
+        layerJobEngine(serverData, { diagnostics: () => diagnostics.enabled(), acl, ...jobOptions, register }).pipe(
           Layer.provide(Layer.mergeAll(Layer.succeedContext(control), Layer.succeed(JobEventSinkTag, journalSink(diagnostics.journal, logSink)))),
         ),
       );
       const engine = Context.get(jobsContext, JobEngineTag);
+      pluginHost.bind(engine);
       const caps = engine.workers().caps;
       yield* Effect.logInfo(
         `finisherd job engine: killTree=${caps.killTree} watchdog=${caps.watchdog} cgroupMemory=${caps.cgroupMemory} leafLimits=${caps.leafLimits} sandbox=${caps.sandbox} sandboxed=${caps.sandboxed}`,
@@ -198,24 +239,30 @@ export const serve = ({
       });
       // The WebSocket (Decision 24): a ticket in `Sec-WebSocket-Protocol`, Host and Origin checked first.
       let wsPort = 0;
-      const check = makeUpgradeCheck({ port: () => wsPort, tickets, origins: cachedOrigins(serverData) });
+      // `server.*` settings (5B Task 10): a fixed loopback port, the remote listener, project roots.
+      const serverSettings = readServerSettings(serverData);
+      // The loopback listener (5A's lists exactly) and its HTTP front (5B Task 6): the routes are
+      // filled in once the pieces they answer from exist (the environment, below).
+      const loopbackOrigins = cachedOrigins(serverData);
+      const loopback = loopbackPolicy(() => wsPort, loopbackOrigins);
+      const check = makeUpgradeCheck({ policy: loopback, tickets });
+      const httpRoutes: Record<string, Route> = {};
+      // DPoP's server nonces (Task 7): every answer of the front carries the current one.
+      const nonces = new Nonces();
+      // One pool of WebSocket slots for every listener (Decision 12), the reserve included.
+      const slots = new WebSocketSlots();
+      const refusals = refusalAudits(audit);
       const { server: ws, port } = yield* Effect.mapError(
         makeTicketedWebSocketServer({
           check,
           // A message over the frame cap and its slack is dropped by ws (close 1009); one just over
           // the cap reaches `protocol.ts`, which answers `FRAME_TOO_LARGE` first.
           maxPayload: MAX_FRAME + 64 * 1024,
-          onRefused: (r) => {
-            if (r.reason === "badPath" || r.reason === "badVersion" || r.reason === "tooMany") return;
-            audit.append({
-              kind: "auth.fail",
-              principal: { kind: "anonymous", id: "" },
-              credentialKind: "ticket",
-              outcome: "failed",
-              code: "UNAUTHENTICATED",
-              details: { reason: r.reason, transport: "ws" },
-            });
-          },
+          slots,
+          policy: loopback,
+          ...(serverSettings.loopbackPort === undefined ? {} : { port: serverSettings.loopbackPort }),
+          onRequest: makeFront(httpRoutes, loopback, nonces, { onRefused: refusals.front }),
+          onRefused: refusals.upgrade("ws"),
         }),
         (e) => startFailure(e.reason.cause ?? e),
       );
@@ -228,6 +275,8 @@ export const serve = ({
         local: everyConnection.add(new Connections(process.platform === "win32" ? "pipe" : "socket", () => localEndpoint)),
         // Each WebSocket carries its ticket's principal from its first frame (`upgrade.ts`).
         ws: everyConnection.add(new Connections("ws", () => wsEndpoint)),
+        // The remote listener's WebSockets (5B Task 10), when it runs.
+        wss: everyConnection.add(new Connections("wss", () => remote.info()?.endpoint ?? "")),
       };
       // Agent and MCP credentials (5A Task 9): proved through the handshake while live; every
       // request re-checks; expired ones are ended by the sweep, revoked ones at once.
@@ -244,7 +293,9 @@ export const serve = ({
       );
       const handshake = new Handshake({
         keys,
-        envId,
+        get envId() {
+          return controlStore.envId;
+        },
         audit,
         credentials: (ref) => credentials.forHello(ref),
         revoke: (ref) => credentials.markEnded(ref, "self"),
@@ -273,6 +324,46 @@ export const serve = ({
         }),
         (timer) => Effect.sync(() => clearInterval(timer)),
       );
+      // 5B: routes, the environment, pairing, DPoP, device tokens and their HTTP routes.
+      const { routes, environment, pairing, access } = yield* wireRemoteAccess({
+        store: controlStore,
+        audit,
+        devices,
+        secrets,
+        tickets,
+        connections: everyConnection,
+        credentials,
+        revokeDeps,
+        nonces,
+        capabilities: CAPABILITIES,
+        journal: diagnostics.journal,
+        loopbackPort: () => wsPort,
+        httpRoutes,
+        rewriteInfo: () => {
+          if (!removed) publish(diagnostics.enabled());
+        },
+        remoteOrigins: () => remote.originsOf(remote.info()?.port ?? 0),
+      });
+      // The remote listener (Task 10): off unless `FIN_LISTEN`, the settings or a test asks.
+      const remote = new RemoteListener({
+        slots,
+        tickets,
+        audit,
+        secrets,
+        routes,
+        environment,
+        nonces,
+        httpRoutes,
+        maxPayload: MAX_FRAME + 64 * 1024,
+        origins: loopbackOrigins,
+        onRefused: refusals.front,
+        onUpgradeRefused: refusals.upgrade("wss"),
+        remoteOf: remoteOptions?.remoteOf,
+      });
+      onRemote?.(remote);
+      if (checkMoved(environment, controlStore, identity.renewed)) {
+        yield* Effect.logWarning("finisherd: this server data was copied or moved: paired devices wait until its owner adopts or resets it");
+      }
       // The agent runtime's shared pieces (7A-2): the session store, each session's credential
       // (minted, refreshed and revoked through the one revoke path) and the branch lineage the
       // chains read for branch reach. Credential effects a crash left in the outbox are done now.
@@ -326,6 +417,7 @@ export const serve = ({
         control: Context.get(control, ControlStoreTag),
         audit,
         endpoint: socket,
+        secretBox: secrets.box,
         // Built below, after the transports; a session sandbox asks for it only once a run starts.
         libraryRoots: () => libraryRoots(),
         agentListener: () => (agentListenerRef === undefined ? Promise.reject(new Error("the agent listener is not built yet")) : agentListenerRef.ensure()),
@@ -353,14 +445,24 @@ export const serve = ({
         { transport: connections.local.transport, endpoint: localEndpoint },
         { transport: connections.ws.transport, endpoint: wsEndpoint },
       ];
-      const serverControl = { envId, listeners: () => listeners, stop: () => void Deferred.doneUnsafe(stopped, Exit.void) };
+      const serverControl = serverControlOf({
+        serverData,
+        store: controlStore,
+        environment,
+        routes,
+        listeners,
+        remote,
+        secrets,
+        settings: serverSettings,
+        stop: () => void Deferred.doneUnsafe(stopped, Exit.void),
+      });
       // What every transport's handlers are served with, built once: the agent listener's
       // handlers, built later, share it with the two built now.
       const served = yield* Layer.build(
         Layer.mergeAll(
           Layer.succeedContext(registryContext),
           fontsLayer,
-          layerPlugins(serverData).pipe(Layer.provide(Layer.succeedContext(control)), Layer.provide(fontsLayer)),
+          layerPlugins(serverData, { host: pluginHost.hooks }).pipe(Layer.provide(Layer.succeedContext(control)), Layer.provide(fontsLayer)),
           Layer.succeed(Diagnostics, diagnostics),
           Layer.succeedContext(control),
           Layer.succeedContext(jobsContext),
@@ -372,12 +474,18 @@ export const serve = ({
           Layer.succeed(TicketsTag, tickets),
           Layer.succeed(ConnectionRegistryTag, everyConnection),
           Layer.succeed(ServerControlTag, serverControl),
+          Layer.succeed(EnvironmentTag, environment),
+          Layer.succeed(PairingTag, pairing),
+          Layer.succeed(DeviceAccessTag, access),
+          Layer.succeed(RemoteListenerTag, remote),
           Layer.succeed(AgentCoreTag, agentCore),
           Layer.succeed(AgentRuntimeTag, agentRuntime),
         ),
       );
       yield* Layer.build(
-        Layer.mergeAll(serveRpc(local, connections.local), serveRpc(ws, connections.ws)).pipe(Layer.provide(Layer.succeedContext(served))),
+        Layer.mergeAll(serveRpc(local, connections.local), serveRpc(ws, connections.ws), serveRpc(remote.socketServer(), connections.wss)).pipe(
+          Layer.provide(Layer.succeedContext(served)),
+        ),
       );
       // The agent listener (plan 7C Task 6): loopback TCP for sandboxed `fin`, started on first
       // need into this server's scope, so it stops with the server.
@@ -414,8 +522,10 @@ export const serve = ({
       agentListenerRef = agentListener;
       onAgentListener?.(agentListener);
 
+      yield* startRemote(remote, serverSettings, environment, remoteOptions);
+
       const publish = (enabled: boolean) =>
-        writeServerInfo(serverData, { pid: process.pid, wsPort, socket, envId, diagnostics: { enabled } });
+        writeServerInfo(serverData, { pid: process.pid, wsPort, socket, envId: controlStore.envId, diagnostics: { enabled } });
       // Set when `finisherd.json` is removed: a late gate change must not bring it back.
       let removed = false;
       const info = yield* Effect.acquireRelease(

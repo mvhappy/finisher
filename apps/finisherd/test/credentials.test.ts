@@ -250,11 +250,12 @@ let running: { fiber: Fiber.Fiber<unknown, unknown>; info: ServerInfo } | undefi
 const clients: NdjsonClient[] = [];
 const time = clock(Date.now());
 
-async function startInProcess(): Promise<ServerInfo> {
+/** `sweepMs`: how often the server's expiry sweep runs (real time; a day: it never does in the test). */
+async function startInProcess(sweepMs = 20): Promise<ServerInfo> {
   let ready!: (i: ServerInfo) => void;
   const info = new Promise<ServerInfo>((r) => (ready = r));
   const fiber = Effect.runFork(
-    serve({ serverData, credentials: { clock: time.now, sweepMs: 20 }, onReady: (i) => ready(i as ServerInfo) }).pipe(Effect.provide(StderrLogger)),
+    serve({ serverData, credentials: { clock: time.now, sweepMs }, onReady: (i) => ready(i as ServerInfo) }).pipe(Effect.provide(StderrLogger)),
   );
   running = { fiber, info: await info };
   return running.info;
@@ -410,8 +411,8 @@ describe("credentials on a server", () => {
     expect(ok<{ principal: Principal }>(await c.call("auth.whoami", {})).principal.id).toBe(credential.id);
   });
 
-  test("expiry closes live connections within the sweep, and refuses requests at once", async () => {
-    await startInProcess();
+  /** An agent with a live `ops.subscribe` stream and a second connection, both on one credential. */
+  async function expiring() {
     const local = await connectProved({ info: running!.info, serverData });
     clients.push(local);
     const projectId = await project(local);
@@ -421,15 +422,33 @@ describe("credentials on a server", () => {
     const sub = a.stream("ops.subscribe", { projectId, branch: "main", fromRev: 0, generation }, () => undefined);
     const b = await agentClient(file);
     expect(code(await b.call("auth.whoami", {}))).toBeUndefined();
-    time.advance(3_600_000);
-    // Expired: refused before the sweep has run (the next request re-checks).
-    expect(code(await b.call("auth.whoami", {}))).toBe("CREDENTIAL_REVOKED");
-    expect(code(await sub.done)).toBe("CREDENTIAL_REVOKED");
+    return { sub, b };
+  }
+
+  async function expectedExpired() {
     const console = await asConsole();
     const listed = ok<{ credentials: Credential[] }>(await console.call("auth.credential.list", { all: true })).credentials;
     expect(listed.map((c) => c.status)).toEqual(["expired"]);
     const kinds = ok<{ entries: Array<{ kind: string }> }>(await console.call("auth.audit.list", { kind: "credential.expire" })).entries;
     expect(kinds).toHaveLength(1);
+  }
+
+  // The two halves run apart: with a sweep every 20 ms, the sweep can close the connection between the
+  // clock's move and the request, and the request then fails with SERVER_UNAVAILABLE, not the refusal.
+  test("expiry refuses requests at once, before any sweep has run", async () => {
+    await startInProcess(86_400_000);
+    const { b } = await expiring();
+    time.advance(3_600_000);
+    // Expired: refused before the sweep has run (the next request re-checks).
+    expect(code(await b.call("auth.whoami", {}))).toBe("CREDENTIAL_REVOKED");
+  });
+
+  test("expiry closes live connections within the sweep", async () => {
+    await startInProcess();
+    const { sub } = await expiring();
+    time.advance(3_600_000);
+    expect(code(await sub.done)).toBe("CREDENTIAL_REVOKED");
+    await expectedExpired();
   });
 
   test("a local key cannot be named as an agent credential, and credential.master is never readable through RPC", async () => {

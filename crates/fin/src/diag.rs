@@ -357,8 +357,12 @@ pub fn finish(result: &Result<Value, CoreError>, exit: i32) {
     if !allowed() {
         return;
     }
-    // A server that did not prove itself gets nothing more from this run (5A Decision 10).
-    if result.as_ref().is_err_and(|e| e.code == "SERVER_UNTRUSTED") {
+    // A server that did not prove itself gets nothing more from this run (5A Decision 10), nor
+    // one that speaks another protocol (no proof was checked; review #12).
+    if result
+        .as_ref()
+        .is_err_and(|e| matches!(e.code.as_str(), "SERVER_UNTRUSTED" | "PROTOCOL_MISMATCH"))
+    {
         return;
     }
     let mut s = state();
@@ -450,6 +454,24 @@ pub fn test_panic() {
     if crate::backend::test_hook(TEST_PANIC_ENV).is_some() {
         panic!("{TEST_PANIC_ENV} asked for a panic");
     }
+}
+
+/// Turns panics into an `INTERNAL` error document (exit 6) instead of a stderr-only trace.
+pub fn install_panic_hook() {
+    std::panic::set_hook(Box::new(|info| {
+        // Best effort and within its budget (`diag`); then the usual document and exit 6.
+        report_panic(info);
+        let message = panic_message(info);
+        let location = info
+            .location()
+            .map(|l| format!("{}:{}", l.file(), l.line()));
+        let e = crate::output::internal(
+            format!("fin crashed: {message}"),
+            json!({ "location": location }),
+        )
+        .with_fix("report this as a bug in fin");
+        std::process::exit(crate::output::error(&e));
+    }));
 }
 
 #[cfg(test)]

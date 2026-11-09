@@ -336,15 +336,49 @@ describe("review fixes", () => {
     const s = await setup({
       names: ["a.png"],
       stages: [
-        testStage("t.dep", { knobs: (files) => ({ crashOn: files.map((f) => f.fp) }) }),
+        // Slow to crash, so the prioritize below comes while its job runs: the background pump
+        // takes `t.dep` once the file is probed.
+        testStage("t.dep", { knobs: (files) => ({ crashOn: files.map((f) => f.fp), delayMs: 2000 }) }),
         testStage("t.after", { dependsOn: ["t.dep"] }),
       ],
     });
     const fp = (await probed(s, ["a.png"]))["a.png"]!.fp!;
+    await eventually(async () => active(s.rig).some((j) => j.state === "running"));
     await exec(s.rig.svc.prioritize(fp, "t.after"));
     expect(s.rig.svc.stages.wanted()).toBe(1);
     await eventually(async () => (await stageRows(s, "t.dep")).find((r) => r.state === "failed" && r.attempts >= 3));
     await eventually(async () => s.rig.svc.stages.wanted() === 0);
+    expect((await stageRows(s, "t.after")).filter((r) => r.state === "done")).toEqual([]);
+  });
+
+  test("a_stage_prioritized_after_its_dependency_failed_for_good_is_not_kept", { timeout: 120_000 }, async () => {
+    const s = await setup({
+      names: ["a.png"],
+      stages: [testStage("t.dep", { knobs: (files) => ({ crashOn: files.map((f) => f.fp) }) }), testStage("t.after", { dependsOn: ["t.dep"] })],
+    });
+    const fp = (await probed(s, ["a.png"]))["a.png"]!.fp!;
+    await eventually(async () => (await stageRows(s, "t.dep")).find((r) => r.state === "failed" && r.attempts >= 3));
+    // Nothing will make `t.dep` done: the entry would wait forever.
+    await exec(s.rig.svc.prioritize(fp, "t.after"));
+    expect(s.rig.svc.stages.wanted()).toBe(0);
+    expect(await stageRows(s, "t.after")).toEqual([]);
+  });
+});
+
+describe("a dependency that does not apply", () => {
+  test("a_stage_prioritized_on_a_skipped_dependency_is_not_kept", { timeout: 120_000 }, async () => {
+    // `t.dep` never applies, so its row is `skipped` and `t.after` can never run: whether the
+    // prioritize itself skips the dependency, or it was skipped before, no entry is kept.
+    const s = await setup({
+      names: ["a.png", "b.png"],
+      stages: [testStage("t.dep", { appliesTo: () => false }), testStage("t.after", { dependsOn: ["t.dep"] })],
+    });
+    const by = await probed(s, ["a.png", "b.png"]);
+    await exec(s.rig.svc.prioritize(by["a.png"]!.fp!, "t.after"));
+    await eventually(async () => s.rig.svc.stages.wanted() === 0);
+    await eventually(async () => (await stageRows(s, "t.dep")).filter((r) => r.state === "skipped").length === 2);
+    await exec(s.rig.svc.prioritize(by["b.png"]!.fp!, "t.after"));
+    expect(s.rig.svc.stages.wanted()).toBe(0);
     expect((await stageRows(s, "t.after")).filter((r) => r.state === "done")).toEqual([]);
   });
 });
@@ -352,23 +386,32 @@ describe("review fixes", () => {
 describe("priority and restarts", () => {
   test("prioritize_jumps_the_queue_with_dependencies", { timeout: 120_000 }, async () => {
     const names = ["a.png", "b.png", "c.png", "d.png", "e.png", "f.png"];
-    const s = await setup({
-      names,
-      stages: [
-        testStage("t.a", { batch: 1, maxInFlight: 1, knobs: () => ({ delayMs: 700 }) }),
-        testStage("t.b", { batch: 1, maxInFlight: 1, dependsOn: ["t.a"] }),
-      ],
-    });
+    // No stage yet: the probes (they share the read pool) run to their end first.
+    const s = await setup({ names });
     const by = await probed(s, names);
     const last = by["f.png"]!.fp!;
+    // The read pool is shut while the stages are registered and the file is prioritized, and has
+    // one slot when it opens: the queue is in the state the test wants, and the engine's order
+    // (priority first) decides what runs first, never how fast this process happens to be.
+    const read = s.rig.svc.book.pools(s.lib)!.read;
+    s.rig.t.engine.definePool(read, 0);
+    s.rig.svc.registerStage(testStage("t.a", { batch: 1, maxInFlight: 1, knobs: () => ({ delayMs: 200 }) }));
+    s.rig.svc.registerStage(testStage("t.b", { batch: 1, maxInFlight: 1, dependsOn: ["t.a"] }));
     await eventually(async () => active(s.rig).length > 0);
     await exec(s.rig.svc.prioritize(last, "t.b"));
+    // One background `t.a` (max in flight 1) and the prioritized one: nothing else was submitted.
+    expect(active(s.rig)).toHaveLength(2);
+    s.rig.t.engine.definePool(read, 1);
     const done = await settled(s, "t.b", [last], ["done"]);
     expect(done.find((r) => r.fp === last)?.state).toBe("done");
-    const aDone = (await stageRows(s, "t.a")).filter((r) => r.state === "done").length;
-    expect(aDone).toBeLessThan(names.length - 1);
-    const mine = stageJobs(s.rig).filter((j) => (j.params as { items: string[] }).items.includes(last));
+    // Both of its jobs ran at `normal`, and its `t.a` started before every other job did: with one
+    // slot a `normal` job always goes before a `background` one, however slow this process is.
+    const all = stageJobs(s.rig);
+    const mine = all.filter((j) => (j.params as { items: string[] }).items.includes(last)).sort((x, y) => x.createdAt - y.createdAt);
     expect(mine.map((j) => j.priority)).toEqual(["normal", "normal"]);
+    for (const j of all.filter((x) => !mine.includes(x))) {
+      expect(j.startedAt === undefined || j.startedAt >= mine[0]!.startedAt!, `${j.id} started before the prioritized file's t.a`).toBe(true);
+    }
     // Unknown stages and fingerprints are refused.
     expect((await Effect.runPromise(Effect.flip(s.rig.svc.prioritize(last, "t.none")))).code).toBe("INVALID_REQUEST");
     expect((await Effect.runPromise(Effect.flip(s.rig.svc.prioritize("fp1:nope", "t.a")))).code).toBe("FILE_NOT_FOUND");

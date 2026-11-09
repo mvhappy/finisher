@@ -14,7 +14,7 @@ use crate::traits::VideoEncoder;
 
 /// What an AV1 encode is asked for.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Av1EncoderConfig {
+pub(crate) struct Av1EncoderConfig {
     pub size: Size,
     /// Frames per second (VFR sources pass their nominal rate).
     pub rate: Rational,
@@ -61,8 +61,9 @@ fn av1c(seq: &[u8]) -> Result<Vec<u8>, CoreError> {
     Ok(out)
 }
 
-/// An SVT-AV1 encoder for 8-bit 4:2:0 input.
-pub fn open_av1_encoder(cfg: &Av1EncoderConfig) -> Result<Box<dyn VideoEncoder>, CoreError> {
+/// An SVT-AV1 encoder for 8-bit 4:2:0 input (opened only through the registry's
+/// `SvtBackend`, plan 6B-1 Decision 2).
+pub(crate) fn open_av1_encoder(cfg: &Av1EncoderConfig) -> Result<Box<dyn VideoEncoder>, CoreError> {
     if !cfg.size.width.is_multiple_of(2)
         || !cfg.size.height.is_multiple_of(2)
         || cfg.size.width < 64

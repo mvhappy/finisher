@@ -30,6 +30,7 @@ fn edit(s: &mut Store, branch: &str, id: &str, ops: Vec<Op>) -> CommittedTx {
         base_rev: base,
         schema_version: SCHEMA_VERSION,
         args_hash: None,
+        via: None,
         ops,
     })
     .unwrap()

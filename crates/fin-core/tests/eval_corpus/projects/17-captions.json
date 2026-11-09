@@ -17,7 +17,7 @@
   "project": {
     "id": "p1",
     "name": "Corpus",
-    "schemaVersion": 2,
+    "schemaVersion": 3,
     "rate": "30",
     "timelines": [
       {
@@ -99,6 +99,7 @@
                 "keyframes": {
                   "opacity": [
                     {
+                      "id": "kf1",
                       "at": "0",
                       "value": 0.0,
                       "interp": {
@@ -110,6 +111,7 @@
                       }
                     },
                     {
+                      "id": "kf2",
                       "at": "1",
                       "value": 1.0,
                       "interp": {

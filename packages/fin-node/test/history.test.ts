@@ -240,6 +240,33 @@ describe("history", () => {
     expect(nothing.code).toBe("NOTHING_TO_UNDO");
   });
 
+  test("an undo whose item lost both neighbours: a user's snaps, an agent's is NEIGHBOURS_GONE", async () => {
+    // c1 [0,5) c2 [5,10) c3 [10,15); alice deletes c2, bob deletes c1 and c3.
+    const e = await project();
+    await e.commit(tx("t-c2", "main", 2, [insert(5)]));
+    await e.commit(tx("t-c3", "main", 3, [insert(10)]));
+    const by = (author: string, txId: string, baseRev: number, ops: unknown[]) =>
+      e.commit(JSON.stringify({ txId, author, branch: "main", baseRev, schemaVersion: 2, ops }));
+    await by("alice", "a1", 4, [{ op: "clip.delete", clip: "c2" }]);
+    await by("bob", "b1", 5, [{ op: "clip.delete", clip: "c1" }]);
+    await by("bob", "b2", 6, [{ op: "clip.delete", clip: "c3" }]);
+    const undo = (txId: string, meta?: object) =>
+      e.undo(req({ txId, branch: "main", author: "alice" }), meta === undefined ? undefined : JSON.stringify(meta));
+    for (const meta of [{ actor: { kind: "agent", session: "s1" } }, { actor: { kind: "unknown" } }, undefined]) {
+      const refused = await rejection(undo(`u-${JSON.stringify(meta)}`, meta));
+      expect(refused.code).toBe("CONFLICT");
+      expect(refused.details.reason).toBe("NEIGHBOURS_GONE");
+      const conflicts = refused.details.conflicts as { details: { placement: { outcome: string } } }[];
+      expect(conflicts[0]?.details.placement.outcome).toBe("conflict");
+    }
+    expect(await clips(e)).toBe(0);
+    const done = await json(undo("u-user", { actor: { kind: "user" } }));
+    expect(done.placements).toHaveLength(1);
+    expect(done.placements[0]).toMatchObject({ item: "c2", outcome: "relocated", txId: "u-user" });
+    expect(done.placements[0].causes.map((c: { txId: string }) => c.txId)).toEqual(["b1", "b2"]);
+    expect(await clips(e)).toBe(1);
+  });
+
   test("checkpoint and undo --to", async () => {
     const e = await project();
     const cp = await json(e.checkpoint(req({ txId: "c1", branch: "main", name: "v1" })));

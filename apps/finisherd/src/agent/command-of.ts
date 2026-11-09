@@ -46,6 +46,8 @@ export const RPC_ONLY: ReadonlySet<FinRpcTag> = new Set<FinRpcTag>([
   "plugin.discard",
   "ops.subscribe",
   "project.events",
+  // Server housekeeping: the engine reopens on the next call (review #11).
+  "project.close",
   "diagnostics.record",
   // Jobs are submitted by the server's own features; a `render` job is named `render`
   // (`SERVER_NAMED`) until a `fin` render command arrives with its row.
@@ -85,6 +87,21 @@ export const RPC_ONLY: ReadonlySet<FinRpcTag> = new Set<FinRpcTag>([
   "agent.local.show",
   "agent.local.test",
   "agent.local.remove",
+  // 5B: pairing, devices, the environment and settings, reached through the console and apps.
+  "auth.pair.offer",
+  "auth.pair.approve",
+  "auth.pair.reject",
+  "auth.pair.pending",
+  "auth.device.list",
+  "auth.device.rename",
+  "auth.device.revoke",
+  "auth.devices.watch",
+  "env.describe",
+  "env.name",
+  "env.adopt",
+  "env.reset",
+  "env.rotateIdentity",
+  "settings.write",
 ]);
 
 type Condition = readonly [path: string, expect: RegistryMatch];
@@ -138,10 +155,11 @@ function holds(payload: unknown, [path, expect]: Condition): boolean {
 /** `plugin:<id>/<command>` of a transaction the plugin host says a plugin committed. */
 function pluginCommand(trusted: TrustedContext | undefined): string | undefined {
   const via = trusted?.via;
-  if (via === undefined || via.plugin === "") return undefined;
+  if (via === undefined || via.command === "") return undefined;
+  // `<id>@<version>`, both non-empty; anything else is treated as no via.
   const at = via.plugin.lastIndexOf("@");
-  const id = at > 0 ? via.plugin.slice(0, at) : via.plugin;
-  return `plugin:${id}/${via.command}`;
+  if (at <= 0 || at === via.plugin.length - 1) return undefined;
+  return `plugin:${via.plugin.slice(0, at)}/${via.command}`;
 }
 
 /** Whether a `tx.commit` holds more than one op. */

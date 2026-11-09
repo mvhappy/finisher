@@ -286,10 +286,12 @@ pub struct AudioParams {
     pub fade_out: Rational,
 }
 
-/// A keyframe; `at` is relative to the item's start (plan 4C Decision 13).
+/// A keyframe; `at` is relative to the item's start (plan 4C Decision 13). `id` (`kf<n>`) is
+/// stable (spec §5.12): unique within the item, kept by trims, moves and splits.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct Keyframe {
+    pub id: String,
     pub at: Rational,
     pub value: ParamValue,
     pub interp: Interp,
@@ -372,8 +374,8 @@ impl Item {
 
     /// Every id the item carries (plan 4C Decision 24), mutably: its own, what its body
     /// names (an asset, a nested timeline, a caption style, the assets its slots name), its
-    /// effects' (with the assets their params name), its link group and the assets its
-    /// keyframe values name. The effect ids in its keyframe paths are reached through
+    /// effects' (with the assets their params name), its link group, and its keyframes' ids
+    /// and the assets their values name. The effect ids in its keyframe paths are reached through
     /// [`crate::Op::try_for_each_ref`].
     pub fn refs_mut(&mut self) -> Vec<&mut String> {
         let mut out = vec![&mut self.id];
@@ -382,13 +384,10 @@ impl Item {
             out.extend(e.refs_mut());
         }
         out.extend(self.common.link.as_mut());
-        out.extend(
-            self.common
-                .keyframes
-                .values_mut()
-                .flatten()
-                .filter_map(|k| k.value.asset_mut()),
-        );
+        for k in self.common.keyframes.values_mut().flatten() {
+            out.push(&mut k.id);
+            out.extend(k.value.asset_mut());
+        }
         out
     }
 
@@ -400,13 +399,10 @@ impl Item {
             out.extend(e.ids());
         }
         out.extend(self.common.link.as_deref());
-        out.extend(
-            self.common
-                .keyframes
-                .values()
-                .flatten()
-                .filter_map(|k| k.value.asset()),
-        );
+        for k in self.common.keyframes.values().flatten() {
+            out.push(k.id.as_str());
+            out.extend(k.value.asset());
+        }
         out
     }
 

@@ -404,6 +404,25 @@ pub(crate) fn find_tx(conn: &Connection, tx_id: &str) -> Result<Option<Committed
     row.map(|(r, _)| decode(r)).transpose()
 }
 
+/// The placements record `tx_id` stored (`Record::placements`; empty for a record that has
+/// none, or none stored).
+pub(crate) fn placements_of(
+    conn: &Connection,
+    tx_id: &str,
+) -> Result<Vec<fin_core::rebase::placement::Placement>, StoreError> {
+    let bytes: Option<Vec<u8>> = conn
+        .query_row(
+            "SELECT record_bytes FROM txs WHERE tx_id = ?1",
+            params![tx_id],
+            |r| r.get(0),
+        )
+        .optional()?;
+    Ok(match bytes {
+        Some(b) => parse_record(None, &b)?.placements,
+        None => Vec::new(),
+    })
+}
+
 /// Committed txs of `branch`'s own rows with `after < rev <= through` (`None`: no upper
 /// bound), in rev order, as stored: the caller fills pending diffs first
 /// ([`crate::branch::lineage::records_since`], which reads a branch's whole lineage).

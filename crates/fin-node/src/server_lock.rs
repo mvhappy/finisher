@@ -117,3 +117,43 @@ pub fn server_id(server_data: String) -> Result<String> {
         || {},
     )
 }
+
+/// Refuses server data that is not on a known local filesystem (review #4,
+/// `fin_store::locality`), unless `FIN_ALLOW_NONLOCAL_SERVER_DATA` is set: `finisherd` checks
+/// its root at every start, before it creates anything there.
+#[napi(catch_unwind)]
+#[cfg_attr(test, allow(dead_code))] // called from JS only
+pub fn check_server_data_local(path: String) -> Result<()> {
+    guarded(
+        || {
+            let allow = fin_store::locality::allowed_by_env();
+            fin_store::locality::check(std::path::Path::new(&path), "server data", allow)
+                .map_err(reject)
+        },
+        || {},
+    )
+}
+
+/// This server data's identity as `finisherd` reads it at start (5B Decision 31): the id, and
+/// when it was just renewed (the server data is a copy, or moved machines or directories) why,
+/// as a closed word (`otherMachine`, `otherDirectory`).
+#[napi(object)]
+pub struct ServerIdentityReport {
+    pub id: String,
+    pub renewed: Option<String>,
+}
+
+#[napi(catch_unwind)]
+pub fn server_identity(server_data: String) -> Result<ServerIdentityReport> {
+    guarded(
+        || {
+            fin_store::server_id::server_identity(std::path::Path::new(&server_data))
+                .map(|identity| ServerIdentityReport {
+                    id: identity.id,
+                    renewed: identity.renewed_reason.map(str::to_owned),
+                })
+                .map_err(reject)
+        },
+        || {},
+    )
+}

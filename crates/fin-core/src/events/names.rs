@@ -241,6 +241,7 @@ pub static CLI_FLAGS: NameTable = NameTable::new(
         "interp",
         "into",
         "italic",
+        "key",
         "kind",
         "kinds",
         "label",

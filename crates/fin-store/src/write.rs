@@ -86,6 +86,9 @@ pub(crate) struct WriteCtx<'a> {
     pub measurer: Option<std::sync::Arc<dyn fin_core::layout::TextMeasurer>>,
     /// The guard of [`Store::with_guard`] at the write's start ([`crate::guard`]).
     guard: crate::WriteGuard,
+    /// What an undo, redo or copy of this write does with an item whose neighbours are both
+    /// gone ([`crate::Store::with_when_lost`]).
+    pub when_lost: fin_core::rebase::placement::WhenLost,
 }
 
 impl WriteCtx<'_> {
@@ -147,6 +150,16 @@ impl WriteCtx<'_> {
     /// changes, a snapshot every [`SNAPSHOT_EVERY`] seqs, and the staged head. Returns the
     /// record as committed, with its link (`None` for an edit).
     pub(crate) fn append(&mut self, d: Draft) -> Result<CommittedTx, StoreError> {
+        self.append_placed(d, Vec::new())
+    }
+
+    /// [`Self::append`] of a history record that stores where its items went back
+    /// (`Record::placements`).
+    pub(crate) fn append_placed(
+        &mut self,
+        d: Draft,
+        placements: Vec<fin_core::rebase::placement::Placement>,
+    ) -> Result<CommittedTx, StoreError> {
         if d.intent.branch != d.branch {
             return Err(CoreError::new(
                 "DB_ERROR",
@@ -164,7 +177,7 @@ impl WriteCtx<'_> {
         );
         let seq = head.rev + 1;
         let parent = head.tip.clone();
-        let record = db::new_record(
+        let mut record = db::new_record(
             seq,
             d.link,
             d.intent.clone(),
@@ -173,6 +186,7 @@ impl WriteCtx<'_> {
             parent,
             self.now,
         )?;
+        record.placements = placements;
         let link = db::committed_link(&record)?;
         let tip = db::insert_tx(
             self.txn,
@@ -281,6 +295,7 @@ impl Store {
         let mut ctx = WriteCtx {
             measurer,
             guard: self.guard.clone(),
+            when_lost: self.when_lost,
             txn: &txn,
             epoch,
             dry_run,

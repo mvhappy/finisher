@@ -52,6 +52,7 @@ fn on(s: &mut Store, id: &str, branch: &str) {
         base_rev: base,
         schema_version: SCHEMA_VERSION,
         args_hash: None,
+        via: None,
         ops: vec![insert(0, "a1")],
     })
     .unwrap();
@@ -191,6 +192,7 @@ fn record(tx_id: &str, seq: u64, link: Link) -> Record {
         base_rev: seq - 1,
         schema_version: SCHEMA_VERSION,
         args_hash: None,
+        via: None,
         ops: vec![],
     };
     let mut r = Record::new_edit(
@@ -348,9 +350,9 @@ fn fixture_4c_opens_identically() {
     let v: i64 = conn
         .query_row("PRAGMA user_version", [], |r| r.get(0))
         .unwrap();
-    assert_eq!((v, DB_VERSION), (4, 4));
-    assert_eq!(meta(&conn, "formatVersion").as_deref(), Some("4"));
-    assert_eq!(meta(&conn, "minReaderVersion").as_deref(), Some("4"));
+    assert_eq!((v, DB_VERSION), (5, 5));
+    assert_eq!(meta(&conn, "formatVersion").as_deref(), Some("5"));
+    assert_eq!(meta(&conn, "minReaderVersion").as_deref(), Some("5"));
     let rows: i64 = conn
         .query_row("SELECT COUNT(*) FROM drops", [], |r| r.get(0))
         .unwrap();

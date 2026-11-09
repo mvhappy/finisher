@@ -17,6 +17,7 @@ use crate::ops::effect_move::EffectMove;
 use crate::ops::effect_remove::EffectRemove;
 use crate::ops::effect_restore::EffectRestore;
 use crate::ops::keyframe_remove::KeyframeRemove;
+use crate::ops::keyframe_restore::KeyframeRestore;
 use crate::ops::keyframe_set::KeyframeSet;
 use crate::ops::marker_add::MarkerAdd;
 use crate::ops::marker_remove::MarkerRemove;
@@ -150,12 +151,16 @@ pub enum Op {
     /// Moves an effect to another index of its item's effect list.
     #[serde(rename = "effect.move")]
     EffectMove(EffectMove),
-    /// Sets the keyframe of an item's parameter at an item-relative time.
+    /// Sets a keyframe of an item's parameter, by key id (or, from clients, by time): edits,
+    /// moves or inserts it.
     #[serde(rename = "keyframe.set")]
     KeyframeSet(Box<KeyframeSet>),
-    /// Removes the keyframe of an item's parameter at an item-relative time.
+    /// Removes a keyframe of an item's parameter, by key id (or, from clients, by time).
     #[serde(rename = "keyframe.remove")]
     KeyframeRemove(KeyframeRemove),
+    /// Internal (inverse of `keyframe.remove`): puts a keyframe back under its id.
+    #[serde(rename = "keyframe.restore")]
+    KeyframeRestore(Box<KeyframeRestore>),
     /// Internal (inverse of `effect.remove`): puts an effect and its keyframes back.
     #[serde(rename = "effect.restore")]
     EffectRestore(Box<EffectRestore>),

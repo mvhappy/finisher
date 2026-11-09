@@ -3,7 +3,8 @@
 //! kept. A step must not change ids, timestamps or bindings.
 //!
 //! Schema version 1 is the first. Version 2 (plan 4C) has a snapshot step
-//! ([`snapshot_v1`]) and a record step ([`record_v1`]), both frozen. Adding version `n + 1` means bumping `SCHEMA_VERSION` and appending a
+//! ([`snapshot_v1`]) and a record step ([`record_v1`]), both frozen. Version 3 (stable
+//! keyframe ids, spec §5.12) has [`snapshot_v2`] and [`record_v2`], frozen too. Adding version `n + 1` means bumping `SCHEMA_VERSION` and appending a
 //! `Step { from: n, .. }` to each table, with a golden test (frozen old shape in, expected new
 //! shape out).
 //!
@@ -12,7 +13,9 @@
 
 mod diff_v1;
 mod record_v1;
+mod record_v2;
 mod snapshot_v1;
+mod snapshot_v2;
 
 use serde_json::{Value, json};
 
@@ -27,14 +30,26 @@ pub(crate) struct Step {
     pub(crate) run: fn(Value) -> Result<Value, CoreError>,
 }
 
-const RECORD_STEPS: &[Step] = &[Step {
-    from: 1,
-    run: record_v1::run,
-}];
-const SNAPSHOT_STEPS: &[Step] = &[Step {
-    from: 1,
-    run: snapshot_v1::run,
-}];
+const RECORD_STEPS: &[Step] = &[
+    Step {
+        from: 1,
+        run: record_v1::run,
+    },
+    Step {
+        from: 2,
+        run: record_v2::run,
+    },
+];
+const SNAPSHOT_STEPS: &[Step] = &[
+    Step {
+        from: 1,
+        run: snapshot_v1::run,
+    },
+    Step {
+        from: 2,
+        run: snapshot_v2::run,
+    },
+];
 
 /// A record value of any known schema version, upgraded to `SCHEMA_VERSION`. Upgrading also
 /// stamps `intent.schemaVersion`, which follows the record's. Above `SCHEMA_VERSION`, or an

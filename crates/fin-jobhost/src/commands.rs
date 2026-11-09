@@ -147,6 +147,10 @@ fn spawn_in(
         .spawner
         .prepare(&req, &mut cmd)
         .map_err(|e| HostError::Spawner(e.0))?;
+    #[cfg(target_os = "macos")]
+    if let Some(mark) = &cmd.seatbelt_mark {
+        inner.domain.mark(&handle, mark);
+    }
     let self_sandbox = match &cmd.self_sandbox {
         Some(sb) => {
             let json = serde_json::to_string(sb).map_err(|e| HostError::Spawner(e.to_string()))?;

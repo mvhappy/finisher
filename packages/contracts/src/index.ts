@@ -18,3 +18,5 @@ export * from "./plugins.ts";
 export * from "./plugin-lifecycle.ts";
 export * from "./plugin-content.ts";
 export * from "./library.ts";
+export * from "./devices.ts";
+export * from "./device-rpcs.ts";

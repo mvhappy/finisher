@@ -19,6 +19,18 @@ fin-dav1d-sys = { path = "../fin-dav1d-sys" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
+# Platform codecs (6B-1), target-gated (scripts/check-crate-deps.mjs): VideoToolbox on macOS
+# (Tasks 4–5), Media Foundation on Windows 11 (Tasks 6–7). No other target links them.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = { workspace = true }
+objc2-core-foundation = { workspace = true }
+objc2-core-media = { workspace = true }
+objc2-core-video = { workspace = true }
+objc2-video-toolbox = { workspace = true }
+
+[target.'cfg(windows)'.dependencies]
+windows = { workspace = true }
+
 [dev-dependencies]
 blake3 = "1"
 fin-codecs = { path = ".", features = ["testing"] }

@@ -227,7 +227,7 @@ describe("settings and the journal", () => {
     expect(JSON.parse(readFileSync(settingsPath(serverData), "utf8")).privacy).toEqual({ diagnostics: "off" });
   });
 
-  test("do_not_track_forces_off; finisherd.json follows the gate", { timeout: 20_000 }, async () => {
+  test("do_not_track_forces_off; finisherd.json follows the gate", { timeout: 120_000 }, async () => {
     await start({ DO_NOT_TRACK: "1" });
     expect(server!.info).toMatchObject({ diagnostics: { enabled: false } });
     const c = await client();
@@ -248,7 +248,8 @@ describe("settings and the journal", () => {
 });
 
 describe("sessions and errors", () => {
-  test.skipIf(WIN)("session_start_end_and_unclean", { timeout: 20_000 }, async () => {
+  // Three server starts and stops in a row: seconds each at load average 20, so the guard is generous.
+  test.skipIf(WIN)("session_start_end_and_unclean", { timeout: 120_000 }, async () => {
     await start();
     await server!.stop();
     server = undefined;
@@ -261,7 +262,7 @@ describe("sessions and errors", () => {
 
     await start();
     // Ready means the writer confirmed the start; the test checks it rather than trusting it.
-    await until(() => onDisk().filter((e) => e.kind === "session.start").length === 2, 2000);
+    await until(() => onDisk().filter((e) => e.kind === "session.start").length === 2, 30_000);
     const open = JSON.parse(readFileSync(join(serverData, "events", "state.json"), "utf8")).openSession;
     expect(open).toBe(onDisk().at(-1)!.session);
     server!.child.kill("SIGKILL");
@@ -336,7 +337,7 @@ describe("sessions and errors", () => {
 });
 
 describe("rpc timing", () => {
-  test("rpc_timing_reaches_rpc_stats and rpc_stats_excludes_streams", { timeout: 20_000 }, async () => {
+  test("rpc_timing_reaches_rpc_stats and rpc_stats_excludes_streams", { timeout: 60_000 }, async () => {
     await start({ FIN_TEST_JOURNAL_STATS_MS: "200" });
     const c = await client();
     for (let i = 0; i < 3; i++) ok(await c.call("server.hello", {}));

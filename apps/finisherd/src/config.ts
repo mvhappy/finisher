@@ -4,7 +4,7 @@ import { chmodSync, lstatSync, mkdirSync, readFileSync, renameSync, rmSync, stat
 import { homedir, userInfo } from "node:os";
 import { join, resolve } from "node:path";
 import { PROTOCOL_VERSION } from "@finisher/contracts";
-import { checkPrivateDir, makePrivateDir } from "@finisher/fin-node";
+import { checkPrivateDir, checkServerDataLocal, makePrivateDir } from "@finisher/fin-node";
 
 export const SERVER_VERSION = "0.0.0";
 
@@ -152,8 +152,14 @@ export function ensurePrivateDir(dir: string, platform: NodeJS.Platform = proces
   if (st.mode & 0o077) chmodSync(dir, 0o700);
 }
 
-/** The server-data directory itself (see `ensurePrivateDir`). */
+/**
+ * The server-data directory itself (see `ensurePrivateDir`), first refused with
+ * `SERVER_DATA_NOT_LOCAL` before anything is created when it (its nearest existing ancestor,
+ * symlinks resolved) is not on a known local filesystem, unless `FIN_ALLOW_NONLOCAL_SERVER_DATA=1`
+ * (review #4: SQLite's WAL and the server's OS locks need a local disk).
+ */
 export function ensureServerData(serverData: string, platform: NodeJS.Platform = process.platform): void {
+  checkServerDataLocal(serverData);
   ensurePrivateDir(serverData, platform);
 }
 

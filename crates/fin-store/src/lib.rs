@@ -33,6 +33,7 @@ mod import;
 pub mod lease;
 mod link_records;
 mod localdate;
+pub mod locality;
 mod migrations;
 pub mod names;
 mod newer;
@@ -254,6 +255,9 @@ pub struct Store {
     write_outcome: Option<WriteOutcome>,
     /// What writes check their target branch against ([`Store::with_guard`]).
     guard: WriteGuard,
+    /// What history writes do with an item whose neighbours are both gone
+    /// ([`Store::with_when_lost`]).
+    when_lost: fin_core::rebase::placement::WhenLost,
     #[cfg(any(test, feature = "test-hooks"))]
     fail_after_apply: bool,
 }
