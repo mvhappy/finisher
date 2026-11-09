@@ -64,22 +64,33 @@ describe("control store", () => {
     expect(store().envId).toBe(envId);
   });
 
-  // 10k commits and the worker's truncate: well under the default 5 s test timeout alone, not at load average 20.
+  // 10k commits: well under the default 5 s test timeout alone, not at load average 20.
   test("main_connection_never_autocheckpoints", { timeout: 60_000 }, async () => {
-    const s = store({ checkpoint: { pollMs: 20, passiveMs: 60_000, idleTruncateMs: 400, walLimitBytes: 1 << 30 } });
+    // No checkpoint worker: whatever shrinks the WAL here could only be the main connection. (With one
+    // running, a scheduling stall of its idle time in the middle of the writes lets it truncate, which
+    // is its job and not this test's question.)
+    const s = store({ checkpoint: false });
     expect((s.db.prepare("PRAGMA wal_autocheckpoint").get() as { wal_autocheckpoint: number }).wal_autocheckpoint).toBe(0);
     s.db.exec("CREATE TABLE t (x TEXT)");
     const ins = s.db.prepare("INSERT INTO t (x) VALUES (?)");
-    const wal = () => (existsSync(`${controlDbPath(dir)}-wal`) ? statSync(`${controlDbPath(dir)}-wal`).size : 0);
     // 10k separate commits: with autocheckpoint at 1000 pages the WAL would be reset over and over.
     for (let i = 0; i < 10_000; i++) ins.run(`row ${i} ${"x".repeat(100)}`);
-    const grown = wal();
-    expect(grown).toBeGreaterThan(4 * 1024 * 1024);
-    // The worker truncates once writes stop.
-    const deadline = Date.now() + 30_000;
-    while (wal() >= grown && Date.now() < deadline) await new Promise((r) => setTimeout(r, 50));
-    expect(wal()).toBeLessThan(grown);
+    expect(statSync(`${controlDbPath(dir)}-wal`).size).toBeGreaterThan(4 * 1024 * 1024);
     expect((s.db.prepare("SELECT COUNT(*) AS n FROM t").get() as { n: number }).n).toBe(10_000);
+  });
+
+  test("checkpoint_worker_truncates_the_wal_once_writes_stop", { timeout: 60_000 }, async () => {
+    const s = store({ checkpoint: { pollMs: 20, passiveMs: 60_000, idleTruncateMs: 1_500, walLimitBytes: 1 << 30 } });
+    s.db.exec("CREATE TABLE t (x TEXT)");
+    const ins = s.db.prepare("INSERT INTO t (x) VALUES (?)");
+    const wal = () => (existsSync(`${controlDbPath(dir)}-wal`) ? statSync(`${controlDbPath(dir)}-wal`).size : 0);
+    for (let i = 0; i < 300; i++) ins.run(`row ${i} ${"x".repeat(100)}`);
+    expect(wal()).toBeGreaterThan(0);
+    // The worker truncates once writes stop (polling to a deadline; the idle time is the worker's).
+    const deadline = Date.now() + 45_000;
+    while (wal() > 0 && Date.now() < deadline) await new Promise((r) => setTimeout(r, 50));
+    expect(wal()).toBe(0);
+    expect((s.db.prepare("SELECT COUNT(*) AS n FROM t").get() as { n: number }).n).toBe(300);
   });
 
   test("server_ids_map_every_server_id", async () => {

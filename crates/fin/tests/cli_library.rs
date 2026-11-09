@@ -41,6 +41,25 @@ fn with_library(test: &str, files: &[&str]) -> Option<(Server, String)> {
     Some((server, added["library"]["id"].as_str().unwrap().to_string()))
 }
 
+/// Waits until the library's background probe stage has settled every file: its results (`fp`,
+/// `state`, `lastChange`) land in the catalog while a test runs, so a test that compares two
+/// answers needs them in before it does.
+fn wait_probed(sd: &Path, cwd: &Path, files: usize) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
+    loop {
+        let all = ok(fin(sd, cwd, &["search", "--limit", "50"]));
+        let hits = all["hits"].as_array().unwrap();
+        if hits.len() == files && hits.iter().all(|h| h["fp"].is_string()) {
+            return;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the probe stage did not settle: {all}"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+}
+
 fn names(files: &Value) -> Vec<String> {
     files["files"]
         .as_array()
@@ -60,6 +79,7 @@ fn ls_status_files_show_search_output_and_json() {
     };
     let (sd, cwd) = (&server.sd, &server.root);
     let run = |args: &[&str]| fin(sd, cwd, args);
+    wait_probed(sd, cwd, 3);
 
     let ls = ok(run(&["library", "ls"]));
     let libs = ls["libraries"].as_array().unwrap();

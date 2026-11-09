@@ -104,7 +104,9 @@ export async function startServer(
   child.stdout.setEncoding("utf8").on("data", (d: string) => (stdout += d));
   const exited = new Promise<number | null>((resolve) => child.once("exit", (code) => resolve(code)));
   const file = join(serverData, "finisherd.json");
-  const deadline = Date.now() + timeoutMs;
+  // Loading the server takes a CPU-second or two and tens of seconds at load average 30: the callers' 5-20 s
+  // only guard against a hang, so on a loaded machine (not `FIN_STRICT_TIMING=1`) they get at least a minute.
+  const deadline = Date.now() + (process.env.FIN_STRICT_TIMING === "1" ? timeoutMs : Math.max(timeoutMs, 60_000));
   for (;;) {
     if (child.exitCode !== null) throw new Error(`finisherd exited ${child.exitCode}: ${stderr}`);
     if (existsSync(file)) {

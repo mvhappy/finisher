@@ -36,7 +36,10 @@ let lastVersion = (version.get() as { v: number }).v;
 let lastWriteAt = Date.now();
 let lastPassiveAt = Date.now();
 let writesSincePassive = false;
-let writesSinceTruncate = false;
+// Writes made before this thread started (it takes a while to load) are in the WAL too, and are
+// never seen as a change of `data_version`: without this a WAL left at start stayed as it was
+// until something wrote again.
+let writesSinceTruncate = walSize() > 0;
 
 function checkpoint(mode: "PASSIVE" | "TRUNCATE"): void {
   try {
