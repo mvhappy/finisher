@@ -338,6 +338,16 @@ describe("a CLI session's processes (the fake harness's spawn step)", () => {
     const local = await server.local();
     const projectId = await project(local, paths.dir, "P");
     await project(local, paths.otherDir, "Q");
+    if (WIN) {
+      // What a launch made outside the temp tree: the static grants (toolchain, `fin`, the
+      // project) and the projects' container profiles.
+      const data = realpathSyncNative(paths.serverData);
+      const containers = [paths.dir, paths.otherDir].map((d) => sandboxProjectContainer(realpathSyncNative(d)));
+      onTestFinished(async () => {
+        await aclRevoke(data, "static").catch(() => 0);
+        for (const c of containers) sandboxContainerDeleteForTest(c);
+      });
+    }
     const started = await local.call("agent.session.start", { projectId, harness: "fake", prompt: "go" });
     if (!started.ok) return { started, local, paths, children: [] as Child[], nodes: [] as Node[], session: undefined };
     const { session, warnings } = started.value as { session: Session; warnings?: unknown[] };
@@ -555,13 +565,7 @@ describe("a CLI session's processes (the fake harness's spawn step)", () => {
     if (!enforced("windows_agent_runs_in_its_container_with_the_sessions_grants")) return;
     const cmd = (c: string) => ["cmd.exe", "/d", "/s", "/c", c] as const;
     const r = await run(() => [cmd("cd"), cmd("echo hi> ok.txt && type ok.txt"), cmd("echo %LOCALAPPDATA%"), cmd("echo %TEMP%"), [FIN, "whoami"], cmd("echo %FIN_SERVER%")]);
-    // What the launch made outside its temp tree: the static grants (toolchain, `fin`, the
-    // project) and the project's container profile.
     const [data, container] = [realpathSyncNative(r.paths.serverData), sandboxProjectContainer(realpathSyncNative(r.paths.dir))];
-    onTestFinished(async () => {
-      await aclRevoke(data, "static");
-      sandboxContainerDeleteForTest(container);
-    });
     expect(r.started.ok).toBe(true);
     const sid = r.session!.id;
     const workspace = realpathSyncNative(join(r.paths.dir, "workspace", sid));
