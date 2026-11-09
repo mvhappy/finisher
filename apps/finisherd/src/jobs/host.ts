@@ -4,7 +4,19 @@
 // job, its error. A process's `spawn` has resolved, and the code after its `await` has run,
 // before its first event (`spawned`) arrives (Task 6 review), so the listener is always in place;
 // an event for an id nobody spawned is dropped (9a review L4).
+//
+// Windows (plan 7C Decision 18, the Windows side of Task 12): an AppContainer process reaches
+// only what the ACL broker granted, so each spawn's table (`JobHost.aclGrants`, from the same
+// mapping as the spawner's) is granted before the spawn, its own entries under an owner of the
+// process (`proc:<start>-<n>`, unique across starts) revoked at its exit (a failed revoke stays
+// in the broker's log for the next start's sweep), and a job visiting a warm worker is granted
+// to it for the attempt (`visit`). A grant waits for the revokes still running: a retry of a
+// job grants the same (path, capability) pairs as the attempt that just exited, and the broker
+// holds one owner per pair. Off Windows, or with a host that answers no table (tests), nothing
+// is granted.
+import { randomBytes } from "node:crypto";
 import type {
+  AclGrant,
   ExitReason,
   Hello,
   HostMsg,
@@ -19,8 +31,9 @@ import type {
   WorkerMsg,
 } from "@finisher/core-types";
 import type { FinError } from "@finisher/contracts";
-import { JobHost, type JobHostSendResult } from "@finisher/fin-node";
+import { JobHost, type JobHostSendResult, sandboxVisitGrant } from "@finisher/fin-node";
 import { finError } from "../errors.ts";
+import { type AclBroker, grantTable } from "../sandbox/broker.ts";
 import { isResourceFault } from "./isolation.ts";
 import { currentSandboxStatus } from "../sandbox/status.ts";
 
@@ -32,6 +45,8 @@ export type SendResult = JobHostSendResult;
 /** The part of fin-node's `JobHost` the engine uses (tests pass a fake, 9a review). */
 export interface JobHostLike {
   caps(): JobHostCaps;
+  /** The ACEs a spawn needs on Windows (fin-node's `JobHost.aclGrants`; fakes may omit it). */
+  aclGrants?(req: JobSpawnRequest): AclGrant[];
   openGroup(spec: JobGroupSpec): number;
   spawn(group: number, req: JobSpawnRequest): Promise<number>;
   send(proc: number, msg: HostMsg): JobHostSendResult;
@@ -79,6 +94,15 @@ export class EngineHost {
   readonly #byProc = new Map<number, object>();
   readonly #clock: () => number;
   #log: Log = () => {};
+  /** Windows: the server's ACL broker (inactive elsewhere). */
+  #acl: AclBroker | undefined;
+  /** Each live process's broker owner, revoked at its exit. */
+  readonly #owners = new Map<number, string>();
+  /** This start's part of every owner name. */
+  readonly #run = randomBytes(4).toString("hex");
+  #nextOwner = 0;
+  /** Revokes still running. */
+  readonly #revoking = new Set<Promise<void>>();
   /** A process reported `abandoned` has really exited (Decision 18). */
   onAbandonedExit: (proc: number) => void = () => {};
 
@@ -90,7 +114,7 @@ export class EngineHost {
   }
 
   /** Starts the host (`factory`: fin-node's by default). `log` receives what the engine logs about processes. */
-  static async start(opts: JobHostOptions, clock: () => number, log: Log, factory: JobHostFactory = (o, f) => JobHost.start(o, f)): Promise<EngineHost> {
+  static async start(opts: JobHostOptions, clock: () => number, log: Log, factory: JobHostFactory = (o, f) => JobHost.start(o, f), acl?: AclBroker): Promise<EngineHost> {
     let early: JobHostEvent[] | undefined = [];
     const router = {
       deliver: (e: JobHostEvent): void => {
@@ -100,6 +124,7 @@ export class EngineHost {
     const host = await factory(opts, (e) => router.deliver(e));
     const engineHost = new EngineHost(host, clock, router);
     engineHost.#log = log;
+    engineHost.#acl = acl?.active === true && host.aclGrants !== undefined ? acl : undefined;
     for (const e of early) router.deliver(e);
     early = undefined;
     return engineHost;
@@ -159,6 +184,11 @@ export class EngineHost {
   }
 
   #gone(proc: number): void {
+    const owner = this.#owners.get(proc);
+    if (owner !== undefined) {
+      this.#owners.delete(proc);
+      void this.#revoke(owner);
+    }
     this.#listeners.delete(proc);
     const key = this.#byProc.get(proc);
     this.#byProc.delete(proc);
@@ -181,19 +211,68 @@ export class EngineHost {
     const key = {};
     const view: ProcView = { group, role: req.role, family: req.family, spawnedAt: this.#clock(), ...(job === undefined ? {} : { job }) };
     this.#live.set(key, { view });
+    const acl = this.#acl;
+    const owner = acl === undefined ? undefined : `proc:${this.#run}-${++this.#nextOwner}`;
     let proc: number;
     try {
+      // Before the process exists: what its container may reach.
+      if (acl !== undefined && owner !== undefined) {
+        await this.#revoked();
+        await grantTable(acl, this.#host.aclGrants!(req), { owner });
+      }
       proc = await this.#host.spawn(group, req);
     } catch (e) {
       this.#live.delete(key);
+      if (owner !== undefined) await this.#revoke(owner);
       throw e;
     }
+    if (owner !== undefined) this.#owners.set(proc, owner);
     // Before any event of the process: the host delivers `spawned` only after this code ran.
     const entry = this.#live.get(key);
     if (entry !== undefined) entry.view = { ...entry.view, proc };
     this.#byProc.set(proc, key);
     this.#listeners.set(proc, listener);
     return proc;
+  }
+
+  /**
+   * Windows: grants the job directory `jobDir`, visiting the warm worker of `workerDir`, to
+   * that worker for the attempt (plan 7C Decision 19: a moved directory keeps its own access);
+   * answers the revoke, to run before the directory moves back. A no-op answer where the broker
+   * is inactive or the host does not confine warm workers per job.
+   */
+  async visit(workerDir: string, jobDir: string, jobId: string): Promise<() => Promise<void>> {
+    const acl = this.#acl;
+    if (acl === undefined || !this.#caps.perJobGrants) return async () => {};
+    const owner = `job:${jobId}`;
+    const g = sandboxVisitGrant(workerDir, jobDir);
+    try {
+      await this.#revoked();
+      await grantTable(acl, [g], { owner });
+    } catch (e) {
+      await this.#revoke(owner);
+      throw e;
+    }
+    return () => this.#revoke(owner);
+  }
+
+  #revoke(owner: string): Promise<void> {
+    const p = (async () => {
+      try {
+        await this.#acl?.revoke(owner);
+      } catch (e) {
+        // It stays pending in the broker's log; the next start's sweep completes it.
+        this.#log("warning", `job host: revoking ${owner}'s grants failed: ${(e as Error).message}`);
+      }
+    })();
+    this.#revoking.add(p);
+    void p.then(() => this.#revoking.delete(p));
+    return p;
+  }
+
+  /** Once every revoke started so far has ended. */
+  async #revoked(): Promise<void> {
+    while (this.#revoking.size > 0) await Promise.all([...this.#revoking]);
   }
 
   /** Enqueues; `full` and `gone` say only that nothing was queued (the cause comes with `exit`). */

@@ -105,6 +105,7 @@ export function recordingHost(reqs: JobSpawnRequest[], sent: Array<{ proc: numbe
     const h = await JobHost.start(opts, onEvent);
     return {
       caps: () => h.caps(),
+      aclGrants: (r) => h.aclGrants(r),
       openGroup: (s) => h.openGroup(s),
       spawn: (g, r) => {
         reqs.push(r);

@@ -62,21 +62,21 @@ pub struct AclGrant {
 }
 
 /// One group of roots granted alike, before enumeration.
-struct Group {
-    roots: Vec<PathBuf>,
-    trustee: Trustee,
-    mask: u32,
-    scope: Scope,
+pub(super) struct Group {
+    pub(super) roots: Vec<PathBuf>,
+    pub(super) trustee: Trustee,
+    pub(super) mask: u32,
+    pub(super) scope: Scope,
 }
 
-fn cap(name: String) -> Trustee {
+pub(super) fn cap(name: String) -> Trustee {
     Trustee::Sid(capability_sid(&name))
 }
 
 /// The ACEs of `groups`: each group's roots enumerated against the policy (plan Decision 2),
 /// so a denied root inside a granted one (Claude Code's project files) is left out, and a
 /// write group also leaves out the protected roots.
-fn expand(
+pub(super) fn expand(
     policy: &SandboxPolicy,
     groups: Vec<Group>,
     tree: &dyn Tree,
@@ -235,7 +235,7 @@ pub fn hook_in(i: &HookInput, tree: &dyn Tree) -> Result<Vec<AclGrant>, String> 
     expand(&policy, groups, tree)
 }
 
-fn toolchains(roots: &[PathBuf]) -> Group {
+pub(super) fn toolchains(roots: &[PathBuf]) -> Group {
     Group {
         roots: roots.to_vec(),
         trustee: cap(TOOLCHAIN.into()),

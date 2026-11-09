@@ -12,6 +12,7 @@ import { ControlStoreTag } from "../control/db.ts";
 import { type JobEngine, JobEngineTag, makeJobEngine, QUEUE_LIMIT } from "./engine.ts";
 import { JobEventSinkTag } from "./events.ts";
 import { ensureJobsRoot } from "./files.ts";
+import type { AclBroker } from "../sandbox/broker.ts";
 import { EngineHost, type JobHostFactory } from "./host.ts";
 import { type FamilySpec, type HelperProgram, type KindRegistry, type KindSpec, makeKindRegistry } from "./kinds.ts";
 import { registerTestKinds } from "./kinds/test.ts";
@@ -52,6 +53,8 @@ export interface JobEngineOptions {
   readonly ownerLimit?: number;
   /** Starts the job host (tests pass a fake; default fin-node's `JobHost.start`). */
   readonly jobHost?: JobHostFactory;
+  /** Windows: the server's ACL broker, which grants each spawn's table (plan 7C Decision 18). */
+  readonly acl?: AclBroker;
   readonly eventQueueBytes?: number;
   /**
    * Registers families and kinds beside the test ones before the engine starts (5D's `library`
@@ -104,7 +107,8 @@ export const buildJobEngine = (serverData: string, opts: JobEngineOptions = {}):
           },
           now,
           log,
-          ...(opts.jobHost === undefined ? [] : [opts.jobHost]),
+          opts.jobHost,
+          opts.acl,
         ),
       catch: startFailure,
     });

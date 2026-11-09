@@ -9,7 +9,8 @@
 //!   is not built).
 //! - [`dacl`] (pure): whether a DACL already gives a grant's access (`ALL APPLICATION
 //!   PACKAGES` on the toolchain roots).
-//! - [`grants`] (pure): the ACEs the broker makes for a launch, enumerated against the policy.
+//! - [`grants`] (pure): the ACEs the broker makes for a launch, enumerated against the policy;
+//!   [`job_grants`] the same for the job host's `worker` and `plugin` processes.
 //! - [`appcontainer`], [`job`], [`desktop`], [`wer`], [`apply`]: the Win32 parts.
 //! - [`launcher`]: `fin-sandbox-exec` on Windows (agents and hooks).
 //! - [`acl`]: allow-only ACE grants and revokes (the broker's primitives, Task 10).
@@ -18,6 +19,7 @@
 pub mod capability;
 pub mod dacl;
 pub mod grants;
+pub mod job_grants;
 pub mod plan;
 
 #[cfg(windows)]

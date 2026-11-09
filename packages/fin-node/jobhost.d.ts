@@ -1,5 +1,6 @@
 // Types of `jobhost.js`: fin-jobhost's host and the job params helpers (re-exported by `index.d.ts`).
 import type {
+  AclGrant,
   HostMsg,
   JobGroupSpec,
   JobHostCaps,
@@ -52,6 +53,12 @@ export declare class JobHost {
   /** Resolves once the host runs (its Unix watchdog or Windows spawn broker started). */
   static start(opts: JobHostOptions, onEvent: (e: JobHostEvent) => void): Promise<JobHost>;
   caps(): JobHostCaps;
+  /**
+   * The ACEs a spawn of `req` needs on Windows (plan 7C Decision 18; pure, every OS answers):
+   * `[]` where its profile passes; a request the spawner would refuse throws
+   * `SANDBOX_UNAVAILABLE`. `finisherd` grants them through the ACL broker before the spawn.
+   */
+  aclGrants(req: JobSpawnRequest): AclGrant[];
   /** Allocates a group id; its OS objects are made at its first spawn. */
   openGroup(spec: JobGroupSpec): number;
   /** Resolves to the process id before any event of the process reaches `onEvent`. */

@@ -120,6 +120,9 @@ fn options(json_text: &str) -> std::result::Result<(JobHostOptions, FailForTest)
 struct Running {
     host: Host,
     events: Arc<Events>,
+    /// The host's spawner, for `aclGrants` (plan 7C Decision 18).
+    spawner: Arc<fin_sandbox::SandboxSpawner>,
+    binary_dir: std::path::PathBuf,
 }
 
 /// `fin-jobhost`'s host. Construct with `JobHost.start`.
@@ -179,7 +182,9 @@ impl JobHost {
         )?;
         let mut opts = HostOptions::new(&o.binary_dir);
         // Plan 7C Task 7: the worker and plugin profiles, where they are ready and enforced.
-        opts.spawner = std::sync::Arc::new(fin_sandbox::SandboxSpawner::new(o.server_data.clone()));
+        let spawner = Arc::new(fin_sandbox::SandboxSpawner::new(o.server_data.clone()));
+        opts.spawner = spawner.clone();
+        let binary_dir = o.binary_dir.clone();
         opts.timing = o.timing.unwrap_or_default().timing();
         if let Some(c) = o.cgroups {
             opts.cgroups = c.into();
@@ -208,7 +213,12 @@ impl JobHost {
         let run = move || match Host::start(opts, sink) {
             Ok(host) => settle.resolve(move |_env| {
                 Ok(JobHost {
-                    running: Some(Running { host, events }),
+                    running: Some(Running {
+                        host,
+                        events,
+                        spawner,
+                        binary_dir,
+                    }),
                 })
             }),
             Err(e) => {
@@ -241,6 +251,30 @@ impl JobHost {
     #[napi(catch_unwind)]
     pub fn caps(&self) -> Result<String> {
         crate::encode(&JobHostCaps::from(self.host().caps()))
+    }
+
+    /// The ACL broker's grants a spawn of `reqJson` (`JobSpawnRequest`) needs on Windows
+    /// (`AclGrant[]` JSON; plan 7C Decision 18, the Windows side of Task 12): `[]` where its
+    /// profile passes. A request the spawner would refuse throws `SANDBOX_UNAVAILABLE`.
+    #[napi(catch_unwind)]
+    pub fn acl_grants(&self, req_json: String) -> Result<String> {
+        let req = decode::<JobSpawnRequest>("req", &req_json)
+            .and_then(|r| r.request().map_err(wire))
+            .map_err(reject)?;
+        let r = self.running();
+        let program = match &req.program {
+            fin_jobhost::Program::Bundled(name) => r
+                .binary_dir
+                .join(format!("{name}{}", std::env::consts::EXE_SUFFIX)),
+            fin_jobhost::Program::Path(p) => p.clone(),
+        };
+        let table = r.spawner.acl_grants(&req, &program).map_err(|e| {
+            reject(CoreError::new(
+                "SANDBOX_UNAVAILABLE",
+                format!("no grant table for the spawn: {e}"),
+            ))
+        })?;
+        crate::encode(&table)
     }
 
     /// Allocates a group (`specJson`: `JobGroupSpec`); its OS objects are made at its first
