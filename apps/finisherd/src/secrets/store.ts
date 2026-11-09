@@ -11,7 +11,8 @@
 // owner-only DACL (fin-node `makePrivateDir`, the helper behind `ensurePrivateDir`) and both the
 // directory and the file are read back with `checkPrivateDir` at every read and write; a loose
 // directory is repaired like a loose mode, a loose file or another owner is refused. The
-// keychain backend (5B) can seal for real later through the `SecretBox` seam.
+// vault's box (5B Decision 7, `vault-box.ts`) seals for real; a `v: 1` value written before it
+// still opens and is resealed at the next write.
 import { randomBytes } from "node:crypto";
 import { chmodSync, closeSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync } from "node:fs";
 import { open, rename, rm } from "node:fs/promises";
@@ -19,7 +20,7 @@ import { join } from "node:path";
 import { checkPrivateDir, lockExclusive, makePrivateDir } from "@finisher/fin-node";
 import { type Clock, type Ids, systemClock, systemIds } from "../agent/clock.ts";
 import { finError } from "../errors.ts";
-import { type Sealed, type SecretBox, identityBox } from "./box.ts";
+import { identityBox, isSealed, type Sealed, type SecretBox } from "./box.ts";
 
 /** The providers whose keys Finisher stores (v1: OpenRouter only, Owner decision 7). */
 export type SecretProvider = "openrouter";
@@ -196,7 +197,10 @@ export class FileSecretStore implements SecretStore {
     const id = this.ids.ulid();
     return this.serial(async () => {
       const doc = this.read();
-      const kept = doc.entries.filter((x) => !(x.provider === e.provider && x.projectId === e.projectId));
+      // Values sealed by an older box (`v: 1`) are resealed with this one (5B Decision 7).
+      const kept = doc.entries
+        .filter((x) => !(x.provider === e.provider && x.projectId === e.projectId))
+        .map((x) => (x.sealed.v === 1 && this.box !== identityBox ? { ...x, sealed: this.reseal(x) } : x));
       const entry: Entry = {
         id,
         provider: "openrouter",
@@ -241,6 +245,20 @@ export class FileSecretStore implements SecretStore {
     }
   }
 
+  /** `x`'s value in this box; a value that no longer opens is kept as it was (`reveal` reports it). */
+  private reseal(x: Entry): Sealed {
+    try {
+      const plain = this.box.open(x.sealed);
+      try {
+        return this.box.seal(plain);
+      } finally {
+        plain.fill(0);
+      }
+    } catch {
+      return x.sealed;
+    }
+  }
+
   private serial<A>(f: () => Promise<A>): Promise<A> {
     const g = () => this.locked(f);
     const run = this.queue.then(g, g);
@@ -271,8 +289,7 @@ export class FileSecretStore implements SecretStore {
         typeof x.label === "string" &&
         (x.projectId === undefined || typeof x.projectId === "string") &&
         typeof x.createdAt === "number" &&
-        x.sealed?.v === 1 &&
-        typeof x.sealed.data === "string";
+        isSealed(x.sealed);
       if (!shaped) throw corrupt("secrets.json holds a malformed entry", { id: typeof x?.id === "string" ? x.id : null });
     }
     return doc;

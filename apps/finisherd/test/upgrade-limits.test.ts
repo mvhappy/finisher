@@ -5,6 +5,7 @@
 // owner, and some are kept for `device` and `console`.
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { connect } from "node:net";
+import type { Duplex } from "node:stream";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Effect, Scope } from "effect";
@@ -25,7 +26,10 @@ const agent = (id: string): Principal => ({ kind: "agent", id, scopes: [], proje
 const device: Principal = { kind: "device", id: "01devicedevicedevicedevice", scopes: [], projects: "*", branches: "*", human: true };
 
 /** A listener in its own scope; `check` decides every upgrade. */
-async function listener(check: (req: { headers: Record<string, unknown> }) => UpgradeResult, more: { maxUnauthenticated?: number; headersTimeoutMs?: number; atCapGraceMs?: number } = {}) {
+async function listener(
+  check: (req: { headers: Record<string, unknown> }) => UpgradeResult,
+  more: { maxUnauthenticated?: number; headersTimeoutMs?: number; atCapGraceMs?: number; perAddress?: number; remoteOf?: (s: Duplex) => string; slots?: WebSocketSlots } = {},
+) {
   const scope = Effect.runSync(Scope.make());
   const { port } = await Effect.runPromise(
     Scope.provide(makeTicketedWebSocketServer({ check: check as never, maxPayload: 1024, ...more }), scope),
@@ -233,6 +237,101 @@ describe("review of Tasks 8–9: the unauthenticated slots at the cap", () => {
       await Promise.all(closed);
     } finally {
       await l.close();
+    }
+  });
+});
+
+// 5B Task 6 (Decision 12): pre-upgrade pools per listener, a per-address cap on the remote
+// listener, one pool of WebSocket slots for every listener.
+/** A raw socket from `localPort` that stays open until the server closes it: resolves `isOpen`. */
+function hold(port: number, localPort: number): Promise<{ isOpen: () => boolean; close: () => void }> {
+  return new Promise((resolve) => {
+    let open = true;
+    const sock = connect({ host: "127.0.0.1", port, localPort, localAddress: "127.0.0.1" }, () => resolve({ isOpen: () => open, close: () => sock.destroy() }));
+    sock.on("close", () => (open = false));
+    sock.on("error", () => (open = false));
+  });
+}
+const settle = () => new Promise((r) => setTimeout(r, 150));
+
+describe("per listener (5B)", () => {
+  test("per_address_cap: a fifth socket from one address is closed; another address gets in", { timeout: 20_000 }, async () => {
+    const base = 40_000 + Math.floor(Math.random() * 10_000);
+    const remoteOf = (s: { remotePort?: number }) => ((s.remotePort ?? 0) >= base + 100 ? "remote-b" : "remote-a");
+    const l = await listener(byHeader({ device }), { perAddress: 4, remoteOf: remoteOf as never });
+    try {
+      const a = [];
+      for (let i = 0; i < 5; i++) a.push(await hold(l.port, base + i));
+      await settle();
+      expect(a.map((x) => x.isOpen())).toEqual([true, true, true, true, false]);
+      const b = await hold(l.port, base + 100);
+      await settle();
+      expect(b.isOpen()).toBe(true);
+      // A socket that ends frees its address's room.
+      a[0]!.close();
+      await settle();
+      const again = await hold(l.port, base + 5);
+      await settle();
+      expect(again.isOpen()).toBe(true);
+      for (const x of [...a, b, again]) x.close();
+    } finally {
+      await l.close();
+    }
+  });
+
+  test("remote_pool_does_not_starve_loopback", { timeout: 20_000 }, async () => {
+    const remote = await listener(byHeader({ device }), { maxUnauthenticated: 4 });
+    const loopback = await listener(byHeader({ console: CONSOLE }), { maxUnauthenticated: 4 });
+    try {
+      const held = [];
+      for (let i = 0; i < 6; i++) held.push(await hold(remote.port, 0));
+      await settle();
+      // The remote pool is full, the loopback one is not: the console still connects there.
+      const got = await open(loopback.port, "console");
+      expect(got.ws).toBeDefined();
+      got.ws!.close();
+      for (const h of held) h.close();
+    } finally {
+      await remote.close();
+      await loopback.close();
+    }
+  });
+
+  test("the reserve split: agents take the unreserved slots, devices the rest", () => {
+    const slots = new WebSocketSlots(RESERVED_WS + 4);
+    const releases = [];
+    for (let i = 0; i < 4; i++) releases.push(slots.acquire(agent(`a${i}`), `agent:a${i}`));
+    expect(releases.every((r) => r !== undefined)).toBe(true);
+    expect(slots.acquire(agent("a9"), "agent:a9")).toBeUndefined();
+    // The reserve stays for the device and the console (8 each per owner).
+    let devices = 0;
+    for (let i = 0; i < 2; i++) for (let j = 0; j < MAX_WS_PER_OWNER; j++) if (slots.acquire({ ...device, id: `d${i}` }, `device:d${i}`)) devices++;
+    expect(devices).toBe(RESERVED_WS);
+    expect(slots.acquire(CONSOLE, "console:console")).toBeUndefined();
+  });
+
+  test("ws_slots_shared_with_device_reserve", { timeout: 20_000 }, async () => {
+    const slots = new WebSocketSlots(4);
+    const principals: Record<string, Principal> = { device };
+    for (let i = 0; i < 4; i++) principals[`a${i}`] = agent(`01agent${String(i).padStart(19, "0")}`);
+    const one = await listener(byHeader(principals), { slots });
+    const two = await listener(byHeader(principals), { slots });
+    const sockets: WebSocket[] = [];
+    try {
+      // 4 in all, minus the 16-slot reserve floor: agents get none of a pool of 4 …
+      expect((await open(one.port, "a0")).status).toBe(503);
+      // … the device takes them, across both listeners.
+      for (const port of [one.port, two.port, one.port, two.port]) {
+        const got = await open(port, "device");
+        expect(got.ws).toBeDefined();
+        sockets.push(got.ws!);
+      }
+      expect(slots.size).toBe(4);
+      expect((await open(two.port, "device")).status).toBe(503);
+    } finally {
+      for (const w of sockets) w.close();
+      await one.close();
+      await two.close();
     }
   });
 });

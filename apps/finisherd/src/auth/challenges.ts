@@ -1,7 +1,8 @@
 // The console's confirmations (spec §4.7, plan 5A Decision 30): `console.challenge` issues
-// a 6-character Crockford code to one `console` connection, valid for 60 s; a mutating
-// human-only RPC from that connection must carry it back (`challenge`) or it is
-// `CONFIRMATION_REQUIRED`. The codes live on the connection itself, so they end with it and
+// a 6-character Crockford code to one connection of a human principal (`console`, and since 5B
+// a `device`), valid for 60 s; a confirmed RPC from that connection (`needsConfirmation`: a
+// console's mutating human-only calls, a device's `server.stop`) must carry it back
+// (`challenge`) or it is `CONFIRMATION_REQUIRED`. The codes live on the connection itself, so they end with it and
 // cannot be answered from another one. A code is used up by the call it confirms; a wrong
 // answer voids every code of the connection (a guess costs a new challenge). Codes are never
 // logged, audited or put in an error. Since the owner decision of 2026-11-08 the person no longer
@@ -11,6 +12,7 @@
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { CHALLENGE_TTL_S, type FinError } from "@finisher/contracts";
 import type { Connection } from "../connections.ts";
+import type { Where } from "../chain/fixes.ts";
 import { finError } from "../errors.ts";
 
 /** Crockford's base 32: no I, L, O or U. */
@@ -70,14 +72,25 @@ export function answerChallenge(c: Connection | undefined, typed: unknown, now: 
   return taken!.expiresAt > now ? undefined : "expired";
 }
 
-/** `CONFIRMATION_REQUIRED` (exit 7): the fix speaks to the person at the console, in words. */
-export function confirmationRequired(tag: string, reason: ChallengeRefusal): FinError {
+/**
+ * `CONFIRMATION_REQUIRED` (exit 7): the fix speaks to the person, in words: at the server's
+ * console, or in the app on a paired device (5B: a device confirms `server.stop`).
+ */
+export function confirmationRequired(tag: string, reason: ChallengeRefusal, where: Extract<Where, "console" | "app"> = "console"): FinError {
+  const why = reason === "missing" ? "none was sent" : reason === "wrong" ? "the code did not match" : "the code expired";
   return finError(
     "CONFIRMATION_REQUIRED",
-    `${tag} needs a confirmation from the console (${reason === "missing" ? "none was sent" : reason === "wrong" ? "the code did not match" : "the code expired"})`,
-    { tag, reason, where: "console" },
-    "This change needs the person at the server to confirm it: run it from the server's console in a terminal, which asks them and then sends it with a code of its own session.",
+    `${tag} needs a confirmation from ${where === "app" ? "this device" : "the console"} (${why})`,
+    { tag, reason, where },
+    where === "app"
+      ? "This change needs you to confirm it in the app on this device, which then sends it with a code of its own connection."
+      : "This change needs the person at the server to confirm it: run it from the server's console in a terminal, which asks them and then sends it with a code of its own session.",
   );
+}
+
+/** Whether `kind` may ask for a code (`console.challenge`): the human principals, `console` and `device` (5B Decision 22). */
+export function mayChallenge(principal: { readonly kind: string; readonly human: boolean }): boolean {
+  return principal.human && (principal.kind === "console" || principal.kind === "device");
 }
 
 /** Credentials each console connection minted (review of Tasks 8–9, M2). */

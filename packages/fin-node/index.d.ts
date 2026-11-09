@@ -273,6 +273,12 @@ export declare function lockExclusive(path: string): ServerLock;
  */
 export declare function serverId(serverData: string): string;
 
+/**
+ * `serverId` with why it was just renewed (5B): `otherMachine` (a copy from another machine, a
+ * cloned machine) or `otherDirectory` (copied or moved to another place); absent otherwise.
+ */
+export declare function serverIdentity(serverData: string): { id: string; renewed?: "otherMachine" | "otherDirectory" };
+
 /** What `checkPrivateDir` found. */
 export interface PrivateDirReport {
   ok: boolean;
@@ -405,6 +411,10 @@ export * from "./sandbox.js";
 export * from "./library.js";
 // The native Windows pipe listener (`pipe.js`).
 export * from "./pipe.js";
+// The vault and the identity key (`vault.js`, 5B).
+export * from "./vault.js";
+// Self-signed certificates and QR codes (`tls.js`, 5B).
+export * from "./tls.js";
 // The plugin store and registries (`registry.js`).
 export { Registry } from "./registry.js";
 

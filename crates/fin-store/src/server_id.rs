@@ -41,6 +41,8 @@ pub struct ServerIdentity {
     pub id: String,
     /// Why the id was just renewed (the server data is a copy, or moved machines).
     pub renewed: Option<String>,
+    /// The same as a closed word (`otherMachine` or `otherDirectory`), for audit rows.
+    pub renewed_reason: Option<&'static str>,
     /// A clone would have been detected: the directory identity and machine id are known.
     pub shortcut_ok: bool,
 }
@@ -75,12 +77,18 @@ pub fn server_identity(server_data: &Path) -> Result<ServerIdentity, StoreError>
         .ok()
         .and_then(|b| serde_json::from_slice(&b).ok());
     let mut renewed = None;
+    let mut renewed_reason = None;
     if let Some(o) = &origin
         && o.server_id == id
     {
         let moved_dir = o.dir.is_some() && dir.is_some() && o.dir != dir;
         let other_machine = o.machine.is_some() && machine.is_some() && o.machine != machine;
         if moved_dir || other_machine {
+            renewed_reason = Some(if other_machine {
+                "otherMachine"
+            } else {
+                "otherDirectory"
+            });
             renewed = Some(if other_machine {
                 "the server data was made on another machine (a copy or a cloned machine): this is a new server".to_string()
             } else {
@@ -104,6 +112,7 @@ pub fn server_identity(server_data: &Path) -> Result<ServerIdentity, StoreError>
     Ok(ServerIdentity {
         id,
         renewed,
+        renewed_reason,
         shortcut_ok: dir.is_some() && machine.is_some(),
     })
 }
