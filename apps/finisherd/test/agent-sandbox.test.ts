@@ -5,7 +5,7 @@
 // folder, writes only in the workspace. Each denial has an unsandboxed control (the profile not
 // ready on this OS: the same processes, started directly). `FIN_REQUIRE_LANDLOCK=1` turns the
 // skip on a host without Landlock into a failure.
-import fs, { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import fs, { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
@@ -49,6 +49,8 @@ afterEach(() => {
 });
 
 const SESSION = { id: "01S0000000000000000000000A", harness: "claudeCode" } as const;
+/** A denied read or write: Landlock answers EACCES, Seatbelt EPERM. */
+const DENIED = process.platform === "darwin" ? /Operation not permitted/ : /Permission denied/;
 
 describe("the session environment (spec §8.5)", () => {
   const parent = {
@@ -323,7 +325,7 @@ describe("a CLI session's processes (the fake harness's spawn step)", () => {
     const boxed = await run(argvs);
     expect(boxed.children).toHaveLength(2);
     expect(boxed.children[0]).toMatchObject({ code: 1 });
-    expect(boxed.children[0]!.stderr).toMatch(/Permission denied/);
+    expect(boxed.children[0]!.stderr).toMatch(DENIED);
     // `local.key` is unreadable, so `fin` is never `local`: it fails, or (where `fin.sock` is
     // reachable: no namespace and Landlock below ABI 9, the residual of Tasks 4 and 6) it is
     // `anonymous`, which holds only the `public` scope.
@@ -361,13 +363,15 @@ describe("a CLI session's processes (the fake harness's spawn step)", () => {
     expect(mismatch!.stdout, JSON.stringify(mismatch)).toMatch(/PATH_NOT_ALLOWED/);
     expect(mismatch!.stdout).toMatch(/projectMismatch/);
     expect(read).toMatchObject({ code: 1 });
-    expect(read!.stderr).toMatch(/Permission denied/);
+    expect(read!.stderr).toMatch(DENIED);
     expect(write!.stdout).toBe("hi\n");
-    expect(write!.stderr).toMatch(/Permission denied/);
+    expect(write!.stderr).toMatch(DENIED);
     expect(existsSync(join(boxed.paths.dir, "planted.txt"))).toBe(false);
     expect(whoami).toMatchObject({ code: 0 });
     expect(whoami!.stdout).toMatch(/"kind":"agent"/);
-    expect(whoami!.stdout).toMatch(/^tcp:127\.0\.0\.1:\d+$/m);
+    // Linux: the agent listener; macOS: `fin.sock` itself, resolved (what the handshake binds).
+    if (process.platform === "darwin") expect(whoami!.stdout.trim().split("\n").at(-1)).toBe(realpathSync(join(boxed.paths.serverData, "run", "fin.sock")));
+    else expect(whoami!.stdout).toMatch(/^tcp:127\.0\.0\.1:\d+$/m);
     await server!.stop();
     // Control: unsandboxed, the other project's folder is readable and the plant lands.
     const open = await run(argvs, NOT_READY);
@@ -571,7 +575,7 @@ describe("the sandbox under the real launcher", () => {
     // Not a read root: refused; named in `extraRead`: read.
     const refused = await read();
     expect(refused.exit.code).toBe(1);
-    expect(refused.err).toMatch(/Permission denied/);
+    expect(refused.err).toMatch(DENIED);
     expect(await read([extra])).toMatchObject({ exit: { code: 0 }, out: "harness\n" });
     // A process under the launcher is killed, its group with it, when the scope closes, and
     // so is a `setsid` grandchild that left the group (the launcher reaps it).

@@ -19,6 +19,22 @@ afterEach(async () => {
   for (const d of temps.splice(0)) rmSync(d, { recursive: true, force: true });
 }, 60_000);
 
+/**
+ * Until the watch of `lib` has reported a write in `dir`, then forgets what it reported. macOS's
+ * FSEvents delivers the tail of what happened just before a recursive `fs.watch` started (the
+ * test's own `mkdir`s), and its stream starts after `watch` returns, so neither a sleep nor
+ * `ready` covers it; events come in order, so that tail is in the same report as the write.
+ */
+async function settle(w: Watches, events: WatchEvent[], lib: string, dir: string): Promise<void> {
+  await until(() => w.ready(lib), 5000);
+  for (let i = 0; events.length === 0; i++) {
+    if (i === 10) throw new Error("the watch never reported a write");
+    writeFileSync(join(dir, `settle-${i}.mov`), "x");
+    await until(() => events.length > 0, 1500).catch(() => undefined);
+  }
+  events.length = 0;
+}
+
 describe("Watches", () => {
   test("split_raw_names", () => {
     expect(splitRaw(Buffer.from("a/b/c.mov"), false).map((p) => Buffer.from(p).toString())).toEqual(["a", "b", "c.mov"]);
@@ -34,7 +50,7 @@ describe("Watches", () => {
     const w = new Watches((e) => events.push(e), { quietMs: 400, maxDirs: 3, known: (_lib, parts) => parts.map((p) => Buffer.from(p).toString("base64")) });
     expect(w.watch("01lib", root)).toEqual({ ok: true });
     try {
-      await until(() => w.ready("01lib"), 5000);
+      await settle(w, events, "01lib", join(root, "a"));
       writeFileSync(join(root, "a", "one.mov"), "x");
       writeFileSync(join(root, "a", "two.mov"), "x");
       writeFileSync(join(root, ".hidden"), "x");
@@ -111,7 +127,7 @@ describe("Watches", () => {
     const w = new Watches((e) => events.push(e), { quietMs: 200, native: false, known: (_lib, parts) => parts.map((p) => Buffer.from(p).toString("base64")) });
     expect(w.watch("01lib", root)).toEqual({ ok: true });
     try {
-      await new Promise((r) => setTimeout(r, 100));
+      await settle(w, events, "01lib", join(root, "a"));
       writeFileSync(join(root, ".git", "index"), "x");
       writeFileSync(join(root, "a", "x.mov"), "x");
       await until(() => events.length > 0, 5000);
