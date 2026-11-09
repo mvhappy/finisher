@@ -275,6 +275,65 @@ describe("engine events in the registry", () => {
     expect(revs.every((rev) => rev <= 3)).toBe(true);
   }, 15_000);
 
+  /** A subscriber that takes rev 1 and then waits on `gate` before taking anything else. */
+  function pausedAfterFirst(r: ProjectRegistryShape, projectId: string) {
+    let release!: () => void;
+    const gate = new Promise<void>((res) => (release = res));
+    const revs: number[] = [];
+    const fiber = Effect.runFork(
+      Stream.runForEach(r.subscribe(projectId, "main", 0), (c) =>
+        Effect.andThen(
+          Effect.sync(() => revs.push(c.rev)),
+          c.rev === 1 ? Effect.promise(() => gate) : Effect.void,
+        ),
+      ),
+    );
+    return { revs, release, exit: () => Effect.runPromise(Fiber.await(fiber)) };
+  }
+
+  test("a gap refill after a rebuild ends with HISTORY_REWOUND before any record of the rebuilt database", async () => {
+    const r = await registry({ hubCapacity: 2 });
+    const { projectId } = await run(r.create(join(tmp, "p"), "Demo", "30"));
+    await run(r.commit(projectId, tx("tx-0", 0, [addAsset("$a0")])));
+    const events: string[] = [];
+    Effect.runFork(Stream.runForEach(r.events(projectId), (e) => Effect.sync(() => events.push(e.type))));
+    const sub = pausedAfterFirst(r, projectId);
+    await until(() => (sub.revs.length === 1 ? true : undefined), 5_000, "rev 1");
+    // Revs 2–6 overflow the 2-item hub of the paused subscriber: it will see a gap.
+    for (let i = 1; i < 6; i++) await run(r.commit(projectId, tx(`tx-${i}`, i, [addAsset(`$a${i}`)])));
+    await run(r.rebuild(projectId));
+    await until(() => (events.includes("rebuilt") ? true : undefined), 5_000, "the rebuilt event");
+    sub.release();
+    const exit = await within(sub.exit(), 5_000);
+    expect(exit, "the subscriber never ended").toBeDefined();
+    expect(failureOf(exit!)?.code).toBe("HISTORY_REWOUND");
+    expect(sub.revs).toEqual([1]);
+  });
+
+  test("a gap refill at a newer generation (a rewind) ends with HISTORY_REWOUND", async () => {
+    const r = await registry({ hubCapacity: 2 });
+    const { projectId } = await run(r.create(join(tmp, "p"), "Demo", "30"));
+    await run(r.commit(projectId, tx("tx-0", 0, [addAsset("$a0")])));
+    const sub = pausedAfterFirst(r, projectId);
+    await until(() => (sub.revs.length === 1 ? true : undefined), 5_000, "rev 1");
+    for (let i = 1; i < 6; i++) await run(r.commit(projectId, tx(`tx-${i}`, i, [addAsset(`$a${i}`)])));
+    // The branch is rewound before its event reaches the hub: the log answers at generation n + 1.
+    const engine = r.engineOf(projectId)!;
+    const opsSinceAt = engine.opsSinceAt.bind(engine);
+    engine.opsSinceAt = async (branch: string, rev: number) => {
+      const read = JSON.parse(await opsSinceAt(branch, rev)) as { generation: { n: number } };
+      read.generation.n += 1;
+      return JSON.stringify(read);
+    };
+    sub.release();
+    const exit = await within(sub.exit(), 5_000);
+    expect(exit, "the subscriber never ended").toBeDefined();
+    const e = failureOf(exit!);
+    expect(e?.code).toBe("HISTORY_REWOUND");
+    expect(e?.details).toMatchObject({ branch: "main", reason: "GENERATION" });
+    expect(sub.revs).toEqual([1]);
+  }, 15_000);
+
   test("an ending is skipped by a subscriber that already read the generation it produces", () => {
     const err = (reason: string): FinError => ({ code: "HISTORY_REWOUND", message: reason, details: {} }) as FinError;
     const channel = new Channel<number>(8);

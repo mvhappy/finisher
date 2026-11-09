@@ -380,9 +380,6 @@ export function makeProjectRegistry(
     const resolveBranch = (projectId: string, branch: string): Effect.Effect<string, FinError> =>
       branch === MAIN ? Effect.succeed(MAIN) : on<string>(projectId, (e) => e.resolveBranch(branch));
 
-    const opsSince = (projectId: string, branch: string, rev: number) =>
-      on<CommittedTx[]>(projectId, (e) => e.opsSince(branch, rev));
-
     return {
       create: (dir, name, rate, idemKey) =>
         Effect.suspend(() => {
@@ -510,12 +507,22 @@ export function makeProjectRegistry(
                 last = c.rev;
                 return Effect.succeed([c]);
               }
-              // A gap: the sliding hub dropped items for this slow subscriber. Fill from the log.
-              return Effect.map(opsSince(projectId, branch, last), (missing) => {
-                const out = missing.filter((m) => m.rev > last && m.rev <= c.rev);
-                if (out.length > 0) last = out[out.length - 1]!.rev;
-                return out;
-              });
+              // A gap: the sliding hub dropped items for this slow subscriber. Fill from the log,
+              // read with its generation: a log rewound or rebuilt since the backlog was read
+              // holds other history, so the stream ends before any of it (its own ending may
+              // not have reached the hub yet).
+              return Effect.flatMap(
+                on<{ generation: Generation; ops: CommittedTx[] }>(projectId, (e) => e.opsSinceAt(branch, last)),
+                (missing) => {
+                  const now = missing.generation;
+                  if (now.incarnation !== read.generation.incarnation || now.n !== read.generation.n) {
+                    return Effect.fail(historyRewound({ branch, rev: 0, reason: "GENERATION", generation: now, expected: read.generation }));
+                  }
+                  const out = missing.ops.filter((m) => m.rev > last && m.rev <= c.rev);
+                  if (out.length > 0) last = out[out.length - 1]!.rev;
+                  return Effect.succeed(out);
+                },
+              );
             };
             const backlog = read.ops.map((tx): Stamped<CommittedTx> => ({ seq: -1, value: tx }));
             return Stream.concat(Stream.fromIterable(backlog), Stream.fromSubscription(live)).pipe(
