@@ -2,7 +2,8 @@
 // and draw on, answered by a warm `media.capabilities` job once per server run and kept.
 // A failure is not kept: the next call asks again.
 import type { FinError, JobOwner } from "@finisher/contracts";
-import type { MediaCapabilities } from "@finisher/core-types";
+// v1 until the worker answers v2 (6B-1 Task 8).
+import type { LegacyMediaCapabilities as MediaCapabilities } from "@finisher/core-types";
 import { Effect } from "effect";
 import { finError } from "../errors.ts";
 import { MEDIA_CAPABILITIES } from "../jobs/kinds/media.capabilities.ts";

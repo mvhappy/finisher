@@ -19,7 +19,7 @@ use fin_core::events::payloads::{
 };
 use fin_jobs::worker::JobCtx;
 use fin_media::VideoCodec;
-use fin_media::jobs::{CapSupport, GpuAdapter, LookFrame, MediaCapabilities};
+use fin_media::jobs::{CapSupport, GpuAdapter, LegacyMediaCapabilities, LookFrame};
 
 /// A `render.stats` window: one minute.
 pub const WINDOW_MS: u64 = 60_000;
@@ -182,7 +182,7 @@ pub fn gpu_entry(a: &GpuAdapter) -> GpuEntry {
 }
 
 /// The `media.capabilities` event for a capabilities answer.
-pub fn capabilities_event(caps: &MediaCapabilities) -> MediaCapabilitiesEvent {
+pub fn capabilities_event(caps: &LegacyMediaCapabilities) -> MediaCapabilitiesEvent {
     MediaCapabilitiesEvent {
         codecs: caps
             .codecs

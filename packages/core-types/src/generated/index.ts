@@ -975,6 +975,47 @@ export type FileMode = "read" | "write" | "readWrite";
  */
 export type AudioCodec = ("aac" | "opus" | "mp3" | "flac" | "alac" | "pcm" | "ac3" | "eac3") | "other";
 /**
+ * Who provides a backend (spec §6.1).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "VendorClass".
+ */
+export type VendorClass = "os" | "gpu" | "software" | "plugin";
+/**
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "Direction".
+ */
+export type Direction = "decode" | "encode";
+/**
+ * How a codec direction is served (v2): in hardware, in software, or not at all.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "CapLevel".
+ */
+export type CapLevel = "hw" | "sw" | "none";
+/**
+ * The sub-project 6 batch that closes a `laterBatch` gap.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "Batch".
+ */
+export type Batch = "6B-2" | "6C" | "6D" | "6E" | "6F" | "6G";
+/**
+ * What a gap in the report is about: one closed table (`fin-codecs`' `probe/guidance.rs`
+ * holds the text).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "GuidanceCode".
+ */
+export type GuidanceCode =
+  | "hevcExtensions"
+  | "av1Extension"
+  | "mediaFeaturePack"
+  | "ltscStoreCodecs"
+  | "gpuDriver"
+  | "codecPlugin"
+  | "laterBatch";
+/**
  * This interface was referenced by `FinCore`'s JSON-Schema
  * via the `definition` "ShapeKind".
  */
@@ -1079,6 +1120,25 @@ export type ChromaSiting = "unknown" | "left" | "center" | "topLeft";
  * via the `definition` "VideoCodec".
  */
 export type VideoCodec = ("av1" | "h264" | "hevc" | "vp9" | "vp8" | "proRes") | "other";
+/**
+ * A codec profile a capability row is about (absent: the codec as a whole).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "Profile".
+ */
+export type Profile =
+  | "baseline"
+  | "main"
+  | "high"
+  | "main10"
+  | "profile0"
+  | "profile2"
+  | "high10"
+  | "high422"
+  | "main422_10"
+  | "proRes422"
+  | "proRes4444"
+  | "other";
 /**
  * A project's collection policy (Decision 13): `finisher.project.json` `collect`, read by
  * `fin-store` and fed to the journal. `never` binds every collaborator's server: no entry of
@@ -1904,6 +1964,13 @@ export type Runtime =
       type: "node";
     };
 /**
+ * The OS confinement the worker applied to itself (spec §3.5.1).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "WorkerSandbox".
+ */
+export type WorkerSandbox = "none" | "landlock" | "worker";
+/**
  * Where a parameter lives. An effect's paths are `<kind>.<param>`; on an item they are
  * addressed as `effects.<fx>.<param>`.
  *
@@ -2228,6 +2295,25 @@ export interface Actor {
   call?: IdRef;
   kind: ActorKind;
   session?: IdRef;
+}
+/**
+ * A GPU by numeric ids only (owner decision 7): never a name or driver string. This is the
+ * wire and journal form; binding a session to an adapter (Windows' LUID, plan 6B-1 Task 6)
+ * is `fin-codecs`' own, never serialised, so no per-boot id reaches a report.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "AdapterId".
+ */
+export interface AdapterId {
+  /**
+   * The PCI device id.
+   */
+  deviceId: number;
+  driverMajor?: number;
+  /**
+   * The PCI vendor id.
+   */
+  vendorId: number;
 }
 /**
  * `agent.approval`: an approval was answered or expired.
@@ -4133,6 +4219,46 @@ export interface FileGrant {
   path: string;
 }
 /**
+ * One audio codec on this machine (none decode or encode before 6C; the rows carry the
+ * guidance, plan 6B-1 Decision 1).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "AudioCodecCaps".
+ */
+export interface AudioCodecCaps {
+  backends: CapBackend[];
+  codec: AudioCodec;
+  decode: CapLevel;
+  encode: CapLevel;
+  guidance?: Guidance[];
+}
+/**
+ * A backend that serves a codec row, by its `fin_media::backend` name.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "CapBackend".
+ */
+export interface CapBackend {
+  class: VendorClass;
+  direction: Direction;
+  /**
+   * Runs on hardware (a hardware MFT, VideoToolbox's hardware decoder).
+   */
+  hw: boolean;
+  name: string;
+}
+/**
+ * One line of guidance for a gap: what to do about it.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "Guidance".
+ */
+export interface Guidance {
+  batch?: Batch;
+  code: GuidanceCode;
+  fix: string;
+}
+/**
  * One item's part of the range: it plays `asset` from `sourceFrom` at `speed` over the
  * timeline span `[from, to)`. `gain` and `pan` cover that span without gaps, in order. An
  * item of a nested timeline lists the nested items it sounds through in `via`, outermost
@@ -4557,15 +4683,15 @@ export interface CatalogSource {
  * via the `definition` "CodecCapabilities".
  */
 export interface CodecCapabilities {
-  video: CodecCaps[];
+  video: LegacyCodecCaps[];
 }
 /**
- * One codec's support: the shape of `fin-codecs`' `CodecSupport`.
+ * v1: one codec's support, the shape of `fin-codecs`' `CodecSupport`.
  *
  * This interface was referenced by `FinCore`'s JSON-Schema
- * via the `definition` "CodecCaps".
+ * via the `definition` "LegacyCodecCaps".
  */
-export interface CodecCaps {
+export interface LegacyCodecCaps {
   /**
    * The backends that would be used, decode first.
    */
@@ -4573,6 +4699,24 @@ export interface CodecCaps {
   codec: VideoCodec;
   decode: CapSupport;
   encode: CapSupport;
+}
+/**
+ * One codec (and profile and bit depth, when the row is about one) on this machine.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "CodecCaps".
+ */
+export interface CodecCaps {
+  /**
+   * The backends that would serve it, decode first, in the order they are tried.
+   */
+  backends: CapBackend[];
+  bitDepth?: number;
+  codec: VideoCodec;
+  decode: CapLevel;
+  encode: CapLevel;
+  guidance?: Guidance[];
+  profile?: Profile;
 }
 /**
  * This interface was referenced by `FinCore`'s JSON-Schema
@@ -4846,6 +4990,35 @@ export interface EffectPlan {
   params?: {
     [k: string]: PlanValue;
   };
+}
+/**
+ * An encoder that encoded the capability probe's test clip (plan 6B-1 Decision 19).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "EncoderCaps".
+ */
+export interface EncoderCaps {
+  adapter?: AdapterId;
+  backend: string;
+  class: VendorClass;
+  codec: VideoCodec;
+  /**
+   * Runs on hardware (VideoToolbox, a hardware MFT, Microsoft's own hardware MFT); the
+   * `hwenc` pool and the proxy kind's resources key on it (Tasks 9, 14).
+   */
+  hw: boolean;
+  /**
+   * Intra-only frames per second at 540p, measured on the test clip (Decision 8).
+   */
+  intraFps?: number;
+  /**
+   * Can encode every frame as a keyframe.
+   */
+  intraOnly: boolean;
+  /**
+   * Concurrent sessions that opened, up to 4; absent when not counted.
+   */
+  sessionLimit?: number;
 }
 /**
  * One journal entry (Decision 2), as read from disk: `payload` is a `Value` (whose schema
@@ -5981,6 +6154,34 @@ export interface KnownDir {
   volume?: VolumeIdentity | null;
 }
 /**
+ * What `media.capabilities` v1 answers (plan 6A Task 13): codecs, the GPU a render would use
+ * (`null` when no adapter, not even a software one, can be opened) and the worker's versions.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "LegacyMediaCapabilities".
+ */
+export interface LegacyMediaCapabilities {
+  codecs: CodecCapabilities;
+  gpu?: GpuAdapter | null;
+  worker: LegacyWorkerInfo;
+}
+/**
+ * v1: the worker binary's versions.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "LegacyWorkerInfo".
+ */
+export interface LegacyWorkerInfo {
+  /**
+   * [`RENDER_VERSION`](crate::RENDER_VERSION): part of every cache key (spec §2.5).
+   */
+  renderVersion: number;
+  /**
+   * The `fin-workers` crate's version.
+   */
+  version: string;
+}
+/**
  * The `library.batch` call's params.
  *
  * This interface was referenced by `FinCore`'s JSON-Schema
@@ -6601,19 +6802,22 @@ export interface ManifestFonts {
   files?: FontFileRef[];
 }
 /**
- * What `media.capabilities` v1 answers (plan 6A Task 13): codecs, the GPU a render would use
- * (`null` when no adapter, not even a software one, can be opened) and the worker's versions.
+ * What `media.capabilities` v2 answers: per codec, profile and bit depth what this machine
+ * decodes and encodes and through which backend (with guidance for every gap), the audio
+ * codecs, the encoders that passed their test clip, the GPU a render would use and the worker.
  *
  * This interface was referenced by `FinCore`'s JSON-Schema
  * via the `definition` "MediaCapabilities".
  */
 export interface MediaCapabilities {
-  codecs: CodecCapabilities;
+  audio: AudioCodecCaps[];
+  codecs: CodecCaps[];
+  encoders: EncoderCaps[];
   gpu?: GpuAdapter | null;
   worker: WorkerInfo;
 }
 /**
- * The worker binary's versions.
+ * The worker binary's versions and confinement (v2).
  *
  * This interface was referenced by `FinCore`'s JSON-Schema
  * via the `definition` "WorkerInfo".
@@ -6623,6 +6827,7 @@ export interface WorkerInfo {
    * [`RENDER_VERSION`](crate::RENDER_VERSION): part of every cache key (spec §2.5).
    */
   renderVersion: number;
+  sandbox: WorkerSandbox;
   /**
    * The `fin-workers` crate's version.
    */
