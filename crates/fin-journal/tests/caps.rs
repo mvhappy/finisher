@@ -292,3 +292,41 @@ fn age_cap_removes_old_files_out_of_write_order() {
     let j = Journal::open(&events(&dir), diagnostics(), aged);
     assert_eq!(micros(&j), [1]);
 }
+
+fn uploadable(j: &Journal) -> usize {
+    j.export(
+        &fin_journal::Filter::default(),
+        Some(fin_core::events::Purposes::DIAGNOSTICS),
+    )
+    .count()
+}
+
+/// The file being appended to is closed by the caps pass once its day has passed (or its last
+/// entry is past retention), so an idle journal's last entries still age out; the next entry
+/// opens a new file.
+#[test]
+fn idle_active_file_ages_out() {
+    let dir = tempfile::tempdir().unwrap();
+    let c = clock();
+    let j = Journal::open(&events(&dir), diagnostics(), opts(&c));
+    j.record(Source::FinNode, None, commit(1));
+    j.flush().unwrap();
+    c.advance(DAY * 400);
+    j.flush().unwrap();
+    assert_eq!(micros(&j), Vec::<u64>::new(), "past the 30-day cap");
+    assert!(files(&events(&dir)).is_empty());
+    j.record(Source::FinNode, None, commit(2));
+    j.flush().unwrap();
+    assert_eq!(micros(&j), [2]);
+    assert_eq!(files(&events(&dir)).len(), 1);
+    assert_eq!(uploadable(&j), 0, "the active file is not closed yet");
+
+    // A day passing closes the file without removing it: the next entry starts a new one.
+    c.advance(DAY + std::time::Duration::from_secs(7200));
+    assert_eq!(uploadable(&j), 1, "closed by the caps pass");
+    assert_eq!(micros(&j), [2]);
+    j.record(Source::FinNode, None, commit(3));
+    j.flush().unwrap();
+    assert_eq!(micros(&j), [2, 3]);
+    assert_eq!(files(&events(&dir)).len(), 2);
+}

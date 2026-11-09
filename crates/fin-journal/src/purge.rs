@@ -3,7 +3,8 @@
 //! without the matching entries (temp-then-rename, fsynced: a kill leaves the old file or the
 //! new one, never a mix), deletes files left empty, lowers the blob counts of what it
 //! removed and deletes the blobs left at zero. Retention and `maxMiB` delete whole files,
-//! oldest first, counting blobs, through the same blob bookkeeping.
+//! oldest first, counting blobs, through the same blob bookkeeping; the caps pass first closes
+//! an idle active file whose day has passed, so retention reaches it.
 
 use std::collections::BTreeSet;
 use std::fs;
@@ -18,7 +19,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::blobs::{self, blob_dir};
 use crate::control::Control;
-use crate::files::{self, FileMeta};
+use crate::files::{self, DAY_MS, FileMeta};
 use crate::key::{self, KEY_FILE};
 use crate::state::STATE_FILE;
 use crate::writer::{CAPS_EVERY_MS, Writer};
@@ -56,14 +57,26 @@ impl Writer {
     /// Retention and `maxMiB` (whole closed files; blobs count, and go with their last
     /// reference), then the blobs nothing references. Retention removes every closed file
     /// whose last entry is past it (after the clock went back, a later file can hold older
-    /// entries); `maxMiB` then removes the first written ones until the total fits.
+    /// entries); `maxMiB` then removes the first written ones until the total fits. An idle
+    /// active file is closed first once its UTC day has passed or its last entry is past
+    /// retention (rotation otherwise waits for the next entry), so it can age out too; the
+    /// next entry opens a new file.
     pub fn apply_caps(&mut self, now: u64) -> io::Result<()> {
         self.next_caps = now + CAPS_EVERY_MS;
         let max_age = self.sh.caps_age.load(Relaxed);
         let max_total = self.sh.caps_total.load(Relaxed);
+        let cutoff = now.saturating_sub(max_age);
+        if self.active.is_some()
+            && let Some(m) = self.files.last()
+            && (now / DAY_MS > m.day || m.end_ts < cutoff)
+        {
+            self.flush_buf()?;
+            if let Some(f) = self.active.take() {
+                files::sync_file(&f)?;
+            }
+        }
         let closed =
             self.files.len() - usize::from(self.active.is_some() && !self.files.is_empty());
-        let cutoff = now.saturating_sub(max_age);
         let mut gone: Vec<bool> = self.files[..closed]
             .iter()
             .map(|f| f.end_ts < cutoff)
