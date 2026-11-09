@@ -97,6 +97,8 @@ pub(super) const VALIDATION_CODES: &[&str] = &[
     "PROJECT_DB_MISSING",
     "PROJECT_DB_MISMATCH",
     "SERVER_DATA_UNSAFE",
+    // Server or project data off a known local filesystem (review #4, `fin_store::locality`).
+    "SERVER_DATA_NOT_LOCAL",
     "IDEM_KEY_REUSED",
     "PROJECT_DIR_UNWRITABLE",
     // A name the rules refuse: an empty or whitespace-only project name, or a branch or

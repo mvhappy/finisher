@@ -4,7 +4,7 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
-import { checkPrivateDir, lockExclusive, makePrivateDir } from "@finisher/fin-node";
+import { checkPrivateDir, checkServerDataLocal, lockExclusive, makePrivateDir } from "@finisher/fin-node";
 import * as fs from "node:fs";
 import { authDir, KEY_FILES, type KeyFs, readKeyFile, rotateKeys, runDir, writeKeyFile } from "../src/auth/keys.ts";
 import { ensureServerData, socketPath } from "../src/config.ts";
@@ -211,5 +211,28 @@ describe.skipIf(WIN)("private directories elsewhere", () => {
     expect(statSync(dir).mode & 0o777).toBe(0o700);
     expect(checkPrivateDir(dir)).toEqual({ ok: true, problems: [] });
     expect(() => checkPrivateDir(join(tmp, "missing"))).toThrow(expect.objectContaining({ code: "SERVER_DATA_UNSAFE" }));
+  });
+});
+
+describe.skipIf(process.platform !== "linux")("server data locality (review #4)", () => {
+  test("server data that resolves off a local disk is refused before anything is created, unless overridden", () => {
+    const link = join(tmp, "elsewhere");
+    fs.symlinkSync("/proc/self", link);
+    const dir = join(link, "finisher");
+    expect(() => ensureServerData(dir)).toThrow(
+      expect.objectContaining({
+        code: "SERVER_DATA_NOT_LOCAL",
+        details: expect.objectContaining({ filesystem: "proc", override: "FIN_ALLOW_NONLOCAL_SERVER_DATA" }),
+        fix: expect.stringContaining("FIN_ALLOW_NONLOCAL_SERVER_DATA=1"),
+      }),
+    );
+    process.env.FIN_ALLOW_NONLOCAL_SERVER_DATA = "1";
+    try {
+      // (Not `ensureServerData`: Node's recursive mkdir never returns on procfs.)
+      expect(() => checkServerDataLocal(dir)).not.toThrow();
+    } finally {
+      delete process.env.FIN_ALLOW_NONLOCAL_SERVER_DATA;
+    }
+    ensureServerData(join(tmp, "local"));
   });
 });

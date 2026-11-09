@@ -299,3 +299,43 @@ fn open_with_another_expected_id_touches_nothing() {
         id
     );
 }
+
+/// Review #4: project data on a filesystem that is not a known local one (here procfs, reached
+/// through a symlink and a path that does not exist yet) is refused before anything is
+/// written, unless the override is set; opening an existing project there is refused too.
+#[cfg(target_os = "linux")]
+#[test]
+fn project_data_off_a_local_disk_is_refused() {
+    use fin_store::OpenOptions;
+    let e = env();
+    let link = e._tmp.path().join("elsewhere");
+    std::os::unix::fs::symlink("/proc/self", &link).unwrap();
+    let remote = link.join("finisher-data");
+    let err = code(Store::create(&remote, &e.dir, "Film", secs(30), None).unwrap_err());
+    assert_eq!(err.code, "SERVER_DATA_NOT_LOCAL", "{err:?}");
+    let details = &err.details;
+    assert_eq!(details["filesystem"], "proc");
+    assert!(details["resolved"].as_str().unwrap().starts_with("/proc/"));
+    assert_eq!(details["override"], fin_store::locality::ALLOW_NONLOCAL_ENV);
+    assert!(
+        err.fix
+            .as_deref()
+            .unwrap()
+            .contains("FIN_ALLOW_NONLOCAL_SERVER_DATA=1")
+    );
+    assert!(!e.dir.exists(), "nothing written into the project folder");
+
+    // The override lets it through to the filesystem (procfs then refuses the writes).
+    let opts = OpenOptions {
+        allow_nonlocal: Some(true),
+        ..OpenOptions::default()
+    };
+    let other = Store::create_with(&remote, &e.dir, "Film", secs(30), None, opts).unwrap_err();
+    assert_ne!(code(other).code, "SERVER_DATA_NOT_LOCAL");
+    let _ = std::fs::remove_dir_all(&e.dir);
+
+    // A project made on a local disk, then opened with server data on procfs.
+    drop(Store::create(&e.data, &e.dir, "Film", secs(30), None).unwrap());
+    let err = code(Store::open(&remote, &e.dir).unwrap_err());
+    assert_eq!(err.code, "SERVER_DATA_NOT_LOCAL", "{err:?}");
+}

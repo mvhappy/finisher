@@ -160,6 +160,7 @@ fn exit_codes_follow_the_contract() {
         "PROJECT_DB_MISSING",
         "PROJECT_DB_MISMATCH",
         "SERVER_DATA_UNSAFE",
+        "SERVER_DATA_NOT_LOCAL",
         "PROJECT_DIR_UNWRITABLE",
         "INVALID_NAME",
         "INVALID_PATH",

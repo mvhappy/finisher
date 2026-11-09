@@ -102,7 +102,7 @@ These follow the research summarised in §7.
   - `user_version` above what the code knows, or `meta.minReaderVersion` above the code's version → `DB_TOO_NEW` (`fix`: update Finisher);
   - a foreign non-zero `application_id` → `NOT_A_PROJECT_DB`. Neither is ever rebuilt over (§3.8).
 - **Integrity on open:** `rebuild::damaged` checks the header, schema and `meta`, then runs `PRAGMA quick_check(20)` read-only. Damage triggers an automatic rebuild (§3.8). `fin project verify` runs `integrity_check` and the other checks in §3.8.
-- **`db.lock`:** every open `Store` holds a shared OS lock on `<project-data>/db.lock`; a rebuild holds it exclusively (§3.8). OS locks are reliable here because server data is local. They are never used in the project folder.
+- **`db.lock`:** every open `Store` holds a shared OS lock on `<project-data>/db.lock`; a rebuild holds it exclusively (§3.8). OS locks are reliable here because server data is local: `Store::create`/`open` refuse a project data folder off a known local filesystem with `SERVER_DATA_NOT_LOCAL` unless `FIN_ALLOW_NONLOCAL_SERVER_DATA=1` (review #4, architecture spec §6.7). They are never used in the project folder.
 
 ### 3.2 Versioning of ops and snapshots
 
