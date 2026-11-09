@@ -190,7 +190,8 @@ describe("history", () => {
       const refused = await rejection(undo(`u-${JSON.stringify(meta)}`, meta));
       expect(refused.code).toBe("CONFLICT");
       expect(refused.details.reason).toBe("NEIGHBOURS_GONE");
-      expect(refused.details.conflicts[0].details.placement.outcome).toBe("conflict");
+      const conflicts = refused.details.conflicts as { details: { placement: { outcome: string } } }[];
+      expect(conflicts[0]?.details.placement.outcome).toBe("conflict");
     }
     expect(await clips(e)).toBe(0);
     const done = await json(undo("u-user", { actor: { kind: "user" } }));
