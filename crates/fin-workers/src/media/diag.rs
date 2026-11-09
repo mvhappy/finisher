@@ -204,9 +204,15 @@ pub fn capabilities_event(caps: &MediaCapabilities) -> MediaCapabilitiesEvent {
             .collect(),
         gpu: caps.gpu.as_ref().map(gpu_entry),
         copy_path: CopyPath::Copy,
-        // sp6 §15: `landlock` once the worker profile's Landlock phase restricted this process.
+        // sp6 §15: `landlock` once the worker profile's Landlock phase restricted this process
+        // (Linux, no seccomp yet); `worker` once the full profile did (macOS Seatbelt: files,
+        // no network, no process creation).
         sandbox: if fin_sandbox::self_apply::applied() {
-            Sandbox::Landlock
+            if cfg!(target_os = "macos") {
+                Sandbox::Worker
+            } else {
+                Sandbox::Landlock
+            }
         } else {
             Sandbox::None
         },

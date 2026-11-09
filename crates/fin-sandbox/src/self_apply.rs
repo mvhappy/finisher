@@ -74,9 +74,16 @@ fn apply(_policy: &SandboxPolicy) -> Result<(), String> {
     Ok(())
 }
 
-#[cfg(not(any(target_os = "linux", windows)))]
+#[cfg(target_os = "macos")]
+fn apply(policy: &SandboxPolicy) -> Result<(), String> {
+    // The worker keeps running its own binary.
+    let exe = std::env::current_exe().map_err(|e| format!("the worker's own binary: {e}"))?;
+    crate::macos::apply::restrict_self(policy, Some(&exe)).map_err(|e| e.to_string())
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
 fn apply(_policy: &SandboxPolicy) -> Result<(), String> {
-    // macOS `sandbox_init` is Task 8.
+    // No self-sandbox on this OS.
     Err(format!(
         "no self-sandbox is implemented on {:?} yet",
         crate::policy::Os::current()

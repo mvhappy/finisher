@@ -1,0 +1,10 @@
+# macOS `mach-lookup` allow-list of the `agent` profile (spec §8.2; plan 7C Decisions 14, 15).
+# Source: spike S9 step B6, minimised by leave-one-out under a full `(deny default)` profile.
+# Everything else is denied: never add SecurityServer, securityd.xpc, lsd.*, coreservicesd,
+# launchservicesd, windowserver.*, tccd*, pboard or FSEvents here (a harness that needs the
+# keychain gains SecurityServer in its own list, Decision 15).
+# User and group lookups (`getpwuid`, `os.userInfo()`).
+com.apple.system.opendirectoryd.libinfo
+# Codex exits at start without the preferences daemon.
+com.apple.cfprefsd.daemon
+com.apple.cfprefsd.agent

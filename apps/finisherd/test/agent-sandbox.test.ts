@@ -15,7 +15,7 @@ import { sandboxStatus } from "@finisher/fin-node";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from "vitest";
 import type { FakeScript } from "../src/agent/fake.ts";
 import { Effect, Exit, Scope } from "effect";
-import { assertSessionEnv, openSessionSandbox, sandboxMode, sessionEnv } from "../src/agent/sandbox.ts";
+import { assertSessionEnv, openSessionSandbox, REAP_GRACE_MS, sandboxMode, sessionEnv } from "../src/agent/sandbox.ts";
 import { sessionKeys } from "../src/agent/sandbox-env.ts";
 import { ensureSessionDirs, linkSignInStore, sessionDirs } from "../src/agent/session-dirs.ts";
 import { resolveFinPath } from "../src/agent/settings.ts";
@@ -467,14 +467,30 @@ describe("a CLI session's processes (the fake harness's spawn step)", () => {
     expect(await violations()).toEqual([]);
   });
 
-  test("a_process_that_leaves_its_group_outlives_the_session", async () => {
-    // The residual of Task 11's review, asserted so it flips when it closes (a subreaper launcher).
-    const r = await run(() => [sh("setsid sh -c 'echo $$ > pid; exec sleep 300' >/dev/null 2>&1 < /dev/null & while [ ! -s pid ]; do sleep 0.05; done; cat pid")], NOT_READY);
+  test("a_process_that_leaves_its_group_goes_with_the_session", async () => {
+    // Task 11's review: a `setsid` grandchild left its group and outlived the session. The
+    // Linux launcher stays the parent and reaps it (Decision 3 as amended).
+    const escape = sh("setsid sh -c 'echo $$ > pid; exec sleep 300' >/dev/null 2>&1 < /dev/null & while [ ! -s pid ]; do sleep 0.05; done; cat pid");
+    // Control: without the launcher (the profile not ready on this OS), it outlives the session.
+    const direct = await run(() => [escape], NOT_READY);
+    const free = Number(direct.children[0]!.stdout.trim());
+    try {
+      ok(await direct.local.call("agent.session.end", { sessionId: direct.session!.id }));
+      await new Promise((res) => setTimeout(res, 200));
+      expect(alive(free)).toBe(true);
+    } finally {
+      if (alive(free)) process.kill(free, "SIGKILL");
+    }
+    await server!.stop();
+    if (restore !== undefined) setSandboxStatusSource(restore);
+    restore = undefined;
+    if (!enforced("a_process_that_leaves_its_group_goes_with_the_session")) return;
+    const r = await run(() => [escape]);
     const pid = Number(r.children[0]!.stdout.trim());
+    expect(pid).toBeGreaterThan(0);
     try {
       ok(await r.local.call("agent.session.end", { sessionId: r.session!.id }));
-      await new Promise((res) => setTimeout(res, 200));
-      expect(alive(pid)).toBe(true);
+      await until(() => (alive(pid) ? undefined : true));
     } finally {
       if (alive(pid)) process.kill(pid, "SIGKILL");
     }
@@ -498,6 +514,34 @@ describe("the sandbox's scope", () => {
     // A refused profile opens nothing.
     const refused = await Effect.runPromiseExit(Effect.scoped(openSessionSandbox(s, "fake", { serverData: data, projectDirOf: () => dir, finPath: "/bin/sh", localEndpoint: "x", status: withAgent({ kind: "unavailable", need: "n" }) })));
     expect(Exit.isFailure(refused) && JSON.stringify(refused.cause)).toMatch(/SANDBOX_UNAVAILABLE/);
+  });
+});
+
+describe("the hang-up of a Linux launcher", () => {
+  test("a_launcher_that_ignores_the_hang_up_is_killed_after_the_grace", async () => {
+    if (process.platform !== "linux") return;
+    // A launcher that never reaps: the session end hangs it up, then kills its group.
+    const stuck = join(tmp, "stuck-launcher.sh");
+    writeFileSync(stuck, "#!/bin/sh\ntrap '' HUP\ncat <&3 >/dev/null\nwhile :; do sleep 0.05; done\n", { mode: 0o755 });
+    const data = join(tmp, "data");
+    const dir = join(tmp, "P");
+    for (const d of [data, dir]) mkdirSync(d, { recursive: true });
+    const s = { id: SESSION.id, projectId: "01P0000000000000000000000A", harness: "fake", mode: "draft" } as unknown as Session;
+    const scope = await Effect.runPromise(Scope.make());
+    const box = await Effect.runPromise(
+      Scope.provide(scope)(
+        openSessionSandbox(s, "fake", { serverData: data, projectDirOf: () => dir, finPath: "/bin/sh", localEndpoint: join(data, "run", "fin.sock"), agentListener: async () => "tcp:127.0.0.1:9", status: withAgent({ kind: "enforced", detail: "stub" }), launcher: () => stuck, killGraceMs: 5000 }),
+      ),
+    );
+    expect(box.mode).toBe("launcher");
+    const child = await Effect.runPromise(box.spawn(["/bin/true"], { cwd: box.workspace, stdio: "pipe" }));
+    await new Promise((r) => setTimeout(r, 200));
+    const t0 = Date.now();
+    await Effect.runPromise(Scope.close(scope, Exit.void));
+    expect(await child.exited).toEqual({ code: null, signal: "SIGKILL" });
+    // Not at once (the hang-up came first), and within the grace.
+    expect(Date.now() - t0).toBeGreaterThanOrEqual(REAP_GRACE_MS - 100);
+    expect(Date.now() - t0).toBeLessThan(REAP_GRACE_MS + 2000);
   });
 });
 
@@ -529,11 +573,22 @@ describe("the sandbox under the real launcher", () => {
     expect(refused.exit.code).toBe(1);
     expect(refused.err).toMatch(/Permission denied/);
     expect(await read([extra])).toMatchObject({ exit: { code: 0 }, out: "harness\n" });
-    // A process under the launcher is killed, its group with it, when the scope closes.
-    const long = await Effect.runPromise(box.spawn(["/bin/sh", "-c", "sleep 300"], { cwd: box.workspace, stdio: "pipe" }));
-    await new Promise((r) => setTimeout(r, 100));
-    await Effect.runPromise(Scope.close(scope, Exit.void));
-    expect(await long.exited).toEqual({ code: null, signal: "SIGKILL" });
+    // A process under the launcher is killed, its group with it, when the scope closes, and
+    // so is a `setsid` grandchild that left the group (the launcher reaps it).
+    const long = await Effect.runPromise(
+      box.spawn(["/bin/sh", "-c", "setsid sh -c 'echo $$ > g.pid; exec sleep 300' >/dev/null 2>&1 < /dev/null & while [ ! -s g.pid ]; do sleep 0.02; done; cat g.pid; exec sleep 300"], { cwd: box.workspace, stdio: "pipe" }),
+    );
+    let said = "";
+    long.stdout.on("data", (b) => (said += String(b)));
+    const escaped = await until(() => (/^\d+\n/.test(said) ? Number(said.trim()) : undefined));
+    try {
+      expect(alive(escaped)).toBe(true);
+      await Effect.runPromise(Scope.close(scope, Exit.void));
+      expect(await long.exited).toEqual({ code: null, signal: "SIGKILL" });
+      await until(() => (alive(escaped) ? undefined : true));
+    } finally {
+      if (alive(escaped)) process.kill(escaped, "SIGKILL");
+    }
     // And the closed sandbox starts nothing more.
     const after = await Effect.runPromiseExit(box.spawn(["/bin/true"], { cwd: box.workspace, stdio: "pipe" }));
     expect(Exit.isFailure(after)).toBe(true);

@@ -250,8 +250,16 @@ fn sleep_echo_and_flood() {
     let v = p.result();
     assert_eq!(v["value"], json!([1, "a"]));
     assert_eq!(v["pid"], p.child.id());
+    // macOS adds `__CF_USER_TEXT_ENCODING` to a process that loads CoreFoundation (the worker
+    // links Metal): the OS's, not passed by the host.
+    let mut env = v["env"].clone();
+    if cfg!(target_os = "macos") {
+        env.as_object_mut()
+            .unwrap()
+            .remove("__CF_USER_TEXT_ENCODING");
+    }
     assert_eq!(
-        v["env"],
+        env,
         json!({ "FIN_TEST_MARKER": "1" }),
         "a cleared environment"
     );

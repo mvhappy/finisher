@@ -154,3 +154,29 @@ fn the_stub_drives_self_apply() {
         other => panic!("{other:?}"),
     }
 }
+
+/// macOS (plan 7C Task 8): Seatbelt is enforced where `sandbox-exec` is present, and a host
+/// without it refuses the start, naming the need.
+#[cfg(target_os = "macos")]
+#[test]
+fn seatbelt_status_follows_sandbox_exec() {
+    use fin_sandbox::status::seatbelt;
+    assert_eq!(
+        seatbelt(std::path::Path::new("/usr/bin/sandbox-exec")),
+        Mechanism::Enforced {
+            detail: "seatbelt".into()
+        }
+    );
+    match seatbelt(std::path::Path::new("/nonexistent/sandbox-exec")) {
+        Mechanism::Unavailable { need } => assert!(need.contains("Seatbelt"), "{need}"),
+        other => panic!("{other:?}"),
+    }
+    if std::env::var_os(fin_sandbox::status::TEST_ENV).is_none() {
+        assert_eq!(
+            fin_sandbox::status::mechanism(),
+            Mechanism::Enforced {
+                detail: "seatbelt".into()
+            }
+        );
+    }
+}

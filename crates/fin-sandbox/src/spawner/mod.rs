@@ -7,6 +7,7 @@
 //! - `plugin` (Linux): the Landlock ruleset is built in `prepare`; the child's `pre_exec`
 //!   steps are `PR_SET_NO_NEW_PRIVS`, `landlock_restrict_self` on the prepared descriptor and
 //!   `RLIMIT_NOFILE`, raw calls that allocate nothing. The seccomp filter is deferred (Task 4).
+//!   macOS: the program is rewritten to `sandbox-exec -p <profile>` (Task 8).
 //! - Windows ([`windows`]): both profiles are created by the host in their AppContainer (the
 //!   security-capabilities attribute and a private desktop); the worker keeps its self-sandbox
 //!   request, which checks the token.
@@ -271,10 +272,22 @@ fn home_dir() -> Option<PathBuf> {
     std::env::var_os(var).map(PathBuf::from)
 }
 
-#[cfg(not(any(target_os = "linux", windows)))]
+/// macOS: the program is rewritten to `sandbox-exec -p <profile> -D… -- <program> <args…>`
+/// (the host starts children with `posix_spawn`, so there is no child-side step; the open-files
+/// limit is not applied on macOS, a recorded residual).
+#[cfg(target_os = "macos")]
+fn plugin_steps(policy: &crate::SandboxPolicy, cmd: &mut PlatformCommand) -> Result<(), String> {
+    let (program, args) = crate::macos::apply::plugin_command(policy, &cmd.program, &cmd.args)
+        .map_err(|e| e.to_string())?;
+    cmd.program = program;
+    cmd.args = args;
+    Ok(())
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
 fn plugin_steps(_policy: &crate::SandboxPolicy, _cmd: &mut PlatformCommand) -> Result<(), String> {
     Err(format!(
-        "the plugin profile is not implemented on {:?} yet (plan 7C Task 8)",
+        "the plugin profile is not implemented on {:?} yet",
         Os::current()
     ))
 }

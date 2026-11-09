@@ -1,5 +1,7 @@
 //! `fin-sandbox-exec --policy-fd <n> -- <program> [args…]`: confines a program `finisherd` starts
-//! itself (an agent harness, a hook command) and becomes it. See `fin_sandbox::launch`.
+//! itself (an agent harness, a hook command): on Linux it forks it and stays its parent, the
+//! session's reaper (`fin_sandbox::linux::reaper`); elsewhere it becomes it. See
+//! `fin_sandbox::launch`.
 
 use std::fs::File;
 use std::io::{Read, Write};
@@ -59,7 +61,7 @@ fn main() {
     if let Err(e) = os::cloexec_from_3() {
         fail(EXIT_UNAVAILABLE, "SANDBOX_UNAVAILABLE", profile, &e);
     }
-    let enforced = match mechanism() {
+    let confine = match mechanism() {
         Mechanism::Disabled {
             reason: DisabledReason::LandlockDisabled,
         } => false,
@@ -72,19 +74,76 @@ fn main() {
         Mechanism::Unavailable { need } => {
             fail(EXIT_UNAVAILABLE, "SANDBOX_UNAVAILABLE", profile, &need)
         }
-        Mechanism::Enforced { .. } => {
-            // Unix sockets hidden first (Decision 26): the mounts need the capabilities the
-            // namespace gives, which Landlock then keeps the program from using.
-            if let Err(e) = os::hide_sockets(&policy, req.home()) {
-                fail(EXIT_UNAVAILABLE, "SANDBOX_UNAVAILABLE", profile, &e);
-            }
-            if let Err(e) = os::apply(&policy) {
-                fail(EXIT_UNAVAILABLE, "SANDBOX_UNAVAILABLE", profile, &e);
-            }
-            true
-        }
+        Mechanism::Enforced { .. } => true,
     };
-    let e = os::exec(&req, &policy, enforced, &args.argv);
+    // Linux: the launcher stays the parent and reaps the session (Decision 3 as amended); the
+    // program is confined in the forked child.
+    #[cfg(target_os = "linux")]
+    {
+        use fin_sandbox::linux::reaper;
+        // SAFETY: getpid has no failure mode.
+        let launcher = unsafe { libc::getpid() };
+        let prepared = reaper::prepare()
+            .unwrap_or_else(|e| fail(EXIT_UNAVAILABLE, "SANDBOX_UNAVAILABLE", profile, &e));
+        // SAFETY: the launcher has one thread, so the child may run any code before `exec`.
+        match unsafe { libc::fork() } {
+            -1 => {
+                let e = std::io::Error::last_os_error();
+                prepared.abandon();
+                fail(
+                    EXIT_UNAVAILABLE,
+                    "SANDBOX_UNAVAILABLE",
+                    profile,
+                    &format!("fork: {e}"),
+                )
+            }
+            0 => {
+                if let Err(e) = prepared.in_child() {
+                    fail(EXIT_UNAVAILABLE, "SANDBOX_UNAVAILABLE", profile, &e);
+                }
+                start(&args, &policy, &req, confine, profile, Some(launcher))
+            }
+            child => {
+                // The program holds the request descriptor and the streams; the launcher
+                // keeps none of them open.
+                if let Ok(mut held) = REPORT.lock() {
+                    held.take();
+                }
+                os::streams_to_null();
+                prepared.supervise(child)
+            }
+        }
+    }
+    #[cfg(not(target_os = "linux"))]
+    start(&args, &policy, &req, confine, profile, None)
+}
+
+/// Confines the calling process where `confine`, then `exec`s the program; never returns.
+fn start(
+    args: &launch::Args,
+    policy: &fin_sandbox::SandboxPolicy,
+    req: &launch::LaunchRequest,
+    confine: bool,
+    profile: Option<Profile>,
+    launcher: Option<i32>,
+) -> ! {
+    if confine {
+        // Unix sockets hidden first (Decision 26): the mounts need the capabilities the
+        // namespace gives, which Landlock then keeps the program from using.
+        if let Err(e) = os::hide_sockets(policy, req.home()) {
+            fail(EXIT_UNAVAILABLE, "SANDBOX_UNAVAILABLE", profile, &e);
+        }
+        if let Err(e) = os::apply(policy) {
+            fail(EXIT_UNAVAILABLE, "SANDBOX_UNAVAILABLE", profile, &e);
+        }
+    }
+    #[cfg(target_os = "linux")]
+    if let Some(Err(e)) = launcher.map(fin_sandbox::linux::reaper::die_with_launcher) {
+        fail(EXIT_UNAVAILABLE, "SANDBOX_UNAVAILABLE", profile, &e);
+    }
+    #[cfg(not(target_os = "linux"))]
+    let _ = launcher;
+    let e = os::exec(req, policy, confine, &args.argv);
     let exit = if e.kind() == std::io::ErrorKind::NotFound {
         EXIT_NOT_FOUND
     } else {
@@ -161,9 +220,20 @@ mod os {
         Ok(())
     }
 
-    #[cfg(not(target_os = "linux"))]
+    /// Seatbelt on the launcher itself, which the program inherits across `exec` (what
+    /// `sandbox-exec` does, without the profile on argv), then `RLIMIT_NOFILE`.
+    #[cfg(target_os = "macos")]
+    pub fn apply(policy: &SandboxPolicy) -> Result<(), String> {
+        fin_sandbox::macos::apply::restrict_self(policy, None).map_err(|e| e.to_string())?;
+        if let Some(n) = policy.limits.open_files {
+            open_files(n)?;
+        }
+        Ok(())
+    }
+
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     pub fn apply(_policy: &SandboxPolicy) -> Result<(), String> {
-        Err("the launcher sandbox of this OS (macOS: plan 7C Task 8)".into())
+        Err("the launcher sandbox of this OS".into())
     }
 
     #[cfg(target_os = "linux")]
@@ -198,7 +268,6 @@ mod os {
     }
 
     /// `RLIMIT_NOFILE` to `n` (never above the current hard limit).
-    #[cfg(target_os = "linux")]
     fn open_files(n: u32) -> Result<(), String> {
         // SAFETY: plain data, written by getrlimit before use.
         let mut r: libc::rlimit = unsafe { std::mem::zeroed() };
@@ -259,12 +328,29 @@ mod os {
         Ok(())
     }
 
+    /// Points the standard streams at `/dev/null` (the launcher after the fork).
+    #[cfg(target_os = "linux")]
+    pub fn streams_to_null() {
+        // SAFETY: a NUL-terminated path; dup2 onto the standard streams, then close.
+        unsafe {
+            let null = libc::open(c"/dev/null".as_ptr(), libc::O_RDWR | libc::O_CLOEXEC);
+            if null >= 0 {
+                for fd in 0..3 {
+                    libc::dup2(null, fd);
+                }
+                if null > 2 {
+                    libc::close(null);
+                }
+            }
+        }
+    }
+
     /// Replaces the process with `argv`, without [`launch::SOCKET_ENV`] (the policy is
     /// already applied to this process). Returns only on failure.
     pub fn exec(
         _req: &fin_sandbox::launch::LaunchRequest,
         _policy: &SandboxPolicy,
-        _enforced: bool,
+        _confine: bool,
         argv: &[std::ffi::OsString],
     ) -> std::io::Error {
         let mut cmd = std::process::Command::new(&argv[0]);
