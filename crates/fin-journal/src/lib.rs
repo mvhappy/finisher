@@ -164,7 +164,7 @@ impl Journal {
             session,
             opts,
             #[allow(clippy::default_constructed_unit_structs)] // a unit struct without test-hooks
-            faults: Faults::default(),
+            faults: Faults::new(),
             key: RwLock::new(key),
             consent: Mutex::new(ctl),
             caps_age: AtomicU64::new(age),
