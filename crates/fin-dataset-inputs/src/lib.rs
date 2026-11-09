@@ -64,8 +64,22 @@ impl Files for Disk {
     }
 }
 
-/// Every entry of `store`, oldest first (its `j-*.jsonl` files in name order). A line that
+/// Every entry of `store`, oldest first (its `j-*.jsonl` files in write order). A line that
 /// does not parse (a torn tail) is skipped.
+/// Journal files (`j-<yyyymmdd>-<ULID>.jsonl`) in the order they were written: by their ULID,
+/// which the journal keeps monotonic, not by name, whose date goes back with the clock (review
+/// #22, as in fin-journal's `files::list`).
+fn write_order(files: &mut [PathBuf]) {
+    let id = |p: &PathBuf| {
+        let name = p.file_name().and_then(|n| n.to_str()).unwrap_or_default();
+        name.strip_suffix(".jsonl")
+            .and_then(|r| r.rsplit_once('-'))
+            .map(|(_, id)| id.to_ascii_uppercase())
+            .unwrap_or_default()
+    };
+    files.sort_by(|a, b| id(a).cmp(&id(b)).then_with(|| a.cmp(b)));
+}
+
 pub fn entries(fs: &dyn Files, server_data: &Path, store: Store) -> io::Result<Vec<Envelope>> {
     let mut files: Vec<PathBuf> = fs
         .list(&store.dir(server_data))?
@@ -76,7 +90,7 @@ pub fn entries(fs: &dyn Files, server_data: &Path, store: Store) -> io::Result<V
                 .is_some_and(|n| n.starts_with("j-") && n.ends_with(".jsonl"))
         })
         .collect();
-    files.sort();
+    write_order(&mut files);
     let mut out = Vec::new();
     for f in files {
         let text = fs.read(&f)?;
@@ -103,5 +117,24 @@ pub fn blob(
         Ok(b) => Ok(Some(b)),
         Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
         Err(e) => Err(e),
+    }
+}
+
+#[cfg(test)]
+mod order_tests {
+    use super::*;
+
+    #[test]
+    fn files_are_read_in_write_order_not_name_order() {
+        // Written second, after the clock went back a day: an earlier date, a later ULID.
+        let mut files = vec![
+            PathBuf::from("j-20261109-01JC0000000000000000000002.jsonl"),
+            PathBuf::from("j-20261110-01JC0000000000000000000001.jsonl"),
+        ];
+        write_order(&mut files);
+        assert_eq!(
+            files[0],
+            PathBuf::from("j-20261110-01JC0000000000000000000001.jsonl")
+        );
     }
 }
