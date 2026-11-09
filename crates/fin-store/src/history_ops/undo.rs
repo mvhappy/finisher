@@ -28,6 +28,9 @@ use crate::{HistoryResult, Store, StoreError};
 /// - `to`: `undo --to <checkpoint>`, a checkpoint name on the branch's lineage: one undo
 ///   record for every unit of the author's made after it (Task 15). `None` for a plain undo;
 ///   a redo takes none (`INVALID_OP`).
+/// - `after_seq`: as `to`, every unit of the author's made after that seq of the branch's
+///   lineage, in one record (plan 7B Task 8: a session's rollback, one record per branch);
+///   not with `to`, and a redo takes none (`INVALID_OP`).
 #[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct HistoryReq {
@@ -38,6 +41,8 @@ pub struct HistoryReq {
     pub dry_run: bool,
     pub args_hash: Option<String>,
     pub to: Option<String>,
+    #[serde(default)]
+    pub after_seq: Option<u64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -103,13 +108,22 @@ impl Store {
     fn history(&mut self, r: &HistoryReq, which: Which) -> Result<HistoryResult, StoreError> {
         check_key(&r.tx_id)?;
         check_args_hash(r.args_hash.as_deref(), &r.tx_id)?;
-        if which == Which::Redo && r.to.is_some() {
+        if which == Which::Redo && (r.to.is_some() || r.after_seq.is_some()) {
             return Err(
                 CoreError::new("INVALID_OP", "redo takes no checkpoint (--to)")
-                    .with_details(json!({ "txId": r.tx_id, "to": r.to }))
+                    .with_details(json!({ "txId": r.tx_id, "to": r.to, "afterSeq": r.after_seq }))
                     .with_fix("one redo reverses one undo record, an undo --to included: fin redo")
                     .into(),
             );
+        }
+        if r.to.is_some() && r.after_seq.is_some() {
+            return Err(CoreError::new(
+                "INVALID_OP",
+                "an undo goes back to a checkpoint or after a seq, not both",
+            )
+            .with_details(json!({ "txId": r.tx_id, "to": r.to, "afterSeq": r.after_seq }))
+            .with_fix("give one of to and afterSeq")
+            .into());
         }
         loop {
             if let Some(c) = self.write(&r.tx_id, r.dry_run, |ctx| plan(ctx, r, which))? {
@@ -149,13 +163,16 @@ fn plan(ctx: &mut WriteCtx<'_>, r: &HistoryReq, which: Which) -> Result<Committe
     let head = ctx.head(&branch)?;
     let log =
         SqlLog::with_head(txn, &branch, head.rev, &head.project).measuring(measurer.as_deref());
-    let planned = match (which, &r.to) {
-        (Which::Undo, Some(name)) => {
+    let planned = match (which, &r.to, r.after_seq) {
+        (Which::Undo, Some(name), _) => {
             let (_, seq) = super::checkpoint::find(txn, &branch, name)?;
             plan_undo_to(&log, &branch, &r.author, seq, &r.tx_id, &mut ids)
         }
-        (Which::Undo, None) => plan_undo(&log, &branch, &r.author, &r.tx_id, &mut ids),
-        (Which::Redo, _) => plan_redo(&log, &branch, &r.author, &r.tx_id, &mut ids),
+        (Which::Undo, None, Some(seq)) => {
+            plan_undo_to(&log, &branch, &r.author, seq, &r.tx_id, &mut ids)
+        }
+        (Which::Undo, None, None) => plan_undo(&log, &branch, &r.author, &r.tx_id, &mut ids),
+        (Which::Redo, _, _) => plan_redo(&log, &branch, &r.author, &r.tx_id, &mut ids),
     }?;
     ids.save(txn)?;
     ctx.append(Draft {

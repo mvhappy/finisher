@@ -37,7 +37,38 @@ impl AgentHost {
             &["--requests", "{root}/agent-host"],
         );
         // `start_script` makes the folder's parent; the host polls the folder itself.
-        let server = server?;
+        AgentHost::with(server?)
+    }
+
+    /// A host whose sessions may run on the scripted `fake` harness (plan 7B Task 6): the
+    /// test-hooks fin-node binary with `FIN_TEST_HOOKS=1`; `scripts` are the fake's scripts in
+    /// open order (`apps/finisherd/src/agent/fake.ts`). Skipped without that binary.
+    pub fn start_fake(test: &str, scripts: &Value) -> Option<AgentHost> {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("fake-scripts.json");
+        std::fs::write(&file, scripts.to_string()).unwrap();
+        let env = vec![
+            (
+                "FIN_NODE_BINARY_DIR".to_string(),
+                super::fontserver::test_native_dir().into(),
+            ),
+            ("FIN_TEST_HOOKS".to_string(), "1".into()),
+        ];
+        let file = file.display().to_string();
+        let server = Server::start_script_with(
+            test,
+            "apps/finisherd/test/support/agent-session-host.ts",
+            &["--requests", "{root}/agent-host", "--fake-scripts", &file],
+            env,
+            super::fontserver::why_no_test_hooks(),
+        )?;
+        let host = AgentHost::with(server);
+        // The scripts file is read at start; the folder may go.
+        drop(dir);
+        host
+    }
+
+    fn with(server: Server) -> Option<AgentHost> {
         let requests = server.root.join("agent-host");
         std::fs::create_dir_all(&requests).unwrap();
         Some(AgentHost {
@@ -74,12 +105,25 @@ impl AgentHost {
     }
 
     pub fn open(&self, project_id: &str, mode: &str) -> Session {
-        let v = self.request(json!({ "op": "open", "projectId": project_id, "mode": mode }));
+        self.open_with(json!({ "op": "open", "projectId": project_id, "mode": mode }))
+    }
+
+    /// A session on the `fake` harness (a host from [`AgentHost::start_fake`]), in a run (a
+    /// session spawns children from a run of its own; no provider turn starts).
+    pub fn open_fake(&self, project_id: &str, mode: &str) -> Session {
+        self.open_with(json!({
+            "op": "open", "projectId": project_id, "mode": mode, "harness": "fake", "running": true,
+        }))
+    }
+
+    fn open_with(&self, req: Value) -> Session {
+        let project_id = req["projectId"].as_str().unwrap().to_string();
+        let v = self.request(req);
         Session {
             id: v["sessionId"].as_str().unwrap().to_string(),
             credential: PathBuf::from(v["credential"].as_str().unwrap()),
             root: v["rootBranch"].as_str().map(str::to_string),
-            project_dir: self.dirs.borrow().get(project_id).cloned(),
+            project_dir: self.dirs.borrow().get(&project_id).cloned(),
         }
     }
 

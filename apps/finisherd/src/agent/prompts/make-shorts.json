@@ -1,0 +1,8 @@
+{
+  "name": "make-shorts",
+  "title": "Make short clips",
+  "role": "clip-finder",
+  "mode": "draft",
+  "template": "Find the {{count}} strongest short clips in this project and cut each one as its own branch of the timeline.\n\nFor each clip: pick a self-contained moment with a clear hook in its first seconds, a payoff, and a natural end. Keep every clip under sixty seconds, trim dead air at both ends, and say in one sentence why it works.\n\nWork on your own branch, leave the source material untouched, and finish with a short list of the clips, their start and end times and your reasons, best first.",
+  "params": [{ "name": "count", "type": "int", "min": 1, "max": 20, "default": 5 }]
+}

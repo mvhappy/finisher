@@ -39,11 +39,12 @@ import { BUNDLED_CATALOGUE, Catalogue } from "./catalogue/catalogue.ts";
 import { OpenRouterPrices } from "./catalogue/prices.ts";
 import type { AgentCore } from "./core.ts";
 import type { BranchRegistry } from "./credentials.ts";
+import { type RollbackRegistry, Rollbacks } from "./rollback.ts";
 import { FakeAdapter, type FakeScript } from "./fake.ts";
 import { sessionPlanner } from "./planner.ts";
 import { BUNDLED_ROLES, type Role } from "./roles.ts";
 import { Runtime } from "./runtime.ts";
-import { cataloguePricing, type SessionEnvironment } from "./runtime-deps.ts";
+import { cataloguePricing, type SessionEnvironment, type ToolExecutor } from "./runtime-deps.ts";
 import { LayeredRules } from "./rules.ts";
 import { RuleStore } from "./rule-store.ts";
 import type { AclBroker } from "../sandbox/broker.ts";
@@ -66,6 +67,10 @@ export interface AgentServeOptions {
   readonly timers?: boolean;
   /** A test's crash point: runs after a one-time grant was consumed, before the handler (7B Task 5). */
   readonly afterGrantConsumed?: (sessionId: string, idem: string) => Promise<void>;
+  /** Tests (7B Task 6): the fake's tool runner, a pause in a spawn, the stop grace. */
+  readonly fakeTools?: ToolExecutor;
+  readonly afterChildOpened?: (childId: string) => Promise<void>;
+  readonly stopGraceMs?: number;
   /** Another `fin-sandbox-exec` for sessions (tests: one that fails as the launcher does). */
   readonly sandboxLauncher?: string;
 }
@@ -127,7 +132,7 @@ export function fakeScriptsOf(options: readonly FakeScript[] | undefined, env: N
 export interface AgentWiringDeps {
   readonly serverData: string;
   readonly core: AgentCore;
-  readonly registry: BranchRegistry & { readonly dirOf: (projectId: string) => string | undefined; readonly indexedDirOf?: (projectId: string) => string | undefined };
+  readonly registry: BranchRegistry & RollbackRegistry & { readonly dirOf: (projectId: string) => string | undefined; readonly indexedDirOf?: (projectId: string) => string | undefined };
   /** `control.db` (the store's), for the lookups `AgentStore` does not offer. */
   readonly db: ConstructorParameters<typeof AgentLookup>[0];
   /** `control.db` itself, for the approvals' check-and-insert transactions (7B Task 4). */
@@ -146,15 +151,24 @@ export interface AgentWiringDeps {
   readonly allowPipe?: (sid: string) => void;
 }
 
-/** Every stored node of a session, in order (the built-in loop rebuilds its history on resume). */
-function allNodes(store: AgentStore, sessionId: string): Node[] {
+/** The node kinds `historyFromNodes` reads a payload of. */
+const HISTORY_KINDS: ReadonlySet<Node["kind"]> = new Set(["userMessage", "assistantMessage", "reasoning", "toolCall", "toolResult", "notice", "summary"]);
+
+/**
+ * Every stored node of a session, in order, each payload the rebuild reads (`historyFromNodes`)
+ * read from its blob when it is past the inline limit: a large prompt, reply, tool input or
+ * result, or summary comes back byte for byte (the built-in loop rebuilds its history on resume).
+ */
+export async function allNodes(store: AgentStore, sessionId: string): Promise<Node[]> {
   const out: Node[] = [];
   for (let from = 1; ; ) {
     const page = store.nodes(sessionId, from, 1000);
     out.push(...page);
-    if (page.length < 1000) return out;
+    if (page.length < 1000) break;
     from = page[page.length - 1]!.seq + 1;
   }
+  for (const [i, n] of out.entries()) if (n.blobRef !== undefined && HISTORY_KINDS.has(n.kind)) out[i] = { ...n, payload: await store.payload(n) };
+  return out;
 }
 
 function openSecrets(serverData: string, log: (m: string) => void): SecretStore | undefined {
@@ -299,14 +313,23 @@ export const buildAgentRuntime = (d: AgentWiringDeps): Effect.Effect<AgentRuntim
       core,
       requests,
       registry: d.registry,
+      rollbacks: new Rollbacks({ store: core.store, registry: d.registry, outcomes: core.outcomes, ids: core.ids }),
       adapters: [...adapters.values()],
       planner,
       environment,
-      // A `fin` call that meets a card waits on it (7B Task 5).
       sandboxes,
-      tools: { builtin: waitingOnApprovals(builtinTools({ finPath, projectDirOf: d.registry.dirOf, ...(settings.toolTimeoutS === undefined ? {} : { timeoutMs: settings.toolTimeoutS * 1000 }) }), () => approvals) },
+      // A `fin` call that meets a card waits on it (7B Task 5).
+      tools: {
+        builtin: waitingOnApprovals(builtinTools({ finPath, projectDirOf: d.registry.dirOf, ...(settings.toolTimeoutS === undefined ? {} : { timeoutMs: settings.toolTimeoutS * 1000 }) }), () => approvals),
+        ...(d.options?.fakeTools === undefined ? {} : { fake: d.options.fakeTools }),
+      },
+      ...(d.options?.afterChildOpened === undefined ? {} : { afterChildOpened: d.options.afterChildOpened }),
+      ...(d.options?.stopGraceMs === undefined ? {} : { stopGraceMs: d.options.stopGraceMs }),
       journal: core.journal,
       pricing: cataloguePricing(catalogue),
+      // Children's roles and limits, live limits (7B Task 6).
+      roles,
+      ...(settings.limits === undefined ? {} : { limits: settings.limits }),
       ...(settings.retentionDays === undefined ? {} : { retentionDays: settings.retentionDays }),
       ...(d.options?.timers === undefined ? {} : { timers: d.options.timers }),
       log: (message, details) => log(`${message} ${JSON.stringify(details)}`),

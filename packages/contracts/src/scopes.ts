@@ -183,6 +183,11 @@ const BRANCH: ReadonlyArray<ResolverName> = ["project", "branch"];
 const SESSION_DRIVERS: ReadonlyArray<PrincipalKind> = ["local", "console", "device"];
 /** The only kind with a session of its own. */
 const SESSION_OWN: ReadonlyArray<PrincipalKind> = ["agent"];
+/**
+ * Who drives a session's children (7B Decision 16): people, and a parent session, which
+ * `agentChainHooks().authorize` admits for its own children only.
+ */
+const CHILD_DRIVERS: ReadonlyArray<PrincipalKind> = [...SESSION_DRIVERS, "agent"];
 /** People's own principals (7B Decision 7: rule writes and project trust; never `local`, `agent`, `mcp`). */
 const PEOPLE: ReadonlyArray<PrincipalKind> = ["console", "device"];
 
@@ -362,16 +367,22 @@ export const RPC_SCOPES: { readonly [T in FinRpcTag]: RuleOf<T> } = {
     scopes: ["agent.run"],
     resolve: PROJECT,
     escalate: (p) => (p.mode === "plan" ? ["project.read"] : ["project.read", "project.write"]),
-    kinds: SESSION_DRIVERS,
+    kinds: CHILD_DRIVERS,
   },
-  "agent.session.prompt": { scopes: ["agent.run"], kinds: SESSION_DRIVERS },
-  "agent.session.steer": { scopes: ["agent.run"], kinds: SESSION_DRIVERS },
-  "agent.session.interrupt": { scopes: ["agent.run"], kinds: SESSION_DRIVERS },
+  // 7B Decision 16: a session starts children (`fin agent spawn`) and drives its own ones; a
+  // resume and a delete stay people's.
+  "agent.session.prompt": { scopes: ["agent.run"], kinds: CHILD_DRIVERS },
+  "agent.session.steer": { scopes: ["agent.run"], kinds: CHILD_DRIVERS },
+  "agent.session.interrupt": { scopes: ["agent.run"], kinds: CHILD_DRIVERS },
   "agent.session.resume": { scopes: ["agent.run"], kinds: SESSION_DRIVERS },
-  "agent.session.end": { scopes: ["agent.run"], kinds: SESSION_DRIVERS },
+  "agent.session.end": { scopes: ["agent.run"], kinds: CHILD_DRIVERS },
+  "agent.session.wait": { scopes: ["agent.run"], kinds: CHILD_DRIVERS },
+  // 7B Decision 23 (owner decision 2026-11-08): people, and a parent for its own direct children
+  // only (stage 4, `reach.ts`), never itself, a sibling or a grandchild.
+  "agent.session.rollback": { scopes: ["agent.run"], kinds: CHILD_DRIVERS },
   "agent.session.list": { scopes: ["agent.read"], resolve: PROJECT },
   "agent.session.get": { scopes: ["agent.read"] },
-  "agent.session.delete": { scopes: ["agent.admin"] },
+  "agent.session.delete": { scopes: ["agent.admin"], kinds: SESSION_DRIVERS },
   "agent.watch": { scopes: ["agent.read"] },
   "agent.approval.list": { scopes: ["agent.read"], resolve: PROJECT },
   // A person's, from any device or the console: never an agent's (`agent.approve` is human-only).
@@ -391,6 +402,10 @@ export const RPC_SCOPES: { readonly [T in FinRpcTag]: RuleOf<T> } = {
   "agent.rules.add": { scopes: ["agent.admin"], resolve: PROJECT, kinds: PEOPLE },
   "agent.rules.remove": { scopes: ["agent.admin"], kinds: PEOPLE },
   "agent.project.trust": { scopes: ["agent.admin"], resolve: PROJECT, kinds: PEOPLE },
+  // Saved prompts (7B Task 10, spec §6.4): anyone may read the list; running one starts a session
+  // as the starter (so the root branch and mode's scopes need `project.write`), people only.
+  "agent.savedPrompt.list": { scopes: ["agent.read"], resolve: PROJECT },
+  "agent.savedPrompt.run": { scopes: ["agent.run", "project.read", "project.write"], resolve: PROJECT, kinds: SESSION_DRIVERS },
   // The owner's agent settings (Task 12): the key, the local endpoint (`agent.admin`) and the
   // counsel gate (`settings.admin`), each change with the challenge code; reading them needs none.
   // A key's project is checked for reach when named.

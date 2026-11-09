@@ -480,6 +480,7 @@ fn merge_then_undo_of_the_merge_unit() {
             dry_run: false,
             args_hash: None,
             to: None,
+            after_seq: None,
         })
         .unwrap();
     assert_eq!(u.undone, ["m"]);
@@ -693,6 +694,7 @@ fn txid_equal_to_a_merge_id_is_refused() {
         dry_run: false,
         args_hash: None,
         to: None,
+        after_seq: None,
     };
     assert_eq!(
         code(s.undo(hist.clone()).unwrap_err()).code,
@@ -722,6 +724,7 @@ fn txid_equal_to_a_merge_id_is_refused() {
             dry_run: false,
             args_hash: None,
             to: None,
+            after_seq: None,
         })
         .unwrap();
     assert_eq!(u.undone, ["m"]);

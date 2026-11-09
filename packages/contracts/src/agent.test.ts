@@ -5,6 +5,9 @@ import { describe, expect, it } from "vitest";
 import {
   AgentApprovalAnswerPayload,
   AgentApprovalWaitPayload,
+  AgentSessionWaitPayload,
+  AgentSessionRollbackPayload,
+  SubagentNodePayload,
   APPROVAL_WAIT_MAX_MS,
   Approval,
   AgentSessionStartPayload,
@@ -16,9 +19,11 @@ import {
   WATCH_ITEM_TYPES,
   WatchItem,
 } from "./agent.ts";
+import { AgentSavedPromptRunPayload, SavedPrompt } from "./saved-prompts.ts";
 import { ProviderKey } from "./agent-admin.ts";
 import { defaultScopes } from "./auth.ts";
 import { MINT_DEFAULT_SCOPES } from "./credentials.ts";
+import { HistoryUndoPayload } from "./history.ts";
 import { STREAM_RPCS } from "./diagnostics.ts";
 import { FinRpcs } from "./rpc.ts";
 import { HUMAN_ONLY, needsConfirmation, requiredScopes, ruleOf, SCOPES, WRITE_RPCS } from "./scopes.ts";
@@ -131,6 +136,8 @@ const AGENT_RPCS = [
   "agent.session.interrupt",
   "agent.session.resume",
   "agent.session.end",
+  "agent.session.wait",
+  "agent.session.rollback",
   "agent.session.list",
   "agent.session.get",
   "agent.session.delete",
@@ -145,6 +152,8 @@ const AGENT_RPCS = [
   "agent.rules.add",
   "agent.rules.remove",
   "agent.project.trust",
+  "agent.savedPrompt.list",
+  "agent.savedPrompt.run",
 ] as const;
 type AgentTag = (typeof AGENT_RPCS)[number];
 
@@ -194,15 +203,19 @@ describe("the group", () => {
 
 /** Every agent RPC: its own scopes and who may call it (spec §3.5; plan 7A Task 2). */
 const TABLE: Record<AgentTag, { scopes: string[]; kinds?: string[]; confirmed?: boolean }> = {
-  "agent.session.start": { scopes: ["agent.run"], kinds: ["local", "console", "device"] },
-  "agent.session.prompt": { scopes: ["agent.run"], kinds: ["local", "console", "device"] },
-  "agent.session.steer": { scopes: ["agent.run"], kinds: ["local", "console", "device"] },
-  "agent.session.interrupt": { scopes: ["agent.run"], kinds: ["local", "console", "device"] },
+  "agent.session.start": { scopes: ["agent.run"], kinds: ["local", "console", "device", "agent"] },
+  "agent.session.prompt": { scopes: ["agent.run"], kinds: ["local", "console", "device", "agent"] },
+  "agent.session.steer": { scopes: ["agent.run"], kinds: ["local", "console", "device", "agent"] },
+  "agent.session.interrupt": { scopes: ["agent.run"], kinds: ["local", "console", "device", "agent"] },
   "agent.session.resume": { scopes: ["agent.run"], kinds: ["local", "console", "device"] },
-  "agent.session.end": { scopes: ["agent.run"], kinds: ["local", "console", "device"] },
+  "agent.session.end": { scopes: ["agent.run"], kinds: ["local", "console", "device", "agent"] },
+  // 7B Decision 16: a parent drives its own children (the stage-4 check); waits on them too.
+  "agent.session.wait": { scopes: ["agent.run"], kinds: ["local", "console", "device", "agent"] },
+  // 7B Decision 23: a parent rolls back its own direct children (the stage-4 check).
+  "agent.session.rollback": { scopes: ["agent.run"], kinds: ["local", "console", "device", "agent"] },
   "agent.session.list": { scopes: ["agent.read"] },
   "agent.session.get": { scopes: ["agent.read"] },
-  "agent.session.delete": { scopes: ["agent.admin"], confirmed: true },
+  "agent.session.delete": { scopes: ["agent.admin"], kinds: ["local", "console", "device"], confirmed: true },
   "agent.watch": { scopes: ["agent.read"] },
   "agent.approval.list": { scopes: ["agent.read"] },
   "agent.approval.answer": { scopes: ["agent.approve"], confirmed: true },
@@ -215,6 +228,9 @@ const TABLE: Record<AgentTag, { scopes: string[]; kinds?: string[]; confirmed?: 
   "agent.rules.add": { scopes: ["agent.admin"], kinds: ["console", "device"], confirmed: true },
   "agent.rules.remove": { scopes: ["agent.admin"], kinds: ["console", "device"], confirmed: true },
   "agent.project.trust": { scopes: ["agent.admin"], kinds: ["console", "device"], confirmed: true },
+  // Saved prompts (7B Task 10): anyone reads the list; a run is a person's (`SESSION_DRIVERS`).
+  "agent.savedPrompt.list": { scopes: ["agent.read"] },
+  "agent.savedPrompt.run": { scopes: ["agent.run", "project.read", "project.write"], kinds: ["local", "console", "device"] },
 };
 
 describe("scopes", () => {
@@ -267,6 +283,38 @@ describe("scopes", () => {
   });
 });
 
+describe("agent.session.wait and the subagent node (7B Task 6)", () => {
+  it("caps the wait at 90 s and 16 sessions", () => {
+    const decode = Schema.decodeUnknownExit(AgentSessionWaitPayload);
+    expect(decode({ ids: ["s1"], timeoutMs: 90_000 })._tag).toBe("Success");
+    expect(decode({ ids: ["s1", "s2"], any: true, timeoutMs: 0 })._tag).toBe("Success");
+    for (const bad of [{ ids: [], timeoutMs: 1 }, { ids: ["s1"], timeoutMs: 90_001 }, { ids: Array.from({ length: 17 }, (_, i) => `s${i}`), timeoutMs: 1 }]) {
+      expect(decode(bad)._tag, JSON.stringify(bad).slice(0, 40)).toBe("Failure");
+    }
+  });
+
+  it("a subagent node names the child, its status, branch and summary", () => {
+    const decode = Schema.decodeUnknownExit(SubagentNodePayload);
+    expect(decode({ child: "c1", status: "ended", reason: "briefDone", branch: "br3", summary: "done" })._tag).toBe("Success");
+    expect(decode({ child: "c1", status: "gone" })._tag).toBe("Failure");
+  });
+});
+
+describe("agent.session.rollback (7B Task 8)", () => {
+  it("names a session and a run seq (0: before the first)", () => {
+    const decode = Schema.decodeUnknownExit(AgentSessionRollbackPayload);
+    expect(decode({ sessionId: "s1", toRun: 0 })._tag).toBe("Success");
+    expect(decode({ sessionId: "s1", toRun: 2 })._tag).toBe("Success");
+    for (const bad of [{ sessionId: "s1" }, { sessionId: "s1", toRun: -1 }, { sessionId: "s1", toRun: 1.5 }]) expect(decode(bad)._tag, JSON.stringify(bad)).toBe("Failure");
+  });
+
+  it("afterSeq is the rollback's own: history.undo's payload decodes without it", () => {
+    const decoded = Schema.decodeUnknownSync(HistoryUndoPayload)({ projectId: "p", txId: "t", author: "a", branch: "b", afterSeq: 3 });
+    expect(decoded).not.toHaveProperty("afterSeq");
+    expect(decoded).toMatchObject({ branch: "b" });
+  });
+});
+
 describe("agent.approval.wait and remember (7B Tasks 4 and 5)", () => {
   it("remember takes session, project and projectLocal", () => {
     const decode = Schema.decodeUnknownExit(AgentApprovalAnswerPayload);
@@ -280,5 +328,23 @@ describe("agent.approval.wait and remember (7B Tasks 4 and 5)", () => {
     expect(decode({ id: "a1", timeoutMs: 0 })._tag).toBe("Success");
     expect(decode({ id: "a1", timeoutMs: 90_000 })._tag).toBe("Success");
     for (const bad of [90_001, -1, 1.5, "10"]) expect(decode({ id: "a1", timeoutMs: bad })._tag, String(bad)).toBe("Failure");
+  });
+});
+
+describe("saved prompts (7B Task 10)", () => {
+  const decode = Schema.decodeUnknownExit(SavedPrompt);
+  const base = { name: "make-shorts", title: "Make shorts", role: "clip-finder", mode: "draft", template: "Find {{count}}", params: [{ name: "count", type: "int", min: 1, max: 20, default: 5 }] };
+  it("decodes the schema and refuses a stray field or a bad name, type or mode", () => {
+    expect(decode(base)._tag).toBe("Success");
+    expect(decode({ ...base, budget: { tokens: 1000 } })._tag).toBe("Success");
+    for (const bad of [{ ...base, name: "Make Shorts" }, { ...base, mode: "yolo" }, { ...base, params: [{ name: "n", type: "float" }] }, { ...base, template: "" }, { ...base, params: [{ name: "Bad", type: "int" }] }]) {
+      expect(decode(bad)._tag, JSON.stringify(bad).slice(0, 60)).toBe("Failure");
+    }
+  });
+  it("a run names the project and prompt; params are whole numbers or text", () => {
+    const run = Schema.decodeUnknownExit(AgentSavedPromptRunPayload);
+    expect(run({ projectId: "p", name: "make-shorts", params: { count: 5, tone: "calm" } })._tag).toBe("Success");
+    expect(run({ projectId: "p", name: "make-shorts", params: { count: 1.5 } })._tag).toBe("Failure");
+    expect(run({ name: "make-shorts" })._tag).toBe("Failure");
   });
 });

@@ -20,61 +20,31 @@ import type { Approval, BudgetState, FinError, Harness, ProviderEvent, Run, Sess
 import { Effect } from "effect";
 import { finError, toFinError } from "../errors.ts";
 import type { BoundEvent, CallGate, Capabilities, ProviderAdapter } from "./adapter.ts";
-import { Budget, type BudgetLimits, type Crossings, DEFAULT_BUDGET, type Reading } from "./budget.ts";
+import { Budget, type Crossings, DEFAULT_BUDGET, type Reading } from "./budget.ts";
 import type { Clock, Ids } from "./clock.ts";
 import type { AgentCore } from "./core.ts";
-import { type BranchRegistry, credentialPath } from "./credentials.ts";
-import type { Pricing, RuntimeJournal, SessionEnvironment, SessionPlanner, ToolExecutor } from "./runtime-deps.ts";
+import { credentialPath } from "./credentials.ts";
+import type { Pricing, RuntimeDeps, RuntimeJournal, ToolExecutor } from "./runtime-deps.ts";
 import { budgetError, errorShape, harnessUnknown, limitsOf, NO_JOURNAL, parseRef, REPORTED_PRICING, runFacts } from "./runtime-deps.ts";
 import { call, closeLive, closeScope, type Live, openLive } from "./runtime-live.ts";
 import { OutboxDrainer } from "./runtime-outbox.ts";
-import { handleRequest, type ProviderRequests } from "./provider-requests.ts";
+import { handleRequest } from "./provider-requests.ts";
 import type { SessionSandboxes } from "./sandbox.ts";
 import type { SessionEvent } from "./session.ts";
 import type { AgentStore, Appended, Applied, NewNode } from "./store.ts";
 import { sessionNotFound } from "./store-rows.ts";
 import { WatchHub } from "./watch-hub.ts";
 
-export interface RuntimeDeps {
-  /** Task 7's per-server pieces (`AgentCoreTag`): the one store and the session credentials. */
-  readonly core: AgentCore;
-  /** The project registry: branch heads, and the root branch created as the starter (`openSession`). */
-  readonly registry: BranchRegistry;
-  readonly adapters: ReadonlyArray<ProviderAdapter>;
-  readonly planner: SessionPlanner;
-  readonly environment: SessionEnvironment;
-  /** CLI harnesses' session sandboxes (plan 7C Task 11); none: CLI processes are not started. */
-  readonly sandboxes?: SessionSandboxes;
-  /** The harnesses whose tool calls the runtime runs (8b's built-in tools; a test's fake). */
-  readonly tools?: Partial<Record<Harness, ToolExecutor>>;
-  readonly journal?: RuntimeJournal;
-  readonly pricing?: Pricing;
-  /** `agents.defaultBudget` and `agents.dailyMoneyMicros` (Decision 20). */
-  readonly defaults?: BudgetLimits;
-  /** `agents.retentionDays` (Decision 4). */
-  readonly retentionDays?: number;
-  /** How long a `budget` approval stays open (default 7 days). */
-  readonly approvalTtlMs?: number;
-  /** How long a budget stop waits for the tool calls in flight before it aborts them (30 s). */
-  readonly stopGraceMs?: number;
-  /** How many items one `agent.watch` may hold unread before it ends `WATCH_LAGGING` (1000). */
-  readonly watchBufferSize?: number;
-  /** Start the hourly retention sweep and the budget check at `boot` (default true). */
-  readonly timers?: boolean;
-  /** Provider permission requests (7B Task 5); none: every request is declined by policy. */
-  readonly requests?: ProviderRequests;
-  /** Where the engine reports what it could not do (an outbox effect, a late provider error). */
-  readonly log?: (message: string, details: Record<string, unknown>) => void;
-}
+/** What the engine is built from (`runtime-deps.ts`). */
+export type { RuntimeDeps } from "./runtime-deps.ts";
 
 /** A provider failure that ends only the run; the session stays `idle` (Decision 10). */
 const RUN_ONLY_STOPS = new Set(["MODEL_CONTEXT_EXCEEDED"]);
 const DAY_MS = 86_400_000;
-const STOP_GRACE_MS = 30_000;
+export const STOP_GRACE_MS = 30_000;
 
 /** Thrown into work queued after `abandon` (a simulated crash): nothing more is written. */
 class Abandoned extends Error {}
-
 
 export abstract class RuntimeEngine {
   protected readonly store: AgentStore;
@@ -415,6 +385,8 @@ export abstract class RuntimeEngine {
         return this.record("a capture", () => this.journal.capture({ session: this.session(sessionId), runId, request: e.request, response: e.response }));
       case "notice":
         return void (await node("notice", { [e.name]: e.details ?? true }));
+      case "summary":
+        return void (await node("summary", { prompt: e.prompt, text: e.text }));
       case "unknown":
         return void (await node("notice", { unknownEvent: e.name }));
     }
@@ -476,7 +448,12 @@ export abstract class RuntimeEngine {
       this.record("a tool result", () => this.journal.toolResult({ sessionId, runId: c.runId, callId: c.callId, ok: e.ok, output: e.output, synthetic: false }));
       await this.crossings(live, c.runId, this.budget(this.session(sessionId)).chargeTool());
     }
-    if (live.pendingStop && live.calls.size === 0 && this.lives.get(sessionId) === live) await this.stop(live, live.pendingStop);
+    if (live.calls.size === 0 && this.lives.get(sessionId) === live) await this.settled(live);
+  }
+
+  /** The calls in flight have their results (the safe point): a pending budget stop goes on. */
+  protected async settled(live: Live): Promise<void> {
+    if (live.pendingStop) await this.stop(live, live.pendingStop);
   }
 
   async #usage(live: Live, runId: string, e: Extract<ProviderEvent, { type: "usage" }>): Promise<void> {

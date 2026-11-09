@@ -374,6 +374,7 @@ pub fn commands() -> impl Iterator<Item = &'static Command> {
         .chain(crate::registry_plugins::JOB_COMMANDS)
         .chain(crate::registry_library::LIBRARY_COMMANDS)
         .chain(crate::registry_plugins::APPROVAL_COMMANDS)
+        .chain(crate::registry_plugins::AGENT_COMMANDS)
         .chain(tail)
 }
 

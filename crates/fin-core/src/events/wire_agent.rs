@@ -24,7 +24,7 @@ use super::payloads::agent::{
     AgentApproval, AgentMode, AgentSession, AgentToolCall, AgentToolResult, AgentTurn,
     ApprovalDecision, ApprovalKind, Attribution, Capture, CostBasis, DecidedBy, Harness,
     MAX_TOOL_TX_IDS, Provenance, SessionPhase, SessionTotals, SessionTrigger, SignIn, StopReason,
-    Weights,
+    TurnPurpose, Weights,
 };
 use super::wire::WireForm;
 
@@ -161,6 +161,8 @@ pub struct AgentTurnIn {
     pub cost_basis: CostBasis,
     pub capture: Capture,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub purpose: Option<TurnPurpose>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub system_hash: Option<Blake3Hex>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tools_hash: Option<Blake3Hex>,
@@ -207,6 +209,7 @@ impl WireForm for AgentTurnIn {
             cost_micros: self.cost_micros,
             cost_basis: self.cost_basis,
             capture: self.capture,
+            purpose: self.purpose,
             system_hash: self.system_hash.as_ref().map(|h| keyed(h, key)),
             tools_hash: self.tools_hash.as_ref().map(|h| keyed(h, key)),
             body_hash: self.body_hash.as_ref().map(|h| keyed(h, key)),
