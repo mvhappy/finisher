@@ -8,9 +8,11 @@
 //!   evicted. Pins do not outlive a server run: [`Index::clear_pins`] at open, and the server
 //!   pins again for what it opens.
 //!
-//! Rows of `entry_projects` and `pins` go with their entry (`ON DELETE CASCADE`). A database
-//! of another schema version, or one SQLite cannot open, is replaced by an empty one: the
-//! adoption at start (`adopt.rs`) rebuilds the rows from the entries on disk.
+//! Rows of `entry_projects` and `pins` go with their entry (`ON DELETE CASCADE`). A damaged
+//! database (`SQLITE_NOTADB`, `SQLITE_CORRUPT`) or one of another schema version is replaced by
+//! an empty one: the adoption at start (`adopt.rs`) rebuilds the rows from the entries on disk.
+//! Any other failure to open (busy, locked, permissions) is `CACHE_IO {reason: index}`, and the
+//! file is kept.
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -75,10 +77,31 @@ pub struct Index {
     conn: Connection,
 }
 
-fn open_conn(path: &Path) -> rusqlite::Result<Connection> {
+/// Why the index did not open.
+enum OpenError {
+    /// Damaged (`SQLITE_NOTADB`, `SQLITE_CORRUPT`) or of another schema version: replaced.
+    Replace(String),
+    /// Anything else (busy, locked, permissions, no file handles left): kept, `CACHE_IO`.
+    Fail(String),
+}
+
+impl From<rusqlite::Error> for OpenError {
+    fn from(e: rusqlite::Error) -> OpenError {
+        use rusqlite::ErrorCode::{DatabaseCorrupt, NotADatabase};
+        match e.sqlite_error_code() {
+            Some(NotADatabase | DatabaseCorrupt) => OpenError::Replace(e.to_string()),
+            _ => OpenError::Fail(e.to_string()),
+        }
+    }
+}
+
+fn open_conn(path: &Path) -> Result<Connection, OpenError> {
     let conn = Connection::open(path)?;
     conn.busy_timeout(Duration::from_secs(5))?;
-    let _: String = conn.query_row("PRAGMA journal_mode=WAL", [], |r| r.get(0))?;
+    let mode: String = conn.query_row("PRAGMA journal_mode=WAL", [], |r| r.get(0))?;
+    if !mode.eq_ignore_ascii_case("wal") {
+        return Err(OpenError::Fail(format!("journal mode {mode}, not WAL")));
+    }
     // A lost tail after a power cut is a missing row: the adoption at start puts it back.
     conn.execute_batch("PRAGMA synchronous=NORMAL; PRAGMA foreign_keys=ON;")?;
     let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
@@ -89,7 +112,7 @@ fn open_conn(path: &Path) -> rusqlite::Result<Connection> {
             |r| r.get(0),
         )?;
         if tables > 0 {
-            return Err(rusqlite::Error::InvalidQuery);
+            return Err(OpenError::Replace(format!("schema version {version}")));
         }
         conn.execute_batch(&format!(
             "BEGIN; {SCHEMA} PRAGMA user_version = {SCHEMA_VERSION}; COMMIT;"
@@ -107,15 +130,30 @@ fn remove_db(path: &Path) {
 }
 
 impl Index {
-    /// Opens `path`, replacing a database of another version or one that does not open.
-    /// Returns whether it was replaced.
+    /// Opens `path`. A damaged database (`SQLITE_NOTADB`, `SQLITE_CORRUPT`) or one of another
+    /// schema version is replaced by an empty one (the adoption rebuilds the rows); any other
+    /// failure is `CACHE_IO {reason: index}` and the file is kept. Returns whether it was
+    /// replaced.
     pub fn open(path: &Path) -> Result<(Index, bool), CoreError> {
+        let fail = |e: String| {
+            cache_io(
+                "index",
+                format!("the media cache index {} did not open: {e}", path.display()),
+            )
+        };
         match open_conn(path) {
             Ok(conn) => Ok((Index { conn }, false)),
-            Err(_) => {
+            Err(OpenError::Fail(e)) => Err(fail(e)),
+            Err(OpenError::Replace(_)) => {
                 remove_db(path);
-                let conn = open_conn(path).map_err(db)?;
-                Ok((Index { conn }, true))
+                match open_conn(path) {
+                    Ok(conn) => Ok((Index { conn }, true)),
+                    Err(OpenError::Fail(e)) => Err(fail(e)),
+                    Err(OpenError::Replace(why)) => Err(cache_io(
+                        "index",
+                        format!("the media cache index is still unusable once replaced: {why}"),
+                    )),
+                }
             }
         }
     }

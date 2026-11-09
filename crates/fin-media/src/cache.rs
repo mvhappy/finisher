@@ -275,9 +275,13 @@ impl EntryMeta {
         }
     }
 
-    /// The payload's size (the files listed; `meta.json` not included).
-    pub fn bytes(&self) -> u64 {
-        self.files.iter().map(|f| f.bytes).sum()
+    /// The payload's size (the files listed; `meta.json` not included);
+    /// `PLAN_MISMATCH {reason: cacheEntry}` when the sizes overflow a `u64`.
+    pub fn bytes(&self) -> Result<u64, CoreError> {
+        self.files
+            .iter()
+            .try_fold(0u64, |n, f| n.checked_add(f.bytes))
+            .ok_or_else(|| entry_invalid("the files' sizes overflow", None))
     }
 
     /// The checks a commit and an adoption make before anything else: the key parses and
@@ -302,6 +306,7 @@ impl EntryMeta {
         if self.fingerprint.is_empty() || self.fingerprint.len() > 256 {
             return Err(entry_invalid("the fingerprint is empty or too long", None));
         }
+        self.bytes()?;
         if self.files.len() > MAX_ENTRY_FILES {
             return Err(entry_invalid(
                 format!("an entry lists at most {MAX_ENTRY_FILES} files"),

@@ -132,7 +132,18 @@ fn key_parse_accepts_only_lowercase_hex() {
 fn meta_check_recomputes_the_key() {
     let m = meta(&[("proxy.mp4", b"abc"), ("table.bin", b"t")]);
     m.check().unwrap();
-    assert_eq!(m.bytes(), 4);
+    assert_eq!(m.bytes().unwrap(), 4);
+    // Sizes that overflow a u64 are refused, by `bytes` and by `check`.
+    let mut huge = m.clone();
+    for f in &mut huge.files {
+        f.bytes = u64::MAX / 2 + 1;
+    }
+    let e = huge.bytes().unwrap_err();
+    assert_eq!(
+        (e.code.as_str(), &e.details["reason"]),
+        ("PLAN_MISMATCH", &json!("cacheEntry"))
+    );
+    assert_eq!(huge.check().unwrap_err().code, "PLAN_MISMATCH");
     assert_eq!(m.key_input(), input());
     let mut forged = m.clone();
     forged.params = json!({ "tier": "t540" });

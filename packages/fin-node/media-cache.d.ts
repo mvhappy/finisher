@@ -14,6 +14,8 @@ export interface MediaCacheOpenReport {
   readonly dropped: number;
   /** The index did not open (another schema version, damaged) and was made anew. */
   readonly indexReplaced: boolean;
+  /** What could not be done and was left (a leftover under `.staging/` or `.trash/` that would not go). */
+  readonly warnings: string[];
 }
 
 /**
@@ -37,8 +39,18 @@ export declare class MediaCache {
   openReport(): MediaCacheOpenReport;
   /** Where the entry `key` lives (whether or not it exists); `null` for a malformed key. */
   entryDir(key: string): string | null;
-  /** The entry, its last use set to now; `null` when there is none or its directory is gone. */
+  /**
+   * The entry, its last use set to now; `null` when there is none or its directory is gone.
+   * A hit records nothing else: a consumer (6B-1 Tasks 14–17) then calls `serve(key, projects)`
+   * so the entry serves (reach) and is pinned for its projects, and `pin(key, "job:<id>")`
+   * before it reads the entry's files (an unpinned entry may be evicted at any time).
+   */
   lookup(key: string): Promise<EntryMeta | null>;
+  /**
+   * Records that `key` serves `projects`, as a commit does, and pins it for those open here;
+   * false when there is no such entry. Adopted entries serve no project until this or a commit.
+   */
+  serve(key: string, projects: ReadonlyArray<string>): Promise<boolean>;
   /**
    * Moves `<jobOutDir>/<key>/` into the cache (after the worker exited): fin-shm's checks,
    * `meta.json` and every file's size and BLAKE3 verified, renamed into place, then indexed

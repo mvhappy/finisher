@@ -172,7 +172,8 @@ export const serve = ({
         serverData, jobsRoot, catalogs, control: Context.get(control, ControlStoreTag), audit: Context.get(control, AuditTag), journal: diagnostics.journal, log: logSink,
       });
       // The media cache (6B-1 Task 13) before the registry: an open project pins the entries serving it.
-      const mediaCache = yield* Effect.mapError(makeMediaCache(serverData, { log: (m) => logSink("warning", m) }), startFailure);
+      // One that cannot open is logged and answers CACHE_IO; the server starts without it.
+      const mediaCache = yield* makeMediaCache(serverData, { log: (m) => logSink("warning", m) });
       // The job engine (5C-1) after the control store and the journal, so it closes before them
       // (its `close` stops every worker); `<server-data>/jobs/` is made private. Its events go
       // to the journal (D34).

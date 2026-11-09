@@ -611,3 +611,195 @@ fn leftovers_of_a_crash_are_cleared_at_open() {
     assert!(!root.join(".staging").exists());
     assert!(!root.join(".trash").exists());
 }
+
+#[test]
+fn serve_on_a_hit_records_and_pins_the_project() {
+    let fx = Fx::new();
+    let (mut c, _) = fx.open(None);
+    let (out, key) = fx.job("j1", &input("fp1"), FILES);
+    c.commit(&out, &key, &["p1".into()]).unwrap();
+    c.pin_project("p2").unwrap();
+    // A consumer for p2 finds the entry: a hit commits nothing, so `serve` records p2.
+    assert!(c.lookup(&key).unwrap().is_some());
+    assert!(c.pins_of(&key).unwrap().is_empty());
+    assert!(c.serve(&key, &["p2".into(), "p3".into()]).unwrap());
+    assert_eq!(c.projects_of(&key).unwrap(), ["p1", "p2", "p3"]);
+    assert_eq!(c.pins_of(&key).unwrap(), ["project:p2"]);
+    // Idempotent; unknown and malformed keys answer false; ids are checked.
+    assert!(c.serve(&key, &["p2".into()]).unwrap());
+    assert_eq!(c.projects_of(&key).unwrap(), ["p1", "p2", "p3"]);
+    assert!(
+        !c.serve(&CacheKey::compute(&input("zz")).to_string(), &["p2".into()])
+            .unwrap()
+    );
+    assert!(!c.serve("../x", &["p2".into()]).unwrap());
+    assert_eq!(
+        c.serve(&key, &["../x".into()]).unwrap_err().code,
+        "INVALID_OP"
+    );
+    // A project opened later pins what it was served.
+    c.pin_project("p3").unwrap();
+    assert_eq!(c.pins_of(&key).unwrap(), ["project:p2", "project:p3"]);
+}
+
+#[test]
+fn an_adopted_entry_is_reachable_through_serve() {
+    let fx = Fx::new();
+    let (out, key) = fx.job("j1", &input("fp1"), FILES);
+    {
+        let (mut c, _) = fx.open(None);
+        c.faults.stop_after_rename = true;
+        assert!(c.commit(&out, &key, &["p1".into()]).is_err());
+    }
+    let (mut c, adopted) = fx.open(None);
+    assert_eq!(adopted.adopted, 1);
+    c.pin_project("p1").unwrap();
+    assert!(c.projects_of(&key).unwrap().is_empty());
+    assert!(c.serve(&key, &["p1".into()]).unwrap());
+    assert_eq!(c.projects_of(&key).unwrap(), ["p1"]);
+    assert_eq!(c.pins_of(&key).unwrap(), ["project:p1"]);
+}
+
+#[test]
+fn an_index_of_another_version_is_replaced_and_rebuilt() {
+    let fx = Fx::new();
+    let (out, key) = fx.job("j1", &input("fp1"), FILES);
+    {
+        let (mut c, _) = fx.open(None);
+        c.commit(&out, &key, &[]).unwrap();
+    }
+    let db = fx.root().join("index.db");
+    {
+        let conn = rusqlite::Connection::open(&db).unwrap();
+        conn.execute_batch("PRAGMA user_version = 99;").unwrap();
+    }
+    let (mut c, adopted) = fx.open(None);
+    assert!(adopted.index_replaced, "{adopted:?}");
+    assert_eq!(adopted.adopted, 1);
+    assert!(c.lookup(&key).unwrap().is_some());
+}
+
+/// Whether `path` is unreadable now (false when running as root, which reads anything).
+#[cfg(unix)]
+fn locked_out(path: &Path) -> bool {
+    fs::File::open(path).is_err()
+}
+
+#[cfg(unix)]
+fn chmod(path: &Path, mode: u32) {
+    use std::os::unix::fs::PermissionsExt;
+    fs::set_permissions(path, fs::Permissions::from_mode(mode)).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn an_index_that_cannot_open_is_cache_io_and_kept() {
+    let fx = Fx::new();
+    let (out, key) = fx.job("j1", &input("fp1"), FILES);
+    {
+        let (mut c, _) = fx.open(None);
+        c.commit(&out, &key, &[]).unwrap();
+    }
+    let db = fx.root().join("index.db");
+    let before = fs::read(&db).unwrap();
+    chmod(&db, 0o000);
+    if !locked_out(&db) {
+        chmod(&db, 0o600);
+        eprintln!("an_index_that_cannot_open_is_cache_io_and_kept: skipped (root)");
+        return;
+    }
+    let e = Cache::open(&fx.data, None, Some(fx.clock()))
+        .err()
+        .expect("the open fails");
+    chmod(&db, 0o600);
+    assert_eq!(e.code, "CACHE_IO", "{e:?}");
+    assert_eq!(e.details["reason"], "index");
+    assert_eq!(fs::read(&db).unwrap(), before, "the index is kept");
+    let (mut c, adopted) = fx.open(None);
+    assert!(!adopted.index_replaced);
+    assert!(c.lookup(&key).unwrap().is_some());
+}
+
+#[cfg(unix)]
+#[test]
+fn leftovers_that_cannot_be_removed_do_not_stop_the_open() {
+    let fx = Fx::new();
+    drop(fx.open(None));
+    let root = fx.root();
+    let stuck = root.join(".staging").join("x");
+    fs::create_dir_all(&stuck).unwrap();
+    fs::write(stuck.join("f"), b"x").unwrap();
+    chmod(&stuck, 0o500);
+    if fs::write(stuck.join("probe"), b"").is_ok() {
+        chmod(&stuck, 0o700);
+        eprintln!("leftovers_that_cannot_be_removed_do_not_stop_the_open: skipped (root)");
+        return;
+    }
+    let opened = Cache::open(&fx.data, None, Some(fx.clock()));
+    chmod(&stuck, 0o700);
+    let (mut c, adopted) = opened.expect("the open goes on");
+    assert_eq!(adopted.warnings.len(), 1, "{adopted:?}");
+    assert!(adopted.warnings[0].contains(".staging"), "{adopted:?}");
+    // Commits still work: their staging names are unique.
+    let (out, key) = fx.job("j1", &input("fp1"), FILES);
+    c.commit(&out, &key, &[]).unwrap();
+}
+
+#[test]
+fn byte_counts_that_overflow_are_plan_mismatch() {
+    let fx = Fx::new();
+    let (mut c, _) = fx.open(None);
+    let i = input("fp1");
+    let mut meta = meta_for(&i, FILES);
+    for f in &mut meta.files {
+        f.bytes = u64::MAX / 2 + 1;
+    }
+    let out = fx.jobs.join("j1").join("out");
+    write_dir(&out.join(&meta.key), &meta, FILES);
+    let e = c.commit(&out, &meta.key, &[]).unwrap_err();
+    assert_eq!(e.code, "PLAN_MISMATCH", "{e:?}");
+    assert_eq!(e.details["reason"], "cacheEntry");
+    assert_eq!(c.status().unwrap().entries, 0);
+}
+
+#[test]
+fn a_directory_without_a_row_in_the_run_valid_kept_damaged_replaced() {
+    let fx = Fx::new();
+    let (mut c, _) = fx.open(None);
+    // Valid: the earlier commit stopped after its rename; a second commit keeps that entry.
+    let i = input("fp1");
+    let (out, key) = fx.job("j1", &i, &[("proxy.mp4", b"first")]);
+    c.faults.stop_after_rename = true;
+    assert!(c.commit(&out, &key, &[]).is_err());
+    c.faults.stop_after_rename = false;
+    let dir = entry_dir(&fx.root(), &key_of(&key));
+    #[cfg(unix)]
+    let before = inode(&dir.join("proxy.mp4"));
+    let (out2, _) = fx.job("j2", &i, &[("proxy.mp4", b"second")]);
+    let meta = c.commit(&out2, &key, &["p1".into()]).unwrap();
+    assert_eq!(fs::read(dir.join("proxy.mp4")).unwrap(), b"first");
+    #[cfg(unix)]
+    assert_eq!(inode(&dir.join("proxy.mp4")), before);
+    assert_eq!(
+        meta.files[0].blake3,
+        blake3::hash(b"first").to_hex().to_string()
+    );
+    assert_eq!(c.lookup(&key).unwrap(), Some(meta));
+    assert_eq!(c.projects_of(&key).unwrap(), ["p1"]);
+    // Damaged: the directory left behind lost a file; the next commit replaces it.
+    let j = input("fp2");
+    let (out3, key3) = fx.job("j3", &j, &[("proxy.mp4", b"third")]);
+    c.faults.stop_after_rename = true;
+    assert!(c.commit(&out3, &key3, &[]).is_err());
+    c.faults.stop_after_rename = false;
+    let dir3 = entry_dir(&fx.root(), &key_of(&key3));
+    fs::write(dir3.join("proxy.mp4"), b"THIRD").unwrap();
+    let (out4, _) = fx.job("j4", &j, &[("proxy.mp4", b"fourth")]);
+    let meta4 = c.commit(&out4, &key3, &[]).unwrap();
+    assert_eq!(fs::read(dir3.join("proxy.mp4")).unwrap(), b"fourth");
+    assert_eq!(
+        meta4.files[0].blake3,
+        blake3::hash(b"fourth").to_hex().to_string()
+    );
+    assert_eq!(c.lookup(&key3).unwrap(), Some(meta4));
+}

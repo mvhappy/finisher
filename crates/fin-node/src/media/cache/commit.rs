@@ -29,7 +29,7 @@ use fin_core::CoreError;
 use fin_media::cache::{CacheKey, EntryMeta, META_FILE};
 use serde_json::json;
 
-use super::adopt::{META_CAP, check_hashes, check_listing, read_meta, verify_dir};
+use super::adopt::{META_CAP, check_hashes, check_listing, mismatch, read_meta, verify_dir};
 use super::evict::{entry_dir, remove_any, volume_space};
 use super::index::cache_io;
 use super::state::Cache;
@@ -91,7 +91,10 @@ impl Cache {
             .with_details(json!({ "reason": "cacheKey", "key": key.as_str(), "got": meta.key })));
         }
         check_listing(&src, &meta)?;
-        let bytes = meta.bytes() + meta_len;
+        let bytes = meta
+            .bytes()?
+            .checked_add(meta_len)
+            .ok_or_else(|| mismatch("the entry's size overflows", META_FILE))?;
         let needed = bytes.saturating_add(RESERVE);
         let free = self.free_bytes_precheck()?;
         if free < needed {

@@ -6,7 +6,10 @@
 //   it closes (`holdProject`, bound to the project registry's open hook). Pins never outlive a
 //   run, so the projects reopened after a start pin again;
 // - the RPCs `media.cache.status {}` (`server.read`) and `media.cache.gc {toGiB?}` (`settings.admin`).
-// Running jobs' `job:<id>` pins are the kinds' (6B-1 Tasks 14–16), through `cache`.
+// Running jobs' `job:<id>` pins are the kinds' (6B-1 Tasks 14–16), through `cache`; a consumer with
+// a `lookup` hit calls `cache.serve(key, projects)` (the projects it serves) and pins before reading.
+// A cache that cannot open does not stop the server: it is logged, `cache` is undefined and every
+// `media.cache.*` call answers that open's `CACHE_IO` until the next start.
 import type { FinError } from "@finisher/contracts";
 import { type CacheGcResult, type CacheStatus, MediaCache } from "@finisher/fin-node";
 import { Context, Effect, type Scope } from "effect";
@@ -19,7 +22,8 @@ export const GIB = 2 ** 30;
 export const EVICT_EVERY_MS = 10 * 60_000;
 
 export interface MediaCacheService {
-  readonly cache: MediaCache;
+  /** Undefined when the cache did not open at start (consumers then make or read nothing cached). */
+  readonly cache: MediaCache | undefined;
   readonly status: () => Effect.Effect<CacheStatus, FinError>;
   /** Evicts down to the cap, or to `toGiB` when lower. */
   readonly gc: (toGiB?: number) => Effect.Effect<CacheGcResult, FinError>;
@@ -31,11 +35,27 @@ export interface MediaCacheService {
 
 export class MediaCacheTag extends Context.Service<MediaCacheTag, MediaCacheService>()("finisherd/MediaCache") {}
 
-/** The cap `settings.json` names, in bytes; `null` for the default; `undefined` when unusable. */
+/**
+ * The cap `settings.json` names, in bytes; `null` for the default; `undefined` when unusable
+ * (including a number of GiB whose bytes are not a safe integer, e.g. `1e300`).
+ */
 export function capFromSettings(serverData: string): number | null | undefined {
   const read = readMediaSettings(serverData);
   if (read.error !== undefined) return undefined;
-  return read.cacheMaxGiB === undefined ? null : Math.floor(read.cacheMaxGiB * GIB);
+  if (read.cacheMaxGiB === undefined) return null;
+  const bytes = Math.floor(read.cacheMaxGiB * GIB);
+  return Number.isSafeInteger(bytes) ? bytes : undefined;
+}
+
+/** The service when the cache did not open: every call answers `failure` (a `CACHE_IO`). */
+function unavailable(failure: FinError): MediaCacheService {
+  return {
+    cache: undefined,
+    tick: async () => {},
+    status: () => Effect.fail(failure),
+    gc: () => Effect.fail(failure),
+    holdProject: () => ({ release: () => {} }),
+  };
 }
 
 export interface MediaCacheOptions {
@@ -43,14 +63,28 @@ export interface MediaCacheOptions {
   readonly log?: (message: string) => void;
 }
 
-/** Opens the cache with the cap of `settings.json` and starts the eviction timer (stopped with the scope). */
-export function makeMediaCache(serverData: string, options: MediaCacheOptions = {}): Effect.Effect<MediaCacheService, FinError, Scope.Scope> {
+/**
+ * Opens the cache with the cap of `settings.json` and starts the eviction timer (stopped with the
+ * scope). A cache that does not open is logged and the service answers `CACHE_IO` (never fails).
+ */
+export function makeMediaCache(serverData: string, options: MediaCacheOptions = {}): Effect.Effect<MediaCacheService, never, Scope.Scope> {
   const log = options.log ?? (() => {});
   return Effect.gen(function* () {
     const cap = capFromSettings(serverData);
     if (cap === undefined) log("finisherd: media cache: settings.json media.cacheMaxGiB is unusable; using the default cap");
-    const cache = yield* attempt(() => MediaCache.open(serverData, cap ?? undefined));
+    const opened = yield* Effect.result(attempt(() => MediaCache.open(serverData, cap ?? undefined)));
+    if (opened._tag === "Failure") {
+      const e = opened.failure;
+      log(`finisherd: media cache: unavailable (${e.code}: ${e.message}); media.cache.* answer CACHE_IO until the next start`);
+      return unavailable(
+        e.code === "CACHE_IO"
+          ? e
+          : finError("CACHE_IO", `the media cache did not open at start: ${e.message}`, { reason: "io" }, "check the volume that holds the server data, then restart finisherd"),
+      );
+    }
+    const cache = opened.success;
     const report = cache.openReport();
+    for (const w of report.warnings) log(`finisherd: media cache: ${w}`);
     if (report.adopted + report.deleted + report.dropped > 0 || report.indexReplaced) {
       log(`finisherd: media cache: adopted ${report.adopted}, deleted ${report.deleted}, dropped ${report.dropped}${report.indexReplaced ? ", index rebuilt" : ""}`);
     }

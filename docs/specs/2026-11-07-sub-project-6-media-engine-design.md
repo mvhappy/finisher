@@ -422,7 +422,7 @@ Revision 1 treated VA-API and D3D11VA like VideoToolbox. They are stateless, so 
 - **Keys:** BLAKE3 of (source fingerprint, recipe name and version, recipe parameters, `RENDER_VERSION`, decoder class). Analysis recipes (pl §8 "Recipes and caching") name the PCM or frame feed's recipe version and decoder class in theirs, so a change to the feed invalidates the analyses built on it.
 - **Entries** are directories: the payload and `meta.json` (recipe, versions, sizes, creation, the source's `MediaInfo`). Workers write into their job's `out/`; 5C's move (with `fin-shm`'s checks) puts the directory in place.
 - **Index:** a small SQLite database `cache/media/index.db` on local disk, written by `fin-node` only: entries, sizes, last use, pins, the project each entry serves (for reach checks, §7.3). Built in 6B.
-- **Eviction:** least recently used, above a cap (default the smaller of 50 GiB and 15 % of the volume, `media.cacheMaxGiB`). Entries a running job reads, or an open project's timelines use, are pinned. `fin cache status|gc`.
+- **Eviction:** least recently used, above a cap (default the smaller of 50 GiB and 15 % of the volume, `media.cacheMaxGiB`). Entries a running job reads, or an open project's timelines use, are pinned. `fin cache status` (`media.cache.status`, `server.read`); eviction on demand is the owner's `finisherd cache gc [--to <GiB>]` (`media.cache.gc` needs `settings.admin`, which is human-only, so `fin cache gc` is refused `HUMAN_ONLY`) (6B-1 Task 13, as built).
 - **Offline libraries:** proxies and PCM keep editing and preview working; export waits and lists the missing originals (`ORIGINALS_MISSING`, arch §6.7).
 
 ### 7.3 Serving the client

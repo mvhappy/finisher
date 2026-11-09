@@ -89,13 +89,13 @@ pub fn remove_any(path: &Path) -> std::io::Result<()> {
 }
 
 /// Removes the entry `key`: its directory to the trash, the row (its projects and pins with
-/// it), then the trash copy. `seq` makes the trash name unique within a run.
+/// it), then the trash copy. `seq` (with the process id) makes the trash name unique.
 pub fn remove_entry(root: &Path, index: &Index, key: &CacheKey, seq: u64) -> Result<(), CoreError> {
     let dir = entry_dir(root, key);
     let trash = trash_dir(root);
     std::fs::create_dir_all(&trash)
         .map_err(|e| cache_io("io", format!("cannot make the cache's trash: {e}")))?;
-    let gone = trash.join(format!("{key}-{seq}"));
+    let gone = trash.join(format!("{key}-{}-{seq}", std::process::id()));
     match std::fs::rename(&dir, &gone) {
         Ok(()) => {}
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}

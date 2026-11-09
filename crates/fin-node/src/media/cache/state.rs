@@ -194,6 +194,21 @@ impl Cache {
         }
     }
 
+    /// Records that the entry `key` serves `projects` (a consumer's hit: only a commit records
+    /// them otherwise) and pins it for those of them open here; false when there is no entry.
+    pub fn serve(&mut self, key: &str, projects: &[String]) -> Result<bool, CoreError> {
+        let projects = check_projects(projects)?;
+        let Ok(key) = CacheKey::parse(key) else {
+            return Ok(false);
+        };
+        if !self.index.contains(key.as_str())? {
+            return Ok(false);
+        }
+        let open = self.open_projects();
+        self.index.add_projects(key.as_str(), &projects, &open)?;
+        Ok(true)
+    }
+
     /// Removes `holder`'s pin of `key`; whether there was one.
     pub fn unpin(&mut self, key: &str, holder: &str) -> Result<bool, CoreError> {
         check_holder(holder)?;

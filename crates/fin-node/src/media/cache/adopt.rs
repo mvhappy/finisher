@@ -8,9 +8,10 @@
 //! directory holds exactly `meta.json` and the files listed, each a regular file of the size
 //! listed whose BLAKE3 matches.
 //!
-//! [`adopt`] at open: the staging directory and the trash are emptied; a row whose directory
-//! is gone is dropped; a directory under a shard without a row is adopted (its row inserted,
-//! serving no project until a commit names one) when [`verify_dir`] passes, and deleted
+//! [`adopt`] at open: the staging directory and the trash are emptied (best effort: what will
+//! not go is a warning in [`Adopted`]); a row whose directory is gone is dropped; a directory
+//! under a shard without a row is adopted (its row inserted, serving no project until a commit
+//! or a hit's `serve` names one) when [`verify_dir`] passes, and deleted
 //! otherwise, as is anything else in a shard (a file, a link, a name that is not a key of that
 //! shard).
 
@@ -41,9 +42,11 @@ pub struct Adopted {
     pub dropped: u64,
     /// The index did not open (another schema version, a damaged file) and was made anew.
     pub index_replaced: bool,
+    /// What could not be done and was left (leftovers that would not go).
+    pub warnings: Vec<String>,
 }
 
-fn mismatch(message: impl Into<String>, file: &str) -> CoreError {
+pub fn mismatch(message: impl Into<String>, file: &str) -> CoreError {
     CoreError::new("PLAN_MISMATCH", message)
         .with_details(json!({ "reason": "cacheEntry", "file": file }))
 }
@@ -159,7 +162,10 @@ pub fn verify_dir(dir: &Path, key: &CacheKey) -> Result<(EntryMeta, u64), CoreEr
     }
     check_listing(dir, &meta)?;
     check_hashes(dir, &meta)?;
-    let bytes = meta.bytes() + meta_len;
+    let bytes = meta
+        .bytes()?
+        .checked_add(meta_len)
+        .ok_or_else(|| mismatch("the entry's size overflows", META_FILE))?;
     Ok((meta, bytes))
 }
 
@@ -170,9 +176,13 @@ fn is_shard(name: &str) -> bool {
 /// The adoption at start (module docs). `now` stamps adopted rows' last use.
 pub fn adopt(root: &Path, index: &mut Index, now: i64) -> Result<Adopted, CoreError> {
     let mut out = Adopted::default();
+    // Best effort: a leftover that will not go is reported, never a reason not to open (commits
+    // and evictions use names unique to the run).
     for scratch in [root.join(".staging"), trash_dir(root)] {
-        remove_any(&scratch)
-            .map_err(|e| cache_io("io", format!("cannot empty {}: {e}", scratch.display())))?;
+        if let Err(e) = remove_any(&scratch) {
+            out.warnings
+                .push(format!("cannot empty {}: {e}", scratch.display()));
+        }
     }
     for key in index.keys()? {
         let present = CacheKey::parse(&key)

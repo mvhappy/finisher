@@ -42,6 +42,10 @@ export class MediaCache {
     return json(this.#native.commit(jobOutDir, key, [...(projects ?? [])]));
   }
 
+  serve(key, projects) {
+    return call(this.#native.serve(key, [...(projects ?? [])]));
+  }
+
   pin(key, holder) {
     return call(this.#native.pin(key, holder));
   }

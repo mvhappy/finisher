@@ -5,8 +5,9 @@
 //!
 //! - `mediaCacheOpen(serverData, capBytes?)` opens it (the index, then the adoption at start)
 //!   and resolves to a `MediaCache`; `openReport()` says what the adoption did.
-//! - `lookup(key)` (touches the last use), `commit(jobOutDir, key, projects)` (rename, then
-//!   insert; `commit.rs`), `pin`/`unpin(key, holder)`, `release(holder)`,
+//! - `lookup(key)` (touches the last use), `serve(key, projects)` (a consumer's hit: the
+//!   projects it serves, pinned for the open ones), `commit(jobOutDir, key, projects)` (rename,
+//!   then insert; `commit.rs`), `pin`/`unpin(key, holder)`, `release(holder)`,
 //!   `pinProject`/`unpinProject(projectId)`, `entriesFor(fingerprint)`, `projectsOf(key)`,
 //!   `status()`, `gc(targetBytes?)`, `setCap(capBytes?)`, `entryDir(key)`.
 //!
@@ -108,6 +109,7 @@ pub fn media_cache_open<'e>(
                     "deleted": adopted.deleted,
                     "dropped": adopted.dropped,
                     "indexReplaced": adopted.index_replaced,
+                    "warnings": adopted.warnings,
                 })
                 .to_string();
                 Ok((cache, report))
@@ -131,7 +133,7 @@ pub fn media_cache_open<'e>(
 
 #[napi]
 impl MediaCache {
-    /// What the adoption at open did: `{adopted, deleted, dropped, indexReplaced}` JSON.
+    /// What the adoption at open did: `{adopted, deleted, dropped, indexReplaced, warnings}` JSON.
     #[napi(catch_unwind)]
     pub fn open_report(&self) -> String {
         self.report.clone()
@@ -149,7 +151,9 @@ impl MediaCache {
         })
     }
 
-    /// The entry's `EntryMeta` JSON, its last use set to now; `null` when there is none.
+    /// The entry's `EntryMeta` JSON, its last use set to now; `null` when there is none. A hit
+    /// records nothing else: the consumer then calls `serve` with the projects it serves (only a
+    /// commit records them otherwise) and `pin`s the entry before it reads its files.
     #[napi(catch_unwind, ts_return_type = "Promise<string | null>")]
     pub fn lookup<'e>(&self, env: &'e Env, key: String) -> Result<Object<'e>> {
         self.run(env, move |c| {
@@ -171,6 +175,18 @@ impl MediaCache {
         self.run(env, move |c| {
             json_of(&c.commit(std::path::Path::new(&job_out_dir), &key, &projects)?)
         })
+    }
+
+    /// Records that `key` serves `projects` (each pinned while it is open here), as a commit
+    /// does: a consumer's hit calls it; false when there is no such entry.
+    #[napi(catch_unwind, ts_return_type = "Promise<boolean>")]
+    pub fn serve<'e>(
+        &self,
+        env: &'e Env,
+        key: String,
+        projects: Vec<String>,
+    ) -> Result<Object<'e>> {
+        self.run(env, move |c| c.serve(&key, &projects))
     }
 
     /// Pins `key` for `holder` (`job:<id>`, `project:<id>`); false when there is no such entry.
