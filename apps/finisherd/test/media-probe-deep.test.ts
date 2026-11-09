@@ -80,13 +80,16 @@ describe("the kind", () => {
     expect(r.kind(MEDIA_PROBE_DEEP)?.warm).toBe(false);
   });
 
-  test("dedupe is the fingerprint, the render version and the capability digest", () => {
-    const a = probeDeepDedupe(params({ renderVersion: 1, capsDigest: "c1" }));
-    expect(a).toBe(JSON.stringify(["media.probeDeep", "fp-a1", 1, "c1"]));
-    // Another asset with the same content coalesces; another report or render version does not.
-    expect(probeDeepDedupe(params({ asset: "a9", renderVersion: 1, capsDigest: "c1" }))).toBe(a);
-    expect(probeDeepDedupe(params({ renderVersion: 2, capsDigest: "c1" }))).not.toBe(a);
-    expect(probeDeepDedupe(params({ renderVersion: 1, capsDigest: "c2" }))).not.toBe(a);
+  test("dedupe is the project, the asset, the fingerprint, the render version and the capability digest", () => {
+    const withProject = (over: Partial<ProbeDeepParams>) => params({ projectId: "p1", ...over });
+    const a = probeDeepDedupe(withProject({ renderVersion: 1, capsDigest: "c1" }));
+    expect(a).toBe(JSON.stringify(["media.probeDeep", "p1", "a1", "fp-a1", 1, "c1"]));
+    // The result names its asset and prepare reads that project's manifest: another asset or
+    // project with the same content does not coalesce, nor does another report or render version.
+    expect(probeDeepDedupe(withProject({ asset: "a9", renderVersion: 1, capsDigest: "c1" }))).not.toBe(a);
+    expect(probeDeepDedupe(withProject({ projectId: "p-other", renderVersion: 1, capsDigest: "c1" }))).not.toBe(a);
+    expect(probeDeepDedupe(withProject({ renderVersion: 2, capsDigest: "c1" }))).not.toBe(a);
+    expect(probeDeepDedupe(withProject({ renderVersion: 1, capsDigest: "c2" }))).not.toBe(a);
     expect(probeDeepDedupe(params())).toBeUndefined();
   });
 

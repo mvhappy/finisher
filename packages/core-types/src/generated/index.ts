@@ -1612,7 +1612,7 @@ export type FsScope = "pluginData";
  * This interface was referenced by `FinCore`'s JSON-Schema
  * via the `definition` "HdrSource".
  */
-export type HdrSource = "container" | "sei";
+export type HdrSource = "container" | "sei" | "containerAndSei";
 /**
  * A helper's kind.
  *

@@ -5764,6 +5764,11 @@
           "const": "sei",
           "description": "H.264/HEVC SEI in the first sample (no `mdcv`/`clli` box).",
           "type": "string"
+        },
+        {
+          "const": "containerAndSei",
+          "description": "Both, field by field: the boxes' fields, and from SEI the mastering display or content\nlight level the boxes lack (a `dvcC` without `mdcv`/`clli`, or `mdcv` without `clli`).",
+          "type": "string"
         }
       ]
     },
