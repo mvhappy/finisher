@@ -170,3 +170,44 @@ fn split_of_concurrent_item_is_passed_after_anchor() {
     )
     .unwrap();
 }
+
+/// Open seed `cc 5b02bc6b`: t4 holds one clip; the head ripple-moves it to t3. Ours
+/// overwrite-trims t3's... (t3 is empty in the base: the trim names nothing) then ripple-moves
+/// t2's first clip to t3's end.
+#[test]
+fn seed_5b02bc6b_trim_then_move_to_track_filled_since() {
+    use keyed4c::Intent::{Move, Trim};
+    let lens = [vec![], vec![10], vec![10], vec![10]];
+    let committed = [(
+        vec![Move {
+            track: 3,
+            clip: 0,
+            to: 2,
+            before: None,
+            overwrite: false,
+        }],
+        false,
+    )];
+    let mine = [
+        Trim {
+            track: 2,
+            clip: 0,
+            start: false,
+            frames: 1,
+            mode: 2,
+        },
+        Move {
+            track: 1,
+            clip: 0,
+            to: 2,
+            before: None,
+            overwrite: false,
+        },
+    ];
+    check(
+        &base_4c(&lens, false, false, (0, false, false)),
+        &committed,
+        &mine,
+    )
+    .unwrap();
+}

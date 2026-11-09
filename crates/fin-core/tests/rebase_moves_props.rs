@@ -203,3 +203,241 @@ fn slide_after_lifted_end_refuses_unblamed() {
     ];
     check(&base(&lens, false, false), &committed, &mine).unwrap();
 }
+
+/// Open seed `cc 5cee31d6`: the head inserts a clip after `c1` on t1, then overwrite-moves it
+/// to t2. Ours inserts after `c1`, then sets a transition between `c1` and our clip.
+#[test]
+fn seed_5cee31d6_insert_after_lifted_concurrent_then_transition() {
+    use keyed4c::Intent::{Insert, Move, TrSet};
+    let lens = [vec![10], vec![], vec![], vec![]];
+    let committed = [
+        (
+            vec![Insert {
+                track: 0,
+                before: None,
+                len: 1,
+            }],
+            false,
+        ),
+        (
+            vec![Move {
+                track: 0,
+                clip: 5,
+                to: 1,
+                before: None,
+                overwrite: true,
+            }],
+            false,
+        ),
+    ];
+    let mine = [
+        Insert {
+            track: 0,
+            before: None,
+            len: 3,
+        },
+        TrSet { track: 0, clip: 0 },
+    ];
+    check(&base(&lens, false, false), &committed, &mine).unwrap();
+}
+
+/// Open seed `cc 1c600fdf`: `c1` (t1) is linked with `c4` (t2). The head ripple-moves `c2` to
+/// t4, then overwrite-moves it back to t1 at zero. Ours ripple-moves `c4` to t4's end.
+#[test]
+fn seed_1c600fdf_move_to_end_of_track_emptied_by_overwrite() {
+    use keyed4c::Intent::Move;
+    let lens = [vec![10, 11, 10], vec![10], vec![], vec![]];
+    let committed = [
+        (
+            vec![Move {
+                track: 0,
+                clip: 1,
+                to: 3,
+                before: None,
+                overwrite: false,
+            }],
+            false,
+        ),
+        (
+            vec![Move {
+                track: 3,
+                clip: 0,
+                to: 0,
+                before: None,
+                overwrite: true,
+            }],
+            false,
+        ),
+    ];
+    let mine = [Move {
+        track: 1,
+        clip: 0,
+        to: 3,
+        before: None,
+        overwrite: false,
+    }];
+    check(&base(&lens, true, false), &committed, &mine).unwrap();
+}
+
+/// Open seed `cc 3130272a`: `c1` (t1) is linked with `c2` (t2). The head inserts a clip on the
+/// empty t3, then overwrite-moves it to t1. Ours ripple-moves `c1` to t3's end.
+#[test]
+fn seed_3130272a_move_to_track_emptied_by_overwrite_move() {
+    use keyed4c::Intent::{Insert, Move};
+    let lens = [vec![10], vec![10], vec![], vec![]];
+    let committed = [
+        (
+            vec![Insert {
+                track: 2,
+                before: None,
+                len: 1,
+            }],
+            false,
+        ),
+        (
+            vec![Move {
+                track: 2,
+                clip: 0,
+                to: 0,
+                before: None,
+                overwrite: true,
+            }],
+            false,
+        ),
+    ];
+    let mine = [Move {
+        track: 0,
+        clip: 0,
+        to: 2,
+        before: None,
+        overwrite: false,
+    }];
+    check(&base(&lens, true, false), &committed, &mine).unwrap();
+}
+
+/// Open seed `cc aa390d30`: the head trims `c1`'s end back a frame, then ripple-moves t4's
+/// first clip to its own end. Ours inserts on t4 before its second clip, then overwrite-moves
+/// `c3` (t2) before t4's first clip.
+#[test]
+fn seed_aa390d30_overwrite_move_before_relocated_first_clip() {
+    use keyed4c::Intent::{Insert, Move, Trim};
+    let lens = [vec![10, 12], vec![10], vec![], vec![11, 10, 10]];
+    let committed = [
+        (
+            vec![Trim {
+                track: 0,
+                clip: 0,
+                start: false,
+                frames: -1,
+                mode: 0,
+            }],
+            false,
+        ),
+        (
+            vec![Move {
+                track: 3,
+                clip: 3,
+                to: 3,
+                before: None,
+                overwrite: false,
+            }],
+            false,
+        ),
+    ];
+    let mine = [
+        Insert {
+            track: 3,
+            before: Some(1),
+            len: 10,
+        },
+        Move {
+            track: 1,
+            clip: 0,
+            to: 3,
+            before: Some(0),
+            overwrite: true,
+        },
+    ];
+    check(&base(&lens, true, false), &committed, &mine).unwrap();
+}
+
+/// Open seed `cc 1477599b`: t1 holds `c1`, `c2` (`c1` linked with t2's `c3`). The head
+/// ripple-moves `c1` to its own end. Ours overwrite-moves `c2` before t2's first clip, then
+/// deletes t2's second clip.
+#[test]
+fn seed_1477599b_overwrite_move_before_partner_then_delete() {
+    use keyed4c::Intent::{Delete, Move};
+    let lens = [vec![15, 38], vec![10, 29], vec![], vec![]];
+    let committed = [(
+        vec![Move {
+            track: 0,
+            clip: 0,
+            to: 0,
+            before: None,
+            overwrite: false,
+        }],
+        false,
+    )];
+    let mine = [
+        Move {
+            track: 0,
+            clip: 5,
+            to: 1,
+            before: Some(0),
+            overwrite: true,
+        },
+        Delete { track: 1, clip: 1 },
+    ];
+    check(&base(&lens, true, false), &committed, &mine).unwrap();
+}
+
+/// Open seed `cc c65a9221`: the head slides t2's second clip, inserts before `c1` on t1, then
+/// slides t2's second clip back. Ours ripple-moves t2's first clip before t3's first, then
+/// overwrite-moves `c1` to t2's end.
+#[test]
+fn seed_c65a9221_slides_then_moves_across_partners() {
+    use keyed4c::Intent::{Insert, Move, Slide};
+    let lens = [vec![24], vec![11, 34], vec![25, 12], vec![]];
+    let committed = [
+        (
+            vec![
+                Slide {
+                    track: 1,
+                    clip: 5,
+                    frames: -1,
+                },
+                Insert {
+                    track: 0,
+                    before: Some(0),
+                    len: 29,
+                },
+            ],
+            false,
+        ),
+        (
+            vec![Slide {
+                track: 1,
+                clip: 1,
+                frames: -3,
+            }],
+            false,
+        ),
+    ];
+    let mine = [
+        Move {
+            track: 1,
+            clip: 2,
+            to: 2,
+            before: Some(0),
+            overwrite: false,
+        },
+        Move {
+            track: 0,
+            clip: 0,
+            to: 1,
+            before: None,
+            overwrite: true,
+        },
+    ];
+    check(&base(&lens, true, false), &committed, &mine).unwrap();
+}
