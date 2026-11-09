@@ -34,8 +34,13 @@ pub static MEDIA_BACKENDS: NameTable = NameTable::new(
         // `os`
         "videotoolbox",
         "audiotoolbox",
+        // 6A's placeholder for Media Foundation: never emitted; 6B-1 names `mf-ms` and `mf-hw`.
         "mediafoundation",
+        // Microsoft's own Media Foundation MFTs (6B-1 plan Decision 3).
+        "mf-ms",
         // `gpu`
+        // A GPU vendor's hardware MFT (6B-1 plan Decision 3; no vendor id reported is `gpu` too).
+        "mf-hw",
         "vaapi",
         "d3d11va",
         "nvdec",
@@ -71,8 +76,8 @@ pub fn backend_class(name: &str) -> BackendClass {
         "dav1d" | "svt-av1" | "libvpx" | "libopus" | "symphonia" | "vo-aacenc" => {
             BackendClass::Software
         }
-        "videotoolbox" | "audiotoolbox" | "mediafoundation" => BackendClass::Os,
-        "vaapi" | "d3d11va" | "nvdec" | "nvenc" => BackendClass::Gpu,
+        "videotoolbox" | "audiotoolbox" | "mediafoundation" | "mf-ms" => BackendClass::Os,
+        "mf-hw" | "vaapi" | "d3d11va" | "nvdec" | "nvenc" => BackendClass::Gpu,
         "ffmpeg" => BackendClass::Plugin,
         _ => BackendClass::Other,
     }

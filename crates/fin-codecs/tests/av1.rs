@@ -4,15 +4,15 @@
 
 use std::io::Cursor;
 
-use fin_codecs::fixture::{ClipSpec, pattern_clip};
+use fin_codecs::fixture::{ClipSpec, encode_all, fixture_config, pattern_clip};
 use fin_codecs::{
-    Av1EncoderConfig, DecodeThreads, FrameReader, RawFrame, capabilities, open_av1_encoder,
-    open_decoder_with,
+    DecodeThreads, EncoderConfig, FrameReader, ProbeResult, RawFrame, capabilities, open_encoder,
 };
 use fin_container::{Demuxer, Limits};
 use fin_core::Rational;
+use fin_media::backend::EncodePurpose;
 use fin_media::testing::{pattern, read_id_y};
-use fin_media::{ColourTags, PixelFormat, Size, VideoCodec};
+use fin_media::{PixelFormat, Size, VideoCodec};
 
 fn psnr(a: &[u8], b: &[u8]) -> f64 {
     let mse = a
@@ -39,7 +39,12 @@ fn encode_120_pattern_frames_and_decode_them_back() {
         ..Default::default()
     };
     let file = pattern_clip(&spec).unwrap();
-    let mut r = FrameReader::open(Cursor::new(file), &Limits::default(), &capabilities()).unwrap();
+    let mut r = FrameReader::open(
+        Cursor::new(file),
+        &Limits::default(),
+        &fin_codecs::ProbeResult::software_only(),
+    )
+    .unwrap();
     let v = r.info().video.clone().unwrap();
     assert_eq!(
         (v.codec, v.coded, v.frames),
@@ -72,7 +77,11 @@ fn a_truncated_sample_is_decode_failed_without_a_panic() {
     .unwrap();
     let mut d = Demuxer::open(Cursor::new(file), &Limits::default()).unwrap();
     let track = d.video().unwrap().clone();
-    let mut dec = fin_codecs::open_decoder(&track, &capabilities()).unwrap();
+    let mut dec = fin_codecs::open_decoder(
+        &fin_codecs::DecoderConfig::new(&track),
+        &fin_codecs::ProbeResult::software_only(),
+    )
+    .unwrap();
     let mut buf = Vec::new();
     d.read_sample(track.track, 0, &mut buf).unwrap();
     let mut failed = None;
@@ -101,7 +110,14 @@ fn a_picture_out_before_a_bad_packet_is_kept() {
     .unwrap();
     let mut d = Demuxer::open(Cursor::new(file), &Limits::default()).unwrap();
     let track = d.video().unwrap().clone();
-    let mut dec = open_decoder_with(&track, &capabilities(), DecodeThreads::SINGLE).unwrap();
+    let mut dec = fin_codecs::open_decoder(
+        &fin_codecs::DecoderConfig {
+            threads: DecodeThreads::SINGLE,
+            ..fin_codecs::DecoderConfig::new(&track)
+        },
+        &fin_codecs::ProbeResult::software_only(),
+    )
+    .unwrap();
     let mut buf = Vec::new();
     for i in 0..2 {
         d.read_sample(track.track, i, &mut buf).unwrap();
@@ -132,34 +148,27 @@ fn a_picture_out_before_a_bad_packet_is_kept() {
 #[test]
 fn encoding_with_one_thread_is_deterministic() {
     let run = || {
-        let cfg = Av1EncoderConfig {
+        let spec = ClipSpec {
             size: Size::new(320, 180),
-            rate: Rational::from_int(30),
             preset: 10,
             crf: 35,
             keyint: 15,
-            threads: 1,
-            colour: ColourTags::BT709,
+            ..ClipSpec::default()
         };
-        let mut enc = open_av1_encoder(&cfg).unwrap();
-        let mut out = Vec::new();
-        for i in 0..20 {
+        let mut enc = open_encoder(
+            &EncoderConfig {
+                purpose: EncodePurpose::TestFixture,
+                ..fixture_config(&spec, VideoCodec::Av1)
+            },
+            &ProbeResult::software_only(),
+        )
+        .unwrap();
+        let out = encode_all(&mut enc, 20, |i| {
             let p = pattern(i, 320, 180, 9);
-            enc.send(
-                &RawFrame::i420(Size::new(320, 180), p.y, p.u, p.v),
-                i as i64,
-                false,
-            )
-            .unwrap();
-            while let Some(pk) = enc.receive().unwrap() {
-                out.push(pk);
-            }
-        }
-        enc.finish().unwrap();
-        while let Some(pk) = enc.receive().unwrap() {
-            out.push(pk);
-        }
-        (out, enc.config())
+            RawFrame::i420(Size::new(320, 180), p.y, p.u, p.v)
+        })
+        .unwrap();
+        (out, enc.config().unwrap())
     };
     let (a, ca) = run();
     let (b, cb) = run();

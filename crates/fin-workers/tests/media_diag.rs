@@ -11,7 +11,7 @@ mod support;
 
 use fin_core::events::{decode_payload, kind};
 use fin_jobs::HostMsg;
-use fin_media::jobs::{LookResult, MediaCapabilities};
+use fin_media::jobs::{LegacyMediaCapabilities as MediaCapabilities, LookResult};
 use media_support::{Fixture, gpu_or_skip, r, worker_env};
 use serde_json::json;
 use support::{Job, Proc, Run, no_calls, spawn_with};

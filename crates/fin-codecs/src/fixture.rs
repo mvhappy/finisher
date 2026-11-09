@@ -5,11 +5,14 @@ use std::io::Cursor;
 
 use fin_container::{Mp4Options, Mp4Writer, VideoTrackConfig};
 use fin_core::{CoreError, Rational};
+use fin_media::backend::EncodePurpose;
 use fin_media::testing::pattern;
-use fin_media::{ColourTags, Rotation, Size};
+use fin_media::{ColourTags, Rotation, Size, VideoCodec};
 
-use crate::av1::{Av1EncoderConfig, open_av1_encoder};
-use crate::frame::RawFrame;
+use crate::config::{EncoderConfig, Gop, RateControl};
+use crate::frame::{EncodedPacket, RawFrame};
+use crate::hung::{EncoderSession, Fed, Output};
+use crate::registry::{ProbeResult, open_encoder};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClipSpec {
@@ -51,24 +54,74 @@ pub fn timing(rate: Rational) -> (u32, u32) {
     ((rate.num() * 1000) as u32, (rate.den() * 1000) as u32)
 }
 
-/// Encodes `spec.frames` pattern frames (`pattern(i, …)` carries frame id `i`) and muxes them.
-pub fn pattern_clip(spec: &ClipSpec) -> Result<Vec<u8>, CoreError> {
-    let cfg = Av1EncoderConfig {
+/// The encoder config for a pattern clip of `codec` (test fixtures only).
+pub fn fixture_config(spec: &ClipSpec, codec: VideoCodec) -> EncoderConfig {
+    EncoderConfig {
+        codec,
+        profile: None,
         size: spec.size,
         rate: spec.rate,
-        preset: spec.preset,
-        crf: spec.crf,
-        keyint: spec.keyint,
+        gop: Gop {
+            key_every_frames: spec.keyint,
+            closed: true,
+            intra_only: false,
+        },
+        rc: RateControl::Crf(spec.crf),
+        purpose: EncodePurpose::TestFixture,
+        adapter: None,
+        preset: Some(spec.preset),
         threads: 1,
         colour: ColourTags::BT709,
-    };
-    let mut enc = open_av1_encoder(&cfg)?;
+    }
+}
+
+/// Sends every frame `frame(i)` gives through `enc` and returns the packets in output order,
+/// starting again from frame 0 whenever the session restarts on another encoder
+/// (`ENCODER_HUNG`'s fallback).
+pub fn encode_all(
+    enc: &mut EncoderSession,
+    frames: u32,
+    mut frame: impl FnMut(u32) -> RawFrame,
+) -> Result<Vec<EncodedPacket>, CoreError> {
+    'again: loop {
+        let mut packets = Vec::new();
+        for i in 0..frames {
+            if enc.send(frame(i), i as i64, false)? == Fed::Restart {
+                continue 'again;
+            }
+            loop {
+                match enc.receive()? {
+                    Output::Packet(p) => packets.push(p),
+                    Output::Pending | Output::End => break,
+                    Output::Restart => continue 'again,
+                }
+            }
+        }
+        if enc.finish()? == Fed::Restart {
+            continue 'again;
+        }
+        loop {
+            match enc.receive()? {
+                Output::Packet(p) => packets.push(p),
+                Output::End => return Ok(packets),
+                Output::Pending => {}
+                Output::Restart => continue 'again,
+            }
+        }
+    }
+}
+
+/// Encodes `spec.frames` pattern frames (`pattern(i, …)` carries frame id `i`) as AV1 with
+/// SVT-AV1 and muxes them.
+pub fn pattern_clip(spec: &ClipSpec) -> Result<Vec<u8>, CoreError> {
+    let mut enc = open_encoder(
+        &fixture_config(spec, VideoCodec::Av1),
+        &ProbeResult::software_only(),
+    )?;
     let (timescale, tick) = timing(spec.rate);
-    let mut pts = Vec::with_capacity(spec.frames as usize);
+    let mut pts = Vec::with_capacity(spec.frames as usize + 1);
     let mut t = 0i64;
-    let mut packets = Vec::new();
     for i in 0..spec.frames {
-        let p = pattern(i, spec.size.width, spec.size.height, spec.seed);
         pts.push(t);
         t += tick as i64
             * if spec.vfr {
@@ -76,18 +129,14 @@ pub fn pattern_clip(spec: &ClipSpec) -> Result<Vec<u8>, CoreError> {
             } else {
                 1
             };
-        enc.send(&RawFrame::i420(spec.size, p.y, p.u, p.v), i as i64, false)?;
-        while let Some(pk) = enc.receive()? {
-            packets.push(pk);
-        }
     }
-    enc.finish()?;
-    while let Some(pk) = enc.receive()? {
-        packets.push(pk);
-    }
+    let packets = encode_all(&mut enc, spec.frames, |i| {
+        let p = pattern(i, spec.size.width, spec.size.height, spec.seed);
+        RawFrame::i420(spec.size, p.y, p.u, p.v)
+    })?;
     let mut w = Mp4Writer::new(Cursor::new(Vec::new()), Mp4Options::default())?;
     let track = w.add_video(VideoTrackConfig {
-        config: enc.config(),
+        config: enc.config()?,
         coded: spec.size,
         timescale,
         rotation: spec.rotation,

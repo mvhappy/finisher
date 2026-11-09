@@ -5,7 +5,8 @@ import { existsSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import type { FinError, JobView } from "@finisher/contracts";
-import type { LookResult, MediaCapabilities } from "@finisher/core-types";
+// v1 until the worker answers v2 (6B-1 Task 8).
+import type { LookResult, LegacyMediaCapabilities as MediaCapabilities } from "@finisher/core-types";
 import type { Engine } from "@finisher/fin-node";
 import { Effect, Exit } from "effect";
 import { afterAll, afterEach, beforeAll, describe, expect, test } from "vitest";

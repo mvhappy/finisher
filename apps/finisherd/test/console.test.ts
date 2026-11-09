@@ -123,8 +123,8 @@ describe("dispatch and connection", () => {
     expect((await run(["help"])).out).toContain("needs an interactive terminal");
   });
 
-  test("exit codes mirror fin's (crates/fin/src/output.rs)", () => {
-    const rs = readFileSync(join(REPO, "crates/fin/src/output.rs"), "utf8");
+  test("exit codes mirror fin's (crates/fin/src/output_codes.rs)", () => {
+    const rs = readFileSync(join(REPO, "crates/fin/src/output_codes.rs"), "utf8");
     const list = (name: string) => {
       const body = new RegExp(`const ${name}: &\\[&str\\] = &\\[([\\s\\S]*?)\\];`).exec(rs)![1]!.replace(/\/\/.*$/gm, "");
       return [...body.matchAll(/"([A-Z0-9_]+)"/g)].map((m) => m[1]);

@@ -19,6 +19,9 @@ const steps = [
   // Workers never start processes (5C-1 plan Decision 24).
   ["node", ["scripts/check-worker-spawn.mjs"]],
   ["node", ["scripts/check-agent-spawn.mjs"]],
+  // One function decides which encoder a purpose may use; encoders open only through
+  // fin_codecs::open_encoder (6B-1 plan Decision 2).
+  ["node", ["scripts/check-encoder-call-sites.mjs"]],
   ["node", ["scripts/check-native-deps.mjs"]],
   ["node", ["scripts/check-notices.mjs"]],
   ["node", ["scripts/check-runtime-libs.mjs"]],

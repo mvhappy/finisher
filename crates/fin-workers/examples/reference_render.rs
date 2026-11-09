@@ -16,7 +16,7 @@ use std::collections::HashMap;
 use std::fs::File;
 use std::path::{Path, PathBuf};
 
-use fin_codecs::{FrameReader, capabilities};
+use fin_codecs::{FrameReader, ProbeResult};
 use fin_compositor::{LayerIssue, SourceFrame, SourceProvider, compare, reference};
 use fin_container::Limits;
 use fin_core::eval::{Layer, eval_frame};
@@ -55,7 +55,7 @@ impl SourceProvider for Decoded<'_> {
                     json!({ "asset": s.asset, "io": e.to_string() }),
                 )
             })?;
-            let reader = FrameReader::open(file, &Limits::default(), &capabilities())
+            let reader = FrameReader::open(file, &Limits::default(), &ProbeResult::software_only())
                 .map_err(|e| issue(&e.code, json!({ "asset": s.asset })))?;
             self.readers.insert(s.asset.clone(), reader);
         }

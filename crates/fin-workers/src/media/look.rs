@@ -128,7 +128,7 @@ pub fn run(job: &StartJob, ctx: &mut JobCtx<'_>, warm: &mut Warm) -> Result<Valu
         let size = params
             .effective_size(Size::new(plan.resolution.width, plan.resolution.height))
             .map_err(job_error)?;
-        let mut src = Sources::new(&manifest, &mut warm.sources, &warm.caps);
+        let mut src = Sources::new(&manifest, &mut warm.sources, &warm.probe);
         let state = warm.gpu.as_mut().expect("made above");
         let started = Instant::now();
         let rendered = state.compositor.render(&state.gpu, &plan, &mut src, size);
