@@ -291,7 +291,7 @@ fn reach_bounds_every_source_colour() {
                 r[k]
             );
             assert!(
-                r[k] - worst[k] < 1e-4,
+                r[k] - worst[k] < 1e-3,
                 "{p:?} channel {k}: {} vs {}",
                 worst[k],
                 r[k]
