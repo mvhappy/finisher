@@ -186,7 +186,8 @@ pub struct MergeReport {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub origins: Vec<String>,
     /// As [`HistoryResult::placements`], each with its copy's txId, plus the `conflict`
-    /// placements of skipped candidates.
+    /// placements of skipped candidates (a retry answers with the copies' stored ones only, as
+    /// its `skipped` is empty).
     #[serde(default)]
     pub placements: Vec<Placement>,
 }

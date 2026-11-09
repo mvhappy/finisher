@@ -131,7 +131,9 @@ pub struct Record {
     /// `undo`, `redo`, `cherryPick`, `revert`, `merge`: where each item a ripple restore or
     /// move put back landed, and why when it was relocated (owner decision of 2026-11-09,
     /// `rebase::placement`), so a retry answers with them. Ignored by replay. Absent when
-    /// empty, so every other record keeps its bytes.
+    /// empty, so every other record keeps its bytes. Part of the stored format: the placement
+    /// types' variants are frozen (a new one would read as damage on an older server), and the
+    /// list counts toward the record size limit (one entry per restored item).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub placements: Vec<crate::rebase::placement::Placement>,
     pub schema_version: u32,
