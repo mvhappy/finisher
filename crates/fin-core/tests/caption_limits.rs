@@ -1,9 +1,10 @@
 //! The words a caption item may hold (review finding #14): at most
 //! [`MAX_CAPTION_WORDS`] (5,000) on every edit that makes a caption's words: `item.insert` of
 //! a caption body (`fin caption import` and SubRip import expand into those), `caption.setText`
-//! (refused before the text is aligned), the internal `caption.setWords` and the result of
-//! `caption.merge`. More is `CAPTION_TOO_LONG {item, words, max, opIndex}`. A policy check:
-//! replay does not re-judge committed history.
+//! (refused before the text is aligned) and the result of `caption.merge`. More is
+//! `CAPTION_TOO_LONG {item, words, max, opIndex}`. A check of what clients send: internal
+//! applies (undo, redo, revert, recovery; the internal `caption.setWords`) and replay re-run
+//! committed words and do not re-judge them.
 
 mod common;
 
@@ -145,7 +146,7 @@ fn set_text_takes_5000_words_and_refuses_5001() {
 }
 
 #[test]
-fn set_words_takes_5000_words_and_refuses_5001() {
+fn set_words_restores_committed_words_past_the_limit() {
     let (p, ids) = captioned(&[3]);
     let set = |n: usize| -> Op {
         CaptionSetWords {
@@ -155,10 +156,34 @@ fn set_words_takes_5000_words_and_refuses_5001() {
         }
         .into()
     };
-    mode(&p, vec![set(5_000)], ApplyMode::Internal).unwrap();
-    let e = mode(&p, vec![set(5_001)], ApplyMode::Internal).unwrap_err();
-    assert_too_long(&e, Some(&ids[0]), 5_001, 0);
+    mode(&p, vec![set(5_001)], ApplyMode::Internal).unwrap();
     mode(&p, vec![set(5_001)], ApplyMode::Replay).unwrap();
+    // Clients cannot send it at all.
+    assert_eq!(try_apply(&p, vec![set(3)]).unwrap_err().code, "INVALID_OP");
+}
+
+#[test]
+fn an_edit_of_a_caption_from_before_the_limit_undoes() {
+    // A caption of 5,001 words committed before the limit (replayed history), shortened by a
+    // client edit: the edit's inverse puts the 5,001 words back (review of batch A).
+    let p = with_caption_track();
+    let legacy = mode(
+        &p,
+        vec![caption("cap9", 0, words(5_001, "w"))],
+        ApplyMode::Replay,
+    )
+    .unwrap()
+    .project;
+    let short = CaptionSetText {
+        item: "cap9".into(),
+        text: "a few words".into(),
+    };
+    let edited = mode(&legacy, vec![short.into()], ApplyMode::Client).unwrap();
+    let undone = mode(&edited.project, edited.inverse, ApplyMode::Internal).unwrap();
+    let ItemBody::Caption { block } = &undone.project.timelines[0].tracks[2].items[0].body else {
+        panic!("not a caption")
+    };
+    assert_eq!(block.words.len(), 5_001);
 }
 
 #[test]

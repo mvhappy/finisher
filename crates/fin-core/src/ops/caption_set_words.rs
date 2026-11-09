@@ -3,8 +3,9 @@
 //! overlapping (structural); times outside the item are kept (an undo restores what a start
 //! trim moved out, Decision 13). The word times are item-relative, so a rebase maps them
 //! through the content offsets of the steps between (Decision 16). The diff records the
-//! item's `caption.words`; the inverse sets the old words. More than
-//! [`crate::captions::MAX_CAPTION_WORDS`] words is `CAPTION_TOO_LONG` (policy).
+//! item's `caption.words`; the inverse sets the old words. It only restores words a caption
+//! held, so [`crate::captions::MAX_CAPTION_WORDS`] is not re-judged here (clients cannot send
+//! it; the limit holds where words are made).
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};

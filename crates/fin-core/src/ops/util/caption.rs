@@ -128,14 +128,16 @@ pub(crate) fn check_caption_words(
     Ok(())
 }
 
-/// At most [`MAX_CAPTION_WORDS`] words for caption `item` (policy; replay does not re-judge
-/// history): more is `CAPTION_TOO_LONG {item, words, max}`.
+/// At most [`MAX_CAPTION_WORDS`] words for caption `item` in what a client sends: more is
+/// `CAPTION_TOO_LONG {item, words, max}`. Internal applies (undo, redo, revert, recovery) and
+/// replay only re-run words a committed record held, so they are not re-judged: an edit of a
+/// caption written before the limit stays undoable.
 pub(crate) fn check_word_count(
     item: &str,
     words: usize,
     bindings: &Bindings,
 ) -> Result<(), CoreError> {
-    if !bindings.policy() || words <= MAX_CAPTION_WORDS {
+    if bindings.internal() || words <= MAX_CAPTION_WORDS {
         return Ok(());
     }
     Err(CoreError::new(

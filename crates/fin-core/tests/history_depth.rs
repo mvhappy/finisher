@@ -270,13 +270,35 @@ fn merge_roots_through_a_long_undo_redo_chain() {
             copy.record.inverse.clone(),
             CYCLES,
         );
-        let last = log.find(&format!("r{}", CYCLES - 1)).unwrap().unwrap();
+        // The whole source path at once: each unit is decided once, not once per record.
+        let path = log.records("work", 1, log.head_seq("work")).unwrap();
         let roots = |target: &str| {
             let l = log.lineage(target).unwrap();
-            Roots::new(&log, &l, std::slice::from_ref(&last), &[]).unwrap()
+            let t = std::time::Instant::now();
+            let r = Roots::new(&log, &l, &path, &[]).unwrap();
+            assert!(t.elapsed().as_secs() < 30, "{:?}", t.elapsed());
+            r.undoes_target
         };
-        // On `other` (where o1 was made) the redo undoes a target record; on main it does not.
-        assert_eq!(roots("other").undoes_target, vec![true]);
-        assert_eq!(roots("main").undoes_target, vec![false]);
+        // On `other` (where o1 was made) every undo and redo undoes a target record (the merge
+        // copy itself inverts nothing); on main none does.
+        let on_other = roots("other");
+        assert_eq!(on_other.len(), 2 * CYCLES + 1);
+        assert!(!on_other[0]);
+        assert!(on_other[1..].iter().all(|&v| v));
+        assert!(roots("main").iter().all(|&v| !v));
+    });
+}
+
+#[test]
+fn an_undo_of_itself_is_a_typed_error() {
+    on_small_stack(|| {
+        let mut log = MemLog::new(with_clips(&[10, 10, 10]));
+        log.fork("b", "main", 0);
+        let undoes = vec!["x".to_string()];
+        log.append_link("b", "x", "carol", Link::Undo { undoes }, vec![delete("c1")]);
+        db_error(
+            log.pick("x", "main", "dave", "k1").unwrap_err(),
+            "linkCycle",
+        );
     });
 }

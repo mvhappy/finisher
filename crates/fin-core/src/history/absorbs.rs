@@ -82,7 +82,7 @@ enum Step {
 /// copy's on its origin's), so a chain of undo/redo cycles is as deep as the history: the
 /// records are evaluated from an explicit stack, deepest first, each once (`memo`), never by
 /// recursion (review of 2026-11-09, #15). A record needed while it is being evaluated (a loop
-/// of stored origin links) is `DB_ERROR`.
+/// of stored links: an undo of itself, a copy of a copy of itself) is `DB_ERROR` `linkCycle`.
 fn marks(
     log: &dyn LogView,
     rec: &LogRec,
@@ -112,11 +112,7 @@ fn marks(
             Step::Needs(deps) => {
                 for (d, dinv) in deps {
                     if open.contains(&(d.record.tx_id.clone(), dinv)) {
-                        return Err(chain_error(
-                            "originCycle",
-                            &rec.record.tx_id,
-                            &d.record.tx_id,
-                        ));
+                        return Err(chain_error("linkCycle", &rec.record.tx_id, &d.record.tx_id));
                     }
                     stack.push((d, dinv));
                 }
