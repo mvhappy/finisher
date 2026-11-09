@@ -37,6 +37,7 @@ mod test_hooks;
 mod tests;
 mod timers;
 pub mod wire;
+mod wire_caps;
 mod writer;
 
 #[cfg(unix)]
@@ -55,8 +56,8 @@ pub use exit::{ExitInfo, ExitReason, KillReason};
 pub use host::Host;
 pub use memory::MemoryRule;
 pub use spawner::{
-    JobLimits, PathGrant, PlatformCommand, Profile, Program, Qos, Role, SpawnError, SpawnRequest,
-    Spawner, UiLimits, Unsandboxed,
+    JobLimits, PathGrant, PlatformCommand, Profile, ProfileCaps, ProfileState, Program, Qos, Role,
+    SpawnError, SpawnRequest, Spawner, UiLimits, Unsandboxed,
 };
 
 /// The host's timers, in milliseconds (Decisions 18, 19, 19a, 20). Tests shorten them.
@@ -256,7 +257,15 @@ pub struct HostCaps {
     /// The spawner's name (`none` when unsandboxed).
     pub sandbox: &'static str,
     pub sandboxed: bool,
+    /// What each sandbox profile gets (plan 7C Decision 4).
+    pub profiles: spawner::ProfileCaps,
+    /// Warm workers can be granted per job (plan 7C Task 12).
+    pub per_job_grants: bool,
 }
+
+/// The code of a spawner refusal whose message begins with it (`SpawnError("SANDBOX_UNAVAILABLE:
+/// …")`): an enforced profile that cannot be applied (plan 7C Decision 5).
+pub const SANDBOX_UNAVAILABLE: &str = "SANDBOX_UNAVAILABLE";
 
 /// A process the host started.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -396,6 +405,9 @@ impl HostError {
             HostError::UnknownGroup(_) | HostError::GroupClosed(_) | HostError::ShutDown => {
                 "JOBHOST_STATE"
             }
+            // A sandbox spawner's refusal to start an unconfined process (plan 7C Task 7):
+            // its message begins with the code.
+            HostError::Spawner(m) if m.starts_with(SANDBOX_UNAVAILABLE) => SANDBOX_UNAVAILABLE,
             _ => "WORKER_UNAVAILABLE",
         }
     }

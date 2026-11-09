@@ -178,6 +178,8 @@ impl JobHost {
             bound(o.event_queue_bytes, EVENT_QUEUE_BYTES),
         )?;
         let mut opts = HostOptions::new(&o.binary_dir);
+        // Plan 7C Task 7: the worker and plugin profiles, where they are ready and enforced.
+        opts.spawner = std::sync::Arc::new(fin_sandbox::SandboxSpawner::new(o.server_data.clone()));
         opts.timing = o.timing.unwrap_or_default().timing();
         if let Some(c) = o.cgroups {
             opts.cgroups = c.into();

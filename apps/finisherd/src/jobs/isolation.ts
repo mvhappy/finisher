@@ -73,7 +73,10 @@ export function classify(f: FailureFacts): { cls: FailureClass; error: FinError 
     return is("deterministic");
   }
   switch (f.cause) {
+    // A sandbox spawner's refusal (an enforced profile it cannot apply, a grant it cannot
+    // place; plan 7C Task 7) is the same on every try, as the self-sandbox's exit 78 is.
     case "spawn":
+      return is(e.code === "SANDBOX_UNAVAILABLE" ? "deterministic" : "transient");
     case "helper":
       return is("transient");
     case "worker":

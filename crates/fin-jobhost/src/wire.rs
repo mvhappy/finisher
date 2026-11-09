@@ -12,8 +12,8 @@ use schemars::{JsonSchema, SchemaGenerator};
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    CgroupMode, ExitInfo, ExitReason, GroupSpec, HostCaps, HostEvent, KillReason, MemoryRule,
-    PathGrant, Profile, Program, Qos, Role, SpawnRequest, Timing, Watch,
+    CgroupMode, ExitInfo, ExitReason, GroupSpec, HostEvent, KillReason, MemoryRule, PathGrant,
+    Profile, Program, Qos, Role, SpawnRequest, Timing, Watch,
 };
 
 /// An input field the host cannot use: `field` (dotted from the argument) and why.
@@ -49,6 +49,11 @@ pub struct JobHostOptions {
     #[serde(default)]
     #[schemars(with = "u32")]
     pub event_queue_bytes: Option<u32>,
+    /// `<server-data>`: the sandbox spawner places each process's grants against it (plan 7C
+    /// Task 7). Without it, a profile that is enforced on this host refuses every spawn.
+    #[serde(default)]
+    #[schemars(with = "PathBuf")]
+    pub server_data: Option<PathBuf>,
 }
 
 /// The host's timers in milliseconds; unset ones take the defaults.
@@ -505,37 +510,7 @@ pub enum JobHostKillTree {
     ProcessGroup,
 }
 
-/// What this host can enforce.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
-#[serde(rename_all = "camelCase")]
-pub struct JobHostCaps {
-    pub kill_tree: JobHostKillTree,
-    pub watchdog: bool,
-    /// Group memory limits are enforced by the kernel (cgroup `memory.max` or a Job).
-    pub cgroup_memory: bool,
-    /// Per-process limits are enforced (leaf Jobs or leaf cgroups).
-    pub leaf_limits: bool,
-    /// The spawner's name (`none` unsandboxed).
-    pub sandbox: String,
-    pub sandboxed: bool,
-}
-
-impl From<HostCaps> for JobHostCaps {
-    fn from(c: HostCaps) -> JobHostCaps {
-        JobHostCaps {
-            kill_tree: match c.kill_tree {
-                crate::KillTree::JobObject => JobHostKillTree::JobObject,
-                crate::KillTree::Cgroup => JobHostKillTree::Cgroup,
-                crate::KillTree::ProcessGroup => JobHostKillTree::ProcessGroup,
-            },
-            watchdog: c.watchdog,
-            cgroup_memory: c.cgroup_memory,
-            leaf_limits: c.leaf_limits,
-            sandbox: c.sandbox.to_owned(),
-            sandboxed: c.sandboxed,
-        }
-    }
-}
+pub use crate::wire_caps::{JobHostCaps, JobHostProfileState, JobHostProfiles};
 
 /// Adds every shape above to `g` (`export_schema`).
 pub fn register_schemas(g: &mut SchemaGenerator) {

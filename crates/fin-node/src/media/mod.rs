@@ -7,7 +7,7 @@
 //!   and writes `snapshot.json` ([`fin_media::jobs::JobSnapshot`]), `manifest.json`
 //!   ([`fin_media::jobs::RenderManifest`]) and, when given the job's params, `params.json`
 //!   (with the plan samples filled) into the job's `in/` directory. Resolves to
-//!   `{rev, planSamples}`.
+//!   `{rev, planSamples, sources}` (the files the worker opens).
 //! - [`commit_job_output`]: `fin_shm::commit_output` as an async call. The kind's
 //!   `onSucceeded` moves each finished file out of the job directory with it, after the
 //!   worker can no longer write (spec §3.3).
@@ -38,6 +38,10 @@ struct Prepared {
     /// The rev of the snapshot written (the branch's head when it was read).
     rev: u64,
     plan_samples: Vec<PlanSample>,
+    /// Every file the manifest makes the worker open (the assets' originals and the project's
+    /// font files), as the manifest names them: the kind grants each to the worker (plan 7C
+    /// Task 7).
+    sources: Vec<String>,
 }
 
 /// The inputs of one `prepareMediaJob` call.
@@ -116,9 +120,18 @@ fn prepare(store: &Shared, req: Request) -> Result<String> {
         p.plan_samples = samples.clone();
         inputs::write_json(dir, "params.json", &p).map_err(reject)?;
     }
+    let mut sources: Vec<String> = manifest
+        .assets
+        .iter()
+        .filter_map(|a| a.original.as_ref().map(|o| o.path.clone()))
+        .chain(manifest.fonts.files.iter().map(|f| f.original.path.clone()))
+        .collect();
+    sources.sort();
+    sources.dedup();
     encode(&Prepared {
         rev,
         plan_samples: samples,
+        sources,
     })
 }
 

@@ -6401,11 +6401,20 @@
           "description": "Per-process limits are enforced (leaf Jobs or leaf cgroups).",
           "type": "boolean"
         },
+        "perJobGrants": {
+          "description": "Warm workers can be granted per job (plan 7C Task 12): warm kinds run warm under an\nenforced profile only then.",
+          "type": "boolean"
+        },
+        "profiles": {
+          "$ref": "#/$defs/JobHostProfiles",
+          "description": "What each sandbox profile gets (plan 7C Decision 4)."
+        },
         "sandbox": {
           "description": "The spawner's name (`none` unsandboxed).",
           "type": "string"
         },
         "sandboxed": {
+          "description": "Every profile is enforced.",
           "type": "boolean"
         },
         "watchdog": {
@@ -6418,7 +6427,9 @@
         "cgroupMemory",
         "leafLimits",
         "sandbox",
-        "sandboxed"
+        "sandboxed",
+        "profiles",
+        "perJobGrants"
       ],
       "type": "object"
     },
@@ -6841,6 +6852,11 @@
           "minimum": 0,
           "type": "integer"
         },
+        "serverData": {
+          "default": null,
+          "description": "`<server-data>`: the sandbox spawner places each process's grants against it (plan 7C\nTask 7). Without it, a profile that is enforced on this host refuses every spawn.",
+          "type": "string"
+        },
         "timing": {
           "$ref": "#/$defs/JobHostTiming"
         },
@@ -6852,6 +6868,31 @@
       },
       "required": [
         "binaryDir"
+      ],
+      "type": "object"
+    },
+    "JobHostProfileState": {
+      "description": "A sandbox profile's state on this host.",
+      "enum": [
+        "enforced",
+        "disabled",
+        "unavailable"
+      ],
+      "type": "string"
+    },
+    "JobHostProfiles": {
+      "description": "[`JobHostProfileState`] per profile.",
+      "properties": {
+        "plugin": {
+          "$ref": "#/$defs/JobHostProfileState"
+        },
+        "worker": {
+          "$ref": "#/$defs/JobHostProfileState"
+        }
+      },
+      "required": [
+        "worker",
+        "plugin"
       ],
       "type": "object"
     },

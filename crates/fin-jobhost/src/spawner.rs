@@ -143,11 +143,46 @@ impl fmt::Display for SpawnError {
 
 impl std::error::Error for SpawnError {}
 
+/// What a spawner does for one profile on this host (plan 7C Decision 4).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProfileState {
+    /// Every process of the profile is confined.
+    Enforced,
+    /// Processes run unconfined, with the warnings their sub-project shows (the profile is not
+    /// ready on this OS, or the mechanism is off: F2).
+    Disabled,
+    /// The profile is ready but the host lacks the mechanism: its spawns are refused.
+    Unavailable,
+}
+
+/// [`ProfileState`] per profile.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ProfileCaps {
+    pub worker: ProfileState,
+    pub plugin: ProfileState,
+}
+
+impl ProfileCaps {
+    pub const DISABLED: ProfileCaps = ProfileCaps {
+        worker: ProfileState::Disabled,
+        plugin: ProfileState::Disabled,
+    };
+}
+
 /// The spawn hook. `prepare` runs on the host's spawn thread for every process.
 pub trait Spawner: Send + Sync {
     fn name(&self) -> &'static str;
+    /// True only when every profile is enforced.
     fn sandboxed(&self) -> bool;
     fn prepare(&self, req: &SpawnRequest, cmd: &mut PlatformCommand) -> Result<(), SpawnError>;
+    /// What each profile gets (`caps().profiles`).
+    fn profiles(&self) -> ProfileCaps {
+        ProfileCaps::DISABLED
+    }
+    /// A warm worker can be granted each job's paths, one job at a time (plan 7C Task 12).
+    fn per_job_grants(&self) -> bool {
+        false
+    }
 }
 
 /// No sandbox: name `none`, `sandboxed` false, `prepare` does nothing.

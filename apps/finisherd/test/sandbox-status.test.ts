@@ -30,7 +30,7 @@ const DISABLED: SandboxMechanism = { kind: "disabled", reason: "landlockDisabled
 const NOT_READY: SandboxMechanism = { kind: "disabled", reason: "profileNotReady" };
 const ENFORCED: SandboxMechanism = { kind: "enforced", detail: "landlock abi 8" };
 
-const caps = { killTree: "processGroup", watchdog: true, cgroupMemory: false, leafLimits: false, sandbox: "none", sandboxed: false } as const;
+const caps = { killTree: "processGroup", watchdog: true, cgroupMemory: false, leafLimits: false, sandbox: "none", sandboxed: false, profiles: { worker: "disabled", plugin: "disabled" }, perJobGrants: false } as const;
 const deps = (status: SandboxStatus, reporter?: SandboxReporter) => ({
   control: { envId: "env", listeners: () => [], stop: () => {} },
   audit: { failures: () => 0 } as unknown as Audit,
@@ -59,10 +59,10 @@ describe("sandbox status", () => {
     const s = sandboxStatus();
     for (const p of ["agent", "hook", "worker", "plugin"] as const) expect(s[p]).toEqual(DISABLED);
     process.env[STUB] = "unavailable";
-    // `unavailable` refuses only a ready profile (none is yet: `READY` is empty) and `worker`,
-    // whose Landlock phase a sub-project may request before it is ready.
+    // `unavailable` refuses only a ready profile, and none is yet (`READY` is empty): every
+    // profile, `worker` included, runs as before 7C (plan 7C Task 7: status and spawner agree).
     const u = sandboxStatus();
-    expect(u.worker).toMatchObject({ kind: "unavailable", need: expect.stringContaining("kernel ≥ 6.2") });
+    expect(u.worker).toEqual(NOT_READY);
     expect(u.agent).toEqual(NOT_READY);
     delete process.env[STUB];
     expect(["linux", "macos", "windows"]).toContain(sandboxStatus().os);

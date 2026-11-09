@@ -38,13 +38,14 @@ export interface AdminDeps {
 /**
  * The standing warning while job workers run unconfined (5C-2 Decision 9, spec §6.2; plan 7C
  * Decision 23): the `worker` profile's status, with the job host's spawner (`sandbox`). A host
- * whose spawner confines nothing warns even where the profile could be enforced.
+ * whose spawner does not apply the profile (`caps.profiles.worker`, plan 7C Task 7) warns even
+ * where the profile could be enforced.
  */
 export function sandboxWarning(caps: JobHostCaps, status: SandboxStatus = currentSandboxStatus()): Record<string, unknown> | undefined {
   const w = profileWarning("worker", status.os, status.worker);
-  if (w === undefined && caps.sandboxed) return undefined;
+  if (w === undefined && caps.profiles.worker === "enforced") return undefined;
   if (w !== undefined) return { ...w, sandbox: caps.sandbox };
-  // The profile could be enforced, but the job host's spawner does not apply it yet (Task 7).
+  // The profile could be enforced, but the job host's spawner does not apply it.
   const base = profileWarning("worker", status.os, { kind: "disabled", reason: "profileNotReady" });
   return { ...base, details: { ...base?.details, reason: "spawnerUnconfined" }, sandbox: caps.sandbox };
 }
@@ -78,6 +79,8 @@ export function serverStatus(deps: AdminDeps) {
           leafLimits: caps.leafLimits,
           sandbox: caps.sandbox,
           sandboxed: caps.sandboxed,
+          profiles: caps.profiles,
+          perJobGrants: caps.perJobGrants,
         },
       },
       // The job host's sandbox (5C-2), then plugins and hooks, then the agent runtime's: each

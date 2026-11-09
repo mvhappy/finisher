@@ -6,9 +6,10 @@
 //!   this crate yet, so they answer `Disabled {profileNotReady}`.
 //! - [`status`] adds [`READY`]: a profile whose escape suite has not passed on this OS runs as
 //!   before 7C (`Disabled {profileNotReady}`), unless the mechanism itself is disabled, which
-//!   is the more useful warning (its fix is a boot parameter). `worker` reports an unavailable
-//!   mechanism as such even before it is ready: its Landlock phase is applied wherever a
-//!   sub-project requests it (6B-1), and refused where the host lacks it.
+//!   is the more useful warning (its fix is a boot parameter). Every profile is treated alike
+//!   (plan 7C Task 7): the job host's `SandboxSpawner` is the only requester of the `worker`
+//!   profile and applies it only once it is ready, so `status` and the spawner's
+//!   `caps().profiles` agree.
 //!
 //! `Disabled` runs unconfined with persistent warnings; `Unavailable` refuses the start
 //! (`SANDBOX_UNAVAILABLE {profile, os, need}`). There is no owner opt-out (owner decision
@@ -75,12 +76,34 @@ pub struct LauncherProbe {
 
 /// The profiles that are the default on an OS, because their escape suite passes there
 /// (Decision 5; Task 16 adds each row as the suites pass on the validation hosts). Empty until
-/// then: the worker profile's Landlock phase is applied only where a sub-project requests it
-/// through `FIN_SELF_SANDBOX` (6B-1), and seccomp (Task 4) completes it.
+/// then nothing is applied by default; seccomp (Task 4) completes Linux's profiles.
 pub const READY: &[(Profile, Os)] = &[];
 
 /// The variable of the test hook (`test-hooks` builds only).
 pub const TEST_ENV: &str = "FIN_TEST_SANDBOX_STATUS";
+/// The test hook that adds rows to [`READY`] for this OS (`test-hooks` builds only):
+/// `FIN_TEST_SANDBOX_READY=worker,plugin`.
+pub const TEST_READY_ENV: &str = "FIN_TEST_SANDBOX_READY";
+
+/// [`READY`], with the test hook's rows in `test-hooks` builds.
+pub fn ready() -> Vec<(Profile, Os)> {
+    #[allow(unused_mut)]
+    let mut rows = READY.to_vec();
+    #[cfg(feature = "test-hooks")]
+    if let Ok(v) = std::env::var(TEST_READY_ENV) {
+        for name in v.split(',') {
+            let p = match name.trim() {
+                "agent" => Profile::Agent,
+                "hook" => Profile::Hook,
+                "worker" => Profile::Worker,
+                "plugin" => Profile::Plugin,
+                _ => continue,
+            };
+            rows.push((p, Os::current()));
+        }
+    }
+    rows
+}
 
 /// The OS mechanism on this host, whatever the profile.
 pub fn mechanism() -> Mechanism {
@@ -140,16 +163,13 @@ fn os_mechanism() -> Mechanism {
 
 /// What `profile` gets on this host.
 pub fn status(profile: Profile) -> Mechanism {
-    status_with(profile, mechanism(), READY)
+    status_with(profile, mechanism(), &ready())
 }
 
 /// [`status`] for a given mechanism and table (pure, for tests).
 pub fn status_with(profile: Profile, mechanism: Mechanism, ready: &[(Profile, Os)]) -> Mechanism {
     match mechanism {
         m @ Mechanism::Disabled { .. } => m,
-        // The worker profile's Landlock phase is applied wherever a sub-project requests it
-        // (6B-1), ready or not, and refused where the host lacks it: say so.
-        m @ Mechanism::Unavailable { .. } if profile == Profile::Worker => m,
         _ if !ready.contains(&(profile, Os::current())) => Mechanism::Disabled {
             reason: DisabledReason::ProfileNotReady,
         },
@@ -160,7 +180,8 @@ pub fn status_with(profile: Profile, mechanism: Mechanism, ready: &[(Profile, Os
 /// Every profile's status.
 pub fn all() -> SandboxStatus {
     let m = mechanism();
-    let s = |p| status_with(p, m.clone(), READY);
+    let ready = ready();
+    let s = |p| status_with(p, m.clone(), &ready);
     SandboxStatus {
         os: Os::current().into(),
         agent: s(Profile::Agent),

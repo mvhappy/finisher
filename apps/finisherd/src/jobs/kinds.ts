@@ -69,6 +69,13 @@ export interface KindSpec<P = unknown, R = unknown> {
    * rewrite every file it writes (`open(name, "w")` truncates).
    */
   readonly prepareEachAttempt?: boolean;
+  /**
+   * The files and directories outside the job directory a cold worker reads, from the job's
+   * params and what `prepare` returned as `extra` (persisted, so every attempt gets the same):
+   * each becomes a `read` grant, which the sandbox spawner turns into the worker profile's
+   * sources and caches (plan 7C Task 7). Canonical absolute paths.
+   */
+  readonly reads?: (extra: unknown, params: P) => ReadonlyArray<string>;
   /** At least once; must be idempotent (Decision 40). */
   readonly onSucceeded?: (ctx: SucceededCtx<P, R>) => Effect.Effect<R | void, FinError>;
   readonly hookTimeoutS?: number;
