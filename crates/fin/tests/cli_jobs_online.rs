@@ -203,7 +203,7 @@ fn look_no_wait_then_fin_wait_and_the_job_commands() {
     }
 }
 
-/// `server.status` (through the console) reports the job host's caps and, unsandboxed, the warning.
+/// `server.status` (through the console) reports the job host's caps and, unconfined, the warning.
 #[test]
 fn server_status_reports_job_caps_and_the_sandbox_warning() {
     let Some(server) = Server::start("jobs_status") else {
@@ -216,11 +216,14 @@ fn server_status_reports_job_caps_and_the_sandbox_warning() {
     let caps = &value["jobs"]["caps"];
     assert!(caps["killTree"].is_string(), "{status}");
     assert_eq!(caps["sandboxed"], false, "{status}");
+    // Plan 7C Task 7: the sandbox spawner, applying nothing until a profile is ready (Task 16).
+    assert_eq!(caps["profiles"]["worker"], "disabled", "{status}");
+    assert_eq!(caps["perJobGrants"], false, "{status}");
     let warnings = value["warnings"].as_array().unwrap();
     assert!(
         warnings
             .iter()
-            .any(|w| w["code"] == "SANDBOX_DISABLED" && w["sandbox"] == "none"),
+            .any(|w| w["code"] == "SANDBOX_DISABLED" && w["sandbox"] == "fin-sandbox"),
         "{status}"
     );
 }

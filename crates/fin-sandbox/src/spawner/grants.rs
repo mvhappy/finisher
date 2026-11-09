@@ -5,7 +5,7 @@
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 
-use fin_jobhost::spawner::{PathGrant, SpawnRequest};
+use fin_jobhost::spawner::{PathGrant, Role, SpawnRequest};
 use fin_jobs::FileMode;
 
 use crate::inputs::{PluginData, PluginInput, WorkerInput, WorkerScope};
@@ -16,6 +16,19 @@ pub const MEDIA_FAMILY: &str = "media";
 /// The directories of `<serverData>` a worker may be granted to read (its caches): the font
 /// cache and the media caches. Any other `read` grant inside server data is refused.
 pub const CACHE_DIRS: &[&str] = &["fonts", "cache"];
+/// Where a plugin's model files are (`<serverData>/plugins/models`, sp8 8C): the only `read`
+/// grants inside server data a plugin may get besides its package.
+pub const MODELS_DIR: &str = "plugins/models";
+/// The device nodes a plugin may be granted: render nodes only (never `card*`, a tty or
+/// `/dev/fuse`).
+const RENDER_NODE_PREFIX: &str = "renderD";
+
+fn is_render_node(p: &Path) -> bool {
+    p.parent() == Some(Path::new("/dev/dri"))
+        && p.file_name()
+            .and_then(|n| n.to_str())
+            .is_some_and(|n| n.starts_with(RENDER_NODE_PREFIX))
+}
 
 fn env<'a>(req: &'a SpawnRequest, name: &str) -> Option<&'a OsStr> {
     req.env
@@ -55,6 +68,11 @@ fn refuse(g: &PathGrant, why: &str) -> String {
 /// `<serverData>/jobs`). A warm worker's request (a grant on the jobs root) is refused: per-job
 /// grants are Task 12.
 pub fn worker_input(req: &SpawnRequest, server_data: &Path) -> Result<WorkerInput, String> {
+    if matches!(req.role, Role::Helper { .. }) {
+        // A helper's directory is `<job>/helpers/<id>/` and its grants are its own files:
+        // mapping them is a follow-up before the profile is ready (plan 7C Task 16).
+        return Err("a helper process under the worker profile (not mapped yet)".into());
+    }
     let jobs = under(server_data, "jobs");
     let job_dir = &req.cwd;
     if !job_dir.starts_with(&jobs) || job_dir == &jobs {
@@ -71,7 +89,7 @@ pub fn worker_input(req: &SpawnRequest, server_data: &Path) -> Result<WorkerInpu
         if g.path == tmp || covered(job_dir, g) {
             continue;
         }
-        if g.path.starts_with(&jobs) && writes(g.mode) && !g.path.starts_with(job_dir) {
+        if g.path == jobs {
             return Err(refuse(
                 g,
                 "a warm worker's grant on the jobs root: per-job grants come with plan 7C Task 12",
@@ -126,8 +144,16 @@ pub fn plugin_input(
     home: &Path,
 ) -> Result<PluginInput, String> {
     let call_dir = &req.cwd;
+    let jobs = under(server_data, "jobs");
+    if !call_dir.starts_with(server_data) || call_dir == server_data || call_dir == &jobs {
+        return Err(format!(
+            "the call's directory {} is not one directory of server data",
+            call_dir.display()
+        ));
+    }
     let tmp = tmp(req)?;
     let store = under(server_data, "plugins/store");
+    let models_dir = under(server_data, MODELS_DIR);
     let mut store_dir = None;
     let mut models = Vec::new();
     let mut system = Vec::new();
@@ -146,13 +172,25 @@ pub fn plugin_input(
             FileMode::Read if g.path.starts_with(call_dir) => {
                 return Err(refuse(g, "only in/ of the call's directory is read"));
             }
-            FileMode::Read if g.path.starts_with(server_data) => models.push(g.path.clone()),
+            FileMode::Read if g.path.starts_with(&models_dir) => models.push(g.path.clone()),
+            FileMode::Read if g.path.starts_with(server_data) => {
+                return Err(refuse(
+                    g,
+                    "inside server data but not the plugin's package or a model",
+                ));
+            }
             FileMode::Read => system.push(g.path.clone()),
-            FileMode::ReadWrite if g.path.starts_with("/dev") => gpu.push(DeviceRule {
+            FileMode::ReadWrite if is_render_node(&g.path) => gpu.push(DeviceRule {
                 path: g.path.clone(),
                 access: DeviceAccess::ReadWrite,
             }),
-            FileMode::ReadWrite if plugin_data.is_none() && !g.path.starts_with(call_dir) => {
+            // The per-project data directory: never in server data (another job, the jobs
+            // root, the store) and never a device.
+            FileMode::ReadWrite
+                if plugin_data.is_none()
+                    && !g.path.starts_with(server_data)
+                    && !g.path.starts_with("/dev") =>
+            {
                 plugin_data = Some(PluginData {
                     dir: g.path.clone(),
                     write: true,
@@ -269,7 +307,8 @@ mod tests {
         // No TMPDIR grant.
         assert!(worker_input(&req("t", "/srv/fin/jobs/j1", "/tmp", ok()), sd).is_err());
         for (bad, why) in [
-            (g("/srv/fin/jobs", FileMode::ReadWrite), "warm"),
+            (g("/srv/fin/jobs", FileMode::ReadWrite), "warm worker"),
+            (g("/srv/fin/jobs", FileMode::Read), "warm worker"),
             (
                 g("/srv/fin/jobs/j1/in/x", FileMode::Write),
                 "in/ is read-only",
@@ -292,7 +331,17 @@ mod tests {
             gs.push(bad);
             let e = worker_input(&req("t", "/srv/fin/jobs/j1", tmp, gs), sd).unwrap_err();
             assert!(e.contains("grant"), "{why}: {e}");
+            if why == "warm worker" {
+                assert!(e.contains(why), "{e}");
+            }
         }
+        // A helper is not mapped yet.
+        let mut h = req("t", "/srv/fin/jobs/j1/helpers/a", tmp, ok());
+        h.role = Role::Helper {
+            kind: fin_jobs::HelperKind::Codec,
+            id: "a".into(),
+        };
+        assert!(worker_input(&h, sd).unwrap_err().contains("helper"));
     }
 
     #[test]
@@ -307,7 +356,7 @@ mod tests {
                 g("/srv/fin/jobs/c1/in", FileMode::Read),
                 g("/srv/fin/jobs/c1/out", FileMode::Write),
                 g("/usr/lib", FileMode::Read),
-                g("/srv/fin/models/m.onnx", FileMode::Read),
+                g("/srv/fin/plugins/models/m.onnx", FileMode::Read),
                 g("/dev/dri/renderD128", FileMode::ReadWrite),
                 g("/home/u/p/.finisher/plugins/acme.tool", FileMode::ReadWrite),
             ],
@@ -318,7 +367,7 @@ mod tests {
             Path::new("/srv/fin/plugins/store/acme.tool@1.0.0")
         );
         assert_eq!(i.system, [PathBuf::from("/usr/lib")]);
-        assert_eq!(i.models, [PathBuf::from("/srv/fin/models/m.onnx")]);
+        assert_eq!(i.models, [PathBuf::from("/srv/fin/plugins/models/m.onnx")]);
         assert_eq!(i.gpu.len(), 1);
         assert_eq!(
             i.plugin_data,
@@ -327,9 +376,11 @@ mod tests {
                 write: true
             })
         );
-        // No package, two packages, a second data directory: refused.
+        // No package, two packages, a second data directory, anything else of server data
+        // (another job, the jobs root, `auth/`), a device other than a render node: refused.
         let base = r.grants[..1].to_vec();
         let pkg = g("/srv/fin/plugins/store/a@1", FileMode::Read);
+        let with_pkg = |x: PathGrant| vec![pkg.clone(), x];
         for extra in [
             vec![],
             vec![pkg.clone(), g("/srv/fin/plugins/store/b@1", FileMode::Read)],
@@ -338,11 +389,29 @@ mod tests {
                 g("/home/u/a", FileMode::ReadWrite),
                 g("/home/u/b", FileMode::ReadWrite),
             ],
+            with_pkg(g("/srv/fin/auth", FileMode::Read)),
+            with_pkg(g("/srv/fin/jobs/other/in", FileMode::Read)),
+            with_pkg(g("/srv/fin/jobs", FileMode::ReadWrite)),
+            with_pkg(g("/srv/fin/jobs/other/out", FileMode::ReadWrite)),
+            with_pkg(g("/dev/tty1", FileMode::ReadWrite)),
+            with_pkg(g("/dev/fuse", FileMode::ReadWrite)),
+            with_pkg(g("/dev/dri/card0", FileMode::ReadWrite)),
         ] {
             let mut gs = base.clone();
-            gs.extend(extra);
+            gs.extend(extra.clone());
             let r = req("x", "/srv/fin/jobs/c1", "/srv/fin/jobs/c1/tmp", gs);
-            assert!(plugin_input(&r, Path::new(SD), Path::new("/home/u")).is_err());
+            assert!(
+                plugin_input(&r, Path::new(SD), Path::new("/home/u")).is_err(),
+                "{extra:?}"
+            );
+        }
+        // The call's directory is one directory of server data.
+        for cwd in ["/home/u/x", "/srv/fin", "/srv/fin/jobs"] {
+            let r = req("x", cwd, "/srv/fin/jobs/c1/tmp", r.grants.clone());
+            assert!(
+                plugin_input(&r, Path::new(SD), Path::new("/home/u")).is_err(),
+                "{cwd}"
+            );
         }
     }
 }

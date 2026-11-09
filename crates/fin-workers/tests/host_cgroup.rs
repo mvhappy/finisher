@@ -116,6 +116,36 @@ fn procs(dir: &Path) -> Vec<u32> {
         .collect()
 }
 
+/// A host that must use delegated cgroups. `alone` holds when the test starts, but a process
+/// can still join the unit's cgroup before the host looks (a race with other agents' work on
+/// the machine): the host then rightly refuses delegation and says why. That case is skipped
+/// with the host's reason (a failure under `FIN_REQUIRE_CGROUP=1`); any other refusal fails
+/// the test's own assertions as before.
+fn cg_host(test: &str, f: impl FnOnce(&mut HostOptions)) -> Option<TestHost> {
+    let said = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+    let keep = said.clone();
+    let h = host_with(move |o| {
+        o.log = std::sync::Arc::new(move |m: &str| {
+            eprintln!("{m}");
+            keep.lock().unwrap().push(m.to_owned());
+        });
+        f(o);
+    });
+    if h.host.caps().kill_tree != KillTree::Cgroup {
+        let crowded = said
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|m| m.contains("holds other processes"))
+            .cloned();
+        if let Some(why) = crowded {
+            unavailable(test, &why);
+            return None;
+        }
+    }
+    Some(h)
+}
+
 fn sleeper() -> Child {
     Command::new("sleep").arg("600").spawn().unwrap()
 }
@@ -130,12 +160,16 @@ fn delegation_detected_only_when_alone() {
     assert_eq!(off.host.caps().kill_tree, KillTree::ProcessGroup);
     assert!(!cg.join("host").exists(), "Off leaves the cgroup alone");
     drop(off);
-    let h = host();
+    let Some(h) = cg_host("delegation_detected_only_when_alone", |_| {}) else {
+        return;
+    };
     let caps = h.host.caps();
     assert_eq!(caps.kill_tree, KillTree::Cgroup);
     assert!(caps.cgroup_memory && caps.leaf_limits, "{caps:?}");
     // A second host in this process finds itself in `<cg>/host` and uses the same root.
-    let h2 = host();
+    let Some(h2) = cg_host("delegation_detected_only_when_alone", |_| {}) else {
+        return;
+    };
     assert_eq!(h2.host.caps().kill_tree, KillTree::Cgroup);
 }
 
@@ -159,7 +193,9 @@ fn host_moves_into_host_leaf() {
         return;
     }
     let cg = own_cgroup();
-    let _h = host();
+    let Some(_h) = cg_host("host_moves_into_host_leaf", |_| {}) else {
+        return;
+    };
     assert_eq!(own_cgroup(), cg.join("host"));
     assert!(
         procs(&cg).is_empty(),
@@ -174,7 +210,9 @@ fn process_gets_its_leaf_before_exec() {
     if !inside("process_gets_its_leaf_before_exec") {
         return;
     }
-    let mut h = host();
+    let Some(mut h) = cg_host("process_gets_its_leaf_before_exec", |_| {}) else {
+        return;
+    };
     let (_, v) = h.run("test.echo", json!({ "value": 1, "report": ["cgroup"] }));
     let at_start = v["cgroup"].as_str().unwrap().trim().to_owned();
     let leaf = at_start.rsplit('/').take(3).collect::<Vec<_>>();
@@ -190,7 +228,9 @@ fn cgroup_kill_takes_setsid_grandchild() {
     if !inside("cgroup_kill_takes_setsid_grandchild") {
         return;
     }
-    let mut h = host();
+    let Some(mut h) = cg_host("cgroup_kill_takes_setsid_grandchild", |_| {}) else {
+        return;
+    };
     let g = h.group();
     let p = h.worker(g);
     h.hello(p);
@@ -211,7 +251,9 @@ fn group_memory_max_and_oom_reported() {
     if !inside("group_memory_max_and_oom_reported") {
         return;
     }
-    let mut h = host();
+    let Some(mut h) = cg_host("group_memory_max_and_oom_reported", |_| {}) else {
+        return;
+    };
     let g = limited_group(&h, 64 * MIB);
     let p = h.worker(g);
     h.hello(p);
@@ -226,7 +268,11 @@ fn leaf_pids_max_from_job_limits() {
     if !inside("leaf_pids_max_from_job_limits") {
         return;
     }
-    let mut h = host_with(|o| o.spawner = rewrite(|c| c.job_limits.active_processes = Some(2)));
+    let Some(mut h) = cg_host("leaf_pids_max_from_job_limits", |o| {
+        o.spawner = rewrite(|c| c.job_limits.active_processes = Some(2))
+    }) else {
+        return;
+    };
     assert!(h.host.caps().leaf_limits);
     let g = h.group();
     let p = h.worker(g);
@@ -249,7 +295,11 @@ fn leftover_groups_swept_at_start() {
     std::fs::create_dir_all(&left).unwrap();
     let mut stray = sleeper();
     std::fs::write(left.join("cgroup.procs"), stray.id().to_string()).unwrap();
-    let h = host();
+    let Some(h) = cg_host("leftover_groups_swept_at_start", |_| {}) else {
+        let _ = stray.kill();
+        let _ = stray.wait();
+        return;
+    };
     assert_eq!(h.host.caps().kill_tree, KillTree::Cgroup);
     let until = Instant::now() + WAIT;
     while stray.try_wait().unwrap().is_none() {

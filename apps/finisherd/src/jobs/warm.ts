@@ -84,15 +84,13 @@ export class WarmPools {
    * Whether a sandbox is in force for `profile`'s warm workers (H3, owner decision): then warm
    * kinds run cold, until the job host grants a warm worker each job's paths instead of the
    * whole jobs root (`caps().perJobGrants`, plan 7C Task 12). The job host's spawner applies
-   * each profile on its own (`caps().profiles`, Task 7); with no profile named, any applied
-   * one counts. A warm worker that sandboxed itself counts for every family.
+   * each profile on its own (`caps().profiles`, Task 7). A warm worker that sandboxed itself
+   * counts for every family.
    */
-  sandboxed(profile?: "worker" | "plugin"): boolean {
+  sandboxed(profile: "worker" | "plugin"): boolean {
     if (this.#selfSandboxed) return true;
     const caps = this.#e.d.host.caps();
-    if (caps.perJobGrants) return false;
-    const applied = (p: "worker" | "plugin") => caps.profiles[p] === "enforced";
-    return profile === undefined ? applied("worker") || applied("plugin") : applied(profile);
+    return !caps.perJobGrants && caps.profiles[profile] === "enforced";
   }
 
   /** A job's warm tag: a `warm` kind at `interactive` priority (Decision 35), else `undefined`. */

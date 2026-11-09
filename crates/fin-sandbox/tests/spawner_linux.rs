@@ -201,6 +201,24 @@ fn a_profile_that_passes_changes_nothing_and_a_refused_one_fails() {
         .prepare(&bad, &mut cmd(&bad))
         .unwrap_err();
     assert!(e.0.contains("not a cache"), "{e}");
+    // Too many sources for one environment string: refused clearly, not `E2BIG` at exec.
+    let many: Vec<PathGrant> = (0..6000)
+        .map(|i| {
+            g(
+                &t.sd
+                    .parent()
+                    .unwrap()
+                    .join(format!("src/a-long-name-{i:05}.mp4")),
+                FileMode::Read,
+            )
+        })
+        .collect();
+    let big = t.req(Profile::Worker, "test", many);
+    let e = t
+        .spawner(Decision::Apply, Decision::Pass)
+        .prepare(&big, &mut cmd(&big))
+        .unwrap_err();
+    assert!(e.0.contains("bytes, over"), "{e}");
     // Nothing is ready on any OS yet (Task 16 fills `READY`): the default spawner passes both.
     let default = SandboxSpawner::new(Some(t.sd.clone()));
     if std::env::var_os(fin_sandbox::status::TEST_READY_ENV).is_none() {
@@ -255,6 +273,8 @@ fn a_plugin_is_confined_by_its_pre_exec_steps() {
         s.prepare(&req, &mut c).unwrap();
         assert!(c.self_sandbox.is_none(), "plugins are confined before exec");
         assert_eq!(c.pre_exec.len(), 1);
+        // Eight processes on the leaf where limits are enforced (sp8 §3.3).
+        assert_eq!(c.job_limits.active_processes, Some(8));
         c
     };
     let key = t.sd.join("auth/local.key");

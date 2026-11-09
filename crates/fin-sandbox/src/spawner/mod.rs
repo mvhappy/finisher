@@ -23,6 +23,9 @@ use fin_jobhost::spawner::{
 use crate::policy::{Os, Profile};
 use crate::status::{Mechanism, mechanism, ready};
 
+/// The largest `FIN_SELF_SANDBOX` value: below Linux's 128 KiB per environment string.
+pub const MAX_SELF_SANDBOX: usize = 120 * 1024;
+
 /// What the spawner does for one profile.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Decision {
@@ -151,10 +154,19 @@ impl Spawner for SandboxSpawner {
             Profile::Worker => {
                 let input = grants::worker_input(req, server_data).map_err(fail)?;
                 crate::profile::worker(&input).map_err(|e| fail(e.to_string()))?;
-                cmd.self_sandbox = Some(SelfSandbox {
+                let req = SelfSandbox {
                     profile: "worker".into(),
                     args: serde_json::to_value(&input).map_err(|e| fail(e.to_string()))?,
-                });
+                };
+                // It travels as one environment string, which Linux caps (`MAX_ARG_STRLEN`):
+                // refuse clearly rather than fail `execve` with `E2BIG`.
+                let len = serde_json::to_string(&req).map_or(usize::MAX, |j| j.len());
+                if len > MAX_SELF_SANDBOX {
+                    return Err(fail(format!(
+                        "the worker input is {len} bytes, over {MAX_SELF_SANDBOX} (too many sources granted one by one)"
+                    )));
+                }
+                cmd.self_sandbox = Some(req);
                 cmd.job_limits.active_processes = Some(1);
                 Ok(())
             }
@@ -162,6 +174,9 @@ impl Spawner for SandboxSpawner {
                 let home = self.home.as_deref().ok_or_else(|| fail("no HOME".into()))?;
                 let input = grants::plugin_input(req, server_data, home).map_err(fail)?;
                 let policy = crate::profile::plugin(&input).map_err(|e| fail(e.to_string()))?;
+                // Processes: the leaf's limit where it is enforced (`caps().leafLimits`);
+                // memory stays the group's limit of 5C (Decision 4a).
+                cmd.job_limits.active_processes = policy.limits.processes;
                 plugin_steps(&policy, cmd).map_err(fail)
             }
         }

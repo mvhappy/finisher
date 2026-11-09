@@ -12,8 +12,8 @@ use schemars::{JsonSchema, SchemaGenerator};
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    CgroupMode, ExitInfo, ExitReason, GroupSpec, HostCaps, HostEvent, KillReason, MemoryRule,
-    PathGrant, Profile, Program, Qos, Role, SpawnRequest, Timing, Watch,
+    CgroupMode, ExitInfo, ExitReason, GroupSpec, HostEvent, KillReason, MemoryRule, PathGrant,
+    Profile, Program, Qos, Role, SpawnRequest, Timing, Watch,
 };
 
 /// An input field the host cannot use: `field` (dotted from the argument) and why.
@@ -510,75 +510,7 @@ pub enum JobHostKillTree {
     ProcessGroup,
 }
 
-/// What this host can enforce.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
-#[serde(rename_all = "camelCase")]
-pub struct JobHostCaps {
-    pub kill_tree: JobHostKillTree,
-    pub watchdog: bool,
-    /// Group memory limits are enforced by the kernel (cgroup `memory.max` or a Job).
-    pub cgroup_memory: bool,
-    /// Per-process limits are enforced (leaf Jobs or leaf cgroups).
-    pub leaf_limits: bool,
-    /// The spawner's name (`none` unsandboxed).
-    pub sandbox: String,
-    /// Every profile is enforced.
-    pub sandboxed: bool,
-    /// What each sandbox profile gets (plan 7C Decision 4).
-    pub profiles: JobHostProfiles,
-    /// Warm workers can be granted per job (plan 7C Task 12): warm kinds run warm under an
-    /// enforced profile only then.
-    pub per_job_grants: bool,
-}
-
-/// A sandbox profile's state on this host.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, JsonSchema)]
-#[serde(rename_all = "camelCase")]
-pub enum JobHostProfileState {
-    Enforced,
-    Disabled,
-    Unavailable,
-}
-
-/// [`JobHostProfileState`] per profile.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, JsonSchema)]
-#[serde(rename_all = "camelCase")]
-pub struct JobHostProfiles {
-    pub worker: JobHostProfileState,
-    pub plugin: JobHostProfileState,
-}
-
-impl From<crate::spawner::ProfileState> for JobHostProfileState {
-    fn from(s: crate::spawner::ProfileState) -> Self {
-        match s {
-            crate::spawner::ProfileState::Enforced => JobHostProfileState::Enforced,
-            crate::spawner::ProfileState::Disabled => JobHostProfileState::Disabled,
-            crate::spawner::ProfileState::Unavailable => JobHostProfileState::Unavailable,
-        }
-    }
-}
-
-impl From<HostCaps> for JobHostCaps {
-    fn from(c: HostCaps) -> JobHostCaps {
-        JobHostCaps {
-            kill_tree: match c.kill_tree {
-                crate::KillTree::JobObject => JobHostKillTree::JobObject,
-                crate::KillTree::Cgroup => JobHostKillTree::Cgroup,
-                crate::KillTree::ProcessGroup => JobHostKillTree::ProcessGroup,
-            },
-            watchdog: c.watchdog,
-            cgroup_memory: c.cgroup_memory,
-            leaf_limits: c.leaf_limits,
-            sandbox: c.sandbox.to_owned(),
-            sandboxed: c.sandboxed,
-            profiles: JobHostProfiles {
-                worker: c.profiles.worker.into(),
-                plugin: c.profiles.plugin.into(),
-            },
-            per_job_grants: c.per_job_grants,
-        }
-    }
-}
+pub use crate::wire_caps::{JobHostCaps, JobHostProfileState, JobHostProfiles};
 
 /// Adds every shape above to `g` (`export_schema`).
 pub fn register_schemas(g: &mut SchemaGenerator) {

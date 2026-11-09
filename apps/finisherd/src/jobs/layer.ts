@@ -86,15 +86,17 @@ export const buildJobEngine = (serverData: string, opts: JobEngineOptions = {}):
       const register = opts.register;
       yield* Effect.try({ try: () => register(registry), catch: startFailure });
     }
-    const root = yield* Effect.try({ try: () => ensureJobsRoot(serverData), catch: startFailure });
+    // Links resolved once, for the jobs root (and so every job directory, `cwd` and grant) and
+    // the sandbox spawner alike: the profiles' paths must be canonical (plan 7C Task 7).
+    const realData = yield* Effect.try({ try: () => realpathSync(serverData), catch: startFailure });
+    const root = yield* Effect.try({ try: () => ensureJobsRoot(realData), catch: startFailure });
     const host = yield* Effect.tryPromise({
       try: () =>
         EngineHost.start(
           {
             binaryDir,
-            // The sandbox spawner places each process's grants against it (plan 7C Task 7), links
-            // resolved as the profile's paths are.
-            serverData: realpathSync(serverData),
+            // The sandbox spawner places each process's grants against it (plan 7C Task 7).
+            serverData: realData,
             ...(opts.timing === undefined ? {} : { timing: opts.timing }),
             ...(opts.cgroups === undefined ? {} : { cgroups: opts.cgroups }),
             ...(opts.watchdog === undefined ? {} : { watchdog: opts.watchdog }),

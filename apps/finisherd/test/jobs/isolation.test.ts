@@ -29,6 +29,7 @@ describe("classification", () => {
       ["HELPER_FAILED", { cause: "helper", error: err("HELPER_FAILED") }, "transient"],
       ["noHello", { cause: "exit", error: err("WORKER_UNAVAILABLE"), exit: exit({ reason: "noHello" }) }, "transient"],
       ["SpawnFailed", { cause: "spawn", error: err("WORKER_UNAVAILABLE") }, "transient"],
+      ["SpawnRefusedBySandbox", { cause: "spawn", error: err("SANDBOX_UNAVAILABLE") }, "deterministic"],
       ["error retry: backoff", { cause: "worker", error: err("IO_ERROR"), retry: "backoff" }, "transient"],
       ["error retry: fresh", { cause: "worker", error: err("GPU_DEVICE_LOST"), retry: "fresh" }, "fresh"],
       ["error retry: never", { cause: "worker", error: err("BAD_INPUT"), retry: "never" }, "deterministic"],

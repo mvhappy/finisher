@@ -59,10 +59,10 @@ describe("sandbox status", () => {
     const s = sandboxStatus();
     for (const p of ["agent", "hook", "worker", "plugin"] as const) expect(s[p]).toEqual(DISABLED);
     process.env[STUB] = "unavailable";
-    // `unavailable` refuses only a ready profile (none is yet: `READY` is empty) and `worker`,
-    // whose Landlock phase a sub-project may request before it is ready.
+    // `unavailable` refuses only a ready profile, and none is yet (`READY` is empty): every
+    // profile, `worker` included, runs as before 7C (plan 7C Task 7: status and spawner agree).
     const u = sandboxStatus();
-    expect(u.worker).toMatchObject({ kind: "unavailable", need: expect.stringContaining("kernel ≥ 6.2") });
+    expect(u.worker).toEqual(NOT_READY);
     expect(u.agent).toEqual(NOT_READY);
     delete process.env[STUB];
     expect(["linux", "macos", "windows"]).toContain(sandboxStatus().os);

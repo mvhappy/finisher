@@ -37,6 +37,7 @@ mod test_hooks;
 mod tests;
 mod timers;
 pub mod wire;
+mod wire_caps;
 mod writer;
 
 #[cfg(unix)]
