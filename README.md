@@ -99,7 +99,7 @@ fin keyframe set img1 opacity --at 0 0 --interp easeOut
 fin keyframe set img1 opacity --at 1s 1
 fin transition set --between c1 c3 --kind dissolve --dur 1s     # the linked audio gets a crossfade
 fin caption import --track t4 --words words.json --style preset:bold   # [{"text","start","end"}]
-fin view --budget 400                                # screenplay view, elided to fit the budget
+fin view --budget 400                                # screenplay view; the whole JSON answer fits ~400 tokens
 fin status                                           # timelines, fonts, unmeasured captions, warnings
 fin eval frame --at 2s                               # the frame plan (needs finisherd)
 fin eval audio --range 0..7s
