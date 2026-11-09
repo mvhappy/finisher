@@ -130,10 +130,11 @@ pub(super) fn layout<R: Read + Seek>(eb: &mut Ebml<R>) -> Result<Layout, CoreErr
     let mut at = seg.body;
     while seg.end - at >= 2 {
         let mut e = eb.header(at, seg.end, 1, true)?;
+        // Another (unknown-sized) Segment ends the first: only the first is read.
+        if e.unknown && e.id == SEGMENT {
+            break;
+        }
         if e.unknown {
-            if e.id != CLUSTER {
-                return Err(corrupt("a Segment inside a Segment", e.start, "Segment"));
-            }
             e.end = cluster::unknown_end(eb, &e)?;
         }
         match e.id {

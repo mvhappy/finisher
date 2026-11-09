@@ -1,6 +1,7 @@
-//! `Cues`: the index of keyframes by cluster. Read under the limits (each element counts
-//! against `max_boxes`, the video track's cue points against `max_samples`) and checked against
-//! the cluster scan. The sample table needs every block, so the scan always runs; the cues
+//! `Cues`: the index of keyframes by cluster. Read under the limits (sizes and depth as every
+//! element; the video track's cue points against `max_samples`, not `max_boxes`: an
+//! all-keyframe file has a cue a frame) and checked against the cluster scan; a limit hit while
+//! reading them drops the cues, never the file. The sample table needs every block, so the scan always runs; the cues
 //! then add sync points (see [`mark`]).
 
 use std::collections::HashMap;
@@ -28,18 +29,18 @@ pub(super) fn read<R: Read + Seek>(
 ) -> Result<Vec<Cue>, CoreError> {
     let max = eb.limits.max_samples as u64;
     let mut out = Vec::new();
-    for p in eb.children(cues, 2)? {
+    for p in eb.children_uncounted(cues, 2)? {
         if p.id != 0xBB {
             continue;
         }
         let mut time = None;
         let mut positions = Vec::new();
-        for c in eb.children(&p, 3)? {
+        for c in eb.children_uncounted(&p, 3)? {
             match c.id {
                 0xB3 => time = Some(eb.uint(&c)?),
                 0xB7 => {
                     let (mut t, mut pos) = (None, None);
-                    for f in eb.children(&c, 4)? {
+                    for f in eb.children_uncounted(&c, 4)? {
                         match f.id {
                             0xF7 => t = Some(eb.uint(&f)?),
                             0xF1 => pos = Some(eb.uint(&f)?),
@@ -64,16 +65,20 @@ pub(super) fn read<R: Read + Seek>(
     Ok(out)
 }
 
-/// Marks the frames the cues name as keyframes: the frame at the cue's time in the cluster at
-/// the cue's position (relative to the Segment's body). Keyframes are the block flags plus
-/// these, so a file whose muxer left the flags unset still has sync points; a cue that names
-/// no scanned cluster or no frame is ignored. Returns how many cues named a frame.
+/// Marks the frames the cues name as keyframes (the frame at the cue's time in the cluster at
+/// the cue's position, relative to the Segment's body) when the track flags no keyframe at
+/// all: a file whose muxer left the flags unset still has sync points, and flags that are set
+/// are the authority. A cue that names no scanned cluster or no frame is ignored. Returns how
+/// many cues named a frame.
 pub(super) fn mark(
     cues: &[Cue],
     clusters: &[Element],
     segment_body: u64,
     frames: &mut [RawFrame],
 ) -> usize {
+    if frames.iter().any(|f| f.key) {
+        return 0;
+    }
     let mut at: HashMap<(u32, i64), usize> = HashMap::new();
     for (i, f) in frames.iter().enumerate() {
         at.entry((f.cluster, f.ts)).or_insert(i);

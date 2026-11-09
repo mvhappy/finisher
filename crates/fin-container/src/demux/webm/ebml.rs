@@ -239,10 +239,28 @@ impl<'a, R: Read + Seek> Ebml<'a, R> {
     /// The children of a known-size master element (each counted). Bytes too short for a
     /// header at the end (a 1-byte `Void` remainder some writers leave) are ignored.
     pub fn children(&mut self, parent: &Element, depth: u8) -> Result<Vec<Element>, CoreError> {
+        self.children_of(parent, depth, true)
+    }
+
+    /// [`Ebml::children`] not counted against `max_boxes` (the caller bounds them otherwise).
+    pub fn children_uncounted(
+        &mut self,
+        parent: &Element,
+        depth: u8,
+    ) -> Result<Vec<Element>, CoreError> {
+        self.children_of(parent, depth, false)
+    }
+
+    fn children_of(
+        &mut self,
+        parent: &Element,
+        depth: u8,
+        counted: bool,
+    ) -> Result<Vec<Element>, CoreError> {
         let mut out = Vec::new();
         let mut at = parent.body;
         while parent.end - at >= 2 {
-            let e = self.header(at, parent.end, depth, true)?;
+            let e = self.header(at, parent.end, depth, counted)?;
             if e.unknown {
                 return Err(corrupt(
                     format!("an unknown-sized element inside {}", parent.name()),

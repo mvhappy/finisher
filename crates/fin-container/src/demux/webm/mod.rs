@@ -8,7 +8,7 @@
 //! (sync points from the index). Times: a video track's timescale is 10⁹ / gcd(10⁹,
 //! `TimestampScale`) ticks a second, so block times convert exactly; an audio track's is its
 //! sampling rate. Matroska stores presentation times in decode order, so decode times are the
-//! sorted presentation times.
+//! sorted presentation times less the largest reorder delay.
 
 mod cluster;
 mod codec_private;
@@ -100,8 +100,14 @@ pub(super) fn parse<R: Read + Seek>(r: &mut R, limits: Limits) -> Result<Parsed,
     };
     let mut scanned = cluster::scan(&mut eb, &l.clusters, &want)?;
     if let (Some(c), Some(v)) = (l.cues, vt) {
-        let list = cues::read(&mut eb, &c, v.number)?;
-        cues::mark(&list, &l.clusters, l.segment_body, &mut scanned.video);
+        // Cues only add sync points: past a limit they are dropped and the scan stands.
+        match cues::read(&mut eb, &c, v.number) {
+            Ok(list) => {
+                cues::mark(&list, &l.clusters, l.segment_body, &mut scanned.video);
+            }
+            Err(e) if e.code == "MEDIA_LIMIT" => {}
+            Err(e) => return Err(e),
+        }
     }
 
     let g = gcd(l.scale, NS);
@@ -208,9 +214,9 @@ pub(super) fn parse<R: Read + Seek>(r: &mut R, limits: Limits) -> Result<Parsed,
 }
 
 /// Video frames in decode order with presentation times in `timescale` ticks (`mul` ticks a
-/// Segment tick): decode times are the sorted presentation times, durations the gap to the
-/// next presentation time (the last frame's: `DefaultDuration`, its `BlockDuration`, else the
-/// gap before it).
+/// Segment tick): durations are the gap to the next presentation time (the last frame's: its `BlockDuration`, else `DefaultDuration`, else
+/// the gap before it). Decode times are the sorted presentation times less the largest reorder
+/// delay, so no decode time passes its presentation time (as MP4's).
 fn video_samples(
     raw: &[RawFrame],
     t: &TrackDesc,
@@ -225,6 +231,11 @@ fn video_samples(
         .collect::<Result<_, _>>()?;
     let mut sorted = pts.clone();
     sorted.sort_unstable();
+    let delay = pts
+        .iter()
+        .zip(&sorted)
+        .map(|(&p, &s)| s.checked_sub(p).ok_or_else(overflow))
+        .try_fold(0i64, |m, d| d.map(|d| m.max(d)))?;
     let last_gap = sorted
         .windows(2)
         .last()
@@ -238,16 +249,19 @@ fn video_samples(
         let next = sorted.partition_point(|&p| p <= pts[i]);
         let d = match sorted.get(next) {
             Some(&n) => n.checked_sub(pts[i]).ok_or_else(overflow)?,
-            None => tail
-                .or(f.duration.and_then(|d| (d as i64).checked_mul(mul)))
+            None => f
+                .duration
+                .and_then(|d| i64::try_from(d).ok()?.checked_mul(mul))
+                .or(tail)
                 .or(last_gap)
                 .unwrap_or(1),
         };
         let d = u32::try_from(d)
             .map_err(|_| corrupt("a frame lasts over 2³² ticks", t.at, "Cluster"))?;
+        let dts = sorted[i].checked_sub(delay).ok_or_else(overflow)?;
         let s = Sample::checked(
-            sorted[i],
-            pts[i].checked_sub(sorted[i]).ok_or_else(overflow)?,
+            dts,
+            pts[i].checked_sub(dts).ok_or_else(overflow)?,
             d,
             f.size,
             f.offset,
@@ -260,8 +274,8 @@ fn video_samples(
 }
 
 /// Audio frames at `rate` samples a second: a block's frames share its time, so a laced
-/// block's span (to the next block; for the last, `DefaultDuration` a frame, its
-/// `BlockDuration`, else the previous block's frame length) is divided between them.
+/// block's span (to the next block; for the last, its `BlockDuration`, else `DefaultDuration`
+/// a frame, else the previous block's frame length) is divided between them.
 fn audio_samples(
     raw: &[RawFrame],
     t: &TrackDesc,
@@ -293,12 +307,11 @@ fn audio_samples(
     for (b, &(first, n, start)) in blocks.iter().enumerate() {
         let span = match blocks.get(b + 1) {
             Some(&(_, _, next)) => next.saturating_sub(start).max(0),
-            None => per_frame_default
-                .map(|d| d.saturating_mul(n as i64))
-                .or(raw[first]
-                    .duration
-                    .map(|d| at(d.min(i64::MAX as u64) as i64))
-                    .transpose()?)
+            None => raw[first]
+                .duration
+                .map(|d| at(d.min(i64::MAX as u64) as i64))
+                .transpose()?
+                .or(per_frame_default.map(|d| d.saturating_mul(n as i64)))
                 .unwrap_or(previous.saturating_mul(n as i64)),
         };
         let (each, extra) = (span / n as i64, span % n as i64);

@@ -152,9 +152,9 @@ struct Ctx {
     group: Option<Group>,
 }
 
-fn push(list: &mut Vec<RawFrame>, f: RawFrame, max: u32) -> Result<(), CoreError> {
-    if list.len() as u64 >= max as u64 {
-        return Err(limit("maxSamples", list.len() as u64 + 1, max as u64));
+fn push(list: &mut Vec<RawFrame>, f: RawFrame, max: u64) -> Result<(), CoreError> {
+    if list.len() as u64 >= max {
+        return Err(limit("maxSamples", list.len() as u64 + 1, max));
     }
     list.push(f);
     Ok(())
@@ -203,7 +203,11 @@ fn read_block<R: Read + Seek>(
         _ => b.end - sizes.iter().sum::<u64>(),
     };
     let count = sizes.len() as u8;
-    let max = eb.limits.max_samples;
+    if lacing != 0 && sizes.contains(&0) {
+        return Err(bad("laces an empty frame"));
+    }
+    // As MP4: a track's samples are also at most the file's length in bytes.
+    let max = (eb.limits.max_samples as u64).min(eb.len);
     for (i, &size) in sizes.iter().enumerate() {
         if video && size == 0 {
             return Err(bad("holds an empty video frame"));

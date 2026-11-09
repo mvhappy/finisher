@@ -407,6 +407,11 @@ fn b_frames_decode_in_stored_order() {
     }
     let dts: Vec<i64> = (0..8).map(|i| v.sample(i).unwrap().dts).collect();
     assert!(dts.windows(2).all(|w| w[0] < w[1]));
+    // Decode times never pass presentation times (the reorder delay is subtracted, as MP4).
+    for i in 0..8 {
+        let s = v.sample(i).unwrap();
+        assert!(s.dts <= s.cts, "sample {i}: dts {} > cts {}", s.dts, s.cts);
+    }
 }
 
 #[test]
@@ -763,4 +768,160 @@ fn truncated_and_mutated_files_are_typed_errors() {
         }
         attempt(m, &format!("mutation {case}"));
     }
+}
+
+#[test]
+fn b_frames_across_a_cluster_boundary() {
+    // Clusters of two blocks: [I0 P3] [B1 B2] [P6 B4] [B5]; B4's time is before its
+    // cluster's (a negative relative timecode).
+    let order = [0usize, 3, 1, 2, 6, 4, 5];
+    let list: Vec<Block> = order
+        .iter()
+        .map(|&p| Block::simple(1, 1000 + p as i64 * 40, p == 0, payload(p)))
+        .collect();
+    let o = Options {
+        cluster_blocks: 2,
+        ..Options::default()
+    };
+    let mut d = open(write(&o, &[av1_track()], &list)).unwrap();
+    let v = d.video().unwrap().clone();
+    let f = v.table.frames();
+    assert_eq!(f.len(), 7);
+    let mut buf = Vec::new();
+    for (k, e) in f.iter().enumerate() {
+        assert_eq!(e.pts, 1000 + k as i64 * 40);
+        d.read_sample(v.track, e.decode_index, &mut buf).unwrap();
+        assert_eq!(buf, payload(k));
+    }
+}
+
+#[test]
+fn block_duration_overrides_default_duration() {
+    // Video: the last frame lasts its BlockDuration (50), not the track's 40 ms default.
+    let mut list = blocks(4, 4, |i| i as i64 * 40, false);
+    for b in &mut list {
+        b.group = true;
+    }
+    list.last_mut().unwrap().duration = Some(50);
+    let t = Track {
+        default_duration: Some(40_000_000),
+        ..av1_track()
+    };
+    let d = open(write(&Options::default(), &[t], &list)).unwrap();
+    assert_eq!(d.video().unwrap().table.frames()[3].duration, 50);
+    // Audio: the last block of two laced frames lasts its BlockDuration (30 ms), not two
+    // DefaultDurations (40 ms).
+    let mk = |ts: i64, duration: Option<u64>| Block {
+        frames: vec![vec![1; 10], vec![2; 10]],
+        lacing: Lacing::Xiph,
+        group: true,
+        duration,
+        ..Block::simple(2, ts, true, vec![])
+    };
+    let t = Track {
+        default_duration: Some(20_000_000),
+        ..opus_track()
+    };
+    let d = open(write(
+        &Options::default(),
+        &[t],
+        &[mk(0, None), mk(40, Some(30))],
+    ))
+    .unwrap();
+    let a = d.audio().unwrap();
+    assert_eq!(
+        a.sample(2).unwrap().duration + a.sample(3).unwrap().duration,
+        1440
+    );
+}
+
+#[test]
+fn hostile_empty_laced_frames() {
+    // Fixed lacing of 256 frames over no bytes: each block would cost 5 bytes for 256 samples.
+    let blocks: Vec<u8> = (0..100)
+        .flat_map(|_| element(0xA3, &[0x82, 0, 0, 0x84, 0xFF]))
+        .collect();
+    let cluster = element(0x1F43_B675, &[uint(0xE7, 0), blocks].concat());
+    let e = open(segment(&[tracks_el(&[opus_track()]), cluster].concat()))
+        .err()
+        .unwrap();
+    assert_eq!(e.code, "MEDIA_CORRUPT", "{}", e.message);
+    // Xiph and EBML lacing with an empty frame too.
+    for lacing in [Lacing::Xiph, Lacing::Ebml] {
+        let b = Block {
+            frames: vec![vec![1; 4], vec![], vec![2; 4]],
+            lacing,
+            ..Block::simple(2, 0, true, vec![])
+        };
+        let e = open(write(&Options::default(), &[opus_track()], &[b]))
+            .err()
+            .unwrap();
+        assert_eq!(e.code, "MEDIA_CORRUPT", "{lacing:?}");
+    }
+}
+
+#[test]
+fn a_cue_per_frame_is_not_an_element_limit() {
+    // An all-keyframe file with a cluster and a cue per frame: the cues' elements do not count
+    // against maxBoxes (they only add sync points); clusters and headers fit.
+    let list = blocks(300, 1, |i| i as i64 * 40, false);
+    let o = Options {
+        cluster_blocks: 1,
+        cues: true,
+        ..Options::default()
+    };
+    let bytes = write(&o, &[av1_track()], &list);
+    let limits = Limits {
+        max_boxes: 400,
+        ..Limits::default()
+    };
+    let d = Demuxer::open(Cursor::new(bytes), &limits).unwrap();
+    assert_eq!(d.video().unwrap().table.sync().len(), 300);
+}
+
+#[test]
+fn cues_add_no_sync_points_when_the_track_sets_keyframe_flags() {
+    // Keyframes flagged at 0 and 8; a cue names frame 3 (a cluster's first frame) as well.
+    let mut list = blocks(12, 8, |i| i as i64 * 40, false);
+    list[3].key = true;
+    let o = Options {
+        cues: true,
+        cluster_blocks: 3,
+        ..Options::default()
+    };
+    let mut bytes = write(&o, &[av1_track()], &list);
+    // Unflag frame 3 in the file so only the cue names it: it opens the second cluster (track
+    // 1, relative time 0, keyframe), the second such block after frame 0.
+    let at = bytes
+        .windows(4)
+        .enumerate()
+        .filter(|(_, w)| *w == [0x81, 0, 0, 0x80])
+        .nth(1)
+        .unwrap()
+        .0;
+    bytes[at + 3] = 0;
+    let d = open(bytes).unwrap();
+    let sync: Vec<u32> = d
+        .video()
+        .unwrap()
+        .table
+        .sync()
+        .iter()
+        .map(|s| s.decode_index)
+        .collect();
+    assert_eq!(sync, vec![0, 8]);
+}
+
+#[test]
+fn a_second_unknown_sized_segment_ends_the_read() {
+    let o = Options {
+        unknown_size_segment: true,
+        ..Options::default()
+    };
+    let one = basic(&o);
+    let mut two = one.clone();
+    two.extend([&id_bytes(0x1853_8067)[..], &UNKNOWN_SIZE[..]].concat());
+    two.extend(element(0xEC, &[0; 4]));
+    let (a, b) = (open(one).unwrap(), open(two).unwrap());
+    assert_eq!(a.info(), b.info());
 }
