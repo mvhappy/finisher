@@ -17,6 +17,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
 use std::time::{Duration, Instant};
 
+use fin_jobhost::spawner::WinAttribute;
 use fin_jobhost::*;
 use fin_jobs::WorkerMsg;
 use host_support::*;
@@ -108,6 +109,26 @@ fn leaf_active_process_limit() {
         m => panic!("the worker cannot start a child, got {m:?}"),
     }
     assert_eq!(h.exit(p).reason, ExitReason::Exited);
+}
+
+#[test]
+fn an_attribute_larger_than_its_value_is_refused() {
+    // `WinAttribute.size` is the attribute's `cbSize`: never beyond the bytes it names.
+    let h = host_with(|o| {
+        o.spawner = rewrite(|cmd| {
+            cmd.attributes.push(WinAttribute {
+                attribute: 0x0002_0007, // PROC_THREAD_ATTRIBUTE_MITIGATION_POLICY
+                value: vec![0u8; 8].into_boxed_slice(),
+                size: 16,
+            })
+        })
+    });
+    let g = h.group();
+    let err = h.spawn(g, h.req(&["test"])).unwrap_err();
+    assert!(
+        matches!(&err, HostError::Spawn(e) if e.kind() == io::ErrorKind::InvalidInput),
+        "{err}"
+    );
 }
 
 #[test]

@@ -198,7 +198,8 @@ export const serve = ({
         libraries.register(r);
       };
       const jobsContext = yield* Layer.build(
-        layerJobEngine(serverData, { diagnostics: () => diagnostics.enabled(), ...jobOptions, register }).pipe(
+        // Windows: each job process's grants go through the broker (plan 7C Decision 18).
+        layerJobEngine(serverData, { diagnostics: () => diagnostics.enabled(), acl, ...jobOptions, register }).pipe(
           Layer.provide(Layer.mergeAll(Layer.succeedContext(control), Layer.succeed(JobEventSinkTag, journalSink(diagnostics.journal, logSink)))),
         ),
       );

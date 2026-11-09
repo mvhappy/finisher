@@ -46,6 +46,9 @@ ulid = "1"
 # Windows: a `FIN_CREDENTIAL` file's owner and DACL (`src/private_windows.rs`, 5A Task 9) and
 # the pipe's client end (`src/pipe_client.rs`, Task 11); already in the tree (MIT OR Apache-2.0).
 [target.'cfg(windows)'.dependencies]
+# A session credential's reader: the session's capability SID (plan 7C Task 10), derived as the
+# ACL broker derives it.
+fin-sandbox = { path = "../fin-sandbox" }
 windows-sys = { version = "0.61", features = [
     "Win32_Foundation",
     "Win32_Security",
@@ -57,10 +60,10 @@ windows-sys = { version = "0.61", features = [
 
 [dev-dependencies]
 fin = { path = ".", features = ["test-hooks"] }
+# The agent listener's sandboxed case (plan 7C Task 6: the launcher's request type and data) and
+# the session credential's reader on every OS.
+fin-sandbox = { path = "../fin-sandbox" }
 fin-probe = { path = "../fin-probe", features = ["fixtures"] }
 fin-testfonts = { path = "../fin-testfonts" }
 tempfile = "3"
 
-# The agent listener's sandboxed case (plan 7C Task 6): the launcher's request type and data.
-[target.'cfg(target_os = "linux")'.dev-dependencies]
-fin-sandbox = { path = "../fin-sandbox" }

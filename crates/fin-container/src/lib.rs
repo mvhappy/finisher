@@ -7,7 +7,7 @@ pub mod error;
 mod limits;
 pub mod mux;
 
-pub use demux::{AudioTrack, Demuxer, SampleInfo, VideoTrack};
+pub use demux::{AudioTrack, CodecParams, Demuxer, SampleInfo, VideoTrack};
 pub use limits::Limits;
 pub use mux::{
     AudioTrackConfig, Brands, CodecConfig, Mp4Options, Mp4Writer, TrackRef, VideoTrackConfig,
