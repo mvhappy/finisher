@@ -66,6 +66,9 @@ pub(crate) struct Runner<'a, 'c, 'w> {
     create: HashMap<usize, String>,
     /// The request's txId: the records are `<txId>-<n>`.
     pub(super) key: &'a str,
+    /// The request's identity ([`super::request_hash`]), the `argsHash` of every record
+    /// written: a retry is answered only from records that carry it.
+    pub(super) args_hash: Option<String>,
     n: u64,
     pub(super) ids: Counters,
     pub(super) bound: Bound<'a>,
@@ -100,6 +103,7 @@ impl<'a, 'c, 'w> Runner<'a, 'c, 'w> {
             ctx: None,
             create: HashMap::new(),
             key,
+            args_hash: None,
             n: 0,
             ids: Counters::load(conn)?,
             bound: Bound::new(conn),
@@ -120,14 +124,17 @@ impl<'a, 'c, 'w> Runner<'a, 'c, 'w> {
         self
     }
 
-    /// Writes the groups of `create` (with their names) through `ctx`.
+    /// Writes the groups of `create` (with their names) through `ctx`, each record with
+    /// `args_hash` (the request's identity).
     pub(crate) fn writing(
         mut self,
         ctx: &'c mut WriteCtx<'w>,
         create: HashMap<usize, String>,
+        args_hash: String,
     ) -> Self {
         self.ctx = Some(ctx);
         self.create = create;
+        self.args_hash = Some(args_hash);
         self
     }
 
@@ -285,7 +292,7 @@ impl<'a, 'c, 'w> Runner<'a, 'c, 'w> {
                     from,
                     at: Some(At::Seq(at)),
                     dry_run: ctx.dry_run,
-                    args_hash: None,
+                    args_hash: self.args_hash.clone(),
                 },
                 made_by,
             )?;

@@ -550,7 +550,7 @@ Native code compiled into Finisher's binaries by a crate's build script, as
 `third_party/native.json` lists it (sub-project 6 spec §16.3; `scripts/check-native-deps.mjs`
 checks that every such package is listed, its licence allowed and named here).
 
-### SQLite (public domain) — `libsqlite3-sys` 0.35, bundled by `rusqlite`
+### SQLite 3.54.0 (public domain) — `libsqlite3-sys` 0.39, bundled by `rusqlite` 0.41
 status: used (`fin-store`), the SQLite amalgamation compiled from the crate's sources. SQLite
 is dedicated to the public domain (`blessing`); `libsqlite3-sys` itself is MIT.
 
@@ -637,7 +637,7 @@ crate under an alternative `deny.toml` allows.
   `futures-channel` 0.3.34, `futures-core` 0.3.34, `futures-executor` 0.3.34,
   `futures-io` 0.3.34, `futures-macro` 0.3.34, `futures-sink` 0.3.34, `futures-task` 0.3.34,
   `futures-util` 0.3.34, `futures` 0.3.34, `getrandom` 0.2.17, 0.3.4, 0.4.3,
-  `gpu-allocator` 0.28.0, `half` 2.7.1, `hashbrown` 0.15.5, 0.16.1, 0.17.1, `hashlink` 0.10.0,
+  `gpu-allocator` 0.28.0, `half` 2.7.1, `hashbrown` 0.16.1, 0.17.1, `hashlink` 0.12.2,
   `heck` 0.5.0, `hex` 0.4.3, `hmac` 0.13.0, `hybrid-array` 0.4.15, `idna` 1.1.0, `itoa` 1.0.18,
   `jobserver` 0.1.35, `landlock` 0.4.7, `libc` 0.2.191, `litrs` 1.0.1, `lock_api` 0.4.14, `log` 0.4.34,
   `memmap2` 0.9.12, `mp4-atom` 0.17.0, `naga-types` 30.0.1, `naga` 30.0.1, `num-bigint` 0.4.8,
@@ -710,7 +710,7 @@ crate under an alternative `deny.toml` allows.
 - Unlicense/MIT (2):
   `same-file` 1.0.6, `walkdir` 2.5.0.
 - Zlib (2):
-  `foldhash` 0.1.5, 0.2.0, `slotmap` 1.1.1.
+  `foldhash` 0.2.0, `slotmap` 1.1.1.
 - 0BSD OR Apache-2.0 (1):
   `interprocess` 2.4.7.
 - 0BSD OR MIT OR Apache-2.0 (1):
