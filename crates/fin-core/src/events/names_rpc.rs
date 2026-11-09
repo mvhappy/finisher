@@ -116,6 +116,7 @@ pub static RPC_METHODS: NameTable = NameTable::new(
         "media.cache.status",
         "media.capabilities",
         "media.look",
+        "media.probeDeep",
         "ops.subscribe",
         "plugin.content.get",
         "plugin.disable",

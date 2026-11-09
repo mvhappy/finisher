@@ -89,6 +89,7 @@ fn every_registry_command_parses() {
         "media caps",
         "cache status",
         "cache gc --to 1.5",
+        "media probe a1",
         "fonts ls --cached --detail",
         "fonts fetch noto-sans",
         "fonts status",

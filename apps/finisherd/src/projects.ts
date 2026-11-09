@@ -114,6 +114,8 @@ export interface ProjectRegistryShape {
     fontCache: string | undefined,
     paramsJson: string | undefined,
   ) => Effect.Effect<MediaJobPrepared, FinError>;
+  /** `f` on the project's engine (opened on demand) with `branch` resolved to its id; `f` resolves to JSON (6B-1 Task 11: `prepareAssetJob`). */
+  readonly onBranch: <A>(projectId: string, branch: string, f: (engine: Engine, branch: string) => Promise<string>) => Effect.Effect<A, FinError>;
   /** Fails with `PROJECT_NOT_FOUND` unless the project is known (opened on demand). */
   readonly ensure: (projectId: string) => Effect.Effect<void, FinError>;
   /** The chain's view (5A Task 5): open here now; its folder; a branch reference's id. */
@@ -582,6 +584,8 @@ export function makeProjectRegistry(
         Effect.flatMap(resolveBranch(projectId, requested), (branch) =>
           on<MediaJobPrepared>(projectId, (e) => e.prepareMediaJob(branch, timeline, [...at], inputDir, { fontCache: fontCache ?? null, paramsJson: paramsJson ?? null })),
         ),
+      onBranch: <A>(projectId: string, requested: string, f: (engine: Engine, branch: string) => Promise<string>) =>
+        Effect.flatMap(resolveBranch(projectId, requested), (branch) => on<A>(projectId, (e) => f(e, branch))),
 
       hubCount: () => hubs.size,
       engineOf: (projectId) => byId.get(projectId)?.engine,

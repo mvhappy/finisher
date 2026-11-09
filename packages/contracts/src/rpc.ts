@@ -1,11 +1,4 @@
-import type {
-  CommittedTx,
-  EngineEvent,
-  Probe,
-  Project,
-  Tx,
-  TxSetAside,
-} from "@finisher/core-types";
+import type { CommittedTx, EngineEvent, Probe, Project, Tx, TxSetAside } from "@finisher/core-types";
 import { Schema } from "effect";
 import { Rpc, RpcGroup } from "effect/rpc";
 import { TxSetAsideSchema } from "./tx-set-aside.ts";
@@ -508,7 +501,7 @@ export const FinRpcs = RpcGroup.make(
   Rpc.make("fonts.status", { payload: Schema.Struct({}), success: FontStatusSchema, error: FinError }),
   Rpc.make("fonts.fetch", { payload: FontsFetchPayload, success: FontStatusSchema, error: FinError }),
   Rpc.make("fonts.plan", { payload: FontsPlanPayload, success: FontsPlanSchema, error: FinError }),
-  ...MEDIA_RPCS, // `media.look`, `media.capabilities` (6A), `media.cache.*` (6B-1; `media-rpcs.ts`)
+  ...MEDIA_RPCS, // `media.look`, `media.capabilities` (6A), `media.cache.*`, `media.probeDeep` (6B-1; `media-rpcs.ts`)
   // 5C-2: the job engine (spec §6.7). Others' jobs and jobs out of reach are `JOB_NOT_FOUND`.
   Rpc.make("jobs.submit", { payload: JobsSubmitPayload, success: JobViewSchema, error: FinError }),
   Rpc.make("jobs.get", { payload: JobIdPayload, success: JobViewSchema, error: FinError }),

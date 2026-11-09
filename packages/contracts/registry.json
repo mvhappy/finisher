@@ -1387,6 +1387,22 @@
     },
     {
       "argKinds": {},
+      "group": "media",
+      "identity": [
+        "projectId",
+        "branch",
+        "asset"
+      ],
+      "name": "media.probe",
+      "rpcs": [
+        {
+          "method": "media.probeDeep"
+        }
+      ],
+      "write": false
+    },
+    {
+      "argKinds": {},
       "group": "fonts",
       "identity": [],
       "name": "fonts.ls",

@@ -27,6 +27,7 @@ pub mod look;
 pub mod marker;
 pub mod media;
 pub mod media_caps;
+pub mod media_probe;
 pub mod param;
 pub mod plugin;
 pub mod project;

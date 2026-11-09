@@ -40,6 +40,7 @@ import { chainJobs, jobHandlers } from "./jobs/rpc.ts";
 import { MediaCacheTag } from "./media/cache.ts";
 import { mediaCapabilities } from "./media/caps.ts";
 import { look as mediaLook } from "./media/look.ts";
+import { probeDeep } from "./media/probe-deep.ts";
 import { requireAbsolute, requireAbsoluteOpt } from "./paths.ts";
 import { metaJson } from "./history.ts";
 import { LibraryServiceTag } from "./library/layer.ts";
@@ -404,6 +405,7 @@ export const HandlersLive = FinRpcs.toLayer(
       // The media cache (6B-1 Task 13): its state, and an eviction down to the cap or `toGiB`.
       "media.cache.status": () => guard("media.cache.status", mediaCache.status()),
       "media.cache.gc": ({ toGiB }) => guard("media.cache.gc", mediaCache.gc(toGiB)),
+      "media.probeDeep": (req, options) => guard("media.probeDeep", probeDeep({ ...mediaDeps, capabilities: capabilitiesOf }, ownerOf(options), req)),
       "fonts.catalog": () => guard("fonts.catalog", fonts.catalog()),
       "fonts.status": () => guard("fonts.status", fonts.status()),
       // `pinned` needs the project open (its pins are the engine's): opened on demand.

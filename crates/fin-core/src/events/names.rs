@@ -135,6 +135,7 @@ pub static CLI_COMMANDS: NameTable = NameTable::new(
         "marker.remove",
         "marker.set",
         "media.caps",
+        "media.probe",
         "merge",
         "param.set",
         "plugin.disable",

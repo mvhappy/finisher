@@ -8,7 +8,8 @@ use super::class::Name;
 use super::names::NameTable;
 
 /// Job kinds. `test.*` (`test.stage` is the `library` family's test kind), 5D's `library.*`,
-/// sub-project 6's `media.*` (6A: `media.look`, `media.capabilities`); 8C adds its own.
+/// sub-project 6's `media.*` (6A: `media.look`, `media.capabilities`; 6B-1: `media.probeDeep`);
+/// 8C adds its own.
 pub static JOB_KINDS: NameTable = NameTable::new(
     "JOB_KINDS",
     &[
@@ -37,6 +38,7 @@ pub static JOB_KINDS: NameTable = NameTable::new(
         "library.hash",
         "media.look",
         "media.capabilities",
+        "media.probeDeep",
     ],
 );
 

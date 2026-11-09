@@ -24,6 +24,7 @@ use mp4_atom::{Ftyp, Mdhd, Mvhd, Tkhd};
 use serde_json::json;
 
 use self::codec_config::Entry;
+pub use self::codec_config::sei::{in_band_hdr, sei_hdr};
 use self::colour::ColrInfo;
 use self::edit_list::Edit;
 use self::reader::{BoxHeader, Reader, be_u32, decode};

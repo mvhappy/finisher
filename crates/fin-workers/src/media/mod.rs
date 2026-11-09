@@ -1,5 +1,5 @@
 //! The `media` worker family (sub-project 6 spec §3; plan 6A Tasks 11 and 13): `media.look` v1
-//! and `media.capabilities` v1.
+//! and `media.capabilities` v1; `media.probeDeep` v1 (plan 6B-1 Task 11, cold).
 //!
 //! - **Inputs** come from the job directory only (`start.files`, opened with `fin-shm`'s
 //!   no-follow [`checked_open`](fin_shm::checked_open) below the [`JobDir`](fin_shm::JobDir)),
@@ -26,12 +26,14 @@ mod fonts;
 mod inputs;
 mod look;
 mod open_cache;
+mod probe_deep;
 pub mod replay;
 mod sources;
 
 static KINDS: &[KindVersion] = &[
     KindVersion::new("media.look", 1),
     KindVersion::new("media.capabilities", 1),
+    KindVersion::new("media.probeDeep", 1),
 ];
 
 /// The GPU state a warm worker keeps.
@@ -108,6 +110,7 @@ impl Family for MediaFamily {
         let out = match (job.kind.as_str(), job.kind_version) {
             ("media.look", 1) => look::run(job, ctx, &mut self.state),
             ("media.capabilities", 1) => caps::run(job, ctx, &mut self.state),
+            ("media.probeDeep", 1) => probe_deep::run(job, ctx, &mut self.state),
             (kind, version) => Err(JobError::new(
                 "JOB_KIND_UNKNOWN",
                 format!("family media has no kind {kind} v{version}"),

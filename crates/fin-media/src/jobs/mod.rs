@@ -10,15 +10,18 @@
 
 //!
 //! One module per job family's types: [`look`] (`media.look`), [`caps`]
-//! (`media.capabilities`, v1 and the v2 report of 6B-1), [`manifest`] (the job inputs).
+//! (`media.capabilities`, v1 and the v2 report of 6B-1), [`probe`] (`media.probeDeep`, 6B-1),
+//! [`manifest`] (the job inputs).
 
 pub mod caps;
 pub mod look;
 pub mod manifest;
+pub mod probe;
 
 pub use caps::*;
 pub use look::*;
 pub use manifest::*;
+pub use probe::*;
 
 use fin_core::CoreError;
 use serde_json::json;

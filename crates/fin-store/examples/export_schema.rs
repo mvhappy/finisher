@@ -85,6 +85,8 @@ fn main() {
         g.subschema_for::<fin_media::cache::KeyInput>();
         g.subschema_for::<fin_media::cache::CacheStatus>();
         g.subschema_for::<fin_media::cache::CacheGcResult>();
+        g.subschema_for::<fin_media::jobs::ProbeDeepParams>();
+        g.subschema_for::<fin_media::jobs::ProbeDeepResult>();
         g.subschema_for::<fin_library::RawRel>();
         g.subschema_for::<fin_library::Expect>();
         g.subschema_for::<fin_library::ScanEntry>();

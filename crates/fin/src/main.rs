@@ -342,7 +342,7 @@ fn run(args: Vec<OsString>) -> Result<Value, CoreError> {
         Some(Cmd::Agent(c)) => commands::agent::run(backend()?.as_ref(), &c, g.project.as_deref()),
         Some(Cmd::Library(c)) => commands::library::run(backend()?.as_ref(), &c),
         Some(Cmd::Search(a)) => commands::search::run(backend()?.as_ref(), &a),
-        Some(Cmd::Media(c)) => commands::media_caps::run(backend()?.as_ref(), &c),
+        Some(Cmd::Media(c)) => commands::media_caps::run(backend()?.as_ref(), g, &c),
         Some(Cmd::Cache(c)) => commands::cache::run(backend()?.as_ref(), &c),
         Some(Cmd::Fonts(FontsCmd::Pin(a))) => edit(g, Edit::Font(FontEdit::Pin(a))),
         Some(Cmd::Fonts(FontsCmd::Repin(a))) => edit(g, Edit::Font(FontEdit::Repin(a))),

@@ -3,7 +3,7 @@
 
 use fin_jobs::KindParams;
 use fin_jobs::kinds::{find, schema_as, validate_as};
-use fin_media::jobs::{CapabilitiesParams, LookParams};
+use fin_media::jobs::{CapabilitiesParams, LookParams, ProbeDeepParams};
 use napi_derive::napi;
 use serde_json::{Value, json};
 
@@ -30,6 +30,12 @@ static MEDIA: &[KindParams] = &[
         version: 1,
         validate: validate_as::<CapabilitiesParams>,
         schema: schema_as::<CapabilitiesParams>,
+    },
+    KindParams {
+        kind: "media.probeDeep",
+        version: 1,
+        validate: validate_as::<ProbeDeepParams>,
+        schema: schema_as::<ProbeDeepParams>,
     },
 ];
 
