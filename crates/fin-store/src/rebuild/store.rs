@@ -23,9 +23,10 @@ pub fn rebuild_project(
 ) -> Result<RebuildReport, StoreError> {
     let file = crate::project_file::read_project_file(project_dir)?;
     let db_path = db_path(server_data, &file.id);
+    let opts = OpenOptions::default();
+    opts.check_local(db_path.parent().unwrap_or(server_data))?;
     let identity = server_identity(server_data)?;
     let kind = storage_kind::resolve(project_dir, file.storage_override.as_ref()).0;
-    let opts = OpenOptions::default();
     let plan = Plan {
         db_path: &db_path,
         project_dir,

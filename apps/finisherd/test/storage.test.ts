@@ -401,7 +401,10 @@ describe("engine events in the registry", () => {
     await run(r.commit(projectId, tx("tx-0", 0, [addAsset("$a0")])));
     const first = r.engineOf(projectId)!;
     await until(() => (r.engineOf(projectId) === undefined ? true : undefined), 5_000, "the idle close");
-    expect(r.isOpen(projectId)).toBe(false);
+    // Still known here with its folder (agents, jobs, device roots); no reopen yet.
+    expect(r.isOpen(projectId)).toBe(true);
+    expect(r.dirOf(projectId)).toBe(join(tmp, "p"));
+    expect(r.openDirs()).toEqual([join(tmp, "p")]);
     // Closed means released: another engine takes the lease at once and sees the commit.
     // Closed means the lease stopped: the reopened engine re-takes it at once (this process
     // wrote the record), not after the ~60 s staleness wait.
@@ -442,10 +445,12 @@ describe("engine events in the registry", () => {
     const e = failureOf(await sub.exit());
     expect(e?.code).toBe("ENGINE_CLOSED");
     expect(e?.details).toMatchObject({ projectId, reason: "closed" });
-    expect(r.isOpen(projectId)).toBe(false);
+    expect(r.engineOf(projectId)).toBeUndefined();
     expect(await run(r.close(projectId))).toEqual({ closed: false });
+    // Attaching (the chain saw it as open here) reopens it.
+    expect(await run(r.open(join(tmp, "p"), false, { projectId, attachOnly: true }))).toEqual({ projectId, rev: 1 });
+    expect(r.engineOf(projectId)).toBeDefined();
     expect((await run(r.commit(projectId, tx("tx-1", 1, [addAsset("$a1")])))).rev).toBe(2);
-    expect(r.isOpen(projectId)).toBe(true);
   });
 
   test("a commit racing project.close reopens the project instead of failing", async () => {
@@ -456,6 +461,22 @@ describe("engine events in the registry", () => {
     expect(await closing).toEqual({ closed: true });
     expect(commits.map((c) => c.rev).sort()).toEqual([1, 2, 3]);
   });
+
+  test("a commit queued behind project.close is retried on a reopened engine that holds the lease", async () => {
+    const r = await registry({ idleCloseMs: 0 });
+    const { projectId } = await run(r.create(join(tmp, "p"), "Demo", "30"));
+    // A recovery holds the commit lock (and the engine's worker) for a while.
+    r.engineOf(projectId)!.delayNextLongCallForTest(800);
+    const recovering = run(r.history(projectId, "recover", { projectId }));
+    await new Promise((res) => setTimeout(res, 100));
+    // The close waits for the lock; the commit resolved the same engine and waits behind it.
+    const closing = run(r.close(projectId));
+    const committing = run(r.commit(projectId, tx("tx-0", 0, [addAsset("$a0")])));
+    await recovering;
+    expect(await closing).toEqual({ closed: true });
+    // Not ENGINE_CLOSED, and not read-only: the reopen waited for the old engine to let go.
+    expect((await committing).rev).toBe(1);
+  }, 15_000);
 
   test("subscribe beyond head fails BASE_REV_AHEAD", async () => {
     const r = await registry();

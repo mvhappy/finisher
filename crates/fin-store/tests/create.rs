@@ -338,4 +338,7 @@ fn project_data_off_a_local_disk_is_refused() {
     drop(Store::create(&e.data, &e.dir, "Film", secs(30), None).unwrap());
     let err = code(Store::open(&remote, &e.dir).unwrap_err());
     assert_eq!(err.code, "SERVER_DATA_NOT_LOCAL", "{err:?}");
+    // And the offline rebuild (`fin project rebuild` with no server).
+    let err = code(fin_store::rebuild_project(&remote, &e.dir).unwrap_err());
+    assert_eq!(err.code, "SERVER_DATA_NOT_LOCAL", "{err:?}");
 }
