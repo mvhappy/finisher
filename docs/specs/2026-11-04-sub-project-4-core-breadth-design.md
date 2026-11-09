@@ -1501,6 +1501,13 @@ Run 2026-11-07 on `sp4c-t29-fixes`: the 4C and diagnostics integration de1a455 p
 - **DB format:** migration `m0004_keyframe_ids` (frozen, literal values) raises `meta` `formatVersion`/`minReaderVersion` to `"4"`, as `m0003` did for 4C, so an older binary refuses the database with `DB_TOO_NEW` instead of failing row by row. `sp5e`'s `m0004_drops` merges second and becomes `m0005` (whichever branch merges second renumbers).
 - **Fixtures:** the 20 eval-corpus projects are re-blessed to v3 by the step itself, keeping one v2 project as the upcast golden. Their plan hashes do not change. The store fixtures and the `fin view` golden stay v2 and load through the step.
 
+#### 5.12.4 Model v4 (sub-project 6, 6B-1 Task 11)
+
+- **`SCHEMA_VERSION` 4** (owner decision 2026-11-09, "bump per change"): `VideoInfo` gains the optional `display`, `rotation` and `pixelAspect` (absent = unknown, omitted when absent), and the client op `asset.reprobe` exists. Sub-project 6 spec §4.4 has the details.
+- **Steps v3 → v4** (`upgrade/snapshot_v3.rs`, `upgrade/record_v3.rs`, frozen): identities, since every v3 value is a valid v4 value; the runner stamps the version. `new_project` still equals the upcast rev-0 project from v1, v2 and v3. A schema-3 client tx is committed as schema 4.
+- **DB format:** migration `m0005_video_display` (frozen, literal values) raises `meta` `formatVersion`/`minReaderVersion` to `"5"` (`DB_VERSION` 5), so a v4-DB binary refuses with `DB_TOO_NEW`. `sp5e`'s `m0004_drops` now becomes `m0006`.
+- **Fixtures:** the eval corpus is re-blessed to v4 (plan hashes unchanged), with `upgrade_golden/snapshot_v3.json` as the v3 golden; the store fixtures and the `fin view` golden stay at their versions and upcast on read.
+
 #### 5.12.3 Op surface
 
 - **`keyframe.set {item, path, key?, at?, value, interp}`:**
