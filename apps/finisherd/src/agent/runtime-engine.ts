@@ -414,6 +414,8 @@ export abstract class RuntimeEngine {
         return this.record("a capture", () => this.journal.capture({ session: this.session(sessionId), runId, request: e.request, response: e.response }));
       case "notice":
         return void (await node("notice", { [e.name]: e.details ?? true }));
+      case "summary":
+        return void (await node("summary", { prompt: e.prompt, text: e.text }));
       case "unknown":
         return void (await node("notice", { unknownEvent: e.name }));
     }

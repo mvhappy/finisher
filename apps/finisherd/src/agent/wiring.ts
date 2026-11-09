@@ -117,14 +117,17 @@ export interface AgentWiringDeps {
 }
 
 /** Every stored node of a session, in order (the built-in loop rebuilds its history on resume). */
-function allNodes(store: AgentStore, sessionId: string): Node[] {
+/** A session's nodes, a large `summary` node's payload read from its blob (the rebuild needs its text). */
+async function allNodes(store: AgentStore, sessionId: string): Promise<Node[]> {
   const out: Node[] = [];
   for (let from = 1; ; ) {
     const page = store.nodes(sessionId, from, 1000);
     out.push(...page);
-    if (page.length < 1000) return out;
+    if (page.length < 1000) break;
     from = page[page.length - 1]!.seq + 1;
   }
+  for (const [i, n] of out.entries()) if (n.kind === "summary" && n.blobRef !== undefined) out[i] = { ...n, payload: await store.payload(n) };
+  return out;
 }
 
 function openSecrets(serverData: string, log: (m: string) => void): SecretStore | undefined {

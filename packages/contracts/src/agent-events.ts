@@ -24,6 +24,7 @@ export const NodeKind = Schema.Literals([
   "usage",
   "notice",
   "error",
+  "summary",
 ]);
 export type NodeKind = typeof NodeKind.Type;
 
@@ -96,6 +97,11 @@ const Capture = ev("capture", { request: Schema.Unknown, response: Schema.Unknow
  * model-call retry): becomes a `notice` node `{[name]: details}`.
  */
 const Notice = ev("notice", { name: Schema.String, details: Schema.optionalKey(Schema.Unknown) });
+/**
+ * The built-in loop's compaction (7B Decision 24): the summary that stands for the runs before
+ * the current one from here on, written with the versioned `prompt`. Becomes a `summary` node.
+ */
+const Summary = ev("summary", { prompt: Schema.String, text: Schema.String });
 /** A provider message the adapter does not know: becomes a `notice` node, never a failure. */
 const UnknownEvent = ev("unknown", { name: Schema.String });
 
@@ -116,6 +122,7 @@ export const ProviderEvent = Schema.Union([
   Exited,
   Capture,
   Notice,
+  Summary,
   UnknownEvent,
 ]);
 export type ProviderEvent = typeof ProviderEvent.Type;
@@ -138,5 +145,6 @@ export const PROVIDER_EVENT_TYPES = [
   "exited",
   "capture",
   "notice",
+  "summary",
   "unknown",
 ] as const satisfies readonly ProviderEvent["type"][];

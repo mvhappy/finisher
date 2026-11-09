@@ -25,6 +25,7 @@ const samples: ProviderEvent[] = [
   { type: "capture", request: { model: "m" }, response: { id: "gen-1" } },
   { type: "notice", name: "retry", details: { attempt: 1, code: "PROVIDER_RATE_LIMITED", delayMs: 3000 } },
   { type: "notice", name: "marker" },
+  { type: "summary", prompt: "compaction-v1", text: "The intro was trimmed; the outro is next." },
   { type: "unknown", name: "rateLimitUpdate" },
 ];
 
@@ -58,7 +59,7 @@ describe("runtime enums", () => {
     expect(Mode.literals).toEqual(["plan", "draft", "auto"]);
     expect(SessionStatus.literals).toEqual(["starting", "idle", "running", "waitingApproval", "interrupted", "ended"]);
     expect(NodeKind.literals).toContain("toolCall");
-    expect(NodeKind.literals).toHaveLength(11);
+    expect(NodeKind.literals).toHaveLength(12);
     expect(Schema.decodeUnknownSync(BudgetSpec)({ tokens: 5, moneyMicros: 0 })).toEqual({ tokens: 5, moneyMicros: 0 });
     expect(() => Schema.decodeUnknownSync(BudgetSpec)({ tokens: -5 })).toThrow();
   });

@@ -185,6 +185,8 @@ export function nodeLine(n: Node): string {
         return `${p.ok === true ? "ok" : "failed"} ${text(p.output, 300)}`;
       case "error":
         return `${text(p.code, 64)}: ${text(p.message)}`;
+      case "summary":
+        return `summary (${text(p.prompt, 32)}): ${text(p.text)}`;
       default:
         return text(p, 300);
     }
