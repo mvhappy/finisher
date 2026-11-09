@@ -369,3 +369,63 @@ fn value_types_follow_the_registry() {
         assert_eq!(ValueType::from(&ty), want, "{ty:?}");
     }
 }
+
+/// External review of 2026-11-09, #17: keyframes whose difference overflows 64 bits (times at
+/// `(M−1)/M` and `M/(M−1)`, `M = i64::MAX`) still interpolate to a finite value: the exact
+/// progress is `(M−1)/(2M−1)`, a hair under ½.
+#[test]
+fn progress_near_i64_max_denominators_is_finite() {
+    let m = i64::MAX;
+    let a = fin_core::Rational::new(m - 1, m).unwrap();
+    let b = fin_core::Rational::new(m, m - 1).unwrap();
+    let kfs = vec![
+        kf(a, num(0.0), Interp::Linear),
+        kf(b, num(1.0), Interp::Linear),
+    ];
+    let v = interpolate(&kfs, secs(1), &num(0.0), ValueType::Number);
+    let PlanValue::Number(x) = v else {
+        panic!("{v:?}")
+    };
+    assert!((x - 0.5).abs() < 1e-12, "{x}");
+    // Bézier easing takes the same progress.
+    let ease = vec![
+        kf(
+            a,
+            num(0.0),
+            Interp::Bezier {
+                x1: 0.0,
+                y1: 0.0,
+                x2: 1.0,
+                y2: 1.0,
+            },
+        ),
+        kf(b, num(1.0), Interp::Linear),
+    ];
+    let v = interpolate(&ease, secs(1), &num(0.0), ValueType::Number);
+    assert!(matches!(v, PlanValue::Number(x) if x.is_finite()), "{v:?}");
+    // At the ends: exactly the keyframe values.
+    assert_eq!(
+        interpolate(&kfs, a, &num(0.0), ValueType::Number),
+        PlanValue::Number(0.0)
+    );
+    assert_eq!(
+        interpolate(&kfs, b, &num(0.0), ValueType::Number),
+        PlanValue::Number(1.0)
+    );
+    // Far apart, with coprime huge denominators: monotone and finite.
+    let lo = fin_core::Rational::new(1, m).unwrap();
+    let hi = fin_core::Rational::new(m - 2, m - 1).unwrap();
+    let wide = vec![
+        kf(lo, num(0.0), Interp::Linear),
+        kf(hi, num(1.0), Interp::Linear),
+    ];
+    let mut last = 0.0;
+    for t in ["1/3", "1/2", "2/3", "9/10"] {
+        let PlanValue::Number(x) = interpolate(&wide, r(t), &num(0.0), ValueType::Number) else {
+            panic!()
+        };
+        assert!(x.is_finite() && x >= last, "{t}: {x}");
+        last = x;
+    }
+    assert!((last - 0.9).abs() < 1e-9, "{last}");
+}

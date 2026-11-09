@@ -271,6 +271,48 @@ describe("font manager", () => {
     expect(w?.fix).toContain("fin fonts pin");
   });
 
+  // Review of 2026-11-09, #23: a caption that goes with any removal leaves no stale warning.
+  test("FONT_UNPINNED forgets a caption removed by a lift, a ripple, its track's or its timeline's removal", async () => {
+    useCatalog([file("sans", hooks.testFont("sans"))]);
+    const { engine } = await open();
+    const commitOps = async (txId: string, ops: unknown[]) =>
+      JSON.parse(await engine.commit(JSON.stringify({ txId, author: "a", branch: "main", baseRev: await engine.head("main"), schemaVersion: 2, ops }))) as { bindings: Record<string, string> };
+    const hebrew = (track: string) => ({
+      op: "item.insert", id: "$h", track, at: "0", duration: "2", mode: "overwrite", kind: "caption", style: "st1",
+      words: [{ text: "שלום", start: "0", end: "0" }],
+    });
+    const unpinned = async () => (await status(engine)).warnings.find((x) => x.code === "FONT_UNPINNED")?.details?.items;
+    const { bindings } = await commitOps("setup", [
+      { op: "track.add", id: "$k", timeline: "tl1", kind: "caption" },
+      { op: "style.add", id: "$s", name: "Test", set: { "text.family": "Test sans", "text.weight": 400 } },
+      { op: "timeline.add", id: "$tl", name: "Second", rate: "30", resolution: [1920, 1080] },
+    ]);
+    const track = bindings.$k!;
+    let n = 0;
+    const removals: Array<[string, (item: string) => Promise<unknown[]>]> = [
+      ["lift", async (item) => [{ op: "item.delete", item, mode: "lift" }]],
+      ["ripple", async (item) => [{ op: "item.delete", item, mode: "ripple" }]],
+    ];
+    for (const [how, ops] of removals) {
+      const item = (await commitOps(`h${++n}`, [hebrew(track)])).bindings.$h!;
+      expect(await unpinned(), how).toEqual([item]);
+      await commitOps(`r${n}`, await ops(item));
+      expect(await unpinned(), how).toBeUndefined();
+    }
+    // The track, with its items.
+    const t = (await commitOps("k2", [{ op: "track.add", id: "$k", timeline: "tl1", kind: "caption" }])).bindings.$k!;
+    const onTrack = (await commitOps(`h${++n}`, [hebrew(t)])).bindings.$h!;
+    expect(await unpinned()).toEqual([onTrack]);
+    await commitOps("rk", [{ op: "track.remove", track: t, withItems: true }]);
+    expect(await unpinned()).toBeUndefined();
+    // The timeline, with its tracks and items.
+    const k3 = (await commitOps("k3", [{ op: "track.add", id: "$k", timeline: bindings.$tl!, kind: "caption" }])).bindings.$k!;
+    const onTimeline = (await commitOps(`h${++n}`, [hebrew(k3)])).bindings.$h!;
+    expect(await unpinned()).toEqual([onTimeline]);
+    await commitOps("rtl", [{ op: "timeline.remove", timeline: bindings.$tl! }]);
+    expect(await unpinned()).toBeUndefined();
+  });
+
   test("an asset font pin measures from the asset file; a changed file is a hash mismatch", async () => {
     useCatalog([file("other", hooks.testFont("rtl"))]);
     const { engine } = await open();

@@ -166,7 +166,7 @@ fn a_silent_server_is_a_typed_timeout_and_a_missing_one_is_unavailable() {
         (commit.code.as_str(), &commit.details["txId"]),
         ("SERVER_TIMEOUT", &json!("tx-9"))
     );
-    assert!(commit.fix.unwrap().contains("retry with `--idem-key tx-9`"));
+    assert!(commit.fix.unwrap().contains("again with `--idem-key tx-9`"));
     drop(server_side);
     // The server reads the request, writes half a frame and goes away: unavailable, not a
     // protocol error, and the commit's fate is unknown.
