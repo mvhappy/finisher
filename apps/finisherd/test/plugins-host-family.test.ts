@@ -144,7 +144,13 @@ describe("the plugin family's process", () => {
       const dir = p.install();
       const r = await p.echo({ op: "env" }, { project: "p1" });
       const env = r.env as Record<string, string>;
-      const allowed = new Set(["PATH", "HOME", "LANG", "TMPDIR", "TEMP", "TMP", "FIN_PLUGIN_PROTOCOL", ...(process.platform === "win32" ? ["Path", "USERPROFILE", "SYSTEMROOT", "SystemRoot", "LOCALAPPDATA"] : [])]);
+      // macOS adds `__CF_USER_TEXT_ENCODING` to every Node process as CoreFoundation loads (`env -i node` has it):
+      // the OS's, not passed by the host.
+      const platformVars: Partial<Record<NodeJS.Platform, string[]>> = {
+        win32: ["Path", "USERPROFILE", "SYSTEMROOT", "SystemRoot", "LOCALAPPDATA"],
+        darwin: ["__CF_USER_TEXT_ENCODING"],
+      };
+      const allowed = new Set(["PATH", "HOME", "LANG", "TMPDIR", "TEMP", "TMP", "FIN_PLUGIN_PROTOCOL", ...(platformVars[process.platform] ?? [])]);
       expect(Object.keys(env).filter((k) => !allowed.has(k) && !k.startsWith("LC_"))).toEqual([]);
       const tmp = keyTmpDir(p.serverData, `${ID}@1.0.0|p1|person`);
       expect(env).toMatchObject({ FIN_PLUGIN_PROTOCOL: "1", TMPDIR: tmp, TEMP: tmp, TMP: tmp });
