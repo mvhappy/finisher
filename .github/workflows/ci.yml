@@ -131,3 +131,56 @@ jobs:
         run: cargo install cargo-deny --locked --version 0.20.2
       - name: Gates
         run: pnpm gates
+
+  # The escape suites as one runner (plan 7C Task 13): every profile's cases on each OS, as
+  # the runner's own non-root user. Linux runs with FIN_REQUIRE_LANDLOCK=1 (set by the script),
+  # so a runner without Landlock fails instead of skipping; the namespace cases skip here with
+  # the launcher's reason (Ubuntu restricts unprivileged user namespaces) and run in
+  # `sandbox-namespaces`. Windows runs the container configuration suites; escape attempts
+  # there are left to a person (Decision 27).
+  sandbox:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-15, windows-2025, ubuntu-24.04]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .node-version
+      - name: Install pnpm
+        run: npm install -g pnpm@12.15.0
+      - name: Install Rust toolchain from rust-toolchain.toml
+        run: rustup show active-toolchain || rustup toolchain install
+      - name: Escape suites (prints the per-profile table)
+        run: pnpm sandbox:suite
+
+  # The socket-namespace cases (Decision 26) on a host that allows the launcher a user
+  # namespace: Finisher's AppArmor profile (resources/linux/apparmor), attached to the test
+  # build's launcher as the installer attaches it to the installed one. With
+  # FIN_REQUIRE_NAMESPACES=1 a missing namespace fails instead of skipping.
+  sandbox-namespaces:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .node-version
+      - name: Install pnpm
+        run: npm install -g pnpm@12.15.0
+      - name: Install Rust toolchain from rust-toolchain.toml
+        run: rustup show active-toolchain || rustup toolchain install
+      - name: Build the sandbox tests and binaries
+        run: cargo test -p fin-sandbox --tests --no-run
+      - name: Allow the test launcher a user namespace (Finisher's AppArmor profile)
+        run: |
+          exe="$GITHUB_WORKSPACE/target/debug/fin-sandbox-exec"
+          test -x "$exe"
+          sed "s|/{opt/finisher/bin,usr/lib/finisher}/fin-sandbox-exec|$exe|" \
+            resources/linux/apparmor/finisher-sandbox-exec > "$RUNNER_TEMP/finisher-sandbox-exec"
+          grep -q "profile finisher-sandbox-exec $exe " "$RUNNER_TEMP/finisher-sandbox-exec"
+          sudo install -m 0644 "$RUNNER_TEMP/finisher-sandbox-exec" /etc/apparmor.d/finisher-sandbox-exec
+          sudo apparmor_parser -r /etc/apparmor.d/finisher-sandbox-exec
+      - name: Escape suites with the namespace required
+        run: pnpm sandbox:suite --require-namespaces
