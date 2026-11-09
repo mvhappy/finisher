@@ -12,6 +12,8 @@
 // - `agents.subagents.maxDepth` (1–8, default 3) and `.maxLive` (1–64, default 8): children per
 //   root session (7B Decision 17); `agents.maxLiveProviders` (1–64, default 4) and
 //   `agents.maxLiveBuiltin` (1–256, default 8): sessions in a run at once (Decision 19);
+// - `agents.savedPrompts`: the owner's saved prompts (7B Task 10), a list read as-is here and
+//   decoded one by one by `saved-prompts.ts` (a bad one is reported, never the whole list);
 // - `training.closedModelTargets`: the counsel gate, default `pendingCounsel` (an unusable value
 //   reads as the default: it never clears the gate by accident).
 //
@@ -42,6 +44,7 @@ export interface AgentSettings {
   readonly retentionDays?: number;
   readonly toolTimeoutS?: number;
   readonly limits?: Partial<SessionLimits>;
+  readonly savedPrompts?: readonly unknown[];
 }
 
 /** How far sessions spread (7B Decisions 17, 19). */
@@ -126,6 +129,8 @@ export function readAgentSettings(serverData: string): { settings: AgentSettings
   const toolTimeoutS = wholeIn(agents.toolTimeoutS, 1, 3600) ? agents.toolTimeoutS : undefined;
   if (agents.toolTimeoutS !== undefined && toolTimeoutS === undefined) problems.push("agents.toolTimeoutS must be 1–3600");
   const limits = readLimits(agents, problems);
+  const savedPrompts = Array.isArray(agents.savedPrompts) ? (agents.savedPrompts as unknown[]) : undefined;
+  if (agents.savedPrompts !== undefined && savedPrompts === undefined) problems.push("agents.savedPrompts must be a list");
   const settings: AgentSettings = {
     models,
     ...(local === undefined ? {} : { local }),
@@ -133,6 +138,7 @@ export function readAgentSettings(serverData: string): { settings: AgentSettings
     ...(retentionDays === undefined ? {} : { retentionDays }),
     ...(toolTimeoutS === undefined ? {} : { toolTimeoutS }),
     ...(limits === undefined ? {} : { limits }),
+    ...(savedPrompts === undefined ? {} : { savedPrompts }),
   };
   return problems.length === 0 ? { settings } : { settings, error: problems.join("; ") };
 }

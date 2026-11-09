@@ -80,6 +80,8 @@ Agent sessions (sub-project 7):
   agent start --project <dir|id> [--provider openrouter|local] [--model <id>] [--role <role>]
               [--mode plan|draft|auto] [--base <branch>] [--title <text>]
               [--prompt <text> | --prompt-file <file>] [--budget-usd <n>] [--budget-tokens <n>]
+  agent run <prompt> --project <dir|id> [--param <name>=<value>]... [--harness <h>] [--provider openrouter|local] [--model <id>]
+                                           start a saved prompt (agent prompts [--project] lists them)
   agent ls [--project <dir|id>] [--status <status>] [--json]
   agent show <id> [--nodes] [--json]
   agent prompt|steer <id> <text>

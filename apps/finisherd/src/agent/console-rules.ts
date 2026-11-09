@@ -4,13 +4,14 @@
 // with a terminal and a confirmation (`confirmed`, owner decision of 2026-11-08): `y` to add a
 // rule, the rule id's first 8 characters typed back to remove one, the project id's first 8
 // characters to trust a project's file (what its rules allow, its agents may do).
-import type { ListedRule } from "@finisher/contracts";
+import type { ListedRule, ListedSavedPrompt } from "@finisher/contracts";
 import { type ConsoleConnection, consoleError, valueOf } from "../console/client.ts";
 import { type CommandContext, withConnection } from "../console/commands/context.ts";
 import { confirmed, proceed, requireTty, typeName } from "../console/confirm.ts";
 import { has, one, onlyFlags, usage } from "../console/format.ts";
 import { safe } from "../console/safe.ts";
 import { projectArg } from "./console.ts";
+import { promptLine } from "./console-prompts.ts";
 
 const call = async <A>(c: ConsoleConnection, tag: string, payload: unknown) => valueOf<A>(await c.call(tag, payload));
 
@@ -107,16 +108,23 @@ export async function projectTrust(ctx: CommandContext, target: string): Promise
     }
     const file = rules.filter((x) => x.layer === "project");
     for (const rule of file) ctx.prompt.show(ruleLine(rule));
-    return confirmed<{ rulesHash: string; rules: number }>(
+    // The project's saved prompts (prompts/*.json) are trusted as shown too, when every file loads.
+    const saved = await call<{ prompts: ListedSavedPrompt[]; ignored?: ListedSavedPrompt[]; invalid?: unknown[]; promptsHash?: string }>(c, "agent.savedPrompt.list", { projectId });
+    const own = [...saved.prompts.filter((p) => p.source === "project"), ...(saved.ignored ?? [])];
+    for (const p of own) ctx.prompt.show(`${promptLine(p)}\n    ${safe(p.template).replace(/\n/g, "\n    ")}`);
+    const broken = (saved.invalid ?? []).some((b) => (b as { source: string }).source.startsWith("prompts/"));
+    const promptsHash = broken ? undefined : saved.promptsHash;
+    if (broken) ctx.output.err("finisherd: a prompt file does not load; its prompts stay untrusted (see `agent prompts --project`)");
+    return confirmed<{ rulesHash: string; rules: number; promptsHash?: string }>(
       c,
       ctx.prompt,
-      `This trusts project ${projectId}'s finisher.rules.json as it is now (${file.length} rules above): its rules apply to agent sessions until the file changes.`,
+      `This trusts project ${projectId}'s finisher.rules.json as it is now (${file.length} rules above)${promptsHash === undefined || own.length === 0 ? "" : ` and its ${own.length} saved prompts (prompts/*.json, above)`}: they apply to agent sessions until a file changes.`,
       typeName("project id's first 8 characters", projectId.slice(0, 8)),
       "agent.project.trust",
       // What was shown: a file changed since is refused.
-      { projectId, expectedHash: rulesHash },
+      { projectId, expectedHash: rulesHash, ...(promptsHash === undefined ? {} : { expectedPromptsHash: promptsHash }) },
     );
   });
-  ctx.output.out(`Trusted project ${projectId}: ${r.rules} rules (${r.rulesHash}).`);
+  ctx.output.out(`Trusted project ${projectId}: ${r.rules} rules (${r.rulesHash})${r.promptsHash === undefined || r.promptsHash === "none" ? "" : `, saved prompts ${r.promptsHash}`}.`);
   return 0;
 }

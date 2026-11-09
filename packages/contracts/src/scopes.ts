@@ -402,6 +402,10 @@ export const RPC_SCOPES: { readonly [T in FinRpcTag]: RuleOf<T> } = {
   "agent.rules.add": { scopes: ["agent.admin"], resolve: PROJECT, kinds: PEOPLE },
   "agent.rules.remove": { scopes: ["agent.admin"], kinds: PEOPLE },
   "agent.project.trust": { scopes: ["agent.admin"], resolve: PROJECT, kinds: PEOPLE },
+  // Saved prompts (7B Task 10, spec §6.4): anyone may read the list; running one starts a session
+  // as the starter (so the root branch and mode's scopes need `project.write`), people only.
+  "agent.savedPrompt.list": { scopes: ["agent.read"], resolve: PROJECT },
+  "agent.savedPrompt.run": { scopes: ["agent.run", "project.read", "project.write"], resolve: PROJECT, kinds: SESSION_DRIVERS },
   // The owner's agent settings (Task 12): the key, the local endpoint (`agent.admin`) and the
   // counsel gate (`settings.admin`), each change with the challenge code; reading them needs none.
   // A key's project is checked for reach when named.

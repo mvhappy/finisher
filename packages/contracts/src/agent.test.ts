@@ -19,6 +19,7 @@ import {
   WATCH_ITEM_TYPES,
   WatchItem,
 } from "./agent.ts";
+import { AgentSavedPromptRunPayload, SavedPrompt } from "./saved-prompts.ts";
 import { ProviderKey } from "./agent-admin.ts";
 import { defaultScopes } from "./auth.ts";
 import { MINT_DEFAULT_SCOPES } from "./credentials.ts";
@@ -151,6 +152,8 @@ const AGENT_RPCS = [
   "agent.rules.add",
   "agent.rules.remove",
   "agent.project.trust",
+  "agent.savedPrompt.list",
+  "agent.savedPrompt.run",
 ] as const;
 type AgentTag = (typeof AGENT_RPCS)[number];
 
@@ -225,6 +228,9 @@ const TABLE: Record<AgentTag, { scopes: string[]; kinds?: string[]; confirmed?: 
   "agent.rules.add": { scopes: ["agent.admin"], kinds: ["console", "device"], confirmed: true },
   "agent.rules.remove": { scopes: ["agent.admin"], kinds: ["console", "device"], confirmed: true },
   "agent.project.trust": { scopes: ["agent.admin"], kinds: ["console", "device"], confirmed: true },
+  // Saved prompts (7B Task 10): anyone reads the list; a run is a person's (`SESSION_DRIVERS`).
+  "agent.savedPrompt.list": { scopes: ["agent.read"] },
+  "agent.savedPrompt.run": { scopes: ["agent.run", "project.read", "project.write"], kinds: ["local", "console", "device"] },
 };
 
 describe("scopes", () => {
@@ -322,5 +328,23 @@ describe("agent.approval.wait and remember (7B Tasks 4 and 5)", () => {
     expect(decode({ id: "a1", timeoutMs: 0 })._tag).toBe("Success");
     expect(decode({ id: "a1", timeoutMs: 90_000 })._tag).toBe("Success");
     for (const bad of [90_001, -1, 1.5, "10"]) expect(decode({ id: "a1", timeoutMs: bad })._tag, String(bad)).toBe("Failure");
+  });
+});
+
+describe("saved prompts (7B Task 10)", () => {
+  const decode = Schema.decodeUnknownExit(SavedPrompt);
+  const base = { name: "make-shorts", title: "Make shorts", role: "clip-finder", mode: "draft", template: "Find {{count}}", params: [{ name: "count", type: "int", min: 1, max: 20, default: 5 }] };
+  it("decodes the schema and refuses a stray field or a bad name, type or mode", () => {
+    expect(decode(base)._tag).toBe("Success");
+    expect(decode({ ...base, budget: { tokens: 1000 } })._tag).toBe("Success");
+    for (const bad of [{ ...base, name: "Make Shorts" }, { ...base, mode: "yolo" }, { ...base, params: [{ name: "n", type: "float" }] }, { ...base, template: "" }, { ...base, params: [{ name: "Bad", type: "int" }] }]) {
+      expect(decode(bad)._tag, JSON.stringify(bad).slice(0, 60)).toBe("Failure");
+    }
+  });
+  it("a run names the project and prompt; params are whole numbers or text", () => {
+    const run = Schema.decodeUnknownExit(AgentSavedPromptRunPayload);
+    expect(run({ projectId: "p", name: "make-shorts", params: { count: 5, tone: "calm" } })._tag).toBe("Success");
+    expect(run({ projectId: "p", name: "make-shorts", params: { count: 1.5 } })._tag).toBe("Failure");
+    expect(run({ name: "make-shorts" })._tag).toBe("Failure");
   });
 });

@@ -26,6 +26,8 @@ export interface NewSession {
   readonly rootBranch?: string;
   readonly base: { readonly branch: string; readonly seq: number };
   readonly parent?: string;
+  /** `savedPrompt`: started from a saved prompt (7B Task 10). */
+  readonly trigger?: "savedPrompt";
   /** A child's (7B Task 6): the top of its tree and its depth below it; a root names neither. */
   readonly rootSession?: string;
   readonly depth?: number;
@@ -109,11 +111,12 @@ export interface SessionRow {
   title: string | null;
   rootSession: string | null;
   depth: number;
+  trigger: string | null;
 }
 
 export const SESSION_COLUMNS =
   "id, projectId, harness, provider, model, weights, role, mode, rootBranch, baseBranch, baseSeq, parent, status, " +
-  "statusReason, runId, approvals, credentialId, providerRef, budget, usage, createdBy, createdAt, endedAt, title, rootSession, depth";
+  "statusReason, runId, approvals, credentialId, providerRef, budget, usage, createdBy, createdAt, endedAt, title, rootSession, depth, trigger";
 
 export interface RunRow {
   id: string;
@@ -193,6 +196,7 @@ export function toSession(r: SessionRow): Session {
     createdAt: r.createdAt,
     ...opt("endedAt", r.endedAt),
     ...opt("title", r.title),
+    ...(r.trigger === "savedPrompt" ? { trigger: "savedPrompt" as const } : {}),
   };
 }
 
@@ -334,7 +338,7 @@ export function sessionInsertArgs(s: NewSession, status: string, now: number): A
   return [
     s.id, s.projectId, s.harness, s.provider, s.model, s.weights, s.role, s.mode, s.rootBranch ?? null, s.base.branch, s.base.seq,
     s.parent ?? null, status, s.id, s.providerRef ?? null, JSON.stringify(s.budget), JSON.stringify(ZERO_USAGE), JSON.stringify(s.createdBy),
-    now, s.title ?? null, s.rootSession ?? null, s.depth ?? 0,
+    now, s.title ?? null, s.rootSession ?? null, s.depth ?? 0, s.trigger ?? null,
   ];
 }
 
@@ -363,7 +367,7 @@ export function approvalExpired(id: string): FinError {
 
 /** Every statement `AgentStore` prepares, once, by name. */
 export const STORE_SQL: Readonly<Record<string, string>> = {
-  insertSession: `INSERT INTO sessions (${SESSION_COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, '[]', ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?)`,
+  insertSession: `INSERT INTO sessions (${SESSION_COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, '[]', ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?)`,
   session: `SELECT ${SESSION_COLUMNS} FROM sessions WHERE id = ?`,
   setState: "UPDATE sessions SET status = ?, statusReason = ?, runId = ?, approvals = ?, endedAt = COALESCE(endedAt, ?) WHERE id = ?",
   live: "SELECT id FROM sessions WHERE status IN ('starting', 'running', 'waitingApproval') ORDER BY id",

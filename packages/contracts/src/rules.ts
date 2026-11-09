@@ -126,11 +126,19 @@ export const AgentRulesRemoveSuccess = Schema.Struct({ removed: Schema.Boolean }
  * and a file changed since is `INVALID_REQUEST {field: expectedHash, reason: changed}` (a later
  * change stops it applying again).
  */
-export const AgentProjectTrustPayload = Schema.Struct({ projectId: Schema.String, expectedHash: RulesHash, challenge: ChallengeField });
+export const AgentProjectTrustPayload = Schema.Struct({
+  projectId: Schema.String,
+  expectedHash: RulesHash,
+  /** Also trust `prompts/*.json` as the person saw it (`agent.savedPrompt.list`'s `promptsHash`); absent: they stay untrusted. */
+  expectedPromptsHash: Schema.optionalKey(RulesHash),
+  challenge: ChallengeField,
+});
 export const AgentProjectTrustSuccess = Schema.Struct({
   projectId: Schema.String,
   rulesHash: Schema.String,
   /** How many rules the file holds. */
   rules: Count,
+  /** The prompt files' combined hash, when `expectedPromptsHash` trusted them. */
+  promptsHash: Schema.optionalKey(Schema.String),
   trustedAt: Count,
 });

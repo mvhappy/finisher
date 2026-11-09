@@ -206,7 +206,7 @@ export class Runtime extends RuntimeEngine {
    * 2–5 in Task 7's `openSession` (the root branch `agent.<role>-<n>` created as the starter,
    * whose actor and guard `meta` carries; the record; the credential; `idle`), then the first run.
    */
-  start(req: StartRequest, by: Principal, meta: CallMeta, parent?: Session): Effect.Effect<{ session: Session; run?: Run; warnings: AgentWarning[] }, FinError> {
+  start(req: StartRequest, by: Principal, meta: CallMeta, parent?: Session, trigger?: "savedPrompt"): Effect.Effect<{ session: Session; run?: Run; warnings: AgentWarning[] }, FinError> {
     return attempt(async () => {
       this.#guard();
       const plan = await this.deps.planner.plan(req, by, parent);
@@ -235,6 +235,7 @@ export class Runtime extends RuntimeEngine {
             ...(child === undefined ? {} : child),
             ...(req.base === undefined || child !== undefined ? {} : { base: req.base }),
             ...(req.title === undefined ? {} : { title: req.title }),
+            ...(trigger === undefined ? {} : { trigger }),
           },
           by,
         ),

@@ -219,7 +219,7 @@ describe("the console", () => {
 
 describe("agent migration 0004", () => {
   test("a server before 0004 refuses the database (it would enforce no rules)", () => {
-    expect(CONTROL_CHAINS.get("agent")).toMatchObject({ formatVersion: 8, minReaderVersion: 8 });
+    expect(CONTROL_CHAINS.get("agent")).toMatchObject({ formatVersion: 9, minReaderVersion: 8 });
   });
 
   test("rootSession and depth: rows before it are their own root at depth 0; new rows too", () => {

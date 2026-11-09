@@ -36,6 +36,8 @@ test("the group exposes exactly the protocol 2 RPC tags", () => {
       "agent.rules.add",
       "agent.rules.list",
       "agent.rules.remove",
+      "agent.savedPrompt.list",
+      "agent.savedPrompt.run",
       "agent.self",
       "agent.self.try",
       "agent.session.delete",

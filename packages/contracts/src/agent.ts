@@ -90,6 +90,8 @@ export const Session = Schema.Struct({
   createdAt: Count,
   endedAt: Schema.optionalKey(Count),
   title: Schema.optionalKey(Schema.String),
+  /** `savedPrompt` when started from one (7B Task 10); absent otherwise. */
+  trigger: Schema.optionalKey(Schema.Literal("savedPrompt")),
 });
 export type Session = typeof Session.Type;
 

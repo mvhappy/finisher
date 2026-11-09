@@ -110,6 +110,8 @@ export const SAMPLE_PAYLOADS: { readonly [T in FinRpcTag]: Record<string, unknow
   "agent.rules.add": { effect: "deny", command: "render" },
   "agent.rules.remove": { id: "01eeeeeeeeeeeeeeeeeeeeeeee" },
   "agent.project.trust": { projectId: P, expectedHash: "none" },
+  "agent.savedPrompt.list": {},
+  "agent.savedPrompt.run": { projectId: P, name: "make-shorts" },
   "agent.key.set": { provider: "openrouter", key: "sk-or-sample-not-a-key" },
   "agent.key.list": {},
   "agent.key.remove": { id: "01cccccccccccccccccccccccc" },

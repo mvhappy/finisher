@@ -209,7 +209,7 @@ export class AgentJournal implements RuntimeJournal {
         role: s.role,
         mode: s.mode,
         ...(s.parent === undefined ? {} : { parent: s.parent }),
-        trigger: s.parent === undefined ? "user" : "subagent",
+        trigger: s.parent !== undefined ? "subagent" : (s.trigger ?? "user"),
         ...(code === undefined ? {} : { reason: code }),
         ...(totals === undefined ? {} : { totals }),
       };
