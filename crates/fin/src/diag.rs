@@ -357,8 +357,12 @@ pub fn finish(result: &Result<Value, CoreError>, exit: i32) {
     if !allowed() {
         return;
     }
-    // A server that did not prove itself gets nothing more from this run (5A Decision 10).
-    if result.as_ref().is_err_and(|e| e.code == "SERVER_UNTRUSTED") {
+    // A server that did not prove itself gets nothing more from this run (5A Decision 10), nor
+    // one that speaks another protocol (no proof was checked; review #12).
+    if result
+        .as_ref()
+        .is_err_and(|e| matches!(e.code.as_str(), "SERVER_UNTRUSTED" | "PROTOCOL_MISMATCH"))
+    {
         return;
     }
     let mut s = state();

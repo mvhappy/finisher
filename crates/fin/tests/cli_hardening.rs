@@ -125,6 +125,14 @@ fn fin_overall_deadline() {
             .unwrap()
             .contains("FIN_DEADLINE_S")
     );
+    // The undo may have landed: the key to retry with is named too (review #8).
+    let key = run.json["error"]["details"]["txId"].as_str().unwrap();
+    assert!(
+        run.json["error"]["fix"]
+            .as_str()
+            .unwrap()
+            .contains(&format!("--idem-key {key}"))
+    );
     assert!(took < Duration::from_secs(5), "{took:?}");
     assert_eq!(server.join().unwrap(), 2);
     // A bad value is a usage error before anything connects.

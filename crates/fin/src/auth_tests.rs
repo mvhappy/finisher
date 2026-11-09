@@ -184,24 +184,9 @@ fn errors_name_no_secret_and_no_command() {
         fix.contains("FIN_CREDENTIAL") && fix.contains("server's data"),
         "{fix}"
     );
-    let old = untrusted(
-        &Endpoint::Socket("/sd/run/fin.sock".into()),
-        "versionMismatch",
-    );
-    assert_eq!(old.details["reason"], "versionMismatch");
-    assert!(
-        old.message.contains("older Finisher release"),
-        "{}",
-        old.message
-    );
     let unsafe_file = unsafe_credential(Path::new("/sd/c.json"), "readableByOthers", 0o100644);
     assert_eq!(unsafe_file.details["mode"], "644");
-    for f in [
-        e.fix.unwrap(),
-        fix,
-        old.fix.unwrap(),
-        unsafe_file.fix.unwrap(),
-    ] {
+    for f in [e.fix.unwrap(), fix, unsafe_file.fix.unwrap()] {
         assert!(
             !f.contains('`') && !f.contains("fin ") && !f.contains("finisherd "),
             "{f}"
