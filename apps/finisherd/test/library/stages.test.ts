@@ -365,6 +365,24 @@ describe("review fixes", () => {
   });
 });
 
+describe("a dependency that does not apply", () => {
+  test("a_stage_prioritized_on_a_skipped_dependency_is_not_kept", { timeout: 120_000 }, async () => {
+    // `t.dep` never applies, so its row is `skipped` and `t.after` can never run: whether the
+    // prioritize itself skips the dependency, or it was skipped before, no entry is kept.
+    const s = await setup({
+      names: ["a.png", "b.png"],
+      stages: [testStage("t.dep", { appliesTo: () => false }), testStage("t.after", { dependsOn: ["t.dep"] })],
+    });
+    const by = await probed(s, ["a.png", "b.png"]);
+    await exec(s.rig.svc.prioritize(by["a.png"]!.fp!, "t.after"));
+    await eventually(async () => s.rig.svc.stages.wanted() === 0);
+    await eventually(async () => (await stageRows(s, "t.dep")).filter((r) => r.state === "skipped").length === 2);
+    await exec(s.rig.svc.prioritize(by["b.png"]!.fp!, "t.after"));
+    expect(s.rig.svc.stages.wanted()).toBe(0);
+    expect((await stageRows(s, "t.after")).filter((r) => r.state === "done")).toEqual([]);
+  });
+});
+
 describe("priority and restarts", () => {
   test("prioritize_jumps_the_queue_with_dependencies", { timeout: 120_000 }, async () => {
     const names = ["a.png", "b.png", "c.png", "d.png", "e.png", "f.png"];

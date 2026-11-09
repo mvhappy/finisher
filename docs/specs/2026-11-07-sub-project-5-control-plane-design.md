@@ -418,7 +418,7 @@ As built (Task 7, Decision 27): `fin_core::events::Source` gains `console` and `
 | 5 | `CONTROL_DB_BUSY`, `TICKET_LIMIT`, `SERVER_TIMEOUT` |
 | 6 | `PROTOCOL_ERROR` (`fin`'s frame cap) |
 | 7 | `UNAUTHENTICATED`, `SERVER_UNTRUSTED`, `SCOPE_DENIED`, `HUMAN_ONLY`, `PATH_NOT_ALLOWED`, `BRANCH_NOT_ALLOWED`, `BRANCH_PROTECTED` (5E), `CREDENTIAL_REVOKED`, `CREDENTIAL_EXPIRED` (**new**, owner decision: revoked and expired credentials get codes of their own), `APPROVAL_REQUIRED`, `CONSOLE_NEEDS_TTY`, `CONFIRMATION_REQUIRED` |
-| start (stderr, exit 1) | `CONTROL_DB_TOO_NEW`, `SERVER_DATA_UNSAFE` (now also on Windows), `PIPE_SQUATTED`, `KEY_FILE_INVALID` |
+| start (stderr, exit 1) | `CONTROL_DB_TOO_NEW`, `SERVER_DATA_UNSAFE` (now also on Windows), `PIPE_SQUATTED`, `KEY_FILE_INVALID`, `SOCKET_PATH_TOO_LONG` (a Unix socket path, or on macOS its resolved form, longer than `sun_path` holds: 107 bytes on Linux, 103 elsewhere) |
 
 ### 4.14 Testing (5A)
 

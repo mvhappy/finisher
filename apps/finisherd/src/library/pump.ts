@@ -264,6 +264,8 @@ export class StagePump {
       }
       for (const f of done) this.#d.files.emit({ type: "stage", library: id, fileId: f.fileId, fp: f.fp, stage: spec.name });
       if (done.length > 0) this.#dependentsReady(done.map((f) => f.fp), spec.name);
+      // A stage that does not apply never becomes done: what waits on it is dropped.
+      for (const r of rows) if (r.state === "skipped") this.#dropWanted(r.fp, spec.name);
       if (only !== undefined || take.length === 0 && rows.length === 0) return submitted;
     }
     return submitted;
@@ -481,30 +483,42 @@ export class StagePump {
       throw notFound(fp);
     }
     const id = holders[0]!;
-    const states = await exec(this.#d.catalogs.reader.stageRows(id, { fps: [fp] }));
-    const rowAt = (s: string, v: string) => states.rows.find((r) => r.stage === s && r.version === v);
-    const doneAt = (s: string, v: string) => rowAt(s, v)?.state === "done";
-    if (doneAt(stage, spec.version)) return unwanted(true);
-    const lost = (s: string, v: string) => {
-      const r = rowAt(s, v);
-      return r?.state === "failed" && r.attempts >= MAX_ATTEMPTS;
-    };
     const deps = this.#d.stages.dependencies(spec);
-    const waitingOn = (deps ?? []).filter((dep) => !doneAt(dep.stage, dep.version));
-    if (lost(stage, spec.version) || waitingOn.some((dep) => lost(dep.stage, dep.version))) return unwanted(false);
-    if (waitingOn.length > 0 || deps === undefined) {
+    // `done`, `waiting` on dependencies not done yet, or `lost`: it, or a dependency, failed for
+    // good or does not apply (`skipped`), so it can never run.
+    const look = async (): Promise<"done" | "waiting" | "lost" | "ready"> => {
+      const states = await exec(this.#d.catalogs.reader.stageRows(id, { fps: [fp] }));
+      const rowAt = (st: string, v: string) => states.rows.find((r) => r.stage === st && r.version === v);
+      const lost = (st: string, v: string) => {
+        const r = rowAt(st, v);
+        return (r?.state === "failed" && r.attempts >= MAX_ATTEMPTS) || r?.state === "skipped";
+      };
+      if (rowAt(stage, spec.version)?.state === "done") return "done";
+      const waitingOn = (deps ?? []).filter((dep) => rowAt(dep.stage, dep.version)?.state !== "done");
+      if (lost(stage, spec.version) || waitingOn.some((dep) => lost(dep.stage, dep.version))) return "lost";
+      return waitingOn.length > 0 || deps === undefined ? "waiting" : "ready";
+    };
+    const first = await look();
+    if (first === "done") return unwanted(true);
+    if (first === "lost") return unwanted(false);
+    if (first === "waiting") {
       // Wanted before its dependencies are submitted: one that ends at once (done, or failed for
       // good) finds the entry to submit or drop; set after, it would wait forever.
       this.#wanted.set(key, { fp, stage });
       try {
-        for (const dep of waitingOn) {
+        for (const dep of deps ?? []) {
           if (!(await this.#prioritize(fp, dep.stage, path))) return unwanted(false);
         }
       } catch (e) {
         unwanted(false);
         throw e;
       }
-      return true;
+      // A dependency may have ended between the first look and the entry (its end then found
+      // no entry to act on): look again.
+      const now = await look();
+      if (now === "done") return unwanted(true);
+      if (now === "lost") return unwanted(false);
+      if (now === "waiting") return true;
     }
     // Still wanted until the submit holds it: a background pump turn between the two (the
     // dependency's end kicks one) would otherwise take it into a background batch.

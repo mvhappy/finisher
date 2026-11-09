@@ -1,7 +1,8 @@
 // RPC transports (plan decision 5): NDJSON over the local socket/pipe and over a ticketed
 // WebSocket on 127.0.0.1 (`upgrade.ts`, 5A Task 6).
-import { chmodSync, existsSync, rmSync } from "node:fs";
+import { chmodSync, existsSync, realpathSync, rmSync } from "node:fs";
 import { connect } from "node:net";
+import { basename, dirname, join } from "node:path";
 import * as NodeSocketServer from "@effect/platform-node/NodeSocketServer";
 import { FinRpcs } from "@finisher/contracts";
 import { Effect, Layer } from "effect";
@@ -48,23 +49,36 @@ export const maxSocketPathBytes = (platform: NodeJS.Platform): number => (platfo
 export const claimSocketPath = (
   path: string,
   platform: NodeJS.Platform = process.platform,
-): Effect.Effect<void, ServerStartError> =>
-  platform === "win32"
-    ? Effect.void
-    : Buffer.byteLength(path) > maxSocketPathBytes(platform)
-      ? Effect.fail(
-          new ServerStartError(
-            "SOCKET_PATH_TOO_LONG",
-            `the socket path ${path} is ${Buffer.byteLength(path)} bytes; this OS allows ${maxSocketPathBytes(platform)}`,
-            { path, bytes: Buffer.byteLength(path), max: maxSocketPathBytes(platform) },
-            "use a server data folder with a shorter path",
-          ),
-        )
-      : Effect.flatMap(
-          Effect.promise(() => (existsSync(path) ? isLive(path) : Promise.resolve(false))),
-          (live) =>
-            live ? Effect.fail(serverRunning(path)) : Effect.try({ try: () => rmSync(path, { force: true }), catch: startFailure }),
-        );
+): Effect.Effect<void, ServerStartError> => {
+  if (platform === "win32") return Effect.void;
+  // macOS: a sandboxed session is given the resolved path (`/tmp` is `/private/tmp`), which
+  // must fit as well.
+  const checked = platform === "darwin" ? resolvedSocketPath(path) : path;
+  const long = [path, checked].find((p) => Buffer.byteLength(p) > maxSocketPathBytes(platform));
+  if (long !== undefined) {
+    return Effect.fail(
+      new ServerStartError(
+        "SOCKET_PATH_TOO_LONG",
+        `the socket path ${long} is ${Buffer.byteLength(long)} bytes; this OS allows ${maxSocketPathBytes(platform)}`,
+        { path: long, bytes: Buffer.byteLength(long), max: maxSocketPathBytes(platform) },
+        "use a server data folder with a shorter path",
+      ),
+    );
+  }
+  return Effect.flatMap(
+    Effect.promise(() => (existsSync(path) ? isLive(path) : Promise.resolve(false))),
+    (live) => (live ? Effect.fail(serverRunning(path)) : Effect.try({ try: () => rmSync(path, { force: true }), catch: startFailure })),
+  );
+};
+
+/** `path` with its folder resolved (the socket itself may not exist yet); as given when the folder cannot be. */
+function resolvedSocketPath(path: string): string {
+  try {
+    return join(realpathSync(dirname(path)), basename(path));
+  } catch {
+    return path;
+  }
+}
 
 /**
  * Unix socket server at `path`. The socket is created under umask 0177 (so it is 0600 from

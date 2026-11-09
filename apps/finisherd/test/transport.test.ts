@@ -1,3 +1,5 @@
+import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { Cause, Effect, Exit } from "effect";
 import { describe, expect, test } from "vitest";
 import { claimSocketPath, isPeerClose } from "../src/transport.ts";
@@ -39,5 +41,21 @@ describe("claimSocketPath", () => {
     }
     // A pipe name has no such limit here.
     expect(Exit.isSuccess(await Effect.runPromiseExit(claimSocketPath(at(300), "win32")))).toBe(true);
+  });
+
+  test.runIf(process.platform === "darwin")("on macOS the resolved path must fit too, which a session is given", async () => {
+    // `/tmp` is `/private/tmp`: 8 bytes more in the endpoint a sandboxed `fin` connects to.
+    const dir = mkdtempSync("/tmp/fin-sock-");
+    try {
+      const pad = 103 - 4 - `${dir}//run/fin.sock`.length;
+      const path = join(dir, "d".repeat(pad), "run", "fin.sock");
+      mkdirSync(dirname(path), { recursive: true });
+      expect(Buffer.byteLength(path)).toBe(99);
+      const exit = await Effect.runPromiseExit(claimSocketPath(path));
+      const error = Exit.isFailure(exit) ? Cause.squash(exit.cause) : undefined;
+      expect(error).toMatchObject({ code: "SOCKET_PATH_TOO_LONG", details: { path: realpathSync(dirname(path)) + "/fin.sock", bytes: 107, max: 103 } });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

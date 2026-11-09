@@ -115,6 +115,8 @@ describe("Watches", () => {
     temps.push(root);
     mkdirSync(join(root, "a"));
     mkdirSync(join(root, ".git"));
+    // Settled in a folder of its own: a late report of it cannot pass for `a/`'s event.
+    mkdirSync(join(root, "settle"));
     expect(dotPath(".git/x")).toBe(true);
     expect(dotPath("a/.x")).toBe(true);
     expect(dotPath("a/b.mov")).toBe(false);
@@ -127,7 +129,7 @@ describe("Watches", () => {
     const w = new Watches((e) => events.push(e), { quietMs: 200, native: false, known: (_lib, parts) => parts.map((p) => Buffer.from(p).toString("base64")) });
     expect(w.watch("01lib", root)).toEqual({ ok: true });
     try {
-      await settle(w, events, "01lib", join(root, "a"));
+      await settle(w, events, "01lib", join(root, "settle"));
       writeFileSync(join(root, ".git", "index"), "x");
       writeFileSync(join(root, "a", "x.mov"), "x");
       await until(() => events.length > 0, 5000);
