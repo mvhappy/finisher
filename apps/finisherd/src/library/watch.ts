@@ -43,6 +43,8 @@ export interface WatchOptions {
   readonly maxUserWatches?: () => number | undefined;
   /** Use the native watcher (default: on Linux). */
   readonly native?: boolean;
+  /** The quiet-time timer (tests move it by hand); `after` answers its cancel. */
+  readonly timers?: { after(ms: number, f: () => void): () => void };
 }
 
 interface Watch {
@@ -52,7 +54,8 @@ interface Watch {
   readonly reserved: number;
   all: boolean;
   ready: boolean;
-  timer: ReturnType<typeof setTimeout> | undefined;
+  /** Cancels the armed quiet-time timer. */
+  timer: (() => void) | undefined;
 }
 
 const SLASH = 0x2f;
@@ -100,6 +103,7 @@ export class Watches {
   readonly #known: WatchOptions["known"];
   readonly #maxUser: () => number | undefined;
   readonly #native: boolean;
+  readonly #after: (ms: number, f: () => void) => () => void;
   readonly #watches = new Map<string, Watch>();
 
   constructor(post: (e: WatchEvent) => void, opts: WatchOptions) {
@@ -109,6 +113,7 @@ export class Watches {
     this.#known = opts.known;
     this.#native = opts.native ?? process.platform === "linux";
     this.#maxUser = opts.maxUserWatches ?? readMaxUserWatches;
+    this.#after = opts.timers?.after.bind(opts.timers) ?? realAfter;
   }
 
   /**
@@ -164,7 +169,7 @@ export class Watches {
     const w = this.#watches.get(lib);
     if (w === undefined) return;
     this.#watches.delete(lib);
-    if (w.timer !== undefined) clearTimeout(w.timer);
+    w.timer?.();
     w.close();
   }
 
@@ -235,8 +240,8 @@ export class Watches {
   }
 
   #arm(lib: string, w: Watch): void {
-    if (w.timer !== undefined) clearTimeout(w.timer);
-    w.timer = setTimeout(() => this.#flush(lib, w), this.#quietMs);
+    w.timer?.();
+    w.timer = this.#after(this.#quietMs, () => this.#flush(lib, w));
   }
 
   #flush(lib: string, w: Watch): void {
@@ -254,6 +259,11 @@ export class Watches {
     this.unwatch(lib);
     this.#post({ type: "watchDegraded", lib, reason });
   }
+}
+
+function realAfter(ms: number, f: () => void): () => void {
+  const t = setTimeout(f, ms);
+  return () => clearTimeout(t);
 }
 
 function codeOf(e: unknown): string {

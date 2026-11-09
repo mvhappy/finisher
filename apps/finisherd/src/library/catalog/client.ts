@@ -307,6 +307,8 @@ export interface IndexerClient {
   unwatch(lib: string): Effect.Effect<void, FinError>;
   /** Tests (`testHooks`): the library's watcher fails as on an overflow. */
   watchFault(lib: string): Effect.Effect<{ faulted: boolean }, FinError>;
+  /** Tests (`testHooks`): whether the library's watch has finished its first walk (events before that can be missed). */
+  watchReady(lib: string): Effect.Effect<{ ready: boolean }, FinError>;
   /** Tests (`testHooks`): the library's next batch file fails in its `transaction`-th transaction, after its writes. */
   testFault(lib: string, transaction: number): Effect.Effect<void, FinError>;
   /** `maxTxRows`: batch rows in one transaction; `maxStepRows`: rows written between two event-loop turns. */
@@ -456,6 +458,7 @@ export async function startCatalogThreads(opts: CatalogThreadsOptions): Promise<
     watch: (lib, root) => fx(() => indexer.call("watch", { lib, root })),
     unwatch: (lib) => fx<void>(async () => void (await indexer.call("unwatch", { lib }))),
     watchFault: (lib) => fx(() => indexer.call("watchFault", { lib })),
+    watchReady: (lib) => fx(() => indexer.call("watchReady", { lib })),
     stats: () => fx(() => indexer.call("stats", {})),
   };
   const readerClient: ReaderClient = {
