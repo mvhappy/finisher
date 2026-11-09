@@ -20,6 +20,7 @@ import { keyTmpDir } from "../src/plugins/host/keys.ts";
 import { makePluginHost, type PluginHost } from "../src/plugins/host/processes.ts";
 import { PluginTables } from "../src/plugins/tables.ts";
 import { advisory, as, code, CONSOLE, codeOf, failure, NET, plugins, run } from "./support/plugins-fixture.ts";
+import { rightsFor } from "../src/plugins/host/rights.ts";
 
 const PROBE = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "fixtures", "plugins", "probe", "main.mjs"), "utf8");
 const ID = "@acme/tool";
@@ -81,6 +82,7 @@ async function rig(packages: object[], opts: { cpu?: boolean } = {}): Promise<Ri
           kind: "test.echo",
           params: { value: op },
           via: { plugin: `${o.id ?? ID}@${o.version ?? "1.0.0"}` },
+          rights: rightsFor({ invoker: { ...PERSON, scopes: [], projects: "*" }, grants: [], class: "person" }),
           ...(o.priority === undefined ? {} : { priority: o.priority }),
           ...(o.project === undefined ? {} : { project: o.project }),
         }),

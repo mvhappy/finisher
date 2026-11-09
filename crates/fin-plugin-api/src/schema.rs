@@ -33,6 +33,11 @@ pub fn register_schemas(g: &mut SchemaGenerator) {
     g.subschema_for::<protocol::CommandRun>();
     g.subschema_for::<protocol::CommandOut>();
     g.subschema_for::<protocol::PluginError>();
+    g.subschema_for::<protocol::JobRights>();
+    g.subschema_for::<protocol::PluginScope>();
+    g.subschema_for::<protocol::Reach>();
+    g.subschema_for::<protocol::RightsBranch>();
+    g.subschema_for::<protocol::RightsPrincipal>();
     g.subschema_for::<calls::HostMethod>();
     g.subschema_for::<calls::ProjectSnapshot>();
     g.subschema_for::<calls::ProjectSnapshotPage>();

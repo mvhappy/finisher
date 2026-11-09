@@ -14,6 +14,9 @@ import { QueueIndex, type QueuedJob, schedule } from "../../src/jobs/schedule.ts
 import { FakeHost } from "../support/fake-host.ts";
 import { closeTestEngines, failure, hostOf, OWNER, run, type TestEngine, testClock, testEngine, until } from "../support/jobs.ts";
 
+/** A plugin family's job names its plugin and carries rights for its owner (sp8b Task 6). */
+const PLUGIN_JOB = { via: { plugin: "@test/plugin@1.0.0" }, rights: { principal: OWNER, class: "person", scopes: [], projects: "all", libraries: [], grants: [] } } as const;
+
 afterEach(closeTestEngines);
 
 const linux = process.platform === "linux";
@@ -532,7 +535,7 @@ describe("helpers and keys", () => {
     const t = await testEngine({ testKinds: { families: { testplugin: { warm: { slots: 2 } } } } });
     const seen: Array<{ key: string; pid: number; served: number }> = [];
     for (const key of ["A", "B", "A", "B", "A"]) {
-      const v = await t.runJob("test.pluginMinor", { key }, { priority: "interactive" });
+      const v = await t.runJob("test.pluginMinor", { key }, { priority: "interactive", ...PLUGIN_JOB });
       expect(v).toMatchObject({ state: "succeeded", warm: true });
       const r = v.result as { pid: number; served: number; key: string };
       expect(r.key).toBe(key);
@@ -548,7 +551,7 @@ describe("helpers and keys", () => {
 
   test("full_pool_retires_longest_idle_key", async () => {
     const t = await testEngine({ testKinds: { families: { testplugin: { warm: { slots: 2 } } } } });
-    const job = async (key: string) => (await t.runJob("test.pluginMinor", { key }, { priority: "interactive" })).result as { pid: number; served: number };
+    const job = async (key: string) => (await t.runJob("test.pluginMinor", { key }, { priority: "interactive", ...PLUGIN_JOB })).result as { pid: number; served: number };
     await job("A");
     const b = await job("B");
     await job("C"); // the pool is full: A's worker, idle the longest, makes room

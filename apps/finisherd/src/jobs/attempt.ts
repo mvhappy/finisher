@@ -5,7 +5,7 @@
 // (`runner.ts`) spawns its worker and ends with its exit; a warm one (`warm-run.ts`) borrows a
 // ready worker of the pool and ends with its `ready`.
 import type { CancelReason, Hello, HelperGrant, HostMsg, JobError as JobErrorMsg, Retry, StartJob, WorkerMsg } from "@finisher/core-types";
-import { FinError, type JobProgress, type MappedFile } from "@finisher/contracts";
+import { FinError, isJobRights, type JobProgress, type MappedFile } from "@finisher/contracts";
 import { finError, toFinError } from "../errors.ts";
 import { CallRouter } from "./calls.ts";
 import type { WorkerExitEvent } from "./events.ts";
@@ -133,7 +133,7 @@ export abstract class AttemptBase {
         role: "worker",
         owner: row.owner,
         ...(row.via === undefined ? {} : { via: row.via }),
-        ...(row.rights === undefined ? {} : { rights: row.rights }),
+        ...(isJobRights(row.rights) ? { rights: row.rights } : {}),
       }),
       (msg) => (this.proc === undefined ? "gone" : env.host.send(this.proc, msg)),
       env.run,

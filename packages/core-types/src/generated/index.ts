@@ -1960,6 +1960,30 @@ export type JobHostKillReason =
  */
 export type JobHostQos = "normal" | "utility" | "background";
 /**
+ * Which projects or libraries a job reaches: `"all"` or a list of ids.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "Reach".
+ */
+export type Reach = ReachAll | string[];
+/**
+ * `"all"`: every project (or library) of this server.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "ReachAll".
+ */
+export type ReachAll = "all";
+/**
+ * A sub-project 5 scope a plugin job may hold, each from one permission (spec §3.7):
+ * `project:read` → `project.read`; `project:write` → `project.write` (only the `tx.commit` of
+ * the command's returned transaction); `media:read` → `library.read` (and asset reads);
+ * `jobs:submit` → `jobs.submit` (the plugin's own kinds only, 8C).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "PluginScope".
+ */
+export type PluginScope = "project.read" | "project.write" | "library.read" | "jobs.submit";
+/**
  * This interface was referenced by `FinCore`'s JSON-Schema
  * via the `definition` "JobSpawnProfile".
  */
@@ -6308,6 +6332,53 @@ export interface JobMemoryRule {
   ramFraction?: number;
 }
 /**
+ * A plugin job's rights: invoker ∩ grants (Decision 8).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "JobRights".
+ */
+export interface JobRights {
+  /**
+   * Set for an agent session: its branch subtree.
+   */
+  branch?: RightsBranch | null;
+  /**
+   * The principal class of the process key (spec §3.3): `person`, `agent:<root session>`,
+   * `system`, or `<kind>:<id>` for any other invoker.
+   */
+  class: string;
+  /**
+   * The plugin's granted permissions at submit.
+   */
+  grants: Permission[];
+  libraries: Reach;
+  principal: RightsPrincipal;
+  projects: Reach;
+  /**
+   * The invoker's scopes that the plugin's grants map to.
+   */
+  scopes: PluginScope[];
+}
+/**
+ * An agent session's branch reach (sub-project 7 §5.1): its root branch and, with `subtree`,
+ * the branches beneath it (less its live children's).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "RightsBranch".
+ */
+export interface RightsBranch {
+  root: string;
+  subtree: boolean;
+}
+/**
+ * The invoker the plugin acts for (audit and journal name `plugin:<id>@<version>` acting
+ * for it).
+ */
+export interface RightsPrincipal {
+  id: string;
+  kind: string;
+}
+/**
  * `in/snapshot.json` (plan 6A Decision 2).
  *
  * This interface was referenced by `FinCore`'s JSON-Schema
@@ -7775,6 +7846,16 @@ export interface ManifestFonts1 {
    */
   cache?: string;
   files?: FontFileRef[];
+}
+/**
+ * The invoking principal (sub-project 5's `{kind, id}`; the job's owner).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "RightsPrincipal".
+ */
+export interface RightsPrincipal1 {
+  id: string;
+  kind: string;
 }
 /**
  * What `fin-sandbox-exec --probe` prints.

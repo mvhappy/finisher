@@ -25,7 +25,7 @@ export type RootSessionOf = (credentialId: string) => string | undefined;
  * `device` principals), `agent:<root session id>` (an agent credential is its session; its
  * class is the root of its session tree, else itself), `system` (work the host starts). Any
  * other owner (an MCP credential) is a class of its own, `<kind>:<id>`, so it never shares a
- * process. Task 6 reads the class from the job's `rights` once `JobRights` carries it.
+ * process. A job's rights carry the same class (checked at submit, `pluginFamily.checkRights`).
  */
 export function principalClass(owner: JobOwner, rootSessionOf: RootSessionOf = () => undefined): string {
   if (PERSON_KINDS.has(owner.kind)) return "person";
@@ -41,7 +41,11 @@ export function viaPlugin(job: JobView): string {
   return p;
 }
 
-/** `<plugin>@<version>|<project or none>|<class>` (spec §3.3's process key). */
+/**
+ * `<plugin>@<version>|<project or none>|<class>` (spec §3.3's process key). The class is always
+ * derived from the job's owner, never read from its rights: the submit check (`checkRights`)
+ * makes the rights' class equal to it, and the key does not trust the stored value.
+ */
 export function pluginWarmKey(job: JobView, rootSessionOf?: RootSessionOf): string {
   return `${viaPlugin(job)}|${projectOfJob(job) ?? "none"}|${principalClass(job.owner, rootSessionOf)}`;
 }

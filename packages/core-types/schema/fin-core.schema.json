@@ -7727,6 +7727,60 @@
       ],
       "type": "string"
     },
+    "JobRights": {
+      "additionalProperties": false,
+      "description": "A plugin job's rights: invoker ∩ grants (Decision 8).",
+      "properties": {
+        "branch": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RightsBranch"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Set for an agent session: its branch subtree."
+        },
+        "class": {
+          "description": "The principal class of the process key (spec §3.3): `person`, `agent:<root session>`,\n`system`, or `<kind>:<id>` for any other invoker.",
+          "type": "string"
+        },
+        "grants": {
+          "description": "The plugin's granted permissions at submit.",
+          "items": {
+            "$ref": "#/$defs/Permission"
+          },
+          "type": "array"
+        },
+        "libraries": {
+          "$ref": "#/$defs/Reach"
+        },
+        "principal": {
+          "$ref": "#/$defs/RightsPrincipal",
+          "description": "The invoker the plugin acts for (audit and journal name `plugin:<id>@<version>` acting\nfor it)."
+        },
+        "projects": {
+          "$ref": "#/$defs/Reach"
+        },
+        "scopes": {
+          "description": "The invoker's scopes that the plugin's grants map to.",
+          "items": {
+            "$ref": "#/$defs/PluginScope"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "principal",
+        "class",
+        "scopes",
+        "projects",
+        "libraries",
+        "grants"
+      ],
+      "type": "object"
+    },
     "JobSnapshot": {
       "description": "`in/snapshot.json` (plan 6A Decision 2).",
       "properties": {
@@ -12716,6 +12770,16 @@
       ],
       "type": "object"
     },
+    "PluginScope": {
+      "description": "A sub-project 5 scope a plugin job may hold, each from one permission (spec §3.7):\n`project:read` → `project.read`; `project:write` → `project.write` (only the `tx.commit` of\nthe command's returned transaction); `media:read` → `library.read` (and asset reads);\n`jobs:submit` → `jobs.submit` (the plugin's own kinds only, 8C).",
+      "enum": [
+        "project.read",
+        "project.write",
+        "library.read",
+        "jobs.submit"
+      ],
+      "type": "string"
+    },
     "PluginSourceName": {
       "description": "Where an installed plugin came from (spec §5.2).",
       "enum": [
@@ -13400,6 +13464,27 @@
       ],
       "type": "object"
     },
+    "Reach": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ReachAll"
+        },
+        {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      ],
+      "description": "Which projects or libraries a job reaches: `\"all\"` or a list of ids."
+    },
+    "ReachAll": {
+      "description": "`\"all\"`: every project (or library) of this server.",
+      "enum": [
+        "all"
+      ],
+      "type": "string"
+    },
     "RecoverGroup": {
       "additionalProperties": false,
       "description": "One group of quarantined records ([`Store::recover_groups`](crate::Store::recover_groups)).\n\n- `id`: the first record's `txHash`, 12 hex digits (stable on every server);\n- `records_branch`: the branch the records were on;\n- `branch`, `fork_seq`, `fork_hash`: the fork `create` uses: an existing branch, the seq\n  and its record; or, with `fork_group`, the branch that group makes (`branch` its name,\n  `fork_hash` absent: its record is written then); none for a group that cannot be made\n  for want of a fork (`NO_COMMON_HISTORY`);\n- `records`, `reasons`: how many, and per quarantine reason; `origin`: the first row's;\n- `server`: the writer's server id (`unknown` when it cannot be told);\n- `first_committed_at`: unix ms; `name`: the branch `create` makes (empty for a group\n  that makes none: it has neither records with ops nor checkpoints, and its child groups\n  fork where it does);\n- `children`: the groups forking from it, or made by its `branch` records;\n- `recoverable`, `problems`: why `create` leaves it whole (fix each, or dismiss it);\n- `notes`: rows `create` leaves in quarantine while making the rest (`NAME_TAKEN`,\n  `BRANCH_NOT_FOUND`, …; they come back as a group of their own), and copies whose source\n  is not here (`SOURCE_NOT_FOUND`).",
@@ -13902,6 +13987,40 @@
       ]
     },
     "ReviewVerdict": {
+      "type": "object"
+    },
+    "RightsBranch": {
+      "additionalProperties": false,
+      "description": "An agent session's branch reach (sub-project 7 §5.1): its root branch and, with `subtree`,\nthe branches beneath it (less its live children's).",
+      "properties": {
+        "root": {
+          "type": "string"
+        },
+        "subtree": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "root",
+        "subtree"
+      ],
+      "type": "object"
+    },
+    "RightsPrincipal": {
+      "additionalProperties": false,
+      "description": "The invoking principal (sub-project 5's `{kind, id}`; the job's owner).",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "kind": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "id"
+      ],
       "type": "object"
     },
     "Risk": {

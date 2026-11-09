@@ -156,12 +156,13 @@ describe("runs", () => {
 
   test("owner_via_rights_are_kept", async () => {
     const t = await testEngine();
+    const rights = { principal: OWNER, class: "person", scopes: ["project.read"], projects: "all", libraries: [], grants: [{ perm: "project:read" }] };
     const done: unknown[] = [];
     t.engine.onDone((j) => done.push(j));
-    const v = await t.runJob("test.call", { method: "test.echo", params: { x: 1 } }, { via: { plugin: "p.one" }, rights: { r: ["a"] } });
+    const v = await t.runJob("test.call", { method: "test.echo", params: { x: 1 } }, { via: { plugin: "p.one" }, rights });
     expect(v.state).toBe("succeeded");
-    expect(v.result).toEqual({ echo: { x: 1 }, job: v.id, role: "worker", owner: OWNER, via: { plugin: "p.one" }, rights: { r: ["a"] } });
-    expect(v).toMatchObject({ owner: OWNER, via: { plugin: "p.one" }, rights: { r: ["a"] } });
+    expect(v.result).toEqual({ echo: { x: 1 }, job: v.id, role: "worker", owner: OWNER, via: { plugin: "p.one" }, rights });
+    expect(v).toMatchObject({ owner: OWNER, via: { plugin: "p.one" }, rights });
     expect(done).toEqual([v]);
   });
 

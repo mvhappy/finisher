@@ -7,8 +7,8 @@ mod support;
 use std::fmt::Debug;
 
 use fin_plugin_api::protocol::{
-    CallLimits, CommandOut, CommandRun, HostMethod, PluginContext, PluginDirs, PluginError,
-    PluginRefFull, calls,
+    CallLimits, CommandOut, CommandRun, HostMethod, JobRights, PluginContext, PluginDirs,
+    PluginError, PluginRefFull, PluginScope, Reach, calls,
 };
 use fin_plugin_api::{
     CommandContribution, ContributionKind, HOST_API, HookContribution, SourceClass, consumable,
@@ -166,6 +166,53 @@ fn plugin_error_round_trips() {
     round::<PluginError>(v);
     let e: PluginError = serde_json::from_value(json!({ "code": "X", "message": "m" })).unwrap();
     assert!(e.details.is_empty());
+}
+
+#[test]
+fn job_rights_round_trip() {
+    let v = json!({
+        "principal": { "kind": "agent", "id": "S1" },
+        "class": "agent:S0",
+        "scopes": ["project.read", "project.write"],
+        "projects": ["p1"],
+        "branch": { "root": "b1", "subtree": true },
+        "libraries": "all",
+        "grants": [{ "perm": "project:read" }, { "perm": "project:write" }]
+    });
+    let r: JobRights = round(v.clone());
+    assert!(r.projects.includes("p1") && !r.projects.includes("p2"));
+    assert!(r.libraries.includes("any"));
+    refuses_extra::<JobRights>(v.clone());
+    let mut no_branch = v.clone();
+    no_branch.as_object_mut().unwrap().remove("branch");
+    assert_eq!(round::<JobRights>(no_branch).branch, None);
+    // No scope outside the four of spec §3.7 parses: a human-only or admin scope is not representable.
+    for bad in [
+        "project.admin",
+        "auth.admin",
+        "branch.protected",
+        "review.decide",
+        "diagnostics.read",
+        "plugin.admin",
+    ] {
+        let mut w = v.clone();
+        w["scopes"] = json!([bad]);
+        assert!(serde_json::from_value::<JobRights>(w).is_err(), "{bad}");
+    }
+    let names: Vec<_> = PluginScope::ALL
+        .iter()
+        .map(|s| (s.name(), s.permission()))
+        .collect();
+    assert_eq!(
+        names,
+        [
+            ("project.read", "project:read"),
+            ("project.write", "project:write"),
+            ("library.read", "media:read"),
+            ("jobs.submit", "jobs:submit")
+        ]
+    );
+    assert!(serde_json::from_value::<Reach>(json!("some")).is_err());
 }
 
 #[test]

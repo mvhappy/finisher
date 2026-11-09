@@ -35,6 +35,9 @@ pub const DENIED_CODES: &[&str] = &[
     "PLUGIN_BUNDLED_MISMATCH",
     "COPYLEFT_NOT_ACCEPTED",
     "THIRD_PARTY_CODE_NOT_ACCEPTED",
+    // A plugin call or commit whose permission the job's rights (invoker ∩ grants) lack
+    // (8B Task 6; `details.perm`).
+    "PLUGIN_PERMISSION_DENIED",
     // Agent sessions (7A-2 Task 6b): a session's token, money or wall-clock budget is used up
     // (`details.kind`, `used`, `limit`); a person raises it (`finisherd agent approve`).
     "BUDGET_EXCEEDED",

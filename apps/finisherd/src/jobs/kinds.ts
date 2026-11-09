@@ -166,6 +166,11 @@ export interface FamilySpec {
    */
   readonly usable?: (job: JobView) => FinError | undefined;
   /**
+   * A plugin family's check of a job's rights at submit (sp8b Task 6), after the engine's own
+   * shape check: e.g. that their principal class is the owner's. The error refuses the submit.
+   */
+  readonly checkRights?: (owner: JobOwner, rights: JobRights) => FinError | undefined;
+  /**
    * Under a sandbox (plan 7C Decision 19): the roots a warm worker spawned for `job` may read,
    * fixed at its start and shared by every job of its key (one project): canonical, outside
    * server data. A job whose `reads` fall outside them runs cold.

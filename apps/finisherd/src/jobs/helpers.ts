@@ -6,7 +6,7 @@
 // answer the helpers get `shutdown` and 2 s before their group is killed.
 import { join } from "node:path";
 import type { FileGrant, HelperGrant, HostMsg, WorkerMsg } from "@finisher/core-types";
-import type { FinError, HelperSpec, MappedFile } from "@finisher/contracts";
+import { type FinError, type HelperSpec, isJobRights, type MappedFile } from "@finisher/contracts";
 import { finError, toFinError } from "../errors.ts";
 import { childEnv } from "../env.ts";
 import { CallRouter } from "./calls.ts";
@@ -124,7 +124,7 @@ export class Helpers {
         helper: { kind: p.spec.kind, id: p.spec.id },
         owner: row.owner,
         ...(row.via === undefined ? {} : { via: row.via }),
-        ...(row.rights === undefined ? {} : { rights: row.rights }),
+        ...(isJobRights(row.rights) ? { rights: row.rights } : {}),
       }),
       (msg) => (p.proc === undefined ? "gone" : env.host.send(p.proc, msg)),
       env.run,

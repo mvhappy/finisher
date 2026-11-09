@@ -7,8 +7,9 @@
 // 1,024 open files. 5C's worker codes become the plugin codes of spec §13 when a job fails.
 import type { FinErrorData } from "@finisher/contracts";
 import { childEnv } from "../../env.ts";
+import { finError } from "../../errors.ts";
 import type { FamilySpec, KindRegistry, MemoryRule, ProgramSpec } from "../../jobs/kinds.ts";
-import { ensurePrivateDir, keyTmpDir, pluginWarmKey, type RootSessionOf, sweepPluginTmp } from "./keys.ts";
+import { ensurePrivateDir, keyTmpDir, pluginWarmKey, principalClass, type RootSessionOf, sweepPluginTmp } from "./keys.ts";
 import { nodeRuntimeEnv } from "./node-runtime.ts";
 import { type InstalledOf, jobRow, resolveRuntime } from "./program.ts";
 
@@ -95,6 +96,10 @@ export function pluginFamily(deps: PluginFamilyDeps): FamilySpec {
     profile: "plugin",
     program: (job, key) => pluginProgram(deps, job, key),
     warmKey: (job) => pluginWarmKey(job, deps.rootSessionOf),
+    checkRights: (owner, rights) => {
+      const cls = principalClass(owner, deps.rootSessionOf);
+      return rights.class === cls ? undefined : finError("INVALID_REQUEST", "a plugin job's rights are for its owner's principal class", { field: "rights", class: rights.class });
+    },
     usable: (job) => {
       const found = jobRow(deps.installed, job);
       return "error" in found ? found.error : undefined;

@@ -7,11 +7,13 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { FinErrorData, JobOwner, JobView } from "@finisher/contracts";
+import { Effect } from "effect";
 import { afterEach, describe, expect, test } from "vitest";
 import { exitPluginId, type KindSpec, makeKindRegistry, MAX_PLUGIN_WARM_SLOTS } from "../src/jobs/kinds.ts";
 import { warmOverrun } from "../src/jobs/schedule.ts";
 import { mapPluginError, PLUGIN_LIMITS, pluginFamily, type PluginFamilyDeps, pluginProgram, registerPluginFamily } from "../src/plugins/host/family.ts";
 import { keyTmpDir, pluginWarmKey, principalClass, type RootSessionOf, sessionRoots } from "../src/plugins/host/keys.ts";
+import { rightsFor } from "../src/plugins/host/rights.ts";
 import { manualClock, systemIds } from "../src/agent/clock.ts";
 import { AgentStore, type NewSession } from "../src/agent/store.ts";
 import { openControlStore } from "../src/control/db.ts";
@@ -95,6 +97,12 @@ async function pluginEngine(): Promise<PluginEngine> {
           kind: "test.echo",
           params: { value: op },
           via: { plugin: `${ID}@${spec.version ?? "1.0.0"}` },
+          rights: rightsFor({
+            invoker: { ...(spec.owner ?? PERSON), scopes: [], projects: "*" },
+            grants: [],
+            class: principalClass(spec.owner ?? PERSON, roots),
+            sessionRoot: spec.owner?.kind === "agent" ? "br1" : undefined,
+          }),
           ...(spec.project === undefined ? {} : { project: spec.project }),
           ...(spec.priority === undefined ? {} : { priority: spec.priority }),
         }),
@@ -298,6 +306,35 @@ describe("the plugin family's process", () => {
     p.tables.setState(ID, true, "revoked", 3);
     expect((await p.submit({ op: "pid" })).error?.code).toBe("PLUGIN_REVOKED");
     expect(p.t.sink.exits.filter((x) => x.family === "plugin")).toEqual([]);
+  });
+
+  test("a plugin job names its plugin and carries its owner's rights (Task 6)", async () => {
+    const p = await pluginEngine();
+    p.install();
+    const via = { plugin: `${ID}@1.0.0` };
+    const rights = rightsFor({ invoker: { ...PERSON, scopes: [], projects: "*" }, grants: [], class: "person" });
+    const refused = (spec: Record<string, unknown>) => Effect.runPromise(Effect.flip(p.t.engine.submit(PERSON, { kind: "test.echo", params: { value: { op: "pid" } }, ...spec })));
+    expect(await refused({ via })).toMatchObject({ code: "INVALID_REQUEST", details: { field: "rights" } });
+    expect(await refused({ rights })).toMatchObject({ code: "INVALID_REQUEST", details: { field: "via" } });
+    expect(await refused({ via, rights: { ...rights, scopes: ["project.admin"] } })).toMatchObject({ details: { field: "rights" } });
+    expect(await refused({ via, rights: { ...rights, extra: 1 } })).toMatchObject({ details: { field: "rights" } });
+    // Rights computed for another principal are not this owner's.
+    expect(await refused({ via, rights: { ...rights, principal: { kind: "agent", id: "S" } } })).toMatchObject({ details: { field: "rights" } });
+    expect(p.t.sink.exits.filter((x) => x.family === "plugin")).toEqual([]);
+    // Rights for another principal class are refused (a person's job cannot take an agent tree's
+    // process, nor an MCP credential's job the person's), and the key never reads the stored class.
+    expect(await refused({ via, rights: { ...rights, class: "agent:R" } })).toMatchObject({ code: "INVALID_REQUEST", details: { field: "rights", class: "agent:R" } });
+    const mcp: JobOwner = { kind: "mcp", id: "M" };
+    const asPerson = rightsFor({ invoker: { ...mcp, scopes: [], projects: "*" }, grants: [], class: "person" });
+    expect(await Effect.runPromise(Effect.flip(p.t.engine.submit(mcp, { kind: "test.echo", params: { value: { op: "pid" } }, via, rights: asPerson })))).toMatchObject({ details: { class: "person" } });
+    expect(pluginWarmKey({ ...job(PERSON, "P"), rights: { ...rights, class: "agent:R" } } as JobView)).toBe(`${ID}@1.0.0|P|person`);
+    // An agent's rights without its branch reach are not rights.
+    const agent: JobOwner = { kind: "agent", id: "S" };
+    const noBranch = { ...rightsFor({ invoker: { ...agent, scopes: [], projects: "*" }, grants: [], class: "agent:S" }) };
+    expect(await Effect.runPromise(Effect.flip(p.t.engine.submit(agent, { kind: "test.echo", params: { value: { op: "pid" } }, via, rights: noBranch })))).toMatchObject({ details: { field: "rights" } });
+    // A `net` grant without origins, or an unknown permission, is refused too.
+    expect(await refused({ via, rights: { ...rights, grants: [{ perm: "net" }] } })).toMatchObject({ details: { field: "rights" } });
+    expect(await refused({ via, rights: { ...rights, grants: [{ perm: "root" }] } })).toMatchObject({ details: { field: "rights" } });
   });
 });
 
