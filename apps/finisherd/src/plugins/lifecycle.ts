@@ -26,6 +26,7 @@ import { attempt, attemptJson, finError, toFinError } from "../errors.ts";
 import { autoUpdatable, baseOf, canonical, installedPlugin, type PlanDeps, precheck, registryFor, stagePlan } from "./plans.ts";
 import { actorOf, type Asker } from "./registries.ts";
 import type { PlanRow } from "./tables.ts";
+import type { PluginHostHooks } from "./host/processes.ts";
 
 /** A version a refresh revoked. */
 export type Revoked = RefreshApplied["revoked"][number];
@@ -48,6 +49,12 @@ export interface LifecycleDeps extends PlanDeps {
    * the rows (Task 12a).
    */
   readonly changed?: Effect.Effect<void>;
+  /**
+   * The code plugins' processes (sp8b Task 5): stopped on disable, revocation, removal and an
+   * update; asked whether a code plugin can be enabled here. Without it (8A's tests), code
+   * plugins cannot be enabled (`PLUGIN_RUNTIME_UNAVAILABLE`).
+   */
+  readonly host?: PluginHostHooks;
 }
 
 /** How many suggestions one principal may have for one project (review M2). */
@@ -62,6 +69,8 @@ export function makeLifecycle(deps: LifecycleDeps) {
   const { native, tables, clock } = deps;
   const lock = Semaphore.makeUnsafe(1);
   const locked = <A, E>(self: Effect.Effect<A, E>) => lock.withPermits(1)(deps.changed === undefined ? self : Effect.ensuring(self, deps.changed));
+  /** A code plugin's processes stop (none run for content packs). */
+  const stopCode = (id: string, opts?: { readonly version?: string; readonly drain?: boolean }) => (deps.host === undefined ? Effect.void : deps.host.stop(id, opts));
 
   /**
    * Revokes the versions of registry `id` a signed `disable` advisory names (any principal's
@@ -73,7 +82,10 @@ export function makeLifecycle(deps: LifecycleDeps) {
       const rows = tables.installed().filter((p) => p.registryId === id && p.state !== "revoked" && tables.installedRootMatches(p.id));
       if (rows.length === 0) return [];
       const hits = yield* attemptJson<Revoked[]>(() => native.revocations(id, JSON.stringify(rows.map((p) => ({ id: p.id, version: p.version })))));
-      for (const h of hits) tables.setState(h.id, false, "revoked", clock());
+      for (const h of hits) {
+        tables.setState(h.id, false, "revoked", clock());
+        yield* stopCode(h.id);
+      }
       return hits;
     });
 
@@ -148,8 +160,12 @@ export function makeLifecycle(deps: LifecycleDeps) {
       // The owner's switch survives an update: a pack they turned off stays off, also a bundled
       // one that was revoked meanwhile (its `enabled` is still their choice, review M2).
       const keepOff = content && prev !== undefined && (prev.state === "disabled" || (prev.state === "revoked" && prev.source === "bundled" && !prev.enabled));
-      const enabled = content && !keepOff && !revokedNow;
-      const state: InstalledRow["state"] = revokedNow ? "revoked" : enabled ? "active" : "disabled";
+      // A code plugin installs disabled (8A); an approved update of one keeps what it had: an
+      // enabled one stays enabled (the person approved the new version's plan), one in a crash
+      // loop stays there until its owner enables it (sp8b Task 5).
+      const codeOn = !content && prev !== undefined && prev.kind === "code" && prev.enabled && prev.state !== "revoked" && !revokedNow;
+      const enabled = (content && !keepOff && !revokedNow) || codeOn;
+      const state: InstalledRow["state"] = revokedNow ? "revoked" : codeOn && prev?.state === "crashLoop" ? "crashLoop" : enabled ? "active" : "disabled";
       const autoUpdate = content && (autoUpdateReq ?? prev?.autoUpdate ?? false);
       const fields = {
         id: placed.id,
@@ -177,6 +193,8 @@ export function makeLifecycle(deps: LifecycleDeps) {
           }),
         catch: toFinError,
       }).pipe(Effect.tapError(() => Effect.ignore(attempt(() => native.removePlugin(placed.id, placed.version, false)))));
+      // The old version's processes drain and stop: new jobs name the new version, so its key (sp8b Task 5).
+      if (prev !== undefined && prev.kind === "code" && (prev.version !== placed.version || revokedNow)) yield* stopCode(prev.id, { version: prev.version, drain: !revokedNow });
       // The version it replaced stays until the switch is recorded; its data stays too.
       if (prev !== undefined && prev.dir !== placed.dir) yield* Effect.ignore(attempt(() => native.removePlugin(prev.id, prev.version, false)));
       const third = staged.warnings?.find((w) => w.code === "thirdPartyCode");
@@ -218,18 +236,27 @@ export function makeLifecycle(deps: LifecycleDeps) {
       const row = tables.installedOne(id);
       if (row === undefined) return yield* Effect.fail(notInstalled(id));
       if (enable) {
-        // No runtime exists before 8B; there is no sandbox gate (owner decision 1).
-        if (row.kind === "code") {
-          return yield* Effect.fail(
-            finError("PLUGIN_RUNTIME_UNAVAILABLE", `${id} is a code plugin, and this version of Finisher cannot run code plugins yet`, { id, kind: "code" }, "Keep it installed: a later Finisher update can run it."),
-          );
-        }
         if (row.state === "revoked") {
           return yield* Effect.fail(finError("PLUGIN_REVOKED", `${id} ${row.version} was revoked by a signed advisory`, { id, version: row.version }, "Install a version the advisory does not name."));
         }
-        tables.setState(id, true, "active", clock());
-      } else if (row.state !== "revoked") {
-        tables.setState(id, false, "disabled", clock());
+        // There is no sandbox gate (owner decision 1); the host checks platform, host API,
+        // Node and `models` (sp8b Task 5, Decision 18). Without a host there is no runtime.
+        if (row.kind === "code") {
+          if (deps.host === undefined) {
+            return yield* Effect.fail(
+              finError("PLUGIN_RUNTIME_UNAVAILABLE", `${id} is a code plugin, and this server runs no code plugins`, { id, kind: "code" }, "Keep it installed: a later Finisher update can run it."),
+            );
+          }
+          yield* deps.host.enableCheck(tables.installedFull(id)!);
+        }
+        // The owner's enable also clears a crash loop.
+        tables.store.tx(() => {
+          tables.setState(id, true, "active", clock());
+          tables.setProblem(id, null);
+        });
+      } else {
+        if (row.state !== "revoked") tables.setState(id, false, "disabled", clock());
+        if (row.kind === "code") yield* stopCode(id);
       }
       return tables.installedOne(id)!;
     });
@@ -239,6 +266,7 @@ export function makeLifecycle(deps: LifecycleDeps) {
       const row = tables.installedOne(id);
       if (row === undefined) return yield* Effect.fail(notInstalled(id));
       if (row.source === "bundled") return yield* Effect.fail(finError("PLUGIN_BUNDLED", `${id} comes with Finisher and cannot be removed`, { id }, "Disable it instead."));
+      if (row.kind === "code") yield* stopCode(id);
       // A row whose store directory is already gone (a removal interrupted after it) is removed too.
       yield* attempt(() => native.removePlugin(id, row.version, purgeData)).pipe(Effect.catchIf((e) => e.code === "PLUGIN_NOT_INSTALLED", () => Effect.void));
       yield* Effect.try({ try: () => tables.store.tx(() => tables.deletePlugin(id)), catch: toFinError });

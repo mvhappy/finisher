@@ -49,6 +49,12 @@ export interface JobEngine {
   pause(target: { readonly job: string } | { readonly all: true }): Effect.Effect<void, FinError>;
   resume(target: { readonly job: string } | { readonly all: true }): Effect.Effect<void, FinError>;
   warm(family: string): Effect.Effect<void, FinError>;
+  /**
+   * Retires `family`'s warm workers whose key `match`es (sp8b Task 5: a plugin disabled,
+   * revoked or updated): a ready one gets `shutdown` and is killed after the grace, a busy one
+   * goes after its job, a spawning one is killed. Only the engine's own processes; how many.
+   */
+  retireWarm(family: string, match: (key: string) => boolean): number;
   definePool(name: PoolName, size: number): void;
   workers(): WorkersView;
   events(): Stream.Stream<JobEvent>;

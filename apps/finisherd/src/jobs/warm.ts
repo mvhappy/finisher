@@ -36,7 +36,7 @@ import { type AttemptOutcome, runAttempt } from "./runner.ts";
 import { MAX_OVERRUN_SLOTS, type SchedState, type WarmWorkerView } from "./schedule.ts";
 import type { JobRow } from "./store.ts";
 import { runWarmAttempt } from "./warm-run.ts";
-import { emptyTmp, noRun, RECYCLE_MEMORY_SHARE, RETIRE_GRACE_MS, spawnRequest, VISIT_DIR, WARM_DIR_PREFIX, WARM_IDLE_S, WARM_MAX_AGE_S, WARM_MAX_JOBS, WARM_SLOTS, type WarmWorkerInfo, type Worker } from "./warm-worker.ts";
+import { emptyTmp, noRun, RECYCLE_MEMORY_SHARE, RETIRE_GRACE_MS, spawnRequest, VISIT_DIR, WARM_DIR_PREFIX, WARM_IDLE_S, WARM_MAX_AGE_S, WARM_MAX_JOBS, WARM_SLOTS, type WarmWorkerInfo, type Worker, workerInfo } from "./warm-worker.ts";
 
 export { RECYCLE_MEMORY_SHARE, RETIRE_GRACE_MS, WARM_DIR_PREFIX, WARM_IDLE_S, WARM_MAX_AGE_S, WARM_MAX_JOBS, WARM_SLOTS, type WarmWorkerInfo } from "./warm-worker.ts";
 
@@ -547,6 +547,23 @@ export class WarmPools {
     e.pump();
   }
 
+  /** `JobEngine.retireWarm`: ready workers retire, busy ones after their job, spawning ones are killed. */
+  retireMatching(family: string, match: (key: string) => boolean): number {
+    let n = 0;
+    for (const w of [...(this.#byFamily.get(family) ?? [])]) {
+      if (w.gone || w.state === "retiring" || !match(w.key)) continue;
+      n++;
+      if (w.state === "ready") this.#retire(w, "done");
+      else if (w.state === "busy") w.retireAfterJob = true;
+      else {
+        w.cameUp = true; // its key's queued job stays queued, and meets the family's refusal
+        this.#kill(w, "shutdown");
+      }
+    }
+    if (n > 0) this.#e.pump();
+    return n;
+  }
+
   /** Whether `name` under the jobs root is a live warm worker's directory (the hourly sweep keeps it). */
   owns(name: string): boolean {
     // A lost worker's directory stays until its job has left it (Task 12 review S5).
@@ -558,16 +575,7 @@ export class WarmPools {
   /** `workers().warm`. */
   list(): WarmWorkerInfo[] {
     const now = this.#e.d.now();
-    return [...this.#byFamily.values()].flat().map((w) => ({
-      family: w.family.family,
-      key: w.key,
-      ...(w.pid === undefined ? {} : { pid: w.pid }),
-      state: w.state,
-      served: w.served,
-      ageS: (now - w.spawnedAt) / 1000,
-      idleS: w.state === "ready" && w.idleSince !== undefined ? (now - w.idleSince) / 1000 : 0,
-      ...(w.memory === undefined ? {} : { memory: w.memory }),
-    }));
+    return [...this.#byFamily.values()].flat().map((w) => workerInfo(w, now));
   }
 
   /** Close (Decision 29): `shutdown` to every worker; resolves once they exited, at most after the grace. */

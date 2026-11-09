@@ -60,6 +60,8 @@ export const AUDIT_KINDS = [
   "plugin.disable",
   "plugin.revoke",
   "plugin.grant",
+  // A code plugin stopped after three crashes in ten minutes (sp8b Task 5).
+  "plugin.crashLoop",
   "registry.add",
   "registry.remove",
   "registry.trust",

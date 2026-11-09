@@ -97,6 +97,10 @@ export const InstalledRowSchema = Schema.Struct({
   installedAt: Schema.Number,
   /** Whole days its registry's metadata is past its expiry; absent while fresh or for other sources. */
   registryStaleDays: Schema.optional(Schema.Number),
+  /** Why a code plugin does not run (sp8b Task 5): an error code such as `PLUGIN_CRASH_LOOP`. */
+  problem: Schema.optional(Schema.String),
+  /** Code plugins in `plugin.list`: whether its processes start under 7C's `plugin` profile (false until it is enforced). */
+  confined: Schema.optional(Schema.Boolean),
 });
 export type InstalledRow = typeof InstalledRowSchema.Type;
 

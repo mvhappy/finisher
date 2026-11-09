@@ -519,6 +519,11 @@ export class Engine implements JobEngine {
     });
   }
 
+  /** `retireWarm` (sp8b Task 5): the family's warm workers whose key `match`es go; how many. */
+  retireWarm(family: string, match: (key: string) => boolean): number {
+    return this.warmPools.retireMatching(family, match);
+  }
+
   definePool(name: PoolName, size: number): void {
     this.d.pools.define(name, size);
     this.pump();

@@ -75,6 +75,20 @@ export interface Worker {
   gone: boolean;
 }
 
+/** One worker as `workers().warm` lists it. */
+export function workerInfo(w: Worker, now: number): WarmWorkerInfo {
+  return {
+    family: w.family.family,
+    key: w.key,
+    ...(w.pid === undefined ? {} : { pid: w.pid }),
+    state: w.state,
+    served: w.served,
+    ageS: (now - w.spawnedAt) / 1000,
+    idleS: w.state === "ready" && w.idleSince !== undefined ? (now - w.idleSince) / 1000 : 0,
+    ...(w.memory === undefined ? {} : { memory: w.memory }),
+  };
+}
+
 export const noRun = (error: FinError, cause: "exit" | "mismatch", exit?: JobHostExitInfo): AttemptOutcome => ({
   ok: false,
   error,

@@ -52,8 +52,7 @@ import { LibrariesTag } from "./library/api.ts";
 import { CatalogsTag, layerCatalogs } from "./library/catalog/client.ts";
 import { LibraryServiceTag, librariesHolding, libraryWiring } from "./library/layer.ts";
 import { layerPlugins } from "./plugins/registries.ts";
-import { registerPluginFamily } from "./plugins/host/family.ts";
-import { sessionRoots } from "./plugins/host/keys.ts";
+import { makePluginHost } from "./plugins/host/processes.ts";
 import { PluginTables } from "./plugins/tables.ts";
 import { layerProjectRegistry, ProjectRegistry, type RegistryOptions } from "./projects.ts";
 import { registerMediaKinds } from "./jobs/kinds/media.look.ts";
@@ -189,12 +188,11 @@ export const serve = ({
         layerProjectRegistry(serverData, { ...registry, libraryUse: (paths) => libraryHold?.(paths) ?? { release: () => {} } }),
       );
       const projects = Context.get(registryContext, ProjectRegistry);
-      // The plugin layer's family (sp8b Task 4): every code plugin's process. Registered with
-      // the engine's other families (a restart reconciles jobs against them); it reads the
-      // installed rows when a job starts.
-      const pluginTables = new PluginTables(controlStore);
+      // The code plugins' processes (sp8b Tasks 4, 5): the `plugin` family is registered with
+      // the engine's other families (a restart reconciles jobs against them), then bound to it.
+      const pluginHost = makePluginHost({ serverData: realpathSync(serverData), control: controlStore, tables: new PluginTables(controlStore), audit: Context.get(control, AuditTag) });
       const register = (r: Parameters<typeof libraries.register>[0]) => {
-        registerPluginFamily(r, { serverData: realpathSync(serverData), installed: (id) => pluginTables.installedFull(id), rootSessionOf: sessionRoots(controlStore) });
+        pluginHost.register(r);
         registerMediaKinds(r, { serverData, projects, libraryRoots: () => libraryRoots() });
         jobOptions?.register?.(r);
         libraries.register(r);
@@ -205,6 +203,7 @@ export const serve = ({
         ),
       );
       const engine = Context.get(jobsContext, JobEngineTag);
+      pluginHost.bind(engine);
       const caps = engine.workers().caps;
       yield* Effect.logInfo(
         `finisherd job engine: killTree=${caps.killTree} watchdog=${caps.watchdog} cgroupMemory=${caps.cgroupMemory} leafLimits=${caps.leafLimits} sandbox=${caps.sandbox} sandboxed=${caps.sandboxed}`,
@@ -462,7 +461,7 @@ export const serve = ({
         Layer.mergeAll(
           Layer.succeedContext(registryContext),
           fontsLayer,
-          layerPlugins(serverData).pipe(Layer.provide(Layer.succeedContext(control)), Layer.provide(fontsLayer)),
+          layerPlugins(serverData, { host: pluginHost.hooks }).pipe(Layer.provide(Layer.succeedContext(control)), Layer.provide(fontsLayer)),
           Layer.succeed(Diagnostics, diagnostics),
           Layer.succeedContext(control),
           Layer.succeedContext(jobsContext),

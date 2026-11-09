@@ -26,6 +26,8 @@ export interface PluginFamilyDeps {
   readonly serverData: string;
   readonly installed: InstalledOf;
   readonly rootSessionOf?: RootSessionOf;
+  /** Told every key a process is started for (its temp directory is removed once it stops). */
+  readonly onKey?: (key: string) => void;
   /** Tests: the runtime's Node, platform and versions (`process.*` otherwise). */
   readonly execPath?: string;
   readonly platform?: string;
@@ -60,6 +62,7 @@ export function pluginProgram(deps: PluginFamilyDeps, job: Parameters<typeof plu
   const tmp = keyTmpDir(deps.serverData, key);
   const rt = resolveRuntime({ serverData: deps.serverData, installed: deps.installed, ...(deps.execPath === undefined ? {} : { execPath: deps.execPath }), ...(deps.platform === undefined ? {} : { platform: deps.platform }) }, job, tmp);
   ensurePrivateDir(tmp);
+  deps.onKey?.(key);
   const env: Record<string, string> = {
     ...childEnv(),
     FIN_PLUGIN_PROTOCOL: PLUGIN_PROTOCOL,

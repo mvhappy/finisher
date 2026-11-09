@@ -43,6 +43,8 @@ async function run(job) {
       });
       return out;
     }
+    case "sleep":
+      return new Promise((resolve) => setTimeout(() => resolve({ pid: process.pid, slept: v.ms }), v.ms));
     case "crash":
       process.exit(3);
       break;
