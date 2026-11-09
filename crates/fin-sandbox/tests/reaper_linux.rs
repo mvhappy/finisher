@@ -118,6 +118,7 @@ fn hang_up_ends_the_session() {
         cmd.current_dir(workspace(&t)).stdout(Stdio::piped());
         let mut child = cmd.spawn().unwrap();
         drop(keep);
+        deadline(child.id());
         let mut line = String::new();
         BufReader::new(child.stdout.take().unwrap())
             .read_line(&mut line)
@@ -151,6 +152,7 @@ fn signals_reach_the_program_and_its_exit_passes_through() {
         cmd.stdout(Stdio::piped());
         let mut child = cmd.spawn().unwrap();
         drop(keep);
+        deadline(child.id());
         let mut out = BufReader::new(child.stdout.take().unwrap());
         let mut line = String::new();
         out.read_line(&mut line).unwrap();
@@ -186,10 +188,12 @@ fn the_parents_death_ends_the_session() {
         let keep = give_request(&mut parent, &req);
         let mut parent = parent.spawn().unwrap();
         drop(keep);
+        deadline(parent.id());
         let mut out = BufReader::new(parent.stdout.take().unwrap());
         let mut line = String::new();
         out.read_line(&mut line).unwrap();
         let launcher: i32 = line.trim().parse().expect("the launcher's pid");
+        deadline(launcher as u32);
         line.clear();
         out.read_line(&mut line).unwrap();
         assert_eq!(line, "ready\n", "{env:?}");
@@ -284,6 +288,7 @@ fn a_delegated_cgroup_holds_the_session_and_is_removed() {
         cmd.current_dir(workspace(&t)).stdout(Stdio::piped());
         let mut child = cmd.spawn().unwrap();
         drop(keep);
+        deadline(child.id());
         let mut line = String::new();
         BufReader::new(child.stdout.take().unwrap())
             .read_line(&mut line)
@@ -313,5 +318,41 @@ fn a_delegated_cgroup_holds_the_session_and_is_removed() {
             !own.join(&session).exists(),
             "{env:?}: the session's cgroup was left"
         );
+    }
+}
+
+/// Kills `pid` (a launcher this test started) after 30 s, so a regression fails the test
+/// instead of hanging the suite.
+fn deadline(pid: u32) {
+    std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_secs(30));
+        // SAFETY: a process this test started; gone (and not reused so soon) otherwise.
+        unsafe { libc::kill(pid as i32, libc::SIGKILL) };
+    });
+}
+
+#[test]
+fn an_ignored_sigchld_is_not_inherited_by_the_reaper() {
+    use std::os::unix::process::CommandExt;
+    // `SIG_IGN` survives `exec`: with it the kernel would reap the program unseen.
+    for env in modes("an_ignored_sigchld_is_not_inherited_by_the_reaper") {
+        let (_d, t) = tempdir();
+        let req = serde_json::to_vec(&agent(&t)).unwrap();
+        let (mut cmd, keep) = launch_cmd(
+            Some(&req),
+            &["--policy-fd", "3", "--", "sh", "-c", "exit 3"],
+            &env,
+        );
+        // SAFETY: only async-signal-safe calls in the child.
+        unsafe {
+            cmd.pre_exec(|| {
+                libc::signal(libc::SIGCHLD, libc::SIG_IGN);
+                Ok(())
+            });
+        }
+        let mut child = cmd.spawn().unwrap();
+        drop(keep);
+        deadline(child.id());
+        assert_eq!(child.wait().unwrap().code(), Some(3), "{env:?}");
     }
 }

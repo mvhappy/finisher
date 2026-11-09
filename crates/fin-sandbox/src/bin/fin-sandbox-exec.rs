@@ -87,12 +87,16 @@ fn main() {
             .unwrap_or_else(|e| fail(EXIT_UNAVAILABLE, "SANDBOX_UNAVAILABLE", profile, &e));
         // SAFETY: the launcher has one thread, so the child may run any code before `exec`.
         match unsafe { libc::fork() } {
-            -1 => fail(
-                EXIT_UNAVAILABLE,
-                "SANDBOX_UNAVAILABLE",
-                profile,
-                &format!("fork: {}", std::io::Error::last_os_error()),
-            ),
+            -1 => {
+                let e = std::io::Error::last_os_error();
+                prepared.abandon();
+                fail(
+                    EXIT_UNAVAILABLE,
+                    "SANDBOX_UNAVAILABLE",
+                    profile,
+                    &format!("fork: {e}"),
+                )
+            }
             0 => {
                 if let Err(e) = prepared.in_child() {
                     fail(EXIT_UNAVAILABLE, "SANDBOX_UNAVAILABLE", profile, &e);

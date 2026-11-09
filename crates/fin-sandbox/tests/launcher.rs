@@ -1,6 +1,7 @@
 //! The launcher `fin-sandbox-exec` (plan 7C Task 5): the request only through `--policy-fd`,
 //! an invalid request refused with `SANDBOX_UNAVAILABLE` (exit 78), and the program's own exit
-//! code and signals (the launcher `exec`s it, so they are the program's).
+//! code and signals (the launcher forwards signals and exits as the program did: Decision 3 as
+//! amended, `reaper_linux.rs`).
 #![cfg(target_os = "linux")]
 
 mod linux_support;
@@ -103,8 +104,8 @@ fn exit_code_and_signals_are_the_programs() {
     );
     assert_eq!(run(&["no-such-program-here"]).status.code(), Some(127));
 
-    // A signal sent to the launcher's process reaches the program: it is the same process. The
-    // program says it is running first, so the signal cannot land on the launcher before `exec`.
+    // A signal sent to the launcher's process reaches the program (forwarded to its group), and
+    // the launcher's exit shows it. The program says it is running first.
     let (mut cmd, keep) = launch_cmd(
         Some(&req),
         &[&fd[..], &["sh", "-c", "echo running; exec sleep 30"]].concat(),

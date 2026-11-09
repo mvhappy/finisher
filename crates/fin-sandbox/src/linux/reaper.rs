@@ -23,6 +23,9 @@
 //! (kernel ≥ 5.14), when the launcher's cgroup is writable and holds only the launcher's
 //! parent and the parent's children (the conditions `fin-jobhost`'s `cgroup::detect` checks
 //! for itself: a delegated unit, or the engine's `<cg>/host`), and not with `FIN_CGROUPS=off`.
+//! Like that check, writability cannot tell a `Delegate=yes` unit from any other unit of the
+//! user's own manager (systemd owns those too); such a unit would get a sub-cgroup it did not
+//! delegate, which is the residual both share.
 //! The session's cgroup is `<own>/fin-session-<launcher pid>`; no controller is enabled.
 //!
 //! The launcher itself is not confined (it runs no code but this); the program is, after the
@@ -104,8 +107,11 @@ pub fn prepare() -> Result<Prepared, String> {
     let mut waited: libc::sigset_t = unsafe { std::mem::zeroed() };
     // SAFETY: as above.
     let mut old_mask: libc::sigset_t = unsafe { std::mem::zeroed() };
-    // SAFETY: valid pointers to owned sets.
+    // SAFETY: valid pointers to owned sets. An inherited `SIG_IGN` (or `SA_NOCLDWAIT`) on
+    // `SIGCHLD` survives `exec` and would let the kernel reap the program unseen: the default
+    // first.
     unsafe {
+        libc::signal(libc::SIGCHLD, libc::SIG_DFL);
         libc::sigemptyset(&mut waited);
         for &s in FORWARDED {
             libc::sigaddset(&mut waited, s);
@@ -129,6 +135,13 @@ impl Prepared {
     /// The session's cgroup, where one was made.
     pub fn cgroup(&self) -> Option<&Path> {
         self.cgroup.as_deref()
+    }
+
+    /// Removes the session's cgroup when the program could not be started.
+    pub fn abandon(&self) {
+        if let Some(dir) = &self.cgroup {
+            let _ = std::fs::remove_dir(dir);
+        }
     }
 
     /// In the forked child: a process group of its own, the session's cgroup, and the signal
@@ -170,8 +183,8 @@ impl Prepared {
             let orphaned = || unsafe { libc::getppid() } != self.parent;
             match sig {
                 libc::SIGCHLD => {
-                    reap_available(child, &mut main);
-                    if main.is_some() {
+                    // No child left at all also ends the session (the program is gone).
+                    if !reap_available(child, &mut main) || main.is_some() {
                         break;
                     }
                 }
@@ -229,8 +242,12 @@ fn reap_available(child: libc::pid_t, main: &mut Option<libc::c_int>) -> bool {
 
 /// Kills the program's group, the cgroup and every child until no child is left.
 fn kill_all(child: libc::pid_t, cgroup: Option<&Path>, main: &mut Option<libc::c_int>) {
-    // SAFETY: kill with plain integers.
-    unsafe { libc::kill(-child, libc::SIGKILL) };
+    // Once the program is reaped its group's id may be free for another process; its members
+    // are the launcher's descendants and go below either way.
+    if main.is_none() {
+        // SAFETY: kill with plain integers; the program is alive or an unreaped zombie.
+        unsafe { libc::kill(-child, libc::SIGKILL) };
+    }
     if let Some(dir) = cgroup {
         let _ = std::fs::write(dir.join("cgroup.kill"), b"1");
     }
@@ -346,7 +363,8 @@ pub fn delegated_cgroup() -> Result<PathBuf, String> {
     if !here.join("cgroup.kill").exists() {
         return Err("no cgroup.kill (kernel < 5.14)".into());
     }
-    if !writable(&here) || !writable(&here.join("cgroup.procs")) {
+    let files = ["cgroup.procs", "cgroup.subtree_control"];
+    if !writable(&here) || files.iter().any(|f| !writable(&here.join(f))) {
         return Err(format!("{} is not delegated to us", here.display()));
     }
     Ok(here)

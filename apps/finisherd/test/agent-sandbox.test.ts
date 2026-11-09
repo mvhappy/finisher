@@ -15,7 +15,7 @@ import { sandboxStatus } from "@finisher/fin-node";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from "vitest";
 import type { FakeScript } from "../src/agent/fake.ts";
 import { Effect, Exit, Scope } from "effect";
-import { assertSessionEnv, openSessionSandbox, sandboxMode, sessionEnv } from "../src/agent/sandbox.ts";
+import { assertSessionEnv, openSessionSandbox, REAP_GRACE_MS, sandboxMode, sessionEnv } from "../src/agent/sandbox.ts";
 import { sessionKeys } from "../src/agent/sandbox-env.ts";
 import { ensureSessionDirs, linkSignInStore, sessionDirs } from "../src/agent/session-dirs.ts";
 import { resolveFinPath } from "../src/agent/settings.ts";
@@ -514,6 +514,34 @@ describe("the sandbox's scope", () => {
     // A refused profile opens nothing.
     const refused = await Effect.runPromiseExit(Effect.scoped(openSessionSandbox(s, "fake", { serverData: data, projectDirOf: () => dir, finPath: "/bin/sh", localEndpoint: "x", status: withAgent({ kind: "unavailable", need: "n" }) })));
     expect(Exit.isFailure(refused) && JSON.stringify(refused.cause)).toMatch(/SANDBOX_UNAVAILABLE/);
+  });
+});
+
+describe("the hang-up of a Linux launcher", () => {
+  test("a_launcher_that_ignores_the_hang_up_is_killed_after_the_grace", async () => {
+    if (process.platform !== "linux") return;
+    // A launcher that never reaps: the session end hangs it up, then kills its group.
+    const stuck = join(tmp, "stuck-launcher.sh");
+    writeFileSync(stuck, "#!/bin/sh\ntrap '' HUP\ncat <&3 >/dev/null\nwhile :; do sleep 0.05; done\n", { mode: 0o755 });
+    const data = join(tmp, "data");
+    const dir = join(tmp, "P");
+    for (const d of [data, dir]) mkdirSync(d, { recursive: true });
+    const s = { id: SESSION.id, projectId: "01P0000000000000000000000A", harness: "fake", mode: "draft" } as unknown as Session;
+    const scope = await Effect.runPromise(Scope.make());
+    const box = await Effect.runPromise(
+      Scope.provide(scope)(
+        openSessionSandbox(s, "fake", { serverData: data, projectDirOf: () => dir, finPath: "/bin/sh", localEndpoint: join(data, "run", "fin.sock"), agentListener: async () => "tcp:127.0.0.1:9", status: withAgent({ kind: "enforced", detail: "stub" }), launcher: () => stuck, killGraceMs: 5000 }),
+      ),
+    );
+    expect(box.mode).toBe("launcher");
+    const child = await Effect.runPromise(box.spawn(["/bin/true"], { cwd: box.workspace, stdio: "pipe" }));
+    await new Promise((r) => setTimeout(r, 200));
+    const t0 = Date.now();
+    await Effect.runPromise(Scope.close(scope, Exit.void));
+    expect(await child.exited).toEqual({ code: null, signal: "SIGKILL" });
+    // Not at once (the hang-up came first), and within the grace.
+    expect(Date.now() - t0).toBeGreaterThanOrEqual(REAP_GRACE_MS - 100);
+    expect(Date.now() - t0).toBeLessThan(REAP_GRACE_MS + 2000);
   });
 });
 
