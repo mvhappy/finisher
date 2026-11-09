@@ -9,6 +9,7 @@ import type {
 import { Schema } from "effect";
 import { Rpc, RpcGroup } from "effect/rpc";
 import { TxSetAsideSchema } from "./tx-set-aside.ts";
+import { DEVICE_RPCS } from "./device-rpcs.ts";
 import {
   AudioPlanSchema,
   EvalAudioPayload,
@@ -90,10 +91,8 @@ import {
   AuditPurgeSuccess,
   ChallengeField,
   ConsoleChallengeSuccess,
-  ServerHelloPayload,
-  ServerHelloSuccess,
-  ServerStatusSuccess,
-  ServerStopSuccess,
+  ServerHelloPayload, ServerHelloSuccess,
+  ServerStatusSuccess, ServerStopPayload, ServerStopSuccess,
 } from "./auth.ts";
 import {
   CredentialListPayload,
@@ -258,7 +257,7 @@ export const ProjectRefSuccess = Schema.Struct({
   rev: Schema.Number,
 });
 
-/** Protocol 2: the probe is for `projectId` (reach: the path must be in that project's folder). */
+/** Protocol 2: the probe is for `projectId` (reach: in that project's folder for an agent or MCP principal; a device's allowed roots, 5B Decision 32). */
 export const AssetProbePayload = Schema.Struct({ projectId: Schema.String, path: Schema.String });
 const Optional = <S extends Schema.Top>(s: S) => Schema.optionalKey(Schema.NullOr(s));
 const ImageInfoSchema = Schema.Struct({ height: Schema.Number, width: Schema.Number });
@@ -432,7 +431,7 @@ export const FinRpcs = RpcGroup.make(
   Rpc.make("console.challenge", { payload: Schema.Struct({}), success: ConsoleChallengeSuccess, error: FinError }),
   // 5A Task 8: the server's own state and graceful stop; the owner's audit log.
   Rpc.make("server.status", { payload: Schema.Struct({}), success: ServerStatusSuccess, error: FinError }),
-  Rpc.make("server.stop", { payload: Schema.Struct({}), success: ServerStopSuccess, error: FinError }),
+  Rpc.make("server.stop", { payload: ServerStopPayload, success: ServerStopSuccess, error: FinError }),
   Rpc.make("auth.audit.list", { payload: AuditListPayload, success: AuditListSuccess, error: FinError }),
   Rpc.make("auth.audit.purge", { payload: AuditPurgePayload, success: AuditPurgeSuccess, error: FinError }),
   // 5A Task 9: the owner's agent and MCP credentials.
@@ -597,4 +596,5 @@ export const FinRpcs = RpcGroup.make(
   Rpc.make("agent.local.remove", { payload: AgentLocalRemovePayload, success: AgentLocalRemoveSuccess, error: FinError }),
   Rpc.make("training.closedTargets.get", { payload: Schema.Struct({}), success: TrainingClosedTargetsSuccess, error: FinError }),
   Rpc.make("training.closedTargets.set", { payload: TrainingClosedTargetsSetPayload, success: TrainingClosedTargetsSuccess, error: FinError }),
+  ...DEVICE_RPCS, // 5B: pairing, devices, the environment and settings writes (`device-rpcs.ts`)
 );

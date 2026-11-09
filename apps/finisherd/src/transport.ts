@@ -138,7 +138,7 @@ export function serveRpc(server: SocketServer["Service"], connections: Connectio
     Layer.provide(Layer.fresh(HandlersLive).pipe(Layer.provide(Layer.succeed(ConnectionsTag, connections)))),
     // Each transport needs its own protocol.
     Layer.provide(Layer.effect(RpcServer.Protocol)(makeFinProtocol(FinRpcs, connections))),
-    Layer.provide(Layer.succeed(SocketServer, connections.transport === "ws" ? server : quietPeerClose(server))),
+    Layer.provide(Layer.succeed(SocketServer, connections.transport === "ws" || connections.transport === "wss" ? server : quietPeerClose(server))),
     Layer.provide(RpcSerialization.layerNdjson),
   );
 }

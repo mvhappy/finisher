@@ -45,6 +45,8 @@ const VALUED = new Set([
   // Saved prompts (7B Task 10).
   "param",
   "name", "storage", "include", "exclude", "kinds", "poll", "full", "bandwidth", "alias", "accept-unmounted",
+  // 5B: pairing and remote access.
+  "ttl", "listen", "tls", "cert", "key", "public-url",
 ]);
 /** Flags whose value is optional: taken only when the next word is one of these (`--hydrate` or `--hydrate off`). */
 const OPTIONAL = new Map<string, ReadonlyArray<string>>([["hydrate", ["on", "off"]]]);
@@ -110,4 +112,16 @@ export function auditLine(e: AuditEntry): string {
   if (e.count > 1) parts.push(`×${e.count}`);
   if (Object.keys(e.details).length > 0) parts.push(JSON.stringify(e.details));
   return parts.join("  ");
+}
+
+/** A pin (`base64url(SHA-256(SPKI))`, 43 characters) in groups of four, for reading aloud. */
+export const pinGroups = (spki: string): string => (spki.match(/.{1,4}/g) ?? []).join(" ");
+
+/**
+ * The QR code text (`qrText`, Unicode half blocks) when it fits `columns`; `undefined` when it
+ * is wider (or the width is unknown and it is wider than 80): the caller shows the link only.
+ */
+export function qrThatFits(qr: string, columns: number | undefined): string | undefined {
+  const width = Math.max(...qr.split("\n").map((l) => [...l].length));
+  return width <= (columns ?? 80) ? qr : undefined;
 }

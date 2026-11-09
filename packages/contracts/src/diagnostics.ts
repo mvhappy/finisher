@@ -18,7 +18,15 @@ export type {
 } from "@finisher/core-types";
 
 /** The RPCs whose success is a stream: never timed into `rpc.stats` (a call's lifetime is not a latency). */
-export const STREAM_RPCS: ReadonlyArray<string> = ["ops.subscribe", "project.events", "jobs.watch", "library.watch", "agent.watch"];
+export const STREAM_RPCS: ReadonlyArray<string> = [
+  "ops.subscribe",
+  "project.events",
+  "jobs.watch",
+  "library.watch",
+  "agent.watch",
+  "auth.pair.pending",
+  "auth.devices.watch",
+];
 
 export const DiagnosticsStatusPayload = Schema.Struct({});
 /** `DiagnosticsReport`: the consent, the journal's state and counts per kind and project. */
