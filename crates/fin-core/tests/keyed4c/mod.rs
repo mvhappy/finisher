@@ -9,6 +9,8 @@
 //! `self_relocates`, `group_grew`, `partner_anchor` and `lifted_on` by removing it, and each
 //! removal fails `rebase_moves_props` within 30k cases; `relocated` was widened to every edge
 //! or start change recorded without a shift (rolls, overwrite trims, carves).
+//! `group_changed`, `concurrent_reedged` and `anchor_drift` (`four`, 2026-11-09) were each
+//! checked the same way: without it, its fixed case fails.
 #![allow(dead_code)]
 
 use std::collections::BTreeMap;
@@ -347,6 +349,8 @@ pub struct Realiser {
     pub base: Option<std::collections::BTreeSet<String>>,
     /// At the head: the committed slips per item (they move the source, not the content).
     pub slips: BTreeMap<String, Rational>,
+    /// The right parts our own splits made, by the item each split.
+    parts: BTreeMap<String, String>,
 }
 
 pub fn reference(key: &Key) -> String {
@@ -364,6 +368,7 @@ impl Realiser {
             ops: Vec::new(),
             base: None,
             slips: BTreeMap::new(),
+            parts: BTreeMap::new(),
         }
     }
 
@@ -447,16 +452,21 @@ impl Realiser {
                 Some(match a {
                     Anchor::Before(_) => c.start,
                     _ => {
-                        // Assoc::After: past items inserted concurrently at that point.
+                        // Assoc::After: past items inserted concurrently at that point, and
+                        // past the right parts our own splits cut from them.
                         let mut at = (c.start + c.duration).unwrap();
+                        let mut last: Option<&str> = None;
                         while let Some(base) = &self.base
                             && let Some(n) = tracks[t].items.iter().find(|n| {
                                 n.start == at
-                                    && !base.contains(&n.id)
-                                    && !self.bound.values().any(|v| *v == n.id)
+                                    && (!base.contains(&n.id)
+                                        && !self.bound.values().any(|v| *v == n.id)
+                                        || last.is_some()
+                                            && self.parts.get(&n.id).map(String::as_str) == last)
                             })
                         {
                             at = (n.start + n.duration).unwrap();
+                            last = Some(&n.id);
                         }
                         at
                     }
@@ -704,6 +714,11 @@ impl Realiser {
         }
         let a = apply_tx(&self.state, &tx(vec![resolved]), &mut self.ids).ok()?;
         self.bound.extend(a.bindings);
+        if let Keyed::Split { name, clip, .. } = k
+            && let (Some(part), Some(of)) = (self.bound.get(name), self.resolve(clip))
+        {
+            self.parts.insert(part.clone(), of);
+        }
         self.state = a.project;
         self.ops.push(op);
         Some(())
@@ -1351,7 +1366,9 @@ pub fn check(
             );
         }
         (true, Err(e)) => {
-            let why = refusal_allowed(&e, &since, &partner_drift(&keyed, p), &self_drift(&keyed));
+            let mut drifted = partner_drift(&keyed, p);
+            drifted.extend(anchor_drift(&keyed, &since));
+            let why = refusal_allowed(&e, &since, &drifted, &self_drift(&keyed));
             prop_assert!(
                 why.is_ok(),
                 "stale refused ({:?}) where fresh applies\nours {:?}\nfresh {:?}",
@@ -1384,8 +1401,10 @@ pub fn comparable(keyed: &[Keyed], since: &[CommittedTx], p: &Project) -> bool {
         .any(|i| relocated(since).contains(i))
         && !self_relocates(keyed)
         && !group_grew(keyed, since)
+        && !group_changed(keyed, since)
         && !partner_anchor(keyed, p)
         && !lifted_on(keyed, since)
+        && !concurrent_reedged(keyed, since, p)
         && !index_in_changed_list(keyed, since)
 }
 

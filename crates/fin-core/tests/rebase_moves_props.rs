@@ -104,3 +104,64 @@ fn slide_then_move_at_moved_anchor_refuses_unblamed() {
     ];
     check(&base(&lens, false, false), &committed, &mine).unwrap();
 }
+
+/// The shrunk case of a 30k-case run (`keyed4c::anchor_drift`): `c1` on t1 is linked with `c3`
+/// on t2, and the head ripple-moves `c4` to its own end on t4, which records a removal of
+/// `[0, 11)` and an insert at 0. Ours ripple-moves `c3` before `c4`, written at 0; that maps past
+/// the re-inserted `c4` to frame 11, and the rebased move carries `c1` by the same delta into
+/// `c2` on t1, so the re-run refuses `INSERT_INSIDE_CLIP`, unblamed.
+#[test]
+fn partner_past_relocated_anchor_refuses_unblamed() {
+    use keyed4c::Intent::Move;
+    let lens = [vec![10, 12], vec![10], vec![], vec![11]];
+    let committed = [(
+        vec![Move {
+            track: 3,
+            clip: 0,
+            to: 3,
+            before: None,
+            overwrite: false,
+        }],
+        false,
+    )];
+    let mine = [Move {
+        track: 1,
+        clip: 0,
+        to: 3,
+        before: Some(0),
+        overwrite: false,
+    }];
+    check(&base(&lens, true, false), &committed, &mine).unwrap();
+}
+
+/// The shrunk case of a 100k-case run (`keyed4c::anchor_drift`): t2 holds `c1` and `c2`, and
+/// the head ripple-moves `c2` to its own end, recording a removal of `[10, 20)` and an insert
+/// at 10. Ours ripple-moves `c3` from t3 before `c2`, written at frame 10, then sets a
+/// transition between `c1` and `c3`. The move maps past the re-inserted `c2` (frame 20), so the
+/// transition's cut is gone and the re-run refuses `NOT_ADJACENT`, unblamed.
+#[test]
+fn transition_past_relocated_anchor_refuses_unblamed() {
+    use keyed4c::Intent::{Move, TrSet};
+    let lens = [vec![], vec![10, 10], vec![10], vec![]];
+    let committed = [(
+        vec![Move {
+            track: 1,
+            clip: 5,
+            to: 1,
+            before: None,
+            overwrite: false,
+        }],
+        false,
+    )];
+    let mine = [
+        Move {
+            track: 2,
+            clip: 0,
+            to: 1,
+            before: Some(1),
+            overwrite: false,
+        },
+        TrSet { track: 1, clip: 0 },
+    ];
+    check(&base(&lens, false, false), &committed, &mine).unwrap();
+}
