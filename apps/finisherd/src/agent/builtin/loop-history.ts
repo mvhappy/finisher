@@ -9,7 +9,9 @@
 // rendered with the same limits as live. Calls the loop answered itself come from its
 // `localToolResult` notices (at their place in the reply), and steers enter where its
 // `steersTaken` notices say. (Not rebuilt: a turn's facts, which are not stored, and the exact
-// text of an interrupted call's result, which recovery writes.)
+// text of an interrupted call's result, which recovery writes.) The nodes of a rolled-back run
+// (`rolledBack`, 7B Task 8) are left out: the conversation is as it was at the end of the run
+// the session was rolled back to.
 import type { Node } from "@finisher/contracts";
 import type { ModelMessage, ToolCall } from "./request.ts";
 
@@ -98,6 +100,7 @@ export function historyFromNodes(nodes: ReadonlyArray<Node>, limits: CutLimits):
     pending = [];
   };
   for (const n of nodes) {
+    if (n.rolledBack === true) continue;
     const p = (n.payload ?? {}) as Record<string, unknown>;
     switch (n.kind) {
       case "userMessage": {

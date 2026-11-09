@@ -6,6 +6,7 @@ import {
   AgentApprovalAnswerPayload,
   AgentApprovalWaitPayload,
   AgentSessionWaitPayload,
+  AgentSessionRollbackPayload,
   SubagentNodePayload,
   APPROVAL_WAIT_MAX_MS,
   Approval,
@@ -134,6 +135,7 @@ const AGENT_RPCS = [
   "agent.session.resume",
   "agent.session.end",
   "agent.session.wait",
+  "agent.session.rollback",
   "agent.session.list",
   "agent.session.get",
   "agent.session.delete",
@@ -205,6 +207,8 @@ const TABLE: Record<AgentTag, { scopes: string[]; kinds?: string[]; confirmed?: 
   "agent.session.end": { scopes: ["agent.run"], kinds: ["local", "console", "device", "agent"] },
   // 7B Decision 16: a parent drives its own children (the stage-4 check); waits on them too.
   "agent.session.wait": { scopes: ["agent.run"], kinds: ["local", "console", "device", "agent"] },
+  // 7B Decision 23: a parent rolls back its own direct children (the stage-4 check).
+  "agent.session.rollback": { scopes: ["agent.run"], kinds: ["local", "console", "device", "agent"] },
   "agent.session.list": { scopes: ["agent.read"] },
   "agent.session.get": { scopes: ["agent.read"] },
   "agent.session.delete": { scopes: ["agent.admin"], kinds: ["local", "console", "device"], confirmed: true },
@@ -286,6 +290,15 @@ describe("agent.session.wait and the subagent node (7B Task 6)", () => {
     const decode = Schema.decodeUnknownExit(SubagentNodePayload);
     expect(decode({ child: "c1", status: "ended", reason: "briefDone", branch: "br3", summary: "done" })._tag).toBe("Success");
     expect(decode({ child: "c1", status: "gone" })._tag).toBe("Failure");
+  });
+});
+
+describe("agent.session.rollback (7B Task 8)", () => {
+  it("names a session and a run seq (0: before the first)", () => {
+    const decode = Schema.decodeUnknownExit(AgentSessionRollbackPayload);
+    expect(decode({ sessionId: "s1", toRun: 0 })._tag).toBe("Success");
+    expect(decode({ sessionId: "s1", toRun: 2 })._tag).toBe("Success");
+    for (const bad of [{ sessionId: "s1" }, { sessionId: "s1", toRun: -1 }, { sessionId: "s1", toRun: 1.5 }]) expect(decode(bad)._tag, JSON.stringify(bad)).toBe("Failure");
   });
 });
 

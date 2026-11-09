@@ -80,6 +80,7 @@ export interface BuiltinDeps {
 export const BUILTIN_CAPABILITIES: Capabilities = {
   ...NO_CAPABILITIES,
   steer: true,
+  rollback: true,
   resume: true,
   reasoning: true,
   parallelTools: true,
@@ -390,7 +391,13 @@ export function BuiltinAdapter(deps: BuiltinDeps): ProviderAdapter {
               early.set(id, answer);
             }
           }),
-        rollback: () => Effect.fail(finError("PROVIDER_UNAVAILABLE", "the built-in agent rolls back in 7B", {})),
+        // 7B Task 8: the runtime marked the later runs' nodes `rolledBack`; the conversation is
+        // rebuilt without them, so the next request leaves them out.
+        rollback: () =>
+          Effect.sync(() => {
+            history.splice(0, history.length, ...(deps.nodes ? historyFromNodes(deps.nodes(spec.sessionId), limits) : []));
+            known = null;
+          }),
         ref: () => ({ kind: "builtin", id: spec.sessionId }),
       };
       return session;

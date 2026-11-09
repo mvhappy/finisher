@@ -2062,6 +2062,20 @@
     },
     {
       "argKinds": {},
+      "group": "agent",
+      "identity": [
+        "sessionId"
+      ],
+      "name": "agent.rollback",
+      "rpcs": [
+        {
+          "method": "agent.session.rollback"
+        }
+      ],
+      "write": false
+    },
+    {
+      "argKinds": {},
       "group": "batch",
       "identity": [
         "projectId",

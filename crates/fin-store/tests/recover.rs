@@ -321,6 +321,7 @@ fn restore_of_a_clip_deleted_before_the_fork_is_no_collision() {
         dry_run: false,
         args_hash: None,
         to: None,
+        after_seq: None,
     })
     .unwrap();
     a.set_test_lease(1, false);
@@ -927,6 +928,7 @@ fn undo_in_the_tail_names_the_fresh_id() {
             dry_run: false,
             args_hash: None,
             to: None,
+            after_seq: None,
         })
         .unwrap();
     });

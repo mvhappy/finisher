@@ -10,6 +10,7 @@ import type { ProviderAdapter } from "../../src/agent/adapter.ts";
 import { type Clock, manualClock, systemIds } from "../../src/agent/clock.ts";
 import type { AgentCore } from "../../src/agent/core.ts";
 import { type BranchRegistry, SessionCredentials } from "../../src/agent/credentials.ts";
+import type { Rollbacks } from "../../src/agent/rollback.ts";
 import { OutcomeTracker } from "../../src/agent/outcomes.ts";
 import { BranchLineage } from "../../src/agent/reach.ts";
 import { Runtime, type RuntimeDeps } from "../../src/agent/runtime.ts";
@@ -187,7 +188,7 @@ export interface Harness {
 export function makeRuntime(
   { store, control }: { readonly store: AgentStore; readonly control: ControlStore },
   adapter: ProviderAdapter,
-  opts: Partial<Omit<RuntimeDeps, "core">> & { clock?: ReturnType<typeof manualClock>; tool?: FinTool; registry?: FakeRegistry } = {},
+  opts: Partial<Omit<RuntimeDeps, "core">> & { clock?: ReturnType<typeof manualClock>; tool?: FinTool; registry?: FakeRegistry; rollbacks?: Rollbacks } = {},
 ): Harness {
   const clock = opts.clock ?? manualClock(Date.now());
   const h = {

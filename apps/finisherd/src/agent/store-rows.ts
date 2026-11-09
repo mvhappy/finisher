@@ -141,9 +141,13 @@ export interface NodeRow {
   payload: string | null;
   blobRef: string | null;
   createdAt: number;
+  /** Agent 0008: its run was rolled back (7B Task 8). */
+  rolledBack: number;
 }
 
 export const NODE_COLUMNS = "id, runId, sessionId, seq, kind, providerId, callId, payload, blobRef, createdAt";
+/** What a node's reads select: its columns and `rolledBack`, which an insert leaves at 0. */
+const NODE_SELECT = `${NODE_COLUMNS}, rolledBack`;
 
 export interface ApprovalRow {
   id: string;
@@ -229,6 +233,7 @@ export function toNode(r: NodeRow): Node {
     ...(r.payload === null ? {} : { payload: JSON.parse(r.payload) as unknown }),
     ...opt("blobRef", r.blobRef),
     createdAt: r.createdAt,
+    ...(r.rolledBack === 1 ? { rolledBack: true } : {}),
   };
 }
 
@@ -375,11 +380,11 @@ export const STORE_SQL: Readonly<Record<string, string>> = {
   runUsage: "UPDATE runs SET usage = ? WHERE id = ?",
   lastNodeSeq: "SELECT seq FROM nodes WHERE sessionId = ? ORDER BY seq DESC LIMIT 1",
   insertNode: `INSERT INTO nodes (${NODE_COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-  nodes: `SELECT ${NODE_COLUMNS} FROM nodes WHERE sessionId = ? AND seq >= ? ORDER BY seq LIMIT ?`,
-  nodeById: `SELECT ${NODE_COLUMNS} FROM nodes WHERE id = ?`,
+  nodes: `SELECT ${NODE_SELECT} FROM nodes WHERE sessionId = ? AND seq >= ? ORDER BY seq LIMIT ?`,
+  nodeById: `SELECT ${NODE_SELECT} FROM nodes WHERE id = ?`,
   // The repeated `kind IN (…)` is `nodes_call`'s own predicate: without it the partial index is not used.
-  callNode: `SELECT ${NODE_COLUMNS} FROM nodes WHERE callId = ? AND kind = ? AND kind IN ('toolCall', 'toolResult')`,
-  openCalls: `SELECT ${NODE_COLUMNS} FROM nodes c WHERE c.runId = ? AND c.kind = 'toolCall' AND NOT EXISTS ` +
+  callNode: `SELECT ${NODE_SELECT} FROM nodes WHERE callId = ? AND kind = ? AND kind IN ('toolCall', 'toolResult')`,
+  openCalls: `SELECT ${NODE_SELECT} FROM nodes c WHERE c.runId = ? AND c.kind = 'toolCall' AND NOT EXISTS ` +
       "(SELECT 1 FROM nodes r WHERE r.callId = c.callId AND r.kind = 'toolResult' AND r.kind IN ('toolCall', 'toolResult')) ORDER BY c.seq",
   blobRefs: "SELECT DISTINCT blobRef FROM nodes WHERE sessionId = ? AND blobRef IS NOT NULL",
   blobUsed: "SELECT 1 AS x FROM nodes WHERE sessionId = ? AND blobRef = ? LIMIT 1",

@@ -225,4 +225,11 @@ pub const AGENT_COMMANDS: &[Command] = &[
         "end a child (its branch stays: fin merge <branch> into yours)",
         || schema_of::<agent::StopArgs>("agent.stop"),
     ),
+    cmd(
+        "agent.rollback",
+        "agent",
+        "<id> --to-run <seq>",
+        "undo a child's runs after <seq>, all or nothing (CONFLICT: nothing changed)",
+        || schema_of::<agent::RollbackArgs>("agent.rollback"),
+    ),
 ];

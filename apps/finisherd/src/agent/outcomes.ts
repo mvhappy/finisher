@@ -14,7 +14,9 @@
 // - `branch.set {archived: true}` of a session's root, or `agent.session.delete` → each
 //   transaction no merge carried out → `abandoned`, `via: archive`;
 // - `by`: `agent` for an agent session (the session itself or another), `critic` for a critic
-//   session, `user` for a person (`local`, `console`, `device`).
+//   session, `user` for a person (`local`, `console`, `device`);
+// - a rollback's undos (7B Task 8, `rollback.ts`; not through the chain) → `undone`, `via: undo`,
+//   with `details.rollback {toRun, by}` (`by` the principal: a person, or the parent session).
 //
 // **It defines no verdict kind of its own.** 5E's `review.verdict` is the single source: once
 // that kind has a version a `source: agent` entry may carry (`kindVersion`, a lookup each
@@ -130,6 +132,20 @@ export class OutcomeTracker {
     return Effect.catchCause(work, (cause) => Effect.sync(() => this.#warn(`cannot record the outcome of ${rpc}: ${String(cause)}`)));
   }
 
+  /**
+   * The undos of a rollback of `s` to run `toRun` by `principal` (7B Task 8): `origins` their
+   * units' records, as an undo's result names them. Never fails: the undos have landed.
+   */
+  observeRollback(s: Session, origins: ReadonlyArray<string>, toRun: number, principal: Principal): void {
+    try {
+      const by = this.#byOf(principal);
+      const details = { rollback: { toRun, by: `${principal.kind}:${principal.id}` } };
+      this.#took(s.projectId, origins, "undone", by === "critic" ? "critic" : "undo", by, details);
+    } catch (e) {
+      this.#warn(`cannot record session ${s.id}'s rollback outcomes: ${String(e)}`);
+    }
+  }
+
   /** A branch's status changed: archiving a session's root abandons its unmerged transactions. */
   observeBranch(e: { readonly projectId: string; readonly branchId: string; readonly archived: boolean; readonly principal: Principal }): void {
     if (!e.archived) return;
@@ -171,14 +187,14 @@ export class OutcomeTracker {
   }
 
   /** An undo or revert took these back. */
-  #took(projectId: string, origins: ReadonlyArray<string>, verdict: TxOutcome, via: OutcomeVia, by: OutcomeBy): void {
-    for (const row of this.#d.store.sessionOfTx(origins).values()) this.#record(row, projectId, verdict, via, by);
+  #took(projectId: string, origins: ReadonlyArray<string>, verdict: TxOutcome, via: OutcomeVia, by: OutcomeBy, details?: Record<string, unknown>): void {
+    for (const row of this.#d.store.sessionOfTx(origins).values()) this.#record(row, projectId, verdict, via, by, details);
   }
 
-  #record(t: OpenTx, projectId: string | undefined, verdict: TxOutcome, via: OutcomeVia, by: OutcomeBy): void {
+  #record(t: OpenTx, projectId: string | undefined, verdict: TxOutcome, via: OutcomeVia, by: OutcomeBy, details?: Record<string, unknown>): void {
     const at = this.#d.clock();
     const ledger = this.#d.store.outcomes;
-    if (!ledger.record({ txId: t.txId, via, verdict, by, sessionId: t.sessionId, at })) return;
+    if (!ledger.record({ txId: t.txId, via, verdict, by, sessionId: t.sessionId, at, ...(details === undefined ? {} : { details }) })) return;
     const version = this.#d.verdicts.version();
     if (version === null) return;
     const v: OutcomeVerdict = { verdict, txIds: [t.txId], by, via, itemKind: "none", sessionId: t.sessionId, openS: Math.max(0, Math.floor((at - t.at) / 1000)) };

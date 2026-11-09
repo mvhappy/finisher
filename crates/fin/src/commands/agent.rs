@@ -1,4 +1,4 @@
-//! `fin agent spawn|wait|ls|send|stop` (plan 7B Task 6, Decisions 16–21; spec §6.3, §11.2): a
+//! `fin agent spawn|wait|ls|send|stop|rollback` (plan 7B Tasks 6, 8, Decisions 16–23; spec §5.3, §6.3, §11.2): a
 //! running session's children. Each child is its own session on a child branch of the parent's
 //! current branch, with its own credential, a mode at most the parent's and a role the parent's
 //! role may spawn; the parent composes by `fin merge <child branch>` into its own branch.
@@ -13,6 +13,10 @@
 //! - `fin agent ls` → the caller's children (a person's `fin`: every session of the project).
 //! - `fin agent send <id> <text>`: a prompt when the child is idle, a steer while it runs.
 //! - `fin agent stop <id>`: ends the child (its branch stays).
+//! - `fin agent rollback <id> --to-run <seq>`: the child back to the end of its run `<seq>`
+//!   (0: before its first): its later transactions undone on every branch, all or nothing
+//!   (`CONFLICT` leaves them all as they were), then its conversation. A direct child only, and
+//!   one that is not running and has no live child (`SESSION_BUSY`).
 //!
 //! All are `agent.session.*` RPCs: offline they are `SERVER_UNAVAILABLE`.
 use std::path::Path;
@@ -49,6 +53,8 @@ pub enum AgentCmd {
     Send(SendArgs),
     /// Ends a child; its branch stays.
     Stop(StopArgs),
+    /// Rolls a child back to the end of one of its runs.
+    Rollback(RollbackArgs),
 }
 
 #[derive(Debug, Clone, Args, Deserialize, Serialize, JsonSchema)]
@@ -108,6 +114,17 @@ pub struct SendArgs {
 pub struct StopArgs {
     /// The child's session id.
     pub id: String,
+}
+
+#[derive(Debug, Clone, Args, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct RollbackArgs {
+    /// The child's session id.
+    pub id: String,
+    /// The run to go back to the end of (its seq; 0: before the first).
+    #[arg(long = "to-run", value_name = "seq")]
+    #[serde(rename = "toRun")]
+    pub to_run: u64,
 }
 
 fn offline(operation: &str) -> CoreError {
@@ -230,6 +247,7 @@ pub fn run(
             AgentCmd::Ls(_) => "agent.session.list",
             AgentCmd::Send(_) => "agent.session.steer",
             AgentCmd::Stop(_) => "agent.session.end",
+            AgentCmd::Rollback(_) => "agent.session.rollback",
         };
         return Err(offline(op));
     }
@@ -267,6 +285,17 @@ pub fn run(
         AgentCmd::Stop(a) => {
             let ended = backend.server_call("agent.session.end", json!({ "sessionId": a.id }))?;
             Ok(brief_view(&ended["session"]))
+        }
+        AgentCmd::Rollback(a) => {
+            let r = backend.server_call(
+                "agent.session.rollback",
+                json!({ "sessionId": a.id, "toRun": a.to_run }),
+            )?;
+            let mut out = brief_view(&r["session"]);
+            for k in ["undone", "branches", "conversation"] {
+                out[k] = r[k].clone();
+            }
+            Ok(out)
         }
     }
 }

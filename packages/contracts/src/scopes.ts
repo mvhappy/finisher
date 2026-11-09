@@ -377,6 +377,9 @@ export const RPC_SCOPES: { readonly [T in FinRpcTag]: RuleOf<T> } = {
   "agent.session.resume": { scopes: ["agent.run"], kinds: SESSION_DRIVERS },
   "agent.session.end": { scopes: ["agent.run"], kinds: CHILD_DRIVERS },
   "agent.session.wait": { scopes: ["agent.run"], kinds: CHILD_DRIVERS },
+  // 7B Decision 23 (owner decision 2026-11-08): people, and a parent for its own direct children
+  // only (stage 4, `reach.ts`), never itself, a sibling or a grandchild.
+  "agent.session.rollback": { scopes: ["agent.run"], kinds: CHILD_DRIVERS },
   "agent.session.list": { scopes: ["agent.read"], resolve: PROJECT },
   "agent.session.get": { scopes: ["agent.read"] },
   "agent.session.delete": { scopes: ["agent.admin"], kinds: SESSION_DRIVERS },

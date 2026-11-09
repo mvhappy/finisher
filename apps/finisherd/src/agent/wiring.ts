@@ -38,6 +38,7 @@ import { BUNDLED_CATALOGUE, Catalogue } from "./catalogue/catalogue.ts";
 import { OpenRouterPrices } from "./catalogue/prices.ts";
 import type { AgentCore } from "./core.ts";
 import type { BranchRegistry } from "./credentials.ts";
+import { type RollbackRegistry, Rollbacks } from "./rollback.ts";
 import { FakeAdapter, type FakeScript } from "./fake.ts";
 import { sessionPlanner } from "./planner.ts";
 import { BUNDLED_ROLES, type Role } from "./roles.ts";
@@ -103,7 +104,7 @@ const DEFAULT_FAKE: readonly FakeScript[] = [{ name: "echo", turns: [[{ emit: [{
 export interface AgentWiringDeps {
   readonly serverData: string;
   readonly core: AgentCore;
-  readonly registry: BranchRegistry & { readonly dirOf: (projectId: string) => string | undefined; readonly indexedDirOf?: (projectId: string) => string | undefined };
+  readonly registry: BranchRegistry & RollbackRegistry & { readonly dirOf: (projectId: string) => string | undefined; readonly indexedDirOf?: (projectId: string) => string | undefined };
   /** `control.db` (the store's), for the lookups `AgentStore` does not offer. */
   readonly db: ConstructorParameters<typeof AgentLookup>[0];
   /** `control.db` itself, for the approvals' check-and-insert transactions (7B Task 4). */
@@ -252,6 +253,7 @@ export const buildAgentRuntime = (d: AgentWiringDeps): Effect.Effect<AgentRuntim
       core,
       requests,
       registry: d.registry,
+      rollbacks: new Rollbacks({ store: core.store, registry: d.registry, outcomes: core.outcomes, ids: core.ids }),
       adapters: [...adapters.values()],
       planner,
       environment,

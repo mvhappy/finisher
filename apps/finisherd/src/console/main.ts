@@ -84,6 +84,7 @@ Agent sessions (sub-project 7):
   agent show <id> [--nodes] [--json]
   agent prompt|steer <id> <text>
   agent interrupt|resume|end <id>          a session's branch stays when it is interrupted or ended
+  agent rollback <id> --to-run <seq>       undo its runs after <seq> on every branch, all or nothing
   agent watch <id> [--json]                its conversation as it happens, until the session ends
   agent providers [--json]                 the harnesses, whether keys are set, the local endpoint
   agent rules ls [--project <dir|id>] [--session <id>] [--json]

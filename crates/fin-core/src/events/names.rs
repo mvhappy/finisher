@@ -58,6 +58,7 @@ pub static CLI_COMMANDS: NameTable = NameTable::new(
     "CLI_COMMANDS",
     &[
         "agent.ls",
+        "agent.rollback",
         "agent.send",
         "agent.spawn",
         "agent.stop",
@@ -298,6 +299,7 @@ pub static CLI_FLAGS: NameTable = NameTable::new(
         "timeline",
         "timeout",
         "to",
+        "to-run",
         "track",
         "weight",
         "with-items",

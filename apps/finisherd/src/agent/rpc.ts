@@ -23,6 +23,7 @@ import { actorFor, type CallMeta } from "../diagnostics.ts";
 import { finError, toFinError } from "../errors.ts";
 import { approvalHandlers } from "./approvals-rpc.ts";
 import type { BranchReach } from "./reach.ts";
+import { rollbackGuard } from "./rollback.ts";
 import { projectsFilter, sessionInReach } from "./session-access.ts";
 import type { AgentStore } from "./store.ts";
 import type { AgentRuntimeParts } from "./wiring.ts";
@@ -112,6 +113,11 @@ export function agentHandlers(deps: AgentRpcDeps) {
       onSession("agent.session.resume", options, sessionId, (s, p) => Effect.map(runtime.resume(s.id, p), (r) => ({ session: r.session }))),
     "agent.session.end": ({ sessionId }: { sessionId: string }, options: Options) =>
       onSession("agent.session.end", options, sessionId, (s, p) => Effect.map(runtime.end(s.id, p), (session) => ({ session }))),
+    // 7B Decision 23: the guard is the session's reach (its subtree less its live children's) with the caller's credential.
+    "agent.session.rollback": ({ sessionId, toRun }: { sessionId: string; toRun: number }, options: Options) =>
+      onSession("agent.session.rollback", options, sessionId, (s, p) =>
+        Effect.flatMap(deps.reach.subtreeOf(s), (reach) => runtime.rollback(s.id, toRun, p, { actor: metaOf(options).actor, guard: rollbackGuard(reach, chainOf(options)?.guard) })),
+      ),
     "agent.session.list": (q: { projectId?: string; status?: Session["status"]; cursor?: string; limit?: number }, options: Options) =>
       guard("agent.session.list", sync(() => {
         const p = by(options);

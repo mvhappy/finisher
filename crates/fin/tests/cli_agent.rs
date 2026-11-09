@@ -1,4 +1,4 @@
-//! `fin agent spawn|wait|ls|send|stop` under an agent session's credential (plan 7B Task 6,
+//! `fin agent spawn|wait|ls|send|stop|rollback` under an agent session's credential (plan 7B Task 6,
 //! Decisions 16–21; spec §6.3, §11.2): a spawn answers `{session, branch}` at once, a wait
 //! answers each child's status, branch and summary or exits 5 `WAIT_TIMEOUT` (repeatable), and a
 //! session reaches its own children only. Against a real `finisherd` whose sessions run on the
@@ -221,6 +221,17 @@ fn a_session_reaches_its_own_children_only() {
         ok(host.agent(&q, &wq, &["agent", "ls"]))["children"],
         json!([])
     );
+    // 7B Task 8: a rollback too, a direct child's only; a running child is busy.
+    assert_error(
+        &host.agent(&q, &wq, &["agent", "rollback", &c, "--to-run", "0"]),
+        7,
+        "SCOPE_DENIED",
+    );
+    assert_error(
+        &host.agent(&p, &wp, &["agent", "rollback", &c, "--to-run", "0"]),
+        4,
+        "SESSION_BUSY",
+    );
     // A plan session holds no agent.run: it spawns nothing.
     let plan = host.open_fake(&project, "plan");
     let wplan = host.workspace(&dir, &plan);
@@ -253,7 +264,7 @@ fn map_lists_agent_and_stays_under_budget() {
         .iter()
         .find(|l| l.as_str().is_some_and(|l| l.starts_with("agent:")))
         .unwrap();
-    assert_eq!(line, "agent: spawn wait ls send stop");
+    assert_eq!(line, "agent: spawn wait ls send stop rollback");
     let help = support::fin(&tmp.path().join("sd"), tmp.path(), &["help", "agent"]);
     assert_eq!(help.code, 0, "{}", help.stdout);
 }

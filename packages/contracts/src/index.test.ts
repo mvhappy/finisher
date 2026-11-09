@@ -45,6 +45,7 @@ test("the group exposes exactly the protocol 2 RPC tags", () => {
       "agent.session.list",
       "agent.session.prompt",
       "agent.session.resume",
+      "agent.session.rollback",
       "agent.session.start",
       "agent.session.steer",
       "agent.session.wait",

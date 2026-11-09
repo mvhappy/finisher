@@ -324,6 +324,8 @@ describe("own children only", () => {
       ["agent.session.prompt", { sessionId: p.session.id, text: "x" }],
       ["agent.session.end", { sessionId: p.session.id }],
       ["agent.session.wait", { ids: [p.session.id], timeoutMs: 0 }],
+      // 7B Task 8: nor rolls one back.
+      ["agent.session.rollback", { sessionId: p.session.id, toRun: 0 }],
     ] as const) {
       const e = await client.call(tag, payload);
       expect(code(e), tag).toBe("SCOPE_DENIED");

@@ -28,6 +28,8 @@ export interface SessionTx {
   /** The session's project and root branch when it was written (agent 0002, 0003): they outlive the session. */
   readonly projectId?: string;
   readonly rootBranch?: string;
+  /** The run it was made in (agent 0008): the session's active run, else its last. */
+  readonly runId?: string;
 }
 
 interface TxRow {
@@ -39,9 +41,10 @@ interface TxRow {
   outcome: string | null;
   projectId: string | null;
   rootBranch: string | null;
+  runId: string | null;
 }
 
-const TX_COLUMNS = "txId, sessionId, callId, attribution, at, outcome, projectId, rootBranch";
+const TX_COLUMNS = "txId, sessionId, callId, attribution, at, outcome, projectId, rootBranch, runId";
 
 function toTx(r: TxRow): SessionTx {
   return {
@@ -53,6 +56,7 @@ function toTx(r: TxRow): SessionTx {
     ...(r.outcome === null ? {} : { outcome: r.outcome as TxOutcome }),
     ...(r.projectId === null ? {} : { projectId: r.projectId }),
     ...(r.rootBranch === null ? {} : { rootBranch: r.rootBranch }),
+    ...(r.runId === null ? {} : { runId: r.runId }),
   };
 }
 
@@ -78,10 +82,11 @@ export class SessionTxs {
   constructor(cs: ControlStore) {
     this.#s = prepare(cs, {
       // The project and root are the session's, kept on the row: the row outlives its session
-      // (agent 0002, 0003).
+      // (agent 0002, 0003); the run is its active one, else its last (0008).
       insert:
-        "INSERT INTO session_txs (txId, sessionId, callId, attribution, at, projectId, rootBranch) " +
-        "VALUES (?, ?, ?, ?, ?, (SELECT projectId FROM sessions WHERE id = ?), (SELECT rootBranch FROM sessions WHERE id = ?)) " +
+        "INSERT INTO session_txs (txId, sessionId, callId, attribution, at, projectId, rootBranch, runId) " +
+        "VALUES (?, ?, ?, ?, ?, (SELECT projectId FROM sessions WHERE id = ?), (SELECT rootBranch FROM sessions WHERE id = ?), " +
+        "COALESCE((SELECT runId FROM sessions WHERE id = ?), (SELECT id FROM runs WHERE sessionId = ? ORDER BY seq DESC LIMIT 1))) " +
         "ON CONFLICT (txId) DO NOTHING",
       of: `SELECT ${TX_COLUMNS} FROM session_txs WHERE txId IN (SELECT value FROM json_each(?))`,
       outcome: "UPDATE session_txs SET outcome = ? WHERE txId = ?",
@@ -95,9 +100,9 @@ export class SessionTxs {
    * for every write of an agent principal, whatever the attribution; a second call for the same
    * txId (a retried after stage, an idempotent replay) changes nothing.
    */
-  record(t: Omit<SessionTx, "outcome" | "projectId" | "rootBranch">): void {
+  record(t: Omit<SessionTx, "outcome" | "projectId" | "rootBranch" | "runId">): void {
     if (!ATTRIBUTIONS.includes(t.attribution)) throw finError("INVALID_REQUEST", "unknown attribution", { attribution: t.attribution });
-    this.#s.insert!.run(t.txId, t.sessionId, t.callId, t.attribution, t.at, t.sessionId, t.sessionId);
+    this.#s.insert!.run(t.txId, t.sessionId, t.callId, t.attribution, t.at, t.sessionId, t.sessionId, t.sessionId, t.sessionId);
   }
 
   /** The rows of those of `txIds` an agent made; the others are absent from the map. */

@@ -38,6 +38,7 @@ pub static RPC_METHODS: NameTable = NameTable::new(
         "agent.session.list",
         "agent.session.prompt",
         "agent.session.resume",
+        "agent.session.rollback",
         "agent.session.start",
         "agent.session.steer",
         "agent.session.wait",

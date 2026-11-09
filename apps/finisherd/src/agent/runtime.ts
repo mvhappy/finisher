@@ -37,6 +37,7 @@ import { BUNDLED_ROLES } from "./roles.ts";
 import { DEFAULT_LIMITS } from "./settings.ts";
 import type { Applied, Recovery } from "./store.ts";
 import { type ChildOpen, Subagents } from "./subagents.ts";
+import type { ConversationOps, RollbackResult, Rollbacks } from "./rollback.ts";
 import { agentWarnings } from "./warnings.ts";
 
 export type { RuntimeDeps } from "./runtime-engine.ts";
@@ -65,7 +66,10 @@ async function exitOf<A>(e: Effect.Effect<A, FinError>): Promise<A> {
 }
 
 /** The runtime over the server's `AgentCore` (Task 12 builds it in `main.ts`, after the core). */
-export const makeRuntime = (deps: Omit<RuntimeDeps, "core">): Effect.Effect<Runtime, never, AgentCoreTag> =>
+/** The runtime's deps: the engine's, and the rollbacks (7B Task 8, `rollback.ts`). */
+type Deps = RuntimeDeps & { readonly rollbacks?: Rollbacks };
+
+export const makeRuntime = (deps: Omit<Deps, "core">): Effect.Effect<Runtime, never, AgentCoreTag> =>
   Effect.gen(function* () {
     const core = yield* AgentCoreTag;
     return new Runtime({ ...deps, core });
@@ -77,9 +81,11 @@ export class Runtime extends RuntimeEngine {
   #closed = false;
   readonly #limits: LiveLimits;
   readonly subagents: Subagents;
+  readonly #rollbacks: Rollbacks | undefined;
 
-  constructor(deps: RuntimeDeps) {
+  constructor(deps: Deps) {
     super(deps);
+    this.#rollbacks = deps.rollbacks;
     const limits = () => ({ ...DEFAULT_LIMITS, ...deps.limits });
     this.#limits = new LiveLimits({
       max: () => ({ builtin: limits().maxLiveBuiltin, provider: limits().maxLiveProviders }),
@@ -260,6 +266,29 @@ export class Runtime extends RuntimeEngine {
   /** `agent.session.wait` (7B Decision 21): `WAIT_TIMEOUT` when not done in time. */
   waitChildren(by: Principal, ids: ReadonlyArray<string>, any: boolean, timeoutMs: number): Effect.Effect<ChildResult[], FinError> {
     return Effect.tryPromise({ try: (signal) => this.subagents.wait(by, ids, any, timeoutMs, signal), catch: toFinError });
+  }
+
+  /**
+   * `agent.session.rollback` (7B Decision 23, `rollback.ts`): in the session's queue, so no run
+   * starts meanwhile; `meta` is the caller's actor and the guard of the session's reach.
+   */
+  rollback(sessionId: string, toRun: number, by: Principal, meta: CallMeta): Effect.Effect<RollbackResult & { session: Session }, FinError> {
+    return attempt(() => {
+      this.#guard();
+      const rb = this.#rollbacks;
+      if (rb === undefined) throw finError("SERVER_UNAVAILABLE", "rollback is not wired on this server", { reason: "noRollback" });
+      return this.serial(sessionId, async () => {
+        const ops: ConversationOps = {
+          caps: async (s) => this.lives.get(s.id)?.caps ?? (await exitOf((this.adapter(s.harness) ?? harnessUnknown(s.harness)).detect())).capabilities,
+          live: (id) => this.lives.get(id)?.provider,
+          open: async (s) => (await this.ensureLive(s)).provider,
+          close: (id) => this.stopLive(id),
+          append: async (n) => void (await this.append(n)),
+        };
+        const r = await rb.rollback(this.session(sessionId), toRun, by, meta, ops);
+        return { ...r, session: this.session(sessionId) };
+      });
+    });
   }
 
   /** `agent.session.prompt`: a run; `SESSION_BUSY` while one runs, `BUDGET_EXCEEDED` when nothing is left. */

@@ -267,6 +267,12 @@ pub const ROWS: &[Row] = &[
     row!("agent.ls", rpc!("agent.session.list"), NONE),
     row!("agent.send", rpc!("agent.session.steer"), &["sessionId"]),
     row!("agent.stop", rpc!("agent.session.end"), &["sessionId"]),
+    // 7B Task 8: a parent's rollback of its own direct child.
+    row!(
+        "agent.rollback",
+        rpc!("agent.session.rollback"),
+        &["sessionId"]
+    ),
     row!("help", rpc!(), NONE),
     row!("whoami", rpc!(), NONE),
     row!("schema", rpc!(), NONE),

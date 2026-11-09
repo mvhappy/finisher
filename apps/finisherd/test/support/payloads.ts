@@ -95,6 +95,7 @@ export const SAMPLE_PAYLOADS: { readonly [T in FinRpcTag]: Record<string, unknow
   "agent.session.resume": { sessionId: S },
   "agent.session.end": { sessionId: S },
   "agent.session.wait": { ids: [S], timeoutMs: 0 },
+  "agent.session.rollback": { sessionId: S, toRun: 1 },
   "agent.session.list": {},
   "agent.session.get": { sessionId: S },
   "agent.session.delete": { sessionId: S },

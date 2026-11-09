@@ -24,6 +24,9 @@
 //   root branch and the branches beneath it are that session's alone: every other session's
 //   reach (its parent's, whose subtree holds it) excludes them until it ends; reads stay open,
 //   so a parent merges a child's branch into its own.
+// - **Rollback (7B Decision 23):** a session rolls back its own direct children only:
+//   `agent.session.rollback` naming itself, a sibling, a grandchild or another tree's session
+//   (or any session, from an `agent` credential that is no session's) is `SCOPE_DENIED`.
 // - **Author and `session_txs`:** every write carries the session's author
 //   (`agent:<role>:<sessionId>`), whatever it sent, and every commit, undo, redo, revert,
 //   cherry-pick and merge it makes is recorded in `session_txs` after the engine answers,
@@ -189,6 +192,11 @@ export class BranchReach {
     });
   }
 
+  /** The branches `session`'s writes reach (its subtree less its live children's): a rollback's guard (7B Task 8). */
+  subtreeOf(session: Session): Effect.Effect<ReadonlyArray<string>, FinError> {
+    return session.rootBranch === undefined ? Effect.succeed([]) : Effect.map(this.#reach(session, []), (s) => [...s]);
+  }
+
   /** `branch` (a reference) as its id, when it is in `session`'s subtree; else `BRANCH_NOT_ALLOWED`. */
   inSubtree(session: Session, branch: string, tag = "agent.self.try"): Effect.Effect<string, FinError> {
     return Effect.gen({ self: this }, function* () {
@@ -274,6 +282,7 @@ export const CHILD_RPCS: ReadonlySet<string> = new Set(["agent.session.prompt", 
  * drives its own; an `agent` credential that is no session's does neither.
  */
 function childCheck(tag: string, principal: Principal, payload: unknown, deps: AgentHookDeps): Effect.Effect<void, FinError> {
+  if (principal.kind === "agent" && tag === "agent.session.rollback") return rollbackCheck(principal, payload, deps);
   if (principal.kind !== "agent" || (tag !== "agent.session.start" && !CHILD_RPCS.has(tag))) return Effect.void;
   if (!deps.reach.covers(principal)) {
     return Effect.fail(finError("SCOPE_DENIED", `${tag} is for a session's own children`, { tag, scopes: [], principal: "agent", reason: "noSession" }, "Run it from inside an agent session, or as a person."));
@@ -288,6 +297,17 @@ function childCheck(tag: string, principal: Principal, payload: unknown, deps: A
     }
   }
   return Effect.void;
+}
+
+/** Stage 4 for an agent's rollback (Decision 23): its own direct child only, else `SCOPE_DENIED`. */
+function rollbackCheck(principal: Principal, payload: unknown, deps: AgentHookDeps): Effect.Effect<void, FinError> {
+  const id = (payload as { sessionId?: unknown } | null)?.sessionId;
+  const target = typeof id === "string" ? deps.sessions.get(id) : undefined;
+  if (deps.reach.covers(principal) && target !== undefined && target.parent === principal.id) return Effect.void;
+  const reason = deps.reach.covers(principal) ? "notOwnChild" : "noSession";
+  return Effect.fail(
+    finError("SCOPE_DENIED", "a session rolls back its own direct children only", { tag: "agent.session.rollback", scopes: [], principal: "agent", reason }, "Roll back your own child (`fin agent ls`), or ask a person to."),
+  );
 }
 
 /** `SCOPE_DENIED` for a session calling one of `SESSION_REFUSED_RPCS`. */
