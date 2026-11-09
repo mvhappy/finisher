@@ -169,8 +169,15 @@ fn a_plugin_runs_under_sandbox_exec() {
         .prepare(&req, &mut c)
         .unwrap();
     assert!(c.self_sandbox.is_none(), "plugins are confined before exec");
-    assert_eq!(c.program, PathBuf::from("/usr/bin/sandbox-exec"));
-    assert_eq!(c.args[0], "-p");
+    // `/bin/sh` sets the open-files limit (`posix_spawn` has no attribute for it), then
+    // `exec`s `sandbox-exec -p <profile>`.
+    assert_eq!(c.program, PathBuf::from("/bin/sh"));
+    let sb = c
+        .args
+        .iter()
+        .position(|a| a == "/usr/bin/sandbox-exec")
+        .unwrap();
+    assert_eq!(c.args[sb + 1], "-p");
     let dashdash = c.args.iter().position(|a| a == "--").unwrap();
     assert_eq!(
         c.args[dashdash + 1],
@@ -209,6 +216,33 @@ fn a_plugin_runs_under_sandbox_exec() {
         let got = run(&c, &op);
         assert!(got.denied(), "{op:?}: {got:?}");
     }
+}
+
+#[test]
+fn a_plugin_gets_its_open_files_limit() {
+    let t = Tree::new();
+    let mut req = t.plugin_req();
+    req.program = Program::Path("/bin/sh".into());
+    req.args = vec!["-c".into(), "ulimit -Sn; ulimit -Hn".into()];
+    let mut c = cmd(&req);
+    c.program = "/bin/sh".into();
+    t.spawner(Decision::Pass, Decision::Apply)
+        .prepare(&req, &mut c)
+        .unwrap();
+    let out = Command::new(&c.program)
+        .args(&c.args)
+        .env_clear()
+        .current_dir(&c.cwd)
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{out:?}");
+    let n = 1024; // the `plugin` profile's `OPEN_FILES`
+    // Both limits, so the plugin cannot raise its own.
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout),
+        format!("{n}\n{n}\n"),
+        "{out:?}"
+    );
 }
 
 /// Exists and is not a zombie.

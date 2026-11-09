@@ -273,20 +273,46 @@ fn home_dir() -> Option<PathBuf> {
 }
 
 /// macOS: the program is rewritten to `sandbox-exec -p <profile> -D… -- <program> <args…>`
-/// (the host starts children with `posix_spawn`, so there is no child-side step; the open-files
-/// limit is not applied on macOS, a recorded residual). The profile carries a fresh Seatbelt
-/// mark, which the host's group kill sweeps (Decision 3, macOS amendment).
+/// (the host starts children with `posix_spawn`, so there is no child-side step). The profile
+/// carries a fresh Seatbelt mark, which the host's group kill sweeps (Decision 3, macOS
+/// amendment). `posix_spawn` has no resource-limit attribute either, so where the policy has
+/// an open-files limit `/bin/sh` sets it (soft and hard, never above the host's own hard
+/// limit) and `exec`s `sandbox-exec`: `/bin/sh -c 'ulimit -n "$0" && exec "$@"' <n>
+/// /usr/bin/sandbox-exec …` (invoked as `sh`, it reads no startup file).
 #[cfg(target_os = "macos")]
 fn plugin_steps(policy: &crate::SandboxPolicy, cmd: &mut PlatformCommand) -> Result<(), String> {
     let mark = fin_jobhost::seatbelt_mark::new_mark().map_err(|e| format!("getentropy: {e}"))?;
     let (program, args) =
         crate::macos::apply::plugin_command(policy, &cmd.program, &cmd.args, &mark)
             .map_err(|e| e.to_string())?;
-    cmd.program = program;
-    cmd.args = args;
     cmd.seatbelt_mark = Some(mark);
+    let Some(n) = policy.limits.open_files else {
+        cmd.program = program;
+        cmd.args = args;
+        return Ok(());
+    };
+    // SAFETY: plain data, written by getrlimit before use.
+    let mut r: libc::rlimit = unsafe { std::mem::zeroed() };
+    // SAFETY: a valid out pointer.
+    if unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut r) } != 0 {
+        return Err(format!("getrlimit: {}", std::io::Error::last_os_error()));
+    }
+    let n = libc::rlim_t::from(n).min(r.rlim_max);
+    let mut wrapped: Vec<std::ffi::OsString> = vec![
+        "-c".into(),
+        "ulimit -n \"$0\" && exec \"$@\"".into(),
+        n.to_string().into(),
+        program.into_os_string(),
+    ];
+    wrapped.extend(args);
+    cmd.program = PathBuf::from(SHELL);
+    cmd.args = wrapped;
     Ok(())
 }
+
+/// The shell that sets a macOS plugin's open-files limit.
+#[cfg(target_os = "macos")]
+const SHELL: &str = "/bin/sh";
 
 #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
 fn plugin_steps(_policy: &crate::SandboxPolicy, _cmd: &mut PlatformCommand) -> Result<(), String> {
