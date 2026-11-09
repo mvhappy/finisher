@@ -29,6 +29,7 @@ pub mod log;
 pub mod media;
 pub mod plugin;
 pub mod reserved;
+pub mod review;
 pub mod sandbox;
 pub mod session;
 pub mod stats;
@@ -58,7 +59,11 @@ pub use plugin::{
     PluginKindName, PluginLifecycle, PluginOutcome, PluginRef, PluginSourceName, RegistryRefresh,
     RiskName, log2_bucket,
 };
-pub use reserved::{PreviewStats, RenderSample, ReviewVerdict, UiAction};
+pub use reserved::{PreviewStats, RenderSample, UiAction};
+pub use review::{
+    MAX_VERDICT_TX_IDS, ReviewItemKind, ReviewVerdict, ReviewVerdictIn, Verdict, VerdictBy,
+    VerdictVia,
+};
 pub use sandbox::{SandboxOs, SandboxProfileName, SandboxUnconfined, UnconfinedReason};
 pub use session::{Arch, BuildProfile, OsFamily, SessionEnd, SessionStart, SessionUnclean};
 pub use stats::{EvalStats, Histogram, RpcStats};
@@ -146,6 +151,7 @@ approx_fixed!(10 =>
     Arch, BuildProfile, OsFamily, StorageMode,
     JobOutcome, JobPriority, ProcessRole, ProcessHelperKind, ExitReason,
     LibraryStorageName, ScanTrigger,
+    ReviewItemKind, Verdict, VerdictBy, VerdictVia,
     PluginOutcome, PluginSourceName, PluginKindName, RiskName,
     SandboxProfileName, SandboxOs, UnconfinedReason,
 );

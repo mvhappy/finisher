@@ -71,6 +71,9 @@ const cli = (marker = "m") => ({
 });
 const panic = { where: "fin", thirdParty: false, thread: "main", message: "Error: a secret caption" };
 
+/** 5E Task 4 put the review RPCs into fin-core's table; Task 5 adds them to FinRpcs and deletes this set. */
+const REVIEW_RPCS_PENDING = new Set(["history.drop", "review.close", "review.comment", "review.decide", "review.get", "review.list", "review.merge", "review.policy", "review.policy.get", "review.refresh", "review.request", "review.watch"]);
+
 const agent = (id = "01JC000000000000000000AGNT"): Principal => ({
   kind: "agent",
   id,
@@ -187,7 +190,9 @@ describe("sources and actors", () => {
   });
 
   test("rpc_methods_table_matches_contracts", () => {
-    expect(rpcMethods().filter((m) => m !== "other").sort()).toEqual([...FinRpcs.requests.keys()].sort());
+    expect(rpcMethods().filter((m) => m !== "other" && !REVIEW_RPCS_PENDING.has(m)).sort()).toEqual([...FinRpcs.requests.keys()].sort());
+    // The pending set is exactly what fin-core lists and the contracts lack: Task 5 must delete it.
+    for (const m of REVIEW_RPCS_PENDING) expect([rpcMethods().includes(m), FinRpcs.requests.has(m)]).toEqual([true, false]);
   });
 });
 

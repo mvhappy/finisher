@@ -909,6 +909,36 @@ export type SandboxProfileName = "agent" | "hook" | "worker" | "plugin";
  */
 export type UnconfinedReason = "landlockDisabled" | "profileNotReady";
 /**
+ * Who brought it about.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "VerdictBy".
+ */
+export type VerdictBy = "user" | "agent" | "critic" | "policy";
+/**
+ * What the verdict is about (`none` for the outcome tracker's entries).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "ReviewItemKind".
+ */
+export type ReviewItemKind =
+  "branchReview" | "mergeConflict" | "qaFinding" | "criticSummary" | "pluginSuggestion" | "none";
+/**
+ * What was decided or became of the work.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "Verdict".
+ */
+export type Verdict =
+  "accepted" | "rejected" | "merged" | "dismissed" | "changesRequested" | "undone" | "reverted" | "abandoned";
+/**
+ * How the outcome came about; absent for a person's decision on an item.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "VerdictVia".
+ */
+export type VerdictVia = "undo" | "revert" | "archive" | "merge" | "critic" | "autoMerge";
+/**
  * Who provides a backend (spec §6.1): the export-encoder policy and the capability report key
  * on it.
  *
@@ -1428,7 +1458,7 @@ export type EventPayload =
     }
   | {
       kind: "review.verdict";
-      kv: 0;
+      kv: 1;
       payload: ReviewVerdict;
     }
   | {
@@ -3792,10 +3822,35 @@ export interface SandboxUnconfined {
  */
 export interface UiAction {}
 /**
+ * `review.verdict`.
+ *
  * This interface was referenced by `FinCore`'s JSON-Schema
  * via the `definition` "ReviewVerdict".
  */
-export interface ReviewVerdict {}
+export interface ReviewVerdict {
+  /**
+   * Counts of the transactions accepted and rejected by the decision.
+   */
+  accepted: number;
+  by: VerdictBy;
+  itemKind: ReviewItemKind;
+  /**
+   * Seconds since the item opened (or since the transaction, for the tracker's entries).
+   */
+  openS: number;
+  /**
+   * Training only: the reason the person gave.
+   */
+  reason?: Scrubbed;
+  rejected: number;
+  sessionId?: IdRef;
+  /**
+   * @maxItems 64
+   */
+  txIds: IdRef[];
+  verdict: Verdict;
+  via?: VerdictVia;
+}
 /**
  * `media.capabilities` (`kv` 1): once per server run, what the media worker can decode,
  * encode and draw on.

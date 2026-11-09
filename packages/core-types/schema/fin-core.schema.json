@@ -3982,7 +3982,7 @@
               "type": "string"
             },
             "kv": {
-              "const": 0,
+              "const": 1,
               "type": "integer"
             },
             "payload": {
@@ -12905,6 +12905,18 @@
       ],
       "type": "object"
     },
+    "ReviewItemKind": {
+      "description": "What the verdict is about (`none` for the outcome tracker's entries).",
+      "enum": [
+        "branchReview",
+        "mergeConflict",
+        "qaFinding",
+        "criticSummary",
+        "pluginSuggestion",
+        "none"
+      ],
+      "type": "string"
+    },
     "ReviewPlan": {
       "additionalProperties": false,
       "description": "[`Store::review_plan`](crate::Store::review_plan)'s answer (plan 5E Decision 7): what a\nmerge of `source` into `target` would do at these heads, one entry per candidate and per\nsource record the target already holds, oldest first; `conflicts`: the candidates that\nconflict (as a `skipConflicting` merge would skip them). At most\n[`REVIEW_PLAN_MAX`](crate::REVIEW_PLAN_MAX) entries and conflicts, the oldest:\n`truncated` when there were more.",
@@ -12941,6 +12953,69 @@
       "type": "object"
     },
     "ReviewVerdict": {
+      "description": "`review.verdict`.",
+      "properties": {
+        "accepted": {
+          "description": "Counts of the transactions accepted and rejected by the decision.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "by": {
+          "$ref": "#/$defs/VerdictBy"
+        },
+        "itemKind": {
+          "$ref": "#/$defs/ReviewItemKind"
+        },
+        "openS": {
+          "description": "Seconds since the item opened (or since the transaction, for the tracker's entries).",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "reason": {
+          "allOf": [
+            {
+              "$ref": "#/$defs/Scrubbed"
+            },
+            {
+              "x-fin-class": "content",
+              "x-fin-content": "userText"
+            }
+          ],
+          "description": "Training only: the reason the person gave."
+        },
+        "rejected": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "sessionId": {
+          "$ref": "#/$defs/IdRef"
+        },
+        "txIds": {
+          "items": {
+            "$ref": "#/$defs/IdRef"
+          },
+          "maxItems": 64,
+          "type": "array"
+        },
+        "verdict": {
+          "$ref": "#/$defs/Verdict"
+        },
+        "via": {
+          "$ref": "#/$defs/VerdictVia"
+        }
+      },
+      "required": [
+        "itemKind",
+        "verdict",
+        "by",
+        "txIds",
+        "accepted",
+        "rejected",
+        "openS"
+      ],
       "type": "object"
     },
     "Risk": {
@@ -15883,6 +15958,42 @@
         "wght"
       ],
       "type": "object"
+    },
+    "Verdict": {
+      "description": "What was decided or became of the work.",
+      "enum": [
+        "accepted",
+        "rejected",
+        "merged",
+        "dismissed",
+        "changesRequested",
+        "undone",
+        "reverted",
+        "abandoned"
+      ],
+      "type": "string"
+    },
+    "VerdictBy": {
+      "description": "Who brought it about.",
+      "enum": [
+        "user",
+        "agent",
+        "critic",
+        "policy"
+      ],
+      "type": "string"
+    },
+    "VerdictVia": {
+      "description": "How the outcome came about; absent for a person's decision on an item.",
+      "enum": [
+        "undo",
+        "revert",
+        "archive",
+        "merge",
+        "critic",
+        "autoMerge"
+      ],
+      "type": "string"
     },
     "Version": {
       "pattern": "^[0-9]{1,5}\\.[0-9]{1,5}\\.[0-9]{1,5}(-[0-9a-z.]{1,32})?$",

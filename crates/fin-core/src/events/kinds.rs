@@ -214,7 +214,7 @@ registry! {
     AgentToolResult(p::AgentToolResult) = "agent.toolResult" v 1 training_only true via wa::AgentToolResultIn [Agent];
     AgentApproval(p::AgentApproval) = "agent.approval" v 1 via wa::AgentApprovalIn [Agent];
     UiAction(p::UiAction) = "ui.action" v 0 [Ui];
-    ReviewVerdict(p::ReviewVerdict) = "review.verdict" v 0 [Ui];
+    ReviewVerdict(p::ReviewVerdict) = "review.verdict" v 1 via p::ReviewVerdictIn [Finisherd, Agent];
     MediaCapabilities(p::MediaCapabilitiesEvent) = "media.capabilities" v 1 [Finisherd];
     RenderStats(p::RenderStats) = "render.stats" v 1 [Finisherd];
     PreviewStats(p::PreviewStats) = "preview.stats" v 0 [Ui];
@@ -256,7 +256,17 @@ impl Payload for p::ErrorPanic {
 }
 impl Payload for p::AgentSession {}
 impl Payload for p::UiAction {}
-impl Payload for p::ReviewVerdict {}
+impl Payload for p::ReviewVerdict {
+    fn rescrub(&mut self, ctx: &ScrubCtx) {
+        if let Some(r) = &mut self.reason {
+            r.0 = r.0.rescrub(ctx);
+        }
+    }
+
+    fn strip_content(&mut self) {
+        self.reason = None;
+    }
+}
 impl Payload for p::MediaCapabilitiesEvent {}
 impl Payload for p::RenderStats {}
 impl Payload for p::PreviewStats {}

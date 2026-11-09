@@ -148,12 +148,7 @@ fn any_payload_covers_every_kind() {
     for name in ["agent.turn", "agent.toolCall", "agent.toolResult"] {
         assert!(kind(name, 1).unwrap().training_only, "{name}");
     }
-    for name in [
-        "ui.action",
-        "review.verdict",
-        "preview.stats",
-        "render.sample",
-    ] {
+    for name in ["ui.action", "preview.stats", "render.sample"] {
         assert!(kind(name, 0).unwrap().reserved, "{name}");
     }
     let training_only: Vec<&str> = kinds()
@@ -412,6 +407,7 @@ fn content_fields_name_their_kind() {
         ("agent.turn.tools".into(), ContentKind::ModelInput),
         ("error.panic.message".into(), ContentKind::ErrorMessage),
         ("log.commit.intent".into(), ContentKind::TxIntent),
+        ("review.verdict.reason".into(), ContentKind::UserText),
     ]);
     assert_eq!(seen, want);
     // `redact`'s own walk agrees.
@@ -815,7 +811,7 @@ fn redact_removes_every_content_path() {
     }
     assert_eq!(
         removed,
-        2 * 9,
+        2 * 10,
         "every sample content field was filled and removed"
     );
 }

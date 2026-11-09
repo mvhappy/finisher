@@ -1,0 +1,13 @@
+{
+  "itemKind": "branchReview",
+  "verdict": "rejected",
+  "by": "user",
+  "txIds": [
+    "01JC0000000000000000000002"
+  ],
+  "accepted": 2,
+  "rejected": 1,
+  "sessionId": "01JC0000000000000000000003",
+  "openS": 90,
+  "reason": "too loud"
+}

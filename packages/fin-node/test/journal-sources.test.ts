@@ -7,7 +7,7 @@ import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Envelope, ExportPage } from "@finisher/core-types";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
-import { Engine, type FinNodeError, FontManager, Journal, testHooks } from "../index.js";
+import { Engine, type FinNodeError, FontManager, Journal, kindVersion, testHooks } from "../index.js";
 import { type CatalogFile, catalogJson, catalogPin, FontServer, waitFor } from "./fontserver.ts";
 
 let tmp: string;
@@ -648,4 +648,36 @@ describe("fonts.fetch", () => {
     // The family name itself is never stored.
     expect(JSON.stringify(await entries(j))).not.toContain("Test Sans");
   }, 20_000);
+});
+
+describe("review.verdict v1", () => {
+  test("kind_version_for_agent_is_one", () => {
+    expect(kindVersion("review.verdict", "agent")).toBe(1);
+    expect(kindVersion("review.verdict", "finisherd")).toBe(1);
+    expect(kindVersion("review.verdict", "ui")).toBeNull();
+  });
+
+  // 7A's `OutcomeVerdict` (`apps/finisherd/src/agent/outcomes.ts`), recorded as source `agent`.
+  const outcome = { verdict: "undone", txIds: [U(7)], by: "user", via: "undo", itemKind: "none", sessionId: U(9), openS: 42 };
+
+  test("outcome_verdict_shape_decodes_and_reason_is_training_only", async () => {
+    const j = open();
+    j.record("review.verdict", 1, null, JSON.stringify(outcome), "agent");
+    j.record("review.verdict", 1, null, JSON.stringify({ ...outcome, txIds: ["idem-key"], reason: "too loud" }), "finisherd");
+    const [a, b] = (await entries(j)).filter((e) => e.kind === "review.verdict");
+    expect(a?.source).toBe("agent");
+    expect(a?.payload).toMatchObject({ verdict: "undone", txIds: [U(7)], by: "user", via: "undo", itemKind: "none", accepted: 0, rejected: 0, openS: 42 });
+    expect(b?.payload).toMatchObject({ txIds: [expect.stringMatching(KEYED)] });
+    expect(b?.payload).not.toHaveProperty("reason");
+    expect(() => j.record("review.verdict", 1, null, JSON.stringify(outcome), "ui")).toThrow();
+    const many = { ...outcome, txIds: Array.from({ length: 65 }, (_, i) => U(i)) };
+    expect(() => j.record("review.verdict", 1, null, JSON.stringify(many), "agent")).toThrow();
+  });
+
+  test("reason_is_kept_under_training", async () => {
+    const j = open({ training: "on" });
+    j.record("review.verdict", 1, null, JSON.stringify({ ...outcome, reason: "too loud" }), "finisherd");
+    const e = (await entries(j)).find((x) => x.kind === "review.verdict")!;
+    expect(e.payload).toMatchObject({ reason: "too loud" });
+  });
 });
