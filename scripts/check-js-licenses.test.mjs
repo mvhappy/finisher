@@ -41,9 +41,10 @@ for (const [expr, blocker] of [
   ["(MIT OR Apache-2.0) AND GPL-3.0-only", "GPL-3.0-only"],
   ["MIT AND GPL-3.0-only", "GPL-3.0-only"],
   ["(GPL-3.0-only OR MIT) AND AGPL-3.0", "AGPL-3.0"],
-  ["GPL-2.0-only WITH Classpath-exception-2.0", "GPL-2.0-only"],
+  ["GPL-2.0-only WITH Classpath-exception-2.0", "GPL-2.0-only, Classpath-exception-2.0"],
   ["GPL-2.0+", "GPL-2.0+"],
   ["mit", "mit"],
+  ["MIT WITH Commons-Clause", "Commons-Clause"],
 ]) {
   test(`${expr} fails, blocked by ${blocker}`, () => {
     const root = fixtureRoot({ "licenses.json": report([[expr, "pkg"]]), "allow.json": "{}" });

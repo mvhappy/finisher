@@ -8,6 +8,9 @@ export const ALLOWED = new Set([
   "CC0-1.0", "CC-BY-4.0", "Unlicense", "BlueOak-1.0.0", "Python-2.0", "Zlib",
 ]);
 
+/** Exceptions that only add permissions to an allowed licence; any other `WITH` blocks. */
+export const ALLOWED_EXCEPTIONS = new Set(["LLVM-exception"]);
+
 const ROOT = fileURLToPath(new URL("..", import.meta.url));
 
 /**
@@ -87,9 +90,12 @@ export function parse(expr) {
 /** `{ok, blockers}`: whether `tree` allows shipping, and the ids that keep it from doing so. */
 function judge(tree, allowed) {
   if ("id" in tree) {
-    // An exception only grants permissions: it is as allowed as its licence. `+` is "or later".
-    const ok = allowed.has(tree.id.replace(/\+$/, ""));
-    return { ok, blockers: ok ? [] : [tree.id] };
+    // `+` is "or later". A known exception only grants permissions; an unknown one (say
+    // `Commons-Clause`) may restrict, so it blocks.
+    const blockers = [];
+    if (!allowed.has(tree.id.replace(/\+$/, ""))) blockers.push(tree.id);
+    if (tree.exception && !ALLOWED_EXCEPTIONS.has(tree.exception)) blockers.push(tree.exception);
+    return { ok: blockers.length === 0, blockers };
   }
   const parts = (tree.or ?? tree.and).map((t) => judge(t, allowed));
   const ok = tree.or ? parts.some((p) => p.ok) : parts.every((p) => p.ok);
