@@ -62,7 +62,7 @@ export function settingsHandlers(d: { readonly guard: Guard; readonly serverData
             const files = path === "server.remote" && (value as { tls?: { mode?: unknown } } | null)?.tls?.mode === "files";
             if (path === "server.projectRoots" || files) {
               return yield* Effect.fail(
-                finError("PATH_NOT_ALLOWED", "a device cannot change the server's roots or certificate files", { reason: "deviceSettings", path }, "Change it from the console on the server: finisherd console."),
+                finError("PATH_NOT_ALLOWED", "a device cannot change the server's roots or certificate files", { reason: "deviceSettings", path }, "Ask the owner to change it at the server's own console."),
               );
             }
           }

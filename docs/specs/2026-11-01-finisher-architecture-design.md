@@ -611,7 +611,7 @@ MyProject/                      (may live on local disk, NAS, or a cloud-synced 
 - **Transport:**
   - local socket and `127.0.0.1` locally;
   - TLS remotely with a self-signed certificate pinned at pairing (desktop shell and native clients);
-  - browsers reach a remote server only over a route whose certificate they trust (owner-supplied files or a reverse proxy) or over loopback through an SSH tunnel;
+  - browsers reach a remote server only over a route whose certificate they trust (owner-supplied files or a reverse proxy) or over loopback through an SSH tunnel; no ACME client and no click-through (owner decision 3 of 2026-11-07, as the 5B plan `docs/superpowers/plans/2026-11-08-sub-project-5b-pairing-and-remote-access.md` records it; built as control-plane spec §5.5);
   - public TLS when hosted.
 - **Certificate rotation:** the server signs a new certificate's fingerprint with the old key before rotating. Paired clients accept it automatically. A lost key means re-pairing, with a clear UI explanation.
 - **Handshake:** protocol version (HTTP 426 on mismatch) plus capabilities.
@@ -1196,3 +1196,9 @@ Spike code, evidence and the report are throwaway and live in the git-ignored `a
     - **Every reader of a library file uses `fin_library::open_for_read`** (raw name chain, no links followed, placeholders refused, identity checked), enforced by clippy `disallowed-methods` in the crates that read originals; sub-projects 6 and 8 follow the same rule.
     - **Deviations:** no listing refresh on macOS shares (libraries are read-only); Linux FUSE sync roots are metadata-only unless `hydrate`; pools per volume with a separate poll slot; library aliases never grant reach.
     - **Still outstanding:** cold scans, the macOS and Windows end-to-end runs and the share figures (5D Task 17).
+
+22. **Sub-project 5B, pairing, devices, remote access and environments (as built, 2026-11-09):** §16 (pairing, sessions, transport, secrets) as implemented is recorded in `docs/specs/2026-11-07-sub-project-5-control-plane-design.md` §5 (§5.12 maps every decision of its plan to As built or Deviation, §5.13 lists the owner decisions and review fixes, §5.14 the residuals), which wins over this document where they differ.
+    - **Shape:** one-time pairing offers (a `finisher://pair` link and QR code, a 256-bit secret in the fragment, at most 10 minutes) approved by the owner on the console or a device after comparing a six-digit safety code; devices are human principals holding every scope, proving with a P-256 key through DPoP (RFC 9449, server nonces) for 15-minute tokens and 30-second WebSocket tickets; revocation ends tokens, tickets and live connections at once.
+    - **Transport:** remote access is off until `finisherd remote enable` or `FIN_LISTEN`; off loopback it is TLS only, with a self-signed certificate made from the environment's identity key (pinned by SPKI) or the owner's certificate files (verified normally, then the `envId`); per-listener Host and Origin checks and connection pools.
+    - **Amendments to §16:** certificate rotation is re-pairing (`finisherd tls rotate`), not a statement signed by the old key; device confirmations: only a device's `server.stop` needs a challenge code, sent by the app after its own dialog; devices name server paths only inside allowed roots; copied server data is refused (`ENV_MOVED`) until `env adopt` or `env reset`; secrets live in the OS keychain when it answers without a prompt, else in private files, optionally wrapped with `FIN_SECRETS_KEY_FILE`.
+    - **Still outstanding:** the cross-platform and cross-host run (5B Task 15); sub-project 9's device key storage, pairing pages, `TLS_PIN_MISMATCH` and the `server.stop` dialog.

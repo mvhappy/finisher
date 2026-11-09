@@ -10,7 +10,7 @@ import { consoleError, valueOf } from "../client.ts";
 import { confirmed, proceed, requireTty } from "../confirm.ts";
 import { has, one, onlyFlags, pinGroups, usage } from "../format.ts";
 import { safe } from "../safe.ts";
-import { checkSetting, DEFAULT_LISTEN, parseListen, readServerSettings, type RemoteSettings } from "../../net/server-settings.ts";
+import { checkSetting, DEFAULT_LISTEN, readServerSettings, type RemoteSettings } from "../../net/server-settings.ts";
 import { type CommandContext, withConnection } from "./context.ts";
 
 interface Listener {
@@ -71,15 +71,22 @@ async function enable(ctx: CommandContext): Promise<number> {
   const value = enabledSetting(ctx);
   requireTty(ctx.prompt, "remote enable");
   const listen = value.listen ?? DEFAULT_LISTEN;
-  const port = (parseListen(listen) as { port: number }).port;
   const lines = [`This opens the server to the network on ${listen}, over TLS: devices you pair reach it there.`];
-  if ((value.tls?.mode ?? "selfSigned") === "selfSigned") {
-    lines.push(
-      "Its certificate is self-signed: the Finisher app checks it by its pin.",
-      `Browsers need trusted certificate files (--cert, --key), or an SSH tunnel on the same port (ssh -L ${port}:127.0.0.1:${port} <this server>).`,
-    );
-  }
-  await withConnection(ctx, (c) => confirmed(c, ctx.prompt, lines.join("\n"), proceed, "settings.write", { path: "server.remote", value }));
+  await withConnection(ctx, async (c) => {
+    if ((value.tls?.mode ?? "selfSigned") === "selfSigned") {
+      // A browser reaches the loopback listener through a tunnel on its own port (Decision 29):
+      // the same port on both ends, so its Host and Origin are the server's own.
+      const { listeners } = valueOf<{ listeners: Listener[] }>(await c.call("server.status", {}));
+      const ws = listeners.find((l) => l.transport === "ws");
+      const port = ws === undefined ? "<port>" : new URL(ws.endpoint).port;
+      lines.push(
+        "Its certificate is self-signed: the Finisher app checks it by its pin.",
+        `Browsers need trusted certificate files (--cert, --key), or an SSH tunnel to this server's loopback port on the same port (ssh -L ${port}:127.0.0.1:${port}).`,
+      );
+      if (readServerSettings(ctx.serverData).loopbackPort === undefined) lines.push("Set server.loopback.port in settings.json for the tunnel: otherwise that port changes at each start.");
+    }
+    return confirmed(c, ctx.prompt, lines.join("\n"), proceed, "settings.write", { path: "server.remote", value });
+  });
   return status(ctx, true);
 }
 

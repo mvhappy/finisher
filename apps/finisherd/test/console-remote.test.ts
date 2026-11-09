@@ -160,7 +160,7 @@ describe("mutations", () => {
     expect(p.asked).toEqual([]);
     const enabled = await run(["remote", "enable", "--listen", "127.0.0.1:0", "--tls", "self-signed"], p);
     expect(enabled.code, enabled.err).toBe(0);
-    expect(p.shown.join("\n")).toContain("an SSH tunnel on the same port");
+    expect(p.shown.join("\n")).toContain(`loopback port on the same port (ssh -L ${server.info.wsPort}:127.0.0.1:${server.info.wsPort})`);
     expect(enabled.out).toMatch(/^Remote access is on: wss:\/\/127\.0\.0\.1:\d+ \(self-signed, from settings\)\.\nPin: /);
     expect(JSON.parse((await run(["remote", "status", "--json"], NOT_A_TERMINAL)).out)).toMatchObject({ enabled: true, listener: { transport: "wss", mode: "selfSigned" } });
     expect((await run(["remote", "disable"], person())).out).toBe("Remote access is off.\n");
