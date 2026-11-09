@@ -484,15 +484,15 @@ fn migration_0002_from_4a_fixture() {
     let v: i64 = conn
         .query_row("PRAGMA user_version", [], |r| r.get(0))
         .unwrap();
-    // 0003 (4C's version bump) runs after 0002.
-    assert_eq!((v, DB_VERSION), (4, 4));
-    assert_eq!(meta(&conn, "formatVersion").as_deref(), Some("4"));
-    assert_eq!(meta(&conn, "minReaderVersion").as_deref(), Some("4"));
+    // 0003, 0004 and 0005 (the version bumps) run after 0002.
+    assert_eq!((v, DB_VERSION), (5, 5));
+    assert_eq!(meta(&conn, "formatVersion").as_deref(), Some("5"));
+    assert_eq!(meta(&conn, "minReaderVersion").as_deref(), Some("5"));
     assert_eq!(branch_rows(&conn), main_only());
     assert!(link_rows(&conn).is_empty());
     let names = backups(store.db_path());
     assert!(
-        names.iter().any(|n| n.starts_with("pre-migrate-1-4-")),
+        names.iter().any(|n| n.starts_with("pre-migrate-1-5-")),
         "{names:?}"
     );
     // The records 4A wrote are kept byte for byte.
@@ -527,15 +527,15 @@ fn sp2_fixture_migrates_through_0002() {
     let v: i64 = conn
         .query_row("PRAGMA user_version", [], |r| r.get(0))
         .unwrap();
-    // 0003 (4C's version bump) runs after 0002.
-    assert_eq!(v, 4);
-    assert_eq!(meta(&conn, "formatVersion").as_deref(), Some("4"));
-    assert_eq!(meta(&conn, "minReaderVersion").as_deref(), Some("4"));
+    // 0003, 0004 and 0005 (the version bumps) run after 0002.
+    assert_eq!(v, 5);
+    assert_eq!(meta(&conn, "formatVersion").as_deref(), Some("5"));
+    assert_eq!(meta(&conn, "minReaderVersion").as_deref(), Some("5"));
     assert_eq!(branch_rows(&conn), main_only());
     assert!(link_rows(&conn).is_empty());
     let names = backups(&db);
     assert_eq!(names.len(), 1, "{names:?}");
-    assert!(names[0].starts_with("pre-migrate-0-4-"), "{names:?}");
+    assert!(names[0].starts_with("pre-migrate-0-5-"), "{names:?}");
 }
 
 #[test]
@@ -544,8 +544,8 @@ fn fresh_project_has_main_branch_row() {
     let a = e.create("a");
     let conn = read_only(a.db_path());
     assert_eq!(branch_rows(&conn), main_only());
-    assert_eq!(meta(&conn, "formatVersion").as_deref(), Some("4"));
-    assert_eq!(meta(&conn, "minReaderVersion").as_deref(), Some("4"));
+    assert_eq!(meta(&conn, "formatVersion").as_deref(), Some("5"));
+    assert_eq!(meta(&conn, "minReaderVersion").as_deref(), Some("5"));
 }
 
 #[test]
