@@ -223,3 +223,74 @@ fn strict_check_names_the_noncanonical_input() {
     // Fields the decoder drops or adds are not times.
     assert!(fin_core::check_canonical_times(&json!({ "x": "y" }), &json!({})).is_ok());
 }
+
+// External review of 2026-11-09, #18 and #19: extreme values are typed errors or exact results in
+// debug and release builds alike (no panic, no wrapping). Run in `--release` too.
+
+const I128_MIN: &str = "-170141183460469231731687303715884105728";
+
+#[test]
+fn i128_min_inputs_are_typed_errors() {
+    assert_eq!(code(I128_MIN.parse::<Rational>()), "TIME_OVERFLOW");
+    assert_eq!(code(parse_time(I128_MIN, rate(30))), "TIME_OVERFLOW");
+    let lenient = serde_json::from_str::<Rational>(&format!("\"{I128_MIN}/1\""));
+    assert!(lenient.unwrap_err().to_string().contains("TIME_OVERFLOW"));
+    let same = format!("\"{I128_MIN}/{}\"", &I128_MIN[1..]);
+    assert!(serde_json::from_str::<Rational>(&same).is_err());
+    let min_over_min = format!("\"{I128_MIN}/{}\"", I128_MIN);
+    // Lenient decoding reads a sign on the denominator only as digits: refused, not a panic.
+    assert!(serde_json::from_str::<Rational>(&min_over_min).is_err());
+}
+
+#[test]
+fn frame_counts_that_overflow_are_typed_errors() {
+    let ntsc = Rational::new(30000, 1001).unwrap();
+    // n × 1001 wraps to 2 × 30000 in i128 without a checked multiply.
+    for f in [
+        "f47931881853998325023312507140738579296",
+        "f170141183460469231731687303715884105727",
+        "f-170141183460469231731687303715884105728",
+    ] {
+        assert_eq!(code(parse_time(f, ntsc)), "TIME_OVERFLOW", "{f}");
+    }
+    let max = Rational::from_int(i64::MAX);
+    assert_eq!(parse_time(&format!("f{}", i64::MAX), rate(1)).unwrap(), max);
+    assert_eq!(
+        code(parse_time(&format!("f{}", i64::MAX), ntsc)),
+        "TIME_OVERFLOW"
+    );
+}
+
+#[test]
+fn long_decimals_overflow() {
+    let s = format!("{}.{}s", "9".repeat(30), "9".repeat(30));
+    assert_eq!(code(parse_time(&s, rate(30))), "TIME_OVERFLOW");
+}
+
+#[test]
+fn subtraction_at_the_extremes() {
+    let min = Rational::from_int(i64::MIN);
+    let max = Rational::from_int(i64::MAX);
+    assert_eq!(min.checked_sub(min).unwrap(), Rational::zero());
+    assert_eq!(max.checked_sub(max).unwrap(), Rational::zero());
+    assert_eq!(
+        min.checked_sub(Rational::from_int(-1)).unwrap(),
+        Rational::from_int(i64::MIN + 1)
+    );
+    assert_eq!(
+        code(min.checked_sub(Rational::from_int(1))),
+        "TIME_OVERFLOW"
+    );
+    assert_eq!(code(min.checked_neg()), "TIME_OVERFLOW");
+    let tiny = Rational::new(i64::MIN, i64::MAX).unwrap();
+    assert_eq!(tiny.checked_sub(tiny).unwrap(), Rational::zero());
+    assert_eq!(code(Rational::new(1, i64::MIN)), "TIME_OVERFLOW");
+    assert_eq!(
+        Rational::new(i64::MIN, i64::MIN).unwrap(),
+        Rational::from_int(1)
+    );
+    assert_eq!(
+        Rational::new(i64::MIN, 2).unwrap(),
+        Rational::from_int(i64::MIN / 2)
+    );
+}

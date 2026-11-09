@@ -12,7 +12,8 @@ use rusqlite::{Connection, params};
 use crate::{StoreError, db};
 
 /// How deep an origin chain is followed (a loop in stored links ends there).
-const MAX_CHAIN: usize = 1_000;
+/// The same bound as `fin_core::history::origin::MAX_CHAIN` (review of 2026-11-09, #16).
+const MAX_CHAIN: usize = fin_core::history::origin::MAX_CHAIN;
 
 /// `ids` and every record their `origin` chains lead to, first seen first, each once. A txId
 /// the database does not hold is kept, and its chain ends there.

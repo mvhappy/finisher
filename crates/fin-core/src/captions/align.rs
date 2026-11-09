@@ -3,6 +3,9 @@
 //! shared-out boundaries are rounded to a fixed millisecond grid ([`GRID`]), so repeated edits
 //! never grow the denominators.
 
+use std::collections::BTreeMap;
+
+use crate::captions::lcs::lcs;
 use crate::error::CoreError;
 use crate::model::Word;
 use crate::time::{Rational, overflow};
@@ -69,37 +72,23 @@ fn key(text: &str) -> String {
     if k.is_empty() { text.to_string() } else { k }
 }
 
-/// The longest common subsequence of `a` and `b` as index pairs, in order (ties prefer the
-/// earliest pairing, so the result is deterministic).
-fn lcs(a: &[String], b: &[String]) -> Vec<(usize, usize)> {
-    let (n, m) = (a.len(), b.len());
-    let mut t = vec![vec![0u32; m + 1]; n + 1];
-    for i in (0..n).rev() {
-        for j in (0..m).rev() {
-            t[i][j] = if a[i] == b[j] {
-                t[i + 1][j + 1] + 1
-            } else {
-                t[i + 1][j].max(t[i][j + 1])
-            };
-        }
+/// `a` and `b` as numbers, equal where the strings are (for [`lcs`]).
+fn interned(a: &[String], b: &[String]) -> (Vec<u32>, Vec<u32>) {
+    fn number<'a>(ids: &mut BTreeMap<&'a str, u32>, list: &'a [String]) -> Vec<u32> {
+        list.iter()
+            .map(|s| {
+                let next = u32::try_from(ids.len()).unwrap_or(u32::MAX);
+                *ids.entry(s.as_str()).or_insert(next)
+            })
+            .collect()
     }
-    let (mut i, mut j, mut out) = (0, 0, Vec::new());
-    while i < n && j < m {
-        if a[i] == b[j] {
-            out.push((i, j));
-            i += 1;
-            j += 1;
-        } else if t[i + 1][j] >= t[i][j + 1] {
-            i += 1;
-        } else {
-            j += 1;
-        }
-    }
-    out
+    let mut ids = BTreeMap::new();
+    (number(&mut ids, a), number(&mut ids, b))
 }
 
 /// The words of `text` (split on whitespace) timed against `old`:
-/// - a word matching an old one (by [`key`], along the longest common subsequence) keeps its
+/// - a word matching an old one (by [`key`], along the longest common subsequence, [`lcs`]:
+///   ties prefer the earliest pairing, so the result is deterministic) keeps its
 ///   times, with the new text;
 /// - a run of new words between two matched ones shares the time between them (from the
 ///   earlier one's end to the later one's start; the old words' span before the first or after
@@ -119,10 +108,11 @@ pub fn align_text(old: &[Word], text: &str) -> Result<Vec<Word>, CoreError> {
     if new.is_empty() {
         return Ok(Vec::new());
     }
-    let pairs = lcs(
+    let (a, b) = interned(
         &old.iter().map(|w| key(&w.text)).collect::<Vec<_>>(),
         &new.iter().map(|t| key(t)).collect::<Vec<_>>(),
     );
+    let pairs = lcs(&a, &b);
     if pairs.is_empty() {
         return distribute(&new, first.start, last.end);
     }

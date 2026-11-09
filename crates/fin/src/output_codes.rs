@@ -236,6 +236,9 @@ pub(super) const VALIDATION_CODES: &[&str] = &[
     // A caption laid out from its pinned fonts overflows its style's lines or safe zone
     // (sub-project 4C Tasks 19–20: checked once at the end of a transaction).
     "CAPTION_OVERFLOW",
+    // A caption item would hold more than `fin_core::captions::MAX_CAPTION_WORDS` (5,000)
+    // words (`details.item`, `words`, `max`, `opIndex`; review finding #14).
+    "CAPTION_TOO_LONG",
     // `diagnostics.record` refused an event (plan D, Decision 33): seen only by direct callers.
     "EVENT_KIND_UNKNOWN",
     "EVENT_INVALID",
