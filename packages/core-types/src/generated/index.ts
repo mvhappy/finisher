@@ -1321,7 +1321,7 @@ export type EventPayload =
     }
   | {
       kind: "log.commit";
-      kv: 1;
+      kv: 2;
       payload: LogCommit;
     }
   | {

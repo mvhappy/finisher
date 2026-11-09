@@ -128,7 +128,7 @@ describe("Journal", () => {
     const ctx = { actor: { kind: "agent", session: "my-agent-session", call: "01JC0000000000000000000007" } };
     j.record("cli.command", 1, JSON.stringify(ctx), JSON.stringify(cli()), "fin", session);
     expect(thrown(() => j.record("no.such", 1, null, "{}", "fin")).code).toBe("EVENT_KIND_UNKNOWN");
-    expect(thrown(() => j.record("log.commit", 1, null, "{}", "fin")).code).toBe("EVENT_INVALID");
+    expect(thrown(() => j.record("log.commit", 2, null, "{}", "fin")).code).toBe("EVENT_INVALID");
     expect(thrown(() => j.record("cli.command", 1, "{\"bogus\":1}", JSON.stringify(cli()), "fin")).code).toBe("EVENT_INVALID");
     const e = (await all(j)).find((x) => x.kind === "cli.command")!;
     expect(e.source).toBe("fin");

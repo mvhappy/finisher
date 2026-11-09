@@ -1,9 +1,10 @@
 # 4C fixture
 
-A project written by the sub-project 4C store (commit `59e30f4`, the code before plan 5E Task 1),
-kept so 5E's format 3 (`drop` records, the `drops` index, database version 4) can prove that a
-4C project opens, migrates and rebuilds to identical state, including its branches, checkpoint,
-merge, undo/redo, cherry-pick and a 4C op (`item.split`).
+A project written by the store built from the integration tip `59e30f4` (the code before plan
+5E Task 1: 4C's segment formats 1 and 2, database version 3), kept so 5E's format 3 (`drop`
+records, the `drops` index, database version 4) can prove that a 4C project opens, migrates and
+rebuilds to identical state, including its branches, checkpoint, merge, undo/redo, cherry-pick
+and a 4C op (`item.split`).
 
 Contents: `folder/` (`finisher.project.json`, one `.fseg` each for `main` and `br1`),
 `project.fdb` (database version 3, WAL checkpointed, single file), `expected.json`

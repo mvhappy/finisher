@@ -347,7 +347,9 @@ impl Runner<'_, '_, '_> {
     /// moved to a recovered branch that only stands beside it. On a branch set aside with it,
     /// in its place on the recovered branch that stands for that one (as a checkpoint); on a
     /// live branch, the same drop again there, guarded as `Store::drop` is; left with a note
-    /// when that branch is gone or archived.
+    /// when that branch is gone or archived. A drop made again is written at the live branch's
+    /// head, so it is that branch's newest mark for each origin it names: it overrides a drop or
+    /// undrop written there since the lost one (lineage order, `fin_core::history::dropped_for`).
     fn drop_row(
         &mut self,
         g: usize,

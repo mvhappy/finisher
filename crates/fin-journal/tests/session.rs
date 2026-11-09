@@ -135,7 +135,7 @@ fn record_value_sync_is_on_disk_when_it_returns() {
         Source::Fin,
         &session,
         "log.commit",
-        1,
+        2,
         None,
         json!({}),
         Duration::from_millis(250),

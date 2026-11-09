@@ -134,7 +134,7 @@ fn intent_decode_refuses_a_raw_path() {
     assert_eq!(back.bytes(), intent.bytes());
     v["ops"][0]["path"] = json!("/home/alice/a.mp4");
     assert!(serde_json::from_value::<IntentTx>(v.clone()).is_err());
-    let spec = kind("log.commit", 1).unwrap();
+    let spec = kind("log.commit", 2).unwrap();
     let payload = json!({ "record": "edit", "outcome": "accepted", "micros": 1, "intent": [v] });
     assert_eq!(
         decode_payload(spec, &payload).unwrap_err().code,

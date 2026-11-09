@@ -221,16 +221,25 @@ pub fn decode_with_reader(bytes: &[u8], reader_version: u32) -> Result<Segment, 
             header.last_seq
         )));
     }
-    if header.format_version == EDIT_ONLY_VERSION {
-        // A format 1 label means edit-only (what 4A reads): a 4B kind in it is damage.
+    // A label below what the records need is damage: format 1 means edit-only (what 4A
+    // reads), and a `drop` needs format 3 (a 4C reader would read past it).
+    if header.format_version < DROP_VERSION {
         #[derive(Deserialize)]
         struct Kind {
             kind: Option<fin_core::RecordKind>,
         }
-        let has_4b = frame.lines.iter().any(|l| {
-            serde_json::from_slice::<Kind>(l).is_ok_and(|k| k.kind.is_some_and(|k| !k.is_4a()))
-        });
-        if has_4b {
+        let kinds: Vec<_> = frame
+            .lines
+            .iter()
+            .filter_map(|l| serde_json::from_slice::<Kind>(l).ok().and_then(|k| k.kind))
+            .collect();
+        if kinds.contains(&fin_core::RecordKind::Drop) {
+            return Err(corrupt(format!(
+                "a format {} segment holds a drop record",
+                header.format_version
+            )));
+        }
+        if header.format_version == EDIT_ONLY_VERSION && kinds.iter().any(|k| !k.is_4a()) {
             return Err(corrupt("a format 1 segment holds a record of a 4B kind"));
         }
     }

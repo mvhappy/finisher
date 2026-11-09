@@ -143,6 +143,14 @@ describe("branches", () => {
 });
 
 describe("history", () => {
+  test("history calls are named, non-enumerable methods", () => {
+    for (const name of ["drop", "merge", "undo", "branchCreate"] as const) {
+      const d = Object.getOwnPropertyDescriptor(Engine.prototype, name);
+      expect(d?.enumerable, name).toBe(false);
+      expect((d?.value as { name: string }).name).toBe(name);
+    }
+  });
+
   test("drop and undrop (plan 5E Task 2)", async () => {
     const e = await project();
     await e.branchCreate(req({ txId: "b1", name: "feature", from: "main" }));

@@ -34,10 +34,13 @@ export class Engine {
   // The branch and history writes: `(reqJson, metaJson?)`, each the native call of its name
   // (index.d.ts documents them one by one).
   static {
+    // Defined like class methods: non-enumerable, and named so stack traces show the call.
     for (const name of HISTORY_CALLS) {
-      Engine.prototype[name] = function (reqJson, metaJson) {
+      const method = function (reqJson, metaJson) {
         return call(this.#native[name](reqJson, metaJson ?? null));
       };
+      Object.defineProperty(method, "name", { value: name });
+      Object.defineProperty(Engine.prototype, name, { value: method, writable: true, configurable: true, enumerable: false });
     }
   }
 

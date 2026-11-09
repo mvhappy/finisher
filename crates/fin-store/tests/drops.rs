@@ -13,8 +13,8 @@ use std::path::{Path, PathBuf};
 use fin_core::branch::BranchState;
 use fin_core::{CommittedTx, CoreError, Link, Op, SCHEMA_VERSION, Tx};
 use fin_store::{
-    BranchCreate, DropReq, MAIN, MergeReport, MergeReq, RecoverReq, RecoverSel, Store, StoreError,
-    WriteGuard, WriteOutcome,
+    BranchCreate, BranchSet, CherryPickReq, DropReq, MAIN, MergeReport, MergeReq, RecoverReq,
+    RecoverSel, Store, StoreError, WriteGuard, WriteOutcome,
 };
 use integration_support::diverge::{Split, all_segments, split, winner};
 use integration_support::{self as is, Env, asset, insert};
@@ -215,6 +215,79 @@ fn drop_validates_origins_on_source() {
         excluded,
         [("e1", "DROPPED"), ("e2", "DROPPED"), ("e3", "DROPPED")]
     );
+    assert_verifies(&s);
+}
+
+/// Decision 15: a rejection is of an entry not yet merged. An origin `into` already holds (it
+/// originates there, or a merge or pick copied it there) is no drop: `notOnSource` when it
+/// originates on `into`, `alreadyPresent` when it was copied there. An undrop names an origin
+/// dropped for `into` now (`notDropped` otherwise), whatever became of it on the source since.
+#[test]
+fn drop_only_of_unmerged_origins() {
+    let e = is::env();
+    let mut s = writer(&e);
+    s.drop(req("d1", "br1", MAIN, &["e2"], &[])).unwrap();
+    let not_dropped = code(s.drop(req("d", "br1", MAIN, &[], &["e1"])));
+    assert_eq!(
+        (not_dropped.code.as_str(), &not_dropped.details["reason"]),
+        ("INVALID_OP", &"notDropped".into())
+    );
+    assert_eq!(not_dropped.details["txId"], "e1");
+    // main merged into br1: its copy of m2 is on br1's path, but m2 is main's own.
+    merge(&mut s, "mx", MAIN, "br1");
+    let own = code(s.drop(req("d", "br1", MAIN, &["m2"], &[])));
+    assert_eq!(
+        (
+            own.code.as_str(),
+            &own.details["reason"],
+            &own.details["txId"]
+        ),
+        ("INVALID_OP", &"notOnSource".into(), &"m2".into())
+    );
+    // br1 merged into main: e1 and e3 are there now.
+    assert_eq!(merge(&mut s, "mA", "br1", MAIN).merged, ["e1", "e3"]);
+    for (id, from) in [("e1", "br1"), ("e3", "br1")] {
+        let err = code(s.drop(req("d", from, MAIN, &[id], &[])));
+        assert_eq!(
+            (
+                err.code.as_str(),
+                &err.details["reason"],
+                &err.details["txId"]
+            ),
+            ("INVALID_OP", &"alreadyPresent".into(), &id.into()),
+            "{id}"
+        );
+    }
+    // Through a child of br1 that also holds e1: the root is what counts.
+    let br2 = new_branch(&mut s, "b2", "side", "br1");
+    let err = code(s.drop(req("d", &br2, MAIN, &["e1"], &[])));
+    assert_eq!(err.details["reason"], "alreadyPresent");
+    // e2, still dropped, is picked into main and br1 is archived: the undrop stays possible.
+    s.cherry_pick(CherryPickReq {
+        tx_id: "p1".into(),
+        author: "rev".into(),
+        origin: "e2".into(),
+        into: MAIN.into(),
+        dry_run: false,
+        args_hash: None,
+    })
+    .unwrap();
+    s.set_branch(BranchSet {
+        tx_id: "a1".into(),
+        author: "rev".into(),
+        branch: "br1".into(),
+        name: None,
+        archived: Some(true),
+        dry_run: false,
+        args_hash: None,
+    })
+    .unwrap();
+    let again = code(s.drop(req("d", "br1", MAIN, &["e2"], &[])));
+    assert_eq!(again.details["reason"], "alreadyPresent");
+    s.drop(req("d2", "br1", MAIN, &[], &["e2"])).unwrap();
+    assert!(dropped(&s, MAIN).is_empty());
+    let twice = code(s.drop(req("d3", "br1", MAIN, &[], &["e2"])));
+    assert_eq!(twice.details["reason"], "notDropped");
     assert_verifies(&s);
 }
 
@@ -647,7 +720,12 @@ fn run(acts: &[Act]) -> Result<Run, TestCaseError> {
                     }
                     Err(err) => {
                         let err = CoreError::from(err);
-                        prop_assert_eq!(&err.details["reason"], "notOnSource", "{:?}", err);
+                        let reason = err.details["reason"].as_str().unwrap_or_default();
+                        prop_assert!(
+                            ["notOnSource", "alreadyPresent", "notDropped"].contains(&reason),
+                            "{:?}",
+                            err
+                        );
                     }
                 }
             }
@@ -699,7 +777,7 @@ fn shuffle<T>(v: &mut [T], mut seed: u64) {
 }
 
 proptest! {
-    #![proptest_config(config(10))]
+    #![proptest_config(config(64))]
 
     /// No merge, on the writer or planned on a follower, copies an origin dropped for its
     /// target, whatever the order of drops, undrops, merges into the target and its

@@ -242,6 +242,17 @@ describe("log.commit from history calls", () => {
     expect(at(byTx(all, U(15)), 0).payload).toMatchObject({ record: "revert", outcome: "noOp", code: "ALREADY_REVERTED" });
   });
 
+  test("drop_is_log_commit_v2", async () => {
+    const j = open();
+    const e = await project();
+    await e.branchCreate(req({ txId: U(10), name: "feature", from: "main" }));
+    await e.commit(tx(U(11), 2, [insert(10)], "br1"));
+    await e.drop(req({ txId: U(12), into: "main", from: "feature", drops: [U(11)] }));
+    const c = at(byTx(await commits(j), U(12)), 0);
+    expect(c.kv).toBe(2);
+    expect(c.payload).toMatchObject({ record: "drop", outcome: "accepted" });
+  });
+
   test("empty_merge_is_no_op", async () => {
     const j = open();
     const e = await project();

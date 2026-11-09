@@ -14,7 +14,10 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use serde_json::json;
+
 use super::merge::TO_HEAD;
+use super::origin::Roots;
 use super::{Lineage, LogView};
 use crate::error::CoreError;
 use crate::record::{Link, RecordKind};
@@ -75,27 +78,111 @@ pub fn dropped_for(log: &dyn LogView, lineage: &Lineage) -> Result<BTreeSet<Stri
         .collect())
 }
 
-/// The origin roots a `drop` on `into` may name for source `from` (plan 5E Decision 5): the
-/// roots of the records a merge of `from` into `into` reads as its source path (`from`'s
-/// lineage after its common point with `into`) that a merge could copy (content records and
-/// `merge` copies, as [`super::candidates`] reads them). Empty when the two are one branch or
-/// share no history.
+/// The origin roots a `drop` on `into` may name in `drops` for source `from` (plan 5E
+/// Decisions 5 and 15: a rejection is of an entry not yet merged), each with whether `into`
+/// already holds it. The roots are those of the records a merge of `from` into `into` reads as
+/// its source path (`from`'s lineage after its common point with `into`) that a merge could
+/// copy (content records and `merge` copies, as [`super::candidates`] reads them); `true` marks
+/// one `into` holds ([`Roots::present`]: it originates on `into`'s lineage, or a merge or pick
+/// copied it there), which is no drop. Empty when the two are one branch or share no history.
 pub fn source_roots(
     log: &dyn LogView,
     from: &str,
     into: &str,
-) -> Result<BTreeSet<String>, CoreError> {
+) -> Result<BTreeMap<String, Held>, CoreError> {
     let (source_l, target_l) = (log.lineage(from)?, log.lineage(into)?);
     let c = super::common_point(&source_l, &target_l);
     if c.0.is_empty() || from == into {
-        return Ok(BTreeSet::new());
+        return Ok(BTreeMap::new());
     }
-    let mut out = BTreeSet::new();
-    for rec in super::merge::path_after(log, &source_l, &c)? {
+    let source = super::merge::path_after(log, &source_l, &c)?;
+    let target = super::merge::path_after(log, &target_l, &c)?;
+    let roots = Roots::new(log, &target_l, &source, &target)?;
+    let mut out = BTreeMap::new();
+    for (i, rec) in source.iter().enumerate() {
         let kind = rec.record.kind;
         if kind.is_content() || kind == RecordKind::Merge {
-            out.insert(super::root_of(log, &rec)?);
+            let held = if roots.on_target[i] {
+                Held::Own
+            } else if roots.present[i] {
+                Held::Copied
+            } else {
+                Held::No
+            };
+            out.insert(roots.source[i].clone(), held);
         }
     }
     Ok(out)
+}
+
+/// Whether the target of a drop already holds a source root ([`source_roots`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Held {
+    /// Not yet merged: a drop may name it.
+    No,
+    /// It originates on the target's lineage.
+    Own,
+    /// A merge or pick copied it to the target.
+    Copied,
+}
+
+/// Checks the ids of a `drop` record on `into` for source `from` (plan 5E Decisions 5, 15):
+/// each of `drops` must be an origin root `from` would still merge into `into`, each of
+/// `undrops` an origin dropped for `into` now ([`dropped_for`]), whatever became of it on the
+/// source since (a pick, an archive), so a rejection can always be lifted.
+///
+/// Errors: `INVALID_OP {reason, txId, from, into}` for the first bad id, `reason` being
+/// `notOnSource` (not a root `from` brings, or one originating on `into`), `alreadyPresent`
+/// (already merged or picked into `into`) or `notDropped` (an undrop of an origin not dropped
+/// for `into`); what the log's reads fail with.
+pub fn check_drop(
+    log: &dyn LogView,
+    from: &str,
+    into: &str,
+    drops: &[String],
+    undrops: &[String],
+) -> Result<(), CoreError> {
+    let refuse = |id: &str, reason: &str, why: String, fix: &str| {
+        Err(CoreError::new("INVALID_OP", why)
+            .with_details(json!({ "reason": reason, "txId": id, "from": from, "into": into }))
+            .with_fix(fix))
+    };
+    if !drops.is_empty() {
+        let roots = source_roots(log, from, into)?;
+        for id in drops {
+            match roots.get(id) {
+                Some(Held::No) => {}
+                Some(Held::Copied) => {
+                    return refuse(
+                        id,
+                        "alreadyPresent",
+                        format!("transaction {id} is already merged into {into}"),
+                        "name the origin txIds of changes not yet merged (revert a merge to undo it)",
+                    );
+                }
+                Some(Held::Own) | None => {
+                    return refuse(
+                        id,
+                        "notOnSource",
+                        format!(
+                            "transaction {id} is not a change branch {from} would merge into {into}"
+                        ),
+                        "name the origin txIds of changes the source branch would merge into the target",
+                    );
+                }
+            }
+        }
+    }
+    if !undrops.is_empty() {
+        let dropped = dropped_for(log, &log.lineage(into)?)?;
+        if let Some(id) = undrops.iter().find(|id| !dropped.contains(*id)) {
+            return refuse(
+                id,
+                "notDropped",
+                format!("transaction {id} is not dropped for {into}"),
+                "name origin txIds dropped for the target (see the branch's dropped list)",
+            );
+        }
+    }
+    Ok(())
 }

@@ -194,7 +194,7 @@ registry! {
     SessionUnclean(p::SessionUnclean) = "session.unclean" v 1 [Finisherd, FinNode];
     ConsentChanged(p::ConsentChanged) = "consent.changed" v 1 [FinNode];
     JournalDropped(p::JournalDropped) = "journal.dropped" v 1 [FinNode];
-    LogCommit(p::LogCommit) = "log.commit" v 1 [FinNode];
+    LogCommit(p::LogCommit) = "log.commit" v 2 [FinNode];
     CliCommand(p::CliCommand) = "cli.command" v 1 via w::CliCommandIn [Fin, Mcp];
     RpcStats(p::RpcStats) = "rpc.stats" v 1 [Finisherd];
     EvalStats(p::EvalStats) = "eval.stats" v 1 [FinNode];

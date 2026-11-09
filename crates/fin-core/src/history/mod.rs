@@ -37,7 +37,7 @@ use crate::tx::{Applied, CommittedTx, Diff, Tx};
 
 pub use candidates::{Candidates, candidates};
 pub use checkpoint::plan_undo_to;
-pub use drops::{DropMark, dropped_for, source_roots};
+pub use drops::{DropMark, Held, check_drop, dropped_for, source_roots};
 pub use merge::{MergePlan, candidate_steps, common_point, plan_merge};
 pub use merged::{left_to_merge, lineage_in};
 pub use origin::{Roots, root, root_of, target_roots};

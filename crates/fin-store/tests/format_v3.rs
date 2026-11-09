@@ -255,6 +255,34 @@ fn v2_reader_gets_newer_format() {
     assert_eq!(segment::decode(&v4), Err(SegError::Newer { min_reader: 4 }));
 }
 
+#[test]
+fn drop_in_older_format_is_corrupt() {
+    // A drop needs format 3: a segment labelled 1 or 2 that holds one is damaged (a 4C reader
+    // would otherwise read it as if the drop were not there), on main and on a branch.
+    let drop = encode_record(&record(
+        "d1",
+        1,
+        Link::new_drop("br1", vec!["e1".into()], vec![]).unwrap(),
+    ));
+    let lines = [drop.as_slice()];
+    for version in [(1, 1), (2, 2)] {
+        let (bytes, _) = segment::encode(&header(version), &lines);
+        assert!(
+            matches!(segment::decode(&bytes), Err(SegError::Corrupt(ref w)) if w.contains("drop")),
+            "{version:?}: {:?}",
+            segment::decode(&bytes)
+        );
+    }
+    let mut branch = header((2, 2));
+    branch.branch = "br2".into();
+    branch.branch_record = Some(format!("blake3:{}", "1".repeat(64)));
+    let (bytes, _) = segment::encode(&branch, &lines);
+    assert!(matches!(
+        segment::decode(&bytes),
+        Err(SegError::Corrupt(ref w)) if w.contains("drop")
+    ));
+}
+
 fn expected_4c() -> serde_json::Value {
     let p = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/4c/expected.json");
     serde_json::from_slice(&fs::read(p).unwrap()).unwrap()
