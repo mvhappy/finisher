@@ -6,7 +6,7 @@ use std::fs::{self, DirBuilder, File, OpenOptions};
 use std::io::{self, ErrorKind, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 
-use fin_core::events::Envelope;
+use fin_core::events::{ENVELOPE_VERSION, Envelope};
 use ulid::Ulid;
 
 /// One journal file.
@@ -89,7 +89,8 @@ pub(crate) fn paths(dir: &Path) -> Vec<PathBuf> {
         .collect()
 }
 
-/// The `ts` of the last whole line of `path`, if it has one that parses.
+/// The `ts` of the last whole line of `path` that parses as an entry of this envelope
+/// version (one a later build wrote is passed over, as the reader passes it over).
 pub(crate) fn last_ts(path: &Path, len: u64) -> Option<u64> {
     const TAIL: u64 = 128 * 1024;
     let mut f = File::open(path).ok()?;
@@ -100,7 +101,8 @@ pub(crate) fn last_ts(path: &Path, len: u64) -> Option<u64> {
     buf.split(|b| *b == b'\n')
         .rev()
         .filter(|l| !l.is_empty())
-        .find_map(|l| serde_json::from_slice::<Envelope>(l).ok())
+        .filter_map(|l| serde_json::from_slice::<Envelope>(l).ok())
+        .find(|e| e.v == ENVELOPE_VERSION)
         .map(|e| e.ts)
 }
 
