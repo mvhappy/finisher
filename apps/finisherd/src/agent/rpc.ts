@@ -95,6 +95,7 @@ export function agentHandlers(deps: AgentRpcDeps) {
         const parent = p.kind === "agent" ? store.get(p.id) : undefined;
         if (parent === undefined) return runtime.start(req, p, metaOf(options));
         if (req.base !== undefined) return Effect.fail(finError("INVALID_REQUEST", "a child starts from its parent's branch", { field: "base", reason: "subagent" }, "spawn it without base"));
+        if (req.prompt === undefined || req.prompt.trim() === "") return Effect.fail(finError("INVALID_REQUEST", "a child starts with a brief", { field: "prompt", reason: "subagent" }, "spawn it with a brief (`fin agent spawn --brief`)"));
         // Reach keeps a session to its project; a child is of its parent's in any case.
         if (req.projectId !== parent.projectId) return Effect.fail(finError("PROJECT_NOT_FOUND", "no such project", { projectId: req.projectId }, "spawn children in your own project"));
         return runtime.spawnChild(parent, req, p, metaOf(options));

@@ -65,6 +65,8 @@ export interface RuntimeDeps {
   readonly limits?: Partial<SessionLimits>;
   /** Provider permission requests (7B Task 5); none: every request is declined by policy. */
   readonly requests?: ProviderRequests;
+  /** A test's pause after a child's open, before its spawn re-reads the parent (7B Task 6). */
+  readonly afterChildOpened?: (childId: string) => Promise<void>;
   /** Where the engine reports what it could not do (an outbox effect, a late provider error). */
   readonly log?: (message: string, details: Record<string, unknown>) => void;
 }
@@ -72,11 +74,10 @@ export interface RuntimeDeps {
 /** A provider failure that ends only the run; the session stays `idle` (Decision 10). */
 const RUN_ONLY_STOPS = new Set(["MODEL_CONTEXT_EXCEEDED"]);
 const DAY_MS = 86_400_000;
-const STOP_GRACE_MS = 30_000;
+export const STOP_GRACE_MS = 30_000;
 
 /** Thrown into work queued after `abandon` (a simulated crash): nothing more is written. */
 class Abandoned extends Error {}
-
 
 export abstract class RuntimeEngine {
   protected readonly store: AgentStore;
@@ -474,7 +475,12 @@ export abstract class RuntimeEngine {
       this.record("a tool result", () => this.journal.toolResult({ sessionId, runId: c.runId, callId: c.callId, ok: e.ok, output: e.output, synthetic: false }));
       await this.crossings(live, c.runId, this.budget(this.session(sessionId)).chargeTool());
     }
-    if (live.pendingStop && live.calls.size === 0 && this.lives.get(sessionId) === live) await this.stop(live, live.pendingStop);
+    if (live.calls.size === 0 && this.lives.get(sessionId) === live) await this.settled(live);
+  }
+
+  /** The calls in flight have their results (the safe point): a pending budget stop goes on. */
+  protected async settled(live: Live): Promise<void> {
+    if (live.pendingStop) await this.stop(live, live.pendingStop);
   }
 
   async #usage(live: Live, runId: string, e: Extract<ProviderEvent, { type: "usage" }>): Promise<void> {

@@ -9,12 +9,16 @@ import { DatabaseSync } from "node:sqlite";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ChildResult, CredentialFile, Node, Run, Session } from "@finisher/contracts";
+import { Effect } from "effect";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from "vitest";
 import { manualClock, systemIds } from "../src/agent/clock.ts";
 import { credentialPath, MODE_SCOPES } from "../src/agent/credentials.ts";
 import type { FakeAdapter, FakeScript } from "../src/agent/fake.ts";
 import { AgentJournal } from "../src/agent/journal.ts";
 import { AgentStore, type NewSession } from "../src/agent/store.ts";
+import type { AgentServeOptions } from "../src/agent/wiring.ts";
+import type { ToolOutcome } from "../src/agent/runtime-deps.ts";
+import { argsHash, subjectOf } from "../src/agent/approvals.ts";
 import { exitCodeOf } from "../src/console/exit-codes.ts";
 import { openControlStore } from "../src/control/db.ts";
 import { agentEntries, flush, openStores, P1 } from "./support/agent-journal.ts";
@@ -28,13 +32,18 @@ const hooks = process.env.FIN_TEST_HOOKS;
 
 const msg = (text: string) => ({ type: "message", role: "assistant", blocks: [{ type: "text", text }] });
 const done = { type: "turnCompleted", stopReason: "endTurn" };
-/** The parent's script: its first run answers and ends (the parent is idle with a run). */
-const PARENT: FakeScript = { name: "parent", turns: [[{ emit: [msg("on it"), done] }]] };
+/** The parent's script: its first run answers and goes on (a parent spawns from its run). */
+const PARENT: FakeScript = { name: "parent", turns: [[{ emit: [msg("on it")] }, { awaitAnswer: "never" }]] };
 /** A run that never ends by itself (the session stays `running`). */
 const WORKING: FakeScript = { name: "working", turns: [[{ emit: [msg("working")] }, { awaitAnswer: "never" }]] };
 /** A brief that runs to its end: the child ends itself with this summary. */
 const brief = (text: string): FakeScript => ({ name: "brief", turns: [[{ emit: [msg(text), done] }]] });
 /** A brief cut short (`maxTokens`): the child is idle; its next run stays open. */
+/** A run that makes one tool call (the runtime runs it: the test's `fakeTools`), then goes on. */
+const TOOL: FakeScript = {
+  name: "tool",
+  turns: [[{ emit: [{ type: "toolStarted", providerId: "t1", tool: "fin", input: { argv: ["view"] } }] }, { awaitTool: "t1" }, { emit: [msg("after the call")] }, { awaitAnswer: "never" }]],
+};
 const IDLE: FakeScript = {
   name: "idle",
   turns: [[{ emit: [msg("half"), { type: "turnCompleted", stopReason: "maxTokens" }] }], [{ emit: [msg("more")] }, { awaitAnswer: "never" }]],
@@ -63,9 +72,10 @@ let n = 0;
 const id = () => `01T${String(++n).padStart(23, "0")}`;
 
 /** A server whose fake opens `scripts` in order (the last repeats); `agents` settings beside. */
-async function boot(scripts: readonly FakeScript[], agents?: Record<string, unknown>) {
-  if (agents !== undefined) writeFileSync(join(serverData, "settings.json"), JSON.stringify({ agents }));
-  server = new AgentServer(serverData, { timers: false, fakeScripts: scripts });
+async function boot(scripts: readonly FakeScript[], agents?: Record<string, unknown>, options: AgentServeOptions & { privacy?: object } = {}) {
+  const { privacy, ...rest } = options;
+  if (agents !== undefined || privacy !== undefined) writeFileSync(join(serverData, "settings.json"), JSON.stringify({ agents, privacy }));
+  server = new AgentServer(serverData, { timers: false, fakeScripts: scripts, ...rest });
   await server.start();
   const local = await server.local();
   const projectId = ok<{ projectId: string }>(await local.call("project.create", { dir: join(tmp, "P"), name: "P", rate: "30" })).projectId;
@@ -87,10 +97,10 @@ async function until<A>(f: () => A | undefined | false, what: string, ms = 8000)
 
 const status = (sessionId: string, want: Session["status"]) => until(() => get(sessionId).status === want, `${sessionId} ${want}`);
 
-/** A root session started by a person, its first run done; its credential's client. */
+/** A root session started by a person, in its first run (or idle without a prompt); its credential's client. */
 async function root(local: NdjsonClient, projectId: string, more: Record<string, unknown> = {}) {
   const { session } = ok<{ session: Session }>(await local.call("agent.session.start", JSON.parse(JSON.stringify({ projectId, harness: "fake", prompt: "go", ...more }))));
-  await status(session.id, "idle");
+  await until(() => get(session.id).status === "running" || get(session.id).status === "idle", `${session.id} started`);
   return { session, client: await server.agent(credentialPath(server.core.store.root, session.id)) };
 }
 
@@ -174,6 +184,91 @@ describe("spawning", () => {
   });
 });
 
+describe("a spawn needs a live run", () => {
+  test("a session spawns only from a run: an idle, interrupted or ended parent is refused", async () => {
+    const { local, projectId } = await boot([PARENT, WORKING]);
+    const idle = await root(local, projectId, { prompt: undefined });
+    expect(get(idle.session.id).status).toBe("idle");
+    const fromIdle = await spawnRaw(idle.client, projectId, "fixer");
+    expect(code(fromIdle)).toBe("SESSION_INTERRUPTED");
+    expect(details(fromIdle)).toMatchObject({ status: "idle" });
+    const p = await root(local, projectId);
+    ok(await local.call("agent.session.interrupt", { sessionId: p.session.id }));
+    const fromInterrupted = await spawnRaw(p.client, projectId, "fixer");
+    expect(code(fromInterrupted)).toBe("SESSION_INTERRUPTED");
+    expect(details(fromInterrupted)).toMatchObject({ status: "interrupted" });
+    expect(server.core.store.tree.liveChildren(p.session.id)).toEqual([]);
+  });
+
+  test("a spawn without a brief is INVALID_REQUEST {field: prompt}; a person may still start an idle session", async () => {
+    const { local, projectId } = await boot([PARENT, WORKING]);
+    const p = await root(local, projectId);
+    const e = await p.client.call("agent.session.start", { projectId, role: "fixer" });
+    expect(code(e)).toBe("INVALID_REQUEST");
+    expect(details(e)).toMatchObject({ field: "prompt" });
+    expect(code(await p.client.call("agent.session.start", { projectId, role: "fixer", prompt: "  " }))).toBe("INVALID_REQUEST");
+    expect(server.core.store.tree.liveChildren(p.session.id)).toEqual([]);
+    expect(ok<{ session: Session }>(await local.call("agent.session.start", { projectId, harness: "fake" })).session.status).toBe("idle");
+  });
+
+  for (const stop of ["interrupt", "end"] as const) {
+    test(`a spawn racing its parent's ${stop}: the child the cascade could not see is stopped and the spawn fails`, async () => {
+      let opened!: (id: string) => void;
+      let release!: () => void;
+      const paused = new Promise<string>((r) => (opened = r));
+      const gate = new Promise<void>((r) => (release = r));
+      const { local, projectId } = await boot([PARENT, WORKING], undefined, {
+        afterChildOpened: async (childId) => {
+          opened(childId);
+          await gate;
+        },
+      });
+      const p = await root(local, projectId);
+      const spawning = spawnRaw(p.client, projectId, "fixer");
+      const childId = await paused;
+      // The child's branch and record exist; the parent stops before the spawn goes on.
+      expect(get(childId)).toMatchObject({ parent: p.session.id, status: "idle" });
+      ok(await local.call(`agent.session.${stop}`, { sessionId: p.session.id }));
+      release();
+      const e = await spawning;
+      // The spawn fails (an ended parent's own credential is revoked by then: its answer says so).
+      expect(code(e)).toBe(stop === "end" ? "CREDENTIAL_REVOKED" : "SESSION_INTERRUPTED");
+      const want = stop === "end" ? { status: "ended", statusReason: "rootEnded" } : { status: "interrupted", statusReason: "parentInterrupted" };
+      await status(childId, want.status as Session["status"]);
+      expect(get(childId).statusReason).toBe(want.statusReason);
+      // Its brief never ran.
+      expect(server.core.store.runs(childId)).toEqual([]);
+      expect(fake().log.turns).toHaveLength(1);
+    });
+  }
+
+  test("two spawns racing the live limit: one is admitted", async () => {
+    const { local, projectId } = await boot([PARENT, WORKING], { subagents: { maxLive: 1 } });
+    const p = await root(local, projectId);
+    const both = await Promise.all([spawnRaw(p.client, projectId, "fixer"), spawnRaw(p.client, projectId, "fixer")]);
+    expect(both.filter((e) => e.ok)).toHaveLength(1);
+    const refused = both.find((e) => !e.ok)!;
+    expect(code(refused)).toBe("DEPTH_EXCEEDED");
+    expect(details(refused)).toMatchObject({ kind: "live", live: 1, max: 1 });
+    expect(server.core.store.tree.liveDescendants(p.session.id)).toBe(1);
+  });
+
+  test("a waitingApproval session holds a live slot", async () => {
+    const { local, projectId } = await boot([WORKING], { maxLiveBuiltin: 1 });
+    const a = ok<{ session: Session }>(await local.call("agent.session.start", { projectId, harness: "fake", prompt: "job a" })).session;
+    await until(() => fake().log.turns.length === 1, "a's turn");
+    const sub = subjectOf({ command: "checkpoint", tag: "history.checkpoint", payload: { projectId, branch: a.rootBranch!, name: "c" }, rule: "r1", layer: "local" });
+    await Effect.runPromise(server.agents.approvals.ask(get(a.id), "rule", sub, argsHash(server.agents.approvalKey, sub)));
+    expect(get(a.id).status).toBe("waitingApproval");
+    const b = ok<{ session: Session; run: Run }>(await local.call("agent.session.start", { projectId, harness: "fake", prompt: "job b" }));
+    expect(nodes(b.session.id).find((x) => x.kind === "notice")?.payload).toEqual({ code: "SESSION_QUEUED", kind: "builtin", limit: 1, position: 1 });
+    expect(fake().log.turns).toHaveLength(1);
+    ok(await local.call("agent.session.end", { sessionId: a.id }));
+    await until(() => fake().log.turns.length === 2, "b's turn");
+    expect(fake().log.turns.at(-1)).toMatchObject({ runId: b.run.id, text: "job b" });
+  });
+});
+
 describe("own children only", () => {
   test("agent_run_only_for_own_children: prompt, steer, interrupt, end its children; another session's, a sibling's or its parent's are SESSION_NOT_FOUND; resume and delete are SCOPE_DENIED", async () => {
     const { local, projectId } = await boot([PARENT, IDLE]);
@@ -234,7 +329,7 @@ describe("own children only", () => {
       expect(code(e), tag).toBe("SCOPE_DENIED");
       expect(details(e), tag).toMatchObject({ reason: "noSession" });
     }
-    expect(get(p.session.id).status).toBe("idle");
+    expect(get(p.session.id).status).toBe("running");
   });
 
   test("parent_cannot_write_live_child_branch: the child's subtree is the child's while it lives; the parent's again once it ended", async () => {
@@ -325,8 +420,8 @@ describe("bounds", () => {
     const ninth = await spawnRaw(more[1]!.client, projectId, "clip-finder");
     expect(code(ninth)).toBe("DEPTH_EXCEEDED");
     expect(details(ninth)).toMatchObject({ kind: "live", live: 8, max: 8, rootSession: r.session.id });
-    // Another tree has its own count (its root needs no run of its own to spawn).
-    const r2 = await root(local, projectId, { prompt: undefined });
+    // Another tree has its own count.
+    const r2 = await root(local, projectId);
     await spawn(r2.client, projectId, "fixer");
   });
 
@@ -432,6 +527,46 @@ describe("ending and waiting", () => {
     expect([get(c2.session.id).statusReason, get(g.session.id).statusReason]).toEqual(["rootEnded", "rootEnded"]);
   });
 
+  test("a root's end ends a descendant after its current tool call: the call's result is recorded, then the child ends and its credential with it", async () => {
+    let started!: () => void;
+    let finish!: () => void;
+    const calling = new Promise<void>((r) => (started = r));
+    const finished = new Promise<void>((r) => (finish = r));
+    const fakeTools = { run: async (): Promise<ToolOutcome> => (started(), await finished, { ok: true, output: { exit: 0, stdout: "viewed" } }) };
+    const { local, projectId } = await boot([PARENT, TOOL], undefined, { fakeTools });
+    const r = await root(local, projectId);
+    const c = await spawn(r.client, projectId, "clip-finder");
+    const g = await spawn(c.client, projectId, "clip-finder");
+    await calling;
+    ok(await local.call("agent.session.end", { sessionId: r.session.id }));
+    // Mid-call: the child goes on, its credential still answers; a new spawn from it is refused.
+    await new Promise((x) => setTimeout(x, 100));
+    expect(get(c.session.id).status).toBe("running");
+    ok(await c.client.call("agent.session.list", {}));
+    expect(code(await spawnRaw(c.client, projectId, "clip-finder"))).toBe("SESSION_ENDED");
+    finish();
+    await status(c.session.id, "ended");
+    expect(get(c.session.id).statusReason).toBe("rootEnded");
+    const result = nodes(c.session.id).find((x) => x.kind === "toolResult")!;
+    expect(result.payload).toEqual({ ok: true, output: { exit: 0, stdout: "viewed" } });
+    await expect(server.agent(credentialPath(server.core.store.root, c.session.id))).rejects.toThrow(/CREDENTIAL_REVOKED/);
+    // Its own child (in a call too) ended with the root, not interrupted by its parent's end.
+    await status(g.session.id, "ended");
+    expect(get(g.session.id).statusReason).toBe("rootEnded");
+  });
+
+  test("a root's end waits for a descendant's call at most the stop grace, then ends it (the call gets the synthetic result)", async () => {
+    const fakeTools = { run: () => new Promise<ToolOutcome>(() => {}) };
+    const { local, projectId } = await boot([PARENT, TOOL], undefined, { fakeTools, stopGraceMs: 50 });
+    const r = await root(local, projectId);
+    const c = await spawn(r.client, projectId, "fixer");
+    await until(() => nodes(c.session.id).some((x) => x.kind === "toolCall"), "the child's call");
+    ok(await local.call("agent.session.end", { sessionId: r.session.id }));
+    await status(c.session.id, "ended");
+    expect(get(c.session.id).statusReason).toBe("rootEnded");
+    expect(nodes(c.session.id).find((x) => x.kind === "toolResult")?.payload).toMatchObject({ ok: false, code: "SESSION_INTERRUPTED", reason: "rootEnded", synthetic: true });
+  });
+
   test("deleting a parent interrupts its children", async () => {
     const { local, projectId } = await boot([PARENT, WORKING]);
     const r = await root(local, projectId);
@@ -444,6 +579,18 @@ describe("ending and waiting", () => {
 });
 
 describe("the journal", () => {
+  test("a real spawn through the RPC journals the child's agent.session with parent and trigger: subagent", async () => {
+    const { local, projectId } = await boot([PARENT, WORKING], undefined, { privacy: { diagnostics: "on" } });
+    const p = await root(local, projectId);
+    const c = await spawn(p.client, projectId, "fixer");
+    const of = (sessionId: string) => agentEntries(serverData, "events").find((e) => e.kind === "agent.session" && e.payload.sessionId === sessionId && e.payload.phase === "started");
+    const child = await until(() => of(c.session.id), "the child's agent.session");
+    expect(child.payload).toMatchObject({ phase: "started", parent: p.session.id, trigger: "subagent", role: "fixer" });
+    const top = await until(() => of(p.session.id), "the root's agent.session");
+    expect(top.payload).toMatchObject({ trigger: "user" });
+    expect(top.payload.parent).toBeUndefined();
+  });
+
   test("a child's agent.session has parent and trigger: subagent; a root's trigger is user", async () => {
     const dir = join(tmp, "journal");
     mkdirSync(dir, { recursive: true, mode: 0o700 });

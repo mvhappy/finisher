@@ -13,8 +13,8 @@
 // - Every command runs in its session's queue, after the events and commands before it.
 // - Children (7B Task 6, `subagents.ts`): `spawnChild` starts one for a parent session,
 //   `waitChildren` waits on them; after every transition the subagents see it (a brief's end,
-//   the parent's `subagent` node, the cascade) and the live limits (`live-limits.ts`) start
-//   the queued runs a freed slot admits.
+//   the parent's `subagent` node, the cascade; a root's end waits for a descendant's calls in
+//   flight, `settled`) and the live limits (`live-limits.ts`) admit runs and start their turns.
 // - A session's provider instance is opened at its first run (with its resume reference) and
 //   kept while the session is `idle`; interrupt, end and any provider exit close it.
 // - The store and session credentials are Task 7's `AgentCore` (one per server, `AgentCoreTag`);
@@ -27,9 +27,9 @@ import type { CallMeta } from "../diagnostics.ts";
 import { finError, toFinError } from "../errors.ts";
 import { AgentCoreTag } from "./core.ts";
 import { openSession, registryBranchOps } from "./credentials.ts";
-import { type RuntimeDeps, RuntimeEngine } from "./runtime-engine.ts";
+import { type RuntimeDeps, RuntimeEngine, STOP_GRACE_MS } from "./runtime-engine.ts";
 import { budgetError, harnessUnknown, pricingUnknown, type StartRequest } from "./runtime-deps.ts";
-import { call, closeLive } from "./runtime-live.ts";
+import { call, closeLive, type Live } from "./runtime-live.ts";
 import { LiveLimits } from "./live-limits.ts";
 import { BUNDLED_ROLES } from "./roles.ts";
 import { DEFAULT_LIMITS } from "./settings.ts";
@@ -83,10 +83,20 @@ export class Runtime extends RuntimeEngine {
       max: () => ({ builtin: limits().maxLiveBuiltin, provider: limits().maxLiveProviders }),
       active: () => this.store.tree.active(),
       current: (id, runId) => this.store.get(id)?.status === "running" && this.store.activeRun(id) === runId,
+      turns: {
+        session: (id) => this.session(id),
+        open: (s) => this.ensureLive(s),
+        startClock: (s) => this.budget(s).startRun(),
+        facts: (s) => this.facts(s),
+        append: async (n) => void (await this.append(n)),
+        interrupt: async (id, reason) => void (await this.apply(id, { kind: "interrupted", reason })),
+      },
     });
-    this.subagents = new Subagents({ store: this.store, roles: deps.roles ?? BUNDLED_ROLES, limits, live: this.#limits, clock: this.clock });
+    const sub = { store: this.store, roles: deps.roles ?? BUNDLED_ROLES, limits, live: this.#limits, clock: this.clock, graceMs: deps.stopGraceMs ?? STOP_GRACE_MS };
+    this.subagents = new Subagents({ ...sub, ...(deps.afterChildOpened === undefined ? {} : { afterOpened: deps.afterChildOpened }) });
     this.subagents.bind({
       background: (id, what, f) => this.background(id, what, f),
+      inFlight: (id) => this.lives.get(id)?.calls.size ?? 0,
       endIn: async (id, reason) => {
         if (this.store.get(id)?.status !== "ended") await this.#endIn(id, reason);
         this.forgetBudget(id);
@@ -96,7 +106,7 @@ export class Runtime extends RuntimeEngine {
         if (st !== undefined && st !== "interrupted" && st !== "ended") await this.#interruptIn(id, reason);
       },
       append: async (n) => void (await this.append(n)),
-      startQueued: (q) => this.background(q.sessionId, "a queued run", () => this.#begin(q.sessionId, q.runId, q.texts[0]!, q.texts.slice(1)).catch(() => {})),
+      startQueued: (q) => this.background(q.sessionId, "a queued run", () => this.#limits.begin(q).catch(() => {})),
     });
     // A provider card is settled at its `expiresAt`, not only by the hourly sweep (7B Task 5).
     deps.requests?.bind({ clock: this.clock, expire: () => this.expireApprovals() });
@@ -129,6 +139,7 @@ export class Runtime extends RuntimeEngine {
   async close(): Promise<void> {
     this.#closed = true;
     for (const t of this.#timers.splice(0)) clearInterval(t);
+    this.subagents.close();
     this.deps.requests?.close();
     const lives = [...this.lives.values()];
     this.lives.clear();
@@ -223,6 +234,8 @@ export class Runtime extends RuntimeEngine {
       return this.serial(id, async () => {
         await this.drain();
         this.publishStatus(this.session(id));
+        // A parent that stopped while the child was opened stops it, and the spawn fails.
+        if (child !== undefined) await this.subagents.adopt(child.parent, id);
         const run = req.prompt === undefined ? undefined : await this.promptIn(id, req.prompt, "prompt", req.attachments);
         return { session: this.session(id), ...(run === undefined ? {} : { run }), warnings: agentWarnings() };
       });
@@ -261,43 +274,9 @@ export class Runtime extends RuntimeEngine {
     const { run } = this.store.startRun(sessionId, { trigger, ...(head === undefined ? {} : { headAtStart: head }) });
     this.publishStatus(this.session(sessionId), run.id);
     await this.append({ sessionId, runId: run.id, kind: "userMessage", payload: { text, trigger, ...(attachments?.length ? { attachments } : {}) } });
-    // Over the server's live limit the run waits for a slot (7B Decision 19): never a failure.
-    const admitted = this.#limits.admit(sessionId, s.harness, run.id, text);
-    if (!admitted.admitted) {
-      const { kind, limit, position } = admitted;
-      await this.append({ sessionId, runId: run.id, kind: "notice", payload: { code: "SESSION_QUEUED", kind, limit, position } });
-      return this.store.run(run.id)!;
-    }
-    await this.#begin(sessionId, run.id, text);
+    // Its turn, or over the server's live limit a wait for a slot (7B Decision 19, `live-limits.ts`).
+    await this.#limits.enter(s, run.id, text);
     return this.store.run(run.id)!;
-  }
-
-  /**
-   * The run's provider turn (its budget's run clock starts here); a failure fails the run.
-   * `steers`: those held while it waited for a slot, steered in now as any steer is.
-   */
-  async #begin(sessionId: string, runId: string, text: string, steers: readonly string[] = []): Promise<void> {
-    if (this.store.get(sessionId)?.status !== "running" || this.store.activeRun(sessionId) !== runId) return;
-    const s = this.session(sessionId);
-    this.budget(s).startRun();
-    let live;
-    try {
-      live = await this.ensureLive(s);
-    } catch (e) {
-      await this.#failRun(sessionId, runId, toFinError(e));
-      throw e;
-    }
-    live.runId = runId;
-    const err = await call(live.provider.startTurn({ runId, text, facts: this.facts(this.session(sessionId)) }));
-    if (err) {
-      live.runId = null;
-      await this.#failRun(sessionId, runId, err);
-      throw err;
-    }
-    for (const t of steers) {
-      if (!live.caps.steer) live.held.push(t);
-      else if (await call(live.provider.steer({ text: t }))) live.held.push(t);
-    }
   }
 
   /** A branch's head seq (by id), for `headAtStart`; undefined when it cannot be read. */
@@ -313,12 +292,6 @@ export class Runtime extends RuntimeEngine {
     if (err) throw err;
   }
 
-  /** The run could not start on its provider: an `error` node, and the session `interrupted`. */
-  async #failRun(sessionId: string, runId: string, e: FinError): Promise<void> {
-    await this.append({ sessionId, runId, kind: "error", payload: { code: e.code, message: e.message, details: e.details ?? {} } });
-    await this.apply(sessionId, { kind: "interrupted", reason: e.code });
-  }
-
   /**
    * `agent.session.steer` (Decision 6): into the running turn when the provider takes steers
    * (the built-in loop appends it before its next model call), else held for the next run
@@ -331,11 +304,7 @@ export class Runtime extends RuntimeEngine {
         const s = this.session(sessionId);
         const live = this.lives.get(sessionId);
         // A run waiting for a slot takes the steer into its first turn.
-        const queued = s.status === "running" ? this.store.activeRun(sessionId) : null;
-        if (queued !== null && this.#limits.hold(sessionId, text)) {
-          await this.append({ sessionId, runId: queued, kind: "userMessage", payload: { text, trigger: "steer" } });
-          return { queued: true };
-        }
+        if (await this.#limits.hold(sessionId, text)) return { queued: true };
         if ((s.status === "running" || s.status === "waitingApproval") && live?.runId) {
           if (!live.caps.steer) {
             live.held.push(text);
@@ -368,6 +337,11 @@ export class Runtime extends RuntimeEngine {
       await call(live.provider.interrupt());
     }
     return (await this.apply(sessionId, { kind: "interrupted", reason })).session;
+  }
+
+  /** The calls in flight have their results: a root's end waiting for them goes on (7B Decision 20), else a budget stop. */
+  protected override async settled(live: Live): Promise<void> {
+    if (!(await this.subagents.settled(live.sessionId))) await super.settled(live);
   }
 
   /** Every transition: then the children and the live limits see it (7B Task 6). */

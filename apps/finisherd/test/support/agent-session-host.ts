@@ -10,7 +10,8 @@
 //
 // The test writes `<n>.req.json` into the requests folder; the host answers with `<n>.res.json`
 // (written temp-then-rename) and removes the request. Requests:
-//   {op: "open", projectId, mode?, role?, base?, harness?} → {sessionId, credential, rootBranch?}
+//   {op: "open", projectId, mode?, role?, base?, harness?, running?} → {sessionId, credential, rootBranch?}
+//     (`running`: the session is in a run, as a spawning parent is; no provider turn starts)
 //   {op: "revoke", sessionId}                      → {}
 //   {op: "txs", sessionId}                         → {txs: [{txId, callId, attribution}]}
 //   {op: "state", sessionId}                       → {defaultBranch, tries}
@@ -46,7 +47,7 @@ let info: ServerInfo | undefined;
 let starter: NdjsonClient | undefined;
 
 type Request =
-  | { op: "open"; projectId: string; mode?: Mode; role?: string; base?: string; harness?: "builtin" | "fake" }
+  | { op: "open"; projectId: string; mode?: Mode; role?: string; base?: string; harness?: "builtin" | "fake"; running?: boolean }
   | { op: "revoke"; sessionId: string }
   | { op: "txs"; sessionId: string }
   | { op: "state"; sessionId: string }
@@ -66,6 +67,7 @@ async function handle(r: Request): Promise<unknown> {
         ...(r.base === undefined ? {} : { base: r.base }),
         ...(r.harness === undefined ? {} : { harness: r.harness }),
       });
+      if (r.running === true) c.store.startRun(session.id, { trigger: "prompt" });
       return { sessionId: session.id, credential: credentialPath, ...(session.rootBranch === undefined ? {} : { rootBranch: session.rootBranch }) };
     }
     case "revoke":

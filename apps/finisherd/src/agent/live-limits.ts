@@ -16,7 +16,13 @@
 // - Steers to a queued run are recorded (their `userMessage` nodes) and held; they are steered
 //   into its turn once it starts, as a steer into a running turn is.
 // - In memory only: a restart interrupts every running session, queued ones too.
-import type { Harness } from "@finisher/contracts";
+// - **The turn** (`enter`, `begin`): an admitted run's provider turn starts here, its budget's
+//   run clock with it; a turn that cannot start fails the run (an `error` node, the session
+//   `interrupted`).
+import type { FinError, Harness, Session } from "@finisher/contracts";
+import { toFinError } from "../errors.ts";
+import { call, type Live } from "./runtime-live.ts";
+import type { NewNode } from "./store.ts";
 
 export type LimitKind = "builtin" | "provider";
 
@@ -36,6 +42,19 @@ export interface LiveLimitDeps {
   readonly active: () => ReadonlyArray<{ readonly id: string; readonly harness: string }>;
   /** Whether `runId` is still the session's active run. */
   readonly current: (sessionId: string, runId: string) => boolean;
+  readonly turns: TurnHost;
+}
+
+/** What starting a turn asks of the runtime (each call in the session's queue). */
+export interface TurnHost {
+  session(sessionId: string): Session;
+  /** The session's provider instance, opened at need. */
+  open(s: Session): Promise<Live>;
+  /** The budget's run clock starts. */
+  startClock(s: Session): void;
+  facts(s: Session): string;
+  append(n: NewNode): Promise<void>;
+  interrupt(sessionId: string, reason: string): Promise<void>;
 }
 
 export class LiveLimits {
@@ -68,11 +87,56 @@ export class LiveLimits {
     return { admitted: false, kind, limit, position: this.#queue.filter((q) => q.kind === kind).length };
   }
 
-  /** Holds a steer for the session's queued run; false when it has none. */
-  hold(sessionId: string, text: string): boolean {
+  /** A recorded run of `s`: its turn now, or queued with its `notice` node (never a failure). */
+  async enter(s: Session, runId: string, text: string): Promise<void> {
+    const admitted = this.admit(s.id, s.harness, runId, text);
+    if (admitted.admitted) return this.begin({ sessionId: s.id, runId, kind: limitKindOf(s.harness), texts: [text] });
+    const { kind, limit, position } = admitted;
+    await this.#d.turns.append({ sessionId: s.id, runId, kind: "notice", payload: { code: "SESSION_QUEUED", kind, limit, position } });
+  }
+
+  /**
+   * The run's provider turn (its budget's run clock starts here); a failure fails the run. The
+   * steers held while it waited for a slot are steered in now, as any steer is.
+   */
+  async begin(q: QueuedRun): Promise<void> {
+    const { sessionId, runId } = q;
+    const h = this.#d.turns;
+    if (!this.#d.current(sessionId, runId)) return;
+    const s = h.session(sessionId);
+    h.startClock(s);
+    let live: Live;
+    try {
+      live = await h.open(s);
+    } catch (e) {
+      await this.#fail(sessionId, runId, toFinError(e));
+      throw e;
+    }
+    live.runId = runId;
+    const err = await call(live.provider.startTurn({ runId, text: q.texts[0]!, facts: h.facts(h.session(sessionId)) }));
+    if (err) {
+      live.runId = null;
+      await this.#fail(sessionId, runId, err);
+      throw err;
+    }
+    for (const t of q.texts.slice(1)) {
+      if (!live.caps.steer) live.held.push(t);
+      else if (await call(live.provider.steer({ text: t }))) live.held.push(t);
+    }
+  }
+
+  /** The run could not start on its provider: an `error` node, and the session `interrupted`. */
+  async #fail(sessionId: string, runId: string, e: FinError): Promise<void> {
+    await this.#d.turns.append({ sessionId, runId, kind: "error", payload: { code: e.code, message: e.message, details: e.details ?? {} } });
+    await this.#d.turns.interrupt(sessionId, e.code);
+  }
+
+  /** A steer to the session's queued run: recorded (its `userMessage`) and held; false when it has none. */
+  async hold(sessionId: string, text: string): Promise<boolean> {
     const q = this.#queue.find((x) => x.sessionId === sessionId);
-    if (q === undefined) return false;
+    if (q === undefined || !this.#d.current(sessionId, q.runId)) return false;
     q.texts.push(text);
+    await this.#d.turns.append({ sessionId, runId: q.runId, kind: "userMessage", payload: { text, trigger: "steer" } });
     return true;
   }
 

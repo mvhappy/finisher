@@ -108,11 +108,12 @@ impl AgentHost {
         self.open_with(json!({ "op": "open", "projectId": project_id, "mode": mode }))
     }
 
-    /// A session on the `fake` harness (a host from [`AgentHost::start_fake`]).
+    /// A session on the `fake` harness (a host from [`AgentHost::start_fake`]), in a run (a
+    /// session spawns children from a run of its own; no provider turn starts).
     pub fn open_fake(&self, project_id: &str, mode: &str) -> Session {
-        self.open_with(
-            json!({ "op": "open", "projectId": project_id, "mode": mode, "harness": "fake" }),
-        )
+        self.open_with(json!({
+            "op": "open", "projectId": project_id, "mode": mode, "harness": "fake", "running": true,
+        }))
     }
 
     fn open_with(&self, req: Value) -> Session {

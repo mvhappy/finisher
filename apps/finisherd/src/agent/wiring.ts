@@ -42,7 +42,7 @@ import { FakeAdapter, type FakeScript } from "./fake.ts";
 import { sessionPlanner } from "./planner.ts";
 import { BUNDLED_ROLES, type Role } from "./roles.ts";
 import { Runtime } from "./runtime.ts";
-import { cataloguePricing, type SessionEnvironment } from "./runtime-deps.ts";
+import { cataloguePricing, type SessionEnvironment, type ToolExecutor } from "./runtime-deps.ts";
 import { LayeredRules } from "./rules.ts";
 import { RuleStore } from "./rule-store.ts";
 import { readAgentSettings, resolveFinPath } from "./settings.ts";
@@ -63,6 +63,10 @@ export interface AgentServeOptions {
   readonly timers?: boolean;
   /** A test's crash point: runs after a one-time grant was consumed, before the handler (7B Task 5). */
   readonly afterGrantConsumed?: (sessionId: string, idem: string) => Promise<void>;
+  /** Tests (7B Task 6): the fake's tool runner, a pause in a spawn, the stop grace. */
+  readonly fakeTools?: ToolExecutor;
+  readonly afterChildOpened?: (childId: string) => Promise<void>;
+  readonly stopGraceMs?: number;
 }
 
 /** What the handlers and the console RPCs use. */
@@ -252,7 +256,12 @@ export const buildAgentRuntime = (d: AgentWiringDeps): Effect.Effect<AgentRuntim
       planner,
       environment,
       // A `fin` call that meets a card waits on it (7B Task 5).
-      tools: { builtin: waitingOnApprovals(builtinTools({ finPath, projectDirOf: d.registry.dirOf, ...(settings.toolTimeoutS === undefined ? {} : { timeoutMs: settings.toolTimeoutS * 1000 }) }), () => approvals) },
+      tools: {
+        builtin: waitingOnApprovals(builtinTools({ finPath, projectDirOf: d.registry.dirOf, ...(settings.toolTimeoutS === undefined ? {} : { timeoutMs: settings.toolTimeoutS * 1000 }) }), () => approvals),
+        ...(d.options?.fakeTools === undefined ? {} : { fake: d.options.fakeTools }),
+      },
+      ...(d.options?.afterChildOpened === undefined ? {} : { afterChildOpened: d.options.afterChildOpened }),
+      ...(d.options?.stopGraceMs === undefined ? {} : { stopGraceMs: d.options.stopGraceMs }),
       journal: core.journal,
       pricing: cataloguePricing(catalogue),
       // Children's roles and limits, live limits (7B Task 6).
