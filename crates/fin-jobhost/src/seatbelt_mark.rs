@@ -13,6 +13,13 @@
 //! do) is told apart by that second name, which a session's profile refuses (with `(deny
 //! default)`, or explicitly in the mark-only profile of an unconfined session). Only processes
 //! of this user are considered; nothing else could be signalled.
+//!
+//! **Test builds** (`test-hooks`) add a second, independent condition to every kill: the
+//! process holds a descriptor open on the session's guard file ([`guard_path`], made by
+//! [`make_guard`]; the launcher and the plugin's wrapper open it for the program, and every
+//! descendant inherits it), read from outside with `proc_pidfdinfo`. So a test, or a mutant of
+//! the sandbox check, can only ever reach processes its own session started, never another
+//! process of the user; a test-build sweep that has no guard file kills nothing.
 
 use std::ffi::{CString, c_char, c_int};
 
@@ -134,10 +141,83 @@ pub fn marked(mark: &str) -> Vec<libc::pid_t> {
         .collect()
 }
 
+/// The guard file of `mark` in test builds: `/private/tmp/fin-test-sweep-<hex>` (the path the
+/// kernel reports for it).
+pub fn guard_path(mark: &str) -> std::path::PathBuf {
+    let hex = mark.rsplit('.').next().unwrap_or(mark);
+    std::path::PathBuf::from(format!("/private/tmp/fin-test-sweep-{hex}"))
+}
+
+/// Makes the guard file of `mark` (test builds).
+pub fn make_guard(mark: &str) -> std::io::Result<()> {
+    std::fs::write(guard_path(mark), b"")
+}
+
+/// Removes the guard file of `mark` (test builds; gone already is fine).
+pub fn remove_guard(mark: &str) {
+    let _ = std::fs::remove_file(guard_path(mark));
+}
+
+/// Whether `pid` holds a descriptor open on `path`: each vnode descriptor's
+/// `PROC_PIDFDVNODEPATHINFO`, searched for the path and its NUL (layout-free: the path holds
+/// 128 random bits). Unreadable: no.
+pub fn holds_open(pid: libc::pid_t, path: &std::path::Path) -> bool {
+    use std::os::unix::ffi::OsStrExt;
+    const PROC_PIDFDVNODEPATHINFO: c_int = 2;
+    let mut want = path.as_os_str().as_bytes().to_vec();
+    want.push(0);
+    let each = std::mem::size_of::<libc::proc_fdinfo>();
+    let mut fds: Vec<libc::proc_fdinfo> = Vec::with_capacity(4096);
+    // SAFETY: a buffer of `capacity` entries; the call returns the bytes it wrote.
+    let n = unsafe {
+        libc::proc_pidinfo(
+            pid,
+            libc::PROC_PIDLISTFDS,
+            0,
+            fds.as_mut_ptr().cast(),
+            (fds.capacity() * each) as c_int,
+        )
+    };
+    if n <= 0 {
+        return false;
+    }
+    // SAFETY: the call initialised `n` bytes of whole entries.
+    unsafe { fds.set_len((n as usize / each).min(fds.capacity())) };
+    let mut buf = vec![0u8; 8192];
+    fds.iter()
+        .filter(|f| f.proc_fdtype == libc::PROX_FDTYPE_VNODE as u32)
+        .any(|f| {
+            // SAFETY: a buffer larger than the kernel's structure; it returns the bytes written.
+            let got = unsafe {
+                libc::proc_pidfdinfo(
+                    pid,
+                    f.proc_fd,
+                    PROC_PIDFDVNODEPATHINFO,
+                    buf.as_mut_ptr().cast(),
+                    buf.len() as c_int,
+                )
+            };
+            got > 0
+                && buf[..got as usize]
+                    .windows(want.len())
+                    .any(|w| w == want.as_slice())
+        })
+}
+
+/// The test builds' guard (see the module doc): only a process holding the guard file open.
+fn may_kill(pid: libc::pid_t, mark: &str) -> bool {
+    if cfg!(feature = "test-hooks") {
+        holds_open(pid, &guard_path(mark))
+    } else {
+        true
+    }
+}
+
 /// `SIGKILL`s every running process that carries `mark`; answers how many were signalled.
 pub fn kill_marked(mark: &str) -> usize {
     marked(mark)
         .into_iter()
+        .filter(|&p| may_kill(p, mark))
         // SAFETY: kill with plain integers.
         .filter(|&p| unsafe { libc::kill(p, libc::SIGKILL) } == 0)
         .count()

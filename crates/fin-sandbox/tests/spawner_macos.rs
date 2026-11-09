@@ -168,6 +168,7 @@ fn a_plugin_runs_under_sandbox_exec() {
     t.spawner(Decision::Pass, Decision::Apply)
         .prepare(&req, &mut c)
         .unwrap();
+    let _guard = Guard(c.seatbelt_mark.clone());
     assert!(c.self_sandbox.is_none(), "plugins are confined before exec");
     // `/bin/sh` sets the open-files limit (`posix_spawn` has no attribute for it), then
     // `exec`s `sandbox-exec -p <profile>`.
@@ -229,6 +230,7 @@ fn a_plugin_gets_its_open_files_limit() {
     t.spawner(Decision::Pass, Decision::Apply)
         .prepare(&req, &mut c)
         .unwrap();
+    let _guard = Guard(c.seatbelt_mark.clone());
     let out = Command::new(&c.program)
         .args(&c.args)
         .env_clear()
@@ -243,6 +245,17 @@ fn a_plugin_gets_its_open_files_limit() {
         format!("{n}\n{n}\n"),
         "{out:?}"
     );
+}
+
+/// Removes a prepared plugin's test guard file (`seatbelt_mark::make_guard`), which only a
+/// host's group close would otherwise remove.
+struct Guard(Option<String>);
+impl Drop for Guard {
+    fn drop(&mut self) {
+        if let Some(m) = &self.0 {
+            fin_jobhost::seatbelt_mark::remove_guard(m);
+        }
+    }
 }
 
 /// Exists and is not a zombie.

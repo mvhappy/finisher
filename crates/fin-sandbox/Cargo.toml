@@ -9,8 +9,9 @@ description = "The OS sandbox (sub-project 7C): one pure policy, the agent, hook
 
 [features]
 # Test-only parts (`ReadPolicy::Everything`, the `fin-sandbox-probe` binary; later the status
-# stubs). Never enabled by a shipped build (`scripts/check-test-hooks.mjs`).
-test-hooks = []
+# stubs; the job host's test-only sweep guard, `fin_jobhost::seatbelt_mark`). Never enabled by a
+# shipped build (`scripts/check-test-hooks.mjs`).
+test-hooks = ["fin-jobhost/test-hooks"]
 
 # Performs one named filesystem or network attempt under a policy and prints `{op, errno}`
 # (the escape suites' probe, plan 7C Task 2).

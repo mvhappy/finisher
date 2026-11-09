@@ -149,6 +149,28 @@ fn start(
     session: Session<'_>,
 ) -> ! {
     let mark = session.mark;
+    // Test builds: the program holds its session's guard file open, which every sweep of a
+    // test build requires (`fin_jobhost::seatbelt_mark`); opened before the sandbox, and kept
+    // across `exec` by every descendant.
+    #[cfg(all(target_os = "macos", feature = "test-hooks"))]
+    if let Some(m) = mark {
+        let guard = fin_jobhost::seatbelt_mark::guard_path(m);
+        match std::fs::File::open(&guard) {
+            // Not close-on-exec: `File::open` sets it, so it is cleared.
+            Ok(f) => {
+                use std::os::fd::IntoRawFd;
+                let fd = f.into_raw_fd();
+                // SAFETY: a flag on our own descriptor, which stays open for the program.
+                unsafe { libc::fcntl(fd, libc::F_SETFD, 0) };
+            }
+            Err(e) => fail(
+                EXIT_UNAVAILABLE,
+                "SANDBOX_UNAVAILABLE",
+                profile,
+                &format!("the test guard {}: {e}", guard.display()),
+            ),
+        }
+    }
     if confine {
         // Unix sockets hidden first (Decision 26): the mounts need the capabilities the
         // namespace gives, which Landlock then keeps the program from using.

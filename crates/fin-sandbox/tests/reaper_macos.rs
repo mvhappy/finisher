@@ -4,7 +4,9 @@
 //! program's group and session with `setsid` (re-parented to `launchd`) included. The session
 //! ends when the program exits, when the launcher is hung up (`SIGHUP`, what `finisherd` sends
 //! at session end) and when its own parent dies. Each case runs confined and unconfined (the
-//! mechanism stubbed disabled, F2), where the launcher applies the marker alone.
+//! mechanism stubbed disabled, F2), where the launcher applies the marker alone. These are
+//! test builds, so every sweep also requires a process to hold its session's guard file open
+//! (`seatbelt_mark::guard_path`): nothing but the processes these tests start can be reached.
 #![cfg(target_os = "macos")]
 
 mod macos_support;
@@ -15,6 +17,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
+use fin_jobhost::seatbelt_mark;
 use macos_support::{LAUNCHER, agent, give_request, launch_cmd, tempdir};
 
 const PATH: (&str, &str) = ("PATH", "/usr/bin:/bin");
@@ -302,38 +305,87 @@ fn an_ignored_sigchld_is_not_inherited_by_the_reaper() {
     }
 }
 
-#[test]
-fn a_foreign_sandbox_that_allows_every_name_is_left_alone() {
-    // Some system agents' sandboxes allow every `mach-lookup`, so they "allow" the session's
-    // mark too; the mark's second name, which every session refuses, tells them apart.
-    let mut foreign = Command::new("/usr/bin/sandbox-exec")
-        .args(["-p", "(version 1)(allow default)", "/bin/sleep", "300"])
-        .spawn()
-        .unwrap();
-    let pid = foreign.id() as i32;
-    let _reap = Reap(vec![pid]);
-    deadline(foreign.id());
-    // `sandbox-exec` has applied its profile once it has exec'd `sleep`.
+/// Starts `sleep 300` under `sandbox-exec -p profile`, holding `hold` open when given, and
+/// waits until it runs `sleep` (its profile then applied).
+fn sandboxed_sleep(profile: &str, defines: &[String], hold: Option<&Path>) -> std::process::Child {
+    use std::os::unix::process::CommandExt;
+    let mut args: Vec<String> = vec!["-p".into(), profile.into()];
+    for d in defines {
+        args.extend(["-D".into(), d.clone()]);
+    }
+    args.extend(["/bin/sleep".into(), "300".into()]);
+    let mut cmd = Command::new("/usr/bin/sandbox-exec");
+    cmd.args(&args).env_clear();
+    if let Some(p) = hold {
+        let f = std::fs::File::open(p).unwrap();
+        let fd = std::os::fd::AsRawFd::as_raw_fd(&f);
+        // SAFETY: only async-signal-safe calls in the child; `f` outlives the spawn.
+        unsafe {
+            cmd.pre_exec(move || {
+                if libc::dup2(fd, 9) < 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
+        let child = cmd.spawn().unwrap();
+        drop(f);
+        return settled(child);
+    }
+    settled(cmd.spawn().unwrap())
+}
+
+fn settled(child: std::process::Child) -> std::process::Child {
+    deadline(child.id());
+    let pid = child.id() as i32;
     let until = Instant::now() + Duration::from_secs(5);
     while proc_name(pid) != "sleep" && Instant::now() < until {
         std::thread::sleep(Duration::from_millis(10));
     }
-    for env in modes() {
-        let (_d, t) = tempdir();
-        let mut child = started(&t, &format!("{ESCAPE}; echo ready; exec sleep 300"), &env);
-        let g = grandchild(&t, child.id());
-        let _reap = Reap(vec![g]);
-        // SAFETY: signalling our own child.
-        assert_eq!(unsafe { libc::kill(child.id() as i32, libc::SIGHUP) }, 0);
-        child.wait().unwrap();
-        assert!(gone(g), "{env:?}: the session's grandchild stayed");
-        assert!(
-            alive(pid),
-            "{env:?}: a foreign sandboxed process was killed"
-        );
-    }
+    assert_eq!(proc_name(pid), "sleep");
+    child
+}
+
+#[test]
+fn a_foreign_sandbox_that_allows_every_name_carries_no_mark() {
+    // Some system agents' sandboxes allow every `mach-lookup`, so they "allow" the session's
+    // mark too; the mark's second name, which every session refuses, tells them apart. The
+    // predicate is checked on this test's own process only: no sweep runs here.
+    let mut foreign = sandboxed_sleep("(version 1)(allow default)", &[], None);
+    let pid = foreign.id() as i32;
+    let _reap = Reap(vec![pid]);
+    let mark = seatbelt_mark::new_mark().unwrap();
+    assert!(
+        !seatbelt_mark::carries(pid, &mark),
+        "an allow-everything sandbox matched"
+    );
     foreign.kill().unwrap();
     foreign.wait().unwrap();
+}
+
+#[test]
+fn a_test_builds_sweep_kills_only_what_holds_its_guard() {
+    // The test builds' guard: a process that carries the mark in its sandbox but does not hold
+    // the guard file open is not killed (here both processes are this test's own).
+    let mark = seatbelt_mark::new_mark().unwrap();
+    seatbelt_mark::make_guard(&mark).unwrap();
+    let defines: Vec<String> = seatbelt_mark::params(&mark)
+        .iter()
+        .map(|(k, v)| format!("{k}={v}"))
+        .collect();
+    let mut bare = sandboxed_sleep(seatbelt_mark::MARK_ONLY, &defines, None);
+    let guard = seatbelt_mark::guard_path(&mark);
+    let mut tagged = sandboxed_sleep(seatbelt_mark::MARK_ONLY, &defines, Some(&guard));
+    let (b, g) = (bare.id() as i32, tagged.id() as i32);
+    let _reap = Reap(vec![b, g]);
+    assert!(seatbelt_mark::carries(b, &mark) && seatbelt_mark::carries(g, &mark));
+    assert_eq!(seatbelt_mark::kill_marked(&mark), 1);
+    assert!(gone(g), "the tagged process stayed");
+    assert!(alive(b), "the guard let an untagged process be killed");
+    bare.kill().unwrap();
+    bare.wait().unwrap();
+    tagged.wait().unwrap();
+    seatbelt_mark::remove_guard(&mark);
 }
 
 /// The process's short name.

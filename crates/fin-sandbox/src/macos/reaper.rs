@@ -58,6 +58,9 @@ pub fn prepare() -> Result<Prepared, String> {
     // SAFETY: getppid has no failure mode.
     let parent = unsafe { libc::getppid() };
     let mark = seatbelt_mark::new_mark().map_err(|e| format!("getentropy: {e}"))?;
+    // Test builds: the guard file every sweep requires the session's processes to hold.
+    #[cfg(feature = "test-hooks")]
+    seatbelt_mark::make_guard(&mark).map_err(|e| format!("the test guard: {e}"))?;
     // SAFETY: kqueue takes no arguments; a kqueue is not inherited across `fork`.
     let raw = unsafe { libc::kqueue() };
     if raw < 0 {
@@ -105,8 +108,11 @@ impl Prepared {
         &self.mark
     }
 
-    /// Nothing to undo when the program could not be started.
-    pub fn abandon(&self) {}
+    /// Undoes [`prepare`] when the program could not be started (test builds: the guard file).
+    pub fn abandon(&self) {
+        #[cfg(feature = "test-hooks")]
+        seatbelt_mark::remove_guard(&self.mark);
+    }
 
     /// In the forked child: a process group of its own and the signal mask the launcher
     /// started with.
@@ -195,6 +201,8 @@ impl Prepared {
             let pause = if pass < 500 { 2 } else { 20 };
             std::thread::sleep(Duration::from_millis(pause));
         }
+        #[cfg(feature = "test-hooks")]
+        seatbelt_mark::remove_guard(&self.mark);
         exit_as(main.unwrap_or(libc::SIGKILL))
     }
 }

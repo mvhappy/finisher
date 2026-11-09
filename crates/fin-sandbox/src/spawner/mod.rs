@@ -285,25 +285,49 @@ fn plugin_steps(policy: &crate::SandboxPolicy, cmd: &mut PlatformCommand) -> Res
     let (program, args) =
         crate::macos::apply::plugin_command(policy, &cmd.program, &cmd.args, &mark)
             .map_err(|e| e.to_string())?;
+    // Test builds: the wrapper also opens the session's guard file as descriptor 9 (every
+    // sweep of a test build requires it, `fin_jobhost::seatbelt_mark`) and always runs.
+    #[cfg(feature = "test-hooks")]
+    let guard = {
+        fin_jobhost::seatbelt_mark::make_guard(&mark).map_err(|e| format!("test guard: {e}"))?;
+        Some(fin_jobhost::seatbelt_mark::guard_path(&mark))
+    };
+    #[cfg(not(feature = "test-hooks"))]
+    let guard: Option<PathBuf> = None;
     cmd.seatbelt_mark = Some(mark);
-    let Some(n) = policy.limits.open_files else {
+    let limit = match policy.limits.open_files {
+        Some(n) => {
+            // SAFETY: plain data, written by getrlimit before use.
+            let mut r: libc::rlimit = unsafe { std::mem::zeroed() };
+            // SAFETY: a valid out pointer.
+            if unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut r) } != 0 {
+                return Err(format!("getrlimit: {}", std::io::Error::last_os_error()));
+            }
+            Some(libc::rlim_t::from(n).min(r.rlim_max))
+        }
+        None => None,
+    };
+    if limit.is_none() && guard.is_none() {
         cmd.program = program;
         cmd.args = args;
         return Ok(());
-    };
-    // SAFETY: plain data, written by getrlimit before use.
-    let mut r: libc::rlimit = unsafe { std::mem::zeroed() };
-    // SAFETY: a valid out pointer.
-    if unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut r) } != 0 {
-        return Err(format!("getrlimit: {}", std::io::Error::last_os_error()));
     }
-    let n = libc::rlim_t::from(n).min(r.rlim_max);
+    // `$0` is the limit (or `-`), then the guard where there is one, then the command.
+    let mut script = String::new();
+    if guard.is_some() {
+        script.push_str("exec 9<\"$1\" && shift && ");
+    }
+    if limit.is_some() {
+        script.push_str("ulimit -n \"$0\" && ");
+    }
+    script.push_str("exec \"$@\"");
     let mut wrapped: Vec<std::ffi::OsString> = vec![
         "-c".into(),
-        "ulimit -n \"$0\" && exec \"$@\"".into(),
-        n.to_string().into(),
-        program.into_os_string(),
+        script.into(),
+        limit.map_or("-".into(), |n| n.to_string()).into(),
     ];
+    wrapped.extend(guard.map(PathBuf::into_os_string));
+    wrapped.push(program.into_os_string());
     wrapped.extend(args);
     cmd.program = PathBuf::from(SHELL);
     cmd.args = wrapped;

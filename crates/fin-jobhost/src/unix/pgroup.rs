@@ -65,6 +65,15 @@ fn kill_marked(group: &GroupHandle) {
     }
 }
 
+/// Test builds: the group's guard files go with it (`seatbelt_mark::guard_path`).
+#[cfg(all(target_os = "macos", feature = "test-hooks"))]
+fn remove_guards(group: &GroupHandle) {
+    let marks = state(group).marks.lock().unwrap_or_else(|e| e.into_inner());
+    for m in marks.iter() {
+        crate::seatbelt_mark::remove_guard(m);
+    }
+}
+
 #[cfg(not(target_os = "macos"))]
 fn kill_marked(_group: &GroupHandle) {}
 
@@ -146,6 +155,8 @@ impl KillDomain for ProcessGroups {
     fn close_group(&self, group: &GroupHandle) {
         let _ = super::kill_pgid(group.pgid());
         kill_marked(group);
+        #[cfg(all(target_os = "macos", feature = "test-hooks"))]
+        remove_guards(group);
         if let Some(w) = &self.watchdog
             && state(group).listed.load(Ordering::Acquire)
         {
