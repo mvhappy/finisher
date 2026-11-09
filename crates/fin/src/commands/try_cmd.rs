@@ -219,7 +219,7 @@ fn finish(backend: &dyn Backend, g: &Globals, keep: bool) -> Result<Value, CoreE
     }
     .ok_or_else(not_try)?;
     let mut doc = if keep {
-        merge_doc(&merge_refs(backend, g, &id, &parent, false)?)
+        merge_doc(&merge_refs(backend, g, "try.keep", &id, &parent, false)?)
     } else {
         let (r, dry) = branch::set(backend, g, "try.drop", &id, None, Some(true))?;
         let mut doc = record_doc(&r, dry);
@@ -297,7 +297,7 @@ fn session_finish(backend: &dyn Backend, g: &Globals, keep: bool) -> Result<Valu
         ));
     };
     let mut doc = if keep {
-        merge_doc(&merge_refs(backend, g, &id, &parent, false)?)
+        merge_doc(&merge_refs(backend, g, "try.keep", &id, &parent, false)?)
     } else {
         let (r, dry) = branch::set(backend, g, "try.drop", &id, None, Some(true))?;
         let mut doc = record_doc(&r, dry);

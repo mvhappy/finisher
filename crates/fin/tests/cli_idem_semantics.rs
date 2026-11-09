@@ -204,6 +204,25 @@ fn try_retries_answer_the_first_attempt() {
     );
 }
 
+/// #27: a key a plain `fin merge` used is another command for `fin try keep`, even though the
+/// keep would merge the same branches (the merge names the try by id, as the keep does).
+#[test]
+fn try_keep_refuses_a_plain_merge_key() {
+    let (server, dir) = setup!("try_keep_refuses_a_plain_merge_key");
+    let t = T(&server, &dir);
+    t.run(&["try", "feat"]);
+    t.run(&["marker", "add", "--at", "0", "--label", "x"]);
+    let merged = t.run(&["--idem-key", "plain", "merge", "br1", "--into", "main"]);
+    assert!(merged["merge"]["mergeId"].is_string(), "{merged}");
+    assert_error(
+        &t.raw(&["--idem-key", "plain", "try", "keep"]),
+        3,
+        "IDEM_KEY_REUSED",
+    );
+    // The try is still the default: nothing was kept or forgotten.
+    assert_eq!(t.run(&["branch", "default"])["default"], "br1");
+}
+
 /// #31: `--dry-run --idem-key K` for a committed `K` answers that commit (not a new plan), and
 /// a dry-run retry of a removal is not `NOT_FOUND`.
 #[test]
