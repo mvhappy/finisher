@@ -58,10 +58,11 @@ fn overwrite_trim(item: &str, edge: Edge, delta: Rational) -> Op {
     .into()
 }
 
-fn anchor(start: Option<&str>, end: Option<&str>) -> Option<Anchor> {
+fn anchor(start: Option<&str>, end: Option<&str>, track_end: bool) -> Option<Anchor> {
     Some(Anchor {
         start: start.map(str::to_string),
         end: end.map(str::to_string),
+        track_end,
         empty: None,
     })
 }
@@ -121,15 +122,16 @@ fn anchors_are_read_in_the_op_frame() {
         ins("$e", "t3", 7, 1),
     ]);
     let got = anchors(&p, &t, ApplyMode::Client).unwrap();
-    assert_eq!(got[0], vec![anchor(Some("c2"), Some("c1"))]);
-    assert_eq!(got[1], vec![anchor(None, Some("c3"))]);
-    assert_eq!(got[2], vec![anchor(Some("c2"), Some("$x"))]);
+    assert_eq!(got[0], vec![anchor(Some("c2"), Some("c1"), false)]);
+    assert_eq!(got[1], vec![anchor(None, Some("c3"), true)]);
+    assert_eq!(got[2], vec![anchor(Some("c2"), Some("$x"), false)]);
     assert_eq!(got[3], vec![None]);
     assert_eq!(
         got[4],
         vec![Some(Anchor {
             start: None,
             end: None,
+            track_end: false,
             empty: Some(secs(7)),
         })]
     );
@@ -210,8 +212,8 @@ fn anchor_moved_to_another_track_keeps_the_op_track() {
     assert_eq!((i.track.as_str(), i.at), ("t1", secs(10)));
 }
 
-/// Ours inserts after `c3` (the track end, 30); the head slides `c3` back two seconds, which
-/// moves the end without a shift. The insert lands at `c3`'s end at the head, 28.
+/// Ours appends after `c3` (the track end, 30); the head slides `c3` back two seconds, which
+/// moves the end without a shift. The append lands at the track's end at the head, 28.
 #[test]
 fn end_anchor_follows_a_shiftless_slide() {
     let p = three();
@@ -291,4 +293,105 @@ fn merged_insert_follows_its_moved_anchor() {
     assert_eq!(order[..3], ["c1", "c2", "c4"]);
     assert_eq!(order[4], "c3");
     assert_well_formed(&log.state("main"));
+}
+
+fn split(item: &str, offset: Rational, id: &str) -> Op {
+    fin_core::ItemSplit {
+        item: item.into(),
+        offset,
+        id: id.into(),
+    }
+    .into()
+}
+
+/// Implementation review finding 1: an append goes to the track's end at the head, after what
+/// the head appended since, even when that item's far end was trimmed since. Ours inserts after
+/// `c3` (30, the end of t1); the head appends 5 s there and trims a second off its end: ours
+/// goes after it, at 34, not between `c3` and it.
+#[test]
+fn append_goes_past_an_append_whose_far_end_moved() {
+    let p = three();
+    let (head, c) = commit(
+        &p,
+        vec![
+            ins("$h", "t1", 30, 5),
+            overwrite_trim("$h", Edge::End, secs(-1)),
+        ],
+    );
+    let rb = stale(&p, &head, &c, vec![ins("$x", "t1", 30, 1)]);
+    assert_eq!(at_of(&rb.tx.ops[0]), secs(34));
+}
+
+/// The same with the head's split of the last item: an append stays after all of `c3`'s
+/// content (at 29), never between its two parts.
+#[test]
+fn append_goes_past_the_heads_split_part_of_the_last_item() {
+    let p = three();
+    let (head, c) = commit(
+        &p,
+        vec![
+            split("c3", secs(5), "$r"),
+            overwrite_trim("$r", Edge::End, secs(-1)),
+        ],
+    );
+    let rb = stale(&p, &head, &c, vec![ins("$x", "t1", 30, 1)]);
+    assert_eq!(at_of(&rb.tx.ops[0]), secs(29));
+}
+
+/// Implementation review finding 2 (`props_history` seed `cc b73af552`): a merge keeps the
+/// source's own order for an append. On `br`, alice inserts `X` before `c1`, then `Y` after `c2` (the end).
+/// On main, bob ripple-moves `c1` after `c2`. The copy of `X` lands before `c1`, right at `c2`'s
+/// end. `Y` was an append on `br` (at the end of its last item), so it goes to main's track end:
+/// after `X`, as on `br`, and after `c1`, which bob moved to the end.
+#[test]
+fn merge_keeps_the_source_order_past_an_earlier_copy() {
+    let mut log = MemLog::new(with_clips(&[10, 10]));
+    log.fork("br", "main", 0);
+    let x = log.commit("br", "e1", "alice", vec![ins("$x", "t1", 0, 1)]);
+    let y = log.commit("br", "e2", "alice", vec![ins("$y", "t1", 21, 1)]);
+    log.commit(
+        "main",
+        "b1",
+        "bob",
+        vec![move_to("c1", "t1", secs(20), InsertMode::Ripple)],
+    );
+    let plan = log.merge("br", "main", "alice", "m1", false).unwrap();
+    assert!(plan.conflicts.is_empty(), "{:?}", plan.conflicts);
+    let (x, y) = (&x.record.bindings["$x"], &y.record.bindings["$y"]);
+    let order: Vec<String> = starts(&log.state("main"), 0)
+        .into_iter()
+        .map(|(id, _)| id)
+        .collect();
+    assert_eq!(order, ["c2", x.as_str(), "c1", y.as_str()]);
+    assert_well_formed(&log.state("main"));
+}
+
+/// Implementation review, `props_history_4c` seed: a move to a track's end is an append, so a
+/// copy of it goes to the target's track end, not after the item it followed where written. On
+/// main, alice moves `c1` to the end (after `c3`); on `br`, bob moves `c3` to the front. Merged
+/// into `br`, `c1` goes last.
+#[test]
+fn merged_move_to_the_end_goes_to_the_targets_end() {
+    let mut log = MemLog::new(with_clips(&[10, 10, 10]));
+    log.fork("br", "main", 0);
+    log.commit(
+        "main",
+        "e1",
+        "alice",
+        vec![move_to("c1", "t1", secs(30), InsertMode::Ripple)],
+    );
+    log.commit(
+        "br",
+        "b1",
+        "bob",
+        vec![move_to("c3", "t1", secs(0), InsertMode::Ripple)],
+    );
+    let plan = log.merge("main", "br", "bob", "m1", false).unwrap();
+    assert!(plan.conflicts.is_empty(), "{:?}", plan.conflicts);
+    let order: Vec<String> = starts(&log.state("br"), 0)
+        .into_iter()
+        .map(|(id, _)| id)
+        .collect();
+    assert_eq!(order, ["c3", "c2", "c1"]);
+    assert_well_formed(&log.state("br"));
 }

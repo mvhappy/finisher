@@ -12,7 +12,6 @@ use fin_core::{
     TrackKind,
 };
 use proptest::prelude::*;
-use proptest::test_runner::TestCaseError;
 
 /// [`base`] with a caption track `t5` holding `caps` captions (style `st1` on the second),
 /// a blur on `c0_0` (`fx`) and `Inter` pinned (`pinned`).
@@ -191,76 +190,6 @@ pub fn refusal_allowed(e: &CoreError, since: &[CommittedTx]) -> Result<(), Strin
         if !named && !policy {
             return Err(format!("{c:?}"));
         }
-    }
-    Ok(())
-}
-
-/// Whether fin-core's placement facts (`rebase::anchors::Placed`, joined over the steps in no
-/// mirrored pair) pass the same items as the oracle's `Assoc::After` walk at the head: an item
-/// not in the oracle's base set (built from [`super::in_effect`]). Every item on the head is
-/// checked (none is ours: `committed` alone).
-pub fn placed_parity(p: &Project, committed: &[(Vec<Intent>, bool)]) -> Result<(), TestCaseError> {
-    let mut ids = fin_core::MemIds::after(p);
-    let mut head = p.clone();
-    let mut since: Vec<CommittedTx> = Vec::new();
-    for (intents, undo_it) in committed {
-        let rev = since.len() as u64 + 1;
-        let Some((next, c, inverse)) = super::commit(&head, intents, rev, &mut ids) else {
-            continue;
-        };
-        head = next;
-        since.push(c);
-        if *undo_it {
-            let Some((next, u)) = super::undo(&head, since.last().unwrap(), inverse, rev + 1)
-            else {
-                return Ok(());
-            };
-            since.push(u);
-            head = next;
-        }
-    }
-    let effect = super::in_effect(&since);
-    let moved = super::ripple_moved(&effect);
-    let mut b: std::collections::BTreeSet<String> = p.timelines[0]
-        .tracks
-        .iter()
-        .flat_map(|t| &t.items)
-        .map(|c| c.id.clone())
-        .filter(|i| !moved.contains(i))
-        .collect();
-    b.extend(
-        super::relocated(&effect)
-            .into_iter()
-            .filter(|i| !moved.contains(i)),
-    );
-    let refs: Vec<&CommittedTx> = since.iter().collect();
-    let steps = fin_core::rebase::steps_from(&refs).unwrap();
-    let mut paired = vec![false; steps.len()];
-    for (s, step) in steps.iter().enumerate() {
-        if let Some(j) = step.mirror_of {
-            paired[s] = true;
-            paired[j] = true;
-        }
-    }
-    let facts: Vec<fin_core::rebase::anchors::Placed> = steps
-        .iter()
-        .map(|s| fin_core::rebase::anchors::Placed::of_step(&s.ops, &s.diff, s.invert))
-        .collect();
-    let placed = fin_core::rebase::anchors::Placed::join(
-        facts
-            .iter()
-            .zip(&paired)
-            .filter(|(_, p)| !**p)
-            .map(|(f, _)| f),
-    );
-    for item in head.timelines[0].tracks.iter().flat_map(|t| &t.items) {
-        prop_assert_eq!(
-            placed.passes(&item.id),
-            !b.contains(&item.id),
-            "item {} after {:?}",
-            item.id,
-            since.iter().map(|c| &c.tx.ops).collect::<Vec<_>>()
-        );
     }
     Ok(())
 }

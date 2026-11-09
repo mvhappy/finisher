@@ -12,8 +12,8 @@
 //! compared, and a refusal must be one the spec explains ([`refusal_allowed`]). Each was checked
 //! by its fixed case passing under the strict check. The one exclusion left,
 //! [`index_in_changed_list`], belongs to `rebase::places`, which has its own oracle.
-//! The walk at an anchor's end reads the records in effect ([`in_effect`]), as the engine reads
-//! the steps in no mirrored pair.
+//! An [`Anchor::After`] (`before: None`) is an append: the track's end at the head, as the
+//! engine reads a position at the end of the track's last item.
 #![allow(dead_code)]
 
 use std::collections::BTreeMap;
@@ -348,12 +348,8 @@ pub struct Realiser {
     ids: MemIds,
     bound: BTreeMap<String, String>,
     ops: Vec<Op>,
-    /// At the head: the item ids of the base (items not in it were inserted concurrently).
-    pub base: Option<std::collections::BTreeSet<String>>,
     /// At the head: the committed slips per item (they move the source, not the content).
     pub slips: BTreeMap<String, Rational>,
-    /// The right parts our own splits made, by the item each split.
-    parts: BTreeMap<String, String>,
 }
 
 pub fn reference(key: &Key) -> String {
@@ -369,9 +365,7 @@ impl Realiser {
             ids,
             bound: BTreeMap::new(),
             ops: Vec::new(),
-            base: None,
             slips: BTreeMap::new(),
-            parts: BTreeMap::new(),
         }
     }
 
@@ -454,25 +448,14 @@ impl Realiser {
                 let c = &tracks[t].items[i];
                 Some(match a {
                     Anchor::Before(_) => c.start,
-                    _ => {
-                        // Assoc::After: past items inserted concurrently at that point, and
-                        // past the right parts our own splits cut from them.
-                        let mut at = (c.start + c.duration).unwrap();
-                        let mut last: Option<&str> = None;
-                        while let Some(base) = &self.base
-                            && let Some(n) = tracks[t].items.iter().find(|n| {
-                                n.start == at
-                                    && (!base.contains(&n.id)
-                                        && !self.bound.values().any(|v| *v == n.id)
-                                        || last.is_some()
-                                            && self.parts.get(&n.id).map(String::as_str) == last)
-                            })
-                        {
-                            at = (n.start + n.duration).unwrap();
-                            last = Some(&n.id);
-                        }
-                        at
-                    }
+                    // `before: None` is an append: the track's end, whatever the head
+                    // appended or moved there since (spec §4.3, `rebase::anchors`).
+                    _ => tracks[t]
+                        .items
+                        .iter()
+                        .map(|n| (n.start + n.duration).unwrap())
+                        .max()
+                        .unwrap(),
                 })
             }
         }
@@ -717,11 +700,6 @@ impl Realiser {
         }
         let a = apply_tx(&self.state, &tx(vec![resolved]), &mut self.ids).ok()?;
         self.bound.extend(a.bindings);
-        if let Keyed::Split { name, clip, .. } = k
-            && let (Some(part), Some(of)) = (self.bound.get(name), self.resolve(clip))
-        {
-            self.parts.insert(part.clone(), of);
-        }
         self.state = a.project;
         self.ops.push(op);
         Some(())
@@ -1058,68 +1036,6 @@ pub fn transitions_valid(p: &Project) -> Result<(), String> {
     Ok(())
 }
 
-/// The records of `since` still in effect: neither undone by a later record nor an undo.
-pub fn in_effect(since: &[CommittedTx]) -> Vec<CommittedTx> {
-    let undone: std::collections::BTreeSet<&str> = since
-        .iter()
-        .filter_map(|c| match c.link.as_deref() {
-            Some(Link::Undo { undoes }) => Some(undoes.iter().map(String::as_str)),
-            _ => None,
-        })
-        .flatten()
-        .collect();
-    since
-        .iter()
-        .filter(|c| c.link.is_none() && !undone.contains(c.tx.tx_id.as_str()))
-        .cloned()
-        .collect()
-}
-
-/// Items a committed ripple move put somewhere (an insertion with a shift).
-pub fn ripple_moved(since: &[CommittedTx]) -> std::collections::BTreeSet<String> {
-    let mut out = std::collections::BTreeSet::new();
-    for c in since {
-        for ch in &c.diff.changes {
-            if let Op::ItemMove(m) = &c.tx.ops[ch.op as usize]
-                && m.mode == InsertMode::Ripple
-                && ch.path.as_deref() == Some("start")
-            {
-                out.insert(ch.id.clone());
-            }
-        }
-    }
-    out
-}
-
-/// Items a committed move or slide relocated, or an op re-edged without a shift on its track.
-pub fn relocated(since: &[CommittedTx]) -> std::collections::BTreeSet<String> {
-    let mut out = std::collections::BTreeSet::new();
-    for c in since {
-        for ch in &c.diff.changes {
-            let op = &c.tx.ops[ch.op as usize];
-            if matches!(op, Op::ItemMove(_) | Op::ItemSlide(_)) {
-                out.insert(ch.id.clone());
-            }
-            if let Op::ItemMove(m) = op
-                && m.mode == InsertMode::Overwrite
-            {
-                out.insert(ch.id.clone());
-            }
-            // Task 26: any edge or start change its op records no shift for on that track (a
-            // roll, an overwrite trim, a carve) moves the item without moving positions.
-            let unshifted = !c
-                .diff
-                .shifts
-                .iter()
-                .any(|x| x.op == ch.op && Some(&x.track) == ch.track.as_ref());
-            if (ch.edge.is_some() || ch.path.as_deref() == Some("start")) && unshifted {
-                out.insert(ch.id.clone());
-            }
-        }
-    }
-    out
-}
-
 pub fn lens() -> impl Strategy<Value = Vec<Vec<i64>>> {
     prop::collection::vec(prop::collection::vec(10i64..40, 0..4), 4)
 }
@@ -1167,23 +1083,6 @@ pub fn check(
         return Ok(());
     }
     let mut at_head = Realiser::with_ids(&head, ids.clone());
-    // What the head placed, over the records still in effect: an undone record and its undo
-    // say nothing about who put an item where (the engine leaves mirrored pairs out).
-    let effect = in_effect(&since);
-    let moved = ripple_moved(&effect);
-    let mut b: std::collections::BTreeSet<String> = p.timelines[0]
-        .tracks
-        .iter()
-        .flat_map(|t| &t.items)
-        .map(|c| c.id.clone())
-        .filter(|i| !moved.contains(i))
-        .collect();
-    b.extend(
-        relocated(&effect)
-            .into_iter()
-            .filter(|i| !moved.contains(i)),
-    );
-    at_head.base = Some(b);
     at_head.slips = slips(&since);
     let fresh_ok = keyed.iter().all(|k| at_head.realise(k).is_some());
     let mut t = tx(at_base.ops.clone());

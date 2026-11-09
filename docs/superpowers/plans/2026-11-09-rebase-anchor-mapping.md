@@ -205,3 +205,16 @@ The carve-outs: `Anchor::Zero` exclusion, relocated-anchor exclusion, `self_relo
 8. Once finding 1 is fixed, no carve-out beyond `index_in_changed_list` has to stay.
 9. A hand simulation of six seeds and seven fixed cases agrees under the rules.
 10. Missing steps (the parity test, fallback tests, the line budget and the merge cost) are added to Tasks 3 and 5.
+
+## Revision after the implementation review (2026-11-09)
+
+The second review ran `props_history` and found a merge that reversed the source's own order. Running the history suites at scale then gave a second case in `props_history_4c`. Both trace to D3, so the design is revised:
+
+- **D1 gains `track_end`.** No item starts at the position, and it is the end of the track's last item, so the position is an append. At the head it resolves to the end of the track's last item, whatever the head appended, moved or trimmed there since. When the track is empty there, the position maps through shifts. This is what both test models mean by "at the end": the keyed oracle's `before: None`, and the undo model's reinsertion with no successor.
+- **D3 (the `End` walk and `Placed`) is withdrawn.**
+  - Every end anchor the oracles produce is a track end, which `track_end` resolves without a walk.
+  - The walk's mirrored-pair rule could not be made right either way. An undo's ripple restore, or a merge's copy after its inverted source, can put an item back at a different place than it took it from. Leaving the pairs out missed that; counting them changed intent.
+  - An end anchor followed by a gap now resolves to that item's end. A concurrent insert at exactly that point is a tie with no intent signal, and sticking to the item is the simpler answer.
+  - The parity property goes with the walk. The oracle's walk, its base set, `ripple_moved`, `relocated` and `in_effect` are removed, and `After(last)` is realised as the track end.
+- **Removed carve-outs:** unchanged.
+- **New named cases:** `merge_keeps_the_source_order_past_an_earlier_copy` and `merged_move_to_the_end_goes_to_the_targets_end` (`tests/rebase_anchors.rs`), plus the two seeds in the history regression files.

@@ -11,7 +11,7 @@ use crate::model::Project;
 use crate::ops::Op;
 use crate::tx::{Applied, CommittedTx, Diff, Tx};
 
-use super::anchors::{Anchor, Ours as AnchorOurs, Placed, split_parts};
+use super::anchors::Anchor;
 use super::conflict::{Conflict, Conflicts, reasons};
 use super::footprint::{
     Footprint, Touch, entity_conflict_in, footprint, overwrite_conflict, split_diff, unbind_own,
@@ -159,14 +159,6 @@ pub fn rebase_prepared(
         mapping.push(StepMap::from_diff(d).invert().map_err(bad)?);
     }
     let theirs = unmirrored_footprints(r.steps).map_err(bad)?;
-    // What the head placed since the frame, for the `End` walk of an anchor (`anchors`).
-    let placed = Placed::join(
-        r.steps
-            .iter()
-            .zip(mirrored(r.steps).map_err(bad)?)
-            .filter(|(_, paired)| !paired)
-            .map(|(s, _)| &*s.placed),
-    );
     for step in r.steps {
         let at = mapping.push(step.map.clone().map_err(bad)?);
         if let Some(j) = step.mirror_of {
@@ -186,17 +178,11 @@ pub fn rebase_prepared(
     let mut earlier: Vec<Footprint> = Vec::with_capacity(n);
     for (k, op) in r.tx.ops.iter().enumerate() {
         let mut op = op.clone();
-        let ours = AnchorOurs {
-            bound: run.bound(),
-            created: &created,
-            parts: split_parts(&ops, run.bound()),
-            placed: &placed,
-        };
         let anchored = r.anchors.get(k);
         for (j, (track, pos)) in op.positions_mut().into_iter().enumerate() {
             // The edge it was written against, where it is now; else shifts (`anchors`).
             if let Some(Some(a)) = anchored.and_then(|v| v.get(j))
-                && let Some(at) = a.resolve(run.project(), &track, &ours)
+                && let Some(at) = a.resolve(run.project(), &track, run.bound())
             {
                 *pos = at;
                 continue;

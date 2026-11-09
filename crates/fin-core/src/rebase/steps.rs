@@ -9,7 +9,6 @@ use crate::ops::Op;
 use crate::record::{Link, resolve_ops};
 use crate::tx::{CommittedTx, Diff};
 
-use super::anchors::Placed;
 use super::footprint::{Footprint, footprint, join_diffs, split_diff};
 use super::map::StepMap;
 
@@ -111,8 +110,6 @@ pub struct Prepared {
     pub mirror_of: Option<usize>,
     pub(super) map: Result<StepMap, CoreError>,
     pub(super) footprints: Result<Arc<[Footprint]>, CoreError>,
-    /// What the step placed (`anchors::Placed`), for the `End` walk.
-    pub(super) placed: Arc<Placed>,
 }
 
 impl Prepared {
@@ -122,7 +119,6 @@ impl Prepared {
             mirror_of: step.mirror_of,
             map: step.map(),
             footprints: step.footprints().map(Into::into),
-            placed: Placed::of_step(&step.ops, &step.diff, step.invert).into(),
         }
     }
 }
