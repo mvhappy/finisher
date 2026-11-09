@@ -96,8 +96,11 @@ export function jobRow(installed: InstalledOf, job: JobView): { readonly row: In
   }
 }
 
-/** The job's plugin, its package and its runtime's program; `tmp` is the key's temp. */
-export function resolveRuntime(deps: ResolveDeps, job: JobView, tmp: string): ResolvedRuntime {
+/**
+ * The job's plugin, its package and its runtime's program; `tmp` is the key's temp, `data` the
+ * caller's `pluginData` directory when `fs pluginData` is granted (a `node` plugin's flags name it).
+ */
+export function resolveRuntime(deps: ResolveDeps, job: JobView, tmp: string, data?: { readonly path: string; readonly write: boolean }): ResolvedRuntime {
   const found = jobRow(deps.installed, job);
   if ("error" in found) throw found.error;
   const { row } = found;
@@ -118,7 +121,7 @@ export function resolveRuntime(deps: ResolveDeps, job: JobView, tmp: string): Re
   }
   if (rt?.type === "node") {
     const main = inPackage(storeDir, rt.main, id);
-    return { row, storeDir, runtime: "node", path: deps.execPath ?? process.execPath, args: nodeArgs({ pluginDir: storeDir, main, tmp }) };
+    return { row, storeDir, runtime: "node", path: deps.execPath ?? process.execPath, args: nodeArgs({ pluginDir: storeDir, main, tmp, ...(data === undefined ? {} : { data }) }) };
   }
   throw finError("PLUGIN_RUNTIME_UNAVAILABLE", `${id} has no runtime this host runs`, { plugin: id, runtime: (rt as { type?: unknown } | undefined)?.type ?? null });
 }

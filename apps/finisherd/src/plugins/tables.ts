@@ -1,5 +1,5 @@
 // The `plugins` chain's tables (8A Task 9a, spec §5.1): the only module that touches
-// `registries`, `plugins`, `plugin_grants`, `plugin_plans` and `plugin_suggestions`. Importing it registers the chain
+// `registries`, `plugins`, `plugin_grants`, `plugin_plans` and `plugin_suggestions` (`plugin_authority` is `host/authority.ts`'s). Importing it registers the chain
 // (`main.ts` imports it before it opens the control store). Statements are prepared once.
 import type { StatementSync } from "node:sqlite";
 import type { InstalledRow, RegistryEntry } from "@finisher/contracts";
@@ -9,8 +9,9 @@ import { plugins0001 } from "../control/migrations/plugins/0001.ts";
 import { plugins0002 } from "../control/migrations/plugins/0002.ts";
 import { plugins0003 } from "../control/migrations/plugins/0003.ts";
 import { plugins0004 } from "../control/migrations/plugins/0004.ts";
+import { plugins0005 } from "../control/migrations/plugins/0005.ts";
 
-registerChain("plugins", [plugins0001, plugins0002, plugins0003, plugins0004], { formatVersion: 4, minReaderVersion: 1 });
+registerChain("plugins", [plugins0001, plugins0002, plugins0003, plugins0004, plugins0005], { formatVersion: 5, minReaderVersion: 1 });
 
 /** `<kind>:<id>` of a principal, as stored in `addedBy`, `installedBy` and `lastRefreshBy`. */
 export const actorOf = (p: { readonly kind: string; readonly id: string }): string => `${p.kind}:${p.id}`;

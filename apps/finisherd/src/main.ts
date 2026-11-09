@@ -284,6 +284,10 @@ export const serve = ({
         writeKeyFile(join(authDir(serverData), KEY_FILES.credentialMaster), key),
       );
       everyConnection.useLiveness((p) => credentials.isLive(p));
+      // Plugin authority keys (sp8 spec §3.3, Decision 28): a credential minted or ended, or a
+      // device revoked, moves its class's policy generation and retires its plugin processes.
+      const unwatchAuthority = pluginHost.watch({ credentials, devices });
+      yield* Effect.addFinalizer(() => Effect.sync(unwatchAuthority));
       // One last write of ended credentials before the control store closes (it closes after).
       yield* Effect.addFinalizer(() =>
         Effect.sync(() => {

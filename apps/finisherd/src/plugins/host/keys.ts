@@ -1,8 +1,10 @@
-// Process keys of the `plugin` family (sp8 spec §3.3; sp8b plan Decisions 3, 4): a long-lived
-// plugin process serves one (plugin@version, project, principal class) and nothing else, and
-// its private temp directory is named by the key's hash. The version is in the key, so an
-// update never reuses an old process; the class keeps one person's, one agent session tree's
-// and the host's own work apart.
+// Process keys of the `plugin` family (sp8 spec §3.3; sp8b plan Decisions 3, 4 as amended
+// 2026-11-09): a long-lived plugin process serves one (plugin@version, project, authority key)
+// and nothing else, and its private temp directory is named by the key's hash. The version is
+// in the key, so an update never reuses an old process; the authority key (`authority.ts`:
+// class + rights hash + policy generation) keeps callers with different rights apart (one
+// agent session tree from another, a child session from its root) and retires a key when its
+// class's generation moves.
 import { createHash } from "node:crypto";
 import { chmodSync, mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
@@ -10,6 +12,7 @@ import type { JobOwner, JobView } from "@finisher/contracts";
 import type { ControlStore } from "../../control/db.ts";
 import { finError } from "../../errors.ts";
 import { projectOfJob } from "../../jobs/kinds.ts";
+import { type AuthorityGenerations, jobAuthority, memoryGenerations } from "./authority.ts";
 
 /** Where the keys' temp directories live, under server data (swept at every start). */
 export const PLUGIN_TMP = ["plugins", "tmp"] as const;
@@ -42,12 +45,14 @@ export function viaPlugin(job: JobView): string {
 }
 
 /**
- * `<plugin>@<version>|<project or none>|<class>` (spec §3.3's process key). The class is always
- * derived from the job's owner, never read from its rights: the submit check (`checkRights`)
- * makes the rights' class equal to it, and the key does not trust the stored value.
+ * `<plugin>@<version>|<project or none>|<authority key>` (spec §3.3's process key). The class is
+ * always derived from the job's owner and the rights hash recomputed from its rights, never
+ * read from stored values; the generation is the class's now (`authority.ts`). A job without
+ * valid rights (the submit check refuses those) gets a key of its own, so it shares no process.
  */
-export function pluginWarmKey(job: JobView, rootSessionOf?: RootSessionOf): string {
-  return `${viaPlugin(job)}|${projectOfJob(job) ?? "none"}|${principalClass(job.owner, rootSessionOf)}`;
+export function pluginWarmKey(job: JobView, rootSessionOf?: RootSessionOf, gens: AuthorityGenerations = memoryGenerations()): string {
+  const authority = jobAuthority(job, principalClass(job.owner, rootSessionOf), gens);
+  return `${viaPlugin(job)}|${projectOfJob(job) ?? "none"}|${authority?.key ?? `job-${job.id}`}`;
 }
 
 /** The key's hash: the name of its temp directory (hex, 32 characters). */
