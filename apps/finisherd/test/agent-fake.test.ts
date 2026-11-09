@@ -1,9 +1,12 @@
 // The adapter contract and the scripted fake provider (plan 7A Task 6a, Decision 5).
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { Deferred, Effect, Fiber, Stream } from "effect";
 import { describe, expect, it } from "vitest";
 import { type BoundEvent, type ProviderSession, type SessionSpec, toProviderEvent } from "../src/agent/adapter.ts";
 import { FakeAdapter, type FakeScript } from "../src/agent/fake.ts";
+import { fakeScriptsOf } from "../src/agent/wiring.ts";
 import { adapterContractSuite, oneTurn } from "./support/adapter-contract.ts";
 
 const script = (name: string): FakeScript =>
@@ -179,5 +182,31 @@ describe("toProviderEvent", () => {
       cacheWrite: 0,
       reasoning: 0,
     });
+  });
+});
+
+describe("the fake's scripts from a file (FIN_TEST_FAKE_SCRIPTS, the e2e `sandbox` scenario)", () => {
+  const dir = mkdtempSync(join(tmpdir(), "fake-scripts-"));
+  const file = (name: string, text: string) => {
+    const p = join(dir, name);
+    writeFileSync(p, text);
+    return p;
+  };
+  const one: FakeScript = { name: "children", turns: [[{ spawn: ["/bin/true"] }]] };
+
+  it("reads the scripts the variable names", () => {
+    expect(fakeScriptsOf(undefined, { FIN_TEST_FAKE_SCRIPTS: file("a.json", JSON.stringify([one])) })).toEqual([one]);
+  });
+
+  it("in-process options win, and without either the default script runs", () => {
+    const other: FakeScript = { name: "other", turns: [[]] };
+    expect(fakeScriptsOf([other], { FIN_TEST_FAKE_SCRIPTS: file("b.json", JSON.stringify([one])) })).toEqual([other]);
+    expect(fakeScriptsOf(undefined, {})[0]?.name).toBe("echo");
+  });
+
+  it("refuses a file that is not a list of scripts", () => {
+    for (const [name, text] of [["c.json", "{}"], ["d.json", "[]"], ["e.json", "[{\"turns\": 1}]"], ["f.json", "not json"]] as const) {
+      expect(() => fakeScriptsOf(undefined, { FIN_TEST_FAKE_SCRIPTS: file(name, text) }), name).toThrow(/FIN_TEST_FAKE_SCRIPTS/);
+    }
   });
 });
