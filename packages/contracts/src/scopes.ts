@@ -242,6 +242,8 @@ export const RPC_SCOPES: { readonly [T in FinRpcTag]: RuleOf<T> } = {
   "snapshot.get": { scopes: ["project.read"], resolve: BRANCH },
   "ops.subscribe": { scopes: ["project.read"], resolve: BRANCH },
   "project.status": { scopes: ["project.read"], resolve: PROJECT },
+  // Ends every client's streams of the project (they reconnect, which reopens it).
+  "project.close": { scopes: ["project.admin"], resolve: PROJECT },
   "project.takeover": { scopes: ["project.admin"], resolve: PROJECT, escalate: (p) => (p.confirm ? ["project.confirm"] : []) },
   "project.verify": { scopes: ["project.read"], resolve: PROJECT },
   "project.rebuild": { scopes: ["project.admin"], resolve: PROJECT },

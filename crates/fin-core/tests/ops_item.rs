@@ -545,6 +545,7 @@ fn restore_of_a_busy_item_is_exact() {
     item.common.keyframes.insert(
         "transform.position".into(),
         vec![Keyframe {
+            id: "kf1".into(),
             at: r("1/3"),
             value: ParamValue::Vec2([1.5, -2.25]),
             interp: Interp::Bezier {
@@ -758,11 +759,13 @@ fn start_trim_rebases_keyframes_and_words() {
         "opacity".into(),
         vec![
             Keyframe {
+                id: "kf2".into(),
                 at: secs(0),
                 value: ParamValue::Number(0.0),
                 interp: Interp::Linear,
             },
             Keyframe {
+                id: "kf3".into(),
                 at: secs(4),
                 value: ParamValue::Number(1.0),
                 interp: Interp::Hold,
@@ -1045,6 +1048,7 @@ fn negative_zero_is_stored_as_zero_and_non_finite_is_refused() {
     item.common.keyframes.insert(
         "opacity".into(),
         vec![Keyframe {
+            id: "kf4".into(),
             at: secs(0),
             value: ParamValue::Vec2([-0.0, 1.0]),
             interp: Interp::Linear,

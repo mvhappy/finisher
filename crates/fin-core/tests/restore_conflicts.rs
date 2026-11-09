@@ -157,7 +157,8 @@ fn undo_of_move_meets_later_effect_edits() {
             fin_core::KeyframeSet {
                 item: "c1".into(),
                 path: format!("effects.{fx}.radius"),
-                at: Rational::zero(),
+                key: None,
+                at: Some(Rational::zero()),
                 value: ParamValue::Number(3.0),
                 interp: fin_core::Interp::Linear,
             }

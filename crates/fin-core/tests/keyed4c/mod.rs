@@ -538,7 +538,8 @@ impl Realiser {
                     Some(fx) => format!("effects.{}.radius", reference(fx)),
                     None => "opacity".into(),
                 },
-                at: self.content_at(clip, *at, *src)?,
+                key: None,
+                at: Some(self.content_at(clip, *at, *src)?),
                 value: ParamValue::Number(*v as f64 / 10.0),
                 interp: Interp::Linear,
             }
@@ -555,7 +556,8 @@ impl Realiser {
                     Some(fx) => format!("effects.{}.{param}", reference(fx)),
                     None => param.clone(),
                 },
-                at: self.content_at(clip, *at, *src)?,
+                key: None,
+                at: Some(self.content_at(clip, *at, *src)?),
             }
             .into(),
             Keyed::EffectAdd {
@@ -985,6 +987,8 @@ pub fn commit(
     let mut t = tx(r.ops);
     t.tx_id = format!("tx-{rev}");
     t.base_rev = rev - 1;
+    // As committed: keyframe ops name their keys (spec §5.12).
+    let t = fin_core::canonicalize(p, &t).unwrap();
     let a = apply_tx(p, &t, ids).unwrap();
     let c = CommittedTx {
         rev,

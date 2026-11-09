@@ -193,9 +193,19 @@ fn in_flight(mut e: CoreError, tx_id: &str) -> CoreError {
         }
         None => e.details = json!({ "txId": tx_id, "detail": e.details }),
     }
-    e.fix = Some(format!(
-        "the commit may have landed; retry with `--idem-key {tx_id}` (after starting finisherd if it is down)"
-    ));
+    // The request may have reached a running server: "start finisherd" would be wrong advice.
+    if e.code == "SERVER_UNAVAILABLE" {
+        e.message = "the connection to the Finisher server was lost before it answered".into();
+    }
+    let retry = format!(
+        "the change may have landed; run the same command again with `--idem-key {tx_id}`: the \
+         server answers a key it already applied from its log instead of applying it twice"
+    );
+    // The run's overall deadline keeps its own advice (`FIN_DEADLINE_S`) beside the key's.
+    e.fix = Some(match e.fix.take() {
+        Some(f) if e.details.get("deadline").is_some() => format!("{f}; {retry}"),
+        _ => retry,
+    });
     e
 }
 
@@ -415,12 +425,17 @@ impl Client {
         self.answer(tag, payload)
     }
 
-    /// `tx.commit`. Once the request may have reached the server, a transport failure
-    /// (timeout, lost connection, garbled answer) leaves the commit's fate unknown: the error
-    /// then carries `details.txId` and tells the agent to retry with that idempotency key.
+    /// `tx.commit`, through [`Client::call_tx`].
     pub fn commit(&mut self, payload: Value, tx_id: &str) -> Result<Value, CoreError> {
-        self.request("tx.commit", payload)
-            .map_err(|e| in_flight(e, tx_id))
+        self.call_tx("tx.commit", payload, tx_id)
+    }
+
+    /// A write keyed by the idempotency key `tx_id` (`tx.commit`, the history and branch
+    /// writes). Once the request may have reached the server, a transport failure (timeout,
+    /// lost connection, garbled answer) leaves its fate unknown: the error then carries
+    /// `details.txId` and tells the agent to retry with that key.
+    pub fn call_tx(&mut self, tag: &str, payload: Value, tx_id: &str) -> Result<Value, CoreError> {
+        self.request(tag, payload).map_err(|e| in_flight(e, tx_id))
     }
 
     /// Fire and forget (`cli.command`, `error.panic`): writes the request frame within `budget`

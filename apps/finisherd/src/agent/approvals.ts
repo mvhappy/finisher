@@ -12,8 +12,8 @@
 //   session machine would expire such a card at once.
 // - **Subject.** Written by the server from the request as stage 5 resolved it, never from the
 //   agent's argv or words: the command name the rule decided on, the RPC, its arguments (the
-//   resolved payload without what changes on every retry: a transaction's `txId`, `author`,
-//   `idemKey`, a `challenge`), the branch ids it writes or acts on, the rule and its layer, and a
+//   resolved payload without what changes on every retry or is made by the client: a
+//   transaction's `txId`, `author`, `idemKey`, a history write's `argsHash`, a `challenge`), the branch ids it writes or acts on, the rule and its layer, and a
 //   one-line `text` made from those. A moved base (`baseRev`, `generation`) is another request.
 //   Only fields the RPC's payload schema declares are kept, and of `tx.commit`'s `tx` (a
 //   `Schema.Unknown`) only fin-core's `Tx` fields (`TX_FIELDS`; its client-made `argsHash` is
@@ -97,7 +97,7 @@ const APPROVAL_WAIT_MAX = 90_000;
 /** The most canonical JSON of `args` a card holds (bytes); the hash covers all of it. */
 export const ARGS_DISPLAY_MAX = 64 * 1024;
 /** Fields that change on every retry of the same request: not its arguments. */
-const VOLATILE = new Set(["txId", "author", "idemKey", "challenge"]);
+const VOLATILE = new Set(["txId", "author", "idemKey", "argsHash", "challenge"]);
 /** fin-core's `Tx` (`crates/fin-core/src/tx.rs`) less `txId`, `author` and its client-made `argsHash`. */
 const TX_FIELDS = ["branch", "baseRev", "schemaVersion", "ops"] as const;
 

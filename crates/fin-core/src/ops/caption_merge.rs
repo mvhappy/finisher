@@ -2,7 +2,8 @@
 //! result keeps `item`'s id, style and fields, spans to `with`'s end, and holds both captions'
 //! words (`with`'s moved to count from `item`'s start); `with` goes. Any other `with` (an
 //! earlier item, a later one with an item between, another track, itself) is `NOT_ADJACENT`;
-//! a locked track `TRACK_LOCKED` (policy).
+//! a locked track `TRACK_LOCKED` (policy); a result over [`crate::captions::MAX_CAPTION_WORDS`]
+//! words `CAPTION_TOO_LONG` (policy).
 //!
 //! At the seam only the words each caption shows are joined (the rule measurement and eval
 //! use, [`crate::captions::shown_words`]), so the result stays in order and shows what both
@@ -25,7 +26,9 @@ use crate::ids::IdAlloc;
 use crate::model::{ItemBody, Project, Word};
 use crate::ops::caption_set_text::WORDS;
 use crate::ops::caption_set_words::CaptionSetWords;
-use crate::ops::util::{OpDiff, caption_at, check_unlocked, end, merge_source, wrong_op};
+use crate::ops::util::{
+    OpDiff, caption_at, check_unlocked, check_word_count, end, merge_source, wrong_op,
+};
 use crate::ops::{Bindings, DeleteMode, Edge, ItemRestore, ItemTrim, Op, TrimMode};
 use crate::rebase::{Footprint, Touch};
 use crate::time::Rational;
@@ -106,6 +109,7 @@ pub(crate) fn apply(
             .with_details(json!({ "item": id, "with": with, "path": "words" }))
             .with_fix("edit the captions' text first, or delete one of them"));
         }
+        check_word_count(&id, words.len(), bindings)?;
         block.words = words;
         block.source = merge_source(old_source.as_ref(), theirs.source.as_ref());
     }

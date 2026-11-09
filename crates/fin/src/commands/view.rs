@@ -36,6 +36,10 @@ pub struct ViewArgs {
     #[arg(long, value_name = "tokens")]
     #[serde(default)]
     pub budget: Option<u64>,
+    /// List each animated path's keyframes as `<key>@<at>` (item-relative).
+    #[arg(long)]
+    #[serde(default)]
+    pub detail: bool,
 }
 
 fn kind(track: &Track) -> &'static str {
@@ -171,6 +175,7 @@ pub fn view(backend: &dyn Backend, g: &Globals, a: &ViewArgs) -> Result<Value, C
         track: a.track.as_deref(),
         from,
         to,
+        detail: a.detail,
     };
     let sections = view::sections(&tls, filter, &marks)?;
     let (lines, elided, tokens) = budget::fit(sections, a.budget);
@@ -186,6 +191,9 @@ pub fn view(backend: &dyn Backend, g: &Globals, a: &ViewArgs) -> Result<Value, C
     }
     if let Some(b) = a.budget {
         resolved["budget"] = json!(b);
+    }
+    if a.detail {
+        resolved["detail"] = json!(true);
     }
     if resolved != json!({}) {
         out["resolved"] = resolved;

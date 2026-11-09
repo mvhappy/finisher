@@ -11,6 +11,7 @@ use crate::error::CoreError;
 use crate::ids::{IdAlloc, IdKind};
 use crate::model::Project;
 use crate::ops::item_insert::{check_body, resolve_body};
+use crate::ops::util::keys::check_key_lists;
 use crate::ops::util::{
     OpDiff, TrackAt, check_track, check_unlocked, clip_containing, frame_of, insert_inside,
     invalid_range, normalize_item, place, ripple, track_index, wrong_op,
@@ -76,6 +77,7 @@ pub(crate) fn apply(
     let r = payload(op)?;
     let mut item = r.item.clone();
     normalize_item(&mut item)?;
+    check_key_lists(&item.common.keyframes, [], !bindings.policy())?;
     item.id = bindings.create(project, &item.id, IdKind::of_item(&item.body), ids)?;
     resolve_body(&mut item.body, bindings)?;
     let id = item.id.clone();

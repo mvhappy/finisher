@@ -356,6 +356,7 @@ export const HandlersLive = FinRpcs.toLayer(
       "project.events": ({ projectId }) =>
         registry.events(projectId).pipe(Stream.catchDefect((defect) => Stream.fail(toFinError(defect)))),
       "project.status": ({ projectId }) => guard("project.status", registry.status(projectId)),
+      "project.close": ({ projectId }) => guard("project.close", registry.close(projectId)),
       "project.takeover": ({ projectId, confirm }) => guard("project.takeover", registry.takeover(projectId, confirm)),
       "project.verify": ({ projectId }) => guard("project.verify", registry.verify(projectId)),
       "project.rebuild": ({ projectId }) => guard("project.rebuild", registry.rebuild(projectId)),

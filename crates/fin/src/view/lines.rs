@@ -115,8 +115,9 @@ fn track_label(t: &Track) -> String {
 }
 
 /// An item's head (`c3 clip a1`; a caption's is its id alone) and its detail parts, which
-/// the budget's first step drops.
-pub fn item_parts(item: &Item) -> (String, Vec<String>) {
+/// the budget's first step drops. `keys` (`fin view --detail`): each animated path's keys as
+/// `<key>@<at>`.
+pub fn item_parts(item: &Item, keys: bool) -> (String, Vec<String>) {
     let mut detail = Vec::new();
     let head = match &item.body {
         ItemBody::Clip {
@@ -146,7 +147,7 @@ pub fn item_parts(item: &Item) -> (String, Vec<String>) {
             format!("{} nested {timeline}", item.id)
         }
     };
-    common(item, &mut detail);
+    common(item, keys, &mut detail);
     (head, detail)
 }
 
@@ -160,7 +161,7 @@ fn ratio(r: Rational) -> String {
     }
 }
 
-fn common(item: &Item, out: &mut Vec<String>) {
+fn common(item: &Item, keys: bool, out: &mut Vec<String>) {
     let c = &item.common;
     let t = &c.transform;
     if t.position != [0.0, 0.0] {
@@ -209,7 +210,20 @@ fn common(item: &Item, out: &mut Vec<String>) {
             out.push(format!("fade {}/{}", secs(a.fade_in), secs(a.fade_out)));
         }
     }
-    if !c.keyframes.is_empty() {
+    if !c.keyframes.is_empty() && keys {
+        let paths: Vec<String> = c
+            .keyframes
+            .iter()
+            .map(|(path, list)| {
+                let at: Vec<String> = list
+                    .iter()
+                    .map(|k| format!("{}@{}", k.id, secs(k.at)))
+                    .collect();
+                format!("{path}[{}]", at.join(","))
+            })
+            .collect();
+        out.push(format!("kf: {}", paths.join(" ")));
+    } else if !c.keyframes.is_empty() {
         let paths: Vec<&str> = c.keyframes.keys().map(String::as_str).collect();
         out.push(format!("kf: {}", paths.join(",")));
     }

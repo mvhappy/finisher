@@ -55,6 +55,9 @@ pub(crate) fn exists(project: &Project, kind: IdKind, id: &str) -> bool {
         IdKind::Effect => items(project).any(|c| c.common.effects.iter().any(|e| e.id == id)),
         IdKind::Link => items(project).any(|c| c.common.link.as_deref() == Some(id)),
         IdKind::Style => project.styles.contains_key(id),
+        IdKind::Keyframe => {
+            items(project).any(|c| c.common.keyframes.values().flatten().any(|k| k.id == id))
+        }
         // Branches are not part of the model.
         IdKind::Branch => false,
     }

@@ -44,7 +44,8 @@ fn strip(s: &[Shift]) -> Vec<(String, Rational, Rational)> {
 
 /// One tx of prop 1 at `p`: every check of the module docs; returns the state after it.
 fn exact(p: &Project, w: &World) -> Result<Project, TestCaseError> {
-    let t = tx(w.ops.clone());
+    // As committed: time-form keyframe ops in their key form (spec §5.12).
+    let t = fin_core::canonicalize(p, &tx(w.ops.clone())).unwrap();
     let a = apply_tx_mode(p, &t, &mut MemIds::after(p), mode_for(&w.ops))
         .unwrap_or_else(|e| panic!("{:?}: {e:?}", w.ops));
     prop_assert_eq!(&a.project, &w.state, "the tx is its ops in a row");
@@ -117,7 +118,7 @@ proptest! {
         let ids = MemIds::after(&p);
         let fresh = apply_tx(&p, &t, &mut ids.clone()).unwrap();
         let rb = rebase_tx(&p, &p, &t, &[], &mut ids.clone()).unwrap();
-        prop_assert_eq!(rb.tx, t);
+        prop_assert_eq!(rb.tx, fin_core::canonicalize(&p, &t).unwrap());
         prop_assert_eq!(rb.applied, fresh);
     }
 }
@@ -301,7 +302,8 @@ impl AnyOp {
             12 => KeyframeSet {
                 item: id(0),
                 path: "opacity".into(),
-                at: t0,
+                key: None,
+                at: Some(t0),
                 value: ParamValue::Number(0.5),
                 interp: fin_core::Interp::Linear,
             }

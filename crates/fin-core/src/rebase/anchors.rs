@@ -77,6 +77,7 @@ pub fn anchors(frame: &Project, tx: &Tx, mode: ApplyMode) -> Result<Anchors, Cor
     }
     let mut out = Vec::with_capacity(tx.ops.len());
     let mut run = Applier::new(frame, tx.schema_version, mode, ApplyEnv::default())?;
+    run.reserve(&tx.ops);
     let ids = &mut MemIds::after(frame);
     for (k, op) in tx.ops.iter().enumerate() {
         out.push(of_op(run.project(), op, run.bound()));

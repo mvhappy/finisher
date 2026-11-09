@@ -21,8 +21,9 @@
 //! Every mark is checked against the ops at its position; a record whose inverse does not
 //! have the expected length gets none.
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, HashSet};
 
+use super::origin::chain_error;
 use super::{LogRec, LogView};
 use crate::error::CoreError;
 use crate::ops::{self, DeleteMode, Edge, Op, TrimMode};
@@ -44,7 +45,9 @@ impl Marks {
     }
 }
 
-type Memo = HashMap<(String, bool), Marks>;
+/// `(txId, inverse?)` → the marks of that record's ops (`false`) or stored inverse (`true`).
+type Key = (String, bool);
+type Memo = HashMap<Key, Marks>;
 
 /// The split-undo removals in the inverses of `recs`, laid end to end in that order (as an
 /// undo, a redo or a revert takes them).
@@ -56,7 +59,7 @@ pub(super) fn of_inverses(
     let mut out = Marks::default();
     let mut offset = 0;
     for rec in recs {
-        out.extend(&in_inverse(log, rec, &mut memo)?, offset);
+        out.extend(&marks(log, rec, true, &mut memo)?, offset);
         offset += rec.record.inverse.len();
     }
     Ok(out.absorb)
@@ -64,15 +67,80 @@ pub(super) fn of_inverses(
 
 /// The split-undo removals in the ops of `rec` (for a copy of it, which keeps its ops).
 pub(super) fn of_ops(log: &dyn LogView, rec: &LogRec) -> Result<BTreeSet<usize>, CoreError> {
-    Ok(in_ops(log, rec, &mut Memo::new())?.absorb)
+    Ok(marks(log, rec, false, &mut Memo::new())?.absorb)
 }
 
-/// The marks in the ops of `rec`.
-fn in_ops(log: &dyn LogView, rec: &LogRec, memo: &mut Memo) -> Result<Marks, CoreError> {
-    let key = (rec.record.tx_id.clone(), false);
-    if let Some(m) = memo.get(&key) {
-        return Ok(m.clone());
+/// What one step of [`marks`] found for a record.
+enum Step {
+    Done(Marks),
+    /// The marks of these records are needed first (none of them in `memo` yet).
+    Needs(Vec<(LogRec, bool)>),
+}
+
+/// The marks in the ops (`inverse == false`) or the stored inverse of `rec`. A record's marks
+/// depend on earlier records' (an undo's on its units' inverses, a redo's on its undo's, a
+/// copy's on its origin's), so a chain of undo/redo cycles is as deep as the history: the
+/// records are evaluated from an explicit stack, deepest first, each once (`memo`), never by
+/// recursion (review of 2026-11-09, #15). A record needed while it is being evaluated (a loop
+/// of stored links: an undo of itself, a copy of a copy of itself) is `DB_ERROR` `linkCycle`.
+fn marks(
+    log: &dyn LogView,
+    rec: &LogRec,
+    inverse: bool,
+    memo: &mut Memo,
+) -> Result<Marks, CoreError> {
+    let top = (rec.record.tx_id.clone(), inverse);
+    let mut stack: Vec<(LogRec, bool)> = vec![(rec.clone(), inverse)];
+    let mut open: HashSet<Key> = HashSet::new();
+    while let Some((r, inv)) = stack.last() {
+        let key = (r.record.tx_id.clone(), *inv);
+        if memo.contains_key(&key) {
+            stack.pop();
+            continue;
+        }
+        let step = if *inv {
+            in_inverse(r, memo)?
+        } else {
+            in_ops(log, r, memo)?
+        };
+        match step {
+            Step::Done(m) => {
+                open.remove(&key);
+                memo.insert(key, m);
+                stack.pop();
+            }
+            Step::Needs(deps) => {
+                for (d, dinv) in deps {
+                    if open.contains(&(d.record.tx_id.clone(), dinv)) {
+                        return Err(chain_error("linkCycle", &rec.record.tx_id, &d.record.tx_id));
+                    }
+                    stack.push((d, dinv));
+                }
+                open.insert(key);
+            }
+        }
     }
+    Ok(memo.get(&top).cloned().unwrap_or_default())
+}
+
+/// The records of `wanted` that `memo` has no marks for, as [`Step::Needs`], or `None`.
+fn needs<'r>(memo: &Memo, wanted: impl IntoIterator<Item = (&'r LogRec, bool)>) -> Option<Step> {
+    let missing: Vec<(LogRec, bool)> = wanted
+        .into_iter()
+        .filter(|(r, inv)| !memo.contains_key(&(r.record.tx_id.clone(), *inv)))
+        .map(|(r, inv)| (r.clone(), inv))
+        .collect();
+    (!missing.is_empty()).then_some(Step::Needs(missing))
+}
+
+fn got(memo: &Memo, rec: &LogRec, inverse: bool) -> Marks {
+    memo.get(&(rec.record.tx_id.clone(), inverse))
+        .cloned()
+        .unwrap_or_default()
+}
+
+/// The marks in the ops of `rec`, once its sources' are in `memo`.
+fn in_ops(log: &dyn LogView, rec: &LogRec, memo: &Memo) -> Result<Step, CoreError> {
     let link = rec.committed()?.link.map(|l| *l);
     let sources: Vec<LogRec> = match &link {
         Some(Link::Undo { undoes }) => {
@@ -85,26 +153,31 @@ fn in_ops(log: &dyn LogView, rec: &LogRec, memo: &mut Memo) -> Result<Marks, Cor
         Some(Link::Redo { redoes }) => log.find(redoes)?.into_iter().collect(),
         Some(Link::Revert { reverts }) => newest_first(log.merge_group(reverts)?),
         Some(Link::Merge { origin, .. } | Link::CherryPick { origin, .. }) => {
-            let marks = match log.find(origin)? {
-                Some(o) if o.record.tx_id != rec.record.tx_id => in_ops(log, &o, memo)?,
-                _ => Marks::default(),
-            };
-            memo.insert(key, marks.clone());
-            return Ok(marks);
+            return Ok(match log.find(origin)? {
+                Some(o) if o.record.tx_id == rec.record.tx_id => {
+                    return Err(chain_error("originCycle", origin, origin));
+                }
+                Some(o) => {
+                    needs(memo, [(&o, false)]).unwrap_or_else(|| Step::Done(got(memo, &o, false)))
+                }
+                None => Step::Done(Marks::default()),
+            });
         }
         _ => Vec::new(),
     };
+    if let Some(step) = needs(memo, sources.iter().map(|s| (s, true))) {
+        return Ok(step);
+    }
     let mut marks = Marks::default();
     let mut offset = 0;
     for s in &sources {
-        marks.extend(&in_inverse(log, s, memo)?, offset);
+        marks.extend(&got(memo, s, true), offset);
         offset += s.record.inverse.len();
     }
     if offset != rec.record.intent.ops.len() {
         marks = Marks::default();
     }
-    memo.insert(key, marks.clone());
-    Ok(marks)
+    Ok(Step::Done(marks))
 }
 
 /// The records a unit id names, newest first: a record, or a merge group's records.
@@ -120,17 +193,16 @@ fn newest_first(mut recs: Vec<LogRec>) -> Vec<LogRec> {
     recs
 }
 
-/// The marks in the stored inverse of `rec`.
-fn in_inverse(log: &dyn LogView, rec: &LogRec, memo: &mut Memo) -> Result<Marks, CoreError> {
-    let key = (rec.record.tx_id.clone(), true);
-    if let Some(m) = memo.get(&key) {
-        return Ok(m.clone());
-    }
+/// The marks in the stored inverse of `rec`, once the marks of its own ops are in `memo`.
+fn in_inverse(rec: &LogRec, memo: &Memo) -> Result<Step, CoreError> {
     let ops = committed_ops(&rec.committed()?)?;
     let inverse = &rec.record.inverse;
     let lens: Vec<usize> = ops.iter().map(|(op, d)| ops::inverse_len(op, d)).collect();
     let mut marks = Marks::default();
     if lens.iter().sum::<usize>() == inverse.len() {
+        if let Some(step) = needs(memo, [(rec, false)]) {
+            return Ok(step);
+        }
         // Op `j`'s part starts after the parts of every later op.
         let start = |j: usize| lens[j + 1..].iter().sum::<usize>();
         for (j, (op, _)) in ops.iter().enumerate() {
@@ -139,7 +211,7 @@ fn in_inverse(log: &dyn LogView, rec: &LogRec, memo: &mut Memo) -> Result<Marks,
                 marks.absorb.extend(part.filter(|&k| absorbing(inverse, k)));
             }
         }
-        let own = in_ops(log, rec, memo)?;
+        let own = got(memo, rec, false);
         for &j in &own.absorb {
             if j + 1 < ops.len() && reversing(inverse, start(j + 1)) {
                 marks.reverse.insert(start(j + 1));
@@ -151,8 +223,7 @@ fn in_inverse(log: &dyn LogView, rec: &LogRec, memo: &mut Memo) -> Result<Marks,
             }
         }
     }
-    memo.insert(key, marks.clone());
-    Ok(marks)
+    Ok(Step::Done(marks))
 }
 
 /// A lift removal at `k` followed by a strict trim that grows an end.

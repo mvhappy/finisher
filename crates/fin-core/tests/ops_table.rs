@@ -10,7 +10,10 @@ use fin_core::{
     TrackAdd, TrackKind, TrackMove, TrackRemove, TrackRestore, TrackSet, Transition,
     TransitionKind, TransitionRemove, TransitionSet, TrimMode, Word,
 };
-use fin_core::{EffectAdd, EffectMove, EffectRemove, EffectRestore, KeyframeRemove, KeyframeSet};
+use fin_core::{
+    EffectAdd, EffectMove, EffectRemove, EffectRestore, KeyframeRemove, KeyframeRestore,
+    KeyframeSet,
+};
 use serde_json::json;
 
 /// A clip item with everything that carries an id: effects, a link group, keyframes.
@@ -36,6 +39,7 @@ pub fn busy_clip() -> Item {
     item.common.keyframes.insert(
         "opacity".into(),
         vec![Keyframe {
+            id: "kf1".into(),
             at: r(0),
             value: ParamValue::Number(0.5),
             interp: Interp::Linear,
@@ -339,15 +343,20 @@ fn every_variant() -> Vec<Op> {
         KeyframeSet {
             item: "c1".into(),
             path: "opacity".into(),
-            at: r(1),
+            key: Some("kf1".into()),
+            at: Some(r(1)),
             value: ParamValue::Number(0.5),
             interp: Interp::Linear,
         }
         .into(),
-        KeyframeRemove {
+        KeyframeRemove::keyed("c1", "opacity", "kf1").into(),
+        KeyframeRestore {
             item: "c1".into(),
-            path: "opacity".into(),
+            path: "effects.fx1.radius".into(),
+            key: "kf2".into(),
             at: r(1),
+            value: ParamValue::Asset { asset: "a2".into() },
+            interp: Interp::Hold,
         }
         .into(),
         EffectRestore {
@@ -366,6 +375,7 @@ fn every_variant() -> Vec<Op> {
             keyframes: [(
                 "effects.fx4.intensity".to_string(),
                 vec![Keyframe {
+                    id: "kf2".into(),
                     at: r(0),
                     value: ParamValue::Number(1.0),
                     interp: Interp::Hold,
@@ -420,6 +430,7 @@ fn every_variant() -> Vec<Op> {
             | Op::EffectMove(_)
             | Op::KeyframeSet(_)
             | Op::KeyframeRemove(_)
+            | Op::KeyframeRestore(_)
             | Op::EffectRestore(_)
             | Op::StyleAdd(_)
             | Op::StyleSet(_)
@@ -557,7 +568,7 @@ fn restore_lists_nested_ids() {
         .collect();
     assert_eq!(
         ops[0].ids(),
-        ["c1", "a1", "fx1", "fx2", "lk1", "t3"],
+        ["c1", "a1", "fx1", "fx2", "lk1", "kf1", "t3"],
         "{:?}",
         ops[0]
     );
@@ -580,7 +591,8 @@ fn track_and_timeline_restores_list_nested_ids() {
     assert_eq!(
         track.ids(),
         [
-            "t1", "c1", "a1", "fx1", "fx2", "lk1", "c2", "a1", "c3", "a2", "tr1", "c2", "c3", "tl1"
+            "t1", "c1", "a1", "fx1", "fx2", "lk1", "kf1", "c2", "a1", "c3", "a2", "tr1", "c2",
+            "c3", "tl1"
         ]
     );
     let timeline: Op = TimelineRestore {

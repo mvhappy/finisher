@@ -19,6 +19,7 @@ use super::footprint::{
 use super::map::{Assoc, Mapping, StepMap, Unmapped, content_of};
 use super::placement::{Ctx, Pending, Placement, WhenLost, item_of, left_first};
 use super::places::{Resolved, Slot, set_index};
+use super::rerun::{Ours, rerun_conflict};
 use super::steps::{Prepared, Step, steps_from};
 
 static NO_IDS: BTreeSet<String> = BTreeSet::new();
@@ -189,6 +190,7 @@ pub fn rebase_prepared(
             .then(|| r.steps[i - n].tx_id.to_string())
     };
     let mut run = Applier::new(head, r.tx.schema_version, mode, r.env).map_err(bad)?;
+    run.reserve(&r.tx.ops);
     let mut ops = Vec::with_capacity(n);
     let mut created = BTreeSet::new();
     // Our earlier ops' footprints: an entity one of them created is blamed through what that
@@ -382,6 +384,9 @@ pub fn rebase_tx_env(
     let mut newer: Vec<&CommittedTx> = since.iter().filter(|c| c.rev > tx.base_rev).collect();
     newer.sort_by_key(|c| c.rev);
     let steps = steps_from(&newer)?;
+    // Keyframe ops name the keys they meet at the base (spec §5.12).
+    let canonical = crate::apply::canonicalize(base, tx);
+    let tx = canonical.as_ref().unwrap_or(tx);
     let own = match apply_tx_mode(base, tx, &mut MemIds::after(base), ApplyMode::Client) {
         Ok(own) => own,
         Err(e) => return Err(failed_at_base(base, head, tx, &steps, ids, e)),
@@ -424,6 +429,7 @@ fn failed_at_base(
         ops: tx.ops[..i].to_vec(),
         ..tx.clone()
     };
+    let prefix = crate::apply::canonicalize(base, &prefix).unwrap_or(prefix);
     let Ok(own) = apply_tx_mode(base, &prefix, &mut MemIds::after(base), ApplyMode::Client) else {
         return e;
     };
@@ -501,94 +507,6 @@ fn mirrored(steps: &[Prepared]) -> Result<Vec<bool>, CoreError> {
         out[s] = true;
     }
     Ok(out)
-}
-
-/// The op that failed to re-run, as [`rerun_conflict`] reads it: its footprint, the
-/// footprints of our earlier ops, and the placeholders bound so far.
-struct Ours<'a> {
-    fp: &'a Footprint,
-    earlier: &'a [Footprint],
-    bound: &'a std::collections::BTreeMap<String, String>,
-}
-
-/// A re-run failure of op `k`. `DUPLICATE_ID` is a copy meeting an id that is already taken
-/// (Decision 18). The step to blame is the one unmirrored step (if exactly one) that touched,
-/// created or removed an entity ours touches, would create (another pin of the key, for a
-/// `FONT_PINNED`) or the error names, or one an earlier op of ours touched to create such an
-/// entity (the item our split cut, for an overwrite meeting the right part); tracks and the
-/// assets ours only uses are left out, since nearly every step shares them.
-fn rerun_conflict(
-    e: &CoreError,
-    r: &PreparedRebase<'_>,
-    k: usize,
-    ours: &Ours<'_>,
-    theirs: &[(&str, &Footprint)],
-    head: &Project,
-) -> Conflict {
-    let mut named: BTreeSet<&str> = ours.fp.touches.iter().map(|(x, _)| x.as_str()).collect();
-    // What the op would create: a pin whose key another record pinned since (`FONT_PINNED`) is
-    // blamed on that record. A placeholder names no entity here.
-    named.extend(
-        ours.fp
-            .creates
-            .iter()
-            .map(String::as_str)
-            .filter(|x| !x.starts_with('$')),
-    );
-    for key in ["clip", "item", "id", "asset"] {
-        named.extend(e.details[key].as_str());
-    }
-    if let Some(clips) = e.details["clips"].as_array() {
-        named.extend(clips.iter().filter_map(Value::as_str));
-    }
-    // An entity we created (by placeholder, or the id it bound) is named through what the op
-    // that created it touched.
-    let creators: Vec<&str> = named
-        .iter()
-        .flat_map(|x| {
-            let placeholder = ours
-                .bound
-                .iter()
-                .find(|(_, id)| id.as_str() == *x)
-                .map(|(p, _)| p.as_str());
-            [Some(*x), placeholder]
-        })
-        .flatten()
-        .collect();
-    for f in ours.earlier {
-        if f.creates.iter().any(|c| creators.contains(&c.as_str())) {
-            named.extend(f.touches.iter().map(|(x, _)| x.as_str()));
-        }
-    }
-    for t in crate::ops::util::tracks(head) {
-        named.remove(t.id.as_str());
-    }
-    let blamed: BTreeSet<&str> = theirs
-        .iter()
-        .filter(|(_, f)| {
-            let changed = f
-                .touches
-                .iter()
-                .map(|(x, _)| x)
-                .chain(&f.creates)
-                .chain(&f.removes);
-            changed.into_iter().any(|x| named.contains(x.as_str()))
-        })
-        .map(|(tx, _)| *tx)
-        .collect();
-    let against = (blamed.len() == 1)
-        .then(|| blamed.first().map(|t| t.to_string()))
-        .flatten();
-    if e.code == "DUPLICATE_ID" {
-        let id = e.details["id"].as_str().unwrap_or_default();
-        let reason = if r.same_origin.contains(id) {
-            reasons::ALREADY_PRESENT
-        } else {
-            reasons::ID_COLLISION
-        };
-        return Conflict::new(r.tx.tx_id.as_str(), k, reason, against);
-    }
-    Conflict::from_rerun(e, &r.tx.tx_id, k, against)
 }
 
 fn overflow() -> CoreError {

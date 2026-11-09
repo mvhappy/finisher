@@ -19,7 +19,7 @@
   "project": {
     "id": "p1",
     "name": "Corpus",
-    "schemaVersion": 2,
+    "schemaVersion": 3,
     "rate": "30000/1001",
     "timelines": [
       {
@@ -47,6 +47,7 @@
                 "keyframes": {
                   "transform.rotation": [
                     {
+                      "id": "kf1",
                       "at": "0",
                       "value": 0.0,
                       "interp": {
@@ -58,6 +59,7 @@
                       }
                     },
                     {
+                      "id": "kf2",
                       "at": "1001/100",
                       "value": 45.0,
                       "interp": {

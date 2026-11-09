@@ -181,7 +181,9 @@ WebSocket port, and the lock file) lives in:
 
 Set `FIN_SERVER_DATA` (read by both `finisherd` and `fin`), or pass
 `finisherd --server-data <dir>`, to use another directory. The live database always stays in
-server data. The project folder holds `finisher.project.json` and `.finisher/`: the lease and a
+server data, which must be on this computer's own disk: a network share, a sync folder or a
+container's overlay filesystem is refused (`SERVER_DATA_NOT_LOCAL`; in Docker, mount a volume)
+unless you set `FIN_ALLOW_NONLOCAL_SERVER_DATA=1`. The project folder holds `finisher.project.json` and `.finisher/`: the lease and a
 write-once, hash-chained export of every edit (`segments/`), from which any server can rebuild
 the database. A project folder can therefore live on a NAS or in a sync folder and be opened
 by several servers: one writes, the others follow read-only.

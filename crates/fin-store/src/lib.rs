@@ -32,6 +32,7 @@ mod import;
 pub mod lease;
 mod link_records;
 mod localdate;
+pub mod locality;
 mod migrations;
 pub mod names;
 mod newer;

@@ -146,10 +146,13 @@ impl RootIds {
             self.seed(conn, tx_id)?;
         }
         let given = self.map.get(root.tx_id());
+        // As `BoundIds`: the first op naming a placeholder binds it.
+        let mut seen = std::collections::BTreeSet::new();
         Ok(tx
             .ops
             .iter()
             .filter_map(|op| op.allocates())
+            .filter(|p| seen.insert(*p))
             .map(|p| {
                 let old = rec.bindings.get(p)?;
                 match root {

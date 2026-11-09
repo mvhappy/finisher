@@ -34,7 +34,7 @@
   "project": {
     "id": "p1",
     "name": "Corpus",
-    "schemaVersion": 2,
+    "schemaVersion": 3,
     "rate": "30",
     "timelines": [
       {
@@ -95,6 +95,7 @@
                 "keyframes": {
                   "transform.scale": [
                     {
+                      "id": "kf1",
                       "at": "0",
                       "value": [
                         1.0,
@@ -109,6 +110,7 @@
                       }
                     },
                     {
+                      "id": "kf2",
                       "at": "6",
                       "value": [
                         1.2,
@@ -183,6 +185,7 @@
                 "keyframes": {
                   "slots.size": [
                     {
+                      "id": "kf3",
                       "at": "0",
                       "value": 0.0,
                       "interp": {
@@ -194,6 +197,7 @@
                       }
                     },
                     {
+                      "id": "kf4",
                       "at": "1",
                       "value": 64.0,
                       "interp": {
@@ -336,6 +340,7 @@
                 "keyframes": {
                   "audio.gain": [
                     {
+                      "id": "kf5",
                       "at": "3",
                       "value": -18.0,
                       "interp": {
@@ -347,6 +352,7 @@
                       }
                     },
                     {
+                      "id": "kf6",
                       "at": "4",
                       "value": -30.0,
                       "interp": {
@@ -354,6 +360,7 @@
                       }
                     },
                     {
+                      "id": "kf7",
                       "at": "8",
                       "value": -30.0,
                       "interp": {
@@ -365,6 +372,7 @@
                       }
                     },
                     {
+                      "id": "kf8",
                       "at": "9",
                       "value": -12.0,
                       "interp": {

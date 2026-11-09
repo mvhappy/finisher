@@ -34,7 +34,7 @@
   "project": {
     "id": "p1",
     "name": "Corpus",
-    "schemaVersion": 2,
+    "schemaVersion": 3,
     "rate": "30",
     "timelines": [
       {
@@ -130,6 +130,7 @@
                 "keyframes": {
                   "audio.gain": [
                     {
+                      "id": "kf1",
                       "at": "0",
                       "value": 0.0,
                       "interp": {
@@ -137,6 +138,7 @@
                       }
                     },
                     {
+                      "id": "kf2",
                       "at": "9",
                       "value": -12.0,
                       "interp": {

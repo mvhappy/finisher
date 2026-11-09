@@ -6,7 +6,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use fin_core::layout::faces_for;
-use fin_core::{AssetKind, CommittedTx, EntityKind, FontSource, ItemBody, Op, Project};
+use fin_core::{AssetKind, ChangeKind, CommittedTx, EntityKind, FontSource, ItemBody, Op, Project};
 use fin_store::Store;
 
 /// One pinned file: its key, its SHA-256, and for an asset pin the asset's file.
@@ -117,7 +117,9 @@ pub(crate) fn branch(store: &Store, branch: &str) -> Option<BranchFonts> {
 
 /// Whether a record may change what its branch pins or what its captions need: a font op
 /// (`font.pin|unpin|repin`), an asset, style or caption op, a caption insert or restore, or
-/// a diff that changes a pin (`font/<key>`), an asset or a style.
+/// a diff that changes a pin (`font/<key>`), an asset or a style, or that adds or removes an
+/// item, track or timeline (a caption may come or go with any of them: `item.delete`, a
+/// split, `track.remove --with-items`, `timeline.remove`; review of 2026-11-09, #23).
 pub(crate) fn touches(c: &CommittedTx) -> bool {
     let caption = |op: &Op| match op {
         Op::ItemInsert(i) => matches!(i.body, ItemBody::Caption { .. }),
@@ -134,6 +136,9 @@ pub(crate) fn touches(c: &CommittedTx) -> bool {
         matches!(
             ch.kind,
             EntityKind::Asset | EntityKind::Font | EntityKind::Style
-        )
+        ) || (matches!(
+            ch.kind,
+            EntityKind::Item | EntityKind::Track | EntityKind::Timeline
+        ) && matches!(ch.change, ChangeKind::Added | ChangeKind::Removed))
     })
 }

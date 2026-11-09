@@ -51,7 +51,8 @@ fn key(item: &str, path: &str, at: Rational, v: f64) -> Op {
     KeyframeSet {
         item: item.into(),
         path: path.into(),
-        at,
+        key: None,
+        at: Some(at),
         value: ParamValue::Number(v),
         interp: Interp::Linear,
     }
@@ -62,7 +63,8 @@ fn unkey(item: &str, path: &str, at: Rational) -> Op {
     KeyframeRemove {
         item: item.into(),
         path: path.into(),
-        at,
+        key: None,
+        at: Some(at),
     }
     .into()
 }
@@ -222,7 +224,7 @@ fn keyframe_ops_golden() {
     };
     assert_eq!(
         (c.kind, c.id.as_str(), c.path.as_deref(), c.track.as_deref()),
-        (EntityKind::Item, "c1", Some("opacity@4"), Some("t1"))
+        (EntityKind::Item, "c1", Some("opacity#kf5"), Some("t1"))
     );
     // On an effect's parameter the change is the effect's.
     let a = golden_apply(&p, vec![key("c1", "effects.fx1.radius", secs(2), 5.0)]);
@@ -234,7 +236,8 @@ fn keyframe_ops_golden() {
     let op: Op = KeyframeSet {
         item: "c2".into(),
         path: "transform.position".into(),
-        at: r("1/2"),
+        key: None,
+        at: Some(r("1/2")),
         value: ParamValue::Vec2([1.0, -2.0]),
         interp: Interp::Bezier {
             x1: 0.25,
@@ -280,7 +283,8 @@ fn keyframe_set_replaces_at_same_time() {
     let op: Op = KeyframeSet {
         item: "c1".into(),
         path: "opacity".into(),
-        at: secs(2),
+        key: None,
+        at: Some(secs(2)),
         value: ParamValue::Number(0.25),
         interp: Interp::Hold,
     }
@@ -291,6 +295,7 @@ fn keyframe_set_replaces_at_same_time() {
     assert_eq!(
         k[0],
         Keyframe {
+            id: "kf1".into(),
             at: secs(2),
             value: ParamValue::Number(0.25),
             interp: Interp::Hold,
@@ -312,7 +317,8 @@ fn keyframe_on_static_path_refused() {
     let blend: Op = KeyframeSet {
         item: "c1".into(),
         path: "blend".into(),
-        at: secs(1),
+        key: Some("$k".into()),
+        at: Some(secs(1)),
         value: ParamValue::Text("screen".into()),
         interp: Interp::Hold,
     }
@@ -331,7 +337,8 @@ fn keyframe_on_static_path_refused() {
         KeyframeSet {
             item: "c1".into(),
             path: "opacity".into(),
-            at: secs(1),
+            key: Some("$k".into()),
+            at: Some(secs(1)),
             value: ParamValue::Text("x".into()),
             interp: Interp::Linear,
         }
@@ -352,7 +359,8 @@ fn keyframe_on_static_path_refused() {
     let bad: Op = KeyframeSet {
         item: "c1".into(),
         path: "opacity".into(),
-        at: secs(1),
+        key: None,
+        at: Some(secs(1)),
         value: ParamValue::Number(0.5),
         interp: Interp::Bezier {
             x1: 1.5,
@@ -512,6 +520,7 @@ fn commit(p: &Project, ops: Vec<Op>, rev: u64, tx_id: &str) -> (Project, Committ
     let mut t = tx(ops);
     t.tx_id = tx_id.into();
     t.base_rev = rev - 1;
+    let t = fin_core::canonicalize(p, &t).unwrap();
     let a = apply_tx(p, &t, &mut MemIds::after(p)).unwrap_or_else(|e| panic!("{tx_id}: {e}"));
     (
         a.project,
@@ -959,7 +968,8 @@ fn bezier_y_is_bounded() {
         KeyframeSet {
             item: "c2".into(),
             path: "opacity".into(),
-            at: secs(1),
+            key: Some("$k".into()),
+            at: Some(secs(1)),
             value: ParamValue::Number(0.5),
             interp: Interp::Bezier {
                 x1: 0.5,

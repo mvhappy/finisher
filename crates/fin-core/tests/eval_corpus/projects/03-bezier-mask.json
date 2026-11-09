@@ -15,7 +15,7 @@
   "project": {
     "id": "p1",
     "name": "Corpus",
-    "schemaVersion": 2,
+    "schemaVersion": 3,
     "rate": "30",
     "timelines": [
       {
@@ -47,6 +47,7 @@
                 "keyframes": {
                   "mask.feather": [
                     {
+                      "id": "kf3",
                       "at": "0",
                       "value": 0.0,
                       "interp": {
@@ -58,6 +59,7 @@
                       }
                     },
                     {
+                      "id": "kf4",
                       "at": "3",
                       "value": 120.5,
                       "interp": {
@@ -69,6 +71,7 @@
                       }
                     },
                     {
+                      "id": "kf5",
                       "at": "6",
                       "value": 12.0,
                       "interp": {
@@ -82,6 +85,7 @@
                   ],
                   "mask.choke": [
                     {
+                      "id": "kf1",
                       "at": "1",
                       "value": -20.0,
                       "interp": {
@@ -93,6 +97,7 @@
                       }
                     },
                     {
+                      "id": "kf2",
                       "at": "5",
                       "value": 40.0,
                       "interp": {
