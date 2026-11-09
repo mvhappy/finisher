@@ -155,6 +155,7 @@ fn salvage_marks_missing_branch_rows() {
             base_rev: base,
             schema_version: fin_core::SCHEMA_VERSION,
             args_hash: None,
+            via: None,
             ops: vec![insert(0, "a1")],
         })
         .unwrap();

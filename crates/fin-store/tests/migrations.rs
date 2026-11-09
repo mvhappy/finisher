@@ -252,6 +252,7 @@ fn commit_after_migration_continues_the_chain() {
             base_rev: rev,
             schema_version: SCHEMA_VERSION,
             args_hash: None,
+            via: None,
             ops: vec![
                 fin_core::AssetAdd::media(
                     "$a",

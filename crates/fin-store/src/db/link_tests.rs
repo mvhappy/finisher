@@ -144,6 +144,7 @@ fn intent(tx_id: &str, seq: u64) -> Tx {
         base_rev: seq - 1,
         schema_version: SCHEMA_VERSION,
         args_hash: None,
+        via: None,
         ops: vec![],
     }
 }

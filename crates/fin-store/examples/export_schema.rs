@@ -1,5 +1,5 @@
 //! Prints the JSON Schema of the TypeScript contract to stdout: `fin-core`'s types plus the
-//! envelope types the engine sends that live above it (fin-store's [`Generation`],
+//! envelope types the engine sends (and `Tx.via`'s `Via`, by name) that live above it (fin-store's [`Generation`],
 //! [`EngineEvent`], [`TxSetAside`], [`HistoryResult`], [`MergeReport`], [`RecoverReport`],
 //! and the [`WriteGuard`] finisherd sends with every write;
 //! fin-probe's [`Probe`]; fin-fonts' [`FontCatalog`], [`FileState`], [`FontsStatus`],
@@ -14,7 +14,9 @@
 //! results (`JobDone` and `WorkerExit` are fin-core payloads, registered with the others),
 //! the JSON shapes of fin-node's `JobHost` (`fin-jobhost`'s `wire`),
 //! the plugin model's (`fin-plugin-api`: `Manifest`, `Permission`, `PermissionDiff`, `Risk`,
-//! `LicenceClass`, `ContributionKind`, `Invalid`, by `schema::register_schemas`) and its
+//! `LicenceClass`, `ContributionKind`, `Invalid`, the `commands` and `hooks` contributions,
+//! the argument schema subset's `SchemaSubset`, `SchemaError` and `ArgProblem`, and the plugin
+//! protocol's context, command, call and error types, by `schema::register_schemas`) and its
 //! store's (`fin-registry`: `InstallPlan`, `InstalledPlugin`, `Accept`, `ValidationReport`,
 //! `TargetCustom`), the sandbox profiles' typed inputs (`fin-sandbox`: `AgentInput`,
 //! `HookInput`, `WorkerInput`, `PluginInput`, `SandboxProfile`; sub-project 7C), and
@@ -34,6 +36,8 @@ use fin_store::{
 fn main() {
     let schema = fin_core::json_schema_with(|g| {
         g.subschema_for::<fin_core::Link>();
+        // Reached through `Tx.via` too; named so the plugin SDKs can import it (plan 8B Task 3).
+        g.subschema_for::<fin_core::tx::Via>();
         g.subschema_for::<fin_core::Conflict>();
         g.subschema_for::<Generation>();
         g.subschema_for::<fin_core::branch::BranchState>();
