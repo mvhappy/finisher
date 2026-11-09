@@ -75,6 +75,21 @@ function spawned(argv: string[]): Promise<{ code: number | null; out: string; er
   });
 }
 
+/**
+ * Spawns every `argv` with at most `limit` in flight and resolves in order. A spawned `finisherd`
+ * costs ~1 CPU-s to load; run one after another, a loaded machine (load average 30) spends the
+ * test's whole budget on process start-up, not on anything the test checks.
+ */
+async function spawnedAll(argvs: ReadonlyArray<string[]>, limit = 6): Promise<Array<{ code: number | null; out: string; err: string }>> {
+  const results = new Array<{ code: number | null; out: string; err: string }>(argvs.length);
+  let next = 0;
+  const lane = async () => {
+    for (let i = next++; i < argvs.length; i = next++) results[i] = await spawned(argvs[i]!);
+  };
+  await Promise.all(Array.from({ length: Math.min(limit, argvs.length) }, lane));
+  return results;
+}
+
 const settings = () => (existsSync(join(serverData, "settings.json")) ? readFileSync(join(serverData, "settings.json"), "utf8") : undefined);
 const codeOf = (e: Exit) => (e.ok ? undefined : e.error.code);
 
@@ -85,7 +100,11 @@ describe("dispatch and connection", () => {
     // `finisherd serve --server-data <dir>` serves; `startServer` uses the flags-only form.
     const child = spawn(process.execPath, [MAIN, "serve", "--server-data", serverData], { stdio: "ignore", env: env() });
     const exited = new Promise<number | null>((r) => child.once("exit", r));
-    for (let i = 0; i < 300 && !existsSync(join(serverData, "finisherd.json")); i++) await new Promise((r) => setTimeout(r, 25));
+    // Loading the server takes seconds on a loaded machine: poll to a deadline, and stop at once if it died.
+    let died: number | null | undefined;
+    void exited.then((c) => (died = c));
+    for (const end = Date.now() + 25_000; died === undefined && Date.now() < end && !existsSync(join(serverData, "finisherd.json")); ) await new Promise((r) => setTimeout(r, 25));
+    expect(died, "the server exited before it was ready").toBeUndefined();
     expect(existsSync(join(serverData, "finisherd.json"))).toBe(true);
     expect((await run(["stop"])).code).toBe(0);
     expect(await exited).toBe(0);
@@ -165,11 +184,12 @@ describe("the terminal gate and confirmations", () => {
     ["library", "set", "nothing", "--hydrate", "on"],
   ];
 
-  test("non_tty_is_console_needs_tty", { timeout: 60_000 }, async () => {
+  test("non_tty_is_console_needs_tty", { timeout: 120_000 }, async () => {
     await start();
     const before = settings();
-    for (const argv of MUTATING) {
-      const r = await spawned(argv);
+    const results = await spawnedAll(MUTATING);
+    for (const [i, argv] of MUTATING.entries()) {
+      const r = results[i]!;
       expect(r.code, argv.join(" ")).toBe(7);
       expect(r.err, argv.join(" ")).toMatch(/^finisherd: CONSOLE_NEEDS_TTY: /);
       expect(r.err).not.toMatch(/`|\bfin(isherd)? [a-z]/);
@@ -288,16 +308,15 @@ describe("the terminal gate and confirmations", () => {
 });
 
 describe("read-only, service and confirmed commands", () => {
-  test("read_only_commands_run_without_tty", async () => {
+  test("read_only_commands_run_without_tty", { timeout: 90_000 }, async () => {
     await start();
-    const status = await spawned(["status", "--json"]);
-    expect(status.code).toBe(0);
-    expect(JSON.parse(status.out)).toMatchObject({ protocol: 2, envId: server!.info.envId, pid: server!.info.pid, journal: { enabled: expect.any(Boolean) } });
-    expect((await spawned(["status"])).out).toContain("Finisher server");
-    const audit = await spawned(["audit", "--json", "--limit", "5"]);
-    expect(audit.code).toBe(0);
-    expect(Array.isArray(JSON.parse(audit.out).entries)).toBe(true);
-    expect((await spawned(["audit", "--kind", "nonsense"])).code).toBe(2);
+    const [status, plain, audit, nonsense] = await spawnedAll([["status", "--json"], ["status"], ["audit", "--json", "--limit", "5"], ["audit", "--kind", "nonsense"]]);
+    expect(status!.code).toBe(0);
+    expect(JSON.parse(status!.out)).toMatchObject({ protocol: 2, envId: server!.info.envId, pid: server!.info.pid, journal: { enabled: expect.any(Boolean) } });
+    expect(plain!.out).toContain("Finisher server");
+    expect(audit!.code).toBe(0);
+    expect(Array.isArray(JSON.parse(audit!.out).entries)).toBe(true);
+    expect(nonsense!.code).toBe(2);
   });
 
   test("stop_shuts_down_gracefully", async () => {
@@ -498,8 +517,15 @@ describe("library commands (plan 5D Task 14)", () => {
   test("console_rm_set_hydrate_and_aliases", { timeout: 90_000 }, async () => {
     await start();
     const root = makeRoot();
-    expect((await run(["library", "add", root, "--name", "Raw"])).code).toBe(0);
+    const added = await run(["library", "add", root, "--name", "Raw"]);
+    expect(added.code).toBe(0);
     const id = (await library())[0]!.id;
+    // `--accept-unmounted clips` names a folder the library must have scanned: wait for the first scan.
+    const scan = /job ([0-9a-z]{26})/.exec(added.out)?.[1];
+    expect(scan, added.out).toBeDefined();
+    const watcher = await connectProved(server!, "console");
+    expect(ok<{ jobs: Array<{ state: string }> }>(await watcher.call("jobs.wait", { ids: [scan], timeoutMs: 60_000 })).jobs[0]!.state).toBe("succeeded");
+    await watcher.close();
     const set = (...argv: string[]) => run(["library", "set", "Raw", ...argv]);
     const p = person();
     const first = await run(["library", "set", "raw", "--hydrate", "on", "--bandwidth", "5", "--alias", "/mnt/a", "--alias", "/mnt/b"], p);
