@@ -17,11 +17,12 @@
 //!   repeatedly, until none is left and the program is reaped;
 //! - exits as the program did: its exit code, or the same signal raised on itself.
 //!
-//! The launcher itself is not confined (it runs no code but this) and carries no mark; the
-//! program may signal only processes of its own sandbox (`(target same-sandbox)`), so it
-//! cannot kill its launcher. A launcher killed by anyone else (`SIGKILL` by its parent) leaves
-//! the session running: `finisherd` hangs the launcher up and kills its group only after
-//! `REAP_GRACE_MS`.
+//! The launcher itself is not confined (it runs no code but this) and carries no mark; a
+//! confined program may signal only processes of its own sandbox (`(target same-sandbox)`), so
+//! it cannot kill its launcher. An unconfined one (the mark-only profile allows everything) can,
+//! and can start processes outside its sandbox through `launchd` (`open`, `launchctl`), which
+//! no mark finds. A launcher killed with `SIGKILL` leaves the session running: `finisherd`
+//! hangs the launcher up and kills its group only after `REAP_GRACE_MS`.
 
 use std::time::Duration;
 
@@ -57,7 +58,6 @@ pub fn prepare() -> Result<Prepared, String> {
     // SAFETY: getppid has no failure mode.
     let parent = unsafe { libc::getppid() };
     let mark = seatbelt_mark::new_mark().map_err(|e| format!("getentropy: {e}"))?;
-    let (_, old_mask) = block(&[libc::SIGCHLD, libc::SIGHUP])?;
     // SAFETY: kqueue takes no arguments; a kqueue is not inherited across `fork`.
     let raw = unsafe { libc::kqueue() };
     if raw < 0 {
@@ -76,6 +76,10 @@ pub fn prepare() -> Result<Prepared, String> {
     if !kevent_add(fd, 0, libc::EVFILT_TIMER, libc::NOTE_SECONDS, 1) {
         return Err(os_err("kevent(EVFILT_TIMER)"));
     }
+    // Blocked only once the filters exist: `kqueue` reports a signal sent after its filter
+    // was added, not one already pending, so one sent in between would be lost (a signal
+    // before this point takes its default action on the launcher, before the fork).
+    let (_, old_mask) = block(&[libc::SIGCHLD, libc::SIGHUP])?;
     // SAFETY: as above.
     if unsafe { libc::getppid() } != parent {
         return Err("the launcher's parent exited".into());
@@ -158,7 +162,8 @@ impl Prepared {
                 Some(Event::Signal(libc::SIGHUP)) | Some(Event::ParentExit) => break,
                 Some(Event::Signal(s)) => forward(child, s),
                 Some(Event::Tick) | None => {
-                    if orphaned() {
+                    // A missed `SIGCHLD` cannot wedge the session either.
+                    if orphaned() || !reap_available(child, &mut main) || main.is_some() {
                         break;
                     }
                 }
@@ -176,7 +181,7 @@ impl Prepared {
             // SAFETY: kill with plain integers; the program is alive or an unreaped zombie.
             unsafe { libc::kill(-child, libc::SIGKILL) };
         }
-        loop {
+        for pass in 0u32.. {
             let signalled = seatbelt_mark::kill_marked(&self.mark);
             let children = reap_available(child, &mut main);
             if signalled == 0 && !children {
@@ -186,7 +191,9 @@ impl Prepared {
                 // SAFETY: our own child, alive or an unreaped zombie.
                 unsafe { libc::kill(child, libc::SIGKILL) };
             }
-            std::thread::sleep(Duration::from_millis(2));
+            // A process stuck in the kernel never dies: after a second, look ten times less often.
+            let pause = if pass < 500 { 2 } else { 20 };
+            std::thread::sleep(Duration::from_millis(pause));
         }
         exit_as(main.unwrap_or(libc::SIGKILL))
     }

@@ -79,12 +79,13 @@ fn grandchild(t: &Path, program: u32) -> i32 {
     g
 }
 
-/// Kills what a failed assertion would leave running.
+/// Kills what a failed assertion would leave running: only a `sleep` or the launcher, so a pid
+/// reused by another process of the user is never killed.
 struct Reap(Vec<i32>);
 impl Drop for Reap {
     fn drop(&mut self) {
         for &p in &self.0 {
-            if p > 0 && alive(p) {
+            if p > 0 && alive(p) && ["sleep", "fin-sandbox-exec"].contains(&proc_name(p).as_str()) {
                 // SAFETY: a process this test started (through the launcher).
                 unsafe { libc::kill(p, libc::SIGKILL) };
             }
@@ -130,11 +131,11 @@ fn a_setsid_grandchild_goes_when_the_program_exits() {
             launch_cmd(&req, &["--policy-fd", "3", "--", "sh", "-c", &script], &env);
         let out = cmd.current_dir(workspace(&t)).output().unwrap();
         drop(keep);
-        // The program's exit code, as before.
-        assert_eq!(out.status.code(), Some(3), "{env:?} {out:?}");
         let text = std::fs::read_to_string(workspace(&t).join("g.pid")).expect("g.pid");
         let g: i32 = text.trim().parse().expect("a pid");
         let _reap = Reap(vec![g]);
+        // The program's exit code, as before.
+        assert_eq!(out.status.code(), Some(3), "{env:?} {out:?}");
         assert!(
             gone(g),
             "{env:?}: the setsid grandchild {g} outlived the program"

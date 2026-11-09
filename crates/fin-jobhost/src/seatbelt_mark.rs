@@ -80,8 +80,10 @@ pub fn carries(pid: libc::pid_t, mark: &str) -> bool {
     sandboxed && allows_lookup(pid, &yes) && !allows_lookup(pid, &no)
 }
 
-/// `pid`'s owner and whether it is a zombie, or `None` when it is gone.
-fn short_info(pid: libc::pid_t) -> Option<(libc::uid_t, bool)> {
+/// Whether `pid` belongs to user `me` (its real or effective uid: a marked process that ran a
+/// setuid program keeps its real uid, and `kill` still reaches it) and is a zombie, or `None`
+/// when it is gone.
+fn short_info(pid: libc::pid_t, me: libc::uid_t) -> Option<(bool, bool)> {
     // SAFETY: plain data the call fills.
     let mut info: libc::proc_bsdshortinfo = unsafe { std::mem::zeroed() };
     let size = std::mem::size_of::<libc::proc_bsdshortinfo>() as c_int;
@@ -95,7 +97,10 @@ fn short_info(pid: libc::pid_t) -> Option<(libc::uid_t, bool)> {
             size,
         )
     };
-    (n == size).then_some((info.pbsi_uid, info.pbsi_status == libc::SZOMB))
+    (n == size).then_some((
+        info.pbsi_uid == me || info.pbsi_ruid == me,
+        info.pbsi_status == libc::SZOMB,
+    ))
 }
 
 /// Every process now running (zombies excluded) of this user whose sandbox carries `mark`.
@@ -124,7 +129,7 @@ pub fn marked(mark: &str) -> Vec<libc::pid_t> {
     }
     buf.into_iter()
         .filter(|&p| p > 1)
-        .filter(|&p| short_info(p).is_some_and(|(uid, zombie)| uid == me && !zombie))
+        .filter(|&p| short_info(p, me).is_some_and(|(ours, zombie)| ours && !zombie))
         .filter(|&p| carries(p, mark))
         .collect()
 }
