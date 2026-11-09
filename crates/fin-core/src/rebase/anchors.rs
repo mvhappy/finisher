@@ -171,3 +171,66 @@ impl Anchor {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::positional;
+    use crate::model::{Item, ItemBody};
+    use crate::ops::*;
+    use crate::time::Rational;
+
+    /// [`positional`] names exactly the ops `Op::positions_mut` lists a position of.
+    #[test]
+    fn positional_matches_positions_mut() {
+        let r = Rational::from_int;
+        let ops: Vec<Op> = vec![
+            ItemInsert {
+                id: "$c".into(),
+                track: "t1".into(),
+                at: r(3),
+                duration: r(1),
+                mode: InsertMode::Ripple,
+                body: ItemBody::Adjustment {},
+            }
+            .into(),
+            ItemRestore {
+                item: Item::clip("c1", "a1", r(4), r(0), r(1)),
+                track: "t1".into(),
+                mode: DeleteMode::Ripple,
+            }
+            .into(),
+            Op::ClipInsert {
+                id: "$c".into(),
+                track: "t1".into(),
+                at: r(2),
+                asset: "a1".into(),
+                source_in: r(0),
+                duration: r(1),
+            },
+            ItemMove {
+                item: "c1".into(),
+                track: "t1".into(),
+                at: r(0),
+                mode: InsertMode::Ripple,
+            }
+            .into(),
+            ItemTrim {
+                item: "c1".into(),
+                edge: Edge::End,
+                delta: r(1),
+                mode: TrimMode::Ripple,
+                alone: false,
+            }
+            .into(),
+            ItemDelete {
+                item: "c1".into(),
+                mode: DeleteMode::Ripple,
+            }
+            .into(),
+        ];
+        for op in ops {
+            let listed = !op.clone().positions_mut().is_empty();
+            assert_eq!(positional(&op), listed, "{}", op.name());
+        }
+    }
+}
