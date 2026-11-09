@@ -146,13 +146,33 @@ pub fn send_flagged(
     };
     let answer = match call(payload.clone()) {
         // The answer was lost after the request was sent (the error names the key): retry once
-        // with the same key, which the server answers from its log if it applied it.
-        Err(e) if IN_FLIGHT_CODES.contains(&e.code.as_str()) && e.details["txId"] == tx_id => {
-            call(payload)
+        // with the same key, which the server answers from its log if it applied it. Not
+        // `project recover` (unhashed): its dismiss and import run before the key's dedupe.
+        Err(e)
+            if req.hashed
+                && IN_FLIGHT_CODES.contains(&e.code.as_str())
+                && e.details["txId"] == tx_id =>
+        {
+            call(payload).map_err(|again| unanswered(e, again, &tx_id))
         }
         other => other,
     }?;
     Ok((answer, globals.dry_run && !committed))
+}
+
+/// The retry's error, unless it failed without reaching a server that answered (reconnect,
+/// handshake, deadline): then the first error, which names the key to retry with.
+fn unanswered(first: CoreError, again: CoreError, tx_id: &str) -> CoreError {
+    let unreached = IN_FLIGHT_CODES.contains(&again.code.as_str())
+        || matches!(
+            again.code.as_str(),
+            "SERVER_UNTRUSTED" | "UNAUTHENTICATED" | "PROTOCOL_MISMATCH"
+        );
+    if unreached && again.details["txId"] != tx_id {
+        first
+    } else {
+        again
+    }
 }
 
 /// Lists longer than this are cut to their first [`CAP`] entries; `<key>Total` has the count.

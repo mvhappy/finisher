@@ -26,6 +26,7 @@ const WRITES: &[&str] = &[
     "history.revert",
     "branch.create",
     "branch.set",
+    "project.recover",
 ];
 
 struct Fake {
@@ -55,6 +56,12 @@ fn answer(frame: &Value) -> Value {
 /// A fake finisherd: drops the connection on the first `drops` writes, then answers writes
 /// with `{committed: []}`.
 fn start(drops: usize) -> Fake {
+    start_with(drops, false)
+}
+
+/// [`start`]; `vanish`: the server goes away with the first dropped answer (its socket is
+/// removed, so the retry cannot even connect).
+fn start_with(drops: usize, vanish: bool) -> Fake {
     let (dir, root) = real_tempdir();
     let sd = root.join("sd");
     std::fs::create_dir_all(sd.join("run")).unwrap();
@@ -70,10 +77,12 @@ fn start(drops: usize) -> Fake {
     let writes: Arc<Mutex<Vec<Value>>> = Arc::default();
     let dropped = Arc::new(AtomicUsize::new(0));
     let record = writes.clone();
+    let gone = vanish.then(|| socket.clone());
     std::thread::spawn(move || {
         for conn in listener.incoming().flatten() {
             let (key, record, dropped) = (key.clone(), record.clone(), dropped.clone());
-            std::thread::spawn(move || serve(conn, &key, &record, &dropped, drops));
+            let gone = gone.clone();
+            std::thread::spawn(move || serve(conn, &key, &record, &dropped, drops, gone));
         }
     });
     Fake {
@@ -90,6 +99,7 @@ fn serve(
     writes: &Mutex<Vec<Value>>,
     dropped: &AtomicUsize,
     drops: usize,
+    gone: Option<PathBuf>,
 ) {
     let mut io = BufReader::new(conn);
     let mut line = String::new();
@@ -105,6 +115,9 @@ fn serve(
             writes.lock().unwrap().push(frame["payload"].clone());
             if dropped.fetch_add(1, Ordering::SeqCst) < drops {
                 // The request arrived; its answer never leaves.
+                if let Some(socket) = gone {
+                    let _ = std::fs::remove_file(socket);
+                }
                 return;
             }
             ok(&frame, json!({ "committed": [] }))
@@ -204,4 +217,38 @@ fn a_given_key_is_the_one_retried_and_named() {
     assert_error(&run, 5, "SERVER_UNAVAILABLE");
     assert_eq!(keys(&fake), [json!("undo-k1"), json!("undo-k1")]);
     assert_eq!(run.json["error"]["details"]["txId"], "undo-k1");
+}
+
+/// Review of fix batch D (B1): the retry that cannot reach the server (it went away with the
+/// answer) keeps the first error, which names the key; never "start finisherd" without one.
+#[cfg(unix)]
+#[test]
+fn a_retry_that_cannot_connect_still_names_the_key() {
+    for args in COMMANDS {
+        let fake = start_with(1, true);
+        let run = run(&fake, args);
+        assert_error(&run, 5, "SERVER_UNAVAILABLE");
+        let keys = keys(&fake);
+        assert_eq!(keys.len(), 1, "{args:?}: {keys:?}");
+        let error = &run.json["error"];
+        assert_eq!(error["details"]["txId"], keys[0], "{args:?}: {error}");
+        let fix = error["fix"].as_str().unwrap();
+        let key = keys[0].as_str().unwrap();
+        assert!(
+            fix.contains(&format!("`--idem-key {key}`")),
+            "{args:?}: {fix}"
+        );
+    }
+}
+
+/// `project recover` is unhashed: its dismiss and import run before the key's dedupe, so a lost
+/// answer is not retried behind the agent's back; the error names the key.
+#[test]
+fn project_recover_is_not_retried() {
+    let fake = start(2);
+    let run = run(&fake, &["project", "recover", "--dismiss", "0123456789ab"]);
+    assert_error(&run, 5, "SERVER_UNAVAILABLE");
+    let keys = keys(&fake);
+    assert_eq!(keys.len(), 1, "{keys:?}");
+    assert_eq!(run.json["error"]["details"]["txId"], keys[0]);
 }
