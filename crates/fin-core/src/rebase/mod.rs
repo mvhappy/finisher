@@ -9,6 +9,7 @@
 //!
 //! [`rebase_tx`] is the stale-commit entry: the frame is the tx applied at its base.
 
+pub mod anchors;
 pub mod conflict;
 mod engine;
 pub mod footprint;

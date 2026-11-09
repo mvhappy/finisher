@@ -26,6 +26,13 @@ their build scripts, not in clippy. A check-only run can skip the SVT-AV1 C buil
 `FIN_SVT_CHECK_ONLY=1`, but rav1d still needs nasm, so install it (`apt install nasm`, or extract
 the `.deb` into a user directory and add its `usr/bin` to `PATH`).
 
+Secrets: a server keeps its identity key and the data key of stored provider keys in the OS
+keychain when it answers without a prompt, else in files in its private data folder
+(`FIN_SECRETS=auto|keychain|file`; `FIN_SECRETS_KEY_FILE` encrypts the files). The tests, the
+e2e harness and `fin`'s test support always run servers with `FIN_SECRETS=file`, and a local
+`.superpowers/env.sh` (git-ignored) should export it too: unsigned macOS builds prompt on every
+keychain access.
+
 ## Run it
 
 Sub-projects 2, 4A, 4B and 4C ship the core with durable storage, history and the full edit model: `finisherd` (the local server)
@@ -187,17 +194,80 @@ can run it. `kill` (SIGTERM) also shuts down cleanly on macOS and Linux.
 `pnpm e2e` runs the whole flow (`fin` → `finisherd` → a WebSocket subscriber) in a temp
 directory.
 
+## Remote access
+
+Off by default: the server listens only on `127.0.0.1` and its local socket or pipe. Turn it on
+from the server's console:
+
+```bash
+finisherd remote enable                                   # 0.0.0.0:7311, a self-signed certificate
+finisherd remote enable --listen 0.0.0.0:7311 --cert <cert.pem> --key <key.pem>   # your own certificate
+finisherd remote enable --public-url https://<your-domain>                       # behind a reverse proxy
+finisherd remote status                                   # what runs, where, and its pin
+finisherd remote disable                                  # closes the listener; devices stay paired
+```
+
+Off this computer it is TLS only (`LISTEN_NEEDS_TLS` otherwise). `--tls self-signed` (the
+default) makes a certificate from the server's identity key; the Finisher app checks it by its
+pin, which comes with the pairing link. **Browsers cannot check a pin**, so they need a route whose
+certificate they trust (`--cert`/`--key` files, for example from `tailscale cert`, re-read when
+they change, or a reverse proxy) or an SSH tunnel to the loopback listener. The tunnel must use
+the same port number on both ends, because the server checks the port in `Host`: fix the
+loopback port with `{"server": {"loopback": {"port": 7310}}}` in `<server-data>/settings.json`,
+restart, then `ssh -L 7310:127.0.0.1:7310 <server>`. The first listen off loopback brings up the
+macOS or Windows firewall prompt.
+
+**Pairing a device.** `finisherd pair` (`--label <text>`, `--ttl 30s` to `10m`, default 5
+minutes) prints a one-time link and, when it fits the terminal, a QR code. Open the link or scan
+the code on the device. The console then shows the device's name, platform and a six-digit
+safety code; approve only if the code matches the one the device shows. A link works once: if
+the device says it was already used, someone else redeemed it, so reject that request and pair
+again. Treat a link as a password, and do not paste it into chats.
+
+```bash
+finisherd devices                  # paired devices (--all for ended ones, --json)
+finisherd revoke <device-id>       # ends it now, with its connections (type its name to confirm)
+finisherd tls show                 # the identity's pin, in groups of four, and the routes
+finisherd tls rotate               # a new identity: every device pairs again (type the environment's name)
+finisherd env show                 # the environment devices pair with
+finisherd env name <name>          # the name devices show for it
+```
+
+**Moved or copied server data.** When the server data turns up on another machine or in
+another folder, devices are refused (`ENV_MOVED`) and the remote listener stays off until you
+decide: `finisherd env adopt` if it was a move (devices are let in again), or `finisherd env
+reset` if it is a copy that will run beside the original (a new identity, devices deleted,
+agent and MCP credentials revoked; type the environment's name).
+
+**Docker and services.** `FIN_LISTEN=<host:port>` runs the remote listener whatever
+`settings.json` says, self-signed unless `FIN_TLS_CERT` and `FIN_TLS_KEY` name certificate
+files. In a container the server cannot see the host's addresses, so set
+`server.remote.publicUrl` (an `https` URL) in `settings.json`, or run Tailscale inside the
+container, for devices to get a usable route. `finisherd remote status` (or `finisherd status --json`) says whether
+the listener came from `env` or `settings`.
+
+**Where the keys live.** The identity key and the data key of stored provider keys go to the OS
+keychain (macOS Keychain, Windows Credential Manager, the Secret Service on Linux) when it
+answers without a prompt. Otherwise, as on a headless Linux box, a locked Secret Service or in
+a container, they go to files in `<server-data>/secrets/` (owner-only), and `finisherd status`
+warns `SECRETS_FILE_STORE`. `FIN_SECRETS=auto|keychain|file` chooses (default `auto`; a server
+keeps the store it used first). `FIN_SECRETS_KEY_FILE` names a file of 32 random bytes in
+base64url (a Docker secret, for example) that encrypts those files; without it they are plain
+files protected only by their folder.
+
 ## Security model
 
 **Who can talk to the server.** Every connection proves who it is before the server does
 anything for it, and the server proves itself first, so a program that took over the socket
-or pipe name gets nothing. There are four kinds of callers today:
+or pipe name gets nothing. There are five kinds of callers today:
 
 - **`local`**: `fin` and scripts you run. They prove with `<server-data>/auth/local.key`.
 - **`console`**: you at the server, through `finisherd <command>`. It proves with
   `<server-data>/auth/console.key`.
 - **`agent`** and **`mcp`**: an agent harness or the MCP adapter, with a credential you mint
   for it (below).
+- **`device`**: a Finisher app you paired (Remote access, above). It proves with its own key on
+  every request.
 - Nothing else. A connection that has not proved anything can only say hello.
 
 `<server-data>/auth/` holds the keys (owner-only; `local.key` and `console.key` are replaced at
@@ -220,7 +290,9 @@ ticket over a proved connection and sends it when it connects.
 - a confirmed takeover and a relocation;
 - adding libraries, installing plugins;
 - minting, listing and revoking credentials, reading or purging the audit log, stopping the
-  server.
+  server;
+- pairing, renaming and revoking devices, remote access and TLS settings, and the environment
+  commands (`env adopt`, `env reset`, `tls rotate`).
 
 You do them in the Finisher app (later) or the server's console. `finisherd` with no argument
 serves. `finisherd help` lists the console commands. `finisherd status`, `audit`, `agent ls`,
@@ -246,10 +318,45 @@ typing the name is the step a blind `y` cannot pass, in a pipe or in a terminal.
 does **not** stop a program running as your user that can read `<server-data>/auth/`: such a
 program can prove as the console itself, or drive a pseudo-terminal (`script`, `expect`) and
 answer `y` or type the name it reads off the screen. **An agent harness you start in a plain
-shell runs as you**, so until Finisher sandboxes agents (a later version), human-only operations,
-scopes and branch limits bind only harnesses that go through `fin` or MCP with their own
-credential. They record who did what and prevent mistakes. They are not a wall against hostile
-code.
+shell runs as you**: human-only operations, scopes and branch limits bind it only if it goes
+through `fin` or MCP with its own credential. They record who did what and prevent mistakes.
+They are not a wall against hostile code. Finisher's OS sandbox (below) is that wall for the
+processes Finisher starts itself, on each OS where it is switched on.
+
+**The OS sandbox.** Every process Finisher starts for a CLI agent session, a media job or a
+plugin goes through `fin-sandbox`, under one of four profiles (`agent`, `hook`, `worker`,
+`plugin`; hooks and the Claude Code and Codex harnesses come in later versions). Where a profile
+is on:
+
+- **no profile can read the server's data**: `auth/` (`local.key`, `console.key`,
+  `credential.master`), `settings.json`, `control.db`, the journal and the audit log, other
+  sessions' own folders, your `~/.ssh`, `~/.gnupg`, cloud and container credentials, and your own
+  `~/.claude` and `~/.codex`;
+- **an agent session's processes** read only an allow-list (the toolchain, the project folder
+  with the other sessions' workspaces in it, its libraries, the session's own folder) and write
+  only their workspace, `workspace/shared/`, a private temp folder, their own CLI configuration
+  folder and the CLI's sign-in file; never `.finisher/`, `assets/`, `finisher.project.json` or
+  `finisher.rules.json`. They reach the server with the session's own credential: on Linux over
+  a loopback listener that admits only agent and MCP credentials, on macOS through `fin.sock`, on
+  Windows through the project's pipe;
+- **media workers and plugins** read their job's inputs and write only its `out/` folder (a
+  plugin also its own data folder), with no credential;
+- on Linux: Landlock (kernel 6.2 or later) confines files, program starts and links, and TCP
+  ports from kernel 6.7; agent processes are reaped with their session even if they leave its
+  process group.
+  On macOS: Seatbelt, with system services (`mach-lookup`) closed except a short list, no
+  keychain, no loopback but Finisher's own. On Windows: an AppContainer per project with a
+  capability per session, a kill-on-close job object and a private desktop. Media workers and
+  plugins have no network on macOS and Windows, and no TCP on Linux from kernel 6.7 (see the
+  Linux limits under Agents).
+
+**It is not on by default yet.** Each profile is switched on per OS once its escape suite has
+passed on that OS's validation machine; until then it runs as before, and `finisherd status`
+and every agent session warn `SANDBOX_DISABLED` (`profileNotReady`; `PLUGINS_UNCONFINED` for
+plugins). Once on, it cannot be turned off. On a Linux kernel with Landlock disabled (not built
+in, or missing from the `lsm=` boot parameter) everything still runs, unconfined, with the
+warning `SANDBOX_DISABLED` (`landlockDisabled`) naming the fix. A sandbox that is present but
+fails to apply stops the start (`SANDBOX_UNAVAILABLE`).
 
 **Agent and MCP credentials** are the recommended way to run a harness by hand. They are not
 required: `fin` run by you needs none.
@@ -289,6 +396,25 @@ data. Elsewhere, exclude it yourself. After restoring an older `control.db`, or 
 file may have leaked, run `finisherd auth rotate-master`. It ends every agent and MCP credential
 (an older `control.db` would otherwise bring back credentials you revoked since).
 
+**Paired devices** are you: each one may do what you may do, including the things only you can
+do, on any project. Three limits apply. A device names server folders only inside the allowed
+roots: `server.projectRoots` in `settings.json` (default `<home>/Finisher`), your libraries and
+the folders of projects open on the server (`PATH_NOT_ALLOWED` elsewhere). A device cannot
+change those roots or point the server at certificate files; that is done from the console.
+And only one call from a device needs a confirmation code, stopping the server: the app asks
+you in its own dialog, then fetches the code and sends it itself. No other action from a device
+takes a code; the app asks what it asks. That code protects against a stop you did not mean
+and against scripts that skip the dialog. It does **not** protect against code running inside
+the app: such code can fetch and answer its own code, and needs none for anything else. Treat a
+compromised app as a stolen device and revoke it (`finisherd revoke <device-id>`, or from
+another device). Revoking ends the device's tokens and connections at once.
+
+**Pairing and raw-shell agents.** `fin` has no pairing command, and offers and approvals are
+things only you can do, confirmed on the console. But an agent harness running in a plain shell
+as you can read `<server-data>/auth/console.key` and make and approve a pairing offer through
+the console, or read the key files in `<server-data>/secrets/` when they are not in the
+keychain. As above, this stays true until Finisher sandboxes agents.
+
 The audit log (`finisherd audit`) records sign-in failures, refusals, credential changes and the
 other security events, locally and for you only.
 
@@ -324,10 +450,12 @@ fin merge <branch>                           # take its work into your branch
   session (`finisherd agent delete`) or 90 days after it ends. Deleting recorded diagnostics
   does not delete them. A session's metadata goes to the diagnostics journal while diagnostics
   are on; its content is recorded only if you turned training on, and then in a separate store.
-- **Not sandboxed yet.** Until a later version adds the OS sandbox, an agent's tools run as your
-  user; the server warns `SANDBOX_DISABLED` on every session. The built-in agent's tools are
-  `fin` and file tools confined to its workspace, but run agents only on projects and prompts
-  you trust.
+- **Not sandboxed by default yet.** The OS sandbox (Security model) is switched on per OS once it
+  passes validation there; until then an agent's tools run as your user and the server warns
+  `SANDBOX_DISABLED` on every session. The built-in agent's tools are `fin` and file tools
+  confined to its workspace, but run agents only on projects and prompts you trust. Agents have
+  internet access (by design in this version; on Linux from kernel 6.7 ports 80 and 443 only),
+  so whatever they can read, including the CLI's own sign-in, can be sent anywhere.
 - **Linux sandbox limits.** On Linux the OS sandbox uses Landlock alone for now; the seccomp
   filter is an open hardening item. Landlock confines reads, writes, program starts, links and
   TCP ports. Agent and hook processes also start in a user and mount namespace where `/run`,
@@ -345,7 +473,13 @@ fin merge <branch>                           # take its work into your branch
   TCP connections on an ephemeral port; job workers and plugins get no namespace yet (they
   can reach the sockets on kernels without Landlock's socket rule, and send UDP); and every
   profile keeps the rest of the kernel's interface (process creation, `io_uring`, 32-bit
-  system calls, namespaces).
+  system calls, namespaces). On kernels before 6.12 an agent's process can signal its
+  launcher.
+- **macOS sandbox limits.** A process an agent starts that leaves its process group (`setsid`)
+  outlives the session there.
+- **Windows sandbox limits.** Node tools that spawn child processes with piped stdio (npm
+  scripts, Node hooks, Node MCP servers) fail fast with `WINDOWS_NODE_PIPES` inside the Windows
+  sandbox, until Node ships libuv's fix. Warm media workers run cold there under the sandbox.
 
 ## Plugins
 

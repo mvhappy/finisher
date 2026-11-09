@@ -56,13 +56,14 @@ export async function ask(prompt: Prompt, what: string, how: Confirmation, tag?:
     if (answer !== "y" && answer !== "yes") throw cancelled(tag, "you did not answer y");
     return;
   }
-  prompt.show(`To confirm, type the ${how.noun}: ${how.name}`);
+  prompt.show(`To confirm, type the ${how.noun}: ${how.name.trim()}`);
   for (let attempt = 1; ; attempt++) {
     const typed = (await prompt.ask(`Type the ${how.noun} to confirm: `)).trim();
-    if (typed === how.name) return;
+    // Compared trimmed: a name the server allows with surrounding spaces can still be typed.
+    if (typed === how.name.trim()) return;
     if (typed.length === 0) throw cancelled(tag, "nothing was typed");
     if (attempt >= CONFIRM_TRIES) throw cancelled(tag, `the ${how.noun} was not typed back`);
-    prompt.show(`That is not ${how.name}. Type it exactly as shown, or press Enter to cancel.`);
+    prompt.show(`That is not ${how.name.trim()}. Type it exactly as shown, or press Enter to cancel.`);
   }
 }
 

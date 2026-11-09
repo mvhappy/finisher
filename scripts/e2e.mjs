@@ -6,7 +6,7 @@
 // through the `fin` binary, and asserts the subscriber saw every committed rev in order and
 // that its last rev equals `snapshot.get`'s. The server and the temp dir are always cleaned up.
 //
-// Usage: node scripts/e2e.mjs [--skip-build] [basic|storage|history|reel|diagnostics|plugins|auth|look|agent|library ...]  (default: every scenario)
+// Usage: node scripts/e2e.mjs [--skip-build] [basic|storage|history|reel|diagnostics|plugins|auth|look|agent|library|sandbox|remote ...]  (default: every scenario)
 //
 // Builds go to `CARGO_TARGET_DIR` when it is set (else `target/`), and so does the run's
 // `fin` and `fin-plugin`. Scenario temp dirs fall back to `/tmp` when `TMPDIR` is so deep that the
@@ -64,6 +64,18 @@
 // stay `cloudOnly` and unopened, a nested mount unmounted through the test overlay goes offline
 // with nothing missing, and no scan changes a byte or a timestamp under the root (plan 5D Task 15).
 //
+// The "sandbox" scenario (scripts/e2e/sandbox.mjs) runs a `fake` session whose turn starts a scripted
+// child through the session sandbox (Linux: the launcher, its subreaper and Landlock): `fin` lands
+// on the session's branch over the agent listener, `auth/local.key` and writes outside the
+// workspace are denied, `/etc/hosts` is `PATH_NOT_ALLOWED`, no `before7C` warning; with a GPU, a
+// warm look per project under the worker profile (plan 7C Task 14).
+//
+// The "remote" scenario (scripts/e2e/remote.mjs, device-lib.mjs) pairs a device written apart from
+// the server (WebCrypto P-256, its own DPoP proofs, a pinned TLS client) over the remote listener on
+// loopback: the descriptor's pin, one-use offers and safety codes, nonces, tokens and tickets, a
+// `wss` subscription, a device's `server.stop`, allowed roots, revocation within 100 ms, a copied
+// server data (`ENV_MOVED`, `env reset`) and the leak grep (plan 5B Task 13).
+//
 // After the builds, the run has a deadline (E2E_DEADLINE_MS, default 180 s): when it passes,
 // the server is killed and the script exits non-zero. Test hooks (scripts/e2e.test.mjs):
 // E2E_SERVER_CMD (a JSON array, `{serverData}` substituted) replaces the finisherd command,
@@ -80,12 +92,17 @@ import { run as runAuth } from "./e2e/auth.mjs";
 import { run as runLook } from "./e2e/look.mjs";
 import { run as runAgent } from "./e2e/agent.mjs";
 import { run as runLibrary } from "./e2e/library.mjs";
+import { run as runSandbox } from "./e2e/sandbox.mjs";
+import { run as runRemote } from "./e2e/remote.mjs";
+
+// The servers of every scenario keep their secrets in files, never in the OS keychain (5B Decision 4).
+process.env.FIN_SECRETS ??= "file";
 
 export { parseFrames } from "./e2e/lib.mjs";
 export { checkRevs };
 
 const DEADLINE_MS = Number(process.env.E2E_DEADLINE_MS ?? 180_000);
-const SCENARIOS = { basic: runBasic, storage: runStorage, history: runHistory, reel: runReel, diagnostics: runDiagnostics, plugins: runPlugins, auth: runAuth, look: runLook, agent: runAgent, library: runLibrary };
+const SCENARIOS = { basic: runBasic, storage: runStorage, history: runHistory, reel: runReel, diagnostics: runDiagnostics, plugins: runPlugins, auth: runAuth, look: runLook, agent: runAgent, library: runLibrary, sandbox: runSandbox, remote: runRemote };
 
 async function main(argv) {
   const names = argv.filter((a) => !a.startsWith("--"));
@@ -94,8 +111,8 @@ async function main(argv) {
     build("cargo", ["build", "--release", "-p", "fin-plugin-cli"]); // publisher tooling: the plugins scenario builds registries with it
     build("pnpm", ["--filter", "@finisher/fin-node", "build"]);
     build("pnpm", ["--filter", "@finisher/fin-node", "build:test"]);
-    if (names.length === 0 || names.includes("look")) {
-      // The look scenario's fixture writer and CPU oracle (it runs them with `cargo run`, which finds them built).
+    if (names.length === 0 || names.includes("look") || names.includes("sandbox")) {
+      // The look scenario's fixture writer and CPU oracle (it runs them with `cargo run`, which finds them built); the sandbox scenario's AV1 clips.
       build("cargo", ["build", "--release", "-p", "fin-codecs", "--features", "testing", "--example", "make_fixture"]);
       build("cargo", ["build", "--release", "-p", "fin-workers", "--example", "reference_render"]);
     }

@@ -40,7 +40,7 @@ export const KEY_RULE_TEXT = "an API key is 8–1024 printable characters withou
 const keyInReach = (by: Principal, k: { projectId?: string }) => by.projects === "*" || (k.projectId !== undefined && by.projects.includes(k.projectId));
 
 const storeUnavailable = () =>
-  finError("SECRET_STORE_UNAVAILABLE", "this host has no secret store Finisher can use yet", { platform: process.platform }, "the keychain backend arrives with sub-project 5B");
+  finError("SECRET_STORE_UNAVAILABLE", "the server could not open its secret store", { platform: process.platform }, "Make the server-data folder private to your account, then restart the server.");
 
 /** The models a local OpenAI-compatible server lists (`GET <base>/models`); no redirect is followed. */
 export async function listLocalModels(baseUrl: string, fetchImpl: typeof fetch = fetch, timeoutMs = 3000): Promise<string[]> {

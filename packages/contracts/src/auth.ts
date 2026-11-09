@@ -2,6 +2,7 @@
 // base64url without padding on the wire; keys never are.
 import { Schema } from "effect";
 import { AuditEntrySchema, AuditKindSchema } from "./audit.ts";
+import { EnvStateSchema, RouteSchema } from "./devices.ts";
 import { HUMAN_ONLY, SCOPES, type Scope, ScopeSchema } from "./scopes.ts";
 
 export const PrincipalKind = Schema.Literals(["anonymous", "local", "console", "device", "agent", "mcp", "plugin"]);
@@ -113,8 +114,19 @@ export const ServerStatusSuccess = Schema.Struct({
   version: Schema.String,
   protocol: Schema.Number,
   envId: Schema.String,
+  /** 5B: the environment's state, its identity pin and its routes. */
+  env: Schema.optional(Schema.Struct({ state: EnvStateSchema, spki: Schema.String, routes: Schema.Array(RouteSchema) })),
   pid: Schema.Number,
-  listeners: Schema.Array(Schema.Struct({ transport: Schema.Literals(["socket", "pipe", "ws", "agentTcp"]), endpoint: Schema.String })),
+  /** 5B: the remote listener is `wss`, with its pin, its certificate mode and where its config came from. */
+  listeners: Schema.Array(
+    Schema.Struct({
+      transport: Schema.Literals(["socket", "pipe", "ws", "wss", "agentTcp"]),
+      endpoint: Schema.String,
+      spki: Schema.optional(Schema.String),
+      mode: Schema.optional(Schema.Literals(["selfSigned", "files"])),
+      source: Schema.optional(Schema.Literals(["env", "settings", "test"])),
+    }),
+  ),
   connections: Schema.Record(Schema.String, Schema.Number),
   journal: Schema.Struct({ enabled: Schema.Boolean }),
   auditFailures: Schema.Number,
@@ -122,7 +134,11 @@ export const ServerStatusSuccess = Schema.Struct({
   warnings: Schema.Array(Schema.Record(Schema.String, Schema.Unknown)),
 });
 
-/** `server.stop {}` (`auth.admin`; a service command, spec §4.7): answers, then stops gracefully. */
+/**
+ * `server.stop {challenge?}` (`auth.admin`; a service command, spec §4.7): answers, then stops
+ * gracefully. The console needs no code; a paired device sends its connection's (5B).
+ */
+export const ServerStopPayload = Schema.Struct({ challenge: ChallengeField });
 export const ServerStopSuccess = Schema.Struct({ stopping: Schema.Literal(true) });
 
 /** At most this many audit entries per `auth.audit.list` page. */
@@ -165,11 +181,12 @@ export const PUBLIC_RPCS: ReadonlySet<string> = new Set(["server.hello", "auth.p
 /**
  * A kind's default scopes (Decision 20): `console` every scope; `local` every scope but the
  * human-only ones; `agent`/`mcp` none by default (their credential lists them); `anonymous` only
- * `public`. `device` (5B) and `plugin` (8) hold none yet.
+ * `public`. A `device` (5B Decision 3) is the owner: every scope. `plugin` (8) holds none yet.
  */
 export function defaultScopes(kind: PrincipalKind): ReadonlyArray<Scope> {
   switch (kind) {
     case "console":
+    case "device":
       return SCOPES;
     case "local":
       return SCOPES.filter((s) => !HUMAN_ONLY.has(s));

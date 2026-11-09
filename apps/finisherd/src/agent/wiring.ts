@@ -11,7 +11,7 @@
 //   harness only in a test-hooks build run with `FIN_TEST_HOOKS=1`.
 // - The runtime gets the core's journal (Task 10) and boots (crash recovery, the outbox, the
 //   credential reconcile, then its timers) before the transports serve; it closes on shutdown.
-import { realpathSync } from "node:fs";
+import { readFileSync, realpathSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import type { Harness, Node, Session } from "@finisher/contracts";
@@ -21,6 +21,7 @@ import { childEnv } from "../env.ts";
 import { finError } from "../errors.ts";
 import type { Audit } from "../control/audit.ts";
 import type { ControlStore } from "../control/db.ts";
+import type { SecretBox } from "../secrets/box.ts";
 import { ModelGateway, type RunningSessions } from "../secrets/gateway.ts";
 import { FileSecretStore, type SecretStore } from "../secrets/store.ts";
 import type { ProviderAdapter } from "./adapter.ts";
@@ -106,6 +107,29 @@ export function fakeAllowed(env: NodeJS.ProcessEnv = process.env): boolean {
 /** A plain turn for the fake when a test names no script: one message, then the end of the turn. */
 const DEFAULT_FAKE: readonly FakeScript[] = [{ name: "echo", turns: [[{ emit: [{ type: "message", role: "assistant", blocks: [{ type: "text", text: "ok" }] }, { type: "turnCompleted", stopReason: "endTurn" }] }]] }];
 
+/** The variable naming a JSON file of fake scripts, for a test that runs `finisherd` as a process (the e2e `sandbox` scenario). */
+export const FAKE_SCRIPTS_ENV = "FIN_TEST_FAKE_SCRIPTS";
+
+/**
+ * The fake's scripts: the in-process options', else the file `FIN_TEST_FAKE_SCRIPTS` names, else
+ * the default turn. Callers must check `fakeAllowed()` first (the only call site does); a file
+ * that is not a non-empty list of scripts stops the boot.
+ */
+export function fakeScriptsOf(options: readonly FakeScript[] | undefined, env: NodeJS.ProcessEnv = process.env): readonly FakeScript[] {
+  if (options !== undefined) return options;
+  const file = env[FAKE_SCRIPTS_ENV];
+  if (file === undefined || file === "") return DEFAULT_FAKE;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(readFileSync(file, "utf8"));
+  } catch (e) {
+    throw new Error(`${FAKE_SCRIPTS_ENV}: ${(e as Error).message}`);
+  }
+  const isScript = (x: unknown) => typeof x === "object" && x !== null && Array.isArray((x as { turns?: unknown }).turns);
+  if (!Array.isArray(parsed) || parsed.length === 0 || !parsed.every(isScript)) throw new Error(`${FAKE_SCRIPTS_ENV}: ${file} is not a non-empty list of fake scripts`);
+  return parsed as FakeScript[];
+}
+
 export interface AgentWiringDeps {
   readonly serverData: string;
   readonly core: AgentCore;
@@ -123,6 +147,8 @@ export interface AgentWiringDeps {
   readonly libraryRoots?: () => ReadonlyArray<string>;
   readonly log: (message: string) => void;
   readonly options?: AgentServeOptions;
+  /** The box `secrets.json` seals with: the vault's (5B Decision 7); the identity box when absent. */
+  readonly secretBox?: SecretBox;
   /** Windows: the server's ACL broker and the pipe's `allow` (plan 7C Task 10). */
   readonly acl?: AclBroker;
   readonly allowPipe?: (sid: string) => void;
@@ -148,9 +174,9 @@ export async function allNodes(store: AgentStore, sessionId: string): Promise<No
   return out;
 }
 
-function openSecrets(serverData: string, log: (m: string) => void): SecretStore | undefined {
+function openSecrets(serverData: string, log: (m: string) => void, box: SecretBox | undefined): SecretStore | undefined {
   try {
-    return new FileSecretStore(serverData);
+    return new FileSecretStore(serverData, box === undefined ? {} : { box });
   } catch (e) {
     log(`agent keys unavailable: ${(e as Error).message}`);
     return undefined;
@@ -185,7 +211,7 @@ export const buildAgentRuntime = (d: AgentWiringDeps): Effect.Effect<AgentRuntim
       log(`agents.models is not used: ${(e as Error).message}`);
       catalogue = Catalogue.load(BUNDLED_CATALOGUE, { prices });
     }
-    const secrets = openSecrets(serverData, log);
+    const secrets = openSecrets(serverData, log, d.secretBox);
     const admin = new AgentAdmin({
       serverData,
       secrets,
@@ -235,7 +261,7 @@ export const buildAgentRuntime = (d: AgentWiringDeps): Effect.Effect<AgentRuntim
         nodes: (id) => allNodes(core.store, id),
       }),
     );
-    if (fakeAllowed()) adapters.set("fake", FakeAdapter(d.options?.fakeScripts ?? DEFAULT_FAKE));
+    if (fakeAllowed()) adapters.set("fake", FakeAdapter(fakeScriptsOf(d.options?.fakeScripts)));
     const rolePrompt = (role: string) => (roles.get(role) ?? roles.get("editor"))!.prompt.text;
     const builtinEnv = builtinEnvironment({ finPath, server: d.endpoint, projectDirOf: d.registry.dirOf, rolePrompt });
     const environment: SessionEnvironment = {

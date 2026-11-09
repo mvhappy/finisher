@@ -85,6 +85,21 @@ export const RPC_ONLY: ReadonlySet<FinRpcTag> = new Set<FinRpcTag>([
   "agent.local.show",
   "agent.local.test",
   "agent.local.remove",
+  // 5B: pairing, devices, the environment and settings, reached through the console and apps.
+  "auth.pair.offer",
+  "auth.pair.approve",
+  "auth.pair.reject",
+  "auth.pair.pending",
+  "auth.device.list",
+  "auth.device.rename",
+  "auth.device.revoke",
+  "auth.devices.watch",
+  "env.describe",
+  "env.name",
+  "env.adopt",
+  "env.reset",
+  "env.rotateIdentity",
+  "settings.write",
 ]);
 
 type Condition = readonly [path: string, expect: RegistryMatch];

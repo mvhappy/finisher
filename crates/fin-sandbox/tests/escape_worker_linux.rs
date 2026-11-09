@@ -9,6 +9,7 @@ mod linux_support;
 use std::path::PathBuf;
 
 use fin_jobs::sandbox::SelfSandbox;
+use fin_sandbox::linux::landlock::SCOPE_ABI;
 use fin_sandbox::{DeviceAccess, DeviceRule, WorkerInput, WorkerScope};
 use linux_support::{Outcome, json_file, landlock_or_skip, listener, probe, s, tempdir, write};
 
@@ -229,9 +230,9 @@ fn worker_warm_sees_only_its_dir() {
 
 #[test]
 fn worker_cannot_exec_or_reach_the_network() {
-    if landlock_or_skip("worker_cannot_exec_or_reach_the_network").is_none() {
+    let Some(abi) = landlock_or_skip("worker_cannot_exec_or_reach_the_network") else {
         return;
-    }
+    };
     let (_l, port) = listener();
     let port = port.to_string();
     let tree = Tree::new();
@@ -244,16 +245,57 @@ fn worker_cannot_exec_or_reach_the_network() {
         vec!["exec", own.to_str().unwrap()],
         vec!["connect-tcp", port.as_str()],
         vec!["bind-tcp", "0"],
-        vec!["signal-parent"],
     ] {
         let got = tree.attempt(&input, &op, false);
         assert!(got.denied(&op), "{op:?}: {got:?}");
     }
+    let got = tree.attempt(&input, &["signal-parent"], false);
+    signal_follows_the_abi(abi.0, &got);
     // Not even a copy of a program in its own write root.
     let copy = tree.p("srv/jobs/j1/tmp/prog");
     std::fs::copy("/bin/true", &copy).unwrap();
     let got = tree.attempt(&input, &["exec", copy.to_str().unwrap()], false);
     assert!(got.denied(&["exec"]), "exec from tmp: {got:?}");
+}
+
+/// Signals are scoped to the domain from [`SCOPE_ABI`] on: there a worker cannot signal a
+/// process outside it, and nothing weaker passes. Below it the kernel has no signal scope and
+/// the recorded residual holds (`linux/reaper.rs`): the signal reaches its parent.
+fn signal_follows_the_abi(abi: u32, got: &Outcome) {
+    if abi >= SCOPE_ABI {
+        assert!(got.denied(&["signal-parent"]), "ABI {abi}: {got:?}");
+    } else {
+        assert_eq!(got, &Outcome::Ran(None), "ABI {abi}: the residual changed");
+    }
+}
+
+#[test]
+fn worker_signal_scope_follows_the_abi() {
+    // Both sides of `SCOPE_ABI` on one kernel: the worker's policy applied at ABI 4 (no scope)
+    // and at the kernel's own.
+    let Some(kernel) = landlock_or_skip("worker_signal_scope_follows_the_abi") else {
+        return;
+    };
+    let tree = Tree::new();
+    let req = SelfSandbox {
+        profile: "worker".into(),
+        args: serde_json::to_value(tree.cold()).unwrap(),
+    };
+    let policy = fin_sandbox::self_apply::policy(&req).unwrap();
+    let file = json_file(&tree.t, "policy.json", &policy);
+    let mut abis = vec![4, kernel.0];
+    abis.retain(|a| *a <= kernel.0);
+    abis.dedup();
+    for abi in abis {
+        let flags = [
+            "--abi".into(),
+            abi.to_string(),
+            "--policy".into(),
+            file.clone(),
+        ];
+        let got = probe(&flags, &["signal-parent".to_string()]);
+        signal_follows_the_abi(abi, &got);
+    }
 }
 
 #[test]

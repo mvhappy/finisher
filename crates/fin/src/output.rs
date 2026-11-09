@@ -62,6 +62,19 @@ pub const DENIED_CODES: &[&str] = &[
     "MODE_FORBIDS",
     "HOOK_BLOCKED",
     "DEPTH_EXCEEDED",
+    // Devices (5B Decision 33): the owner rejected a pairing; a device's proof, nonce, token or
+    // ticket did not hold; a Host or Origin the listener does not serve; a revoked device; server
+    // data copied or moved until the owner adopts or resets it; a client's pinned SPKI differs.
+    "PAIRING_REJECTED",
+    "DPOP_INVALID",
+    "DPOP_NONCE",
+    "TOKEN_EXPIRED",
+    "TICKET_INVALID",
+    "ORIGIN_REFUSED",
+    "HOST_REFUSED",
+    "DEVICE_REVOKED",
+    "ENV_MOVED",
+    "TLS_PIN_MISMATCH",
 ];
 
 /// Codes that mean "a person has been asked" (exit 8, sub-project 7 §7.3): the `ask` stage
@@ -280,14 +293,21 @@ const VALIDATION_CODES: &[&str] = &[
     "SEARCH_QUERY_INVALID",
     "LIBRARY_METADATA_ONLY",
     "NAME_COLLISION",
+    // Devices and remote access (5B Decision 33): an expired offer; a non-loopback listener
+    // without TLS; certificate files that do not hold; the secrets of another server data; a
+    // wrapped secret store whose key does not open it.
+    "PAIRING_EXPIRED",
+    "LISTEN_NEEDS_TLS",
+    "TLS_FILES_INVALID",
+    "IDENTITY_MISMATCH",
+    "SECRETS_KEY_INVALID",
 ];
 
 /// Codes that mean "the project moved under you; read it again and retry" (exit 4).
 /// `SEGMENT_COLLISION`: the project folder holds another file under the name this server's
 /// export needs (the folder changed under it); the export retries under another name.
 /// `PROJECT_READ_ONLY`: the project cannot take edits now (`details.reason`: `CHAIN_FORK`,
-/// `CONFLICT_COPY`, `NEWER_FORMAT`, `IMPORT_ERROR`, `LEASE_LOST`, `LEASE_HELD`,
-/// `CATCHING_UP`).
+/// `CONFLICT_COPY`, `NEWER_FORMAT`, `IMPORT_ERROR`, `LEASE_LOST`, `LEASE_HELD`, `CATCHING_UP`).
 /// `LEASE_TAKEOVER_REFUSED`: `fin project takeover` found a live holder, a sync folder without
 /// `--confirm`, or a holder not yet confirmed stopped (`details.reason`).
 /// `LEASE_LOST`: this server's lease failed its fencing check (writes surface it as
@@ -308,9 +328,8 @@ const CONFLICT_CODES: &[&str] = &[
     "TX_SET_ASIDE",
     // A registry with this id exists (8A Task 9a).
     "REGISTRY_EXISTS",
-    // The server holds as many live agent and MCP credentials as it keeps (5A Task 9; review
-    // of Tasks 8–9, L4): the server's state refuses it, not the caller (only the owner mints),
-    // and waiting changes nothing: revoke some, then mint again. A conflict, not exit 5.
+    // The server holds all the live agent and MCP credentials it keeps (5A Task 9, L4): a
+    // conflict of the server's state, not exit 5; revoke some, then mint again.
     "CREDENTIAL_LIMIT",
     // Libraries (5D): a file whose data is not on this machine (a placeholder; `hydrate` is
     // the owner's call) and one that differs from its catalogued row (rescan, then retry).
@@ -329,10 +348,11 @@ const CONFLICT_CODES: &[&str] = &[
     // the session's workspace holds its 256 MiB (7A-2 Task 8b): remove files first.
     "AUTO_MERGE_UNAVAILABLE",
     "WORKSPACE_FULL",
-    // Sub-project 7B Task 4: a session has 16 approvals waiting for a person, or the server
-    // 256 (`details.open`, `limit`, `scope`); refused, never dropping an older card. Wait for
-    // answers or expiries, then ask again.
+    // 7B Task 4: 16 approvals wait in a session, or 256 in the server; wait, then ask again.
     "APPROVAL_LIMIT",
+    // Devices (5B Decision 33): an offer someone already redeemed; 64 live devices (revoke some).
+    "PAIRING_USED",
+    "DEVICE_LIMIT",
 ];
 
 /// Codes of a job that ended without succeeding (exit 4, 5C-1 Decision 41): its outcome, and
@@ -489,6 +509,9 @@ const UNAVAILABLE_CODES: &[&str] = &[
     "HOOK_TIMEOUT",
     "SECRET_STORE_BUSY",
     "SECRET_STORE_UNAVAILABLE",
+    // Devices (5B Decision 13): too many pairing or token requests; wait for `Retry-After`.
+    "PAIRING_RATE_LIMITED",
+    "TOKEN_RATE_LIMITED",
 ];
 
 /// The one place error codes become exit codes.

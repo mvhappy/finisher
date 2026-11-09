@@ -22,7 +22,7 @@ import { Context } from "effect";
 import { ANONYMOUS, isProved, type Principal } from "./principal.ts";
 
 /** `agentTcp`: the Linux agent listener on loopback TCP (plan 7C Task 6, `agent/listener.ts`). */
-export type Transport = "socket" | "pipe" | "ws" | "agentTcp";
+export type Transport = "socket" | "pipe" | "ws" | "wss" | "agentTcp";
 
 /**
  * A listener's own rules (the agent listener's, plan 7C Decision 13): which proved principals it

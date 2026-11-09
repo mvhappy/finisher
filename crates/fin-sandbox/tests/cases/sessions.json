@@ -1,0 +1,23 @@
+{
+  "about": "Spec §8.11 'Between sessions' (plan 7C Task 13), run by tests/escape_common.rs on the fixture of server_data.json: the agent is session s1; s2 is another session of the same project. Its directory, credential, provider directory, temp and workspace are out of reach (the workspace is readable, never writable: a draft reads its siblings' drafts). Windows separates sessions by capability SID: tests/container_windows.rs proves that configuration (plan 7C Decision 27).",
+  "cases": [
+    { "name": "list another session's directory", "profiles": ["agent"], "op": ["list", "$T/data/agents/s2"], "expect": "deny" },
+    { "name": "read another session's credential", "profiles": ["agent"], "op": ["read", "$T/data/agents/s2/credential.json"], "expect": "deny" },
+    { "name": "read another session's provider directory", "profiles": ["agent"], "op": ["read", "$T/data/agents/s2/provider/state.json"], "expect": "deny" },
+    { "name": "write another session's provider directory", "profiles": ["agent"], "op": ["create", "$T/data/agents/s2/provider/hooks.json"], "expect": "deny" },
+    { "name": "read another session's temp", "profiles": ["agent"], "op": ["read", "$T/data/agents/s2/tmp/note"], "expect": "deny" },
+    { "name": "write another session's temp", "profiles": ["agent"], "op": ["create", "$T/data/agents/s2/tmp/x"], "expect": "deny" },
+    { "name": "overwrite another session's draft", "profiles": ["agent"], "op": ["write", "$T/p/workspace/s2/draft.txt"], "expect": "deny" },
+    { "name": "create in another session's workspace", "profiles": ["agent"], "op": ["create", "$T/p/workspace/s2/x"], "expect": "deny" },
+    { "name": "unlink another session's draft", "profiles": ["agent"], "op": ["unlink", "$T/p/workspace/s2/draft.txt"], "expect": "deny" },
+    { "name": "overwrite its own credential", "profiles": ["agent"], "op": ["write", "$T/data/agents/s1/credential.json"], "expect": "deny" },
+    { "name": "read its own blobs", "profiles": ["agent"], "op": ["read", "$T/data/agents/s1/blobs/b1"], "expect": "deny" },
+    { "name": "read a session's credential", "profiles": ["hook", "worker", "plugin"], "op": ["read", "$T/data/agents/s1/credential.json"], "expect": "deny" },
+    { "name": "write a session's workspace", "profiles": ["hook", "worker", "plugin"], "op": ["create", "$T/p/workspace/s1/x"], "expect": "deny" },
+
+    { "name": "read its own credential", "profiles": ["agent"], "op": ["read", "$T/data/agents/s1/credential.json"], "expect": "allow" },
+    { "name": "write its own temp", "profiles": ["agent"], "op": ["create", "$T/data/agents/s1/tmp/scratch"], "expect": "allow" },
+    { "name": "write its own provider directory", "profiles": ["agent"], "op": ["create", "$T/data/agents/s1/provider/state.json"], "expect": "allow" },
+    { "name": "read another session's draft", "profiles": ["agent"], "op": ["read", "$T/p/workspace/s2/draft.txt"], "expect": "allow" }
+  ]
+}

@@ -1,0 +1,33 @@
+{
+  "about": "Spec §8.11 'Links and mounts' (plan 7C Decision 20, Task 13), run by tests/escape_common.rs on the fixture of server_data.json. A hard link or a rename never brings a file from a read root, server data or an unlisted folder into a write root. A symbolic link is only a name: the fixture plants links from each write root to a denied file, and reading through one is denied at its target. 'mounts' cases (Linux) run with the launcher's socket namespace on and need a host with unprivileged user namespaces; elsewhere they are skipped with the launcher's reason. Their control runs only as root (an unprivileged process cannot clone mounts either), as in tests/namespace_linux.rs. Windows junctions are left to a person (plan 7C Decision 27).",
+  "cases": [
+    { "name": "hard link a project source into the workspace", "profiles": ["agent"], "op": ["link", "$T/p/sources/clip.mp4", "$T/p/workspace/s1/clip"], "expect": "deny" },
+    { "name": "hard link an unlisted file into the workspace", "profiles": ["agent"], "op": ["link", "$T/q/other.txt", "$T/p/workspace/s1/other"], "expect": "deny" },
+    { "name": "hard link auth/local.key into the workspace", "profiles": ["agent"], "op": ["link", "$T/data/auth/local.key", "$T/p/workspace/s1/key"], "expect": "deny" },
+    { "name": "hard link the project's state into the workspace", "profiles": ["agent"], "op": ["link", "$T/p/.finisher/segment", "$T/p/workspace/s1/seg"], "expect": "deny" },
+    { "name": "hard link another session's credential into the workspace", "profiles": ["agent"], "op": ["link", "$T/data/agents/s2/credential.json", "$T/p/workspace/s1/cred"], "expect": "deny" },
+    { "name": "rename an unlisted file into the workspace", "profiles": ["agent"], "op": ["rename", "$T/q/other.txt", "$T/p/workspace/s1/other"], "expect": "deny" },
+    { "name": "rename the project's state into the workspace", "profiles": ["agent"], "op": ["rename", "$T/p/.finisher/segment", "$T/p/workspace/s1/seg"], "expect": "deny" },
+    { "name": "read through a planted link to auth/", "profiles": ["agent"], "op": ["read", "$T/p/workspace/s1/to-key"], "expect": "deny" },
+
+    { "name": "hard link an unlisted file into its temp", "profiles": ["hook"], "op": ["link", "$T/q/other.txt", "$T/hook-tmp/other"], "expect": "deny" },
+    { "name": "hard link auth/local.key into its temp", "profiles": ["hook"], "op": ["link", "$T/data/auth/local.key", "$T/hook-tmp/key"], "expect": "deny" },
+    { "name": "read through a planted link to auth/", "profiles": ["hook"], "op": ["read", "$T/hook-tmp/to-key"], "expect": "deny" },
+
+    { "name": "hard link a source into out/", "profiles": ["worker"], "op": ["link", "$T/p/sources/clip.mp4", "$T/data/jobs/j1/out/clip"], "expect": "deny" },
+    { "name": "hard link auth/local.key into out/", "profiles": ["worker"], "op": ["link", "$T/data/auth/local.key", "$T/data/jobs/j1/out/key"], "expect": "deny" },
+    { "name": "rename the manifest into out/", "profiles": ["worker"], "op": ["rename", "$T/data/jobs/j1/in/manifest.json", "$T/data/jobs/j1/out/m"], "expect": "deny" },
+    { "name": "read through a planted link to auth/", "profiles": ["worker"], "op": ["read", "$T/data/jobs/j1/tmp/to-key"], "expect": "deny" },
+
+    { "name": "hard link its store into out/", "profiles": ["plugin"], "op": ["link", "$T/data/plugins/store/acme/plugin.json", "$T/data/jobs/p1/out/plugin.json"], "expect": "deny" },
+    { "name": "hard link auth/local.key into out/", "profiles": ["plugin"], "op": ["link", "$T/data/auth/local.key", "$T/data/jobs/p1/out/key"], "expect": "deny" },
+    { "name": "write its own store", "profiles": ["plugin"], "op": ["write", "$T/data/plugins/store/acme/plugin.json"], "expect": "deny" },
+    { "name": "read through a planted link to auth/", "profiles": ["plugin"], "op": ["read", "$T/data/jobs/p1/tmp/to-key"], "expect": "deny" },
+
+    { "name": "hard link inside its workspace", "profiles": ["agent"], "op": ["link", "$T/p/workspace/s1/mine.txt", "$T/p/workspace/s1/mine2.txt"], "expect": "allow" },
+    { "name": "symlink in its workspace", "profiles": ["agent"], "op": ["symlink", "$T/q/other.txt", "$T/p/workspace/s1/to-q"], "expect": "allow" },
+
+    { "name": "clone the mounts of the fixture (open_tree)", "profiles": ["agent"], "os": ["linux"], "needs": "namespaces", "control": "root", "op": ["open-tree", "$T", "home/.cache/ide.sock"], "expect": { "errno": ["EPERM"] } },
+    { "name": "a nested user namespace", "profiles": ["agent"], "os": ["linux"], "needs": "namespaces", "control": "none", "op": ["unshare-user"], "expect": { "errno": ["ENOSPC", "EPERM"] } }
+  ]
+}
