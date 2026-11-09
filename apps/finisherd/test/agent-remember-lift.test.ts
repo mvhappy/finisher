@@ -6,9 +6,11 @@
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { ListedRule } from "@finisher/contracts";
-import { afterEach, beforeEach, describe, expect, test } from "vitest";
+import type { ListedRule, Session } from "@finisher/contracts";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import { ruleLine } from "../src/agent/console-rules.ts";
 import { BUNDLED_ROLES } from "../src/agent/roles.ts";
+import { NOTHING_RESOLVED, RuleSet } from "../src/agent/rules.ts";
 import { AgentServer, code, open } from "./support/agent-server.ts";
 import { addAsset, commit, confirmed, type Exit, type NdjsonClient, ok, tx } from "./support/ndjson-client.ts";
 
@@ -218,5 +220,125 @@ describe("a remembered allow lifts a matching ask", () => {
     writeFileSync(join(projectDir, "finisher.rules.json"), JSON.stringify({ rules: [] }));
     await trust(owner, projectId);
     expect(code(await checkpoint(a, projectId, root, "p2"))).toBe("APPROVAL_PENDING");
+  });
+
+  test("a remembered deny proves nothing: flipped to allow in the file and trusted again, it lifts no ask", async () => {
+    const { owner, projectId, projectDir, a, root } = await setUp({ projectDir: projectFolder([]) });
+    await trust(owner, projectId);
+    const first = await checkpoint(a, projectId, root, "c1");
+    expect(code(first)).toBe("APPROVAL_PENDING");
+    const recorded = vi.spyOn(server.agents.ruleStore, "remembered");
+    const { rule } = ok<{ rule: ListedRule }>(await answer(owner, String(details(first)!.approval), "deny", "project"));
+    // Only an allow is recorded.
+    expect(recorded).not.toHaveBeenCalled();
+    recorded.mockRestore();
+    expect(rule).toMatchObject({ layer: "project", effect: "deny" });
+    expect(code(await checkpoint(a, projectId, root, "d"))).toBe("RULE_DENIED");
+    // A person (or anything that can write the folder) edits the remembered deny into an allow.
+    const file = join(projectDir, "finisher.rules.json");
+    const rules = (JSON.parse(readFileSync(file, "utf8")) as { rules: Array<Record<string, unknown>> }).rules.map((r) => (r.id === rule.id ? { ...r, effect: "allow" } : r));
+    writeFileSync(file, JSON.stringify({ rules }));
+    await trust(owner, projectId);
+    expect(code(await checkpoint(a, projectId, root, "flipped"))).toBe("APPROVAL_PENDING");
+    const listed = ok<{ rules: ListedRule[] }>(await owner.call("agent.rules.list", { projectId })).rules.find((r) => r.id === rule.id);
+    expect(listed).toMatchObject({ effect: "allow", applies: true });
+    expect(listed?.remembered).toBeUndefined();
+  });
+
+  test("only an allow record proves: a deny is never recorded, and a record of one proves no allow", async () => {
+    const { owner, projectId, a, root } = await setUp();
+    const store = server.agents.ruleStore;
+    // A projectLocal deny is remembered (a rule like any other) without a record.
+    const first = await checkpoint(a, projectId, root, "c1");
+    const { rule: deny } = ok<{ rule: ListedRule }>(await answer(owner, String(details(first)!.approval), "deny", "projectLocal"));
+    expect(deny).toMatchObject({ layer: "local", effect: "deny", source: `approval:${String(details(first)!.approval)}` });
+    expect(store.proves({ ...deny, effect: "allow" }, undefined)).toBe(false);
+    expect(() => store.add({ id: "01REMEMBEREDDENY0000000000", effect: "deny", command: "checkpoint", projectId, source: "approval:01D", createdAt: 1 }, "01D")).toThrow();
+    expect(store.get("01REMEMBEREDDENY0000000000")).toBeUndefined();
+    const fileRule = { id: "01FILERULE0000000000000000", effect: "allow" as const, command: "checkpoint", layer: "project" as const, source: "finisher.rules.json", createdAt: 0 };
+    store.remembered({ ruleId: fileRule.id, layer: "project", projectId, effect: "deny" as "allow", command: "checkpoint", approvalId: "01D", createdAt: 1 });
+    expect(store.proves(fileRule, projectId)).toBe(false);
+    store.forget(projectId, fileRule.id);
+    store.remembered({ ruleId: fileRule.id, layer: "project", projectId, effect: "allow", command: "checkpoint", approvalId: "01D", createdAt: 1 });
+    expect(store.proves(fileRule, projectId)).toBe(true);
+  });
+
+  test("trusting a file without a remembered rule drops its record: written back by hand and trusted, it lifts nothing", async () => {
+    const { owner, projectId, projectDir, a, root } = await setUp({ projectDir: projectFolder([]) });
+    await trust(owner, projectId);
+    const { rule } = await rememberAllow(owner, a, projectId, root, "project");
+    expect(code(await checkpoint(a, projectId, root, "p"))).toBeUndefined();
+    // The listing a person trusts from says which allows are remembered (they lift asks).
+    const listed = () => owner.call("agent.rules.list", { projectId }).then((e) => ok<{ rules: ListedRule[] }>(e));
+    expect((await listed()).rules.find((r) => r.id === rule.id)).toMatchObject({ remembered: true, applies: true });
+    const file = join(projectDir, "finisher.rules.json");
+    const bytes = readFileSync(file);
+    writeFileSync(file, JSON.stringify({ rules: [] }));
+    await trust(owner, projectId);
+    writeFileSync(file, bytes);
+    await trust(owner, projectId);
+    expect((await listed()).rules.find((r) => r.id === rule.id)).toMatchObject({ applies: true });
+    expect((await listed()).rules.find((r) => r.id === rule.id)?.remembered).toBeUndefined();
+    expect(code(await checkpoint(a, projectId, root, "back"))).toBe("APPROVAL_PENDING");
+  });
+
+  test("trusting keeps the record of a remembered rule still in the file; listings mark remembered allows", async () => {
+    const { owner, projectId, projectDir, a, root } = await setUp({ projectDir: projectFolder([]) });
+    await trust(owner, projectId);
+    const { rule } = await rememberAllow(owner, a, projectId, root, "project");
+    const file = join(projectDir, "finisher.rules.json");
+    const before = JSON.parse(readFileSync(file, "utf8")) as { rules: unknown[] };
+    writeFileSync(file, JSON.stringify({ rules: [...before.rules, { id: "other", effect: "ask", command: "render" }] }));
+    await trust(owner, projectId);
+    expect(code(await checkpoint(a, projectId, root, "kept"))).toBeUndefined();
+    const rules = ok<{ rules: ListedRule[] }>(await owner.call("agent.rules.list", { projectId })).rules;
+    const kept = rules.find((r) => r.id === rule.id)!;
+    expect(kept).toMatchObject({ remembered: true });
+    // The console's listing says so; other rules do not.
+    expect(ruleLine(kept)).toContain("[remembered: lifts a matching ask]");
+    expect(ruleLine(rules.find((r) => r.id === "other")!)).not.toContain("remembered");
+    // So does the listing of every local rule and the server's (a remembered local allow).
+    const e = await setUp();
+    const { rule: localRule } = await rememberAllow(e.owner, e.a, e.projectId, e.root, "projectLocal");
+    expect(ok<{ rules: ListedRule[] }>(await owner.call("agent.rules.list", {})).rules.find((r) => r.id === localRule.id)).toMatchObject({ remembered: true });
+  });
+
+  test("a remembered allow of project A lifts no ask of project B when a call names both (the server's layers)", async () => {
+    // No RPC names two projects for an agent today (a session's credential reaches its own; a
+    // session-less one's call names one, its other keys stripped at decode), so the server's own
+    // layers are asked for a call naming both, as stage 5 would.
+    const A = await setUp({ ask: false });
+    const B = await setUp({ ask: false, projectDir: projectFolder([{ id: "p.ask", effect: "ask", command: "render" }]) });
+    await trust(B.owner, B.projectId);
+    const store = server.agents.ruleStore;
+    store.add({ id: "01REMEMBEREDA0000000000000", effect: "allow", command: "render", projectId: A.projectId, source: "approval:01APPROVALA", createdAt: 1 }, "01APPROVALA");
+    ok(await confirmed(A.owner, "agent.rules.add", { effect: "ask", command: "render", projectId: A.projectId }));
+    const decide = (projectIds: string[], session?: Session) => {
+      const layered = server.agents.rules.layers({ projectIds, ...(session === undefined ? {} : { session }) });
+      return new RuleSet(layered.rules, layered.lifts).decide(["render"], session, NOTHING_RESOLVED);
+    };
+    expect(decide([A.projectId]).effect).toBe("allow");
+    // B's project-file ask stands, and so does a local ask bound to B.
+    expect(decide([A.projectId, B.projectId])).toMatchObject({ effect: "ask", rule: { id: "p.ask" } });
+    writeFileSync(join(B.projectDir, "finisher.rules.json"), JSON.stringify({ rules: [] }));
+    await trust(B.owner, B.projectId);
+    expect(decide([A.projectId, B.projectId]).effect).toBe("allow");
+    ok(await confirmed(A.owner, "agent.rules.add", { effect: "ask", command: "render", projectId: B.projectId }));
+    expect(decide([A.projectId, B.projectId])).toMatchObject({ effect: "ask", layer: "local" });
+    // An ask of every project (user layer) stands while B has no remembered allow of its own.
+    settings("settings.json", [{ id: "u.ask", effect: "ask", command: "render" }]);
+    expect(decide([A.projectId])).toMatchObject({ effect: "allow" });
+    store.add({ id: "01REMEMBEREDB0000000000000", effect: "allow", command: "render", projectId: B.projectId, source: "approval:01APPROVALB", createdAt: 1 }, "01APPROVALB");
+    expect(decide([A.projectId, B.projectId]).effect).toBe("allow");
+    // A session's remembered allow lifts for that session only.
+    store.add({ id: "01REMEMBEREDS0000000000000", effect: "allow", command: "export", projectId: A.projectId, sessionId: A.session.id, source: "approval:01APPROVALS", createdAt: 1 }, "01APPROVALS");
+    ok(await confirmed(A.owner, "agent.rules.add", { effect: "ask", command: "export", projectId: A.projectId }));
+    const exportIn = (session: Session) => {
+      const layered = server.agents.rules.layers({ session, projectIds: [A.projectId] });
+      return new RuleSet(layered.rules, layered.lifts).decide(["export"], session, NOTHING_RESOLVED).effect;
+    };
+    expect(exportIn(A.session)).toBe("allow");
+    const other = await session(A.local, A.owner, A.projectId, false);
+    expect(exportIn(other.session)).toBe("ask");
   });
 });

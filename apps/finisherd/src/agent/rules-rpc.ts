@@ -37,8 +37,8 @@ export interface RulesRpcDeps {
 const inReach = (p: Principal, projectId: string) => p.projects === "*" || p.projects.includes(projectId);
 const sync = <A>(f: () => A) => Effect.try({ try: f, catch: toFinError });
 
-/** A rule as listed: its own fields only, and whether it applies now. */
-function listed(r: Rule | LocalRule, applies: boolean): ListedRule {
+/** A rule as listed: its own fields only, whether it applies now, and whether it is a proven remembered allow. */
+function listed(r: Rule | LocalRule, applies: boolean, remembered = false): ListedRule {
   const l = r as LocalRule;
   return {
     id: r.id,
@@ -52,6 +52,7 @@ function listed(r: Rule | LocalRule, applies: boolean): ListedRule {
     ...(l.projectId === undefined ? {} : { projectId: l.projectId }),
     ...(l.sessionId === undefined ? {} : { sessionId: l.sessionId }),
     applies,
+    ...(remembered ? { remembered: true as const } : {}),
   };
 }
 
@@ -84,13 +85,13 @@ export function rulesHandlers(deps: RulesRpcDeps) {
           // The server's layers and every local rule the caller reaches.
           const serverData = rules.serverData;
           return {
-            rules: [...managedRules(serverData), ...ruleStore.all().filter((r) => ruleInReach(p, r)), ...userRules(serverData)].map((r) => listed(r, true)),
+            rules: [...managedRules(serverData), ...ruleStore.all().filter((r) => ruleInReach(p, r)), ...userRules(serverData)].map((r) => listed(r, true, r.layer === "local" && ruleStore.proves(r, undefined))),
           };
         }
         const layered = yield* sync(() => rules.layers({ ...(session === undefined ? {} : { session }), ...(project === undefined ? {} : { projectIds: [project] }) }));
         const file = project === undefined ? undefined : layered.projects.get(project);
         return {
-          rules: [...layered.rules.map((r) => listed(r, true)), ...(file?.ignored ?? []).map((r) => listed(r, false))],
+          rules: [...layered.rules.map((r) => listed(r, true, layered.lifts?.remembered.has(r) === true)), ...(file?.ignored ?? []).map((r) => listed(r, false))],
           ...(file === undefined ? {} : { projectRules: file.status }),
           ...(file?.rulesHash === undefined ? {} : { rulesHash: file.rulesHash }),
           ...(file?.reason === undefined ? {} : { projectRulesReason: file.reason }),

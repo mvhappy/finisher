@@ -79,6 +79,8 @@ export const ListedRule = Schema.Struct({
   sessionId: Schema.optionalKey(Schema.String),
   /** False for a project rule while the project is untrusted or its file changed. */
   applies: Schema.Boolean,
+  /** A person's `remember` wrote this allow (the server's record proves it): it lifts a matching ask of its project. */
+  remembered: Schema.optionalKey(Schema.Literal(true)),
 });
 export type ListedRule = typeof ListedRule.Type;
 

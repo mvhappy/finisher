@@ -3,8 +3,9 @@
 // rule a person's `remember` wrote (`remember.ts`), the proof `rules.ts` asks of an `allow`
 // before it lifts an `ask`: the rule's id, its layer (`local`: a row of `agent_rules`;
 // `project`: a rule of the project's `finisher.rules.json`), the project, the session (a
-// `session`-scoped local rule only: the row goes with the session), the exact command and the
-// approval it answered. A rule's `source` is display only and never proves anything. A server
+// `session`-scoped local rule only: the row goes with the session), the effect (only an `allow`
+// is recorded, and only an `allow` row proves anything), the exact command and the approval it
+// answered. A rule's `source` is display only and never proves anything. A server
 // before this step lifts nothing (it ignores the table: stricter), so `minReaderVersion` stays 4.
 import type { DatabaseSync } from "node:sqlite";
 import type { Migration } from "../../migrations.ts";
@@ -14,7 +15,7 @@ export const agent0006: Migration = {
   up: (db: DatabaseSync) => {
     db.exec(`
       CREATE TABLE agent_remembered (
-        ruleId TEXT NOT NULL, layer TEXT NOT NULL, projectId TEXT NOT NULL, sessionId TEXT, command TEXT NOT NULL,
+        ruleId TEXT NOT NULL, layer TEXT NOT NULL, projectId TEXT NOT NULL, sessionId TEXT, effect TEXT NOT NULL, command TEXT NOT NULL,
         approvalId TEXT NOT NULL, createdAt INTEGER NOT NULL, PRIMARY KEY (layer, projectId, ruleId)) WITHOUT ROWID;
       CREATE INDEX agent_remembered_session ON agent_remembered (sessionId) WHERE sessionId IS NOT NULL;
     `);

@@ -135,7 +135,7 @@ describe("units", () => {
     // `remembered` is the set of allows whose record proves a person's `remember` wrote them.
     const lift = rule("local", "allow", "render", undefined, "remembered");
     const lifted = (rules: readonly Rule[], names: readonly string[] = ["render"], remembered: readonly Rule[] = [lift]) =>
-      new RuleSet([lift, ...rules], new Set(remembered)).decide(names, SESSION, NOTHING_RESOLVED);
+      new RuleSet([lift, ...rules], { remembered: new Map(remembered.map((r) => [r, { projectId: "01P" }])), projectIds: ["01P"] }).decide(names, SESSION, NOTHING_RESOLVED);
     for (const layer of ["local", "project", "user", "role"] as const) {
       expect(lifted([rule(layer, "ask", "render")]).effect, `${layer} ask`).toBe("allow");
       expect(lifted([rule(layer, "ask", "*")]).effect, `${layer} ask glob`).toBe("allow");
@@ -154,6 +154,38 @@ describe("units", () => {
     expect(lifted([rule("user", "ask", "render"), other], ["render"], [other])).toMatchObject({ effect: "ask" });
     const narrowed = rule("local", "allow", "render", { mode: "draft" }, "remembered.where");
     expect(lifted([rule("user", "ask", "render"), narrowed], ["render"], [narrowed])).toMatchObject({ effect: "ask" });
+  });
+
+  test("a remembered allow is pinned to its exact command: a glob in it lifts nothing", () => {
+    const lifts = (r: Rule) => ({ remembered: new Map([[r, { projectId: "01P" }]]), projectIds: ["01P"] });
+    const glob = rule("local", "allow", "rend*", undefined, "remembered.glob");
+    expect(new RuleSet([glob, rule("user", "ask", "render")], lifts(glob)).decide(["render"], SESSION, NOTHING_RESOLVED)).toMatchObject({ effect: "ask" });
+    const all = rule("local", "allow", "**", undefined, "remembered.all");
+    expect(new RuleSet([all, rule("user", "ask", "**")], lifts(all)).decide(["render"], SESSION, NOTHING_RESOLVED)).toMatchObject({ effect: "ask" });
+    const exact = rule("local", "allow", "render", undefined, "remembered.exact");
+    expect(new RuleSet([exact, rule("user", "ask", "**")], lifts(exact)).decide(["render"], SESSION, NOTHING_RESOLVED).effect).toBe("allow");
+  });
+
+  test("a remembered allow lifts only the asks of its own project, and a session's only for that session", () => {
+    const A = "01PA";
+    const B = "01PB";
+    const liftA = rule("local", "allow", "render", undefined, "remembered.A");
+    const liftB = rule("local", "allow", "render", undefined, "remembered.B");
+    const askA = rule("local", "ask", "render", undefined, "ask.A");
+    const askB = rule("project", "ask", "render", undefined, "ask.B");
+    const userAsk = rule("user", "ask", "render");
+    const decideIn = (rules: readonly Rule[], projectIds: readonly string[], remembered: ReadonlyArray<readonly [Rule, { projectId: string; sessionId?: string }]>) =>
+      new RuleSet(rules, { remembered: new Map(remembered), projectOf: new Map([[askA, A], [askB, B], [liftA, A], [liftB, B]]), projectIds }).decide(["render"], SESSION, NOTHING_RESOLVED);
+    // A's own ask, and an ask of every project, in a call naming A alone: lifted.
+    expect(decideIn([liftA, askA, userAsk], [A], [[liftA, { projectId: A }]]).effect).toBe("allow");
+    // A call naming A and B: B's ask stands, and an ask of every project (B's too) stands.
+    expect(decideIn([liftA, askA, askB], [A, B], [[liftA, { projectId: A }]])).toMatchObject({ effect: "ask", rule: askB });
+    expect(decideIn([liftA, askA, userAsk], [A, B], [[liftA, { projectId: A }]])).toMatchObject({ effect: "ask", rule: userAsk });
+    // Remembered for both: lifted.
+    expect(decideIn([liftA, liftB, askA, askB, userAsk], [A, B], [[liftA, { projectId: A }], [liftB, { projectId: B }]]).effect).toBe("allow");
+    // A session's remembered allow lifts nothing for another session.
+    expect(decideIn([liftA, askA], [A], [[liftA, { projectId: A, sessionId: "01SOTHER" }]])).toMatchObject({ effect: "ask", rule: askA });
+    expect(decideIn([liftA, askA], [A], [[liftA, { projectId: A, sessionId: SESSION.id }]]).effect).toBe("allow");
   });
 
   test("every name a call could be is evaluated: the strictest wins", () => {

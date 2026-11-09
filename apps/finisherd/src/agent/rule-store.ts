@@ -40,6 +40,8 @@ export interface RememberedRule {
   readonly projectId: string;
   /** A `session`-scoped local rule's session. */
   readonly sessionId?: string;
+  /** Only an `allow` is recorded (only an allow lifts). */
+  readonly effect: "allow";
   readonly command: string;
   readonly approvalId: string;
   readonly createdAt: number;
@@ -71,10 +73,11 @@ const decodeWhere = Schema.decodeUnknownSync(RuleWhere);
 const SQL = {
   insert: `INSERT INTO agent_rules (${COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   remove: "DELETE FROM agent_rules WHERE id = ?",
-  record: "INSERT INTO agent_remembered (ruleId, layer, projectId, sessionId, command, approvalId, createdAt) VALUES (?, ?, ?, ?, ?, ?, ?)",
+  record: "INSERT INTO agent_remembered (ruleId, layer, projectId, sessionId, effect, command, approvalId, createdAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
   forget: "DELETE FROM agent_remembered WHERE layer = ? AND projectId = ? AND ruleId = ?",
   forgetLocal: "DELETE FROM agent_remembered WHERE layer = 'local' AND ruleId = ?",
-  proves: "SELECT 1 AS ok FROM agent_remembered WHERE layer = ? AND projectId = ? AND ruleId = ? AND command = ? AND sessionId IS ?",
+  proves: "SELECT 1 AS ok FROM agent_remembered WHERE layer = ? AND projectId = ? AND ruleId = ? AND effect = 'allow' AND command = ? AND sessionId IS ?",
+  projectRecords: "SELECT ruleId, effect, command FROM agent_remembered WHERE layer = 'project' AND projectId = ?",
   get: `SELECT ${COLUMNS} FROM agent_rules WHERE id = ?`,
   all: `SELECT ${COLUMNS} FROM agent_rules ORDER BY createdAt, id`,
   applicable: `SELECT ${COLUMNS} FROM agent_rules WHERE (projectId IS NULL OR projectId = ?) AND (sessionId IS NULL OR sessionId = ?) ORDER BY createdAt, id`,
@@ -111,21 +114,36 @@ export class RuleStore {
   /**
    * Adds a local rule; with `from` (the approval a `remember` answered) also its record, in one
    * transaction, so the rule never stands without the record that proves it (or the reverse).
+   * Only an `allow` has a record (only an allow lifts).
    */
   add(r: NewLocalRule, from?: string): LocalRule {
     if (from === undefined) return this.#insert(r);
+    if (r.effect !== "allow") throw new Error("only a remembered allow is recorded");
     if (r.projectId === undefined) throw new Error("a remembered rule names its project");
     const projectId = r.projectId;
     return this.#atomic(() => {
       const rule = this.#insert(r);
-      this.remembered({ ruleId: r.id, layer: "local", projectId, ...(r.sessionId === undefined ? {} : { sessionId: r.sessionId }), command: r.command, approvalId: from, createdAt: r.createdAt });
+      this.remembered({ ruleId: r.id, layer: "local", projectId, ...(r.sessionId === undefined ? {} : { sessionId: r.sessionId }), effect: "allow", command: r.command, approvalId: from, createdAt: r.createdAt });
       return rule;
     });
   }
 
   /** Records a rule a `remember` wrote (a project file's, or through `add`). */
   remembered(m: RememberedRule): void {
-    this.#s.record.run(m.ruleId, m.layer, m.projectId, m.sessionId ?? null, m.command, m.approvalId, m.createdAt);
+    this.#s.record.run(m.ruleId, m.layer, m.projectId, m.sessionId ?? null, m.effect, m.command, m.approvalId, m.createdAt);
+  }
+
+  /**
+   * Drops the records of a project's remembered rules that `rules` (the file being trusted) no
+   * longer holds as written: the same id, effect and command, no `where`. A rule a person took
+   * out and wrote back by hand is theirs, not a `remember`'s.
+   */
+  keepRemembered(projectId: string, rules: readonly Rule[]): void {
+    const rows = this.#s.projectRecords.all(projectId) as unknown as Array<{ ruleId: string; effect: string; command: string }>;
+    for (const row of rows) {
+      const held = rules.some((r) => r.id === row.ruleId && r.effect === row.effect && r.command === row.command && r.where === undefined);
+      if (!held) this.forget(projectId, row.ruleId);
+    }
   }
 
   /** Drops the record of a project file's remembered rule (its write was taken back). */
@@ -134,8 +152,8 @@ export class RuleStore {
   }
 
   /**
-   * Whether `rule` is exactly what a `remember` wrote: an `allow` with no `where`, and a record
-   * of its id, layer, project, session and command. A local rule is checked against its own
+   * Whether `rule` is exactly what a `remember` wrote: an `allow` with no `where`, and an
+   * `allow` record of its id, layer, project, session and command. A local rule is checked against its own
    * row's project and session; a project file's against the project whose file it is in.
    */
   proves(rule: Rule | LocalRule, projectId: string | undefined): boolean {

@@ -15,7 +15,7 @@ const call = async <A>(c: ConsoleConnection, tag: string, payload: unknown) => v
 export function ruleLine(r: ListedRule): string {
   const where = r.where === undefined ? "" : `  where ${safe(JSON.stringify(r.where))}`;
   const scope = r.sessionId !== undefined ? `  session ${r.sessionId}` : r.projectId !== undefined ? `  project ${r.projectId}` : "";
-  return `${r.id}  ${r.layer}  ${r.effect} ${safe(r.command)}${where}${scope}  (${safe(r.source)})${r.applies ? "" : "  [ignored: project not trusted]"}`;
+  return `${r.id}  ${r.layer}  ${r.effect} ${safe(r.command)}${where}${scope}  (${safe(r.source)})${r.applies ? "" : "  [ignored: project not trusted]"}${r.remembered === true ? "  [remembered: lifts a matching ask]" : ""}`;
 }
 
 export async function agentRules(ctx: CommandContext, rest: ReadonlyArray<string>): Promise<number> {

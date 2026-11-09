@@ -19,7 +19,9 @@
 //   for no file) in `project_trust`. A file whose hash differs from the trusted one is ignored
 //   (`changed`) until it is trusted again, and so is a trusted file since deleted (`deleted`) or
 //   unreadable (`unreadable`); an untrusted project's rules do not apply at all, neither its
-//   `deny` nor its `allow` (owner decision 2026-11-08). Trusting binds what the person saw: the
+//   `deny` nor its `allow` (owner decision 2026-11-08). Trusting drops the record of each
+//   remembered rule (`RuleStore.keepRemembered`) the file no longer holds as `remember` wrote it,
+//   so one taken out and written back by hand lifts nothing. Trusting binds what the person saw: the
 //   console lists the file with its hash and sends it back (`expectedHash`); a file changed in
 //   between is refused (`INVALID_REQUEST {field: expectedHash, reason: changed}`). Trusting a
 //   file that does not read as rules is refused, so a trusted file reads (unless a later
@@ -194,9 +196,14 @@ export function trustProject(store: RuleStore, projectId: string, dir: string, e
   if (hash !== expectedHash) {
     throw finError("INVALID_REQUEST", `${RULES_FILE} changed since it was shown`, { projectId, field: "expectedHash", reason: "changed", rulesHash: hash }, "list the project's rules again and trust what they show now");
   }
-  if ("absent" in read) return { trust: store.trust(projectId, NO_FILE, by, at), rules: 0 };
+  if ("absent" in read) {
+    store.keepRemembered(projectId, []);
+    return { trust: store.trust(projectId, NO_FILE, by, at), rules: 0 };
+  }
   if (read.rules === undefined) {
     throw finError("INVALID_REQUEST", `${RULES_FILE} is not a rules file: ${read.invalid ?? ""}`, { projectId, reason: "invalidRules" }, `a rules file is {"rules": [{"id", "effect", "command", "where"?}...]}`);
   }
+  // A remembered rule the trusted file no longer holds as written loses its record (`RuleStore`).
+  store.keepRemembered(projectId, read.rules);
   return { trust: store.trust(projectId, hash, by, at), rules: read.rules.length };
 }

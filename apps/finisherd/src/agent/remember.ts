@@ -23,12 +23,13 @@
 //   moved to the file without the rule when it names the file as it is now (another answer's
 //   refresh, or a person's trust, covered all of it); else left alone.
 //
-// - **Proof.** Each rule written here is also recorded in `agent_remembered` (`RuleStore`: a
+// - **Proof.** Each `allow` written here is also recorded in `agent_remembered` (`RuleStore`: a
 //   local rule in the same transaction as its row; a project rule just before the file is
-//   replaced, dropped again when the write fails or is undone). That record, not the `approval:<id>` source, is what lets a
-//   remembered `allow` lift a matching `ask` (owner decision 2026-11-08, `rules.ts`): from the
+//   replaced, dropped again when the write fails or is undone, or when a person trusts the file
+//   without it). That record, not the `approval:<id>` source, is what lets a remembered `allow`
+//   lift a matching `ask` of its own project (owner decision 2026-11-08, `rules.ts`): from the
 //   local, project, user and role layers, never a `deny`, never a managed `ask`. A remembered
-//   `deny` is a rule like any other.
+//   `deny` has no record: a rule like any other, and edited into an allow it lifts nothing.
 import { chmodSync, closeSync, constants, fstatSync, lstatSync, openSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { type Approval, type ApprovalDecision, type ListedRule, type Principal, type RememberScope, RuleCommand, type Session } from "@finisher/contracts";
@@ -153,7 +154,7 @@ export function remember(d: RememberDeps, a: Approval, decision: ApprovalDecisio
       source,
       createdBy: who,
       createdAt: now,
-    }, a.id);
+    }, decision === "allow" ? a.id : undefined);
     audit("agent.rule.add", { ruleId: rule.id, layer: "local", value: decision, projectId: s.projectId, ...(scope === "session" ? { sessionId: s.id } : {}), from: a.id });
     const listed: ListedRule = { ...rule, applies: true };
     return { rule: listed, undo: () => void d.ruleStore.remove(rule.id) };
@@ -168,8 +169,8 @@ export function remember(d: RememberDeps, a: Approval, decision: ApprovalDecisio
   const id = ulid(now);
   const next = encode(appended(before, { id, effect: decision, command }));
   if (next.length > RULES_FILE_MAX) throw finError("INVALID_REQUEST", `${RULES_FILE} would pass ${RULES_FILE_MAX} bytes`, { field: "remember", reason: "fileFull" }, "remove rules from the file, or remember with projectLocal");
-  // The record first: a failed write takes it back, so a rule in the file always has its proof.
-  d.ruleStore.remembered({ ruleId: id, layer: "project", projectId: s.projectId, command, approvalId: a.id, createdAt: now });
+  // The record first: a failed write takes it back, so an allow in the file always has its proof.
+  if (decision === "allow") d.ruleStore.remembered({ ruleId: id, layer: "project", projectId: s.projectId, effect: "allow", command, approvalId: a.id, createdAt: now });
   try {
     replaceFile(path, next, mode);
   } catch (e) {

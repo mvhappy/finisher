@@ -19,9 +19,14 @@
 //   lifted when an applicable *remembered* `allow` names exactly that name (its command is the
 //   name, no glob, no `where`; its session or project scope already held to apply). Only that
 //   name: an ask raised on another name of the same call stands, and the strictest name wins.
+//   Only its project: a remembered allow (each is given in one project, `session` ones for one
+//   session too) lifts an ask bound to its project (a project file's, a local rule's of the
+//   project or of a session in it); an ask bound to none (user, role, a local rule for every
+//   project) only when every project the call names has its own remembered allow.
 //   **Remembered is proven, never claimed**: the rule's id, layer, project, session and command
 //   must match the server's record of the `remember` that wrote it (`agent_remembered`,
-//   `RuleStore.proves`). A rule's `source` (`approval:<id>`) is display only: files never set
+//   `RuleStore.proves`; only allows are recorded, and trusting a file drops the records of the
+//   remembered rules it no longer holds). A rule's `source` (`approval:<id>`) is display only: files never set
 //   it (the reader fills it), `agent.rules.add` writes its own, and a file rule reusing a
 //   remembered id or claiming a source matches no record of its layer and project. A project
 //   file's remembered rule lifts only while the file is trusted, as all its rules apply.
@@ -59,7 +64,7 @@ import { type GrantPort, isDryRun } from "./approvals.ts";
 import { commandsOf } from "./command-of.ts";
 import { globMatch } from "./glob.ts";
 import type { Role } from "./roles.ts";
-import type { RuleStore } from "./rule-store.ts";
+import type { LocalRule, RuleStore } from "./rule-store.ts";
 import { managedRules, type ProjectRules, projectRules, userRules } from "./trust.ts";
 
 export type Layer = RuleLayer;
@@ -100,36 +105,61 @@ function holds(w: RuleWhere | undefined, session: Session | undefined, r: Resolv
   return bytes && over(w.minutesOver, r.minutes) && over(w.costOver, r.costMicros);
 }
 
+/** Where a remembered allow was given: its project, and its session when session-scoped. */
+export interface RememberedScope {
+  readonly projectId: string;
+  readonly sessionId?: string;
+}
+
+/** What a remembered allow may lift in one call (module docs). */
+export interface Lifts {
+  /** The allows of the call's rules proven to be a `remember`'s (`RuleStore.proves`), with their scope. */
+  readonly remembered: ReadonlyMap<Rule, RememberedScope>;
+  /** The project a project-bound rule applies to (a project file's, a local rule's own or its session's). */
+  readonly projectOf?: ReadonlyMap<Rule, string>;
+  /** The call's projects: a rule bound to none applies to each of them. */
+  readonly projectIds: readonly string[];
+}
+
+const NO_LIFTS: Lifts = { remembered: new Map(), projectIds: [] };
+
 /** The applicable rules of one call, every layer together. */
 export class RuleSet {
   readonly rules: readonly Rule[];
-  readonly #remembered: ReadonlySet<Rule>;
+  readonly #lifts: Lifts;
 
-  /** `remembered`: the allows of `rules` proven to be a `remember`'s (module docs). */
-  constructor(rules: readonly Rule[], remembered: ReadonlySet<Rule> = new Set()) {
+  constructor(rules: readonly Rule[], lifts: Lifts = NO_LIFTS) {
     this.rules = [...rules].sort((a, b) => RANK[a.layer] - RANK[b.layer]);
-    this.#remembered = remembered;
+    this.#lifts = lifts;
   }
 
   /**
-   * One name's outcome: a `deny` anywhere, else a managed `ask`, else another layer's `ask`
-   * unless a remembered allow of exactly this name lifts it, else `allow`; the highest layer names it.
+   * One name's outcome: a `deny` anywhere, else the highest-layer `ask` no remembered allow of
+   * exactly this name lifts (a managed one never is), else `allow`.
    */
   evaluate(input: { readonly command: string; readonly principal?: Principal; readonly session?: Session; readonly resolved: Resolved }): RuleOutcome {
-    let ask: Rule | undefined;
-    let lifted = false;
+    // The projects a remembered allow of exactly this name covers (for its session, if it has one).
+    const covered = new Set<string>();
     for (const rule of this.rules) {
-      if (rule.effect === "allow") {
-        lifted ||= this.#remembered.has(rule) && rule.where === undefined && rule.command === input.command;
-        continue;
-      }
-      if (!globMatch(rule.command, input.command) || !holds(rule.where, input.session, input.resolved)) continue;
-      if (rule.effect === "deny") return { effect: "deny", rule, layer: rule.layer };
-      ask ??= rule;
+      const scope = rule.effect === "allow" ? this.#lifts.remembered.get(rule) : undefined;
+      if (scope === undefined || rule.where !== undefined || rule.command !== input.command) continue;
+      if (scope.sessionId === undefined || scope.sessionId === input.session?.id) covered.add(scope.projectId);
     }
-    // Rules are in layer order: a managed ask, when there is one, is `ask`, and never lifted.
-    if (ask === undefined || (lifted && ask.layer !== "managed")) return { effect: "allow" };
-    return { effect: "ask", rule: ask, layer: ask.layer };
+    let ask: Rule | undefined;
+    for (const rule of this.rules) {
+      if (rule.effect === "allow" || !globMatch(rule.command, input.command) || !holds(rule.where, input.session, input.resolved)) continue;
+      if (rule.effect === "deny") return { effect: "deny", rule, layer: rule.layer };
+      if (ask === undefined && !this.#lifted(rule, covered)) ask = rule;
+    }
+    return ask === undefined ? { effect: "allow" } : { effect: "ask", rule: ask, layer: ask.layer };
+  }
+
+  /** An ask is lifted when every project it applies to in this call is covered; a managed one never is. */
+  #lifted(ask: Rule, covered: ReadonlySet<string>): boolean {
+    if (ask.layer === "managed" || covered.size === 0) return false;
+    const bound = this.#lifts.projectOf?.get(ask);
+    const projects = bound === undefined ? this.#lifts.projectIds : [bound];
+    return projects.length > 0 && projects.every((p) => covered.has(p));
   }
 
   /** The strictest outcome over every name a call could be, with the name it was decided on. */
@@ -154,8 +184,8 @@ export interface RuleContext {
 /** Every applicable rule of a call, and whether each project's file applies. */
 export interface Layered {
   readonly rules: readonly Rule[];
-  /** The allows of `rules` proven to be a `remember`'s (`RuleStore.proves`). */
-  readonly remembered?: ReadonlySet<Rule>;
+  /** What the proven remembered allows of `rules` may lift (`RuleSet`). */
+  readonly lifts?: Lifts;
   readonly projects: ReadonlyMap<string, ProjectRules>;
 }
 
@@ -193,13 +223,24 @@ export class LayeredRules implements RuleSource {
     const projects = new Map(ids.map((id) => [id, this.project(id)]));
     const role = ctx.session === undefined ? [] : (this.#d.roles.get(ctx.session.role)?.rules ?? []);
     // The local rules of each project (those naming none come back for each: kept once).
-    const local = new Map<string, Rule>();
+    const local = new Map<string, LocalRule>();
     for (const id of ids.length === 0 ? [undefined] : ids) for (const r of this.#d.store.applicable(id, ctx.session?.id)) local.set(r.id, r);
     // Proven remembered allows: a local rule by its own row, a project rule by its file's project.
-    const remembered = new Set<Rule>([...local.values()].filter((r) => this.#d.store.proves(r, undefined)));
-    for (const [id, p] of projects) for (const r of p.rules) if (this.#d.store.proves(r, id)) remembered.add(r);
+    const remembered = new Map<Rule, RememberedScope>();
+    const projectOf = new Map<Rule, string>();
+    for (const r of local.values()) {
+      const bound = r.projectId ?? (r.sessionId === undefined ? undefined : ctx.session?.projectId);
+      if (bound !== undefined) projectOf.set(r, bound);
+      if (r.projectId !== undefined && this.#d.store.proves(r, undefined)) remembered.set(r, { projectId: r.projectId, ...(r.sessionId === undefined ? {} : { sessionId: r.sessionId }) });
+    }
+    for (const [id, p] of projects) {
+      for (const r of p.rules) {
+        projectOf.set(r, id);
+        if (this.#d.store.proves(r, id)) remembered.set(r, { projectId: id });
+      }
+    }
     return {
-      remembered,
+      lifts: { remembered, projectOf, projectIds: ids },
       rules: [
         ...managedRules(this.#d.serverData),
         ...local.values(),
@@ -315,9 +356,9 @@ export function commandRules(rules: RuleSource, sessions: RuleSessions, options:
       const payloadProject = field(input.payload, "projectId");
       const projectIds = [...new Set([...(input.projectIds ?? []), ...(typeof payloadProject === "string" ? [payloadProject] : [])])];
       const projectId = session?.projectId ?? (typeof payloadProject === "string" ? payloadProject : projectIds[0]);
-      const { rules: all, remembered } = yield* Effect.try({ try: () => rules.layers({ ...(session === undefined ? {} : { session }), projectIds }), catch: (e) => finError("INTERNAL", `command rules cannot be read: ${String(e)}`) });
+      const { rules: all, lifts } = yield* Effect.try({ try: () => rules.layers({ ...(session === undefined ? {} : { session }), projectIds }), catch: (e) => finError("INTERNAL", `command rules cannot be read: ${String(e)}`) });
       if (all.length === 0) return undefined;
-      const set = new RuleSet(all, remembered);
+      const set = new RuleSet(all, lifts);
       const names = commandsOf(input.tag, input.payload);
       const resolved = yield* resolveFor(set.rules, input, projectId, options);
       const outcome = set.decide(names, session, resolved);
