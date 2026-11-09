@@ -2,6 +2,7 @@
 
 use clap::{Args, Subcommand};
 use fin_core::CoreError;
+use fin_core::branch::{BranchIndex, BranchInfo};
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -124,6 +125,19 @@ pub fn create(
     at: Option<Value>,
 ) -> Result<Value, CoreError> {
     let args = json!({ "name": name, "from": from, "at": at });
+    create_as(backend, g, ("branch.new", args), name, from, at)
+}
+
+/// [`create`] with the command input `argsHash` covers given by the caller (`fin try` hashes
+/// what was typed, not the default branch it forks from, which its first attempt moved).
+pub fn create_as(
+    backend: &dyn Backend,
+    g: &Globals,
+    (cmd, args): (&str, Value),
+    name: Option<&str>,
+    from: &str,
+    at: Option<Value>,
+) -> Result<Value, CoreError> {
     let mut fields = json!({ "from": from });
     if let Some(n) = name {
         fields["name"] = json!(n);
@@ -136,7 +150,7 @@ pub fn create(
         g,
         Req {
             tag: "branch.create",
-            cmd: "branch.new",
+            cmd,
             args,
             fields,
             hashed: true,
@@ -189,13 +203,24 @@ pub fn not_found(reference: &str, views: &[Value]) -> CoreError {
         .with_fix("fin branch ls --all lists the branches (an archived one by id or <name>#<id>)")
 }
 
-/// The listing entry a reference names.
+/// The listing entry a reference names (`branch.list` with `all`), resolved as the store
+/// resolves `--branch` ([`BranchIndex::resolve`]): an id, the name a non-archived branch holds
+/// (case-insensitively), or `<name>#<id>`. A plain name never names an archived branch
+/// (review #34).
 pub fn find(views: &[Value], reference: &str) -> Result<Value, CoreError> {
-    let named = |v: &&Value| v["display"] == json!(reference) || v["name"] == json!(reference);
-    views
-        .iter()
-        .find(|v| v["id"] == json!(reference))
-        .or_else(|| views.iter().find(named))
+    let infos = views.iter().filter_map(|v| {
+        let state = v["state"].as_str();
+        Some(BranchInfo {
+            id: v["id"].as_str()?.to_string(),
+            name: v["name"].as_str()?.to_string(),
+            archived: state == Some("archived"),
+            merged: state == Some("merged"),
+            ..BranchInfo::main()
+        })
+    });
+    BranchIndex::from_infos(infos)
+        .resolve(reference)
+        .and_then(|info| views.iter().find(|v| v["id"] == json!(info.id)))
         .cloned()
         .ok_or_else(|| not_found(reference, views))
 }
@@ -311,5 +336,27 @@ mod tests {
         for bad in ["@3", "b@", "b@99999999999999999999999"] {
             assert_eq!(parse_from(bad).unwrap_err().code, "USAGE", "{bad}");
         }
+    }
+
+    /// Review #34: a plain name is the active holder, never an archived branch listed first.
+    #[test]
+    fn find_resolves_like_the_store() {
+        let view = |id: &str, name: &str, state: &str| json!({ "id": id, "name": name, "display": name, "state": state });
+        let views = vec![
+            view("main", "main", "active"),
+            view("br1", "same", "archived"),
+            view("br2", "same", "active"),
+            view("br3", "gone", "archived"),
+            view("br4", "done", "merged"),
+        ];
+        let id = |r: &str| find(&views, r).map(|v| v["id"].as_str().unwrap().to_string());
+        assert_eq!(id("same").unwrap(), "br2");
+        assert_eq!(id("SAME").unwrap(), "br2");
+        assert_eq!(id("br1").unwrap(), "br1");
+        assert_eq!(id("same#br1").unwrap(), "br1");
+        assert_eq!(id("done").unwrap(), "br4");
+        assert_eq!(id("main").unwrap(), "main");
+        assert_eq!(id("gone").unwrap_err().code, "BRANCH_NOT_FOUND");
+        assert_eq!(id("other#br1").unwrap_err().code, "BRANCH_NOT_FOUND");
     }
 }

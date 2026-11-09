@@ -79,7 +79,14 @@ fn full_editing_flow() {
         json!([{ "kind": "item", "id": "c1", "change": "removed", "op": 0, "track": "t1" }])
     );
 
-    let view = run(&["view"]);
+    let mut view = run(&["view"]);
+    // The whole printed response, `ceil(chars / 4)` (its own digits included).
+    let response = view
+        .as_object_mut()
+        .unwrap()
+        .remove("responseTokens")
+        .unwrap();
+    assert!(response.as_u64().unwrap() > 26, "{view}");
     assert_eq!(
         view,
         json!({
@@ -90,7 +97,7 @@ fn full_editing_flow() {
                 "00:00.0–00:03.0  V1  c2 clip a1 [4.0s+3.0s]",
             ],
             "elided": [],
-            "tokens": 26,
+            "lineTokens": 26,
         })
     );
     // From outside the project folder, --project finds it; status agrees with view.
