@@ -63,6 +63,8 @@ impl IntentTx {
             schema_version,
             mut ops,
             args_hash,
+            // Not journaled: a third-party plugin id would need a keyed hash (spec §11).
+            via: _,
         } = tx;
         for op in &mut ops {
             if let Op::AssetAdd(a) = op {

@@ -86,14 +86,18 @@ pub struct JobLimits {
     pub ui: Option<UiLimits>,
 }
 
-/// A Windows process-thread attribute (`UpdateProcThreadAttribute`): its id and value bytes
-/// (sub-project 7 is its only producer). `PROC_THREAD_ATTRIBUTE_HANDLE_LIST` and
+/// A Windows process-thread attribute (`UpdateProcThreadAttribute`): its id, value bytes and
+/// size (sub-project 7 is its only producer). `PROC_THREAD_ATTRIBUTE_HANDLE_LIST` and
 /// `PROC_THREAD_ATTRIBUTE_PARENT_PROCESS` are the host's own and are refused.
 #[cfg(windows)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WinAttribute {
     pub attribute: usize,
     pub value: Box<[u8]>,
+    /// The attribute's `cbSize`: the struct at the start of `value`, which may hold more (the
+    /// data its pointers aim at: `SECURITY_CAPABILITIES` and its SIDs, whose size Windows
+    /// requires exactly, plan 7C Task 9 follow-up). At most `value.len()`.
+    pub size: usize,
 }
 
 /// A child-side step run after the host's own (Linux `pre_exec`). It must not allocate or

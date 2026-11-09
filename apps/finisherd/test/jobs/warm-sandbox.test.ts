@@ -4,17 +4,22 @@
 // roots. Real `fin-workers test --warm` under the Landlock `worker` profile (the test-hooks
 // `FIN_TEST_SANDBOX_READY=worker`) for what a worker can and cannot read, each case beside its
 // unsandboxed control; the scripted `FakeHost` for the pool's choices. `FIN_REQUIRE_LANDLOCK=1`
-// turns a skip on a host without Landlock into a failure.
+// turns a skip on a host without Landlock into a failure. Windows (plan 7C Decision 27): the same
+// real worker in its AppContainer, its grants through the real ACL broker; what it may read is
+// probed, what it may not is proven by the broker's live grants, never by a probe.
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { HostMsg, JobSpawnRequest, TestWarmResult } from "@finisher/core-types";
+import { aclGrantsForTest, aclRevoke, sandboxContainerDeleteForTest } from "@finisher/fin-node";
 import { Effect } from "effect";
-import { afterEach, describe, expect, test } from "vitest";
+import { afterEach, describe, expect, onTestFinished, test } from "vitest";
+import { aclBroker } from "../../src/sandbox/broker.ts";
 import { FakeHost, recordingHost } from "../support/fake-host.ts";
 import { closeTestEngines, testEngine, until } from "../support/jobs.ts";
 
 const EACCES = 13;
+const WIN = process.platform === "win32";
 const scratch: string[] = [];
 const savedReady = process.env.FIN_TEST_SANDBOX_READY;
 afterEach(async () => {
@@ -58,11 +63,21 @@ describe("a real warm worker under the worker profile", () => {
     const t = await testEngine({
       serverData,
       jobHost: recordingHost(reqs),
+      // Windows: each spawn's grants through the broker, as `main.ts` wires it.
+      ...(WIN && sandboxed ? { acl: aclBroker(serverData) } : {}),
       // Two slots: both projects' workers stay up at once.
       testKinds: { families: { test: { warmReads: (job) => [join(projects, job.project ?? "none", "sources")], warm: { slots: 2 } } } },
     });
     const root = join(serverData, "jobs");
-    return { t, reqs, root, files: layout(base, root) };
+    if (WIN && sandboxed) {
+      // What the workers' launches made outside the temp tree: the static grant on the program
+      // and the family's container profile.
+      onTestFinished(async () => {
+        await aclRevoke(serverData, "static");
+        sandboxContainerDeleteForTest("finisher-worker-test");
+      });
+    }
+    return { t, reqs, root, serverData, files: layout(base, root) };
   }
 
   /** Whether this host enforces the profile; else skip (or fail under `FIN_REQUIRE_LANDLOCK=1`). */
@@ -79,7 +94,7 @@ describe("a real warm worker under the worker profile", () => {
     return v.result as TestWarmResult;
   };
 
-  test("a_warm_worker_reads_only_its_own_job_and_project", async () => {
+  test.skipIf(WIN)("a_warm_worker_reads_only_its_own_job_and_project", async () => {
     const e = await engine(true);
     if (!enforced(e.t.engine.workers().caps, "a_warm_worker_reads_only_its_own_job_and_project")) return;
     const { a, b, otherJob } = e.files;
@@ -106,6 +121,30 @@ describe("a real warm worker under the worker profile", () => {
     const other = await look(e.t, "B", [join(a, "clip.mov"), join(b, "clip.mov")]);
     expect(other.pid).toBe(first.pid);
     expect(other.probes).toEqual([EACCES, null]);
+  });
+
+  test.runIf(WIN)("a_warm_worker_on_windows_reads_its_job_and_project_through_the_broker", async () => {
+    const e = await engine(true);
+    if (!enforced(e.t.engine.workers().caps, "a_warm_worker_on_windows_reads_its_job_and_project_through_the_broker")) return;
+    const { a, b } = e.files;
+    const one = await look(e.t, "A", [join(a, "clip.mov")]);
+    expect(one.probes).toEqual([null]);
+    const other = await look(e.t, "B", [join(b, "clip.mov")]);
+    expect(other.probes).toEqual([null]);
+    expect(other.pid).not.toBe(one.pid);
+    // Each live worker's own grants: its `tmp/` (modify) and its project's sources (read), never
+    // its `jobs/`, the jobs root or the other project; no visit grant outlives its attempt.
+    const lower = (p: string) => realpathSync.native(p).toLowerCase();
+    // The broker records canonical (`\\?\`) paths.
+    const live = aclGrantsForTest(e.serverData).map((g) => ({ ...g, path: g.path.replace(/^\\\\\?\\/, "") }));
+    expect(live.filter((g) => g.owner.startsWith("job:"))).toEqual([]);
+    const bySid = new Map<string, string[]>();
+    for (const g of live.filter((x) => x.owner.startsWith("proc:"))) bySid.set(g.sid, [...(bySid.get(g.sid) ?? []), `${g.path.toLowerCase()} ${g.mask}`]);
+    const warm = e.reqs.filter(isWarm);
+    expect(warm).toHaveLength(2);
+    const want = warm.map((r, i) => [`${lower(join(r.cwd, "tmp"))} ${0x1301bf}`, `${lower(i === 0 ? a : b)} ${0x120089}`].sort());
+    expect([...bySid.values()].map((v) => v.sort()).sort()).toEqual(want.sort());
+    for (const g of live) expect([lower(e.root), ...warm.map((r) => lower(join(r.cwd, "jobs")))]).not.toContain(g.path.toLowerCase());
   });
 
   test("control_unsandboxed_the_same_probes_read", async () => {
@@ -193,7 +232,8 @@ describe("the pool under a sandbox (scripted host)", () => {
       const { fake } = host({ perJobGrants: true }, false, (job, dir) => {
         const at = what === "jobDir" ? job : join(dir, "tmp");
         rmSync(at, { recursive: true });
-        symlinkSync(victim, at);
+        // A junction on Windows (no symlink privilege needed), a link elsewhere.
+        symlinkSync(victim, at, "junction");
       });
       const t = await testEngine({ jobHost: fake.factory, testKinds: { overrides: { "test.warm": { maxAttempts: 1 } } } });
       const v = await t.runJob("test.warm", { value: 1 }, { project: "A" });
@@ -266,7 +306,7 @@ describe("the media family's warm read roots", () => {
     const { mediaWarmReads } = await import("../../src/jobs/kinds/media.look.ts");
     const base = tmp();
     for (const d of ["P/sources", "lib", "data/fonts"]) mkdirSync(join(base, d), { recursive: true });
-    symlinkSync(join(base, "lib"), join(base, "lib-link"));
+    symlinkSync(join(base, "lib"), join(base, "lib-link"), "junction");
     const deps = { serverData: join(base, "data"), projects: { dirOf: (id: string) => (id === "p1" ? join(base, "P") : undefined) } as never, libraryRoots: () => [join(base, "lib-link"), join(base, "gone")] };
     const job = (over: object) => ({ id: "j", kind: "media.look", params: {}, ...over }) as never;
     // Canonical; a root that does not resolve is left out; `project`, else the params' `projectId`.

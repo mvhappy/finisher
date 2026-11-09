@@ -10,13 +10,20 @@
 // names a store-only directory, and **makes no call on any path under `providers/`** (`lstat`,
 // `readlink`, `rm` and `symlink` on the link's own name only).
 //
-// Windows: the ACL broker (plan 7C Task 10) grants these directories to the session's
-// capability SID with the masks the policy gives each (`sandbox.ts`, from fin-sandbox's grant
-// table: `settings/`, `git/` and `credential.json` read, `tmp/`, `provider/` and
-// `localappdata/` modify, `blobs/` nothing), so this module stays free of OS code.
+// Windows: there are no modes. Server data is private (a protected owner-only DACL, `config.ts`
+// `ensurePrivateDir`), so each directory made here inherits owner-only access, and the ACL
+// broker (plan 7C Task 10) grants these directories to the session's capability SID with the
+// masks the policy gives each (`sandbox.ts`, from fin-sandbox's grant table: `settings/`,
+// `git/` and `credential.json` read, `tmp/`, `provider/` and `localappdata/` modify, `blobs/`
+// nothing). An existing directory's DACL is left as it is: it holds the broker's live grants
+// of the session's other open scopes, which the broker does not re-apply (it trusts its log).
+// So a write root the container deleted (its mask includes delete) and an open made again is
+// made without its grant for the rest of the session: only the session itself loses it.
+// What a sandboxed process planted at a directory's name (a junction, a file link, a file) is
+// removed, never followed, as on Unix.
 import { constants } from "node:fs";
 import { chmod, lstat, mkdir, open, readlink, rm, symlink, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { posix, win32 } from "node:path";
 import type { Harness } from "@finisher/contracts";
 import { sandboxSessionGitConfig } from "@finisher/fin-node";
 
@@ -37,8 +44,9 @@ export interface SessionDirs {
   readonly localAppData: string;
 }
 
-/** The directory names under `<server-data>/agents/<sessionId>/`. */
-export function sessionDirs(agentsRoot: string, sessionId: string): SessionDirs {
+/** The directory names under `<server-data>/agents/<sessionId>/`, spelled for `platform`. */
+export function sessionDirs(agentsRoot: string, sessionId: string, platform: NodeJS.Platform = process.platform): SessionDirs {
+  const { join } = platform === "win32" ? win32 : posix;
   const dir = join(agentsRoot, sessionId);
   const git = join(dir, "git");
   const tmp = join(dir, "tmp");
@@ -65,12 +73,27 @@ export interface EnsureOptions {
  * `provider/` are the session's write roots, so a name inside them (`tmp/gnupg`) may be a link
  * a sandboxed process made. An existing directory is opened `O_DIRECTORY | O_NOFOLLOW` and
  * `fchmod`ed; anything else of that name (a link, a file) is removed first, never followed.
+ * Windows: `lstat` of the name itself (a junction or a link reads as a link); anything but a
+ * real directory is removed and the directory made, inheriting server data's owner-only DACL.
  */
 async function privateDir(p: string, platform: NodeJS.Platform): Promise<void> {
+  if (platform === "win32") {
+    const st = await lstat(p).catch((e: NodeJS.ErrnoException) => {
+      if (e.code === "ENOENT") return undefined;
+      throw e;
+    });
+    if (st?.isDirectory() === true) return;
+    // `rm` of a link or junction removes the link alone, never its target.
+    if (st !== undefined) await rm(p, { force: true });
+    await mkdir(p).catch(async (e: NodeJS.ErrnoException) => {
+      // Another open of the session made it meanwhile: a real directory is as good.
+      if (e.code !== "EEXIST" || (await lstat(p)).isDirectory() !== true) throw e;
+    });
+    return;
+  }
   await mkdir(p, { mode: 0o700 }).catch((e: NodeJS.ErrnoException) => {
     if (e.code !== "EEXIST") throw e;
   });
-  if (platform === "win32") return;
   const flags = constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW;
   let fh = await open(p, flags).catch(() => undefined);
   if (fh === undefined) {
@@ -89,6 +112,7 @@ async function privateDir(p: string, platform: NodeJS.Platform): Promise<void> {
 /** Makes the session's directories (0700) and its git configuration; answers their names. */
 export async function ensureSessionDirs(agentsRoot: string, sessionId: string, opts: EnsureOptions = {}): Promise<SessionDirs> {
   const platform = opts.platform ?? process.platform;
+  // Real directories: spelled as this host spells paths (`platform` only picks the behaviour).
   const d = sessionDirs(agentsRoot, sessionId);
   // `agents/` is the server's (never a write root); below it, one level at a time.
   await mkdir(agentsRoot, { recursive: true, mode: 0o700 });
@@ -151,6 +175,8 @@ export interface LinkOptions {
 export async function linkSignInStore(harness: Harness, serverData: string, dirs: SessionDirs, opts: LinkOptions = {}): Promise<LinkedStore | undefined> {
   const store = SIGN_IN_STORES[harness];
   if (store === undefined) return undefined;
+  const platform = opts.platform ?? process.platform;
+  const { join } = process.platform === "win32" ? win32 : posix;
   const home = join(serverData, "providers", harness, "home");
   const target = join(home, store.name);
   // Not created here (that would `mkdir` and, when it exists, `stat` under `providers/`): the
@@ -168,7 +194,7 @@ export async function linkSignInStore(harness: Harness, serverData: string, dirs
     // file link cannot be made, and a hard link would open the store and break at the CLI's
     // first rename. The store is then not reached: the CLI reports itself signed out.
     const code = (e as NodeJS.ErrnoException).code;
-    if ((opts.platform ?? process.platform) === "win32" && (code === "EPERM" || code === "EACCES")) return undefined;
+    if (platform === "win32" && (code === "EPERM" || code === "EACCES")) return undefined;
     throw e;
   }
   return { grant: target };

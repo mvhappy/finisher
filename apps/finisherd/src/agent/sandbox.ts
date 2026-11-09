@@ -40,7 +40,7 @@
 import { type ChildProcess, spawn as spawnChild } from "node:child_process";
 import { mkdir, realpath } from "node:fs/promises";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { isAbsolute, join, relative, sep } from "node:path";
 import type { Readable, Writable } from "node:stream";
 import type { FinError, Harness, Session } from "@finisher/contracts";
 import type { AgentInput, FinEndpoint } from "@finisher/core-types";
@@ -81,6 +81,11 @@ export interface SandboxedChild {
 export type SandboxMode = "launcher" | "direct";
 
 export interface SpawnOptions {
+  /**
+   * Inside the session's workspace or the shared workspace, both granted (spec §8.5): on
+   * Windows a container's process needs its working directory granted, and Node reads the
+   * nearest `package.json` above it (S9 point 8), so it never starts elsewhere.
+   */
   readonly cwd: string;
   readonly stdio: "pipe";
   /** Read roots this process needs beyond the session's (a harness's own files). */
@@ -202,6 +207,12 @@ export function sandboxMode(m: SandboxMechanism, os: string): SandboxMode | FinE
 
 const canonical = (p: string) => realpath(p).catch(() => p);
 
+/** `p` is `dir` or inside it (both canonical). */
+function within(p: string, dir: string): boolean {
+  const r = relative(dir, p);
+  return r === "" || (r !== ".." && !r.startsWith(`..${sep}`) && !isAbsolute(r));
+}
+
 /**
  * Opens `s`'s sandbox in the current scope (spec §8.5, §8.6): its directories, the sign-in
  * store link, the environment and the profile input, checked by `fin-sandbox` now so a bad
@@ -238,10 +249,11 @@ export function openSessionSandbox(s: Session, harness: Harness, deps: SessionSa
       const dir = deps.projectDirOf(s.projectId);
       if (dir === undefined) throw finError("PROJECT_NOT_FOUND", "the session's project is not open on this server", { projectId: s.projectId });
       const projectDir = await canonical(dir);
-      const workspace = join(projectDir, "workspace", s.id);
-      const shared = join(projectDir, "workspace", "shared");
-      await mkdir(workspace, { recursive: true, mode: 0o700 });
-      await mkdir(shared, { recursive: true, mode: 0o700 });
+      await mkdir(join(projectDir, "workspace", s.id), { recursive: true, mode: 0o700 });
+      await mkdir(join(projectDir, "workspace", "shared"), { recursive: true, mode: 0o700 });
+      // Links resolved (a `workspace/` the user put on another disk), as `spawn` resolves a cwd.
+      const workspace = await canonical(join(projectDir, "workspace", s.id));
+      const shared = await canonical(join(projectDir, "workspace", "shared"));
       const dirs = await ensureSessionDirs(join(deps.serverData, "agents"), s.id, { platform });
       const store = await linkSignInStore(harness, deps.serverData, dirs, { platform, ...(deps.symlink === undefined ? {} : { symlink: deps.symlink }) });
       const server = mode === "launcher" ? await launcherServer(deps, platform) : { env: deps.localEndpoint, fin: undefined };
@@ -290,6 +302,10 @@ export function openSessionSandbox(s: Session, harness: Harness, deps: SessionSa
           Effect.tryPromise({
             try: async () => {
               if (argv.length === 0) throw finError("USAGE", "nothing to start", { sessionId: s.id });
+              const cwd = await canonical(opts.cwd);
+              if (!within(cwd, workspace) && !within(cwd, shared)) {
+                throw finError("USAGE", "a session's process starts in its workspace", { sessionId: s.id, reason: "cwdOutsideWorkspace" });
+              }
               let input = base;
               if (opts.extraRead !== undefined && opts.extraRead.length > 0) {
                 const extra = await Promise.all(opts.extraRead.map(canonical));
@@ -301,7 +317,7 @@ export function openSessionSandbox(s: Session, harness: Harness, deps: SessionSa
                 }
               }
               if (closed.v) throw finError("SESSION_INTERRUPTED", "the session's sandbox is closed", { sessionId: s.id });
-              const child = await start(mode === "launcher" ? { launcher, request: { profile: "agent", input } } : undefined, argv, opts.cwd, env, platform, (exit, launcherFailed) => {
+              const child = await start(mode === "launcher" ? { launcher, request: { profile: "agent", input } } : undefined, argv, cwd, env, platform, (exit, launcherFailed) => {
                 if (launcherFailed && exit.code === LAUNCHER_UNAVAILABLE) deps.onViolation?.({ sessionId: s.id, op: "apply", profile: "agent", rootKind: "none" });
               });
               children.add(child);
