@@ -124,6 +124,33 @@ pub trait LogView {
     fn measurer(&self) -> Option<&dyn TextMeasurer> {
         None
     }
+    /// What an undo, redo or copy does with an item whose neighbours are both gone
+    /// (`rebase::placement`): the store sets it per call from who asked; `Snap` by default.
+    fn when_lost(&self) -> crate::rebase::placement::WhenLost {
+        crate::rebase::placement::WhenLost::Snap
+    }
+}
+
+/// `placements` with each cause's author: from `recs` (the records the plan read: their
+/// intents' txIds and authors), else the log's record of that txId (none for a copy the plan
+/// has not appended yet).
+pub(crate) fn authored<'a>(
+    log: &dyn LogView,
+    recs: impl IntoIterator<Item = &'a Tx> + Clone,
+    mut placements: Vec<crate::rebase::placement::Placement>,
+) -> Vec<crate::rebase::placement::Placement> {
+    for c in placements.iter_mut().flat_map(|p| p.causes.iter_mut()) {
+        let held = recs.clone().into_iter().find(|t| t.tx_id == c.tx_id);
+        c.author = match held {
+            Some(t) => Some(t.author.clone()),
+            None => log
+                .find(&c.tx_id)
+                .ok()
+                .flatten()
+                .map(|r| r.record.intent.author),
+        };
+    }
+    placements
 }
 
 /// The env a planner re-runs with at the head: the log's measurer.
@@ -248,4 +275,7 @@ pub struct Planned {
     pub link: Link,
     pub intent: Tx,
     pub applied: Applied,
+    /// One per item the record puts back with a ripple restore or move
+    /// (`rebase::placement`), in op order; empty for other ops.
+    pub placements: Vec<crate::rebase::placement::Placement>,
 }

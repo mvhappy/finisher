@@ -9,6 +9,7 @@ use fin_core::history::{
     plan_cherry_pick, plan_merge, plan_redo, plan_revert, plan_undo, plan_undo_to,
 };
 use fin_core::layout::TextMeasurer;
+use fin_core::rebase::placement::{Placement, WhenLost};
 use fin_core::{
     Applied, ApplyEnv, ApplyMode, BoundIds, CoreError, Diff, Link, MemIds, Op, Project, Record,
     SCHEMA_VERSION, Tx, apply_tx_env, apply_tx_mode, rebase_tx_env, resolve_ops,
@@ -28,6 +29,10 @@ pub struct MemLog {
     pub ids: MemIds,
     /// What edits and the planners measure captions with (plan 4C Task 20); none by default.
     pub measurer: Option<Arc<dyn TextMeasurer>>,
+    /// What the planners do with an item whose neighbours are both gone (`Snap`: a person).
+    pub when_lost: WhenLost,
+    /// The placements of the last undo, redo, `undo --to`, pick, revert or merge planned.
+    pub placements: Vec<Placement>,
 }
 
 impl MemLog {
@@ -44,6 +49,8 @@ impl MemLog {
             branches: BTreeMap::from([("main".to_string(), main)]),
             ids,
             measurer: None,
+            when_lost: WhenLost::Snap,
+            placements: Vec::new(),
         }
     }
 
@@ -145,6 +152,7 @@ impl MemLog {
 
     /// A planned record appended at the head of `b`.
     pub fn append(&mut self, b: &str, p: Planned) -> LogRec {
+        self.placements = p.placements.clone();
         assert_eq!(p.intent.base_rev, self.head_seq(b), "planned at the head");
         self.push(b, p.link, p.intent, p.applied)
     }
@@ -199,6 +207,7 @@ impl MemLog {
         for p in plan.planned.clone() {
             self.append(into, p);
         }
+        self.placements = plan.placements.clone();
         Ok(plan)
     }
 
@@ -306,6 +315,10 @@ impl MemLog {
 impl LogView for MemLog {
     fn measurer(&self) -> Option<&dyn TextMeasurer> {
         self.measurer.as_deref()
+    }
+
+    fn when_lost(&self) -> WhenLost {
+        self.when_lost
     }
 
     fn lineage(&self, branch: &str) -> Result<Lineage, CoreError> {

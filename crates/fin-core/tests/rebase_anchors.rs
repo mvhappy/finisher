@@ -222,10 +222,11 @@ fn end_anchor_follows_a_shiftless_slide() {
     assert_eq!(at_of(&rb.tx.ops[0]), secs(28));
 }
 
-/// Undo of a ripple delete after another author ripple-moved the item that followed it
-/// (plan D9): the restore goes back before that item, where it is now.
+/// Undo of a ripple delete after another author ripple-moved the item that followed it. Plan
+/// D9 put it back before that item; since the owner decision of 2026-11-09 it goes right after
+/// the item that preceded it (`c1`, which nobody moved), where it was (`rebase::placement`).
 #[test]
-fn undo_of_ripple_delete_goes_back_before_its_moved_follower() {
+fn undo_of_ripple_delete_goes_back_after_its_left_neighbour() {
     let mut log = MemLog::new(with_clips(&[10, 10, 10, 10]));
     log.commit("main", "e1", "alice", vec![delete("c2")]);
     // c1 c3 c4 → bob moves c3 to the end: c1 c4 c3.
@@ -240,13 +241,14 @@ fn undo_of_ripple_delete_goes_back_before_its_moved_follower() {
         .into_iter()
         .map(|(id, _)| id)
         .collect();
-    assert_eq!(order, ["c1", "c4", "c2", "c3"]);
+    assert_eq!(order, ["c1", "c2", "c4", "c3"]);
     assert_well_formed(&log.state("main"));
 }
 
-/// Undo of a ripple move, after another author moved the item that followed its old place.
+/// Undo of a ripple move, after another author moved the item that followed its old place:
+/// back right after `c1` (owner decision 2026-11-09; D9 had it before `c3`).
 #[test]
-fn undo_of_ripple_move_goes_back_before_its_moved_follower() {
+fn undo_of_ripple_move_goes_back_after_its_left_neighbour() {
     let mut log = MemLog::new(with_clips(&[10, 10, 10, 10]));
     // c1 c2 c3 c4 → alice moves c2 to the end: c1 c3 c4 c2.
     log.commit(
@@ -267,7 +269,7 @@ fn undo_of_ripple_move_goes_back_before_its_moved_follower() {
         .into_iter()
         .map(|(id, _)| id)
         .collect();
-    assert_eq!(order, ["c1", "c4", "c2", "c3"]);
+    assert_eq!(order, ["c1", "c2", "c4", "c3"]);
     assert_well_formed(&log.state("main"));
 }
 
@@ -366,12 +368,13 @@ fn merge_keeps_the_source_order_past_an_earlier_copy() {
     assert_well_formed(&log.state("main"));
 }
 
-/// Implementation review, `props_history_4c` seed: a move to a track's end is an append, so a
-/// copy of it goes to the target's track end, not after the item it followed where written. On
-/// main, alice moves `c1` to the end (after `c3`); on `br`, bob moves `c3` to the front. Merged
-/// into `br`, `c1` goes last.
+/// Implementation review, `props_history_4c` seed: on main, alice moves `c1` to the end (after
+/// `c3`); on `br`, bob moves `c3` to the front. Merged into `br`, the copied ripple move goes
+/// right after `c3`, the item it followed on main, wherever `c3` is (owner decision
+/// 2026-11-09, `rebase::placement`): `c3 c1 c2`, relocated by bob's move. Before that decision
+/// a copied move to the end was an append and `c1` went last (`c3 c2 c1`).
 #[test]
-fn merged_move_to_the_end_goes_to_the_targets_end() {
+fn merged_move_goes_after_the_item_it_followed() {
     let mut log = MemLog::new(with_clips(&[10, 10, 10]));
     log.fork("br", "main", 0);
     log.commit(
@@ -392,7 +395,11 @@ fn merged_move_to_the_end_goes_to_the_targets_end() {
         .into_iter()
         .map(|(id, _)| id)
         .collect();
-    assert_eq!(order, ["c3", "c2", "c1"]);
+    assert_eq!(order, ["c3", "c1", "c2"]);
+    assert_eq!(
+        plan.placements[0].outcome,
+        fin_core::rebase::placement::Outcome::Relocated
+    );
     assert_well_formed(&log.state("br"));
 }
 

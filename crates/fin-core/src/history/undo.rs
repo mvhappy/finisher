@@ -338,7 +338,8 @@ pub(super) fn try_rebase_over(
             .with_env(super::env_of(log))
             .with_absorbs(absorbs)
             .with_places(&reads.places)
-            .with_anchors(&reads.anchors),
+            .with_anchors(&reads.anchors)
+            .with_history(log.when_lost()),
         ids,
         ApplyMode::Internal,
     )
@@ -349,6 +350,7 @@ pub(super) fn try_rebase_over(
             ..rebased.tx
         },
         applied: rebased.applied,
+        placements: super::authored(log, since.iter().map(|c| &c.tx), rebased.placements),
     }))
 }
 

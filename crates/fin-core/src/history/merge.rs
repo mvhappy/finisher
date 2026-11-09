@@ -247,6 +247,9 @@ pub struct MergePlan {
     pub merged: Vec<String>,
     pub conflicts: Vec<Conflict>,
     pub excluded: Vec<Conflict>,
+    /// One per item the copies put back with a ripple restore or move, each with its copy's
+    /// txId, plus the `conflict` placements of skipped candidates (`rebase::placement`).
+    pub placements: Vec<crate::rebase::placement::Placement>,
 }
 
 /// The `merge` records that merge branch `from` into branch `into` (ids), by `author`, as
@@ -298,6 +301,7 @@ pub fn plan_merge(
             .iter()
             .map(|&(i, reason)| Conflict::new(&source[i].record.tx_id, 0, reason, None))
             .collect(),
+        placements: Vec::new(),
     };
     let mut copies: Vec<(usize, Prepared)> = Vec::new();
     // Candidates not copied: excluded, or failed. What depends on them is DEPENDS_ON_SKIPPED.
@@ -341,6 +345,7 @@ pub fn plan_merge(
             absorbs: &absorbs,
             places: &reads.places,
             anchors: &reads.anchors,
+            history: Some(log.when_lost()),
         };
         let rerun = BoundIds::new(&r.intent.ops, &r.bindings)
             .map_err(|e| Conflict::from_rerun(&e, &r.tx_id, 0, None))
@@ -348,6 +353,7 @@ pub fn plan_merge(
         let rebased = match rerun {
             Ok(rebased) => rebased,
             Err(c) => {
+                plan.placements.extend(conflict_placement(&c));
                 plan.conflicts.push(on_skipped(c, &skipped));
                 skipped.insert(&r.tx_id);
                 continue;
@@ -377,10 +383,21 @@ pub fn plan_merge(
         copies.push((i, Prepared::new(&Step::from_committed(&copy)?)));
         head = rebased.applied.project.clone();
         plan.merged.push(r.tx_id.clone());
+        let placements: Vec<_> = rebased
+            .placements
+            .into_iter()
+            .map(|p| crate::rebase::placement::Placement {
+                tx_id: intent.tx_id.clone(),
+                ..p
+            })
+            .collect();
+        let placements = super::authored(log, target.iter().map(|r| &r.record.intent), placements);
+        plan.placements.extend(placements.iter().cloned());
         plan.planned.push(Planned {
             link,
             intent,
             applied: rebased.applied,
+            placements,
         });
     }
     if !skip_conflicting && let Some(all) = Conflicts::new(plan.conflicts.clone()) {
@@ -483,4 +500,11 @@ impl Binders {
             .filter(|id| self.source.get(id) == self.target.get(id))
             .collect())
     }
+}
+
+/// The `conflict` placement a refused candidate carries (`NEIGHBOURS_GONE`'s
+/// `details.placement`), for the plan's list.
+fn conflict_placement(c: &Conflict) -> Option<crate::rebase::placement::Placement> {
+    let p = c.details.as_ref()?.get("placement")?;
+    serde_json::from_value(p.clone()).ok()
 }

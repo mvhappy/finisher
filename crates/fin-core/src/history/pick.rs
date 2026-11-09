@@ -127,6 +127,7 @@ pub fn plan_cherry_pick(
         absorbs: &absorbs,
         places: &reads.places,
         anchors: &reads.anchors,
+        history: Some(log.when_lost()),
     };
     // Earlier source records stand in the steps as unmirrored inverses unless the target
     // holds a copy: what depends on them depends on a record not picked.
@@ -155,6 +156,11 @@ pub fn plan_cherry_pick(
             ..rebased.tx
         },
         applied: rebased.applied,
+        placements: super::authored(
+            log,
+            target.iter().map(|r| &r.record.intent),
+            rebased.placements,
+        ),
     }))
 }
 
