@@ -20,7 +20,8 @@ import { credentialPath } from "../src/agent/credentials.ts";
 import type { FakeAdapter, FakeScript } from "../src/agent/fake.ts";
 import { OutcomeTracker } from "../src/agent/outcomes.ts";
 import { BranchLineage } from "../src/agent/reach.ts";
-import { Rollbacks } from "../src/agent/rollback.ts";
+import { type RollbackRegistry, Rollbacks } from "../src/agent/rollback.ts";
+import { finError } from "../src/errors.ts";
 import { cataloguePricing, type ToolCall, type ToolOutcome } from "../src/agent/runtime-deps.ts";
 import { AgentStore } from "../src/agent/store.ts";
 import { openControlStore } from "../src/control/db.ts";
@@ -310,17 +311,166 @@ describe("rollback through the runtime and the engine", () => {
 });
 
 describe("afterSeq is the rollback's own", () => {
-  test("history.undo over RPC takes no afterSeq: a plain undo of one unit at most", async () => {
+  test("history.undo over RPC with afterSeq is a plain undo: exactly one unit", async () => {
+    const { local, projectId } = await boot([worker()]);
+    const s = await idleRoot(local, projectId);
+    const root = s.session.rootBranch!;
+    const made: string[] = [];
+    await runWith(local, s.session.id, async () => {
+      made.push(await edit(s.client, projectId, root, 0));
+      made.push(await edit(s.client, projectId, root, 1));
+    });
+    const r = ok<{ undone: string[] }>(await s.client.call("history.undo", { projectId, txId: id(), author: "x", branch: root, afterSeq: 0 }));
+    expect(r.undone).toEqual([made[1]]);
+  });
+});
+
+/** `c`'s plain undo (or `undo --to`, `redo`) on `branch`; its result. */
+const hist = async (c: NdjsonClient, op: "undo" | "redo", projectId: string, branch: string, extra: Record<string, unknown> = {}) =>
+  ok<{ undone: string[] }>(await c.call(`history.${op}`, { projectId, txId: id(), author: "x", branch, ...extra }));
+
+describe("the session's later undos and redos are reversed too", () => {
+  test("a run-2 undo of a run-1 commit: rollback to run 1 redoes it (A is back)", async () => {
+    const { local, projectId } = await boot([worker()]);
+    const s = await idleRoot(local, projectId);
+    const root = s.session.rootBranch!;
+    let a = "";
+    await runWith(local, s.session.id, async () => void (a = await edit(s.client, projectId, root, 0)));
+    const afterRun1 = await snapshot(local, projectId, root);
+    let u: string[] = [];
+    await runWith(local, s.session.id, async () => void (u = (await hist(s.client, "undo", projectId, root)).undone));
+    expect(u).toEqual([a]);
+    expect(await snapshot(local, projectId, root)).not.toEqual(afterRun1);
+    const r = ok<Rolled & { restored?: string[] }>(await local.call("agent.session.rollback", { sessionId: s.session.id, toRun: 1 }));
+    expect(r.undone).toEqual([]);
+    expect(r.branches).toEqual([root]);
+    expect(r.restored).toHaveLength(1);
+    expect(await snapshot(local, projectId, root)).toEqual(afterRun1);
+    // A's outcome is not `undone` by the rollback; the notice counts what was restored.
+    expect(srv().core.store.outcomes.of(a).filter((o) => (o.details as { rollback?: unknown } | undefined)?.rollback !== undefined)).toEqual([]);
+    expect(nodes(s.session.id).at(-1)).toMatchObject({ kind: "notice", payload: { rollback: { toRun: 1, undone: 0, restored: 1 } } });
+  });
+
+  test("an undo --to <checkpoint> in run 2 of run 1's units: rollback to run 1 redoes that one record", async () => {
     const { local, projectId } = await boot([worker()]);
     const s = await idleRoot(local, projectId);
     const root = s.session.rootBranch!;
     await runWith(local, s.session.id, async () => {
       await edit(s.client, projectId, root, 0);
+      ok(await local.call("history.checkpoint", { projectId, txId: id(), author: "someone", branch: root, name: "v1" }));
+      await edit(s.client, projectId, root, 1);
+      await edit(s.client, projectId, root, 2);
+    });
+    const afterRun1 = await snapshot(local, projectId, root);
+    await runWith(local, s.session.id, async () => void expect((await hist(s.client, "undo", projectId, root, { to: "v1" })).undone).toHaveLength(2));
+    const before = (await heads(local, projectId)).get(root)!;
+    const r = ok<Rolled & { restored?: string[] }>(await local.call("agent.session.rollback", { sessionId: s.session.id, toRun: 1 }));
+    expect(r.restored).toHaveLength(1);
+    expect(await snapshot(local, projectId, root)).toEqual(afterRun1);
+    expect((await heads(local, projectId)).get(root)).toBe(before + 1);
+  });
+
+  test("a run-2 redo of a run-1 undo is undone; undos and redos within the later runs cancel out", async () => {
+    const { local, projectId } = await boot([worker()]);
+    const s = await idleRoot(local, projectId);
+    const root = s.session.rootBranch!;
+    await runWith(local, s.session.id, async () => {
+      await edit(s.client, projectId, root, 0);
+      await hist(s.client, "undo", projectId, root);
+    });
+    const afterRun1 = await snapshot(local, projectId, root);
+    let c = "";
+    await runWith(local, s.session.id, async () => {
+      await hist(s.client, "redo", projectId, root);
+      // B then its undo cancel out; C clears the redo stack (B's undo is not needed back).
+      await edit(s.client, projectId, root, 1);
+      await hist(s.client, "undo", projectId, root);
+      c = await edit(s.client, projectId, root, 2);
+    });
+    const r = ok<Rolled & { restored?: string[] }>(await local.call("agent.session.rollback", { sessionId: s.session.id, toRun: 1 }));
+    expect(r.undone).toHaveLength(2);
+    expect(r.undone[0]).toBe(c);
+    expect(r.restored ?? []).toEqual([]);
+    expect(await snapshot(local, projectId, root)).toEqual(afterRun1);
+  });
+
+  test("an undo a later edit cleared off the redo stack cannot be redone: CONFLICT notReversible before any write", async () => {
+    const { local, projectId } = await boot([worker()]);
+    const s = await idleRoot(local, projectId);
+    const root = s.session.rootBranch!;
+    await runWith(local, s.session.id, async () => void (await edit(s.client, projectId, root, 0)));
+    let u = "";
+    await runWith(local, s.session.id, async () => {
+      await hist(s.client, "undo", projectId, root);
+      u = srv().core.store.txsOfSession(s.session.id).at(-1)!.txId;
       await edit(s.client, projectId, root, 1);
     });
-    const e = await s.client.call("history.undo", { projectId, txId: id(), author: "x", branch: root, afterSeq: 0 });
-    if (e.ok) expect((e.value as { undone: string[] }).undone).toHaveLength(1);
-    else expect(code(e)).toBe("INVALID_REQUEST");
+    const before = await heads(local, projectId);
+    const e = await local.call("agent.session.rollback", { sessionId: s.session.id, toRun: 1 });
+    expect(code(e)).toBe("CONFLICT");
+    expect(details(e)).toMatchObject({ reason: "notReversible", why: "redoCleared", branch: root, tx: u });
+    expect(await heads(local, projectId)).toEqual(before);
+  });
+});
+
+describe("after the undos land", () => {
+  test("a redo that fails while restoring: CONFLICT with partial, redoFailed, and that branch's units recorded undone", async () => {
+    const { local, projectId } = await boot([worker()]);
+    const s = await idleRoot(local, projectId);
+    const root = s.session.rootBranch!;
+    await runWith(local, s.session.id, async () => void (await edit(s.client, projectId, root, 0)));
+    let tryId = "";
+    let clip = "";
+    await runWith(local, s.session.id, async () => {
+      tryId = await tryBranch(s.client, projectId, root, "try-1");
+      clip = ok<{ bindings: Record<string, string> }>(await commit(s.client, projectId, { ...tx(id(), 1, [insert(2)]), branch: tryId })).bindings.$c!;
+    });
+    let b = "";
+    await runWith(local, s.session.id, async () => void (b = await edit(s.client, projectId, root, 1)));
+    const head = (await heads(local, projectId)).get(tryId)!;
+    ok(await commit(local, projectId, { ...tx(id(), head, [{ op: "item.delete", item: clip, mode: "ripple" }]), branch: tryId }));
+    const reg = (srv().agents.runtime as unknown as { deps: { registry: RollbackRegistry } }).deps.registry;
+    const history = reg.history.bind(reg);
+    reg.history = (p, op, payload, m) => (op === "redo" ? Effect.fail(finError("INTERNAL", "injected redo failure")) : history(p, op, payload, m));
+    try {
+      const e = await local.call("agent.session.rollback", { sessionId: s.session.id, toRun: 1 });
+      expect(code(e)).toBe("CONFLICT");
+      expect(details(e)).toMatchObject({ partial: true, branch: tryId, redone: [], redoFailed: [{ branch: root, code: "INTERNAL" }], undone: [b] });
+    } finally {
+      reg.history = history;
+    }
+    expect(srv().core.store.outcomes.of(b)).toEqual([expect.objectContaining({ verdict: "undone", via: "undo", details: { rollback: { toRun: 1, by: "local:local" } } })]);
+  });
+
+  test("marking the runs or the notice failing after the undos landed: success with a warning", async () => {
+    const { local, projectId } = await boot([worker()]);
+    const s = await threeRuns(local, projectId);
+    const marks = srv().core.store.rollbacks;
+    const mark = marks.mark.bind(marks);
+    let calls = 0;
+    marks.mark = () => {
+      calls++;
+      throw new Error("injected mark failure");
+    };
+    try {
+      const r = ok<Rolled & { warning?: string }>(await local.call("agent.session.rollback", { sessionId: s.session.id, toRun: 1 }));
+      expect(r.undone).toHaveLength(4);
+      expect(calls).toBe(2);
+      expect(r.warning).toContain("injected mark failure");
+    } finally {
+      marks.mark = mark;
+    }
+    expect(await snapshot(local, projectId, s.root)).toEqual(s.afterRun1.root);
+  });
+
+  test("a branch archived since is left as it was and named in the answer and the notice", async () => {
+    const { local, projectId } = await boot([worker()]);
+    const s = await threeRuns(local, projectId);
+    ok(await local.call("branch.set", { projectId, txId: id(), author: "someone", branch: s.tryId, archived: true }));
+    const r = ok<Rolled & { archived?: string[] }>(await local.call("agent.session.rollback", { sessionId: s.session.id, toRun: 1 }));
+    expect(r.branches).toEqual([s.root]);
+    expect(r.archived).toEqual([s.tryId]);
+    expect(nodes(s.session.id).at(-1)).toMatchObject({ kind: "notice", payload: { rollback: { archived: [s.tryId] } } });
   });
 });
 

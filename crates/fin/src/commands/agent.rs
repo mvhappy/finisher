@@ -14,8 +14,9 @@
 //! - `fin agent send <id> <text>`: a prompt when the child is idle, a steer while it runs.
 //! - `fin agent stop <id>`: ends the child (its branch stays).
 //! - `fin agent rollback <id> --to-run <seq>`: the child back to the end of its run `<seq>`
-//!   (0: before its first): its later transactions undone on every branch, all or nothing
-//!   (`CONFLICT` leaves them all as they were), then its conversation. A direct child only, and
+//!   (0: before its first): its later transactions undone and its later undos and redos
+//!   reversed on every branch, all or nothing (`CONFLICT` leaves them all as they were), then
+//!   its conversation. A direct child only, and
 //!   one that is not running and has no live child (`SESSION_BUSY`).
 //!
 //! All are `agent.session.*` RPCs: offline they are `SERVER_UNAVAILABLE`.
@@ -294,6 +295,12 @@ pub fn run(
             let mut out = brief_view(&r["session"]);
             for k in ["undone", "branches", "conversation"] {
                 out[k] = r[k].clone();
+            }
+            // Present only when there is something to say (7B Task 8).
+            for k in ["restored", "archived", "warning"] {
+                if !r[k].is_null() {
+                    out[k] = r[k].clone();
+                }
             }
             Ok(out)
         }

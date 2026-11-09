@@ -22,6 +22,7 @@ import {
 import { ProviderKey } from "./agent-admin.ts";
 import { defaultScopes } from "./auth.ts";
 import { MINT_DEFAULT_SCOPES } from "./credentials.ts";
+import { HistoryUndoPayload } from "./history.ts";
 import { STREAM_RPCS } from "./diagnostics.ts";
 import { FinRpcs } from "./rpc.ts";
 import { HUMAN_ONLY, needsConfirmation, requiredScopes, ruleOf, SCOPES, WRITE_RPCS } from "./scopes.ts";
@@ -299,6 +300,12 @@ describe("agent.session.rollback (7B Task 8)", () => {
     expect(decode({ sessionId: "s1", toRun: 0 })._tag).toBe("Success");
     expect(decode({ sessionId: "s1", toRun: 2 })._tag).toBe("Success");
     for (const bad of [{ sessionId: "s1" }, { sessionId: "s1", toRun: -1 }, { sessionId: "s1", toRun: 1.5 }]) expect(decode(bad)._tag, JSON.stringify(bad)).toBe("Failure");
+  });
+
+  it("afterSeq is the rollback's own: history.undo's payload decodes without it", () => {
+    const decoded = Schema.decodeUnknownSync(HistoryUndoPayload)({ projectId: "p", txId: "t", author: "a", branch: "b", afterSeq: 3 });
+    expect(decoded).not.toHaveProperty("afterSeq");
+    expect(decoded).toMatchObject({ branch: "b" });
   });
 });
 

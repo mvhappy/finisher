@@ -374,22 +374,28 @@ export const AgentSessionWaitSuccess = Schema.Struct({ children: Schema.Array(Ch
  * `agent.session.rollback {sessionId, toRun}` (7B Decision 23; `fin agent rollback`, console
  * `agent rollback`): the session back to the end of its run `toRun` (its `seq`; 0: before its
  * first). People, and a parent session for its own direct children. Refused while it runs or
- * has a live child (`SESSION_BUSY`). Its transactions of the later runs are undone on every
- * branch, all or nothing (`CONFLICT` leaves every branch as it was); then its conversation.
+ * has a live child (`SESSION_BUSY`). Its transactions of the later runs are undone, and its
+ * later undos and redos reversed, on every branch, all or nothing (`CONFLICT` leaves every
+ * branch as it was; `details.partial` when restoring one failed too); then its conversation.
  */
 export const AgentSessionRollbackPayload = Schema.Struct({ sessionId: Id, toRun: Count });
 export type AgentSessionRollbackPayload = typeof AgentSessionRollbackPayload.Type;
 /**
  * `undone`: the units taken back (the session's transactions, newest first per branch);
- * `branches`: the branches written, one undo record each; `conversation`: `rolledBack` (the
- * provider, or the built-in loop's next request) or `kept` (a provider without the capability:
- * its history stays, a `notice` says so).
+ * `branches`: the branches written (one undo record each, or the redos of its later undos);
+ * `conversation`: `rolledBack` (the provider, or the built-in loop's next request) or `kept` (a
+ * provider without the capability: its history stays, a `notice` says so). `restored`: the
+ * session's later undo records redone (what they took back is back); `archived`: branches with
+ * later-run transactions left as they were; `warning`: what failed after the undos landed.
  */
 export const AgentSessionRollbackSuccess = Schema.Struct({
   session: Session,
   undone: Schema.Array(Id),
   branches: Schema.Array(Id),
   conversation: Schema.Literals(["rolledBack", "kept"]),
+  restored: Schema.optionalKey(Schema.Array(Id)),
+  archived: Schema.optionalKey(Schema.Array(Id)),
+  warning: Schema.optionalKey(Schema.String),
 });
 
 /** What an adapter can do (spec §4.1). */

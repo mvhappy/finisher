@@ -271,14 +271,17 @@ async function rollback(ctx: CommandContext, rest: ReadonlyArray<string>): Promi
   const id = idOf("rollback", rest);
   const to = one(ctx.args, "to-run");
   if (to === undefined || !/^\d+$/.test(to)) usage("agent rollback needs --to-run <seq>, a run's number (0: before the first)", "List the runs with `finisherd agent show <id>`.");
-  type Answer = { session: Session; undone: string[]; branches: string[]; conversation: "rolledBack" | "kept" };
+  type Answer = { session: Session; undone: string[]; branches: string[]; conversation: "rolledBack" | "kept"; restored?: string[]; archived?: string[]; warning?: string };
   const r = await withConnection(ctx, (c) => call<Answer>(c, "agent.session.rollback", { sessionId: id, toRun: Number(to) }));
   if (has(ctx.args, "json")) {
     ctx.output.out(JSON.stringify(r));
     return 0;
   }
   ctx.output.out(`Rolled ${id} back to run ${to}: ${r.undone.length} transaction(s) undone on ${r.branches.length} branch(es).`);
+  if ((r.restored ?? []).length > 0) ctx.output.out(`Redid ${r.restored!.length} of its later undo(s): what they took back is back.`);
+  if ((r.archived ?? []).length > 0) ctx.output.out(`Left archived branch(es) as they were: ${safe(r.archived!.join(", "))}.`);
   if (r.conversation === "kept") ctx.output.out("Its provider keeps the later runs in its own history (it cannot roll back); the session goes on from there.");
+  if (r.warning !== undefined) ctx.output.err(`finisherd: warning: ${safe(r.warning)}`);
   ctx.output.out(sessionLine(r.session));
   return 0;
 }
