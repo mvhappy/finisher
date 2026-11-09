@@ -1,0 +1,2 @@
+# macOS `mach-lookup` allow-list of the `hook` profile (plan 7C Task 8). Source: spike S9
+# step B6: `fin` and hook shells need none. Empty: every lookup is denied.

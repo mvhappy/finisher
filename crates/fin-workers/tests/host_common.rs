@@ -132,7 +132,12 @@ fn bundled_program_resolves_only_known_names() {
 fn env_is_the_allow_list() {
     let mut h = host();
     let (_, v) = h.run("test.echo", json!({ "value": 1, "report": ["env", "cwd"] }));
-    let env: BTreeMap<String, String> = serde_json::from_value(v["env"].clone()).unwrap();
+    let mut env: BTreeMap<String, String> = serde_json::from_value(v["env"].clone()).unwrap();
+    // macOS adds `__CF_USER_TEXT_ENCODING` to a process that loads CoreFoundation (the worker
+    // links Metal): the OS's, not passed by the host.
+    if cfg!(target_os = "macos") {
+        env.remove("__CF_USER_TEXT_ENCODING");
+    }
     let want: BTreeMap<String, String> = base_env(h.dir.path())
         .into_iter()
         .map(|(k, v)| (k.into_string().unwrap(), v.into_string().unwrap()))
