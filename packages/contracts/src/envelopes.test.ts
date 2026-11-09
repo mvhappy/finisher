@@ -1,4 +1,4 @@
-// Gate: the Effect schemas that validate RPC envelopes at runtime must describe exactly the
+// Gate (`pnpm gates` runs it through scripts/check-envelopes.mjs; `pnpm test` runs it too): the Effect schemas that validate RPC envelopes at runtime must describe exactly the
 // Rust types they carry (generated into @finisher/core-types). Their TS types come from the
 // generated ones; this checks the runtime half, field by field.
 import { readFileSync } from "node:fs";
@@ -8,8 +8,9 @@ import { BranchViewSchema, ConflictSchema } from "./history.ts";
 import { GenerationSchema, ProbeSchema, ProjectEventSchema, TxSetAsideSchema } from "./rpc.ts";
 
 type Json = { [k: string]: unknown };
-const defs = JSON.parse(readFileSync(new URL("../../core-types/schema/fin-core.schema.json", import.meta.url), "utf8"))
-  .$defs as Record<string, Json>;
+// `FIN_CORE_SCHEMA` points the check at another schema file (scripts/check-envelopes.test.mjs seeds drift this way).
+const schemaFile = process.env.FIN_CORE_SCHEMA ?? new URL("../../core-types/schema/fin-core.schema.json", import.meta.url);
+const defs = JSON.parse(readFileSync(schemaFile, "utf8")).$defs as Record<string, Json>;
 
 /**
  * A comparable shape: `{ field: kind }` plus the required fields. Kinds: `string`, `number`,
