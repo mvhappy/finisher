@@ -211,7 +211,7 @@ describe("the session sandbox on Windows", () => {
         openSessionSandbox(S, "fake", {
           serverData: data,
           projectDirOf: () => dir,
-          finPath: "/bin/sh",
+          finPath: process.execPath,
           localEndpoint: "\\\\.\\pipe\\finisher-test",
           status: () => ({ ...sandboxStatus(), agent: { kind: "enforced", detail: "test" } }),
           launcher: () => "/nonexistent/fin-sandbox-exec",
