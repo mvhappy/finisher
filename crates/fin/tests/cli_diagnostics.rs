@@ -182,10 +182,16 @@ fn serve(
     }
 }
 
+/// `fin` records its run within 50 ms and drops what it cannot send in time for good (polling
+/// cannot bring it back), which a loaded machine makes happen: the runs that wait for a record
+/// widen that budget (`FIN_TEST_DIAG_BUDGET_MS`, as `cli_diagnostics_online.rs` does).
+const BUDGET: (&str, &str) = ("FIN_TEST_DIAG_BUDGET_MS", "10000");
+
 /// `fin fonts status`: one server call, no project.
 fn run(fake: &Fake, sd: Option<&Path>, env: &[(&str, &str)]) -> (support::Run, Duration) {
     let nowhere = fake.root.join("no-server");
     let mut cmd = fin_cmd(sd.unwrap_or(&nowhere), &fake.root, &["fonts", "status"]);
+    cmd.env(BUDGET.0, BUDGET.1);
     if sd.is_none() {
         cmd.env("FIN_SERVER", &fake.socket);
     }
@@ -324,7 +330,8 @@ fn slow_server_never_delays_exit_beyond_budget() {
     // (a few hundred bytes the socket buffer takes) and leaves.
     let fake = Fake::start(After::Stall);
     let sd = fake.discovery(Some(true));
-    let (r, took) = run(&fake, Some(&sd), &[]);
+    // The real budget: it is what bounds the write.
+    let (r, took) = run(&fake, Some(&sd), &[(BUDGET.0, "50")]);
     assert_eq!(r.code, 0, "{}", r.stdout);
     assert!(took < Duration::from_secs(2), "took {took:?}");
 }
@@ -383,7 +390,10 @@ fn map_still_under_budget() {
 /// `fin <args>` against the fake through discovery; `online`-less runs have no connection of
 /// their own.
 fn run_args(fake: &Fake, sd: &Path, args: &[&str]) -> support::Run {
-    let out = fin_cmd(sd, &fake.root, args).output().unwrap();
+    let out = fin_cmd(sd, &fake.root, args)
+        .env(BUDGET.0, BUDGET.1)
+        .output()
+        .unwrap();
     finish(args, out)
 }
 

@@ -258,7 +258,10 @@ fn a_stuck_root_probe_is_not_repeated() {
     };
     let deadline = std::time::Instant::now() + Duration::from_secs(60);
     while probe_hooks::joined(&root) < 5 {
-        assert!(std::time::Instant::now() < deadline, "the waiter never joined");
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the waiter never joined"
+        );
         std::thread::yield_now();
     }
     drop(block);
@@ -266,7 +269,10 @@ fn a_stuck_root_probe_is_not_repeated() {
     assert_eq!(probe_hooks::started(&root), 1);
     // The finished probe left the pending map before it published its answer, so the call after
     // the answer starts a probe of its own.
-    assert_eq!(code(root_state(&root, &stored, Duration::from_secs(60))), "NOT_FOUND");
+    assert_eq!(
+        code(root_state(&root, &stored, Duration::from_secs(60))),
+        "NOT_FOUND"
+    );
     assert_eq!(probe_hooks::started(&root), 2);
 }
 
