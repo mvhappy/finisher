@@ -1035,6 +1035,33 @@ Plan: `docs/superpowers/plans/2026-11-08-sub-project-7c-os-sandbox.md`. Batch 7C
 - [x] Task 15: the spec as built, cross-references, tracker (branch `sp7c-t15`). Sub-project 7 spec revision 8: **§25** (what is built by area; deviations and decisions taken during the build: seccomp deferred, Decisions 25–27, the Decision 3 subreaper amendment, the socket namespace of Decision 26; the `READY` table; residual risks; open items; where it is), §8 pointers (the seccomp bullet marked deferred, §8.9's `before7C` paragraph replaced by `profileNotReady`), §1.4's 7C row, §15's new codes, §19 "After 7C", §24.5. sp5 §4.6, §4.17 (`probe_beneath`, Decision 20), §6.2, §6.3, §6.12 (each closed with a pointer or left open with the reason: the Linux `fork` refusal waits for seccomp, Windows per-job grants); sp6 §3.5.1 (the Landlock phase delivered by `fin-sandbox`); sp8 §16.1 (the profile as built and its deviations; the store decision: read-only, no re-hash); arch §8.4 (no bwrap fallback; AppContainer) and §27 item 22; README security model (what the sandbox guarantees per OS once on, not on by default yet, F2 hosts) and the Linux, macOS and Windows limits (`WINDOWS_NODE_PIPES`). Claims checked against the code by a fresh reviewer.
 - [ ] Task 16: cross-platform validation (controller-run; needs the hosts); fills `fin_sandbox::status::READY`, which is empty, so **no profile is on by default until it lands**
 
+## Sub-project 8B: plugin runtime (in progress, branch `sp8b`)
+
+Plan `docs/superpowers/plans/2026-11-08-sub-project-8b-plugin-runtime.md`. Batches (each green before the next): A types and the wire (Tasks 1–3), B processes and lifecycle (4–5), C rights, host API and egress (6–8; Task 6's agent rows wait for **7A-2**), D commands (9–11), E SDKs and the harness (12–14; 12 may start after 2), F diagnostics (15), G confinement (16, on **7C**'s `plugin` profile: 7C Tasks 7–9 built, `READY` filled by 7C Task 16) and hooks (17, on **7F**), H e2e, validation, docs (18–20).
+
+- [x] Reconciled with 7C as built (2026-11-09): no conflict needs the owner. 7C refuses a spawn only when `plugin` is in `READY` for the OS and the mechanism is unavailable on the host (below the kernel 6.2 floor, no `sandbox-exec`): that is the plan's one `SANDBOX_UNAVAILABLE` exception (agent §8.10), and before `READY` holds `plugin` nothing is refused (owner decision 1), Landlock disabled runs with the warning, no opt-out, no re-check. The plan's `unavailable (noProfile)` is 7C's `disabled {profileNotReady}`. Task 16 owes: 7C's grant mapping must accept the per-project data directory under `<serverData>/plugins/data/` (it accepts it only outside server data today); the `plugin` family stays warm under the profile (no per-job grants needed); 8C places models under `<serverData>/plugins/models/` (spec §5.1 says `<server-data>/models/`). macOS residuals: a plugin's open-files limit is not applied under `posix_spawn`, and the `gpu` grant has no macOS form yet
+- [ ] Task 1: tracker, SDK and harness skeletons, dependency gate
+- [ ] Task 2: protocol types, `commands` and `hooks` contributions, host API 1.1, the argument schema subset
+- [ ] Task 3: `Tx.via` in fin-core; stripped from client commits
+- [ ] Task 4: the `plugin` family: programs, environment, limits, warm keys
+- [ ] Task 5: enable, disable, crash loop and update for code plugins
+- [ ] Task 6: the `plugin` principal, rights and reach (agent rows after 7A-2)
+- [ ] Task 7: the host API through `onCall`
+- [ ] Task 8: the egress broker (`net.fetch`)
+- [ ] Task 9: plugin commands committed with `Tx.via`
+- [ ] Task 10: `fin @<id> <command>` and help
+- [ ] Task 11: developer mode (`finisherd --plugin-dir`)
+- [ ] Task 12: Rust SDK `fin-plugin-sdk`
+- [ ] Task 13: TypeScript SDK `@finisher/plugin-sdk`
+- [ ] Task 14: `fin-plugin-test` and `fin-plugin test` (`command` profile)
+- [ ] Task 15: diagnostics, audit and error codes
+- [ ] Task 16: confinement through 7C's `plugin` profile (gated on 7C)
+- [ ] Task 17: hook handlers (gated on 7F)
+- [ ] Task 18: e2e `plugin-code` scenario
+- [ ] Task 19: cross-platform validation (needs the hosts)
+- [ ] Task 20: spec as built, notices, tracker
+- Residual (Decision 16): no store re-hash before a run; until 7C's profile is enforced on an OS, a user-level process can alter an installed plugin's files undetected
+
 ## Sub-project 9: frontend and desktop shell (not designed yet)
 
 - [ ] **Decide the desktop shell / Electron ffmpeg** (follow-up decision F4, arch D10, §18, sp6 §16.1): Electron with a documented ffmpeg exception plus the open-codecs build, Tauri or the OS webviews, or a custom build. Only the desktop app is affected (the server, `fin` and the media engine contain no ffmpeg). Until it is decided the Electron exception is provisional, `AGENTS.md` is unchanged, and the counsel item (6.2) waits for the result
