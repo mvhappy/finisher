@@ -1,16 +1,19 @@
 // ProjectRegistry: open Engines, the `app.db` project index, per-(project, branch) op hubs and
 // per-project event hubs fed by each engine's `onEvent`.
+import { realpathSync } from "node:fs";
 import { resolve } from "node:path";
 import type { AudioPlan, BranchView, CommittedTx, FontsPlan, FramePlan } from "@finisher/core-types";
-import type { EngineEvent, FinError, Generation, ProjectEvent, TxGetResult } from "@finisher/contracts";
+import type { FinError, Generation, ProjectEvent, TxGetResult } from "@finisher/contracts";
 import { Engine } from "@finisher/fin-node";
-import { Context, Effect, Layer, PubSub, type Scope, Semaphore, Stream } from "effect";
+import { Context, Effect, Layer, type Scope, Semaphore, type Stream } from "effect";
 import { attempt, attemptJson, finError, isEngineDead } from "./errors.ts";
 import type { CallMeta } from "./diagnostics.ts";
 import { callEngine, type HistoryOp, type HistoryPayload, metaJson, publishResult } from "./history.ts";
-import { follower, Hubs } from "./hubs.ts";
-import { engineEvicted, historyRewound, opStream } from "./op-stream.ts";
+import { Hubs } from "./hubs.ts";
+import { routeEngineEvent } from "./engine-events.ts";
+import { engineEvicted, opStream } from "./op-stream.ts";
 import { holdLibraries, type OpenProject } from "./open-project.ts";
+import { projectEvents, type StatusAt } from "./project-events.ts";
 import { ProjectIndex } from "./project-index.ts";
 
 /** What `prepareMediaJob` resolves to: the rev written, the plan's BLAKE3 at each time and the files the worker opens. */
@@ -156,7 +159,14 @@ export const DEFAULT_IDLE_CLOSE_MS = 10 * 60_000;
 export const DEFAULT_HUB_CAPACITY = 1024;
 const MAIN = "main";
 
-
+/** `dir` with every link resolved; `undefined` when it does not exist (any more). */
+const realDir = (dir: string): string | undefined => {
+  try {
+    return realpathSync(dir);
+  } catch {
+    return undefined;
+  }
+};
 
 export function makeProjectRegistry(
   serverData: string,
@@ -182,6 +192,8 @@ export function makeProjectRegistry(
     const closedHere = new Map<string, string>();
     /** Set once shutdown starts: engines that finish opening later are closed at once. */
     let closed = false;
+    /** The last engine's `epoch`. */
+    let epochs = 0;
 
     yield* Effect.addFinalizer(() =>
       Effect.suspend(() => {
@@ -206,54 +218,8 @@ export function makeProjectRegistry(
 
     const shuttingDown = () => finError("SERVER_SHUTTING_DOWN", "finisherd is shutting down", {}, "retry once the server is back");
 
-    /**
-     * Routes one engine event: imports to the op hubs (deduped by rev against commits),
-     * rewinds and rebuilds end the subscribers that saw the lost history, status and the rest
-     * go to `project.events`; a fatal error evicts the engine. `ENGINE_BUSY` never arrives
-     * here: it is a call's answer, passed through to the client.
-     */
-    const onEngineEvent = (p: OpenProject, json: string): void => {
-      const id = p.engine.projectId;
-      if (byId.get(id) !== p) return;
-      let e: EngineEvent;
-      try {
-        e = JSON.parse(json) as EngineEvent;
-      } catch {
-        return;
-      }
-      switch (e.type) {
-        case "applied":
-          hubs.publishTx(id, e.tx);
-          break;
-        case "status":
-          hubs.publishEvent(id, { type: "status", status: e.status });
-          break;
-        case "rewound": {
-          const generation = { incarnation: e.incarnation, n: e.generation };
-          hubs.rewind(id, e.branch, e.fromRev, historyRewound({ branch: e.branch, rev: e.fromRev, generation }), generation);
-          hubs.publishEvent(id, e);
-          break;
-        }
-        case "rebuilt":
-          // `rev: 0` as on fin-store's own `HISTORY_REWOUND` (`REBUILT`): read from the start.
-          hubs.endAll(
-            id,
-            1,
-            (branch) => historyRewound({ branch, rev: 0, reason: "REBUILT", incarnation: e.incarnation }),
-            { incarnation: e.incarnation },
-          );
-          hubs.publishEvent(id, e);
-          break;
-        case "lagged":
-          // Events were dropped before registration (a rewind or rebuild among them, maybe).
-          hubs.endAll(id, 1, (branch) => historyRewound({ branch, rev: 0, reason: "EVENTS_LAGGED" }));
-          break;
-        case "error":
-          hubs.publishEvent(id, { type: "error", error: e.error, fatal: e.fatal });
-          if (e.fatal) evict(p);
-          break;
-        case "collect": break;
-      }
+    const onEngineEvent = (p: OpenProject, json: string, seq: number): void => {
+      if (byId.get(p.engine.projectId) === p) routeEngineEvent(hubs, p, json, seq, evict);
     };
 
     const register = (engine: Engine, dir: string): OpenProject => {
@@ -263,17 +229,19 @@ export function makeProjectRegistry(
       }
       const existing = byId.get(engine.projectId);
       if (existing) {
-        // Same project reached through another path string: keep the first engine.
+        // Same project reached through another path string (a link, or a race with a move
+        // that `openDir` handles): keep the first engine; the second one only read (LEASE_HELD).
         void engine.close().catch(() => undefined);
         byDir.set(dir, existing.engine.projectId);
         return existing;
       }
-      const project: OpenProject = { engine, dir, commitLock: Semaphore.makeUnsafe(1), active: 0, lastUsed: Date.now(), retired: false };
+      epochs += 1;
+      const project: OpenProject = { engine, epoch: epochs, dir, commitLock: Semaphore.makeUnsafe(1), active: 0, lastUsed: Date.now(), retired: false };
       byId.set(engine.projectId, project);
       closedHere.delete(engine.projectId);
       byDir.set(dir, engine.projectId);
       index.touch(engine.projectId, dir);
-      engine.onEvent((json) => onEngineEvent(project, json));
+      engine.onEvent((json, seq) => onEngineEvent(project, json, seq));
       if (libraryUse !== undefined) holdLibraries(project, libraryUse);
       return project;
     };
@@ -287,21 +255,26 @@ export function makeProjectRegistry(
       void forget(p, "evicted").catch(() => undefined);
     };
 
-    /** Unregisters `p`, ends its streams and closes its engine (after its in-flight calls). */
-    const forget = (p: OpenProject, reason: "evicted" | "closed"): Promise<void> => {
+    /**
+     * Unregisters `p`, ends its streams and closes its engine (after its in-flight calls).
+     * `moved`: its folder is elsewhere now and reopens there at once, so its streams go on.
+     */
+    const forget = (p: OpenProject, reason: "evicted" | "closed" | "moved"): Promise<void> => {
       const id = p.engine.projectId;
       if (byId.get(id) !== p) return Promise.resolve();
       byId.delete(id);
-      p.retired = reason === "closed";
-      if (p.retired) closedHere.set(id, p.dir);
+      p.retired = reason !== "evicted";
+      if (reason === "closed") closedHere.set(id, p.dir);
       const dirs = new Set([p.dir]);
       for (const [dir, pid] of byDir) {
         if (pid !== id) continue;
         byDir.delete(dir);
         dirs.add(dir);
       }
-      hubs.endAll(id, 0, () => engineEvicted(id, reason));
-      hubs.endEvents(id, engineEvicted(id, reason));
+      if (reason !== "moved") {
+        hubs.endAll(id, 0, () => engineEvicted(id, reason));
+        hubs.endEvents(id, engineEvicted(id, reason));
+      }
       p.release?.();
       p.release = () => {};
       const closing = p.engine.close();
@@ -386,13 +359,14 @@ export function makeProjectRegistry(
         // a closing engine of the folder lets go of its lease and database first.
         pending = (closingDirs.get(dir) ?? Promise.resolve())
           .then(() => Engine.open(serverData, dir, { relocate, ...(expected === undefined ? {} : { expectId: expected }) }))
-          .then((engine) => {
+          .then(async (engine) => {
             // And again before `register`: a project other than the one checked is never taken on.
             if (expected !== undefined && engine.projectId !== expected) {
               void engine.close().catch(() => undefined);
               throw changed(dir, expected);
             }
-            return register(engine, dir);
+            const old = byId.get(engine.projectId);
+            return old !== undefined && realDir(old.dir) === undefined ? relocated(old, engine, dir, relocate) : register(engine, dir);
           })
           .finally(() => opening.delete(dir));
         opening.set(dir, pending);
@@ -402,6 +376,20 @@ export function makeProjectRegistry(
         if (expected !== undefined && p.engine.projectId !== expected) throw changed(dir, expected);
         return p;
       });
+    };
+
+    /**
+     * The project open here at `old.dir` was moved to `dir` (review #32): its old folder is gone,
+     * so its lease is lost and `engine` (opened while the old one held it) only reads. The
+     * index records `dir` first (a call in between waits for this open), the old engine closes
+     * after its in-flight calls (streams go on: same project, same history) and the project
+     * reopens at `dir`, writable.
+     */
+    const relocated = async (old: OpenProject, engine: Engine, dir: string, relocate: boolean): Promise<OpenProject> => {
+      await engine.close().catch(() => undefined);
+      index.touch(old.engine.projectId, dir);
+      await Effect.runPromise(old.commitLock.withPermits(1)(Effect.promise(() => forget(old, "moved").catch(() => undefined))));
+      return register(await Engine.open(serverData, dir, { relocate, expectId: old.engine.projectId }), dir);
     };
 
     const ref = (p: OpenProject): Effect.Effect<ProjectRef, FinError> =>
@@ -434,6 +422,12 @@ export function makeProjectRegistry(
     /** `f` on the engine of `projectId`, its JSON answer parsed. */
     const on = <A>(projectId: string, f: (engine: Engine) => Promise<string>): Effect.Effect<A, FinError> =>
       withOpen(projectId, (p) => call<A>(p, f));
+
+    /** The status and the last event it covers, from the engine that read it (`project.events`). */
+    const statusAt = (projectId: string): Effect.Effect<StatusAt, FinError> =>
+      withOpen(projectId, (p) =>
+        Effect.map(call<{ status: unknown; seq: number }>(p, (e) => e.statusAt()), (r) => ({ status: r.status, seq: r.seq, source: p.epoch })),
+      );
 
     /** The id a branch reference names (`BRANCH_NOT_FOUND` when none does); `main` needs no call. */
     const resolveBranch = (projectId: string, branch: string): Effect.Effect<string, FinError> =>
@@ -521,33 +515,7 @@ export function makeProjectRegistry(
       subscribe: (projectId, requested, fromRev, generation) =>
         opStream({ hubs, resolveBranch, on, released: () => touch(projectId) }, projectId, requested, fromRev, generation),
 
-      events: (projectId) =>
-        Stream.unwrap(
-          Effect.gen(function* () {
-            const channel = yield* Effect.acquireRelease(
-              Effect.sync(() => hubs.acquireEvents(projectId)),
-              () =>
-                Effect.sync(() => {
-                  hubs.releaseEvents(projectId);
-                  touch(projectId);
-                }),
-            );
-            const check = follower(channel, "");
-            // Subscribe first: a change landing while the status is read is then not missed.
-            const live = yield* PubSub.subscribe(channel.pubsub);
-            const status = yield* on<unknown>(projectId, (e) => e.status());
-            const first: ProjectEvent = { type: "status", status };
-            const items = Stream.fromSubscription(live).pipe(
-              Stream.mapEffect((item) => {
-                const ended = check(item, 0);
-                if (ended !== undefined) return Effect.fail(ended);
-                return Effect.succeed(item.value === undefined ? [] : [item.value]);
-              }),
-              Stream.flattenIterable,
-            );
-            return Stream.concat(Stream.make(first), items);
-          }),
-        ),
+      events: (projectId) => projectEvents({ hubs, capacity: hubCapacity, statusAt, released: () => touch(projectId) }, projectId),
       close: (projectId) =>
         Effect.suspend(() => {
           const p = byId.get(projectId);

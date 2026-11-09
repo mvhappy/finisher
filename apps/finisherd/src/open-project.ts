@@ -5,6 +5,8 @@ import type { Semaphore } from "effect";
 /** One open project: its engine and a commit lock. */
 export interface OpenProject {
   readonly engine: Engine;
+  /** The registry's number for this engine, rising with each one registered (`project.events`' `source`). */
+  readonly epoch: number;
   readonly dir: string;
   /** Serializes commit + publish so hubs see revs in commit order. */
   readonly commitLock: Semaphore.Semaphore;
@@ -14,7 +16,7 @@ export interface OpenProject {
   active: number;
   /** When it was last used (`Date.now()`): a call ended or a subscriber left. */
   lastUsed: number;
-  /** Set once the registry closed it (idle, `project.close`; not an eviction): a call that raced it reopens. */
+  /** Set once the registry closed it (idle, `project.close`, moved; not an eviction): a call that raced it reopens. */
   retired: boolean;
 }
 
