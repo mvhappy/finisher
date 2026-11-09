@@ -246,10 +246,45 @@ typing the name is the step a blind `y` cannot pass, in a pipe or in a terminal.
 does **not** stop a program running as your user that can read `<server-data>/auth/`: such a
 program can prove as the console itself, or drive a pseudo-terminal (`script`, `expect`) and
 answer `y` or type the name it reads off the screen. **An agent harness you start in a plain
-shell runs as you**, so until Finisher sandboxes agents (a later version), human-only operations,
-scopes and branch limits bind only harnesses that go through `fin` or MCP with their own
-credential. They record who did what and prevent mistakes. They are not a wall against hostile
-code.
+shell runs as you**: human-only operations, scopes and branch limits bind it only if it goes
+through `fin` or MCP with its own credential. They record who did what and prevent mistakes.
+They are not a wall against hostile code. Finisher's OS sandbox (below) is that wall for the
+processes Finisher starts itself, on each OS where it is switched on.
+
+**The OS sandbox.** Every process Finisher starts for a CLI agent session, a media job or a
+plugin goes through `fin-sandbox`, under one of four profiles (`agent`, `hook`, `worker`,
+`plugin`; hooks and the Claude Code and Codex harnesses come in later versions). Where a profile
+is on:
+
+- **no profile can read the server's data**: `auth/` (`local.key`, `console.key`,
+  `credential.master`), `settings.json`, `control.db`, the journal and the audit log, other
+  sessions' own folders, your `~/.ssh`, `~/.gnupg`, cloud and container credentials, and your own
+  `~/.claude` and `~/.codex`;
+- **an agent session's processes** read only an allow-list (the toolchain, the project folder
+  with the other sessions' workspaces in it, its libraries, the session's own folder) and write
+  only their workspace, `workspace/shared/`, a private temp folder, their own CLI configuration
+  folder and the CLI's sign-in file; never `.finisher/`, `assets/`, `finisher.project.json` or
+  `finisher.rules.json`. They reach the server with the session's own credential: on Linux over
+  a loopback listener that admits only agent and MCP credentials, on macOS through `fin.sock`, on
+  Windows through the project's pipe;
+- **media workers and plugins** read their job's inputs and write only its `out/` folder (a
+  plugin also its own data folder), with no credential;
+- on Linux: Landlock (kernel 6.2 or later) confines files, program starts and links, and TCP
+  ports from kernel 6.7; agent processes are reaped with their session even if they leave its
+  process group.
+  On macOS: Seatbelt, with system services (`mach-lookup`) closed except a short list, no
+  keychain, no loopback but Finisher's own. On Windows: an AppContainer per project with a
+  capability per session, a kill-on-close job object and a private desktop. Media workers and
+  plugins have no network on macOS and Windows, and no TCP on Linux from kernel 6.7 (see the
+  Linux limits under Agents).
+
+**It is not on by default yet.** Each profile is switched on per OS once its escape suite has
+passed on that OS's validation machine; until then it runs as before, and `finisherd status`
+and every agent session warn `SANDBOX_DISABLED` (`profileNotReady`; `PLUGINS_UNCONFINED` for
+plugins). Once on, it cannot be turned off. On a Linux kernel with Landlock disabled (not built
+in, or missing from the `lsm=` boot parameter) everything still runs, unconfined, with the
+warning `SANDBOX_DISABLED` (`landlockDisabled`) naming the fix. A sandbox that is present but
+fails to apply stops the start (`SANDBOX_UNAVAILABLE`).
 
 **Agent and MCP credentials** are the recommended way to run a harness by hand. They are not
 required: `fin` run by you needs none.
@@ -324,10 +359,12 @@ fin merge <branch>                           # take its work into your branch
   session (`finisherd agent delete`) or 90 days after it ends. Deleting recorded diagnostics
   does not delete them. A session's metadata goes to the diagnostics journal while diagnostics
   are on; its content is recorded only if you turned training on, and then in a separate store.
-- **Not sandboxed yet.** Until a later version adds the OS sandbox, an agent's tools run as your
-  user; the server warns `SANDBOX_DISABLED` on every session. The built-in agent's tools are
-  `fin` and file tools confined to its workspace, but run agents only on projects and prompts
-  you trust.
+- **Not sandboxed by default yet.** The OS sandbox (Security model) is switched on per OS once it
+  passes validation there; until then an agent's tools run as your user and the server warns
+  `SANDBOX_DISABLED` on every session. The built-in agent's tools are `fin` and file tools
+  confined to its workspace, but run agents only on projects and prompts you trust. Agents have
+  internet access (by design in this version; on Linux from kernel 6.7 ports 80 and 443 only),
+  so whatever they can read, including the CLI's own sign-in, can be sent anywhere.
 - **Linux sandbox limits.** On Linux the OS sandbox uses Landlock alone for now; the seccomp
   filter is an open hardening item. Landlock confines reads, writes, program starts, links and
   TCP ports. Agent and hook processes also start in a user and mount namespace where `/run`,
@@ -345,7 +382,13 @@ fin merge <branch>                           # take its work into your branch
   TCP connections on an ephemeral port; job workers and plugins get no namespace yet (they
   can reach the sockets on kernels without Landlock's socket rule, and send UDP); and every
   profile keeps the rest of the kernel's interface (process creation, `io_uring`, 32-bit
-  system calls, namespaces).
+  system calls, namespaces). On kernels before 6.12 an agent's process can signal its
+  launcher.
+- **macOS sandbox limits.** A process an agent starts that leaves its process group (`setsid`)
+  outlives the session there.
+- **Windows sandbox limits.** Node tools that spawn child processes with piped stdio (npm
+  scripts, Node hooks, Node MCP servers) fail fast with `WINDOWS_NODE_PIPES` inside the Windows
+  sandbox, until Node ships libuv's fix. Warm media workers run cold there under the sandbox.
 
 ## Plugins
 
