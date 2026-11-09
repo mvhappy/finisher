@@ -1,5 +1,5 @@
 //! The container error codes (spec §17): `MEDIA_CORRUPT {at, box}`, `MEDIA_LIMIT {limit,
-//! value}`, `UNSUPPORTED_CONTAINER {format}`, `UNSUPPORTED_TRANSFORM`, and `IO_ERROR` for the
+//! value}`, `UNSUPPORTED_CONTAINER {format, reason}`, `UNSUPPORTED_TRANSFORM`, and `IO_ERROR` for the
 //! reader or writer failing.
 
 use fin_core::CoreError;
@@ -26,6 +26,28 @@ pub fn unsupported_container(format: &str, why: &str) -> CoreError {
     )
     .with_details(json!({ "format": format, "reason": why }))
     .with_fix("convert the file to MP4 or MOV, or install the codec plugin")
+}
+
+/// A Matroska track whose frames are compressed or encrypted (`ContentEncoding`):
+/// `UNSUPPORTED_CONTAINER {format, reason: contentEncoding}`.
+pub fn content_encoding(format: &str) -> CoreError {
+    CoreError::new(
+        "UNSUPPORTED_CONTAINER",
+        "cannot read this container: the track's frames are compressed or encrypted \
+         (ContentEncoding)",
+    )
+    .with_details(json!({ "format": format, "reason": "contentEncoding" }))
+    .with_fix("remux the file without header compression or encryption, or convert it to MP4")
+}
+
+/// A Matroska video track with a projection other than flat, or a pose.
+pub fn unsupported_projection(projection_type: u64) -> CoreError {
+    CoreError::new(
+        "UNSUPPORTED_TRANSFORM",
+        "the video track has a 360° projection or a pose",
+    )
+    .with_details(json!({ "projectionType": projection_type }))
+    .with_fix("re-export the clip as flat video without a projection")
 }
 
 pub fn unsupported_transform(matrix: &[i32; 9]) -> CoreError {

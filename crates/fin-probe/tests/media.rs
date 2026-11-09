@@ -111,3 +111,45 @@ fn a_bad_matrix_is_unsupported_transform_with_the_path() {
     assert_eq!(e.code, "UNSUPPORTED_TRANSFORM");
     assert!(std::path::Path::new(e.details["path"].as_str().unwrap()).is_absolute());
 }
+
+/// WebM is dispatched by its EBML magic (6B-1 Task 12) and probes like MP4: the model's rate
+/// is the average, the audio rate the track's sampling rate.
+#[test]
+fn webm_probes_by_its_magic() {
+    use fin_container::testing::webm_writer::{Block, Options, Track, opus_head, write};
+    let mut blocks: Vec<Block> = (0..30)
+        .map(|i| Block::simple(1, (i * 1000 + 15) / 30, i % 10 == 0, vec![i as u8; 24]))
+        .collect();
+    blocks.extend((0..50).map(|i| Block::simple(2, i * 20, true, vec![0xFC; 12])));
+    blocks.sort_by_key(|b| (b.ts, b.track));
+    let tracks = [
+        Track::video(1, "V_AV1", 640, 360),
+        Track {
+            private: Some(opus_head(2, 312)),
+            ..Track::audio(2, "A_OPUS", 48_000.0, 2)
+        },
+    ];
+    let p = probe_bytes(write(&Options::default(), &tracks, &blocks));
+    let v = p.video.unwrap();
+    assert_eq!((v.width, v.height), (640, 360));
+    // 30 frames over 967 + 34 ms.
+    assert_eq!(v.rate, r(30_000, 1001));
+    let a = p.audio.unwrap();
+    assert_eq!((a.sample_rate, a.channels), (48_000, 2));
+    let m = p.media.unwrap();
+    assert_eq!(m.container, ContainerKind::Webm);
+    assert_eq!(m.video.unwrap().nominal_rate, r(30, 1));
+    assert_eq!(m.audio.unwrap().priming, 312);
+
+    // A track whose frames are compressed: the reason code survives with the path.
+    let mut t = Track::video(1, "V_AV1", 64, 64);
+    t.extra = [0x6D, 0x80, 0x83, 0x62, 0x40, 0x80].to_vec();
+    let bytes = write(&Options::default(), &[t], &blocks[..1]);
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("clip.webm");
+    std::fs::write(&path, bytes).unwrap();
+    let e = probe(&path).unwrap_err();
+    assert_eq!(e.code, "UNSUPPORTED_CONTAINER");
+    assert_eq!(e.details["reason"], "contentEncoding");
+    assert!(e.details["path"].is_string());
+}

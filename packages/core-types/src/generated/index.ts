@@ -1225,12 +1225,12 @@ export type Switch = "on" | "off";
  */
 export type TrainingState = "on" | "off" | "undecided";
 /**
- * The container family, from `ftyp`'s brands.
+ * The container family, from `ftyp`'s brands or the EBML `DocType`.
  *
  * This interface was referenced by `FinCore`'s JSON-Schema
  * via the `definition` "ContainerKind".
  */
-export type ContainerKind = "mp4" | "mov";
+export type ContainerKind = "mp4" | "mov" | "webm" | "matroska";
 /**
  * Every key of spec §4.2, consumed or not.
  *
@@ -6585,9 +6585,9 @@ export interface Probe {
   video?: VideoInfo | null;
 }
 /**
- * MP4/MOV: what the file is (sub-project 6 spec §6.3): display size and rotation, colour,
- * HDR, VFR, edit lists. In the `asset.probe` answer only: an `asset.add` never carries it
- * (spec §4.4).
+ * MP4/MOV, WebM/Matroska: what the file is (sub-project 6 spec §6.3): display size and
+ * rotation, colour, HDR, VFR, edit lists. In the `asset.probe` answer only: an
+ * `asset.add` never carries it (spec §4.4).
  */
 export interface MediaInfo {
   audio?: AudioTrackInfo;

@@ -44,7 +44,7 @@ fn header_len(body: &[u8], video: bool) -> usize {
     }
 }
 
-fn config_info(e: &mut Entry, kind: &[u8; 4], b: &[u8]) {
+pub(crate) fn config_info(e: &mut Entry, kind: &[u8; 4], b: &[u8]) {
     match kind {
         b"av1C" if b.len() >= 4 => {
             e.profile = Some(b[1] >> 5);

@@ -2710,7 +2710,7 @@
       "type": "object"
     },
     "ContainerKind": {
-      "description": "The container family, from `ftyp`'s brands.",
+      "description": "The container family, from `ftyp`'s brands or the EBML `DocType`.",
       "oneOf": [
         {
           "enum": [
@@ -2721,6 +2721,16 @@
         {
           "const": "mov",
           "description": "QuickTime (`qt  ` major brand).",
+          "type": "string"
+        },
+        {
+          "const": "webm",
+          "description": "EBML `DocType` `webm`.",
+          "type": "string"
+        },
+        {
+          "const": "matroska",
+          "description": "EBML `DocType` `matroska`.",
           "type": "string"
         }
       ]
@@ -12755,7 +12765,7 @@
         },
         "media": {
           "$ref": "#/$defs/MediaInfo",
-          "description": "MP4/MOV: what the file is (sub-project 6 spec §6.3): display size and rotation, colour,\nHDR, VFR, edit lists. In the `asset.probe` answer only: an `asset.add` never carries it\n(spec §4.4)."
+          "description": "MP4/MOV, WebM/Matroska: what the file is (sub-project 6 spec §6.3): display size and\nrotation, colour, HDR, VFR, edit lists. In the `asset.probe` answer only: an\n`asset.add` never carries it (spec §4.4)."
         },
         "size": {
           "format": "uint64",
