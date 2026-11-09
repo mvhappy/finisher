@@ -42,7 +42,11 @@ const steps = [
   ["cargo", ["check", "-q", "-p", "fin-compositor", "--features", "reference", "--target", "wasm32-unknown-unknown"]],
 ];
 const hasCargoDeny = spawnSync("cargo", ["deny", "--version"], { stdio: "ignore" }).status === 0;
-if (process.platform !== "win32" && hasCargoDeny) steps.push(["cargo", ["deny", "check", "licenses", "sources", "bans"]]);
+// Advisories (review #46) need the RustSec database: fetched (or updated) into
+// ~/.cargo/advisory-dbs, or with FIN_DENY_OFFLINE=1 (`--offline`) only the cached copy is used.
+const denyOffline = process.env.FIN_DENY_OFFLINE === "1" ? ["--offline"] : [];
+if (process.platform !== "win32" && hasCargoDeny)
+  steps.push(["cargo", ["deny", ...denyOffline, "check", "advisories", "licenses", "sources", "bans"]]);
 else console.log("gates: skipping cargo deny (not installed or Windows)");
 
 let failed = 0;

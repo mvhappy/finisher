@@ -78,7 +78,8 @@ impl Runner<'_, '_, '_> {
         let tx_id = self.next_id()?;
         let author = self.author;
         let ctx = self.ctx.as_deref_mut().expect("writing");
-        let draft = metadata_draft(ctx, branch, &tx_id, author, link)?;
+        let mut draft = metadata_draft(ctx, branch, &tx_id, author, link)?;
+        draft.intent.args_hash.clone_from(&self.args_hash);
         self.committed.push(ctx.append(draft)?);
         Ok(())
     }
@@ -116,7 +117,7 @@ impl Runner<'_, '_, '_> {
             Err(c) => return Ok(Err(c)),
         };
         tx.author = self.author.to_string();
-        tx.args_hash = None;
+        tx.args_hash.clone_from(&self.args_hash);
         if let Some(b) = branch {
             tx.tx_id = self.next_id()?;
             tx.branch = b.to_string();
@@ -279,7 +280,7 @@ impl Runner<'_, '_, '_> {
                 from,
                 at: Some(At::Seq(seq)),
                 dry_run: ctx.dry_run,
-                args_hash: None,
+                args_hash: self.args_hash.clone(),
             },
             Some(self.forest.rows[i].hash.clone()),
         )?;

@@ -10,7 +10,8 @@
 //!
 //! The old file may be damaged anywhere. Tables are read by rowid ranges: after a read error
 //! the reader probes further rowids and resumes past the bad page (a binary search finds the
-//! first readable rowid), so one bad page loses only its own rows. Every error is reported
+//! first readable rowid), so one bad page loses only its own rows; a row that is read but
+//! whose columns do not decode loses only itself. Every error is reported
 //! ([`Outcome::errors`]); `complete` is false whenever anything could not be read.
 //! Sources are opened read-only, so a kept copy's WAL is never checkpointed into it.
 
@@ -256,24 +257,25 @@ fn rows<T>(
         format!("SELECT rowid, {cols} FROM {table} NOT INDEXED WHERE rowid > ?1 ORDER BY rowid");
     let mut out = vec![];
     let mut errors = vec![];
-    // Reads from `after` on; `Err((last rowid read, error))` on a failure.
-    let read = |after: i64, out: &mut Vec<T>| -> Result<(), (i64, String)> {
-        let mut stmt = c.prepare(&sql).map_err(|e| (after, e.to_string()))?;
+    // Reads from `after` on; on a failure `Err((rowid, error, row_only))`: with `row_only`
+    // the row `rowid` was read but its columns do not decode (only it is skipped), otherwise
+    // `rowid` is the last row read before the failure (a bad page is searched past).
+    let read = |after: i64, out: &mut Vec<T>| -> Result<(), (i64, String, bool)> {
+        let mut stmt = c.prepare(&sql).map_err(|e| (after, e.to_string(), false))?;
         let mut rs = stmt
             .query(params![after])
-            .map_err(|e| (after, e.to_string()))?;
+            .map_err(|e| (after, e.to_string(), false))?;
         let mut last = after;
         loop {
             match rs.next() {
                 Ok(Some(row)) => {
-                    let id: i64 = row.get(0).map_err(|e| (last, e.to_string()))?;
+                    let id: i64 = row.get(0).map_err(|e| (last, e.to_string(), false))?;
                     last = id;
-                    // A row whose columns do not decode is skipped like a bad page's.
-                    let v = f(row).map_err(|e| (last, e.to_string()))?;
+                    let v = f(row).map_err(|e| (id, e.to_string(), true))?;
                     out.push(v);
                 }
                 Ok(None) => return Ok(()),
-                Err(e) => return Err((last, e.to_string())),
+                Err(e) => return Err((last, e.to_string(), false)),
             }
         }
     };
@@ -291,9 +293,18 @@ fn rows<T>(
     loop {
         match read(after, &mut out) {
             Ok(()) => break,
-            Err((last, e)) => {
+            Err((last, e, row_only)) => {
                 if errors.len() < 20 {
-                    errors.push(format!("after rowid {last}: {e}"));
+                    if row_only {
+                        errors.push(format!("rowid {last}: {e}"));
+                    } else {
+                        errors.push(format!("after rowid {last}: {e}"));
+                    }
+                }
+                if row_only {
+                    // `last > after`, so this always moves on; the next row is read as is.
+                    after = last;
+                    continue;
                 }
                 // Find a readable start beyond the bad page: double the step, then narrow.
                 let mut lo = last;
