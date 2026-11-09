@@ -113,3 +113,12 @@ export async function pairDevice(server: { info: ServerInfo; serverData: string 
     await c.close();
   }
 }
+
+/** Redeems `link` (`finisher://pair?…#<offerId>.<secret>`) as a new device named `name`: its pending id. */
+export async function redeemLink(port: number, link: string, name: string): Promise<string> {
+  const [offerId, secret] = link.slice(link.indexOf("#") + 1).split(".");
+  const key = await deviceKey();
+  const redeemed = await post(port, "/pair/redeem", { offerId, secret, device: { name, platform: "android", jwk: key.jwk } });
+  if (redeemed.status !== 200) throw new Error(`redeem: ${redeemed.status} ${JSON.stringify(redeemed.body)}`);
+  return redeemed.body.pendingId as string;
+}

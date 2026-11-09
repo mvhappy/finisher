@@ -11,11 +11,16 @@ import { agent } from "./commands/agent.ts";
 import { audit } from "./commands/audit.ts";
 import { auth } from "./commands/auth.ts";
 import type { CommandContext } from "./commands/context.ts";
+import { devices, revoke } from "./commands/devices.ts";
 import { diagnostics } from "./commands/diagnostics.ts";
+import { env } from "./commands/env.ts";
 import { library } from "./commands/library.ts";
 import { mcp } from "./commands/mcp.ts";
+import { pair } from "./commands/pair.ts";
 import { project } from "./commands/project.ts";
+import { remote } from "./commands/remote.ts";
 import { status } from "./commands/status.ts";
+import { tls } from "./commands/tls.ts";
 import { training } from "./commands/training.ts";
 import { provider } from "../secrets/console.ts";
 import { stop } from "./commands/stop.ts";
@@ -38,6 +43,13 @@ const COMMANDS: Record<string, (ctx: CommandContext) => Promise<number>> = {
   auth,
   plugin,
   registry,
+  // 5B: pairing, devices, remote access, the identity and the environment.
+  pair,
+  devices,
+  revoke,
+  remote,
+  tls,
+  env,
 };
 
 export const HELP = `Usage: finisherd [serve] [--server-data <dir>]
@@ -49,6 +61,10 @@ Commands for the running server, as its owner:
   audit [--since <date>] [--kind <kind>] [--limit <n>] [--json]
                                            the security audit log, newest first
   agent credentials [--all] [--json]       agent and MCP credentials (live ones, or all)
+  devices [--all] [--json]                 paired devices (live ones, or all)
+  remote status [--json]                   whether remote access is on, where, and its pin
+  tls show [--json]                        the identity's pin and the routes devices use
+  env show [--json]                        the environment devices pair with
 
 These change something: each needs an interactive terminal, says what it will do, and goes
 ahead once you answer y (or, for what cannot be undone, type the name it shows back).
@@ -75,6 +91,16 @@ ahead once you answer y (or, for what cannot be undone, type the name it shows b
   mcp setup --out <file> [--label <name>] [--scope <scope>]...
                                            a credential for the MCP adapter
   auth rotate-master                       a new key for all credentials: every one of them ends
+  pair [--label <text>] [--ttl <duration>] a one-time pairing link and QR code; approve the device here
+                                           after comparing its safety code
+  revoke <device-id>                       end a device: its connections close now (type its name)
+  remote enable [--listen <host:port>] [--tls self-signed | --cert <file> --key <file>] [--public-url <url>]
+                                           open the server to the network, TLS only
+  remote disable                           close the remote listener; devices stay paired
+  tls rotate                               a new identity: every device pairs again (type the environment's name)
+  env name <name>                          the name devices show for this environment
+  env adopt                                the server data was moved here: devices are let in again
+  env reset                                it is a copy: a new identity, devices deleted, credentials revoked
 
 Agent sessions (sub-project 7):
   agent start --project <dir|id> [--provider openrouter|local] [--model <id>] [--role <role>]
@@ -142,6 +168,8 @@ export interface ConsoleDeps {
   readonly output?: Output;
   readonly env?: NodeJS.ProcessEnv;
   readonly createFile?: CommandContext["createFile"];
+  /** The terminal's width (tests; default stdout's). */
+  readonly columns?: () => number | undefined;
 }
 
 /** Runs one console command; resolves with its exit code (`fin`'s codes). */
@@ -168,6 +196,7 @@ export async function runConsole(argv: ReadonlyArray<string>, deps: ConsoleDeps 
       output,
       connect: () => connectConsole(serverData),
       createFile: deps.createFile,
+      columns: deps.columns ?? (() => process.stdout.columns),
     });
   } catch (e) {
     if (e instanceof ConsoleError) return printFailure(output, e.error);
