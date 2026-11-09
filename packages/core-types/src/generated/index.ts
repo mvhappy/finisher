@@ -7514,7 +7514,7 @@ export interface SchemaError {
   message: string;
   /**
    * `keyword`, `type`, `topType`, `additionalProperties`, `properties`, `required`,
-   * `items`, `bound`, `enum`, `const`, `pattern`, `description` or `depth`.
+   * `items`, `bound`, `enum`, `const`, `pattern`, `description`, `depth` or `budget`.
    */
   problem: string;
 }

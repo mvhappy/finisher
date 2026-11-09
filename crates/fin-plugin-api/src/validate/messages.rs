@@ -43,11 +43,10 @@ fn referenced_keys(m: &Manifest) -> Vec<(String, String)> {
     for (i, c) in m.contributes.commands.iter().enumerate() {
         let base = format!("/contributes/commands/{i}");
         v.push((format!("{base}/title"), c.title.clone()));
-        // A schema outside the subset is reported by `content`; its keys are not read.
-        if c.args.check().is_ok() {
-            for (at, key) in c.args.descriptions() {
-                v.push((format!("{base}/args{at}"), key));
-            }
+        // Well-formed keys only, without compiling the schema (`content` does that once);
+        // a malformed description is `content`'s `argsSchema`.
+        for (at, key) in c.args.descriptions() {
+            v.push((format!("{base}/args{at}"), key));
         }
     }
     v

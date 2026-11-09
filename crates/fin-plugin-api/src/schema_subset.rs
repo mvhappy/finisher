@@ -9,7 +9,14 @@
 //! `minItems`/`maxItems` and `description` (a message key). A keyword outside the subset, or
 //! one that does not apply to the node's type, refuses the schema: there is no `$ref`, no
 //! format, no composition, no default. `pattern` is compiled by `regex-automata`'s meta
-//! engine, whose matching time is linear in the input (no backreferences, no lookaround).
+//! engine (not the `regex` facade the plan names: it is not in the tree) without its lazy
+//! DFA, so matching time is linear in the input and its memory fixed at compile time (no
+//! backreferences, no lookaround). Shorthand classes and word boundaries (`\d \w \s \b`, their
+//! negations, `\p`) are Unicode there, not ECMA-262, so they are refused: patterns spell
+//! ASCII classes out (`[0-9]`). Each schema has a compile budget: at most
+//! [`MAX_PATTERNS`] patterns, [`PATTERN_NFA_BYTES`] of automaton per pattern and
+//! [`MAX_COMPILED_BYTES`] in all. A host compiles a schema once ([`CompiledArgs::new`]) and
+//! reuses it for every run.
 //! **Deviation from spec §18.1:** no `jsonschema` crate.
 
 use std::borrow::Cow;
@@ -19,7 +26,7 @@ use regex_automata::meta::Regex;
 use regex_automata::util::syntax;
 use schemars::{JsonSchema, Schema, SchemaGenerator, json_schema};
 use serde::{Deserialize, Serialize};
-use serde_json::{Map, Value};
+use serde_json::{Map, Number, Value};
 
 mod args;
 
@@ -27,8 +34,12 @@ mod args;
 pub const MAX_DEPTH: usize = 16;
 /// The longest `pattern` accepted, in bytes.
 pub const MAX_PATTERN_BYTES: usize = 1024;
-/// The compiled size cap of one `pattern`.
-const REGEX_SIZE_LIMIT: usize = 1 << 20;
+/// The most `pattern`s in one schema.
+pub const MAX_PATTERNS: usize = 64;
+/// The compiled automaton size cap of one `pattern`, in bytes.
+pub const PATTERN_NFA_BYTES: usize = 64 * 1024;
+/// The compiled size cap of all of one schema's patterns together, in bytes.
+pub const MAX_COMPILED_BYTES: usize = 2 * 1024 * 1024;
 
 const KEYWORDS: &[&str] = &[
     "type",
@@ -76,7 +87,7 @@ impl JsonSchema for SchemaSubset {
 pub struct SchemaError {
     pub at: String,
     /// `keyword`, `type`, `topType`, `additionalProperties`, `properties`, `required`,
-    /// `items`, `bound`, `enum`, `const`, `pattern`, `description` or `depth`.
+    /// `items`, `bound`, `enum`, `const`, `pattern`, `description`, `depth` or `budget`.
     pub problem: String,
     pub message: String,
 }
@@ -102,26 +113,14 @@ impl SchemaSubset {
         &self.0
     }
 
-    /// Whether the schema is inside the subset; the first problem otherwise.
+    /// Whether the schema is inside the subset; the first problem otherwise. Compiles it:
+    /// call it once (install) and keep [`CompiledArgs`] where arguments are checked.
     pub fn check(&self) -> Result<(), SchemaError> {
-        self.compile().map(|_| ())
+        CompiledArgs::new(self).map(|_| ())
     }
 
-    /// The schema, checked and compiled for [`Compiled::validate`].
-    pub fn compile(&self) -> Result<Compiled, SchemaError> {
-        let root = node(&self.0, "", 0)?;
-        if !matches!(root.kind, Kind::Object { .. }) {
-            return Err(err(
-                "/type",
-                "topType",
-                "the top of an argument schema is an object",
-            ));
-        }
-        Ok(Compiled { root })
-    }
-
-    /// The `description` message keys, as (pointer into the schema, key). Meaningful only for
-    /// a schema that passes [`SchemaSubset::check`].
+    /// The `description`s that are well-formed message keys, as (pointer into the schema,
+    /// key), without compiling anything; a malformed one is [`SchemaSubset::check`]'s.
     pub fn descriptions(&self) -> Vec<(String, String)> {
         let mut out = Vec::new();
         descriptions(&self.0, "", 0, &mut out);
@@ -130,8 +129,9 @@ impl SchemaSubset {
 }
 
 /// Checks `args` against `schema`, reporting every problem, sorted by path.
+/// Compiles `schema` each call: a host keeps a [`CompiledArgs`] instead.
 pub fn validate_args(schema: &SchemaSubset, args: &Value) -> Result<(), Vec<ArgProblem>> {
-    match schema.compile() {
+    match CompiledArgs::new(schema) {
         Ok(c) => c.validate(args),
         Err(e) => Err(vec![ArgProblem {
             path: String::new(),
@@ -144,13 +144,32 @@ pub fn validate_args(schema: &SchemaSubset, args: &Value) -> Result<(), Vec<ArgP
     }
 }
 
-/// A checked schema.
+/// A checked and compiled schema, reusable for every run of its command.
 #[derive(Debug, Clone)]
-pub struct Compiled {
+pub struct CompiledArgs {
     root: Node,
 }
 
-impl Compiled {
+/// What a schema's patterns have used of their budget.
+#[derive(Default)]
+struct Budget {
+    patterns: usize,
+    bytes: usize,
+}
+
+impl CompiledArgs {
+    pub fn new(schema: &SchemaSubset) -> Result<CompiledArgs, SchemaError> {
+        let root = node(&schema.0, "", 0, &mut Budget::default())?;
+        if !matches!(root.kind, Kind::Object { .. }) {
+            return Err(err(
+                "/type",
+                "topType",
+                "the top of an argument schema is an object",
+            ));
+        }
+        Ok(CompiledArgs { root })
+    }
+
     pub fn validate(&self, args: &Value) -> Result<(), Vec<ArgProblem>> {
         let mut out = Vec::new();
         self.root.validate(args, "", &mut out);
@@ -179,8 +198,8 @@ enum Kind {
     },
     Number {
         integer: bool,
-        min: Option<f64>,
-        max: Option<f64>,
+        min: Option<Number>,
+        max: Option<Number>,
     },
     Boolean,
     Array {
@@ -209,7 +228,7 @@ fn sorted_keys(o: &Map<String, Value>) -> Vec<&String> {
     keys
 }
 
-fn node(v: &Value, at: &str, depth: usize) -> Result<Node, SchemaError> {
+fn node(v: &Value, at: &str, depth: usize, b: &mut Budget) -> Result<Node, SchemaError> {
     let Value::Object(o) = v else {
         return Err(err(at, "type", "a schema node is an object"));
     };
@@ -266,19 +285,19 @@ fn node(v: &Value, at: &str, depth: usize) -> Result<Node, SchemaError> {
         ));
     }
     let kind = match ty {
-        "object" => object(o, at, depth)?,
+        "object" => object(o, at, depth, b)?,
         "string" => {
             let (min, max) = lengths(o, at, "minLength", "maxLength")?;
             let pattern = match o.get("pattern") {
                 None => None,
-                Some(p) => Some(pattern(p, &format!("{at}/pattern"))?),
+                Some(p) => Some(pattern(p, &format!("{at}/pattern"), b)?),
             };
             Kind::String { min, max, pattern }
         }
         "number" | "integer" => {
             let num = |k: &str| match o.get(k) {
                 None => Ok(None),
-                Some(Value::Number(n)) => Ok(n.as_f64()),
+                Some(Value::Number(n)) => Ok(Some(n.clone())),
                 Some(_) => Err(err(
                     &format!("{at}/{k}"),
                     "bound",
@@ -286,8 +305,8 @@ fn node(v: &Value, at: &str, depth: usize) -> Result<Node, SchemaError> {
                 )),
             };
             let (min, max) = (num("minimum")?, num("maximum")?);
-            if let (Some(a), Some(b)) = (min, max)
-                && a > b
+            if let (Some(a), Some(b)) = (&min, &max)
+                && args::num_cmp(a, b).is_gt()
             {
                 return Err(err(at, "bound", "minimum is above maximum"));
             }
@@ -303,7 +322,7 @@ fn node(v: &Value, at: &str, depth: usize) -> Result<Node, SchemaError> {
             let Some(items) = o.get("items") else {
                 return Err(err(at, "items", "an array schema names its items"));
             };
-            let items = Box::new(node(items, &format!("{at}/items"), depth + 1)?);
+            let items = Box::new(node(items, &format!("{at}/items"), depth + 1, b)?);
             Kind::Array { items, min, max }
         }
     };
@@ -342,12 +361,26 @@ fn node(v: &Value, at: &str, depth: usize) -> Result<Node, SchemaError> {
                 format!("{c} is not of type {ty}"),
             ));
         }
+        if let Some(values) = &n.one_of
+            && !values.iter().any(|v| args::json_eq(v, c))
+        {
+            return Err(err(
+                &format!("{at}/const"),
+                "const",
+                format!("{c} is not among the enum's values"),
+            ));
+        }
         n.konst = Some(c.clone());
     }
     Ok(n)
 }
 
-fn object(o: &Map<String, Value>, at: &str, depth: usize) -> Result<Kind, SchemaError> {
+fn object(
+    o: &Map<String, Value>,
+    at: &str,
+    depth: usize,
+    b: &mut Budget,
+) -> Result<Kind, SchemaError> {
     match o.get("additionalProperties") {
         None => {
             return Err(err(
@@ -370,7 +403,12 @@ fn object(o: &Map<String, Value>, at: &str, depth: usize) -> Result<Kind, Schema
         None => {}
         Some(Value::Object(p)) => {
             for k in sorted_keys(p) {
-                let child = node(&p[k], &format!("{at}/properties/{}", escape(k)), depth + 1)?;
+                let child = node(
+                    &p[k],
+                    &format!("{at}/properties/{}", escape(k)),
+                    depth + 1,
+                    b,
+                )?;
                 properties.insert(k.clone(), child);
             }
         }
@@ -445,7 +483,22 @@ fn lengths(
     Ok((min, max))
 }
 
-fn pattern(p: &Value, at: &str) -> Result<(String, Regex), SchemaError> {
+/// A shorthand class or assertion that is Unicode in regex-automata but ASCII in ECMA-262,
+/// or a Unicode property: the first one in `p`, outside an escaped backslash.
+fn unicode_shorthand(p: &str) -> Option<char> {
+    let mut chars = p.chars();
+    while let Some(c) = chars.next() {
+        if c == '\\'
+            && let Some(e @ ('d' | 'D' | 'w' | 'W' | 's' | 'S' | 'b' | 'B' | 'p' | 'P')) =
+                chars.next()
+        {
+            return Some(e);
+        }
+    }
+    None
+}
+
+fn pattern(p: &Value, at: &str, b: &mut Budget) -> Result<(String, Regex), SchemaError> {
     let Some(s) = p.as_str() else {
         return Err(err(at, "pattern", "pattern is a string"));
     };
@@ -456,9 +509,31 @@ fn pattern(p: &Value, at: &str) -> Result<(String, Regex), SchemaError> {
             format!("a pattern is at most {MAX_PATTERN_BYTES} bytes"),
         ));
     }
+    if let Some(e) = unicode_shorthand(s) {
+        return Err(err(
+            at,
+            "pattern",
+            format!(
+                "\\{e} is Unicode here, not ECMA-262: spell the class out in ASCII, such as [0-9], [A-Za-z0-9_] or [ \\t\\n\\r]"
+            ),
+        ));
+    }
+    if b.patterns >= MAX_PATTERNS {
+        return Err(err(
+            at,
+            "budget",
+            format!("a schema has at most {MAX_PATTERNS} patterns"),
+        ));
+    }
+    b.patterns += 1;
     let re = Regex::builder()
         .syntax(syntax::Config::new().nest_limit(64))
-        .configure(Regex::config().nfa_size_limit(Some(REGEX_SIZE_LIMIT)))
+        .configure(
+            Regex::config()
+                .nfa_size_limit(Some(PATTERN_NFA_BYTES))
+                .onepass_size_limit(Some(0))
+                .hybrid(false),
+        )
         .build(s)
         .map_err(|e| {
             err(
@@ -467,6 +542,14 @@ fn pattern(p: &Value, at: &str) -> Result<(String, Regex), SchemaError> {
                 format!("{s:?} is not a supported pattern: {e}"),
             )
         })?;
+    b.bytes += re.memory_usage();
+    if b.bytes > MAX_COMPILED_BYTES {
+        return Err(err(
+            at,
+            "budget",
+            format!("a schema's patterns compile to at most {MAX_COMPILED_BYTES} bytes in all"),
+        ));
+    }
     Ok((s.to_string(), re))
 }
 
@@ -475,7 +558,9 @@ fn descriptions(v: &Value, at: &str, depth: usize, out: &mut Vec<(String, String
     if depth >= MAX_DEPTH {
         return;
     }
-    if let Some(Value::String(d)) = o.get("description") {
+    if let Some(Value::String(d)) = o.get("description")
+        && crate::validate::is_message_key(d)
+    {
         out.push((format!("{at}/description"), d.clone()));
     }
     if let Some(Value::Object(p)) = o.get("properties") {

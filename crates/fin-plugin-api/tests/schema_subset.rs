@@ -3,7 +3,7 @@
 
 use std::time::{Duration, Instant};
 
-use fin_plugin_api::schema_subset::{SchemaSubset, validate_args};
+use fin_plugin_api::schema_subset::{CompiledArgs, SchemaSubset, validate_args};
 use serde_json::{Value, json};
 
 fn schema(v: Value) -> SchemaSubset {
@@ -424,4 +424,147 @@ fn schema_round_trips_unchanged() {
     let s = schema(v.clone());
     assert_eq!(serde_json::to_value(&s).unwrap(), v);
     assert_eq!(s.check(), Ok(()));
+}
+
+/// An object schema with `n` string properties of pattern `p`.
+fn many_patterns(n: usize, p: &str) -> SchemaSubset {
+    let props: serde_json::Map<String, Value> = (0..n)
+        .map(|i| (format!("p{i}"), json!({ "type": "string", "pattern": p })))
+        .collect();
+    schema(json!({ "type": "object", "properties": props, "additionalProperties": false }))
+}
+
+#[test]
+fn pattern_budget_is_bounded() {
+    // 64 small patterns are fine; the 65th is refused.
+    assert_eq!(many_patterns(64, "^[a-z]{1,8}$").check(), Ok(()));
+    let t = Instant::now();
+    let e = many_patterns(65, "^[a-z]{1,8}$").check().unwrap_err();
+    assert_eq!(e.problem, "budget", "{e:?}");
+    // The reviewer's probe: 2,000 × `.{1000}` is refused quickly.
+    let e = many_patterns(2000, ".{1000}").check().unwrap_err();
+    assert!(e.problem == "budget" || e.problem == "pattern", "{e:?}");
+    let e = many_patterns(2000, "[a-z]{200}").check().unwrap_err();
+    assert!(e.problem == "budget" || e.problem == "pattern", "{e:?}");
+    assert!(
+        t.elapsed() < Duration::from_secs(2),
+        "took {:?}",
+        t.elapsed()
+    );
+    // One large pattern is refused by the per-pattern limit.
+    let e = many_patterns(1, ".{1000}").check().unwrap_err();
+    assert_eq!(e.problem, "pattern", "{e:?}");
+    // Patterns each under the per-pattern limit but too large together hit the total cap.
+    assert_eq!(many_patterns(1, "a{2000}").check(), Ok(()));
+    let e = many_patterns(64, "a{2000}").check().unwrap_err();
+    assert_eq!(e.problem, "budget", "{e:?}");
+}
+
+#[test]
+fn compiled_args_are_reusable() {
+    let s = one(json!({ "type": "string", "pattern": "^[a-z]+$" }));
+    let c = CompiledArgs::new(&s).unwrap();
+    for _ in 0..3 {
+        assert!(c.validate(&json!({ "x": "abc" })).is_ok());
+        assert_eq!(
+            c.validate(&json!({ "x": "ab1" })).unwrap_err()[0].reason,
+            "pattern"
+        );
+    }
+    assert!(CompiledArgs::new(&schema(json!({ "type": "string" }))).is_err());
+}
+
+#[test]
+fn unicode_shorthand_classes_refused() {
+    for p in [
+        "^\\d+$",
+        "\\D",
+        "^\\w{1,40}$",
+        "\\W",
+        "\\s",
+        "\\S",
+        "\\bx\\b",
+        "\\B",
+        "[\\d]",
+        "\\pL",
+        "\\p{Greek}",
+    ] {
+        let (at, problem) = refusal(json!({
+            "type": "object",
+            "properties": { "x": { "type": "string", "pattern": p } },
+            "additionalProperties": false
+        }))
+        .unwrap_or_else(|| panic!("{p} accepted"));
+        assert_eq!(
+            (at.as_str(), problem.as_str()),
+            ("/properties/x/pattern", "pattern"),
+            "{p}"
+        );
+        let e = one(json!({ "type": "string", "pattern": p }))
+            .check()
+            .unwrap_err();
+        assert!(e.message.contains("[0-9]"), "{}", e.message);
+    }
+    // An escaped backslash before a letter is a literal, not a class.
+    let s = one(json!({ "type": "string", "pattern": "^a\\\\d$" }));
+    assert_eq!(s.check(), Ok(()));
+    assert_eq!(reasons(&s, json!({ "x": "a\\d" })), Vec::<String>::new());
+    // Explicit ASCII classes do not match other scripts' digits.
+    let s = one(json!({ "type": "string", "pattern": "^[0-9]+$" }));
+    assert_eq!(reasons(&s, json!({ "x": "٣" })), ["pattern"]);
+}
+
+#[test]
+fn integer_bounds_are_exact() {
+    let s = one(json!({ "type": "integer", "maximum": 9007199254740992u64 }));
+    assert_eq!(
+        reasons(&s, json!({ "x": 9007199254740993u64 })),
+        ["maximum"]
+    );
+    assert_eq!(
+        reasons(&s, json!({ "x": 9007199254740992u64 })),
+        Vec::<String>::new()
+    );
+    let s = one(json!({ "type": "integer", "minimum": -9007199254740992i64 }));
+    assert_eq!(
+        reasons(&s, json!({ "x": -9007199254740993i64 })),
+        ["minimum"]
+    );
+    let s = one(json!({ "type": "integer", "maximum": u64::MAX }));
+    assert_eq!(reasons(&s, json!({ "x": u64::MAX })), Vec::<String>::new());
+    assert_eq!(reasons(&s, json!({ "x": -1 })), Vec::<String>::new());
+    // Non-integers still compare as numbers.
+    let s = one(json!({ "type": "number", "minimum": 0.5, "maximum": 2 }));
+    assert_eq!(reasons(&s, json!({ "x": 0.4 })), ["minimum"]);
+    assert_eq!(reasons(&s, json!({ "x": 2.5 })), ["maximum"]);
+    assert_eq!(reasons(&s, json!({ "x": 1 })), Vec::<String>::new());
+    // Exact for enum and const too.
+    let s = one(json!({ "type": "integer", "enum": [9007199254740992u64] }));
+    assert_eq!(reasons(&s, json!({ "x": 9007199254740993u64 })), ["enum"]);
+    // Schema bounds compare exactly.
+    let (_, problem) = refusal(json!({
+        "type": "object",
+        "properties": { "x": { "type": "integer", "minimum": 9007199254740993u64, "maximum": 9007199254740992u64 } },
+        "additionalProperties": false
+    }))
+    .unwrap();
+    assert_eq!(problem, "bound");
+}
+
+#[test]
+fn const_outside_enum_refused() {
+    let (at, problem) = refusal(json!({
+        "type": "object",
+        "properties": { "x": { "type": "string", "enum": ["a", "b"], "const": "c" } },
+        "additionalProperties": false
+    }))
+    .unwrap();
+    assert_eq!(
+        (at.as_str(), problem.as_str()),
+        ("/properties/x/const", "const")
+    );
+    assert_eq!(
+        one(json!({ "type": "string", "enum": ["a", "b"], "const": "a" })).check(),
+        Ok(())
+    );
 }

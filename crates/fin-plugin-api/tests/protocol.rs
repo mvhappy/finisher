@@ -357,3 +357,30 @@ fn schema_outside_subset_refused() {
     assert_eq!(errs[0].details["at"], json!("/properties/threshold/format"));
     assert_eq!(errs[0].details["problem"], json!("keyword"));
 }
+
+#[test]
+fn pattern_heavy_schema_refused_quickly_at_install() {
+    let props: serde_json::Map<String, Value> = (0..2000)
+        .map(|i| {
+            (
+                format!("p{i}"),
+                json!({ "type": "string", "pattern": "[a-z]{1,8}" }),
+            )
+        })
+        .collect();
+    let c = set(
+        command("trim"),
+        "/args",
+        json!({ "type": "object", "properties": props, "additionalProperties": false }),
+    );
+    let t = std::time::Instant::now();
+    let errs = check_cmds(json!([c]));
+    assert!(
+        t.elapsed() < std::time::Duration::from_secs(2),
+        "took {:?}",
+        t.elapsed()
+    );
+    assert_eq!(errs.len(), 1, "{errs:?}");
+    assert_eq!(errs[0].reason(), Some("argsSchema"));
+    assert_eq!(errs[0].details["problem"], json!("budget"));
+}

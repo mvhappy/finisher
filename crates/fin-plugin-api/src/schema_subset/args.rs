@@ -1,13 +1,36 @@
 //! Checking arguments against a compiled schema: every problem is reported.
 
-use serde_json::Value;
+use std::cmp::Ordering;
+
+use serde_json::{Number, Value};
 
 use super::{ArgProblem, Kind, Node, escape, sorted_keys};
 
+/// `n` exactly, when it is an integer of `i64` or `u64` range.
+fn as_int(n: &Number) -> Option<i128> {
+    n.as_i64()
+        .map(i128::from)
+        .or_else(|| n.as_u64().map(i128::from))
+}
+
+/// Numbers by value: exactly when both are integers, as `f64` otherwise.
+pub(super) fn num_cmp(a: &Number, b: &Number) -> Ordering {
+    match (as_int(a), as_int(b)) {
+        (Some(x), Some(y)) => x.cmp(&y),
+        _ => {
+            let (x, y) = (
+                a.as_f64().unwrap_or(f64::NAN),
+                b.as_f64().unwrap_or(f64::NAN),
+            );
+            x.partial_cmp(&y).unwrap_or(Ordering::Equal)
+        }
+    }
+}
+
 /// Equality of JSON values with numbers compared by value (`2` equals `2.0`).
-fn json_eq(a: &Value, b: &Value) -> bool {
+pub(super) fn json_eq(a: &Value, b: &Value) -> bool {
     match (a, b) {
-        (Value::Number(x), Value::Number(y)) => x.as_f64() == y.as_f64(),
+        (Value::Number(x), Value::Number(y)) => num_cmp(x, y).is_eq(),
         (Value::Array(x), Value::Array(y)) => {
             x.len() == y.len() && x.iter().zip(y).all(|(p, q)| json_eq(p, q))
         }
@@ -142,13 +165,20 @@ impl Node {
                 }
                 found
             }
-            (Kind::Number { min, max, .. }, Value::Number(n)) => bounds(
-                n.as_f64().unwrap_or(f64::NAN),
-                *min,
-                *max,
-                ("minimum", "maximum"),
-                "",
-            ),
+            (Kind::Number { min, max, .. }, Value::Number(n)) => {
+                let mut found = Vec::new();
+                if let Some(m) = min
+                    && num_cmp(n, m).is_lt()
+                {
+                    found.push(("minimum".to_string(), format!("at least {m}")));
+                }
+                if let Some(m) = max
+                    && num_cmp(n, m).is_gt()
+                {
+                    found.push(("maximum".to_string(), format!("at most {m}")));
+                }
+                found
+            }
             (Kind::Array { items, min, max }, Value::Array(a)) => {
                 for (i, item) in a.iter().enumerate() {
                     items.validate(item, &format!("{path}/{i}"), out);

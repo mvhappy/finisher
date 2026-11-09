@@ -13893,7 +13893,7 @@
           "type": "string"
         },
         "problem": {
-          "description": "`keyword`, `type`, `topType`, `additionalProperties`, `properties`, `required`,\n`items`, `bound`, `enum`, `const`, `pattern`, `description` or `depth`.",
+          "description": "`keyword`, `type`, `topType`, `additionalProperties`, `properties`, `required`,\n`items`, `bound`, `enum`, `const`, `pattern`, `description`, `depth` or `budget`.",
           "type": "string"
         }
       },

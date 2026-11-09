@@ -11,8 +11,8 @@ description = "Plugin manifests, permissions, risks, licence classes, the plugin
 # `CommandOut::Tx` carries fin-core ops; fin-core is pure and builds for wasm32 too.
 fin-core = { path = "../fin-core" }
 # The argument schema subset's `pattern` (8B Decision 13): the linear-time meta regex, already
-# in the tree through globset (no `regex` facade crate, no backtracking-only engine).
-regex-automata = { version = "0.4.18", default-features = false, features = ["std", "syntax", "unicode", "meta", "nfa-pikevm", "nfa-backtrack", "hybrid"] }
+# in the tree through globset (no `regex` facade crate; no lazy DFA, so memory is fixed at compile).
+regex-automata = { version = "0.4.18", default-features = false, features = ["std", "syntax", "unicode", "meta", "nfa-pikevm", "nfa-backtrack"] }
 schemars = { version = "1", features = ["semver1"] }
 semver = { version = "1", features = ["serde"] }
 serde = { version = "1", features = ["derive"] }
