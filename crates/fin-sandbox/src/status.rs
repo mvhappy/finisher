@@ -4,8 +4,8 @@
 //!   source (`EPERM`, `ENOSYS`, `EOPNOTSUPP` → `Disabled {landlockDisabled}`, F2: run, warn;
 //!   ABI < 3 → `Unavailable {need: "kernel ≥ 6.2"}`). macOS: Seatbelt, `Enforced` where
 //!   `/usr/bin/sandbox-exec` is present (it is deprecated but shipped; its removal is the
-//!   tracked risk of spec §22), else `Unavailable`. Windows has no mechanism in this crate yet,
-//!   so it answers `Disabled {profileNotReady}`.
+//!   tracked risk of spec §22), else `Unavailable`. Windows: AppContainer, always
+//!   `Enforced {appcontainer}`.
 //! - [`status`] adds [`READY`]: a profile whose escape suite has not passed on this OS runs as
 //!   before 7C (`Disabled {profileNotReady}`), unless the mechanism itself is disabled, which
 //!   is the more useful warning (its fix is a boot parameter). Every profile is treated alike
@@ -160,6 +160,14 @@ fn os_mechanism() -> Mechanism {
     }
 }
 
+/// AppContainer is part of every supported Windows (10 and 11): always enforced.
+#[cfg(windows)]
+fn os_mechanism() -> Mechanism {
+    Mechanism::Enforced {
+        detail: "appcontainer".into(),
+    }
+}
+
 #[cfg(target_os = "macos")]
 fn os_mechanism() -> Mechanism {
     seatbelt(std::path::Path::new(crate::macos::apply::SANDBOX_EXEC))
@@ -177,9 +185,9 @@ pub fn seatbelt(sandbox_exec: &std::path::Path) -> Mechanism {
     }
 }
 
-#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+#[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
 fn os_mechanism() -> Mechanism {
-    // AppContainer (Task 9) is not built yet.
+    // No mechanism on this OS.
     Mechanism::Disabled {
         reason: DisabledReason::ProfileNotReady,
     }

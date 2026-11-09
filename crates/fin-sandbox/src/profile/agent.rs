@@ -191,6 +191,10 @@ mod tests {
             (Os::Macos, "Library/Keychains"),
             (Os::Windows, "AppData/Roaming/Microsoft/Protect"),
         ] {
+            // Each OS's device paths are absolute only on its own family.
+            if cfg!(windows) != (os == Os::Windows) {
+                continue;
+            }
             let p = agent_on(os, &input(&root)).unwrap();
             assert!(
                 p.deny_read.contains(&under(&root.join("home"), rel)),

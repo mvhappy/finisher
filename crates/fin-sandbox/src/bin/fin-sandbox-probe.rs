@@ -23,11 +23,24 @@
 //!
 //! Exit 0 when the attempt ran (whatever its result), 3 when the sandbox could not be applied
 //! (`{"apply": "<error>"}`), 2 for a usage error.
+//!
+//! On Windows the probe is `probe/windows.rs`: configuration and granted-path ops only.
 
-#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+#[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
 fn main() {
-    eprintln!("fin-sandbox-probe: Linux and macOS only; the Windows probe comes with Task 9");
+    eprintln!("fin-sandbox-probe: Linux, macOS and Windows only");
     std::process::exit(2)
+}
+
+/// Windows: a different probe (it runs inside the container the launcher made); see
+/// `probe/windows.rs`.
+#[cfg(windows)]
+#[path = "probe/windows.rs"]
+mod probe_windows;
+
+#[cfg(windows)]
+fn main() {
+    probe_windows::main()
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]

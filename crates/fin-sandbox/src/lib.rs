@@ -21,6 +21,7 @@ pub mod profile;
 pub mod self_apply;
 pub mod spawner;
 pub mod status;
+pub mod windows;
 
 pub use error::{ApplyError, PolicyError};
 pub use inputs::{
@@ -47,4 +48,5 @@ pub fn register_schemas(g: &mut schemars::SchemaGenerator) {
     g.subschema_for::<Profile>();
     g.subschema_for::<SandboxStatus>();
     g.subschema_for::<LauncherProbe>();
+    g.subschema_for::<windows::grants::AclGrant>();
 }

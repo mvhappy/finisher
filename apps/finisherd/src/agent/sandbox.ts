@@ -30,6 +30,14 @@
 // descriptor 3 before exit 78; a program's own exit 78 writes none), goes to `onViolation`
 // (`sandbox.violation`, spec §8.8). A seccomp kill (`SIGSYS`) is not attributed: without the
 // filter (plan Task 4) every `SIGSYS` is one a process sent, and so could be forged.
+// On Windows the launcher's AppContainer reaches only what the ACL broker granted (plan 7C
+// Task 10): the agent table (`sandboxAgentGrants`: the masks follow the policy) is granted
+// before the first process starts (re-granting an entry the broker already holds is a no-op),
+// a process's `extraRead` granted to the session's capability under the session's owner, the
+// session's own entries revoked when its last open scope closes (a replaced instance's scope
+// may close after its successor opened: `SessionGrants` counts them, so the old one never
+// revokes the new one's grants), and the project's container SID is allowed on the pipe
+// (`allowPipe`).
 import { type ChildProcess, spawn as spawnChild } from "node:child_process";
 import { mkdir, realpath } from "node:fs/promises";
 import { homedir } from "node:os";
@@ -37,13 +45,14 @@ import { join } from "node:path";
 import type { Readable, Writable } from "node:stream";
 import type { FinError, Harness, Session } from "@finisher/contracts";
 import type { AgentInput, FinEndpoint } from "@finisher/core-types";
-import { sandboxAgentCheck, sandboxToolchainBase } from "@finisher/fin-node";
+import { sandboxAgentCheck, sandboxAgentGrants, sandboxContainerSid, sandboxProjectContainer, sandboxToolchainBase } from "@finisher/fin-node";
 import { Effect, type Scope } from "effect";
 import { finError, toFinError } from "../errors.ts";
+import { type AclBroker, grantTable, sessionOwner } from "../sandbox/broker.ts";
 import { resolveSandboxExecPath } from "../sandbox/exec.ts";
 import { currentSandboxStatus, type SandboxMechanism, type SandboxStatus } from "../sandbox/status.ts";
 import { sessionEnv } from "./sandbox-env.ts";
-import { ensureSessionDirs, linkSignInStore } from "./session-dirs.ts";
+import { ensureSessionDirs, type LinkOptions, linkSignInStore } from "./session-dirs.ts";
 
 export { assertSessionEnv, sessionEnv } from "./sandbox-env.ts";
 
@@ -116,6 +125,60 @@ export interface SessionSandboxDeps {
   readonly parent?: NodeJS.ProcessEnv;
   /** How long a killed process group may take to go at scope close (default 5 s). */
   readonly killGraceMs?: number;
+  /** Windows: the server's ACL broker (plan 7C Task 10). */
+  readonly acl?: AclBroker;
+  /** Windows: admits a container SID on the server's pipe (`PipeServer.allow`). */
+  readonly allowPipe?: (sid: string) => void;
+  /** The ACEs a launch needs (default: fin-node's `sandboxAgentGrants`). */
+  readonly agentGrants?: typeof sandboxAgentGrants;
+  /** A container's SID by name (default: fin-node's `sandboxContainerSid`; tests). */
+  readonly containerSid?: (name: string) => string | null;
+  /** The sign-in link call (tests: a Windows host without the symlink privilege). */
+  readonly symlink?: LinkOptions["symlink"];
+  /** The open scopes per session owner (default: one per broker). */
+  readonly sessionGrants?: SessionGrants;
+}
+
+/**
+ * The session sandboxes open per session (Windows, Task 10 review 2): a session's grants are
+ * revoked when its last open scope closes, and a scope that opens while that revoke runs waits
+ * for it before granting (a grant the broker still held would otherwise be skipped as covered,
+ * then removed by the revoke).
+ */
+export class SessionGrants {
+  readonly #open = new Map<string, number>();
+  readonly #revoking = new Map<string, Promise<unknown>>();
+
+  /** A scope of `owner` opens: waits for a revoke of `owner` still running. */
+  async enter(owner: string): Promise<void> {
+    this.#open.set(owner, (this.#open.get(owner) ?? 0) + 1);
+    await this.#revoking.get(owner);
+  }
+
+  /** A scope of `owner` closes: `revoke` runs when it was the last. */
+  async leave(owner: string, revoke: () => Promise<unknown>): Promise<void> {
+    const n = (this.#open.get(owner) ?? 1) - 1;
+    if (n > 0) {
+      this.#open.set(owner, n);
+      return;
+    }
+    this.#open.delete(owner);
+    const p = (this.#revoking.get(owner) ?? Promise.resolve()).then(revoke).catch(() => 0);
+    this.#revoking.set(owner, p);
+    await p;
+    if (this.#revoking.get(owner) === p) this.#revoking.delete(owner);
+  }
+}
+
+const GRANTS = new WeakMap<AclBroker, SessionGrants>();
+
+function grantsOf(acl: AclBroker): SessionGrants {
+  let g = GRANTS.get(acl);
+  if (g === undefined) {
+    g = new SessionGrants();
+    GRANTS.set(acl, g);
+  }
+  return g;
 }
 
 /** How the `agent` profile's status starts processes, or the refusal. */
@@ -150,6 +213,23 @@ export function openSessionSandbox(s: Session, harness: Harness, deps: SessionSa
   const children = new Set<SandboxedChild>();
   // Set once the scope closes: a spawn still in flight is killed as it arrives.
   const closed = { v: false };
+  // Windows: the broker's grants are made under this owner (revoked at scope close).
+  const acl = platform === "win32" && deps.acl?.active === true ? deps.acl : undefined;
+  const owner = sessionOwner(s.id);
+  const scopes = acl === undefined ? undefined : (deps.sessionGrants ?? grantsOf(acl));
+  // Set once this scope counts in `scopes` (it then leaves at close, or when the open fails).
+  let entered = false;
+  const leave = async () => {
+    if (!entered || acl === undefined || scopes === undefined) return;
+    entered = false;
+    // A revoke that fails stays in the broker's log; the next start's sweep completes it.
+    await scopes.leave(owner, () => acl.revoke(owner));
+  };
+  const grant = async (input: AgentInput, extraRead?: readonly string[]) => {
+    if (acl === undefined) return;
+    const table = (deps.agentGrants ?? sandboxAgentGrants)(input, extraRead);
+    await grantTable(acl, table, { owner, ...(deps.containerSid === undefined ? {} : { containerSid: deps.containerSid }) });
+  };
   const open = Effect.tryPromise({
     try: async (): Promise<SessionSandbox> => {
       const status = (deps.status ?? currentSandboxStatus)();
@@ -163,7 +243,7 @@ export function openSessionSandbox(s: Session, harness: Harness, deps: SessionSa
       await mkdir(workspace, { recursive: true, mode: 0o700 });
       await mkdir(shared, { recursive: true, mode: 0o700 });
       const dirs = await ensureSessionDirs(join(deps.serverData, "agents"), s.id, { platform });
-      const store = await linkSignInStore(harness, deps.serverData, dirs);
+      const store = await linkSignInStore(harness, deps.serverData, dirs, { platform, ...(deps.symlink === undefined ? {} : { symlink: deps.symlink }) });
       const server = mode === "launcher" ? await launcherServer(deps, platform) : { env: deps.localEndpoint, fin: undefined };
       const env = sessionEnv({ session: { id: s.id, harness }, server: server.env, projectDir, dirs, store, platform, ...(deps.parent === undefined ? {} : { parent: deps.parent }) });
       const libraries = await Promise.all((await (deps.libraryRoots?.(s.projectId) ?? Promise.resolve([]))).map(canonical));
@@ -182,7 +262,24 @@ export function openSessionSandbox(s: Session, harness: Harness, deps: SessionSa
         home: await canonical(homedir()),
         ...(server.fin === undefined ? {} : { fin: server.fin }),
       };
-      if (mode === "launcher") check(base, status.os);
+      if (mode === "launcher") {
+        check(base, status.os);
+        // The project's container reaches `fin` over the pipe (spec §8.11): its SID is allowed
+        // there, whatever the grant table names.
+        if (acl !== undefined && deps.allowPipe !== undefined) {
+          const sid = (deps.containerSid ?? sandboxContainerSid)(sandboxProjectContainer(projectDir));
+          if (sid === null) throw finError("SANDBOX_UNAVAILABLE", "no SID for the project's container", { profile: "agent", os: status.os, need: "the project's container SID" });
+          deps.allowPipe(sid);
+        }
+        // Before any process: what the container may reach (a failure, here or later in the
+        // open, revokes what was granted unless another open scope of the session uses it:
+        // `leave` below).
+        if (scopes !== undefined) {
+          entered = true;
+          await scopes.enter(owner);
+        }
+        await grant(base);
+      }
       const launcher = mode === "launcher" ? (deps.launcher ?? resolveSandboxExecPath)() : "";
       return {
         env,
@@ -195,8 +292,13 @@ export function openSessionSandbox(s: Session, harness: Harness, deps: SessionSa
               if (argv.length === 0) throw finError("USAGE", "nothing to start", { sessionId: s.id });
               let input = base;
               if (opts.extraRead !== undefined && opts.extraRead.length > 0) {
-                input = { ...base, toolchains: [...base.toolchains!, ...(await Promise.all(opts.extraRead.map(canonical)))] };
-                if (mode === "launcher") check(input, status.os);
+                const extra = await Promise.all(opts.extraRead.map(canonical));
+                input = { ...base, toolchains: [...base.toolchains!, ...extra] };
+                if (mode === "launcher") {
+                  check(input, status.os);
+                  // The session's own (revoked with it), never static toolchain grants.
+                  await grant(input, extra);
+                }
               }
               if (closed.v) throw finError("SESSION_INTERRUPTED", "the session's sandbox is closed", { sessionId: s.id });
               const child = await start(mode === "launcher" ? { launcher, request: { profile: "agent", input } } : undefined, argv, opts.cwd, env, platform, (exit, launcherFailed) => {
@@ -216,10 +318,12 @@ export function openSessionSandbox(s: Session, harness: Harness, deps: SessionSa
     },
     catch: toFinError,
   });
-  return Effect.acquireRelease(open, () =>
-    Effect.promise(() => {
+  const opened = open.pipe(Effect.tapError(() => Effect.promise(leave)));
+  return Effect.acquireRelease(opened, () =>
+    Effect.promise(async () => {
       closed.v = true;
-      return killAll(children, deps.killGraceMs ?? 5_000);
+      await killAll(children, deps.killGraceMs ?? 5_000);
+      await leave();
     }),
   );
 }

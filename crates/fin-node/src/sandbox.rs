@@ -24,7 +24,8 @@ pub fn sandbox_session_git_config() -> String {
 
 /// The base toolchain read list of this OS (`data/<os>/toolchain-base.txt`): on Linux and
 /// macOS each entry's links resolved, missing and nested entries dropped (the form a policy
-/// takes); on Windows the list as written (`%SystemRoot%` unexpanded).
+/// takes); on Windows `%SystemRoot%` and `%ProgramFiles%` expanded from the environment and
+/// missing entries dropped (Task 10 review B1: the broker refuses a path that is not absolute).
 #[napi]
 pub fn sandbox_toolchain_base() -> Vec<String> {
     let os = fin_sandbox::Os::current();
@@ -34,10 +35,10 @@ pub fn sandbox_toolchain_base() -> Vec<String> {
         .map(|p| p.to_string_lossy().into_owned())
         .collect();
     #[cfg(not(unix))]
-    let list: Vec<String> = fin_sandbox::data::toolchain_base(os)
-        .into_iter()
-        .map(str::to_owned)
-        .collect();
+    let list: Vec<String> = {
+        let _ = os;
+        fin_sandbox::data::toolchain_base_present()
+    };
     list
 }
 

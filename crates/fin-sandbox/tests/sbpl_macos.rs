@@ -58,6 +58,7 @@ fn policies() -> Vec<(&'static str, SandboxPolicy)> {
                 path: p("/u/data/run/fin.sock"),
             },
         }),
+        timeout_ms: None,
     };
     let worker = WorkerInput {
         tmp: p("/u/data/jobs/j1/tmp"),

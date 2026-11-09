@@ -8,7 +8,7 @@ mod worker;
 
 use std::path::{Path, PathBuf};
 
-pub use agent::agent;
+pub use agent::{PROJECT_STATE, agent};
 pub use hook::hook;
 pub use plugin::plugin;
 pub use worker::worker;

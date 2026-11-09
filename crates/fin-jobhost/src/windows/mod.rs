@@ -28,6 +28,7 @@ mod env_block;
 mod iocp;
 pub(crate) mod job;
 mod jobapi;
+pub mod process_dacl;
 mod spawn;
 
 /// The exit code of a process the host killed (`TerminateJobObject`, `TerminateProcess`):
