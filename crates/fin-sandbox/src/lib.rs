@@ -1,10 +1,12 @@
 //! `fin-sandbox` (sub-project 7C, spec §8): one pure [`SandboxPolicy`], the four profiles that
 //! build it from typed inputs ([`profile`]), and the root enumeration the add-only mechanisms
 //! need ([`enumerate`]). On Linux, [`linux`] applies a policy with Landlock, and
-//! [`self_apply`] is the self-sandbox entry `fin-workers` registers. Seatbelt, AppContainer
-//! and the `Spawner` build on these in later tasks; the seccomp filter is deferred (owner
-//! decision 2026-11-08, plan 7C Task 4). [`launch`] is the launcher
-//! (`fin-sandbox-exec`) for the programs `finisherd` starts itself: agents and hooks.
+//! [`self_apply`] is the self-sandbox entry `fin-workers` registers. On macOS, [`macos`]
+//! applies it with Seatbelt (its profile generator, [`macos::sbpl`], is pure and built on every
+//! OS). AppContainer builds on these in a later task, and [`spawner`] is the job host's
+//! `SandboxSpawner`; the seccomp filter is deferred (owner decision 2026-11-08, plan 7C Task 4).
+//! [`launch`] is the launcher (`fin-sandbox-exec`) for the programs `finisherd` starts itself:
+//! agents and hooks.
 
 pub mod data;
 pub mod enumerate;
@@ -13,10 +15,13 @@ pub mod inputs;
 pub mod launch;
 #[cfg(target_os = "linux")]
 pub mod linux;
+pub mod macos;
 pub mod policy;
 pub mod profile;
 pub mod self_apply;
+pub mod spawner;
 pub mod status;
+pub mod windows;
 
 pub use error::{ApplyError, PolicyError};
 pub use inputs::{
@@ -27,7 +32,10 @@ pub use policy::{
     SandboxPolicy, headless_devices,
 };
 pub use self_apply::self_apply;
-pub use status::{DisabledReason, Mechanism, READY, SandboxStatus, status};
+pub use spawner::SandboxSpawner;
+pub use status::{
+    DisabledReason, LauncherProbe, Mechanism, Namespaces, READY, SandboxStatus, status,
+};
 
 /// The types `@finisher/core-types` generates from this crate, registered by
 /// `crates/fin-store/examples/export_schema.rs`. The policy itself is not among them: it
@@ -39,4 +47,6 @@ pub fn register_schemas(g: &mut schemars::SchemaGenerator) {
     g.subschema_for::<PluginInput>();
     g.subschema_for::<Profile>();
     g.subschema_for::<SandboxStatus>();
+    g.subschema_for::<LauncherProbe>();
+    g.subschema_for::<windows::grants::AclGrant>();
 }

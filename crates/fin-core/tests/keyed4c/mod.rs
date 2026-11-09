@@ -9,6 +9,9 @@
 //! `self_relocates`, `group_grew`, `partner_anchor` and `lifted_on` by removing it, and each
 //! removal fails `rebase_moves_props` within 30k cases; `relocated` was widened to every edge
 //! or start change recorded without a shift (rolls, overwrite trims, carves).
+//! `group_changed`, `concurrent_reedged` and `anchor_drift` (`four`, 2026-11-09) were each
+//! checked the same way: without it, its fixed case fails.
+//! `lifted_gap` (`four`, 2026-11-09) too: without it, its fixed case fails.
 #![allow(dead_code)]
 
 use std::collections::BTreeMap;
@@ -347,6 +350,8 @@ pub struct Realiser {
     pub base: Option<std::collections::BTreeSet<String>>,
     /// At the head: the committed slips per item (they move the source, not the content).
     pub slips: BTreeMap<String, Rational>,
+    /// The right parts our own splits made, by the item each split.
+    parts: BTreeMap<String, String>,
 }
 
 pub fn reference(key: &Key) -> String {
@@ -364,6 +369,7 @@ impl Realiser {
             ops: Vec::new(),
             base: None,
             slips: BTreeMap::new(),
+            parts: BTreeMap::new(),
         }
     }
 
@@ -447,16 +453,21 @@ impl Realiser {
                 Some(match a {
                     Anchor::Before(_) => c.start,
                     _ => {
-                        // Assoc::After: past items inserted concurrently at that point.
+                        // Assoc::After: past items inserted concurrently at that point, and
+                        // past the right parts our own splits cut from them.
                         let mut at = (c.start + c.duration).unwrap();
+                        let mut last: Option<&str> = None;
                         while let Some(base) = &self.base
                             && let Some(n) = tracks[t].items.iter().find(|n| {
                                 n.start == at
-                                    && !base.contains(&n.id)
-                                    && !self.bound.values().any(|v| *v == n.id)
+                                    && (!base.contains(&n.id)
+                                        && !self.bound.values().any(|v| *v == n.id)
+                                        || last.is_some()
+                                            && self.parts.get(&n.id).map(String::as_str) == last)
                             })
                         {
                             at = (n.start + n.duration).unwrap();
+                            last = Some(&n.id);
                         }
                         at
                     }
@@ -704,6 +715,11 @@ impl Realiser {
         }
         let a = apply_tx(&self.state, &tx(vec![resolved]), &mut self.ids).ok()?;
         self.bound.extend(a.bindings);
+        if let Keyed::Split { name, clip, .. } = k
+            && let (Some(part), Some(of)) = (self.bound.get(name), self.resolve(clip))
+        {
+            self.parts.insert(part.clone(), of);
+        }
         self.state = a.project;
         self.ops.push(op);
         Some(())
@@ -1136,7 +1152,16 @@ pub fn partner_drift(keyed: &[Keyed], base: &Project) -> std::collections::BTree
 /// were, gap included, so a stale positional op of ours on a track it touched can land past a
 /// gap a fresh one closes or skips.
 pub fn lifted_on(keyed: &[Keyed], since: &[CommittedTx]) -> bool {
-    let tracks: std::collections::BTreeSet<&str> = since
+    let tracks = lifted_tracks(since);
+    keyed.iter().any(|k| match k {
+        Keyed::Insert { track, .. } | Keyed::Move { to: track, .. } => tracks.contains(track),
+        _ => false,
+    })
+}
+
+/// The tracks a committed shift-less relocation (overwrite move, slide) touched.
+pub fn lifted_tracks(since: &[CommittedTx]) -> std::collections::BTreeSet<&str> {
+    since
         .iter()
         .flat_map(|c| c.diff.changes.iter().map(move |ch| (c, ch)))
         .filter(|(c, ch)| {
@@ -1146,11 +1171,7 @@ pub fn lifted_on(keyed: &[Keyed], since: &[CommittedTx]) -> bool {
                 || matches!(&c.tx.ops[ch.op as usize], Op::ItemSlide(_))
         })
         .filter_map(|(_, ch)| ch.track.as_deref())
-        .collect();
-    keyed.iter().any(|k| match k {
-        Keyed::Insert { track, .. } | Keyed::Move { to: track, .. } => tracks.contains(track),
-        _ => false,
-    })
+        .collect()
 }
 
 /// Our own shift-less relocation (slide, overwrite move) before a positional op.
@@ -1351,7 +1372,15 @@ pub fn check(
             );
         }
         (true, Err(e)) => {
-            let why = refusal_allowed(&e, &since, &partner_drift(&keyed, p), &self_drift(&keyed));
+            let mut drifted = partner_drift(&keyed, p);
+            drifted.extend(anchor_drift(&keyed, &since));
+            let why = refusal_allowed(
+                &e,
+                &since,
+                &drifted,
+                &self_drift(&keyed),
+                &lifted_gap(&keyed, &since),
+            );
             prop_assert!(
                 why.is_ok(),
                 "stale refused ({:?}) where fresh applies\nours {:?}\nfresh {:?}",
@@ -1384,8 +1413,10 @@ pub fn comparable(keyed: &[Keyed], since: &[CommittedTx], p: &Project) -> bool {
         .any(|i| relocated(since).contains(i))
         && !self_relocates(keyed)
         && !group_grew(keyed, since)
+        && !group_changed(keyed, since)
         && !partner_anchor(keyed, p)
         && !lifted_on(keyed, since)
+        && !concurrent_reedged(keyed, since, p)
         && !index_in_changed_list(keyed, since)
 }
 

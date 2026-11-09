@@ -28,6 +28,8 @@ import type { Pricing, RuntimeJournal, SessionEnvironment, SessionPlanner, ToolE
 import { budgetError, errorShape, harnessUnknown, limitsOf, NO_JOURNAL, parseRef, REPORTED_PRICING, runFacts } from "./runtime-deps.ts";
 import { call, closeLive, closeScope, type Live, openLive } from "./runtime-live.ts";
 import { OutboxDrainer } from "./runtime-outbox.ts";
+import { handleRequest, type ProviderRequests } from "./provider-requests.ts";
+import type { SessionSandboxes } from "./sandbox.ts";
 import type { SessionEvent } from "./session.ts";
 import type { AgentStore, Appended, Applied, NewNode } from "./store.ts";
 import { sessionNotFound } from "./store-rows.ts";
@@ -41,6 +43,8 @@ export interface RuntimeDeps {
   readonly adapters: ReadonlyArray<ProviderAdapter>;
   readonly planner: SessionPlanner;
   readonly environment: SessionEnvironment;
+  /** CLI harnesses' session sandboxes (plan 7C Task 11); none: CLI processes are not started. */
+  readonly sandboxes?: SessionSandboxes;
   /** The harnesses whose tool calls the runtime runs (8b's built-in tools; a test's fake). */
   readonly tools?: Partial<Record<Harness, ToolExecutor>>;
   readonly journal?: RuntimeJournal;
@@ -57,6 +61,8 @@ export interface RuntimeDeps {
   readonly watchBufferSize?: number;
   /** Start the hourly retention sweep and the budget check at `boot` (default true). */
   readonly timers?: boolean;
+  /** Provider permission requests (7B Task 5); none: every request is declined by policy. */
+  readonly requests?: ProviderRequests;
   /** Where the engine reports what it could not do (an outbox effect, a late provider error). */
   readonly log?: (message: string, details: Record<string, unknown>) => void;
 }
@@ -278,6 +284,7 @@ export abstract class RuntimeEngine {
       caps,
       (b) => this.#onEvent(s.id, b),
       (l) => this.#onEnd(l),
+      this.sandboxFor(s),
     );
     holder.live = live;
     this.lives.set(s.id, live);
@@ -285,6 +292,9 @@ export abstract class RuntimeEngine {
     if (now !== null) this.store.setProviderRef(s.id, JSON.stringify(now));
     return live;
   }
+
+  /** The session sandbox a CLI harness's instance opens in its scope (none for the built-in agent). */
+  protected abstract sandboxFor(s: Session): ReturnType<SessionSandboxes["open"]>;
 
   /** Ends the session's instance (`stopProvider`); a tool still running finishes, unheard. */
   protected async stopLive(sessionId: string): Promise<void> {
@@ -386,14 +396,15 @@ export abstract class RuntimeEngine {
         return this.#toolStarted(live, runId, e);
       case "toolCompleted":
         return this.#toolCompleted(live, e);
-      case "request": {
-        // Approvals answered by people arrive in 7B: until then the runtime declines.
-        await node("approval", { requestId: e.id, kind: e.kind, ...(e.tool === undefined ? {} : { tool: e.tool }), input: e.input ?? null, decision: "deny", by: "policy", reason: "approvalsUnavailable" });
-        const answer = e.kind === "approval" ? ({ kind: "approval", allow: false } as const) : ({ kind: "userInput", text: "No one can answer now: continue without it." } as const);
-        const err = await call(live.provider.respond(e.id, answer));
-        if (err) this.log("agent runtime: the provider refused an answer", { sessionId, code: err.code });
-        return;
-      }
+      case "request":
+        // Through the provider permissions (7B Task 5, `provider-requests.ts`).
+        return handleRequest(this.deps.requests, {
+          session: this.session(sessionId),
+          runId,
+          node: async (payload) => void (await node("approval", payload)),
+          respond: (a) => call(live.provider.respond(e.id, a)),
+          log: (m, d) => this.log(m, { sessionId, ...d }),
+        }, e);
       case "usage":
         return this.#usage(live, runId, e);
       case "turnCompleted":

@@ -57,12 +57,13 @@ async function createProject(c: NdjsonClient, name = "Demo"): Promise<string> {
 describe("finisherd", () => {
   test("server_starts_with_the_job_engine", async () => {
     const { stderr } = await start();
-    // One start line with the host's capabilities; nothing is sandboxed before sub-project 7.
+    // One start line with the host's capabilities: the sandbox spawner, applying no profile
+    // until one is ready on this OS (plan 7C Tasks 7 and 16).
     await until(() => /finisherd job engine: killTree=\w+ .*sandboxed=false/.test(stderr()));
     const line = stderr().split("\n").find((l) => l.includes("finisherd job engine:")) ?? "";
     // Job Objects on Windows; a delegated cgroup or process groups on Linux; process groups on macOS.
     expect(line).toMatch(WIN ? /killTree=jobObject/ : process.platform === "linux" ? /killTree=(cgroup|processGroup)/ : /killTree=processGroup/);
-    expect(line).toContain("sandbox=none");
+    expect(line).toContain("sandbox=fin-sandbox");
     // The engine's start ran: an empty jobs root, and the store's chain is in control.db.
     expect(readdirSync(join(serverData, "jobs"))).toEqual([]);
   });

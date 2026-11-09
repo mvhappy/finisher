@@ -44,6 +44,7 @@ use napi::bindgen_prelude::*;
 use napi_derive::napi;
 use serde_json::json;
 
+mod acl_broker;
 mod auto;
 mod bundled;
 mod cert;
@@ -72,6 +73,7 @@ mod private_file;
 mod qr;
 mod registry;
 mod sandbox;
+mod sandbox_acl;
 mod server_lock;
 mod tasks;
 #[cfg(feature = "test-hooks")]

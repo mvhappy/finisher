@@ -68,20 +68,24 @@ async function project(): Promise<{ e: Engine; dir: string; a1: string; inDir: s
 }
 
 const read = <T>(dir: string, name: string): T => JSON.parse(readFileSync(join(dir, name), "utf8")) as T;
-const prepared = (json: string) => JSON.parse(json) as { rev: number; planSamples: { at: string; blake3: string }[] };
+const prepared = (json: string) => JSON.parse(json) as { rev: number; planSamples: { at: string; blake3: string }[]; sources: string[] };
 
 describe("prepareMediaJob", () => {
   test("the manifest lists the assets the plans reference and nothing else", async () => {
     const { e, inDir, a1 } = await project();
     const first = prepared(await e.prepareMediaJob("main", "tl1", ["1"], inDir, { fontCache: join(tmp, "sd", "fonts") }));
     expect(first.rev).toBe(1);
+    // The files the worker opens (plan 7C Task 7): the referenced assets' originals.
+    expect(first.sources).toEqual([a1]);
     let manifest = read<Manifest>(inDir, "manifest.json");
     expect(manifest.version).toBe(1);
     expect(manifest.assets.map((a) => a.asset)).toEqual(["a1"]);
     expect(manifest.assets[0]).toMatchObject({ kind: "media", fingerprint: "fp-a1", original: { path: a1, size: 12 } });
     expect(manifest.fonts).toEqual({ cache: join(tmp, "sd", "fonts"), files: [] });
     // Both clips: the file that is not there is `null`, not an error.
-    await e.prepareMediaJob("main", "tl1", ["1", "6"], inDir);
+    const both = prepared(await e.prepareMediaJob("main", "tl1", ["1", "6"], inDir));
+    // A missing original has no path to grant.
+    expect(both.sources).toEqual([a1]);
     manifest = read<Manifest>(inDir, "manifest.json");
     expect(manifest.assets.map((a) => [a.asset, a.original === null ? null : a.original.size])).toEqual([
       ["a1", 12],

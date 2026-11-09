@@ -5,6 +5,29 @@
  */
 
 /**
+ * How long a grant lives.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "AclScope".
+ */
+export type AclScope = "static" | "owner";
+/**
+ * Whom an ACE names: a SID (a capability's, derived here) or a container by name (its SID
+ * is Windows', [`super::appcontainer::sid`]).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "AclTrustee".
+ */
+export type AclTrustee =
+  | {
+      kind: "sid";
+      value: string;
+    }
+  | {
+      kind: "container";
+      value: string;
+    };
+/**
  * This interface was referenced by `FinCore`'s JSON-Schema
  * via the `definition` "IdRef".
  */
@@ -1623,6 +1646,13 @@ export type SourceKind = "bundled" | "registry" | "dev";
  */
 export type JobHostKillTree = "jobObject" | "cgroup" | "processGroup";
 /**
+ * A sandbox profile's state on this host.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "JobHostProfileState".
+ */
+export type JobHostProfileState = "enforced" | "disabled" | "unavailable";
+/**
  * This interface was referenced by `FinCore`'s JSON-Schema
  * via the `definition` "JobHostCgroups".
  */
@@ -2056,6 +2086,25 @@ export type RootState =
       state: "timeout";
     };
 /**
+ * Whether `fin-sandbox-exec` can hide Unix sockets from `agent` and `hook` processes in a user
+ * and mount namespace on this host (plan 7C Decision 26). Only the launcher binary can tell
+ * (an AppArmor profile attaches to it by path), so `finisherd` asks it: `--probe`.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "SandboxNamespaces".
+ */
+export type SandboxNamespaces =
+  | {
+      kind: "available";
+    }
+  | {
+      kind: "unavailable";
+      reason: string;
+    }
+  | {
+      kind: "notApplicable";
+    };
+/**
  * What a profile gets on this host.
  *
  * This interface was referenced by `FinCore`'s JSON-Schema
@@ -2174,6 +2223,18 @@ export interface FinCore {
 export interface Accept {
   copyleft?: boolean;
   thirdPartyCode?: boolean;
+}
+/**
+ * One allow ACE, inherited by the subtree.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "AclGrant".
+ */
+export interface AclGrant {
+  mask: number;
+  path: string;
+  scope: AclScope;
+  trustee: AclTrustee;
 }
 /**
  * Who caused an entry: a person, an agent (with its session and the tool call that ran
@@ -5388,6 +5449,11 @@ export interface HookInput {
   projectDir: string;
   serverData: string;
   /**
+   * The hook's time limit (`Limits.wall_ms`): the launcher ends the whole tree when it passes
+   * (on Windows also the backstop for a Node process stuck on piped stdio, Decision 25).
+   */
+  timeoutMs?: number | null;
+  /**
    * A private temporary directory, the only write root.
    */
   tmp: string;
@@ -5722,11 +5788,27 @@ export interface JobHostCaps {
    */
   leafLimits: boolean;
   /**
+   * Warm workers can be granted per job (plan 7C Task 12): warm kinds run warm under an
+   * enforced profile only then.
+   */
+  perJobGrants: boolean;
+  profiles: JobHostProfiles;
+  /**
    * The spawner's name (`none` unsandboxed).
    */
   sandbox: string;
+  /**
+   * Every profile is enforced.
+   */
   sandboxed: boolean;
   watchdog: boolean;
+}
+/**
+ * What each sandbox profile gets (plan 7C Decision 4).
+ */
+export interface JobHostProfiles {
+  plugin: JobHostProfileState;
+  worker: JobHostProfileState;
 }
 /**
  * `progress`. The runtime fills `job` ([`crate::worker::JobCtx::progress`]).
@@ -5765,6 +5847,11 @@ export interface JobHostOptions {
    * alone). `exit`, `spawned` and `groupEmpty` are not counted: a process has one of each.
    */
   eventQueueBytes?: number;
+  /**
+   * `<server-data>`: the sandbox spawner places each process's grants against it (plan 7C
+   * Task 7). Without it, a profile that is enforced on this host refuses every spawn.
+   */
+  serverData?: string;
   timing?: JobHostTiming;
   /**
    * The Unix host watchdog (default on; ignored on Windows).
@@ -5783,6 +5870,16 @@ export interface JobHostTiming {
   hungMs?: number;
   killWaitMs?: number;
   rssSampleMs?: number;
+}
+/**
+ * [`JobHostProfileState`] per profile.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "JobHostProfiles".
+ */
+export interface JobHostProfiles1 {
+  plugin: JobHostProfileState;
+  worker: JobHostProfileState;
 }
 /**
  * A group memory rule (Decision 20).
@@ -7030,6 +7127,15 @@ export interface ManifestFonts1 {
   files?: FontFileRef[];
 }
 /**
+ * What `fin-sandbox-exec --probe` prints.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "SandboxLauncherProbe".
+ */
+export interface SandboxLauncherProbe {
+  namespaces: SandboxNamespaces;
+}
+/**
  * Every profile's status on this host (`sandboxStatus()` in fin-node).
  *
  * This interface was referenced by `FinCore`'s JSON-Schema
@@ -7530,6 +7636,12 @@ export interface TestWarmParams {
    * A job-directory file kept open past `ready` (breaks the warm contract on purpose).
    */
   holdFile?: string;
+  /**
+   * Paths the worker tries to read (plan 7C Task 12): each answered with the errno of
+   * the attempt, `null` when it read. A path starting with `!` is renamed instead (to
+   * `<path>.moved`, and back when it worked): what replacing it with a link would need.
+   */
+  probe?: string[];
   value: unknown;
 }
 /**
@@ -7538,6 +7650,10 @@ export interface TestWarmParams {
  */
 export interface TestWarmResult {
   pid: number;
+  /**
+   * One errno (or `null`) per `probe` path, in order.
+   */
+  probes?: (number | null)[];
   served: number;
   value: unknown;
 }

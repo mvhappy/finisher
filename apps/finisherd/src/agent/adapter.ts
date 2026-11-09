@@ -5,6 +5,7 @@
 import { type AgentProvider, type FinError, type Harness, type Mode, ProviderEvent } from "@finisher/contracts";
 import { type Effect, Schema, type Scope, type Stream } from "effect";
 import { finError } from "../errors.ts";
+import type { SessionSandbox } from "./sandbox.ts";
 
 export type { Harness, Mode, ProviderEvent };
 
@@ -53,6 +54,11 @@ export interface SessionSpec {
   readonly providerRef: ProviderRef | null;
   /** The runtime's budget check before each model call, for an adapter whose loop runs here (7A-2). */
   readonly gate?: CallGate;
+  /**
+   * A CLI harness's session sandbox (plan 7C Task 11): the only way its adapter starts a
+   * process, with `env` the session environment. Absent for the built-in agent (spec §8.9).
+   */
+  readonly sandbox?: SessionSandbox;
 }
 
 /** Tokens a model call is projected to use (the catalogue's `Usage`). */

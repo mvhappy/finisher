@@ -97,6 +97,7 @@ export const ConsoleChallengeSuccess = Schema.Struct({ code: Schema.String, expi
  * `JobEngine.workers().caps`) and standing warnings (`{code, …}`; `SANDBOX_DISABLED` while job
  * workers run unconfined).
  */
+export const JobHostProfileState = Schema.Literals(["enforced", "disabled", "unavailable"]);
 export const JobHostCapsSchema = Schema.Struct({
   killTree: Schema.String,
   watchdog: Schema.Boolean,
@@ -104,6 +105,10 @@ export const JobHostCapsSchema = Schema.Struct({
   leafLimits: Schema.Boolean,
   sandbox: Schema.String,
   sandboxed: Schema.Boolean,
+  /** Per sandbox profile: `enforced`, `disabled` (runs unconfined) or `unavailable` (refused); plan 7C Task 7. */
+  profiles: Schema.Struct({ worker: JobHostProfileState, plugin: JobHostProfileState }),
+  /** Warm workers can be granted per job (plan 7C Task 12). */
+  perJobGrants: Schema.Boolean,
 });
 export const ServerStatusSuccess = Schema.Struct({
   version: Schema.String,
@@ -115,7 +120,7 @@ export const ServerStatusSuccess = Schema.Struct({
   /** 5B: the remote listener is `wss`, with its pin, its certificate mode and where its config came from. */
   listeners: Schema.Array(
     Schema.Struct({
-      transport: Schema.Literals(["socket", "pipe", "ws", "wss"]),
+      transport: Schema.Literals(["socket", "pipe", "ws", "wss", "agentTcp"]),
       endpoint: Schema.String,
       spki: Schema.optional(Schema.String),
       mode: Schema.optional(Schema.Literals(["selfSigned", "files"])),

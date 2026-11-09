@@ -227,6 +227,8 @@ impl Registry {
                     installed: req.installed,
                     known_ids: req.known_ids,
                     registry_changed: req.registry_changed,
+                    // What the job host's spawner reports for `plugin` (plan 7C Task 7).
+                    plugin_confined: fin_sandbox::spawner::plugin_confined(),
                     #[cfg(feature = "test-hooks")]
                     test_agent_facing: req.test_agent_facing,
                     #[cfg(not(feature = "test-hooks"))]

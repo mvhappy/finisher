@@ -12,7 +12,7 @@ pub fn hook(i: &HookInput) -> Result<SandboxPolicy, PolicyError> {
     hook_on(Os::current(), i)
 }
 
-pub(crate) fn hook_on(os: Os, i: &HookInput) -> Result<SandboxPolicy, PolicyError> {
+pub fn hook_on(os: Os, i: &HookInput) -> Result<SandboxPolicy, PolicyError> {
     for (field, p) in [
         ("projectDir", &i.project_dir),
         ("hookFile", &i.hook_file),
@@ -61,8 +61,11 @@ pub(crate) fn hook_on(os: Os, i: &HookInput) -> Result<SandboxPolicy, PolicyErro
         deny_read: deny,
         unix_sockets,
         net,
-        mach: vec![],
+        mach: crate::data::mach(os, Profile::Hook),
         devices: headless_devices(os),
-        limits: Limits::default(),
+        limits: Limits {
+            wall_ms: i.timeout_ms,
+            ..Limits::default()
+        },
     })
 }

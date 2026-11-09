@@ -1,6 +1,7 @@
 //! The launcher `fin-sandbox-exec` (plan 7C Task 5): the request only through `--policy-fd`,
 //! an invalid request refused with `SANDBOX_UNAVAILABLE` (exit 78), and the program's own exit
-//! code and signals (the launcher `exec`s it, so they are the program's).
+//! code and signals (the launcher forwards signals and exits as the program did: Decision 3 as
+//! amended, `reaper_linux.rs`).
 #![cfg(target_os = "linux")]
 
 mod linux_support;
@@ -11,43 +12,15 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::process::Stdio;
 
-use fin_core::events::payloads::agent::{AgentMode, Harness};
 use fin_sandbox::launch::LaunchRequest;
-use fin_sandbox::{AgentInput, Os};
 use linux_support::{
-    failure, inherit_fd4, landlock_or_skip, launch_cmd, launch_raw, tempdir, write,
+    agent, failure, inherit_fd4, landlock_or_skip, launch_cmd, launch_raw, tempdir,
 };
 
+/// Landlock alone: these cases check its denials (`EACCES`); the socket namespace
+/// (`namespace_linux.rs`) would answer `ENOENT` for hidden paths first.
+const NS_OFF: (&str, &str) = ("FIN_TEST_SANDBOX_NAMESPACES", "unavailable");
 const PATH: (&str, &str) = ("PATH", "/usr/bin:/bin");
-
-/// An agent request for a project and server data under `t`, with the base toolchain.
-fn agent(t: &Path) -> LaunchRequest {
-    let project = t.join("p");
-    let data = t.join("data");
-    for d in [
-        "p/workspace/s1",
-        "data/agents/s1/tmp",
-        "data/agents/s1/provider",
-    ] {
-        std::fs::create_dir_all(t.join(d)).unwrap();
-    }
-    write(&t.join("data/auth/local.key"), "k");
-    LaunchRequest::Agent(AgentInput {
-        session_id: "s1".into(),
-        mode: AgentMode::Draft,
-        harness: Harness::Codex,
-        workspace_dir: project.join("workspace").join("s1"),
-        shared_dir: None,
-        project_dir: project,
-        library_roots: vec![],
-        session_dir: data.join("agents").join("s1"),
-        sign_in_store: None,
-        toolchains: fin_sandbox::data::toolchain_base_resolved(Os::Linux),
-        server_data: data,
-        home: t.join("home"),
-        fin: None,
-    })
-}
 
 fn bytes(r: &LaunchRequest) -> Vec<u8> {
     serde_json::to_vec(r).unwrap()
@@ -69,7 +42,7 @@ fn request_only_through_the_descriptor() {
         &["--policy-fd", "3", "--policy-fd", "3", "--", "true"],
         &["--policy-fd", "3"],
     ] {
-        let out = launch_raw(Some(&req), args, &[PATH]);
+        let out = launch_raw(Some(&req), args, &[PATH, NS_OFF]);
         assert_eq!(out.status.code(), Some(64), "{args:?}");
         assert_eq!(failure(&out)["code"], "USAGE", "{args:?}");
     }
@@ -100,14 +73,18 @@ fn invalid_request_is_sandbox_unavailable() {
         ),
         ("relative path", bytes(&relative)),
     ] {
-        let out = launch_raw(Some(&req), &["--policy-fd", "3", "--", "true"], &[PATH]);
+        let out = launch_raw(
+            Some(&req),
+            &["--policy-fd", "3", "--", "true"],
+            &[PATH, NS_OFF],
+        );
         assert_eq!(out.status.code(), Some(78), "{what}");
         let f = failure(&out);
         assert_eq!(f["code"], "SANDBOX_UNAVAILABLE", "{what}");
         assert_eq!(f["os"], "linux", "{what}");
     }
     // A descriptor that is not open.
-    let out = launch_raw(None, &["--policy-fd", "9", "--", "true"], &[PATH]);
+    let out = launch_raw(None, &["--policy-fd", "9", "--", "true"], &[PATH, NS_OFF]);
     assert_eq!(out.status.code(), Some(78));
 }
 
@@ -119,7 +96,7 @@ fn exit_code_and_signals_are_the_programs() {
     let (_d, t) = tempdir();
     let req = bytes(&agent(&t));
     let fd = ["--policy-fd", "3", "--"];
-    let run = |argv: &[&str]| launch_raw(Some(&req), &[&fd[..], argv].concat(), &[PATH]);
+    let run = |argv: &[&str]| launch_raw(Some(&req), &[&fd[..], argv].concat(), &[PATH, NS_OFF]);
     assert_eq!(run(&["sh", "-c", "exit 7"]).status.code(), Some(7));
     assert_eq!(
         run(&["sh", "-c", "kill -TERM $$"]).status.signal(),
@@ -127,12 +104,12 @@ fn exit_code_and_signals_are_the_programs() {
     );
     assert_eq!(run(&["no-such-program-here"]).status.code(), Some(127));
 
-    // A signal sent to the launcher's process reaches the program: it is the same process. The
-    // program says it is running first, so the signal cannot land on the launcher before `exec`.
+    // A signal sent to the launcher's process reaches the program (forwarded to its group), and
+    // the launcher's exit shows it. The program says it is running first.
     let (mut cmd, keep) = launch_cmd(
         Some(&req),
         &[&fd[..], &["sh", "-c", "echo running; exec sleep 30"]].concat(),
-        &[PATH],
+        &[PATH, NS_OFF],
     );
     cmd.stdout(Stdio::piped());
     let mut child = cmd.spawn().unwrap();
@@ -158,7 +135,7 @@ fn the_program_runs_confined_and_inherits_no_descriptor() {
     let out = launch_raw(
         Some(&req),
         &["--policy-fd", "3", "--", "cat", &key(&t)],
-        &[PATH],
+        &[PATH, NS_OFF],
     );
     assert_ne!(out.status.code(), Some(0), "local.key was readable");
     assert!(
@@ -179,7 +156,7 @@ fn the_program_runs_confined_and_inherits_no_descriptor() {
     let (mut cmd, keep) = launch_cmd(
         Some(&req),
         &["--policy-fd", "3", "--", "sh", "-c", "cat <&4"],
-        &[PATH],
+        &[PATH, NS_OFF],
     );
     let _fd4 = inherit_fd4(&mut cmd, leaked());
     let out = cmd.output().unwrap();
@@ -204,7 +181,7 @@ fn the_program_runs_confined_and_inherits_no_descriptor() {
     let out = launch_raw(
         Some(&req),
         &["--policy-fd", "3", "--", &copy.to_string_lossy()],
-        &[PATH],
+        &[PATH, NS_OFF],
     );
     assert_eq!(out.status.code(), Some(126), "{out:?}");
     assert_eq!(failure(&out)["code"], "EXEC_FAILED");

@@ -12,12 +12,15 @@
 //   the server lists, a known open-weight family or one the owner describes (`MODEL_UNKNOWN`).
 //   The price is the runtime's check (`PRICING_UNKNOWN`). OpenRouter's listing is refreshed
 //   first when it is a day old (best effort: the cache stands when the network does not).
+// - **Model default**: the role's per harness (`roleModel`); the CLI harnesses (7D, 7E) read the
+//   same field, and the CLI lists its own models, so a bundled role names none for them.
+// - **Tools**: the role's allow-set rides on the plan (7D builds `--disallowedTools` from it).
 // - **Budget**: the role's, which the starter may lower or fill in.
 import type { Harness, Principal, Weights } from "@finisher/contracts";
 import { finError } from "../errors.ts";
 import type { Catalogue } from "./catalogue/catalogue.ts";
 import { OPENROUTER_ID } from "./catalogue/prices.ts";
-import { budgetFor, MODE_RANK, type Role, roleUnknown } from "./roles.ts";
+import { budgetFor, MODE_RANK, type Role, roleModel, roleUnknown } from "./roles.ts";
 import { harnessUnknown, type SessionPlan, type SessionPlanner, type StartRequest } from "./runtime-deps.ts";
 import type { LocalEndpoint } from "./settings.ts";
 
@@ -53,15 +56,15 @@ export function sessionPlanner(deps: PlannerDeps): SessionPlanner {
       const harness = req.harness ?? "builtin";
       if (!deps.harnesses().has(harness)) harnessUnknown(harness);
       const budget = budgetFor(role, req.budget);
-      const base = { harness, role: role.name, mode, budget };
+      const base = { harness, role: role.name, mode, budget, tools: role.tools.allow };
       if (harness === "fake") {
         // Tests only: no model, no key, priced as local (nothing is charged).
         return { ...base, provider: "local", model: req.model ?? "fake", weights: "unknown" };
       }
       if (harness !== "builtin") harnessUnknown(harness);
       const preset = req.provider ?? "openrouter";
-      if (preset === "local") return { ...base, provider: "local", ...(await localModel(deps, req.model ?? role.models.local)) };
-      const model = req.model ?? role.models.builtin;
+      if (preset === "local") return { ...base, provider: "local", ...(await localModel(deps, req.model ?? roleModel(role, harness, "local"))) };
+      const model = req.model ?? roleModel(role, harness, "openrouter");
       if (model === undefined || !OPENROUTER_ID.test(model)) {
         modelUnknown(model, model === undefined ? "noDefault" : "notOpenrouterId", "name an OpenRouter model id such as anthropic/claude-sonnet-5.5, or use --provider local");
       }

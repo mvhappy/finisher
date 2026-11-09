@@ -1,5 +1,6 @@
 import { describe, expect, test } from "vitest";
-import { AUDIT_KINDS, auditDetailsValid } from "./audit.ts";
+import { Schema } from "effect";
+import { AUDIT_KINDS, AuditOutcomeSchema, auditDetailsValid } from "./audit.ts";
 
 describe("audit details", () => {
   test("every kind takes ids, words and counts", () => {
@@ -27,6 +28,25 @@ describe("audit details", () => {
     // The fields are the plugin kinds' own.
     expect(auditDetailsValid("auth.denied", { pluginId: "@acme/pack" })).toBe(false);
     expect(auditDetailsValid("consent.change", { registryId: "team" })).toBe(false);
+  });
+
+  test("rule_kinds_take_a_rule_id_a_layer_and_a_rules_hash_never_the_pattern", () => {
+    const id = "01m6yfjx51brn5wdjt6gsrsq7g";
+    for (const kind of ["agent.rule.add", "agent.rule.remove", "agent.project.trust"] as const) {
+      expect(auditDetailsValid(kind, { rpc: "agent.rules.add", ruleId: id, layer: "local", value: "deny", projectId: id, sessionId: id, from: id }), kind).toBe(true);
+      expect(auditDetailsValid(kind, { rulesHash: `sha256:${"a".repeat(64)}` }), kind).toBe(true);
+      expect(auditDetailsValid(kind, { rulesHash: "none" }), kind).toBe(true);
+      for (const bad of [{ command: "render" }, { layer: "team" }, { rulesHash: "abc" }, { ruleId: "not an id" }]) expect(auditDetailsValid(kind, bad), `${kind} ${JSON.stringify(bad)}`).toBe(false);
+    }
+    expect(auditDetailsValid("settings.write", { ruleId: id })).toBe(false);
+  });
+
+  test("an auth.denied row may name the card an ask opened (APPROVAL_PENDING, outcome pending); no other kind", () => {
+    const id = "01m6yfjx51brn5wdjt6gsrsq7g";
+    expect(auditDetailsValid("auth.denied", { rpc: "history.checkpoint", rule: "ask", approval: id })).toBe(true);
+    expect(auditDetailsValid("auth.denied", { approval: "not an id" })).toBe(false);
+    expect(auditDetailsValid("settings.write", { approval: id })).toBe(false);
+    expect(Schema.decodeUnknownSync(AuditOutcomeSchema)("pending")).toBe("pending");
   });
 
   test("free text, paths and unknown fields are refused", () => {

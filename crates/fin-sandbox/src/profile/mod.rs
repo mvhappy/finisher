@@ -8,10 +8,19 @@ mod worker;
 
 use std::path::{Path, PathBuf};
 
-pub use agent::agent;
+pub use agent::{PROJECT_STATE, agent};
 pub use hook::hook;
 pub use plugin::plugin;
 pub use worker::worker;
+
+/// The builders for a named OS, so the macOS goldens (plan 7C Task 8) are checked on every OS.
+#[doc(hidden)]
+pub mod for_os {
+    pub use super::agent::agent_on as agent;
+    pub use super::hook::hook_on as hook;
+    pub use super::plugin::plugin_on as plugin;
+    pub use super::worker::worker_on as worker;
+}
 
 use crate::error::PolicyError;
 use crate::policy::{Os, SandboxPolicy, check_path, under};

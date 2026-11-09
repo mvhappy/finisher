@@ -598,6 +598,7 @@ fn hook_input() -> HookInput {
         server_data: abs("data"),
         home: abs("home/u"),
         fin: None,
+        timeout_ms: None,
     }
 }
 

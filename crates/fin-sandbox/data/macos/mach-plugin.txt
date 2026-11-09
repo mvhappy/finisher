@@ -1,0 +1,2 @@
+# macOS `mach-lookup` allow-list of the `plugin` profile (sp8 §3.2, §16.1; plan 7C Task 8).
+# Empty: `tccd` and the Apple Events service stay unreachable. Source: spike S9 step B6.

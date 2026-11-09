@@ -49,18 +49,49 @@ fn a_profile_not_ready_runs_as_before_7c() {
             disabled(DisabledReason::ProfileNotReady)
         );
     }
-    // Not ready, `worker` still reports what a request for its Landlock phase would meet.
-    assert_eq!(
-        status_with(Profile::Worker, enforced(), &[]),
-        disabled(DisabledReason::ProfileNotReady)
-    );
+    // Not ready, `worker` runs as before 7C too, whatever the mechanism (plan 7C Task 7: the
+    // job host's spawner is its only requester and passes it through until it is ready).
     let unavailable = Mechanism::Unavailable {
         need: "kernel ≥ 6.2".into(),
     };
-    assert_eq!(
-        status_with(Profile::Worker, unavailable.clone(), &[]),
-        unavailable
-    );
+    for m in [enforced(), unavailable] {
+        assert_eq!(
+            status_with(Profile::Worker, m, &[]),
+            disabled(DisabledReason::ProfileNotReady)
+        );
+    }
+}
+
+/// `status` and the job host's spawner answer alike for every mechanism and `READY` table,
+/// so `server.status`'s warnings say what the spawner does.
+#[test]
+fn status_and_the_spawner_agree() {
+    use fin_jobhost::ProfileState;
+    use fin_sandbox::spawner::{Decision, decide};
+    let mechanisms = [
+        enforced(),
+        disabled(DisabledReason::LandlockDisabled),
+        Mechanism::Unavailable { need: "k".into() },
+    ];
+    for profile in [Profile::Worker, Profile::Plugin] {
+        for ready in [vec![], vec![(profile, Os::current())]] {
+            for m in &mechanisms {
+                let st = status_with(profile, m.clone(), &ready);
+                let d = decide(profile, m, &ready);
+                let want = match st {
+                    Mechanism::Enforced { .. } => ProfileState::Enforced,
+                    Mechanism::Disabled { .. } => ProfileState::Disabled,
+                    Mechanism::Unavailable { .. } => ProfileState::Unavailable,
+                };
+                let got = match d {
+                    Decision::Apply => ProfileState::Enforced,
+                    Decision::Pass => ProfileState::Disabled,
+                    Decision::Refuse(_) => ProfileState::Unavailable,
+                };
+                assert_eq!(got, want, "{profile:?} {m:?} ready={}", !ready.is_empty());
+            }
+        }
+    }
 }
 
 #[test]
@@ -121,5 +152,31 @@ fn the_stub_drives_self_apply() {
     match probe_env(&flags, &op, &[(stub, "unavailable")]) {
         Outcome::Apply(e) => assert!(e.contains("kernel ≥ 6.2"), "{e}"),
         other => panic!("{other:?}"),
+    }
+}
+
+/// macOS (plan 7C Task 8): Seatbelt is enforced where `sandbox-exec` is present, and a host
+/// without it refuses the start, naming the need.
+#[cfg(target_os = "macos")]
+#[test]
+fn seatbelt_status_follows_sandbox_exec() {
+    use fin_sandbox::status::seatbelt;
+    assert_eq!(
+        seatbelt(std::path::Path::new("/usr/bin/sandbox-exec")),
+        Mechanism::Enforced {
+            detail: "seatbelt".into()
+        }
+    );
+    match seatbelt(std::path::Path::new("/nonexistent/sandbox-exec")) {
+        Mechanism::Unavailable { need } => assert!(need.contains("Seatbelt"), "{need}"),
+        other => panic!("{other:?}"),
+    }
+    if std::env::var_os(fin_sandbox::status::TEST_ENV).is_none() {
+        assert_eq!(
+            fin_sandbox::status::mechanism(),
+            Mechanism::Enforced {
+                detail: "seatbelt".into()
+            }
+        );
     }
 }

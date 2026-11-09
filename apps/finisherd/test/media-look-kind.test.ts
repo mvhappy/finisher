@@ -130,6 +130,29 @@ describe("the kind", () => {
     expect(resolveMemoryRule(MEDIA_MEMORY, 128 * GiB)).toBe(6 * GiB);
   });
 
+  // Plan 7C Task 7: the files the worker opens are persisted as `extra.reads` (links
+  // resolved, missing ones left out) with the font cache, and `reads` answers them.
+  test("prepare_persists_the_worker_reads_and_reads_answers_them", async () => {
+    const sd = realpathSync(mkdtempSync(join(work, "reads-sd-")));
+    mkdirSync(join(sd, "fonts"));
+    const src = join(realpathSync(mkdtempSync(join(work, "reads-src-"))), "clip.mp4");
+    writeFileSync(src, "c");
+    const link = join(dirname(src), "link.mp4");
+    symlinkSync(src, link);
+    const jobsRoot = join(sd, "jobs");
+    mkdirSync(join(jobsRoot, "j1"), { recursive: true });
+    const k = mediaLookKind({
+      serverData: sd,
+      jobsRoot,
+      projects: { prepareMediaJob: () => Effect.succeed({ rev: 3, planSamples: [], sources: [link, join(dirname(src), "gone.mp4"), "relative.mp4"] }), dirOf: () => undefined },
+    });
+    const params = { timeline: "tl1", at: ["0"], outName: "look", projectId: "p", branch: "main" };
+    const out = (await Effect.runPromise(k.prepare!({ job: { id: "j1", params }, attempt: 1, open: () => fail(0) } as never) as Effect.Effect<{ extra: unknown }, FinError>)).extra;
+    expect(out).toMatchObject({ rev: 3, reads: [src, join(sd, "fonts")].sort() });
+    expect(k.reads!(out, params as never)).toEqual([src, join(sd, "fonts")].sort());
+    expect(k.reads!(undefined, params as never)).toEqual([]);
+  });
+
   test("its params are the generated LookParams", () => {
     const ok = { timeline: "tl1", at: ["0", "1/2"], outName: "look", projectId: "p", branch: "main", rev: 3, size: { width: 8, height: 8 }, outDir: "shots" };
     expect(validateJobParams("media.look", 1, ok)).toMatchObject({ ok: true, params: { ...ok, planSamples: [] } });

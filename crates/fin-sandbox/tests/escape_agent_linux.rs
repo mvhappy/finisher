@@ -2,8 +2,11 @@
 //! `fin-sandbox-exec` applies the profile and `exec`s `fin-sandbox-probe --none <op>`, which
 //! makes one attempt. A denial passes only on an observed `EACCES`/`EXDEV` (filesystem and
 //! TCP); each denied case is first run unsandboxed as a control, so a missing file never passes.
-//! The seccomp filter is deferred (plan Task 4): no case here depends on it, and
-//! `pathname_sockets_are_a_residual_until_seccomp` asserts what it would close.
+//! The seccomp filter is deferred (plan Task 4): no case here depends on it. Every case runs
+//! with the socket namespace off (`FIN_TEST_SANDBOX_NAMESPACES=unavailable`), so it tests
+//! Landlock alone, except the gap cases: `pathname_sockets_hidden_by_the_namespace` and
+//! `udp_leaves_only_where_the_namespace_allows` assert what the namespace closes where it is
+//! available (Decision 26) and the residual where it is not; `namespace_linux.rs` has the rest.
 #![cfg(target_os = "linux")]
 
 mod linux_support;
@@ -16,8 +19,13 @@ use fin_sandbox::launch::LaunchRequest;
 use fin_sandbox::linux::landlock::Abi;
 use fin_sandbox::{AgentInput, FinEndpoint, HookFin, HookInput, Os};
 use linux_support::{
-    Outcome, PROBE, failure, landlock_or_skip, launch_raw, listener, probe, s, tempdir, write,
+    Outcome, PROBE, failure, landlock_or_skip, launch_raw, listener, namespaces_or_skip, probe, s,
+    tempdir, write,
 };
+
+/// Landlock alone: the namespace (tested in `namespace_linux.rs`) would answer `ENOENT` for
+/// hidden paths first and hide what these cases check.
+const NS_OFF: (&str, &str) = ("FIN_TEST_SANDBOX_NAMESPACES", "unavailable");
 
 /// Server data, a project, a second project and a home directory under one temporary root.
 struct Tree {
@@ -123,16 +131,22 @@ impl Tree {
             server_data: self.p("data"),
             home: self.p("home"),
             fin,
+            timeout_ms: None,
         })
     }
 }
 
-/// Runs `op` through the launcher under `req`.
+/// Runs `op` through the launcher under `req`, Landlock alone.
 fn launched(req: &LaunchRequest, op: &[String]) -> Outcome {
+    launched_env(req, op, &[NS_OFF])
+}
+
+/// [`launched`] with `env` instead (the gap cases leave the namespace on).
+fn launched_env(req: &LaunchRequest, op: &[String], env: &[(&str, &str)]) -> Outcome {
     let bytes = serde_json::to_vec(req).unwrap();
     let mut args = vec!["--policy-fd", "3", "--", PROBE, "--none"];
     args.extend(op.iter().map(String::as_str));
-    let out = launch_raw(Some(&bytes), &args, &[]);
+    let out = launch_raw(Some(&bytes), &args, env);
     let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
     match serde_json::from_str::<serde_json::Value>(stdout.trim()) {
         Ok(v) if out.status.code() == Some(0) && v.get("op").is_some() => {
@@ -354,49 +368,66 @@ fn agent_makes_fifos_but_no_sockets() {
 }
 
 #[test]
-fn pathname_sockets_are_a_residual_until_seccomp() {
-    let Some(abi) = abi("pathname_sockets_are_a_residual_until_seccomp") else {
+fn pathname_sockets_hidden_by_the_namespace() {
+    let test = "pathname_sockets_hidden_by_the_namespace";
+    let Some(abi) = abi(test) else {
         return;
     };
     let t = Tree::new();
-    let path = t.p("data/run/bus");
+    // In the home directory, a hidden root (a socket like `~/.ssh` ControlMaster's or
+    // `gpg-agent`'s); `namespace_linux.rs` covers `/run` and `$XDG_RUNTIME_DIR`.
+    let path = t.p("home/.gnupg/S.gpg-agent");
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
     let _l = std::os::unix::net::UnixListener::bind(&path).unwrap();
-    let got = launched(
-        &t.agent(Harness::Codex, None),
-        &op(&["connect-unix", &s(&path)]),
-    );
-    if abi.0 >= 9 {
-        // `RESOLVE_UNIX`: only the policy's sockets.
-        assert_eq!(got, Outcome::Ran(Some(libc::EACCES)));
-    } else {
-        // Recorded residual (plan Task 4, deferred): below ABI 9 nothing but the seccomp filter
-        // refuses this. When the filter is wired in, this arm must start failing.
-        assert_eq!(got, Outcome::Ran(None));
+    let o = op(&["connect-unix", &s(&path)]);
+    assert_eq!(probe(&["--none".into()], &o), Outcome::Ran(None), "control");
+    for req in [t.agent(Harness::Codex, None), t.hook(None)] {
+        let got = launched_env(&req, &o, &[]);
+        if namespaces_or_skip(test) {
+            // Decision 26: the location is an empty tmpfs inside the namespace.
+            assert_eq!(got, Outcome::Ran(Some(libc::ENOENT)));
+        } else if abi.0 >= 9 {
+            // `RESOLVE_UNIX`: only the policy's sockets.
+            assert_eq!(got, Outcome::Ran(Some(libc::EACCES)));
+        } else {
+            // Recorded residual (`SANDBOX_SOCKETS_EXPOSED`): no namespace, Landlock below ABI
+            // 9 and no seccomp filter, so nothing refuses it.
+            assert_eq!(got, Outcome::Ran(None));
+        }
     }
 }
 
 #[test]
-fn udp_is_a_residual_until_seccomp() {
-    let Some(_) = abi("udp_is_a_residual_until_seccomp") else {
+fn udp_leaves_only_where_the_namespace_allows() {
+    let test = "udp_leaves_only_where_the_namespace_allows";
+    let Some(_) = abi(test) else {
         return;
     };
-    // Recorded residual (plan Task 4, deferred): Landlock handles TCP only, so a `hook` (network
-    // "none") and an `agent` (loopback limited) still send UDP, to loopback services too. The
-    // datagram is observed arriving; when the seccomp filter is wired in, this must fail.
+    // Landlock handles TCP only. A `hook` without network gets an empty network namespace
+    // (Decision 26), so its datagram cannot leave; an `agent` (and a hook that declares `fin`)
+    // keeps the host's network, so UDP stays a residual for it until the seccomp filter: the
+    // datagram is observed arriving, and this must fail when the filter is wired in.
     let t = Tree::new();
     let sock = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
     sock.set_read_timeout(Some(std::time::Duration::from_secs(5)))
         .unwrap();
     let port = sock.local_addr().unwrap().port().to_string();
-    for req in [t.hook(None), t.agent(Harness::Codex, None)] {
+    let o = op(&["send-udp", &port]);
+    let mut b = [0u8; 4];
+    if namespaces_or_skip(test) {
         assert_eq!(
-            launched(&req, &op(&["send-udp", &port])),
-            Outcome::Ran(None)
+            launched_env(&t.hook(None), &o, &[]),
+            Outcome::Ran(Some(libc::ENETUNREACH))
         );
-        let mut b = [0u8; 4];
+    } else {
+        assert_eq!(launched_env(&t.hook(None), &o, &[]), Outcome::Ran(None));
         assert_eq!(sock.recv(&mut b).unwrap(), 1);
     }
+    assert_eq!(
+        launched_env(&t.agent(Harness::Codex, None), &o, &[]),
+        Outcome::Ran(None)
+    );
+    assert_eq!(sock.recv(&mut b).unwrap(), 1);
 }
 
 #[test]
@@ -431,6 +462,8 @@ fn git_works_under_the_session_configuration() {
             let req = serde_json::to_vec(&t.agent(Harness::Codex, None)).unwrap();
             let mut a = vec!["--policy-fd", "3", "--"];
             a.extend(&argv);
+            let mut env = env.clone();
+            env.push(NS_OFF);
             launch_raw(Some(&req), &a, &env)
         } else {
             Command::new(argv[0])

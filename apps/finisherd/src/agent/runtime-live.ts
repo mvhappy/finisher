@@ -6,6 +6,7 @@ import { Cause, Effect, Exit, Fiber, Option, Scope, Stream } from "effect";
 import type { BoundEvent, Capabilities, ProviderAdapter, ProviderSession, SessionSpec } from "./adapter.ts";
 import type { Reading, Reservation } from "./budget.ts";
 import type { OpenEnvironment } from "./runtime-deps.ts";
+import type { SessionSandbox } from "./sandbox.ts";
 
 export interface Call {
   readonly callId: string;
@@ -18,6 +19,10 @@ export interface Live {
   readonly instance: string;
   readonly caps: Capabilities;
   readonly env: OpenEnvironment;
+  /** A CLI harness's session sandbox, opened in `scope` (plan 7C Task 11). */
+  readonly sandbox: SessionSandbox | undefined;
+  /** The sandbox's notices are written (once per instance). */
+  noticed?: boolean;
   readonly scope: Scope.Closeable;
   pump: Fiber.Fiber<void, never> | null;
   /** Set once its scope is being closed. */
@@ -40,7 +45,9 @@ export interface Live {
 
 /**
  * Opens `adapter` for `spec` in a scope of its own and starts pumping its events to `onEvent`.
- * `onEnd` runs when the event stream ends by itself (the instance is gone).
+ * `onEnd` runs when the event stream ends by itself (the instance is gone). `sandbox` (a CLI
+ * harness's) is opened first in the same scope, so the instance's end kills its processes;
+ * the adapter gets it as `spec.sandbox` and its environment as `spec.env`.
  */
 export async function openLive(
   adapter: ProviderAdapter,
@@ -49,20 +56,30 @@ export async function openLive(
   caps: Capabilities,
   onEvent: (b: BoundEvent) => void,
   onEnd: (live: Live) => void,
+  sandbox?: Effect.Effect<SessionSandbox, FinError, Scope.Scope>,
 ): Promise<Live> {
   const scope = await Effect.runPromise(Scope.make());
-  const exit = await Effect.runPromiseExit(Scope.provide(scope)(adapter.open(spec)));
+  const exit = await Effect.runPromiseExit(
+    Scope.provide(scope)(
+      Effect.gen(function* () {
+        const box = sandbox === undefined ? undefined : yield* sandbox;
+        const provider = yield* adapter.open(box === undefined ? spec : { ...spec, env: box.env, sandbox: box });
+        return { provider, box };
+      }),
+    ),
+  );
   if (Exit.isFailure(exit)) {
     await Effect.runPromise(Scope.close(scope, Exit.void));
     throw failureOf(exit);
   }
-  const provider = exit.value;
+  const { provider, box } = exit.value;
   const live: Live = {
     sessionId: spec.sessionId,
     provider,
     instance: provider.instance,
     caps,
-    env,
+    env: box === undefined ? env : { ...env, env: box.env },
+    sandbox: box,
     scope,
     pump: null,
     closed: false,

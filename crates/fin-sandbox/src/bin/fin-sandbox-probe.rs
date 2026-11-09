@@ -6,33 +6,49 @@
 //! fin-sandbox-probe [--abi <n>] [--thread] (--policy <file> | --self <file> | --none) <op> <args…>
 //! ```
 //! - `--policy`: a `SandboxPolicy` (JSON) applied with Landlock at `--abi` (default: the
-//!   kernel's); `--self`: a `SelfSandbox` request (JSON) given to `fin_sandbox::self_apply`, as
-//!   `fin-workers` does; `--none`: no sandbox (controls).
+//!   kernel's; Linux) or with Seatbelt (macOS); `--self`: a `SelfSandbox` request (JSON) given
+//!   to `fin_sandbox::self_apply`, as `fin-workers` does; `--none`: no sandbox (controls).
 //! - `--thread`: a second thread exists before the sandbox is applied, and the attempt runs on
 //!   it (below ABI 8 the apply must refuse; from ABI 8 the thread must be restricted).
 //! - ops: `read <file>`, `list <dir>`, `write <file>`, `create <file>`, `truncate <file>`,
 //!   `unlink <file>`, `rmdir <dir>`, `mkdir <dir>`, `mkfifo <path>`, `link <from> <to>`,
 //!   `rename <from> <to>`, `symlink <target> <link>`, `exec <file>`, `connect-tcp <port>`,
-//!   `bind-tcp <port>`, `listen-tcp` (`listen` on an unbound socket), `bind-unix <path>`,
-//!   `connect-unix <path>`, `send-udp <port>` (one datagram to loopback), `signal-parent`.
+//!   `connect-ip <ipv4> <port>`, `bind-tcp <port>`, `listen-tcp` (`listen` on an unbound socket), `bind-unix <path>`,
+//!   `connect-unix <path>`, `send-udp <port>` (one datagram to loopback), `signal-parent`,
+//!   `open-tree <dir> <rel>` (a clone of the mounts at `dir`, then `connect` to `rel` in it),
+//!   `unshare-user` (a nested user namespace), `fork` (a child that exits at once); macOS only:
+//!   `mach-lookup <service>` (`bootstrap_look_up`; a refusal is reported as `EPERM`),
+//!   `shm-open <name>` (read-only), `sysctl <name>`, `system-socket` (`PF_SYSTEM`),
+//!   `signal-self`.
 //!
 //! Exit 0 when the attempt ran (whatever its result), 3 when the sandbox could not be applied
 //! (`{"apply": "<error>"}`), 2 for a usage error.
+//!
+//! On Windows the probe is `probe/windows.rs`: configuration and granted-path ops only.
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
 fn main() {
-    eprintln!(
-        "fin-sandbox-probe: Linux only (Task 2); macOS and Windows probes come with their tasks"
-    );
+    eprintln!("fin-sandbox-probe: Linux, macOS and Windows only");
     std::process::exit(2)
 }
 
-#[cfg(target_os = "linux")]
+/// Windows: a different probe (it runs inside the container the launcher made); see
+/// `probe/windows.rs`.
+#[cfg(windows)]
+#[path = "probe/windows.rs"]
+mod probe_windows;
+
+#[cfg(windows)]
+fn main() {
+    probe_windows::main()
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn main() {
     probe::main()
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 mod probe {
     use std::ffi::CString;
     use std::io;
@@ -40,8 +56,48 @@ mod probe {
     use std::path::Path;
 
     use fin_sandbox::SandboxPolicy;
-    use fin_sandbox::linux::apply::{restrict_self, restrict_self_at};
-    use fin_sandbox::linux::landlock::Abi;
+
+    /// A Landlock ABI (`--abi`, Linux).
+    #[cfg_attr(target_os = "macos", allow(dead_code))]
+    #[derive(Clone, Copy)]
+    struct Abi(u32);
+
+    /// The policy applied to this process (`--policy`).
+    #[cfg(target_os = "linux")]
+    fn apply(p: &SandboxPolicy, abi: Option<Abi>) -> Result<(), String> {
+        use fin_sandbox::linux::apply::{restrict_self, restrict_self_at};
+        use fin_sandbox::linux::landlock::Abi as LlAbi;
+        match abi {
+            Some(a) => restrict_self_at(p, LlAbi(a.0)).map(|_| ()),
+            None => restrict_self(p).map(|_| ()),
+        }
+        .map_err(|e| e.to_string())
+    }
+
+    #[cfg(target_os = "macos")]
+    fn apply(p: &SandboxPolicy, abi: Option<Abi>) -> Result<(), String> {
+        if abi.is_some() {
+            usage("--abi is Linux only");
+        }
+        fin_sandbox::macos::apply::restrict_self(p, None).map_err(|e| e.to_string())
+    }
+
+    /// `socket(2)` with close-on-exec.
+    fn socket(family: libc::c_int, kind: libc::c_int) -> libc::c_int {
+        // SAFETY: plain syscalls; the descriptor is ours.
+        unsafe {
+            #[cfg(target_os = "linux")]
+            return libc::socket(family, kind | libc::SOCK_CLOEXEC, 0);
+            #[cfg(target_os = "macos")]
+            {
+                let s = libc::socket(family, kind, 0);
+                if s >= 0 {
+                    libc::fcntl(s, libc::F_SETFD, libc::FD_CLOEXEC);
+                }
+                s
+            }
+        }
+    }
 
     fn usage(msg: &str) -> ! {
         eprintln!("fin-sandbox-probe: {msg}");
@@ -67,7 +123,7 @@ mod probe {
         while let Some(flag) = args.first().cloned() {
             match flag.as_str() {
                 "--abi" => {
-                    let n = args.get(1).and_then(|n| n.parse().ok());
+                    let n = args.get(1).and_then(|n| n.parse::<u32>().ok());
                     abi = Some(Abi(n.unwrap_or_else(|| usage("--abi needs a number"))));
                     args.drain(..2);
                 }
@@ -105,12 +161,7 @@ mod probe {
             })
         });
         let applied = match sandbox {
-            Sandbox::Policy(p) => match abi {
-                Some(a) => restrict_self_at(&p, a)
-                    .map(|_| ())
-                    .map_err(|e| e.to_string()),
-                None => restrict_self(&p).map(|_| ()).map_err(|e| e.to_string()),
-            },
+            Sandbox::Policy(p) => apply(&p, abi),
             Sandbox::SelfReq(r) => fin_sandbox::self_apply(&r).map(|_| ()),
             Sandbox::None => Ok(()),
         };
@@ -165,14 +216,18 @@ mod probe {
     }
 
     fn tcp(port: u16, bind: bool) -> Result<(), i32> {
+        tcp_at(std::net::Ipv4Addr::LOCALHOST, port, bind)
+    }
+
+    fn tcp_at(ip: std::net::Ipv4Addr, port: u16, bind: bool) -> Result<(), i32> {
         // SAFETY: a socket we own and a fully initialised address.
         unsafe {
-            let s = libc::socket(libc::AF_INET, libc::SOCK_STREAM | libc::SOCK_CLOEXEC, 0);
+            let s = socket(libc::AF_INET, libc::SOCK_STREAM);
             rc(s)?;
             let mut a: libc::sockaddr_in = std::mem::zeroed();
             a.sin_family = libc::AF_INET as libc::sa_family_t;
             a.sin_port = port.to_be();
-            a.sin_addr.s_addr = u32::from(std::net::Ipv4Addr::LOCALHOST).to_be();
+            a.sin_addr.s_addr = u32::from(ip).to_be();
             let len = std::mem::size_of::<libc::sockaddr_in>() as libc::socklen_t;
             let addr = (&raw const a).cast::<libc::sockaddr>();
             let r = if bind {
@@ -190,7 +245,7 @@ mod probe {
     fn listen_tcp() -> Result<(), i32> {
         // SAFETY: a socket we own.
         unsafe {
-            let s = libc::socket(libc::AF_INET, libc::SOCK_STREAM | libc::SOCK_CLOEXEC, 0);
+            let s = socket(libc::AF_INET, libc::SOCK_STREAM);
             rc(s)?;
             let out = rc(libc::listen(s, 1));
             libc::close(s);
@@ -202,7 +257,7 @@ mod probe {
     fn udp(port: u16) -> Result<(), i32> {
         // SAFETY: a socket we own, a fully initialised address and a one-byte buffer.
         unsafe {
-            let s = libc::socket(libc::AF_INET, libc::SOCK_DGRAM | libc::SOCK_CLOEXEC, 0);
+            let s = socket(libc::AF_INET, libc::SOCK_DGRAM);
             rc(s)?;
             let mut a: libc::sockaddr_in = std::mem::zeroed();
             a.sin_family = libc::AF_INET as libc::sa_family_t;
@@ -215,6 +270,27 @@ mod probe {
             libc::close(s);
             out
         }
+    }
+
+    #[cfg(target_os = "linux")]
+    /// `open_tree(<dir>, OPEN_TREE_CLONE)` (a copy of the mounts below `dir`, as they are
+    /// beneath any mount on top), then `connect` to `<rel>` inside the copy.
+    fn open_tree(dir: &str, rel: &str) -> Result<(), i32> {
+        let d = c(dir);
+        // SAFETY: a valid path; the descriptor is ours.
+        let fd = unsafe {
+            libc::syscall(
+                libc::SYS_open_tree,
+                libc::AT_FDCWD,
+                d.as_ptr(),
+                0x1 | libc::O_CLOEXEC as libc::c_long, // OPEN_TREE_CLONE | OPEN_TREE_CLOEXEC
+            )
+        };
+        rc(fd as i32)?;
+        let out = unix(&format!("/proc/self/fd/{fd}/{rel}"), false);
+        // SAFETY: our own descriptor.
+        unsafe { libc::close(fd as i32) };
+        out
     }
 
     /// `bind` (which creates the socket file) or `connect` on a pathname socket.
@@ -230,7 +306,7 @@ mod probe {
             for (d, b) in a.sun_path.iter_mut().zip(bytes) {
                 *d = *b as libc::c_char;
             }
-            let s = libc::socket(libc::AF_UNIX, libc::SOCK_STREAM | libc::SOCK_CLOEXEC, 0);
+            let s = socket(libc::AF_UNIX, libc::SOCK_STREAM);
             rc(s)?;
             let len = std::mem::size_of::<libc::sockaddr_un>() as libc::socklen_t;
             let addr = (&raw const a).cast::<libc::sockaddr>();
@@ -242,6 +318,47 @@ mod probe {
             let out = rc(r);
             libc::close(s);
             out
+        }
+    }
+
+    /// A child that exits at once, waited for.
+    fn fork() -> Result<(), i32> {
+        // SAFETY: the child only calls `_exit`.
+        unsafe {
+            let pid = libc::fork();
+            rc(pid)?;
+            if pid == 0 {
+                libc::_exit(0);
+            }
+            let mut st = 0;
+            libc::waitpid(pid, &mut st, 0);
+        }
+        Ok(())
+    }
+
+    #[cfg(target_os = "macos")]
+    unsafe extern "C" {
+        static bootstrap_port: libc::mach_port_t;
+        fn bootstrap_look_up(
+            bp: libc::mach_port_t,
+            name: *const libc::c_char,
+            sp: *mut libc::mach_port_t,
+        ) -> libc::c_int;
+    }
+
+    /// `bootstrap_look_up(<service>)`: `EPERM` when the sandbox refuses it (the bootstrap
+    /// server answers `BOOTSTRAP_NOT_PRIVILEGED`, 1100), `ENOENT` for any other failure
+    /// (`BOOTSTRAP_UNKNOWN_SERVICE`, 1102, above all).
+    #[cfg(target_os = "macos")]
+    fn mach_lookup(name: &str) -> Result<(), i32> {
+        let n = CString::new(name).unwrap_or_else(|_| usage("a NUL"));
+        let mut port: libc::mach_port_t = 0;
+        // SAFETY: a valid name and out pointer; `bootstrap_port` is set by libSystem.
+        let kr = unsafe { bootstrap_look_up(bootstrap_port, n.as_ptr(), &mut port) };
+        match kr {
+            0 => Ok(()),
+            1100 => Err(libc::EPERM),
+            _ => Err(libc::ENOENT),
         }
     }
 
@@ -275,11 +392,50 @@ mod probe {
                     rc(libc::execve(p.as_ptr(), argv.as_ptr(), envp.as_ptr()))
                 }
                 "connect-tcp" => tcp(port(1), false),
+                "connect-ip" => {
+                    let ip = a(1).parse().unwrap_or_else(|_| usage("an IPv4 address"));
+                    tcp_at(ip, port(2), false)
+                }
                 "bind-tcp" => tcp(port(1), true),
                 "listen-tcp" => listen_tcp(),
                 "bind-unix" => unix(a(1), true),
                 "connect-unix" => unix(a(1), false),
                 "send-udp" => udp(port(1)),
+                #[cfg(target_os = "linux")]
+                "open-tree" => open_tree(a(1), a(2)),
+                #[cfg(target_os = "linux")]
+                "unshare-user" => rc(libc::unshare(libc::CLONE_NEWUSER)),
+                "fork" => fork(),
+                #[cfg(target_os = "macos")]
+                "mach-lookup" => mach_lookup(a(1)),
+                #[cfg(target_os = "macos")]
+                "shm-open" => {
+                    let fd = libc::shm_open(c(a(1)).as_ptr(), libc::O_RDONLY);
+                    rc(fd).map(|()| {
+                        libc::close(fd);
+                    })
+                }
+                #[cfg(target_os = "macos")]
+                "sysctl" => {
+                    let mut v = [0u8; 64];
+                    let mut n = v.len();
+                    let name = c(a(1));
+                    rc(libc::sysctlbyname(
+                        name.as_ptr(),
+                        v.as_mut_ptr().cast(),
+                        &mut n,
+                        std::ptr::null_mut(),
+                        0,
+                    ))
+                }
+                #[cfg(target_os = "macos")]
+                "system-socket" => {
+                    let s = libc::socket(libc::PF_SYSTEM, libc::SOCK_DGRAM, libc::SYSPROTO_CONTROL);
+                    rc(s).map(|()| {
+                        libc::close(s);
+                    })
+                }
+                "signal-self" => rc(libc::kill(libc::getpid(), 0)),
                 "signal-parent" => rc(libc::kill(libc::getppid(), 0)),
                 _ => usage(&format!("unknown op {op:?}")),
             }

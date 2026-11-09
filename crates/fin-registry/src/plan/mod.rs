@@ -70,6 +70,11 @@ pub struct PlanRequest {
     /// is part of its digest. `finisherd` decides; the plan only says so.
     #[serde(default)]
     pub registry_changed: bool,
+    /// The `plugin` sandbox profile is enforced on this host (what the job host's spawner
+    /// reports as `caps().profiles.plugin`, plan 7C Task 7; fin-node sets it, never the
+    /// caller): a third-party code plan's `thirdPartyCode` warning says `confined: true`.
+    #[serde(default)]
+    pub plugin_confined: bool,
     /// Tests only (`fin-node`'s `test-hooks` builds set it): mark the plan agent-facing, since
     /// no agent-facing kind is consumable in 8A and the update rule must still be tested
     /// (8A Decision 23).
@@ -198,10 +203,10 @@ fn build(
     };
     let mut warnings = Vec::new();
     if third_party_code {
-        // No `plugin` sandbox profile exists before 7C (spec §3.1).
+        // Whether the `plugin` profile confines it on this host (plan 7C Task 7; spec §3.1).
         warnings.push(PlanWarning::new(
             "thirdPartyCode",
-            json!({ "confined": false }),
+            json!({ "confined": req.plugin_confined }),
         ));
     }
     if req.registry_changed {

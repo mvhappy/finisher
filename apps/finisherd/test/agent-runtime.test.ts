@@ -412,7 +412,7 @@ describe("agent runtime", () => {
     expect(kinds(b.session.id)).toEqual(["userMessage", "error"]);
   });
 
-  test("a provider request is declined by policy until 7B", async () => {
+  test("a runtime without provider permissions declines a provider request by policy (7A's answer)", async () => {
     const adapter = FakeAdapter([fixture("approval")]);
     const h = harness(adapter);
     await h.runtime.boot();

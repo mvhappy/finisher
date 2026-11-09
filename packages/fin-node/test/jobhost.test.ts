@@ -155,7 +155,8 @@ describe("JobHost", () => {
   test("starts_and_reports_caps", async () => {
     const t = await start({ cgroups: "auto" });
     const caps = t.host.caps();
-    expect(caps).toMatchObject({ sandbox: "none", sandboxed: false });
+    // Plan 7C Task 7: the sandbox spawner, applying nothing until a profile is ready on this OS.
+    expect(caps).toMatchObject({ sandbox: "fin-sandbox", sandboxed: false, profiles: { worker: "disabled", plugin: "disabled" }, perJobGrants: false });
     if (win) expect(caps).toMatchObject({ killTree: "jobObject", leafLimits: true, cgroupMemory: true, watchdog: false });
     else expect(caps.watchdog).toBe(true);
     if (process.platform === "darwin") expect(caps.killTree).toBe("processGroup");

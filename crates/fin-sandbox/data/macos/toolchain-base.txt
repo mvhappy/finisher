@@ -1,20 +1,31 @@
 # The base toolchain read list for macOS (spec §8.1 item 1; plan 7C Decision 6).
-# Source: PLACEHOLDER from the spec's categories (the shell, coreutils, git, fin, system
-# libraries and frameworks, certificates, fonts, locale data). Spike S9 step B6 (plan 7C
-# Task 0) replaces it with the list measured on macOS 14+; Task 8 re-validates it.
+# Source: spike S9 step B6 (plan 7C Task 0), verified for the `agent` shape on macOS 27.0.1
+# (Apple silicon). Each entry is resolved when the policy is built (`/etc` is
+# `/private/etc`); a missing entry is dropped. `/usr/bin` holds the developer shims (`git`):
+# with an empty `xcrun` cache they run `xcodebuild`, which the sandbox refuses, so the agent's
+# PATH puts the real developer directory (`xcode-select -p`) first (7D/7E). `/usr` is listed
+# by directory so `/usr/local/var` and `/usr/local/etc` (Intel Homebrew's data and
+# configuration) stay out, as `/opt/homebrew/{var,etc}` do.
 /bin
+/sbin
 /usr/bin
+/usr/sbin
 /usr/lib
 /usr/libexec
 /usr/share
-/System/Library
+/usr/standalone
+/usr/local/bin
+/usr/local/lib
+/usr/local/opt
+/usr/local/Cellar
+/System
+/Library/Apple
 /Library/Developer/CommandLineTools
-/Library/Fonts
-/private/etc/ssl
-/private/etc/localtime
-/private/etc/hosts
-/private/etc/resolv.conf
+/Library/Preferences/Logging
+/private/etc
 /private/var/db/timezone
+/private/var/db/dyld
+/private/var/select/sh
 /opt/homebrew/bin
 /opt/homebrew/lib
 /opt/homebrew/opt

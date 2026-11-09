@@ -102,6 +102,31 @@ describe("9a review", () => {
     ]);
   });
 
+  // Plan 7C Task 7: what a kind reads outside the job directory (from its persisted `extra`)
+  // becomes a `read` grant, which the sandbox spawner places as the worker's sources.
+  test("a_kinds_reads_become_read_grants", async () => {
+    const reqs: JobSpawnRequest[] = [];
+    const seen: unknown[] = [];
+    const t = await testEngine({
+      jobHost: recordingHost(reqs),
+      testKinds: {
+        overrides: {
+          "test.echo": {
+            prepare: () => Effect.succeed({ extra: { reads: ["/srv/media/clip.mp4"] } }),
+            reads: (extra: unknown) => {
+              seen.push(extra);
+              return (extra as { reads: string[] }).reads;
+            },
+          },
+        },
+      },
+    });
+    const v = await t.runJob("test.echo", { value: 1 });
+    expect(v.state).toBe("succeeded");
+    expect(seen).toEqual([{ reads: ["/srv/media/clip.mp4"] }]);
+    expect(reqs[0]?.grants?.at(-1)).toEqual({ path: "/srv/media/clip.mp4", mode: "read" });
+  });
+
   // H2: a terminal row whose job.done did not go out (death between the UPDATE and the sink) is announced at the next start, once.
   test("an_unannounced_end_is_announced_at_the_next_start", async () => {
     const serverData = tmp();

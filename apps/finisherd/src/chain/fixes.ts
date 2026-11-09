@@ -104,6 +104,19 @@ export function approvalRequired(tag: string, approvalId: string, reason: string
 }
 
 /**
+ * `APPROVAL_PENDING {approval}` (exit 8, sub-project 7 §7.3): a person has been asked on a
+ * durable card; the request is not denied. `reused`: an identical open card answered.
+ */
+export function approvalPending(tag: string, approval: { readonly id: string; readonly expiresAt: number }, command: string, reused: boolean): FinError {
+  return finError(
+    "APPROVAL_PENDING",
+    `${command} waits for a person to answer approval ${approval.id}`,
+    { tag, approval: approval.id, command, expiresAt: approval.expiresAt, reused },
+    "A person has been asked to approve this; it is not denied. Wait for their answer, then repeat the same request.",
+  );
+}
+
+/**
  * `CONSENT_UI_ONLY` (exit 2; arch §21.1, D14b): turning training on is the app's onboarding
  * question, answered by a person; every principal but a `device` is refused, the console too.
  * The fix names the ways in, in words.

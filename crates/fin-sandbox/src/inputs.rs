@@ -74,6 +74,10 @@ pub struct HookInput {
     /// it the hook has no network and no credential.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fin: Option<HookFin>,
+    /// The hook's time limit (`Limits.wall_ms`): the launcher ends the whole tree when it passes
+    /// (on Windows also the backstop for a Node process stuck on piped stdio, Decision 25).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

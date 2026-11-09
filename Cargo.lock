@@ -1071,6 +1071,7 @@ dependencies = [
  "fin",
  "fin-core",
  "fin-probe",
+ "fin-sandbox",
  "fin-store",
  "fin-testfonts",
  "getrandom 0.3.4",
@@ -1377,6 +1378,7 @@ name = "fin-sandbox"
 version = "0.0.0"
 dependencies = [
  "fin-core",
+ "fin-jobhost",
  "fin-jobs",
  "fin-sandbox",
  "landlock",
@@ -1385,8 +1387,10 @@ dependencies = [
  "schemars",
  "serde",
  "serde_json",
+ "sha2 0.11.1",
  "tempfile",
  "thiserror 2.0.21",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

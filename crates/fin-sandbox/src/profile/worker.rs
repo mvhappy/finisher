@@ -1,8 +1,9 @@
 //! The `worker` profile (spec §8.10, sp6 §3.5; plan 7C Decisions 8 and 19).
 //!
 //! Cold: the manifest's sources, the caches and the job's `in/` read-only; the job's `out/` and
-//! a private temp writable. Warm: the worker's own directory (its jobs are created under it),
-//! never the jobs root, and one project's sources and library roots. No network, one process
+//! a private temp writable. Warm: the `jobs/` of the worker's own directory (each job it serves
+//! visits it), never the directory itself (its `tmp/` and `jobs/` could otherwise be replaced by
+//! links `finisherd` then follows) nor the jobs root, and one project's sources and library roots. No network, one process
 //! (creation denied by the OS layers), no pathname socket. GPU rows come from sub-project 6.
 
 use std::path::PathBuf;
@@ -10,9 +11,13 @@ use std::path::PathBuf;
 use super::{finish, inside, not_under, path, paths};
 use crate::error::PolicyError;
 use crate::inputs::{WorkerInput, WorkerScope};
-use crate::policy::{Limits, Net, Profile, ReadPolicy, SandboxPolicy, under};
+use crate::policy::{Limits, Net, Os, Profile, ReadPolicy, SandboxPolicy, under};
 
 pub fn worker(i: &WorkerInput) -> Result<SandboxPolicy, PolicyError> {
+    worker_on(Os::current(), i)
+}
+
+pub fn worker_on(os: Os, i: &WorkerInput) -> Result<SandboxPolicy, PolicyError> {
     path("tmp", &i.tmp)?;
     path("serverData", &i.server_data)?;
     paths("caches", &i.caches)?;
@@ -42,7 +47,7 @@ pub fn worker(i: &WorkerInput) -> Result<SandboxPolicy, PolicyError> {
             inside("scope.workerDir", worker_dir, &jobs)?;
             not_under("scope.libraryRoots", library_roots, &deny)?;
             read.extend(library_roots.iter().cloned());
-            write.push(worker_dir.clone());
+            write.push(worker_dir.join("jobs"));
         }
     }
 
@@ -54,7 +59,8 @@ pub fn worker(i: &WorkerInput) -> Result<SandboxPolicy, PolicyError> {
         deny_read: deny,
         unix_sockets: vec![],
         net: Net::None,
-        mach: vec![],
+        // macOS: VideoToolbox and Metal (spike S9 B6); empty elsewhere.
+        mach: crate::data::mach(os, Profile::Worker),
         devices: i.devices.clone(),
         limits: Limits {
             processes: Some(1),

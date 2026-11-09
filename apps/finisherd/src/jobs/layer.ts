@@ -1,6 +1,7 @@
 // The job engine as a layer (5C-1 plan Task 9a): `<server-data>/jobs/` made private, fin-node's
 // job host started, the store and the registry (the test kinds with `testKinds`), the engine
 // built and started; released by `engine.close()`, before the control store closes.
+import { realpathSync } from "node:fs";
 import { availableParallelism, totalmem } from "node:os";
 import type { JobHostOptions } from "@finisher/core-types";
 import { testHooks, workersBinaryPath } from "@finisher/fin-node";
@@ -85,12 +86,17 @@ export const buildJobEngine = (serverData: string, opts: JobEngineOptions = {}):
       const register = opts.register;
       yield* Effect.try({ try: () => register(registry), catch: startFailure });
     }
-    const root = yield* Effect.try({ try: () => ensureJobsRoot(serverData), catch: startFailure });
+    // Links resolved once, for the jobs root (and so every job directory, `cwd` and grant) and
+    // the sandbox spawner alike: the profiles' paths must be canonical (plan 7C Task 7).
+    const realData = yield* Effect.try({ try: () => realpathSync(serverData), catch: startFailure });
+    const root = yield* Effect.try({ try: () => ensureJobsRoot(realData), catch: startFailure });
     const host = yield* Effect.tryPromise({
       try: () =>
         EngineHost.start(
           {
             binaryDir,
+            // The sandbox spawner places each process's grants against it (plan 7C Task 7).
+            serverData: realData,
             ...(opts.timing === undefined ? {} : { timing: opts.timing }),
             ...(opts.cgroups === undefined ? {} : { cgroups: opts.cgroups }),
             ...(opts.watchdog === undefined ? {} : { watchdog: opts.watchdog }),
@@ -105,8 +111,8 @@ export const buildJobEngine = (serverData: string, opts: JobEngineOptions = {}):
     const caps = host.caps();
     if (!caps.sandboxed) {
       const worker = currentSandboxStatus().worker;
-      const why = worker.kind === "disabled" ? worker.reason : worker.kind === "unavailable" ? `needs ${worker.need}` : "profile enforced, spawner does not apply it";
-      log("warning", `job engine: workers run unsandboxed (spawner ${caps.sandbox}; worker profile: ${why}); kill tree ${caps.killTree}`);
+      const why = worker.kind === "disabled" ? worker.reason : worker.kind === "unavailable" ? `needs ${worker.need}` : "enforced";
+      log("warning", `job engine: not every process is sandboxed (spawner ${caps.sandbox}: worker ${caps.profiles.worker}, plugin ${caps.profiles.plugin}; worker profile status: ${why}); kill tree ${caps.killTree}`);
     }
     return yield* Effect.tryPromise({
       try: () =>

@@ -72,8 +72,13 @@ export interface PipeServerOptions {
   readonly maxConnections?: number;
   /** A client the listener disconnected before reading from it (for the audit log). */
   readonly onRefused?: (refusal: Extract<PipeEvent, { type: "refused" }>) => void;
+  /**
+   * Called once the listener exists with its `allow` (plan 7C Task 10: each project's
+   * container SID is allowed when its agents or hooks get one; throws `INVALID_SID`).
+   */
+  readonly onAllow?: (allow: (sid: string) => void) => void;
   /** Makes the listener (default: fin-node's `PipeServer`); tests drive a fake through it. */
-  readonly native?: (name: string, options: ConstructorParameters<typeof PipeServer>[1]) => NativePipe;
+  readonly native?: (name: string, options: ConstructorParameters<typeof PipeServer>[1]) => NativePipe & Partial<Pick<PipeServer, "allow">>;
 }
 
 /** `PIPE_SQUATTED` (exit 1) with a fix in words, or the start failure the error is. */
@@ -105,6 +110,10 @@ export const makePipeSocketServer = (name: string, options: PipeServerOptions = 
       }),
       (server) => Effect.sync(() => server.shutdown()),
     );
+    options.onAllow?.((sid) => {
+      if (native.allow === undefined) throw new Error("this pipe listener cannot allow a SID");
+      native.allow(sid);
+    });
     type Accepted = Extract<PipeEvent, { type: "connection" }>;
     const pending: Accepted[] = [];
     let onConnection = (a: Accepted) => void pending.push(a);

@@ -142,6 +142,7 @@ const VALIDATION_CODES: &[&str] = &[
     // above the role's ceiling; a bad `apply` list entry; an attachment too large or of a type
     // the model cannot take; the model catalogue or `agents.models` broken (`details`).
     "ROLE_UNKNOWN",
+    "ROLE_INVALID",
     "MODE_INVALID",
     "MODEL_UNKNOWN",
     "SAVED_PROMPT_UNKNOWN",
@@ -306,8 +307,7 @@ const VALIDATION_CODES: &[&str] = &[
 /// `SEGMENT_COLLISION`: the project folder holds another file under the name this server's
 /// export needs (the folder changed under it); the export retries under another name.
 /// `PROJECT_READ_ONLY`: the project cannot take edits now (`details.reason`: `CHAIN_FORK`,
-/// `CONFLICT_COPY`, `NEWER_FORMAT`, `IMPORT_ERROR`, `LEASE_LOST`, `LEASE_HELD`,
-/// `CATCHING_UP`).
+/// `CONFLICT_COPY`, `NEWER_FORMAT`, `IMPORT_ERROR`, `LEASE_LOST`, `LEASE_HELD`, `CATCHING_UP`).
 /// `LEASE_TAKEOVER_REFUSED`: `fin project takeover` found a live holder, a sync folder without
 /// `--confirm`, or a holder not yet confirmed stopped (`details.reason`).
 /// `LEASE_LOST`: this server's lease failed its fencing check (writes surface it as
@@ -328,9 +328,8 @@ const CONFLICT_CODES: &[&str] = &[
     "TX_SET_ASIDE",
     // A registry with this id exists (8A Task 9a).
     "REGISTRY_EXISTS",
-    // The server holds as many live agent and MCP credentials as it keeps (5A Task 9; review
-    // of Tasks 8–9, L4): the server's state refuses it, not the caller (only the owner mints),
-    // and waiting changes nothing: revoke some, then mint again. A conflict, not exit 5.
+    // The server holds all the live agent and MCP credentials it keeps (5A Task 9, L4): a
+    // conflict of the server's state, not exit 5; revoke some, then mint again.
     "CREDENTIAL_LIMIT",
     // Libraries (5D): a file whose data is not on this machine (a placeholder; `hydrate` is
     // the owner's call) and one that differs from its catalogued row (rescan, then retry).
@@ -349,6 +348,8 @@ const CONFLICT_CODES: &[&str] = &[
     // the session's workspace holds its 256 MiB (7A-2 Task 8b): remove files first.
     "AUTO_MERGE_UNAVAILABLE",
     "WORKSPACE_FULL",
+    // 7B Task 4: 16 approvals wait in a session, or 256 in the server; wait, then ask again.
+    "APPROVAL_LIMIT",
     // Devices (5B Decision 33): an offer someone already redeemed; 64 live devices (revoke some).
     "PAIRING_USED",
     "DEVICE_LIMIT",
@@ -502,6 +503,8 @@ const UNAVAILABLE_CODES: &[&str] = &[
     // replies (`server.status`, a session's start), never the error a command exits with.
     "SANDBOX_DISABLED",
     "PLUGINS_UNCONFINED",
+    // The launcher cannot hide Unix sockets on this host (plan 7C Decision 26): a warning too.
+    "SANDBOX_SOCKETS_EXPOSED",
     "TOOL_TIMEOUT",
     "HOOK_TIMEOUT",
     "SECRET_STORE_BUSY",

@@ -204,6 +204,8 @@ export function registerLibraryKinds(registry: KindRegistry, deps: LibraryKindsD
     { name: DIRS_FILE, mode: "read" },
   ];
   const scan: KindSpec<LibraryScanParams> = {
+    // The library root, read under the worker profile (plan 7C Task 7; params carry it canonical).
+    reads: (_extra, p) => [p.root],
     kind: "library.scan",
     version: 1,
     family: LIBRARY_FAMILY,
@@ -248,6 +250,8 @@ export function registerLibraryKinds(registry: KindRegistry, deps: LibraryKindsD
     });
 
   const probe: KindSpec<LibraryProbeParams> = {
+    // The library root, read under the worker profile (plan 7C Task 7; params carry it canonical).
+    reads: (_extra, p) => [p.root],
     kind: "library.probe",
     version: 1,
     family: LIBRARY_FAMILY,
@@ -284,6 +288,8 @@ export function registerLibraryKinds(registry: KindRegistry, deps: LibraryKindsD
   };
 
   const hash: KindSpec<LibraryHashParams> = {
+    // The library root, read under the worker profile (plan 7C Task 7; params carry it canonical).
+    reads: (_extra, p) => [p.root],
     kind: "library.hash",
     version: 1,
     family: LIBRARY_FAMILY,

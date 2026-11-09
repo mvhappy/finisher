@@ -151,6 +151,26 @@ describe("agent sessions from the console", () => {
     expect((await until(local, session.id, "idle")).status).toBe("idle");
   });
 
+  test("a rule approval is answered with --remember, which adds a rule (7B Task 5)", async () => {
+    const local = await server.local();
+    const p = await project(local);
+    const started = await run(["agent", "start", "--project", p.id, "--harness", "fake", "--prompt", "one", "--json"]);
+    const { session } = JSON.parse(started.out) as { session: Session };
+    await until(local, session.id, "idle");
+    server.core.store.startRun(session.id, { trigger: "prompt" });
+    const subject = { command: "checkpoint", rpc: "history.checkpoint", args: {}, branches: [], rule: "r1", layer: "local", text: "checkpoint {}" };
+    const { approval } = server.core.store.openApproval({ sessionId: session.id, kind: "rule", subject, argsHash: "hmac-sha256:00", expiresAt: server.time.now() + 60_000 });
+    expect((await run(["agent", "approve", approval.id, "deny", "--remember", "forever"], person())).code).toBe(2);
+    const owner = person();
+    const r = await run(["agent", "approve", approval.id, "deny", "--remember", "session"], owner);
+    expect(r.code, r.err).toBe(0);
+    expect(owner.shown[0]).toContain("It also adds a rule: deny checkpoint for this session.");
+    expect(r.out).toContain("(deny)");
+    const rule = /Rule (\S+) added \(local layer\)/.exec(r.out)?.[1];
+    expect(rule, r.out).toBeDefined();
+    expect(server.agents.ruleStore.get(rule!)).toMatchObject({ effect: "deny", command: "checkpoint", sessionId: session.id, source: `approval:${approval.id}` });
+  });
+
   test("agent providers", async () => {
     const r = await run(["agent", "providers"]);
     expect(r.code, r.err).toBe(0);

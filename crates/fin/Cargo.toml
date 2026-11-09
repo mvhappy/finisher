@@ -60,3 +60,7 @@ fin = { path = ".", features = ["test-hooks"] }
 fin-probe = { path = "../fin-probe", features = ["fixtures"] }
 fin-testfonts = { path = "../fin-testfonts" }
 tempfile = "3"
+
+# The agent listener's sandboxed case (plan 7C Task 6): the launcher's request type and data.
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+fin-sandbox = { path = "../fin-sandbox" }

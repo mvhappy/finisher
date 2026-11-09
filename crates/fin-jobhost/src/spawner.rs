@@ -1,7 +1,7 @@
 //! The `Spawner` hook (spec §6.2, Decision 9), frozen for sub-project 7: every process is
 //! described by a [`SpawnRequest`], turned into a [`PlatformCommand`] by the host, and handed
 //! to [`Spawner::prepare`], which may rewrite it (a wrapper program, extra environment,
-//! child-side steps on Linux, attributes and a token on Windows, leaf `job_limits`, a
+//! child-side steps on Linux, attributes, a token and a desktop on Windows, leaf `job_limits`, a
 //! self-sandbox request). The default is [`Unsandboxed`].
 
 use std::ffi::OsString;
@@ -116,6 +116,15 @@ pub struct PlatformCommand {
     pub attributes: Vec<WinAttribute>,
     #[cfg(windows)]
     pub token: Option<std::os::windows::io::OwnedHandle>,
+    /// `STARTUPINFO.lpDesktop` (`<window station>\<desktop>`): a sandbox's private desktop,
+    /// which the spawner keeps alive. `None`: the host's own.
+    #[cfg(windows)]
+    pub desktop: Option<OsString>,
+    /// The process's own DACL as SDDL (`D:P(...)`, [`crate::process_dacl::sddl`]): given to
+    /// the process and its first thread at creation, and made its token's default DACL before
+    /// it runs. `None`: the token's default.
+    #[cfg(windows)]
+    pub dacl: Option<String>,
 }
 
 impl fmt::Debug for PlatformCommand {
@@ -143,11 +152,48 @@ impl fmt::Display for SpawnError {
 
 impl std::error::Error for SpawnError {}
 
+/// What a spawner does for one profile on this host (plan 7C Decision 4).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProfileState {
+    /// Every process of the profile is confined.
+    Enforced,
+    /// Processes run unconfined, with the warnings their sub-project shows (the profile is not
+    /// ready on this OS, or the mechanism is off: F2).
+    Disabled,
+    /// The profile is ready but the host lacks the mechanism: its spawns are refused.
+    Unavailable,
+}
+
+/// [`ProfileState`] per profile.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ProfileCaps {
+    pub worker: ProfileState,
+    pub plugin: ProfileState,
+}
+
+impl ProfileCaps {
+    pub const DISABLED: ProfileCaps = ProfileCaps {
+        worker: ProfileState::Disabled,
+        plugin: ProfileState::Disabled,
+    };
+}
+
 /// The spawn hook. `prepare` runs on the host's spawn thread for every process.
 pub trait Spawner: Send + Sync {
     fn name(&self) -> &'static str;
+    /// True only when every profile is enforced.
     fn sandboxed(&self) -> bool;
     fn prepare(&self, req: &SpawnRequest, cmd: &mut PlatformCommand) -> Result<(), SpawnError>;
+    /// What each profile gets (`caps().profiles`).
+    fn profiles(&self) -> ProfileCaps {
+        ProfileCaps::DISABLED
+    }
+    /// A warm worker of the `worker` profile is confined to its own directory, where each job
+    /// it serves visits, and its project's read roots (plan 7C Task 12, Decision 19). Plugin
+    /// warm workers are not covered: they run cold under an applied `plugin` profile.
+    fn per_job_grants(&self) -> bool {
+        false
+    }
 }
 
 /// No sandbox: name `none`, `sandboxed` false, `prepare` does nothing.
@@ -207,6 +253,10 @@ pub(crate) fn command(binary_dir: &Path, req: &SpawnRequest) -> Result<PlatformC
         attributes: Vec::new(),
         #[cfg(windows)]
         token: None,
+        #[cfg(windows)]
+        desktop: None,
+        #[cfg(windows)]
+        dacl: None,
     })
 }
 

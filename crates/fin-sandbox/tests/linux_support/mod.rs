@@ -131,36 +131,69 @@ pub fn launch_cmd(
     args: &[&str],
     env: &[(&str, &str)],
 ) -> (Command, Option<std::os::fd::OwnedFd>) {
+    let mut cmd = Command::new(LAUNCHER);
+    cmd.args(args).env_clear().envs(env.iter().copied());
+    let keep = request.map(|bytes| give_request(&mut cmd, bytes));
+    (cmd, keep)
+}
+
+/// Makes `cmd`'s process inherit a pipe holding `bytes` as descriptor 3; the returned read
+/// end must stay open until the spawn.
+pub fn give_request(cmd: &mut Command, bytes: &[u8]) -> std::os::fd::OwnedFd {
     use std::io::Write;
     use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
     use std::os::unix::process::CommandExt;
 
-    let mut cmd = Command::new(LAUNCHER);
-    cmd.args(args).env_clear().envs(env.iter().copied());
-    let mut keep = None;
-    if let Some(bytes) = request {
-        let mut fds = [0; 2];
-        // SAFETY: a valid array for the two new descriptors.
-        assert_eq!(unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC) }, 0);
-        // SAFETY: both descriptors are fresh and owned here.
-        let (r, w) = unsafe { (OwnedFd::from_raw_fd(fds[0]), OwnedFd::from_raw_fd(fds[1])) };
-        assert!(bytes.len() < 60_000, "the pipe holds the whole request");
-        std::fs::File::from(w).write_all(bytes).unwrap();
-        let raw = r.as_raw_fd();
-        // SAFETY: only async-signal-safe calls in the child; `r` lives until the spawn.
-        unsafe {
-            cmd.pre_exec(move || {
-                if raw == 3 {
-                    libc::fcntl(3, libc::F_SETFD, 0);
-                } else if libc::dup2(raw, 3) < 0 {
-                    return Err(std::io::Error::last_os_error());
-                }
-                Ok(())
-            });
-        }
-        keep = Some(r);
+    let mut fds = [0; 2];
+    // SAFETY: a valid array for the two new descriptors.
+    assert_eq!(unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC) }, 0);
+    // SAFETY: both descriptors are fresh and owned here.
+    let (r, w) = unsafe { (OwnedFd::from_raw_fd(fds[0]), OwnedFd::from_raw_fd(fds[1])) };
+    assert!(bytes.len() < 60_000, "the pipe holds the whole request");
+    std::fs::File::from(w).write_all(bytes).unwrap();
+    let raw = r.as_raw_fd();
+    // SAFETY: only async-signal-safe calls in the child; `r` lives until the spawn.
+    unsafe {
+        cmd.pre_exec(move || {
+            if raw == 3 {
+                libc::fcntl(3, libc::F_SETFD, 0);
+            } else if libc::dup2(raw, 3) < 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
     }
-    (cmd, keep)
+    r
+}
+
+/// An agent request for a project and server data under `t`, with the base toolchain.
+pub fn agent(t: &Path) -> fin_sandbox::launch::LaunchRequest {
+    let project = t.join("p");
+    let data = t.join("data");
+    for d in [
+        "p/workspace/s1",
+        "data/agents/s1/tmp",
+        "data/agents/s1/provider",
+    ] {
+        std::fs::create_dir_all(t.join(d)).unwrap();
+    }
+    write(&t.join("data/auth/local.key"), "k");
+    use fin_core::events::payloads::agent::{AgentMode, Harness};
+    fin_sandbox::launch::LaunchRequest::Agent(fin_sandbox::AgentInput {
+        session_id: "s1".into(),
+        mode: AgentMode::Draft,
+        harness: Harness::Codex,
+        workspace_dir: project.join("workspace").join("s1"),
+        shared_dir: None,
+        project_dir: project,
+        library_roots: vec![],
+        session_dir: data.join("agents").join("s1"),
+        sign_in_store: None,
+        toolchains: fin_sandbox::data::toolchain_base_resolved(fin_sandbox::Os::Linux),
+        server_data: data,
+        home: t.join("home"),
+        fin: None,
+    })
 }
 
 /// The launcher's stderr line, parsed.
@@ -172,11 +205,16 @@ pub fn failure(out: &std::process::Output) -> serde_json::Value {
 /// Makes `cmd`'s process inherit `file` as descriptor 4, without close-on-exec (as a careless
 /// parent would leak one). The returned descriptor must stay open until the spawn.
 pub fn inherit_fd4(cmd: &mut Command, file: std::fs::File) -> std::os::fd::OwnedFd {
+    use std::os::fd::FromRawFd;
     use std::os::fd::{AsRawFd, OwnedFd};
     use std::os::unix::process::CommandExt;
-    let fd = OwnedFd::from(file);
-    let raw = fd.as_raw_fd();
-    assert_ne!(raw, 3, "descriptor 3 is the request's");
+    // Above 4, so neither the request's dup onto 3 nor this one onto 4 overwrites the other.
+    // SAFETY: `F_DUPFD_CLOEXEC` makes a new descriptor owned below.
+    let raw = unsafe { libc::fcntl(file.as_raw_fd(), libc::F_DUPFD_CLOEXEC, 10) };
+    assert!(raw >= 10, "{}", std::io::Error::last_os_error());
+    // SAFETY: a fresh descriptor nobody else owns.
+    let fd = unsafe { OwnedFd::from_raw_fd(raw) };
+    drop(file);
     // SAFETY: only async-signal-safe calls in the child; `fd` lives until the spawn.
     unsafe {
         cmd.pre_exec(move || {
@@ -189,4 +227,34 @@ pub fn inherit_fd4(cmd: &mut Command, file: std::fs::File) -> std::os::fd::Owned
         });
     }
     fd
+}
+
+/// The launcher's `--probe` answer: can it hide Unix sockets in a namespace here (Decision 26)?
+pub fn launcher_namespaces(env: &[(&str, &str)]) -> fin_sandbox::Namespaces {
+    let out = Command::new(LAUNCHER)
+        .arg("--probe")
+        .env_clear()
+        .envs(env.iter().copied())
+        .output()
+        .expect("run fin-sandbox-exec --probe");
+    assert!(out.status.success(), "--probe: {out:?}");
+    let p: fin_sandbox::LauncherProbe = serde_json::from_slice(&out.stdout).expect("probe JSON");
+    p.namespaces
+}
+
+/// Whether the launcher makes its namespace here, with a printed reason when it cannot.
+/// `FIN_REQUIRE_NAMESPACES=1` turns "cannot" into a failure (the privileged-container run).
+pub fn namespaces_or_skip(test: &str) -> bool {
+    match launcher_namespaces(&[]) {
+        fin_sandbox::Namespaces::Available => true,
+        other => {
+            assert_ne!(
+                std::env::var("FIN_REQUIRE_NAMESPACES").as_deref(),
+                Ok("1"),
+                "{test}: FIN_REQUIRE_NAMESPACES=1 but the launcher answers {other:?}"
+            );
+            eprintln!("{test}: no socket namespace on this host ({other:?})");
+            false
+        }
+    }
 }

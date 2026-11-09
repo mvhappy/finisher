@@ -169,8 +169,8 @@ describe("jobs RPCs", () => {
 });
 
 describe("server.status", () => {
-  const caps = { killTree: "processGroup", watchdog: true, cgroupMemory: false, leafLimits: false, sandbox: "none", sandboxed: false } as const;
-  const deps = (c: typeof caps | (Omit<typeof caps, "sandboxed" | "sandbox"> & { sandboxed: true; sandbox: string })) => ({
+  const caps = { killTree: "processGroup", watchdog: true, cgroupMemory: false, leafLimits: false, sandbox: "none", sandboxed: false, profiles: { worker: "disabled", plugin: "disabled" }, perJobGrants: false } as const;
+  const deps = (c: typeof caps | (Omit<typeof caps, "sandboxed" | "sandbox" | "profiles"> & { sandboxed: true; sandbox: string; profiles: { worker: "enforced"; plugin: "enforced" } })) => ({
     control: { envId: "env", listeners: () => [], stop: () => {} },
     audit: { failures: () => 0 } as unknown as Audit,
     connections: { count: () => ({}) } as never,
@@ -188,7 +188,7 @@ describe("server.status", () => {
     // A spawner that confines and an enforced worker profile: no worker warning.
     const enforced = { kind: "enforced", detail: "test" } as const;
     const boxed = await Effect.runPromise(
-      serverStatus({ ...deps({ ...caps, sandboxed: true, sandbox: "fin-sandbox" }), sandbox: () => ({ ...status, worker: enforced }) }),
+      serverStatus({ ...deps({ ...caps, sandboxed: true, sandbox: "fin-sandbox", profiles: { worker: "enforced", plugin: "enforced" } }), sandbox: () => ({ ...status, worker: enforced }) }),
     );
     expect(boxed.warnings).toEqual([...sandboxWarnings(status, ["plugin", "hook"]), ...agentWarnings(status)]);
   });

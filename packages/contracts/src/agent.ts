@@ -6,6 +6,7 @@
 import { Schema } from "effect";
 import { BudgetSpec, ContentBlock, Harness, Mode, NodeKind, SessionStatus } from "./agent-events.ts";
 import { ChallengeField, PrincipalKind } from "./auth.ts";
+import { ListedRule, ProjectRulesStatus } from "./rules.ts";
 
 const Count = Schema.Number.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(0));
 const Id = Schema.String;
@@ -139,8 +140,12 @@ export type ApprovalDecision = typeof ApprovalDecision.Type;
 export const ApprovalStatus = Schema.Literals(["open", "answered", "expired"]);
 export type ApprovalStatus = typeof ApprovalStatus.Type;
 
-/** What an answer may add to a rule: for the session, or for the project (spec §7.3). */
-export const RememberScope = Schema.Literals(["session", "project"]);
+/**
+ * What an answer may add as a rule (spec §7.3; plan 7B Decision 12): `session` (the user's
+ * `local` layer, for this session), `projectLocal` (the `local` layer, for the project; never
+ * travels) or `project` (the shared `finisher.rules.json`, which travels with the project).
+ */
+export const RememberScope = Schema.Literals(["session", "project", "projectLocal"]);
 export type RememberScope = typeof RememberScope.Type;
 
 /** An `ask` waiting for a person (spec §7.3). The subject is written by the server, never by the agent. */
@@ -267,7 +272,15 @@ export const AgentSessionListSuccess = Schema.Struct({ sessions: Schema.Array(Se
 
 /** `agent.session.get`: the session, its runs and the approvals still open. Nodes come through `agent.watch`. */
 export const AgentSessionGetPayload = SessionIdPayload;
-export const AgentSessionGetSuccess = Schema.Struct({ session: Session, runs: Schema.Array(Run), approvals: Schema.Array(Approval) });
+/** `warnings`: the persistent sandbox warnings of a CLI harness's session (spec §8.9; plan 7C Task 11). */
+export const AgentSessionGetSuccess = Schema.Struct({
+  session: Session,
+  runs: Schema.Array(Run),
+  approvals: Schema.Array(Approval),
+  /** Whether the project's `finisher.rules.json` applies (7B): `untrusted` and `changed` mean it is ignored. */
+  projectRules: Schema.optionalKey(ProjectRulesStatus),
+  warnings: Schema.optionalKey(Schema.Array(AgentWarning)),
+});
 
 /** `agent.session.delete` (owner, challenge code): removes the session's product state at once. */
 export const AgentSessionDeletePayload = Schema.Struct({ sessionId: Id, challenge: ChallengeField });
@@ -296,7 +309,30 @@ export const AgentApprovalAnswerPayload = Schema.Struct({
   ),
   challenge: ChallengeField,
 });
-export const AgentApprovalAnswerSuccess = Schema.Struct({ approval: Approval });
+/**
+ * `rule`: the rule a `remember` added; `notice`: why it does not apply now (a shared project
+ * file of an untrusted project: `projectUntrusted`), the answer's one-time grant still does.
+ */
+export const AgentApprovalAnswerSuccess = Schema.Struct({
+  approval: Approval,
+  rule: Schema.optionalKey(ListedRule),
+  notice: Schema.optionalKey(Schema.String),
+});
+
+/** The longest `agent.approval.wait` (spec §7.3): below every CLI tool timeout (120 s). */
+export const APPROVAL_WAIT_MAX_MS = 90_000;
+
+/**
+ * `agent.approval.wait` (sub-project 7B Decision 11): blocks at most `timeoutMs` (≤ 90 s) for
+ * an answer; `APPROVAL_PENDING` on timeout, repeatable.
+ */
+export const AgentApprovalWaitPayload = Schema.Struct({
+  id: Id,
+  timeoutMs: Count.check(Schema.isLessThanOrEqualTo(APPROVAL_WAIT_MAX_MS)),
+});
+export type AgentApprovalWaitPayload = typeof AgentApprovalWaitPayload.Type;
+/** An allowed approval (deny or expiry is `APPROVAL_DENIED`, a timeout `APPROVAL_PENDING`). */
+export const AgentApprovalWaitSuccess = Schema.Struct({ approval: Approval });
 
 /** What an adapter can do (spec §4.1). */
 export const Capabilities = Schema.Struct({

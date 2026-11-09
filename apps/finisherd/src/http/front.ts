@@ -13,6 +13,7 @@
 // address, aggregated). Nothing here logs a body, a header value or a token.
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { DEVICE_ERROR_CODES, FinError, PROTOCOL_VERSION } from "@finisher/contracts";
+import type { Audit } from "../control/audit.ts";
 import { finError, toFinError } from "../errors.ts";
 import { corsHeaders, preflightHeaders } from "./cors.ts";
 import { hostAllowed, type ListenerPolicy, normalOrigin, originAllowed, RPC_PATH } from "./policy.ts";
@@ -200,3 +201,25 @@ export function makeFront(
     });
   };
 }
+
+/**
+ * The audit rows of refusals before any proof: the front's (`auth.fail` with the address) and
+ * a WebSocket upgrade's on `transport` (never a wrong path, a wrong version or a full pool).
+ */
+export const refusalAudits = (audit: Audit) => ({
+  front: (r: FrontRefusal) =>
+    audit.append({
+      kind: "auth.fail",
+      principal: { kind: "anonymous", id: "" },
+      credentialKind: r.credentialKind,
+      outcome: "failed",
+      code: r.code,
+      details: { reason: r.reason, address: r.remote.slice(0, 64) },
+    }),
+  upgrade:
+    (transport: "ws" | "wss") =>
+    (r: { readonly reason: string }): void => {
+      if (r.reason === "badPath" || r.reason === "badVersion" || r.reason === "tooMany") return;
+      audit.append({ kind: "auth.fail", principal: { kind: "anonymous", id: "" }, credentialKind: "ticket", outcome: "failed", code: "UNAUTHENTICATED", details: { reason: r.reason, transport } });
+    },
+});

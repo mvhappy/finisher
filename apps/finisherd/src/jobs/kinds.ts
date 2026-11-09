@@ -69,6 +69,13 @@ export interface KindSpec<P = unknown, R = unknown> {
    * rewrite every file it writes (`open(name, "w")` truncates).
    */
   readonly prepareEachAttempt?: boolean;
+  /**
+   * The files and directories outside the job directory a cold worker reads, from the job's
+   * params and what `prepare` returned as `extra` (persisted, so every attempt gets the same):
+   * each becomes a `read` grant, which the sandbox spawner turns into the worker profile's
+   * sources and caches (plan 7C Task 7). Canonical absolute paths.
+   */
+  readonly reads?: (extra: unknown, params: P) => ReadonlyArray<string>;
   /** At least once; must be idempotent (Decision 40). */
   readonly onSucceeded?: (ctx: SucceededCtx<P, R>) => Effect.Effect<R | void, FinError>;
   readonly hookTimeoutS?: number;
@@ -139,6 +146,12 @@ export interface FamilySpec {
   readonly warm?: { readonly slots?: number; readonly idleS?: number; readonly maxJobs?: number; readonly maxAgeS?: number };
   /** Decision 35. */
   readonly warmKey?: (job: JobView) => string;
+  /**
+   * Under a sandbox (plan 7C Decision 19): the roots a warm worker spawned for `job` may read,
+   * fixed at its start and shared by every job of its key (one project): canonical, outside
+   * server data. A job whose `reads` fall outside them runs cold.
+   */
+  readonly warmReads?: (job: JobView) => ReadonlyArray<string>;
   /** Decision 5a. */
   readonly onCall?: OnCall;
   readonly diagKinds?: ReadonlyArray<string>;
@@ -176,6 +189,13 @@ export interface KindRegistry {
    * for `Program::Path` plugin processes too. Throws for an unknown family.
    */
   program(family: string, job: JobView, mode: SpawnMode): ProgramSpec;
+}
+
+/** A job's project: its `project`, else its params' `projectId` (`media.look`): what a confined warm key and its read roots name. */
+export function projectOfJob(job: JobView): string | undefined {
+  if (job.project !== undefined) return job.project;
+  const p = (job.params as { projectId?: unknown } | null)?.projectId;
+  return typeof p === "string" ? p : undefined;
 }
 
 /** How a process is spawned: cold (one job, then exit) or warm (`ready`, then the next job). */

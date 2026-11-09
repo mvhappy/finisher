@@ -15,6 +15,84 @@
       },
       "type": "object"
     },
+    "AclGrant": {
+      "description": "One allow ACE, inherited by the subtree.",
+      "properties": {
+        "mask": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "path": {
+          "type": "string"
+        },
+        "scope": {
+          "$ref": "#/$defs/AclScope"
+        },
+        "trustee": {
+          "$ref": "#/$defs/AclTrustee"
+        }
+      },
+      "required": [
+        "path",
+        "trustee",
+        "mask",
+        "scope"
+      ],
+      "type": "object"
+    },
+    "AclScope": {
+      "description": "How long a grant lives.",
+      "oneOf": [
+        {
+          "const": "static",
+          "description": "Shared by every launch of its kind (the toolchain, a project's folder, a sign-in\nstore): granted once, kept.",
+          "type": "string"
+        },
+        {
+          "const": "owner",
+          "description": "This session's or this call's own: revoked when it ends.",
+          "type": "string"
+        }
+      ]
+    },
+    "AclTrustee": {
+      "description": "Whom an ACE names: a SID (a capability's, derived here) or a container by name (its SID\nis Windows', [`super::appcontainer::sid`]).",
+      "oneOf": [
+        {
+          "properties": {
+            "kind": {
+              "const": "sid",
+              "type": "string"
+            },
+            "value": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "value"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "kind": {
+              "const": "container",
+              "type": "string"
+            },
+            "value": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "value"
+          ],
+          "type": "object"
+        }
+      ]
+    },
     "Actor": {
       "description": "Who caused an entry: a person, an agent (with its session and the tool call that ran\n`fin`), a plugin or the system. `session` is the agent or UI session (`FIN_SESSION`), not\nthe envelope's process run; `call` is the harness's tool-call id (`FIN_CALL`).",
       "properties": {
@@ -5286,6 +5364,15 @@
         "serverData": {
           "type": "string"
         },
+        "timeoutMs": {
+          "description": "The hook's time limit (`Limits.wall_ms`): the launcher ends the whole tree when it passes\n(on Windows also the backstop for a Node process stuck on piped stdio, Decision 25).",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
         "tmp": {
           "description": "A private temporary directory, the only write root.",
           "type": "string"
@@ -6469,11 +6556,20 @@
           "description": "Per-process limits are enforced (leaf Jobs or leaf cgroups).",
           "type": "boolean"
         },
+        "perJobGrants": {
+          "description": "Warm workers can be granted per job (plan 7C Task 12): warm kinds run warm under an\nenforced profile only then.",
+          "type": "boolean"
+        },
+        "profiles": {
+          "$ref": "#/$defs/JobHostProfiles",
+          "description": "What each sandbox profile gets (plan 7C Decision 4)."
+        },
         "sandbox": {
           "description": "The spawner's name (`none` unsandboxed).",
           "type": "string"
         },
         "sandboxed": {
+          "description": "Every profile is enforced.",
           "type": "boolean"
         },
         "watchdog": {
@@ -6486,7 +6582,9 @@
         "cgroupMemory",
         "leafLimits",
         "sandbox",
-        "sandboxed"
+        "sandboxed",
+        "profiles",
+        "perJobGrants"
       ],
       "type": "object"
     },
@@ -6909,6 +7007,11 @@
           "minimum": 0,
           "type": "integer"
         },
+        "serverData": {
+          "default": null,
+          "description": "`<server-data>`: the sandbox spawner places each process's grants against it (plan 7C\nTask 7). Without it, a profile that is enforced on this host refuses every spawn.",
+          "type": "string"
+        },
         "timing": {
           "$ref": "#/$defs/JobHostTiming"
         },
@@ -6920,6 +7023,31 @@
       },
       "required": [
         "binaryDir"
+      ],
+      "type": "object"
+    },
+    "JobHostProfileState": {
+      "description": "A sandbox profile's state on this host.",
+      "enum": [
+        "enforced",
+        "disabled",
+        "unavailable"
+      ],
+      "type": "string"
+    },
+    "JobHostProfiles": {
+      "description": "[`JobHostProfileState`] per profile.",
+      "properties": {
+        "plugin": {
+          "$ref": "#/$defs/JobHostProfileState"
+        },
+        "worker": {
+          "$ref": "#/$defs/JobHostProfileState"
+        }
+      },
+      "required": [
+        "worker",
+        "plugin"
       ],
       "type": "object"
     },
@@ -12944,6 +13072,18 @@
       ],
       "type": "string"
     },
+    "SandboxLauncherProbe": {
+      "description": "What `fin-sandbox-exec --probe` prints.",
+      "properties": {
+        "namespaces": {
+          "$ref": "#/$defs/SandboxNamespaces"
+        }
+      },
+      "required": [
+        "namespaces"
+      ],
+      "type": "object"
+    },
     "SandboxMechanism": {
       "description": "What a profile gets on this host.",
       "oneOf": [
@@ -12995,6 +13135,53 @@
           "required": [
             "kind",
             "need"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "SandboxNamespaces": {
+      "description": "Whether `fin-sandbox-exec` can hide Unix sockets from `agent` and `hook` processes in a user\nand mount namespace on this host (plan 7C Decision 26). Only the launcher binary can tell\n(an AppArmor profile attaches to it by path), so `finisherd` asks it: `--probe`.",
+      "oneOf": [
+        {
+          "properties": {
+            "kind": {
+              "const": "available",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Today's behaviour (Landlock alone), with `SANDBOX_SOCKETS_EXPOSED`.",
+          "properties": {
+            "kind": {
+              "const": "unavailable",
+              "type": "string"
+            },
+            "reason": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "reason"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Not Linux.",
+          "properties": {
+            "kind": {
+              "const": "notApplicable",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
           ],
           "type": "object"
         }
@@ -14613,6 +14800,13 @@
           "description": "A job-directory file kept open past `ready` (breaks the warm contract on purpose).",
           "type": "string"
         },
+        "probe": {
+          "description": "Paths the worker tries to read (plan 7C Task 12): each answered with the errno of\nthe attempt, `null` when it read. A path starting with `!` is renamed instead (to\n`<path>.moved`, and back when it worked): what replacing it with a link would need.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
         "value": true
       },
       "required": [
@@ -14626,6 +14820,17 @@
           "format": "uint32",
           "minimum": 0,
           "type": "integer"
+        },
+        "probes": {
+          "description": "One errno (or `null`) per `probe` path, in order.",
+          "items": {
+            "format": "int32",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "type": "array"
         },
         "served": {
           "format": "uint64",

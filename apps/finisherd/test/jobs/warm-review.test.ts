@@ -4,7 +4,7 @@
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { Hello, HostMsg, JobSpawnRequest } from "@finisher/core-types";
+import type { Hello, HostMsg, JobHostCaps, JobSpawnRequest } from "@finisher/core-types";
 import { afterEach, describe, expect, test } from "vitest";
 import { Engine } from "../../src/jobs/engine.ts";
 import { heldFiles } from "../../src/jobs/held-files.ts";
@@ -142,13 +142,31 @@ describe("H2: temp state never crosses jobs", () => {
 describe("H3: no warm workers under a sandbox", () => {
   test("caps_sandboxed_runs_warm_kinds_cold", async () => {
     const fake = workers();
-    fake.capsOverride = { sandboxed: true, sandbox: "landlock" };
+    fake.capsOverride = { sandboxed: true, sandbox: "fin-sandbox", profiles: { worker: "enforced", plugin: "enforced" } };
     const t = await testEngine({ jobHost: fake.factory });
     const v = await t.runJob("test.warm", { value: 1 });
     expect(v).toMatchObject({ state: "succeeded", warm: false });
     await run(t.engine.warm("test"));
     expect(fake.spawns.filter(isWarm)).toEqual([]);
     expect(t.engine.workers().warm).toEqual([]);
+  });
+
+  // Plan 7C Task 7: the gate follows the family's own profile, and per-job grants lift it.
+  test("the_gate_follows_the_familys_profile_and_per_job_grants", async () => {
+    const cases: Array<[Partial<JobHostCaps>, boolean]> = [
+      [{ profiles: { worker: "enforced", plugin: "disabled" } }, false],
+      [{ profiles: { worker: "disabled", plugin: "enforced" } }, true],
+      [{ profiles: { worker: "unavailable", plugin: "disabled" } }, true],
+      [{ profiles: { worker: "enforced", plugin: "enforced" }, perJobGrants: true }, true],
+    ];
+    for (const [caps, warm] of cases) {
+      const fake = workers();
+      fake.capsOverride = caps;
+      const t = await testEngine({ jobHost: fake.factory });
+      const v = await t.runJob("test.warm", { value: 1 });
+      expect(v, JSON.stringify(caps)).toMatchObject({ state: "succeeded", warm });
+      await t.close();
+    }
   });
 
   test("a_self_sandboxed_hello_turns_warm_kinds_cold", async () => {
