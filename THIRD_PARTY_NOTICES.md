@@ -642,9 +642,10 @@ crate under an alternative `deny.toml` allows.
 - Unlicense OR MIT (8):
   `aho-corasick` 1.1.5, `jiff-core` 0.1.1, `jiff-static` 0.2.38, `jiff-tzdb-platform` 0.1.3,
   `jiff-tzdb` 0.1.9, `memchr` 2.8.3, `termcolor` 1.4.1, `winapi-util` 0.1.11.
-- Zlib OR Apache-2.0 OR MIT (7):
+- Zlib OR Apache-2.0 OR MIT (10):
   `bytemuck_derive` 1.12.1, `bytemuck` 1.25.2, `objc2-core-foundation` 0.3.2,
-  `objc2-core-graphics` 0.3.2, `objc2-metal` 0.3.2, `objc2-quartz-core` 0.3.2,
+  `objc2-core-graphics` 0.3.2, `objc2-core-media` 0.3.2, `objc2-core-video` 0.3.2,
+  `objc2-metal` 0.3.2, `objc2-quartz-core` 0.3.2, `objc2-video-toolbox` 0.3.2,
   `tinyvec` 1.13.3.
 - MIT/Apache-2.0 (5):
   `fallible-iterator` 0.3.0, `fallible-streaming-iterator` 0.1.9, `rangemap` 1.8.0,

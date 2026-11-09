@@ -40,6 +40,16 @@ default-members = [
 # layouts, the CPU reference compositor, the mixer) takes it from here. An update re-runs the
 # T0 and A0 suites and bumps `RENDER_VERSION` if a hash moves.
 libm = "=0.2.16"
+# Platform codecs (sub-project 6B-1 plan Task 1): VideoToolbox, CoreMedia and CoreVideo on
+# macOS through the objc2 bindings (the 0.3 line the tree's objc2-* take through wgpu; Zlib OR
+# Apache-2.0 OR MIT), Media Foundation and D3D11 on Windows through `windows` (in the tree
+# through wgpu; MIT OR Apache-2.0). `fin-codecs` takes them target-gated only.
+objc2 = "0.6"
+objc2-core-foundation = { version = "0.3", default-features = false, features = ["std", "CFBase", "CFDictionary", "CFNumber", "CFString", "CFData", "CFArray"] }
+objc2-core-media = { version = "0.3", default-features = false, features = ["std", "objc2-core-video", "CMBase", "CMBlockBuffer", "CMFormatDescription", "CMSampleBuffer", "CMTime", "CMFormatDescriptionBridge"] }
+objc2-core-video = { version = "0.3", default-features = false, features = ["std", "CVBase", "CVBuffer", "CVImageBuffer", "CVPixelBuffer", "CVPixelBufferPool", "CVReturn"] }
+objc2-video-toolbox = { version = "0.3", default-features = false, features = ["std", "objc2-core-media", "objc2-core-video", "VTBase", "VTSession", "VTErrors", "VTDecompressionSession", "VTDecompressionProperties", "VTCompressionSession", "VTCompressionProperties", "VTPixelTransferSession", "VTPixelTransferProperties", "VTUtilities", "VTVideoEncoderList"] }
+windows = { version = "0.62", features = ["Win32_Foundation", "Win32_Media_MediaFoundation", "Win32_Graphics_Direct3D", "Win32_Graphics_Direct3D11", "Win32_Graphics_Dxgi", "Win32_Graphics_Dxgi_Common", "Win32_System_Com", "Win32_System_Com_StructuredStorage", "Win32_System_Variant"] }
 
 [workspace.package]
 edition = "2024"

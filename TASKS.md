@@ -631,6 +631,30 @@ Spec: `docs/specs/2026-11-07-sub-project-6-media-engine-design.md` (§24 maps th
   - [ ] Playback/scrubbing: `FrameReader::open` takes dav1d's default frame delay (⌈√threads⌉ frames in flight, `reader.rs`), so the first frame after a seek waits for them; scrubbing may want `frame_delay: 1` on seeks (Windows 1080p: delay 1 ~320 fps vs ~685 fps at delay 4)
 - [ ] 6B-1: stateful platform codecs and proxies
   - [ ] Plan written (2026-11-08): `docs/superpowers/plans/2026-11-08-sub-project-6b1-platform-codecs-and-proxies.md` (22 tasks in batches A–G; branch `sp6b1-platform-codecs`). Task 18, the Linux Landlock worker profile, waits for 7C's Linux `worker` profile; Tasks 4–5 need a macOS host, 6–7 a Windows 11 host. Decided 2026-11-08: proxies are video-only in 6B-1 and 6C adds Opus as proxy recipe v2 (Decision 4, owner; spec §21 item 10); capability URLs are the only media HTTP auth, spec §7.3 amended (13, coordinator); under Landlock `fin look` is held to the cold budget until 7C Task 12 (per-job grants for warm workers), then warm again (15, coordinator); libvpx VP9 decode moves to 6B-2, VP9 is `CODEC_UNAVAILABLE` on Linux in 6B-1 (16, coordinator). Task 18 depends on 7C Tasks 2 and 7
+  - Sub-project 6B-1 tasks (plan Task 1; built on branch `sp6b1`, the plan's `sp6b1-platform-codecs`). Batches, each green on macOS, Windows 11 and Linux before the next (owner decision 8): **A** foundations 1–3; **B** macOS 4–5 and **C** Windows 6–7 (beside each other, on their hosts); **D** 8 (after B and C), 9–12 (after A); **E** 13–17; **F** 18 (after 7C's Linux `worker` profile); **G** 19–22
+    - [x] Task 1: tracker, platform codec dependencies and the encoder call-site gate. As built: `objc2-video-toolbox`, `objc2-core-media`, `objc2-core-video` 0.3.2 (Zlib OR Apache-2.0 OR MIT) and `windows` 0.62 features, target-gated in `fin-codecs` (`check-crate-deps` `TARGETED`); `scripts/check-encoder-call-sites.mjs` (in `pnpm gates`). Deviation: the allowed files are per primitive (`VTCompressionSessionCreate` in `apple/encode.rs`; `CLSID_MSH264EncoderMFT`, `MFT_CATEGORY_VIDEO_ENCODER`, `CODECAPI_AVEnc*` in `mf/{encode,codecapi}.rs`; `fin_svt_sys` in `av1/svt_ffi.rs`, `svt_ffi` in `av1/{svt,mod}.rs`) and `open_encoder` may be called anywhere that names an `EncodePurpose` (never renamed or taken as a value; `EncoderConfig` has no `Default`)
+    - [ ] Task 2: vendor classes, the encoder policy (`encoder_allowed`) and capability types v2
+    - [ ] Task 3: backend choice (`open_decoder`/`open_encoder`), encoder configuration and `ENCODER_HUNG`
+    - [ ] Task 4: VideoToolbox decode and pixel transfer (macOS host)
+    - [ ] Task 5: VideoToolbox encode: H.264 proxies, HEVC test fixtures only (macOS host)
+    - [ ] Task 6: Media Foundation decode bound to the compositor's adapter (Windows 11 host)
+    - [ ] Task 7: Media Foundation encode: hardware MFTs for proxies, Microsoft's MFT for export (Windows 11 host)
+    - [ ] Task 8: the capability probe and report (encoder test clips, session limits, guidance)
+    - [ ] Task 9: `hwenc` sizing and RAM-scaled limits (the 5C asks)
+    - [ ] Task 10: BT.2390 HDR tone mapping and the wide-gamut soft clip (`RENDER_VERSION` 2)
+    - [ ] Task 11: `VideoInfo` display, rotation and pixel aspect; `asset.reprobe`; `media.probeDeep`
+    - [ ] Task 12: WebM/Matroska demux under limits, with a fuzz target
+    - [ ] Task 13: the media cache, its SQLite index, pins and eviction
+    - [ ] Task 14: `media.proxy` and the `proxy540` library stage
+    - [ ] Task 15: `media.thumbs`: thumbnails and filmstrips
+    - [ ] Task 16: `media.look` from proxies
+    - [ ] Task 17: cache entries over HTTP with capability URLs
+    - [ ] Task 18: media workers under 7C's Linux Landlock `worker` profile (the 7C sandbox's GPU rows in `crates/fin-sandbox/data/linux/gpu.txt` are proven for lavapipe only; a hardware adapter also needs `/sys/devices/pci*` read rows)
+    - [ ] Task 19: diagnostics and error codes
+    - [ ] Task 20: e2e `proxy` scenario and CI
+    - [ ] Task 21: cross-platform validation (controller; hosts)
+    - [ ] Task 22: spec as built, architecture pointer, notices and tracker
+    - Room left, not built (mobile note `docs/specs/2026-11-08-mobile-offline-editing-decisions.md`): a phone-sized proxy tier beside `540`/`1080`, and the iOS reuse of the VideoToolbox backend
 - [ ] 6B-2: stateless platform codecs (`cros-codecs`, VA-API, D3D11VA)
 - [ ] 6C: audio (incl. built-in audio effects, PCM feeds)
 - [ ] 6D: layers (effects, masks and mattes, nested, images, SVG, Lottie, captions raster)

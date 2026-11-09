@@ -1,5 +1,44 @@
 {
-  "libraries": [],
+  "libraries": [
+    {
+      "name": "VideoToolbox",
+      "provider": "os",
+      "license": "Apple OS component",
+      "note": "macOS frameworks fin-codecs links (6B-1 Tasks 4–5, objc2-video-toolbox, objc2-core-media, objc2-core-video): decode, pixel transfer (OS tone mapping) and H.264 encode. Linked as system frameworks, never loaded by name; part of the OS."
+    },
+    {
+      "name": "CoreMedia",
+      "provider": "os",
+      "license": "Apple OS component",
+      "note": "macOS frameworks fin-codecs links (6B-1 Tasks 4–5, objc2-video-toolbox, objc2-core-media, objc2-core-video): decode, pixel transfer (OS tone mapping) and H.264 encode. Linked as system frameworks, never loaded by name; part of the OS."
+    },
+    {
+      "name": "CoreVideo",
+      "provider": "os",
+      "license": "Apple OS component",
+      "note": "macOS frameworks fin-codecs links (6B-1 Tasks 4–5, objc2-video-toolbox, objc2-core-media, objc2-core-video): decode, pixel transfer (OS tone mapping) and H.264 encode. Linked as system frameworks, never loaded by name; part of the OS."
+    },
+    {
+      "name": "Media Foundation",
+      "files": ["mfplat.dll", "mf.dll", "mfreadwrite.dll"],
+      "provider": "os",
+      "license": "Windows OS component",
+      "note": "Windows 11 Media Foundation (6B-1 Tasks 6–7, `windows` crate import libraries): MFStartup, MFTEnumEx and the stateful MFTs. Absent on N editions without the Media Feature Pack (CODEC_UNAVAILABLE with mediaFeaturePack guidance). Never loaded by name."
+    },
+    {
+      "name": "Microsoft MFTs",
+      "files": ["msmpeg2vdec.dll", "mfh264enc.dll", "msvp9dec_store.dll", "msav1dec_store.dll", "mshevcdec_store.dll"],
+      "provider": "os",
+      "license": "Windows OS component",
+      "note": "Microsoft's own decoder and encoder MFTs (vendor class os, plan Decision 3), including the Store extensions (HEVC Video Extensions, AV1 and VP9 extensions) the user installs. Activated through COM by MFTEnumEx, never loaded by name."
+    },
+    {
+      "name": "hardware MFTs",
+      "provider": "driver",
+      "license": "GPU vendor driver",
+      "note": "A GPU vendor's hardware decoder and encoder MFTs, installed with the driver (vendor class gpu, plan Decision 3). Activated through COM by MFTEnumEx, never loaded by name. Encoders: proxies only (owner decision 9, follow-up F3; fin_media::backend::encoder_allowed)."
+    }
+  ],
   "crates": [
     {
       "crate": "napi-sys",
