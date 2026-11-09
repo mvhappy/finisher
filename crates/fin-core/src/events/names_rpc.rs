@@ -128,6 +128,7 @@ pub static RPC_METHODS: NameTable = NameTable::new(
         "plugin.suggest",
         "project.acknowledgeRewind",
         "project.acknowledgeSalvage",
+        "project.close",
         "project.compact",
         "project.create",
         "project.events",

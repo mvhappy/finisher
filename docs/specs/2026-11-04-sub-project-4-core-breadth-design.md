@@ -700,6 +700,7 @@ In 4B `chain_continuity` resolves each branch from the segments of its directory
 | `snapshot.get` | `{projectId, branch}` | `{rev, project, generation?}` (read under one lock) |
 | `ops.subscribe` (stream) | `{projectId, branch, fromRev, generation?}` | `CommittedTx` items. `fromRev` beyond the head → `BASE_REV_AHEAD`; a `generation` that no longer matches → `HISTORY_REWOUND {rev 0, reason GENERATION}` at once |
 | `project.status` | `{projectId}` | `ProjectStatus` (+ `busy`) |
+| `project.close` (review #11) | `{projectId}` | `{closed}` (`false`: not open). Ends the project's `ops.subscribe` and `project.events` streams with `ENGINE_CLOSED {reason: closed}`, waits for the commit lock, closes the engine (in-flight calls finish, the export is flushed, the lease stops; reopening here re-takes it at once). Scope `project.admin`; refused to agent sessions; no `fin` command (`RPC_ONLY`). The next call on the project reopens it |
 | `project.takeover` | `{projectId, confirm}` | `ProjectStatus` |
 | `project.verify` | `{projectId}` | verify report |
 | `project.rebuild` | `{projectId}` | `RebuildReport` |
@@ -719,6 +720,7 @@ In 4B `chain_continuity` resolves each branch from the segments of its directory
 | `history.cherryPick` (4B) | `{projectId, txId, author, origin, into, dryRun?, argsHash?}` | `HistoryResult` (`noOp: ALREADY_PRESENT` when nothing to do) |
 | `history.revert` (4B) | `{projectId, txId, author, mergeId, branch, dryRun?, argsHash?}` | `HistoryResult` (`undone: [mergeId]`; `noOp: ALREADY_REVERTED`) |
 
+- **Engine lifetime (review #11, as built):** finisherd closes an engine idle for **10 minutes** (`RegistryOptions.idleCloseMs`): no `ops.subscribe` or `project.events` subscriber, no call in flight (a commit or history write waiting for or holding the commit lock counts, as does a long call), checked about once a minute. The close takes the commit lock first; a call that raced it (resolved the engine just before) gets `ENGINE_CLOSED` from the closed engine and is retried once on a reopened one, which is safe because a closed engine refuses a call before doing anything. Fatal errors still evict at once (`ENGINE_CLOSED {reason: evicted}`).
 - **Decision 4 (deviation from the earlier text, which put `status` events on `ops.subscribe`):** status and history events go on `project.events`, and `ops.subscribe` keeps its item type. A second item type would break existing clients and the protocol.
 - **Generation in protocol 1:** `tx.commit.generation` and `ops.subscribe.generation` are **optional**, so protocol-1 clients keep working; `fin` always sends the snapshot's generation. A future protocol 2 should make both required.
 - **Still hand-declared:** the verify, rebuild and compact results are `Schema.Unknown`, and so is `ProjectStatus` (generating it is a follow-up). Of the 4B results, `BranchViewSchema` and `ConflictSchema` are Effect schemas checked against the generated JSON Schema (`envelopes.test.ts`, plus a `Same<>` type check); the larger results are `Schema.Unknown` narrowed to the generated TS types.
