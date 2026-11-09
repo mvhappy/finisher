@@ -10,7 +10,7 @@ import { childEnv } from "../../env.ts";
 import type { FamilySpec, KindRegistry, MemoryRule, ProgramSpec } from "../../jobs/kinds.ts";
 import { ensurePrivateDir, keyTmpDir, pluginWarmKey, type RootSessionOf, sweepPluginTmp } from "./keys.ts";
 import { nodeRuntimeEnv } from "./node-runtime.ts";
-import { type InstalledOf, resolveRuntime } from "./program.ts";
+import { type InstalledOf, jobRow, resolveRuntime } from "./program.ts";
 
 export const PLUGIN_FAMILY = "plugin";
 /** The envelope's plugin protocol a process speaks (`FIN_PLUGIN_PROTOCOL`). */
@@ -41,6 +41,9 @@ export function mapPluginError(e: FinErrorData): FinErrorData {
       // A broken envelope is the plugin's protocol, not a crash.
       return as(details["protocol"] === undefined ? "PLUGIN_CRASHED" : "PLUGIN_PROTOCOL");
     case "WORKER_HUNG":
+    // The kind's own `timeoutS` (a command's 60 s ceiling); Task 9 cancels a command at its
+    // manifest timeout and answers `PLUGIN_TIMEOUT` itself (Decision 7).
+    case "JOB_TIMEOUT":
       return as("PLUGIN_TIMEOUT");
     case "WORKER_PROTOCOL_MISMATCH":
       return as("PLUGIN_PROTOCOL");
@@ -50,8 +53,10 @@ export function mapPluginError(e: FinErrorData): FinErrorData {
 }
 
 /** The program, environment, grants and limits of a plugin job's process. */
-export function pluginProgram(deps: PluginFamilyDeps, job: Parameters<typeof pluginWarmKey>[0]): ProgramSpec {
-  const key = pluginWarmKey(job, deps.rootSessionOf);
+export function pluginProgram(deps: PluginFamilyDeps, job: Parameters<typeof pluginWarmKey>[0], warmKey?: string): ProgramSpec {
+  // A warm spawn's key is the one the engine tagged the worker with, so its `TMPDIR` and its
+  // key can never disagree; a cold spawn computes it.
+  const key = warmKey ?? pluginWarmKey(job, deps.rootSessionOf);
   const tmp = keyTmpDir(deps.serverData, key);
   const rt = resolveRuntime({ serverData: deps.serverData, installed: deps.installed, ...(deps.execPath === undefined ? {} : { execPath: deps.execPath }), ...(deps.platform === undefined ? {} : { platform: deps.platform }) }, job, tmp);
   ensurePrivateDir(tmp);
@@ -85,8 +90,12 @@ export function pluginFamily(deps: PluginFamilyDeps): FamilySpec {
   return {
     family: PLUGIN_FAMILY,
     profile: "plugin",
-    program: (job) => pluginProgram(deps, job),
+    program: (job, key) => pluginProgram(deps, job, key),
     warmKey: (job) => pluginWarmKey(job, deps.rootSessionOf),
+    usable: (job) => {
+      const found = jobRow(deps.installed, job);
+      return "error" in found ? found.error : undefined;
+    },
     warm: PLUGIN_WARM,
     memory: { interactive: PLUGIN_MEMORY, batch: PLUGIN_MEMORY },
     mapError: mapPluginError,

@@ -11,7 +11,11 @@ import { afterEach, describe, expect, test } from "vitest";
 import { exitPluginId, type KindSpec, makeKindRegistry, MAX_PLUGIN_WARM_SLOTS } from "../src/jobs/kinds.ts";
 import { warmOverrun } from "../src/jobs/schedule.ts";
 import { mapPluginError, PLUGIN_LIMITS, pluginFamily, type PluginFamilyDeps, pluginProgram, registerPluginFamily } from "../src/plugins/host/family.ts";
-import { keyTmpDir, pluginWarmKey, principalClass } from "../src/plugins/host/keys.ts";
+import { keyTmpDir, pluginWarmKey, principalClass, type RootSessionOf, sessionRoots } from "../src/plugins/host/keys.ts";
+import { manualClock, systemIds } from "../src/agent/clock.ts";
+import { AgentStore, type NewSession } from "../src/agent/store.ts";
+import { openControlStore } from "../src/control/db.ts";
+import type { ControlStore } from "../src/control/db.ts";
 import { DENIED_NODE_FLAGS } from "../src/plugins/host/node-runtime.ts";
 import { storeDirOf, unusable } from "../src/plugins/host/program.ts";
 import { type InstalledFull, PluginTables } from "../src/plugins/tables.ts";
@@ -62,16 +66,18 @@ interface PluginEngine {
 async function pluginEngine(): Promise<PluginEngine> {
   const serverData = tempData();
   let tables: PluginTables | undefined;
+  let roots: RootSessionOf | undefined;
   const t = await testEngine({
     serverData,
     testKinds: false,
     timing: { hungMs: 1500 },
     register: (r) => {
-      registerPluginFamily(r, { serverData, installed: (id) => tables?.installedFull(id) });
+      registerPluginFamily(r, { serverData, installed: (id) => tables?.installedFull(id), rootSessionOf: (id) => roots?.(id) });
       r.registerKind(ECHO);
     },
   });
   tables = new PluginTables(t.control);
+  roots = sessionRoots(t.control);
   const pe: PluginEngine = {
     t,
     serverData,
@@ -102,6 +108,28 @@ async function pluginEngine(): Promise<PluginEngine> {
     },
   };
   return pe;
+}
+
+/** A root agent session and its child (7A-2's session tree) in `control`; their ids. */
+async function agentTree(control: ControlStore, dir: string): Promise<{ root: string; child: string }> {
+  const clock = manualClock(Date.now());
+  const store = new AgentStore(control, dir, clock, systemIds(clock));
+  const base: Omit<NewSession, "id"> = {
+    projectId: "01project0000000000000000a",
+    harness: "builtin",
+    provider: "openrouter",
+    model: "anthropic/claude-sonnet-5.5",
+    weights: "closed",
+    role: "editor",
+    mode: "draft",
+    rootBranch: "br1",
+    base: { branch: "main", seq: 1 },
+    budget: {},
+    createdBy: { principal: { kind: "local", id: "local" } },
+  };
+  const root = await store.createSession({ ...base, id: systemIds(clock).ulid() });
+  const child = await store.createSession({ ...base, id: systemIds(clock).ulid(), role: "fixer", rootBranch: "br2", parent: root.id, rootSession: root.id, depth: 1, createdBy: { principal: { kind: "agent", id: root.id } } });
+  return { root: root.id, child: child.id };
 }
 
 const job = (owner: JobOwner, project?: string, plugin = `${ID}@1.0.0`): JobView => ({ id: "j1", owner, via: { plugin }, ...(project === undefined ? {} : { project }) }) as unknown as JobView;
@@ -180,20 +208,27 @@ describe("the plugin family's process", () => {
   test("warm_key_never_crosses: two projects, two classes, four processes", async () => {
     const p = await pluginEngine();
     p.install();
+    const tree = await agentTree(p.t.control, p.serverData);
+    const cls = (o: JobOwner) => (o === PERSON ? "person" : o === SYSTEM ? "system" : `agent:${tree.root}`);
     const cases = [
       { project: "p1", owner: PERSON },
       { project: "p1", owner: SYSTEM },
       { project: "p2", owner: PERSON },
       { project: "p2", owner: SYSTEM },
+      { project: "p1", owner: { kind: "agent", id: tree.root } as JobOwner },
     ];
     const first = [];
     for (const c of cases) first.push((await p.echo({ op: "env" }, c)) as { pid: number; env: Record<string, string> });
-    expect(new Set(first.map((r) => r.pid)).size).toBe(4);
-    expect(new Set(first.map((r) => r.env.TMPDIR)).size).toBe(4);
-    // Each key's next job goes to its own process, never another key's.
+    expect(new Set(first.map((r) => r.pid)).size).toBe(5);
+    expect(new Set(first.map((r) => r.env.TMPDIR)).size).toBe(5);
+    // Each key's next job goes to its own process, never another key's; the agent's child
+    // session shares its root's class.
     for (const [i, c] of cases.entries()) expect(((await p.echo({ op: "env" }, c)) as { pid: number }).pid).toBe(first[i]!.pid);
+    expect(((await p.echo({ op: "env" }, { project: "p1", owner: { kind: "agent", id: tree.child } })) as { pid: number }).pid).toBe(first[4]!.pid);
     const warm = p.t.engine.workers().warm.filter((w) => w.family === "plugin");
-    expect(warm.map((w) => w.key).sort()).toEqual(cases.map((c) => `${ID}@1.0.0|${c.project}|${c.owner === PERSON ? "person" : "system"}`).sort());
+    expect(warm.map((w) => w.key).sort()).toEqual(cases.map((c) => `${ID}@1.0.0|${c.project}|${cls(c.owner)}`).sort());
+    // Each process's temp is its own key's, as the engine tagged it.
+    for (const [i, c] of cases.entries()) expect(first[i]!.env.TMPDIR).toBe(keyTmpDir(p.serverData, `${ID}@1.0.0|${c.project}|${cls(c.owner)}`));
   });
 
   test("update_uses_a_new_process: the version is in the key", async () => {
@@ -237,6 +272,22 @@ describe("the plugin family's process", () => {
     for (const priority of ["normal", "interactive"] as const) {
       expect((await p.submit({ op: "pid" }, { version: "2.0.0", priority })).error).toMatchObject({ code: "PLUGIN_PROTOCOL", details: { cause: "WORKER_PROTOCOL_MISMATCH" } });
     }
+  });
+
+  test("usable_checked_at_warm_dispatch: a plugin revoked while its process idles serves no more jobs", async () => {
+    const p = await pluginEngine();
+    p.install();
+    const pid = (await p.echo({ op: "pid" })).pid;
+    expect(p.t.engine.workers().warm.find((w) => w.family === "plugin")).toMatchObject({ state: "ready", served: 1 });
+    p.tables.setState(ID, true, "revoked", 2);
+    const refused = await p.submit({ op: "pid" });
+    expect(refused.error?.code).toBe("PLUGIN_REVOKED");
+    // The job never reached the process, which is retired.
+    const exits = async () => p.t.sink.exits.filter((x) => x.family === "plugin");
+    for (let i = 0; i < 100 && (await exits()).length === 0; i++) await new Promise((r) => setTimeout(r, 50));
+    expect(await exits()).toMatchObject([{ jobsServed: 1, pluginId: ID }]);
+    expect(p.t.engine.workers().warm.filter((w) => w.family === "plugin")).toEqual([]);
+    expect(pid).toBeGreaterThan(0);
   });
 
   test("a disabled or revoked plugin starts no process", async () => {
@@ -328,6 +379,28 @@ describe("the plugin family's configuration", () => {
     expect(() => pluginWarmKey({ id: "j", owner: PERSON } as unknown as JobView)).toThrow(/names no plugin/);
   });
 
+  test("sessionRoots reads an agent session tree from a migrated control.db", async () => {
+    const sd = tempData();
+    const control = openControlStore(sd, { serverId: "sid-test", checkpoint: false });
+    try {
+      const tree = await agentTree(control, sd);
+      const roots = sessionRoots(control);
+      expect(roots(tree.child)).toBe(tree.root);
+      expect(roots(tree.root)).toBe(tree.root);
+      expect(roots("01nosuchsession00000000000")).toBeUndefined();
+      expect(principalClass({ kind: "agent", id: tree.child }, roots)).toBe(`agent:${tree.root}`);
+    } finally {
+      await control.close();
+    }
+  });
+
+  test("a warm spawn's temp is its tagged key's", () => {
+    const sd = tempData();
+    placeProbe(sd, "1.0.0");
+    const p = pluginProgram(deps(sd), job(PERSON, "p1"), "p1/tagged-key");
+    expect("path" in p && p.process?.env.TMPDIR).toBe(keyTmpDir(sd, "p1/tagged-key"));
+  });
+
   test("slots_up_to_16_for_plugin_family; the overrun stays at 2 per family", () => {
     const r = makeKindRegistry();
     const sd = tempData();
@@ -358,7 +431,8 @@ describe("the plugin family's configuration", () => {
     expect(mapPluginError(e("WORKER_OOM"))).toEqual(e("WORKER_OOM"));
     expect(mapPluginError(e("WORKER_CRASHED", { protocol: "json" })).code).toBe("PLUGIN_PROTOCOL");
     expect(mapPluginError(e("WORKER_CRASHED", { exitCode: 3 }))).toEqual({ code: "PLUGIN_CRASHED", message: "m", details: { exitCode: 3, cause: "WORKER_CRASHED" } });
-    expect(mapPluginError(e("JOB_TIMEOUT")).code).toBe("JOB_TIMEOUT");
+    expect(mapPluginError(e("JOB_TIMEOUT")).code).toBe("PLUGIN_TIMEOUT");
+    expect(mapPluginError(e("JOB_STALLED")).code).toBe("JOB_STALLED");
   });
 
   test("unusable rows: disabled, revoked, crash loop, content", () => {

@@ -4,6 +4,11 @@
 // package and its temp, writes only its temp, and gets no child processes, addons, workers
 // or WASI. Under Electron the child runs as plain Node (`ELECTRON_RUN_AS_NODE=1`, for that
 // child only).
+//
+// Residual before 7C: Node 24.22's permission model has no network control, so a `node` plugin
+// can open TCP and unix sockets until 7C's `plugin` profile applies. Owner decision 1 accepts
+// plugins running unconfined until then; finisherd's local socket still needs the key file,
+// which the child cannot read.
 import { finError } from "../../errors.ts";
 
 /** Flags a plugin process never gets. */

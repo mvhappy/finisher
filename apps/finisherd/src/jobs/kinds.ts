@@ -154,11 +154,17 @@ export interface FamilySpec {
    * The family's program for a cold spawn. Never ends in `--warm`: the engine decides whether
    * a process is warm and appends it (`KindRegistry.program`), so a family declares one argv.
    */
-  readonly program: ProgramSpec | ((job: JobView) => ProgramSpec);
+  readonly program: ProgramSpec | ((job: JobView, key?: string) => ProgramSpec);
   readonly memory?: { readonly interactive?: MemoryRule; readonly batch?: MemoryRule };
   readonly warm?: { readonly slots?: number; readonly idleS?: number; readonly maxJobs?: number; readonly maxAgeS?: number };
   /** Decision 35. */
   readonly warmKey?: (job: JobView) => string;
+  /**
+   * Whether `job` may still run at all, checked when a warm job is handed to a ready worker
+   * (sp8b review: a plugin disabled, revoked or in a crash loop while its process is idle):
+   * the error the job fails with, or `undefined`. The worker is retired and never sees the job.
+   */
+  readonly usable?: (job: JobView) => FinError | undefined;
   /**
    * Under a sandbox (plan 7C Decision 19): the roots a warm worker spawned for `job` may read,
    * fixed at its start and shared by every job of its key (one project): canonical, outside
@@ -207,7 +213,7 @@ export interface KindRegistry {
    * batch A review): the family's program, with `--warm` appended for a warm spawn. This holds
    * for `Program::Path` plugin processes too. Throws for an unknown family.
    */
-  program(family: string, job: JobView, mode: SpawnMode): ProgramSpec;
+  program(family: string, job: JobView, mode: SpawnMode, key?: string): ProgramSpec;
 }
 
 /** A job's project: its `project`, else its params' `projectId` (`media.look`): what a confined warm key and its read roots name. */
@@ -383,9 +389,9 @@ export function makeKindRegistry(): KindRegistry {
     family: (name) => families.get(name),
     helper: (kind, id) => helpers.get(`${kind}:${id}`),
     kinds: () => [...kinds.values()],
-    program(name, job, mode) {
+    program(name, job, mode, key) {
       const f = families.get(name) ?? refuse(`unknown family ${name}`);
-      return programFor(typeof f.program === "function" ? f.program(job) : f.program, mode);
+      return programFor(typeof f.program === "function" ? f.program(job, key) : f.program, mode);
     },
   };
 }

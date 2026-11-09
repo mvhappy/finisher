@@ -205,7 +205,7 @@ export class WarmPools {
     const row = head === undefined ? undefined : e.d.store.row(head.id);
     let program: ProgramSpec;
     try {
-      program = row === undefined ? programFor(f.program as ProgramSpec, "warm") : e.kinds.program(family, row, "warm");
+      program = row === undefined ? programFor(f.program as ProgramSpec, "warm") : e.kinds.program(family, row, "warm", key);
     } catch (err) {
       // A family's own refusal (a plugin that is disabled or gone, sp8b Task 4) is the job's error.
       const error = err instanceof FinError ? err : finError("WORKER_UNAVAILABLE", `the warm ${family} worker has no program: ${toFinError(err).message}`, { reason: "program" });
@@ -263,6 +263,18 @@ export class WarmPools {
     if (mismatch !== undefined || w.proc === undefined || w.gone) {
       this.#idle(w, undefined, false);
       return mismatch === undefined ? noRun(finError("WORKER_UNAVAILABLE", "the warm worker is gone", { reason: "warmExited" }), "exit") : noRun(mismatch, "mismatch");
+    }
+    // The family may refuse the job now (a plugin disabled or revoked while its process idled):
+    // the worker goes, and the job never reaches it.
+    let refused: FinError | undefined;
+    try {
+      refused = family.usable?.(row);
+    } catch (err) {
+      refused = toFinError(err);
+    }
+    if (refused !== undefined) {
+      this.#retire(w, "done");
+      return noRun(refused, "exit");
     }
     this.#lostOn.delete(row.id);
     let started = false;

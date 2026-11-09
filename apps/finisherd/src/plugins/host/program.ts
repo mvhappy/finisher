@@ -7,9 +7,9 @@
 // user-level process can change an installed package unnoticed: the recorded residual).
 import { readFileSync } from "node:fs";
 import { isAbsolute, join, relative, sep } from "node:path";
-import type { JobView } from "@finisher/contracts";
+import type { FinError, JobView } from "@finisher/contracts";
 import type { Manifest } from "@finisher/core-types";
-import { finError } from "../../errors.ts";
+import { finError, toFinError } from "../../errors.ts";
 import type { InstalledFull } from "../tables.ts";
 import { viaPlugin } from "./keys.ts";
 import { nodeArgs } from "./node-runtime.ts";
@@ -81,15 +81,27 @@ export interface ResolveDeps {
   readonly platform?: string;
 }
 
+/** The job's installed row, or the error it fails with (not installed, another version, unusable). */
+export function jobRow(installed: InstalledOf, job: JobView): { readonly row: InstalledFull } | { readonly error: FinError } {
+  try {
+    const { id, version } = splitVia(viaPlugin(job));
+    const row = installed(id);
+    if (row === undefined) return { error: finError("PLUGIN_NOT_FOUND", `${id} is not installed`, { plugin: id }) };
+    // Jobs of another version (an update switched the row) never start the new one's code.
+    if (row.version !== version) return { error: finError("PLUGIN_NOT_FOUND", `${id}@${version} is not the installed version`, { plugin: id, version, installed: row.version }) };
+    const refused = unusable(row);
+    return refused === undefined ? { row } : { error: refused };
+  } catch (e) {
+    return { error: toFinError(e) };
+  }
+}
+
 /** The job's plugin, its package and its runtime's program; `tmp` is the key's temp. */
 export function resolveRuntime(deps: ResolveDeps, job: JobView, tmp: string): ResolvedRuntime {
-  const { id, version } = splitVia(viaPlugin(job));
-  const row = deps.installed(id);
-  if (row === undefined) throw finError("PLUGIN_NOT_FOUND", `${id} is not installed`, { plugin: id });
-  // Jobs of another version (an update switched the row) never start the new one's code.
-  if (row.version !== version) throw finError("PLUGIN_NOT_FOUND", `${id}@${version} is not the installed version`, { plugin: id, version, installed: row.version });
-  const refused = unusable(row);
-  if (refused !== undefined) throw refused;
+  const found = jobRow(deps.installed, job);
+  if ("error" in found) throw found.error;
+  const { row } = found;
+  const id = row.id;
   const storeDir = storeDirOf(deps.serverData, row);
   let manifest: Manifest;
   try {
