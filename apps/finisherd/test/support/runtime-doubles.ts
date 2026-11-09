@@ -80,9 +80,14 @@ export class FakeRegistry implements BranchRegistry {
     return b === undefined ? Effect.fail(finError("BRANCH_NOT_FOUND", `no branch ${ref}`, { branch: ref })) : Effect.succeed(b.id);
   }
 
-  history(projectId: string, _op: "branchCreate", p: Record<string, unknown>, meta: CallMeta) {
+  history(projectId: string, op: "branchCreate" | "branchSet", p: Record<string, unknown>, meta: CallMeta) {
     return Effect.sync(() => {
       const bs = this.list(projectId);
+      if (op === "branchSet") {
+        const i = bs.findIndex((b) => b.id === p.branch);
+        if (i >= 0 && p.archived === true) bs[i] = { ...bs[i]!, state: "archived" };
+        return { dryRun: false, record: {} };
+      }
       const b = view(`br${bs.length}`, p.name as string, (p.at as { seq: number }).seq, p.from as string, p.author as string);
       bs.push(b);
       this.created.push({ projectId, name: b.name, from: b.parent!, author: b.createdBy, meta });

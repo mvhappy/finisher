@@ -5,23 +5,28 @@
 //   (`--budget`, already at most the role's: `roles.ts` `budgetFor`), else the child role's
 //   budget capped at half the parent's remaining (`limit − used − reserved`). More than the
 //   parent has left, or a default of nothing (the parent has at most one unit left), is
-//   `BUDGET_EXCEEDED` on the parent, before anything is made.
+//   `BUDGET_EXCEEDED` on the parent, before anything is made. A kind whose limit is 0 is one the
+//   parent has none of (0 is none, never unlimited: a free call still runs on it): its default
+//   carve is 0, and asking for any of it is `BUDGET_EXCEEDED`.
 // - **Reserved with the child's record** (`LedgerStore.carve`, inside `AgentStore.createSession`'s
 //   transaction): the parent's `reserved` += the carve, the child's `budgets` rows hold it as
 //   their limits, and `budget_carves` (agent migration 0007) records it; re-checked there, so a
 //   race fails `BUDGET_EXCEEDED` on the parent and records nothing.
 // - **Settled at the child's end** (`settleCarve`, in the transaction of the child's `ended`,
 //   whichever path ends it: its brief, a person, a cascade, a delete): the parent's `reserved`
-//   drops by the carve and its `used` rises by what the child spent, plus what the child still
-//   holds for its own live children (their later spend is the ended child's: charged now, so it
-//   can never reach past the carve). Recorded as settled, so it happens once. A parent that is
-//   gone is left alone.
+//   drops by the carve and its `used` rises by what the child spent. The carves the child still
+//   holds for its own live children pass to the parent (held there instead), so their spend,
+//   and a raise of them, reach the nearest live ancestor (review 7B Task 7: a carve held by an
+//   ended child would let a raise escape the root). Recorded as settled, so it happens once. A
+//   parent that is gone is left alone.
 // - **Raised by a person only** (`raise`; agents hold no `agent.approve`): a child's raise
-//   reserves as much on its parent within the parent's remaining, or is `BUDGET_EXCEEDED` on the
-//   parent and raises nothing. The parent's own limit never moves for it.
+//   reserves as much on the holder of its carve (its parent, or the nearest live ancestor) within
+//   that one's remaining, or is `BUDGET_EXCEEDED` there and raises nothing. That holder's own
+//   limit never moves for it.
 // - **Recovery** (`DbLedger.recover`, at start): per-call reservations return (7A), every open
 //   carve is held again on its parent, then each carve whose child has ended or is gone is
-//   settled (a gone child's spend is unknown: it is charged its whole carve, failing closed).
+//   settled, deepest first (a gone child's spend is unknown: it is charged its whole carve,
+//   failing closed, and its own children's carves stay within it).
 // - **Kinds:** tokens and money. The wall clock is not carved: it runs for a parent and its
 //   children at once, so it is no shared stock; a child's is its own (the role's, or lower).
 //   Money for the server's day is charged by real spend only: a settlement never touches it.
@@ -56,6 +61,8 @@ export interface CarveRecords {
   settled(sessionId: string): void;
   /** What `parentId` has carved out of `kind` and not yet settled. */
   heldBy(parentId: string, kind: CarvedKind): number;
+  /** `from`'s open carves of `kind` are held by `to` from now on. */
+  pass(from: string, to: string, kind: CarvedKind): void;
 }
 
 const remaining = (r: Ledger): number => (r.limit === null ? 0 : Math.max(0, r.limit - r.used - r.reserved));
@@ -80,9 +87,11 @@ export function childCarve(l: LedgerStore, parentId: string, planned: BudgetSpec
     const key = SPEC[kind];
     const left = remaining(l.read(parentId, kind));
     const role = planned[key] ?? defaults[key];
-    const want = asked?.[key] === undefined ? Math.min(role, Math.floor(left / 2)) : role;
+    // A kind the parent has none of (limit 0) carves 0 by default.
+    const none = l.read(parentId, kind).limit === 0;
+    const want = asked?.[key] === undefined ? (none ? 0 : Math.min(role, Math.floor(left / 2))) : role;
     if (want > left) throw overParent(parentId, kind, want, left, `the ${want} asked`);
-    if (want === 0 && role > 0) throw overParent(parentId, kind, role, left, "two to halve");
+    if (want === 0 && role > 0 && !none) throw overParent(parentId, kind, role, left, "two to halve");
     carve[kind] = want;
     budget[key] = want;
   }
@@ -105,14 +114,25 @@ export function carveIn(l: LedgerStore, r: CarveRecords, parentId: string, sessi
   }
 }
 
-/** Returns the child's open carves to their parent, charging what it spent; once. */
+/**
+ * Returns the child's open carves to their parent, charging what it spent, and passes the
+ * carves it holds for its own live children to that parent; once.
+ */
 export function settleIn(l: LedgerStore, r: CarveRecords, sessionId: string): void {
   const open = r.open(sessionId);
   if (open.length === 0) return;
   for (const c of open) {
+    if (l.read(c.parentId, c.kind).limit === null) continue;
     const child = l.read(sessionId, c.kind);
-    const spent = child.limit === null ? c.amount : child.used + r.heldBy(sessionId, c.kind);
-    if (l.read(c.parentId, c.kind).limit !== null) l.add(c.parentId, c.kind, { reserved: -c.amount, used: spent });
+    // A gone child's spend is unknown: its whole carve, which covers its own children's.
+    if (child.limit === null) {
+      l.add(c.parentId, c.kind, { reserved: -c.amount, used: c.amount });
+      continue;
+    }
+    const held = r.heldBy(sessionId, c.kind);
+    l.add(c.parentId, c.kind, { reserved: held - c.amount, used: child.used });
+    if (held > 0) l.add(sessionId, c.kind, { reserved: -held });
+    r.pass(sessionId, c.parentId, c.kind);
   }
   r.settled(sessionId);
 }
@@ -161,6 +181,10 @@ export class MemoryCarves implements CarveRecords {
 
   settled(sessionId: string): void {
     this.#rows.delete(sessionId);
+  }
+
+  pass(from: string, to: string, kind: CarvedKind): void {
+    for (const [id, rows] of this.#rows) this.#rows.set(id, rows.map((x) => (x.parentId === from && x.kind === kind ? { ...x, parentId: to } : x)));
   }
 
   heldBy(parentId: string, kind: CarvedKind): number {

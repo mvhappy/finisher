@@ -40,6 +40,8 @@ export interface LedgerStore {
   raise(sessionId: string, add: Raise): void;
   /** The `BUDGET_EXCEEDED` that `raise(sessionId, add)` would fail with, if any. */
   canRaise(sessionId: string, add: Raise): FinError | undefined;
+  /** `f` in one transaction (`control.db`'s, nesting as a savepoint); in memory it only runs `f`. */
+  tx<A>(f: () => A): A;
 }
 
 const EMPTY: Ledger = { limit: null, used: 0, reserved: 0 };
@@ -93,6 +95,10 @@ export class MemoryLedger implements LedgerStore {
 
   canRaise(sessionId: string, add: Raise): FinError | undefined {
     return raiseRefused(this, this.carves, sessionId, add);
+  }
+
+  tx<A>(f: () => A): A {
+    return f();
   }
 }
 

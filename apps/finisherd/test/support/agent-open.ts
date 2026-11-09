@@ -23,6 +23,7 @@ export function rpcBranchOps(c: NdjsonClient): SessionBranchOps {
         return b === undefined ? Effect.fail(toFinError(Object.assign(new Error("no branch"), { code: "BRANCH_NOT_FOUND", finNode: true }))) : Effect.succeed(b.id);
       }),
     createBranch: (projectId, req) => Effect.map(call<{ branch: BranchView }>("branch.create", { projectId, ...req }), (r) => r.branch),
+    archiveBranch: (projectId, req) => call("branch.set", { projectId, ...req, archived: true }),
   };
 }
 

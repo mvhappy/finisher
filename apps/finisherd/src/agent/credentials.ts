@@ -6,7 +6,9 @@
 //   the session is recorded; its `agent` credential is minted **with the session's id**, the
 //   scopes of its mode, `projects: [projectId]` and `branches: [root]` (its subtree is implied:
 //   `reach.ts`); the credential file is written to `<server-data>/agents/<id>/credential.json`
-//   (0600 from creation, then renamed into place); the session becomes `idle`.
+//   (0600 from creation, then renamed into place); the session becomes `idle`. A record that
+//   fails (a child's carve re-checked in its transaction, 7B Task 7) archives the branch made
+//   for it and removes its directories, best effort.
 // - **End** revokes the credential through 5A's one revoke path; **resume** refreshes its
 //   expiry; both reach this module as `session_outbox` items (`handle`), at least once, so
 //   handling one twice changes nothing.
@@ -28,6 +30,7 @@ import { type RevokeDeps, revokeCredential } from "../auth/revoke.ts";
 import type { CallMeta } from "../diagnostics.ts";
 import { finError, toFinError } from "../errors.ts";
 import type { HistoryPayload } from "../history.ts";
+import { removeSessionDir } from "./blobs.ts";
 import type { Ids } from "./clock.ts";
 import { sessionAuthor } from "./reach.ts";
 import type { AgentStore, NewSession, OutboxItem } from "./store.ts";
@@ -279,13 +282,15 @@ export interface SessionBranchOps {
     projectId: string,
     req: { readonly txId: string; readonly author: string; readonly name: string; readonly from: string; readonly at: { readonly seq: number } },
   ): Effect.Effect<BranchView, FinError>;
+  /** `branch.set {archived: true}` as the starter: a branch made for a session never recorded. */
+  archiveBranch?(projectId: string, req: { readonly txId: string; readonly author: string; readonly branch: string }): Effect.Effect<unknown, FinError>;
 }
 
 /** What `registryBranchOps` needs of the project registry (`ProjectRegistry`). */
 export interface BranchRegistry {
   branches(projectId: string, all: boolean): Effect.Effect<{ readonly branches: ReadonlyArray<BranchView> }, FinError>;
   resolveBranch(projectId: string, ref: string): Effect.Effect<string, FinError>;
-  history(projectId: string, op: "branchCreate", payload: HistoryPayload, meta: CallMeta): Effect.Effect<unknown, FinError>;
+  history(projectId: string, op: "branchCreate" | "branchSet", payload: HistoryPayload, meta: CallMeta): Effect.Effect<unknown, FinError>;
 }
 
 /**
@@ -299,7 +304,15 @@ export function registryBranchOps(registry: BranchRegistry, meta: CallMeta): Ses
     resolveBranch: (projectId, ref) => registry.resolveBranch(projectId, ref),
     createBranch: (projectId, req) =>
       Effect.map(registry.history(projectId, "branchCreate", { projectId, ...req }, meta), (r) => (r as BranchCreated).branch),
+    archiveBranch: (projectId, req) => registry.history(projectId, "branchSet", { projectId, ...req, archived: true }, meta),
   };
+}
+
+/** A session whose record failed: the branch made for it archived, its directories removed (best effort). */
+function unmade(deps: { readonly store: AgentStore; readonly ops: SessionBranchOps; readonly ids: Ids }, projectId: string, id: string, author: string, branch: string | undefined): Effect.Effect<void> {
+  const archive = branch === undefined || deps.ops.archiveBranch === undefined ? Effect.void : Effect.ignore(deps.ops.archiveBranch(projectId, { txId: deps.ids.ulid(), author, branch }));
+  const dirs = Effect.promise(() => (deps.store.get(id) === undefined ? removeSessionDir(deps.store.root, id).catch(() => undefined) : Promise.resolve()));
+  return Effect.andThen(archive, dirs);
 }
 
 /** A session to open: step 1 of Decision 15 is done (role, mode, harness, model resolved). */
@@ -373,10 +386,14 @@ export function openSession(
       root = made.id;
     }
     const { base: _base, root: _root, under: _under, ...rest } = req;
-    const session = yield* Effect.tryPromise({
-      try: () => deps.store.createSession({ ...rest, id, base: { branch: base.id, seq: base.head }, ...(root === undefined ? {} : { rootBranch: root }) }),
-      catch: toFinError,
-    });
+    const made = root !== undefined && req.root === undefined ? root : undefined;
+    const session = yield* Effect.tapError(
+      Effect.tryPromise({
+        try: () => deps.store.createSession({ ...rest, id, base: { branch: base.id, seq: base.head }, ...(root === undefined ? {} : { rootBranch: root }) }),
+        catch: toFinError,
+      }),
+      () => unmade(deps, req.projectId, id, sessionAuthor({ role: req.role, id }), made),
+    );
     // Two starts on one existing root may both pass the first check: the second look, with
     // both recorded, ends whichever finds the other.
     const claimed = root === undefined || req.root === undefined ? Effect.void : deps.creds.claimRoot(req.projectId, root, id);

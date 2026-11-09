@@ -10,6 +10,7 @@
 // each run, a resumed one included; the 80 % notices are remembered by this `Budget` only, so
 // after a restart a notice may be shown once more. Both are deliberate: neither is money, and
 // the ledger (used, reserved, limits) is what persists.
+import type { Raise } from "./carve.ts";
 import type { Usage } from "./catalogue/catalogue.ts";
 import type { Clock } from "./clock.ts";
 import { type BudgetKind, BUDGET_KINDS, type LedgerStore, utcDay } from "./ledger.ts";
@@ -215,8 +216,13 @@ export class Budget {
    * A child's raise reserves as much on its parent, or fails `BUDGET_EXCEEDED` there (`carve.ts`).
    */
   raise(kind: BudgetKind, by: number): void {
-    this.ledger.raise(this.sessionId, { [kind]: by });
-    this.noticed.delete(kind);
+    this.raiseAll({ [kind]: by });
+  }
+
+  /** Raises every kind of `add` at once (one ledger transaction): all of them, or none. */
+  raiseAll(add: Raise): void {
+    this.ledger.raise(this.sessionId, add);
+    for (const kind of BUDGET_KINDS) if ((add[kind] ?? 0) > 0) this.noticed.delete(kind);
   }
 
   /** Every reading (money as spent, not held), for the budget facts at the head of a run. */

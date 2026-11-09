@@ -195,12 +195,17 @@ class DbCarves implements CarveRecords {
       grow: "UPDATE budget_carves SET amount = amount + ? WHERE sessionId = ? AND kind = ? AND settled = 0",
       settled: "UPDATE budget_carves SET settled = 1 WHERE sessionId = ? AND settled = 0",
       heldBy: "SELECT COALESCE(SUM(amount), 0) AS n FROM budget_carves WHERE parentId = ? AND kind = ? AND settled = 0",
+      pass: "UPDATE budget_carves SET parentId = ? WHERE parentId = ? AND kind = ? AND settled = 0",
       // Recovery: every open carve held on its parent again, then the children no longer live.
       rehold:
         "UPDATE budgets SET reserved = (SELECT SUM(c.amount) FROM budget_carves c WHERE c.parentId = budgets.sessionId AND c.kind = budgets.kind AND c.settled = 0) " +
         "WHERE EXISTS (SELECT 1 FROM budget_carves c WHERE c.parentId = budgets.sessionId AND c.kind = budgets.kind AND c.settled = 0)",
+      // Deepest first, by the chain of open carves (a gone child has no `sessions.depth`).
       notLive:
-        "SELECT DISTINCT c.sessionId FROM budget_carves c LEFT JOIN sessions s ON s.id = c.sessionId WHERE c.settled = 0 AND (s.id IS NULL OR s.status = 'ended') ORDER BY c.sessionId",
+        "WITH RECURSIVE up (sessionId, at, d) AS (SELECT DISTINCT sessionId, parentId, 1 FROM budget_carves WHERE settled = 0 " +
+        "UNION SELECT up.sessionId, c.parentId, up.d + 1 FROM up JOIN budget_carves c ON c.sessionId = up.at AND c.settled = 0) " +
+        "SELECT up.sessionId FROM up LEFT JOIN sessions s ON s.id = up.sessionId WHERE s.id IS NULL OR s.status = 'ended' " +
+        "GROUP BY up.sessionId ORDER BY MAX(up.d) DESC, up.sessionId",
     });
   }
 
@@ -222,6 +227,10 @@ class DbCarves implements CarveRecords {
 
   heldBy(parentId: string, kind: CarvedKind): number {
     return (this.#s.heldBy!.get(parentId, kind) as { n: number }).n;
+  }
+
+  pass(from: string, to: string, kind: CarvedKind): void {
+    this.#s.pass!.run(to, from, kind);
   }
 
   /** After the per-call reservations were returned: the open carves held again; the children no longer live. */
@@ -294,6 +303,10 @@ export class DbLedger implements LedgerStore {
 
   canRaise(sessionId: string, add: Raise): FinError | undefined {
     return raiseRefused(this, this.#carves, sessionId, add);
+  }
+
+  tx<A>(f: () => A): A {
+    return this.#cs.tx(f);
   }
 
   /**

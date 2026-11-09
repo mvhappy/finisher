@@ -6,10 +6,12 @@
 // against a real server, sessions on the scripted `fake` harness (`FIN_TEST_HOOKS=1`).
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
+import { DatabaseSync } from "node:sqlite";
 import { join } from "node:path";
 import type { Approval, Session } from "@finisher/contracts";
 import fc from "fast-check";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from "vitest";
+import { listSessionDirs } from "../src/agent/blobs.ts";
 import { DEFAULT_BUDGET } from "../src/agent/budget.ts";
 import { type Carve, childCarve } from "../src/agent/carve.ts";
 import { manualClock, systemIds } from "../src/agent/clock.ts";
@@ -17,7 +19,7 @@ import { credentialPath } from "../src/agent/credentials.ts";
 import type { FakeScript } from "../src/agent/fake.ts";
 import { type LedgerStore, MemoryLedger, utcDay } from "../src/agent/ledger.ts";
 import { AgentStore, type NewSession } from "../src/agent/store.ts";
-import { type ControlStore, openControlStore } from "../src/control/db.ts";
+import { type ControlStore, controlDbPath, openControlStore } from "../src/control/db.ts";
 import { AgentServer, code } from "./support/agent-server.ts";
 import { addAsset, commit, confirmed, type Exit, type NdjsonClient, ok, tx } from "./support/ndjson-client.ts";
 
@@ -84,6 +86,12 @@ describe("the carve in the ledger", () => {
     return s.id;
   }
 
+  async function childOf2(parent: string, root: string, carve: Carve): Promise<string> {
+    const s = await store.createSession(session({ parent, rootSession: root, depth: 2, carve }));
+    store.apply(s.id, { kind: "ready" });
+    return s.id;
+  }
+
   const row = (id: string, kind: "tokens" | "money") => store.ledger().read(id, kind);
   const carves = () => control.db.prepare("SELECT sessionId, parentId, kind, amount, settled FROM budget_carves ORDER BY sessionId, kind").all();
 
@@ -128,20 +136,56 @@ describe("the carve in the ledger", () => {
     expect(carves()).toEqual([expect.objectContaining({ sessionId: c, settled: 1 }), expect.objectContaining({ sessionId: c, settled: 1 })]);
   });
 
-  test("a deleted child settles before its rows go; a nested child's held carve counts as its parent's spend", async () => {
+  test("a deleted child settles before its rows go; its live children's carves pass to its parent", async () => {
     const p = await rootOf(10_000, 0);
     const c = await childOf(p, { tokens: 4000 });
     const g = await store.createSession(session({ parent: c, rootSession: p, depth: 2, carve: { tokens: 1000 } }));
     expect(row(c, "tokens")).toEqual({ limit: 4000, used: 0, reserved: 1000 });
     store.ledger().add(c, "tokens", { used: 500 });
-    // The child ends with its own child still live: its parent is charged what it spent and what it still holds.
+    // The child ends with its own child still live: its parent is charged what it spent and now holds the grandchild's carve.
     await store.delete(c);
-    expect(row(p, "tokens")).toEqual({ limit: 10_000, used: 1500, reserved: 0 });
-    // The grandchild's end settles into a parent that is gone: nothing is written for it.
+    expect(row(p, "tokens")).toEqual({ limit: 10_000, used: 500, reserved: 1000 });
+    // The grandchild's end settles into the root: what it spent, no more.
     store.ledger().add(g.id, "tokens", { used: 10 });
     store.apply(g.id, { kind: "ended", reason: "briefDone" });
     expect(row(c, "tokens")).toEqual({ limit: null, used: 0, reserved: 0 });
-    expect(row(p, "tokens")).toEqual({ limit: 10_000, used: 1500, reserved: 0 });
+    expect(row(p, "tokens")).toEqual({ limit: 10_000, used: 510, reserved: 0 });
+  });
+
+  test("a raise of a grandchild whose parent has ended reserves on the root, and its spend reaches the root (review 7B Task 7, 1)", async () => {
+    const p = await rootOf(1000, 0);
+    const c = await childOf(p, { tokens: 100 });
+    const g = await childOf2(c, p, { tokens: 40 });
+    store.ledger().add(c, "tokens", { used: 20 });
+    store.apply(c, { kind: "ended", reason: "briefDone" });
+    expect(row(p, "tokens")).toEqual({ limit: 1000, used: 20, reserved: 40 });
+    store.ledger().raise(g, { tokens: 40 });
+    expect(row(g, "tokens").limit).toBe(80);
+    expect(row(p, "tokens")).toEqual({ limit: 1000, used: 20, reserved: 80 });
+    expect(row(c, "tokens").reserved).toBe(0);
+    store.ledger().add(g, "tokens", { used: 80 });
+    store.apply(g, { kind: "ended", reason: "briefDone" });
+    expect(row(p, "tokens")).toEqual({ limit: 1000, used: 100, reserved: 0 });
+    // Past the root's remaining it is refused on the root.
+    const p2 = await rootOf(100, 0);
+    const c2 = await childOf(p2, { tokens: 60 });
+    const g2 = await childOf2(c2, p2, { tokens: 50 });
+    store.apply(c2, { kind: "ended", reason: "briefDone" });
+    expect(fails(() => store.ledger().raise(g2, { tokens: 51 }))).toMatchObject({ code: "BUDGET_EXCEEDED", details: { session: p2, scope: "parent", remaining: 50 } });
+  });
+
+  test("recovery settles the deepest carves first: an ended chain left unsettled is charged once, to the root", async () => {
+    const p = await rootOf(10_000, 0);
+    const c = await childOf(p, { tokens: 4000 });
+    const g = await childOf2(c, p, { tokens: 1000 });
+    store.ledger().add(c, "tokens", { used: 300 });
+    store.ledger().add(g, "tokens", { used: 200 });
+    // Both ended without their settlement (a crash between the two writes, say).
+    control.db.prepare("UPDATE sessions SET status = 'ended' WHERE id IN (?, ?)").run(c, g);
+    store.recoverAfterCrash();
+    expect(row(p, "tokens")).toEqual({ limit: 10_000, used: 500, reserved: 0 });
+    expect(row(c, "tokens")).toMatchObject({ used: 500, reserved: 0 });
+    expect(carves().every((x) => (x as { settled: number }).settled === 1)).toBe(true);
   });
 
   test("recovery keeps live children's carves held, returns per-call reservations, settles carves whose child is gone", async () => {
@@ -207,6 +251,17 @@ describe("the carve in the ledger", () => {
     expect(fails(() => childCarve(store.ledger(), p, {}, undefined, DEFAULT_BUDGET))).toMatchObject({ code: "BUDGET_EXCEEDED", details: { session: p, kind: "tokens", remaining: 1 } });
   });
 
+  test("a kind the parent has no budget for (limit 0) carves 0 by default; asking more of it is BUDGET_EXCEEDED", async () => {
+    const p = await rootOf(10_000, 0);
+    expect(childCarve(store.ledger(), p, {}, undefined, DEFAULT_BUDGET).carve).toEqual({ tokens: 5000, money: 0 });
+    const c = await childOf(p, childCarve(store.ledger(), p, {}, undefined, DEFAULT_BUDGET).carve);
+    expect(row(c, "money")).toEqual({ limit: 0, used: 0, reserved: 0 });
+    expect(fails(() => childCarve(store.ledger(), p, { moneyMicros: 1 }, { moneyMicros: 1 }, DEFAULT_BUDGET))).toMatchObject({ code: "BUDGET_EXCEEDED", details: { session: p, kind: "money", asked: 1, remaining: 0 } });
+    // A limit used up (not 0) still refuses the default.
+    store.ledger().add(p, "tokens", { used: 4999 });
+    expect(fails(() => childCarve(store.ledger(), p, {}, undefined, DEFAULT_BUDGET))).toMatchObject({ code: "BUDGET_EXCEEDED", details: { kind: "tokens", remaining: 1 } });
+  });
+
   test("the in-memory ledger carves, raises and settles as control.db does", () => {
     const run = (l: LedgerStore) => {
       l.setLimit("p", "tokens", 1000);
@@ -225,28 +280,34 @@ describe("the carve in the ledger", () => {
     expect(db).toEqual({ before: { limit: 1000, used: 0, reserved: 400 }, over: "BUDGET_EXCEEDED", after: { limit: 1000, used: 250, reserved: 0 }, child: { limit: 500, used: 250, reserved: 0 } });
   });
 
-  test("carve_property: over spawn, spend, raise, end, delete and crash, used + reserved ≤ limit for every session, no carve outlives its child after recovery, the day's money is real spend once", async () => {
+  test("carve_property: over spawn, spend (overshooting as a real charge can), raise, end, delete and crash: used + reserved ≤ limit until a charge overshoots, the root sees at least every real spend under it, equals it once settled, no carve outlives its child after recovery, the day's money is real spend once", async () => {
     type Op =
       | { op: "spawn"; at: number; ask: number | null }
-      | { op: "spend" | "reserve" | "raise"; at: number; frac: number }
+      | { op: "spend" | "reserve" | "raise"; at: number; frac: number; over: boolean }
       | { op: "end" | "delete"; at: number }
       | { op: "crash" };
+    const KINDS = ["tokens", "money"] as const;
     const at = fc.nat(7);
     const frac = fc.double({ min: 0, max: 1, noNaN: true });
+    // Weighted so that trees nest and a parent often ends before its child.
     const op: fc.Arbitrary<Op> = fc.oneof(
-      fc.record({ op: fc.constant("spawn" as const), at, ask: fc.option(frac, { nil: null }) }),
-      fc.record({ op: fc.constantFrom("spend" as const, "reserve" as const, "raise" as const), at, frac }),
-      fc.record({ op: fc.constantFrom("end" as const, "delete" as const), at }),
-      fc.constant({ op: "crash" as const }),
+      { arbitrary: fc.record({ op: fc.constant("spawn" as const), at, ask: fc.option(frac, { nil: null }) }), weight: 3 },
+      { arbitrary: fc.record({ op: fc.constantFrom("spend" as const, "reserve" as const, "raise" as const), at, frac, over: fc.boolean() }), weight: 4 },
+      { arbitrary: fc.record({ op: fc.constantFrom("end" as const, "delete" as const), at }), weight: 2 },
+      { arbitrary: fc.constant({ op: "crash" as const }), weight: 1 },
     );
     const day = utcDay(clock.now());
     await fc.assert(
-      fc.asyncProperty(fc.integer({ min: 0, max: 50_000 }), fc.integer({ min: 0, max: 5_000_000 }), fc.array(op, { maxLength: 30 }), async (tokens, money, ops) => {
+      fc.asyncProperty(fc.integer({ min: 0, max: 50_000 }), fc.integer({ min: 0, max: 5_000_000 }), fc.array(op, { minLength: 5, maxLength: 40, size: "max" }), fc.boolean(), async (tokens, money, ops, parentsFirst) => {
         control.db.exec("DELETE FROM budget_days");
         const l = store.ledger();
-        const ids = [await rootOf(tokens, money)];
+        const root = await rootOf(tokens, money);
+        const ids = [root];
         const parentOf = new Map<string, string>();
+        /** What each session really spent (a charge lands whatever the limit). */
+        const real = new Map<string, { tokens: number; money: number }>([[root, { tokens: 0, money: 0 }]]);
         let spent = 0;
+        let overshot = false;
         const alive = (i: number) => {
           const id = ids[i % ids.length]!;
           const s = store.get(id);
@@ -256,23 +317,39 @@ describe("the carve in the ledger", () => {
           const r = l.read(id, kind);
           return Math.max(0, (r.limit ?? 0) - r.used - r.reserved);
         };
+        const openCarves = () => control.db.prepare("SELECT sessionId, parentId, kind, amount FROM budget_carves WHERE settled = 0").all() as Array<{ sessionId: string; parentId: string; kind: string; amount: number }>;
         const check = () => {
-          for (const id of ids) {
-            for (const kind of ["tokens", "money"] as const) {
-              const r = l.read(id, kind);
-              if (r.limit !== null) expect(r.used + r.reserved, `${kind} of ${id}`).toBeLessThanOrEqual(r.limit);
+          if (!overshot) {
+            for (const id of ids) {
+              for (const kind of KINDS) {
+                const r = l.read(id, kind);
+                if (r.limit !== null) expect(r.used + r.reserved, `${kind} of ${id}`).toBeLessThanOrEqual(r.limit);
+              }
             }
           }
           expect(l.daily(day).used).toBe(spent);
+          if (store.get(root) === undefined) return;
+          const open = openCarves().filter((c) => real.has(c.sessionId));
+          for (const kind of KINDS) {
+            const total = [...real.values()].reduce((a, x) => a + x[kind], 0);
+            const r = l.read(root, kind);
+            // A live child's overshoot past its carve reaches its parent when it settles.
+            const over = open.filter((c) => c.kind === kind).reduce((a, c) => {
+              const x = l.read(c.sessionId, kind);
+              return a + Math.max(0, x.used + x.reserved - (x.limit ?? 0));
+            }, 0);
+            expect(r.used + r.reserved + over, `the root sees every ${kind} spent under it`).toBeGreaterThanOrEqual(total);
+            if (open.length === 0) expect(r.used, `a settled tree's ${kind}`).toBe(total);
+          }
         };
         for (const o of ops) {
           if (o.op === "crash") {
             store.recoverAfterCrash();
-            const open = control.db.prepare("SELECT sessionId, parentId, kind, amount FROM budget_carves WHERE settled = 0").all() as Array<{ sessionId: string; parentId: string; kind: string; amount: number }>;
+            const open = openCarves();
             for (const c of open) expect(store.get(c.sessionId)?.status, "an open carve's child is live").not.toBe("ended");
             for (const id of ids) {
               if (store.get(id) === undefined) continue;
-              for (const kind of ["tokens", "money"] as const) {
+              for (const kind of KINDS) {
                 const held = open.filter((c) => c.parentId === id && c.kind === kind).reduce((a, c) => a + c.amount, 0);
                 expect(l.read(id, kind).reserved).toBe(held);
               }
@@ -286,22 +363,28 @@ describe("the carve in the ledger", () => {
             const asked = o.ask === null ? undefined : { tokens: Math.floor(o.ask * (left(id, "tokens") + 2)) };
             try {
               const { carve } = childCarve(l, id, asked ?? {}, asked, DEFAULT_BUDGET);
-              const c = await store.createSession(session({ parent: id, rootSession: ids[0]!, depth: 1, carve }));
+              const c = await store.createSession(session({ parent: id, rootSession: root, depth: 1, carve }));
               store.apply(c.id, { kind: "ready" });
               ids.push(c.id);
               parentOf.set(c.id, id);
+              real.set(c.id, { tokens: 0, money: 0 });
             } catch (e) {
               expect((e as { code?: string }).code).toBe("BUDGET_EXCEEDED");
             }
           } else if (o.op === "spend" || o.op === "reserve") {
-            const t = Math.floor(o.frac * left(id, "tokens"));
-            const m = Math.floor(o.frac * left(id, "money"));
+            // A charge may overshoot its projection, past the limit (`Budget.charge` adds what was used).
+            const extra = o.over ? 1 + Math.floor(o.frac * 500) : 0;
+            const t = Math.floor(o.frac * left(id, "tokens")) + extra;
+            const m = Math.floor(o.frac * left(id, "money")) + extra;
             if (o.op === "reserve") {
-              l.add(id, "tokens", { reserved: t });
+              l.add(id, "tokens", { reserved: Math.floor(o.frac * left(id, "tokens")) });
             } else {
+              if (extra > 0) overshot = true;
               l.add(id, "tokens", { used: t });
               l.add(id, "money", { used: m });
               l.addDaily(day, { used: m });
+              const r = real.get(id)!;
+              real.set(id, { tokens: r.tokens + t, money: r.money + m });
               spent += m;
             }
           } else if (o.op === "raise") {
@@ -320,8 +403,14 @@ describe("the carve in the ledger", () => {
           }
           check();
         }
+        // Then every session ends, parents before their children or after: the tree settles.
+        for (const id of parentsFirst ? ids : [...ids].reverse()) {
+          if (alive(ids.indexOf(id)) !== undefined) store.apply(id, { kind: "ended", reason: "userEnded" });
+          check();
+        }
+        expect(openCarves().filter((c) => real.has(c.sessionId)), "a settled tree").toEqual([]);
       }),
-      { numRuns: 60 },
+      { numRuns: 100 },
     );
   });
 });
@@ -486,5 +575,54 @@ describe("carves through spawn", () => {
     // A person deletes the child: what it spent is charged to the parent, the rest returns.
     ok(await confirmed(owner, "agent.session.delete", { sessionId: c.session.id }));
     expect(ledger(p.session.id)).toEqual({ limit: 5000, used: 1200, reserved: 0 });
+  });
+
+  /** A second connection to the server's `control.db`, for a trigger the server's statements then meet. */
+  function controlDb(): DatabaseSync {
+    return new DatabaseSync(controlDbPath(serverData));
+  }
+
+  test("a raise is one transaction: a raise that fails part-way raises nothing and leaves the approval open (review 7B Task 7, 3)", async () => {
+    const { local, projectId } = await boot([PARENT, OVER]);
+    const p = await root(local, projectId, { tokens: 5000 });
+    const c = await spawn(p.client, projectId, "fixer", { budget: { tokens: 1000 } });
+    await until(() => get(c.session.id).status === "interrupted", "the child's budget stop");
+    const approval = server.core.store.approvals(c.session.id)[0]!;
+    const db = controlDb();
+    db.exec(`CREATE TRIGGER no_wall BEFORE UPDATE OF "limit" ON budgets WHEN NEW.kind = 'wallMs' BEGIN SELECT RAISE(ABORT, 'refused'); END`);
+    try {
+      const owner = await server.console();
+      const failed = await confirmed(owner, "agent.approval.answer", { id: approval.id, decision: "allow", add: { tokens: 1000, wallMs: 1000 } });
+      expect(failed.ok).toBe(false);
+      expect(server.core.store.approval(approval.id)!.status).toBe("open");
+      expect(ledger(c.session.id).limit).toBe(1000);
+      expect(ledger(p.session.id).reserved).toBe(1000);
+    } finally {
+      db.exec("DROP TRIGGER no_wall");
+      db.close();
+    }
+  });
+
+  test("a spawn whose carve fails as the child is recorded archives the branch made for it and removes its directories (review 7B Task 7, 6)", async () => {
+    const { local, projectId } = await boot([PARENT, WORKING]);
+    const p = await root(local, projectId, { tokens: 10_000 });
+    const listed = async () => ok<{ branches: Array<{ id: string; state: string }> }>(await local.call("branch.list", { projectId, all: true })).branches;
+    const before = await listed();
+    const dirs = await listSessionDirs(server.core.store.root);
+    const db = controlDb();
+    db.exec("CREATE TRIGGER no_carve BEFORE INSERT ON budget_carves BEGIN SELECT RAISE(ABORT, 'refused'); END");
+    try {
+      expect((await spawnRaw(p.client, projectId, "fixer", { budget: { tokens: 1000 } })).ok).toBe(false);
+    } finally {
+      db.exec("DROP TRIGGER no_carve");
+      db.close();
+    }
+    const after = await listed();
+    const made = after.filter((b) => !before.some((x) => x.id === b.id));
+    expect(made).toHaveLength(1);
+    expect(made[0]!.state).toBe("archived");
+    expect(await listSessionDirs(server.core.store.root)).toEqual(dirs);
+    expect(server.core.store.tree.children(p.session.id)).toEqual([]);
+    expect(ledger(p.session.id)).toMatchObject({ reserved: 0 });
   });
 });

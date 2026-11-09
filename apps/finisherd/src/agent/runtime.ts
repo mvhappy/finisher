@@ -422,29 +422,37 @@ export class Runtime extends RuntimeEngine {
         throw finError("APPROVAL_NOT_FOUND", "no such approval", { id: approvalId });
       })();
       return this.serial(found.sessionId, async () => {
-        let answered: { approval: Approval; session: Session };
-        // A child's raise must fit its parent's remaining (7B Decision 22): refused before it is answered.
-        const refused = found.kind === "budget" && decision === "allow" ? this.store.ledger().canRaise(found.sessionId, { tokens: add.tokens, money: add.moneyMicros, wallMs: add.wallMs }) : undefined;
-        if (refused !== undefined) throw refused;
-        try {
-          answered = this.store.answerApproval(approvalId, decision, principalRef(by));
-        } catch (e) {
-          // Past its deadline it expired instead (`APPROVAL_EXPIRED`): that is journaled.
-          const s = (e as { code?: unknown }).code === "APPROVAL_EXPIRED" ? this.store.get(found.sessionId) : undefined;
+        const raising = found.kind === "budget" && decision === "allow";
+        // The session's `Budget` puts its limits in the ledger first, outside the transaction below.
+        const b = raising ? this.budget(this.session(found.sessionId)) : undefined;
+        // The answer and every raise are one transaction (7B Decision 22): a child's raise past
+        // its parent's remaining, or any failure, answers nothing and raises nothing.
+        const out = this.store.ledger().tx(() => {
+          let answered: { approval: Approval; session: Session };
+          try {
+            answered = this.store.answerApproval(approvalId, decision, principalRef(by));
+          } catch (e) {
+            // Past its deadline it expired instead (`APPROVAL_EXPIRED`): kept, and journaled below.
+            if ((e as { code?: unknown }).code === "APPROVAL_EXPIRED") return { expired: e };
+            throw e;
+          }
+          if (b !== undefined) {
+            b.raiseAll({ tokens: add.tokens, money: add.moneyMicros, wallMs: add.wallMs });
+            this.store.consumeApproval(approvalId);
+          }
+          return { answered };
+        });
+        if ("expired" in out) {
+          const s = this.store.get(found.sessionId);
           if (s !== undefined) this.#journalExpired(s);
-          throw e;
+          throw out.expired;
         }
-        const { approval, session } = answered;
+        const { approval, session } = out.answered;
         this.record("an approval", () => this.journal.approval({ session, approval }));
         this.publishStatus(session);
         // By kind (7B Task 5): a provider's request hears the answer; a rule's is a one-time grant.
         if (approval.kind === "provider") await this.deps.requests?.settle(approval);
-        if (approval.kind !== "budget" || decision !== "allow") return { approval: this.store.approval(approvalId)!, session };
-        const b = this.budget(session);
-        if (add.tokens) b.raise("tokens", add.tokens);
-        if (add.moneyMicros) b.raise("money", add.moneyMicros);
-        if (add.wallMs) b.raise("wallMs", add.wallMs);
-        this.store.consumeApproval(approvalId);
+        if (!raising) return { approval: this.store.approval(approvalId)!, session };
         const now = this.session(session.id);
         if (now.status !== "interrupted") return { approval: this.store.approval(approvalId)!, session: now };
         await this.#refresh(now);
