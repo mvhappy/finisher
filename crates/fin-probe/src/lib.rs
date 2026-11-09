@@ -368,8 +368,9 @@ fn with_path(mut e: CoreError, path: &Path) -> CoreError {
 }
 
 /// The model's fields keep their 4C meaning (spec §4.4): `width`/`height` the coded size, the
-/// rate the average (`samples × timescale / track duration`), the audio rate the track's
-/// timescale; `media` carries the rest.
+/// rate the average (`samples × timescale / track duration`), the audio rate the audio's own
+/// sample rate (sample entry, else the AAC config; never the media timescale); `media`
+/// carries the rest.
 fn parse<R: Read + Seek>(file: &mut R, path: &Path) -> Result<Probe, CoreError> {
     let d = Demuxer::open(io::BufReader::new(file), &Limits::default())
         .map_err(|e| with_path(e, path))?;
@@ -396,7 +397,7 @@ fn parse<R: Read + Seek>(file: &mut R, path: &Path) -> Result<Probe, CoreError> 
     };
     let audio = match (d.audio(), &info.audio) {
         (Some(t), Some(a)) if a.channels > 0 => Some(AudioInfo {
-            sample_rate: t.timescale,
+            sample_rate: a.sample_rate,
             channels: a.channels,
         }),
         _ => None,
