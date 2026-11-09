@@ -1,5 +1,5 @@
 //! Prints the JSON Schema of the TypeScript contract to stdout: `fin-core`'s types plus the
-//! envelope types the engine sends that live above it (fin-store's [`Generation`],
+//! envelope types the engine sends (and `Tx.via`'s `Via`, by name) that live above it (fin-store's [`Generation`],
 //! [`EngineEvent`], [`TxSetAside`], [`HistoryResult`], [`MergeReport`], [`RecoverReport`],
 //! and the [`WriteGuard`] finisherd sends with every write;
 //! fin-probe's [`Probe`]; fin-fonts' [`FontCatalog`], [`FileState`], [`FontsStatus`],
@@ -36,6 +36,8 @@ use fin_store::{
 fn main() {
     let schema = fin_core::json_schema_with(|g| {
         g.subschema_for::<fin_core::Link>();
+        // Reached through `Tx.via` too; named so the plugin SDKs can import it (plan 8B Task 3).
+        g.subschema_for::<fin_core::tx::Via>();
         g.subschema_for::<fin_core::Conflict>();
         g.subschema_for::<Generation>();
         g.subschema_for::<fin_core::branch::BranchState>();

@@ -49,6 +49,16 @@ export const CAPABILITIES: ReadonlyArray<string> = [...FinRpcs.requests.keys()].
 const purgeReason = (selector: unknown): string =>
   selector === "all" ? "all" : selector !== null && typeof selector === "object" && "before" in selector ? "before" : "project";
 
+/**
+ * A client's tx without `via` (spec §3.8): only the plugin host, which commits through the
+ * registry, attributes a tx to a plugin, so no client can. Any value is dropped, even `null`.
+ */
+const withoutVia = (tx: unknown): unknown => {
+  if (tx === null || typeof tx !== "object" || Array.isArray(tx) || !Object.hasOwn(tx, "via")) return tx;
+  const { via: _via, ...rest } = tx as Record<string, unknown>;
+  return rest;
+};
+
 /** Defects (thrown exceptions, bugs) become `INTERNAL` instead of an RPC defect frame. */
 const defectsAsErrors = <A, R>(self: Effect.Effect<A, FinError, R>) =>
   Effect.catchDefect(self, (defect) => Effect.fail(toFinError(defect)));
@@ -306,7 +316,7 @@ export const HandlersLive = FinRpcs.toLayer(
           ),
         ),
       "tx.commit": ({ projectId, tx, generation }, options) =>
-        guard("tx.commit", withMeta(options, (m) => registry.commit(projectId, tx, generation, m))),
+        guard("tx.commit", withMeta(options, (m) => registry.commit(projectId, withoutVia(tx), generation, m))),
       "snapshot.get": ({ projectId, branch }) => guard("snapshot.get", registry.snapshot(projectId, branch)),
       // Errors (unknown project, bad range) travel in the stream's error channel.
       "ops.subscribe": ({ projectId, branch, fromRev, generation }) =>

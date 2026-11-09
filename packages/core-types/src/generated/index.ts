@@ -4369,6 +4369,17 @@ export interface Tx {
   ops: Op[];
   schemaVersion: number;
   txId: string;
+  via?: Via;
+}
+/**
+ * The plugin command a transaction came from: `plugin` is `<id>@<version>`.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "Via".
+ */
+export interface Via {
+  command: string;
+  plugin: string;
 }
 /**
  * The limits of this job's calls and results.

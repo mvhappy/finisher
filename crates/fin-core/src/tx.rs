@@ -28,6 +28,21 @@ pub struct Tx {
     /// (`IDEM_KEY_REUSED`). Stored with the record, so every server that imported it checks.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub args_hash: Option<String>,
+    // The plugin command that proposed the tx (spec §3.8). Set only by the server's plugin
+    // host (a client's is stripped); ignored by apply and replay; carried by rebase and pick.
+    // Absent on every other tx and never written then, so older records keep their bytes.
+    // Boxed, as `CommittedTx::link`: most txs have none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "Via")]
+    pub via: Option<Box<Via>>,
+}
+
+/// The plugin command a transaction came from: `plugin` is `<id>@<version>`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct Via {
+    pub plugin: String,
+    pub command: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

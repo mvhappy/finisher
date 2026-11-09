@@ -500,6 +500,7 @@ fn a_rebuilt_database_refuses_callers_of_the_old_one() {
         base_rev: 1,
         schema_version: SCHEMA_VERSION,
         args_hash: None,
+        via: None,
         ops: vec![asset(&format!("/m/{id}.mov"))],
     };
     let err: CoreError = a

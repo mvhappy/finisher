@@ -74,6 +74,7 @@ fn commit_ops(s: &mut Store, id: &str, ops: Vec<Op>) {
         base_rev,
         schema_version: SCHEMA_VERSION,
         args_hash: None,
+        via: None,
         ops,
     })
     .unwrap();
@@ -801,6 +802,7 @@ fn oversized_tx_is_refused_at_commit() {
             base_rev,
             schema_version: SCHEMA_VERSION,
             args_hash: None,
+            via: None,
             ops: vec![sized_op(1, 1100), sized_op(2, 1100)],
         })
         .unwrap_err();

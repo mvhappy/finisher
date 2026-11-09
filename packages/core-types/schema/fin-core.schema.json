@@ -16041,6 +16041,9 @@
         },
         "txId": {
           "type": "string"
+        },
+        "via": {
+          "$ref": "#/$defs/Via"
         }
       },
       "required": [
@@ -16305,6 +16308,22 @@
         "target",
         "length",
         "sha256"
+      ],
+      "type": "object"
+    },
+    "Via": {
+      "description": "The plugin command a transaction came from: `plugin` is `<id>@<version>`.",
+      "properties": {
+        "command": {
+          "type": "string"
+        },
+        "plugin": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "plugin",
+        "command"
       ],
       "type": "object"
     },
