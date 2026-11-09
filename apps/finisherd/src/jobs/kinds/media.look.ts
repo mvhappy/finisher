@@ -29,7 +29,8 @@ export const MEDIA_FAMILY = "media";
 export const MEDIA_LOOK = "media.look";
 
 /**
- * The `interactive:media` group's limit. A warm worker keeps up to 8 open sources, each with up
+ * The `interactive:media` group's limit (kept by 6B-1, Decision 18: a deviation from
+ * spec §14's interactive row for the warm frame cache; batch kinds use `media/memory.ts`). A warm worker keeps up to 8 open sources, each with up
  * to 64 decoded frames (about 200 MB per 1080p source), the GPU's staging and the PNGs being
  * encoded: half the RAM, at most 6 GiB (Decision 20's rule shape).
  */

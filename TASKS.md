@@ -656,7 +656,7 @@ Spec: `docs/specs/2026-11-07-sub-project-6-media-engine-design.md` (§24 maps th
     - [ ] Task 6: Media Foundation decode bound to the compositor's adapter (Windows 11 host)
     - [ ] Task 7: Media Foundation encode: hardware MFTs for proxies, Microsoft's MFT for export (Windows 11 host)
     - [ ] Task 8: the capability probe and report (encoder test clips, session limits, guidance)
-    - [ ] Task 9: `hwenc` sizing and RAM-scaled limits (the 5C asks)
+    - [x] Task 9: `hwenc` sizing and RAM-scaled limits (the 5C asks). As built: `apps/finisherd/src/media/caps.ts` `hwencSize(answer)` (the smallest `sessionLimit` the report counted on a hardware encoder, else 2) → `engine.definePool("hwenc", n)` after the first answer (a failed or v1 answer leaves 2); `apps/finisherd/src/media/memory.ts` `mediaBatchMemory(display)` = `{ramFraction 0.25, capMiB 4096}`, `{0.35, 6144}` above 1920 × 1080 pixels (for Tasks 11, 14, 15); `media.look` keeps `MEDIA_MEMORY` (Decision 18, documented). Tests `apps/finisherd/test/media-pools.test.ts`. Note: 5C's `WORKER_OOM` carries `{used?, signal?}` and never `limit` (`apps/finisherd/src/jobs/host.ts`), so the plan's `WORKER_OOM {limit}` does not hold; 6B-1 leaves 5C's shape as it is. Until Task 8 the worker answers v1, so `hwenc` stays 2
     - [ ] Task 10: BT.2390 HDR tone mapping and the wide-gamut soft clip (`RENDER_VERSION` 2)
     - [ ] Task 11: `VideoInfo` display, rotation and pixel aspect; `asset.reprobe`; `media.probeDeep`
     - [ ] Task 12: WebM/Matroska demux under limits, with a fuzz target
