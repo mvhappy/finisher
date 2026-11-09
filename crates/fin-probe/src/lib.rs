@@ -396,7 +396,7 @@ fn parse<R: Read + Seek>(file: &mut R, path: &Path) -> Result<Probe, CoreError> 
         _ => None,
     };
     let audio = match (d.audio(), &info.audio) {
-        (Some(t), Some(a)) if a.channels > 0 => Some(AudioInfo {
+        (Some(_), Some(a)) if a.channels > 0 => Some(AudioInfo {
             sample_rate: a.sample_rate,
             channels: a.channels,
         }),

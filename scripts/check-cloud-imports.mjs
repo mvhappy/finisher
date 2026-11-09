@@ -10,9 +10,11 @@
 // - Cargo: the dependency key, a `package = "finisher-cloud…"` rename (any spelling of the
 //   table), `[dependencies.finisher-cloud…]` tables, and, in `Cargo.lock`, a resolved package
 //   by that name.
-// - package.json: a dependency key or `npm:@finisher-cloud/…` alias.
+// - package.json: a dependency key or `npm:@finisher-cloud/…` alias, also in `overrides`,
+//   `resolutions` and `pnpm.overrides`; the pnpm, npm and yarn lock files and pnpm-workspace.yaml.
 //
-// A dynamic import whose specifier is computed at run time cannot be checked here.
+// A dynamic import whose specifier is computed at run time cannot be checked here (a template
+// literal that starts with the scope can: `import(`@finisher-cloud/${x}`)`).
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -20,7 +22,6 @@ import { code as rustCode } from "./check-worker-spawn.mjs";
 import { report, rootArg, walk } from "./walk.mjs";
 
 const NPM_SCOPE = /^@finisher-cloud(?:\/|$)/;
-const CRATE = /finisher[-_]cloud[\w-]*/;
 const KEYWORDS_BEFORE_REGEX = new Set(["return", "typeof", "case", "do", "else", "in", "of", "new", "delete", "void", "throw", "yield", "await"]);
 
 /** TS/JS tokens of `text`: `{ t: "id" | "str" | "tpl" | "p", v }`. Comments are dropped; a
@@ -30,18 +31,33 @@ export function tokens(text) {
   const stack = []; // "tpl" when a `${` is open, "blk" for a plain `{`
   let i = 0;
   const last = () => out[out.length - 1];
+  // The character an escape after a backslash stands for (`i` at the backslash on entry,
+  // at the escape's last character on exit); `\x2f` and `\u002f` spell "/".
+  const escape = () => {
+    const next = text[i + 1] ?? "";
+    const hex = (re) => {
+      const m = re.exec(text.slice(i + 1));
+      if (!m) return null;
+      i += m[0].length;
+      return String.fromCodePoint(Number.parseInt(m[1], 16));
+    };
+    if (next === "x") return hex(/^x([0-9a-fA-F]{2})/) ?? "x";
+    if (next === "u") return hex(/^u\{([0-9a-fA-F]{1,6})\}/) ?? hex(/^u([0-9a-fA-F]{4})/) ?? "u";
+    i++;
+    return { n: "\n", t: "\t", r: "\r" }[next] ?? next;
+  };
   const template = (resumed) => {
     // `i` is just past the opening backtick or the `}` that closes a substitution.
     let v = "";
     for (; i < text.length; i++) {
       const c = text[i];
-      if (c === "\\") v += text[++i] ?? "";
+      if (c === "\\") v += escape();
       else if (c === "`") {
         i++;
         return out.push(resumed ? { t: "tpl", v: "" } : { t: "str", v });
       } else if (c === "$" && text[i + 1] === "{") {
         i += 2;
-        out.push({ t: "tplpart", v });
+        if (!resumed) out.push({ t: "tplhead", v });
         stack.push("tpl");
         return;
       } else v += c;
@@ -61,8 +77,8 @@ export function tokens(text) {
       let v = "";
       i++;
       while (i < text.length && text[i] !== c && text[i] !== "\n") {
-        if (text[i] === "\\") i++;
-        v += text[i] ?? "";
+        if (text[i] === "\\") v += escape();
+        else v += text[i];
         i++;
       }
       i++;
@@ -100,18 +116,22 @@ export function tokens(text) {
       i++;
       while (i < text.length && /[a-z]/.test(text[i])) i++;
       out.push({ t: "num", v: "/re/" });
+    } else if ((c === "+" || c === "-") && n === c) {
+      // `i++ / 2` divides: a postfix operator ends an expression.
+      out.push({ t: "p", v: c + c });
+      i += 2;
     } else {
       out.push({ t: "p", v: c });
       i++;
     }
   }
-  return out.filter((t) => t.t !== "tplpart");
+  return out;
 }
 
 function regexAllowed(prev) {
   if (!prev) return true;
   if (prev.t === "id") return KEYWORDS_BEFORE_REGEX.has(prev.v);
-  if (prev.t === "p") return ![")", "]", "}"].includes(prev.v);
+  if (prev.t === "p") return ![")", "]", "}", "++", "--"].includes(prev.v);
   return false;
 }
 
@@ -120,20 +140,25 @@ export function tsSpecifiers(text) {
   const t = tokens(text);
   const found = [];
   const at = (k, type, v) => t[k]?.t === type && (v === undefined || t[k].v === v);
+  // A specifier: a string, or a template whose literal head names the scope (`@finisher-cloud/${x}`).
+  const spec_ = (k) => (at(k, "str") || at(k, "tplhead") ? t[k].v : undefined);
   for (let k = 0; k < t.length; k++) {
-    if (t[k].t !== "id" || at(k - 1, "p", ".")) continue;
+    if (t[k].t !== "id") continue;
+    // `a.import(..)`, `a.from(..)` and `a.require(..)` are other APIs; `module.require(..)` loads.
+    if (at(k - 1, "p", ".") && !(t[k].v === "require" && at(k - 2, "id", "module"))) continue;
     let spec;
     switch (t[k].v) {
       case "from":
-        if (at(k + 1, "str")) spec = t[k + 1].v;
+        spec = spec_(k + 1);
         break;
       case "import":
         if (at(k + 1, "str")) spec = t[k + 1].v;
-        else if (at(k + 1, "p", "(") && at(k + 2, "str")) spec = t[k + 2].v;
+        else if (at(k + 1, "p", "(")) spec = spec_(k + 2);
+        else if (at(k + 1, "p", ".") && at(k + 2, "id", "meta") && at(k + 3, "p", ".") && at(k + 4, "id", "resolve") && at(k + 5, "p", "(")) spec = spec_(k + 6);
         break;
       case "require":
-        if (at(k + 1, "p", "(") && at(k + 2, "str")) spec = t[k + 2].v;
-        else if (at(k + 1, "p", ".") && at(k + 2, "id", "resolve") && at(k + 3, "p", "(") && at(k + 4, "str")) spec = t[k + 4].v;
+        if (at(k + 1, "p", "(")) spec = spec_(k + 2);
+        else if (at(k + 1, "p", ".") && at(k + 2, "id", "resolve") && at(k + 3, "p", "(")) spec = spec_(k + 4);
         break;
     }
     if (spec !== undefined && NPM_SCOPE.test(spec)) found.push(spec);
@@ -148,34 +173,110 @@ export function rustNames(text) {
   return [...names];
 }
 
-/** `text` of a TOML file without `#` comments (a `#` inside a string stays). */
-function tomlCode(text) {
-  return text
-    .split("\n")
-    .map((line) => {
-      let quote = null;
-      for (let i = 0; i < line.length; i++) {
-        const c = line[i];
-        if (quote) {
-          if (c === "\\" && quote === '"') i++;
-          else if (c === quote) quote = null;
-        } else if (c === '"' || c === "'") quote = c;
-        else if (c === "#") return line.slice(0, i);
+/** The key segments and `package` values of a TOML document: every bare or quoted segment of
+ * a table header or key (`[dependencies.a]`, `a.package = ..`, `"a" = ..`, inline-table keys),
+ * and the string given to a key called `package`. Values are read, never reported, so a
+ * keyword or description that mentions a crate is not a dependency on it. */
+export function tomlKeys(text) {
+  const keys = [];
+  const packages = [];
+  let i = 0;
+  const ws = (newlines) => {
+    for (;;) {
+      const c = text[i];
+      if (c === "#") while (i < text.length && text[i] !== "\n") i++;
+      else if (c === " " || c === "\t" || c === "\r" || (newlines && c === "\n")) i++;
+      else return;
+    }
+  };
+  const str = () => {
+    const q = text[i];
+    const long = text.startsWith(q.repeat(3), i);
+    i += long ? 3 : 1;
+    let v = "";
+    while (i < text.length) {
+      if (long ? text.startsWith(q.repeat(3), i) : text[i] === q || text[i] === "\n") break;
+      if (q === '"' && text[i] === "\\") i++;
+      v += text[i++] ?? "";
+    }
+    i += long ? 3 : 1;
+    return v;
+  };
+  const key = () => {
+    const parts = [];
+    for (;;) {
+      ws(false);
+      const c = text[i];
+      if (c === '"' || c === "'") parts.push(str());
+      else {
+        const m = /^[A-Za-z0-9_-]+/.exec(text.slice(i, i + 256));
+        if (!m) break;
+        parts.push(m[0]);
+        i += m[0].length;
       }
-      return line;
-    })
-    .join("\n");
+      ws(false);
+      if (text[i] !== ".") break;
+      i++;
+    }
+    keys.push(...parts);
+    return parts;
+  };
+  const value = (path) => {
+    ws(true);
+    const c = text[i];
+    if (c === '"' || c === "'") {
+      const v = str();
+      if (path.at(-1) === "package") packages.push(v);
+    } else if (c === "[") {
+      i++;
+      for (ws(true); i < text.length && text[i] !== "]"; ws(true)) {
+        const before = i;
+        value([]);
+        ws(true);
+        if (text[i] === ",") i++;
+        if (i === before) i++;
+      }
+      i++;
+    } else if (c === "{") {
+      i++;
+      for (ws(true); i < text.length && text[i] !== "}"; ws(true)) {
+        const before = i;
+        const p = key();
+        ws(false);
+        if (text[i] === "=") (i++, value(p));
+        ws(true);
+        if (text[i] === ",") i++;
+        if (i === before) i++;
+      }
+      i++;
+    } else {
+      while (i < text.length && !",]}\n".includes(text[i]) && text[i] !== "#") i++;
+    }
+  };
+  while (i < text.length) {
+    ws(true);
+    if (text[i] === "[") {
+      i += text[i + 1] === "[" ? 2 : 1;
+      key();
+      while (i < text.length && text[i] !== "\n") i++;
+    } else if (i < text.length) {
+      const before = i;
+      const p = key();
+      ws(false);
+      if (text[i] === "=") (i++, value(p));
+      while (i < text.length && text[i] !== "\n") i++;
+      if (i === before) i++;
+    }
+  }
+  return { keys, packages };
 }
 
 /** Cloud crates a `Cargo.toml` depends on: by key (`name = …`, `name.workspace = true`,
- * `[dependencies.name]`) or by `package = "name"` under any alias. */
+ * `[dependencies.name]`, `dependencies.name = …`) or by `package = "name"` under any alias. */
 export function cargoNames(text) {
-  const toml = tomlCode(text);
-  const found = new Set();
-  for (const m of toml.matchAll(/(?:^|[\s,{])"?('?)(finisher[-_]cloud[\w-]*)\1"?\s*(?:=|\.\w+\s*=|\])/gm)) found.add(m[2]);
-  for (const m of toml.matchAll(/\bpackage\s*=\s*["'](finisher[-_]cloud[\w-]*)["']/g)) found.add(m[1]);
-  for (const m of toml.matchAll(/^\s*\[[^\]\n]*\.(?:"|')?(finisher[-_]cloud[\w-]*)(?:"|')?\s*\]/gm)) found.add(m[1]);
-  return [...found];
+  const { keys, packages } = tomlKeys(text);
+  const cloud = /^finisher[-_]cloud[\w-]*$/;
+  return [...new Set([...keys, ...packages].filter((n) => cloud.test(n)))];
 }
 
 /** Cloud packages a `Cargo.lock` resolved. */
@@ -183,7 +284,13 @@ export function lockNames(text) {
   return [...new Set([...text.matchAll(/^name\s*=\s*"(finisher[-_]cloud[\w-]*)"/gm)].map((m) => m[1]))];
 }
 
-/** Cloud packages a `package.json` depends on, by key or `npm:` alias. */
+const DEP_FIELDS = new Set([
+  "dependencies", "devDependencies", "peerDependencies", "optionalDependencies", "bundledDependencies",
+  "bundleDependencies", "overrides", "resolutions", "catalog", "catalogs", "patchedDependencies",
+]);
+
+/** Cloud packages a `package.json` depends on, by key or `npm:` alias, in any dependency field
+ * (also `overrides`, `resolutions`, `pnpm.overrides`, catalogs). */
 export function packageJsonNames(text) {
   let json;
   try {
@@ -192,20 +299,38 @@ export function packageJsonNames(text) {
     return [];
   }
   const found = new Set();
-  for (const field of ["dependencies", "devDependencies", "peerDependencies", "optionalDependencies"]) {
-    for (const [name, spec] of Object.entries(json?.[field] ?? {})) {
-      if (NPM_SCOPE.test(name)) found.add(name);
-      const alias = typeof spec === "string" ? spec.match(/@finisher-cloud\/[^@\s]+/) : null;
+  const walk = (node, inDeps) => {
+    if (typeof node === "string") {
+      const alias = inDeps ? node.match(/@finisher-cloud\/[^@\s]+/) : null;
       if (alias) found.add(alias[0]);
+    } else if (node && typeof node === "object") {
+      for (const [k, v] of Object.entries(node)) {
+        if (inDeps && NPM_SCOPE.test(k)) found.add(k);
+        walk(v, inDeps || DEP_FIELDS.has(k));
+      }
     }
+  };
+  walk(json, false);
+  return [...found];
+}
+
+/** Cloud packages a lock or workspace file (`pnpm-lock.yaml`, `pnpm-workspace.yaml`,
+ * `package-lock.json`, `yarn.lock`) names, outside `#` comments. */
+export function lockfileNames(text) {
+  const found = new Set();
+  for (const line of text.split("\n")) {
+    if (line.trimStart().startsWith("#")) continue;
+    for (const m of line.matchAll(/@finisher-cloud\/[\w.-]+/g)) found.add(m[0]);
   }
   return [...found];
 }
 
+const JS_LOCKS = ["pnpm-lock.yaml", "pnpm-workspace.yaml", "package-lock.json", "yarn.lock"];
+
 /** Whether `path` (repo-relative, "/") is a file kind the gate reads. */
 export function relevant(path) {
   const base = path.split("/").pop();
-  return /\.(ts|tsx|mts|cts|js|jsx|mjs|cjs|rs)$/.test(path) || ["Cargo.toml", "Cargo.lock", "package.json"].includes(base);
+  return /\.(ts|tsx|mts|cts|js|jsx|mjs|cjs|rs)$/.test(path) || ["Cargo.toml", "Cargo.lock", "package.json", ...JS_LOCKS].includes(base);
 }
 
 /** The violations in one file (`path` repo-relative with "/"). */
@@ -216,6 +341,7 @@ export function check(path, text) {
   if (base === "Cargo.toml") return cargoNames(text).map((n) => `${path}: depends on ${n}`);
   if (base === "Cargo.lock") return lockNames(text).map((n) => `${path}: resolves ${n}`);
   if (base === "package.json") return packageJsonNames(text).map((n) => `${path}: depends on ${n}`);
+  if (JS_LOCKS.includes(base)) return lockfileNames(text).map((n) => `${path}: resolves ${n}`);
   return [];
 }
 

@@ -358,12 +358,18 @@ pub(crate) fn probe<R: Read + Seek>(
     let parsed = (|| {
         let mut archive =
             zip::ZipArchive::new(file).map_err(|e| format!("not a dotLottie archive: {e}"))?;
-        let manifest = member(&mut archive, size, "manifest.json", MANIFEST_LIMIT)?;
-        let manifest: Value = serde_json::from_slice(&manifest)
-            .map_err(|e| format!("malformed JSON in manifest.json: {e}"))?;
-        let dir = animation_dir(&manifest)?;
-        let id = first_animation(&manifest)?;
-        let name = format!("{dir}/{id}.json");
+        let bytes = member(&mut archive, size, "manifest.json", MANIFEST_LIMIT)?;
+        // The manifest's text and tree are dropped before the (up to 32 MiB) animation is read.
+        let name = {
+            let manifest: Value = serde_json::from_slice(&bytes)
+                .map_err(|e| format!("malformed JSON in manifest.json: {e}"))?;
+            format!(
+                "{}/{}.json",
+                animation_dir(&manifest)?,
+                first_animation(&manifest)?
+            )
+        };
+        drop(bytes);
         let anim = member(&mut archive, size, &name, ANIMATION_LIMIT)?;
         info(&anim, &name)
     })();
