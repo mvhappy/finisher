@@ -3,6 +3,15 @@
 Spec: `docs/specs/2026-11-01-finisher-architecture-design.md` (§27 holds the spike conclusions).
 Spike code, results and report are local-only in `archive/spike/` (git-ignored).
 
+## Paused 2026-11-09 (weekly usage limit; resumes after 2026-11-14 01:00 CET)
+
+Done and merged into `sp4c-edit-breadth` before the pause: 5B (Tasks 11–14), macOS session containment and test health, the load-sensitive flaky-test fixes, undo placement, 8B Batch B (`630db4ef`).
+
+Stopped partway through, resume from these:
+- **5E (VM, `~/wt-sp5e`):** Tasks 1–3 are on `home/sp5e` (`28dcdaa2`). Task 4 (`review.verdict` v1) is unverified WIP on `home/wip/sp5e-task4` (`cfce6682`). Re-run its tests, clippy, `pnpm test` and gates, then review it.
+- **8B (pc-worker, `~/wt-sp8b`):** Batch C, Task 6 (plugin rights and reach) was cut off mid-implementation. Uncommitted work may remain in the worktree.
+- **6B-1 (olhapi-t3code):** Tasks 10 (tonemap), 11 (reprobe) and 12 (WebM) were cut off mid-implementation, and Task 13 (cache) was in review. Check the `sp6b1` worktree for uncommitted work.
+
 ## Spike round 1 (2026-11-02): done
 
 S1–S11 executed on macOS. Conclusions are in spec §27.
