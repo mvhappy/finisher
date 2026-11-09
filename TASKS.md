@@ -520,7 +520,7 @@ Plan: `docs/superpowers/plans/2026-11-07-diagnostics-and-training-data-hooks.md`
 - [ ] Sub-project 7: keep server data, and with it the `ui` token, unreadable to agents
 - [ ] Sub-project 9: the onboarding consent question (no pre-selected answer) and the diagnostics notice
 - [ ] Sub-project 6: GPU facts in `session.start`
-- [ ] A legal review before the first upload: the notice wording, ePrivacy Art. 5(3) for storage on the device, and whether some regions need consent for diagnostics too (part of "Counsel before release/upload")
+- [ ] A legal review before the first upload: the notice wording, ePrivacy Art. 5(3) for storage on the device, and whether some regions need consent for diagnostics too (part of "Counsel before release/upload"). **Added 2026-11-09 (review finding 6, arch §21.1):** (a) legitimate interest (GDPR Art. 6(1)(f)) for basic diagnostics needs a documented purpose, necessity and balancing assessment, since having no content does not establish it; (b) whether *uploading* diagnostics needs consent under ePrivacy; (c) the training dataset is consented capture only: the builder reads the journal and agent-trace store, never the op log (owner decision), and built examples are a regenerable cache deleted with the entries they derive from
 - [ ] `consent.changed` across a restart: a server that opens under a consent other than `state.json`'s (an env override added or removed) journals none. Decide whether the uploader needs one (the stamps and `rev` show the change)
 
 ## Owner decisions of 2026-11-07 (sub-projects 5–8, cross-cutting)
