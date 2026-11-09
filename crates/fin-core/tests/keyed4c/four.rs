@@ -153,12 +153,14 @@ pub fn slips(since: &[CommittedTx]) -> BTreeMap<String, Rational> {
 /// where our own shift-less move put a partner somewhere our later op's position does not
 /// follow, or a committed relocation of our anchor carried our move past it, or a
 /// position-inside-an-item code at one of the `self_drifted` indexes ([`super::self_drift`]),
-/// where our own slide or overwrite move moved an edge across our later op's kept position.
+/// where our own slide or overwrite move moved an edge across our later op's kept position, or
+/// a `SLIDE_BLOCKED` at one of the `gapped` indexes ([`lifted_gap`]).
 pub fn refusal_allowed(
     e: &CoreError,
     since: &[CommittedTx],
     drifted: &std::collections::BTreeSet<usize>,
     self_drifted: &std::collections::BTreeSet<usize>,
+    gapped: &std::collections::BTreeSet<usize>,
 ) -> Result<(), String> {
     if e.code != "CONFLICT" {
         return Err(format!("not a conflict: {e:?}"));
@@ -194,6 +196,7 @@ pub fn refusal_allowed(
             && (drifted.contains(&c.op_index)
                 || self_drifted.contains(&c.op_index)
                     && super::SELF_DRIFT_CODES.contains(&c.reason.as_str())
+                || gapped.contains(&c.op_index) && c.reason == "SLIDE_BLOCKED"
                 || c.against_tx
                     .as_ref()
                     .is_some_and(|t| since.iter().any(|s| s.tx.tx_id == *t))
@@ -323,6 +326,39 @@ pub fn anchor_drift(
             {
                 out.insert(i);
             }
+        }
+    }
+    out
+}
+
+/// The ops of ours that *lifted gap* covers (spec §4.3 *lifted*, its refusal): a slide of an
+/// item our earlier insert or move put on a track a committed shift-less relocation touched.
+/// That relocation (a slide of the track's last item, say) moved an edge without a shift, so
+/// our placement keeps the position it was written at and can land past a gap a fresh one
+/// closes. Our slide then has no touching neighbour on that side and is refused
+/// `SLIDE_BLOCKED`. It is blamed only when exactly one committed record touched what the
+/// slide names (spec §4.3, a re-run that fails); when several did (a transition set on the
+/// moved item, then the slide), nothing is. The refusal is right for the op as mapped
+/// (comparison already leaves lifted tracks out, [`super::lifted_on`]), so it is allowed here
+/// (fixed case `rebase_moves_props::slide_after_lifted_end_refuses_unblamed`).
+pub fn lifted_gap(
+    keyed: &[super::Keyed],
+    since: &[CommittedTx],
+) -> std::collections::BTreeSet<usize> {
+    use super::{Key, Keyed, reference};
+    let lifted = super::lifted_tracks(since);
+    let mut placed: Vec<String> = Vec::new();
+    let mut out = std::collections::BTreeSet::new();
+    for (i, k) in keyed.iter().enumerate() {
+        match k {
+            Keyed::Insert { name, track, .. } if lifted.contains(track) => {
+                placed.push(reference(&Key::Own(name.clone())));
+            }
+            Keyed::Move { clip, to, .. } if lifted.contains(to) => placed.push(reference(clip)),
+            Keyed::Slide { clip, .. } if placed.contains(&reference(clip)) => {
+                out.insert(i);
+            }
+            _ => {}
         }
     }
     out

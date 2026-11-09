@@ -165,3 +165,41 @@ fn transition_past_relocated_anchor_refuses_unblamed() {
     ];
     check(&base(&lens, false, false), &committed, &mine).unwrap();
 }
+
+/// The shrunk case of a 100k-case run (spec §4.3 *lifted*, `keyed4c::lifted_gap`): t4 holds
+/// `c1`, `c2` and `c3`; the head sets a transition between `c1` and `c2`, then slides `c3` back
+/// a frame, so t4 ends at frame 29 and no shift is recorded. Ours ripple-moves `c1` to t4's end,
+/// written at frame 30, then slides it back two frames. The move keeps 30 and leaves a frame's
+/// gap after `c3`, so the slide has no touching neighbour and is refused `SLIDE_BLOCKED`, with
+/// nothing blamed: both committed records touched what ours names.
+#[test]
+fn slide_after_lifted_end_refuses_unblamed() {
+    use keyed4c::Intent::{Move, Slide, TrSet};
+    let lens = [vec![], vec![], vec![], vec![10, 10, 10]];
+    let committed = [
+        (vec![TrSet { track: 3, clip: 2 }], false),
+        (
+            vec![Slide {
+                track: 3,
+                clip: 2,
+                frames: -1,
+            }],
+            false,
+        ),
+    ];
+    let mine = [
+        Move {
+            track: 3,
+            clip: 3,
+            to: 3,
+            before: None,
+            overwrite: false,
+        },
+        Slide {
+            track: 3,
+            clip: 2,
+            frames: -2,
+        },
+    ];
+    check(&base(&lens, false, false), &committed, &mine).unwrap();
+}
