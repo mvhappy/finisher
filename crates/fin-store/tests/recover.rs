@@ -915,6 +915,54 @@ fn recover_retry_same_tx_id_is_idempotent() {
     assert_eq!(err.code, "INVALID_OP");
 }
 
+/// Review #35: an ordinary branch creation holding `<txId>-1` is not a recovery to answer a
+/// retry from, whatever group is asked for; a retry asking for other groups is refused too,
+/// and a record under the next id that is not the recovery's is left out of its answer.
+#[test]
+fn recover_retry_answers_only_from_its_own_records() {
+    let e = env();
+    let Split { mut a, .. } = diverged(&e, |a| {
+        on(a, "x1", MAIN, vec![insert(0, "a1")]);
+    });
+    branch(&mut a, "recovery-1", "ordinary", MAIN);
+    let sel = Some(RecoverSel::Group("does-not-exist".into()));
+    let err = fin_core::CoreError::from(a.recover(req("recovery", sel)).unwrap_err());
+    assert_eq!(err.code, "IDEM_KEY_REUSED", "{err:?}");
+    assert_eq!(err.details["kind"], "branch", "{err:?}");
+    let err = fin_core::CoreError::from(
+        a.recover(req("recovery", Some(RecoverSel::All)))
+            .unwrap_err(),
+    );
+    assert_eq!(err.code, "IDEM_KEY_REUSED", "{err:?}");
+    assert_eq!(
+        a.recover_groups().unwrap().len(),
+        1,
+        "nothing was recovered"
+    );
+
+    let group = a.recover_groups().unwrap()[0].id.clone();
+    let first = create_all(&mut a, "rec");
+    assert_eq!(first.created.len(), 1);
+    let sel = Some(RecoverSel::Group(group));
+    let err = fin_core::CoreError::from(a.recover(req("rec", sel)).unwrap_err());
+    assert_eq!(err.code, "IDEM_KEY_REUSED", "another selection: {err:?}");
+    let mut other_author = req("rec", Some(RecoverSel::All));
+    other_author.author = "someone".into();
+    let err = fin_core::CoreError::from(a.recover(other_author).unwrap_err());
+    assert_eq!(err.code, "IDEM_KEY_REUSED", "another author: {err:?}");
+    let next = format!("rec-{}", first.committed.len() + 1);
+    on(&mut a, &next, MAIN, vec![asset("/m/n.mov")]);
+    let again = create_all(&mut a, "rec");
+    assert_eq!(again.committed, first.committed);
+    assert_eq!(again.created, first.created);
+    let ours = first.committed[0].tx.args_hash.clone();
+    assert!(
+        ours.as_deref().is_some_and(|h| h.starts_with("blake3:")),
+        "{ours:?}"
+    );
+    assert!(first.committed.iter().all(|c| c.tx.args_hash == ours));
+}
+
 /// An undo in the tail names its unit's clip literally (its ops come from the inverse): the
 /// copy names the fresh id.
 #[test]
