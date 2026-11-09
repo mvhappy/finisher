@@ -137,6 +137,15 @@ describe("commandOf", () => {
     expect(commandsOf("tx.commit", { ...claimed, via: claimed.tx.via }).some((n) => n.startsWith("plugin:"))).toBe(false);
   });
 
+  test("a_malformed_host_via_names_no_plugin", () => {
+    const body = { tx: { ops: [{ op: "item.split" }] } };
+    // `plugin` must be `<id>@<version>` and `command` non-empty, else the via is absent.
+    for (const [plugin, command] of [["plain", "go"], ["@acme/tools", "go"], ["plain@", "go"], ["@1.0.0", "go"], ["", "go"], ["plain@1.0.0", ""]]) {
+      const names = commandsOf("tx.commit", body, { via: { plugin: plugin!, command: command! } });
+      expect(names, `${plugin} ${command}`).toEqual(["item.split", "rpc:tx.commit"]);
+    }
+  });
+
   test("every_rpc_also_names_rpc_method", () => {
     for (const tag of tags) expect(commandsOf(tag, {}).at(-1), tag).toBe(`rpc:${tag}`);
     expect(commandsOf("project.status", { projectId: "p" })).toEqual(["project.status", "status", "rpc:project.status"]);

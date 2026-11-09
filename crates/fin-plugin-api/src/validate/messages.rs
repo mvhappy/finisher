@@ -1,7 +1,7 @@
 //! Message catalogues (arch §17.1): `messages` names a directory of `<locale>.json` files,
 //! each a flat JSON object of message key → ICU message. `locales` includes `en`, and every
-//! key the manifest references (a model's `purpose`, a caption style's `title`) is in the
-//! `en` catalogue.
+//! key the manifest references (a model's `purpose`, a caption style's `title`, a command's
+//! `title` and its argument `description`s) is in the `en` catalogue.
 
 use std::collections::BTreeMap;
 
@@ -10,7 +10,7 @@ use super::{Invalid, PackageFiles};
 use crate::manifest::Manifest;
 
 /// `[a-z][A-Za-z0-9]*` segments joined by `.`, at most 128 bytes.
-fn key_ok(k: &str) -> bool {
+pub(crate) fn key_ok(k: &str) -> bool {
     k.len() <= 128
         && k.split('.').all(|seg| {
             let b = seg.as_bytes();
@@ -38,6 +38,15 @@ fn referenced_keys(m: &Manifest) -> Vec<(String, String)> {
     for (i, s) in m.contributes.caption_styles.iter().enumerate() {
         if let Some(t) = &s.title {
             v.push((format!("/contributes/captionStyles/{i}/title"), t.clone()));
+        }
+    }
+    for (i, c) in m.contributes.commands.iter().enumerate() {
+        let base = format!("/contributes/commands/{i}");
+        v.push((format!("{base}/title"), c.title.clone()));
+        // Well-formed keys only, without compiling the schema (`content` does that once);
+        // a malformed description is `content`'s `argsSchema`.
+        for (at, key) in c.args.descriptions() {
+            v.push((format!("{base}/args{at}"), key));
         }
     }
     v

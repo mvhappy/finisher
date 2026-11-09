@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/*"]
+members = ["crates/*", "examples/plugins/rust-tools"]
 # Everything but the cross-host harness, which enables `fin-store/test-hooks`: a build or test
 # of the default members never unifies that feature into `fin` or `fin-node`
 # (`scripts/check-test-hooks.mjs`). Build the harness alone: `cargo build -p fin-store-xhost`.
@@ -8,6 +8,9 @@ members = ["crates/*"]
 # worker links them: their SVT-AV1 and dav1d builds need cmake, nasm on x86_64 and the
 # `third_party/svt-av1` and `third_party/dav1d` submodules. `fin-codecs`' own fixtures:
 # `cargo test -p fin-codecs --features testing`.
+# The plugin SDK, its harness and the example plugins (sub-project 8B) are members outside the
+# defaults, like `fin-plugin-cli`: plugin authors' tooling, not part of the app; `--workspace`
+# builds and tests them.
 default-members = [
     "crates/fin",
     "crates/fin-codecs",

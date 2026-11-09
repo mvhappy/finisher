@@ -17,6 +17,7 @@ import { settingsHandlers } from "./net/settings-rpc.ts";
 import { EnvironmentTag, envMoved } from "./env/descriptor.ts";
 import { envHandlers } from "./env/rpc.ts";
 import { chainOf, credentialOf, withChain, writeGuardOf } from "./chain/chain.ts";
+import { withoutVia } from "./chain/client-via.ts";
 import { AuditTag } from "./control/audit.ts";
 import { ConnectionRegistryTag, ConnectionsTag } from "./connections.ts";
 import { issueChallenge, mayChallenge, noteMinted } from "./auth/challenges.ts";
@@ -343,8 +344,9 @@ export const HandlersLive = FinRpcs.toLayer(
             Effect.flatMap(requireAbsolute("path", path), (p) => probeFor(chainOf(options)?.principal, projects, projectId, p)),
           ),
         ),
+      // The chain already strips a client's `via`; this is the backstop for a chainless caller.
       "tx.commit": ({ projectId, tx, generation }, options) =>
-        guard("tx.commit", withMeta(options, (m) => registry.commit(projectId, tx, generation, m))),
+        guard("tx.commit", withMeta(options, (m) => registry.commit(projectId, withoutVia(tx), generation, m))),
       "snapshot.get": ({ projectId, branch }) => guard("snapshot.get", registry.snapshot(projectId, branch)),
       // Errors (unknown project, bad range) travel in the stream's error channel.
       "ops.subscribe": ({ projectId, branch, fromRev, generation }) =>
