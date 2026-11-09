@@ -1,8 +1,10 @@
 //! Ingest (spec §5.1 step 2): Y′CbCr code values to display-encoded R′G′B′ `f32`: bilinear
 //! chroma upsampling at the source's siting, range expansion, the source matrix, and the
-//! wide-gamut conversion to Rec.709 (spec §10.1).
+//! conversion to the Rec.709 SDR working space: the wide-gamut matrix and soft clip, or the HDR
+//! tone mapping (`fin_media::colour::tonemap`, spec §10.1).
 
-use fin_media::colour::convert::{convert_gamut, decode, primaries_to_709};
+use fin_media::colour::convert::decode;
+use fin_media::colour::tonemap::Conversion;
 use fin_media::{ChromaSiting, PixelFormat};
 
 use super::mipchain::Image;
@@ -100,7 +102,7 @@ pub(crate) fn ingest(src: &SourceFrame) -> Image {
         ChromaSiting::TopLeft => (0.0, 0.0),
         ChromaSiting::Left | ChromaSiting::Unknown => (0.0, 0.5),
     };
-    let gamut = primaries_to_709(tags.primaries);
+    let conversion = Conversion::for_source(&tags, src.hdr.as_ref());
     let ([py, pu, pv], bits) = planes(src);
     let mut px = Vec::with_capacity(w * h);
     for y in 0..h {
@@ -111,10 +113,7 @@ pub(crate) fn ingest(src: &SourceFrame) -> Image {
             let cb = bilinear(&pu, cw, ch, fx, fy);
             let cr = bilinear(&pv, cw, ch, fx, fy);
             let rgb = decode(yv, cb, cr, tags.range, bits, tags.matrix);
-            px.push(match &gamut {
-                Some(m) => convert_gamut(rgb, m),
-                None => rgb,
-            });
+            px.push(conversion.apply(rgb));
         }
     }
     Image {

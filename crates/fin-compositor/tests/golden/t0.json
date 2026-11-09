@@ -8,7 +8,7 @@
     "blend-normal": "ee31eb19ad26f9ab7a272259c383d5708597395a241d0a440b902fc3775a03c1",
     "blend-overlay": "18ff0ca42a2021538d46c004869a1e1925a966c5f5e585a2a23c77b06511c6bb",
     "blend-screen": "4b7740d3dab8edb08728b735e2af8e327684db21a0005b72e652b06b4226c765",
-    "bt2020-gamut": "6a1bc264337a6e3866920f0c28263e020fe530c47b7db4167cd553292ef2ca79",
+    "bt2020-gamut": "ec657f30f3c28755fcba4d8a8fc03d0f8b23a50405826a3d1739316bcea674d8",
     "bt601-full-range-centre-siting": "36ccbd30b083c5490d5510fa1eeb1c6ee1f6fe6aca92bf2032d120893e4e76b8",
     "contain-16x9-in-9x16": "6bd192979ffc0cde078d4f84f29e5b4f9c1b82f99f25393ea8cd951a55248bcc",
     "contain-9x16-in-16x9": "be54bff2c93814135c797bd6c8ad7cdbff7f114add8ca8e3c444af8908579ed1",
@@ -20,6 +20,8 @@
     "dissolve-0.5": "f2cb7791918b7829d6de328b6852ff97c4130aadd6160cc4f8b3dd4885b53bd7",
     "dissolve-1.0": "ddf5d6db4a138cae913ae6f2fd680bd83f469914c1e22602eb768e3ea60066ca",
     "fractional-position": "966a6bc77f073e9e1e4b661e2241046699c0d69e021d465874ba066d33ee850a",
+    "hlg-1000": "442ea79247cab285448c7493db29a138f4e9329474a9178e2fae77bc0a35da7b",
+    "hlg-full-range": "18e30eca5e38bda87d3bdf8fe028003b2d8c0afaafb3f4817b1d22bff270032e",
     "midpoint-tie": "24c8c44f66c53eb2913bf9cdd6fcd1cb993c6866be66350d96f1fbb671a37980",
     "minified-0.3": "8eaa25d2454d88bc6109cbf0936c72a7247845d0b921466a5d54a3ca84827bac",
     "mips-4k-into-1080p": "e8473a4babff08e4b02a25eb44373e51cb4213a312f33c82a6b0cdf84f1fa33b",
@@ -27,6 +29,11 @@
     "off-frame": "8661a13c42df9de3bbce5d8a1b95c19a3c9761dad8d2bd18b6973556a598bbfc",
     "opacity-keyframe-sample": "83499bcd72b9e00b2e8be1d50a98d98fba625e1e690a05023199c8959f1f00e1",
     "output-size-differs": "9cf95e37a566df5b5097beb7bd4056eac507d325ef3b2b26fc244e8223e33e0d",
+    "p3-gamut": "56d26b1437c12ecfc71c2834d27760a1b216c7f51ec4ff2cead35bea5b9b38c6",
+    "pq-bt709-primaries": "84c5b4a52b994e88285a0becc5f3d310bf959a05baedb5384c9dac43650b2672",
+    "pq-clli-4000": "ef9510250496002a60371a21d1ade5f344b1cf25a04e0bca89e9df21e67b9759",
+    "pq-default-peak": "4285c437104a79ba0102dab707f52e449b1a958b97d965289e53eff49a052465",
+    "pq-mdcv-600": "713bd72c81f7c528c871ad9423faf6beb76568cb2489eeecc6dda63757682630",
     "rotated-portrait-source": "a1aa8c4b3c442d8a08a63e1d06c4581d8fdd0549cf50a9240273d84425dd8e94",
     "rotation-180-source": "4a8c31cf834f8c6c05252d6214e0c7adbf15a65baf72c44f6efc304e04511291",
     "rotation-30-degrees": "b950a82aea8125d890a7fdcb8c73265d69cc65bbbdcf148b23508767d0b4bfce",
@@ -34,5 +41,5 @@
     "skips-non-clip-and-effects": "f3d83619726ddb244751f6cf8fef93e377c8737877cac9a77c6ee097b53a8613",
     "two-tracks": "b1f7823c2382756114c052707040c286669e7fa966ceceaeb9eafc7cf04d2126"
   },
-  "renderVersion": 1
+  "renderVersion": 2
 }

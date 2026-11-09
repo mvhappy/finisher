@@ -92,20 +92,23 @@ fn transfer_and_gamut() {
         primaries_to_709(Primaries::Bt709).is_none()
             && primaries_to_709(Primaries::Bt601_625).is_none()
     );
-    // White stays white; BT.2020 pure green is out of Rec.709's gamut and clips.
+    // White stays neutral, rolled off by the soft clip to softclip(1.0) = 0.941 421 linear
+    // (0.975 18 encoded); BT.2020 pure green is out of Rec.709's gamut: R and B go negative
+    // (encoded as 0) and G = 1.1329 rolls off to 0.8 + 0.2 · 1.6645 / √(1 + 1.6645²) = 0.971 44.
+    let white = fin_media::colour::softclip::softclip(1.0);
     let m = primaries_to_709(Primaries::Bt2020).unwrap();
     assert!(near(
         convert_gamut([1.0, 1.0, 1.0], &m),
-        [1.0, 1.0, 1.0],
+        [from_linear(white); 3],
         1e-3
     ));
     let g = convert_gamut([0.0, 1.0, 0.0], &m);
     assert_eq!((g[0], g[2]), (0.0, 0.0));
-    assert!((g[1] - 1.0).abs() < 1e-6);
+    assert!((g[1] - from_linear(0.971_44)).abs() < 1e-5, "{g:?}");
     let p3 = primaries_to_709(Primaries::DisplayP3).unwrap();
     assert!(near(
         convert_gamut([1.0, 1.0, 1.0], &p3),
-        [1.0, 1.0, 1.0],
+        [from_linear(white); 3],
         1e-3
     ));
 }

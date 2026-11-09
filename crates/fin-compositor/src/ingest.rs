@@ -7,7 +7,8 @@
 //! Each layout has its own fetch prefix (`ingest_*.wgsl`) in front of the shared body, so every
 //! format reaches the conversion as code values, in the reference's order of operations.
 
-use fin_media::colour::convert::{luma_coefficients, primaries_to_709};
+use fin_media::colour::convert::luma_coefficients;
+use fin_media::colour::tonemap::{Conversion, Eetf, Hdr};
 use fin_media::{ChromaSiting, PixelFormat, Range};
 
 use crate::gpu::Stage;
@@ -22,6 +23,8 @@ pub(crate) const SHADERS: [(&str, &str); 3] = [
 ];
 /// The body every ingest shader shares.
 pub(crate) const BODY: &str = include_str!("shaders/ingest.wgsl");
+/// The colour conversion the body ends with (fin-media's `tonemap` and `softclip`, ported).
+pub(crate) const TONEMAP: &str = include_str!("shaders/tonemap.wgsl");
 
 /// The ingest stage for `format` (`source::readable` has checked it is one of the three).
 pub(crate) fn stage(format: PixelFormat) -> Stage {
@@ -61,7 +64,7 @@ pub(crate) const SOURCE_USAGE: wgpu::TextureUsages =
     wgpu::TextureUsages::RENDER_ATTACHMENT.union(wgpu::TextureUsages::TEXTURE_BINDING);
 
 /// The `Ingest` uniform block of `ingest.wgsl`.
-pub(crate) fn uniforms(src: &SourceFrame) -> [f32; 24] {
+pub(crate) fn uniforms(src: &SourceFrame) -> [f32; 32] {
     let tags = src.colour;
     let (cw, ch) = (src.size.width.div_ceil(2), src.size.height.div_ceil(2));
     // Chroma sample k sits at luma coordinate 2k + offset (as the reference reads it).
@@ -83,10 +86,27 @@ pub(crate) fn uniforms(src: &SourceFrame) -> [f32; 24] {
         Range::Limited => (16.0 * scale, 219.0 * scale, 224.0 * scale),
         Range::Full => (0.0, max, max),
     };
-    let identity = luma_coefficients(tags.matrix).is_none();
+    let gbr = luma_coefficients(tags.matrix).is_none();
     let (kr, kb) = luma_coefficients(tags.matrix).unwrap_or((0.2126, 0.0722));
-    let gamut = primaries_to_709(tags.primaries);
-    let g = gamut.unwrap_or([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]);
+    let identity = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
+    // The conversion (`tonemap::Conversion`) as the shader's mode, matrix and EETF constants.
+    let none = Eetf {
+        black: 0.0,
+        range: 1.0,
+        max_lum: 1.0,
+        min_lum: 0.0,
+        knee: 1.0,
+    };
+    let (mode, g, e, target) = match Conversion::for_source(&tags, src.hdr.as_ref()) {
+        Conversion::None => (0.0, identity, none, 1.0),
+        Conversion::Gamut(m) => (1.0, m, none, 1.0),
+        Conversion::Hdr(kind, p) => (
+            if kind == Hdr::Pq { 2.0 } else { 3.0 },
+            p.gamut,
+            p.eetf,
+            p.target_peak,
+        ),
+    };
     [
         cw as f32,
         ch as f32,
@@ -98,8 +118,8 @@ pub(crate) fn uniforms(src: &SourceFrame) -> [f32; 24] {
         c_scale,
         kr,
         kb,
-        if identity { 1.0 } else { 0.0 },
-        if gamut.is_some() { 1.0 } else { 0.0 },
+        if gbr { 1.0 } else { 0.0 },
+        mode,
         g[0][0],
         g[0][1],
         g[0][2],
@@ -111,6 +131,14 @@ pub(crate) fn uniforms(src: &SourceFrame) -> [f32; 24] {
         g[2][0],
         g[2][1],
         g[2][2],
+        0.0,
+        e.black,
+        e.range,
+        e.max_lum,
+        e.min_lum,
+        e.knee,
+        target,
+        0.0,
         0.0,
     ]
 }

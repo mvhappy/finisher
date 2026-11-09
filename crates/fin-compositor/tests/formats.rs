@@ -1,7 +1,8 @@
 //! Platform decoder layouts (sub-project 6B-1): NV12 (8-bit 4:2:0, Y then interleaved UV) and
 //! P010 (10-bit 4:2:0 in little-endian 16-bit words, the value in the high 10 bits, Y then
 //! interleaved UV), built from the 6A pattern's I420 planes. The reference reads NV12 exactly
-//! as the I420 it came from and P010 with 8-bit-derived values within ±1 code of it; the GPU
+//! as the I420 it came from and P010 with 8-bit-derived values within ±1 code of it (±8 for
+//! full-range HDR, where scaling by 4 is inexact and the curves magnify it); the GPU
 //! is within T1 of the reference for both (`FIN_GPU`, `FIN_REQUIRE_GPU` as in `gpu.rs`).
 
 mod common;
@@ -13,7 +14,7 @@ use fin_compositor::compare::{passes, t1};
 use fin_compositor::{LayerIssue, SourceFrame, SourceProvider, reference};
 use fin_core::Rational;
 use fin_core::eval::Layer;
-use fin_media::{ColourTags, PixelFormat, Rotation, Size};
+use fin_media::{ColourTags, PixelFormat, Range, Rotation, Size, Transfer};
 
 /// How P010 words are made from 8-bit codes.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -95,8 +96,13 @@ impl SourceProvider for Converted<'_> {
         );
         let depth = self.depth;
         let src = self.inner.frame(l)?;
-        let (size, colour, rotation, pixel_aspect) =
-            (src.size, src.colour, src.rotation, src.pixel_aspect);
+        let (size, colour, hdr, rotation, pixel_aspect) = (
+            src.size,
+            src.colour,
+            src.hdr,
+            src.rotation,
+            src.pixel_aspect,
+        );
         if !self.cache.contains_key(&key) {
             let p = convert(&src, depth);
             self.cache.insert(key.clone(), p);
@@ -112,6 +118,7 @@ impl SourceProvider for Converted<'_> {
             planes: [&p.y, &p.uv, &[]],
             strides: [p.strides[0], p.strides[1], 0],
             colour,
+            hdr,
             rotation,
             pixel_aspect,
         })
@@ -152,7 +159,18 @@ fn nv12_reads_as_the_i420_it_came_from_and_p010_within_one_code() {
         assert_eq!(p010.skipped, want.skipped, "{}: p010 skips", case.name);
         let d = max_abs(&p010.rgba8, &want.rgba8);
         eprintln!("{:<32} p010 (scaled) vs i420 max {d}", case.name);
-        assert!(d <= 1, "{}: p010 within ±1 of i420, max {d}", case.name);
+        // `code << 2` is exact for limited range but not for full range (4 · 255 = 1020 of
+        // 1023, 0.3 % low at the top), which the HLG and PQ curves magnify near their peaks.
+        let hdr_full = case.sources.values().any(|s| {
+            s.colour.range == Range::Full
+                && matches!(s.colour.transfer, Transfer::Pq | Transfer::Hlg)
+        });
+        let limit = if hdr_full { 8 } else { 1 };
+        assert!(
+            d <= limit,
+            "{}: p010 within ±{limit} of i420, max {d}",
+            case.name
+        );
     }
 }
 
@@ -191,6 +209,7 @@ impl SourceProvider for Fixed {
             planes: [&self.planes[0], &self.planes[1], &[]],
             strides: [self.strides[0], self.strides[1], 0],
             colour: ColourTags::BT709,
+            hdr: None,
             rotation: Rotation::R0,
             pixel_aspect: Rational::from_int(1),
         })

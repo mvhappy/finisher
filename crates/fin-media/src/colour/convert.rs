@@ -1,6 +1,6 @@
 //! Colour conversion shared by both compositors (spec §5.1 ingest, §10.1): range expansion,
 //! the BT.601/709/2020 Y′CbCr matrices, BT.1886 transfer, and the wide-gamut SDR primaries
-//! conversion to the Rec.709 working space. Scalar `f32`, `libm` for powers (spec §13.4).
+//! conversion to the Rec.709 working space (HDR is `tonemap`'s). Scalar `f32`, `libm` for powers (spec §13.4).
 
 use super::{Matrix, Primaries, Range};
 
@@ -104,14 +104,20 @@ pub fn primaries_to_709(p: Primaries) -> Option<[[f32; 3]; 3]> {
     }
 }
 
-/// A display-encoded R′G′B′ in primaries `m`'s gamut to Rec.709: linearised, converted,
-/// clipped to 0…1 (6A clips; the soft clip of spec §10.1 is 6B's), re-encoded.
+/// A display-encoded R′G′B′ in primaries `m`'s gamut to Rec.709: linearised, then
+/// [`linear_to_709`].
 pub fn convert_gamut(rgb: [f32; 3], m: &[[f32; 3]; 3]) -> [f32; 3] {
-    let l = [to_linear(rgb[0]), to_linear(rgb[1]), to_linear(rgb[2])];
+    linear_to_709([to_linear(rgb[0]), to_linear(rgb[1]), to_linear(rgb[2])], m)
+}
+
+/// Linear light through the 3×3 `m`, then per channel the soft clip
+/// ([`softclip`](super::softclip::softclip), spec §10.1; 6A hard-clipped to 0…1 before
+/// `RENDER_VERSION` 2) and the BT.1886 encode. Wide-gamut SDR and tone-mapped HDR share it.
+pub fn linear_to_709(l: [f32; 3], m: &[[f32; 3]; 3]) -> [f32; 3] {
     let mut out = [0.0f32; 3];
     for (k, row) in m.iter().enumerate() {
         let v = row[0] * l[0] + row[1] * l[1] + row[2] * l[2];
-        out[k] = from_linear(v.clamp(0.0, 1.0));
+        out[k] = from_linear(super::softclip::softclip(v));
     }
     out
 }

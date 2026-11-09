@@ -335,6 +335,7 @@ impl SourceProvider for Decoded {
             planes: [&f.planes[0].data, &f.planes[1].data, &f.planes[2].data],
             strides: [f.planes[0].stride, f.planes[1].stride, f.planes[2].stride],
             colour: video.colour.resolve_defaults(f.size.height),
+            hdr: video.hdr,
             rotation: video.rotation,
             pixel_aspect: video.pixel_aspect,
         })

@@ -194,7 +194,7 @@ describe("media.capabilities", () => {
     const c: MediaCapabilities = first;
     expect(c.codecs.video.find((v) => v.codec === "av1")).toMatchObject({ decode: "software", encode: "software", backends: ["dav1d", "svt-av1"] });
     expect(c.codecs.video.find((v) => v.codec === "hevc")).toMatchObject({ decode: "none", encode: "none" });
-    expect(c.worker).toEqual({ version: expect.stringMatching(/^\d+\.\d+\.\d+/), renderVersion: 1 });
+    expect(c.worker).toEqual({ version: expect.stringMatching(/^\d+\.\d+\.\d+/), renderVersion: 2 });
     expect(c.gpu === null || typeof c.gpu?.vendor === "number").toBe(true);
     const jobs = s.t.engine.list({}).jobs.filter((j) => j.kind === "media.capabilities").length;
     expect(await Effect.runPromise(caps(OWNER))).toEqual(first);
