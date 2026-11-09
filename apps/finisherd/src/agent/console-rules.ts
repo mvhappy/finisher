@@ -1,11 +1,13 @@
 // `finisherd agent rules ls|add|rm` and `finisherd project trust <dir|id>` (sub-project 7B
 // Decision 7): the owner's command rules from the console. Listing needs no terminal; adding
 // and removing a `local` rule and trusting a project's `finisher.rules.json` are a person's,
-// with a terminal and the typed code (`confirmed`).
+// with a terminal and a confirmation (`confirmed`, owner decision of 2026-11-08): `y` to add a
+// rule, the rule id's first 8 characters typed back to remove one, the project id's first 8
+// characters to trust a project's file (what its rules allow, its agents may do).
 import type { ListedRule } from "@finisher/contracts";
 import { type ConsoleConnection, consoleError, valueOf } from "../console/client.ts";
 import { type CommandContext, withConnection } from "../console/commands/context.ts";
-import { confirmed, requireTty } from "../console/confirm.ts";
+import { confirmed, proceed, requireTty, typeName } from "../console/confirm.ts";
 import { has, one, onlyFlags, usage } from "../console/format.ts";
 import { safe } from "../console/safe.ts";
 import { projectArg } from "./console.ts";
@@ -77,7 +79,7 @@ async function add(ctx: CommandContext, rest: ReadonlyArray<string>): Promise<nu
   requireTty(ctx.prompt, "agent rules add");
   const scope = session !== undefined ? `session ${session}` : project !== undefined ? `project ${payload.projectId}` : "every project";
   const { rule } = await withConnection(ctx, (c) =>
-    confirmed<{ rule: ListedRule }>(c, ctx.prompt, `This adds a local rule: ${effect} ${command} for agent sessions of ${scope}.`, "agent.rules.add", payload),
+    confirmed<{ rule: ListedRule }>(c, ctx.prompt, `This adds a local rule: ${effect} ${command} for agent sessions of ${scope}.`, proceed, "agent.rules.add", payload),
   );
   ctx.output.out(has(ctx.args, "json") ? JSON.stringify({ rule }) : `Added ${ruleLine(rule)}`);
   return 0;
@@ -88,7 +90,7 @@ async function remove(ctx: CommandContext, rest: ReadonlyArray<string>): Promise
   const [id, ...more] = rest;
   if (id === undefined || more.length > 0) usage("agent rules rm needs one rule id (agent rules ls lists them)");
   requireTty(ctx.prompt, "agent rules rm");
-  const { removed } = await withConnection(ctx, (c) => confirmed<{ removed: boolean }>(c, ctx.prompt, `This removes local rule ${id}.`, "agent.rules.remove", { id }));
+  const { removed } = await withConnection(ctx, (c) => confirmed<{ removed: boolean }>(c, ctx.prompt, `This removes local rule ${id}.`, typeName("rule id's first 8 characters", id.slice(0, 8)), "agent.rules.remove", { id }));
   ctx.output.out(removed ? `Removed rule ${id}.` : `No local rule ${id}: nothing changed (rules of the other layers live in their files).`);
   return 0;
 }
@@ -109,6 +111,7 @@ export async function projectTrust(ctx: CommandContext, target: string): Promise
       c,
       ctx.prompt,
       `This trusts project ${projectId}'s finisher.rules.json as it is now (${file.length} rules above): its rules apply to agent sessions until the file changes.`,
+      typeName("project id's first 8 characters", projectId.slice(0, 8)),
       "agent.project.trust",
       // What was shown: a file changed since is refused.
       { projectId, expectedHash: rulesHash },

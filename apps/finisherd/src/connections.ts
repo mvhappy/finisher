@@ -19,9 +19,30 @@
 //   `protocol.ts` registers here closes it.
 import type { FinError } from "@finisher/contracts";
 import { Context } from "effect";
-import { ANONYMOUS, type Principal } from "./principal.ts";
+import { ANONYMOUS, isProved, type Principal } from "./principal.ts";
 
-export type Transport = "socket" | "pipe" | "ws";
+/** `agentTcp`: the Linux agent listener on loopback TCP (plan 7C Task 6, `agent/listener.ts`). */
+export type Transport = "socket" | "pipe" | "ws" | "agentTcp";
+
+/**
+ * A listener's own rules (the agent listener's, plan 7C Decision 13): which proved principals it
+ * serves (checked after the proof, `handshake.ts`), how long a connection may stay unproved, and
+ * how many may be open at once. Timers are injected (tests).
+ */
+export interface ListenerRules {
+  readonly admits: (p: Principal) => boolean;
+  readonly handshakeTimeoutMs: number;
+  /** Open connections at once, proved or not. */
+  readonly maxConnections: number;
+  /**
+   * Unproved connections at once (≤ `maxConnections`): loopback TCP is open to every local user,
+   * so one that holds unproved connections cannot fill the slots proved agents need.
+   */
+  readonly maxUnproved: number;
+  /** A connection was refused at a cap (for a rate-limited log line). */
+  readonly onRefused?: (cap: "connections" | "unproved") => void;
+  readonly timers?: { readonly set: (f: () => void, ms: number) => unknown; readonly clear: (h: unknown) => void };
+}
 
 export type CredentialRef = { kind: "local" | "console" } | { kind: "agent" | "mcp"; id: string };
 
@@ -69,6 +90,8 @@ const credentialKey = (p: { readonly kind: string; readonly id: string }) => `${
 export class Connections {
   readonly #byId = new Map<number, Connection>();
   readonly #links = new Map<number, Link>();
+  /** Handshake timers of unproved connections (`ListenerRules`). */
+  readonly #timers = new Map<number, unknown>();
   /** Whether a principal's credential was revoked (`ConnectionRegistry.add` sets it). */
   #revoked: (p: Principal) => boolean = () => false;
 
@@ -77,12 +100,19 @@ export class Connections {
   readonly endpoint: () => string;
   private readonly initial: Principal;
   private readonly now: () => number;
+  private readonly rules: ListenerRules | undefined;
 
-  constructor(transport: Transport, endpoint: () => string, initial: Principal = ANONYMOUS, now: () => number = Date.now) {
+  constructor(transport: Transport, endpoint: () => string, initial: Principal = ANONYMOUS, now: () => number = Date.now, rules?: ListenerRules) {
     this.transport = transport;
     this.endpoint = endpoint;
     this.initial = initial;
     this.now = now;
+    this.rules = rules;
+  }
+
+  /** Whether this transport serves `p` once proved (every principal, unless its rules say). */
+  admits(p: Principal): boolean {
+    return this.rules === undefined || this.rules.admits(p);
   }
 
   /**
@@ -103,8 +133,34 @@ export class Connections {
    */
   attach(clientId: number, link: Link, principal: Principal = this.initial, peer?: Peer): Connection {
     const c: Connection = { clientId, transport: this.transport, openedAt: this.now(), principal, failures: 0, ...(peer === undefined ? {} : { peer }) };
+    const rules = this.rules;
+    const full =
+      rules === undefined
+        ? undefined
+        : this.#byId.size >= rules.maxConnections
+          ? ("connections" as const)
+          : !isProved(principal) && this.#unproved() >= rules.maxUnproved
+            ? ("unproved" as const)
+            : undefined;
+    if (full !== undefined) {
+      // Over a cap: not registered, closed at once.
+      c.principal = ANONYMOUS;
+      link.close();
+      rules?.onRefused?.(full);
+      return c;
+    }
     this.#byId.set(clientId, c);
     this.#links.set(clientId, link);
+    if (rules !== undefined) {
+      const timers = rules.timers ?? { set: (f: () => void, ms: number) => setTimeout(f, ms).unref(), clear: (h: unknown) => clearTimeout(h as NodeJS.Timeout) };
+      this.#timers.set(
+        clientId,
+        timers.set(() => {
+          this.#timers.delete(clientId);
+          if (this.#byId.get(clientId) === c && !isProved(c.principal)) link.close();
+        }, rules.handshakeTimeoutMs),
+      );
+    }
     // A ticket taken before its credential was revoked must not bring a connection in after
     // the revocation swept the live ones (review of Task 7, M3).
     if (this.#revoked(principal)) {
@@ -112,6 +168,13 @@ export class Connections {
       link.close();
     }
     return c;
+  }
+
+  /** Live connections that have not proved a credential. */
+  #unproved(): number {
+    let n = 0;
+    for (const c of this.#byId.values()) if (!isProved(c.principal)) n++;
+    return n;
   }
 
   /** Sets how this transport learns of revoked credentials (`ConnectionRegistry`). */
@@ -129,6 +192,11 @@ export class Connections {
   close(clientId: number): void {
     this.#byId.delete(clientId);
     this.#links.delete(clientId);
+    const t = this.#timers.get(clientId);
+    if (t !== undefined) {
+      (this.rules?.timers?.clear ?? ((h: unknown) => clearTimeout(h as NodeJS.Timeout)))(t);
+      this.#timers.delete(clientId);
+    }
   }
 
   /** The protocol's handle on a live connection. */

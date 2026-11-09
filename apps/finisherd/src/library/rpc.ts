@@ -1,5 +1,5 @@
 // The `library.*` RPCs (plan 5D Task 13): the handlers `handlers.ts` takes as call sites. Every
-// one passes the chain first (scopes, human-only and typed confirmation: `scopes.ts`), so these
+// one passes the chain first (scopes, human-only and the challenge code: `scopes.ts`), so these
 // only check what the chain cannot: that a library exists and is in the caller's reach (an
 // unknown library and one out of reach answer the same `LIBRARY_NOT_FOUND`), that a path
 // below a root is a plain relative path, and what each call's state allows.
@@ -31,7 +31,7 @@ import { chainOf } from "../chain/chain.ts";
 import type { JobEngine } from "../jobs/api.ts";
 import { ANONYMOUS } from "../principal.ts";
 import { toFinError } from "../errors.ts";
-import { acceptVolume, addLibrary, removeLibrary, scanLibrary, setLibrary } from "./admin.ts";
+import { acceptEmptyRoot, acceptUnmounted, acceptVolume, addLibrary, removeLibrary, scanLibrary, setLibrary } from "./admin.ts";
 import type { FileState } from "./api.ts";
 import { filesFresh, searchFresh } from "./fresh.ts";
 import { lookupLibraries } from "./lookup.ts";
@@ -90,6 +90,16 @@ export function libraryHandlers({ service: svc, engine, guard }: LibraryRpcDeps)
       catch: toFinError,
     });
 
+  /** `dir`, a path below the root, as a nested mount point's `RawRel` (never the root itself). */
+  const mountRel = (lib: LibraryRow, dir: string): Effect.Effect<{ components: string[] }, FinError> =>
+    Effect.gen(function* () {
+      const ref = yield* dirRef(lib, dir);
+      if ("dirId" in ref && ref.dirId === 1) return yield* Effect.fail(invalid("acceptUnmounted.dir", "name a directory below the root"));
+      const r = (yield* reader.query(lib.id, "core", "dirRel", ref)) as { rel?: { components: string[] } };
+      if (r.rel === undefined) return yield* Effect.fail(notFound("folder", {}));
+      return r.rel;
+    });
+
   return {
     // The owner's changes (human-only): the registry audits them.
     "library.add": (req: LibraryAddRequest, options: object) =>
@@ -109,15 +119,21 @@ export function libraryHandlers({ service: svc, engine, guard }: LibraryRpcDeps)
     "library.set": (req: LibrarySetRequest, options: object) =>
       guard(
         "library.set",
-        Effect.flatMap(libraryAny(svc, req.id), (lib) =>
-          run(async () => {
-            const { id: _i, challenge: _c, acceptVolume: accept, ...fields } = req;
+        Effect.gen(function* () {
+          const lib = yield* libraryAny(svc, req.id);
+          // The nested mount to forget, as the catalog's path of it (an unknown or root directory fails before anything changes).
+          const mount = req.acceptUnmounted === undefined ? undefined : yield* mountRel(lib, req.acceptUnmounted.dir);
+          const { id: _i, challenge: _c, acceptVolume: accept, acceptUnmounted: _u, acceptEmptyRoot: empty, ...fields } = req;
+          const actor = actorOf(options);
+          return yield* run(async () => {
             const patch = defined(fields) as LibraryPatch;
-            if (Object.keys(patch).length > 0) await setLibrary(svc, lib.id, patch, actorOf(options));
-            if (accept === true) await acceptVolume(svc, lib.id, actorOf(options));
-            return { library: await shown(svc.registry.get(lib.id) ?? lib) };
-          }),
-        ),
+            if (Object.keys(patch).length > 0) await setLibrary(svc, lib.id, patch, actor);
+            if (accept === true) await acceptVolume(svc, lib.id, actor);
+            if (empty === true) await acceptEmptyRoot(svc, lib.id, actor);
+            const unmounted = mount === undefined ? undefined : (await acceptUnmounted(svc, lib.id, [mount], actor)).dirs.length;
+            return { library: await shown(svc.registry.get(lib.id) ?? lib), ...(unmounted === undefined ? {} : { unmounted }) };
+          });
+        }),
       ),
     "library.list": (_: object, options: object) =>
       guard("library.list", run(async () => ({ libraries: await Promise.all(reachable(svc, principalOf(options)).map(shown)) }))),

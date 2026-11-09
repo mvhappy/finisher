@@ -1,8 +1,8 @@
 // `finisherd agent mint|credentials|revoke` and the mint `finisherd mcp setup` shares (spec §4.7, plan 5A
-// Task 9): the owner's agent and MCP credentials. Minting and revoking need a terminal and a
-// typed code; listing reads only and runs anywhere. The agent session commands (`agent start|ls|
-// show|…`, 7A Task 12) are `agent/console.ts`'s; `agent ls` lists sessions since then, and the
-// credentials moved to `agent credentials`.
+// Task 9): the owner's agent and MCP credentials. Minting and revoking need a terminal and a `y`
+// (owner decision of 2026-11-08); listing reads only and runs anywhere. The agent session
+// commands (`agent start|ls|show|…`, 7A Task 12) are `agent/console.ts`'s; `agent ls` lists
+// sessions since then, and the credentials moved to `agent credentials`.
 //
 // A minted credential's file is the only copy of its key. With `--out` the console creates the
 // file **before** it mints (`createPrivateFile`: new, owner-only from creation, and its open
@@ -10,14 +10,14 @@
 // otherwise), so a mint never leaves a live credential without its file. The key is written
 // whole and fsynced; when that fails the credential is revoked on the same connection (no new
 // code: the server lets the connection that minted a credential take it back) and the file
-// removed. A cancelled code, Ctrl-C or any other failure removes the file too. Without
+// removed. A cancelled answer, Ctrl-C or any other failure removes the file too. Without
 // `--out` (`agent mint` only) the file's contents are shown once on this terminal.
 import { resolve } from "node:path";
 import type { Credential, CredentialFile, CredentialKind } from "@finisher/contracts";
 import { SCOPES } from "@finisher/contracts";
 import { createPrivateFile, type PrivateFile } from "@finisher/fin-node";
 import { consoleError, valueOf } from "../client.ts";
-import { confirmed, requireTty } from "../confirm.ts";
+import { confirmed, proceed, requireTty } from "../confirm.ts";
 import { agentSessions, SESSION_COMMANDS } from "../../agent/console.ts";
 import { agentRules } from "../../agent/console-rules.ts";
 import { all, has, one, onlyFlags, usage } from "../format.ts";
@@ -110,7 +110,7 @@ export async function mint(ctx: CommandContext, kind: CredentialKind, rest: Read
   let minted: { credential: Credential; file: CredentialFile };
   try {
     minted = await withConnection(ctx, async (c) => {
-      const m = await confirmed<{ credential: Credential; file: CredentialFile }>(c, ctx.prompt, describeMint(kind, label, scopes, projects, branches), "auth.credential.mint", payload);
+      const m = await confirmed<{ credential: Credential; file: CredentialFile }>(c, ctx.prompt, describeMint(kind, label, scopes, projects, branches), proceed, "auth.credential.mint", payload);
       if (file === undefined) return m;
       try {
         file.commit(`${JSON.stringify(m.file)}\n`);
@@ -186,6 +186,7 @@ async function revoke(ctx: CommandContext, rest: ReadonlyArray<string>): Promise
       c,
       ctx.prompt,
       `This revokes the ${found.kind} credential ${id} ("${found.label}"): its connections end now, and its file stops working.`,
+      proceed,
       "auth.credential.revoke",
       { id },
     );

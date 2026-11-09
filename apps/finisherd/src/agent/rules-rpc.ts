@@ -1,6 +1,6 @@
 // The rule RPCs (sub-project 7B Decision 7): `agent.rules.list` reads every layer;
 // `agent.rules.add|remove` write the `local` layer and `agent.project.trust` trusts a project's
-// `finisher.rules.json`, all three the owner's (`agent.admin`, people only, typed code: the
+// `finisher.rules.json`, all three the owner's (`agent.admin`, people only, challenge code: the
 // chain checked it). A rule or trust names a project or a session the caller must reach: a
 // session out of reach is `SESSION_NOT_FOUND`, a local rule out of reach is not listed and its
 // removal answers `removed: false`, exactly as a missing one. Listing a project gives its

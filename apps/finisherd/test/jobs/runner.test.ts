@@ -81,7 +81,7 @@ describe("exit verdicts", () => {
       [info({ reason: "killed", kill: "hung" } as never), false, "hung", "WORKER_HUNG"],
       [info({ reason: "killed", kill: "jobEnded" } as never), false, "killed", "WORKER_CRASHED"],
       [info({ reason: "protocolError", what: "seq" } as never), false, "protocolError", "WORKER_CRASHED"],
-      [info({ reason: "spawnFailed", what: "selfSandbox" } as never), false, "spawnFailed", "WORKER_UNAVAILABLE"],
+      [info({ reason: "spawnFailed", what: "selfSandbox" } as never), false, "spawnFailed", "SANDBOX_UNAVAILABLE"],
       [info({ reason: "protocolMismatch", expected: "v1", got: "v2" } as never), false, "protocolError", "WORKER_PROTOCOL_MISMATCH"],
     ];
     for (const [i, ended, reason, code] of rows) {

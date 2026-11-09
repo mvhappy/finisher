@@ -105,7 +105,7 @@ export interface AgentWiringDeps {
   /** `control.db` itself, for the approvals' check-and-insert transactions (7B Task 4). */
   readonly control: ControlStore;
   readonly audit: Audit;
-  /** `FIN_SERVER` for the built-in `fin`: the local socket until 7C's agent listener. */
+  /** `FIN_SERVER` for the built-in `fin`: the local socket (it runs outside the OS sandbox, spec §8.9). */
   readonly endpoint: string;
   readonly log: (message: string) => void;
   readonly options?: AgentServeOptions;

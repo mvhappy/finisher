@@ -34,9 +34,10 @@ export class NdjsonClient {
     });
   }
 
-  static connect(path: string): Promise<NdjsonClient> {
+  /** `path`: the local socket; `{host, port}`: TCP (the agent listener, plan 7C Task 6). */
+  static connect(path: string | { readonly host: string; readonly port: number }): Promise<NdjsonClient> {
     return new Promise((resolve, reject) => {
-      const socket = connect({ path });
+      const socket = connect(typeof path === "string" ? { path } : { host: path.host, port: path.port });
       socket.once("connect", () => resolve(new NdjsonClient(socket)));
       socket.once("error", reject);
     });

@@ -52,17 +52,11 @@ export const RPC_ONLY: ReadonlySet<FinRpcTag> = new Set<FinRpcTag>([
   "jobs.submit",
   "jobs.watch",
   "jobs.workers",
-  // The library and the training store.
+  // The library's person-only and internal RPCs (the `fin library` ones are its commands'), and
+  // the training store.
   "library.add",
   "library.remove",
-  "library.set",
-  "library.list",
-  "library.status",
-  "library.files",
-  "library.file",
-  "library.search",
   "library.lookup",
-  "library.scan",
   "library.watch",
   "training.closedTargets.get",
   "training.closedTargets.set",

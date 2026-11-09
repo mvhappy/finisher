@@ -18,6 +18,7 @@ import { CONTROL_CHAINS } from "../src/control/migrations.ts";
 import { runConsole } from "../src/console/main.ts";
 import type { Prompt } from "../src/console/prompt.ts";
 import { AgentServer, code, open } from "./support/agent-server.ts";
+import { person } from "./support/person.ts";
 import { addAsset, commit, confirmed, type NdjsonClient, ok, tx } from "./support/ndjson-client.ts";
 
 let tmp: string;
@@ -181,22 +182,6 @@ describe("project trust", () => {
   });
 });
 
-/** A person at a terminal who types back each code shown. */
-function person(): Prompt & { shown: string[] } {
-  const shown: string[] = [];
-  let last = "";
-  return {
-    shown,
-    isInteractive: () => true,
-    show: (text: string) => {
-      shown.push(text);
-      const m = /type this code within 60 seconds: ([0-9A-Z]{6})$/.exec(text);
-      if (m) last = m[1]!;
-    },
-    ask: async () => last,
-  };
-}
-
 const NOT_A_TERMINAL: Prompt = { isInteractive: () => false, show: () => undefined, ask: async () => "" };
 
 async function run(argv: string[], prompt: Prompt = NOT_A_TERMINAL) {
@@ -219,7 +204,7 @@ describe("the console", () => {
     expect(ls.out).toContain("project rules (finisher.rules.json): none");
     expect((await run(["agent", "rules", "rm", rule.id], person())).out).toContain(`Removed rule ${rule.id}.`);
     expect(code(await checkpoint(a, projectId, session.rootBranch!))).toBeUndefined();
-    // project trust shows the file's rules, then asks for the code.
+    // project trust shows the file's rules, then asks for the project id's first 8 characters.
     writeRules(dir, [{ id: "p1", effect: "deny", command: "checkpoint" }]);
     expect((await run(["project", "trust", projectId])).exit).toBe(7);
     const p = person();
@@ -227,6 +212,7 @@ describe("the console", () => {
     expect(trusted.exit).toBe(0);
     expect(trusted.out).toContain(`Trusted project ${projectId}: 1 rules`);
     expect(p.shown.some((t) => t.includes("p1  project  deny checkpoint"))).toBe(true);
+    expect(p.asked).toEqual(["Type the project id's first 8 characters to confirm: "]);
     expect(code(await checkpoint(a, projectId, session.rootBranch!))).toBe("RULE_DENIED");
   });
 });

@@ -162,6 +162,15 @@ describe("H3: no warm workers under a sandbox", () => {
     expect(fake.spawns.filter(isWarm)).toHaveLength(1);
     expect(t.engine.workers().warm).toEqual([]);
   });
+
+  test("a_hello_that_applied_nothing_keeps_warm_kinds_warm", async () => {
+    // F2 (plan 7C Task 3): `selfSandbox: "none"` is unconfined, so the warm gate stays open.
+    const fake = workers((proc, req) => warmHello(proc, { warm: isWarm(req), ...(isWarm(req) ? { selfSandbox: "none" } : {}) }));
+    const t = await testEngine({ jobHost: fake.factory });
+    expect(await t.runJob("test.warm", { value: 1 })).toMatchObject({ state: "succeeded", warm: true });
+    expect(await t.runJob("test.warm", { value: 2 })).toMatchObject({ state: "succeeded", warm: true });
+    expect(fake.spawns.filter(isWarm)).toHaveLength(1);
+  });
 });
 
 describe("M1: warm keys are encoded, not joined", () => {

@@ -42,6 +42,7 @@ const SHARED: Record<string, string> = {
   "try.drop": "branch.archive",
   "item.trim": "clip.trim",
   "item.delete": "clip.delete",
+  search: "library.search",
 };
 
 const dyn = (c: RegistryCommand) => c.dynamic === true;

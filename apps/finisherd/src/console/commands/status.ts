@@ -36,6 +36,16 @@ export async function status(ctx: CommandContext): Promise<number> {
     o.out(`Jobs: kill tree ${c.killTree}, watchdog ${c.watchdog ? "on" : "off"}, memory limits ${c.cgroupMemory ? "kernel" : "sampled"}, leaf limits ${c.leafLimits ? "on" : "off"}, ${c.sandboxed ? `sandboxed (${c.sandbox})` : "unsandboxed"}`);
   }
   if (s.auditFailures > 0) o.out(`Audit log: ${s.auditFailures} entries could not be written since start`);
-  for (const w of s.warnings) o.out(`Warning: ${String(w.code)}`);
+  for (const w of s.warnings) o.out(warningLine(w));
   return 0;
+}
+
+/** `Warning: CODE (profile, reason): message Fix: …` (the details a sandbox warning carries). */
+export function warningLine(w: Record<string, unknown>): string {
+  const d = (w.details ?? {}) as Record<string, unknown>;
+  const facts = [d.profile, d.reason ?? d.need].filter((x) => x !== undefined).map(String);
+  const head = `Warning: ${String(w.code)}${facts.length > 0 ? ` (${facts.join(", ")})` : ""}`;
+  const message = typeof w.message === "string" ? `: ${w.message}` : "";
+  const fix = typeof w.fix === "string" ? ` Fix: ${w.fix}` : "";
+  return `${head}${message}${fix}`;
 }

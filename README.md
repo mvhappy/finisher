@@ -225,14 +225,27 @@ ticket over a proved connection and sends it when it connects.
 You do them in the Finisher app (later) or the server's console. `finisherd` with no argument
 serves. `finisherd help` lists the console commands. `finisherd status`, `audit`, `agent ls`,
 `agent credentials` and `stop` run anywhere. **Every command that changes something needs an
-interactive terminal**: it says what will happen, shows a short code from the server, and goes
-ahead only once you type the code back. A command run from a pipe or a script is refused with
-`CONSOLE_NEEDS_TTY`.
+interactive terminal**: it says what will happen and asks you to confirm. Most ask `Proceed? [y/N]`. What
+cannot be undone or destroys something asks you to type the target's name back, GitHub-style:
+the library's name for `library rm` (and for `library set --accept-unmounted` or
+`--accept-empty-root`, which can mark files missing), the registry's id for `registry rm`, the
+root's first 8 characters for `registry forget`, the plugin's id for `plugin rm --purge-data`
+and for third-party code, the word `audit` for `audit purge`, the word `diagnostics` for
+`diagnostics purge`, `credential.master` for `auth rotate-master`, the project id's first 8
+characters for `project takeover --confirm`, the folder's name for `project open --relocate`,
+the session id's first 8 characters for `agent delete`, the key id's first 8 characters for
+`provider key rm` and the word `local` for `provider local rm`.
+A command run from a pipe or a script is refused with `CONSOLE_NEEDS_TTY`. Once you confirm, the
+console fetches a one-time code from the server and sends it with the change; you never see it.
+The server still refuses a confirmed change without a fresh code from the same console session.
 
-**What the typed code protects against, and what it does not.** It stops `yes |` pipes, pasted
-scripts and an agent that runs `fin`. It does **not** stop a program running as your user that
-can read `<server-data>/auth/`: such a program can prove as the console itself, or drive a
-pseudo-terminal (`script`, `expect`) and type the code. **An agent harness you start in a plain
+**What the confirmation protects against, and what it does not.** The terminal rule stops pipes
+(`yes | finisherd …`), pasted scripts, cron jobs and an agent that runs `fin`. A `y` on its own
+would be satisfied by `yes |`, so for y/N actions the terminal rule is what keeps that pipe out;
+typing the name is the step a blind `y` cannot pass, in a pipe or in a terminal. It
+does **not** stop a program running as your user that can read `<server-data>/auth/`: such a
+program can prove as the console itself, or drive a pseudo-terminal (`script`, `expect`) and
+answer `y` or type the name it reads off the screen. **An agent harness you start in a plain
 shell runs as you**, so until Finisher sandboxes agents (a later version), human-only operations,
 scopes and branch limits bind only harnesses that go through `fin` or MCP with their own
 credential. They record who did what and prevent mistakes. They are not a wall against hostile
@@ -315,6 +328,24 @@ fin merge <branch>                           # take its work into your branch
   user; the server warns `SANDBOX_DISABLED` on every session. The built-in agent's tools are
   `fin` and file tools confined to its workspace, but run agents only on projects and prompts
   you trust.
+- **Linux sandbox limits.** On Linux the OS sandbox uses Landlock alone for now; the seccomp
+  filter is an open hardening item. Landlock confines reads, writes, program starts, links and
+  TCP ports. Agent and hook processes also start in a user and mount namespace where `/run`,
+  `/tmp`, `/var/tmp`, `/dev/shm`, `$XDG_RUNTIME_DIR`, your home directory, the server's data
+  folder and the container managers' socket folders are empty except for the paths the
+  sandbox grants, so the local Unix sockets your user may open (the D-Bus
+  session bus, `ssh-agent`, `gpg-agent`, `docker.sock`, `fin.sock`) are out of reach, and the
+  variables that name them (`SSH_AUTH_SOCK`, `DBUS_SESSION_BUS_ADDRESS`, `DOCKER_HOST`, …) are
+  removed; a hook without network gets an empty network namespace too. Ubuntu 24.04 and later
+  allow that namespace only with Finisher's AppArmor profile
+  (`resources/linux/apparmor/finisher-sandbox-exec`, which the installer loads); where user
+  namespaces are not available the server warns `SANDBOX_SOCKETS_EXPOSED` and those sockets
+  stay reachable. Still open everywhere: a socket inside a folder the sandbox grants (a
+  project folder) or in a place none of those folders covers stays reachable; agents (and hooks that use `fin`) can send UDP and accept
+  TCP connections on an ephemeral port; job workers and plugins get no namespace yet (they
+  can reach the sockets on kernels without Landlock's socket rule, and send UDP); and every
+  profile keeps the rest of the kernel's interface (process creation, `io_uring`, 32-bit
+  system calls, namespaces).
 
 ## Plugins
 
@@ -323,8 +354,8 @@ plugin. Plugins come from **registries**: signed folders (local, on a NAS or a s
 a clone of a git repository) that a publisher keeps.
 
 - **Only a person installs plugins**, through the app or the server console (`finisherd plugin
-  install <id>`, which prints the plan with every permission and its risk and asks for `yes`;
-  third-party code asks for the plugin's id typed back). Agents and `fin` can read and suggest,
+  install <id>`, which prints the plan with every permission and its risk and asks
+  `Proceed? [y/N]`; third-party code asks for the plugin's id typed back). Agents and `fin` can read and suggest,
   never install, update, enable or remove.
 - **Registry trust is the publisher's root hash.** `finisherd registry add <id> --dir <path>`
   shows the registry's root SHA-256 and the key ids behind it, and adds nothing until you paste
@@ -406,7 +437,7 @@ Changing consent, deleting what was recorded, clearing a project's `never` flag 
 recorded content are yours alone: `fin` (and any agent that runs it) is refused with
 `HUMAN_ONLY`. You make these changes in the Finisher app or the server's console
 (`finisherd diagnostics consent …`, `purge`, `project default`, `export --content`), which asks
-you to type a short code it shows before anything changes. Training cannot be turned on from
+`Proceed? [y/N]` before anything changes (a purge asks you to type `diagnostics`). Training cannot be turned on from
 the console either.
 
 Withdrawing a purpose takes effect before anything else is written. It stops the upload view

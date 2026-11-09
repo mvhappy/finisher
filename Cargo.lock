@@ -618,6 +618,26 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d0881ea181b1df73ff77ffaaf9c7544ecc11e82fba9b5f27b262a3c73a332555"
 
 [[package]]
+name = "enumflags2"
+version = "0.7.12"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1027f7680c853e056ebcec683615fb6fbbc07dbaa13b4d5d9442b146ded4ecef"
+dependencies = [
+ "enumflags2_derive",
+]
+
+[[package]]
+name = "enumflags2_derive"
+version = "0.7.12"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "67c78a4d8fdf9953a5c9d458f9efe940fd97a0cab0941c075a813ac594733827"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
+]
+
+[[package]]
 name = "equivalent"
 version = "1.0.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -679,6 +699,7 @@ dependencies = [
  "fin",
  "fin-core",
  "fin-probe",
+ "fin-sandbox",
  "fin-store",
  "fin-testfonts",
  "getrandom 0.3.4",
@@ -874,6 +895,7 @@ dependencies = [
  "fin-plugin-api",
  "fin-probe",
  "fin-registry",
+ "fin-sandbox",
  "fin-shm",
  "fin-store",
  "fin-testfonts",
@@ -973,6 +995,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "fin-sandbox"
+version = "0.0.0"
+dependencies = [
+ "fin-core",
+ "fin-jobs",
+ "fin-sandbox",
+ "landlock",
+ "libc",
+ "proptest",
+ "schemars",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "fin-shm"
 version = "0.0.0"
 dependencies = [
@@ -1001,6 +1040,7 @@ dependencies = [
  "fin-plugin-api",
  "fin-probe",
  "fin-registry",
+ "fin-sandbox",
  "fin-store",
  "fin-testfonts",
  "fin-text",
@@ -1078,6 +1118,7 @@ dependencies = [
  "fin-library",
  "fin-media",
  "fin-probe",
+ "fin-sandbox",
  "fin-shm",
  "fin-testfonts",
  "fin-text",
@@ -1704,6 +1745,17 @@ dependencies = [
  "euclid",
  "polycool",
  "smallvec",
+]
+
+[[package]]
+name = "landlock"
+version = "0.4.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4cca98e95f35b29d469dade6724c6f96cec9236640f745a0e99b0334ec320ab1"
+dependencies = [
+ "enumflags2",
+ "libc",
+ "thiserror 2.0.21",
 ]
 
 [[package]]

@@ -27,6 +27,17 @@ export function nativeFileNames(platform, arch, getReport) {
   return [base, ...suffixes.map((s) => `${base}-${s}`)].map((s) => `fin-node.${s}.node`);
 }
 
+/** The 7C launcher's file name on `platform` (plan 7C Task 5). */
+export function sandboxExecFileName(platform) {
+  return platform === "win32" ? "fin-sandbox-exec.exe" : "fin-sandbox-exec";
+}
+
+/** `fin-sandbox-exec[.exe]` in `dir`, beside the fin-node `.node` file and `fin-workers`. */
+export function sandboxExecPath(dir, platform) {
+  const sep = platform === "win32" ? "\\" : "/";
+  return `${dir.replace(/[\\/]+$/, "")}${sep}${sandboxExecFileName(platform)}`;
+}
+
 /** The worker binary's file name on `platform` (5C-1 plan, Decision 2). */
 export function workersFileName(platform) {
   return platform === "win32" ? "fin-workers.exe" : "fin-workers";

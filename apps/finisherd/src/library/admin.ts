@@ -113,6 +113,33 @@ export async function acceptVolume(svc: LibraryService, id: string, actor: Actor
 }
 
 /**
+ * The owner accepts a root that is empty for good (`library.set {acceptEmptyRoot: true}`,
+ * human-only, audited): the root really lists empty now (an unmounted, changed or unreachable
+ * root is refused with `LIBRARY_ROOT_SUSPECT`: that is not this), the catalog stops refusing an
+ * empty root listing (`ROOT_EMPTY_SUSPECT`), and the library comes back with a full scan
+ * (`trigger: mount`). The root directory is then like any other that listed empty: its files
+ * go missing only after the usual confirmation (`DIR_EMPTY_SUSPECT`: a second empty listing
+ * 60 s later). A listing that finds the root non-empty ends the accept.
+ */
+export async function acceptEmptyRoot(svc: LibraryService, id: string, actor: Actor): Promise<LibraryView> {
+  const row = svc.registry.get(id);
+  if (row === undefined) throw notFound(id);
+  const probe = await exec(svc.registry.probe(row, RECHECK_PROBE_MS));
+  if (probe.state !== "empty" && probe.state !== "online") {
+    throw new FinError({
+      code: "LIBRARY_ROOT_SUSPECT",
+      message: "the root is not empty, it is unavailable: there is no empty root to accept",
+      details: { id, state: probe.state },
+    });
+  }
+  await exec(svc.deps.catalogs.indexer.setEmptyRootOk(id, true));
+  svc.registry.auditAccept(id, "acceptEmptyRoot", actor);
+  if (row.state === "offline") await svc.goOnline(id);
+  else await svc.submitScan(id, { mode: "full", trigger: "mount" });
+  return svc.view(svc.registry.get(id) ?? row);
+}
+
+/**
  * The owner removed nested mounts for good (Decision 17; the 7b note): every offline mount
  * point below the root (or the ones named) forgets its mount, and a targeted scan lists them.
  * Their rows then go missing like any directory's (after the usual empty-listing
@@ -122,9 +149,11 @@ export async function acceptUnmounted(
   svc: LibraryService,
   id: string,
   dirs?: ReadonlyArray<RawRel>,
+  actor?: Actor,
 ): Promise<{ dirs: ReadonlyArray<RawRel>; job?: JobView }> {
   if (svc.registry.get(id) === undefined) throw notFound(id);
   const r = await exec(svc.deps.catalogs.indexer.acceptUnmounted(id, dirs));
+  if (actor !== undefined) svc.registry.auditAccept(id, "acceptUnmounted", actor);
   const job = await svc.submitScan(id, { mode: "dirs", dirs: r.dirs, trigger: "demand" });
   return { dirs: r.dirs, ...(job === undefined ? {} : { job }) };
 }
@@ -136,8 +165,8 @@ export async function acceptUnmounted(
 export async function scanLibrary(svc: LibraryService, id: string, req: { readonly full?: boolean; readonly dirs?: ReadonlyArray<RawRel> }): Promise<JobView> {
   const row = svc.registry.get(id);
   if (row === undefined) throw notFound(id);
-  if (row.state === "paused") throw new FinError({ code: "LIBRARY_PAUSED", message: "the library is paused", details: { id } });
-  if (row.state === "offline") throw new FinError({ code: "LIBRARY_OFFLINE", message: "the library is offline", details: { id, reason: row.offlineReason ?? null } });
+  if (row.state === "paused") throw new FinError({ code: "LIBRARY_PAUSED", message: "the library is paused", details: { id }, fix: "Resume the library (fin library set <lib> --resume), then scan it again." });
+  if (row.state === "offline") throw new FinError({ code: "LIBRARY_OFFLINE", message: "the library is offline", details: { id, reason: row.offlineReason ?? null }, fix: "Its root is not usable right now; the server checks again every minute and scans once it is back. Scan again then." });
   svc.usage.touch(id);
   const job =
     req.full === true

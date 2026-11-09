@@ -195,7 +195,7 @@ export type WatchItem = typeof WatchItem.Type;
 /** Every `WatchItem` type, in union order. */
 export const WATCH_ITEM_TYPES = ["nodeAdded", "delta", "statusChanged", "usageUpdated", "approvalOpened"] as const satisfies readonly WatchItem["type"][];
 
-// Payloads and answers, one per RPC (spec §3.5). `challenge` is the console's typed code on the
+// Payloads and answers, one per RPC (spec §3.5). `challenge` is the console's challenge code on the
 // human-only calls (5A Decision 30).
 
 /** The longest prompt, steer or title text, in characters. */
@@ -280,7 +280,7 @@ export const AgentSessionGetSuccess = Schema.Struct({
   projectRules: Schema.optionalKey(ProjectRulesStatus),
 });
 
-/** `agent.session.delete` (owner, typed code): removes the session's product state at once. */
+/** `agent.session.delete` (owner, challenge code): removes the session's product state at once. */
 export const AgentSessionDeletePayload = Schema.Struct({ sessionId: Id, challenge: ChallengeField });
 export const AgentSessionDeleteSuccess = Schema.Struct({ deleted: Schema.Literal(true) });
 
@@ -295,7 +295,7 @@ export const AgentApprovalListPayload = Schema.Struct({
 export const AgentApprovalListSuccess = Schema.Struct({ approvals: Schema.Array(Approval) });
 
 /**
- * `agent.approval.answer` (human, typed code): `remember` adds a visible, revocable rule for
+ * `agent.approval.answer` (human, challenge code): `remember` adds a visible, revocable rule for
  * the session or the project (never a standing grant); `add` raises a `budget` approval's limits.
  */
 export const AgentApprovalAnswerPayload = Schema.Struct({

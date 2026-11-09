@@ -3,7 +3,7 @@
 // local preset (`provider local set <url>`, `agent start --provider local`): loopback needs no
 // test hooks, no key and no network, and the server is the release `finisherd` with the release
 // `fin`. Model replies come from `agent-model.mjs`, chosen by what the conversation holds.
-//   1. a dummy OpenRouter key and the local endpoint are set as the owner (typed code); session A
+//   1. a dummy OpenRouter key and the local endpoint are set as the owner (challenge code); session A
 //      starts in `draft` mode with "tighten the intro"; `finisherd agent watch` renders its nodes;
 //   2. the model calls `fin view --budget 2000`, `fin item trim …`, then `fin caption import …`;
 //   3. its branch holds two commits by `agent:editor:<id>` and `main` is untouched; with the

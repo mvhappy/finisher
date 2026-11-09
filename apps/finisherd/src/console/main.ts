@@ -2,7 +2,8 @@
 // only flags serves; any other first word is a command for the running server, proved as
 // `console` with `<server-data>/auth/console.key`. Read-only and service commands (`status`,
 // `audit`, `stop`) run anywhere; every command that changes something needs an interactive
-// terminal and the code the server shows to be typed back.
+// terminal and the person's confirmation there: a `y`, or for what cannot be undone the target's
+// name typed back (`confirm.ts`).
 import { resolve } from "node:path";
 import { defaultServerData } from "../config.ts";
 import { connectConsole, ConsoleError } from "./client.ts";
@@ -11,6 +12,7 @@ import { audit } from "./commands/audit.ts";
 import { auth } from "./commands/auth.ts";
 import type { CommandContext } from "./commands/context.ts";
 import { diagnostics } from "./commands/diagnostics.ts";
+import { library } from "./commands/library.ts";
 import { mcp } from "./commands/mcp.ts";
 import { project } from "./commands/project.ts";
 import { status } from "./commands/status.ts";
@@ -28,6 +30,7 @@ const COMMANDS: Record<string, (ctx: CommandContext) => Promise<number>> = {
   audit,
   diagnostics,
   project,
+  library,
   agent,
   provider,
   training,
@@ -47,8 +50,8 @@ Commands for the running server, as its owner:
                                            the security audit log, newest first
   agent credentials [--all] [--json]       agent and MCP credentials (live ones, or all)
 
-These change something: each needs an interactive terminal, shows what it will do and a
-short code, and goes ahead once you type the code back.
+These change something: each needs an interactive terminal, says what it will do, and goes
+ahead once you answer y (or, for what cannot be undone, type the name it shows back).
   audit purge (--all | --before <date>)
   diagnostics consent diagnostics <on|off|unset>
   diagnostics <on|off|unset>
@@ -60,6 +63,14 @@ short code, and goes ahead once you type the code back.
   agent mint --label <name> [--scope <scope>]... [--project <id>]... [--branch own|<id>]...
              [--idle <duration>] [--absolute <duration>|none] [--out <file>]
                                            a credential for an agent harness you run by hand
+  library add <dir> [--name <n>] [--storage local|network|sync] [--include <glob>]... [--exclude <glob>]...
+              [--kinds all|<kind>,...] [--poll demand|<s>] [--full daily|weekly|manual]
+              [--hydrate] [--bandwidth <MiB/s>] [--alias <path>]...
+                                           index a folder as a library and start its first scan
+  library rm <library>                     forget a library and delete its catalog (the files stay)
+  library set <library> [--hydrate on|off] [--bandwidth <MiB/s>|off] [--alias <path>]... [--no-aliases]
+              [--accept-volume] [--accept-unmounted <dir>] [--accept-empty-root]
+                                           the library settings only a person changes
   agent revoke <id>                        end a credential: its connections close now
   mcp setup --out <file> [--label <name>] [--scope <scope>]...
                                            a credential for the MCP adapter
@@ -80,7 +91,7 @@ Agent sessions (sub-project 7):
   provider key ls [--json]                 the stored model keys (never their values)
   provider local show|test [--json]        the local model endpoint, and whether it answers
   training closed-targets [--json]         the counsel gate on closed-model training targets
-These change something (each needs an interactive terminal and the typed code):
+These change something (each needs an interactive terminal and your confirmation):
   agent approve <approval> allow|deny [--add <amount>] [--remember session|project|projectLocal]
                                            --add raises a budget: USD, tokens (200k) or time (30m)
   agent delete <id>                        removes a session's conversation; its branch stays
@@ -103,7 +114,7 @@ Plugins and registries (spec §5):
   plugin info <id> [--json]
   plugin ls [--json]
   registry ls|status <id>|refresh [<id>] [--json]
-These change something (each needs an interactive terminal and the typed code):
+These change something (each needs an interactive terminal and your confirmation):
   registry add <id> --dir <path> [--root <file> | --root-sha256 <hex>]
                                            no root given: shows the root's SHA-256 and waits for you to type it back
   registry rm <id>

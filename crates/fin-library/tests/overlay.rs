@@ -394,6 +394,33 @@ fn overlay_unmounts_delays_and_errors() {
     assert!(overlay::wrap(&root, Arc::new(NativeSource::new(&root))).is_err());
 }
 
+/// A mount point marked `mountRoot` again after an unmount is listed again: the overlay's
+/// `volume` reports the mark as the native source reports a real nested mount.
+#[test]
+fn overlay_remount_lists_the_mount_again() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().join("lib");
+    real_tree(&root);
+    let mounted = json!({ "paths": { "a": { "mountRoot": true } } });
+    set_overlay(&root, &mounted);
+    let (r, batches) = run(source(&root), full(1, None), &opts(4));
+    r.unwrap();
+    let known = known_from(&batches, 1);
+    set_overlay(&root, &json!({ "paths": { "a": { "unmounted": true } } }));
+    let (r, batches) = run(source(&root), full(2, Some(known.clone())), &opts(4));
+    r.unwrap();
+    assert!(done_paths(&batches).contains(&"a!ROOT_UNMOUNTED".to_owned()));
+
+    set_overlay(&root, &mounted);
+    let (r, batches) = run(source(&root), full(3, Some(known)), &opts(4));
+    r.unwrap();
+    let done = done_paths(&batches);
+    assert!(
+        done.contains(&"a".to_owned()) && done.contains(&"a/x".to_owned()),
+        "{done:?}"
+    );
+}
+
 #[cfg(target_os = "linux")]
 #[test]
 fn descriptors_stay_bounded_on_wide_trees() {

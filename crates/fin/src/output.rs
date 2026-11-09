@@ -479,6 +479,12 @@ const UNAVAILABLE_CODES: &[&str] = &[
     "PROVIDER_PROTOCOL",
     "MODEL_CONTEXT_EXCEEDED",
     "SANDBOX_UNAVAILABLE",
+    // A sandbox profile that runs unconfined on this host (F2, plan 7C Task 3): a warning in
+    // replies (`server.status`, a session's start), never the error a command exits with.
+    "SANDBOX_DISABLED",
+    "PLUGINS_UNCONFINED",
+    // The launcher cannot hide Unix sockets on this host (plan 7C Decision 26): a warning too.
+    "SANDBOX_SOCKETS_EXPOSED",
     "TOOL_TIMEOUT",
     "HOOK_TIMEOUT",
     "SECRET_STORE_BUSY",

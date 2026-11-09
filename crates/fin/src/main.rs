@@ -24,6 +24,7 @@ mod pipe_client;
 mod private_windows;
 mod registry;
 mod registry_edit;
+mod registry_library;
 mod registry_plugins;
 mod registry_rpcs;
 mod registry_rpcs_edit;
@@ -53,6 +54,7 @@ use commands::history::{CheckpointArgs, CherryPickArgs, MergeArgs, RevertArgs, U
 use commands::item::ItemCmd;
 use commands::job::{JobCmd, WaitArgs};
 use commands::keyframe::KeyframeCmd;
+use commands::library::LibraryCmd;
 use commands::look::LookArgs;
 use commands::marker::MarkerCmd;
 use commands::media::{GraphicCmd, ImageCmd};
@@ -60,6 +62,7 @@ use commands::media_caps::MediaCmd;
 use commands::param::ParamCmd;
 use commands::plugin::{PluginCmd, RegistryCmd};
 use commands::project::ProjectCmd;
+use commands::search::SearchArgs;
 use commands::style::StyleCmd;
 use commands::timeline::TimelineCmd;
 use commands::track::TrackCmd;
@@ -121,6 +124,9 @@ enum Cmd {
     Wait(WaitArgs),
     #[command(subcommand)]
     Approval(ApprovalCmd),
+    #[command(subcommand)]
+    Library(LibraryCmd),
+    Search(SearchArgs),
     #[command(subcommand)]
     Media(MediaCmd),
     #[command(subcommand)]
@@ -327,6 +333,8 @@ fn run(args: Vec<OsString>) -> Result<Value, CoreError> {
         Some(Cmd::Job(c)) => commands::job::run(backend()?.as_ref(), &c),
         Some(Cmd::Wait(a)) => commands::job::wait(backend()?.as_ref(), &a),
         Some(Cmd::Approval(c)) => commands::approval::run(backend()?.as_ref(), &c),
+        Some(Cmd::Library(c)) => commands::library::run(backend()?.as_ref(), &c),
+        Some(Cmd::Search(a)) => commands::search::run(backend()?.as_ref(), &a),
         Some(Cmd::Media(c)) => commands::media_caps::run(backend()?.as_ref(), &c),
         Some(Cmd::Fonts(FontsCmd::Pin(a))) => edit(g, Edit::Font(FontEdit::Pin(a))),
         Some(Cmd::Fonts(FontsCmd::Repin(a))) => edit(g, Edit::Font(FontEdit::Repin(a))),

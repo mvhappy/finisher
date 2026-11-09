@@ -13,6 +13,7 @@
 //   {op: "ask", sessionId, command}                → {rule}: a local `ask` rule for the session, and a run
 //   {op: "answer", id, decision}                   → {approval}: a person's answer (7B Task 5)
 //   {op: "expireAll"}                              → {}: every open approval expired (a clock past them all)
+//   {op: "listener"}                               → {endpoint}  (starts the agent listener, 7C Task 6)
 // A failure answers {error: {code, message}}.
 import { mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -21,6 +22,7 @@ import type { Mode } from "@finisher/contracts";
 import { Effect } from "effect";
 import type { AgentCore } from "../../src/agent/core.ts";
 import type { AgentRuntimeParts } from "../../src/agent/wiring.ts";
+import type { AgentListener } from "../../src/agent/listener.ts";
 import { toFinError } from "../../src/errors.ts";
 import { serve, StderrLogger } from "../../src/main.ts";
 import { open } from "./agent-open.ts";
@@ -33,6 +35,7 @@ if (serverData === undefined || requests === undefined) throw new Error("--serve
 
 let core: AgentCore | undefined;
 let agents: AgentRuntimeParts | undefined;
+let listener: AgentListener | undefined;
 let info: ServerInfo | undefined;
 let starter: NdjsonClient | undefined;
 
@@ -43,7 +46,8 @@ type Request =
   | { op: "state"; sessionId: string }
   | { op: "ask"; sessionId: string; command: string }
   | { op: "answer"; id: string; decision: "allow" | "deny" }
-  | { op: "expireAll" };
+  | { op: "expireAll" }
+  | { op: "listener" };
 
 async function handle(r: Request): Promise<unknown> {
   const c = core!;
@@ -77,6 +81,8 @@ async function handle(r: Request): Promise<unknown> {
     case "expireAll":
       c.store.expireOverdueApprovals(Number.MAX_SAFE_INTEGER);
       return {};
+    case "listener":
+      return { endpoint: await listener!.ensure() };
   }
 }
 
@@ -112,6 +118,7 @@ await Effect.runPromise(
     serverData,
     onAgentCore: (c) => (core = c),
     onAgentRuntime: (a) => (agents = a),
+    onAgentListener: (l) => (listener = l),
     onReady: (i) => (info = i as ServerInfo),
   }).pipe(Effect.provide(StderrLogger)),
 );

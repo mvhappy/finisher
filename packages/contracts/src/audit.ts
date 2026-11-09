@@ -133,7 +133,7 @@ const COMMON = {
   /** `audit.purge`: the cutoff (ms) an owner's purge removed entries before. */
   before: Schema.optional(Schema.Int),
   /** The transport a connection came over (5A Task 3). */
-  transport: Schema.optional(Schema.Literals(["socket", "pipe", "ws"])),
+  transport: Schema.optional(Schema.Literals(["socket", "pipe", "ws", "agentTcp"])),
 };
 // `library.add|remove|set` (plan 5D Decision 49): the library's id, its storage kind and the
 // field names a human-only `library.set` changed; never a library's name, root, alias or path.

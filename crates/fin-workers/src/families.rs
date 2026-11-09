@@ -12,7 +12,15 @@ pub fn run_family(family: &str, warm: bool) -> Option<Infallible> {
         "test" | "testbad" | "testplugin" => {
             fin_jobs::worker::run(crate::test_family::TestFamily::new(family, warm))
         }
-        "library" => fin_jobs::worker::run(crate::library::LibraryFamily::new(warm)),
+        "library" => {
+            // The worker profile grants no `/proc`: the volume check reads the mount table
+            // through a handle opened now, before the self-sandbox entry (plan 7C Task 2).
+            #[cfg(target_os = "linux")]
+            if let Err(e) = fin_library::volume::linux::hold_mountinfo() {
+                eprintln!("fin-workers: /proc/self/mountinfo: {e}");
+            }
+            fin_jobs::worker::run(crate::library::LibraryFamily::new(warm))
+        }
         "media" => fin_jobs::worker::run(crate::media::MediaFamily::new(warm)),
         _ => None,
     }

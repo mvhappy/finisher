@@ -1,10 +1,11 @@
 // `finisherd project takeover <dir|projectId> --confirm` and `finisherd project open <dir>
 // --relocate` (spec §4.6): a person's decisions about a project's lease and where it lives;
 // `finisherd project trust <dir|id>` (sub-project 7B, `agent/console-rules.ts`): its rules file.
-// All need a terminal and a typed code.
-import { isAbsolute, resolve } from "node:path";
+// All need a terminal and a confirmation (owner decision of 2026-11-08): a takeover the project
+// id's first 8 characters typed back, a relocation the folder's name; trust as `projectTrust` says.
+import { basename, isAbsolute, resolve } from "node:path";
 import { valueOf } from "../client.ts";
-import { confirmed, requireTty } from "../confirm.ts";
+import { confirmed, requireTty, typeName } from "../confirm.ts";
 import { has, onlyFlags, usage } from "../format.ts";
 import { projectTrust } from "../../agent/console-rules.ts";
 import { type CommandContext, withConnection } from "./context.ts";
@@ -32,6 +33,7 @@ async function takeover(ctx: CommandContext, target: string): Promise<number> {
       c,
       ctx.prompt,
       `This makes this server the writer of project ${projectId}, even if another one still holds it. Make sure nothing else is editing it.`,
+      typeName("project id's first 8 characters", projectId.slice(0, 8)),
       "project.takeover",
       { projectId, confirm: true },
     );
@@ -51,6 +53,7 @@ async function open(ctx: CommandContext, target: string): Promise<number> {
       c,
       ctx.prompt,
       `This tells the server the project now lives at ${dir}, and that the old folder is no longer it.`,
+      typeName("folder's name", basename(dir)),
       "project.open",
       { dir, relocate: true },
     ),

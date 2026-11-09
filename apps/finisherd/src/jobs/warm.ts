@@ -375,7 +375,8 @@ export class WarmPools {
     w.pid = hello.pid;
     w.hello = hello;
     if (w.state !== "spawning") return;
-    if (hello.selfSandbox !== undefined && hello.selfSandbox !== "") return this.#sandboxFound(w, hello.selfSandbox);
+    // `none`: a sandbox was asked for and nothing applied (F2, Landlock off): not confined.
+    if (hello.selfSandbox !== undefined && hello.selfSandbox !== "" && hello.selfSandbox !== "none") return this.#sandboxFound(w, hello.selfSandbox);
     if (hello.role !== "worker" || hello.family !== w.family.family || hello.warm !== true) {
       w.mismatch = finError("WORKER_PROTOCOL_MISMATCH", `the worker is not a warm ${w.family.family} worker`, {
         expected: { role: "worker", family: w.family.family, warm: true },

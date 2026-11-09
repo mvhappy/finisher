@@ -231,6 +231,30 @@ pub const ROWS: &[Row] = &[
     row!("job.pause", rpc!("jobs.pause"), &["job"]),
     row!("job.resume", rpc!("jobs.resume"), &["job"]),
     row!("wait", rpc!("jobs.wait"), &["ids", "any"]),
+    row!("library.ls", rpc!("library.list"), NONE),
+    row!("library.status", rpc!("library.status"), &["id"]),
+    row!(
+        "library.scan",
+        rpc!("library.scan"),
+        &["id", "full", "dirs"]
+    ),
+    row!(
+        "library.files",
+        rpc!("library.files"),
+        &["id", "dir", "state", "kind"]
+    ),
+    row!(
+        "library.show",
+        rpc!("library.file"),
+        &["id", "path", "fileId"]
+    ),
+    row!(
+        "library.search",
+        rpc!("library.search"),
+        &["query", "libraries"]
+    ),
+    row!("library.set", rpc!("library.set"), &["id"]),
+    row!("search", rpc!("library.search"), &["query", "libraries"]),
     row!("approval.wait", rpc!("agent.approval.wait"), &["id"]),
     row!(
         "approval.ls",

@@ -1846,6 +1846,125 @@
     },
     {
       "argKinds": {},
+      "group": "library",
+      "identity": [],
+      "name": "library.ls",
+      "rpcs": [
+        {
+          "method": "library.list"
+        }
+      ],
+      "write": false
+    },
+    {
+      "argKinds": {},
+      "group": "library",
+      "identity": [
+        "id"
+      ],
+      "name": "library.status",
+      "rpcs": [
+        {
+          "method": "library.status"
+        }
+      ],
+      "write": false
+    },
+    {
+      "argKinds": {},
+      "group": "library",
+      "identity": [
+        "id",
+        "full",
+        "dirs"
+      ],
+      "name": "library.scan",
+      "rpcs": [
+        {
+          "method": "library.scan"
+        }
+      ],
+      "write": false
+    },
+    {
+      "argKinds": {},
+      "group": "library",
+      "identity": [
+        "id",
+        "dir",
+        "state",
+        "kind"
+      ],
+      "name": "library.files",
+      "rpcs": [
+        {
+          "method": "library.files"
+        }
+      ],
+      "write": false
+    },
+    {
+      "argKinds": {},
+      "group": "library",
+      "identity": [
+        "id",
+        "path",
+        "fileId"
+      ],
+      "name": "library.show",
+      "rpcs": [
+        {
+          "method": "library.file"
+        }
+      ],
+      "write": false
+    },
+    {
+      "argKinds": {},
+      "group": "library",
+      "identity": [
+        "query",
+        "libraries"
+      ],
+      "name": "library.search",
+      "rpcs": [
+        {
+          "method": "library.search"
+        }
+      ],
+      "write": false
+    },
+    {
+      "argKinds": {},
+      "group": "library",
+      "identity": [
+        "id"
+      ],
+      "name": "library.set",
+      "rpcs": [
+        {
+          "method": "library.set"
+        }
+      ],
+      "write": false
+    },
+    {
+      "argKinds": {},
+      "group": "library",
+      "identity": [
+        "query",
+        "libraries"
+      ],
+      "name": "search",
+      "rpcs": [
+        {
+          "method": "library.search"
+        }
+      ],
+      "write": false
+    },
+    {
+      "argKinds": {},
       "group": "approval",
       "identity": [
         "id"

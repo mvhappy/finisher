@@ -236,6 +236,12 @@ fn samples_before_plugins() -> Vec<AnyPayload> {
             micros: 2_400_000,
         }
         .into(),
+        SandboxUnconfined {
+            profile: SandboxProfileName::Worker,
+            os: SandboxOs::Linux,
+            reason: UnconfinedReason::LandlockDisabled,
+        }
+        .into(),
         typed::<AgentSession>(json!({
             "sessionId": SESSION, "phase": "ended", "harness": "builtin", "provider": "openrouter",
             "model": "other", "modelHash": h('1'), "weights": "unknown", "role": "editor",

@@ -15,7 +15,11 @@ import type { OpenEnvironment, SessionEnvironment } from "../runtime-deps.ts";
 
 export interface BuiltinEnvironmentDeps {
   readonly finPath: string;
-  /** The endpoint `fin` connects to (`FIN_SERVER`): the local socket until 7C's agent listener. */
+  /**
+   * The endpoint `fin` connects to (`FIN_SERVER`): the local socket. The built-in `fin` tool runs
+   * outside the OS sandbox (spec §8.9), so it does not use the Linux agent listener, which
+   * sandboxed sessions get through the session wiring (plan 7C Tasks 6 and 11).
+   */
   readonly server: string;
   readonly projectDirOf: (projectId: string) => string | undefined;
   /** The role's prompt (its skills included). */

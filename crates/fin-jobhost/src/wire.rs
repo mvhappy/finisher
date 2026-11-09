@@ -166,7 +166,7 @@ pub enum JobSpawnProfile {
     Plugin,
 }
 
-/// `bundled`: `fin-workers` or `fin-analyze` in `binaryDir`; `path`: plugin processes only.
+/// `bundled`: `fin-workers`, `fin-analyze` or `fin-sandbox-exec` in `binaryDir`; `path`: plugin processes only.
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub enum JobSpawnProgram {

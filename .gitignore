@@ -11,9 +11,14 @@ __pycache__/
 # A reel golden mismatch leaves the actual value beside the golden.
 /scripts/e2e/reel-golden/*.actual
 /scripts/e2e/reel-golden/*.actual.json
-# fin-workers copied beside the fin-node binaries (packages/fin-node/scripts/copy-workers.mjs).
+# fin-workers and fin-sandbox-exec copied beside the fin-node binaries (packages/fin-node/scripts/copy-workers.mjs).
 /packages/fin-node/fin-workers
 /packages/fin-node/fin-workers.exe
 /packages/fin-node/test/native/fin-workers
 /packages/fin-node/test/native/fin-workers.exe
 /packages/fin-node/**/.fin-workers*.tmp
+/packages/fin-node/fin-sandbox-exec
+/packages/fin-node/fin-sandbox-exec.exe
+/packages/fin-node/test/native/fin-sandbox-exec
+/packages/fin-node/test/native/fin-sandbox-exec.exe
+/packages/fin-node/**/.fin-sandbox-exec*.tmp
