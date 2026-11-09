@@ -5593,7 +5593,8 @@ export interface HistoryResult {
   /**
    * Where the record put each item back that a ripple restore or move placed (owner
    * decision 2026-11-09; `fin_core::rebase::placement`): `clean`, or `relocated` with where
-   * and why. Always present; empty for a retry answered from the log (not stored).
+   * and why. Always in the answer (the generated type marks it optional, as `origins`); a
+   * retry answers with what the record stored.
    */
   placements?: Placement[];
   undone: string[];

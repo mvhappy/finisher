@@ -137,7 +137,7 @@ impl Store {
                     | (Which::Redo, Some(Link::Redo { .. })) => result(
                         (
                             same_args_hash(r.args_hash.as_deref(), existing)?,
-                            Vec::new(),
+                            db::placements_of(&self.conn, &r.tx_id)?,
                         ),
                         false,
                     ),
@@ -149,8 +149,7 @@ impl Store {
     }
 }
 
-/// The answer: the record and where its items went back (none for a retry answered from the
-/// log: placements are not stored).
+/// The answer: the record and where its items went back (a retry: as the record stored them).
 fn result((c, placements): (CommittedTx, Vec<Placement>), dry_run: bool) -> HistoryResult {
     HistoryResult {
         undone: targets(c.link.as_deref()),
@@ -190,17 +189,20 @@ fn plan(
     }?;
     ids.save(txn)?;
     let placements = planned.placements;
-    ctx.append(Draft {
-        branch,
-        link: planned.link,
-        intent: Tx {
-            args_hash: r.args_hash.clone(),
-            ..planned.intent
+    ctx.append_placed(
+        Draft {
+            branch,
+            link: planned.link,
+            intent: Tx {
+                args_hash: r.args_hash.clone(),
+                ..planned.intent
+            },
+            inverse: planned.applied.inverse,
+            bindings: planned.applied.bindings,
+            diff: planned.applied.diff,
+            project: planned.applied.project,
         },
-        inverse: planned.applied.inverse,
-        bindings: planned.applied.bindings,
-        diff: planned.applied.diff,
-        project: planned.applied.project,
-    })
+        placements.clone(),
+    )
     .map(|c| (c, placements))
 }

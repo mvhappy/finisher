@@ -328,20 +328,15 @@ const CONFLICT_CODES: &[&str] = &[
     "TX_SET_ASIDE",
     // A registry with this id exists (8A Task 9a).
     "REGISTRY_EXISTS",
-    // The server holds all the live agent and MCP credentials it keeps (5A Task 9, L4): a
-    // conflict of the server's state, not exit 5; revoke some, then mint again.
+    // The server holds all the live agent/MCP credentials it keeps (5A Task 9, L4): revoke some.
     "CREDENTIAL_LIMIT",
-    // Libraries (5D): a file whose data is not on this machine (a placeholder; `hydrate` is
-    // the owner's call) and one that differs from its catalogued row (rescan, then retry).
+    // Libraries (5D): a file whose data is not here (a placeholder; `hydrate` is the owner's
+    // call) or that differs from its catalogued row (rescan, retry).
     "FILE_CLOUD_ONLY",
     "FILE_CHANGED",
-    // Another live agent session works on this root branch (7A Task 7): end it, or start from
-    // another branch.
+    // Another live agent session on this root branch (7A Task 7); an agent's undo whose item
+    // lost both neighbours (`CONFLICT {reason}`, SP4 §4.3), 4 as a code too.
     "BRANCH_IN_USE",
-    // An undo, redo or copy whose item lost both neighbours, for an agent (owner decision
-    // 2026-11-09, SP4 §4.3): it arrives as `CONFLICT {reason: NEIGHBOURS_GONE}` (nothing
-    // changed; read the head and place the item yourself); listed so the reason maps to exit 4
-    // wherever it is read as a code.
     "NEIGHBOURS_GONE",
     // Agent sessions (7A-2 Task 6b): a run is active (steer it, or wait); the session ended.
     "SESSION_BUSY",

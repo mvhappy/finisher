@@ -150,6 +150,16 @@ impl WriteCtx<'_> {
     /// changes, a snapshot every [`SNAPSHOT_EVERY`] seqs, and the staged head. Returns the
     /// record as committed, with its link (`None` for an edit).
     pub(crate) fn append(&mut self, d: Draft) -> Result<CommittedTx, StoreError> {
+        self.append_placed(d, Vec::new())
+    }
+
+    /// [`Self::append`] of a history record that stores where its items went back
+    /// (`Record::placements`).
+    pub(crate) fn append_placed(
+        &mut self,
+        d: Draft,
+        placements: Vec<fin_core::rebase::placement::Placement>,
+    ) -> Result<CommittedTx, StoreError> {
         if d.intent.branch != d.branch {
             return Err(CoreError::new(
                 "DB_ERROR",
@@ -167,7 +177,7 @@ impl WriteCtx<'_> {
         );
         let seq = head.rev + 1;
         let parent = head.tip.clone();
-        let record = db::new_record(
+        let mut record = db::new_record(
             seq,
             d.link,
             d.intent.clone(),
@@ -176,6 +186,7 @@ impl WriteCtx<'_> {
             parent,
             self.now,
         )?;
+        record.placements = placements;
         let link = db::committed_link(&record)?;
         let tip = db::insert_tx(
             self.txn,

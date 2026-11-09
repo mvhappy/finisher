@@ -5517,7 +5517,7 @@
         },
         "placements": {
           "default": [],
-          "description": "Where the record put each item back that a ripple restore or move placed (owner\ndecision 2026-11-09; `fin_core::rebase::placement`): `clean`, or `relocated` with where\nand why. Always present; empty for a retry answered from the log (not stored).",
+          "description": "Where the record put each item back that a ripple restore or move placed (owner\ndecision 2026-11-09; `fin_core::rebase::placement`): `clean`, or `relocated` with where\nand why. Always in the answer (the generated type marks it optional, as `origins`); a\nretry answers with what the record stored.",
           "items": {
             "$ref": "#/$defs/Placement"
           },

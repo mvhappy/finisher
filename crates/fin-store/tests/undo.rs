@@ -608,6 +608,8 @@ fn undo_placement_follows_the_callers_policy() {
     assert_eq!(p.causes[0].author.as_deref(), Some("bob"));
     let json = serde_json::to_value(&r).unwrap();
     assert_eq!(json["placements"][0]["outcome"], "relocated");
+    // A retry answers from the record, placements included.
+    assert_eq!(undo(&mut s, "u2", "alice"), r);
     // The redo deletes again (nothing to place), and its JSON still carries the field.
     let r = redo(&mut s, "r1", "alice");
     assert_eq!(

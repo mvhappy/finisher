@@ -95,6 +95,10 @@ impl Store {
         for id in ids {
             committed.extend(db::find_tx(&self.conn, &id)?);
         }
+        let mut placements = Vec::new();
+        for c in &committed {
+            placements.extend(db::placements_of(&self.conn, &c.tx.tx_id)?);
+        }
         Ok(MergeReport {
             merge_id: r.tx_id.clone(),
             merged: committed.iter().filter_map(origin).collect(),
@@ -104,7 +108,7 @@ impl Store {
             source_state: state_of(&self.conn, &from)?,
             dry_run: false,
             origins: Vec::new(),
-            placements: Vec::new(),
+            placements,
         })
     }
 }
@@ -159,15 +163,18 @@ fn plan(ctx: &mut WriteCtx<'_>, r: &MergeReq) -> Result<MergeReport, StoreError>
             args_hash: if n == 0 { r.args_hash.clone() } else { None },
             ..p.intent
         };
-        committed.push(ctx.append(Draft {
-            branch: into.clone(),
-            link: p.link,
-            intent,
-            inverse: p.applied.inverse,
-            bindings: p.applied.bindings,
-            diff: p.applied.diff,
-            project: p.applied.project,
-        })?);
+        committed.push(ctx.append_placed(
+            Draft {
+                branch: into.clone(),
+                link: p.link,
+                intent,
+                inverse: p.applied.inverse,
+                bindings: p.applied.bindings,
+                diff: p.applied.diff,
+                project: p.applied.project,
+            },
+            p.placements,
+        )?);
     }
     // The source's state after the copies (Decision 21).
     ctx.settle()?;

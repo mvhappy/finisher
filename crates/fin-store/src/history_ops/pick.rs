@@ -176,18 +176,21 @@ impl Store {
                     Err(why) => return Ok(Err(why)),
                 };
                 let placements = p.placements;
-                ctx.append(Draft {
-                    branch,
-                    link: p.link,
-                    intent: Tx {
-                        args_hash: c.args_hash.map(str::to_string),
-                        ..p.intent
+                ctx.append_placed(
+                    Draft {
+                        branch,
+                        link: p.link,
+                        intent: Tx {
+                            args_hash: c.args_hash.map(str::to_string),
+                            ..p.intent
+                        },
+                        inverse: p.applied.inverse,
+                        bindings: p.applied.bindings,
+                        diff: p.applied.diff,
+                        project: p.applied.project,
                     },
-                    inverse: p.applied.inverse,
-                    bindings: p.applied.bindings,
-                    diff: p.applied.diff,
-                    project: p.applied.project,
-                })
+                    placements.clone(),
+                )
                 .map(|c| Ok((c, placements)))
             })?;
             if let Some(out) = wrote {
@@ -199,7 +202,10 @@ impl Store {
                     return Err(key_reused(&existing));
                 }
                 let r = result(
-                    Ok((same_args_hash(c.args_hash, existing)?, Vec::new())),
+                    Ok((
+                        same_args_hash(c.args_hash, existing)?,
+                        db::placements_of(&self.conn, c.tx_id)?,
+                    )),
                     false,
                 );
                 return self.pick_origins(r);
@@ -208,8 +214,8 @@ impl Store {
     }
 }
 
-/// The answer: the record and where its items went back (none for a retry answered from the
-/// log), or nothing and why (`noOp`).
+/// The answer: the record and where its items went back (a retry: as the record stored them),
+/// or nothing and why (`noOp`).
 fn result(
     c: Result<(CommittedTx, Vec<fin_core::rebase::placement::Placement>), &'static str>,
     dry_run: bool,

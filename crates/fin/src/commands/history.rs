@@ -255,7 +255,14 @@ pub fn notice(placements: &Value) -> Option<String> {
             format!("{item} went back {place} on {track}{frame}{why}")
         })
         .collect();
-    (!lines.is_empty()).then(|| format!("relocated: {}", lines.join("; ")))
+    // A person reads a few; the rest are in `placements`.
+    const SHOWN: usize = 3;
+    let more = lines.len().saturating_sub(SHOWN);
+    let mut text = lines.into_iter().take(SHOWN).collect::<Vec<_>>().join("; ");
+    if more > 0 {
+        text.push_str(&format!("; and {more} more (placements)"));
+    }
+    (!text.is_empty()).then(|| format!("relocated: {text}"))
 }
 
 /// `{[<key>: [...],] rev, txId, noOp?, dryRun?, placements, notice?}` of a `HistoryResult`.
