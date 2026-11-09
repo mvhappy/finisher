@@ -116,12 +116,8 @@ export interface ProjectRegistryShape {
   readonly onBranch: <A>(projectId: string, branch: string, f: (engine: Engine, branch: string) => Promise<string>) => Effect.Effect<A, FinError>;
   /** Fails with `PROJECT_NOT_FOUND` unless the project is known (opened on demand). */
   readonly ensure: (projectId: string) => Effect.Effect<void, FinError>;
-  /**
-   * The chain's view (5A Task 5): open here now; its folder; a branch reference's id. A project
-   * the registry closed (idle, `project.close`) still counts as open here, with its folder,
-   * until it reopens: reopening it on demand is the registry's housekeeping, so it needs no
-   * `project.write` and keeps a device's roots, an agent's and a job's folder as they were.
-   */
+  /** The chain's view (5A Task 5): open here now; its folder; a branch reference's id. A project closed idle or by `project.close` still counts as open here, with its folder, until it reopens
+   * (reopening on demand is the registry's housekeeping: no `project.write`; a device's roots and an agent's or a job's folder stay as they were). */
   readonly isOpen: (projectId: string) => boolean;
   readonly dirOf: (projectId: string) => string | undefined;
   /** The folders of the projects open here now (a device's roots, 5B Decision 32). */
@@ -589,8 +585,7 @@ export function makeProjectRegistry(
         Effect.flatMap(resolveBranch(projectId, requested), (branch) =>
           on<MediaJobPrepared>(projectId, (e) => e.prepareMediaJob(branch, timeline, [...at], inputDir, { fontCache: fontCache ?? null, paramsJson: paramsJson ?? null })),
         ),
-      onBranch: <A>(projectId: string, requested: string, f: (engine: Engine, branch: string) => Promise<string>) =>
-        Effect.flatMap(resolveBranch(projectId, requested), (branch) => on<A>(projectId, (e) => f(e, branch))),
+      onBranch: <A>(projectId: string, requested: string, f: (e: Engine, branch: string) => Promise<string>) => Effect.flatMap(resolveBranch(projectId, requested), (branch) => on<A>(projectId, (e) => f(e, branch))),
 
       hubCount: () => hubs.size,
       engineOf: (projectId) => byId.get(projectId)?.engine,

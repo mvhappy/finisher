@@ -129,3 +129,8 @@ export function makeMediaCache(serverData: string, options: MediaCacheOptions = 
     return service;
   });
 }
+
+/** One hold that releases every one of `holds` (absent ones skipped). */
+export function releaseAll(holds: ReadonlyArray<{ release(): void } | undefined>): { release(): void } {
+  return { release: () => holds.forEach((h) => h?.release()) };
+}
