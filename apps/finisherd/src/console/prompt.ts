@@ -14,6 +14,8 @@ export interface Prompt {
   show(text: string): void;
   /** Asks `question` and resolves with the line typed (`""` at end of input). */
   ask(question: string): Promise<string>;
+  /** Whether the last `ask` ended with Ctrl-C (`pair` stops on it; others treat it as no answer). */
+  interrupted?(): boolean;
   /** Like `ask`, without echoing what is typed (a key pasted for `provider key set`). */
   secret?(question: string): Promise<string>;
 }
@@ -25,13 +27,16 @@ export interface Prompt {
  * code built to read the screen (spec §4.6, owner decision 6; sub-project 7's sandbox closes it).
  */
 export function ttyPrompt(stdin: NodeJS.ReadStream = process.stdin, stdout: NodeJS.WriteStream = process.stdout): Prompt {
+  let interrupted = false;
   return {
     isInteractive: () => stdin.isTTY === true && stdout.isTTY === true,
+    interrupted: () => interrupted,
     show: (text) => void stdout.write(`${plain(text)}\n`),
     ask: (question) =>
       new Promise((resolve) => {
         const rl = createInterface({ input: stdin, output: stdout, terminal: true });
         let answered = false;
+        interrupted = false;
         rl.question(plain(question), (line) => {
           answered = true;
           rl.close();
@@ -39,7 +44,10 @@ export function ttyPrompt(stdin: NodeJS.ReadStream = process.stdin, stdout: Node
         });
         // Ctrl-C at the question cancels it, as end of input does (review of Tasks 8–9, M2:
         // the command then cleans up, removing a reserved credential file).
-        rl.once("SIGINT", () => rl.close());
+        rl.once("SIGINT", () => {
+          interrupted = true;
+          rl.close();
+        });
         rl.once("close", () => {
           if (!answered) resolve("");
         });

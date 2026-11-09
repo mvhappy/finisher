@@ -698,6 +698,9 @@
           "$ref": "#/$defs/SandboxUnconfined"
         },
         {
+          "$ref": "#/$defs/AuthPair"
+        },
+        {
           "$ref": "#/$defs/AgentSession"
         },
         {
@@ -1173,6 +1176,49 @@
         "channels",
         "priming",
         "padding"
+      ],
+      "type": "object"
+    },
+    "AuthPair": {
+      "description": "`auth.pair` (`kv` 1).",
+      "properties": {
+        "micros": {
+          "description": "From the redeem to the owner's answer (`approved`, `rejected`).",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "outcome": {
+          "$ref": "#/$defs/PairOutcome"
+        },
+        "platform": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PairPlatform"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The device's platform, once a device redeemed the offer."
+        },
+        "route": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PairRoute"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "How the device reached the server, once it redeemed."
+        }
+      },
+      "required": [
+        "outcome"
       ],
       "type": "object"
     },
@@ -3917,6 +3963,28 @@
             },
             "payload": {
               "$ref": "#/$defs/SandboxUnconfined"
+            }
+          },
+          "required": [
+            "kind",
+            "kv",
+            "payload"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "auth.pair",
+              "type": "string"
+            },
+            "kv": {
+              "const": 1,
+              "type": "integer"
+            },
+            "payload": {
+              "$ref": "#/$defs/AuthPair"
             }
           },
           "required": [
@@ -10855,6 +10923,43 @@
         "linux",
         "macos",
         "windows",
+        "other"
+      ],
+      "type": "string"
+    },
+    "PairOutcome": {
+      "description": "A pairing step.",
+      "enum": [
+        "offered",
+        "redeemed",
+        "approved",
+        "rejected",
+        "expired",
+        "revoked"
+      ],
+      "type": "string"
+    },
+    "PairPlatform": {
+      "description": "What a device runs on (`PLATFORMS`).",
+      "enum": [
+        "macos",
+        "windows",
+        "linux",
+        "ios",
+        "android",
+        "web",
+        "other"
+      ],
+      "type": "string"
+    },
+    "PairRoute": {
+      "description": "How a device reached the server (`ROUTE_KINDS`): a kind, never an address.",
+      "enum": [
+        "loopback",
+        "lan",
+        "tailscale",
+        "public",
+        "connect",
         "other"
       ],
       "type": "string"

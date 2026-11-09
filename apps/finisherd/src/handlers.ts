@@ -8,11 +8,19 @@ import { TicketsTag } from "./auth/tickets.ts";
 import { CredentialsTag } from "./auth/credentials.ts";
 import { KEY_BYTES } from "./auth/crypto.ts";
 import { revokeCredential } from "./auth/revoke.ts";
+import { deviceHandlers } from "./auth/device-rpc.ts";
+import { PairingTag } from "./auth/pairing.ts";
+import { DeviceAccessTag } from "./net/remote-wiring.ts";
+import { RemoteListenerTag } from "./net/remote.ts";
+import { defaultProjectRoots, readServerSettings } from "./net/server-settings.ts";
+import { settingsHandlers } from "./net/settings-rpc.ts";
+import { EnvironmentTag, envMoved } from "./env/descriptor.ts";
+import { envHandlers } from "./env/rpc.ts";
 import { chainOf, credentialOf, withChain, writeGuardOf } from "./chain/chain.ts";
 import { withoutVia } from "./chain/client-via.ts";
 import { AuditTag } from "./control/audit.ts";
 import { ConnectionRegistryTag, ConnectionsTag } from "./connections.ts";
-import { issueChallenge, noteMinted } from "./auth/challenges.ts";
+import { issueChallenge, mayChallenge, noteMinted } from "./auth/challenges.ts";
 import { actorFor, type CallMeta, Diagnostics } from "./diagnostics.ts";
 import { attemptJson, finError, toFinError } from "./errors.ts";
 import { agentAsk as agentAskPort } from "./agent/approvals.ts";
@@ -79,6 +87,10 @@ export const HandlersLive = FinRpcs.toLayer(
     const jobEngine = yield* JobEngineTag;
     const agents = yield* AgentCoreTag;
     const agentRuntime = yield* AgentRuntimeTag;
+    const environment = yield* EnvironmentTag;
+    const pairing = yield* PairingTag;
+    const deviceAccess = yield* DeviceAccessTag;
+    const remoteListener = yield* RemoteListenerTag;
     const admin: AdminDeps = {
       control: yield* ServerControlTag,
       audit,
@@ -137,6 +149,13 @@ export const HandlersLive = FinRpcs.toLayer(
       branches: (projectId: string) => Effect.map(registry.branches(projectId, true), (r) => r.branches),
       // 5D Decision 47: reach to a library file is a catalogued row, never a path prefix.
       libraryFile: (path: string) => cataloguedAt(library, path),
+      // 5B Decision 32: a device's roots, read live (`settings.write` changes them).
+      allowedRoots: () =>
+        Effect.sync(() => [
+          ...(admin.control.serverData === undefined ? defaultProjectRoots() : readServerSettings(admin.control.serverData).projectRoots),
+          ...library.registry.list().map((l) => l.root),
+          ...registry.openDirs(),
+        ]),
     };
     // Agent sessions (7A Task 7): branch reach over their root's subtree, path reach over their
     // project folder and its libraries, the server's author, `session_txs` after every write.
@@ -190,8 +209,25 @@ export const HandlersLive = FinRpcs.toLayer(
             return { principal, ...defaultBranchOf(principal) };
           }),
         ),
-      "auth.revokeSelf": (_, options) =>
-        guard(
+      "auth.revokeSelf": (_, options) => {
+        const self = principalOf(options);
+        // A device revokes itself through the one device path (5B Decision 24); its own
+        // connection answers, then closes.
+        if (self.kind === "device") {
+          return guard(
+            "auth.revokeSelf",
+            Effect.sync(() => {
+              deviceAccess.revoke(self.id, {
+                reason: "self",
+                by: { kind: self.kind, id: self.id },
+                except: { transport: connections.transport, clientId: options.client.id },
+              });
+              connections.link(options.client.id)?.closeAfterReply();
+              return {};
+            }),
+          );
+        }
+        return guard(
           "auth.revokeSelf",
           revokeSelf(
             {
@@ -208,7 +244,8 @@ export const HandlersLive = FinRpcs.toLayer(
               closeAfterReply: () => connections.link(options.client.id)?.closeAfterReply(),
             },
           ),
-        ),
+        );
+      },
       // The console's confirmations (Decision 30): a code for this connection only, which the
       // console sends itself once the person has confirmed.
       "console.challenge": (_, options) =>
@@ -216,8 +253,9 @@ export const HandlersLive = FinRpcs.toLayer(
           "console.challenge",
           Effect.suspend(() => {
             const c = connections.get(options.client.id);
-            if (principalOf(options).kind !== "console" || c === undefined) {
-              return Effect.fail(finError("INVALID_REQUEST", "console.challenge is for the server's console", { tag: "console.challenge" }));
+            // Every human principal (5B Decision 22): the console and paired devices.
+            if (!mayChallenge(principalOf(options)) || c === undefined) {
+              return Effect.fail(finError("INVALID_REQUEST", "console.challenge is for the server's console and paired devices", { tag: "console.challenge" }));
             }
             return Effect.succeed(issueChallenge(c));
           }),
@@ -404,6 +442,22 @@ export const HandlersLive = FinRpcs.toLayer(
       ...agentHandlers({ guard, store: agents.store, reach, agents: agentRuntime, principalOf }),
       ...rulesHandlers({ guard, store: agents.store, rules: agentRuntime.rules, ruleStore: agentRuntime.ruleStore, audit, clock: agents.clock, roles: agentRuntime.roles, dirOf: (id) => registry.dirOf(id) ?? registry.indexedDirOf(id), principalOf }),
       ...savedPromptHandlers({ guard, runtime: agentRuntime.runtime, principalOf, prompts: new SavedPrompts({ serverData: agentRuntime.rules.serverData, roles: agentRuntime.roles, dirOf: (id) => registry.dirOf(id) ?? registry.indexedDirOf(id), trustOf: (id) => agentRuntime.ruleStore.trustOf(id) }) }),
-    }), { connections, projects, jobs: chainJobs(jobEngine), audit, timed: guard, touch: (p) => credentials.touch(p.id), hooks, policies, agentAsk });
+      // 5B: pairing, devices, settings writes and the environment.
+      ...deviceHandlers({ guard, pairing, access: deviceAccess, connections }),
+      ...settingsHandlers({ guard, serverData: admin.control.serverData ?? "", remote: remoteListener, audit }),
+      ...envHandlers({ guard, env: environment }),
+    }), {
+      connections,
+      projects,
+      jobs: chainJobs(jobEngine),
+      audit,
+      timed: guard,
+      touch: (p) => credentials.touch(p.id),
+      hooks,
+      policies,
+      agentAsk,
+      // Copied or moved server data refuses devices until its owner decides (5B Decision 31).
+      refuse: (p) => (p.kind === "device" && environment.state() === "moved" ? envMoved() : undefined),
+    });
   }),
 );

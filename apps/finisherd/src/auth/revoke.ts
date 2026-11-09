@@ -31,7 +31,7 @@ import { finError } from "../errors.ts";
 import type { Principal } from "../principal.ts";
 import type { Tickets } from "./tickets.ts";
 
-/** A credential that can be revoked: `agent` and `mcp` (5A; 5B adds `device`). */
+/** A credential that can be revoked: `agent` and `mcp` (5A); devices go through `revokeDevice`. */
 export interface RevocableRef {
   readonly kind: "agent" | "mcp";
   readonly id: string;
@@ -135,4 +135,81 @@ export function sweepExpired(deps: RevokeDeps, expired: () => ReadonlyArray<Revo
     }
   }
   return n;
+}
+
+// ---- Devices (5B Decision 24) ----
+
+/** `DEVICE_REVOKED` (exit 7, 401): the fix speaks to the person, in words. */
+export function deviceRevoked(): FinError {
+  return finError(
+    "DEVICE_REVOKED",
+    "this device is no longer paired with the server",
+    {},
+    "Pair this device with the server again: its owner makes a new pairing link or QR code.",
+  );
+}
+
+export interface DeviceRevokeDeps {
+  readonly tickets: Pick<Tickets, "dropWhere">;
+  readonly connections: Pick<ConnectionRegistry, "closeWhere" | "revoke">;
+  readonly audit: Audit;
+  readonly devices: {
+    get(id: string): { readonly name: string } | undefined;
+    markEnded(id: string, reason: "owner" | "self" | "reset" | "rotation"): boolean;
+    persist(): void;
+  };
+  /** The device's access tokens (Task 9). */
+  readonly tokens?: { dropDevice(id: string): number };
+}
+
+export interface DeviceRevokeOptions {
+  readonly reason: "owner" | "self" | "reset" | "rotation";
+  readonly by: { readonly kind: string; readonly id: string };
+  /** A `device.revoke` audit row (the bulk ends of a reset or rotation are audited as one). */
+  readonly audit?: boolean;
+  /** The revoker's remote address, for the audit row only (owner decision 4). */
+  readonly remote?: string;
+  readonly except?: { readonly transport: Transport; readonly clientId: number };
+}
+
+/**
+ * The one way a device is revoked, in 5A's order: ended in memory (no proof by its key gets a
+ * token again), every transport refuses it, its tokens and tickets are dropped, every live
+ * connection it proved ends `DEVICE_REVOKED` (its streams with it), then the end is written
+ * (retried). A device has no fin-store write lock to take: it is the owner, its writes carry no
+ * credential. Audited `device.revoke {deviceId, deviceName, reason, address?}` once.
+ */
+export function revokeDevice(deps: DeviceRevokeDeps, id: string, opts: DeviceRevokeOptions): RevokeReport {
+  const name = deps.devices.get(id)?.name;
+  const stored = deps.devices.markEnded(id, opts.reason);
+  const ref = { kind: "device", id };
+  deps.connections.revoke(ref);
+  deps.tokens?.dropDevice(id);
+  const mine = (p: Principal) => p.kind === "device" && p.id === id;
+  const tickets = deps.tickets.dropWhere(mine);
+  const except = opts.except;
+  const connections = deps.connections.closeWhere(
+    (c) => mine(c.principal) && !(except !== undefined && c.transport === except.transport && c.clientId === except.clientId),
+    deviceRevoked(),
+  );
+  try {
+    deps.devices.persist();
+  } catch (e) {
+    process.stderr.write(`finisherd: warning: cannot record a device's end: ${String(e)}\n`);
+  }
+  if (stored && opts.audit !== false) {
+    deps.audit.append({
+      kind: "device.revoke",
+      principal: opts.by,
+      outcome: "ok",
+      details: {
+        deviceId: id,
+        ...(name === undefined ? {} : { deviceName: name }),
+        reason: opts.reason,
+        count: connections,
+        ...(opts.remote === undefined ? {} : { address: opts.remote.slice(0, 64) }),
+      },
+    });
+  }
+  return { revoked: stored, tickets, connections };
 }

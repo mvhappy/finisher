@@ -28,8 +28,8 @@ export const EvalAudioPayload = Schema.Struct({
  * end is `INVALID_RANGE`). `branch` defaults to `main`, `timeline` to the first. `out`: an
  * absolute folder for the files (`workspace/shared/look/` of the project when absent; never
  * inside `.finisher/`, `assets/` or the server's data, `EXPORT_DESTINATION`); naming it needs
- * `project.write` on top of `project.read` and `jobs.submit`, and a principal with roots writes
- * only inside its project's folder. `size`: each side 1 to 8192 (the timeline's resolution when
+ * `project.write` on top of `project.read` and `jobs.submit`; an agent or MCP principal writes
+ * only inside its project's folder, a device inside the server's allowed roots (5B Decision 32). `size`: each side 1 to 8192 (the timeline's resolution when
  * absent). `wait` (default true) answers the `LookResult` (frames with their final paths, what
  * was `skipped`, the adapter) once the job finished, or its error; `wait: false` answers
  * `{job}` at once.

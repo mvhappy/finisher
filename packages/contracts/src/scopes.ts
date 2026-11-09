@@ -71,7 +71,10 @@ export type FinRpcTag = RpcGroup.Rpcs<typeof FinRpcs>["_tag"];
  *   (`finisher.project.json`) and whether that project is open here;
  * - `probePath` / `importDir`: the path, canonical and absolute (`INVALID_PATH` otherwise);
  * - `outDir`: the payload's `out`, an absolute folder the call writes files into (optional),
- *   canonical; for a principal with roots it must lie inside the call's project folder;
+ *   canonical; for an agent or MCP principal it must lie inside the call's project folder, for
+ *   a device inside the server's allowed roots (5B Decision 32);
+ * - `libraryRoot` / `registryPaths`: `library.add`'s root, `registry.add`'s folder and root
+ *   file: canonical, checked against a device's roots, never rewritten;
  * - `branch`: the payload's branch references (a name, an id or `name#id`), as ids through
  *   the store, when a policy reads them (5A: the write targets of `agent`/`mcp` principals
  *   with branch limits; 5E: protected branches);
@@ -81,7 +84,8 @@ export type FinRpcTag = RpcGroup.Rpcs<typeof FinRpcs>["_tag"];
  *   kind clients may submit;
  * - `job`: the payload's `job` as whose it is to the caller (`RuleFacts.job`).
  */
-export type ResolverName = "project" | "openDir" | "createDir" | "probePath" | "importDir" | "outDir" | "branch" | "jobProject" | "jobKind" | "job";
+/** `libraryRoot`, `registryPaths`: `library.add`'s root and `registry.add`'s folder and root file, checked against a device's roots (5B Decision 32). */
+export type ResolverName = "project" | "openDir" | "createDir" | "probePath" | "importDir" | "outDir" | "libraryRoot" | "registryPaths" | "branch" | "jobProject" | "jobKind" | "job";
 
 /** Resolved facts an escalation may read. */
 export interface RuleFacts {
@@ -139,9 +143,16 @@ export interface RuleOf<T extends FinRpcTag> {
    * `CONFIRMATION_REQUIRED`: on by default (owner decision, review of Task 7, L2). A rule opts
    * out only as `readOnly` (it changes nothing: reading content, asking for a code, listing the
    * audit) or `service` (`server.stop`, which service managers call without a terminal, spec
-   * §4.7).
+   * §4.7). A `device` (5B) confirms exactly the `service` rules: the opt-out is the console's,
+   * and stopping the server from the app takes the person's code (`needsConfirmation`).
    */
   readonly unconfirmed?: "readOnly" | "service";
+  /**
+   * A payload-dependent opt-out, read like `unconfirmed` when it answers (5B Decision 21: a
+   * console's `self` pairing offer, which the desktop shell's main process makes without a
+   * terminal). `undefined`: the rule's own `unconfirmed` stands.
+   */
+  readonly unconfirmedIf?: (payload: PayloadOf<T>) => "readOnly" | "service" | undefined;
   /**
    * The principal kinds that may call it, whatever scopes they hold; any other kind is
    * `SCOPE_DENIED` (reason `principalKind`), before the human-only check. `agent.self` is the
@@ -172,6 +183,7 @@ export interface RpcRule {
   readonly targets?: ReadonlyArray<string>;
   readonly author?: string;
   readonly unconfirmed?: "readOnly" | "service";
+  readonly unconfirmedIf?: (payload: never) => "readOnly" | "service" | undefined;
   readonly kinds?: ReadonlyArray<PrincipalKind>;
   readonly deviceOnly?: (payload: never) => boolean;
   readonly allProjects?: (payload: never) => boolean;
@@ -203,7 +215,8 @@ export const RPC_SCOPES: { readonly [T in FinRpcTag]: RuleOf<T> } = {
   "auth.whoami": { scopes: ["server.read"] },
   // No id: a credential can revoke only itself.
   "auth.revokeSelf": { scopes: ["server.read"] },
-  // The console's confirmations (Decision 30); the handler serves `console` principals only.
+  // The typed confirmations (Decision 30); the handler serves the human principals only
+  // (`console` and, since 5B, `device`).
   "console.challenge": { scopes: ["auth.admin"], unconfirmed: "readOnly" },
   // 5A Task 8. Stopping is the owner's, but service managers call it without a terminal.
   "server.status": { scopes: ["server.read"] },
@@ -223,7 +236,7 @@ export const RPC_SCOPES: { readonly [T in FinRpcTag]: RuleOf<T> } = {
     resolve: ["openDir"],
     escalate: (p, facts) => [...(facts.attached === true ? [] : (["project.write"] as const)), ...(p.relocate === true ? (["project.confirm"] as const) : [])],
   },
-  // Protocol 2: the probe is for `projectId`, and a principal with roots probes only inside its folder.
+  // Protocol 2: the probe is for `projectId`; an agent or MCP principal probes only inside its folder.
   "asset.probe": { scopes: ["project.write"], resolve: ["project", "probePath"] },
   "tx.commit": { scopes: ["project.write"], resolve: BRANCH, writes: ["tx.branch"] },
   "snapshot.get": { scopes: ["project.read"], resolve: BRANCH },
@@ -257,7 +270,7 @@ export const RPC_SCOPES: { readonly [T in FinRpcTag]: RuleOf<T> } = {
   "fonts.fetch": { scopes: ["fonts.fetch"], resolve: PROJECT },
   "fonts.plan": { scopes: ["project.read"], resolve: BRANCH },
   // Plan 6A Task 13. A look reads the project and submits a job (`jobs.submit` and the kind's own
-  // `project.read`, spec §6.7); its frames go to `out`, which a principal with roots may name only
+  // `project.read`, spec §6.7); its frames go to `out`, which an agent or MCP principal may name only
   // inside its project's folder. It commits nothing, so it takes no branch write guard.
   // A read-only token gets the default place only: naming a folder (`out`) writes files where
   // the caller chooses, which takes `project.write` (owner decision, review of Tasks 11-12, M1).
@@ -317,7 +330,7 @@ export const RPC_SCOPES: { readonly [T in FinRpcTag]: RuleOf<T> } = {
   // themselves are the owner's (`plugin.admin` is human-only).
   "registry.list": { scopes: ["plugin.read"] },
   "registry.status": { scopes: ["plugin.read"] },
-  "registry.add": { scopes: ["plugin.admin"] },
+  "registry.add": { scopes: ["plugin.admin"], resolve: ["registryPaths"] },
   "registry.remove": { scopes: ["plugin.admin"] },
   "registry.forget": { scopes: ["plugin.admin"] },
   "registry.refresh": { scopes: ["plugin.read"] },
@@ -342,7 +355,7 @@ export const RPC_SCOPES: { readonly [T in FinRpcTag]: RuleOf<T> } = {
   // (human-only) for the ones only a person decides. Everything that reads needs `library.read`
   // and reaches the libraries the caller reads (`libraryReach`); a scan also needs `jobs.submit`,
   // and so does hashing candidates, which submits jobs.
-  "library.add": { scopes: ["library.admin"] },
+  "library.add": { scopes: ["library.admin"], resolve: ["libraryRoot"] },
   "library.remove": { scopes: ["library.admin"] },
   "library.set": {
     scopes: ["library.scan"],
@@ -418,6 +431,23 @@ export const RPC_SCOPES: { readonly [T in FinRpcTag]: RuleOf<T> } = {
   "agent.local.remove": { scopes: ["agent.admin"] },
   "training.closedTargets.get": { scopes: ["server.read"] },
   "training.closedTargets.set": { scopes: ["settings.admin"] },
+  // 5B (plan Decision 1, spec §5.9): pairing, devices and the environment are the owner's
+  // (`auth.admin`, human-only); the streams and the device list only read. A console's `self`
+  // offer (the desktop shell pairing its own renderer) needs no typed code (Decision 21).
+  "auth.pair.offer": { scopes: ["auth.admin"], unconfirmedIf: (p) => (p.self === true ? "service" : undefined) },
+  "auth.pair.approve": { scopes: ["auth.admin"] },
+  "auth.pair.reject": { scopes: ["auth.admin"] },
+  "auth.pair.pending": { scopes: ["auth.admin"], unconfirmed: "readOnly" },
+  "auth.device.list": { scopes: ["auth.admin"], unconfirmed: "readOnly" },
+  "auth.device.rename": { scopes: ["auth.admin"] },
+  "auth.device.revoke": { scopes: ["auth.admin"] },
+  "auth.devices.watch": { scopes: ["auth.admin"], unconfirmed: "readOnly" },
+  "env.describe": { scopes: ["server.read"] },
+  "env.name": { scopes: ["auth.admin"] },
+  "env.adopt": { scopes: ["auth.admin"] },
+  "env.reset": { scopes: ["auth.admin"] },
+  "env.rotateIdentity": { scopes: ["auth.admin"] },
+  "settings.write": { scopes: ["settings.admin"] },
 };
 
 /** The RPCs that write through the store's guard: exactly the rules with `writes`. */
@@ -442,12 +472,32 @@ export function escalatedScopes(tag: FinRpcTag, payload: unknown, facts: RuleFac
   return [...new Set(more)].filter((s) => !r.scopes.includes(s));
 }
 
+/** The rule's opt-out for `payload`: its `unconfirmedIf` when that answers, else its `unconfirmed`. */
+export function optOutOf(tag: FinRpcTag, payload: unknown): "readOnly" | "service" | undefined {
+  const r = ruleOf(tag);
+  return r.unconfirmedIf?.(payload as never) ?? r.unconfirmed;
+}
+
 /**
- * Whether a `console` principal's call must carry its connection's challenge code: it needs a
- * human-only scope and its rule does not opt out (`unconfirmed`).
+ * Whether a call must carry its connection's typed code (`console.challenge`):
+ * - a `console` principal's, when it needs a human-only scope and its rule does not opt out
+ *   (`unconfirmed`, or `unconfirmedIf` for this payload; 5A Decision 30, review of Task 7 L2);
+ * - a `device`'s, only for the rules a service manager calls without a terminal
+ *   (`unconfirmed: "service"`: `server.stop`; owner decision of 2026-11-08, narrowing 5B
+ *   Decision 22): a person in the app confirms stopping the server, and nothing else;
+ * - a non-human's never (it holds no human-only scope); a human kind this code does not know is
+ *   held to the console's rule, so a new kind fails closed.
+ * `principal` defaults to the console.
  */
-export function needsConfirmation(tag: FinRpcTag, payload: unknown, facts: RuleFacts = {}): boolean {
-  return ruleOf(tag).unconfirmed === undefined && requiredScopes(tag, payload, facts).some((s) => HUMAN_ONLY.has(s));
+export function needsConfirmation(
+  tag: FinRpcTag,
+  payload: unknown,
+  facts: RuleFacts = {},
+  principal: { readonly kind: PrincipalKind; readonly human: boolean } = { kind: "console", human: true },
+): boolean {
+  if (!principal.human) return false;
+  if (principal.kind === "device") return ruleOf(tag).unconfirmed === "service";
+  return optOutOf(tag, payload) === undefined && requiredScopes(tag, payload, facts).some((s) => HUMAN_ONLY.has(s));
 }
 
 /** Every scope `tag` needs for `payload`, given the resolved `facts`. */

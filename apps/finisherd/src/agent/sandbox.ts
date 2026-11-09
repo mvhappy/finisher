@@ -14,18 +14,17 @@
 //   with the session environment and no sandbox, and the persistent warning says so;
 // - **refused** where the mechanism is unavailable: `SANDBOX_UNAVAILABLE`, nothing starts.
 // Every process starts in a process group of its own and the whole group is killed when its
-// leader exits or the scope closes (session end, or the instance replaced). On Linux the
-// launcher stays the program's parent, a subreaper (plan 7C Decision 3 as amended): it
-// forwards signals, passes the program's exit through and, when the program exits, is hung up
-// or loses its parent, kills every descendant, one that left the group (`setsid`, `setpgid`)
-// included, and the session's cgroup where one is delegated. So a kill with `SIGKILL` of a
-// process under the Linux launcher hangs it up (`SIGHUP`, which it never forwards) and falls
-// back to `SIGKILL` on its group after `REAP_GRACE_MS`; a `SIGKILL` would end the launcher
-// before it reaps. **Residual:** without the launcher (direct mode, where the profile is not
-// ready on this OS) a process that leaves its group outlives both, unconfined anyway. The
-// macOS launcher (Task 8) still `exec`s, so there it outlives the session too (a Task 8
-// follow-up, plan Decision 3 amendment); Windows closes it with the launcher's job object
-// (Task 9).
+// leader exits or the scope closes (session end, or the instance replaced). On Linux and
+// macOS the launcher stays the program's parent (plan 7C Decision 3 as amended): it forwards
+// signals, passes the program's exit through and, when the program exits, is hung up or loses
+// its parent, kills every descendant, one that left the group (`setsid`, `setpgid`) included:
+// on Linux as a subreaper (and with the session's cgroup where one is delegated), on macOS by
+// the session's Seatbelt mark, which every descendant inherits. So a kill with `SIGKILL` of a
+// process under either launcher hangs it up (`SIGHUP`, which it never forwards) and falls back
+// to `SIGKILL` on its group after `REAP_GRACE_MS`; a `SIGKILL` would end the launcher before it
+// reaps. **Residual:** without the launcher (direct mode, where the profile is not ready on
+// this OS) a process that leaves its group outlives both, unconfined anyway. Windows closes it
+// with the launcher's job object (Task 9).
 // What the launcher itself reports, a failure to apply the policy (its line written back on
 // descriptor 3 before exit 78; a program's own exit 78 writes none), goes to `onViolation`
 // (`sandbox.violation`, spec §8.8). A seccomp kill (`SIGSYS`) is not attributed: without the
@@ -47,6 +46,7 @@ import type { FinError, Harness, Session } from "@finisher/contracts";
 import type { AgentInput, FinEndpoint } from "@finisher/core-types";
 import { sandboxAgentCheck, sandboxAgentGrants, sandboxContainerSid, sandboxProjectContainer, sandboxToolchainBase } from "@finisher/fin-node";
 import { Effect, type Scope } from "effect";
+import { canonicalEndpoint } from "../auth/crypto.ts";
 import { finError, toFinError } from "../errors.ts";
 import { type AclBroker, grantTable, sessionOwner } from "../sandbox/broker.ts";
 import { resolveSandboxExecPath } from "../sandbox/exec.ts";
@@ -331,7 +331,17 @@ export function openSessionSandbox(s: Session, harness: Harness, deps: SessionSa
 /** `FIN_SERVER` and the policy's `fin` endpoint under the launcher, per OS. */
 async function launcherServer(deps: SessionSandboxDeps, platform: NodeJS.Platform): Promise<{ env: string; fin: FinEndpoint | undefined }> {
   if (platform === "win32") return { env: deps.localEndpoint, fin: { kind: "pipe" } };
-  if (platform === "darwin") return { env: deps.localEndpoint, fin: { kind: "unixSocket", path: deps.localEndpoint } };
+  if (platform === "darwin") {
+    // Resolved, as the handshake binds it: a sandboxed `fin` may not resolve a link on the way
+    // (`/tmp`, `/var`), and the endpoint it compares would then be the link's (`endpointMismatch`).
+    let socket = deps.localEndpoint;
+    try {
+      socket = canonicalEndpoint(socket, platform);
+    } catch {
+      // Not there (yet): `fin` meets the same unresolved path.
+    }
+    return { env: socket, fin: { kind: "unixSocket", path: socket } };
+  }
   if (deps.agentListener === undefined) throw finError("SANDBOX_UNAVAILABLE", "the agent listener is not available", { profile: "agent", os: "linux", need: "the agent listener" });
   const endpoint = await deps.agentListener();
   const port = Number(/^tcp:127\.0\.0\.1:(\d+)$/.exec(endpoint)?.[1]);
@@ -353,8 +363,8 @@ function start(
   platform: NodeJS.Platform,
   onExit: (e: ChildExit, launcherFailed: boolean) => void,
 ): Promise<SandboxedChild> {
-  // The Linux launcher stays the parent and reaps the session (see the header).
-  const reaps = via !== undefined && platform === "linux";
+  // The Linux and macOS launchers stay the parent and reap the session (see the header).
+  const reaps = via !== undefined && (platform === "linux" || platform === "darwin");
   const [program, args] = via === undefined ? [argv[0]!, argv.slice(1)] : [via.launcher, ["--policy-fd", "3", "--", ...argv]];
   const child: ChildProcess = spawnChild(program, args, {
     cwd,

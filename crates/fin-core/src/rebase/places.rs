@@ -244,12 +244,12 @@ struct Found {
 }
 
 /// `id` as the project names it: a placeholder an earlier op bound is its id.
-fn real<'a>(id: &'a str, bound: &'a Bound) -> &'a str {
+pub(super) fn real<'a>(id: &'a str, bound: &'a Bound) -> &'a str {
     bound.get(id).map_or(id, String::as_str)
 }
 
 /// `id` canonical: the placeholder that bound it, if an earlier op of the transaction did.
-fn canonical(id: &str, bound: &Bound) -> String {
+pub(super) fn canonical(id: &str, bound: &Bound) -> String {
     bound
         .iter()
         .find(|(_, v)| v.as_str() == id)

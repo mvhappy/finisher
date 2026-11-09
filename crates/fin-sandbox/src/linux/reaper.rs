@@ -37,20 +37,8 @@
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-/// The signals the launcher passes on to the program's process group.
-pub const FORWARDED: &[libc::c_int] = &[
-    libc::SIGTERM,
-    libc::SIGINT,
-    libc::SIGQUIT,
-    libc::SIGUSR1,
-    libc::SIGUSR2,
-    libc::SIGWINCH,
-    libc::SIGCONT,
-    libc::SIGALRM,
-    libc::SIGTSTP,
-    libc::SIGTTIN,
-    libc::SIGTTOU,
-];
+pub use crate::reap::FORWARDED;
+use crate::reap::{block, child_group_and_mask, exit_as, forward, os_err, reap_available};
 
 /// The signal the launcher asks for when its parent dies: not `SIGHUP`, because the kernel
 /// sends it when the parent *thread* that started the launcher exits, so the launcher checks
@@ -82,10 +70,6 @@ pub struct Prepared {
     cgroup: Option<PathBuf>,
 }
 
-fn os_err(call: &str) -> String {
-    format!("{call}: {}", std::io::Error::last_os_error())
-}
-
 /// Before the fork: subreaper, parent-death signal, the blocked signals, the cgroup.
 pub fn prepare() -> Result<Prepared, String> {
     // SAFETY: getppid has no failure mode.
@@ -103,26 +87,7 @@ pub fn prepare() -> Result<Prepared, String> {
     if unsafe { libc::getppid() } != parent {
         return Err("the launcher's parent exited".into());
     }
-    // SAFETY: plain data, initialised by sigemptyset before use.
-    let mut waited: libc::sigset_t = unsafe { std::mem::zeroed() };
-    // SAFETY: as above.
-    let mut old_mask: libc::sigset_t = unsafe { std::mem::zeroed() };
-    // SAFETY: valid pointers to owned sets. An inherited `SIG_IGN` (or `SA_NOCLDWAIT`) on
-    // `SIGCHLD` survives `exec` and would let the kernel reap the program unseen: the default
-    // first.
-    unsafe {
-        libc::signal(libc::SIGCHLD, libc::SIG_DFL);
-        libc::sigemptyset(&mut waited);
-        for &s in FORWARDED {
-            libc::sigaddset(&mut waited, s);
-        }
-        for s in [libc::SIGCHLD, libc::SIGHUP, parent_death_signal()] {
-            libc::sigaddset(&mut waited, s);
-        }
-        if libc::sigprocmask(libc::SIG_BLOCK, &waited, &mut old_mask) != 0 {
-            return Err(os_err("sigprocmask"));
-        }
-    }
+    let (waited, old_mask) = block(&[libc::SIGCHLD, libc::SIGHUP, parent_death_signal()])?;
     Ok(Prepared {
         parent,
         old_mask,
@@ -147,19 +112,10 @@ impl Prepared {
     /// In the forked child: a process group of its own, the session's cgroup, and the signal
     /// mask the launcher started with.
     pub fn in_child(&self) -> Result<(), String> {
-        // SAFETY: setpgid on the calling process.
-        if unsafe { libc::setpgid(0, 0) } != 0 {
-            return Err(os_err("setpgid"));
-        }
+        child_group_and_mask(&self.old_mask)?;
         if let Some(dir) = &self.cgroup {
             // Not fatal: the reaper still kills every descendant.
             let _ = std::fs::write(dir.join("cgroup.procs"), b"0");
-        }
-        // SAFETY: a valid pointer to the saved mask.
-        if unsafe { libc::sigprocmask(libc::SIG_SETMASK, &self.old_mask, std::ptr::null_mut()) }
-            != 0
-        {
-            return Err(os_err("sigprocmask"));
         }
         Ok(())
     }
@@ -210,36 +166,6 @@ impl Prepared {
     }
 }
 
-/// Sends `sig` to the program's group, or to the program where it left that group.
-fn forward(child: libc::pid_t, sig: libc::c_int) {
-    // SAFETY: kill with plain integers.
-    unsafe {
-        if libc::kill(-child, sig) != 0 {
-            libc::kill(child, sig);
-        }
-    }
-}
-
-/// Reaps every exited child without waiting; the program's status goes to `main`. Answers
-/// whether any child is left.
-fn reap_available(child: libc::pid_t, main: &mut Option<libc::c_int>) -> bool {
-    loop {
-        let mut status = 0;
-        // SAFETY: a valid out pointer.
-        let r = unsafe { libc::waitpid(-1, &mut status, libc::WNOHANG) };
-        if r == child {
-            *main = Some(status);
-        } else if r == 0 {
-            return true;
-        } else if r < 0 {
-            if std::io::Error::last_os_error().raw_os_error() == Some(libc::EINTR) {
-                continue;
-            }
-            return false; // ECHILD: none left
-        }
-    }
-}
-
 /// Kills the program's group, the cgroup and every child until no child is left.
 fn kill_all(child: libc::pid_t, cgroup: Option<&Path>, main: &mut Option<libc::c_int>) {
     // Once the program is reaped its group's id may be free for another process; its members
@@ -283,33 +209,6 @@ fn children() -> Vec<libc::pid_t> {
 fn parent_of(pid: u32) -> Option<u32> {
     let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
     stat.rsplit_once(") ")?.1.split(' ').nth(1)?.parse().ok()
-}
-
-/// Exits with the program's wait status: its code, or its signal raised on the launcher.
-fn exit_as(status: libc::c_int) -> ! {
-    if libc::WIFEXITED(status) {
-        std::process::exit(libc::WEXITSTATUS(status));
-    }
-    let sig = if libc::WIFSIGNALED(status) {
-        libc::WTERMSIG(status)
-    } else {
-        libc::SIGKILL
-    };
-    let none = libc::rlimit {
-        rlim_cur: 0,
-        rlim_max: 0,
-    };
-    // SAFETY: plain calls on the launcher itself, with valid pointers.
-    unsafe {
-        libc::setrlimit(libc::RLIMIT_CORE, &none);
-        libc::signal(sig, libc::SIG_DFL);
-        let mut set: libc::sigset_t = std::mem::zeroed();
-        libc::sigemptyset(&mut set);
-        libc::sigaddset(&mut set, sig);
-        libc::sigprocmask(libc::SIG_UNBLOCK, &set, std::ptr::null_mut());
-        libc::raise(sig);
-    }
-    std::process::exit(128 + sig)
 }
 
 // --- The optional cgroup layer ---

@@ -393,6 +393,7 @@ describe("the chain", () => {
       unauthenticated("unproved"),
       consentUiOnly("diagnostics.consent", p),
       confirmationRequired("diagnostics.purge", "missing"),
+      confirmationRequired("server.stop", "wrong", "app"),
     ];
     for (const e of all) {
       expect(e.fix, e.code).toBeDefined();
@@ -658,12 +659,14 @@ describe("review of Tasks 8–9", () => {
     expect(code(await fresh.call("project.create", { dir: join(dirB, "workspace", "new"), name: "N", rate: "30" }))).toBeUndefined();
   });
 
-  test("Task 8: server.stop needs no code from the console, but a device with auth.admin must confirm it", async () => {
+  test("Task 8: server.stop needs no code from the console; a device with auth.admin confirms it (5B Task 4)", async () => {
     const stop = { "server.stop": (_: unknown) => Effect.succeed({ stopping: true }) };
     expect(code(await harness(CONSOLE, {}, stop).call("server.stop", {}))).toBeUndefined();
     const device: Principal = { kind: "device", id: "01device00000000000000000a", scopes: ["auth.admin", "server.read"], projects: "*", branches: "*", human: true };
     const h = harness(device, {}, stop);
     expect(code(await h.call("server.stop", {}))).toBe("CONFIRMATION_REQUIRED");
     expect(h.audited.map((e) => e.kind)).toEqual(["console.refused"]);
+    // With its own connection's code, it stops.
+    expect(code(await h.call("server.stop", { challenge: h.challenge() }))).toBeUndefined();
   });
 });

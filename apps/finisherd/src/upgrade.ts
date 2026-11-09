@@ -24,7 +24,8 @@
 // (`MAX_WS_PER_OWNER`: a credential, or one `local` connection), for `local` as a whole and in
 // all, with `RESERVED_WS` of them only for `device` and `console` principals (the app and the
 // owner), so a principal minting tickets cannot lock out the UI.
-import { createServer, type IncomingMessage, type Server } from "node:http";
+import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
+import { createServer as createHttpsServer } from "node:https";
 import type { Duplex } from "node:stream";
 import { PROTOCOL_VERSION, WS_PROTOCOL_PREFIX, WS_TICKET_PREFIX } from "@finisher/contracts";
 import { Context, Effect, Exit, Fiber, Scope } from "effect";
@@ -34,8 +35,9 @@ import { SocketServer, SocketServerError, SocketServerOpenError } from "effect/s
 import { WebSocketServer, type WebSocket } from "ws";
 import type { Principal } from "./principal.ts";
 import { principalKeyOf, type Tickets } from "./auth/tickets.ts";
+import { hostAllowed, type ListenerPolicy, loopbackPolicy, MAX_UNAUTHENTICATED, originAllowed, RPC_PATH } from "./http/policy.ts";
 
-export const RPC_PATH = "/rpc";
+export { RPC_PATH } from "./http/policy.ts";
 export const WS_PROTOCOL = `${WS_PROTOCOL_PREFIX}${PROTOCOL_VERSION}` as const;
 
 export type UpgradeFailure = "badPath" | "badVersion" | "badHost" | "badOrigin" | "noTicket" | "badTicket" | "tooMany";
@@ -45,28 +47,21 @@ export type UpgradeResult =
   | { ok: true; principal: Principal; owner: string; protocol: typeof WS_PROTOCOL }
   | { ok: false; status: 401 | 403 | 404 | 426 | 503; reason: UpgradeFailure; body?: unknown };
 
-export interface UpgradeCheckOptions {
-  /** The port the server is bound to (known once it listens). */
-  readonly port: () => number;
-  readonly tickets: Tickets;
-  /** Configured origins (`settings.json` `server.origins`), read at each upgrade. */
-  readonly origins: () => ReadonlyArray<string>;
-}
+export type UpgradeCheckOptions =
+  | {
+      /** The port the server is bound to (known once it listens): the loopback listener's lists. */
+      readonly port: () => number;
+      readonly tickets: Tickets;
+      /** Configured origins (`settings.json` `server.origins`), read at each upgrade. */
+      readonly origins: () => ReadonlyArray<string>;
+    }
+  | {
+      /** The listener's own Host and Origin lists (5B Decision 11: the remote listener's). */
+      readonly policy: ListenerPolicy;
+      readonly tickets: Tickets;
+    };
 
-/** `origin` as `new URL` normalises it (lower-cased, default port dropped), or `undefined`. */
-export function normalOrigin(origin: string): string | undefined {
-  try {
-    const o = new URL(origin).origin;
-    return o === "null" ? undefined : o;
-  } catch {
-    return undefined;
-  }
-}
-
-/** The loopback names a local client may use for this server (Host and Origin). */
-export function loopbackHosts(port: number): ReadonlyArray<string> {
-  return [`127.0.0.1:${port}`, `localhost:${port}`, `[::1]:${port}`];
-}
+export { loopbackHosts, normalOrigin } from "./http/policy.ts";
 
 /** The offered subprotocols, in order (repeated headers are joined by Node with `, `). */
 function offered(req: Pick<IncomingMessage, "headers">): string[] {
@@ -79,6 +74,7 @@ function offered(req: Pick<IncomingMessage, "headers">): string[] {
 }
 
 export function makeUpgradeCheck(opts: UpgradeCheckOptions): (req: Pick<IncomingMessage, "headers" | "url">) => UpgradeResult {
+  const policy = "policy" in opts ? opts.policy : loopbackPolicy(opts.port, opts.origins);
   return (req) => {
     let path: string;
     try {
@@ -91,16 +87,8 @@ export function makeUpgradeCheck(opts: UpgradeCheckOptions): (req: Pick<Incoming
     if (!protocols.includes(WS_PROTOCOL)) {
       return { ok: false, status: 426, reason: "badVersion", body: { protocol: { min: PROTOCOL_VERSION, max: PROTOCOL_VERSION } } };
     }
-    const port = opts.port();
-    const hosts = loopbackHosts(port);
-    const host = req.headers.host?.toLowerCase();
-    if (host === undefined || !hosts.includes(host)) return { ok: false, status: 403, reason: "badHost" };
-    const origin = req.headers.origin;
-    if (origin !== undefined) {
-      const allowed = new Set([...hosts.map((h) => `http://${h}`), ...opts.origins().map(normalOrigin)]);
-      const got = normalOrigin(origin);
-      if (got === undefined || !allowed.has(got)) return { ok: false, status: 403, reason: "badOrigin" };
-    }
+    if (!hostAllowed(policy, req.headers.host)) return { ok: false, status: 403, reason: "badHost" };
+    if (!originAllowed(policy, req.headers.origin)) return { ok: false, status: 403, reason: "badOrigin" };
     const tickets = protocols.filter((p) => p.startsWith(WS_TICKET_PREFIX));
     if (tickets.length !== 1) return { ok: false, status: 401, reason: "noTicket" };
     const redeemed = opts.tickets.redeem(tickets[0]!.slice(WS_TICKET_PREFIX.length));
@@ -147,12 +135,29 @@ export interface WebSocketServerOptions {
   readonly atCapGraceMs?: number;
   /** WebSockets at most, every principal together (default `MAX_WEBSOCKETS`). */
   readonly maxWebSockets?: number;
+  /**
+   * The WebSocket slots, shared by every listener (5B Decision 12: 64 in all, 16 only for
+   * `device` and `console`); default a pool of this listener's own.
+   */
+  readonly slots?: WebSocketSlots;
+  /** Pre-upgrade sockets per remote address at most (5B: the remote listener's 4); default none. */
+  readonly perAddress?: number;
+  /** The listener's policy: its `maxUnauthenticated` and `perAddress` apply unless given above. */
+  readonly policy?: ListenerPolicy;
+  /** A socket's remote address (tests inject addresses); default the socket's own. */
+  readonly remoteOf?: (socket: Duplex) => string;
+  /** Plain HTTP requests (5B's front, `http/front.ts`); default 5A's 404, or 426 on `/rpc`. */
+  readonly onRequest?: (req: IncomingMessage, res: ServerResponse) => void;
+  /** The port to listen on (default 0: any). */
+  readonly port?: number;
+  /** TLS (5B's remote listener): `node:https` with this key and certificate, TLS 1.2 or later. */
+  readonly tls?: { readonly key: string; readonly cert: string };
 }
 
 /** Before authentication a client gets this long to upgrade (review of Task 6, finding 8). */
 export const HEADERS_TIMEOUT_MS = 10_000;
-/** Open sockets that have not upgraded yet, at most: past it a new one is closed at once. */
-export const MAX_UNAUTHENTICATED = 16;
+/** Open sockets that have not upgraded yet, at most: past it a new one is closed at once (`http/policy.ts`). */
+export { MAX_UNAUTHENTICATED } from "./http/policy.ts";
 /** Once `MAX_UNAUTHENTICATED` are open, the header timeout of the ones already open. */
 export const AT_CAP_GRACE_MS = 1_000;
 /** WebSockets at most: the UI and a few tools, never a flood. */
@@ -224,22 +229,31 @@ export const makeTicketedWebSocketServer = (options: WebSocketServerOptions) =>
     let onConnection = (a: Accepted) => void pending.push(a);
 
     const timeout = options.headersTimeoutMs ?? HEADERS_TIMEOUT_MS;
-    const maxUnauthenticated = options.maxUnauthenticated ?? MAX_UNAUTHENTICATED;
+    const maxUnauthenticated = options.maxUnauthenticated ?? options.policy?.maxUnauthenticated ?? MAX_UNAUTHENTICATED;
     const atCapGrace = options.atCapGraceMs ?? AT_CAP_GRACE_MS;
     const maxWebSockets = options.maxWebSockets ?? MAX_WEBSOCKETS;
-    const slots = new WebSocketSlots(maxWebSockets);
+    const slots = options.slots ?? new WebSocketSlots(maxWebSockets);
+    const perAddress = options.perAddress ?? options.policy?.perAddress;
+    const remoteOf = options.remoteOf ?? ((s: Duplex) => (s as Duplex & { remoteAddress?: string }).remoteAddress ?? "");
+    /** Pre-upgrade sockets per remote address (only counted with `perAddress`). */
+    const byAddress = new Map<string, number>();
     /** Sockets that have not upgraded: when each opened, and what marks it upgraded (it stops counting). */
     const unauthenticated = new Map<Duplex, { readonly openedAt: number; readonly upgraded: () => void }>();
     const http: Server = yield* Effect.acquireRelease(
       Effect.sync(() => {
         // Slow or idle clients before the upgrade are cut off (checked every second); the
         // connection count bounds the rest.
-        const server = createServer({ headersTimeout: timeout, requestTimeout: timeout, connectionsCheckingInterval: 1000 }, (req, res) => {
-          // Nothing is served over plain HTTP.
+        const plain = (req: IncomingMessage, res: ServerResponse) => {
+          // 5A: nothing is served over plain HTTP.
           const status = req.url?.split("?")[0] === RPC_PATH ? 426 : 404;
           res.writeHead(status, { "content-type": "application/json", connection: "close" });
           res.end(status === 426 ? JSON.stringify({ protocol: { min: PROTOCOL_VERSION, max: PROTOCOL_VERSION } }) : "");
-        });
+        };
+        const opts = { headersTimeout: timeout, requestTimeout: timeout, connectionsCheckingInterval: 1000 };
+        const server: Server =
+          options.tls === undefined
+            ? createServer(opts, options.onRequest ?? plain)
+            : (createHttpsServer({ ...opts, key: options.tls.key, cert: options.tls.cert, minVersion: "TLSv1.2" }, options.onRequest ?? plain) as unknown as Server);
         // A backstop only: the caps below decide first.
         server.maxConnections = maxUnauthenticated + maxWebSockets;
         return server;
@@ -256,6 +270,13 @@ export const makeTicketedWebSocketServer = (options: WebSocketServerOptions) =>
     // Every socket starts unauthenticated: capped on its own, and closed unless it upgrades in
     // time, whether it sends half a request or nothing at all.
     http.on("connection", (socket: Duplex) => {
+      // One remote address holds at most `perAddress` of them (5B), so one LAN host cannot hold
+      // the pool; checked first, so a refused socket evicts nobody.
+      const address = perAddress === undefined ? undefined : remoteOf(socket);
+      if (address !== undefined && (byAddress.get(address) ?? 0) >= perAddress!) {
+        socket.destroy();
+        return;
+      }
       if (unauthenticated.size >= maxUnauthenticated) {
         // At the cap the header timeout is short: the ones that have waited past it go first.
         const now = Date.now();
@@ -269,11 +290,19 @@ export const makeTicketedWebSocketServer = (options: WebSocketServerOptions) =>
         socket.destroy();
         return;
       }
+      if (address !== undefined) byAddress.set(address, (byAddress.get(address) ?? 0) + 1);
       const timer = setTimeout(() => socket.destroy(), timeout);
       timer.unref();
+      let counted = true;
       const upgraded = () => {
         clearTimeout(timer);
         unauthenticated.delete(socket);
+        if (address !== undefined && counted) {
+          counted = false;
+          const n = (byAddress.get(address) ?? 1) - 1;
+          if (n <= 0) byAddress.delete(address);
+          else byAddress.set(address, n);
+        }
       };
       unauthenticated.set(socket, { openedAt: Date.now(), upgraded });
       socket.once("close", upgraded);
@@ -300,7 +329,8 @@ export const makeTicketedWebSocketServer = (options: WebSocketServerOptions) =>
         return;
       }
       socket.once("close", release);
-      unauthenticated.get(socket)?.upgraded();
+      // Over TLS the upgrade comes on the `TLSSocket`; the pool tracked its raw socket (`_parent`).
+      (unauthenticated.get(socket) ?? unauthenticated.get((socket as Duplex & { _parent?: Duplex })._parent as Duplex))?.upgraded();
       wss.handleUpgrade(req, socket, head, (conn) => {
         // Paused until a handler reads it, so nothing is dropped.
         conn.pause();
@@ -310,7 +340,7 @@ export const makeTicketedWebSocketServer = (options: WebSocketServerOptions) =>
     yield* Effect.callback<void, SocketServerError>((resume) => {
       const fail = (cause: unknown) => resume(Effect.fail(new SocketServerError({ reason: new SocketServerOpenError({ cause }) })));
       http.once("error", fail);
-      http.listen(0, options.host ?? "127.0.0.1", () => {
+      http.listen(options.port ?? 0, options.host ?? "127.0.0.1", () => {
         http.off("error", fail);
         resume(Effect.void);
       });
@@ -345,5 +375,5 @@ export const makeTicketedWebSocketServer = (options: WebSocketServerOptions) =>
         ).pipe(Effect.ensuring(Scope.close(scope, Exit.void)));
       });
 
-    return { server: SocketServer.of({ address, run }), port: bound.port };
+    return { server: SocketServer.of({ address, run }), port: bound.port, http };
   });

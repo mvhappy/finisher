@@ -18,6 +18,7 @@ use super::class::BlobRef;
 pub use super::intent::{IntentTx, TxIntent};
 
 pub mod agent;
+pub mod auth;
 pub mod cli;
 pub mod consent;
 pub mod errors;
@@ -40,6 +41,7 @@ pub use agent::{
     MAX_TOOL_TX_IDS, Provenance, SessionPhase, SessionTotals, SessionTrigger, SignIn, StopReason,
     TurnPurpose, Weights,
 };
+pub use auth::{AuthPair, PairOutcome, PairPlatform, PairRoute};
 pub use cli::CliCommand;
 pub use consent::ConsentChanged;
 pub use errors::{ErrorInternal, ErrorPanic, PanicThread, PanicWhere};
@@ -148,6 +150,7 @@ approx_fixed!(10 =>
     LibraryStorageName, ScanTrigger,
     PluginOutcome, PluginSourceName, PluginKindName, RiskName,
     SandboxProfileName, SandboxOs, UnconfinedReason,
+    PairOutcome, PairPlatform, PairRoute,
 );
 
 /// The [`BlobRef`]s of each content [`Body`] given, for `AnyPayload::blobs`.

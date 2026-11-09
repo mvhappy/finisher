@@ -1,7 +1,14 @@
+import { existsSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { defineConfig } from "vitest/config";
 
 const strict = process.env.FIN_STRICT_TIMING === "1";
+// Tests make a server data in a temp dir, and its `run/fin.sock` must fit a socket path (103
+// bytes on macOS): macOS's per-user `TMPDIR` (`/var/folders/…/T`, 48 bytes) leaves too little
+// for a test's nested dirs, so they go under `/tmp` there, as the e2e scenarios do
+// (`scripts/e2e/lib.mjs` `scenarioTmp`). `/tmp` is a link too, so resolved paths still differ.
+const shortTmp = process.platform === "darwin" && Buffer.byteLength(tmpdir()) > 40 && existsSync("/tmp");
 
 export default defineConfig({
   test: {
@@ -16,6 +23,9 @@ export default defineConfig({
     env: {
       // fin-node tests load the `test-hooks` build, never the production binary.
       FIN_NODE_BINARY_DIR: fileURLToPath(new URL("packages/fin-node/test/native/", import.meta.url)),
+      ...(shortTmp ? { TMPDIR: "/tmp" } : {}),
+      // Servers under test keep their secrets in files, never in the OS keychain (5B Decision 4).
+      FIN_SECRETS: "file",
     },
   },
 });

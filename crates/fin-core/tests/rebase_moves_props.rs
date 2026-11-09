@@ -30,11 +30,11 @@ proptest! {
     }
 }
 
-/// The shrunk case of a workspace run: the head ripples `c4` in after `c3`, at our
-/// overwrite move's anchor on t2, so the rebased move takes `c2` (and its partner `c1` on t1)
-/// ten frames later than where it was written. Our later ripple move of `c1` to its
-/// own end maps through no shift (an overwrite move records none) and lands inside `c1`, and
-/// the re-run refuses it, unblamed (`keyed4c::partner_drift`).
+/// The shrunk case of a workspace run (formerly *partner drift*): the head ripples `c4` in after
+/// `c3`, at our overwrite move's anchor on t2, so the rebased move takes `c2` (and its partner `c1`
+/// on t1) ten frames later than where it was written. Our later ripple move of `c1` to its own end
+/// used to keep the position it was written at (an overwrite move records no shift) and was
+/// refused inside `c1`, unblamed. It is anchored at `c1`'s end now, which follows the partner.
 #[test]
 fn partner_of_overwrite_move_refuses_unblamed() {
     use keyed4c::Intent::Move;
@@ -68,12 +68,10 @@ fn partner_of_overwrite_move_refuses_unblamed() {
     check(&base(&lens, true, false), &committed, &mine).unwrap();
 }
 
-/// The shrunk case of a workspace run (spec §4.3 *self relocation*): t1 holds c1, c2, c3 and
-/// the head ripples c2 to t1's end, so c3 now starts where c2 did (frame 10). Ours slides c3
-/// back a frame, then ripple-moves c4 before c2, written at frame 10. That position maps to 10
-/// (c2's range collapses to its start), but at the head our rebased slide put c3's start at 9
-/// without a shift, so 10 is inside c3 and the re-run refuses `INSERT_INSIDE_CLIP`, unblamed:
-/// the head only shifted c3 (`keyed4c::self_drift`).
+/// The shrunk case of a workspace run (formerly *self relocation*): t1 holds c1, c2, c3 and the
+/// head ripples c2 to t1's end. Ours slides c3 back a frame, then ripple-moves c4 before c2. The
+/// move was written at c2's start; through shifts it kept frame 10, inside c3 after our rebased
+/// slide (`INSERT_INSIDE_CLIP`, unblamed). Anchored at c2's start, it lands before c2 at t1's end.
 #[test]
 fn slide_then_move_at_moved_anchor_refuses_unblamed() {
     use keyed4c::Intent::{Move, Slide};
@@ -105,11 +103,11 @@ fn slide_then_move_at_moved_anchor_refuses_unblamed() {
     check(&base(&lens, false, false), &committed, &mine).unwrap();
 }
 
-/// The shrunk case of a 30k-case run (`keyed4c::anchor_drift`): `c1` on t1 is linked with `c3`
-/// on t2, and the head ripple-moves `c4` to its own end on t4, which records a removal of
-/// `[0, 11)` and an insert at 0. Ours ripple-moves `c3` before `c4`, written at 0; that maps past
-/// the re-inserted `c4` to frame 11, and the rebased move carries `c1` by the same delta into
-/// `c2` on t1, so the re-run refuses `INSERT_INSIDE_CLIP`, unblamed.
+/// The shrunk case of a 30k-case run (formerly *anchor drift*): `c1` on t1 is linked with `c3`
+/// on t2, and the head ripple-moves `c4` to its own end on t4 (a removal of `[0, 11)` and an
+/// insert at 0). Ours ripple-moves `c3` before `c4`, written at 0. Through shifts that went past
+/// the re-inserted `c4` to 11 and carried `c1` into `c2` (`INSERT_INSIDE_CLIP`, unblamed);
+/// anchored at `c4`'s start it stays at 0.
 #[test]
 fn partner_past_relocated_anchor_refuses_unblamed() {
     use keyed4c::Intent::Move;
@@ -134,11 +132,10 @@ fn partner_past_relocated_anchor_refuses_unblamed() {
     check(&base(&lens, true, false), &committed, &mine).unwrap();
 }
 
-/// The shrunk case of a 100k-case run (`keyed4c::anchor_drift`): t2 holds `c1` and `c2`, and
-/// the head ripple-moves `c2` to its own end, recording a removal of `[10, 20)` and an insert
-/// at 10. Ours ripple-moves `c3` from t3 before `c2`, written at frame 10, then sets a
-/// transition between `c1` and `c3`. The move maps past the re-inserted `c2` (frame 20), so the
-/// transition's cut is gone and the re-run refuses `NOT_ADJACENT`, unblamed.
+/// The shrunk case of a 100k-case run (formerly *anchor drift*): t2 holds `c1` and `c2`, and the
+/// head ripple-moves `c2` to its own end. Ours ripple-moves `c3` from t3 before `c2`, then sets a
+/// transition between `c1` and `c3`. Through shifts the move went past the re-inserted `c2` and
+/// the transition was refused `NOT_ADJACENT`, unblamed; anchored at `c2`'s start, the cut is there.
 #[test]
 fn transition_past_relocated_anchor_refuses_unblamed() {
     use keyed4c::Intent::{Move, TrSet};
@@ -166,12 +163,11 @@ fn transition_past_relocated_anchor_refuses_unblamed() {
     check(&base(&lens, false, false), &committed, &mine).unwrap();
 }
 
-/// The shrunk case of a 100k-case run (spec §4.3 *lifted*, `keyed4c::lifted_gap`): t4 holds
-/// `c1`, `c2` and `c3`; the head sets a transition between `c1` and `c2`, then slides `c3` back
-/// a frame, so t4 ends at frame 29 and no shift is recorded. Ours ripple-moves `c1` to t4's end,
-/// written at frame 30, then slides it back two frames. The move keeps 30 and leaves a frame's
-/// gap after `c3`, so the slide has no touching neighbour and is refused `SLIDE_BLOCKED`, with
-/// nothing blamed: both committed records touched what ours names.
+/// The shrunk case of a 100k-case run (formerly *lifted gap*): t4 holds `c1`, `c2` and `c3`; the
+/// head sets a transition between `c1` and `c2`, then slides `c3` back a frame, so t4 ends at
+/// frame 29 with no shift recorded. Ours ripple-moves `c1` to t4's end, written at 30, then slides
+/// it back two frames. Through shifts the move kept 30, a frame past `c3`, and the slide was
+/// refused `SLIDE_BLOCKED`, unblamed; anchored at `c3`'s end it lands at 29.
 #[test]
 fn slide_after_lifted_end_refuses_unblamed() {
     use keyed4c::Intent::{Move, Slide, TrSet};
@@ -202,4 +198,242 @@ fn slide_after_lifted_end_refuses_unblamed() {
         },
     ];
     check(&base(&lens, false, false), &committed, &mine).unwrap();
+}
+
+/// Open seed `cc 5cee31d6`: the head inserts a clip after `c1` on t1, then overwrite-moves it
+/// to t2. Ours inserts after `c1`, then sets a transition between `c1` and our clip.
+#[test]
+fn seed_5cee31d6_insert_after_lifted_concurrent_then_transition() {
+    use keyed4c::Intent::{Insert, Move, TrSet};
+    let lens = [vec![10], vec![], vec![], vec![]];
+    let committed = [
+        (
+            vec![Insert {
+                track: 0,
+                before: None,
+                len: 1,
+            }],
+            false,
+        ),
+        (
+            vec![Move {
+                track: 0,
+                clip: 5,
+                to: 1,
+                before: None,
+                overwrite: true,
+            }],
+            false,
+        ),
+    ];
+    let mine = [
+        Insert {
+            track: 0,
+            before: None,
+            len: 3,
+        },
+        TrSet { track: 0, clip: 0 },
+    ];
+    check(&base(&lens, false, false), &committed, &mine).unwrap();
+}
+
+/// Open seed `cc 1c600fdf`: `c1` (t1) is linked with `c4` (t2). The head ripple-moves `c2` to
+/// t4, then overwrite-moves it back to t1 at zero. Ours ripple-moves `c4` to t4's end.
+#[test]
+fn seed_1c600fdf_move_to_end_of_track_emptied_by_overwrite() {
+    use keyed4c::Intent::Move;
+    let lens = [vec![10, 11, 10], vec![10], vec![], vec![]];
+    let committed = [
+        (
+            vec![Move {
+                track: 0,
+                clip: 1,
+                to: 3,
+                before: None,
+                overwrite: false,
+            }],
+            false,
+        ),
+        (
+            vec![Move {
+                track: 3,
+                clip: 0,
+                to: 0,
+                before: None,
+                overwrite: true,
+            }],
+            false,
+        ),
+    ];
+    let mine = [Move {
+        track: 1,
+        clip: 0,
+        to: 3,
+        before: None,
+        overwrite: false,
+    }];
+    check(&base(&lens, true, false), &committed, &mine).unwrap();
+}
+
+/// Open seed `cc 3130272a`: `c1` (t1) is linked with `c2` (t2). The head inserts a clip on the
+/// empty t3, then overwrite-moves it to t1. Ours ripple-moves `c1` to t3's end.
+#[test]
+fn seed_3130272a_move_to_track_emptied_by_overwrite_move() {
+    use keyed4c::Intent::{Insert, Move};
+    let lens = [vec![10], vec![10], vec![], vec![]];
+    let committed = [
+        (
+            vec![Insert {
+                track: 2,
+                before: None,
+                len: 1,
+            }],
+            false,
+        ),
+        (
+            vec![Move {
+                track: 2,
+                clip: 0,
+                to: 0,
+                before: None,
+                overwrite: true,
+            }],
+            false,
+        ),
+    ];
+    let mine = [Move {
+        track: 0,
+        clip: 0,
+        to: 2,
+        before: None,
+        overwrite: false,
+    }];
+    check(&base(&lens, true, false), &committed, &mine).unwrap();
+}
+
+/// Open seed `cc aa390d30`: the head trims `c1`'s end back a frame, then ripple-moves t4's
+/// first clip to its own end. Ours inserts on t4 before its second clip, then overwrite-moves
+/// `c3` (t2) before t4's first clip.
+#[test]
+fn seed_aa390d30_overwrite_move_before_relocated_first_clip() {
+    use keyed4c::Intent::{Insert, Move, Trim};
+    let lens = [vec![10, 12], vec![10], vec![], vec![11, 10, 10]];
+    let committed = [
+        (
+            vec![Trim {
+                track: 0,
+                clip: 0,
+                start: false,
+                frames: -1,
+                mode: 0,
+            }],
+            false,
+        ),
+        (
+            vec![Move {
+                track: 3,
+                clip: 3,
+                to: 3,
+                before: None,
+                overwrite: false,
+            }],
+            false,
+        ),
+    ];
+    let mine = [
+        Insert {
+            track: 3,
+            before: Some(1),
+            len: 10,
+        },
+        Move {
+            track: 1,
+            clip: 0,
+            to: 3,
+            before: Some(0),
+            overwrite: true,
+        },
+    ];
+    check(&base(&lens, true, false), &committed, &mine).unwrap();
+}
+
+/// Open seed `cc 1477599b`: t1 holds `c1`, `c2` (`c1` linked with t2's `c3`). The head
+/// ripple-moves `c1` to its own end. Ours overwrite-moves `c2` before t2's first clip, then
+/// deletes t2's second clip.
+#[test]
+fn seed_1477599b_overwrite_move_before_partner_then_delete() {
+    use keyed4c::Intent::{Delete, Move};
+    let lens = [vec![15, 38], vec![10, 29], vec![], vec![]];
+    let committed = [(
+        vec![Move {
+            track: 0,
+            clip: 0,
+            to: 0,
+            before: None,
+            overwrite: false,
+        }],
+        false,
+    )];
+    let mine = [
+        Move {
+            track: 0,
+            clip: 5,
+            to: 1,
+            before: Some(0),
+            overwrite: true,
+        },
+        Delete { track: 1, clip: 1 },
+    ];
+    check(&base(&lens, true, false), &committed, &mine).unwrap();
+}
+
+/// Open seed `cc c65a9221`: the head slides t2's second clip, inserts before `c1` on t1, then
+/// slides t2's second clip back. Ours ripple-moves t2's first clip before t3's first, then
+/// overwrite-moves `c1` to t2's end.
+#[test]
+fn seed_c65a9221_slides_then_moves_across_partners() {
+    use keyed4c::Intent::{Insert, Move, Slide};
+    let lens = [vec![24], vec![11, 34], vec![25, 12], vec![]];
+    let committed = [
+        (
+            vec![
+                Slide {
+                    track: 1,
+                    clip: 5,
+                    frames: -1,
+                },
+                Insert {
+                    track: 0,
+                    before: Some(0),
+                    len: 29,
+                },
+            ],
+            false,
+        ),
+        (
+            vec![Slide {
+                track: 1,
+                clip: 1,
+                frames: -3,
+            }],
+            false,
+        ),
+    ];
+    let mine = [
+        Move {
+            track: 1,
+            clip: 2,
+            to: 2,
+            before: Some(0),
+            overwrite: false,
+        },
+        Move {
+            track: 0,
+            clip: 0,
+            to: 1,
+            before: None,
+            overwrite: true,
+        },
+    ];
+    check(&base(&lens, true, false), &committed, &mine).unwrap();
 }
