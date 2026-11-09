@@ -7624,7 +7624,7 @@ export interface RecoverReport {
 }
 /**
  * A file `import_dir` did not read: its path and why (`not a segment: …`, `another
- * project`, `unreadable: …`).
+ * project`, `too large: …`, `unreadable: …`).
  *
  * This interface was referenced by `FinCore`'s JSON-Schema
  * via the `definition` "SkippedFile".

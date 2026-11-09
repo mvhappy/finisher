@@ -1328,6 +1328,29 @@ fn import_reports_skipped_files_and_counts_new_rows() {
     drop(a);
 }
 
+/// A `.fseg` above the scanner's segment cap is skipped as too large, never read whole.
+#[test]
+fn import_skips_a_segment_above_the_cap() {
+    let e = env();
+    let a = e.create("a");
+    let mut f = e.open("f");
+    let moved = e.root.join("moved");
+    fs::create_dir_all(&moved).unwrap();
+    let huge = fs::File::create(moved.join("huge.fseg")).unwrap();
+    huge.set_len(64 << 20).unwrap();
+    let mut imp = req("imp", None);
+    imp.import_dir = Some(moved);
+    let r = f.recover(imp).unwrap();
+    assert_eq!(r.imported, 0);
+    assert_eq!(r.skipped_files.len(), 1, "{:?}", r.skipped_files);
+    assert!(
+        r.skipped_files[0].reason.starts_with("too large"),
+        "{:?}",
+        r.skipped_files
+    );
+    drop(a);
+}
+
 /// S3: a group that can never be recovered can be dismissed on this server; a recoverable
 /// one cannot.
 #[test]

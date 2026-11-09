@@ -7,7 +7,7 @@ use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
 
-use fin_core::events::{Envelope, kind};
+use fin_core::events::{ENVELOPE_VERSION, Envelope, kind};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -99,7 +99,7 @@ impl Entries {
         self.skipped
     }
 
-    /// Entries of a kind or version this build does not know.
+    /// Entries of an envelope version, kind or kind version this build does not know.
     pub fn unknown(&self) -> u64 {
         self.unknown
     }
@@ -130,7 +130,7 @@ impl Entries {
                 self.skipped += 1;
                 continue;
             };
-            if kind(e.kind.as_str(), e.kv).is_none() {
+            if e.v != ENVELOPE_VERSION || kind(e.kind.as_str(), e.kv).is_none() {
                 self.unknown += 1;
                 continue;
             }

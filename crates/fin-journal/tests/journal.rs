@@ -282,6 +282,50 @@ fn torn_tail_is_truncated_on_open() {
     assert_eq!(it.skipped(), 0);
 }
 
+/// An entry of another envelope version (a later build wrote it) is unknown here: the read,
+/// the export (stored and upload view), a redacted page and the file's last `ts` pass it over.
+#[test]
+fn other_envelope_versions_are_unknown() {
+    let dir = tempfile::tempdir().unwrap();
+    let c = clock();
+    let j = Journal::open(&events(&dir), diagnostics(), opts(&c));
+    j.record(Source::FinNode, None, commit(1));
+    j.record(Source::FinNode, None, commit(2));
+    j.close();
+    let file = files(&events(&dir)).pop().unwrap();
+    let text = std::fs::read_to_string(&file).unwrap();
+    let mut lines: Vec<String> = text.lines().map(str::to_owned).collect();
+    let first: serde_json::Value = serde_json::from_str(&lines[0]).unwrap();
+    let mut later: serde_json::Value = serde_json::from_str(&lines[1]).unwrap();
+    later["v"] = serde_json::json!(2);
+    later["ts"] = serde_json::json!(T0 + 30 * DAY.as_millis() as u64);
+    lines[1] = later.to_string();
+    std::fs::write(&file, lines.join("\n") + "\n").unwrap();
+
+    let j = Journal::open(&events(&dir), diagnostics(), opts(&c));
+    let mut it = j.read(&Filter::default());
+    let got: Vec<u64> = it
+        .by_ref()
+        .map(|e| e.payload["micros"].as_u64().unwrap())
+        .collect();
+    assert_eq!(got, [1]);
+    assert_eq!((it.skipped(), it.unknown()), (0, 1));
+    assert_eq!(j.export(&Filter::default(), None).count(), 1);
+    let upload = j.export(&Filter::default(), Some(Purposes::DIAGNOSTICS));
+    assert_eq!(upload.count(), 1);
+    assert_eq!(
+        j.status_now().newest,
+        first["ts"].as_u64(),
+        "the later build's ts is not this file's last"
+    );
+    let page = j.export_page(&Filter::default(), None, None, 100).unwrap();
+    let mut text = serde_json::to_value(&page).unwrap();
+    text["lines"][0]["v"] = serde_json::json!(2);
+    let mut page: fin_journal::ExportPage = serde_json::from_value(text).unwrap();
+    page.redact();
+    assert!(page.lines.is_empty(), "{page:?}");
+}
+
 #[test]
 fn reader_skips_bad_lines_and_counts() {
     let dir = tempfile::tempdir().unwrap();
