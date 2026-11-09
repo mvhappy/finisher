@@ -131,26 +131,58 @@ pub trait LogView {
     }
 }
 
-/// `placements` with each cause's author: from `recs` (the records the plan read: their
-/// intents' txIds and authors), else the log's record of that txId (none for a copy the plan
-/// has not appended yet).
-pub(crate) fn authored<'a>(
-    log: &dyn LogView,
-    recs: impl IntoIterator<Item = &'a Tx> + Clone,
-    mut placements: Vec<crate::rebase::placement::Placement>,
-) -> Vec<crate::rebase::placement::Placement> {
-    for c in placements.iter_mut().flat_map(|p| p.causes.iter_mut()) {
-        let held = recs.clone().into_iter().find(|t| t.tx_id == c.tx_id);
-        c.author = match held {
-            Some(t) => Some(t.author.clone()),
-            None => log
-                .find(&c.tx_id)
-                .ok()
-                .flatten()
-                .map(|r| r.record.intent.author),
-        };
+/// Who wrote the records a plan names as causes: `recs` (the records the plan read: their
+/// intents), else the log, else `own` (`(id, author)`: the record being planned, `id` itself
+/// or a part `<id>-<n>` of it, which the log does not hold yet: an earlier copy of the same
+/// merge, an earlier unit of the same `undo --to`).
+pub(crate) struct Authors<'a, I> {
+    pub log: &'a dyn LogView,
+    pub recs: I,
+    pub own: (&'a str, &'a str),
+}
+
+impl<'a, I: IntoIterator<Item = &'a Tx> + Clone> Authors<'a, I> {
+    fn of(&self, tx_id: &str) -> Option<String> {
+        if let Some(t) = self.recs.clone().into_iter().find(|t| t.tx_id == tx_id) {
+            return Some(t.author.clone());
+        }
+        if let Some(r) = self.log.find(tx_id).ok().flatten() {
+            return Some(r.record.intent.author);
+        }
+        let (id, author) = self.own;
+        let part = tx_id
+            .strip_prefix(id)
+            .is_some_and(|rest| rest.is_empty() || rest.starts_with('-'));
+        part.then(|| author.to_string())
     }
-    placements
+
+    /// `placements` with each cause's author.
+    pub(crate) fn fill(
+        &self,
+        mut placements: Vec<crate::rebase::placement::Placement>,
+    ) -> Vec<crate::rebase::placement::Placement> {
+        for c in placements.iter_mut().flat_map(|p| p.causes.iter_mut()) {
+            c.author = self.of(&c.tx_id);
+        }
+        placements
+    }
+
+    /// `c` with the causes of its refused placement (`details.placement`) authored.
+    pub(crate) fn fill_conflict(&self, mut c: crate::rebase::Conflict) -> crate::rebase::Conflict {
+        let causes = c
+            .details
+            .as_mut()
+            .and_then(|d| d.get_mut("placement"))
+            .and_then(|p| p.get_mut("causes"))
+            .and_then(serde_json::Value::as_array_mut);
+        for cause in causes.into_iter().flatten() {
+            let tx = cause["txId"].as_str().unwrap_or_default().to_string();
+            if let (Some(a), Some(m)) = (self.of(&tx), cause.as_object_mut()) {
+                m.insert("author".into(), serde_json::Value::String(a));
+            }
+        }
+        c
+    }
 }
 
 /// The env a planner re-runs with at the head: the log's measurer.

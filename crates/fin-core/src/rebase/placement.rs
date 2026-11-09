@@ -45,7 +45,7 @@ pub enum WhenLost {
 /// The placement outcome of one restored item.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
-pub enum Outcome {
+pub enum PlacementOutcome {
     Clean,
     Relocated,
     Conflict,
@@ -54,7 +54,7 @@ pub enum Outcome {
 /// How a neighbour changed since the op was written.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
-pub enum Change {
+pub enum NeighbourChange {
     Moved,
     Removed,
 }
@@ -84,7 +84,7 @@ pub struct Landed {
 #[serde(rename_all = "camelCase")]
 pub struct Cause {
     pub neighbour: String,
-    pub change: Change,
+    pub change: NeighbourChange,
     pub tx_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(with = "String")]
@@ -99,7 +99,7 @@ pub struct Placement {
     pub tx_id: String,
     pub op_index: usize,
     pub item: String,
-    pub outcome: Outcome,
+    pub outcome: PlacementOutcome,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(with = "Landed")]
     pub landed: Option<Landed>,
@@ -140,14 +140,15 @@ pub(crate) struct Ctx<'a> {
 /// A position resolved: its outcome so far and its causes, until the op has re-run.
 #[derive(Debug, Clone)]
 pub(crate) struct Pending {
-    outcome: Outcome,
+    outcome: PlacementOutcome,
     causes: Vec<Cause>,
 }
 
 impl Pending {
     /// The refusal this placement stands for, if it is one (`WhenLost::Refuse`).
     pub(crate) fn refusal(&self, tx_id: &str, k: usize, item: &str) -> Option<Conflict> {
-        (self.outcome == Outcome::Conflict).then(|| refused(tx_id, k, item, self.causes.clone()))
+        (self.outcome == PlacementOutcome::Conflict)
+            .then(|| refused(tx_id, k, item, self.causes.clone()))
     }
 }
 
@@ -155,14 +156,14 @@ impl Pending {
     /// A position that mapped by shifts: nothing written to resolve, so nothing moved.
     pub(crate) fn clean() -> Pending {
         Pending {
-            outcome: Outcome::Clean,
+            outcome: PlacementOutcome::Clean,
             causes: Vec::new(),
         }
     }
 
     /// The placement of the item `item` once op `k` of `tx_id` re-ran at `project`.
     pub(crate) fn finish(self, project: &Project, tx_id: &str, k: usize, item: &str) -> Placement {
-        let landed = (self.outcome == Outcome::Relocated)
+        let landed = (self.outcome == PlacementOutcome::Relocated)
             .then(|| landed(project, item))
             .flatten();
         Placement {
@@ -221,13 +222,13 @@ pub(crate) fn resolve(
         };
         let mut causes = Vec::new();
         if !primary && let Some(l) = left.as_deref().filter(|l| on(l).is_none()) {
-            causes.extend(cause(ctx, l, false, Edge::End));
+            causes.extend(cause(ctx, l, anywhere(ctx, l), Edge::End));
         }
         let mut inherited = false;
         if let Some(n) = &by {
             let id = real(n, ctx.bound);
             if let Some(p) = ctx.earlier.iter().find(|p| p.item == id) {
-                inherited = p.outcome != Outcome::Clean;
+                inherited = p.outcome != PlacementOutcome::Clean;
                 causes.extend(p.causes.iter().cloned());
             }
             let edge = if left.as_ref() == Some(n) {
@@ -238,21 +239,21 @@ pub(crate) fn resolve(
             causes.extend(cause(ctx, n, true, edge));
         }
         let outcome = if primary && causes.is_empty() && !inherited {
-            Outcome::Clean
+            PlacementOutcome::Clean
         } else {
-            Outcome::Relocated
+            PlacementOutcome::Relocated
         };
         return Some((at, Pending { outcome, causes }));
     }
     let causes: Vec<Cause> = [(left, Edge::End), (right, Edge::Start)]
         .into_iter()
         .filter_map(|(n, e)| n.map(|n| (n, e)))
-        .filter_map(|(n, e)| cause(ctx, &n, false, e))
+        .filter_map(|(n, e)| cause(ctx, &n, anywhere(ctx, &n), e))
         .collect();
     let at = snap(t, shifted.unwrap_or(written), ctx.item);
     let outcome = match ctx.when {
-        WhenLost::Snap => Outcome::Relocated,
-        WhenLost::Refuse => Outcome::Conflict,
+        WhenLost::Snap => PlacementOutcome::Relocated,
+        WhenLost::Refuse => PlacementOutcome::Conflict,
     };
     Some((at, Pending { outcome, causes }))
 }
@@ -265,13 +266,19 @@ fn refused(tx_id: &str, k: usize, item: &str, causes: Vec<Cause>) -> Conflict {
         tx_id: tx_id.to_string(),
         op_index: k,
         item: item.to_string(),
-        outcome: Outcome::Conflict,
+        outcome: PlacementOutcome::Conflict,
         landed: None,
         causes,
     };
     let mut c = Conflict::new(tx_id, k, reasons::NEIGHBOURS_GONE, against);
     c.details = Some(Box::new(json!({ "placement": placement })));
     c
+}
+
+/// Whether neighbour `name` is anywhere at the head (moved to another track, not removed).
+fn anywhere(ctx: &Ctx<'_>, name: &str) -> bool {
+    let id = real(name, ctx.bound);
+    tracks(ctx.project).any(|t| t.items.iter().any(|i| i.id == id))
 }
 
 /// The last unmirrored record that removed or moved neighbour `name` (`present`: it is on the
@@ -290,9 +297,9 @@ fn cause(ctx: &Ctx<'_>, name: &str, present: bool, edge: Edge) -> Option<Cause> 
     Some(Cause {
         neighbour: id.to_string(),
         change: if present {
-            Change::Moved
+            NeighbourChange::Moved
         } else {
-            Change::Removed
+            NeighbourChange::Removed
         },
         tx_id: tx.to_string(),
         author: None,

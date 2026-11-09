@@ -9,7 +9,9 @@ mod common;
 use common::memlog::MemLog;
 use common::moves::move_to;
 use common::*;
-use fin_core::rebase::placement::{Change, Outcome, Placement, WhenLost};
+use fin_core::rebase::placement::{
+    NeighbourChange as Change, Placement, PlacementOutcome as Outcome, WhenLost,
+};
 use fin_core::rebase::reasons;
 use fin_core::{InsertMode, Op, Project, Rational, TrackRemove};
 
@@ -391,4 +393,80 @@ fn copied_insert_keeps_the_start_rule() {
     let x = &plan.planned[0].applied.bindings["$x"];
     assert_eq!(order(&head), ["c1", "c3", x.as_str(), "c2"]);
     assert!(plan.placements.is_empty(), "{:?}", plan.placements);
+}
+
+/// Core review, finding 1: a copy of a record that inserts `$x` and then ripple-moves it names
+/// the item by its real id, and a relocation says where it landed.
+#[test]
+fn copied_move_of_its_own_insert_names_the_real_item() {
+    let mut log = MemLog::new(with_clips(&[10, 10, 10, 10]));
+    log.fork("br", "main", 0);
+    let e = log.commit(
+        "br",
+        "e1",
+        "alice",
+        vec![
+            insert("$x", "t1", secs(40), "a1", Rational::zero(), secs(1)),
+            move_to("$x", "t1", secs(10), InsertMode::Ripple),
+        ],
+    );
+    let x = e.record.bindings["$x"].clone();
+    log.commit(
+        "main",
+        "b1",
+        "bob",
+        vec![move_to("c1", "t1", secs(40), InsertMode::Ripple)],
+    );
+    let plan = log.merge("br", "main", "alice", "m1", false).unwrap();
+    let p = one(&plan.placements);
+    assert_eq!(p.item, x);
+    assert_eq!(p.outcome, Outcome::Relocated);
+    let landed = p.landed.as_ref().expect("landed");
+    assert_eq!(landed.after.as_deref(), Some("c1"));
+    assert_eq!(
+        order(&log.state("main")),
+        ["c2", "c3", "c4", "c1", x.as_str()]
+    );
+}
+
+/// Core review, findings 2 and 3: an agent's `undo --to` refusal names one op index in both
+/// places, and its causes carry their authors.
+#[test]
+fn undo_to_refusal_names_its_op_and_authors() {
+    let mut log = MemLog::new(with_clips(&[10, 10, 10, 10, 10]));
+    log.when_lost = WhenLost::Refuse;
+    let cp = log.checkpoint("main", "k1", "alice", "start");
+    log.commit("main", "e1", "alice", vec![delete("c2")]);
+    log.commit("main", "e2", "alice", vec![delete("c5")]);
+    log.commit("main", "b1", "bob", vec![delete("c1"), delete("c3")]);
+    let e = log.undo_to("main", "alice", cp, "u1").unwrap_err();
+    let c = &e.details["conflicts"][0];
+    assert_eq!(c["reason"], reasons::NEIGHBOURS_GONE, "{e:?}");
+    assert_eq!(c["opIndex"], c["details"]["placement"]["opIndex"], "{c}");
+    assert_eq!(
+        c["details"]["placement"]["causes"][0]["author"], "bob",
+        "{c}"
+    );
+}
+
+/// Core review, finding 5: a left neighbour moved to another track is `moved`, not `removed`.
+#[test]
+fn neighbour_moved_to_another_track_is_moved() {
+    let mut log = MemLog::new(common::moves::with_v2(with_clips(&[10, 10, 10])));
+    log.commit("main", "e1", "alice", vec![delete("c2")]);
+    log.commit(
+        "main",
+        "b1",
+        "bob",
+        vec![move_to("c1", "t3", secs(0), InsertMode::Ripple)],
+    );
+    log.undo("main", "alice", "u1").unwrap();
+    let p = one(&log.placements);
+    assert_eq!(p.outcome, Outcome::Relocated);
+    let causes: Vec<_> = p
+        .causes
+        .iter()
+        .map(|c| (c.neighbour.as_str(), c.change))
+        .collect();
+    assert_eq!(causes, [("c1", Change::Moved)]);
 }

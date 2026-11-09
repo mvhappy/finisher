@@ -198,7 +198,9 @@ pub fn rebase_prepared(
     for (k, op) in r.tx.ops.iter().enumerate() {
         let mut op = op.clone();
         let anchored = r.anchors.get(k);
-        let placing = r.history.filter(|_| left_first(&op)).zip(item_of(&op));
+        // The item by its real id (a copy names an item its own earlier op made by placeholder).
+        let item = item_of(&op).map(|i| super::places::real(&i, run.bound()).to_string());
+        let placing = r.history.filter(|_| left_first(&op)).zip(item);
         let mut pending = placing.as_ref().map(|_| Pending::clean());
         for (j, (track, pos)) in op.positions_mut().into_iter().enumerate() {
             let a = anchored.and_then(|v| v.get(j)).and_then(Option::as_ref);

@@ -125,6 +125,15 @@ pub fn plan_undo_to(
         undoes.push(unit.id.clone());
         offset += n;
     }
+    let authors = super::Authors {
+        log,
+        recs: own.iter().map(|r| &r.record.intent),
+        own: (tx_id, author),
+    };
+    let conflicts = conflicts
+        .into_iter()
+        .map(|c| authors.fill_conflict(c))
+        .collect();
     if let Some(all) = Conflicts::new(conflicts) {
         return Err(all.into());
     }
@@ -139,7 +148,7 @@ pub fn plan_undo_to(
         link: Link::Undo { undoes },
         intent: tx,
         applied,
-        placements: super::authored(log, own.iter().map(|r| &r.record.intent), placements),
+        placements: authors.fill(placements),
     })
 }
 
@@ -289,6 +298,10 @@ fn in_record(mut c: Conflict, offset: usize, unit: &str) -> Conflict {
         Some(Value::Object(m)) => m,
         _ => serde_json::Map::new(),
     };
+    // A refused placement names the op too (`NEIGHBOURS_GONE`).
+    if let Some(Value::Object(p)) = d.get_mut("placement") {
+        p.insert("opIndex".into(), json!(c.op_index));
+    }
     d.insert("unit".into(), json!(unit));
     c.details = Some(Box::new(Value::Object(d)));
     c

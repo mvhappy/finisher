@@ -304,6 +304,11 @@ pub fn plan_merge(
         placements: Vec::new(),
     };
     let mut copies: Vec<(usize, Prepared)> = Vec::new();
+    let authors = super::Authors {
+        log,
+        recs: target.iter().map(|r| &r.record.intent),
+        own: (merge_id, author),
+    };
     // Candidates not copied: excluded, or failed. What depends on them is DEPENDS_ON_SKIPPED.
     let mut skipped: HashSet<&str> = cands
         .excluded
@@ -353,6 +358,7 @@ pub fn plan_merge(
         let rebased = match rerun {
             Ok(rebased) => rebased,
             Err(c) => {
+                let c = authors.fill_conflict(c);
                 plan.placements.extend(conflict_placement(&c));
                 plan.conflicts.push(on_skipped(c, &skipped));
                 skipped.insert(&r.tx_id);
@@ -391,7 +397,7 @@ pub fn plan_merge(
                 ..p
             })
             .collect();
-        let placements = super::authored(log, target.iter().map(|r| &r.record.intent), placements);
+        let placements = authors.fill(placements);
         plan.placements.extend(placements.iter().cloned());
         plan.planned.push(Planned {
             link,

@@ -398,7 +398,7 @@ fn merged_move_goes_after_the_item_it_followed() {
     assert_eq!(order, ["c3", "c1", "c2"]);
     assert_eq!(
         plan.placements[0].outcome,
-        fin_core::rebase::placement::Outcome::Relocated
+        fin_core::rebase::placement::PlacementOutcome::Relocated
     );
     assert_well_formed(&log.state("br"));
 }
