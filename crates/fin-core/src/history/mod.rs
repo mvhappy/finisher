@@ -127,19 +127,94 @@ pub trait LogView {
 }
 
 /// The env a planner re-runs with at the head: the log's measurer.
-/// The places of a copy's index ops (`rebase::places`), read in the source's frame right
-/// before `rec`; none (and no frame read) when no op names an index.
-pub(crate) fn source_places(
+/// What a copy's planner reads in the source's frame right before `rec`: the places of its
+/// index ops (`rebase::places`) and the anchors of its positions (`rebase::anchors`); none
+/// (and no frame read) when no op names either.
+pub(crate) fn source_frame(
     log: &dyn LogView,
     rec: &LogRec,
     tx: &crate::tx::Tx,
     mode: crate::apply::ApplyMode,
-) -> Result<Vec<Option<crate::rebase::places::Slot>>, CoreError> {
-    if !crate::rebase::places::any(&tx.ops) {
-        return Ok(Vec::new());
+) -> Result<FrameReads, CoreError> {
+    let (index, at) = (
+        crate::rebase::places::any(&tx.ops),
+        crate::rebase::anchors::any(&tx.ops),
+    );
+    if !index && !at {
+        return Ok(FrameReads::default());
     }
     let frame = log.state_at(&rec.branch, rec.seq.saturating_sub(1))?;
-    crate::rebase::places::places(&frame, tx, mode)
+    FrameReads::read(&frame, tx, mode)
+}
+
+/// [`source_frame`] along one source branch, record after record (a merge's candidates): the
+/// frame right before a record is the previous record's frame with that record replayed, so a
+/// merge reads a frame from the log once per run of consecutive records, not once per
+/// candidate (each `state_at` replays from the nearest snapshot).
+#[derive(Default)]
+pub(crate) struct SourceFrames {
+    /// The last frame read: the state right before record `seq` of `branch`.
+    last: Option<(String, u64, crate::model::Project)>,
+}
+
+impl SourceFrames {
+    /// [`source_frame`] of `rec`, whose predecessor on its branch is `prev` (when the caller
+    /// knows it).
+    pub(crate) fn reads(
+        &mut self,
+        log: &dyn LogView,
+        rec: &LogRec,
+        prev: Option<&LogRec>,
+        tx: &crate::tx::Tx,
+        mode: crate::apply::ApplyMode,
+    ) -> Result<FrameReads, CoreError> {
+        let needed = crate::rebase::places::any(&tx.ops) || crate::rebase::anchors::any(&tx.ops);
+        let follows = |p: &LogRec| p.branch == rec.branch && p.seq + 1 == rec.seq;
+        // The frame carried from the previous record, when it is that record's own; a record
+        // that does not replay (it would fail the log's own read too) falls back to the log.
+        let carried = match (self.last.take(), prev) {
+            (Some((b, s, f)), Some(p)) if follows(p) && b == p.branch && s == p.seq => {
+                crate::replay::apply_committed(&f, &p.record.intent, &p.record.bindings)
+                    .ok()
+                    .map(|a| a.project)
+            }
+            _ => None,
+        };
+        // A record that reads nothing still carries the frame along (one replay), so the run
+        // goes on through it.
+        if !needed {
+            self.last = carried.map(|f| (rec.branch.clone(), rec.seq, f));
+            return Ok(FrameReads::default());
+        }
+        let frame = match carried {
+            Some(f) => f,
+            None => log.state_at(&rec.branch, rec.seq.saturating_sub(1))?,
+        };
+        let reads = FrameReads::read(&frame, tx, mode)?;
+        self.last = Some((rec.branch.clone(), rec.seq, frame));
+        Ok(reads)
+    }
+}
+
+/// The places and anchors of a tx's ops, read in their own frame ([`source_frame`]).
+#[derive(Debug, Default)]
+pub(crate) struct FrameReads {
+    pub places: Vec<Option<crate::rebase::places::Slot>>,
+    pub anchors: crate::rebase::anchors::Anchors,
+}
+
+impl FrameReads {
+    /// Both, read in `frame`.
+    pub(crate) fn read(
+        frame: &crate::model::Project,
+        tx: &crate::tx::Tx,
+        mode: crate::apply::ApplyMode,
+    ) -> Result<FrameReads, CoreError> {
+        Ok(FrameReads {
+            places: crate::rebase::places::places(frame, tx, mode)?,
+            anchors: crate::rebase::anchors::anchors(frame, tx, mode)?,
+        })
+    }
 }
 
 pub(crate) fn env_of(log: &dyn LogView) -> ApplyEnv<'_> {
