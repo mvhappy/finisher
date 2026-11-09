@@ -8,14 +8,14 @@
 // `ready`) keeps it; otherwise its group is killed with the job's helpers. A helper that fails
 // during the job gets the worker a `cancel` too, not a kill (Task 11 review L4): a `ready`
 // within the grace keeps it, and the attempt fails with the helper's error.
-import { rename, rm } from "node:fs/promises";
+import { lstat, rename, rm } from "node:fs/promises";
 import { join, sep } from "node:path";
 import type { HelperGrant, JobHostKillReason } from "@finisher/core-types";
-import type { HelperSpec } from "@finisher/contracts";
+import type { FinError, HelperSpec } from "@finisher/contracts";
 import { resolveMemoryRule } from "@finisher/fin-node";
 import { finError, toFinError } from "../errors.ts";
 import { AttemptBase, type AttemptSpec, type KillReason, type Outcome, stopped } from "./attempt.ts";
-import { type JobDirs, jobDirs } from "./files.ts";
+import { type JobDirs, jobDirs, PREPARED_MARKER } from "./files.ts";
 import { heldFiles } from "./held-files.ts";
 import { exitVerdict, type JobHostExitInfo, type ProcEvent } from "./host.ts";
 import { type FamilySpec, type KindSpec, resolveOrFn } from "./kinds.ts";
@@ -56,6 +56,19 @@ export type WarmOutcome = AttemptOutcome & {
   readonly memory?: number;
 };
 
+/** `rename`, retried on Windows while a scanner or a closing handle holds the directory. */
+async function renameRetrying(from: string, to: string): Promise<void> {
+  for (let i = 0; ; i++) {
+    try {
+      return await rename(from, to);
+    } catch (e) {
+      const code = (e as { code?: unknown }).code;
+      if (process.platform !== "win32" || i >= 20 || !(code === "EPERM" || code === "EBUSY" || code === "EACCES")) throw e;
+      await new Promise((r) => setTimeout(r, 25));
+    }
+  }
+}
+
 /** One attempt of `row` on the pool's worker behind `link`. */
 export async function runWarmAttempt(
   env: RunnerEnv,
@@ -89,18 +102,32 @@ export async function runWarmAttempt(
     return attempt.run(p.helpers);
   });
   // A failure before the worker's part (files, `prepare`) leaves the worker untouched.
-  const kept = attempt === undefined ? true : attempt.kept;
+  let kept = attempt === undefined ? true : attempt.kept;
   const memory = attempt?.memory;
   let out: AttemptOutcome = o;
   if (visit !== undefined) {
     // Back home, so the job's end (`onSucceeded`, its cleanup) finds it where a cold job's is
     // and the worker keeps nothing of it. The pool removes a lost worker's directory only
-    // after this (`Worker.visit`).
-    try {
-      await rename(visit.here.job, visit.home.job);
-    } catch (e) {
-      const error = finError("IO_ERROR", `the job directory could not be moved back from its warm worker: ${toFinError(e).message}`, { step: "visitBack" });
-      out = { ...o, ok: false, error, cause: "files" } as AttemptOutcome;
+    // after this (`Worker.visit`). The worker could write `jobs/`: what sits at the job's name
+    // must be a directory, never a link it planted (Task 12 review S4).
+    const failed = (error: FinError, cause: "files" | "tampered") => {
+      // A worker that may still hold the job's directory is not kept (S3).
+      if (kept) link.lose("jobEnded");
+      kept = false;
+      out = { ...o, ok: false, error, cause } as AttemptOutcome;
+    };
+    const st = await lstat(visit.here.job).catch(() => undefined);
+    if (st !== undefined && !st.isDirectory()) {
+      await rm(visit.here.job, { force: true }).catch(() => {});
+      failed(finError("JOB_FAILED", "the warm worker replaced its job's directory", { problem: "link" }, "the worker must not replace its job directory"), "tampered");
+    } else {
+      try {
+        await renameRetrying(visit.here.job, visit.home.job);
+        // `prepare` runs again before another attempt: the worker could write `in/` (N1).
+        await rm(join(visit.home.job, PREPARED_MARKER), { force: true });
+      } catch (e) {
+        failed(finError("IO_ERROR", `the job directory could not be moved back from its warm worker: ${toFinError(e).message}`, { step: "visitBack" }), "files");
+      }
     }
   }
   return { ...out, warmReused: link.reused, kept, ...(reach ? { reach: true as const } : {}), ...(memory === undefined ? {} : { memory }) };

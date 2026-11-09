@@ -7550,7 +7550,8 @@ export interface TestWarmParams {
   holdFile?: string;
   /**
    * Paths the worker tries to read (plan 7C Task 12): each answered with the errno of
-   * the attempt, `null` when it read.
+   * the attempt, `null` when it read. A path starting with `!` is renamed instead (to
+   * `<path>.moved`, and back when it worked): what replacing it with a link would need.
    */
   probe?: string[];
   value: unknown;

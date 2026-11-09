@@ -22,7 +22,7 @@ import { finError, toFinError } from "../../errors.ts";
 import type { ProjectRegistryShape } from "../../projects.ts";
 import { jobDirs } from "../files.ts";
 import { mkdirSafe } from "../fsafe.ts";
-import type { KindRegistry, KindSpec, MemoryRule } from "../kinds.ts";
+import { type KindRegistry, type KindSpec, type MemoryRule, projectOfJob } from "../kinds.ts";
 import { mediaCapabilitiesKind } from "./media.capabilities.ts";
 
 export const MEDIA_FAMILY = "media";
@@ -199,10 +199,11 @@ const exists = (path: string): Promise<boolean> =>
  * the libraries' roots, canonical (synchronous: once per warm worker spawned). A root that does
  * not resolve is left out; a job reading below it then runs cold.
  */
-export function mediaWarmReads(deps: Pick<MediaKindDeps, "projects" | "libraryRoots">, job: JobView): ReadonlyArray<string> {
-  const p = job.params as { projectId?: unknown } | null;
-  const dir = typeof p?.projectId === "string" ? deps.projects.dirOf(p.projectId) : undefined;
-  const roots = [...(dir === undefined ? [] : [join(dir, "sources")]), ...(deps.libraryRoots?.() ?? [])];
+export function mediaWarmReads(deps: Pick<MediaKindDeps, "projects" | "libraryRoots" | "serverData">, job: JobView): ReadonlyArray<string> {
+  const project = projectOfJob(job);
+  const dir = project === undefined ? undefined : deps.projects.dirOf(project);
+  // The font cache too: `prepare` lists it in every job's reads (Task 12 review S1).
+  const roots = [...(dir === undefined ? [] : [join(dir, "sources")]), ...(deps.libraryRoots?.() ?? []), join(deps.serverData, "fonts")];
   return roots.flatMap((r) => {
     try {
       return [realpathSync(r)];
@@ -213,7 +214,7 @@ export function mediaWarmReads(deps: Pick<MediaKindDeps, "projects" | "libraryRo
 }
 
 /** The `media` family (`fin-workers media`; `--warm` is appended by the engine). */
-export function registerMediaFamily(registry: KindRegistry, deps?: Pick<MediaKindDeps, "projects" | "libraryRoots">): void {
+export function registerMediaFamily(registry: KindRegistry, deps?: Pick<MediaKindDeps, "projects" | "libraryRoots" | "serverData">): void {
   registry.registerFamily({
     family: MEDIA_FAMILY,
     profile: "worker",

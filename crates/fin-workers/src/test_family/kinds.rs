@@ -247,6 +247,14 @@ fn warm(job: &StartJob, ctx: &mut JobCtx<'_>, served: u64) -> Result<Value, JobE
         .probe
         .iter()
         .map(|path| {
+            if let Some(path) = path.strip_prefix('!') {
+                let moved = format!("{path}.moved");
+                let r = std::fs::rename(path, &moved);
+                if r.is_ok() {
+                    let _ = std::fs::rename(&moved, path);
+                }
+                return r.err().map(|e| e.raw_os_error().unwrap_or(-1));
+            }
             let r = match std::fs::metadata(path) {
                 Ok(m) if m.is_dir() => std::fs::read_dir(path).map(|_| ()),
                 _ => std::fs::read(path).map(|_| ()),

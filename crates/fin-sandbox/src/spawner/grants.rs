@@ -398,7 +398,10 @@ mod tests {
             }
         );
         let policy = crate::profile::worker(&i).unwrap();
-        assert!(policy.write.contains(&PathBuf::from(w)));
+        // Its `jobs/` and `tmp/`, never the directory itself (Task 12 review B1: a writable
+        // directory lets the worker swap either for a link).
+        assert!(policy.write.contains(&PathBuf::from(format!("{w}/jobs"))));
+        assert!(!policy.write.contains(&PathBuf::from(w)));
         assert!(!policy.write.contains(&PathBuf::from("/srv/fin/jobs")));
         // Without its `jobs/` grant, or not named `warm-…`, or not directly in the jobs root,
         // it is a cold request, whose `cwd` grant of `jobs/` is refused.

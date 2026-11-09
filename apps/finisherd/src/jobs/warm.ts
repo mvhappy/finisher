@@ -30,9 +30,9 @@ import type { Engine } from "./engine.ts";
 import { removeJobDir } from "./files.ts";
 import { mkdirSafe } from "./fsafe.ts";
 import { exitVerdict, type ProcEvent } from "./host.ts";
-import { type FamilySpec, type KindSpec, type ProgramSpec, programFor } from "./kinds.ts";
+import { type FamilySpec, type KindSpec, type ProgramSpec, programFor, projectOfJob } from "./kinds.ts";
 import type { RunControl } from "./run-control.ts";
-import type { AttemptOutcome } from "./runner.ts";
+import { type AttemptOutcome, runAttempt } from "./runner.ts";
 import type { SchedState, WarmWorkerView } from "./schedule.ts";
 import type { JobRow } from "./store.ts";
 import { runWarmAttempt } from "./warm-run.ts";
@@ -55,6 +55,8 @@ export class WarmPools {
   readonly #coldOnly = new Set<string>();
   /** A worker's `hello` reported a self-applied sandbox: warm kinds run cold from now on (H3). */
   #selfSandboxed = false;
+  /** The directories of lost workers not yet removed (the hourly sweep keeps them, S5). */
+  readonly #removing = new Set<string>();
   /** Directory removals in flight (`close` waits for them, H2). */
   readonly #removals = new Set<Promise<void>>();
 
@@ -128,7 +130,8 @@ export class WarmPools {
     } catch (e) {
       this.#e.d.log("warning", `job ${row.id}: the warm key of ${f.family} failed: ${toFinError(e).message}`);
     }
-    if (this.#confined(f.profile)) key = `${row.project ?? ""}/${key}`;
+    // The same field the family's read roots come from (N2).
+    if (this.#confined(f.profile)) key = `${projectOfJob(row) ?? ""}/${key}`;
     return { family: f.family, key, ...(this.#lostOn.has(row.id) ? { fresh: true as const } : {}) };
   }
 
@@ -293,7 +296,16 @@ export class WarmPools {
       } else this.#idle(w, undefined, false);
       throw err;
     }
-    if (out.reach) this.#coldOnly.add(row.id);
+    if (out.reach) {
+      // Cold now, in this attempt (Task 12 review S2: no attempt spent on the warm miss), and
+      // from now on for this job.
+      this.#coldOnly.add(row.id);
+      if (!(await emptyTmp(w, this.#e.d.log))) this.#kill(w, "jobEnded");
+      else this.#idle(w, undefined, false);
+      // The job's `warm` says how it runs: cold.
+      if (!this.#e.crashed) this.#e.d.store.transition(row.id, "running", { warm: false });
+      return runAttempt(this.#e.env, row, kind, family, params, control);
+    }
     if (!out.kept) {
       this.#lostOn.add(row.id);
       return out;
@@ -492,6 +504,7 @@ export class WarmPools {
     w.cancelKill?.();
     const list = this.#list(w.family.family);
     list.splice(list.indexOf(w), 1);
+    this.#removing.add(basename(w.dir));
     if (w.replaces !== undefined) w.replaces.replacement = undefined;
     if (w.replacement !== undefined) w.replacement.replaces = undefined;
     const base = exitVerdict(info, true).reason;
@@ -505,7 +518,7 @@ export class WarmPools {
       // The job it held leaves the directory first (its attempt moves it back, Decision 19).
       await w.visit;
       await removeJobDir(w.dir).catch((err) => e.d.log("warning", `warm worker directory ${w.dir}: ${toFinError(err).message}`));
-    })();
+    })().finally(() => this.#removing.delete(basename(w.dir)));
     this.#removals.add(removal);
     void removal.finally(() => this.#removals.delete(removal));
     if (e.closing || e.crashed) return;
@@ -521,6 +534,8 @@ export class WarmPools {
 
   /** Whether `name` under the jobs root is a live warm worker's directory (the hourly sweep keeps it). */
   owns(name: string): boolean {
+    // A lost worker's directory stays until its job has left it (Task 12 review S5).
+    if (this.#removing.has(name)) return true;
     for (const list of this.#byFamily.values()) if (list.some((w) => basename(w.dir) === name)) return true;
     return false;
   }

@@ -1,7 +1,7 @@
 // A warm worker's record and the parts of its life that need no pool (5C-1 plan Task 11; split
 // out of `warm.ts` in Task 12): the constants, the spawn request, emptying its `tmp/` after a
 // job (Task 11 review H2) and the outcome of an attempt that never ran.
-import { readdir, rm } from "node:fs/promises";
+import { lstat, readdir, rm } from "node:fs/promises";
 import { join } from "node:path";
 import type { Hello, JobHostExitInfo, JobSpawnRequest } from "@finisher/core-types";
 import type { FinError } from "@finisher/contracts";
@@ -108,11 +108,17 @@ export function spawnRequest(w: Worker): JobSpawnRequest {
   };
 }
 
-/** Empties the worker's `tmp/` (false: it could not be emptied). */
+/**
+ * Empties the worker's `tmp/` and `jobs/` (false: they could not be emptied, or one is not a
+ * directory: never followed, Task 12 review B1). `rm` of an entry removes a link, not its target.
+ */
 export async function emptyTmp(w: Worker, log: (level: "warning", message: string) => void): Promise<boolean> {
-  const tmp = join(w.dir, "tmp");
   try {
-    for (const name of await readdir(tmp)) await rm(join(tmp, name), { recursive: true, force: true });
+    for (const sub of ["tmp", VISIT_DIR]) {
+      const dir = join(w.dir, sub);
+      if (!(await lstat(dir)).isDirectory()) throw new Error(`${sub}/ is not a directory`);
+      for (const name of await readdir(dir)) await rm(join(dir, name), { recursive: true, force: true });
+    }
     return true;
   } catch (err) {
     log("warning", `warm ${w.family.family} worker: its temp directory could not be emptied: ${toFinError(err).message}`);

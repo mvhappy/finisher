@@ -89,7 +89,8 @@ params! {
         #[schemars(with = "String")]
         pub hold_file: Option<String>,
         /// Paths the worker tries to read (plan 7C Task 12): each answered with the errno of
-        /// the attempt, `null` when it read.
+        /// the attempt, `null` when it read. A path starting with `!` is renamed instead (to
+        /// `<path>.moved`, and back when it worked): what replacing it with a link would need.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         pub probe: Vec<String>,
     }

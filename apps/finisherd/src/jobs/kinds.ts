@@ -191,6 +191,13 @@ export interface KindRegistry {
   program(family: string, job: JobView, mode: SpawnMode): ProgramSpec;
 }
 
+/** A job's project: its `project`, else its params' `projectId` (`media.look`): what a confined warm key and its read roots name. */
+export function projectOfJob(job: JobView): string | undefined {
+  if (job.project !== undefined) return job.project;
+  const p = (job.params as { projectId?: unknown } | null)?.projectId;
+  return typeof p === "string" ? p : undefined;
+}
+
 /** How a process is spawned: cold (one job, then exit) or warm (`ready`, then the next job). */
 export type SpawnMode = "cold" | "warm";
 

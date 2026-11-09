@@ -14609,7 +14609,7 @@
           "type": "string"
         },
         "probe": {
-          "description": "Paths the worker tries to read (plan 7C Task 12): each answered with the errno of\nthe attempt, `null` when it read.",
+          "description": "Paths the worker tries to read (plan 7C Task 12): each answered with the errno of\nthe attempt, `null` when it read. A path starting with `!` is renamed instead (to\n`<path>.moved`, and back when it worked): what replacing it with a link would need.",
           "items": {
             "type": "string"
           },

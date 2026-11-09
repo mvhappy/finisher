@@ -102,7 +102,10 @@ impl Server {
             self.b.join("clip.mov"),
             self.sd.join("auth/local.key"),
         ];
-        let probe: Vec<String> = paths.iter().map(|p| p.display().to_string()).collect();
+        let mut probe: Vec<String> = paths.iter().map(|p| p.display().to_string()).collect();
+        // Replacing its own `tmp/` or `jobs/` (the first step to a link there).
+        probe.push(format!("!{}", self.worker.join("tmp").display()));
+        probe.push(format!("!{}", self.worker.join("jobs").display()));
         let HostMsg::Start(mut start) =
             h.start_msg("j1", "test.warm", json!({ "value": 1, "probe": probe }))
         else {
@@ -141,12 +144,15 @@ fn a_warm_worker_reads_only_the_job_visiting_it_and_its_project() {
     assert_eq!(sandbox.as_deref(), Some("worker"));
     assert_eq!(
         confined,
-        json!([null, null, EACCES, EACCES, EACCES, EACCES]),
-        "its job, its project; not another job, the jobs root, another project, server data"
+        json!([null, null, EACCES, EACCES, EACCES, EACCES, EACCES, EACCES]),
+        "its job, its project; not another job, the jobs root, another project, server data, nor replace its tmp/ or jobs/"
     );
     // Control: a spawner that passes reads them all.
     assert!(!s.host(Decision::Pass).host.caps().per_job_grants);
     let (sandbox, open) = s.probe(Decision::Pass);
     assert_eq!(sandbox, None);
-    assert_eq!(open, json!([null, null, null, null, null, null]));
+    assert_eq!(
+        open,
+        json!([null, null, null, null, null, null, null, null])
+    );
 }
