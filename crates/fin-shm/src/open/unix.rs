@@ -1,5 +1,6 @@
 //! The unix opener: each directory segment by `openat(O_NOFOLLOW | O_DIRECTORY)` from the
-//! previous one's descriptor (Linux: `O_PATH`, so a segment needs only search permission), so
+//! previous one's descriptor (Linux `O_PATH`, macOS `O_SEARCH`: a segment needs only search
+//! permission), so
 //! no segment can be a link and no ancestor can be swapped under the walk; the file is
 //! `fstatat(AT_SYMLINK_NOFOLLOW)`-checked before it is opened (a FIFO or device is never
 //! opened), then opened `O_NOFOLLOW | O_NONBLOCK` and checked again on its descriptor.
@@ -24,7 +25,13 @@ pub(crate) struct Anchor {
 
 #[cfg(any(target_os = "linux", target_os = "android"))]
 const DIR_FLAGS: c_int = libc::O_PATH | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC;
-#[cfg(not(any(target_os = "linux", target_os = "android")))]
+// macOS: `O_SEARCH` (`O_EXEC | O_DIRECTORY`), the equivalent of `O_PATH` for a directory: it
+// needs search permission only, so under the `worker` sandbox (Seatbelt, which grants a job's
+// `in/` and `out/`, not their parents' listings) the walk reaches the job's files (plan 7C
+// Task 8).
+#[cfg(target_os = "macos")]
+const DIR_FLAGS: c_int = libc::O_SEARCH | libc::O_NOFOLLOW | libc::O_CLOEXEC;
+#[cfg(not(any(target_os = "linux", target_os = "android", target_os = "macos")))]
 const DIR_FLAGS: c_int = libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC;
 
 fn cname(s: &OsStr) -> Result<CString, Fail> {
@@ -255,8 +262,23 @@ fn open_dest_dir(to: &Path) -> Result<(OwnedFd, CString, &OsStr), Fail> {
 }
 
 fn sync_dir(dir: &OwnedFd) {
-    // SAFETY: our own descriptor. Best effort: not every filesystem syncs directories.
-    unsafe { libc::fsync(dir.as_raw_fd()) };
+    // SAFETY: our own descriptors. Best effort: not every filesystem syncs directories. A walk's
+    // descriptor (`O_PATH`, `O_SEARCH`) cannot be synced (`EBADF`): the directory is reopened
+    // for reading through it, which a process allowed to list it can do.
+    unsafe {
+        if libc::fsync(dir.as_raw_fd()) == 0 {
+            return;
+        }
+        let fd = libc::openat(
+            dir.as_raw_fd(),
+            c".".as_ptr(),
+            libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC,
+        );
+        if fd >= 0 {
+            libc::fsync(fd);
+            libc::close(fd);
+        }
+    }
 }
 
 pub(crate) fn commit(src: &Opened, to: &Path, cap: u64, force_copy: bool) -> Result<(), Fail> {

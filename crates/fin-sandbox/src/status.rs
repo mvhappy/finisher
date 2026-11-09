@@ -2,8 +2,10 @@
 //!
 //! - [`mechanism`] is the OS mechanism alone. Linux: the Landlock version query is the only
 //!   source (`EPERM`, `ENOSYS`, `EOPNOTSUPP` → `Disabled {landlockDisabled}`, F2: run, warn;
-//!   ABI < 3 → `Unavailable {need: "kernel ≥ 6.2"}`). macOS and Windows have no mechanism in
-//!   this crate yet, so they answer `Disabled {profileNotReady}`.
+//!   ABI < 3 → `Unavailable {need: "kernel ≥ 6.2"}`). macOS: Seatbelt, `Enforced` where
+//!   `/usr/bin/sandbox-exec` is present (it is deprecated but shipped; its removal is the
+//!   tracked risk of spec §22), else `Unavailable`. Windows has no mechanism in this crate yet,
+//!   so it answers `Disabled {profileNotReady}`.
 //! - [`status`] adds [`READY`]: a profile whose escape suite has not passed on this OS runs as
 //!   before 7C (`Disabled {profileNotReady}`), unless the mechanism itself is disabled, which
 //!   is the more useful warning (its fix is a boot parameter). Every profile is treated alike
@@ -132,8 +134,13 @@ fn stubbed() -> Option<Mechanism> {
 
 #[cfg(target_os = "linux")]
 const NEED: &str = crate::linux::landlock::NEED;
-// Only the test stub names a need off Linux.
-#[cfg(all(not(target_os = "linux"), feature = "test-hooks"))]
+#[cfg(target_os = "macos")]
+const NEED: &str = "Seatbelt (/usr/bin/sandbox-exec)";
+// Only the test stub names a need elsewhere (Windows until Task 9).
+#[cfg(all(
+    not(any(target_os = "linux", target_os = "macos")),
+    feature = "test-hooks"
+))]
 const NEED: &str = "an OS sandbox this build implements";
 
 #[cfg(target_os = "linux")]
@@ -153,9 +160,26 @@ fn os_mechanism() -> Mechanism {
     }
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(target_os = "macos")]
 fn os_mechanism() -> Mechanism {
-    // Seatbelt (Task 8) and AppContainer (Task 9) are not built yet.
+    seatbelt(std::path::Path::new(crate::macos::apply::SANDBOX_EXEC))
+}
+
+/// Seatbelt's status from `sandbox-exec`'s presence (a test points it at a missing file).
+#[cfg(target_os = "macos")]
+pub fn seatbelt(sandbox_exec: &std::path::Path) -> Mechanism {
+    if sandbox_exec.is_file() {
+        Mechanism::Enforced {
+            detail: "seatbelt".into(),
+        }
+    } else {
+        Mechanism::Unavailable { need: NEED.into() }
+    }
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+fn os_mechanism() -> Mechanism {
+    // AppContainer (Task 9) is not built yet.
     Mechanism::Disabled {
         reason: DisabledReason::ProfileNotReady,
     }

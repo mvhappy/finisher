@@ -7,7 +7,8 @@
 //! typed input, from which [`LaunchRequest::policy`] builds the policy, so nothing outside this
 //! crate assembles one (Decision 1). The launcher reads the descriptor to its end and closes it,
 //! applies the policy (Linux: Landlock, then `RLIMIT_NOFILE` from the policy's limits; the
-//! seccomp filter is deferred, plan Task 4) and `exec`s the program. Before Landlock, where it
+//! seccomp filter is deferred, plan Task 4; macOS: Seatbelt through `sandbox_init`, which the
+//! program inherits across `exec`, then `RLIMIT_NOFILE`) and `exec`s the program. Before Landlock, where it
 //! is enforced, the launcher hides Unix sockets in a user and mount namespace (Decision 26,
 //! [`crate::linux::namespace`]) when a forked probe shows it can, and in every mode it removes
 //! [`SOCKET_ENV`] from the program's environment. `--probe` prints whether the namespace is
@@ -21,9 +22,9 @@
 //! (`SANDBOX_UNAVAILABLE`); 126/127 when the program cannot be started (refused, or missing).
 //! Each writes one JSON line on stderr. Where Landlock is disabled (F2,
 //! `Disabled {landlockDisabled}`), the program runs unconfined: `finisherd` already reports
-//! that from `sandboxStatus()`. Any other `Disabled` reason (macOS and Windows until Tasks 8
-//! and 9) is refused with exit 78, so `finisherd` must not start programs through the launcher
-//! on those OSes before then.
+//! that from `sandboxStatus()`. Any other `Disabled` reason (Windows until Task 9) is refused
+//! with exit 78, so `finisherd` must not start programs through the launcher there before
+//! then.
 //!
 //! The descriptor is read to end of file: the parent must close its copy of the pipe's write
 //! end in the child (and its own after writing), or the launcher waits forever.

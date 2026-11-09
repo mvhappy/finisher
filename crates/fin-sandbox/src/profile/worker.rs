@@ -10,9 +10,13 @@ use std::path::PathBuf;
 use super::{finish, inside, not_under, path, paths};
 use crate::error::PolicyError;
 use crate::inputs::{WorkerInput, WorkerScope};
-use crate::policy::{Limits, Net, Profile, ReadPolicy, SandboxPolicy, under};
+use crate::policy::{Limits, Net, Os, Profile, ReadPolicy, SandboxPolicy, under};
 
 pub fn worker(i: &WorkerInput) -> Result<SandboxPolicy, PolicyError> {
+    worker_on(Os::current(), i)
+}
+
+pub fn worker_on(os: Os, i: &WorkerInput) -> Result<SandboxPolicy, PolicyError> {
     path("tmp", &i.tmp)?;
     path("serverData", &i.server_data)?;
     paths("caches", &i.caches)?;
@@ -54,7 +58,8 @@ pub fn worker(i: &WorkerInput) -> Result<SandboxPolicy, PolicyError> {
         deny_read: deny,
         unix_sockets: vec![],
         net: Net::None,
-        mach: vec![],
+        // macOS: VideoToolbox and Metal (spike S9 B6); empty elsewhere.
+        mach: crate::data::mach(os, Profile::Worker),
         devices: i.devices.clone(),
         limits: Limits {
             processes: Some(1),

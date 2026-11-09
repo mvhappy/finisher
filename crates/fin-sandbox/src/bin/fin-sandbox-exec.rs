@@ -126,9 +126,20 @@ mod os {
         Ok(())
     }
 
-    #[cfg(not(target_os = "linux"))]
+    /// Seatbelt on the launcher itself, which the program inherits across `exec` (what
+    /// `sandbox-exec` does, without the profile on argv), then `RLIMIT_NOFILE`.
+    #[cfg(target_os = "macos")]
+    pub fn apply(policy: &SandboxPolicy) -> Result<(), String> {
+        fin_sandbox::macos::apply::restrict_self(policy, None).map_err(|e| e.to_string())?;
+        if let Some(n) = policy.limits.open_files {
+            open_files(n)?;
+        }
+        Ok(())
+    }
+
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     pub fn apply(_policy: &SandboxPolicy) -> Result<(), String> {
-        Err("the launcher sandbox of this OS (macOS: plan 7C Task 8)".into())
+        Err("the launcher sandbox of this OS".into())
     }
 
     #[cfg(target_os = "linux")]
@@ -163,7 +174,6 @@ mod os {
     }
 
     /// `RLIMIT_NOFILE` to `n` (never above the current hard limit).
-    #[cfg(target_os = "linux")]
     fn open_files(n: u32) -> Result<(), String> {
         // SAFETY: plain data, written by getrlimit before use.
         let mut r: libc::rlimit = unsafe { std::mem::zeroed() };

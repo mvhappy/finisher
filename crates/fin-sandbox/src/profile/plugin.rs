@@ -30,7 +30,7 @@ fn is_card_node(p: &Path) -> bool {
             .is_some_and(|n| n.starts_with("card"))
 }
 
-pub(crate) fn plugin_on(os: Os, i: &PluginInput) -> Result<SandboxPolicy, PolicyError> {
+pub fn plugin_on(os: Os, i: &PluginInput) -> Result<SandboxPolicy, PolicyError> {
     for (field, p) in [
         ("storeDir", &i.store_dir),
         ("callDir", &i.call_dir),
@@ -112,8 +112,8 @@ pub(crate) fn plugin_on(os: Os, i: &PluginInput) -> Result<SandboxPolicy, Policy
         deny_read: deny,
         unix_sockets: vec![],
         net: Net::None,
-        // macOS: an empty allow-list denies `tccd` and the Apple Events service (sp8 §3.2).
-        mach: vec![],
+        // macOS: the (empty) allow-list denies `tccd` and the Apple Events service (sp8 §3.2).
+        mach: crate::data::mach(os, Profile::Plugin),
         devices: i.gpu.clone(),
         limits: Limits {
             processes: Some(PROCESSES),
