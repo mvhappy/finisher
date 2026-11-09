@@ -1047,6 +1047,14 @@ Task 19 has not run. 4A is not mergeable until it has. Each item below was writt
       - Transform the inverse past what others did since (operational transformation, ProseMirror's `Mapping` with `Assoc`), which is a time mapping.
       - Attach the content to the element it followed (sequence CRDTs such as RGA and Yjs keep a left origin per item), so it lands after that element, wherever the element is now.
 
+      What products do (research of 2026-11-09):
+      - **Undo is per-user.** Google Sheets and Slides, Excel and PowerPoint Online, and Figma undo only your own changes, as do the Yjs, Automerge and Liveblocks undo libraries (Stewen & Kleppmann 2024 tested the products). Figma also builds the redo at undo time.
+      - **Professional editors avoid the question by locking.** Premiere Team Projects and Productions, DaVinci Resolve, Avid bins and CapCut all lock; Descript makes a conflict revision that you reconcile by hand.
+      - **List restores anchor on the old neighbours.** Yjs's undo re-inserts using the item's original left and right neighbours. Figma keeps child order as fractional indexes. Timeline CRDT designs (an OpenTimelineIO-to-CRDT design, Miru at FOSDEM 2026) order clips relative to each other.
+      - **When neighbours are gone, products fail quietly:** nothing happens (Figma, Google Slides), undo is blocked (Miro), or the redo is dropped (Yjs). No product we found reports where a restored item landed, although users ask for it.
+
+      Finisher reports a relocation, and says nothing for a clean restore (owner decision).
+
       Users read an item's neighbours, not its timecode. So the left neighbour is the primary anchor, and time is only a hint. An automated caller cannot judge a nearby landing, so it gets a refusal it can act on. A person gets the nearest sensible place and a notice.
     - *Left neighbour first.* In the op's own frame the planner reads A, the item whose end touches the position, and C, the item that starts there. At the evolving head B goes right after A, wherever A is now, whatever starts there since. When A is gone (removed, or moved to another track), B goes before C. An item that was first on its track (no A, C after it) goes back to the track start when C is gone too. When the track was empty, the position as written holds while the track is still empty. An item the op moves is never its own neighbour. The old timecode (the position mapped through shifts) is only a fallback hint.
     - *Both neighbours gone.* The policy comes from who asked (`LogView::when_lost`, set by the store per call; fin-node reads it from the call's actor, which the server builds from the principal; for a `local` principal its kind is the unverified `fin-actor-kind` header, so a misreported local caller gets a reported relocation, never a silent loss):
