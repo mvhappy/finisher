@@ -106,8 +106,8 @@ export const FAKE_SCRIPTS_ENV = "FIN_TEST_FAKE_SCRIPTS";
 
 /**
  * The fake's scripts: the in-process options', else the file `FIN_TEST_FAKE_SCRIPTS` names, else
- * the default turn. Read only where the fake is allowed (`fakeAllowed`); a file that is not a
- * non-empty list of scripts stops the boot.
+ * the default turn. Callers must check `fakeAllowed()` first (the only call site does); a file
+ * that is not a non-empty list of scripts stops the boot.
  */
 export function fakeScriptsOf(options: readonly FakeScript[] | undefined, env: NodeJS.ProcessEnv = process.env): readonly FakeScript[] {
   if (options !== undefined) return options;

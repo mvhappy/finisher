@@ -1,9 +1,9 @@
 // The adapter contract and the scripted fake provider (plan 7A Task 6a, Decision 5).
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Deferred, Effect, Fiber, Stream } from "effect";
-import { describe, expect, it } from "vitest";
+import { afterAll, describe, expect, it } from "vitest";
 import { type BoundEvent, type ProviderSession, type SessionSpec, toProviderEvent } from "../src/agent/adapter.ts";
 import { FakeAdapter, type FakeScript } from "../src/agent/fake.ts";
 import { fakeScriptsOf } from "../src/agent/wiring.ts";
@@ -187,6 +187,7 @@ describe("toProviderEvent", () => {
 
 describe("the fake's scripts from a file (FIN_TEST_FAKE_SCRIPTS, the e2e `sandbox` scenario)", () => {
   const dir = mkdtempSync(join(tmpdir(), "fake-scripts-"));
+  afterAll(() => rmSync(dir, { recursive: true, force: true }));
   const file = (name: string, text: string) => {
     const p = join(dir, name);
     writeFileSync(p, text);

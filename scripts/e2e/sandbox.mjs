@@ -10,10 +10,11 @@
 //      `workspace/<sessionId>/` succeeds; `fin caption import --words /etc/hosts` is
 //      `PATH_NOT_ALLOWED`; `main` is untouched;
 //   3. `server.status` carries no `before7C` and no `SANDBOX_DISABLED` for the agent profile;
-//   4. (Linux, with a GPU adapter) a `media.look` in each of two projects runs warm under the
-//      `worker` profile (its `media.capabilities` entry says `sandbox: landlock`): one warm worker per project,
-//      each seeing only the jobs that visit it (Decision 19; the denial itself is proven by
-//      `warm-sandbox.test.ts` and `warm_landlock.rs` with their controls).
+//   4. (Linux, with a GPU adapter) the worker profile is applied (`media.capabilities` journals
+//      `sandbox: landlock` for the capabilities worker, whose profile the look workers share), and
+//      a `media.look` in each of two projects runs warm, each in a new warm worker of its own
+//      project. That a warm worker cannot see another job's directory is not observed here: it is
+//      proven by `warm-sandbox.test.ts` and `warm_landlock.rs`, with their unsandboxed controls.
 // Skipped where the agent profile cannot be enforced (Windows: plan 7C Task 11's Windows run is
 // open; a host without Landlock), unless `FIN_REQUIRE_LANDLOCK=1`.
 import { spawnSync } from "node:child_process";
@@ -69,7 +70,8 @@ function av1Clip(path) {
 
 /** Throws unless the child failed with an OS denial. */
 function deniedChild(c, what) {
-  if (c.code === 0 || !/Permission denied/.test(c.stderr)) throw new Error(`${what}: expected a denial, got ${JSON.stringify(c)}`);
+  // Landlock answers EACCES ("Permission denied"), Seatbelt EPERM ("Operation not permitted").
+  if (c.code === 0 || !/Permission denied|Operation not permitted/.test(c.stderr)) throw new Error(`${what}: expected a denial, got ${JSON.stringify(c)}`);
 }
 
 export async function run() {
@@ -87,6 +89,7 @@ export async function run() {
   const other = join(tmp, "other");
   const outside = join(tmp, "outside.txt");
   let server;
+  let ws;
   try {
     step(0, "server (test hooks: the fake harness, agent and worker profiles ready), two projects");
     mkdirSync(sd, { recursive: true, mode: 0o700 });
@@ -119,11 +122,11 @@ export async function run() {
     person(project, ["asset", "add", "sources/clip.mp4"]);
     person(project, ["clip", "insert", "--no-audio", "--track", "t1", "--at", "0", "--asset", "a1", "--dur", "1s"]);
     assertEqual(person(project, ["track", "add", "--kind", "caption"]).bindings.$track, "t3", "the caption track");
-    const otherId = person(tmp, ["project", "create", other, "--name", "Other"]).project.projectId;
+    person(tmp, ["project", "create", other, "--name", "Other"]);
     av1Clip(join(other, "sources", "clip.mp4"));
     person(other, ["asset", "add", "sources/clip.mp4"]);
     person(other, ["clip", "insert", "--no-audio", "--track", "t1", "--at", "0", "--asset", "a1", "--dur", "1s"]);
-    const ws = await connectWs(server);
+    ws = await connectWs(server);
     const mainOf = async () => JSON.stringify((await ws.call("snapshot.get", { projectId, branch: "main" })).project);
     const mainBefore = await mainOf();
 
@@ -141,6 +144,7 @@ export async function run() {
     assertEqual(c.whoami.code, 0, `fin whoami (${c.whoami.stderr})`);
     if (!/"kind":"agent"/.test(c.whoami.stdout)) throw new Error(`fin whoami is not the agent: ${c.whoami.stdout}`);
     const transport = /FIN_SERVER=(\S+)/.exec(c.whoami.stdout)?.[1] ?? "";
+    // On macOS sandboxed and direct sessions both use `fin.sock`: there only the denials below prove the sandbox.
     if (process.platform === "linux" ? !/^tcp:127\.0\.0\.1:\d+$/.test(transport) : transport !== server.info.socket) {
       throw new Error(`the session's transport on ${process.platform}: ${transport}`);
     }
@@ -162,18 +166,20 @@ export async function run() {
     step(3, "server.status: no before7C, the agent profile not disabled");
     const after = await consoleRpc(server, "server.status", {}, { confirm: false });
     const stale = (after.warnings ?? []).filter((w) => about(w).reason === "before7C" || (w.code === "SANDBOX_DISABLED" && about(w).profile === "agent"));
-    // The hook profile is not made ready, so its warning is the proof the filter reads `details`.
-    if (!(after.warnings ?? []).some((w) => w.code === "SANDBOX_DISABLED" && about(w).profile === "hook")) throw new Error(`server.status: no hook warning to compare with: ${JSON.stringify(after.warnings)}`);
+    // Every sandbox warning names its profile in `details`, so the filters above cannot miss one.
+    for (const w of after.warnings ?? []) {
+      if (/^SANDBOX_|^PLUGINS_/.test(w.code) && about(w).profile === undefined) throw new Error(`server.status: a sandbox warning without details.profile: ${JSON.stringify(w)}`);
+    }
     assertEqual(stale, [], "server.status warnings");
 
     if (process.platform === "linux") {
       step(4, "a warm look per project under the worker profile");
-      await warmLooks(server, sd, [project, other], [projectId, otherId]);
+      await warmLooks(server, sd, [project, other]);
     }
-    ws.close?.();
     log(`PASS sandbox in ${((Date.now() - started) / 1000).toFixed(1)}s`);
   } finally {
     try {
+      ws?.close?.();
       if (server) await stopServer(server);
     } finally {
       removeTmp(tmp);
@@ -182,7 +188,7 @@ export async function run() {
 }
 
 /** One `fin look` in each project: both warm, each in its own project's warm worker, sandboxed. */
-async function warmLooks(server, sd, dirs, ids) {
+async function warmLooks(server, sd, dirs) {
   const caps = fin(sd, dirs[0], ["media", "caps"]);
   if (!caps.gpu) {
     if (process.env.FIN_REQUIRE_GPU === "1") throw new Error("FIN_REQUIRE_GPU=1 but the media worker opened no GPU adapter");
@@ -196,12 +202,18 @@ async function warmLooks(server, sd, dirs, ids) {
     20_000,
   );
   assertEqual(answered.payload.sandbox, "landlock", "media.capabilities: the worker restricted itself");
-  const workers = new Set();
   const jobs = join(sd, "jobs");
+  const warm = () => new Set(readdirSync(jobs).filter((n) => n.startsWith("warm-")));
+  // Each project's look starts a warm worker of its own: the key names the project under an
+  // applied profile, so no worker serves two projects (one per project, owner decision).
+  const workers = [];
   for (const dir of dirs) {
+    const before = warm();
     const r = finRaw(sd, dir, ["look", "--at", "0"]);
     assertEqual(r.status, 0, `fin look in ${dir} (${r.text} ${r.stderr})`);
-    for (const w of readdirSync(jobs).filter((n) => n.startsWith("warm-"))) workers.add(w);
+    const added = [...warm()].filter((w) => !before.has(w));
+    assertEqual(added.length, 1, `fin look in ${dir}: one new warm worker (${[...warm()].join(", ")})`);
+    workers.push(added[0]);
   }
   const done = await waitFor(
     "two media.look job.done entries",
@@ -212,9 +224,7 @@ async function warmLooks(server, sd, dirs, ids) {
     20_000,
   );
   assertEqual(done.map((e) => [e.payload.outcome, e.payload.warm]), dirs.map(() => ["succeeded", true]), "the looks ran warm");
-  // One warm worker per project (the key names the project under an applied profile), so a
-  // worker never holds another project's job; its directory holds only the job visiting it.
-  if (workers.size < ids.length) throw new Error(`expected a warm worker per project, saw ${[...workers].join(", ")}`);
+  // After `ready` the visiting job has moved back out of the worker's directory (Decision 19).
   for (const w of workers) {
     const visiting = existsSync(join(jobs, w, "jobs")) ? readdirSync(join(jobs, w, "jobs")) : [];
     assertEqual(visiting, [], `${w}: no job left in the worker's directory after ready`);
