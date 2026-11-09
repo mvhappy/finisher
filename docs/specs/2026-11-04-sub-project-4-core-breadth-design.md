@@ -1,6 +1,6 @@
 # Sub-project 4: Core breadth — Design
 
-- **Status:** draft for review (2026-11-04). Stage 4A implemented (2026-11-05, branch `sp4a-durable-storage`); §3 describes it as built. Its cross-host validation (§3.13) is pending. Stage 4B implemented (2026-11-06, branch `sp4b-history`, stacked on 4A); §4 describes it as built, and the places in §3 that 4B changed say so. Its cross-host validation (§4.8) is pending. Stage 4C implemented (2026-11-07, branch `sp4c-edit-breadth`, stacked on 4B); §5 describes it as built, and the places in §3 and §4 that 4C changed say so. Its cross-platform validation (§5.10) is pending.
+- **Status:** draft for review (2026-11-04). Stage 4A implemented (2026-11-05, branch `sp4a-durable-storage`); §3 describes it as built. Its cross-host validation (§3.13) is pending. Stage 4B implemented (2026-11-06, branch `sp4b-history`, stacked on 4A); §4 describes it as built, and the places in §3 that 4B changed say so. Its cross-host validation (§4.8) is pending. Stage 4C implemented (2026-11-07, branch `sp4c-edit-breadth`, stacked on 4B); §5 describes it as built, and the places in §3 and §4 that 4C changed say so. Its cross-platform validation (§5.10) is pending. **§5.12 is a proposed amendment (2026-11-09), awaiting owner approval:** stable keyframe ids in model v3.
 - **Parent:** `docs/specs/2026-11-01-finisher-architecture-design.md` (cited below as *arch §n*). This document refines arch §6, §7, §9, §12.3–12.7 and §27.9 for sub-project 4. Where the two disagree, this document wins for sub-project 4, and arch §27 gets a pointer when the stage merges.
 - **Builds on:** sub-project 2 (merged `382b344`): `fin-core` with `asset.add`, `clip.insert`, `clip.trim`, `clip.delete`; `fin-store` SQLite op log; `fin-node`; `@finisher/contracts`; `finisherd`; `fin`.
 
@@ -1067,7 +1067,7 @@ Task 19 has not run. 4A is not mergeable until it has. Each item below was writt
     - *Follow-ups (§5.11):* a merge's relocations become light review items once the 5E review store exists. The console has no undo or merge command yet, so its notice comes with one.
 - **Conflicts are judged per entity** (footprints: one `footprint` function per op module, from the resolved op and its own diff, never from a project):
   - touching or using X when an unmirrored intervening record removed X (the last removal or creation decides) → `REMOVED`. This covers a stale insert of an asset that `asset.remove` removed;
-  - the same edge of X → `SAME_EDGE`; the same parameter → `SAME_PARAM` (4C). Since 4C (plan Decision 20) an op's footprint is what it names, plus what its **own diff** records (`Footprint::with_changes`): `Removed` → removes, `Added` → creates, `edge` → `Edge`, `path` → `Param`, else `Exists`. Sub-entities are `"<item>/<fx>"`, `"<track>/<transition>"` and `"font/<key>"`. Slip touches `Param("sourceIn")`; split touches `Exists` and its end edge and creates the right part; slide touches `Param("start")` and its neighbours' edges; a move touches `start`. **`Param` keys:** the registry path (`opacity`, `effects.<fx>.<param>`, …), `"<path>@<at>"` for a keyframe, `"caption.words"` and `"caption.style"` (also recorded by `caption.split` and `caption.merge`, so a stale `setText`/`setStyle` over a split or merge conflicts), `"transition.out"`/`"transition.in"`, and `"sha256"`/`"fallback"` for fonts. A path's first keyframe (and removing its last) also changes the path, so it meets a static `param.set`. Effect order is a list entity, not a parameter (ordered lists, below);
+  - the same edge of X → `SAME_EDGE`; the same parameter → `SAME_PARAM` (4C). Since 4C (plan Decision 20) an op's footprint is what it names, plus what its **own diff** records (`Footprint::with_changes`): `Removed` → removes, `Added` → creates, `edge` → `Edge`, `path` → `Param`, else `Exists`. Sub-entities are `"<item>/<fx>"`, `"<track>/<transition>"` and `"font/<key>"`. Slip touches `Param("sourceIn")`; split touches `Exists` and its end edge and creates the right part; slide touches `Param("start")` and its neighbours' edges; a move touches `start`. **`Param` keys:** the registry path (`opacity`, `effects.<fx>.<param>`, …), `"<path>@<at>"` for a keyframe (to be replaced by `"<path>#<key>"`, stable keyframe ids, if the proposed amendment §5.12 is approved), `"caption.words"` and `"caption.style"` (also recorded by `caption.split` and `caption.merge`, so a stale `setText`/`setStyle` over a split or merge conflicts), `"transition.out"`/`"transition.in"`, and `"sha256"`/`"fallback"` for fonts. A path's first keyframe (and removing its last) also changes the path, so it meets a static `param.set`. Effect order is a list entity, not a parameter (ordered lists, below);
   - removing an entity someone else edited is **not** a conflict (deleting a clip another author trimmed, on undo or redo too). There are two exceptions. A font unpin after a repin conflicts (below). So does a removal whose content the same transaction puts back into another entity: in an undo of `item.split` or `caption.split`, the left part's trim-back covers the right part's range, so the lift `item.remove` of the right part is judged as a put-back of it. The planner marks those removals from the records' links (`history::absorbs`, `Rebase::absorbs`): an undo, redo or revert of a split, or a copy of one, followed through undo, redo and origin links. The undo of an overwrite insert has the same two ops, but it removes an entity of its own, so it is no conflict. Another author's later edit of the right part (a parameter, an effect, its text or style, its end) is then `SAME_PARAM`, or `SAME_EDGE` for an edge, blamed on that author;
   - **an op that puts an entity back whole** from a snapshot (`Footprint::overwrites`) meets any later change of that entity, of an entity nested in it (`<id>/…`: an item's effects) or of what lies on it as a conflict. What lies on it is any put-back entity among a record's `tracks` or `uses`: an insert or move onto a put-back track, a `marker.add` or `track.add` on a put-back timeline. Ordered lists are never put back; their order is judged by places (below). It counts a touch of any kind, a creation or a removal by an unmirrored intervening record: `SAME_EDGE` when that record moved an edge of a put-back entity, else `SAME_PARAM`, blamed on the first such record. These ops are `item.restore`, `effect.restore`, `track.restore` (the track, its items and transitions, and anything put on it since), `timeline.restore` (the timeline, its markers and tracks, all on them, and anything added to it since), and the `marker.add`, `asset.add`, `bin.add` and `style.add` that invert a removal (a literal id; a `$placeholder` makes a new entity and puts nothing back). They arrive on every path that rebases ops: undo, redo, `undo --to`, merge, cherry-pick and revert, including the internal restores inside the inverses of `item.move`, `caption.merge` and the overwrite trims and moves, all through `rebase_prepared`. It is judged after the op re-ran, so an op that cannot run keeps the re-run's reason (`ALREADY_PRESENT`, `ID_COLLISION`, `CLIP_OVERLAP`, …). It is also judged only when the re-run wrote something: an op that writes nothing at the head (a pin of a file and fallback place already held) loses nothing, so the same pin on both sides merges. *As built (2026-11-07):* the rule above it had no counterpart for re-creation, so a snapshot went over later edits without a word. The 4C undo property and review found the cases (fixed-case tables: `props_history_4c`, `restore_conflicts`):
     - an undo of a move dropped another author's later trim, effect edit or keyframe on the item;
@@ -1470,6 +1470,149 @@ Run 2026-11-07 on `sp4c-t29-fixes`: the 4C and diagnostics integration de1a455 p
 - **Variable fonts in the catalog** beyond Inter's `wght`: other axes, named instances, and variable entries for the Noto families.
 - **Caption layouts** are cached in memory only (the server measurer's LRU of 1,024 layouts); a persistent cache is not planned for 4C.
 - **CI's wasm32 steps** have not completed a run on GitHub (§5.4).
+
+### 5.12 Amendment (2026-11-09, proposed — awaiting owner approval): stable keyframe ids
+
+*Status: design only; nothing here is built. It replaces the `"<path>@<at>"` keyframe identity of §4.3 (the `Param` keys list) and of plan 4C Decision 20 once approved. Fix batch B in `TASKS.md` (review finding #1, P1) implements it. Owner decision of 2026-11-09: keyframes get stable ids in model v3, with an upcast, and conflicts follow the key, not its time. Open questions are marked **Open question**, each with options and a recommendation.*
+
+**The defect** (validated on `a02a0eb3`). A keyframe's conflict identity is its path and item-relative time. A rebase maps the incoming op's `at` to the head frame (content offsets, `rebase/engine.rs` `offsets_mut`), then builds its footprint (`keyframe_set::keyframe_footprint`) with the mapped time. Each intervening step's footprint is its own diff, so it keeps the times that step was committed at (`rebase/footprint.rs`, `same_touch`). After one start trim, the two times still meet, because the step that edited the key ran after the trim, at the same time the op maps to. After two trims around an edit they do not:
+
+- A clip has keys at 2 and 6 on `opacity`. Bob trims the start by 1/2 (the keys move to 3/2 and 11/2), sets the key at 3/2 to 0.75 (his diff names `opacity@3/2`), and trims another 1/2 (the keys move to 1 and 5).
+- Alice's stale `keyframe.set` at 2 (value 0.25) maps to 1. Its footprint names `opacity@1`, which no step named, so the op re-runs, returns `Ok` and replaces Bob's 0.75. The result is `[(1, 0.25), (5, 0)]`.
+- A stale `keyframe.remove` at 2 deletes Bob's key the same way. With only one trim, both ops are `SAME_PARAM`, as they should be.
+- Effect keys (`effects.<fx>.<param>`, entity `<item>/<fx>`) work the same way and have the same defect.
+
+Mapping the footprints of intervening steps forward would fix this one case and keep time as the identity. That is rejected (*Alternatives*, below).
+
+#### 5.12.1 Id shape
+
+- **Minted ids:** a new `IdKind::Keyframe`, prefix **`kf`** (`kf1`, `kf2`, …). Store counter row `keyframe`. The `ids` table is keyed by kind name, so it needs no migration (`fin-store::counters`). No prefix is `kf` followed by digits, so the `suffix` rule of `ids.rs` holds.
+- **Who mints them:** the store, at commit, through a placeholder, as for effects (`$fx` → `fx<n>`). An op that creates a key binds a placeholder, and `Tx.bindings` records the id. Replay hands the id out again through `BoundIds` and never allocates. Merge and cherry-pick copies keep the source's ids (they re-run with the source's bindings, `history::merge`, `history::pick`). Recovery remaps them like any other bound id (`Counters::raise_to_quarantine`, §4.5). So the id is deterministic under replay and is the same on every machine and every branch that holds the record. *Why not an id minted by the op from the list (the next free ordinal)?* Two branches would mint the same id for different keys, which gives false conflicts and, at a merge, edits of the wrong key. *Why not an id derived from the txId?* It is long (it costs agent tokens in every echo), and a v2 snapshot cannot compute it for its keys (§5.12.2).
+- **Legacy ids:** keys that exist before a lineage's first v3 record get **`kv<n>`** ids. `n` is the key's 1-based rank by `at` within its `(item, path)` list (§5.12.2). They are never minted, have no counter, and only the upcast and legacy replay assign them.
+- **Uniqueness scope:**
+  - A key is addressed as **`(item, path, key)`**, as effects are addressed as `(item, effect)`. Within an item, ids are unique across all its paths (structural `DUPLICATE_ID`).
+  - `kf` ids are unique project-wide when minted.
+  - `item.split` copies the keys to the right part with their ids, as it copies effects with theirs, so the two parts may hold the same id.
+  - `kv` ids are unique only within their list. The same `kv1` appears in many lists.
+- **Grammar:** a literal key id is `kf` or `kv` plus digits (`INVALID_ID`, replay only, as for other ids). `Project::entity_ids` lists `kf` ids, so `MemIds::after` and `Counters::seed` raise the counter past them.
+
+#### 5.12.2 Model v3 and the upcast
+
+- **`SCHEMA_VERSION` 3.** It covers ops and the model, as in §3.2. The one model change: `Keyframe {id, at, value, interp}`, with `id` first and always present. Lists stay sorted by `at`. **Times are strictly increasing within a list** (structural, already implied by "sorted, one key per time"; now named `KEYFRAME_EXISTS`). The ids within an item are unique (`DUPLICATE_ID`). Eval ignores ids, so `FramePlan` and `AudioPlan` do not change.
+- **Snapshot step v2 → v3** (`upgrade/snapshot_v2.rs`, frozen, on `serde_json::Value`, golden-tested). In every `keyframes` map, each list's keys get `id: "kv<rank>"` in list order. That covers items and every path, effect paths included. Nothing else changes.
+  - The step is pure, so every machine gives the same result.
+  - Rev-0 projects hold no keyframes, so `new_project(genesis)` still equals the upcast rev-0 project from v1 and from v2 (pinned for rates 30, 30000/1001, 25 and 60, as for v1 → v2).
+- **Record step v2 → v3** (`upgrade/record_v2.rs`, frozen):
+  - **ops stay in time form** (`keyframe.set {item, path, at, value, interp}`, `keyframe.remove {item, path, at}`, which are still valid v3 shapes, §5.12.3);
+  - each key list carried inside an op gets `kv<rank>` ids by the same rule: `item.restore`'s `item.common.keyframes`, `effect.restore`'s `keyframes`, and the items inside `track.restore` and `timeline.restore`, in `intent.ops`, `resolved` and `inverse`;
+  - ids, timestamps and bindings are not touched, as the §3.2 rule requires (`kv` ids are model content, not allocated ids).
+- **Legacy replay.** A record **stored** at schema version ≤ 2 replays in *legacy mode*. `upcast_record` keeps the stored version in memory on `Record` (`stored_version`, never serialised), and `apply_committed` passes it to apply (`ApplyMode::Replay { legacy_keys }`). In legacy mode the keyframe ops behave as v2 did:
+  - a time-form insert takes no id from the allocator;
+  - after the op, the list it changed is relabelled `kv1…kvn` by rank;
+  - the op's diff records the v2 path `"<path>@<at>"`.
+
+  So for every rev `r` of a lineage's v2 prefix, replay gives `snapshot_step(v2 snapshot at r)`: ranks change only when a key is inserted or removed in that list. Trims move all keys of an item together, splits copy whole lists, and put-backs carry lists that the record step has already labelled. Each lineage's v2 records come before its v3 ones (a v2 reader goes read-only at the first v3 record, §3.2), so `kv` labels are frozen from the first v3 record on. v3 ops never relabel.
+- **Stored diffs.** A v2 diff's `"<path>@<at>"` is read as touching **every key of `<path>`** on that entity (`Touch::Param("<path>#*")`; `same_touch` matches it against any `"<path>#<key>"`). That is conservative: a stale v3 tx whose base is in the v2 prefix may be refused over an edit of another key, and is never silently merged. `diffs_match` (verify) still holds, because legacy replay records the same `@` paths. `upcast_diff` itself is unchanged.
+- **Records, export, import, recovery.**
+  - Stored bytes are never re-encoded, so every `txHash`, segment and pack stays as it is.
+  - Export writes the same bytes, and import upcasts in memory.
+  - A v2 reader meets a v3 record or snapshot as `NEWER_FORMAT` and goes read-only, as a 4B reader does with 4C (§3.2, §5.8 upgrade notes).
+  - `.fsnap` headers say `modelSchemaVersion: 3`, and old snapshot rows and files upcast on read. A rebuild replays from genesis and reaches the same state (`kv` by legacy replay, then `kf` from the bindings).
+  - Recovery's set-aside v2 records are re-applied as new v3 transactions, so they are canonicalised (§5.12.3) and mint `kf` ids.
+- **Open question Q5: DB format.** Options: (a) migration `m0005_v3` raises `meta` `formatVersion`/`minReaderVersion` to `"4"`, as `m0003` did for 4C, so an older binary refuses the database with `DB_TOO_NEW` instead of failing per row; (b) no migration, and rows fail `NEWER_FORMAT` one by one. **Recommendation: (a)**, following Decision 3 of plan 4C. It is numbered after `sp5e`'s `m0004_drops`, so whichever branch merges second renumbers.
+
+#### 5.12.3 Op surface
+
+- **`keyframe.set {item, path, key?, at?, value, interp}`:**
+  - *time form* (no `key`, `at` given): a key at exactly `at` is edited and keeps its id. Otherwise a key is inserted under a new id. This is today's behaviour, so old clients and `fin keyframe set --at` keep working.
+  - *key form, literal* (`key: "kf7"`): that key ends up at `at` (default: its current time) with `value` and `interp`. A different `at` **moves** the key. `NOT_FOUND` "keyframe" if the item has no such key on `path` (client and replay). A key already at the target time gives `KEYFRAME_EXISTS` (new, exit 3; `details {item, path, key, at, existing}`; fix: edit `existing` instead).
+  - *key form, placeholder* (`key: "$k"`): inserts at `at` (required) and binds `$k`, so later ops of the same tx can name the new key. An occupied time gives `KEYFRAME_EXISTS`.
+  - Policy is unchanged: range, `PARAM_NOT_ANIMATABLE`, bézier limits, lock. `at` is still a content offset (Decision 16), mapped by start-edge moves.
+- **`keyframe.remove {item, path, key? | at?}`:** exactly one of `key` and `at` (`INVALID_OP` otherwise). A time names the key at exactly that time.
+- **`keyframe.restore {item, path, key, at, value, interp}`** (new, internal, like `effect.restore`): the inverse of a removal. It puts the key back under its literal id at `at`. It gives `KEYFRAME_EXISTS` when another key holds that time, and `DUPLICATE_ID` when the id is present.
+- **Inverses** are always in key form: an insert's is `keyframe.remove {key}`; an edit's or a move's is `keyframe.set {key, at, value, interp}` with the old values; a remove's is `keyframe.restore`. `effect.remove`, `item.remove` and the other put-backs carry keys with their ids.
+- **Canonical form.** Where a tx is first applied (its base frame, or a copy's source frame, the same frame that `places` and anchors read), each time-form `keyframe.set`/`remove` is replaced in the applied intent by its key form. It names the key found at `at`, or a generated placeholder `$kf<opIndex>` for an insert (`DUPLICATE_PLACEHOLDER` if the client already used that name). `at` is filled in either way. This is how `normalize` replaces aliases (§3.2). So **every v3 record stores key-form keyframe ops**, and only v2 records hold time form (replayed in legacy mode). A rebase then carries the key, not the time, and **a stale time-form op is pinned to the key it met in its own frame**.
+- **Wire and CLI compatibility.**
+  - Clients may keep sending the time form. `resolved` and `--dry-run` echo the key form with the id (`kf<n>` from the bindings for an insert).
+  - `fin keyframe set <i> <path> (--at <t> | --key <k> [--at <t>]) <value> [--interp]` and `fin keyframe remove <i> <path> (--at <t> | --key <k>)`.
+  - The `argsHash` input leaves `--key` out when it is absent (Decision 7), so earlier retries are still answered from the log.
+  - The `clip.*` aliases are untouched (Q6).
+- **Open question Q2: `keyframe.move`.** No move op exists today. Options: (a) the move is key-form `keyframe.set` with a new `at` (above; no new op kind, and one inverse shape); (b) a separate `keyframe.move {item, path, key, to}`. **Recommendation: (a).** It is smaller, a move and an edit of one key conflict either way, and an agent can see it in the echo.
+- **Open question Q4: finding ids.** `fin view` shows keyframe paths only (`view/lines.rs`), so today an agent cannot see a key's time or id. Options: (a) `fin keyframe ls <i> [path]` returns `[{path, key, at, value, interp}]`, about 20 tokens in the command map; (b) ids in `fin view --detail`; (c) both. **Recommendation: (a)**, keeping `view` budget-stable, with key ids echoed on every keyframe write.
+
+#### 5.12.4 Conflict semantics
+
+- **Footprint key** `Param("<path>#<key>")` on the item, or on `<item>/<fx>` for an effect path (which also uses the item, as today). The first key of a path, and removing its last, still also change `path`, so they meet a static `param.set` (unchanged).
+- An insert's own diff names its placeholder (`unbind_own`, §4.3), which no other record names, so an insert meets nothing by id.
+- **What is `SAME_PARAM`:** two unmirrored ops that edit, move, remove or restore **the same key**, whatever trims or moves did to its time in between. Edits of different keys of one path merge, even when trims made their times cross or coincide in someone's frame. The repro of §5.12 is `SAME_PARAM` for the set and for the remove, blamed on Bob's edit.
+- **Trims and other start-edge moves** change a key's time, never its id, and touch no `#key` param. Content offsets keep mapping `at`, which now only says where a moved or inserted key lands.
+- **Delete vs edit:** a stale edit of a key another record removed, and a stale removal of a key another record edited, are both `SAME_PARAM` (same key, as today). This differs on purpose from the whole-entity rule ("removing an entity someone else edited is not a conflict"): a key is a parameter of its item, not an entity.
+- **Concurrent inserts at the same time.** The rebased insert re-runs as key form with a placeholder and fails `KEYFRAME_EXISTS`. The re-run conflict is blamed on the last unmirrored record that created or moved the key now at that time (`details.existing` names it). Inserts at different times merge.
+  - **Open question Q3.** Options: (a) conflict (above); (b) the later insert edits the existing key (time-form semantics, which silently drops the other author's value); (c) keep both, nudging the later one by one frame. **Recommendation: (a).** It matches the "never lose a concurrent value" rule, and `--skip-conflicting` and a re-send cover the rest.
+- **Moves:** a move onto a time that another record filled since gives `KEYFRAME_EXISTS`, blamed the same way. A move against a concurrent edit of the same key is `SAME_PARAM`.
+- **Undo, redo and placement.** Keys are not list members (they are ordered by time), so neither `places` nor the left-neighbour placement rules (§4.3) apply. An undone removal (`keyframe.restore`) returns at its mapped time under its own id. If another key holds that time, it is `KEYFRAME_EXISTS`, for persons and agents alike. The actor rule (`when_lost`) is only for items. `undo_redo_props` covers keys.
+- **Merge-origin records.** Copies keep the source's ids, so later edits of a copied key, merged or picked from the source, find it on the target by id. A copy of an insert whose key the target already holds (same id) gives `DUPLICATE_ID`, which existing re-run rules blame.
+- **Pre-v3 keys across lineages** (`kv` ids). The labels are frozen per lineage, so two branches that diverged before the upgrade and then inserted or removed keys in the same list give one `kv` id to different keys. An op that names a `kv` key also checks that the key at the head has the time the key had in the op's own frame, mapped by content offsets. If not, it is `SAME_PARAM`, blamed on the last record that changed that list. Within a lineage the check always holds, because only trims move `kv` keys, and the mapping carries them.
+  - **Open question Q1.** Options: (a) this time guard; (b) no guard, accepting a rare wrong-key edit when merging pre-upgrade divergent branches; (c) refuse every cross-lineage op on a `kv` key. **Recommendation: (a).** It costs one frame lookup and keeps (b)'s risk out, without (c)'s refusals of common merges.
+- **Q7 (decided here unless the owner objects):** undoing a **pre-v3** `keyframe.remove` brings the key back under a new `kf` id. Its stored v2 inverse is a time-form set, which is canonicalised as an insert. Nothing can name the old `kv` id afterwards except ops on the same lineage, which the time guard covers.
+
+#### 5.12.5 Test plan
+
+Test-first. The validation repro is the regression test.
+
+1. **Repro** (`tests/keyframe_ids.rs`): keys at 2 and 6; trim +1/2, set the moved key to 0.75, trim +1/2. Alice's stale `keyframe.set` at 2 and her stale `keyframe.remove` at 2 are each `SAME_PARAM`, blamed on Bob's edit, and the keys stay `[(1, 0.75), (5, 0)]`. The same on an effect path (`effects.fx1.exposure`), with blame on `<item>/<fx>`.
+2. **Independent-key control:** the same trims, with Bob editing the key at 6. Alice's stale edit of the key at 2 merges, and both values hold. Also with trims that make the two keys' frame times cross.
+3. **Concurrent same-time inserts**, by stale commit and by merge: `KEYFRAME_EXISTS` blamed on the first insert. Inserts at different times merge. A move onto a filled time is refused the same way.
+4. **Ops:** every form of set, remove and restore, its inverse and its echo; `NOT_FOUND`, `KEYFRAME_EXISTS`, `DUPLICATE_ID`, `INVALID_OP`; canonicalisation (the intent holds key form, the placeholder is bound, `DUPLICATE_PLACEHOLDER`); `item.split` copies keep ids; `effect.remove`/`restore` round-trip ids.
+5. **Upcast goldens** (`tests/upgrade_golden/`): a v2 snapshot with item and effect keys gives the expected `kv` labels; a v2 record with keys inside an `item.restore` and an `effect.restore`; the v1 → v2 → v3 chain; `new_project` equality for the four rates.
+6. **Upcast determinism property** (256 cases): over generated v2 histories with keyframe inserts and removes, trims, splits and effect removals, `snapshot_step(v2 state at r) == legacy replay to r` for every r. Then v3 edits on top give the same project and the same bytes on a second run. The second run is in a fresh process, and on the CI matrix, through the existing cross-platform corpus jobs.
+7. **Old fixtures unchanged:**
+   - the `sp2`, `4a` and `4b` store fixtures replay to `upcast_snapshot(expected_v2.json)`. The fixture files stay as they are, and none holds a keyframe;
+   - every stored record byte and `txHash` is unchanged;
+   - `diffs_match` passes;
+   - the eval corpus gives the same `expected.json` hashes after upcast.
+8. **Properties updated:**
+   - `keyed4c` (the oracle keys keyframes by id);
+   - `gen4c` (generators make key-form and time-form ops);
+   - `props_rebase_4c`, `undo_redo_props`, `props_history_4c`;
+   - the record-bytes round-trip property over the new op shapes.
+9. **`fin`:** `keyframe set --key`, `keyframe ls`, the command-map token budget, and the argsHash of 4C inputs (unchanged).
+
+#### 5.12.6 Cost and risk
+
+- **Files, by crate:**
+  - `fin-core`: `ids.rs`, `model/{item,mod}.rs`, `ops/{keyframe_set,keyframe_remove}.rs`, new `ops/keyframe_restore.rs`, `ops/{mod,defs}.rs` (the op table), `ops/util/{values,paths}.rs`, `rebase/{footprint,engine,conflict}.rs`, new `upgrade/{snapshot_v2,record_v2}.rs`, `upgrade/mod.rs`, `record` (`stored_version`), `replay.rs` and `schema.rs`. `rebase/engine.rs` (597 lines) and `ops/mod.rs` (593) are at the 600-line limit, so the guard and the canonicalisation go to a new `rebase/keys.rs` and `ops/util/keys.rs`.
+  - `fin-store`: `counters.rs` (kind name), the replay call sites that pass `stored_version` (open, import, rebuild, verify), and `m0005` if Q5 is (a).
+  - `fin`: `commands/keyframe.rs` and the command registry.
+  - The generated `packages/core-types` schema and `index.ts`.
+  - No TypeScript outside `generated/` reads keyframes.
+- **Fixture churn:**
+  - about 26 Rust files build `Keyframe {..}` literals and gain `id`;
+  - about 28 test files use the keyframe ops;
+  - the 20 eval-corpus projects are re-blessed to v3 with the step itself, mechanically, keeping one v2 project as an upcast golden. Their plan hashes must not change;
+  - the store fixtures do not change.
+- **Open branches that will conflict:**
+  - `sp5e`: `rebase/conflict.rs` (9 lines), the migration numbering (`m0004`), and the generated schema. Medium, mechanical.
+  - `sp8b` and `sp6b1`: the generated schema and `index.ts` only (`sp6b1` also adds to `fin/src/commands/mod.rs`). Low: regenerate.
+  - Batch A (`history/absorbs`, `pick`, `checkpoint`) does not overlap. B merges after A, as planned.
+  - Batch D (`fin` CLI) may touch `commands/mod.rs`. Low.
+- **Estimate:** 8 tasks.
+  1. Ids and model v3.
+  2. Upcast steps, legacy replay and goldens.
+  3. The key-form ops and `keyframe.restore`.
+  4. Canonicalisation.
+  5. Rebase footprints, the guard and blame.
+  6. `fin` (`--key`, `ls`).
+  7. Properties and the oracle.
+  8. Fixtures, the regenerated contracts, docs and the as-built spec.
+
+  About 1,500–2,500 changed lines, half of them tests. Medium-high risk, all in `fin-core`: legacy replay must equal the snapshot step exactly, and property 6 is what gates it.
+- **Alternatives considered:**
+  - **Map footprints forward**: carry each intervening step's `@at` keys through the later steps' content offsets to the head, or our `at` back into each step's frame. Rejected. Time stays the identity, so a key removed and another inserted at the same time are still one key, and the mapping has to follow splits, effect removals and put-backs that move whole lists. It fixes only rebase, and agents still could not name a key. The owner chose ids.
+  - **Per-list ordinal ids minted by the op:** these collide across branches (§5.12.1).
+  - **Ids derived from the txId:** they are long, and a v2 snapshot cannot compute them. Every v2 snapshot would have to be rebuilt by replay from genesis.
+  - **Ids folded into v2 without a version bump:** v2 records and snapshots already exist on integration, in fixtures and in the corpus, and one version must mean one shape (§3.2).
+- **Open question Q6:** drop the `clip.*` aliases at schema 3 (the §5.11 follow-up)? **Recommendation: no.** Keep batch B narrow, and move that follow-up to "a later schema".
 
 ---
 
