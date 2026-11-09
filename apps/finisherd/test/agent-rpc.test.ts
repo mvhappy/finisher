@@ -166,10 +166,10 @@ describe("agent session RPCs", () => {
     expect(ok<{ sessions: Session[] }>(await reader.call("agent.session.list", {})).sessions.map((s) => s.id)).toEqual([ours.id]);
     expect(code((await watchAll(reader, { sessionId: theirs.id })).exit)).toBe("SESSION_NOT_FOUND");
     expect(code(await reader.call("agent.approval.list", { sessionId: theirs.id }))).toBe("SESSION_NOT_FOUND");
-    // A session's own credential never drives one (7A: sessions are driven by people).
+    // A session's own credential drives only its children (7B Task 6), never itself.
     const mine = await open(server.core, local, a);
     const agent = await server.agent(mine.credentialPath);
-    expect(code(await agent.call("agent.session.end", { sessionId: mine.session.id }))).toBe("SCOPE_DENIED");
+    expect(code(await agent.call("agent.session.end", { sessionId: mine.session.id }))).toBe("SESSION_NOT_FOUND");
   });
 
   test("start-up recovery runs before the first request is served", async () => {

@@ -47,6 +47,9 @@ pub const MIN_ABI: u32 = 3;
 pub const NEED: &str = "kernel ≥ 6.2";
 /// The ABI from which `LANDLOCK_RESTRICT_SELF_TSYNC` restricts every thread.
 pub const TSYNC_ABI: u32 = 8;
+/// The ABI that scopes abstract sockets and signals to the domain (kernel 6.12). Below it a
+/// confined process can signal one outside its domain (the residual of `linux/reaper.rs`).
+pub const SCOPE_ABI: u32 = 6;
 /// The ports `agent` reaches besides its loopback ports (owner decision 5: open egress).
 pub const AGENT_WEB_PORTS: [u16; 2] = [80, 443];
 
@@ -165,7 +168,7 @@ pub fn ruleset_from(
             .handle_access(net_handled(policy.profile))
             .map_err(os("handle TCP access"))?;
     }
-    if abi.0 >= 6 {
+    if abi.0 >= SCOPE_ABI {
         rs = rs.scope(Scope::from_all(v)).map_err(os("scope"))?;
     }
     let mut rs = rs.create().map_err(os("landlock_create_ruleset"))?;

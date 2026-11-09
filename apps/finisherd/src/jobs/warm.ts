@@ -304,7 +304,9 @@ export class WarmPools {
       else this.#idle(w, undefined, false);
       // The job's `warm` says how it runs: cold.
       if (!this.#e.crashed) this.#e.d.store.transition(row.id, "running", { warm: false });
-      return runAttempt(this.#e.env, row, kind, family, params, control);
+      // `row` is the job as it was before `prepare`: the cold run gets the extra it made (its
+      // plan samples, its reads and so its grants), or it starts without them.
+      return runAttempt(this.#e.env, { ...row, extra: out.reach.extra }, kind, family, params, control);
     }
     if (!out.kept) {
       this.#lostOn.add(row.id);

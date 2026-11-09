@@ -218,6 +218,14 @@ pub enum Capture {
     Stream,
 }
 
+/// Why a model call was made, when it is not the conversation's next step (7B Decision 24).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum TurnPurpose {
+    /// The built-in loop's summary call, whose reply replaces the runs before the current one.
+    Compaction,
+}
+
 /// `agent.turn`: one model call. Content (training only, in the agent-trace store): the
 /// turn's new input messages, the output, and the system prompt and tool definitions, which
 /// are always blobs so identical prompts are stored once.
@@ -267,6 +275,10 @@ pub struct AgentTurn {
     pub cost_micros: Option<u64>,
     pub cost_basis: CostBasis,
     pub capture: Capture,
+    // Absent for an ordinary call; `compaction` for the built-in loop's summary call.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "TurnPurpose")]
+    pub purpose: Option<TurnPurpose>,
     // The keyed hashes of the system prompt and the tool definitions (exact capture only: a
     // stream turn has neither).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -321,6 +333,7 @@ approx_struct!(AgentTurn {
     cost_micros,
     cost_basis,
     capture,
+    purpose,
     system_hash,
     tools_hash,
     body_hash,

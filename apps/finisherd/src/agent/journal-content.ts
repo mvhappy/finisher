@@ -203,14 +203,16 @@ export interface CaptureMeta {
   readonly upstream?: string;
   readonly latencyMs: number;
   readonly ttftMs?: number;
+  /** `compaction`: the built-in loop's summary call (7B Decision 24). */
+  readonly purpose?: "compaction";
 }
 
 const count = (v: unknown) => (typeof v === "number" && Number.isFinite(v) && v >= 0 ? Math.round(v) : undefined);
 
 /**
  * Reads a capture: `request` the body text (an object is serialised), `response` either the
- * chunks or `{chunks, stopReason?, upstream?, latencyMs?, ttftMs?}` (the client's `ModelResult`
- * fields; see `RuntimeJournal.capture`).
+ * chunks or `{chunks, stopReason?, upstream?, latencyMs?, ttftMs?, purpose?}` (the client's
+ * `ModelResult` fields, and the loop's `purpose`; see `RuntimeJournal.capture`).
  */
 export function captureMeta(request: unknown, response: unknown): CaptureMeta {
   const text = typeof request === "string" ? request : request === undefined || request === null ? undefined : JSON.stringify(request);
@@ -224,5 +226,6 @@ export function captureMeta(request: unknown, response: unknown): CaptureMeta {
     ...(typeof response.upstream === "string" && response.upstream.length > 0 ? { upstream: response.upstream } : {}),
     latencyMs: count(response.latencyMs) ?? 0,
     ...(ttft === undefined ? {} : { ttftMs: ttft }),
+    ...(response.purpose === "compaction" ? { purpose: "compaction" as const } : {}),
   };
 }

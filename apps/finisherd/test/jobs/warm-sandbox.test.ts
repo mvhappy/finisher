@@ -12,6 +12,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { HostMsg, JobSpawnRequest, TestWarmResult } from "@finisher/core-types";
 import { aclGrantsForTest, aclRevoke, sandboxContainerDeleteForTest } from "@finisher/fin-node";
+import { Effect } from "effect";
 import { afterEach, describe, expect, onTestFinished, test } from "vitest";
 import { aclBroker } from "../../src/sandbox/broker.ts";
 import { FakeHost, recordingHost } from "../support/fake-host.ts";
@@ -255,6 +256,33 @@ describe("the pool under a sandbox (scripted host)", () => {
     });
     const v = await t.runJob("test.warm", { value: 1 }, { project: "A" });
     expect([v.state, v.attempts]).toEqual(["succeeded", 1]);
+  });
+
+  test("a_reach_miss_runs_cold_with_the_extra_and_reads_its_prepare_made", async () => {
+    // The reads come from `prepare`'s extra (as `media.look`'s do): the cold run after the warm
+    // miss must start with that extra and be granted those reads, though `prepare` does not run
+    // again (it succeeded once for the directory). It once got the row as it was before
+    // `prepare`: no extra (`PLAN_MISMATCH {reason: noSample}`) and no grant for the file.
+    const { fake } = host({ perJobGrants: true });
+    const starts: unknown[] = [];
+    const send = fake.onSend!;
+    fake.onSend = (h, proc, msg: HostMsg) => {
+      if (msg.t === "start") starts.push(msg.job.extra);
+      send(h, proc, msg);
+    };
+    const extra = { reads: ["/srv/B/clip.mov"], planSamples: [{ at: "0", blake3: "x" }] };
+    const t = await testEngine({
+      jobHost: fake.factory,
+      testKinds: {
+        families: { test: { warmReads: () => ["/srv/A"] } },
+        overrides: { "test.warm": { prepare: () => Effect.succeed({ extra }), reads: (e: unknown) => (e as typeof extra | undefined)?.reads ?? [] } },
+      },
+    });
+    const v = await t.runJob("test.warm", { value: 1 }, { project: "A" });
+    expect([v.state, v.warm, v.attempts]).toEqual(["succeeded", false, 1]);
+    expect(starts).toEqual([extra]);
+    const cold = fake.spawns.filter((r) => !isWarm(r) && r.role === "worker");
+    expect(cold.map((r) => r.grants?.filter((g) => g.mode === "read").map((g) => g.path))).toEqual([["/srv/B/clip.mov"]]);
   });
 
   test("a_job_reading_outside_its_workers_roots_runs_cold", async () => {

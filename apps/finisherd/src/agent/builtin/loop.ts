@@ -17,6 +17,10 @@
 //   the model is at most 16 KiB (head 12 KiB + tail 4 KiB + a note), and at most 1 MiB of it is
 //   stored; at most 8 reads run at once; the run stops with `MODEL_CONTEXT_EXCEEDED` when a
 //   call's prompt would pass 85 % of the model's window.
+// - **Compaction (7B Decision 24, `compact.ts`):** a call whose prompt would pass 75 % is
+//   preceded, once per run, by a summary call over the runs before the current one, which the
+//   summary then replaces. A compaction that cannot be made is a `compactionSkipped` notice and
+//   the uncompacted request goes out while it fits.
 // - **Event order of a model call** (the journal's contract, `RuntimeJournal.capture`): its
 //   `capture`, then its `usage`, then its reasoning and message, then its `toolStarted`s.
 // - **Resume:** what the loop answers itself (an unknown tool, arguments that are not JSON, a
@@ -28,6 +32,7 @@ import { finError } from "../../errors.ts";
 import { type BoundEvent, type Capabilities, NO_CAPABILITIES, type ProjectedUsage, type ProviderAdapter, type ProviderSession, type RuntimeAnswer, type SessionSpec } from "../adapter.ts";
 import type { Catalogue } from "../catalogue/catalogue.ts";
 import { type AttemptCost, type KeySource, type ModelClient, type ModelResult, noKey } from "./compat.ts";
+import { captureOf, compact } from "./compact.ts";
 import type { FinIndex } from "./fin-tool.ts";
 import { boundOutput, historyFromNodes, INTERRUPTED_RESULT, renderResult } from "./loop-history.ts";
 import type { ModelMessage, ModelRequest, Preset, ToolCall } from "./request.ts";
@@ -42,6 +47,8 @@ export interface LoopLimits {
   readonly tailBytes: number;
   /** The share of the window a call's prompt may reach. */
   readonly contextRatio: number;
+  /** The share past which the runs before the current one are compacted first (below `contextRatio`). */
+  readonly compactRatio: number;
   /** `max_tokens` of each call (capped by the model's `maxOutput`). */
   readonly maxTokens: number;
   /** Reads (and `fin --dry-run`s) running at once. */
@@ -57,6 +64,7 @@ export const LOOP_LIMITS: LoopLimits = {
   headBytes: 12 * 1024,
   tailBytes: 4 * 1024,
   contextRatio: 0.85,
+  compactRatio: 0.75,
   maxTokens: 8192,
   parallelReads: 8,
   storedBytes: 1024 * 1024,
@@ -72,14 +80,15 @@ export interface BuiltinDeps {
   readonly finPath: string;
   /** What the tools' write/read split reads (`fin schema commands`); unknown `fin` commands are writes. */
   readonly index?: () => Promise<FinIndex | undefined>;
-  /** A session's stored nodes, to rebuild the conversation when it is opened again (resume). */
-  readonly nodes?: (sessionId: string) => ReadonlyArray<Node>;
+  /** A session's stored nodes (a `summary` node's payload read), to rebuild the conversation when it is opened again (resume). */
+  readonly nodes?: (sessionId: string) => ReadonlyArray<Node> | Promise<ReadonlyArray<Node>>;
   readonly limits?: Partial<LoopLimits>;
 }
 
 export const BUILTIN_CAPABILITIES: Capabilities = {
   ...NO_CAPABILITIES,
   steer: true,
+  rollback: true,
   resume: true,
   reasoning: true,
   parallelTools: true,
@@ -115,7 +124,18 @@ export function BuiltinAdapter(deps: BuiltinDeps): ProviderAdapter {
       const maxTokens = Math.max(1, Math.min(limits.maxTokens, info.maxOutput || limits.maxTokens));
       const viewBudget = Math.max(200, Math.min(4000, Math.floor(info.window * 0.05)));
 
-      const history: ModelMessage[] = deps.nodes ? historyFromNodes(deps.nodes(spec.sessionId), limits) : [];
+      /** The conversation of the stored nodes, without those of `starting` (its prompt is stored before the session opens). */
+      const rebuild = (starting?: string) =>
+        Effect.tryPromise({
+          try: async () => (deps.nodes ? historyFromNodes((await deps.nodes(spec.sessionId)).filter((n) => n.runId !== starting), limits) : []),
+          catch: (e) => (e instanceof FinError ? e : finError("INTERNAL", `the conversation could not be rebuilt: ${String(e)}`, {})),
+        });
+      const history: ModelMessage[] = [];
+      /** Rebuilt at the first turn (resume), which knows its own run. */
+      let rebuilt = deps.nodes === undefined;
+      /** Where the current run's messages start (the runs before it end), and whether it tried to compact. */
+      let runStart = 0;
+      let compactTried = false;
       const steers: string[] = [];
       const waits = new Map<string, { resolve: (a: ToolAnswer) => void; reject: (e: unknown) => void }>();
       const early = new Map<string, ToolAnswer>();
@@ -139,12 +159,13 @@ export function BuiltinAdapter(deps: BuiltinDeps): ProviderAdapter {
           return bounded;
         });
 
+      const freshTokens = (req: ModelRequest) => estimate(JSON.stringify({ s: req.system, t: req.tools, m: req.messages }).length);
       /** The prompt tokens of `req`: the last call's count plus the new messages, else all of it. */
       const promptTokens = (req: ModelRequest) => {
         if (known !== null && known.covers <= req.messages.length) {
           return known.tokens + estimate(JSON.stringify(req.messages.slice(known.covers)).length);
         }
-        return estimate(JSON.stringify({ s: req.system, t: req.tools, m: req.messages }).length);
+        return freshTokens(req);
       };
 
       /** Charges one attempt: its usage, else the gate's reservation is released. */
@@ -164,7 +185,7 @@ export function BuiltinAdapter(deps: BuiltinDeps): ProviderAdapter {
        * (emitted by the caller, after the capture), or — when the stream throws or ends without
        * either — the gate's reservation is released (the `finally`).
        */
-      async function modelCall(req: ModelRequest, signal: AbortSignal): Promise<{ result: ModelResult } | { refused: FinError }> {
+      async function modelCall(req: ModelRequest, signal: AbortSignal, quiet = false): Promise<{ result: ModelResult } | { refused: FinError }> {
         const projected: ProjectedUsage = { input: promptTokens(req), output: req.maxTokens, cacheRead: 0, cacheWrite: 0, reasoning: 0 };
         const first = admit(projected);
         if (first) return { refused: first };
@@ -181,10 +202,10 @@ export function BuiltinAdapter(deps: BuiltinDeps): ProviderAdapter {
             const ev = step.value;
             switch (ev.type) {
               case "textDelta":
-                emit({ type: "messageDelta", text: ev.text });
+                if (!quiet) emit({ type: "messageDelta", text: ev.text });
                 break;
               case "reasoningDelta":
-                emit({ type: "reasoningDelta", text: ev.text });
+                if (!quiet) emit({ type: "reasoningDelta", text: ev.text });
                 break;
               case "retry": {
                 charge(ev.cost);
@@ -267,6 +288,14 @@ export function BuiltinAdapter(deps: BuiltinDeps): ProviderAdapter {
         }
       }
 
+      /** A gate refusal ends the run: the per-run call cap as a completion, anything else failed. */
+      const refusedEnd = (e: FinError) => {
+        const kind = (e.details as { kind?: unknown } | null)?.kind;
+        if (kind === "modelCalls") return emit({ type: "turnCompleted", stopReason: "modelCallCap" });
+        return failedEnd(e);
+      };
+      const failedEnd = (e: FinError) => emit({ type: "turnFailed", error: { code: e.code, message: e.message, details: e.details ?? {}, ...(e.fix === undefined ? {} : { fix: e.fix }) } });
+
       async function runTurn(): Promise<void> {
         const signal = ctl!.signal;
         const used = { tools: 0 };
@@ -279,35 +308,45 @@ export function BuiltinAdapter(deps: BuiltinDeps): ProviderAdapter {
               emit({ type: "notice", name: "steersTaken", details: { count: taken.length } });
             }
             if (calls >= limits.modelCalls) return emit({ type: "turnCompleted", stopReason: "modelCallCap" });
-            const req: ModelRequest = { system: spec.system, tools: TOOL_DEFS, messages: [...history], model: spec.model, maxTokens };
-            const tokens = promptTokens(req);
+            let req: ModelRequest = { system: spec.system, tools: TOOL_DEFS, messages: [...history], model: spec.model, maxTokens };
+            let tokens = promptTokens(req);
+            let skipped: string | undefined;
+            if (tokens > limits.compactRatio * info.window && runStart > 0 && !compactTried) {
+              compactTried = true;
+              const c = await compact({
+                next: req,
+                older: history.slice(0, runStart),
+                current: history.slice(runStart),
+                tokens: promptTokens,
+                fresh: freshTokens,
+                fits: limits.contextRatio * info.window,
+                window: info.window,
+                call: (r) => modelCall(r, signal, true),
+                emit,
+                aborted: () => signal.aborted,
+              });
+              if ("refused" in c) return refusedEnd(c.refused);
+              if ("skipped" in c) {
+                // Not made: the uncompacted request goes out if it fits (the stop below decides).
+                skipped = c.skipped;
+                emit({ type: "notice", name: "compactionSkipped", details: c.details });
+              } else {
+                history.splice(0, runStart, c.message);
+                runStart = 1;
+                known = null;
+                req = { ...req, messages: [...history] };
+                tokens = promptTokens(req);
+              }
+            }
             if (tokens > limits.contextRatio * info.window) {
-              const e = finError("MODEL_CONTEXT_EXCEEDED", "the conversation fills 85 % of the model's context window", { tokens, window: info.window }, "start a new run or session");
+              const e = finError("MODEL_CONTEXT_EXCEEDED", "the conversation fills 85 % of the model's context window", { tokens, window: info.window, ...(skipped === undefined ? {} : { compaction: skipped }) }, "start a new run or session");
               return emit({ type: "turnFailed", error: { code: e.code, message: e.message, details: e.details, fix: e.fix! } });
             }
             const answer = await modelCall(req, signal);
-            if ("refused" in answer) {
-              const e = answer.refused;
-              const kind = (e.details as { kind?: unknown } | null)?.kind;
-              if (kind === "modelCalls") return emit({ type: "turnCompleted", stopReason: "modelCallCap" });
-              return emit({ type: "turnFailed", error: { code: e.code, message: e.message, details: e.details ?? {}, ...(e.fix === undefined ? {} : { fix: e.fix }) } });
-            }
+            if ("refused" in answer) return refusedEnd(answer.refused);
             const r = answer.result;
             // The journal's order: the capture, then the usage it joins, then the content.
-            emit({
-              type: "capture",
-              request: r.capture.request,
-              response: {
-                chunks: r.capture.response,
-                stopReason: r.stopReason,
-                bodyHash: r.bodyHash,
-                usageEstimated: r.usageEstimated,
-                latencyMs: r.latencyMs,
-                ...(r.ttftMs === undefined ? {} : { ttftMs: r.ttftMs }),
-                ...(r.upstream === undefined ? {} : { upstream: r.upstream }),
-                ...(r.generationId === undefined ? {} : { generationId: r.generationId }),
-              },
-            });
+            emit(captureOf(r));
             emit({ type: "usage", ...r.usage, ...(r.costMicros === undefined ? {} : { costMicros: r.costMicros }) });
             if (r.reasoningText !== "" || r.reasoning.length > 0) {
               emit({ type: "reasoning", ...(r.reasoningText === "" ? {} : { text: r.reasoningText }), ...(r.reasoning.length === 0 ? {} : { encrypted: r.reasoning }) });
@@ -362,16 +401,22 @@ export function BuiltinAdapter(deps: BuiltinDeps): ProviderAdapter {
         instance,
         events: Stream.fromQueue(queue),
         startTurn: (i) =>
-          Effect.suspend(() => {
-            if (running !== null) return Effect.fail(finError("SESSION_BUSY", "a turn is running", { instance }));
+          Effect.gen(function* () {
+            if (!rebuilt) {
+              const past = yield* rebuild(i.runId);
+              if (!rebuilt) history.splice(0, history.length, ...past);
+              rebuilt = true;
+            }
+            if (running !== null) return yield* Effect.fail(finError("SESSION_BUSY", "a turn is running", { instance }));
             const blocks = [...(i.facts === undefined ? [] : [{ type: "text" as const, text: i.facts }]), { type: "text" as const, text: i.text }];
+            runStart = history.length;
+            compactTried = false;
             history.push({ role: "user", content: blocks });
             ctl = new AbortController();
             early.clear();
             running = runTurn().finally(() => {
               running = null;
             });
-            return Effect.void;
           }),
         steer: (i) =>
           Effect.sync(() => {
@@ -390,7 +435,15 @@ export function BuiltinAdapter(deps: BuiltinDeps): ProviderAdapter {
               early.set(id, answer);
             }
           }),
-        rollback: () => Effect.fail(finError("PROVIDER_UNAVAILABLE", "the built-in agent rolls back in 7B", {})),
+        // 7B Task 8: the runtime marked the later runs' nodes `rolledBack`; the conversation is
+        // rebuilt without them, so the next request leaves them out.
+        rollback: () =>
+          Effect.map(rebuild(), (past) => {
+            history.splice(0, history.length, ...past);
+            rebuilt = true;
+            runStart = history.length;
+            known = null;
+          }),
         ref: () => ({ kind: "builtin", id: spec.sessionId }),
       };
       return session;

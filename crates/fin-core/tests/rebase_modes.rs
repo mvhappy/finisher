@@ -368,12 +368,14 @@ fn partial_undo_to_cuts_at_inverse_op_boundaries() {
     );
 }
 
-/// Task 8 review: `compose::overwrite`'s split follows a concurrent start trim of the item
-/// (its offset is content-anchored) while the insert's `at` does not, so the insert lands
-/// inside the right part: `OVERWRITE_SPLITS_ITEM`, blamed on the trim through the item our
-/// split cut.
+/// Task 8 review, revised by anchor mapping (spec §4.3, 2026-11-09): `compose::overwrite`'s
+/// splits follow a concurrent start trim of the item (their offsets are content-anchored), and
+/// now so does the insert: its `at` was written at the start of the piece the splits cut out, so
+/// it lands at that piece's start at the head. The overwrite replaces the same source span
+/// (4–6 s of the asset) it replaced where written. (Before, `at` kept 4 s through no shift and
+/// landed inside the right part: `OVERWRITE_SPLITS_ITEM`, blamed on the trim.)
 #[test]
-fn composed_overwrite_after_start_trim_blames_the_trim() {
+fn composed_overwrite_after_start_trim_follows_the_content() {
     let p = with_clips(&[10]);
     let (pa, a) = commit(&p, vec![trim("c1", Edge::Start, secs(2))], 1, "tx-a");
     let body = ItemBody::Clip {
@@ -384,11 +386,15 @@ fn composed_overwrite_after_start_trim_blames_the_trim() {
     let ops = fin_core::compose::overwrite(&p, "t1", secs(4), secs(2), body, "$x")
         .unwrap()
         .ops;
-    let e = rebase(&p, &pa, &stale(ops), &[a]).unwrap_err();
-    assert_eq!(
-        conflict(&e),
-        ("OVERWRITE_SPLITS_ITEM".into(), Some("tx-a".into()))
-    );
+    let rb = rebase(&p, &pa, &stale(ops), &[a]).unwrap();
+    let got = spans(&rb.applied.project);
+    let x = &rb.applied.bindings["$x"];
+    assert_eq!(got.len(), 3, "{got:?}");
+    assert_eq!((got[0].1, got[0].2), (secs(0), secs(2)), "{got:?}");
+    assert_eq!(got[1], s(x, 2, 2), "{got:?}");
+    assert_eq!((got[2].1, got[2].2), (secs(4), secs(4)), "{got:?}");
+    // What follows the overwrite is the source after the span it replaced.
+    assert_eq!(clip(&rb.applied.project, &got[2].0).source_in, secs(6));
 }
 
 /// Task 8 review: an overwrite refused `OVERWRITE_SPLITS_ITEM` takes no id.

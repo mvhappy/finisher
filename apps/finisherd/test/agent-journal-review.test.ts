@@ -294,3 +294,16 @@ test("the Rust replay's fixture is what splitRequest makes now (FIN_UPDATE_FIXTU
   expect(readFileSync(FIXTURE, "utf8")).toBe(text);
   expect(replayBodies(turnsOut)).toEqual(turnsOut.map((t) => t.body));
 });
+
+describe("saved prompts", () => {
+  test("the journaled agent.session carries trigger savedPrompt, a child subagent, else user", async () => {
+    const s = stores(TRAINING);
+    const ss = session({ trigger: "savedPrompt" });
+    const j = newJournal(s, s.traces, { ...EMPTY_STORE, get: () => ss });
+    j.session(ss.id, ss, "started", null);
+    await flush(s);
+    for (const sub of ["events", "agent-traces"] as const) {
+      expect(of(agentEntries(dir, sub), "agent.session")[0]?.payload.trigger, sub).toBe("savedPrompt");
+    }
+  });
+});

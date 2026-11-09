@@ -3,10 +3,15 @@
 // people only from Task 12 on. Run as
 //
 //   node apps/finisherd/test/support/agent-session-host.ts --server-data <dir> --requests <dir>
+//     [--fake-scripts <file>]
+//
+// `--fake-scripts`: the `fake` harness's scripts (a JSON list, `agent/fake.ts`), for a
+// test-hooks fin-node build run with `FIN_TEST_HOOKS=1` (7B Task 6: children run on it).
 //
 // The test writes `<n>.req.json` into the requests folder; the host answers with `<n>.res.json`
 // (written temp-then-rename) and removes the request. Requests:
-//   {op: "open", projectId, mode?, role?, base?}   → {sessionId, credential, rootBranch?}
+//   {op: "open", projectId, mode?, role?, base?, harness?, running?} → {sessionId, credential, rootBranch?}
+//     (`running`: the session is in a run, as a spawning parent is; no provider turn starts)
 //   {op: "revoke", sessionId}                      → {}
 //   {op: "txs", sessionId}                         → {txs: [{txId, callId, attribution}]}
 //   {op: "state", sessionId}                       → {defaultBranch, tries}
@@ -21,6 +26,7 @@ import { parseArgs } from "node:util";
 import type { Mode } from "@finisher/contracts";
 import { Effect } from "effect";
 import type { AgentCore } from "../../src/agent/core.ts";
+import type { FakeScript } from "../../src/agent/fake.ts";
 import type { AgentRuntimeParts } from "../../src/agent/wiring.ts";
 import type { AgentListener } from "../../src/agent/listener.ts";
 import { toFinError } from "../../src/errors.ts";
@@ -28,10 +34,11 @@ import { serve, StderrLogger } from "../../src/main.ts";
 import { open } from "./agent-open.ts";
 import { connectProved, type NdjsonClient, type ServerInfo } from "./ndjson-client.ts";
 
-const { values } = parseArgs({ options: { "server-data": { type: "string" }, requests: { type: "string" } } });
+const { values } = parseArgs({ options: { "server-data": { type: "string" }, requests: { type: "string" }, "fake-scripts": { type: "string" } } });
 const serverData = values["server-data"];
 const requests = values.requests;
 if (serverData === undefined || requests === undefined) throw new Error("--server-data and --requests are required");
+const fakeScripts = values["fake-scripts"] === undefined ? undefined : (JSON.parse(readFileSync(values["fake-scripts"], "utf8")) as FakeScript[]);
 
 let core: AgentCore | undefined;
 let agents: AgentRuntimeParts | undefined;
@@ -40,7 +47,7 @@ let info: ServerInfo | undefined;
 let starter: NdjsonClient | undefined;
 
 type Request =
-  | { op: "open"; projectId: string; mode?: Mode; role?: string; base?: string }
+  | { op: "open"; projectId: string; mode?: Mode; role?: string; base?: string; harness?: "builtin" | "fake"; running?: boolean }
   | { op: "revoke"; sessionId: string }
   | { op: "txs"; sessionId: string }
   | { op: "state"; sessionId: string }
@@ -58,7 +65,9 @@ async function handle(r: Request): Promise<unknown> {
         ...(r.mode === undefined ? {} : { mode: r.mode }),
         ...(r.role === undefined ? {} : { role: r.role }),
         ...(r.base === undefined ? {} : { base: r.base }),
+        ...(r.harness === undefined ? {} : { harness: r.harness }),
       });
+      if (r.running === true) c.store.startRun(session.id, { trigger: "prompt" });
       return { sessionId: session.id, credential: credentialPath, ...(session.rootBranch === undefined ? {} : { rootBranch: session.rootBranch }) };
     }
     case "revoke":
@@ -117,6 +126,7 @@ await Effect.runPromise(
   serve({
     serverData,
     onAgentCore: (c) => (core = c),
+    ...(fakeScripts === undefined ? {} : { agents: { fakeScripts } }),
     onAgentRuntime: (a) => (agents = a),
     onAgentListener: (l) => (listener = l),
     onReady: (i) => (info = i as ServerInfo),

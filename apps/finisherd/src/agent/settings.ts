@@ -9,6 +9,11 @@
 // - `agents.finPath`: the `fin` the built-in tools run (default: beside the bundled binaries,
 //   else `target/release|debug/fin` in a checkout);
 // - `agents.retentionDays` (1–3650, default 90) and `agents.toolTimeoutS` (1–3600, default 120);
+// - `agents.subagents.maxDepth` (1–8, default 3) and `.maxLive` (1–64, default 8): children per
+//   root session (7B Decision 17); `agents.maxLiveProviders` (1–64, default 4) and
+//   `agents.maxLiveBuiltin` (1–256, default 8): sessions in a run at once (Decision 19);
+// - `agents.savedPrompts`: the owner's saved prompts (7B Task 10), a list read as-is here and
+//   decoded one by one by `saved-prompts.ts` (a bad one is reported, never the whole list);
 // - `training.closedModelTargets`: the counsel gate, default `pendingCounsel` (an unusable value
 //   reads as the default: it never clears the gate by accident).
 //
@@ -38,6 +43,39 @@ export interface AgentSettings {
   readonly finPath?: string;
   readonly retentionDays?: number;
   readonly toolTimeoutS?: number;
+  readonly limits?: Partial<SessionLimits>;
+  readonly savedPrompts?: readonly unknown[];
+}
+
+/** How far sessions spread (7B Decisions 17, 19). */
+export interface SessionLimits {
+  /** Children below a root session: at most this deep, and this many not ended. */
+  readonly maxDepth: number;
+  readonly maxLive: number;
+  /** Sessions in a run at once: CLI provider processes, and built-in (in-process) sessions. */
+  readonly maxLiveProviders: number;
+  readonly maxLiveBuiltin: number;
+}
+
+export const DEFAULT_LIMITS: SessionLimits = { maxDepth: 3, maxLive: 8, maxLiveProviders: 4, maxLiveBuiltin: 8 };
+
+/** The limits of `agents` (`subagents.maxDepth|maxLive`, `maxLiveProviders`, `maxLiveBuiltin`); a bad one is reported. */
+function readLimits(agents: Record<string, unknown>, problems: string[]): Partial<SessionLimits> | undefined {
+  const out: { -readonly [K in keyof SessionLimits]?: number } = {};
+  const sub = agents.subagents;
+  if (sub !== undefined && !isObject(sub)) problems.push("agents.subagents must be an object");
+  const take = (k: keyof SessionLimits, v: unknown, hi: number, name: string) => {
+    if (v === undefined) return;
+    if (wholeIn(v, 1, hi)) out[k] = v;
+    else problems.push(`${name} must be 1–${hi}`);
+  };
+  if (isObject(sub)) {
+    take("maxDepth", sub.maxDepth, 8, "agents.subagents.maxDepth");
+    take("maxLive", sub.maxLive, 64, "agents.subagents.maxLive");
+  }
+  take("maxLiveProviders", agents.maxLiveProviders, 64, "agents.maxLiveProviders");
+  take("maxLiveBuiltin", agents.maxLiveBuiltin, 256, "agents.maxLiveBuiltin");
+  return Object.keys(out).length === 0 ? undefined : out;
 }
 
 export const CLOSED_TARGETS_DEFAULT: ClosedModelTargets = "pendingCounsel";
@@ -90,12 +128,17 @@ export function readAgentSettings(serverData: string): { settings: AgentSettings
   if (agents.retentionDays !== undefined && retentionDays === undefined) problems.push("agents.retentionDays must be 1–3650");
   const toolTimeoutS = wholeIn(agents.toolTimeoutS, 1, 3600) ? agents.toolTimeoutS : undefined;
   if (agents.toolTimeoutS !== undefined && toolTimeoutS === undefined) problems.push("agents.toolTimeoutS must be 1–3600");
+  const limits = readLimits(agents, problems);
+  const savedPrompts = Array.isArray(agents.savedPrompts) ? (agents.savedPrompts as unknown[]) : undefined;
+  if (agents.savedPrompts !== undefined && savedPrompts === undefined) problems.push("agents.savedPrompts must be a list");
   const settings: AgentSettings = {
     models,
     ...(local === undefined ? {} : { local }),
     ...(finPath === undefined ? {} : { finPath }),
     ...(retentionDays === undefined ? {} : { retentionDays }),
     ...(toolTimeoutS === undefined ? {} : { toolTimeoutS }),
+    ...(limits === undefined ? {} : { limits }),
+    ...(savedPrompts === undefined ? {} : { savedPrompts }),
   };
   return problems.length === 0 ? { settings } : { settings, error: problems.join("; ") };
 }

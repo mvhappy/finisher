@@ -91,6 +91,7 @@ fn req(id: &str, author: &str, branch: &str, to: Option<&str>) -> HistoryReq {
         dry_run: false,
         args_hash: None,
         to: to.map(Into::into),
+        after_seq: None,
     }
 }
 
@@ -727,4 +728,41 @@ fn checkpoints_follow_and_rebuild() {
     assert_eq!(f.find_checkpoint(&br, "v1").unwrap(), (br.clone(), 4));
     assert_eq!(f.find_checkpoint(MAIN, "V1").unwrap(), (MAIN.into(), 3));
     assert_verifies(&f);
+}
+
+/// `afterSeq` (7B Task 8, a session's rollback): as `undo --to`, after a seq instead of a
+/// checkpoint's; not with `to`, and a redo takes none.
+#[test]
+fn undo_after_seq_one_record_newest_first() {
+    let Env { _tmp, mut s } = project();
+    let e0 = edit(&mut s, MAIN, "e0", "alice", vec![delete("c3")]);
+    edit(&mut s, MAIN, "e1", "alice", vec![delete("c1")]);
+    edit(&mut s, MAIN, "b1", "bob", vec![insert("$w", 0, 5)]);
+    edit(&mut s, MAIN, "e2", "alice", vec![trim("c2", -2)]);
+    let after = |id: &str, seq: u64| HistoryReq {
+        after_seq: Some(seq),
+        ..req(id, "alice", MAIN, None)
+    };
+    let r = s.undo(after("ua", e0.rev)).unwrap();
+    assert_eq!(r.undone, ["e2", "e1"]);
+    assert_eq!(r.committed.len(), 1);
+    assert_eq!(
+        starts(&state(&s, MAIN)),
+        at(&[("c4", 0), ("c1", 5), ("c2", 15)])
+    );
+    // One redo reverses it whole.
+    let back = s.redo(req("ra", "alice", MAIN, None)).unwrap();
+    assert_eq!(back.undone, ["ua"]);
+    // Nothing of alice's after her newest: NOTHING_TO_UNDO.
+    let head = s.head(MAIN);
+    assert_eq!(
+        code(s.undo(after("ub", head)).unwrap_err()).code,
+        "NOTHING_TO_UNDO"
+    );
+    let both = HistoryReq {
+        to: Some("v1".into()),
+        ..after("uc", 1)
+    };
+    assert_eq!(code(s.undo(both).unwrap_err()).code, "INVALID_OP");
+    assert_eq!(code(s.redo(after("rb", 1)).unwrap_err()).code, "INVALID_OP");
 }

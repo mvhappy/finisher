@@ -306,6 +306,7 @@ pub fn plan_merge(
         .iter()
         .map(|&(i, _)| source[i].record.tx_id.as_str())
         .collect();
+    let mut frames = super::SourceFrames::default();
     for &i in &cands.picks {
         let src = &source[i];
         let r = &src.record;
@@ -329,7 +330,8 @@ pub fn plan_merge(
         };
         let mode = rerun_mode(r);
         let absorbs = super::absorbs::of_ops(log, src)?;
-        let places = super::source_places(log, src, &tx, mode)?;
+        let prev = i.checked_sub(1).map(|j| &source[j]);
+        let reads = frames.reads(log, src, prev, &tx, mode)?;
         let rebase = PreparedRebase {
             tx: &tx,
             own: &src.diff,
@@ -337,7 +339,8 @@ pub fn plan_merge(
             same_origin: &same_origin,
             env: super::env_of(log),
             absorbs: &absorbs,
-            places: &places,
+            places: &reads.places,
+            anchors: &reads.anchors,
         };
         let rerun = BoundIds::new(&r.intent.ops, &r.bindings)
             .map_err(|e| Conflict::from_rerun(&e, &r.tx_id, 0, None))

@@ -82,6 +82,7 @@ pub fn run(a: &Args, em: &mut Emitter) -> Result<(), String> {
         dry_run: false,
         args_hash: None,
         to: None,
+        after_seq: None,
     });
     let ms = t.elapsed().as_millis() as u64;
     match r {

@@ -12,6 +12,7 @@
     "test:gates": "node --test \"scripts/**/*.test.mjs\"",
     "gates": "node scripts/gates.mjs",
     "e2e": "node scripts/e2e.mjs",
+    "sandbox:suite": "node scripts/sandbox-suite.mjs",
     "check:crate-age": "node scripts/check-crate-age.mjs",
     "check:npm-age": "node scripts/check-npm-age.mjs",
     "check:dep-age": "node scripts/check-dep-age.mjs"

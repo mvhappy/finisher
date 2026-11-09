@@ -1452,3 +1452,43 @@ fn sandbox_unconfined_payload_is_closed() {
         assert!(decode_payload(k, &bad).is_err(), "{bad}");
     }
 }
+
+/// `agent.turn.purpose` (7B Decision 24) is additive in v1: a turn without it serialises as
+/// before; a compaction turn carries `purpose: compaction` through the wire form; any other
+/// value is refused.
+#[test]
+fn agent_turn_purpose_is_additive() {
+    let key = |data: &[u8]| -> [u8; 16] { blake3::hash(data).as_bytes()[..16].try_into().unwrap() };
+    let b3 = "blake3:0000000000000000000000000000000000000000000000000000000000000001";
+    let wire = json!({
+        "turnId": "01JC0000000000000000000005", "runId": "01JC0000000000000000000007", "seq": 2,
+        "parentTurnId": "01JC0000000000000000000004", "harness": "builtin",
+        "provider": "openrouter", "model": "acme/x", "weights": "open", "inputTokens": 700,
+        "outputTokens": 90, "cacheReadTokens": 600, "cacheWriteTokens": 0, "reasoningTokens": 0,
+        "latencyMs": 5, "stopReason": "endTurn", "costBasis": "reported", "capture": "exact",
+        "systemHash": b3, "toolsHash": b3, "bodyHash": b3,
+    });
+    let spec = kind("agent.turn", 1).unwrap();
+    let received = |v: &Value| validate_payload(spec, v, &key, &ScrubCtx::default());
+    let plain = serde_json::to_value(received(&wire).unwrap()).unwrap();
+    assert!(plain.get("purpose").is_none(), "the v1 shape is unchanged");
+    let mut compaction = wire.clone();
+    compaction["purpose"] = json!("compaction");
+    let payload = received(&compaction).unwrap();
+    let AnyPayload::AgentTurn(t) = &payload else {
+        panic!("kind")
+    };
+    assert_eq!(t.purpose, Some(TurnPurpose::Compaction));
+    check_golden(
+        "agent_turn_compaction.json",
+        &serde_json::to_string_pretty(&payload).unwrap(),
+    );
+    let mut back = serde_json::to_value(&payload).unwrap();
+    let purpose = back.as_object_mut().unwrap().remove("purpose");
+    assert_eq!((purpose, back), (Some(json!("compaction")), plain));
+    for bad in [json!("summary"), json!(""), json!(1)] {
+        let mut v = wire.clone();
+        v["purpose"] = bad.clone();
+        assert!(received(&v).is_err(), "{bad}");
+    }
+}

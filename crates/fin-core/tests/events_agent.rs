@@ -85,6 +85,7 @@ fn turn() -> AgentTurn {
         cost_micros: Some(310),
         cost_basis: CostBasis::Reported,
         capture: Capture::Exact,
+        purpose: None,
         system_hash: Some(h('e')),
         tools_hash: Some(h('f')),
         body_hash: Some(h('b')),

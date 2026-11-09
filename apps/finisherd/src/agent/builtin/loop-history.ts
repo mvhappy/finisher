@@ -9,8 +9,14 @@
 // rendered with the same limits as live. Calls the loop answered itself come from its
 // `localToolResult` notices (at their place in the reply), and steers enter where its
 // `steersTaken` notices say. (Not rebuilt: a turn's facts, which are not stored, and the exact
-// text of an interrupted call's result, which recovery writes.)
+// text of an interrupted call's result, which recovery writes.) The nodes of a rolled-back run
+// (`rolledBack`, 7B Task 8) are left out: the conversation is as it was at the end of the run
+// the session was rolled back to. A `summary` node (7B Decision 24) replaces every message of
+// the runs before its own with the summary's message, as the loop did live; before it the
+// conversation is whole. A rollback to a run the summary covers rolls its run back too, so the
+// covered runs come back whole.
 import type { Node } from "@finisher/contracts";
+import { summaryMessage } from "./compact.ts";
 import type { ModelMessage, ToolCall } from "./request.ts";
 
 export interface CutLimits {
@@ -44,6 +50,8 @@ export function boundOutput(output: unknown, max: number): unknown {
 
 type Slot = { readonly call: ToolCall; readonly index?: number; readonly content?: string };
 interface Reply {
+  /** The run whose model call this is. */
+  readonly run: string;
   text?: string;
   readonly slots: Slot[];
   reasoning?: unknown[];
@@ -52,6 +60,13 @@ interface Reply {
 /** The conversation of a session's nodes (user prompts, replies, tool calls and results). */
 export function historyFromNodes(nodes: ReadonlyArray<Node>, limits: CutLimits): ModelMessage[] {
   const out: ModelMessage[] = [];
+  /** The run of each message of `out` (`""`: a summary, of no run). */
+  const runs: string[] = [];
+  const put = (m: ModelMessage, run: string) => {
+    out.push(m);
+    runs.push(run);
+  };
+  let run = "";
   const results = new Map<string, string>();
   const steers: string[] = [];
   let reply: Reply | null = null;
@@ -59,7 +74,7 @@ export function historyFromNodes(nodes: ReadonlyArray<Node>, limits: CutLimits):
   let pending: Reply[] = [];
   const open = (): Reply => {
     if (reply === null) {
-      reply = { slots: [], ...(reasoning === undefined ? {} : { reasoning }) };
+      reply = { run, slots: [], ...(reasoning === undefined ? {} : { reasoning }) };
       reasoning = undefined;
     }
     return reply;
@@ -87,17 +102,19 @@ export function historyFromNodes(nodes: ReadonlyArray<Node>, limits: CutLimits):
       }
       calls.push(...rest);
       if (r.text === undefined && calls.length === 0 && r.reasoning === undefined) continue;
-      out.push({
+      put({
         role: "assistant",
         ...(r.text === undefined ? {} : { text: r.text }),
         ...(calls.length === 0 ? {} : { toolCalls: calls.map((s) => s.call) }),
         ...(r.reasoning === undefined ? {} : { reasoning: r.reasoning }),
-      });
-      for (const s of calls) out.push({ role: "tool", toolCallId: s.call.id, content: s.content ?? results.get(s.call.id) ?? INTERRUPTED_RESULT });
+      }, r.run);
+      for (const s of calls) put({ role: "tool", toolCallId: s.call.id, content: s.content ?? results.get(s.call.id) ?? INTERRUPTED_RESULT }, r.run);
     }
     pending = [];
   };
   for (const n of nodes) {
+    if (n.rolledBack === true) continue;
+    run = n.runId;
     const p = (n.payload ?? {}) as Record<string, unknown>;
     switch (n.kind) {
       case "userMessage": {
@@ -109,7 +126,7 @@ export function historyFromNodes(nodes: ReadonlyArray<Node>, limits: CutLimits):
         }
         flush();
         write();
-        out.push({ role: "user", content: [{ type: "text", text }] });
+        put({ role: "user", content: [{ type: "text", text }] }, run);
         break;
       }
       case "usage":
@@ -120,7 +137,7 @@ export function historyFromNodes(nodes: ReadonlyArray<Node>, limits: CutLimits):
         if (typeof taken === "number" && taken > 0) {
           flush();
           write();
-          out.push({ role: "user", content: [{ type: "text", text: steers.splice(0, taken).join("\n\n") }] });
+          put({ role: "user", content: [{ type: "text", text: steers.splice(0, taken).join("\n\n") }] }, run);
         }
         const local = p.localToolResult as { providerId?: unknown; tool?: unknown; arguments?: unknown; index?: unknown; content?: unknown } | undefined;
         if (local && typeof local.providerId === "string" && typeof local.index === "number" && typeof local.content === "string") {
@@ -147,6 +164,16 @@ export function historyFromNodes(nodes: ReadonlyArray<Node>, limits: CutLimits):
         if (n.providerId === undefined) break;
         const body = n.payload === undefined ? `[the result is stored as ${n.blobRef ?? "a blob"}]` : renderResult(n.providerId, { ok: p.ok !== false, output: p.output }, limits);
         results.set(n.providerId, body);
+        break;
+      }
+      case "summary": {
+        if (typeof p.text !== "string") break;
+        flush();
+        write();
+        const first = runs.indexOf(run);
+        const cut = first === -1 ? out.length : first;
+        out.splice(0, cut, summaryMessage(p.text));
+        runs.splice(0, cut, "");
         break;
       }
       default:

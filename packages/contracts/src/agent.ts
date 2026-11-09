@@ -76,6 +76,9 @@ export const Session = Schema.Struct({
   /** The branch and revision it was started from. */
   base: Schema.Struct({ branch: Schema.String, seq: Count }),
   parent: Schema.optionalKey(Id),
+  /** A child's (7B): the session at the top of its tree, and how far below it (1–3). Absent on a root. */
+  rootSession: Schema.optionalKey(Id),
+  depth: Schema.optionalKey(Count),
   status: SessionStatus,
   /** The code that interrupted or ended it (`serverRestart`, `BUDGET_EXCEEDED`, …). */
   statusReason: Schema.optionalKey(Schema.String),
@@ -87,6 +90,8 @@ export const Session = Schema.Struct({
   createdAt: Count,
   endedAt: Schema.optionalKey(Count),
   title: Schema.optionalKey(Schema.String),
+  /** `savedPrompt` when started from one (7B Task 10); absent otherwise. */
+  trigger: Schema.optionalKey(Schema.Literal("savedPrompt")),
 });
 export type Session = typeof Session.Type;
 
@@ -127,6 +132,8 @@ export const Node = Schema.Struct({
   payload: Schema.optionalKey(Schema.Unknown),
   blobRef: Schema.optionalKey(Schema.String),
   createdAt: Count,
+  /** Its run was rolled back (7B Decision 23): kept for display and audit, out of the model's next request. */
+  rolledBack: Schema.optionalKey(Schema.Boolean),
 });
 export type Node = typeof Node.Type;
 
@@ -333,6 +340,67 @@ export const AgentApprovalWaitPayload = Schema.Struct({
 export type AgentApprovalWaitPayload = typeof AgentApprovalWaitPayload.Type;
 /** An allowed approval (deny or expiry is `APPROVAL_DENIED`, a timeout `APPROVAL_PENDING`). */
 export const AgentApprovalWaitSuccess = Schema.Struct({ approval: Approval });
+
+/** At most this many sessions in one `agent.session.wait`. */
+export const AGENT_WAIT_IDS_MAX = 16;
+/** The longest `agent.session.wait` (7B Decision 21), as `agent.approval.wait`'s. */
+export const SESSION_WAIT_MAX_MS = APPROVAL_WAIT_MAX_MS;
+
+/**
+ * What became of a child (7B Decisions 20, 21): its status (`ended` with reason `briefDone`
+ * when its brief ran to the end), its root branch (absent in `plan`) and its summary, the final
+ * assistant message of its last run. Also the payload of the parent's `subagent` node.
+ */
+export const ChildResult = Schema.Struct({
+  child: Id,
+  status: SessionStatus,
+  reason: Schema.optionalKey(Schema.String),
+  branch: Schema.optionalKey(Schema.String),
+  summary: Schema.optionalKey(Schema.String),
+});
+export type ChildResult = typeof ChildResult.Type;
+export const SubagentNodePayload = ChildResult;
+
+/**
+ * `agent.session.wait {ids, any, timeoutMs ≤ 90000}` (`fin agent wait`): blocks until every child
+ * (`any`: one) is done (idle after a run, interrupted or ended), at most `timeoutMs`; then
+ * `WAIT_TIMEOUT` (exit 5, repeatable). A session waits on its own children only.
+ */
+export const AgentSessionWaitPayload = Schema.Struct({
+  ids: Schema.Array(Id).check(Schema.isMinLength(1), Schema.isMaxLength(AGENT_WAIT_IDS_MAX)),
+  any: Schema.optionalKey(Schema.Boolean),
+  timeoutMs: Count.check(Schema.isLessThanOrEqualTo(SESSION_WAIT_MAX_MS)),
+});
+export type AgentSessionWaitPayload = typeof AgentSessionWaitPayload.Type;
+export const AgentSessionWaitSuccess = Schema.Struct({ children: Schema.Array(ChildResult) });
+
+/**
+ * `agent.session.rollback {sessionId, toRun}` (7B Decision 23; `fin agent rollback`, console
+ * `agent rollback`): the session back to the end of its run `toRun` (its `seq`; 0: before its
+ * first). People, and a parent session for its own direct children. Refused while it runs or
+ * has a live child (`SESSION_BUSY`). Its transactions of the later runs are undone, and its
+ * later undos and redos reversed, on every branch, all or nothing (`CONFLICT` leaves every
+ * branch as it was; `details.partial` when restoring one failed too); then its conversation.
+ */
+export const AgentSessionRollbackPayload = Schema.Struct({ sessionId: Id, toRun: Count });
+export type AgentSessionRollbackPayload = typeof AgentSessionRollbackPayload.Type;
+/**
+ * `undone`: the units taken back (the session's transactions, newest first per branch);
+ * `branches`: the branches written (one undo record each, or the redos of its later undos);
+ * `conversation`: `rolledBack` (the provider, or the built-in loop's next request) or `kept` (a
+ * provider without the capability: its history stays, a `notice` says so). `restored`: the
+ * session's later undo records redone (what they took back is back); `archived`: branches with
+ * later-run transactions left as they were; `warning`: what failed after the undos landed.
+ */
+export const AgentSessionRollbackSuccess = Schema.Struct({
+  session: Session,
+  undone: Schema.Array(Id),
+  branches: Schema.Array(Id),
+  conversation: Schema.Literals(["rolledBack", "kept"]),
+  restored: Schema.optionalKey(Schema.Array(Id)),
+  archived: Schema.optionalKey(Schema.Array(Id)),
+  warning: Schema.optionalKey(Schema.String),
+});
 
 /** What an adapter can do (spec §4.1). */
 export const Capabilities = Schema.Struct({

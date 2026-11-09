@@ -51,6 +51,8 @@ export interface ProjectTrust {
   readonly projectId: string;
   readonly rulesHash: string;
   readonly hooksHash?: string;
+  /** The trusted `prompts/*.json` as a whole (7B Task 10); absent: the project's prompt files are not trusted. */
+  readonly promptsHash?: string;
   readonly trustedAt: number;
   readonly by: string;
 }
@@ -81,7 +83,8 @@ const SQL = {
   get: `SELECT ${COLUMNS} FROM agent_rules WHERE id = ?`,
   all: `SELECT ${COLUMNS} FROM agent_rules ORDER BY createdAt, id`,
   applicable: `SELECT ${COLUMNS} FROM agent_rules WHERE (projectId IS NULL OR projectId = ?) AND (sessionId IS NULL OR sessionId = ?) ORDER BY createdAt, id`,
-  trustOf: "SELECT projectId, rulesHash, hooksHash, trustedAt, by FROM project_trust WHERE projectId = ?",
+  trustOf: "SELECT projectId, rulesHash, hooksHash, promptsHash, trustedAt, by FROM project_trust WHERE projectId = ?",
+  trustPrompts: "UPDATE project_trust SET promptsHash = ? WHERE projectId = ?",
   trust: `INSERT INTO project_trust (projectId, rulesHash, trustedAt, by) VALUES (?, ?, ?, ?)
     ON CONFLICT (projectId) DO UPDATE SET rulesHash = excluded.rulesHash, trustedAt = excluded.trustedAt, by = excluded.by`,
 } as const;
@@ -215,13 +218,19 @@ export class RuleStore {
   }
 
   trustOf(projectId: string): ProjectTrust | undefined {
-    const r = this.#s.trustOf.get(projectId) as { projectId: string; rulesHash: string; hooksHash: string | null; trustedAt: number; by: string } | undefined;
+    const r = this.#s.trustOf.get(projectId) as { projectId: string; rulesHash: string; hooksHash: string | null; promptsHash: string | null; trustedAt: number; by: string } | undefined;
     if (r === undefined) return undefined;
-    return { projectId: r.projectId, rulesHash: r.rulesHash, ...(r.hooksHash === null ? {} : { hooksHash: r.hooksHash }), trustedAt: r.trustedAt, by: r.by };
+    return { projectId: r.projectId, rulesHash: r.rulesHash, ...(r.hooksHash === null ? {} : { hooksHash: r.hooksHash }), ...(r.promptsHash === null ? {} : { promptsHash: r.promptsHash }), trustedAt: r.trustedAt, by: r.by };
   }
 
   trust(projectId: string, rulesHash: string, by: string, at: number): ProjectTrust {
     this.#s.trust.run(projectId, rulesHash, at, by);
+    return this.trustOf(projectId)!;
+  }
+
+  /** Records the trusted prompt files' hash on the project's trust record (made by `trust`). */
+  trustPrompts(projectId: string, promptsHash: string): ProjectTrust {
+    this.#s.trustPrompts.run(promptsHash, projectId);
     return this.trustOf(projectId)!;
   }
 }

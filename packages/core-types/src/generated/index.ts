@@ -187,6 +187,13 @@ export type Capture = "exact" | "stream";
  */
 export type CostBasis = "unknown" | "reported" | "priced" | "subscription";
 /**
+ * Why a model call was made, when it is not the conversation's next step (7B Decision 24).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "TurnPurpose".
+ */
+export type TurnPurpose = "compaction";
+/**
  * This interface was referenced by `FinCore`'s JSON-Schema
  * via the `definition` "StopReason".
  */
@@ -2411,6 +2418,7 @@ export interface AgentTurn {
   outputTokens: number;
   parentTurnId?: IdRef;
   provider: Name;
+  purpose?: TurnPurpose;
   reasoningTokens: number;
   runId: IdRef;
   seq: number;

@@ -10,6 +10,7 @@ import type { ProviderAdapter } from "../../src/agent/adapter.ts";
 import { type Clock, manualClock, systemIds } from "../../src/agent/clock.ts";
 import type { AgentCore } from "../../src/agent/core.ts";
 import { type BranchRegistry, SessionCredentials } from "../../src/agent/credentials.ts";
+import type { Rollbacks } from "../../src/agent/rollback.ts";
 import { OutcomeTracker } from "../../src/agent/outcomes.ts";
 import { BranchLineage } from "../../src/agent/reach.ts";
 import { Runtime, type RuntimeDeps } from "../../src/agent/runtime.ts";
@@ -80,9 +81,14 @@ export class FakeRegistry implements BranchRegistry {
     return b === undefined ? Effect.fail(finError("BRANCH_NOT_FOUND", `no branch ${ref}`, { branch: ref })) : Effect.succeed(b.id);
   }
 
-  history(projectId: string, _op: "branchCreate", p: Record<string, unknown>, meta: CallMeta) {
+  history(projectId: string, op: "branchCreate" | "branchSet", p: Record<string, unknown>, meta: CallMeta) {
     return Effect.sync(() => {
       const bs = this.list(projectId);
+      if (op === "branchSet") {
+        const i = bs.findIndex((b) => b.id === p.branch);
+        if (i >= 0 && p.archived === true) bs[i] = { ...bs[i]!, state: "archived" };
+        return { dryRun: false, record: {} };
+      }
       const b = view(`br${bs.length}`, p.name as string, (p.at as { seq: number }).seq, p.from as string, p.author as string);
       bs.push(b);
       this.created.push({ projectId, name: b.name, from: b.parent!, author: b.createdBy, meta });
@@ -182,7 +188,7 @@ export interface Harness {
 export function makeRuntime(
   { store, control }: { readonly store: AgentStore; readonly control: ControlStore },
   adapter: ProviderAdapter,
-  opts: Partial<Omit<RuntimeDeps, "core">> & { clock?: ReturnType<typeof manualClock>; tool?: FinTool; registry?: FakeRegistry } = {},
+  opts: Partial<Omit<RuntimeDeps, "core">> & { clock?: ReturnType<typeof manualClock>; tool?: FinTool; registry?: FakeRegistry; rollbacks?: Rollbacks } = {},
 ): Harness {
   const clock = opts.clock ?? manualClock(Date.now());
   const h = {

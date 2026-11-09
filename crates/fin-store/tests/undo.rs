@@ -99,6 +99,7 @@ fn req(id: &str, author: &str, branch: &str) -> HistoryReq {
         dry_run: false,
         args_hash: None,
         to: None,
+        after_seq: None,
     }
 }
 

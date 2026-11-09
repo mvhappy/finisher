@@ -40,6 +40,7 @@ use clap::{Command, CommandFactory, FromArgMatches, Parser, Subcommand};
 use fin_core::CoreError;
 use serde_json::{Map, Value, json};
 
+use commands::agent::AgentCmd;
 use commands::approval::ApprovalCmd;
 use commands::asset::{AssetCmd, AssetEdit};
 use commands::bin::BinCmd;
@@ -124,6 +125,8 @@ enum Cmd {
     Wait(WaitArgs),
     #[command(subcommand)]
     Approval(ApprovalCmd),
+    #[command(subcommand)]
+    Agent(AgentCmd),
     #[command(subcommand)]
     Library(LibraryCmd),
     Search(SearchArgs),
@@ -333,6 +336,7 @@ fn run(args: Vec<OsString>) -> Result<Value, CoreError> {
         Some(Cmd::Job(c)) => commands::job::run(backend()?.as_ref(), &c),
         Some(Cmd::Wait(a)) => commands::job::wait(backend()?.as_ref(), &a),
         Some(Cmd::Approval(c)) => commands::approval::run(backend()?.as_ref(), &c),
+        Some(Cmd::Agent(c)) => commands::agent::run(backend()?.as_ref(), &c, g.project.as_deref()),
         Some(Cmd::Library(c)) => commands::library::run(backend()?.as_ref(), &c),
         Some(Cmd::Search(a)) => commands::search::run(backend()?.as_ref(), &a),
         Some(Cmd::Media(c)) => commands::media_caps::run(backend()?.as_ref(), &c),
