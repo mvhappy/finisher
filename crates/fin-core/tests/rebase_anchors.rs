@@ -409,3 +409,23 @@ fn stale_overwrite_at_a_gapped_end_does_not_cut_the_heads_insert() {
     assert_eq!(at_of(&rb.tx.ops[0]), secs(15));
     assert_eq!(clip(&rb.applied.project, h).duration, secs(5));
 }
+
+/// Implementation review round 4: at a cut whose `start` item is gone, the end decides even
+/// when something now starts there. The head lifts `c2`, overwrite-trims `c1`'s end by 5 s and
+/// overwrite-moves `c3` to 15: `c1` [0,15), `c3` [15,25). Ours inserts at the cut `c1`|`c2`
+/// (10): `c2` is gone, so `c1`'s end decides: 15, between `c1` and `c3` (through shifts it
+/// would stay at 10, inside `c1`).
+#[test]
+fn cut_with_its_start_gone_takes_the_end_even_when_taken() {
+    let p = three();
+    let (head, c) = commit(
+        &p,
+        vec![
+            lift("c2"),
+            overwrite_trim("c1", Edge::End, secs(5)),
+            move_to("c3", "t1", secs(15), InsertMode::Overwrite),
+        ],
+    );
+    let rb = stale(&p, &head, &c, vec![ins("$x", "t1", 10, 1)]);
+    assert_eq!(at_of(&rb.tx.ops[0]), secs(15));
+}
