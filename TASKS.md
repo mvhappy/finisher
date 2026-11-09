@@ -7,10 +7,27 @@ Spike code, results and report are local-only in `archive/spike/` (git-ignored).
 
 Done and merged into `sp4c-edit-breadth` before the pause: 5B (Tasks 11–14), macOS session containment and test health, the load-sensitive flaky-test fixes, undo placement, 8B Batch B (`630db4ef`).
 
-Stopped partway through, resume from these:
-- **5E (VM, `~/wt-sp5e`):** Tasks 1–3 are on `home/sp5e` (`28dcdaa2`). Task 4 (`review.verdict` v1) is unverified WIP on `home/wip/sp5e-task4` (`cfce6682`). Re-run its tests, clippy, `pnpm test` and gates, then review it.
-- **8B (pc-worker, `~/wt-sp8b`):** Batch C, Task 6 (plugin rights and reach) was cut off mid-implementation. Uncommitted work may remain in the worktree.
-- **6B-1 (olhapi-t3code):** Tasks 10 (tonemap), 11 (reprobe) and 12 (WebM) were cut off mid-implementation, and Task 13 (cache) was in review. Check the `sp6b1` worktree for uncommitted work.
+The streams cut off by the limit were finished the same evening on a second account:
+- **5E:** Task 4 (`review.verdict` v1) done, `home/sp5e` at `06b9d9ff`; Task 5 next. `sp5e` predates the flaky-test fixes (`ec33360d`), so `library/stages.test.ts` can still fail there until it merges integration.
+- **8B:** Task 6 (plugin rights and reach) done, `home/sp8b` at `537a8975`; Task 7 next (it must also implement the authority keying below).
+- **6B-1:** Tasks 10–13 being finished on `sp6b1` (partial work was saved on `home/wip/sp6b1-*`).
+
+## External review of 2026-11-09: validated findings and fix batches
+
+A whole-app review (on old commit `231fd725`) raised 23 findings; each was re-checked against `sp4c-edit-breadth` @ `a02a0eb3` (validation notes and repros: `archive/reviews/2026-11-09-validation/`, local to the VM). Already fixed: #5's MP4 hang and FIFO block (new demuxer, 2026-11-07); out-of-process probing with a deadline stays a P3 option (spec 6 keeps probing in fin-node). #3 was already handled by plan 8B Decision 5 (spec text fixed). #2 and #6 are recorded as spec amendments (plugins spec Decisions 28–29; architecture spec §21.1).
+
+**Owner decisions (2026-11-09):**
+- **#1 keyframe conflicts:** stable keyframe ids (model v3 with an upcast), replacing the `<param>@<time>` identity of the sub-project 4 spec (line ~1070); conflicts track the key, not its time; effect keys too.
+- **#4 server-data locality:** refuse a server-data or project-data root that is not a known local filesystem (symlinks and ancestors resolved), unless an explicit override is set; checked at startup and in `Store::create`/`open`.
+- **#11 engine lifetime:** close an engine after 10 idle minutes (no subscribers, no commit lock, no long call), plus an explicit `project.close` RPC.
+- **#14 caption size:** typed `CAPTION_TOO_LONG` above 5,000 words per caption item (insert, setText, setWords, merge, SRT import), and a linear-memory alignment with a work bound.
+- Coordinator calls: #12 exact protocol match in the handshake, `PROTOCOL_MISMATCH`; #16 keep merge-origin meaning, loop with a visited set and a typed error at a cycle or the limit; #17 overflow-safe progress with a step fallback; #8 keep the generated key on every possibly-committed failure, retry once with it, else print the exact `--idem-key` command.
+
+**Fix batches** (each: own branch from integration, test-first with the validation repro as the regression test, full Rust/TS suites, clippy, gates, one fresh review, then merge into integration):
+- [ ] **A, core safety:** #15 (P1: undo/redo chains abort the daemon by stack overflow after ~1,300 cycles; `history/absorbs.rs` `in_ops`/`in_inverse`, `pick.rs`, `checkpoint.rs`, `Made::redo` to loops; 5,000 cycles on a 2 MiB stack), #14, #16, #17, #18 (release builds silently mis-parse one crafted frame value), #19.
+- [ ] **B, stable keyframe ids:** #1 (P1). Spec amendment first, then model v3, upcast, rebase footprints by id; trim → edit → trim → stale set/remove, effect keys, independent-key control. Merge after A.
+- [ ] **C, storage and daemon:** #4 (P1), #11, #13 (refill via `opsSinceAt` with a generation check), #20, #10, #21, #22.
+- [ ] **D, CLI and gates:** #8 (P1), #12, #7 and #9 (licence discovery across every shipped workspace, a real SPDX expression parser), #23 (font rescan on item/track/timeline removal).
 
 ## Spike round 1 (2026-11-02): done
 
