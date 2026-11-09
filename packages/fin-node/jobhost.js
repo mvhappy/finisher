@@ -82,6 +82,10 @@ export class JobHost {
     return JSON.parse(sync(() => this.#native.caps()));
   }
 
+  aclGrants(req) {
+    return JSON.parse(sync(() => this.#native.aclGrants(json(req))));
+  }
+
   openGroup(spec) {
     return sync(() => this.#native.openGroup(json(spec)));
   }

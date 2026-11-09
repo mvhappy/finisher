@@ -44,6 +44,10 @@ export function sandboxHookGrants(input) {
   return JSON.parse(sync(() => native.sandboxHookGrants(JSON.stringify(input))));
 }
 
+export function sandboxVisitGrant(workerDir, jobDir) {
+  return JSON.parse(sync(() => native.sandboxVisitGrant(workerDir, jobDir)));
+}
+
 export function sandboxProjectContainer(projectDir) {
   return native.sandboxProjectContainer(projectDir);
 }

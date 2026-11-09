@@ -195,6 +195,23 @@ pub fn sandbox_hook_grants(input: String) -> Result<String> {
     })
 }
 
+/// The grant of a job visiting a warm worker for its attempt (`AclGrant` JSON; plan 7C
+/// Decision 19): the job's directory in `<workerDir>/jobs/` to the worker's capability.
+#[napi(catch_unwind)]
+pub fn sandbox_visit_grant(worker_dir: String, job_dir: String) -> Result<String> {
+    let g = fin_sandbox::windows::job_grants::visit(
+        std::path::Path::new(&worker_dir),
+        std::path::Path::new(&job_dir),
+    )
+    .map_err(|e| {
+        reject(CoreError::new(
+            "INVALID_ARGS",
+            format!("no visit grant: {e}"),
+        ))
+    })?;
+    encode(&g)
+}
+
 /// The AppContainer name of a project's agents and hooks (`finisher-p-<hash>`, pure).
 #[napi(catch_unwind)]
 pub fn sandbox_project_container(project_dir: String) -> String {

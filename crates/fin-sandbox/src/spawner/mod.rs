@@ -115,6 +115,50 @@ impl SandboxSpawner {
         }
     }
 
+    /// The ACL broker's grants `req` needs on Windows (plan 7C Decision 18; the Windows side
+    /// of Task 12), its program resolved to `program` ([`crate::windows::job_grants`]): none
+    /// where its profile passes, the refusal [`Spawner::prepare`] would give where it cannot
+    /// be placed. Pure, so every OS answers; `finisherd` grants them before the spawn where
+    /// the broker is active (Windows) and revokes the process's own ones at its exit.
+    pub fn acl_grants(
+        &self,
+        req: &SpawnRequest,
+        program: &Path,
+    ) -> Result<Vec<crate::windows::grants::AclGrant>, SpawnError> {
+        let (profile, decision) = match req.profile {
+            HostProfile::Worker => (Profile::Worker, &self.worker),
+            HostProfile::Plugin => (Profile::Plugin, &self.plugin),
+        };
+        match decision {
+            Decision::Pass => return Ok(vec![]),
+            Decision::Refuse(need) => {
+                return Err(SpawnError(format!(
+                    "SANDBOX_UNAVAILABLE: the {} profile needs {need}",
+                    profile_name(profile)
+                )));
+            }
+            Decision::Apply => {}
+        }
+        let fail = |e: String| {
+            SpawnError(format!(
+                "SANDBOX_UNAVAILABLE: the {} profile: {e}",
+                profile_name(profile)
+            ))
+        };
+        let server_data = self.server_data()?;
+        match profile {
+            Profile::Worker => {
+                let input = grants::worker_input(req, server_data).map_err(fail)?;
+                crate::windows::job_grants::worker(&input, &req.family, program).map_err(fail)
+            }
+            _ => {
+                let home = self.home.as_deref().ok_or_else(|| fail("no HOME".into()))?;
+                let input = grants::plugin_input(req, server_data, home).map_err(fail)?;
+                crate::windows::job_grants::plugin(&input, program).map_err(fail)
+            }
+        }
+    }
+
     fn server_data(&self) -> Result<&Path, SpawnError> {
         self.server_data
             .as_deref()
@@ -138,13 +182,14 @@ impl Spawner for SandboxSpawner {
         }
     }
 
-    /// Where the `worker` profile is applied by a restriction made once at start that names
-    /// paths (Landlock): a warm worker granted its own `jobs/` sees only the job visiting it
-    /// (Decision 19). macOS follows once Task 8's Seatbelt worker profile exists (granting
-    /// `jobs/`, never the worker's directory); Windows needs the broker's per-job ACL grants
-    /// (Task 10). Both stay false until then, so warm kinds run cold there.
+    /// Where the `worker` profile confines a warm worker to the job visiting it (Decision 19):
+    /// on Linux by a restriction made once at start that names paths (Landlock: its own
+    /// `jobs/`); on Windows by the ACL broker, which `finisherd` asks to grant each visiting
+    /// job's directory to the worker's capability for the attempt ([`crate::windows::
+    /// job_grants::visit`]: a moved directory keeps its own access). macOS follows once Task 8's
+    /// Seatbelt worker profile exists; it stays false there, so warm kinds run cold.
     fn per_job_grants(&self) -> bool {
-        self.worker == Decision::Apply && cfg!(target_os = "linux")
+        self.worker == Decision::Apply && cfg!(any(target_os = "linux", windows))
     }
 
     fn prepare(&self, req: &SpawnRequest, cmd: &mut PlatformCommand) -> Result<(), SpawnError> {

@@ -82,6 +82,7 @@ export async function runWarmAttempt(
   let attempt: WarmAttempt | undefined;
   let reach = false;
   let visit: { readonly home: JobDirs; readonly here: JobDirs } | undefined;
+  let unvisit: (() => Promise<void>) | undefined;
   const o = await attemptWith(env, row, kind, params, control, async (p): Promise<Outcome> => {
     // A confined worker reads only the roots it started with (Decision 19).
     const outside = link.reads === undefined ? [] : (kind.reads?.(p.extra, params as never) ?? []).filter((r) => !link.reads!.some((root) => r === root || r.startsWith(root + sep)));
@@ -98,6 +99,13 @@ export async function runWarmAttempt(
       return { ok: false, error: finError("IO_ERROR", `the job directory could not be moved to its warm worker: ${toFinError(e).message}`, { step: "visit" }), cause: "files" };
     }
     visit = { home: p.dirs, here };
+    // Windows: the moved directory keeps its own access, so the broker grants it to the worker
+    // for the attempt (Decision 19).
+    try {
+      unvisit = await env.host.visit(link.dir, here.job, row.id);
+    } catch (e) {
+      return { ok: false, error: finError("SANDBOX_UNAVAILABLE", `the job directory could not be granted to its warm worker: ${toFinError(e).message}`, { profile: family.profile, step: "visit" }), cause: "files" };
+    }
     attempt = new WarmAttempt({ env, row, kind, family, params, control, ...p, dirs: here }, link);
     return attempt.run(p.helpers);
   });
@@ -105,6 +113,8 @@ export async function runWarmAttempt(
   let kept = attempt === undefined ? true : attempt.kept;
   const memory = attempt?.memory;
   let out: AttemptOutcome = o;
+  // The worker's access to the job ends with the attempt, before the directory moves back.
+  await unvisit?.();
   if (visit !== undefined) {
     // Back home, so the job's end (`onSucceeded`, its cleanup) finds it where a cold job's is
     // and the worker keeps nothing of it. The pool removes a lost worker's directory only
