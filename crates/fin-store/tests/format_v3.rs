@@ -296,7 +296,9 @@ fn assert_matches_4c(store: &Store, expected: &serde_json::Value, what: &str) {
         assert_eq!(rev, want["rev"].as_u64().unwrap(), "{what}: {branch} rev");
         assert_eq!(
             serde_json::to_value(&project).unwrap(),
-            want["project"],
+            // The fixture stays as written; this Finisher reads it upcast (spec §5.12.2).
+            serde_json::to_value(fin_core::upcast_snapshot(want["project"].clone()).unwrap())
+                .unwrap(),
             "{what}: {branch} project"
         );
         let stacks = store.undo_stacks(branch, "fixture").unwrap();

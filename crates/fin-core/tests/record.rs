@@ -612,9 +612,9 @@ fn drop_record_golden() {
         bytes,
         concat!(
             r#"{"txId":"tx-test","seq":7,"kind":"drop","from":"br2","drops":["o1","o2"],"#,
-            r#""undrops":["o3"],"schemaVersion":2,"parentHash":null,"author":"test","#,
+            r#""undrops":["o3"],"schemaVersion":3,"parentHash":null,"author":"test","#,
             r#""committedAt":1700000000000,"intent":{"txId":"tx-test","author":"test","#,
-            r#""branch":"main","baseRev":0,"schemaVersion":2,"ops":[]},"resolved":[],"#,
+            r#""branch":"main","baseRev":0,"schemaVersion":3,"ops":[]},"resolved":[],"#,
             r#""inverse":[],"bindings":{}}"#
         )
     );
@@ -643,10 +643,14 @@ fn drop_record_golden() {
 }
 
 /// Every other kind encodes exactly as 4B wrote it: the checked-in lines were captured from
-/// the 4B build before `drop` existed.
+/// the 4B build before `drop` existed. Only the op schema version differs (model v3, the
+/// stable-keyframe-ids bump), so the lines are compared at the current one.
 #[test]
 fn other_kinds_byte_identical() {
-    let golden = include_str!("fixtures/record_kinds_4b.jsonl");
+    let golden = include_str!("fixtures/record_kinds_4b.jsonl").replace(
+        r#""schemaVersion":2"#,
+        &format!(r#""schemaVersion":{SCHEMA_VERSION}"#),
+    );
     let want: Vec<&str> = golden.lines().filter(|l| !l.is_empty()).collect();
     let got: Vec<String> = every_link()
         .iter()
