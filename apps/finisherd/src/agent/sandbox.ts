@@ -47,6 +47,7 @@ import type { FinError, Harness, Session } from "@finisher/contracts";
 import type { AgentInput, FinEndpoint } from "@finisher/core-types";
 import { sandboxAgentCheck, sandboxAgentGrants, sandboxContainerSid, sandboxProjectContainer, sandboxToolchainBase } from "@finisher/fin-node";
 import { Effect, type Scope } from "effect";
+import { canonicalEndpoint } from "../auth/crypto.ts";
 import { finError, toFinError } from "../errors.ts";
 import { type AclBroker, grantTable, sessionOwner } from "../sandbox/broker.ts";
 import { resolveSandboxExecPath } from "../sandbox/exec.ts";
@@ -331,7 +332,17 @@ export function openSessionSandbox(s: Session, harness: Harness, deps: SessionSa
 /** `FIN_SERVER` and the policy's `fin` endpoint under the launcher, per OS. */
 async function launcherServer(deps: SessionSandboxDeps, platform: NodeJS.Platform): Promise<{ env: string; fin: FinEndpoint | undefined }> {
   if (platform === "win32") return { env: deps.localEndpoint, fin: { kind: "pipe" } };
-  if (platform === "darwin") return { env: deps.localEndpoint, fin: { kind: "unixSocket", path: deps.localEndpoint } };
+  if (platform === "darwin") {
+    // Resolved, as the handshake binds it: a sandboxed `fin` may not resolve a link on the way
+    // (`/tmp`, `/var`), and the endpoint it compares would then be the link's (`endpointMismatch`).
+    let socket = deps.localEndpoint;
+    try {
+      socket = canonicalEndpoint(socket, platform);
+    } catch {
+      // Not there (yet): `fin` meets the same unresolved path.
+    }
+    return { env: socket, fin: { kind: "unixSocket", path: socket } };
+  }
   if (deps.agentListener === undefined) throw finError("SANDBOX_UNAVAILABLE", "the agent listener is not available", { profile: "agent", os: "linux", need: "the agent listener" });
   const endpoint = await deps.agentListener();
   const port = Number(/^tcp:127\.0\.0\.1:(\d+)$/.exec(endpoint)?.[1]);
