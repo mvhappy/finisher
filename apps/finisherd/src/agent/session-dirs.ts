@@ -112,7 +112,8 @@ async function privateDir(p: string, platform: NodeJS.Platform): Promise<void> {
 /** Makes the session's directories (0700) and its git configuration; answers their names. */
 export async function ensureSessionDirs(agentsRoot: string, sessionId: string, opts: EnsureOptions = {}): Promise<SessionDirs> {
   const platform = opts.platform ?? process.platform;
-  const d = sessionDirs(agentsRoot, sessionId, platform);
+  // Real directories: spelled as this host spells paths (`platform` only picks the behaviour).
+  const d = sessionDirs(agentsRoot, sessionId);
   // `agents/` is the server's (never a write root); below it, one level at a time.
   await mkdir(agentsRoot, { recursive: true, mode: 0o700 });
   const dirs = [d.dir, d.settings, d.tmp, d.provider, d.git, d.blobs, d.gnupg, ...(platform === "win32" ? [d.localAppData] : [])];
@@ -175,7 +176,7 @@ export async function linkSignInStore(harness: Harness, serverData: string, dirs
   const store = SIGN_IN_STORES[harness];
   if (store === undefined) return undefined;
   const platform = opts.platform ?? process.platform;
-  const { join } = platform === "win32" ? win32 : posix;
+  const { join } = process.platform === "win32" ? win32 : posix;
   const home = join(serverData, "providers", harness, "home");
   const target = join(home, store.name);
   // Not created here (that would `mkdir` and, when it exists, `stat` under `providers/`): the

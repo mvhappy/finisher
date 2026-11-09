@@ -288,7 +288,8 @@ fn info(tok: &OwnedHandle, class: TOKEN_INFORMATION_CLASS) -> Vec<u64> {
 fn container_of(tok: &OwnedHandle) -> Option<(String, Vec<String>)> {
     // SAFETY: each call wrote the structure named by its class into its buffer.
     unsafe {
-        if *info(tok, TokenIsAppContainer).as_ptr().cast::<u32>() == 0 {
+        let is = info(tok, TokenIsAppContainer);
+        if *is.as_ptr().cast::<u32>() == 0 {
             return None;
         }
         let ac = info(tok, TokenAppContainerSid);

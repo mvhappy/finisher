@@ -315,7 +315,7 @@ describe("the session sandbox on Windows", () => {
     mkdirSync(cli);
     const { box, close } = await openBox(b);
     // The launcher does not exist here: the start fails after the grants.
-    await Effect.runPromise(Effect.exit(box.spawn(["x"], { cwd: tmp, stdio: "pipe", extraRead: [cli] })));
+    await Effect.runPromise(Effect.exit(box.spawn(["x"], { cwd: box.workspace, stdio: "pipe", extraRead: [cli] })));
     const extra = b.grants.filter((g) => g.path === cli);
     expect(extra).toMatchObject([{ owner: sessionOwner(S.id) }]);
     await close();

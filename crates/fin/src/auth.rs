@@ -225,7 +225,8 @@ fn read_private(path: &Path, credential_file: bool) -> Result<Option<String>, Co
     // `local.key` sits in the server's private `auth/` folder, which the server checks.
     #[cfg(windows)]
     if credential_file {
-        let problems = crate::private_windows::problems(&file)
+        let reader = session_reader(path);
+        let problems = crate::private_windows::problems(&file, reader.as_deref())
             .unwrap_or_else(|e| vec![format!("unreadable security info: {}", e.kind())]);
         if !problems.is_empty() {
             return Err(unsafe_file(path, "notPrivate", json!(problems)));
@@ -241,6 +242,26 @@ fn read_private(path: &Path, credential_file: bool) -> Result<Option<String>, Co
         Ok(n) if n as u64 <= MAX_CREDENTIAL_BYTES => Ok(Some(text)),
         _ => Ok(None),
     }
+}
+
+/// The one reader besides this user a credential file may name on Windows: for a session's
+/// `<server-data>/agents/<sessionId>/credential.json`, that session's capability SID, which the
+/// ACL broker grants it read-only so the session's sandboxed `fin` can read it (plan 7C Task
+/// 10). Pure, so every OS answers.
+#[cfg(any(windows, test))]
+pub(crate) fn session_reader(path: &Path) -> Option<String> {
+    fn name(p: Option<&Path>) -> Option<&str> {
+        p?.file_name()?.to_str()
+    }
+    if name(Some(path))? != "credential.json" {
+        return None;
+    }
+    let dir = path.parent()?;
+    if name(dir.parent())? != "agents" {
+        return None;
+    }
+    let cap = fin_sandbox::windows::capability::session(name(Some(dir))?).ok()?;
+    Some(fin_sandbox::windows::capability::capability_sid(&cap))
 }
 
 /// A credential file (`FIN_CREDENTIAL`'s): `Ok(None)` when it is missing, unreadable or
