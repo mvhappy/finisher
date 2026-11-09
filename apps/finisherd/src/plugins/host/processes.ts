@@ -13,10 +13,10 @@
 // older generations, then (once they and the class's running jobs are gone) removes their temp
 // directories and the class's authority-keyed `pluginData`. The start sweeps both.
 import { rmSync } from "node:fs";
-import type { FinError, JobState, JobView } from "@finisher/contracts";
+import { type FinError, isJobRights, type JobState, type JobView } from "@finisher/contracts";
 import { validateManifest } from "@finisher/fin-node";
 import type { ValidationReport } from "@finisher/core-types";
-import { Effect } from "effect";
+import { Effect, Fiber } from "effect";
 import type { CredentialChange } from "../../auth/credentials.ts";
 import type { DeviceEvent } from "../../auth/devices.ts";
 import type { Audit } from "../../control/audit.ts";
@@ -63,6 +63,8 @@ export interface PluginHostDeps {
   readonly tables: PluginTables;
   readonly audit?: Audit;
   readonly clock?: () => number;
+  /** How long a bump's drain waits (tests); `AUTHORITY_DRAIN_MS` by default. */
+  readonly drainMs?: number;
 }
 
 /** How long a retired authority's temp and data wait for its last job (a command's 60 s ceiling, plus grace). */
@@ -121,35 +123,97 @@ export function makePluginHost(d: PluginHostDeps) {
       }
     });
 
+  /** One drain per class at a time (a later bump joins it; `close` interrupts them all). */
+  const drains = new Map<string, Fiber.Fiber<void>>();
+  let closed = false;
+  /** Interrupts every drain (their removals are left to the next start's sweep). */
+  const close = (): Effect.Effect<void> =>
+    Effect.suspend(() => {
+      closed = true;
+      const all = [...drains.values()];
+      drains.clear();
+      return Effect.asVoid(Fiber.interruptAll(all));
+    });
+
+  /**
+   * Waits until no warm process of `cls` older than its generation now is left and no job of
+   * the class submitted before it runs (at most `AUTHORITY_DRAIN_MS`), then removes those older
+   * generations' temp directories and the class's authority-keyed `pluginData` below it. A
+   * bump during the wait moves the target on, so the newest generation's state is never
+   * touched. On a timeout nothing is removed: the next start's sweep does it (as `stop` does).
+   */
+  const drain = (cls: string): Effect.Effect<void> =>
+    Effect.gen(function* () {
+      const slug = classSlug(cls);
+      const older = (key: string, target: number) => {
+        const a = authorityOfWarmKey(key);
+        return a !== undefined && a.slug === slug && a.generation < target;
+      };
+      const busy = (e: JobEngine, target: number) =>
+        e.workers().warm.some((w) => w.family === PLUGIN_FAMILY && older(w.key, target)) ||
+        e.list({ state: ["running"], limit: 500 }).jobs.some((j) => j.family === PLUGIN_FAMILY && principalClass(j.owner, rootSessionOf) === cls && (isJobRights(j.rights) ? j.rights.generation < target : true));
+      const e = engine;
+      let waited = 0;
+      for (;;) {
+        const target = generations.of(cls);
+        if (e !== undefined && busy(e, target)) {
+          if (waited >= (d.drainMs ?? AUTHORITY_DRAIN_MS)) return;
+          yield* Effect.sleep(50);
+          waited += 50;
+          continue;
+        }
+        // The check and the removal in one synchronous step: no bump can come between them.
+        const done = yield* Effect.sync(() => {
+          if (generations.of(cls) !== target) return false;
+          const still = new Set(e?.workers().warm.map((w) => w.key) ?? []);
+          for (const key of [...keys]) {
+            if (!older(key, target) || still.has(key)) continue;
+            keys.delete(key);
+            try {
+              rmSync(keyTmpDir(d.serverData, key), { recursive: true, force: true });
+            } catch {}
+          }
+          try {
+            removeClassAuthData(d.serverData, cls, target);
+          } catch {}
+          return true;
+        });
+        if (done) return;
+      }
+    });
+
   /**
    * `cls`'s policy generation moves on (spec §3.3): its warm processes of older generations are
-   * retired at once (a busy one after its job), and once none is left and no job of the class
-   * runs (at most `AUTHORITY_DRAIN_MS`), their temp directories and the class's
-   * authority-keyed `pluginData` are removed. Resolves after the removal.
+   * retired at once (a busy one after its job), then the class's drain (`drain`) removes their
+   * temp and authority data. Resolves with the new generation once that drain ended.
    */
   const authorityChanged = (cls: string): Effect.Effect<number> =>
     Effect.gen(function* () {
       const generation = generations.bump(cls);
       const slug = classSlug(cls);
-      const stale = (key: string) => {
+      engine?.retireWarm(PLUGIN_FAMILY, (key) => {
         const a = authorityOfWarmKey(key);
-        return a !== undefined && a.slug === slug && a.generation !== generation;
-      };
-      const e = engine;
-      if (e !== undefined) {
-        e.retireWarm(PLUGIN_FAMILY, stale);
-        const busy = () =>
-          e.workers().warm.some((w) => w.family === PLUGIN_FAMILY && stale(w.key)) ||
-          e.list({ state: ["running"], limit: 500 }).jobs.some((j) => j.family === PLUGIN_FAMILY && principalClass(j.owner, rootSessionOf) === cls);
-        for (let waited = 0; busy() && waited < AUTHORITY_DRAIN_MS; waited += 50) yield* Effect.sleep(50);
+        return a !== undefined && a.slug === slug && a.generation < generation;
+      });
+      if (closed) return generation;
+      let f = drains.get(cls);
+      if (f === undefined) {
+        // It yields first, so it is in `drains` before it can end (and remove itself).
+        const started: Fiber.Fiber<void> = Effect.runFork(
+          Effect.yieldNow.pipe(
+            Effect.andThen(drain(cls)),
+            Effect.ensuring(
+              Effect.sync(() => {
+                if (drains.get(cls) === started) drains.delete(cls);
+              }),
+            ),
+          ),
+        );
+        drains.set(cls, started);
+        f = started;
       }
-      const still = new Set(e?.workers().warm.map((w) => w.key) ?? []);
-      for (const key of [...keys]) {
-        if (!stale(key) || still.has(key)) continue;
-        keys.delete(key);
-        yield* Effect.ignore(Effect.try(() => rmSync(keyTmpDir(d.serverData, key), { recursive: true, force: true })));
-      }
-      yield* Effect.ignore(Effect.try(() => removeClassAuthData(d.serverData, cls, generation)));
+      // An interrupted drain (`close`) is not this bump's failure.
+      yield* Fiber.await(f);
       return generation;
     });
 
@@ -195,8 +259,11 @@ export function makePluginHost(d: PluginHostDeps) {
       ];
       return () => {
         for (const off of offs) off?.();
+        Effect.runFork(close());
       };
     },
+    /** Stops the drains (`watch`'s unsubscribe does it too); call before the engine closes. */
+    close,
     /** `cls`'s generation moves on now (`watch` calls it; tests too). */
     authorityChanged,
     /** The generations (tests; Task 7 compares a call's key with the job's live one). */
@@ -211,6 +278,14 @@ export function makePluginHost(d: PluginHostDeps) {
     bind(e: JobEngine): void {
       engine = e;
       e.onDone((job) => crashLoop.onDone(job));
+      // A generation bump the store could not record must not be handed out again after a
+      // restart: a job still queued under it raises its class back to it.
+      for (let cursor: string | undefined, page = 0; page < 100; page++) {
+        const l = e.list({ state: ["queued", "paused", "running"], limit: 500, ...(cursor === undefined ? {} : { cursor }) });
+        for (const j of l.jobs) if (j.family === PLUGIN_FAMILY && isJobRights(j.rights)) generations.raise(principalClass(j.owner, rootSessionOf), j.rights.generation);
+        if (l.next === undefined) break;
+        cursor = l.next;
+      }
     },
     hooks: { stop, enabled: (id: string) => crashLoop.clear(id), confined: () => engine?.workers().caps.profiles.plugin === "enforced", enableCheck } satisfies PluginHostHooks,
   };

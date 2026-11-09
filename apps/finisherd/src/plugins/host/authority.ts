@@ -66,6 +66,8 @@ export interface AuthorityGenerations {
   of(cls: string): number;
   /** Increments the class's generation; the new one. */
   bump(cls: string): number;
+  /** Raises the class's generation to at least `n` (a job seen at start carries `n`); never lowers it. */
+  raise(cls: string, n: number): void;
   /** Every class with a generation above 0, by its slug. */
   bySlug(): ReadonlyMap<string, number>;
 }
@@ -80,15 +82,19 @@ export function memoryGenerations(): AuthorityGenerations {
       gens.set(cls, n);
       return n;
     },
+    raise: (cls, n) => {
+      if (n > (gens.get(cls) ?? 0)) gens.set(cls, n);
+    },
     bySlug: () => new Map([...gens].map(([c, n]) => [classSlug(c), n])),
   };
 }
 
 /**
  * Generations in `control.db` (`plugin_authority`), cached in memory. A bump the store cannot
- * write (busy) still takes effect in memory; a restart then reads the older value, which is
- * safe: processes and temp do not survive a restart, and the start's sweep removes
- * authority directories of any generation but the current.
+ * write (busy) still takes effect in memory; a restart then reads the older value. Processes
+ * and temp do not survive a restart, and the start's sweep removes authority directories of
+ * any generation but the current; a job queued under the lost generation raises its class
+ * back to it when the host binds the engine (`raise`), so no generation is handed out twice.
  */
 export function storedGenerations(store: ControlStore): AuthorityGenerations {
   const cache = new Map<string, number>();
@@ -103,17 +109,23 @@ export function storedGenerations(store: ControlStore): AuthorityGenerations {
     cache.set(cls, n);
     return n;
   };
+  const set = (cls: string, n: number): void => {
+    cache.set(cls, n);
+    try {
+      write.run(cls, n);
+    } catch (e) {
+      process.stderr.write(`finisherd: warning: cannot record a plugin authority generation (kept in memory): ${String(e)}\n`);
+    }
+  };
   return {
     of,
     bump: (cls) => {
       const n = of(cls) + 1;
-      cache.set(cls, n);
-      try {
-        write.run(cls, n);
-      } catch (e) {
-        process.stderr.write(`finisherd: warning: cannot record a plugin authority generation (kept in memory): ${String(e)}\n`);
-      }
+      set(cls, n);
       return n;
+    },
+    raise: (cls, n) => {
+      if (n > of(cls)) set(cls, n);
     },
     bySlug: () => {
       const out = new Map<string, number>();
@@ -235,12 +247,15 @@ function removeAuthData(serverData: string, stale: (key: string) => boolean): nu
   return n;
 }
 
-/** `cls`'s authority directories of any generation but `generation` (a bump's, or a session's end). */
+/**
+ * `cls`'s authority directories of a generation older than `generation` (a bump's, or a
+ * session's end). Never a newer one: a later bump's processes may already use theirs.
+ */
 export function removeClassAuthData(serverData: string, cls: string, generation: number): number {
   const slug = classSlug(cls);
   return removeAuthData(serverData, (key) => {
     const a = parseAuthorityKey(key);
-    return a !== undefined && a.slug === slug && a.generation !== generation;
+    return a !== undefined && a.slug === slug && a.generation < generation;
   });
 }
 

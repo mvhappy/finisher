@@ -23,7 +23,7 @@ import type { JobEngine } from "../src/jobs/engine.ts";
 import { JobEventSinkTag, memorySink } from "../src/jobs/events.ts";
 import type { KindSpec } from "../src/jobs/kinds.ts";
 import { buildJobEngine } from "../src/jobs/layer.ts";
-import { authorityOfWarmKey, classSlug, memoryGenerations, PLUGIN_AUTHDATA, PLUGIN_DATA, parseAuthorityKey, storedGenerations, sweepAuthData, uniformClassRights } from "../src/plugins/host/authority.ts";
+import { authorityOfWarmKey, classSlug, memoryGenerations, removeClassAuthData, PLUGIN_AUTHDATA, PLUGIN_DATA, parseAuthorityKey, storedGenerations, sweepAuthData, uniformClassRights } from "../src/plugins/host/authority.ts";
 import { keyTmpDir, principalClass, sessionRoots } from "../src/plugins/host/keys.ts";
 import { makePluginHost, type PluginHost } from "../src/plugins/host/processes.ts";
 import { rightsFor, rightsHash, systemInvoker } from "../src/plugins/host/rights.ts";
@@ -53,16 +53,16 @@ interface Rig {
   revokeDevice(id: string): void;
   /** The job a submit of `o` would make (rights computed now, as the host does). */
   jobOf(o: RunOpts): JobView;
-  echo(op: Record<string, unknown>, o: RunOpts): Promise<Record<string, unknown>>;
+  echo(op: Record<string, unknown>, o: RunOpts, job?: JobView): Promise<Record<string, unknown>>;
 }
 
 type RunOpts = { owner: JobOwner; project?: string; sessionRoot?: string; scopes?: ReadonlyArray<string>; grants?: ReadonlyArray<Permission> };
 
-async function rig(): Promise<Rig> {
+async function rig(opts: { drainMs?: number } = {}): Promise<Rig> {
   const serverData = realpathSync(mkdtempSync(join(tmpdir(), "fin-plugin-auth-")));
   const control = openControlStore(serverData, { serverId: "sid-test", checkpoint: false });
   const tables = new PluginTables(control);
-  const host = makePluginHost({ serverData, control, tables });
+  const host = makePluginHost({ serverData, control, tables, ...(opts.drainMs === undefined ? {} : { drainMs: opts.drainMs }) });
   const engine = await Effect.runPromise(
     buildJobEngine(serverData, {
       testKinds: false,
@@ -116,8 +116,8 @@ async function rig(): Promise<Rig> {
       for (const f of deviceListeners) f({ kind: "revoked", id });
     },
     jobOf,
-    async echo(op, o) {
-      const j = jobOf(o);
+    async echo(op, o, job) {
+      const j = job ?? jobOf(o);
       const v = await run(engine.submit(o.owner, { kind: "test.echo", params: { value: op }, via: j.via!, rights: j.rights!, ...(o.project === undefined ? {} : { project: o.project }) }));
       const [done] = await run(engine.wait([v.id], { timeoutMs: 20_000 }));
       expect(done?.state, JSON.stringify(done?.error)).toBe("succeeded");
@@ -326,5 +326,121 @@ describe("pluginData per authority", () => {
     const env = (await r.echo({ op: "env" }, { owner: PERSON, project: "p4", grants: [] })) as { execArgv: string[] };
     expect(env.execArgv.some((a) => a.includes(join("plugins", "data")))).toBe(false);
     expect(existsSync(join(r.serverData, ...PLUGIN_DATA, "@test", "probe", "p4"))).toBe(false);
+  });
+});
+
+describe("authority drains (review of f25e589e)", () => {
+  /** An MCP credential's owner and class (minting it bumped the class to 1). */
+  const mcp = (r: Rig) => {
+    const { credential } = r.creds.mint(CONSOLE, { kind: "mcp", label: "m", scopes: ["project.read"], projects: ["p1"] });
+    return { owner: { kind: "mcp", id: credential.id } as JobOwner, cls: `mcp:${credential.id}` };
+  };
+  /** Submits a `sleep` job under `o` without waiting for it. */
+  const sleeper = async (r: Rig, o: RunOpts, ms: number) => {
+    const j = r.jobOf(o);
+    const v = await run(r.engine.submit(o.owner, { kind: "test.echo", params: { value: { op: "sleep", ms } }, via: j.via!, rights: j.rights!, project: "p1" }));
+    await until(() => r.engine.list({ state: ["running"], limit: 10 }).jobs.some((x) => x.id === v.id));
+    return v.id;
+  };
+
+  test("two_bumps_in_one_drain_keep_the_newest_generation: its temp and data survive the drain", async () => {
+    const r = await rig();
+    const { owner, cls } = mcp(r);
+    const o: RunOpts = { owner, project: "p1" };
+    const slow = await sleeper(r, o, 1500);
+    // Two bumps while the generation-1 job still runs: one drain, its target moves to 3.
+    const first = Effect.runPromise(r.host.authorityChanged(cls));
+    const second = Effect.runPromise(r.host.authorityChanged(cls));
+    expect(r.host.generations.of(cls)).toBe(3);
+    // A process and data directory of generation 3 exist before the drain ends.
+    const key = r.host.warmKeyOf(r.jobOf(o));
+    expect(authorityOfWarmKey(key)?.generation).toBe(3);
+    const env = (await r.echo({ op: "env" }, o)) as { env: Record<string, string> };
+    expect(env.env.TMPDIR).toBe(keyTmpDir(r.serverData, key));
+    const data = r.host.dataDirOf(r.jobOf(o))!.path;
+    expect(await Promise.all([first, second])).toEqual([2, 3]);
+    await run(r.engine.wait([slow], { timeoutMs: 20_000 }));
+    expect(existsSync(keyTmpDir(r.serverData, key))).toBe(true);
+    expect(existsSync(data)).toBe(true);
+    expect(plugin(r).some((w) => w.key === key)).toBe(true);
+    // The removal itself never takes a newer generation's directory.
+    const h = "b".repeat(32);
+    const at = (g: number) => join(r.serverData, ...PLUGIN_AUTHDATA, "@test", "probe", "p1", `${classSlug(cls)}.${h}.${g}`);
+    for (const g of [2, 4]) mkdirSync(at(g), { recursive: true });
+    expect(removeClassAuthData(r.serverData, cls, 3)).toBe(1);
+    expect([existsSync(at(2)), existsSync(at(4))]).toEqual([false, true]);
+  });
+
+  test("drain_timeout_removes_nothing: a job still running keeps its temp and data for the start sweep", async () => {
+    const r = await rig({ drainMs: 300 });
+    const { owner, cls } = mcp(r);
+    const o: RunOpts = { owner, project: "p1" };
+    const key = r.host.warmKeyOf(r.jobOf(o));
+    const data = r.host.dataDirOf(r.jobOf(o))!.path;
+    const slow = await sleeper(r, o, 2500);
+    expect(await Effect.runPromise(r.host.authorityChanged(cls))).toBe(2);
+    // The drain timed out with the job running: nothing of generation 1 is gone.
+    expect(r.engine.list({ state: ["running"], limit: 10 }).jobs.some((x) => x.id === slow)).toBe(true);
+    expect(existsSync(keyTmpDir(r.serverData, key))).toBe(true);
+    expect(existsSync(data)).toBe(true);
+    // The next start's sweep takes the data (temp is emptied at every start).
+    await run(r.engine.wait([slow], { timeoutMs: 20_000 }));
+    expect(sweepAuthData(r.serverData, r.host.generations)).toBe(1);
+    expect(existsSync(data)).toBe(false);
+  });
+
+  test("close_interrupts_drains: no drain outlives the host", async () => {
+    const r = await rig();
+    const { owner, cls } = mcp(r);
+    const o: RunOpts = { owner, project: "p1" };
+    const data = r.host.dataDirOf(r.jobOf(o))!.path;
+    const slow = await sleeper(r, o, 2000);
+    const bumped = Effect.runPromise(r.host.authorityChanged(cls));
+    await Effect.runPromise(r.host.close());
+    // The bump resolves (its drain was interrupted) without removing anything.
+    expect(await bumped).toBe(2);
+    expect(existsSync(data)).toBe(true);
+    // A bump after close moves the generation and retires, but starts no drain.
+    expect(await Effect.runPromise(r.host.authorityChanged(cls))).toBe(3);
+    await run(r.engine.wait([slow], { timeoutMs: 20_000 }));
+    expect(existsSync(data)).toBe(true);
+  });
+
+  test("queued_before_a_bump_adopts_the_new_generation: it never revives the retired key", async () => {
+    const r = await rig();
+    const { owner, cls } = mcp(r);
+    const o: RunOpts = { owner, project: "p1" };
+    // The job's rights were computed at generation 1, before the bump.
+    const before = r.jobOf(o);
+    const oldKey = r.host.warmKeyOf(before);
+    expect(await Effect.runPromise(r.host.authorityChanged(cls))).toBe(2);
+    const newKey = r.host.warmKeyOf(before);
+    expect(authorityOfWarmKey(oldKey)?.generation).toBe(1);
+    expect(authorityOfWarmKey(newKey)?.generation).toBe(2);
+    const env = (await r.echo({ op: "env" }, o, before)) as { env: Record<string, string> };
+    expect(env.env.TMPDIR).toBe(keyTmpDir(r.serverData, newKey));
+    expect(plugin(r).some((w) => w.key === oldKey)).toBe(false);
+    expect(existsSync(keyTmpDir(r.serverData, oldKey))).toBe(false);
+  });
+
+  test("bind_raises_generations_to_queued_jobs: a bump the store lost is not handed out again", () => {
+    const sd = realpathSync(mkdtempSync(join(tmpdir(), "fin-plugin-raise-")));
+    const control = openControlStore(sd, { serverId: "sid-test", checkpoint: false });
+    cleanups.push(async () => {
+      await control.close();
+      rmSync(sd, { recursive: true, force: true });
+    });
+    const host = makePluginHost({ serverData: sd, control, tables: new PluginTables(control) });
+    const owner: JobOwner = { kind: "mcp", id: "m1" };
+    const rights = rightsFor({ invoker: { ...owner, scopes: ["project.read"], projects: "*" }, grants: [{ perm: "project:read" }], class: "mcp:m1", generation: 5 });
+    const jobs = [{ id: "j", family: "plugin", owner, rights, via: { plugin: `${ID}@1.0.0` } }, { id: "k", family: "other", owner: { kind: "mcp", id: "m2" }, rights: { ...rights, class: "mcp:m2", generation: 9 } }];
+    host.bind({ onDone: () => () => {}, list: () => ({ jobs }) } as unknown as JobEngine);
+    expect(host.generations.of("mcp:m1")).toBe(5);
+    expect(host.generations.of("mcp:m2")).toBe(0);
+    // Raised in the store too; never lowered.
+    expect(storedGenerations(control).of("mcp:m1")).toBe(5);
+    host.generations.raise("mcp:m1", 2);
+    expect(host.generations.of("mcp:m1")).toBe(5);
+    expect(host.generations.bump("mcp:m1")).toBe(6);
   });
 });
