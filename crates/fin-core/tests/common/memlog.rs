@@ -172,6 +172,21 @@ impl MemLog {
         self.append_link(b, tx_id, author, link, vec![]).seq
     }
 
+    /// A `drop` record on `b` (plan 5E Decision 1) naming `drops` and `undrops` from `from`;
+    /// returns its seq.
+    pub fn drop_rec(
+        &mut self,
+        b: &str,
+        tx_id: &str,
+        from: &str,
+        drops: &[&str],
+        undrops: &[&str],
+    ) -> u64 {
+        let ids = |l: &[&str]| l.iter().map(|s| s.to_string()).collect();
+        let link = Link::new_drop(from, ids(drops), ids(undrops)).expect("a valid drop");
+        self.append_link(b, tx_id, "alice", link, vec![]).seq
+    }
+
     /// `undo --to` the checkpoint at `checkpoint_seq` on `b`, appended.
     pub fn undo_to(
         &mut self,

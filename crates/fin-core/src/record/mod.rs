@@ -17,15 +17,28 @@ use crate::error::CoreError;
 use crate::ops::Op;
 use crate::tx::Tx;
 
-pub use link::{Link, kind_name};
+pub use link::{Link, MAX_DROP_IDS, kind_name};
 
-/// Version of the record line format written by this code (4B: record kinds).
+/// Version of the record line format written by this code for every kind but `drop` (4B:
+/// record kinds); a `drop` record is format 3 ([`record_format`]).
 pub const RECORD_FORMAT: u32 = 2;
-/// The oldest reader that can read every record this code writes. Files holding only `edit`
-/// records stay readable by version 1 (`fin_store::segment::version_for`).
+/// The oldest reader that can read every record of a kind other than `drop` this code writes.
+/// Files holding only `edit` records stay readable by version 1
+/// (`fin_store::segment::version_for`).
 pub const MIN_READER: u32 = 2;
 
-/// What a record does (spec §4.2). Sub-project 4A writes only edits; 4B adds the rest.
+/// The record format a record of `kind` is written at and the oldest reader that reads it:
+/// `(3, 3)` for `drop` (plan 5E Decision 4), [`RECORD_FORMAT`] and [`MIN_READER`] otherwise.
+/// Every other kind stays byte-identical to what 4B wrote.
+pub fn record_format(kind: RecordKind) -> (u32, u32) {
+    match kind {
+        RecordKind::Drop => (3, 3),
+        _ => (RECORD_FORMAT, MIN_READER),
+    }
+}
+
+/// What a record does (spec §4.2). Sub-project 4A writes only edits; 4B adds the rest up to
+/// `branchSet`; 5E adds `drop` (durable rejections, sub-project 5 spec §8.3).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 #[non_exhaustive]
@@ -39,6 +52,7 @@ pub enum RecordKind {
     Checkpoint,
     Branch,
     BranchSet,
+    Drop,
 }
 
 impl RecordKind {
@@ -55,11 +69,11 @@ impl RecordKind {
         )
     }
 
-    /// Whether the record carries ops: not `checkpoint`, `branch` or `branchSet`.
+    /// Whether the record carries ops: not `checkpoint`, `branch`, `branchSet` or `drop`.
     pub fn has_ops(self) -> bool {
         !matches!(
             self,
-            RecordKind::Checkpoint | RecordKind::Branch | RecordKind::BranchSet
+            RecordKind::Checkpoint | RecordKind::Branch | RecordKind::BranchSet | RecordKind::Drop
         )
     }
 
@@ -75,7 +89,7 @@ impl RecordKind {
 /// - `resolved`: `intent.ops` with `bindings` substituted ([`resolve_ops`]).
 /// - `inverse`: the ops that undo it, with bound ids.
 /// - `parent_hash`: the previous record's hash on the branch, `None` for the first.
-/// - `undoes` … `archived`: the kind's fields, read as a [`Link`] ([`Record::link`]).
+/// - `undoes` … `undrops`: the kind's fields, read as a [`Link`] ([`Record::link`]).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Record {
@@ -128,6 +142,13 @@ pub struct Record {
     /// writes it, so only it marks a quarantine row recovered.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub recovers: Option<String>,
+    /// `drop`: the origin roots it drops for this branch, sorted, deduplicated, absent when
+    /// none (plan 5E Decision 1).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub drops: Option<Vec<String>>,
+    /// `drop`: the origin roots it makes candidates again, as `drops`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub undrops: Option<Vec<String>>,
     pub schema_version: u32,
     pub parent_hash: Option<String>,
     pub author: String,
@@ -171,6 +192,8 @@ impl Record {
             epoch: None,
             archived: None,
             recovers: None,
+            drops: None,
+            undrops: None,
             schema_version,
             parent_hash,
             author,

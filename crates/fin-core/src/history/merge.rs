@@ -239,7 +239,7 @@ pub fn candidate_steps(
 
 /// A planned merge: its id, the copies to append in order, the source txIds they copy, the
 /// candidates that conflict (each skipped; empty unless `skip_conflicting`), and the source
-/// records left out as `UNDOES_TARGET_RECORDS`.
+/// records left out as `DROPPED` or `UNDOES_TARGET_RECORDS` (not conflicts).
 #[derive(Debug, Clone, PartialEq)]
 pub struct MergePlan {
     pub merge_id: String,
@@ -283,7 +283,8 @@ pub fn plan_merge(
     let source = path_after(log, &source_l, &c)?;
     let target = path_after(log, &target_l, &c)?;
     let roots = Roots::new(log, &target_l, &source, &target)?;
-    let cands = candidates(&source, &roots);
+    let dropped = super::dropped_for(log, &target_l)?;
+    let cands = candidates(&source, &roots, &dropped);
     let paths = Paths::new(&source, &target, &roots)?.prepared();
     let binders = Binders::new(&source, &roots.source, &target, &roots.target);
     let (mut seq, mut head) = log.head(into)?;

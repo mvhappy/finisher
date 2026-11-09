@@ -1040,6 +1040,12 @@ export type Link =
       kind: "branchSet";
       name?: string | null;
       recovers?: string | null;
+    }
+  | {
+      drops?: string[];
+      from: string;
+      kind: "drop";
+      undrops?: string[];
     };
 /**
  * Why a `cancel` was sent.

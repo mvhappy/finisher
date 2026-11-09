@@ -148,6 +148,11 @@ pub(crate) fn link_row(branch: &str, record: &Record) -> Result<Option<LinkRow>,
             name = n;
             Some(vec![branch_id])
         }
+        // The origins it names go into the `drops` index (plan 5E Task 2), not here.
+        Link::Drop { from: f, .. } => {
+            from = Some(f);
+            None
+        }
     };
     Ok(Some(LinkRow {
         tx_id: record.tx_id.clone(),

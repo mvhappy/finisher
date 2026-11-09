@@ -8419,6 +8419,35 @@
             "branchId"
           ],
           "type": "object"
+        },
+        {
+          "description": "Drops (and undrops) origin roots of branch `from` for this record's branch: a merge\ninto it leaves a dropped origin out (plan 5E Decisions 1–3). Each list sorted and\ndeduplicated, at least one non-empty, no id in both ([`Link::new_drop`]).",
+          "properties": {
+            "drops": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "from": {
+              "type": "string"
+            },
+            "kind": {
+              "const": "drop",
+              "type": "string"
+            },
+            "undrops": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "kind",
+            "from"
+          ],
+          "type": "object"
         }
       ]
     },
