@@ -571,7 +571,8 @@ describe("the sandbox under the real launcher", () => {
     // Not a read root: refused; named in `extraRead`: read.
     const refused = await read();
     expect(refused.exit.code).toBe(1);
-    expect(refused.err).toMatch(/Permission denied/);
+    // Landlock denies with EACCES, Seatbelt with EPERM.
+    expect(refused.err).toMatch(process.platform === "darwin" ? /Operation not permitted/ : /Permission denied/);
     expect(await read([extra])).toMatchObject({ exit: { code: 0 }, out: "harness\n" });
     // A process under the launcher is killed, its group with it, when the scope closes, and
     // so is a `setsid` grandchild that left the group (the launcher reaps it).

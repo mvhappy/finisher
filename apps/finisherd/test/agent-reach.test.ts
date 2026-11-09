@@ -2,7 +2,7 @@
 // §5.2, §5.6): its writes stay in its root branch's subtree, in the chain and in the store's
 // guard; it reaches its project folder and the libraries the project references; every write
 // carries the server's author; every commit, undo and merge is recorded under the session.
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Principal, Session } from "@finisher/contracts";
@@ -19,7 +19,7 @@ let tmp: string;
 let server: AgentServer;
 
 beforeEach(() => {
-  tmp = mkdtempSync(join(tmpdir(), "finisherd-agent-reach-"));
+  tmp = realpathSync(mkdtempSync(join(tmpdir(), "finisherd-agent-reach-"))); // reach answers resolved roots (macOS: `/var` is a link)
   const serverData = join(tmp, "server-data");
   mkdirSync(serverData, { recursive: true, mode: 0o700 });
   server = new AgentServer(serverData);
