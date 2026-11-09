@@ -203,7 +203,9 @@ fn listing(
 }
 
 /// A recovery request's identity, the `argsHash` of every record it writes: what it creates
-/// and as whom. A retry of the txId is answered from the log only by records carrying it.
+/// (the selection as asked: `all` and a group id are different requests even when they pick
+/// the same group) and as whom. A retry of the txId is answered from the log only by records
+/// carrying it; records written before this identity existed carry none and answer no retry.
 fn request_hash(sel: &RecoverSel, author: &str) -> String {
     let sel = match sel {
         RecoverSel::All => json!({ "all": true }),
@@ -369,7 +371,11 @@ impl Store {
         while let Some(c) = db::find_tx(&self.conn, &format!("{key}-{}", committed.len() + 1))? {
             if c.tx.args_hash.as_deref() != Some(ours) {
                 if committed.is_empty() {
-                    return Err(key_reused(&c));
+                    let mut e = CoreError::from(key_reused(&c));
+                    e.fix = Some(format!(
+                        "txId {key} was used by another command or another recovery request (other groups or author); use a new idempotency key (txId)"
+                    ));
+                    return Err(e.into());
                 }
                 // A later record under the next id is not this recovery's.
                 break;
