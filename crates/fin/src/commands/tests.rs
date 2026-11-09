@@ -435,3 +435,32 @@ fn committed_echo_finds_the_clip_by_placeholder() {
     );
     assert_eq!(batch[2]["resolved"], json!({ "at": "0" }));
 }
+
+/// Decision 7 (spec §5.12.3): `--key` is left out of the `argsHash` input when it is absent,
+/// so a 4C `fin keyframe set|remove --at` hashes as before. The hashes were computed by the
+/// `fin` of the commit before `--key` (c30d5e80).
+#[test]
+fn args_hash_of_4c_keyframe_inputs_is_unchanged() {
+    let cases = [
+        (
+            "keyframe.set",
+            json!({ "item": "c1", "path": "opacity", "at": "2s", "value": "0.5", "interp": "ease" }),
+            "blake3:b95d0f11bde9d35efb2d4c208287278c01ae3ac5a618a2d4144c07cba72a0f72",
+        ),
+        (
+            "keyframe.remove",
+            json!({ "item": "c1", "path": "opacity", "at": "2s" }),
+            "blake3:5043c952a46f48bfe0d6914febda0b8094e4565f831d56e8a79b5e0c8c52aa8f",
+        ),
+    ];
+    for (cmd, args, hash) in cases {
+        let k = if cmd == "keyframe.set" {
+            keyframe::KeyframeCmd::Set(serde_json::from_value(args.clone()).unwrap())
+        } else {
+            keyframe::KeyframeCmd::Remove(serde_json::from_value(args.clone()).unwrap())
+        };
+        let step = Write::Edit(edit::Edit::Keyframe(k));
+        assert_eq!(input(&step), json!({ "cmd": cmd, "args": args }));
+        assert_eq!(args_hash(&[input(&step)]), hash, "{cmd}");
+    }
+}

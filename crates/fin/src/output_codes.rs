@@ -194,6 +194,9 @@ pub(super) const VALIDATION_CODES: &[&str] = &[
     "SLOT_UNKNOWN",
     "PARAM_ANIMATED",
     "PARAM_NOT_ANIMATABLE",
+    // Stable keyframe ids (sub-project 4 §5.12): a key set or moved to a time another key of
+    // the path holds.
+    "KEYFRAME_EXISTS",
     // Library (sub-project 4C Task 13): a removal of a bin holding assets or bins; a bin
     // moved into itself or a bin inside it.
     "BIN_NOT_EMPTY",

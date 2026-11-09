@@ -123,6 +123,7 @@ fn exit_codes_follow_the_contract() {
         "SLOT_UNKNOWN",
         "PARAM_ANIMATED",
         "PARAM_NOT_ANIMATABLE",
+        "KEYFRAME_EXISTS",
         "BIN_NOT_EMPTY",
         "BIN_CYCLE",
         "NESTED_CYCLE",

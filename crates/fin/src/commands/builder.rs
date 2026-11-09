@@ -320,6 +320,7 @@ impl<'a> Builder<'a> {
         }
         let mut resolved = resolved;
         echo_committed(&mut resolved, &committed.tx.ops);
+        super::keyframe::echo_key(&mut resolved, &committed);
         let mut doc = json!({
             "rev": committed.rev,
             "txId": committed.tx.tx_id,

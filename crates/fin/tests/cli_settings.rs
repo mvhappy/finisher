@@ -105,9 +105,11 @@ fn keyframe_set_and_remove() {
     let doc = dry(&[
         "keyframe", "set", "c1", "opacity", "--at", "f15", "0.5", "--interp", "easeOut",
     ]);
+    // An insert echoes the id the dry run mints (the snapshot's keys are kf1@0 and kf2@1).
+    assert_eq!(doc["bindings"], json!({ "$kf0": "kf3" }));
     assert_eq!(
         doc["resolved"],
-        json!({ "item": "c1", "path": "opacity", "at": "1/2", "value": 0.5,
+        json!({ "item": "c1", "path": "opacity", "key": "kf3", "at": "1/2", "value": 0.5,
                 "interp": { "type": "bezier", "x1": 0.0, "y1": 0.0, "x2": 0.58, "y2": 1.0 } })
     );
     let doc = dry(&[
@@ -121,7 +123,10 @@ fn keyframe_set_and_remove() {
     ]);
     assert_eq!(doc["resolved"]["interp"], json!({ "type": "linear" }));
     let doc = dry(&["keyframe", "remove", "c1", "opacity", "--at", "1s"]);
-    assert_eq!(doc["resolved"]["at"], "1");
+    assert_eq!(
+        doc["resolved"],
+        json!({ "item": "c1", "path": "opacity", "key": "kf2", "at": "1" })
+    );
     refused(
         &["keyframe", "set", "c1", "blend", "--at", "0", "multiply"],
         3,
@@ -143,6 +148,82 @@ fn keyframe_set_and_remove() {
         "PARAM_ANIMATED",
         "",
     );
+}
+
+/// Spec §5.12.3: a key named by id is edited in place, moved by `--at`, or removed; a time
+/// another key holds is `KEYFRAME_EXISTS` (exit 3).
+#[test]
+fn keyframe_by_key() {
+    // --at names an existing key: it is edited and keeps its id.
+    let doc = dry(&["keyframe", "set", "c1", "opacity", "--at", "1s", "0.25"]);
+    assert_eq!(doc["bindings"], json!({}));
+    assert_eq!(doc["resolved"]["key"], "kf2");
+    // --key alone keeps the key's time, echoed.
+    let doc = dry(&["keyframe", "set", "c1", "opacity", "--key", "kf2", "0.75"]);
+    assert_eq!(
+        doc["resolved"],
+        json!({ "item": "c1", "path": "opacity", "key": "kf2", "at": "1", "value": 0.75,
+                "interp": { "type": "linear" } })
+    );
+    // --key with --at moves it.
+    let doc = dry(&[
+        "keyframe", "set", "c1", "opacity", "--key", "kf2", "--at", "3s", "0.75",
+    ]);
+    assert_eq!(doc["resolved"]["key"], "kf2");
+    assert_eq!(doc["resolved"]["at"], "3");
+    let doc = dry(&["keyframe", "remove", "c1", "opacity", "--key", "kf1"]);
+    assert_eq!(
+        doc["resolved"],
+        json!({ "item": "c1", "path": "opacity", "key": "kf1", "at": "0" })
+    );
+    let e = refused(
+        &[
+            "keyframe", "set", "c1", "opacity", "--key", "kf2", "--at", "0", "0.5",
+        ],
+        3,
+        "KEYFRAME_EXISTS",
+        "kf1",
+    );
+    assert_eq!(e["details"]["existing"], "kf1", "{e}");
+    assert_eq!(e["details"]["key"], "kf2", "{e}");
+    refused(
+        &["keyframe", "set", "c1", "opacity", "--key", "kf9", "0.5"],
+        3,
+        "NOT_FOUND",
+        "",
+    );
+    refused(
+        &["keyframe", "remove", "c1", "opacity", "--key", "kf9"],
+        3,
+        "NOT_FOUND",
+        "",
+    );
+}
+
+#[test]
+fn keyframe_needs_at_or_key() {
+    let e = refused(
+        &["keyframe", "set", "c1", "opacity", "0.5"],
+        2,
+        "USAGE",
+        "--key kf3",
+    );
+    assert_eq!(e["details"]["fields"], json!(["at", "key"]));
+    refused(
+        &["keyframe", "remove", "c1", "opacity"],
+        2,
+        "USAGE",
+        "--at 2s",
+    );
+    let e = refused(
+        &[
+            "keyframe", "remove", "c1", "opacity", "--key", "kf1", "--at", "0",
+        ],
+        2,
+        "USAGE",
+        "--key kf3",
+    );
+    assert!(e["message"].as_str().unwrap().contains("not both"), "{e}");
 }
 
 #[test]

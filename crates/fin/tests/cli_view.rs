@@ -96,6 +96,44 @@ fn view_full_matches_golden() {
     }
 }
 
+/// `--detail` lists each animated path's keys as `<key>@<at>` (item-relative); every other
+/// line, and the lines without it, are as before (spec §5.12.3).
+#[test]
+fn view_detail_lists_keyframe_ids_and_times() {
+    let plain = view(&[]);
+    let v = view(&["--detail"]);
+    assert_eq!(v["resolved"], json!({ "detail": true }));
+    assert_eq!(v["tokens"], estimate(&v));
+    let c3 = "00:07.5–00:10.0  V1  c3 clip a1 [10.0s+2.5s] rot 90";
+    for (a, b) in lines(&plain).iter().zip(lines(&v).iter()) {
+        if a.starts_with(c3) {
+            assert_eq!(a, &format!("{c3} kf: opacity"));
+            assert_eq!(b, &format!("{c3} kf: opacity[kf1@0.0s,kf2@1.0s]"));
+        } else {
+            assert_eq!(a, b);
+        }
+    }
+    assert_eq!(lines(&plain).len(), lines(&v).len());
+
+    // Two paths: sorted by path, separated by a space.
+    let mut p = project();
+    let tracks = p["project"]["timelines"][0]["tracks"][0]["items"]
+        .as_array_mut()
+        .unwrap();
+    let c3_item = tracks.iter_mut().find(|i| i["id"] == "c3").unwrap();
+    c3_item["keyframes"]["transform.rotation"] = json!([
+        { "at": "1/2", "interp": { "type": "hold" }, "value": 45.0 }
+    ]);
+    let r = offline(&p, &["view", "--detail", "--track", "t1"]);
+    assert_eq!(r.code, 0, "{}", r.stdout);
+    let l = lines(&r.json);
+    let line = l.iter().find(|x| x.contains(" c3 ")).unwrap();
+    assert!(
+        line.ends_with("kf: opacity[kf1@0.0s,kf2@1.0s] transform.rotation[kf3@0.5s]"),
+        "{line}"
+    );
+}
+
 #[test]
 fn view_budget_degrades_in_order_and_says_so() {
     let full = view(&[]);
