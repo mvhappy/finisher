@@ -7,7 +7,8 @@
 //!   what is inserted at the cut goes before us, `Assoc::After`);
 //! - `track_end`: no item starts at `p` and it is the end of the track's last item, so it is
 //!   the track's end (an append: what the head appended since goes before us);
-//! - `end`: the item that ends at `p` (with a gap after it, or as the fallback of `start`);
+//! - `end`: the item that ends at `p` (with a gap after it, or as the fallback of `start`); at
+//!   the head only while nothing starts at that end (else shifts decide: they pass it);
 //! - `empty`: the track holds no items there.
 //!
 //! A position in a gap away from every edge, or inside an item, names a time, not an item, and
@@ -59,7 +60,7 @@ pub fn any(ops: &[Op]) -> bool {
 
 /// Whether `op` is one of the ops `Op::positions_mut` lists a position of (an insert, a move,
 /// a restore and the `clip.insert` alias), without copying it.
-fn positional(op: &Op) -> bool {
+pub(crate) fn positional(op: &Op) -> bool {
     matches!(
         op,
         Op::ItemInsert(_) | Op::ItemMove(_) | Op::ItemRestore(_) | Op::ClipInsert { .. }
@@ -156,8 +157,13 @@ impl Anchor {
         {
             return Some(end);
         }
+        // An end followed by a gap where written. When the head put something at that end
+        // since, which side of it ours goes has no intent signal, and an overwrite there would
+        // cut into another author's content unannounced: the position maps through shifts,
+        // which pass what was inserted there (implementation review, 2026-11-09).
         if let Some(a) = self.end.as_deref().and_then(on) {
-            return a.end().ok();
+            let end = a.end().ok()?;
+            return (!t.items.iter().any(|n| n.start == end)).then_some(end);
         }
         match self.empty {
             Some(p) if t.items.is_empty() => Some(p),

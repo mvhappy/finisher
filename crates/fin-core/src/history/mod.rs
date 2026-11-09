@@ -168,15 +168,27 @@ impl SourceFrames {
         tx: &crate::tx::Tx,
         mode: crate::apply::ApplyMode,
     ) -> Result<FrameReads, CoreError> {
-        if !crate::rebase::places::any(&tx.ops) && !crate::rebase::anchors::any(&tx.ops) {
+        let needed = crate::rebase::places::any(&tx.ops) || crate::rebase::anchors::any(&tx.ops);
+        let follows = |p: &LogRec| p.branch == rec.branch && p.seq + 1 == rec.seq;
+        // The frame carried from the previous record, when it is that record's own; a record
+        // that does not replay (it would fail the log's own read too) falls back to the log.
+        let carried = match (self.last.take(), prev) {
+            (Some((b, s, f)), Some(p)) if follows(p) && b == p.branch && s == p.seq => {
+                crate::replay::apply_committed(&f, &p.record.intent, &p.record.bindings)
+                    .ok()
+                    .map(|a| a.project)
+            }
+            _ => None,
+        };
+        // A record that reads nothing still carries the frame along (one replay), so the run
+        // goes on through it.
+        if !needed {
+            self.last = carried.map(|f| (rec.branch.clone(), rec.seq, f));
             return Ok(FrameReads::default());
         }
-        let follows = |p: &LogRec| p.branch == rec.branch && p.seq + 1 == rec.seq;
-        let frame = match (self.last.take(), prev) {
-            (Some((b, s, f)), Some(p)) if follows(p) && b == p.branch && s == p.seq => {
-                crate::replay::apply_committed(&f, &p.record.intent, &p.record.bindings)?.project
-            }
-            _ => log.state_at(&rec.branch, rec.seq.saturating_sub(1))?,
+        let frame = match carried {
+            Some(f) => f,
+            None => log.state_at(&rec.branch, rec.seq.saturating_sub(1))?,
         };
         let reads = FrameReads::read(&frame, tx, mode)?;
         self.last = Some((rec.branch.clone(), rec.seq, frame));

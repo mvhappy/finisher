@@ -395,3 +395,17 @@ fn merged_move_to_the_end_goes_to_the_targets_end() {
     assert_eq!(order, ["c3", "c2", "c1"]);
     assert_well_formed(&log.state("br"));
 }
+
+/// Implementation review round 3, finding 1: an end followed by a gap. `c1` [0,10), a gap, `c3`
+/// [20,30) (c2 lifted). The head ripple-inserts 5 s at 10. Ours overwrites 3 s at 10, written
+/// against `c1`'s end. Resolved at `c1`'s end it would cut the head's clip from 5 s to 2,
+/// unannounced; since something now starts at that end, shifts decide and pass it: 15.
+#[test]
+fn stale_overwrite_at_a_gapped_end_does_not_cut_the_heads_insert() {
+    let p = apply(&three(), vec![lift("c2")]).project;
+    let (head, c) = commit(&p, vec![ins("$h", "t1", 10, 5)]);
+    let h = &c.bindings["$h"];
+    let rb = stale(&p, &head, &c, vec![overwrite("$x", secs(10), secs(3))]);
+    assert_eq!(at_of(&rb.tx.ops[0]), secs(15));
+    assert_eq!(clip(&rb.applied.project, h).duration, secs(5));
+}

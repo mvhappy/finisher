@@ -589,5 +589,21 @@ mod tests {
         }
         .into();
         assert!(trim.positions_mut().is_empty());
+        // `rebase::anchors` tells positional ops without copying them: the same list.
+        let mv: Op = ItemMove {
+            item: "c1".into(),
+            track: "t1".into(),
+            at: r(0),
+            mode: InsertMode::Ripple,
+        }
+        .into();
+        for op in [insert, restore, alias, trim, mv] {
+            assert_eq!(
+                crate::rebase::anchors::positional(&op),
+                !op.clone().positions_mut().is_empty(),
+                "{}",
+                op.name()
+            );
+        }
     }
 }
