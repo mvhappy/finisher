@@ -15,7 +15,7 @@ export const context = (over: Partial<PluginContext["limits"]> = {}): PluginCont
   grants: [{ perm: "project:read" }],
   dirs: { plugin: "/pkg", tmp: "/tmp/p" },
   locale: "en",
-  limits: { timeoutS: 10, messageBytes: 1 << 20, pageBytes: 768 * 1024, ...over },
+  limits: { timeoutS: 10, messageBytes: 1 << 20, pageBytes: 756 * 1024, ...over },
 });
 
 let jobs = 0;
@@ -54,6 +54,11 @@ export class FakeHost {
   /** Writes one host line (with `v` and the next `seq` unless `raw`). */
   send(m: HostMsg | Record<string, unknown>, raw = false): void {
     this.child.stdin.write(`${JSON.stringify(raw ? m : { v: 1, ...m, seq: ++this.#seq })}\n`);
+  }
+
+  /** Writes `text` as it is (no `v`, no `seq`, no newline added). */
+  sendRaw(text: string): void {
+    this.child.stdin.write(text);
   }
 
   start(job: StartJob, aliveMs = 5000): void {

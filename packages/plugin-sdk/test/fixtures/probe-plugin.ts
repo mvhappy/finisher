@@ -39,5 +39,21 @@ definePlugin({
     "ignore-cancel": () => never,
     big: () => ({ data: "x".repeat(1 << 20) }),
     "bad-result": () => 42 as never,
+    bigint: () => ({ data: { n: 10n } }),
+    cycle: () => {
+      const a: { self?: unknown } = {};
+      a.self = a;
+      return { data: a };
+    },
+    "big-error": () => {
+      throw new Error("x".repeat(2 << 20));
+    },
+    "big-code": () => {
+      throw new PluginError("X".repeat(2 << 20), "m");
+    },
+    "bigint-details": () => {
+      throw new PluginError("PROBE_ODD", "odd details", { n: 1n });
+    },
+    "view-huge": async (_args, host) => ({ data: await host.view({ range: "x".repeat(2 << 20) } as never) }),
   },
 });

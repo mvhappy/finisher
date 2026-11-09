@@ -7,7 +7,8 @@
 // It accepts a deliberately small module subset and refuses anything else with a clear error:
 // - static imports from `node:` builtins (named, `* as ns`, default), from relative paths and
 //   from `aliases` (`{"@finisher/plugin-sdk": "/abs/src/index.ts"}`); `import type` is erased;
-// - `export function|async function|class|const|let|var <name>` (one binding per `export`),
+// - `export function|async function|class|const|let|var <name>` (one binding per `export`:
+//   `export const a = 1, b = 2` is refused, as the second binding would not be exported),
 //   `export { a, b as c }` and `export { a } from "./x.ts"`, `export * from "./x.ts"`;
 // - dynamic `import("node:…")`; no other dynamic import, no `export default`, no import cycles.
 // Each module runs in its own function scope, in dependency order; exports are copied when the
@@ -22,6 +23,80 @@ const EXPORT_DESTRUCTURE = /^export\s+(?:const|let|var)\s*[{[]/m;
 const EXPORT_LIST = /^[ \t]*export\s*\{([^}]*)\}\s*(?:from\s*(["'])([^"'\n]+)\2)?[ \t]*;?/gm;
 const EXPORT_STAR = /^[ \t]*export\s*\*\s*from\s*(["'])([^"'\n]+)\1[ \t]*;?/gm;
 const DYNAMIC_IMPORT = /\bimport\s*\(\s*(?:(["'])([^"'\n]*)\1)?/g;
+
+const OPEN = "([{";
+const CLOSE = ")]}";
+// After one of these (or at the start) a `/` begins a regular expression, not a division.
+const BEFORE_REGEX = "=(,:[!&|?{};+-*%<>~^";
+// A line ending at depth 0 after one of these, with the next not starting with one of
+// `CONTINUES`, ends the statement (automatic semicolon insertion).
+const ENDS_EXPR = /[\w$)\]}"'`]/;
+const CONTINUES = ",.?:+-*/%&|^=<>";
+
+/**
+ * Whether the declaration whose initialiser starts at `from` in `code` declares a second
+ * binding: a `,` at bracket depth 0 before the statement ends. Strings, template literals,
+ * regular expressions and comments are skipped (TypeScript types are already erased).
+ */
+function declaresMore(code, from) {
+  let depth = 0;
+  let last = "=";
+  for (let i = from; i < code.length; i++) {
+    const c = code[i];
+    if (c === "/" && code[i + 1] === "/") {
+      while (i < code.length && code[i] !== "\n") i++;
+      i--;
+      continue;
+    }
+    if (c === "/" && code[i + 1] === "*") {
+      const end = code.indexOf("*/", i + 2);
+      i = end < 0 ? code.length : end + 1;
+      continue;
+    }
+    if (c === '"' || c === "'") {
+      for (i++; i < code.length && code[i] !== c && code[i] !== "\n"; i++) if (code[i] === "\\") i++;
+      last = c;
+      continue;
+    }
+    if (c === "`") {
+      let inner = 0;
+      for (i++; i < code.length; i++) {
+        if (code[i] === "\\") i++;
+        else if (inner === 0 && code[i] === "`") break;
+        else if (code[i] === "$" && code[i + 1] === "{") (inner++, i++);
+        else if (inner > 0 && code[i] === "{") inner++;
+        else if (inner > 0 && code[i] === "}") inner--;
+      }
+      last = c;
+      continue;
+    }
+    if (c === "/" && BEFORE_REGEX.includes(last)) {
+      let cls = false;
+      for (i++; i < code.length && code[i] !== "\n"; i++) {
+        if (code[i] === "\\") i++;
+        else if (code[i] === "[") cls = true;
+        else if (code[i] === "]") cls = false;
+        else if (code[i] === "/" && !cls) break;
+      }
+      last = "/x";
+      continue;
+    }
+    if (c === "\n" && depth === 0) {
+      const next = code.slice(i + 1).match(/^\s*(\S)/)?.[1];
+      if (ENDS_EXPR.test(last.at(-1)) && (next === undefined || !CONTINUES.includes(next))) return false;
+      continue;
+    }
+    if (/\s/.test(c)) continue;
+    if (OPEN.includes(c)) depth++;
+    else if (CLOSE.includes(c)) {
+      if (depth === 0) return false;
+      depth--;
+    } else if (depth === 0 && c === ";") return false;
+    else if (depth === 0 && c === ",") return true;
+    last = c;
+  }
+  return false;
+}
 
 /** `a, b as c` → [[local, exported]]; empty entries (erased `type` specifiers) dropped. */
 function specifiers(list) {
@@ -109,7 +184,10 @@ export function bundle({ entry, outfile, aliases = {} }) {
       for (const [local, as] of specifiers(list)) exports.push(scope === undefined ? `${as}: ${local}` : `${as}: ${scope}.${local}`);
       return "";
     });
-    body = body.replace(EXPORT_DECL, (_all, kw, name) => {
+    body = body.replace(EXPORT_DECL, (all, kw, name, at, text) => {
+      if (/^(?:const|let|var)$/.test(kw) && declaresMore(text, at + all.length)) {
+        throw new Error(`bundle: ${where}: an export declaring more than one binding (${kw} ${name} = …, …) is not supported: export each binding on its own`);
+      }
       exports.push(`${name}: ${name}`);
       return `${kw} ${name}`;
     });

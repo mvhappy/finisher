@@ -20,8 +20,14 @@ import { protocolError } from "./errors.ts";
 /** Sends one call and resolves to its reply's `value` (rejects with a `PluginError`). */
 export type CallFn = (method: HostMethod, params: unknown) => Promise<unknown>;
 
-/** The largest page this SDK asks for (Decision 5: 768 KiB before base64). */
-export const PAGE_BYTES = 768 * 1024;
+/**
+ * The largest page this SDK asks for: 756 KiB (774,144 bytes), mirroring
+ * `fin_plugin_api::protocol::PAGE_BYTES` (not in the generated types). Its base64 is 1,032,192
+ * characters, which leaves room for the reply's own JSON inside one 1 MiB envelope line.
+ */
+export const PAGE_BYTES = 756 * 1024;
+/** The longest response body this SDK reads (`net.fetch`'s declared `length`): 64 MiB. */
+export const MAX_BODY_BYTES = 64 << 20;
 
 /** A response read to its end: the body joined from `net.read` pages. */
 export interface HttpResponse {
@@ -44,7 +50,10 @@ export class Host {
   readonly context: PluginContext;
   /** The command run: `command`, `args`, `project`, `branch` and the pinned `rev`. */
   readonly run: CommandRun;
-  /** Fires when the host cancels the job (or the process is shutting down). */
+  /**
+   * Fires when the host cancels the job, when the process is shutting down, and also when the
+   * job ends normally (its handler settled): work still holding it should stop then too.
+   */
   readonly signal: AbortSignal;
   readonly #call: CallFn;
 
@@ -62,19 +71,21 @@ export class Host {
   }
 
   /**
-   * The project at the job's pinned `rev` (`project:read`): every page fetched and joined;
-   * a page of another `rev`, a wrong page number or a page count that changes is
-   * `PLUGIN_PROTOCOL`.
+   * The project at the job's pinned `rev` (`project:read`): every page fetched and joined.
+   * `PLUGIN_PROTOCOL {reason, page, expected, got}` when a page names another index
+   * (`snapshotPage`), the page count is 0 or changes (`snapshotPages`) or a page is of another
+   * `rev` (`snapshotRev`).
    */
   async snapshot(): Promise<Project> {
     const first = (await this.#call("project.snapshot", {})) as ProjectSnapshotPage;
     const pages = first.pages;
-    if (!Number.isInteger(pages) || pages < 1) throw protocolError("a snapshot has no pages", { reason: "snapshotPages", pages });
+    if (!Number.isInteger(pages) || pages < 1) throw protocolError("a snapshot has no pages", { reason: "snapshotPages", page: 0, expected: 1, got: pages });
     const parts: Buffer[] = [];
     for (let page = 0; page < pages; page++) {
       const p = page === 0 ? first : ((await this.#call("project.snapshot", { page })) as ProjectSnapshotPage);
-      if (p.page !== page || p.pages !== pages) throw protocolError("a snapshot page is out of order", { reason: "snapshotPage", expected: page, got: p.page, pages: p.pages });
-      if (p.rev !== this.run.rev) throw protocolError("a snapshot page is of another revision", { reason: "snapshotRev", expected: this.run.rev, got: p.rev });
+      if (p.rev !== this.run.rev) throw protocolError("a snapshot page is of another revision", { reason: "snapshotRev", page, expected: this.run.rev, got: p.rev });
+      if (p.page !== page) throw protocolError("a snapshot page is out of order", { reason: "snapshotPage", page, expected: page, got: p.page });
+      if (p.pages !== pages) throw protocolError("a snapshot's page count changed", { reason: "snapshotPages", page, expected: pages, got: p.pages });
       parts.push(b64(p.bytesB64));
     }
     try {
@@ -91,17 +102,22 @@ export class Host {
 
   /**
    * An HTTPS request through the host's broker (`net`, approved origins only): the head from
-   * `net.fetch`, then the body in `net.read` pages until `eof`. A body whose pages do not add
-   * up to the declared `length` is `PLUGIN_PROTOCOL`.
+   * `net.fetch`, then the body in `net.read` pages until `eof`. `PLUGIN_PROTOCOL` when the
+   * declared `length` passes `MAX_BODY_BYTES` (`bodyTooLarge`, nothing read), a page is longer
+   * than asked or empty before `eof` (`bodyPage`), or the pages do not add up to `length`
+   * (`bodyLength`).
    */
   async fetch(request: HttpRequest, opts: FetchOptions = {}): Promise<HttpResponse> {
     const head = (await this.#call("net.fetch", opts.grant === undefined ? { request } : { request, grant: opts.grant })) as NetFetchReply;
+    if (!Number.isSafeInteger(head.length) || head.length < 0) throw protocolError("a response has no valid length", { reason: "bodyLength", length: head.length });
+    if (head.length > MAX_BODY_BYTES) throw protocolError("a response body is larger than this SDK reads", { reason: "bodyTooLarge", length: head.length, max: MAX_BODY_BYTES });
     const parts: Buffer[] = [];
     let offset = 0;
     for (;;) {
       const length = Math.min(this.#pageBytes, Math.max(head.length - offset, 0)) || 1;
       const page = (await this.#call("net.read", { handle: head.handle, offset, length })) as NetReadPage;
       const bytes = b64(page.bytesB64);
+      if (bytes.length > length) throw protocolError("a response page is longer than asked", { reason: "bodyPage", offset, length, got: bytes.length });
       parts.push(bytes);
       offset += bytes.length;
       if (offset > head.length) throw protocolError("a response body is longer than its length", { reason: "bodyLength", length: head.length, got: offset });

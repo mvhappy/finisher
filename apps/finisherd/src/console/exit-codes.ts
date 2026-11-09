@@ -37,6 +37,8 @@ export const JOB_RESULT_CODES: ReadonlyArray<string> = [
   "POISON_ITEM", "HELPER_FAILED",
   // sp8b Task 4: a plugin job's process crashed, hung or broke the envelope.
   "PLUGIN_CRASHED", "PLUGIN_TIMEOUT", "PLUGIN_PROTOCOL",
+  // sp8b Tasks 13-14: a plugin's command failed in its own code, or wrote an invalid output.
+  "PLUGIN_COMMAND_FAILED", "PLUGIN_OUTPUT_INVALID",
 ];
 
 export const UNAVAILABLE_CODES: ReadonlyArray<string> = [

@@ -6,8 +6,11 @@
 // - a `PluginError`, or any object with a string `code` and `message` that is not one of
 //   Node's own errors, keeps its code, message and details;
 // - Node's permission model (`ERR_ACCESS_DENIED`, a `--permission` process touching what it
-//   was not granted) is `PLUGIN_PERMISSION_DENIED {perm: "fs"|..., nodePermission}`, without
-//   the resource (it is usually a path, and errors to non-human callers lose paths);
+//   was not granted) is `PLUGIN_PERMISSION_DENIED {perm, nodePermission}`, without the resource
+//   (it is usually a path, and errors to non-human callers lose paths). `perm` is a manifest
+//   permission name (`fs`, for Node's `FileSystem*` scopes) or `"unknown"`: Node's other scopes
+//   (child processes, workers, addons, WASI) have no manifest permission that grants them;
+//   `nodePermission` keeps Node's own scope name;
 // - a cancelled job's failure is `JOB_CANCELLED` (the runtime decides that, not this module);
 // - anything else is `PLUGIN_COMMAND_FAILED {name, nodeCode?}` with the error's message.
 import type { JobError, PluginError as PluginErrorData } from "@finisher/core-types";
@@ -38,8 +41,10 @@ export const codes = {
   /** The host sent something this SDK cannot serve: an unknown command or kind, a malformed run, inconsistent pages. */
   PLUGIN_PROTOCOL: "PLUGIN_PROTOCOL",
   PLUGIN_PERMISSION_DENIED: "PLUGIN_PERMISSION_DENIED",
-  /** A handler threw something that is not a `PluginError`. */
+  /** A handler threw something that is not a `PluginError`, or a job file's I/O failed (`{reason: io}`). */
   PLUGIN_COMMAND_FAILED: "PLUGIN_COMMAND_FAILED",
+  /** A job's output file is not what the host created (`{reason: size|truncated|link|notRegular}`, spec §13). */
+  PLUGIN_OUTPUT_INVALID: "PLUGIN_OUTPUT_INVALID",
   /** 5C's cancelled job (`fin_jobs::JobError::cancelled`). */
   JOB_CANCELLED: "JOB_CANCELLED",
 } as const;
@@ -48,14 +53,9 @@ export const protocolError = (message: string, details: { [k: string]: unknown }
 
 export const cancelledError = (): PluginError => new PluginError(codes.JOB_CANCELLED, "the job was cancelled");
 
-/** Node's permission scopes (`err.permission`) as the manifest's permission names. */
-function permOf(nodePermission: unknown): string {
-  if (typeof nodePermission !== "string") return "unknown";
-  if (nodePermission.startsWith("FileSystem")) return "fs";
-  if (nodePermission === "ChildProcess") return "process";
-  if (nodePermission === "WorkerThreads") return "worker";
-  if (nodePermission === "Addon" || nodePermission === "WASI") return "native";
-  return "unknown";
+/** Node's permission scope (`err.permission`) as a manifest permission name, or `"unknown"`. */
+function permOf(nodePermission: string): "fs" | "unknown" {
+  return nodePermission.startsWith("FileSystem") ? "fs" : "unknown";
 }
 
 const isObject = (e: unknown): e is Record<string, unknown> => typeof e === "object" && e !== null;
