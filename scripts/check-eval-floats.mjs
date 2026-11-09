@@ -8,7 +8,7 @@
 // literals are not checked.
 //
 // Render determinism (sub-project 6 spec §13.4, plan 6A Task 7): the hashed render modules
-// (`fin-media`'s colour conversion, HDR tone mapping and soft clip (`colour/tonemap.rs`,
+// (`fin-media`'s colour conversion, HDR tone mapping and gamut compression (`colour/tonemap.rs`,
 // `colour/softclip.rs`, plan 6B-1 Task 10) and sampling rule, `fin-compositor`'s geometry,
 // coverage, mip levels and CPU reference) refuse the same platform transcendental and fused calls (methods
 // and paths), the metavariable forms and SIMD intrinsics (`std::arch`/`core::arch`), but must

@@ -23,8 +23,8 @@ pub const CORPUS: [&str; 5] = [
     include_str!("../corpus/colour.json"),
 ];
 
-/// The cases that convert colour (wide-gamut SDR and HDR, `RENDER_VERSION` 2): the soft clip
-/// and the tone mapping (spec §10.1).
+/// The cases that convert colour (wide-gamut SDR and HDR, `RENDER_VERSION` 2): the gamut
+/// compression and the tone mapping (spec §10.1).
 pub const COLOUR_CASES: [&str; 8] = [
     "bt2020-gamut",
     "p3-gamut",

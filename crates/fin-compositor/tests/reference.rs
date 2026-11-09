@@ -171,8 +171,8 @@ fn t0_change_without_bump_fails() {
     assert_eq!(committed.render_version, RENDER_VERSION);
 }
 
-/// Wide-gamut SDR and HDR sources (spec §10.1) at `RENDER_VERSION` 2: the soft clip replaced
-/// 6A's hard clip (the BT.2020 case moved off its version-1 hash) and HDR is tone-mapped by
+/// Wide-gamut SDR and HDR sources (spec §10.1) at `RENDER_VERSION` 2: the gamut compression
+/// replaced 6A's hard clip (the BT.2020 case moved off its version-1 hash) and HDR is tone-mapped by
 /// the BT.2390 EETF, its source peak from the metadata. Each case's hash is in the goldens.
 #[test]
 fn wide_gamut_softclip_t0() {
@@ -201,6 +201,34 @@ fn wide_gamut_softclip_t0() {
         golden.hashes["bt2020-gamut"],
         "6a1bc264337a6e3866920f0c28263e020fe530c47b7db4167cd553292ef2ca79"
     );
+}
+
+/// Owner decision 2026-11-09 (spec §10.1): what Rec.709 can show passes through. The Display P3
+/// case, tagged Rec.709 instead, renders every neutral pixel (white, the greys, black) to the
+/// same bytes.
+#[test]
+fn wide_gamut_keeps_what_rec709_shows() {
+    for name in ["p3-gamut", "bt2020-gamut"] {
+        let mut c = cases().into_iter().find(|c| c.name == name).unwrap();
+        let wide = reference::render(&c.plan, &mut c.patterns(), c.size()).rgba8;
+        for spec in c.sources.values_mut() {
+            spec.colour.primaries = fin_media::Primaries::Bt709;
+        }
+        let narrow = reference::render(&c.plan, &mut c.patterns(), c.size()).rgba8;
+        let (mut neutral, mut moved) = (0, 0);
+        for (w, n) in wide.chunks(4).zip(narrow.chunks(4)) {
+            if n[0] == n[1] && n[1] == n[2] {
+                assert_eq!(w, n, "{name}: a neutral pixel moved");
+                neutral += 1;
+            } else if w != n {
+                moved += 1;
+            }
+        }
+        assert!(neutral > 1000, "{name}: {neutral} neutral pixels");
+        // The coloured pixels are different colours in the two gamuts, so they differ; the
+        // neutral ones are the check (white itself: fin-media's tests/gamut.rs).
+        assert!(moved > 0);
+    }
 }
 
 #[test]

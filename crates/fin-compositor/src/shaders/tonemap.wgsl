@@ -1,10 +1,10 @@
-// HDR to SDR and the gamut soft clip (spec §10.1): a line-for-line port of fin-media's
+// HDR to SDR and the gamut compression (spec §10.1): a line-for-line port of fin-media's
 // `colour::softclip` and `colour::tonemap` (`to_sdr` and the transfers before it); T1 holds
-// between them. The EETF's constants come from `tonemap::Eetf`, computed in Rust. Uses
-// `from_linear` (common.wgsl). Zero inputs to `pow` are answered before the call, as `pow(0, y)`
-// is not defined everywhere.
+// between them. The EETF's and the compression's constants are computed in Rust. Zero and
+// negative inputs to `pow` are answered before the call, as `pow(0, y)` is not defined
+// everywhere.
 
-const KNEE: f32 = 0.8;
+const POWER: f32 = 1.2;
 
 const PQ_M1: f32 = 2610.0 / 16384.0;
 const PQ_M2: f32 = 2523.0 / 4096.0 * 128.0;
@@ -27,12 +27,43 @@ struct Eetf {
     knee: f32,
 }
 
-fn softclip(x: f32) -> f32 {
-    if x <= KNEE {
-        return x;
+// The gamut compression (fin-media's `softclip`): per channel, the encoded distance from the
+// achromatic max(R′, G′, B′) above the threshold through the RGC curve.
+struct Compression {
+    threshold: vec3f,
+    scale: vec3f,
+}
+
+fn encode_signed(v: f32) -> f32 {
+    if v > 0.0 {
+        return pow(v, 1.0 / 2.4);
+    } else if v < 0.0 {
+        return -pow(-v, 1.0 / 2.4);
     }
-    let t = (x - KNEE) / (1.0 - KNEE);
-    return KNEE + (1.0 - KNEE) / sqrt(1.0 + 1.0 / (t * t));
+    return 0.0;
+}
+
+fn compress_distance(d: f32, t: f32, s: f32) -> f32 {
+    if s <= 0.0 || d <= t {
+        return d;
+    }
+    let x = (d - t) / s;
+    return t + s * x / pow(1.0 + pow(x, POWER), 1.0 / POWER);
+}
+
+fn compress(rgb: vec3f, c: Compression) -> vec3f {
+    let a = max(max(rgb.x, rgb.y), rgb.z);
+    if a <= 0.0 {
+        return rgb;
+    }
+    var out = rgb;
+    for (var k = 0; k < 3; k++) {
+        let d = (a - rgb[k]) / a;
+        if c.scale[k] > 0.0 && d > c.threshold[k] {
+            out[k] = a - compress_distance(d, c.threshold[k], c.scale[k]) * a;
+        }
+    }
+    return out;
 }
 
 fn pq_eotf(e_in: f32) -> f32 {
@@ -94,21 +125,24 @@ fn eetf_apply(c: Eetf, nits: f32) -> f32 {
     return pq_eotf(eetf_apply_pq(c, pq_inverse_eotf(nits)));
 }
 
-// Linear light through the primaries matrix (rows g0, g1, g2), the soft clip, the BT.1886
-// encode (fin-media's `convert::linear_to_709`).
-fn linear_to_709(l: vec3f, g0: vec3f, g1: vec3f, g2: vec3f) -> vec3f {
-    let r = g0.x * l.x + g0.y * l.y + g0.z * l.z;
-    let g = g1.x * l.x + g1.y * l.y + g1.z * l.z;
-    let b = g2.x * l.x + g2.y * l.y + g2.z * l.z;
-    return vec3f(from_linear(softclip(r)), from_linear(softclip(g)), from_linear(softclip(b)));
+// Linear light through the primaries matrix (rows g0, g1, g2), the signed BT.1886 encode, the
+// gamut compression and the clip to 0…1 (fin-media's `convert::linear_to_709`).
+fn linear_to_709(l: vec3f, g0: vec3f, g1: vec3f, g2: vec3f, c: Compression) -> vec3f {
+    let v = vec3f(
+        g0.x * l.x + g0.y * l.y + g0.z * l.z,
+        g1.x * l.x + g1.y * l.y + g1.z * l.z,
+        g2.x * l.x + g2.y * l.y + g2.z * l.z,
+    );
+    let e = compress(vec3f(encode_signed(v.x), encode_signed(v.y), encode_signed(v.z)), c);
+    return vec3f(clamp(e.x, 0.0, 1.0), clamp(e.y, 0.0, 1.0), clamp(e.z, 0.0, 1.0));
 }
 
 // Display light in cd/m² to display-encoded Rec.709 SDR (fin-media's `tonemap::to_sdr`).
-fn to_sdr(rgb: vec3f, c: Eetf, target_peak: f32, g0: vec3f, g1: vec3f, g2: vec3f) -> vec3f {
+fn to_sdr(rgb: vec3f, c: Eetf, target_peak: f32, g0: vec3f, g1: vec3f, g2: vec3f, k: Compression) -> vec3f {
     let m = max(max(rgb.x, rgb.y), rgb.z);
     if m <= 0.0 {
         return vec3f(0.0);
     }
     let s = eetf_apply(c, m) / m / target_peak;
-    return linear_to_709(vec3f(rgb.x * s, rgb.y * s, rgb.z * s), g0, g1, g2);
+    return linear_to_709(vec3f(rgb.x * s, rgb.y * s, rgb.z * s), g0, g1, g2, k);
 }

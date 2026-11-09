@@ -7,7 +7,7 @@
 //! Each layout has its own fetch prefix (`ingest_*.wgsl`) in front of the shared body, so every
 //! format reaches the conversion as code values, in the reference's order of operations.
 
-use fin_media::colour::convert::luma_coefficients;
+use fin_media::colour::convert::{IDENTITY, luma_coefficients};
 use fin_media::colour::tonemap::{Conversion, Eetf, Hdr};
 use fin_media::{ChromaSiting, PixelFormat, Range};
 
@@ -64,7 +64,7 @@ pub(crate) const SOURCE_USAGE: wgpu::TextureUsages =
     wgpu::TextureUsages::RENDER_ATTACHMENT.union(wgpu::TextureUsages::TEXTURE_BINDING);
 
 /// The `Ingest` uniform block of `ingest.wgsl`.
-pub(crate) fn uniforms(src: &SourceFrame) -> [f32; 32] {
+pub(crate) fn uniforms(src: &SourceFrame) -> [f32; 36] {
     let tags = src.colour;
     let (cw, ch) = (src.size.width.div_ceil(2), src.size.height.div_ceil(2));
     // Chroma sample k sits at luma coordinate 2k + offset (as the reference reads it).
@@ -88,7 +88,6 @@ pub(crate) fn uniforms(src: &SourceFrame) -> [f32; 32] {
     };
     let gbr = luma_coefficients(tags.matrix).is_none();
     let (kr, kb) = luma_coefficients(tags.matrix).unwrap_or((0.2126, 0.0722));
-    let identity = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
     // The conversion (`tonemap::Conversion`) as the shader's mode, matrix and EETF constants.
     let none = Eetf {
         black: 0.0,
@@ -98,7 +97,7 @@ pub(crate) fn uniforms(src: &SourceFrame) -> [f32; 32] {
         knee: 1.0,
     };
     let (mode, g, e, target) = match Conversion::for_source(&tags, src.hdr.as_ref()) {
-        Conversion::None => (0.0, identity, none, 1.0),
+        Conversion::None => (0.0, IDENTITY, none, 1.0),
         Conversion::Gamut(m) => (1.0, m, none, 1.0),
         Conversion::Hdr(kind, p) => (
             if kind == Hdr::Pq { 2.0 } else { 3.0 },
@@ -120,18 +119,18 @@ pub(crate) fn uniforms(src: &SourceFrame) -> [f32; 32] {
         kb,
         if gbr { 1.0 } else { 0.0 },
         mode,
-        g[0][0],
-        g[0][1],
-        g[0][2],
-        0.0,
-        g[1][0],
-        g[1][1],
-        g[1][2],
-        0.0,
-        g[2][0],
-        g[2][1],
-        g[2][2],
-        0.0,
+        g.matrix[0][0],
+        g.matrix[0][1],
+        g.matrix[0][2],
+        g.compression.threshold[0],
+        g.matrix[1][0],
+        g.matrix[1][1],
+        g.matrix[1][2],
+        g.compression.threshold[1],
+        g.matrix[2][0],
+        g.matrix[2][1],
+        g.matrix[2][2],
+        g.compression.threshold[2],
         e.black,
         e.range,
         e.max_lum,
@@ -139,6 +138,10 @@ pub(crate) fn uniforms(src: &SourceFrame) -> [f32; 32] {
         e.knee,
         target,
         0.0,
+        0.0,
+        g.compression.scale[0],
+        g.compression.scale[1],
+        g.compression.scale[2],
         0.0,
     ]
 }

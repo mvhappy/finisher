@@ -1,7 +1,7 @@
 //! Ingest (spec §5.1 step 2): Y′CbCr code values to display-encoded R′G′B′ `f32`: bilinear
 //! chroma upsampling at the source's siting, range expansion, the source matrix, and the
-//! conversion to the Rec.709 SDR working space: the wide-gamut matrix and soft clip, or the HDR
-//! tone mapping (`fin_media::colour::tonemap`, spec §10.1).
+//! conversion to the Rec.709 SDR working space: the wide-gamut matrix and gamut compression,
+//! or the HDR tone mapping (`fin_media::colour::tonemap`, spec §10.1).
 
 use fin_media::colour::convert::decode;
 use fin_media::colour::tonemap::Conversion;

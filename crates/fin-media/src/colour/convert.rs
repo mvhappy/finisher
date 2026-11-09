@@ -2,6 +2,7 @@
 //! the BT.601/709/2020 Y′CbCr matrices, BT.1886 transfer, and the wide-gamut SDR primaries
 //! conversion to the Rec.709 working space (HDR is `tonemap`'s). Scalar `f32`, `libm` for powers (spec §13.4).
 
+use super::softclip::{Compression, compress, encode_signed};
 use super::{Matrix, Primaries, Range};
 
 /// `(Kr, Kb)` of a Y′CbCr matrix; `None` for identity (GBR). Unknown reads as BT.709 (callers
@@ -104,20 +105,48 @@ pub fn primaries_to_709(p: Primaries) -> Option<[[f32; 3]; 3]> {
     }
 }
 
-/// A display-encoded R′G′B′ in primaries `m`'s gamut to Rec.709: linearised, then
-/// [`linear_to_709`].
-pub fn convert_gamut(rgb: [f32; 3], m: &[[f32; 3]; 3]) -> [f32; 3] {
-    linear_to_709([to_linear(rgb[0]), to_linear(rgb[1]), to_linear(rgb[2])], m)
+/// A source gamut's way to Rec.709: the linear-light matrix and the gamut compression of what
+/// lands outside ([`softclip`](super::softclip)).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Gamut {
+    pub matrix: [[f32; 3]; 3],
+    pub compression: Compression,
 }
 
-/// Linear light through the 3×3 `m`, then per channel the soft clip
-/// ([`softclip`](super::softclip::softclip), spec §10.1; 6A hard-clipped to 0…1 before
-/// `RENDER_VERSION` 2) and the BT.1886 encode. Wide-gamut SDR and tone-mapped HDR share it.
-pub fn linear_to_709(l: [f32; 3], m: &[[f32; 3]; 3]) -> [f32; 3] {
-    let mut out = [0.0f32; 3];
-    for (k, row) in m.iter().enumerate() {
-        let v = row[0] * l[0] + row[1] * l[1] + row[2] * l[2];
-        out[k] = from_linear(super::softclip::softclip(v));
-    }
-    out
+/// Rec.709 to itself: the identity, nothing to compress.
+pub const IDENTITY: Gamut = Gamut {
+    matrix: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+    compression: super::softclip::NONE,
+};
+
+/// [`primaries_to_709`] with the compression for `p`'s reach; `None` as there.
+pub fn gamut_to_709(p: Primaries) -> Option<Gamut> {
+    primaries_to_709(p).map(|matrix| Gamut {
+        matrix,
+        compression: Compression::for_primaries(p),
+    })
+}
+
+/// A display-encoded R′G′B′ in gamut `g`'s primaries to Rec.709: linearised, then
+/// [`linear_to_709`].
+pub fn convert_gamut(rgb: [f32; 3], g: &Gamut) -> [f32; 3] {
+    linear_to_709([to_linear(rgb[0]), to_linear(rgb[1]), to_linear(rgb[2])], g)
+}
+
+/// Linear light through `g`'s matrix, BT.1886-encoded with the sign kept, the gamut
+/// compression (spec §10.1; 6A hard-clipped to 0…1 before `RENDER_VERSION` 2), then clipped to
+/// 0…1 per channel. Wide-gamut SDR and tone-mapped HDR share it.
+pub fn linear_to_709(l: [f32; 3], g: &Gamut) -> [f32; 3] {
+    let m = &g.matrix;
+    let v = [
+        m[0][0] * l[0] + m[0][1] * l[1] + m[0][2] * l[2],
+        m[1][0] * l[0] + m[1][1] * l[1] + m[1][2] * l[2],
+        m[2][0] * l[0] + m[2][1] * l[1] + m[2][2] * l[2],
+    ];
+    let e = compress(v.map(encode_signed), &g.compression);
+    [
+        e[0].clamp(0.0, 1.0),
+        e[1].clamp(0.0, 1.0),
+        e[2].clamp(0.0, 1.0),
+    ]
 }

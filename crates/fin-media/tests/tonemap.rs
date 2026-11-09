@@ -1,11 +1,11 @@
-//! HDR tone mapping and the gamut soft clip (spec §10.1) against hand-computed values.
+//! HDR tone mapping and the BT.2408 reference white (spec §10.1) against hand-computed values.
 //!
 //! The PQ constants (SMPTE ST 2084): m1 = 2610/16384 = 0.159 301 76, m2 = 2523/4096 × 128 =
 //! 78.843 75, c1 = 3424/4096 = 0.835 937 5, c2 = 2413/4096 × 32 = 18.851 562 5,
 //! c3 = 2392/4096 × 32 = 18.6875. PQ(L) = ((c1 + c2·Y^m1) / (1 + c3·Y^m1))^m2 with Y = L/10 000.
 
-use fin_media::colour::convert::{from_linear, primaries_to_709};
-use fin_media::colour::softclip::{KNEE, softclip};
+use fin_media::colour::convert::{IDENTITY, from_linear, gamut_to_709};
+use fin_media::colour::softclip::NONE;
 use fin_media::colour::tonemap::{
     Conversion, DEFAULT_PEAK, Eetf, HLG_PEAK, Hdr, SDR_PEAK, ToneMap, hlg_inverse_oetf, hlg_ootf,
     pq_eotf, pq_inverse_eotf, source_peak, to_sdr,
@@ -123,60 +123,24 @@ fn hlg_ootf_at_1000_nits() {
 }
 
 #[test]
-fn softclip_continuous_and_monotonic() {
-    assert_eq!(KNEE, 0.8);
-    // Identity up to the knee, negatives included.
-    for x in [-1.0f32, -0.1, 0.0, 0.3, 0.799, 0.8] {
-        assert_eq!(softclip(x), x);
-    }
-    // t = (x − 0.8) / 0.2; 0.8 + 0.2 · t / √(1 + t²): x = 1 → t = 1 → 0.8 + 0.2 / √2 = 0.941 421;
-    // x = 0.9 → t = ½ → 0.8 + 0.1 / √1.25 = 0.889 443; x = 1.660 491 (BT.2020 red) → t = 4.302 455
-    // → 0.994 807.
-    assert!(close(softclip(1.0), 0.941_421, 1e-6));
-    assert!(close(softclip(0.9), 0.889_443, 1e-6));
-    assert!(close(softclip(1.660_491), 0.994_807, 1e-6));
-    // Continuous with slope 1 at the knee, Lipschitz 1 (never steeper than the identity),
-    // below 1.0, and increasing: strictly over every value a primaries matrix can produce
-    // (up to 2; further out f32 runs out of digits below 1.0).
-    let h = 1e-3f32;
-    assert!(close((softclip(KNEE + h) - softclip(KNEE)) / h, 1.0, 1e-3));
-    let mut last = softclip(-2.0);
-    let mut x = -2.0f32;
-    while x < 50.0 {
-        let next = x + 1.0 / 1024.0;
-        let v = softclip(next);
-        assert!(v - last <= (next - x) * 1.000_01, "steeper than 1 at {x}");
-        if next > KNEE && next <= 2.0 {
-            assert!(v > last, "strictly increasing at {next}");
-        } else {
-            assert!(v >= last);
-        }
-        assert!(v < 1.0, "{next} → {v}");
-        last = v;
-        x = next;
-    }
-}
-
-#[test]
 fn to_sdr_keeps_hue_and_lands_on_the_target() {
     let p = ToneMap {
         eetf: Eetf::new(1000.0, SDR_PEAK),
         target_peak: SDR_PEAK,
-        gamut: primaries_to_709(Primaries::Bt2020).unwrap(),
+        gamut: gamut_to_709(Primaries::Bt2020).unwrap(),
     };
-    // 1000-nit white → 100 nits → 1.0 relative → soft clip 0.941 421 → BT.1886 0.975 18.
+    // 1000-nit white → 100 nits → 1.0 relative: SDR white, kept by the gamut compression.
     let w = to_sdr([1000.0; 3], &p);
-    let want = from_linear(softclip(1.0));
-    assert!(w.iter().all(|&v| close(v, want, 2e-5)), "{w:?} vs {want}");
+    assert!(w.iter().all(|&v| close(v, 1.0, 2e-5)), "{w:?}");
     assert_eq!(to_sdr([0.0; 3], &p), [0.0; 3]);
     // The roll-off scales all three channels by max(R, G, B)'s ratio: a dim grey below the knee
     // keeps its level (10 nits → 0.1 → 0.1^(1/2.4)).
     let g = to_sdr([10.0; 3], &p);
     assert!(g.iter().all(|&v| close(v, from_linear(0.1), 2e-4)), "{g:?}");
     // A 100-nit orange keeps its R:G ratio (69.454 / 100 for both channels; R ends at 0.694 54,
-    // below the soft clip's knee).
+    // and no gamut to compress).
     let identity = ToneMap {
-        gamut: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+        gamut: IDENTITY,
         ..p
     };
     let o = to_sdr([100.0, 50.0, 0.0], &identity);
@@ -209,7 +173,7 @@ fn conversion_follows_the_tags_and_metadata() {
         panic!("PQ is tone-mapped")
     };
     assert_eq!(p.eetf, Eetf::new(DEFAULT_PEAK, SDR_PEAK));
-    assert_eq!(Some(p.gamut), primaries_to_709(Primaries::Bt2020));
+    assert_eq!(Some(p.gamut), gamut_to_709(Primaries::Bt2020));
     let Conversion::Hdr(Hdr::Hlg, p) =
         Conversion::for_source(&tags(Primaries::Bt2020, Transfer::Hlg), None)
     else {
@@ -276,7 +240,7 @@ fn hdr_signal_to_sdr_end_to_end() {
         None,
     );
     let w = c.apply([1.0; 3]);
-    let want = from_linear(softclip(1.0));
+    let want = 1.0;
     assert!(w.iter().all(|&v| close(v, want, 2e-5)), "{w:?}");
     // HLG E′ = 1 white: 1000 nits from the OOTF, the same white.
     let c = Conversion::for_source(
@@ -296,4 +260,54 @@ fn hdr_signal_to_sdr_end_to_end() {
         assert!(if i <= 95 { v > last } else { v >= last }, "{i}");
         last = v;
     }
+}
+
+/// HDR reference white (BT.2408: 203 cd/m², 75 % HLG, 58 % PQ) through the BT.2390 EETF on a
+/// 1,000-nit source lands at 0.949 signal (242 of 255), BT.2446 Method C's "approximately 95 %
+/// SDR signal"; a brighter master keeps more highlight range below it (4,000 nits: 0.875).
+/// Neutrals are never touched by the gamut compression, so these are the EETF's alone.
+#[test]
+fn hdr_reference_white_lands_near_sdr_white() {
+    let tags = |primaries, transfer| ColourTags {
+        primaries,
+        transfer,
+        ..ColourTags::BT709
+    };
+    let code = |v: f32| (v * 255.0).round() as u8;
+    // HLG 75 %: the inverse OETF gives 0.264 963 scene light, the OOTF 1000 · 0.264 963^1.2 =
+    // 202.9 cd/m²; EETF(1000 → 100) of that is 88.24 cd/m², 0.8824^(1/2.4) = 0.9492.
+    let hlg = Conversion::for_source(&tags(Primaries::Bt2020, Transfer::Hlg), None);
+    let w = hlg.apply([0.75; 3]);
+    assert!(w.iter().all(|&v| close(v, 0.949_2, 1e-3)), "{w:?}");
+    assert_eq!(code(w[1]), 242);
+    // PQ at 203 cd/m² (58 %), default 1,000-nit peak: the same level.
+    let pq = Conversion::for_source(&tags(Primaries::Bt2020, Transfer::Pq), None);
+    let w = pq.apply([pq_inverse_eotf(203.0); 3]);
+    assert!(w.iter().all(|&v| close(v, 0.949_2, 1e-3)), "{w:?}");
+    assert_eq!(code(w[1]), 242);
+    // Rec.709 primaries: the same white, and no gamut compression at all.
+    let Conversion::Hdr(_, p) = Conversion::for_source(&tags(Primaries::Bt709, Transfer::Pq), None)
+    else {
+        panic!()
+    };
+    assert_eq!(p.gamut.compression, NONE);
+    assert!(close(to_sdr([203.0; 3], &p)[0], 0.949_2, 1e-3));
+    // A 4,000-nit master (mdcv) keeps more highlight range below SDR white.
+    let bright = HdrInfo {
+        mastering: None,
+        content_light: Some(ContentLight {
+            max_cll: 4000,
+            max_fall: 400,
+        }),
+        dolby_vision: None,
+    };
+    let pq4k = Conversion::for_source(&tags(Primaries::Bt2020, Transfer::Pq), Some(&bright));
+    let w = pq4k.apply([pq_inverse_eotf(203.0); 3]);
+    assert!(close(w[1], 0.875_2, 2e-3), "{w:?}");
+    // The source peak reaches SDR white exactly.
+    assert!(
+        pq4k.apply([pq_inverse_eotf(4000.0); 3])
+            .iter()
+            .all(|&v| close(v, 1.0, 1e-4))
+    );
 }

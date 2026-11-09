@@ -118,7 +118,7 @@ fn every_corpus_case_is_within_t1_of_the_reference() {
     );
 }
 
-/// The tone mapping and soft clip of `tonemap.wgsl` against `fin_media::colour::tonemap`
+/// The tone mapping and gamut compression of `tonemap.wgsl` against `fin_media::colour::tonemap`
 /// (spec §10.1, §13.2 T1 and T4): every wide-gamut and HDR case, from I420.
 #[test]
 fn gpu_tonemap_within_t1() {

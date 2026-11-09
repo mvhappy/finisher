@@ -3,7 +3,7 @@
 //! BT.2100 OOTF at a 1,000-nit nominal peak to display light; then the BT.2390 EETF on the
 //! PQ-encoded `max(R, G, B)` (source peak from `clli`/`mdcv` or 1,000 nits, a 100-nit SDR
 //! target, black 0), its ratio applied to all three channels (no hue shift); then the
-//! primaries conversion to Rec.709, the soft clip and the BT.1886 encode.
+//! primaries conversion to Rec.709, the gamut compression (`softclip`) and the clip.
 //!
 //! [`to_sdr`] is the one definition: the CPU reference calls it through
 //! [`Conversion::apply`], and `fin-compositor`'s `shaders/tonemap.wgsl` is its line-for-line
@@ -12,7 +12,7 @@
 //! §13.4). Zero inputs to `powf` are answered before the call, as the shader must (`pow(0, y)`
 //! is not defined on every GPU).
 
-use super::convert::{convert_gamut, linear_to_709, primaries_to_709};
+use super::convert::{Gamut, IDENTITY, convert_gamut, gamut_to_709, linear_to_709};
 use super::{ColourTags, Transfer};
 use crate::info::HdrInfo;
 
@@ -36,7 +36,6 @@ pub const DEFAULT_PEAK: f32 = 1000.0;
 
 /// The BT.2020 luminance weights the HLG OOTF uses.
 const YS: [f32; 3] = [0.2627, 0.6780, 0.0593];
-const IDENTITY: [[f32; 3]; 3] = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
 
 /// ST 2084 EOTF: a PQ signal (clamped to 0…1) to absolute luminance in cd/m².
 pub fn pq_eotf(e: f32) -> f32 {
@@ -147,12 +146,12 @@ impl Eetf {
 pub struct ToneMap {
     pub eetf: Eetf,
     pub target_peak: f32,
-    pub gamut: [[f32; 3]; 3],
+    pub gamut: Gamut,
 }
 
 /// Display light in cd/m² (the source's primaries) to display-encoded Rec.709 SDR: the EETF on
 /// `max(R, G, B)` and its ratio on every channel, relative to the target peak, the primaries
-/// matrix, the soft clip, the BT.1886 encode.
+/// matrix, the gamut compression and the clip (`convert::linear_to_709`).
 pub fn to_sdr(rgb: [f32; 3], p: &ToneMap) -> [f32; 3] {
     let m = rgb[0].max(rgb[1]).max(rgb[2]);
     if m <= 0.0 {
@@ -196,7 +195,7 @@ pub enum Conversion {
     None,
     /// Wide-gamut SDR (Display P3, BT.2020): BT.1886-linearised, the 3×3 matrix, the soft
     /// clip, re-encoded.
-    Gamut([[f32; 3]; 3]),
+    Gamut(Gamut),
     /// PQ or HLG: tone-mapped by [`to_sdr`].
     Hdr(Hdr, ToneMap),
 }
@@ -204,7 +203,7 @@ pub enum Conversion {
 impl Conversion {
     /// The conversion for resolved tags and the source's HDR metadata.
     pub fn for_source(tags: &ColourTags, hdr: Option<&HdrInfo>) -> Conversion {
-        let gamut = primaries_to_709(tags.primaries);
+        let gamut = gamut_to_709(tags.primaries);
         let kind = match tags.transfer {
             Transfer::Pq => Hdr::Pq,
             Transfer::Hlg => Hdr::Hlg,
