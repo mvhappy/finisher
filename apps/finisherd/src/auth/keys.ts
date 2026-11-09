@@ -14,8 +14,7 @@
 // renamed over the old one, and the directory fsynced (`writeKeyFile`).
 //
 // Backups (review of Tasks 8–9, M3): on macOS `auth/` is excluded from Time Machine
-// (`tmutil addexclusion`, the sticky `NSURLIsExcludedFromBackupKey` exclusion that moves with
-// the folder) at every start. Windows File History backs up libraries and the profile's
+// (the sticky `NSURLIsExcludedFromBackupKey` exclusion that moves with the folder) at every start. Windows File History backs up libraries and the profile's
 // folders, which the default server data (`%LOCALAPPDATA%`) is not in; other backup tools and
 // Linux have no standard switch, so the README tells the owner to leave `auth/` out. A
 // `credential.master` restored from a backup, or an old `control.db` restored beside it,
@@ -153,14 +152,21 @@ const runCommand: RunCommand = (command, args) => {
   return r.error === undefined ? r.status : null;
 };
 
+/** The attribute that holds macOS's sticky backup exclusion. */
+const BACKUP_EXCLUDE_ATTR = "com.apple.metadata:com_apple_backup_excludeItem";
+/** Its value, byte for byte what `tmutil addexclusion` writes: a binary plist of the string `com.apple.backupd`. */
+export const BACKUP_EXCLUDE_HEX = "62706c69737430305f1011636f6d2e6170706c652e6261636b75706408000000000000010100000000000000010000000000000000000000000000001c";
+
 /**
- * Keeps `dir` out of backups where the OS has a switch for it (module docs): on macOS
- * `tmutil addexclusion` (no administrator rights needed for this sticky form). Never fails the
- * start: a warning on stderr. Answers whether it was excluded.
+ * Keeps `dir` out of backups where the OS has a switch for it (module docs): on macOS the
+ * sticky exclusion's attribute, written by `/usr/bin/xattr` (no administrator rights needed;
+ * `tmutil isexcluded` reads it as excluded). Not `tmutil addexclusion`, which writes the same
+ * attribute but takes 11 s on some hosts (it waits on backupd), and the start waited for it.
+ * Never fails the start: a warning on stderr. Answers whether it was excluded.
  */
 export function excludeFromBackups(dir: string, platform: NodeJS.Platform = process.platform, run: RunCommand = runCommand): boolean {
   if (platform !== "darwin") return false;
-  if (run("/usr/bin/tmutil", ["addexclusion", dir]) === 0) return true;
+  if (run("/usr/bin/xattr", ["-wx", BACKUP_EXCLUDE_ATTR, BACKUP_EXCLUDE_HEX, dir]) === 0) return true;
   process.stderr.write(`finisherd: warning: cannot exclude ${dir} from Time Machine backups; leave it out of backups yourself\n`);
   return false;
 }

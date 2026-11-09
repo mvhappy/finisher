@@ -1,5 +1,6 @@
 import { expect, test } from "vitest";
 import { defaultScopes } from "./auth.ts";
+import { DEVICE_RPCS } from "./device-rpcs.ts";
 import { FinRpcs } from "./rpc.ts";
 import { HUMAN_ONLY, needsConfirmation, RPC_SCOPES, requiredScopes, type ResolverName, ruleOf, SCOPES, WRITE_RPCS } from "./scopes.ts";
 
@@ -13,6 +14,9 @@ const OPTED_OUT: Record<string, "readOnly" | "service"> = {
   "agent.key.list": "readOnly",
   "agent.local.show": "readOnly",
   "agent.local.test": "readOnly",
+  "auth.pair.pending": "readOnly",
+  "auth.device.list": "readOnly",
+  "auth.devices.watch": "readOnly",
 };
 
 /** The resolver a payload field needs (spec §4.4 stage 3). */
@@ -41,13 +45,18 @@ test("rpc_scopes_cover_every_rpc", () => {
     const fields = Object.keys(rpc.payloadSchema.fields ?? {});
     for (const f of fields) {
       const need = f === "dir" ? (tag === "project.create" ? "createDir" : "openDir") : NEEDS[f];
-      // `library.file`'s `path` and `library.files`' `dir` are relative to a library root, not a filesystem path to resolve.
-      if (need !== undefined && !(tag.startsWith("library.") && (f === "path" || f === "dir"))) expect(rule.resolve ?? [], `${tag}.${f}`).toContain(need);
+      // `library.file`'s `path` and `library.files`' `dir` are relative to a library root, not a filesystem path to resolve;
+      // `settings.write`'s `path` names a settings section (5B Decision 27).
+      const notAFile = (tag.startsWith("library.") && (f === "path" || f === "dir")) || (tag === "settings.write" && f === "path");
+      if (need !== undefined && !notAFile) expect(rule.resolve ?? [], `${tag}.${f}`).toContain(need);
     }
     // Every write target is a payload field the branch resolver covers.
     for (const w of [...(rule.writes ?? []), ...(rule.targets ?? [])]) expect(fields, tag).toContain(w.split(".")[0]);
     if (rule.author !== undefined) expect(fields, tag).toContain(rule.author);
   }
+  // A library's root is a device's path to check (5B Decision 32).
+  expect(ruleOf("library.add").resolve).toContain("libraryRoot");
+  expect(ruleOf("registry.add").resolve).toContain("registryPaths");
   // Only the handshake is public.
   expect(tags.filter((t) => RPC_SCOPES[t as keyof typeof RPC_SCOPES].scopes.includes("public"))).toEqual(["auth.prove", "server.hello"]);
 });
@@ -189,5 +198,53 @@ test("human_only_needs_follow_the_payload_alone (never whether a project is open
   for (const [tag, payload] of payloads) {
     const human = facts.map((f) => requiredScopes(tag, payload, f).filter((s) => HUMAN_ONLY.has(s)).join(","));
     expect(new Set(human).size, `${tag} ${JSON.stringify(payload)}`).toBe(1);
+  }
+});
+
+// 5B Task 1 (Decision 1): the pairing, device, environment and settings RPCs.
+const DEVICE_TAGS = DEVICE_RPCS.map((r) => r._tag);
+
+test("device_rpcs_have_rules", () => {
+  expect(DEVICE_TAGS.length).toBe(14);
+  for (const tag of DEVICE_TAGS) {
+    expect(FinRpcs.requests.has(tag), tag).toBe(true);
+    expect(ruleOf(tag).scopes.length, tag).toBeGreaterThan(0);
+  }
+});
+
+test("device_default_scopes_are_all", () => {
+  expect(defaultScopes("device")).toEqual(SCOPES);
+});
+
+test("device_rules_human_only: every write needs auth.admin or settings.admin; only reads opt out", () => {
+  const reads = new Set(["env.describe", "auth.pair.pending", "auth.device.list", "auth.devices.watch"]);
+  for (const tag of DEVICE_TAGS) {
+    const rule = ruleOf(tag);
+    if (tag === "env.describe") {
+      expect(rule.scopes).toEqual(["server.read"]);
+      continue;
+    }
+    expect(rule.scopes, tag).toEqual([tag === "settings.write" ? "settings.admin" : "auth.admin"]);
+    expect(rule.scopes.every((s) => HUMAN_ONLY.has(s)), tag).toBe(true);
+    if (reads.has(tag)) expect(rule.unconfirmed, tag).toBe("readOnly");
+    else {
+      expect(rule.unconfirmed, tag).toBeUndefined();
+      expect(needsConfirmation(tag, {}), tag).toBe(true);
+    }
+  }
+  // The `self` offer's opt-out depends on its payload (Decision 21).
+  const offer = ruleOf("auth.pair.offer").unconfirmedIf as (p: unknown) => string | undefined;
+  expect(offer({ self: true })).toBe("service");
+  expect(offer({})).toBeUndefined();
+  expect(offer({ self: false })).toBeUndefined();
+});
+
+test("device_confirmed_rules_take_a_code (5B Task 4: the payload keeps `challenge`)", () => {
+  const device = { kind: "device" as const, human: true };
+  const confirmed = (Object.keys(RPC_SCOPES) as Array<keyof typeof RPC_SCOPES>).filter((t) => needsConfirmation(t, {}, {}, device));
+  expect(confirmed).toEqual(["server.stop"]);
+  for (const tag of confirmed) {
+    const rpc = FinRpcs.requests.get(tag) as unknown as { payloadSchema: { fields?: Record<string, unknown> } };
+    expect(Object.keys(rpc.payloadSchema.fields ?? {}), tag).toContain("challenge");
   }
 });

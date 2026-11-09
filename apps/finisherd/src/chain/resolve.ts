@@ -6,7 +6,7 @@
 // unauthorised caller must not get opened, and only the policy stage reads them.
 import { constants } from "node:fs";
 import { open, realpath } from "node:fs/promises";
-import { basename, dirname, join, sep } from "node:path";
+import { basename, dirname, isAbsolute, join, sep } from "node:path";
 import type { FinError, Principal, RpcRule, RuleFacts, Scope } from "@finisher/contracts";
 import { Effect } from "effect";
 import { finError } from "../errors.ts";
@@ -38,6 +38,12 @@ export interface ChainProjects {
    * outside them only through such a row, in a library it reaches.
    */
   libraryFile?(path: string): Effect.Effect<CataloguedFile | undefined, FinError>;
+  /**
+   * A device's allowed roots (5B Decision 32): `server.projectRoots`, the library roots and the
+   * folders of projects open here. `rootsOf` canonicalises them and skips missing ones; none
+   * wired, a device reaches no path.
+   */
+  allowedRoots?(): Effect.Effect<ReadonlyArray<string>>;
 }
 
 /** What the chain needs from the job engine (5C-2 Decision 4): it reads, never changes. */
@@ -62,6 +68,11 @@ export interface Resolved {
   readonly openedProject?: string;
   /** `asset.probe`: the project whose folder every path must be in (for principals with roots). */
   readonly pathsIn?: string;
+  /**
+   * `project.open`'s canonical folder: a device's path to check (5B Decision 32). Other
+   * principals with roots are checked by the project it names (a folder is reach by its id).
+   */
+  readonly openDir?: string;
 }
 
 const field = (payload: unknown, path: string): unknown =>
@@ -137,6 +148,7 @@ export function resolve(
     let out = payload as Record<string, unknown>;
     let facts: RuleFacts = {};
     let openedProject: string | undefined;
+    let openDir: string | undefined;
     if (want.has("project")) {
       for (const k of ["projectId", "pinned"]) {
         const v = field(payload, k);
@@ -170,6 +182,7 @@ export function resolve(
     if (want.has("openDir")) {
       const dir = yield* Effect.flatMap(requireAbsolute("dir", String(out.dir)), canonical);
       out = { ...out, dir };
+      openDir = dir;
       openedProject = yield* Effect.promise(() => projectIdIn(dir));
       if (openedProject !== undefined) projects.push(openedProject);
       facts = { ...facts, attached: openedProject !== undefined && deps.isOpen(openedProject) };
@@ -207,6 +220,15 @@ export function resolve(
         if (typeof out.projectId === "string") pathsIn = out.projectId;
       }
     }
+    // `library.add`'s root is checked, never rewritten: the library canonicalises it natively
+    // (a network share's form). A relative one stays as given: it is inside no root.
+    const checkOnly = (p: unknown) => (typeof p !== "string" ? Effect.void : Effect.map(isAbsolute(p) ? canonical(p) : Effect.succeed(p), (c) => void paths.push(c)));
+    if (want.has("libraryRoot")) yield* checkOnly(out.root);
+    // `registry.add`'s folder and root file: checked the same way (review of Task 11).
+    if (want.has("registryPaths")) {
+      yield* checkOnly((out.cfg as { path?: unknown } | undefined)?.path);
+      yield* checkOnly((out.root as { path?: unknown } | undefined)?.path);
+    }
     return {
       payload: out,
       projects,
@@ -215,6 +237,7 @@ export function resolve(
       facts,
       ...(openedProject === undefined ? {} : { openedProject }),
       ...(pathsIn === undefined ? {} : { pathsIn }),
+      ...(openDir === undefined ? {} : { openDir }),
     };
   });
 }
@@ -239,9 +262,20 @@ export function inside(path: string, root: string): boolean {
  * folder still names the project (review of Tasks 8–9, L6: an index entry is stale once the
  * project moved, and `project.create` inside the old folder opens nothing that would notice;
  * the handlers that open it check again, `probe.ts` re-reads the open folder); `only`: just
- * that project's (a probe for it). `undefined`: no roots (any path).
+ * that project's (a probe for it). A `device` has `projects: "*"` but the server's allowed
+ * roots (5B Decision 32: `allowedRoots`, canonical; a root that does not exist is skipped,
+ * never created; `only` does not narrow them). `undefined`: no roots (any path).
  */
 export function rootsOf(principal: Principal, deps: ChainProjects, only?: string): Effect.Effect<ReadonlyArray<string> | undefined> {
+  if (principal.kind === "device") {
+    if (deps.allowedRoots === undefined) return Effect.succeed([]);
+    return Effect.flatMap(deps.allowedRoots(), (roots) =>
+      Effect.promise(async () => {
+        const real = await Promise.all(roots.map((r) => realpath(r).catch(() => undefined)));
+        return [...new Set(real.filter((r): r is string => r !== undefined))];
+      }),
+    );
+  }
   if (principal.projects === "*") return Effect.succeed(undefined);
   const ids = only === undefined ? principal.projects : principal.projects.filter((id) => id === only);
   return Effect.map(

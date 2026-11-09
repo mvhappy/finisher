@@ -236,6 +236,7 @@ export type AnyPayload =
   | WorkerExit
   | LibraryScan
   | SandboxUnconfined
+  | AuthPair
   | AgentSession
   | AgentTurn
   | AgentToolCall
@@ -909,6 +910,27 @@ export type SandboxProfileName = "agent" | "hook" | "worker" | "plugin";
  */
 export type UnconfinedReason = "landlockDisabled" | "profileNotReady";
 /**
+ * A pairing step.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "PairOutcome".
+ */
+export type PairOutcome = "offered" | "redeemed" | "approved" | "rejected" | "expired" | "revoked";
+/**
+ * What a device runs on (`PLATFORMS`).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "PairPlatform".
+ */
+export type PairPlatform = "macos" | "windows" | "linux" | "ios" | "android" | "web" | "other";
+/**
+ * How a device reached the server (`ROUTE_KINDS`): a kind, never an address.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "PairRoute".
+ */
+export type PairRoute = "loopback" | "lan" | "tailscale" | "public" | "connect" | "other";
+/**
  * Who provides a backend (spec §6.1): the export-encoder policy and the capability report key
  * on it.
  *
@@ -1441,6 +1463,11 @@ export type EventPayload =
       kind: "sandbox.unconfined";
       kv: 1;
       payload: SandboxUnconfined;
+    }
+  | {
+      kind: "auth.pair";
+      kv: 1;
+      payload: AuthPair;
     }
   | {
       kind: "agent.session";
@@ -3848,6 +3875,27 @@ export interface SandboxUnconfined {
   os: SandboxOs;
   profile: SandboxProfileName;
   reason: UnconfinedReason;
+}
+/**
+ * `auth.pair` (`kv` 1).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "AuthPair".
+ */
+export interface AuthPair {
+  /**
+   * From the redeem to the owner's answer (`approved`, `rejected`).
+   */
+  micros?: number | null;
+  outcome: PairOutcome;
+  /**
+   * The device's platform, once a device redeemed the offer.
+   */
+  platform?: PairPlatform | null;
+  /**
+   * How the device reached the server, once it redeemed.
+   */
+  route?: PairRoute | null;
 }
 /**
  * This interface was referenced by `FinCore`'s JSON-Schema

@@ -343,3 +343,25 @@ test("auth: wsUpgrade sends the headers it is given and reports the status and b
     http.close();
   }
 });
+
+// The remote scenario's device client (5B Task 13): its proofs are made apart from the server.
+test("remote: dpopProof is an ES256 JWS over its header and claims, verifiable with its own JWK", async () => {
+  const { dpopProof, newDeviceKey } = await import("./e2e/device-lib.mjs");
+  const { webcrypto, createHash } = await import("node:crypto");
+  const key = await newDeviceKey();
+  const jwt = await dpopProof(key, "POST", "https://127.0.0.1:1/auth/token", { nonce: "n0", accessToken: "tok" });
+  const [h, p, s] = jwt.split(".");
+  const header = JSON.parse(Buffer.from(h, "base64url").toString());
+  const claims = JSON.parse(Buffer.from(p, "base64url").toString());
+  assert.deepEqual(header, { typ: "dpop+jwt", alg: "ES256", jwk: key.jwk });
+  assert.equal(claims.htm, "POST");
+  assert.equal(claims.htu, "https://127.0.0.1:1/auth/token");
+  assert.equal(claims.nonce, "n0");
+  assert.equal(claims.ath, createHash("sha256").update("tok").digest("base64url"));
+  assert.equal(Buffer.from(s, "base64url").length, 64);
+  const pub = await webcrypto.subtle.importKey("jwk", key.jwk, { name: "ECDSA", namedCurve: "P-256" }, false, ["verify"]);
+  assert.equal(await webcrypto.subtle.verify({ name: "ECDSA", hash: "SHA-256" }, pub, Buffer.from(s, "base64url"), Buffer.from(`${h}.${p}`)), true);
+  // RFC 7638's thumbprint: the required members in order, no spaces.
+  const want = createHash("sha256").update(`{"crv":"P-256","kty":"EC","x":"${key.jwk.x}","y":"${key.jwk.y}"}`).digest("base64url");
+  assert.equal(key.jkt, want);
+});

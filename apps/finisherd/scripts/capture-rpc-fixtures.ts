@@ -25,6 +25,9 @@ import {
   tx,
 } from "../test/support/ndjson-client.ts";
 
+// The server this script starts keeps its secrets in files, never in the OS keychain (5B Decision 4).
+process.env.FIN_SECRETS ??= "file";
+
 const OUT = fileURLToPath(new URL("../../../crates/fin/tests/fixtures/rpc/", import.meta.url));
 const FIXTURE_PROJECT_ID = "01fixtureproject0000000000";
 const FIXTURE_INCARNATION = "01fixtureincarnation000000";

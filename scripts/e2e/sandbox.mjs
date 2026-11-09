@@ -13,7 +13,9 @@
 //   4. (Linux, with a GPU adapter) the worker profile is applied (`media.capabilities` journals
 //      `sandbox: landlock` for the capabilities worker, whose profile the look workers share), and
 //      a `media.look` in each of two projects runs warm, each in a new warm worker of its own
-//      project. That a warm worker cannot see another job's directory is not observed here: it is
+//      project; a third project's clip lies outside its `sources/` (added from the project root,
+//      `fin asset add clip.mp4`): its look misses the warm worker's roots and renders cold, with
+//      the per-file grants `prepare` computed. That a warm worker cannot see another job's directory is not observed here: it is
 //      proven by `warm-sandbox.test.ts` and `warm_landlock.rs`, with their unsandboxed controls.
 // Skipped where the agent profile cannot be enforced (Windows: plan 7C Task 11's Windows run is
 // open; a host without Landlock), unless `FIN_REQUIRE_LANDLOCK=1`.
@@ -87,6 +89,7 @@ export async function run() {
   const sd = join(tmp, "server");
   const project = join(tmp, "film");
   const other = join(tmp, "other");
+  const loose = join(tmp, "loose");
   const outside = join(tmp, "outside.txt");
   let server;
   let ws;
@@ -126,6 +129,11 @@ export async function run() {
     av1Clip(join(other, "sources", "clip.mp4"));
     person(other, ["asset", "add", "sources/clip.mp4"]);
     person(other, ["clip", "insert", "--no-audio", "--track", "t1", "--at", "0", "--asset", "a1", "--dur", "1s"]);
+    // The clip at the project's root, not in `sources/`: outside the warm worker's roots.
+    person(tmp, ["project", "create", loose, "--name", "Loose"]);
+    av1Clip(join(loose, "clip.mp4"));
+    person(loose, ["asset", "add", "clip.mp4"]);
+    person(loose, ["clip", "insert", "--no-audio", "--track", "t1", "--at", "0", "--asset", "a1", "--dur", "1s"]);
     ws = await connectWs(server);
     const mainOf = async () => JSON.stringify((await ws.call("snapshot.get", { projectId, branch: "main" })).project);
     const mainBefore = await mainOf();
@@ -174,7 +182,10 @@ export async function run() {
 
     if (process.platform === "linux") {
       step(4, "a warm look per project under the worker profile");
-      await warmLooks(server, sd, [project, other]);
+      if (await warmLooks(server, sd, [project, other])) {
+        step(5, "a look whose clip is outside sources/ runs cold under the worker profile");
+        await coldLook(server, sd, loose);
+      }
     }
     log(`PASS sandbox in ${((Date.now() - started) / 1000).toFixed(1)}s`);
   } finally {
@@ -192,8 +203,8 @@ async function warmLooks(server, sd, dirs) {
   const caps = fin(sd, dirs[0], ["media", "caps"]);
   if (!caps.gpu) {
     if (process.env.FIN_REQUIRE_GPU === "1") throw new Error("FIN_REQUIRE_GPU=1 but the media worker opened no GPU adapter");
-    log("SKIP sandbox step 4: no GPU adapter (set FIN_GPU, or FIN_REQUIRE_GPU=1 to fail)");
-    return;
+    log("SKIP sandbox steps 4 and 5: no GPU adapter (set FIN_GPU, or FIN_REQUIRE_GPU=1 to fail)");
+    return false;
   }
   // The worker's own answer, journalled as `media.capabilities` (sp6 §15): its Landlock phase applied.
   const answered = await waitFor(
@@ -229,4 +240,24 @@ async function warmLooks(server, sd, dirs) {
     const visiting = existsSync(join(jobs, w, "jobs")) ? readdirSync(join(jobs, w, "jobs")) : [];
     assertEqual(visiting, [], `${w}: no job left in the worker's directory after ready`);
   }
+  return true;
+}
+
+/**
+ * One `fin look` in a project whose clip is outside its `sources/`: the warm worker cannot read
+ * it, so the job runs cold in the same attempt, granted the clip (plan 7C Task 12). It once
+ * failed `PLAN_MISMATCH {reason: noSample}`: the cold run started without `prepare`'s extra.
+ */
+async function coldLook(server, sd, dir) {
+  const r = finRaw(sd, dir, ["look", "--at", "0"]);
+  assertEqual(r.status, 0, `fin look in ${dir} (${r.text} ${r.stderr})`);
+  const done = await waitFor(
+    "the loose project's media.look job.done entry",
+    async () => {
+      const looks = (await storedEntries(server, { kinds: ["job.done"] })).filter((e) => e.payload.kind === "media.look");
+      return looks.length >= 3 ? looks[looks.length - 1] : undefined;
+    },
+    20_000,
+  );
+  assertEqual([done.payload.outcome, done.payload.warm, done.payload.attempts], ["succeeded", false, 1], "the look outside sources/ ran cold, in one attempt");
 }

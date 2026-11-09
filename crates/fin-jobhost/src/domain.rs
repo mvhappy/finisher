@@ -152,6 +152,10 @@ pub(crate) trait KillDomain: Send + Sync {
     /// The process sent `hello`: its own start-up is done (on its stdout reader). Windows
     /// recognises the process's console host here.
     fn hello(&self, _group: &GroupHandle, _pid: u32) {}
+    /// Every process carrying the Seatbelt `mark` belongs to the group (before the process
+    /// that carries it first is spawned); its kill and its close take them all.
+    #[cfg(target_os = "macos")]
+    fn mark(&self, _group: &GroupHandle, _mark: &str) {}
     /// Kills every process of the group.
     fn kill(&self, group: &GroupHandle) -> io::Result<()>;
     /// The group's current memory figure (Decision 20), if this domain measures one.
@@ -249,6 +253,10 @@ pub(crate) mod double {
         }
         fn hello(&self, group: &GroupHandle, pid: u32) {
             self.inner.hello(group, pid)
+        }
+        #[cfg(target_os = "macos")]
+        fn mark(&self, group: &GroupHandle, mark: &str) {
+            self.inner.mark(group, mark)
         }
         fn kill(&self, group: &GroupHandle) -> io::Result<()> {
             self.note(format!("kill {}", group.id));

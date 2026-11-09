@@ -30,6 +30,8 @@ pub mod held_paths;
 mod host;
 mod memory;
 mod proc;
+#[cfg(target_os = "macos")]
+pub mod seatbelt_mark;
 pub mod spawner;
 #[cfg(feature = "test-hooks")]
 mod test_hooks;

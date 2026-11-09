@@ -21,6 +21,7 @@ import { childEnv } from "../env.ts";
 import { finError } from "../errors.ts";
 import type { Audit } from "../control/audit.ts";
 import type { ControlStore } from "../control/db.ts";
+import type { SecretBox } from "../secrets/box.ts";
 import { ModelGateway, type RunningSessions } from "../secrets/gateway.ts";
 import { FileSecretStore, type SecretStore } from "../secrets/store.ts";
 import type { ProviderAdapter } from "./adapter.ts";
@@ -146,6 +147,8 @@ export interface AgentWiringDeps {
   readonly libraryRoots?: () => ReadonlyArray<string>;
   readonly log: (message: string) => void;
   readonly options?: AgentServeOptions;
+  /** The box `secrets.json` seals with: the vault's (5B Decision 7); the identity box when absent. */
+  readonly secretBox?: SecretBox;
   /** Windows: the server's ACL broker and the pipe's `allow` (plan 7C Task 10). */
   readonly acl?: AclBroker;
   readonly allowPipe?: (sid: string) => void;
@@ -171,9 +174,9 @@ export async function allNodes(store: AgentStore, sessionId: string): Promise<No
   return out;
 }
 
-function openSecrets(serverData: string, log: (m: string) => void): SecretStore | undefined {
+function openSecrets(serverData: string, log: (m: string) => void, box: SecretBox | undefined): SecretStore | undefined {
   try {
-    return new FileSecretStore(serverData);
+    return new FileSecretStore(serverData, box === undefined ? {} : { box });
   } catch (e) {
     log(`agent keys unavailable: ${(e as Error).message}`);
     return undefined;
@@ -208,7 +211,7 @@ export const buildAgentRuntime = (d: AgentWiringDeps): Effect.Effect<AgentRuntim
       log(`agents.models is not used: ${(e as Error).message}`);
       catalogue = Catalogue.load(BUNDLED_CATALOGUE, { prices });
     }
-    const secrets = openSecrets(serverData, log);
+    const secrets = openSecrets(serverData, log, d.secretBox);
     const admin = new AgentAdmin({
       serverData,
       secrets,
