@@ -383,6 +383,9 @@ export type Op =
   | (AssetMove & {
       op: "asset.move";
     })
+  | (AssetReprobe & {
+      op: "asset.reprobe";
+    })
   | (TrackRestore & {
       op: "track.restore";
     })
@@ -489,6 +492,13 @@ export type Rational = string;
  * via the `definition` "FontFormat".
  */
 export type FontFormat = "ttf" | "otf" | "ttc";
+/**
+ * Clockwise display rotation in degrees, from the track matrix.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "Rotation".
+ */
+export type Rotation = 0 | 90 | 180 | 270;
 /**
  * `item.insert`: an item of any kind (the flattened `body`, tagged by `kind`) at `at` on
  * `track`, `duration` long, with default common fields. `id` is a `$name` placeholder bound
@@ -1361,13 +1371,6 @@ export type EngineEvent =
       collect: CollectPolicy;
       type: "collect";
     };
-/**
- * Clockwise display rotation in degrees, from the track matrix.
- *
- * This interface was referenced by `FinCore`'s JSON-Schema
- * via the `definition` "Rotation".
- */
-export type Rotation = 0 | 90 | 180 | 270;
 /**
  * The type of a directory entry as listed (never by following a link). Windows reparse
  * points with a name-surrogate tag (symlinks, junctions, mount points) are `symlink` in a
@@ -2851,8 +2854,27 @@ export interface LutInfo {
  * via the `definition` "VideoInfo".
  */
 export interface VideoInfo {
+  display?: DisplaySize;
+  /**
+   * The coded height, in px.
+   */
   height: number;
+  pixelAspect?: Rational;
   rate: Rational;
+  rotation?: Rotation;
+  /**
+   * The coded width, in px.
+   */
+  width: number;
+}
+/**
+ * A picture's display size in px (`VideoInfo.display`).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "DisplaySize".
+ */
+export interface DisplaySize {
+  height: number;
   width: number;
 }
 /**
@@ -3184,6 +3206,17 @@ export interface BinRemove {
 export interface AssetMove {
   asset: string;
   bin?: string;
+}
+/**
+ * `asset.reprobe`: `asset`'s streams are now `video` and `audio`.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "AssetReprobe".
+ */
+export interface AssetReprobe {
+  asset: string;
+  audio?: AudioInfo;
+  video?: VideoInfo;
 }
 /**
  * `track.restore` (internal): puts `track` back on `timeline` at `index`.

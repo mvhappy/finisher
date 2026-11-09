@@ -1,74 +1,15 @@
 //! What a media file is (spec §6.3): `MediaInfo`, read from the container by `fin-container`
 //! and answered by `asset.probe` (never stored in an `asset.add` record, spec §4.4).
 
-use std::borrow::Cow;
-
 use fin_core::Rational;
-use schemars::{JsonSchema, Schema, SchemaGenerator, json_schema};
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::colour::ColourTags;
 use crate::format::{AudioCodec, Chroma, ContainerKind, VideoCodec};
 
-/// A clockwise display rotation from the track matrix; serialised as degrees.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
-#[serde(into = "u16", try_from = "u16")]
-pub enum Rotation {
-    #[default]
-    R0,
-    R90,
-    R180,
-    R270,
-}
-
-impl Rotation {
-    pub fn degrees(self) -> u16 {
-        match self {
-            Rotation::R0 => 0,
-            Rotation::R90 => 90,
-            Rotation::R180 => 180,
-            Rotation::R270 => 270,
-        }
-    }
-
-    /// Whether width and height swap on display.
-    pub fn swaps(self) -> bool {
-        matches!(self, Rotation::R90 | Rotation::R270)
-    }
-}
-
-impl From<Rotation> for u16 {
-    fn from(r: Rotation) -> u16 {
-        r.degrees()
-    }
-}
-
-impl TryFrom<u16> for Rotation {
-    type Error = String;
-    fn try_from(d: u16) -> Result<Rotation, String> {
-        match d {
-            0 => Ok(Rotation::R0),
-            90 => Ok(Rotation::R90),
-            180 => Ok(Rotation::R180),
-            270 => Ok(Rotation::R270),
-            _ => Err(format!("rotation must be 0, 90, 180 or 270, not {d}")),
-        }
-    }
-}
-
-impl JsonSchema for Rotation {
-    fn schema_name() -> Cow<'static, str> {
-        "Rotation".into()
-    }
-
-    fn json_schema(_: &mut SchemaGenerator) -> Schema {
-        json_schema!({
-            "type": "integer",
-            "enum": [0, 90, 180, 270],
-            "description": "Clockwise display rotation in degrees, from the track matrix."
-        })
-    }
-}
+/// The clockwise display rotation: fin-core's model type (`VideoInfo.rotation`).
+pub use fin_core::Rotation;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]

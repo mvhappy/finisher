@@ -97,8 +97,9 @@ pub fn normalize(mut tx: Tx) -> Result<Tx, CoreError> {
         tx.schema_version = SCHEMA_VERSION;
     }
     // A schema-2 client tx holds only shapes schema 3 still accepts (time-form keyframe ops,
-    // spec §5.12), so it is committed as schema 3.
-    if tx.schema_version == 2 {
+    // spec §5.12), so it is committed as schema 3; a schema-3 one is a valid schema-4 tx
+    // (schema 4 only adds optional `VideoInfo` fields and `asset.reprobe`).
+    if tx.schema_version == 2 || tx.schema_version == 3 {
         tx.schema_version = SCHEMA_VERSION;
     }
     if tx.schema_version == SCHEMA_VERSION {

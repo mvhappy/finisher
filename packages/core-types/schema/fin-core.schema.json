@@ -985,6 +985,24 @@
       ],
       "type": "object"
     },
+    "AssetReprobe": {
+      "description": "`asset.reprobe`: `asset`'s streams are now `video` and `audio`.",
+      "properties": {
+        "asset": {
+          "type": "string"
+        },
+        "audio": {
+          "$ref": "#/$defs/AudioInfo"
+        },
+        "video": {
+          "$ref": "#/$defs/VideoInfo"
+        }
+      },
+      "required": [
+        "asset"
+      ],
+      "type": "object"
+    },
     "Attach": {
       "description": "`attach`: a helper's job, its files only, and its directories.",
       "properties": {
@@ -3260,6 +3278,26 @@
       "required": [
         "job",
         "tmp"
+      ],
+      "type": "object"
+    },
+    "DisplaySize": {
+      "description": "A picture's display size in px (`VideoInfo.display`).",
+      "properties": {
+        "height": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "width": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "width",
+        "height"
       ],
       "type": "object"
     },
@@ -11111,6 +11149,26 @@
         {
           "allOf": [
             {
+              "$ref": "#/$defs/AssetReprobe"
+            },
+            {
+              "properties": {
+                "op": {
+                  "const": "asset.reprobe",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "op"
+              ],
+              "type": "object"
+            }
+          ],
+          "description": "Replaces a media asset's video and audio with a fresh probe's (schema 4)."
+        },
+        {
+          "allOf": [
+            {
               "$ref": "#/$defs/TrackRestore"
             },
             {
@@ -17556,15 +17614,26 @@
     },
     "VideoInfo": {
       "properties": {
+        "display": {
+          "$ref": "#/$defs/DisplaySize"
+        },
         "height": {
+          "description": "The coded height, in px.",
           "format": "uint32",
           "minimum": 0,
           "type": "integer"
         },
+        "pixelAspect": {
+          "$ref": "#/$defs/Rational"
+        },
         "rate": {
           "$ref": "#/$defs/Rational"
         },
+        "rotation": {
+          "$ref": "#/$defs/Rotation"
+        },
         "width": {
+          "description": "The coded width, in px.",
           "format": "uint32",
           "minimum": 0,
           "type": "integer"

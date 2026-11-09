@@ -452,7 +452,7 @@ fn upcast_v1_record_golden_per_op() {
             json!([inverse]),
             "{v1}"
         );
-        assert_eq!((up.schema_version, up.intent.schema_version), (3, 3));
+        assert_eq!((up.schema_version, up.intent.schema_version), (4, 4));
     }
 }
 
@@ -514,17 +514,18 @@ fn golden(name: &str) -> Value {
     serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap()
 }
 
-/// The frozen snapshot steps: `snapshot_v1.json` upcasts through v2 (`snapshot_v2.json`) to
-/// v3, compared as a decoded `Project` and as re-encoded JSON (each step's output is canonical
-/// JSON). The v2 golden holds no keyframe, so v2 → v3 only stamps the version.
+/// The frozen snapshot steps: `snapshot_v1.json` upcasts through v2 (`snapshot_v2.json`) and
+/// v3 to v4, compared as a decoded `Project` and as re-encoded JSON (each step's output is
+/// canonical JSON). The v2 golden holds no keyframe, so v2 → v3 only stamps the version, and
+/// v3 → v4 always does.
 #[test]
 fn upcast_v1_snapshot_golden() {
     let got = upcast_snapshot(golden("snapshot_v1.json")).unwrap();
-    let mut v3 = golden("snapshot_v2.json");
-    v3["schemaVersion"] = json!(3);
-    let want: Project = serde_json::from_value(v3.clone()).unwrap();
+    let mut v4 = golden("snapshot_v2.json");
+    v4["schemaVersion"] = json!(4);
+    let want: Project = serde_json::from_value(v4.clone()).unwrap();
     assert_eq!(got, want);
-    assert_eq!(serde_json::to_value(&got).unwrap(), v3);
+    assert_eq!(serde_json::to_value(&got).unwrap(), v4);
     assert_eq!(upcast_snapshot(golden("snapshot_v2.json")).unwrap(), want);
 }
 
@@ -602,7 +603,7 @@ fn upcast_v2_record_refuses_keyframes() {
     let plain = json!([{ "op": "marker.add", "id": "$m", "timeline": "tl1", "at": "1",
                          "label": "x" }]);
     let up = fin_core::upcast_record(v2(plain.clone())).unwrap();
-    assert_eq!((up.schema_version, up.intent.schema_version), (3, 3));
+    assert_eq!((up.schema_version, up.intent.schema_version), (4, 4));
     assert_eq!(serde_json::to_value(&up.intent.ops).unwrap(), plain);
     let keyed = json!([{ "op": "keyframe.set", "item": "c1", "path": "opacity", "at": "1",
                          "value": 0.5, "interp": { "type": "linear" } }]);
@@ -641,8 +642,9 @@ fn malformed_v1_snapshot_is_invalid_format() {
     }
 }
 
-/// `new_project` is the upcast of 4B's rev-0 project (plan 4C Decision 5), and of 4C's (spec
-/// §5.12.2): same timeline, names, rate and 1080×1920, for any rate.
+/// `new_project` is the upcast of 4B's rev-0 project (plan 4C Decision 5), of 4C's (spec
+/// §5.12.2) and of schema 3's (6B-1 Task 11): same timeline, names, rate and 1080×1920, for
+/// any rate.
 #[test]
 fn new_project_equals_upcast_genesis() {
     for rate in ["30", "30000/1001", "25", "60"] {
@@ -660,10 +662,17 @@ fn new_project_equals_upcast_genesis() {
             new_project("01m6r3sq1s34zp9esh9dtgwwjd".into(), "Genesis".into(), rate).unwrap();
         let up = upcast_snapshot(v1).unwrap();
         assert_eq!(up, fresh, "{rate}");
-        // And from v2: a rev-0 project holds no keyframe.
-        let mut v2 = serde_json::to_value(&fresh).unwrap();
-        v2["schemaVersion"] = json!(2);
-        assert_eq!(upcast_snapshot(v2).unwrap(), fresh, "{rate}");
+        // And from v2 (a rev-0 project holds no keyframe) and v3 (nor any asset).
+        for version in [2, 3] {
+            let mut old = serde_json::to_value(&fresh).unwrap();
+            old["schemaVersion"] = json!(version);
+            let up = upcast_snapshot(old).unwrap();
+            assert_eq!(up, fresh, "{rate} v{version}");
+            assert_eq!(
+                serde_json::to_string(&up).unwrap(),
+                serde_json::to_string(&fresh).unwrap()
+            );
+        }
         assert_eq!(
             serde_json::to_string(&up).unwrap(),
             serde_json::to_string(&fresh).unwrap()
@@ -703,4 +712,63 @@ fn undo_of_a_4b_trim_after_a_link_trims_the_item_alone() {
         .map(|t| t.items[0].duration)
         .collect();
     assert_eq!(durations, [secs(6), secs(5)], "only c1 grows back");
+}
+
+/// The v3 → v4 snapshot step is the identity (6B-1 Task 11): `snapshot_v3.json` (corpus case
+/// 05 as schema 3 wrote it: media assets with `video`, keyed items) comes back as it was but
+/// for `schemaVersion: 4`, with no `display`, `rotation` or `pixelAspect` guessed.
+#[test]
+fn upcast_v3_snapshot_golden() {
+    let v3 = golden("snapshot_v3.json");
+    assert_eq!(v3["schemaVersion"], 3);
+    let got = upcast_snapshot(v3.clone()).unwrap();
+    let mut v4 = v3;
+    v4["schemaVersion"] = json!(4);
+    assert_eq!(serde_json::to_value(&got).unwrap(), v4);
+    let videos: Vec<_> = got
+        .assets
+        .values()
+        .filter_map(|a| a.video.as_ref())
+        .collect();
+    assert!(!videos.is_empty(), "the golden has video assets");
+    assert!(
+        videos
+            .iter()
+            .all(|v| v.display.is_none() && v.rotation.is_none() && v.pixel_aspect.is_none())
+    );
+}
+
+/// A v3 record upcasts to v4 unchanged but for its versions (6B-1 Task 11), keyframe ops and
+/// all.
+#[test]
+fn upcast_v3_record_is_identity() {
+    let ops = json!([
+        { "op": "asset.add", "id": "$a", "kind": "media", "path": "media/a.mov",
+          "fingerprint": "fp", "duration": "60",
+          "video": { "width": 1920, "height": 1080, "rate": "30" } },
+        { "op": "keyframe.set", "item": "c1", "path": "opacity", "key": "kf1", "at": "1",
+          "value": 0.5, "interp": { "type": "linear" } }
+    ]);
+    let mut r = v1_record(vec![], vec![], vec![], json!({ "$a": "a1" }));
+    r["schemaVersion"] = json!(3);
+    r["intent"]["schemaVersion"] = json!(3);
+    r["intent"]["ops"] = ops.clone();
+    r["resolved"] = ops.clone();
+    let up = fin_core::upcast_record(r.clone()).unwrap();
+    assert_eq!((up.schema_version, up.intent.schema_version), (4, 4));
+    let mut want = r;
+    want["schemaVersion"] = json!(4);
+    want["intent"]["schemaVersion"] = json!(4);
+    let got = serde_json::to_value(&up).unwrap();
+    for key in [
+        "intent",
+        "resolved",
+        "inverse",
+        "bindings",
+        "txId",
+        "seq",
+        "committedAt",
+    ] {
+        assert_eq!(got[key], want[key], "{key}");
+    }
 }

@@ -295,7 +295,17 @@ export const ProbeSchema = Schema.Struct({
   // rotation, colour, HDR, VFR). Validated in Rust and passed through; never in `asset.add`.
   media: Optional(Schema.Unknown),
   size: Schema.Number,
-  video: Optional(Schema.Struct({ height: Schema.Number, rate: Schema.String, width: Schema.Number })),
+  // Schema 4 (6B-1 Task 11): the display geometry too; each absent when unknown.
+  video: Optional(
+    Schema.Struct({
+      display: Schema.optionalKey(Schema.Struct({ height: Schema.Number, width: Schema.Number })),
+      height: Schema.Number,
+      pixelAspect: Schema.optionalKey(Schema.String),
+      rate: Schema.String,
+      rotation: Schema.optionalKey(Schema.Literals([0, 90, 180, 270])),
+      width: Schema.Number,
+    }),
+  ),
 });
 export const AssetProbeSuccess = ProbeSchema;
 // The schema's type and the generated `Probe` must stay assignable to each other (`media` is a

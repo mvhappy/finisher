@@ -274,6 +274,20 @@ fn every_variant() -> Vec<Op> {
             bin: Some("b1".into()),
         }
         .into(),
+        fin_core::AssetReprobe {
+            asset: "a1".into(),
+            video: Some(fin_core::VideoInfo {
+                display: Some(fin_core::DisplaySize {
+                    width: 1080,
+                    height: 1920,
+                }),
+                rotation: Some(fin_core::Rotation::R90),
+                pixel_aspect: Some(r(1)),
+                ..fin_core::VideoInfo::coded(1920, 1080, r(30))
+            }),
+            audio: None,
+        }
+        .into(),
         TrackRestore {
             track: busy_track(),
             timeline: "tl1".into(),
@@ -416,6 +430,7 @@ fn every_variant() -> Vec<Op> {
             | Op::BinMove(_)
             | Op::BinRemove(_)
             | Op::AssetMove(_)
+            | Op::AssetReprobe(_)
             | Op::TrackRestore(_)
             | Op::TimelineRestore(_)
             | Op::AssetRemove { .. }

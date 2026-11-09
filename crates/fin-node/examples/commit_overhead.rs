@@ -61,6 +61,9 @@ fn project(data: &Path, dir: &Path) -> Store {
         width: 1920,
         height: 1080,
         rate: Rational::from_int(30),
+        display: None,
+        rotation: None,
+        pixel_aspect: None,
     };
     let asset: Op = fin_core::AssetAdd::media(
         "$a",

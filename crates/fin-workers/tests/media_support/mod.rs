@@ -127,6 +127,9 @@ impl Fixture {
             width: w,
             height: h,
             rate: Rational::from_int(30),
+            display: None,
+            rotation: None,
+            pixel_aspect: None,
         };
         let clip = |id: &str, at: i64, asset: &str, secs: i64| -> Op {
             ItemInsert {

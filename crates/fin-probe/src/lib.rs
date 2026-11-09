@@ -26,7 +26,8 @@ mod wav;
 
 use fin_container::{Demuxer, Limits};
 use fin_core::{
-    AssetKind, AudioInfo, CoreError, FontFile, ImageInfo, LottieInfo, LutInfo, Rational, VideoInfo,
+    AssetKind, AudioInfo, CoreError, DisplaySize, FontFile, ImageInfo, LottieInfo, LutInfo,
+    Rational, VideoInfo,
 };
 use fin_media::MediaInfo;
 use schemars::JsonSchema;
@@ -376,7 +377,8 @@ fn with_path(mut e: CoreError, path: &Path) -> CoreError {
 
 /// The model's fields keep their 4C meaning (spec §4.4): `width`/`height` the coded size, the
 /// rate the average (`samples × timescale / track duration`), the audio rate the track's
-/// timescale; `media` carries the rest.
+/// timescale. Schema 4 adds the display geometry (`display`, `rotation`, `pixelAspect`, as
+/// `MediaInfo` reads them); `media` carries the rest and is never stored.
 fn parse<R: Read + Seek>(file: &mut R, path: &Path) -> Result<Probe, CoreError> {
     let d = Demuxer::open(io::BufReader::new(file), &Limits::default())
         .map_err(|e| with_path(e, path))?;
@@ -397,6 +399,12 @@ fn parse<R: Read + Seek>(file: &mut R, path: &Path) -> Result<Probe, CoreError> 
                 width: v.coded.width,
                 height: v.coded.height,
                 rate,
+                display: Some(DisplaySize {
+                    width: v.display.width,
+                    height: v.display.height,
+                }),
+                rotation: Some(v.rotation),
+                pixel_aspect: Some(v.pixel_aspect),
             })
         }
         _ => None,

@@ -4,7 +4,11 @@
 //!
 //! Schema version 1 is the first. Version 2 (plan 4C) has a snapshot step
 //! ([`snapshot_v1`]) and a record step ([`record_v1`]), both frozen. Version 3 (stable
-//! keyframe ids, spec §5.12) has [`snapshot_v2`] and [`record_v2`], frozen too. Adding version `n + 1` means bumping `SCHEMA_VERSION` and appending a
+//! keyframe ids, spec §5.12) has [`snapshot_v2`] and [`record_v2`], frozen too. Version 4
+//! (`VideoInfo` display, rotation and pixel aspect, and `asset.reprobe`; sub-project 6 spec
+//! §6.3) has [`snapshot_v3`] and [`record_v3`], frozen identities: every v3 value is a valid
+//! v4 value, and the bump only makes older readers refuse v4 values (`NEWER_FORMAT`) rather
+//! than drop the new fields. Adding version `n + 1` means bumping `SCHEMA_VERSION` and appending a
 //! `Step { from: n, .. }` to each table, with a golden test (frozen old shape in, expected new
 //! shape out).
 //!
@@ -14,8 +18,10 @@
 mod diff_v1;
 mod record_v1;
 mod record_v2;
+mod record_v3;
 mod snapshot_v1;
 mod snapshot_v2;
+mod snapshot_v3;
 
 use serde_json::{Value, json};
 
@@ -39,6 +45,10 @@ const RECORD_STEPS: &[Step] = &[
         from: 2,
         run: record_v2::run,
     },
+    Step {
+        from: 3,
+        run: record_v3::run,
+    },
 ];
 const SNAPSHOT_STEPS: &[Step] = &[
     Step {
@@ -48,6 +58,10 @@ const SNAPSHOT_STEPS: &[Step] = &[
     Step {
         from: 2,
         run: snapshot_v2::run,
+    },
+    Step {
+        from: 3,
+        run: snapshot_v3::run,
     },
 ];
 
@@ -230,6 +244,33 @@ mod tests {
         assert_eq!(
             (record.schema_version, record.intent.schema_version),
             (1, 1)
+        );
+    }
+
+    /// 6B-1 Task 11: a record holding `asset.reprobe` is stamped schema 4, and a schema-3
+    /// reader (the same runner with target 3, as 4C shipped it) refuses it with
+    /// `NEWER_FORMAT` instead of reading it without the op's fields.
+    #[test]
+    fn older_reader_refuses_reprobe_op() {
+        let ops = json!([{ "op": "asset.reprobe", "asset": "a1",
+            "video": { "width": 1920, "height": 1080, "rate": "30", "rotation": 90,
+                       "display": { "width": 1080, "height": 1920 }, "pixelAspect": "1" } }]);
+        let mut v = golden_v0();
+        v["schemaVersion"] = json!(SCHEMA_VERSION);
+        v["author"] = json!("fixture");
+        v["committedAt"] = json!(1_700_000_000_000_i64);
+        v["intent"]["schemaVersion"] = json!(SCHEMA_VERSION);
+        v["intent"]["ops"] = ops.clone();
+        v["resolved"] = ops;
+        v.as_object_mut().unwrap().remove("actor");
+        let record = upcast_record(v.clone()).unwrap();
+        assert_eq!(SCHEMA_VERSION, 4);
+        assert_eq!(record.schema_version, 4);
+        assert_eq!(record.resolved[0].name(), "asset.reprobe");
+        let e = upcast(v, RECORD_STEPS, 3, "record").unwrap_err();
+        assert_eq!(
+            (e.code.as_str(), &e.details["schemaVersion"]),
+            ("NEWER_FORMAT", &json!(4))
         );
     }
 

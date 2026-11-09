@@ -584,10 +584,20 @@ fn every_op_has_a_footprint() {
         ),
         (lib.clone(), BinRemove { bin: "b2".into() }.into(), vec![]),
         (
-            lib,
+            lib.clone(),
             AssetMove {
                 asset: "a1".into(),
                 bin: Some("b1".into()),
+            }
+            .into(),
+            vec![],
+        ),
+        (
+            lib.clone(),
+            fin_core::AssetReprobe {
+                asset: "a1".into(),
+                video: lib.assets["a1"].video.clone(),
+                audio: lib.assets["a1"].audio.clone(),
             }
             .into(),
             vec![],
@@ -736,6 +746,14 @@ fn every_op_has_a_footprint() {
             Op::AssetMove(m) => {
                 f.touches == [(m.asset.clone(), Touch::Param("bin".into()))] && f.uses == ["b1"]
             }
+            Op::AssetReprobe(r) => {
+                f.touches
+                    == [
+                        (r.asset.clone(), Touch::Param("video".into())),
+                        (r.asset.clone(), Touch::Param("audio".into())),
+                    ]
+                    && f.uses.is_empty()
+            }
             Op::ParamSet(s) => f.touches == [(s.item.clone(), Touch::Param(s.path.clone()))],
             Op::EffectAdd(a) => {
                 f.creates == [format!("c2/{}", a.id)]
@@ -846,7 +864,7 @@ fn every_op_has_a_footprint() {
             "{f:?}"
         );
     }
-    assert_eq!(seen.len(), 50);
+    assert_eq!(seen.len(), 51);
 }
 
 /// The style and font ops (plan 4C Task 18), each at a project where it applies; none is on

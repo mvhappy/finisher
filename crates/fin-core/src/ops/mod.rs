@@ -4,7 +4,7 @@
 //! Client ops: `asset.add`, `item.insert`, `item.trim`, `item.delete`, `item.slip`,
 //! `item.split`, `item.move`, `item.slide`, `item.link`, `item.unlink`, `transition.set`,
 //! `transition.remove`, `track.add|remove|move|set`, `timeline.add|set|remove`,
-//! `marker.add|set|remove`, `bin.add|move|remove`, `asset.move`, `asset.remove`, `param.set`,
+//! `marker.add|set|remove`, `bin.add|move|remove`, `asset.move|remove|reprobe`, `param.set`,
 //! `effect.add|remove|move`, `keyframe.set|remove`, `style.add|set|remove`,
 //! `font.pin|unpin|repin`, `caption.setText|split|merge|setStyle` (and the
 //! `clip.*` aliases of `item.insert`, `item.trim` and `item.delete`, [`alias`]). Internal ops
@@ -33,6 +33,7 @@ mod alias;
 mod asset_add;
 mod asset_move;
 mod asset_remove;
+mod asset_reprobe;
 mod bin_add;
 mod bin_move;
 mod bin_remove;
@@ -85,7 +86,6 @@ pub(crate) mod util;
 
 pub use alias::normalize;
 use alias::{clip_delete, clip_insert, clip_trim};
-pub use asset_move::AssetMove;
 pub use bin_add::BinAdd;
 pub use bin_move::BinMove;
 pub use bin_remove::BinRemove;
@@ -109,13 +109,7 @@ pub use font_unpin::FontUnpin;
 pub use keyframe_remove::KeyframeRemove;
 pub use keyframe_restore::KeyframeRestore;
 pub use keyframe_set::KeyframeSet;
-pub use marker_add::MarkerAdd;
-pub use marker_remove::MarkerRemove;
-pub use marker_set::MarkerSet;
 pub use param_set::ParamSet;
-pub use style_add::StyleAdd;
-pub use style_remove::StyleRemove;
-pub use style_set::StyleSet;
 pub use timeline_add::TimelineAdd;
 pub use timeline_remove::TimelineRemove;
 pub use timeline_restore::TimelineRestore;
@@ -125,6 +119,9 @@ pub use track_move::TrackMove;
 pub use track_remove::TrackRemove;
 pub use track_restore::TrackRestore;
 pub use track_set::TrackSet;
+pub use {asset_move::AssetMove, asset_reprobe::AssetReprobe};
+pub use {marker_add::MarkerAdd, marker_remove::MarkerRemove, marker_set::MarkerSet};
+pub use {style_add::StyleAdd, style_remove::StyleRemove, style_set::StyleSet};
 
 /// `$name` placeholders bound during one transaction, in op order.
 pub(crate) struct Bindings {
@@ -404,6 +401,7 @@ fn prunes(op: &Op) -> bool {
                 | Op::BinMove(_)
                 | Op::BinRemove(_)
                 | Op::AssetMove(_)
+                | Op::AssetReprobe(_)
                 | Op::ParamSet(_)
                 | Op::EffectAdd(_)
                 | Op::EffectRemove(_)
@@ -514,6 +512,7 @@ ops_table! {
     BinMove => bin_move,
     BinRemove => bin_remove,
     AssetMove => asset_move,
+    AssetReprobe => asset_reprobe,
     TrackRestore => track_restore,
     TimelineRestore => timeline_restore,
     AssetRemove => asset_remove,
