@@ -17,7 +17,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use super::merge::TO_HEAD;
 use super::{Lineage, LogView};
 use crate::error::CoreError;
-use crate::record::Link;
+use crate::record::{Link, RecordKind};
 
 /// One origin a `drop` record names: on `branch` at `seq`, `dropped` for `drops`, `false` for
 /// `undrops`.
@@ -44,7 +44,10 @@ pub fn marks_from_records<L: LogView + ?Sized>(
             continue;
         }
         for rec in log.records(branch, *after, through)? {
-            let Ok(Link::Drop { drops, undrops, .. }) = rec.record.link() else {
+            if rec.record.kind != RecordKind::Drop {
+                continue;
+            }
+            let Link::Drop { drops, undrops, .. } = rec.record.link()? else {
                 continue;
             };
             let mark = |origin: String, dropped: bool| DropMark {

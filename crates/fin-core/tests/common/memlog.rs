@@ -187,6 +187,13 @@ impl MemLog {
         self.append_link(b, tx_id, "alice", link, vec![]).seq
     }
 
+    /// Damages the record at `seq` on `b` by removing its `from`, as a corrupt log would.
+    pub fn damage_from(&mut self, b: &str, seq: u64) {
+        let br = self.branches.get_mut(b).unwrap();
+        let rec = br.recs.iter_mut().find(|r| r.seq == seq).unwrap();
+        rec.record.from = None;
+    }
+
     /// `undo --to` the checkpoint at `checkpoint_seq` on `b`, appended.
     pub fn undo_to(
         &mut self,

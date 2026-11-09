@@ -8,7 +8,7 @@ use std::collections::BTreeSet;
 
 use common::memlog::MemLog;
 use common::*;
-use fin_core::history::{DropMark, LogView, dropped_for, left_to_merge};
+use fin_core::history::{DropMark, LogView, dropped_for, left_to_merge, plan_merge};
 use fin_core::rebase::reasons;
 use fin_core::{Edge, Op, Project, Rational};
 
@@ -245,4 +245,49 @@ fn drop_is_no_undo_unit() {
     assert!(log.stacks("main", "alice").undo.is_empty());
     // The drop stands.
     assert_eq!(dropped(&log, "main"), set(&["e2"]));
+}
+
+/// A damaged `drop` record is an error, not skipped: `dropped_for` and a merge report it.
+#[test]
+fn damaged_drop_record_is_an_error() {
+    let mut log = three_edits();
+    let seq = log.drop_rec("main", "d1", "br1", &["e2"], &[]);
+    assert!(dropped_for(&log, &log.lineage("main").unwrap()).is_ok());
+    log.damage_from("main", seq);
+    let err = dropped_for(&log, &log.lineage("main").unwrap()).unwrap_err();
+    assert_eq!(err.code, "INVALID_FORMAT");
+    let err = plan_merge(&log, "br1", "main", "carol", "m1", false).unwrap_err();
+    assert_eq!(err.code, "INVALID_FORMAT");
+    // Records of other kinds are not looked at as drops.
+    let mut log = three_edits();
+    log.commit("main", "t1", "alice", vec![ins(0, 1)]);
+    assert!(dropped_for(&log, &log.lineage("main").unwrap()).is_ok());
+}
+
+/// A cherry-pick copy of a dropped origin on another source branch is judged by its root.
+#[test]
+fn cherry_pick_copy_of_dropped_origin_is_excluded() {
+    let mut log = three_edits();
+    log.fork("other", "main", 0);
+    log.pick("e2", "other", "dave", "k1")
+        .unwrap()
+        .expect("picked");
+    log.drop_rec("main", "d1", "br1", &["e2"], &[]);
+    let plan = log.merge("other", "main", "carol", "m1", false).unwrap();
+    assert_eq!(excluded(&plan), [("k1", reasons::DROPPED)]);
+    assert!(plan.merged.is_empty());
+}
+
+/// What remains after a drop stays listed when it depends on the dropped record: the merge
+/// cannot take it without `--skip-conflicting`, so the branch is not merged.
+#[test]
+fn left_to_merge_keeps_dependents_of_dropped() {
+    let mut log = MemLog::new(genesis());
+    log.fork("br1", "main", 0);
+    log.commit("br1", "e1", "alice", vec![ins(30, 2)]);
+    log.commit("br1", "e2", "alice", vec![trim("c4", Edge::End, secs(-1))]);
+    log.drop_rec("main", "d1", "br1", &["e1"], &[]);
+    assert_eq!(left_to_merge(&log, "br1", "main").unwrap(), ["e2"]);
+    let err = log.merge("br1", "main", "carol", "m1", false).unwrap_err();
+    assert_eq!(err.code, "CONFLICT");
 }
