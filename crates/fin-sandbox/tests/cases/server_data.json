@@ -1,5 +1,5 @@
 {
-  "about": "Spec §8.11 'Server data' and the S8 core, for every profile (plan 7C Task 13), run by tests/escape_common.rs. $T is the shared fixture of that file: data/ is server data, p/ the project, q/ an unlisted folder, home/ the user's home. 'deny' passes only on an observed denial (Linux EACCES or EXDEV, macOS EPERM or EACCES), and the same attempt must succeed unsandboxed first (the control). Each profile's 'allow' case proves the sandbox is not refusing everything.",
+  "about": "Spec §8.11 'Server data' and the S8 core, for every profile (plan 7C Task 13), run by tests/escape_common.rs. $T is the shared fixture of that file: data/ is server data, p/ the project, q/ an unlisted folder, home/ the user's home. 'deny' passes only on an observed denial (Linux EACCES or EXDEV, macOS EPERM or EACCES), and the same attempt must then succeed unsandboxed on a fresh fixture (the control). Each profile's 'allow' case proves the sandbox is not refusing everything.",
   "cases": [
     { "name": "read auth/local.key", "profiles": ["agent", "hook", "worker", "plugin"], "op": ["read", "$T/data/auth/local.key"], "expect": "deny" },
     { "name": "read auth/console.key", "profiles": ["agent", "hook", "worker", "plugin"], "op": ["read", "$T/data/auth/console.key"], "expect": "deny" },

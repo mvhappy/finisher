@@ -6,8 +6,10 @@
 //! - `plugin`: `probe --policy` with the profile's policy (the `Spawner` applies the same one
 //!   before `exec`).
 //!
-//! A `deny` case passes only on an observed denial, and only after the same attempt succeeded
-//! unsandboxed (the control), each run on a fresh fixture, so a missing file never passes. On
+//! A `deny` case passes only on an observed denial, and only if the same attempt then succeeds
+//! unsandboxed (the control), each run on a fresh fixture, so a missing file never passes. A
+//! case whose control cannot run here (`control: root` as another user, `control: none`) is
+//! recorded as `uncontrolled`, never as `denied`. On
 //! Linux the launcher's socket namespace is off (Landlock alone, as in `escape_agent_linux.rs`)
 //! except for cases that `need` it, which are skipped with the launcher's reason on a host
 //! without unprivileged user namespaces. `FIN_REQUIRE_LANDLOCK=1` turns a missing Landlock
@@ -63,7 +65,7 @@ struct Record {
     file: String,
     case: String,
     profile: String,
-    /// `denied`, `allowed`, `skipped` or `failed`.
+    /// `denied`, `uncontrolled` (denied, no control), `allowed`, `skipped` or `failed`.
     result: &'static str,
     detail: String,
 }
@@ -304,7 +306,9 @@ mod unix {
         PluginInput {
             store_dir: t.p("data/plugins/store/acme"),
             runtime: vec![],
-            system: vec![],
+            // The system roots, as `escape_macos.rs` gives them (Seatbelt reads them for the
+            // already running probe; Landlock does not need them).
+            system: toolchains(),
             onnx_runtime: None,
             models: vec![],
             call_dir: t.p("data/jobs/p1"),
@@ -488,8 +492,14 @@ fn run(case: &Case, profile: &str) -> (&'static str, String) {
     let Outcome::Ran(Some(e)) = got else {
         unreachable!()
     };
-    let how = if control { "" } else { ", no control" };
-    ("denied", format!("errno {e}{how}"))
+    if control {
+        ("denied", format!("errno {e}"))
+    } else {
+        (
+            "uncontrolled",
+            format!("errno {e}, no control on this host"),
+        )
+    }
 }
 
 /// Runs every case of `file` for every profile it names.
@@ -588,6 +598,19 @@ fn every_case_file_names_known_profiles_and_oses() {
                 );
             }
             assert!(!c.op.is_empty(), "{file}: {}", c.name);
+            match &c.expect {
+                Expect::Word(w) => assert!(["allow", "deny"].contains(&w.as_str()), "{file}: {w}"),
+                Expect::Errno { errno } => assert!(!errno.is_empty(), "{file}: {}", c.name),
+            }
+            if let Some(n) = &c.needs {
+                assert_eq!(n, "namespaces", "{file}: {}", c.name);
+            }
+            if let Some(k) = &c.control {
+                assert!(
+                    ["required", "root", "none"].contains(&k.as_str()),
+                    "{file}: {k}"
+                );
+            }
         }
     }
 }

@@ -49,9 +49,10 @@ export function suiteEnv(os, { requireNamespaces = false, reportDir } = {}, base
   return env;
 }
 
-/// libtest's summary line, or null.
+/// libtest's summary line, or null. The last one: a suite that runs a nested libtest (the
+/// reaper's re-run of itself) prints the nested summary first.
 export function parseResult(output) {
-  const m = output.match(/test result: (ok|FAILED)\. (\d+) passed; (\d+) failed; (\d+) ignored/);
+  const m = [...output.matchAll(/test result: (ok|FAILED)\. (\d+) passed; (\d+) failed; (\d+) ignored/g)].at(-1);
   if (!m) return null;
   return { ok: m[1] === "ok", passed: +m[2], failed: +m[3], ignored: +m[4] };
 }
@@ -61,7 +62,7 @@ export function skipReasons(output) {
   const lines = output
     .split("\n")
     .map((l) => l.trim())
-    .filter((l) => /: skipped, |no socket namespace on this host|: skipped$/.test(l));
+    .filter((l) => /\bskipped\b|no socket namespace on this host|unchecked$/.test(l) && !/^test .* \.\.\. /.test(l));
   return [...new Set(lines)];
 }
 
@@ -70,7 +71,7 @@ export function tally(records) {
   const rows = new Map();
   for (const r of records) {
     const key = `${r.os}\u0000${r.profile}`;
-    const row = rows.get(key) ?? { os: r.os, profile: r.profile, denied: 0, allowed: 0, skipped: 0, failed: 0 };
+    const row = rows.get(key) ?? { os: r.os, profile: r.profile, denied: 0, uncontrolled: 0, allowed: 0, skipped: 0, failed: 0 };
     if (!(r.result in row)) throw new Error(`unknown result ${r.result} (${r.case})`);
     row[r.result] += 1;
     rows.set(key, row);
@@ -92,8 +93,8 @@ export function format({ records, suites, skips }) {
   const out = [];
   out.push(
     table(
-      ["os", "profile", "denied", "allowed", "skipped", "failed"],
-      tally(records).map((r) => [r.os, r.profile, r.denied, r.allowed, r.skipped, r.failed]),
+      ["os", "profile", "denied", "uncontrolled", "allowed", "skipped", "failed"],
+      tally(records).map((r) => [r.os, r.profile, r.denied, r.uncontrolled, r.allowed, r.skipped, r.failed]),
     ),
   );
   const failed = records.filter((r) => r.result === "failed");

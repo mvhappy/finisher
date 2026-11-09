@@ -50,6 +50,9 @@ test("libtest's summary is parsed", () => {
   });
   assert.equal(parseResult("test result: FAILED. 3 passed; 1 failed; 0 ignored").ok, false);
   assert.equal(parseResult("error: could not compile"), null);
+  // A nested libtest run prints its summary first; the suite's own is the last.
+  const nested = "running 6 tests\nrunning 1 test\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 5 filtered out\ntest result: ok. 6 passed; 0 failed; 0 ignored";
+  assert.equal(parseResult(nested).passed, 6);
 });
 
 test("skip reasons are collected once each", () => {
@@ -57,18 +60,21 @@ test("skip reasons are collected once each", () => {
     "links_mounts.json: agent: a nested user namespace: skipped, no unprivileged user namespace",
     "links_mounts.json: agent: a nested user namespace: skipped, no unprivileged user namespace",
     "x: no socket namespace on this host (Unavailable)",
+    "x: no loopback address of its own here; the own-address case skipped",
+    "apparmor_parser is not installed; syntax unchecked",
+    "test the_case_skipped_here ... ok",
     "test server_data ... ok",
   ].join("\n");
-  assert.equal(skipReasons(out).length, 2);
+  assert.equal(skipReasons(out).length, 4);
 });
 
 test("records are tallied per OS and profile, in profile order", () => {
-  const rows = tally([rec("plugin", "denied"), rec("agent", "denied"), rec("agent", "allowed"), rec("agent", "skipped")]);
+  const rows = tally([rec("plugin", "denied"), rec("agent", "denied"), rec("agent", "allowed"), rec("agent", "skipped"), rec("agent", "uncontrolled")]);
   assert.deepEqual(
-    rows.map((r) => [r.profile, r.denied, r.allowed, r.skipped, r.failed]),
+    rows.map((r) => [r.profile, r.denied, r.uncontrolled, r.allowed, r.skipped, r.failed]),
     [
-      ["agent", 1, 1, 1, 0],
-      ["plugin", 1, 0, 0, 0],
+      ["agent", 1, 1, 1, 1, 0],
+      ["plugin", 1, 0, 0, 0, 0],
     ],
   );
   assert.throws(() => tally([rec("agent", "maybe")]), /unknown result/);
@@ -83,8 +89,8 @@ test("the table lists failed cases and failed suites", () => {
     ],
     skips: ["namespace_linux: no socket namespace on this host"],
   });
-  assert.match(text, /^os\s+profile\s+denied\s+allowed\s+skipped\s+failed$/m);
-  assert.match(text, /^linux\s+agent\s+1\s+0\s+0\s+0$/m);
+  assert.match(text, /^os\s+profile\s+denied\s+uncontrolled\s+allowed\s+skipped\s+failed$/m);
+  assert.match(text, /^linux\s+agent\s+1\s+0\s+0\s+0\s+0$/m);
   assert.match(text, /failed cases:\n {2}linux hook server_data\.json: c-hook-failed: not denied/);
   assert.match(text, /^escape_common\s+2\s+1\s+0\s+FAILED$/m);
   assert.match(text, /^launcher\s+5\s+0\s+0\s+ok$/m);
