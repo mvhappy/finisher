@@ -17,7 +17,9 @@ pub const SERVICE: &str = "finisher";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum KcError {
-    /// The keychain is there but locked: using it would prompt.
+    /// The keychain is there but locked: using it would prompt. Only the Secret Service is
+    /// asked (Linux); elsewhere a lock surfaces as the backend's own error.
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     Locked,
     /// No keychain answers (no Secret Service on a headless host, no session bus).
     Absent(String),
