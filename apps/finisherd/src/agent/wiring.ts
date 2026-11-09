@@ -116,9 +116,15 @@ export interface AgentWiringDeps {
   readonly options?: AgentServeOptions;
 }
 
-/** Every stored node of a session, in order (the built-in loop rebuilds its history on resume). */
-/** A session's nodes, a large `summary` node's payload read from its blob (the rebuild needs its text). */
-async function allNodes(store: AgentStore, sessionId: string): Promise<Node[]> {
+/** The node kinds `historyFromNodes` reads a payload of. */
+const HISTORY_KINDS: ReadonlySet<Node["kind"]> = new Set(["userMessage", "assistantMessage", "reasoning", "toolCall", "toolResult", "notice", "summary"]);
+
+/**
+ * Every stored node of a session, in order, each payload the rebuild reads (`historyFromNodes`)
+ * read from its blob when it is past the inline limit: a large prompt, reply, tool input or
+ * result, or summary comes back byte for byte (the built-in loop rebuilds its history on resume).
+ */
+export async function allNodes(store: AgentStore, sessionId: string): Promise<Node[]> {
   const out: Node[] = [];
   for (let from = 1; ; ) {
     const page = store.nodes(sessionId, from, 1000);
@@ -126,7 +132,7 @@ async function allNodes(store: AgentStore, sessionId: string): Promise<Node[]> {
     if (page.length < 1000) break;
     from = page[page.length - 1]!.seq + 1;
   }
-  for (const [i, n] of out.entries()) if (n.kind === "summary" && n.blobRef !== undefined) out[i] = { ...n, payload: await store.payload(n) };
+  for (const [i, n] of out.entries()) if (n.blobRef !== undefined && HISTORY_KINDS.has(n.kind)) out[i] = { ...n, payload: await store.payload(n) };
   return out;
 }
 

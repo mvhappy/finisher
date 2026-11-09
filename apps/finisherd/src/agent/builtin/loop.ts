@@ -19,7 +19,8 @@
 //   call's prompt would pass 85 % of the model's window.
 // - **Compaction (7B Decision 24, `compact.ts`):** a call whose prompt would pass 75 % is
 //   preceded, once per run, by a summary call over the runs before the current one, which the
-//   summary then replaces.
+//   summary then replaces. A compaction that cannot be made is a `compactionSkipped` notice and
+//   the uncompacted request goes out while it fits.
 // - **Event order of a model call** (the journal's contract, `RuntimeJournal.capture`): its
 //   `capture`, then its `usage`, then its reasoning and message, then its `toolStarted`s.
 // - **Resume:** what the loop answers itself (an unknown tool, arguments that are not JSON, a
@@ -132,9 +133,9 @@ export function BuiltinAdapter(deps: BuiltinDeps): ProviderAdapter {
       const history: ModelMessage[] = [];
       /** Rebuilt at the first turn (resume), which knows its own run. */
       let rebuilt = deps.nodes === undefined;
-      /** Where the current run's messages start (the runs before it end), and whether it compacted. */
+      /** Where the current run's messages start (the runs before it end), and whether it tried to compact. */
       let runStart = 0;
-      let compacted = false;
+      let compactTried = false;
       const steers: string[] = [];
       const waits = new Map<string, { resolve: (a: ToolAnswer) => void; reject: (e: unknown) => void }>();
       const early = new Map<string, ToolAnswer>();
@@ -158,12 +159,13 @@ export function BuiltinAdapter(deps: BuiltinDeps): ProviderAdapter {
           return bounded;
         });
 
+      const freshTokens = (req: ModelRequest) => estimate(JSON.stringify({ s: req.system, t: req.tools, m: req.messages }).length);
       /** The prompt tokens of `req`: the last call's count plus the new messages, else all of it. */
       const promptTokens = (req: ModelRequest) => {
         if (known !== null && known.covers <= req.messages.length) {
           return known.tokens + estimate(JSON.stringify(req.messages.slice(known.covers)).length);
         }
-        return estimate(JSON.stringify({ s: req.system, t: req.tools, m: req.messages }).length);
+        return freshTokens(req);
       };
 
       /** Charges one attempt: its usage, else the gate's reservation is released. */
@@ -308,11 +310,15 @@ export function BuiltinAdapter(deps: BuiltinDeps): ProviderAdapter {
             if (calls >= limits.modelCalls) return emit({ type: "turnCompleted", stopReason: "modelCallCap" });
             let req: ModelRequest = { system: spec.system, tools: TOOL_DEFS, messages: [...history], model: spec.model, maxTokens };
             let tokens = promptTokens(req);
-            if (tokens > limits.compactRatio * info.window && runStart > 0 && !compacted) {
+            let skipped: string | undefined;
+            if (tokens > limits.compactRatio * info.window && runStart > 0 && !compactTried) {
+              compactTried = true;
               const c = await compact({
                 next: req,
                 older: history.slice(0, runStart),
+                current: history.slice(runStart),
                 tokens: promptTokens,
+                fresh: freshTokens,
                 fits: limits.contextRatio * info.window,
                 window: info.window,
                 call: (r) => modelCall(r, signal, true),
@@ -320,16 +326,20 @@ export function BuiltinAdapter(deps: BuiltinDeps): ProviderAdapter {
                 aborted: () => signal.aborted,
               });
               if ("refused" in c) return refusedEnd(c.refused);
-              if ("failed" in c) return failedEnd(c.failed);
-              history.splice(0, runStart, c.message);
-              runStart = 1;
-              compacted = true;
-              known = null;
-              req = { ...req, messages: [...history] };
-              tokens = promptTokens(req);
+              if ("skipped" in c) {
+                // Not made: the uncompacted request goes out if it fits (the stop below decides).
+                skipped = c.skipped;
+                emit({ type: "notice", name: "compactionSkipped", details: c.details });
+              } else {
+                history.splice(0, runStart, c.message);
+                runStart = 1;
+                known = null;
+                req = { ...req, messages: [...history] };
+                tokens = promptTokens(req);
+              }
             }
             if (tokens > limits.contextRatio * info.window) {
-              const e = finError("MODEL_CONTEXT_EXCEEDED", "the conversation fills 85 % of the model's context window", { tokens, window: info.window }, "start a new run or session");
+              const e = finError("MODEL_CONTEXT_EXCEEDED", "the conversation fills 85 % of the model's context window", { tokens, window: info.window, ...(skipped === undefined ? {} : { compaction: skipped }) }, "start a new run or session");
               return emit({ type: "turnFailed", error: { code: e.code, message: e.message, details: e.details, fix: e.fix! } });
             }
             const answer = await modelCall(req, signal);
@@ -400,7 +410,7 @@ export function BuiltinAdapter(deps: BuiltinDeps): ProviderAdapter {
             if (running !== null) return yield* Effect.fail(finError("SESSION_BUSY", "a turn is running", { instance }));
             const blocks = [...(i.facts === undefined ? [] : [{ type: "text" as const, text: i.facts }]), { type: "text" as const, text: i.text }];
             runStart = history.length;
-            compacted = false;
+            compactTried = false;
             history.push({ role: "user", content: blocks });
             ctl = new AbortController();
             early.clear();

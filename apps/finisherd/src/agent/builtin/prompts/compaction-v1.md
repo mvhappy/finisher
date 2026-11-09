@@ -2,7 +2,7 @@ The conversation above is about to be replaced by a summary, because it is close
 
 You will read only your summary from here on, so keep everything you need to carry on:
 
-- What the person asked for, in their own words where they matter, and what they decided or refused.
+- What the person asked for and what they decided or refused. Where their exact words matter, quote the person's requests, marked as quotes.
 - What you did to the project: the edits you made, on which branch, and what each one changed.
 - What you found out: item and clip ids, timings, names and values you will need again.
 - What failed or was refused, and why, so you do not repeat it.
