@@ -469,8 +469,8 @@ describe("a CLI session's processes (the fake harness's spawn step)", () => {
 
   test("a_process_that_leaves_its_group_goes_with_the_session", async () => {
     // Task 11's review: a `setsid` grandchild left its group and outlived the session. The
-    // Linux launcher stays the parent and reaps it (Decision 3 as amended).
-    const escape = sh("setsid sh -c 'echo $$ > pid; exec sleep 300' >/dev/null 2>&1 < /dev/null & while [ ! -s pid ]; do sleep 0.05; done; cat pid");
+    // Linux and macOS launchers stay the parent and reap it (Decision 3 as amended).
+    const escape = sh(`${setsid("echo $$ > pid; exec sleep 300")} >/dev/null 2>&1 < /dev/null & while [ ! -s pid ]; do sleep 0.05; done; cat pid`);
     // Control: without the launcher (the profile not ready on this OS), it outlives the session.
     const direct = await run(() => [escape], NOT_READY);
     const free = Number(direct.children[0]!.stdout.trim());
@@ -517,9 +517,9 @@ describe("the sandbox's scope", () => {
   });
 });
 
-describe("the hang-up of a Linux launcher", () => {
+describe("the hang-up of a Linux or macOS launcher", () => {
   test("a_launcher_that_ignores_the_hang_up_is_killed_after_the_grace", async () => {
-    if (process.platform !== "linux") return;
+    if (process.platform !== "linux" && process.platform !== "darwin") return;
     // A launcher that never reaps: the session end hangs it up, then kills its group.
     const stuck = join(tmp, "stuck-launcher.sh");
     writeFileSync(stuck, "#!/bin/sh\ntrap '' HUP\ncat <&3 >/dev/null\nwhile :; do sleep 0.05; done\n", { mode: 0o755 });
@@ -576,7 +576,7 @@ describe("the sandbox under the real launcher", () => {
     // A process under the launcher is killed, its group with it, when the scope closes, and
     // so is a `setsid` grandchild that left the group (the launcher reaps it).
     const long = await Effect.runPromise(
-      box.spawn(["/bin/sh", "-c", "setsid sh -c 'echo $$ > g.pid; exec sleep 300' >/dev/null 2>&1 < /dev/null & while [ ! -s g.pid ]; do sleep 0.02; done; cat g.pid; exec sleep 300"], { cwd: box.workspace, stdio: "pipe" }),
+      box.spawn(["/bin/sh", "-c", `${setsid("echo $$ > g.pid; exec sleep 300")} >/dev/null 2>&1 < /dev/null & while [ ! -s g.pid ]; do sleep 0.02; done; cat g.pid; exec sleep 300`], { cwd: box.workspace, stdio: "pipe" }),
     );
     let said = "";
     long.stdout.on("data", (b) => (said += String(b)));
@@ -594,6 +594,12 @@ describe("the sandbox under the real launcher", () => {
     expect(Exit.isFailure(after)).toBe(true);
   });
 });
+
+/** A shell command that runs `/bin/sh -c <script>` in a session of its own (`script` holds no
+ * single quote; macOS has no `setsid` command). */
+function setsid(script: string): string {
+  return process.platform === "darwin" ? `perl -MPOSIX -e 'POSIX::setsid() > 0 or die; exec "/bin/sh", "-c", $ARGV[0]' '${script}'` : `setsid sh -c '${script}'`;
+}
 
 function alive(pid: number): boolean {
   try {

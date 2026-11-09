@@ -274,13 +274,17 @@ fn home_dir() -> Option<PathBuf> {
 
 /// macOS: the program is rewritten to `sandbox-exec -p <profile> -D… -- <program> <args…>`
 /// (the host starts children with `posix_spawn`, so there is no child-side step; the open-files
-/// limit is not applied on macOS, a recorded residual).
+/// limit is not applied on macOS, a recorded residual). The profile carries a fresh Seatbelt
+/// mark, which the host's group kill sweeps (Decision 3, macOS amendment).
 #[cfg(target_os = "macos")]
 fn plugin_steps(policy: &crate::SandboxPolicy, cmd: &mut PlatformCommand) -> Result<(), String> {
-    let (program, args) = crate::macos::apply::plugin_command(policy, &cmd.program, &cmd.args)
-        .map_err(|e| e.to_string())?;
+    let mark = fin_jobhost::seatbelt_mark::new_mark().map_err(|e| format!("getentropy: {e}"))?;
+    let (program, args) =
+        crate::macos::apply::plugin_command(policy, &cmd.program, &cmd.args, &mark)
+            .map_err(|e| e.to_string())?;
     cmd.program = program;
     cmd.args = args;
+    cmd.seatbelt_mark = Some(mark);
     Ok(())
 }
 

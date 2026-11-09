@@ -1,7 +1,7 @@
 //! `fin-sandbox-exec --policy-fd <n> -- <program> [args…]`: confines a program `finisherd` starts
-//! itself (an agent harness, a hook command): on Linux it forks it and stays its parent, the
-//! session's reaper (`fin_sandbox::linux::reaper`); elsewhere it becomes it. See
-//! `fin_sandbox::launch`.
+//! itself (an agent harness, a hook command): on Linux and macOS it forks it and stays its
+//! parent, the session's reaper (`fin_sandbox::linux::reaper`, `fin_sandbox::macos::reaper`);
+//! on Windows it runs it in its container. See `fin_sandbox::launch`.
 
 use std::fs::File;
 use std::io::{Read, Write};
@@ -76,11 +76,14 @@ fn main() {
         }
         Mechanism::Enforced { .. } => true,
     };
-    // Linux: the launcher stays the parent and reaps the session (Decision 3 as amended); the
-    // program is confined in the forked child.
-    #[cfg(target_os = "linux")]
+    // Linux and macOS: the launcher stays the parent and reaps the session (Decision 3 as
+    // amended); the program is confined in the forked child.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     {
+        #[cfg(target_os = "linux")]
         use fin_sandbox::linux::reaper;
+        #[cfg(target_os = "macos")]
+        use fin_sandbox::macos::reaper;
         // SAFETY: getpid has no failure mode.
         let launcher = unsafe { libc::getpid() };
         let prepared = reaper::prepare()
@@ -101,7 +104,15 @@ fn main() {
                 if let Err(e) = prepared.in_child() {
                     fail(EXIT_UNAVAILABLE, "SANDBOX_UNAVAILABLE", profile, &e);
                 }
-                start(&args, &policy, &req, confine, profile, Some(launcher))
+                #[cfg(target_os = "linux")]
+                let mark = None;
+                #[cfg(target_os = "macos")]
+                let mark = Some(prepared.mark());
+                let session = Session {
+                    launcher: Some(launcher),
+                    mark,
+                };
+                start(&args, &policy, &req, confine, profile, session)
             }
             child => {
                 // The program holds the request descriptor and the streams; the launcher
@@ -114,35 +125,61 @@ fn main() {
             }
         }
     }
-    #[cfg(not(target_os = "linux"))]
-    start(&args, &policy, &req, confine, profile, None)
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    start(&args, &policy, &req, confine, profile, Session::default())
 }
 
-/// Confines the calling process where `confine`, then `exec`s the program; never returns.
+/// What the program's start needs from the launcher's reaper: its pid (Linux: the program
+/// dies with it) and the session's mark (macOS: the profile carries it).
+#[derive(Default)]
+struct Session<'a> {
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    launcher: Option<i32>,
+    mark: Option<&'a str>,
+}
+
+/// Confines the calling process where `confine` (on macOS, marks it either way), then `exec`s
+/// the program; never returns.
 fn start(
     args: &launch::Args,
     policy: &fin_sandbox::SandboxPolicy,
     req: &launch::LaunchRequest,
     confine: bool,
     profile: Option<Profile>,
-    launcher: Option<i32>,
+    session: Session<'_>,
 ) -> ! {
+    let mark = session.mark;
     if confine {
         // Unix sockets hidden first (Decision 26): the mounts need the capabilities the
         // namespace gives, which Landlock then keeps the program from using.
         if let Err(e) = os::hide_sockets(policy, req.home()) {
             fail(EXIT_UNAVAILABLE, "SANDBOX_UNAVAILABLE", profile, &e);
         }
-        if let Err(e) = os::apply(policy) {
+        if let Err(e) = os::apply(policy, mark) {
             fail(EXIT_UNAVAILABLE, "SANDBOX_UNAVAILABLE", profile, &e);
         }
+    } else if let Some(m) = mark {
+        #[cfg(target_os = "macos")]
+        if let Err(e) = fin_sandbox::macos::apply::mark_only(m) {
+            fail(
+                EXIT_UNAVAILABLE,
+                "SANDBOX_UNAVAILABLE",
+                profile,
+                &e.to_string(),
+            );
+        }
+        #[cfg(not(target_os = "macos"))]
+        let _ = m;
     }
     #[cfg(target_os = "linux")]
-    if let Some(Err(e)) = launcher.map(fin_sandbox::linux::reaper::die_with_launcher) {
+    if let Some(Err(e)) = session
+        .launcher
+        .map(fin_sandbox::linux::reaper::die_with_launcher)
+    {
         fail(EXIT_UNAVAILABLE, "SANDBOX_UNAVAILABLE", profile, &e);
     }
     #[cfg(not(target_os = "linux"))]
-    let _ = launcher;
+    let _ = session;
     let e = os::exec(req, policy, confine, &args.argv);
     let exit = if e.kind() == std::io::ErrorKind::NotFound {
         EXIT_NOT_FOUND
@@ -212,7 +249,7 @@ mod os {
     }
 
     #[cfg(target_os = "linux")]
-    pub fn apply(policy: &SandboxPolicy) -> Result<(), String> {
+    pub fn apply(policy: &SandboxPolicy, _mark: Option<&str>) -> Result<(), String> {
         fin_sandbox::linux::apply::restrict_self(policy).map_err(|e| e.to_string())?;
         if let Some(n) = policy.limits.open_files {
             open_files(n)?;
@@ -220,11 +257,12 @@ mod os {
         Ok(())
     }
 
-    /// Seatbelt on the launcher itself, which the program inherits across `exec` (what
-    /// `sandbox-exec` does, without the profile on argv), then `RLIMIT_NOFILE`.
+    /// Seatbelt on the forked child, carrying the session's mark, which the program inherits
+    /// across `exec` (what `sandbox-exec` does, without the profile on argv), then
+    /// `RLIMIT_NOFILE`.
     #[cfg(target_os = "macos")]
-    pub fn apply(policy: &SandboxPolicy) -> Result<(), String> {
-        fin_sandbox::macos::apply::restrict_self(policy, None).map_err(|e| e.to_string())?;
+    pub fn apply(policy: &SandboxPolicy, mark: Option<&str>) -> Result<(), String> {
+        fin_sandbox::macos::apply::restrict_self(policy, None, mark).map_err(|e| e.to_string())?;
         if let Some(n) = policy.limits.open_files {
             open_files(n)?;
         }
@@ -232,7 +270,7 @@ mod os {
     }
 
     #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-    pub fn apply(_policy: &SandboxPolicy) -> Result<(), String> {
+    pub fn apply(_policy: &SandboxPolicy, _mark: Option<&str>) -> Result<(), String> {
         Err("the launcher sandbox of this OS".into())
     }
 
@@ -329,7 +367,7 @@ mod os {
     }
 
     /// Points the standard streams at `/dev/null` (the launcher after the fork).
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     pub fn streams_to_null() {
         // SAFETY: a NUL-terminated path; dup2 onto the standard streams, then close.
         unsafe {
@@ -447,7 +485,7 @@ mod os {
     }
 
     /// Nothing to apply in-process: the container is made at the start.
-    pub fn apply(_policy: &SandboxPolicy) -> Result<(), String> {
+    pub fn apply(_policy: &SandboxPolicy, _mark: Option<&str>) -> Result<(), String> {
         Ok(())
     }
 
@@ -505,7 +543,7 @@ mod os {
         Err(format!("descriptor {fd}: no launcher on this OS"))
     }
 
-    pub fn apply(_policy: &SandboxPolicy) -> Result<(), String> {
+    pub fn apply(_policy: &SandboxPolicy, _mark: Option<&str>) -> Result<(), String> {
         Err("no launcher sandbox on this OS".into())
     }
 

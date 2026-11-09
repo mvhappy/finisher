@@ -10,6 +10,8 @@ mod macos_support;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::{Arc, mpsc};
+use std::time::{Duration, Instant};
 
 use fin_jobhost::spawner::{
     JobLimits, PathGrant, PlatformCommand, Profile, Program, Qos, Role, SpawnRequest, Spawner,
@@ -98,6 +100,7 @@ fn cmd(req: &SpawnRequest) -> PlatformCommand {
         cwd: req.cwd.clone(),
         job_limits: JobLimits::default(),
         self_sandbox: None,
+        seatbelt_mark: None,
     }
 }
 
@@ -206,4 +209,95 @@ fn a_plugin_runs_under_sandbox_exec() {
         let got = run(&c, &op);
         assert!(got.denied(), "{op:?}: {got:?}");
     }
+}
+
+/// Exists and is not a zombie.
+fn alive(pid: i32) -> bool {
+    // SAFETY: plain data the call fills; the size is the struct's.
+    let mut info: libc::proc_bsdshortinfo = unsafe { std::mem::zeroed() };
+    let size = std::mem::size_of::<libc::proc_bsdshortinfo>() as libc::c_int;
+    // SAFETY: a valid buffer of `size` bytes.
+    let n = unsafe {
+        libc::proc_pidinfo(
+            pid,
+            libc::PROC_PIDT_SHORTBSDINFO,
+            0,
+            (&raw mut info).cast(),
+            size,
+        )
+    };
+    n == size && info.pbsi_status != libc::SZOMB
+}
+
+/// Polls `f` for up to 10 s.
+fn within(mut f: impl FnMut() -> bool) -> bool {
+    let until = Instant::now() + Duration::from_secs(10);
+    while !f() {
+        if Instant::now() > until {
+            return false;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    true
+}
+
+#[test]
+fn a_plugins_setsid_child_goes_with_its_group() {
+    use fin_jobhost::{EventSink, GroupSpec, Host, HostOptions, KillReason};
+    let t = Tree::new();
+    let mut req = t.plugin_req();
+    // A plugin that leaves a child in a session of its own behind (out of its process group,
+    // which the kill domain kills), which says its pid in `out/g.pid`.
+    let pid_file = t.job.join("out/g.pid");
+    req.args = vec![
+        "--none".into(),
+        "setsid-child".into(),
+        pid_file.clone().into(),
+    ];
+    let mut opts = HostOptions::new(std::env::temp_dir());
+    opts.watchdog = false;
+    opts.spawner = Arc::new(t.spawner(Decision::Pass, Decision::Apply));
+    let (sink, _events) = EventSink::channel(1024);
+    let host = Host::start(opts, sink).unwrap();
+    let group = host.open_group(GroupSpec {
+        label: "t".into(),
+        memory_bytes: None,
+        qos: Qos::Normal,
+    });
+    let (tx, rx) = mpsc::channel();
+    host.spawn(
+        group,
+        req,
+        Box::new(move |r| {
+            let _ = tx.send(r.map_err(|e| e.to_string()));
+        }),
+    );
+    rx.recv_timeout(Duration::from_secs(10))
+        .unwrap()
+        .expect("the plugin started");
+    assert!(within(|| pid_file.exists()), "the child never started");
+    let g: i32 = std::fs::read_to_string(&pid_file)
+        .unwrap()
+        .trim()
+        .parse()
+        .unwrap();
+    // The child writes its pid only once `setsid` succeeded. The host may already have
+    // ended the group when the plugin exited (its close sweeps the mark too); the kill and
+    // the close below end it otherwise.
+    let (tx, rx) = mpsc::channel();
+    host.kill_group(
+        group,
+        KillReason::Test,
+        Box::new(move || {
+            let _ = tx.send(());
+        }),
+    );
+    rx.recv_timeout(Duration::from_secs(10)).unwrap();
+    host.close_group(group);
+    let left = !within(|| !alive(g));
+    if left {
+        // SAFETY: the process this test started.
+        unsafe { libc::kill(g, libc::SIGKILL) };
+    }
+    assert!(!left, "the setsid child {g} outlived its group's kill");
 }

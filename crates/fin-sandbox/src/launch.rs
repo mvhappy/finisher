@@ -1,7 +1,7 @@
 //! The launcher (plan 7C Decision 3, Task 5): `fin-sandbox-exec --policy-fd <n> -- <argv…>`
-//! confines a program `finisherd` starts itself (an agent harness, a hook command): on Linux it
-//! forks it and stays its parent, the session's reaper ([`crate::linux::reaper`], Decision 3 as
-//! amended); elsewhere it becomes it.
+//! confines a program `finisherd` starts itself (an agent harness, a hook command): on Linux and
+//! macOS it forks it and stays its parent, the session's reaper ([`crate::linux::reaper`],
+//! [`crate::macos::reaper`], Decision 3 as amended); on Windows it runs it in its container.
 //!
 //! The request arrives on the inherited descriptor `<n>` (never on argv, which every process of
 //! the user can read, and never in the environment): a [`LaunchRequest`], the profile and its
@@ -9,15 +9,15 @@
 //! crate assembles one (Decision 1). The launcher reads the descriptor to its end and closes it,
 //! applies the policy (Linux: Landlock, then `RLIMIT_NOFILE` from the policy's limits, in the
 //! forked child; the seccomp filter is deferred, plan Task 4; macOS: Seatbelt through
-//! `sandbox_init`, which the program inherits across `exec`, then `RLIMIT_NOFILE`) and `exec`s
-//! the program. Before Landlock, where it
+//! `sandbox_init` in the forked child, its profile carrying the session's mark, which the
+//! program inherits across `exec`, then `RLIMIT_NOFILE`) and `exec`s the program. Before Landlock, where it
 //! is enforced, the launcher hides Unix sockets in a user and mount namespace (Decision 26,
 //! [`crate::linux::namespace`]) when a forked probe shows it can, and in every mode it removes
 //! [`SOCKET_ENV`] from the program's environment. `--probe` prints whether the namespace is
-//! available (`finisherd`'s `SANDBOX_SOCKETS_EXPOSED`). On Linux the launcher
+//! available (`finisherd`'s `SANDBOX_SOCKETS_EXPOSED`). On Linux and macOS the launcher
 //! forwards the signals it is sent to the program's group and exits as the program did (its
 //! code, or its signal raised again); `SIGHUP` ends the session instead, killing every
-//! descendant. Elsewhere it `exec`s, so the exit code and signals are the program's own.
+//! descendant.
 //!
 //! **Windows** (plan 7C Task 9, [`crate::windows::launcher`]): `<n>` is a C runtime descriptor
 //! (Node's `stdio[3]`) or else an inherited handle's value. The launcher cannot become the
