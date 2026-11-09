@@ -4,14 +4,16 @@
 //! known limitations under which the two may differ ([`comparable`]). Shared by
 //! `rebase_moves_props` (moves, slides, links, transitions) and `props_rebase_4c` (every 4C edit).
 //!
-//! The limitations are semantics of position mapping (positions map through shifts only, and a
-//! move maps by its named item's track), not defects: Task 26 re-checked each of
-//! `self_relocates`, `group_grew`, `partner_anchor` and `lifted_on` by removing it, and each
-//! removal fails `rebase_moves_props` within 30k cases; `relocated` was widened to every edge
-//! or start change recorded without a shift (rolls, overwrite trims, carves).
-//! `group_changed`, `concurrent_reedged` and `anchor_drift` (`four`, 2026-11-09) were each
-//! checked the same way: without it, its fixed case fails.
-//! `lifted_gap` (`four`, 2026-11-09) too: without it, its fixed case fails.
+//! Since 2026-11-09 positions map through the item edge they were written against (spec §4.3,
+//! `rebase::anchors`), which is what this model's [`Anchor`] names. The shift-only limitations
+//! this model used to leave out of the comparison or allow as unblamed refusals (an anchor at an
+//! empty track's zero, a relocated anchor, self relocation, group grew or changed, partner
+//! anchor and drift, lifted, lifted edges, anchor drift and lifted gap) are gone: every case is
+//! compared, and a refusal must be one the spec explains ([`refusal_allowed`]). Each was checked
+//! by its fixed case passing under the strict check. The one exclusion left,
+//! [`index_in_changed_list`], belongs to `rebase::places`, which has its own oracle.
+//! The walk at an anchor's end reads the records in effect ([`in_effect`]), as the engine reads
+//! the steps in no mirrored pair.
 #![allow(dead_code)]
 
 use std::collections::BTreeMap;

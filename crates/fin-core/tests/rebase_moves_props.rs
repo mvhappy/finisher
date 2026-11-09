@@ -30,11 +30,11 @@ proptest! {
     }
 }
 
-/// The shrunk case of a workspace run: the head ripples `c4` in after `c3`, at our
-/// overwrite move's anchor on t2, so the rebased move takes `c2` (and its partner `c1` on t1)
-/// ten frames later than where it was written. Our later ripple move of `c1` to its
-/// own end maps through no shift (an overwrite move records none) and lands inside `c1`, and
-/// the re-run refuses it, unblamed (`keyed4c::partner_drift`).
+/// The shrunk case of a workspace run (formerly *partner drift*): the head ripples `c4` in after
+/// `c3`, at our overwrite move's anchor on t2, so the rebased move takes `c2` (and its partner `c1`
+/// on t1) ten frames later than where it was written. Our later ripple move of `c1` to its own end
+/// used to keep the position it was written at (an overwrite move records no shift) and was
+/// refused inside `c1`, unblamed. It is anchored at `c1`'s end now, which follows the partner.
 #[test]
 fn partner_of_overwrite_move_refuses_unblamed() {
     use keyed4c::Intent::Move;
@@ -68,12 +68,10 @@ fn partner_of_overwrite_move_refuses_unblamed() {
     check(&base(&lens, true, false), &committed, &mine).unwrap();
 }
 
-/// The shrunk case of a workspace run (spec §4.3 *self relocation*): t1 holds c1, c2, c3 and
-/// the head ripples c2 to t1's end, so c3 now starts where c2 did (frame 10). Ours slides c3
-/// back a frame, then ripple-moves c4 before c2, written at frame 10. That position maps to 10
-/// (c2's range collapses to its start), but at the head our rebased slide put c3's start at 9
-/// without a shift, so 10 is inside c3 and the re-run refuses `INSERT_INSIDE_CLIP`, unblamed:
-/// the head only shifted c3 (`keyed4c::self_drift`).
+/// The shrunk case of a workspace run (formerly *self relocation*): t1 holds c1, c2, c3 and the
+/// head ripples c2 to t1's end. Ours slides c3 back a frame, then ripple-moves c4 before c2. The
+/// move was written at c2's start; through shifts it kept frame 10, inside c3 after our rebased
+/// slide (`INSERT_INSIDE_CLIP`, unblamed). Anchored at c2's start, it lands before c2 at t1's end.
 #[test]
 fn slide_then_move_at_moved_anchor_refuses_unblamed() {
     use keyed4c::Intent::{Move, Slide};
@@ -105,11 +103,11 @@ fn slide_then_move_at_moved_anchor_refuses_unblamed() {
     check(&base(&lens, false, false), &committed, &mine).unwrap();
 }
 
-/// The shrunk case of a 30k-case run (`keyed4c::anchor_drift`): `c1` on t1 is linked with `c3`
-/// on t2, and the head ripple-moves `c4` to its own end on t4, which records a removal of
-/// `[0, 11)` and an insert at 0. Ours ripple-moves `c3` before `c4`, written at 0; that maps past
-/// the re-inserted `c4` to frame 11, and the rebased move carries `c1` by the same delta into
-/// `c2` on t1, so the re-run refuses `INSERT_INSIDE_CLIP`, unblamed.
+/// The shrunk case of a 30k-case run (formerly *anchor drift*): `c1` on t1 is linked with `c3`
+/// on t2, and the head ripple-moves `c4` to its own end on t4 (a removal of `[0, 11)` and an
+/// insert at 0). Ours ripple-moves `c3` before `c4`, written at 0. Through shifts that went past
+/// the re-inserted `c4` to 11 and carried `c1` into `c2` (`INSERT_INSIDE_CLIP`, unblamed);
+/// anchored at `c4`'s start it stays at 0.
 #[test]
 fn partner_past_relocated_anchor_refuses_unblamed() {
     use keyed4c::Intent::Move;
@@ -134,11 +132,10 @@ fn partner_past_relocated_anchor_refuses_unblamed() {
     check(&base(&lens, true, false), &committed, &mine).unwrap();
 }
 
-/// The shrunk case of a 100k-case run (`keyed4c::anchor_drift`): t2 holds `c1` and `c2`, and
-/// the head ripple-moves `c2` to its own end, recording a removal of `[10, 20)` and an insert
-/// at 10. Ours ripple-moves `c3` from t3 before `c2`, written at frame 10, then sets a
-/// transition between `c1` and `c3`. The move maps past the re-inserted `c2` (frame 20), so the
-/// transition's cut is gone and the re-run refuses `NOT_ADJACENT`, unblamed.
+/// The shrunk case of a 100k-case run (formerly *anchor drift*): t2 holds `c1` and `c2`, and the
+/// head ripple-moves `c2` to its own end. Ours ripple-moves `c3` from t3 before `c2`, then sets a
+/// transition between `c1` and `c3`. Through shifts the move went past the re-inserted `c2` and
+/// the transition was refused `NOT_ADJACENT`, unblamed; anchored at `c2`'s start, the cut is there.
 #[test]
 fn transition_past_relocated_anchor_refuses_unblamed() {
     use keyed4c::Intent::{Move, TrSet};
@@ -166,12 +163,11 @@ fn transition_past_relocated_anchor_refuses_unblamed() {
     check(&base(&lens, false, false), &committed, &mine).unwrap();
 }
 
-/// The shrunk case of a 100k-case run (spec §4.3 *lifted*, `keyed4c::lifted_gap`): t4 holds
-/// `c1`, `c2` and `c3`; the head sets a transition between `c1` and `c2`, then slides `c3` back
-/// a frame, so t4 ends at frame 29 and no shift is recorded. Ours ripple-moves `c1` to t4's end,
-/// written at frame 30, then slides it back two frames. The move keeps 30 and leaves a frame's
-/// gap after `c3`, so the slide has no touching neighbour and is refused `SLIDE_BLOCKED`, with
-/// nothing blamed: both committed records touched what ours names.
+/// The shrunk case of a 100k-case run (formerly *lifted gap*): t4 holds `c1`, `c2` and `c3`; the
+/// head sets a transition between `c1` and `c2`, then slides `c3` back a frame, so t4 ends at
+/// frame 29 with no shift recorded. Ours ripple-moves `c1` to t4's end, written at 30, then slides
+/// it back two frames. Through shifts the move kept 30, a frame past `c3`, and the slide was
+/// refused `SLIDE_BLOCKED`, unblamed; anchored at `c3`'s end it lands at 29.
 #[test]
 fn slide_after_lifted_end_refuses_unblamed() {
     use keyed4c::Intent::{Move, Slide, TrSet};
