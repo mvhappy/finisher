@@ -174,7 +174,8 @@ fn manifest_schema_round_trips() {
     assert_eq!(schema["additionalProperties"], json!(false));
     let contributes = &schema["$defs"]["Contributes"]["properties"];
     let keys: Vec<&String> = contributes.as_object().unwrap().keys().collect();
-    assert_eq!(keys, ["captionStyles", "fontCatalogs"]);
+    // The kinds host API 1.1 consumes (8B Decision 14); `hooks` waits for 7F.
+    assert_eq!(keys, ["captionStyles", "commands", "fontCatalogs"]);
 }
 
 #[test]

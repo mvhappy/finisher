@@ -9,7 +9,10 @@ use schemars::JsonSchema;
 use semver::{Version, VersionReq};
 use serde::{Deserialize, Serialize};
 
-pub use contributes::{CaptionStyleContribution, Contributes, FontCatalogContribution};
+pub use contributes::{
+    CaptionStyleContribution, CommandContribution, Contributes, FontCatalogContribution,
+    HookContribution,
+};
 pub use id::{DEV_PUBLISHER, IdError, PluginId, RESERVED_DEVICE_NAMES, RESERVED_PUBLISHERS};
 pub use runtime::{Platform, Runtime};
 

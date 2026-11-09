@@ -212,9 +212,10 @@ fn unconsumable_kind_refused() {
         assert_eq!(errs.len(), 1, "{}: {errs:?}", kind.key());
         assert_eq!(errs[0].code, "PLUGIN_CONTRIBUTION_UNSUPPORTED");
         assert_eq!(errs[0].details["kind"], json!(kind.key()));
-        assert_eq!(errs[0].details["hostApi"], json!("1.0.0"));
+        assert_eq!(errs[0].details["hostApi"], json!("1.1.0"));
     }
-    assert_eq!(refused, ContributionKind::ALL.len() - 2);
+    // Host API 1.1 consumes font catalogs, caption styles and commands (8B Decision 14).
+    assert_eq!(refused, ContributionKind::ALL.len() - 3);
     // A misspelt kind is refused the same way, never ignored.
     let v = set(
         fixture("content-pack"),
@@ -319,7 +320,7 @@ fn compatibility_with_the_running_host() {
     let errs = check(&v).unwrap_err();
     assert_eq!(errs[0].code, "PLUGIN_HOST_API");
     assert_eq!(errs[0].details["range"], json!("^2.0"));
-    assert_eq!(errs[0].details["host"], json!("1.0.0"));
+    assert_eq!(errs[0].details["host"], json!("1.1.0"));
     let mut c: ValidateCtx = ctx(SourceClass::Registry);
     c.platform = Some(Platform::Win32Arm64);
     c.node = Some(Version::new(24, 21, 0));

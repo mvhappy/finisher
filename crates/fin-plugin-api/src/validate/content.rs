@@ -1,6 +1,7 @@
 //! Contributions: a kind this host does not consume is `PLUGIN_CONTRIBUTION_UNSUPPORTED
 //! {kind, hostApi}` (8A Decision 4); font catalogs and caption styles are checked through the
-//! injected [`ContentChecks`].
+//! injected [`ContentChecks`]; commands' names, timeouts and argument schemas here (8B
+//! Task 2).
 
 use std::collections::BTreeSet;
 
@@ -9,6 +10,7 @@ use serde_json::json;
 use super::{ContentChecks, Invalid, PackageFiles, ValidateCtx};
 use crate::contribution::{ContributionKind, consumable};
 use crate::manifest::Manifest;
+use crate::protocol::MAX_COMMAND_TIMEOUT_S;
 
 fn unsupported(kind: &str, ctx: &ValidateCtx) -> Invalid {
     Invalid::new(
@@ -61,6 +63,56 @@ pub(super) fn check(
     }
     if eaten.contains(&ContributionKind::CaptionStyles) {
         captions(m, files, ctx.content_checks, out);
+    }
+    if eaten.contains(&ContributionKind::Commands) {
+        commands(m, out);
+    }
+}
+
+fn commands(m: &Manifest, out: &mut Vec<Invalid>) {
+    let mut names = BTreeSet::new();
+    for (i, c) in m.contributes.commands.iter().enumerate() {
+        let base = format!("/contributes/commands/{i}");
+        if !style_name_ok(&c.name) {
+            out.push(Invalid::manifest(
+                &format!("{base}/name"),
+                "commandName",
+                format!(
+                    "{:?} is not a command name [a-z0-9][a-z0-9-]{{0,63}}",
+                    c.name
+                ),
+            ));
+        }
+        if !names.insert(c.name.as_str()) {
+            out.push(Invalid::manifest(
+                &format!("{base}/name"),
+                "duplicateCommand",
+                format!("command {} is listed twice", c.name),
+            ));
+        }
+        if let Some(t) = c.timeout_s
+            && !(1..=MAX_COMMAND_TIMEOUT_S).contains(&t)
+        {
+            out.push(Invalid::manifest(
+                &format!("{base}/timeoutS"),
+                "commandTimeout",
+                format!("a command's timeout is 1 to {MAX_COMMAND_TIMEOUT_S} s, not {t}"),
+            ));
+        }
+        if let Err(e) = c.args.check() {
+            out.push(
+                Invalid::manifest(
+                    &format!("{base}/args"),
+                    "argsSchema",
+                    format!(
+                        "command {}: arguments schema at {:?}: {}",
+                        c.name, e.at, e.message
+                    ),
+                )
+                .with("at", e.at)
+                .with("problem", e.problem),
+            );
+        }
     }
 }
 

@@ -922,6 +922,8 @@ dependencies = [
 name = "fin-plugin-api"
 version = "0.0.0"
 dependencies = [
+ "fin-core",
+ "regex-automata",
  "schemars",
  "semver",
  "serde",
