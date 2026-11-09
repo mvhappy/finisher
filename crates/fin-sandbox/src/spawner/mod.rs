@@ -128,6 +128,15 @@ impl Spawner for SandboxSpawner {
         }
     }
 
+    /// Where the `worker` profile is applied by a restriction made once at start that names
+    /// paths (Landlock): a warm worker granted its own `jobs/` sees only the job visiting it
+    /// (Decision 19). macOS follows once Task 8's Seatbelt worker profile exists (granting
+    /// `jobs/`, never the worker's directory); Windows needs the broker's per-job ACL grants
+    /// (Task 10). Both stay false until then, so warm kinds run cold there.
+    fn per_job_grants(&self) -> bool {
+        self.worker == Decision::Apply && cfg!(target_os = "linux")
+    }
+
     fn prepare(&self, req: &SpawnRequest, cmd: &mut PlatformCommand) -> Result<(), SpawnError> {
         let (profile, decision) = match req.profile {
             HostProfile::Worker => (Profile::Worker, &self.worker),
