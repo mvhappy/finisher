@@ -140,6 +140,7 @@ fn undo(s: &mut Store, id: &str, author: &str, branch: &str) -> HistoryResult {
         dry_run: false,
         args_hash: None,
         to: None,
+        after_seq: None,
     })
     .unwrap()
 }
@@ -1022,6 +1023,7 @@ fn origins_name_what_was_acted_on() {
             dry_run: false,
             args_hash: None,
             to: None,
+            after_seq: None,
         })
         .unwrap();
     assert!(redo.origins.is_empty());

@@ -20,7 +20,9 @@
 //   without the harness, provider, model and weights that made it, even once `events/` aged out.
 // - **Deltas chain only through recorded turns** (review H1): a turn's delta is based on the
 //   previous turn of its run only when that turn's content is in the trace store (`baseTurnId`);
-//   otherwise it starts over (`from: 0`).
+//   otherwise it starts over (`from: 0`). After a compaction turn (`purpose: compaction`, 7B
+//   Decision 24) it starts over too: the next request no longer holds the runs the summary
+//   replaced, and a replay never splices a compacted history onto an uncompacted one.
 // - **Off means off:** each call checks the gates (one atomic load each) and the project's
 //   `collect` policy before it builds a payload; a project that is `never` or unknown records
 //   nothing in either store, and no blob is attached for it.
@@ -207,7 +209,7 @@ export class AgentJournal implements RuntimeJournal {
         role: s.role,
         mode: s.mode,
         ...(s.parent === undefined ? {} : { parent: s.parent }),
-        trigger: s.parent === undefined ? "user" : "subagent",
+        trigger: s.parent !== undefined ? "subagent" : (s.trigger ?? "user"),
         ...(code === undefined ? {} : { reason: code }),
         ...(totals === undefined ? {} : { totals }),
       };
@@ -285,6 +287,7 @@ export class AgentJournal implements RuntimeJournal {
         ...(basis === "unknown" ? {} : { costMicros: u.moneyMicros }),
         costBasis: basis,
         capture: cap === undefined ? "stream" : "exact",
+        ...(cap?.purpose === undefined ? {} : { purpose: cap.purpose }),
         // A stream turn has no prompt or tool definitions of its own: no hash of nothing.
         ...(split === undefined ? {} : { systemHash: hashOf(split.system), toolsHash: hashOf(split.tools) }),
         ...(cap?.request === undefined ? {} : { bodyHash: hashOf(cap.request) }),
@@ -299,7 +302,7 @@ export class AgentJournal implements RuntimeJournal {
           return { bodyBlake3: hashOf(cap.request), messagesDelta, output, system, tools };
         },
       });
-      if (built && split !== undefined) {
+      if (built && split !== undefined && cap?.purpose !== "compaction") {
         run.previous = split.messages;
         run.previousTurnId = turnId;
       }

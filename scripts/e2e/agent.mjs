@@ -190,7 +190,9 @@ export async function run() {
       assertEqual([p.provider, "weights" in p], ["local", true], `provenance of ${e.kind}`);
     }
     const turnsA = traces.filter((t) => t.kind === "agent.turn" && t.ctx?.actor?.session === A.id && t.payload.messagesDelta !== undefined);
-    const sentA = models.requests().filter((r) => r.body.messages?.some((m) => m.role === "user" && String(m.content).includes(PROMPTS.intro)));
+    // A user message's text: one string, or its parts (the run's facts, then the prompt).
+    const userText = (c) => (typeof c === "string" ? c : Array.isArray(c) ? c.map((p) => p?.text ?? "").join("\n") : "");
+    const sentA = models.requests().filter((r) => r.body.messages?.some((m) => m.role === "user" && userText(m.content).includes(PROMPTS.intro)));
     assertEqual(turnsA.length, sentA.length, "one trace turn per model call of A");
     // Loaded now, not at the top: fin-node reads FIN_NODE_BINARY_DIR when first loaded, and the fixture writer sets it.
     const { replayBodies } = await import("../../apps/finisherd/src/agent/journal-content.ts");

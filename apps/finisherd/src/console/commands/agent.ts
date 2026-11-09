@@ -20,6 +20,7 @@ import { consoleError, valueOf } from "../client.ts";
 import { confirmed, proceed, requireTty } from "../confirm.ts";
 import { agentSessions, SESSION_COMMANDS } from "../../agent/console.ts";
 import { agentRules } from "../../agent/console-rules.ts";
+import { agentPrompts, agentRun } from "../../agent/console-prompts.ts";
 import { all, has, one, onlyFlags, usage } from "../format.ts";
 import { type CommandContext, withConnection } from "./context.ts";
 
@@ -30,6 +31,8 @@ export async function agent(ctx: CommandContext): Promise<number> {
   if (sub === "revoke") return revoke(ctx, rest);
   if (sub !== undefined && SESSION_COMMANDS.has(sub)) return agentSessions(ctx, sub, rest);
   if (sub === "rules") return agentRules(ctx, rest);
+  if (sub === "run") return agentRun(ctx, rest);
+  if (sub === "prompts") return agentPrompts(ctx, rest);
   return usage(sub === undefined ? "agent needs a command (finisherd help lists them)" : `unknown agent command: ${sub}`);
 }
 

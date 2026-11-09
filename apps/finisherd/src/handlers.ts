@@ -29,6 +29,8 @@ import { agentChainHooks, BranchReach, PathReach } from "./agent/reach.ts";
 import { agentHandlers } from "./agent/rpc.ts";
 import { commandRules } from "./agent/rules.ts";
 import { rulesHandlers } from "./agent/rules-rpc.ts";
+import { SavedPrompts } from "./agent/saved-prompts.ts";
+import { savedPromptHandlers } from "./agent/saved-prompts-rpc.ts";
 import { AgentRuntimeTag } from "./agent/wiring.ts";
 import { agentBranchLimitsExcept } from "./chain/policy.ts";
 import { Fonts } from "./fonts.ts";
@@ -436,7 +438,8 @@ export const HandlersLive = FinRpcs.toLayer(
       // The job engine (5C-2): ownership and reach per job in `jobs/rpc.ts`.
       ...jobHandlers({ engine: jobEngine, guard }),
       ...agentHandlers({ guard, store: agents.store, reach, agents: agentRuntime, principalOf }),
-      ...rulesHandlers({ guard, store: agents.store, rules: agentRuntime.rules, ruleStore: agentRuntime.ruleStore, audit, clock: agents.clock, dirOf: (id) => registry.dirOf(id) ?? registry.indexedDirOf(id), principalOf }),
+      ...rulesHandlers({ guard, store: agents.store, rules: agentRuntime.rules, ruleStore: agentRuntime.ruleStore, audit, clock: agents.clock, roles: agentRuntime.roles, dirOf: (id) => registry.dirOf(id) ?? registry.indexedDirOf(id), principalOf }),
+      ...savedPromptHandlers({ guard, runtime: agentRuntime.runtime, principalOf, prompts: new SavedPrompts({ serverData: agentRuntime.rules.serverData, roles: agentRuntime.roles, dirOf: (id) => registry.dirOf(id) ?? registry.indexedDirOf(id), trustOf: (id) => agentRuntime.ruleStore.trustOf(id) }) }),
       // 5B: pairing, devices, settings writes and the environment.
       ...deviceHandlers({ guard, pairing, access: deviceAccess, connections }),
       ...settingsHandlers({ guard, serverData: admin.control.serverData ?? "", remote: remoteListener, audit }),

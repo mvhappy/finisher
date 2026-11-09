@@ -25,12 +25,13 @@ import type { Appended, ApprovalRow, NewApproval, NewNode, NewSession, NodeRow, 
 import { type Applied, addUsage, approvalExpired, INLINE_MAX, invalid, outboxOf, SYNTHETIC_RESULT, STORE_SQL, sessionNotFound, stateOf } from "./store-rows.ts";
 import { sessionInsertArgs, sessionListQuery, toApproval, toNode, toRun, toSession, ZERO_USAGE } from "./store-rows.ts";
 import { SessionTxOutcomes } from "./store-outcomes.ts";
-import { DbLedger, type SessionBranchState, type SessionTx, SessionStates, SessionTxs, type TxOutcome } from "./store-tables.ts";
+import { SessionRollbacks } from "./store-rollback.ts";
+import { DbLedger, type SessionBranchState, type SessionTx, SessionStates, SessionTree, SessionTxs, type TxOutcome } from "./store-tables.ts";
 
 export type { Appended, Applied, NewApproval, NewNode, NewSession, OutboxEffect, OutboxItem, Recovery, RunStart, SessionQuery } from "./store-rows.ts";
 export type { SessionBranchState, SessionTx, SessionTryRow, TxOutcome } from "./store-tables.ts";
 
-registerChain("agent", [...AGENT_MIGRATIONS], { formatVersion: 6, minReaderVersion: 4 });
+registerChain("agent", [...AGENT_MIGRATIONS], { formatVersion: 9, minReaderVersion: 8 });
 
 const DAY_MS = 86_400_000;
 /** `agents.retentionDays` default (Decision 4). */
@@ -52,12 +53,11 @@ export class AgentStore {
   readonly #txs: SessionTxs;
   readonly #states: SessionStates;
   readonly #ledger: DbLedger;
-  /** The outcome ledger (Task 11): every outcome of every agent transaction. */
-  readonly outcomes: SessionTxOutcomes;
-  /** Synthetic results written since the store opened. */
-  #closed = 0;
-  /** `<server-data>/agents`. */
-  readonly root: string;
+  readonly outcomes: SessionTxOutcomes; // every outcome of every agent transaction (Task 11)
+  readonly tree: SessionTree; // parents, children, live counts (7B Task 6)
+  readonly rollbacks: SessionRollbacks; // rolled-back runs' nodes (7B Task 8)
+  #closed = 0; // synthetic results written since the store opened
+  readonly root: string; // `<server-data>/agents`
 
   constructor(control: ControlStore, serverData: string, clock: Clock, ids: Ids) {
     this.#cs = control;
@@ -68,6 +68,8 @@ export class AgentStore {
     this.#states = new SessionStates(control);
     this.#ledger = new DbLedger(control);
     this.outcomes = new SessionTxOutcomes(control);
+    this.tree = new SessionTree(control);
+    this.rollbacks = new SessionRollbacks(control);
     this.#s = Object.fromEntries(Object.entries(STORE_SQL).map(([k, sql]) => [k, control.db.prepare(sql)]));
   }
 
@@ -92,6 +94,7 @@ export class AgentStore {
     return this.#cs.tx(() => {
       if (this.#s.exists!.get(s.id) !== undefined) throw finError("INVALID_REQUEST", "a session with this id exists", { sessionId: s.id });
       this.#s.insertSession!.run(...sessionInsertArgs(s, initialState.status, this.#clock.now()));
+      if (s.carve !== undefined && s.parent !== undefined) this.#ledger.carve(s.parent, s.id, s.carve);
       this.#states.create(s.id, s.rootBranch ?? s.base.branch);
       return toSession(this.#row(s.id));
     });
@@ -159,6 +162,7 @@ export class AgentStore {
     for (const o of outboxOf(t.effects)) this.#queue(sessionId, o, now);
     const s = t.state;
     if (e.kind === "ready" && s.status === "idle") this.#s.markReady!.run(now, sessionId);
+    if (s.status === "ended") this.#ledger.settleCarve(sessionId);
     this.#s.setState!.run(s.status, s.reason, s.runId, JSON.stringify(s.approvals), s.status === "ended" ? now : null, sessionId);
     return { session: toSession(this.#row(sessionId)), effects: t.effects };
   }
@@ -508,10 +512,8 @@ export class AgentStore {
     const before = this.#closed;
     // Money and tokens held for model calls that died with the last process: no call settles
     // them now, so they are returned before anything else (the outbox included) runs.
-    this.#cs.tx(() => {
-      this.#s.clearReserved!.run();
-      this.#s.clearDailyReserved!.run();
-    });
+    // Children's carves are held again, and settled for children that have ended (`carve.ts`).
+    this.#cs.tx(() => this.#ledger.recover());
     for (const { id } of this.#s.live!.all() as Array<{ id: string }>) {
       this.#cs.tx(() => this.#applyIn(id, { kind: "interrupted", reason: SERVER_RESTART }, {}));
       interrupted.push(id);
@@ -590,7 +592,7 @@ export class AgentStore {
     this.#cs.tx(() => {
       const db = this.#cs.db;
       db.prepare("DELETE FROM nodes WHERE sessionId = ?").run(sessionId);
-      for (const t of ["runs", "approvals", "budgets", "session_state", "agent_rules", "agent_remembered"]) db.prepare(`DELETE FROM ${t} WHERE sessionId = ?`).run(sessionId);
+      for (const t of ["runs", "approvals", "budgets", "budget_carves", "session_state", "agent_rules", "agent_remembered"]) db.prepare(`DELETE FROM ${t} WHERE sessionId = ?`).run(sessionId);
       db.prepare("DELETE FROM sessions WHERE id = ?").run(sessionId);
     });
   }

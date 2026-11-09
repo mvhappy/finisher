@@ -477,9 +477,11 @@ describe("on a server", () => {
     const listed = ok<{ approvals: Approval[] }>(await a.call("agent.approval.list", { sessionId: other.session.id }));
     expect(listed.approvals.map((x) => x.id)).toEqual([mine]);
     expect(ok<{ approvals: Approval[] }>(await a.call("agent.approval.list", {})).approvals.map((x) => x.id)).toEqual([mine]);
-    for (const [tag, payload] of [["agent.session.get", { sessionId: other.session.id }], ["agent.session.list", {}], ["agent.rules.list", {}]] as const) {
+    for (const [tag, payload] of [["agent.session.get", { sessionId: other.session.id }], ["agent.rules.list", {}]] as const) {
       expect(code(await a.call(tag, payload)), tag).toBe("SCOPE_DENIED");
     }
+    // A session lists its own children only (7B Task 6): none here.
+    expect(ok<{ sessions: unknown[] }>(await a.call("agent.session.list", {})).sessions).toEqual([]);
     // A person waits on any card in reach.
     expect(code(await local.call("agent.approval.wait", { id: theirs, timeoutMs: 0 }))).toBe("APPROVAL_PENDING");
   });

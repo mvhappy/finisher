@@ -103,6 +103,7 @@ fn history(tx_id: &str, branch: &str, dry_run: bool) -> HistoryReq {
         dry_run,
         args_hash: None,
         to: None,
+        after_seq: None,
     }
 }
 

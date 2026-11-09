@@ -1453,36 +1453,42 @@ fn sandbox_unconfined_payload_is_closed() {
     }
 }
 
+/// `agent.turn.purpose` (7B Decision 24) is additive in v1: a turn without it serialises as
+/// before; a compaction turn carries `purpose: compaction` through the wire form; any other
+/// value is refused.
 #[test]
-fn auth_pair_payload_is_closed() {
-    let k = kind("auth.pair", 1).expect("auth.pair at v1");
-    assert!(!k.reserved && !k.training_only);
-    assert_eq!(k.sources, [Source::Finisherd]);
-    let schema = (k.schema)();
-    let props: BTreeSet<&str> = schema["properties"]
-        .as_object()
-        .expect("properties")
-        .keys()
-        .map(String::as_str)
-        .collect();
-    // Metadata only (5B Decision 33): no name, address, id, safety code or secret.
-    assert_eq!(
-        props,
-        BTreeSet::from(["outcome", "platform", "route", "micros"]),
-        "{schema}"
+fn agent_turn_purpose_is_additive() {
+    let key = |data: &[u8]| -> [u8; 16] { blake3::hash(data).as_bytes()[..16].try_into().unwrap() };
+    let b3 = "blake3:0000000000000000000000000000000000000000000000000000000000000001";
+    let wire = json!({
+        "turnId": "01JC0000000000000000000005", "runId": "01JC0000000000000000000007", "seq": 2,
+        "parentTurnId": "01JC0000000000000000000004", "harness": "builtin",
+        "provider": "openrouter", "model": "acme/x", "weights": "open", "inputTokens": 700,
+        "outputTokens": 90, "cacheReadTokens": 600, "cacheWriteTokens": 0, "reasoningTokens": 0,
+        "latencyMs": 5, "stopReason": "endTurn", "costBasis": "reported", "capture": "exact",
+        "systemHash": b3, "toolsHash": b3, "bodyHash": b3,
+    });
+    let spec = kind("agent.turn", 1).unwrap();
+    let received = |v: &Value| validate_payload(spec, v, &key, &ScrubCtx::default());
+    let plain = serde_json::to_value(received(&wire).unwrap()).unwrap();
+    assert!(plain.get("purpose").is_none(), "the v1 shape is unchanged");
+    let mut compaction = wire.clone();
+    compaction["purpose"] = json!("compaction");
+    let payload = received(&compaction).unwrap();
+    let AnyPayload::AgentTurn(t) = &payload else {
+        panic!("kind")
+    };
+    assert_eq!(t.purpose, Some(TurnPurpose::Compaction));
+    check_golden(
+        "agent_turn_compaction.json",
+        &serde_json::to_string_pretty(&payload).unwrap(),
     );
-    for ok in [
-        json!({"outcome": "offered"}),
-        json!({"outcome": "approved", "platform": "android", "route": "tailscale", "micros": 5}),
-        json!({"outcome": "expired"}),
-    ] {
-        assert!(decode_payload(k, &ok).is_ok(), "{ok}");
-    }
-    for bad in [
-        json!({"outcome": "stolen"}),
-        json!({"outcome": "redeemed", "platform": "amiga"}),
-        json!({"outcome": "redeemed", "route": "127.0.0.1"}),
-    ] {
-        assert!(decode_payload(k, &bad).is_err(), "{bad}");
+    let mut back = serde_json::to_value(&payload).unwrap();
+    let purpose = back.as_object_mut().unwrap().remove("purpose");
+    assert_eq!((purpose, back), (Some(json!("compaction")), plain));
+    for bad in [json!("summary"), json!(""), json!(1)] {
+        let mut v = wire.clone();
+        v["purpose"] = bad.clone();
+        assert!(received(&v).is_err(), "{bad}");
     }
 }

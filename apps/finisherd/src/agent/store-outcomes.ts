@@ -25,6 +25,8 @@ export interface TxOutcomeRow {
   readonly at: number;
   /** Whether 5E's `review.verdict` was emitted for it. */
   readonly emitted: boolean;
+  /** Beside it (agent 0008): `{rollback: {toRun, by}}` for an undo a rollback made (7B Task 8). */
+  readonly details?: Readonly<Record<string, unknown>>;
 }
 
 interface Row {
@@ -35,6 +37,7 @@ interface Row {
   sessionId: string;
   at: number;
   emitted: number;
+  details: string | null;
 }
 
 const toRow = (r: Row): TxOutcomeRow => ({
@@ -45,6 +48,7 @@ const toRow = (r: Row): TxOutcomeRow => ({
   sessionId: r.sessionId,
   at: r.at,
   emitted: r.emitted === 1,
+  ...(r.details === null ? {} : { details: JSON.parse(r.details) as Record<string, unknown> }),
 });
 
 /** A transaction no merge carried out of its session's subtree. */
@@ -65,12 +69,12 @@ export class SessionTxOutcomes {
     this.#cs = cs;
     const sql: Record<string, string> = {
       insert:
-        "INSERT INTO session_tx_outcomes (txId, via, verdict, by, sessionId, at) VALUES (?, ?, ?, ?, ?, ?) " +
+        "INSERT INTO session_tx_outcomes (txId, via, verdict, by, sessionId, at, details) VALUES (?, ?, ?, ?, ?, ?, ?) " +
         "ON CONFLICT (txId, via) DO NOTHING",
       latest: "UPDATE session_txs SET outcome = ? WHERE txId = ?",
       emitted: "UPDATE session_tx_outcomes SET emitted = 1 WHERE txId = ? AND via = ?",
-      of: "SELECT txId, via, verdict, by, sessionId, at, emitted FROM session_tx_outcomes WHERE txId = ? ORDER BY seq",
-      bySession: "SELECT txId, via, verdict, by, sessionId, at, emitted FROM session_tx_outcomes WHERE sessionId = ? ORDER BY seq",
+      of: "SELECT txId, via, verdict, by, sessionId, at, emitted, details FROM session_tx_outcomes WHERE txId = ? ORDER BY seq",
+      bySession: "SELECT txId, via, verdict, by, sessionId, at, emitted, details FROM session_tx_outcomes WHERE sessionId = ? ORDER BY seq",
       unmergedOfRoot: `SELECT t.txId, t.sessionId, t.at FROM session_txs t WHERE t.projectId = ? AND t.rootBranch = ? AND ${UNMERGED} ORDER BY t.at, t.txId`,
       unmergedOfSession: `SELECT t.txId, t.sessionId, t.at FROM session_txs t WHERE t.sessionId = ? AND ${UNMERGED} ORDER BY t.at, t.txId`,
     };
@@ -86,7 +90,8 @@ export class SessionTxOutcomes {
     if (!OUTCOME_VIAS.includes(o.via)) throw finError("INVALID_REQUEST", "unknown outcome route", { via: o.via });
     if (!OUTCOME_BYS.includes(o.by)) throw finError("INVALID_REQUEST", "unknown outcome actor", { by: o.by });
     return this.#cs.tx(() => {
-      if (Number(this.#s.insert!.run(o.txId, o.via, o.verdict, o.by, o.sessionId, o.at).changes) === 0) return false;
+      const details = o.details === undefined ? null : JSON.stringify(o.details);
+      if (Number(this.#s.insert!.run(o.txId, o.via, o.verdict, o.by, o.sessionId, o.at, details).changes) === 0) return false;
       this.#s.latest!.run(o.verdict, o.txId);
       return true;
     });

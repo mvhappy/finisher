@@ -317,6 +317,7 @@ fn undo_of_4b_record_after_upgrade() {
         dry_run: false,
         args_hash: None,
         to: None,
+        after_seq: None,
     };
     let u1 = s.undo(req("u-4c-1")).unwrap();
     assert_eq!(u1.undone, ["01JC0000000000000000000018"], "the cherry-pick");

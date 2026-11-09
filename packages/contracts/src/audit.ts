@@ -66,7 +66,7 @@ export const AUDIT_KINDS = [
   "registry.forget",
   "registry.verifyFail",
   // Command rules (7B Decisions 7 and 12): a `local` rule added (by a person, or a remembered
-  // answer: `from`) or removed, and a project's rules file trusted (its `rulesHash`).
+  // answer: `from`) or removed, and a project's rules file trusted (its `rulesHash`, and the `promptsHash` of its saved prompts).
   "agent.rule.add",
   "agent.rule.remove",
   "agent.project.trust",
@@ -197,6 +197,7 @@ const RULE_FIELDS = {
   sessionId: Schema.optional(Id),
   from: Schema.optional(Id),
   rulesHash: Schema.optional(Schema.String.check(Schema.isPattern(/^(?:sha256:[0-9a-f]{64}|none)$/))),
+  promptsHash: Schema.optional(Schema.String.check(Schema.isPattern(/^(?:sha256:[0-9a-f]{64}|none)$/))),
 };
 
 /** What an `auth.denied` row may say besides: the card an ask opened (`APPROVAL_PENDING`, 7B Decision 8). */

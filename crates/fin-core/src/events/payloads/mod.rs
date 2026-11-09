@@ -39,7 +39,7 @@ pub use agent::{
     AgentApproval, AgentMode, AgentSession, AgentToolCall, AgentToolResult, AgentTurn,
     ApprovalDecision, ApprovalKind, Attribution, Capture, CostBasis, DecidedBy, Harness,
     MAX_TOOL_TX_IDS, Provenance, SessionPhase, SessionTotals, SessionTrigger, SignIn, StopReason,
-    Weights,
+    TurnPurpose, Weights,
 };
 pub use auth::{AuthPair, PairOutcome, PairPlatform, PairRoute};
 pub use cli::CliCommand;
@@ -143,7 +143,7 @@ impl Body {
 approx_fixed!(10 =>
     super::Basis, super::Source, super::Purposes,
     AgentMode, Harness, SessionPhase, SessionTrigger, Weights, SignIn, StopReason, CostBasis,
-    Capture, Attribution, ApprovalKind, ApprovalDecision, DecidedBy,
+    Capture, TurnPurpose, Attribution, ApprovalKind, ApprovalDecision, DecidedBy,
     PanicThread, PanicWhere, FetchOutcome, CommitOutcome, CommitRecord, IntentOmitted,
     Arch, BuildProfile, OsFamily, StorageMode,
     JobOutcome, JobPriority, ProcessRole, ProcessHelperKind, ExitReason,

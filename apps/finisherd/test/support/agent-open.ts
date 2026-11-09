@@ -23,6 +23,7 @@ export function rpcBranchOps(c: NdjsonClient): SessionBranchOps {
         return b === undefined ? Effect.fail(toFinError(Object.assign(new Error("no branch"), { code: "BRANCH_NOT_FOUND", finNode: true }))) : Effect.succeed(b.id);
       }),
     createBranch: (projectId, req) => Effect.map(call<{ branch: BranchView }>("branch.create", { projectId, ...req }), (r) => r.branch),
+    archiveBranch: (projectId, req) => call("branch.set", { projectId, ...req, archived: true }),
   };
 }
 
@@ -31,6 +32,8 @@ export interface OpenOptions {
   readonly role?: string;
   readonly base?: string;
   readonly root?: string;
+  /** The scripted `fake` harness (a test-hooks build with `FIN_TEST_HOOKS=1`) instead of the built-in one. */
+  readonly harness?: "builtin" | "fake";
 }
 
 /** Opens a session on `projectId` as `local` (Decision 15 steps 2–5). */
@@ -40,10 +43,9 @@ export async function open(core: AgentCore, starter: NdjsonClient, projectId: st
       { creds: core.credentials, store: core.store, ops: rpcBranchOps(starter), ids: core.ids },
       {
         projectId,
-        harness: "builtin",
-        provider: "openrouter",
-        model: "anthropic/claude-sonnet-5.5",
-        weights: "closed",
+        ...(o.harness === "fake"
+          ? { harness: "fake" as const, provider: "local" as const, model: "fake", weights: "unknown" as const }
+          : { harness: "builtin" as const, provider: "openrouter" as const, model: "anthropic/claude-sonnet-5.5", weights: "closed" as const }),
         role: o.role ?? "editor",
         mode: o.mode ?? "draft",
         budget: {},

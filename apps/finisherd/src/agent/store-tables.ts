@@ -1,10 +1,12 @@
 // The agent store's side tables (plan 7A Decisions 1, 14a, 21; spec §5.1, §5.2): `session_txs`,
-// `session_state` and the budget ledger (`budgets`, `budget_days`). `AgentStore` owns one of
-// each and answers them; nothing else touches these tables.
+// `session_state` and the budget ledger (`budgets`, `budget_days`, 7B's `budget_carves`).
+// `AgentStore` owns one of each and answers them; nothing else touches these tables.
 import type { StatementSync } from "node:sqlite";
 import type { Attribution } from "@finisher/core-types";
 import type { ControlStore } from "../control/db.ts";
 import { finError } from "../errors.ts";
+import type { FinError } from "@finisher/contracts";
+import { type Carve, type CarvedKind, carveIn, type CarveRecords, type CarveRow, type Raise, raiseIn, raiseRefused, settleIn } from "./carve.ts";
 import type { BudgetKind, Daily, Ledger, LedgerStore } from "./ledger.ts";
 
 /** What became of an agent's transaction (spec §12.5; `outcomes.ts`, Task 11, sets it). */
@@ -26,6 +28,8 @@ export interface SessionTx {
   /** The session's project and root branch when it was written (agent 0002, 0003): they outlive the session. */
   readonly projectId?: string;
   readonly rootBranch?: string;
+  /** The run it was made in (agent 0008): the session's active run, else its last. */
+  readonly runId?: string;
 }
 
 interface TxRow {
@@ -37,9 +41,10 @@ interface TxRow {
   outcome: string | null;
   projectId: string | null;
   rootBranch: string | null;
+  runId: string | null;
 }
 
-const TX_COLUMNS = "txId, sessionId, callId, attribution, at, outcome, projectId, rootBranch";
+const TX_COLUMNS = "txId, sessionId, callId, attribution, at, outcome, projectId, rootBranch, runId";
 
 function toTx(r: TxRow): SessionTx {
   return {
@@ -51,6 +56,7 @@ function toTx(r: TxRow): SessionTx {
     ...(r.outcome === null ? {} : { outcome: r.outcome as TxOutcome }),
     ...(r.projectId === null ? {} : { projectId: r.projectId }),
     ...(r.rootBranch === null ? {} : { rootBranch: r.rootBranch }),
+    ...(r.runId === null ? {} : { runId: r.runId }),
   };
 }
 
@@ -76,10 +82,11 @@ export class SessionTxs {
   constructor(cs: ControlStore) {
     this.#s = prepare(cs, {
       // The project and root are the session's, kept on the row: the row outlives its session
-      // (agent 0002, 0003).
+      // (agent 0002, 0003); the run is its active one, else its last (0008).
       insert:
-        "INSERT INTO session_txs (txId, sessionId, callId, attribution, at, projectId, rootBranch) " +
-        "VALUES (?, ?, ?, ?, ?, (SELECT projectId FROM sessions WHERE id = ?), (SELECT rootBranch FROM sessions WHERE id = ?)) " +
+        "INSERT INTO session_txs (txId, sessionId, callId, attribution, at, projectId, rootBranch, runId) " +
+        "VALUES (?, ?, ?, ?, ?, (SELECT projectId FROM sessions WHERE id = ?), (SELECT rootBranch FROM sessions WHERE id = ?), " +
+        "COALESCE((SELECT runId FROM sessions WHERE id = ?), (SELECT id FROM runs WHERE sessionId = ? ORDER BY seq DESC LIMIT 1))) " +
         "ON CONFLICT (txId) DO NOTHING",
       of: `SELECT ${TX_COLUMNS} FROM session_txs WHERE txId IN (SELECT value FROM json_each(?))`,
       outcome: "UPDATE session_txs SET outcome = ? WHERE txId = ?",
@@ -93,9 +100,9 @@ export class SessionTxs {
    * for every write of an agent principal, whatever the attribution; a second call for the same
    * txId (a retried after stage, an idempotent replay) changes nothing.
    */
-  record(t: Omit<SessionTx, "outcome" | "projectId" | "rootBranch">): void {
+  record(t: Omit<SessionTx, "outcome" | "projectId" | "rootBranch" | "runId">): void {
     if (!ATTRIBUTIONS.includes(t.attribution)) throw finError("INVALID_REQUEST", "unknown attribution", { attribution: t.attribution });
-    this.#s.insert!.run(t.txId, t.sessionId, t.callId, t.attribution, t.at, t.sessionId, t.sessionId);
+    this.#s.insert!.run(t.txId, t.sessionId, t.callId, t.attribution, t.at, t.sessionId, t.sessionId, t.sessionId, t.sessionId);
   }
 
   /** The rows of those of `txIds` an agent made; the others are absent from the map. */
@@ -182,12 +189,74 @@ export class SessionStates {
   }
 }
 
-/** `LedgerStore` over `budgets` and `budget_days` (Task 4's interface; each call one statement). */
-export class DbLedger implements LedgerStore {
+/** `CarveRecords` over `budget_carves` (7B Task 7, agent 0007). */
+class DbCarves implements CarveRecords {
   readonly #s: Record<string, StatementSync>;
 
   constructor(cs: ControlStore) {
     this.#s = prepare(cs, {
+      open: "SELECT sessionId, parentId, kind, amount FROM budget_carves WHERE sessionId = ? AND settled = 0 ORDER BY kind",
+      record: "INSERT INTO budget_carves (sessionId, kind, parentId, amount) VALUES (?, ?, ?, ?)",
+      grow: "UPDATE budget_carves SET amount = amount + ? WHERE sessionId = ? AND kind = ? AND settled = 0",
+      settled: "UPDATE budget_carves SET settled = 1 WHERE sessionId = ? AND settled = 0",
+      heldBy: "SELECT COALESCE(SUM(amount), 0) AS n FROM budget_carves WHERE parentId = ? AND kind = ? AND settled = 0",
+      pass: "UPDATE budget_carves SET parentId = ? WHERE parentId = ? AND kind = ? AND settled = 0",
+      // Recovery: every open carve held on its parent again, then the children no longer live.
+      rehold:
+        "UPDATE budgets SET reserved = (SELECT SUM(c.amount) FROM budget_carves c WHERE c.parentId = budgets.sessionId AND c.kind = budgets.kind AND c.settled = 0) " +
+        "WHERE EXISTS (SELECT 1 FROM budget_carves c WHERE c.parentId = budgets.sessionId AND c.kind = budgets.kind AND c.settled = 0)",
+      // Deepest first, by the chain of open carves (a gone child has no `sessions.depth`).
+      notLive:
+        "WITH RECURSIVE up (sessionId, at, d) AS (SELECT DISTINCT sessionId, parentId, 1 FROM budget_carves WHERE settled = 0 " +
+        "UNION SELECT up.sessionId, c.parentId, up.d + 1 FROM up JOIN budget_carves c ON c.sessionId = up.at AND c.settled = 0) " +
+        "SELECT up.sessionId FROM up LEFT JOIN sessions s ON s.id = up.sessionId WHERE s.id IS NULL OR s.status = 'ended' " +
+        "GROUP BY up.sessionId ORDER BY MAX(up.d) DESC, up.sessionId",
+    });
+  }
+
+  open(sessionId: string): CarveRow[] {
+    return this.#s.open!.all(sessionId) as unknown as CarveRow[];
+  }
+
+  record(r: CarveRow): void {
+    this.#s.record!.run(r.sessionId, r.kind, r.parentId, r.amount);
+  }
+
+  grow(sessionId: string, kind: CarvedKind, by: number): void {
+    this.#s.grow!.run(by, sessionId, kind);
+  }
+
+  settled(sessionId: string): void {
+    this.#s.settled!.run(sessionId);
+  }
+
+  heldBy(parentId: string, kind: CarvedKind): number {
+    return (this.#s.heldBy!.get(parentId, kind) as { n: number }).n;
+  }
+
+  pass(from: string, to: string, kind: CarvedKind): void {
+    this.#s.pass!.run(to, from, kind);
+  }
+
+  /** After the per-call reservations were returned: the open carves held again; the children no longer live. */
+  rehold(): string[] {
+    this.#s.rehold!.run();
+    return (this.#s.notLive!.all() as Array<{ sessionId: string }>).map((r) => r.sessionId);
+  }
+}
+
+/** `LedgerStore` over `budgets` and `budget_days` (Task 4's interface; each call one statement), and 7B's carves. */
+export class DbLedger implements LedgerStore {
+  readonly #s: Record<string, StatementSync>;
+  readonly #cs: ControlStore;
+  readonly #carves: DbCarves;
+
+  constructor(cs: ControlStore) {
+    this.#cs = cs;
+    this.#carves = new DbCarves(cs);
+    this.#s = prepare(cs, {
+      clearReserved: "UPDATE budgets SET reserved = 0 WHERE reserved != 0",
+      clearDailyReserved: "UPDATE budget_days SET reserved = 0 WHERE reserved != 0",
       read: 'SELECT "limit" AS "limit", used, reserved FROM budgets WHERE sessionId = ? AND kind = ?',
       add:
         "INSERT INTO budgets (sessionId, kind, used, reserved) VALUES (?, ?, ?, MAX(0, ?)) ON CONFLICT (sessionId, kind) DO UPDATE SET " +
@@ -224,5 +293,96 @@ export class DbLedger implements LedgerStore {
     const reserved = delta.reserved ?? 0;
     const r = this.#s.addDaily!.get(utcDay, delta.used ?? 0, reserved, reserved) as unknown as Daily;
     return { used: r.used, reserved: r.reserved };
+  }
+  carve(parentId: string, sessionId: string, carve: Carve): void {
+    this.#cs.tx(() => carveIn(this, this.#carves, parentId, sessionId, carve));
+  }
+
+  settleCarve(sessionId: string): void {
+    this.#cs.tx(() => settleIn(this, this.#carves, sessionId));
+  }
+
+  raise(sessionId: string, add: Raise): void {
+    this.#cs.tx(() => raiseIn(this, this.#carves, sessionId, add));
+  }
+
+  canRaise(sessionId: string, add: Raise): FinError | undefined {
+    return raiseRefused(this, this.#carves, sessionId, add);
+  }
+
+  tx<A>(f: () => A): A {
+    return this.#cs.tx(f);
+  }
+
+  /**
+   * Recovery (spec §13.1; the caller's transaction, before anything else runs): every per-call
+   * reservation returns, every open carve is held on its parent again, and each carve whose
+   * child has ended or is gone is settled.
+   */
+  recover(): void {
+    this.#s.clearReserved!.run();
+    this.#s.clearDailyReserved!.run();
+    for (const id of this.#carves.rehold()) settleIn(this, this.#carves, id);
+  }
+}
+
+/**
+ * The session tree (7B Task 6): parents, children and what is live, over `sessions`
+ * (`parent`, `rootSession`, `depth`, agent migration 0004), and a session's last assistant
+ * message (a child's summary).
+ */
+export class SessionTree {
+  readonly #s: Record<string, StatementSync>;
+
+  constructor(store: ControlStore) {
+    const sql: Record<string, string> = {
+      children: "SELECT id FROM sessions WHERE parent = ? ORDER BY id",
+      liveChildren: "SELECT id FROM sessions WHERE parent = ? AND status != 'ended' ORDER BY id",
+      liveBelow: "SELECT COUNT(*) AS n FROM sessions WHERE rootSession = ? AND id != ? AND status != 'ended'",
+      liveBelowIds: "SELECT id FROM sessions WHERE rootSession = ? AND id != ? AND status != 'ended' ORDER BY depth DESC, id",
+      liveRoots: "SELECT id, rootBranch FROM sessions WHERE projectId = ? AND status != 'ended' AND rootBranch IS NOT NULL",
+      active: "SELECT id, harness FROM sessions WHERE status IN ('running', 'waitingApproval')",
+      lastAssistant: "SELECT seq FROM nodes WHERE sessionId = ? AND kind = 'assistantMessage' ORDER BY seq DESC LIMIT 1",
+    };
+    this.#s = Object.fromEntries(Object.entries(sql).map(([k, q]) => [k, store.db.prepare(q)]));
+  }
+
+  #ids(name: string, ...args: string[]): string[] {
+    return (this.#s[name]!.all(...args) as { id: string }[]).map((r) => r.id);
+  }
+
+  /** Every child of `parent`, ended ones too, oldest first. */
+  children(parent: string): string[] {
+    return this.#ids("children", parent);
+  }
+
+  /** The children of `parent` that have not ended. */
+  liveChildren(parent: string): string[] {
+    return this.#ids("liveChildren", parent);
+  }
+
+  /** How many sessions below the root session `root` have not ended. */
+  liveDescendants(root: string): number {
+    return (this.#s.liveBelow!.get(root, root) as { n: number }).n;
+  }
+
+  /** The sessions below `root` that have not ended, deepest first. */
+  liveDescendantIds(root: string): string[] {
+    return this.#ids("liveBelowIds", root, root);
+  }
+
+  /** The root branches of `projectId`'s sessions that have not ended (Decision 18). */
+  liveRoots(projectId: string): Array<{ readonly id: string; readonly rootBranch: string }> {
+    return this.#s.liveRoots!.all(projectId) as Array<{ id: string; rootBranch: string }>;
+  }
+
+  /** The sessions in a run (`running`, `waitingApproval`) and their harnesses (Decision 19). */
+  active(): Array<{ readonly id: string; readonly harness: string }> {
+    return this.#s.active!.all() as Array<{ id: string; harness: string }>;
+  }
+
+  /** The seq of the session's last `assistantMessage` node, if any. */
+  lastAssistantSeq(sessionId: string): number | undefined {
+    return (this.#s.lastAssistant!.get(sessionId) as { seq: number } | undefined)?.seq;
   }
 }

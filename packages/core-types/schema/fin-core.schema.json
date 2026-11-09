@@ -535,6 +535,9 @@
         "provider": {
           "$ref": "#/$defs/Name"
         },
+        "purpose": {
+          "$ref": "#/$defs/TurnPurpose"
+        },
         "reasoningTokens": {
           "format": "uint64",
           "minimum": 0,
@@ -15479,6 +15482,16 @@
         "targets"
       ],
       "type": "object"
+    },
+    "TurnPurpose": {
+      "description": "Why a model call was made, when it is not the conversation's next step (7B Decision 24).",
+      "oneOf": [
+        {
+          "const": "compaction",
+          "description": "The built-in loop's summary call, whose reply replaces the runs before the current one.",
+          "type": "string"
+        }
+      ]
     },
     "Tx": {
       "properties": {

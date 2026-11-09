@@ -170,8 +170,20 @@ impl Server {
     /// Like [`Server::start`], but node runs `script` (relative to the repository) with `args`
     /// after `--server-data <sd>`; `args` may name paths under `root` (`{root}` is replaced).
     pub fn start_script(test: &str, script: &str, args: &[&str]) -> Option<Server> {
+        Server::start_script_with(test, script, args, Vec::new(), None)
+    }
+
+    /// [`Server::start_script`] with extra environment and one more reason it may be unable to
+    /// run, as [`Server::start_with`].
+    pub fn start_script_with(
+        test: &str,
+        script: &str,
+        args: &[&str],
+        env: Vec<(String, OsString)>,
+        extra: Option<String>,
+    ) -> Option<Server> {
         let repo = repo_root();
-        if let Some(reason) = why_unavailable(&repo) {
+        if let Some(reason) = why_unavailable(&repo).or(extra) {
             assert!(!env_on(REQUIRE_ENV), "{test}: {REQUIRE_ENV}=1 but {reason}");
             eprintln!("SKIPPED {test}: {reason}");
             return None;
@@ -188,7 +200,7 @@ impl Server {
             root,
             sd,
             socket: String::new(),
-            env: Vec::new(),
+            env,
             script: repo.join(script),
             args,
         };
