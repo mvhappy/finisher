@@ -450,6 +450,20 @@ describe("library commands (plan 5D Task 14)", () => {
       await c.close();
     }
   };
+  /** Until the library's first scan has ended. */
+  const scanned = async (id: string): Promise<void> => {
+    const c = await connectProved(server!, "console");
+    try {
+      for (let i = 0; i < 1500; i++) {
+        const { library: l } = ok<{ library: { lastScan?: { outcome: string } } }>(await c.call("library.status", { id }));
+        if (l.lastScan !== undefined) return void expect(l.lastScan.outcome).toBe("succeeded");
+        await new Promise((r) => setTimeout(r, 20));
+      }
+      throw new Error("the library's first scan never ended");
+    } finally {
+      await c.close();
+    }
+  };
   const makeRoot = (name = "footage"): string => {
     const root = join(tmp, name);
     mkdirSync(join(root, "clips"), { recursive: true });
@@ -515,6 +529,8 @@ describe("library commands (plan 5D Task 14)", () => {
     // empty root is accepted harmlessly on a root that holds files.
     // Both can mark files missing, so they take the library's name typed back (as the server
     // knows it: `Raw`, though `raw` was given); a y or the name in other case is not enough.
+    // The first scan has found `clips/` (a library's add answers before its scan ends).
+    await scanned(id);
     const typing = person();
     const unmounted = await run(["library", "set", "raw", "--accept-unmounted", "clips"], typing);
     expect(unmounted.code, unmounted.err).toBe(0);
