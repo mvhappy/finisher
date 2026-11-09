@@ -336,16 +336,32 @@ describe("review fixes", () => {
     const s = await setup({
       names: ["a.png"],
       stages: [
-        testStage("t.dep", { knobs: (files) => ({ crashOn: files.map((f) => f.fp) }) }),
+        // Slow to crash, so the prioritize below comes while its job runs: the background pump
+        // takes `t.dep` once the file is probed.
+        testStage("t.dep", { knobs: (files) => ({ crashOn: files.map((f) => f.fp), delayMs: 2000 }) }),
         testStage("t.after", { dependsOn: ["t.dep"] }),
       ],
     });
     const fp = (await probed(s, ["a.png"]))["a.png"]!.fp!;
+    await eventually(async () => active(s.rig).some((j) => j.state === "running"));
     await exec(s.rig.svc.prioritize(fp, "t.after"));
     expect(s.rig.svc.stages.wanted()).toBe(1);
     await eventually(async () => (await stageRows(s, "t.dep")).find((r) => r.state === "failed" && r.attempts >= 3));
     await eventually(async () => s.rig.svc.stages.wanted() === 0);
     expect((await stageRows(s, "t.after")).filter((r) => r.state === "done")).toEqual([]);
+  });
+
+  test("a_stage_prioritized_after_its_dependency_failed_for_good_is_not_kept", { timeout: 120_000 }, async () => {
+    const s = await setup({
+      names: ["a.png"],
+      stages: [testStage("t.dep", { knobs: (files) => ({ crashOn: files.map((f) => f.fp) }) }), testStage("t.after", { dependsOn: ["t.dep"] })],
+    });
+    const fp = (await probed(s, ["a.png"]))["a.png"]!.fp!;
+    await eventually(async () => (await stageRows(s, "t.dep")).find((r) => r.state === "failed" && r.attempts >= 3));
+    // Nothing will make `t.dep` done: the entry would wait forever.
+    await exec(s.rig.svc.prioritize(fp, "t.after"));
+    expect(s.rig.svc.stages.wanted()).toBe(0);
+    expect(await stageRows(s, "t.after")).toEqual([]);
   });
 });
 
