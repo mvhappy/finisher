@@ -46,6 +46,8 @@ export interface Worker {
   readonly dir: string;
   /** Under a sandbox, its project's read roots (`FamilySpec.warmReads`, plan 7C Decision 19), canonical. */
   readonly reads: ReadonlyArray<string>;
+  /** The plugin its `worker.exit` names (sp8b Decision 3b): its family's, else its first job's `via`. */
+  readonly plugin: string | undefined;
   readonly spawnedAt: number;
   state: State;
   served: number;
@@ -91,6 +93,25 @@ export const VISIT_DIR = "jobs";
 /** The spawn request of worker `w`. */
 export function spawnRequest(w: Worker): JobSpawnRequest {
   const tmp = join(w.dir, "tmp");
+  // A plugin family's process (sp8b Task 4): its own environment, `cwd`, grants and limits.
+  // It is granted neither its warm directory nor the `jobs/` its jobs visit: a warm plugin
+  // exchanges data through calls only (sp8b Decision 5).
+  const own = "path" in w.program ? w.program.process : undefined;
+  if (own !== undefined) {
+    return {
+      role: "worker",
+      profile: w.family.profile,
+      family: w.family.family,
+      program: { path: (w.program as { path: string }).path },
+      args: [...w.program.args],
+      env: { ...own.env },
+      cwd: own.cwd,
+      grants: [...own.grants, ...w.reads.map((path) => ({ path, mode: "read" as const }))],
+      ...(own.limits === undefined ? {} : { limits: own.limits }),
+      qos: "normal",
+      label: `warm ${w.family.family}${w.key === "" ? "" : `:${w.key}`}`,
+    };
+  }
   return {
     role: "worker",
     profile: w.family.profile,

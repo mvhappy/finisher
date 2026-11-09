@@ -378,7 +378,7 @@ fn edit(g: &Globals, step: Edit) -> Result<Value, CoreError> {
 
 fn main() {
     diag::begin();
-    output::install_panic_hook();
+    diag::install_panic_hook();
     // `FIN_TEST_PANIC` (test builds only) before anything else; the overall deadline
     // (5A Decision 36) bounds the command, not D6's recording, which has its own budget.
     diag::test_panic();

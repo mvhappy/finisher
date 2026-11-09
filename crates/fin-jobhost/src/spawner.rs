@@ -72,6 +72,19 @@ pub struct SpawnRequest {
     pub qos: Qos,
     /// For logs.
     pub label: String,
+    /// Limits the host applies to the process whatever the spawner does (sp8b Decision 9:
+    /// a plugin process's 8 processes and 1,024 open files before sub-project 7C's profile).
+    pub limits: ProcessLimits,
+}
+
+/// Limits a request asks for (sp8b Decision 9). `processes` goes to the leaf kill domain's
+/// active-process limit (a cgroup's `pids.max`, a leaf Job; not enforced with process
+/// groups), `open_files` to `RLIMIT_NOFILE` (soft and hard) on Linux; macOS `posix_spawn`
+/// sets no rlimit and Windows has no open-handle limit, so it is not applied there.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct ProcessLimits {
+    pub processes: Option<u32>,
+    pub open_files: Option<u32>,
 }
 
 /// Windows `JOB_OBJECT_UILIMIT_*` flags for a leaf Job.
@@ -84,6 +97,9 @@ pub struct UiLimits(pub u32);
 pub struct JobLimits {
     pub active_processes: Option<u32>,
     pub ui: Option<UiLimits>,
+    /// `RLIMIT_NOFILE` (soft and hard, never above the host's hard limit), set in the child
+    /// on Linux; not applied on macOS or Windows (see [`ProcessLimits`]).
+    pub open_files: Option<u32>,
 }
 
 /// A Windows process-thread attribute (`UpdateProcThreadAttribute`): its id and value bytes
@@ -250,7 +266,11 @@ pub(crate) fn command(binary_dir: &Path, req: &SpawnRequest) -> Result<PlatformC
         args: req.args.clone(),
         env: req.env.clone(),
         cwd: req.cwd.clone(),
-        job_limits: JobLimits::default(),
+        job_limits: JobLimits {
+            active_processes: req.limits.processes,
+            open_files: req.limits.open_files,
+            ..JobLimits::default()
+        },
         self_sandbox: None,
         #[cfg(target_os = "linux")]
         pre_exec: Vec::new(),

@@ -3,6 +3,7 @@
 // Usage: node apps/finisherd/src/main.ts [serve] [--server-data <dir>]
 //        node apps/finisherd/src/main.ts <command> …   (the owner's console, `console/main.ts`)
 // Serving logs to stderr only; stdout stays empty. Console commands answer on stdout.
+import { realpathSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { runMain } from "@effect/platform-node/NodeRuntime";
@@ -51,6 +52,9 @@ import { LibrariesTag } from "./library/api.ts";
 import { CatalogsTag, layerCatalogs } from "./library/catalog/client.ts";
 import { LibraryServiceTag, librariesHolding, libraryWiring } from "./library/layer.ts";
 import { layerPlugins } from "./plugins/registries.ts";
+import { registerPluginFamily } from "./plugins/host/family.ts";
+import { sessionRoots } from "./plugins/host/keys.ts";
+import { PluginTables } from "./plugins/tables.ts";
 import { layerProjectRegistry, ProjectRegistry, type RegistryOptions } from "./projects.ts";
 import { registerMediaKinds } from "./jobs/kinds/media.look.ts";
 import { MAX_FRAME } from "./protocol.ts";
@@ -185,7 +189,12 @@ export const serve = ({
         layerProjectRegistry(serverData, { ...registry, libraryUse: (paths) => libraryHold?.(paths) ?? { release: () => {} } }),
       );
       const projects = Context.get(registryContext, ProjectRegistry);
+      // The plugin layer's family (sp8b Task 4): every code plugin's process. Registered with
+      // the engine's other families (a restart reconciles jobs against them); it reads the
+      // installed rows when a job starts.
+      const pluginTables = new PluginTables(controlStore);
       const register = (r: Parameters<typeof libraries.register>[0]) => {
+        registerPluginFamily(r, { serverData: realpathSync(serverData), installed: (id) => pluginTables.installedFull(id), rootSessionOf: sessionRoots(controlStore) });
         registerMediaKinds(r, { serverData, projects, libraryRoots: () => libraryRoots() });
         jobOptions?.register?.(r);
         libraries.register(r);

@@ -85,6 +85,7 @@ impl Server {
             ],
             qos: Qos::Normal,
             label: "warm test".into(),
+            limits: Default::default(),
         }
     }
 

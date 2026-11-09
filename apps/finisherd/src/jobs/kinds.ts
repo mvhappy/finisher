@@ -2,7 +2,7 @@
 // 20, 31–40). A family's crate registers its `FamilySpec`, its kinds' `KindSpec`s and its
 // helpers' `HelperProgram`s here; the engine reads them. Params are validated by Rust
 // (`validateJobParams`), never here.
-import { type FinError, type HelperSpec, type JobOwner, type JobRights, type JobView, type JobVia, type MappedFile, type Priority, SCOPES } from "@finisher/contracts";
+import { type FinError, type FinErrorData, type HelperSpec, type JobOwner, type JobRights, type JobView, type JobVia, type MappedFile, type Priority, SCOPES } from "@finisher/contracts";
 import type { FileHandle } from "node:fs/promises";
 import type { Effect } from "effect";
 
@@ -116,7 +116,20 @@ export type ItemOutcome = { readonly value?: unknown } | { readonly error: FinEr
 export type ProgramSpec =
   | { readonly binary: "fin-workers" | "fin-analyze"; readonly args: ReadonlyArray<string> }
   /** Plugins only (`Program::Path`). */
-  | { readonly path: string; readonly args: ReadonlyArray<string> };
+  | { readonly path: string; readonly args: ReadonlyArray<string>; readonly process?: ProcessSpec };
+
+/**
+ * How a plugin family's process is started, in place of the engine's own (sp8b Task 4): its
+ * whole environment (the engine adds nothing, not even its `TMPDIR`), its `cwd`, its grants
+ * (the engine adds only the job's mapped files and `reads` on a cold spawn, never its job or
+ * warm directory) and the limits the job host applies whatever the spawner does.
+ */
+export interface ProcessSpec {
+  readonly env: Readonly<Record<string, string>>;
+  readonly cwd: string;
+  readonly grants: ReadonlyArray<{ readonly path: string; readonly mode: "read" | "readWrite" }>;
+  readonly limits?: { readonly processes?: number; readonly openFiles?: number };
+}
 
 export interface CallCtx {
   readonly job: JobView;
@@ -162,6 +175,12 @@ export interface FamilySpec {
    * list written in code; a variable that is not set is not passed.
    */
   readonly env?: ReadonlyArray<string>;
+  /**
+   * The code a failed job of this family ends with, from the engine's own (sp8b Task 4: the
+   * `plugin` family names `PLUGIN_CRASHED`, `PLUGIN_TIMEOUT`, `PLUGIN_PROTOCOL`). Applied when
+   * the job ends `failed`, after the retry policy read the engine's code.
+   */
+  readonly mapError?: (e: FinErrorData) => FinErrorData;
 }
 
 export interface HelperProgram {
@@ -208,13 +227,28 @@ export const WARM_ARG = "--warm";
 export function programFor(program: ProgramSpec, mode: SpawnMode): ProgramSpec {
   if (program.args.includes(WARM_ARG)) refuse(`a family program already holds ${WARM_ARG}; the engine appends it`);
   if (mode === "cold") return program;
-  return "path" in program ? { path: program.path, args: [...program.args, WARM_ARG] } : { binary: program.binary, args: [...program.args, WARM_ARG] };
+  return "path" in program ? { ...program, args: [...program.args, WARM_ARG] } : { binary: program.binary, args: [...program.args, WARM_ARG] };
+}
+
+/**
+ * The plugin a `worker.exit` names (sp8b Decision 3b): the family's own, else the job's
+ * `via.plugin` (`<id>@<version>`) without its version, so one family serves many plugins.
+ */
+export function exitPluginId(family: { readonly pluginId?: string | undefined }, via: JobVia | undefined): string | undefined {
+  if (family.pluginId !== undefined) return family.pluginId;
+  const p = via?.plugin;
+  if (p === undefined) return undefined;
+  const at = p.lastIndexOf("@");
+  return at > 0 ? p.slice(0, at) : p;
 }
 
 /** A value or a function of the params. */
 export function resolveOrFn<P, T>(v: OrFn<P, T>, params: P): T {
   return typeof v === "function" ? (v as (params: P) => T)(params) : v;
 }
+
+/** The warm slots a family of profile `plugin` may declare (sp8b Decision 3a); others 1 or 2. */
+export const MAX_PLUGIN_WARM_SLOTS = 16;
 
 /** The variables of `finisherd`'s environment a family may pass to its processes (`FamilySpec.env`). */
 export const FAMILY_ENV: ReadonlySet<string> = new Set(["FIN_GPU"]);
@@ -305,8 +339,11 @@ export function makeKindRegistry(): KindRegistry {
     registerFamily(f) {
       if (!FAMILY.test(f.family)) refuse(`family name ${JSON.stringify(f.family)} must match ${FAMILY}`);
       if (families.has(f.family)) refuse(`family ${f.family} is already registered`);
+      // A plugin family's slots are its keys' processes (one per plugin, project and class), not
+      // cpu: up to 16 (sp8b Decision 3a), so two keys do not thrash every other plugin's.
       const slots = f.warm?.slots;
-      if (slots !== undefined && (!Number.isInteger(slots) || slots < 1 || slots > 2)) refuse(`family ${f.family}: warm slots must be 1 or 2`);
+      const most = f.profile === "plugin" ? MAX_PLUGIN_WARM_SLOTS : 2;
+      if (slots !== undefined && (!Number.isInteger(slots) || slots < 1 || slots > most)) refuse(`family ${f.family}: warm slots must be ${most === 2 ? "1 or 2" : `1 to ${most}`}`);
       if (typeof f.program !== "function" && f.program.args.includes(WARM_ARG)) refuse(`family ${f.family}: the engine appends ${WARM_ARG}`);
       // `env` copies variables of `finisherd`'s own environment into the family's processes: a
       // list written in code for built-in families, never a plugin's (review L4).

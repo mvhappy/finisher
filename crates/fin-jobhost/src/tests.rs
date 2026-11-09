@@ -51,6 +51,7 @@ fn sh(script: &str) -> SpawnRequest {
         grants: Vec::new(),
         qos: Qos::Normal,
         label: "sh".into(),
+        limits: Default::default(),
     }
 }
 
@@ -242,4 +243,35 @@ fn panicking_callback_skips_nothing() {
     drx.recv_timeout(Duration::from_secs(5))
         .expect("the shutdown ends");
     assert!(calls.lock().unwrap().iter().any(|c| c == "close_group g1"));
+}
+
+/// A request's `limits.openFiles` is the child's `RLIMIT_NOFILE`, soft and hard (sp8b
+/// Decision 9), whatever the spawner does; without it the host's own limit is inherited.
+#[cfg(target_os = "linux")]
+#[test]
+fn request_open_files_limit_is_the_childs_rlimit() {
+    let d = recording(&Arc::new(Mutex::new(Vec::new())));
+    let (host, rx) = test_host(d);
+    let g = group(&host);
+    let mut req = sh(r#"[ "$(ulimit -n)" = 64 ] && [ "$(ulimit -Hn)" = 64 ] && exit 7; exit 9"#);
+    req.limits = ProcessLimits {
+        processes: Some(8),
+        open_files: Some(64),
+    };
+    let p = spawn(&host, g, req).expect("spawned");
+    let HostEvent::Exit { info, .. } = wait_for(
+        &rx,
+        |e| matches!(e, HostEvent::Exit { proc, .. } if *proc == p),
+    ) else {
+        unreachable!()
+    };
+    assert_eq!(info.code, Some(7), "ulimit -n is 64 in the child");
+    let p = spawn(&host, g, sh(r#"[ "$(ulimit -n)" = 64 ] && exit 7; exit 9"#)).expect("spawned");
+    let HostEvent::Exit { info, .. } = wait_for(
+        &rx,
+        |e| matches!(e, HostEvent::Exit { proc, .. } if *proc == p),
+    ) else {
+        unreachable!()
+    };
+    assert_eq!(info.code, Some(9), "no limit asked: the host's own");
 }

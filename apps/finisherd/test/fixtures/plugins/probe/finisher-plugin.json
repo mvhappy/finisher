@@ -1,0 +1,11 @@
+{
+  "manifestVersion": 1,
+  "id": "@test/probe",
+  "version": "1.0.0",
+  "kind": "code",
+  "hostApi": "^1.1",
+  "license": "MIT",
+  "publisher": { "name": "Finisher tests" },
+  "platforms": ["darwin-arm64", "darwin-x64", "linux-x64", "linux-arm64", "win32-x64", "win32-arm64"],
+  "runtime": { "type": "node", "main": "main.mjs", "node": ">=24.22" }
+}

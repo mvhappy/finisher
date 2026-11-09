@@ -190,15 +190,21 @@ function* dueStream(b: Bucket, now: number): Generator<QueuedJob> {
 
 /**
  * The `cpu` slots a warm dispatch may take beyond the pool's size: the sum of `slots` over
- * every warm family (Decision 35). The caller takes a warm dispatch's slots with
+ * every warm family, each at most `MAX_OVERRUN_SLOTS` (Decision 35). The caller takes a warm dispatch's slots with
  * `pools.take(resources, warmOverrun(state.warm))` and a cold one's with no overrun; `schedule`
  * checks exactly the same bound, so a dispatch it returns is always takeable.
  */
 export function warmOverrun(warm: SchedState["warm"]): { cpu: number } {
   let cpu = 0;
-  for (const w of warm.values()) cpu += w.slots;
+  for (const w of warm.values()) cpu += Math.min(w.slots, MAX_OVERRUN_SLOTS);
   return { cpu };
 }
+
+/**
+ * What one warm family adds to the overrun at most: the 2 slots a worker family may declare.
+ * A plugin family's up to 16 slots are its keys' processes (sp8b Decision 3a), not cpu.
+ */
+export const MAX_OVERRUN_SLOTS = 2;
 
 type PlanWorker = WarmWorkerView & { retiring?: boolean };
 

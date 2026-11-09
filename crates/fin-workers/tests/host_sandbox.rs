@@ -80,6 +80,7 @@ impl Server {
             ],
             qos: Qos::Normal,
             label: "test".into(),
+            limits: Default::default(),
         }
     }
 

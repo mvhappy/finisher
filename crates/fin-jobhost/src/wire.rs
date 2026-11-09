@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     CgroupMode, ExitInfo, ExitReason, GroupSpec, HostEvent, KillReason, MemoryRule, PathGrant,
-    Profile, Program, Qos, Role, SpawnRequest, Timing, Watch,
+    ProcessLimits, Profile, Program, Qos, Role, SpawnRequest, Timing, Watch,
 };
 
 /// An input field the host cannot use: `field` (dotted from the argument) and why.
@@ -211,6 +211,21 @@ pub struct JobSpawnRequest {
     pub qos: JobHostQos,
     #[serde(default)]
     pub label: String,
+    /// Limits the host applies whatever the spawner does (sp8b Decision 9).
+    #[serde(default)]
+    pub limits: JobSpawnLimits,
+}
+
+/// A request's process limits ([`crate::spawner::ProcessLimits`]).
+#[derive(Debug, Clone, Copy, Default, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct JobSpawnLimits {
+    #[serde(default)]
+    #[schemars(with = "u32")]
+    pub processes: Option<u32>,
+    #[serde(default)]
+    #[schemars(with = "u32")]
+    pub open_files: Option<u32>,
 }
 
 impl JobSpawnRequest {
@@ -252,6 +267,10 @@ impl JobSpawnRequest {
                 .collect(),
             qos: self.qos.into(),
             label: self.label,
+            limits: ProcessLimits {
+                processes: self.limits.processes,
+                open_files: self.limits.open_files,
+            },
         })
     }
 }

@@ -21,7 +21,7 @@
 import { randomBytes } from "node:crypto";
 import { basename, join } from "node:path";
 import type { Hello, JobHostExitInfo, JobHostKillReason } from "@finisher/core-types";
-import type { JobView } from "@finisher/contracts";
+import { FinError, type JobView } from "@finisher/contracts";
 import { resolveMemoryRule } from "@finisher/fin-node";
 import { finError, toFinError } from "../errors.ts";
 import { helloMismatch, sendWorkerExit } from "./attempt.ts";
@@ -30,10 +30,10 @@ import type { Engine } from "./engine.ts";
 import { removeJobDir } from "./files.ts";
 import { mkdirSafe } from "./fsafe.ts";
 import { exitVerdict, type ProcEvent } from "./host.ts";
-import { type FamilySpec, type KindSpec, type ProgramSpec, programFor, projectOfJob } from "./kinds.ts";
+import { exitPluginId, type FamilySpec, type KindSpec, type ProgramSpec, programFor, projectOfJob } from "./kinds.ts";
 import type { RunControl } from "./run-control.ts";
 import { type AttemptOutcome, runAttempt } from "./runner.ts";
-import type { SchedState, WarmWorkerView } from "./schedule.ts";
+import { MAX_OVERRUN_SLOTS, type SchedState, type WarmWorkerView } from "./schedule.ts";
 import type { JobRow } from "./store.ts";
 import { runWarmAttempt } from "./warm-run.ts";
 import { emptyTmp, noRun, RECYCLE_MEMORY_SHARE, RETIRE_GRACE_MS, spawnRequest, VISIT_DIR, WARM_DIR_PREFIX, WARM_IDLE_S, WARM_MAX_AGE_S, WARM_MAX_JOBS, WARM_SLOTS, type WarmWorkerInfo, type Worker } from "./warm-worker.ts";
@@ -144,7 +144,7 @@ export class WarmPools {
   /** The cpu slots warm dispatches may take beyond the pool (Decision 35's `warmOverrun`). */
   overrun(): { cpu: number } {
     let cpu = 0;
-    for (const f of this.families().values()) cpu += f.warm?.slots ?? WARM_SLOTS;
+    for (const f of this.families().values()) cpu += Math.min(f.warm?.slots ?? WARM_SLOTS, MAX_OVERRUN_SLOTS);
     return { cpu };
   }
 
@@ -207,11 +207,12 @@ export class WarmPools {
     try {
       program = row === undefined ? programFor(f.program as ProgramSpec, "warm") : e.kinds.program(family, row, "warm");
     } catch (err) {
-      const error = finError("WORKER_UNAVAILABLE", `the warm ${family} worker has no program: ${toFinError(err).message}`, { reason: "program" });
+      // A family's own refusal (a plugin that is disabled or gone, sp8b Task 4) is the job's error.
+      const error = err instanceof FinError ? err : finError("WORKER_UNAVAILABLE", `the warm ${family} worker has no program: ${toFinError(err).message}`, { reason: "program" });
       if (head !== undefined) e.dispatch(head.id, { run: async () => noRun(error, "exit"), release: () => {} });
       return;
     }
-    this.#spawn(f, key, program, this.#readsFor(f, row));
+    this.#spawn(f, key, program, this.#readsFor(f, row), exitPluginId(f, row?.via));
   }
 
   /** A confined worker's read roots, from the job it is spawned for (canonical; none unconfined). */
@@ -239,7 +240,7 @@ export class WarmPools {
       this.#e.d.log("debug", `warm(${f.family}): its program depends on the job; the first job spawns its worker`);
       return;
     }
-    this.#spawn(f, "", programFor(f.program, "warm"), []);
+    this.#spawn(f, "", programFor(f.program, "warm"), [], f.pluginId);
   }
 
   #lease(w: Worker): WarmLease {
@@ -347,7 +348,7 @@ export class WarmPools {
   /** The replacement first; the worker serves until its `hello` (Decision 36). */
   #recycle(w: Worker): void {
     if (w.replacement !== undefined || w.retire !== undefined) return;
-    const r = this.#spawn(w.family, w.key, w.program, w.reads);
+    const r = this.#spawn(w.family, w.key, w.program, w.reads, w.plugin);
     if (r === undefined) return;
     r.replaces = w;
     w.replacement = r;
@@ -384,7 +385,7 @@ export class WarmPools {
   }
 
   /** A new worker (none while the engine closes, L1). */
-  #spawn(f: FamilySpec, key: string, program: ProgramSpec, reads: ReadonlyArray<string>): Worker | undefined {
+  #spawn(f: FamilySpec, key: string, program: ProgramSpec, reads: ReadonlyArray<string>, plugin: string | undefined): Worker | undefined {
     const e = this.#e;
     if (e.closing || e.crashed || this.sandboxed(f.profile)) return undefined;
     const id = this.#nextId++;
@@ -392,7 +393,7 @@ export class WarmPools {
     const memoryBytes = rule === undefined ? undefined : resolveMemoryRule(rule, e.d.totalMem);
     const group = e.d.host.openGroup({ label: `warm ${f.family} ${id}`, qos: "normal", ...(memoryBytes === undefined ? {} : { memoryBytes }) });
     const name = `${WARM_DIR_PREFIX}${this.#runId}-${id}`;
-    const w: Worker = { id, family: f, key, program, group, memoryBytes, dir: join(e.d.root, name), reads, spawnedAt: e.d.now(), state: "spawning", served: 0, gone: false, cameUp: false };
+    const w: Worker = { id, family: f, key, program, group, memoryBytes, dir: join(e.d.root, name), reads, plugin, spawnedAt: e.d.now(), state: "spawning", served: 0, gone: false, cameUp: false };
     this.#list(f.family).push(w);
     void this.#start(w);
     return w;
@@ -511,7 +512,7 @@ export class WarmPools {
     if (w.replacement !== undefined) w.replacement.replaces = undefined;
     const base = exitVerdict(info, true).reason;
     const reason = w.retire !== undefined && (base === "done" || info.reason === "killed") ? w.retire : base;
-    sendWorkerExit(e.env, w.family, info, reason, w.served, `warm ${w.family.family} worker`);
+    sendWorkerExit(e.env, w.family, info, reason, w.served, `warm ${w.family.family} worker`, w.plugin);
     // An idle worker that would not die holds its slot like a job's process (L2); a busy one's attempt reports it.
     if (info.reason === "abandoned" && w.on === undefined && w.proc !== undefined) e.abandonment.abandoned(w.proc, `warm ${w.family.family} ${w.id}`, []);
     const removal = (async () => {

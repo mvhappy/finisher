@@ -7520,6 +7520,25 @@
       ],
       "type": "object"
     },
+    "JobSpawnLimits": {
+      "additionalProperties": false,
+      "description": "A request's process limits ([`crate::spawner::ProcessLimits`]).",
+      "properties": {
+        "openFiles": {
+          "default": null,
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "processes": {
+          "default": null,
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "type": "object"
+    },
     "JobSpawnProfile": {
       "enum": [
         "worker",
@@ -7592,6 +7611,10 @@
         "label": {
           "default": "",
           "type": "string"
+        },
+        "limits": {
+          "$ref": "#/$defs/JobSpawnLimits",
+          "description": "Limits the host applies whatever the spawner does (sp8b Decision 9)."
         },
         "profile": {
           "$ref": "#/$defs/JobSpawnProfile"

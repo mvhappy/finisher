@@ -12,7 +12,7 @@ import type { WorkerExitEvent } from "./events.ts";
 import { type JobDirs, mappedPath } from "./files.ts";
 import { Helpers } from "./helpers.ts";
 import type { ExitVerdict, JobHostExitInfo } from "./host.ts";
-import type { FamilySpec, ItemOutcome, KindSpec } from "./kinds.ts";
+import { exitPluginId, type FamilySpec, type ItemOutcome, type KindSpec } from "./kinds.ts";
 import type { RunControl, StopReason } from "./run-control.ts";
 import type { FailureCause, RunnerEnv } from "./runner.ts";
 import type { JobRow } from "./store.ts";
@@ -73,8 +73,19 @@ export function helloMismatch(hello: Hello, family: FamilySpec, kind: KindSpec, 
   });
 }
 
-/** Sends a `worker.exit` (a sink that throws is logged). */
-export function sendWorkerExit(env: RunnerEnv, family: FamilySpec, info: JobHostExitInfo, reason: WorkerExitEvent["reason"], jobsServed: number, job: string): void {
+/**
+ * Sends a `worker.exit` (a sink that throws is logged). `plugin`: the plugin it names, from
+ * the job's or the warm worker's `via` (sp8b Decision 3b; the family's own `pluginId` wins).
+ */
+export function sendWorkerExit(
+  env: RunnerEnv,
+  family: FamilySpec,
+  info: JobHostExitInfo,
+  reason: WorkerExitEvent["reason"],
+  jobsServed: number,
+  job: string,
+  plugin: string | undefined = family.pluginId,
+): void {
   const exit: WorkerExitEvent = {
     role: "worker",
     family: family.family,
@@ -84,7 +95,7 @@ export function sendWorkerExit(env: RunnerEnv, family: FamilySpec, info: JobHost
     sandboxed: env.host.caps().sandboxed,
     ...(info.code === undefined ? {} : { exitCode: info.code }),
     ...(info.signal === undefined ? {} : { signal: info.signal }),
-    ...(family.pluginId === undefined ? {} : { pluginId: family.pluginId }),
+    ...(plugin === undefined ? {} : { pluginId: plugin }),
   };
   try {
     env.sink.workerExit(exit);
@@ -295,6 +306,6 @@ export abstract class AttemptBase {
 
   /** The verdict's exit, as a `worker.exit` of this attempt's worker. */
   protected workerExit(info: JobHostExitInfo, verdict: ExitVerdict, jobsServed: number): void {
-    sendWorkerExit(this.a.env, this.a.family, info, verdict.reason, jobsServed, `job ${this.a.row.id}`);
+    sendWorkerExit(this.a.env, this.a.family, info, verdict.reason, jobsServed, `job ${this.a.row.id}`, exitPluginId(this.a.family, this.a.row.via));
   }
 }

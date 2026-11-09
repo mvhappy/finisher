@@ -367,6 +367,10 @@ const JOB_RESULT_CODES: &[&str] = &[
     "JOB_TIMEOUT",
     "POISON_ITEM",
     "HELPER_FAILED",
+    // A plugin job's process crashed, hung or broke the envelope (sp8 §13; sp8b Task 4).
+    "PLUGIN_CRASHED",
+    "PLUGIN_TIMEOUT",
+    "PLUGIN_PROTOCOL",
 ];
 
 /// Codes that mean "this request can never succeed as sent" (exit 2, like `USAGE`).
@@ -454,6 +458,8 @@ const UNAVAILABLE_CODES: &[&str] = &[
     "REGISTRY_STALE",
     "PLUGIN_DISABLED",
     "PLUGIN_RUNTIME_UNAVAILABLE",
+    // A code plugin stopped after three crashes in ten minutes (sp8b Tasks 4, 5).
+    "PLUGIN_CRASH_LOOP",
     "TOO_MANY_PLANS",
     "TOO_MANY_SUGGESTIONS",
     // Libraries (5D Decision 51): a library offline or paused, a root that cannot be read, a
@@ -575,24 +581,6 @@ pub fn ok(doc: &Value) -> i32 {
 pub fn error(e: &CoreError) -> i32 {
     print(&json!({ "error": e }));
     exit_code(&e.code)
-}
-
-/// Turns panics into an `INTERNAL` error document (exit 6) instead of a stderr-only trace.
-pub fn install_panic_hook() {
-    std::panic::set_hook(Box::new(|info| {
-        // Best effort and within its budget (`diag`); then the usual document and exit 6.
-        crate::diag::report_panic(info);
-        let message = crate::diag::panic_message(info);
-        let location = info
-            .location()
-            .map(|l| format!("{}:{}", l.file(), l.line()));
-        let e = internal(
-            format!("fin crashed: {message}"),
-            json!({ "location": location }),
-        )
-        .with_fix("report this as a bug in fin");
-        std::process::exit(error(&e));
-    }));
 }
 
 #[cfg(test)]

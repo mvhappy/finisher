@@ -368,6 +368,7 @@ export class Engine implements JobEngine {
    * at the next start).
    */
   async end(id: string, to: JobState, patch: TransitionPatch): Promise<void> {
+    if (to === "failed" && patch.error != null) patch = { ...patch, error: this.#familyError(id, patch.error) };
     const stats = this.#stats.get(id) ?? newStats();
     this.#stats.delete(id);
     // The stats go with the terminal row: a `job.done` re-sent at the next start carries them (9b review M5).
@@ -382,6 +383,19 @@ export class Engine implements JobEngine {
       await removeJobDir(jobDirs(this.d.root, id).job);
     } catch (e) {
       this.d.log("warning", `job ${id}: its directory could not be deleted: ${toFinError(e).message}`);
+    }
+  }
+
+  /** A failed job's error as its family names it (`FamilySpec.mapError`, sp8b Task 4). */
+  #familyError(id: string, error: FinErrorData): FinErrorData {
+    const family = this.d.store.row(id)?.family;
+    const map = family === undefined ? undefined : this.kinds.family(family)?.mapError;
+    if (map === undefined) return error;
+    try {
+      return map(error);
+    } catch (e) {
+      this.d.log("error", `job ${id}: the family's error mapping failed: ${toFinError(e).message}`);
+      return error;
     }
   }
 

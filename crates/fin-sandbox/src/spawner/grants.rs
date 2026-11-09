@@ -272,6 +272,7 @@ mod tests {
             grants,
             qos: Qos::Normal,
             label: "t".into(),
+            limits: Default::default(),
         }
     }
 
@@ -512,5 +513,40 @@ mod tests {
                 "{cwd}"
             );
         }
+    }
+
+    /// The request 8B's `plugin` family sends (sp8b Task 4; `apps/finisherd/src/plugins/host/`,
+    /// whose test pins the same shape): `cwd` and `TMPDIR` its key's private temp under
+    /// `<serverData>/plugins/tmp/`, the package as the one store grant, the Node runtime read
+    /// outside server data, and no plugin data directory (Task 16 places one under
+    /// `plugins/data/`; inside server data it is refused today).
+    #[cfg(unix)]
+    #[test]
+    fn the_plugin_familys_request_maps_onto_the_plugin_input() {
+        let tmp = "/srv/fin/plugins/tmp/0123456789abcdef0123456789abcdef";
+        let pkg = "/srv/fin/plugins/store/@acme/tool/1.0.0-abc";
+        let mut r = req(
+            "plugin",
+            tmp,
+            tmp,
+            vec![
+                g(tmp, FileMode::ReadWrite),
+                g(pkg, FileMode::Read),
+                g("/opt/node/bin/node", FileMode::Read),
+            ],
+        );
+        r.profile = Profile::Plugin;
+        let i = plugin_input(&r, Path::new(SD), Path::new("/home/u")).unwrap();
+        assert_eq!(i.store_dir, Path::new(pkg));
+        assert_eq!(i.tmp, Path::new(tmp));
+        assert_eq!(i.call_dir, Path::new(tmp));
+        assert_eq!(i.system, [PathBuf::from("/opt/node/bin/node")]);
+        assert_eq!(i.plugin_data, None);
+        let mut data = r.clone();
+        data.grants.push(g(
+            "/srv/fin/plugins/data/@acme/tool/p1",
+            FileMode::ReadWrite,
+        ));
+        assert!(plugin_input(&data, Path::new(SD), Path::new("/home/u")).is_err());
     }
 }

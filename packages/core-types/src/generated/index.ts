@@ -6103,6 +6103,16 @@ export interface JobSpawnHelper {
   kind: HelperKind;
 }
 /**
+ * A request's process limits ([`crate::spawner::ProcessLimits`]).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "JobSpawnLimits".
+ */
+export interface JobSpawnLimits {
+  openFiles?: number;
+  processes?: number;
+}
+/**
  * One process to start. `env` is its whole environment: nothing else is inherited. `helper`
  * is required for a helper and refused for a worker.
  *
@@ -6119,10 +6129,18 @@ export interface JobSpawnRequest {
   grants?: JobSpawnGrant[];
   helper?: JobSpawnHelper;
   label?: string;
+  limits?: JobSpawnLimits1;
   profile?: JobSpawnProfile;
   program: JobSpawnProgram;
   qos?: "normal" | "utility" | "background";
   role: JobSpawnRole;
+}
+/**
+ * Limits the host applies whatever the spawner does (sp8b Decision 9).
+ */
+export interface JobSpawnLimits1 {
+  openFiles?: number;
+  processes?: number;
 }
 /**
  * `watch`'s argument: `stallMs` without `begin`, `item` or `progress`; `timeoutMs` from now.

@@ -452,5 +452,23 @@ pub fn test_panic() {
     }
 }
 
+/// Turns panics into an `INTERNAL` error document (exit 6) instead of a stderr-only trace.
+pub fn install_panic_hook() {
+    std::panic::set_hook(Box::new(|info| {
+        // Best effort and within its budget (`diag`); then the usual document and exit 6.
+        report_panic(info);
+        let message = panic_message(info);
+        let location = info
+            .location()
+            .map(|l| format!("{}:{}", l.file(), l.line()));
+        let e = crate::output::internal(
+            format!("fin crashed: {message}"),
+            json!({ "location": location }),
+        )
+        .with_fix("report this as a bug in fin");
+        std::process::exit(crate::output::error(&e));
+    }));
+}
+
 #[cfg(test)]
 mod tests;
