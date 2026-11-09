@@ -121,10 +121,11 @@ pub fn send_flagged(
     if globals.dry_run {
         payload["dryRun"] = json!(true);
     }
-    if req.hashed && globals.idem_key.is_some() {
+    // Always hashed: a retry with the key a lost reply names, but other args, is
+    // `IDEM_KEY_REUSED`, never the earlier command's answer.
+    if req.hashed {
         payload["argsHash"] = json!(args_hash(&[json!({ "cmd": req.cmd, "args": req.args })]));
     }
-    let retry_safe = globals.idem_key.is_some() && !globals.dry_run;
     let mut committed = false;
     if globals.idem_key.is_some() && !backend.dry_run_only() {
         // A retry whose record was set aside is reported, never sent again blindly.
@@ -135,10 +136,19 @@ pub fn send_flagged(
         };
         committed = lookup(backend, &first)?.is_some();
     }
-    let answer = match backend.project_call(req.tag, payload.clone()) {
-        // The answer was lost: the server answers the same txId from the log.
-        Err(e) if retry_safe && IN_FLIGHT_CODES.contains(&e.code.as_str()) => {
-            backend.project_call(req.tag, payload)
+    // A merge group's records are `{txId}-1`…; the key to retry with is still `tx_id`.
+    let call = |p: Value| {
+        if globals.dry_run {
+            backend.project_call(req.tag, p)
+        } else {
+            backend.project_tx(req.tag, p, &tx_id)
+        }
+    };
+    let answer = match call(payload.clone()) {
+        // The answer was lost after the request was sent (the error names the key): retry once
+        // with the same key, which the server answers from its log if it applied it.
+        Err(e) if IN_FLIGHT_CODES.contains(&e.code.as_str()) && e.details["txId"] == tx_id => {
+            call(payload)
         }
         other => other,
     }?;
