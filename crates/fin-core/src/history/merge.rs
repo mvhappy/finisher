@@ -306,6 +306,7 @@ pub fn plan_merge(
         .iter()
         .map(|&(i, _)| source[i].record.tx_id.as_str())
         .collect();
+    let mut frames = super::SourceFrames::default();
     for &i in &cands.picks {
         let src = &source[i];
         let r = &src.record;
@@ -329,7 +330,8 @@ pub fn plan_merge(
         };
         let mode = rerun_mode(r);
         let absorbs = super::absorbs::of_ops(log, src)?;
-        let reads = super::source_frame(log, src, &tx, mode)?;
+        let prev = i.checked_sub(1).map(|j| &source[j]);
+        let reads = frames.reads(log, src, prev, &tx, mode)?;
         let rebase = PreparedRebase {
             tx: &tx,
             own: &src.diff,

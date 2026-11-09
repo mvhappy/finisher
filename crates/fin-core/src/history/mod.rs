@@ -147,6 +147,43 @@ pub(crate) fn source_frame(
     FrameReads::read(&frame, tx, mode)
 }
 
+/// [`source_frame`] along one source branch, record after record (a merge's candidates): the
+/// frame right before a record is the previous record's frame with that record replayed, so a
+/// merge reads a frame from the log once per run of consecutive records, not once per
+/// candidate (each `state_at` replays from the nearest snapshot).
+#[derive(Default)]
+pub(crate) struct SourceFrames {
+    /// The last frame read: the state right before record `seq` of `branch`.
+    last: Option<(String, u64, crate::model::Project)>,
+}
+
+impl SourceFrames {
+    /// [`source_frame`] of `rec`, whose predecessor on its branch is `prev` (when the caller
+    /// knows it).
+    pub(crate) fn reads(
+        &mut self,
+        log: &dyn LogView,
+        rec: &LogRec,
+        prev: Option<&LogRec>,
+        tx: &crate::tx::Tx,
+        mode: crate::apply::ApplyMode,
+    ) -> Result<FrameReads, CoreError> {
+        if !crate::rebase::places::any(&tx.ops) && !crate::rebase::anchors::any(&tx.ops) {
+            return Ok(FrameReads::default());
+        }
+        let follows = |p: &LogRec| p.branch == rec.branch && p.seq + 1 == rec.seq;
+        let frame = match (self.last.take(), prev) {
+            (Some((b, s, f)), Some(p)) if follows(p) && b == p.branch && s == p.seq => {
+                crate::replay::apply_committed(&f, &p.record.intent, &p.record.bindings)?.project
+            }
+            _ => log.state_at(&rec.branch, rec.seq.saturating_sub(1))?,
+        };
+        let reads = FrameReads::read(&frame, tx, mode)?;
+        self.last = Some((rec.branch.clone(), rec.seq, frame));
+        Ok(reads)
+    }
+}
+
 /// The places and anchors of a tx's ops, read in their own frame ([`source_frame`]).
 #[derive(Debug, Default)]
 pub(crate) struct FrameReads {
