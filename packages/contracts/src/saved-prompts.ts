@@ -10,6 +10,7 @@ import { ProjectRulesStatus, RulesHash } from "./rules.ts";
 
 const Slug = Schema.String.check(Schema.isPattern(/^[a-z][a-z0-9]*(-[a-z0-9]+)*$/), Schema.isMaxLength(64));
 const Text = Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(200));
+const Id = Schema.String;
 const Whole = Schema.Number.check(Schema.isInt());
 
 /** The longest template, in characters, and most parameters and enum values. */
@@ -56,6 +57,8 @@ export const AgentSavedPromptListSuccess = Schema.Struct({
   ignored: Schema.optionalKey(Schema.Array(ListedSavedPrompt)),
   /** Prompts that did not load (settings or project files), with why: never silently dropped. */
   invalid: Schema.optionalKey(Schema.Array(Schema.Struct({ source: Schema.String, name: Schema.optionalKey(Schema.String), reason: Schema.String }))),
+  /** A trusted project's prompts an owner's of the same name hides (never silently dropped). */
+  shadowed: Schema.optionalKey(Schema.Array(Schema.Struct({ name: Schema.String, source: SavedPromptSource, by: SavedPromptSource }))),
   /** The project's `prompts/*.json` as a whole: none, trusted, untrusted, or changed since trusted. */
   projectPrompts: Schema.optionalKey(ProjectRulesStatus),
   /** Their combined hash now (what `agent.project.trust` binds as `expectedPromptsHash`). */
@@ -68,7 +71,7 @@ export const AgentSavedPromptListSuccess = Schema.Struct({
  * own choices of harness, preset, model and title apply as for `agent.session.start`.
  */
 export const AgentSavedPromptRunPayload = Schema.Struct({
-  projectId: Schema.String,
+  projectId: Id,
   name: Schema.String,
   params: Schema.optionalKey(Schema.Record(Schema.String, Schema.Union([Whole, Schema.String]))),
   harness: Schema.optionalKey(Harness),

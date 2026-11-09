@@ -53,13 +53,14 @@ export async function agentPrompts(ctx: CommandContext, rest: ReadonlyArray<stri
   if (rest.length > 0) usage("agent prompts takes --project and --json only");
   const project = one(ctx.args, "project");
   const payload = project === undefined ? {} : { projectId: await projectArg(project) };
-  const r = await withConnection(ctx, (c) => call<{ prompts: ListedSavedPrompt[]; ignored?: ListedSavedPrompt[]; invalid?: Array<{ source: string; reason: string }>; projectPrompts?: string }>(c, "agent.savedPrompt.list", payload));
+  const r = await withConnection(ctx, (c) => call<{ prompts: ListedSavedPrompt[]; ignored?: ListedSavedPrompt[]; invalid?: Array<{ source: string; reason: string }>; shadowed?: Array<{ name: string; source: string; by: string }>; projectPrompts?: string }>(c, "agent.savedPrompt.list", payload));
   if (has(ctx.args, "json")) {
     ctx.output.out(JSON.stringify(r));
     return 0;
   }
   for (const p of r.prompts) ctx.output.out(promptLine(p));
   for (const p of r.ignored ?? []) ctx.output.out(`${promptLine(p)}  [ignored: project's prompts are ${r.projectPrompts ?? "untrusted"}]`);
+  for (const x of r.shadowed ?? []) ctx.output.err(`finisherd: the ${safe(x.source)} prompt ${safe(x.name)} is hidden by the ${safe(x.by)} prompt of the same name`);
   for (const b of r.invalid ?? []) ctx.output.err(`finisherd: ${safe(b.source)} does not load: ${safe(b.reason)}`);
   if (r.projectPrompts !== undefined) ctx.output.out(`project prompts (prompts/*.json): ${r.projectPrompts}`);
   return 0;

@@ -111,7 +111,7 @@ export async function projectTrust(ctx: CommandContext, target: string): Promise
     // The project's saved prompts (prompts/*.json) are trusted as shown too, when every file loads.
     const saved = await call<{ prompts: ListedSavedPrompt[]; ignored?: ListedSavedPrompt[]; invalid?: unknown[]; promptsHash?: string }>(c, "agent.savedPrompt.list", { projectId });
     const own = [...saved.prompts.filter((p) => p.source === "project"), ...(saved.ignored ?? [])];
-    for (const p of own) ctx.prompt.show(`${promptLine(p)}\n    ${safe(p.template).replace(/\n/g, "\n    ")}`);
+    for (const p of own) ctx.prompt.show(`${promptLine(p)}\n${p.template.split("\n").map((l) => `    ${safe(l)}`).join("\n")}`);
     const broken = (saved.invalid ?? []).some((b) => (b as { source: string }).source.startsWith("prompts/"));
     const promptsHash = broken ? undefined : saved.promptsHash;
     if (broken) ctx.output.err("finisherd: a prompt file does not load; its prompts stay untrusted (see `agent prompts --project`)");

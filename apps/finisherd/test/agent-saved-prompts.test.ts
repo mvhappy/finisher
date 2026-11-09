@@ -1,12 +1,14 @@
 // Saved prompts (sub-project 7B Task 10, Decision 15; spec §6.4): bundled, owner-defined and
 // project-folder prompts expand into a session start and a first prompt, for people only.
 // Sessions run on the scripted `fake` harness (a test-hooks build, `FIN_TEST_HOOKS=1`).
-import { mkdirSync, mkdtempSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ListedSavedPrompt, Session } from "@finisher/contracts";
 import { REGISTRY } from "@finisher/contracts/registry";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from "vitest";
+import { AGENT_TEXT_MAX } from "@finisher/contracts";
 import { RPC_ONLY } from "../src/agent/command-of.ts";
 import type { FakeScript } from "../src/agent/fake.ts";
 import type { AgentStore } from "../src/agent/store.ts";
@@ -14,6 +16,7 @@ import { BUNDLED_ROLES } from "../src/agent/roles.ts";
 import { expand, loadPrompt } from "../src/agent/saved-prompts.ts";
 import { runConsole } from "../src/console/main.ts";
 import { AgentServer, code, open } from "./support/agent-server.ts";
+import { person } from "./support/person.ts";
 import { addAsset, commit, confirmed, type Exit, type NdjsonClient, ok, tx } from "./support/ndjson-client.ts";
 
 let tmp: string;
@@ -232,5 +235,93 @@ describe("saved prompts", () => {
     out = "";
     expect(await argv("agent", "prompts", "--project", dir)).toBe(0);
     expect(out).toContain("make-shorts");
+  });
+
+  test("expansion_capped: a template that could pass AGENT_TEXT_MAX is refused at load, an expansion that does at run", () => {
+    const slots = (n: number) => "{{notes}} ".repeat(n);
+    const notes = [{ name: "notes", type: "string" }];
+    expect(() => loadPrompt(prompt("fits", { template: slots(99), params: notes }), "test", BUNDLED_ROLES)).not.toThrow();
+    const over = () => loadPrompt(prompt("big", { template: slots(101), params: notes }), "test bundle", BUNDLED_ROLES);
+    expect(over).toThrow(expect.objectContaining({ code: "INVALID_REQUEST", details: expect.objectContaining({ field: "template", reason: expect.stringContaining(String(AGENT_TEXT_MAX)) }) }));
+    expect(over).toThrow(/big/);
+    // Defence in depth: expand refuses on its own too (a prompt that skipped the load check).
+    const p = { ...prompt("raw", { template: slots(101), params: notes }) } as never;
+    expect(() => expand(p, { notes: "x".repeat(2000) })).toThrow(expect.objectContaining({ code: "AGENT_ARGS", details: expect.objectContaining({ reason: "tooLong" }) }));
+  });
+
+  test("param names are not Object.prototype members; inherited values are not given", () => {
+    for (const name of ["constructor", "toString", "valueOf", "hasOwnProperty"]) {
+      expect(() => loadPrompt(prompt("t", { template: `{{${name}}}`, params: [{ name, type: "string" }] }), "test", BUNDLED_ROLES), name).toThrow(expect.objectContaining({ details: expect.objectContaining({ field: `params.${name}` }) }));
+    }
+    const p = loadPrompt(prompt("t", { template: "{{count}}", params: [{ name: "count", type: "int" }] }), "test", BUNDLED_ROLES);
+    expect(() => expand(p, Object.create({ count: 3 }))).toThrow(expect.objectContaining({ details: expect.objectContaining({ field: "count", reason: "required" }) }));
+  });
+
+  test("project prompt files are hardened: links, FIFOs, size and count are reported, never read; paths stay relative", async () => {
+    const { local, dir, projectId } = await setUp();
+    const pd = join(dir, "prompts");
+    mkdirSync(pd, { recursive: true });
+    writeFileSync(join(pd, "ok.json"), JSON.stringify(prompt("ok")));
+    writeFileSync(join(tmp, "real.json"), JSON.stringify(prompt("linked")));
+    symlinkSync(join(tmp, "real.json"), join(pd, "linked.json"));
+    writeFileSync(join(pd, "huge.json"), JSON.stringify({ pad: "x".repeat(70_000) }));
+    if (process.platform !== "win32") execFileSync("mkfifo", [join(pd, "fifo.json")]);
+    const l = await list(local, projectId);
+    const bad = (l.invalid ?? []).map((b) => b.source).sort();
+    expect(bad).toEqual(process.platform === "win32" ? ["prompts/huge.json", "prompts/linked.json"] : ["prompts/fifo.json", "prompts/huge.json", "prompts/linked.json"]);
+    expect(JSON.stringify(l.invalid)).not.toContain(tmp);
+    expect(l.ignored?.map((p) => p.name)).toEqual(["ok"]);
+    // More than 64 files: nothing loads, and it is said.
+    for (let i = 0; i < 65; i++) writeFileSync(join(pd, `f${String(i).padStart(2, "0")}.json`), "{}");
+    const many = await list(local, projectId);
+    expect(many.ignored ?? []).toEqual([]);
+    expect(many.invalid).toEqual([expect.objectContaining({ source: "prompts/", reason: expect.stringContaining("64") })]);
+    // A prompts/ that is itself a link is refused whole.
+    rmSync(pd, { recursive: true });
+    mkdirSync(join(tmp, "elsewhere"));
+    writeFileSync(join(tmp, "elsewhere", "ok.json"), JSON.stringify(prompt("ok")));
+    symlinkSync(join(tmp, "elsewhere"), pd);
+    const linked = await list(local, projectId);
+    expect(linked.ignored ?? []).toEqual([]);
+    expect(linked.invalid).toEqual([expect.objectContaining({ source: "prompts/", reason: expect.stringContaining("link") })]);
+    expect(JSON.stringify(linked.invalid)).not.toContain(tmp);
+  });
+
+  test("a file whose name is not its prompt's cannot be trusted (as the list refuses it)", async () => {
+    const { local, owner, dir, projectId } = await setUp();
+    mkdirSync(join(dir, "prompts"), { recursive: true });
+    writeFileSync(join(dir, "prompts", "other.json"), JSON.stringify(prompt("outro")));
+    const l = await list(local, projectId);
+    expect(l.invalid).toEqual([expect.objectContaining({ source: "prompts/other.json" })]);
+    const rules = ok<{ rulesHash: string }>(await owner.call("agent.rules.list", { projectId })).rulesHash;
+    const e = await confirmed(owner, "agent.project.trust", { projectId, expectedHash: rules, expectedPromptsHash: l.promptsHash });
+    expect(errOf(e)?.code).toBe("INVALID_REQUEST");
+  });
+
+  test("a project prompt shadowed by an owner's is reported", async () => {
+    const { local, owner, dir, projectId } = await setUp();
+    mkdirSync(join(dir, "prompts"), { recursive: true });
+    writeFileSync(join(dir, "prompts", "outro.json"), JSON.stringify(prompt("outro")));
+    const rules = ok<{ rulesHash: string }>(await owner.call("agent.rules.list", { projectId })).rulesHash;
+    ok(await confirmed(owner, "agent.project.trust", { projectId, expectedHash: rules, expectedPromptsHash: (await list(local, projectId)).promptsHash }));
+    expect((await list(local, projectId)) as { shadowed?: unknown }).not.toHaveProperty("shadowed");
+    settings({ savedPrompts: [prompt("outro", { template: "mine {{scope}}" })] });
+    const l = (await list(local, projectId)) as { prompts: ListedSavedPrompt[]; shadowed?: unknown };
+    expect(l.prompts.find((p) => p.name === "outro")?.source).toBe("settings");
+    expect(l.shadowed).toEqual([{ name: "outro", source: "project", by: "settings" }]);
+  });
+
+  test("project trust shows each template line (multi-line, controls removed) before the confirmation", async () => {
+    const { dir, projectId } = await setUp();
+    mkdirSync(join(dir, "prompts"), { recursive: true });
+    writeFileSync(join(dir, "prompts", "outro.json"), JSON.stringify(prompt("outro", { template: "line one {{scope}}\nline\u001b[2J two {{tone}}\r\nline three {{notes}}" })));
+    const p = person();
+    let err = "";
+    const exit = await runConsole(["project", "trust", dir, "--server-data", server.serverData], { prompt: p, output: { out: () => undefined, err: (t: string) => void (err += t) } } as never);
+    expect([exit, err]).toEqual([0, ""]);
+    const shown = p.shown.join("\n");
+    expect(shown).toContain("\n    line one {{scope}}\n    line[2J two {{tone}}\n    line three {{notes}}");
+    expect(shown).not.toContain("\u001b");
+    expect(shown).not.toContain("\r");
   });
 });

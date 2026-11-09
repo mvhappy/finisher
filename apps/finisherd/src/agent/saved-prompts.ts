@@ -24,10 +24,10 @@
 //   untrusted or changed project's prompts are listed nowhere and cannot run. They are separate
 //   from `rulesHash` because remembering a rule rewrites the rules file and refreshes that hash
 //   alone, which must never trust prompt files.
-import { closeSync, constants, fstatSync, openSync, readdirSync, readFileSync } from "node:fs";
+import { closeSync, constants, fstatSync, lstatSync, openSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { type ListedSavedPrompt, type ProjectRulesStatus, PROMPT_STRING_MAX, SavedPrompt, type SavedPromptParam, type SavedPromptSource } from "@finisher/contracts";
+import { AGENT_TEXT_MAX, type ListedSavedPrompt, type ProjectRulesStatus, PROMPT_STRING_MAX, SavedPrompt, type SavedPromptParam, type SavedPromptSource } from "@finisher/contracts";
 import { Schema } from "effect";
 import { finError } from "../errors.ts";
 import { readAgentSettings } from "./settings.ts";
@@ -63,15 +63,27 @@ export function loadPrompt(raw: unknown, source: string, roles: ReadonlyMap<stri
   const declared = new Set<string>();
   for (const q of p.params) {
     if (declared.has(q.name)) invalid(source, `params.${q.name}`, "is declared twice");
+    if (Object.hasOwn(Object.prototype, q.name)) invalid(source, `params.${q.name}`, "is the name of an Object.prototype member");
     declared.add(q.name);
     checkParam(q, source);
   }
+  const widest = new Map(p.params.map((q) => [q.name, widestValue(q)]));
+  let worst = 0;
   const rest = p.template.replace(SLOT, (_, n: string) => {
     if (!declared.has(n)) invalid(source, "template", `{{${n}}} is not a declared parameter`);
+    worst += widest.get(n)!;
     return "";
   });
   if (rest.includes("{{")) invalid(source, "template", "a {{ that is not exactly a declared parameter's {{name}} slot (templates have no expressions)");
+  if (rest.length + worst > AGENT_TEXT_MAX) invalid(source, "template", `prompt ${p.name} could expand past ${AGENT_TEXT_MAX} characters (the template's ${rest.length} plus each slot's longest value)`);
   return p;
+}
+
+/** The most characters a run can put in one slot of `q`. */
+function widestValue(q: SavedPromptParam): number {
+  if (q.type === "int") return 17;
+  if (q.type === "enum") return Math.max(0, ...(q.values ?? []).map((v) => v.length));
+  return PROMPT_STRING_MAX;
 }
 
 function checkParam(q: SavedPromptParam, source: string): void {
@@ -118,7 +130,7 @@ export function expand(p: SavedPrompt, given: Readonly<Record<string, unknown>>)
   for (const k of Object.keys(given)) if (!known.has(k)) throw args(k, "unknown", { params: [...known.keys()] });
   const values = new Map<string, string>();
   for (const q of p.params) {
-    const v = given[q.name] ?? q.default;
+    const v = (Object.hasOwn(given, q.name) ? given[q.name] : undefined) ?? q.default;
     if (v === undefined) throw args(q.name, "required");
     try {
       values.set(q.name, coerce(q, v));
@@ -126,37 +138,46 @@ export function expand(p: SavedPrompt, given: Readonly<Record<string, unknown>>)
       throw args(q.name, (e as Error).message, { ...(q.min === undefined ? {} : { min: q.min }), ...(q.max === undefined ? {} : { max: q.max }), ...(q.values === undefined ? {} : { values: q.values }) });
     }
   }
-  return p.template.replace(SLOT, (_, n: string) => values.get(n)!);
+  const text = p.template.replace(SLOT, (_, n: string) => values.get(n)!);
+  if (text.length > AGENT_TEXT_MAX) throw args("template", "tooLong", { max: AGENT_TEXT_MAX });
+  return text;
 }
 
 // Files ---------------------------------------------------------------------------------------
 
 /** `dir`'s `*.json`, each read once (regular file, not a link, size-capped); the one buffer is what is hashed and parsed. */
 type FileRead = { readonly file: string; readonly hash: string; readonly json?: unknown; readonly invalid?: string };
+const refusal = (m: string) => Object.assign(new Error(m), { refusal: true });
+/** A reason that shows the person what is wrong without the server's absolute path (a system error names it). */
+const reasonOf = (e: unknown) => ((e as { refusal?: boolean }).refusal === true ? firstLine(e) : `cannot be read (${String((e as { code?: unknown }).code ?? "error")})`);
+
 function readJsonDir(dir: string): { readonly files: readonly FileRead[]; readonly error?: string } | "absent" {
   let names: string[];
   try {
+    if (lstatSync(dir).isSymbolicLink()) return { files: [], error: "is a symbolic link" };
     names = readdirSync(dir).filter((n) => n.endsWith(".json")).sort();
   } catch (e) {
     const code = (e as { code?: unknown }).code;
-    return code === "ENOENT" || code === "ENOTDIR" ? "absent" : { files: [], error: String(code ?? e) };
+    return code === "ENOENT" || code === "ENOTDIR" ? "absent" : { files: [], error: `cannot be read (${String(code ?? "error")})` };
   }
   const files: FileRead[] = [];
   for (const file of names.slice(0, PROMPT_FILES_MAX)) {
     let fd: number | undefined;
     try {
+      // lstat first: Windows has no O_NOFOLLOW, and a FIFO must not be opened to find out.
+      if (!lstatSync(join(dir, file)).isFile()) throw refusal("not a regular file (a link, a folder or a FIFO)");
       fd = openSync(join(dir, file), constants.O_RDONLY | NONBLOCK | NOFOLLOW);
       const st = fstatSync(fd);
-      if (!st.isFile() || st.size > PROMPT_FILE_MAX) throw new Error(st.isFile() ? `larger than ${PROMPT_FILE_MAX} bytes` : "not a regular file");
+      if (!st.isFile() || st.size > PROMPT_FILE_MAX) throw refusal(st.isFile() ? `larger than ${PROMPT_FILE_MAX} bytes` : "not a regular file");
       const bytes = readFileSync(fd);
-      if (bytes.length > PROMPT_FILE_MAX) throw new Error(`larger than ${PROMPT_FILE_MAX} bytes`);
+      if (bytes.length > PROMPT_FILE_MAX) throw refusal(`larger than ${PROMPT_FILE_MAX} bytes`);
       try {
         files.push({ file, hash: hashOf(bytes), json: JSON.parse(bytes.toString("utf8")) as unknown });
       } catch (e) {
         files.push({ file, hash: hashOf(bytes), invalid: `not JSON: ${firstLine(e)}` });
       }
     } catch (e) {
-      files.push({ file, hash: "unreadable", invalid: firstLine(e) });
+      files.push({ file, hash: "unreadable", invalid: reasonOf(e) });
     } finally {
       if (fd !== undefined) closeSync(fd);
     }
@@ -167,6 +188,14 @@ function readJsonDir(dir: string): { readonly files: readonly FileRead[]; readon
 
 const manifestHash = (files: readonly FileRead[]) => (files.length === 0 ? NO_FILE : hashOf(Buffer.from(files.map((f) => `${f.file}\0${f.hash}`).join("\n"))));
 
+/** A file's prompt: it must read, load, and be named for its file. */
+function loadFile(f: FileRead, source: string, roles: ReadonlyMap<string, Role>): SavedPrompt {
+  if (f.json === undefined) invalid(source, "", f.invalid ?? "unreadable");
+  const p = loadPrompt(f.json, source, roles);
+  if (f.file !== `${p.name}.json`) invalid(source, "name", `must match the file name (${p.name}.json)`);
+  return p;
+}
+
 export const BUNDLED_DIR = new URL("./prompts/", import.meta.url);
 
 /** The bundled prompts, by name; a bad one fails the start (a build error, as a role file). */
@@ -174,9 +203,7 @@ export function loadBundled(roles: ReadonlyMap<string, Role>, dir: URL = BUNDLED
   const out = new Map<string, SavedPrompt>();
   const read = readJsonDir(fileURLToPath(dir));
   for (const f of read === "absent" ? [] : read.files) {
-    if (f.json === undefined) invalid(`bundle ${f.file}`, "", f.invalid ?? "unreadable");
-    const p = loadPrompt(f.json, `bundle ${f.file}`, roles);
-    if (f.file !== `${p.name}.json`) invalid(`bundle ${f.file}`, "name", `must match the file name (${p.name}.json)`);
+    const p = loadFile(f, `bundle ${f.file}`, roles);
     out.set(p.name, p);
   }
   return out;
@@ -189,6 +216,8 @@ export interface PromptListing {
   /** A project's valid prompts that do not apply (untrusted, changed). */
   readonly ignored: readonly ListedSavedPrompt[];
   readonly invalid: ReadonlyArray<{ readonly source: string; readonly name?: string; readonly reason: string }>;
+  /** A trusted project's prompts an owner's of the same name hides. */
+  readonly shadowed?: ReadonlyArray<{ readonly name: string; readonly source: SavedPromptSource; readonly by: SavedPromptSource }>;
   readonly projectPrompts?: ProjectRulesStatus;
   readonly promptsHash?: string;
 }
@@ -207,6 +236,8 @@ export interface ProjectPrompts {
   /** The combined hash now (`none` without files); absent when the folder cannot be read. */
   readonly promptsHash?: string;
   readonly files: readonly FileRead[];
+  /** Why the folder as a whole is not read (a link, past the file cap, unreadable). */
+  readonly error?: string;
 }
 
 export function projectPrompts(dir: string | undefined, trust: ProjectTrust | undefined): ProjectPrompts {
@@ -215,7 +246,7 @@ export function projectPrompts(dir: string | undefined, trust: ProjectTrust | un
   const read = readJsonDir(join(dir, PROMPTS_DIR));
   if (read === "absent" || (read.files.length === 0 && read.error === undefined)) return gone();
   // A folder that cannot be listed whole (unreadable, or past the file cap) trusts and loads nothing.
-  if (read.error !== undefined) return { status: trust?.promptsHash === undefined ? "untrusted" : "changed", files: [] };
+  if (read.error !== undefined) return { status: trust?.promptsHash === undefined ? "untrusted" : "changed", files: [], error: read.error };
   const hash = manifestHash(read.files);
   const status: ProjectRulesStatus = trust?.promptsHash === undefined ? "untrusted" : trust.promptsHash === hash ? "trusted" : "changed";
   return { status, promptsHash: hash, files: read.files };
@@ -235,7 +266,12 @@ export class SavedPrompts {
     const bad: Array<{ source: string; name?: string; reason: string }> = [];
     const ignored: ListedSavedPrompt[] = [];
     const by = new Map<string, ListedSavedPrompt>();
-    const add = (p: SavedPrompt, source: SavedPromptSource) => void (!by.has(p.name) && by.set(p.name, { ...p, source }));
+    const shadowed: Array<{ name: string; source: SavedPromptSource; by: SavedPromptSource }> = [];
+    const add = (p: SavedPrompt, source: SavedPromptSource) => {
+      const held = by.get(p.name);
+      if (held === undefined) by.set(p.name, { ...p, source });
+      else if (source === "project") shadowed.push({ name: p.name, source, by: held.source });
+    };
     const { settings, error } = readAgentSettings(this.#d.serverData);
     if (error?.includes("savedPrompts") === true) bad.push({ source: "settings.json", reason: error });
     (settings.savedPrompts ?? []).forEach((raw, i) => {
@@ -247,12 +283,11 @@ export class SavedPrompts {
       }
     });
     const project = projectId === undefined ? undefined : projectPrompts(this.#d.dirOf(projectId), this.#d.trustOf(projectId));
+    if (project?.error !== undefined) bad.push({ source: `${PROMPTS_DIR}/`, reason: project.error });
     for (const f of project?.files ?? []) {
       const source = `${PROMPTS_DIR}/${f.file}`;
       try {
-        if (f.json === undefined) invalid(source, "", f.invalid ?? "unreadable");
-        const p = loadPrompt(f.json, source, this.#d.roles);
-        if (f.file !== `${p.name}.json`) invalid(source, "name", `must match the file name (${p.name}.json)`);
+        const p = loadFile(f, source, this.#d.roles);
         if (project?.status === "trusted") add(p, "project");
         else ignored.push({ ...p, source: "project" });
       } catch (e) {
@@ -264,6 +299,7 @@ export class SavedPrompts {
       prompts: [...by.values()].sort((a, b) => a.name.localeCompare(b.name)),
       ignored,
       invalid: bad,
+      ...(shadowed.length === 0 ? {} : { shadowed }),
       ...(project === undefined ? {} : { projectPrompts: project.status, ...(project.promptsHash === undefined ? {} : { promptsHash: project.promptsHash }) }),
     };
   }
@@ -294,7 +330,7 @@ export function checkTrustedPrompts(dir: string, projectId: string, expected: st
   }
   for (const f of now.files) {
     if (f.json === undefined) throw finError("INVALID_REQUEST", `${PROMPTS_DIR}/${f.file}: ${f.invalid ?? "unreadable"}`, { projectId, reason: "invalidPrompt", file: f.file }, "fix or remove the file, then trust the project again");
-    loadPrompt(f.json, `${PROMPTS_DIR}/${f.file}`, roles);
+    loadFile(f, `${PROMPTS_DIR}/${f.file}`, roles);
   }
   return now.promptsHash;
 }
