@@ -10,6 +10,7 @@ use fin_core::{
     CoreError, Edge, EffectAdd, Interp, Item, KeyframeRemove, KeyframeSet, Op, ParamValue, Project,
     Rational,
 };
+use proptest::prelude::*;
 use serde_json::json;
 
 const OPACITY: &str = "opacity";
@@ -420,16 +421,37 @@ fn keyframe_op_errors() {
     assert_eq!(code(&p, vec![both.into()]), "INVALID_OP");
     assert_eq!(code(&p, vec![neither.into()]), "INVALID_OP");
     assert_eq!(code(&p, vec![unkey("c1", OPACITY, secs(3))]), "NOT_FOUND");
-    // A generated placeholder the client already used is bound twice.
-    let e = try_apply(
-        &p,
+}
+
+/// A generated placeholder never takes a name the client's transaction uses, before or after
+/// the time-form op: each insert stays its own key.
+#[test]
+fn generated_placeholders_avoid_the_clients() {
+    let p = genesis();
+    for ops in [
         vec![
             key_id("c1", OPACITY, "$kf1", Some(secs(3)), 0.5),
             key("c1", OPACITY, secs(4), 0.5),
         ],
-    )
-    .unwrap_err();
-    assert_eq!(e.code, "DUPLICATE_PLACEHOLDER");
+        vec![
+            key("c1", OPACITY, secs(1), 0.5),
+            key_id("c1", OPACITY, "$kf0", Some(secs(3)), 0.7),
+        ],
+    ] {
+        let t = fin_core::canonicalize(&p, &tx(ops.clone())).unwrap();
+        let a = golden_apply(&p, ops);
+        assert_eq!(keys(&a.project, "c1", OPACITY).len(), 4, "{:?}", t.ops);
+        let placeholders: Vec<&str> = t
+            .ops
+            .iter()
+            .filter_map(|op| match op {
+                Op::KeyframeSet(k) => k.key.as_deref(),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(placeholders.len(), 2);
+        assert_ne!(placeholders[0], placeholders[1]);
+    }
 }
 
 /// `keyframe.restore` (a removal's inverse) puts the key back under its id; it is internal,
@@ -602,4 +624,138 @@ fn undo_of_a_removal_restores_the_id_or_conflicts() {
         conflict(&e),
         ("KEYFRAME_EXISTS".to_string(), Some("tx-ins".to_string()))
     );
+}
+
+/// Put-backs hold key lists with their ids: those ids are unique within the item and, in
+/// replay, `kf<n>`; their times strictly increase.
+#[test]
+fn put_backs_check_key_ids() {
+    let p = genesis();
+    let removed = apply(
+        &p,
+        vec![
+            fin_core::EffectRemove {
+                item: "c1".into(),
+                effect: "fx1".into(),
+            }
+            .into(),
+        ],
+    );
+    let Op::EffectRestore(back) = &removed.inverse[0] else {
+        panic!("{:?}", removed.inverse)
+    };
+    let internal = |op: Op, mode: fin_core::ApplyMode| {
+        fin_core::apply_tx_mode(
+            &removed.project,
+            &tx(vec![op]),
+            &mut fin_core::MemIds::after(&removed.project),
+            mode,
+        )
+    };
+    // An effect key under an id the item's opacity keys hold.
+    let mut dup = (**back).clone();
+    dup.keyframes.get_mut(RADIUS).unwrap()[0].id = "kf1".into();
+    let e = internal(dup.into(), fin_core::ApplyMode::Internal).unwrap_err();
+    assert_eq!(e.code, "DUPLICATE_ID");
+    let mut bad = (**back).clone();
+    bad.keyframes.get_mut(RADIUS).unwrap()[0].id = "k9".into();
+    let e = internal(bad.into(), fin_core::ApplyMode::Replay).unwrap_err();
+    assert_eq!(e.code, "INVALID_ID");
+    // An item put back with two keys under one id.
+    let deleted = apply(&p, vec![delete("c1")]);
+    let Op::ItemRestore(r) = deleted.inverse.last().unwrap().clone() else {
+        panic!("{:?}", deleted.inverse)
+    };
+    let mut r = r;
+    r.item.common.keyframes.get_mut(OPACITY).unwrap()[1].id = "kf1".into();
+    let e = fin_core::apply_internal(
+        &deleted.project,
+        &tx(vec![(*r).into()]),
+        &mut fin_core::MemIds::after(&deleted.project),
+    )
+    .unwrap_err();
+    assert_eq!(e.code, "DUPLICATE_ID");
+}
+
+// ---- property: conflicts follow the key, whatever trims did ----
+
+/// One of Bob's records: a start trim by `n`/2 (`n` in {-1, 1}) or an edit of key `kf<k>`
+/// (of `path`'s two) by id.
+#[derive(Debug, Clone)]
+enum Bob {
+    Trim(i64),
+    Edit(usize, f64),
+}
+
+fn bob_step() -> impl Strategy<Value = Bob> {
+    prop_oneof![
+        prop_oneof![Just(-1i64), Just(1)].prop_map(Bob::Trim),
+        (0usize..2, 0u8..10).prop_map(|(k, v)| Bob::Edit(k, f64::from(v) / 10.0)),
+    ]
+}
+
+proptest! {
+    #![proptest_config(prop_config(256))]
+    /// Bob's trims and key edits, then Alice's stale edit or removal (by time, at the base) of
+    /// one key: `SAME_PARAM` exactly when Bob edited that key; otherwise it merges, and every
+    /// key holds the value its last author gave it, by id.
+    #[test]
+    fn stale_keyframe_ops_meet_edits_of_the_same_key(
+        effect in any::<bool>(),
+        steps in prop::collection::vec(bob_step(), 0..8),
+        target in 0usize..2,
+        remove in any::<bool>(),
+    ) {
+        let path = if effect { RADIUS } else { OPACITY };
+        let p = genesis();
+        let ids0 = ids(&p, "c1", path);
+        let mut log = MemLog::new(p);
+        let mut want: Vec<f64> = keys(&log.state("main"), "c1", path).iter().map(|k| k.1).collect();
+        let mut edited = [false, false];
+        for (i, s) in steps.iter().enumerate() {
+            let op = match s {
+                Bob::Trim(n) => trim("c1", Edge::Start, Rational::new(*n, 2).unwrap()),
+                Bob::Edit(k, v) => {
+                    edited[*k] = true;
+                    want[*k] = *v;
+                    key_id("c1", path, &ids0[*k].0, None, *v)
+                }
+            };
+            log.commit("main", &format!("tx-bob-{i}"), "bob", vec![op]);
+        }
+        let at = ids0[target].1;
+        let op = if remove { unkey("c1", path, at) } else { key("c1", path, at, 0.25) };
+        // Where trims moved the key: an edit there outside the item is refused by policy.
+        let head = log.state("main");
+        let moved = ids(&head, "c1", path)[target].1;
+        let outside = moved < Rational::zero() || moved > item(&head, "c1").duration;
+        let got = log.commit_at("main", "tx-alice", "alice", 0, vec![op]);
+        if edited[target] {
+            let e = got.unwrap_err();
+            prop_assert_eq!(conflict(&e).0, "SAME_PARAM");
+        } else if outside && !remove {
+            prop_assert_eq!(conflict(&got.unwrap_err()).0, "INVALID_RANGE");
+        } else {
+            got.unwrap();
+            let after = log.state("main");
+            let held: Vec<(String, f64)> = item(&after, "c1").common.keyframes[path]
+                .iter()
+                .map(|k| match k.value {
+                    ParamValue::Number(v) => (k.id.clone(), v),
+                    _ => unreachable!(),
+                })
+                .collect();
+            let mut expect = Vec::new();
+            for (k, (id, _)) in ids0.iter().enumerate() {
+                if k == target {
+                    if !remove {
+                        expect.push((id.clone(), 0.25));
+                    }
+                } else {
+                    expect.push((id.clone(), want[k]));
+                }
+            }
+            prop_assert_eq!(held, expect);
+        }
+    }
 }

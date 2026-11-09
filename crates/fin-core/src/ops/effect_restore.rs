@@ -18,6 +18,7 @@ use crate::error::CoreError;
 use crate::ids::{IdAlloc, IdKind};
 use crate::model::{Effect, Keyframe, ParamValue, Project};
 use crate::ops::effect_remove::prefix;
+use crate::ops::util::keys::check_key_lists;
 use crate::ops::util::{
     OpDiff, check_unlocked, item_index, normalize_interp, normalize_value, wrong_op,
 };
@@ -101,6 +102,13 @@ pub(crate) fn apply(
             )
             .with_details(json!({ "id": effect.id, "item": item })));
         }
+        let held = it
+            .common
+            .keyframes
+            .values()
+            .flatten()
+            .map(|k| k.id.as_str());
+        check_key_lists(&keyframes, held, !bindings.policy())?;
         let own = prefix(&effect.id);
         if let Some(p) = keyframes
             .keys()

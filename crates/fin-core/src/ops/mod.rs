@@ -133,6 +133,8 @@ pub(crate) struct Bindings {
     internal: bool,
     /// Policy checks run (everything but replay).
     policy: bool,
+    /// Every placeholder the transaction names: a generated one avoids them (`util::keys`).
+    pub(crate) reserved: std::collections::BTreeSet<String>,
 }
 
 impl Bindings {
@@ -141,6 +143,7 @@ impl Bindings {
             map: BTreeMap::new(),
             internal: mode != ApplyMode::Client,
             policy: mode != ApplyMode::Replay,
+            reserved: Default::default(),
         }
     }
 

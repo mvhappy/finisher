@@ -46,10 +46,7 @@ pub(crate) fn run(mut v: Value) -> Result<Value, CoreError> {
                             .as_object_mut()
                             .ok_or_else(|| bad("a keyframe is not an object"))?;
                         n += 1;
-                        // `id` first, as the v3 model writes it.
-                        let rest = std::mem::take(key);
                         key.insert("id".into(), json!(format!("kf{n}")));
-                        key.extend(rest);
                     }
                 }
             }

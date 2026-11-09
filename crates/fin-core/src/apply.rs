@@ -93,6 +93,7 @@ pub fn apply_tx_env(
     env: ApplyEnv<'_>,
 ) -> Result<Applied, CoreError> {
     let mut run = Applier::new(project, tx.schema_version, mode, env)?;
+    run.reserve(&tx.ops);
     for (i, op) in tx.ops.iter().enumerate() {
         run.op(i, op, ids)?;
     }
@@ -115,6 +116,7 @@ pub fn canonicalize(frame: &Project, tx: &Tx) -> Result<Tx, CoreError> {
         ApplyMode::Client
     };
     let mut run = Applier::new(frame, tx.schema_version, mode, ApplyEnv::default())?;
+    run.reserve(&tx.ops);
     for (i, op) in tx.ops.iter().enumerate() {
         run.op(i, op, &mut ids)?;
     }
@@ -246,6 +248,13 @@ impl<'e> Applier<'e> {
         self.inverses.push(applied.map_err(|e| at_op(e, index))?);
         self.ran.push(op.clone());
         Ok(self.own_diff(changes_before, before))
+    }
+
+    /// Reserves every placeholder `ops` (the whole transaction) names, so a key placeholder the
+    /// applier generates for a time-form insert never is one the client uses later.
+    pub(crate) fn reserve(&mut self, ops: &[Op]) {
+        let names = ops.iter().flat_map(Op::ids).filter(|x| x.starts_with('$'));
+        self.bindings.reserved.extend(names.map(str::to_string));
     }
 
     /// The entries recorded since `changes` changes and `shifts` shifts.

@@ -7,14 +7,18 @@
 //! op by its key form
 //! before it runs: the key at exactly `at` (named by the placeholder that bound it, when an
 //! earlier op of the transaction made it), or, for a set with no key there, an insert under
-//! the generated placeholder `$kf<opIndex>`. The committed intent holds what ran, so every
+//! the generated placeholder `$kf<opIndex>` (suffixed `_<n>` when the transaction names
+//! that one itself). The committed intent holds what ran, so every
 //! stored op names its key and a rebase carries the key, not its time. Replay refuses the time
 //! form ([`time_form`]).
 
 use serde_json::json;
 
 use crate::error::CoreError;
-use crate::model::Project;
+use std::collections::BTreeMap;
+
+use crate::ids::IdKind;
+use crate::model::{Keyframe, Project};
 use crate::ops::util::item_index;
 use crate::ops::util::paths::resolve_path;
 use crate::ops::{Bindings, KeyframeRemove, KeyframeSet, Op};
@@ -168,17 +172,55 @@ pub(crate) fn unbind_keys(ops: &[Op], own: &mut [crate::tx::Diff]) {
     }
 }
 
-/// The placeholder `$kf<index>` for a new key, unless an earlier op bound it already
-/// (`DUPLICATE_PLACEHOLDER`: it would name that op's entity instead).
+/// The placeholder for a new key of op `index`: `$kf<index>`, or `$kf<index>_<n>` (the
+/// smallest `n`) when the transaction names that one itself or an earlier op bound it, so it
+/// never names the client's own entity.
 fn fresh(bindings: &Bindings, index: usize) -> Result<String, CoreError> {
-    let name = format!("$kf{index}");
-    if bindings.map.contains_key(&name) {
-        return Err(CoreError::new(
-            "DUPLICATE_PLACEHOLDER",
-            format!("placeholder {name} is bound twice: a new keyframe of op {index} takes it"),
-        )
-        .with_details(json!({ "placeholder": name }))
-        .with_fix(format!("name your own placeholders other than {name}")));
+    let taken = |n: &String| bindings.reserved.contains(n) || bindings.map.contains_key(n);
+    let base = format!("$kf{index}");
+    if !taken(&base) {
+        return Ok(base);
     }
-    Ok(name)
+    let mut n = 1u64;
+    loop {
+        let name = format!("{base}_{n}");
+        if !taken(&name) {
+            return Ok(name);
+        }
+        n += 1;
+    }
+}
+
+/// The structural rules of key lists an op puts back whole (an item, track or timeline
+/// restore, an effect restore), beside `held` (the ids of the keys the item already holds):
+/// every list is non-empty with strictly increasing times (`INVALID_OP`), ids are unique
+/// within the item (`DUPLICATE_ID`), and in replay each id is `kf<n>` (`INVALID_ID`).
+pub(crate) fn check_key_lists<'a>(
+    lists: &BTreeMap<String, Vec<Keyframe>>,
+    held: impl IntoIterator<Item = &'a str>,
+    replay: bool,
+) -> Result<(), CoreError> {
+    let mut seen: std::collections::BTreeSet<&str> = held.into_iter().collect();
+    for (path, keys) in lists {
+        if keys.is_empty() || keys.windows(2).any(|w| w[0].at >= w[1].at) {
+            return Err(CoreError::new(
+                "INVALID_OP",
+                format!("the keyframes of {path} are not a non-empty list in time order"),
+            )
+            .with_details(json!({ "path": path })));
+        }
+        for k in keys {
+            if replay {
+                crate::ops::check_literal(&k.id, IdKind::Keyframe)?;
+            }
+            if !seen.insert(&k.id) {
+                return Err(CoreError::new(
+                    "DUPLICATE_ID",
+                    format!("key {} is listed twice", k.id),
+                )
+                .with_details(json!({ "id": k.id, "path": path })));
+            }
+        }
+    }
+    Ok(())
 }

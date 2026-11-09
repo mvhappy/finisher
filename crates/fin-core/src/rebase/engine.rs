@@ -190,6 +190,7 @@ pub fn rebase_prepared(
             .then(|| r.steps[i - n].tx_id.to_string())
     };
     let mut run = Applier::new(head, r.tx.schema_version, mode, r.env).map_err(bad)?;
+    run.reserve(&r.tx.ops);
     let mut ops = Vec::with_capacity(n);
     let mut created = BTreeSet::new();
     // Our earlier ops' footprints: an entity one of them created is blamed through what that
