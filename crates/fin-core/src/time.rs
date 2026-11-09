@@ -18,9 +18,9 @@ pub struct Rational {
     den: i64,
 }
 
-fn gcd(mut a: i128, mut b: i128) -> i128 {
-    a = a.abs();
-    b = b.abs();
+/// The gcd of `|a|` and `|b|`, on magnitudes so `i128::MIN` cannot overflow a negation.
+fn gcd(a: i128, b: i128) -> u128 {
+    let (mut a, mut b) = (a.unsigned_abs(), b.unsigned_abs());
     while b != 0 {
         (a, b) = (b, a % b);
     }
@@ -71,11 +71,17 @@ impl Rational {
         if den == 0 {
             return Err(invalid_time("", "denominator is zero"));
         }
+        // Reduced on magnitudes (u128): every i128 input, `i128::MIN` too, has one.
         let g = gcd(num, den).max(1);
-        let sign = if den < 0 { -1 } else { 1 };
-        let (n, d) = (sign * num / g, sign * den / g);
-        match (i64::try_from(n), i64::try_from(d)) {
-            (Ok(num), Ok(den)) => Ok(Rational { num, den }),
+        let (n, d) = (num.unsigned_abs() / g, den.unsigned_abs() / g);
+        let negative = (num < 0) != (den < 0) && n != 0;
+        let num = if negative {
+            0i64.checked_sub_unsigned(u64::try_from(n).map_err(|_| overflow())?)
+        } else {
+            i64::try_from(n).ok()
+        };
+        match (num, i64::try_from(d)) {
+            (Some(num), Ok(den)) => Ok(Rational { num, den }),
             _ => Err(overflow()),
         }
     }
@@ -127,8 +133,16 @@ impl Rational {
         Self::from_i128(a * d + c * b, b * d)
     }
 
+    /// `a/b − c/d` as `(a·d − c·b) / (b·d)` in i128 (each product is below 2^126), so a
+    /// right side whose negation overflows (`MIN − MIN`) still subtracts exactly.
     pub fn checked_sub(self, rhs: Rational) -> Result<Rational, CoreError> {
-        self.checked_add(rhs.checked_neg()?)
+        let (a, b, c, d) = (
+            self.num as i128,
+            self.den as i128,
+            rhs.num as i128,
+            rhs.den as i128,
+        );
+        Self::from_i128(a * d - c * b, b * d)
     }
 
     pub fn checked_neg(self) -> Result<Rational, CoreError> {
@@ -382,7 +396,8 @@ fn parse_time_inner(input: &str, rate: Rational) -> Result<Rational, CoreError> 
             return Err(bad("frame times need a positive rate"));
         }
         let n: i128 = frames.parse().map_err(|_| overflow())?;
-        return Rational::from_i128(n * rate.den as i128, rate.num as i128);
+        let n = n.checked_mul(rate.den as i128).ok_or_else(overflow)?;
+        return Rational::from_i128(n, rate.num as i128);
     }
     if let Some(sec) = input.strip_suffix('s') {
         return parse_decimal(sec).ok_or_else(|| bad("expected decimal seconds like 12.4s"))?;
@@ -420,7 +435,10 @@ fn parse_decimal(s: &str) -> Option<Result<Rational, CoreError>> {
         return Some(Err(overflow()));
     }
     let scale = 10i128.pow(frac.len() as u32);
-    let digits: i128 = format!("{int}{frac}").parse().ok()?;
+    // Only digits, so a parse failure is a value beyond i128.
+    let Ok(digits) = format!("{int}{frac}").parse::<i128>() else {
+        return Some(Err(overflow()));
+    };
     let n = if neg { -digits } else { digits };
     Some(Rational::from_i128(n, scale))
 }
