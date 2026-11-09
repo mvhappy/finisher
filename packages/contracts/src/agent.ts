@@ -272,12 +272,14 @@ export const AgentSessionListSuccess = Schema.Struct({ sessions: Schema.Array(Se
 
 /** `agent.session.get`: the session, its runs and the approvals still open. Nodes come through `agent.watch`. */
 export const AgentSessionGetPayload = SessionIdPayload;
+/** `warnings`: the persistent sandbox warnings of a CLI harness's session (spec §8.9; plan 7C Task 11). */
 export const AgentSessionGetSuccess = Schema.Struct({
   session: Session,
   runs: Schema.Array(Run),
   approvals: Schema.Array(Approval),
   /** Whether the project's `finisher.rules.json` applies (7B): `untrusted` and `changed` mean it is ignored. */
   projectRules: Schema.optionalKey(ProjectRulesStatus),
+  warnings: Schema.optionalKey(Schema.Array(AgentWarning)),
 });
 
 /** `agent.session.delete` (owner, challenge code): removes the session's product state at once. */

@@ -25,7 +25,7 @@ import { AgentCoreTag } from "./core.ts";
 import { openSession, registryBranchOps } from "./credentials.ts";
 import { type RuntimeDeps, RuntimeEngine } from "./runtime-engine.ts";
 import { budgetError, harnessUnknown, pricingUnknown, type StartRequest } from "./runtime-deps.ts";
-import { call, closeLive } from "./runtime-live.ts";
+import { call, closeLive, type Live } from "./runtime-live.ts";
 import type { Recovery } from "./store.ts";
 import { agentWarnings } from "./warnings.ts";
 
@@ -162,6 +162,10 @@ export class Runtime extends RuntimeEngine {
       this.#guard();
       const plan = await this.deps.planner.plan(req, by);
       if (this.adapter(plan.harness) === undefined) harnessUnknown(plan.harness);
+      // A CLI harness whose sandbox cannot be applied here never starts (spec §8.9), nor one
+      // the runtime has no sandboxes for (it would start its processes unconfined).
+      if (this.deps.sandboxes !== undefined) this.deps.sandboxes.check(plan.harness);
+      else if (plan.harness === "claudeCode" || plan.harness === "codex") throw finError("SANDBOX_UNAVAILABLE", "this runtime has no session sandbox for CLI harnesses", { profile: "agent", harness: plan.harness });
       // A money budget without a price would fail open: refused before anything is made.
       if (plan.provider !== "local" && !this.pricing.known(plan.provider, plan.model)) throw pricingUnknown(plan.provider, plan.model);
       const opened = await exitOf(
@@ -225,6 +229,7 @@ export class Runtime extends RuntimeEngine {
       throw e;
     }
     live.runId = run.id;
+    await this.#sandboxNotices(live, run.id);
     const err = await call(live.provider.startTurn({ runId: run.id, text, facts: this.facts(this.session(sessionId)) }));
     if (err) {
       live.runId = null;
@@ -232,6 +237,27 @@ export class Runtime extends RuntimeEngine {
       throw err;
     }
     return this.store.run(run.id)!;
+  }
+
+  protected sandboxFor(s: Session) {
+    return this.deps.sandboxes?.open(s, (v) =>
+      this.background(v.sessionId, "a sandbox violation", async () => {
+        const runId = this.store.activeRun(v.sessionId);
+        if (runId !== null) await this.append({ sessionId: v.sessionId, runId, kind: "notice", payload: { sandboxViolation: { op: v.op, profile: v.profile, rootKind: v.rootKind } } });
+      }),
+    );
+  }
+
+  /**
+   * Once per opened instance of a sandboxed session: a `notice` per persistent warning of the
+   * `agent` profile (F2: `SANDBOX_DISABLED`, spec §8.9), so a person sees it on the session.
+   */
+  async #sandboxNotices(live: Live, runId: string): Promise<void> {
+    if (live.sandbox === undefined || live.noticed) return;
+    live.noticed = true;
+    for (const w of agentWarnings()) {
+      await this.append({ sessionId: live.sessionId, runId, kind: "notice", payload: { sandbox: { code: w.code, ...w.details } } });
+    }
   }
 
   /** A branch's head seq (by id), for `headAtStart`; undefined when it cannot be read. */

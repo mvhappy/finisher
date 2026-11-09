@@ -613,7 +613,7 @@ The `/usr/bin` developer shims (`git` and friends) are a trap. With a fresh `HOM
 
 **Interfaces:** `SessionSandbox`, `openSessionSandbox`, `assertSessionEnv` (frozen above). `session-dirs.ts`: `ensureSessionDirs(s) → {dir, tmp, provider, settings, git, blobs}` (0700; `credential.json` 0600; Windows: private DACL plus the broker grant to the session's capability SID); `linkSignInStore(harness, s)` creates the link from `provider/` to the store file in `<server-data>/providers/<harness>/home/` and **never opens the target** (spec §8.6).
 
-- [ ] **Step 1: Write failing tests:**
+- [x] **Step 1: Write failing tests:**
   - `session_env_is_exact` (spec §8.5: `childEnv()` plus `FIN_SERVER` (socket, listener or pipe per OS), `FIN_SESSION`, `FIN_CREDENTIAL`, **`FIN_PROJECT_DIR`** (the session's project folder, links resolved), `TMPDIR`, the provider directory variable; never `FIN_SERVER_DATA`, `FIN_AUTHOR`, `FIN_TRAINING`, `FIN_DIAGNOSTICS`, `SSH_AUTH_SOCK`, `GPG_AGENT_INFO`, `DBUS_SESSION_BUS_ADDRESS`, `DOCKER_HOST`, `DISPLAY`, `WAYLAND_DISPLAY`, `CLAUDE_CODE_OAUTH_TOKEN`, `*_API_KEY`), and `assertSessionEnv` throws on each violation (the contract 7D/7E call);
   - **`harness_with_wrong_project_dir_reads_nothing`**: a child of `spawnInSession` that resets `FIN_PROJECT_DIR` to another project's folder gets `PATH_NOT_ALLOWED {reason: projectMismatch}` from `fin caption import --words` (the check of `agent_paths.rs:186-200`), and cannot read that folder at all under the sandbox;
   - **`agent_child_cannot_read_local_key`**: a `spawnInSession` child runs `cat <server-data>/auth/local.key` and `fin --server-data … whoami` without `FIN_CREDENTIAL`: both fail (OS denial), on each OS the suite runs on;
@@ -621,8 +621,8 @@ The `/usr/bin` developer shims (`git` and friends) are a trap. With a fresh `HOM
   - `disabled_host_runs_with_notice` (stub `disabled`: the session starts, a `notice` node and `agent.session.get` carry `SANDBOX_DISABLED {reason: landlockDisabled}`); `unavailable_refuses_start` (`SANDBOX_UNAVAILABLE`); `profile_not_ready_keeps_warning` (Decision 23);
   - `violation_is_audited` (a seccomp kill in a session child → `sandbox.violation` with root kind and keyed hash, and a `notice` node).
 - **From the Task 5 review:** the session git configuration of `data/linux/git-config` sits at `GIT_CONFIG_GLOBAL`, which a repository's own `.git/config` overrides; pass `core.fsmonitor=false` and the empty `credential.helper` through `GIT_CONFIG_COUNT`/`GIT_CONFIG_KEY_<n>`/`GIT_CONFIG_VALUE_<n>` as well (command-line precedence), and set a private `GNUPGHOME` (spec §8.3). Start the launcher only where `sandboxStatus()` says the agent profile is enforced or Landlock-disabled (it refuses other `Disabled` reasons with exit 78), and close the request pipe's write end in the child.
-- [ ] **Step 2: Implement.**
-- [ ] **Step 3: Run** the gates and `rtk pnpm e2e` → PASS. **Commit** `feat(agent): session sandbox, directories and environment; every agent process through fin-sandbox`.
+- [x] **Step 2: Implement.**
+- [x] **Step 3: Run** the gates and `rtk pnpm e2e` → PASS. **Commit** `feat(agent): session sandbox, directories and environment; every agent process through fin-sandbox`.
 
 ### Task 12: Warm workers under a sandbox: per-job grants — tier: opus — 7C-5
 

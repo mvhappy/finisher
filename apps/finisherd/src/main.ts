@@ -138,6 +138,8 @@ export const serve = ({
       // its assets live in (5D): the library service starts after the engine, so the hook is
       // bound once it has; a project opened before that holds none.
       let libraryHold: ((paths: ReadonlyArray<string>) => { release(): void }) | undefined;
+      // The libraries' roots (sandboxed agent sessions read them, plan 7C Decision 6): bound once the service runs.
+      let libraryRoots: () => ReadonlyArray<string> = () => [];
       const registryContext = yield* Layer.build(
         layerProjectRegistry(serverData, { ...registry, libraryUse: (paths) => libraryHold?.(paths) ?? { release: () => {} } }),
       );
@@ -163,6 +165,7 @@ export const serve = ({
         (s) => Effect.sync(() => s.close()),
       );
       libraryHold = (paths) => library.use(librariesHolding(library.registry, paths));
+      libraryRoots = () => library.registry.list().map((l) => l.root);
 
       const audit = Context.get(control, AuditTag);
       // Windows: the native pipe listener (Task 11); a client of another user is refused
@@ -299,6 +302,7 @@ export const serve = ({
       // The agent runtime over the project registry (7A Task 12): recovery, the outbox
       // and the credential reconcile run here, before either transport serves a request.
       const projectRegistry = projects; // built above, before the job engine
+      let agentListenerRef: AgentListener | undefined;
       const agentRuntime = yield* buildAgentRuntime({
         serverData,
         core: agentCore,
@@ -307,6 +311,9 @@ export const serve = ({
         control: Context.get(control, ControlStoreTag),
         audit,
         endpoint: socket,
+        // Built below, after the transports; a session sandbox asks for it only once a run starts.
+        libraryRoots: () => libraryRoots(),
+        agentListener: () => (agentListenerRef === undefined ? Promise.reject(new Error("the agent listener is not built yet")) : agentListenerRef.ensure()),
         log: (message) => logSink("warning", `finisherd: agent runtime: ${message}`),
         ...(agentOptions === undefined ? {} : { options: agentOptions }),
       });
@@ -377,6 +384,7 @@ export const serve = ({
           }),
         ),
       );
+      agentListenerRef = agentListener;
       onAgentListener?.(agentListener);
 
       const publish = (enabled: boolean) =>
