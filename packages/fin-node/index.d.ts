@@ -77,7 +77,7 @@ export declare class Engine {
   /**
    * `{ status, seq }` JSON: `status()`'s answer and the number of the last event (`onEvent`'s
    * `seq`) emitted before it was read. Events numbered up to `seq` are older than it (their
-   * changes are in it), later ones newer: a subscriber starting from it drops the former.
+   * changes are in it), later ones never older: a subscriber starting from it drops the former.
    */
   statusAt(): Promise<string>;
   /**

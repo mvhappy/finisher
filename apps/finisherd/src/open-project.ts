@@ -1,6 +1,8 @@
 // One project the registry has open (`projects.ts`), and the libraries it holds in use.
+import { realpathSync } from "node:fs";
 import type { Engine } from "@finisher/fin-node";
 import type { Semaphore } from "effect";
+import { projectIdIn } from "./chain/resolve.ts";
 
 /** One open project: its engine and a commit lock. */
 export interface OpenProject {
@@ -35,3 +37,21 @@ export function holdLibraries(p: OpenProject, use: (assetPaths: ReadonlyArray<st
   );
 }
 
+
+/** `dir` with every link resolved; `undefined` when it does not exist (any more). */
+function realDir(dir: string): string | undefined {
+  try {
+    return realpathSync(dir);
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Whether the project open here at `oldDir` was moved to `dir` (review #32): another folder, and
+ * the old one no longer holds the project (gone, or something else is there now). A link to the
+ * same folder, or a copy whose original is still there, keeps the open engine.
+ */
+export async function movedFrom(oldDir: string, dir: string, projectId: string): Promise<boolean> {
+  return realDir(oldDir) !== realDir(dir) && (await projectIdIn(oldDir)) !== projectId;
+}

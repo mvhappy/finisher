@@ -61,8 +61,9 @@ export const projectEvents = (deps: ProjectEventsDeps, projectId: string): Strea
           }),
       );
       const check = follower(channel, "");
-      const lost = gapless(channel);
       const live = yield* PubSub.subscribe(channel.pubsub);
+      // After subscribing: an item published in between is then not taken for a gap.
+      const lost = gapless(channel);
       const at = yield* deps.statusAt(projectId);
       const first: ProjectEvent = { type: "status", status: at.status };
       const items = Stream.fromSubscription(live).pipe(

@@ -1,5 +1,5 @@
 // In-process ProjectRegistry tests (fin-node `test-hooks` build via vitest.config.ts).
-import { mkdtempSync, renameSync, rmSync, symlinkSync } from "node:fs";
+import { cpSync, mkdtempSync, renameSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { FinError } from "@finisher/contracts";
@@ -122,10 +122,16 @@ describe("ProjectRegistry", () => {
     await run(r.commit(projectId, tx("tx-0", 0, [addAsset("$a0")])));
     const old = r.engineOf(projectId);
     const ops = Effect.runFork(r.subscribe(projectId, "main", 1).pipe(Stream.take(1), Stream.runCollect));
-    const events = Effect.runFork(r.events(projectId).pipe(Stream.take(1), Stream.runCollect));
-    await Effect.runPromise(Fiber.join(events));
+    const seen: Array<{ type: string; fromRev?: number }> = [];
+    const events = Effect.runFork(r.events(projectId).pipe(Stream.runForEach((e) => Effect.sync(() => seen.push(e as never)))));
+    while (seen.length === 0) await new Promise((res) => setTimeout(res, 20));
     renameSync(from, to);
     expect((await run(r.open(to))).projectId).toBe(projectId);
+    // The events subscriber goes on and hears the new engine.
+    r.engineOf(projectId)!.emitRewoundForTest("main", 7);
+    while (!seen.some((e) => e.type === "rewound")) await new Promise((res) => setTimeout(res, 20));
+    expect(seen.find((e) => e.type === "rewound")).toMatchObject({ fromRev: 7 });
+    expect(events.pollUnsafe()).toBeUndefined();
     expect(r.engineOf(projectId)).not.toBe(old);
     expect(r.dirOf(projectId)).toBe(to);
     expect(r.indexedDirOf(projectId)).toBe(to);
@@ -138,6 +144,42 @@ describe("ProjectRegistry", () => {
     expect((await run(r.open(join(tmp, "link")))).projectId).toBe(projectId);
     expect(r.engineOf(projectId)).toBe(now);
     await run(r.commit(projectId, tx("tx-2", 2, [addAsset("$a2")])));
+  });
+
+  test("a moved project is taken on when another project now sits at its old folder (review #32)", async () => {
+    const r = await registry();
+    const [from, to] = [join(tmp, "a"), join(tmp, "b")];
+    const { projectId } = await run(r.create(from, "Demo", "30"));
+    renameSync(from, to);
+    const other = (await run(r.create(from, "Other", "30"))).projectId;
+    expect((await run(r.open(to))).projectId).toBe(projectId);
+    expect(r.dirOf(projectId)).toBe(to);
+    await run(r.commit(projectId, tx("tx-0", 0, [addAsset("$a0")])));
+    await run(r.commit(other, tx("tx-o", 0, [addAsset("$o")])));
+  });
+
+  test("two paths to a moved project's new folder, opened at once, share one writable engine (review #32)", async () => {
+    const r = await registry();
+    const [from, to, link] = [join(tmp, "a"), join(tmp, "b"), join(tmp, "link")];
+    const { projectId } = await run(r.create(from, "Demo", "30"));
+    renameSync(from, to);
+    symlinkSync(to, link);
+    const [x, y] = await Promise.all([run(r.open(to)), run(r.open(link))]);
+    expect([x.projectId, y.projectId]).toEqual([projectId, projectId]);
+    await run(r.commit(projectId, tx("tx-0", 0, [addAsset("$a0")])));
+  });
+
+  test("a copy whose original is still there is refused; the engine stays at the original (review #32)", async () => {
+    const r = await registry();
+    const [from, copy] = [join(tmp, "a"), join(tmp, "copy")];
+    const { projectId } = await run(r.create(from, "Demo", "30"));
+    const engine = r.engineOf(projectId);
+    cpSync(from, copy, { recursive: true });
+    // fin-store refuses the copy (it is the original's to keep); the engine stays as it was.
+    expect((await failure(r.open(copy))).code).toBe("PROJECT_COPY");
+    expect(r.engineOf(projectId)).toBe(engine);
+    expect(r.dirOf(projectId)).toBe(from);
+    await run(r.commit(projectId, tx("tx-0", 0, [addAsset("$a0")])));
   });
 
   test("a project.events subscriber that falls behind its buffer ends WATCH_LAGGING (review #38)", async () => {

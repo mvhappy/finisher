@@ -118,14 +118,15 @@ export function follower<T>(channel: Channel<T>, branch: string) {
 }
 
 /**
- * Whether a subscriber made now (before it subscribes to `pubsub`) lost items: `lost(item)` is
- * true when the items before `item` did not all reach it (the sliding buffer dropped them).
+ * Whether a subscriber lost items: made just after it subscribed to `pubsub`, `lost(item)` is
+ * true when items published since then, before `item`, did not all reach it (the sliding buffer
+ * dropped them). Items published before it was made (between subscribing and now) are not gaps.
  */
 export function gapless<T>(channel: Channel<T>) {
   let next = channel.published + 1;
   return (item: Stamped<T>): boolean => {
-    const lost = item.n !== next;
-    next = item.n + 1;
+    const lost = item.n > next;
+    next = Math.max(next, item.n + 1);
     return lost;
   };
 }

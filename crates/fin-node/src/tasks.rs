@@ -224,7 +224,8 @@ fn tx_json(tx_id: &str, status: TxStatus) -> Result<Reply> {
 /// `at` (`statusAt()`): `{"status", "seq"}`, `seq` the last event emitted before it was read.
 /// The store is held through the font merge and `seq` read under the fonts' `publish` lock: a
 /// tick emits holding the store, then `publish`; a font refresh, holding `publish`. Every
-/// event up to `seq` is then older than this status, every later one newer.
+/// event up to `seq` is then older than this status, and no later one is older (one may
+/// repeat a change already in it, e.g. a commit's events emitted by the next tick).
 fn status(store: &Shared, at: bool) -> Result<Reply> {
     let mut guard = lock(&store.state);
     let (value, busy) = match &mut *guard {

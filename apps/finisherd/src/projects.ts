@@ -1,6 +1,5 @@
 // ProjectRegistry: open Engines, the `app.db` project index, per-(project, branch) op hubs and
 // per-project event hubs fed by each engine's `onEvent`.
-import { realpathSync } from "node:fs";
 import { resolve } from "node:path";
 import type { AudioPlan, BranchView, CommittedTx, FontsPlan, FramePlan } from "@finisher/core-types";
 import type { FinError, Generation, ProjectEvent, TxGetResult } from "@finisher/contracts";
@@ -12,7 +11,8 @@ import { callEngine, type HistoryOp, type HistoryPayload, metaJson, publishResul
 import { Hubs } from "./hubs.ts";
 import { routeEngineEvent } from "./engine-events.ts";
 import { engineEvicted, opStream } from "./op-stream.ts";
-import { holdLibraries, type OpenProject } from "./open-project.ts";
+import { projectIdIn } from "./chain/resolve.ts";
+import { holdLibraries, movedFrom, type OpenProject } from "./open-project.ts";
 import { projectEvents, type StatusAt } from "./project-events.ts";
 import { ProjectIndex } from "./project-index.ts";
 
@@ -159,14 +159,6 @@ export const DEFAULT_IDLE_CLOSE_MS = 10 * 60_000;
 export const DEFAULT_HUB_CAPACITY = 1024;
 const MAIN = "main";
 
-/** `dir` with every link resolved; `undefined` when it does not exist (any more). */
-const realDir = (dir: string): string | undefined => {
-  try {
-    return realpathSync(dir);
-  } catch {
-    return undefined;
-  }
-};
 
 export function makeProjectRegistry(
   serverData: string,
@@ -192,6 +184,8 @@ export function makeProjectRegistry(
     const closedHere = new Map<string, string>();
     /** Set once shutdown starts: engines that finish opening later are closed at once. */
     let closed = false;
+    /** Relocations under way, by project (`relocateOnce`). */
+    const relocating = new Map<string, Promise<OpenProject>>();
     /** The last engine's `epoch`. */
     let epochs = 0;
 
@@ -229,8 +223,8 @@ export function makeProjectRegistry(
       }
       const existing = byId.get(engine.projectId);
       if (existing) {
-        // Same project reached through another path string (a link, or a race with a move
-        // that `openDir` handles): keep the first engine; the second one only read (LEASE_HELD).
+        // Same project reached through another path string (a link): keep the first engine; the
+        // second one only read (LEASE_HELD). A move was handled before opening (`relocation`).
         void engine.close().catch(() => undefined);
         byDir.set(dir, existing.engine.projectId);
         return existing;
@@ -358,15 +352,16 @@ export function makeProjectRegistry(
         // The store checks the folder still holds `expected` before it locks or leases anything;
         // a closing engine of the folder lets go of its lease and database first.
         pending = (closingDirs.get(dir) ?? Promise.resolve())
-          .then(() => Engine.open(serverData, dir, { relocate, ...(expected === undefined ? {} : { expectId: expected }) }))
-          .then(async (engine) => {
+          .then(() => relocation(dir, relocate, expected))
+          .then(async (moved) => {
+            if (moved !== undefined) return moved;
+            const engine = await Engine.open(serverData, dir, { relocate, ...(expected === undefined ? {} : { expectId: expected }) });
             // And again before `register`: a project other than the one checked is never taken on.
             if (expected !== undefined && engine.projectId !== expected) {
               void engine.close().catch(() => undefined);
               throw changed(dir, expected);
             }
-            const old = byId.get(engine.projectId);
-            return old !== undefined && realDir(old.dir) === undefined ? relocated(old, engine, dir, relocate) : register(engine, dir);
+            return register(engine, dir);
           })
           .finally(() => opening.delete(dir));
         opening.set(dir, pending);
@@ -379,17 +374,49 @@ export function makeProjectRegistry(
     };
 
     /**
-     * The project open here at `old.dir` was moved to `dir` (review #32): its old folder is gone,
-     * so its lease is lost and `engine` (opened while the old one held it) only reads. The
-     * index records `dir` first (a call in between waits for this open), the old engine closes
-     * after its in-flight calls (streams go on: same project, same history) and the project
-     * reopens at `dir`, writable.
+     * The project `dir` holds, when it is open here at another folder it was moved from (review
+     * #32), taken on at `dir`; `undefined` otherwise. Decided before any engine opens at `dir`:
+     * a second engine of the project, open while the first lets go, would take its lease. One
+     * relocation per project at a time: another path to the new folder joins it.
      */
-    const relocated = async (old: OpenProject, engine: Engine, dir: string, relocate: boolean): Promise<OpenProject> => {
-      await engine.close().catch(() => undefined);
-      index.touch(old.engine.projectId, dir);
+    const relocation = async (dir: string, relocate: boolean, expected: string | undefined): Promise<OpenProject | undefined> => {
+      const id = await projectIdIn(dir);
+      if (id === undefined || (expected !== undefined && id !== expected)) return undefined;
+      const old = byId.get(id);
+      if (relocating.has(id) || old === undefined) return relocating.get(id);
+      if (!(await movedFrom(old.dir, dir, id))) return relocating.get(id);
+      if (relocating.has(id) || byId.get(id) !== old) return relocating.get(id);
+      const next = relocated(old, dir, relocate).finally(() => relocating.delete(id));
+      relocating.set(id, next);
+      return next;
+    };
+
+    /**
+     * The old folder's engine has lost its lease (its check reads the old path). The index
+     * records `dir` first (a call in between waits for this open), the old engine closes after
+     * its in-flight calls (streams go on: same project, same history) and the project reopens
+     * at `dir`, writable. A reopen that
+     * fails ends the streams (`ENGINE_CLOSED {reason: closed}`) and leaves the project closed
+     * here, at `dir`: the next call reopens it.
+     */
+    const relocated = async (old: OpenProject, dir: string, relocate: boolean): Promise<OpenProject> => {
+      const id = old.engine.projectId;
+      index.touch(id, dir);
+      for (const [folder, made] of created) if (made.projectId === id) created.delete(folder);
       await Effect.runPromise(old.commitLock.withPermits(1)(Effect.promise(() => forget(old, "moved").catch(() => undefined))));
-      return register(await Engine.open(serverData, dir, { relocate, expectId: old.engine.projectId }), dir);
+      // An eviction that raced this one closes without the lock: its lease must be let go too.
+      await (closingDirs.get(old.dir) ?? Promise.resolve());
+      try {
+        if (closed) throw shuttingDown();
+        return register(await Engine.open(serverData, dir, { relocate, expectId: id }), dir);
+      } catch (e) {
+        if (!closed && !byId.has(id)) {
+          closedHere.set(id, dir);
+          hubs.endAll(id, 0, () => engineEvicted(id, "closed"));
+          hubs.endEvents(id, engineEvicted(id, "closed"));
+        }
+        throw e;
+      }
     };
 
     const ref = (p: OpenProject): Effect.Effect<ProjectRef, FinError> =>

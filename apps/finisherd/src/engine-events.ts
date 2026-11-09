@@ -1,5 +1,5 @@
 // Routing one engine event (`Engine.onEvent`) to the registry's hubs (`projects.ts`).
-import type { EngineEvent } from "@finisher/contracts";
+import type { EngineEvent, ProjectEvent } from "@finisher/contracts";
 import type { Hubs } from "./hubs.ts";
 import { historyRewound } from "./op-stream.ts";
 import type { OpenProject } from "./open-project.ts";
@@ -19,7 +19,7 @@ export function routeEngineEvent(hubs: Hubs, p: OpenProject, json: string, seq: 
   } catch {
     return;
   }
-  const publish = (event: Parameters<Hubs["publishEvent"]>[1]["event"]) => hubs.publishEvent(id, { event, source: p.epoch, seq });
+  const publish = (event: ProjectEvent) => hubs.publishEvent(id, { event, source: p.epoch, seq });
   switch (e.type) {
     case "applied":
       hubs.publishTx(id, e.tx);

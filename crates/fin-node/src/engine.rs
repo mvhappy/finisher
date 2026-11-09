@@ -329,7 +329,7 @@ impl Engine {
     }
 
     /// Resolves to `{"status": ProjectStatus, "seq": n}`: every event numbered up to `n` was
-    /// emitted before this status was read (its changes are in it), every later one after.
+    /// emitted before this status was read (its changes are in it); no later one is older.
     #[napi(catch_unwind)]
     pub fn status_at(&self) -> AsyncTask<StoreTask> {
         self.task(Call::Status { at: true })
