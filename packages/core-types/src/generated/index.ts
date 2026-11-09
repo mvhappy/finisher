@@ -1568,6 +1568,14 @@ export type FileState =
       state: "failed";
     };
 /**
+ * A decoded picture's memory layout.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "PixelFormat".
+ */
+export type PixelFormat =
+  ("rgba8" | "rgba16f") | "nv12" | "p010" | "i420" | "i420p10" | "i422" | "i422p10" | "i444" | "i444p10";
+/**
  * The item kinds, as they appear in plans.
  *
  * This interface was referenced by `FinCore`'s JSON-Schema
@@ -1591,6 +1599,13 @@ export type FsAccess = "read" | "readWrite";
  * via the `definition` "FsScope".
  */
 export type FsScope = "pluginData";
+/**
+ * Where [`ProbeDeepResult::hdr`] came from.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "HdrSource".
+ */
+export type HdrSource = "container" | "sei";
 /**
  * A helper's kind.
  *
@@ -5306,6 +5321,17 @@ export interface Filter {
   until?: number;
 }
 /**
+ * The first decoded picture.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "FirstFrame".
+ */
+export interface FirstFrame {
+  format: PixelFormat;
+  height: number;
+  width: number;
+}
+/**
  * This interface was referenced by `FinCore`'s JSON-Schema
  * via the `definition` "FontCatalog".
  */
@@ -7407,6 +7433,91 @@ export interface PrivacySettings {
   training?: Switch | null;
 }
 /**
+ * `media.probeDeep` v1: probe `asset`, whose content is `fingerprint`.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "ProbeDeepParams".
+ */
+export interface ProbeDeepParams {
+  asset: string;
+  /**
+   * The branch whose head names the asset (`main` when absent). Host only.
+   */
+  branch?: string | null;
+  capsDigest?: string | null;
+  display?: Size3;
+  /**
+   * The asset's fingerprint as the submitter saw it. The manifest's must equal it, else the
+   * job fails `ASSET_CHANGED` (the model changed between the request and the run).
+   */
+  fingerprint: string;
+  /**
+   * The project the asset is in. Only the host reads it (`prepare` writes the manifest
+   * from it); the worker works from the job directory.
+   */
+  projectId?: string | null;
+  /**
+   * The worker's `RENDER_VERSION` and a digest of its capability report, which with the
+   * fingerprint make the job's identity (`dedupe`): another decoder set probes again.
+   * Host only.
+   */
+  renderVersion?: number | null;
+}
+/**
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "Size".
+ */
+export interface Size3 {
+  height: number;
+  width: number;
+}
+/**
+ * What `media.probeDeep` v1 answers. `backend`, `class`, `hw` and `firstFrame` are present
+ * exactly when `decodable`; otherwise `failure` says why.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "ProbeDeepResult".
+ */
+export interface ProbeDeepResult {
+  asset: string;
+  /**
+   * The decoder's backend (`dav1d`, `videotoolbox`, …), a `fin_media::backend::BACKENDS`
+   * name.
+   */
+  backend?: string;
+  class?: VendorClass;
+  /**
+   * The video track's codec.
+   */
+  codec: ("av1" | "h264" | "hevc" | "vp9" | "vp8" | "proRes") | "other";
+  /**
+   * The first frame decoded.
+   */
+  decodable: boolean;
+  failure?: ProbeFailure;
+  fingerprint: string;
+  firstFrame?: FirstFrame;
+  hdr?: HdrInfo;
+  hdrSource?: HdrSource;
+  /**
+   * The frame was decoded on hardware.
+   */
+  hw?: boolean;
+}
+/**
+ * Why the first frame did not decode: the decoder's error code and message (a codec nothing
+ * on this machine decodes is `CODEC_UNAVAILABLE`; a bitstream the decoder refused is
+ * `DECODE_FAILED` or `MEDIA_CORRUPT`).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "ProbeFailure".
+ */
+export interface ProbeFailure {
+  code: string;
+  details?: unknown;
+  message: string;
+}
+/**
  * `project.snapshot`: one page of the call's project and branch at the job's pinned `rev`,
  * as canonical JSON (page 0 when absent).
  *
@@ -7799,14 +7910,6 @@ export interface SetAside {
   origin: string;
   reason: string;
   txId: string;
-}
-/**
- * This interface was referenced by `FinCore`'s JSON-Schema
- * via the `definition` "Size".
- */
-export interface Size3 {
-  height: number;
-  width: number;
 }
 /**
  * An asset and the time to read from it, in seconds.

@@ -1,11 +1,4 @@
-import type {
-  CommittedTx,
-  EngineEvent,
-  Probe,
-  Project,
-  Tx,
-  TxSetAside,
-} from "@finisher/core-types";
+import type { CommittedTx, EngineEvent, Probe, Project, Tx, TxSetAside } from "@finisher/core-types";
 import { Schema } from "effect";
 import { Rpc, RpcGroup } from "effect/rpc";
 import { TxSetAsideSchema } from "./tx-set-aside.ts";
@@ -23,6 +16,8 @@ import {
   MediaCapabilitiesSuccess,
   MediaLookPayload,
   MediaLookSuccess,
+  MediaProbeDeepPayload,
+  MediaProbeDeepSuccess,
 } from "./media.ts";
 import {
   AgentApprovalAnswerPayload,
@@ -513,6 +508,8 @@ export const FinRpcs = RpcGroup.make(
   /** Plan 6A Task 13: looks at a timeline, and what this machine's media worker can do. */
   Rpc.make("media.look", { payload: MediaLookPayload, success: MediaLookSuccess, error: FinError }),
   Rpc.make("media.capabilities", { payload: Schema.Struct({}), success: MediaCapabilitiesSuccess, error: FinError }),
+  /** Plan 6B-1 Task 11: the decode-level probe of one asset (commits nothing). */
+  Rpc.make("media.probeDeep", { payload: MediaProbeDeepPayload, success: MediaProbeDeepSuccess, error: FinError }),
   // 5C-2: the job engine (spec §6.7). Others' jobs and jobs out of reach are `JOB_NOT_FOUND`.
   Rpc.make("jobs.submit", { payload: JobsSubmitPayload, success: JobViewSchema, error: FinError }),
   Rpc.make("jobs.get", { payload: JobIdPayload, success: JobViewSchema, error: FinError }),

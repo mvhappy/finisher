@@ -49,7 +49,10 @@ fn hello_lists_the_media_kinds() {
         (Role::Worker, "media", false)
     );
     let kinds: Vec<&str> = h.kinds.iter().map(|k| k.kind.as_ref()).collect();
-    assert_eq!(kinds, ["media.look", "media.capabilities"]);
+    assert_eq!(
+        kinds,
+        ["media.look", "media.capabilities", "media.probeDeep"]
+    );
     assert!(WORKER_FAMILIES.get("media").is_some());
     for k in &h.kinds {
         assert!(

@@ -47,6 +47,19 @@ export const MediaLookPayload = Schema.Struct({
 export const MediaLookSuccess = Schema.Unknown;
 /** The generated `MediaCapabilities`: `{codecs, gpu, worker}`. */
 export const MediaCapabilitiesSuccess = Schema.Unknown;
+/**
+ * Plan 6B-1 Task 11: the decode-level probe of one `media` asset by a `media.probeDeep` job:
+ * the first frame decoded with the decoder this machine picks, and in-band HDR SEI read when
+ * the container has no HDR boxes. `branch` defaults to `main`. Waits for the job (up to 120 s)
+ * and commits nothing.
+ */
+export const MediaProbeDeepPayload = Schema.Struct({
+  projectId: Schema.String,
+  asset: Schema.String,
+  branch: Schema.optional(Schema.String),
+});
+/** The generated `ProbeDeepResult`: `{asset, fingerprint, codec, decodable, backend?, class?, hw?, hdr?, hdrSource?, firstFrame?, failure?}`. */
+export const MediaProbeDeepSuccess = Schema.Unknown;
 /** fin-core's `FramePlan` / `AudioPlan` (the generated types). */
 export const FramePlanSchema = Schema.Unknown;
 export const AudioPlanSchema = Schema.Unknown;

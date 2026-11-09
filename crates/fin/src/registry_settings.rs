@@ -174,6 +174,14 @@ pub const SETTINGS_COMMANDS: &[Command] = &[
         || schema_of::<project::NoArgs>("media.caps"),
     ),
     cmd(
+        "media.probe",
+        "media",
+        "<asset>",
+        "decode an asset's first frame: backend, class, in-band HDR (server only; commits nothing)",
+        false,
+        || schema_of::<crate::commands::media_probe::ProbeArgs>("media.probe"),
+    ),
+    cmd(
         "fonts.ls",
         "fonts",
         "[--catalog|--cached|--pinned] [--detail]",

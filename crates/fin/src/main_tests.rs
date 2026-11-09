@@ -87,6 +87,7 @@ fn every_registry_command_parses() {
         "eval frame --at 2s",
         "eval audio --range 0..2s",
         "media caps",
+        "media probe a1",
         "fonts ls --cached --detail",
         "fonts fetch noto-sans",
         "fonts status",

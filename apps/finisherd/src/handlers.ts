@@ -39,6 +39,7 @@ import { JobEngineTag } from "./jobs/layer.ts";
 import { chainJobs, jobHandlers } from "./jobs/rpc.ts";
 import { mediaCapabilities } from "./media/caps.ts";
 import { look as mediaLook } from "./media/look.ts";
+import { probeDeep } from "./media/probe-deep.ts";
 import { requireAbsolute, requireAbsoluteOpt } from "./paths.ts";
 import { metaJson } from "./history.ts";
 import { LibraryServiceTag } from "./library/layer.ts";
@@ -399,6 +400,7 @@ export const HandlersLive = FinRpcs.toLayer(
         guard("eval.audio", registry.evalAudio(projectId, branch ?? "main", timeline, from, to)),
       "media.look": (req, options) => guard("media.look", mediaLook(mediaDeps, ownerOf(options), req)),
       "media.capabilities": (_, options) => guard("media.capabilities", capabilitiesOf(ownerOf(options))),
+      "media.probeDeep": (req, options) => guard("media.probeDeep", probeDeep({ ...mediaDeps, capabilities: capabilitiesOf }, ownerOf(options), req)),
       "fonts.catalog": () => guard("fonts.catalog", fonts.catalog()),
       "fonts.status": () => guard("fonts.status", fonts.status()),
       // `pinned` needs the project open (its pins are the engine's): opened on demand.

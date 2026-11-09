@@ -170,6 +170,10 @@ export class Engine {
     return call(this.#native.prepareMediaJob(branch, timeline, at, inputDir, options ?? null));
   }
 
+  prepareAssetJob(branch, asset, inputDir) {
+    return call(this.#native.prepareAssetJob(branch, asset, inputDir));
+  }
+
   setCollect(collect, metaJson) {
     return call(this.#native.setCollect(collect, metaJson));
   }
@@ -528,73 +532,34 @@ export function validateManifest(dir, source) {
   return call(native.validateManifest(dir, source ?? null));
 }
 
+/** A native test hook whose errors are `FinError`s. */
+const typedHook = (f) => (...args) => {
+  try {
+    return f(...args);
+  } catch (e) {
+    throw toFinError(e);
+  }
+};
+
 /** @internal Present only in binaries built with the `test-hooks` feature (`build:test`). */
 export const testHooks = native.writeFixtureMp4ForTest
   ? {
-      testFont(name) {
-        try {
-          return native.testFontForTest(name);
-        } catch (e) {
-          throw toFinError(e);
-        }
-      },
-      measure(serverData, requestJson) {
-        try {
-          return native.measureForTest(serverData, requestJson);
-        } catch (e) {
-          throw toFinError(e);
-        }
-      },
-      writeFixtureMp4(path, { seconds = 2, fps = 25, audio = true, sampleRate = 48000 } = {}) {
-        try {
-          native.writeFixtureMp4ForTest(path, seconds, fps, audio, sampleRate);
-        } catch (e) {
-          throw toFinError(e);
-        }
-      },
-      writeFixture(kind, path) {
-        try {
-          native.writeFixtureForTest(kind, path);
-        } catch (e) {
-          throw toFinError(e);
-        }
-      },
-      heldPaths(pid) {
-        try {
-          return native.heldPathsForTest(pid);
-        } catch (e) {
-          throw toFinError(e);
-        }
-      },
+      testFont: typedHook((name) => native.testFontForTest(name)),
+      measure: typedHook((serverData, requestJson) => native.measureForTest(serverData, requestJson)),
+      writeFixtureMp4: typedHook((path, { seconds = 2, fps = 25, audio = true, sampleRate = 48000 } = {}) => {
+        native.writeFixtureMp4ForTest(path, seconds, fps, audio, sampleRate);
+      }),
+      writeFixture: typedHook((kind, path) => {
+        native.writeFixtureForTest(kind, path);
+      }),
+      heldPaths: typedHook((pid) => native.heldPathsForTest(pid)),
       libraryProbeHang: (root, hang) => native.libraryProbeHangForTest(root, hang),
       libraryProbeStarted: (root) => native.libraryProbeStartedForTest(root),
-      packPlugin(src, out) {
-        try {
-          return native.packPluginForTest(src, out);
-        } catch (e) {
-          throw toFinError(e);
-        }
-      },
-      buildRegistry(dir, keysDir, specJson) {
-        try {
-          return native.buildRegistryForTest(dir, keysDir, specJson);
-        } catch (e) {
-          throw toFinError(e);
-        }
-      },
-      treeHash(dir) {
-        try {
-          return native.treeHashForTest(dir);
-        } catch (e) {
-          throw toFinError(e);
-        }
-      },
-      publishToRegistry(dir, keysDir, specJson) {
-        try {
-          native.publishToRegistryForTest(dir, keysDir, specJson);
-        } catch (e) {
-          throw toFinError(e);
-        }
-      },
+      packPlugin: typedHook((src, out) => native.packPluginForTest(src, out)),
+      buildRegistry: typedHook((dir, keysDir, specJson) => native.buildRegistryForTest(dir, keysDir, specJson)),
+      treeHash: typedHook((dir) => native.treeHashForTest(dir)),
+      publishToRegistry: typedHook((dir, keysDir, specJson) => {
+        native.publishToRegistryForTest(dir, keysDir, specJson);
+      }),
     }
   : undefined;

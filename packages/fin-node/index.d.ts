@@ -162,6 +162,15 @@ export declare class Engine {
     inputDir: string,
     options?: PrepareMediaOptions | null,
   ): Promise<string>;
+  /**
+   * Prepares a job about one asset (plan 6B-1 Task 11: `media.probeDeep`): writes
+   * `manifest.json` (`RenderManifest` naming only `asset` of `branch`'s head, `original: null`
+   * when its file is missing) into `inputDir` (the job's existing `in/`). Resolves to
+   * `{ rev, fingerprint, sources }` as JSON: the rev read, the asset's fingerprint there and the
+   * original's path (none when missing). Rejects `ASSET_NOT_FOUND`, and `ASSET_TYPE_UNSUPPORTED`
+   * for an asset that is not `media`.
+   */
+  prepareAssetJob(branch: string, asset: string, inputDir: string): Promise<string>;
   /** Resolves to the `AudioPlan` JSON of `timeline` on `branch` over `[from, to)`. */
   evalAudio(branch: string, timeline: string | null | undefined, from: string, to: string): Promise<string>;
   /**

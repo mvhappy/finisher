@@ -4735,6 +4735,31 @@
         }
       ]
     },
+    "FirstFrame": {
+      "additionalProperties": false,
+      "description": "The first decoded picture.",
+      "properties": {
+        "format": {
+          "$ref": "#/$defs/PixelFormat"
+        },
+        "height": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "width": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "width",
+        "height",
+        "format"
+      ],
+      "type": "object"
+    },
     "FontCatalog": {
       "additionalProperties": false,
       "properties": {
@@ -5532,6 +5557,21 @@
         }
       },
       "type": "object"
+    },
+    "HdrSource": {
+      "description": "Where [`ProbeDeepResult::hdr`] came from.",
+      "oneOf": [
+        {
+          "const": "container",
+          "description": "The sample entry's `mdcv`/`clli`/`dvcC` boxes.",
+          "type": "string"
+        },
+        {
+          "const": "sei",
+          "description": "H.264/HEVC SEI in the first sample (no `mdcv`/`clli` box).",
+          "type": "string"
+        }
+      ]
     },
     "Header": {
       "additionalProperties": false,
@@ -11865,6 +11905,58 @@
       ],
       "type": "object"
     },
+    "PixelFormat": {
+      "description": "A decoded picture's memory layout.",
+      "oneOf": [
+        {
+          "enum": [
+            "rgba8",
+            "rgba16f"
+          ],
+          "type": "string"
+        },
+        {
+          "const": "nv12",
+          "description": "8-bit 4:2:0, Y plane then interleaved UV.",
+          "type": "string"
+        },
+        {
+          "const": "p010",
+          "description": "10-bit 4:2:0 in 16-bit words (high bits), Y then interleaved UV.",
+          "type": "string"
+        },
+        {
+          "const": "i420",
+          "description": "8-bit 4:2:0, three planes.",
+          "type": "string"
+        },
+        {
+          "const": "i420p10",
+          "description": "10-bit 4:2:0, three planes of 16-bit words (low bits).",
+          "type": "string"
+        },
+        {
+          "const": "i422",
+          "description": "8-bit 4:2:2, three planes.",
+          "type": "string"
+        },
+        {
+          "const": "i422p10",
+          "description": "10-bit 4:2:2, three planes of 16-bit words (low bits).",
+          "type": "string"
+        },
+        {
+          "const": "i444",
+          "description": "8-bit 4:4:4, three planes.",
+          "type": "string"
+        },
+        {
+          "const": "i444p10",
+          "description": "10-bit 4:4:4, three planes of 16-bit words (low bits).",
+          "type": "string"
+        }
+      ]
+    },
     "Placeholder": {
       "description": "A cloud placeholder (Decision 12): catalogued from metadata only, never opened unless the\nlibrary has `hydrate`.",
       "oneOf": [
@@ -12777,6 +12869,124 @@
         "kind",
         "fingerprint",
         "size"
+      ],
+      "type": "object"
+    },
+    "ProbeDeepParams": {
+      "additionalProperties": false,
+      "description": "`media.probeDeep` v1: probe `asset`, whose content is `fingerprint`.",
+      "properties": {
+        "asset": {
+          "type": "string"
+        },
+        "branch": {
+          "description": "The branch whose head names the asset (`main` when absent). Host only.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "capsDigest": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "display": {
+          "$ref": "#/$defs/Size"
+        },
+        "fingerprint": {
+          "description": "The asset's fingerprint as the submitter saw it. The manifest's must equal it, else the\njob fails `ASSET_CHANGED` (the model changed between the request and the run).",
+          "type": "string"
+        },
+        "projectId": {
+          "description": "The project the asset is in. Only the host reads it (`prepare` writes the manifest\nfrom it); the worker works from the job directory.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "renderVersion": {
+          "description": "The worker's `RENDER_VERSION` and a digest of its capability report, which with the\nfingerprint make the job's identity (`dedupe`): another decoder set probes again.\nHost only.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "asset",
+        "fingerprint"
+      ],
+      "type": "object"
+    },
+    "ProbeDeepResult": {
+      "additionalProperties": false,
+      "description": "What `media.probeDeep` v1 answers. `backend`, `class`, `hw` and `firstFrame` are present\nexactly when `decodable`; otherwise `failure` says why.",
+      "properties": {
+        "asset": {
+          "type": "string"
+        },
+        "backend": {
+          "description": "The decoder's backend (`dav1d`, `videotoolbox`, …), a `fin_media::backend::BACKENDS`\nname.",
+          "type": "string"
+        },
+        "class": {
+          "$ref": "#/$defs/VendorClass"
+        },
+        "codec": {
+          "$ref": "#/$defs/VideoCodec",
+          "description": "The video track's codec."
+        },
+        "decodable": {
+          "description": "The first frame decoded.",
+          "type": "boolean"
+        },
+        "failure": {
+          "$ref": "#/$defs/ProbeFailure"
+        },
+        "fingerprint": {
+          "type": "string"
+        },
+        "firstFrame": {
+          "$ref": "#/$defs/FirstFrame"
+        },
+        "hdr": {
+          "$ref": "#/$defs/HdrInfo"
+        },
+        "hdrSource": {
+          "$ref": "#/$defs/HdrSource"
+        },
+        "hw": {
+          "description": "The frame was decoded on hardware.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "asset",
+        "fingerprint",
+        "codec",
+        "decodable"
+      ],
+      "type": "object"
+    },
+    "ProbeFailure": {
+      "additionalProperties": false,
+      "description": "Why the first frame did not decode: the decoder's error code and message (a codec nothing\non this machine decodes is `CODEC_UNAVAILABLE`; a bitstream the decoder refused is\n`DECODE_FAILED` or `MEDIA_CORRUPT`).",
+      "properties": {
+        "code": {
+          "type": "string"
+        },
+        "details": true,
+        "message": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "code",
+        "message"
       ],
       "type": "object"
     },

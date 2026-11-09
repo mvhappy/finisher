@@ -1,7 +1,7 @@
-//! `fin look` and `fin media caps` against a real finisherd and its `fin-workers media` (plan
+//! `fin look`, `fin media caps` and `fin media probe` against a real finisherd and its `fin-workers media` (plan
 //! 6A Task 13): three times of a project rendered to PNGs, what a frame left out in `skipped`
 //! (the fixture clip is H.264, which 6A cannot decode), the error exits, `--no-wait`, and the
-//! worker's capabilities. Rendering needs a GPU adapter: `FIN_GPU=software` (lavapipe, WARP)
+//! worker's capabilities, and the decode-level probe of an asset (6B-1 Task 11). Rendering needs a GPU adapter: `FIN_GPU=software` (lavapipe, WARP)
 //! is set for the server; a machine with none skips the rendering checks unless
 //! `FIN_REQUIRE_GPU=1`.
 
@@ -145,11 +145,57 @@ fn media_caps_reports_codecs_gpu_and_versions() {
 }
 
 #[test]
+fn media_probe_reports_the_decoder_and_commits_nothing() {
+    let Some(server) = Server::start_with("media_probe", Vec::new(), None) else {
+        return;
+    };
+    let (sd, root) = (&server.sd, &server.root);
+    ok(fin(
+        sd,
+        root,
+        &["project", "create", "film", "--name", "Film"],
+    ));
+    let dir = root.join("film");
+    media(&dir.join("clip.mp4"), 1);
+    ok(fin(sd, &dir, &["asset", "add", "clip.mp4"]));
+    let rev = ok(fin(sd, &dir, &["status"]))["rev"].clone();
+
+    let doc = ok(fin(sd, &dir, &["media", "probe", "a1"]));
+    assert_eq!(
+        (&doc["asset"], &doc["codec"]),
+        (&json!("a1"), &json!("h264"))
+    );
+    assert!(doc["fingerprint"].is_string(), "{doc}");
+    if doc["decodable"] == true {
+        // An OS decoder took it (macOS, Windows): it says which and of what class.
+        assert!(
+            doc["backend"].is_string() && doc["class"].is_string(),
+            "{doc}"
+        );
+        assert!(doc["firstFrame"]["width"].is_number(), "{doc}");
+    } else {
+        // No H.264 decoder here (Linux until 6B-2): an answer, not an error.
+        assert_eq!(doc["failure"]["code"], "CODEC_UNAVAILABLE", "{doc}");
+        assert!(doc.get("backend").is_none(), "{doc}");
+    }
+    // Nothing was committed.
+    assert_eq!(ok(fin(sd, &dir, &["status"]))["rev"], rev);
+
+    assert_error(
+        &fin(sd, &dir, &["media", "probe", "a9"]),
+        3,
+        "ASSET_NOT_FOUND",
+    );
+}
+
+#[test]
 fn look_and_caps_are_unavailable_offline() {
     let snapshot = json!({ "rev": 1, "project": fin_core::new_project("p".into(), "P".into(), "30".parse().unwrap()).unwrap() });
     let r = support::offline(&snapshot, &["look", "--at", "0"]);
     assert_error(&r, 5, "SERVER_UNAVAILABLE");
     let r = support::offline(&snapshot, &["media", "caps"]);
+    assert_error(&r, 5, "SERVER_UNAVAILABLE");
+    let r = support::offline(&snapshot, &["media", "probe", "a1"]);
     assert_error(&r, 5, "SERVER_UNAVAILABLE");
 }
 

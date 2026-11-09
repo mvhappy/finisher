@@ -87,6 +87,9 @@ pub(super) const VALIDATION_CODES: &[&str] = &[
     "UNSUPPORTED_TRANSFORM",
     "MEDIA_CORRUPT",
     "MEDIA_LIMIT",
+    // An asset's content changed between a request and the job that serves it (6B-1 Task 11:
+    // `media.probeDeep`'s fingerprint check).
+    "ASSET_CHANGED",
     // A look's or export's destination is not writable or lies inside `.finisher/` or
     // `assets/` (spec §17): the request names it.
     "EXPORT_DESTINATION",

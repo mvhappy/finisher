@@ -80,6 +80,8 @@ fn main() {
         g.subschema_for::<fin_media::jobs::MediaCapabilities>();
         g.subschema_for::<fin_media::jobs::JobSnapshot>();
         g.subschema_for::<fin_media::jobs::RenderManifest>();
+        g.subschema_for::<fin_media::jobs::ProbeDeepParams>();
+        g.subschema_for::<fin_media::jobs::ProbeDeepResult>();
         g.subschema_for::<fin_library::RawRel>();
         g.subschema_for::<fin_library::Expect>();
         g.subschema_for::<fin_library::ScanEntry>();
