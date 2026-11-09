@@ -47,6 +47,9 @@ pub enum HdrSource {
     Container,
     /// H.264/HEVC SEI in the first sample (no `mdcv`/`clli` box).
     Sei,
+    /// Both, field by field: the boxes' fields, and from SEI the mastering display or content
+    /// light level the boxes lack (a `dvcC` without `mdcv`/`clli`, or `mdcv` without `clli`).
+    ContainerAndSei,
 }
 
 /// The first decoded picture.
@@ -106,4 +109,31 @@ pub struct ProbeDeepResult {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(with = "ProbeFailure")]
     pub failure: Option<ProbeFailure>,
+}
+
+/// The boxes' HDR metadata, with the mastering display and content light level they lack taken
+/// from SEI (read only when one is missing), field by field, and where the result came from.
+pub fn merge_hdr(
+    boxes: Option<HdrInfo>,
+    sei: impl FnOnce() -> Option<HdrInfo>,
+) -> (Option<HdrInfo>, Option<HdrSource>) {
+    let boxes = boxes.filter(|h| !h.is_empty());
+    let complete = boxes.is_some_and(|h| h.mastering.is_some() && h.content_light.is_some());
+    let sei = if complete { None } else { sei() };
+    let Some(sei) = sei.filter(|h| h.mastering.is_some() || h.content_light.is_some()) else {
+        return (boxes, boxes.map(|_| HdrSource::Container));
+    };
+    let Some(mut out) = boxes else {
+        return (Some(sei), Some(HdrSource::Sei));
+    };
+    let filled = (out.mastering.is_none() && sei.mastering.is_some())
+        || (out.content_light.is_none() && sei.content_light.is_some());
+    out.mastering = out.mastering.or(sei.mastering);
+    out.content_light = out.content_light.or(sei.content_light);
+    let source = if filled {
+        HdrSource::ContainerAndSei
+    } else {
+        HdrSource::Container
+    };
+    (Some(out), Some(source))
 }

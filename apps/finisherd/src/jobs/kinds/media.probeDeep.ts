@@ -5,9 +5,9 @@
 // - `prepare` writes `in/manifest.json` naming only the asset (`Engine.prepareAssetJob`) and
 //   fails `ASSET_CHANGED` when the asset's fingerprint at the branch head is no longer the one
 //   the job was submitted for; the original is granted to the worker per file (7C Task 7).
-// - Identity (`dedupe`): the fingerprint, the worker's `RENDER_VERSION` and a digest of its
-//   capability report, so the same content on the same decoders is probed once at a time and a
-//   new decoder set probes again. Without the two host fields the job does not coalesce.
+// - Identity (`dedupe`): the project, the asset, its fingerprint, the worker's `RENDER_VERSION`
+//   and a digest of its capability report, so one asset on the same decoders is probed once at a
+//   time and a new decoder set probes again. Without the host fields the job does not coalesce.
 // - Memory: the batch media rule of `media/memory.ts` (Decision 18) by the source's size.
 import { realpath } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
@@ -40,10 +40,15 @@ interface AssetJobPrepared {
 const invalid = (field: string, why: string): FinError =>
   finError("JOB_PARAMS_INVALID", `params.${field}: ${why}`, { field }, "submit a media.probeDeep through the media.probeDeep RPC");
 
-/** `[fingerprint, renderVersion, capsDigest]`, or `undefined` (no coalescing) without the host's two fields. */
+/**
+ * `[projectId, asset, fingerprint, renderVersion, capsDigest]`, or `undefined` (no coalescing)
+ * without the host's fields. The project and asset are in the key because the result names its
+ * asset and `prepare` reads that project's manifest: one file under two assets (or projects)
+ * shares a fingerprint but not an answer.
+ */
 export function probeDeepDedupe(p: ProbeDeepParams): string | undefined {
-  if (p.renderVersion == null || p.capsDigest == null) return undefined;
-  return JSON.stringify([MEDIA_PROBE_DEEP, p.fingerprint, p.renderVersion, p.capsDigest]);
+  if (p.projectId == null || p.renderVersion == null || p.capsDigest == null) return undefined;
+  return JSON.stringify([MEDIA_PROBE_DEEP, p.projectId, p.asset, p.fingerprint, p.renderVersion, p.capsDigest]);
 }
 
 /** The original's path, resolved (a missing one is left out: the worker reports it missing). */

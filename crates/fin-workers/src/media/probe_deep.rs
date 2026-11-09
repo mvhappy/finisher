@@ -23,8 +23,7 @@ use fin_jobs::worker::JobCtx;
 use fin_jobs::{JobError, StartJob};
 use fin_media::backend::backend;
 use fin_media::jobs::{
-    FirstFrame, HdrSource, MANIFEST_VERSION, ProbeDeepParams, ProbeDeepResult, ProbeFailure,
-    RenderManifest,
+    FirstFrame, MANIFEST_VERSION, ProbeDeepParams, ProbeDeepResult, ProbeFailure, RenderManifest,
 };
 use serde_json::{Value, json};
 
@@ -98,13 +97,11 @@ pub fn run(job: &StartJob, ctx: &mut JobCtx<'_>, warm: &mut Warm) -> Result<Valu
                 .with_details(json!({ "kind": "videoTrack", "asset": p.asset })),
         )
     })?;
-    let (hdr, hdr_source) = match info.hdr {
-        Some(h) if !h.is_empty() => (Some(h), Some(HdrSource::Container)),
-        _ => match fin_container::demux::in_band_hdr(&mut demux).map_err(job_error)? {
-            Some(h) => (Some(h), Some(HdrSource::Sei)),
-            None => (None, None),
-        },
-    };
+    // In-band SEI fills what the boxes lack; a sample that cannot be read is no SEI (damaged
+    // metadata is no reason to fail a probe; the decode below reports the sample itself).
+    let (hdr, hdr_source) = fin_media::jobs::merge_hdr(info.hdr, || {
+        fin_container::demux::in_band_hdr(&mut demux).ok().flatten()
+    });
     drop(demux);
     if ctx.cancelled().is_some() {
         return Err(JobError::cancelled());
