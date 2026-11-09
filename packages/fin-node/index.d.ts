@@ -96,6 +96,12 @@ export declare class Engine {
   branchSet(reqJson: string, metaJson?: string): Promise<string>;
   /** Resolves to the JSON string of the id a branch reference (id, name, `<name>#<id>`) names. */
   resolveBranch(name: string): Promise<string>;
+  /**
+   * What a merge of `from` into `into` would do at their heads now: `{from, into}` JSON (branch
+   * references); resolves to the `ReviewPlan` JSON (one entry per source record, oldest first,
+   * at most 10,000: `truncated`). A read: writes nothing, works on a follower (plan 5E Decision 7).
+   */
+  reviewPlan(reqJson: string): Promise<string>;
   /** `HistoryReq` JSON (`to`: undo back to a checkpoint); resolves to the `HistoryResult` JSON. */
   undo(reqJson: string, metaJson?: string): Promise<string>;
   /** `HistoryReq` JSON; resolves to the `HistoryResult` JSON. */

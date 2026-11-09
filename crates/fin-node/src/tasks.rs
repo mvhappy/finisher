@@ -87,6 +87,9 @@ pub(crate) enum Call {
         req_json: String,
         meta_json: Option<String>,
     },
+    ReviewPlan {
+        req_json: String,
+    },
     // Evaluation and pin planning (`crate::eval`).
     EvalFrame {
         branch: String,
@@ -372,7 +375,8 @@ fn run(store: &Shared, call: Call) -> Result<Reply> {
         | Call::Merge { .. }
         | Call::CherryPick { .. }
         | Call::Revert { .. }
-        | Call::Drop { .. }) => crate::history::run(store, call),
+        | Call::Drop { .. }
+        | Call::ReviewPlan { .. }) => crate::history::run(store, call),
         call @ (Call::EvalFrame { .. } | Call::EvalAudio { .. } | Call::FontsPlan { .. }) => {
             crate::eval::run(store, call)
         }

@@ -240,7 +240,7 @@ pub const COMMANDS: &[Command] = &[
     Command {
         name: "merge",
         group: "history",
-        args: "<branch> [--into <b>] [--skip-conflicting]",
+        args: "<branch> [--into <b>] [--skip-conflicting] [--include <txId>…] [--up-to <seq>]",
         summary: "merge a branch (CONFLICT lists conflicts)",
         write: true,
         schema: || schema_of::<history::MergeArgs>("merge"),

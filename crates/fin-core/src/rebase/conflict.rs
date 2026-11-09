@@ -27,6 +27,9 @@ pub mod reasons {
     /// Not a conflict: a merge leaves the record out because its origin root is dropped for
     /// the target (a `drop` record, sub-project 5 spec §8.3).
     pub const DROPPED: &str = "DROPPED";
+    /// Not a conflict: a limited merge leaves the record out because its origin root is not
+    /// in `include`, or it is on the source branch above `sourceUpTo` (spec §8.4).
+    pub const NOT_INCLUDED: &str = "NOT_INCLUDED";
     /// `undo --to`: a redo unit stands for units made on both sides of the checkpoint, so
     /// neither undoing it nor keeping it gives the checkpoint's state.
     pub const STRADDLES_CHECKPOINT: &str = "STRADDLES_CHECKPOINT";

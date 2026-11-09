@@ -1,7 +1,8 @@
 //! Merge through the store (plan 4B Task 13): `merge` records appended in one transaction,
 //! conflicts listed in full, `--skip-conflicting`, retries and re-merges, crashes, dry runs on
 //! a follower, merging both ways, undoing a merge unit, and followers applying a merge, a
-//! prefix of it first.
+//! prefix of it first; merges limited by `include` and `sourceUpTo`, and the review plan
+//! (plan 5E Task 3).
 
 mod integration_support;
 
@@ -9,11 +10,14 @@ use std::fs;
 use std::path::PathBuf;
 
 use fin_core::branch::BranchState;
+use fin_core::history::EntryStatus;
 use fin_core::{
     CommittedTx, CoreError, Edge, Link, Op, Project, Rational, SCHEMA_VERSION, Tx, VideoInfo,
     apply_committed,
 };
-use fin_store::{BranchCreate, HistoryReq, MAIN, MergeReport, MergeReq, Store, StoreError};
+use fin_store::{
+    BranchCreate, DropReq, HistoryReq, MAIN, MergeReport, MergeReq, ReviewPlan, Store, StoreError,
+};
 use integration_support as is;
 use rusqlite::Connection;
 use tempfile::TempDir;
@@ -111,6 +115,8 @@ fn req(id: &str, from: &str, into: &str) -> MergeReq {
         skip_conflicting: false,
         dry_run: false,
         args_hash: None,
+        include: None,
+        source_up_to: None,
     }
 }
 
@@ -740,4 +746,244 @@ fn empty_merge_leaves_no_trace() {
     assert_eq!(rows(&s), before);
     edit(&mut s, "br1", "e1", "alice", vec![insert("$p", 30, 1)]);
     assert_eq!(merge(&mut s, "k", "br1", MAIN).merged, ["e1"]);
+}
+
+/// [`req`] limited to `include` (origin roots) and `up_to`.
+fn limited(
+    id: &str,
+    from: &str,
+    into: &str,
+    include: Option<&[&str]>,
+    up_to: Option<u64>,
+) -> MergeReq {
+    MergeReq {
+        include: include.map(|i| i.iter().map(|t| t.to_string()).collect()),
+        source_up_to: up_to,
+        ..req(id, from, into)
+    }
+}
+
+fn origins_with(plan: &ReviewPlan, status: EntryStatus) -> Vec<&str> {
+    plan.entries
+        .iter()
+        .filter(|e| e.status == status)
+        .map(|e| e.origin.as_str())
+        .collect()
+}
+
+fn statuses(plan: &ReviewPlan) -> Vec<(&str, EntryStatus)> {
+    plan.entries
+        .iter()
+        .map(|e| (e.tx_id.as_str(), e.status))
+        .collect()
+}
+
+#[test]
+fn include_and_up_to_limit_a_store_merge() {
+    let e = env();
+    let mut s = project(&e);
+    edit(&mut s, "br1", "e1", "alice", vec![insert("$p", 30, 2)]);
+    let e2 = edit(&mut s, "br1", "e2", "alice", vec![delete("c1")]);
+    edit(&mut s, "br1", "e3", "alice", vec![delete("c3")]);
+    let r = s
+        .merge(limited("m", "br1", MAIN, Some(&["e1", "e3"]), Some(e2.rev)))
+        .unwrap();
+    assert_eq!(r.merged, ["e1"]);
+    assert_eq!(r.not_included, ["e2", "e3"]);
+    assert_eq!(r.source_state, BranchState::Active);
+    // An empty include merges nothing and writes nothing.
+    let before = rows(&s);
+    let none = s
+        .merge(limited("m2", "br1", MAIN, Some(&[]), None))
+        .unwrap();
+    assert!(none.committed.is_empty() && none.merged.is_empty());
+    assert_eq!(none.not_included, ["e2", "e3"]);
+    assert_eq!(rows(&s), before);
+    // Too many ids is refused before anything is read.
+    let many: Vec<String> = (0..=fin_core::history::MAX_INCLUDE)
+        .map(|n| format!("t{n}"))
+        .collect();
+    let err = code(
+        s.merge(MergeReq {
+            include: Some(many),
+            ..req("m3", "br1", MAIN)
+        })
+        .unwrap_err(),
+    );
+    assert_eq!(
+        (err.code.as_str(), &err.details["field"]),
+        ("INVALID_OP", &serde_json::json!("include"))
+    );
+    // The report's JSON names what was left out; a plain report omits the field.
+    let json = serde_json::to_value(&r).unwrap();
+    assert_eq!(json["notIncluded"], serde_json::json!(["e2", "e3"]));
+    assert!(
+        serde_json::to_value(&none)
+            .unwrap()
+            .get("notIncluded")
+            .is_some()
+    );
+    let plain = merge(&mut s, "m4", "br1", MAIN);
+    assert!(
+        serde_json::to_value(&plain)
+            .unwrap()
+            .get("notIncluded")
+            .is_none()
+    );
+}
+
+#[test]
+fn commit_between_plan_and_write_not_included() {
+    let e = env();
+    let mut s = project(&e);
+    edit(&mut s, "br1", "e1", "alice", vec![insert("$p", 30, 2)]);
+    edit(&mut s, "br1", "e2", "alice", vec![delete("c1")]);
+    let plan = s.review_plan("feature", MAIN).unwrap();
+    assert_eq!(plan.source.seq, s.head("br1"));
+    assert_eq!(plan.target.seq, s.head(MAIN));
+    assert!(plan.source.hash.is_some() && plan.target.hash.is_some());
+    let include = origins_with(&plan, EntryStatus::WillMerge);
+    assert_eq!(include, ["e1", "e2"]);
+    // e3 lands on the source after the review, before the merge's transaction.
+    edit(&mut s, "br1", "e3", "alice", vec![delete("c3")]);
+    let up_to = Some(plan.source.seq);
+    let r = s
+        .merge(limited("m", "br1", MAIN, Some(&include), up_to))
+        .unwrap();
+    assert_eq!(r.merged, ["e1", "e2"]);
+    assert_eq!(r.not_included, ["e3"]);
+    assert!(!r.origins.iter().any(|o| o == "e3"));
+    assert!(
+        state(&s, MAIN).timelines[0].tracks[0]
+            .items
+            .iter()
+            .any(|c| c.id == "c3")
+    );
+    // Naming it does not get past the snapshot's seq either.
+    let r = s
+        .merge(limited("m2", "br1", MAIN, Some(&["e3"]), up_to))
+        .unwrap();
+    assert!(r.committed.is_empty() && r.merged.is_empty());
+    assert_eq!(r.not_included, ["e3"]);
+    // The heads moved: a new plan says so, by seq and hash.
+    let again = s.review_plan("br1", MAIN).unwrap();
+    assert_ne!(again.source, plan.source);
+    assert_ne!(again.target, plan.target);
+    assert_eq!(origins_with(&again, EntryStatus::WillMerge), ["e3"]);
+}
+
+/// br1: e1 (merged before), e2 (dropped), e3 (conflicts: main deleted c2), e4 (merges),
+/// e5 (trims e2's clip: depends on the dropped e2).
+fn mixed(s: &mut Store) {
+    edit(s, "br1", "e1", "alice", vec![insert("$p", 30, 2)]);
+    edit(s, "br1", "e2", "alice", vec![insert("$q", 0, 2)]);
+    edit(s, "br1", "e3", "alice", vec![trim("c2", -1)]);
+    edit(s, "br1", "e4", "alice", vec![delete("c3")]);
+    edit(s, "br1", "e5", "alice", vec![trim("c5", -1)]);
+    s.merge(limited("m0", "br1", MAIN, Some(&["e1"]), None))
+        .unwrap();
+    s.drop(DropReq {
+        tx_id: "d1".into(),
+        author: "rev".into(),
+        into: MAIN.into(),
+        from: "br1".into(),
+        drops: vec!["e2".into()],
+        undrops: vec![],
+        dry_run: false,
+        args_hash: None,
+    })
+    .unwrap();
+    edit(s, MAIN, "t1", "bob", vec![delete("c2")]);
+}
+
+#[test]
+fn plan_statuses_match_merge() {
+    let e = env();
+    let mut s = project(&e);
+    mixed(&mut s);
+    let plan = s.review_plan("br1", MAIN).unwrap();
+    assert_eq!(
+        statuses(&plan),
+        [
+            ("e1", EntryStatus::AlreadyPresent),
+            ("e2", EntryStatus::Dropped),
+            ("e3", EntryStatus::Conflict),
+            ("e4", EntryStatus::WillMerge),
+            ("e5", EntryStatus::DependsOnSkipped),
+        ]
+    );
+    assert!(!plan.truncated);
+    let conflicts: Vec<&str> = plan.conflicts.iter().map(|c| c.tx_id.as_str()).collect();
+    assert_eq!(conflicts, ["e3", "e5"]);
+    assert_eq!(plan.entries[2].blame.as_deref(), Some("t1"));
+    // A merge of everything with skipConflicting copies exactly the willMerge entries.
+    let all: Vec<&str> = plan.entries.iter().map(|e| e.origin.as_str()).collect();
+    let dry = MergeReq {
+        dry_run: true,
+        skip_conflicting: true,
+        ..limited("m1", "br1", MAIN, Some(&all), Some(plan.source.seq))
+    };
+    let planned = s.merge(dry).unwrap();
+    assert_eq!(planned.merged, origins_with(&plan, EntryStatus::WillMerge));
+    let skipped: Vec<&str> = planned.skipped.iter().map(|c| c.tx_id.as_str()).collect();
+    assert_eq!(skipped, conflicts);
+    // And a merge of just the willMerge entries has no conflict and copies them.
+    let will = origins_with(&plan, EntryStatus::WillMerge);
+    let r = s
+        .merge(limited(
+            "m2",
+            "br1",
+            MAIN,
+            Some(&will),
+            Some(plan.source.seq),
+        ))
+        .unwrap();
+    assert_eq!(r.merged, will);
+    assert_eq!(r.not_included, ["e3", "e5"]);
+    let after = s.review_plan("br1", MAIN).unwrap();
+    assert_eq!(
+        origins_with(&after, EntryStatus::AlreadyPresent),
+        ["e1", "e4"]
+    );
+}
+
+#[test]
+fn review_plan_on_follower() {
+    let e = env();
+    let mut s = project(&e);
+    mixed(&mut s);
+    let plan = s.review_plan("br1", MAIN).unwrap();
+    let before = rows(&s);
+    let f = Store::open(&e.data, &e.dir).unwrap();
+    assert!(f.read_only().is_some());
+    assert_eq!(f.review_plan("feature", MAIN).unwrap(), plan);
+    assert_eq!(rows(&f), before, "a review plan writes nothing");
+    let err = code(f.review_plan("nope", MAIN).unwrap_err());
+    assert_eq!(err.code, "BRANCH_NOT_FOUND");
+    let err = code(f.review_plan(MAIN, MAIN).unwrap_err());
+    assert_eq!(err.code, "INVALID_OP");
+}
+
+#[test]
+fn review_plan_truncates() {
+    let e = env();
+    let mut s = project(&e);
+    for n in 1..=5 {
+        edit(
+            &mut s,
+            "br1",
+            &format!("e{n}"),
+            "alice",
+            vec![insert("$p", 30, 1)],
+        );
+    }
+    let cut = s.review_plan_capped("br1", MAIN, 3).unwrap();
+    assert!(cut.truncated);
+    let ids: Vec<&str> = cut.entries.iter().map(|e| e.tx_id.as_str()).collect();
+    assert_eq!(ids, ["e1", "e2", "e3"], "the oldest");
+    let whole = s.review_plan_capped("br1", MAIN, 5).unwrap();
+    assert!(!whole.truncated);
+    assert_eq!(whole.entries.len(), 5);
+    assert_eq!(s.review_plan("br1", MAIN).unwrap(), whole);
+    assert_eq!(fin_store::REVIEW_PLAN_MAX, 10_000);
 }

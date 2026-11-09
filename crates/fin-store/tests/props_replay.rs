@@ -310,6 +310,8 @@ impl Script {
                     skip_conflicting: skip,
                     dry_run: false,
                     args_hash: None,
+                    include: None,
+                    source_up_to: None,
                 });
                 allowed(r)
             }

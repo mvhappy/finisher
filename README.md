@@ -134,6 +134,7 @@ fin --branch feature clip trim c1 --end +1s         # edit on the branch
 fin branch ls                                       # branches, heads and states (--all: archived too)
 fin merge feature                                   # into the current branch; CONFLICT (exit 4) lists conflicts
 fin merge feature --skip-conflicting                # merge the rest, leave conflicting records on the branch
+fin merge feature --include <txId>… --up-to <seq>  # merge only what was reviewed; the rest is notIncluded
 fin undo                                            # undo your last edit or merge (fin redo reverses it)
 fin checkpoint before-cut                           # name the head; fin undo --to before-cut
 fin cherry-pick <txId>                              # copy one record; fin revert <mergeId> undoes a merge

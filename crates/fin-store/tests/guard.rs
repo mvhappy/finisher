@@ -224,6 +224,8 @@ fn merge(from: &str, into: &str) -> MergeReq {
         skip_conflicting: false,
         dry_run: false,
         args_hash: None,
+        include: None,
+        source_up_to: None,
     }
 }
 

@@ -4,7 +4,7 @@
 //! `Deserialize`); results are the wire types' JSON. Everything but `recover` is a short call
 //! ([`crate::tasks`]); `recover` may import a folder and copy many records, so it is a long call
 //! on the worker. A dry run plans against the local database and keeps nothing, on a follower
-//! too.
+//! too, and so does `reviewPlan` (plan 5E Decision 7), a read.
 //!
 //! Every napi method that writes takes an optional `metaJson` (`{actor?, guard?}`): `actor`
 //! (finisherd's `callMeta`) is the actor of its `log.commit` entry ([`crate::commit_log`]);
@@ -52,6 +52,14 @@ fn req(j: &Journal, tx_id: &str, author: &str, branch: Option<&str>) -> Option<R
     })
 }
 
+/// `reviewPlan`'s request: the source and target branch references.
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ReviewPlanReq {
+    from: String,
+    into: String,
+}
+
 /// The short history calls (called from [`crate::tasks`]). Every one that writes is logged
 /// as `log.commit` ([`commit_log::history`]); the listings are not.
 pub(crate) fn run(store: &Shared, call: Call) -> Result<Reply> {
@@ -60,6 +68,11 @@ pub(crate) fn run(store: &Shared, call: Call) -> Result<Reply> {
         let json = match call {
             Call::Branches { all } => {
                 return Ok(Reply::Json(encode(&s.branches(all).map_err(reject)?)?));
+            }
+            Call::ReviewPlan { req_json } => {
+                let r = parse::<ReviewPlanReq>("review plan", &req_json)?;
+                let plan = s.review_plan(&r.from, &r.into).map_err(reject)?;
+                return Ok(Reply::Json(encode(&plan)?));
             }
             Call::ResolveBranch { name } => {
                 return Ok(Reply::Json(encode(
@@ -292,6 +305,14 @@ impl Engine {
             req_json,
             meta_json,
         })
+    }
+
+    /// What a merge of `from` into `into` would do at their heads now (`{from, into}` JSON,
+    /// branch references); resolves to the `ReviewPlan` JSON. A read: it writes nothing and
+    /// works on a follower.
+    #[napi(catch_unwind)]
+    pub fn review_plan(&self, req_json: String) -> AsyncTask<StoreTask> {
+        self.task(Call::ReviewPlan { req_json })
     }
 
     /// Lists the recoverable groups, and with `create` makes their branches (`RecoverReq`

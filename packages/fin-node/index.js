@@ -100,6 +100,10 @@ export class Engine {
     return call(this.#native.resolveBranch(name));
   }
 
+  reviewPlan(reqJson) {
+    return call(this.#native.reviewPlan(reqJson));
+  }
+
   takeover(confirm) {
     return call(this.#native.takeover(confirm));
   }

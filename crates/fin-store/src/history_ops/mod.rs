@@ -6,7 +6,7 @@
 //!   `Store::undo_stacks`.
 //! - [`checkpoint`]: `Store::checkpoint`, `Store::find_checkpoint`.
 //! - [`drop`]: `Store::drop` (durable rejections, plan 5E Decision 5), `Store::dropped`.
-//! - [`merge`] holds `Store::merge`.
+//! - [`merge`] holds `Store::merge`; [`review_plan`] `Store::review_plan` (plan 5E Decision 7).
 //! - [`pick`]: `Store::cherry_pick`, `Store::revert`.
 //! - [`origins`]: what a result's records stand for (`origins`, 7A Decision 27).
 
@@ -15,6 +15,7 @@ pub(crate) mod drop;
 pub(crate) mod merge;
 pub(crate) mod origins;
 pub(crate) mod pick;
+pub(crate) mod review_plan;
 pub(crate) mod undo;
 
 #[cfg(test)]

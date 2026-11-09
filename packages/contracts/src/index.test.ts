@@ -1,7 +1,7 @@
 import { Effect, Schema } from "effect";
 import { RpcSchema } from "effect/rpc";
 import { expect, test } from "vitest";
-import { FinError, FinRpcs, PROTOCOL_VERSION, STREAM_RPCS } from "./index.ts";
+import { FinError, FinRpcs, MERGE_INCLUDE_MAX, PROTOCOL_VERSION, STREAM_RPCS } from "./index.ts";
 
 test("protocol version is 2 (5A: the handshake, tickets, asset.probe {projectId})", () => {
   expect(PROTOCOL_VERSION).toBe(2);
@@ -201,6 +201,13 @@ test("history payloads decode what finisherd needs and the results are not strea
     dryRun: true,
   });
   await expect(decode("history.merge", { projectId: "p", txId: "t", author: "a", from: "x" })).rejects.toThrow();
+  // A limited merge (plan 5E Decision 6): `include` bounded, `sourceUpTo` a seq.
+  const merge = { projectId: "p", txId: "t", author: "a", from: "x", into: "main" };
+  expect(await decode("history.merge", { ...merge, include: [], sourceUpTo: 7 })).toMatchObject({ include: [], sourceUpTo: 7 });
+  const many = Array.from({ length: MERGE_INCLUDE_MAX + 1 }, (_, n) => `t${n}`);
+  await expect(decode("history.merge", { ...merge, include: many })).rejects.toThrow();
+  await expect(decode("history.merge", { ...merge, sourceUpTo: -1 })).rejects.toThrow();
+  await expect(decode("history.merge", { ...merge, sourceUpTo: 1.5 })).rejects.toThrow();
   // `project.recover` lists with just the project.
   expect(await decode("project.recover", { projectId: "p" })).toEqual({ projectId: "p" });
 });

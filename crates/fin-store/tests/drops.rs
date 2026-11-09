@@ -73,6 +73,8 @@ fn merge_req(id: &str, from: &str, into: &str) -> MergeReq {
         skip_conflicting: true,
         dry_run: false,
         args_hash: None,
+        include: None,
+        source_up_to: None,
     }
 }
 

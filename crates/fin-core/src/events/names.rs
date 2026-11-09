@@ -301,6 +301,7 @@ pub static CLI_FLAGS: NameTable = NameTable::new(
         "to",
         "to-run",
         "track",
+        "up-to",
         "weight",
         "with-items",
         "word",

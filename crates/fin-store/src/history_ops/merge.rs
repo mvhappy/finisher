@@ -1,12 +1,15 @@
 //! `Store::merge` (spec §4.4; plan 4B Task 13, Decisions 18–20, 26): the merge is planned by
-//! `fin_core::history::plan_merge` over the write's own transaction and its `merge` records are
+//! `fin_core::history::plan_merge_limited` over the write's own transaction (so `include` and
+//! `sourceUpTo`, plan 5E Decision 6, bound the candidates of that moment) and its `merge` records are
 //! appended through the one write path, all in one SQLite transaction: all of them or none.
 //! Export cuts them into segments as any records; a follower that has only a prefix of the
 //! group applies that prefix like any records (each copy replays from its own intent and
 //! bindings), and the rest when it arrives. Nothing is re-planned there.
 
+use std::collections::BTreeSet;
+
 use fin_core::branch::BranchState;
-use fin_core::history::plan_merge;
+use fin_core::history::{MAX_INCLUDE, MergeLimits, plan_merge_limited};
 use fin_core::{CommittedTx, CoreError, Link, Tx};
 use serde_json::json;
 
@@ -25,6 +28,9 @@ use crate::{MergeReport, Store, StoreError};
 /// - `author`: the merging author, the records' author (Decision 20);
 /// - `from`, `into`: branch references (the source may be archived; the target may not);
 /// - `skip_conflicting`: merge what applies and leave the conflicting candidates;
+/// - `include`: the origin roots the merge may copy (at most `MAX_INCLUDE`; `[]` copies
+///   nothing); `source_up_to`: the newest seq of the source branch's own records it may copy
+///   (plan 5E Decision 6). What they leave out is `notIncluded`;
 /// - `dry_run`: plan against the local database and keep nothing, on a follower too;
 /// - `args_hash`: the command input's hash, stored on the first record's intent.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
@@ -36,6 +42,10 @@ pub struct MergeReq {
     pub into: String,
     #[serde(default)]
     pub skip_conflicting: bool,
+    #[serde(default)]
+    pub include: Option<Vec<String>>,
+    #[serde(default)]
+    pub source_up_to: Option<u64>,
     #[serde(default)]
     pub dry_run: bool,
     pub args_hash: Option<String>,
@@ -49,7 +59,8 @@ impl Store {
     /// Nothing to merge writes nothing, so a later request with the same mergeId merges what
     /// arrived since.
     ///
-    /// Errors, in order: `INVALID_OP` (empty txId, bad `argsHash`); a retried mergeId answers
+    /// Errors, in order: `INVALID_OP` (empty txId, bad `argsHash`, more than `MAX_INCLUDE`
+    /// ids in `include`); a retried mergeId answers
     /// from the log (`IDEM_KEY_REUSED` when `<mergeId>-1` holds another kind of record or
     /// another `argsHash`); `PROJECT_READ_ONLY`; `IDEM_KEY_REUSED` when the mergeId itself or
     /// a `<mergeId>-<n>` is another record's txId; `BRANCH_NOT_FOUND`, `BRANCH_ARCHIVED` (the
@@ -60,6 +71,7 @@ impl Store {
     pub fn merge(&mut self, r: MergeReq) -> Result<MergeReport, StoreError> {
         check_key(&r.tx_id)?;
         check_args_hash(r.args_hash.as_deref(), &r.tx_id)?;
+        check_include(r.include.as_deref())?;
         let first = format!("{}-1", r.tx_id);
         loop {
             if let Some(report) = self.write(&first, r.dry_run, |ctx| plan(ctx, &r))? {
@@ -101,6 +113,7 @@ impl Store {
             committed,
             skipped: Vec::new(),
             excluded: Vec::new(),
+            not_included: Vec::new(),
             source_state: state_of(&self.conn, &from)?,
             dry_run: false,
             origins: Vec::new(),
@@ -117,6 +130,21 @@ fn origin(c: &CommittedTx) -> Option<String> {
 
 fn state_of(conn: &rusqlite::Connection, id: &str) -> Result<BranchState, StoreError> {
     Ok(index::get(conn, id)?.map_or(BranchState::Active, |i| i.state()))
+}
+
+/// `INVALID_OP` for an `include` of more than [`MAX_INCLUDE`] ids.
+fn check_include(include: Option<&[String]>) -> Result<(), StoreError> {
+    let n = include.map_or(0, <[String]>::len);
+    if n <= MAX_INCLUDE {
+        return Ok(());
+    }
+    Err(CoreError::new(
+        "INVALID_OP",
+        format!("include names {n} origins; a merge takes at most {MAX_INCLUDE}"),
+    )
+    .with_details(json!({ "field": "include", "count": n, "max": MAX_INCLUDE }))
+    .with_fix("merge in several steps, or review the branch (fin review)")
+    .into())
 }
 
 /// A txId the merge would write that another record holds already: `IDEM_KEY_REUSED`.
@@ -147,7 +175,22 @@ fn plan(ctx: &mut WriteCtx<'_>, r: &MergeReq) -> Result<MergeReport, StoreError>
     let measurer = ctx.measurer.clone();
     let head = ctx.head(&into)?;
     let log = SqlLog::with_head(txn, &into, head.rev, &head.project).measuring(measurer.as_deref());
-    let plan = plan_merge(&log, &from, &into, &r.author, &r.tx_id, r.skip_conflicting)?;
+    let include: Option<BTreeSet<String>> = r.include.as_ref().map(|i| i.iter().cloned().collect());
+    let limits = MergeLimits {
+        include: include.as_ref(),
+        source_up_to: r.source_up_to,
+    };
+    let (author, id) = (&r.author, &r.tx_id);
+    let plan = plan_merge_limited(
+        &log,
+        &from,
+        &into,
+        author,
+        id,
+        r.skip_conflicting,
+        limits,
+        None,
+    )?;
     let mut committed = Vec::with_capacity(plan.planned.len());
     for (n, p) in plan.planned.into_iter().enumerate() {
         taken(txn, &p.intent.tx_id, &r.tx_id)?;
@@ -173,6 +216,7 @@ fn plan(ctx: &mut WriteCtx<'_>, r: &MergeReq) -> Result<MergeReport, StoreError>
         merged: plan.merged,
         skipped: plan.conflicts,
         excluded: plan.excluded,
+        not_included: plan.not_included,
         source_state: state_of(txn, &from)?,
         dry_run: ctx.dry_run,
         origins: Vec::new(),

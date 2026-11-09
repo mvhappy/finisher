@@ -1260,6 +1260,13 @@ export type EngineEvent =
       type: "collect";
     };
 /**
+ * What a merge does with a source record (the review's `status`).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "EntryStatus".
+ */
+export type EntryStatus = "willMerge" | "alreadyPresent" | "dropped" | "excluded" | "dependsOnSkipped" | "conflict";
+/**
  * The type of a directory entry as listed (never by following a link). Windows reparse
  * points with a name-surrogate tag (symlinks, junctions, mount points) are `symlink` in a
  * [`ScanEntry`] (see [`crate::listing`]); anything that is neither a regular file, a
@@ -2025,6 +2032,15 @@ export type PurgeSelector =
   | {
       before: number;
     };
+/**
+ * What a record does (spec §4.2). Sub-project 4A writes only edits; 4B adds the rest up to
+ * `branchSet`; 5E adds `drop` (durable rejections, sub-project 5 spec §8.3).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "RecordKind".
+ */
+export type RecordKind =
+  "edit" | "undo" | "redo" | "merge" | "cherryPick" | "revert" | "checkpoint" | "branch" | "branchSet" | "drop";
 /**
  * A frame size as a bucket: the smallest standard size the frame fits within, by pixel count
  * (so a portrait clip buckets as its landscape twin): `sd` ≤ 960×540, `hd720` ≤ 1280×720,
@@ -6683,7 +6699,9 @@ export interface MediaInfo1 {
  * the target, in order (or planned and rolled back, `dry_run`); `merged`: the source txIds
  * they copy; `skipped`: the candidates that conflict and were left on the source (with
  * `skipConflicting`; they are offered again by the next merge); `excluded`: source records
- * never offered (`UNDOES_TARGET_RECORDS`); `source_state`: the source branch's state after
+ * never offered (`DROPPED`, `UNDOES_TARGET_RECORDS`); `not_included`: the origin roots of the
+ * candidates the merge's `include` and `sourceUpTo` left on the source, oldest first (plan 5E
+ * Decision 6; omitted when empty); `source_state`: the source branch's state after
  * the merge; `origins`: `merged` with the records their `origin` chains lead to (a copy of a
  * copy), first seen first (7A Decision 27). A retry of a committed merge answers from the
  * log: its records and their origins, `skipped` and `excluded` empty, `dry_run` false.
@@ -6698,6 +6716,7 @@ export interface MergeReport {
   excluded: Conflict[];
   mergeId: string;
   merged: string[];
+  notIncluded?: string[];
   origins?: string[];
   skipped: Conflict[];
   sourceState: BranchState;
@@ -7118,6 +7137,62 @@ export interface ManifestFonts1 {
    */
   cache?: string;
   files?: FontFileRef[];
+}
+/**
+ * One entry of a review plan: a source record (`tx_id` on `branch` at `seq`) and its origin
+ * root (`origin`, what decisions and `include` name), its kind, record author, number of
+ * intent ops and commit time (unix ms), and what the merge does with it. `reason`: the
+ * conflict or exclusion reason (absent for `willMerge` and `alreadyPresent`); `blame`: the
+ * record a conflict is blamed on, when there is one. `actor`: the agent actor the server
+ * knows for the record (sub-project 7A's tracker), never set by the planner.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "ReviewEntry".
+ */
+export interface ReviewEntry {
+  actor?: unknown;
+  author: string;
+  blame?: string | null;
+  branch: string;
+  committedAt: number;
+  kind: RecordKind;
+  opsCount: number;
+  origin: string;
+  reason?: string | null;
+  seq: number;
+  status: EntryStatus;
+  txId: string;
+}
+/**
+ * A branch head as a review plan saw it: the branch id, its head seq and the `txHash` of the
+ * record there (absent at a root's start), so a rewind to the same seq is told apart (plan 5E
+ * Decision 9).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "ReviewHead".
+ */
+export interface ReviewHead {
+  branch: string;
+  hash?: string | null;
+  seq: number;
+}
+/**
+ * [`Store::review_plan`](crate::Store::review_plan)'s answer (plan 5E Decision 7): what a
+ * merge of `source` into `target` would do at these heads, one entry per candidate and per
+ * source record the target already holds, oldest first; `conflicts`: the candidates that
+ * conflict (as a `skipConflicting` merge would skip them). At most
+ * [`REVIEW_PLAN_MAX`](crate::REVIEW_PLAN_MAX) entries and conflicts, the oldest:
+ * `truncated` when there were more.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "ReviewPlan".
+ */
+export interface ReviewPlan {
+  conflicts: Conflict[];
+  entries: ReviewEntry[];
+  source: ReviewHead;
+  target: ReviewHead;
+  truncated: boolean;
 }
 /**
  * What `fin-sandbox-exec --probe` prints.

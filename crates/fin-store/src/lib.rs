@@ -83,6 +83,7 @@ pub use history::Generation;
 pub use history_ops::checkpoint::CheckpointReq;
 pub use history_ops::merge::MergeReq;
 pub use history_ops::pick::{CherryPickReq, RevertReq};
+pub use history_ops::review_plan::REVIEW_PLAN_MAX;
 pub use history_ops::undo::HistoryReq;
 pub use import::{ForeignFile, ImportReport, ReadOnlyReason, Rewind};
 #[cfg(any(test, feature = "test-hooks"))]
@@ -104,7 +105,7 @@ pub use tick::{DueWork, TickOptions, TickReport};
 pub use verify::{Check, VerifyReport};
 pub use wire::{
     BranchCreated, BranchView, DropReq, EngineEvent, HistoryResult, MergeReport, RecoverGroup,
-    RecoverReport, SetAside, SkippedFile, TxSetAside,
+    RecoverReport, ReviewHead, ReviewPlan, SetAside, SkippedFile, TxSetAside,
 };
 pub use write::WriteOutcome;
 

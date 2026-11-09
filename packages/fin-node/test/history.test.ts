@@ -179,6 +179,36 @@ describe("history", () => {
     expect(again.merged).toEqual(["t-b2"]);
   });
 
+  test("a merge limited by include and sourceUpTo; the review plan (plan 5E Task 3)", async () => {
+    const e = await project();
+    await e.branchCreate(req({ txId: "b1", name: "feature", from: "main" }));
+    await e.commit(tx("t-b1", "br1", 2, [insert(10)]));
+    await e.commit(tx("t-b2", "br1", 3, [insert(20)]));
+    await e.commit(tx("t-b3", "br1", 4, [insert(30)]));
+
+    const plan = await json(e.reviewPlan(JSON.stringify({ from: "feature", into: "main" })));
+    expect(plan.source).toMatchObject({ branch: "br1", seq: 5 });
+    expect(typeof plan.source.hash).toBe("string");
+    expect(plan.target.branch).toBe("main");
+    expect(plan.entries.map((x: { txId: string; status: string }) => [x.txId, x.status])).toEqual([
+      ["t-b1", "willMerge"],
+      ["t-b2", "willMerge"],
+      ["t-b3", "willMerge"],
+    ]);
+    expect(plan.entries[0]).toMatchObject({ origin: "t-b1", branch: "br1", kind: "edit", opsCount: 1 });
+    expect(plan).toMatchObject({ conflicts: [], truncated: false });
+
+    const merged = await json(e.merge(req({ txId: "m1", from: "feature", into: "main", include: ["t-b1", "t-b3"], sourceUpTo: 4 })));
+    expect(merged.merged).toEqual(["t-b1"]);
+    expect(merged.notIncluded).toEqual(["t-b2", "t-b3"]);
+    const after = await json(e.reviewPlan(JSON.stringify({ from: "feature", into: "main" })));
+    expect(after.entries.map((x: { status: string }) => x.status)).toEqual(["alreadyPresent", "willMerge", "willMerge"]);
+
+    const bad = await rejection(e.reviewPlan(JSON.stringify({ from: "feature" })));
+    expect(bad.code).toBe("INVALID_OP");
+    expect((await rejection(e.reviewPlan(JSON.stringify({ from: "nope", into: "main" })))).code).toBe("BRANCH_NOT_FOUND");
+  });
+
   test("merge, undo, redo, revert", async () => {
     const e = await project();
     await e.branchCreate(req({ txId: "b1", name: "feature", from: "main" }));

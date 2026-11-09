@@ -118,6 +118,8 @@ fn stack_records_equal_the_parsed_records() {
         skip_conflicting: true,
         dry_run: false,
         args_hash: None,
+        include: None,
+        source_up_to: None,
     })
     .unwrap();
     s.undo(history("u2", "carol", MAIN)).unwrap();
