@@ -880,6 +880,30 @@ fn a_cue_per_frame_is_not_an_element_limit() {
 }
 
 #[test]
+fn cue_children_are_bounded_and_a_limit_drops_the_cues() {
+    // Cues are not counted against maxBoxes, but their children are bounded by maxSamples: a
+    // Cues of 5,000 `Void`s past a 1,000-sample limit is dropped (never the file), so with the
+    // keyframe flags unset the only sync point the cue named is gone.
+    let list = blocks(8, 8, |i| i as i64 * 40, false);
+    let o = Options {
+        cues: true,
+        unflag_keys: true,
+        cue_voids: 5000,
+        ..Options::default()
+    };
+    let bytes = write(&o, &[av1_track()], &list);
+    let open_with = |max_samples| {
+        let limits = Limits {
+            max_samples,
+            ..Limits::default()
+        };
+        Demuxer::open(Cursor::new(bytes.clone()), &limits).unwrap()
+    };
+    assert_eq!(open_with(10_000).video().unwrap().table.sync().len(), 1);
+    assert_eq!(open_with(1_000).video().unwrap().table.sync().len(), 0);
+}
+
+#[test]
 fn cues_add_no_sync_points_when_the_track_sets_keyframe_flags() {
     // Keyframes flagged at 0 and 8; a cue names frame 3 (a cluster's first frame) as well.
     let mut list = blocks(12, 8, |i| i as i64 * 40, false);

@@ -1,8 +1,9 @@
 //! `Cues`: the index of keyframes by cluster. Read under the limits (sizes and depth as every
-//! element; the video track's cue points against `max_samples`, not `max_boxes`: an
-//! all-keyframe file has a cue a frame) and checked against the cluster scan; a limit hit while
-//! reading them drops the cues, never the file. The sample table needs every block, so the scan always runs; the cues
-//! then add sync points (see [`mark`]).
+//! element; the children of each Cues element and the video track's cue points against
+//! `max_samples`, not `max_boxes`: an all-keyframe file has a cue a frame) and checked against
+//! the cluster scan; a limit hit while reading them drops the cues, never the file. The sample
+//! table needs every block, so the scan always runs; the cues then add sync points (see
+//! [`mark`]).
 
 use std::collections::HashMap;
 use std::io::{Read, Seek};

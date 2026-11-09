@@ -252,6 +252,8 @@ pub struct Options {
     pub unknown_size_segment: bool,
     /// Writes every `SimpleBlock` without its keyframe flag (cues still name the keyframes).
     pub unflag_keys: bool,
+    /// Two-byte `Void` elements appended inside `Cues` (a hostile index).
+    pub cue_voids: usize,
 }
 
 impl Default for Options {
@@ -265,6 +267,7 @@ impl Default for Options {
             unknown_size_clusters: false,
             unknown_size_segment: false,
             unflag_keys: false,
+            cue_voids: 0,
         }
     }
 }
@@ -340,7 +343,7 @@ pub fn write(o: &Options, tracks: &[Track], blocks: &[Block]) -> Vec<u8> {
     if o.cues
         && let Some(track) = cue_track
     {
-        let points: Vec<u8> = cue_points
+        let mut points: Vec<u8> = cue_points
             .iter()
             .flat_map(|&(t, pos)| {
                 element(
@@ -353,6 +356,9 @@ pub fn write(o: &Options, tracks: &[Track], blocks: &[Block]) -> Vec<u8> {
                 )
             })
             .collect();
+        for _ in 0..o.cue_voids {
+            points.extend([0xEC, 0x80]);
+        }
         body.extend(element(0x1C53_BB6B, &points));
     }
     let mut out = ebml_header(&o.doc_type);

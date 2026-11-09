@@ -239,28 +239,36 @@ impl<'a, R: Read + Seek> Ebml<'a, R> {
     /// The children of a known-size master element (each counted). Bytes too short for a
     /// header at the end (a 1-byte `Void` remainder some writers leave) are ignored.
     pub fn children(&mut self, parent: &Element, depth: u8) -> Result<Vec<Element>, CoreError> {
-        self.children_of(parent, depth, true)
+        self.children_of(parent, depth, None)
     }
 
-    /// [`Ebml::children`] not counted against `max_boxes` (the caller bounds them otherwise).
+    /// [`Ebml::children`] not counted against `max_boxes` but at most `max_samples` of them
+    /// (`MEDIA_LIMIT maxSamples` past it), so the list stays bounded.
     pub fn children_uncounted(
         &mut self,
         parent: &Element,
         depth: u8,
     ) -> Result<Vec<Element>, CoreError> {
-        self.children_of(parent, depth, false)
+        let cap = self.limits.max_samples as u64;
+        self.children_of(parent, depth, Some(cap))
     }
 
+    /// `cap`: `None` counts each child against `max_boxes`; `Some(n)` allows at most `n`.
     fn children_of(
         &mut self,
         parent: &Element,
         depth: u8,
-        counted: bool,
+        cap: Option<u64>,
     ) -> Result<Vec<Element>, CoreError> {
         let mut out = Vec::new();
         let mut at = parent.body;
         while parent.end - at >= 2 {
-            let e = self.header(at, parent.end, depth, counted)?;
+            if let Some(cap) = cap
+                && out.len() as u64 >= cap
+            {
+                return Err(limit("maxSamples", out.len() as u64 + 1, cap));
+            }
+            let e = self.header(at, parent.end, depth, cap.is_none())?;
             if e.unknown {
                 return Err(corrupt(
                     format!("an unknown-sized element inside {}", parent.name()),
