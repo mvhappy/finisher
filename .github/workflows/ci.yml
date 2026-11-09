@@ -78,7 +78,11 @@ jobs:
         # Linux only: that is where the workspace is verified clean; the macOS and Windows
         # `cfg` code has not been linted yet (TASKS.md).
         if: runner.os == 'Linux'
-        run: cargo clippy --workspace --all-targets -- -D warnings
+        run: |
+          cargo clippy --workspace --all-targets -- -D warnings
+          # The shipped code alone: --all-targets builds the dev-dependencies, and several crates
+          # depend on themselves with `test-hooks`, so the line above never lints them without it.
+          cargo clippy -- -D warnings
       - name: Rust tests
         # The default members: everything but the cross-host harness, whose `test-hooks`
         # must not unify into fin or fin-node (scripts/check-test-hooks.mjs). With

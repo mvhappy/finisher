@@ -18,6 +18,7 @@ function workspacePackages(root) {
   const start = lines.findIndex((l) => /^packages:\s*$/.test(l));
   const dirs = new Set();
   for (const line of start === -1 ? [] : lines.slice(start + 1)) {
+    if (/^\s*(#|$)/.test(line)) continue; // a comment or blank line, whatever its indent
     if (/^\S/.test(line)) break; // the next top-level key
     const item = line.match(/^\s+-\s+["']?([^"'#]+?)["']?\s*(#.*)?$/);
     if (!item) continue;

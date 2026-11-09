@@ -49,3 +49,12 @@ test("a workspace that lists no package fails", () => {
   assert.equal(r.code, 1);
   assert.match(r.out, /TYPECHECK_FAILED: pnpm-workspace\.yaml lists no package/);
 });
+
+test("a comment between the list items does not end the list", () => {
+  const f = files("apps/late");
+  f["pnpm-workspace.yaml"] = 'packages:\n  - "packages/*"\n# the apps\n\n  - "apps/*"\n';
+  for (const [k, v] of Object.entries(files("apps/late", ["apps/late"]))) if (k !== "pnpm-workspace.yaml") f[k] = v;
+  const r = gate(fixtureRoot(f));
+  assert.equal(r.code, 1);
+  assert.match(r.out, /TYPECHECK_FAILED: apps\/late/);
+});

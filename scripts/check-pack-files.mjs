@@ -25,6 +25,7 @@ try {
 for (const path of files) {
   if (MUST_NOT.some((re) => re.test(path))) violations.push(`PACK_CONTENTS: ${PACKAGE} would pack ${path}; list the shipped files in package.json "files"`);
 }
+if (files.length === 0 && violations.length === 0) violations.push(`PACK_CONTENTS: \`pnpm pack --dry-run\` in ${PACKAGE} listed no file`);
 if (files.length) {
   for (const path of MUST_HAVE) {
     if (!files.includes(path)) violations.push(`PACK_CONTENTS: ${PACKAGE} would not pack ${path}`);
