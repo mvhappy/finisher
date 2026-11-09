@@ -59,10 +59,10 @@ fn main() {
     if let Err(e) = os::cloexec_from_3() {
         fail(EXIT_UNAVAILABLE, "SANDBOX_UNAVAILABLE", profile, &e);
     }
-    match mechanism() {
+    let enforced = match mechanism() {
         Mechanism::Disabled {
             reason: DisabledReason::LandlockDisabled,
-        } => {}
+        } => false,
         Mechanism::Disabled { reason } => fail(
             EXIT_UNAVAILABLE,
             "SANDBOX_UNAVAILABLE",
@@ -81,9 +81,10 @@ fn main() {
             if let Err(e) = os::apply(&policy) {
                 fail(EXIT_UNAVAILABLE, "SANDBOX_UNAVAILABLE", profile, &e);
             }
+            true
         }
-    }
-    let e = os::exec(&args.argv);
+    };
+    let e = os::exec(&req, &policy, enforced, &args.argv);
     let exit = if e.kind() == std::io::ErrorKind::NotFound {
         EXIT_NOT_FOUND
     } else {
@@ -243,9 +244,14 @@ mod os {
         Ok(())
     }
 
-    /// Replaces the process with `argv`, without [`launch::SOCKET_ENV`]. Returns only on
-    /// failure.
-    pub fn exec(argv: &[std::ffi::OsString]) -> std::io::Error {
+    /// Replaces the process with `argv`, without [`launch::SOCKET_ENV`] (the policy is
+    /// already applied to this process). Returns only on failure.
+    pub fn exec(
+        _req: &fin_sandbox::launch::LaunchRequest,
+        _policy: &SandboxPolicy,
+        _enforced: bool,
+        argv: &[std::ffi::OsString],
+    ) -> std::io::Error {
         let mut cmd = std::process::Command::new(&argv[0]);
         cmd.args(&argv[1..]);
         for v in fin_sandbox::launch::SOCKET_ENV {
@@ -255,18 +261,142 @@ mod os {
     }
 }
 
-#[cfg(not(unix))]
+#[cfg(windows)]
+mod os {
+    use std::fs::File;
+    use std::os::windows::io::{FromRawHandle, OwnedHandle, RawHandle};
+
+    use fin_sandbox::SandboxPolicy;
+    use fin_sandbox::launch::{EXIT_UNAVAILABLE, LaunchRequest, SOCKET_ENV, failure_line};
+    use fin_sandbox::windows::launcher::{self, Failure};
+    use fin_sandbox::windows::plan;
+    use windows_sys::Win32::Foundation::{
+        DUPLICATE_SAME_ACCESS, DuplicateHandle, GetHandleInformation, HANDLE,
+    };
+    use windows_sys::Win32::System::Threading::GetCurrentProcess;
+
+    type InvalidParameter =
+        Option<unsafe extern "C" fn(*const u16, *const u16, *const u16, u32, usize)>;
+
+    unsafe extern "C" {
+        fn _get_osfhandle(fd: i32) -> isize;
+        fn _close(fd: i32) -> i32;
+        fn _set_thread_local_invalid_parameter_handler(h: InvalidParameter) -> InvalidParameter;
+    }
+
+    unsafe extern "C" fn ignore(_: *const u16, _: *const u16, _: *const u16, _: u32, _: usize) {}
+
+    /// `_get_osfhandle(fd)`, or -1: a number that is not a C runtime descriptor (a handle
+    /// value) would otherwise reach the runtime's invalid-parameter handler, which ends the
+    /// process with a fast-fail.
+    fn crt_handle(fd: i32) -> isize {
+        // SAFETY: the handler is this thread's, replaced for the one lookup and restored.
+        unsafe {
+            let old = _set_thread_local_invalid_parameter_handler(Some(ignore));
+            let h = _get_osfhandle(fd);
+            _set_thread_local_invalid_parameter_handler(old);
+            h
+        }
+    }
+
+    /// The request's pipe: C runtime descriptor `fd` (how Node passes `stdio[3]`), else an
+    /// inherited handle whose value is `fd`. Taken over, so nothing else can read it.
+    pub fn take_fd(fd: i32) -> Result<File, String> {
+        let crt = crt_handle(fd);
+        if crt != -1 && crt != -2 {
+            let mut dup: HANDLE = std::ptr::null_mut();
+            // SAFETY: a handle of this process, duplicated without inheritance, then the
+            // descriptor (and its handle) closed.
+            unsafe {
+                let me = GetCurrentProcess();
+                if DuplicateHandle(me, crt as HANDLE, me, &mut dup, 0, 0, DUPLICATE_SAME_ACCESS)
+                    == 0
+                {
+                    return Err(format!(
+                        "descriptor {fd}: {}",
+                        std::io::Error::last_os_error()
+                    ));
+                }
+                _close(fd);
+                return Ok(File::from(OwnedHandle::from_raw_handle(dup as RawHandle)));
+            }
+        }
+        let h = fd as usize as HANDLE;
+        let mut flags = 0u32;
+        // SAFETY: only queries the handle's flags.
+        if unsafe { GetHandleInformation(h, &mut flags) } == 0 {
+            return Err(format!(
+                "descriptor {fd}: {}",
+                std::io::Error::last_os_error()
+            ));
+        }
+        // SAFETY: an open handle handed to this process to own.
+        Ok(File::from(unsafe {
+            OwnedHandle::from_raw_handle(h as RawHandle)
+        }))
+    }
+
+    /// Nothing to apply in-process: the container is made at the start.
+    pub fn apply(_policy: &SandboxPolicy) -> Result<(), String> {
+        Ok(())
+    }
+
+    /// The handle list of the start passes the standard handles alone.
+    pub fn cloexec_from_3() -> Result<(), String> {
+        Ok(())
+    }
+
+    pub fn namespaces() -> fin_sandbox::Namespaces {
+        fin_sandbox::Namespaces::NotApplicable
+    }
+
+    pub fn hide_sockets(_policy: &SandboxPolicy, _home: &std::path::Path) -> Result<(), String> {
+        Ok(())
+    }
+
+    /// Runs `argv` in its container (`enforced`), or unconfined (the F2 stub), and leaves with
+    /// its exit code. Returns only when the program cannot be started.
+    pub fn exec(
+        req: &LaunchRequest,
+        policy: &SandboxPolicy,
+        enforced: bool,
+        argv: &[std::ffi::OsString],
+    ) -> std::io::Error {
+        let profile = Some(req.profile());
+        if !enforced {
+            let mut cmd = std::process::Command::new(&argv[0]);
+            cmd.args(&argv[1..]);
+            for v in SOCKET_ENV {
+                cmd.env_remove(v);
+            }
+            return match cmd.status() {
+                Ok(s) => std::process::exit(s.code().unwrap_or(1)),
+                Err(e) => e,
+            };
+        }
+        let unavailable = |need: String| -> ! {
+            eprintln!("{}", failure_line("SANDBOX_UNAVAILABLE", profile, &need));
+            std::process::exit(EXIT_UNAVAILABLE)
+        };
+        let plan = plan::launch(req, policy).unwrap_or_else(|e| unavailable(e));
+        match launcher::run(req.profile(), policy, &plan, argv) {
+            Ok(code) => std::process::exit(code),
+            Err(Failure::Setup(need)) => unavailable(need),
+            Err(Failure::Start(e)) => e,
+        }
+    }
+}
+
+#[cfg(not(any(unix, windows)))]
 mod os {
     use fin_sandbox::SandboxPolicy;
 
     pub fn take_fd(fd: i32) -> Result<std::fs::File, String> {
-        Err(format!(
-            "descriptor {fd}: the Windows launcher takes a handle (plan 7C Task 9)"
-        ))
+        Err(format!("descriptor {fd}: no launcher on this OS"))
     }
 
     pub fn apply(_policy: &SandboxPolicy) -> Result<(), String> {
-        Err("the Windows launcher (plan 7C Task 9)".into())
+        Err("no launcher sandbox on this OS".into())
     }
 
     pub fn cloexec_from_3() -> Result<(), String> {
@@ -281,7 +411,12 @@ mod os {
         Ok(())
     }
 
-    pub fn exec(_argv: &[std::ffi::OsString]) -> std::io::Error {
-        std::io::Error::other("the Windows launcher (plan 7C Task 9)")
+    pub fn exec(
+        _req: &fin_sandbox::launch::LaunchRequest,
+        _policy: &SandboxPolicy,
+        _enforced: bool,
+        _argv: &[std::ffi::OsString],
+    ) -> std::io::Error {
+        std::io::Error::other("no launcher sandbox on this OS")
     }
 }

@@ -374,6 +374,8 @@ mod tests {
         assert!(worker_input(&h, sd).unwrap_err().contains("helper"));
     }
 
+    // Unix paths (the profile refuses them as relative on Windows).
+    #[cfg(unix)]
     #[test]
     fn a_warm_worker_gets_its_own_directory_and_its_projects_roots() {
         let sd = Path::new(SD);

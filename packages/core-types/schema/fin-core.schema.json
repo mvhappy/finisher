@@ -5218,6 +5218,15 @@
         "serverData": {
           "type": "string"
         },
+        "timeoutMs": {
+          "description": "The hook's time limit (`Limits.wall_ms`): the launcher ends the whole tree when it passes\n(on Windows also the backstop for a Node process stuck on piped stdio, Decision 25).",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
         "tmp": {
           "description": "A private temporary directory, the only write root.",
           "type": "string"

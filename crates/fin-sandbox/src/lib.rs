@@ -18,6 +18,7 @@ pub mod profile;
 pub mod self_apply;
 pub mod spawner;
 pub mod status;
+pub mod windows;
 
 pub use error::{ApplyError, PolicyError};
 pub use inputs::{

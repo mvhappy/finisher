@@ -1,7 +1,9 @@
 //! The self-sandbox entry (plan 7C Decision 3): the function `fin-workers` registers with
 //! `fin_jobs::sandbox::register`, run before `hello` when the host's `Spawner` asks for it
 //! through `FIN_SELF_SANDBOX`. Only `worker` is applied this way; the request's `args` are a
-//! [`WorkerInput`], from which [`crate::profile::worker`] builds the policy. Every failure
+//! [`WorkerInput`], from which [`crate::profile::worker`] builds the policy (on Windows the
+//! job host already started the worker in its AppContainer, and the entry only checks its
+//! token). Every failure
 //! is an `Err`, which `fin-jobs` turns into exit 78 before `hello` (fail closed). The one
 //! exception is F2: where the mechanism is disabled on this host ([`crate::status::mechanism`]
 //! says `Disabled {landlockDisabled}`), nothing is applied and the worker's `hello` reports
@@ -61,9 +63,20 @@ fn apply(policy: &SandboxPolicy) -> Result<(), String> {
         .map_err(|e| e.to_string())
 }
 
-#[cfg(not(target_os = "linux"))]
+/// Windows: the `Spawner` started the worker in its AppContainer (plan 7C Decision 3), so
+/// there is nothing left to apply; the entry checks the token is one, and fails closed if not.
+#[cfg(windows)]
 fn apply(_policy: &SandboxPolicy) -> Result<(), String> {
-    // macOS `sandbox_init` is Task 8; Windows workers get their token from the `Spawner`.
+    let t = crate::windows::token::current().map_err(|e| format!("the token: {e}"))?;
+    if !t.app_container {
+        return Err("the worker was asked to be sandboxed but is not in an AppContainer".into());
+    }
+    Ok(())
+}
+
+#[cfg(not(any(target_os = "linux", windows)))]
+fn apply(_policy: &SandboxPolicy) -> Result<(), String> {
+    // macOS `sandbox_init` is Task 8.
     Err(format!(
         "no self-sandbox is implemented on {:?} yet",
         crate::policy::Os::current()

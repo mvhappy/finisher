@@ -2,8 +2,9 @@
 //!
 //! - [`mechanism`] is the OS mechanism alone. Linux: the Landlock version query is the only
 //!   source (`EPERM`, `ENOSYS`, `EOPNOTSUPP` → `Disabled {landlockDisabled}`, F2: run, warn;
-//!   ABI < 3 → `Unavailable {need: "kernel ≥ 6.2"}`). macOS and Windows have no mechanism in
-//!   this crate yet, so they answer `Disabled {profileNotReady}`.
+//!   ABI < 3 → `Unavailable {need: "kernel ≥ 6.2"}`). Windows: AppContainer, always
+//!   `Enforced {appcontainer}`. macOS has no mechanism in this crate yet (Task 8), so it
+//!   answers `Disabled {profileNotReady}`.
 //! - [`status`] adds [`READY`]: a profile whose escape suite has not passed on this OS runs as
 //!   before 7C (`Disabled {profileNotReady}`), unless the mechanism itself is disabled, which
 //!   is the more useful warning (its fix is a boot parameter). Every profile is treated alike
@@ -153,9 +154,17 @@ fn os_mechanism() -> Mechanism {
     }
 }
 
-#[cfg(not(target_os = "linux"))]
+/// AppContainer is part of every supported Windows (10 and 11): always enforced.
+#[cfg(windows)]
 fn os_mechanism() -> Mechanism {
-    // Seatbelt (Task 8) and AppContainer (Task 9) are not built yet.
+    Mechanism::Enforced {
+        detail: "appcontainer".into(),
+    }
+}
+
+#[cfg(not(any(target_os = "linux", windows)))]
+fn os_mechanism() -> Mechanism {
+    // Seatbelt is Task 8.
     Mechanism::Disabled {
         reason: DisabledReason::ProfileNotReady,
     }

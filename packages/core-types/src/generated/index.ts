@@ -5366,6 +5366,11 @@ export interface HookInput {
   projectDir: string;
   serverData: string;
   /**
+   * The hook's time limit (`Limits.wall_ms`): the launcher ends the whole tree when it passes
+   * (on Windows also the backstop for a Node process stuck on piped stdio, Decision 25).
+   */
+  timeoutMs?: number | null;
+  /**
    * A private temporary directory, the only write root.
    */
   tmp: string;

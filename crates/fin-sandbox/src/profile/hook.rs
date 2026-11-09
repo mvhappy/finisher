@@ -63,6 +63,9 @@ pub(crate) fn hook_on(os: Os, i: &HookInput) -> Result<SandboxPolicy, PolicyErro
         net,
         mach: vec![],
         devices: headless_devices(os),
-        limits: Limits::default(),
+        limits: Limits {
+            wall_ms: i.timeout_ms,
+            ..Limits::default()
+        },
     })
 }

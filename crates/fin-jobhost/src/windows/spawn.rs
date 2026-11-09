@@ -160,6 +160,7 @@ pub(crate) fn spawn_suspended(
     let mut line = command_line(&cmd.program, &cmd.args)?;
     let env = env_block(&cmd.env)?;
     let cwd = wide(cmd.cwd.as_os_str())?;
+    let desktop = cmd.desktop.as_deref().map(wide).transpose()?;
     let ours: [HANDLE; 3] = [raw(stdio.stdin), raw(stdio.stdout), raw(stdio.stderr)];
     // Dropped after the call: the broker's copies close.
     let in_broker = InBroker::new(broker, &ours)?;
@@ -185,6 +186,9 @@ pub(crate) fn spawn_suspended(
     si.StartupInfo.hStdInput = handles[0];
     si.StartupInfo.hStdOutput = handles[1];
     si.StartupInfo.hStdError = handles[2];
+    if let Some(d) = &desktop {
+        si.StartupInfo.lpDesktop = d.as_ptr().cast_mut();
+    }
     si.lpAttributeList = list.ptr();
     let flags = flags
         | CREATE_SUSPENDED
