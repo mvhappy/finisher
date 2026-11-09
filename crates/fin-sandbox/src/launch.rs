@@ -20,7 +20,9 @@
 //! program, so it starts it in the project's AppContainer, in a kill-on-close job, on a private
 //! desktop, and stays its parent: its exit code is the program's, and the program's tree ends
 //! when the launcher does. A limit the job reports adds a `SANDBOX_VIOLATION` line
-//! ([`violation_line`]) on stderr; the wall time ends the tree with [`EXIT_WALL_TIME`].
+//! ([`violation_line`]) on the request channel (on stderr when the channel is one-way, which a
+//! parent must not trust: the program shares it); the wall time ends the tree with
+//! [`EXIT_WALL_TIME`].
 //!
 //! Exit codes of the launcher itself: [`EXIT_USAGE`] for a malformed command line or a request
 //! offered anywhere but the descriptor; [`EXIT_UNAVAILABLE`] when the request is unreadable or

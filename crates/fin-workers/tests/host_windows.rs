@@ -237,9 +237,10 @@ fn unhandled_exception_dies_without_wer() {
 }
 
 /// What a crash of `exe` leaves for the user to see over the next `secs` seconds: a
-/// `WerFault.exe` with a window, or a report directory naming `exe` new in the per-user or
-/// machine `ReportArchive`/`ReportQueue`. One line each; nothing when there is neither.
-fn wer_trace_watch(exe: &str, secs: u32) -> std::process::Child {
+/// `WerFault.exe` with a window, or any report directory new in the per-user or machine
+/// `ReportArchive`/`ReportQueue` (WER shortens application names there, so none is filtered by
+/// name). One line each; nothing when there is neither.
+fn wer_trace_watch(secs: u32) -> std::process::Child {
     let script = format!(
         "$roots=@(\"$env:LOCALAPPDATA\\Microsoft\\Windows\\WER\\ReportArchive\", \
                   \"$env:LOCALAPPDATA\\Microsoft\\Windows\\WER\\ReportQueue\", \
@@ -252,7 +253,7 @@ fn wer_trace_watch(exe: &str, secs: u32) -> std::process::Child {
              ForEach-Object {{ $hit[\"window: $($_.Id) $($_.MainWindowTitle)\"]=1 }}; \
            Start-Sleep -Milliseconds 100 }}; \
          foreach($r in $roots){{ Get-ChildItem -LiteralPath $r -Directory -ErrorAction SilentlyContinue | \
-           Where-Object {{ -not $before.ContainsKey($_.FullName) -and $_.Name -like '*{exe}*' }} | \
+           Where-Object {{ -not $before.ContainsKey($_.FullName) }} | \
            ForEach-Object {{ $hit[\"report: $($_.FullName)\"]=1 }} }}; \
          $hit.Keys"
     );
@@ -273,7 +274,7 @@ fn fastfail_without_trace(how: &str) {
     let g = h.group();
     let p = h.worker(g);
     h.hello(p);
-    let watch = wer_trace_watch("fin-workers", 8);
+    let watch = wer_trace_watch(8);
     std::thread::sleep(Duration::from_millis(1500));
     let t0 = Instant::now();
     h.start(

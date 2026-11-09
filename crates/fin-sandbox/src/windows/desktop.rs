@@ -55,7 +55,7 @@ impl PrivateDesktop {
     pub fn new(container: &str) -> io::Result<PrivateDesktop> {
         let user = current_user()?.string();
         let station_sd = descriptor(&format!(
-            "D:P(A;;GA;;;SY)(A;;GA;;;{user})(A;;GA;;;{ALL_APP_PACKAGES})"
+            "D:P(A;;GA;;;SY)(A;;GA;;;{user})(A;;{STATION_RIGHTS:#x};;;{ALL_APP_PACKAGES})"
         ))?;
         let desktop_sd = descriptor(&desktop_sddl(&user, container))?;
         let attrs = |sd: &Sd| SECURITY_ATTRIBUTES {
@@ -68,6 +68,13 @@ impl PrivateDesktop {
         let winsta = unsafe { CreateWindowStationW(null(), 0, GENERIC_ALL, &sa) };
         if winsta.is_null() {
             return Err(io::Error::last_os_error());
+        }
+        // The station may be older than this launch, made by another program of the user
+        // with its own descriptor: make sure containers may use it.
+        if let Err(e) = admit_containers(winsta) {
+            // SAFETY: the station we opened.
+            unsafe { CloseWindowStation(winsta) };
+            return Err(e);
         }
         let desktop_name = unique_name();
         let name = match object_name(winsta) {
@@ -111,6 +118,11 @@ impl PrivateDesktop {
         })
     }
 
+    /// The station's and the desktop's DACLs as SDDL.
+    pub fn dacls(&self) -> io::Result<(String, String)> {
+        Ok((sddl_of(self.winsta)?, sddl_of(self.desktop)?))
+    }
+
     /// `<window station>\<desktop>`, for `STARTUPINFO.lpDesktop`.
     pub fn name(&self) -> &str {
         &self.name
@@ -120,9 +132,52 @@ impl PrivateDesktop {
 /// `ALL APPLICATION PACKAGES`.
 const ALL_APP_PACKAGES: &str = "S-1-15-2-1";
 
+/// What containers may do with the shared station: read its attributes and its descriptor
+/// and use global atoms (less fails their start with `STATUS_DLL_INIT_FAILED`, measured on
+/// the S9 host). Not `WRITE_DAC`, `WRITE_OWNER`, `DELETE`, creating or enumerating desktops,
+/// or reading the screen (review: one container must not lock the others out by rewriting
+/// its DACL).
+pub const STATION_RIGHTS: u32 = 0x0002 | 0x0020 | 0x0002_0000;
+
+/// What a container may do on its own desktop: read and write objects, create windows and
+/// menus, enumerate. Not hooks, journaling, switching, `WRITE_DAC`, `WRITE_OWNER`, `DELETE`.
+pub const DESKTOP_RIGHTS: u32 = 0x0001 | 0x0002 | 0x0004 | 0x0040 | 0x0080;
+
 /// The desktop's descriptor: the user, `SYSTEM` and one container.
 pub fn desktop_sddl(user: &str, container: &str) -> String {
-    format!("D:P(A;;GA;;;SY)(A;;GA;;;{user})(A;;GA;;;{container})")
+    format!("D:P(A;;GA;;;SY)(A;;GA;;;{user})(A;;{DESKTOP_RIGHTS:#x};;;{container})")
+}
+
+/// Adds the containers' entry to the station's DACL when it lacks one.
+fn admit_containers(winsta: HWINSTA) -> io::Result<()> {
+    let current = sddl_of(winsta)?;
+    if current.contains(&station_ace()?) {
+        return Ok(());
+    }
+    let ac = super::sid::Sid::parse(ALL_APP_PACKAGES)?;
+    super::acl::grant_object(winsta, &ac, STATION_RIGHTS)
+}
+
+/// An allow ACE as Windows writes it in SDDL (rights as letters where it has them).
+fn ace(mask: u32, sid: &str) -> io::Result<String> {
+    let sd = descriptor(&format!("D:(A;;{mask:#x};;;{sid})"))?;
+    let s = super::acl::descriptor_sddl(sd.0)?;
+    Ok(s.trim_start_matches("D:").to_owned())
+}
+
+/// The containers' entry on the station, as [`PrivateDesktop::dacls`] shows it.
+pub fn station_ace() -> io::Result<String> {
+    ace(STATION_RIGHTS, ALL_APP_PACKAGES)
+}
+
+/// `container`'s entry on its desktop, as [`PrivateDesktop::dacls`] shows it.
+pub fn desktop_ace(container: &str) -> io::Result<String> {
+    ace(DESKTOP_RIGHTS, container)
+}
+
+/// The DACL of a window station or desktop, as SDDL (tests read both back).
+pub(crate) fn sddl_of(h: HWINSTA) -> io::Result<String> {
+    super::acl::object_sddl(h)
 }
 
 /// A desktop name no other launch uses: `fin-<pid>-<n>`.

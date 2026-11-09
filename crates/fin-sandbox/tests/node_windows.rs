@@ -3,7 +3,8 @@
 //! in `NODE_OPTIONS`, and the guard turns a `child_process` call with piped stdio, which would
 //! hang inside a container, into a `WINDOWS_NODE_PIPES` error within its probe's timeout.
 //!
-//! Needs Node: `FIN_TEST_NODE=<path to node.exe>` (else each case is skipped with a notice;
+//! Needs Node: `FIN_TEST_NODE=<path to node.exe>` or `node.exe` on `PATH` (else each case is
+//! skipped with a notice;
 //! `FIN_REQUIRE_NODE=1` turns the skip into a failure). Node is copied into the test's
 //! toolchain folder, which the toolchain capability is granted on, as `finisherd` grants the
 //! real toolchain roots.
@@ -23,16 +24,25 @@ use fin_sandbox::windows::sid::Sid;
 use fin_sandbox::windows::{acl, appcontainer, capability};
 use windows_support::{Run, Tree, run_in};
 
+/// `FIN_TEST_NODE`, else `node.exe` on `PATH`.
 fn node_or_skip(test: &str) -> Option<PathBuf> {
-    match std::env::var_os("FIN_TEST_NODE") {
-        Some(n) => Some(PathBuf::from(n)),
+    let on_path = || {
+        std::env::split_paths(&std::env::var_os("PATH")?)
+            .map(|d| d.join("node.exe"))
+            .find(|n| n.is_file())
+    };
+    match std::env::var_os("FIN_TEST_NODE")
+        .map(PathBuf::from)
+        .or_else(on_path)
+    {
+        Some(n) => Some(n),
         None => {
             assert_ne!(
                 std::env::var("FIN_REQUIRE_NODE").as_deref(),
                 Ok("1"),
                 "{test}: FIN_TEST_NODE is not set"
             );
-            eprintln!("{test}: skipped, FIN_TEST_NODE is not set");
+            eprintln!("{test}: skipped, FIN_TEST_NODE is not set and no node.exe is on PATH");
             None
         }
     }
@@ -235,4 +245,87 @@ fn guard_inert_when_pipes_work() {
         .output()
         .unwrap();
     assert_eq!(String::from_utf8_lossy(&out.stdout), "hi", "{out:?}");
+}
+
+/// A hook with a wall time, Node in its toolchain, `script` as its file.
+fn hook_setup(node: &Path, script: &str, timeout_ms: u64) -> (Tree, LaunchRequest, String) {
+    use fin_sandbox::HookInput;
+    let t = Tree::new();
+    for d in ["p", "data/hooks/h1", "tools"] {
+        t.dir(d);
+    }
+    std::fs::copy(node, t.p("tools/node.exe")).unwrap();
+    let file = t.write("p/hooks/h.js", script);
+    let i = HookInput {
+        project_dir: t.p("p"),
+        hook_file: file,
+        toolchains: vec![t.p("tools")],
+        tmp: t.p("data/hooks/h1"),
+        server_data: t.p("data"),
+        home: t.p("home"),
+        fin: None,
+        timeout_ms: Some(timeout_ms),
+    };
+    for g in grants::hook(&i)
+        .unwrap()
+        .into_iter()
+        .filter(|g| g.path.exists())
+    {
+        let sid = match &g.trustee {
+            Trustee::Sid(s) => Sid::parse(s).unwrap(),
+            Trustee::Container(c) => appcontainer::sid(c).unwrap(),
+        };
+        acl::grant(&g.path, &sid, g.mask, true).unwrap();
+    }
+    let container = capability::project_container(&i.project_dir);
+    (t, LaunchRequest::Hook(i), container)
+}
+
+fn run_hook(t: &Tree, req: &LaunchRequest) -> Run {
+    let node = t.p("tools/node.exe").to_string_lossy().into_owned();
+    let script = t.p("p/hooks/h.js").to_string_lossy().into_owned();
+    let cwd = t.p("data/hooks/h1");
+    run_in(req, &[&node, &script], &[], Some(&cwd))
+}
+
+#[test]
+fn wall_time_reports_node_pipes_for_a_node_without_the_guard() {
+    let Some(node) = node_or_skip("wall_time_reports_node_pipes_for_a_node_without_the_guard")
+    else {
+        return;
+    };
+    // The grandchild Node loads no guard (its environment drops it) and hangs on piped
+    // stdio, as a Node started by a tool that resets NODE_OPTIONS would.
+    let script = r#"
+const cp = require("node:child_process");
+const env = { ...process.env };
+delete env.NODE_OPTIONS;
+delete env.FIN_SANDBOX_NODE_GUARD;
+cp.spawnSync(process.execPath, ["--preserve-symlinks", "--preserve-symlinks-main", "-e",
+  "require('node:child_process').spawnSync('cmd.exe', ['/c', 'echo hi'])"], { stdio: "inherit", env });
+"#;
+    let (t, req, container) = hook_setup(&node, script, 6000);
+    let t0 = Instant::now();
+    let r = run_hook(&t, &req);
+    let _ = appcontainer::delete(&container);
+    assert_eq!(r.code, Some(fin_sandbox::launch::EXIT_WALL_TIME), "{r:?}");
+    assert!(t0.elapsed() < Duration::from_secs(30), "{:?}", t0.elapsed());
+    assert!(r.stderr.contains(r#""op":"nodePipes""#), "{r:?}");
+}
+
+#[test]
+fn wall_time_reports_wall_time_for_a_busy_program() {
+    let Some(node) = node_or_skip("wall_time_reports_wall_time_for_a_busy_program") else {
+        return;
+    };
+    let script = r#"
+const fs = require("node:fs");
+const f = require("node:path").join(process.cwd(), "busy.txt");
+for (;;) { fs.writeFileSync(f, String(Date.now())); }
+"#;
+    let (t, req, container) = hook_setup(&node, script, 4000);
+    let r = run_hook(&t, &req);
+    let _ = appcontainer::delete(&container);
+    assert_eq!(r.code, Some(fin_sandbox::launch::EXIT_WALL_TIME), "{r:?}");
+    assert!(r.stderr.contains(r#""op":"wallTime""#), "{r:?}");
 }

@@ -49,7 +49,8 @@ pub struct ContainerPlan {
     pub capabilities: Vec<Capability>,
     /// The launcher's `LOCALAPPDATA` for the process (S9 point 7: Windows rewrites `TEMP` to
     /// `<LOCALAPPDATA>\Packages\<container>\AC\Temp`, so without it `TEMP` is per project).
-    /// `None` for workers and plugins, whose temp the job host already makes private.
+    /// For workers and plugins it lies in their private temp too (review: otherwise every job
+    /// of a family, across projects, and every call of a plugin would share one `TEMP`).
     pub local_app_data: Option<PathBuf>,
 }
 
@@ -61,6 +62,19 @@ impl ContainerPlan {
                 .join(&self.container)
                 .join("AC")
                 .join("Temp")
+        })
+    }
+
+    /// The capability of the process's own owner (its session, hook call, job, warm worker or
+    /// plugin call), which its process DACL names besides the user (review B1): not the
+    /// toolchain's, a project view's, a sign-in store's or a well-known one.
+    pub fn owner(&self) -> Option<&Capability> {
+        self.capabilities.iter().find(|c| {
+            c.name.as_deref().is_some_and(|n| {
+                n != TOOLCHAIN
+                    && !n.starts_with("finisher-signin-")
+                    && !n.starts_with("finisher-pv-")
+            })
         })
     }
 
@@ -79,7 +93,7 @@ const APPDATA: &str = "appdata";
 pub fn launch(req: &LaunchRequest, policy: &SandboxPolicy) -> Result<ContainerPlan, String> {
     match req {
         LaunchRequest::Agent(i) => agent(i, policy),
-        LaunchRequest::Hook(i) => Ok(hook(i)),
+        LaunchRequest::Hook(i) => hook(i),
     }
 }
 
@@ -89,6 +103,7 @@ pub fn agent(i: &AgentInput, policy: &SandboxPolicy) -> Result<ContainerPlan, St
     let mut caps = vec![
         Capability::named(capability::session(&i.session_id)?),
         Capability::named(TOOLCHAIN.into()),
+        Capability::named(capability::project_view(&i.project_dir, &policy.deny_read)),
     ];
     if i.sign_in_store.is_some() {
         let harness = serde_json::to_value(i.harness)
@@ -109,15 +124,17 @@ pub fn agent(i: &AgentInput, policy: &SandboxPolicy) -> Result<ContainerPlan, St
 
 /// `hook`: the project's container; the toolchain's capability and the call's own. No
 /// `internetClient` (a hook reaches `fin` through the pipe, whose DACL admits the container).
-pub fn hook(i: &HookInput) -> ContainerPlan {
-    ContainerPlan {
+pub fn hook(i: &HookInput) -> Result<ContainerPlan, String> {
+    let policy = crate::profile::hook(i).map_err(|e| e.to_string())?;
+    Ok(ContainerPlan {
         container: capability::project_container(&i.project_dir),
         capabilities: vec![
             Capability::named(TOOLCHAIN.into()),
             Capability::named(capability::hook(&i.tmp)),
+            Capability::named(capability::project_view(&i.project_dir, &policy.deny_read)),
         ],
         local_app_data: Some(i.tmp.join(APPDATA)),
-    }
+    })
 }
 
 fn last(p: &Path) -> Result<&str, String> {
@@ -137,7 +154,7 @@ pub fn worker(i: &WorkerInput, family: &str) -> Result<ContainerPlan, String> {
     Ok(ContainerPlan {
         container: capability::worker_container(family)?,
         capabilities: vec![Capability::named(cap)],
-        local_app_data: None,
+        local_app_data: Some(i.tmp.join(APPDATA)),
     })
 }
 
@@ -153,7 +170,7 @@ pub fn plugin(i: &PluginInput) -> Result<ContainerPlan, String> {
             Capability::named(TOOLCHAIN.into()),
             Capability::named(capability::call(last(&i.call_dir)?)?),
         ],
-        local_app_data: None,
+        local_app_data: Some(i.tmp.join(APPDATA)),
     })
 }
 
@@ -211,7 +228,7 @@ mod tests {
             fin: None,
             timeout_ms: None,
         };
-        assert!(!hook(&h).has_internet());
+        assert!(!hook(&h).unwrap().has_internet());
         let p = PluginInput {
             store_dir: r.join("data").join("plugins").join("store").join("a"),
             runtime: vec![],
@@ -227,5 +244,13 @@ mod tests {
             home: r.join("home"),
         };
         assert!(!plugin(&p).unwrap().has_internet());
+        // Each process's own capability, for its DACL.
+        let own = |c: &ContainerPlan| c.owner().and_then(|o| o.name.clone()).unwrap();
+        assert_eq!(
+            own(&agent(&i, &policy(Net::None)).unwrap()),
+            "finisher-session-s1"
+        );
+        assert_eq!(own(&hook(&h).unwrap()), capability::hook(&h.tmp));
+        assert_eq!(own(&plugin(&p).unwrap()), "finisher-call-c1");
     }
 }

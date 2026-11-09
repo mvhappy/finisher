@@ -7,7 +7,8 @@
 //!
 //! | Name | Who carries it | What the broker grants it |
 //! |---|---|---|
-//! | container `finisher-p-<hash>` | every `agent` and `hook` process of one project | the project folder (read) |
+//! | container `finisher-p-<hash>` | every `agent` and `hook` process of one project | nothing (the pipe's DACL names it) |
+//! | `finisher-pv-<hash>` | the processes of one project that see it alike (same denied paths) | the project folder and libraries (read), enumerated |
 //! | container `finisher-worker-<family>` | the workers of a family | nothing (each job has its capability) |
 //! | container `finisher-plugin-<hash>` | one plugin in one project | its store directory, its models |
 //! | `finisher-session-<sessionId>` | one agent session | its session directory and workspace |
@@ -97,6 +98,26 @@ fn bounded(name: String, max: usize) -> Result<String, String> {
 /// The container of a project's agents and hooks.
 pub fn project_container(project_dir: &Path) -> String {
     format!("finisher-p-{}", path_hash(project_dir, 24))
+}
+
+/// The capability that reads a project folder as one policy sees it (review B2): named after
+/// the folder and the denied paths inside it, so a Claude Code session (its project files
+/// denied, spec §4.5) and a Codex session or a hook (none denied) carry different ones, and a
+/// grant made for one view never opens what another view denies. Processes of one view share
+/// the grant, which is static.
+pub fn project_view(project_dir: &Path, denied: &[std::path::PathBuf]) -> String {
+    let mut key = project_dir.to_string_lossy().to_lowercase();
+    let mut inside: Vec<String> = denied
+        .iter()
+        .filter(|d| d.starts_with(project_dir))
+        .map(|d| d.to_string_lossy().to_lowercase())
+        .collect();
+    inside.sort();
+    for d in inside {
+        key.push('\0');
+        key.push_str(&d);
+    }
+    format!("finisher-pv-{}", short_hash(key.as_bytes(), 24))
 }
 
 /// The container of a worker family's processes.

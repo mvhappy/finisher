@@ -50,6 +50,7 @@ impl Setup {
             "p/finisher.project.json",
             "p/sources/clip.mp4",
             "p/hooks/check.cmd",
+            "p/CLAUDE.md",
             "q/other.txt",
             "home/.ssh/id_ed25519",
         ] {
@@ -102,7 +103,12 @@ impl Setup {
     /// An agent launch of `session` in `project`, its table granted first (as the broker
     /// does).
     fn agent(&mut self, session: &str, project: &str) -> LaunchRequest {
-        let i = self.agent_input(session, project);
+        self.agent_as(session, project, Harness::Codex)
+    }
+
+    fn agent_as(&mut self, session: &str, project: &str, harness: Harness) -> LaunchRequest {
+        let mut i = self.agent_input(session, project);
+        i.harness = harness;
         self.apply(&grants::agent(&i).unwrap());
         self.containers
             .push(capability::project_container(&i.project_dir));
@@ -216,9 +222,15 @@ fn agent_token_is_its_project_container_with_exactly_its_capabilities() {
     assert_eq!(t["appContainer"], true, "{v}");
     let c = appcontainer::sid(&capability::project_container(&st.p("p"))).unwrap();
     assert_eq!(t["container"], c.string());
+    let i = st.agent_input("s1", "p");
+    let view = capability::project_view(
+        &i.project_dir,
+        &fin_sandbox::profile::agent(&i).unwrap().deny_read,
+    );
     let want = [
         capability_sid("finisher-session-s1"),
         capability_sid(TOOLCHAIN),
+        capability_sid(&view),
         INTERNET_CLIENT.to_string(),
     ];
     let got: Vec<String> = serde_json::from_value(t["capabilities"].clone()).unwrap();
@@ -231,9 +243,17 @@ fn hook_token_has_no_network_capability() {
     let req = st.hook(None);
     let v = probe(&req, &["token"]);
     let got: Vec<String> = serde_json::from_value(v["token"]["capabilities"].clone()).unwrap();
+    let LaunchRequest::Hook(i) = &req else {
+        unreachable!()
+    };
+    let view = capability::project_view(
+        &i.project_dir,
+        &fin_sandbox::profile::hook(i).unwrap().deny_read,
+    );
     let want = [
         capability_sid(TOOLCHAIN),
         capability_sid(&capability::hook(&st.p("data/hooks/h1"))),
+        capability_sid(&view),
     ];
     assert_eq!(got, want);
 }
@@ -404,7 +424,10 @@ fn job_is_kill_on_close_with_ui_limits_and_no_breakaway() {
         "{v}"
     );
     assert_eq!(flags & BREAKAWAY, 0, "{v}");
-    assert_eq!(v["ui"].as_u64(), Some(u64::from(UI_LIMITS)), "{v}");
+    // HANDLES 0x1, READCLIPBOARD 0x2, WRITECLIPBOARD 0x4, SYSTEMPARAMETERS 0x8,
+    // DISPLAYSETTINGS 0x10, DESKTOP 0x40, EXITWINDOWS 0x80; not GLOBALATOMS (0x20).
+    assert_eq!(v["ui"].as_u64(), Some(0xDF), "{v}");
+    assert_eq!(UI_LIMITS, 0xDF);
 }
 
 #[test]
@@ -487,17 +510,52 @@ fn wall_time_ends_the_tree_and_reports_it() {
 
 #[test]
 fn a_crash_in_the_container_shows_no_window_and_keeps_no_report() {
+    // Control: the same crash unconfined, with the default error mode, starts WerFault, so
+    // the watcher can see what it looks for.
+    let control = windows_support::wer_watch(8);
+    std::thread::sleep(std::time::Duration::from_millis(1500));
+    let _ = std::process::Command::new(windows_support::PROBE)
+        .args(["crash", "av"])
+        .status();
+    let seen = String::from_utf8_lossy(&control.wait_with_output().unwrap().stdout).into_owned();
+    assert!(seen.contains("werfault:"), "control: {seen:?}");
+
     let mut st = Setup::new();
     let req = st.agent("s1", "p");
     for (how, code) in [("av", 0xC000_0005u32), ("fastfail", 0xC000_0409)] {
-        let watch = windows_support::wer_watch("fin-sandbox-probe", 8);
+        let watch = windows_support::wer_watch(8);
         std::thread::sleep(std::time::Duration::from_millis(1500));
         let r = run(&req, &[windows_support::PROBE, "crash", how]);
         assert_eq!(r.code.map(|c| c as u32), Some(code), "{how}: {r:?}");
-        let seen = watch.wait_with_output().unwrap();
-        let seen = String::from_utf8_lossy(&seen.stdout);
-        assert!(seen.trim().is_empty(), "{how}: {seen}");
+        let seen = String::from_utf8_lossy(&watch.wait_with_output().unwrap().stdout).into_owned();
+        // A `__fastfail` may still start a headless WerFault (Decision 22); an access
+        // violation, with the inherited error mode, none at all.
+        let shown: Vec<&str> = seen
+            .lines()
+            .filter(|l| how == "av" || !l.starts_with("werfault:"))
+            .filter(|l| !l.trim().is_empty())
+            .collect();
+        assert!(shown.is_empty(), "{how}: {seen}");
     }
+}
+
+#[test]
+fn the_station_and_desktop_admit_only_what_they_must() {
+    use fin_sandbox::windows::desktop::{PrivateDesktop, desktop_ace, station_ace};
+    let c = appcontainer::sid(&format!("finisher-p-dacl{}", std::process::id()))
+        .unwrap()
+        .string();
+    let d = PrivateDesktop::new(&c).unwrap();
+    let (station, desktop) = d.dacls().unwrap();
+    // Containers may use the shared station, not rewrite it.
+    assert!(station.contains(&station_ace().unwrap()), "{station}");
+    assert!(
+        !station.contains("A;;GA;;;AC") && !station.contains(&c),
+        "{station}"
+    );
+    // Its desktop admits its own container alone.
+    assert!(desktop.contains(&desktop_ace(&c).unwrap()), "{desktop}");
+    assert!(!desktop.contains(";;;AC)"), "{desktop}");
 }
 
 #[test]
@@ -519,4 +577,96 @@ fn concurrent_launches_of_different_projects_all_start() {
             assert_eq!(r.json()["token"]["appContainer"], true, "{r:?}");
         }
     });
+}
+
+#[test]
+fn processes_of_other_sessions_grant_nothing() {
+    // Two sessions of one project share its container: neither may open the other's process.
+    let mut st = Setup::new();
+    let a = st.agent("s1", "p");
+    let b = st.agent("s2", "p");
+    let wa = Waiting::start(&a);
+    let wb = Waiting::start(&b);
+    let got = windows_support::process_access(&wb.token_handle(), wa.pid());
+    assert_eq!(got, 0, "session B on session A's process: {got:#x}");
+    let got = windows_support::process_access(&wa.token_handle(), wb.pid());
+    assert_eq!(got, 0, "session A on session B's process: {got:#x}");
+}
+
+#[test]
+fn only_the_standard_handles_reach_the_container() {
+    let mut st = Setup::new();
+    let req = st.agent("s1", "p");
+    // The launcher holds the request's pipe handle (`{fd}`): it is not open in the program.
+    let r = run(&req, &[windows_support::PROBE, "handle", "{fd}"]);
+    let closed = |r: &windows_support::Run| {
+        r.code.map(|c| c as u32) == Some(0xC000_0008)
+            || (r.code == Some(0) && r.json()["open"] == false)
+    };
+    assert!(closed(&r), "the request handle: {r:?}");
+    // A decoy the launcher inherits from us, inheritable there too: the handle list keeps it
+    // from the program (inherited handles keep their values).
+    use std::os::windows::io::AsRawHandle;
+    let (decoy, _w) = std::io::pipe().unwrap();
+    let h = decoy.as_raw_handle();
+    // SAFETY: a pipe end we own; only its inherit flag changes.
+    let ok = unsafe { windows_sys::Win32::Foundation::SetHandleInformation(h as _, 1, 1) };
+    assert_ne!(ok, 0);
+    let v = (h as usize).to_string();
+    let r = run(&req, &[windows_support::PROBE, "handle", &v]);
+    // Not open: either the query says so, or the container's strict handle checks end the
+    // probe with STATUS_INVALID_HANDLE.
+    let closed = r.code.map(|c| c as u32) == Some(0xC000_0008)
+        || (r.code == Some(0) && r.json()["open"] == false);
+    assert!(closed, "{r:?}");
+}
+
+#[test]
+fn children_of_other_sessions_grant_nothing() {
+    // A process the container starts gets its DACL from its token's default DACL, which the
+    // launcher set before the program ran.
+    let mut st = Setup::new();
+    let probe_copy = st.p("tools/probe.exe");
+    std::fs::copy(windows_support::PROBE, &probe_copy).unwrap();
+    let a = st.agent("s1", "p");
+    let b = st.agent("s2", "p");
+    let pc = s(&probe_copy);
+    let wa = Waiting::start_argv(&a, &[windows_support::PROBE, "spawn-wait", &pc]);
+    let wb = Waiting::start(&b);
+    assert_eq!(wa.token["token"]["appContainer"], true, "{}", wa.token);
+    let got = windows_support::process_access(&wb.token_handle(), wa.pid());
+    assert_eq!(got, 0, "session B on session A's child: {got:#x}");
+    // Its own session's process may open it (one trust domain).
+    let mine = Waiting::start(&a);
+    assert_ne!(
+        windows_support::process_access(&mine.token_handle(), wa.pid()),
+        0
+    );
+}
+
+#[test]
+fn another_harness_grant_does_not_open_claude_codes_denied_files() {
+    // A Codex session grants the project as a whole; a Claude Code session of the same project
+    // still cannot read its denied project files (spec §4.5): it reads the project through
+    // another view capability.
+    let mut st = Setup::new();
+    let codex = st.agent("s1", "p");
+    let claude = st.agent_as("s2", "p", Harness::ClaudeCode);
+    let wc = Waiting::start(&codex);
+    let wl = Waiting::start(&claude);
+    let md = st.p("p/CLAUDE.md");
+    assert_ne!(
+        file_access(&wc.token_handle(), &md) & FILE_READ_DATA,
+        0,
+        "control: Codex reads it"
+    );
+    assert_eq!(
+        file_access(&wl.token_handle(), &md),
+        0,
+        "Claude Code is denied it"
+    );
+    assert_ne!(
+        file_access(&wl.token_handle(), &st.p("p/sources/clip.mp4")) & FILE_READ_DATA,
+        0
+    );
 }

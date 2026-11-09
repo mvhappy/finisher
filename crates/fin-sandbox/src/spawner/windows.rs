@@ -12,6 +12,7 @@
 //! for the capability the plan names, before the start.
 
 use std::collections::HashMap;
+use std::ffi::OsString;
 use std::sync::{Arc, Mutex};
 
 use fin_jobhost::spawner::{PlatformCommand, UiLimits, WinAttribute};
@@ -61,6 +62,42 @@ pub fn contain(
         value,
     });
     cmd.desktop = Some(desktops.of(&container)?.into());
+    // Processes of one container belong to different jobs and calls (review B1).
+    let own = plan.owner().ok_or("the plan names no owner capability")?;
+    let user = crate::windows::sid::current_user().map_err(|e| format!("the user: {e}"))?;
+    cmd.dacl = Some(fin_jobhost::process_dacl::sddl(&user.string(), &own.sid));
     cmd.job_limits.ui = Some(UiLimits(UI_LIMITS));
+    private_temp(plan, cmd)?;
+    // A Node plugin host needs the flags Node needs in a container (S9 point 8a).
+    if crate::windows::launcher::is_node(cmd.program.as_os_str()) {
+        let flags = crate::windows::launcher::NODE_FLAGS
+            .iter()
+            .map(OsString::from);
+        cmd.args.splice(0..0, flags);
+    }
+    Ok(())
+}
+
+/// `LOCALAPPDATA` in the process's private temp and `TEMP`, `TMP`, `TMPDIR` at the folder
+/// Windows derives from it (S9 point 7), made before the start.
+fn private_temp(plan: &ContainerPlan, cmd: &mut PlatformCommand) -> Result<(), String> {
+    let (Some(lad), Some(temp)) = (&plan.local_app_data, plan.temp()) else {
+        return Ok(());
+    };
+    std::fs::create_dir_all(&temp).map_err(|e| format!("{}: {e}", temp.display()))?;
+    let set = [
+        ("LOCALAPPDATA", lad.clone()),
+        ("TEMP", temp.clone()),
+        ("TMP", temp.clone()),
+        ("TMPDIR", temp),
+    ];
+    cmd.env.retain(|(k, _)| {
+        !set.iter()
+            .any(|(n, _)| k.to_string_lossy().eq_ignore_ascii_case(n))
+    });
+    cmd.env.extend(
+        set.into_iter()
+            .map(|(k, v)| (OsString::from(k), v.into_os_string())),
+    );
     Ok(())
 }

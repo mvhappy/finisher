@@ -115,8 +115,9 @@ pub fn spawn_in(
     );
     let fd = (h as usize).to_string();
     let mut cmd = Command::new(EXEC);
+    // `{fd}` in `argv` is the request handle's value (to check it does not reach the program).
     cmd.args(["--policy-fd", &fd, "--"])
-        .args(argv)
+        .args(argv.iter().map(|a| a.replace("{fd}", &fd)))
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -188,7 +189,12 @@ pub struct Waiting {
 
 impl Waiting {
     pub fn start(req: &LaunchRequest) -> Waiting {
-        let mut child = spawn(req, &[PROBE, "wait"], &[]);
+        Waiting::start_argv(req, &[PROBE, "wait"])
+    }
+
+    /// A waiting probe started by `argv` (its first stdout line is the waiting one's token).
+    pub fn start_argv(req: &LaunchRequest, argv: &[&str]) -> Waiting {
+        let mut child = spawn(req, argv, &[]);
         let mut line = String::new();
         BufReader::new(child.stdout.as_mut().unwrap())
             .read_line(&mut line)
@@ -267,8 +273,28 @@ pub fn impersonation_token(pid: u32) -> OwnedHandle {
 /// # Safety
 /// `sd` is a valid self-relative security descriptor with owner, group and DACL.
 pub unsafe fn access_of(token: &OwnedHandle, sd: PSECURITY_DESCRIPTOR) -> u32 {
+    // SAFETY: the caller's promise.
+    unsafe { access_with(token, sd, FILE_MAPPING) }
+}
+
+/// The process generic mapping (`PROCESS_*`).
+pub const PROCESS_MAPPING: GENERIC_MAPPING = GENERIC_MAPPING {
+    GenericRead: 0x0002_0410,
+    GenericWrite: 0x0002_0BEA,
+    GenericExecute: 0x0012_1000,
+    GenericAll: 0x001F_FFFF,
+};
+
+/// [`access_of`] with another generic mapping.
+///
+/// # Safety
+/// As [`access_of`].
+pub unsafe fn access_with(
+    token: &OwnedHandle,
+    sd: PSECURITY_DESCRIPTOR,
+    mapping: GENERIC_MAPPING,
+) -> u32 {
     let mut desired = MAXIMUM_ALLOWED;
-    let mapping = FILE_MAPPING;
     // SAFETY: valid pointers.
     unsafe { MapGenericMask(&mut desired, &mapping) };
     let mut privs = vec![0u64; 32];
@@ -381,6 +407,23 @@ pub fn pipe_server(name: &str, sddl: &str) -> OwnedHandle {
 
 /// The access `token` has on a kernel object by its security descriptor.
 pub fn object_access(token: &OwnedHandle, object: &OwnedHandle) -> u32 {
+    object_access_with(token, object, FILE_MAPPING)
+}
+
+/// The access `token` has on process `pid` by its security descriptor.
+pub fn process_access(token: &OwnedHandle, pid: u32) -> u32 {
+    const READ_CONTROL: u32 = 0x0002_0000;
+    // SAFETY: a handle we own.
+    let p = owned(unsafe { OpenProcess(READ_CONTROL, 0, pid) });
+    object_access_with(token, &p, PROCESS_MAPPING)
+}
+
+/// [`object_access`] with another generic mapping.
+pub fn object_access_with(
+    token: &OwnedHandle,
+    object: &OwnedHandle,
+    mapping: GENERIC_MAPPING,
+) -> u32 {
     use windows_sys::Win32::Security::Authorization::{GetSecurityInfo, SE_KERNEL_OBJECT};
     let si = OWNER_SECURITY_INFORMATION
         | GROUP_SECURITY_INFORMATION
@@ -402,7 +445,7 @@ pub fn object_access(token: &OwnedHandle, object: &OwnedHandle) -> u32 {
     };
     assert_eq!(e, 0, "GetSecurityInfo: {e}");
     // SAFETY: the descriptor just read.
-    unsafe { access_of(token, sd) }
+    unsafe { access_with(token, sd, mapping) }
 }
 
 /// Whether process `pid` ends within `ms`.
@@ -421,24 +464,26 @@ pub fn ends_within(pid: u32, ms: u32) -> bool {
     }
 }
 
-/// Watches for `secs` seconds what a crash of `exe` (a file stem) leaves for the user to see:
-/// a `WerFault.exe` with a window (`window: <pid> <title>`), and a report directory naming
-/// `exe` that appeared in the per-user or machine `ReportArchive`/`ReportQueue`
-/// (`report: <path>`). Prints nothing when there is neither (plan 7C Decision 22).
-pub fn wer_watch(exe: &str, secs: u32) -> Child {
+/// Watches for `secs` seconds what a crash leaves: every `WerFault.exe` (`werfault: <pid>`), one
+/// with a window (`window: <pid> <title>`), and any report directory new in the per-user or
+/// machine `ReportArchive`/`ReportQueue` (`report: <path>`; WER shortens application names in
+/// them, so none is filtered by name). `MainWindowHandle` sees the watcher's own desktop.
+pub fn wer_watch(secs: u32) -> Child {
     let script = format!(
         "$roots=@(\"$env:LOCALAPPDATA\\Microsoft\\Windows\\WER\\ReportArchive\", \
                   \"$env:LOCALAPPDATA\\Microsoft\\Windows\\WER\\ReportQueue\", \
                   \"$env:ProgramData\\Microsoft\\Windows\\WER\\ReportArchive\", \
                   \"$env:ProgramData\\Microsoft\\Windows\\WER\\ReportQueue\"); \
          $before=@{{}}; foreach($r in $roots){{ Get-ChildItem -LiteralPath $r -Directory -ErrorAction SilentlyContinue | ForEach-Object {{ $before[$_.FullName]=1 }} }}; \
+         $old=@{{}}; Get-Process -Name WerFault -ErrorAction SilentlyContinue | ForEach-Object {{ $old[$_.Id]=1 }}; \
          $end=(Get-Date).AddSeconds({secs}); $hit=@{{}}; \
          while((Get-Date) -lt $end) {{ \
-           Get-Process -Name WerFault -ErrorAction SilentlyContinue | Where-Object {{ $_.MainWindowHandle -ne 0 }} | \
-             ForEach-Object {{ $hit[\"window: $($_.Id) $($_.MainWindowTitle)\"]=1 }}; \
-           Start-Sleep -Milliseconds 100 }}; \
+           Get-Process -Name WerFault -ErrorAction SilentlyContinue | Where-Object {{ -not $old.ContainsKey($_.Id) }} | ForEach-Object {{ \
+             $hit[\"werfault: $($_.Id)\"]=1; \
+             if ($_.MainWindowHandle -ne 0) {{ $hit[\"window: $($_.Id) $($_.MainWindowTitle)\"]=1 }} }}; \
+           Start-Sleep -Milliseconds 50 }}; \
          foreach($r in $roots){{ Get-ChildItem -LiteralPath $r -Directory -ErrorAction SilentlyContinue | \
-           Where-Object {{ -not $before.ContainsKey($_.FullName) -and $_.Name -like '*{exe}*' }} | \
+           Where-Object {{ -not $before.ContainsKey($_.FullName) }} | \
            ForEach-Object {{ $hit[\"report: $($_.FullName)\"]=1 }} }}; \
          $hit.Keys"
     );

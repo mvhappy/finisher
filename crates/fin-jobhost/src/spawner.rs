@@ -120,6 +120,11 @@ pub struct PlatformCommand {
     /// which the spawner keeps alive. `None`: the host's own.
     #[cfg(windows)]
     pub desktop: Option<OsString>,
+    /// The process's own DACL as SDDL (`D:P(...)`, [`crate::process_dacl::sddl`]): given to
+    /// the process and its first thread at creation, and made its token's default DACL before
+    /// it runs. `None`: the token's default.
+    #[cfg(windows)]
+    pub dacl: Option<String>,
 }
 
 impl fmt::Debug for PlatformCommand {
@@ -250,6 +255,8 @@ pub(crate) fn command(binary_dir: &Path, req: &SpawnRequest) -> Result<PlatformC
         token: None,
         #[cfg(windows)]
         desktop: None,
+        #[cfg(windows)]
+        dacl: None,
     })
 }
 

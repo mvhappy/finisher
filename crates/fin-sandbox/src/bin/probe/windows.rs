@@ -6,7 +6,7 @@
 //! ```text
 //! fin-sandbox-probe token | wait | errormode | job | desktop | env <name> | read <file>
 //!                   | write <file> <text> | mkdir <dir> | list <dir> | pipe <name>
-//!                   | crash av|fastfail
+//!                   | crash av|fastfail | handle <n> | spawn-wait <exe>
 //! ```
 //! Each op prints one JSON line. `wait` prints the `token` line, then waits for its stdin to
 //! close (the suite reads its token meanwhile). Exit 0 when the op ran, 2 for a usage error.
@@ -162,6 +162,22 @@ pub fn main() {
         ),
         "pipe" => io_result(op, pipe(a(1))),
         "crash" => crash(a(1)),
+        // Starts `<exe> wait` with this process's standard handles and waits for it: the child
+        // prints its own `token` line (with its pid).
+        "spawn-wait" => {
+            let st = std::process::Command::new(a(1)).arg("wait").status();
+            json!({ "op": op, "ok": st.map(|s| s.success()).unwrap_or(false) })
+        }
+        // Whether handle value `n` is open in this process (only the standard handles may be
+        // inherited).
+        "handle" => {
+            let n: usize = a(1).parse().unwrap_or_else(|_| usage("a handle value"));
+            let mut flags = 0u32;
+            // SAFETY: only queries a handle value's flags.
+            let ok =
+                unsafe { windows_sys::Win32::Foundation::GetHandleInformation(n as _, &mut flags) };
+            json!({ "op": op, "open": ok != 0 })
+        }
         _ => usage(&format!("unknown op {op:?}")),
     };
     println!("{line}");

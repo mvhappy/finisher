@@ -43,9 +43,12 @@ if (process.platform === "win32" && process.env.FIN_SANDBOX_NODE_GUARD === "1") 
     } catch {
       // A probe that cannot run says nothing: treat the pipes as broken.
     }
-    verdict = Atomics.load(flag, 0) === 1;
+    const answer = Atomics.load(flag, 0);
     if (worker) worker.terminate().catch(() => {});
-    return verdict;
+    // Only a definite answer is kept: a probe that timed out (a loaded host) refuses this call
+    // and is asked again next time.
+    if (answer !== 0) verdict = answer === 1;
+    return answer === 1;
   };
 
   const PIPES = new Set(["pipe", "overlapped", "ipc"]);
@@ -75,12 +78,15 @@ if (process.platform === "win32" && process.env.FIN_SANDBOX_NODE_GUARD === "1") 
     return e;
   };
 
+  // `exec` and `execFile` collect the output through pipes whatever `stdio` says, so they
+  // always count as piped.
   const wrap = (name, fork) => {
     const real = cp[name];
     if (typeof real !== "function") return;
     cp[name] = function guarded(...args) {
       const opts = optionsOf(args.slice(1));
-      if (piped(opts && opts.stdio, fork) && !pipesWork()) {
+      const always = name === "exec" || name === "execFile";
+      if ((always || piped(opts && opts.stdio, fork)) && !pipesWork()) {
         throw refuse();
       }
       return real.apply(this, args);

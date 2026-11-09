@@ -161,6 +161,13 @@ pub(crate) fn spawn_suspended(
     let env = env_block(&cmd.env)?;
     let cwd = wide(cmd.cwd.as_os_str())?;
     let desktop = cmd.desktop.as_deref().map(wide).transpose()?;
+    let dacl = cmd
+        .dacl
+        .as_deref()
+        .map(super::process_dacl::Descriptor::parse)
+        .transpose()?;
+    let sa = dacl.as_ref().map(|d| d.attributes());
+    let sa_ptr = sa.as_ref().map_or(std::ptr::null(), |a| a as *const _);
     let ours: [HANDLE; 3] = [raw(stdio.stdin), raw(stdio.stdout), raw(stdio.stderr)];
     // Dropped after the call: the broker's copies close.
     let in_broker = InBroker::new(broker, &ours)?;
@@ -206,8 +213,8 @@ pub(crate) fn spawn_suspended(
                     raw(token),
                     app.as_ptr(),
                     line.as_mut_ptr(),
-                    std::ptr::null(),
-                    std::ptr::null(),
+                    sa_ptr,
+                    sa_ptr,
                     1,
                     flags,
                     env.as_ptr().cast(),
@@ -218,8 +225,8 @@ pub(crate) fn spawn_suspended(
                 None => CreateProcessW(
                     app.as_ptr(),
                     line.as_mut_ptr(),
-                    std::ptr::null(),
-                    std::ptr::null(),
+                    sa_ptr,
+                    sa_ptr,
                     1,
                     flags,
                     env.as_ptr().cast(),
@@ -237,11 +244,16 @@ pub(crate) fn spawn_suspended(
         }
         return Err(e);
     }
-    Ok(SuspendedProcess {
+    let sp = SuspendedProcess {
         process: Some(owned(pi.hProcess)?),
         thread: owned(pi.hThread)?,
         pid: pi.dwProcessId,
-    })
+    };
+    // Before it runs (dropped on failure: terminated).
+    if let Some(d) = &dacl {
+        d.set_default_dacl(sp.process.as_ref().expect("unresumed"))?;
+    }
+    Ok(sp)
 }
 
 pub(super) fn spawn(cmd: PlatformCommand, ctx: &SpawnCtx<'_>) -> io::Result<Spawned> {

@@ -13,7 +13,7 @@
 //!    command line.
 //! 4. `CreateProcessW` in the container ([`super::apply::start`]), then a wait that drains the
 //!    job's limit messages (one `SANDBOX_VIOLATION` line each on stderr) and ends the tree at
-//!    the policy's wall time (`op: nodePipes` when no I/O happened in the last
+//!    the policy's wall time (`op: nodePipes` when no read or write happened in the last
 //!    [`IDLE_FOR_NODE_PIPES`], the signature of a Node spawn stuck on piped stdio; else
 //!    `wallTime`), exit [`crate::launch::EXIT_WALL_TIME`]. Otherwise the exit code is the
 //!    program's.
@@ -39,7 +39,7 @@ pub const NODE_GUARD_ENV: &str = "FIN_SANDBOX_NODE_GUARD";
 pub const NODE_GUARD: &str = include_str!("../../data/windows/node-guard.cjs");
 /// Its file name there.
 pub const NODE_GUARD_FILE: &str = "finisher-node-guard.cjs";
-/// No I/O for this long before the wall time means a Node spawn stuck on piped stdio.
+/// No reads or writes for this long before the wall time means a Node spawn stuck on piped stdio.
 pub const IDLE_FOR_NODE_PIPES: Duration = Duration::from_secs(2);
 /// The flags Node needs in a container (S9 point 8a: its JS `realpath` `lstat`s the drive root).
 pub const NODE_FLAGS: [&str; 2] = ["--preserve-symlinks", "--preserve-symlinks-main"];
@@ -138,7 +138,13 @@ fn prepare(plan: &ContainerPlan) -> Result<PathBuf, String> {
     let temp = plan.temp().ok_or("a launch plan names a temp")?;
     std::fs::create_dir_all(&temp).map_err(|e| format!("{}: {e}", temp.display()))?;
     let guard = lad.join(NODE_GUARD_FILE);
-    std::fs::write(&guard, NODE_GUARD).map_err(|e| format!("{}: {e}", guard.display()))?;
+    // Another launch of the session may be starting Node on it: never rewrite it in place.
+    if std::fs::read(&guard).is_ok_and(|b| b == NODE_GUARD.as_bytes()) {
+        return Ok(guard);
+    }
+    let tmp = lad.join(format!("{NODE_GUARD_FILE}.{}.tmp", std::process::id()));
+    std::fs::write(&tmp, NODE_GUARD).map_err(|e| format!("{}: {e}", tmp.display()))?;
+    std::fs::rename(&tmp, &guard).map_err(|e| format!("{}: {e}", guard.display()))?;
     Ok(guard)
 }
 
@@ -151,11 +157,16 @@ pub enum Failure {
 }
 
 /// Runs `argv` in the container of `plan` under `policy`; the exit code to leave with.
+///
+/// `violation` receives each `SANDBOX_VIOLATION` line. The program shares the launcher's
+/// stderr and could print lines of its own there, so the caller writes them on the request
+/// channel, which only the launcher holds (review: violations must not be forgeable).
 pub fn run(
     profile: Profile,
     policy: &SandboxPolicy,
     plan: &ContainerPlan,
     argv: &[OsString],
+    violation: &mut dyn FnMut(&str),
 ) -> Result<i32, Failure> {
     super::wer::crash_ui_off();
     let guard = prepare(plan).map_err(Failure::Setup)?;
@@ -167,7 +178,9 @@ pub fn run(
         ContainerJob::new(&policy.limits).map_err(|e| Failure::Setup(format!("the job: {e}")))?;
     let env = environment(std::env::vars_os(), plan, &guard);
     let argv = argv_for(argv, &guard);
-    let started = start(&container, &job, &desktop, &argv, &env, None).map_err(Failure::Start)?;
+    let own = plan.owner().map(|c| c.sid.as_str());
+    let started =
+        start(&container, &job, &desktop, &argv, &env, None, own).map_err(Failure::Start)?;
     let deadline = policy
         .limits
         .wall_ms
@@ -177,7 +190,7 @@ pub fn run(
         for v in job.violations() {
             if !reported.contains(&v) {
                 reported.push(v);
-                eprintln!("{}", violation_line(profile, v.op()));
+                violation(&violation_line(profile, v.op()));
             }
         }
     };
@@ -209,7 +222,7 @@ pub fn run(
                 "wallTime"
             };
             job.terminate(EXIT_WALL_TIME as u32);
-            eprintln!("{}", violation_line(profile, op));
+            violation(&violation_line(profile, op));
             return Ok(EXIT_WALL_TIME);
         }
     }

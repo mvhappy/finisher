@@ -21,19 +21,20 @@ use windows_sys::Win32::System::Console::{
     GetStdHandle, STD_ERROR_HANDLE, STD_INPUT_HANDLE, STD_OUTPUT_HANDLE,
 };
 use windows_sys::Win32::System::Threading::{
-    CREATE_UNICODE_ENVIRONMENT, CreateProcessW, DeleteProcThreadAttributeList,
+    CREATE_SUSPENDED, CREATE_UNICODE_ENVIRONMENT, CreateProcessW, DeleteProcThreadAttributeList,
     EXTENDED_STARTUPINFO_PRESENT, InitializeProcThreadAttributeList, LPPROC_THREAD_ATTRIBUTE_LIST,
     PROC_THREAD_ATTRIBUTE_HANDLE_LIST, PROC_THREAD_ATTRIBUTE_JOB_LIST,
-    PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES, PROCESS_INFORMATION, STARTF_USESTDHANDLES,
-    STARTUPINFOEXW, UpdateProcThreadAttribute,
+    PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES, PROCESS_INFORMATION, ResumeThread,
+    STARTF_USESTDHANDLES, STARTUPINFOEXW, TerminateProcess, UpdateProcThreadAttribute,
 };
 
 use super::appcontainer;
 use super::desktop::PrivateDesktop;
 use super::job::ContainerJob;
 use super::plan::ContainerPlan;
-use super::sid::{Sid, wide};
+use super::sid::{Sid, current_user, wide};
 use super::{check, owned};
+use fin_jobhost::process_dacl::{self, Descriptor};
 
 /// `SE_GROUP_ENABLED` (winnt.h; windows-sys puts it behind `Win32_System_SystemServices`).
 const SE_GROUP_ENABLED: u32 = 0x4;
@@ -270,8 +271,12 @@ pub fn start(
     argv: &[OsString],
     env: &[(OsString, OsString)],
     cwd: Option<&Path>,
+    own: Option<&str>,
 ) -> io::Result<Started> {
     let caps = container.security_capabilities()?;
+    let own = own.ok_or_else(|| io::Error::other("no owner capability for the process DACL"))?;
+    let dacl = Descriptor::parse(&process_dacl::sddl(&current_user()?.string(), own))?;
+    let sa = dacl.attributes();
     let mut line = command_line(argv)?;
     let block = env_block(env)?;
     let cwd = cwd.map(|c| wide(c.as_os_str()));
@@ -313,19 +318,37 @@ pub fn start(
         CreateProcessW(
             null(),
             line.as_mut_ptr(),
-            null(),
-            null(),
-            1,
-            EXTENDED_STARTUPINFO_PRESENT | CREATE_UNICODE_ENVIRONMENT,
+            &sa,
+            &sa,
+            // No handle at all without standard handles (review B3): with the flag set and no
+            // handle list, every inheritable handle of the launcher would pass.
+            i32::from(!handles.is_empty()),
+            EXTENDED_STARTUPINFO_PRESENT | CREATE_UNICODE_ENVIRONMENT | CREATE_SUSPENDED,
             block.as_ptr().cast(),
             cwd.as_ref().map_or(null(), |c| c.as_ptr()),
             &si.StartupInfo,
             &mut pi,
         )
     })?;
-    drop(owned(pi.hThread)?);
+    let thread = owned(pi.hThread)?;
+    let process = owned(pi.hProcess)?;
+    // Before it runs: what it creates gets the same DACL (review B1). On failure it is ended
+    // unrun (and the job would end it with the launcher anyway).
+    let ready = dacl.set_default_dacl(&process).and_then(|()| {
+        // SAFETY: the primary thread of our suspended process.
+        if unsafe { ResumeThread(pi.hThread) } == u32::MAX {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(())
+    });
+    if let Err(e) = ready {
+        // SAFETY: our own process handle.
+        unsafe { TerminateProcess(pi.hProcess, 1) };
+        return Err(e);
+    }
+    drop(thread);
     Ok(Started {
-        process: owned(pi.hProcess)?,
+        process,
         pid: pi.dwProcessId,
     })
 }

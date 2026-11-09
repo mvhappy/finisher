@@ -4,7 +4,8 @@
 //! `session` ones after it.
 //!
 //! An AppContainer only *adds* access, so every root a process may use is one allow ACE, and
-//! the mask follows the policy: a write root gets [`MODIFY`] (no `WRITE_DAC`, no
+//! the mask follows the policy (the project is read through a view capability, never the
+//! shared container SID, review B2): a write root gets [`MODIFY`] (no `WRITE_DAC`, no
 //! `WRITE_OWNER`), a read root [`READ`] (data) or [`READ_EXECUTE`] (toolchains, the project).
 //! Each group of roots is enumerated against the policy first (plan Decision 2), so a denied
 //! root inside a granted one is not reached and a protected root is never inside a write
@@ -106,7 +107,7 @@ pub fn agent_in(i: &AgentInput, tree: &dyn Tree) -> Result<Vec<AclGrant>, String
     let policy = crate::profile::agent(i).map_err(|e| e.to_string())?;
     let plan = plan::agent(i, &policy)?;
     let session = cap(capability::session(&i.session_id)?);
-    let container = Trustee::Container(plan.container.clone());
+    let view = cap(capability::project_view(&i.project_dir, &policy.deny_read));
     let mut project = vec![i.project_dir.clone()];
     project.extend(i.library_roots.iter().cloned());
     // The policy's own write roots (the shared workspace only outside `plan` mode), and
@@ -122,7 +123,7 @@ pub fn agent_in(i: &AgentInput, tree: &dyn Tree) -> Result<Vec<AclGrant>, String
         toolchains(&i.toolchains),
         Group {
             roots: project,
-            trustee: container,
+            trustee: view,
             mask: READ_EXECUTE,
             scope: Scope::Static,
         },
@@ -167,7 +168,6 @@ pub fn hook(i: &HookInput) -> Result<Vec<AclGrant>, String> {
 /// [`hook`] over `tree`.
 pub fn hook_in(i: &HookInput, tree: &dyn Tree) -> Result<Vec<AclGrant>, String> {
     let policy = crate::profile::hook(i).map_err(|e| e.to_string())?;
-    let plan = plan::hook(i);
     let call = cap(capability::hook(&i.tmp));
     let mut own = vec![];
     if !i.hook_file.starts_with(&i.project_dir) {
@@ -177,7 +177,7 @@ pub fn hook_in(i: &HookInput, tree: &dyn Tree) -> Result<Vec<AclGrant>, String> 
         toolchains(&i.toolchains),
         Group {
             roots: vec![i.project_dir.clone()],
-            trustee: Trustee::Container(plan.container.clone()),
+            trustee: cap(capability::project_view(&i.project_dir, &policy.deny_read)),
             mask: READ_EXECUTE,
             scope: Scope::Static,
         },
@@ -318,10 +318,10 @@ mod tests {
     #[test]
     fn agent_grants_follow_the_policy() {
         let i = input(Harness::Codex, AgentMode::Draft);
-        let c = format!(
-            "container:{}",
-            capability::project_container(&i.project_dir)
-        );
+        let c = sid(&capability::project_view(
+            &i.project_dir,
+            &crate::profile::agent(&i).unwrap().deny_read,
+        ));
         let s1 = sid("finisher-session-s1");
         let want: BTreeSet<_> = [
             ("tools", sid(TOOLCHAIN), READ_EXECUTE, Scope::Static),
@@ -371,10 +371,10 @@ mod tests {
             ("workspace", Kind::Dir),
         ]);
         let t = table(&agent_in(&i, &m).unwrap());
-        let c = format!(
-            "container:{}",
-            capability::project_container(&i.project_dir)
-        );
+        let c = sid(&capability::project_view(
+            &i.project_dir,
+            &crate::profile::agent(&i).unwrap().deny_read,
+        ));
         let project: BTreeSet<_> = t
             .iter()
             .filter(|(_, w, ..)| *w == c)
@@ -418,10 +418,10 @@ mod tests {
             timeout_ms: None,
         };
         let call = sid(&capability::hook(&i.tmp));
-        let c = format!(
-            "container:{}",
-            capability::project_container(&i.project_dir)
-        );
+        let c = sid(&capability::project_view(
+            &i.project_dir,
+            &crate::profile::hook(&i).unwrap().deny_read,
+        ));
         let want: BTreeSet<_> = [
             ("tools", sid(TOOLCHAIN), READ_EXECUTE, Scope::Static),
             ("p", c, READ_EXECUTE, Scope::Static),
@@ -433,5 +433,30 @@ mod tests {
         .map(|(p, w, m, s)| (p.to_string(), w, m, s))
         .collect();
         assert_eq!(table(&hook_in(&i, &model(vec![])).unwrap()), want);
+    }
+}
+
+#[cfg(test)]
+mod view_tests {
+    use fin_core::events::payloads::agent::Harness;
+
+    use super::*;
+
+    #[test]
+    fn harnesses_that_see_the_project_differently_read_it_through_different_capabilities() {
+        let r = PathBuf::from(if cfg!(windows) { r"C:\r" } else { "/r" });
+        let p = r.join("p");
+        let claude = vec![p.join("CLAUDE.md"), p.join(".claude"), r.join("data")];
+        let codex = vec![r.join("data")];
+        assert_ne!(
+            capability::project_view(&p, &claude),
+            capability::project_view(&p, &codex)
+        );
+        assert_eq!(
+            capability::project_view(&p, &codex),
+            capability::project_view(&p, &[r.join("elsewhere")]),
+            "only paths inside the project count"
+        );
+        let _ = Harness::ClaudeCode;
     }
 }

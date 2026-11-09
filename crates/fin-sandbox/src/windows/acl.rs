@@ -8,11 +8,12 @@ use std::io;
 use std::path::Path;
 use std::ptr::{null, null_mut};
 
-use windows_sys::Win32::Foundation::{ERROR_SUCCESS, HLOCAL, LocalFree, WIN32_ERROR};
+use windows_sys::Win32::Foundation::{ERROR_SUCCESS, HANDLE, HLOCAL, LocalFree, WIN32_ERROR};
 use windows_sys::Win32::Security::Authorization::{
     ConvertSecurityDescriptorToStringSecurityDescriptorW, EXPLICIT_ACCESS_W, GRANT_ACCESS,
-    GetNamedSecurityInfoW, NO_MULTIPLE_TRUSTEE, SDDL_REVISION_1, SE_FILE_OBJECT, SetEntriesInAclW,
-    SetNamedSecurityInfoW, TRUSTEE_IS_SID, TRUSTEE_IS_WELL_KNOWN_GROUP, TRUSTEE_W,
+    GetNamedSecurityInfoW, GetSecurityInfo, NO_MULTIPLE_TRUSTEE, SDDL_REVISION_1, SE_FILE_OBJECT,
+    SE_WINDOW_OBJECT, SetEntriesInAclW, SetNamedSecurityInfoW, SetSecurityInfo, TRUSTEE_IS_SID,
+    TRUSTEE_IS_WELL_KNOWN_GROUP, TRUSTEE_W,
 };
 use windows_sys::Win32::Security::{
     ACCESS_ALLOWED_ACE, ACE_HEADER, ACL, AddAce, DACL_SECURITY_INFORMATION, EqualSid, GetAce,
@@ -253,4 +254,92 @@ pub fn set_sddl(path: &Path, sddl: &str) -> io::Result<()> {
             ),
         )
     }
+}
+
+/// Adds an allow ACE for `sid` with `mask` to the DACL of a kernel or USER object (a window
+/// station); the handle needs `READ_CONTROL` and `WRITE_DAC`.
+pub(crate) fn grant_object(h: HANDLE, sid: &Sid, mask: u32) -> io::Result<()> {
+    let mut dacl: *mut ACL = null_mut();
+    let mut sd = Local(null_mut::<std::ffi::c_void>());
+    // SAFETY: a valid handle and out-pointers.
+    win("GetSecurityInfo", unsafe {
+        GetSecurityInfo(
+            h,
+            SE_WINDOW_OBJECT,
+            DACL_SECURITY_INFORMATION,
+            null_mut(),
+            null_mut(),
+            &mut dacl,
+            null_mut(),
+            &mut sd.0,
+        )
+    })?;
+    let ea = EXPLICIT_ACCESS_W {
+        grfAccessPermissions: mask,
+        grfAccessMode: GRANT_ACCESS,
+        grfInheritance: NO_INHERITANCE,
+        Trustee: TRUSTEE_W {
+            pMultipleTrustee: null_mut(),
+            MultipleTrusteeOperation: NO_MULTIPLE_TRUSTEE,
+            TrusteeForm: TRUSTEE_IS_SID,
+            TrusteeType: TRUSTEE_IS_WELL_KNOWN_GROUP,
+            ptstrName: sid.as_psid().cast(),
+        },
+    };
+    let mut new = Local(null_mut::<ACL>());
+    // SAFETY: one entry, the current DACL, a valid out-pointer.
+    win("SetEntriesInAclW", unsafe {
+        SetEntriesInAclW(1, &ea, dacl, &mut new.0)
+    })?;
+    // SAFETY: a valid handle and DACL.
+    win("SetSecurityInfo", unsafe {
+        SetSecurityInfo(
+            h,
+            SE_WINDOW_OBJECT,
+            DACL_SECURITY_INFORMATION,
+            null_mut(),
+            null_mut(),
+            new.0,
+            null(),
+        )
+    })
+}
+
+/// The DACL of a window station or desktop as SDDL.
+pub(crate) fn object_sddl(h: HANDLE) -> io::Result<String> {
+    let mut sd = Local(null_mut::<std::ffi::c_void>());
+    // SAFETY: a valid handle and out-pointers.
+    win("GetSecurityInfo", unsafe {
+        GetSecurityInfo(
+            h,
+            SE_WINDOW_OBJECT,
+            DACL_SECURITY_INFORMATION,
+            null_mut(),
+            null_mut(),
+            null_mut(),
+            null_mut(),
+            &mut sd.0,
+        )
+    })?;
+    descriptor_sddl(sd.0)
+}
+
+/// The DACL of a descriptor (which the caller keeps owning) as SDDL.
+pub(crate) fn descriptor_sddl(sd: PSECURITY_DESCRIPTOR) -> io::Result<String> {
+    let mut s = Local(null_mut::<u16>());
+    // SAFETY: a valid descriptor and a valid out-pointer.
+    if unsafe {
+        ConvertSecurityDescriptorToStringSecurityDescriptorW(
+            sd,
+            SDDL_REVISION_1,
+            DACL_SECURITY_INFORMATION,
+            &mut s.0,
+            null_mut(),
+        )
+    } == 0
+    {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: a NUL-terminated string the call returned.
+    Ok(unsafe { from_wide(s.0) })
 }

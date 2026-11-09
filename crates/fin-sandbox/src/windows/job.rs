@@ -169,8 +169,8 @@ impl ContainerJob {
         }
     }
 
-    /// Read, write and other I/O operations of every process the job has held (Node's
-    /// piped-stdio backstop: no change means no progress).
+    /// Read and write operations of every process the job has held (Node's piped-stdio
+    /// backstop: no change means no progress).
     pub fn io_operations(&self) -> u64 {
         // SAFETY: a plain C struct; zeros are its defaults.
         let mut info: JOBOBJECT_BASIC_AND_IO_ACCOUNTING_INFORMATION = unsafe { zeroed() };
@@ -187,8 +187,10 @@ impl ContainerJob {
         if ok == 0 {
             return 0;
         }
+        // Reads and writes only: a Node spawn stuck on piped stdio retries `CreateNamedPipe`
+        // forever, and those calls count as "other" operations (measured on the S9 host).
         let io = info.IoInfo;
-        io.ReadOperationCount + io.WriteOperationCount + io.OtherOperationCount
+        io.ReadOperationCount + io.WriteOperationCount
     }
 
     /// The limits the job has, read back from Windows.

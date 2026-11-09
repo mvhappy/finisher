@@ -50,6 +50,8 @@ mod windows;
 use windows as os;
 #[cfg(windows)]
 pub use windows::KILLED_EXIT_CODE;
+#[cfg(windows)]
+pub use windows::process_dacl;
 
 pub use commands::{Done, SpawnDone};
 pub use exit::{ExitInfo, ExitReason, KillReason};

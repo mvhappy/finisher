@@ -98,6 +98,21 @@ fn main() {
     )
 }
 
+/// Writes a `SANDBOX_VIOLATION` line on the request channel, which only the launcher holds (the
+/// program shares stderr and could forge lines there). Where the channel is one-way (a plain
+/// pipe, as in the suites) the line goes to stderr instead, which a parent must not trust.
+#[cfg(windows)]
+fn violation(line: &str) {
+    let sent = REPORT
+        .lock()
+        .ok()
+        .and_then(|mut held| held.as_mut().map(|f| writeln!(f, "{line}").is_ok()))
+        .unwrap_or(false);
+    if !sent {
+        eprintln!("{line}");
+    }
+}
+
 /// Reads the request from the inherited descriptor to its end; the descriptor is kept for
 /// [`REPORT`] and closes at `exec` (close-on-exec) or exit.
 fn read_fd(fd: i32) -> Result<Vec<u8>, String> {
@@ -271,7 +286,8 @@ mod os {
     use fin_sandbox::windows::launcher::{self, Failure};
     use fin_sandbox::windows::plan;
     use windows_sys::Win32::Foundation::{
-        DUPLICATE_SAME_ACCESS, DuplicateHandle, GetHandleInformation, HANDLE,
+        DUPLICATE_SAME_ACCESS, DuplicateHandle, GetHandleInformation, HANDLE, HANDLE_FLAG_INHERIT,
+        SetHandleInformation,
     };
     use windows_sys::Win32::System::Threading::GetCurrentProcess;
 
@@ -330,6 +346,14 @@ mod os {
                 std::io::Error::last_os_error()
             ));
         }
+        // Not inheritable: nothing the launcher starts may receive it (review B3).
+        // SAFETY: only the handle's inherit flag changes.
+        if unsafe { SetHandleInformation(h, HANDLE_FLAG_INHERIT, 0) } == 0 {
+            return Err(format!(
+                "descriptor {fd}: {}",
+                std::io::Error::last_os_error()
+            ));
+        }
         // SAFETY: an open handle handed to this process to own.
         Ok(File::from(unsafe {
             OwnedHandle::from_raw_handle(h as RawHandle)
@@ -379,7 +403,7 @@ mod os {
             std::process::exit(EXIT_UNAVAILABLE)
         };
         let plan = plan::launch(req, policy).unwrap_or_else(|e| unavailable(e));
-        match launcher::run(req.profile(), policy, &plan, argv) {
+        match launcher::run(req.profile(), policy, &plan, argv, &mut super::violation) {
             Ok(code) => std::process::exit(code),
             Err(Failure::Setup(need)) => unavailable(need),
             Err(Failure::Start(e)) => e,

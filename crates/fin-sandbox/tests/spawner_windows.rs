@@ -65,6 +65,7 @@ fn a_worker_is_placed_in_its_family_container() {
         attributes: Vec::new(),
         token: None,
         desktop: None,
+        dacl: None,
     };
     s.prepare(&req, &mut c).unwrap();
     let container = capability::worker_container("test").unwrap();
@@ -81,6 +82,12 @@ fn a_worker_is_placed_in_its_family_container() {
         .to_string_lossy()
         .into_owned();
     assert!(desk.contains("\\fin-"), "{desk}");
+    let user = fin_sandbox::windows::sid::current_user().unwrap().string();
+    let own = capability_sid(&capability::job("j1").unwrap());
+    assert_eq!(
+        c.dacl.as_deref(),
+        Some(fin_jobhost::process_dacl::sddl(&user, &own).as_str())
+    );
     assert_eq!(c.attributes.len(), 1);
     let a = &c.attributes[0];
     assert_eq!(
@@ -99,6 +106,23 @@ fn a_worker_is_placed_in_its_family_container() {
     assert_eq!(ac, appcontainer::sid(&container).unwrap().string());
     // One capability, its job's; no network, no toolchain.
     assert_eq!(caps, [capability_sid(&capability::job("j1").unwrap())]);
+    // Its TEMP is its job's own (review: a family's container is shared across projects).
+    let temp = job
+        .join("tmp")
+        .join("appdata")
+        .join("Packages")
+        .join(&container)
+        .join("AC")
+        .join("Temp");
+    let env = |k: &str| {
+        c.env
+            .iter()
+            .find(|(n, _)| n.to_string_lossy().eq_ignore_ascii_case(k))
+            .map(|(_, v)| PathBuf::from(v))
+    };
+    assert_eq!(env("TEMP"), Some(temp.clone()));
+    assert_eq!(env("TMPDIR"), Some(temp.clone()));
+    assert!(temp.is_dir());
     drop(c);
     appcontainer::delete(&container).unwrap();
 }
