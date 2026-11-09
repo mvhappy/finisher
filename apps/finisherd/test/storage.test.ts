@@ -349,13 +349,13 @@ describe("engine events in the registry", () => {
     channel.end(1, err("REBUILT"), { incarnation: "b" });
     channel.end(3, err("REWOUND"), { incarnation: "b", n: 2 });
     channel.publish(7);
-    const item = { seq: 2, value: 7 };
+    const item = { seq: 2, n: 3, value: 7 };
     expect(fresh(item, 5, { incarnation: "b", n: 2 })).toBeUndefined();
     expect(stale(item, 5, { incarnation: "a", n: 9 })?.message).toBe("REBUILT");
     // Same incarnation, read before the rewind (n 1 < 2) and past its fromRev: ended.
     expect(rewoundLater(item, 5, { incarnation: "b", n: 1 })?.message).toBe("REWOUND");
     // No generation known (project.events): every applicable ending applies.
-    expect(follower(channel, "main")({ seq: 3, value: 1 }, 5)).toBeUndefined();
+    expect(follower(channel, "main")({ seq: 3, n: 4, value: 1 }, 5)).toBeUndefined();
   });
 
   test("the hub publishes every rev, also one below a rev it published before", async () => {
