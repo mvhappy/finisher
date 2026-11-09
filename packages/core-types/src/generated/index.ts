@@ -1083,6 +1083,13 @@ export type CapSupport = "hardware" | "software" | "none";
  */
 export type UnmeasuredReason = "fontMissing" | "fontFetchFailed" | "fontUnpinned" | "noMeasurer";
 /**
+ * How a neighbour changed since the op was written.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "NeighbourChange".
+ */
+export type NeighbourChange = "moved" | "removed";
+/**
  * Chroma subsampling.
  *
  * This interface was referenced by `FinCore`'s JSON-Schema
@@ -1545,6 +1552,13 @@ export type HelperKind = "codec" | "plugin";
  * via the `definition` "HelloRole".
  */
 export type HelloRole = "worker" | "helper";
+/**
+ * The placement outcome of one restored item.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "PlacementOutcome".
+ */
+export type PlacementOutcome = "clean" | "relocated" | "conflict";
 /**
  * The host methods of host API 1.1.
  *
@@ -4680,6 +4694,19 @@ export interface CatalogSource {
   url: string;
 }
 /**
+ * Why an item was relocated: the committed record that last moved or removed `neighbour`,
+ * and its author when the log knows it.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "Cause".
+ */
+export interface Cause {
+  author?: string;
+  change: NeighbourChange;
+  neighbour: string;
+  txId: string;
+}
+/**
  * What this machine can decode and encode: the shape of `fin-codecs`' `Capabilities`.
  *
  * This interface was referenced by `FinCore`'s JSON-Schema
@@ -5563,7 +5590,42 @@ export interface HistoryResult {
   dryRun: boolean;
   noOp?: string | null;
   origins?: string[];
+  /**
+   * Where the record put each item back that a ripple restore or move placed (owner
+   * decision 2026-11-09; `fin_core::rebase::placement`): `clean`, or `relocated` with where
+   * and why. Always present; empty for a retry answered from the log (not stored).
+   */
+  placements?: Placement[];
   undone: string[];
+}
+/**
+ * The placement of one item an undo, redo or copy put back (module docs): which op of which
+ * record, the item, the outcome, and for a relocation where it landed and why.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "Placement".
+ */
+export interface Placement {
+  causes?: Cause[];
+  item: string;
+  landed?: Landed;
+  opIndex: number;
+  outcome: PlacementOutcome;
+  txId: string;
+}
+/**
+ * Where a relocated item landed: its track and start, the start as a whole frame of its
+ * timeline (when it is one), and its neighbours there.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "Landed".
+ */
+export interface Landed {
+  after?: string;
+  at: Rational;
+  before?: string;
+  frame?: number;
+  track: string;
 }
 /**
  * A hook handler (agent §9). Typed now; consumable once 7F's hook engine lands (8B
@@ -6896,6 +6958,11 @@ export interface MergeReport {
   mergeId: string;
   merged: string[];
   origins?: string[];
+  /**
+   * As [`HistoryResult::placements`], each with its copy's txId, plus the `conflict`
+   * placements of skipped candidates.
+   */
+  placements?: Placement[];
   skipped: Conflict[];
   sourceState: BranchState;
 }

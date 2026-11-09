@@ -86,6 +86,9 @@ pub(crate) struct WriteCtx<'a> {
     pub measurer: Option<std::sync::Arc<dyn fin_core::layout::TextMeasurer>>,
     /// The guard of [`Store::with_guard`] at the write's start ([`crate::guard`]).
     guard: crate::WriteGuard,
+    /// What an undo, redo or copy of this write does with an item whose neighbours are both
+    /// gone ([`crate::Store::with_when_lost`]).
+    pub when_lost: fin_core::rebase::placement::WhenLost,
 }
 
 impl WriteCtx<'_> {
@@ -281,6 +284,7 @@ impl Store {
         let mut ctx = WriteCtx {
             measurer,
             guard: self.guard.clone(),
+            when_lost: self.when_lost,
             txn: &txn,
             epoch,
             dry_run,

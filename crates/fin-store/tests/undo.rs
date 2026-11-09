@@ -579,3 +579,39 @@ fn undo_args_hash_is_stored_and_checked_on_retry() {
     let r = s.redo(with("r1", h('c'))).unwrap();
     assert_eq!(r.committed[0].tx.args_hash, h('c'));
 }
+
+/// Owner decisions of 2026-11-09 (`fin_core::rebase::placement`): an undo whose item lost both
+/// neighbours goes back at the nearest boundary for a person (the default) and says so in
+/// `placements`; under `Store::with_when_lost(Refuse)` (an agent) it is `NEIGHBOURS_GONE` and
+/// writes nothing. A clean undo still carries the field.
+#[test]
+fn undo_placement_follows_the_callers_policy() {
+    use fin_core::rebase::placement::{PlacementOutcome as Outcome, WhenLost};
+    let e = env();
+    let mut s = project(&e);
+    edit(&mut s, "a1", "alice", vec![delete("c2")]);
+    edit(&mut s, "b1", "bob", vec![delete("c1")]);
+    edit(&mut s, "b2", "bob", vec![delete("c3")]);
+    let before = rows(&s);
+    let refused = s
+        .with_when_lost(WhenLost::Refuse, |s| s.undo(req("u1", "alice", MAIN)))
+        .unwrap_err();
+    let c = code(refused);
+    assert_eq!(c.code, "CONFLICT");
+    assert_eq!(c.details["reason"], "NEIGHBOURS_GONE");
+    assert_eq!(c.details["againstTx"], "b1");
+    assert_eq!(rows(&s), before, "a refused undo writes nothing");
+    let r = undo(&mut s, "u2", "alice");
+    assert_eq!(r.placements.len(), 1, "{:?}", r.placements);
+    let p = &r.placements[0];
+    assert_eq!((p.item.as_str(), p.outcome), ("c2", Outcome::Relocated));
+    assert_eq!(p.causes[0].author.as_deref(), Some("bob"));
+    let json = serde_json::to_value(&r).unwrap();
+    assert_eq!(json["placements"][0]["outcome"], "relocated");
+    // The redo deletes again (nothing to place), and its JSON still carries the field.
+    let r = redo(&mut s, "r1", "alice");
+    assert_eq!(
+        serde_json::to_value(&r).unwrap()["placements"],
+        serde_json::json!([])
+    );
+}
