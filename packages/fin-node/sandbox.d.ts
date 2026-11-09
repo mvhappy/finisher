@@ -21,7 +21,8 @@ export declare function sandboxSessionGitConfig(): string;
 
 /**
  * This OS's base toolchain read list: links resolved, missing and nested entries dropped
- * (Linux, macOS); as written on Windows. Plan 7C Task 11.
+ * (Linux, macOS); on Windows `%SystemRoot%` and `%ProgramFiles%` expanded and missing entries
+ * dropped (plan 7C Task 11; Task 10 review B1).
  */
 export declare function sandboxToolchainBase(): string[];
 
@@ -54,12 +55,18 @@ export declare function aclRevoke(serverData: string, owner: string, path?: stri
 
 /**
  * Revokes every grant whose owner is not in `liveOwners` (`static` always is); how many. The
- * first call of a server opens the broker, completing what a crash left.
+ * first call of a server opens the broker, completing what a crash left. A revoke that fails
+ * stays pending for the next sweep; once every other one is done the call rejects with one
+ * `IO_ERROR` naming them.
  */
 export declare function aclSweep(serverData: string, liveOwners: Iterable<string>): Promise<number>;
 
-/** The ACEs an `agent` launch needs on Windows (`fin_sandbox::windows::grants::agent`; pure). */
-export declare function sandboxAgentGrants(input: AgentInput): AclGrant[];
+/**
+ * The ACEs an `agent` launch needs on Windows (`fin_sandbox::windows::grants::agent`; pure).
+ * `extraRead` (each also in `input.toolchains`): read by the session's capability under the
+ * session's owner, not static toolchain grants.
+ */
+export declare function sandboxAgentGrants(input: AgentInput, extraRead?: readonly string[]): AclGrant[];
 
 /** The ACEs a `hook` launch needs on Windows (`fin_sandbox::windows::grants::hook`; pure). */
 export declare function sandboxHookGrants(input: HookInput): AclGrant[];

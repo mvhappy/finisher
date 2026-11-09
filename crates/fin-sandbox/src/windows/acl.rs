@@ -163,6 +163,54 @@ pub fn revoke(path: &Path, sid: &Sid) -> io::Result<usize> {
     }
 }
 
+const ACCESS_DENIED_ACE_TYPE: u8 = 1;
+
+/// Whether the DACL of `path` already gives `sid` (by an explicit ACE) or every AppContainer
+/// (`ALL APPLICATION PACKAGES`) `mask`, and its subtree too when `inherit`
+/// ([`super::dacl::covers`]). Reads only (`READ_CONTROL`).
+pub fn admits(path: &Path, sid: &Sid, mask: u32, inherit: bool) -> io::Result<bool> {
+    use super::dacl::{ALL_APPLICATION_PACKAGES, Ace, Who, covers};
+    let all = Sid::parse(ALL_APPLICATION_PACKAGES)?;
+    let p = wide(path);
+    let (dacl, _sd) = dacl_of(&p)?;
+    if dacl.is_null() {
+        // A null DACL admits everyone.
+        return Ok(true);
+    }
+    let mut aces = Vec::new();
+    // SAFETY: `dacl` is the valid ACL the descriptor holds; each ACE is read in bounds.
+    unsafe {
+        for i in 0..u32::from((*dacl).AceCount) {
+            let mut ace = null_mut();
+            if GetAce(dacl, i, &mut ace) == 0 {
+                return Err(io::Error::last_os_error());
+            }
+            let h = ace.cast::<ACE_HEADER>();
+            let kind = (*h).AceType;
+            if kind != ACCESS_ALLOWED_ACE_TYPE && kind != ACCESS_DENIED_ACE_TYPE {
+                continue;
+            }
+            // Allowed and denied ACEs share one layout (header, mask, SID).
+            let body = ace.cast::<ACCESS_ALLOWED_ACE>();
+            let who_sid = (&raw mut (*body).SidStart).cast::<std::ffi::c_void>() as PSID;
+            let who = if EqualSid(who_sid, all.as_psid()) != 0 {
+                Who::AllPackages
+            } else if EqualSid(who_sid, sid.as_psid()) != 0 {
+                Who::Grantee
+            } else {
+                Who::Other
+            };
+            aces.push(Ace {
+                allow: kind == ACCESS_ALLOWED_ACE_TYPE,
+                flags: (*h).AceFlags,
+                who,
+                mask: (*body).Mask,
+            });
+        }
+    }
+    Ok(covers(&aces, mask, inherit))
+}
+
 /// The owner, DACL and label of `path` as SDDL (tests, the broker's read-back).
 pub fn sddl(path: &Path) -> io::Result<String> {
     let p = wide(path);

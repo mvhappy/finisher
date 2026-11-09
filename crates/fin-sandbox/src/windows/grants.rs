@@ -102,11 +102,28 @@ fn expand(
 
 /// The grants of an `agent` launch, enumerated on the real filesystem.
 pub fn agent(i: &AgentInput) -> Result<Vec<AclGrant>, String> {
-    agent_in(i, &Fs)
+    agent_in(i, &[], &Fs)
 }
 
-/// [`agent`] over `tree`.
-pub fn agent_in(i: &AgentInput, tree: &dyn Tree) -> Result<Vec<AclGrant>, String> {
+/// [`agent`] for a process that also reads `extra` (a harness's own files; each also in
+/// `i.toolchains`, so the policy reads it): granted to the session's capability, revoked with
+/// the session (Task 10 review 4), never a static toolchain grant.
+pub fn agent_with_extra(i: &AgentInput, extra: &[PathBuf]) -> Result<Vec<AclGrant>, String> {
+    agent_in(i, extra, &Fs)
+}
+
+/// [`agent_with_extra`] over `tree`.
+pub fn agent_in(
+    i: &AgentInput,
+    extra: &[PathBuf],
+    tree: &dyn Tree,
+) -> Result<Vec<AclGrant>, String> {
+    if let Some(e) = extra.iter().find(|e| !i.toolchains.contains(e)) {
+        return Err(format!(
+            "{} is read by this process but not in its toolchains",
+            e.display()
+        ));
+    }
     let policy = crate::profile::agent(i).map_err(|e| e.to_string())?;
     let plan = plan::agent(i, &policy)?;
     let session = cap(capability::session(&i.session_id)?);
@@ -122,8 +139,20 @@ pub fn agent_in(i: &AgentInput, tree: &dyn Tree) -> Result<Vec<AclGrant>, String
         .cloned()
         .collect();
     write.extend(plan.local_app_data.iter().cloned());
+    let base: Vec<PathBuf> = i
+        .toolchains
+        .iter()
+        .filter(|t| !extra.contains(t))
+        .cloned()
+        .collect();
     let mut groups = vec![
-        toolchains(&i.toolchains),
+        toolchains(&base),
+        Group {
+            roots: extra.to_vec(),
+            trustee: session.clone(),
+            mask: READ_EXECUTE,
+            scope: Scope::Owner,
+        },
         Group {
             roots: project,
             trustee: view,
@@ -353,13 +382,35 @@ mod tests {
         .into_iter()
         .map(|(p, w, m, s)| (p.to_string(), w, m, s))
         .collect();
-        assert_eq!(table(&agent_in(&i, &model(vec![])).unwrap()), want);
+        assert_eq!(table(&agent_in(&i, &[], &model(vec![])).unwrap()), want);
+    }
+
+    #[test]
+    fn extra_reads_are_the_sessions_not_static_toolchains() {
+        let mut i = input(Harness::Codex, AgentMode::Draft);
+        let own = root().join("cli");
+        i.toolchains.push(own.clone());
+        let t = table(&agent_in(&i, std::slice::from_ref(&own), &model(vec![])).unwrap());
+        let s1 = sid("finisher-session-s1");
+        assert!(
+            t.contains(&("cli".into(), s1, READ_EXECUTE, Scope::Owner)),
+            "{t:?}"
+        );
+        assert!(
+            !t.iter()
+                .any(|(p, w, ..)| p == "cli" && *w == sid(TOOLCHAIN)),
+            "{t:?}"
+        );
+        assert!(t.contains(&("tools".into(), sid(TOOLCHAIN), READ_EXECUTE, Scope::Static)));
+        // An extra read the policy does not read is refused.
+        let i = input(Harness::Codex, AgentMode::Draft);
+        assert!(agent_in(&i, &[own], &model(vec![])).is_err());
     }
 
     #[test]
     fn plan_mode_does_not_write_the_shared_workspace() {
         let i = input(Harness::Codex, AgentMode::Plan);
-        let t = table(&agent_in(&i, &model(vec![])).unwrap());
+        let t = table(&agent_in(&i, &[], &model(vec![])).unwrap());
         assert!(!t.iter().any(|(p, ..)| p == "p/workspace/shared"), "{t:?}");
     }
 
@@ -373,7 +424,7 @@ mod tests {
             ("sources", Kind::Dir),
             ("workspace", Kind::Dir),
         ]);
-        let t = table(&agent_in(&i, &m).unwrap());
+        let t = table(&agent_in(&i, &[], &m).unwrap());
         let c = sid(&capability::project_view(
             &i.project_dir,
             &crate::profile::agent(&i).unwrap().deny_read,
@@ -389,7 +440,7 @@ mod tests {
     #[test]
     fn nothing_else_of_server_data_or_home_is_granted() {
         let i = input(Harness::Codex, AgentMode::Draft);
-        for (p, _, m, _) in table(&agent_in(&i, &model(vec![])).unwrap()) {
+        for (p, _, m, _) in table(&agent_in(&i, &[], &model(vec![])).unwrap()) {
             assert!(!p.starts_with("home"), "{p}");
             assert!(
                 p != "data" && p != "data/agents" && !p.starts_with("data/agents/s2"),

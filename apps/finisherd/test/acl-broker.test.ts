@@ -15,9 +15,9 @@ import type { AclGrant } from "@finisher/core-types";
 import { type AclBrokerGrant, aclGrant, aclGrantsForTest, aclRevoke, aclSweep, sandboxStatus } from "@finisher/fin-node";
 import { Effect, Exit, Scope } from "effect";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
-import { openSessionSandbox } from "../src/agent/sandbox.ts";
+import { openSessionSandbox, type SessionSandboxDeps } from "../src/agent/sandbox.ts";
 import { makePipeSocketServer } from "../src/pipe.ts";
-import { type AclBroker, aclBroker, grantTable, STATIC_OWNER, sessionOwner } from "../src/sandbox/broker.ts";
+import { type AclBroker, aclBroker, grantTable, STATIC_OWNER, sessionOwner, sweepAtStart } from "../src/sandbox/broker.ts";
 
 const MODIFY = 0x1301bf;
 const READ = 0x120089;
@@ -39,6 +39,13 @@ const wal = () => (existsSync(join(data, "run", "acl-broker.wal")) ? readFileSyn
 const tmpGrant = (owner = "session:s1"): AclBrokerGrant => ({ path: join(data, "agents", "s1", "tmp"), sid: SID, mask: MODIFY, inherit: true, owner });
 
 describe("aclBroker", () => {
+  test("the_starts_sweep_logs_a_failure_and_starts", async () => {
+    const failing = { ...aclBroker(data, { platform: "linux" }), sweep: () => Promise.reject(Object.assign(new Error("a revoke failed"), { code: "IO_ERROR" })) };
+    expect(await Effect.runPromise(sweepAtStart(failing))).toBeUndefined();
+    const ok = { ...failing, sweep: async () => 2 };
+    expect(await Effect.runPromise(sweepAtStart(ok))).toBe(2);
+  });
+
   test("is_a_no_op_off_windows", async () => {
     const calls: string[] = [];
     const native = {
@@ -62,11 +69,13 @@ describe("aclBroker", () => {
 
 describe("fin-node's broker (its log runs on every OS)", () => {
   test("grants_are_logged_revoked_and_swept", async () => {
-    await aclGrant(data, tmpGrant("session:a"));
-    await aclGrant(data, { ...tmpGrant(STATIC_OWNER), path: join(data, "agents", "s1", "settings"), mask: READ });
-    expect(aclGrantsForTest(data).map((g) => g.owner).sort()).toEqual(["session:a", STATIC_OWNER]);
+    const lib = join(tmp, "lib");
+    mkdirSync(lib);
+    await aclGrant(data, tmpGrant("session:s1"));
+    await aclGrant(data, { ...tmpGrant(STATIC_OWNER), path: lib, mask: READ });
+    expect(aclGrantsForTest(data).map((g) => g.owner).sort()).toEqual(["session:s1", STATIC_OWNER]);
     expect(wal().trim().split("\n")).toHaveLength(4);
-    expect(await aclSweep(data, ["session:a"])).toBe(0);
+    expect(await aclSweep(data, ["session:s1"])).toBe(0);
     expect(await aclSweep(data, [])).toBe(1);
     expect(aclGrantsForTest(data).map((g) => g.owner)).toEqual([STATIC_OWNER]);
     expect(await aclRevoke(data, STATIC_OWNER)).toBe(1);
@@ -87,6 +96,8 @@ describe("fin-node's broker (its log runs on every OS)", () => {
     }
     await expect(aclGrant(data, { ...tmpGrant(), path: join(data, "agents", "s1", "tmp", "missing") })).rejects.toMatchObject({ code: "NOT_FOUND" });
     await expect(aclGrant(data, { ...tmpGrant(), mask: MODIFY | 0x40000 })).rejects.toMatchObject({ code: "INVALID_ARGS" });
+    // Another session's files (review: `agents/<id>/` only for `session:<id>`).
+    await expect(aclGrant(data, tmpGrant("session:s2"))).rejects.toMatchObject({ code: "PATH_NOT_ALLOWED" });
     expect(wal()).toBe(before);
   });
 
@@ -187,17 +198,17 @@ describe("grantTable", () => {
 });
 
 describe("the session sandbox on Windows", () => {
-  test("grants_the_agent_table_before_any_process_and_revokes_it_at_scope_close", async () => {
+  const S = { id: "01S0000000000000000000000A", projectId: "01P0000000000000000000000A", harness: "fake", mode: "draft" } as unknown as Session;
+
+  /** Opens `S`'s sandbox (Windows, launcher mode) in a new scope over `b`. */
+  async function openBox(b: AclBroker, more: Partial<SessionSandboxDeps> = {}) {
     const dir = join(tmp, "P");
     mkdirSync(dir, { recursive: true });
     writeFileSync(join(dir, "finisher.project.json"), "{}");
-    const s = { id: "01S0000000000000000000000A", projectId: "01P0000000000000000000000A", harness: "fake", mode: "draft" } as unknown as Session;
-    const b = fakeBroker();
-    const allowed: string[] = [];
     const scope = await Effect.runPromise(Scope.make());
     const box = await Effect.runPromise(
       Scope.provide(scope)(
-        openSessionSandbox(s, "fake", {
+        openSessionSandbox(S, "fake", {
           serverData: data,
           projectDirOf: () => dir,
           finPath: "/bin/sh",
@@ -206,11 +217,19 @@ describe("the session sandbox on Windows", () => {
           launcher: () => "/nonexistent/fin-sandbox-exec",
           platform: "win32",
           acl: b,
-          allowPipe: (sid) => allowed.push(sid),
           containerSid: (name) => (name.startsWith("finisher-p-") ? "S-1-15-2-7" : null),
+          ...more,
         }),
       ),
     );
+    return { dir, box, close: () => Effect.runPromise(Scope.close(scope, Exit.void)) };
+  }
+
+  test("grants_the_agent_table_before_any_process_and_revokes_it_at_scope_close", async () => {
+    const s = S;
+    const b = fakeBroker();
+    const allowed: string[] = [];
+    const { dir, box, close } = await openBox(b, { allowPipe: (sid) => allowed.push(sid) });
     expect(box.mode).toBe("launcher");
     const owner = sessionOwner(s.id);
     const by = (p: string) => b.grants.filter((g) => g.path === p);
@@ -227,8 +246,88 @@ describe("the session sandbox on Windows", () => {
     expect(b.grants.every((g) => g.owner === owner || g.owner === STATIC_OWNER)).toBe(true);
     expect(allowed).toEqual(["S-1-15-2-7"]);
     expect(b.revoked).toEqual([]);
-    await Effect.runPromise(Scope.close(scope, Exit.void));
+    await close();
     expect(b.revoked).toEqual([owner]);
+  });
+
+  test("a_grant_that_fails_revokes_what_the_session_was_granted", async () => {
+    const b = fakeBroker();
+    let n = 0;
+    const failing: AclBroker = {
+      ...b,
+      grant: async (g) => {
+        // The third entry fails after two were granted.
+        if (++n === 3) throw Object.assign(new Error("denied"), { code: "IO_ERROR", finNode: true });
+        await b.grant(g);
+      },
+    };
+    await expect(openBox(failing)).rejects.toMatchObject({ code: "IO_ERROR" });
+    expect(n).toBe(3);
+    expect(b.revoked).toEqual([sessionOwner(S.id)]);
+  });
+
+  test("a_replaced_instance_never_revokes_its_successors_grants", async () => {
+    const b = fakeBroker();
+    const owner = sessionOwner(S.id);
+    // The old instance's scope closes after its successor opened (runtime-engine's stopLive).
+    const old = await openBox(b);
+    const next = await openBox(b);
+    await old.close();
+    expect(b.revoked).toEqual([]);
+    await next.close();
+    expect(b.revoked).toEqual([owner]);
+    // An instance that opens while the last one's revoke runs grants after it.
+    let release!: () => void;
+    const order: string[] = [];
+    const slow: AclBroker = {
+      ...b,
+      revoke: async (o) => {
+        order.push("revoke");
+        await new Promise<void>((r) => (release = r));
+        order.push("revoked");
+        return b.revoke(o);
+      },
+      grant: async (g) => {
+        order.push("grant");
+        await b.grant(g);
+      },
+    };
+    const first = await openBox(slow);
+    order.length = 0;
+    const closing = first.close();
+    await new Promise((r) => setTimeout(r, 10));
+    const opening = openBox(slow);
+    await new Promise((r) => setTimeout(r, 10));
+    expect(order).toEqual(["revoke"]);
+    release();
+    await closing;
+    const second = await opening;
+    expect(order.slice(0, 3)).toEqual(["revoke", "revoked", "grant"]);
+    const closed = second.close();
+    await new Promise((r) => setTimeout(r, 10));
+    release();
+    await closed;
+  });
+
+  test("a_processs_extra_reads_are_the_sessions_grants", async () => {
+    const b = fakeBroker();
+    const cli = join(tmp, "cli");
+    mkdirSync(cli);
+    const { box, close } = await openBox(b);
+    // The launcher does not exist here: the start fails after the grants.
+    await Effect.runPromise(Effect.exit(box.spawn(["x"], { cwd: tmp, stdio: "pipe", extraRead: [cli] })));
+    const extra = b.grants.filter((g) => g.path === cli);
+    expect(extra).toMatchObject([{ owner: sessionOwner(S.id) }]);
+    await close();
+  });
+
+  test("a_sign_in_link_that_cannot_be_made_on_windows_leaves_the_cli_signed_out", async () => {
+    const b = fakeBroker();
+    const eperm = async () => Promise.reject(Object.assign(new Error("EPERM: operation not permitted, symlink"), { code: "EPERM" }));
+    const { box, close } = await openBox(b, { symlink: eperm });
+    expect(box.mode).toBe("launcher");
+    expect(b.grants.some((g) => g.path.includes("providers"))).toBe(false);
+    await close();
   });
 });
 

@@ -1,6 +1,5 @@
 //! Windows: the broker over the real DACL, and the pipe's per-project container SIDs.
 
-use std::io::Write;
 use std::ptr::null_mut;
 use std::sync::mpsc;
 
@@ -18,9 +17,7 @@ use windows_sys::Win32::Storage::FileSystem::{
 };
 use windows_sys::Win32::System::Threading::OpenProcessToken;
 
-use super::support::{
-    AppContainer, CHILD_CONNECTED, CHILD_DENIED, CHILD_OTHER, CLIENT_ACCESS, READ_CONTROL, open,
-};
+use super::support::{AppContainer, CHILD_CONNECTED, CLIENT_ACCESS, READ_CONTROL, open};
 use super::*;
 use crate::acl_broker::apply::Windows;
 use crate::pipe_win::{Event, Options as PipeOptions, PipeCore};
@@ -58,15 +55,16 @@ fn two_concurrent_real_grants_on_one_directory_are_both_present() {
     let t = Tree::new();
     let b = Arc::new(real(&t));
     let (a, c) = (session_sid("s1"), session_sid("s2"));
+    let job = t.data.join("jobs/j1");
     // A subtree, so each grant propagates for a while.
     for i in 0..300 {
-        std::fs::write(t.tmp().join(format!("f{i}")), "x").unwrap();
+        std::fs::write(job.join(format!("f{i}")), "x").unwrap();
     }
     let barrier = Arc::new(Barrier::new(2));
-    let hs: Vec<_> = [(a.clone(), "session:s1"), (c.clone(), "session:s2")]
+    let hs: Vec<_> = [(a.clone(), "job:a"), (c.clone(), "job:b")]
         .into_iter()
         .map(|(sid, owner)| {
-            let (b, w, p) = (b.clone(), barrier.clone(), t.tmp());
+            let (b, w, p) = (b.clone(), barrier.clone(), job.clone());
             std::thread::spawn(move || {
                 w.wait();
                 b.grant(&grant(&p, &sid, MODIFY, owner)).unwrap();
@@ -74,9 +72,66 @@ fn two_concurrent_real_grants_on_one_directory_are_both_present() {
         })
         .collect();
     hs.into_iter().for_each(|h| h.join().unwrap());
-    let sddl = acl::sddl(&t.tmp()).unwrap();
+    let sddl = acl::sddl(&job).unwrap();
     assert!(sddl.contains(&a) && sddl.contains(&c), "{sddl}");
-    assert_eq!(b.sweep(&HashSet::new()).unwrap(), 2);
+    assert_eq!(b.sweep(&HashSet::new()).revoked, 2);
+}
+
+/// Review B1: the toolchain roots admit every AppContainer already (`ALL APPLICATION
+/// PACKAGES`) and this user may not re-ACL them, so the grant is done without a change.
+#[test]
+fn a_root_that_admits_every_container_is_granted_without_a_change() {
+    let t = Tree::new();
+    let b = real(&t);
+    let toolchain = capability::capability_sid(capability::TOOLCHAIN);
+    let roots = fin_sandbox::data::toolchain_base_present();
+    assert!(!roots.is_empty());
+    for root in roots {
+        let p = PathBuf::from(&root);
+        let before = acl::sddl(&p).unwrap();
+        b.grant(&grant(&p, &toolchain, READ_EXECUTE, STATIC_OWNER))
+            .unwrap_or_else(|e| panic!("{root}: {e}"));
+        assert_eq!(acl::sddl(&p).unwrap(), before, "{root}: unchanged");
+    }
+}
+
+/// A root that does not admit containers and whose DACL this user may not change (`OWNER
+/// RIGHTS` limits the owner to read): the grant fails, naming it, and nothing is recorded.
+#[test]
+fn a_root_this_user_cannot_re_acl_fails_naming_it() {
+    let t = Tree::new();
+    let b = real(&t);
+    let locked = t.project.join("workspace/s1/locked");
+    std::fs::create_dir_all(&locked).unwrap();
+    let user = fin_sandbox::windows::sid::current_user().unwrap().string();
+    acl::set_sddl(&locked, &format!("D:P(A;;FR;;;{user})(A;;FR;;;OW)")).unwrap();
+    let e = b
+        .grant(&grant(&locked, &session_sid("s1"), READ, "session:s1"))
+        .unwrap_err();
+    assert_eq!(e.code(), "IO_ERROR", "{e}");
+    assert!(e.to_string().contains("locked"), "{e}");
+    assert!(b.grants().is_empty());
+}
+
+/// Review 6: a share spelling of a local path (`\\localhost\C$\…`) is refused, never
+/// checked by its share form.
+#[test]
+fn a_share_path_is_refused() {
+    let t = Tree::new();
+    let b = real(&t);
+    let local = t.tmp().to_string_lossy().into_owned();
+    let local = local.trim_start_matches(r"\\?\");
+    let (drive, rest) = local.split_once(':').unwrap();
+    let share = PathBuf::from(format!(r"\\localhost\{drive}${rest}"));
+    let e = b
+        .grant(&grant(&share, &session_sid("s1"), MODIFY, "session:s1"))
+        .unwrap_err();
+    assert!(
+        matches!(e.code(), "PATH_NOT_ALLOWED" | "NOT_FOUND"),
+        "{}: {e}",
+        share.display()
+    );
+    assert!(b.grants().is_empty());
 }
 
 /// The pipe's owner, group, DACL and label (`AccessCheck` needs owner and group).
@@ -220,32 +275,4 @@ fn pipe_allow_admits_the_projects_container_and_no_other() {
     );
     drop((wx, wy, ours));
     core.shutdown();
-}
-
-/// In the container: opens the pipe named by `FIN_PIPE_PROBE` as `fin` does (its own
-/// project's: the allowed case).
-#[test]
-#[ignore = "the AppContainer child of pipe_allow_admits_the_projects_container_and_no_other"]
-fn appcontainer_child() {
-    let Ok(name) = std::env::var("FIN_PIPE_PROBE") else {
-        return;
-    };
-    let code = match open(&name, CLIENT_ACCESS) {
-        Ok(mut c) => {
-            let _ = c.write_all(b"hi\n");
-            CHILD_CONNECTED
-        }
-        Err(e) if e.raw_os_error() == Some(5) => CHILD_DENIED,
-        Err(_) => CHILD_OTHER,
-    };
-    std::process::exit(code as i32);
-}
-
-/// In the container: waits to be killed, so the parent can read its token. Opens nothing.
-#[test]
-#[ignore = "the waiting AppContainer child of pipe_allow_admits_the_projects_container_and_no_other"]
-fn waiting_child() {
-    if std::env::var_os("FIN_ACL_WAIT").is_some() {
-        std::thread::sleep(Duration::from_secs(60));
-    }
 }

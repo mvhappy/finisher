@@ -36,8 +36,8 @@ export function aclSweep(serverData, liveOwners) {
   return call(native.aclSweep(serverData, [...liveOwners]));
 }
 
-export function sandboxAgentGrants(input) {
-  return JSON.parse(sync(() => native.sandboxAgentGrants(JSON.stringify(input))));
+export function sandboxAgentGrants(input, extraRead) {
+  return JSON.parse(sync(() => native.sandboxAgentGrants(JSON.stringify(input), extraRead === undefined ? undefined : [...extraRead])));
 }
 
 export function sandboxHookGrants(input) {

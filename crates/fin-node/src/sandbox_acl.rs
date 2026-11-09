@@ -80,7 +80,7 @@ impl Task for AclTask {
                 let n = match &self.op {
                     AclOp::Grant(g) => b.grant(g).map(|()| 0),
                     AclOp::Revoke { owner, path } => b.revoke(owner, path.as_deref()),
-                    AclOp::Sweep(live) => b.sweep(live),
+                    AclOp::Sweep(live) => sweep(&b, live),
                 }
                 .map_err(|e| reject(core(e)))?;
                 Ok(u32::try_from(n).unwrap_or(u32::MAX))
@@ -92,6 +92,22 @@ impl Task for AclTask {
     fn resolve(&mut self, _env: Env, output: u32) -> Result<u32> {
         Ok(output)
     }
+}
+
+/// The sweep's count of grants revoked. The revokes that failed stay pending (the next sweep
+/// retries them) and answer one `IO_ERROR` once every other one is done, so `finisherd` logs
+/// them and starts anyway (Task 10 review 5).
+fn sweep(b: &PlatformBroker, live: &HashSet<String>) -> std::result::Result<usize, BrokerError> {
+    let r = b.sweep(live);
+    if r.failed.is_empty() {
+        return Ok(r.revoked);
+    }
+    Err(BrokerError::Io(format!(
+        "{} revoked; {} revoke(s) failed and stay pending: {}",
+        r.revoked,
+        r.failed.len(),
+        r.failed.join("; ")
+    )))
 }
 
 /// Grants `sid` `mask` on `path` for `owner` (`inherit`: the subtree inherits it). Logged
@@ -152,13 +168,20 @@ fn grants_json(
     encode(&grants)
 }
 
-/// The grants of an `agent` launch (`AgentInput` JSON): `AclGrant[]` JSON.
+/// The grants of an `agent` launch (`AgentInput` JSON): `AclGrant[]` JSON. `extraRead` (each
+/// also in the input's `toolchains`) are a harness's own files for this process: read by the
+/// session's capability and revoked with the session, not static toolchain grants.
 #[napi(catch_unwind)]
-pub fn sandbox_agent_grants(input: String) -> Result<String> {
+pub fn sandbox_agent_grants(input: String, extra_read: Option<Vec<String>>) -> Result<String> {
     grants_json(&input, |s| {
         let i: fin_sandbox::AgentInput =
             serde_json::from_str(s).map_err(|e| format!("the agent input does not parse: {e}"))?;
-        fin_sandbox::windows::grants::agent(&i)
+        let extra: Vec<PathBuf> = extra_read
+            .unwrap_or_default()
+            .into_iter()
+            .map(PathBuf::from)
+            .collect();
+        fin_sandbox::windows::grants::agent_with_extra(&i, &extra)
     })
 }
 

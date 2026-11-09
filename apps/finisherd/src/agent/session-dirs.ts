@@ -138,11 +138,17 @@ export interface LinkedStore {
 /**
  * Connects `provider/` to `harness`'s sign-in store in `<server-data>/providers/<harness>/home/`
  * (`serverData` canonical). `link`: makes (or keeps) the link `provider/<name>` → the store
- * file, replacing anything else of that name; `dir`: names the store directory only. Makes no
- * call on any path under `providers/` (only `lstat`, `readlink`, `rm` and `symlink` of the
- * link's own name in `provider/`).
+ * file, replacing anything else of that name (`undefined` on Windows when no file link can be
+ * made); `dir`: names the store directory only. Makes no call on any path under `providers/`
+ * (only `lstat`, `readlink`, `rm` and `symlink` of the link's own name in `provider/`).
  */
-export async function linkSignInStore(harness: Harness, serverData: string, dirs: SessionDirs): Promise<LinkedStore | undefined> {
+export interface LinkOptions {
+  readonly platform?: NodeJS.Platform;
+  /** The link call (tests: a host without the symlink privilege). */
+  readonly symlink?: typeof symlink;
+}
+
+export async function linkSignInStore(harness: Harness, serverData: string, dirs: SessionDirs, opts: LinkOptions = {}): Promise<LinkedStore | undefined> {
   const store = SIGN_IN_STORES[harness];
   if (store === undefined) return undefined;
   const home = join(serverData, "providers", harness, "home");
@@ -155,6 +161,15 @@ export async function linkSignInStore(harness: Harness, serverData: string, dirs
   const existing = await lstat(link).catch(() => undefined);
   if (existing?.isSymbolicLink() === true && (await readlink(link)) === target) return { grant: target };
   if (existing !== undefined) await rm(link, { recursive: true, force: true });
-  await symlink(target, link, "file");
+  try {
+    await (opts.symlink ?? symlink)(target, link, "file");
+  } catch (e) {
+    // Windows without the symlink privilege (no Developer Mode, not elevated; S9 point 12): a
+    // file link cannot be made, and a hard link would open the store and break at the CLI's
+    // first rename. The store is then not reached: the CLI reports itself signed out.
+    const code = (e as NodeJS.ErrnoException).code;
+    if ((opts.platform ?? process.platform) === "win32" && (code === "EPERM" || code === "EACCES")) return undefined;
+    throw e;
+  }
   return { grant: target };
 }

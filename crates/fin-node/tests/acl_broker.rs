@@ -55,6 +55,8 @@ struct FileFake {
     file: PathBuf,
     delay: Duration,
     fail_grant: bool,
+    /// Paths whose revoke fails (shared by the clones, so a test can change it later).
+    fail_revoke: Arc<Mutex<Vec<PathBuf>>>,
 }
 
 impl FileFake {
@@ -63,7 +65,19 @@ impl FileFake {
             file: dir.join("fake-acl.json"),
             delay: Duration::ZERO,
             fail_grant: false,
+            fail_revoke: Arc::default(),
         }
+    }
+
+    fn fail_revoke_on(&self, paths: &[&Path]) {
+        *self.fail_revoke.lock().unwrap() = paths.iter().map(|p| p.to_path_buf()).collect();
+    }
+
+    /// Removes every ACE of `p` behind the broker's back (a file replaced by rename).
+    fn wipe(&self, p: &Path) {
+        let mut all = self.read();
+        all.remove(&key(p));
+        self.write(&all);
     }
 
     fn read(&self) -> Aces {
@@ -110,6 +124,9 @@ impl Apply for FileFake {
     }
 
     fn revoke(&self, path: &Path, sid: &str) -> io::Result<usize> {
+        if self.fail_revoke.lock().unwrap().iter().any(|p| p == path) {
+            return Err(io::Error::other("injected revoke failure"));
+        }
         let mut all = self.read();
         std::thread::sleep(self.delay);
         let aces = all.entry(key(path)).or_default();
@@ -121,6 +138,13 @@ impl Apply for FileFake {
             return Err(io::ErrorKind::NotFound.into());
         }
         Ok(n)
+    }
+
+    fn holds(&self, path: &Path, sid: &str, mask: u32, _inherit: bool) -> io::Result<bool> {
+        Ok(self
+            .read()
+            .get(&key(path))
+            .is_some_and(|a| a.iter().any(|(s, m, _)| s == sid && m & mask == mask)))
     }
 }
 
@@ -183,12 +207,32 @@ impl Tree {
 
     fn open_with(&self, fake: FileFake, live: &[&str], opts: Options) -> Broker<FileFake> {
         let live: HashSet<String> = live.iter().map(|s| s.to_string()).collect();
-        Broker::open(&self.data, fake, opts, &|o| live.contains(o)).expect("the broker opens")
+        open_retrying(&self.data, fake, opts, &|o| live.contains(o)).expect("the broker opens")
     }
 
     fn tmp(&self) -> PathBuf {
         self.data.join("agents/s1/tmp")
     }
+}
+
+/// [`Broker::open`], retried while the lock of a broker this process just dropped is still
+/// held: on Unix the lock (`flock`) belongs to the open file, which a child forked by another
+/// test at that moment holds until its `exec` closes it. A server never reopens its broker.
+fn open_retrying<A: Apply + Clone>(
+    data: &Path,
+    apply: A,
+    opts: Options,
+    live: &dyn Fn(&str) -> bool,
+) -> Result<Broker<A>, BrokerError> {
+    for _ in 0..200 {
+        match Broker::open(data, apply.clone(), opts.clone(), live) {
+            Err(BrokerError::Io(m)) if m.contains("another ACL broker") => {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            r => return r,
+        }
+    }
+    Broker::open(data, apply, opts, live)
 }
 
 fn grant(path: &Path, sid: &str, mask: u32, owner: &str) -> Grant {
@@ -199,6 +243,14 @@ fn grant(path: &Path, sid: &str, mask: u32, owner: &str) -> Grant {
         inherit: true,
         owner: owner.into(),
     }
+}
+
+/// `<p>/..`, its `..` kept as written.
+fn dotdot(p: &Path) -> PathBuf {
+    let mut s = p.as_os_str().to_owned();
+    s.push(std::path::MAIN_SEPARATOR_STR);
+    s.push("..");
+    PathBuf::from(s)
 }
 
 fn owners(b: &Broker<FileFake>) -> Vec<String> {
@@ -221,13 +273,17 @@ fn a_grant_is_logged_applied_and_replayed() {
     // grant, done, grant, done.
     assert_eq!(t.wal_text().lines().count(), 4, "{}", t.wal_text());
     drop(b);
+    // A static record is not carried across a restart (the next launch grants it again); its
+    // ACE stays.
     let b = t.open(fake.clone(), &["session:s1"]);
-    assert_eq!(owners(&b), ["session:s1", STATIC_OWNER]);
+    assert_eq!(owners(&b), ["session:s1"]);
+    assert_eq!(fake.sids(&t.project), [SID_B]);
+    assert!(!t.wal_text().contains(STATIC_OWNER), "{}", t.wal_text());
     // Revoked by owner: the ACE goes, the log says so after a reopen.
     assert_eq!(b.revoke("session:s1", None).unwrap(), 1);
     assert!(fake.sids(&t.tmp()).is_empty());
     drop(b);
-    assert_eq!(owners(&t.open(fake, &["session:s1"])), [STATIC_OWNER]);
+    assert!(owners(&t.open(fake, &["session:s1"])).is_empty());
 }
 
 #[test]
@@ -246,8 +302,9 @@ fn the_log_stays_bounded() {
     assert_eq!(lines, b.wal_lines());
     // 2 per live grant, the slack, and what the last operation appended since.
     assert!(lines <= 2 + 4 + 4, "{lines} lines:\n{}", t.wal_text());
+    assert!(b.warnings().is_empty(), "{:?}", b.warnings());
     drop(b);
-    assert_eq!(owners(&t.open(fake, &[])), [STATIC_OWNER]);
+    assert!(owners(&t.open(fake, &[])).is_empty());
 }
 
 #[test]
@@ -255,18 +312,18 @@ fn a_torn_last_line_is_dropped_and_a_damaged_one_refused() {
     let t = Tree::new();
     let fake = t.fake();
     drop(t.open(fake.clone(), &[]));
-    let g = serde_json::json!({"op": "grant", "id": 1, "path": t.tmp(), "sid": SID_A, "mask": MODIFY, "inherit": true, "owner": STATIC_OWNER});
+    let g = serde_json::json!({"op": "grant", "id": 1, "path": t.tmp(), "sid": SID_A, "mask": MODIFY, "inherit": true, "owner": "session:s1"});
     let done = r#"{"op":"done","id":1}"#;
     std::fs::write(t.wal(), format!("{g}\n{done}\n{{\"op\":\"gra")).unwrap();
-    let b = t.open(fake.clone(), &[]);
-    assert_eq!(owners(&b), [STATIC_OWNER]);
+    let b = t.open(fake.clone(), &["session:s1"]);
+    assert_eq!(owners(&b), ["session:s1"]);
     drop(b);
     // Rewritten at open: the torn tail is gone.
     assert_eq!(t.wal_text().lines().count(), 2, "{}", t.wal_text());
     std::fs::write(t.wal(), format!("{g}\nnot json\n{done}\n")).unwrap();
-    let r = Broker::open(&t.data, fake, Options::default(), &|_| true);
+    let r = open_retrying(&t.data, fake, Options::default(), &|_| true);
     assert!(
-        matches!(r, Err(BrokerError::Io(_))),
+        matches!(&r, Err(BrokerError::Io(m)) if m.contains("damaged")),
         "a damaged log is refused"
     );
 }
@@ -291,22 +348,24 @@ fn two_concurrent_grants_on_one_directory_both_survive() {
     lost.into_iter().for_each(|h| h.join().unwrap());
     assert_eq!(fake.sids(&t.tmp()).len(), 1, "the fake models the race");
     std::fs::remove_file(&fake.file).unwrap();
-    // Through the broker, both are kept; also a grant on a child of a directory being granted.
+    // Through the broker, both are kept.
     let b = Arc::new(t.open(fake.clone(), &[]));
     let barrier = Arc::new(Barrier::new(2));
+    let job = t.data.join("jobs/j1");
     let both: Vec<_> = [SID_A, SID_B]
         .into_iter()
-        .map(|sid| {
-            let (b, w, p) = (b.clone(), barrier.clone(), t.tmp());
+        .enumerate()
+        .map(|(n, sid)| {
+            let (b, w, p) = (b.clone(), barrier.clone(), job.clone());
             std::thread::spawn(move || {
                 w.wait();
-                b.grant(&grant(&p, sid, MODIFY, &format!("session:{sid}")))
+                b.grant(&grant(&p, sid, MODIFY, &format!("job:{n}")))
                     .unwrap();
             })
         })
         .collect();
     both.into_iter().for_each(|h| h.join().unwrap());
-    assert_eq!(fake.sids(&t.tmp()), [SID_A, SID_B]);
+    assert_eq!(fake.sids(&job), [SID_A, SID_B]);
     assert_eq!(b.grants().len(), 2);
 }
 
@@ -381,19 +440,19 @@ fn the_sweep_revokes_the_grants_of_owners_gone() {
     let t = Tree::new();
     let fake = t.fake();
     let b = t.open(fake.clone(), &[]);
-    b.grant(&grant(&t.tmp(), SID_A, MODIFY, "session:a"))
+    b.grant(&grant(&t.tmp(), SID_A, MODIFY, "session:s1"))
         .unwrap();
     b.grant(&grant(&t.data.join("jobs/j1"), SID_B, MODIFY, "job:b"))
         .unwrap();
     b.grant(&grant(&t.project, SID_B, READ_EXECUTE, STATIC_OWNER))
         .unwrap();
-    let live: HashSet<String> = ["session:a".to_string()].into();
-    assert_eq!(b.sweep(&live).unwrap(), 1);
-    assert_eq!(owners(&b), ["session:a", STATIC_OWNER]);
+    let live: HashSet<String> = ["session:s1".to_string()].into();
+    assert_eq!(b.sweep(&live).revoked, 1);
+    assert_eq!(owners(&b), ["session:s1", STATIC_OWNER]);
     assert!(fake.sids(&t.data.join("jobs/j1")).is_empty());
     assert_eq!(fake.sids(&t.tmp()), [SID_A]);
     // At start nothing is live but the static grants.
-    assert_eq!(b.sweep(&HashSet::new()).unwrap(), 1);
+    assert_eq!(b.sweep(&HashSet::new()).revoked, 1);
     assert_eq!(owners(&b), [STATIC_OWNER]);
 }
 
@@ -486,9 +545,15 @@ fn protected_roots_are_refused_before_the_log() {
             "INVALID_ARGS",
         ),
         (grant(&t.tmp(), SID_A, MODIFY, "session s1"), "INVALID_ARGS"),
+        // Spelled out: `join("..")` on a `\\?\` path (Windows) pops a component instead.
         (
-            grant(&t.tmp().join(".."), SID_A, MODIFY, "session:s1"),
+            grant(&dotdot(&t.tmp()), SID_A, MODIFY, "session:s1"),
             "INVALID_ARGS",
+        ),
+        // Another session's files, whatever the mask.
+        (
+            grant(&t.tmp(), SID_A, READ, "session:s2"),
+            "PATH_NOT_ALLOWED",
         ),
         (
             grant(&t.tmp().join("missing"), SID_A, MODIFY, "session:s1"),
@@ -549,9 +614,9 @@ fn one_owner_per_pair_and_a_covered_grant_is_skipped() {
     b.grant(&grant(&t.tmp(), SID_A, READ, "session:s1"))
         .unwrap();
     assert_eq!(b.wal_lines(), lines, "already covered: nothing logged");
-    let e = b
-        .grant(&grant(&t.tmp(), SID_A, MODIFY, "session:s2"))
-        .unwrap_err();
+    let job = t.data.join("jobs/j1");
+    b.grant(&grant(&job, SID_A, MODIFY, "job:a")).unwrap();
+    let e = b.grant(&grant(&job, SID_A, MODIFY, "job:b")).unwrap_err();
     assert_eq!(e.code(), "INVALID_OP", "{e}");
 }
 
@@ -562,7 +627,7 @@ fn a_failed_grant_is_rolled_back() {
     fake.fail_grant = true;
     let b = t.open(fake.clone(), &[]);
     let e = b
-        .grant(&grant(&t.tmp(), SID_A, MODIFY, STATIC_OWNER))
+        .grant(&grant(&t.tmp(), SID_A, MODIFY, "session:s1"))
         .unwrap_err();
     assert_eq!(e.code(), "IO_ERROR");
     assert!(b.grants().is_empty());
@@ -572,6 +637,307 @@ fn a_failed_grant_is_rolled_back() {
     let b = t.open(fake.clone(), &[]);
     assert!(b.grants().is_empty(), "{:?}", b.grants());
     assert!(fake.sids(&t.tmp()).is_empty());
+}
+
+#[test]
+fn a_pending_revoke_never_wipes_a_newer_grant_of_its_pair() {
+    let t = Tree::new();
+    let fake = t.fake();
+    let b = t.open(fake.clone(), &[]);
+    let g = grant(&t.tmp(), SID_A, MODIFY, "session:s1");
+    b.grant(&g).unwrap();
+    fake.fail_revoke_on(&[&t.tmp()]);
+    assert_eq!(b.revoke("session:s1", None).unwrap_err().code(), "IO_ERROR");
+    assert_eq!(
+        fake.sids(&t.tmp()),
+        [SID_A],
+        "the failed revoke left the ACE"
+    );
+    assert_eq!(b.pending(), 1, "and stays pending");
+    // The session grants its pair again: the pending revoke is completed first, then granted.
+    fake.fail_revoke_on(&[]);
+    b.grant(&g).unwrap();
+    assert_eq!(b.pending(), 0);
+    let live: HashSet<String> = ["session:s1".to_string()].into();
+    assert!(b.sweep(&live).failed.is_empty());
+    assert_eq!(
+        fake.sids(&t.tmp()),
+        [SID_A],
+        "the sweep left the newer grant"
+    );
+    drop(b);
+    let b = t.open(fake.clone(), &["session:s1"]);
+    assert_eq!(owners(&b), ["session:s1"]);
+    assert_eq!(fake.sids(&t.tmp()), [SID_A], "and so did the replay");
+}
+
+#[test]
+fn a_replayed_revoke_followed_by_a_grant_of_its_pair_grants_it_again() {
+    // The log of a broker that did not complete its pending revoke before granting again.
+    let t = Tree::new();
+    let fake = t.fake();
+    drop(t.open(fake.clone(), &[]));
+    let tmp = t.tmp();
+    let lines = [
+        serde_json::json!({"op": "grant", "id": 1, "path": tmp, "sid": SID_A, "mask": MODIFY, "inherit": true, "owner": "session:s1"}),
+        serde_json::json!({"op": "done", "id": 1}),
+        serde_json::json!({"op": "revoke", "id": 2, "path": tmp, "sid": SID_A, "owner": "session:s1"}),
+        serde_json::json!({"op": "grant", "id": 3, "path": tmp, "sid": SID_A, "mask": MODIFY, "inherit": true, "owner": "session:s1"}),
+        serde_json::json!({"op": "done", "id": 3}),
+    ];
+    let text: String = lines.iter().map(|l| format!("{l}\n")).collect();
+    std::fs::write(t.wal(), text).unwrap();
+    FileFake::grant(&fake, &tmp, SID_A, MODIFY, true).unwrap();
+    let b = t.open(fake.clone(), &["session:s1"]);
+    assert_eq!(owners(&b), ["session:s1"]);
+    assert_eq!(b.pending(), 0);
+    assert_eq!(
+        fake.sids(&tmp),
+        [SID_A],
+        "the revoke did not leave the grant without its ACE"
+    );
+}
+
+#[test]
+fn a_revoke_that_fails_stays_pending_and_the_others_go_on() {
+    let t = Tree::new();
+    let fake = t.fake();
+    let b = t.open_with(fake.clone(), &[], Options { compact_slack: 0 });
+    let job = t.data.join("jobs/j1");
+    b.grant(&grant(&t.tmp(), SID_A, MODIFY, "session:s1"))
+        .unwrap();
+    b.grant(&grant(
+        &t.project.join("workspace/s1"),
+        SID_A,
+        MODIFY,
+        "session:s1",
+    ))
+    .unwrap();
+    b.grant(&grant(&job, SID_B, MODIFY, "job:j1")).unwrap();
+    // `revoke` tries every grant of the owner.
+    fake.fail_revoke_on(&[&t.tmp()]);
+    assert!(b.revoke("session:s1", None).is_err());
+    assert!(fake.sids(&t.project.join("workspace/s1")).is_empty());
+    assert_eq!(b.pending(), 1);
+    // The sweep retries it, fails again, and still revokes the job's.
+    let r = b.sweep(&HashSet::new());
+    assert_eq!((r.revoked, r.failed.len()), (1, 1), "{r:?}");
+    assert!(fake.sids(&job).is_empty());
+    assert_eq!(fake.sids(&t.tmp()), [SID_A]);
+    // Compaction (slack 0: at every operation) keeps it; so does a restart.
+    drop(b);
+    let b = t.open_with(fake.clone(), &[], Options { compact_slack: 0 });
+    assert_eq!(b.pending(), 1, "{}", t.wal_text());
+    assert!(!b.warnings().is_empty(), "the failure at open is a warning");
+    fake.fail_revoke_on(&[]);
+    let r = b.sweep(&HashSet::new());
+    assert!(r.failed.is_empty(), "{r:?}");
+    assert!(fake.sids(&t.tmp()).is_empty());
+    assert_eq!(b.pending(), 0);
+}
+
+#[test]
+fn a_covered_static_grant_is_applied_again_when_its_ace_is_gone() {
+    let t = Tree::new();
+    let fake = t.fake();
+    let b = t.open(fake.clone(), &[]);
+    let g = grant(&t.project, SID_B, READ_EXECUTE, STATIC_OWNER);
+    b.grant(&g).unwrap();
+    let lines = b.wal_lines();
+    b.grant(&g).unwrap();
+    assert_eq!(b.wal_lines(), lines, "held: skipped");
+    // Replaced by rename: the explicit ACE is gone, the record is not.
+    fake.wipe(&t.project);
+    b.grant(&g).unwrap();
+    assert_eq!(fake.sids(&t.project), [SID_B], "granted again");
+}
+
+#[test]
+fn a_path_is_checked_locked_recorded_and_applied_in_its_resolved_form() {
+    let t = Tree::new();
+    let fake = t.fake();
+    let b = t.open(fake.clone(), &[]);
+    // A spelling with a redundant separator and, on Unix, a link: one record, the resolved path.
+    let mut spelled = t.tmp().into_os_string();
+    spelled.push(std::path::MAIN_SEPARATOR_STR);
+    b.grant(&grant(&PathBuf::from(spelled), SID_A, MODIFY, "session:s1"))
+        .unwrap();
+    #[cfg(unix)]
+    {
+        let link = t.root.join("tmp-link");
+        std::os::unix::fs::symlink(t.tmp(), &link).unwrap();
+        b.grant(&grant(&link, SID_A, MODIFY, "session:s1")).unwrap();
+        // Through a link into another session's files: refused by the resolved form.
+        std::fs::create_dir_all(t.data.join("agents/s2/tmp")).unwrap();
+        let other = t.root.join("other-link");
+        std::os::unix::fs::symlink(t.data.join("agents/s2/tmp"), &other).unwrap();
+        let e = b
+            .grant(&grant(&other, SID_A, MODIFY, "session:s1"))
+            .unwrap_err();
+        assert_eq!(e.code(), "PATH_NOT_ALLOWED", "{e}");
+    }
+    let paths: Vec<PathBuf> = b.grants().into_iter().map(|g| g.path).collect();
+    assert_eq!(paths, [t.tmp()]);
+    assert_eq!(fake.sids(&t.tmp()), [SID_A]);
+    assert_eq!(b.revoke("session:s1", None).unwrap(), 1);
+}
+
+#[cfg(unix)]
+#[test]
+fn a_path_that_cannot_be_resolved_is_refused() {
+    use std::os::unix::fs::PermissionsExt;
+    let t = Tree::new();
+    let b = t.open(t.fake(), &[]);
+    let locked = t.project.join("workspace/s1/locked");
+    std::fs::create_dir_all(locked.join("inner")).unwrap();
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
+    let r = b.grant(&grant(&locked.join("inner"), SID_A, READ, "session:s1"));
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o700)).unwrap();
+    // Root reads through 0o000 (a CI container): nothing to refuse there.
+    if let Err(e) = r {
+        assert_eq!(e.code(), "PATH_NOT_ALLOWED", "{e}");
+    }
+}
+
+#[test]
+fn a_failed_rewrite_of_the_log_is_a_warning() {
+    let t = Tree::new();
+    let fake = t.fake();
+    let b = t.open_with(fake.clone(), &[], Options { compact_slack: 0 });
+    // The temp file cannot be made: a directory holds its name.
+    std::fs::create_dir_all(t.data.join("run/acl-broker.wal.tmp/x")).unwrap();
+    for _ in 0..3 {
+        b.grant(&grant(&t.tmp(), SID_A, MODIFY, "session:s1"))
+            .unwrap();
+        b.revoke("session:s1", None).unwrap();
+    }
+    assert!(!b.warnings().is_empty());
+    // The log was kept, and appended to, in place.
+    assert_eq!(t.wal_text().lines().count(), b.wal_lines());
+    b.grant(&grant(&t.tmp(), SID_A, MODIFY, "session:s1"))
+        .unwrap();
+    drop(b);
+    std::fs::remove_dir_all(t.data.join("run/acl-broker.wal.tmp")).unwrap();
+    assert_eq!(owners(&t.open(fake, &["session:s1"])), ["session:s1"]);
+}
+
+#[test]
+fn one_broker_per_server_data() {
+    let t = Tree::new();
+    let b = t.open(t.fake(), &[]);
+    let second = Broker::open(&t.data, t.fake(), Options::default(), &|_| true);
+    assert!(
+        matches!(second, Err(BrokerError::Io(_))),
+        "refused while one is open"
+    );
+    drop(b);
+    drop(t.open(t.fake(), &[]));
+}
+
+/// The real grant tables (`fin_sandbox::windows::grants`), built from realistic inputs with
+/// this OS's toolchain list, pass the broker's protect rules (Task 10 review B1): a table that
+/// names what the rules refuse fails here, not at a launch.
+#[test]
+fn the_real_grant_tables_pass_the_protect_rules() {
+    use fin_core::events::payloads::agent::{AgentMode, Harness};
+    use fin_sandbox::windows::grants::{self, Scope};
+    use fin_sandbox::{AgentInput, HookInput, inputs::FinEndpoint, inputs::HookFin};
+    let t = Tree::new();
+    let fake = t.fake();
+    let b = t.open(fake, &[]);
+    let d = &t.data;
+    for p in ["agents/s1/localappdata", "providers/codex/home", "hooks/c1"] {
+        std::fs::create_dir_all(d.join(p)).unwrap();
+    }
+    std::fs::write(d.join("providers/codex/home/auth.json"), "{}").unwrap();
+    std::fs::write(d.join("hooks/c1.cred"), "{}").unwrap();
+    std::fs::create_dir_all(t.project.join("workspace/shared")).unwrap();
+    let hook_file = t.root.join("hooks/h.cmd");
+    std::fs::create_dir_all(hook_file.parent().unwrap()).unwrap();
+    std::fs::write(&hook_file, "x").unwrap();
+    let lib = t.root.join("lib");
+    std::fs::create_dir_all(&lib).unwrap();
+    let home = t.root.join("home");
+    std::fs::create_dir_all(&home).unwrap();
+    let cli = t.root.join("cli");
+    std::fs::create_dir_all(&cli).unwrap();
+    let mut toolchains: Vec<PathBuf> = system_toolchains();
+    toolchains.push(cli.clone());
+    let agent = AgentInput {
+        session_id: "s1".into(),
+        mode: AgentMode::Draft,
+        harness: Harness::Codex,
+        project_dir: t.project.clone(),
+        workspace_dir: t.project.join("workspace/s1"),
+        shared_dir: Some(t.project.join("workspace/shared")),
+        library_roots: vec![lib],
+        session_dir: d.join("agents/s1"),
+        sign_in_store: Some(d.join("providers/codex/home/auth.json")),
+        toolchains: toolchains.clone(),
+        server_data: d.clone(),
+        home: home.clone(),
+        fin: None,
+    };
+    let hook = HookInput {
+        project_dir: t.project.clone(),
+        hook_file,
+        toolchains,
+        tmp: d.join("hooks/c1"),
+        server_data: d.clone(),
+        home,
+        fin: Some(HookFin {
+            credential: d.join("hooks/c1.cred"),
+            endpoint: FinEndpoint::Pipe,
+        }),
+        timeout_ms: None,
+    };
+    let tables = [
+        (
+            "session:s1",
+            grants::agent_with_extra(&agent, &[cli]).unwrap(),
+        ),
+        ("call:c1", grants::hook(&hook).unwrap()),
+    ];
+    let mut checked = 0;
+    for (owner, table) in tables {
+        assert!(!table.is_empty());
+        for e in table {
+            let sid = match &e.trustee {
+                grants::Trustee::Sid(s) => s.clone(),
+                grants::Trustee::Container(_) => SID_B.into(),
+            };
+            let owner = if e.scope == Scope::Static {
+                STATIC_OWNER
+            } else {
+                owner
+            };
+            b.grant(&Grant {
+                path: e.path.clone(),
+                sid,
+                mask: e.mask,
+                inherit: true,
+                owner: owner.into(),
+            })
+            .unwrap_or_else(|err| panic!("{} for {owner}: {err}", e.path.display()));
+            checked += 1;
+        }
+    }
+    assert!(checked >= 15, "{checked}");
+}
+
+/// This OS's base toolchain roots, as `finisherd` passes them (`sandboxToolchainBase`).
+fn system_toolchains() -> Vec<PathBuf> {
+    #[cfg(unix)]
+    {
+        fin_sandbox::data::toolchain_base_resolved(fin_sandbox::Os::current())
+    }
+    #[cfg(windows)]
+    {
+        fin_sandbox::data::toolchain_base_present()
+            .into_iter()
+            .map(PathBuf::from)
+            .collect()
+    }
 }
 
 /// The crash points: a child of this binary runs one operation with `FIN_TEST_ACL_CRASH`
@@ -676,6 +1042,32 @@ mod crash {
         }
     }
 
+    #[test]
+    fn a_crash_while_the_log_is_rewritten_loses_nothing() {
+        for point in ["beforeRename", "afterRename"] {
+            let t = Tree::new();
+            let fake = t.fake();
+            drop({
+                let b = t.open(fake.clone(), &[]);
+                b.grant(&grant(&t.tmp(), SID_A, MODIFY, "session:s1"))
+                    .unwrap();
+                b
+            });
+            // The child's open rewrites the log and is aborted around the rename.
+            child(&t, "compact", point);
+            let tmp = t.data.join("run/acl-broker.wal.tmp");
+            assert_eq!(tmp.exists(), point == "beforeRename", "{point}");
+            let b = t.open(fake.clone(), &["session:s1"]);
+            assert_eq!(owners(&b), ["session:s1"], "{point}: {}", t.wal_text());
+            assert_eq!(b.pending(), 0, "{point}");
+            assert_eq!(fake.sids(&t.tmp()), [SID_A], "{point}");
+            assert!(
+                !tmp.exists(),
+                "{point}: the stale temp file was replaced and renamed"
+            );
+        }
+    }
+
     /// The child of the crash tests (`FIN_ACL_CHILD`: the op, server data, the fake's dir).
     #[test]
     #[ignore = "run by the crash tests"]
@@ -689,10 +1081,12 @@ mod crash {
             PathBuf::from(it.next().unwrap()),
             PathBuf::from(it.next().unwrap()),
         );
-        let b = Broker::open(&data, FileFake::new(&root), Options::default(), &|_| true).unwrap();
+        let b = open_retrying(&data, FileFake::new(&root), Options::default(), &|_| true).unwrap();
         let tmp = data.join("agents/s1/tmp");
         match op {
             "grant" => b.grant(&grant(&tmp, SID_A, MODIFY, "session:s1")).unwrap(),
+            // The open above rewrote the log.
+            "compact" => {}
             _ => {
                 b.revoke("session:s1", None).unwrap();
             }
@@ -704,3 +1098,37 @@ mod crash {
 #[cfg(windows)]
 #[path = "acl_broker/windows.rs"]
 mod windows;
+
+// The AppContainer children of `windows::pipe_allow_admits_the_projects_container_and_no_other`,
+// at the crate root: the container runs this binary as `<exe> <test> --exact`, so a test in a
+// module would not be found and the child would exit 0 without running.
+
+/// In the container: opens the pipe named by `FIN_PIPE_PROBE` as `fin` does (its own
+/// project's: the allowed case).
+#[test]
+#[ignore = "the AppContainer child of pipe_allow_admits_the_projects_container_and_no_other"]
+#[cfg(windows)]
+fn appcontainer_child() {
+    let Ok(name) = std::env::var("FIN_PIPE_PROBE") else {
+        return;
+    };
+    let code = match support::open(&name, support::CLIENT_ACCESS) {
+        Ok(mut c) => {
+            let _ = std::io::Write::write_all(&mut c, b"hi\n");
+            support::CHILD_CONNECTED
+        }
+        Err(e) if e.raw_os_error() == Some(5) => support::CHILD_DENIED,
+        Err(_) => support::CHILD_OTHER,
+    };
+    std::process::exit(code as i32);
+}
+
+/// In the container: waits to be killed, so the parent can read its token. Opens nothing.
+#[test]
+#[ignore = "the waiting AppContainer child of pipe_allow_admits_the_projects_container_and_no_other"]
+#[cfg(windows)]
+fn waiting_child() {
+    if std::env::var_os("FIN_ACL_WAIT").is_some() {
+        std::thread::sleep(Duration::from_secs(60));
+    }
+}

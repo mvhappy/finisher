@@ -7,6 +7,8 @@
 //!   per-session (per-call, per-job) capability SIDs the ACL broker grants on their roots
 //!   (Decision 16; S9 confirmed that capability SIDs are honoured, so Decision 17's fallback
 //!   is not built).
+//! - [`dacl`] (pure): whether a DACL already gives a grant's access (`ALL APPLICATION
+//!   PACKAGES` on the toolchain roots).
 //! - [`grants`] (pure): the ACEs the broker makes for a launch, enumerated against the policy.
 //! - [`appcontainer`], [`job`], [`desktop`], [`wer`], [`apply`]: the Win32 parts.
 //! - [`launcher`]: `fin-sandbox-exec` on Windows (agents and hooks).
@@ -14,6 +16,7 @@
 //! - [`token`]: what this process's token says (the self-sandbox check of workers).
 
 pub mod capability;
+pub mod dacl;
 pub mod grants;
 pub mod plan;
 

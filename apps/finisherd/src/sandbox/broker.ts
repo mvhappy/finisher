@@ -11,6 +11,7 @@
 // session, job or call outlives the server that started it.
 import type { AclGrant } from "@finisher/core-types";
 import { type AclBrokerGrant, aclGrant, aclRevoke, aclSweep, sandboxContainerSid } from "@finisher/fin-node";
+import { Effect } from "effect";
 
 export const STATIC_OWNER = "static";
 
@@ -51,6 +52,17 @@ export function aclBroker(serverData: string, opts: { platform?: NodeJS.Platform
     sweep: (live) => native.aclSweep(serverData, live),
   };
 }
+
+/**
+ * The start's sweep (no owner live): how many grants it revoked, or `undefined` when it failed.
+ * A failure is a warning, never a start failure (Task 10 review 5): a revoke that cannot be done
+ * stays pending in the log for the next sweep, and a broker that cannot open makes every later
+ * grant fail, so agents fail closed.
+ */
+export const sweepAtStart = (broker: AclBroker): Effect.Effect<number | undefined> =>
+  Effect.tryPromise({ try: () => broker.sweep([]), catch: (e) => e }).pipe(
+    Effect.catch((e) => Effect.as(Effect.logWarning(`finisherd: ACL broker: the start's sweep did not complete (what failed stays pending): ${e instanceof Error ? e.message : String(e)}`), undefined)),
+  );
 
 export interface TableOptions {
   /** The owner of the table's `owner`-scoped entries (`session:<id>`, `call:<id>`). */

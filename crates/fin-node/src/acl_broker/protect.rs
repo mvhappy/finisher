@@ -14,6 +14,8 @@
 //!    itself) refused:
 //!    - `agents/<id>/{tmp, provider, localappdata}` and below: any mask;
 //!    - `agents/<id>/{credential.json, settings, git}` and below: read only (protected);
+//!    - under `agents/<id>/`, only for the owner `session:<id>` (one session's grant never
+//!      names another session's files);
 //!    - `providers/<harness>/home/<store>` and below: any mask (the sign-in store);
 //!    - `jobs/<dir>` and below: any mask (a job's directory, a warm worker's own);
 //!    - `hooks/<call>` and below: any mask (a hook call's private temp and credential);
@@ -25,8 +27,11 @@
 //!    profiles' `protect` roots). Residual: an inheritable write grant on a folder that holds a
 //!    project somewhere below is not found (that would walk the subtree).
 //!
-//! Rules 2 and 3 are checked on the path as given and, when it exists, on its canonical form
-//! against the canonical server data, so a link does not lead a grant in.
+//! **One form of each path** ([`Rules::resolve`]): the path is resolved once on entry (links,
+//! `\\?\`, 8.3 names, `\\localhost\C$\…`), and that form is checked against the canonical
+//! server data, and then locked, recorded and applied, so no spelling leads a grant past a
+//! rule. A path that cannot be resolved is refused (`NOT_FOUND` when it does not exist), and
+//! on Windows only a drive path (`C:\…`, `\\?\C:\…`) is accepted: a share (UNC) is refused.
 
 use std::path::{Component, Path, PathBuf};
 
@@ -79,7 +84,7 @@ fn eq(a: &str, b: &str) -> bool {
 }
 
 /// Whether `rel` (inside server data) may be granted, and why not.
-fn in_server_data(rel: &[String], write: bool) -> Result<(), &'static str> {
+fn in_server_data(rel: &[String], write: bool, owner: &str) -> Result<(), &'static str> {
     let at = |i: usize, name: &str| rel.get(i).is_some_and(|c| eq(c, name));
     let any = |i: usize, names: &[&str]| names.iter().any(|n| at(i, n));
     let read_only = |ok: bool| match (ok, write) {
@@ -88,6 +93,12 @@ fn in_server_data(rel: &[String], write: bool) -> Result<(), &'static str> {
         (true, false) => Ok(()),
     };
     if at(0, "agents") && rel.len() >= 3 {
+        if !owner
+            .strip_prefix("session:")
+            .is_some_and(|id| eq(id, &rel[1]))
+        {
+            return Err("another session's files");
+        }
         if any(2, &["tmp", "provider", "localappdata"]) {
             return Ok(());
         }
@@ -108,18 +119,59 @@ fn in_server_data(rel: &[String], write: bool) -> Result<(), &'static str> {
 /// The broker's view of server data.
 pub struct Rules {
     data: PathBuf,
-    canonical: Option<PathBuf>,
+}
+
+/// `p` resolved when it can be (a revoke by path of a path gone keeps its spelling).
+pub fn resolved(p: &Path) -> PathBuf {
+    std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf())
+}
+
+/// On Windows only a drive path is accepted (`C:\…`; `\\?\C:\…` is what resolving gives).
+fn local_drive(p: &Path) -> bool {
+    use std::path::Prefix;
+    match p.components().next() {
+        Some(Component::Prefix(pre)) => {
+            matches!(pre.kind(), Prefix::Disk(_) | Prefix::VerbatimDisk(_))
+        }
+        _ => !cfg!(windows),
+    }
 }
 
 impl Rules {
     pub fn new(server_data: &Path) -> Rules {
         Rules {
-            data: server_data.to_path_buf(),
-            canonical: std::fs::canonicalize(server_data).ok(),
+            data: resolved(server_data),
         }
     }
 
-    /// Refuses `g` when it is malformed or protected (nothing is logged for it).
+    /// `g` with its path resolved, or why it is refused (nothing is logged for it): malformed,
+    /// missing, not resolvable, not on a local drive, or protected.
+    pub fn resolve(&self, g: &Grant) -> Result<Grant, BrokerError> {
+        well_formed(g)?;
+        let path = match std::fs::canonicalize(&g.path) {
+            Ok(p) => p,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                return Err(BrokerError::NotFound(g.path.clone()));
+            }
+            Err(_) => {
+                return Err(BrokerError::Protected {
+                    path: g.path.clone(),
+                    why: "a path that cannot be resolved",
+                });
+            }
+        };
+        if !local_drive(&path) {
+            return Err(BrokerError::Protected {
+                path: g.path.clone(),
+                why: "not a path on a local drive",
+            });
+        }
+        let g = Grant { path, ..g.clone() };
+        self.check(&g)?;
+        Ok(g)
+    }
+
+    /// Refuses `g`, its path taken as resolved, when it is malformed or protected.
     pub fn check(&self, g: &Grant) -> Result<(), BrokerError> {
         well_formed(g)?;
         let write = g.mask & !READ_EXECUTE != 0;
@@ -127,21 +179,14 @@ impl Rules {
             path: g.path.clone(),
             why,
         };
-        let canonical = std::fs::canonicalize(&g.path).ok();
-        let mut forms = vec![(g.path.as_path(), self.data.as_path())];
-        if let (Some(p), Some(d)) = (canonical.as_deref(), self.canonical.as_deref()) {
-            forms.push((p, d));
+        if relative(&g.path, &self.data).is_some() {
+            return Err(protected("server data or a folder that holds it"));
         }
-        for (path, data) in forms {
-            if relative(path, data).is_some() {
-                return Err(protected("server data or a folder that holds it"));
-            }
-            if let Some(rel) = relative(data, path) {
-                in_server_data(&rel, write).map_err(protected)?;
-            }
+        if let Some(rel) = relative(&self.data, &g.path) {
+            in_server_data(&rel, write, &g.owner).map_err(protected)?;
         }
         if write {
-            project_state(canonical.as_deref().unwrap_or(&g.path)).map_err(protected)?;
+            project_state(&g.path).map_err(protected)?;
         }
         Ok(())
     }

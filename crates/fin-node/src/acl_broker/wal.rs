@@ -122,6 +122,8 @@ pub struct Wal {
     path: PathBuf,
     file: File,
     lines: usize,
+    /// The rewritten log, written and fsynced, until it is renamed over the log.
+    temp: Option<File>,
 }
 
 fn open_append(path: &Path) -> io::Result<File> {
@@ -132,7 +134,10 @@ fn open_append(path: &Path) -> io::Result<File> {
     o.open(path)
 }
 
-/// Fsyncs the directory of `path` (Unix: makes a rename durable; Windows' rename is).
+/// Fsyncs the directory of `path`, which makes a rename durable on Unix. Windows has no
+/// directory fsync: the rename's metadata is journalled by NTFS but may still be lost by a
+/// crash, which leaves the old log in place; the old log and the new one replay to the same
+/// state, so either is correct.
 fn sync_dir(path: &Path) -> io::Result<()> {
     #[cfg(unix)]
     if let Some(dir) = path.parent() {
@@ -171,6 +176,7 @@ impl Wal {
                 path: path.to_path_buf(),
                 file,
                 lines: n,
+                temp: None,
             },
             records,
         ))
@@ -186,14 +192,19 @@ impl Wal {
         Ok(())
     }
 
-    /// Replaces the log with `records`: a temp file, fsynced, renamed over it.
-    pub fn rewrite(&mut self, records: &[Record]) -> io::Result<()> {
-        let tmp = self.path.with_extension("wal.tmp");
+    fn temp_path(&self) -> PathBuf {
+        self.path.with_extension("wal.tmp")
+    }
+
+    /// Writes `records` to the temp file beside the log and fsyncs it (a stale temp file, left
+    /// by a crash, is replaced). The log itself is untouched until [`Wal::replace_with_temp`].
+    pub fn write_temp(&mut self, records: &[Record]) -> io::Result<()> {
+        self.temp = None;
         let mut o = OpenOptions::new();
         o.create(true).write(true).truncate(true);
         #[cfg(unix)]
         std::os::unix::fs::OpenOptionsExt::mode(&mut o, 0o600);
-        let mut f = o.open(&tmp)?;
+        let mut f = o.open(self.temp_path())?;
         let mut text = String::new();
         for r in records {
             text.push_str(&serde_json::to_string(r).map_err(io::Error::other)?);
@@ -201,16 +212,27 @@ impl Wal {
         }
         f.write_all(text.as_bytes())?;
         f.sync_all()?;
-        // The old handle closes before the rename (Windows), and the new one, at the end of
-        // what it wrote, follows its file to the log's name.
-        self.file = f;
-        if let Err(e) = std::fs::rename(&tmp, &self.path) {
-            self.file = open_append(&self.path)?;
+        self.temp = Some(f);
+        Ok(())
+    }
+
+    /// Renames the temp file over the log (`lines` records). Until the rename succeeds the
+    /// log's own handle is kept, so a failure leaves the log as it was and appends go on
+    /// there. After it, the temp file's handle, at the end of what it wrote, follows its file
+    /// to the log's name (the old handle may stay open across the rename: Rust opens files
+    /// with `FILE_SHARE_DELETE` on Windows, and renames with POSIX semantics where it can).
+    pub fn replace_with_temp(&mut self, lines: usize) -> io::Result<()> {
+        let Some(f) = self.temp.take() else {
+            return Err(io::Error::other("no rewritten log to rename"));
+        };
+        if let Err(e) = std::fs::rename(self.temp_path(), &self.path) {
+            drop(f);
+            let _ = std::fs::remove_file(self.temp_path());
             return Err(e);
         }
-        sync_dir(&self.path)?;
-        self.lines = records.len();
-        Ok(())
+        self.file = f;
+        self.lines = lines;
+        sync_dir(&self.path)
     }
 
     pub fn lines(&self) -> usize {
