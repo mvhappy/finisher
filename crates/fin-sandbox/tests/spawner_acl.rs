@@ -49,6 +49,7 @@ fn cold(profile: Profile) -> (SpawnRequest, PathBuf) {
         grants,
         qos: Qos::Normal,
         label: "t".into(),
+        limits: Default::default(),
     };
     (req, sd)
 }
