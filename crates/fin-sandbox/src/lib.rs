@@ -18,6 +18,8 @@ pub mod linux;
 pub mod macos;
 pub mod policy;
 pub mod profile;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub(crate) mod reap;
 pub mod self_apply;
 pub mod spawner;
 pub mod status;

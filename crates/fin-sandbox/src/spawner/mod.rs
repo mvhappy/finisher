@@ -318,16 +318,70 @@ fn home_dir() -> Option<PathBuf> {
 }
 
 /// macOS: the program is rewritten to `sandbox-exec -p <profile> -D… -- <program> <args…>`
-/// (the host starts children with `posix_spawn`, so there is no child-side step; the open-files
-/// limit is not applied on macOS, a recorded residual).
+/// (the host starts children with `posix_spawn`, so there is no child-side step). The profile
+/// carries a fresh Seatbelt mark, which the host's group kill sweeps (Decision 3, macOS
+/// amendment). `posix_spawn` has no resource-limit attribute either, so where the policy has
+/// an open-files limit `/bin/sh` sets it (soft and hard, never above the host's own hard
+/// limit) and `exec`s `sandbox-exec`: `/bin/sh -c 'ulimit -n "$0" && exec "$@"' <n>
+/// /usr/bin/sandbox-exec …` (invoked as `sh`, it reads no startup file).
 #[cfg(target_os = "macos")]
 fn plugin_steps(policy: &crate::SandboxPolicy, cmd: &mut PlatformCommand) -> Result<(), String> {
-    let (program, args) = crate::macos::apply::plugin_command(policy, &cmd.program, &cmd.args)
-        .map_err(|e| e.to_string())?;
-    cmd.program = program;
-    cmd.args = args;
+    let mark = fin_jobhost::seatbelt_mark::new_mark().map_err(|e| format!("getentropy: {e}"))?;
+    let (program, args) =
+        crate::macos::apply::plugin_command(policy, &cmd.program, &cmd.args, &mark)
+            .map_err(|e| e.to_string())?;
+    // Test builds: the wrapper also opens the session's guard file as descriptor 9 (every
+    // sweep of a test build requires it, `fin_jobhost::seatbelt_mark`) and always runs.
+    #[cfg(feature = "test-hooks")]
+    let guard = {
+        fin_jobhost::seatbelt_mark::make_guard(&mark).map_err(|e| format!("test guard: {e}"))?;
+        Some(fin_jobhost::seatbelt_mark::guard_path(&mark))
+    };
+    #[cfg(not(feature = "test-hooks"))]
+    let guard: Option<PathBuf> = None;
+    cmd.seatbelt_mark = Some(mark);
+    let limit = match policy.limits.open_files {
+        Some(n) => {
+            // SAFETY: plain data, written by getrlimit before use.
+            let mut r: libc::rlimit = unsafe { std::mem::zeroed() };
+            // SAFETY: a valid out pointer.
+            if unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut r) } != 0 {
+                return Err(format!("getrlimit: {}", std::io::Error::last_os_error()));
+            }
+            Some(libc::rlim_t::from(n).min(r.rlim_max))
+        }
+        None => None,
+    };
+    if limit.is_none() && guard.is_none() {
+        cmd.program = program;
+        cmd.args = args;
+        return Ok(());
+    }
+    // `$0` is the limit (or `-`), then the guard where there is one, then the command.
+    let mut script = String::new();
+    if guard.is_some() {
+        script.push_str("exec 9<\"$1\" && shift && ");
+    }
+    if limit.is_some() {
+        script.push_str("ulimit -n \"$0\" && ");
+    }
+    script.push_str("exec \"$@\"");
+    let mut wrapped: Vec<std::ffi::OsString> = vec![
+        "-c".into(),
+        script.into(),
+        limit.map_or("-".into(), |n| n.to_string()).into(),
+    ];
+    wrapped.extend(guard.map(PathBuf::into_os_string));
+    wrapped.push(program.into_os_string());
+    wrapped.extend(args);
+    cmd.program = PathBuf::from(SHELL);
+    cmd.args = wrapped;
     Ok(())
 }
+
+/// The shell that sets a macOS plugin's open-files limit.
+#[cfg(target_os = "macos")]
+const SHELL: &str = "/bin/sh";
 
 #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
 fn plugin_steps(_policy: &crate::SandboxPolicy, _cmd: &mut PlatformCommand) -> Result<(), String> {

@@ -7,6 +7,9 @@
 //   it), and only `fin-workers` and `fin-wasm` link `fin-compositor`;
 // - `fin-workers` takes `fin-fonts` with `default-features = false` and without `fetch`
 //   (workers never fetch).
+// - `fin-codecs`' platform codec crates are target-gated (6B-1 plan Global Constraints): the
+//   objc2 VideoToolbox, CoreMedia and CoreVideo bindings only under `cfg(target_os = "macos")`,
+//   `windows` (Media Foundation, D3D11) only under `cfg(windows)`.
 // - `fin-dataset-inputs` (the dataset builder's inputs; sp7 §12.1, §16.2) links no Finisher
 //   crate but `fin-core`: its readers reach the journal's files only, never `control.db` or
 //   any crate that opens it (`fin-node`, `fin-registry`, `fin-store`, …).
@@ -28,6 +31,12 @@ export const ONLY = [
   { crate: "fin-svt-sys", by: ["fin-codecs", "fin-workers"] },
   { crate: "fin-dav1d-sys", by: ["fin-codecs", "fin-workers"] },
   { crate: "fin-compositor", by: ["fin-workers", "fin-wasm"] },
+];
+
+/** Direct dependencies a member may declare only under the given `cfg` target. */
+export const TARGETED = [
+  { crate: "fin-codecs", deps: ["objc2", "objc2-core-foundation", "objc2-core-media", "objc2-core-video", "objc2-video-toolbox"], cfg: 'cfg(target_os = "macos")' },
+  { crate: "fin-codecs", deps: ["windows"], cfg: "cfg(windows)" },
 ];
 
 export function check(doc) {
@@ -59,6 +68,12 @@ export function check(doc) {
     for (const id of g.members) {
       const name = g.name(id);
       if (name !== c.crate && !c.may.includes(name) && reach(c.crate).has(name)) breach(c.crate, name, c.why);
+    }
+  }
+  for (const t of TARGETED) {
+    for (const d of g.packages.get(g.member(t.crate))?.dependencies ?? []) {
+      if (!t.deps.includes(d.name) || d.kind === "dev" || d.target === t.cfg) continue;
+      out.push(`CRATE_DEPENDENCY: ${t.crate} takes ${d.name} ${d.target ? `under ${d.target}` : "for every target"} (only under ${t.cfg})`);
     }
   }
   const workers = g.packages.get(g.member("fin-workers"));

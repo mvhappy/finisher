@@ -129,6 +129,11 @@ pub struct PlatformCommand {
     /// it runs. `None`: the token's default.
     #[cfg(windows)]
     pub dacl: Option<String>,
+    /// The Seatbelt session mark the process's profile carries ([`crate::seatbelt_mark`]):
+    /// the group's kill also takes every process that carries it, one that left the group
+    /// with `setsid` included (plan 7C Decision 3, macOS amendment).
+    #[cfg(target_os = "macos")]
+    pub seatbelt_mark: Option<String>,
 }
 
 impl fmt::Debug for PlatformCommand {
@@ -261,6 +266,8 @@ pub(crate) fn command(binary_dir: &Path, req: &SpawnRequest) -> Result<PlatformC
         desktop: None,
         #[cfg(windows)]
         dacl: None,
+        #[cfg(target_os = "macos")]
+        seatbelt_mark: None,
     })
 }
 

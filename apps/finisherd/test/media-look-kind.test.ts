@@ -196,7 +196,7 @@ describe("the kind", () => {
 describe("destinations", () => {
   let dir: string;
   beforeAll(() => {
-    dir = mkdtempSync(join(work, "dest-"));
+    dir = realpathSync(mkdtempSync(join(work, "dest-"))); // destinations answer resolved (macOS: `/var` is a link)
     mkdirSync(join(dir, ".finisher"));
     mkdirSync(join(dir, "assets"));
   });
@@ -205,7 +205,7 @@ describe("destinations", () => {
     expect(await lookDestination(dir, undefined)).toBe(join(dir, "workspace", "shared", "look"));
     expect(existsSync(join(dir, "workspace", "shared", "look"))).toBe(true);
     expect(await lookDestination(dir, "shots/a")).toBe(join(dir, "shots", "a"));
-    const outside = mkdtempSync(join(work, "outside-"));
+    const outside = realpathSync(mkdtempSync(join(work, "outside-")));
     expect(await lookDestination(dir, outside)).toBe(outside);
   });
 

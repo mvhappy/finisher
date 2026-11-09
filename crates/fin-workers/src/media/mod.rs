@@ -14,7 +14,7 @@
 //! - **Workers never start processes** (spec §2.9); `tests/media_look.rs` checks it.
 //! - `fin-workers media --replay <jobdir>` runs a job directory without a host (`replay.rs`).
 
-use fin_codecs::Capabilities;
+use fin_codecs::{Capabilities, ProbeResult};
 use fin_compositor::{Compositor, Gpu};
 use fin_jobs::worker::{Family, JobCtx};
 use fin_jobs::{JobError, KindVersion, Retry, StartJob};
@@ -45,6 +45,9 @@ pub(crate) struct Warm {
     pub gpu: Option<GpuState>,
     pub sources: open_cache::OpenCache,
     pub fonts: fonts::Fonts,
+    /// The backends this machine has (6A's software pair until 6B-1 Task 8's probe).
+    pub probe: ProbeResult,
+    /// Their v1 table (`media.capabilities` v1).
     pub caps: Capabilities,
     /// Jobs started on this worker.
     pub jobs: u32,
@@ -68,6 +71,7 @@ impl MediaFamily {
                 gpu: None,
                 sources: open_cache::OpenCache::default(),
                 fonts: fonts::Fonts::new(),
+                probe: ProbeResult::software_only(),
                 caps: fin_codecs::capabilities(),
                 jobs: 0,
                 render_stats: diag::RenderBook::default(),
