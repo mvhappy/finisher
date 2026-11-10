@@ -348,8 +348,10 @@ impl JsonSchema for Rational {
     fn json_schema(_: &mut SchemaGenerator) -> Schema {
         json_schema!({
             "type": "string",
-            "pattern": r"^(0|-?[1-9]\d*)(/[1-9]\d*)?$",
-            "description": "Exact rational seconds in canonical form: \"n/d\" in lowest terms with d > 1, or \"n\" when d is 1; no leading zeros, no \"+\", no \"-0\"."
+            // Zero is "0" alone (not "0/5"); a denominator is 2 or more (not "3/1"). Lowest
+            // terms (gcd 1) is beyond a regex: the parser enforces it.
+            "pattern": r"^(0|-?[1-9]\d*(/([2-9]\d*|1\d+))?)$",
+            "description": "Exact rational seconds in canonical form: \"n/d\" in lowest terms with d > 1, or \"n\" when d is 1; no leading zeros, no \"+\", no \"-0\". The pattern checks the shape; lowest terms is checked by the parser."
         })
     }
 }

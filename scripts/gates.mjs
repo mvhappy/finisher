@@ -13,6 +13,10 @@ const steps = [
   // The exported command registry (7B Decision 1): regenerated with `fin schema --registry`.
   ["node", ["scripts/check-registry.mjs"]],
   ["node", ["scripts/check-typecheck.mjs"]],
+  // The contracts' runtime envelope schemas against the generated Rust types.
+  ["node", ["scripts/check-envelopes.mjs"]],
+  // The fin-node tarball carries the runtime files, not its tests or the test-hooks binaries.
+  ["node", ["scripts/check-pack-files.mjs"]],
   ["node", ["scripts/check-strip-types.mjs"]],
   ["node", ["scripts/check-rust-fmt.mjs"]],
   ["node", ["scripts/check-test-hooks.mjs"]],

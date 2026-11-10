@@ -87,3 +87,14 @@ test("the sandbox status is generated (plan 7C Task 3)", () => {
   expect(ts).toMatch(/export type UnconfinedReason = "landlockDisabled" \| "profileNotReady";/);
   expect(block("SandboxUnconfined")).toMatch(/reason: UnconfinedReason;/);
 });
+
+test("the Rational schema pattern matches the parser's shape (no `0/5`, no `3/1`)", () => {
+  const schema = JSON.parse(readFileSync(new URL("../schema/fin-core.schema.json", import.meta.url), "utf8")) as {
+    $defs: { Rational: { pattern: string } };
+  };
+  const re = new RegExp(schema.$defs.Rational.pattern);
+  // What `Rational::from_str` accepts (lowest terms is the parser's check, not the pattern's).
+  for (const ok of ["0", "5", "-5", "10", "1/2", "-7/3", "62/5", "30000/1001", "1/10", "7/19", "3/20"]) expect(re.test(ok), ok).toBe(true);
+  // What it rejects as non-canonical or malformed.
+  for (const bad of ["", "0/5", "-0", "-0/5", "3/1", "-3/1", "1/0", "1/01", "01", "+1", "1/-2", "2/-3", "1.5", "1/", "/2"]) expect(re.test(bad), bad).toBe(false);
+});

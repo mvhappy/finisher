@@ -28,17 +28,17 @@ impl Manager {
     }
 
     /// `raw` (the store's status) with the engine's font summary now merged, which counts
-    /// as published.
-    pub(super) fn merged(&self, key: u64, raw: Value) -> Value {
+    /// as published, and `then`'s answer, read holding `publish`.
+    pub(super) fn merged<T>(&self, key: u64, raw: Value, then: impl FnOnce() -> T) -> (Value, T) {
         let _publish = lock(&self.publish);
         let Some(s) = self.summary_of(key) else {
-            return raw;
+            return (raw, then());
         };
         let out = status::merge(raw, &s);
         if let Some(a) = lock(&self.engines).get_mut(&key) {
             a.published = Some((s, Instant::now()));
         }
-        out
+        (out, then())
     }
 
     /// Emits the store's `status` event `raw` with the engine's last published font summary

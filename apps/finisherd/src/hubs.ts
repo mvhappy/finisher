@@ -9,10 +9,16 @@
 // each bumps the channel's `seq`, every item carries the `seq` it was published at, and a
 // subscriber that receives an item with a higher `seq` than it last saw replays the endings
 // in between from the log. One it can no longer replay (the log is pruned) ends it.
+//
+// Every item also carries `n`, its place among everything the channel published: a subscriber
+// that sees `n` jump lost items to the sliding buffer (`gapless`). Op subscribers refill such a
+// gap from the op log; `project.events` has no log to refill from and ends `WATCH_LAGGING`
+// (review #38).
 import type { CommittedTx, Generation } from "@finisher/core-types";
-import type { FinError, ProjectEvent } from "@finisher/contracts";
+import type { FinError } from "@finisher/contracts";
 import { Effect, PubSub } from "effect";
 import { finError } from "./errors.ts";
+import type { SourcedEvent } from "./project-events.ts";
 
 /**
  * One ending: subscribers that reported a rev ≥ `fromRev` (0: every one) end with `error`.
@@ -39,6 +45,8 @@ function alreadyRead(ending: Ending, read: Generation | undefined): boolean {
 /** An item as delivered: `value` is absent on the marker an ending publishes. */
 export interface Stamped<T> {
   readonly seq: number;
+  /** Its place among the channel's items, from 1. */
+  readonly n: number;
   readonly value?: T;
 }
 
@@ -48,6 +56,7 @@ export const ENDINGS_KEPT = 64;
 export class Channel<T> {
   readonly pubsub: PubSub.PubSub<Stamped<T>>;
   #seq = 0;
+  #n = 0;
   readonly #endings: Ending[] = [];
 
   constructor(capacity: number) {
@@ -59,15 +68,22 @@ export class Channel<T> {
     return this.#seq;
   }
 
+  /** How many items were published: read it before subscribing to `pubsub` (`gapless`). */
+  get published(): number {
+    return this.#n;
+  }
+
   publish(value: T): void {
-    Effect.runSync(PubSub.publish(this.pubsub, { seq: this.#seq, value }));
+    this.#n += 1;
+    Effect.runSync(PubSub.publish(this.pubsub, { seq: this.#seq, n: this.#n, value }));
   }
 
   end(fromRev: number, error: FinError, produces?: Ending["produces"]): void {
     this.#seq += 1;
     this.#endings.push(produces === undefined ? { seq: this.#seq, fromRev, error } : { seq: this.#seq, fromRev, error, produces });
     if (this.#endings.length > ENDINGS_KEPT) this.#endings.shift();
-    Effect.runSync(PubSub.publish(this.pubsub, { seq: this.#seq }));
+    this.#n += 1;
+    Effect.runSync(PubSub.publish(this.pubsub, { seq: this.#seq, n: this.#n }));
   }
 
   /** The endings after `seen` up to `upTo`; `undefined` when some were pruned already. */
@@ -101,6 +117,20 @@ export function follower<T>(channel: Channel<T>, branch: string) {
   };
 }
 
+/**
+ * Whether a subscriber lost items: made just after it subscribed to `pubsub`, `lost(item)` is
+ * true when items published since then, before `item`, did not all reach it (the sliding buffer
+ * dropped them). Items published before it was made (between subscribing and now) are not gaps.
+ */
+export function gapless<T>(channel: Channel<T>) {
+  let next = channel.published + 1;
+  return (item: Stamped<T>): boolean => {
+    const lost = item.n > next;
+    next = Math.max(next, item.n + 1);
+    return lost;
+  };
+}
+
 const key = (projectId: string, branch: string) => `${projectId}\u0000${branch}`;
 
 /** A channel and the subscribers holding it. */
@@ -124,7 +154,7 @@ interface Held<T> {
 export class Hubs {
   readonly #capacity: number;
   readonly #ops = new Map<string, Held<CommittedTx>>();
-  readonly #events = new Map<string, Held<ProjectEvent>>();
+  readonly #events = new Map<string, Held<SourcedEvent>>();
 
   constructor(capacity: number) {
     this.#capacity = capacity;
@@ -195,7 +225,7 @@ export class Hubs {
   }
 
   /** The event channel of the project, held until `releaseEvents`. */
-  acquireEvents(projectId: string): Channel<ProjectEvent> {
+  acquireEvents(projectId: string): Channel<SourcedEvent> {
     return this.#acquire(this.#events, projectId);
   }
 
@@ -203,7 +233,7 @@ export class Hubs {
     this.#release(this.#events, projectId);
   }
 
-  publishEvent(projectId: string, event: ProjectEvent): void {
+  publishEvent(projectId: string, event: SourcedEvent): void {
     this.#events.get(projectId)?.channel.publish(event);
   }
 
