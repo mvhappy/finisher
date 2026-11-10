@@ -12,6 +12,15 @@
       "default": "./index.js"
     }
   },
+  "files": [
+    "*.js",
+    "*.d.ts",
+    "*.node",
+    "fin-workers",
+    "fin-workers.exe",
+    "fin-sandbox-exec",
+    "fin-sandbox-exec.exe"
+  ],
   "napi": {
     "binaryName": "fin-node"
   },

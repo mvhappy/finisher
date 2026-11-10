@@ -9,7 +9,7 @@ use napi::bindgen_prelude::*;
 use napi_derive::napi;
 use serde_json::json;
 
-use crate::maintenance::{EventFn, EventSink, Maintenance};
+use crate::maintenance::{EventArgs, EventFn, EventSink, Maintenance};
 use crate::tasks::{Call, StoreTask};
 use crate::worker::{self, Worker};
 use crate::{encode, reject};
@@ -325,7 +325,14 @@ impl Engine {
     /// Resolves to the `ProjectStatus` JSON.
     #[napi(catch_unwind)]
     pub fn status(&self) -> AsyncTask<StoreTask> {
-        self.task(Call::Status)
+        self.task(Call::Status { at: false })
+    }
+
+    /// Resolves to `{"status": ProjectStatus, "seq": n}`: every event numbered up to `n` was
+    /// emitted before this status was read (its changes are in it); no later one is older.
+    #[napi(catch_unwind)]
+    pub fn status_at(&self) -> AsyncTask<StoreTask> {
+        self.task(Call::Status { at: true })
     }
 
     /// Resolves to the `CommittedTx` JSON of `tx_id`, `{"setAside": {...}}` JSON when it was
@@ -405,16 +412,19 @@ impl Engine {
         self.task(Call::SetCollect { collect, meta_json })
     }
 
-    /// Delivers every later store event (JSON string) to `callback`, replacing an earlier one.
-    /// Events from before the first registration are buffered (the newest 1024). The
-    /// callback does not keep the process alive.
+    /// Delivers every later store event (JSON string) and its number (`seq`, see
+    /// `statusAt`) to `callback`, replacing an earlier one. Events from before the first
+    /// registration are buffered (the newest 1024). The callback does not keep the process alive.
     #[napi(catch_unwind)]
     pub fn on_event(
         &self,
-        #[napi(ts_arg_type = "(json: string) => void")] callback: Function<String, ()>,
+        #[napi(ts_arg_type = "(json: string, seq: number) => void")] callback: Function<
+            EventArgs,
+            (),
+        >,
     ) -> Result<()> {
         let tsfn: EventFn = callback
-            .build_threadsafe_function::<String>()
+            .build_threadsafe_function::<EventArgs>()
             .weak::<true>()
             .build()?;
         self.inner.events.set(tsfn);

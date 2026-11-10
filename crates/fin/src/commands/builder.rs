@@ -24,8 +24,9 @@ pub struct Builder<'a> {
     ids: MemIds,
     bound: BTreeMap<String, String>,
     ops: Vec<Op>,
-    /// `--idem-key` on a real commit: an op that fails local validation is still sent, because
-    /// it may be a retry of a tx that already committed (the server then returns that commit).
+    /// `--idem-key` with a server (also for `--dry-run`): an op that fails local validation is
+    /// kept, because it may be a retry of a tx that already committed (that commit is then the
+    /// answer); with nothing committed, a real commit sends it and a dry run returns the error.
     lenient: bool,
     /// The first local validation error a lenient build let through.
     deferred: Option<CoreError>,
@@ -38,6 +39,8 @@ pub struct Builder<'a> {
     pub timeline: Option<String>,
     /// `--project`: the folder an agent session's file arguments are confined to (14c).
     pub project: Option<std::path::PathBuf>,
+    /// `--branch` as given (hashed into `argsHash` when present).
+    pub(super) explicit_branch: Option<String>,
 }
 
 /// `$name` with a batch line's number: `$clip` → `$clip3`, `$split2` → `$split2_3`.
@@ -96,7 +99,9 @@ impl<'a> Builder<'a> {
         let branch = target_branch(backend, globals)?;
         let base = backend.snapshot(&branch)?;
         let ids = MemIds::after(&base.project);
-        let lenient = globals.idem_key.is_some() && !globals.dry_run && !backend.dry_run_only();
+        // A `--dry-run` with a key is lenient too: the key may have committed, and then that
+        // commit is the answer, not a plan against the state it made (review #31).
+        let lenient = globals.idem_key.is_some() && !backend.dry_run_only();
         Ok(Builder {
             backend,
             work: base.project.clone(),
@@ -112,6 +117,7 @@ impl<'a> Builder<'a> {
             inputs: Vec::new(),
             project: globals.project.clone(),
             timeline: globals.timeline.clone(),
+            explicit_branch: globals.branch.clone(),
         })
     }
 
@@ -255,11 +261,13 @@ impl<'a> Builder<'a> {
             tx.args_hash = Some(args_hash(&self.inputs));
         }
         let dry = globals.dry_run || self.backend.dry_run_only();
-        // A retry (`--idem-key`): ask what became of the key first. Already committed: that
-        // commit is the answer (with the pins it was planned with). Set aside (lost to another
-        // server's history, salvaged): it is reported, never sent again blindly.
+        // A retry (`--idem-key`): ask what became of the key first, for a `--dry-run` too
+        // (spec §3.11: a committed key answers that commit, without `dryRun`). Already
+        // committed: that commit is the answer (with the pins it was planned with). Set aside
+        // (lost to another server's history, salvaged): it is reported, never sent again
+        // blindly.
         let earlier = match &globals.idem_key {
-            Some(_) if !dry => lookup(self.backend, &tx.tx_id)?,
+            Some(_) if !self.backend.dry_run_only() => lookup(self.backend, &tx.tx_id)?,
             _ => None,
         };
         if let (None, Some(e)) = (&earlier, &self.unplanned) {
@@ -272,7 +280,11 @@ impl<'a> Builder<'a> {
             tx.ops.splice(0..0, pins);
         }
         let resolved = with_fonts(resolved, &fonts);
-        if dry {
+        if dry && earlier.is_none() {
+            // Nothing committed under the key: the plan must hold locally after all.
+            if let Some(e) = self.deferred {
+                return Err(e);
+            }
             let applied = apply_tx(
                 &self.base.project,
                 &tx,

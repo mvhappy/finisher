@@ -42,6 +42,8 @@ pub struct Entry {
     pub tail: String,
     /// A transition's items.
     pub between: Option<[String; 2]>,
+    /// How many lines the `merge` step folded into this one (0: not a merged line).
+    pub folded: usize,
 }
 
 /// One timeline's lines.
@@ -111,6 +113,7 @@ pub fn sections(
                     words: None,
                     tail: String::new(),
                     between: None,
+                    folded: 0,
                 });
             }
         }
@@ -151,6 +154,7 @@ pub fn sections(
                     words,
                     tail,
                     between: None,
+                    folded: 0,
                 });
             }
             for tr in &t.transitions {
@@ -185,6 +189,7 @@ pub fn sections(
                     words: None,
                     tail: String::new(),
                     between: Some(tr.between.clone()),
+                    folded: 0,
                 });
             }
         }

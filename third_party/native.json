@@ -37,9 +37,9 @@
     {
       "name": "SQLite",
       "package": "libsqlite3-sys",
-      "version": "0.35",
+      "version": "0.39",
       "license": "blessing",
-      "note": "the SQLite amalgamation bundled by libsqlite3-sys (rusqlite's `bundled` feature); SQLite is in the public domain"
+      "note": "the SQLite amalgamation bundled by libsqlite3-sys (rusqlite's `bundled` feature); SQLite 3.54.0, which has the WAL-reset fix (crates/fin-store/tests/sqlite_engine.rs); SQLite is in the public domain"
     },
     {
       "name": "BLAKE3",
