@@ -1383,19 +1383,29 @@ impl World {
                 bin: pick(&bins, x).map(|b| self.key(b)),
             }
             .into(),
-            // A reprobe keeps the asset's streams and fills (or, at x = 2, clears) the display.
+            // A reprobe keeps the asset's streams and fills (or, at x = 2, clears) the display:
+            // every rotation (by k and x), square pixels or 4:3 (anamorphic) ones.
             _ => {
                 let id = pick(&assets, k)?;
                 let a = &self.state.assets[id];
-                let rotation = [Rotation::R0, Rotation::R90, Rotation::R270][x % 3];
-                let video = a.video.clone().map(|v| VideoInfo {
-                    display: (x < 2).then_some(DisplaySize {
-                        width: if rotation.swaps() { v.height } else { v.width },
-                        height: if rotation.swaps() { v.width } else { v.height },
-                    }),
-                    rotation: (x < 2).then_some(rotation),
-                    pixel_aspect: (x < 2).then(|| secs(1)),
-                    ..VideoInfo::coded(v.width, v.height, v.rate)
+                let rotation =
+                    [Rotation::R0, Rotation::R90, Rotation::R180, Rotation::R270][(k + x) % 4];
+                let aspect = if x == 1 {
+                    Rational::new(4, 3).unwrap()
+                } else {
+                    secs(1)
+                };
+                let video = a.video.clone().map(|v| {
+                    let w = (v.width as i64 * aspect.num() / aspect.den()) as u32;
+                    VideoInfo {
+                        display: (x < 2).then_some(DisplaySize {
+                            width: if rotation.swaps() { v.height } else { w },
+                            height: if rotation.swaps() { w } else { v.height },
+                        }),
+                        rotation: (x < 2).then_some(rotation),
+                        pixel_aspect: (x < 2).then_some(aspect),
+                        ..VideoInfo::coded(v.width, v.height, v.rate)
+                    }
                 });
                 AssetReprobe {
                     asset: self.key(id),

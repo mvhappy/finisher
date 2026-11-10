@@ -772,3 +772,39 @@ fn upcast_v3_record_is_identity() {
         assert_eq!(got[key], want[key], "{key}");
     }
 }
+
+/// A schema-3 record cannot hold what only schema 4 has: an `asset.reprobe`, or a `video` with
+/// `display`, `rotation` or `pixelAspect` is `INVALID_FORMAT` (damage or a mislabelled record,
+/// never a v3 writer's), while an item's `transform.rotation` is v3 as ever.
+#[test]
+fn upcast_v3_record_refuses_v4_shapes() {
+    let v3 = |ops: Value| -> Value {
+        let mut r = v1_record(vec![], vec![], vec![], json!({}));
+        r["schemaVersion"] = json!(3);
+        r["intent"]["schemaVersion"] = json!(3);
+        r["intent"]["ops"] = ops.clone();
+        r["resolved"] = ops;
+        r
+    };
+    let reprobe = json!([{ "op": "asset.reprobe", "asset": "a1" }]);
+    let e = fin_core::upcast_record(v3(reprobe)).unwrap_err();
+    assert_eq!(
+        (e.code.as_str(), &e.details["schemaVersion"]),
+        ("INVALID_FORMAT", &json!(3))
+    );
+    for field in ["display", "rotation", "pixelAspect"] {
+        let mut video = json!({ "width": 1920, "height": 1080, "rate": "30" });
+        video[field] = match field {
+            "display" => json!({ "width": 1080, "height": 1920 }),
+            "rotation" => json!(90),
+            _ => json!("1"),
+        };
+        let add = json!([{ "op": "asset.add", "id": "$a", "kind": "media", "path": "a.mov",
+                           "fingerprint": "fp", "duration": "1", "video": video }]);
+        let e = fin_core::upcast_record(v3(add)).unwrap_err();
+        assert_eq!(e.code, "INVALID_FORMAT", "{field}");
+    }
+    let turned = json!([{ "op": "param.set", "item": "c1", "path": "transform.rotation",
+                          "value": 90.0 }]);
+    assert!(fin_core::upcast_record(v3(turned)).is_ok());
+}
