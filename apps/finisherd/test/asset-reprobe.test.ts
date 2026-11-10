@@ -59,6 +59,7 @@ async function setup() {
       ensure: () => Effect.void,
       resolveBranch: (_: string, b: string) => Effect.succeed(b),
       snapshot: (_: string, b: string) => Effect.tryPromise({ try: async () => JSON.parse(await engine.snapshot(b)), catch: toFinError }),
+      txGet: (_: string, id: string) => Effect.tryPromise({ try: async () => JSON.parse((await engine.txGet(id)) ?? "null"), catch: toFinError }),
       commit: (_: string, t: unknown) => Effect.tryPromise({ try: async () => JSON.parse(await engine.commit(JSON.stringify(t))), catch: toFinError }),
       dirOf: () => dir,
     },
@@ -99,11 +100,24 @@ describe("asset.reprobe", () => {
     expect(records[0]!.tx.ops.map((o) => o.op)).toEqual(["asset.reprobe"]);
   }, 60_000);
 
-  test("a retry with the same txId answers from the log", async () => {
+  test("a retry with the same txId answers from the log, even after the file changed", async () => {
+    const { clip, jobs, rev, run } = await setup();
+    const first = (await run({ deep: true })) as { rev: number; video: unknown };
+    expect(jobs.submitted).toHaveLength(1);
+    // The file moves on and the job queue would refuse: the retry neither probes nor submits.
+    testHooks!.writeFixtureMp4(clip, { seconds: 3 });
+    const again = (await run({ deep: true })) as { rev: number; txId: string; video: unknown };
+    expect(again).toMatchObject({ rev: first.rev, txId: "01reprobe0000000000000001", video: first.video });
+    expect(jobs.submitted).toHaveLength(1);
+    expect(await rev()).toBe(first.rev);
+  }, 60_000);
+
+  test("a reprobe that finds the streams recorded commits nothing", async () => {
     const { rev, run } = await setup();
     const first = (await run()) as { rev: number };
-    const again = (await run()) as { rev: number };
-    expect(again.rev).toBe(first.rev);
+    const same = (await run({ txId: "01reprobe0000000000000003" })) as { unchanged: boolean; rev: number; txId?: string };
+    expect(same).toMatchObject({ unchanged: true, rev: first.rev });
+    expect(same.txId).toBeUndefined();
     expect(await rev()).toBe(first.rev);
   }, 60_000);
 

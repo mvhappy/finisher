@@ -115,7 +115,8 @@ pub struct ReprobeArgs {
 }
 
 /// `fin asset reprobe`: the server probes and commits (`asset.reprobe`); `{asset, video?,
-/// audio?, deep?, rev, txId}`, or `dryRun: true` with nothing committed.
+/// audio?, deep?, rev, txId}`, `unchanged: true` with the head's `rev` when the streams are
+/// already recorded, or `dryRun: true`; neither of those commits.
 pub fn reprobe(backend: &dyn Backend, g: &Globals, a: &ReprobeArgs) -> Result<Value, CoreError> {
     if backend.dry_run_only() {
         return Err(

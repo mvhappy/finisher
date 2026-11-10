@@ -188,13 +188,13 @@ fn media_probe_reports_the_decoder_and_commits_nothing() {
     );
 }
 
-/// `fin asset reprobe` (6B-1 Task 11): the server probes the unchanged file again and commits
-/// one `asset.reprobe` record with the display geometry; a portrait clip (a 90° `tkhd`
-/// matrix) is recorded 180x320, rotated 90. `--deep` decodes first: a codec this machine
-/// cannot decode is `CODEC_UNAVAILABLE` (exit 5) and commits nothing. A changed file is
-/// `ASSET_CHANGED` (exit 3).
+/// `fin asset reprobe` (6B-1 Task 11): `fin asset add` of a portrait clip (a 90° `tkhd`
+/// matrix) already records it 180x320, rotated 90, so a reprobe finds nothing new and commits
+/// nothing (`unchanged`; `apps/finisherd/test/asset-reprobe.test.ts` shows one filling a
+/// schema 3 asset). `--deep` decodes first: a codec this machine cannot decode is
+/// `CODEC_UNAVAILABLE` (exit 5). A changed file is `ASSET_CHANGED` (exit 3).
 #[test]
-fn asset_reprobe_commits_the_display_geometry() {
+fn asset_reprobe_reports_the_display_geometry() {
     let Some(server) = Server::start_with("asset_reprobe", Vec::new(), None) else {
         return;
     };
@@ -225,20 +225,23 @@ fn asset_reprobe_commits_the_display_geometry() {
         (&doc["video"]["width"], &doc["video"]["height"]),
         (&json!(320), &json!(180))
     );
-    assert_eq!(doc["rev"], rev + 1, "{doc}");
-    assert!(doc["txId"].is_string(), "{doc}");
-    assert_eq!(ok(fin(sd, &dir, &["status"]))["rev"], rev + 1);
+    assert_eq!(
+        (&doc["unchanged"], &doc["rev"]),
+        (&json!(true), &json!(rev)),
+        "{doc}"
+    );
+    assert_eq!(ok(fin(sd, &dir, &["status"]))["rev"], rev);
 
     // A dry run probes and commits nothing.
     let dry = ok(fin(sd, &dir, &["asset", "reprobe", "a1", "--dry-run"]));
     assert_eq!(dry["dryRun"], true, "{dry}");
-    assert_eq!(ok(fin(sd, &dir, &["status"]))["rev"], rev + 1);
+    assert_eq!(ok(fin(sd, &dir, &["status"]))["rev"], rev);
 
     // The fixture is H.264: decodable here or not, the answer is typed.
     let deep = fin(sd, &dir, &["asset", "reprobe", "a1", "--deep"]);
     if deep.code == 0 {
         assert_eq!(deep.json["deep"]["decodable"], true, "{}", deep.stdout);
-        assert_eq!(ok(fin(sd, &dir, &["status"]))["rev"], rev + 2);
+        assert_eq!(deep.json["unchanged"], true, "{}", deep.stdout);
     } else {
         assert_error(&deep, 5, "CODEC_UNAVAILABLE");
         assert_eq!(
@@ -246,8 +249,8 @@ fn asset_reprobe_commits_the_display_geometry() {
             "{}",
             deep.stdout
         );
-        assert_eq!(ok(fin(sd, &dir, &["status"]))["rev"], rev + 1);
     }
+    assert_eq!(ok(fin(sd, &dir, &["status"]))["rev"], rev);
 
     assert_error(
         &fin(sd, &dir, &["asset", "reprobe", "a9"]),
