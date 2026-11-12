@@ -144,15 +144,24 @@ export interface HostEnvInput {
   readonly platform?: NodeJS.Platform;
 }
 
+/** A host sandbox's own `HOME` (Task 5 review): `tmp/home`, an empty directory the open makes. */
+export function hostHome(dirs: SessionDirs, platform: NodeJS.Platform = process.platform): string {
+  return (platform === "win32" ? win32 : posix).join(dirs.tmp, "home");
+}
+
 /**
  * A host sandbox's environment (plan 7D Task 3b): `childEnv()` and the directory's own `TMPDIR`,
  * provider directory, git settings and `GNUPGHOME`; no `FIN_*` connection, no project, no
- * credential; the sign-in store variable only with `store` (detection's).
+ * credential; the sign-in store variable only with `store` (detection's). `HOME` (and Windows'
+ * `USERPROFILE`) is the throwaway `hostHome`, never the server's: what a CLI reads under the
+ * user's home (`$HOME/.config/anthropic/…`) cannot sign the probe in. Sessions keep the server's.
  */
 export function hostEnv(i: HostEnvInput): Record<string, string> {
   const platform = i.platform ?? process.platform;
   const env = childEnv({}, i.parent ?? process.env, platform);
   if (i.store?.env !== undefined) env[i.store.env.name] = i.store.env.value;
+  env.HOME = hostHome(i.dirs, platform);
+  if (platform === "win32") env.USERPROFILE = env.HOME;
   return ownDirs(env, i.harness, i.dirs, platform);
 }
 
@@ -197,7 +206,8 @@ export interface AssertOptions {
   readonly extra?: ReadonlyArray<string>;
   /**
    * A host sandbox's environment (`hostEnv`; `s.id` is its `host-<ulid>`): the names of
-   * `SESSION_ONLY` are refused instead of required, and the own paths are checked from `TMPDIR`.
+   * `SESSION_ONLY` are refused instead of required, the own paths are checked from `TMPDIR`, and
+   * `HOME` (Windows: `USERPROFILE` too) must be its throwaway `tmp/home`.
    */
   readonly host?: boolean;
   /**
@@ -274,6 +284,10 @@ export function assertSessionEnv(env: Readonly<Record<string, string | undefined
   under("TMPDIR", "tmp");
   under("GIT_CONFIG_GLOBAL", "git", "config");
   under("GNUPGHOME", "tmp", "gnupg");
+  if (host) {
+    under("HOME", "tmp", "home");
+    if (platform === "win32") under("USERPROFILE", "tmp", "home");
+  }
   const provider = PROVIDER_DIR_ENV[s.harness];
   if (provider !== undefined) under(provider, "provider");
   if (platform === "win32") {

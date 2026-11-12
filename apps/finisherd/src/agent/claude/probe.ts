@@ -4,14 +4,16 @@
 // dir, never the sign-in store variable) and costs nothing:
 //
 // 1. **`initialize` only:** it must list `models`, `commands: []`, `capabilities`, the detected
-//    `claude_code_version`, and `account.tokenSource: "none"`. A CLI signed in by other means (a
-//    managed `apiKeyHelper` or `env`, a cloud provider's variables, a keychain item) gets **no
-//    user line**: the result is marked `initPending`, and the first real instance's init
+//    `claude_code_version` and the settings canary's `output_style`. Only an account of exactly
+//    `{tokenSource: "none", apiProvider: "firstParty"}` is unsigned; any other (an API key in the
+//    env or a settings file's `env`, an `apiKeyHelper`, Bedrock, Vertex, a keychain item) gets
+//    **no user line**: the result is marked `initPending`, and the first real instance's init
 //    completes it (`completeProbe`), never a paid prompt.
 // 2. **Unsigned only:** one user line under `--max-budget-usd 0.01` (a second guard); the CLI
 //    answers with `system/init` and the "Not logged in" `result {is_error: true}` at
 //    `total_cost_usd: 0` (2.1.321 writes `subtype: "success"` there, so the probe keys on
-//    `is_error`). The init must pass `checkInit` with the settings canary; then the CLI is killed.
+//    `is_error` and the `result` text). The init must pass `checkInit` with the settings canary
+//    and `apiKeySource: "none"`; then the CLI is killed.
 //
 // The permission path (Decision 10): `stdio` first; a version that refuses the value (it exits
 // before answering `initialize`, naming `--permission-prompt-tool`) is probed again with the
@@ -60,6 +62,8 @@ export interface ProbeKey {
 const PROBE_PROMPT = "Reply with OK.";
 const PROBE_BUDGET_USD = "0.01";
 const INITIALIZE_ID = "probe-initialize";
+/** The unsigned turn's `result` text (Task 0, 2.1.321: "Not logged in · Please run /login"). */
+const NOT_LOGGED_IN = /^Not logged in\b/;
 
 // ---- the cache ----
 
@@ -68,7 +72,7 @@ const CachedResult = Schema.Struct({
   version: Str,
   permissionPath: Schema.Literals(["stdio", "mcp"]),
   tools: Schema.Array(Str),
-  models: Schema.Array(Schema.Struct({ id: Str, displayName: Str, isDefault: Schema.Boolean })),
+  models: Schema.Array(Schema.Struct({ id: Str, displayName: Str, isDefault: Schema.Boolean, resolvedModel: Schema.optionalKey(Str) })),
   capabilities: Schema.Array(Str),
   restricted: Schema.optionalKey(Schema.Boolean),
   brokeredShell: Schema.optionalKey(Schema.Boolean),
@@ -101,23 +105,37 @@ export async function readProbeCache(serverData: string): Promise<readonly Cache
 
 const sameKey = (e: Pick<CacheEntry, "version" | "flagsHash" | "os">, k: ProbeKey) => e.version === k.version && e.flagsHash === k.flagsHash && e.os === k.os;
 
+/** The cache's read-modify-write runs one at a time in this process, so concurrent probes keep every entry. */
+let cacheWrites: Promise<unknown> = Promise.resolve();
+
 /** Replaces `key`'s entry with `result` (temp-then-rename, 0600). Only the fields of `CachedResult` are written. */
-async function writeProbeCache(serverData: string, key: ProbeKey, result: ProbeResult): Promise<void> {
-  const r = Schema.decodeUnknownSync(CachedResult)(result, { onExcessProperty: "ignore" });
-  const entries = [...(await readProbeCache(serverData)).filter((e) => !sameKey(e, key)), { ...key, result: r }];
-  await mkdir(dirname(probeCachePath(serverData)), { recursive: true, mode: 0o700 });
-  await writeLaunchFiles({ files: [{ path: probeCachePath(serverData), body: `${JSON.stringify({ entries }, null, 2)}\n` }] });
+function writeProbeCache(serverData: string, key: ProbeKey, result: ProbeResult): Promise<void> {
+  const write = async () => {
+    const r = Schema.decodeUnknownSync(CachedResult)(result, { onExcessProperty: "ignore" });
+    const entries = [...(await readProbeCache(serverData)).filter((e) => !sameKey(e, key)), { ...key, result: r }];
+    await mkdir(dirname(probeCachePath(serverData)), { recursive: true, mode: 0o700 });
+    await writeLaunchFiles({ files: [{ path: probeCachePath(serverData), body: `${JSON.stringify({ entries }, null, 2)}\n` }] });
+  };
+  const next = cacheWrites.then(write);
+  cacheWrites = next.catch(() => 0);
+  return next;
+}
+
+/** The hash of one plan's argv (without the binary), file bodies and environment (entries sorted). */
+export function flagsHashOf(plan: Pick<LaunchPlan, "argv" | "files" | "env">): string {
+  const env = Object.entries(plan.env).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+  return createHash("sha256").update(JSON.stringify({ argv: plan.argv.slice(1), files: plan.files.map((f) => f.body), env })).digest("hex").slice(0, 16);
 }
 
 /**
- * The hash of the launch flags a probe vouches for: the argv and settings `instancePlan` builds
- * for `os`, with paths and the session id fixed. A Finisher release that changes a flag, the
- * tool lists or the settings probes again.
+ * The hash of the launch flags a probe vouches for: the argv, settings and environment
+ * `instancePlan` builds for `os`, with paths and the session id fixed. A Finisher release that
+ * changes a flag, the tool lists, the settings or a variable probes again. Only the
+ * `--setting-sources user` launch: `restricted` stays off (`ProbeResult.restricted`).
  */
 export function probeFlagsHash(os: NodeJS.Platform = process.platform): string {
   const root = os === "win32" ? "C:\\fin" : "/fin";
-  const plan = probePlan("claude", sessionDirs(root, "probe", os), os, "stdio", "00000000-0000-0000-0000-000000000000");
-  return createHash("sha256").update(JSON.stringify({ argv: plan.argv.slice(1), files: plan.files.map((f) => f.body) })).digest("hex").slice(0, 16);
+  return flagsHashOf(probePlan("claude", sessionDirs(root, "probe", os), os, "stdio", "00000000-0000-0000-0000-000000000000"));
 }
 
 // ---- the process ----
@@ -273,16 +291,16 @@ async function runInstance(box: SessionSandbox, detected: string, path: "stdio" 
     const facts = checkInitialize(answer.response.response, detected);
     if (!("models" in facts)) throw facts;
     const base = { version: detected, permissionPath: path, models: facts.models };
-    // Signed in by other means: no user line, ever; the first real instance completes the probe.
-    if (facts.tokenSource !== "none") return { kind: "done", result: { ...base, tools: [], capabilities: [...facts.capabilities], initPending: true } };
+    // Anything but exactly the unsigned account: no user line, ever; the first real instance completes the probe.
+    if (!facts.unsigned) return { kind: "done", result: { ...base, tools: [], capabilities: [...facts.capabilities], initPending: true } };
     io.write(encodeUser([PROBE_PROMPT], uuid));
     const init = await io.next(isInit, timeoutMs);
     if ("exited" in init) throw versionError("init", "the Claude Code CLI exited before its init", { version: detected, code: init.exited.code });
-    const bad = checkInit(init, plan, { signedIn: false, canary: true });
+    const bad = checkInit(init, plan, { unsigned: true, canary: true });
     if (bad !== null) throw bad;
     const result = await io.next(isResult, timeoutMs);
     if ("exited" in result) throw versionError("result", "the Claude Code CLI exited before its result", { version: detected, code: result.exited.code });
-    if (!result.is_error || result.total_cost_usd !== 0) {
+    if (!result.is_error || result.total_cost_usd !== 0 || !NOT_LOGGED_IN.test(result.result ?? "")) {
       throw versionError("unsigned", "the Claude Code probe turn was answered or charged: the CLI is signed in by other means", { version: detected, cost: result.total_cost_usd });
     }
     const capabilities = [...new Set([...facts.capabilities, ...(init.capabilities ?? [])])];
@@ -328,8 +346,10 @@ export function probe(detected: Detection, flagsHash: string, deps: ProbeDeps): 
 
 /**
  * Completes a probe left `initPending` (a CLI signed in by other means) from the first real
- * instance's init: `checkInit` against that instance's plan, then the cached entry gains its
- * tools. A probe already complete is returned as cached; a missing entry is `INTERNAL`.
+ * instance's init: `checkInit` against that instance's plan, then the cached entry loses the
+ * mark and gains the init's capabilities. `tools` stays empty: it is the CLI's set seen unsigned,
+ * never a session's subset. A probe already complete is returned as cached; a missing entry is
+ * `INTERNAL`.
  */
 export function completeProbe(serverData: string, key: ProbeKey, init: SystemInit, plan: Pick<LaunchPlan, "argv" | "tools" | "mcpTools">, opts: CheckOptions = {}): Effect.Effect<ProbeResult, FinError> {
   return Effect.tryPromise({
@@ -341,7 +361,7 @@ export function completeProbe(serverData: string, key: ProbeKey, init: SystemIni
       if (entry.result.initPending !== true) return entry.result as ProbeResult;
       const { initPending: _, ...rest } = entry.result;
       const capabilities = [...new Set([...rest.capabilities, ...(init.capabilities ?? [])])];
-      const result: ProbeResult = { ...rest, tools: [...init.tools], capabilities };
+      const result: ProbeResult = { ...rest, tools: [], capabilities };
       await writeProbeCache(serverData, key, result);
       return result;
     },

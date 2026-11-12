@@ -11,7 +11,7 @@
 //   up `failed`, Task 0);
 // - `plugins` all built-in (`path: "builtin"`, `source` ending `@builtin`);
 // - `skills` and `slash_commands` empty; `memory_paths` absent or `null` (2.1.321 leaves it out
-//   when auto memory is off);
+//   when auto memory is off); `additional_directories` absent or empty;
 // - `agents` only the five built-ins (listed even with `Task`/`Agent` disallowed);
 // - `session_id` the UUID Finisher passed; `permissionMode` `default`;
 // - `apiKeySource: "none"` while the CLI says it is signed in: the sign-in was ignored (`oauth`);
@@ -21,13 +21,13 @@ import type { FinError, ProviderEvent } from "@finisher/contracts";
 import { finError } from "../../errors.ts";
 import { type CliModel, parseClaudeInitialize } from "../catalogue/cli-models.ts";
 import { type LaunchPlan, MCP_SERVER } from "./launch.ts";
+import { CANARY_STYLE } from "./probe-types.ts";
 import type { CliLine, McpReply, SystemInit } from "./protocol.ts";
+
+export { CANARY_STYLE } from "./probe-types.ts";
 
 /** The subagents 2.1.321 lists whatever the flags (Task 0): any other name refuses. */
 export const BUILTIN_AGENTS: ReadonlySet<string> = new Set(["claude", "Explore", "general-purpose", "Plan", "statusline-setup"]);
-
-/** The probe's settings canary (Decision 4): `outputStyle` in its settings, `output_style` in init. */
-export const CANARY_STYLE = "Explanatory";
 
 /** `PROVIDER_VERSION {missing, item?}`: what the installed CLI lacks or added. */
 export function versionError(missing: string, message: string, extra: Record<string, unknown> = {}): FinError {
@@ -50,6 +50,8 @@ export interface CheckOptions {
   readonly signedIn?: boolean;
   /** The settings carried the probe's canary: `output_style` must show it. */
   readonly canary?: boolean;
+  /** The probe's unsigned turn (Decision 8 step 2): `apiKeySource` must be `none`, else `unsigned`. */
+  readonly unsigned?: boolean;
 }
 
 /** Init keys the predicate reads that the decoder leaves optional: absent is a failure. */
@@ -81,6 +83,7 @@ export function checkInit(init: SystemInit, plan: Pick<LaunchPlan, "argv" | "too
   const command = init.slash_commands?.[0];
   if (command !== undefined) return isolation(`slash_command:${label(command)}`, v);
   if (init.memory_paths !== undefined && init.memory_paths !== null) return isolation("memory_paths", v);
+  if (init.additional_directories !== undefined && init.additional_directories.length > 0) return isolation("additional_directories", v);
   for (const a of init.agents ?? []) if (!BUILTIN_AGENTS.has(a)) return isolation(`agent:${label(a)}`, v);
   const finisher = init.mcp_servers?.find((s) => s.name === MCP_SERVER);
   if (finisher?.status !== "connected") {
@@ -93,25 +96,39 @@ export function checkInit(init: SystemInit, plan: Pick<LaunchPlan, "argv" | "too
   if (opts.signedIn === true && init.apiKeySource === "none") {
     return versionError("oauth", "the Claude Code instance ignored its sign-in", { item: "apiKeySource", ...(v === undefined ? {} : { version: v }) });
   }
+  if (opts.unsigned === true && init.apiKeySource !== "none") {
+    return versionError("unsigned", "the Claude Code probe instance is signed in by other means", { item: "apiKeySource", ...(v === undefined ? {} : { version: v }) });
+  }
   if (opts.canary === true && init.output_style !== CANARY_STYLE) {
     return versionError("settings", "the Claude Code instance did not apply its settings file", { item: "outputStyle", ...(v === undefined ? {} : { version: v }) });
   }
   return null;
 }
 
-/** What step 1 learns from the `initialize` answer. Never the account itself: its token source only. */
+/** What step 1 learns from the `initialize` answer. Never the account itself: whether it is unsigned only. */
 export interface InitializeFacts {
   readonly models: readonly CliModel[];
   readonly capabilities: readonly string[];
-  readonly tokenSource: string;
+  /**
+   * The account is exactly `{tokenSource: "none", apiProvider: "firstParty"}` and nothing else.
+   * Anything more or other is a sign-in (2.1.321: an API key adds `apiKeySource`, an
+   * `apiKeyHelper` is `tokenSource: "apiKeyHelper"`, Bedrock has `apiProvider: "bedrock"` and no
+   * `tokenSource`), and the probe sends no user line.
+   */
+  readonly unsigned: boolean;
 }
+
+const isUnsigned = (account: Record<string, unknown>): boolean =>
+  Object.keys(account).length === 2 && account.tokenSource === "none" && account.apiProvider === "firstParty";
 
 const strings = (v: unknown): v is string[] => Array.isArray(v) && v.every((x) => typeof x === "string");
 
 /**
  * The `initialize` answer's body (`control_response.response.response`) against Decision 8's
- * step 1: `models`, `commands: []`, `capabilities`, `claude_code_version` equal to `version`, an
- * `account.tokenSource`. A missing one is `PROVIDER_VERSION {missing}`; a command is isolation.
+ * step 1: `models`, `commands: []`, `capabilities`, `claude_code_version` equal to `version`,
+ * `output_style` the canary (the probe always runs with it; a settings file the CLI dropped
+ * answers `default`), an `account` object. A missing one is `PROVIDER_VERSION {missing}`; a
+ * command is isolation.
  */
 export function checkInitialize(body: unknown, version: string): InitializeFacts | FinError {
   if (typeof body !== "object" || body === null || Array.isArray(body)) return versionError("initialize", "the Claude Code initialize answer is not an object");
@@ -132,9 +149,12 @@ export function checkInitialize(body: unknown, version: string): InitializeFacts
   if (o.claude_code_version !== version) {
     return versionError("version", "the Claude Code CLI reports another version than detected", { item: "claude_code_version", version, got: label(o.claude_code_version) });
   }
-  const tokenSource = (o.account as { tokenSource?: unknown } | null | undefined)?.tokenSource;
-  if (typeof tokenSource !== "string") return versionError("account", "the Claude Code initialize answer has no token source", { item: "account.tokenSource", version });
-  return { models, capabilities: o.capabilities, tokenSource };
+  if (o.output_style !== CANARY_STYLE) return versionError("settings", "the Claude Code CLI did not apply the probe's settings file", { item: "outputStyle", version });
+  const account = o.account;
+  if (typeof account !== "object" || account === null || Array.isArray(account)) {
+    return versionError("account", "the Claude Code initialize answer has no account", { item: "account", version });
+  }
+  return { models, capabilities: o.capabilities, unsigned: isUnsigned(account as Record<string, unknown>) };
 }
 
 // ---- the first-turn gate ----
@@ -143,8 +163,12 @@ export function checkInitialize(body: unknown, version: string): InitializeFacts
 export type GateStep =
   | { readonly kind: "forward"; readonly lines: readonly CliLine[] }
   | { readonly kind: "hold" }
-  /** The init failed: fail the turn with `error` and interrupt the instance at once. */
-  | { readonly kind: "refuse"; readonly error: FinError; readonly interrupt: true }
+  /**
+   * The init failed: fail the turn with `error` and kill the instance at once (SIGKILL of its
+   * process group through the sandbox, `SandboxedChild.kill`); an `interrupt` control request
+   * only where no kill is possible. An interrupt lets the turn play on, a kill does not.
+   */
+  | { readonly kind: "refuse"; readonly error: FinError; readonly kill: true }
   /** After a refusal: the line is dropped. */
   | { readonly kind: "drop" };
 
@@ -161,10 +185,12 @@ const passes = (l: CliLine): boolean =>
 /**
  * Holds every event of an instance back until its `system/init` passes `checkInit` (Decision 8,
  * Review Focus 1), so nothing reaches the runtime from an instance that is not isolated. Then it
- * releases what it held, the init first among them in arrival order, and forwards everything.
- * A failing init refuses (the caller interrupts the instance and fails the turn); a `result`
- * before any init releases that `result` alone when it is an error (an unknown `--resume`), and
- * refuses otherwise. Control lines the caller must answer at once (the MCP handshake, control
+ * releases what it held in arrival order, the init last, and forwards everything. The CLI sends
+ * an init on every turn: each one is checked, in any state, and a failing one refuses (the
+ * caller kills the instance and fails the turn). A `result` before any init releases that
+ * `result` alone when it is an error (an unknown `--resume`), dropping what was held, and
+ * refuses otherwise. Held lines include `can_use_tool` and every other CLI request. Control
+ * lines the caller must answer at once (the MCP handshake, control
  * responses, cancels) always pass; a refused instance's other control requests too, so the
  * caller can deny them.
  */
@@ -174,7 +200,7 @@ export function firstTurnGate(plan: Pick<LaunchPlan, "argv" | "tools" | "mcpTool
   const refuse = (error: FinError): GateStep => {
     state = "refused";
     held = [];
-    return { kind: "refuse", error, interrupt: true };
+    return { kind: "refuse", error, kill: true };
   };
   return {
     get state() {
@@ -182,16 +208,17 @@ export function firstTurnGate(plan: Pick<LaunchPlan, "argv" | "tools" | "mcpTool
     },
     push(line) {
       if (passes(line)) return { kind: "forward", lines: [line] };
-      if (state === "open") return { kind: "forward", lines: [line] };
       if (state === "refused") return line.kind === "controlRequest" ? { kind: "forward", lines: [line] } : { kind: "drop" };
       if (line.kind === "init") {
         const e = checkInit(line, plan, opts);
         if (e !== null) return refuse(e);
+        if (state === "open") return { kind: "forward", lines: [line] };
         state = "open";
         const lines = [...held, line];
         held = [];
         return { kind: "forward", lines };
       }
+      if (state === "open") return { kind: "forward", lines: [line] };
       if (line.kind === "result") {
         if (!line.is_error) return refuse(versionError("init", "the Claude Code instance ended a turn without its init", { item: "system/init" }));
         held = [];

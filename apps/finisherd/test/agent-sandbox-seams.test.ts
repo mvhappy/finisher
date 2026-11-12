@@ -296,6 +296,35 @@ describe("the host sandbox (detection and the probe)", () => {
     });
   });
 
+  test("host_sandbox_has_throwaway_home", async () => {
+    // `$HOME/.config/anthropic/*` and the like can sign a CLI in: a host sandbox's `HOME` is its
+    // own empty directory `tmp/home`, never the server's. A session keeps the server's.
+    const d = deps();
+    await within(openHostSandbox("probe", "claudeCode", d), async (box) => {
+      const [id] = readdirSync(join(d.serverData, "agents"));
+      const home = join(d.serverData, "agents", id!, "tmp", "home");
+      expect(box.env.HOME).toBe(home);
+      if (WIN) expect(box.env.USERPROFILE).toBe(home);
+      expect(readdirSync(home)).toEqual([]);
+      expect(lines((await run(box, printEnv("HOME"))).stdout)).toEqual({ HOME: home });
+      const host = { id: id!, harness: "claudeCode" as const };
+      expect(() => assertSessionEnv(box.env, host, { host: true, expect: box.env })).not.toThrow();
+      expect(() => assertSessionEnv({ ...box.env, HOME: "/home/u" }, host, { host: true })).toThrow(/not the session's own path/);
+      const { HOME: _, ...homeless } = box.env;
+      expect(() => assertSessionEnv(homeless, host, { host: true })).toThrow(/a missing variable/);
+      // A process cannot be handed another.
+      expect((await refusal(box, ["/bin/true"], { HOME: "/home/u" })).code).toBe("SANDBOX_ENV");
+    });
+    await within(openHostSandbox("detect", "claudeCode", d), async (box) => {
+      expect(box.env.HOME).toMatch(/[\\/]tmp[\\/]home$/);
+    });
+    if (!WIN) {
+      await within(openSessionSandbox(session("claudeCode"), "claudeCode", d), async (box) => {
+        expect(box.env.HOME).toBe("/home/u");
+      });
+    }
+  });
+
   test.skipIf(WIN)("host_sandbox_uses_launcher_when_enforced", async () => {
     // A launcher that records its request (descriptor 3) and runs the program: what the host
     // sandbox hands `fin-sandbox-exec`.

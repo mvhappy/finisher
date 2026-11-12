@@ -32,7 +32,7 @@ import { finError } from "../../errors.ts";
 import type { SessionSpec } from "../adapter.ts";
 import { assertSpawnEnv } from "../sandbox-env.ts";
 import { type SessionDirs, sessionDirs } from "../session-dirs.ts";
-import type { ProbeResult } from "./probe-types.ts";
+import { CANARY_STYLE, type ProbeResult } from "./probe-types.ts";
 
 /** What one instance is started with: `argv` through the sandbox, `files` written first, `env` added. */
 export interface LaunchPlan {
@@ -111,7 +111,7 @@ const ClaudeSettings = Schema.Struct({
   // Exactly `{}`: a settings `env` would reach the CLI's tools past the sandbox's environment.
   env: Schema.Record(Schema.String, Schema.Never),
   /** The probe's canary only (Decision 4): an applied file shows it in `system/init`. */
-  outputStyle: Schema.optionalKey(Schema.Literal("Explanatory")),
+  outputStyle: Schema.optionalKey(Schema.Literal(CANARY_STYLE)),
 });
 export type ClaudeSettings = typeof ClaudeSettings.Type;
 
@@ -143,7 +143,7 @@ export function sessionSettings(tools: readonly string[], mcpTools: readonly str
     // settings file. The `ask` list makes every call of every enabled tool a `can_use_tool`.
     permissions: { defaultMode: "default", blockWritesOutsideWorkingDirectories: true, ask: [...tools, ...mcpTools.filter((t) => t === SHELL_TOOL)] },
     env: {},
-    ...(canary ? { outputStyle: "Explanatory" } : {}),
+    ...(canary ? { outputStyle: CANARY_STYLE } : {}),
   });
 }
 

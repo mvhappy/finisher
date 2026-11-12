@@ -13,8 +13,8 @@ import { Effect, Exit, Scope } from "effect";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from "vitest";
 import { type Detection, NO_CAPABILITIES } from "../src/agent/adapter.ts";
 import { CLI_TOOLS, cliTools, instancePlan, writeLaunchFiles } from "../src/agent/claude/launch.ts";
-import { checkInit, completeProbe, firstTurnGate, hostDirs, InstanceLines, type ProbeDeps, probe, probeCachePath, probeFlagsHash, readProbeCache, untestedVersionNotices } from "../src/agent/claude/probe.ts";
-import { checkInitialize, mcpReply } from "../src/agent/claude/probe-check.ts";
+import { checkInit, completeProbe, firstTurnGate, flagsHashOf, hostDirs, InstanceLines, type ProbeDeps, probe, probeCachePath, probeFlagsHash, readProbeCache, untestedVersionNotices } from "../src/agent/claude/probe.ts";
+import { CANARY_STYLE, checkInitialize, mcpReply } from "../src/agent/claude/probe-check.ts";
 import { type CliLine, decodeLine, encodeControl, encodeUser, type SystemInit } from "../src/agent/claude/protocol.ts";
 import { openHostSandbox, type SessionSandbox, type SessionSandboxDeps } from "../src/agent/sandbox.ts";
 import type { SandboxStatus } from "../src/sandbox/status.ts";
@@ -71,7 +71,7 @@ function install(script: unknown, version = VERSION): { binary: string; observed
   return { binary, observed };
 }
 
-type Observed = { argv: string[]; refused?: string; flags: Record<string, unknown>; envNames: string[]; settings: string; controlRequests: { subtype: string }[] }[];
+type Observed = { pid: number; argv: string[]; refused?: string; flags: Record<string, unknown>; envNames: string[]; settings: string; controlRequests: { subtype: string }[]; userLines?: unknown[] }[];
 const observed = (path: string): Observed => (existsSync(path) ? (JSON.parse(readFileSync(path, "utf8")) as Observed) : []);
 
 const detection = (version = VERSION): Detection => ({ installed: true, version, supported: null, signedIn: false, capabilities: NO_CAPABILITIES });
@@ -165,7 +165,7 @@ describe("the init predicate", () => {
     expect(verdict(init({ skills: ["deploy"] }))).toMatchObject({ item: "skill:deploy" });
     expect(verdict(init({ slash_commands: ["review"] }))).toMatchObject({ missing: "isolation", item: "slash_command:review" });
     // `initialize` lists the commands before any prompt: one there refuses too.
-    const body = { models: [{ value: "default" }], commands: [{ name: "review" }], capabilities: [], claude_code_version: VERSION, account: { tokenSource: "none" } };
+    const body = { models: [{ value: "default" }], commands: [{ name: "review" }], capabilities: [], claude_code_version: VERSION, account: { tokenSource: "none" }, output_style: CANARY_STYLE };
     expect(checkInitialize(body, VERSION)).toMatchObject({ code: "PROVIDER_VERSION", details: { missing: "isolation", item: "command:review" } });
   });
 
@@ -186,6 +186,44 @@ describe("the init predicate", () => {
     expect(verdict(init(), { canary: true })).toMatchObject({ missing: "settings", item: "outputStyle" });
     // Sessions run without the canary.
     expect(verdict(init())).toBeNull();
+  });
+
+  test("additional_directories_refused", () => {
+    expect(verdict(init({ additional_directories: [] }))).toBeNull();
+    expect(verdict(init({ additional_directories: ["/home/u/src"] }))).toMatchObject({ missing: "isolation", item: "additional_directories" });
+  });
+
+  test("unsigned_instance_needs_no_api_key_source", () => {
+    // The probe's unsigned turn: any `apiKeySource` but `none` signs it in.
+    expect(verdict(init({ output_style: CANARY_STYLE }), { unsigned: true, canary: true })).toBeNull();
+    expect(verdict(init({ apiKeySource: "ANTHROPIC_API_KEY", output_style: CANARY_STYLE }), { unsigned: true, canary: true })).toMatchObject({ missing: "unsigned", item: "apiKeySource" });
+  });
+
+  test("initialize_account_must_be_exactly_unsigned", () => {
+    const body = (account: unknown, over: Record<string, unknown> = {}) => ({
+      models: [{ value: "default" }],
+      commands: [],
+      capabilities: [],
+      claude_code_version: VERSION,
+      output_style: CANARY_STYLE,
+      ...(account === undefined ? {} : { account }),
+      ...over,
+    });
+    const unsigned = (account: unknown) => (checkInitialize(body(account), VERSION) as { unsigned?: boolean }).unsigned;
+    expect(unsigned({ tokenSource: "none", apiProvider: "firstParty" })).toBe(true);
+    // What 2.1.321 answers with an API key (in the env or a settings file's `env`), an
+    // `apiKeyHelper`, Bedrock: each is signed in, as is anything else.
+    expect(unsigned({ tokenSource: "none", apiKeySource: "ANTHROPIC_API_KEY", apiProvider: "firstParty" })).toBe(false);
+    expect(unsigned({ tokenSource: "apiKeyHelper", apiProvider: "firstParty" })).toBe(false);
+    expect(unsigned({ apiProvider: "bedrock" })).toBe(false);
+    expect(unsigned({ apiProvider: "vertex" })).toBe(false);
+    expect(unsigned({ tokenSource: "none", apiProvider: "bedrock" })).toBe(false);
+    expect(unsigned({ tokenSource: "none" })).toBe(false);
+    expect(unsigned({})).toBe(false);
+    expect(checkInitialize(body(undefined), VERSION)).toMatchObject({ details: { missing: "account" } });
+    expect(checkInitialize(body("none"), VERSION)).toMatchObject({ details: { missing: "account" } });
+    // The settings canary shows in `initialize` too: a dropped file answers `default`.
+    expect(checkInitialize(body({ tokenSource: "none", apiProvider: "firstParty" }, { output_style: "default" }), VERSION)).toMatchObject({ details: { missing: "settings", item: "outputStyle" } });
   });
 
   test("missing_init_key_names_it", () => {
@@ -232,12 +270,24 @@ describe("the probe", () => {
     expect(rec!.envNames).not.toContain("CLAUDE_SECURESTORAGE_CONFIG_DIR");
     expect(rec!.envNames).not.toContain("CLAUDE_CODE_OAUTH_TOKEN");
     expect(rec!.settings).toBe("applied");
+    expect(rec!.userLines).toHaveLength(1); // the one unsigned turn
     expect(existsSync(join(data(), "providers"))).toBe(false);
     // The host sandbox's directory is gone; only the cache is left.
     expect(readdirSync(join(data(), "agents"))).toEqual(["claude-probe.json"]);
     // A turn that was answered or charged is no probe result: the CLI was signed in after all.
     const { binary: paid } = install({ ...UNSIGNED, steps: [{ expect: "user", cumulativeUsage: { inputTokens: 5, outputTokens: 1, costUsd: 0.001 } }] });
     expect(await failure(probe(detection(), "h2", probeDeps(paid)))).toMatchObject({ code: "PROVIDER_VERSION", details: { missing: "unsigned" } });
+    // An error result that cost something, or one that is not the CLI's "Not logged in", too.
+    const errorResult = (over: Record<string, unknown>) => ({ type: "result", subtype: "success", is_error: true, session_id: "$session_id", usage: { input_tokens: 0, output_tokens: 0 }, total_cost_usd: 0, result: "Not logged in · Please run /login", ...over });
+    for (const [n, over] of [[3, { total_cost_usd: 0.002 }], [4, { result: "Credit balance is too low" }], [5, { result: "$remove" }]] as const) {
+      const r = { ...errorResult(over) } as Record<string, unknown>;
+      if (r.result === "$remove") delete r.result;
+      const { binary: b } = install({ ...UNSIGNED, steps: [{ expect: "user", emit: [r] }] });
+      expect(await failure(probe(detection(), `h${n}`, probeDeps(b))), JSON.stringify(over)).toMatchObject({ code: "PROVIDER_VERSION", details: { missing: "unsigned" } });
+    }
+    // The control: the same line with the CLI's own text passes.
+    const { binary: ok } = install({ ...UNSIGNED, steps: [{ expect: "user", emit: [errorResult({})] }] });
+    expect((await run(probe(detection(), "h6", probeDeps(ok)))).initPending).toBeUndefined();
   });
 
   withFake("probe_prompt_has_cent_budget", async () => {
@@ -250,20 +300,45 @@ describe("the probe", () => {
   });
 
   withFake("probe_never_prompts_when_signed_in_by_other_means", async () => {
-    // The fake's `initialize` reports `tokenSource: "claude.ai"` by default; a user line would write the marker.
+    // Every account but exactly `{tokenSource: "none", apiProvider: "firstParty"}` is signed in
+    // (the first is the fake's default; the others what 2.1.321 answers for an API key, an
+    // `apiKeyHelper`, Bedrock): no user line, ever. A user line would write the marker.
     const marker = join(tmp, "prompted");
+    const accounts = [
+      undefined,
+      { tokenSource: "none", apiKeySource: "ANTHROPIC_API_KEY", apiProvider: "firstParty" },
+      { tokenSource: "apiKeyHelper", apiProvider: "firstParty" },
+      { apiProvider: "bedrock" },
+      { apiProvider: "vertex" },
+    ];
+    for (const [n, account] of accounts.entries()) {
+      const { binary, observed: obs } = install({ ...(account === undefined ? {} : { initialize: { account } }), steps: [{ expect: "user", notLoggedIn: true, writeFile: { path: marker, contents: "x" } }] });
+      const r = await run(probe(detection(), `a${n}`, probeDeps(binary)));
+      expect(r, JSON.stringify(account)).toMatchObject({ initPending: true, tools: [], permissionPath: "stdio" });
+      const recs = observed(obs); // one file for every install: one record per probe so far
+      expect(recs).toHaveLength(n + 1);
+      const rec = recs[n];
+      expect(rec!.controlRequests.map((c) => c.subtype)).toEqual(["initialize"]);
+      expect(rec!.userLines ?? []).toEqual([]);
+      expect(existsSync(marker)).toBe(false);
+    }
+    // The settings canary is required on this path too.
+    const { binary: dropped } = install({ initialize: { output_style: "default" } });
+    expect(await failure(probe(detection(), "a9", probeDeps(dropped)))).toMatchObject({ code: "PROVIDER_VERSION", details: { missing: "settings", item: "outputStyle" } });
+    rmSync(probeCachePath(data()));
     const { binary } = install({ steps: [{ expect: "user", writeFile: { path: marker, contents: "x" } }] });
     const key = { version: VERSION, flagsHash: "h1", os: process.platform };
     const r = await run(probe(detection(), "h1", probeDeps(binary)));
     expect(r).toMatchObject({ initPending: true, tools: [], permissionPath: "stdio" });
-    expect(existsSync(marker)).toBe(false);
     // The first real instance's init completes it; a failing init does not.
     const bad = await failure(completeProbe(data(), key, init({ tools: ["Read", "Task"] }), PLAN, { signedIn: true }));
     expect(bad).toMatchObject({ code: "PROVIDER_VERSION", details: { missing: "isolation", item: "tool:Task" } });
     expect((await readProbeCache(data()))[0]!.result.initPending).toBe(true);
-    const done = await run(completeProbe(data(), key, init({ apiKeySource: "/login managed key" }), PLAN, { signedIn: true }));
+    const done = await run(completeProbe(data(), key, init({ apiKeySource: "/login managed key", capabilities: ["c1"] }), PLAN, { signedIn: true }));
     expect(done.initPending).toBeUndefined();
-    expect(done.tools).toEqual(["Read", "Edit", "Bash"]);
+    // `tools` is the CLI's set seen unsigned: a session's subset is never recorded there.
+    expect(done.tools).toEqual([]);
+    expect(done.capabilities).toContain("c1");
     expect((await readProbeCache(data()))[0]!.result).toEqual(done);
   });
 
@@ -271,6 +346,7 @@ describe("the probe", () => {
     const { binary, observed: obs } = install(UNSIGNED);
     const deps = probeDeps(binary);
     const first = await run(probe(detection(), "h1", deps));
+    expect(first.models.find((m) => m.id === "opus")?.resolvedModel).toBe("claude-opus-5-5");
     expect(await run(probe(detection(), "h1", deps))).toEqual(first);
     expect(observed(obs)).toHaveLength(1); // the second started nothing
     await run(probe(detection(), "h2", deps));
@@ -299,6 +375,49 @@ describe("the probe", () => {
     // The flags hash follows the launch flags.
     expect(probeFlagsHash("linux")).toMatch(/^[0-9a-f]{16}$/);
     expect(probeFlagsHash("linux")).toBe(probeFlagsHash("linux"));
+    expect(probeFlagsHash("linux")).not.toBe(probeFlagsHash("win32"));
+  });
+
+  test("flags_hash_covers_argv_settings_and_env", () => {
+    const plan = instancePlan({ binary: "claude", dirs: hostDirs({ env: { TMPDIR: "/fin/agents/host-0/tmp" } }, "linux").dirs, os: "linux", uuid: UUID, resume: false, tools: ["Read"], shell: false, probe: { permissionPath: "stdio" }, model: "default", system: "s", retentionDays: 1, budgetUsd: "0.01", canary: true });
+    const h = flagsHashOf(plan);
+    expect(flagsHashOf({ ...plan, env: Object.fromEntries(Object.entries(plan.env).reverse()) })).toBe(h); // order is not a change
+    const [k, v] = Object.entries(plan.env)[0]!;
+    expect(flagsHashOf({ ...plan, env: { ...plan.env, [k]: `${v}x` } })).not.toBe(h);
+    expect(flagsHashOf({ ...plan, env: { ...plan.env, CLAUDE_CODE_NEW: "1" } })).not.toBe(h);
+    const settings = plan.files.findIndex((f) => f.body.includes(CANARY_STYLE));
+    expect(settings).toBeGreaterThanOrEqual(0);
+    const files = plan.files.map((f, i) => (i === settings ? { ...f, body: f.body.replace(CANARY_STYLE, "default") } : f));
+    expect(flagsHashOf({ ...plan, files })).not.toBe(h);
+    expect(flagsHashOf({ ...plan, argv: [...plan.argv, "--verbose"] })).not.toBe(h);
+  });
+
+  withFake("concurrent_probes_keep_every_entry", async () => {
+    const { binary } = install(UNSIGNED);
+    const deps = probeDeps(binary);
+    await Promise.all(["c1", "c2", "c3"].map((h) => run(probe(detection(), h, deps))));
+    expect((await readProbeCache(data())).map((e) => e.flagsHash).sort()).toEqual(["c1", "c2", "c3"]);
+  });
+
+  withFake("probe_timeout_kills_and_cleans_up", async () => {
+    // The init comes, the result never does in time.
+    const { binary, observed: obs } = install({ ...UNSIGNED, steps: [{ expect: "user", sleep: 30_000, notLoggedIn: true }] });
+    const started = Date.now();
+    expect(await failure(probe(detection(), "h1", { ...probeDeps(binary), timeoutMs: 1_000 }))).toMatchObject({ code: "PROVIDER_VERSION", details: { missing: "answer" } });
+    expect(Date.now() - started).toBeLessThan(15_000);
+    const [rec] = observed(obs);
+    const alive = (pid: number) => {
+      try {
+        process.kill(pid, 0);
+        return true;
+      } catch {
+        return false;
+      }
+    };
+    for (let i = 0; i < 50 && alive(rec!.pid); i++) await new Promise((r) => setTimeout(r, 100));
+    expect(alive(rec!.pid)).toBe(false);
+    expect(existsSync(join(data(), "agents")) ? readdirSync(join(data(), "agents")) : []).toEqual([]);
+    expect(readdirSync(join(tmp, "hosts")).flatMap((p) => (existsSync(join(tmp, "hosts", p, "workspace")) ? readdirSync(join(tmp, "hosts", p, "workspace")) : []))).toEqual([]);
   });
 
   withFake("missing_capability_names_item", async () => {
@@ -385,21 +504,22 @@ describe("the first-turn gate", () => {
         if (step.kind === "forward") forwarded.push(...step.lines);
         if (step.kind === "refuse") {
           refusal = step.error;
-          io.write(encodeControl("stop-1", { subtype: "interrupt" }));
+          expect(step.kill).toBe(true);
+          child.kill("SIGKILL");
         }
       }
       expect(refusal).toMatchObject({ code: "PROVIDER_VERSION", details: { missing: "isolation", item: "tool:Task" } });
       expect(gate.state).toBe("refused");
-      // The interrupt is answered; nothing the instance wrote reached the caller but control lines.
-      const answered = await io.next((x): x is CliLine => x.kind === "controlResponse" && x.response.request_id === "stop-1", 10_000);
-      expect("exited" in answered).toBe(false);
+      // The instance is killed; nothing it wrote reached the caller but control lines.
+      const exit = await child.exited;
+      expect(exit.signal ?? exit.code).not.toBe(0);
       for (const l of io.lines.slice(seen)) {
         const step = gate.push(l);
         if (step.kind === "forward") forwarded.push(...step.lines);
       }
       expect(forwarded.every((l) => l.kind === "controlRequest" || l.kind === "controlResponse")).toBe(true);
       expect(io.lines.some((l) => l.kind === "assistant")).toBe(false);
-      expect(observed(obs)[0]!.controlRequests.map((r) => r.subtype)).toEqual(["initialize", "interrupt"]);
+      expect(observed(obs)[0]!.controlRequests.map((r) => r.subtype)).toEqual(["initialize"]);
     });
   });
 
@@ -414,6 +534,46 @@ describe("the first-turn gate", () => {
     const result = (is_error: boolean) =>
       decodeLine(JSON.stringify({ type: "result", subtype: "error_during_execution", is_error, usage: { input_tokens: 0, output_tokens: 0 }, total_cost_usd: 0 })) as CliLine;
     expect(firstTurnGate(PLAN).push(result(true))).toMatchObject({ kind: "forward" });
-    expect(firstTurnGate(PLAN).push(result(false))).toMatchObject({ kind: "refuse", interrupt: true });
+    expect(firstTurnGate(PLAN).push(result(false))).toMatchObject({ kind: "refuse", kill: true });
+  });
+
+  const control = (subtype: string, extra: Record<string, unknown> = {}) =>
+    decodeLine(JSON.stringify({ type: "control_request", request_id: `r-${subtype}`, request: { subtype, ...extra } })) as CliLine;
+  const canUseTool = () => control("can_use_tool", { tool_name: "Read", input: { file_path: "/w/a" }, tool_use_id: "t1" });
+
+  test("gate_holds_permission_and_ui_requests_until_init", () => {
+    const gate = firstTurnGate(PLAN);
+    const ask = canUseTool();
+    const ui = control("ui_invalidate");
+    expect(ask.kind).toBe("controlRequest");
+    expect(gate.push(ask)).toEqual({ kind: "hold" });
+    expect(gate.push(ui)).toEqual({ kind: "hold" });
+    // The MCP handshake is never held.
+    expect(gate.push(control("mcp_message", { server_name: "finisher", message: { method: "initialize", id: 0 } }))).toMatchObject({ kind: "forward" });
+    const i = init();
+    expect(gate.push(i)).toEqual({ kind: "forward", lines: [ask, ui, i] });
+  });
+
+  test("gate_checks_every_init", () => {
+    const gate = firstTurnGate(PLAN);
+    expect(gate.push(init())).toMatchObject({ kind: "forward" });
+    // Every turn has its init: a later one that fails refuses as the first would.
+    expect(gate.push(init())).toMatchObject({ kind: "forward" });
+    expect(gate.push(init({ tools: ["Read", "Edit", "Bash", "Task"] }))).toMatchObject({ kind: "refuse", kill: true, error: { details: { missing: "isolation", item: "tool:Task" } } });
+    expect(gate.state).toBe("refused");
+    expect(gate.push(init())).toEqual({ kind: "drop" });
+  });
+
+  test("gate_error_result_before_init_drops_held_lines", () => {
+    const gate = firstTurnGate(PLAN);
+    const status = decodeLine(JSON.stringify({ type: "system", subtype: "status", status: "requesting" })) as CliLine;
+    const ask = canUseTool();
+    gate.push(status);
+    gate.push(ask);
+    const error = decodeLine(JSON.stringify({ type: "result", subtype: "error_during_execution", is_error: true, usage: { input_tokens: 0, output_tokens: 0 }, total_cost_usd: 0 })) as CliLine;
+    expect(gate.push(error)).toEqual({ kind: "forward", lines: [error] });
+    // Nothing held before it comes out with a later init.
+    const i = init();
+    expect(gate.push(i)).toEqual({ kind: "forward", lines: [i] });
   });
 });

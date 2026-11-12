@@ -270,6 +270,9 @@ impl Runner {
                 }
             }
             Some("user") => {
+                // Every user line the host sent (a test proves none was sent).
+                self.observed
+                    .push("userLines", json!({"sessionId": v["session_id"]}));
                 self.transcript.append(&v);
                 Some(Ev::User(v))
             }
