@@ -48,4 +48,13 @@ pub mod codes {
     pub const EGRESS_NOT_HTTPS: &str = "EGRESS_NOT_HTTPS";
     pub const EGRESS_PRIVATE_ADDRESS: &str = "EGRESS_PRIVATE_ADDRESS";
     pub const SECRET_MISSING: &str = "SECRET_MISSING";
+    /// A request body over 768,000 bytes, a response over 64 MiB, or a job over its held
+    /// bytes (`{what, limit}`; sp8b Task 8).
+    pub const EGRESS_TOO_LARGE: &str = "EGRESS_TOO_LARGE";
+    /// The 120 s cap of a `net.fetch` call (`{limitS}`).
+    pub const EGRESS_TIMEOUT: &str = "EGRESS_TIMEOUT";
+    /// The plugin's rate or in-flight cap, or the server's (`{reason, limit, retryable}`).
+    pub const EGRESS_RATE_LIMITED: &str = "EGRESS_RATE_LIMITED";
+    /// A name that does not resolve or an origin that does not answer (`{origin, reason}`).
+    pub const EGRESS_UNREACHABLE: &str = "EGRESS_UNREACHABLE";
 }

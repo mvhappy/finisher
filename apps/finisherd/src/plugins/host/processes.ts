@@ -33,7 +33,7 @@ import { pluginDataFor } from "./family.ts";
 import { type CallDeps, makeHostCalls, PAGE_BYTES } from "./calls.ts";
 import { keyTmpDir, pluginWarmKey, principalClass, sessionRoots } from "./keys.ts";
 import { type EgressTestHooks, makeEgress } from "./egress.ts";
-import { makePluginLog, type ServerLog } from "./log.ts";
+import { makePluginLog, scrubLogText, type ServerLog } from "./log.ts";
 import { splitVia, storeDirOf } from "./program.ts";
 import type { PluginContext } from "@finisher/core-types";
 
@@ -102,7 +102,10 @@ export function makePluginHost(d: PluginHostDeps) {
     clock,
     bundled: (id) => d.tables.installedFull(id)?.source === "bundled",
   });
-  const egress = makeEgress(d.egressHooks === undefined ? {} : { hooks: d.egressHooks });
+  const serverLog: ServerLog = d.log ?? ((level, message) => void process.stderr.write(`finisherd: ${level}: ${message}\n`));
+  // Refusals go to the server log under the plugin's keyed id, scrubbed (never to the journal).
+  const egressLog = (plugin: string, message: string): void => serverLog("warning", `[${pluginLog.name(plugin)}] ${scrubLogText(message)}`);
+  const egress = makeEgress({ log: egressLog, ...(d.egressHooks === undefined ? {} : { hooks: d.egressHooks }) });
   const calls = makeHostCalls({ deps: () => callDeps, keyNow: warmKeyOf, coldKey: (job) => cold.get(job)?.key, log: pluginLog, egress });
   const onStderr = (line: string, from: { readonly job?: string; readonly key?: string }): void => {
     const plugin = from.key !== undefined ? (keyPlugin(from.key).split("|")[0] ?? "") : (cold.get(from.job ?? "")?.plugin ?? "");

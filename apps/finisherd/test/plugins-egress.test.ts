@@ -83,6 +83,11 @@ beforeAll(async () => {
         return res.end(Buffer.alloc(600, 0x62));
       }
       if (p === "/slow") return; // never answers
+      if (p === "/trickle") {
+        // 1000 bytes, then nothing: the bytes are in flight until the call ends.
+        res.writeHead(200);
+        return void res.write(Buffer.alloc(1000, 0x63));
+      }
       res.writeHead(404).end();
     });
   });
@@ -186,9 +191,13 @@ describe("egress broker", () => {
       "::", "::1", "fc00::1", "fd7a:115c:a1e0::1", "fe80::1", "fe80::1%eth0", "febf::1", "fec0::1", "ff02::1",
       "::ffff:127.0.0.1", "::ffff:7f00:1", "::ffff:10.0.0.1", "::ffff:a9fe:a9fe", "0:0:0:0:0:ffff:192.168.0.1", "::127.0.0.1",
       "64:ff9b::a00:1", "64:ff9b::192.168.0.1", "2002:c0a8:101::1", "2002:7f00:1::",
+      // IANA special-purpose blocks that are not globally reachable.
+      "192.0.0.8", "192.0.2.1", "198.51.100.1", "203.0.113.7", "198.18.0.1", "198.19.255.255", "192.88.99.1",
+      "64:ff9b:1::a00:1", "64:ff9b:1::b00:7", "::ffff:0:10.0.0.1", "::ffff:0:a00:1", "2001::1", "2001:0:4136:e378::1", "100::1",
+      "2001:10::1", "2001:20::1", "2001:2::1", "2001:db8::1", "3fff::1", "5f00::1", "4000::1", "::2",
     ];
     for (const a of refused) expect(privateReason(a), a).toBeDefined();
-    const pub = ["203.0.113.7", "198.51.100.1", "172.32.0.1", "172.15.255.255", "100.63.255.255", "100.128.0.1", "11.0.0.1", "2001:db8::1", "::ffff:203.0.113.7", "64:ff9b::cb00:7107", "2002:cb00:7107::1", "fbff::1", "fe7f::1"];
+    const pub = ["11.0.0.1", "172.32.0.1", "172.15.255.255", "100.63.255.255", "100.128.0.1", "198.20.0.1", "192.0.3.1", "2a00:1::1", "2001:200::1", "::ffff:11.0.0.7", "::ffff:0:b00:7", "64:ff9b::b00:7", "2002:b00:7::1"];
     for (const a of pub) expect(privateReason(a), a).toBeUndefined();
     expect(privateReason("not-an-address")).toBe("invalid");
     expect(ipv6Groups("1:2:3:4:5:6:1.2.3.4")).toEqual([1, 2, 3, 4, 5, 6, 0x102, 0x304]);
@@ -207,9 +216,12 @@ describe("egress broker", () => {
 
   test("dns_answer_with_one_private_address_refused", async () => {
     seen.length = 0;
-    const e = makeEgress({ hooks: hooks({ lookup: async () => ["203.0.113.7", "10.0.0.5"] }) });
+    const logged: string[] = [];
+    const e = makeEgress({ hooks: hooks({ lookup: async () => ["11.0.0.7", "10.0.0.5"] }), log: (p, m) => void logged.push(`${p} ${m}`) });
     const err = await failure(e.fetch(call([origin]), get(`${origin}/hello`)));
-    expect(err).toMatchObject({ code: "EGRESS_PRIVATE_ADDRESS", details: { origin, address: "10.0.0.5", reason: "private" } });
+    // The plugin learns the origin and the class, never the internal address: that is logged.
+    expect([err.code, err.details]).toEqual(["EGRESS_PRIVATE_ADDRESS", { origin, reason: "private" }]);
+    expect(logged).toEqual([`${PLUGIN} egress refused: ${origin} resolves to 10.0.0.5 (private)`]);
     // The hook's pair is (name, address): the same loopback answer for another name is refused.
     const e2 = makeEgress({ hooks: hooks({ allow: [{ host: OTHER, address: "127.0.0.1" }] }) });
     expect((await failure(e2.fetch(call([origin]), get(`${origin}/hello`)))).code).toBe("EGRESS_PRIVATE_ADDRESS");
@@ -326,6 +338,82 @@ describe("egress broker", () => {
     }
     expect((await failure(e.fetch(call([origin]), get(`https://user:pw@${API}:${port}/hello`)))).code).toBe("INVALID_REQUEST");
     expect(e.stats().get("@test/egress")?.secretMissing).toBe(1);
+  });
+
+  test("in_flight_cap: 4 requests of a plugin at once; bytes in flight count against the budgets", async () => {
+    const e = makeEgress({ hooks: hooks({ limits: { timeoutMs: 20_000 } }) });
+    const slow = [0, 1, 2, 3].map((i) => e.fetch(call([origin], `s${i}`), get(`${origin}/slow`)).catch((x: FinError) => x));
+    for (let i = 0; i < 200 && e.inFlight() < 4; i++) await new Promise((x) => setTimeout(x, 10));
+    expect(e.inFlight()).toBe(4);
+    expect(await failure(e.fetch(call([origin], "s4"), get(`${origin}/hello`)))).toMatchObject({ code: "EGRESS_RATE_LIMITED", details: { reason: "inFlight", limit: 4, retryable: true } });
+    // Another plugin is not held up by this one.
+    expect((await e.fetch(call([origin], "o1", "@test/other@1.0.0"), get(`${origin}/hello`))).status).toBe(200);
+    for (let i = 0; i < 4; i++) e.release(`s${i}`);
+    for (const r of await Promise.all(slow)) expect((r as FinError).details).toMatchObject({ reason: "jobEnded" });
+    expect(e.inFlight()).toBe(0);
+    // The job's budget counts what it holds and what is arriving.
+    const job = makeEgress({ hooks: hooks({ limits: { jobBytes: 2000 } }) });
+    await job.fetch(call([origin], "b1"), get(`${origin}/chunked-big`));
+    expect(await failure(job.fetch(call([origin], "b1"), get(`${origin}/chunked-big`)))).toMatchObject({ code: "EGRESS_TOO_LARGE", details: { what: "held", limit: 2000 } });
+    expect(job.heldBytes()).toBe(1200);
+    // The server's ceiling covers every job; a refusal there is retryable.
+    const server = makeEgress({ hooks: hooks({ limits: { serverBytes: 1500 } }) });
+    await server.fetch(call([origin], "c1"), get(`${origin}/chunked-big`));
+    expect(await failure(server.fetch(call([origin], "c2", "@test/other@1.0.0"), get(`${origin}/chunked-big`)))).toMatchObject({ code: "EGRESS_RATE_LIMITED", details: { reason: "serverBytes", retryable: true } });
+    expect(server.heldBytes()).toBe(1200);
+    server.release("c1");
+    expect(server.heldBytes()).toBe(0);
+  });
+
+  test("release_aborts_in_flight: a job's end aborts its requests and frees their bytes", async () => {
+    const e = makeEgress({ hooks: hooks({ limits: { timeoutMs: 20_000 } }) });
+    const pending = e.fetch(call([origin], "jr"), get(`${origin}/trickle`)).catch((x: FinError) => x);
+    for (let i = 0; i < 300 && e.heldBytes() < 1000; i++) await new Promise((x) => setTimeout(x, 10));
+    expect(e.heldBytes()).toBe(1000);
+    const t0 = Date.now();
+    e.release("jr");
+    expect(e.heldBytes()).toBe(0);
+    expect(await pending).toMatchObject({ code: "INVALID_REQUEST", details: { reason: "jobEnded" } });
+    expect(Date.now() - t0).toBeLessThan(5_000);
+    expect(e.heldBytes()).toBe(0);
+    expect(e.inFlight()).toBe(0);
+    // Nothing more is fetched or held for an ended job.
+    expect(await failure(e.fetch(call([origin], "jr"), get(`${origin}/hello`)))).toMatchObject({ details: { reason: "jobEnded" } });
+    expect(e.heldBytes()).toBe(0);
+  });
+
+  test("lookups_are_capped: a slow resolver cannot hold the pool", async () => {
+    const e = makeEgress({ hooks: hooks({ limits: { lookups: 1, timeoutMs: 20_000 }, lookup: () => new Promise(() => undefined) }) });
+    const first = e.fetch(call([origin], "l1"), get(`${origin}/hello`)).catch((x: FinError) => x);
+    expect(await failure(e.fetch(call([origin], "l2", "@test/other@1.0.0"), get(`${origin}/hello`)))).toMatchObject({ code: "EGRESS_RATE_LIMITED", details: { reason: "lookups", limit: 1 } });
+    e.release("l1");
+    expect(await first).toMatchObject({ details: { reason: "jobEnded" } });
+  });
+
+  test("headers: tokens only, no CR/LF/NUL, no __proto__; proxy variables are ignored", async () => {
+    const e = makeEgress({ hooks: hooks() });
+    seen.length = 0;
+    for (const h of [{ name: "x-a", value: "v\r\nInjected: 1" }, { name: "x-b", value: "v\nx" }, { name: "x-c", value: "a\u0000b" }, { name: "__proto__", value: "x" }, { name: "bad name", value: "x" }, { name: "x:y", value: "x" }, { name: "", value: "x" }]) {
+      expect((await failure(e.fetch(call([origin]), get(`${origin}/hello`, { headers: [h] })))).code, JSON.stringify(h)).toBe("INVALID_REQUEST");
+    }
+    expect(seen).toHaveLength(0);
+    const keys = ["HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy", "ALL_PROXY", "all_proxy"];
+    const saved = keys.map((k) => process.env[k]);
+    try {
+      for (const k of keys) process.env[k] = "http://127.0.0.1:9";
+      expect((await e.fetch(call([origin]), get(`${origin}/hello`))).status).toBe(200);
+      expect(seen).toHaveLength(1);
+    } finally {
+      keys.forEach((k, i) => (saved[i] === undefined ? delete process.env[k] : (process.env[k] = saved[i])));
+    }
+  });
+
+  test("connect_falls_back_to_the_next_checked_address", async () => {
+    const e = makeEgress({
+      hooks: hooks({ lookup: async () => ["::1", "127.0.0.1"], allow: [{ host: API, address: "::1" }, { host: API, address: "127.0.0.1" }] }),
+    });
+    // The server listens on 127.0.0.1 only: ::1 refuses the connection, the next address answers.
+    expect((await e.fetch(call([origin]), get(`${origin}/hello`))).status).toBe(200);
   });
 
   test("hooks need the test build's flag", () => {

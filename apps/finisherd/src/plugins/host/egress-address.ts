@@ -1,10 +1,17 @@
 // The broker's address check (sp8b plan Task 8; spec §9.3 "Addresses"): an address `net.fetch`
-// may connect to is a public unicast one. Refused, as `EGRESS_PRIVATE_ADDRESS`: loopback,
-// private (RFC 1918, RFC 4193), link-local, CGNAT and Tailscale (100.64.0.0/10), multicast,
-// unspecified, the rest of "this network" and the reserved 240.0.0.0/4 (with broadcast), the
-// IPv6 forms that embed an IPv4 address (mapped `::ffff:0:0/96`, compatible `::/96`, NAT64
-// `64:ff9b::/96`, 6to4 `2002::/16`; each decoded and checked as IPv4 first), and the
-// deprecated site-local `fec0::/10`. Pure; no resolution happens here.
+// may connect to is a globally reachable unicast one. Refused, as `EGRESS_PRIVATE_ADDRESS`:
+// loopback, private (RFC 1918, RFC 4193), link-local, CGNAT and Tailscale (100.64.0.0/10),
+// multicast, unspecified, and every other IANA special-purpose block that is not globally
+// reachable or is reserved: "this network", IETF protocol assignments (192.0.0.0/24), the
+// documentation nets (192.0.2/24, 198.51.100/24, 203.0.113/24, 2001:db8::/32, 3fff::/20),
+// benchmarking (198.18.0.0/15), the old 6to4 relay anycast (192.88.99.0/24), 240.0.0.0/4 with
+// broadcast; in IPv6 everything outside global unicast 2000::/3 (discard-only 100::/64 among
+// them) and, inside it, the IETF protocol block 2001::/23 as a whole (Teredo 2001::/32,
+// benchmarking, ORCHID and ORCHIDv2 2001:10::/28 and 2001:20::/28; a few globally reachable
+// anycast entries in it are refused too, failing closed). The IPv6 forms that embed an IPv4
+// address are decoded and checked as IPv4 (mapped `::ffff:0:0/96`, SIIT `::ffff:0:0:0/96`,
+// compatible `::/96`, NAT64 `64:ff9b::/96` and the local-use `64:ff9b:1::/48` from their last
+// 32 bits, 6to4 `2002::/16`). Pure; no resolution happens here.
 import { isIPv4, isIPv6 } from "node:net";
 
 /** Why an address is refused, or `undefined` for a public unicast address. */
@@ -32,6 +39,12 @@ const V4_RULES: ReadonlyArray<V4Rule> = [
   [v4(100, 64, 0, 0), 10, "cgnat"], // CGNAT and Tailscale
   [v4(224, 0, 0, 0), 4, "multicast"],
   [v4(240, 0, 0, 0), 4, "reserved"], // 255.255.255.255 included
+  [v4(192, 0, 0, 0), 24, "reserved"], // IETF protocol assignments
+  [v4(192, 0, 2, 0), 24, "reserved"], // TEST-NET-1
+  [v4(198, 51, 100, 0), 24, "reserved"], // TEST-NET-2
+  [v4(203, 0, 113, 0), 24, "reserved"], // TEST-NET-3
+  [v4(198, 18, 0, 0), 15, "reserved"], // benchmarking
+  [v4(192, 88, 99, 0), 24, "reserved"], // 6to4 relay anycast (deprecated)
 ];
 
 function parseV4(s: string): number | undefined {
@@ -91,14 +104,21 @@ function checkV6(g: ReadonlyArray<number>): PrivateReason | undefined {
   }
   // IPv4-mapped `::ffff:a.b.c.d`.
   if (zero5 && f === 0xffff) return checkV4(embedded(h, l));
-  // NAT64 well-known prefix `64:ff9b::/96`.
+  // SIIT IPv4-translated `::ffff:0:a.b.c.d`.
+  if (a === 0 && b === 0 && c === 0 && d === 0 && e === 0xffff && f === 0) return checkV4(embedded(h, l));
+  // NAT64: the well-known prefix `64:ff9b::/96` and the local-use `64:ff9b:1::/48`.
   if (a === 0x64 && b === 0xff9b && c === 0 && d === 0 && e === 0 && f === 0) return checkV4(embedded(h, l));
+  if (a === 0x64 && b === 0xff9b && c === 1) return checkV4(embedded(h, l)) ?? "private";
   // 6to4 `2002:AABB:CCDD::/48` carries the IPv4 address in its second and third groups.
   if (a === 0x2002) return checkV4(embedded(b, c));
   if ((a & 0xfe00) === 0xfc00) return "private"; // fc00::/7 (Tailscale's fd7a:115c:a1e0::/48 included)
   if ((a & 0xffc0) === 0xfe80) return "linkLocal"; // fe80::/10
   if ((a & 0xffc0) === 0xfec0) return "private"; // fec0::/10, site-local
   if ((a & 0xff00) === 0xff00) return "multicast"; // ff00::/8
+  if ((a & 0xe000) !== 0x2000) return "reserved"; // outside global unicast 2000::/3 (100::/64 …)
+  if (a === 0x2001 && b < 0x0200) return "reserved"; // 2001::/23 (Teredo, ORCHID, benchmarking …)
+  if (a === 0x2001 && b === 0x0db8) return "reserved"; // documentation
+  if ((a & 0xfff0) === 0x3ff0) return "reserved"; // 3fff::/20, documentation
   return undefined;
 }
 
