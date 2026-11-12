@@ -171,6 +171,12 @@ export class ReviewStore {
     return r === undefined ? undefined : itemOf(r);
   }
 
+  /** Every open item of `kind` across projects (a plugin install supersedes its suggestions). */
+  openOfKind(kind: ReviewKind): ReadonlyArray<ReviewItem> {
+    const rows = this.#stmt(`SELECT ${COLUMNS} FROM reviews WHERE kind = ? AND state IN (${OPEN_SQL}) ORDER BY createdAt, id`).all(kind) as unknown as Row[];
+    return rows.map(itemOf);
+  }
+
   /** Newest first. */
   list(projectId: string, q: ItemQuery = {}): ReadonlyArray<ReviewItem> {
     const where = ["projectId = ?"];
@@ -181,9 +187,9 @@ export class ReviewStore {
     return rows.map(itemOf);
   }
 
-  /** Items still open (`open` or `changesRequested`) in a project: what `REVIEW_LIMIT` counts. */
+  /** Items still open (`open` or `changesRequested`) in a project: what `REVIEW_LIMIT` counts (suggestions have their own cap). */
   openCount(projectId: string): number {
-    const r = this.#stmt(`SELECT COUNT(*) AS n FROM reviews WHERE projectId = ? AND state IN (${OPEN_SQL})`).get(projectId) as { n: number };
+    const r = this.#stmt(`SELECT COUNT(*) AS n FROM reviews WHERE projectId = ? AND kind != 'pluginSuggestion' AND state IN (${OPEN_SQL})`).get(projectId) as { n: number };
     return r.n;
   }
 
@@ -200,7 +206,7 @@ export class ReviewStore {
         const existing = this.findOpen(item.projectId, item.kind, item.source, item.target);
         if (existing !== undefined) return existing;
       }
-      if (this.openCount(item.projectId) >= REVIEW_LIMIT) {
+      if (item.kind !== "pluginSuggestion" && this.openCount(item.projectId) >= REVIEW_LIMIT) {
         throw finError(
           "REVIEW_LIMIT",
           `the project already has ${REVIEW_LIMIT} open review items`,

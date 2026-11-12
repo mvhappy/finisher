@@ -9,7 +9,8 @@ import { Effect, Exit } from "effect";
 import { describe, expect, test, vi } from "vitest";
 import { scrubParts } from "../src/plugins/scrub.ts";
 import { MAX_OPEN_PLANS } from "../src/plugins/plans.ts";
-import { MAX_SUGGESTIONS } from "../src/plugins/lifecycle.ts";
+import { ReviewStore } from "../src/reviews/store.ts";
+import { MAX_SUGGESTIONS } from "../src/reviews/suggestions.ts";
 import { advisory, AGENT, as, CONSOLE, code, codeOf, failure, LOCAL, MCP, MINUTE, plugins, run, type Setup } from "./support/plugins-fixture.ts";
 
 const f = plugins();
@@ -149,16 +150,17 @@ describe("M2: what non-human principals may cost", () => {
 
   test("suggestions_are_deduplicated_and_capped", async () => {
     const s = f.service();
+    const items = new ReviewStore(f.control);
     const P = "01aaaaaaaaaaaaaaaaaaaaaaaa";
     const Q = "01bbbbbbbbbbbbbbbbbbbbbbbb";
     const first = await run(s.life.suggest({ id: "@acme/pack", reason: "once", projectId: P }, AGENT));
     const again = await run(s.life.suggest({ id: "@acme/pack", reason: "twice", projectId: P }, AGENT));
     expect(again).toEqual(first);
-    expect(s.tables.suggestions().length).toBe(1);
+    expect(items.list(P, { kind: "pluginSuggestion" }).length).toBe(1);
     // The same plugin for another project, or from another principal, is another suggestion.
     await run(s.life.suggest({ id: "@acme/pack", reason: "x", projectId: Q }, AGENT));
     await run(s.life.suggest({ id: "@acme/pack", reason: "x", projectId: P }, MCP));
-    expect(s.tables.suggestions().length).toBe(3);
+    expect(items.list(P, { kind: "pluginSuggestion" }).length + items.list(Q, { kind: "pluginSuggestion" }).length).toBe(3);
     for (let i = 1; i < MAX_SUGGESTIONS; i++) await run(s.life.suggest({ id: `@acme/pack-${i + 10}`, reason: "x", projectId: P }, AGENT));
     expect(await codeOf(s.life.suggest({ id: "@acme/one-more", reason: "x", projectId: P }, AGENT))).toBe("TOO_MANY_SUGGESTIONS");
     await run(s.life.suggest({ id: "@acme/one-more", reason: "x", projectId: Q }, AGENT));

@@ -5,6 +5,8 @@ import type { Audit } from "../control/audit.ts";
 import type { ControlStore } from "../control/db.ts";
 import { Context, Effect } from "effect";
 import { finError } from "../errors.ts";
+import { rederive } from "./rederive.ts";
+import { type PluginSuggestions, pluginSuggestions } from "./suggestions.ts";
 import { PolicyGate } from "./gate.ts";
 import { ReviewHub } from "./hub.ts";
 import type { ReviewEngine } from "./plan.ts";
@@ -46,3 +48,12 @@ export function makeReviews(control: ControlStore, options: ReviewsOptions = {})
 
 export { registryEngine } from "./plan.ts";
 export { journalReviewVerdicts } from "./verdicts.ts";
+
+/**
+ * The reviews at server start (5E Task 8): `suggestions` is what the plugin lifecycle writes
+ * through, and `opened` re-derives a loaded project's reviews (Decision 22) in the background.
+ */
+export function startReviews(control: ControlStore, options: ReviewsOptions = {}): { reviews: Reviews; suggestions: PluginSuggestions; opened: (projectId: string) => void } {
+  const reviews = makeReviews(control, options);
+  return { reviews, suggestions: pluginSuggestions(reviews.store), opened: (id) => void Effect.runPromise(rederive(reviews.workflow, id)) };
+}

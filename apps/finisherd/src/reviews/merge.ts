@@ -73,8 +73,8 @@ function engineMerge(w: ReviewWorkflow, c: Caller, item: ReviewItem, include: Re
     argsHash: argsHash(item),
   };
   return Effect.map(w.engine.write(item.projectId, "merge", payload, c.meta), (r) => r as MergeReport).pipe(
-    Effect.tapError((error) => Effect.sync(() => w.observeMerge(item.projectId, item.source!, item.target!, { error }))),
-    Effect.tap((report) => Effect.sync(() => w.observeMerge(item.projectId, item.source!, item.target!, { report }))),
+    Effect.tapError((error) => w.observeMerge(item.projectId, item.source!, item.target!, { error }, principalKey(c.principal))),
+    Effect.tap((report) => w.observeMerge(item.projectId, item.source!, item.target!, { report }, principalKey(c.principal))),
     Effect.mapError((e) =>
       e.code === "CONFLICT"
         ? finError(
@@ -101,6 +101,7 @@ function archiveIfFinished(w: ReviewWorkflow, c: Caller, item: ReviewItem, idemK
     const plan: ReviewPlan = yield* w.planner.now(item.projectId, item.source!, item.target!);
     if (plan.truncated || plan.entries.some((e) => LEFT.has(e.status))) return false;
     yield* w.engine.write(item.projectId, "branchSet", { projectId: item.projectId, txId: `${idemKey}.archive`, author: c.author, branch: source.id, archived: true }, c.meta);
+    yield* w.observeArchived(item.projectId, source.id, principalKey(c.principal));
     return true;
   });
   return Effect.orElseSucceed(self, () => false);

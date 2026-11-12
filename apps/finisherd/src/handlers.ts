@@ -51,6 +51,8 @@ import { probeFor } from "./probe.ts";
 import { ProjectRegistry } from "./projects.ts";
 import { type AdminDeps, auditList, auditPurge, ServerControlTag, serverStatus, serverStop } from "./server-admin.ts";
 import { reporterFor } from "./sandbox/status.ts";
+import { observingArchive, observingMerge } from "./reviews/conflicts.ts";
+import { principalKey } from "./reviews/workflow.ts";
 import { reviewHandlers } from "./reviews/rpc.ts";
 import { ReviewsTag } from "./reviews/service.ts";
 
@@ -378,7 +380,7 @@ export const HandlersLive = FinRpcs.toLayer(
         guard("branch.create", withMeta(options, (m) => registry.history(payload.projectId, "branchCreate", payload, m))),
       "branch.list": ({ projectId, all }) => guard("branch.list", registry.branches(projectId, all === true)),
       "branch.set": (payload, options) =>
-        guard("branch.set", withMeta(options, (m) => registry.history(payload.projectId, "branchSet", payload, m))),
+        guard("branch.set", withMeta(options, (m) => registry.history(payload.projectId, "branchSet", payload, m).pipe(observingArchive(reviews.workflow, principalKey(principalOf(options)), payload)))),
       "history.undo": (payload, options) =>
         guard("history.undo", withMeta(options, (m) => registry.history(payload.projectId, "undo", payload, m))),
       "history.redo": (payload, options) =>
@@ -386,7 +388,7 @@ export const HandlersLive = FinRpcs.toLayer(
       "history.checkpoint": (payload, options) =>
         guard("history.checkpoint", withMeta(options, (m) => registry.history(payload.projectId, "checkpoint", payload, m))),
       "history.merge": (payload, options) =>
-        guard("history.merge", withMeta(options, (m) => registry.history(payload.projectId, "merge", payload, m))),
+        guard("history.merge", withMeta(options, (m) => registry.history(payload.projectId, "merge", payload, m).pipe(observingMerge(reviews.workflow, principalKey(principalOf(options)), payload)))),
       "history.cherryPick": (payload, options) =>
         guard("history.cherryPick", withMeta(options, (m) => registry.history(payload.projectId, "cherryPick", payload, m))),
       "history.revert": (payload, options) =>

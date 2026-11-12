@@ -17,6 +17,8 @@ import { type ControlStore, openControlStore } from "../src/control/db.ts";
 import { CONSOLE as CONSOLE_P, LOCAL as LOCAL_P } from "../src/principal.ts";
 import { makePlugins, type MakePluginsOptions } from "../src/plugins/registries.ts";
 import { pluginHandlers } from "../src/plugins/rpc.ts";
+import { ReviewStore } from "../src/reviews/store.ts";
+import { MAX_SUGGESTIONS, pluginSuggestions } from "../src/reviews/suggestions.ts";
 import { PluginTables } from "../src/plugins/tables.ts";
 import { SAMPLE_PAYLOADS } from "./support/payloads.ts";
 
@@ -547,16 +549,55 @@ describe("audit and suggestions", () => {
   });
 
   test("suggest_records_plugin_suggestion", async () => {
-    const s = service();
+    const store = new ReviewStore(control, () => now);
+    const s = service({ suggestions: pluginSuggestions(store) });
     const P = "01aaaaaaaaaaaaaaaaaaaaaaaa";
     const r = await run(s.h["plugin.suggest"]({ id: "@acme/pack", reason: "captions in the house style", projectId: P }, as(AGENT, ["plugin.suggest", "project.read"])));
     expect(r.suggestionId).toMatch(/^[0-9a-z]{26}$/i);
-    expect(s.tables.suggestions()).toEqual([{ id: r.suggestionId, pluginId: "@acme/pack", projectId: P, reason: "captions in the house style", byKind: "agent", byId: AGENT.id, createdAt: now }]);
+    // An item now, not a row.
+    expect(control.db.prepare("SELECT name FROM sqlite_master WHERE name = 'plugin_suggestions'").all()).toEqual([]);
+    expect(store.list(P)).toMatchObject([
+      { id: r.suggestionId, kind: "pluginSuggestion", state: "open", title: "@acme/pack", summary: "captions in the house style", requestedBy: { principal: `agent:${AGENT.id}` }, subject: { pluginId: "@acme/pack" }, createdAt: now },
+    ]);
     // It installs nothing and is no approval.
     expect(s.tables.installed()).toEqual([]);
     expect(control.db.prepare("SELECT COUNT(*) AS n FROM plugin_plans").get()).toEqual({ n: 0 });
     // Its scopes: the suggestion's own and reading the project it is about.
     expect(requiredScopes("plugin.suggest", SAMPLE_PAYLOADS["plugin.suggest"])).toEqual(["plugin.suggest", "project.read"]);
+  });
+
+  test("suggestion_is_item: one open item per plugin, project and principal, capped per principal", async () => {
+    const store = new ReviewStore(control, () => now);
+    const s = service({ suggestions: pluginSuggestions(store) });
+    const P = "01aaaaaaaaaaaaaaaaaaaaaaaa";
+    const first = await run(s.life.suggest({ id: "@acme/pack", reason: "once", projectId: P }, AGENT));
+    expect(await run(s.life.suggest({ id: "@acme/pack", reason: "twice", projectId: P }, AGENT))).toEqual(first);
+    expect(store.list(P).length).toBe(1);
+    await run(s.life.suggest({ id: "@acme/pack", reason: "x", projectId: P }, MCP));
+    for (let i = 1; i < MAX_SUGGESTIONS; i++) await run(s.life.suggest({ id: `@acme/pack-${i + 10}`, reason: "x", projectId: P }, AGENT));
+    expect(await codeOf(s.life.suggest({ id: "@acme/one-more", reason: "x", projectId: P }, AGENT))).toBe("TOO_MANY_SUGGESTIONS");
+    // Closing one by a person frees a slot, and the plugin may be suggested again.
+    store.setState(first.suggestionId, "dismissed", "console:console");
+    expect((await run(s.life.suggest({ id: "@acme/pack", reason: "again", projectId: P }, AGENT))).suggestionId).not.toBe(first.suggestionId);
+  });
+
+  test("install_supersedes_suggestion", async () => {
+    const store = new ReviewStore(control, () => now);
+    const s = await setup({ packages: ["@acme/pack@1.0.0", "@acme/other@1.0.0"] }, { suggestions: pluginSuggestions(store) });
+    const P = "01aaaaaaaaaaaaaaaaaaaaaaaa";
+    const Q = "01bbbbbbbbbbbbbbbbbbbbbbbb";
+    const a = await run(s.life.suggest({ id: "@acme/pack", reason: "x", projectId: P }, AGENT));
+    const b = await run(s.life.suggest({ id: "@acme/pack", reason: "x", projectId: Q }, MCP));
+    const other = await run(s.life.suggest({ id: "@acme/other", reason: "x", projectId: P }, AGENT));
+    await install(s, "@acme/pack");
+    expect(store.get(a.suggestionId)?.state).toBe("superseded");
+    expect(store.get(b.suggestionId)?.state).toBe("superseded");
+    expect(store.get(other.suggestionId)?.state).toBe("open");
+  });
+
+  test("fresh_control_db_has_no_plugin_suggestions_table", () => {
+    expect(control.db.prepare("SELECT name FROM sqlite_master WHERE name LIKE 'plugin_suggestions%'").all()).toEqual([]);
+    expect(control.db.prepare("SELECT n FROM migrations WHERE chain = 'plugins' ORDER BY n").all()).toEqual([{ n: 1 }, { n: 2 }, { n: 3 }, { n: 4 }, { n: 5 }]);
   });
 });
 
