@@ -80,6 +80,9 @@ async function run(job) {
     case "sleep":
       return new Promise((resolve) => setTimeout(() => resolve({ pid: process.pid, slept: v.ms }), v.ms));
     case "crash":
+      // `say`: stderr lines first (a crash's `stderrTail`).
+      for (const l of v.say ?? []) process.stderr.write(`${l}\n`);
+      if (v.say) await new Promise((r) => process.stderr.write("", r));
       process.exit(3);
       break;
     case "hang":

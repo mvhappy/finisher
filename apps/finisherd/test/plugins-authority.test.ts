@@ -423,6 +423,32 @@ describe("authority drains (review of f25e589e)", () => {
     expect(existsSync(keyTmpDir(r.serverData, oldKey))).toBe(false);
   });
 
+  test("start_sweep_after_raise: a lost bump keeps the live generation's data, not the retired one's", () => {
+    const sd = realpathSync(mkdtempSync(join(tmpdir(), "fin-plugin-sweep-")));
+    const control = openControlStore(sd, { serverId: "sid-test", checkpoint: false });
+    cleanups.push(async () => {
+      await control.close();
+      rmSync(sd, { recursive: true, force: true });
+    });
+    // The store recorded generation 1; a process of generation 2 (whose bump the store lost)
+    // wrote its data before the restart. No job is queued.
+    storedGenerations(control).bump("agent:R");
+    const h = "b".repeat(32);
+    const at = (key: string) => join(sd, ...PLUGIN_AUTHDATA, "@test", "probe", "p1", key);
+    for (const k of [`agent-R.${h}.1`, `agent-R.${h}.2`]) mkdirSync(at(k), { recursive: true });
+    // The server's order: register (before the engine starts), then bind.
+    const host = makePluginHost({ serverData: sd, control, tables: new PluginTables(control) });
+    host.register({ registerFamily: () => {} } as unknown as Parameters<PluginHost["register"]>[0]);
+    expect(existsSync(at(`agent-R.${h}.2`)) && existsSync(at(`agent-R.${h}.1`))).toBe(true);
+    host.bind({ onDone: () => () => {}, list: () => ({ jobs: [] }) } as unknown as JobEngine);
+    expect(host.generations.of("agent:R")).toBe(2);
+    expect(storedGenerations(control).of("agent:R")).toBe(2);
+    expect(existsSync(at(`agent-R.${h}.2`))).toBe(true);
+    expect(existsSync(at(`agent-R.${h}.1`))).toBe(false);
+    // The next bump is a new generation: the retired data never comes back.
+    expect(host.generations.bump("agent:R")).toBe(3);
+  });
+
   test("bind_raises_generations_to_queued_jobs: a bump the store lost is not handed out again", () => {
     const sd = realpathSync(mkdtempSync(join(tmpdir(), "fin-plugin-raise-")));
     const control = openControlStore(sd, { serverId: "sid-test", checkpoint: false });

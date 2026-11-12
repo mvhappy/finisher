@@ -23,6 +23,7 @@ import { decodePluginCall, pluginProjectView } from "@finisher/fin-node";
 import { Effect } from "effect";
 import { finError, toFinError } from "../../errors.ts";
 import { type CallCtx, type OnCall, projectOfJob } from "../../jobs/kinds.ts";
+import { bareKey } from "./keys.ts";
 import type { PluginLog } from "./log.ts";
 import { authorizeMethod, type ReachDeps } from "./reach.ts";
 import { type LiveInvoker, narrowRights } from "./rights.ts";
@@ -73,11 +74,6 @@ function protocolError(method: string, error: string): FinError {
 function branchOfJob(job: JobView): string | undefined {
   const b = (job.params as { branch?: unknown } | null)?.branch;
   return typeof b === "string" ? b : undefined;
-}
-
-/** The warm key without a confined `<project>/` prefix (that is the pool's, not the authority's). */
-function bareKey(key: string): string {
-  return key.startsWith("@") ? key : key.slice(key.indexOf("/") + 1);
 }
 
 /** `text` cut to whole lines so that its JSON encoding stays within `VIEW_BYTES`. */
@@ -168,8 +164,10 @@ export function makeHostCalls(h: HostCallsDeps) {
         return yield* Effect.fail(finError("PLUGIN_PROTOCOL", "host calls come from a plugin job's worker", { method, reason: "notPluginJob" }));
       }
       // The authority is the job's: the process's key must still be the key the job runs under.
+      // A process with no known key (neither a warm worker's tag nor a cold spawn's record) is
+      // refused too: the check fails closed (review of Task 7).
       const key = ctx.workerKey !== undefined ? bareKey(ctx.workerKey) : h.coldKey(job.id);
-      if (key !== undefined && key !== h.keyNow(job)) return yield* Effect.fail(retired());
+      if (key === undefined || key !== h.keyNow(job)) return yield* Effect.fail(retired());
       const deps = h.deps();
       if (deps === undefined) return yield* Effect.fail(finError("PLUGIN_RUNTIME_UNAVAILABLE", "this server does not serve plugin calls yet", { method }));
       const narrowed = narrowRights(ctx.rights, deps.live(ctx.owner));

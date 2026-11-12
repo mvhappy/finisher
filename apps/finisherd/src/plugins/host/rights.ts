@@ -63,7 +63,6 @@ export function reaches(reach: Reach, id: string): boolean {
 /** The rights an authority key hashes (spec §3.3): everything plugin-relevant but the principal. */
 export type HashedRights = Pick<JobRights, "class" | "scopes" | "projects" | "branch" | "libraries" | "grants">;
 
-/** JSON with object keys sorted and (with `sortLists`) string lists sorted. */
 /**
  * Canonical JSON of `v`: object keys sorted, `undefined` members left out; with `sortLists`,
  * an array whose items are all strings is deduplicated and sorted. Any other array (objects,

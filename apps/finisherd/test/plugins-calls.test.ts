@@ -21,7 +21,8 @@ import { JobEventSinkTag, memorySink } from "../src/jobs/events.ts";
 import type { CallCtx, KindSpec } from "../src/jobs/kinds.ts";
 import { buildJobEngine } from "../src/jobs/layer.ts";
 import { type CallDeps, PAGE_BYTES } from "../src/plugins/host/calls.ts";
-import { keyTmpDir, principalClass, sessionRoots } from "../src/plugins/host/keys.ts";
+import { mapPluginError, pluginProgram } from "../src/plugins/host/family.ts";
+import { bareKey, keyTmpDir, principalClass, sessionRoots } from "../src/plugins/host/keys.ts";
 import { LOG_PER_SECOND, makePluginLog, scrubLogText } from "../src/plugins/host/log.ts";
 import { makePluginHost, type PluginHost, PLUGIN_HOST_API } from "../src/plugins/host/processes.ts";
 import type { Invoker } from "../src/plugins/host/rights.ts";
@@ -34,6 +35,8 @@ const FIXTURE = join(dirname(fileURLToPath(import.meta.url)), "fixtures", "plugi
 const ID = "@test/probe";
 const PERSON: JobOwner = { kind: "local", id: "local" };
 const COMMAND: KindSpec = { kind: "plugin.command", version: 1, family: "plugin", scopes: [], resources: [], warm: true, defaultPriority: "interactive", qos: "normal", timeoutS: 60, maxAttempts: 1 };
+/** A cold kind of the family: one process per job, its key recorded at spawn. */
+const COLD: KindSpec = { ...COMMAND, kind: "test.echo", warm: false };
 const READ: Permission = { perm: "project:read" };
 const DATA_RW: Permission = { perm: "fs", scope: "pluginData", access: "readWrite" };
 
@@ -67,12 +70,15 @@ interface Rig {
   readonly control: ControlStore;
   readonly engine: JobEngine;
   readonly host: PluginHost;
+  readonly tables: PluginTables;
   readonly world: World;
   readonly logs: Array<{ level: string; message: string }>;
   readonly sink: ReturnType<typeof memorySink>;
   jobOf(o?: RunOpts): JobView;
   /** Runs a `plugin.command` job whose `args` is `op`; the job when it ended. */
   command(op: Record<string, unknown>, o?: RunOpts): Promise<JobView>;
+  /** Submits a cold `test.echo` job of the family whose `value` is `op`, without waiting. */
+  cold(op: Record<string, unknown>): Promise<JobView>;
 }
 
 type RunOpts = { owner?: JobOwner; project?: string; branch?: string; scopes?: ReadonlyArray<string>; projects?: "*" | string[]; grants?: ReadonlyArray<Permission> };
@@ -93,6 +99,7 @@ async function rig(): Promise<Rig> {
       register: (r) => {
         host.register(r);
         r.registerKind(COMMAND);
+        r.registerKind(COLD);
       },
     }).pipe(Effect.provide(Layer.mergeAll(Layer.succeed(ControlStoreTag, control), Layer.succeed(JobEventSinkTag, sink)))),
   );
@@ -139,10 +146,15 @@ async function rig(): Promise<Rig> {
     control,
     engine,
     host,
+    tables,
     world,
     logs,
     sink,
     jobOf,
+    cold(op) {
+      const j = jobOf();
+      return run(engine.submit(j.owner, { kind: "test.echo", params: { value: op }, via: j.via!, rights: j.rights!, project: j.project! }));
+    },
     async command(op, o = {}) {
       const j = jobOf(o);
       const params = { ...(j.params as Record<string, unknown>), args: op };
@@ -286,9 +298,47 @@ describe("host calls", () => {
     const got = (done.result as { replies: Array<{ value?: unknown; error?: { code: string; details: Record<string, unknown> } }> }).replies;
     expect(got[0]?.value).toEqual({});
     expect(got[1]?.error).toMatchObject({ code: "PLUGIN_AUTHORITY_RETIRED", details: { retryable: true } });
-    // A cold process's key is checked the same way.
+    // A call from a process whose key the host does not know fails closed.
     const job = r.jobOf();
-    expect(codeOf(await direct(r, job, "log", { level: "info", msg: "x" }, null))).toBe("ok");
+    expect(codeOf(await direct(r, job, "log", { level: "info", msg: "x" }, null))).toBe("PLUGIN_AUTHORITY_RETIRED");
+  });
+
+  test("retired_generation_call_fails (cold): a cold process's recorded key is checked after a bump", async () => {
+    const r = await rig();
+    const v = await r.cold({ op: "calls", pauseMs: 1500, calls: [{ method: "log", params: { level: "info", msg: "cold-one" } }, { method: "log", params: { level: "info", msg: "cold-two" } }] });
+    for (let i = 0; i < 400 && !r.logs.some((l) => l.message.endsWith(" cold-one")); i++) await new Promise((x) => setTimeout(x, 25));
+    // It ran cold: no warm worker of the family.
+    expect(r.engine.workers().warm.filter((w) => w.family === "plugin")).toEqual([]);
+    void Effect.runFork(r.host.authorityChanged("person"));
+    const [done] = await run(r.engine.wait([v.id], { timeoutMs: 30_000 }));
+    expect(done?.state, JSON.stringify(done?.error)).toBe("succeeded");
+    const got = (done!.result as { replies: Array<{ value?: unknown; error?: { code: string } }> }).replies;
+    expect(got[0]?.value).toEqual({});
+    expect(got[1]?.error?.code).toBe("PLUGIN_AUTHORITY_RETIRED");
+  });
+
+  test("confined_key_names_one_temp: the program's TMPDIR under a `<project>/` tag is the context's", async () => {
+    const r = await rig();
+    const job = r.jobOf();
+    const key = r.host.warmKeyOf(job);
+    const deps = { serverData: r.serverData, installed: (id: string) => r.tables.installedFull(id), generations: r.host.generations };
+    const confined = pluginProgram(deps, job, `p1/${key}`);
+    const plain = pluginProgram(deps, job, key);
+    const ctx = r.host.contextOf(job, { timeoutS: 10 });
+    expect("path" in confined && confined.process?.env.TMPDIR).toBe(ctx.dirs.tmp);
+    expect("path" in plain && plain.process?.env.TMPDIR).toBe(ctx.dirs.tmp);
+    expect(ctx.dirs.tmp).toBe(keyTmpDir(r.serverData, key));
+    expect(bareKey(`p1/${key}`)).toBe(key);
+  });
+
+  test("crash_stderr_tail_is_scrubbed: a crash's stderr tail loses paths before it is stored", async () => {
+    const r = await rig();
+    const done = await r.command({ op: "crash", say: ["dying at /home/someone/secret/plan.txt", "\u001b[2Jbye"] });
+    expect(done.error?.code).toBe("PLUGIN_CRASHED");
+    const stored = JSON.stringify(done.error);
+    expect(stored).not.toContain("/home/someone");
+    expect(stored).not.toContain("\u001b");
+    expect(mapPluginError({ code: "WORKER_CRASHED", message: "x", details: { stderrTail: "at C:\\Users\\me\\x.txt" } }).details).toMatchObject({ cause: "WORKER_CRASHED", stderrTail: "at <path>" });
   });
 
   test("log_is_rate_limited_and_scrubbed", async () => {

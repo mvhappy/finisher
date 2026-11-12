@@ -28,10 +28,10 @@ import { RETIRE_GRACE_MS } from "../../jobs/warm-worker.ts";
 import type { InstalledFull, PluginTables } from "../tables.ts";
 import { makeCrashLoop } from "./crash-loop.ts";
 import { PLUGIN_FAMILY, registerPluginFamily } from "./family.ts";
-import { type Authority, type AuthorityGenerations, authorityOfWarmKey, classSlug, jobAuthority, removeClassAuthData, storedGenerations, sweepAuthData } from "./authority.ts";
+import { type Authority, type AuthorityGenerations, authorityOfWarmKey, classSlug, jobAuthority, raiseFromAuthData, removeClassAuthData, storedGenerations, sweepAuthData } from "./authority.ts";
 import { pluginDataFor } from "./family.ts";
 import { type CallDeps, makeHostCalls, PAGE_BYTES } from "./calls.ts";
-import { keyTmpDir, pluginWarmKey, principalClass, sessionRoots } from "./keys.ts";
+import { bareKey, keyTmpDir, pluginWarmKey, principalClass, sessionRoots } from "./keys.ts";
 import { makePluginLog, type ServerLog } from "./log.ts";
 import { splitVia, storeDirOf } from "./program.ts";
 import type { PluginContext } from "@finisher/core-types";
@@ -55,9 +55,7 @@ export interface PluginHostHooks {
 }
 
 /** The `<id>@<version>|…` part of a warm key (a confined key is `<project>/<key>`). */
-export function keyPlugin(key: string): string {
-  return key.startsWith("@") ? key : key.slice(key.indexOf("/") + 1);
-}
+export const keyPlugin = bareKey;
 
 export interface PluginHostDeps {
   /** Links resolved. */
@@ -137,7 +135,7 @@ export function makePluginHost(d: PluginHostDeps) {
       // cold or drained job still running may use its key's: then nothing is removed now
       // (the next start's sweep does it).
       if (e.list({ state: ["running"], limit: 500 }).jobs.some((j) => j.family === PLUGIN_FAMILY && j.via !== undefined && mine(j.via.plugin))) return;
-      const still = new Set(live().map((w) => w.key));
+      const still = new Set(live().map((w) => bareKey(w.key)));
       for (const key of [...keys]) {
         if (!ofKey(key) || still.has(key)) continue;
         keys.delete(key);
@@ -187,7 +185,7 @@ export function makePluginHost(d: PluginHostDeps) {
         // The check and the removal in one synchronous step: no bump can come between them.
         const done = yield* Effect.sync(() => {
           if (generations.of(cls) !== target) return false;
-          const still = new Set(e?.workers().warm.map((w) => w.key) ?? []);
+          const still = new Set(e?.workers().warm.map((w) => bareKey(w.key)) ?? []);
           for (const key of [...keys]) {
             if (!older(key, target) || still.has(key)) continue;
             keys.delete(key);
@@ -261,7 +259,7 @@ export function makePluginHost(d: PluginHostDeps) {
     });
 
   return {
-    /** Registers the `plugin` family (before the engine starts) and empties the keys' temp. */
+    /** Registers the `plugin` family (before the engine starts) and empties the keys' temp (the authority data is swept at `bind`). */
     register(r: KindRegistry): void {
       registerPluginFamily(r, {
         serverData: d.serverData,
@@ -275,7 +273,6 @@ export function makePluginHost(d: PluginHostDeps) {
         onCall: calls.onCall,
         onStderr,
       });
-      sweepAuthData(d.serverData, generations);
     },
     /**
      * Bumps the classes' generations from the credentials and devices: a credential minted or
@@ -331,7 +328,11 @@ export function makePluginHost(d: PluginHostDeps) {
     },
     /** `PluginContext.dirs.data` of `job` (Task 7), created on first use; only with `fs pluginData`. */
     dataDirOf: (job: JobView) => pluginDataFor({ serverData: d.serverData, rootSessionOf, generations }, job),
-    /** Binds the started engine: stops go to it, its job ends feed the crash loop. */
+    /**
+     * Binds the started engine: stops go to it, its job ends feed the crash loop; the classes'
+     * generations are raised to their queued jobs' and authority directories', then the
+     * authority data of other generations is swept.
+     */
     bind(e: JobEngine): void {
       engine = e;
       e.onDone((job) => {
@@ -347,6 +348,10 @@ export function makePluginHost(d: PluginHostDeps) {
         if (l.next === undefined) break;
         cursor = l.next;
       }
+      // Then the authority directories (review of Task 7): their own generations raise their
+      // classes too, and only then does the sweep remove what is not current.
+      raiseFromAuthData(d.serverData, generations);
+      sweepAuthData(d.serverData, generations);
     },
     hooks: { stop, enabled: (id: string) => crashLoop.clear(id), confined: () => engine?.workers().caps.profiles.plugin === "enforced", enableCheck } satisfies PluginHostHooks,
   };

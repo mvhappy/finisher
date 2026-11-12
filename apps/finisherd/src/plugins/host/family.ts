@@ -11,8 +11,9 @@ import { type AuthorityGenerations, jobAuthority, jobDataDir, memoryGenerations 
 import { childEnv } from "../../env.ts";
 import { finError } from "../../errors.ts";
 import type { FamilySpec, KindRegistry, MemoryRule, ProgramSpec } from "../../jobs/kinds.ts";
-import { ensurePrivateDir, keyTmpDir, pluginWarmKey, principalClass, type RootSessionOf, sweepPluginTmp } from "./keys.ts";
+import { bareKey, ensurePrivateDir, keyTmpDir, pluginWarmKey, principalClass, type RootSessionOf, sweepPluginTmp } from "./keys.ts";
 import { rightsHash } from "./rights.ts";
+import { scrubLogText } from "./log.ts";
 import { nodeRuntimeEnv } from "./node-runtime.ts";
 import { type InstalledOf, jobRow, resolveRuntime } from "./program.ts";
 
@@ -48,8 +49,12 @@ export interface PluginFamilyDeps {
 }
 
 /** 5C's codes as a plugin job's (spec §13; `WORKER_OOM` and the rest are kept). */
-export function mapPluginError(e: FinErrorData): FinErrorData {
-  const details = e.details !== null && typeof e.details === "object" ? (e.details as Record<string, unknown>) : {};
+export function mapPluginError(raw: FinErrorData): FinErrorData {
+  const given = raw.details !== null && typeof raw.details === "object" ? (raw.details as Record<string, unknown>) : {};
+  // A crash's `stderrTail` is the plugin's own text: scrubbed like its stderr lines before it is
+  // stored or answered (review of Task 7: paths otherwise reach control.db and non-human callers).
+  const details = typeof given["stderrTail"] === "string" ? { ...given, stderrTail: scrubLogText(given["stderrTail"]) } : given;
+  const e: FinErrorData = details === given ? raw : { ...raw, details };
   const as = (code: string): FinErrorData => ({ ...e, code, details: { ...details, cause: e.code } });
   switch (e.code) {
     case "WORKER_CRASHED":
@@ -72,7 +77,9 @@ export function pluginProgram(deps: PluginFamilyDeps, job: Parameters<typeof plu
   // A warm spawn's key is the one the engine tagged the worker with, so its `TMPDIR` and its
   // key can never disagree; a cold spawn computes it.
   const gens = deps.generations ?? memoryGenerations();
-  const key = warmKey ?? pluginWarmKey(job, deps.rootSessionOf, gens);
+  // Under a sandbox the pool's tag is `<project>/<key>` (`warm.ts`): the temp directory is the
+  // authority key's, as `contextOf` and the calls name it (review of Task 7).
+  const key = warmKey !== undefined ? bareKey(warmKey) : pluginWarmKey(job, deps.rootSessionOf, gens);
   const tmp = keyTmpDir(deps.serverData, key);
   const data = pluginDataFor(deps, job);
   const rt = resolveRuntime({ serverData: deps.serverData, installed: deps.installed, ...(deps.execPath === undefined ? {} : { execPath: deps.execPath }), ...(deps.platform === undefined ? {} : { platform: deps.platform }) }, job, tmp, data);

@@ -56,6 +56,14 @@ export function pluginWarmKey(job: JobView, rootSessionOf?: RootSessionOf, gens:
 }
 
 /** The key's hash: the name of its temp directory (hex, 32 characters). */
+/**
+ * A warm key without the confined pool's `<project>/` prefix (`warm.ts` adds it under a
+ * sandbox): the authority's key, which names the temp directory and every call's check.
+ */
+export function bareKey(key: string): string {
+  return key.startsWith("@") ? key : key.slice(key.indexOf("/") + 1);
+}
+
 export function keyHash(key: string): string {
   return createHash("sha256").update(key).digest("hex").slice(0, 32);
 }

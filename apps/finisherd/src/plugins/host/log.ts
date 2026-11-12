@@ -22,10 +22,21 @@ const CONTROL = new RegExp("[\\u0000-\\u001f\\u007f-\\u009f\\u2028\\u2029\\u200e
 /** `text` scrubbed and cut to `max` UTF-8 bytes (an ellipsis marks a cut). */
 export function scrubLogText(text: string, max = LOG_MESSAGE_BYTES): string {
   // Control characters (C0, DEL, C1, line and paragraph separators, bidi controls) become a space.
-  const flat = stripPaths(text.replace(CONTROL, " "));
-  if (Buffer.byteLength(flat) <= max) return flat;
-  let cut = flat.slice(0, max);
-  while (Buffer.byteLength(cut) > max - 3) cut = cut.slice(0, -1);
+  // At most `max` UTF-16 units go through the scrub (a UTF-8 byte is at least one of them).
+  const truncated = text.length > max * 2;
+  const flat = stripPaths((truncated ? text.slice(0, max * 2) : text).replace(CONTROL, " "));
+  const size = Buffer.byteLength(flat);
+  if (!truncated && size <= max) return flat;
+  if (size <= max - 3) return `${flat}…`;
+  // Cut by code point, never inside a surrogate pair, in one pass.
+  let bytes = 0;
+  let cut = "";
+  for (const ch of flat) {
+    const n = Buffer.byteLength(ch);
+    if (bytes + n > max - 3) break;
+    bytes += n;
+    cut += ch;
+  }
   return `${cut}…`;
 }
 
@@ -101,9 +112,10 @@ export function makePluginLog(d: PluginLogDeps) {
     },
     /** A stderr line of the process `source`. */
     stderr(source: string, plugin: string, line: string): boolean {
-      const text = scrubLogText(line);
+      // The window first, by the line's length as capped, so a flood is never scrubbed.
       const w = windowOf(`stderr:${source}`, () => new Window(STDERR_BYTES_PER_MINUTE, 60_000));
-      const { ok, reportDropped } = w.take(clock(), Buffer.byteLength(text));
+      const { ok, reportDropped } = w.take(clock(), Math.min(Buffer.byteLength(line), LOG_MESSAGE_BYTES));
+      const text = ok ? scrubLogText(line) : "";
       if (reportDropped > 0) d.write("warning", `[${name(plugin)} stderr] ${reportDropped} lines dropped (over ${STDERR_BYTES_PER_MINUTE} bytes a minute)`);
       if (ok) d.write("debug", `[${name(plugin)} stderr] ${text}`);
       return ok;

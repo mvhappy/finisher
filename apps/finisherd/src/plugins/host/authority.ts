@@ -259,6 +259,30 @@ export function removeClassAuthData(serverData: string, cls: string, generation:
   });
 }
 
+/** The class a slug names, when `classSlug` kept it readable (`agent-<id>` → `agent:<id>`); a hashed slug names none. */
+export function classOfSlug(slug: string): string | undefined {
+  if (!/^[a-z]+(-[A-Za-z0-9_]+)?$/.test(slug)) return undefined;
+  return slug.replace("-", ":");
+}
+
+/**
+ * Raises each class to the highest generation its authority directories name (review of Task 7:
+ * a bump the store lost while a process of it wrote `pluginData` must not make the start's sweep
+ * keep the retired generation's data and remove the live one's). Run before `sweepAuthData`.
+ */
+export function raiseFromAuthData(serverData: string, gens: AuthorityGenerations): void {
+  const highest = new Map<string, number>();
+  removeAuthData(serverData, (key) => {
+    const a = parseAuthorityKey(key);
+    if (a !== undefined && a.generation > (highest.get(a.slug) ?? -1)) highest.set(a.slug, a.generation);
+    return false;
+  });
+  for (const [slug, n] of highest) {
+    const cls = classOfSlug(slug);
+    if (cls !== undefined) gens.raise(cls, n);
+  }
+}
+
 /** At start: authority directories of a generation that is not their class's now, or unreadable. */
 export function sweepAuthData(serverData: string, gens: AuthorityGenerations): number {
   const now = gens.bySlug();

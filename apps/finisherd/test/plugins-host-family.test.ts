@@ -481,11 +481,13 @@ describe("the plugin family's configuration", () => {
     }
   });
 
-  test("a warm spawn's temp is its tagged key's", () => {
+  test("a warm spawn's temp is its tagged key's, without a confined pool's `<project>/` prefix", () => {
     const sd = tempData();
     placeProbe(sd, "1.0.0");
     const p = pluginProgram(deps(sd), job(PERSON, "p1"), "p1/tagged-key");
-    expect("path" in p && p.process?.env.TMPDIR).toBe(keyTmpDir(sd, "p1/tagged-key"));
+    expect("path" in p && p.process?.env.TMPDIR).toBe(keyTmpDir(sd, "tagged-key"));
+    const q = pluginProgram(deps(sd), job(PERSON, "p1"), "@x/y@1.0.0|p1|person.k.0");
+    expect("path" in q && q.process?.env.TMPDIR).toBe(keyTmpDir(sd, "@x/y@1.0.0|p1|person.k.0"));
   });
 
   test("slots_up_to_16_for_plugin_family; the overrun stays at 2 per family", () => {

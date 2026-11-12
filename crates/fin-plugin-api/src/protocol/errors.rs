@@ -44,6 +44,9 @@ pub mod codes {
     /// A malformed message or call (the process is not killed for a call).
     pub const PLUGIN_PROTOCOL: &str = "PLUGIN_PROTOCOL";
     pub const PLUGIN_PERMISSION_DENIED: &str = "PLUGIN_PERMISSION_DENIED";
+    /// The process serves an authority whose policy generation moved on (`{retryable: true}`):
+    /// the caller runs the command again under the current authority.
+    pub const PLUGIN_AUTHORITY_RETIRED: &str = "PLUGIN_AUTHORITY_RETIRED";
     pub const EGRESS_DENIED: &str = "EGRESS_DENIED";
     pub const EGRESS_NOT_HTTPS: &str = "EGRESS_NOT_HTTPS";
     pub const EGRESS_PRIVATE_ADDRESS: &str = "EGRESS_PRIVATE_ADDRESS";
