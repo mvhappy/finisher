@@ -20,7 +20,7 @@ import type { CommittedTx, MergeReport, ReviewPlan } from "@finisher/core-types"
 import { blake3Hex } from "@finisher/fin-node";
 import { Effect } from "effect";
 import { finError } from "../errors.ts";
-import { type Caller, openOrigins, principalKey, reviewClosed, sync, wrongKind, type ReviewWorkflow } from "./workflow.ts";
+import { type Caller, principalKey, reviewClosed, sync, wrongKind, type ReviewWorkflow } from "./workflow.ts";
 
 export interface ReviewMergeReq {
   readonly itemId: string;
@@ -34,6 +34,8 @@ export interface ReviewMerged {
   readonly item: ReviewItem;
   readonly merge: MergeReport;
   readonly targetMoved: boolean;
+  /** The source was archived (an agent's branch with nothing left to merge). */
+  readonly archived: boolean;
 }
 
 /** The prefixes of a credential's author (`authorOf`): an agent's branch is archived once merged. */
@@ -86,17 +88,31 @@ function engineMerge(w: ReviewWorkflow, c: Caller, item: ReviewItem, include: Re
   );
 }
 
-/** Archives an agent's source branch once nothing of it is left to merge into the target; never fails the merge. */
-function archiveIfFinished(w: ReviewWorkflow, c: Caller, item: ReviewItem, idemKey: string): Effect.Effect<void> {
+/**
+ * Archives an agent's source branch once nothing is left to merge into the target (no entry of a
+ * fresh plan `willMerge|dependsOnSkipped|conflict`, on the source or an ancestor); whether it
+ * did. Never fails the merge: a refused archive (a branch-limited reviewer's guard) is `false`.
+ */
+function archiveIfFinished(w: ReviewWorkflow, c: Caller, item: ReviewItem, idemKey: string): Effect.Effect<boolean> {
   const self = Effect.gen(function* () {
     const source = (yield* w.engine.branches(item.projectId)).find((b) => b.id === item.source);
-    if (source === undefined || source.state === "archived" || !CREDENTIAL_AUTHOR.test(source.createdBy)) return;
+    if (source === undefined || !CREDENTIAL_AUTHOR.test(source.createdBy)) return false;
+    if (source.state === "archived") return true;
     const plan: ReviewPlan = yield* w.planner.now(item.projectId, item.source!, item.target!);
-    if (plan.truncated || plan.entries.some((e) => e.branch === item.source && LEFT.has(e.status))) return;
+    if (plan.truncated || plan.entries.some((e) => LEFT.has(e.status))) return false;
     yield* w.engine.write(item.projectId, "branchSet", { projectId: item.projectId, txId: `${idemKey}.archive`, author: c.author, branch: source.id, archived: true }, c.meta);
+    return true;
   });
-  return Effect.ignore(self);
+  return Effect.orElseSucceed(self, () => false);
 }
+
+const undecided = (item: ReviewItem, pending: number, reason?: string) =>
+  finError(
+    "REVIEW_UNDECIDED",
+    reason === undefined ? `${pending} transaction(s) of the review are undecided` : "no transaction of the review is accepted",
+    { itemId: item.id, pending, ...(reason === undefined ? {} : { reason }) },
+    "Accept or reject the transactions the review lists, then merge.",
+  );
 
 /** `review.merge` (Decision 14). */
 export function mergeReview(w: ReviewWorkflow, c: Caller, req: ReviewMergeReq): Effect.Effect<ReviewMerged, FinError> {
@@ -104,23 +120,34 @@ export function mergeReview(w: ReviewWorkflow, c: Caller, req: ReviewMergeReq): 
     const item = yield* w.item(req.itemId);
     if (item.kind !== "branchReview") return yield* Effect.fail(wrongKind(item));
     if (item.state === "merged" && item.mergeId === req.idemKey) {
-      // A retry: fin-store answers the merge from the log (an empty include copies nothing new).
+      // A retry: fin-store answers the merge from the log (an empty include copies nothing new);
+      // an archive the first call did not get to is made now.
       const report = yield* engineMerge(w, c, item, [], req.idemKey);
-      return { item, merge: report, targetMoved: yield* targetMoved(w, item, report) };
+      return { item, merge: report, targetMoved: yield* targetMoved(w, item, report), archived: yield* archiveIfFinished(w, c, item, req.idemKey) };
     }
     if (item.state !== "open" && item.state !== "changesRequested") return yield* Effect.fail(reviewClosed(item));
     yield* w.checkExpect(item, req.expect);
-    const { plan } = yield* w.planner.atSnapshot(item);
-    const decisions = w.store.decisions(item.id);
-    const origins = openOrigins(plan);
-    const pending = origins.filter((o) => !decisions.has(o));
-    if (w.store.policy(item.projectId).requireReview && pending.length > 0) {
+    const { plan, approximate } = yield* w.planner.atSnapshot(item);
+    // After a restart or an eviction the snapshot's own list is gone; when the source moved, the
+    // list made now may hold records the snapshot never had, which pending must never take (S3).
+    if (req.acceptPending === true && approximate) {
       return yield* Effect.fail(
-        finError("REVIEW_UNDECIDED", `${pending.length} transaction(s) of the review are undecided`, { itemId: item.id, pending: pending.length }, "Accept or reject every transaction the review lists, then merge."),
+        finError("REVIEW_STALE", "the review's change list must be planned again before pending transactions are merged", { itemId: item.id, reason: "replan" }, "Refresh the review, check what it lists, then merge."),
       );
     }
-    const accepted = origins.filter((o) => decisions.get(o)?.decision === "accept");
+    // What the review lists (not on the target at the snapshot), and where each stands now: a
+    // drop or undrop since the snapshot does not change the cached list (B1).
+    const listed = [...new Set(plan.entries.filter((e) => e.status !== "alreadyPresent").map((e) => e.origin))];
+    const status = yield* w.planner.statusNow(item);
+    const live = listed.filter((o) => status.get(o) === "open");
+    const decisions = w.store.decisions(item.id);
+    const pending = live.filter((o) => !decisions.has(o));
+    if (w.store.policy(item.projectId).requireReview && pending.length > 0) return yield* Effect.fail(undecided(item, pending.length));
+    // Accepted ones go in whatever their state: a real drop is fin-store's `DROPPED`.
+    const accepted = listed.filter((o) => decisions.get(o)?.decision === "accept");
     const include = [...accepted, ...(req.acceptPending === true ? pending : [])].sort();
+    // Nothing accepted while the review still lists open transactions: not a merge (S2).
+    if (include.length === 0 && live.length > 0) return yield* Effect.fail(undecided(item, pending.length, "nothingAccepted"));
     const report = yield* engineMerge(w, c, item, include, req.idemKey);
     const by = principalKey(c.principal);
     const merged = yield* sync(() => w.store.setState(item.id, "merged", by, { mergeId: report.mergeId }));
@@ -135,7 +162,6 @@ export function mergeReview(w: ReviewWorkflow, c: Caller, req: ReviewMergeReq): 
     }
     w.emit(c, merged, "merged", report.merged, "accepted");
     const moved = yield* targetMoved(w, item, report);
-    yield* archiveIfFinished(w, c, item, req.idemKey);
-    return { item: merged, merge: report, targetMoved: moved };
+    return { item: merged, merge: report, targetMoved: moved, archived: yield* archiveIfFinished(w, c, item, req.idemKey) };
   });
 }
