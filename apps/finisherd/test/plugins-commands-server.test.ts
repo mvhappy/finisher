@@ -4,7 +4,7 @@
 // writing its rows into the running server's `control.db` (the registry reads them on each
 // ask), as `@test/probe` (a registry plugin) and `@dev/probe` (a developer plugin, Decision 19).
 // Then a `local` client and an agent session's credential run its commands.
-import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -59,7 +59,8 @@ async function installProbe(id: string, source: "registry" | "dev"): Promise<voi
   const control = openControlStore(sd, { serverId: serverIdentity(sd).id, checkpoint: false });
   try {
     const tables = new PluginTables(control);
-    tables.addPlugin({ id, version: "1.0.0", source, treeHash: "t", dir: rel, kind: "code", enabled: true, state: "active", installedBy: "console:console", installedAt: 0 });
+    // A developer plugin runs from its own folder: its `dir` is that folder's real path (Task 11).
+    tables.addPlugin({ id, version: "1.0.0", source, treeHash: "t", dir: source === "dev" ? realpathSync(full) : rel, kind: "code", enabled: true, state: "active", installedBy: "console:console", installedAt: 0 });
     tables.setGrants(id, "1.0.0", [JSON.stringify({ perm: "project:read" }), JSON.stringify({ perm: "project:write" })], "console:console", 0);
   } finally {
     await control.close();
