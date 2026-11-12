@@ -37,6 +37,11 @@ export interface PolicyInput {
   readonly projectIds?: ReadonlyArray<string>;
   /** The call's headers (`fin-actor-call`: the `FIN_CALL` a grant is consumed for). */
   readonly headers?: unknown;
+  /**
+   * What only the host knows of a `tx.commit` the plugin host makes for a command run (sp8b
+   * Task 9's channel, never a payload's): the plugin and command, and whether it is a dry run.
+   */
+  readonly host?: { readonly via: { readonly plugin: string; readonly command: string }; readonly dryRun: boolean };
 }
 
 /** A rule's answer; `undefined`: no opinion. A `deny` or `ask` ends the stage. */

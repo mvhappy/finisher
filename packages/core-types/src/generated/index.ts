@@ -4993,6 +4993,12 @@ export interface CommandRun {
   command: string;
   project: string;
   rev: number;
+  /**
+   * The host's handle on the snapshot it read for this run at submit (opaque to plugins):
+   * every page the run reads comes from that snapshot, of this run only, so a rewind or
+   * rebuild that reaches `rev` again in a newer history is never served from an older one.
+   */
+  snapshot?: string | null;
 }
 /**
  * One op that cannot be carried to the head: which op of which tx, why (a reason code), the

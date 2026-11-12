@@ -70,12 +70,10 @@ export function pinOf(s: { readonly rev: number; readonly project: unknown; read
   return { rev: s.rev, ...(s.generation === undefined ? {} : { generation: s.generation }), json, bytes: Buffer.from(json, "utf8") };
 }
 
-const heldKey = (project: string, branch: string, rev: number): string => `${project}\u0000${branch}\u0000${rev}`;
-
-/** A command job's `rev` (its `CommandRun.rev`), when its params carry one. */
-function revOfJob(job: JobView): number | undefined {
-  const r = (job.params as { rev?: unknown } | null)?.rev;
-  return typeof r === "number" ? r : undefined;
+/** A command job's held snapshot (its `CommandRun.snapshot`), when its params name one. */
+function heldOfJob(job: JobView): string | undefined {
+  const s = (job.params as { snapshot?: unknown } | null)?.snapshot;
+  return typeof s === "string" ? s : undefined;
 }
 
 export function retired(): FinError {
@@ -89,6 +87,12 @@ export function retired(): FinError {
 
 function protocolError(method: string, error: string): FinError {
   return finError("PLUGIN_PROTOCOL", `the ${method} call's params do not decode: ${error}`, { method, error });
+}
+
+/** A command job's `rev` (its `CommandRun.rev`), when its params carry one. */
+function revOfParams(job: JobView): number | undefined {
+  const r = (job.params as { rev?: unknown } | null)?.rev;
+  return typeof r === "number" ? r : undefined;
 }
 
 /** The branch a call of `job` reads: its command's `branch` (Task 9's `CommandRun`). */
@@ -117,16 +121,19 @@ export function makeHostCalls(h: HostCallsDeps) {
   /** Each job's pinned snapshot, released when the job ends (`release`). */
   const pins = new Map<string, Promise<Pinned>>();
   /**
-   * Snapshots a command run read when it was submitted (Task 9, `hold`), by project, branch
-   * and rev, with how many runs hold each: a job of that `CommandRun` reads exactly it.
+   * Snapshots a command run read when it was submitted (Task 9, `hold`), one per run, by the
+   * handle its `CommandRun.snapshot` names: a job of that run reads exactly it, and no other
+   * run's (a rewind or rebuild can reach the same rev in a newer history generation).
    */
-  const held = new Map<string, { pin: Pinned; count: number }>();
+  const held = new Map<string, { project: string; branch: string; pin: Pinned }>();
+  let holds = 0;
 
   const pinned = (deps: CallDeps, job: JobView, project: string, branch: string): Effect.Effect<Pinned, FinError> =>
     Effect.suspend(() => {
       let p = pins.get(job.id);
-      const rev = revOfJob(job);
-      const seeded = rev === undefined ? undefined : held.get(heldKey(project, branch, rev));
+      const handle = heldOfJob(job);
+      const h = handle === undefined ? undefined : held.get(handle);
+      const seeded = h !== undefined && h.project === project && h.branch === branch && h.pin.rev === revOfParams(job) ? h : undefined;
       if (p === undefined && seeded !== undefined) {
         p = Promise.resolve(seeded.pin);
         pins.set(job.id, p);
@@ -211,22 +218,14 @@ export function makeHostCalls(h: HostCallsDeps) {
   return {
     onCall,
     /**
-     * Holds `pin` (`project`'s `branch` read when a command was submitted, Task 9) until the
-     * returned release: a job whose `CommandRun` names that project, branch and rev reads it,
-     * so the rev a command commits from is every page's rev.
+     * Holds `pin` (`project`'s `branch` read when a command was submitted, Task 9) until
+     * `release`: a job whose `CommandRun.snapshot` is `id` (and whose project, branch and rev
+     * are the pin's) reads it, so the rev and history a command commits from are every page's.
      */
-    hold(project: string, branch: string, pin: Pinned): () => void {
-      const k = heldKey(project, branch, pin.rev);
-      const h = held.get(k);
-      if (h === undefined) held.set(k, { pin, count: 1 });
-      else h.count++;
-      let done = false;
-      return () => {
-        if (done) return;
-        done = true;
-        const now = held.get(k);
-        if (now !== undefined && --now.count <= 0) held.delete(k);
-      };
+    hold(project: string, branch: string, pin: Pinned): { readonly id: string; readonly release: () => void } {
+      const id = `s${++holds}`;
+      held.set(id, { project, branch, pin });
+      return { id, release: () => void held.delete(id) };
     },
     /** How many submitted snapshots are held (tests). */
     heldSnapshots: (): number => held.size,

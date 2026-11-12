@@ -15,6 +15,11 @@ pub struct CommandRun {
     pub project: String,
     pub branch: String,
     pub rev: u64,
+    /// The host's handle on the snapshot it read for this run at submit (opaque to plugins):
+    /// every page the run reads comes from that snapshot, of this run only, so a rewind or
+    /// rebuild that reaches `rev` again in a newer history is never served from an older one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub snapshot: Option<String>,
 }
 
 /// What a command returns, at most one envelope line (1 MiB). `tx` is committed by the host

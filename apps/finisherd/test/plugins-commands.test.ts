@@ -12,7 +12,7 @@ import { fileURLToPath } from "node:url";
 import type { FinError, JobView, Principal } from "@finisher/contracts";
 import { defaultScopes } from "@finisher/contracts";
 import type { CommittedTx, PluginCommandList, PluginCommandRunResult } from "@finisher/core-types";
-import { Effect, Exit, Layer, Scope } from "effect";
+import { Effect, Exit, Fiber, Layer, Scope } from "effect";
 import { afterEach, describe, expect, test } from "vitest";
 import { commandsOf } from "../src/agent/command-of.ts";
 import { chainOf, withChain, writeGuardOf } from "../src/chain/chain.ts";
@@ -78,6 +78,8 @@ interface Rig {
   /** Binds `p` to the rig's connection (the live invoker the chain reads). */
   as(p: Principal): void;
   call<A>(tag: string, payload: unknown): Promise<Exit.Exit<A, FinError>>;
+  /** `call`, as a fiber the test can interrupt (the caller going away). */
+  fork(tag: string, payload: unknown): Fiber.Fiber<unknown, FinError>;
   /** `plugin.command.run` of `command` with the probe's `command` op. */
   runCommand(command: string, a: Record<string, unknown>, more?: Record<string, unknown>): Promise<Exit.Exit<PluginCommandRunResult, FinError>>;
   head(): Promise<number>;
@@ -176,6 +178,7 @@ async function rig(opts: { grants?: ReadonlyArray<object>; commands?: ReadonlyAr
       connections.get(1)!.principal = p;
     },
     call,
+    fork: (tag, payload) => Effect.runFork(chained[tag]!(payload, { client: { id: 1 }, headers: {} })),
     runCommand: (command, a, more = {}) => call<PluginCommandRunResult>("plugin.command.run", { projectId, name: `plugin:${ID}/${command}`, args: { op: "command", ...a }, ...more }),
     head: async () => (await Effect.runPromise(projects.snapshot(projectId, "main"))).rev,
     commit: (t) => Effect.runPromise(projects.commit(projectId, t)),
@@ -300,6 +303,8 @@ describe("plugin commands", () => {
     expect(errorOf(await r.runCommand("edit", { out: '{"nonsense":true}' }))?.code).toBe("PLUGIN_PROTOCOL");
     expect(await r.head()).toBe(head);
     expect(r.runs.map((x) => x.code)).toEqual(["PLUGIN_TX_INVALID", "PLUGIN_PROTOCOL", "PLUGIN_PROTOCOL"]);
+    // A failed run lets its snapshot go.
+    expect(r.host.calls.heldSnapshots()).toBe(0);
   });
 
   test("args_validated_before_job", async () => {
@@ -333,6 +338,7 @@ describe("plugin commands", () => {
     expect(Date.now() - t0).toBeLessThan(4500);
     for (let i = 0; i < 200 && jobsOf(r).some((j) => j.state === "running"); i++) await new Promise((x) => setTimeout(x, 25));
     expect(jobsOf(r)[0]?.state).toBe("cancelled");
+    expect(r.host.calls.heldSnapshots()).toBe(0);
     // The job's own ceiling is the manifest maximum (the RPC cancels at the command's).
     expect(r.engine.kinds.kind("plugin.command")).toMatchObject({ timeoutS: 60, maxAttempts: 1, warm: true, defaultPriority: "interactive" });
   });
@@ -365,4 +371,56 @@ describe("plugin commands", () => {
     expect(value(await r.call<PluginCommandList>("plugin.commands", {})).commands).toEqual([]);
     expect(errorOf(await r.runCommand("look", { out: txOut([]) }))?.code).toBe("PLUGIN_NOT_FOUND");
   });
+
+  test("each_run_holds_its_own_snapshot: a rebuild between runs never serves one run the other's history", async () => {
+    const r = await rig();
+    const base = await r.head();
+    const first = r.runCommand("edit", { waitFor: "go", read: true, out: txOut([insert(5, 5)]) });
+    const running = await until(() => jobsOf(r).find((j) => j.state === "running"));
+    // A rebuild: the same rev in a new history generation.
+    await Effect.runPromise(r.projects.rebuild(r.projectId));
+    expect(await r.head()).toBe(base);
+    const second = r.runCommand("edit", { read: true, out: txOut([insert(10, 5)]) });
+    const queued = await until(() => jobsOf(r).find((j) => j.id !== running.id));
+    // Two runs of the same project, branch and rev hold two snapshots, each named by its own job.
+    expect(r.host.calls.heldSnapshots()).toBe(2);
+    const handle = (j: JobView) => (j.params as { snapshot?: string; rev: number }).snapshot;
+    expect(handle(running)).toBeTypeOf("string");
+    expect(handle(queued)).toBeTypeOf("string");
+    expect(handle(queued)).not.toBe(handle(running));
+    expect((queued.params as { rev: number }).rev).toBe(base);
+    writeFileSync(join(keyTmpDir(r.serverData, r.host.warmKeyOf(running)), "go"), "");
+    // The first read its snapshot before the rebuild: its commit is refused; the second's lands.
+    expect(errorOf(await first)?.code).toBe("HISTORY_REWOUND");
+    expect(value(await second)).toMatchObject({ outcome: "accepted", rev: base + 1 });
+    expect(r.host.calls.heldSnapshots()).toBe(0);
+  });
+
+  test("caller_gone_cancels_the_job: an interrupted run cancels its job and lets its snapshot go", async () => {
+    const r = await rig();
+    const fiber = r.fork("plugin.command.run", { projectId: r.projectId, name: `plugin:${ID}/edit`, args: { op: "command", waitFor: "never", out: txOut([]) } });
+    const job = await until(() => jobsOf(r).find((j) => j.state === "running"));
+    expect(r.host.calls.heldSnapshots()).toBe(1);
+    await Effect.runPromise(Fiber.interrupt(fiber));
+    await until(() => (jobsOf(r).find((j) => j.id === job.id)?.state === "cancelled" ? true : undefined));
+    expect(r.host.calls.heldSnapshots()).toBe(0);
+  });
+
+  test("command_rights_carry_a_net_grant", async () => {
+    const net = { perm: "net", origins: ["https://api.example.org"] };
+    const r = await rig({ grants: [...GRANTS, net] });
+    value(await r.runCommand("look", { out: '{"kind":"data","value":null}' }));
+    const rights = jobsOf(r)[0]!.rights as { grants: unknown[] };
+    expect(rights.grants).toContainEqual(net);
+  });
 });
+
+/** Polls `f` until it answers something (5 s at most). */
+async function until<A>(f: () => A | undefined): Promise<A> {
+  for (let i = 0; i < 200; i++) {
+    const got = f();
+    if (got !== undefined) return got;
+    await new Promise((x) => setTimeout(x, 25));
+  }
+  throw new Error("timed out waiting");
+}

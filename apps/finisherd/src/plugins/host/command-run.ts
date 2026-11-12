@@ -8,7 +8,8 @@
 //    the plugin actually saw (never applied twice);
 // 3. a `plugin.command` job owned by the invoker, `via` the plugin, with invoker ∩ grants as its
 //    rights, runs on the key's warm process; the run is cancelled at the command's own
-//    timeout (`PLUGIN_TIMEOUT`) or when the caller goes away;
+//    timeout (`PLUGIN_TIMEOUT`; counted from the submit, so time queued for a process counts)
+//    or when the caller goes away;
 // 4. `CommandOut::Data` is answered as is; `CommandOut::Tx` (only from a command whose manifest
 //    says `writes`, and only with the `project:write` grant) is built as `Tx {baseRev, via,
 //    author: the invoker}`, checked by fin-core against the held snapshot
@@ -20,7 +21,7 @@
 import { FinError, type JobView, type Principal } from "@finisher/contracts";
 import type { CommandRun, CommittedTx, PluginCommandRunRequest, PluginCommandRunResult } from "@finisher/core-types";
 import { pluginCommandOutcome } from "@finisher/fin-node";
-import { Effect } from "effect";
+import { Effect, Exit } from "effect";
 import { ulid } from "../../control/ulid.ts";
 import { finError } from "../../errors.ts";
 import type { JobEngine } from "../../jobs/api.ts";
@@ -78,33 +79,39 @@ function txInvalid(name: string, problems: ReadonlyArray<unknown>): FinError {
   return finError("PLUGIN_TX_INVALID", `the transaction ${name} returned is not valid`, { name, problems }, "The plugin proposed a change Finisher refuses: report it to the plugin's publisher.");
 }
 
+const readOnly = (name: string): FinError =>
+  txInvalid(name, [{ code: "PLUGIN_TX_INVALID", message: "the command's manifest does not say it writes", details: { reason: "readOnlyCommand" } }]);
+
 const asError = (e: { code: string; message: string; details?: unknown; fix?: string }): FinError =>
   new FinError({ code: e.code, message: e.message, details: e.details ?? {}, ...(e.fix === undefined ? {} : { fix: e.fix }) });
 
 export function makeCommandRun(d: CommandRunDeps) {
   const clock = d.clock ?? Date.now;
 
-  /** Runs the job and answers its result (`CommandOut` as the plugin sent it). */
+  /**
+   * Runs the job and answers its result (`CommandOut` as the plugin sent it). The job is
+   * cancelled unless it ended: at the command's timeout (`PLUGIN_TIMEOUT`), on any failure of
+   * the wait, and when the caller goes away (an interrupt, even right after the submit).
+   */
   const runJob = (principal: Principal, entry: CommandEntry, params: CommandRun, rights: JobRights): Effect.Effect<unknown, FinError> =>
-    Effect.gen(function* () {
-      const job = yield* d.engine.submit(
+    Effect.acquireUseRelease(
+      d.engine.submit(
         { kind: principal.kind as JobView["owner"]["kind"], id: principal.id },
         { kind: COMMAND_KIND, params, project: params.project, via: { plugin: entry.info.plugin }, rights, priority: "interactive", maxAttempts: 1 },
-      );
-      const cancel = Effect.ignore(d.engine.cancel(job.id));
-      const ended = yield* d.engine.wait([job.id], { timeoutMs: entry.info.timeoutS * 1000 }).pipe(
-        Effect.catchIf(
-          (e) => e.code === "WAIT_TIMEOUT",
-          () => Effect.andThen(cancel, Effect.fail(commandTimeout(entry))),
-        ),
-        Effect.onInterrupt(() => cancel),
-      );
-      const done = ended[0];
-      if (done === undefined) return yield* Effect.fail(finError("INTERNAL", "the command's job vanished", { job: job.id }));
-      if (done.state === "succeeded") return done.result;
-      if (done.error !== undefined) return yield* Effect.fail(asError(done.error));
-      return yield* Effect.fail(finError("JOB_CANCELLED", `${entry.info.name} was cancelled`, { name: entry.info.name, job: job.id }));
-    });
+      ),
+      (job) =>
+        Effect.gen(function* () {
+          const ended = yield* d.engine
+            .wait([job.id], { timeoutMs: entry.info.timeoutS * 1000 })
+            .pipe(Effect.catchIf((e) => e.code === "WAIT_TIMEOUT", () => Effect.fail(commandTimeout(entry))));
+          const done = ended[0];
+          if (done === undefined) return yield* Effect.fail(finError("INTERNAL", "the command's job vanished", { job: job.id }));
+          if (done.state === "succeeded") return done.result;
+          if (done.error !== undefined) return yield* Effect.fail(asError(done.error));
+          return yield* Effect.fail(finError("JOB_CANCELLED", `${entry.info.name} was cancelled`, { name: entry.info.name, job: job.id }));
+        }),
+      (job, exit) => (Exit.isSuccess(exit) ? Effect.void : Effect.ignore(d.engine.cancel(job.id))),
+    );
 
   const run = (principal: Principal, req: PluginCommandRunRequest): Effect.Effect<PluginCommandRunResult, FinError> => {
     const started = clock();
@@ -126,11 +133,13 @@ export function makeCommandRun(d: CommandRunDeps) {
       const branch = yield* d.projects.resolveBranch(req.projectId, req.branch ?? "main");
       const snap = yield* d.projects.snapshot(req.projectId, branch);
       const pin = pinOf(snap);
-      const release = d.host.calls.hold(req.projectId, branch, pin);
-      return yield* Effect.ensuring(
-        Effect.gen(function* () {
-          const params: CommandRun = { command: e.info.command, args, project: req.projectId, branch, rev: pin.rev };
+      return yield* Effect.acquireUseRelease(
+        Effect.sync(() => d.host.calls.hold(req.projectId, branch, pin)),
+        (held) => Effect.gen(function* () {
+          const params: CommandRun = { command: e.info.command, args, project: req.projectId, branch, rev: pin.rev, snapshot: held.id };
           const out = yield* runJob(principal, e, params, rights);
+          // A read-only command's transaction is refused before fin-core applies anything.
+          if (!e.info.writes && (out as { kind?: unknown } | null)?.kind === "tx") return yield* Effect.fail(readOnly(e.info.name));
           const via = { plugin: e.info.plugin, command: e.info.command };
           const checkedOut = pluginCommandOutcome(pin.json, out, { txId: ulid(clock()), author: d.authorOf(principal), branch, baseRev: pin.rev, via });
           if (!checkedOut.ok) {
@@ -138,7 +147,7 @@ export function makeCommandRun(d: CommandRunDeps) {
             return yield* Effect.fail(txInvalid(e.info.name, [checkedOut.invalid]));
           }
           if (checkedOut.kind === "data") return { outcome: "data", data: checkedOut.value as PluginCommandRunResult["data"] & {} } satisfies PluginCommandRunResult;
-          if (!e.info.writes) return yield* Effect.fail(txInvalid(e.info.name, [{ code: "PLUGIN_TX_INVALID", message: "the command's manifest does not say it writes", details: { reason: "readOnlyCommand" } }]));
+          if (!e.info.writes) return yield* Effect.fail(readOnly(e.info.name));
           const denied = requirePermission(rights, "project:write");
           if (denied !== undefined) return yield* Effect.fail(denied);
           const ops = checkedOut.tx.ops;
@@ -154,7 +163,7 @@ export function makeCommandRun(d: CommandRunDeps) {
           if ("dryRun" in c) return { outcome: "data", dryRun: true, rev: pin.rev, ops } satisfies PluginCommandRunResult;
           return { outcome: c.rev === pin.rev + 1 ? "accepted" : "rebased", txId: c.tx.txId, rev: c.rev } satisfies PluginCommandRunResult;
         }),
-        Effect.sync(release),
+        (held) => Effect.sync(held.release),
       );
     });
     const report = (outcome: CommandRunEvent["outcome"], code?: string) =>

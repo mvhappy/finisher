@@ -3,6 +3,9 @@
 //! screenplay as `fin view` (fin-core's `view`), offline (no font file states). Task 9 adds a
 //! command's argument check and the check of what a command returned.
 
+// napi registers the export; a `cargo test` build has no caller.
+#![cfg_attr(test, allow(dead_code))]
+
 use fin_core::{CoreError, MemIds, Project, SCHEMA_VERSION, Tx, Via, apply_tx};
 use fin_plugin_api::protocol::calls::{decode_params, reserved_method};
 use fin_plugin_api::protocol::{CommandOut, HostMethod};
