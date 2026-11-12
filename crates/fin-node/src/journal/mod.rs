@@ -30,7 +30,6 @@ use serde_json::{Value, json};
 
 pub(crate) mod ctx;
 mod hook;
-mod plugin_ref;
 
 use ctx::{RawCtx, ctx_of};
 pub(crate) use hook::install_panic_hook;
@@ -560,7 +559,9 @@ pub fn validate_privacy(privacy_json: String) -> Option<String> {
     None
 }
 
-// After `JournalHandle`: napi expands an `impl` only once it has seen the struct.
+// After `JournalHandle`: napi expands an `impl` only once it has seen the struct (declared
+// before it, the impl's class is named `JournalHandle`, not `Journal`, in some builds).
+mod plugin_ref;
 #[cfg(feature = "test-hooks")]
 mod test_api;
 mod traces;
