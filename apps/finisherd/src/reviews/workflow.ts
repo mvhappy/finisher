@@ -319,8 +319,13 @@ export class ReviewWorkflow {
       }
       const current = self.store.decisions(item.id);
       const all = [...wanted.values()];
-      const drops = all.filter((d) => d.decision === "reject" && current.get(d.txId)?.decision !== "reject").map((d) => d.txId);
-      const undrops = all.filter((d) => d.decision !== "reject" && current.get(d.txId)?.decision === "reject").map((d) => d.txId);
+      // Drops as they are now, not as the snapshot's list says (review of Task 7, B1 and S1): a
+      // rejection drops what is not dropped; an accept undrops what is (whoever dropped it); a
+      // pending takes back only the review's own rejection; nothing undrops what is not dropped.
+      const status = all.length === 0 ? new Map<string, string>() : yield* self.planner.statusNow(item);
+      const dropped = (id: string) => status.get(id) === "dropped";
+      const drops = all.filter((d) => d.decision === "reject" && status.get(d.txId) === "open").map((d) => d.txId);
+      const undrops = all.filter((d) => dropped(d.txId) && (d.decision === "accept" || (d.decision === "pending" && current.get(d.txId)?.decision === "reject"))).map((d) => d.txId);
       const written = yield* self.writeDrops(c, item, drops, undrops);
       const by = principalKey(c.principal);
       if (all.length > 0) yield* sync(() => self.store.setDecisions(item.id, all, by));

@@ -7,10 +7,15 @@ import { join } from "node:path";
 import type { CredentialFile, ReviewItem, ReviewView, Snapshot } from "@finisher/contracts";
 import type { BranchView, CommittedTx, MergeReport, ReviewPlan } from "@finisher/core-types";
 import { Effect, Fiber } from "effect";
-import { afterEach, beforeEach, describe, expect, test } from "vitest";
+import { afterEach, beforeEach, describe, expect, onTestFinished, test } from "vitest";
 import { b64u, canonicalEndpoint, proveMac } from "../src/auth/crypto.ts";
+import { openControlStore } from "../src/control/db.ts";
 import { serve, StderrLogger } from "../src/main.ts";
+import { LOCAL } from "../src/principal.ts";
+import { mergeReview } from "../src/reviews/merge.ts";
 import { Planner, type ReviewEngine } from "../src/reviews/plan.ts";
+import { ReviewStore } from "../src/reviews/store.ts";
+import { callerOf, ReviewWorkflow } from "../src/reviews/workflow.ts";
 import { addAsset, commit, confirmed, connectProved, type Exit, hello, NdjsonClient, ok, type ServerInfo, tx } from "./support/ndjson-client.ts";
 
 let tmp: string;
@@ -308,8 +313,9 @@ describe("merge", () => {
     const item = await request(projectId, agentBranch);
     // Accepted and rejected: nothing is left to merge once it is merged.
     const decided = ok<ReviewView>(await decide(item, [["f1", "accept"], ["f2", "accept"], ["f3", "reject"]]));
-    const merged = ok<{ merge: MergeReport; targetMoved: boolean }>(await merge(decided.item, "m1"));
+    const merged = ok<{ merge: MergeReport; targetMoved: boolean; archived: boolean }>(await merge(decided.item, "m1"));
     expect(merged.targetMoved).toBe(false);
+    expect(merged.archived).toBe(true);
     expect((await branches(projectId)).find((b) => b.id === agentBranch)?.state).toBe("archived");
   });
 
@@ -318,7 +324,7 @@ describe("merge", () => {
     const agentBranch = await branch(projectId, "work", "mcp:01jc0000000000000000000mcp", ["f1", "f2"]);
     const item = await request(projectId, agentBranch);
     const decided = ok<ReviewView>(await decide(item, [["f1", "accept"]]));
-    ok(await merge(decided.item, "m1"));
+    expect(ok<{ archived: boolean }>(await merge(decided.item, "m1")).archived).toBe(false);
     expect((await branches(projectId)).find((b) => b.id === agentBranch)?.state).not.toBe("archived");
     const human = await branch(projectId, "mine", "ann", ["h1"]);
     const second = await request(projectId, human);
@@ -362,6 +368,114 @@ describe("merge", () => {
     const other = await request(projectId, "other");
     const otherDecided = ok<ReviewView>(await decide(other, [["o1", "accept"]]));
     expect(code(await merge(otherDecided.item, "m1"))).toBe("IDEM_KEY_REUSED");
+  });
+});
+
+describe("review follow-ups (Task 7 review)", () => {
+  test("B1: a rejection taken back after the source moved is merged", async () => {
+    const projectId = await project();
+    const feature = await branch(projectId, "feature", "ann", ["f1", "f2"]);
+    const item = await request(projectId, "feature");
+    const rejected = ok<ReviewView>(await decide(item, [["f1", "reject"]]));
+    expect(rejected.stale).toBe(false);
+    // The source moves, so the undrop below does not move the snapshot.
+    await commitOn(projectId, feature, "f3", [edit("f3")]);
+    const accepted = ok<ReviewView>(await decide(rejected.item, [["f1", "accept"], ["f2", "accept"]]));
+    expect(accepted.stale).toBe(true);
+    const merged = ok<{ item: ReviewItem; merge: MergeReport }>(await merge(accepted.item, "m1"));
+    expect([...merged.merge.merged].sort()).toEqual(["f1", "f2"]);
+    expect(merged.merge.notIncluded).toEqual(["f3"]);
+  });
+
+  test("B1: accepting a transaction someone else dropped undrops it", async () => {
+    const projectId = await project();
+    await branch(projectId, "feature", "ann", ["f1", "f2"]);
+    const item = await request(projectId, "feature");
+    ok(await local.call("history.drop", { projectId, txId: "x-drop", author: "ann", from: "feature", into: "main", drops: ["f1"] }));
+    const accepted = ok<ReviewView>(await decide(item, [["f1", "accept"], ["f2", "accept"]]));
+    expect((await plainMerge(projectId, "feature")).dropped).toEqual([]);
+    const merged = ok<{ merge: MergeReport }>(await merge(accepted.item, "m1"));
+    expect([...merged.merge.merged].sort()).toEqual(["f1", "f2"]);
+  });
+
+  test("S1: a rejection undropped elsewhere can still be taken back", async () => {
+    const projectId = await project();
+    await branch(projectId, "feature", "ann", ["f1", "f2"]);
+    const item = await request(projectId, "feature");
+    const rejected = ok<ReviewView>(await decide(item, [["f1", "reject"], ["f2", "reject"]]));
+    ok(await local.call("history.drop", { projectId, txId: "x-undrop", author: "ann", from: "feature", into: "main", undrops: ["f1", "f2"] }));
+    const before = await head(projectId, "main");
+    const back = ok<ReviewView>(await decide(rejected.item, [["f1", "accept"], ["f2", "pending"]]));
+    // Nothing was dropped, so nothing is undropped (no `notDropped`), and no record is written.
+    expect(await head(projectId, "main")).toBe(before);
+    expect(back.decisions.map((d) => [d.txId, d.decision])).toEqual([["f1", "accept"]]);
+    // Rejecting again drops again.
+    ok(await decide(back.item, [["f2", "reject"]]));
+    expect((await plainMerge(projectId, "feature")).dropped).toEqual(["f2"]);
+  });
+
+  test("S2: a merge with nothing accepted is REVIEW_UNDECIDED and keeps the item open", async () => {
+    const projectId = await project();
+    await branch(projectId, "feature", "ann", ["f1"]);
+    const item = await request(projectId, "feature");
+    const before = await head(projectId, "main");
+    const refused = await merge(item, "m1");
+    expect(code(refused)).toBe("REVIEW_UNDECIDED");
+    expect(refused.ok ? undefined : refused.error.details).toMatchObject({ reason: "nothingAccepted", pending: 1 });
+    expect(await head(projectId, "main")).toBe(before);
+    expect((await get(item.id)).item.state).toBe("open");
+    // Everything rejected: nothing is left open, so merging nothing is allowed.
+    const all = ok<ReviewView>(await decide(item, [["f1", "reject"]]));
+    expect(ok<{ item: ReviewItem; merge: MergeReport }>(await merge(all.item, "m1")).merge.merged).toEqual([]);
+  });
+});
+
+describe("the workflow on a fake engine", () => {
+  const snapshot = { sourceSeq: 4, sourceHash: "h1", targetSeq: 2, targetHash: "t", plannedAt: 0 };
+  const entry = (origin: string, seq: number) => ({ origin, txId: origin, branch: "s", seq, kind: "edit" as const, author: "a", opsCount: 1, committedAt: 0, status: "willMerge" as const });
+  function setup(plan: ReviewPlan, failDecisions = false) {
+    mkdirSync(join(tmp, "control"), { recursive: true, mode: 0o700 });
+    const control = openControlStore(join(tmp, "control"), { serverId: "sid-1", checkpoint: false });
+    onTestFinished(() => control.close());
+    const store = new ReviewStore(control);
+    const writes: string[] = [];
+    const engine: ReviewEngine = {
+      resolveBranch: (_, r) => Effect.succeed(r),
+      branches: () => Effect.succeed([]),
+      plan: () => Effect.succeed(plan),
+      write: (_, op) => {
+        writes.push(op);
+        return Effect.succeed({ rev: 3, tx: { txId: "d", branch: "main" }, bindings: {} });
+      },
+    };
+    if (failDecisions) {
+      store.setDecisions = () => {
+        throw new Error("control.db is gone");
+      };
+    }
+    const w = new ReviewWorkflow({ store, engine });
+    const item = store.open({ projectId: "p", kind: "branchReview", source: "s", target: "main", snapshot, title: "t", requestedBy: { principal: "local:local" } });
+    return { w, item, writes, caller: callerOf(LOCAL, { actor: { kind: "user" }, guard: { denyBranches: [] } }, "pipe") };
+  }
+
+  test("S3: after a cold cache and a source rewound below the snapshot's seq, acceptPending is REVIEW_STALE", async () => {
+    // The source now has another record at seq 4 (hash h2): the cut plan holds `r4`, never in the snapshot.
+    const plan: ReviewPlan = { source: { branch: "s", seq: 4, hash: "h2" }, target: { branch: "main", seq: 2, hash: "t" }, entries: [entry("f1", 3), entry("r4", 4)], conflicts: [], truncated: false };
+    const { w, item, writes, caller } = setup(plan);
+    const exit = await Effect.runPromiseExit(mergeReview(w, caller, { itemId: item.id, expect: snapshot, acceptPending: true, idemKey: "m1" }));
+    expect(JSON.stringify(exit)).toContain("REVIEW_STALE");
+    expect(JSON.stringify(exit)).toContain("replan");
+    expect(writes).toEqual([]);
+  });
+
+  test("N6: the drop is durable before the item changes", async () => {
+    const plan: ReviewPlan = { source: { branch: "s", seq: 4, hash: "h1" }, target: { branch: "main", seq: 2, hash: "t" }, entries: [entry("f1", 3)], conflicts: [], truncated: false };
+    const { w, item, writes, caller } = setup(plan, true);
+    const exit = await Effect.runPromiseExit(w.decide(caller, { itemId: item.id, expect: snapshot, decisions: [{ txId: "f1", decision: "reject" }] }));
+    expect(exit._tag).toBe("Failure");
+    // The drop record was written; the item's decisions, which failed after it, are not.
+    expect(writes).toEqual(["drop"]);
+    expect(w.store.decisions(item.id).size).toBe(0);
   });
 });
 

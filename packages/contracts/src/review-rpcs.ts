@@ -106,6 +106,8 @@ export const ReviewMergeSuccess = Schema.Struct({
   merge: Schema.Unknown,
   /** The target moved since the snapshot (Decision 14); the reviewed transactions were still the only ones copied. */
   targetMoved: Schema.Boolean,
+  /** The source was archived: an agent's branch with nothing left to merge into the target. */
+  archived: Schema.Boolean,
 });
 
 export const ReviewClosePayload = Schema.Struct({
