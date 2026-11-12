@@ -16,13 +16,15 @@
 //    of one job has the same `rev` (deviation: fin-node reads a branch at its head only, so the
 //    pin is the head at that first read; a command's commit rebases from its own `rev`);
 //    `project.view` renders `fin view`'s screenplay of the same snapshot, capped at
-//    `VIEW_BYTES`; `log` goes to the server log (`log.ts`); `net.*` are Task 8's.
+//    `VIEW_BYTES`; `log` goes to the server log (`log.ts`); `net.fetch` and `net.read` go to
+//    the egress broker (`egress.ts`, Task 8) with the job's approved `net` origins.
 import { FinError, type JobView } from "@finisher/contracts";
-import type { HostMethod } from "@finisher/core-types";
+import type { HostMethod, NetFetch, NetRead } from "@finisher/core-types";
 import { decodePluginCall, pluginProjectView } from "@finisher/fin-node";
 import { Effect } from "effect";
 import { finError, toFinError } from "../../errors.ts";
 import { type CallCtx, type OnCall, projectOfJob } from "../../jobs/kinds.ts";
+import type { Egress } from "./egress.ts";
 import type { PluginLog } from "./log.ts";
 import { authorizeMethod, type ReachDeps } from "./reach.ts";
 import { type LiveInvoker, narrowRights } from "./rights.ts";
@@ -48,6 +50,8 @@ export interface HostCallsDeps {
   /** The key a cold process of `jobId` was started under. */
   readonly coldKey: (jobId: string) => string | undefined;
   readonly log: PluginLog;
+  /** The egress broker (`net.fetch`, `net.read`). */
+  readonly egress: Egress;
 }
 
 interface Pinned {
@@ -146,10 +150,14 @@ export function makeHostCalls(h: HostCallsDeps) {
           const bytes = pin.bytes.subarray(page * PAGE_BYTES, (page + 1) * PAGE_BYTES);
           return { bytesB64: bytes.toString("base64"), page, pages, rev: pin.rev };
         }
-        case "net.fetch":
+        case "net.fetch": {
+          // The approved origins are the job's `net` grants (narrowing keeps grants as they are).
+          const origins = (ctx.rights?.grants ?? []).flatMap((g) => (g.perm === "net" ? g.origins : []));
+          const call = { jobId: job.id, plugin, origins };
+          return yield* Effect.tryPromise({ try: () => h.egress.fetch(call, params as unknown as NetFetch), catch: (e) => toFinError(e) });
+        }
         case "net.read":
-          // The egress broker (Task 8) answers these; until then the method is not served.
-          return yield* Effect.fail(finError("INVALID_REQUEST", `${method} is not served by this host yet`, { method, availableFrom: "8B" }));
+          return yield* Effect.try({ try: () => h.egress.read(job.id, params as unknown as NetRead), catch: (e) => toFinError(e) });
       }
     });
 
@@ -181,9 +189,10 @@ export function makeHostCalls(h: HostCallsDeps) {
 
   return {
     onCall,
-    /** `jobId` ended: its pinned snapshot goes. */
+    /** `jobId` ended: its pinned snapshot and its held response bodies go. */
     release(jobId: string): void {
       pins.delete(jobId);
+      h.egress.release(jobId);
     },
     /** How many jobs hold a pinned snapshot (tests). */
     pinnedJobs: (): number => pins.size,
