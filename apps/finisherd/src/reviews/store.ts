@@ -298,12 +298,12 @@ export class ReviewStore {
     return this.#changed(id);
   }
 
-  /** Moves the snapshot (a refresh) without changing the state. */
-  setSnapshot(id: string, snapshot: Snapshot, by: string): ReviewItem {
+  /** Moves the snapshot (a refresh) without changing the state; `details` go into the event (ids and words only). */
+  setSnapshot(id: string, snapshot: Snapshot, by: string, details: object = {}): ReviewItem {
     this.#store.tx(() => {
       this.#writable(id);
       this.#stmt("UPDATE reviews SET snapshot = ?, updatedAt = ? WHERE id = ?").run(json(snapshot), this.#clock(), id);
-      this.#event(id, "refreshed", by);
+      this.#event(id, "refreshed", by, details);
     });
     return this.#changed(id);
   }

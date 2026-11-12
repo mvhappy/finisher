@@ -15,7 +15,10 @@ export type HistoryOp =
   | "cherryPick"
   | "revert"
   | "drop"
-  | "recover";
+  | "recover"
+  // A read (5E Decision 7): the change list a merge would make now. Under the commit lock like
+  // the writes, so a review never plans against a write half made; it publishes nothing.
+  | "reviewPlan";
 
 /** An RPC payload of a history call: the project, `dryRun` and the request's own fields. */
 export interface HistoryPayload {
@@ -58,6 +61,7 @@ export function dropPayload<P extends { readonly argsHash?: string | undefined }
 }
 
 export function callEngine(engine: Engine, op: HistoryOp, payload: object, meta?: string): Promise<string> {
+  if (op === "reviewPlan") return engine.reviewPlan(requestJson(payload));
   return engine[op](requestJson(payload), meta);
 }
 

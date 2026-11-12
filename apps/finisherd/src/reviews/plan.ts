@@ -1,0 +1,149 @@
+// A branch review's change list (5E plan Decisions 7 and 9): fin-store's `ReviewPlan`, derived at
+// the item's snapshot of both heads and never stored. It is cached in memory per `(item,
+// snapshot)` (the newest `PLAN_CACHE_MAX`) and planned again on a miss.
+//
+// A plan made now matches the snapshot when both heads have the same seq and hash; otherwise the
+// item is stale. A stale item's list is the cached one, or, after a miss, the plan made now
+// without the source records above the snapshot's source seq: what the item's merge could still
+// copy (`sourceUpTo`), which is what a decision may name.
+import type { FinError, ReviewItem, Snapshot } from "@finisher/contracts";
+import type { BranchView, EntryStatus, ReviewPlan } from "@finisher/core-types";
+import { Effect } from "effect";
+import type { CallMeta } from "../diagnostics.ts";
+import type { HistoryOp, HistoryPayload } from "../history.ts";
+import type { ProjectRegistryShape } from "../projects.ts";
+
+/** Change lists kept in memory (Decision 9). */
+export const PLAN_CACHE_MAX = 64;
+
+/** What the workflow needs of the project registry: reads, the plan, and the three writes it makes. */
+export interface ReviewEngine {
+  readonly resolveBranch: (projectId: string, ref: string) => Effect.Effect<string, FinError>;
+  /** Every branch, archived ones too. */
+  readonly branches: (projectId: string) => Effect.Effect<ReadonlyArray<BranchView>, FinError>;
+  readonly plan: (projectId: string, from: string, into: string) => Effect.Effect<ReviewPlan, FinError>;
+  /** A write through the registry's one path (the commit lock, the hubs, the guard in `meta`). */
+  readonly write: (projectId: string, op: Extract<HistoryOp, "merge" | "drop" | "branchSet">, payload: HistoryPayload, meta: CallMeta) => Effect.Effect<unknown, FinError>;
+}
+
+export function registryEngine(registry: Pick<ProjectRegistryShape, "resolveBranch" | "branches" | "history">): ReviewEngine {
+  return {
+    resolveBranch: registry.resolveBranch,
+    branches: (projectId) => Effect.map(registry.branches(projectId, true), (r) => r.branches),
+    plan: (projectId, from, into) => Effect.map(registry.history(projectId, "reviewPlan", { projectId, from, into }), (r) => r as ReviewPlan),
+    write: registry.history,
+  };
+}
+
+/** Statuses of entries a merge would still have to decide about (not present, not dropped). */
+const UNDECIDABLE: ReadonlySet<EntryStatus> = new Set<EntryStatus>(["alreadyPresent", "dropped"]);
+
+/** Whether an entry is still open: neither on the target already nor dropped for it. */
+export const isOpenEntry = (e: { readonly status: EntryStatus }): boolean => !UNDECIDABLE.has(e.status);
+
+/** The snapshot a plan was made at. */
+export function snapshotOf(plan: ReviewPlan, plannedAt: number): Snapshot {
+  return {
+    sourceSeq: plan.source.seq,
+    ...(plan.source.hash == null ? {} : { sourceHash: plan.source.hash }),
+    targetSeq: plan.target.seq,
+    ...(plan.target.hash == null ? {} : { targetHash: plan.target.hash }),
+    plannedAt,
+  };
+}
+
+/** Same heads: seqs and hashes (`plannedAt` ignored), so a rewind to the same seq is caught. */
+export function sameSnapshot(a: Snapshot, b: Snapshot): boolean {
+  return a.sourceSeq === b.sourceSeq && (a.sourceHash ?? null) === (b.sourceHash ?? null) && a.targetSeq === b.targetSeq && (a.targetHash ?? null) === (b.targetHash ?? null);
+}
+
+/** The plan without the source branch's records above `sourceSeq` (the merge's `sourceUpTo`). */
+export function restrict(plan: ReviewPlan, sourceSeq: number): ReviewPlan {
+  const source = plan.source.branch;
+  return { ...plan, entries: plan.entries.filter((e) => e.branch !== source || e.seq <= sourceSeq) };
+}
+
+const keyOf = (s: Snapshot) => `${s.sourceSeq}:${s.sourceHash ?? ""}:${s.targetSeq}:${s.targetHash ?? ""}`;
+
+/** The newest `max` change lists by `(item, snapshot)`. */
+export class PlanCache {
+  readonly #max: number;
+  readonly #plans = new Map<string, ReviewPlan>();
+
+  constructor(max = PLAN_CACHE_MAX) {
+    this.#max = max;
+  }
+
+  get(itemId: string, s: Snapshot): ReviewPlan | undefined {
+    const k = `${itemId}|${keyOf(s)}`;
+    const plan = this.#plans.get(k);
+    if (plan !== undefined) {
+      this.#plans.delete(k);
+      this.#plans.set(k, plan);
+    }
+    return plan;
+  }
+
+  set(itemId: string, s: Snapshot, plan: ReviewPlan): void {
+    const k = `${itemId}|${keyOf(s)}`;
+    this.#plans.delete(k);
+    this.#plans.set(k, plan);
+    while (this.#plans.size > this.#max) this.#plans.delete(this.#plans.keys().next().value as string);
+  }
+
+  get size(): number {
+    return this.#plans.size;
+  }
+}
+
+/** Plans for review items: fresh ones, and the change list at an item's snapshot. */
+export class Planner {
+  readonly engine: ReviewEngine;
+  readonly cache: PlanCache;
+  /** Plans made (tests: a cache hit makes none). */
+  planned = 0;
+
+  constructor(engine: ReviewEngine, cache = new PlanCache()) {
+    this.engine = engine;
+    this.cache = cache;
+  }
+
+  /** A plan of `source` into `target` at their heads now. */
+  now(projectId: string, source: string, target: string): Effect.Effect<ReviewPlan, FinError> {
+    return Effect.suspend(() => {
+      this.planned++;
+      return this.engine.plan(projectId, source, target);
+    });
+  }
+
+  /** Keeps `plan` as the change list of `item` at `snapshot`. */
+  remember(itemId: string, snapshot: Snapshot, plan: ReviewPlan): void {
+    this.cache.set(itemId, snapshot, plan);
+  }
+
+  /**
+   * The change list at the item's snapshot and whether either head moved since. A cache hit
+   * compares the heads' seqs with the branch list (no plan); a miss plans now and compares seqs
+   * and hashes.
+   */
+  atSnapshot(item: ReviewItem): Effect.Effect<{ readonly plan: ReviewPlan; readonly stale: boolean }, FinError> {
+    const { snapshot, source, target } = item;
+    if (snapshot === undefined || source === undefined || target === undefined) {
+      return Effect.die(new Error(`review item ${item.id} has no snapshot to plan at`));
+    }
+    const cached = this.cache.get(item.id, snapshot);
+    if (cached !== undefined) {
+      return Effect.map(this.engine.branches(item.projectId), (branches) => {
+        const head = (id: string) => branches.find((b) => b.id === id)?.head;
+        return { plan: cached, stale: head(source) !== snapshot.sourceSeq || head(target) !== snapshot.targetSeq };
+      });
+    }
+    return Effect.map(this.now(item.projectId, source, target), (plan) => {
+      if (sameSnapshot(snapshotOf(plan, snapshot.plannedAt), snapshot)) {
+        this.remember(item.id, snapshot, plan);
+        return { plan, stale: false };
+      }
+      return { plan: restrict(plan, snapshot.sourceSeq), stale: true };
+    });
+  }
+}
