@@ -24,6 +24,8 @@
 //   root branch and the branches beneath it are that session's alone: every other session's
 //   reach (its parent's, whose subtree holds it) excludes them until it ends; reads stay open,
 //   so a parent merges a child's branch into its own.
+// - **Reviews (7B Task 11):** a session's `review.request` and `review.refresh` name a source
+//   in that reach (`BRANCH_NOT_ALLOWED` otherwise); comments and reads stay project-wide.
 // - **Rollback (7B Decision 23):** a session rolls back its own direct children only:
 //   `agent.session.rollback` naming itself, a sibling, a grandchild or another tree's session
 //   (or any session, from an `agent` credential that is no session's) is `SCOPE_DENIED`.
@@ -159,6 +161,7 @@ export class BranchReach {
     return Effect.gen({ self: this }, function* () {
       const session = this.sessionOf(principal);
       const rule = ruleOf(tag);
+      if (session !== undefined && REVIEW_SOURCE_RPCS.has(tag)) return yield* this.#reviewSource(session, projectId, tag, payload);
       if (session === undefined || (rule.writes === undefined && rule.targets === undefined)) return undefined;
       // Every writing RPC names its project, and reach kept it to the session's.
       if (projectId === undefined || projectId !== session.projectId || session.rootBranch === undefined) {
@@ -173,6 +176,22 @@ export class BranchReach {
       const outside = targets.find((t) => !sub.has(t));
       if (outside !== undefined) return yield* Effect.fail(branchNotAllowed(tag, outside));
       return [...sub];
+    });
+  }
+
+  /**
+   * A review the session asks for or refreshes (7B Task 11 review, S1): its source (the
+   * request's `source`, the item's as the `review` resolver added it) must be in the session's
+   * reach, else `BRANCH_NOT_ALLOWED`. Nothing is written, so no guard: `undefined` when it is.
+   */
+  #reviewSource(session: Session, projectId: string | undefined, tag: FinRpcTag, payload: unknown): Effect.Effect<undefined, FinError> {
+    return Effect.gen({ self: this }, function* () {
+      const source = (payload as { source?: unknown } | null)?.source;
+      if (typeof source !== "string") return undefined;
+      if (projectId === undefined || projectId !== session.projectId || session.rootBranch === undefined) return yield* Effect.fail(branchNotAllowed(tag, source));
+      const id = yield* this.#projects.resolveBranch(projectId, source);
+      const sub = yield* this.#reach(session, [id]);
+      return sub.has(id) ? undefined : yield* Effect.fail(branchNotAllowed(tag, id));
     });
   }
 
@@ -274,6 +293,13 @@ export const SESSION_REFUSED_RPCS: ReadonlySet<string> = new Set([
  * transcripts and state, and the rules, stay people's.
  */
 export const SESSION_PEOPLE_READS: ReadonlySet<string> = new Set(["agent.session.get", "agent.watch", "agent.rules.list"]);
+
+/**
+ * The review RPCs whose source branch must be in a session's reach (7B Task 11 review, S1):
+ * asking for a review and refreshing (or handing back) an item. `review.comment` and
+ * `review.get` stay project-wide: a critic comments on the item it judges, outside its reach.
+ */
+export const REVIEW_SOURCE_RPCS: ReadonlySet<string> = new Set(["review.request", "review.refresh"]);
 
 /** The RPCs a session calls on its own children only (7B Decision 16): `sessionId`, or `ids` of a wait. */
 export const CHILD_RPCS: ReadonlySet<string> = new Set(["agent.session.prompt", "agent.session.steer", "agent.session.interrupt", "agent.session.end", "agent.session.wait"]);

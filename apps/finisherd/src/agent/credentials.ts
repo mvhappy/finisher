@@ -32,6 +32,7 @@ import { finError, toFinError } from "../errors.ts";
 import type { HistoryPayload } from "../history.ts";
 import { removeSessionDir } from "./blobs.ts";
 import type { Ids } from "./clock.ts";
+import { CRITIC_ROLE } from "./outcomes.ts";
 import { sessionAuthor } from "./reach.ts";
 import type { AgentStore, NewSession, OutboxItem } from "./store.ts";
 
@@ -286,6 +287,8 @@ export interface SessionBranchOps {
   ): Effect.Effect<BranchView, FinError>;
   /** `branch.set {archived: true}` as the starter: a branch made for a session never recorded. */
   archiveBranch?(projectId: string, req: { readonly txId: string; readonly author: string; readonly branch: string }): Effect.Effect<unknown, FinError>;
+  /** Whether `branch` (an id) is the source of an open `branchReview` (7B Task 11): no critic takes it as its root. */
+  underReview?(projectId: string, branch: string): boolean;
 }
 
 /** What `registryBranchOps` needs of the project registry (`ProjectRegistry`). */
@@ -298,11 +301,18 @@ export interface BranchRegistry {
 /**
  * `SessionBranchOps` over the project registry, as the starter: `meta` is the start call's actor
  * and the chain's guard (`{...actorFor(principal, headers), guard}`), so the root branch is
- * created exactly as the starter's own `branch.create` would be. `archived`: told of each
- * archive, as `branch.set`'s handler tells 5E's review workflow (its conflict items, 7B Task 11).
+ * created exactly as the starter's own `branch.create` would be. `reviews` (7B Task 11): `archived`
+ * is told of each archive, as `branch.set`'s handler tells 5E's review workflow (its conflict
+ * items); `underReview` answers `SessionBranchOps.underReview`.
  */
-export function registryBranchOps(registry: BranchRegistry, meta: CallMeta, archived?: (projectId: string, branch: string) => Effect.Effect<void>): SessionBranchOps {
+export function registryBranchOps(
+  registry: BranchRegistry,
+  meta: CallMeta,
+  reviews: { readonly archived?: (projectId: string, branch: string) => Effect.Effect<void>; readonly underReview?: (projectId: string, branch: string) => boolean } = {},
+): SessionBranchOps {
+  const { archived, underReview } = reviews;
   return {
+    ...(underReview === undefined ? {} : { underReview }),
     branches: (projectId) => Effect.map(registry.branches(projectId, true), (r) => r.branches),
     resolveBranch: (projectId, ref) => registry.resolveBranch(projectId, ref),
     createBranch: (projectId, req) =>
@@ -377,6 +387,10 @@ export function openSession(
     if (base === undefined) return yield* Effect.fail(finError("BRANCH_NOT_FOUND", `no branch ${baseRef}`, { branch: baseRef }));
     let root: string | undefined;
     if (req.mode !== "plan" && req.root !== undefined) {
+      // A critic works beside the reviewed branch, never on it (Decision 26; review N2).
+      if (req.role === CRITIC_ROLE && deps.ops.underReview?.(req.projectId, base.id) === true) {
+        return yield* Effect.fail(finError("INVALID_REQUEST", "a critic cannot work on a branch under review itself", { field: "root", reason: "underReview", branch: base.id }, "Start the critic with that branch as its base: it works on a child branch of it."));
+      }
       root = base.id;
       yield* deps.creds.claimRoot(req.projectId, root);
     } else if (req.mode !== "plan") {

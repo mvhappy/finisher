@@ -3,18 +3,19 @@
 //
 // - **A review request from a session** (`review.request` through the chain, the session's own
 //   credential, `review.write` in `draft` and `auto`): after the handler answered, an item whose
-//   source lies in the session's subtree is recorded on the session (`session_state.reviews`,
+//   source lies in the session's reach (its subtree less live sessions' roots beneath it, as for
+//   its writes; the chain refuses any other source, `reach.ts`) is recorded on the session (`session_state.reviews`,
 //   agent 0011) and `branchReady {sessionId, projectId, branch, headSeq, reviewId}` is emitted,
 //   `headSeq` the source's head as the request left it. A request by anyone else, or for a branch
 //   outside the session's subtree, links nothing.
 // - **A session that ends** (any reason but `deleted`) with a root branch whose own records are
 //   not all on its fork parent (a fresh review plan of the root into its parent has an open
-//   entry of the root, as 5E's re-derivation decides) and no review recorded emits
+//   entry of the root, as 5E's re-derivation decides) and no review of its root recorded emits
 //   `branchReady` without `reviewId`, once: `ended` is final. A session with no `session_txs`
 //   row made no commit, and is not planned.
 // - **`branchReady` is an in-process event**, never an RPC: `onBranchReady` subscribes (7F's
-//   `BranchReady` hooks, Task 12's `auto` merge trigger); none by default. Listeners run after
-//   the call that caused it has answered, each on its own; what they throw or fail with is
+//   `BranchReady` hooks, Task 12's `auto` merge trigger); none by default. Listeners run on a
+//   later turn of the event loop, after the call that caused it has answered, each on its own; what they throw or fail with is
 //   reported on stderr and never reaches that call.
 // - **Critics** (Decision 26): a `critic` session started with `base` the source of an open
 //   `branchReview` item gets its root as a child branch of it, `<reviewed name>.critic-<n>`
@@ -25,12 +26,11 @@
 import type { FinError, FinRpcTag, Principal, Session } from "@finisher/contracts";
 import { REVIEW_OPEN_STATES } from "@finisher/contracts";
 import type { BranchView, ReviewPlan } from "@finisher/core-types";
-import { Effect } from "effect";
+import { Effect, Option } from "effect";
 import type { ChainHooks } from "../chain/hooks.ts";
-import type { ChainProjects } from "../chain/resolve.ts";
 import { isOpenEntry } from "../reviews/plan.ts";
 import type { Reviews } from "../reviews/service.ts";
-import type { BranchLineage } from "./reach.ts";
+import type { BranchLineage, BranchReach } from "./reach.ts";
 import type { AgentStore } from "./store.ts";
 
 /** A session's branch is ready for review (spec §9.1 `BranchReady`): internal, never on the wire. */
@@ -54,6 +54,8 @@ export interface ReviewPort {
   branches(projectId: string): Effect.Effect<ReadonlyArray<BranchView>, FinError>;
   /** Whether `branch` (an id) is the source of an open `branchReview` item. */
   underReview(projectId: string, branch: string): boolean;
+  /** A review item's source branch (an id); undefined for an unknown item. */
+  sourceOf(itemId: string): string | undefined;
   /** A fresh plan of `source` into `target`. */
   plan(projectId: string, source: string, target: string): Effect.Effect<ReviewPlan, FinError>;
   /** `branch` (an id) was archived by `by`: its conflict items are superseded. Never fails. */
@@ -68,6 +70,7 @@ export function reviewPort(reviews: Reviews): ReviewPort {
     branches: (projectId) => w.engine.branches(projectId),
     underReview: (projectId, branch) =>
       reviews.store.list(projectId, { kind: "branchReview" }).some((i) => i.source === branch && REVIEW_OPEN_STATES.includes(i.state)),
+    sourceOf: (itemId) => reviews.store.get(itemId)?.source,
     plan: (projectId, source, target) => w.planner.now(projectId, source, target),
     archived: (projectId, branch, by) => w.observeArchived(projectId, branch, by),
   };
@@ -116,15 +119,15 @@ export class ReviewLink {
    * `review.request` answered `result` for `principal`: when it is a session and the item's
    * source is in its subtree, the item is recorded on the session and `branchReady` emitted.
    */
-  requested(principal: Principal, result: unknown, projects: ChainProjects): Effect.Effect<void> {
+  requested(principal: Principal, result: unknown, reach: Pick<BranchReach, "inSubtree">): Effect.Effect<void> {
     const item = (result as { item?: { id?: unknown; projectId?: unknown; source?: unknown; kind?: unknown } } | null)?.item;
     const s = principal.kind === "agent" ? this.#d.store.get(principal.id) : undefined;
     if (s?.rootBranch === undefined || item?.kind !== "branchReview" || typeof item.id !== "string" || typeof item.source !== "string") return Effect.void;
     if (item.projectId !== s.projectId) return Effect.void;
     const { id: reviewId, source } = { id: item.id, source: item.source };
     const task = Effect.gen({ self: this }, function* () {
-      const own = yield* this.#d.lineage.subtree(projects, s.projectId, s.rootBranch!, [source]);
-      if (!own.has(source)) return;
+      // The write path's reach: a live child's or critic's branch beneath the root is not the session's (review B1).
+      if (Option.isNone(yield* Effect.option(reach.inSubtree(s, source, "review.request")))) return;
       this.#d.store.reviews.record(s.id, reviewId);
       const port = this.#port;
       const head = port === undefined ? undefined : (yield* port.branches(s.projectId)).find((b) => b.id === source)?.head;
@@ -139,7 +142,8 @@ export class ReviewLink {
     if (s.rootBranch === undefined || s.statusReason === DELETED) return;
     const task = Effect.gen({ self: this }, function* () {
       const port = this.#port;
-      if (port === undefined || this.#d.store.reviews.of(s.id).length > 0) return;
+      // A review of the root itself suppresses it; one of a try does not (review N3).
+      if (port === undefined || this.#d.store.reviews.of(s.id).some((id) => port.sourceOf(id) === s.rootBranch)) return;
       if (this.#d.store.txsOfSession(s.id).length === 0) return;
       const root = (yield* port.branches(s.projectId)).find((b) => b.id === s.rootBranch);
       if (root === undefined || root.state !== "active" || root.parent == null) return;
@@ -163,6 +167,11 @@ export class ReviewLink {
     );
   }
 
+  /** Whether `branch` (an id) is the source of an open `branchReview` (a critic may not take it as its root). */
+  underReview(projectId: string, branch: string): boolean {
+    return this.#port?.underReview(projectId, branch) ?? false;
+  }
+
   /** The runtime archived `branch` (an id): 5E's archive observer. Never fails. */
   archived(projectId: string, branch: string, by?: string): Effect.Effect<void> {
     return this.#port === undefined ? Effect.void : this.#port.archived(projectId, branch, by);
@@ -177,11 +186,16 @@ export class ReviewLink {
     this.#pending.add(tracked);
   }
 
-  /** Every listener, detached from the caller; one that fails is reported. */
+  /**
+   * Every listener, detached from the caller: each starts on a later turn of the event loop
+   * (`setImmediate`), after the call that caused it has answered (review S2); one that throws,
+   * fails or rejects is reported, and the others run.
+   */
   #emit(ev: BranchReady): void {
     for (const listener of this.#listeners) {
       this.#track(
         (async () => {
+          await new Promise<void>((resolve) => setImmediate(resolve));
           try {
             const r = listener(ev);
             if (Effect.isEffect(r)) await Effect.runPromise(r as Effect.Effect<unknown, unknown>);
@@ -196,11 +210,11 @@ export class ReviewLink {
 }
 
 /** The chain's after stage for the link, after `hooks`' own (`review.request` only). */
-export function withReviewLink(hooks: ChainHooks, link: ReviewLink, projects: ChainProjects): ChainHooks {
+export function withReviewLink(hooks: ChainHooks, link: ReviewLink, reach: Pick<BranchReach, "inSubtree">): ChainHooks {
   const first = hooks.after;
   const after: ChainHooks["after"] = (tag: FinRpcTag, principal, payload, result, headers) =>
     Effect.andThen(first === undefined ? Effect.void : first(tag, principal, payload, result, headers), () =>
-      tag === "review.request" ? link.requested(principal, result, projects) : Effect.void,
+      tag === "review.request" ? link.requested(principal, result, reach) : Effect.void,
     );
   return { ...hooks, after };
 }

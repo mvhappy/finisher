@@ -6,25 +6,34 @@
 // a critic on a reviewed branch works on a child branch of it; the outcome tracker emits 5E's
 // `review.verdict` v1 and counts a review's merge once; the runtime's archive of a branch tells
 // 5E's conflict items.
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { execFile } from "node:child_process";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
+import { fileURLToPath } from "node:url";
 import { FinRpcs, type FinRpcTag, type Principal, type ReviewItem, type ReviewView, type Session } from "@finisher/contracts";
 import type { BranchView } from "@finisher/core-types";
 import { kindVersion } from "@finisher/fin-node";
 import { Effect } from "effect";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from "vitest";
 import type { ChainProjects } from "../src/chain/resolve.ts";
-import { credentialPath, MODE_SCOPES, NEVER_SESSION_SCOPES, registryBranchOps } from "../src/agent/credentials.ts";
+import { credentialPath, MODE_SCOPES, NEVER_SESSION_SCOPES, openSession, registryBranchOps } from "../src/agent/credentials.ts";
+import { BranchReach } from "../src/agent/reach.ts";
+import { LOCAL } from "../src/principal.ts";
 import type { FakeScript } from "../src/agent/fake.ts";
 import { type BranchReady, withReviewLink } from "../src/agent/review-link.ts";
 import { settingsPath } from "../src/config.ts";
 import { controlDbPath } from "../src/control/db.ts";
+import { childEnv } from "../src/env.ts";
 import { toFinError } from "../src/errors.ts";
 import { entries } from "./support/agent-journal.ts";
-import { AgentServer, code } from "./support/agent-server.ts";
+import { AgentServer, code, rpcBranchOps } from "./support/agent-server.ts";
 import { addAsset, commit, confirmed, type Exit, insert, type NdjsonClient, ok, tx } from "./support/ndjson-client.ts";
+
+const FIN = fileURLToPath(new URL("../../../target/debug/fin", import.meta.url));
+/** CI (`FIN_REQUIRE_SERVER=1`, as `fin`'s own server tests): a missing `fin` fails instead of skipping. */
+const REQUIRE_FIN = process.env.FIN_REQUIRE_SERVER === "1";
 
 let tmp: string;
 let serverData: string;
@@ -99,6 +108,15 @@ async function edit(c: NdjsonClient, projectId: string, on: string, at = 0): Pro
   return txId;
 }
 
+/** The chain's branch reach over `c`'s branch list (what `handlers.ts` builds over the registry). */
+function reachOf(c: NdjsonClient): BranchReach {
+  const projects = {
+    branches: (p: string) => Effect.promise(async () => await branches(c, p)),
+    resolveBranch: (p: string, ref: string) => Effect.promise(async () => (await branches(c, p)).find((b) => b.id === ref || b.name === ref)!.id),
+  } as unknown as ChainProjects;
+  return new BranchReach(server.core.store, server.core.lineage, projects);
+}
+
 const request = (c: NdjsonClient, projectId: string, source: string) => c.call("review.request", { projectId, source, title: "Ready" });
 const outcomes = (txId: string) => server.core.store.outcomes.of(txId).map((o) => ({ verdict: o.verdict, via: o.via, by: o.by, emitted: o.emitted }));
 
@@ -156,17 +174,115 @@ describe("a session's review request", () => {
     expect(ready).toHaveLength(2);
   });
 
-  test("a plan session holds no review.write; a request for a branch outside the session's subtree links nothing", async () => {
+  test("a plan session holds no review.write; a session's review.request and review.refresh stay within its reach, comment and get do not", async () => {
     const { local, projectId, ready } = await boot();
     const planned = await start(local, projectId, { mode: "plan" });
     expect(code(await request(planned.client, projectId, "main"))).toBe("SCOPE_DENIED");
     const other = ok<{ branch: BranchView }>(await local.call("branch.create", { projectId, txId: id(), author: "ann", name: "feature", from: "main" })).branch.id;
     await edit(local, projectId, other);
     const { client: a, session: s } = await start(local, projectId, { mode: "draft" });
-    ok(await request(a, projectId, other));
+    // A person's branch is outside the session's reach (Task 11 review, S1).
+    expect(code(await request(a, projectId, other))).toBe("BRANCH_NOT_ALLOWED");
+    expect(code(await request(a, projectId, "feature"))).toBe("BRANCH_NOT_ALLOWED");
+    const { item } = ok<{ item: ReviewItem }>(await request(local, projectId, other));
+    expect(code(await a.call("review.refresh", { itemId: item.id }))).toBe("BRANCH_NOT_ALLOWED");
+    ok(await a.call("review.comment", { itemId: item.id, body: "seen" }));
+    expect(ok<ReviewView>(await a.call("review.get", { itemId: item.id })).item.id).toBe(item.id);
     await server.core.reviewLink.settled();
     expect(ready).toEqual([]);
     expect(server.core.store.reviews.of(s.id)).toEqual([]);
+  });
+
+  test("a live critic's branch under the session's root, and a live child's root, are outside its review reach (review B1)", async () => {
+    const { local, projectId, ready } = await boot();
+    const { session: s, client: a } = await start(local, projectId);
+    const root = s.rootBranch!;
+    await edit(a, projectId, root);
+    ok(await request(a, projectId, root));
+    const critic = await start(local, projectId, { role: "critic", mode: "draft", base: root });
+    const fix = critic.session.rootBranch!;
+    await edit(critic.client, projectId, fix, 3);
+    expect(code(await commit(a, projectId, { ...tx(id(), 1, [insert(4)]), branch: fix }))).toBe("BRANCH_NOT_ALLOWED");
+    expect(code(await request(a, projectId, fix))).toBe("BRANCH_NOT_ALLOWED");
+    // A parent and its live child's root.
+    const child = ok<{ session: Session }>(await a.call("agent.session.start", { projectId, role: "fixer", prompt: "brief" })).session;
+    const childClient = await server.agent(credentialPath(server.core.store.root, child.id));
+    await edit(childClient, projectId, child.rootBranch!, 5);
+    expect(code(await request(a, projectId, child.rootBranch!))).toBe("BRANCH_NOT_ALLOWED");
+    await server.core.reviewLink.settled();
+    expect(ready.map((r) => r.branch)).toEqual([root]);
+    // The link checks the same reach itself (the after stage, called directly).
+    const after = withReviewLink({}, server.core.reviewLink, reachOf(local)).after!;
+    const principal: Principal = { kind: "agent", id: s.id, scopes: [...MODE_SCOPES.draft], projects: [projectId], branches: [root], human: false };
+    for (const source of [fix, child.rootBranch!]) {
+      await Effect.runPromise(after("review.request", principal, { projectId }, { item: { id: `item-${source}`, kind: "branchReview", projectId, source } }, undefined));
+    }
+    await server.core.reviewLink.settled();
+    expect(ready.map((r) => r.branch)).toEqual([root]);
+    expect(server.core.store.reviews.of(s.id)).toHaveLength(1);
+  });
+});
+
+describe("branchReady listeners", () => {
+  // `fin` in its own process: a listener blocking this process (the server's) cannot hold a reply
+  // already written, and `fin` stamps its own end time.
+  test.skipIf((!existsSync(FIN) && !REQUIRE_FIN) || process.platform === "win32")("run after the reply: a slow listener does not delay `fin review request` (review S2)", async () => {
+    if (!existsSync(FIN)) throw new Error(`FIN_REQUIRE_SERVER=1 but ${FIN} is missing: run \`cargo build -p fin\``);
+    const { local, projectId, ready } = await boot();
+    const { session: s, client: a } = await start(local, projectId);
+    await edit(a, projectId, s.rootBranch!);
+    const projectDir = join(tmp, "P");
+    const workspace = join(projectDir, "workspace", s.id);
+    mkdirSync(workspace, { recursive: true });
+    let ran = 0;
+    server.core.reviewLink.onBranchReady(() => {
+      const until = Date.now() + 1500;
+      while (Date.now() < until) ran++;
+    });
+    const env = { ...childEnv({ FIN_SERVER: server.info.socket, FIN_SESSION: s.id, FIN_PROJECT_DIR: projectDir }), FIN_CREDENTIAL: credentialPath(server.core.store.root, s.id) };
+    const t0 = Date.now();
+    const out = await new Promise<string>((resolve) =>
+      execFile("sh", ["-c", '"$0" review request --title Ready; echo "exit=$? end=$(date +%s%3N)"', FIN], { cwd: workspace, env, encoding: "utf8" }, (_e, stdout) => resolve(stdout)),
+    );
+    const m = /exit=(\d+) end=(\d+)/.exec(out);
+    expect(m?.[1]).toBe("0");
+    expect(Number(m![2]) - t0).toBeLessThan(1000);
+    await server.core.reviewLink.settled();
+    expect(ran).toBeGreaterThan(0);
+    expect(ready).toHaveLength(1);
+  });
+
+  test("a listener that throws, fails or rejects is isolated; an unsubscribed one is not called (review S3)", async () => {
+    const warned: string[] = [];
+    const { local, projectId, ready } = await boot();
+    const { session: s, client: a } = await start(local, projectId);
+    await edit(a, projectId, s.rootBranch!);
+    const stderr = process.stderr.write.bind(process.stderr);
+    process.stderr.write = ((chunk: string | Uint8Array, ...rest: unknown[]) => {
+      if (String(chunk).includes("branchReady listener")) warned.push(String(chunk));
+      return (stderr as (c: string | Uint8Array, ...r: unknown[]) => boolean)(chunk, ...rest);
+    }) as typeof process.stderr.write;
+    let gone = 0;
+    try {
+      const link = server.core.reviewLink;
+      link.onBranchReady(() => {
+        throw new Error("sync throw");
+      });
+      link.onBranchReady(() => Effect.fail("effect failure"));
+      link.onBranchReady(() => Promise.reject(new Error("rejected")));
+      const off = link.onBranchReady(() => void gone++);
+      off();
+      const after: BranchReady[] = [];
+      link.onBranchReady((ev) => void after.push(ev));
+      ok(await request(a, projectId, s.rootBranch!));
+      await link.settled();
+      expect(ready).toHaveLength(1);
+      expect(after).toHaveLength(1);
+      expect(gone).toBe(0);
+      expect(warned).toHaveLength(3);
+    } finally {
+      process.stderr.write = stderr;
+    }
   });
 });
 
@@ -185,6 +301,22 @@ describe("a session's end", () => {
     expect(code(await local.call("agent.session.end", { sessionId: s.id }))).toBe("SESSION_ENDED");
     await server.core.reviewLink.settled();
     expect(ready).toHaveLength(1);
+  });
+
+  test("a review of another branch (a try) does not suppress the root's end event (review N3)", async () => {
+    const { local, projectId, ready } = await boot();
+    const { session: s, client: a } = await start(local, projectId);
+    const root = s.rootBranch!;
+    const tryBranch = ok<{ branch: { id: string } }>(await a.call("branch.create", { projectId, txId: id(), author: "x", from: root, name: "try-1" })).branch.id;
+    await edit(a, projectId, tryBranch);
+    ok(await request(a, projectId, tryBranch));
+    await edit(a, projectId, root, 1);
+    ok(await local.call("agent.session.end", { sessionId: s.id }));
+    await server.core.reviewLink.settled();
+    expect(ready.map((r) => [r.branch, r.reviewId === undefined])).toEqual([
+      [tryBranch, false],
+      [root, true],
+    ]);
   });
 
   test("without commits, with its commits merged already, or deleted: none", async () => {
@@ -221,6 +353,23 @@ describe("critics on child branches", () => {
     await edit(critic.client, projectId, made.id, 3);
     // While the critic lives, its branch is out of the reviewed session's reach.
     expect(code(await commit(a, projectId, { ...tx(id(), 1, [insert(4)]), branch: made.id }))).toBe("BRANCH_NOT_ALLOWED");
+  });
+
+  test("a critic cannot take a branch under review itself as its root (review N2)", async () => {
+    const { local, projectId } = await boot();
+    const { session: s, client: a } = await start(local, projectId);
+    const root = s.rootBranch!;
+    await edit(a, projectId, root);
+    ok(await request(a, projectId, root));
+    ok(await local.call("agent.session.end", { sessionId: s.id }));
+    const core = server.core;
+    const ops = { ...rpcBranchOps(local), underReview: (p: string, b: string) => core.reviewLink.underReview(p, b) };
+    const req = { projectId, harness: "fake" as const, provider: "local" as const, model: "fake", weights: "unknown" as const, mode: "draft" as const, budget: {}, createdBy: { principal: { kind: "local" as const, id: "local" } }, root };
+    const refused = await Effect.runPromise(Effect.flip(openSession({ creds: core.credentials, store: core.store, ops, ids: core.ids }, { ...req, role: "critic" }, LOCAL)));
+    expect(refused).toMatchObject({ code: "INVALID_REQUEST", details: { field: "root", reason: "underReview" } });
+    // Another role may still work on it.
+    const fixer = await Effect.runPromise(openSession({ creds: core.credentials, store: core.store, ops, ids: core.ids }, { ...req, role: "fixer" }, LOCAL));
+    expect(fixer.session.rootBranch).toBe(root);
   });
 
   test("a critic whose base is under no review gets an ordinary root", async () => {
@@ -271,10 +420,7 @@ describe("branchReady is reachable only from review.request and a session's end"
   test("the chain's after stage links review.request and no other RPC", async () => {
     const { local, projectId, ready } = await boot();
     const { session: s } = await start(local, projectId);
-    const projects = {
-      branches: (p: string) => Effect.promise(async () => await branches(local, p)),
-    } as unknown as ChainProjects;
-    const after = withReviewLink({}, server.core.reviewLink, projects).after!;
+    const after = withReviewLink({}, server.core.reviewLink, reachOf(local)).after!;
     const principal: Principal = { kind: "agent", id: s.id, scopes: [...MODE_SCOPES.draft], projects: [projectId], branches: [s.rootBranch!], human: false };
     const result = { item: { id: "item-1", kind: "branchReview", projectId, source: s.rootBranch! }, existing: false };
     const tags = [...FinRpcs.requests.keys()] as FinRpcTag[];
@@ -330,7 +476,7 @@ describe("the runtime's archive of a branch (5E residual)", () => {
       resolveBranch: (_p: string, ref: string) => Effect.succeed(ref),
       history: (_p: string, op: "branchCreate" | "branchSet", payload: unknown) => call(op === "branchSet" ? "branch.set" : "branch.create", payload),
     };
-    const ops = registryBranchOps(registry, { actor: { kind: "local" } } as never, (p, b) => server.core.reviewLink.archived(p, b, "local:local"));
+    const ops = registryBranchOps(registry, { actor: { kind: "local" } } as never, { archived: (p, b) => server.core.reviewLink.archived(p, b, "local:local") });
     await Effect.runPromise(ops.archiveBranch!(projectId, { txId: id(), author: "ann", branch: feature }));
     expect((await items()).map((i) => i.state)).toEqual(["superseded"]);
   });

@@ -176,7 +176,7 @@ export const HandlersLive = FinRpcs.toLayer(
     // Then the outcome tracker (Task 11), once the session's own rows are written.
     // Then the review link (7B Task 11): a session's `review.request` is recorded and `branchReady` emitted.
     const tracked = withOutcomes(agentChainHooks({ reach, paths: new PathReach(agents.store, projects), sessions: agents.store, clock: agents.clock.now }), agents.outcomes, projects);
-    const hooks = withReviewLink(tracked, agents.reviewLink, projects);
+    const hooks = withReviewLink(tracked, agents.reviewLink, reach);
     // Then command rules (7B Task 2), for agent principals only; a person's allow is a one-time grant (Task 5).
     // Then protected branches (5E Task 6), for every principal without `branch.protected`.
     const policies = [reach.policy, agentBranchLimitsExcept((p) => reach.covers(p)), protectedBranches, commandRules(agentRuntime.rules, agents.store, { grants: agentRuntime.grants })];
