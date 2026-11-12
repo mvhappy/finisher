@@ -2,7 +2,7 @@
 // `plugin.stats` per plugin and minute, `plugin.command` with its training arguments, and
 // nothing built while the journal is off. `worker.exit` and `plugin.exit` are in
 // `jobs/journal-sink.test.ts`.
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Envelope, ExportPage } from "@finisher/core-types";
@@ -10,6 +10,12 @@ import { Journal } from "@finisher/fin-node";
 import { Effect } from "effect";
 import { afterEach, expect, test } from "vitest";
 import type { CallCtx } from "../src/jobs/kinds.ts";
+import type { JobEngine } from "../src/jobs/engine.ts";
+import { openControlStore } from "../src/control/db.ts";
+import { PluginTables } from "../src/plugins/tables.ts";
+import { makePluginHost } from "../src/plugins/host/processes.ts";
+import { mapPluginError } from "../src/plugins/host/family.ts";
+import { exitCodeOf } from "../src/console/exit-codes.ts";
 import { makeHostCalls } from "../src/plugins/host/calls.ts";
 import { makeEgress } from "../src/plugins/host/egress.ts";
 import { commandOutcome, commandRunOf, journalPluginCommand, type PluginCommandRun } from "../src/plugins/host/command-journal.ts";
@@ -62,7 +68,8 @@ test("stats_hold_no_free_text", async () => {
   const j = open({ diagnostics: "on" });
   let egress = new Map([[ID, counters({ requests: 2, completed: 1, denied: 1, bytesIn: 900 })]]);
   const logs: string[] = [];
-  const stats = makePluginStats({ journal: j, egress: () => egress, log: (m) => logs.push(m) });
+  let clock = 1_000_000;
+  const stats = makePluginStats({ journal: j, egress: () => egress, log: (m) => logs.push(m), now: () => clock });
   // The first window holds what the broker counted before it.
   expect(stats.take().map(([id, p]) => [id, p.egress?.requests, p.families])).toEqual([[ID, 2, []]]);
   egress = new Map([[ID, counters({ requests: 5, completed: 3, denied: 1, privateAddress: 1, bytesIn: 5000, bytesOut: 10 })]]);
@@ -76,6 +83,7 @@ test("stats_hold_no_free_text", async () => {
   stats.jobEnded(plugin, "CONFLICT");
   stats.dropped(plugin, "log");
   stats.dropped(plugin, "stderr");
+  clock += 60_000;
   expect(stats.flush()).toBe(1);
   const [e, ...rest] = await entries(j, ["plugin.stats"]);
   expect(rest).toEqual([]);
@@ -117,7 +125,7 @@ test("percentiles come from a bounded sample", () => {
 test("events_off_means_nothing_built", async () => {
   const j = open({ diagnostics: "off" });
   const recorded: string[] = [];
-  const spy = { get enabled() { return j.enabled; }, recordPlugin: (...a: Parameters<Journal["recordPlugin"]>) => { recorded.push(a[0]); j.recordPlugin(...a); } };
+  const spy = { get enabled() { return j.enabled; }, get training() { return j.training; }, recordPlugin: (...a: Parameters<Journal["recordPlugin"]>) => { recorded.push(a[0]); j.recordPlugin(...a); } };
   let egress = new Map([[ID, counters({ requests: 1 })]]);
   const stats = makePluginStats({ journal: spy, egress: () => egress });
   expect(stats.counting()).toBe(false);
@@ -163,7 +171,7 @@ test("plugin_command_training_args_are_content", async () => {
 
 test("a refused plugin.command is logged, never thrown", () => {
   const logs: string[] = [];
-  const refusing = { enabled: true, recordPlugin: () => { throw new Error("EVENT_INVALID"); } };
+  const refusing = { enabled: true, training: false, recordPlugin: () => { throw new Error("EVENT_INVALID"); } };
   expect(journalPluginCommand(refusing, { plugin: ID, command: "c", outcome: "data", durationMs: 1 }, (m) => logs.push(m))).toBe(false);
   expect(logs).toEqual([expect.stringContaining("refused a plugin.command")]);
 });
@@ -172,6 +180,20 @@ test("command outcomes of errors", () => {
   expect(["CONFLICT", "PLUGIN_COMMAND_ARGS", "PLUGIN_TX_INVALID", "PLUGIN_TIMEOUT", "PLUGIN_CRASHED", "PLUGIN_PROTOCOL", "PLUGIN_PERMISSION_DENIED", "PLUGIN_DISABLED"].map(commandOutcome)).toEqual([
     "conflict", "invalid", "invalid", "timeout", "failed", "failed", "refused", "refused",
   ]);
+  for (const c of ["PLUGIN_COMMAND_FAILED", "JOB_CANCELLED", "JOB_QUEUE_FULL", "WORKER_UNAVAILABLE", "PLUGIN_RUNTIME_UNAVAILABLE", "INTERNAL"]) expect(commandOutcome(c), c).toBe("failed");
+});
+
+test("a plugin's own error code never reaches the journal: PLUGIN_COMMAND_FAILED", () => {
+  const e = (code: string) => ({ code, message: "m", details: { why: "x" } });
+  for (const code of ["MY_PLUGIN_BROKE", "my plugin broke /home/someone", "", "K".repeat(300)]) {
+    const m = mapPluginError(e(code));
+    expect(m.code, code).toBe("PLUGIN_COMMAND_FAILED");
+    expect(JSON.stringify(m.details)).not.toContain(code === "" ? "\u0000" : code);
+    expect(commandOutcome(m.code)).toBe("failed");
+  }
+  expect(exitCodeOf("PLUGIN_COMMAND_FAILED")).toBe(4);
+  // Host-known codes stay as they are.
+  for (const code of ["PLUGIN_PERMISSION_DENIED", "CONFLICT", "WORKER_OOM", "JOB_CANCELLED"]) expect(mapPluginError(e(code)).code).toBe(code);
 });
 
 test("dropped log calls and stderr lines reach the stats", () => {
@@ -192,6 +214,8 @@ test("every host call of a plugin job is counted, answered or refused", async ()
   const calls = makeHostCalls({ deps: () => undefined, keyNow: () => "", coldKey: () => undefined, log: makePluginLog({ write: () => {} }), egress: makeEgress(), stats });
   const ctx = { job: { id: "j1" }, role: "worker", owner: { kind: "console", id: "console" }, via: { plugin: `${ID}@1.0.0` } } as unknown as CallCtx;
   await Effect.runPromiseExit(calls.onCall(ctx, "made.up", {}));
+  // Params that do not serialise break the decoder (a defect): counted `INTERNAL`, the count itself never throws.
+  await Effect.runPromiseExit(calls.onCall(ctx, "made.up", { n: 1n }));
   await Effect.runPromiseExit(calls.onCall(ctx, "media.pcm", {}));
   await Effect.runPromiseExit(calls.onCall(ctx, "log", { level: "info" }));
   // A job of no plugin is not counted.
@@ -201,9 +225,55 @@ test("every host call of a plugin job is counted, answered or refused", async ()
   expect(rest).toEqual([]);
   expect(id).toBe(ID);
   expect(p?.families).toEqual([
-    expect.objectContaining({ family: "other", calls: 2, errors: { INVALID_REQUEST: 2 } }),
+    expect.objectContaining({ family: "other", calls: 3, errors: { INVALID_REQUEST: 2, INTERNAL: 1 } }),
     expect.objectContaining({ family: "log", calls: 1, errors: { PLUGIN_PROTOCOL: 1 } }),
   ]);
+});
+
+test("a dry run that validated is accepted", () => {
+  const e = { plugin: ID, command: "c", principal: { kind: "console", id: "console" }, ms: 1 };
+  expect(commandRunOf({ ...e, outcome: "data", dryRun: true }).outcome).toBe("accepted");
+  expect(commandRunOf({ ...e, outcome: "data", dryRun: false }).outcome).toBe("data");
+});
+
+test("arguments over 16 KiB are not sent: argsOmitted", async () => {
+  const j = open({ diagnostics: "on", training: "on" });
+  const sent: string[] = [];
+  const spy = { enabled: true, training: true, recordPlugin: (...a: Parameters<Journal["recordPlugin"]>) => { sent.push(a[3]); j.recordPlugin(...a); } };
+  expect(journalPluginCommand(spy, { plugin: ID, command: "c", outcome: "accepted", durationMs: 1, args: { text: "x".repeat(17 * 1024) } })).toBe(true);
+  expect(sent[0]?.length).toBeLessThan(1024);
+  const [e] = await entries(j, ["plugin.command"]);
+  expect(e?.payload).toMatchObject({ argsOmitted: "tooLarge" });
+  expect(e?.payload).not.toHaveProperty("args");
+  // Without training the arguments are not even serialised.
+  const noTraining = { ...spy, training: false };
+  let touched = false;
+  journalPluginCommand(noTraining, { plugin: ID, command: "c", outcome: "accepted", durationMs: 1, args: { toJSON: () => { touched = true; return {}; } } });
+  expect(touched).toBe(false);
+});
+
+test("the window records its real length; close flushes the last one", async () => {
+  let now = 1_000_000;
+  const j = { enabled: true, recordPlugin: () => {} };
+  const stats = makePluginStats({ journal: j, now: () => now });
+  stats.call(ID, "log", 1, undefined, 0, 0);
+  now += 20_400;
+  const [[, p] = ["", undefined]] = stats.take();
+  expect(p?.windowS).toBe(20);
+  // A plugin host's close records what its last window counted.
+  const sd = realpathSync(mkdtempSync(join(tmpdir(), "fin-plugin-close-")));
+  const control = openControlStore(sd, { serverId: "sid-test", checkpoint: false });
+  try {
+    const recorded: string[] = [];
+    const host = makePluginHost({ serverData: sd, control, tables: new PluginTables(control), journal: { enabled: true, training: false, recordPlugin: (k) => void recorded.push(k) } });
+    host.bind({ onDone: () => () => {}, list: () => ({ jobs: [] }) } as unknown as JobEngine);
+    host.stats.call(`${ID}@1.0.0`, "log", 5, undefined, 1, 1);
+    await Effect.runPromise(host.close());
+    expect(recorded).toEqual(["plugin.stats"]);
+  } finally {
+    await control.close();
+    rmSync(sd, { recursive: true, force: true });
+  }
 });
 
 test("task 9's onRun event maps onto a plugin.command run", () => {

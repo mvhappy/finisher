@@ -252,6 +252,15 @@ fn worker_exit_kv2_carries_plugin() {
         panic!()
     };
     assert!(PluginExit::of(&w).is_none());
+    // A helper process (a codec of a plugin job) is not the plugin's process.
+    let mut helper = raw.clone();
+    helper["role"] = json!("helper");
+    helper["helperKind"] = json!("plugin");
+    let AnyPayload::WorkerExit(w) = decode_payload(spec, &helper).unwrap() else {
+        panic!()
+    };
+    assert!(w.plugin.is_some());
+    assert!(PluginExit::of(&w).is_none());
     let mut bare = raw.clone();
     bare["plugin"] = json!("@acme/x");
     assert!(decode_payload(spec, &bare).is_err());
@@ -523,6 +532,20 @@ fn command_is_keyed_and_args_are_training_content() {
         (c.args.is_none(), c.args_omitted),
         (true, Some(ArgsOmitted::TooLarge))
     );
+    // The sender's `argsOmitted: tooLarge` (it did not send them) stays, with training only.
+    let mut intent = raw.clone();
+    intent.as_object_mut().unwrap().remove("args");
+    intent["argsOmitted"] = json!("tooLarge");
+    let ps = plugin_payloads("plugin.command", 1, "@acme/fancy", intent.clone(), &ON).unwrap();
+    let AnyPayload::PluginCommand(c) = &ps[0] else {
+        panic!()
+    };
+    assert_eq!(c.args_omitted, Some(ArgsOmitted::TooLarge));
+    let ps = plugin_payloads("plugin.command", 1, "@acme/fancy", intent, &no_training).unwrap();
+    let AnyPayload::PluginCommand(c) = &ps[0] else {
+        panic!()
+    };
+    assert_eq!(c.args_omitted, None);
     // An unknown op kind reads as `other`; a missing command is refused.
     let mut odd = raw.clone();
     odd["ops"] = json!({ "rm -rf": 1 });

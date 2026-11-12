@@ -15,7 +15,7 @@
 //
 // Diagnostics (Task 15): the host, never a plugin, records `plugin.stats` each minute
 // (`stats.ts`: calls, its jobs' timeouts and crashes, dropped log and stderr, egress) and
-// `plugin.command` through `journalCommand` (`command-journal.ts`); `worker.exit` and
+// `plugin.command` through `onCommandRun` (`command-journal.ts`); `worker.exit` and
 // `plugin.exit` come from the job engine's sink (`jobs/journal-sink.ts`).
 import { rmSync } from "node:fs";
 import { type FinError, isJobRights, type JobState, type JobView } from "@finisher/contracts";
@@ -39,7 +39,7 @@ import { type CallDeps, makeHostCalls, PAGE_BYTES } from "./calls.ts";
 import { keyTmpDir, pluginWarmKey, principalClass, sessionRoots } from "./keys.ts";
 import { type EgressTestHooks, makeEgress } from "./egress.ts";
 import { makePluginLog, scrubLogText, type ServerLog } from "./log.ts";
-import { type CommandRunEventLike, type CommandRunExtra, commandRunOf, journalPluginCommand, type PluginCommandRun } from "./command-journal.ts";
+import { type CommandRunEventLike, type CommandRunExtra, commandRunOf, journalPluginCommand } from "./command-journal.ts";
 import { makePluginStats } from "./stats.ts";
 import { splitVia, storeDirOf } from "./program.ts";
 import type { PluginContext } from "@finisher/core-types";
@@ -81,7 +81,7 @@ export interface PluginHostDeps {
   /** The broker's test hooks (`egress-test-hooks.ts`; refused outside a test-hooks build). */
   readonly egressHooks?: EgressTestHooks;
   /** The diagnostics journal: `plugin.stats` and `plugin.command` (Task 15). */
-  readonly journal?: Pick<Journal, "enabled" | "recordPlugin">;
+  readonly journal?: Pick<Journal, "enabled" | "training" | "recordPlugin">;
 }
 
 /** 5C's envelope line (Decision 5). */
@@ -111,6 +111,7 @@ export function makePluginHost(d: PluginHostDeps) {
     ...(d.journal === undefined ? {} : { journal: d.journal }),
     egress: () => egress.stats(),
     log: (m) => serverLog("warning", m),
+    now: clock,
   });
   const pluginLog = makePluginLog({
     write: serverLog,
@@ -342,16 +343,8 @@ export function makePluginHost(d: PluginHostDeps) {
     /** `plugin.stats`' counters (tests flush them). */
     stats,
     /**
-     * Records a finished `plugin.command.run` as `plugin.command` (Task 15) and counts it in
-     * `plugin.stats`' `command` family. Task 9's `commands.ts` calls it once per run, for
-     * every outcome; it never throws.
-     */
-    journalCommand(run: PluginCommandRun): void {
-      journalPluginCommand(d.journal, run, (m) => serverLog("warning", m));
-      stats.call(run.plugin, "command", run.durationMs * 1000, run.code, 0, 0);
-    },
-    /**
-     * Task 9's `onRun` hook: `layerPluginCommands({ onRun: (e) => pluginHost.onCommandRun(e) })`.
+     * Task 9's `onRun` hook (once per `plugin.command.run`, every outcome): records
+     * `plugin.command` and counts the run in `plugin.stats`' `command` family; never throws.
      * `extra` carries what its `CommandRunEvent` lacks (`txId`, `ops`, the validated `args`).
      */
     onCommandRun(e: CommandRunEventLike, extra?: CommandRunExtra): void {

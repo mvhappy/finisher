@@ -45,6 +45,8 @@ pub mod codes {
     pub const PLUGIN_PROTOCOL: &str = "PLUGIN_PROTOCOL";
     /// A cold kind's output file that fails its checks (`{reason: link|notRegular|linked|size|truncated|schema}`).
     pub const PLUGIN_OUTPUT_INVALID: &str = "PLUGIN_OUTPUT_INVALID";
+    /// A plugin job that failed with a code the host does not know (the plugin's own).
+    pub const PLUGIN_COMMAND_FAILED: &str = "PLUGIN_COMMAND_FAILED";
     pub const PLUGIN_PERMISSION_DENIED: &str = "PLUGIN_PERMISSION_DENIED";
     pub const EGRESS_DENIED: &str = "EGRESS_DENIED";
     pub const EGRESS_NOT_HTTPS: &str = "EGRESS_NOT_HTTPS";

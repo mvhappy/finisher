@@ -109,10 +109,14 @@ export interface PluginStatsDeps {
   /** The server log, for a refused entry (never thrown). */
   readonly log?: (message: string) => void;
   readonly random?: () => number;
+  readonly now?: () => number;
 }
 
 export function makePluginStats(d: PluginStatsDeps) {
   const random = d.random ?? Math.random;
+  const now = d.now ?? Date.now;
+  /** When this window began: `windowS` is its real length (the last one, flushed at close, is short). */
+  let windowStart = now();
   let window = new Map<string, Plugin>();
   let egressBefore = new Map<string, Readonly<EgressCounters>>();
   let timer: ReturnType<typeof setInterval> | undefined;
@@ -135,6 +139,9 @@ export function makePluginStats(d: PluginStatsDeps) {
   const take = (): Array<[string, Payload]> => {
     const ended = window;
     window = new Map();
+    const at = now();
+    const windowS = Math.max(1, Math.round((at - windowStart) / 1000));
+    windowStart = at;
     const egressNow = d.egress?.() ?? new Map<string, Readonly<EgressCounters>>();
     const before = egressBefore;
     egressBefore = new Map(egressNow);
@@ -149,7 +156,7 @@ export function makePluginStats(d: PluginStatsDeps) {
       out.push([
         id,
         {
-          windowS: STATS_WINDOW_MS / 1000,
+          windowS,
           families: [...(p?.families ?? new Map<string, Family>())].map(([name, f]) => f.payload(name)),
           timeouts: Math.min(p?.timeouts ?? 0, U32),
           crashes: Math.min(p?.crashes ?? 0, U32),

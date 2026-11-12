@@ -1,15 +1,18 @@
 // `plugin.command` (sp8b plan Task 15; spec §11): one entry per `plugin.command.run`, whatever
-// its outcome. Task 9's `commands.ts` calls `journalPluginCommand` (through
-// `PluginHost.journalCommand`) once per run. The plugin and the command go to fin-node raw
+// its outcome. Task 9's `onRun` hook calls `PluginHost.onCommandRun` once per run. The plugin and the command go to fin-node raw
 // (`recordPlugin`): it names the plugin by its `PluginRef`, keys the command as the hash of
 // `<plugin id>/<command>`, turns `txId` into an `IdRef`, and keeps `args` (training content,
-// `toolArgs`) only while training is on and within 16 KiB of JSON. Nothing is built while the
+// `toolArgs`) only while training is on and within 16 KiB of JSON (larger ones are not sent:
+// `argsOmitted: tooLarge`). Nothing is built while the
 // journal is off; a refused entry is logged, never thrown (a run never fails for its entry).
 import type { PluginCommandOutcome } from "@finisher/core-types";
 import type { Journal } from "@finisher/fin-node";
 import { pluginIdOf } from "./stats.ts";
 
-export type CommandJournal = Pick<Journal, "enabled" | "recordPlugin">;
+export type CommandJournal = Pick<Journal, "enabled" | "training" | "recordPlugin">;
+
+/** The largest arguments sent (as JSON bytes): fin-core's `MAX_COMMAND_ARGS_BYTES`. */
+export const MAX_COMMAND_ARGS_BYTES = 16 * 1024;
 
 /** One finished command run, as Task 9 knows it. */
 export interface PluginCommandRun {
@@ -51,6 +54,10 @@ export function commandOutcome(code: string): PluginCommandOutcome {
     case "PLUGIN_CRASHED":
     case "PLUGIN_PROTOCOL":
     case "PLUGIN_COMMAND_FAILED":
+    case "JOB_CANCELLED":
+    case "JOB_QUEUE_FULL":
+    case "WORKER_UNAVAILABLE":
+    case "PLUGIN_RUNTIME_UNAVAILABLE":
     case "INTERNAL":
     case "IO_ERROR":
       return "failed";
@@ -79,9 +86,12 @@ export interface CommandRunExtra {
   readonly args?: unknown;
 }
 
-/** `e` (Task 9's `onRun` event) as a `PluginCommandRun`; an `error` maps through `commandOutcome`. */
+/**
+ * `e` (Task 9's `onRun` event) as a `PluginCommandRun`; an `error` maps through
+ * `commandOutcome`, and a dry run that answered (`data` with its ops) is `accepted` (validated).
+ */
 export function commandRunOf(e: CommandRunEventLike, extra: CommandRunExtra = {}): PluginCommandRun {
-  const outcome: PluginCommandOutcome = e.outcome === "error" ? commandOutcome(e.code ?? "INTERNAL") : e.outcome;
+  const outcome: PluginCommandOutcome = e.outcome === "error" ? commandOutcome(e.code ?? "INTERNAL") : e.dryRun && e.outcome === "data" ? "accepted" : e.outcome;
   return {
     plugin: e.plugin,
     command: e.command,
@@ -96,6 +106,15 @@ export function commandRunOf(e: CommandRunEventLike, extra: CommandRunExtra = {}
 /** Records `run` as `plugin.command` v1; whether an entry was handed to the journal. */
 export function journalPluginCommand(journal: CommandJournal | undefined, run: PluginCommandRun, log?: (message: string) => void): boolean {
   if (journal?.enabled !== true) return false;
+  // Arguments only with training on, and only when they fit (else the intent to omit them).
+  let args: { readonly args: unknown } | { readonly argsOmitted: "tooLarge" } | undefined;
+  if (run.args !== undefined && journal.training) {
+    let json: string | undefined;
+    try {
+      json = JSON.stringify(run.args);
+    } catch {}
+    if (json !== undefined) args = Buffer.byteLength(json) <= MAX_COMMAND_ARGS_BYTES ? { args: run.args } : { argsOmitted: "tooLarge" };
+  }
   const payload = {
     command: run.command,
     outcome: run.outcome,
@@ -104,7 +123,7 @@ export function journalPluginCommand(journal: CommandJournal | undefined, run: P
     ...(run.ops === undefined ? {} : { ops: run.ops }),
     ...(run.dryRun === true ? { dryRun: true } : {}),
     micros: Math.max(0, Math.round(run.durationMs * 1000)),
-    ...(run.args === undefined ? {} : { args: run.args }),
+    ...args,
   };
   try {
     journal.recordPlugin("plugin.command", 1, pluginIdOf(run.plugin), JSON.stringify(payload));

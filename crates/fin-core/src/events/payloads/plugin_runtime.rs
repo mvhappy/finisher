@@ -12,7 +12,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 
-use super::jobs::{ExitReason, WorkerExit};
+use super::jobs::{ExitReason, ProcessRole, WorkerExit};
 use super::plugin::PluginRef;
 use super::{Body, Counts};
 use crate::CoreError;
@@ -190,8 +190,12 @@ approx_struct!(PluginExit {
 });
 
 impl PluginExit {
-    /// The `plugin.exit` of a `worker.exit` that names a plugin.
+    /// The `plugin.exit` of a `worker.exit` of a plugin's own process (`role: worker`); a
+    /// helper (a codec of a plugin job) is not the plugin's process.
     pub fn of(w: &WorkerExit) -> Option<PluginExit> {
+        if w.role != ProcessRole::Worker {
+            return None;
+        }
         Some(PluginExit {
             plugin: w.plugin.clone()?,
             reason: PluginExitReason::of(w.reason),
@@ -369,7 +373,12 @@ fn command_fields(
         },
         Some(_) => return Err(invalid("plugin.command", "txId is a string")),
     }
-    obj.remove("argsOmitted");
+    // The sender's `argsOmitted: tooLarge` (it left oversized arguments out) is kept with
+    // training only; any other value is dropped.
+    let omitted = obj.remove("argsOmitted");
+    if keys.training && omitted == Some(json!("tooLarge")) {
+        obj.insert("argsOmitted".into(), json!("tooLarge"));
+    }
     match obj.remove("args") {
         Some(args) if keys.training && !args.is_null() => {
             let fits = serde_json::to_vec(&args).is_ok_and(|b| b.len() <= MAX_COMMAND_ARGS_BYTES);

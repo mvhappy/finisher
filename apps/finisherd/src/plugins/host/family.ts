@@ -6,7 +6,8 @@
 // `FamilySpec.env`, no credential, no socket to finisherd: 5C passes only stdio), its caller's
 // `pluginData` directory when `fs pluginData` is granted, 2 GiB of memory, 8 processes and
 // 1,024 open files. 5C's worker codes become the plugin codes of spec §13 when a job fails.
-import type { FinErrorData } from "@finisher/contracts";
+import { type FinErrorData, JOB_ERROR_CODES } from "@finisher/contracts";
+import { FIN_ERROR_CODES } from "../../console/exit-codes.ts";
 import { type AuthorityGenerations, jobAuthority, jobDataDir, memoryGenerations } from "./authority.ts";
 import { childEnv } from "../../env.ts";
 import { finError } from "../../errors.ts";
@@ -47,7 +48,15 @@ export interface PluginFamilyDeps {
   readonly versions?: Readonly<Record<string, string | undefined>>;
 }
 
-/** 5C's codes as a plugin job's (spec §13; `WORKER_OOM` and the rest are kept). */
+/** Codes the host knows: the FinError table and 5C's job codes. */
+const HOST_CODES: ReadonlySet<string> = new Set([...FIN_ERROR_CODES, ...Object.keys(JOB_ERROR_CODES)]);
+
+/**
+ * 5C's codes as a plugin job's (spec §13; `WORKER_OOM` and the rest are kept). A code the host
+ * does not know is the plugin's own: free text that must not reach `job.done`, `plugin.command`
+ * or `plugin.stats` (nor fail them for its pattern), so it becomes `PLUGIN_COMMAND_FAILED` and is
+ * not kept in `details` (sp8b Task 15 review).
+ */
 export function mapPluginError(e: FinErrorData): FinErrorData {
   const details = e.details !== null && typeof e.details === "object" ? (e.details as Record<string, unknown>) : {};
   const as = (code: string): FinErrorData => ({ ...e, code, details: { ...details, cause: e.code } });
@@ -63,7 +72,7 @@ export function mapPluginError(e: FinErrorData): FinErrorData {
     case "WORKER_PROTOCOL_MISMATCH":
       return as("PLUGIN_PROTOCOL");
     default:
-      return e;
+      return HOST_CODES.has(e.code) ? e : { code: "PLUGIN_COMMAND_FAILED", message: "the plugin's job failed", details: { cause: "plugin" } };
   }
 }
 

@@ -36,8 +36,8 @@ export const JOB_RESULT_CODES: ReadonlyArray<string> = [
   "JOB_FAILED", "JOB_CANCELLED", "JOB_INTERRUPTED", "WORKER_CRASHED", "WORKER_HUNG", "JOB_STALLED", "JOB_TIMEOUT",
   "POISON_ITEM", "HELPER_FAILED",
   // sp8b Task 4: a plugin job's process crashed, hung or broke the envelope; Task 15: a cold
-  // plugin job's output failed its checks.
-  "PLUGIN_CRASHED", "PLUGIN_TIMEOUT", "PLUGIN_PROTOCOL", "PLUGIN_OUTPUT_INVALID",
+  // plugin job's output failed its checks; a plugin job failed with a code of its own.
+  "PLUGIN_CRASHED", "PLUGIN_TIMEOUT", "PLUGIN_PROTOCOL", "PLUGIN_OUTPUT_INVALID", "PLUGIN_COMMAND_FAILED",
 ];
 
 export const UNAVAILABLE_CODES: ReadonlyArray<string> = [

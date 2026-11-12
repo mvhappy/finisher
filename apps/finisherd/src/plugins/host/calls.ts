@@ -192,21 +192,31 @@ export function makeHostCalls(h: HostCallsDeps) {
       return yield* act(deps, ctx, m, decoded.params as Record<string, unknown>, branch ?? branchOfJob(job));
     });
 
-  /** `serve`, counted for `plugin.stats` while it counts (sizes as JSON bytes). */
-  const onCall: OnCall = (ctx, method, raw) => {
-    const run = serve(ctx, method, raw);
-    const stats = h.stats;
-    const plugin = ctx.via?.plugin;
-    if (stats === undefined || plugin === undefined || !stats.counting()) return run;
-    const started = performance.now();
-    const micros = (): number => Math.round((performance.now() - started) * 1000);
-    const size = (v: unknown): number => (v === undefined ? 0 : Buffer.byteLength(JSON.stringify(v) ?? ""));
-    const bytesIn = size(raw);
-    return run.pipe(
-      Effect.tap((reply) => Effect.sync(() => stats.call(plugin, method, micros(), undefined, bytesIn, size(reply)))),
-      Effect.tapError((e) => Effect.sync(() => stats.call(plugin, method, micros(), e.code, bytesIn, 0))),
-    );
+  /** JSON bytes of `v`; 0 when it does not serialise (a count never fails a call). */
+  const size = (v: unknown): number => {
+    try {
+      return v === undefined ? 0 : Buffer.byteLength(JSON.stringify(v) ?? "");
+    } catch {
+      return 0;
+    }
   };
+
+  /** `serve`, counted for `plugin.stats` while it counts: answers, refusals and defects (`INTERNAL`). */
+  const onCall: OnCall = (ctx, method, raw) =>
+    Effect.suspend(() => {
+      const run = serve(ctx, method, raw);
+      const stats = h.stats;
+      const plugin = ctx.via?.plugin;
+      if (stats === undefined || plugin === undefined || !stats.counting()) return run;
+      const started = performance.now();
+      const micros = (): number => Math.round((performance.now() - started) * 1000);
+      const bytesIn = size(raw);
+      return run.pipe(
+        Effect.tap((reply) => Effect.sync(() => stats.call(plugin, method, micros(), undefined, bytesIn, size(reply)))),
+        Effect.tapError((e) => Effect.sync(() => stats.call(plugin, method, micros(), e.code, bytesIn, 0))),
+        Effect.tapDefect(() => Effect.sync(() => stats.call(plugin, method, micros(), "INTERNAL", bytesIn, 0))),
+      );
+    });
 
   return {
     onCall,
