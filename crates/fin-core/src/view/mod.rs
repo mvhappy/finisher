@@ -76,9 +76,21 @@ impl Filter<'_> {
     }
 }
 
-/// `a..b`, `a..` or `..b`; both ends absolute times at the project rate. Rejects `a >= b`.
+/// The rate a view's frame times (`f300`) count at: the rate the shown `timelines` share (the
+/// project's `fallback` when none is shown), `None` when they differ.
+pub fn frame_rate(timelines: &[&Timeline], fallback: Rational) -> Option<Rational> {
+    let mut rates = timelines.iter().map(|tl| tl.rate);
+    let first = rates.next().unwrap_or(fallback);
+    rates.all(|r| r == first).then_some(first)
+}
+
+/// `a..b`, `a..` or `..b` over the shown `timelines`; both ends absolute times. Rejects
+/// `a >= b`. Frames (`f300`) count at the rate the shown timelines share ([`frame_rate`]);
+/// when their rates differ a frame is ambiguous: `USAGE` (`details.reason: MIXED_RATES`, the
+/// `rates` per timeline), while seconds, clock times and rationals still resolve.
 pub fn range(
-    project: &Project,
+    timelines: &[&Timeline],
+    fallback: Rational,
     input: &str,
 ) -> Result<(Option<Rational>, Option<Rational>), CoreError> {
     let Some((a, b)) = input.split_once("..") else {
@@ -88,16 +100,32 @@ pub fn range(
                 .with_fix("write the range as 2s..5s, 2s.. or ..5s"),
         );
     };
+    let rate = frame_rate(timelines, fallback);
     let end = |s: &str| {
         if s.is_empty() {
             return Ok(None);
         }
-        parse_time(s, project.rate).map(Some).map_err(|mut e| {
-            if let Some(map) = e.details.as_object_mut() {
-                map.insert("field".to_string(), json!("range"));
-            }
-            e
-        })
+        if rate.is_none() && s.starts_with('f') {
+            let rates: Vec<Value> = timelines
+                .iter()
+                .map(|tl| json!({ "timeline": tl.id, "rate": tl.rate }))
+                .collect();
+            return Err(CoreError::new(
+                "USAGE",
+                format!(
+                    "frame time {s:?} is ambiguous: the shown timelines run at different rates"
+                ),
+            )
+            .with_details(
+                json!({ "input": input, "field": "range", "reason": "MIXED_RATES",
+                                  "rates": rates }),
+            )
+            .with_fix("show one timeline, or write the range in seconds such as 2s..5s"));
+        }
+        // Without frames the rate is unused.
+        parse_time(s, rate.unwrap_or(fallback))
+            .map(Some)
+            .map_err(in_range)
     };
     let (from, to) = (end(a)?, end(b)?);
     if let (Some(f), Some(t)) = (from, to)
@@ -112,6 +140,13 @@ pub fn range(
     Ok((from, to))
 }
 
+fn in_range(mut e: CoreError) -> CoreError {
+    if let Some(map) = e.details.as_object_mut() {
+        map.insert("field".to_string(), json!("range"));
+    }
+    e
+}
+
 /// Every timeline's screenplay without the server's font file states (`fin view` offline):
 /// `{lines, elided, tokens}` (`tokens`: the lines' own), the whole document within `budget`,
 /// limited to `range` when given.
@@ -120,11 +155,11 @@ pub fn screenplay(
     range_input: Option<&str>,
     budget_tokens: Option<u64>,
 ) -> Result<Value, CoreError> {
+    let timelines: Vec<&Timeline> = project.timelines.iter().collect();
     let (from, to) = match range_input {
-        Some(r) => range(project, r)?,
+        Some(r) => range(&timelines, project.rate, r)?,
         None => (None, None),
     };
-    let timelines: Vec<&Timeline> = project.timelines.iter().collect();
     let marks = unmeasured(project, None);
     let filter = Filter {
         track: None,

@@ -177,12 +177,17 @@ fn respond(base: &Value, resolved: &Value, lines: &[String], elided: &[Value]) -
     }
 }
 
+/// `fin view`. Frames in `--range` (`f30..f31`) count at the rate of the timelines shown:
+/// `--timeline`'s, the one holding `--track`, or, with neither, every timeline's when they all
+/// share one. When the shown timelines' rates differ a frame is ambiguous and refused (`USAGE`,
+/// `details.reason: MIXED_RATES`, fix: name a timeline or use seconds); seconds, clock times
+/// and rationals resolve whatever the rates.
 pub fn view(backend: &dyn Backend, g: &Globals, a: &ViewArgs) -> Result<Value, CoreError> {
     let snap = backend.snapshot(&target_branch(backend, g)?)?;
     let p = &snap.project;
     let tls = shown(p, g, a)?;
     let (from, to) = match &a.range {
-        Some(r) => addr::range(p, r)?,
+        Some(r) => addr::range(p, &tls, r)?,
         None => (None, None),
     };
     let has_captions = tls.iter().any(|tl| {
