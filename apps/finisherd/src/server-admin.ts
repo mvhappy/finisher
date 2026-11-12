@@ -66,7 +66,9 @@ export function sandboxWarning(caps: JobHostCaps, status: SandboxStatus = curren
  */
 export function pluginWarnings(caps: JobHostCaps, status: SandboxStatus, enabled: number): Array<Record<string, unknown>> {
   if (enabled === 0) return [];
-  const own = sandboxWarnings(status, ["plugin"])[0];
+  // The plugin profile's own warning: `PLUGINS_UNCONFINED`, or `SANDBOX_UNAVAILABLE` where an
+  // enforced profile cannot apply (the plugin profile has no sockets warning).
+  const own = sandboxWarnings(status, ["plugin"]).find((w) => w.code === "PLUGINS_UNCONFINED" || w.code === "SANDBOX_UNAVAILABLE");
   if (own !== undefined) return [{ ...own, details: { ...own.details, enabled } }];
   if (caps.profiles.plugin === "enforced") return [];
   const base = profileWarning("plugin", status.os, { kind: "disabled", reason: "profileNotReady" });
