@@ -105,6 +105,10 @@ impl Contender {
         let mine = LeaseRecord::new(&self.server_id, epoch, 0, &self.holder, stamp);
         let bytes = record::encode(&mine);
         let path = self.record_path();
+        // Never through a link (`crate::reserved`): a linked `.finisher` is not this folder.
+        if let Err(e) = crate::reserved::no_links(&self.dir) {
+            return back_off(lost(format!("cannot write lease.json: {e}")));
+        }
         // 3. Unchanged since judged? 4. Then write.
         let wrote = match (&expected, record::read(&path)) {
             (Expected::Missing, Ok(Seen::Missing)) => create_record(&self.dir, &path, &bytes),
@@ -145,6 +149,7 @@ impl Contender {
         // it would hold a claim above ours.
         let mut seen = record::read(&path);
         if matches!(seen, Ok(Seen::Corrupt(_)))
+            && crate::reserved::no_links(&self.dir).is_ok()
             && claim::list(&self.dir).is_ok_and(|c| c.iter().all(|c| c.epoch <= epoch))
             && fsio::write_in_place(&path, &bytes).is_ok()
         {
@@ -186,6 +191,9 @@ impl Contender {
 
 /// Best effort: `lease.json` back to what it was before our failed in-place write.
 fn restore(path: &Path, expected: &Expected) {
+    if crate::reserved::no_links(path.parent().unwrap_or(path)).is_err() {
+        return;
+    }
     let _ = match expected {
         Expected::Record(r) => fsio::write_in_place(path, &record::encode(r)),
         Expected::Corrupt(b) => fsio::write_in_place(path, b),

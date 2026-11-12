@@ -40,6 +40,10 @@ impl std::error::Error for Linked {}
 /// a link (all of `dir` when it has no such component). A missing directory ends the check:
 /// nothing below it exists. Any other `symlink_metadata` failure is returned.
 pub(crate) fn no_links(dir: &Path) -> io::Result<()> {
+    #[cfg(any(test, feature = "test-hooks"))]
+    if failing(dir) {
+        return Err(io::Error::other("injected link-check failure"));
+    }
     let comps: Vec<Component<'_>> = dir.components().collect();
     let start = comps
         .iter()
@@ -65,9 +69,55 @@ pub(crate) fn is_linked(e: &io::Error) -> bool {
     e.get_ref().is_some_and(|i| i.is::<Linked>())
 }
 
+/// The real directories directly in `dir` (links are skipped), or none when `dir` itself or a
+/// directory above it up to `.finisher` is a link.
+pub(crate) fn subdirs(dir: &Path) -> Vec<PathBuf> {
+    if no_links(dir).is_err() {
+        return vec![];
+    }
+    std::fs::read_dir(dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter(|e| e.file_type().is_ok_and(|t| t.is_dir()))
+        .map(|e| e.path())
+        .collect()
+}
+
 /// `.finisher` of `project_dir` is a real directory (not missing, not a link, not a file).
 pub(crate) fn dot_is_dir(project_dir: &Path) -> bool {
     std::fs::symlink_metadata(project_dir.join(DOT)).is_ok_and(|m| m.is_dir())
+}
+
+#[cfg(any(test, feature = "test-hooks"))]
+fn failing_set() -> &'static std::sync::Mutex<std::collections::HashSet<PathBuf>> {
+    static SET: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<PathBuf>>> =
+        std::sync::OnceLock::new();
+    SET.get_or_init(Default::default)
+}
+
+#[cfg(any(test, feature = "test-hooks"))]
+fn failing(dir: &Path) -> bool {
+    let set = failing_set()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    set.iter().any(|p| dir.starts_with(p))
+}
+
+/// Test hook: [`no_links`] of `dir` or anything below it fails (on any thread) with an error
+/// that is not a link, as an `lstat` on a share that drops for a moment, until called again
+/// with `false`.
+#[cfg(any(test, feature = "test-hooks"))]
+#[doc(hidden)]
+pub fn fail_link_checks_for_test(dir: &Path, fail: bool) {
+    let mut set = failing_set()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if fail {
+        set.insert(dir.to_path_buf());
+    } else {
+        set.remove(dir);
+    }
 }
 
 #[cfg(test)]

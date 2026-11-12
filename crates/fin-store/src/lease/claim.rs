@@ -186,8 +186,8 @@ fn create(dir: &Path, path: &Path, server_id: &str) -> io::Result<()> {
     }) {
         return Err(super::hooks::delete_pending());
     }
-    #[cfg(not(any(test, feature = "test-hooks")))]
-    let _ = dir;
+    // Never through a link (`crate::reserved`).
+    crate::reserved::no_links(dir)?;
     let mut file = OpenOptions::new().write(true).create_new(true).open(path)?;
     let result = file
         .write_all(server_id.as_bytes())
@@ -213,6 +213,9 @@ pub fn remove(dir: &Path, epoch: u64) {
     if hook(dir, |h| h.keep_backed_off) {
         return;
     }
+    if crate::reserved::no_links(dir).is_err() {
+        return;
+    }
     let _ = fs::remove_file(dir.join(claim_name(epoch)));
 }
 
@@ -220,7 +223,7 @@ pub fn remove(dir: &Path, epoch: u64) {
 /// read as "held" forever. Best effort: what fails is retried after the next acquisition.
 pub fn remove_below(dir: &Path, epoch: u64) {
     for c in list(dir).unwrap_or_default() {
-        if c.epoch < epoch {
+        if c.epoch < epoch && crate::reserved::no_links(dir).is_ok() {
             let _ = fs::remove_file(dir.join(claim_name(c.epoch)));
         }
     }
@@ -230,12 +233,9 @@ pub fn remove_below(dir: &Path, epoch: u64) {
 /// With every lease file gone (deleted, or a damaged record whose claims were removed), the
 /// segments still carry the epochs used, so a new one never repeats them.
 pub(super) fn highest_segment_epoch(dir: &Path) -> u64 {
-    let Ok(branches) = std::fs::read_dir(dir.join("segments")) else {
-        return 0;
-    };
-    branches
-        .flatten()
-        .filter_map(|b| std::fs::read_dir(b.path()).ok())
+    crate::reserved::subdirs(&dir.join("segments"))
+        .into_iter()
+        .filter_map(|b| std::fs::read_dir(b).ok())
         .flat_map(|files| files.flatten())
         .filter_map(|f| {
             crate::names::SegmentName::parse(f.file_name().to_str()?).map(|n| n.epoch())

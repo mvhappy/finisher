@@ -147,6 +147,10 @@ pub(super) fn grace_of(store: &Store, m: Option<&Manifest>) -> Duration {
 
 /// The regular, downloaded files directly in `dir`.
 fn present_files(dir: &Path) -> HashSet<String> {
+    // Nothing is present through a link (`crate::reserved`).
+    if crate::reserved::no_links(dir).is_err() {
+        return HashSet::new();
+    }
     std::fs::read_dir(dir)
         .into_iter()
         .flatten()
