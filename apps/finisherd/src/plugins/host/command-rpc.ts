@@ -93,6 +93,7 @@ export function serverPluginCommands(d: { readonly serverData: string; readonly 
   return {
     registry,
     kind: pluginCommandKind({ contextOf: (job, o) => d.host.contextOf(job, o), timeoutOf: registry.timeoutOf }) as unknown as KindSpec,
-    service: (engine: PluginCommandsService["engine"]): PluginCommandsService => ({ registry, host: d.host, engine }),
+    // Every run, refusals included, is journaled as `plugin.command` (Task 15).
+    service: (engine: PluginCommandsService["engine"]): PluginCommandsService => ({ registry, host: d.host, engine, onRun: (e) => d.host.onCommandRun(e) }),
   };
 }

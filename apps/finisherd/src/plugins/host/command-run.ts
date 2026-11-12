@@ -27,12 +27,17 @@ import { finError } from "../../errors.ts";
 import type { JobEngine } from "../../jobs/api.ts";
 import { COMMAND_KIND } from "../../jobs/kinds/plugin.command.ts";
 import { type HostCalls, pinOf } from "./calls.ts";
-import type { CommandEntry, CommandRegistry } from "./commands.ts";
+import { type CommandEntry, type CommandRegistry, parseCommandName } from "./commands.ts";
 import { type Invoker, requirePermission } from "./rights.ts";
 import type { JobRights, Permission } from "@finisher/core-types";
 
-/** What a run did, for the journal (Task 15): never args, data or ops. */
+/**
+ * What a run did, for the journal (Task 15): never its data or the ops themselves. A name that
+ * does not resolve (`PLUGIN_NOT_FOUND`, a disabled plugin) is reported with the plugin id and
+ * command it names (no version), when it has that shape.
+ */
 export interface CommandRunEvent {
+  /** `<id>@<version>`, or the bare id the name gave when it did not resolve. */
   readonly plugin: string;
   readonly command: string;
   readonly principal: { readonly kind: string; readonly id: string };
@@ -41,6 +46,22 @@ export interface CommandRunEvent {
   readonly code?: string;
   readonly dryRun: boolean;
   readonly ms: number;
+  /** The arguments as validated (absent when they did not pass). */
+  readonly args?: unknown;
+  /** The committed transaction's id. */
+  readonly txId?: string;
+  /** Op kind → count of the ops the plugin returned (a commit, a conflict or a dry run). */
+  readonly ops?: Readonly<Record<string, number>>;
+}
+
+/** Op kind (`op`, fin-core's wire name) → count. */
+export function opCounts(ops: ReadonlyArray<unknown>): Record<string, number> {
+  const counts: Record<string, number> = {};
+  for (const o of ops) {
+    const k = (o as { op?: unknown } | null)?.op;
+    if (typeof k === "string") counts[k] = (counts[k] ?? 0) + 1;
+  }
+  return counts;
 }
 
 /** A commit through the chain as the live invoker (`handlers.ts`); a dry run commits nothing. */
@@ -117,12 +138,15 @@ export function makeCommandRun(d: CommandRunDeps) {
     const started = clock();
     const dryRun = req.dryRun === true;
     let entry: CommandEntry | undefined;
+    // What the journal gets beyond the outcome (set as the run gets there).
+    let seen: { args?: unknown; txId?: string; ops?: Record<string, number> } = {};
     const body = Effect.gen(function* () {
       const e = yield* d.registry.resolve(principal, req.name);
       entry = e;
       const args = req.args ?? {};
       const checked = e.args.validate(args);
       if (!checked.ok) return yield* Effect.fail(finError("PLUGIN_COMMAND_ARGS", `the arguments of ${e.info.name} do not match its schema`, { name: e.info.name, problems: checked.problems }, "Check the command's arguments with `fin help`."));
+      seen = { args };
       const sessionRoot = d.sessionRootOf?.(principal);
       const rights = d.host.rightsOf({ kind: principal.kind, id: principal.id, scopes: principal.scopes, projects: principal.projects }, e.grants, sessionRoot);
       // A writing command that could never commit is refused before it runs.
@@ -151,6 +175,7 @@ export function makeCommandRun(d: CommandRunDeps) {
           const denied = requirePermission(rights, "project:write");
           if (denied !== undefined) return yield* Effect.fail(denied);
           const ops = checkedOut.tx.ops;
+          seen = { ...seen, ops: opCounts(ops) };
           const committed = yield* d.commit(req.projectId, checkedOut.tx, pin.generation, { via, dryRun }).pipe(
             Effect.map((c) => ({ c }) as const),
             Effect.catchIf(
@@ -161,6 +186,7 @@ export function makeCommandRun(d: CommandRunDeps) {
           if ("conflict" in committed) return { outcome: "conflict", rev: pin.rev, ops } satisfies PluginCommandRunResult;
           const c = committed.c;
           if ("dryRun" in c) return { outcome: "data", dryRun: true, rev: pin.rev, ops } satisfies PluginCommandRunResult;
+          seen = { ...seen, txId: c.tx.txId };
           return { outcome: c.rev === pin.rev + 1 ? "accepted" : "rebased", txId: c.tx.txId, rev: c.rev } satisfies PluginCommandRunResult;
         }),
         (held) => Effect.sync(held.release),
@@ -168,8 +194,11 @@ export function makeCommandRun(d: CommandRunDeps) {
     });
     const report = (outcome: CommandRunEvent["outcome"], code?: string) =>
       Effect.sync(() => {
-        if (entry === undefined || d.onRun === undefined) return;
-        d.onRun({ plugin: entry.info.plugin, command: entry.info.command, principal: { kind: principal.kind, id: principal.id }, outcome, ...(code === undefined ? {} : { code }), dryRun, ms: clock() - started });
+        if (d.onRun === undefined) return;
+        // A refusal before the name resolved names what the caller asked for (no version).
+        const named = entry === undefined ? parseCommandName(req.name) : { id: entry.info.plugin, command: entry.info.command };
+        if (named === undefined) return;
+        d.onRun({ plugin: named.id, command: named.command, principal: { kind: principal.kind, id: principal.id }, outcome, ...(code === undefined ? {} : { code }), dryRun, ms: clock() - started, ...seen });
       });
     return body.pipe(
       Effect.tap((r) => report(r.outcome)),

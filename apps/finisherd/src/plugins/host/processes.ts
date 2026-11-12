@@ -351,12 +351,14 @@ export function makePluginHost(d: PluginHostDeps) {
     /**
      * Task 9's `onRun` hook (once per `plugin.command.run`, every outcome): records
      * `plugin.command` and counts the run in `plugin.stats`' `command` family; never throws.
-     * `extra` carries what its `CommandRunEvent` lacks (`txId`, `ops`, the validated `args`).
+     * The event carries the validated `args`, the `txId` and the op counts; `extra` overrides
+     * them. A name that did not resolve (`PLUGIN_NOT_FOUND`) is journaled but not counted: no
+     * plugin ran, and a mistyped id must not take a slot of the stats window.
      */
     onCommandRun(e: CommandRunEventLike, extra?: CommandRunExtra): void {
       const run = commandRunOf(e, extra);
       journalPluginCommand(d.journal, run, (m) => serverLog("warning", m));
-      stats.call(run.plugin, "command", run.durationMs * 1000, run.code, 0, 0);
+      if (run.code !== "PLUGIN_NOT_FOUND") stats.call(run.plugin, "command", run.durationMs * 1000, run.code, 0, 0);
     },
     /**
      * `start.extra`'s `PluginContext` for `job` (Task 9's kind puts it in): the plugin, its

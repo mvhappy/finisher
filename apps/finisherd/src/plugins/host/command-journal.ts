@@ -77,9 +77,12 @@ export interface CommandRunEventLike {
   readonly code?: string;
   readonly dryRun: boolean;
   readonly ms: number;
+  readonly args?: unknown;
+  readonly txId?: string;
+  readonly ops?: Readonly<Record<string, number>>;
 }
 
-/** What `CommandRunEvent` does not carry (Task 9 may add them to its event): training args, the commit. */
+/** Overrides of what the event carries: training args, the commit. */
 export interface CommandRunExtra {
   readonly txId?: string;
   readonly ops?: Readonly<Record<string, number>>;
@@ -99,6 +102,9 @@ export function commandRunOf(e: CommandRunEventLike, extra: CommandRunExtra = {}
     ...(e.code === undefined ? {} : { code: e.code }),
     ...(e.dryRun ? { dryRun: true } : {}),
     durationMs: e.ms,
+    ...(e.args === undefined ? {} : { args: e.args }),
+    ...(e.txId === undefined ? {} : { txId: e.txId }),
+    ...(e.ops === undefined || Object.keys(e.ops).length === 0 ? {} : { ops: e.ops }),
     ...extra,
   };
 }

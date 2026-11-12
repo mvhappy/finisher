@@ -15,6 +15,7 @@ import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { openControlStore } from "../src/control/db.ts";
 import { PluginTables } from "../src/plugins/tables.ts";
 import { AgentServer, code, open } from "./support/agent-server.ts";
+import { entries } from "./support/agent-journal.ts";
 import { addAsset, commit, confirmed, insert, type NdjsonClient, ok, tx } from "./support/ndjson-client.ts";
 
 const FIXTURE = join(dirname(fileURLToPath(import.meta.url)), "fixtures", "plugins", "probe");
@@ -132,5 +133,36 @@ describe("plugin commands on a server", () => {
     // A deny rule on the plugin's commands holds at its commit too.
     ok(await confirmed(owner, "agent.rules.add", { effect: "deny", command: "plugin:@test/*", sessionId: opened.session.id }));
     expect(code(await run(a, projectId, "plugin:@test/probe/edit", txOut([insert(15, 5)]), { branch: root }))).toBe("RULE_DENIED");
+  });
+
+  test("command_runs_are_journaled: plugin.command with training args, txId and op counts; refusals too; no raw plugin id", async () => {
+    writeFileSync(join(server.serverData, "settings.json"), JSON.stringify({ privacy: { diagnostics: "on", training: "on" } }));
+    const { local, projectId } = await setUp();
+    const ops = [insert(5, 5), { ...insert(10, 5), id: "$d" }];
+    ok(await run(local, projectId, "plugin:@test/probe/edit", txOut(ops), { dryRun: true }));
+    const done = ok<PluginCommandRunResult>(await run(local, projectId, "plugin:@test/probe/edit", txOut(ops)));
+    expect(done.outcome).toBe("accepted");
+    expect(code(await run(local, projectId, "plugin:@test/probe/nope", "{}"))).toBe("PLUGIN_NOT_FOUND");
+    await server.stop();
+    const got = entries(server.serverData, "events").filter((e) => e.kind === "plugin.command");
+    expect(got.map((e) => [e.payload["outcome"], e.payload["code"] ?? null, e.payload["dryRun"] ?? false])).toEqual([
+      ["accepted", null, true],
+      ["accepted", null, false],
+      ["refused", "PLUGIN_NOT_FOUND", false],
+    ]);
+    const [dry, commit, refused] = got as [(typeof got)[0], (typeof got)[0], (typeof got)[0]];
+    for (const e of [dry, commit]) {
+      expect(e.payload["ops"]).toEqual({ "clip.insert": 2 });
+      expect(e.payload["args"]).toEqual({ inline: { op: "command", out: txOut(ops) } });
+      expect(e.consent.purposes).toContain("training");
+    }
+    expect(dry.payload["txId"]).toBeUndefined();
+    expect(commit.payload["txId"]).toBeDefined();
+    expect(JSON.stringify(commit.payload["txId"])).not.toContain(done.txId!);
+    expect(refused.payload["args"]).toBeUndefined();
+    expect(refused.payload["ops"]).toBeUndefined();
+    // The plugin is named by its PluginRef, the command by its keyed hash: no raw id anywhere.
+    expect(JSON.stringify(got)).not.toMatch(/@test|probe|nope/);
+    expect(refused.payload["command"]).not.toEqual(commit.payload["command"]);
   });
 });
