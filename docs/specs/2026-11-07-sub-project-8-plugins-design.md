@@ -196,7 +196,7 @@ Rules, all implemented once in **`fin-shm`**, which `fin-worker` and the plugin 
 | Method (plugin → host) | Permission | Notes |
 |---|---|---|
 | `project.snapshot {rev?}` | `project:read` | the call's project and branch at its pinned `rev` (arch §6.3), inline or as an `in/` file |
-| `project.view {budget?, range?}` | `project:read` | `fin view` text |
+| `project.view {budget?, range?}` | `project:read` | `fin view` text over every timeline; frames in `range` count at the rate the timelines share, else `USAGE {reason: MIXED_RATES}` (use seconds) |
 | `analysis.get {ref}`, `analysis.find {fingerprint, kind}` | `project:read` or `media:read` | reach-checked |
 | `media.pcm {asset \| fingerprint, range?, rate, channels}` | `media:read` | an `in/` file or ring from `fin-worker`'s audio cache (6C); never a source path |
 | `media.frames {asset \| fingerprint, times \| stride, maxSide, format: rgb8\|gray8}` | `media:read` | an `in/` ring from a `fin-worker` decode role |

@@ -120,7 +120,9 @@ pub fn range(
                 json!({ "input": input, "field": "range", "reason": "MIXED_RATES",
                                   "rates": rates }),
             )
-            .with_fix("show one timeline, or write the range in seconds such as 2s..5s"));
+            .with_fix(
+                "write the range in seconds such as 2s..5s: frames count at one timeline's rate",
+            ));
         }
         // Without frames the rate is unused.
         parse_time(s, rate.unwrap_or(fallback))
