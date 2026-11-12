@@ -6,8 +6,8 @@ use fin_core::{CoreError, ItemBody, MemIds, Op, Project, SCHEMA_VERSION, Tx, app
 use serde_json::{Value, json};
 
 use super::{
-    Globals, IN_FLIGHT_CODES, args_hash, author, echo_committed, idem_key_reused, lookup,
-    same_command, target_branch,
+    Globals, IN_FLIGHT_CODES, args_hash, author, echo, idem_key_reused, lookup, same_command,
+    target_branch,
 };
 use crate::backend::{Backend, Snapshot};
 use crate::output::{VALIDATION, exit_code, usage};
@@ -331,7 +331,24 @@ impl<'a> Builder<'a> {
             return Err(idem_key_reused(&committed));
         }
         let mut resolved = resolved;
-        echo_committed(&mut resolved, &committed.tx.ops);
+        // A retry answered from the log, a lost answer found again or a rebased commit: the
+        // plan's values are not the commit's (review #48).
+        if !echo::planned_is_committed(&tx.ops, self.base.rev, &committed) {
+            let after = match committed.rev {
+                r if r == self.base.rev => Some(self.base.project),
+                r if r > self.base.rev => self
+                    .backend
+                    .snapshot(&self.branch)
+                    .ok()
+                    .filter(|s| s.rev == r)
+                    .map(|s| s.project),
+                _ => None,
+            };
+            let cmds: Vec<String> = (self.inputs.iter())
+                .map(|i| i["cmd"].as_str().unwrap_or_default().to_string())
+                .collect();
+            echo::from_commit(&mut resolved, &cmds, &committed, after.as_ref());
+        }
         super::keyframe::echo_key(&mut resolved, &committed);
         let mut doc = json!({
             "rev": committed.rev,

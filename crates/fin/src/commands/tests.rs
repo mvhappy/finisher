@@ -413,8 +413,24 @@ fn committed_echo_finds_the_clip_by_placeholder() {
         insert("$audio", "9", "1"),
         insert("$clip", "7", "1"),
     ];
+    let committed = |ops: &[Op]| CommittedTx {
+        rev: 2,
+        tx: Tx {
+            tx_id: "K".into(),
+            author: "fin".into(),
+            branch: "main".into(),
+            base_rev: 1,
+            schema_version: fin_core::SCHEMA_VERSION,
+            args_hash: None,
+            via: None,
+            ops: ops.to_vec(),
+        },
+        diff: Default::default(),
+        bindings: Default::default(),
+        link: None,
+    };
     let mut single = json!({ "at": "0", "in": "1", "duration": "2", "out": "3" });
-    echo_committed(&mut single, &ops);
+    echo::from_commit(&mut single, &["clip.insert".into()], &committed(&ops), None);
     assert_eq!(
         single,
         json!({ "at": "7", "in": "1", "duration": "2", "out": "3" })
@@ -427,7 +443,7 @@ fn committed_echo_finds_the_clip_by_placeholder() {
         line(2, "clip.insert"),
         line(3, "clip.insert")
     ]);
-    echo_committed(&mut batch, &ops);
+    echo::from_commit(&mut batch, &[], &committed(&ops), None);
     assert_eq!(batch[0]["resolved"], json!({ "at": "0" }));
     assert_eq!(
         batch[1]["resolved"],
