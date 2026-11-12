@@ -40,7 +40,7 @@ fn every_registry_command_parses() {
         "review show r1",
         "review refresh r1",
         "review comment r1 hello --tx tx1 --at 1s",
-        "review decide r1 --accept tx1 tx2 --reject tx3 --reason why",
+        "review decide r1 --accept tx1,tx2 --reject tx3 --reason why",
         "review merge r1 --accept-pending",
         "review close r1 --dismissed",
         "revert m1",

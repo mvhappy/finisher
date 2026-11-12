@@ -6,9 +6,9 @@
 //! Review text (titles, comments, reasons) is content: the server never audits it, and these
 //! commands print it back only in the item's own document.
 //!
-//! The review RPCs take no `txId`: the merge's `--idem-key` (or `FIN_CALL`) is its `idemKey`;
-//! the other writes are harmless to repeat (`request` answers the open item, `decide` sets the
-//! same marks). `--dry-run` is refused: a review has no plan to preview beyond `show`.
+//! The review RPCs take no `txId`: `--idem-key` (or `FIN_CALL`) applies to `merge` only, as its
+//! `idemKey`; the other writes are harmless to repeat (`request` answers the open item, `decide`
+//! sets the same marks). `--dry-run` is refused: a review has no plan to preview beyond `show`.
 
 use clap::{Args, Subcommand};
 use fin_core::CoreError;
@@ -101,16 +101,16 @@ pub struct DecideArgs {
     /// The review item's id.
     #[arg(value_name = "id")]
     pub id: String,
-    /// Origin txIds to accept.
-    #[arg(long, value_name = "txId", num_args = 1..)]
+    /// Origin txIds to accept: one per flag, repeat the flag or separate with commas.
+    #[arg(long, value_name = "txId", value_delimiter = ',')]
     #[serde(default)]
     pub accept: Vec<String>,
     /// Origin txIds to reject: a drop record keeps them out of every merge at once.
-    #[arg(long, value_name = "txId", num_args = 1..)]
+    #[arg(long, value_name = "txId", value_delimiter = ',')]
     #[serde(default)]
     pub reject: Vec<String>,
     /// Origin txIds to take the mark back from.
-    #[arg(long, value_name = "txId", num_args = 1..)]
+    #[arg(long, value_name = "txId", value_delimiter = ',')]
     #[serde(default)]
     pub pending: Vec<String>,
     /// Why (at most 2 KiB; kept with each mark).
@@ -135,7 +135,8 @@ pub struct MergeArgs {
     /// The review item's id.
     #[arg(value_name = "id")]
     pub id: String,
-    /// Merge the entries still pending too (otherwise `REVIEW_UNDECIDED` lists them).
+    /// Merge the undecided entries too (otherwise only the accepted ones merge). Under the
+    /// project's `requireReview`, any undecided entry refuses the merge whatever this says.
     #[arg(long = "accept-pending")]
     #[serde(default, rename = "acceptPending")]
     pub accept_pending: bool,
@@ -177,14 +178,12 @@ fn expect(backend: &dyn Backend, id: &str, given: &Option<String>) -> Result<Val
             });
     }
     let view = backend.server_call("review.get", json!({ "itemId": id }))?;
-    match view["item"].get("snapshot") {
-        Some(s) if s.is_object() => Ok(s.clone()),
-        _ => Err(usage(
-            "this review item has no snapshot to decide or merge against",
-            json!({ "itemId": id, "kind": view["item"]["kind"] }),
-            "only a branchReview has a change list; close the item instead",
-        )),
-    }
+    // An item with no snapshot (not a branchReview) gets a placeholder: the server checks the
+    // item's kind and state before the snapshot and answers with its own error.
+    Ok(match view["item"].get("snapshot") {
+        Some(s) if s.is_object() => s.clone(),
+        _ => json!({ "sourceSeq": 0, "targetSeq": 0, "plannedAt": 0 }),
+    })
 }
 
 fn marks(a: &DecideArgs) -> Result<Vec<Value>, CoreError> {
@@ -236,6 +235,15 @@ pub fn decide_payload(a: &DecideArgs) -> Result<Value, CoreError> {
 }
 
 /// A merge whose answer was lost names the key to repeat it with.
+fn with_hint(mut e: CoreError, id: &str) -> CoreError {
+    if e.code == "REVIEW_UNDECIDED" && e.details["reason"] == "nothingAccepted" {
+        e.fix = Some(format!(
+            "accept something first (fin review decide {id} --accept <txId>), or add --accept-pending to merge the undecided entries"
+        ));
+    }
+    e
+}
+
 fn with_key(mut e: CoreError, key: &str) -> CoreError {
     if IN_FLIGHT_CODES.contains(&e.code.as_str()) {
         e.details["idemKey"] = json!(key);
@@ -301,7 +309,7 @@ pub fn run(backend: &dyn Backend, g: &Globals, c: &ReviewCmd) -> Result<Value, C
             p["expect"] = expect(backend, &a.id, &a.expect)?;
             backend
                 .server_call("review.merge", p)
-                .map_err(|e| with_key(e, &idem))
+                .map_err(|e| with_hint(with_key(e, &idem), &a.id))
         }
         ReviewCmd::Close(a) => {
             let state = match (a.rejected, a.dismissed) {

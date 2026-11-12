@@ -23,6 +23,8 @@ export const AUTO_MERGE_AVAILABLE = false;
 export interface PolicyPayload {
   readonly projectId: string;
   readonly protected?: ReadonlyArray<string> | undefined;
+  readonly protect?: ReadonlyArray<string> | undefined;
+  readonly unprotect?: ReadonlyArray<string> | undefined;
   readonly requireReview?: boolean | undefined;
   readonly autoMerge?: { readonly enabled: boolean } | undefined;
 }
@@ -53,11 +55,26 @@ export function writePolicy(deps: PolicyDeps, principal: { readonly kind: string
   return Effect.gen(function* () {
     if (req.autoMerge?.enabled === true && !(deps.autoMergeAvailable ?? AUTO_MERGE_AVAILABLE)) return yield* Effect.fail(autoMergeUnavailable());
     const { store, gate } = deps.reviews;
+    const deltas = req.protect !== undefined || req.unprotect !== undefined;
+    if (deltas && req.protected !== undefined) {
+      return yield* Effect.fail(finError("INVALID_REQUEST", "protected cannot be sent with protect or unprotect", { field: "protected", reason: "exclusive" }, "Send the whole list, or the branches to add and remove."));
+    }
+    const resolve = (refs: ReadonlyArray<string> | undefined) => Effect.forEach(refs ?? [], (ref) => deps.projects.resolveBranch(req.projectId, ref));
+    // Resolved before the gate (an unknown branch changes nothing); applied to the list as it is inside it.
+    const add = yield* resolve(req.protect);
+    const remove = yield* resolve(req.unprotect);
+    if (add.some((id) => remove.includes(id))) {
+      return yield* Effect.fail(finError("INVALID_REQUEST", "a branch is in both protect and unprotect", { field: "protect", reason: "both" }, "Name it in one of them."));
+    }
     return yield* gate.exclusive(
       req.projectId,
       Effect.gen(function* () {
         const current = store.policy(req.projectId);
-        const ids = req.protected === undefined ? current.protected : yield* Effect.forEach(req.protected, (ref) => deps.projects.resolveBranch(req.projectId, ref));
+        const ids = deltas
+          ? [...current.protected, ...add].filter((id) => !remove.includes(id))
+          : req.protected === undefined
+            ? current.protected
+            : yield* resolve(req.protected);
         const policy: BranchPolicy = {
           protected: [...new Set(ids)],
           requireReview: req.requireReview ?? current.requireReview,

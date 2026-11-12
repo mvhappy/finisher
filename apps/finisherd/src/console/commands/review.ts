@@ -6,7 +6,7 @@
 import type { BranchPolicy } from "@finisher/contracts";
 import { projectArg } from "../../agent/console.ts";
 import { AUTO_MERGE_AVAILABLE, autoMergeUnavailable } from "../../reviews/policy.ts";
-import { consoleError, valueOf } from "../client.ts";
+import { type ConsoleConnection, consoleError, valueOf } from "../client.ts";
 import { confirmed, proceed, requireTty } from "../confirm.ts";
 import { all, has, one, onlyFlags, usage } from "../format.ts";
 import { safe } from "../safe.ts";
@@ -18,12 +18,35 @@ const onOff = (flag: string, value: string | undefined): boolean | undefined => 
   return value === "on";
 };
 
-const words = (p: BranchPolicy): string =>
+interface BranchRow {
+  readonly id: string;
+  readonly name: string;
+}
+
+/** `name (id)`, or the id alone for a branch the list does not hold. */
+const label = (rows: ReadonlyArray<BranchRow>, id: string): string => {
+  const b = rows.find((r) => r.id === id);
+  return safe(b === undefined || b.name === id ? id : `${b.name} (${id})`);
+};
+
+const words = (p: BranchPolicy, rows: ReadonlyArray<BranchRow>): string =>
   [
-    `protected branches: ${p.protected.length === 0 ? "none" : p.protected.map(safe).join(", ")}`,
+    `protected branches: ${p.protected.length === 0 ? "none" : p.protected.map((id) => label(rows, id)).join(", ")}`,
     `require review: ${p.requireReview ? "on" : "off"}`,
     `auto merge: ${p.autoMerge.enabled ? "on" : "off"}`,
   ].join("\n  ");
+
+/** Every branch of the project, archived ones too (a protected branch may have been archived). */
+async function branchRows(c: ConsoleConnection, projectId: string): Promise<ReadonlyArray<BranchRow>> {
+  return valueOf<{ branches: ReadonlyArray<BranchRow> }>(await c.call("branch.list", { projectId, all: true })).branches;
+}
+
+/** A branch reference (id, name or `name#id`) as its id; unknown is `BRANCH_NOT_FOUND`, before anything is asked. */
+function resolveRef(rows: ReadonlyArray<BranchRow>, ref: string): string {
+  const hit = rows.find((r) => r.id === ref) ?? rows.find((r) => r.name === ref) ?? rows.find((r) => `${r.name}#${r.id}` === ref);
+  if (hit === undefined) throw consoleError("BRANCH_NOT_FOUND", `no branch ${safe(ref)} in this project`, { branch: ref }, "Name a branch by its id, its name or name#id.");
+  return hit.id;
+}
 
 export async function review(ctx: CommandContext): Promise<number> {
   const [sub, action, ...more] = ctx.args.words;
@@ -43,8 +66,11 @@ async function projectOf(ctx: CommandContext): Promise<string> {
 async function show(ctx: CommandContext): Promise<number> {
   onlyFlags(ctx.args, "review policy show", ["project", "json"]);
   const projectId = await projectOf(ctx);
-  const r = await withConnection(ctx, async (c) => valueOf<{ policy: BranchPolicy }>(await c.call("review.policy.get", { projectId })));
-  ctx.output.out(has(ctx.args, "json") ? JSON.stringify(r) : `Review policy of project ${projectId}:\n  ${words(r.policy)}`);
+  const { r, rows } = await withConnection(ctx, async (c) => ({
+    r: valueOf<{ policy: BranchPolicy }>(await c.call("review.policy.get", { projectId })),
+    rows: await branchRows(c, projectId),
+  }));
+  ctx.output.out(has(ctx.args, "json") ? JSON.stringify(r) : `Review policy of project ${projectId}:\n  ${words(r.policy, rows)}`);
   return 0;
 }
 
@@ -62,23 +88,29 @@ async function set(ctx: CommandContext): Promise<number> {
     const e = autoMergeUnavailable();
     throw consoleError(e.code, e.message, e.details as Record<string, unknown>, e.fix);
   }
+  const both = protect.filter((b) => unprotect.includes(b));
+  if (both.length > 0) usage(`${both.map(safe).join(", ")} is in both --protect and --unprotect`, "Name a branch in one of them.");
   const projectId = await projectOf(ctx);
   requireTty(ctx.prompt, "review policy set");
-  const r = await withConnection(ctx, async (c) => {
-    const { policy: current } = valueOf<{ policy: BranchPolicy }>(await c.call("review.policy.get", { projectId }));
+  const { r, rows } = await withConnection(ctx, async (c) => {
+    // Resolved first: an unknown branch fails before anything is asked. The server applies the
+    // branches to the list as it is when the write lands (no read-modify-write here).
+    const rows = await branchRows(c, projectId);
+    const add = protect.map((b) => resolveRef(rows, b));
+    const remove = unprotect.map((b) => resolveRef(rows, b));
+    if (add.some((id) => remove.includes(id))) usage("a branch is in both --protect and --unprotect", "Name it in one of them.");
     const payload: Record<string, unknown> = { projectId };
-    if (protect.length + unprotect.length > 0) {
-      payload.protected = [...new Set([...current.protected, ...protect])].filter((b) => !unprotect.includes(b));
-    }
+    if (add.length > 0) payload.protect = add;
+    if (remove.length > 0) payload.unprotect = remove;
     if (requireReview !== undefined) payload.requireReview = requireReview;
     if (autoMerge !== undefined) payload.autoMerge = { enabled: autoMerge };
     const change = [
-      ...(protect.length === 0 ? [] : [`protects ${protect.map(safe).join(", ")}`]),
-      ...(unprotect.length === 0 ? [] : [`stops protecting ${unprotect.map(safe).join(", ")}`]),
+      ...(add.length === 0 ? [] : [`protects ${add.map((id) => label(rows, id)).join(", ")}`]),
+      ...(remove.length === 0 ? [] : [`stops protecting ${remove.map((id) => label(rows, id)).join(", ")}`]),
       ...(requireReview === undefined ? [] : [`turns "require review" ${requireReview ? "on" : "off"}`]),
       ...(autoMerge === undefined ? [] : [`turns auto merge ${autoMerge ? "on" : "off"}`]),
     ];
-    return confirmed<{ policy: BranchPolicy; old: BranchPolicy }>(
+    const r = await confirmed<{ policy: BranchPolicy; old: BranchPolicy }>(
       c,
       ctx.prompt,
       `This ${change.join(" and ")} for project ${projectId}. A protected branch takes writes only from a reviewer. It is audited.`,
@@ -86,7 +118,8 @@ async function set(ctx: CommandContext): Promise<number> {
       "review.policy",
       payload,
     );
+    return { r, rows };
   });
-  ctx.output.out(has(ctx.args, "json") ? JSON.stringify(r) : `Review policy of project ${projectId}:\n  ${words(r.policy)}`);
+  ctx.output.out(has(ctx.args, "json") ? JSON.stringify(r) : `Review policy of project ${projectId}:\n  ${words(r.policy, rows)}`);
   return 0;
 }

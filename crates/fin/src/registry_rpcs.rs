@@ -158,7 +158,7 @@ pub const ROWS: &[Row] = &[
     row!(
         "review.decide",
         rpc!("review.decide"),
-        &["itemId", "decisions", "requestChanges"]
+        &["itemId", "decisions.*.txId", "decisions.*.decision"]
     ),
     row!(
         "review.merge",

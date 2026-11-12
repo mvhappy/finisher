@@ -127,7 +127,11 @@ export const ReviewCloseSuccess = Schema.Struct({ item: ReviewItemSchema });
  */
 export const ReviewPolicyPayload = Schema.Struct({
   projectId: Schema.String,
+  /** The whole list; exclusive with `protect`/`unprotect` (`INVALID_REQUEST`). */
   protected: Schema.optional(Schema.Array(Schema.String).check(Schema.isMaxLength(REVIEW_PROTECTED_MAX))),
+  /** Branches to add to / take off the CURRENT list, applied under the project's policy gate (no lost update). */
+  protect: Schema.optional(Schema.Array(Schema.String).check(Schema.isMaxLength(REVIEW_PROTECTED_MAX))),
+  unprotect: Schema.optional(Schema.Array(Schema.String).check(Schema.isMaxLength(REVIEW_PROTECTED_MAX))),
   requireReview: Schema.optional(Schema.Boolean),
   autoMerge: Schema.optional(Schema.Struct({ enabled: Schema.Boolean })),
   challenge: ChallengeField,
