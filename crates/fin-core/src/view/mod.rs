@@ -132,9 +132,7 @@ pub fn screenplay(
         to,
         detail: false,
     };
-    let doc = |lines: &[String], elided: &[Value]| {
-        json!({ "lines": lines, "elided": elided, "tokens": budget::tokens(lines) })
-    };
+    let doc = |lines: &[String], elided: &[Value]| json!({ "lines": lines, "elided": elided, "tokens": budget::tokens(lines) });
     // The budget covers the whole document (compact JSON and a newline), as `fin view`'s does.
     let size = |l: &[String], e: &[Value]| doc(l, e).to_string().chars().count() as u64 + 1;
     let (lines, elided) = budget::fit(sections(&timelines, filter, &marks)?, budget_tokens, &size);
