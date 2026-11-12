@@ -460,7 +460,8 @@ describe("the host sandbox (detection and the probe)", () => {
     });
     // A link-store harness: the link in the host directory's provider folder, the store granted.
     await within(openHostSandbox("detect", "fake", d), async (box) => {
-      expect((await run(box, ["/bin/true"])).code).toBe(0);
+      // `/bin/sh`, not `/bin/true`: macOS has only `/usr/bin/true`.
+      expect((await run(box, ["/bin/sh", "-c", "true"])).code).toBe(0);
       const req = JSON.parse(readFileSync(request, "utf8")) as { input: Record<string, unknown> };
       const link = join(String(req.input.sessionDir), "provider", "sign-in.json");
       expect(lstatSync(link).isSymbolicLink()).toBe(true);
