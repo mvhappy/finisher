@@ -208,7 +208,7 @@ fin --branch feature review request --title "Tighten the intro" [--into main] [-
 fin review ls [--state open] [--kind branchReview]   # kinds: branchReview, mergeConflict, pluginSuggestion
 fin review show <id>                                  # JSON: the change list, your marks, comments, "stale"
 fin review comment <id> "too slow here" [--tx <txId>]
-fin review decide <id> --accept <txId>… --reject <txId>… [--pending <txId>…] [--reason "…"]
+fin review decide <id> --accept <txId> --accept <txId> --reject <txId> [--pending <txId>] [--reason "…"]   # or --accept a,b
 fin review decide <id> --request-changes --reason "…"   # hand the branch back to its agent
 fin review refresh <id>                               # re-plan at the current heads; your marks stay
 fin review merge <id> [--accept-pending]              # copy the accepted transactions (and the pending ones with the flag)
@@ -222,12 +222,15 @@ fin review close <id> --rejected | --dismissed        # --rejected keeps every u
 - **Deciding.** `accept`, `reject` or leave `pending`. Every `decide` and `merge` sends the
   snapshot it saw, so a view that is out of date is `REVIEW_STALE` (exit 4) with the fresh list;
   `fin review refresh` moves the snapshot and keeps your marks. A rejection writes a `drop`
-  record on the target branch at once, before anything else. Taking a rejection back (`--pending`
-  or `--accept`) lifts it.
+  record on the target branch at once, before anything else. `--accept` brings a rejected
+  transaction back (a drop someone else made needs `review.decide` on the target); `--pending`
+  lifts the review's own rejection.
 - **Merging.** `fin review merge` copies exactly the accepted transactions, up to the
   snapshot: anything the branch gained after the review is not merged by it. Pending
-  transactions stop it (`REVIEW_UNDECIDED` lists them) unless you pass `--accept-pending`, and
-  never when the project requires review. A conflict is `REVIEW_HAS_CONFLICTS` and nothing is
+  transactions are left out (the review closes as merged, and you review the rest with a new
+  request) unless you pass `--accept-pending`; when the project requires review, any pending
+  one stops the merge (`REVIEW_UNDECIDED`). With nothing accepted and transactions still open,
+  the merge is `REVIEW_UNDECIDED` too. A conflict is `REVIEW_HAS_CONFLICTS` and nothing is
   written. If the target moved since the snapshot, the merge still goes ahead on what was
   reviewed and says `targetMoved`. An agent's branch is archived once nothing of it is left.
 - **Merge conflicts** from any `fin merge` appear as `mergeConflict` items, and a plugin's
@@ -250,7 +253,8 @@ cherry-pick of it is still allowed.
 transaction itself (`BRANCH_PROTECTED`, exit 7). `fin` run by you keeps the scope, so you can still
 edit `main` directly; agent and MCP credentials do not have it, and `review merge`, `review
 decide`, `review close` and `fin drop` into a protected branch need `review.decide`, which
-only you hold by default. The policy is yours alone, set at the server's console:
+only you hold by default. Plugin commands commit as whoever runs them, so the same rule binds
+them: an MCP credential's command into protected `main` is `BRANCH_PROTECTED`. The policy is yours alone, set at the server's console:
 
 ```bash
 finisherd review policy show --project <id> [--json]
@@ -259,8 +263,8 @@ finisherd review policy set --project <id> --require-review on                  
 finisherd review policy set --project <id> --auto-merge on                           # refused: AUTO_MERGE_UNAVAILABLE
 ```
 
-`--protect` and `--unprotect` take branch names and change the project's current list; the
-console asks `Proceed? [y/N]` first, like the other human-only actions. Automatic merging by
+`--protect` and `--unprotect` take branch names (or ids), may be repeated, and add to or remove
+from the project's list as it is when the change lands; the console asks `Proceed? [y/N]` first, like the other human-only actions. Automatic merging by
 policy is built but switched off: turning it on is refused until the QA gate and critic
 (sub-project 10) can vouch for a change.
 
