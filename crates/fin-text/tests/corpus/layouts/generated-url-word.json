@@ -1,9 +1,9 @@
 {
   "lines": [
     {
-      "x": 0,
+      "x": 160,
       "top": 0,
-      "width": 4800,
+      "width": 4480,
       "height": 4000,
       "baseline": 2960,
       "rtl": false,
@@ -11,9 +11,9 @@
       "endWord": 1
     },
     {
-      "x": 0,
+      "x": 160,
       "top": 4000,
-      "width": 43520,
+      "width": 43200,
       "height": 4000,
       "baseline": 6960,
       "rtl": false,
@@ -21,9 +21,9 @@
       "endWord": 2
     },
     {
-      "x": 0,
+      "x": 160,
       "top": 8000,
-      "width": 5760,
+      "width": 5440,
       "height": 4000,
       "baseline": 10960,
       "rtl": false,
@@ -34,21 +34,21 @@
   "words": [
     {
       "line": 0,
-      "x": 0,
-      "width": 4800
+      "x": 160,
+      "width": 4480
     },
     {
       "line": 1,
-      "x": 0,
-      "width": 43520
+      "x": 160,
+      "width": 43200
     },
     {
       "line": 2,
-      "x": 0,
-      "width": 5760
+      "x": 160,
+      "width": 5440
     }
   ],
-  "width": 43520,
+  "width": 43200,
   "height": 12000,
   "overflow": true,
   "missing": [],

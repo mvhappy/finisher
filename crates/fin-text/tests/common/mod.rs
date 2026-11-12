@@ -82,8 +82,8 @@ pub fn face_ref(sha256: &str, bytes: &[u8], face: u32) -> FaceRef {
     }
 }
 
-/// The generated fonts by corpus name (`sans`, `rtl`, `han`, `latinBold`, `ttc#0`, `ttc#1`)
-/// and a provider holding them.
+/// The generated fonts by corpus name (`sans`, `rtl`, `han`, `latinBold`, `var`, `overhang`,
+/// `ttc#0`, `ttc#1`) and a provider holding them.
 pub fn generated_fonts() -> (MapBytes, BTreeMap<String, FaceRef>) {
     use fin_testfonts as tf;
     let mut bytes = MapBytes::default();
@@ -94,6 +94,7 @@ pub fn generated_fonts() -> (MapBytes, BTreeMap<String, FaceRef>) {
         ("han", tf::test_han()),
         ("latinBold", tf::build(&tf::LATIN_BOLD)),
         ("var", tf::test_variable()),
+        ("overhang", tf::test_overhang()),
     ] {
         let sha = bytes.add(data.clone());
         refs.insert(name.to_string(), face_ref(&sha, &data, 0));

@@ -3,7 +3,7 @@
     {
       "x": 120,
       "top": 0,
-      "width": 15000,
+      "width": 14640,
       "height": 2640,
       "baseline": 2040,
       "rtl": false,
@@ -15,15 +15,15 @@
     {
       "line": 0,
       "x": 120,
-      "width": 9000
+      "width": 8640
     },
     {
       "line": 0,
       "x": 9840,
-      "width": 5280
+      "width": 4920
     }
   ],
-  "width": 15000,
+  "width": 14640,
   "height": 2640,
   "overflow": false,
   "missing": [],

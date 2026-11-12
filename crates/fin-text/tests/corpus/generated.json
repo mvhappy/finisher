@@ -507,6 +507,93 @@
         "letterSpacing": 0.0,
         "align": "left"
       }
+    },
+    {
+      "id": "overhang",
+      "what": "outlines past their advances: left (J) and right (W) overhangs, overflowing the box",
+      "fonts": [
+        "overhang"
+      ],
+      "words": [
+        "Ja",
+        "W",
+        "aW"
+      ],
+      "style": {
+        "family": "TestOverhang",
+        "weight": 400,
+        "italic": false,
+        "size": 100,
+        "lineHeight": 1.25,
+        "letterSpacing": 0.0,
+        "align": "left"
+      },
+      "maxWidth": 300.0
+    },
+    {
+      "id": "combining-mark",
+      "what": "zero-advance combining marks placed by the shaper's fallback positioning",
+      "fonts": [
+        "overhang"
+      ],
+      "words": [
+        "a\u0301",
+        "W\u0301"
+      ],
+      "style": {
+        "family": "TestOverhang",
+        "weight": 400,
+        "italic": false,
+        "size": 100,
+        "lineHeight": 1.25,
+        "letterSpacing": 0.0,
+        "align": "center"
+      },
+      "maxWidth": 400.0
+    },
+    {
+      "id": "tracking-right",
+      "what": "negative tracking, right-aligned: none after each line's last glyph",
+      "fonts": [
+        "sans"
+      ],
+      "words": [
+        "WW",
+        "Wa",
+        "W"
+      ],
+      "style": {
+        "family": "TestSans",
+        "weight": 400,
+        "italic": false,
+        "size": 100,
+        "lineHeight": 1.25,
+        "letterSpacing": -0.1,
+        "align": "right"
+      },
+      "maxWidth": 400.0
+    },
+    {
+      "id": "tracking-rtl-center",
+      "what": "positive tracking on right-to-left lines, centred",
+      "fonts": [
+        "rtl"
+      ],
+      "words": [
+        "אבג",
+        "דהו",
+        "זחט"
+      ],
+      "style": {
+        "family": "TestRtl",
+        "weight": 400,
+        "italic": false,
+        "size": 100,
+        "lineHeight": 1.25,
+        "letterSpacing": 0.1,
+        "align": "center"
+      },
+      "maxWidth": 400.0
     }
   ]
 }

@@ -85,8 +85,10 @@ fn hyphen_never_breaks_a_word() {
     let l = layout(&m, &r);
     assert_word_lines(&l, 2, Some(150.0));
     assert_eq!(l.lines.len(), 2);
-    // 9 glyphs of 500 units at 50 px: 225 px, one line, wider than the box.
-    assert_eq!((l.words[0].width, l.lines[0].width), (225 * 64, 225 * 64));
+    // 9 glyphs of 500 units at 50 px: 225 px of advance, drawn from 2.5 px (the first side
+    // bearing) to 222.5 px (the last): 220 px of ink, one line, wider than the box.
+    assert_eq!((l.words[0].width, l.lines[0].width), (220 * 64, 220 * 64));
+    assert_eq!(l.lines[0].x, 160, "2.5 px");
     assert!(l.overflow);
     let wide = layout(&m, &req(&refs, &["sans"], &["aaaa-bbbb", "c"], Some(300.0)));
     assert_eq!(wide.lines.len(), 1);
@@ -119,7 +121,8 @@ fn long_cjk_word_takes_one_line() {
     );
     assert_word_lines(&l, 2, Some(120.0));
     assert_eq!(l.lines.len(), 2);
-    assert_eq!(l.words[0].width, 8 * 50 * 64, "eight full-width ideographs");
+    // Eight full-width ideographs (400 px of advance), less a 2.5 px side bearing each end.
+    assert_eq!(l.words[0].width, 395 * 64, "eight full-width ideographs");
     assert!(l.overflow);
 }
 
@@ -142,7 +145,12 @@ fn rtl_paragraph_over_lines() {
     assert_eq!(l.lines.len(), 2, "two 90 px words and a space per line");
     for line in &l.lines {
         assert!(line.rtl);
-        assert_eq!(line.x + line.width, 200 * 64, "right-aligned in the box");
+        // The last glyph's 50-unit right side bearing (2.5 px) is not ink.
+        assert_eq!(
+            line.x + line.width,
+            200 * 64 - 160,
+            "right-aligned in the box"
+        );
     }
     assert!(l.words[0].x > l.words[1].x && l.words[2].x > l.words[3].x);
     // A later line that starts with Latin keeps the paragraph's direction: in `abc דהו` the
