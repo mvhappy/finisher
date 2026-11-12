@@ -21,7 +21,7 @@ import { finError, toFinError } from "../errors.ts";
 import { dropPayload } from "../history.ts";
 import { isOpenEntry, Planner, type ReviewEngine, sameSnapshot, snapshotOf } from "./plan.ts";
 import type { DecisionInput, ReviewStore } from "./store.ts";
-import { auditCancelled, dropIndex, dropUnknown, isReviewsOwn, othersDrops, reviewDrops } from "./undrop.ts";
+import { auditCancelled, dropIndex, dropUnknown, isReviewsOwn, NO_DROPS, othersDrops, reviewDrops } from "./undrop.ts";
 import { NO_VERDICTS, type ReviewVerdictSink, type ReviewVerdictValue, verdictBy, verdictEntries } from "./verdicts.ts";
 
 /** fin-core's `MAX_DROP_IDS`: origins one `drop` record names, drops and undrops together. */
@@ -328,10 +328,12 @@ export class ReviewWorkflow {
       // make goes through the owner's rule (`othersDrops`: listed in `undropped`, audited).
       const status = all.length === 0 ? new Map<string, string>() : yield* self.planner.statusNow(item);
       const dropped = (id: string) => status.get(id) === "dropped";
-      const index = all.some((d) => dropped(d.txId)) ? yield* dropIndex(self, item) : () => undefined;
+      // A separate read from the plan above: an undrop landing between them makes the origin
+      // `dropUnknown`, a `REVIEW_STALE` the caller retries.
+      const index = all.some((d) => dropped(d.txId)) ? yield* dropIndex(self, item) : NO_DROPS;
       const own = reviewDrops(self, item.id);
       const ours = (id: string) => isReviewsOwn(index, own, id);
-      for (const d of all) if (d.decision !== "reject" && dropped(d.txId) && index(d.txId) === undefined) return yield* Effect.fail(dropUnknown(item, d.txId));
+      for (const d of all) if (d.decision !== "reject" && dropped(d.txId) && index.newest(d.txId) === undefined) return yield* Effect.fail(dropUnknown(item, d.txId));
       const drops = all.filter((d) => d.decision === "reject" && (status.get(d.txId) === "open" || dropped(d.txId))).map((d) => d.txId);
       const undrops = all.filter((d) => dropped(d.txId) && (d.decision === "accept" || (d.decision === "pending" && ours(d.txId)))).map((d) => d.txId);
       const undropped = all.filter((d) => d.decision === "accept" && dropped(d.txId) && !ours(d.txId)).map((d) => d.txId);
@@ -339,7 +341,7 @@ export class ReviewWorkflow {
       const fresh = drops.filter((id) => !dropped(id) || ours(id));
       const joined = drops.filter((id) => !fresh.includes(id));
       // Drops someone else made that these accepts cancel: only a reviewer of the target may (owner, 2026-11-12).
-      const cancelled = yield* othersDrops(c, item, index, undropped);
+      const cancelled = yield* othersDrops(c, item, index, own, undropped);
       const written = yield* self.writeDrops(c, item, drops, undrops);
       // The records the review wrote, so a later decision can tell its own drop from a newer one.
       const dropTxs = written.filter((w) => w.link?.kind === "drop" && (w.link as { drops?: ReadonlyArray<string> }).drops !== undefined).map((w) => w.tx.txId);

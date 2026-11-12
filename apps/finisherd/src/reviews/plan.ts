@@ -23,7 +23,7 @@ export interface ReviewEngine {
   /** Every branch, archived ones too. */
   readonly branches: (projectId: string) => Effect.Effect<ReadonlyArray<BranchView>, FinError>;
   readonly plan: (projectId: string, from: string, into: string) => Effect.Effect<ReviewPlan, FinError>;
-  /** A branch's own records, oldest first (an accept looks up who dropped an origin, `undrop.ts`). */
+  /** The records of a branch's whole lineage (`opsSince(branch, 0)`: each ancestor's up to its fork, then its own), oldest first; `undrop.ts` reads who dropped an origin. */
   readonly records: (projectId: string, branch: string) => Effect.Effect<ReadonlyArray<CommittedTx>, FinError>;
   /** A write through the registry's one path (the commit lock, the hubs, the guard in `meta`). */
   readonly write: (projectId: string, op: Extract<HistoryOp, "merge" | "drop" | "branchSet">, payload: HistoryPayload, meta: CallMeta) => Effect.Effect<unknown, FinError>;

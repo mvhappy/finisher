@@ -444,6 +444,43 @@ describe("drops someone else made (Task 7 review, round 2)", () => {
     return { projectId, item: (await get(rejected.item.id)).item };
   }
 
+  const auditRows = async () =>
+    (await call<{ entries: Array<{ details: Record<string, unknown> }> }>("auth.audit.list", { kind: "history.drop" }, await connect("console"))).entries.filter((e) => e.details.dropTx !== undefined).map((e) => e.details);
+
+  test("probe E: bob drops, the review rejects (joining it), then accepts: bob's record is named, not the review's", async () => {
+    const projectId = await project();
+    await branch(projectId, "feature", "ann", ["f1", "f2"]);
+    const item = await request(projectId, "feature");
+    ok(await drop(projectId, "bob-1", { drops: ["f1"] }));
+    const rejected = ok<ReviewView>(await decide(item, [["f1", "reject"]]));
+    const accepted = ok<ReviewView>(await decide((await get(rejected.item.id)).item, [["f1", "accept"]]));
+    expect(accepted.undropped).toEqual([{ txId: "f1", dropTx: "bob-1", droppedBy: "bob" }]);
+    expect((await auditRows()).map((d) => [d.txId, d.dropTx, d.droppedBy])).toEqual([["f1", "bob-1", "other"]]);
+    expect((await plainMerge(projectId, "feature")).dropped).toEqual([]);
+  });
+
+  test("probe A: bob drops twice: both records are listed and audited, newest first", async () => {
+    const projectId = await project();
+    await branch(projectId, "feature", "ann", ["f1"]);
+    const item = await request(projectId, "feature");
+    ok(await drop(projectId, "bob-1", { drops: ["f1"] }));
+    ok(await drop(projectId, "bob-2", { drops: ["f1"] }));
+    const accepted = ok<ReviewView>(await decide(item, [["f1", "accept"]]));
+    expect(accepted.undropped?.map((d) => d.dropTx)).toEqual(["bob-2", "bob-1"]);
+    expect((await auditRows()).map((d) => d.dropTx).sort()).toEqual(["bob-1", "bob-2"]);
+  });
+
+  test("probe F: a drop inherited from main is named on a review into a branch of main", async () => {
+    const projectId = await project();
+    await branch(projectId, "feature", "ann", ["f1", "f2"]);
+    ok(await drop(projectId, "bob-1", { drops: ["f1"] }));
+    const dev = await call<{ branch: BranchView }>("branch.create", { projectId, txId: "b-dev", author: "ann", name: "dev", from: "main" });
+    const { item } = await call<{ item: ReviewItem }>("review.request", { projectId, source: "feature", into: dev.branch.id, title: "Into dev" });
+    const accepted = ok<ReviewView>(await decide(item, [["f1", "accept"]]));
+    expect(accepted.undropped).toEqual([{ txId: "f1", dropTx: "bob-1", droppedBy: "bob" }]);
+    expect((await auditRows()).map((d) => d.dropTx)).toEqual(["bob-1"]);
+  });
+
   test("B1r3: an accept after a later drop by bob goes through the owner's rule: listed and audited", async () => {
     const { projectId, item } = await rejectedThenBob();
     const accepted = ok<ReviewView>(await decide(item, [["f1", "accept"]]));
