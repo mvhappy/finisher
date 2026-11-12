@@ -206,10 +206,10 @@ describe("verdicts through the server", () => {
       await local.call("review.decide", { itemId: one.id, expect: one.snapshot, decisions: [{ txId: "one1", decision: "reject", reason: REASON }, { txId: "one2", decision: "accept", reason: REASON }], requestChanges: { reason: REASON } }),
     );
     ok(await local.call("review.merge", { itemId: one.id, expect: decided.item.snapshot, idemKey: "m1", acceptPending: true }));
-    ok(await local.call("review.close", { itemId: two.id, state: "rejected" }));
-    // A stale expect's error carries the change list, never the item's text.
+    // A stale expect's error carries the change list, never the item's text (on an open item).
     const stale = await local.call("review.decide", { itemId: two.id, expect: { ...two.snapshot!, sourceSeq: 0 }, decisions: [] });
-    expect(stale.ok).toBe(false);
+    expect(stale.ok ? undefined : stale.error.code).toBe("REVIEW_STALE");
+    ok(await local.call("review.close", { itemId: two.id, state: "rejected" }));
     ok(await local.call("diagnostics.status", {}));
     const console = await connect("console");
     const audit = ok<{ entries: Array<{ kind: string; details: Record<string, unknown> }> }>(await console.call("auth.audit.list", { limit: 1000 }));

@@ -205,10 +205,11 @@ const RULE_FIELDS = {
 };
 
 /**
- * `history.drop {item?, count}`, `review.merge {item, protected, auto}` and `review.policy {old,
- * new}` (5E Decision 26): a review item's id, counts, booleans and branch ids; never a title,
+ * `history.drop {item?, count, txId?, dropTx?, droppedBy?}`, `review.merge {item, protected, auto}` and `review.policy {old,
+ * new}` (5E Decision 26; the cancelled-drop fields: owner amendment to Decision 13): a review item's id, counts, booleans and branch ids; never a title,
  * summary, comment or reason (review text is content).
  */
+const TxWord = Schema.String.check(Schema.isPattern(/^[0-9A-Za-z._:-]{1,128}$/));
 const BranchIdWord = Schema.String.check(Schema.isPattern(/^[0-9A-Za-z]{1,64}$/));
 const PolicyWord = Schema.Struct({ protected: Schema.Array(BranchIdWord), requireReview: Schema.Boolean, autoMerge: Schema.Boolean });
 const REVIEW_FIELDS = {
@@ -217,6 +218,11 @@ const REVIEW_FIELDS = {
   auto: Schema.optional(Schema.Boolean),
   old: Schema.optional(PolicyWord),
   new: Schema.optional(PolicyWord),
+  // A drop another principal made, cancelled by a reviewer's accept (owner, 2026-11-12): the
+  // origin, the drop record and its author, as keys and credential ids (`other` otherwise).
+  txId: Schema.optional(TxWord),
+  dropTx: Schema.optional(TxWord),
+  droppedBy: Schema.optional(Schema.String.check(Schema.isPattern(/^(?:(?:agent|mcp|device|plugin|local|console):[0-9A-Za-z]{1,64}|other)$/))),
 };
 
 /** What an `auth.denied` row may say besides: the card an ask opened (`APPROVAL_PENDING`, 7B Decision 8). */
