@@ -21,6 +21,7 @@
 //    the egress broker (`egress.ts`, Task 8) with the job's approved `net` origins.
 // Every call of a plugin job, answered or refused, is counted for `plugin.stats` (`stats.ts`,
 // Task 15) while the journal records: its method family, time, error code and bytes.
+import { randomBytes } from "node:crypto";
 import { FinError, type JobView } from "@finisher/contracts";
 import type { HostMethod, NetFetch, NetRead } from "@finisher/core-types";
 import { decodePluginCall, pluginProjectView } from "@finisher/fin-node";
@@ -131,7 +132,6 @@ export function makeHostCalls(h: HostCallsDeps) {
    * run's (a rewind or rebuild can reach the same rev in a newer history generation).
    */
   const held = new Map<string, { project: string; branch: string; pin: Pinned }>();
-  let holds = 0;
 
   const pinned = (deps: CallDeps, job: JobView, project: string, branch: string): Effect.Effect<Pinned, FinError> =>
     Effect.suspend(() => {
@@ -254,7 +254,8 @@ export function makeHostCalls(h: HostCallsDeps) {
      * are the pin's) reads it, so the rev and history a command commits from are every page's.
      */
     hold(project: string, branch: string, pin: Pinned): { readonly id: string; readonly release: () => void } {
-      const id = `s${++holds}`;
+      // Random: a counter would tell plugins how many runs the server has served.
+      const id = `s${randomBytes(12).toString("hex")}`;
       held.set(id, { project, branch, pin });
       return { id, release: () => void held.delete(id) };
     },

@@ -285,6 +285,8 @@ describe("plugin commands", () => {
     expect(handle(running)).toBeTypeOf("string");
     expect(handle(queued)).toBeTypeOf("string");
     expect(handle(queued)).not.toBe(handle(running));
+    // Random handles: a counter would tell plugins how many runs the server has served.
+    for (const j of [running, queued]) expect(handle(j)).toMatch(/^s[0-9a-f]{24}$/);
     expect((queued.params as { rev: number }).rev).toBe(base);
     writeFileSync(join(keyTmpDir(r.serverData, r.host.warmKeyOf(running)), "go"), "");
     // The first read its snapshot before the rebuild: its commit is refused; the second's lands.

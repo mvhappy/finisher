@@ -183,7 +183,6 @@ export function makeCommandRun(d: CommandRunDeps) {
             return yield* Effect.fail(txInvalid(e.info.name, [checkedOut.invalid]));
           }
           if (checkedOut.kind === "data") return { outcome: "data", data: checkedOut.value as PluginCommandRunResult["data"] & {} } satisfies PluginCommandRunResult;
-          if (!e.info.writes) return yield* Effect.fail(readOnly(e.info.name));
           const denied = requirePermission(rights, "project:write");
           if (denied !== undefined) return yield* Effect.fail(denied);
           const ops = checkedOut.tx.ops;

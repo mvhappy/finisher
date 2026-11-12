@@ -101,7 +101,10 @@ pub fn split(args: &[OsString]) -> Option<Result<Invocation, CoreError>> {
                 value();
                 refused.get_or_insert_with(|| flag.to_string());
             }
-            "--help" | "-h" if seen_id && inline.is_none() => inv.help = true,
+            // Help right after the id or as the command's first word; later it is a value.
+            "--help" | "-h" if seen_id && inline.is_none() && inv.args.is_empty() => {
+                inv.help = true;
+            }
             _ if !seen_id => {
                 if !w.starts_with('@') {
                     return None;
@@ -322,20 +325,36 @@ fn resolve(list: &PluginCommandList, inv: &Invocation, command: &str) -> Result<
 /// at that timeout, counted from its submit).
 const RUN_SLACK_S: u64 = 15;
 
-/// `plugin.command.run` on a connection of its own that waits `wait`, outside the run's overall
-/// deadline (as `fin wait`): an ordinary call gives up after 30 s, a command may take 60.
-fn long_call(backend: &dyn Backend, payload: Value, wait: Duration) -> Result<Value, CoreError> {
-    if backend.dry_run_only() {
-        return backend.server_call("plugin.command.run", payload);
-    }
-    crate::client::Client::connect(&crate::endpoint::resolve()?, wait)?
-        .without_deadline()
-        .call("plugin.command.run", payload)
+/// A run's failure, and whether its request was sent: a connection that never opened (or never
+/// proved itself) ran nothing, whatever the code says.
+struct RunFailure {
+    error: CoreError,
+    sent: bool,
 }
 
-/// What fin answers when the run's answer was lost: a writing run may have committed.
-fn lost(mut e: CoreError, name: &str, writes: bool, dry_run: bool) -> CoreError {
-    if !writes || dry_run || !crate::client::IN_FLIGHT_CODES.contains(&e.code.as_str()) {
+/// `plugin.command.run` on a connection of its own that waits `wait`, outside the run's overall
+/// deadline (as `fin wait`): an ordinary call gives up after 30 s, a command may take 60.
+fn long_call(backend: &dyn Backend, payload: Value, wait: Duration) -> Result<Value, RunFailure> {
+    let sent = |error| RunFailure { error, sent: true };
+    let unsent = |error| RunFailure { error, sent: false };
+    if backend.dry_run_only() {
+        return backend
+            .server_call("plugin.command.run", payload)
+            .map_err(sent);
+    }
+    let endpoint = crate::endpoint::resolve().map_err(unsent)?;
+    crate::client::Client::connect(&endpoint, wait)
+        .map_err(unsent)?
+        .without_deadline()
+        .call("plugin.command.run", payload)
+        .map_err(sent)
+}
+
+/// What fin answers when the run's answer was lost: a writing run whose request was sent may
+/// have committed.
+fn lost(failure: RunFailure, name: &str, writes: bool, dry_run: bool) -> CoreError {
+    let RunFailure { error: mut e, sent } = failure;
+    if !sent || !writes || dry_run || !crate::client::IN_FLIGHT_CODES.contains(&e.code.as_str()) {
         return e;
     }
     if let Some(map) = e.details.as_object_mut() {
@@ -419,19 +438,22 @@ pub fn run(backend: &dyn Backend, inv: &Invocation) -> Result<Value, CoreError> 
         match long_call(backend, payload, wait) {
             Ok(v) => return answer(v, &name),
             // Nothing ran: a stale cache may have mapped the line; ask again once.
-            Err(e)
+            Err(f)
                 if !fresh
-                    && matches!(e.code.as_str(), "PLUGIN_NOT_FOUND" | "PLUGIN_COMMAND_ARGS") =>
+                    && matches!(
+                        f.error.code.as_str(),
+                        "PLUGIN_NOT_FOUND" | "PLUGIN_COMMAND_ARGS"
+                    ) =>
             {
                 let before = list.digest.clone();
                 list = fetch(backend)?;
                 fresh = true;
                 if list.digest == before {
-                    return Err(e);
+                    return Err(f.error);
                 }
                 args = resolve(&list, inv, command)?;
             }
-            Err(e) => return Err(lost(e, &name, writes, inv.dry_run)),
+            Err(f) => return Err(lost(f, &name, writes, inv.dry_run)),
         }
     }
 }
@@ -483,11 +505,20 @@ mod tests {
         assert!(split_str("fin @a/b --help").unwrap().unwrap().help);
         assert!(split_str("fin @a/b go -h").unwrap().unwrap().help);
         assert!(split_str("fin @a/b -h go --x").unwrap().unwrap().help);
+        // After a command's first word it is a value, not help.
+        let value = split_str("fin @a/b go --label -h").unwrap().unwrap();
+        assert_eq!(
+            (value.help, value.args),
+            (false, vec!["--label".to_string(), "-h".to_string()])
+        );
     }
 
     #[test]
     fn a_lost_writing_run_may_have_run() {
-        let e = || CoreError::new("SERVER_TIMEOUT", "late").with_details(json!({}));
+        let e = || RunFailure {
+            error: CoreError::new("SERVER_TIMEOUT", "late").with_details(json!({})),
+            sent: true,
+        };
         let lost_write = lost(e(), "plugin:@a/b/go", true, false);
         assert_eq!(lost_write.details["name"], "plugin:@a/b/go");
         assert_eq!(lost_write.details["mayHaveRun"], true);
@@ -496,12 +527,29 @@ mod tests {
         assert!(lost(e(), "n", false, false).details.get("name").is_none());
         assert!(lost(e(), "n", true, true).details.get("name").is_none());
         // A refusal is not a lost answer.
-        let refused = CoreError::new("PLUGIN_TX_INVALID", "x").with_details(json!({}));
+        let refused = RunFailure {
+            error: CoreError::new("PLUGIN_TX_INVALID", "x").with_details(json!({})),
+            sent: true,
+        };
         assert!(
             lost(refused, "n", true, false)
                 .details
                 .get("name")
                 .is_none()
+        );
+    }
+
+    #[test]
+    fn a_run_that_never_connected_did_not_run() {
+        // A connection that never opened is SERVER_UNAVAILABLE too, but nothing was sent.
+        let unsent = RunFailure {
+            error: CoreError::new("SERVER_UNAVAILABLE", "no server").with_details(json!({})),
+            sent: false,
+        };
+        let e = lost(unsent, "plugin:@a/b/go", true, false);
+        assert_eq!(
+            (e.message.as_str(), e.details.get("mayHaveRun"), e.fix),
+            ("no server", None, None)
         );
     }
 

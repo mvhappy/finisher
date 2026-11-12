@@ -269,11 +269,31 @@ fn fin_runs_plugin_command() {
         "--op",
         "command",
         "--sleep-ms",
-        "1500",
+        "3000",
         "--out",
         &remove,
     ]);
-    std::thread::sleep(std::time::Duration::from_millis(700));
+    // The marker goes once the run's job runs: its snapshot (with the marker) is held from its
+    // submit, so the removal lands while the plugin sleeps, however loaded the machine is.
+    let started = std::time::Instant::now();
+    loop {
+        let running = ok(rig.fin(&[
+            "job",
+            "ls",
+            "--kind",
+            "plugin.command",
+            "--state",
+            "running",
+        ]));
+        if running["jobs"].as_array().is_some_and(|j| !j.is_empty()) {
+            break;
+        }
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(30),
+            "the racing run never started"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
     ok(rig.fin(&["marker", "remove", &marker]));
     let lost = support::finish(&["racing"], racing.wait_with_output().unwrap());
     assert_eq!(
