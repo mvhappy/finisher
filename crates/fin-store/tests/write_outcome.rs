@@ -137,6 +137,8 @@ fn write_outcome_written_deduped_planned() {
             skip_conflicting: false,
             dry_run: dry,
             args_hash: None,
+            include: None,
+            source_up_to: None,
         })
         .unwrap()
     });

@@ -1,0 +1,12 @@
+{
+  "id": "01m6zschfwn7xas0wsbtjy08sz",
+  "name": "4C fixture",
+  "schemaVersion": 2,
+  "formatVersion": 1,
+  "minReaderVersion": 1,
+  "storage": "local",
+  "genesis": {
+    "name": "4C fixture",
+    "rate": "30"
+  }
+}

@@ -198,6 +198,7 @@ MyProject/                      (may live on local disk, NAS, or a cloud-synced 
   - **Merge** rebases the branch's transactions onto `main` with re-validation. Conflicts become review items.
   - Cherry-pick works per transaction.
   - `checkpoint` names a revision; `try` makes a throwaway sub-branch.
+  - *As built (5E):* conflicts become `mergeConflict` review items, a rejection is a durable `drop` record, and a merge can be limited to what was reviewed: control-plane spec §8 (item 25 of §27).
 - **Undo appends; the log is never truncated.**
   - Undoing transaction *T* = append the inverse of *T*, rebased onto the current head. If it can't be rebased, the result is a typed `Conflict`.
   - Undo/redo stacks are kept per (author, branch).
@@ -428,7 +429,7 @@ MyProject/                      (may live on local disk, NAS, or a cloud-synced 
    - a read-only session with sampled frames, contact sheet, transcript, QA report and brief;
    - rubrics borrowed from Uncut (intent, stills, motion/jitter, legibility, colour, mix, beat sync) plus hook strength and pacing;
    - fixes come as a child branch; rounds are capped (default 3); a summary lists what is still open.
-3. **Markers** (`open/review/resolved`), per-transaction change list with accept/reject, A/B compare.
+3. **Markers** (`open/review/resolved`), per-transaction change list with accept/reject, A/B compare. *As built (5E):* the change list, per-transaction decisions, durable rejections and reviewed-only merges are control-plane spec §8; markers and A/B compare are not built.
 4. **Share page:** exported HTML with timecode comments that come back as markers. Hosted links come later through `ShareService`.
 
 ---
@@ -748,7 +749,7 @@ MyProject/                      (may live on local disk, NAS, or a cloud-synced 
 
 ```json
 {"v":1,"id":"01JC…","ts":1794571200123,"session":"01JC…","source":"finNode",
- "kind":"log.commit","kv":1,
+ "kind":"log.commit","kv":2,
  "consent":{"rev":3,"purposes":["diagnostics"],"basis":"default"},
  "ctx":{"project":"01jb…","branch":"br1","txId":"01JC…","author":"k1:3f…",
         "actor":{"kind":"agent","session":"01JC…","call":"k1:9a…"}},
@@ -1194,7 +1195,7 @@ Spike code, evidence and the report are throwaway and live in the git-ignored `a
 20. **Sub-project 7A, the agent runtime core and the built-in agent (as built, 2026-11-08):** §8 (sessions, providers, the built-in agent, budgets), §9's `FIN_CALL` and agent credentials, §16's `ModelGateway` and secrets, and §21.1's agent kinds as implemented are recorded in `docs/specs/2026-11-07-sub-project-7-agent-runtime-design.md` §1–13 (each 7A part marked *As built (7A)*) and §24 (§24.1 maps every decision of its plan to As built or Deviation), which wins over this document where they differ.
     - **Shape:** the runtime in `finisherd` (`apps/finisherd/src/agent/`): sessions, runs and nodes in `control.db` (the `agent` migration chain), interrupted on a crash and resumed without re-running a tool; one adapter contract with the scripted `fake` harness and the built-in loop over one OpenAI-compatible Chat Completions client with an OpenRouter preset (the pasted key, the only secret Finisher stores) and a local preset (no key); the tools `fin` (argv, no shell) and three workspace file tools.
     - **Sessions are principals:** each has its own root branch (`agent.<role>-<n>`) and an `agent` credential whose id is the session id, scopes from its mode (`plan`, `draft`, `auto`), writes confined to its branch subtree and paths to its project, its workspace and its project's libraries; `fin` under that credential never falls back to `local.key`, keeps its default branch and tries per session on the server, and takes its project folder from `FIN_PROJECT_DIR`; the server sets every credential principal's author and records every agent commit in `session_txs`, kept for the project's life.
-    - **Recording:** metadata to the diagnostics journal, content only under training to the separate agent-trace store, with provenance on every session and turn; outcomes (merged, undone, reverted, abandoned) are tracked for 5E's `review.verdict`, which is not emitted until 5E registers it; the counsel gate `training.closedModelTargets` exists with the default `pendingCounsel`.
+    - **Recording:** metadata to the diagnostics journal, content only under training to the separate agent-trace store, with provenance on every session and turn; outcomes (merged, undone, reverted, abandoned) are tracked for 5E's `review.verdict` (registered at version 1 by 5E, so the tracker now emits it; outcomes stored before that are not back-filled, §27 item 25); the counsel gate `training.closedModelTargets` exists with the default `pendingCounsel`.
     - **Not a boundary yet:** before 7C every host runs agent tools unsandboxed, with the persistent warning `SANDBOX_DISABLED {reason: before7C}`.
     - **Still outstanding:** real-provider sessions and the cross-platform run on macOS and Windows 11 (7A Task 15); 7B–7H.
 
@@ -1218,3 +1219,8 @@ Spike code, evidence and the report are throwaway and live in the git-ignored `a
     - **Shape:** a code plugin is a worker of one `plugin` family on the `fin-jobs` envelope (not a separate JSON-RPC stream, amending D8 for plugins), keyed by plugin, version, project and effective authority; commands are `plugin.command` jobs committed through the chain's `tx.commit` under the invoker with `Tx.via`; host calls are `project.snapshot`, `project.view`, `log`, `net.fetch`, `net.read`; the Rust and TypeScript SDKs and developer mode (`finisherd --plugin-dir`) are built.
     - **Amendments to §16:** no plugin is OS-confined before 7C's `plugin` profile is enforced on an OS (the sandbox wording of §16 should say so, plugins spec §22 item 23); egress is brokered HTTPS with the address checks of §16 and no secret injection until 8G; `PLUGINS_UNCONFINED` shows while any enabled code plugin runs unconfined.
     - **Still outstanding:** confinement (Task 16, on 7C), hook handlers (Task 17, on 7F), the `fin-plugin-test` harness (Task 14), the cross-platform run and budgets (Task 19), and the open owner question on an empty plugin transaction.
+25. **Sub-project 5E, the review workflow (as built, 2026-11-12):** §6.4 ("conflicts become review items") and §11.3 (per-transaction accept/reject) as implemented are recorded in `docs/specs/2026-11-07-sub-project-5-control-plane-design.md` §8 (§8.8 maps every decision of its plan to As built or Deviation, §8.9 lists the owner decisions and review fixes, §8.10 the residuals), which wins over this document where they differ.
+    - **Shape:** a `branchReview` item holds a change list planned at a snapshot of both heads; a person accepts or rejects each origin transaction, and a merge copies only what was reviewed (`include` and `sourceUpTo`, checked inside the merge's write transaction), so a commit that lands on the source afterwards is never merged by it. A rejection is a **`drop` record in the op log** of the target branch (record format 3 for that kind only; derived index `m0004_drops`), so it syncs, survives moves and rebuilds, and keeps a later plain `fin merge` from bringing the transaction back; `DROPPED` is reported in `excluded`, not `skipped`. Merge conflicts and plugin suggestions are review items too.
+    - **Protected branches** (default `main`) refuse writes from principals without `branch.protected`, at the chain's policy stage and again inside the store's write transaction; `local` keeps the scope, agents and MCP credentials do not. Before 7C this binds credentials, not a raw shell that can read `local.key` (README "Security model").
+    - **Auto merge** exists as a server-internal path with all its checks and tests, and enabling it answers `AUTO_MERGE_UNAVAILABLE` until sub-project 10 records QA-gate and critic verdicts. `review.verdict` v1 is registered, so 7A's outcome tracker emits.
+    - **Still outstanding:** the cross-platform and mixed-version run (5E Task 13); sub-project 10's verdicts and the flag; sub-project 7's delivery of `changesRequested` as a turn.

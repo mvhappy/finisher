@@ -46,6 +46,7 @@ import { Diagnostics, makeDiagnostics } from "./diagnostics.ts";
 import { withServerLock } from "./lock.ts";
 // Registers the `jobs` migration chain: imported before the control store opens.
 import "./jobs/store.ts";
+import { journalReviewVerdicts, registryEngine, ReviewsTag, startReviews } from "./reviews/service.ts";
 import { JobEventSinkTag } from "./jobs/events.ts";
 import { journalSink } from "./jobs/journal-sink.ts";
 import { JobEngineTag, layerJobEngine } from "./jobs/layer.ts";
@@ -166,8 +167,9 @@ export const serve = ({
       // The libraries' roots: sandboxed agent sessions read them (plan 7C Decision 6), and so does a
       // confined warm media worker (Decision 19). Bound once the service runs.
       let libraryRoots: () => ReadonlyArray<string> = () => [];
+      let onOpened: ((projectId: string) => void) | undefined; // re-derived reviews (5E Decision 22), bound with the reviews
       const registryContext = yield* Layer.build(
-        layerProjectRegistry(serverData, { ...registry, libraryUse: (paths) => libraryHold?.(paths) ?? { release: () => {} } }),
+        layerProjectRegistry(serverData, { ...registry, libraryUse: (paths) => libraryHold?.(paths) ?? { release: () => {} }, onOpened: (id) => onOpened?.(id) }),
       );
       const projects = Context.get(registryContext, ProjectRegistry);
       // The code plugins' processes (sp8b Tasks 4, 5): the `plugin` family is registered with
@@ -407,6 +409,8 @@ export const serve = ({
         },
       });
       onAgentRuntime?.(agentRuntime);
+      const started = startReviews(controlStore, { engine: registryEngine(projects), audit, verdicts: journalReviewVerdicts(diagnostics.journal) });
+      onOpened = started.opened;
       // One font layer for the handlers and the plugins, which feed it the packs' catalogs.
       const fontsLayer = layerFonts(serverData, fonts);
       // `server.stop` (5A Task 8): `serve` returns, and its scope's finalizers stop everything.
@@ -432,7 +436,7 @@ export const serve = ({
         Layer.mergeAll(
           Layer.succeedContext(registryContext),
           fontsLayer,
-          layerPlugins(serverData, { host: pluginHost.hooks }).pipe(Layer.provide(Layer.succeedContext(control)), Layer.provide(fontsLayer)),
+          layerPlugins(serverData, { host: pluginHost.hooks, suggestions: started.suggestions }).pipe(Layer.provide(Layer.succeedContext(control)), Layer.provide(fontsLayer)),
           Layer.succeed(Diagnostics, diagnostics),
           Layer.succeedContext(control),
           Layer.succeedContext(jobsContext),
@@ -451,6 +455,7 @@ export const serve = ({
           Layer.succeed(RemoteListenerTag, remote),
           Layer.succeed(AgentCoreTag, agentCore),
           Layer.succeed(AgentRuntimeTag, agentRuntime),
+          Layer.succeed(ReviewsTag, started.reviews),
         ),
       );
       yield* Layer.build(

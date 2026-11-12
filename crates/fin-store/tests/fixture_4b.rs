@@ -384,6 +384,8 @@ fn merge_of_4b_branch_after_upgrade() {
             skip_conflicting: false,
             dry_run: false,
             args_hash: None,
+            include: None,
+            source_up_to: None,
         })
         .unwrap();
     assert!(m.skipped.is_empty(), "{m:?}");

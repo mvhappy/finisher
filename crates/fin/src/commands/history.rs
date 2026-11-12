@@ -51,6 +51,15 @@ pub struct MergeArgs {
     #[arg(long = "skip-conflicting")]
     #[serde(default, rename = "skipConflicting")]
     pub skip_conflicting: bool,
+    /// Copy only these origin txIds (a reviewed change list); the rest stay on the source.
+    #[arg(long, value_name = "txId", value_delimiter = ',')]
+    #[serde(default)]
+    pub include: Option<Vec<String>>,
+    /// Copy no record of the source branch itself above this seq (records it holds from its
+    /// parent pass).
+    #[arg(long = "up-to", value_name = "seq")]
+    #[serde(default, rename = "upTo")]
+    pub up_to: Option<u64>,
 }
 
 /// Re-apply one record of another branch here.
@@ -406,14 +415,22 @@ pub fn merge_doc(report: &Value) -> Value {
     }
     let mut doc = json!({ "merge": merge });
     with_placements(&mut doc["merge"], report);
-    for key in ["merged", "skipped", "excluded"] {
+    for key in ["merged", "skipped", "excluded", "notIncluded"] {
         cap(&mut doc["merge"], key);
     }
     doc
 }
 
-/// Merges `from` into `into`. `cmd` names the command for `argsHash`: `fin try keep` hashes
-/// as `try.keep`, so a key a plain `fin merge` used is `IDEM_KEY_REUSED` there (review #27).
+/// What a merge may copy (`fin merge --include`, `--up-to`); the default limits nothing.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Limits<'a> {
+    pub include: Option<&'a [String]>,
+    pub up_to: Option<u64>,
+}
+
+/// Merges `from` into `into`, copying what `limits` admit. `cmd` names the command for
+/// `argsHash`: `fin try keep` hashes as `try.keep`, so a key a plain `fin merge` used is
+/// `IDEM_KEY_REUSED` there (review #27).
 pub fn merge_refs(
     backend: &dyn Backend,
     g: &Globals,
@@ -421,11 +438,25 @@ pub fn merge_refs(
     from: &str,
     into: &str,
     skip_conflicting: bool,
+    limits: Limits<'_>,
 ) -> Result<Value, CoreError> {
-    let args = json!({ "from": from, "into": into, "skipConflicting": skip_conflicting });
+    let mut args = json!({ "from": from, "into": into, "skipConflicting": skip_conflicting });
     let mut fields = json!({ "from": from, "into": into });
     if skip_conflicting {
         fields["skipConflicting"] = json!(true);
+    }
+    // Only when given, so a plain merge's argsHash (its idempotency) is what it was.
+    if let Some(include) = limits.include {
+        // Sorted and deduplicated: the argsHash must not depend on the order given.
+        let mut include = include.to_vec();
+        include.sort();
+        include.dedup();
+        args["include"] = json!(include);
+        fields["include"] = json!(include);
+    }
+    if let Some(n) = limits.up_to {
+        args["sourceUpTo"] = json!(n);
+        fields["sourceUpTo"] = json!(n);
     }
     send(
         backend,
@@ -446,7 +477,19 @@ pub fn merge(backend: &dyn Backend, g: &Globals, a: &MergeArgs) -> Result<Value,
         Some(b) => b.clone(),
         None => target_branch(backend, g)?,
     };
-    let report = merge_refs(backend, g, "merge", &a.source, &into, a.skip_conflicting)?;
+    let limits = Limits {
+        include: a.include.as_deref(),
+        up_to: a.up_to,
+    };
+    let report = merge_refs(
+        backend,
+        g,
+        "merge",
+        &a.source,
+        &into,
+        a.skip_conflicting,
+        limits,
+    )?;
     Ok(merge_doc(&report))
 }
 

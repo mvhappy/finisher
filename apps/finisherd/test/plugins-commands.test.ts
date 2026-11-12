@@ -54,10 +54,11 @@ type Rig = CommandRig & {
   runCommand(command: string, a: Record<string, unknown>, more?: Record<string, unknown>): Promise<Exit.Exit<PluginCommandRunResult, FinError>>;
 };
 
-async function rig(opts: { grants?: ReadonlyArray<object>; commands?: ReadonlyArray<object> } = {}): Promise<Rig> {
+async function rig(opts: { grants?: ReadonlyArray<object>; commands?: ReadonlyArray<object>; protectedBranches?: ReadonlyArray<string> } = {}): Promise<Rig> {
   const r = await commandRig({
     id: ID,
     cleanups,
+    ...(opts.protectedBranches === undefined ? {} : { protectedBranches: opts.protectedBranches }),
     grants: opts.grants ?? GRANTS,
     // The probe with three commands.
     place: (full) => {
@@ -122,6 +123,17 @@ describe("plugin commands", () => {
     r.as(LOCAL);
     const c = value(await r.call<CommittedTx>("tx.commit", { projectId: r.projectId, tx: { ...tx("t-client", await r.head(), [insert(0, 1)]), via: { plugin: `${ID}@1.0.0`, command: "edit" } } }));
     expect(c.tx.via).toBeUndefined();
+  });
+
+  test("command_respects_protected_branches: a credential's command cannot commit to a protected branch (5E)", async () => {
+    const r = await rig({ protectedBranches: ["main"] });
+    r.as(mcp());
+    const head = await r.head();
+    expect(errorOf(await r.runCommand("edit", { out: txOut([insert(10, 5)]) }))).toMatchObject({ code: "BRANCH_PROTECTED", details: { tag: "tx.commit", branch: "main" } });
+    expect(await r.head()).toBe(head);
+    // A person keeps `branch.protected`: the same command commits.
+    r.as(LOCAL);
+    expect(value(await r.runCommand("edit", { out: txOut([insert(10, 5)]) }))).toMatchObject({ outcome: "accepted", rev: head + 1 });
   });
 
   test("conflicting_tx_rebases_or_conflicts: the plugin's base is the snapshot held at submit", async () => {

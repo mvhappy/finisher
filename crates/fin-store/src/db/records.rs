@@ -148,6 +148,11 @@ pub(crate) fn link_row(branch: &str, record: &Record) -> Result<Option<LinkRow>,
             name = n;
             Some(vec![branch_id])
         }
+        // The origins it names go into the `drops` index (`crate::drops_index`), not here.
+        Link::Drop { from: f, .. } => {
+            from = Some(f);
+            None
+        }
     };
     Ok(Some(LinkRow {
         tx_id: record.tx_id.clone(),
@@ -216,6 +221,7 @@ pub(crate) fn insert_tx(
         ],
     )?;
     insert_link(conn, branch, record)?;
+    crate::drops_index::insert(conn, branch, record)?;
     Ok(tx_hash)
 }
 
@@ -258,6 +264,7 @@ pub(crate) fn insert_imported(
         ],
     )?;
     insert_link(conn, branch, record)?;
+    crate::drops_index::insert(conn, branch, record)?;
     Ok(())
 }
 

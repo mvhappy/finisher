@@ -94,7 +94,7 @@ fn record_then_read_round_trips() {
     assert_eq!(e.v, 1);
     assert_eq!(
         (e.kind.as_str(), e.kv, e.source),
-        ("log.commit", 1, Source::FinNode)
+        ("log.commit", 2, Source::FinNode)
     );
     assert_eq!(e.ts, T0 + 3_600_000);
     assert_eq!(Some(e.session.as_str()), j.session());
@@ -112,7 +112,7 @@ fn record_then_read_round_trips() {
         }
     );
     assert_eq!(e.ctx, Some(ctx()));
-    let back = decode_payload(kind("log.commit", 1).unwrap(), &e.payload).unwrap();
+    let back = decode_payload(kind("log.commit", 2).unwrap(), &e.payload).unwrap();
     assert_eq!(back, p);
     assert_eq!(all[1].kind.as_str(), "session.end");
     assert!(all[1].ctx.is_none());

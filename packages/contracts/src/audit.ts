@@ -45,6 +45,8 @@ export const AUDIT_KINDS = [
   "library.set",
   "history.drop",
   "review.merge",
+  // The owner changed a project's branch policy (5E Decision 18): the old and the new, as ids and booleans.
+  "review.policy",
   "console.refused",
   // The owner purged the audit log (5A Task 8): written after the purge, with its count.
   "audit.purge",
@@ -109,8 +111,13 @@ export type AuditEntry = typeof AuditEntrySchema.Type;
 
 /** A dotted lowerCamel word: an RPC tag (`history.cherryPick`), a scope, a rule, a reason. */
 const Word = Schema.String.check(Schema.isPattern(/^[a-z][a-zA-Z0-9]{0,47}(\.[a-z][a-zA-Z0-9]{0,47}){0,3}$/));
+/** What an audit `Id` field takes: a ULID-shaped id. */
+export const AUDIT_ID_PATTERN = /^[0-9A-Za-z]{26}$/;
+/** What an auto merge's audited `verdictId` takes (5E Decision 19). */
+export const AUDIT_VERDICT_ID_PATTERN = /^[0-9A-Za-z_-]{1,64}$/;
+
 /** A ULID-shaped id (credentials, projects, devices). */
-const Id = Schema.String.check(Schema.isPattern(/^[0-9A-Za-z]{26}$/));
+const Id = Schema.String.check(Schema.isPattern(AUDIT_ID_PATTERN));
 /** An error code. */
 const Code = Schema.String.check(Schema.isPattern(/^[A-Z][A-Z0-9_]{0,63}$/));
 /** A person's text: a device name or credential label, ≤ 64 characters. */
@@ -202,6 +209,49 @@ const RULE_FIELDS = {
   promptsHash: Schema.optional(Schema.String.check(Schema.isPattern(/^(?:sha256:[0-9a-f]{64}|none)$/))),
 };
 
+/**
+ * `history.drop {item?, count, txId?, dropTx?, droppedBy?}`, `review.merge {item, protected,
+ * auto}` (with `auto: true` also `snapshot`, `session?`, `verdicts`, `enabledBy`) and
+ * `review.policy {old, new}` (5E Decisions 19, 26; the cancelled-drop fields: owner amendment to
+ * Decision 13): a review item's id, counts, booleans and branch ids; never a title,
+ * summary, comment or reason (review text is content).
+ */
+const TxWord = Schema.String.check(Schema.isPattern(/^[0-9A-Za-z._:-]{1,128}$/));
+const BranchIdWord = Schema.String.check(Schema.isPattern(/^[0-9A-Za-z]{1,64}$/));
+const PolicyWord = Schema.Struct({ protected: Schema.Array(BranchIdWord), requireReview: Schema.Boolean, autoMerge: Schema.Boolean });
+/** A head's `txHash` (`blake3:<hex>`). */
+const HashWord = Schema.String.check(Schema.isPattern(/^[0-9a-z]{1,16}:[0-9a-f]{1,128}$/));
+/** The snapshot an auto merge was judged at (5E Decision 19): the heads' seqs and hashes. */
+const SnapshotWord = Schema.Struct({
+  sourceSeq: Schema.Int,
+  sourceHash: Schema.optional(HashWord),
+  targetSeq: Schema.Int,
+  targetHash: Schema.optional(HashWord),
+});
+/** A QA-gate or critic verdict an auto merge relied on, by id. */
+const VerdictWord = Schema.Struct({
+  kind: Schema.Literals(["qa", "critic"]),
+  verdictId: Schema.String.check(Schema.isPattern(AUDIT_VERDICT_ID_PATTERN)),
+});
+const REVIEW_FIELDS = {
+  item: Schema.optional(Schema.String.check(Schema.isPattern(/^[0-9A-Za-z]{26}$/))),
+  protected: Schema.optional(Schema.Boolean),
+  auto: Schema.optional(Schema.Boolean),
+  old: Schema.optional(PolicyWord),
+  new: Schema.optional(PolicyWord),
+  // A drop another principal made, cancelled by a reviewer's accept (owner, 2026-11-12): the
+  // origin, the drop record and its author, as keys and credential ids (`other` otherwise).
+  txId: Schema.optional(TxWord),
+  dropTx: Schema.optional(TxWord),
+  droppedBy: Schema.optional(Schema.String.check(Schema.isPattern(/^(?:(?:agent|mcp|device|plugin|local|console):[0-9A-Za-z]{1,64}|other)$/))),
+  // `review.merge {auto: true}` (Decision 19): the judged snapshot, the agent session, the
+  // verdicts and the person who turned the policy on (a human principal's `<kind>:<id>`).
+  snapshot: Schema.optional(SnapshotWord),
+  session: Schema.optional(Id),
+  verdicts: Schema.optional(Schema.Array(VerdictWord)),
+  enabledBy: Schema.optional(Schema.String.check(Schema.isPattern(/^(?:console|local|device):[0-9A-Za-z]{1,64}$/))),
+};
+
 /** What an `auth.denied` row may say besides: the card an ask opened (`APPROVAL_PENDING`, 7B Decision 8). */
 const DENIAL_FIELDS = { approval: Schema.optional(Id) };
 
@@ -219,6 +269,7 @@ const SANDBOX = {
   pathHash: Schema.optional(Schema.String.check(Schema.isPattern(/^[0-9a-f]{16,64}$/))),
 };
 
+const REVIEW_KINDS_AUDITED: ReadonlyArray<AuditKind> = ["history.drop", "review.merge", "review.policy"];
 const PAIRING: ReadonlyArray<AuditKind> = ["pair.offer", "pair.redeem", "pair.approve", "pair.reject", "pair.expire"];
 /** Kinds whose details may name a device or credential. */
 export const AUDIT_NAME_KINDS: ReadonlySet<AuditKind> = new Set<AuditKind>([
@@ -230,6 +281,9 @@ export const AUDIT_NAME_KINDS: ReadonlySet<AuditKind> = new Set<AuditKind>([
 /** Kinds whose details may hold a remote address (owner decision 4 of 5B: pairing, revocation, failures). */
 export const AUDIT_ADDRESS_KINDS: ReadonlySet<AuditKind> = new Set<AuditKind>([...PAIRING, "device.revoke", "auth.fail"]);
 
+/** Kinds whose details name a review item, counts and branch ids (5E). */
+export const AUDIT_REVIEW_KINDS: ReadonlySet<AuditKind> = new Set<AuditKind>(REVIEW_KINDS_AUDITED);
+
 /** Kinds whose details name a library by id. */
 export const AUDIT_LIBRARY_KINDS: ReadonlySet<AuditKind> = new Set<AuditKind>(["library.add", "library.remove", "library.set"]);
 
@@ -239,9 +293,10 @@ const RuleDetails = Schema.Struct({ ...COMMON, ...RULE_FIELDS });
 const DenialDetails = Schema.Struct({ ...COMMON, ...DENIAL_FIELDS });
 const SandboxDetails = Schema.Struct({ ...COMMON, ...SANDBOX });
 const LibraryDetails = Schema.Struct({ ...COMMON, ...LIBRARY });
+const ReviewDetails = Schema.Struct({ ...COMMON, ...REVIEW_FIELDS });
 const NamedDetails = Schema.Struct({ ...COMMON, ...SERVER, ...NAMES });
 const AddressedDetails = Schema.Struct({ ...COMMON, ...SERVER, ...NAMES, ...ADDRESS });
-type DetailsSchema = typeof PlainDetails | typeof LibraryDetails | typeof NamedDetails | typeof AddressedDetails | typeof PluginDetails | typeof RuleDetails | typeof DenialDetails | typeof SandboxDetails;
+type DetailsSchema = typeof PlainDetails | typeof LibraryDetails | typeof NamedDetails | typeof AddressedDetails | typeof PluginDetails | typeof RuleDetails | typeof DenialDetails | typeof SandboxDetails | typeof ReviewDetails;
 
 /** Kinds whose details may name a plugin, a registry and a version. */
 export const AUDIT_PLUGIN_KINDS: ReadonlySet<AuditKind> = new Set<AuditKind>(AUDIT_KINDS.filter((k) => k.startsWith("plugin.") || k.startsWith("registry.")));
@@ -253,6 +308,7 @@ function detailsSchema(kind: AuditKind): DetailsSchema {
   if (kind === "sandbox.violation") return SandboxDetails;
   if (kind === "auth.denied") return DenialDetails;
   if (AUDIT_RULE_KINDS.has(kind)) return RuleDetails;
+  if (AUDIT_REVIEW_KINDS.has(kind)) return ReviewDetails;
   if (AUDIT_PLUGIN_KINDS.has(kind)) return PluginDetails;
   if (AUDIT_ADDRESS_KINDS.has(kind)) return AddressedDetails;
   if (AUDIT_LIBRARY_KINDS.has(kind)) return LibraryDetails;
@@ -271,6 +327,7 @@ const DECODE = {
   plugin: Schema.decodeUnknownExit(PluginDetails),
   plain: Schema.decodeUnknownExit(PlainDetails),
   library: Schema.decodeUnknownExit(LibraryDetails),
+  review: Schema.decodeUnknownExit(ReviewDetails),
   named: Schema.decodeUnknownExit(NamedDetails),
   addressed: Schema.decodeUnknownExit(AddressedDetails),
 };
@@ -283,6 +340,8 @@ export function auditDetailsValid(kind: AuditKind, details: unknown): boolean {
     ? DECODE.denial
     : AUDIT_RULE_KINDS.has(kind)
     ? DECODE.rule
+    : AUDIT_REVIEW_KINDS.has(kind)
+    ? DECODE.review
     : AUDIT_PLUGIN_KINDS.has(kind)
       ? DECODE.plugin
       : AUDIT_ADDRESS_KINDS.has(kind)

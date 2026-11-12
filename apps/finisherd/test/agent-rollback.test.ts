@@ -475,6 +475,32 @@ describe("after the undos land", () => {
 });
 
 describe("who may roll back", () => {
+  test("a rollback into a protected branch needs branch.protected (5E, Task 6 review S3)", async () => {
+    const { local, projectId } = await boot([PARENT, CHILD]);
+    const { session: parent } = ok<{ session: Session }>(await local.call("agent.session.start", { projectId, harness: "fake", prompt: "go" }));
+    await until(() => get(parent.id).status === "running", "the parent runs");
+    const p = await clientOf(parent.id);
+    firstWork.push(async (sid) => void (await edit(await clientOf(sid), projectId, get(sid).rootBranch!, 0)));
+    const c1 = ok<{ session: Session }>(await p.call("agent.session.start", { projectId, role: "fixer", prompt: "brief" })).session;
+    const c1Client = await clientOf(c1.id);
+    await settled(c1.id, 1);
+    const atRun1 = await snapshot(local, projectId, c1.rootBranch!);
+    let b = "";
+    await runWith(p, c1.id, async () => void (b = await edit(c1Client, projectId, c1.rootBranch!, 1)));
+    // A person protects the child's branch.
+    ok(await confirmed(await srv().console(), "review.policy", { projectId, protected: ["main", c1.rootBranch!] }));
+    const before = await heads(local, projectId);
+    // The parent session's credential has no `branch.protected`: refused before any write.
+    const refused = await p.call("agent.session.rollback", { sessionId: c1.id, toRun: 1 });
+    expect(code(refused)).toBe("BRANCH_PROTECTED");
+    expect(details(refused)).toMatchObject({ branch: c1.rootBranch });
+    expect(await heads(local, projectId)).toEqual(before);
+    expect(srv().core.store.outcomes.of(b)).toEqual([]);
+    // `local` holds it (owner decision 5) and rolls the child back.
+    expect(ok<Rolled>(await local.call("agent.session.rollback", { sessionId: c1.id, toRun: 1 })).undone).toEqual([b]);
+    expect(await snapshot(local, projectId, c1.rootBranch!)).toEqual(atRun1);
+  });
+
   test("parent_rolls_back_own_child_only: its direct child; SCOPE_DENIED for itself, a sibling, a grandchild and another tree's; a running child SESSION_BUSY", async () => {
     // Opened in order: the parent, child 1, child 2 (running), the grandchild, another root.
     const { local, projectId } = await boot([PARENT, CHILD, WORKING, WORKING, WORKING]);

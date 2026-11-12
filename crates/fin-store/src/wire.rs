@@ -168,10 +168,13 @@ pub struct HistoryResult {
 /// the target, in order (or planned and rolled back, `dry_run`); `merged`: the source txIds
 /// they copy; `skipped`: the candidates that conflict and were left on the source (with
 /// `skipConflicting`; they are offered again by the next merge); `excluded`: source records
-/// never offered (`UNDOES_TARGET_RECORDS`); `source_state`: the source branch's state after
+/// never offered (`DROPPED`, `UNDOES_TARGET_RECORDS`); `not_included`: the origin roots of the
+/// candidates the merge's `include` and `sourceUpTo` left on the source, oldest first (plan 5E
+/// Decision 6; omitted when empty); `source_state`: the source branch's state after
 /// the merge; `origins`: `merged` with the records their `origin` chains lead to (a copy of a
 /// copy), first seen first (7A Decision 27). A retry of a committed merge answers from the
-/// log: its records and their origins, `skipped` and `excluded` empty, `dry_run` false.
+/// log: its records and their origins, `skipped`, `excluded` and `not_included` empty,
+/// `dry_run` false.
 /// Nothing left to merge is an empty answer, not an error.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -181,6 +184,8 @@ pub struct MergeReport {
     pub merged: Vec<String>,
     pub skipped: Vec<Conflict>,
     pub excluded: Vec<Conflict>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub not_included: Vec<String>,
     pub source_state: BranchState,
     pub dry_run: bool,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -190,6 +195,34 @@ pub struct MergeReport {
     /// its `skipped` is empty).
     #[serde(default)]
     pub placements: Vec<Placement>,
+}
+
+/// A branch head as a review plan saw it: the branch id, its head seq and the `txHash` of the
+/// record there (absent at a root's start), so a rewind to the same seq is told apart (plan 5E
+/// Decision 9).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ReviewHead {
+    pub branch: String,
+    pub seq: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hash: Option<String>,
+}
+
+/// [`Store::review_plan`](crate::Store::review_plan)'s answer (plan 5E Decision 7): what a
+/// merge of `source` into `target` would do at these heads, one entry per candidate and per
+/// source record the target already holds, oldest first; `conflicts`: the candidates that
+/// conflict (as a `skipConflicting` merge would skip them). At most
+/// [`REVIEW_PLAN_MAX`](crate::REVIEW_PLAN_MAX) entries and conflicts, the oldest:
+/// `truncated` when there were more.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ReviewPlan {
+    pub source: ReviewHead,
+    pub target: ReviewHead,
+    pub entries: Vec<fin_core::history::ReviewEntry>,
+    pub conflicts: Vec<Conflict>,
+    pub truncated: bool,
 }
 
 /// One group of quarantined records ([`Store::recover_groups`](crate::Store::recover_groups)).
@@ -257,4 +290,32 @@ pub struct RecoverReport {
     pub dismissed: usize,
     pub manual: Option<String>,
     pub dry_run: bool,
+}
+
+/// [`Store::drop`](crate::Store::drop)'s request (`history.drop`, plan 5E Decision 5).
+///
+/// - `tx_id`: the idempotency key, the `drop` record's txId;
+/// - `author`: the record's author;
+/// - `into`: the branch the rejection binds (a reference; the record is written there);
+/// - `from`: the source branch (a reference; it may be archived);
+/// - `drops`, `undrops`: origin-root txIds of records on `from`'s lineage after its common
+///   point with `into`, at least one in all; sorted and deduplicated at write;
+/// - `dry_run`: plan against the local database and keep nothing, on a follower too;
+/// - `args_hash`: the command input's hash, stored on the record's intent; a retry of the
+///   txId with another hash is `IDEM_KEY_REUSED`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct DropReq {
+    pub tx_id: String,
+    pub author: String,
+    pub into: String,
+    pub from: String,
+    #[serde(default)]
+    pub drops: Vec<String>,
+    #[serde(default)]
+    pub undrops: Vec<String>,
+    #[serde(default)]
+    pub dry_run: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub args_hash: Option<String>,
 }

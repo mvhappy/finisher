@@ -6,7 +6,7 @@
 // through the `fin` binary, and asserts the subscriber saw every committed rev in order and
 // that its last rev equals `snapshot.get`'s. The server and the temp dir are always cleaned up.
 //
-// Usage: node scripts/e2e.mjs [--skip-build] [basic|storage|history|reel|diagnostics|plugins|plugin-code|auth|look|agent|library|sandbox|remote ...]  (default: every scenario)
+// Usage: node scripts/e2e.mjs [--skip-build] [basic|storage|history|reel|diagnostics|plugins|plugin-code|auth|look|agent|library|sandbox|remote|review ...]  (default: every scenario)
 //
 // Builds go to `CARGO_TARGET_DIR` when it is set (else `target/`), and so does the run's
 // `fin` and `fin-plugin`. Scenario temp dirs fall back to `/tmp` when `TMPDIR` is so deep that the
@@ -84,7 +84,14 @@
 // `wss` subscription, a device's `server.stop`, allowed roots, revocation within 100 ms, a copied
 // server data (`ENV_MOVED`, `env reset`) and the leak grep (plan 5B Task 13).
 //
-// After the builds, the run has a deadline (E2E_DEADLINE_MS, default 180 s): when it passes,
+// The "review" scenario (scripts/e2e/review.mjs) drives the review workflow with an agent credential
+// on its own branches and `fin` as the local reviewer: a protected `main`, a review of four edits
+// (reject one, accept two, leave one), the partial merge and the rest after a stale snapshot, the
+// drop kept out of a plain merge, a `mergeConflict` item superseded by a later merge, the project
+// copied to a second server data (the drop holds, the agent branch is re-derived), the policy
+// (`AUTO_MERGE_UNAVAILABLE`, `HUMAN_ONLY`) and what `events/` and the audit hold (plan 5E Task 11).
+//
+// After the builds, each scenario has a deadline (E2E_DEADLINE_MS, default 180 s): when it passes,
 // the server is killed and the script exits non-zero. Test hooks (scripts/e2e.test.mjs):
 // E2E_SERVER_CMD (a JSON array, `{serverData}` substituted) replaces the finisherd command,
 // and E2E_START_TIMEOUT_MS bounds the wait for its `finisherd.json` (default 30 s).
@@ -103,6 +110,7 @@ import { run as runAgent } from "./e2e/agent.mjs";
 import { run as runLibrary } from "./e2e/library.mjs";
 import { run as runSandbox } from "./e2e/sandbox.mjs";
 import { run as runRemote } from "./e2e/remote.mjs";
+import { run as runReview } from "./e2e/review.mjs";
 
 // The servers of every scenario keep their secrets in files, never in the OS keychain (5B Decision 4).
 process.env.FIN_SECRETS ??= "file";
@@ -111,7 +119,7 @@ export { parseFrames } from "./e2e/lib.mjs";
 export { checkRevs };
 
 const DEADLINE_MS = Number(process.env.E2E_DEADLINE_MS ?? 180_000);
-const SCENARIOS = { basic: runBasic, storage: runStorage, history: runHistory, reel: runReel, diagnostics: runDiagnostics, plugins: runPlugins, "plugin-code": runPluginCode, auth: runAuth, look: runLook, agent: runAgent, library: runLibrary, sandbox: runSandbox, remote: runRemote };
+const SCENARIOS = { basic: runBasic, storage: runStorage, history: runHistory, reel: runReel, diagnostics: runDiagnostics, plugins: runPlugins, "plugin-code": runPluginCode, auth: runAuth, look: runLook, agent: runAgent, library: runLibrary, sandbox: runSandbox, remote: runRemote, review: runReview };
 
 async function main(argv) {
   const names = argv.filter((a) => !a.startsWith("--"));
@@ -133,15 +141,11 @@ async function main(argv) {
   // deadline covers the run itself.
   const unknown = names.filter((n) => !(n in SCENARIOS));
   if (unknown.length > 0) throw new Error(`unknown scenario ${unknown.join(", ")}; known: ${Object.keys(SCENARIOS).join(", ")}`);
-  await withDeadline(
-    (async () => {
-      for (const name of names.length > 0 ? names : Object.keys(SCENARIOS)) {
-        process.stdout.write(`e2e: scenario ${name}\n`);
-        await SCENARIOS[name]();
-      }
-    })(),
-    DEADLINE_MS,
-  );
+  // The deadline is per scenario: the sum of the scenarios outgrew one budget (review made it 12).
+  for (const name of names.length > 0 ? names : Object.keys(SCENARIOS)) {
+    process.stdout.write(`e2e: scenario ${name}\n`);
+    await withDeadline(SCENARIOS[name](), DEADLINE_MS);
+  }
 }
 
 /** Races `work` against `ms`; on expiry the server is killed and the temp dir removed. */

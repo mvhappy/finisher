@@ -31,6 +31,7 @@ pub mod media;
 pub mod plugin;
 pub mod plugin_runtime;
 pub mod reserved;
+pub mod review;
 pub mod sandbox;
 pub mod session;
 pub mod stats;
@@ -65,7 +66,11 @@ pub use plugin_runtime::{
     ArgsOmitted, MAX_COMMAND_ARGS_BYTES, PluginCommand, PluginCommandOutcome, PluginEgressStats,
     PluginExit, PluginExitReason, PluginKeys, PluginMethodStats, PluginStats, plugin_payloads,
 };
-pub use reserved::{PreviewStats, RenderSample, ReviewVerdict, UiAction};
+pub use reserved::{PreviewStats, RenderSample, UiAction};
+pub use review::{
+    MAX_VERDICT_TX_IDS, ReviewItemKind, ReviewVerdict, ReviewVerdictIn, Verdict, VerdictBy,
+    VerdictVia,
+};
 pub use sandbox::{SandboxOs, SandboxProfileName, SandboxUnconfined, UnconfinedReason};
 pub use session::{Arch, BuildProfile, OsFamily, SessionEnd, SessionStart, SessionUnclean};
 pub use stats::{EvalStats, Histogram, RpcStats};
@@ -153,6 +158,7 @@ approx_fixed!(10 =>
     Arch, BuildProfile, OsFamily, StorageMode,
     JobOutcome, JobPriority, ProcessRole, ProcessHelperKind, ExitReason,
     LibraryStorageName, ScanTrigger,
+    ReviewItemKind, Verdict, VerdictBy, VerdictVia,
     PluginOutcome, PluginSourceName, PluginKindName, RiskName,
     PluginExitReason, PluginCommandOutcome, ArgsOmitted,
     SandboxProfileName, SandboxOs, UnconfinedReason,

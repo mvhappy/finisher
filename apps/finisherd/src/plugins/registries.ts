@@ -22,6 +22,8 @@ import { type Content, type ContentProblem, type FontSink, makeContent } from ".
 import { reconcileStore, type StoreProblem } from "./store-sync.ts";
 import { actorOf, PluginTables, type RegistryRow } from "./tables.ts";
 import type { PluginHostHooks } from "./host/processes.ts";
+import { ReviewStore } from "../reviews/store.ts";
+import { type PluginSuggestions, pluginSuggestions } from "../reviews/suggestions.ts";
 
 export { actorOf, PluginTables } from "./tables.ts";
 
@@ -92,6 +94,8 @@ export interface MakePluginsOptions {
   readonly testAgentFacing?: (id: string) => boolean;
   /** The code plugins' processes (sp8b Task 5; `main.ts` passes the server's). */
   readonly host?: PluginHostHooks;
+  /** Suggestions as review items (5E Decision 11; `main.ts` passes the server's, which publishes to the hub). */
+  readonly suggestions?: PluginSuggestions;
 }
 
 /** An audit log that records nothing, for services made without one. */
@@ -131,6 +135,7 @@ export function makePlugins(native: Registry, tables: PluginTables, clock: () =>
     changed: content.sync(),
     ...(options.testAgentFacing === undefined ? {} : { testAgentFacing: options.testAgentFacing }),
     ...(options.host === undefined ? {} : { host: options.host }),
+    suggestions: options.suggestions ?? pluginSuggestions(new ReviewStore(tables.store, clock)),
     refreshOne: (id, by) => Effect.flatMap(refreshOne(id, by), (r) => (r.ok ? Effect.void : Effect.fail(failed(r)!))),
   });
 
@@ -234,9 +239,10 @@ export interface PluginsOptions {
   /** How often expired plans are swept (Decision 18: every minute, and at start). */
   readonly sweepMs?: number;
   readonly host?: PluginHostHooks;
+  readonly suggestions?: PluginSuggestions;
 }
 
-export const layerPlugins = (serverData: string, { clock = Date.now, sweepMs = 60_000, bundledRoot, host }: PluginsOptions = {}): Layer.Layer<PluginsTag, FinError, ControlStoreTag | AuditTag | Fonts> =>
+export const layerPlugins = (serverData: string, { clock = Date.now, sweepMs = 60_000, bundledRoot, host, suggestions }: PluginsOptions = {}): Layer.Layer<PluginsTag, FinError, ControlStoreTag | AuditTag | Fonts> =>
   Layer.effect(
     PluginsTag,
     Effect.gen(function* () {
@@ -246,7 +252,7 @@ export const layerPlugins = (serverData: string, { clock = Date.now, sweepMs = 6
       yield* reconcile(native, tables, clock);
       const audit = yield* AuditTag;
       const fonts = yield* Fonts;
-      const plugins = makePlugins(native, tables, clock, { audit, fonts: fonts.setExtraCatalogs, ...(bundledRoot === undefined ? {} : { bundledRoot }), ...(host === undefined ? {} : { host }) });
+      const plugins = makePlugins(native, tables, clock, { audit, fonts: fonts.setExtraCatalogs, ...(bundledRoot === undefined ? {} : { bundledRoot }), ...(host === undefined ? {} : { host }), ...(suggestions === undefined ? {} : { suggestions }) });
       yield* plugins.reconcileStore();
       // The plugins that come with the app: installed, updated or revoked before anything is served.
       yield* Effect.catch(plugins.syncBundled(), (e) => Effect.logWarning(`finisherd: bundled plugins could not be checked: ${e.code}`));

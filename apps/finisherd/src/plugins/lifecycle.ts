@@ -27,6 +27,7 @@ import { autoUpdatable, baseOf, canonical, installedPlugin, type PlanDeps, prech
 import { actorOf, type Asker } from "./registries.ts";
 import type { PlanRow } from "./tables.ts";
 import type { PluginHostHooks } from "./host/processes.ts";
+import type { PluginSuggestions } from "../reviews/suggestions.ts";
 
 /** A version a refresh revoked. */
 export type Revoked = RefreshApplied["revoked"][number];
@@ -55,10 +56,9 @@ export interface LifecycleDeps extends PlanDeps {
    * plugins cannot be enabled (`PLUGIN_RUNTIME_UNAVAILABLE`).
    */
   readonly host?: PluginHostHooks;
+  /** Where suggestions live (5E Decision 11): review items. */
+  readonly suggestions: PluginSuggestions;
 }
-
-/** How many suggestions one principal may have for one project (review M2). */
-export const MAX_SUGGESTIONS = 20;
 
 /** Who installs the plugins that come with Finisher. */
 export const BUNDLED_BY: Asker = { kind: "system", id: "bundled", human: false };
@@ -193,6 +193,8 @@ export function makeLifecycle(deps: LifecycleDeps) {
           }),
         catch: toFinError,
       }).pipe(Effect.tapError(() => Effect.ignore(attempt(() => native.removePlugin(placed.id, placed.version, false)))));
+      // An installed plugin is no longer a suggestion (5E Decision 11).
+      yield* Effect.ignore(Effect.try({ try: () => deps.suggestions.installed(placed.id), catch: toFinError }));
       // The old version's processes drain and stop: new jobs name the new version, so its key (sp8b Task 5).
       if (prev !== undefined && prev.kind === "code" && (prev.version !== placed.version || revokedNow)) yield* stopCode(prev.id, { version: prev.version, drain: !revokedNow });
       // The version it replaced stays until the switch is recorded; its data stays too.
@@ -380,20 +382,7 @@ export function makeLifecycle(deps: LifecycleDeps) {
       })),
     suggest: (req: { readonly id: string; readonly reason: string; readonly projectId: string }, by: Asker): Effect.Effect<{ suggestionId: string }, FinError> =>
       Effect.try({
-        try: () => {
-          // One suggestion per plugin, project and principal, and a bounded number per project:
-          // an agent cannot fill the table by asking again (review M2).
-          const mine = tables.suggestedBy(by, req.projectId);
-          const same = mine.find((x) => x.pluginId === req.id);
-          if (same !== undefined) return { suggestionId: same.id };
-          if (mine.length >= MAX_SUGGESTIONS) {
-            throw finError("TOO_MANY_SUGGESTIONS", `${by.kind} principals may have ${MAX_SUGGESTIONS} suggestions per project`, { limit: MAX_SUGGESTIONS }, "Wait for the owner to look at the ones you made.");
-          }
-          const now = clock();
-          const suggestionId = ulid(now);
-          tables.addSuggestion({ id: suggestionId, pluginId: req.id, projectId: req.projectId, reason: req.reason, byKind: by.kind, byId: by.id, createdAt: now });
-          return { suggestionId };
-        },
+        try: () => deps.suggestions.suggest({ pluginId: req.id, projectId: req.projectId, reason: req.reason }, by),
         catch: toFinError,
       }),
     /**

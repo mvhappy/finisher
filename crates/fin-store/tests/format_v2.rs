@@ -298,7 +298,7 @@ fn segment_with_branch_record_is_v2() {
             segment::MIN_READER_VERSION,
             segment::READER_VERSION
         ),
-        (2, 2, 2)
+        (2, 2, 3)
     );
     assert_eq!(segment::version_for(&[branch.as_slice()]), (2, 2));
     let first = all[0].2.records[0].as_slice();
@@ -408,13 +408,13 @@ fn v2_segment_is_newer_for_a_v1_reader() {
     let (v1, _) = segment::encode(&header((1, 1)), &[&edit]);
     assert!(segment::decode_with_reader(&v1, 1).is_ok());
     // Above our reader version is newer for us too.
-    let (v3, _) = segment::encode(&header((3, 3)), &[&record]);
-    assert_eq!(segment::decode(&v3), Err(SegError::Newer { min_reader: 3 }));
+    let (v4, _) = segment::encode(&header((4, 4)), &[&record]);
+    assert_eq!(segment::decode(&v4), Err(SegError::Newer { min_reader: 4 }));
 }
 
 #[test]
 fn snapshot_reader_version_is_its_own() {
-    assert_eq!(segment::READER_VERSION, 2);
+    assert_eq!(segment::READER_VERSION, 3);
     assert_eq!(
         (
             snapfile::FORMAT_VERSION,
@@ -484,15 +484,16 @@ fn migration_0002_from_4a_fixture() {
     let v: i64 = conn
         .query_row("PRAGMA user_version", [], |r| r.get(0))
         .unwrap();
-    // 0003 (4C's version bump) runs after 0002.
-    assert_eq!((v, DB_VERSION), (4, 4));
-    assert_eq!(meta(&conn, "formatVersion").as_deref(), Some("4"));
-    assert_eq!(meta(&conn, "minReaderVersion").as_deref(), Some("4"));
+    // 0003 (4C's version bump), 0004 (5E's drops index) and 0005 (the keyframe-ids bump) run
+    // after 0002.
+    assert_eq!((v, DB_VERSION), (5, 5));
+    assert_eq!(meta(&conn, "formatVersion").as_deref(), Some("5"));
+    assert_eq!(meta(&conn, "minReaderVersion").as_deref(), Some("5"));
     assert_eq!(branch_rows(&conn), main_only());
     assert!(link_rows(&conn).is_empty());
     let names = backups(store.db_path());
     assert!(
-        names.iter().any(|n| n.starts_with("pre-migrate-1-4-")),
+        names.iter().any(|n| n.starts_with("pre-migrate-1-5-")),
         "{names:?}"
     );
     // The records 4A wrote are kept byte for byte.
@@ -527,15 +528,16 @@ fn sp2_fixture_migrates_through_0002() {
     let v: i64 = conn
         .query_row("PRAGMA user_version", [], |r| r.get(0))
         .unwrap();
-    // 0003 (4C's version bump) runs after 0002.
-    assert_eq!(v, 4);
-    assert_eq!(meta(&conn, "formatVersion").as_deref(), Some("4"));
-    assert_eq!(meta(&conn, "minReaderVersion").as_deref(), Some("4"));
+    // 0003 (4C's version bump), 0004 (5E's drops index) and 0005 (the keyframe-ids bump) run
+    // after 0002.
+    assert_eq!(v, 5);
+    assert_eq!(meta(&conn, "formatVersion").as_deref(), Some("5"));
+    assert_eq!(meta(&conn, "minReaderVersion").as_deref(), Some("5"));
     assert_eq!(branch_rows(&conn), main_only());
     assert!(link_rows(&conn).is_empty());
     let names = backups(&db);
     assert_eq!(names.len(), 1, "{names:?}");
-    assert!(names[0].starts_with("pre-migrate-0-4-"), "{names:?}");
+    assert!(names[0].starts_with("pre-migrate-0-5-"), "{names:?}");
 }
 
 #[test]
@@ -544,8 +546,8 @@ fn fresh_project_has_main_branch_row() {
     let a = e.create("a");
     let conn = read_only(a.db_path());
     assert_eq!(branch_rows(&conn), main_only());
-    assert_eq!(meta(&conn, "formatVersion").as_deref(), Some("4"));
-    assert_eq!(meta(&conn, "minReaderVersion").as_deref(), Some("4"));
+    assert_eq!(meta(&conn, "formatVersion").as_deref(), Some("5"));
+    assert_eq!(meta(&conn, "minReaderVersion").as_deref(), Some("5"));
 }
 
 #[test]

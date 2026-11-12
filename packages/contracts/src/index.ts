@@ -21,3 +21,5 @@ export * from "./plugin-commands.ts";
 export * from "./library.ts";
 export * from "./devices.ts";
 export * from "./device-rpcs.ts";
+export * from "./reviews.ts";
+export * from "./review-rpcs.ts";

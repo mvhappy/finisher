@@ -87,6 +87,10 @@ export const RPC_ONLY: ReadonlySet<FinRpcTag> = new Set<FinRpcTag>([
   "agent.local.show",
   "agent.local.test",
   "agent.local.remove",
+  // 5E: `review.watch` is a stream and `review.policy*` is the console's; the rest are `fin review`.
+  "review.watch",
+  "review.policy",
+  "review.policy.get",
   // 5B: pairing, devices, the environment and settings, reached through the console and apps.
   "auth.pair.offer",
   "auth.pair.approve",

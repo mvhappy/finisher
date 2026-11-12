@@ -348,6 +348,145 @@
       "group": "history",
       "identity": [
         "projectId",
+        "from",
+        "into",
+        "drops",
+        "undrops"
+      ],
+      "name": "drop",
+      "rpcs": [
+        {
+          "method": "history.drop"
+        }
+      ],
+      "write": true
+    },
+    {
+      "argKinds": {},
+      "group": "review",
+      "identity": [
+        "projectId",
+        "source",
+        "into"
+      ],
+      "name": "review.request",
+      "rpcs": [
+        {
+          "method": "review.request"
+        }
+      ],
+      "write": true
+    },
+    {
+      "argKinds": {},
+      "group": "review",
+      "identity": [
+        "projectId",
+        "state",
+        "kind"
+      ],
+      "name": "review.ls",
+      "rpcs": [
+        {
+          "method": "review.list"
+        }
+      ],
+      "write": false
+    },
+    {
+      "argKinds": {},
+      "group": "review",
+      "identity": [
+        "itemId"
+      ],
+      "name": "review.show",
+      "rpcs": [
+        {
+          "method": "review.get"
+        }
+      ],
+      "write": false
+    },
+    {
+      "argKinds": {},
+      "group": "review",
+      "identity": [
+        "itemId"
+      ],
+      "name": "review.refresh",
+      "rpcs": [
+        {
+          "method": "review.refresh"
+        }
+      ],
+      "write": true
+    },
+    {
+      "argKinds": {},
+      "group": "review",
+      "identity": [
+        "itemId",
+        "txId"
+      ],
+      "name": "review.comment",
+      "rpcs": [
+        {
+          "method": "review.comment"
+        }
+      ],
+      "write": true
+    },
+    {
+      "argKinds": {},
+      "group": "review",
+      "identity": [
+        "itemId",
+        "decisions.*.txId",
+        "decisions.*.decision"
+      ],
+      "name": "review.decide",
+      "rpcs": [
+        {
+          "method": "review.decide"
+        }
+      ],
+      "write": true
+    },
+    {
+      "argKinds": {},
+      "group": "review",
+      "identity": [
+        "itemId",
+        "acceptPending"
+      ],
+      "name": "review.merge",
+      "rpcs": [
+        {
+          "method": "review.merge"
+        }
+      ],
+      "write": true
+    },
+    {
+      "argKinds": {},
+      "group": "review",
+      "identity": [
+        "itemId",
+        "state"
+      ],
+      "name": "review.close",
+      "rpcs": [
+        {
+          "method": "review.close"
+        }
+      ],
+      "write": true
+    },
+    {
+      "argKinds": {},
+      "group": "history",
+      "identity": [
+        "projectId",
         "mergeId",
         "branch"
       ],

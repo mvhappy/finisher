@@ -41,6 +41,11 @@ export interface CommandRigOptions {
   /** Transactions committed to the new project before the test (`tx(...)` shapes). */
   readonly setup: ReadonlyArray<(rev: number) => Record<string, unknown>>;
   readonly egressHooks?: EgressTestHooks;
+  /**
+   * The branch ids the project's review policy protects (5E). Default none, so a credential's
+   * command may commit to `main`; without a reviews store the chain would protect `main`.
+   */
+  readonly protectedBranches?: ReadonlyArray<string>;
   /** Runs when the test ends (the caller's `afterEach` list). */
   readonly cleanups: Array<() => Promise<void> | void>;
 }
@@ -135,7 +140,7 @@ export async function commandRig(opts: CommandRigOptions): Promise<CommandRig> {
     "plugin.commands": commands["plugin.commands"] as Handler,
     "plugin.command.run": commands["plugin.command.run"] as Handler,
   };
-  chained = withChain(handlers, { connections, projects: chainProjects, pluginCommands: { writes: registry.writes } }) as unknown as Record<string, Handler>;
+  chained = withChain(handlers, { connections, projects: chainProjects, pluginCommands: { writes: registry.writes }, reviews: { item: () => undefined, protectedBranches: () => opts.protectedBranches ?? [] } }) as unknown as Record<string, Handler>;
   const call = <A>(tag: string, payload: unknown) => Effect.runPromiseExit(chained[tag]!(payload, { client: { id: 1 }, headers: {} }) as Effect.Effect<A, FinError>);
   return {
     serverData,

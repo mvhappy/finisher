@@ -47,7 +47,7 @@ fn envelope_json_matches_golden() {
         session: ulid("01JC0000000000000000000001"),
         source: Source::FinNode,
         kind: KindName::parse("log.commit").unwrap(),
-        kv: 1,
+        kv: 2,
         consent: ConsentStamp {
             rev: 3,
             purposes: Purposes::DIAGNOSTICS,
@@ -77,6 +77,7 @@ fn envelope_json_matches_golden() {
         ts: 1_794_571_200_999,
         source: Source::Finisherd,
         kind: KindName::of(kind("session.end", 1).unwrap()),
+        kv: 1,
         consent: ConsentStamp {
             rev: 4,
             purposes: Purposes::ALL,
@@ -147,12 +148,7 @@ fn any_payload_covers_every_kind() {
     for name in ["agent.turn", "agent.toolCall", "agent.toolResult"] {
         assert!(kind(name, 1).unwrap().training_only, "{name}");
     }
-    for name in [
-        "ui.action",
-        "review.verdict",
-        "preview.stats",
-        "render.sample",
-    ] {
+    for name in ["ui.action", "preview.stats", "render.sample"] {
         assert!(kind(name, 0).unwrap().reserved, "{name}");
     }
     let training_only: Vec<&str> = kinds()
@@ -411,6 +407,7 @@ fn content_fields_name_their_kind() {
         ("agent.turn.tools".into(), ContentKind::ModelInput),
         ("error.panic.message".into(), ContentKind::ErrorMessage),
         ("log.commit.intent".into(), ContentKind::TxIntent),
+        ("review.verdict.reason".into(), ContentKind::UserText),
         ("plugin.command.args".into(), ContentKind::ToolArgs),
     ]);
     assert_eq!(seen, want);
@@ -634,7 +631,7 @@ fn unknown_table_value_reads_as_other() {
         ["dry-run", "other"]
     );
 
-    let spec = kind("log.commit", 1).unwrap();
+    let spec = kind("log.commit", 2).unwrap();
     let raw = json!({
         "record": "edit", "outcome": "accepted", "micros": 3,
         "ops": { "item.trim": 1, "made.up": 2, "also.made.up": 3 },
@@ -729,7 +726,7 @@ fn src_loc_accepts_only_repo_paths() {
 
 #[test]
 fn log_commit_intent_is_content() {
-    let spec = kind("log.commit", 1).unwrap();
+    let spec = kind("log.commit", 2).unwrap();
     let paths = content_paths(spec);
     assert_eq!(paths.len(), 1);
     assert_eq!(paths[0].path, [Seg::Key("intent".into())]);
@@ -815,7 +812,7 @@ fn redact_removes_every_content_path() {
     }
     assert_eq!(
         removed,
-        2 * 10,
+        2 * 11,
         "every sample content field was filled and removed"
     );
 }
@@ -868,7 +865,8 @@ fn training_only_kinds_keep_metadata_under_diagnostics() {
 
 #[test]
 fn unknown_kind_and_version_refused() {
-    assert!(kind("log.commit", 2).is_none());
+    assert!(kind("log.commit", 1).is_none());
+    assert!(kind("log.commit", 3).is_none());
     assert!(kind("log.commit", 0).is_none());
     assert!(kind("made.up", 1).is_none());
     assert_eq!(
@@ -897,7 +895,7 @@ fn unknown_kind_and_version_refused() {
             .code,
         "EVENT_KIND_UNKNOWN"
     );
-    let commit = kind("log.commit", 1).unwrap();
+    let commit = kind("log.commit", 2).unwrap();
     for bad in [
         json!({ "record": "edit" }),
         json!("text"),
@@ -1265,7 +1263,7 @@ fn redact_walk_panics_on_unresolved_ref() {
 
 #[test]
 fn intent_content_holds_free_text_only_in_ops() {
-    let c = check("log.commit", 1);
+    let c = check("log.commit", 2);
     assert!(c.issues.is_empty(), "{:?}", c.issues);
     assert!(!c.raw_in_content.is_empty());
     for raw in &c.raw_in_content {
@@ -1274,7 +1272,7 @@ fn intent_content_holds_free_text_only_in_ops() {
             "{raw}: free text outside the ops"
         );
     }
-    let schema = (kind("log.commit", 1).unwrap().schema)();
+    let schema = (kind("log.commit", 2).unwrap().schema)();
     let tx = &schema["$defs"]["IntentTx"]["properties"];
     for (field, def) in [
         ("txId", "IdRef"),

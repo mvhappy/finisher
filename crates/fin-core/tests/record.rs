@@ -6,8 +6,8 @@ use std::collections::BTreeMap;
 
 use common::*;
 use fin_core::{
-    CommittedTx, Diff, Edge, Link, MIN_READER, Op, RECORD_FORMAT, Record, RecordKind,
-    SCHEMA_VERSION, encode_record, resolve_ops, upcast_record, upcast_snapshot,
+    CommittedTx, Diff, Edge, Link, MAX_DROP_IDS, MIN_READER, Op, RECORD_FORMAT, Record, RecordKind,
+    SCHEMA_VERSION, encode_record, record_format, resolve_ops, upcast_record, upcast_snapshot,
 };
 use serde_json::{Value, json};
 
@@ -272,6 +272,25 @@ fn every_link() -> Vec<Link> {
             archived: None,
             recovers: Some(H.into()),
         },
+        // Plan 5E Decision 1: drops, undrops or both.
+        Link::Drop {
+            from: "br2".into(),
+            drops: vec!["o1".into(), "o2".into()],
+            undrops: vec![],
+            recovers: None,
+        },
+        Link::Drop {
+            from: "br2".into(),
+            drops: vec![],
+            undrops: vec!["o1".into()],
+            recovers: None,
+        },
+        Link::Drop {
+            from: "br2".into(),
+            drops: vec!["o2".into()],
+            undrops: vec!["o1".into(), "o3".into()],
+            recovers: Some(H.into()),
+        },
     ]
 }
 
@@ -318,6 +337,8 @@ fn every_kind_roundtrips_byte_stable() {
             "forkHash",
             "archived",
             "recovers",
+            "drops",
+            "undrops",
             "schemaVersion",
         ];
         let positions: Vec<usize> = order
@@ -363,6 +384,7 @@ fn kind_names_are_camel_case() {
         (RecordKind::Checkpoint, "checkpoint", false, false, false),
         (RecordKind::Branch, "branch", false, false, false),
         (RecordKind::BranchSet, "branchSet", false, false, false),
+        (RecordKind::Drop, "drop", false, false, false),
     ];
     for (kind, name, content, ops, is_4a) in names {
         assert_eq!(serde_json::to_value(kind).unwrap(), json!(name));
@@ -561,6 +583,190 @@ fn link_fields_must_match_kind() {
         assert_eq!(e.code, "INVALID_FORMAT", "{what}: {e}");
         assert_eq!(e.details["kind"], "record", "{what}");
     }
+}
+
+/// A `drop` record (plan 5E Decisions 1 and 4): its fields after `recovers` in the order
+/// `…, recovers, drops, undrops`, each list sorted and deduplicated by the constructor, no ops,
+/// written at record format 3 with min reader 3.
+#[test]
+fn drop_record_golden() {
+    let link = Link::new_drop(
+        "br2",
+        vec!["o2".into(), "o1".into(), "o2".into()],
+        vec!["o3".into()],
+    )
+    .unwrap();
+    assert_eq!(
+        link,
+        Link::Drop {
+            from: "br2".into(),
+            drops: vec!["o1".into(), "o2".into()],
+            undrops: vec!["o3".into()],
+            recovers: None,
+        }
+    );
+    let record = linked(&link);
+    assert_eq!(record.kind, RecordKind::Drop);
+    let bytes = String::from_utf8(encode_record(&record)).unwrap();
+    assert_eq!(
+        bytes,
+        concat!(
+            r#"{"txId":"tx-test","seq":7,"kind":"drop","from":"br2","drops":["o1","o2"],"#,
+            r#""undrops":["o3"],"schemaVersion":3,"parentHash":null,"author":"test","#,
+            r#""committedAt":1700000000000,"intent":{"txId":"tx-test","author":"test","#,
+            r#""branch":"main","baseRev":0,"schemaVersion":3,"ops":[]},"resolved":[],"#,
+            r#""inverse":[],"bindings":{}}"#
+        )
+    );
+    assert_eq!(
+        upcast_record(serde_json::from_str(&bytes).unwrap()).unwrap(),
+        record
+    );
+    // Only drops: no undrops field at all.
+    let only = linked(&Link::new_drop("br2", vec!["o1".into()], vec![]).unwrap());
+    let text = String::from_utf8(encode_record(&only)).unwrap();
+    assert!(
+        text.contains(r#""kind":"drop","from":"br2","drops":["o1"],"schemaVersion":"#),
+        "{text}"
+    );
+    // The link as `CommittedTx.link` carries it: empty lists omitted.
+    assert_eq!(
+        serde_json::to_value(only.link().unwrap()).unwrap(),
+        json!({"kind": "drop", "from": "br2", "drops": ["o1"]})
+    );
+    assert_eq!(record_format(RecordKind::Drop), (3, 3));
+    for link in every_link() {
+        if link.kind() != RecordKind::Drop {
+            assert_eq!(record_format(link.kind()), (RECORD_FORMAT, MIN_READER));
+        }
+    }
+}
+
+/// Every other kind encodes exactly as 4B wrote it: the checked-in lines were captured from
+/// the 4B build before `drop` existed. Only the op schema version differs (model v3, the
+/// stable-keyframe-ids bump), so the lines are compared at the current one.
+#[test]
+fn other_kinds_byte_identical() {
+    let golden = include_str!("fixtures/record_kinds_4b.jsonl").replace(
+        r#""schemaVersion":2"#,
+        &format!(r#""schemaVersion":{SCHEMA_VERSION}"#),
+    );
+    let want: Vec<&str> = golden.lines().filter(|l| !l.is_empty()).collect();
+    let got: Vec<String> = every_link()
+        .iter()
+        .filter(|l| l.kind() != RecordKind::Drop)
+        .map(|l| String::from_utf8(encode_record(&linked(l))).unwrap())
+        .collect();
+    assert_eq!(got.len(), want.len());
+    for (g, w) in got.iter().zip(&want) {
+        assert_eq!(g, w);
+        assert!(
+            !g.contains("\"drops\"") && !g.contains("\"undrops\""),
+            "{g}"
+        );
+    }
+}
+
+/// A `drop` names at least one origin: the constructor refuses with `INVALID_OP` (a request
+/// error), a stored record without one is damage (`INVALID_FORMAT`).
+#[test]
+fn drop_needs_one_non_empty_list() {
+    let e = Link::new_drop("br2", vec![], vec![]).unwrap_err();
+    assert_eq!(e.code, "INVALID_OP", "{e}");
+    let too_many: Vec<String> = (0..=MAX_DROP_IDS).map(|i| format!("o{i}")).collect();
+    let e = Link::new_drop(
+        "br2",
+        too_many[..MAX_DROP_IDS / 2].to_vec(),
+        too_many[MAX_DROP_IDS / 2..].to_vec(),
+    )
+    .unwrap_err();
+    assert_eq!(e.code, "INVALID_OP", "{e}");
+    assert!(Link::new_drop("br2", too_many[..MAX_DROP_IDS].to_vec(), vec![]).is_ok());
+    // Duplicates count once.
+    assert!(
+        Link::new_drop("br2", vec!["o1".into(); MAX_DROP_IDS + 5], vec![]).is_ok(),
+        "deduplicated before counting"
+    );
+
+    let good: Value = serde_json::from_slice(&encode_record(&linked(&every_link()[16]))).unwrap();
+    let with = |f: &dyn Fn(&mut serde_json::Map<String, Value>)| {
+        let mut v = good.clone();
+        f(v.as_object_mut().unwrap());
+        v
+    };
+    let bad: Vec<(&str, Value)> = vec![
+        (
+            "no list",
+            with(&|m| {
+                m.remove("drops");
+            }),
+        ),
+        (
+            "empty drops",
+            with(&|m| {
+                m.insert("drops".into(), json!([]));
+            }),
+        ),
+        (
+            "empty undrops beside drops",
+            with(&|m| {
+                m.insert("undrops".into(), json!([]));
+            }),
+        ),
+        (
+            "no from",
+            with(&|m| {
+                m.remove("from");
+            }),
+        ),
+        (
+            "unsorted",
+            with(&|m| {
+                m.insert("drops".into(), json!(["o2", "o1"]));
+            }),
+        ),
+        (
+            "duplicated",
+            with(&|m| {
+                m.insert("drops".into(), json!(["o1", "o1"]));
+            }),
+        ),
+        (
+            "too many",
+            with(&|m| {
+                let ids: Vec<String> = (0..=MAX_DROP_IDS).map(|i| format!("o{i:05}")).collect();
+                m.insert("drops".into(), json!(ids));
+            }),
+        ),
+        (
+            "with ops",
+            with(&|m| {
+                m["intent"]["ops"] = json!([{ "op": "clip.delete", "clip": "c1" }]);
+            }),
+        ),
+        (
+            "with origin",
+            with(&|m| {
+                m.insert("origin".into(), json!("o1"));
+            }),
+        ),
+    ];
+    for (what, v) in bad {
+        let e = upcast_record(v).unwrap_err();
+        assert_eq!(e.code, "INVALID_FORMAT", "{what}: {e}");
+    }
+}
+
+/// An origin both dropped and undropped by one record is `INVALID_OP` at write and damage when
+/// stored.
+#[test]
+fn id_in_both_lists_invalid() {
+    let e = Link::new_drop("br2", vec!["o1".into(), "o2".into()], vec!["o2".into()]).unwrap_err();
+    assert_eq!(e.code, "INVALID_OP", "{e}");
+    assert_eq!(e.details["txId"], "o2", "{e}");
+    let mut v: Value = serde_json::from_slice(&encode_record(&linked(&every_link()[18]))).unwrap();
+    v["undrops"] = json!(["o1", "o2"]);
+    assert_eq!(upcast_record(v).unwrap_err().code, "INVALID_FORMAT");
 }
 
 #[test]

@@ -10,9 +10,10 @@
 //! - [`Store::recover`] with `create` makes branches in one write: per group, a `branch`
 //!   record on the parent, then a record standing for each row (a `cherryPick` of the record's
 //!   origin root under fresh or kept ids, [`ids`], [`remap`]; a fresh checkpoint, `branch` or
-//!   `branchSet` record), then its child groups. The records are `<txId>-<n>`, each with the
-//!   request's identity as its `argsHash`; a retry of the txId answers from the log, from
-//!   the records that carry it. `import_dir` first reads `.fseg` files moved out of the
+//!   `branchSet` record; a `drop` made again on the branch it binds, or in its place when that
+//!   branch is set aside with it, `rows`), then its child groups. The records are `<txId>-<n>`,
+//!   each with the request's identity as its `argsHash`; a retry of the txId answers from the
+//!   log, from the records that carry it. `import_dir` first reads `.fseg` files moved out of the
 //!   folder into quarantine (`IMPORTED`, origin `foreign`; [`import_dir`]), and `dismiss`
 //!   sets a group that cannot be recovered aside from listing and counting on this server
 //!   ([`dismiss`]); both also while the project is read-only.
@@ -37,7 +38,7 @@ use std::sync::Arc;
 use serde::Deserialize;
 
 use fin_core::layout::TextMeasurer;
-use fin_core::{CommittedTx, Conflict, CoreError, Link, RecordKind};
+use fin_core::{CommittedTx, Conflict, CoreError, Link};
 use rusqlite::Connection;
 use serde_json::json;
 
@@ -101,13 +102,14 @@ struct Listing {
     out: Vec<RecoverGroup>,
 }
 
-/// Whether group `g` makes a branch: it has records with ops or checkpoints.
+/// Whether group `g` makes a branch: it has records that stand in their place there
+/// ([`Forest::in_place`]).
 fn makes_branch(forest: &Forest, g: &Group) -> bool {
     g.rows.iter().any(|&i| {
         forest.rows[i]
             .record
             .as_ref()
-            .is_some_and(|r| r.kind.has_ops() || r.kind == RecordKind::Checkpoint)
+            .is_some_and(|r| forest.in_place(r))
     })
 }
 

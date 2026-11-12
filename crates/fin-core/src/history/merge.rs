@@ -38,7 +38,9 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 use serde_json::json;
 
 use super::candidates::candidates;
+use super::limits::MergeLimits;
 use super::origin::Roots;
+use super::review::ReviewEntry;
 use super::{Lineage, LogRec, LogView, Planned};
 use crate::apply::ApplyMode;
 use crate::error::CoreError;
@@ -238,8 +240,9 @@ pub fn candidate_steps(
 }
 
 /// A planned merge: its id, the copies to append in order, the source txIds they copy, the
-/// candidates that conflict (each skipped; empty unless `skip_conflicting`), and the source
-/// records left out as `UNDOES_TARGET_RECORDS`.
+/// candidates that conflict (each skipped; empty unless `skip_conflicting`), the source
+/// records left out as `DROPPED` or `UNDOES_TARGET_RECORDS` (not conflicts), and the origin
+/// roots of the candidates the merge's limits leave out ([`MergeLimits`], oldest first).
 #[derive(Debug, Clone, PartialEq)]
 pub struct MergePlan {
     pub merge_id: String,
@@ -247,6 +250,7 @@ pub struct MergePlan {
     pub merged: Vec<String>,
     pub conflicts: Vec<Conflict>,
     pub excluded: Vec<Conflict>,
+    pub not_included: Vec<String>,
     /// One per item the copies put back with a ripple restore or move, each with its copy's
     /// txId, plus the `conflict` placements of skipped candidates (`rebase::placement`).
     pub placements: Vec<crate::rebase::placement::Placement>,
@@ -265,6 +269,33 @@ pub fn plan_merge(
     author: &str,
     merge_id: &str,
     skip_conflicting: bool,
+) -> Result<MergePlan, CoreError> {
+    let none = MergeLimits::default();
+    plan_merge_limited(
+        log,
+        from,
+        into,
+        author,
+        merge_id,
+        skip_conflicting,
+        none,
+        None,
+    )
+}
+
+/// [`plan_merge`] copying only what `limits` admit ([`super::limits`]); `explain` gets one
+/// [`ReviewEntry`] per source record the plan decides about, before a `CONFLICT` is returned
+/// ([`super::review`]).
+#[allow(clippy::too_many_arguments)]
+pub fn plan_merge_limited(
+    log: &dyn LogView,
+    from: &str,
+    into: &str,
+    author: &str,
+    merge_id: &str,
+    skip_conflicting: bool,
+    limits: MergeLimits<'_>,
+    explain: Option<&mut dyn FnMut(ReviewEntry)>,
 ) -> Result<MergePlan, CoreError> {
     if from == into {
         return Err(CoreError::new(
@@ -286,7 +317,9 @@ pub fn plan_merge(
     let source = path_after(log, &source_l, &c)?;
     let target = path_after(log, &target_l, &c)?;
     let roots = Roots::new(log, &target_l, &source, &target)?;
-    let cands = candidates(&source, &roots);
+    let dropped = super::dropped_for(log, &target_l)?;
+    let mut cands = candidates(&source, &roots, &dropped);
+    let left = super::limits::apply(&mut cands, &source, &roots, from, &limits);
     let paths = Paths::new(&source, &target, &roots)?.prepared();
     let binders = Binders::new(&source, &roots.source, &target, &roots.target);
     let (mut seq, mut head) = log.head(into)?;
@@ -301,6 +334,7 @@ pub fn plan_merge(
             .iter()
             .map(|&(i, reason)| Conflict::new(&source[i].record.tx_id, 0, reason, None))
             .collect(),
+        not_included: super::limits::roots_of(&left, &roots),
         placements: Vec::new(),
     };
     let mut copies: Vec<(usize, Prepared)> = Vec::new();
@@ -314,6 +348,7 @@ pub fn plan_merge(
         .excluded
         .iter()
         .map(|&(i, _)| source[i].record.tx_id.as_str())
+        .chain(left.iter().map(|&i| source[i].record.tx_id.as_str()))
         .collect();
     let mut frames = super::SourceFrames::default();
     for &i in &cands.picks {
@@ -405,6 +440,9 @@ pub fn plan_merge(
             applied: rebased.applied,
             placements,
         });
+    }
+    if let Some(sink) = explain {
+        super::review::explain(&source, &roots, &plan, &left, sink);
     }
     if !skip_conflicting && let Some(all) = Conflicts::new(plan.conflicts.clone()) {
         return Err(all.into());

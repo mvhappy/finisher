@@ -134,6 +134,39 @@ pub const ROWS: &[Row] = &[
         &["projectId", "origin", "into"]
     ),
     row!(
+        "drop",
+        rpc!("history.drop"),
+        &["projectId", "from", "into", "drops", "undrops"]
+    ),
+    row!(
+        "review.request",
+        rpc!("review.request"),
+        &["projectId", "source", "into"]
+    ),
+    row!(
+        "review.ls",
+        rpc!("review.list"),
+        &["projectId", "state", "kind"]
+    ),
+    row!("review.show", rpc!("review.get"), &["itemId"]),
+    row!("review.refresh", rpc!("review.refresh"), &["itemId"]),
+    row!(
+        "review.comment",
+        rpc!("review.comment"),
+        &["itemId", "txId"]
+    ),
+    row!(
+        "review.decide",
+        rpc!("review.decide"),
+        &["itemId", "decisions.*.txId", "decisions.*.decision"]
+    ),
+    row!(
+        "review.merge",
+        rpc!("review.merge"),
+        &["itemId", "acceptPending"]
+    ),
+    row!("review.close", rpc!("review.close"), &["itemId", "state"]),
+    row!(
         "revert",
         rpc!("history.revert"),
         &["projectId", "mergeId", "branch"]

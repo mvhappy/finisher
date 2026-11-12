@@ -744,7 +744,7 @@ export type CommitOutcome = "accepted" | "rebased" | "deduped" | "noOp" | "confl
  * via the `definition` "CommitRecord".
  */
 export type CommitRecord =
-  "edit" | "undo" | "redo" | "merge" | "pick" | "revert" | "checkpoint" | "branch" | "branchSet" | "recover";
+  "edit" | "undo" | "redo" | "merge" | "pick" | "revert" | "checkpoint" | "branch" | "branchSet" | "recover" | "drop";
 /**
  * This interface was referenced by `FinCore`'s JSON-Schema
  * via the `definition` "FetchOutcome".
@@ -960,6 +960,36 @@ export type PairPlatform = "macos" | "windows" | "linux" | "ios" | "android" | "
  */
 export type PairRoute = "loopback" | "lan" | "tailscale" | "public" | "connect" | "other";
 /**
+ * Who brought it about.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "VerdictBy".
+ */
+export type VerdictBy = "user" | "agent" | "critic" | "policy";
+/**
+ * What the verdict is about (`none` for the outcome tracker's entries).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "ReviewItemKind".
+ */
+export type ReviewItemKind =
+  "branchReview" | "mergeConflict" | "qaFinding" | "criticSummary" | "pluginSuggestion" | "none";
+/**
+ * What was decided or became of the work.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "Verdict".
+ */
+export type Verdict =
+  "accepted" | "rejected" | "merged" | "dismissed" | "changesRequested" | "undone" | "reverted" | "abandoned";
+/**
+ * How the outcome came about; absent for a person's decision on an item.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "VerdictVia".
+ */
+export type VerdictVia = "undo" | "revert" | "archive" | "merge" | "critic" | "autoMerge";
+/**
  * Who provides a backend (spec §6.1): the export-encoder policy and the capability report key
  * on it.
  *
@@ -1132,6 +1162,13 @@ export type Link =
       kind: "branchSet";
       name?: string | null;
       recovers?: string | null;
+    }
+  | {
+      drops?: string[];
+      from: string;
+      kind: "drop";
+      recovers?: string | null;
+      undrops?: string[];
     };
 /**
  * Why a `cancel` was sent.
@@ -1395,6 +1432,13 @@ export type EngineEvent =
       type: "collect";
     };
 /**
+ * What a merge does with a source record (the review's `status`).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "EntryStatus".
+ */
+export type EntryStatus = "willMerge" | "alreadyPresent" | "dropped" | "excluded" | "dependsOnSkipped" | "conflict";
+/**
  * The type of a directory entry as listed (never by following a link). Windows reparse
  * points with a name-surrogate tag (symlinks, junctions, mount points) are `symlink` in a
  * [`ScanEntry`] (see [`crate::listing`]); anything that is neither a regular file, a
@@ -1456,7 +1500,7 @@ export type EventPayload =
     }
   | {
       kind: "log.commit";
-      kv: 1;
+      kv: 2;
       payload: LogCommit;
     }
   | {
@@ -1576,7 +1620,7 @@ export type EventPayload =
     }
   | {
       kind: "review.verdict";
-      kv: 0;
+      kv: 1;
       payload: ReviewVerdict;
     }
   | {
@@ -2235,6 +2279,15 @@ export type PurgeSelector =
   | {
       before: number;
     };
+/**
+ * What a record does (spec §4.2). Sub-project 4A writes only edits; 4B adds the rest up to
+ * `branchSet`; 5E adds `drop` (durable rejections, sub-project 5 spec §8.3).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "RecordKind".
+ */
+export type RecordKind =
+  "edit" | "undo" | "redo" | "merge" | "cherryPick" | "revert" | "checkpoint" | "branch" | "branchSet" | "drop";
 /**
  * A frame size as a bucket: the smallest standard size the frame fits within, by pixel count
  * (so a portrait clip buckets as its landscape twin): `sd` ≤ 960×540, `hd720` ≤ 1280×720,
@@ -4181,10 +4234,35 @@ export interface AuthPair {
  */
 export interface UiAction {}
 /**
+ * `review.verdict`.
+ *
  * This interface was referenced by `FinCore`'s JSON-Schema
  * via the `definition` "ReviewVerdict".
  */
-export interface ReviewVerdict {}
+export interface ReviewVerdict {
+  /**
+   * Counts of the transactions accepted and rejected by the decision.
+   */
+  accepted: number;
+  by: VerdictBy;
+  itemKind: ReviewItemKind;
+  /**
+   * Seconds since the item opened (or since the transaction, for the tracker's entries).
+   */
+  openS: number;
+  /**
+   * Training only: the reason the person gave.
+   */
+  reason?: Scrubbed;
+  rejected: number;
+  sessionId?: IdRef;
+  /**
+   * @maxItems 64
+   */
+  txIds: IdRef[];
+  verdict: Verdict;
+  via?: VerdictVia;
+}
 /**
  * `media.capabilities` (`kv` 1): once per server run, what the media worker can decode,
  * encode and draw on.
@@ -5430,6 +5508,32 @@ export interface DolbyVision {
   level: number;
   profile: number;
   rpu: boolean;
+}
+/**
+ * [`Store::drop`](crate::Store::drop)'s request (`history.drop`, plan 5E Decision 5).
+ *
+ * - `tx_id`: the idempotency key, the `drop` record's txId;
+ * - `author`: the record's author;
+ * - `into`: the branch the rejection binds (a reference; the record is written there);
+ * - `from`: the source branch (a reference; it may be archived);
+ * - `drops`, `undrops`: origin-root txIds of records on `from`'s lineage after its common
+ *   point with `into`, at least one in all; sorted and deduplicated at write;
+ * - `dry_run`: plan against the local database and keep nothing, on a follower too;
+ * - `args_hash`: the command input's hash, stored on the record's intent; a retry of the
+ *   txId with another hash is `IDEM_KEY_REUSED`.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "DropReq".
+ */
+export interface DropReq {
+  argsHash?: string | null;
+  author: string;
+  drops?: string[];
+  dryRun?: boolean;
+  from: string;
+  into: string;
+  txId: string;
+  undrops?: string[];
 }
 /**
  * One enabled effect with its parameters resolved at the plan's time. `params` holds the
@@ -7470,10 +7574,13 @@ export interface MediaInfo1 {
  * the target, in order (or planned and rolled back, `dry_run`); `merged`: the source txIds
  * they copy; `skipped`: the candidates that conflict and were left on the source (with
  * `skipConflicting`; they are offered again by the next merge); `excluded`: source records
- * never offered (`UNDOES_TARGET_RECORDS`); `source_state`: the source branch's state after
+ * never offered (`DROPPED`, `UNDOES_TARGET_RECORDS`); `not_included`: the origin roots of the
+ * candidates the merge's `include` and `sourceUpTo` left on the source, oldest first (plan 5E
+ * Decision 6; omitted when empty); `source_state`: the source branch's state after
  * the merge; `origins`: `merged` with the records their `origin` chains lead to (a copy of a
  * copy), first seen first (7A Decision 27). A retry of a committed merge answers from the
- * log: its records and their origins, `skipped` and `excluded` empty, `dry_run` false.
+ * log: its records and their origins, `skipped`, `excluded` and `not_included` empty,
+ * `dry_run` false.
  * Nothing left to merge is an empty answer, not an error.
  *
  * This interface was referenced by `FinCore`'s JSON-Schema
@@ -7485,6 +7592,7 @@ export interface MergeReport {
   excluded: Conflict[];
   mergeId: string;
   merged: string[];
+  notIncluded?: string[];
   origins?: string[];
   /**
    * As [`HistoryResult::placements`], each with its copy's txId, plus the `conflict`
@@ -8178,6 +8286,62 @@ export interface ManifestFonts1 {
    */
   cache?: string;
   files?: FontFileRef[];
+}
+/**
+ * One entry of a review plan: a source record (`tx_id` on `branch` at `seq`) and its origin
+ * root (`origin`, what decisions and `include` name), its kind, record author, number of
+ * intent ops and commit time (unix ms), and what the merge does with it. `reason`: the
+ * conflict or exclusion reason (absent for `willMerge` and `alreadyPresent`); `blame`: the
+ * record a conflict is blamed on, when there is one. `actor`: the agent actor the server
+ * knows for the record (sub-project 7A's tracker), never set by the planner.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "ReviewEntry".
+ */
+export interface ReviewEntry {
+  actor?: unknown;
+  author: string;
+  blame?: string | null;
+  branch: string;
+  committedAt: number;
+  kind: RecordKind;
+  opsCount: number;
+  origin: string;
+  reason?: string | null;
+  seq: number;
+  status: EntryStatus;
+  txId: string;
+}
+/**
+ * A branch head as a review plan saw it: the branch id, its head seq and the `txHash` of the
+ * record there (absent at a root's start), so a rewind to the same seq is told apart (plan 5E
+ * Decision 9).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "ReviewHead".
+ */
+export interface ReviewHead {
+  branch: string;
+  hash?: string | null;
+  seq: number;
+}
+/**
+ * [`Store::review_plan`](crate::Store::review_plan)'s answer (plan 5E Decision 7): what a
+ * merge of `source` into `target` would do at these heads, one entry per candidate and per
+ * source record the target already holds, oldest first; `conflicts`: the candidates that
+ * conflict (as a `skipConflicting` merge would skip them). At most
+ * [`REVIEW_PLAN_MAX`](crate::REVIEW_PLAN_MAX) entries and conflicts, the oldest:
+ * `truncated` when there were more.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "ReviewPlan".
+ */
+export interface ReviewPlan {
+  conflicts: Conflict[];
+  entries: ReviewEntry[];
+  source: ReviewHead;
+  target: ReviewHead;
+  truncated: boolean;
 }
 /**
  * The invoking principal (sub-project 5's `{kind, id}`; the job's owner).

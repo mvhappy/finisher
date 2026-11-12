@@ -46,7 +46,8 @@ pub use ops::{
 };
 pub use rebase::{Conflict, Conflicts, rebase_tx, rebase_tx_env};
 pub use record::{
-    Link, MIN_READER, RECORD_FORMAT, Record, RecordKind, encode_record, kind_name, resolve_ops,
+    Link, MAX_DROP_IDS, MIN_READER, RECORD_FORMAT, Record, RecordKind, encode_record, kind_name,
+    record_format, resolve_ops,
 };
 pub use replay::{BoundIds, apply_committed};
 pub use schema::{json_schema, json_schema_with};

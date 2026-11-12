@@ -13,7 +13,19 @@ import type {
 } from "@finisher/core-types";
 import { Schema } from "effect";
 
-export type { BranchCreated, BranchView, Conflict, HistoryResult, MergeReport, RecoverGroup, RecoverReport } from "@finisher/core-types";
+export type {
+  BranchCreated,
+  BranchView,
+  Conflict,
+  EntryStatus,
+  HistoryResult,
+  MergeReport,
+  RecoverGroup,
+  RecoverReport,
+  ReviewEntry,
+  ReviewHead,
+  ReviewPlan,
+} from "@finisher/core-types";
 
 type Same<A, B> = [A] extends [B] ? ([B] extends [A] ? true : never) : never;
 
@@ -88,11 +100,46 @@ export const BranchSetPayload = Schema.Struct({
 export const HistoryUndoPayload = Schema.Struct({ ...Write, branch: Schema.String, to: Schema.optional(Schema.String) });
 export const HistoryRedoPayload = Schema.Struct({ ...Write, branch: Schema.String });
 export const HistoryCheckpointPayload = Schema.Struct({ ...Write, branch: Schema.String, name: Schema.String });
+/**
+ * The most origin txIds a merge's `include` names (fin-core's `MAX_INCLUDE`): a review plan's
+ * entries at most, so a review merge can include every entry it lists.
+ */
+export const MERGE_INCLUDE_MAX = 10_000;
+/** The longest txId on the wire (fin-core's `MAX_RAW_ID`, bytes). */
+export const TX_ID_MAX = 256;
+
+/**
+ * Merge `from` into `into`. `include`: copy only the candidates whose origin root is named
+ * (`[]` copies nothing); `sourceUpTo`: copy no record of the source branch itself above that
+ * seq (records it holds from its parent pass). Both are applied inside the merge's write
+ * transaction; what they leave out is `notIncluded`, and an included record depending on one
+ * left out is a `DEPENDS_ON_SKIPPED` conflict (plan 5E Decision 6).
+ */
 export const HistoryMergePayload = Schema.Struct({
   ...Write,
   from: Schema.String,
   into: Schema.String,
   skipConflicting: Schema.optional(Schema.Boolean),
+  include: Schema.optional(Schema.Array(Schema.String.check(Schema.isMaxLength(TX_ID_MAX))).check(Schema.isMaxLength(MERGE_INCLUDE_MAX))),
+  sourceUpTo: Schema.optional(
+    Schema.Number.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(0), Schema.isLessThanOrEqualTo(Number.MAX_SAFE_INTEGER)),
+  ),
+});
+/** The most origin roots one `drop` record names, `drops` and `undrops` together (fin-core's `MAX_DROP_IDS`). */
+export const DROP_IDS_MAX = 4096;
+
+/**
+ * `history.drop` (5E Decision 5): write a `drop` record on `into` that keeps the origin roots in
+ * `drops` out of every merge of `from` (and its descendants), or lifts a drop (`undrops`). At
+ * least one list is non-empty; the server always sets `argsHash`. Needs `review.decide` on a
+ * protected target, `project.write` elsewhere.
+ */
+export const HistoryDropPayload = Schema.Struct({
+  ...Write,
+  from: Schema.String,
+  into: Schema.String,
+  drops: Schema.optional(Schema.Array(Schema.String.check(Schema.isMaxLength(TX_ID_MAX))).check(Schema.isMaxLength(DROP_IDS_MAX))),
+  undrops: Schema.optional(Schema.Array(Schema.String.check(Schema.isMaxLength(TX_ID_MAX))).check(Schema.isMaxLength(DROP_IDS_MAX))),
 });
 export const HistoryCherryPickPayload = Schema.Struct({ ...Write, origin: Schema.String, into: Schema.String });
 export const HistoryRevertPayload = Schema.Struct({ ...Write, mergeId: Schema.String, branch: Schema.String });

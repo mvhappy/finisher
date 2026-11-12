@@ -99,6 +99,8 @@ fn merge(s: &mut Store, id: &str, from: &str, into: &str) -> MergeReport {
         skip_conflicting: false,
         dry_run: false,
         args_hash: None,
+        include: None,
+        source_up_to: None,
     })
     .unwrap()
 }
@@ -589,6 +591,8 @@ fn merged_state_when_nothing_left() {
             skip_conflicting: true,
             dry_run: false,
             args_hash: None,
+            include: None,
+            source_up_to: None,
         })
         .unwrap();
     assert_eq!(part.merged, ["e1"]);
@@ -630,6 +634,8 @@ fn merged_state_when_nothing_left() {
             skip_conflicting: false,
             dry_run: true,
             args_hash: None,
+            include: None,
+            source_up_to: None,
         })
         .unwrap();
     assert_eq!(dry.source_state, BranchState::Merged);

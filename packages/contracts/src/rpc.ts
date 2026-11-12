@@ -10,6 +10,7 @@ import { Schema } from "effect";
 import { Rpc, RpcGroup } from "effect/rpc";
 import { TxSetAsideSchema } from "./tx-set-aside.ts";
 import { DEVICE_RPCS } from "./device-rpcs.ts";
+import { REVIEW_RPCS } from "./review-rpcs.ts";
 import {
   AudioPlanSchema,
   EvalAudioPayload,
@@ -595,4 +596,5 @@ export const FinRpcs = RpcGroup.make(
   Rpc.make("training.closedTargets.get", { payload: Schema.Struct({}), success: TrainingClosedTargetsSuccess, error: FinError }),
   Rpc.make("training.closedTargets.set", { payload: TrainingClosedTargetsSetPayload, success: TrainingClosedTargetsSuccess, error: FinError }),
   ...DEVICE_RPCS, // 5B: pairing, devices, the environment and settings writes (`device-rpcs.ts`)
+  ...REVIEW_RPCS, // 5E: the review workflow, its policy and `history.drop` (`review-rpcs.ts`)
 );

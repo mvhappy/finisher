@@ -5,7 +5,7 @@
   "session": "01JC0000000000000000000001",
   "source": "finNode",
   "kind": "log.commit",
-  "kv": 1,
+  "kv": 2,
   "consent": {
     "rev": 3,
     "purposes": [

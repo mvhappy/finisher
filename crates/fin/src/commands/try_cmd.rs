@@ -10,7 +10,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 use super::branch::{self, find};
-use super::history::{key, merge_doc, merge_refs, record_doc};
+use super::history::{Limits, key, merge_doc, merge_refs, record_doc};
 use super::{Globals, configured_branch, lookup, target_branch};
 use crate::agent_session;
 use crate::backend::Backend;
@@ -221,7 +221,15 @@ fn finish(backend: &dyn Backend, g: &Globals, keep: bool) -> Result<Value, CoreE
     }
     .ok_or_else(not_try)?;
     let mut doc = if keep {
-        merge_doc(&merge_refs(backend, g, "try.keep", &id, &parent, false)?)
+        merge_doc(&merge_refs(
+            backend,
+            g,
+            "try.keep",
+            &id,
+            &parent,
+            false,
+            Limits::default(),
+        )?)
     } else {
         let (r, dry) = branch::set(backend, g, "try.drop", &id, None, Some(true))?;
         let mut doc = record_doc(&r, dry);
@@ -309,7 +317,15 @@ fn session_finish(backend: &dyn Backend, g: &Globals, keep: bool) -> Result<Valu
         ));
     };
     let mut doc = if keep {
-        merge_doc(&merge_refs(backend, g, "try.keep", &id, &parent, false)?)
+        merge_doc(&merge_refs(
+            backend,
+            g,
+            "try.keep",
+            &id,
+            &parent,
+            false,
+            Limits::default(),
+        )?)
     } else {
         let (r, dry) = branch::set(backend, g, "try.drop", &id, None, Some(true))?;
         let mut doc = record_doc(&r, dry);

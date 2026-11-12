@@ -2616,7 +2616,8 @@
         "checkpoint",
         "branch",
         "branchSet",
-        "recover"
+        "recover",
+        "drop"
       ],
       "type": "string"
     },
@@ -3272,6 +3273,55 @@
       ],
       "type": "object"
     },
+    "DropReq": {
+      "additionalProperties": false,
+      "description": "[`Store::drop`](crate::Store::drop)'s request (`history.drop`, plan 5E Decision 5).\n\n- `tx_id`: the idempotency key, the `drop` record's txId;\n- `author`: the record's author;\n- `into`: the branch the rejection binds (a reference; the record is written there);\n- `from`: the source branch (a reference; it may be archived);\n- `drops`, `undrops`: origin-root txIds of records on `from`'s lineage after its common\n  point with `into`, at least one in all; sorted and deduplicated at write;\n- `dry_run`: plan against the local database and keep nothing, on a follower too;\n- `args_hash`: the command input's hash, stored on the record's intent; a retry of the\n  txId with another hash is `IDEM_KEY_REUSED`.",
+      "properties": {
+        "argsHash": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "author": {
+          "type": "string"
+        },
+        "drops": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "dryRun": {
+          "default": false,
+          "type": "boolean"
+        },
+        "from": {
+          "type": "string"
+        },
+        "into": {
+          "type": "string"
+        },
+        "txId": {
+          "type": "string"
+        },
+        "undrops": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "txId",
+        "author",
+        "into",
+        "from"
+      ],
+      "type": "object"
+    },
     "Edge": {
       "description": "Which edge of an item a trim moves.",
       "enum": [
@@ -3649,6 +3699,41 @@
       ],
       "type": "string"
     },
+    "EntryStatus": {
+      "description": "What a merge does with a source record (the review's `status`).",
+      "oneOf": [
+        {
+          "const": "willMerge",
+          "description": "Copied by the merge.",
+          "type": "string"
+        },
+        {
+          "const": "alreadyPresent",
+          "description": "The target holds its origin root already (merged, picked, or its own).",
+          "type": "string"
+        },
+        {
+          "const": "dropped",
+          "description": "Its origin root is dropped for the target (`DROPPED`).",
+          "type": "string"
+        },
+        {
+          "const": "excluded",
+          "description": "Left out, not a conflict: `UNDOES_TARGET_RECORDS`, or `NOT_INCLUDED` by the merge's\nlimits (`reason` says which).",
+          "type": "string"
+        },
+        {
+          "const": "dependsOnSkipped",
+          "description": "A conflict: it depends on a record the merge does not copy (`DEPENDS_ON_SKIPPED`).",
+          "type": "string"
+        },
+        {
+          "const": "conflict",
+          "description": "A conflict of another reason (`reason`, `blame`).",
+          "type": "string"
+        }
+      ]
+    },
     "EntryType": {
       "description": "The type of a directory entry as listed (never by following a link). Windows reparse\npoints with a name-surrogate tag (symlinks, junctions, mount points) are `symlink` in a\n[`ScanEntry`] (see [`crate::listing`]); anything that is neither a regular file, a\ndirectory nor a link (sockets, devices, FIFOs) is `other`.",
       "enum": [
@@ -3914,7 +3999,7 @@
               "type": "string"
             },
             "kv": {
-              "const": 1,
+              "const": 2,
               "type": "integer"
             },
             "payload": {
@@ -4442,7 +4527,7 @@
               "type": "string"
             },
             "kv": {
-              "const": 0,
+              "const": 1,
               "type": "integer"
             },
             "payload": {
@@ -9386,6 +9471,41 @@
             "branchId"
           ],
           "type": "object"
+        },
+        {
+          "description": "Drops (and undrops) origin roots of branch `from` for this record's branch: a merge\ninto it leaves a dropped origin out (plan 5E Decisions 1–3). Each list sorted and\ndeduplicated, at least one non-empty, no id in both ([`Link::new_drop`]). `recovers`:\nthe quarantined `drop` record a recovery's record stands for (plan 5E Task 2).",
+          "properties": {
+            "drops": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "from": {
+              "type": "string"
+            },
+            "kind": {
+              "const": "drop",
+              "type": "string"
+            },
+            "recovers": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "undrops": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "kind",
+            "from"
+          ],
+          "type": "object"
         }
       ]
     },
@@ -10239,7 +10359,7 @@
     },
     "MergeReport": {
       "additionalProperties": false,
-      "description": "The answer of [`Store::merge`](crate::Store::merge): merge group `merge_id`'s records on\nthe target, in order (or planned and rolled back, `dry_run`); `merged`: the source txIds\nthey copy; `skipped`: the candidates that conflict and were left on the source (with\n`skipConflicting`; they are offered again by the next merge); `excluded`: source records\nnever offered (`UNDOES_TARGET_RECORDS`); `source_state`: the source branch's state after\nthe merge; `origins`: `merged` with the records their `origin` chains lead to (a copy of a\ncopy), first seen first (7A Decision 27). A retry of a committed merge answers from the\nlog: its records and their origins, `skipped` and `excluded` empty, `dry_run` false.\nNothing left to merge is an empty answer, not an error.",
+      "description": "The answer of [`Store::merge`](crate::Store::merge): merge group `merge_id`'s records on\nthe target, in order (or planned and rolled back, `dry_run`); `merged`: the source txIds\nthey copy; `skipped`: the candidates that conflict and were left on the source (with\n`skipConflicting`; they are offered again by the next merge); `excluded`: source records\nnever offered (`DROPPED`, `UNDOES_TARGET_RECORDS`); `not_included`: the origin roots of the\ncandidates the merge's `include` and `sourceUpTo` left on the source, oldest first (plan 5E\nDecision 6; omitted when empty); `source_state`: the source branch's state after\nthe merge; `origins`: `merged` with the records their `origin` chains lead to (a copy of a\ncopy), first seen first (7A Decision 27). A retry of a committed merge answers from the\nlog: its records and their origins, `skipped`, `excluded` and `not_included` empty,\n`dry_run` false.\nNothing left to merge is an empty answer, not an error.",
       "properties": {
         "committed": {
           "items": {
@@ -10260,6 +10380,12 @@
           "type": "string"
         },
         "merged": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "notIncluded": {
           "items": {
             "type": "string"
           },
@@ -14198,6 +14324,22 @@
       ],
       "type": "string"
     },
+    "RecordKind": {
+      "description": "What a record does (spec §4.2). Sub-project 4A writes only edits; 4B adds the rest up to\n`branchSet`; 5E adds `drop` (durable rejections, sub-project 5 spec §8.3).",
+      "enum": [
+        "edit",
+        "undo",
+        "redo",
+        "merge",
+        "cherryPick",
+        "revert",
+        "checkpoint",
+        "branch",
+        "branchSet",
+        "drop"
+      ],
+      "type": "string"
+    },
     "RecoverGroup": {
       "additionalProperties": false,
       "description": "One group of quarantined records ([`Store::recover_groups`](crate::Store::recover_groups)).\n\n- `id`: the first record's `txHash`, 12 hex digits (stable on every server);\n- `records_branch`: the branch the records were on;\n- `branch`, `fork_seq`, `fork_hash`: the fork `create` uses: an existing branch, the seq\n  and its record; or, with `fork_group`, the branch that group makes (`branch` its name,\n  `fork_hash` absent: its record is written then); none for a group that cannot be made\n  for want of a fork (`NO_COMMON_HISTORY`);\n- `records`, `reasons`: how many, and per quarantine reason; `origin`: the first row's;\n- `server`: the writer's server id (`unknown` when it cannot be told);\n- `first_committed_at`: unix ms; `name`: the branch `create` makes (empty for a group\n  that makes none: it has neither records with ops nor checkpoints, and its child groups\n  fork where it does);\n- `children`: the groups forking from it, or made by its `branch` records;\n- `recoverable`, `problems`: why `create` leaves it whole (fix each, or dismiss it);\n- `notes`: rows `create` leaves in quarantine while making the rest (`NAME_TAKEN`,\n  `BRANCH_NOT_FOUND`, …; they come back as a group of their own), and copies whose source\n  is not here (`SOURCE_NOT_FOUND`).",
@@ -14699,7 +14841,205 @@
         }
       ]
     },
+    "ReviewEntry": {
+      "additionalProperties": false,
+      "description": "One entry of a review plan: a source record (`tx_id` on `branch` at `seq`) and its origin\nroot (`origin`, what decisions and `include` name), its kind, record author, number of\nintent ops and commit time (unix ms), and what the merge does with it. `reason`: the\nconflict or exclusion reason (absent for `willMerge` and `alreadyPresent`); `blame`: the\nrecord a conflict is blamed on, when there is one. `actor`: the agent actor the server\nknows for the record (sub-project 7A's tracker), never set by the planner.",
+      "properties": {
+        "actor": true,
+        "author": {
+          "type": "string"
+        },
+        "blame": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "branch": {
+          "type": "string"
+        },
+        "committedAt": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "kind": {
+          "$ref": "#/$defs/RecordKind"
+        },
+        "opsCount": {
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "origin": {
+          "type": "string"
+        },
+        "reason": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "seq": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "status": {
+          "$ref": "#/$defs/EntryStatus"
+        },
+        "txId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "origin",
+        "txId",
+        "branch",
+        "seq",
+        "kind",
+        "author",
+        "opsCount",
+        "committedAt",
+        "status"
+      ],
+      "type": "object"
+    },
+    "ReviewHead": {
+      "additionalProperties": false,
+      "description": "A branch head as a review plan saw it: the branch id, its head seq and the `txHash` of the\nrecord there (absent at a root's start), so a rewind to the same seq is told apart (plan 5E\nDecision 9).",
+      "properties": {
+        "branch": {
+          "type": "string"
+        },
+        "hash": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "seq": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "branch",
+        "seq"
+      ],
+      "type": "object"
+    },
+    "ReviewItemKind": {
+      "description": "What the verdict is about (`none` for the outcome tracker's entries).",
+      "enum": [
+        "branchReview",
+        "mergeConflict",
+        "qaFinding",
+        "criticSummary",
+        "pluginSuggestion",
+        "none"
+      ],
+      "type": "string"
+    },
+    "ReviewPlan": {
+      "additionalProperties": false,
+      "description": "[`Store::review_plan`](crate::Store::review_plan)'s answer (plan 5E Decision 7): what a\nmerge of `source` into `target` would do at these heads, one entry per candidate and per\nsource record the target already holds, oldest first; `conflicts`: the candidates that\nconflict (as a `skipConflicting` merge would skip them). At most\n[`REVIEW_PLAN_MAX`](crate::REVIEW_PLAN_MAX) entries and conflicts, the oldest:\n`truncated` when there were more.",
+      "properties": {
+        "conflicts": {
+          "items": {
+            "$ref": "#/$defs/Conflict"
+          },
+          "type": "array"
+        },
+        "entries": {
+          "items": {
+            "$ref": "#/$defs/ReviewEntry"
+          },
+          "type": "array"
+        },
+        "source": {
+          "$ref": "#/$defs/ReviewHead"
+        },
+        "target": {
+          "$ref": "#/$defs/ReviewHead"
+        },
+        "truncated": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "source",
+        "target",
+        "entries",
+        "conflicts",
+        "truncated"
+      ],
+      "type": "object"
+    },
     "ReviewVerdict": {
+      "description": "`review.verdict`.",
+      "properties": {
+        "accepted": {
+          "description": "Counts of the transactions accepted and rejected by the decision.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "by": {
+          "$ref": "#/$defs/VerdictBy"
+        },
+        "itemKind": {
+          "$ref": "#/$defs/ReviewItemKind"
+        },
+        "openS": {
+          "description": "Seconds since the item opened (or since the transaction, for the tracker's entries).",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "reason": {
+          "allOf": [
+            {
+              "$ref": "#/$defs/Scrubbed"
+            },
+            {
+              "x-fin-class": "content",
+              "x-fin-content": "userText"
+            }
+          ],
+          "description": "Training only: the reason the person gave."
+        },
+        "rejected": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "sessionId": {
+          "$ref": "#/$defs/IdRef"
+        },
+        "txIds": {
+          "items": {
+            "$ref": "#/$defs/IdRef"
+          },
+          "maxItems": 64,
+          "type": "array"
+        },
+        "verdict": {
+          "$ref": "#/$defs/Verdict"
+        },
+        "via": {
+          "$ref": "#/$defs/VerdictVia"
+        }
+      },
+      "required": [
+        "itemKind",
+        "verdict",
+        "by",
+        "txIds",
+        "accepted",
+        "rejected",
+        "openS"
+      ],
       "type": "object"
     },
     "RightsBranch": {
@@ -17731,6 +18071,42 @@
           "type": "string"
         }
       ]
+    },
+    "Verdict": {
+      "description": "What was decided or became of the work.",
+      "enum": [
+        "accepted",
+        "rejected",
+        "merged",
+        "dismissed",
+        "changesRequested",
+        "undone",
+        "reverted",
+        "abandoned"
+      ],
+      "type": "string"
+    },
+    "VerdictBy": {
+      "description": "Who brought it about.",
+      "enum": [
+        "user",
+        "agent",
+        "critic",
+        "policy"
+      ],
+      "type": "string"
+    },
+    "VerdictVia": {
+      "description": "How the outcome came about; absent for a person's decision on an item.",
+      "enum": [
+        "undo",
+        "revert",
+        "archive",
+        "merge",
+        "critic",
+        "autoMerge"
+      ],
+      "type": "string"
     },
     "Version": {
       "pattern": "^[0-9]{1,5}\\.[0-9]{1,5}\\.[0-9]{1,5}(-[0-9a-z.]{1,32})?$",

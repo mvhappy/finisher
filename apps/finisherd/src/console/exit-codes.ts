@@ -29,6 +29,8 @@ export const CONFLICT_CODES: ReadonlyArray<string> = [
   "APPROVAL_EXPIRED", "AUTO_MERGE_UNAVAILABLE", "WORKSPACE_FULL", "APPROVAL_LIMIT",
   // 5B (Decision 33).
   "PAIRING_USED", "DEVICE_LIMIT",
+  // Reviews (5E Decision 26).
+  "REVIEW_STALE", "REVIEW_HAS_CONFLICTS", "REVIEW_CLOSED", "REVIEW_LIMIT",
 ];
 
 /** A job that ended without succeeding (5C-1 Decision 41): exit 4, as `CONFLICT_CODES`. */
@@ -58,6 +60,8 @@ export const UNAVAILABLE_CODES: ReadonlyArray<string> = [
   "SECRET_STORE_UNAVAILABLE",
   // 5B (Decision 33).
   "PAIRING_RATE_LIMITED", "TOKEN_RATE_LIMITED",
+  // Reviews (5E Decision 18): a policy change waits for the writes in flight.
+  "POLICY_BUSY",
 ];
 
 export const VALIDATION_CODES: ReadonlyArray<string> = [
@@ -89,6 +93,8 @@ export const VALIDATION_CODES: ReadonlyArray<string> = [
   "CURSOR_EXPIRED", "CURSOR_INVALID", "SEARCH_QUERY_INVALID", "LIBRARY_METADATA_ONLY", "NAME_COLLISION",
   // 5B (Decision 33).
   "PAIRING_EXPIRED", "LISTEN_NEEDS_TLS", "TLS_FILES_INVALID", "IDENTITY_MISMATCH", "SECRETS_KEY_INVALID",
+  // Reviews (5E Decision 26).
+  "REVIEW_NOT_FOUND", "REVIEW_UNDECIDED",
 ];
 
 /** The exit code of an error code, in `fin`'s order: denied, pending, usage, conflict, unavailable, validation, else 6. */

@@ -34,13 +34,14 @@ import { SavedPrompts } from "./agent/saved-prompts.ts";
 import { savedPromptHandlers } from "./agent/saved-prompts-rpc.ts";
 import { AgentRuntimeTag } from "./agent/wiring.ts";
 import { agentBranchLimitsExcept } from "./chain/policy.ts";
+import { protectedBranches } from "./chain/protected.ts";
 import { Fonts } from "./fonts.ts";
 import { JobEngineTag } from "./jobs/layer.ts";
 import { chainJobs, jobHandlers } from "./jobs/rpc.ts";
 import { mediaCapabilities } from "./media/caps.ts";
 import { look as mediaLook } from "./media/look.ts";
 import { requireAbsolute, requireAbsoluteOpt } from "./paths.ts";
-import { metaJson } from "./history.ts";
+import { dropPayload, metaJson } from "./history.ts";
 import { LibraryServiceTag } from "./library/layer.ts";
 import { cataloguedAt } from "./library/reach.ts";
 import { libraryHandlers } from "./library/rpc.ts";
@@ -53,6 +54,10 @@ import { probeFor } from "./probe.ts";
 import { ProjectRegistry } from "./projects.ts";
 import { type AdminDeps, auditList, auditPurge, ServerControlTag, serverStatus, serverStop } from "./server-admin.ts";
 import { reporterFor } from "./sandbox/status.ts";
+import { observingArchive, observingMerge } from "./reviews/conflicts.ts";
+import { principalKey } from "./reviews/workflow.ts";
+import { reviewHandlers } from "./reviews/rpc.ts";
+import { ReviewsTag } from "./reviews/service.ts";
 
 /** Advertised in `server.hello`: the RPC tags this server implements. */
 export const CAPABILITIES: ReadonlyArray<string> = [...FinRpcs.requests.keys()].sort();
@@ -90,6 +95,7 @@ export const HandlersLive = FinRpcs.toLayer(
     const jobEngine = yield* JobEngineTag;
     const agents = yield* AgentCoreTag;
     const agentRuntime = yield* AgentRuntimeTag;
+    const reviews = yield* ReviewsTag;
     const environment = yield* EnvironmentTag;
     const pairing = yield* PairingTag;
     const deviceAccess = yield* DeviceAccessTag;
@@ -128,7 +134,7 @@ export const HandlersLive = FinRpcs.toLayer(
         return f({ ...actorFor(c.principal, options.headers), guard: { denyBranches: [], ...(credential === undefined ? {} : { credential }) } });
       });
     /** An `ok` audit row of `kind` for the call's principal (consent changes, purges). */
-    const auditAs = (options: object, kind: "consent.change" | "diagnostics.purge", details: Record<string, string>) => {
+    const auditAs = (options: object, kind: "consent.change" | "diagnostics.purge" | "history.drop", details: Record<string, string | number>) => {
       const p = principalOf(options);
       audit.append({ kind, principal: { kind: p.kind, id: p.id }, outcome: "ok", details: { ...details, transport: connections.transport } });
     };
@@ -169,7 +175,8 @@ export const HandlersLive = FinRpcs.toLayer(
     // Then the outcome tracker (Task 11), once the session's own rows are written.
     const hooks = withOutcomes(agentChainHooks({ reach, paths: new PathReach(agents.store, projects), sessions: agents.store, clock: agents.clock.now }), agents.outcomes, projects);
     // Then command rules (7B Task 2), for agent principals only; a person's allow is a one-time grant (Task 5).
-    const policies = [reach.policy, agentBranchLimitsExcept((p) => reach.covers(p)), commandRules(agentRuntime.rules, agents.store, { grants: agentRuntime.grants })];
+    // Then protected branches (5E Task 6), for every principal without `branch.protected`.
+    const policies = [reach.policy, agentBranchLimitsExcept((p) => reach.covers(p)), protectedBranches, commandRules(agentRuntime.rules, agents.store, { grants: agentRuntime.grants })];
     // A running session's rule ask becomes a durable card (7B Task 4): `APPROVAL_PENDING`.
     const agentAsk = agentAskPort(agentRuntime.approvals, agents.store, agentRuntime.approvalKey);
     /** An agent session's default branch, for `auth.whoami` (Decision 14a); none for any other principal. */
@@ -393,7 +400,7 @@ export const HandlersLive = FinRpcs.toLayer(
         guard("branch.create", withMeta(options, (m) => registry.history(payload.projectId, "branchCreate", payload, m))),
       "branch.list": ({ projectId, all }) => guard("branch.list", registry.branches(projectId, all === true)),
       "branch.set": (payload, options) =>
-        guard("branch.set", withMeta(options, (m) => registry.history(payload.projectId, "branchSet", payload, m))),
+        guard("branch.set", withMeta(options, (m) => registry.history(payload.projectId, "branchSet", payload, m).pipe(observingArchive(reviews.workflow, principalKey(principalOf(options)), payload)))),
       "history.undo": (payload, options) =>
         guard("history.undo", withMeta(options, (m) => registry.history(payload.projectId, "undo", payload, m))),
       "history.redo": (payload, options) =>
@@ -401,11 +408,20 @@ export const HandlersLive = FinRpcs.toLayer(
       "history.checkpoint": (payload, options) =>
         guard("history.checkpoint", withMeta(options, (m) => registry.history(payload.projectId, "checkpoint", payload, m))),
       "history.merge": (payload, options) =>
-        guard("history.merge", withMeta(options, (m) => registry.history(payload.projectId, "merge", payload, m))),
+        guard("history.merge", withMeta(options, (m) => registry.history(payload.projectId, "merge", payload, m).pipe(observingMerge(reviews.workflow, principalKey(principalOf(options)), payload)))),
       "history.cherryPick": (payload, options) =>
         guard("history.cherryPick", withMeta(options, (m) => registry.history(payload.projectId, "cherryPick", payload, m))),
       "history.revert": (payload, options) =>
         guard("history.revert", withMeta(options, (m) => registry.history(payload.projectId, "revert", payload, m))),
+      // 5E: a rejection that outlives the review. Audited with a count only: no review text, no txIds.
+      "history.drop": (payload, options) =>
+        guard(
+          "history.drop",
+          Effect.tap(
+            withMeta(options, (m) => registry.history(payload.projectId, "drop", dropPayload(payload), m)),
+            () => Effect.sync(() => (payload.dryRun === true ? undefined : auditAs(options, "history.drop", { count: (payload.drops?.length ?? 0) + (payload.undrops?.length ?? 0) }))),
+          ),
+        ),
       // Not records, but changes a revoked credential must not make either (L1): the guard's credential.
       "project.acknowledgeRewind": ({ projectId, branch, generation }, options) =>
         guard(
@@ -463,10 +479,11 @@ export const HandlersLive = FinRpcs.toLayer(
       ...libraryHandlers({ service: library, engine: jobEngine, guard }),
       // The job engine (5C-2): ownership and reach per job in `jobs/rpc.ts`.
       ...jobHandlers({ engine: jobEngine, guard }),
-      ...agentHandlers({ guard, store: agents.store, reach, agents: agentRuntime, principalOf }),
+      ...agentHandlers({ guard, store: agents.store, reach, agents: agentRuntime, principalOf, protect: { gate: reviews.gate, protectedBranches: reviews.chain.protectedBranches } }),
       ...rulesHandlers({ guard, store: agents.store, rules: agentRuntime.rules, ruleStore: agentRuntime.ruleStore, audit, clock: agents.clock, roles: agentRuntime.roles, dirOf: (id) => registry.dirOf(id) ?? registry.indexedDirOf(id), principalOf }),
       ...savedPromptHandlers({ guard, runtime: agentRuntime.runtime, principalOf, prompts: new SavedPrompts({ serverData: agentRuntime.rules.serverData, roles: agentRuntime.roles, dirOf: (id) => registry.dirOf(id) ?? registry.indexedDirOf(id), trustOf: (id) => agentRuntime.ruleStore.trustOf(id) }) }),
       // 5B: pairing, devices, settings writes and the environment.
+      ...reviewHandlers({ guard, reviews, projects, audit, transport: connections.transport }),
       ...deviceHandlers({ guard, pairing, access: deviceAccess, connections }),
       ...settingsHandlers({ guard, serverData: admin.control.serverData ?? "", remote: remoteListener, audit }),
       ...envHandlers({ guard, env: environment }),
@@ -474,6 +491,8 @@ export const HandlersLive = FinRpcs.toLayer(
       connections,
       projects,
       jobs: chainJobs(jobEngine),
+      reviews: reviews.chain,
+      gate: reviews.gate,
       audit,
       timed: guard,
       touch: (p) => credentials.touch(p.id),
