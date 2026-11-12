@@ -148,6 +148,18 @@ describe("the reviews chain", () => {
     expect(other.open(branchReview({ source: "last", projectId: "01cccccccccccccccccccccccc" })).state).toBe("open");
   });
 
+  test("suggestions_do_not_count_toward_the_limit", () => {
+    const store = new ReviewStore(control());
+    const R = "01dddddddddddddddddddddddd";
+    for (let i = 0; i < REVIEW_LIMIT; i++) {
+      store.open({ projectId: R, kind: "pluginSuggestion", title: `@acme/p${i}`, requestedBy: { principal: `agent:a${i}` }, subject: { pluginId: `@acme/p${i}` } });
+    }
+    // 256 open suggestions leave room for the 256 reviews, and the next suggestion is still taken.
+    for (let i = 0; i < REVIEW_LIMIT; i++) store.open(branchReview({ source: `b${i}`, projectId: R }));
+    expect(code(() => store.open(branchReview({ source: "last", projectId: R }))).code).toBe("REVIEW_LIMIT");
+    expect(store.open({ projectId: R, kind: "pluginSuggestion", title: "@acme/more", requestedBy: { principal: "agent:z" }, subject: { pluginId: "@acme/more" } }).state).toBe("open");
+  });
+
   test("decisions_keyed_by_origin_survive_snapshot_change", () => {
     const store = new ReviewStore(control());
     const item = store.open(branchReview());
@@ -256,6 +268,19 @@ describe("the review resolver", () => {
   });
   const run = (rule: string, payload: unknown, principal: Principal, d: ReturnType<typeof deps>, store: ReviewStore) =>
     Effect.runPromiseExit(resolve(ruleOf(rule as never), payload, d.projects, { principal, reviews: d.reviews(store) }));
+
+  test("review_resolver_other_kinds_of_another_project_are_not_found", async () => {
+    const store = new ReviewStore(control());
+    const conflict = store.open(branchReview({ kind: "mergeConflict", title: "Conflict", snapshot: undefined }));
+    const suggestion = store.open({ projectId: P, kind: "pluginSuggestion", title: "@acme/pack", requestedBy: by, subject: { pluginId: "@acme/pack" } });
+    for (const item of [conflict, suggestion]) {
+      for (const rule of ["review.get", "review.decide", "review.merge", "review.close"]) {
+        const outside = await run(rule, { itemId: item.id }, agent(["01bbbbbbbbbbbbbbbbbbbbbbbb"]), deps(true), store);
+        expect(outside._tag, `${item.kind} ${rule}`).toBe("Failure");
+        expect(outside._tag === "Failure" ? JSON.stringify(outside.cause) : "").toContain("REVIEW_NOT_FOUND");
+      }
+    }
+  });
 
   test("review_resolver_reach", async () => {
     const store = new ReviewStore(control());

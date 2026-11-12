@@ -115,6 +115,40 @@ describe("merge conflicts", () => {
     expect((await conflictItems(projectId)).find((i) => i.id === item!.id)?.state).toBe("superseded");
   });
 
+  test("archive_by_a_name_an_older_archived_branch_shares_supersedes_the_right_item", async () => {
+    const projectId = await project();
+    // An older branch named `feature` is archived first; the live one gets the name afterwards.
+    const old = (await call<{ branch: BranchView }>("branch.create", { projectId, txId: "b-old", author: "ann", name: "feature", from: "main" })).branch.id;
+    ok(await local.call("branch.set", { projectId, txId: "arch-old", author: "ann", branch: old, archived: true }));
+    const live = (await call<{ branch: BranchView }>("branch.create", { projectId, txId: "b-live", author: "ann", name: "feature", from: "main" })).branch.id;
+    ok(await commitOn(projectId, live, "f1", [del]));
+    ok(await commitOn(projectId, "main", "m2", [del]));
+    await merge(projectId);
+    const [item] = await conflictItems(projectId);
+    expect(item).toMatchObject({ source: live, state: "open" });
+    ok(await local.call("branch.set", { projectId, txId: "arch-live", author: "ann", branch: "feature", archived: true }));
+    expect((await conflictItems(projectId)).find((i) => i.id === item!.id)?.state).toBe("superseded");
+  });
+
+  test("review_merge_auto_archive_supersedes_conflict_items", async () => {
+    const projectId = await project();
+    const made = await call<{ branch: BranchView }>("branch.create", { projectId, txId: "b-work", author: "agent:01jc0000000000000000000agt", name: "work", from: "main" });
+    const work = made.branch.id;
+    ok(await commit(local, projectId, { ...tx("w1", made.branch.head, [edit("w1")]), branch: work, author: "agent:01jc0000000000000000000agt" }));
+    // A conflict item for the pair (work -> other) that the review merge's archive must end.
+    const other = (await call<{ branch: BranchView }>("branch.create", { projectId, txId: "b-other", author: "ann", name: "other", from: "main" })).branch.id;
+    ok(await commitOn(projectId, other, "o1", [del]));
+    ok(await commitOn(projectId, work, "w2", [del]));
+    // `w2` is on `work` before the review: leave it out by rejecting it, so nothing is left to merge.
+    expect(code(await local.call("history.merge", { projectId, txId: "mc", author: "ann", from: work, into: other }))).toBe("CONFLICT");
+    expect(await conflictItems(projectId)).toMatchObject([{ source: work, target: other, state: "open" }]);
+    const item = (await call<{ item: ReviewItem }>("review.request", { projectId, source: work, title: "Look" })).item;
+    const decided = ok<ReviewView>(await local.call("review.decide", { itemId: item.id, expect: item.snapshot, decisions: [{ txId: "w1", decision: "accept" }, { txId: "w2", decision: "reject" }] }));
+    ok(await local.call("review.merge", { itemId: item.id, expect: decided.item.snapshot, idemKey: "rm-ok" }));
+    expect((await branches(projectId)).find((b) => b.id === work)?.state).toBe("archived");
+    expect((await conflictItems(projectId)).filter((i) => i.state === "open")).toEqual([]);
+  });
+
   test("review_merge_conflict_goes_through_observer", async () => {
     const { projectId, feature } = await conflicting();
     const item = (await call<{ item: ReviewItem }>("review.request", { projectId, source: feature, title: "Please look" })).item;

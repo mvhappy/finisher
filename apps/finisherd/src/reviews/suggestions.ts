@@ -1,10 +1,9 @@
 // Plugin suggestions as review items (5E plan Decision 11, the 8A Task 9b follow-up):
 // `plugin.suggest` writes a `pluginSuggestion` item (`subject {pluginId}`, `title` the plugin id,
 // `summary` the reason, `requestedBy` the suggester); installing the plugin supersedes its open
-// suggestions; rows an earlier build left in `plugin_suggestions` move here once. The table
-// stays, unwritten: a later `plugins` migration drops it.
+// suggestions. A pluginSuggestion does not count toward `REVIEW_LIMIT` (the store); its own cap
+// is `MAX_SUGGESTIONS` per principal and project.
 import type { ReviewItem } from "@finisher/contracts";
-import type { ControlStore } from "../control/db.ts";
 import { finError } from "../errors.ts";
 import type { ReviewStore } from "./store.ts";
 
@@ -44,42 +43,15 @@ export function pluginSuggestions(store: ReviewStore): PluginSuggestions {
       return { suggestionId: item.id };
     },
     installed: (pluginId) => {
-      for (const item of store.openOfKind("pluginSuggestion")) if (subjectPlugin(item) === pluginId) store.setState(item.id, "superseded", SYSTEM);
+      // One already closed meanwhile (`REVIEW_CLOSED`) does not stop the rest.
+      for (const item of store.openOfKind("pluginSuggestion")) {
+        if (subjectPlugin(item) !== pluginId) continue;
+        try {
+          store.setState(item.id, "superseded", SYSTEM);
+        } catch {
+          // closed under us
+        }
+      }
     },
   };
-}
-
-interface Row {
-  id: string;
-  pluginId: string;
-  projectId: string;
-  reason: string;
-  byKind: string;
-  byId: string;
-  createdAt: number;
-}
-
-/**
- * Moves the `plugin_suggestions` rows into items, once: in one transaction each row is inserted
- * (by its id, if absent) and then deleted, so a crash between the two moves nothing twice. Run at
- * start, after every chain has migrated. Answers how many rows it moved.
- */
-export function moveSuggestionRows(control: ControlStore, store: ReviewStore): number {
-  return control.tx(() => {
-    const rows = control.db.prepare("SELECT id, pluginId, projectId, reason, byKind, byId, createdAt FROM plugin_suggestions ORDER BY createdAt, id").all() as unknown as Row[];
-    for (const r of rows) {
-      store.adopt({
-        id: r.id,
-        createdAt: r.createdAt,
-        projectId: r.projectId,
-        kind: "pluginSuggestion",
-        title: r.pluginId,
-        summary: r.reason,
-        requestedBy: { principal: `${r.byKind}:${r.byId}` },
-        subject: { pluginId: r.pluginId },
-      });
-    }
-    control.db.prepare("DELETE FROM plugin_suggestions").run();
-    return rows.length;
-  });
 }

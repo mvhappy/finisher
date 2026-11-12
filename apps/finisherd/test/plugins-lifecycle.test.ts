@@ -18,7 +18,7 @@ import { CONSOLE as CONSOLE_P, LOCAL as LOCAL_P } from "../src/principal.ts";
 import { makePlugins, type MakePluginsOptions } from "../src/plugins/registries.ts";
 import { pluginHandlers } from "../src/plugins/rpc.ts";
 import { ReviewStore } from "../src/reviews/store.ts";
-import { MAX_SUGGESTIONS, moveSuggestionRows, pluginSuggestions } from "../src/reviews/suggestions.ts";
+import { MAX_SUGGESTIONS, pluginSuggestions } from "../src/reviews/suggestions.ts";
 import { PluginTables } from "../src/plugins/tables.ts";
 import { SAMPLE_PAYLOADS } from "./support/payloads.ts";
 
@@ -555,7 +555,7 @@ describe("audit and suggestions", () => {
     const r = await run(s.h["plugin.suggest"]({ id: "@acme/pack", reason: "captions in the house style", projectId: P }, as(AGENT, ["plugin.suggest", "project.read"])));
     expect(r.suggestionId).toMatch(/^[0-9a-z]{26}$/i);
     // An item now, not a row.
-    expect(s.tables.suggestions()).toEqual([]);
+    expect(control.db.prepare("SELECT name FROM sqlite_master WHERE name = 'plugin_suggestions'").all()).toEqual([]);
     expect(store.list(P)).toMatchObject([
       { id: r.suggestionId, kind: "pluginSuggestion", state: "open", title: "@acme/pack", summary: "captions in the house style", requestedBy: { principal: `agent:${AGENT.id}` }, subject: { pluginId: "@acme/pack" }, createdAt: now },
     ]);
@@ -595,24 +595,9 @@ describe("audit and suggestions", () => {
     expect(store.get(other.suggestionId)?.state).toBe("open");
   });
 
-  test("suggestion_rows_moved_once: a crash between the insert and the delete moves nothing twice", () => {
-    const store = new ReviewStore(control, () => now);
-    const P = "01aaaaaaaaaaaaaaaaaaaaaaaa";
-    const add = control.db.prepare("INSERT INTO plugin_suggestions (id, pluginId, projectId, reason, byKind, byId, createdAt) VALUES (?, ?, ?, ?, 'agent', ?, ?)");
-    add.run("01sugg000000000000000000a1", "@acme/pack", P, "one", AGENT.id, now - 5);
-    add.run("01sugg000000000000000000a2", "@acme/other", P, "two", AGENT.id, now - 4);
-    // A first move that stopped after its insert: the item is there, the row too.
-    store.adopt({ id: "01sugg000000000000000000a1", createdAt: now - 5, projectId: P, kind: "pluginSuggestion", title: "@acme/pack", summary: "one", requestedBy: { principal: `agent:${AGENT.id}` }, subject: { pluginId: "@acme/pack" } });
-    expect(moveSuggestionRows(control, store)).toBe(2);
-    expect(control.db.prepare("SELECT COUNT(*) AS n FROM plugin_suggestions").get()).toEqual({ n: 0 });
-    expect(store.list(P).map((i) => [i.id, i.createdAt]).sort()).toEqual([
-      ["01sugg000000000000000000a1", now - 5],
-      ["01sugg000000000000000000a2", now - 4],
-    ]);
-    expect(store.events("01sugg000000000000000000a1").length).toBe(1);
-    // A second start moves nothing.
-    expect(moveSuggestionRows(control, store)).toBe(0);
-    expect(store.list(P).length).toBe(2);
+  test("fresh_control_db_has_no_plugin_suggestions_table", () => {
+    expect(control.db.prepare("SELECT name FROM sqlite_master WHERE name LIKE 'plugin_suggestions%'").all()).toEqual([]);
+    expect(control.db.prepare("SELECT n FROM migrations WHERE chain = 'plugins' ORDER BY n").all()).toEqual([{ n: 1 }, { n: 2 }, { n: 3 }, { n: 4 }, { n: 5 }]);
   });
 });
 

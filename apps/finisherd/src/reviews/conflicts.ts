@@ -49,13 +49,11 @@ export function observeMerge(w: ReviewWorkflow, projectId: string, from: string,
   return Effect.ignore(task.pipe(Effect.catchDefect(() => Effect.void)));
 }
 
-/** The source of `ref` was archived: its open conflict items are superseded. Never fails. */
-export function observeArchived(w: ReviewWorkflow, projectId: string, ref: string, by: string = SYSTEM): Effect.Effect<void> {
-  const task = Effect.gen(function* () {
-    const branch = (yield* w.engine.branches(projectId)).find((b) => b.id === ref || b.name === ref || b.display === ref);
-    if (branch === undefined) return;
+/** Branch `branchId` was archived: its open conflict items are superseded. Never fails. */
+export function observeArchived(w: ReviewWorkflow, projectId: string, branchId: string, by: string = SYSTEM): Effect.Effect<void> {
+  const task = Effect.sync(() => {
     for (const item of w.store.list(projectId, { kind: "mergeConflict" })) {
-      if (item.source === branch.id && (item.state === "open" || item.state === "changesRequested")) w.store.setState(item.id, "superseded", by);
+      if (item.source === branchId && (item.state === "open" || item.state === "changesRequested")) w.store.setState(item.id, "superseded", by);
     }
   });
   return Effect.ignore(task.pipe(Effect.catchDefect(() => Effect.void)));
@@ -63,17 +61,26 @@ export function observeArchived(w: ReviewWorkflow, projectId: string, ref: strin
 
 /** `history.merge` observed (a dry run wrote nothing and is not). */
 export const observingMerge =
-  (w: ReviewWorkflow, by: string, p: { readonly projectId: string; readonly from: string; readonly into?: string | undefined; readonly dryRun?: boolean | undefined }) =>
+  (w: ReviewWorkflow, by: string, p: { readonly projectId: string; readonly from: string; readonly into: string; readonly dryRun?: boolean | undefined }) =>
   <A>(self: Effect.Effect<A, FinError>): Effect.Effect<A, FinError> =>
-    p.dryRun === true || p.into === undefined
+    p.dryRun === true
       ? self
       : self.pipe(
-          Effect.tap((report) => w.observeMerge(p.projectId, p.from, p.into!, { report }, by)),
-          Effect.tapError((error) => w.observeMerge(p.projectId, p.from, p.into!, { error }, by)),
+          Effect.tap((report) => w.observeMerge(p.projectId, p.from, p.into, { report }, by)),
+          Effect.tapError((error) => w.observeMerge(p.projectId, p.from, p.into, { error }, by)),
         );
 
-/** `branch.set` observed: archiving supersedes the branch's conflict items. */
+/**
+ * `branch.set` observed: archiving supersedes the branch's conflict items. The reference is
+ * resolved to the branch's id before the write (afterwards a name may match an older archived
+ * branch of the same name).
+ */
 export const observingArchive =
   (w: ReviewWorkflow, by: string, p: { readonly projectId: string; readonly branch: string; readonly archived?: boolean | undefined; readonly dryRun?: boolean | undefined }) =>
   <A>(self: Effect.Effect<A, FinError>): Effect.Effect<A, FinError> =>
-    p.archived !== true || p.dryRun === true ? self : Effect.tap(self, () => observeArchived(w, p.projectId, p.branch, by));
+    p.archived !== true || p.dryRun === true
+      ? self
+      : Effect.flatMap(
+          Effect.catch(w.engine.resolveBranch(p.projectId, p.branch), () => Effect.succeed(undefined)),
+          (id) => Effect.tap(self, () => (id === undefined ? Effect.void : observeArchived(w, p.projectId, id, by))),
+        );

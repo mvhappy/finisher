@@ -149,6 +149,25 @@ describe("re-derivation", () => {
     expect(again[0]).toMatchObject({ rederived: true, state: "open" });
   });
 
+  test("rederive_after_a_partial_merge_reviews_what_is_left", async () => {
+    const projectId = await project();
+    const a = await branch(projectId, "agent-work", AGENT, ["a1", "a2"]);
+    const item = (await call<{ item: ReviewItem }>("review.request", { projectId, source: a, title: "Look" })).item;
+    const decided = ok<{ item: ReviewItem }>(await local.call("review.decide", { itemId: item.id, expect: item.snapshot, decisions: [{ txId: "a1", decision: "accept" }] }));
+    ok(await local.call("review.merge", { itemId: item.id, expect: decided.item.snapshot, idemKey: "pm-1" }));
+    expect((await items(projectId, "merged")).map((i) => i.id)).toEqual([item.id]);
+    // a2 is still unmerged on an active branch: the next load reviews it, a1 is not listed.
+    const after = await reload(projectId, "restart");
+    const fresh = after.filter((i) => i.id !== item.id);
+    expect(fresh).toMatchObject([{ source: a, state: "open", rederived: true }]);
+    const view = await call<{ plan: { entries: Array<{ origin: string; status: string }> } }>("review.get", { itemId: fresh[0]!.id });
+    expect(view.plan.entries.filter((e) => e.status === "willMerge").map((e) => e.origin)).toEqual(["a2"]);
+    // An open one is not doubled by another load; a rejected one is not made again.
+    expect(await reload(projectId, "close")).toHaveLength(2);
+    ok(await local.call("review.close", { itemId: fresh[0]!.id, state: "rejected" }));
+    expect(await reload(projectId, "close")).toHaveLength(2);
+  });
+
   test("rederive_is_idempotent", async () => {
     const projectId = await project();
     const a = await branch(projectId, "agent-work", AGENT, ["a1"]);

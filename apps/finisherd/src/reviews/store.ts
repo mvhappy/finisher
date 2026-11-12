@@ -177,30 +177,6 @@ export class ReviewStore {
     return rows.map(itemOf);
   }
 
-  /**
-   * Stores an open item that already has an id and a creation time (the 8A suggestion rows moving
-   * here); false when the id is already stored. No limit applies: it is what was already there.
-   */
-  adopt(item: NewItem & { readonly id: string; readonly createdAt: number }): boolean {
-    return this.#store.tx(() => {
-      if (this.get(item.id) !== undefined) return false;
-      this.#stmt(`INSERT INTO reviews (${COLUMNS}) VALUES (?, ?, ?, 'open', NULL, NULL, NULL, ?, ?, ?, ?, ?, NULL, NULL, NULL, 0, ?)`).run(
-        item.id,
-        item.projectId,
-        item.kind,
-        item.title,
-        item.summary ?? null,
-        json(item.requestedBy),
-        item.createdAt,
-        item.createdAt,
-        item.subject === undefined ? null : json(item.subject),
-      );
-      this.#event(item.id, "opened", item.requestedBy.principal, {});
-      this.#changed(item.id);
-      return true;
-    });
-  }
-
   /** Newest first. */
   list(projectId: string, q: ItemQuery = {}): ReadonlyArray<ReviewItem> {
     const where = ["projectId = ?"];
@@ -211,9 +187,9 @@ export class ReviewStore {
     return rows.map(itemOf);
   }
 
-  /** Items still open (`open` or `changesRequested`) in a project: what `REVIEW_LIMIT` counts. */
+  /** Items still open (`open` or `changesRequested`) in a project: what `REVIEW_LIMIT` counts (suggestions have their own cap). */
   openCount(projectId: string): number {
-    const r = this.#stmt(`SELECT COUNT(*) AS n FROM reviews WHERE projectId = ? AND state IN (${OPEN_SQL})`).get(projectId) as { n: number };
+    const r = this.#stmt(`SELECT COUNT(*) AS n FROM reviews WHERE projectId = ? AND kind != 'pluginSuggestion' AND state IN (${OPEN_SQL})`).get(projectId) as { n: number };
     return r.n;
   }
 
@@ -230,7 +206,7 @@ export class ReviewStore {
         const existing = this.findOpen(item.projectId, item.kind, item.source, item.target);
         if (existing !== undefined) return existing;
       }
-      if (this.openCount(item.projectId) >= REVIEW_LIMIT) {
+      if (item.kind !== "pluginSuggestion" && this.openCount(item.projectId) >= REVIEW_LIMIT) {
         throw finError(
           "REVIEW_LIMIT",
           `the project already has ${REVIEW_LIMIT} open review items`,

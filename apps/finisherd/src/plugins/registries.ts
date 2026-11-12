@@ -22,7 +22,8 @@ import { type Content, type ContentProblem, type FontSink, makeContent } from ".
 import { reconcileStore, type StoreProblem } from "./store-sync.ts";
 import { actorOf, PluginTables, type RegistryRow } from "./tables.ts";
 import type { PluginHostHooks } from "./host/processes.ts";
-import type { PluginSuggestions } from "../reviews/suggestions.ts";
+import { ReviewStore } from "../reviews/store.ts";
+import { type PluginSuggestions, pluginSuggestions } from "../reviews/suggestions.ts";
 
 export { actorOf, PluginTables } from "./tables.ts";
 
@@ -93,7 +94,7 @@ export interface MakePluginsOptions {
   readonly testAgentFacing?: (id: string) => boolean;
   /** The code plugins' processes (sp8b Task 5; `main.ts` passes the server's). */
   readonly host?: PluginHostHooks;
-  /** Suggestions as review items (5E Decision 11; `main.ts` passes the server's). */
+  /** Suggestions as review items (5E Decision 11; `main.ts` passes the server's, which publishes to the hub). */
   readonly suggestions?: PluginSuggestions;
 }
 
@@ -134,7 +135,7 @@ export function makePlugins(native: Registry, tables: PluginTables, clock: () =>
     changed: content.sync(),
     ...(options.testAgentFacing === undefined ? {} : { testAgentFacing: options.testAgentFacing }),
     ...(options.host === undefined ? {} : { host: options.host }),
-    ...(options.suggestions === undefined ? {} : { suggestions: options.suggestions }),
+    suggestions: options.suggestions ?? pluginSuggestions(new ReviewStore(tables.store, clock)),
     refreshOne: (id, by) => Effect.flatMap(refreshOne(id, by), (r) => (r.ok ? Effect.void : Effect.fail(failed(r)!))),
   });
 

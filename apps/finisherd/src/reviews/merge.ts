@@ -94,6 +94,7 @@ function archiveIfFinished(w: ReviewWorkflow, c: Caller, item: ReviewItem, idemK
     const plan: ReviewPlan = yield* w.planner.now(item.projectId, item.source!, item.target!);
     if (plan.truncated || plan.entries.some((e) => e.branch === item.source && LEFT.has(e.status))) return;
     yield* w.engine.write(item.projectId, "branchSet", { projectId: item.projectId, txId: `${idemKey}.archive`, author: c.author, branch: source.id, archived: true }, c.meta);
+    yield* w.observeArchived(item.projectId, source.id, principalKey(c.principal));
   });
   return Effect.ignore(self);
 }

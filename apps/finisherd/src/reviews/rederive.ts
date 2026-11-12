@@ -2,10 +2,11 @@
 // server's `control.db`, so a project opened on a server that never saw its branches (a move,
 // a copy, a reset `control.db`) has agent branches with changes and no review. When a project is
 // loaded, every active branch an `agent:` or `mcp:` credential made, that still has changes to
-// merge into its fork parent and has never had a `branchReview` item, gets one marked
+// merge into its fork parent and has no open `branchReview` into that parent and none a person dismissed or rejected, gets one marked
 // `rederived: true`. Comments and accept marks of the old server's items are lost; rejections
 // are not (they are `drop` records, so a dropped transaction is no longer a change to merge).
 // Idempotent; at most `REDERIVE_MAX` per load, the rest on the next one. Never fails the load.
+import { REVIEW_OPEN_STATES, REVIEW_TITLE_MAX } from "@finisher/contracts";
 import { Effect } from "effect";
 import { isOpenEntry, snapshotOf } from "./plan.ts";
 import type { ReviewWorkflow } from "./workflow.ts";
@@ -23,10 +24,14 @@ export function rederive(w: ReviewWorkflow, projectId: string): Effect.Effect<Re
   const task = Effect.gen(function* () {
     const made: string[] = [];
     const branches = yield* w.engine.branches(projectId);
-    const reviewed = new Set(w.store.list(projectId, { kind: "branchReview" }).map((i) => i.source));
+    // Skipped: a branch with an open review into its parent, or one a person dismissed or rejected.
+    // A `merged` (or superseded) review does not count: changes left after a partial merge are reviewed again.
+    const reviews = w.store.list(projectId, { kind: "branchReview" });
+    const seen = (b: { readonly id: string; readonly parent?: string | null }) =>
+      reviews.some((i) => i.source === b.id && i.target === b.parent && (REVIEW_OPEN_STATES.includes(i.state) || i.state === "dismissed" || i.state === "rejected"));
     for (const b of branches) {
       if (made.length >= REDERIVE_MAX) break;
-      if (b.state !== "active" || b.parent == null || !CREDENTIAL_AUTHOR.test(b.createdBy) || reviewed.has(b.id)) continue;
+      if (b.state !== "active" || b.parent == null || !CREDENTIAL_AUTHOR.test(b.createdBy) || seen(b)) continue;
       yield* Effect.ignore(
         Effect.gen(function* () {
           const plan = yield* w.planner.now(projectId, b.id, b.parent!);
@@ -38,7 +43,7 @@ export function rederive(w: ReviewWorkflow, projectId: string): Effect.Effect<Re
             source: b.id,
             target: b.parent!,
             snapshot,
-            title: [...`Review of ${b.name}`].slice(0, 200).join(""),
+            title: [...`Review of ${b.name}`].slice(0, REVIEW_TITLE_MAX).join(""),
             requestedBy: { principal: SYSTEM },
             rederived: true,
           });
