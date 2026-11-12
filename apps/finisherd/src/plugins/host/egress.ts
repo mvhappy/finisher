@@ -77,6 +77,8 @@ export interface EgressTestHooks {
   readonly allow?: ReadonlyArray<{ readonly host: string; readonly address: string }>;
   /** The CA of the loopback test server. */
   readonly ca?: string;
+  /** The port to connect to in place of `origin`'s (a loopback server standing in for a fixed `https://…:443` origin). */
+  readonly port?: (origin: string) => number | undefined;
   readonly limits?: Partial<EgressLimits>;
 }
 
@@ -240,7 +242,7 @@ export function makeEgress(opts: { readonly hooks?: EgressTestHooks; readonly no
         req = httpsRequest({
           agent,
           host: literal ?? url.hostname,
-          port: url.port === "" ? 443 : Number(url.port),
+          port: hooks?.port?.(url.origin) ?? (url.port === "" ? 443 : Number(url.port)),
           path: `${url.pathname}${url.search}`,
           method,
           headers: Object.assign(Object.create(null) as Record<string, string | string[]>, headers, { connection: "close" }, body === undefined ? {} : { "content-length": String(body.length) }),
