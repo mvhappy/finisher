@@ -13,6 +13,7 @@ members = ["crates/*", "examples/plugins/rust-tools"]
 # builds and tests them.
 default-members = [
     "crates/fin",
+    "crates/fin-agent-fakes",
     "crates/fin-codecs",
     "crates/fin-compositor",
     "crates/fin-container",
