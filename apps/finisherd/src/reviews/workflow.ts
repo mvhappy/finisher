@@ -15,7 +15,7 @@ import { Effect } from "effect";
 import { authorOf } from "../chain/policy.ts";
 import type { Audit } from "../control/audit.ts";
 import { ulid } from "../control/ulid.ts";
-import type { CallMeta } from "../diagnostics.ts";
+import { type CallMeta, type PolicyActor, policyVerdict } from "../diagnostics.ts";
 import { finError, toFinError } from "../errors.ts";
 import { dropPayload } from "../history.ts";
 import { isOpenEntry, Planner, type ReviewEngine, sameSnapshot, snapshotOf } from "./plan.ts";
@@ -25,13 +25,22 @@ import { NO_VERDICTS, type ReviewVerdictSink, type ReviewVerdictValue, verdictBy
 /** fin-core's `MAX_DROP_IDS`: origins one `drop` record names, drops and undrops together. */
 export const DROP_RECORD_MAX = 4096;
 
+/** The principal of the server-internal auto-merge actor (`auto-merge.ts`): never a connection's. */
+export interface PolicyPrincipal {
+  readonly kind: "policy";
+  readonly id: "autoMerge";
+}
+
 /** Who calls: the principal, the call's actor with the chain's guard, the author its records carry. */
 export interface Caller {
-  readonly principal: Principal;
+  readonly principal: Principal | PolicyPrincipal;
   readonly meta: CallMeta;
   /** The chain's stamp for a credential, else `<kind>:<id>`. */
   readonly author: string;
+  /** The transport, or `internal` for the policy actor (never audited as a transport). */
   readonly transport: string;
+  /** Set only for the auto-merge policy's actor (Decision 19): its verdicts say `by: policy`, `via: autoMerge`. */
+  readonly internal?: PolicyActor | undefined;
 }
 
 export interface WorkflowDeps {
@@ -72,7 +81,7 @@ export interface ReviewCommentReq {
 /** A merge's outcome as `observeMerge` hears it (Task 8): the report, or the error that refused it. */
 export type MergeOutcome = { readonly report: unknown } | { readonly error: FinError };
 
-export const principalKey = (p: Pick<Principal, "kind" | "id">): string => `${p.kind}:${p.id}`;
+export const principalKey = (p: { readonly kind: string; readonly id: string }): string => `${p.kind}:${p.id}`;
 
 /** A caller of `principal` (a read: no guard); `author` defaults to `<kind>:<id>`. */
 export function callerOf(principal: Principal, meta: CallMeta, transport: string, author?: unknown): Caller {
@@ -163,7 +172,9 @@ export class ReviewWorkflow {
   #reopens(c: Caller, item: ReviewItem): Effect.Effect<boolean, FinError> {
     if (item.state !== "changesRequested") return Effect.succeed(false);
     if (item.requestedBy.principal === principalKey(c.principal)) return Effect.succeed(true);
-    return Effect.map(this.engine.branches(item.projectId), (bs) => bs.find((b) => b.id === item.source)?.createdBy === authorOf(c.principal));
+    const p = c.principal;
+    if (p.kind === "policy") return Effect.succeed(false);
+    return Effect.map(this.engine.branches(item.projectId), (bs) => bs.find((b) => b.id === item.source)?.createdBy === authorOf(p));
   }
 
   /** Decision 12: plans the change list and opens the item; the open item of the pair answers `existing: true`. */
@@ -277,8 +288,10 @@ export class ReviewWorkflow {
 
   /** Verdict entries for `item` (Decision 20); never fails. */
   emit(c: Caller, item: ReviewItem, verdict: ReviewVerdictValue, txIds: ReadonlyArray<string>, counts: "accepted" | "rejected" | "none", reason?: string): void {
-    const session = c.principal.kind === "agent" || c.principal.kind === "mcp" ? c.meta.actor.session : undefined;
-    const entries = verdictEntries({ item, verdict, by: verdictBy(c.principal), txIds, counts, sessionId: session, reason, now: this.clock() });
+    const p = c.principal;
+    const session = c.internal !== undefined || p.kind === "agent" || p.kind === "mcp" ? c.meta.actor.session : undefined;
+    const who = c.internal !== undefined ? policyVerdict(c.internal) : { by: verdictBy(p) };
+    const entries = verdictEntries({ item, verdict, ...who, txIds, counts, sessionId: session, reason, now: this.clock() });
     this.verdicts.emit(item.projectId, c.meta.actor, entries);
   }
 

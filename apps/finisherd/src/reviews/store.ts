@@ -391,22 +391,71 @@ export class ReviewStore {
 
   /** The project's policy; the default (`main` protected, nothing else on) when none was set. */
   policy(projectId: string): BranchPolicy {
-    const r = this.#stmt("SELECT protected, requireReview, autoMerge FROM branch_policy WHERE projectId = ?").get(projectId) as
-      | { protected: string; requireReview: number; autoMerge: string }
-      | undefined;
+    const r = this.#policyRow(projectId);
     if (r === undefined) return DEFAULT_BRANCH_POLICY;
-    return { protected: JSON.parse(r.protected) as string[], requireReview: r.requireReview === 1, autoMerge: JSON.parse(r.autoMerge) as { enabled: boolean } };
+    const autoMerge = JSON.parse(r.autoMerge) as StoredAutoMerge;
+    return { protected: JSON.parse(r.protected) as string[], requireReview: r.requireReview === 1, autoMerge: { enabled: autoMerge.enabled } };
   }
 
-  /** Stores the policy and answers the one it replaced (the default when none was set). */
-  setPolicy(projectId: string, p: BranchPolicy): { readonly old: BranchPolicy } {
+  /** Who turned the project's auto merge on (`<kind>:<id>`), while it is on (Decision 19). */
+  autoMergeEnabledBy(projectId: string): string | undefined {
+    const r = this.#policyRow(projectId);
+    if (r === undefined) return undefined;
+    const autoMerge = JSON.parse(r.autoMerge) as StoredAutoMerge;
+    return autoMerge.enabled ? autoMerge.enabledBy : undefined;
+  }
+
+  #policyRow(projectId: string) {
+    return this.#stmt("SELECT protected, requireReview, autoMerge FROM branch_policy WHERE projectId = ?").get(projectId) as
+      | { protected: string; requireReview: number; autoMerge: string }
+      | undefined;
+  }
+
+  /**
+   * Stores the policy and answers the one it replaced (the default when none was set). With
+   * auto merge on, `enabledBy` names who turned it on (kept from the stored policy when not
+   * given); with it off, nobody is kept.
+   */
+  setPolicy(projectId: string, p: BranchPolicy, enabledBy?: string): { readonly old: BranchPolicy } {
     return this.#store.tx(() => {
       const old = this.policy(projectId);
+      const by = p.autoMerge.enabled ? (enabledBy ?? this.autoMergeEnabledBy(projectId)) : undefined;
+      const autoMerge: StoredAutoMerge = { enabled: p.autoMerge.enabled, ...(by === undefined ? {} : { enabledBy: by }) };
       this.#stmt(
         "INSERT INTO branch_policy (projectId, protected, requireReview, autoMerge) VALUES (?, ?, ?, ?) " +
           "ON CONFLICT (projectId) DO UPDATE SET protected = excluded.protected, requireReview = excluded.requireReview, autoMerge = excluded.autoMerge",
-      ).run(projectId, json([...new Set(p.protected)]), p.requireReview ? 1 : 0, json(p.autoMerge));
+      ).run(projectId, json([...new Set(p.protected)]), p.requireReview ? 1 : 0, json(autoMerge));
       return { old };
     });
   }
+
+  /**
+   * The QA-gate and critic verdicts recorded on an item (`review_verdicts`, reserved for
+   * sub-project 10; 5E writes it only in tests), oldest first, each with the snapshot it judged.
+   */
+  verdicts(itemId: string): ReadonlyArray<StoredVerdict> {
+    const rows = this.#stmt("SELECT verdictId, kind, snapshot, pass, at FROM review_verdicts WHERE itemId = ? ORDER BY at, verdictId").all(itemId) as Array<{
+      verdictId: string;
+      kind: "qa" | "critic";
+      snapshot: string;
+      pass: number;
+      at: number;
+    }>;
+    return rows.map((r) => ({ verdictId: r.verdictId, kind: r.kind, snapshot: JSON.parse(r.snapshot) as Snapshot, pass: r.pass === 1, at: r.at }));
+  }
+}
+
+/** `branch_policy.autoMerge` as stored: the switch, and who turned it on. */
+interface StoredAutoMerge {
+  readonly enabled: boolean;
+  readonly enabledBy?: string;
+}
+
+/** A `review_verdicts` row. */
+export interface StoredVerdict {
+  readonly verdictId: string;
+  readonly kind: "qa" | "critic";
+  readonly snapshot: Snapshot;
+  readonly pass: boolean;
+  readonly at: number;
 }

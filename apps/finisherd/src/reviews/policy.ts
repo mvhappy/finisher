@@ -6,7 +6,9 @@
 // inside one. Audited `review.policy {old, new}` with branch ids and booleans only.
 //
 // Turning auto merge on is `AUTO_MERGE_UNAVAILABLE` while `AUTO_MERGE_AVAILABLE` is false:
-// sub-project 10 flips it once QA-gate and critic verdicts are recorded (Decision 19).
+// sub-project 10 flips it once QA-gate and critic verdicts are recorded (Decision 19). Turning
+// it on records who did (`enabledBy`, kept in `branch_policy.autoMerge`, not in the answer);
+// the internal path (`auto-merge.ts`) merges in that person's name and refuses without one.
 import type { BranchPolicy, FinError } from "@finisher/contracts";
 import { Effect } from "effect";
 import { chainOf } from "../chain/chain.ts";
@@ -15,7 +17,7 @@ import type { Audit } from "../control/audit.ts";
 import { finError } from "../errors.ts";
 import type { Reviews } from "./service.ts";
 
-/** Whether the auto-merge path may be turned on (sub-project 10 sets it). */
+/** Whether the auto-merge path may be turned on and run (sub-project 10 sets it; `auto-merge.ts` checks it too). */
 export const AUTO_MERGE_AVAILABLE = false;
 
 export interface PolicyPayload {
@@ -61,7 +63,9 @@ export function writePolicy(deps: PolicyDeps, principal: { readonly kind: string
           requireReview: req.requireReview ?? current.requireReview,
           autoMerge: req.autoMerge ?? current.autoMerge,
         };
-        const { old } = store.setPolicy(req.projectId, policy);
+        // Who turned auto merge on: the policy actor merges in their name (Decision 19).
+        const enabledBy = req.autoMerge?.enabled === true ? `${principal.kind}:${principal.id}` : undefined;
+        const { old } = store.setPolicy(req.projectId, policy, enabledBy);
         deps.audit?.append({
           kind: "review.policy",
           principal: { kind: principal.kind, id: principal.id },

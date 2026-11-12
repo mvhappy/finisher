@@ -205,18 +205,39 @@ const RULE_FIELDS = {
 };
 
 /**
- * `history.drop {item?, count}`, `review.merge {item, protected, auto}` and `review.policy {old,
- * new}` (5E Decision 26): a review item's id, counts, booleans and branch ids; never a title,
+ * `history.drop {item?, count}`, `review.merge {item, protected, auto}` (with `auto: true` also
+ * `snapshot`, `session?`, `verdicts`, `enabledBy`) and `review.policy {old, new}` (5E Decisions
+ * 19, 26): a review item's id, counts, booleans and branch ids; never a title,
  * summary, comment or reason (review text is content).
  */
 const BranchIdWord = Schema.String.check(Schema.isPattern(/^[0-9A-Za-z]{1,64}$/));
 const PolicyWord = Schema.Struct({ protected: Schema.Array(BranchIdWord), requireReview: Schema.Boolean, autoMerge: Schema.Boolean });
+/** A head's `txHash` (`blake3:<hex>`). */
+const HashWord = Schema.String.check(Schema.isPattern(/^[0-9a-z]{1,16}:[0-9a-f]{1,128}$/));
+/** The snapshot an auto merge was judged at (5E Decision 19): the heads' seqs and hashes. */
+const SnapshotWord = Schema.Struct({
+  sourceSeq: Schema.Int,
+  sourceHash: Schema.optional(HashWord),
+  targetSeq: Schema.Int,
+  targetHash: Schema.optional(HashWord),
+});
+/** A QA-gate or critic verdict an auto merge relied on, by id. */
+const VerdictWord = Schema.Struct({
+  kind: Schema.Literals(["qa", "critic"]),
+  verdictId: Schema.String.check(Schema.isPattern(/^[0-9A-Za-z_-]{1,64}$/)),
+});
 const REVIEW_FIELDS = {
   item: Schema.optional(Schema.String.check(Schema.isPattern(/^[0-9A-Za-z]{26}$/))),
   protected: Schema.optional(Schema.Boolean),
   auto: Schema.optional(Schema.Boolean),
   old: Schema.optional(PolicyWord),
   new: Schema.optional(PolicyWord),
+  // `review.merge {auto: true}` (Decision 19): the judged snapshot, the agent session, the
+  // verdicts and the person who turned the policy on (a human principal's `<kind>:<id>`).
+  snapshot: Schema.optional(SnapshotWord),
+  session: Schema.optional(Id),
+  verdicts: Schema.optional(Schema.Array(VerdictWord)),
+  enabledBy: Schema.optional(Schema.String.check(Schema.isPattern(/^(?:console|local|device):[0-9A-Za-z]{1,64}$/))),
 };
 
 /** What an `auth.denied` row may say besides: the card an ask opened (`APPROVAL_PENDING`, 7B Decision 8). */
