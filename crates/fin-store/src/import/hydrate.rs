@@ -86,6 +86,7 @@ pub(super) fn run(
 
 /// Reads `path` to its end, keeping nothing.
 fn read_through(path: &Path) -> io::Result<u64> {
+    crate::reserved::no_links(path.parent().unwrap_or(path))?;
     io::copy(&mut fs::File::open(path)?, &mut io::sink())
 }
 

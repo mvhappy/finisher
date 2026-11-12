@@ -143,7 +143,10 @@ fn holds_newest_segments(conn: &Connection, dir: &Path) -> bool {
     // it) will do.
     let mut by_branch: std::collections::BTreeMap<&str, bool> = Default::default();
     for (branch, name) in &newest {
-        let present = segments.join(branch).join(name).is_file();
+        // Never through a link (`crate::reserved`).
+        let dir = segments.join(branch);
+        let present = crate::reserved::no_links(&dir).is_ok()
+            && std::fs::symlink_metadata(dir.join(name)).is_ok_and(|m| m.is_file());
         *by_branch.entry(branch).or_default() |= present;
     }
     by_branch.values().all(|p| *p)
