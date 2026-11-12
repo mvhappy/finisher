@@ -361,3 +361,90 @@ fn review_usage_errors() {
     assert_error(&w.local(&["--dry-run", "review", "merge", &id]), 2, "USAGE");
     assert_error(&w.local(&["review", "request"]), 2, "USAGE");
 }
+
+#[test]
+fn decide_takes_comma_lists_and_repeated_flags() {
+    let w = world!("decide_takes_comma_lists_and_repeated_flags");
+    for _ in 0..3 {
+        w.edit();
+    }
+    let id = w.request();
+    let o = w.origins(&id);
+    // One id per flag, repeatable or comma-separated: the item id is never swallowed.
+    let both = format!("{},{}", o[0], o[1]);
+    let d = ok(w.local(&[
+        "review", "decide", &id, "--accept", &both, "--reject", &o[2],
+    ]));
+    assert_eq!(d["decisions"].as_array().unwrap().len(), 3, "{d}");
+    let again = ok(w.local(&[
+        "review",
+        "decide",
+        &id,
+        "--pending",
+        &o[0],
+        "--pending",
+        &o[1],
+    ]));
+    assert_eq!(again["decisions"].as_array().unwrap().len(), 1, "{again}");
+}
+
+#[test]
+fn merge_with_nothing_accepted_says_how_to_go_on() {
+    let w = world!("merge_with_nothing_accepted_says_how_to_go_on");
+    w.edit();
+    let id = w.request();
+    let r = w.local(&["review", "merge", &id]);
+    assert_error(&r, 3, "REVIEW_UNDECIDED");
+    assert_eq!(r.json["error"]["details"]["reason"], "nothingAccepted");
+    let fix = r.json["error"]["fix"].as_str().unwrap();
+    assert!(
+        fix.contains("--accept-pending") && fix.contains("decide"),
+        "{fix}"
+    );
+}
+
+#[test]
+fn decide_and_merge_pass_the_servers_errors_through() {
+    let w = world!("decide_and_merge_pass_the_servers_errors_through");
+    w.edit();
+    let id = w.request();
+    let o = w.origins(&id)[0].clone();
+    ok(w.local(&["review", "close", &id, "--dismissed"]));
+    assert_error(
+        &w.local(&["review", "decide", &id, "--accept", &o]),
+        4,
+        "REVIEW_CLOSED",
+    );
+    assert_error(&w.local(&["review", "merge", &id]), 4, "REVIEW_CLOSED");
+}
+
+#[test]
+fn a_drop_made_after_the_decision_is_reported() {
+    let w = world!("a_drop_made_after_the_decision_is_reported");
+    w.edit();
+    w.edit();
+    let id = w.request();
+    let o = w.origins(&id);
+    ok(w.local(&["review", "decide", &id, "--accept", &o[0]]));
+    // Someone else drops the accepted transaction: the merge says which, before writing.
+    ok(w.local(&["drop", &o[0], "--from", "work"]));
+    let r = w.local(&["review", "merge", &id, "--accept-pending"]);
+    assert_error(&r, 3, "REVIEW_UNDECIDED");
+    assert_eq!(
+        r.json["error"]["details"]["reason"], "acceptedDropped",
+        "{}",
+        r.stdout
+    );
+    assert_eq!(r.json["error"]["details"]["txIds"], json!([o[0]]));
+    // Accepting it again brings it back, and the answer names the drop it cancelled.
+    let d = ok(w.local(&["review", "decide", &id, "--accept", &o[0]]));
+    let undropped = d["undropped"].as_array().unwrap();
+    assert_eq!(undropped.len(), 1, "{d}");
+    assert_eq!(undropped[0]["txId"], o[0].as_str());
+    let merged = ok(w.local(&["review", "merge", &id, "--accept-pending"]));
+    assert_eq!(
+        merged["merge"]["merged"].as_array().unwrap().len(),
+        2,
+        "{merged}"
+    );
+}

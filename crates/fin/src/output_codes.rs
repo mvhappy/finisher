@@ -293,7 +293,8 @@ pub(super) const VALIDATION_CODES: &[&str] = &[
     "TLS_FILES_INVALID",
     "IDENTITY_MISMATCH",
     "SECRETS_KEY_INVALID",
-    // Reviews (5E Decision 26): no such item (or not in reach); pending entries under `requireReview`.
+    // Reviews (5E Decision 26): no such item (or not in reach); a merge the decisions do not allow
+    // (pending entries under `requireReview`, nothing accepted, a decision a drop record outdated).
     "REVIEW_NOT_FOUND",
     "REVIEW_UNDECIDED",
 ];

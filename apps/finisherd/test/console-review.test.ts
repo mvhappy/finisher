@@ -8,7 +8,7 @@ import { runConsole } from "../src/console/main.ts";
 import type { Prompt } from "../src/console/prompt.ts";
 import { AgentServer } from "./support/agent-server.ts";
 import { person } from "./support/person.ts";
-import { ok } from "./support/ndjson-client.ts";
+import { confirmed, ok } from "./support/ndjson-client.ts";
 
 let tmp: string;
 let server: AgentServer;
@@ -85,6 +85,49 @@ describe("finisherd review policy", () => {
     const unprotect = await run(["review", "policy", "set", "--project", id, "--unprotect", "main"], person());
     expect(unprotect.code, unprotect.err).toBe(0);
     expect(unprotect.out).toContain("protected branches: none");
+  });
+
+  test("protect and unprotect by name, deltas only, unknown and both before the prompt", async () => {
+    const id = await project();
+    const local = await server.local();
+    const mk = async (name: string) =>
+      ok<{ branch: { id: string } }>(await local.call("branch.create", { projectId: id, from: "main", name, txId: `b-${name}`, author: "test" })).branch.id;
+    const work = await mk("work");
+    const other = await mk("other");
+    // By name; the answer shows name (id).
+    const p = person();
+    const done = await run(["review", "policy", "set", "--project", id, "--protect", "work"], p);
+    expect(done.code, done.err).toBe(0);
+    expect(done.out).toContain(`work (${work})`);
+    expect(p.shown[0]).toContain(`protects work (${work})`);
+    const json = async () => JSON.parse((await run(["review", "policy", "show", "--project", id, "--json"])).out).policy.protected;
+    expect(await json()).toEqual(["main", work]);
+    // A concurrent protect between the read and the write is not lost.
+    const racing: Prompt = {
+      isInteractive: () => true,
+      show: () => undefined,
+      ask: async () => {
+        ok(await confirmed(await server.console(), "review.policy", { projectId: id, protect: [other] }));
+        return "y";
+      },
+    };
+    const raced = await run(["review", "policy", "set", "--project", id, "--unprotect", "work"], racing);
+    expect(raced.code, raced.err).toBe(0);
+    expect(await json()).toEqual(["main", other]);
+    expect((await run(["review", "policy", "show", "--project", id])).out).toContain(`other (${other})`);
+    // Unknown, and the same branch in both: refused before anything is asked.
+    for (const [argv, code, text] of [
+      [["--unprotect", "nope"], 3, "BRANCH_NOT_FOUND"],
+      [["--protect", "work", "--unprotect", "work"], 2, "USAGE"],
+      [["--protect", "work", "--unprotect", work], 2, "USAGE"],
+    ] as const) {
+      const q = person();
+      const r = await run(["review", "policy", "set", "--project", id, ...argv], q);
+      expect(r.code, argv.join(" ")).toBe(code);
+      expect(r.err).toContain(text);
+      expect(q.asked).toEqual([]);
+    }
+    expect(await json()).toEqual(["main", other]);
   });
 
   test("--auto-merge on is refused before anything is asked", async () => {

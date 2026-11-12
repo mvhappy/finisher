@@ -236,6 +236,24 @@ describe("review.policy", () => {
     expect(h.audited.filter((e) => e.kind === "review.policy")).toHaveLength(2);
   });
 
+  test("protect_and_unprotect_apply_to_the_current_list", async () => {
+    const { reviews, set } = setup();
+    // Resolved to ids and added to the list as it is: another write's branch is not lost.
+    expect(Exit.isSuccess(await set(1, { protect: ["release"] }))).toBe(true);
+    expect(reviews.store.policy(A).protected).toEqual(["main", "br4"]);
+    expect(Exit.isSuccess(await set(1, { protect: ["feature"] }))).toBe(true);
+    expect(reviews.store.policy(A).protected).toEqual(["main", "br4", "br3"]);
+    // Unprotect by name takes the stored id off; a branch not on the list is a no-op.
+    expect(Exit.isSuccess(await set(1, { unprotect: ["release", "feature"] }))).toBe(true);
+    expect(reviews.store.policy(A).protected).toEqual(["main"]);
+    // Exclusive with the whole list, and with itself; unknown changes nothing.
+    const full = await set(1, { protected: ["main"], protect: ["release"] });
+    expect(codeOf(full)).toBe("INVALID_REQUEST");
+    expect(codeOf(await set(1, { protect: ["release"], unprotect: ["br4"] }))).toBe("INVALID_REQUEST");
+    expect(codeOf(await set(1, { unprotect: ["nope"] }))).toBe("BRANCH_NOT_FOUND");
+    expect(reviews.store.policy(A).protected).toEqual(["main"]);
+  });
+
   test("auto_merge_on_is_unavailable", async () => {
     expect(AUTO_MERGE_AVAILABLE).toBe(false);
     const { h, reviews, set } = setup();

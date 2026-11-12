@@ -441,8 +441,8 @@
       "group": "review",
       "identity": [
         "itemId",
-        "decisions",
-        "requestChanges"
+        "decisions.*.txId",
+        "decisions.*.decision"
       ],
       "name": "review.decide",
       "rpcs": [
