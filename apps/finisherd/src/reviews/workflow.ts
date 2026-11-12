@@ -13,6 +13,7 @@ import { REVIEW_OPEN_STATES } from "@finisher/contracts";
 import type { CommittedTx, ReviewPlan } from "@finisher/core-types";
 import { Effect } from "effect";
 import { authorOf } from "../chain/policy.ts";
+import { observeMerge } from "./conflicts.ts";
 import type { Audit } from "../control/audit.ts";
 import { ulid } from "../control/ulid.ts";
 import type { CallMeta } from "../diagnostics.ts";
@@ -372,6 +373,8 @@ export class ReviewWorkflow {
     });
   }
 
-  /** Task 8's seam: a merge's outcome for `mergeConflict` items. Nothing yet. */
-  observeMerge(_projectId: string, _from: string, _into: string, _outcome: MergeOutcome): void {}
+  /** A merge's outcome, for `mergeConflict` items (`conflicts.ts`); never fails. `by` is the merger's `<kind>:<id>`. */
+  observeMerge(projectId: string, from: string, into: string, outcome: MergeOutcome, by?: string): Effect.Effect<void> {
+    return observeMerge(this, projectId, from, into, outcome, by);
+  }
 }

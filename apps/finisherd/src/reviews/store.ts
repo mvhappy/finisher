@@ -171,6 +171,36 @@ export class ReviewStore {
     return r === undefined ? undefined : itemOf(r);
   }
 
+  /** Every open item of `kind` across projects (a plugin install supersedes its suggestions). */
+  openOfKind(kind: ReviewKind): ReadonlyArray<ReviewItem> {
+    const rows = this.#stmt(`SELECT ${COLUMNS} FROM reviews WHERE kind = ? AND state IN (${OPEN_SQL}) ORDER BY createdAt, id`).all(kind) as unknown as Row[];
+    return rows.map(itemOf);
+  }
+
+  /**
+   * Stores an open item that already has an id and a creation time (the 8A suggestion rows moving
+   * here); false when the id is already stored. No limit applies: it is what was already there.
+   */
+  adopt(item: NewItem & { readonly id: string; readonly createdAt: number }): boolean {
+    return this.#store.tx(() => {
+      if (this.get(item.id) !== undefined) return false;
+      this.#stmt(`INSERT INTO reviews (${COLUMNS}) VALUES (?, ?, ?, 'open', NULL, NULL, NULL, ?, ?, ?, ?, ?, NULL, NULL, NULL, 0, ?)`).run(
+        item.id,
+        item.projectId,
+        item.kind,
+        item.title,
+        item.summary ?? null,
+        json(item.requestedBy),
+        item.createdAt,
+        item.createdAt,
+        item.subject === undefined ? null : json(item.subject),
+      );
+      this.#event(item.id, "opened", item.requestedBy.principal, {});
+      this.#changed(item.id);
+      return true;
+    });
+  }
+
   /** Newest first. */
   list(projectId: string, q: ItemQuery = {}): ReadonlyArray<ReviewItem> {
     const where = ["projectId = ?"];

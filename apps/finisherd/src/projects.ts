@@ -148,6 +148,7 @@ export interface RegistryOptions {
    * Default `DEFAULT_IDLE_CLOSE_MS`; `0` never closes one.
    */
   readonly idleCloseMs?: number;
+  readonly onOpened?: (projectId: string) => void; // 5E Decision 22: a project was loaded (re-derived reviews)
 }
 
 /** 10 minutes. */
@@ -156,11 +157,9 @@ export const DEFAULT_IDLE_CLOSE_MS = 10 * 60_000;
 export const DEFAULT_HUB_CAPACITY = 1024;
 const MAIN = "main";
 
-
-
 export function makeProjectRegistry(
   serverData: string,
-  { hubCapacity = DEFAULT_HUB_CAPACITY, libraryUse, idleCloseMs = DEFAULT_IDLE_CLOSE_MS }: RegistryOptions = {},
+  { hubCapacity = DEFAULT_HUB_CAPACITY, libraryUse, idleCloseMs = DEFAULT_IDLE_CLOSE_MS, onOpened }: RegistryOptions = {},
 ): Effect.Effect<ProjectRegistryShape, never, Scope.Scope> {
   return Effect.gen(function* () {
     const index = yield* Effect.acquireRelease(
@@ -275,6 +274,7 @@ export function makeProjectRegistry(
       index.touch(engine.projectId, dir);
       engine.onEvent((json) => onEngineEvent(project, json));
       if (libraryUse !== undefined) holdLibraries(project, libraryUse);
+      if (onOpened !== undefined) queueMicrotask(() => onOpened(engine.projectId));
       return project;
     };
 
