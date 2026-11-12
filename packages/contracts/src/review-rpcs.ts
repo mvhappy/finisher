@@ -8,6 +8,7 @@ import { ChallengeField } from "./auth.ts";
 import { FinError } from "./errors.ts";
 import { HistoryDropPayload, RecordSuccess } from "./history.ts";
 import {
+  AutoMergePolicySchema,
   BranchPolicySchema,
   CommentSchema,
   DecisionSchema,
@@ -134,7 +135,8 @@ export const ReviewPolicyPayload = Schema.Struct({
   protect: Schema.optional(Schema.Array(Schema.String).check(Schema.isMaxLength(REVIEW_PROTECTED_MAX))),
   unprotect: Schema.optional(Schema.Array(Schema.String).check(Schema.isMaxLength(REVIEW_PROTECTED_MAX))),
   requireReview: Schema.optional(Schema.Boolean),
-  autoMerge: Schema.optional(Schema.Struct({ enabled: Schema.Boolean })),
+  /** The whole setting: `roles` absent admits every role. */
+  autoMerge: Schema.optional(AutoMergePolicySchema),
   challenge: ChallengeField,
 });
 export const ReviewPolicySuccess = Schema.Struct({ policy: BranchPolicySchema, old: BranchPolicySchema });

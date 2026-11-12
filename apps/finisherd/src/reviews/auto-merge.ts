@@ -3,9 +3,10 @@
 // enabledBy}` when the project's owner turned the policy on and the QA gate and the critic both
 // passed the item's exact snapshot.
 //
-// - **No RPC reaches it.** No handler imports this module; its callers are a `VerdictSource`
-//   (sub-project 10's, none in release builds) and the tests, which inject the verdicts and the
-//   availability through `AutoMergeDeps`, never through the environment.
+// - **No RPC reaches it.** No handler imports this module; its one caller is the session-side
+//   trigger (`agent/auto-merge.ts`, 7B Task 12) on `branchReady`, which `main.ts` subscribes,
+//   and the tests, which inject the verdicts and the availability through `AutoMergeDeps` (or
+//   the trigger's options), never through the environment.
 // - **Unavailable until sub-project 10:** with `AUTO_MERGE_AVAILABLE` false (the default of
 //   `available`) nothing is read and nothing merges.
 // - **Checks, in order:** the item is `open` (`changesRequested`: a person handed the branch
@@ -28,7 +29,7 @@ import { Effect } from "effect";
 import type { Audit } from "../control/audit.ts";
 import { type PolicyActor, policyMeta } from "../diagnostics.ts";
 import { finError } from "../errors.ts";
-import { mergeReview } from "./merge.ts";
+import { mergeReview, type ReviewMerged } from "./merge.ts";
 import { sameSnapshot } from "./plan.ts";
 import { AUTO_MERGE_AVAILABLE } from "./policy.ts";
 import type { Reviews } from "./service.ts";
@@ -43,6 +44,11 @@ export interface JudgedVerdict {
   readonly snapshot: Snapshot;
   /** When it was recorded (ms): the newest of a kind is the one that counts. */
   readonly at: number;
+  /**
+   * The session that judged it. A critic's must name its critic session: the session-side
+   * trigger (`agent/auto-merge.ts`, 7B Task 12) refuses a critic verdict without one.
+   */
+  readonly session?: string;
 }
 
 /** Where verdicts come from: sub-project 10's QA gate and critic (`storedVerdicts`), or a test's fake. */
@@ -84,7 +90,10 @@ export type AutoMergeRefusal =
   | "replanNeeded"
   | "dropsChanged";
 
-export type AutoMergeResult = { readonly merged: true; readonly mergeId: string } | { readonly merged: false; readonly reason: AutoMergeRefusal };
+/** A merge answers what `mergeReview` did (absent on the replay of an item already merged). */
+export type AutoMergeResult =
+  | { readonly merged: true; readonly mergeId: string; readonly review?: ReviewMerged }
+  | { readonly merged: false; readonly reason: AutoMergeRefusal };
 
 const refused = (reason: AutoMergeRefusal): AutoMergeResult => ({ merged: false, reason });
 
@@ -101,17 +110,20 @@ const POLICY_PRINCIPAL = { kind: "policy", id: "autoMerge" } as const;
  * merge relies on. A verdict whose id the audit cannot record does not count (it is missing).
  */
 export function judge(verdicts: ReadonlyArray<JudgedVerdict>, snapshot: Snapshot): AutoMergeRefusal | ReadonlyArray<JudgedVerdict> {
-  const newer = (a: JudgedVerdict, v: JudgedVerdict) => v.at > a.at || (v.at === a.at && a.pass && !v.pass);
-  const newest = (kind: JudgedVerdict["kind"]) =>
-    verdicts
-      .filter((v) => v.kind === kind && AUDIT_VERDICT_ID_PATTERN.test(v.verdictId))
-      .reduce<JudgedVerdict | undefined>((a, v) => (a === undefined || newer(a, v) ? v : a), undefined);
-  const both = [newest("qa"), newest("critic")];
+  const both = [newestVerdict(verdicts, "qa"), newestVerdict(verdicts, "critic")];
   if (both.some((v) => v === undefined)) return "verdictMissing";
   const judged = both as ReadonlyArray<JudgedVerdict>;
   if (judged.some((v) => !v.pass)) return "verdictFailed";
   if (judged.some((v) => !sameSnapshot(v.snapshot, snapshot))) return "snapshotMismatch";
   return judged;
+}
+
+/** The verdict of `kind` that counts: the newest whose id the audit can record (a failing one wins a tie). */
+export function newestVerdict(verdicts: ReadonlyArray<JudgedVerdict>, kind: JudgedVerdict["kind"]): JudgedVerdict | undefined {
+  const newer = (a: JudgedVerdict, v: JudgedVerdict) => v.at > a.at || (v.at === a.at && a.pass && !v.pass);
+  return verdicts
+    .filter((v) => v.kind === kind && AUDIT_VERDICT_ID_PATTERN.test(v.verdictId))
+    .reduce<JudgedVerdict | undefined>((a, v) => (a === undefined || newer(a, v) ? v : a), undefined);
 }
 
 /**
@@ -204,7 +216,7 @@ export function tryAutoMerge(itemId: string, session: string | undefined, deps: 
         );
         if (merged.ok === undefined) return refused("dropsChanged");
         deps.audit.append({ kind: "review.merge", principal: POLICY_PRINCIPAL, outcome: "ok", details });
-        return { merged: true, mergeId: merged.ok.merge.mergeId } as const;
+        return { merged: true, mergeId: merged.ok.merge.mergeId, review: merged.ok } as const;
       }),
     );
   });

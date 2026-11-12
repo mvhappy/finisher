@@ -131,12 +131,25 @@ export const ReviewEventSchema = Schema.Struct({
 });
 export type ReviewEvent = typeof ReviewEventSchema.Type;
 
+/** At most this many roles in `autoMerge.roles`. */
+export const REVIEW_AUTO_MERGE_ROLES_MAX = 32;
+/** A role's name (`roles/*.json` `name`). */
+const RoleNameSchema = Schema.String.check(Schema.isPattern(/^[a-z][a-z0-9]*(-[a-z0-9]+)*$/), Schema.isMaxLength(64));
+/**
+ * `branch_policy.autoMerge` (sp7 §6.5): the switch and the roles whose `auto` sessions it admits
+ * (absent: every role). The merge target is the review item's own target (no `into`).
+ */
+export const AutoMergePolicySchema = Schema.Struct({
+  enabled: Schema.Boolean,
+  roles: Schema.optional(Schema.Array(RoleNameSchema).check(Schema.isMaxLength(REVIEW_AUTO_MERGE_ROLES_MAX))),
+});
+
 /** The per-project policy (Decision 18); the default protects `main` and turns the rest off. */
 export const BranchPolicySchema = Schema.Struct({
   /** Branch ids. */
   protected: Schema.Array(Schema.String),
   requireReview: Schema.Boolean,
-  autoMerge: Schema.Struct({ enabled: Schema.Boolean }),
+  autoMerge: AutoMergePolicySchema,
 });
 export type BranchPolicy = typeof BranchPolicySchema.Type;
 export const DEFAULT_BRANCH_POLICY: BranchPolicy = { protected: ["main"], requireReview: false, autoMerge: { enabled: false } };

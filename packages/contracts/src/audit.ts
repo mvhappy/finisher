@@ -212,13 +212,21 @@ const RULE_FIELDS = {
 /**
  * `history.drop {item?, count, txId?, dropTx?, droppedBy?}`, `review.merge {item, protected,
  * auto}` (with `auto: true` also `snapshot`, `session?`, `verdicts`, `enabledBy`) and
- * `review.policy {old, new}` (5E Decisions 19, 26; the cancelled-drop fields: owner amendment to
+ * `review.policy {old, new}` (`autoMergeRoles` since 7B Task 12; 5E Decisions 19, 26; the cancelled-drop fields: owner amendment to
  * Decision 13): a review item's id, counts, booleans and branch ids; never a title,
  * summary, comment or reason (review text is content).
  */
 const TxWord = Schema.String.check(Schema.isPattern(/^[0-9A-Za-z._:-]{1,128}$/));
 const BranchIdWord = Schema.String.check(Schema.isPattern(/^[0-9A-Za-z]{1,64}$/));
-const PolicyWord = Schema.Struct({ protected: Schema.Array(BranchIdWord), requireReview: Schema.Boolean, autoMerge: Schema.Boolean });
+/** A role's name, as `branch_policy.autoMerge.roles` holds it (7B Task 12). */
+const RoleWord = Schema.String.check(Schema.isPattern(/^[a-z][a-z0-9]*(-[a-z0-9]+)*$/), Schema.isMaxLength(64));
+const PolicyWord = Schema.Struct({
+  protected: Schema.Array(BranchIdWord),
+  requireReview: Schema.Boolean,
+  autoMerge: Schema.Boolean,
+  /** The roles auto merge admits; absent: every role. */
+  autoMergeRoles: Schema.optional(Schema.Array(RoleWord).check(Schema.isMaxLength(32))),
+});
 /** A head's `txHash` (`blake3:<hex>`). */
 const HashWord = Schema.String.check(Schema.isPattern(/^[0-9a-z]{1,16}:[0-9a-f]{1,128}$/));
 /** The snapshot an auto merge was judged at (5E Decision 19): the heads' seqs and hashes. */

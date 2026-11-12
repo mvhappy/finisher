@@ -26,7 +26,8 @@
 // review's own merge (`review.merge`, 5E) already has 5E's `merged` verdict: the tracker records
 // what it carried out of the subtree in the ledger (`merged`, `via: merge`, not emitted; 7B Task
 // 11), so the verdict is counted once and a later delete or archive does not call it abandoned.
-// `via: autoMerge` / `by: policy` come with 7B Task 12 and sub-project 10.
+// The `auto` merge policy's merge (7B Task 12, `agent/auto-merge.ts`; not an RPC) is recorded
+// the same way, `by: policy`, `via: autoMerge`: 5E's verdict of it already says so.
 //
 // The tracker never fails a call: the write has landed. What it cannot record is reported on
 // stderr.
@@ -148,6 +149,18 @@ export class OutcomeTracker {
   }
 
   /**
+   * The `auto` merge policy merged an item (`merge`, the merge's report): what it carried out of
+   * the subtree is `merged`, `by: policy`, `via: autoMerge`, not emitted (5E's verdict is the
+   * entry). Never fails.
+   */
+  observeAutoMerge(projectId: string, merge: unknown, projects: ChainProjects): Effect.Effect<void> {
+    const target = committedOf(merge)[0]?.tx.branch;
+    if (target === undefined) return Effect.void;
+    const work = this.#merged(projectId, (merge as Origins | null)?.origins ?? [], target, "policy", projects, false, "autoMerge");
+    return Effect.catchCause(work, (cause) => Effect.sync(() => this.#warn(`cannot record the outcome of an auto merge: ${String(cause)}`)));
+  }
+
+  /**
    * The undos of a rollback of `s` to run `toRun` by `principal` (7B Task 8): `origins` their
    * units' records, as an undo's result names them. Never fails: the undos have landed.
    */
@@ -181,7 +194,15 @@ export class OutcomeTracker {
   }
 
   /** Copies onto `target`: each agent transaction among them lands outside its subtree or not. */
-  #merged(projectId: string, origins: ReadonlyArray<string>, target: string, by: OutcomeBy, projects: ChainProjects, emit = true): Effect.Effect<void, unknown> {
+  #merged(
+    projectId: string,
+    origins: ReadonlyArray<string>,
+    target: string,
+    by: OutcomeBy,
+    projects: ChainProjects,
+    emit = true,
+    via: OutcomeVia = "merge",
+  ): Effect.Effect<void, unknown> {
     const rows = [...this.#d.store.sessionOfTx(origins).values()];
     if (rows.length === 0) return Effect.void;
     return Effect.gen({ self: this }, function* () {
@@ -196,7 +217,7 @@ export class OutcomeTracker {
           within = (yield* this.#d.lineage.subtree(projects, projectId, root, [target])).has(target);
           inside.set(root, within);
         }
-        if (!within) this.#record(row, projectId, "merged", "merge", by, undefined, emit);
+        if (!within) this.#record(row, projectId, "merged", via, by, undefined, emit);
       }
     });
   }

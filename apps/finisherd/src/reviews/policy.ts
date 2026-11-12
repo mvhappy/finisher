@@ -26,7 +26,8 @@ export interface PolicyPayload {
   readonly protect?: ReadonlyArray<string> | undefined;
   readonly unprotect?: ReadonlyArray<string> | undefined;
   readonly requireReview?: boolean | undefined;
-  readonly autoMerge?: { readonly enabled: boolean } | undefined;
+  /** The whole setting: `roles` absent admits every role (7B Task 12). */
+  readonly autoMerge?: { readonly enabled: boolean; readonly roles?: ReadonlyArray<string> | undefined } | undefined;
 }
 
 export interface PolicyDeps {
@@ -47,8 +48,13 @@ export function autoMergeUnavailable(): FinError {
   );
 }
 
-/** The audited form of a policy: branch ids and booleans. */
-const word = (p: BranchPolicy) => ({ protected: [...p.protected], requireReview: p.requireReview, autoMerge: p.autoMerge.enabled });
+/** The audited form of a policy: branch ids, booleans and the admitted roles' names. */
+const word = (p: BranchPolicy) => ({
+  protected: [...p.protected],
+  requireReview: p.requireReview,
+  autoMerge: p.autoMerge.enabled,
+  ...(p.autoMerge.roles === undefined ? {} : { autoMergeRoles: [...p.autoMerge.roles] }),
+});
 
 /** Stores the new policy and answers it with the one it replaced. */
 export function writePolicy(deps: PolicyDeps, principal: { readonly kind: string; readonly id: string }, req: PolicyPayload) {

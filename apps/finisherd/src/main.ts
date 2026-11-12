@@ -38,6 +38,7 @@ import { systemClock, systemIds } from "./agent/clock.ts";
 import { type AgentCore, AgentCoreTag } from "./agent/core.ts";
 import { journalVerdicts, OutcomeTracker } from "./agent/outcomes.ts";
 import { ReviewLink, reviewPort } from "./agent/review-link.ts";
+import { autoMergeTrigger, registryProjects } from "./agent/auto-merge.ts";
 import { AgentJournal } from "./agent/journal.ts";
 import { SessionCredentials } from "./agent/credentials.ts";
 import { BranchLineage } from "./agent/reach.ts";
@@ -415,6 +416,9 @@ export const serve = ({
       const started = startReviews(controlStore, { engine: registryEngine(projects), audit, verdicts: journalReviewVerdicts(diagnostics.journal) });
       onOpened = started.opened;
       agentCore.reviewLink.bind(reviewPort(started.reviews));
+      // The `auto` merge policy's trigger (7B Task 12): unavailable until sub-project 10, so nothing merges.
+      const autoMerge = { store: agentStore, reviews: started.reviews, audit, outcomes, projects: registryProjects(projects), ...agentOptions?.autoMerge };
+      agentCore.reviewLink.onBranchReady(autoMergeTrigger(autoMerge));
       // One font layer for the handlers and the plugins, which feed it the packs' catalogs.
       const fontsLayer = layerFonts(serverData, fonts);
       // `server.stop` (5A Task 8): `serve` returns, and its scope's finalizers stop everything.

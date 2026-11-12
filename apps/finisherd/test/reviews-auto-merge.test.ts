@@ -325,8 +325,10 @@ describe("the merge", () => {
     expect(auditDetailsValid("review.merge", row.details)).toBe(true);
     // The verdict says it was the policy, never a person's acceptance.
     expect(f.entries).toEqual([expect.objectContaining({ itemKind: "branchReview", verdict: "merged", by: "policy", via: "autoMerge", txIds: ["f1", "f2"], accepted: 2, sessionId: SESSION })]);
-    // A second attempt finds the item merged by this path: the same answer, not audited again.
-    expect(await run(attempt2(f))).toEqual(result);
+    // The merge's own answer carries what `mergeReview` did (the outcome ledger reads it, 7B Task 12).
+    expect(result).toMatchObject({ review: { item: { id: f.item.id, state: "merged" } } });
+    // A second attempt finds the item merged by this path: the same merge, not audited again.
+    expect(await run(attempt2(f))).toEqual({ merged: true, mergeId: result.merged ? result.mergeId : "" });
     expect(f.audited).toHaveLength(1);
     // A person's merge of another snapshot is not this path's: closed.
     const local = callerOf(LOCAL, { actor: { kind: "user" } }, "socket");
@@ -532,7 +534,7 @@ describe("review follow-ups", () => {
     const restarted = makeReviews(f.control, { engine, audit: { append: (a) => void audited.push(a) } });
     const head = await f.e.head("main");
     const replay = await run(tryAutoMerge(f.item.id, SESSION, { reviews: restarted, verdicts: source(passing(judged)), available: true, audit: { append: (a) => void audited.push(a) } }));
-    expect(replay).toEqual({ merged: true, mergeId: `auto-${f.item.id}-${judged.sourceSeq}` });
+    expect(replay).toMatchObject({ merged: true, mergeId: `auto-${f.item.id}-${judged.sourceSeq}` });
     expect(restarted.store.get(f.item.id)).toMatchObject({ state: "merged", mergeId: replay.merged ? replay.mergeId : "" });
     // Nothing was copied twice: fin-store answered the stored merge, and the only new record is
     // the archive of the finished agent branch the crash had cut off (a `branchSet` on main).
@@ -638,9 +640,13 @@ const POLICY_CALLER = [/[{,]\s*internal\s*:\s*[A-Za-z_{]/, /\bpolicyCaller\b/, /
 const POLICY_TYPE_DECLARATIONS = ["diagnostics.ts", "reviews/workflow.ts"];
 
 describe("no_rpc_reaches_auto_merge", () => {
-  test("no source module but the path itself imports it", () => {
+  test("no source module but the path itself, the session-side trigger and the server wiring imports it", () => {
     const files = sources();
-    expect(files.filter(([p, text]) => p !== AUTO_MERGE && IMPORTS_AUTO_MERGE.test(text)).map(([p]) => p)).toEqual([]);
+    // 7B Task 12: the trigger (`agent/auto-merge.ts`) imports the path; `main.ts` builds the
+    // trigger and `agent/wiring.ts` holds its options' type. No handler or RPC module does.
+    expect(files.filter(([p, text]) => p !== AUTO_MERGE && IMPORTS_AUTO_MERGE.test(text)).map(([p]) => p).sort()).toEqual(["agent/auto-merge.ts", "agent/wiring.ts", "main.ts"]);
+    const importsPath = /["'`][^"'`\n]*reviews\/auto-merge(?:\.[cm]?[jt]s)?["'`]/;
+    expect(files.filter(([, text]) => importsPath.test(text)).map(([p]) => p)).toEqual(["agent/auto-merge.ts"]);
     // No computed import could reach it either.
     expect(files.filter(([, text]) => text.split("\n").some((l) => COMPUTED_IMPORT.test(l) && !l.trimStart().startsWith("//"))).map(([p]) => p)).toEqual(COMPUTED_IMPORT_SITES);
     // The checks catch what they claim to.

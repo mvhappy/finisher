@@ -305,7 +305,8 @@ describe("branchReady is reachable only from review.request and a session's end"
     const sites = (re: RegExp) => files.filter((f) => re.test(readFileSync(f, "utf8"))).map((f) => relative(src, f).replaceAll("\\", "/")).sort();
     expect(sites(/\.requested\(/)).toEqual(["agent/review-link.ts"]);
     expect(sites(/\.sessionEnded\(/)).toEqual(["agent/runtime.ts"]);
-    expect(sites(/\.onBranchReady\(/)).toEqual(["agent/runtime.ts"]);
+    // The runtime's notice and the `auto` merge trigger (7B Task 12, wired in `main.ts`).
+    expect(sites(/\.onBranchReady\(/)).toEqual(["agent/runtime.ts", "main.ts"]);
     expect(sites(/withReviewLink\(/)).toEqual(["agent/review-link.ts", "handlers.ts"]);
   });
 });
