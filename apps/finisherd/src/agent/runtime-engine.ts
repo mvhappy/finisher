@@ -25,7 +25,7 @@ import type { Clock, Ids } from "./clock.ts";
 import type { AgentCore } from "./core.ts";
 import { credentialPath } from "./credentials.ts";
 import type { Pricing, RuntimeDeps, RuntimeJournal, ToolExecutor } from "./runtime-deps.ts";
-import { budgetError, errorShape, harnessUnknown, limitsOf, NO_JOURNAL, parseRef, REPORTED_PRICING, runFacts } from "./runtime-deps.ts";
+import { budgetError, errorShape, harnessUnknown, limitsOf, NO_JOURNAL, parseRef, REPORTED_PRICING, runFacts, toolsOf } from "./runtime-deps.ts";
 import { call, closeLive, closeScope, type Live, openLive } from "./runtime-live.ts";
 import { OutboxDrainer } from "./runtime-outbox.ts";
 import { handleRequest } from "./provider-requests.ts";
@@ -248,6 +248,7 @@ export abstract class RuntimeEngine {
         cwd: env.cwd,
         env: liveEnv.env,
         providerRef: parseRef(this.store.providerRef(s.id)),
+        ...toolsOf(this.store.tools(s.id)),
         gate: this.#gate(s.id, holder),
       },
       liveEnv,

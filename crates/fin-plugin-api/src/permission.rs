@@ -42,7 +42,9 @@ pub enum SecretMode {
 )]
 #[serde(rename_all = "camelCase")]
 pub enum FsScope {
-    /// `<server-data>/plugins/data/<id>/<projectId|_>/` (spec §5.1). `workspace` is not in v1.
+    /// The caller's plugin data directory (spec §5.1): `<server-data>/plugins/data/<id>/<projectId|_>/`
+    /// for uniform `person`/`system` rights, else `plugins/authdata/<id>/<projectId|_>/<authorityKey>/`.
+    /// `workspace` is not in v1.
     PluginData,
 }
 

@@ -21,7 +21,8 @@ fn for_field(mut e: CoreError, field: &str) -> CoreError {
 }
 
 /// An absolute time (`12.4s`, `00:12.4`, `f300`, `62/5`) at the project rate.
-pub fn time(project: &Project, field: &str, input: &str) -> Result<Rational, CoreError> {
+#[cfg(test)]
+fn time(project: &Project, field: &str, input: &str) -> Result<Rational, CoreError> {
     time_at(project.rate, field, input)
 }
 
@@ -173,37 +174,9 @@ pub fn rate_of(project: &Project, track: &str) -> Rational {
     self::track(project, track).map_or(project.rate, |(tl, _)| tl.rate)
 }
 
-/// `a..b`, `a..` or `..b`; both ends absolute times. Rejects `a >= b`.
-pub fn range(
-    project: &Project,
-    input: &str,
-) -> Result<(Option<Rational>, Option<Rational>), CoreError> {
-    let Some((a, b)) = input.split_once("..") else {
-        return Err(
-            CoreError::new("INVALID_RANGE", format!("range {input:?} is not a..b"))
-                .with_details(json!({ "input": input, "field": "range" }))
-                .with_fix("write the range as 2s..5s, 2s.. or ..5s"),
-        );
-    };
-    let end = |s: &str| {
-        if s.is_empty() {
-            Ok(None)
-        } else {
-            time(project, "range", s).map(Some)
-        }
-    };
-    let (from, to) = (end(a)?, end(b)?);
-    if let (Some(f), Some(t)) = (from, to)
-        && f >= t
-    {
-        return Err(
-            CoreError::new("INVALID_RANGE", format!("range {input:?} is empty"))
-                .with_details(json!({ "input": input, "from": f, "to": t }))
-                .with_fix("make the start of the range earlier than its end"),
-        );
-    }
-    Ok((from, to))
-}
+/// `a..b`, `a..` or `..b`; both ends absolute times. Rejects `a >= b` (fin-core's, shared
+/// with the plugin host's `project.view`).
+pub use fin_core::view::range;
 
 #[cfg(test)]
 mod tests {

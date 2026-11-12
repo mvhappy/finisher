@@ -40,10 +40,11 @@ import type { Audit } from "../control/audit.ts";
 import { ulid } from "../control/ulid.ts";
 import { authorize } from "./authorize.ts";
 import { withoutClientVia } from "./client-via.ts";
+import { type HostCommit, hostCommitOf } from "../plugins/host/commit-channel.ts";
 import type { ChainHooks } from "./hooks.ts";
 import { approvalRequired, outOfReach } from "./fixes.ts";
 import { type Ask, authorOf, branchLimited, DEFAULT_POLICIES, type PolicyInput, type PolicyRule, runPolicies, stampsAuthor } from "./policy.ts";
-import { type ChainJobs, type ChainProjects, type ChainReviews, resolve } from "./resolve.ts";
+import { type ChainJobs, type ChainPluginCommands, type ChainProjects, type ChainReviews, resolve } from "./resolve.ts";
 import type { PolicyGate } from "../reviews/gate.ts";
 
 export type { Ask, Outcome, PolicyRule } from "./policy.ts";
@@ -139,6 +140,8 @@ export interface ChainDeps {
    * holds it exclusive) never lands between a write's check and its commit. None: no gate.
    */
   readonly gate?: PolicyGate;
+  /** Whether a plugin command writes, for `plugin.command.run` (8B Task 9). */
+  readonly pluginCommands?: ChainPluginCommands;
   readonly audit?: Audit;
   /** Counts a unary refusal in `rpc.stats`. */
   readonly timed?: <A>(tag: string, self: Effect.Effect<A, FinError>) => Effect.Effect<A, FinError>;
@@ -238,7 +241,7 @@ export function withChain<H extends object>(handlers: H, deps: ChainDeps): H {
     });
 
   /** Stages 2–5; the resolved payload and the guard, or the refusal. */
-  const check = (tag: FinRpcTag, sent: unknown, clientId: number, headers: unknown) => {
+  const check = (tag: FinRpcTag, sent: unknown, clientId: number, headers: unknown, host?: HostCommit) => {
     // Before anything reads it: a client's `via` would name a plugin it is not (spec §3.8).
     const payload = withoutClientVia(tag, sent);
     const principal = deps.connections.principalOf(clientId);
@@ -253,7 +256,7 @@ export function withChain<H extends object>(handlers: H, deps: ChainDeps): H {
       const refused = deps.refuse?.(principal);
       if (refused !== undefined) return yield* Effect.fail(refused);
       if (credentialOf(principal) !== undefined) deps.touch?.(principal);
-      const resolved = yield* resolve(rule, payload, deps.projects, { principal, jobs: deps.jobs, reviews: deps.reviews });
+      const resolved = yield* resolve(rule, payload, deps.projects, { principal, jobs: deps.jobs, reviews: deps.reviews, pluginCommands: deps.pluginCommands });
       yield* authorize(tag, principal, payload, resolved, deps.projects, hooks);
       // The policy gate, held until the call is answered (the scope `withChain` closes).
       const gated = (resolved.payload as { projectId?: unknown } | null)?.projectId;
@@ -262,7 +265,17 @@ export function withChain<H extends object>(handlers: H, deps: ChainDeps): H {
         // Interruptible while queued (a client gone, a shutdown): the waiter leaves the queue.
         yield* Effect.acquireRelease(gate.acquireShared(gated), (release) => Effect.sync(release), { interruptible: true });
       }
-      const input: PolicyInput = { tag, rule, principal, payload: resolved.payload, projects: deps.projects, projectIds: resolved.projects, headers, reviews: deps.reviews };
+      const input: PolicyInput = {
+        tag,
+        rule,
+        principal,
+        payload: resolved.payload,
+        projects: deps.projects,
+        projectIds: resolved.projects,
+        headers,
+        reviews: deps.reviews,
+        ...(host === undefined || tag !== "tx.commit" ? {} : { host }),
+      };
       const outcome = yield* runPolicies(policies, input);
       if ("deny" in outcome) return yield* Effect.fail(outcome.deny);
       if ("ask" in outcome) {
@@ -315,8 +328,8 @@ export function withChain<H extends object>(handlers: H, deps: ChainDeps): H {
     ...(c.openedProject === undefined ? {} : { openedProject: c.openedProject }),
   });
   /** A refusal counted in `rpc.stats` (streams too: only their refusals, review M5). */
-  const counted = (tag: FinRpcTag, payload: unknown, clientId: number, headers: unknown) =>
-    Effect.catchCause(check(tag, payload, clientId, headers), (cause) => timed(tag, Effect.failCause(cause)));
+  const counted = (tag: FinRpcTag, payload: unknown, clientId: number, headers: unknown, host?: HostCommit) =>
+    Effect.catchCause(check(tag, payload, clientId, headers, host), (cause) => timed(tag, Effect.failCause(cause)));
   /** The handler's typed failure gives back what the policy stage took (unless it may have committed). */
   const undoing = (c: Checked, self: Effect.Effect<unknown, FinError>) =>
     c.undo === undefined ? self : Effect.tapError(self, (e) => (MAYBE_COMMITTED.has(e.code) ? Effect.void : c.undo!));
@@ -332,7 +345,7 @@ export function withChain<H extends object>(handlers: H, deps: ChainDeps): H {
     }
     out[tag] = (payload, options) =>
       Effect.scoped(
-        Effect.flatMap(counted(tag, payload, options.client.id, options.headers), (c) =>
+        Effect.flatMap(counted(tag, payload, options.client.id, options.headers, hostCommitOf(options)), (c) =>
           Effect.flatMap(undoing(c, handler(c.payload, optionsOf(options, c)) as Effect.Effect<unknown, FinError>), after(tag, c, options.headers)),
         ),
       );

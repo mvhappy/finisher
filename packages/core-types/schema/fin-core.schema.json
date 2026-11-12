@@ -707,6 +707,15 @@
           "$ref": "#/$defs/RegistryRefresh"
         },
         {
+          "$ref": "#/$defs/PluginStats"
+        },
+        {
+          "$ref": "#/$defs/PluginExit"
+        },
+        {
+          "$ref": "#/$defs/PluginCommand"
+        },
+        {
           "$ref": "#/$defs/ErrorInternal"
         },
         {
@@ -861,6 +870,13 @@
         "message"
       ],
       "type": "object"
+    },
+    "ArgsOmitted": {
+      "description": "Why `args` is absent although training is on.",
+      "enum": [
+        "tooLarge"
+      ],
+      "type": "string"
     },
     "Asset": {
       "properties": {
@@ -1564,7 +1580,6 @@
       "type": "string"
     },
     "CallLimits": {
-      "additionalProperties": false,
       "description": "The limits of this job's calls and results.",
       "properties": {
         "messageBytes": {
@@ -2517,9 +2532,33 @@
         }
       ]
     },
+    "CommandOutcome": {
+      "description": "What became of a command run.",
+      "oneOf": [
+        {
+          "const": "accepted",
+          "description": "The transaction was committed on the revision the plugin saw.",
+          "type": "string"
+        },
+        {
+          "const": "rebased",
+          "description": "The branch had moved on: fin-core rebased the transaction and committed it.",
+          "type": "string"
+        },
+        {
+          "const": "conflict",
+          "description": "fin-core refused it (`CONFLICT`): nothing was committed; `ops` are what was proposed.",
+          "type": "string"
+        },
+        {
+          "const": "data",
+          "description": "The command returned data, or a dry run validated its transaction.",
+          "type": "string"
+        }
+      ]
+    },
     "CommandRun": {
-      "additionalProperties": false,
-      "description": "A command run: the host has checked `args` against the command's schema and pinned `rev`\nto the head of `branch`.",
+      "description": "A command run: the host has checked `args` against the command's schema and pinned `rev`\nto the head of `branch`. Decoded leniently (a field from a newer host is ignored).",
       "properties": {
         "args": true,
         "branch": {
@@ -2536,6 +2575,13 @@
           "format": "uint64",
           "minimum": 0,
           "type": "integer"
+        },
+        "snapshot": {
+          "description": "The host's handle on the snapshot it read for this run at submit (opaque to plugins):\nevery page the run reads comes from that snapshot, of this run only, so a rewind or\nrebuild that reaches `rev` again in a newer history is never served from an older one.",
+          "type": [
+            "string",
+            "null"
+          ]
         }
       },
       "required": [
@@ -4125,6 +4171,72 @@
           "additionalProperties": false,
           "properties": {
             "kind": {
+              "const": "plugin.stats",
+              "type": "string"
+            },
+            "kv": {
+              "const": 1,
+              "type": "integer"
+            },
+            "payload": {
+              "$ref": "#/$defs/PluginStats"
+            }
+          },
+          "required": [
+            "kind",
+            "kv",
+            "payload"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "plugin.exit",
+              "type": "string"
+            },
+            "kv": {
+              "const": 1,
+              "type": "integer"
+            },
+            "payload": {
+              "$ref": "#/$defs/PluginExit"
+            }
+          },
+          "required": [
+            "kind",
+            "kv",
+            "payload"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "plugin.command",
+              "type": "string"
+            },
+            "kv": {
+              "const": 1,
+              "type": "integer"
+            },
+            "payload": {
+              "$ref": "#/$defs/PluginCommand"
+            }
+          },
+          "required": [
+            "kind",
+            "kv",
+            "payload"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
               "const": "error.internal",
               "type": "string"
             },
@@ -4195,7 +4307,7 @@
               "type": "string"
             },
             "kv": {
-              "const": 1,
+              "const": 2,
               "type": "integer"
             },
             "payload": {
@@ -5346,7 +5458,7 @@
       "oneOf": [
         {
           "const": "pluginData",
-          "description": "`<server-data>/plugins/data/<id>/<projectId|_>/` (spec §5.1). `workspace` is not in v1.",
+          "description": "The caller's plugin data directory (spec §5.1): `<server-data>/plugins/data/<id>/<projectId|_>/`\nfor uniform `person`/`system` rights, else `plugins/authdata/<id>/<projectId|_>/<authorityKey>/`.\n`workspace` is not in v1.",
           "type": "string"
         }
       ]
@@ -6095,7 +6207,7 @@
       "description": "An HTTPS request to one of the plugin's approved `net` origins.",
       "properties": {
         "bodyB64": {
-          "description": "At most 768 KiB before base64.",
+          "description": "At most 756 KiB (`PAGE_BYTES`) before base64.",
           "type": [
             "string",
             "null"
@@ -7811,6 +7923,72 @@
         "background"
       ],
       "type": "string"
+    },
+    "JobRights": {
+      "additionalProperties": false,
+      "description": "A plugin job's rights: invoker ∩ grants (Decision 8), with the authority they run under\n(class + `rights_hash` + `generation`, spec §3.3 and Decision 28).",
+      "properties": {
+        "branch": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RightsBranch"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Set for an agent session: its branch subtree."
+        },
+        "class": {
+          "description": "The principal class of the process key (spec §3.3): `person`, `agent:<root session>`,\n`system`, or `<kind>:<id>` for any other invoker.",
+          "type": "string"
+        },
+        "generation": {
+          "description": "The class's policy generation when the rights were computed (spec §3.3): it increments\nwhen a credential of the class is narrowed or revoked or its agent session tree changes.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "grants": {
+          "description": "The plugin's granted permissions at submit.",
+          "items": {
+            "$ref": "#/$defs/Permission"
+          },
+          "type": "array"
+        },
+        "libraries": {
+          "$ref": "#/$defs/Reach"
+        },
+        "principal": {
+          "$ref": "#/$defs/RightsPrincipal",
+          "description": "The invoker the plugin acts for (audit and journal name `plugin:<id>@<version>` acting\nfor it)."
+        },
+        "projects": {
+          "$ref": "#/$defs/Reach"
+        },
+        "rightsHash": {
+          "description": "The hash of the plugin-relevant rights above (class, scopes, projects, branch, libraries,\ngrants; not the principal, so callers of one class with identical rights share it): 32\nlower-case hex characters, computed by the host (spec §3.3's authority key, Decision 28).",
+          "type": "string"
+        },
+        "scopes": {
+          "description": "The invoker's scopes that the plugin's grants map to.",
+          "items": {
+            "$ref": "#/$defs/PluginScope"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "principal",
+        "class",
+        "scopes",
+        "projects",
+        "libraries",
+        "grants",
+        "rightsHash",
+        "generation"
+      ],
+      "type": "object"
     },
     "JobSnapshot": {
       "description": "`in/snapshot.json` (plan 6A Decision 2).",
@@ -10350,7 +10528,6 @@
       "type": "object"
     },
     "NetFetchReply": {
-      "additionalProperties": false,
       "description": "The response's head; the body (at most 64 MiB) stays with the host and is read by\n`net.read` through `handle` until the job ends (Decision 11).",
       "properties": {
         "handle": {
@@ -10398,7 +10575,7 @@
           "type": "string"
         },
         "length": {
-          "description": "At most 768 KiB.",
+          "description": "At most 756 KiB (`PAGE_BYTES`).",
           "format": "uint32",
           "minimum": 0,
           "type": "integer"
@@ -10417,7 +10594,6 @@
       "type": "object"
     },
     "NetReadPage": {
-      "additionalProperties": false,
       "properties": {
         "bytesB64": {
           "type": "string"
@@ -12540,8 +12716,256 @@
       ],
       "type": "string"
     },
-    "PluginContext": {
+    "PluginCommand": {
+      "description": "`plugin.command`: one run of a plugin command (`plugin.command.run`).",
+      "properties": {
+        "args": {
+          "allOf": [
+            {
+              "$ref": "#/$defs/Body"
+            },
+            {
+              "x-fin-class": "content",
+              "x-fin-content": "toolArgs"
+            }
+          ],
+          "description": "Training only: the arguments as validated."
+        },
+        "argsOmitted": {
+          "$ref": "#/$defs/ArgsOmitted"
+        },
+        "code": {
+          "$ref": "#/$defs/Code"
+        },
+        "command": {
+          "$ref": "#/$defs/Hashed"
+        },
+        "dryRun": {
+          "type": "boolean"
+        },
+        "micros": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "ops": {
+          "additionalProperties": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "description": "Op kind → count of the ops it returned (`OP_KINDS`).",
+          "propertyNames": {
+            "$ref": "#/$defs/Name"
+          },
+          "type": "object"
+        },
+        "outcome": {
+          "$ref": "#/$defs/PluginCommandOutcome"
+        },
+        "plugin": {
+          "$ref": "#/$defs/PluginRef"
+        },
+        "txId": {
+          "$ref": "#/$defs/IdRef"
+        }
+      },
+      "required": [
+        "plugin",
+        "command",
+        "outcome",
+        "micros"
+      ],
+      "type": "object"
+    },
+    "PluginCommandInfo": {
       "additionalProperties": false,
+      "description": "One command as `plugin.commands` lists it.",
+      "properties": {
+        "args": {
+          "$ref": "#/$defs/SchemaSubset"
+        },
+        "command": {
+          "description": "The command's name in its manifest.",
+          "type": "string"
+        },
+        "name": {
+          "description": "The registry name, `plugin:<id>/<command>` (the name 7B's command rules match).",
+          "type": "string"
+        },
+        "plugin": {
+          "description": "`<id>@<version>` of the enabled plugin that serves it.",
+          "type": "string"
+        },
+        "timeoutS": {
+          "description": "Its timeout in seconds (the manifest's, 10 when absent, at most 60).",
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "title": {
+          "description": "A message key in the plugin's `en` catalogue.",
+          "type": "string"
+        },
+        "writes": {
+          "description": "Whether it returns a transaction (running it needs `project.write`).",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "name",
+        "plugin",
+        "command",
+        "title",
+        "args",
+        "writes",
+        "timeoutS"
+      ],
+      "type": "object"
+    },
+    "PluginCommandList": {
+      "additionalProperties": false,
+      "description": "`plugin.commands`: `digest` is the BLAKE3 of the canonical JSON of `commands`, so a client\ncaches the list per server and digest.",
+      "properties": {
+        "commands": {
+          "items": {
+            "$ref": "#/$defs/PluginCommandInfo"
+          },
+          "type": "array"
+        },
+        "digest": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "digest",
+        "commands"
+      ],
+      "type": "object"
+    },
+    "PluginCommandOutcome": {
+      "description": "How a plugin command ended (spec §11; `failed`: the process crashed, broke the protocol or\nthe host failed, a deviation: the spec's list has no outcome for it).",
+      "oneOf": [
+        {
+          "enum": [
+            "conflict",
+            "timeout",
+            "failed"
+          ],
+          "type": "string"
+        },
+        {
+          "const": "accepted",
+          "description": "Its transaction was committed as is (or, with `dryRun`, validated).",
+          "type": "string"
+        },
+        {
+          "const": "rebased",
+          "description": "Committed after a rebase.",
+          "type": "string"
+        },
+        {
+          "const": "refused",
+          "description": "Refused by a check (permission, reach, a disabled plugin).",
+          "type": "string"
+        },
+        {
+          "const": "invalid",
+          "description": "Its arguments or its returned ops were invalid (`PLUGIN_COMMAND_ARGS`,\n`PLUGIN_TX_INVALID`).",
+          "type": "string"
+        },
+        {
+          "const": "data",
+          "description": "It returned data, not a transaction.",
+          "type": "string"
+        }
+      ]
+    },
+    "PluginCommandRunRequest": {
+      "additionalProperties": false,
+      "description": "`plugin.command.run`'s request.",
+      "properties": {
+        "args": {
+          "default": null
+        },
+        "branch": {
+          "description": "A branch name, id or `name#id`; `main` when absent.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "dryRun": {
+          "description": "Validate the returned transaction against the snapshot the plugin saw; commit nothing.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "name": {
+          "description": "`plugin:<id>/<command>`.",
+          "type": "string"
+        },
+        "projectId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "projectId",
+        "name"
+      ],
+      "type": "object"
+    },
+    "PluginCommandRunResult": {
+      "additionalProperties": false,
+      "properties": {
+        "data": {
+          "description": "A data command's value as the plugin returned it."
+        },
+        "dryRun": {
+          "description": "A dry run: nothing was committed.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "ops": {
+          "description": "The proposed ops (dry run, conflict).",
+          "items": {
+            "$ref": "#/$defs/Op"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "outcome": {
+          "$ref": "#/$defs/CommandOutcome"
+        },
+        "rev": {
+          "description": "The committed revision; for a dry run or a conflict, the revision the plugin saw.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "txId": {
+          "description": "The committed transaction's id (accepted, rebased).",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "outcome"
+      ],
+      "type": "object"
+    },
+    "PluginContext": {
       "properties": {
         "dirs": {
           "$ref": "#/$defs/PluginDirs"
@@ -12596,11 +13020,10 @@
       "type": "object"
     },
     "PluginDirs": {
-      "additionalProperties": false,
       "description": "Directories the plugin may use, as absolute paths on the host.",
       "properties": {
         "data": {
-          "description": "The per-project data directory, only when `fs pluginData` is granted.",
+          "description": "The caller's `pluginData` directory, only when `fs pluginData` is granted (spec §5.1):\n`plugins/data/@pub/name/<projectId|_>/` for uniform `person`/`system` rights, else\n`plugins/authdata/@pub/name/<projectId|_>/<authorityKey>/`.",
           "type": [
             "string",
             "null"
@@ -12618,6 +13041,101 @@
       "required": [
         "plugin",
         "tmp"
+      ],
+      "type": "object"
+    },
+    "PluginEgressStats": {
+      "description": "The egress broker's counts for one plugin in a `plugin.stats` window (Task 8's counters,\ndifferenced per window). Refusals by reason; no origin, URL or body.",
+      "properties": {
+        "bytesInLog2": {
+          "format": "uint8",
+          "maximum": 255,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "bytesOutLog2": {
+          "format": "uint8",
+          "maximum": 255,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "completed": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "denied": {
+          "description": "`EGRESS_DENIED`: an origin it was not granted.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "failed": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "notHttps": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "privateAddress": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "rateLimited": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "redirectsFollowed": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "redirectsReturned": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "requests": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "secretMissing": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "timeouts": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "tooLarge": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "requests",
+        "completed",
+        "denied",
+        "notHttps",
+        "privateAddress",
+        "secretMissing",
+        "rateLimited",
+        "tooLarge",
+        "timeouts",
+        "failed",
+        "redirectsFollowed",
+        "redirectsReturned",
+        "bytesInLog2",
+        "bytesOutLog2"
       ],
       "type": "object"
     },
@@ -12647,6 +13165,55 @@
         "message"
       ],
       "type": "object"
+    },
+    "PluginExit": {
+      "description": "`plugin.exit`: a plugin process ended (built from the same exit as its `worker.exit`).",
+      "properties": {
+        "exitCode": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "jobsServed": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "plugin": {
+          "$ref": "#/$defs/PluginRef"
+        },
+        "reason": {
+          "$ref": "#/$defs/PluginExitReason"
+        },
+        "signal": {
+          "$ref": "#/$defs/Name"
+        },
+        "uptimeS": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "plugin",
+        "reason",
+        "jobsServed",
+        "uptimeS"
+      ],
+      "type": "object"
+    },
+    "PluginExitReason": {
+      "description": "Why a plugin process ended (spec §11).",
+      "enum": [
+        "ok",
+        "crash",
+        "timeout",
+        "killed",
+        "oom",
+        "protocol",
+        "sandbox",
+        "idle"
+      ],
+      "type": "string"
     },
     "PluginId": {
       "description": "`@<publisher>/<name>` (8A Decision 2).",
@@ -12856,6 +13423,71 @@
       ],
       "type": "object"
     },
+    "PluginMethodStats": {
+      "description": "One method family's calls in a `plugin.stats` window.",
+      "properties": {
+        "bytesInLog2": {
+          "description": "Params bytes over the window, as a log₂ bucket.",
+          "format": "uint8",
+          "maximum": 255,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "bytesOutLog2": {
+          "description": "Reply bytes over the window, as a log₂ bucket.",
+          "format": "uint8",
+          "maximum": 255,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "calls": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "errors": {
+          "additionalProperties": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "description": "Error code → count.",
+          "propertyNames": {
+            "$ref": "#/$defs/Code"
+          },
+          "type": "object"
+        },
+        "family": {
+          "$ref": "#/$defs/Name"
+        },
+        "p50Micros": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "p95Micros": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "reachDenials": {
+          "description": "Calls refused for reach (`PROJECT_NOT_FOUND`, `BRANCH_NOT_ALLOWED`, a library).",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "family",
+        "calls",
+        "reachDenials",
+        "p50Micros",
+        "p95Micros",
+        "bytesInLog2",
+        "bytesOutLog2"
+      ],
+      "type": "object"
+    },
     "PluginOutcome": {
       "description": "How a plugin or registry call ended.",
       "oneOf": [
@@ -12907,7 +13539,6 @@
       ]
     },
     "PluginRefFull": {
-      "additionalProperties": false,
       "description": "A plugin at one version.",
       "properties": {
         "id": {
@@ -12923,6 +13554,16 @@
       ],
       "type": "object"
     },
+    "PluginScope": {
+      "description": "A sub-project 5 scope a plugin job may hold, each from one permission (spec §3.7):\n`project:read` → `project.read`; `project:write` → `project.write` (only the `tx.commit` of\nthe command's returned transaction); `media:read` → `library.read` (and asset reads);\n`jobs:submit` → `jobs.submit` (the plugin's own kinds only, 8C).",
+      "enum": [
+        "project.read",
+        "project.write",
+        "library.read",
+        "jobs.submit"
+      ],
+      "type": "string"
+    },
     "PluginSourceName": {
       "description": "Where an installed plugin came from (spec §5.2).",
       "enum": [
@@ -12931,6 +13572,63 @@
         "dev"
       ],
       "type": "string"
+    },
+    "PluginStats": {
+      "description": "`plugin.stats`: one plugin's host traffic over one window (a minute), sent when the\nplugin did anything in it.",
+      "properties": {
+        "crashes": {
+          "description": "Its jobs that ended `PLUGIN_CRASHED`.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "egress": {
+          "$ref": "#/$defs/PluginEgressStats"
+        },
+        "families": {
+          "description": "Per method family (`PLUGIN_METHOD_FAMILIES`), each at most once.",
+          "items": {
+            "$ref": "#/$defs/PluginMethodStats"
+          },
+          "type": "array"
+        },
+        "logDropped": {
+          "description": "`log` calls dropped by the rate limit.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "plugin": {
+          "$ref": "#/$defs/PluginRef"
+        },
+        "stderrDropped": {
+          "description": "stderr lines dropped by the byte limit.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "timeouts": {
+          "description": "Its jobs that ended `PLUGIN_TIMEOUT`.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "windowS": {
+          "description": "The window's length in seconds.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "plugin",
+        "windowS",
+        "timeouts",
+        "crashes",
+        "logDropped",
+        "stderrDropped"
+      ],
+      "type": "object"
     },
     "PreviewStats": {
       "type": "object"
@@ -13378,11 +14076,10 @@
       "type": "object"
     },
     "ProjectSnapshotPage": {
-      "additionalProperties": false,
       "description": "One page of a snapshot; every page of one job has the same `rev`.",
       "properties": {
         "bytesB64": {
-          "description": "At most 768 KiB before base64.",
+          "description": "At most 756 KiB (`PAGE_BYTES`) before base64.",
           "type": "string"
         },
         "page": {
@@ -13411,7 +14108,7 @@
     },
     "ProjectView": {
       "additionalProperties": false,
-      "description": "`project.view`: the `fin view` text of the call's branch, capped at 768 KiB.",
+      "description": "`project.view`: the `fin view` text of the call's branch, capped at 756 KiB (`PAGE_BYTES`).",
       "properties": {
         "budget": {
           "description": "`fin view --budget`.",
@@ -13433,7 +14130,6 @@
       "type": "object"
     },
     "ProjectViewText": {
-      "additionalProperties": false,
       "properties": {
         "text": {
           "type": "string"
@@ -13586,8 +14282,8 @@
       ]
     },
     "Rational": {
-      "description": "Exact rational seconds in canonical form: \"n/d\" in lowest terms with d > 1, or \"n\" when d is 1; no leading zeros, no \"+\", no \"-0\".",
-      "pattern": "^(0|-?[1-9]\\d*)(/[1-9]\\d*)?$",
+      "description": "Exact rational seconds in canonical form: \"n/d\" in lowest terms with d > 1, or \"n\" when d is 1; no leading zeros, no \"+\", no \"-0\". The pattern checks the shape; lowest terms is checked by the parser.",
+      "pattern": "^(0|-?[1-9]\\d*(/([2-9]\\d*|1\\d+))?)$",
       "type": "string"
     },
     "RawRel": {
@@ -13606,6 +14302,27 @@
         "components"
       ],
       "type": "object"
+    },
+    "Reach": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ReachAll"
+        },
+        {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      ],
+      "description": "Which projects or libraries a job reaches: `\"all\"` or a list of ids."
+    },
+    "ReachAll": {
+      "description": "`\"all\"`: every project (or library) of this server.",
+      "enum": [
+        "all"
+      ],
+      "type": "string"
     },
     "RecordKind": {
       "description": "What a record does (spec §4.2). Sub-project 4A writes only edits; 4B adds the rest up to\n`branchSet`; 5E adds `drop` (durable rejections, sub-project 5 spec §8.3).",
@@ -14322,6 +15039,40 @@
         "accepted",
         "rejected",
         "openS"
+      ],
+      "type": "object"
+    },
+    "RightsBranch": {
+      "additionalProperties": false,
+      "description": "An agent session's branch reach (sub-project 7 §5.1): its root branch and, with `subtree`,\nthe branches beneath it (less its live children's).",
+      "properties": {
+        "root": {
+          "type": "string"
+        },
+        "subtree": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "root",
+        "subtree"
+      ],
+      "type": "object"
+    },
+    "RightsPrincipal": {
+      "additionalProperties": false,
+      "description": "The invoking principal (sub-project 5's `{kind, id}`; the job's owner).",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "kind": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "id"
       ],
       "type": "object"
     },
@@ -17733,7 +18484,7 @@
       "type": "object"
     },
     "WorkerExit": {
-      "description": "`worker.exit` (`kv` 1).",
+      "description": "`worker.exit` (`kv` 2: `plugin` is a [`PluginRef`], Decision 22 of sp8b; `kv` 1 had a\n`Hashed` that nothing ever filled).",
       "properties": {
         "exitCode": {
           "format": "int64",
@@ -17756,7 +18507,7 @@
           "type": "integer"
         },
         "plugin": {
-          "$ref": "#/$defs/Hashed"
+          "$ref": "#/$defs/PluginRef"
         },
         "reason": {
           "$ref": "#/$defs/ExitReason"

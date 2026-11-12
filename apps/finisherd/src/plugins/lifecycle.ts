@@ -144,7 +144,7 @@ export function makeLifecycle(deps: LifecycleDeps) {
       if (baseOf(tables, row.pluginId) !== row.base) return yield* Effect.fail(changed());
       const staged = yield* attemptJson<InstallPlan>(() => native.stagedPlan(row.id));
       const dirs = tables.installed().flatMap((p) => {
-        const full = p.id === row.pluginId ? undefined : tables.installedFull(p.id);
+        const full = p.id === row.pluginId || p.source === "dev" ? undefined : tables.installedFull(p.id);
         return full === undefined ? [] : [full.dir];
       });
       const placed = yield* attemptJson<InstalledPlugin>(() => native.commit(row.id, row.digest, JSON.stringify(accept), JSON.stringify({ installedDirs: dirs }))).pipe(

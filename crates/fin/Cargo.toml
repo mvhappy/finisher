@@ -31,6 +31,8 @@ base64 = "0.23"
 blake3 = "1"
 clap = { version = "4", default-features = false, features = ["std", "derive", "error-context", "suggestions", "usage"] }
 fin-core = { path = "../fin-core" }
+# `plugin.commands` and `plugin.command.run` payloads (sp8b Task 10): the generated types' source.
+fin-plugin-api = { path = "../fin-plugin-api" }
 # `fin project rebuild` with no server running rebuilds the database in-process.
 fin-store = { path = "../fin-store" }
 getrandom = "0.3"

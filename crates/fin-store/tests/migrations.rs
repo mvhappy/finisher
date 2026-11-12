@@ -538,6 +538,8 @@ fn prune_never_deletes_the_new_backup() {
         "pre-migrate-0-1-19990101T000000000Z.fdb.bak",
         "pre-migrate-x-1-19990101T000000000Z.fdb",
         "pre-migrate-0-1-1999010T1000000000Z.fdb",
+        // Valid UTF-8, 19 bytes, a non-ASCII timestamp character (review #37: a panic).
+        "pre-migrate-1-2-1234567\u{e9}123456789Z.fdb",
         "notes.txt",
     ];
     for name in future.iter().chain(&foreign) {

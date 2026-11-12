@@ -124,6 +124,8 @@ export const SAMPLE_PAYLOADS: { readonly [T in FinRpcTag]: Record<string, unknow
   "training.closedTargets.get": {},
   "training.closedTargets.set": { state: "pendingCounsel" },
   "plugin.suggest": { id: "@acme/pack", reason: "captions in the house style", projectId: P },
+  "plugin.commands": {},
+  "plugin.command.run": { projectId: P, name: "plugin:@acme/tools/trim", args: {} },
   "library.add": { root: "/nowhere/library" },
   "library.remove": { id: "nowhere" },
   "library.set": { id: "nowhere", paused: true },

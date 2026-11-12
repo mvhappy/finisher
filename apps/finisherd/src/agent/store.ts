@@ -31,7 +31,7 @@ import { DbLedger, type SessionBranchState, type SessionTx, SessionStates, Sessi
 export type { Appended, Applied, NewApproval, NewNode, NewSession, OutboxEffect, OutboxItem, Recovery, RunStart, SessionQuery } from "./store-rows.ts";
 export type { SessionBranchState, SessionTx, SessionTryRow, TxOutcome } from "./store-tables.ts";
 
-registerChain("agent", [...AGENT_MIGRATIONS], { formatVersion: 9, minReaderVersion: 8 });
+registerChain("agent", [...AGENT_MIGRATIONS], { formatVersion: 10, minReaderVersion: 8 });
 
 const DAY_MS = 86_400_000;
 /** `agents.retentionDays` default (Decision 4). */
@@ -128,6 +128,12 @@ export class AgentStore {
 
   providerRef(sessionId: string): string | undefined {
     return this.#row(sessionId).providerRef ?? undefined;
+  }
+
+  /** The role's tool allow-set the session started with (agent 0010), null when none was recorded. */
+  tools(sessionId: string): string[] | null {
+    const t = this.#row(sessionId).tools;
+    return t === null ? null : (JSON.parse(t) as string[]);
   }
 
   setProviderRef(sessionId: string, ref: string | null): void {
@@ -285,17 +291,7 @@ export class AgentStore {
     }
   }
 
-  #insertNode(
-    id: string,
-    sessionId: string,
-    runId: string,
-    kind: string,
-    providerId: string | null,
-    callId: string | null,
-    payload: string | null,
-    blobRef: string | null,
-    now: number,
-  ): void {
+  #insertNode(id: string, sessionId: string, runId: string, kind: string, providerId: string | null, callId: string | null, payload: string | null, blobRef: string | null, now: number): void {
     const last = this.#s.lastNodeSeq!.get(sessionId) as { seq: number } | undefined;
     this.#s.insertNode!.run(id, runId, sessionId, (last?.seq ?? 0) + 1, kind, providerId, callId, payload, blobRef, now);
   }

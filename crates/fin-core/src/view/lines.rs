@@ -1,7 +1,7 @@
 //! How `fin view` writes one line (plan 4C Task 25): times as `mm:ss.d`, seconds as `2.0s`,
 //! and the item, caption, transition and marker bodies at full detail.
 
-use fin_core::{BlendMode, Item, ItemBody, ParamValue, Rational, Timeline, Track};
+use crate::{BlendMode, Item, ItemBody, ParamValue, Rational, Timeline, Track};
 
 /// `t` in milliseconds, rounded half up (half away from zero for a negative time).
 fn millis(t: Rational) -> i128 {

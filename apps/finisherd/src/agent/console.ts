@@ -382,7 +382,7 @@ async function providers(ctx: CommandContext, rest: ReadonlyArray<string>): Prom
   onlyFlags(ctx.args, "agent providers", ["json"]);
   if (rest.length > 0) usage("agent providers takes --json only");
   type Answer = {
-    providers: { harness: string; detected: boolean; version?: string; signedIn?: boolean | null; problem?: { code: string; message: string } }[];
+    providers: { harness: string; detected: boolean; version?: string; signedIn?: boolean | null; enabled?: boolean; problem?: { code: string; message: string } }[];
     openrouter: { keySet: boolean; projects?: string[] };
     local: { configured: boolean; preset?: string; reachable?: boolean };
     warnings?: { code: string; message: string; fix?: string }[];
@@ -393,7 +393,8 @@ async function providers(ctx: CommandContext, rest: ReadonlyArray<string>): Prom
     return 0;
   }
   for (const p of r.providers) {
-    ctx.output.out(`${p.harness}  ${p.detected ? "available" : "not available"}${p.version === undefined ? "" : `  ${safe(p.version)}`}${p.problem === undefined ? "" : `  ${p.problem.code}: ${safe(p.problem.message)}`}`);
+    const signed = p.harness === "builtin" || p.signedIn === undefined || p.signedIn === null ? "" : p.signedIn ? "  signed in" : "  not signed in";
+    ctx.output.out(`${p.harness}  ${p.detected ? "available" : "not available"}${p.version === undefined ? "" : `  ${safe(p.version)}`}${signed}${p.enabled === false ? "  off" : ""}${p.problem === undefined ? "" : `  ${p.problem.code}: ${safe(p.problem.message)}`}`);
   }
   const own = r.openrouter.projects ?? [];
   ctx.output.out(`openrouter key: ${r.openrouter.keySet ? "set for the server" : "not set for the server"}${own.length === 0 ? "" : `; own keys for ${own.join(", ")}`}`);

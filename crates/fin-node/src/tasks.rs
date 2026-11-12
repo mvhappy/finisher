@@ -28,7 +28,10 @@ pub(crate) enum Call {
         branch: String,
         after: f64,
     },
-    Status,
+    /// `at`: with the last event number the status covers (`statusAt`).
+    Status {
+        at: bool,
+    },
     TxGet {
         tx_id: String,
     },
@@ -224,7 +227,13 @@ fn tx_json(tx_id: &str, status: TxStatus) -> Result<Reply> {
 
 /// `status()`: the store's status with `busy: null`; during a long call, at once, the status
 /// cached after the last tick or long call with `busy: {operation, sinceMs}`.
-fn status(store: &Shared) -> Result<Reply> {
+///
+/// `at` (`statusAt()`): `{"status", "seq"}`, `seq` the last event emitted before it was read.
+/// The store is held through the font merge and `seq` read under the fonts' `publish` lock: a
+/// tick emits holding the store, then `publish`; a font refresh, holding `publish`. Every
+/// event up to `seq` is then older than this status, and no later one is older (one may
+/// repeat a change already in it, e.g. a commit's events emitted by the next tick).
+fn status(store: &Shared, at: bool) -> Result<Reply> {
     let mut guard = lock(&store.state);
     let (value, busy) = match &mut *guard {
         State::Open(s) => {
@@ -248,11 +257,17 @@ fn status(store: &Shared) -> Result<Reply> {
         }
         other => return Err(reject(other.unavailable())),
     };
-    drop(guard);
+    let held = at.then_some(guard);
     // The font summary (plan 4C Decision 34): `fonts`, and its warnings after the store's.
-    let mut value = store.fonts.merged(value);
+    let (mut value, seq) = store.fonts.merged_then(value, || store.events.seq());
+    drop(held);
     if let Some(obj) = value.as_object_mut() {
         obj.insert("busy".to_string(), busy);
+    }
+    if at {
+        return Ok(Reply::Json(encode(
+            &json!({ "status": value, "seq": seq }),
+        )?));
     }
     Ok(Reply::Json(encode(&value)?))
 }
@@ -340,7 +355,7 @@ fn run(store: &Shared, call: Call) -> Result<Reply> {
                 )?))
             })
         }
-        Call::Status => status(store),
+        Call::Status { at } => status(store, at),
         Call::TxGet { tx_id } => with_store(store, |s| {
             tx_json(&tx_id, s.tx_status(&tx_id).map_err(reject)?)
         }),
@@ -395,7 +410,7 @@ impl Call {
             Call::Commit { .. } => "tx.commit",
             Call::Snapshot { .. } => "snapshot.get",
             Call::OpsSince { .. } | Call::OpsSinceAt { .. } => "ops.subscribe",
-            Call::Status => "project.status",
+            Call::Status { .. } => "project.status",
             Call::TxGet { .. } => "tx.get",
             Call::AcknowledgeRewind { .. } => "project.acknowledgeRewind",
             Call::AcknowledgeSalvage { .. } => "project.acknowledgeSalvage",

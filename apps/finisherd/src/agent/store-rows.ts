@@ -37,6 +37,8 @@ export interface NewSession {
   readonly createdBy: Session["createdBy"];
   readonly title?: string;
   readonly providerRef?: string;
+  /** The role's tool allow-set (`SessionPlan.tools`), kept for resume (agent 0010, plan 7D Task 4). */
+  readonly tools?: readonly string[];
 }
 
 export interface NewNode {
@@ -112,11 +114,12 @@ export interface SessionRow {
   rootSession: string | null;
   depth: number;
   trigger: string | null;
+  tools: string | null;
 }
 
 export const SESSION_COLUMNS =
   "id, projectId, harness, provider, model, weights, role, mode, rootBranch, baseBranch, baseSeq, parent, status, " +
-  "statusReason, runId, approvals, credentialId, providerRef, budget, usage, createdBy, createdAt, endedAt, title, rootSession, depth, trigger";
+  "statusReason, runId, approvals, credentialId, providerRef, budget, usage, createdBy, createdAt, endedAt, title, rootSession, depth, trigger, tools";
 
 export interface RunRow {
   id: string;
@@ -338,7 +341,7 @@ export function sessionInsertArgs(s: NewSession, status: string, now: number): A
   return [
     s.id, s.projectId, s.harness, s.provider, s.model, s.weights, s.role, s.mode, s.rootBranch ?? null, s.base.branch, s.base.seq,
     s.parent ?? null, status, s.id, s.providerRef ?? null, JSON.stringify(s.budget), JSON.stringify(ZERO_USAGE), JSON.stringify(s.createdBy),
-    now, s.title ?? null, s.rootSession ?? null, s.depth ?? 0, s.trigger ?? null,
+    now, s.title ?? null, s.rootSession ?? null, s.depth ?? 0, s.trigger ?? null, s.tools === undefined ? null : JSON.stringify(s.tools),
   ];
 }
 
@@ -367,7 +370,7 @@ export function approvalExpired(id: string): FinError {
 
 /** Every statement `AgentStore` prepares, once, by name. */
 export const STORE_SQL: Readonly<Record<string, string>> = {
-  insertSession: `INSERT INTO sessions (${SESSION_COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, '[]', ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?)`,
+  insertSession: `INSERT INTO sessions (${SESSION_COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, '[]', ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?)`,
   session: `SELECT ${SESSION_COLUMNS} FROM sessions WHERE id = ?`,
   setState: "UPDATE sessions SET status = ?, statusReason = ?, runId = ?, approvals = ?, endedAt = COALESCE(endedAt, ?) WHERE id = ?",
   live: "SELECT id FROM sessions WHERE status IN ('starting', 'running', 'waitingApproval') ORDER BY id",

@@ -12,7 +12,8 @@
   "modeCeiling": "draft",
   "defaultMode": "plan",
   "models": {
-    "builtin": "anthropic/claude-sonnet-5.5"
+    "builtin": "anthropic/claude-sonnet-5.5",
+    "claudeCode": "default"
   },
   "rules": [
     {

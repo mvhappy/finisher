@@ -73,7 +73,7 @@ const count = (table: string, where = "1 = 1", ...args: string[]): number =>
 
 describe("agent store", () => {
   test("agent_chain_is_registered", () => {
-    expect(control.db.prepare("SELECT value FROM meta WHERE key = 'formatVersion.agent'").get()).toEqual({ value: "9" });
+    expect(control.db.prepare("SELECT value FROM meta WHERE key = 'formatVersion.agent'").get()).toEqual({ value: "10" });
     for (const t of ["sessions", "runs", "nodes", "session_txs", "session_state", "approvals", "budgets", "budget_days", "session_outbox"]) {
       expect(count(t)).toBe(0);
     }

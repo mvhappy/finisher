@@ -5,7 +5,9 @@
 //! `INVALID_REQUEST {method, availableFrom}`.
 
 use schemars::JsonSchema;
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 /// The host methods of host API 1.1.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
@@ -62,16 +64,17 @@ pub struct ProjectSnapshot {
 
 /// One page of a snapshot; every page of one job has the same `rev`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+// A reply: decoded leniently (a field from a newer host is ignored).
+#[serde(rename_all = "camelCase")]
 pub struct ProjectSnapshotPage {
-    /// At most 768 KiB before base64.
+    /// At most 756 KiB (`PAGE_BYTES`) before base64.
     pub bytes_b64: String,
     pub page: u32,
     pub pages: u32,
     pub rev: u64,
 }
 
-/// `project.view`: the `fin view` text of the call's branch, capped at 768 KiB.
+/// `project.view`: the `fin view` text of the call's branch, capped at 756 KiB (`PAGE_BYTES`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ProjectView {
@@ -84,7 +87,8 @@ pub struct ProjectView {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+// A reply: decoded leniently (a field from a newer host is ignored).
+#[serde(rename_all = "camelCase")]
 pub struct ProjectViewText {
     pub text: String,
 }
@@ -116,7 +120,7 @@ pub struct HttpRequest {
     pub url: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub headers: Vec<Header>,
-    /// At most 768 KiB before base64.
+    /// At most 756 KiB (`PAGE_BYTES`) before base64.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub body_b64: Option<String>,
 }
@@ -134,7 +138,8 @@ pub struct NetFetch {
 /// The response's head; the body (at most 64 MiB) stays with the host and is read by
 /// `net.read` through `handle` until the job ends (Decision 11).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+// A reply: decoded leniently (a field from a newer host is ignored).
+#[serde(rename_all = "camelCase")]
 pub struct NetFetchReply {
     pub status: u16,
     pub headers: Vec<Header>,
@@ -152,12 +157,13 @@ pub struct NetFetchReply {
 pub struct NetRead {
     pub handle: String,
     pub offset: u64,
-    /// At most 768 KiB.
+    /// At most 756 KiB (`PAGE_BYTES`).
     pub length: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+// A reply: decoded leniently (a field from a newer host is ignored).
+#[serde(rename_all = "camelCase")]
 pub struct NetReadPage {
     pub bytes_b64: String,
     /// Whether the page reaches the end of the body.
@@ -180,4 +186,73 @@ pub enum LogLevel {
 pub struct Log {
     pub level: LogLevel,
     pub msg: String,
+}
+
+/// Methods of later host APIs, each with the batch that brings it: the host answers them
+/// `INVALID_REQUEST {method, availableFrom}` (sp8b Task 7; `job.submit` is Decision 6's,
+/// `secret.grant` Decision 10's).
+pub const RESERVED_METHODS: &[(&str, &str)] = &[
+    ("analysis.get", "8C"),
+    ("analysis.find", "8C"),
+    ("media.pcm", "8C"),
+    ("media.frames", "8C"),
+    ("job.submit", "8C"),
+    ("media.file", "8H"),
+    ("secret.grant", "8G"),
+];
+
+/// The batch a reserved method arrives in, if `method` is one.
+pub fn reserved_method(method: &str) -> Option<&'static str> {
+    RESERVED_METHODS
+        .iter()
+        .find(|(m, _)| *m == method)
+        .map(|(_, b)| *b)
+}
+
+fn roundtrip<T: Serialize + DeserializeOwned>(params: &Value) -> Result<Value, String> {
+    let typed: T = serde_json::from_value(params.clone()).map_err(|e| e.to_string())?;
+    serde_json::to_value(typed).map_err(|e| e.to_string())
+}
+
+/// `params` decoded by `method`'s type (unknown fields refused), as the canonical JSON the
+/// host acts on; the decoder's message otherwise (the host answers `PLUGIN_PROTOCOL`).
+pub fn decode_params(method: HostMethod, params: &Value) -> Result<Value, String> {
+    match method {
+        HostMethod::ProjectSnapshot => roundtrip::<ProjectSnapshot>(params),
+        HostMethod::ProjectView => roundtrip::<ProjectView>(params),
+        HostMethod::NetFetch => roundtrip::<NetFetch>(params),
+        HostMethod::NetRead => roundtrip::<NetRead>(params),
+        HostMethod::Log => roundtrip::<Log>(params),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn decode_params_refuses_unknown_fields_and_wrong_types() {
+        let ok = decode_params(HostMethod::ProjectSnapshot, &json!({ "page": 2 })).unwrap();
+        assert_eq!(ok, json!({ "page": 2 }));
+        assert_eq!(
+            decode_params(HostMethod::ProjectSnapshot, &json!({})).unwrap(),
+            json!({})
+        );
+        assert!(decode_params(HostMethod::ProjectSnapshot, &json!({ "page": -1 })).is_err());
+        assert!(decode_params(HostMethod::ProjectView, &json!({ "extra": 1 })).is_err());
+        assert!(decode_params(HostMethod::Log, &json!({ "level": "loud", "msg": "x" })).is_err());
+        assert!(decode_params(HostMethod::Log, &json!(null)).is_err());
+        let log = decode_params(HostMethod::Log, &json!({ "level": "warn", "msg": "x" })).unwrap();
+        assert_eq!(log, json!({ "level": "warn", "msg": "x" }));
+    }
+
+    #[test]
+    fn reserved_methods_are_not_host_methods() {
+        for (m, batch) in RESERVED_METHODS {
+            assert!(HostMethod::from_name(m).is_none(), "{m}");
+            assert_eq!(reserved_method(m), Some(*batch));
+        }
+        assert_eq!(reserved_method("log"), None);
+    }
 }

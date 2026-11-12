@@ -29,6 +29,7 @@ pub mod library;
 pub mod log;
 pub mod media;
 pub mod plugin;
+pub mod plugin_runtime;
 pub mod reserved;
 pub mod review;
 pub mod sandbox;
@@ -60,6 +61,10 @@ pub use media::{
 pub use plugin::{
     PluginKindName, PluginLifecycle, PluginOutcome, PluginRef, PluginSourceName, RegistryRefresh,
     RiskName, log2_bucket,
+};
+pub use plugin_runtime::{
+    ArgsOmitted, MAX_COMMAND_ARGS_BYTES, PluginCommand, PluginCommandOutcome, PluginEgressStats,
+    PluginExit, PluginExitReason, PluginKeys, PluginMethodStats, PluginStats, plugin_payloads,
 };
 pub use reserved::{PreviewStats, RenderSample, UiAction};
 pub use review::{
@@ -155,6 +160,7 @@ approx_fixed!(10 =>
     LibraryStorageName, ScanTrigger,
     ReviewItemKind, Verdict, VerdictBy, VerdictVia,
     PluginOutcome, PluginSourceName, PluginKindName, RiskName,
+    PluginExitReason, PluginCommandOutcome, ArgsOmitted,
     SandboxProfileName, SandboxOs, UnconfinedReason,
     PairOutcome, PairPlatform, PairRoute,
 );

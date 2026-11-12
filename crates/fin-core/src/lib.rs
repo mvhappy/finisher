@@ -20,6 +20,7 @@ pub mod schema;
 pub mod time;
 pub mod tx;
 pub mod upgrade;
+pub mod view;
 
 pub use apply::{
     ApplyEnv, ApplyMode, apply_internal, apply_tx, apply_tx_env, apply_tx_mode, canonicalize,

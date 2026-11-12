@@ -5,9 +5,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 /// A command run: the host has checked `args` against the command's schema and pinned `rev`
-/// to the head of `branch`.
+/// to the head of `branch`. Decoded leniently (a field from a newer host is ignored).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct CommandRun {
     /// The command's name in the manifest (not the `plugin:<id>/` registry name).
     pub command: String,
@@ -15,6 +15,11 @@ pub struct CommandRun {
     pub project: String,
     pub branch: String,
     pub rev: u64,
+    /// The host's handle on the snapshot it read for this run at submit (opaque to plugins):
+    /// every page the run reads comes from that snapshot, of this run only, so a rewind or
+    /// rebuild that reaches `rev` again in a newer history is never served from an older one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub snapshot: Option<String>,
 }
 
 /// What a command returns, at most one envelope line (1 MiB). `tx` is committed by the host

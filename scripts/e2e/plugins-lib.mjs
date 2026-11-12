@@ -148,6 +148,12 @@ export function makeRegistry(work, name, dir, publishers, { rootKeys = 1 } = {})
       const pkg = packPlugin(work, spec);
       return mustPlugin(["registry", "publish", dir, pkg, "--keys", keys, "--key", key(spec.id.slice(1).split("/")[0])]);
     },
+    /** Packs the plugin folder `src` (its manifest's `id`) and publishes it as its publisher. */
+    publishDir(src, id) {
+      const out = join(work, `${id.replace(/[@/]/g, "_")}.finpkg`);
+      mustPlugin(["pack", src, "-o", out]);
+      return mustPlugin(["registry", "publish", dir, out, "--keys", keys, "--key", key(id.slice(1).split("/")[0])]);
+    },
     /** A signed advisory by the plugin's publisher. */
     advise(args) {
       const publisher = args.plugin.slice(1).split("/")[0];

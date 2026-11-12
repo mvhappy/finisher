@@ -202,6 +202,35 @@ fn bad_host_line_exits_65() {
 }
 
 #[test]
+fn plugin_mode_hello_and_unknown_host_types() {
+    let mut rig = Rig::plugin(warm_toy(|job, _| Ok(job.params.clone())), 3);
+    let WorkerMsg::Hello(h) = rig.recv_any() else {
+        panic!("hello first")
+    };
+    assert_eq!((h.v, h.minor, h.warm), (PROTOCOL, 3, true));
+    assert_eq!(h.envelope, None, "a plugin sends no envelope id");
+    // seq 1 and 2: types a newer host may send, with and without an id; dropped.
+    rig.send_raw(b"{\"v\":1,\"t\":\"future\",\"seq\":1}\n");
+    rig.send_raw(b"{\"v\":1,\"t\":\"later\",\"seq\":2,\"id\":9}\n");
+    rig.skip_seq(2);
+    rig.send(&start("j1", "toy.run", json!({ "a": 1 })));
+    assert!(matches!(rig.recv(), WorkerMsg::Result { job, .. } if job == "j1"));
+    assert_eq!(rig.recv(), WorkerMsg::Ready {});
+    // Every other rule still holds: a seq gap is fatal.
+    rig.send_raw(b"{\"v\":1,\"t\":\"future\",\"seq\":9}\n");
+    assert_eq!(rig.join_open(), EXIT_HOST_PROTOCOL);
+}
+
+#[test]
+fn plugin_mode_keeps_a_malformed_known_type_fatal() {
+    let mut rig = Rig::plugin(warm_toy(|job, _| Ok(job.params.clone())), 3);
+    rig.recv_any();
+    // A `start` without its job: a known type of a bad shape.
+    rig.send_raw(b"{\"v\":1,\"t\":\"start\",\"seq\":1}\n");
+    assert_eq!(rig.join_open(), EXIT_HOST_PROTOCOL);
+}
+
+#[test]
 fn pause_reason_reaches_the_family() {
     let mut rig = Rig::worker(toy(|_, ctx| {
         while ctx.cancelled().is_none() {

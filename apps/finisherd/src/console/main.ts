@@ -121,6 +121,7 @@ Agent sessions (sub-project 7):
                                            command rules of every layer, and which apply
   provider key ls [--json]                 the stored model keys (never their values)
   provider local show|test [--json]        the local model endpoint, and whether it answers
+  provider signin|signout claudeCode       prints the CLI's own sign-in commands to run here; runs nothing
   training closed-targets [--json]         the counsel gate on closed-model training targets
   review policy show --project <dir|id> [--json]
                                            protected branches, required review, auto merge

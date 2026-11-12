@@ -18,7 +18,7 @@
 //! the plugin model's (`fin-plugin-api`: `Manifest`, `Permission`, `PermissionDiff`, `Risk`,
 //! `LicenceClass`, `ContributionKind`, `Invalid`, the `commands` and `hooks` contributions,
 //! the argument schema subset's `SchemaSubset`, `SchemaError` and `ArgProblem`, and the plugin
-//! protocol's context, command, call and error types, by `schema::register_schemas`) and its
+//! protocol's context, command, call, rights and error types, by `schema::register_schemas`) and its
 //! store's (`fin-registry`: `InstallPlan`, `InstalledPlugin`, `Accept`, `ValidationReport`,
 //! `TargetCustom`), the sandbox profiles' typed inputs (`fin-sandbox`: `AgentInput`,
 //! `HookInput`, `WorkerInput`, `PluginInput`, `SandboxProfile`; sub-project 7C), and

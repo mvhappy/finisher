@@ -1,0 +1,15 @@
+{
+  "steps": [
+    {
+      "expect": "user",
+      "ask": {"tool": "Bash", "input": {"command": "fin view"}},
+      "onAllow": [
+        {"type": "user", "session_id": "$session_id", "parent_tool_use_id": null, "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "toolu_fake_1", "content": "ok", "is_error": false}]}}
+      ],
+      "onDeny": [
+        {"type": "user", "session_id": "$session_id", "parent_tool_use_id": null, "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "toolu_fake_1", "content": "denied", "is_error": true}]}}
+      ],
+      "cumulativeUsage": {"inputTokens": 20, "outputTokens": 8, "costUsd": 0.002}
+    }
+  ]
+}

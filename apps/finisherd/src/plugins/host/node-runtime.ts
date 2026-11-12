@@ -22,8 +22,9 @@ export interface NodeArgv {
   /** The key's private temp (read and write). */
   readonly tmp: string;
   /**
-   * The per-project data directory when `fs pluginData` is granted (spec §5.1): not granted
-   * before 8B Task 16 (7C's mapping accepts it under `plugins/data/` only from then on).
+   * The caller's `pluginData` directory when `fs pluginData` is granted (spec §5.1: the shared
+   * per-project one for uniform `person`/`system` rights, else the authority's). Node's flags
+   * name it; the sandbox grant for it is 8B Task 16's (7C's mapping accepts it from then on).
    */
   readonly data?: { readonly path: string; readonly write: boolean };
 }

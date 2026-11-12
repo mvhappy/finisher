@@ -15,7 +15,8 @@ use crate::time::Rational;
 /// preset or a project style) on `track`, the transcript's time 0 at `at`: the words split
 /// into blocks by the style's rule ([`blocks`]), each an `item.insert` in `overwrite` mode
 /// named `$cap<n>` (n from 1, in time order) with its words relative to its start. `echo` is
-/// `{ mode: "overwrite", style, blocks }`. `NOT_FOUND` for an unknown track or style; every
+/// `{ mode: "overwrite", style, blocks }`. `NOT_FOUND` for an unknown track or style,
+/// `TIME_OVERFLOW` when a block's times overflow (the whole import fails); every
 /// other check is the inserts' own (a caption track, a block at least one frame long).
 pub fn caption_import(
     project: &Project,
@@ -25,7 +26,7 @@ pub fn caption_import(
     style: &str,
 ) -> Result<Composed, CoreError> {
     track_index(project, track)?;
-    let drafts = blocks(words, find_style(project, style)?);
+    let drafts = blocks(words, find_style(project, style)?)?;
     let mut ops = Vec::with_capacity(drafts.len());
     for (n, b) in drafts.into_iter().enumerate() {
         ops.push(

@@ -202,10 +202,13 @@ registry! {
     StorageState(p::StorageState) = "storage.state" v 1 [FinNode];
     PluginLifecycle(p::PluginLifecycle) = "plugin.lifecycle" v 1 [FinNode];
     RegistryRefresh(p::RegistryRefresh) = "registry.refresh" v 1 [FinNode];
+    PluginStats(p::PluginStats) = "plugin.stats" v 1 [Finisherd];
+    PluginExit(p::PluginExit) = "plugin.exit" v 1 [Finisherd];
+    PluginCommand(p::PluginCommand) = "plugin.command" v 1 [Finisherd];
     ErrorInternal(p::ErrorInternal) = "error.internal" v 1 [FinNode, Finisherd];
     ErrorPanic(p::ErrorPanic) = "error.panic" v 1 via w::ErrorPanicIn [Fin, Mcp, Finisherd, FinNode];
     JobDone(p::JobDone) = "job.done" v 2 [Finisherd];
-    WorkerExit(p::WorkerExit) = "worker.exit" v 1 [Finisherd];
+    WorkerExit(p::WorkerExit) = "worker.exit" v 2 [Finisherd];
     LibraryScan(p::LibraryScan) = "library.scan" v 1 [Finisherd];
     SandboxUnconfined(p::SandboxUnconfined) = "sandbox.unconfined" v 1 [Finisherd];
     AuthPair(p::AuthPair) = "auth.pair" v 1 [Finisherd];
@@ -239,6 +242,17 @@ impl Payload for p::FontsFetch {}
 impl Payload for p::StorageState {}
 impl Payload for p::PluginLifecycle {}
 impl Payload for p::RegistryRefresh {}
+impl Payload for p::PluginStats {}
+impl Payload for p::PluginExit {}
+impl Payload for p::PluginCommand {
+    fn blobs(&self) -> Vec<&BlobRef> {
+        body_blobs(&[self.args.as_ref()])
+    }
+
+    fn strip_content(&mut self) {
+        self.args = None;
+    }
+}
 impl Payload for p::ErrorInternal {}
 impl Payload for p::JobDone {}
 impl Payload for p::WorkerExit {}

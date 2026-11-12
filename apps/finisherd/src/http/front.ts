@@ -222,4 +222,14 @@ export const refusalAudits = (audit: Audit) => ({
       if (r.reason === "badPath" || r.reason === "badVersion" || r.reason === "tooMany") return;
       audit.append({ kind: "auth.fail", principal: { kind: "anonymous", id: "" }, credentialKind: "ticket", outcome: "failed", code: "UNAUTHENTICATED", details: { reason: r.reason, transport } });
     },
+  /** Windows' pipe listener (5A Task 11): a client of another user, refused before its first byte. */
+  pipe: (r: { readonly reason: string; readonly pid: number; readonly sid?: string | null | undefined }) =>
+    audit.append({
+      kind: "auth.fail",
+      principal: { kind: "anonymous", id: "" },
+      credentialKind: "pipe",
+      outcome: "failed",
+      code: "UNAUTHENTICATED",
+      details: { reason: r.reason, transport: "pipe", peer: { pid: r.pid, ...(r.sid == null ? {} : { sid: r.sid }) } },
+    }),
 });

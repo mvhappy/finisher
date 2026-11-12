@@ -284,7 +284,8 @@ test("review_rpcs_have_rules (5E Decision 23, spec §8.6)", () => {
   const needs = (Object.keys(RPC_SCOPES) as Array<keyof typeof RPC_SCOPES>).filter((t) => ruleOf(t).protectedNeeds !== undefined).sort();
   expect(needs).toEqual(["history.drop", "review.close", "review.decide", "review.merge"]);
   expect(STREAM_RPCS.filter((t) => t.startsWith("review."))).toEqual(["review.watch"]);
-  expect(REVIEW_RPCS.map((r) => r._tag).sort()).toEqual(Object.keys(RPC_SCOPES).filter((t) => t.startsWith("review.")).sort());
+  // `REVIEW_RPCS` carries `history.drop` too (moved there so `rpc.ts` stays within its size limit).
+  expect(REVIEW_RPCS.map((r) => r._tag).sort()).toEqual([...Object.keys(RPC_SCOPES).filter((t) => t.startsWith("review.")), "history.drop"].sort());
 });
 
 test("history_drop_scopes_follow_protection (5E Decision 17)", () => {

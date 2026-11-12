@@ -248,6 +248,7 @@ pub const ROWS: &[Row] = &[
     row!("plugin.rm", rpc!("plugin.remove"), &["id"]),
     row!("plugin.enable", rpc!("plugin.enable"), &["id"]),
     row!("plugin.disable", rpc!("plugin.disable"), &["id"]),
+    row!("plugin.commands", rpc!("plugin.commands"), NONE),
     row!("registry.ls", rpc!("registry.list"), NONE),
     row!("registry.status", rpc!("registry.status"), &["id"]),
     row!("registry.refresh", rpc!("registry.refresh"), &["id"]),

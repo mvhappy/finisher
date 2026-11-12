@@ -43,7 +43,8 @@ export function reconcileStore(native: Registry, tables: PluginTables, clock: ()
     }
     const problems: StoreProblem[] = [];
     for (const r of rows) {
-      if (dirs.some((d) => d.dir === r.dir)) continue;
+      // A developer plugin (sp8b Task 11) is served from its own folder, never the store.
+      if (r.source === "dev" || dirs.some((d) => d.dir === r.dir)) continue;
       problems.push({ id: r.id, version: r.version, reason: "storeMissing" });
       if (r.enabled) tables.setState(r.id, false, r.state === "active" ? "disabled" : r.state, clock());
     }

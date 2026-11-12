@@ -55,7 +55,8 @@ export function makeCrashLoop(d: CrashLoopDeps): { onDone(job: JobView): void; c
         principal: { kind: "system", id: "plugins" },
         outcome: "ok",
         code: "PLUGIN_CRASH_LOOP",
-        details: { pluginId: id, version: row.version, count: CRASH_LOOP_CRASHES, code: "PLUGIN_CRASH_LOOP" },
+        // `auto`: the host stopped it, no person (spec §11; sp8b Task 15).
+        details: { pluginId: id, version: row.version, count: CRASH_LOOP_CRASHES, code: "PLUGIN_CRASH_LOOP", auto: true },
       });
       d.stop(id);
     },

@@ -20,6 +20,7 @@ import { keyTmpDir } from "../src/plugins/host/keys.ts";
 import { makePluginHost, type PluginHost } from "../src/plugins/host/processes.ts";
 import { PluginTables } from "../src/plugins/tables.ts";
 import { advisory, as, code, CONSOLE, codeOf, failure, NET, plugins, run } from "./support/plugins-fixture.ts";
+import { rightsFor } from "../src/plugins/host/rights.ts";
 
 const PROBE = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "fixtures", "plugins", "probe", "main.mjs"), "utf8");
 const ID = "@acme/tool";
@@ -81,6 +82,7 @@ async function rig(packages: object[], opts: { cpu?: boolean } = {}): Promise<Ri
           kind: "test.echo",
           params: { value: op },
           via: { plugin: `${o.id ?? ID}@${o.version ?? "1.0.0"}` },
+          rights: rightsFor({ invoker: { ...PERSON, scopes: [], projects: "*" }, grants: [], class: "person" }),
           ...(o.priority === undefined ? {} : { priority: o.priority }),
           ...(o.project === undefined ? {} : { project: o.project }),
         }),
@@ -104,6 +106,8 @@ async function rig(packages: object[], opts: { cpu?: boolean } = {}): Promise<Ri
 }
 
 const plugin = (r: Rig) => r.engine.workers().warm.filter((w) => w.family === "plugin");
+/** The person's warm key of `id`@1.0.0 without a project (the rig's rights). */
+const personKey = (r: Rig, id: string): string => r.host.warmKeyOf({ id: "k", owner: PERSON, via: { plugin: `${id}@1.0.0` }, rights: rightsFor({ invoker: { ...PERSON, scopes: [], projects: "*" }, grants: [], class: "person" }) } as unknown as JobView);
 const exists = (pid: number): boolean => {
   try {
     process.kill(pid, 0); // signal 0 only asks whether the process exists
@@ -150,7 +154,7 @@ describe("enable and disable", () => {
     for (let i = 0; i < 200 && ((await run(r.engine.get(holder.id))).state !== "running" || (await run(r.engine.get(running.id))).state !== "running"); i++) await new Promise((x) => setTimeout(x, 20));
     const queued = await r.start({ op: "pid" }, { priority: "normal" });
     expect((await run(r.engine.get(queued.id))).state).toBe("queued");
-    const tmp = keyTmpDir(realpathSync(f.serverData), `${ID}@1.0.0|none|person`);
+    const tmp = keyTmpDir(realpathSync(f.serverData), personKey(r, ID));
     expect(existsSync(tmp)).toBe(true);
     await run(r.s.life.disable(ID));
     // The queued job failed at once (`job.get` sees it) while the slot it waits for is still held.
@@ -179,7 +183,7 @@ describe("enable and disable", () => {
     await run(r.s.life.disable(ID));
     expect(await alive(mine)).toBe(false);
     expect(exists(theirs)).toBe(true);
-    expect(plugin(r).map((w) => w.key)).toEqual([`${OTHER}@1.0.0|none|person`]);
+    expect(plugin(r).map((w) => w.key)).toEqual([personKey(r, OTHER)]);
     expect((await r.echo({ op: "pid" }, { id: OTHER })).pid).toBe(theirs);
   });
 
@@ -220,7 +224,7 @@ describe("crash loop", () => {
     expect((await r.submit({ op: "crash" }, { priority: "normal" })).error?.code).toBe("PLUGIN_CRASHED");
     for (let i = 0; i < 100 && r.s.tables.installedOne(ID)?.state !== "crashLoop"; i++) await new Promise((x) => setTimeout(x, 20));
     expect(r.s.tables.installedOne(ID)).toMatchObject({ enabled: true, state: "crashLoop", problem: "PLUGIN_CRASH_LOOP" });
-    expect(r.s.rows().filter((x) => x.kind === "plugin.crashLoop")).toMatchObject([{ principalKind: "system", outcome: "ok", code: "PLUGIN_CRASH_LOOP", details: { pluginId: ID, version: "1.0.0" } }]);
+    expect(r.s.rows().filter((x) => x.kind === "plugin.crashLoop")).toMatchObject([{ principalKind: "system", outcome: "ok", code: "PLUGIN_CRASH_LOOP", details: { pluginId: ID, version: "1.0.0", auto: true } }]);
     expect((await r.submit({ op: "pid" })).error?.code).toBe("PLUGIN_CRASH_LOOP");
     expect((await run(r.s.h["plugin.list"]())).plugins.find((p) => p.id === ID)).toMatchObject({ state: "crashLoop", problem: "PLUGIN_CRASH_LOOP" });
   });

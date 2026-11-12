@@ -597,7 +597,7 @@ describe("audit and suggestions", () => {
 
   test("fresh_control_db_has_no_plugin_suggestions_table", () => {
     expect(control.db.prepare("SELECT name FROM sqlite_master WHERE name LIKE 'plugin_suggestions%'").all()).toEqual([]);
-    expect(control.db.prepare("SELECT n FROM migrations WHERE chain = 'plugins' ORDER BY n").all()).toEqual([{ n: 1 }, { n: 2 }, { n: 3 }, { n: 4 }, { n: 5 }]);
+    expect(control.db.prepare("SELECT n FROM migrations WHERE chain = 'plugins' ORDER BY n").all()).toEqual([{ n: 1 }, { n: 2 }, { n: 3 }, { n: 4 }, { n: 5 }, { n: 6 }]);
   });
 });
 

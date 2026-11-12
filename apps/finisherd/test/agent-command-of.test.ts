@@ -137,6 +137,26 @@ describe("commandOf", () => {
     expect(commandsOf("tx.commit", { ...claimed, via: claimed.tx.via }).some((n) => n.startsWith("plugin:"))).toBe(false);
   });
 
+  test("plugin_command_run_is_named_plugin_id_command", () => {
+    // The 7B contract (spec §3.8): `fin @<id> <command>` sends `plugin.command.run` with
+    // `name: "plugin:<id>/<command>"`; that name is what `commandOf` returns, so a rule on
+    // `plugin:@acme/*` or `plugin:*/publish` matches it. The registry's plugin entry lists the RPC.
+    const name = "plugin:@acme/tools/trim-silence";
+    const payload = { projectId: "p", branch: "main", name, args: { db: -30 } };
+    expect(commandOf("plugin.command.run", payload)).toBe(name);
+    expect(commandsOf("plugin.command.run", payload)).toEqual([name, "rpc:plugin.command.run"]);
+    expect(commandsOf("plugin.command.run", { ...payload, dryRun: true })[0]).toBe(name);
+    const entry = REGISTRY.commands.find((c) => c.name === "plugin:<id>/<command>");
+    expect(entry?.dynamic).toBe(true);
+    expect(entry?.rpcs.map((r) => r.method)).toEqual(["plugin.command.run", "tx.commit"]);
+    // A name of any other shape names no plugin command.
+    for (const bad of ["plugin:acme/go", "plugin:@acme/tools", "@acme/tools/go", "plugin:@Acme/tools/go", 5]) {
+      expect(commandsOf("plugin.command.run", { ...payload, name: bad }), String(bad)).toEqual(["rpc:plugin.command.run"]);
+    }
+    // `plugin.commands` is `fin plugin commands` (and `fin help @<id>`).
+    expect(commandOf("plugin.commands", {})).toBe("plugin.commands");
+  });
+
   test("a_malformed_host_via_names_no_plugin", () => {
     const body = { tx: { ops: [{ op: "item.split" }] } };
     // `plugin` must be `<id>@<version>` and `command` non-empty, else the via is absent.

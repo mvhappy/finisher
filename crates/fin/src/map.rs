@@ -39,6 +39,7 @@ pub fn map() -> Value {
         "write": "{rev, txId, bindings, diff, resolved}; --dry-run: {dryRun:true, txId, bindings, diff, resolved}",
         "error": "{error:{code, message, details, fix}}",
         "exit": "0 ok, 2 USAGE, 3 validation, 4 CONFLICT, 5 SERVER_UNAVAILABLE, 6 internal, 7 denied (needs a person; do not retry), 8 APPROVAL_PENDING (a person was asked: wait, then repeat)",
+        "plugins": "fin @<pub>/<name> <command> --<arg> <v>; fin help @<pub>/<name> lists its commands",
         "more": "fin help <group>; fin schema <cmd>",
     })
 }

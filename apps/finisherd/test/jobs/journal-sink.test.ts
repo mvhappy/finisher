@@ -7,7 +7,7 @@ import { join } from "node:path";
 import type { Envelope, ExportPage } from "@finisher/core-types";
 import { Journal } from "@finisher/fin-node";
 import { afterEach, expect, test } from "vitest";
-import type { JobDoneEvent, WorkerExitEvent } from "../../src/jobs/events.ts";
+import { type JobDoneEvent, lifetimeSeconds, type WorkerExitEvent } from "../../src/jobs/events.ts";
 import { journalSink } from "../../src/jobs/journal-sink.ts";
 
 let journal: Journal | undefined;
@@ -57,10 +57,50 @@ test("job_done_and_worker_exit_reach_the_journal", async () => {
   expect(d?.payload).not.toHaveProperty("notAField");
   expect(d?.payload).not.toHaveProperty("media");
   const [w] = await entries(j, ["worker.exit"]);
-  expect(w).toMatchObject({ kind: "worker.exit", source: "finisherd", payload: { role: "worker", family: "testplugin", reason: "done", jobsServed: 2 } });
+  expect(w).toMatchObject({ kind: "worker.exit", kv: 2, source: "finisherd", payload: { role: "worker", family: "testplugin", reason: "done", jobsServed: 2 } });
   // No raw plugin id reaches the journal.
   expect(JSON.stringify(w)).not.toContain("acme");
   expect(logs).toEqual([]);
+});
+
+test("worker_exit_kv2_carries_plugin", async () => {
+  const j = open({ diagnostics: "on" });
+  const logs: string[] = [];
+  const sink = journalSink(j, (_l, m) => logs.push(m));
+  sink.workerExit({ ...exit, family: "plugin", reason: "crashed", exitCode: 3, lifetimeS: 7 });
+  sink.workerExit({ ...exit, family: "plugin", reason: "idleExpired", pluginId: "@finisher/captions-basic" });
+  const { pluginId: _none, ...plain } = exit;
+  sink.workerExit({ ...plain, family: "media" });
+  const ws = await entries(j, ["worker.exit"]);
+  expect(ws.map((w) => w.kv)).toEqual([2, 2, 2]);
+  const hashed = (ws[0]?.payload as { plugin?: { hashed?: string } }).plugin?.hashed;
+  expect(hashed).toMatch(/^k1:[0-9a-f]{32}$/);
+  expect(ws[1]?.payload).toMatchObject({ plugin: { bundled: "finisher/captions-basic" } });
+  expect(ws[2]?.payload).not.toHaveProperty("plugin");
+  // `plugin.exit` from the same exits, none for a process of no plugin.
+  const es = await entries(j, ["plugin.exit"]);
+  expect(es.map((e) => e.payload)).toEqual([
+    { plugin: { hashed }, reason: "crash", exitCode: 3, jobsServed: 2, uptimeS: 7 },
+    { plugin: { bundled: "finisher/captions-basic" }, reason: "idle", exitCode: 0, jobsServed: 2, uptimeS: 1 },
+  ]);
+  expect(es.every((e) => e.source === "finisherd" && e.kv === 1)).toBe(true);
+  expect(JSON.stringify([...ws, ...es])).not.toContain("acme");
+  expect(logs).toEqual([]);
+});
+
+test("worker_exit_lifetime_is_whole_seconds: a fractional lifetime is not refused", async () => {
+  const j = open({ diagnostics: "on" });
+  const logs: string[] = [];
+  const sink = journalSink(j, (_l, m) => logs.push(m));
+  // What a process that lived 2,065 ms used to send (`lifetimeMs / 1000`).
+  sink.workerExit({ ...exit, family: "plugin", lifetimeS: 2.065 });
+  const { pluginId: _none, ...plain } = exit;
+  sink.workerExit({ ...plain, family: "media", lifetimeS: 0.4 });
+  expect(logs).toEqual([]);
+  const ws = await entries(j, ["worker.exit"]);
+  expect(ws.map((w) => (w.payload as { lifetimeS: number }).lifetimeS)).toEqual([2, 0]);
+  expect((await entries(j, ["plugin.exit"])).map((e) => (e.payload as { uptimeS: number }).uptimeS)).toEqual([2]);
+  expect([lifetimeSeconds(2065), lifetimeSeconds(999), lifetimeSeconds(-1), lifetimeSeconds(Number.NaN)]).toEqual([2, 0, 0, 0]);
 });
 
 test("a_refused_event_is_logged_not_thrown", async () => {
@@ -79,7 +119,7 @@ test("nothing_is_recorded_while_off", async () => {
   const sink = journalSink(j, () => {});
   sink.jobDone(done, "01OFF");
   sink.workerExit(exit);
-  expect(await entries(j, ["job.done", "worker.exit"])).toEqual([]);
+  expect(await entries(j, ["job.done", "worker.exit", "plugin.exit"])).toEqual([]);
 });
 
 const media = { codec: "av1", backend: "dav1d", hw: false, resolution: "hd1080", frames: 3, rtFactorMilli: 4200, cacheHit: true, copyPath: "copy" };

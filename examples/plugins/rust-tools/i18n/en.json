@@ -1,0 +1,7 @@
+{
+  "cmd.trimSilence": "Trim silence",
+  "arg.label": "The label of the marker spans that mark silence",
+  "arg.mode": "Lift the items (leave a gap) or ripple the rest of the track",
+  "cmd.fetchTitle": "Fetch a page title",
+  "arg.path": "The path to fetch on the example API"
+}

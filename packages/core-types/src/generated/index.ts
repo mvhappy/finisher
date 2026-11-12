@@ -230,6 +230,9 @@ export type AnyPayload =
   | StorageState
   | PluginLifecycle
   | RegistryRefresh
+  | PluginStats
+  | PluginExit
+  | PluginCommand
   | ErrorInternal
   | ErrorPanic
   | JobDone
@@ -476,7 +479,7 @@ export type Op =
       op: "clip.delete";
     };
 /**
- * Exact rational seconds in canonical form: "n/d" in lowest terms with d > 1, or "n" when d is 1; no leading zeros, no "+", no "-0".
+ * Exact rational seconds in canonical form: "n/d" in lowest terms with d > 1, or "n" when d is 1; no leading zeros, no "+", no "-0". The pattern checks the shape; lowest terms is checked by the parser.
  *
  * This interface was referenced by `FinCore`'s JSON-Schema
  * via the `definition` "Rational".
@@ -794,6 +797,29 @@ export type RiskName = "low" | "medium" | "high" | "unknown";
  * via the `definition` "PluginSourceName".
  */
 export type PluginSourceName = "bundled" | "registry" | "dev";
+/**
+ * Why a plugin process ended (spec §11).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "PluginExitReason".
+ */
+export type PluginExitReason = "ok" | "crash" | "timeout" | "killed" | "oom" | "protocol" | "sandbox" | "idle";
+/**
+ * Why `args` is absent although training is on.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "ArgsOmitted".
+ */
+export type ArgsOmitted = "tooLarge";
+/**
+ * How a plugin command ended (spec §11; `failed`: the process crashed, broke the protocol or
+ * the host failed, a deviation: the spec's list has no outcome for it).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "PluginCommandOutcome".
+ */
+export type PluginCommandOutcome =
+  ("conflict" | "timeout" | "failed") | "accepted" | "rebased" | "refused" | "invalid" | "data";
 /**
  * This interface was referenced by `FinCore`'s JSON-Schema
  * via the `definition` "SrcLoc".
@@ -1257,6 +1283,13 @@ export type CommandOut =
       value: unknown;
     };
 /**
+ * What became of a command run.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "CommandOutcome".
+ */
+export type CommandOutcome = "accepted" | "rebased" | "conflict" | "data";
+/**
  * One purpose's switch.
  *
  * This interface was referenced by `FinCore`'s JSON-Schema
@@ -1506,6 +1539,21 @@ export type EventPayload =
       payload: RegistryRefresh;
     }
   | {
+      kind: "plugin.stats";
+      kv: 1;
+      payload: PluginStats;
+    }
+  | {
+      kind: "plugin.exit";
+      kv: 1;
+      payload: PluginExit;
+    }
+  | {
+      kind: "plugin.command";
+      kv: 1;
+      payload: PluginCommand;
+    }
+  | {
       kind: "error.internal";
       kv: 1;
       payload: ErrorInternal;
@@ -1522,7 +1570,7 @@ export type EventPayload =
     }
   | {
       kind: "worker.exit";
-      kv: 1;
+      kv: 2;
       payload: WorkerExit;
     }
   | {
@@ -2006,6 +2054,30 @@ export type JobHostKillReason =
  * via the `definition` "JobHostQos".
  */
 export type JobHostQos = "normal" | "utility" | "background";
+/**
+ * Which projects or libraries a job reaches: `"all"` or a list of ids.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "Reach".
+ */
+export type Reach = ReachAll | string[];
+/**
+ * `"all"`: every project (or library) of this server.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "ReachAll".
+ */
+export type ReachAll = "all";
+/**
+ * A sub-project 5 scope a plugin job may hold, each from one permission (spec §3.7):
+ * `project:read` → `project.read`; `project:write` → `project.write` (only the `tx.commit` of
+ * the command's returned transaction); `media:read` → `library.read` (and asset reads);
+ * `jobs:submit` → `jobs.submit` (the plugin's own kinds only, 8C).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "PluginScope".
+ */
+export type PluginScope = "project.read" | "project.write" | "library.read" | "jobs.submit";
 /**
  * This interface was referenced by `FinCore`'s JSON-Schema
  * via the `definition` "JobSpawnProfile".
@@ -3836,6 +3908,137 @@ export interface RegistryRefresh {
   targetsLog2: number;
 }
 /**
+ * `plugin.stats`: one plugin's host traffic over one window (a minute), sent when the
+ * plugin did anything in it.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "PluginStats".
+ */
+export interface PluginStats {
+  /**
+   * Its jobs that ended `PLUGIN_CRASHED`.
+   */
+  crashes: number;
+  egress?: PluginEgressStats;
+  /**
+   * Per method family (`PLUGIN_METHOD_FAMILIES`), each at most once.
+   */
+  families?: PluginMethodStats[];
+  /**
+   * `log` calls dropped by the rate limit.
+   */
+  logDropped: number;
+  plugin: PluginRef;
+  /**
+   * stderr lines dropped by the byte limit.
+   */
+  stderrDropped: number;
+  /**
+   * Its jobs that ended `PLUGIN_TIMEOUT`.
+   */
+  timeouts: number;
+  /**
+   * The window's length in seconds.
+   */
+  windowS: number;
+}
+/**
+ * The egress broker's counts for one plugin in a `plugin.stats` window (Task 8's counters,
+ * differenced per window). Refusals by reason; no origin, URL or body.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "PluginEgressStats".
+ */
+export interface PluginEgressStats {
+  bytesInLog2: number;
+  bytesOutLog2: number;
+  completed: number;
+  /**
+   * `EGRESS_DENIED`: an origin it was not granted.
+   */
+  denied: number;
+  failed: number;
+  notHttps: number;
+  privateAddress: number;
+  rateLimited: number;
+  redirectsFollowed: number;
+  redirectsReturned: number;
+  requests: number;
+  secretMissing: number;
+  timeouts: number;
+  tooLarge: number;
+}
+/**
+ * One method family's calls in a `plugin.stats` window.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "PluginMethodStats".
+ */
+export interface PluginMethodStats {
+  /**
+   * Params bytes over the window, as a log₂ bucket.
+   */
+  bytesInLog2: number;
+  /**
+   * Reply bytes over the window, as a log₂ bucket.
+   */
+  bytesOutLog2: number;
+  calls: number;
+  /**
+   * Error code → count.
+   */
+  errors?: {
+    [k: string]: number;
+  };
+  family: Name;
+  p50Micros: number;
+  p95Micros: number;
+  /**
+   * Calls refused for reach (`PROJECT_NOT_FOUND`, `BRANCH_NOT_ALLOWED`, a library).
+   */
+  reachDenials: number;
+}
+/**
+ * `plugin.exit`: a plugin process ended (built from the same exit as its `worker.exit`).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "PluginExit".
+ */
+export interface PluginExit {
+  exitCode?: number;
+  jobsServed: number;
+  plugin: PluginRef;
+  reason: PluginExitReason;
+  signal?: Name;
+  uptimeS: number;
+}
+/**
+ * `plugin.command`: one run of a plugin command (`plugin.command.run`).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "PluginCommand".
+ */
+export interface PluginCommand {
+  /**
+   * Training only: the arguments as validated.
+   */
+  args?: Body;
+  argsOmitted?: ArgsOmitted;
+  code?: Code;
+  command: Hashed;
+  dryRun?: boolean;
+  micros: number;
+  /**
+   * Op kind → count of the ops it returned (`OP_KINDS`).
+   */
+  ops?: {
+    [k: string]: number;
+  };
+  outcome: PluginCommandOutcome;
+  plugin: PluginRef;
+  txId?: IdRef;
+}
+/**
  * An `INTERNAL` error, or one of the store's unexpected codes, returned through `fin-node`.
  *
  * This interface was referenced by `FinCore`'s JSON-Schema
@@ -3939,7 +4142,8 @@ export interface JobMedia {
   rtFactorMilli: number;
 }
 /**
- * `worker.exit` (`kv` 1).
+ * `worker.exit` (`kv` 2: `plugin` is a [`PluginRef`], Decision 22 of sp8b; `kv` 1 had a
+ * `Hashed` that nothing ever filled).
  *
  * This interface was referenced by `FinCore`'s JSON-Schema
  * via the `definition` "WorkerExit".
@@ -3950,7 +4154,7 @@ export interface WorkerExit {
   helperKind?: ProcessHelperKind;
   jobsServed: number;
   lifetimeS: number;
-  plugin?: Hashed;
+  plugin?: PluginRef;
   reason: ExitReason;
   role: ProcessRole;
   sandboxed: boolean;
@@ -5026,7 +5230,7 @@ export interface SchemaSubset {
 }
 /**
  * A command run: the host has checked `args` against the command's schema and pinned `rev`
- * to the head of `branch`.
+ * to the head of `branch`. Decoded leniently (a field from a newer host is ignored).
  *
  * This interface was referenced by `FinCore`'s JSON-Schema
  * via the `definition` "CommandRun".
@@ -5040,6 +5244,12 @@ export interface CommandRun {
   command: string;
   project: string;
   rev: number;
+  /**
+   * The host's handle on the snapshot it read for this run at submit (opaque to plugins):
+   * every page the run reads comes from that snapshot, of this run only, so a rewind or
+   * rebuild that reaches `rev` again in a newer history is never served from an older one.
+   */
+  snapshot?: string | null;
 }
 /**
  * One op that cannot be carried to the head: which op of which tx, why (a reason code), the
@@ -6074,7 +6284,7 @@ export interface JobError {
  */
 export interface HttpRequest {
   /**
-   * At most 768 KiB before base64.
+   * At most 756 KiB (`PAGE_BYTES`) before base64.
    */
   bodyB64?: string | null;
   headers?: Header[];
@@ -6436,6 +6646,65 @@ export interface JobMemoryRule {
   capMiB?: number;
   fixedMiB?: number;
   ramFraction?: number;
+}
+/**
+ * A plugin job's rights: invoker ∩ grants (Decision 8), with the authority they run under
+ * (class + `rights_hash` + `generation`, spec §3.3 and Decision 28).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "JobRights".
+ */
+export interface JobRights {
+  /**
+   * Set for an agent session: its branch subtree.
+   */
+  branch?: RightsBranch | null;
+  /**
+   * The principal class of the process key (spec §3.3): `person`, `agent:<root session>`,
+   * `system`, or `<kind>:<id>` for any other invoker.
+   */
+  class: string;
+  /**
+   * The class's policy generation when the rights were computed (spec §3.3): it increments
+   * when a credential of the class is narrowed or revoked or its agent session tree changes.
+   */
+  generation: number;
+  /**
+   * The plugin's granted permissions at submit.
+   */
+  grants: Permission[];
+  libraries: Reach;
+  principal: RightsPrincipal;
+  projects: Reach;
+  /**
+   * The hash of the plugin-relevant rights above (class, scopes, projects, branch, libraries,
+   * grants; not the principal, so callers of one class with identical rights share it): 32
+   * lower-case hex characters, computed by the host (spec §3.3's authority key, Decision 28).
+   */
+  rightsHash: string;
+  /**
+   * The invoker's scopes that the plugin's grants map to.
+   */
+  scopes: PluginScope[];
+}
+/**
+ * An agent session's branch reach (sub-project 7 §5.1): its root branch and, with `subtree`,
+ * the branches beneath it (less its live children's).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "RightsBranch".
+ */
+export interface RightsBranch {
+  root: string;
+  subtree: boolean;
+}
+/**
+ * The invoker the plugin acts for (audit and journal name `plugin:<id>@<version>` acting
+ * for it).
+ */
+export interface RightsPrincipal {
+  id: string;
+  kind: string;
 }
 /**
  * `in/snapshot.json` (plan 6A Decision 2).
@@ -6804,7 +7073,7 @@ export interface MediaInfo {
   audio?: AudioTrackInfo;
   container: ContainerKind;
   /**
-   * Exact rational seconds in canonical form: "n/d" in lowest terms with d > 1, or "n" when d is 1; no leading zeros, no "+", no "-0".
+   * Exact rational seconds in canonical form: "n/d" in lowest terms with d > 1, or "n" when d is 1; no leading zeros, no "+", no "-0". The pattern checks the shape; lowest terms is checked by the parser.
    */
   duration: string;
   fragmented?: boolean;
@@ -6839,11 +7108,11 @@ export interface VideoTrackInfo {
   icc?: boolean;
   level?: number;
   /**
-   * Exact rational seconds in canonical form: "n/d" in lowest terms with d > 1, or "n" when d is 1; no leading zeros, no "+", no "-0".
+   * Exact rational seconds in canonical form: "n/d" in lowest terms with d > 1, or "n" when d is 1; no leading zeros, no "+", no "-0". The pattern checks the shape; lowest terms is checked by the parser.
    */
   nominalRate: string;
   /**
-   * Exact rational seconds in canonical form: "n/d" in lowest terms with d > 1, or "n" when d is 1; no leading zeros, no "+", no "-0".
+   * Exact rational seconds in canonical form: "n/d" in lowest terms with d > 1, or "n" when d is 1; no leading zeros, no "+", no "-0". The pattern checks the shape; lowest terms is checked by the parser.
    */
   pixelAspect: string;
   profile?: number;
@@ -7284,7 +7553,7 @@ export interface MediaInfo1 {
   audio?: AudioTrackInfo;
   container: ContainerKind;
   /**
-   * Exact rational seconds in canonical form: "n/d" in lowest terms with d > 1, or "n" when d is 1; no leading zeros, no "+", no "-0".
+   * Exact rational seconds in canonical form: "n/d" in lowest terms with d > 1, or "n" when d is 1; no leading zeros, no "+", no "-0". The pattern checks the shape; lowest terms is checked by the parser.
    */
   duration: string;
   fragmented?: boolean;
@@ -7377,7 +7646,7 @@ export interface NetFetchReply {
 export interface NetRead {
   handle: string;
   /**
-   * At most 768 KiB.
+   * At most 756 KiB (`PAGE_BYTES`).
    */
   length: number;
   offset: number;
@@ -7410,6 +7679,103 @@ export interface ParamSpec {
   unit?: string | null;
 }
 /**
+ * One command as `plugin.commands` lists it.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "PluginCommandInfo".
+ */
+export interface PluginCommandInfo {
+  args: SchemaSubset;
+  /**
+   * The command's name in its manifest.
+   */
+  command: string;
+  /**
+   * The registry name, `plugin:<id>/<command>` (the name 7B's command rules match).
+   */
+  name: string;
+  /**
+   * `<id>@<version>` of the enabled plugin that serves it.
+   */
+  plugin: string;
+  /**
+   * Its timeout in seconds (the manifest's, 10 when absent, at most 60).
+   */
+  timeoutS: number;
+  /**
+   * A message key in the plugin's `en` catalogue.
+   */
+  title: string;
+  /**
+   * Whether it returns a transaction (running it needs `project.write`).
+   */
+  writes: boolean;
+}
+/**
+ * `plugin.commands`: `digest` is the BLAKE3 of the canonical JSON of `commands`, so a client
+ * caches the list per server and digest.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "PluginCommandList".
+ */
+export interface PluginCommandList {
+  commands: PluginCommandInfo[];
+  digest: string;
+}
+/**
+ * `plugin.command.run`'s request.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "PluginCommandRunRequest".
+ */
+export interface PluginCommandRunRequest {
+  args?: {
+    [k: string]: unknown;
+  };
+  /**
+   * A branch name, id or `name#id`; `main` when absent.
+   */
+  branch?: string | null;
+  /**
+   * Validate the returned transaction against the snapshot the plugin saw; commit nothing.
+   */
+  dryRun?: boolean | null;
+  /**
+   * `plugin:<id>/<command>`.
+   */
+  name: string;
+  projectId: string;
+}
+/**
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "PluginCommandRunResult".
+ */
+export interface PluginCommandRunResult {
+  /**
+   * A data command's value as the plugin returned it.
+   */
+  data?: {
+    [k: string]: unknown;
+  };
+  /**
+   * A dry run: nothing was committed.
+   */
+  dryRun?: boolean | null;
+  /**
+   * The proposed ops (dry run, conflict).
+   */
+  ops?: Op[] | null;
+  outcome: CommandOutcome;
+  /**
+   * The committed revision; for a dry run or a conflict, the revision the plugin saw.
+   */
+  rev?: number | null;
+  /**
+   * The committed transaction's id (accepted, rebased).
+   */
+  txId?: string | null;
+}
+/**
  * This interface was referenced by `FinCore`'s JSON-Schema
  * via the `definition` "PluginContext".
  */
@@ -7439,7 +7805,9 @@ export interface PluginContext {
  */
 export interface PluginDirs {
   /**
-   * The per-project data directory, only when `fs pluginData` is granted.
+   * The caller's `pluginData` directory, only when `fs pluginData` is granted (spec §5.1):
+   * `plugins/data/@pub/name/<projectId|_>/` for uniform `person`/`system` rights, else
+   * `plugins/authdata/@pub/name/<projectId|_>/<authorityKey>/`.
    */
   data?: string | null;
   /**
@@ -7645,7 +8013,7 @@ export interface ProjectSnapshot {
  */
 export interface ProjectSnapshotPage {
   /**
-   * At most 768 KiB before base64.
+   * At most 756 KiB (`PAGE_BYTES`) before base64.
    */
   bytesB64: string;
   page: number;
@@ -7653,7 +8021,7 @@ export interface ProjectSnapshotPage {
   rev: number;
 }
 /**
- * `project.view`: the `fin view` text of the call's branch, capped at 768 KiB.
+ * `project.view`: the `fin view` text of the call's branch, capped at 756 KiB (`PAGE_BYTES`).
  *
  * This interface was referenced by `FinCore`'s JSON-Schema
  * via the `definition` "ProjectView".
@@ -7965,6 +8333,16 @@ export interface ReviewPlan {
   source: ReviewHead;
   target: ReviewHead;
   truncated: boolean;
+}
+/**
+ * The invoking principal (sub-project 5's `{kind, id}`; the job's owner).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "RightsPrincipal".
+ */
+export interface RightsPrincipal1 {
+  id: string;
+  kind: string;
 }
 /**
  * What `fin-sandbox-exec --probe` prints.

@@ -767,11 +767,11 @@ fn dotlottie_members_are_bounded() {
         "dotLottie member manifest.json is larger than 1 MiB"
     );
     // `slots` and `fonts` become trees only up to 1 MiB; `chars` glyphs are read one by one.
-    let head = r#"{"w":64,"h":36,"fr":30,"ip":0,"op":30,"slots":{"s":{"p":{"k":["#;
+    let head = r#"{"w":64,"h":36,"fr":30,"ip":0,"op":30,"layers":[],"slots":{"s":{"p":{"k":["#;
     streamed_lottie(&path, head, "0,", 600 * 1024, "0]}}}}", false);
     assert_eq!(unsupported(&path), "slots is larger than 1 MiB");
     let glyph = r#"{"ch":"A","size":1,"style":"R","w":1,"fFamily":"I"},"#;
-    let head = r#"{"w":64,"h":36,"fr":30,"ip":0,"op":30,"chars":["#;
+    let head = r#"{"w":64,"h":36,"fr":30,"ip":0,"op":30,"layers":[],"chars":["#;
     streamed_lottie(&path, head, glyph, 100_000, r#"{"ch":"B"}]}"#, false);
     assert_eq!(unsupported(&path), "malformed chars[100000]");
     streamed_lottie(

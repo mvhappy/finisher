@@ -2,6 +2,7 @@
 // owner and progress, mapped files and helper specs, as Effect Schemas. Their TS types are
 // `Schema.Type` of them. The envelope, the params of each kind, `JobDone` and `WorkerExit`
 // are Rust types (`@finisher/core-types`).
+import type { JobRights as GeneratedJobRights } from "@finisher/core-types";
 import { Schema } from "effect";
 
 export const PRIORITIES = ["interactive", "normal", "background"] as const;
@@ -26,9 +27,46 @@ export type JobOwner = typeof JobOwnerSchema.Type;
 export const JobViaSchema = Schema.Struct({ plugin: Schema.String });
 export type JobVia = typeof JobViaSchema.Type;
 
-/** The invoker ∩ grants snapshot; opaque until 8B. */
+/**
+ * A plugin job's rights, invoker ∩ grants (sp8b Decision 8): fin-plugin-api's generated
+ * `JobRights`. Only the host builds them (a plugin kind is never submitted by RPC), so the wire
+ * carries them as given; `isJobRights` is the shape check the engine applies at submit.
+ */
 export const JobRightsSchema = Schema.Unknown;
-export type JobRights = typeof JobRightsSchema.Type;
+export type JobRights = GeneratedJobRights;
+
+const PLUGIN_SCOPE_NAMES: ReadonlySet<string> = new Set(["project.read", "project.write", "library.read", "jobs.submit"]);
+const RIGHTS_KEYS: ReadonlySet<string> = new Set(["principal", "class", "scopes", "projects", "branch", "libraries", "grants", "rightsHash", "generation"]);
+/** The authority's rights hash: 32 lower-case hex characters (sp8 spec §3.3, Decision 28). */
+const RIGHTS_HASH = /^[0-9a-f]{32}$/;
+const isObj = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
+const isStr = (v: unknown): v is string => typeof v === "string";
+const isReach = (v: unknown): boolean => v === "all" || (Array.isArray(v) && v.every(isStr));
+/** fin-plugin-api's `Permission` tags; `net` must name its origins (the egress broker reads them). */
+const PERMS: ReadonlySet<string> = new Set(["project:read", "project:write", "media:read", "media:file", "jobs:submit", "gpu", "net", "secrets", "fs", "hooks:observe", "hooks:modify"]);
+const isGrant = (g: unknown): boolean => isObj(g) && isStr(g.perm) && PERMS.has(g.perm) && (g.perm !== "net" || (Array.isArray(g.origins) && g.origins.every(isStr)));
+
+/**
+ * Whether `v` has `JobRights`' shape: no unknown field, scopes from the four a plugin may hold,
+ * known permissions (a `net` grant with its origins), a branch for an `agent` principal, and
+ * the authority's `rightsHash` (32 hex) and `generation` (a non-negative integer). Whether the
+ * hash matches the rights is the plugin family's check (`checkRights`).
+ */
+export function isJobRights(v: unknown): v is GeneratedJobRights {
+  if (!isObj(v) || Object.keys(v).some((k) => !RIGHTS_KEYS.has(k))) return false;
+  const p = v.principal;
+  if (!isObj(p) || !isStr(p.kind) || !isStr(p.id) || Object.keys(p).length !== 2) return false;
+  if (!isStr(v.class) || !Array.isArray(v.scopes) || !v.scopes.every((s) => isStr(s) && PLUGIN_SCOPE_NAMES.has(s))) return false;
+  if (!isReach(v.projects) || !isReach(v.libraries)) return false;
+  const b = v.branch;
+  if (b !== undefined && b !== null && !(isObj(b) && isStr(b.root) && typeof b.subtree === "boolean" && Object.keys(b).length === 2)) return false;
+  // An agent session's rights always carry its branch reach: without it reads would be unbounded.
+  if (p.kind === "agent" && !isObj(b)) return false;
+  // The authority the job runs under: its rights hash and the class's policy generation.
+  if (!isStr(v.rightsHash) || !RIGHTS_HASH.test(v.rightsHash)) return false;
+  if (typeof v.generation !== "number" || !Number.isSafeInteger(v.generation) || v.generation < 0) return false;
+  return Array.isArray(v.grants) && v.grants.every(isGrant);
+}
 
 export const ProgressUnitSchema = Schema.Literals(["bytes", "items", "frames", "seconds"]);
 
@@ -144,6 +182,8 @@ export const JOB_ERROR_CODES = {
   PLUGIN_CRASHED: 4,
   PLUGIN_TIMEOUT: 4,
   PLUGIN_PROTOCOL: 4,
+  PLUGIN_OUTPUT_INVALID: 4,
+  PLUGIN_COMMAND_FAILED: 4,
   JOB_QUEUE_FULL: 5,
   WORKER_UNAVAILABLE: 5,
   WORKER_PROTOCOL_MISMATCH: 5,

@@ -1,7 +1,7 @@
 // `FinRpcs` handlers. Every failure reaches the client as `FinError { code, message, details, fix }`.
 import { randomBytes } from "node:crypto";
 import { type FinError, FinRpcs, PROTOCOL_VERSION } from "@finisher/contracts";
-import { Effect, Stream } from "effect";
+import { Effect, Option, Stream } from "effect";
 import { SERVER_VERSION } from "./config.ts";
 import { HandshakeTag, revokeSelf } from "./auth/handshake.ts";
 import { TicketsTag } from "./auth/tickets.ts";
@@ -46,6 +46,9 @@ import { LibraryServiceTag } from "./library/layer.ts";
 import { cataloguedAt } from "./library/reach.ts";
 import { libraryHandlers } from "./library/rpc.ts";
 import { pluginHandlers } from "./plugins/rpc.ts";
+import { commandHandlers, PluginCommandsTag } from "./plugins/host/command-rpc.ts";
+import { txToCommit } from "./plugins/host/commit-channel.ts";
+import type { PluginCommandRunRequest } from "@finisher/core-types";
 import { PluginsTag } from "./plugins/registries.ts";
 import { probeFor } from "./probe.ts";
 import { ProjectRegistry } from "./projects.ts";
@@ -97,6 +100,8 @@ export const HandlersLive = FinRpcs.toLayer(
     const pairing = yield* PairingTag;
     const deviceAccess = yield* DeviceAccessTag;
     const remoteListener = yield* RemoteListenerTag;
+    // Plugin commands (sp8b Task 9): served only where the plugin host runs.
+    const pluginCommands = Option.getOrUndefined(yield* Effect.serviceOption(PluginCommandsTag));
     const admin: AdminDeps = {
       control: yield* ServerControlTag,
       audit,
@@ -104,6 +109,7 @@ export const HandlersLive = FinRpcs.toLayer(
       journalEnabled: () => diagnostics.enabled(),
       jobCaps: () => jobEngine.workers().caps,
       sandboxReporter: reporterFor(diagnostics.journal),
+      ...(pluginCommands?.enabledCode === undefined ? {} : { enabledCodePlugins: pluginCommands.enabledCode }),
     };
     /** The principal the chain bound to this call (`anonymous` outside it: fail closed). */
     const principalOf = (options: object) => chainOf(options)?.principal ?? connections.principalOf((options as { client: { id: number } }).client.id);
@@ -178,7 +184,17 @@ export const HandlersLive = FinRpcs.toLayer(
       const s = p.kind === "agent" ? agents.store.get(p.id) : undefined;
       return s === undefined ? {} : { defaultBranch: agents.store.state(s.id).defaultBranch };
     };
-    return withChain(FinRpcs.of({
+    /** The chained handlers, for a plugin command's commit as its invoker (set below). */
+    let chained: Record<string, (payload: unknown, options: object) => Effect.Effect<unknown, FinError>> = {};
+    const commands = commandHandlers({
+      service: pluginCommands,
+      projects: registry,
+      chained: () => chained,
+      sessionRootOf: (p) => (p.kind === "agent" ? agents.store.get(p.id)?.rootBranch : undefined),
+      authorOf: (p) => hooks.authorOf?.(p),
+      guard,
+    });
+    const served = withChain(FinRpcs.of({
       // Public: the handshake (5A Decisions 8 and 9).
       "server.hello": (req, { client }) =>
         guard(
@@ -352,8 +368,12 @@ export const HandlersLive = FinRpcs.toLayer(
           ),
         ),
       // The chain already strips a client's `via`; this is the backstop for a chainless caller.
-      "tx.commit": ({ projectId, tx, generation }, options) =>
-        guard("tx.commit", withMeta(options, (m) => registry.commit(projectId, withoutVia(tx), generation, m))),
+      // The plugin host's own commit (sp8b Task 9, `commit-channel.ts`) adds its `via`, or checks
+      // everything and commits nothing for a dry run.
+      "tx.commit": ({ projectId, tx, generation }, options) => {
+        const sent = txToCommit(tx, options, withoutVia);
+        return guard("tx.commit", withMeta(options, (m) => ("dryRun" in sent ? Effect.succeed(sent as never) : registry.commit(projectId, sent.tx, generation, m))));
+      },
       "snapshot.get": ({ projectId, branch }) => guard("snapshot.get", registry.snapshot(projectId, branch)),
       // Errors (unknown project, bad range) travel in the stream's error channel.
       "ops.subscribe": ({ projectId, branch, fromRev, generation }) =>
@@ -453,6 +473,8 @@ export const HandlersLive = FinRpcs.toLayer(
           diagnostics.record({ principal: principalOf(options), connection: `${connections.transport}:${options.client.id}` }, req, options.headers),
         ),
       ...pluginHandlers({ plugins, audit, guard }),
+      "plugin.commands": (payload, options) => commands["plugin.commands"](payload, options),
+      "plugin.command.run": (payload, options) => commands["plugin.command.run"](payload as PluginCommandRunRequest, options),
       ...libraryHandlers({ service: library, engine: jobEngine, guard }),
       // The job engine (5C-2): ownership and reach per job in `jobs/rpc.ts`.
       ...jobHandlers({ engine: jobEngine, guard }),
@@ -478,6 +500,9 @@ export const HandlersLive = FinRpcs.toLayer(
       agentAsk,
       // Copied or moved server data refuses devices until its owner decides (5B Decision 31).
       refuse: (p) => (p.kind === "device" && environment.state() === "moved" ? envMoved() : undefined),
+      pluginCommands: { writes: (p, name) => (pluginCommands === undefined ? Effect.succeed(undefined) : pluginCommands.registry.writes(p, name)) },
     });
+    chained = served as unknown as typeof chained;
+    return served;
   }),
 );

@@ -62,6 +62,12 @@ export interface ChainReviews {
   protectedBranches(projectId: string): ReadonlyArray<string>;
 }
 
+/** What the chain asks of plugin commands (8B Task 9): whether a command name writes. */
+export interface ChainPluginCommands {
+  /** `true`/`false` for a command `principal` may run, `undefined` for any other name. */
+  writes(principal: Principal, name: string): Effect.Effect<boolean | undefined>;
+}
+
 export interface Resolved {
   /** The payload the handler receives (canonical paths in place of the given ones). */
   readonly payload: unknown;
@@ -146,7 +152,12 @@ export function resolve(
   rule: RpcRule,
   payload: unknown,
   deps: ChainProjects,
-  job?: { readonly principal: Principal; readonly jobs?: ChainJobs | undefined; readonly reviews?: ChainReviews | undefined },
+  job?: {
+    readonly principal: Principal;
+    readonly jobs?: ChainJobs | undefined;
+    readonly reviews?: ChainReviews | undefined;
+    readonly pluginCommands?: ChainPluginCommands | undefined;
+  },
 ): Effect.Effect<Resolved, FinError> {
   return Effect.gen(function* () {
     const want = new Set(rule.resolve ?? []);
@@ -180,6 +191,14 @@ export function resolve(
       const kind = field(payload, "kind");
       const scopes = typeof kind === "string" ? job?.jobs?.kindScopes(kind) : undefined;
       if (scopes !== undefined) facts = { ...facts, kindScopes: scopes };
+    }
+    // A writing command needs `project.write`: a rule without the commands' view would let
+    // every run through on `project.read` alone, a wiring defect, never an open rule.
+    if (want.has("pluginCommand")) {
+      if (job?.pluginCommands === undefined) return yield* Effect.fail(finError("INTERNAL", "a plugin command rule reached the chain without the commands", { reason: "noPluginCommands" }));
+      const name = field(payload, "name");
+      const writes = typeof name === "string" ? yield* job.pluginCommands.writes(job.principal, name) : undefined;
+      if (writes !== undefined) facts = { ...facts, commandWrites: writes };
     }
     if (want.has("job")) {
       const id = field(payload, "job");

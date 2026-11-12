@@ -11,8 +11,9 @@
 //!   record on the parent, then a record standing for each row (a `cherryPick` of the record's
 //!   origin root under fresh or kept ids, [`ids`], [`remap`]; a fresh checkpoint, `branch` or
 //!   `branchSet` record; a `drop` made again on the branch it binds, or in its place when that
-//!   branch is set aside with it, `rows`), then its child groups. The records are `<txId>-<n>`; a retry of the
-//!   txId answers from the log. `import_dir` first reads `.fseg` files moved out of the
+//!   branch is set aside with it, `rows`), then its child groups. The records are `<txId>-<n>`,
+//!   each with the request's identity as its `argsHash`; a retry of the txId answers from the
+//!   log, from the records that carry it. `import_dir` first reads `.fseg` files moved out of the
 //!   folder into quarantine (`IMPORTED`, origin `foreign`; [`import_dir`]), and `dismiss`
 //!   sets a group that cannot be recovered aside from listing and counting on this server
 //!   ([`dismiss`]); both also while the project is read-only.
@@ -203,6 +204,19 @@ fn listing(
     })
 }
 
+/// A recovery request's identity, the `argsHash` of every record it writes: what it creates
+/// (the selection as asked: `all` and a group id are different requests even when they pick
+/// the same group) and as whom. A retry of the txId is answered from the log only by records
+/// carrying it; records written before this identity existed carry none and answer no retry.
+fn request_hash(sel: &RecoverSel, author: &str) -> String {
+    let sel = match sel {
+        RecoverSel::All => json!({ "all": true }),
+        RecoverSel::Group(id) => json!({ "group": id }),
+    };
+    let input = json!({ "recover": sel, "author": author });
+    db::hash_bytes(format!("finisher.recover/1\0{input}").as_bytes())
+}
+
 fn group_id(hash: &str) -> String {
     crate::names::hash12(hash).unwrap_or(hash).to_string()
 }
@@ -260,7 +274,8 @@ impl Store {
     /// `details.problems`; a child group whose parent group is not created; dismissing a
     /// group that can be recovered); `NOT_FOUND` (`details.kind` `group`); `IO_ERROR`
     /// (`import_dir`); for `create` as a commit: a retried txId answers from the log
-    /// (`IDEM_KEY_REUSED` when `<txId>-1` holds no recovery record), `PROJECT_READ_ONLY`;
+    /// (`IDEM_KEY_REUSED` when `<txId>-1` is not a record of this request: its selection and
+    /// author, stored as each record's `argsHash`), `PROJECT_READ_ONLY`;
     /// `IDEM_KEY_REUSED` when another record holds a txId it would write. `import_dir` and
     /// `dismiss` are allowed while read-only. A dry run plans everything (the import
     /// included) and keeps nothing, on a follower too.
@@ -332,7 +347,9 @@ impl Store {
             }
             // Deduped; gone again (an import rewound it since): the recovery runs again.
             if db::find_tx(&self.conn, &first)?.is_some() {
-                let (created, committed) = self.recovered_before(&r.tx_id)?;
+                let sel = r.create.as_ref().expect("a write needs create");
+                let ours = request_hash(sel, &r.author);
+                let (created, committed) = self.recovered_before(&r.tx_id, &ours)?;
                 let groups = self.recover_groups()?;
                 return Ok(report(
                     (groups, created, committed),
@@ -344,13 +361,27 @@ impl Store {
         }
     }
 
-    /// The answer to a retried recovery: its records `<txId>-<n>` and the branches they made.
+    /// The answer to a retried recovery: its records `<txId>-<n>` (those carrying `ours`, the
+    /// request's identity) and the branches they made. `IDEM_KEY_REUSED` when `<txId>-1` is
+    /// not a record of this request (another command's, or a recovery of other groups).
     fn recovered_before(
         &self,
         key: &str,
+        ours: &str,
     ) -> Result<(Vec<BranchView>, Vec<CommittedTx>), StoreError> {
         let mut committed: Vec<CommittedTx> = vec![];
         while let Some(c) = db::find_tx(&self.conn, &format!("{key}-{}", committed.len() + 1))? {
+            if c.tx.args_hash.as_deref() != Some(ours) {
+                if committed.is_empty() {
+                    let mut e = CoreError::from(key_reused(&c));
+                    e.fix = Some(format!(
+                        "txId {key} was used by another command or another recovery request (other groups or author); use a new idempotency key (txId)"
+                    ));
+                    return Err(e.into());
+                }
+                // A later record under the next id is not this recovery's.
+                break;
+            }
             committed.push(c);
         }
         // A recovery writes a `branch` record first, or a record standing for a row.
@@ -432,7 +463,7 @@ fn create(
     let (created_groups, committed) = {
         let mut runner = Runner::new(txn, &l.forest, &l.groups, &r.author, &r.tx_id)?
             .measuring(ctx.measurer.clone())
-            .writing(ctx, create);
+            .writing(ctx, create, request_hash(sel, &r.author));
         runner.run(&l.order)?;
         (runner.created, runner.committed)
     };

@@ -1,4 +1,4 @@
-// The `review.*` RPCs (5E plan Decision 23, spec §8.6), spread into `FinRpcs` (`rpc.ts`) so that
+// The `review.*` RPCs and `history.drop` (5E plan Decision 23, spec §8.6), spread into `FinRpcs` (`rpc.ts`) so that
 // file stays small. Their rules are in `scopes.ts`. Review text (titles, summaries, comments,
 // reasons) is content: never audited, never in an error.
 import type { ReviewPlan } from "@finisher/core-types";
@@ -6,6 +6,7 @@ import { Schema } from "effect";
 import { Rpc } from "effect/rpc";
 import { ChallengeField } from "./auth.ts";
 import { FinError } from "./errors.ts";
+import { HistoryDropPayload, RecordSuccess } from "./history.ts";
 import {
   BranchPolicySchema,
   CommentSchema,
@@ -141,6 +142,8 @@ export const ReviewPolicyGetPayload = Schema.Struct({ projectId: Schema.String }
 export const ReviewPolicyGetSuccess = Schema.Struct({ policy: BranchPolicySchema });
 
 export const REVIEW_RPCS = [
+  // A rejection made durable: a `drop` record on the target branch.
+  Rpc.make("history.drop", { payload: HistoryDropPayload, success: RecordSuccess, error: FinError }),
   Rpc.make("review.request", { payload: ReviewRequestPayload, success: ReviewRequestSuccess, error: FinError }),
   Rpc.make("review.comment", { payload: ReviewCommentPayload, success: ReviewCommentSuccess, error: FinError }),
   Rpc.make("review.refresh", { payload: ReviewIdPayload, success: ReviewViewSchema, error: FinError }),

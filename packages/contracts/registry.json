@@ -1811,6 +1811,18 @@
     },
     {
       "argKinds": {},
+      "group": "plugin",
+      "identity": [],
+      "name": "plugin.commands",
+      "rpcs": [
+        {
+          "method": "plugin.commands"
+        }
+      ],
+      "write": false
+    },
+    {
+      "argKinds": {},
       "group": "registry",
       "identity": [],
       "name": "registry.ls",
@@ -2267,11 +2279,15 @@
       "group": "plugin-command",
       "identity": [
         "projectId",
-        "tx.branch",
-        "tx.ops"
+        "branch",
+        "name",
+        "args"
       ],
       "name": "plugin:<id>/<command>",
       "rpcs": [
+        {
+          "method": "plugin.command.run"
+        },
         {
           "method": "tx.commit"
         }

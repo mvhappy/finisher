@@ -6,11 +6,11 @@
 // answer the helpers get `shutdown` and 2 s before their group is killed.
 import { join } from "node:path";
 import type { FileGrant, HelperGrant, HostMsg, WorkerMsg } from "@finisher/core-types";
-import type { FinError, HelperSpec, MappedFile } from "@finisher/contracts";
+import { type FinError, type HelperSpec, isJobRights, type MappedFile } from "@finisher/contracts";
 import { finError, toFinError } from "../errors.ts";
 import { childEnv } from "../env.ts";
 import { CallRouter } from "./calls.ts";
-import type { WorkerExitEvent } from "./events.ts";
+import { lifetimeSeconds, type WorkerExitEvent } from "./events.ts";
 import { type JobDirs, mappedPath } from "./files.ts";
 import { mkdirSafe } from "./fsafe.ts";
 import { type JobHostExitInfo, type JobSpawnRequest, type ProcEvent, exitVerdict } from "./host.ts";
@@ -124,7 +124,7 @@ export class Helpers {
         helper: { kind: p.spec.kind, id: p.spec.id },
         owner: row.owner,
         ...(row.via === undefined ? {} : { via: row.via }),
-        ...(row.rights === undefined ? {} : { rights: row.rights }),
+        ...(isJobRights(row.rights) ? { rights: row.rights } : {}),
       }),
       (msg) => (p.proc === undefined ? "gone" : env.host.send(p.proc, msg)),
       env.run,
@@ -236,7 +236,7 @@ export class Helpers {
         helperKind: p.spec.kind,
         reason: verdict.reason,
         jobsServed: p.attached ? 1 : 0,
-        lifetimeS: info.lifetimeMs / 1000,
+        lifetimeS: lifetimeSeconds(info.lifetimeMs),
         sandboxed: this.#env.host.caps().sandboxed,
         ...(info.code === undefined ? {} : { exitCode: info.code }),
         ...(info.signal === undefined ? {} : { signal: info.signal }),
