@@ -1,7 +1,7 @@
 // Helpers of the "plugin-code" e2e scenario: the example plugins staged as packages for this
 // host, the test probe packaged as a registry plugin, the loopback HTTPS server the egress
 // broker's test hooks route the examples' origin to, and process checks.
-import { chmodSync, copyFileSync, cpSync, existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, cpSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { createServer } from "node:https";
 import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -114,12 +114,29 @@ export function alive(pid) {
   }
 }
 
-/** Every file under `dir` whose text is exactly `text` (marker files); none when `dir` is missing. */
+/**
+ * Every file under `dir` whose text is exactly `text` (marker files); none when `dir` is missing.
+ * The host removes retired temp and pluginData directories while a scenario polls this walk, so
+ * an entry listed here may be gone by the time it is read: a vanished entry holds nothing, and
+ * the callers' waits end when the marker is gone, never on an ENOENT from that race.
+ */
 export function filesHolding(dir, text) {
-  if (!existsSync(dir)) return [];
-  return readdirSync(dir).flatMap((name) => {
+  const gone = (e) => e?.code === "ENOENT" || e?.code === "ENOTDIR";
+  let names;
+  try {
+    names = readdirSync(dir);
+  } catch (e) {
+    if (gone(e)) return [];
+    throw e;
+  }
+  return names.flatMap((name) => {
     const p = join(dir, name);
-    if (statSync(p).isDirectory()) return filesHolding(p, text);
-    return readFileSync(p, "utf8") === text ? [p] : [];
+    try {
+      if (statSync(p).isDirectory()) return filesHolding(p, text);
+      return readFileSync(p, "utf8") === text ? [p] : [];
+    } catch (e) {
+      if (gone(e)) return [];
+      throw e;
+    }
   });
 }
