@@ -247,9 +247,9 @@ mod tests {
         );
     }
 
-    /// Spec §5.13: a record whose split carries a fade offset is stamped schema 4, and a
-    /// schema-3 reader (the same runner with target 3) refuses it with `NEWER_FORMAT` instead
-    /// of reading it without the offset.
+    /// Spec §5.13: a record that sets a fade offset (`param.set audio.fadeInOffset`, a path
+    /// schema 3 does not have) is stamped schema 4, and a schema-3 reader (the same runner with
+    /// target 3) refuses it with `NEWER_FORMAT` instead of reading it.
     #[test]
     fn older_reader_refuses_v4_fields() {
         let ops = json!([{ "op": "param.set", "item": "c1", "path": "audio.fadeInOffset",
