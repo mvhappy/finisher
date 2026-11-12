@@ -198,6 +198,7 @@ MyProject/                      (may live on local disk, NAS, or a cloud-synced 
   - **Merge** rebases the branch's transactions onto `main` with re-validation. Conflicts become review items.
   - Cherry-pick works per transaction.
   - `checkpoint` names a revision; `try` makes a throwaway sub-branch.
+  - *As built (5E):* conflicts become `mergeConflict` review items, a rejection is a durable `drop` record, and a merge can be limited to what was reviewed: control-plane spec §8 (item 24 of §27).
 - **Undo appends; the log is never truncated.**
   - Undoing transaction *T* = append the inverse of *T*, rebased onto the current head. If it can't be rebased, the result is a typed `Conflict`.
   - Undo/redo stacks are kept per (author, branch).
@@ -428,7 +429,7 @@ MyProject/                      (may live on local disk, NAS, or a cloud-synced 
    - a read-only session with sampled frames, contact sheet, transcript, QA report and brief;
    - rubrics borrowed from Uncut (intent, stills, motion/jitter, legibility, colour, mix, beat sync) plus hook strength and pacing;
    - fixes come as a child branch; rounds are capped (default 3); a summary lists what is still open.
-3. **Markers** (`open/review/resolved`), per-transaction change list with accept/reject, A/B compare.
+3. **Markers** (`open/review/resolved`), per-transaction change list with accept/reject, A/B compare. *As built (5E):* the change list, per-transaction decisions, durable rejections and reviewed-only merges are control-plane spec §8; markers and A/B compare are not built.
 4. **Share page:** exported HTML with timecode comments that come back as markers. Hosted links come later through `ShareService`.
 
 ---
@@ -1214,3 +1215,8 @@ Spike code, evidence and the report are throwaway and live in the git-ignored `a
     - **Transport:** remote access is off until `finisherd remote enable` or `FIN_LISTEN`; off loopback it is TLS only, with a self-signed certificate made from the environment's identity key (pinned by SPKI) or the owner's certificate files (verified normally, then the `envId`); per-listener Host and Origin checks and connection pools.
     - **Amendments to §16:** certificate rotation is re-pairing (`finisherd tls rotate`), not a statement signed by the old key; device confirmations: only a device's `server.stop` needs a challenge code, sent by the app after its own dialog; devices name server paths only inside allowed roots; copied server data is refused (`ENV_MOVED`) until `env adopt` or `env reset`; secrets live in the OS keychain when it answers without a prompt, else in private files, optionally wrapped with `FIN_SECRETS_KEY_FILE`.
     - **Still outstanding:** the cross-platform and cross-host run (5B Task 15); sub-project 9's device key storage, pairing pages, `TLS_PIN_MISMATCH` and the `server.stop` dialog.
+24. **Sub-project 5E, the review workflow (as built, 2026-11-12):** §6.4 ("conflicts become review items") and §11.3 (per-transaction accept/reject) as implemented are recorded in `docs/specs/2026-11-07-sub-project-5-control-plane-design.md` §8 (§8.8 maps every decision of its plan to As built or Deviation, §8.9 lists the owner decisions and review fixes, §8.10 the residuals), which wins over this document where they differ.
+    - **Shape:** a `branchReview` item holds a change list planned at a snapshot of both heads; a person accepts or rejects each origin transaction, and a merge copies only what was reviewed (`include` and `sourceUpTo`, checked inside the merge's write transaction), so a commit that lands on the source afterwards is never merged by it. A rejection is a **`drop` record in the op log** of the target branch (record format 3 for that kind only; derived index `m0004_drops`), so it syncs, survives moves and rebuilds, and keeps a later plain `fin merge` from bringing the transaction back; `DROPPED` is reported in `excluded`, not `skipped`. Merge conflicts and plugin suggestions are review items too.
+    - **Protected branches** (default `main`) refuse writes from principals without `branch.protected`, at the chain's policy stage and again inside the store's write transaction; `local` keeps the scope, agents and MCP credentials do not. Before 7C this binds credentials, not a raw shell that can read `local.key` (README "Security model").
+    - **Auto merge** exists as a server-internal path with all its checks and tests, and enabling it answers `AUTO_MERGE_UNAVAILABLE` until sub-project 10 records QA-gate and critic verdicts. `review.verdict` v1 is registered, so 7A's outcome tracker emits.
+    - **Still outstanding:** the cross-platform and mixed-version run (5E Task 13); sub-project 10's verdicts and the flag; sub-project 7's delivery of `changesRequested` as a turn.

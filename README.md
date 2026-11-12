@@ -197,6 +197,73 @@ can run it. `kill` (SIGTERM) also shuts down cleanly on macOS and Linux.
 `pnpm e2e` runs the whole flow (`fin` → `finisherd` → a WebSocket subscriber) in a temp
 directory.
 
+## Reviews
+
+An agent's branch goes through a review that you decide, one transaction at a time. What you
+decide binds every later merge: a merge copies only what was reviewed, and a rejection is kept
+in the project's history, so it holds on every server that opens the project.
+
+```bash
+fin --branch feature review request --title "Tighten the intro" [--into main] [--summary "…"]
+fin review ls [--state open] [--kind branchReview]   # kinds: branchReview, mergeConflict, pluginSuggestion
+fin review show <id>                                  # JSON: the change list, your marks, comments, "stale"
+fin review comment <id> "too slow here" [--tx <txId>]
+fin review decide <id> --accept <txId>… --reject <txId>… [--pending <txId>…] [--reason "…"]
+fin review decide <id> --request-changes --reason "…"   # hand the branch back to its agent
+fin review refresh <id>                               # re-plan at the current heads; your marks stay
+fin review merge <id> [--accept-pending]              # copy the accepted transactions (and the pending ones with the flag)
+fin review close <id> --rejected | --dismissed        # --rejected keeps every unmerged change out of later merges
+```
+
+- **Requesting.** A review lists the branch's transactions that `main` (or `--into`) does not
+  hold yet, with a status each (`willMerge`, `dropped`, `dependsOnSkipped`, `conflict`, …). One
+  review is open per branch pair; asking again returns it. Review text (titles, summaries,
+  comments) stays on the server and is never audited or sent to diagnostics.
+- **Deciding.** `accept`, `reject` or leave `pending`. Every `decide` and `merge` sends the
+  snapshot it saw, so a view that is out of date is `REVIEW_STALE` (exit 4) with the fresh list;
+  `fin review refresh` moves the snapshot and keeps your marks. A rejection writes a `drop`
+  record on the target branch at once, before anything else. Taking a rejection back (`--pending`
+  or `--accept`) lifts it.
+- **Merging.** `fin review merge` copies exactly the accepted transactions, up to the
+  snapshot: anything the branch gained after the review is not merged by it. Pending
+  transactions stop it (`REVIEW_UNDECIDED` lists them) unless you pass `--accept-pending`, and
+  never when the project requires review. A conflict is `REVIEW_HAS_CONFLICTS` and nothing is
+  written. If the target moved since the snapshot, the merge still goes ahead on what was
+  reviewed and says `targetMoved`. An agent's branch is archived once nothing of it is left.
+- **Merge conflicts** from any `fin merge` appear as `mergeConflict` items, and a plugin's
+  suggestion as a `pluginSuggestion` item; close those with `fin review close`.
+- **Server moves.** Rejections travel with the project. Open reviews and their comments and
+  marks live in the server's own data: on another server, open agent branches get a fresh
+  review, marked re-derived.
+
+```bash
+fin drop <txId>… --from feature [--into main]         # keep changes out of every merge into a branch, without a review
+fin drop --undo <txId>… --from feature [--into main]  # bring them back
+fin merge feature --include <txId>… --up-to <seq>     # merge only what you name, up to a record on the branch
+```
+
+A plain `fin merge` leaves a dropped transaction out (`excluded`, reason `DROPPED`), and a
+cherry-pick of it is still allowed.
+
+**Protected branches.** `main` is protected by default: a caller without the
+`branch.protected` scope cannot write it, and the server refuses again inside the write
+transaction itself (`BRANCH_PROTECTED`, exit 7). `fin` run by you keeps the scope, so you can still
+edit `main` directly; agent and MCP credentials do not have it, and `review merge`, `review
+decide`, `review close` and `fin drop` into a protected branch need `review.decide`, which
+only you hold by default. The policy is yours alone, set at the server's console:
+
+```bash
+finisherd review policy show --project <id> [--json]
+finisherd review policy set --project <id> --protect release --unprotect old-line   # branch names
+finisherd review policy set --project <id> --require-review on                       # pending never merges
+finisherd review policy set --project <id> --auto-merge on                           # refused: AUTO_MERGE_UNAVAILABLE
+```
+
+`--protect` and `--unprotect` take branch names and change the project's current list; the
+console asks `Proceed? [y/N]` first, like the other human-only actions. Automatic merging by
+policy is built but switched off: turning it on is refused until the QA gate and critic
+(sub-project 10) can vouch for a change.
+
 ## Remote access
 
 Off by default: the server listens only on `127.0.0.1` and its local socket or pipe. Turn it on
@@ -417,6 +484,15 @@ things only you can do, confirmed on the console. But an agent harness running i
 as you can read `<server-data>/auth/console.key` and make and approve a pairing offer through
 the console, or read the key files in `<server-data>/secrets/` when they are not in the
 keychain. As above, this stays true until Finisher sandboxes agents.
+
+**Protected branches and raw-shell agents.** A protected branch (`main` by default) binds
+the credentials that go through the server: an agent or MCP credential cannot write it, decide a
+review or merge into it, and the server enforces that inside the store's write transaction, so a
+renamed or re-resolved branch cannot slip past. Like the human-only list above, this is advisory
+against an agent in a plain shell as you until Finisher sandboxes agents: such an agent can read
+`<server-data>/auth/local.key`, which holds `review.decide` and `branch.protected` (so `fin`
+keeps writing `main`), or `<server-data>/auth/console.key`, which can change the policy. Run
+harnesses with their own credential (above), and the sandbox closes the rest.
 
 The audit log (`finisherd audit`) records sign-in failures, refusals, credential changes and the
 other security events, locally and for you only.
