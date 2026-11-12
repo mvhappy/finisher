@@ -21,7 +21,8 @@
 import { realpathSync, statSync, accessSync, constants } from "node:fs";
 import { posix, win32 } from "node:path";
 import type { FinError, ProviderInfo } from "@finisher/contracts";
-import { Effect } from "effect";
+import { Effect, Exit } from "effect";
+import { safe } from "../../console/safe.ts";
 import { finError } from "../../errors.ts";
 import type { Capabilities } from "../adapter.ts";
 import { openHostSandbox, type SandboxedChild, type SessionSandbox, type SessionSandboxDeps } from "../sandbox.ts";
@@ -42,8 +43,16 @@ export const DETECT_TIMEOUT_MS = 10_000;
 /** What detection reads of a command's output at most. */
 const OUTPUT_CAP = 64 * 1024;
 
-/** A sign-in method as the CLI names it (`claude.ai`, `console`, `none`, …): one word, never a label. */
-const AUTH_METHOD = /^[A-Za-z0-9][A-Za-z0-9._-]{0,39}$/;
+/**
+ * The sign-in methods kept by name; any other answer is `"other"`, never the CLI's text (it could
+ * be a label). `claude.ai` and `console` are what the CLI documents. ASSUMPTION (plan Task 0's
+ * signed-in half confirms the real values): `oauth` and `apiKey` are not known to be printed, so
+ * they are not listed; add a value here once Task 0 sees it.
+ */
+const AUTH_METHODS: ReadonlySet<string> = new Set(["claude.ai", "console"]);
+
+/** How long an `auth status` answer is reused. A sign-in/out is printed for a person to run in a separate console process, which cannot reach this cache: this TTL covers it. */
+export const AUTH_TTL_MS = 30_000;
 
 /** What sessions on Claude Code can do (spec §4.1; the session tasks may refine it). */
 export const CLAUDE_CAPABILITIES: Capabilities = {
@@ -91,6 +100,8 @@ export interface ClaudeDetectDeps {
   /** Resolves links of the found path (default `realpathSync`; tests). */
   readonly realpath?: (p: string) => string;
   readonly timeoutMs?: number;
+  /** The clock for the `auth status` cache (default `Date.now`; tests). */
+  readonly now?: () => number;
 }
 
 const HARNESS = "claudeCode";
@@ -176,7 +187,7 @@ export function parseVersion(stdout: string): string {
 }
 
 /**
- * `auth status --json`'s answer: `loggedIn`, and `authMethod` when signed in and one word.
+ * `auth status --json`'s answer: `loggedIn`, and `authMethod` (allow-listed, else `other`) when signed in.
  * Exit 0 or 1 with a JSON object holding a boolean `loggedIn` is an answer; anything else is
  * `PROVIDER_PROTOCOL`. Nothing else of the answer is kept.
  */
@@ -191,7 +202,7 @@ export function parseAuthStatus(code: number | null, stdout: string): { signedIn
   if (o === undefined || typeof o.loggedIn !== "boolean") {
     throw finError("PROVIDER_PROTOCOL", "claude auth status did not answer whether it is signed in", { harness: HARNESS, reason: "authStatus", ...(code === null ? {} : { exitCode: code }) });
   }
-  const method = o.loggedIn && typeof o.authMethod === "string" && AUTH_METHOD.test(o.authMethod) ? o.authMethod : undefined;
+  const method = o.loggedIn && typeof o.authMethod === "string" ? (AUTH_METHODS.has(o.authMethod) ? o.authMethod : "other") : undefined;
   return { signedIn: o.loggedIn, ...(method === undefined ? {} : { authMethod: method }) };
 }
 
@@ -234,13 +245,72 @@ function run(box: SessionSandbox, real: string, args: readonly string[], ms: num
 
 const sync = <A>(f: () => A): Effect.Effect<A, FinError> => Effect.try({ try: f, catch: (e) => e as FinError });
 
+interface AuthAnswer {
+  readonly signedIn: boolean | null;
+  readonly authMethod?: string;
+  readonly problem?: FinError;
+}
+
+// Detection runs on every `agent.providers` call and every claudeCode plan, so its answers are
+// kept: the version while the binary is the same file (realpath, mtime, size); `auth status` for
+// `AUTH_TTL_MS`; concurrent callers share one run.
+let generation = 0;
+const versions = new Map<string, string>();
+const auths = new Map<string, { at: number; answer: AuthAnswer }>();
+const flights = new Map<string, Promise<Exit.Exit<AuthAnswer & { version: string }, FinError>>>();
+
+/** Forgets what detection has kept (a settings change; a sign-in or sign-out finishing in this process). */
+export function invalidateClaudeDetection(): void {
+  generation++;
+  versions.clear();
+  auths.clear();
+  flights.clear();
+}
+
+/** Runs the CLI (version unless known, `auth status` unless fresh) and keeps the answers. */
+function probe(deps: ClaudeDetectDeps, real: string, key: string | undefined, platform: NodeJS.Platform): Effect.Effect<AuthAnswer & { version: string }, FinError> {
+  const ms = deps.timeoutMs ?? DETECT_TIMEOUT_MS;
+  const now = deps.now ?? Date.now;
+  const authKey = key === undefined ? undefined : `${deps.sandbox.serverData}\0${key}`;
+  return Effect.scoped(
+    Effect.gen(function* () {
+      const gen = generation;
+      let version = key === undefined ? undefined : versions.get(key);
+      const hit = authKey === undefined ? undefined : auths.get(authKey);
+      let auth = hit !== undefined && now() - hit.at < AUTH_TTL_MS ? hit.answer : undefined;
+      if (version === undefined || auth === undefined) {
+        const box = yield* openHostSandbox("detect", HARNESS, deps.sandbox);
+        if (version === undefined) {
+          const v = yield* run(box, real, ["--version"], ms, platform);
+          if (v.code !== 0) {
+            return yield* Effect.fail(finError("PROVIDER_PROTOCOL", "claude --version failed", { harness: HARNESS, reason: "version", exitCode: v.code }, "reinstall Claude Code's native build"));
+          }
+          version = yield* sync(() => parseVersion(v.stdout));
+          if (key !== undefined && gen === generation) versions.set(key, version);
+        }
+        if (compareVersions(version, CLAUDE_FLOOR) >= 0 && auth === undefined) {
+          const a = yield* Effect.result(run(box, real, ["auth", "status", "--json"], ms, platform).pipe(Effect.flatMap((r) => sync(() => parseAuthStatus(r.code, r.stdout)))));
+          auth = a._tag === "Failure" ? { signedIn: null, problem: a.failure } : a.success;
+          if (authKey !== undefined && gen === generation) auths.set(authKey, { at: now(), answer: auth });
+        }
+      }
+      if (compareVersions(version, CLAUDE_FLOOR) < 0) {
+        return yield* Effect.fail(
+          finError("PROVIDER_VERSION", `Claude Code ${version} is older than ${CLAUDE_FLOOR}, the oldest this Finisher supports`, { harness: HARNESS, version, floor: CLAUDE_FLOOR }, `update Claude Code to ${CLAUDE_FLOOR} or later`),
+        );
+      }
+      return { version, ...auth! };
+    }),
+  );
+}
+
 /**
  * Finds the CLI, reads its version (`PROVIDER_VERSION {version, floor}` below the floor) and
- * whether it is signed in. Runs the CLI twice in a host sandbox; reads nothing under `providers/`.
+ * whether it is signed in. Runs the CLI in a host sandbox (twice at most; answers are reused, see
+ * above); reads nothing under `providers/`.
  */
 export function detectClaude(deps: ClaudeDetectDeps): Effect.Effect<ClaudeDetection, FinError> {
   const platform = deps.platform ?? deps.sandbox.platform ?? process.platform;
-  const ms = deps.timeoutMs ?? DETECT_TIMEOUT_MS;
   return Effect.gen(function* () {
     const settings = (deps.settings ?? (() => claudeCodeSettings(deps.sandbox.serverData)))();
     const path = yield* sync(() =>
@@ -253,24 +323,30 @@ export function detectClaude(deps: ClaudeDetectDeps): Effect.Effect<ClaudeDetect
         throw notInstalled("pathMissing");
       }
     });
-    return yield* Effect.scoped(
-      Effect.gen(function* () {
-        const box = yield* openHostSandbox("detect", HARNESS, deps.sandbox);
-        const v = yield* run(box, real, ["--version"], ms, platform);
-        if (v.code !== 0) {
-          return yield* Effect.fail(finError("PROVIDER_PROTOCOL", "claude --version failed", { harness: HARNESS, reason: "version", exitCode: v.code }, "reinstall Claude Code's native build"));
-        }
-        const version = yield* sync(() => parseVersion(v.stdout));
-        if (compareVersions(version, CLAUDE_FLOOR) < 0) {
-          return yield* Effect.fail(
-            finError("PROVIDER_VERSION", `Claude Code ${version} is older than ${CLAUDE_FLOOR}, the oldest this Finisher supports`, { harness: HARNESS, version, floor: CLAUDE_FLOOR }, `update Claude Code to ${CLAUDE_FLOOR} or later`),
-          );
-        }
-        const auth = yield* Effect.result(run(box, real, ["auth", "status", "--json"], ms, platform).pipe(Effect.flatMap((a) => sync(() => parseAuthStatus(a.code, a.stdout)))));
-        if (auth._tag === "Failure") return { path, version, floor: CLAUDE_FLOOR, signedIn: null, problem: auth.failure } satisfies ClaudeDetection;
-        return { path, version, floor: CLAUDE_FLOOR, ...auth.success } satisfies ClaudeDetection;
-      }),
-    );
+    let key: string | undefined;
+    try {
+      const st = statSync(real);
+      key = `${real}\0${st.mtimeMs}\0${st.size}`;
+    } catch {
+      key = undefined; // Unreadable here (a fake path): run it every time.
+    }
+    const flightKey = key === undefined ? undefined : `${deps.sandbox.serverData}\0${key}`;
+    let flight = flightKey === undefined ? undefined : flights.get(flightKey);
+    if (flight === undefined) {
+      const started = Effect.runPromiseExit(probe(deps, real, key, platform));
+      flight = started;
+      if (flightKey !== undefined) {
+        flights.set(flightKey, started);
+        const mine = started;
+        void started.finally(() => {
+          if (flights.get(flightKey) === mine) flights.delete(flightKey);
+        });
+      }
+    }
+    const r = yield* Effect.promise(() => flight);
+    const d = yield* r;
+    const { version, ...auth } = d;
+    return { path, version, floor: CLAUDE_FLOOR, ...auth } satisfies ClaudeDetection;
   });
 }
 
@@ -332,40 +408,54 @@ export function claudeProviderInfo(deps: ClaudeDetectDeps): Effect.Effect<Provid
 // The sign-in commands -------------------------------------------------------------------------
 
 const shQuote = (s: string) => `'${s.replaceAll("'", `'\\''`)}'`;
-const psQuote = (s: string) => `'${s.replaceAll("'", "''")}'`;
+/** PowerShell treats `'` and U+2018 to U+201B alike as a single quote: each is doubled. */
+const psQuote = (s: string) => `'${s.replace(/['\u2018-\u201b]/g, (c) => c + c)}'`;
+/** Variables that make the CLI use a credential, endpoint or cloud route other than its own store. */
+const CRED_VARS = ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL", "CLAUDE_CODE_OAUTH_TOKEN", "CLAUDE_CODE_OAUTH_REFRESH_TOKEN", "CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX", "CLAUDE_CODE_USE_FOUNDRY"];
 
 /**
  * The commands a person runs in a terminal on the server to sign the CLI in (`login`) or out
  * (`logout`) with its own flow, into `<server-data>/providers/claudeCode/home` (Decision 23).
- * Unix: a subshell with `umask 077`, the store folder made 0700, and the CLI run with neither
- * `ANTHROPIC_API_KEY` nor `CLAUDE_CODE_OAUTH_TOKEN`; Windows: the PowerShell form (server data's
+ * Unix: a subshell with `umask 077`, the store folder made 0700, and the CLI run without
+ * any of `CRED_VARS` (API key, tokens, base URL, cloud routes); Windows: the PowerShell form (server data's
  * owner-only DACL is inherited). Lines starting with `#` are comments in both shells.
  */
-export function signinCommands(verb: "login" | "logout", i: { path: string; serverData: string; platform: NodeJS.Platform; enabled?: boolean }): string[] {
+export function signinCommands(verb: "login" | "logout", i: { path: string; serverData: string; platform: NodeJS.Platform; enabled?: boolean; source?: "setting" | "path" }): string[] {
   const p = pathOf(i.platform);
-  const home = p.join(i.serverData, "providers", HARNESS, "home");
-  const store = p.join(home, "store");
+  // Printed text never carries a control character (a path could hold an escape sequence).
+  const exe = safe(i.path);
+  const home = safe(p.join(i.serverData, "providers", HARNESS, "home"));
+  const store = safe(p.join(i.serverData, "providers", HARNESS, "home", "store"));
   const off = i.enabled === false ? ["# Claude Code is off on this server: sessions start on it once agents.claudeCode.enabled is true in settings.json."] : [];
+  const where =
+    i.source === undefined
+      ? []
+      : [i.source === "setting" ? "# The CLI is the one agents.claudeCode.path names." : "# The CLI was found on this console's PATH, which can differ from the server's; agents.claudeCode.path in settings.json overrides the search."];
+  const alt = `# Or run /${verb} inside an interactive claude started with the same variables.`;
   if (i.platform === "win32") {
     return [
       `# Run in a new PowerShell window on this server, as the account that runs finisherd (it changes that window's environment).`,
       ...off,
+      ...where,
       ...(verb === "login" ? [`New-Item -ItemType Directory -Force -Path ${psQuote(store)} | Out-Null`] : []),
-      "Remove-Item Env:ANTHROPIC_API_KEY, Env:CLAUDE_CODE_OAUTH_TOKEN -ErrorAction SilentlyContinue",
+      `Remove-Item ${CRED_VARS.map((v) => `Env:${v}`).join(", ")} -ErrorAction SilentlyContinue`,
       `$env:CLAUDE_CONFIG_DIR = ${psQuote(home)}`,
       `$env:CLAUDE_SECURESTORAGE_CONFIG_DIR = ${psQuote(store)}`,
       "$env:DISABLE_AUTOUPDATER = '1'",
-      `& ${psQuote(i.path)} auth ${verb}`,
+      `& ${psQuote(exe)} auth ${verb}`,
+      alt,
     ];
   }
   return [
-    "# Run in a terminal on this server, as the account that runs finisherd.",
+    "# Run in sh, bash or zsh on this server, as the account that runs finisherd.",
     ...off,
+    ...where,
     "(",
     "  umask 077",
-    ...(verb === "login" ? [`  mkdir -p -m 700 ${shQuote(store)}`] : []),
-    `  env -u ANTHROPIC_API_KEY -u CLAUDE_CODE_OAUTH_TOKEN CLAUDE_CONFIG_DIR=${shQuote(home)} CLAUDE_SECURESTORAGE_CONFIG_DIR=${shQuote(store)} DISABLE_AUTOUPDATER=1 ${shQuote(i.path)} auth ${verb}`,
+    ...(verb === "login" ? [`  mkdir -p ${shQuote(store)}`, `  chmod 700 ${shQuote(store)}`] : []),
+    `  env ${CRED_VARS.map((v) => `-u ${v}`).join(" ")} CLAUDE_CONFIG_DIR=${shQuote(home)} CLAUDE_SECURESTORAGE_CONFIG_DIR=${shQuote(store)} DISABLE_AUTOUPDATER=1 ${shQuote(exe)} auth ${verb}`,
     ")",
+    alt,
   ];
 }
 
@@ -388,5 +478,5 @@ export function signinLines(
   }
   const settings = o.settings ?? claudeCodeSettings(serverData);
   const path = resolveClaudePath({ setting: settings.path, pathEnv: o.pathEnv ?? process.env.PATH ?? process.env.Path, platform, ...(o.isFile === undefined ? {} : { isFile: o.isFile }) });
-  return signinCommands(verb, { path, serverData: data, platform, enabled: settings.enabled });
+  return signinCommands(verb, { path, serverData: data, platform, enabled: settings.enabled, source: settings.path === undefined ? "path" : "setting" });
 }

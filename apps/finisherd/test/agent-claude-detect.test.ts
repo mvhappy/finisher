@@ -3,7 +3,7 @@
 // the native build only on Windows, `--version` against the floor, `auth status`'s JSON read
 // for `loggedIn` and a one-word method only, nothing opened under `providers/`, and sign-in
 // commands printed, never run. Everything runs `fake-claude` (no real CLI).
-import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { hostname, tmpdir, userInfo } from "node:os";
 import { delimiter, join, sep } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -18,6 +18,7 @@ import {
   claudeProviderInfo,
   compareVersions,
   detectClaude,
+  invalidateClaudeDetection,
   parseAuthStatus,
   parseVersion,
   resolveClaudePath,
@@ -54,6 +55,7 @@ vi.mock("node:fs/promises", async (orig) => {
   return { ...spy.wrap(m), default: spy.wrap(m) };
 });
 
+const CRED = ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL", "CLAUDE_CODE_OAUTH_TOKEN", "CLAUDE_CODE_OAUTH_REFRESH_TOKEN", "CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX", "CLAUDE_CODE_USE_FOUNDRY"];
 const WIN = process.platform === "win32";
 const FAKE = fileURLToPath(new URL(`../../../target/debug/fake-claude${WIN ? ".exe" : ""}`, import.meta.url));
 /** CI (`FIN_REQUIRE_SERVER=1`, as the other Rust-binary tests): a missing fake fails instead of skipping. */
@@ -80,6 +82,7 @@ beforeEach(() => {
   tmp = realpathSync(mkdtempSync(join(tmpdir(), "agent-claude-detect-")));
 });
 afterEach(() => {
+  invalidateClaudeDetection();
   rmSync(tmp, { recursive: true, force: true });
 });
 
@@ -224,10 +227,9 @@ describe("detection", () => {
     const out = await Effect.runPromise(detectClaude(deps(installFake("out", { auth: { loggedIn: false } }))));
     expect(out).toMatchObject({ signedIn: false });
     expect(out.authMethod).toBeUndefined();
-    // A method that is not one word (it could be anything) is dropped.
+    // A method outside the allow-list (it could be anything) is "other", never its text.
     const odd = await Effect.runPromise(detectClaude(deps(installFake("odd", { auth: { authMethod: "someone@example.invalid" } }))));
-    expect(odd).toMatchObject({ signedIn: true });
-    expect(odd.authMethod).toBeUndefined();
+    expect(odd).toMatchObject({ signedIn: true, authMethod: "other" });
     // The parser on its own: exit 0/1 with a boolean `loggedIn`, nothing else.
     expect(parseAuthStatus(0, JSON.stringify({ loggedIn: true, authMethod: "console", email: "x@y.z" }))).toEqual({ signedIn: true, authMethod: "console" });
     expect(parseAuthStatus(1, JSON.stringify({ loggedIn: false, authMethod: "none" }))).toEqual({ signedIn: false });
@@ -241,6 +243,52 @@ describe("detection", () => {
     writeFileSync(join(broken, "claude"), '#!/bin/sh\nif [ "$1" = --version ]; then echo "2.1.321 (Claude Code)"; else echo "Logged in"; fi\n', { mode: 0o755 });
     const b = await Effect.runPromise(detectClaude(deps(broken)));
     expect(b).toMatchObject({ version: "2.1.321", signedIn: null, problem: { code: "PROVIDER_PROTOCOL" } });
+  });
+
+  test.skipIf(NO_FAKE || WIN)("detection_cached_and_single_flight", async () => {
+    needFake();
+    const dir = join(tmp, "counted");
+    mkdirSync(dir);
+    const log = join(dir, "runs");
+    writeFileSync(
+      join(dir, "claude"),
+      `#!/bin/sh\necho "$1" >> '${log}'\nif [ "$1" = --version ]; then echo "2.1.321 (Claude Code)"; else sleep 0.3; echo '{"loggedIn":true,"authMethod":"console"}'; fi\n`,
+      { mode: 0o755 },
+    );
+    const runs = () => (existsSync(log) ? readFileSync(log, "utf8").trim().split("\n") : []);
+    let clock = 1_000_000;
+    const d = deps(dir, { now: () => clock });
+    // Concurrent callers share one run of each command.
+    const all = await Promise.all([1, 2, 3, 4].map(() => Effect.runPromise(detectClaude(d))));
+    expect(all.every((r) => r.signedIn === true && r.authMethod === "console")).toBe(true);
+    expect(runs()).toEqual(["--version", "auth"]);
+    // Within 30 s nothing runs again; after it only `auth status` does (the version is the same file).
+    await Effect.runPromise(claudeProviderInfo(d));
+    expect(runs()).toHaveLength(2);
+    clock += 31_000;
+    await Effect.runPromise(detectClaude(d));
+    expect(runs()).toEqual(["--version", "auth", "auth"]);
+    // Invalidation forgets both.
+    invalidateClaudeDetection();
+    await Effect.runPromise(detectClaude(d));
+    expect(runs()).toEqual(["--version", "auth", "auth", "--version", "auth"]);
+  });
+
+  test.skipIf(NO_FAKE || WIN)("cache_invalidated_by_binary_change", async () => {
+    needFake();
+    const dir = join(tmp, "swap");
+    mkdirSync(dir);
+    const script = (v: string) => `#!/bin/sh\nif [ "$1" = --version ]; then echo "${v} (Claude Code)"; else echo '{"loggedIn":true}'; fi\n`;
+    writeFileSync(join(dir, "claude"), script("2.1.321"), { mode: 0o755 });
+    const d = deps(dir);
+    expect((await Effect.runPromise(detectClaude(d))).version).toBe("2.1.321");
+    // The same path now holds another build (a different size): the cached version is not reused.
+    writeFileSync(join(dir, "claude"), script("2.1.400"), { mode: 0o755 });
+    expect((await Effect.runPromise(detectClaude(d))).version).toBe("2.1.400");
+    // Same size, new mtime.
+    writeFileSync(join(dir, "claude"), script("2.1.401"), { mode: 0o755 });
+    utimesSync(join(dir, "claude"), new Date(0), new Date(1_000_000));
+    expect((await Effect.runPromise(detectClaude(d))).version).toBe("2.1.401");
   });
 
   test.skipIf(NO_FAKE)("providers_never_carry_label_or_token", async () => {
@@ -346,13 +394,16 @@ describe("the sign-in commands", () => {
     if (!WIN) {
       const q = (s: string) => `'${s.replaceAll("'", `'\\''`)}'`;
       expect(lines).toEqual([
-        "# Run in a terminal on this server, as the account that runs finisherd.",
+        "# Run in sh, bash or zsh on this server, as the account that runs finisherd.",
         "# Claude Code is off on this server: sessions start on it once agents.claudeCode.enabled is true in settings.json.",
+        "# The CLI is the one agents.claudeCode.path names.",
         "(",
         "  umask 077",
-        `  mkdir -p -m 700 ${q(store)}`,
-        `  env -u ANTHROPIC_API_KEY -u CLAUDE_CODE_OAUTH_TOKEN CLAUDE_CONFIG_DIR=${q(home)} CLAUDE_SECURESTORAGE_CONFIG_DIR=${q(store)} DISABLE_AUTOUPDATER=1 ${q(path)} auth login`,
+        `  mkdir -p ${q(store)}`,
+        `  chmod 700 ${q(store)}`,
+        `  env ${CRED.map((v) => `-u ${v}`).join(" ")} CLAUDE_CONFIG_DIR=${q(home)} CLAUDE_SECURESTORAGE_CONFIG_DIR=${q(store)} DISABLE_AUTOUPDATER=1 ${q(path)} auth login`,
         ")",
+        "# Or run /login inside an interactive claude started with the same variables.",
       ]);
       // Sign-out: the same environment, `auth logout`, no folder made.
       lines.length = 0;
@@ -369,12 +420,19 @@ describe("the sign-in commands", () => {
     expect(ps).toEqual([
       "# Run in a new PowerShell window on this server, as the account that runs finisherd (it changes that window's environment).",
       "New-Item -ItemType Directory -Force -Path 'C:\\Fin Data\\providers\\claudeCode\\home\\store' | Out-Null",
-      "Remove-Item Env:ANTHROPIC_API_KEY, Env:CLAUDE_CODE_OAUTH_TOKEN -ErrorAction SilentlyContinue",
+      `Remove-Item ${CRED.map((v) => `Env:${v}`).join(", ")} -ErrorAction SilentlyContinue`,
       "$env:CLAUDE_CONFIG_DIR = 'C:\\Fin Data\\providers\\claudeCode\\home'",
       "$env:CLAUDE_SECURESTORAGE_CONFIG_DIR = 'C:\\Fin Data\\providers\\claudeCode\\home\\store'",
       "$env:DISABLE_AUTOUPDATER = '1'",
       "& 'C:\\Users\\O''Neil\\.local\\bin\\claude.exe' auth login",
+      "# Or run /login inside an interactive claude started with the same variables.",
     ]);
+    // PowerShell reads U+2018 to U+201B as quotes too: each is doubled.
+    const smart = signinCommands("logout", { path: "C:\\Users\\O\u2019Neil\\claude.exe", serverData: "C:\\Fin Data", platform: "win32" });
+    expect(smart).toContain("& 'C:\\Users\\O\u2019\u2019Neil\\claude.exe' auth logout");
+    // A control character in a path never reaches the terminal.
+    const ctl = signinCommands("logout", { path: "/bin/cla\u001b[2Jude", serverData: "/d", platform: "linux" });
+    expect(ctl.join("\n")).not.toContain("\u001b");
     // Only `claudeCode`; a CLI that is not there is the detection's refusal.
     expect(await runConsole(["provider", "signin", "codex", "--server-data", data], { output })).not.toBe(0);
     writeFileSync(join(data, "settings.json"), JSON.stringify({ agents: { claudeCode: { path: join(tmp, "missing", "claude") } } }));
