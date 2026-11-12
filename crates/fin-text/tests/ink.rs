@@ -342,3 +342,111 @@ fn overhang_at_line_start_keeps_greedy_breaking() {
     assert_eq!(lines, [(0, 2), (2, 3)], "{l:?}");
     assert!(l.overflow);
 }
+
+/// A colour glyph is inked over its advance, and its advance never includes tracking: one
+/// `W` (80 px) stays 80 px wide with +0.1 em tracking and fits a box exactly its width.
+#[test]
+fn advance_ink_excludes_tracking() {
+    let (m, f) = font(tf::test_color());
+    for tracking in [-0.1, 0.0, 0.1] {
+        let mut r = req(&f, &["W"], 100.0, Some(400.0));
+        r.style.letter_spacing = tracking;
+        r.style.align = Align::Right;
+        let l = layout(&m, &r);
+        assert_eq!(line_px(&l), (320.0, 80.0), "tracking {tracking}: {l:?}");
+        assert!(!l.overflow);
+        let mut r = req(&f, &["W"], 100.0, Some(80.0));
+        r.style.letter_spacing = tracking;
+        let l = layout(&m, &r);
+        assert_eq!(line_px(&l), (0.0, 80.0), "tracking {tracking}: {l:?}");
+        assert!(!l.overflow, "tracking {tracking}: {l:?}");
+    }
+    // Between two colour glyphs the tracking stays: 80 + t + 80.
+    let mut r = req(&f, &["WW"], 100.0, None);
+    r.style.letter_spacing = 0.1;
+    assert_eq!(line_px(&layout(&m, &r)), (0.0, 170.0));
+}
+
+/// Letter spacing goes between clusters: a base and its combining marks are one cluster, so
+/// a mark adds no tracking and stays where the untracked shaping put it.
+#[test]
+fn tracking_goes_between_clusters() {
+    let (m, f) = font(tf::test_overhang());
+    let at = |words: &[&str], tracking: f64, align: Align| {
+        let mut r = req(&f, words, 100.0, Some(400.0));
+        r.style.letter_spacing = tracking;
+        r.style.align = align;
+        line_px(&layout(&m, &r))
+    };
+    for align in ALIGNS {
+        // One cluster: tracking changes nothing (Latin and Hebrew, with and without a mark).
+        for word in ["a", "a\u{301}", "\u{5d0}", "\u{5d0}\u{5b8}"] {
+            let plain = at(&[word], 0.0, align);
+            for tracking in [-0.3, 0.3] {
+                assert_eq!(
+                    at(&[word], tracking, align),
+                    plain,
+                    "{word:?} {tracking} {align:?}"
+                );
+            }
+        }
+        // The mark sits inside its base's ink, whatever the tracking.
+        for tracking in [-0.3, 0.0, 0.3] {
+            assert_eq!(
+                at(&["a\u{301}"], tracking, align),
+                at(&["a"], tracking, align),
+                "{tracking} {align:?}"
+            );
+        }
+        // Two clusters: one gap of tracking, however many marks they hold. The ink grows by
+        // t, and the line moves left by the alignment's share of t.
+        let share = match align {
+            Align::Left => 0.0,
+            Align::Center => 0.5,
+            Align::Right => 1.0,
+        };
+        for word in ["aa", "a\u{301}a", "a\u{301}a\u{301}"] {
+            let (x0, w0) = at(&[word], 0.0, align);
+            for tracking in [-0.3, 0.3] {
+                let t = 100.0 * tracking;
+                let want = (x0 - share * t, w0 + t);
+                assert_eq!(
+                    at(&[word], tracking, align),
+                    want,
+                    "{word:?} {tracking} {align:?}"
+                );
+            }
+        }
+    }
+    // The same in a right-to-left line (the letters are 50 px, drawn 5..45).
+    for align in ALIGNS {
+        let (x0, w0) = at(&["\u{5d0}\u{5b8}\u{5d0}"], 0.0, align);
+        assert_eq!(w0, 90.0);
+        let share = match align {
+            Align::Left => 0.0,
+            Align::Center => 0.5,
+            Align::Right => 1.0,
+        };
+        for tracking in [-0.3, 0.3] {
+            let t = 100.0 * tracking;
+            let got = at(&["\u{5d0}\u{5b8}\u{5d0}"], tracking, align);
+            assert_eq!(got, (x0 - share * t, w0 + t), "{tracking} {align:?}");
+        }
+    }
+}
+
+/// A word of whitespace only draws nothing: a zero-width box at its pen position.
+#[test]
+fn whitespace_word_has_a_pen_box() {
+    let (m, sans) = font(tf::test_sans());
+    // `W` 0..80, space 80..105, NBSP (shaped as the space) 105..130, space 130..155, `W`
+    // 155..235.
+    let l = layout(&m, &req(&sans, &["W", "\u{a0}", "W"], 100.0, None));
+    let words: Vec<(f64, f64)> = l
+        .words
+        .iter()
+        .map(|w| (f64::from(w.x) / 64.0, f64::from(w.width) / 64.0))
+        .collect();
+    assert_eq!(words, [(5.0, 70.0), (105.0, 0.0), (160.0, 70.0)], "{l:?}");
+    assert_eq!(line_px(&l), (5.0, 225.0));
+}

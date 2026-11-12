@@ -9,16 +9,18 @@
 //! **Bidi.** The paragraph direction comes from the whole paragraph (UAX #9 P2–P3, first
 //! strong character). A line whose own first strong character gives the other direction (or
 //! none, in a right-to-left paragraph) is shaped behind a mark (LRM or RLM) forcing the
-//! paragraph's, so it keeps the paragraph's order. The mark moves nothing: it takes no letter
-//! spacing (its advance stays zero, so neither the pen nor the alignment width shifts), and
-//! its own glyphs are ignored. A line that needs no mark gets none, so nothing synthetic sits
+//! paragraph's, so it keeps the paragraph's order. The mark moves nothing: its advance is zero
+//! (letter spacing is fin-text's, [`crate::tracking`], and never reaches it), and its own
+//! glyphs are ignored. A line that needs no mark gets none, so nothing synthetic sits
 //! in front of its glyphs (a leading combining mark is not positioned against it).
 //!
 //! **Ink.** Glyphs are placed by their advances (and shaping offsets), but every reported
 //! box is ink: the union of the placed glyphs' outline extents ([`crate::ink`]), side
 //! bearings, overhangs and positioned marks included. A line fits when its ink lies inside
-//! `0..max_width`. A word with no ink (only empty glyphs) gets a zero-width box at its pen
-//! position.
+//! `0..max_width`. A word with no ink (only empty glyphs or whitespace) gets a zero-width box
+//! at its pen position.
+//!
+//! **Letter spacing** goes between shaping clusters only ([`crate::tracking`]).
 //!
 //! Every output length is rounded with `libm::roundf` to 1/64 px; sums saturate.
 
@@ -32,6 +34,7 @@ use fin_core::layout::{Align, LineBox, TextLayout, TextRequest, WordBox};
 
 use crate::ink::Ink;
 use crate::system::System;
+use crate::tracking::{self, LineFacts};
 
 /// `v` px in 1/64 px, rounded half away from zero (saturating).
 pub(crate) fn to_64(v: f32) -> i32 {
@@ -78,43 +81,8 @@ impl Span {
     }
 }
 
-/// A glyph's ink in line px, `None` when it draws nothing.
-/// How far to move every glyph of a line so the letter spacing after its last glyph is gone.
-///
-/// Letter spacing goes between glyphs, not after a line's last one. cosmic-text adds it to
-/// every glyph's advance (the direction mark's excepted), each glyph's spacing lying on its
-/// right in either direction, so a line of advance `w` ends one `spacing` past its rightmost
-/// glyph, and is aligned as `w` wide. This re-aligns it as `w − spacing` wide, with
-/// cosmic-text's own rule: in a box `max` wide (else in the line's own width) the gap is
-/// `max(0, box − width)`; a left-to-right line's left edge sits at 0, ½ or all of the gap
-/// (left, centre, right), a right-to-left line's right edge at the box's right less all, ½
-/// or none of it.
-fn trailing_shift(max: Option<f64>, align: Align, rtl: bool, w: f32, spacing: f32) -> f32 {
-    let trimmed = w - spacing;
-    let (box_c, box_d) = match max {
-        Some(m) => (m as f32, m as f32),
-        None => (w, trimmed),
-    };
-    let (gap_c, gap_d) = ((box_c - w).max(0.0), (box_d - trimmed).max(0.0));
-    if rtl {
-        let f = match align {
-            Align::Left => 1.0,
-            Align::Center => 0.5,
-            Align::Right => 0.0,
-        };
-        // The rightmost glyph's own advance ended `spacing` before cosmic-text's right edge.
-        (box_d - f * gap_d) - (box_c - f * gap_c) + spacing
-    } else {
-        let f = match align {
-            Align::Left => 0.0,
-            Align::Center => 0.5,
-            Align::Right => 1.0,
-        };
-        f * (gap_d - gap_c)
-    }
-}
-
-/// `dx` shifts the glyph from where cosmic-text placed it.
+/// A glyph's ink in line px, `None` when it draws nothing; `dx` shifts the glyph from where
+/// cosmic-text placed it.
 fn glyph_ink(
     sys: &mut System,
     face: Option<usize>,
@@ -212,14 +180,11 @@ impl Shaper<'_> {
         buffer.set_wrap(Wrap::None);
         buffer.set_hinting(Hinting::Disabled);
         buffer.set_size(self.req.max_width.map(|w| w as f32), None);
-        let plain = Attrs::new()
+        // No letter spacing here: tracking::shifts applies it between clusters.
+        let attrs = Attrs::new()
             .family(Family::Name(sys.primary))
             .weight(Weight(st.weight));
-        let attrs = plain.clone().letter_spacing(st.letter_spacing as f32);
-        // The mark is its own span without letter spacing (cosmic-text adds the spacing to
-        // every glyph's advance, the mark's hidden glyph included).
-        let spans = [(mark, plain), (&text[mark.len()..], attrs.clone())];
-        buffer.set_rich_text(spans, &attrs, Shaping::Advanced, Some(align(st.align)));
+        buffer.set_text(&text, &attrs, Shaping::Advanced, Some(align(st.align)));
         buffer.shape_until_scroll(&mut sys.fs, false);
 
         let mut line = Line {
@@ -237,13 +202,15 @@ impl Shaper<'_> {
         let spacing = (st.letter_spacing * st.size) as f32;
         for run in buffer.layout_runs() {
             line.baseline = to_64(run.line_y);
-            let tracked = run.glyphs.iter().any(|g| g.end > lead);
-            let dx = if tracked {
-                trailing_shift(self.req.max_width, st.align, run.rtl, run.line_w, spacing)
-            } else {
-                0.0
+            let facts = LineFacts {
+                max: self.req.max_width,
+                align: st.align,
+                rtl: run.rtl,
+                w: run.line_w,
+                spacing,
             };
-            for g in run.glyphs {
+            let shifts = tracking::shifts(run.glyphs, lead, &facts);
+            for (g, &dx) in run.glyphs.iter().zip(&shifts) {
                 if g.end <= lead {
                     continue; // the direction mark
                 }
@@ -256,10 +223,12 @@ impl Shaper<'_> {
                     let unmapped = cluster.chars().filter(|&c| !mapped(sys, c));
                     line.missing.extend(unmapped.map(u32::from));
                 }
-                if cluster.chars().all(char::is_whitespace) {
-                    continue;
-                }
-                let drawn = glyph_ink(sys, face, g, dx);
+                // Whitespace draws nothing but still marks the pen.
+                let drawn = if cluster.chars().all(char::is_whitespace) {
+                    None
+                } else {
+                    glyph_ink(sys, face, g, dx)
+                };
                 pen.add(g.x + dx, 0.0);
                 if let Some((lo, hi)) = drawn {
                     ink.add(lo, hi - lo);

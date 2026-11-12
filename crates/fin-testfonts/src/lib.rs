@@ -131,12 +131,13 @@ pub fn test_han() -> Vec<u8> {
 /// At 1000 units per em: `W` advances 200 but is drawn 50..750 (right side bearing −550); `J`
 /// advances 500, drawn −200..450 (left side bearing −200); `a` advances 500, drawn 50..450;
 /// U+0301 (combining acute) advances 0 and is drawn −350..−150, over the base before it; the
-/// space advances 250. No GDEF, GSUB or GPOS.
+/// space advances 250; `א` advances 500, drawn 50..450, and U+05B8 (Hebrew qamats, a
+/// combining point) advances 0, drawn −350..−150. No GDEF, GSUB or GPOS.
 pub const OVERHANG: Spec = Spec {
     family: "TestOverhang",
     weight: 400,
     italic: false,
-    chars: "WJa \u{301}",
+    chars: "WJa \u{301}\u{5d0}\u{5b8}",
     advance: overhang_advance,
     ink: Some(overhang_ink),
 };
@@ -145,7 +146,7 @@ fn overhang_advance(c: char) -> u16 {
     match c {
         'W' => 200,
         ' ' => 250,
-        '\u{301}' => 0,
+        '\u{301}' | '\u{5b8}' => 0,
         _ => 500,
     }
 }
@@ -154,7 +155,7 @@ fn overhang_ink(c: char) -> Option<(i16, i16)> {
     match c {
         'W' => Some((50, 750)),
         'J' => Some((-200, 450)),
-        '\u{301}' => Some((-350, -150)),
+        '\u{301}' | '\u{5b8}' => Some((-350, -150)),
         ' ' => None,
         _ => Some((50, 450)),
     }
@@ -162,6 +163,19 @@ fn overhang_ink(c: char) -> Option<(i16, i16)> {
 
 pub fn test_overhang() -> Vec<u8> {
     build(&OVERHANG)
+}
+
+/// `TestColor`: `TestSans`'s glyphs plus an empty `COLR` (version 0, no records), so it
+/// counts as a colour font whose glyphs are inked over their advances.
+pub fn test_color() -> Vec<u8> {
+    let spec = Spec {
+        family: "TestColor",
+        ..SANS
+    };
+    // version, numBaseGlyphRecords, baseGlyphRecordsOffset, layerRecordsOffset,
+    // numLayerRecords.
+    let colr = [0u8; 14];
+    assemble_with(&spec, None, None, &[(b"COLR", &colr)])
 }
 
 /// `TestVar`: Latin like `TestLatin` but Regular, variable on `wght` 100–900 (default 400);
@@ -172,7 +186,7 @@ pub fn test_variable() -> Vec<u8> {
         weight: 400,
         ..LATIN_BOLD
     };
-    assemble_with(&spec, None, Some(VARIABLE_DELTA))
+    assemble_with(&spec, None, Some(VARIABLE_DELTA), &[])
 }
 
 /// The advance gained at `wght` 900 by every `test_variable` glyph.
@@ -215,12 +229,18 @@ fn write_fonts_path(svg: &str) -> kurbo::BezPath {
 }
 
 fn assemble(spec: &Spec, pad: Option<usize>) -> Vec<u8> {
-    assemble_with(spec, pad, None)
+    assemble_with(spec, pad, None, &[])
 }
 
 /// `wght`: the advance delta (font units) every glyph gains at `wght` 900, making a variable
 /// font with one axis `wght` 100–900, default 400 (deltas on the right phantom point only).
-fn assemble_with(spec: &Spec, pad: Option<usize>, wght: Option<i16>) -> Vec<u8> {
+/// `extra`: raw tables added as they are.
+fn assemble_with(
+    spec: &Spec,
+    pad: Option<usize>,
+    wght: Option<i16>,
+    extra: &[(&[u8; 4], &[u8])],
+) -> Vec<u8> {
     let chars = chars_of(spec);
     let mut advances = vec![NOTDEF_ADVANCE];
     let mut glyf = GlyfLocaBuilder::new();
@@ -440,6 +460,9 @@ fn assemble_with(spec: &Spec, pad: Option<usize>, wght: Option<i16>) -> Vec<u8> 
         .unwrap();
     if let Some(pad) = pad {
         builder.add_raw(Tag::new(b"zpad"), vec![0u8; pad]);
+    }
+    for (tag, data) in extra {
+        builder.add_raw(Tag::new(tag), data.to_vec());
     }
     let fvar_gvar = wght.map(|delta| variations(delta, &points));
     if let Some((fvar, gvar)) = &fvar_gvar {
