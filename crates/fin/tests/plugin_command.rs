@@ -35,6 +35,8 @@ fn args_schema() -> Value {
                 "additionalProperties": false,
             },
             "sleepMs": { "type": "integer", "minimum": 0 },
+            "branch": { "type": "string" },
+            "read": { "type": "boolean" },
         },
         "required": ["op"],
         "additionalProperties": false,
@@ -151,6 +153,20 @@ impl Rig {
         self.fin_at(&self.project, args)
     }
 
+    fn fin_env(&self, args: &[&str], more: &[(&str, &str)]) -> Run {
+        let mut env: Vec<(&str, &OsStr)> = vec![("FIN_CACHE_DIR", self.cache.as_os_str())];
+        env.extend(more.iter().map(|(k, v)| (*k, OsStr::new(*v))));
+        fin_env(&self.server.sd, &self.project, args, &env)
+    }
+
+    /// `fin` started, not waited for.
+    fn spawn(&self, args: &[&str]) -> std::process::Child {
+        support::fin_cmd(&self.server.sd, &self.project, args)
+            .env("FIN_CACHE_DIR", &self.cache)
+            .spawn()
+            .unwrap()
+    }
+
     /// The one cache file `fin` keeps for this server.
     fn cache_files(&self) -> Vec<PathBuf> {
         std::fs::read_dir(self.cache.join("plugin-commands"))
@@ -225,6 +241,56 @@ fn fin_runs_plugin_command() {
             .code,
         2
     );
+    // A run longer than an ordinary call's timeout (lowered here to 1 s) still answers: the run
+    // waits on a connection of its own for the command's timeout (10 s) and some.
+    let long = rig.fin_env(
+        &[
+            ID,
+            "look",
+            "--op",
+            "command",
+            "--sleep-ms",
+            "2500",
+            "--out",
+            out,
+        ],
+        &[("FIN_TEST_CALL_TIMEOUT_MS", "1000")],
+    );
+    assert_eq!(long.code, 0, "{}", long.stdout);
+
+    // A conflict is fin's CONFLICT (exit 4), with what the plugin proposed.
+    let added = ok(rig.fin(&["marker", "add", "--at", "2s", "--label", "doomed"]));
+    let marker = added["bindings"]["$marker"].as_str().unwrap().to_string();
+    let remove =
+        json!({ "kind": "tx", "ops": [{ "op": "marker.remove", "marker": marker }] }).to_string();
+    let racing = rig.spawn(&[
+        ID,
+        "edit",
+        "--op",
+        "command",
+        "--sleep-ms",
+        "1500",
+        "--out",
+        &remove,
+    ]);
+    std::thread::sleep(std::time::Duration::from_millis(700));
+    ok(rig.fin(&["marker", "remove", &marker]));
+    let lost = support::finish(&["racing"], racing.wait_with_output().unwrap());
+    assert_eq!(
+        (lost.code, error_code(&lost)),
+        (4, "CONFLICT"),
+        "{}",
+        lost.stdout
+    );
+    assert_eq!(
+        lost.json["error"]["details"]["name"],
+        "plugin:@acme/tools/edit"
+    );
+    assert_eq!(
+        lost.json["error"]["details"]["ops"][0]["op"],
+        "marker.remove"
+    );
+
     // Outside a project there is nothing to run it on.
     let nowhere = rig.fin_at(&rig.server.root, &[ID, "look", "--op", "echo"]);
     assert_ne!(nowhere.code, 0, "{}", nowhere.stdout);
@@ -262,7 +328,10 @@ fn help_lists_commands_from_cache() {
         line.contains("[--sleep-ms <integer>]") && line.contains("[--loud]"),
         "{line}"
     );
-    assert!(line.ends_with("[--args-json '{\"box\": …}']"), "{line}");
+    assert!(
+        line.ends_with("[--args-json '{\"box\": …, \"branch\": …}']"),
+        "{line}"
+    );
     // One cache file, holding the list under its digest; `fin plugin commands` agrees.
     let files = rig.cache_files();
     assert_eq!(files.len(), 1, "{files:?}");
@@ -272,6 +341,13 @@ fn help_lists_commands_from_cache() {
     let all = ok(rig.fin(&["plugin", "commands"]));
     assert_eq!(all["commands"], help["commands"]);
     assert_eq!(ok(rig.fin(&[ID]))["commands"], help["commands"]);
+    assert_eq!(ok(rig.fin(&[ID, "--help"]))["commands"], help["commands"]);
+    assert_eq!(
+        ok(rig.fin(&[ID, "look", "-h"]))["commands"],
+        help["commands"]
+    );
+    // fin's own flag names are never a property's: `branch` is in --args-json.
+    assert!(line.contains("\"branch\": …"), "{line}");
 
     // With the server gone, help comes from the cache.
     rig.server.stop();
@@ -407,6 +483,13 @@ fn args_mapping_table() {
             json!({ "box": { "w": 4 } }),
         ),
         (vec!["--out", "--x=y"], json!(null)),
+        // `branch` (a property named like fin's flag) only through --args-json; `--branch` is fin's.
+        (
+            vec!["--args-json", r#"{"branch":"x"}"#],
+            json!({ "branch": "x" }),
+        ),
+        (vec!["--branch", "main"], json!({})),
+        (vec!["--dry-run", "--loud"], json!({ "loud": true })),
     ] {
         let run = echo(&line);
         if want.is_null() {
@@ -430,6 +513,8 @@ fn args_mapping_table() {
         (vec!["--box", "{}"], 2, "USAGE"),
         (vec!["--count", "1", "--count", "2"], 2, "USAGE"),
         (vec!["positional"], 2, "USAGE"),
+        (vec!["--timeline", "tl1"], 2, "USAGE"),
+        (vec!["--idem-key", "k"], 2, "USAGE"),
         (vec!["--count", "101"], 3, "PLUGIN_COMMAND_ARGS"),
         (
             vec!["--args-json", r#"{"box":{"h":1}}"#],

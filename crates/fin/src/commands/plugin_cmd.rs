@@ -14,10 +14,12 @@
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use fin_core::CoreError;
 use fin_plugin_api::protocol::rpc::{
-    PluginCommandInfo, PluginCommandList, PluginCommandRunRequest, PluginCommandRunResult,
+    CommandOutcome, PluginCommandInfo, PluginCommandList, PluginCommandRunRequest,
+    PluginCommandRunResult,
 };
 use serde_json::{Value, json};
 
@@ -30,6 +32,13 @@ use crate::output::{internal, usage};
 pub const CACHE_ENV: &str = "FIN_CACHE_DIR";
 
 /// `fin [globals] @<id> [<command> [args…]]`, split from fin's own flags.
+///
+/// fin's global flags `--project`, `--branch` and `--dry-run` are fin's wherever they stand, as
+/// for every fin command (clap's `global` flags); a plugin property spelled like one of them
+/// (or `--help`) is passed in `--args-json` (`plugin_args::RESERVED`, shown so by its usage
+/// line). `--idem-key` and `--timeline` are refused: a run is never retried and acts on no
+/// timeline of fin's choosing. `--help`/`-h` after the id is `fin help @<id>`. Any other flag
+/// between the id and the command word is refused: a command's flags follow it.
 #[derive(Debug, PartialEq)]
 pub struct Invocation {
     pub project: Option<PathBuf>,
@@ -38,6 +47,8 @@ pub struct Invocation {
     pub id: String,
     pub command: Option<String>,
     pub args: Vec<String>,
+    /// `--help` or `-h` after the id.
+    pub help: bool,
 }
 
 /// The invocation when the first word after fin's global flags is `@…`; `None` for every other
@@ -55,9 +66,12 @@ pub fn split(args: &[OsString]) -> Option<Result<Invocation, CoreError>> {
         id: String::new(),
         command: None,
         args: Vec::new(),
+        help: false,
     };
     let mut i = 0;
     let mut seen_id = false;
+    let mut refused: Option<String> = None;
+    let mut misplaced: Option<String> = None;
     while i < words.len() {
         let w = &words[i];
         i += 1;
@@ -83,16 +97,11 @@ pub fn split(args: &[OsString]) -> Option<Result<Invocation, CoreError>> {
                 Some(v) => inv.branch = Some(v),
                 None => return seen_id.then(|| Err(needs(flag))),
             },
-            "--idem-key" | "--timeline" if seen_id => {
-                return Some(Err(usage(
-                    format!("plugin commands take no {flag}"),
-                    json!({ "flag": flag }),
-                    "leave it out: a plugin command run is never retried",
-                )));
-            }
             "--idem-key" | "--timeline" => {
                 value();
+                refused.get_or_insert_with(|| flag.to_string());
             }
+            "--help" | "-h" if seen_id && inline.is_none() => inv.help = true,
             _ if !seen_id => {
                 if !w.starts_with('@') {
                     return None;
@@ -100,11 +109,34 @@ pub fn split(args: &[OsString]) -> Option<Result<Invocation, CoreError>> {
                 inv.id = w.clone();
                 seen_id = true;
             }
-            _ if inv.command.is_none() && !w.starts_with('-') => inv.command = Some(w.clone()),
+            _ if inv.command.is_none() && w.starts_with('-') => {
+                misplaced.get_or_insert_with(|| w.clone());
+            }
+            _ if inv.command.is_none() => inv.command = Some(w.clone()),
             _ => inv.args.push(w.clone()),
         }
     }
-    seen_id.then_some(Ok(inv))
+    if !seen_id {
+        return None;
+    }
+    if let Some(flag) = refused {
+        return Some(Err(usage(
+            format!("plugin commands take no {flag}"),
+            json!({ "flag": flag }),
+            "leave it out: a plugin command run is never retried and names no timeline",
+        )));
+    }
+    if let Some(flag) = misplaced.filter(|_| !inv.help) {
+        return Some(Err(usage(
+            format!("{flag} comes before the command word: a plugin command's flags follow it"),
+            json!({ "flag": flag, "id": inv.id }),
+            format!(
+                "write fin {} <command> {flag} …; fin help {} lists its commands",
+                inv.id, inv.id
+            ),
+        )));
+    }
+    Some(Ok(inv))
 }
 
 fn needs(flag: &str) -> CoreError {
@@ -229,6 +261,7 @@ fn not_found(id: &str, command: Option<&str>, list: &PluginCommandList) -> CoreE
         }
         _ => {
             let mut ids: Vec<&str> = list.commands.iter().map(|c| id_of(&c.plugin)).collect();
+            ids.sort_unstable();
             ids.dedup();
             (
                 format!("no enabled plugin {id} serves commands"),
@@ -250,7 +283,7 @@ fn not_found(id: &str, command: Option<&str>, list: &PluginCommandList) -> CoreE
 pub fn list(backend: &dyn Backend, id: Option<&str>) -> Result<Value, CoreError> {
     let (list, source) = match fetch(backend) {
         Ok(l) => (l, "server"),
-        Err(e) if e.code == "SERVER_UNAVAILABLE" => {
+        Err(e) if matches!(e.code.as_str(), "SERVER_UNAVAILABLE" | "SERVER_TIMEOUT") => {
             match cache_file().as_deref().and_then(read_cache) {
                 Some(l) => (l, "cache"),
                 None => return Err(e),
@@ -285,12 +318,66 @@ fn resolve(list: &PluginCommandList, inv: &Invocation, command: &str) -> Result<
     map_args(&name, c.args.as_value(), &inv.args)
 }
 
-/// `fin @<id> <command> …`: `plugin.command.run` on the project and branch, its result as the
-/// server answers it. `fin @<id>` alone lists the plugin's commands.
-pub fn run(backend: &dyn Backend, inv: &Invocation) -> Result<Value, CoreError> {
-    let Some(command) = inv.command.as_deref() else {
-        return list(backend, Some(&inv.id));
+/// How long fin waits for a run beyond the command's own timeout (the server cancels the job
+/// at that timeout, counted from its submit).
+const RUN_SLACK_S: u64 = 15;
+
+/// `plugin.command.run` on a connection of its own that waits `wait`, outside the run's overall
+/// deadline (as `fin wait`): an ordinary call gives up after 30 s, a command may take 60.
+fn long_call(backend: &dyn Backend, payload: Value, wait: Duration) -> Result<Value, CoreError> {
+    if backend.dry_run_only() {
+        return backend.server_call("plugin.command.run", payload);
+    }
+    crate::client::Client::connect(&crate::endpoint::resolve()?, wait)?
+        .without_deadline()
+        .call("plugin.command.run", payload)
+}
+
+/// What fin answers when the run's answer was lost: a writing run may have committed.
+fn lost(mut e: CoreError, name: &str, writes: bool, dry_run: bool) -> CoreError {
+    if !writes || dry_run || !crate::client::IN_FLIGHT_CODES.contains(&e.code.as_str()) {
+        return e;
+    }
+    if let Some(map) = e.details.as_object_mut() {
+        map.insert("name".into(), json!(name));
+        map.insert("mayHaveRun".into(), json!(true));
+    }
+    if e.code == "SERVER_UNAVAILABLE" {
+        e.message =
+            "the connection to the Finisher server was lost before the command answered".into();
+    }
+    e.with_fix(format!(
+        "{name} may have run and committed: check fin view (or fin branch ls for the head) on the branch before running it again"
+    ))
+}
+
+/// A run's answer: `conflict` is fin's `CONFLICT` (exit 4) as for every write; anything else as
+/// the server sent it (decoded when it can be: an answer after a commit is never thrown away).
+fn answer(v: Value, name: &str) -> Result<Value, CoreError> {
+    let Ok(result) = serde_json::from_value::<PluginCommandRunResult>(v.clone()) else {
+        return Ok(v);
     };
+    if result.outcome == CommandOutcome::Conflict {
+        return Err(CoreError::new(
+            "CONFLICT",
+            format!(
+                "{name}'s change conflicts with a commit made while it ran: nothing was committed"
+            ),
+        )
+        .with_details(json!({ "name": name, "rev": result.rev, "ops": result.ops }))
+        .with_fix("run the command again: it starts from the branch's head"));
+    }
+    Ok(serde_json::to_value(result).unwrap_or(v))
+}
+
+/// `fin @<id> <command> …`: `plugin.command.run` on the project and branch, its result as the
+/// server answers it. `fin @<id>` alone (or with `--help`) lists the plugin's commands.
+pub fn run(backend: &dyn Backend, inv: &Invocation) -> Result<Value, CoreError> {
+    let command = match inv.command.as_deref() {
+        Some(c) if !inv.help => c,
+        _ => return list(backend, Some(&inv.id)),
+    };
+    let name = name_of(&inv.id, command);
     let cached = cache_file().as_deref().and_then(read_cache);
     let (mut list, mut fresh) = match cached {
         Some(l) => (l, false),
@@ -315,27 +402,22 @@ pub fn run(backend: &dyn Backend, inv: &Invocation) -> Result<Value, CoreError> 
     };
     let branch = target_branch(backend, &globals)?;
     loop {
+        let info = list.commands.iter().find(|c| c.name == name);
+        let writes = info.is_none_or(|c| c.writes);
+        let timeout_s = info.map_or(60, |c| u64::from(c.timeout_s));
         let req = PluginCommandRunRequest {
             project_id: project_id.clone(),
             branch: Some(branch.clone()),
-            name: name_of(&inv.id, command),
+            name: name.clone(),
             args: args.clone(),
             dry_run: inv.dry_run.then_some(true),
         };
         let payload = serde_json::to_value(&req)
             .map_err(|e| internal(format!("cannot encode the run: {e}"), json!({})))?;
-        match backend.server_call("plugin.command.run", payload) {
-            Ok(v) => {
-                let result: PluginCommandRunResult =
-                    serde_json::from_value(v.clone()).map_err(|e| {
-                        internal(
-                            format!("plugin.command.run answered an unexpected shape: {e}"),
-                            json!({ "answer": v }),
-                        )
-                    })?;
-                return serde_json::to_value(result)
-                    .map_err(|e| internal(format!("cannot encode the result: {e}"), json!({})));
-            }
+        // The command may take its whole timeout: a connection of its own, waiting that long.
+        let wait = Duration::from_secs(timeout_s + RUN_SLACK_S);
+        match long_call(backend, payload, wait) {
+            Ok(v) => return answer(v, &name),
             // Nothing ran: a stale cache may have mapped the line; ask again once.
             Err(e)
                 if !fresh
@@ -349,7 +431,7 @@ pub fn run(backend: &dyn Backend, inv: &Invocation) -> Result<Value, CoreError> 
                 }
                 args = resolve(&list, inv, command)?;
             }
-            Err(e) => return Err(e),
+            Err(e) => return Err(lost(e, &name, writes, inv.dry_run)),
         }
     }
 }
@@ -367,7 +449,7 @@ mod tests {
     fn split_finds_the_plugin_after_fin_flags() {
         assert!(split_str("fin clip insert --track t1").is_none());
         assert!(split_str("fin --project p view").is_none());
-        let inv = split_str("fin --project p @a/b go --x 1 --branch dev --dry-run --y")
+        let inv = split_str("fin --project p @a/b --dry-run go --x 1 --branch dev --y")
             .unwrap()
             .unwrap();
         assert_eq!(inv.project, Some(PathBuf::from("p")));
@@ -388,6 +470,57 @@ mod tests {
         assert_eq!(
             split_str("fin @a/b go --branch").unwrap().unwrap_err().code,
             "USAGE"
+        );
+        // A refused flag before the id is still refused once the line is a plugin's.
+        let early = split_str("fin --timeline tl1 @a/b go")
+            .unwrap()
+            .unwrap_err();
+        assert_eq!(early.details["flag"], "--timeline");
+        // A command's flags follow the command word.
+        let before = split_str("fin @a/b --x 1 go").unwrap().unwrap_err();
+        assert_eq!(before.details["flag"], "--x");
+        // `--help` after the id is help, wherever it stands.
+        assert!(split_str("fin @a/b --help").unwrap().unwrap().help);
+        assert!(split_str("fin @a/b go -h").unwrap().unwrap().help);
+        assert!(split_str("fin @a/b -h go --x").unwrap().unwrap().help);
+    }
+
+    #[test]
+    fn a_lost_writing_run_may_have_run() {
+        let e = || CoreError::new("SERVER_TIMEOUT", "late").with_details(json!({}));
+        let lost_write = lost(e(), "plugin:@a/b/go", true, false);
+        assert_eq!(lost_write.details["name"], "plugin:@a/b/go");
+        assert_eq!(lost_write.details["mayHaveRun"], true);
+        assert!(lost_write.fix.unwrap().contains("may have run"));
+        // A read-only command or a dry run committed nothing: the error stays as it was.
+        assert!(lost(e(), "n", false, false).details.get("name").is_none());
+        assert!(lost(e(), "n", true, true).details.get("name").is_none());
+        // A refusal is not a lost answer.
+        let refused = CoreError::new("PLUGIN_TX_INVALID", "x").with_details(json!({}));
+        assert!(
+            lost(refused, "n", true, false)
+                .details
+                .get("name")
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn a_conflict_is_fins_conflict() {
+        let e = answer(
+            json!({ "outcome": "conflict", "rev": 4, "ops": [] }),
+            "plugin:@a/b/go",
+        )
+        .unwrap_err();
+        assert_eq!(
+            (e.code.as_str(), crate::output::exit_code(&e.code)),
+            ("CONFLICT", 4)
+        );
+        assert_eq!(e.details["rev"], 4);
+        // An answer fin cannot decode is still the server's answer.
+        assert_eq!(
+            answer(json!({ "odd": 1 }), "n").unwrap(),
+            json!({ "odd": 1 })
         );
     }
 

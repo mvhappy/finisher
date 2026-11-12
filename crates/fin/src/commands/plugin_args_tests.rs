@@ -13,6 +13,10 @@ fn schema() -> Value {
             "tags": { "type": "array", "items": { "type": "string" } },
             "frames": { "type": "array", "items": { "type": "integer" } },
             "box": { "type": "object", "properties": {}, "additionalProperties": false },
+            "branch": { "type": "string" },
+            "dry_run": { "type": "boolean" },
+            "a_b": { "type": "string" },
+            "aB": { "type": "integer" },
         },
         "required": ["op"],
         "additionalProperties": false,
@@ -57,6 +61,12 @@ fn flags_map_by_type() {
         &["--args-json", r#"{"box":{}}"#, "--op", "a"],
         json!({ "box": {}, "op": "a" }),
     );
+    // Two properties with one kebab flag: the first in key order has it (`aB` before `a_b`).
+    ok(&["--a-b", "2"], json!({ "aB": 2 }));
+    ok(
+        &["--args-json", r#"{"branch":"b","a_b":"y"}"#],
+        json!({ "branch": "b", "a_b": "y" }),
+    );
     // The schema decides nothing else here: an enum miss is the server's to refuse.
     ok(&["--op", "zzz"], json!({ "op": "zzz" }));
 }
@@ -79,6 +89,11 @@ fn bad_command_lines_are_usage() {
         vec!["--args-json", "{}", "--args-json", "{}"],
         vec!["--op", "a", "--args-json", r#"{"op":"b"}"#],
         vec!["--"],
+        // fin's own flag names are never a property's: `branch` goes in --args-json.
+        vec!["--branch", "x"],
+        vec!["--dry-run"],
+        // The second property of one kebab flag has none of its own.
+        vec!["--a_b", "x"],
     ] {
         assert!(map(&t).is_err(), "{t:?} was accepted");
     }
@@ -88,7 +103,8 @@ fn bad_command_lines_are_usage() {
 fn usage_line_from_schema() {
     assert_eq!(
         usage_args(&schema()),
-        "--op <a|b> [--frames <integer>…] [--gain <number>] [--loud] [--sleep-ms <integer>] \
-         [--tags <string>…] [--args-json '{\"box\": …}']"
+        "--op <a|b> [--a-b <integer>] [--frames <integer>…] [--gain <number>] [--loud] \
+         [--sleep-ms <integer>] [--tags <string>…] \
+         [--args-json '{\"a_b\": …, \"box\": …, \"branch\": …, \"dry_run\": …}']"
     );
 }

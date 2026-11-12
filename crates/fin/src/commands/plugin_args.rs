@@ -8,7 +8,10 @@
 //! - `--args-json '<object>'` for anything else (objects, arrays of objects), merged with the
 //!   flags; a key given both ways is refused.
 //!
-//! A property is spelled as written (`--sleepMs`) or in kebab case (`--sleep-ms`). Only the
+//! A property is spelled as written (`--sleepMs`) or in kebab case (`--sleep-ms`). A property
+//! whose flag would be one of fin's own (`RESERVED`: `--project`, `--branch`, `--dry-run`, …),
+//! or the same flag as an earlier property's, has no flag: it goes in `--args-json`, and its
+//! usage line says so. Only the
 //! command line is checked here (`USAGE`, exit 2): the server checks the arguments against the
 //! schema itself (`PLUGIN_COMMAND_ARGS`, exit 3).
 
@@ -19,6 +22,11 @@ use crate::output::usage;
 
 /// The flag that carries a JSON object of arguments.
 pub const ARGS_JSON: &str = "args-json";
+
+/// fin's own flags on a plugin command's line (`plugin_cmd::split`) and `--args-json` itself.
+pub const RESERVED: &[&str] = &[
+    "project", "branch", "dry-run", "idem-key", "timeline", "help", ARGS_JSON,
+];
 
 /// `sleepMs` → `sleep-ms`.
 pub fn kebab(name: &str) -> String {
@@ -76,6 +84,22 @@ fn required(schema: &Value) -> Vec<&str> {
         .unwrap_or_default()
 }
 
+/// The properties that have a flag (in key order), and those reached only through
+/// `--args-json`: a reserved flag, or one an earlier property already has.
+fn split_props(schema: &Value) -> (Vec<(&str, &Value)>, Vec<&str>) {
+    let mut flagged: Vec<(&str, &Value)> = Vec::new();
+    let mut json_only = Vec::new();
+    for (name, prop) in properties(schema) {
+        let flag = kebab(name);
+        if RESERVED.contains(&flag.as_str()) || flagged.iter().any(|(k, _)| kebab(k) == flag) {
+            json_only.push(name);
+        } else {
+            flagged.push((name, prop));
+        }
+    }
+    (flagged, json_only)
+}
+
 /// The property a flag names: its own spelling first, then the kebab one.
 fn find<'a>(props: &[(&'a str, &'a Value)], flag: &str) -> Option<(&'a str, &'a Value)> {
     props
@@ -90,8 +114,8 @@ fn find<'a>(props: &[(&'a str, &'a Value)], flag: &str) -> Option<(&'a str, &'a 
 pub fn usage_args(schema: &Value) -> String {
     let req = required(schema);
     let mut parts: Vec<(bool, String)> = Vec::new();
-    let mut json_keys = Vec::new();
-    for (name, prop) in properties(schema) {
+    let (flagged, mut json_keys) = split_props(schema);
+    for (name, prop) in flagged {
         let flag = format!("--{}", kebab(name));
         let value = |t: &str, p: &Value| match p.get("enum").and_then(Value::as_array) {
             Some(e) => format!(
@@ -128,6 +152,7 @@ pub fn usage_args(schema: &Value) -> String {
     parts.sort_by_key(|(optional, _)| *optional);
     let mut parts: Vec<String> = parts.into_iter().map(|(_, p)| p).collect();
     if !json_keys.is_empty() {
+        json_keys.sort_unstable();
         let keys: Vec<String> = json_keys.iter().map(|k| format!("\"{k}\": …")).collect();
         parts.push(format!("[--{ARGS_JSON} '{{{}}}']", keys.join(", ")));
     }
@@ -167,7 +192,7 @@ fn scalar(t: &str, text: &str) -> Result<Value, String> {
 /// `tokens` (after `fin @<id> <command>`, fin's own flags removed) as the command's `args`.
 /// `command` names it in errors (`plugin:<id>/<cmd>`).
 pub fn map_args(command: &str, schema: &Value, tokens: &[String]) -> Result<Value, CoreError> {
-    let props = properties(schema);
+    let (props, _) = split_props(schema);
     let fix = "run fin help @<id> for the command's flags; objects go in --args-json '{…}'";
     let accepted = || {
         let mut f: Vec<String> = props

@@ -318,7 +318,7 @@ impl Online {
             Some(c) => c,
             None => slot.insert(Client::connect(
                 &endpoint::resolve()?,
-                crate::client::TIMEOUT,
+                crate::client::call_timeout(),
             )?),
         };
         let result = f(client);
