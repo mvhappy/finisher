@@ -38,6 +38,9 @@ async function attempt(f) {
   }
 }
 
+/** Marks a `run` answer that is the job's error, not its result. */
+const FAIL = Symbol("fail");
+
 async function run(job) {
   // `test.echo` carries the op in `value`, a `plugin.command` in its `args`.
   const v = job.params?.value ?? job.params?.args ?? {};
@@ -89,6 +92,8 @@ async function run(job) {
       let rev = -1;
       if (v.read) rev = (await call("project.snapshot", {})).value?.rev ?? -2;
       if (v.sleepMs) await new Promise((r) => setTimeout(r, v.sleepMs));
+      // `fail`: a `JobError` as JSON, sent as the job's error (the SDKs' wire form: `fix` in `details`).
+      if (v.fail) return { [FAIL]: JSON.parse(v.fail) };
       return JSON.parse((v.out ?? '{"kind":"data","value":null}').replaceAll("$REV", String(rev)));
     }
     case "echo":
@@ -126,7 +131,8 @@ rl.on("line", async (line) => {
   }
   if (m.t !== "start") return;
   const value = await run(m.job);
-  send({ t: "result", job: m.job.id, value });
+  if (value?.[FAIL] !== undefined) send({ t: "error", job: m.job.id, error: value[FAIL] });
+  else send({ t: "result", job: m.job.id, value });
   if (warm) send({ t: "ready" });
   else stop();
 });

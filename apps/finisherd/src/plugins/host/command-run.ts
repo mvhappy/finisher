@@ -28,6 +28,7 @@ import type { JobEngine } from "../../jobs/api.ts";
 import { COMMAND_KIND } from "../../jobs/kinds/plugin.command.ts";
 import { type HostCalls, pinOf } from "./calls.ts";
 import { type CommandEntry, type CommandRegistry, parseCommandName } from "./commands.ts";
+import { scrubLogText } from "./log.ts";
 import { type Invoker, requirePermission } from "./rights.ts";
 import type { JobRights, Permission } from "@finisher/core-types";
 
@@ -103,8 +104,19 @@ function txInvalid(name: string, problems: ReadonlyArray<unknown>): FinError {
 const readOnly = (name: string): FinError =>
   txInvalid(name, [{ code: "PLUGIN_TX_INVALID", message: "the command's manifest does not say it writes", details: { reason: "readOnlyCommand" } }]);
 
-const asError = (e: { code: string; message: string; details?: unknown; fix?: string }): FinError =>
-  new FinError({ code: e.code, message: e.message, details: e.details ?? {}, ...(e.fix === undefined ? {} : { fix: e.fix }) });
+/**
+ * The job's error as the caller's. The SDKs carry a plugin error's `fix` in `details.fix` (the
+ * envelope's `JobError` has no `fix`); it becomes `FinError.fix`, scrubbed like the plugin's log
+ * text. Only host-known codes keep details at all (`mapPluginError`: a plugin's own code is
+ * `PLUGIN_COMMAND_FAILED` without any), so no other plugin's fix reaches the caller.
+ */
+const asError = (e: { code: string; message: string; details?: unknown; fix?: string }): FinError => {
+  const details = e.details !== null && typeof e.details === "object" ? { ...(e.details as Record<string, unknown>) } : {};
+  const given = details["fix"];
+  delete details["fix"];
+  const fix = e.fix ?? (typeof given === "string" && given.trim() !== "" ? scrubLogText(given) : undefined);
+  return new FinError({ code: e.code, message: e.message, details, ...(fix === undefined ? {} : { fix }) });
+};
 
 export function makeCommandRun(d: CommandRunDeps) {
   const clock = d.clock ?? Date.now;

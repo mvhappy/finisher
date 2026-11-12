@@ -32,6 +32,7 @@ const ARGS = {
     read: { type: "boolean" },
     waitFor: { type: "string", pattern: "^[a-z]+$" },
     sleepMs: { type: "integer", minimum: 0, maximum: 120000 },
+    fail: { type: "string", maxLength: 100000 },
   },
   required: ["op"],
   additionalProperties: false,
@@ -184,6 +185,23 @@ describe("plugin commands", () => {
     expect(r.runs.map((x) => x.code)).toEqual(["PLUGIN_TX_INVALID", "PLUGIN_PROTOCOL", "PLUGIN_PROTOCOL"]);
     // A failed run lets its snapshot go.
     expect(r.host.calls.heldSnapshots()).toBe(0);
+  });
+
+  test("plugin_error_fix_reaches_the_caller: a host-known code's details.fix becomes FinError.fix, scrubbed", async () => {
+    const r = await rig();
+    const fail = (e: object) => r.runCommand("look", { fail: JSON.stringify(e) });
+    const known = errorOf(await fail({ code: "INVALID_REQUEST", message: "bad input", details: { field: "x", fix: "Open /home/someone/secret.txt\u001b[2J and retry" } }));
+    expect(known?.code).toBe("INVALID_REQUEST");
+    expect(known?.fix).toBe("Open <path> [2J and retry");
+    expect(known?.details).toEqual({ field: "x" });
+    // A plugin's own code is PLUGIN_COMMAND_FAILED with nothing of it: no fix either.
+    const own = errorOf(await fail({ code: "ACME_BROKEN", message: "boom", details: { fix: "call acme" } }));
+    expect(own?.code).toBe("PLUGIN_COMMAND_FAILED");
+    expect(own?.fix).toBeUndefined();
+    expect(JSON.stringify(own)).not.toContain("acme");
+    // A fix that is not a string is dropped, never answered.
+    const odd = errorOf(await fail({ code: "INVALID_REQUEST", message: "bad", details: { fix: { not: "text" } } }));
+    expect([odd?.fix, odd?.details]).toEqual([undefined, {}]);
   });
 
   test("args_validated_before_job", async () => {
