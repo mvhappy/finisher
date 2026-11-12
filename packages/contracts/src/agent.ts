@@ -74,7 +74,8 @@ export const Session = Schema.Struct({
    */
   rootBranch: Schema.optionalKey(Schema.String),
   /** The branch and revision it was started from. */
-  base: Schema.Struct({ branch: Schema.String, seq: Count }),
+  /** `hash`: the head's hash, recorded for a critic on a branch under review (7B Task 12: `criticStale`). */
+  base: Schema.Struct({ branch: Schema.String, seq: Count, hash: Schema.optionalKey(Schema.String) }),
   parent: Schema.optionalKey(Id),
   /** A child's (7B): the session at the top of its tree, and how far below it (1–3). Absent on a root. */
   rootSession: Schema.optionalKey(Id),

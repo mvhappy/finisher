@@ -289,6 +289,8 @@ export interface SessionBranchOps {
   archiveBranch?(projectId: string, req: { readonly txId: string; readonly author: string; readonly branch: string }): Effect.Effect<unknown, FinError>;
   /** Whether `branch` (an id) is the source of an open `branchReview` (7B Task 11): no critic takes it as its root. */
   underReview?(projectId: string, branch: string): boolean;
+  /** The head (seq and hash) of a branch under review, from a review plan of it (7B Task 12); undefined when none. */
+  reviewedHead?(projectId: string, branch: string): Effect.Effect<{ readonly seq: number; readonly hash?: string } | undefined>;
 }
 
 /** What `registryBranchOps` needs of the project registry (`ProjectRegistry`). */
@@ -308,11 +310,12 @@ export interface BranchRegistry {
 export function registryBranchOps(
   registry: BranchRegistry,
   meta: CallMeta,
-  reviews: { readonly archived?: (projectId: string, branch: string) => Effect.Effect<void>; readonly underReview?: (projectId: string, branch: string) => boolean } = {},
+  reviews: Pick<SessionBranchOps, "underReview" | "reviewedHead"> & { readonly archived?: (projectId: string, branch: string) => Effect.Effect<void> } = {},
 ): SessionBranchOps {
-  const { archived, underReview } = reviews;
+  const { archived, underReview, reviewedHead } = reviews;
   return {
     ...(underReview === undefined ? {} : { underReview }),
+    ...(reviewedHead === undefined ? {} : { reviewedHead }),
     branches: (projectId) => Effect.map(registry.branches(projectId, true), (r) => r.branches),
     resolveBranch: (projectId, ref) => registry.resolveBranch(projectId, ref),
     createBranch: (projectId, req) =>
@@ -385,6 +388,10 @@ export function openSession(
     const branches = yield* deps.ops.branches(req.projectId);
     const base = branches.find((b) => b.id === baseId);
     if (base === undefined) return yield* Effect.fail(finError("BRANCH_NOT_FOUND", `no branch ${baseRef}`, { branch: baseRef }));
+    // A critic on a branch under review records the reviewed head's hash too (`criticStale`), when
+    // the plan's head is the one it starts from; otherwise none, and the trigger fails closed.
+    const reviewed = req.under === undefined || deps.ops.reviewedHead === undefined ? undefined : yield* deps.ops.reviewedHead(req.projectId, req.under);
+    const hash = reviewed !== undefined && reviewed.seq === base.head ? reviewed.hash : undefined;
     let root: string | undefined;
     if (req.mode !== "plan" && req.root !== undefined) {
       // A critic works beside the reviewed branch, never on it (Decision 26; review N2).
@@ -407,7 +414,8 @@ export function openSession(
     const made = root !== undefined && req.root === undefined ? root : undefined;
     const session = yield* Effect.tapError(
       Effect.tryPromise({
-        try: () => deps.store.createSession({ ...rest, id, base: { branch: base.id, seq: base.head }, ...(root === undefined ? {} : { rootBranch: root }) }),
+        try: () =>
+          deps.store.createSession({ ...rest, id, base: { branch: base.id, seq: base.head, ...(hash === undefined ? {} : { hash }) }, ...(root === undefined ? {} : { rootBranch: root }) }),
         catch: toFinError,
       }),
       () => unmade(deps, req.projectId, id, sessionAuthor({ role: req.role, id }), made),

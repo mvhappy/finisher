@@ -486,7 +486,7 @@ export const HandlersLive = FinRpcs.toLayer(
       ...rulesHandlers({ guard, store: agents.store, rules: agentRuntime.rules, ruleStore: agentRuntime.ruleStore, audit, clock: agents.clock, roles: agentRuntime.roles, dirOf: (id) => registry.dirOf(id) ?? registry.indexedDirOf(id), principalOf }),
       ...savedPromptHandlers({ guard, runtime: agentRuntime.runtime, principalOf, prompts: new SavedPrompts({ serverData: agentRuntime.rules.serverData, roles: agentRuntime.roles, dirOf: (id) => registry.dirOf(id) ?? registry.indexedDirOf(id), trustOf: (id) => agentRuntime.ruleStore.trustOf(id) }) }),
       // 5B: pairing, devices, settings writes and the environment.
-      ...reviewHandlers({ guard, reviews, projects, audit, transport: connections.transport }),
+      ...reviewHandlers({ guard, reviews, projects, audit, transport: connections.transport, roles: () => new Set(agentRuntime.roles.keys()) }),
       ...deviceHandlers({ guard, pairing, access: deviceAccess, connections }),
       ...settingsHandlers({ guard, serverData: admin.control.serverData ?? "", remote: remoteListener, audit }),
       ...envHandlers({ guard, env: environment }),

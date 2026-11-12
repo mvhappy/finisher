@@ -109,7 +109,7 @@ export function testCore(store: AgentStore, control: ControlStore, clock: Clock)
   });
   const lineage = new BranchLineage();
   const outcomes = new OutcomeTracker({ store, lineage, clock: () => clock.now(), verdicts: { version: () => null, emit: () => false } });
-  return { store, credentials, lineage, outcomes, reviewLink: new ReviewLink({ store, lineage }), clock, ids: systemIds(clock), journal: NO_JOURNAL, auth };
+  return { store, credentials, lineage, outcomes, reviewLink: new ReviewLink({ store }), clock, ids: systemIds(clock), journal: NO_JOURNAL, auth };
 }
 
 export function journal(): RuntimeJournal & { readonly entries: { kind: string; [k: string]: unknown }[]; failSessions: boolean } {

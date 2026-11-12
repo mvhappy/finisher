@@ -14,43 +14,50 @@
 //   the server's options (`AgentServeOptions.autoMerge`), never the environment; the default
 //   source is `review_verdicts` (`storedVerdicts`).
 // - **Checks, cheapest first:** `noReview` (an end without a review: no item), `unavailable`,
-//   `notAuto` (the session is not, or no longer, an `auto` session), `policyOff`,
-//   `roleNotAdmitted` (`branch_policy.autoMerge.roles`; absent: every role), `approvalOpen` (an
-//   open approval of the session), `overBudget` (a ledger kind used up), `hookBlocked` (7F's
-//   `PreMerge`, a hook point that allows today), then the newest critic verdict (the one 5E
-//   judges): `criticUnknown` (it names no session this server knows), `criticNotDistinct` (the
-//   authoring session or one in its tree: the same `rootSession`), `criticStale` (the critic did
-//   not start from the reviewed branch at the head it judged). 5E then judges exactly the
-//   verdicts checked here (read once), so a newer one cannot slip past these checks.
+//   then the session side (`sessionSide`): `notAuto` (not, or no longer, an `auto` session),
+//   `policyOff`, `roleNotAdmitted` (`branch_policy.autoMerge.roles`; absent: every role),
+//   `notOwnBranch` (the item's source must be the event's branch and the session's own root:
+//   never a child's or a critic's branch), `targetNotAllowed` (the item's target must be the
+//   policy's `into`, default `main`), `approvalOpen`, `overBudget` (the runtime's `Budget`:
+//   held amounts and the day's money count); then `hookBlocked` (7F's `PreMerge`, a hook point
+//   that allows today) and the newest critic verdict (the one 5E judges): `criticUnknown` (it
+//   names no session this server knows), `criticNotCritic` (that session's role is not
+//   `critic`), `criticNotDistinct` (the author or a session of its tree: the same root session),
+//   `criticStale` (the critic did not start from the item's source at the judged seq and hash).
+// - **Again under the gate:** 5E runs the session side once more (`admit`) with the item and the
+//   policy it re-reads under the project's policy gate, so an owner's policy write or a mode,
+//   approval or branch change that lands meanwhile is seen. 5E judges exactly the verdicts
+//   checked here (read once), so a newer one cannot slip past.
+// - **One at a time per item:** a second event for an item while one runs waits for it (it then
+//   finds the item merged, or decides afresh): no double merge, no second audit row.
 // - **Recorded once:** 5E's `review.verdict` says `merged`, `by: policy`, `via: autoMerge`; the
 //   outcome ledger records the transactions it carried out of their subtree the same way, not
-//   emitted (`OutcomeTracker.observeAutoMerge`), so a later delete does not call them abandoned.
-import type { FinError, Session } from "@finisher/contracts";
-import { Effect } from "effect";
+//   emitted (`OutcomeTracker.observeAutoMerge`), also after a replay, so a later delete does not
+//   call them abandoned.
+import { AUTO_MERGE_DEFAULT_INTO, type BranchPolicy, type FinError, type ReviewItem, type Session } from "@finisher/contracts";
+import { Effect, Semaphore } from "effect";
 import type { ChainProjects } from "../chain/resolve.ts";
 import type { Audit } from "../control/audit.ts";
 import type { ProjectRegistryShape } from "../projects.ts";
 import { type AutoMergeRefusal, newestVerdict, storedVerdicts, tryAutoMerge, type VerdictSource } from "../reviews/auto-merge.ts";
 import { AUTO_MERGE_AVAILABLE } from "../reviews/policy.ts";
 import type { Reviews } from "../reviews/service.ts";
-import { type BudgetLimits, DEFAULT_BUDGET } from "./budget.ts";
-import { BUDGET_KINDS, type BudgetKind } from "./ledger.ts";
-import type { OutcomeTracker } from "./outcomes.ts";
+import { CRITIC_ROLE, type OutcomeTracker } from "./outcomes.ts";
 import type { BranchReady } from "./review-link.ts";
-import { limitsOf } from "./runtime-deps.ts";
 import type { AgentStore } from "./store.ts";
 
 export type { VerdictSource };
 
+/** The trigger's own refusals: the session side, rechecked under the gate. */
+export type SessionRefusal = "notAuto" | "policyOff" | "roleNotAdmitted" | "notOwnBranch" | "targetNotAllowed" | "approvalOpen" | "overBudget";
+
 /** Why the trigger did not merge: its own checks, then 5E's refusals. */
 export type AutoMergeReason =
   | "noReview"
-  | "notAuto"
-  | "roleNotAdmitted"
-  | "approvalOpen"
-  | "overBudget"
+  | SessionRefusal
   | "hookBlocked"
   | "criticUnknown"
+  | "criticNotCritic"
   | "criticNotDistinct"
   | "criticStale"
   | AutoMergeRefusal;
@@ -72,51 +79,52 @@ export interface AutoMergeTriggerOptions {
 }
 
 export interface AutoMergeTriggerDeps extends AutoMergeTriggerOptions {
-  readonly store: Pick<AgentStore, "get" | "approvals" | "ledger">;
+  readonly store: Pick<AgentStore, "get" | "approvals">;
   readonly reviews: Pick<Reviews, "workflow" | "store" | "gate">;
   readonly audit: Pick<Audit, "append">;
   readonly outcomes: Pick<OutcomeTracker, "observeAutoMerge">;
   /** For the outcome ledger's branch lineage. */
   readonly projects: ChainProjects;
-  /** The server's budget defaults (a session's own limits are in its ledger once it ran). */
-  readonly defaults?: BudgetLimits;
+  /** The runtime's budget check (`Runtime.budgetSpent`): what `s` has used up, or null. */
+  readonly budgetSpent: (s: Session) => unknown;
 }
 
 const refused = (reason: AutoMergeReason): AutoMergeOutcome => ({ merged: false, reason });
 
-/** The ledger's limit field of each kind. */
-const LIMIT: Record<BudgetKind, "tokens" | "moneyMicros" | "wallMs"> = { tokens: "tokens", money: "moneyMicros", wallMs: "wallMs" };
-
-/** Whether every ledger kind of `s` is below its limit (as `Budget` stops at `used >= limit`). */
-function withinBudget(store: AutoMergeTriggerDeps["store"], s: Session, defaults: BudgetLimits): boolean {
-  const limits = limitsOf(s.budget, defaults);
-  const ledger = store.ledger();
-  return BUDGET_KINDS.every((kind) => {
-    const l = ledger.read(s.id, kind);
-    return l.used < (l.limit ?? limits[LIMIT[kind]]);
-  });
-}
-
 /** The session at the top of `s`'s tree (a root is its own). */
 const treeOf = (s: Session) => s.rootSession ?? s.id;
+
+/**
+ * The session side of `ev` for `item` under `policy`, read now: the first refusal, or none.
+ * Run before 5E is asked, and again by 5E under the policy gate (`admit`).
+ */
+function sessionSide(deps: AutoMergeTriggerDeps, ev: BranchReady, item: ReviewItem, policy: BranchPolicy): SessionRefusal | undefined {
+  const s = deps.store.get(ev.sessionId);
+  if (s === undefined || s.mode !== "auto") return "notAuto";
+  if (!policy.autoMerge.enabled) return "policyOff";
+  const roles = policy.autoMerge.roles;
+  if (roles !== undefined && !roles.includes(s.role)) return "roleNotAdmitted";
+  if (item.projectId !== s.projectId || s.rootBranch === undefined || item.source !== s.rootBranch || ev.branch !== item.source) return "notOwnBranch";
+  if (item.kind !== "branchReview" || item.target !== (policy.autoMerge.into ?? AUTO_MERGE_DEFAULT_INTO)) return "targetNotAllowed";
+  if (deps.store.approvals(s.id).some((a) => a.status === "open")) return "approvalOpen";
+  if (deps.budgetSpent(s) !== null) return "overBudget";
+  return undefined;
+}
 
 /**
  * The trigger: one `branchReady` event in, what became of it out. It fails only with what 5E's
  * path fails with (a conflict, the engine's errors); the item stays open either way.
  */
 export function autoMergeTrigger(deps: AutoMergeTriggerDeps): (ev: BranchReady) => Effect.Effect<AutoMergeOutcome, FinError> {
-  const decide = (ev: BranchReady): Effect.Effect<AutoMergeOutcome, FinError> =>
+  const decide = (ev: BranchReady, itemId: string): Effect.Effect<AutoMergeOutcome, FinError> =>
     Effect.gen(function* () {
-      const itemId = ev.reviewId;
-      if (itemId === undefined) return refused("noReview");
-      if (!(deps.available ?? AUTO_MERGE_AVAILABLE)) return refused("unavailable");
       const s = deps.store.get(ev.sessionId);
       if (s === undefined || s.mode !== "auto") return refused("notAuto");
-      const policy = deps.reviews.store.policy(s.projectId).autoMerge;
-      if (!policy.enabled) return refused("policyOff");
-      if (policy.roles !== undefined && !policy.roles.includes(s.role)) return refused("roleNotAdmitted");
-      if (deps.store.approvals(s.id).some((a) => a.status === "open")) return refused("approvalOpen");
-      if (!withinBudget(deps.store, s, deps.defaults ?? DEFAULT_BUDGET)) return refused("overBudget");
+      const policy = deps.reviews.store.policy(s.projectId);
+      if (!policy.autoMerge.enabled) return refused("policyOff");
+      const item = yield* deps.reviews.workflow.item(itemId);
+      const side = sessionSide(deps, ev, item, policy);
+      if (side !== undefined) return refused(side);
       if (deps.preMerge !== undefined && !(yield* deps.preMerge(ev, s))) return refused("hookBlocked");
       // Read once: 5E judges exactly these verdicts.
       const verdicts = [...(deps.verdicts ?? storedVerdicts(deps.reviews.store)).verdicts(itemId)];
@@ -124,21 +132,47 @@ export function autoMergeTrigger(deps: AutoMergeTriggerDeps): (ev: BranchReady) 
       if (critic !== undefined) {
         const by = critic.session === undefined ? undefined : deps.store.get(critic.session);
         if (by === undefined) return refused("criticUnknown");
+        if (by.role !== CRITIC_ROLE) return refused("criticNotCritic");
         if (by.id === s.id || treeOf(by) === treeOf(s)) return refused("criticNotDistinct");
-        const item = yield* deps.reviews.workflow.item(itemId);
-        if (by.base.branch !== item.source || by.base.seq !== critic.snapshot.sourceSeq) return refused("criticStale");
+        const judged = critic.snapshot;
+        const sameHead = by.base.branch === item.source && by.base.seq === judged.sourceSeq && (by.base.hash ?? null) === (judged.sourceHash ?? null);
+        if (!sameHead) return refused("criticStale");
       }
       const result = yield* tryAutoMerge(itemId, s.id, {
         reviews: deps.reviews,
         verdicts: { verdicts: () => verdicts },
         available: deps.available ?? AUTO_MERGE_AVAILABLE,
         audit: deps.audit,
+        admit: (now, policyNow) => sessionSide(deps, ev, now, policyNow),
       });
       if (!result.merged) return refused(result.reason);
       if (result.review !== undefined) yield* deps.outcomes.observeAutoMerge(result.review.item.projectId, result.review.merge, deps.projects);
       return { merged: true, mergeId: result.mergeId } as const;
     });
-  return (ev) => Effect.tap(decide(ev), (out) => Effect.sync(() => deps.observe?.(ev, out)));
+  // One decision per item at a time; the map holds an item only while an event for it runs.
+  const running = new Map<string, { readonly lock: Semaphore.Semaphore; n: number }>();
+  const serial = <A, E>(itemId: string, f: Effect.Effect<A, E>): Effect.Effect<A, E> =>
+    Effect.suspend(() => {
+      const held = running.get(itemId) ?? { lock: Semaphore.makeUnsafe(1), n: 0 };
+      held.n++;
+      running.set(itemId, held);
+      return Effect.ensuring(
+        held.lock.withPermits(1)(f),
+        Effect.sync(() => {
+          if (--held.n === 0) running.delete(itemId);
+        }),
+      );
+    });
+  return (ev) => {
+    const itemId = ev.reviewId;
+    const out: Effect.Effect<AutoMergeOutcome, FinError> =
+      itemId === undefined
+        ? Effect.succeed(refused("noReview"))
+        : !(deps.available ?? AUTO_MERGE_AVAILABLE)
+          ? Effect.succeed(refused("unavailable"))
+          : serial(itemId, decide(ev, itemId));
+    return Effect.tap(out, (o) => Effect.sync(() => deps.observe?.(ev, o)));
+  };
 }
 
 /** The branch lineage's view of the project registry (only `branches` is read). */

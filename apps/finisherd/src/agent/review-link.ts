@@ -30,7 +30,7 @@ import { Effect, Option } from "effect";
 import type { ChainHooks } from "../chain/hooks.ts";
 import { isOpenEntry } from "../reviews/plan.ts";
 import type { Reviews } from "../reviews/service.ts";
-import type { BranchLineage, BranchReach } from "./reach.ts";
+import type { BranchReach } from "./reach.ts";
 import type { AgentStore } from "./store.ts";
 
 /** A session's branch is ready for review (spec §9.1 `BranchReady`): internal, never on the wire. */
@@ -54,6 +54,8 @@ export interface ReviewPort {
   branches(projectId: string): Effect.Effect<ReadonlyArray<BranchView>, FinError>;
   /** Whether `branch` (an id) is the source of an open `branchReview` item. */
   underReview(projectId: string, branch: string): boolean;
+  /** The open `branchReview` item whose source is `branch` (an id): its target. */
+  reviewTarget(projectId: string, branch: string): string | undefined;
   /** A review item's source branch (an id); undefined for an unknown item. */
   sourceOf(itemId: string): string | undefined;
   /** A fresh plan of `source` into `target`. */
@@ -70,6 +72,8 @@ export function reviewPort(reviews: Reviews): ReviewPort {
     branches: (projectId) => w.engine.branches(projectId),
     underReview: (projectId, branch) =>
       reviews.store.list(projectId, { kind: "branchReview" }).some((i) => i.source === branch && REVIEW_OPEN_STATES.includes(i.state)),
+    reviewTarget: (projectId, branch) =>
+      reviews.store.list(projectId, { kind: "branchReview" }).find((i) => i.source === branch && REVIEW_OPEN_STATES.includes(i.state))?.target,
     sourceOf: (itemId) => reviews.store.get(itemId)?.source,
     plan: (projectId, source, target) => w.planner.now(projectId, source, target),
     archived: (projectId, branch, by) => w.observeArchived(projectId, branch, by),
@@ -78,7 +82,6 @@ export function reviewPort(reviews: Reviews): ReviewPort {
 
 export interface ReviewLinkDeps {
   readonly store: AgentStore;
-  readonly lineage: BranchLineage;
   readonly warn?: (message: string) => void;
 }
 
@@ -170,6 +173,21 @@ export class ReviewLink {
   /** Whether `branch` (an id) is the source of an open `branchReview` (a critic may not take it as its root). */
   underReview(projectId: string, branch: string): boolean {
     return this.#port?.underReview(projectId, branch) ?? false;
+  }
+
+  /**
+   * The head of `branch` (an id) under review, from a fresh plan of it into the item's target:
+   * its seq and hash (7B Task 12: a critic records the hash it starts from). Undefined when the
+   * branch is under no review or the plan fails.
+   */
+  reviewedHead(projectId: string, branch: string): Effect.Effect<{ readonly seq: number; readonly hash?: string } | undefined> {
+    const port = this.#port;
+    const target = port?.reviewTarget(projectId, branch);
+    if (port === undefined || target === undefined) return Effect.succeed(undefined);
+    return Effect.orElseSucceed(
+      Effect.map(port.plan(projectId, branch, target), (p) => ({ seq: p.source.seq, ...(p.source.hash == null ? {} : { hash: p.source.hash }) })),
+      () => undefined,
+    );
   }
 
   /** The runtime archived `branch` (an id): 5E's archive observer. Never fails. */

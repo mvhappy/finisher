@@ -232,7 +232,11 @@ export class Runtime extends RuntimeEngine {
       // A critic on a branch under review works on a child branch of it (7B Decision 26, `review-link.ts`).
       const under = child === undefined && plan.role === CRITIC_ROLE && req.base !== undefined ? await exitOf(this.core.reviewLink.criticUnder(req.projectId, req.base)) : undefined;
       const link = this.core.reviewLink;
-      const ops = registryBranchOps(this.deps.registry, meta, { archived: (p, b) => link.archived(p, b, principalRef(by)), underReview: (p, b) => link.underReview(p, b) });
+      const ops = registryBranchOps(this.deps.registry, meta, {
+        archived: (p, b) => link.archived(p, b, principalRef(by)),
+        underReview: (p, b) => link.underReview(p, b),
+        reviewedHead: (p, b) => link.reviewedHead(p, b),
+      });
       const opened = await exitOf(
         openSession(
           { creds: this.core.credentials, store: this.store, ops, ids: this.ids },

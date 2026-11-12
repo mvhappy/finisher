@@ -327,8 +327,9 @@ describe("the merge", () => {
     expect(f.entries).toEqual([expect.objectContaining({ itemKind: "branchReview", verdict: "merged", by: "policy", via: "autoMerge", txIds: ["f1", "f2"], accepted: 2, sessionId: SESSION })]);
     // The merge's own answer carries what `mergeReview` did (the outcome ledger reads it, 7B Task 12).
     expect(result).toMatchObject({ review: { item: { id: f.item.id, state: "merged" } } });
-    // A second attempt finds the item merged by this path: the same merge, not audited again.
-    expect(await run(attempt2(f))).toEqual({ merged: true, mergeId: result.merged ? result.mergeId : "" });
+    // A second attempt finds the item merged by this path: the same merge, read back from
+    // fin-store (7B Task 12: the ledger records it after a replay), not audited again.
+    expect(await run(attempt2(f))).toMatchObject({ merged: true, mergeId: result.merged ? result.mergeId : "", review: { item: { id: f.item.id } } });
     expect(f.audited).toHaveLength(1);
     // A person's merge of another snapshot is not this path's: closed.
     const local = callerOf(LOCAL, { actor: { kind: "user" } }, "socket");

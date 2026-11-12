@@ -12,9 +12,12 @@ import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import { type ReviewItem, type Session, type Snapshot, STREAM_RPCS } from "@finisher/contracts";
 import type { BranchView } from "@finisher/core-types";
+import { Effect } from "effect";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test, vi } from "vitest";
 import { type AutoMergeOutcome, type AutoMergeTriggerOptions } from "../src/agent/auto-merge.ts";
+import { DEFAULT_BUDGET } from "../src/agent/budget.ts";
 import { credentialPath } from "../src/agent/credentials.ts";
+import { utcDay } from "../src/agent/ledger.ts";
 import type { FakeScript } from "../src/agent/fake.ts";
 import type { BranchReady } from "../src/agent/review-link.ts";
 import { settingsPath } from "../src/config.ts";
@@ -28,12 +31,15 @@ import { type FinRpcTag, SAMPLE_PAYLOADS } from "./support/payloads.ts";
 
 // The spies: every trigger the server builds counts its calls; `tryAutoMerge` is counted too.
 const triggered = vi.hoisted(() => [] as unknown[]);
+/** The triggers the server built (one per server): a test calls one directly with a forged event. */
+const built = vi.hoisted(() => [] as Array<(ev: BranchReady) => Effect.Effect<AutoMergeOutcome, unknown>>);
 vi.mock("../src/agent/auto-merge.ts", async (importOriginal) => {
   const real = await importOriginal<typeof import("../src/agent/auto-merge.ts")>();
   return {
     ...real,
     autoMergeTrigger: (deps: Parameters<typeof real.autoMergeTrigger>[0]) => {
       const trigger = real.autoMergeTrigger(deps);
+      built.push(trigger);
       return (ev: BranchReady) => {
         triggered.push(ev);
         return trigger(ev);
@@ -68,6 +74,7 @@ beforeEach(() => {
   serverData = join(tmp, "server-data");
   mkdirSync(serverData, { recursive: true, mode: 0o700 });
   triggered.length = 0;
+  built.length = 0;
   vi.mocked(tryAutoMerge).mockClear();
 });
 
@@ -104,7 +111,7 @@ interface Booted {
  * A server (diagnostics on: the journal records `review.verdict`) and a project with an asset
  * on `main`. `available` (default true) and the verdicts reach the trigger through the options.
  */
-async function boot(o: { available?: boolean; verdicts?: VerdictSource | "none" } = {}): Promise<Booted> {
+async function boot(o: { available?: boolean; verdicts?: VerdictSource | "none"; preMerge?: () => void } = {}): Promise<Booted> {
   writeFileSync(settingsPath(serverData), JSON.stringify({ privacy: { diagnostics: "on" } }));
   const source = verdictSource();
   const outcomes: AutoMergeOutcome[] = [];
@@ -112,6 +119,7 @@ async function boot(o: { available?: boolean; verdicts?: VerdictSource | "none" 
     ...(o.available === undefined ? { available: true } : o.available ? { available: true } : {}),
     ...(o.verdicts === "none" ? {} : { verdicts: o.verdicts ?? source }),
     observe: (_ev, out) => void outcomes.push(out),
+    ...(o.preMerge === undefined ? {} : { preMerge: () => Effect.sync(() => (o.preMerge!(), true)) }),
   };
   server = new AgentServer(serverData, { timers: false, fakeScripts: [WORKING], autoMerge });
   await server.start();
@@ -124,10 +132,10 @@ async function boot(o: { available?: boolean; verdicts?: VerdictSource | "none" 
 }
 
 /** The project's policy, written as the owner would once sub-project 10 allows it (`review.policy` refuses it today). */
-function policy(projectId: string, p: { enabled?: boolean; roles?: string[]; requireReview?: boolean } = {}): void {
+function policy(projectId: string, p: { enabled?: boolean; roles?: string[]; requireReview?: boolean; into?: string } = {}): void {
   const db = new DatabaseSync(controlDbPath(serverData));
   try {
-    const autoMerge = { enabled: p.enabled ?? true, enabledBy: "console:console", ...(p.roles === undefined ? {} : { roles: p.roles }) };
+    const autoMerge = { enabled: p.enabled ?? true, enabledBy: "console:console", ...(p.roles === undefined ? {} : { roles: p.roles }), ...(p.into === undefined ? {} : { into: p.into }) };
     db.prepare(
       "INSERT INTO branch_policy (projectId, protected, requireReview, autoMerge) VALUES (?, ?, ?, ?) " +
         "ON CONFLICT (projectId) DO UPDATE SET protected = excluded.protected, requireReview = excluded.requireReview, autoMerge = excluded.autoMerge",
@@ -138,6 +146,19 @@ function policy(projectId: string, p: { enabled?: boolean; roles?: string[]; req
 }
 
 const get = (sessionId: string) => server.core.store.get(sessionId)!;
+
+/** A statement on the server's `control.db` (what a test sets up behind the server's back). */
+function sql(statement: string, ...args: Array<string | number | null>): void {
+  const db = new DatabaseSync(controlDbPath(serverData));
+  try {
+    db.prepare(statement).run(...args);
+  } finally {
+    db.close();
+  }
+}
+
+/** The server's trigger, called directly (a forged event the chain would not let through). */
+const trigger = (ev: BranchReady) => Effect.runPromise(built[0]!(ev) as Effect.Effect<AutoMergeOutcome>);
 
 async function until<A>(f: () => A | undefined | false, what: string, ms = 8000): Promise<A> {
   const t0 = Date.now();
@@ -289,17 +310,21 @@ describe("the session-side checks", () => {
     expect((await itemOf(b.local, item.id)).state).toBe("open");
   });
 
-  test("critic_must_be_distinct: the author, its child, its grandchild, an unknown session and a verdict naming none", async () => {
+  test("critic_must_be_distinct: a critic of the author's tree, the author, a non-critic, an unknown session, none", async () => {
     const b = await boot();
     policy(b.projectId);
     const { item, root, author } = await authored(b);
+    const childCritic = await start(author.client, b.projectId, { role: "critic" });
     const child = await start(author.client, b.projectId, { role: "clip-finder" });
     const grandchild = await start(child.client, b.projectId, { role: "clip-finder" });
     expect(get(grandchild.session.id).rootSession).toBe(author.session.id);
+    // Another descendant of the author's root, as a critic (its role set behind the server's back).
+    sql("UPDATE sessions SET role = 'critic' WHERE id = ?", grandchild.session.id);
     const cases: Array<[string | undefined, string]> = [
-      [author.session.id, "criticNotDistinct"],
-      [child.session.id, "criticNotDistinct"],
+      [childCritic.session.id, "criticNotDistinct"],
       [grandchild.session.id, "criticNotDistinct"],
+      [author.session.id, "criticNotCritic"],
+      [child.session.id, "criticNotCritic"],
       ["01ZZZZZZZZZZZZZZZZZZZZZZZZ", "criticUnknown"],
       [undefined, "criticUnknown"],
     ];
@@ -308,8 +333,32 @@ describe("the session-side checks", () => {
       await request(author.client, b.projectId, root);
       expect(b.outcomes.at(-1), String(critic)).toEqual({ merged: false, reason });
     }
+    // The author itself as a critic (its role set too): still its own tree.
+    sql("UPDATE sessions SET role = 'critic' WHERE id = ?", author.session.id);
+    b.source.list = passing(item.snapshot!, author.session.id);
+    await request(author.client, b.projectId, root);
+    expect(b.outcomes.at(-1)).toEqual({ merged: false, reason: "criticNotDistinct" });
     expect(vi.mocked(tryAutoMerge)).not.toHaveBeenCalled();
     expect((await itemOf(b.local, item.id)).state).toBe("open");
+  });
+
+  test("an ancestor or a sibling of the author as critic: the same tree", async () => {
+    const b = await boot();
+    policy(b.projectId);
+    const parent = await start(b.local, b.projectId, { mode: "auto" });
+    // The author is a child (its mode set to auto behind the server's back: no bundled child role reaches auto).
+    const author = await start(parent.client, b.projectId, { role: "clip-finder" });
+    const sibling = await start(parent.client, b.projectId, { role: "critic" });
+    sql("UPDATE sessions SET mode = 'auto' WHERE id = ?", author.session.id);
+    sql("UPDATE sessions SET role = 'critic' WHERE id = ?", parent.session.id);
+    const root = author.session.rootBranch!;
+    await edit(author.client, b.projectId, root);
+    const item = await request(author.client, b.projectId, root);
+    for (const critic of [parent.session.id, sibling.session.id]) {
+      b.source.list = passing(item.snapshot!, critic);
+      await request(author.client, b.projectId, root);
+      expect(b.outcomes.at(-1), critic).toEqual({ merged: false, reason: "criticNotDistinct" });
+    }
   });
 
   test("the newest critic verdict is the one checked: an older distinct critic does not stand for a newer one in the tree", async () => {
@@ -317,9 +366,30 @@ describe("the session-side checks", () => {
     policy(b.projectId);
     const { item, root, author } = await authored(b);
     const critic = await criticOf(b, root);
-    b.source.list = [...passing(item.snapshot!, critic.session.id), { ...passing(item.snapshot!, author.session.id, 5)[1]! }];
+    const inTree = await start(author.client, b.projectId, { role: "critic" });
+    b.source.list = [...passing(item.snapshot!, critic.session.id), { ...passing(item.snapshot!, inTree.session.id, 5)[1]! }];
     await request(author.client, b.projectId, root);
     expect(b.outcomes.at(-1)).toEqual({ merged: false, reason: "criticNotDistinct" });
+  });
+
+  test("criticStale: another base branch at the same seq, or the same seq with another hash", async () => {
+    const b = await boot();
+    policy(b.projectId);
+    const { item, root, author } = await authored(b);
+    const critic = await criticOf(b, root);
+    // The recorded hash is the reviewed head's, as the item's snapshot has it.
+    expect(get(critic.session.id).base).toEqual({ branch: root, seq: item.snapshot!.sourceSeq, hash: item.snapshot!.sourceHash });
+    b.source.list = passing(item.snapshot!, critic.session.id);
+    sql("UPDATE sessions SET baseBranch = 'main' WHERE id = ?", critic.session.id);
+    await request(author.client, b.projectId, root);
+    expect(b.outcomes.at(-1)).toEqual({ merged: false, reason: "criticStale" });
+    sql("UPDATE sessions SET baseBranch = ?, baseHash = 'blake3:00' WHERE id = ?", root, critic.session.id);
+    await request(author.client, b.projectId, root);
+    expect(b.outcomes.at(-1)).toEqual({ merged: false, reason: "criticStale" });
+    sql("UPDATE sessions SET baseHash = NULL WHERE id = ?", critic.session.id);
+    await request(author.client, b.projectId, root);
+    expect(b.outcomes.at(-1)).toEqual({ merged: false, reason: "criticStale" });
+    expect(vi.mocked(tryAutoMerge)).not.toHaveBeenCalled();
   });
 
   test("critic_on_older_head_blocks: a critic that started before the reviewed head moved", async () => {
@@ -348,7 +418,7 @@ describe("the merge", () => {
     const { item, root, author, t1 } = await authored(b);
     expect(b.outcomes).toEqual([{ merged: false, reason: "verdictMissing" }]);
     const critic = await criticOf(b, root);
-    expect(get(critic.session.id).base).toEqual({ branch: root, seq: item.snapshot!.sourceSeq });
+    expect(get(critic.session.id).base).toMatchObject({ branch: root, seq: item.snapshot!.sourceSeq });
     b.source.list = passing(item.snapshot!, critic.session.id);
     const mainBefore = await head(b.local, b.projectId, "main");
     await request(author.client, b.projectId, root);
@@ -416,6 +486,153 @@ describe("the merge", () => {
     await request(author.client, b.projectId, root);
     expect(b.outcomes.at(-1)).toMatchObject({ merged: true });
     expect(ledger(t1)).toEqual([{ verdict: "merged", via: "autoMerge", by: "policy", emitted: false }]);
+  });
+});
+
+/** The `review.merge` audit rows with `auto: true`. */
+function autoAudits(): number {
+  const db = new DatabaseSync(controlDbPath(serverData));
+  try {
+    const rows = db.prepare("SELECT details FROM audit WHERE kind = 'review.merge'").all() as Array<{ details: string }>;
+    return rows.filter((r) => (JSON.parse(r.details) as { auto?: unknown }).auto === true).length;
+  } finally {
+    db.close();
+  }
+}
+
+/** An `auto` author's open review, a distinct critic on it and passing verdicts: everything holds. */
+async function ready(b: Booted) {
+  const a = await authored(b);
+  const critic = await criticOf(b, a.root);
+  b.source.list = passing(a.item.snapshot!, critic.session.id);
+  return { ...a, critic, ev: { sessionId: a.author.session.id, projectId: b.projectId, branch: a.root, headSeq: a.item.snapshot!.sourceSeq, reviewId: a.item.id } };
+}
+
+describe("the session's own branch and the policy's target (review blocker 1, finding 2)", () => {
+  test("notOwnBranch: a child's branch or a critic's branch under the author's name never merges", async () => {
+    const b = await boot();
+    policy(b.projectId);
+    const { author, root } = await ready(b);
+    // The author's draft child asks for a review of its own branch (the child's trigger: notAuto).
+    const child = await start(author.client, b.projectId, { role: "clip-finder" });
+    await edit(child.client, b.projectId, child.session.rootBranch!);
+    const childItem = await request(child.client, b.projectId, child.session.rootBranch!);
+    expect(b.outcomes.at(-1)).toEqual({ merged: false, reason: "notAuto" });
+    // The critic's own branch under review, by the critic.
+    const critic = await criticOf(b, root);
+    const criticBranch = critic.session.rootBranch!;
+    await edit(critic.client, b.projectId, criticBranch, 2);
+    const criticItem = await request(critic.client, b.projectId, criticBranch);
+    const forged: BranchReady[] = [
+      { sessionId: author.session.id, projectId: b.projectId, branch: child.session.rootBranch!, headSeq: childItem.snapshot!.sourceSeq, reviewId: childItem.id },
+      { sessionId: author.session.id, projectId: b.projectId, branch: root, headSeq: childItem.snapshot!.sourceSeq, reviewId: childItem.id },
+      { sessionId: author.session.id, projectId: b.projectId, branch: criticBranch, headSeq: criticItem.snapshot!.sourceSeq, reviewId: criticItem.id },
+    ];
+    b.source.list = passing(childItem.snapshot!, critic.session.id);
+    for (const ev of forged) expect(await trigger(ev), ev.branch).toEqual({ merged: false, reason: "notOwnBranch" });
+    expect(vi.mocked(tryAutoMerge)).not.toHaveBeenCalled();
+    expect((await itemOf(b.local, childItem.id)).state).toBe("open");
+    expect((await itemOf(b.local, criticItem.id)).state).toBe("open");
+  });
+
+  test("targetNotAllowed: a review into another protected branch; the policy's into admits it", async () => {
+    const b = await boot();
+    const release = ok<{ branch: BranchView }>(await b.local.call("branch.create", { projectId: b.projectId, txId: id(), author: "ann", name: "release", from: "main" })).branch.id;
+    policy(b.projectId);
+    const author = await start(b.local, b.projectId, { mode: "auto" });
+    const root = author.session.rootBranch!;
+    await edit(author.client, b.projectId, root);
+    const { item } = ok<{ item: ReviewItem }>(await author.client.call("review.request", { projectId: b.projectId, source: root, into: "release", title: "Ready" }));
+    await server.core.reviewLink.settled();
+    expect(item.target).toBe(release);
+    expect(b.outcomes.at(-1)).toEqual({ merged: false, reason: "targetNotAllowed" });
+    expect(vi.mocked(tryAutoMerge)).not.toHaveBeenCalled();
+    policy(b.projectId, { into: release });
+    ok(await author.client.call("review.request", { projectId: b.projectId, source: root, into: "release", title: "Ready" }));
+    await server.core.reviewLink.settled();
+    expect(b.outcomes.at(-1)).toEqual({ merged: false, reason: "verdictMissing" });
+  });
+});
+
+describe("the session side again under the gate (finding 3)", () => {
+  const cases: Array<[string, (x: { projectId: string; sessionId: string; root: string }) => void, string]> = [
+    ["the owner narrows the roles", ({ projectId }) => policy(projectId, { roles: ["colourist"] }), "roleNotAdmitted"],
+    ["the owner moves into", ({ projectId }) => policy(projectId, { into: "br9" }), "targetNotAllowed"],
+    ["the owner turns it off", ({ projectId }) => policy(projectId, { enabled: false }), "policyOff"],
+    [
+      "an approval opens",
+      ({ sessionId }) =>
+        void server.core.store.openApproval({ sessionId, kind: "budget", subject: { kind: "tokens", used: 1, limit: 1 }, argsHash: "budget:tokens", expiresAt: server.time.now() + 60_000 }),
+      "approvalOpen",
+    ],
+    ["the session's mode changes", ({ sessionId }) => sql("UPDATE sessions SET mode = 'draft' WHERE id = ?", sessionId), "notAuto"],
+  ];
+  for (const [what, change, reason] of cases) {
+    test(`${what} between the early checks and the gate: ${reason}`, async () => {
+      let hook = () => undefined as void;
+      const b = await boot({ preMerge: () => hook() });
+      policy(b.projectId);
+      const { author, root, item, critic } = await authored(b).then(async (a) => ({ ...a, critic: await criticOf(b, a.root) }));
+      b.source.list = passing(item.snapshot!, critic.session.id);
+      hook = () => change({ projectId: b.projectId, sessionId: author.session.id, root });
+      await request(author.client, b.projectId, root);
+      expect(b.outcomes.at(-1)).toEqual({ merged: false, reason });
+      expect(vi.mocked(tryAutoMerge)).toHaveBeenCalledTimes(1);
+      expect((await itemOf(b.local, item.id)).state).toBe("open");
+      expect(autoAudits()).toBe(0);
+    });
+  }
+});
+
+describe("one decision per item, and a replay (nits)", () => {
+  test("two events for one item at once: one merge, one audit row", async () => {
+    const b = await boot();
+    policy(b.projectId);
+    const { ev, item } = await ready(b);
+    const [x, y] = await Promise.all([trigger(ev), trigger(ev)]);
+    expect([x, y]).toEqual([
+      { merged: true, mergeId: expect.any(String) },
+      { merged: true, mergeId: expect.any(String) },
+    ]);
+    expect((await itemOf(b.local, item.id)).state).toBe("merged");
+    expect(autoAudits()).toBe(1);
+  });
+
+  test("a crash between the merge and the ledger: the replay records merged, by policy, via autoMerge", async () => {
+    const b = await boot();
+    policy(b.projectId);
+    const { ev, item, t1 } = await ready(b);
+    const tracker = server.core.outcomes;
+    const observe = tracker.observeAutoMerge.bind(tracker);
+    tracker.observeAutoMerge = () => Effect.die(new Error("crash"));
+    await expect(trigger(ev)).rejects.toThrow();
+    expect((await itemOf(b.local, item.id)).state).toBe("merged");
+    expect(ledger(t1)).toEqual([]);
+    tracker.observeAutoMerge = observe;
+    expect(await trigger(ev)).toMatchObject({ merged: true });
+    expect(ledger(t1)).toEqual([{ verdict: "merged", via: "autoMerge", by: "policy", emitted: false }]);
+    expect(autoAudits()).toBe(1);
+  });
+
+  test("overBudget counts what is held and the day's money (the runtime's Budget)", async () => {
+    const b = await boot();
+    policy(b.projectId);
+    const { ev, author } = await ready(b);
+    const l = server.core.store.ledger();
+    const tokens = l.read(author.session.id, "tokens");
+    l.add(author.session.id, "tokens", { reserved: tokens.limit! - tokens.used });
+    expect(await trigger(ev)).toEqual({ merged: false, reason: "overBudget" });
+    l.add(author.session.id, "tokens", { reserved: -(tokens.limit! - tokens.used) });
+    l.addDaily(utcDay(server.time.now()), { used: DEFAULT_BUDGET.dailyMoneyMicros });
+    expect(await trigger(ev)).toEqual({ merged: false, reason: "overBudget" });
+  });
+
+  test("an ended distinct critic's verdict still counts", async () => {
+    const b = await boot();
+    policy(b.projectId);
+    const { ev, critic, local } = { ...(await ready(b)), local: b.local };
+    ok(await local.call("agent.session.end", { sessionId: critic.session.id }));
+    expect(await trigger(ev)).toMatchObject({ merged: true });
   });
 });
 

@@ -140,6 +140,11 @@ export abstract class RuntimeEngine {
     return b;
   }
 
+  /** The first budget `s` has used up (`Budget.spent`, with this runtime's defaults), or null (7B Task 12). */
+  budgetSpent(s: Session): Reading | null {
+    return (this.#budgets.get(s.id) ?? new Budget(this.store.ledger(), s.id, limitsOf(s.budget, this.deps.defaults ?? DEFAULT_BUDGET), this.clock)).spent();
+  }
+
   protected forgetBudget(sessionId: string): void {
     this.#budgets.delete(sessionId);
   }

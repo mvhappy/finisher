@@ -31,7 +31,7 @@ import { DbLedger, type SessionBranchState, SessionReviews, type SessionTx, Sess
 export type { Appended, Applied, NewApproval, NewNode, NewSession, OutboxEffect, OutboxItem, Recovery, RunStart, SessionQuery } from "./store-rows.ts";
 export type { SessionBranchState, SessionTx, SessionTryRow, TxOutcome } from "./store-tables.ts";
 
-registerChain("agent", [...AGENT_MIGRATIONS], { formatVersion: 11, minReaderVersion: 8 });
+registerChain("agent", [...AGENT_MIGRATIONS], { formatVersion: 12, minReaderVersion: 8 });
 
 const DAY_MS = 86_400_000;
 /** `agents.retentionDays` default (Decision 4). */

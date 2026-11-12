@@ -346,7 +346,8 @@ describe("critics on child branches", () => {
     const critic = await start(local, projectId, { role: "critic", mode: "draft", base: root });
     const made = await branch(local, projectId, critic.session.rootBranch!);
     expect(made).toMatchObject({ name: `${reviewed.name}.critic-1`, parent: root });
-    expect(critic.session.base).toEqual({ branch: root, seq: reviewed.head });
+    expect(critic.session.base).toMatchObject({ branch: root, seq: reviewed.head });
+    expect(critic.session.base.hash).toMatch(/^blake3:/);
     expect(get(critic.session.id).base.seq).toBe(reviewed.head);
     const refused = await commit(critic.client, projectId, { ...tx(id(), 1, [insert(3)]), branch: root });
     expect(code(refused)).toBe("BRANCH_NOT_ALLOWED");

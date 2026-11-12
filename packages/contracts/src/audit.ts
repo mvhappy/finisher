@@ -212,7 +212,7 @@ const RULE_FIELDS = {
 /**
  * `history.drop {item?, count, txId?, dropTx?, droppedBy?}`, `review.merge {item, protected,
  * auto}` (with `auto: true` also `snapshot`, `session?`, `verdicts`, `enabledBy`) and
- * `review.policy {old, new}` (`autoMergeRoles` since 7B Task 12; 5E Decisions 19, 26; the cancelled-drop fields: owner amendment to
+ * `review.policy {old, new}` (`autoMergeRoles`, `autoMergeInto` since 7B Task 12; 5E Decisions 19, 26; the cancelled-drop fields: owner amendment to
  * Decision 13): a review item's id, counts, booleans and branch ids; never a title,
  * summary, comment or reason (review text is content).
  */
@@ -226,6 +226,8 @@ const PolicyWord = Schema.Struct({
   autoMerge: Schema.Boolean,
   /** The roles auto merge admits; absent: every role. */
   autoMergeRoles: Schema.optional(Schema.Array(RoleWord).check(Schema.isMaxLength(32))),
+  /** The branch (id) auto merge merges into; absent: `main`. */
+  autoMergeInto: Schema.optional(BranchIdWord),
 });
 /** A head's `txHash` (`blake3:<hex>`). */
 const HashWord = Schema.String.check(Schema.isPattern(/^[0-9a-z]{1,16}:[0-9a-f]{1,128}$/));

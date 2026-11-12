@@ -11,6 +11,8 @@
 //   `available`) nothing is read and nothing merges.
 // - **Checks, in order:** the item is `open` (`changesRequested`: a person handed the branch
 //   back), `policyOff` (auto merge off, or nobody recorded as having turned it on),
+//   `targetNotAllowed` (the item's target is not the policy's `into`, default `main`; 7B Task
+//   12), the caller's `admit` (7B Task 12: the session side, again under the gate),
 //   `requireReview` (a person decides every entry), `verdictMissing` (no QA or no critic
 //   verdict), `verdictFailed` (the newest of either failed), `snapshotMismatch` (the newest of
 //   either judged another snapshot than the item's), `replanNeeded` (the snapshot's list is gone
@@ -23,7 +25,16 @@
 //   branch denied. Audited `review.merge {auto: true, item, snapshot, session?, verdicts,
 //   enabledBy}`; its `review.verdict` says `by: policy`, `via: autoMerge`.
 // - A refusal writes nothing: the item stays open for a person.
-import { AUDIT_ID_PATTERN, AUDIT_VERDICT_ID_PATTERN, auditDetailsValid, type FinError, type ReviewItem, type Snapshot } from "@finisher/contracts";
+import {
+  AUDIT_ID_PATTERN,
+  AUDIT_VERDICT_ID_PATTERN,
+  AUTO_MERGE_DEFAULT_INTO,
+  auditDetailsValid,
+  type BranchPolicy,
+  type FinError,
+  type ReviewItem,
+  type Snapshot,
+} from "@finisher/contracts";
 import type { WriteGuard } from "@finisher/core-types";
 import { Effect } from "effect";
 import type { Audit } from "../control/audit.ts";
@@ -61,13 +72,18 @@ export function storedVerdicts(store: Pick<ReviewStore, "verdicts">): VerdictSou
   return { verdicts: (itemId) => store.verdicts(itemId) };
 }
 
-export interface AutoMergeDeps {
+export interface AutoMergeDeps<R extends string = never> {
   readonly reviews: Pick<Reviews, "workflow" | "store" | "gate">;
   readonly verdicts: VerdictSource;
   /** Sub-project 10's switch; tests inject `true`. Default `AUTO_MERGE_AVAILABLE` (false). */
   readonly available?: boolean | undefined;
   /** Where the `review.merge {auto: true}` row goes: an auto merge is never unaudited. */
   readonly audit: Pick<Audit, "append">;
+  /**
+   * The caller's own checks, run under the policy gate with the item and the policy as they are
+   * there (7B Task 12: the session's role, mode, approvals and branch): a reason refuses.
+   */
+  readonly admit?: (item: ReviewItem, policy: BranchPolicy) => R | undefined;
 }
 
 /**
@@ -83,6 +99,7 @@ export type AutoMergeRefusal =
   | "unavailable"
   | "changesRequested"
   | "policyOff"
+  | "targetNotAllowed"
   | "requireReview"
   | "verdictMissing"
   | "verdictFailed"
@@ -90,10 +107,13 @@ export type AutoMergeRefusal =
   | "replanNeeded"
   | "dropsChanged";
 
-/** A merge answers what `mergeReview` did (absent on the replay of an item already merged). */
-export type AutoMergeResult =
+/**
+ * A merge answers what `mergeReview` did (on a replay, fin-store's stored merge; absent only when
+ * that cannot be read back).
+ */
+export type AutoMergeResult<R extends string = never> =
   | { readonly merged: true; readonly mergeId: string; readonly review?: ReviewMerged }
-  | { readonly merged: false; readonly reason: AutoMergeRefusal };
+  | { readonly merged: false; readonly reason: AutoMergeRefusal | R };
 
 const refused = (reason: AutoMergeRefusal): AutoMergeResult => ({ merged: false, reason });
 
@@ -167,7 +187,7 @@ const snapshotWord = (s: Snapshot) => ({
  * `REVIEW_CLOSED`, `REVIEW_HAS_CONFLICTS`, `REVIEW_UNDECIDED {reason: nothingAccepted}` (the
  * review lists open transactions and none would be merged), and the engine's.
  */
-export function tryAutoMerge(itemId: string, session: string | undefined, deps: AutoMergeDeps): Effect.Effect<AutoMergeResult, FinError> {
+export function tryAutoMerge<R extends string = never>(itemId: string, session: string | undefined, deps: AutoMergeDeps<R>): Effect.Effect<AutoMergeResult<R>, FinError> {
   return Effect.gen(function* () {
     if (!(deps.available ?? AUTO_MERGE_AVAILABLE)) return refused("unavailable");
     if (session !== undefined && !AUDIT_ID_PATTERN.test(session)) {
@@ -181,13 +201,16 @@ export function tryAutoMerge(itemId: string, session: string | undefined, deps: 
         // Read again under the gate: the policy and the item as they are now.
         const current = yield* w.item(itemId);
         if (current.kind === "branchReview" && current.state === "merged" && current.snapshot !== undefined && current.mergeId === idemKeyOf(current)) {
-          return { merged: true, mergeId: current.mergeId } as const;
+          return yield* replayed(deps, current, session);
         }
         const item = yield* w.openBranchReview(itemId);
         if (item.state !== "open") return refused("changesRequested");
         const policy = store.policy(item.projectId);
         const enabledBy = store.autoMergeEnabledBy(item.projectId);
         if (!policy.autoMerge.enabled || enabledBy === undefined) return refused("policyOff");
+        if (item.target !== (policy.autoMerge.into ?? AUTO_MERGE_DEFAULT_INTO)) return refused("targetNotAllowed");
+        const no = deps.admit?.(item, policy);
+        if (no !== undefined) return { merged: false, reason: no } as const;
         if (policy.requireReview) return refused("requireReview");
         const snapshot = item.snapshot!;
         const judged = judge(deps.verdicts.verdicts(item.id), snapshot);
@@ -220,4 +243,21 @@ export function tryAutoMerge(itemId: string, session: string | undefined, deps: 
       }),
     );
   });
+}
+
+/**
+ * An item this path merged already (a replay after a crash between the item's state and what
+ * followed): fin-store answers the merge it stored for the fixed `idemKey`, so the answer carries
+ * what was merged (the outcome ledger records it then). Not audited again. When that read fails
+ * the answer is the bare merge id.
+ */
+function replayed<R extends string>(deps: AutoMergeDeps<R>, item: ReviewItem, session: string | undefined): Effect.Effect<AutoMergeResult<R>> {
+  const mergeId = item.mergeId!;
+  const { store, workflow: w } = deps.reviews;
+  const actor: PolicyActor = { kind: "policy", policy: "autoMerge", enabledBy: store.autoMergeEnabledBy(item.projectId) ?? "replay" };
+  const caller = policyCaller(actor, policyGuard(item, store.policy(item.projectId).protected), session);
+  return mergeReview(w, caller, { itemId: item.id, expect: item.snapshot!, acceptPending: true, idemKey: mergeId }).pipe(
+    Effect.map((review): AutoMergeResult<R> => ({ merged: true, mergeId, review })),
+    Effect.orElseSucceed((): AutoMergeResult<R> => ({ merged: true, mergeId })),
+  );
 }

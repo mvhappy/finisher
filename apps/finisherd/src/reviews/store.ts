@@ -404,7 +404,11 @@ export class ReviewStore {
     return {
       protected: JSON.parse(r.protected) as string[],
       requireReview: r.requireReview === 1,
-      autoMerge: { enabled: autoMerge.enabled, ...(autoMerge.roles === undefined ? {} : { roles: autoMerge.roles }) },
+      autoMerge: {
+        enabled: autoMerge.enabled,
+        ...(autoMerge.roles === undefined ? {} : { roles: autoMerge.roles }),
+        ...(autoMerge.into === undefined ? {} : { into: autoMerge.into }),
+      },
     };
   }
 
@@ -432,7 +436,13 @@ export class ReviewStore {
       const old = this.policy(projectId);
       const by = p.autoMerge.enabled ? (enabledBy ?? this.autoMergeEnabledBy(projectId)) : undefined;
       const roles = p.autoMerge.roles === undefined ? undefined : [...new Set(p.autoMerge.roles)];
-      const autoMerge: StoredAutoMerge = { enabled: p.autoMerge.enabled, ...(roles === undefined ? {} : { roles }), ...(by === undefined ? {} : { enabledBy: by }) };
+      const into = p.autoMerge.into;
+      const autoMerge: StoredAutoMerge = {
+        enabled: p.autoMerge.enabled,
+        ...(roles === undefined ? {} : { roles }),
+        ...(into === undefined ? {} : { into }),
+        ...(by === undefined ? {} : { enabledBy: by }),
+      };
       this.#stmt(
         "INSERT INTO branch_policy (projectId, protected, requireReview, autoMerge) VALUES (?, ?, ?, ?) " +
           "ON CONFLICT (projectId) DO UPDATE SET protected = excluded.protected, requireReview = excluded.requireReview, autoMerge = excluded.autoMerge",
@@ -466,10 +476,12 @@ export class ReviewStore {
   }
 }
 
-/** `branch_policy.autoMerge` as stored: the switch, the roles it admits (absent: all), and who turned it on. */
+/** `branch_policy.autoMerge` as stored: the switch, the roles it admits (absent: all), its target (absent: `main`) and who turned it on. */
 interface StoredAutoMerge {
   readonly enabled: boolean;
   readonly roles?: ReadonlyArray<string>;
+  /** The branch id it merges into; absent: `main`. */
+  readonly into?: string;
   readonly enabledBy?: string;
 }
 
