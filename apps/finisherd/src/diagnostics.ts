@@ -123,6 +123,30 @@ export function actorFor(p: Principal, headers: unknown): CallMeta {
 }
 
 /**
+ * The server-internal actor of the auto-merge policy (5E Decision 19; spec §8.5; agent spec §1.7
+ * item 6): no principal, no credential, reached by no RPC. `enabledBy` is the person who turned
+ * the project's policy on (`<kind>:<id>`).
+ */
+export interface PolicyActor {
+  readonly kind: "policy";
+  readonly policy: "autoMerge";
+  readonly enabledBy: string;
+}
+
+/**
+ * The policy actor's `CallMeta`: journalled as fin-core's `system` actor (it has no `policy`
+ * kind), with the agent session whose branch it merges, and the guard its merge carries.
+ */
+export function policyMeta(_actor: PolicyActor, guard: WriteGuard, session?: string): CallMeta {
+  return { actor: { kind: "system", ...(session === undefined ? {} : { session }) }, guard };
+}
+
+/** How a `review.verdict` names the policy actor's decisions: `by: policy`, `via: autoMerge`. */
+export function policyVerdict(actor: PolicyActor): { readonly by: "policy"; readonly via: "autoMerge" } {
+  return { by: actor.kind, via: actor.policy };
+}
+
+/**
  * The rate-limit key of a principal's call: `local:<connection>` (per connection), `console`,
  * `<kind>:<id>` for the others.
  */

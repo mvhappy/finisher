@@ -32,8 +32,13 @@ export interface ReviewVerdictPayload {
   readonly reason?: string;
 }
 
-/** `user` for a person and `local`; `agent` for agent and MCP credentials (Decision 20). */
-export function verdictBy(p: Pick<Principal, "kind">): ReviewVerdictBy {
+/**
+ * `user` for a person and `local`; `agent` for agent and MCP credentials; `policy` for the
+ * auto-merge policy's actor (Decision 20), whose entries also say `via: autoMerge`
+ * (`policyVerdict` in `diagnostics.ts`).
+ */
+export function verdictBy(p: { readonly kind: Principal["kind"] | "policy" }): ReviewVerdictBy {
+  if (p.kind === "policy") return "policy";
   return p.kind === "agent" || p.kind === "mcp" ? "agent" : "user";
 }
 

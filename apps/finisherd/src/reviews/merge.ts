@@ -15,6 +15,8 @@
 //   left to merge into the target.
 // - A retry with the item's own `mergeId` as `idemKey` answers the merge again (fin-store
 //   answers it from the log); any other write on a merged item is `REVIEW_CLOSED`.
+// - The auto-merge policy's actor (`auto-merge.ts`, Decision 19) calls this too, under the gate
+//   it takes itself, and writes its own `review.merge {auto: true}` row.
 import type { FinError, ReviewItem } from "@finisher/contracts";
 import type { CommittedTx, MergeReport, ReviewPlan } from "@finisher/core-types";
 import { blake3Hex } from "@finisher/fin-node";
@@ -167,7 +169,8 @@ export function mergeReview(w: ReviewWorkflow, c: Caller, req: ReviewMergeReq): 
     const by = principalKey(c.principal);
     const merged = yield* sync(() => w.store.setState(item.id, "merged", by, { mergeId: report.mergeId }));
     const isProtected = w.store.policy(item.projectId).protected.includes(item.target!);
-    if (isProtected) {
+    // The auto-merge policy's actor audits its own row (`auto: true`, `auto-merge.ts`).
+    if (isProtected && c.internal === undefined) {
       w.audit?.append({
         kind: "review.merge",
         principal: { kind: c.principal.kind, id: c.principal.id },
