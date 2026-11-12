@@ -18,11 +18,17 @@ USAGE:
   fin-plugin new content|code <dir>
   fin-plugin validate <dir>
   fin-plugin pack <dir> -o <file.finpkg>
+  fin-plugin test <dir> [--profile command] [--fixture <snapshot.json>] [--exec <path>] [--node <path>]
+        runs the plugin through a conformance profile on a fake host (`command`: every
+        command answers in time with valid output, honours cancel, makes no call outside
+        its permissions and logs no path or secret). --exec: a native plugin's executable
+        when <dir> is a source tree; --node: the Node a `node` plugin runs on
   fin-plugin keygen <private.pem> [--public <public.pem>]
   fin-plugin registry <command> ...        (see `fin-plugin registry --help`)
 
 Output is JSON on stdout. Errors are {code, message, details, fix?} on stderr with the exit
-code: 2 usage, 3 invalid or not found, 4 conflict, 5 unavailable, 7 trust.
+code: 2 usage, 3 invalid or not found (a failed `test` is PLUGIN_TEST_FAILED), 4 conflict,
+5 unavailable, 7 trust.
 ";
 
 pub(crate) const REGISTRY_HELP: &str = "fin-plugin registry: build and sign a local-folder registry
@@ -94,7 +100,10 @@ impl CliError {
             | "PUBLISHER_EXISTS"
             | "DIR_NOT_EMPTY"
             | "KEY_EXISTS" => 4,
-            "IO_ERROR" | "REGISTRY_UNREACHABLE" | "CLOCK_SUSPECT" => 5,
+            "IO_ERROR"
+            | "REGISTRY_UNREACHABLE"
+            | "CLOCK_SUSPECT"
+            | "PLUGIN_RUNTIME_UNAVAILABLE" => 5,
             "REGISTRY_UNTRUSTED" => 7,
             c if c.starts_with("TUF_") => 7,
             _ => 3,
@@ -237,6 +246,7 @@ fn run(args: &[String]) -> Result<Option<Value>, CliError> {
         Some("new") => cmd::new::run(&rest).map(Some),
         Some("validate") => cmd::validate::run(&rest).map(Some),
         Some("pack") => cmd::pack::run(&rest).map(Some),
+        Some("test") => cmd::test::run(&rest).map(Some),
         Some("keygen") => keys::keygen(&rest).map(Some),
         Some("registry") => cmd::registry::run(&rest).map(Some),
         Some(other) => Err(CliError::usage(format!(

@@ -1329,6 +1329,7 @@ dependencies = [
  "fin-core",
  "fin-fonts",
  "fin-plugin-api",
+ "fin-plugin-test",
  "fin-registry",
  "semver",
  "serde_json",
@@ -1355,10 +1356,16 @@ dependencies = [
 name = "fin-plugin-test"
 version = "0.0.0"
 dependencies = [
+ "base64 0.23.1",
  "fin-core",
  "fin-jobs",
  "fin-plugin-api",
+ "rcgen",
+ "rustls",
+ "semver",
+ "serde",
  "serde_json",
+ "tempfile",
 ]
 
 [[package]]

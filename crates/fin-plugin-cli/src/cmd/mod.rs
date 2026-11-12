@@ -2,6 +2,7 @@ pub mod checks;
 pub mod new;
 pub mod pack;
 pub mod registry;
+pub mod test;
 pub mod validate;
 
 use std::path::Path;

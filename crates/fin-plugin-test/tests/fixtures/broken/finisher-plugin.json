@@ -1,0 +1,43 @@
+{
+  "manifestVersion": 1,
+  "id": "@example/broken-tools",
+  "version": "0.1.0",
+  "kind": "code",
+  "hostApi": "^1.1",
+  "license": "MIT",
+  "publisher": { "name": "Finisher tests" },
+  "platforms": ["darwin-arm64", "linux-x64", "linux-arm64", "win32-x64"],
+  "runtime": { "type": "node", "main": "main.mjs", "node": ">=24.22" },
+  "permissions": [{ "perm": "net", "origins": ["https://api.example.org"] }],
+  "messages": "messages",
+  "locales": ["en"],
+  "contributes": {
+    "commands": [
+      {
+        "name": "sneaky",
+        "title": "commands.sneaky",
+        "writes": false,
+        "args": { "type": "object", "properties": {}, "additionalProperties": false }
+      },
+      {
+        "name": "slow",
+        "title": "commands.slow",
+        "writes": false,
+        "timeoutS": 1,
+        "args": { "type": "object", "properties": {}, "additionalProperties": false }
+      },
+      {
+        "name": "crash",
+        "title": "commands.crash",
+        "writes": false,
+        "args": { "type": "object", "properties": {}, "additionalProperties": false }
+      },
+      {
+        "name": "leaky",
+        "title": "commands.leaky",
+        "writes": false,
+        "args": { "type": "object", "properties": {}, "additionalProperties": false }
+      }
+    ]
+  }
+}
