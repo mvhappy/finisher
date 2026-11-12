@@ -88,6 +88,13 @@ pub const PLUGIN_COMMANDS: &[Command] = &[
         || schema_of::<plugin::IdArgs>("plugin.disable"),
     ),
     cmd(
+        "plugin.commands",
+        "plugin",
+        "[<id>]",
+        "plugin commands you can run: fin <id> <command> --<arg> <v>…; fin help <id> is one plugin's",
+        || schema_of::<plugin::CommandsArgs>("plugin.commands"),
+    ),
+    cmd(
         "registry.ls",
         "registry",
         "",

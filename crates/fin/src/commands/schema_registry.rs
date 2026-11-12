@@ -7,7 +7,7 @@ use serde_json::{Value, json};
 
 use crate::registry::{Command, commands};
 use crate::registry_rpcs::{Match, Row, RpcUse};
-use crate::registry_rpcs_edit::{EDIT_ROWS, PLUGIN_COMMAND, PLUGIN_COMMAND_RPC};
+use crate::registry_rpcs_edit::{EDIT_ROWS, PLUGIN_COMMAND, PLUGIN_COMMAND_RPCS};
 
 pub const VERSION: u32 = 1;
 
@@ -52,14 +52,15 @@ fn entry(c: &Command) -> Value {
     })
 }
 
-/// The plugin commands' entry: a name pattern, composed by the server from the plugin host's
-/// record of the caller (never the payload's `tx.via`).
+/// The plugin commands' entry: a name pattern, `plugin:<id>/<command>` (`fin @<id>
+/// <command>`): `plugin.command.run` is named by its `name`, the transaction it commits by the
+/// plugin host's record of the caller (never the payload's `tx.via`).
 fn plugin_entry() -> Value {
     json!({
         "name": PLUGIN_COMMAND,
         "group": "plugin-command",
-        "rpcs": [rpc(&PLUGIN_COMMAND_RPC)],
-        "identity": ["projectId", "tx.branch", "tx.ops"],
+        "rpcs": PLUGIN_COMMAND_RPCS.iter().map(rpc).collect::<Vec<_>>(),
+        "identity": ["projectId", "branch", "name", "args"],
         "write": true,
         "argKinds": {},
         "dynamic": true,

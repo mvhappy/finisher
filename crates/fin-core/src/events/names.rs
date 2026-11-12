@@ -53,7 +53,8 @@ impl NameTable {
 }
 
 /// `fin` commands by registry name (dotted, as `fin`'s registry names them), plus the
-/// `fin diagnostics` commands of Task D6 and the `fin plugin|registry` commands of 8A Task 12c.
+/// `fin diagnostics` commands of Task D6 and the `fin plugin|registry` commands of 8A Task 12c
+/// (`plugin.commands`: 8B Task 10; `fin @<id> <command>` itself is no registry command: `other`).
 pub static CLI_COMMANDS: NameTable = NameTable::new(
     "CLI_COMMANDS",
     &[
@@ -135,6 +136,7 @@ pub static CLI_COMMANDS: NameTable = NameTable::new(
         "media.caps",
         "merge",
         "param.set",
+        "plugin.commands",
         "plugin.disable",
         "plugin.enable",
         "plugin.info",

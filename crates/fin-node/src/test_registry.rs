@@ -57,6 +57,10 @@ struct FullPackage {
     /// The manifest's `contributes`, instead of the generated one.
     #[serde(default)]
     contributes: Option<Value>,
+    /// Top-level manifest fields set last, over the generated ones (a code plugin's
+    /// `contributes`, `messages` and `locales`; with `files`, its own `dist/plugin.mjs`).
+    #[serde(default)]
+    manifest: Option<serde_json::Map<String, Value>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -107,6 +111,7 @@ fn full(p: &PackageSpec) -> Result<FullPackage> {
                 styles: Vec::new(),
                 files: BTreeMap::new(),
                 contributes: None,
+                manifest: None,
             }
         }
         PackageSpec::Full(f) => FullPackage {
@@ -119,6 +124,7 @@ fn full(p: &PackageSpec) -> Result<FullPackage> {
             styles: f.styles.clone(),
             files: f.files.clone(),
             contributes: f.contributes.clone(),
+            manifest: f.manifest.clone(),
         },
     })
 }
@@ -220,6 +226,9 @@ fn pack(p: &FullPackage, scratch: &Path) -> Result<std::path::PathBuf> {
             contributes.insert("captionStyles".into(), Value::Array(list));
         }
         manifest["contributes"] = Value::Object(contributes);
+    }
+    if let (Some(extra), Some(m)) = (&p.manifest, manifest.as_object_mut()) {
+        m.extend(extra.clone());
     }
     for (path, text) in &p.files {
         write(path, text.as_bytes())?;

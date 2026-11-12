@@ -44,10 +44,6 @@ export const RPC_ONLY: ReadonlySet<FinRpcTag> = new Set<FinRpcTag>([
   "fonts.plan",
   "plugin.content.get",
   "plugin.discard",
-  // Plugin commands (sp8b Task 9): a run is named by its command, `plugin:<id>/<cmd>`
-  // (`commandsOf`); `fin @<id> <command>` (Task 10) adds the `fin` side.
-  "plugin.commands",
-  "plugin.command.run",
   "ops.subscribe",
   "project.events",
   // Server housekeeping: the engine reopens on the next call (review #11).

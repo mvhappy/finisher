@@ -1077,6 +1077,7 @@ dependencies = [
  "clap",
  "fin",
  "fin-core",
+ "fin-plugin-api",
  "fin-probe",
  "fin-sandbox",
  "fin-store",

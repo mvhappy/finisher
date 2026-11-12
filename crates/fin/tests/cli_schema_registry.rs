@@ -45,10 +45,11 @@ fn registry_lists_every_command() {
     assert_eq!(names.len(), listed.len() + 1);
     let plugin = command(&reg, "plugin:<id>/<command>");
     assert_eq!(plugin["dynamic"], true);
-    // Named from the plugin host's own record of the caller, never from the payload.
+    // `plugin.command.run` by its `name`; its commit from the plugin host's own record of the
+    // caller, never from the payload (sp8b Task 10).
     assert_eq!(
         plugin["rpcs"],
-        serde_json::json!([{ "method": "tx.commit" }])
+        serde_json::json!([{ "method": "plugin.command.run" }, { "method": "tx.commit" }])
     );
     // The plugin manager's own commands keep their plugin.* names.
     command(&reg, "plugin.install");

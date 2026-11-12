@@ -91,6 +91,9 @@ async function run(job) {
       if (v.sleepMs) await new Promise((r) => setTimeout(r, v.sleepMs));
       return JSON.parse((v.out ?? '{"kind":"data","value":null}').replaceAll("$REV", String(rev)));
     }
+    case "echo":
+      // A `plugin.command` run's arguments as its data (`fin`'s argument mapping, Task 10).
+      return { kind: "data", value: v };
     case "sleep":
       return new Promise((resolve) => setTimeout(() => resolve({ pid: process.pid, slept: v.ms }), v.ms));
     case "crash":
