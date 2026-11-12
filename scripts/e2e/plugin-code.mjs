@@ -13,8 +13,9 @@
 //      a private address: `EGRESS_PRIVATE_ADDRESS`;
 //   5. an agent session on another project cannot reach the first (`PROJECT_NOT_FOUND`);
 //   6. authority isolation: the person's marker (memory, temp, pluginData) is invisible to the
-//      agent session and to its child, still the person's afterwards; the session's end bumps
-//      its tree's generation, stops its process and removes its temp and pluginData;
+//      agent session and to its child, still the person's afterwards; the child's start bumps
+//      the tree's generation and retires the root's older process, temp and pluginData (the root
+//      then sees none of its own marker); the session's end does the same for the new ones;
 //   7. the probe's process killed during three runs: `crashLoop` and its audit row;
 //   8. disable with work running and queued: the queued run fails `PLUGIN_DISABLED`;
 //   9. `PLUGINS_UNCONFINED` counts what is still enabled and active;
@@ -180,16 +181,6 @@ export async function run() {
     const agentSaw = marker(asAgent(session.id, [probe.id, "run", "--op", "marker", "--set", "agent-one"]), "the agent's marker");
     assertEqual({ ...agentSaw, pid: undefined }, { ...nothing, pid: undefined }, "the agent sees none of the person's marker");
     need(agentSaw.pid !== first.pid, "the agent ran in the person's process");
-    const child = asAgent(session.id, ["agent", "spawn", "--role", "fixer", "--brief", "look at the cut"]);
-    need(child.status === 0, `fin agent spawn: ${child.text} ${child.stderr}`);
-    const childId = child.json.session.id ?? child.json.session;
-    await waitSession(server, childId, ["running"]);
-    mkdirSync(join(other, "workspace", childId), { recursive: true });
-    const childSaw = marker(asAgent(childId, [probe.id, "run", "--op", "marker"]), "the child's marker");
-    assertEqual({ ...childSaw, pid: undefined }, { ...nothing, pid: undefined }, "the child sees neither the person's nor its root's marker");
-    need(![first.pid, agentSaw.pid].includes(childSaw.pid), "the child ran in another caller's process");
-    const again = asPersonMarker();
-    assertEqual([again.memory, again.tmp, again.data], ["person-one", "person-one", "person-one"], "the person still sees its own marker");
     const generation = (cls) => {
       const db = new DatabaseSync(join(sd, "control.db"), { readOnly: true });
       try {
@@ -198,13 +189,35 @@ export async function run() {
         db.close();
       }
     };
-    const treeBefore = generation(`agent:${session.id}`);
-    const agentFiles = () => [...filesHolding(join(sd, "plugins"), "agent-one")];
-    assertEqual(agentFiles().length, 2, "the agent's temp and pluginData markers");
+    const tree = `agent:${session.id}`;
+    const markerFiles = (text) => filesHolding(join(sd, "plugins"), text);
+    assertEqual(markerFiles("agent-one").length, 2, "the agent's temp and pluginData markers");
+    // A child's start changes the session tree: the tree's generation goes up, and the root's
+    // older-generation process, temp and pluginData are retired (the as-built stand-in for a
+    // narrowed credential, which is never narrowed in place).
+    const spawnedAt = generation(tree);
+    const child = asAgent(session.id, ["agent", "spawn", "--role", "fixer", "--brief", "look at the cut"]);
+    need(child.status === 0, `fin agent spawn: ${child.text} ${child.stderr}`);
+    const childId = child.json.session.id ?? child.json.session;
+    await waitSession(server, childId, ["running"]);
+    need(generation(tree) > spawnedAt, "the child's start did not bump its tree's generation");
+    await waitFor("the root's older-generation process, temp and pluginData to go", () => !alive(agentSaw.pid) && markerFiles("agent-one").length === 0, 70_000, () => `: alive ${alive(agentSaw.pid)}, files ${JSON.stringify(markerFiles("agent-one"))}`, 100);
+    mkdirSync(join(other, "workspace", childId), { recursive: true });
+    const childSaw = marker(asAgent(childId, [probe.id, "run", "--op", "marker"]), "the child's marker");
+    assertEqual({ ...childSaw, pid: undefined }, { ...nothing, pid: undefined }, "the child sees none of the person's marker");
+    need(![first.pid, agentSaw.pid].includes(childSaw.pid), "the child ran in another caller's process");
+    // The root again, under the new generation: nothing of its retired state, a process of its own.
+    const rootAgain = marker(asAgent(session.id, [probe.id, "run", "--op", "marker", "--set", "agent-two"]), "the root's marker after the bump");
+    assertEqual({ ...rootAgain, pid: undefined }, { ...nothing, pid: undefined }, "the root's retired memory, temp and pluginData are gone");
+    need(![first.pid, agentSaw.pid, childSaw.pid].includes(rootAgain.pid), "the root ran in a retired or another caller's process");
+    assertEqual(markerFiles("agent-two").length, 2, "the root's new temp and pluginData markers");
+    const again = asPersonMarker();
+    assertEqual([again.memory, again.tmp, again.data], ["person-one", "person-one", "person-one"], "the person still sees its own marker");
+    const endedAt = generation(tree);
     await consoleCall(server, "agent.session.end", { sessionId: session.id });
-    await waitFor("the agent's process, temp and pluginData to go", () => !alive(agentSaw.pid) && agentFiles().length === 0, 70_000, () => `: alive ${alive(agentSaw.pid)}, files ${JSON.stringify(agentFiles())}`, 100);
-    need(generation(`agent:${session.id}`) > treeBefore, "the session's end did not bump its tree's generation");
-    assertEqual(filesHolding(join(sd, "plugins"), "person-one").length, 2, "the person's markers stay");
+    await waitFor("the agent's process, temp and pluginData to go", () => !alive(rootAgain.pid) && markerFiles("agent-two").length === 0, 70_000, () => `: alive ${alive(rootAgain.pid)}, files ${JSON.stringify(markerFiles("agent-two"))}`, 100);
+    need(generation(tree) > endedAt, "the session's end did not bump its tree's generation");
+    assertEqual(markerFiles("person-one").length, 2, "the person's markers stay");
     need(alive(again.pid), "the person's process was retired with the agent's");
 
     step(7, "the probe killed during three runs: crash loop and its audit row");
@@ -248,7 +261,7 @@ export async function run() {
     const keyed = (ref) => JSON.stringify(ref).includes("hash") && !JSON.stringify(ref).includes("@");
     need(exits.every((e) => keyed(e.payload.plugin)), `a worker.exit's plugin is not keyed: ${JSON.stringify(exits[0]?.payload.plugin)}`);
     need(entries.filter((e) => e.kind === "plugin.exit" || e.kind === "plugin.command").every((e) => keyed(e.payload.plugin)), "a plugin entry names its plugin unkeyed");
-    const needles = ["@example", "ts-tools", "rust-tools", "@e2e", "e2e/probe", "person-one", "agent-one", STDERR_TEXT, "silent items", TITLE, API, tmp, sd, work];
+    const needles = ["@example", "ts-tools", "rust-tools", "@e2e", "e2e/probe", "person-one", "agent-one", "agent-two", STDERR_TEXT, "silent items", TITLE, API, tmp, sd, work];
     const found = leaks(filesUnder(join(sd, "events")), needles);
     need(found.length === 0, `free text in the journal: ${JSON.stringify(found.slice(0, 3))}`);
     need(!needles.some((n) => JSON.stringify(entries).includes(n)), "free text in the stored entries");
