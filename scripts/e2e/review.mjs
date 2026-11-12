@@ -27,6 +27,7 @@ async function auditOf(server) {
   const rows = [];
   for (let cursor; ; ) {
     const page = await consoleRpc(server, "auth.audit.list", { limit: 1000, ...(cursor ? { cursor } : {}) }, { confirm: false });
+    if (!Array.isArray(page.entries) || (page.next !== undefined && typeof page.next !== "string")) throw new Error(`unexpected auth.audit.list answer: ${JSON.stringify(page).slice(0, 300)}`);
     rows.push(...page.entries);
     cursor = page.next;
     if (cursor === undefined) return rows;
@@ -79,7 +80,8 @@ export async function run() {
     const edits = [1, 2, 3, 4].map((n) => insert(agent, "work", `${n}s`).txId);
     refused(as(agent, ["--branch", "main", "clip", "insert", "--no-audio", "--track", "t1", "--at", "end", "--asset", "a1", "--dur", "1s"]), 7, "BRANCH_NOT_ALLOWED", "an own-branch credential on main");
     refused(as(wide, ["--branch", "main", "clip", "insert", "--no-audio", "--track", "t1", "--at", "end", "--asset", "a1", "--dur", "1s"]), 7, "BRANCH_PROTECTED", "a wide credential on protected main");
-    const requested = agentOk(agent, ["review", "request", "--branch", "work", "--title", "Four edits"]);
+    const summary1 = "SECRET-SUMMARY-1";
+    const requested = agentOk(agent, ["review", "request", "--branch", "work", "--title", "Four edits", "--summary", summary1]);
     const itemId = requested.item.id;
     assertEqual([requested.item.kind, requested.item.state], ["branchReview", "open"], "the requested item");
 
@@ -90,10 +92,11 @@ export async function run() {
     refused(as(agent, ["review", "decide", itemId, "--accept", edits[0]]), 7, "SCOPE_DENIED", "the agent cannot decide");
     const comment = "the intro drags SECRET-COMMENT";
     agentOk(agent, ["review", "comment", itemId, comment, "--tx", edits[0]]);
-    const decided = local(["review", "decide", itemId, "--reject", edits[0], "--accept", edits[1], edits[2], "--reason", "no"]);
+    const rejectReason = "SECRET-REASON-1";
+    const decided = local(["review", "decide", itemId, "--reject", edits[0], "--accept", edits[1], edits[2], "--reason", rejectReason]);
     assertEqual(decided.decisions.length, 3, "three decisions");
     const merged = local(["review", "merge", itemId]);
-    assertEqual(merged.merge.merged.length, 2, "two merged");
+    assertEqual([...merged.merge.merged].sort(), [edits[1], edits[2]].sort(), "exactly the two accepted origins merged");
     const stateAfter = merged.item.state;
     log(`item after the partial merge: ${stateAfter}`);
     const mainSnap = async () => (await ws.call("snapshot.get", { projectId, branch: "main" }));
@@ -105,7 +108,7 @@ export async function run() {
     step(4, "the partial merge closed the item; a fifth edit and a new request; a sixth makes the old snapshot stale");
     assertEqual(stateAfter, "merged", "a merge without --accept-pending closes the item");
     const fifth = insert(agent, "work", "5s").txId;
-    const again = agentOk(agent, ["review", "request", "--branch", "work", "--title", "The rest"]);
+    const again = agentOk(agent, ["review", "request", "--branch", "work", "--title", "The rest", "--summary", "SECRET-SUMMARY-2"]);
     assertEqual(again.existing, false, "a new item for the rest");
     const item2 = again.item.id;
     const shown2 = local(["review", "show", item2]);
@@ -119,6 +122,13 @@ export async function run() {
     assertEqual(second.merge.merged.length, 3, "the pending one, the fifth and the sixth");
     assertEqual(second.merge.merged.some((t) => t.startsWith(edits[0])), false, "not the rejected one");
     assertEqual(await clipCount(), 5, "main holds five clips");
+
+    // A request for changes and a close on a branch of its own, with text in each (nothing reaches main).
+    agentOk(agent, ["branch", "new", "side"]);
+    insert(agent, "side", "7s");
+    const item3 = agentOk(agent, ["review", "request", "--branch", "side", "--title", "Closing SECRET-TITLE-3", "--summary", "SECRET-SUMMARY-3"]).item.id;
+    local(["review", "decide", item3, "--request-changes", "--reason", "SECRET-REASON-3"]);
+    local(["review", "close", item3, "--dismissed"]);
 
     step(5, "a plain merge of the agent branch leaves the dropped origin out");
     const plain = local(["merge", work.id, "--skip-conflicting"]).merge;
@@ -143,11 +153,18 @@ export async function run() {
     ws.close();
     sockets.length = 0;
     await waitFor("the export to catch up", () => local(["project", "status"]).status.branches.every((b) => b.exportedThrough >= b.head), 20_000);
+    // No RPC or `fin` command lists records, so the drop is read from the exported segments of the folder.
+    const segmentText = () => filesIn(join(project, ".finisher")).map(([, b]) => b.toString("latin1")).join("\n");
+    const dropLine = segmentText().split("\n").find((l) => l.includes('"kind":"drop"') && l.includes(edits[0]));
+    if (dropLine === undefined) throw new Error(`no drop record in the exported segments: ${filesIn(join(project, ".finisher")).map(([f, b]) => f.split("/").pop() + ":" + b.length)}`);
+    assertEqual(dropLine.includes(edits[1]) || dropLine.includes(edits[2]), false, "the drop names only the rejected origin");
     const auditA = await auditOf(server);
     await consoleRpc(server, "project.close", { projectId });
     await stopServer(server);
     servers.length = 0;
-    // The folder is copied without its lease files: the second server takes its own lease.
+    // The folder is copied without its lease files: the second server takes its own lease. (A clean stop leaves the
+    // lease held for about 45 s; TASKS.md's open 4A item "Clean close could write a 'released' lease record so other
+    // servers need not wait out 45 s of staleness" is a known item, not a 5E bug.)
     const moved = join(tmp, "moved project");
     cpSync(project, moved, { recursive: true });
     for (const name of readdirSync(join(moved, ".finisher"))) if (name.startsWith("lease.")) rmSync(join(moved, ".finisher", name));
@@ -165,6 +182,8 @@ export async function run() {
     assertEqual(plainB.excluded.some((e) => e.txId === edits[0] && e.reason === "DROPPED"), true, "the drop holds there");
     const rederived = localB(["review", "ls", "--kind", "branchReview", "--state", "open"]).items.filter((i) => i.source === clash.id);
     assertEqual(rederived.length, 1, "the active agent branch has one item");
+    const openItems = localB(["review", "ls", "--kind", "branchReview", "--state", "open"]).items;
+    assertEqual(openItems.some((i) => i.source === work.id), false, "the fully reviewed branch gets no re-derived item");
     assertEqual(rederived[0].rederived, true, "marked re-derived");
 
     step(8, "auto merge is unavailable; the agent cannot write the policy");
@@ -177,7 +196,8 @@ export async function run() {
 
     step(9, "the journal's verdicts carry counts and no text; the audit rows carry no titles or comments");
     const verdicts = entriesIn(sd, "events").filter((e) => e.kind === "review.verdict").map((e) => e.payload);
-    assertEqual(verdicts.map((v) => [v.verdict, v.by, v.accepted, v.rejected]), [["accepted", "user", 2, 0], ["rejected", "user", 0, 1], ["merged", "user", 2, 0], ["merged", "user", 3, 0]], "the verdicts: who and how many");
+    assertEqual(verdicts.map((v) => [v.verdict, v.by, v.accepted, v.rejected]).filter((v) => v[0] !== "changesRequested" && v[0] !== "dismissed"), [["accepted", "user", 2, 0], ["rejected", "user", 0, 1], ["merged", "user", 2, 0], ["merged", "user", 3, 0]], "the verdicts: who and how many");
+    assertEqual(verdicts.length >= 6, true, `verdicts incl. request-changes and close: ${verdicts.length}`);
     for (const v of verdicts) {
       assertEqual(Object.keys(v).filter((k) => ["reason", "title", "summary", "comment", "text"].includes(k)), [], "no text in a verdict (training is off)");
       assertEqual(JSON.stringify(v).includes("Four edits"), false, "no title in a verdict");
@@ -186,9 +206,13 @@ export async function run() {
     const kinds = new Set(audit.map((e) => e.kind));
     log(`audit kinds: ${[...kinds]}`);
     for (const kind of ["history.drop", "review.policy"]) assertEqual(kinds.has(kind), true, `a ${kind} row`);
+    const needles = ["Four edits", "The rest", "SECRET-TITLE-3", comment, rejectReason, "SECRET-REASON-3", "SECRET-SUMMARY-1", "SECRET-SUMMARY-2", "SECRET-SUMMARY-3"];
     const events = filesIn(join(sd, "events")).map(([, bytes]) => bytes.toString("utf8")).join("\n");
-    for (const needle of ["Four edits", "The rest", comment]) assertEqual(events.includes(needle), false, `${needle} is not in events/`);
-    for (const needle of ["Four edits", "The rest", comment]) {
+    // The searches must not be vacuous: the bytes searched hold what they should.
+    assertEqual(events.includes("review.verdict"), true, "events/ holds the verdict entries");
+    assertEqual(JSON.stringify(audit).includes("history.drop"), true, "the audit text holds history.drop");
+    for (const needle of needles) {
+      assertEqual(events.includes(needle), false, `${needle} is not in events/`);
       assertEqual(JSON.stringify(audit).includes(needle), false, `${needle} is in no audit row`);
     }
     log(`PASS review in ${((Date.now() - started) / 1000).toFixed(1)}s`);
