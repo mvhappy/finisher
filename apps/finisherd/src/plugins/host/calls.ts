@@ -12,9 +12,10 @@
 //    and checks the method's permission and reach (`authorizeMethod`, Task 6) against the
 //    job's project and branch;
 // 4. then acts: `project.snapshot` pages the project's canonical JSON (`PAGE_BYTES` a page
-//    before base64) from one snapshot pinned at the job's first read, so every page and view
-//    of one job has the same `rev` (deviation: fin-node reads a branch at its head only, so the
-//    pin is the head at that first read; a command's commit rebases from its own `rev`);
+//    before base64) from one snapshot pinned for the job, so every page and view of one job
+//    has the same `rev`: a command's is the snapshot `commands.ts` read at submit (`hold`),
+//    whose rev is its `CommandRun.rev` and its transaction's `baseRev` (Task 9); any other
+//    job's is the head at its first read (fin-node reads a branch at its head only);
 //    `project.view` renders `fin view`'s screenplay of the same snapshot, capped at
 //    `VIEW_BYTES`; `log` goes to the server log (`log.ts`); `net.*` are Task 8's.
 import { FinError, type JobView } from "@finisher/contracts";
@@ -51,10 +52,26 @@ export interface HostCallsDeps {
   readonly log: PluginLog;
 }
 
-interface Pinned {
+/** A snapshot a job reads: its rev, its history generation and the project's canonical JSON. */
+export interface Pinned {
   readonly rev: number;
+  readonly generation?: unknown;
   readonly bytes: Buffer;
   readonly json: string;
+}
+
+/** `project`'s branch at `rev` as `pinned()` keeps it. */
+export function pinOf(s: { readonly rev: number; readonly project: unknown; readonly generation?: unknown }): Pinned {
+  const json = JSON.stringify(s.project);
+  return { rev: s.rev, ...(s.generation === undefined ? {} : { generation: s.generation }), json, bytes: Buffer.from(json, "utf8") };
+}
+
+const heldKey = (project: string, branch: string, rev: number): string => `${project}\u0000${branch}\u0000${rev}`;
+
+/** A command job's `rev` (its `CommandRun.rev`), when its params carry one. */
+function revOfJob(job: JobView): number | undefined {
+  const r = (job.params as { rev?: unknown } | null)?.rev;
+  return typeof r === "number" ? r : undefined;
 }
 
 export function retired(): FinError {
@@ -95,17 +112,23 @@ function capView(lines: ReadonlyArray<string>): string {
 export function makeHostCalls(h: HostCallsDeps) {
   /** Each job's pinned snapshot, released when the job ends (`release`). */
   const pins = new Map<string, Promise<Pinned>>();
+  /**
+   * Snapshots a command run read when it was submitted (Task 9, `hold`), by project, branch
+   * and rev, with how many runs hold each: a job of that `CommandRun` reads exactly it.
+   */
+  const held = new Map<string, { pin: Pinned; count: number }>();
 
   const pinned = (deps: CallDeps, job: JobView, project: string, branch: string): Effect.Effect<Pinned, FinError> =>
     Effect.suspend(() => {
       let p = pins.get(job.id);
+      const rev = revOfJob(job);
+      const seeded = rev === undefined ? undefined : held.get(heldKey(project, branch, rev));
+      if (p === undefined && seeded !== undefined) {
+        p = Promise.resolve(seeded.pin);
+        pins.set(job.id, p);
+      }
       if (p === undefined) {
-        p = Effect.runPromise(
-          Effect.map(deps.snapshot(project, branch), (s) => {
-            const json = JSON.stringify(s.project);
-            return { rev: s.rev, json, bytes: Buffer.from(json, "utf8") };
-          }),
-        );
+        p = Effect.runPromise(Effect.map(deps.snapshot(project, branch), pinOf));
         pins.set(job.id, p);
         // A failed read is not kept: the next call reads again.
         p.catch(() => pins.get(job.id) === p && pins.delete(job.id));
@@ -179,6 +202,26 @@ export function makeHostCalls(h: HostCallsDeps) {
 
   return {
     onCall,
+    /**
+     * Holds `pin` (`project`'s `branch` read when a command was submitted, Task 9) until the
+     * returned release: a job whose `CommandRun` names that project, branch and rev reads it,
+     * so the rev a command commits from is every page's rev.
+     */
+    hold(project: string, branch: string, pin: Pinned): () => void {
+      const k = heldKey(project, branch, pin.rev);
+      const h = held.get(k);
+      if (h === undefined) held.set(k, { pin, count: 1 });
+      else h.count++;
+      let done = false;
+      return () => {
+        if (done) return;
+        done = true;
+        const now = held.get(k);
+        if (now !== undefined && --now.count <= 0) held.delete(k);
+      };
+    },
+    /** How many submitted snapshots are held (tests). */
+    heldSnapshots: (): number => held.size,
     /** `jobId` ended: its pinned snapshot goes. */
     release(jobId: string): void {
       pins.delete(jobId);

@@ -7,6 +7,7 @@
 //!   `plugin.command` v1 job (spec §3.6's `command.run`);
 //! - [`calls`]: the plugin → host calls (`call {id, method, params}` → `reply`) of host API 1.1;
 //! - [`JobRights`] ([`rights`]): a plugin job's invoker ∩ grants (Decision 8);
+//! - the client RPCs of commands ([`rpc`]): `plugin.commands`, `plugin.command.run`;
 //! - [`PluginError`] ([`errors`]): the `{code, message, details, fix?}` a failed call, job or
 //!   command answers.
 //!
@@ -18,12 +19,17 @@ pub mod command;
 pub mod context;
 pub mod errors;
 pub mod rights;
+pub mod rpc;
 
 pub use calls::HostMethod;
 pub use command::{CommandOut, CommandRun};
 pub use context::{CallLimits, PluginContext, PluginDirs, PluginRefFull};
 pub use errors::PluginError;
 pub use rights::{JobRights, PluginScope, Reach, ReachAll, RightsBranch, RightsPrincipal};
+pub use rpc::{
+    CommandOutcome, PluginCommandInfo, PluginCommandList, PluginCommandRunRequest,
+    PluginCommandRunResult,
+};
 
 /// The job kind of a command run (Decision 7).
 pub const COMMAND_KIND: &str = "plugin.command";

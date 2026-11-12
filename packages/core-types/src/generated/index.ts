@@ -1220,6 +1220,13 @@ export type CommandOut =
       value: unknown;
     };
 /**
+ * What became of a command run.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "CommandOutcome".
+ */
+export type CommandOutcome = "accepted" | "rebased" | "conflict" | "data";
+/**
  * One purpose's switch.
  *
  * This interface was referenced by `FinCore`'s JSON-Schema
@@ -7383,6 +7390,103 @@ export interface ParamSpec {
   scope: Scope;
   type: ParamType;
   unit?: string | null;
+}
+/**
+ * One command as `plugin.commands` lists it.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "PluginCommandInfo".
+ */
+export interface PluginCommandInfo {
+  args: SchemaSubset;
+  /**
+   * The command's name in its manifest.
+   */
+  command: string;
+  /**
+   * The registry name, `plugin:<id>/<command>` (the name 7B's command rules match).
+   */
+  name: string;
+  /**
+   * `<id>@<version>` of the enabled plugin that serves it.
+   */
+  plugin: string;
+  /**
+   * Its timeout in seconds (the manifest's, 10 when absent, at most 60).
+   */
+  timeoutS: number;
+  /**
+   * A message key in the plugin's `en` catalogue.
+   */
+  title: string;
+  /**
+   * Whether it returns a transaction (running it needs `project.write`).
+   */
+  writes: boolean;
+}
+/**
+ * `plugin.commands`: `digest` is the BLAKE3 of the canonical JSON of `commands`, so a client
+ * caches the list per server and digest.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "PluginCommandList".
+ */
+export interface PluginCommandList {
+  commands: PluginCommandInfo[];
+  digest: string;
+}
+/**
+ * `plugin.command.run`'s request.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "PluginCommandRunRequest".
+ */
+export interface PluginCommandRunRequest {
+  args?: {
+    [k: string]: unknown;
+  };
+  /**
+   * A branch name, id or `name#id`; `main` when absent.
+   */
+  branch?: string | null;
+  /**
+   * Validate the returned transaction against the snapshot the plugin saw; commit nothing.
+   */
+  dryRun?: boolean | null;
+  /**
+   * `plugin:<id>/<command>`.
+   */
+  name: string;
+  projectId: string;
+}
+/**
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "PluginCommandRunResult".
+ */
+export interface PluginCommandRunResult {
+  /**
+   * A data command's value as the plugin returned it.
+   */
+  data?: {
+    [k: string]: unknown;
+  };
+  /**
+   * A dry run: nothing was committed.
+   */
+  dryRun?: boolean | null;
+  /**
+   * The proposed ops (dry run, conflict).
+   */
+  ops?: Op[] | null;
+  outcome: CommandOutcome;
+  /**
+   * The committed revision; for a dry run or a conflict, the revision the plugin saw.
+   */
+  rev?: number | null;
+  /**
+   * The committed transaction's id (accepted, rebased).
+   */
+  txId?: string | null;
 }
 /**
  * This interface was referenced by `FinCore`'s JSON-Schema

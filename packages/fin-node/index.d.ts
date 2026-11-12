@@ -268,6 +268,29 @@ export declare function decodePluginCall(
  */
 export declare function pluginProjectView(projectJson: string, range?: string, budget?: number): { lines: string[]; elided: unknown[]; tokens: number };
 
+/**
+ * A command's argument schema (a manifest's `args`), compiled once (sp8b Task 9). The
+ * constructor throws `PLUGIN_MANIFEST_INVALID {at, problem}` for a schema outside the subset.
+ */
+export declare class PluginCommandArgs {
+  constructor(schema: unknown);
+  validate(args: unknown): { ok: true } | { ok: false; problems: Array<{ path: string; reason: string; message: string }> };
+}
+
+/**
+ * A `plugin.command` job's result (`CommandOut`) decoded; a transaction is built on `txFields`
+ * and applied to `projectJson` (the project the plugin saw, at `baseRev`).
+ */
+export declare function pluginCommandOutcome(
+  projectJson: string,
+  out: unknown,
+  txFields: { txId: string; author: string; branch: string; baseRev: number; via: { plugin: string; command: string } },
+):
+  | { ok: true; kind: "data"; value: unknown }
+  | { ok: true; kind: "tx"; tx: import("@finisher/core-types").Tx; bindings: Record<string, string>; diff: unknown }
+  | { ok: false; protocol: string }
+  | { ok: false; invalid: { code: string; message: string; details?: Record<string, unknown>; fix?: string } };
+
 /** A held exclusive file lock; the descriptor stays open until `release()` or process exit. */
 export declare class ServerLock {
   private constructor();

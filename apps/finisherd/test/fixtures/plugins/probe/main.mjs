@@ -1,7 +1,7 @@
 // A test-only plugin process (sp8b Task 4's tests; the SDKs come in Tasks 12 and 13): it speaks
 // 5C's `fin-jobs` envelope by hand (NDJSON on stdin/stdout, `seq` from 1) as a worker of the
 // `plugin` family, and serves `test.echo` jobs whose `params.value.op` says what to report or
-// try. `kinds.json` beside it, when present, replaces the kinds its `hello` names.
+// try (`command`: a `plugin.command` run's answer). `kinds.json` beside it, when present, replaces the kinds its `hello` names.
 import { readFileSync } from "node:fs";
 import { createInterface } from "node:readline";
 
@@ -77,6 +77,20 @@ async function run(job) {
     case "stderr":
       for (const l of v.lines ?? []) process.stderr.write(`${l}\n`);
       return { pid: process.pid };
+    case "command": {
+      // A command run (Task 9): waits for `waitFor` in its temp directory, reads the snapshot
+      // when `read`, sleeps `sleepMs`, then answers `out` (a `CommandOut` as JSON) with `$REV`
+      // replaced by the rev it read.
+      if (v.waitFor) {
+        const { existsSync } = await import("node:fs");
+        const { join } = await import("node:path");
+        while (!existsSync(join(process.env.TMPDIR, v.waitFor))) await new Promise((r) => setTimeout(r, 20));
+      }
+      let rev = -1;
+      if (v.read) rev = (await call("project.snapshot", {})).value?.rev ?? -2;
+      if (v.sleepMs) await new Promise((r) => setTimeout(r, v.sleepMs));
+      return JSON.parse((v.out ?? '{"kind":"data","value":null}').replaceAll("$REV", String(rev)));
+    }
     case "sleep":
       return new Promise((resolve) => setTimeout(() => resolve({ pid: process.pid, slept: v.ms }), v.ms));
     case "crash":

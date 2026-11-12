@@ -253,6 +253,10 @@ pub(super) const VALIDATION_CODES: &[&str] = &[
     "REGISTRY_NOT_FOUND",
     "REGISTRY_INVALID",
     "PLUGIN_NOT_FOUND",
+    // Plugin commands (sp8b Task 9): arguments outside the command's schema; a transaction the
+    // plugin returned that fin-core refuses (or from a command that does not write).
+    "PLUGIN_COMMAND_ARGS",
+    "PLUGIN_TX_INVALID",
     // Packages and manifests (8A Tasks 2–3): a manifest or package that breaks the rules
     // (`details.path`, `details.reason`), a contribution this host does not consume, an unsafe
     // or oversized package, a host API, platform or Node version it does not fit.

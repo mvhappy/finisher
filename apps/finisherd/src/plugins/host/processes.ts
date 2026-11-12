@@ -34,7 +34,8 @@ import { type CallDeps, makeHostCalls, PAGE_BYTES } from "./calls.ts";
 import { bareKey, keyTmpDir, pluginWarmKey, principalClass, sessionRoots } from "./keys.ts";
 import { makePluginLog, type ServerLog } from "./log.ts";
 import { splitVia, storeDirOf } from "./program.ts";
-import type { PluginContext } from "@finisher/core-types";
+import type { JobRights, Permission, PluginContext } from "@finisher/core-types";
+import { type Invoker, rightsFor } from "./rights.ts";
 
 /** The host API a code plugin must accept to be enabled (sp8b Decision 14). */
 export const PLUGIN_HOST_API = "1.1.0";
@@ -302,6 +303,14 @@ export function makePluginHost(d: PluginHostDeps) {
     authorityOf: (job: JobView): Authority | undefined => jobAuthority(job, principalClass(job.owner, rootSessionOf), generations),
     /** `job`'s warm key now: a worker whose key differs serves a retired authority (Task 7). */
     warmKeyOf,
+    /**
+     * A command job's rights (Task 9): `invoker` ∩ `grants` under its class's generation now;
+     * `sessionRoot` is an agent session's root branch.
+     */
+    rightsOf(invoker: Invoker, grants: ReadonlyArray<Permission>, sessionRoot?: string): JobRights {
+      const cls = principalClass({ kind: invoker.kind, id: invoker.id }, rootSessionOf);
+      return rightsFor({ invoker, grants, class: cls, sessionRoot, generation: generations.of(cls) });
+    },
     /** Serves host calls with `deps` (once the server's credentials, sessions and projects exist). */
     serve(deps: CallDeps): void {
       callDeps = deps;

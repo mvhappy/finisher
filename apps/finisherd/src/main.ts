@@ -53,6 +53,7 @@ import { CatalogsTag, layerCatalogs } from "./library/catalog/client.ts";
 import { LibraryServiceTag, librariesHolding, libraryWiring } from "./library/layer.ts";
 import { layerPlugins } from "./plugins/registries.ts";
 import { makePluginHost } from "./plugins/host/processes.ts";
+import { PluginCommandsTag, serverPluginCommands } from "./plugins/host/command-rpc.ts";
 import { pluginCallDeps } from "./plugins/host/serve.ts";
 import { PluginTables } from "./plugins/tables.ts";
 import { layerProjectRegistry, ProjectRegistry, type RegistryOptions } from "./projects.ts";
@@ -190,10 +191,14 @@ export const serve = ({
       );
       const projects = Context.get(registryContext, ProjectRegistry);
       // The code plugins' processes (sp8b Tasks 4, 5): the `plugin` family is registered with
-      // the engine's other families (a restart reconciles jobs against them), then bound to it.
-      const pluginHost = makePluginHost({ serverData: realpathSync(serverData), control: controlStore, tables: new PluginTables(controlStore), audit: Context.get(control, AuditTag), log: (l, m) => logSink(l === "warning" || l === "error" ? "warning" : "debug", m) });
+      // the engine's other families (a restart reconciles jobs against them), then bound to it;
+      // plugin commands (Task 9) are the enabled plugins' `commands`, run as `plugin.command` jobs.
+      const pluginTables = new PluginTables(controlStore);
+      const pluginHost = makePluginHost({ serverData: realpathSync(serverData), control: controlStore, tables: pluginTables, audit: Context.get(control, AuditTag), log: (l, m) => logSink(l === "warning" || l === "error" ? "warning" : "debug", m) });
+      const pluginCommands = serverPluginCommands({ serverData: realpathSync(serverData), tables: pluginTables, host: pluginHost });
       const register = (r: Parameters<typeof libraries.register>[0]) => {
         pluginHost.register(r);
+        r.registerKind(pluginCommands.kind);
         registerMediaKinds(r, { serverData, projects, libraryRoots: () => libraryRoots() });
         jobOptions?.register?.(r);
         libraries.register(r);
@@ -465,6 +470,7 @@ export const serve = ({
           Layer.succeed(Diagnostics, diagnostics),
           Layer.succeedContext(control),
           Layer.succeedContext(jobsContext),
+          Layer.succeed(PluginCommandsTag, pluginCommands.service(engine)),
           Layer.succeed(LibrariesTag, library),
           Layer.succeed(LibraryServiceTag, library),
           Layer.succeed(KeysTag, keys),

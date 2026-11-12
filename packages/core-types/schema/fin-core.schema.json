@@ -2517,6 +2517,31 @@
         }
       ]
     },
+    "CommandOutcome": {
+      "description": "What became of a command run.",
+      "oneOf": [
+        {
+          "const": "accepted",
+          "description": "The transaction was committed on the revision the plugin saw.",
+          "type": "string"
+        },
+        {
+          "const": "rebased",
+          "description": "The branch had moved on: fin-core rebased the transaction and committed it.",
+          "type": "string"
+        },
+        {
+          "const": "conflict",
+          "description": "fin-core refused it (`CONFLICT`): nothing was committed; `ops` are what was proposed.",
+          "type": "string"
+        },
+        {
+          "const": "data",
+          "description": "The command returned data, or a dry run validated its transaction.",
+          "type": "string"
+        }
+      ]
+    },
     "CommandRun": {
       "additionalProperties": false,
       "description": "A command run: the host has checked `args` against the command's schema and pinned `rev`\nto the head of `branch`.",
@@ -12479,6 +12504,155 @@
         "win32-arm64"
       ],
       "type": "string"
+    },
+    "PluginCommandInfo": {
+      "additionalProperties": false,
+      "description": "One command as `plugin.commands` lists it.",
+      "properties": {
+        "args": {
+          "$ref": "#/$defs/SchemaSubset"
+        },
+        "command": {
+          "description": "The command's name in its manifest.",
+          "type": "string"
+        },
+        "name": {
+          "description": "The registry name, `plugin:<id>/<command>` (the name 7B's command rules match).",
+          "type": "string"
+        },
+        "plugin": {
+          "description": "`<id>@<version>` of the enabled plugin that serves it.",
+          "type": "string"
+        },
+        "timeoutS": {
+          "description": "Its timeout in seconds (the manifest's, 10 when absent, at most 60).",
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "title": {
+          "description": "A message key in the plugin's `en` catalogue.",
+          "type": "string"
+        },
+        "writes": {
+          "description": "Whether it returns a transaction (running it needs `project.write`).",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "name",
+        "plugin",
+        "command",
+        "title",
+        "args",
+        "writes",
+        "timeoutS"
+      ],
+      "type": "object"
+    },
+    "PluginCommandList": {
+      "additionalProperties": false,
+      "description": "`plugin.commands`: `digest` is the BLAKE3 of the canonical JSON of `commands`, so a client\ncaches the list per server and digest.",
+      "properties": {
+        "commands": {
+          "items": {
+            "$ref": "#/$defs/PluginCommandInfo"
+          },
+          "type": "array"
+        },
+        "digest": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "digest",
+        "commands"
+      ],
+      "type": "object"
+    },
+    "PluginCommandRunRequest": {
+      "additionalProperties": false,
+      "description": "`plugin.command.run`'s request.",
+      "properties": {
+        "args": {
+          "default": null
+        },
+        "branch": {
+          "description": "A branch name, id or `name#id`; `main` when absent.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "dryRun": {
+          "description": "Validate the returned transaction against the snapshot the plugin saw; commit nothing.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "name": {
+          "description": "`plugin:<id>/<command>`.",
+          "type": "string"
+        },
+        "projectId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "projectId",
+        "name"
+      ],
+      "type": "object"
+    },
+    "PluginCommandRunResult": {
+      "additionalProperties": false,
+      "properties": {
+        "data": {
+          "description": "A data command's value as the plugin returned it."
+        },
+        "dryRun": {
+          "description": "A dry run: nothing was committed.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "ops": {
+          "description": "The proposed ops (dry run, conflict).",
+          "items": {
+            "$ref": "#/$defs/Op"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "outcome": {
+          "$ref": "#/$defs/CommandOutcome"
+        },
+        "rev": {
+          "description": "The committed revision; for a dry run or a conflict, the revision the plugin saw.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "txId": {
+          "description": "The committed transaction's id (accepted, rebased).",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "outcome"
+      ],
+      "type": "object"
     },
     "PluginContext": {
       "additionalProperties": false,

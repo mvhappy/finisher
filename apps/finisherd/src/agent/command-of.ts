@@ -11,7 +11,7 @@
 // `commandOf` (the first name) is for display and the journal only, never for a decision. The
 // last name is always `rpc:<method>`, so a rule can name any RPC. A plugin command's name comes
 // only from the host (`trusted.via`), never from the payload.
-import type { FinRpcTag } from "@finisher/contracts";
+import { type FinRpcTag, PLUGIN_COMMAND_NAME } from "@finisher/contracts";
 import { REGISTRY, type RegistryMatch } from "@finisher/contracts/registry";
 
 /**
@@ -44,6 +44,10 @@ export const RPC_ONLY: ReadonlySet<FinRpcTag> = new Set<FinRpcTag>([
   "fonts.plan",
   "plugin.content.get",
   "plugin.discard",
+  // Plugin commands (sp8b Task 9): a run is named by its command, `plugin:<id>/<cmd>`
+  // (`commandsOf`); `fin @<id> <command>` (Task 10) adds the `fin` side.
+  "plugin.commands",
+  "plugin.command.run",
   "ops.subscribe",
   "project.events",
   // Server housekeeping: the engine reopens on the next call (review #11).
@@ -152,6 +156,16 @@ function holds(payload: unknown, [path, expect]: Condition): boolean {
   return found.some((v) => v === expect);
 }
 
+/**
+ * `plugin.command.run`'s command (sp8b Task 9): the registry name it asks for. The host runs
+ * exactly that command or none (`PLUGIN_NOT_FOUND`), so naming it from the payload names what
+ * runs; a name of any other shape is not named.
+ */
+function ranCommand(payload: unknown): string | undefined {
+  const name = (payload as { name?: unknown } | null)?.name;
+  return typeof name === "string" && PLUGIN_COMMAND_NAME.test(name) ? name : undefined;
+}
+
 /** `plugin:<id>/<command>` of a transaction the plugin host says a plugin committed. */
 function pluginCommand(trusted: TrustedContext | undefined): string | undefined {
   const via = trusted?.via;
@@ -177,7 +191,7 @@ function severalOps(payload: unknown): boolean {
  * the host, not the payload, says about the call.
  */
 export function commandsOf(method: string, payload: unknown, trusted?: TrustedContext): string[] {
-  const plugin = method === "tx.commit" ? pluginCommand(trusted) : undefined;
+  const plugin = method === "tx.commit" ? pluginCommand(trusted) : method === "plugin.command.run" ? ranCommand(payload) : undefined;
   const all = [...(BY_METHOD.get(method) ?? []), ...(SERVER_NAMED[method] ?? [])];
   const candidates = all.filter((c) => c.conditions.every((cond) => holds(payload, cond)));
   const specific = candidates.filter((c) => c.conditions.length > 0).sort((a, b) => b.conditions.length - a.conditions.length);
