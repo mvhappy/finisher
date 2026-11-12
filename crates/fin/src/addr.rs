@@ -174,9 +174,26 @@ pub fn rate_of(project: &Project, track: &str) -> Rational {
     self::track(project, track).map_or(project.rate, |(tl, _)| tl.rate)
 }
 
-/// `a..b`, `a..` or `..b`; both ends absolute times. Rejects `a >= b` (fin-core's, shared
-/// with the plugin host's `project.view`).
-pub use fin_core::view::range;
+/// `a..b`, `a..` or `..b` over the shown `timelines`; both ends absolute times. Rejects
+/// `a >= b` (fin-core's [`fin_core::view::range`], shared with the plugin host's
+/// `project.view`): frames count at the rate the shown timelines share, and a frame over
+/// timelines of different rates is `USAGE` (`MIXED_RATES`) whose fix names the flags.
+pub fn range(
+    project: &Project,
+    timelines: &[&Timeline],
+    input: &str,
+) -> Result<(Option<Rational>, Option<Rational>), CoreError> {
+    fin_core::view::range(timelines, project.rate, input).map_err(|e| {
+        if e.details["reason"] == "MIXED_RATES" {
+            e.with_fix(
+                "name one timeline with --timeline (or a track of it with --track), or write \
+                 the range in seconds such as 2s..5s",
+            )
+        } else {
+            e
+        }
+    })
+}
 
 #[cfg(test)]
 mod tests {
@@ -254,9 +271,31 @@ mod tests {
     #[test]
     fn ranges_parse_open_ends() {
         let p = project();
-        assert_eq!(range(&p, "2s..5s").unwrap(), (Some(r("2")), Some(r("5"))));
-        assert_eq!(range(&p, "..5s").unwrap(), (None, Some(r("5"))));
-        assert_eq!(range(&p, "5s..2s").unwrap_err().code, "INVALID_RANGE");
-        assert_eq!(range(&p, "5s").unwrap_err().code, "INVALID_RANGE");
+        let all: Vec<&Timeline> = p.timelines.iter().collect();
+        let range = |input| range(&p, &all, input);
+        assert_eq!(range("2s..5s").unwrap(), (Some(r("2")), Some(r("5"))));
+        assert_eq!(range("..5s").unwrap(), (None, Some(r("5"))));
+        assert_eq!(range("f45..").unwrap(), (Some(r("3/2")), None));
+        assert_eq!(range("5s..2s").unwrap_err().code, "INVALID_RANGE");
+        assert_eq!(range("5s").unwrap_err().code, "INVALID_RANGE");
+    }
+
+    #[test]
+    fn range_frames_follow_the_shown_timelines() {
+        let mut p = project();
+        let mut tl2 = p.timelines[0].clone();
+        tl2.id = "tl2".into();
+        tl2.rate = r("30000/1001");
+        p.timelines.push(tl2);
+        let (tl1, tl2) = (&p.timelines[0], &p.timelines[1]);
+        assert_eq!(range(&p, &[tl2], "f30..").unwrap().0, Some(r("1001/1000")));
+        assert_eq!(range(&p, &[tl1], "f30..").unwrap().0, Some(r("1")));
+        let e = range(&p, &[tl1, tl2], "..f30").unwrap_err();
+        assert_eq!(
+            (&*e.code, &e.details["reason"]),
+            ("USAGE", &json!("MIXED_RATES"))
+        );
+        assert!(e.fix.unwrap().contains("--timeline"));
+        assert_eq!(range(&p, &[tl1, tl2], "..1s").unwrap().1, Some(r("1")));
     }
 }

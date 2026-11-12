@@ -319,6 +319,58 @@ fn view_range_and_timeline() {
     );
 }
 
+/// Review #47: frames in `--range` count at the shown timeline's rate (tl2 runs at 30000/1001
+/// in a 30 fps project), and a view over timelines of different rates refuses frames.
+#[test]
+fn view_range_frames_count_at_the_shown_timeline_rate() {
+    let ids = |v: &Value| -> Vec<String> {
+        lines(v)
+            .iter()
+            .filter(|x| !x.starts_with("== "))
+            .map(|x| {
+                x.split("  ")
+                    .nth(2)
+                    .unwrap()
+                    .split(' ')
+                    .next()
+                    .unwrap()
+                    .to_string()
+            })
+            .collect()
+    };
+    for narrow in [&["--timeline", "tl2"][..], &["--track", "t5"][..]] {
+        let mut args = narrow.to_vec();
+        args.extend(["--range", "f30..f31"]);
+        let v = view(&args);
+        assert_eq!(
+            v["resolved"]["range"],
+            json!({ "from": "1001/1000", "to": "31031/30000" }),
+            "{args:?}"
+        );
+        // c6 ends at 1001/1000, outside the half-open range; adj1 starts there.
+        assert_eq!(ids(&v), ["adj1"], "{args:?}: {}", text(&v));
+    }
+    // Seconds and rationals need no rate: still fine across timelines.
+    let v = view(&["--range", "1001/1000..2s"]);
+    assert_eq!(
+        v["resolved"]["range"],
+        json!({ "from": "1001/1000", "to": "2" })
+    );
+    // tl1 (30) and tl2 (30000/1001) differ: a frame is ambiguous.
+    for range in ["f30..f31", "f30..", "1s..f60"] {
+        let r = offline(&project(), &["view", "--range", range]);
+        assert_error(&r, 2, "USAGE");
+        assert_eq!(r.json["error"]["details"]["field"], "range", "{}", r.stdout);
+        assert_eq!(
+            r.json["error"]["details"]["reason"], "MIXED_RATES",
+            "{}",
+            r.stdout
+        );
+        let fix = r.json["error"]["fix"].as_str().unwrap();
+        assert!(fix.contains("--timeline"), "{fix}");
+    }
+}
+
 #[test]
 fn view_is_deterministic() {
     for args in [&[][..], &["--budget", "90"][..]] {

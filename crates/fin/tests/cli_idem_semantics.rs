@@ -342,3 +342,34 @@ fn batch_lines_reject_unknown_envelope_fields() {
     assert_eq!(t.rev("main"), json!(1), "only the asset add");
     assert_eq!(ok(t.batch(&ok_line))["rev"], 2);
 }
+
+/// #49: a batch line whose mode is not one of the flag's values refuses the whole batch before
+/// anything is committed (it used to commit a ripple delete for `"liftt"`).
+#[test]
+fn batch_line_with_an_unknown_mode_commits_nothing() {
+    let (server, dir) = setup!("batch_line_with_an_unknown_mode_commits_nothing");
+    let t = T(&server, &dir);
+    support::media(&dir.join("clip.mp4"), 10);
+    t.run(&["asset", "add", "clip.mp4"]);
+    for _ in 0..2 {
+        t.run(&[
+            "clip", "insert", "--track", "t1", "--at", "end", "--asset", "a1", "--dur", "1s",
+        ]);
+    }
+    let before = t.rev("main");
+    let run = t.batch(concat!(
+        r#"{"cmd":"clip.delete","args":{"clip":"c2","mode":"lift"}}"#,
+        "\n",
+        r#"{"cmd":"clip.delete","args":{"clip":"c1","mode":"liftt"}}"#,
+        "\n",
+    ));
+    assert_error(&run, 2, "USAGE");
+    assert_eq!(run.json["error"]["details"]["line"], 2, "{}", run.stdout);
+    assert_eq!(t.rev("main"), before, "nothing committed");
+    let run = t.batch(concat!(
+        r#"{"cmd":"clip.trim","args":{"clip":"c1","end":"-0.5s","mode":"rol"}}"#,
+        "\n"
+    ));
+    assert_error(&run, 2, "USAGE");
+    assert_eq!(t.rev("main"), before, "nothing committed");
+}

@@ -886,3 +886,126 @@ fn edit_commands_are_in_help_and_schema() {
         assert!(clip.json["properties"][p].is_object(), "{p}");
     }
 }
+
+/// `fin batch` against the offline snapshot, `lines` on stdin.
+fn batch(lines: &str) -> Run {
+    use std::io::Write as _;
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("snapshot.json");
+    std::fs::write(&file, snapshot().to_string()).unwrap();
+    let mut cmd = support::fin_cmd(&dir.path().join("no-server"), dir.path(), &["batch"]);
+    cmd.env("FIN_OFFLINE_SNAPSHOT", &file)
+        .stdin(std::process::Stdio::piped());
+    let mut child = cmd.spawn().unwrap();
+    let mut stdin = child.stdin.take().unwrap();
+    stdin.write_all(lines.as_bytes()).unwrap();
+    drop(stdin);
+    support::finish(&["batch"], child.wait_with_output().unwrap())
+}
+
+/// Review #49: a batch line's mode is one of the values the flag takes; anything else is
+/// `USAGE` naming the field and the allowed values, never a silent default.
+#[test]
+fn batch_modes_are_closed() {
+    let ok_line = r#"{"cmd":"clip.delete","args":{"clip":"c2","mode":"lift"}}"#;
+    for (bad, allowed) in [
+        (
+            r#"{"cmd":"clip.delete","args":{"clip":"c1","mode":"liftt"}}"#,
+            ["ripple", "lift"].as_slice(),
+        ),
+        (
+            r#"{"cmd":"clip.trim","args":{"clip":"c1","end":"-1s","mode":"rol"}}"#,
+            &["ripple", "roll", "overwrite"],
+        ),
+        (
+            r#"{"cmd":"clip.insert","args":{"track":"t1","at":"end","asset":"a2","dur":"1s","mode":"overwrit"}}"#,
+            &["ripple", "overwrite"],
+        ),
+    ] {
+        let r = batch(&format!("{ok_line}\n{bad}\n"));
+        assert_eq!(r.code, 2, "{bad}: {}", r.stdout);
+        let e = &r.json["error"];
+        assert_eq!(e["code"], "USAGE", "{bad}: {}", r.stdout);
+        assert_eq!(e["details"]["line"], 2, "{bad}: {}", r.stdout);
+        let message = e["message"].as_str().unwrap();
+        assert!(message.contains("mode"), "{message}");
+        for v in allowed {
+            assert!(message.contains(v), "{message} lacks {v}");
+        }
+    }
+    // The lowercase spellings the flags take are what a batch line takes.
+    let r = batch(ok_line);
+    assert_eq!(r.code, 0, "{}", r.stdout);
+    assert_eq!(r.json["resolved"][0]["resolved"]["mode"], "lift");
+}
+
+/// Review #49: every edit command's `mode` schema lists its values.
+#[test]
+fn mode_schemas_list_their_values() {
+    for (name, values) in [
+        ("clip.insert", json!(["ripple", "overwrite"])),
+        ("clip.delete", json!(["ripple", "lift"])),
+        ("clip.trim", json!(["ripple", "roll", "overwrite"])),
+        ("item.move", json!(["ripple", "overwrite"])),
+        ("item.delete", json!(["ripple", "lift"])),
+        ("item.trim", json!(["ripple", "roll", "overwrite"])),
+        ("image.insert", json!(["ripple", "overwrite"])),
+        ("graphic.insert", json!(["ripple", "overwrite"])),
+    ] {
+        let schema = run(&["schema", name]).json;
+        let mut values = values;
+        values.as_array_mut().unwrap().push(Value::Null);
+        assert_eq!(schema["properties"]["mode"]["enum"], values, "{name}");
+    }
+}
+
+/// Review #49 follow-up: a track's and a transition's kinds and a transition's curve are closed
+/// too.
+#[test]
+fn kind_and_curve_schemas_list_their_values() {
+    let prop = |name: &str, p: &str| run(&["schema", name]).json["properties"][p].clone();
+    assert_eq!(
+        prop("track.add", "kind")["enum"],
+        json!(["video", "audio", "caption"])
+    );
+    assert_eq!(
+        prop("transition.set", "kind")["enum"],
+        json!(["dissolve", "crossfade", null])
+    );
+    assert_eq!(
+        prop("transition.set", "curve")["enum"],
+        json!(["linear", "equalPower", null])
+    );
+    // The flags take the same spellings, and the echo is the value applied.
+    let set = dry(&[
+        "transition",
+        "set",
+        "--between",
+        "c1",
+        "c2",
+        "--dur",
+        "1s",
+        "--curve",
+        "equalPower",
+    ]);
+    assert_eq!(set["resolved"]["curve"], "equalPower", "{set}");
+    let add = dry(&["track", "add", "--kind", "caption"]);
+    assert_eq!(add["resolved"]["kind"], "caption", "{add}");
+    refused(&["track", "add", "--kind", "vidoe"], 2, "USAGE", "");
+    refused(
+        &[
+            "transition",
+            "set",
+            "--between",
+            "c1",
+            "c2",
+            "--dur",
+            "1s",
+            "--curve",
+            "equalpower",
+        ],
+        2,
+        "USAGE",
+        "",
+    );
+}

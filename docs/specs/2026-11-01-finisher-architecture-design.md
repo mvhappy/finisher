@@ -375,7 +375,7 @@ MyProject/                      (may live on local disk, NAS, or a cloud-synced 
    - entities: `c12`, `t1`, `m3`, `s7`, `face:2`
    - relative and time: `after:c12`, `+2s`, `12.4s`, `00:12.4`, `f300`
    - handles: `r:3`
-   - Resolved values are always echoed.
+   - Resolved values are always echoed. A keyed retry, a lost answer found again or a rebased commit echoes what the commit made; a value the commit cannot tell (an edge once later edits moved it) is `null`, never a fresh plan's.
 3. **Views:**
    - `fin view` (screenplay-style, `--budget`, `--range`)
    - `fin status`

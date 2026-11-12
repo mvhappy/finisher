@@ -156,9 +156,12 @@ export declare class Engine {
    * Resolves to the `FramePlan` JSON of `timeline` (`null`: the main timeline) on `branch` at
    * `at` (a rational time string). Captions are measured with the server's shared measurer;
    * a caption whose font bytes are missing is unmeasured (`layout: null`, `unmeasured`),
-   * never an error, and the missing files are queued for fetching.
+   * never an error, and the missing files are queued for fetching. `rev`: the branch rev the
+   * caller resolved `timeline` at; a named timeline missing from a head at another rev (moved
+   * on, or rewound) is `CONFLICT` (`details: { reason: "TIMELINE_GONE", timeline, rev, head }`), never
+   * another timeline. Missing at `rev` (or with no `rev`): `NOT_FOUND`.
    */
-  evalFrame(branch: string, timeline: string | null | undefined, at: string): Promise<string>;
+  evalFrame(branch: string, timeline: string | null | undefined, at: string, rev?: number | null): Promise<string>;
   /**
    * Prepares a `media.look` job's inputs (plan 6A Task 12): evaluates the plan of `timeline` on
    * `branch`'s head at every time of `at` (rational seconds), and writes `snapshot.json`
@@ -178,8 +181,11 @@ export declare class Engine {
     inputDir: string,
     options?: PrepareMediaOptions | null,
   ): Promise<string>;
-  /** Resolves to the `AudioPlan` JSON of `timeline` on `branch` over `[from, to)`. */
-  evalAudio(branch: string, timeline: string | null | undefined, from: string, to: string): Promise<string>;
+  /**
+   * Resolves to the `AudioPlan` JSON of `timeline` on `branch` over `[from, to)`. `rev` as
+   * `evalFrame`'s.
+   */
+  evalAudio(branch: string, timeline: string | null | undefined, from: string, to: string, rev?: number | null): Promise<string>;
   /**
    * Resolves to the `FontsPlan` JSON (`{ ops, notes }`): the `font.pin` ops to prepend to a tx
    * of `opsJson` (a JSON `Op[]`) on `branch`. The ops are applied to a copy of the head first,

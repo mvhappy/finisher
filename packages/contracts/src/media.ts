@@ -7,18 +7,23 @@ import { Schema } from "effect";
  * a name or `<name>#<id>`), `timeline` to the main (first) timeline; times are rational
  * strings (`"12"`, `"1001/30000"`). Captions are measured with the server's shared measurer
  * from the project's pinned font bytes; a caption whose bytes are missing is unmeasured
- * (`layout: null`, `unmeasured`), never an error.
+ * (`layout: null`, `unmeasured`), never an error. `rev`: the branch rev the caller resolved
+ * `timeline` at (`snapshot.get`'s); a named timeline missing from a head at another rev (moved
+ * on, or rewound) is `CONFLICT` (`details.reason: TIMELINE_GONE`; read the project again and retry), while
+ * one missing at that rev (or with no `rev`) is `NOT_FOUND`.
  */
 export const EvalFramePayload = Schema.Struct({
   projectId: Schema.String,
   branch: Schema.optional(Schema.String),
   timeline: Schema.optional(Schema.String),
+  rev: Schema.optional(Schema.Number),
   at: Schema.String,
 });
 export const EvalAudioPayload = Schema.Struct({
   projectId: Schema.String,
   branch: Schema.optional(Schema.String),
   timeline: Schema.optional(Schema.String),
+  rev: Schema.optional(Schema.Number),
   from: Schema.String,
   to: Schema.String,
 });

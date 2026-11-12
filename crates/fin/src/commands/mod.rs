@@ -12,6 +12,7 @@ pub mod caption;
 pub mod clip;
 pub mod diagnostics;
 pub mod drop;
+mod echo;
 pub mod edit;
 pub mod effect;
 pub mod eval;
@@ -203,54 +204,6 @@ fn idem_key_reused(committed: &CommittedTx) -> CoreError {
         "committedOps": committed.tx.ops,
     }))
     .with_fix("use a new --idem-key for a different command")
-}
-
-/// Echoes what was committed rather than what was planned: the server may have rebased the tx
-/// over concurrent commits (moving insert positions), or returned an earlier commit for the same
-/// `--idem-key` (planned against an earlier state). Each `clip.insert` echo gets the clip its
-/// commit placed, found among the committed ops themselves, by its placeholder (`$clip`, or `$clipN` on batch line
-/// N), not by where this attempt's plan put it: the commit may hold pins, splits or audio ops
-/// this plan does not, or lack some it has.
-fn echo_committed(resolved: &mut Value, ops: &[Op]) {
-    let clip = |placeholder: &str| {
-        ops.iter().find_map(|op| match op {
-            Op::ItemInsert(i)
-                if i.id == placeholder && matches!(i.body, fin_core::ItemBody::Clip { .. }) =>
-            {
-                Some(i)
-            }
-            _ => None,
-        })
-    };
-    let patch = |r: &mut Value, i: &fin_core::ItemInsert| {
-        if let (Some(map), fin_core::ItemBody::Clip { source_in, .. }) =
-            (r.as_object_mut(), &i.body)
-        {
-            map.insert("at".to_string(), json!(i.at));
-            map.insert("in".to_string(), json!(source_in));
-            map.insert("duration".to_string(), json!(i.duration));
-            if let Ok(out) = source_in.checked_add(i.duration) {
-                map.insert("out".to_string(), json!(out));
-            }
-        }
-    };
-    match resolved {
-        Value::Array(lines) => {
-            for line in lines.iter_mut() {
-                let Some(n) = line.get("line").and_then(Value::as_u64) else {
-                    continue;
-                };
-                if let (Some(r), Some(i)) = (line.get_mut("resolved"), clip(&format!("$clip{n}"))) {
-                    patch(r, i);
-                }
-            }
-        }
-        single => {
-            if let Some(i) = clip("$clip") {
-                patch(single, i);
-            }
-        }
-    }
 }
 
 /// `blake3:<hex>` of the command input `inputs` (`[{cmd, args}]`, keys sorted): what

@@ -145,12 +145,12 @@ export class Engine {
     });
   }
 
-  evalFrame(branch, timeline, at) {
-    return call(this.#native.evalFrame(branch, timeline ?? null, at));
+  evalFrame(branch, timeline, at, rev) {
+    return call(this.#native.evalFrame(branch, timeline ?? null, at, rev ?? null));
   }
 
-  evalAudio(branch, timeline, from, to) {
-    return call(this.#native.evalAudio(branch, timeline ?? null, from, to));
+  evalAudio(branch, timeline, from, to, rev) {
+    return call(this.#native.evalAudio(branch, timeline ?? null, from, to, rev ?? null));
   }
 
   fontsPlan(branch, opsJson) {
