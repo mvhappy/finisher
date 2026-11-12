@@ -3,19 +3,21 @@
 // `diag` payloads of the journal's own kinds. The journal decides consent (off: nothing is
 // recorded). An event the journal refuses (`EVENT_INVALID`, `EVENT_TOO_LARGE`, an unknown
 // kind) is logged, never thrown: a `job.done` that would throw is sent again at every start,
-// and a refusal does not change on a retry. `worker.exit`'s `plugin` (the keyed hash of a
-// plugin id) is left out: the journal's key does not reach TypeScript, and no plugin process
-// runs before sub-project 8, which adds the hash where the key lives (a TASKS follow-up).
+// and a refusal does not change on a retry. `worker.exit` is `kv` 2 (sp8b Task 15, Decision
+// 22): a plugin process's exit goes through `journal.recordPlugin` with the raw plugin id,
+// which fin-node names by its `PluginRef` (a bundled name or the journal's keyed hash: the key
+// never reaches TypeScript) and from which it also records the exit's `plugin.exit`.
 import type { JobDone, JobMedia, WorkerExit } from "@finisher/core-types";
 import type { Journal } from "@finisher/fin-node";
 import { kindNames } from "@finisher/fin-node";
 import type { ForwardedEvent, JobDoneEvent, JobEventSink, WorkerExitEvent } from "./events.ts";
 
 type Log = (level: "debug" | "warning", message: string) => void;
-type JournalLike = Pick<Journal, "enabled" | "record">;
+type JournalLike = Pick<Journal, "enabled" | "record" | "recordPlugin">;
 
 const SOURCE = "finisherd";
 const JOB_DONE_KV = 2;
+const WORKER_EXIT_KV = 2;
 let known: ReadonlySet<string> | undefined;
 
 /**
@@ -29,8 +31,8 @@ export function jobDonePayload(e: JobDoneEvent): JobDone {
   return media === undefined ? payload : { ...payload, media: media as JobMedia };
 }
 
-/** `worker.exit` `kv` 1, without the plugin id (see above). */
-export function workerExitPayload(e: WorkerExitEvent): WorkerExit {
+/** `worker.exit` `kv` 2 without `plugin` (fin-node adds it from the raw id, see above). */
+export function workerExitPayload(e: WorkerExitEvent): Omit<WorkerExit, "plugin"> {
   const { pluginId: _pluginId, ...payload } = e;
   return payload;
 }
@@ -57,7 +59,19 @@ export function journalSink(journal: JournalLike, log: Log): JobEventSink {
         record("job.done", JOB_DONE_KV, plain, `${what} without its media object`);
       }
     },
-    workerExit: (e) => record("worker.exit", 1, workerExitPayload(e), `a worker.exit (${e.family} ${e.role})`),
+    workerExit: (e) => {
+      const what = `a worker.exit (${e.family} ${e.role})`;
+      if (e.pluginId === undefined) {
+        record("worker.exit", WORKER_EXIT_KV, workerExitPayload(e), what);
+        return;
+      }
+      if (!journal.enabled) return;
+      try {
+        journal.recordPlugin("worker.exit", WORKER_EXIT_KV, e.pluginId, JSON.stringify(workerExitPayload(e)));
+      } catch (err) {
+        log("warning", `job engine: the journal refused ${what}: ${(err as Error).message}`);
+      }
+    },
     forward: (origin: ForwardedEvent["origin"], kind, payload) => {
       known ??= new Set(kindNames());
       if (!known.has(kind)) {

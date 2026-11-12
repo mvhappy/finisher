@@ -381,6 +381,8 @@ pub(super) const JOB_RESULT_CODES: &[&str] = &[
     "PLUGIN_CRASHED",
     "PLUGIN_TIMEOUT",
     "PLUGIN_PROTOCOL",
+    // A cold plugin job's output file failed its checks (`{reason}`; sp8 §13, sp8b Task 15).
+    "PLUGIN_OUTPUT_INVALID",
 ];
 
 /// Codes that mean "this request can never succeed as sent" (exit 2, like `USAGE`).

@@ -211,7 +211,7 @@ fn samples_before_plugins() -> Vec<AnyPayload> {
             role: ProcessRole::Helper,
             family: names_jobs::WORKER_FAMILIES.get("media").unwrap(),
             helper_kind: Some(ProcessHelperKind::Plugin),
-            plugin: Some(h('e')),
+            plugin: Some(PluginRef::Hashed(h('e'))),
             reason: ExitReason::Crashed,
             exit_code: None,
             signal: names_jobs::SIGNALS.get("segv"),

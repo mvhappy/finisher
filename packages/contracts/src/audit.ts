@@ -180,7 +180,7 @@ const PLUGIN_FIELDS = {
   registryId: Schema.optional(RegistryIdWord),
   rootSha256: Schema.optional(Sha256Word),
   permissionsAdded: Schema.optional(Schema.Int),
-  /** An automatic update (a person's refresh took a newer version that widens nothing). */
+  /** An automatic change: an update a person's refresh took (widening nothing), a bundled install, a crash-loop stop (sp8b). */
   auto: Schema.optional(Schema.Boolean),
   /** The plan an install tried to use. */
   planId: Schema.optional(Schema.String.check(Schema.isMaxLength(64), Schema.isPattern(/^[0-9A-Za-z]+$/))),

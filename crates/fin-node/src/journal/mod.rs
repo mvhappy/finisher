@@ -30,6 +30,7 @@ use serde_json::{Value, json};
 
 pub(crate) mod ctx;
 mod hook;
+mod plugin_ref;
 
 use ctx::{RawCtx, ctx_of};
 pub(crate) use hook::install_panic_hook;

@@ -191,7 +191,7 @@ export const serve = ({
       const projects = Context.get(registryContext, ProjectRegistry);
       // The code plugins' processes (sp8b Tasks 4, 5): the `plugin` family is registered with
       // the engine's other families (a restart reconciles jobs against them), then bound to it.
-      const pluginHost = makePluginHost({ serverData: realpathSync(serverData), control: controlStore, tables: new PluginTables(controlStore), audit: Context.get(control, AuditTag), log: (l, m) => logSink(l === "warning" || l === "error" ? "warning" : "debug", m) });
+      const pluginHost = makePluginHost({ serverData: realpathSync(serverData), control: controlStore, tables: new PluginTables(controlStore), audit: Context.get(control, AuditTag), journal: diagnostics.journal, log: (l, m) => logSink(l === "warning" || l === "error" ? "warning" : "debug", m) });
       const register = (r: Parameters<typeof libraries.register>[0]) => {
         pluginHost.register(r);
         registerMediaKinds(r, { serverData, projects, libraryRoots: () => libraryRoots() });

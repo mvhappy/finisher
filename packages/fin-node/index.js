@@ -305,6 +305,8 @@ export class Journal {
     return sync(() => this.#native.recordSync(kind, kv, ctxJson ?? null, payloadJson, source, timeoutMs));
   }
 
+  recordPlugin(kind, kv, pluginId, payloadJson) { sync(() => this.#native.recordPlugin(kind, kv, pluginId, payloadJson)); }
+
   observe(metric, key, micros, code) {
     this.#native.observe(metric, key, micros, code ?? null);
   }

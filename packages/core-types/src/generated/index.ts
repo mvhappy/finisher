@@ -230,6 +230,9 @@ export type AnyPayload =
   | StorageState
   | PluginLifecycle
   | RegistryRefresh
+  | PluginStats
+  | PluginExit
+  | PluginCommand
   | ErrorInternal
   | ErrorPanic
   | JobDone
@@ -794,6 +797,29 @@ export type RiskName = "low" | "medium" | "high" | "unknown";
  * via the `definition` "PluginSourceName".
  */
 export type PluginSourceName = "bundled" | "registry" | "dev";
+/**
+ * Why a plugin process ended (spec §11).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "PluginExitReason".
+ */
+export type PluginExitReason = "ok" | "crash" | "timeout" | "killed" | "oom" | "protocol" | "sandbox" | "idle";
+/**
+ * Why `args` is absent although training is on.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "ArgsOmitted".
+ */
+export type ArgsOmitted = "tooLarge";
+/**
+ * How a plugin command ended (spec §11; `failed`: the process crashed, broke the protocol or
+ * the host failed, a deviation: the spec's list has no outcome for it).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "PluginCommandOutcome".
+ */
+export type PluginCommandOutcome =
+  ("conflict" | "timeout" | "failed") | "accepted" | "rebased" | "refused" | "invalid" | "data";
 /**
  * This interface was referenced by `FinCore`'s JSON-Schema
  * via the `definition` "SrcLoc".
@@ -1462,6 +1488,21 @@ export type EventPayload =
       payload: RegistryRefresh;
     }
   | {
+      kind: "plugin.stats";
+      kv: 1;
+      payload: PluginStats;
+    }
+  | {
+      kind: "plugin.exit";
+      kv: 1;
+      payload: PluginExit;
+    }
+  | {
+      kind: "plugin.command";
+      kv: 1;
+      payload: PluginCommand;
+    }
+  | {
       kind: "error.internal";
       kv: 1;
       payload: ErrorInternal;
@@ -1478,7 +1519,7 @@ export type EventPayload =
     }
   | {
       kind: "worker.exit";
-      kv: 1;
+      kv: 2;
       payload: WorkerExit;
     }
   | {
@@ -3807,6 +3848,137 @@ export interface RegistryRefresh {
   targetsLog2: number;
 }
 /**
+ * `plugin.stats`: one plugin's host traffic over one window (a minute), sent when the
+ * plugin did anything in it.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "PluginStats".
+ */
+export interface PluginStats {
+  /**
+   * Its jobs that ended `PLUGIN_CRASHED`.
+   */
+  crashes: number;
+  egress?: PluginEgressStats;
+  /**
+   * Per method family (`PLUGIN_METHOD_FAMILIES`), each at most once.
+   */
+  families?: PluginMethodStats[];
+  /**
+   * `log` calls dropped by the rate limit.
+   */
+  logDropped: number;
+  plugin: PluginRef;
+  /**
+   * stderr lines dropped by the byte limit.
+   */
+  stderrDropped: number;
+  /**
+   * Its jobs that ended `PLUGIN_TIMEOUT`.
+   */
+  timeouts: number;
+  /**
+   * The window's length in seconds.
+   */
+  windowS: number;
+}
+/**
+ * The egress broker's counts for one plugin in a `plugin.stats` window (Task 8's counters,
+ * differenced per window). Refusals by reason; no origin, URL or body.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "PluginEgressStats".
+ */
+export interface PluginEgressStats {
+  bytesInLog2: number;
+  bytesOutLog2: number;
+  completed: number;
+  /**
+   * `EGRESS_DENIED`: an origin it was not granted.
+   */
+  denied: number;
+  failed: number;
+  notHttps: number;
+  privateAddress: number;
+  rateLimited: number;
+  redirectsFollowed: number;
+  redirectsReturned: number;
+  requests: number;
+  secretMissing: number;
+  timeouts: number;
+  tooLarge: number;
+}
+/**
+ * One method family's calls in a `plugin.stats` window.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "PluginMethodStats".
+ */
+export interface PluginMethodStats {
+  /**
+   * Params bytes over the window, as a log₂ bucket.
+   */
+  bytesInLog2: number;
+  /**
+   * Reply bytes over the window, as a log₂ bucket.
+   */
+  bytesOutLog2: number;
+  calls: number;
+  /**
+   * Error code → count.
+   */
+  errors?: {
+    [k: string]: number;
+  };
+  family: Name;
+  p50Micros: number;
+  p95Micros: number;
+  /**
+   * Calls refused for reach (`PROJECT_NOT_FOUND`, `BRANCH_NOT_ALLOWED`, a library).
+   */
+  reachDenials: number;
+}
+/**
+ * `plugin.exit`: a plugin process ended (built from the same exit as its `worker.exit`).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "PluginExit".
+ */
+export interface PluginExit {
+  exitCode?: number;
+  jobsServed: number;
+  plugin: PluginRef;
+  reason: PluginExitReason;
+  signal?: Name;
+  uptimeS: number;
+}
+/**
+ * `plugin.command`: one run of a plugin command (`plugin.command.run`).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "PluginCommand".
+ */
+export interface PluginCommand {
+  /**
+   * Training only: the arguments as validated.
+   */
+  args?: Body;
+  argsOmitted?: ArgsOmitted;
+  code?: Code;
+  command: Hashed;
+  dryRun?: boolean;
+  micros: number;
+  /**
+   * Op kind → count of the ops it returned (`OP_KINDS`).
+   */
+  ops?: {
+    [k: string]: number;
+  };
+  outcome: PluginCommandOutcome;
+  plugin: PluginRef;
+  txId?: IdRef;
+}
+/**
  * An `INTERNAL` error, or one of the store's unexpected codes, returned through `fin-node`.
  *
  * This interface was referenced by `FinCore`'s JSON-Schema
@@ -3910,7 +4082,8 @@ export interface JobMedia {
   rtFactorMilli: number;
 }
 /**
- * `worker.exit` (`kv` 1).
+ * `worker.exit` (`kv` 2: `plugin` is a [`PluginRef`], Decision 22 of sp8b; `kv` 1 had a
+ * `Hashed` that nothing ever filled).
  *
  * This interface was referenced by `FinCore`'s JSON-Schema
  * via the `definition` "WorkerExit".
@@ -3921,7 +4094,7 @@ export interface WorkerExit {
   helperKind?: ProcessHelperKind;
   jobsServed: number;
   lifetimeS: number;
-  plugin?: Hashed;
+  plugin?: PluginRef;
   reason: ExitReason;
   role: ProcessRole;
   sandboxed: boolean;

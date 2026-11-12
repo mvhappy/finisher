@@ -18,6 +18,8 @@
 //    `project.view` renders `fin view`'s screenplay of the same snapshot, capped at
 //    `VIEW_BYTES`; `log` goes to the server log (`log.ts`); `net.fetch` and `net.read` go to
 //    the egress broker (`egress.ts`, Task 8) with the job's approved `net` origins.
+// Every call of a plugin job, answered or refused, is counted for `plugin.stats` (`stats.ts`,
+// Task 15) while the journal records: its method family, time, error code and bytes.
 import { FinError, type JobView } from "@finisher/contracts";
 import type { HostMethod, NetFetch, NetRead } from "@finisher/core-types";
 import { decodePluginCall, pluginProjectView } from "@finisher/fin-node";
@@ -26,6 +28,7 @@ import { finError, toFinError } from "../../errors.ts";
 import { type CallCtx, type OnCall, projectOfJob } from "../../jobs/kinds.ts";
 import type { Egress } from "./egress.ts";
 import type { PluginLog } from "./log.ts";
+import type { PluginStatsRecorder } from "./stats.ts";
 import { authorizeMethod, type ReachDeps } from "./reach.ts";
 import { type LiveInvoker, narrowRights } from "./rights.ts";
 
@@ -52,6 +55,8 @@ export interface HostCallsDeps {
   readonly log: PluginLog;
   /** The egress broker (`net.fetch`, `net.read`). */
   readonly egress: Egress;
+  /** `plugin.stats`' counters (Task 15). */
+  readonly stats?: PluginStatsRecorder;
 }
 
 interface Pinned {
@@ -161,7 +166,7 @@ export function makeHostCalls(h: HostCallsDeps) {
       }
     });
 
-  const onCall: OnCall = (ctx, method, raw) =>
+  const serve: OnCall = (ctx, method, raw) =>
     Effect.gen(function* () {
       const decoded = decodePluginCall(method, raw);
       if (!decoded.ok) {
@@ -186,6 +191,22 @@ export function makeHostCalls(h: HostCallsDeps) {
       const branch = yield* authorizeMethod(narrowed, m, { project: projectOfJob(job), branch: branchOfJob(job) }, deps.reach);
       return yield* act(deps, ctx, m, decoded.params as Record<string, unknown>, branch ?? branchOfJob(job));
     });
+
+  /** `serve`, counted for `plugin.stats` while it counts (sizes as JSON bytes). */
+  const onCall: OnCall = (ctx, method, raw) => {
+    const run = serve(ctx, method, raw);
+    const stats = h.stats;
+    const plugin = ctx.via?.plugin;
+    if (stats === undefined || plugin === undefined || !stats.counting()) return run;
+    const started = performance.now();
+    const micros = (): number => Math.round((performance.now() - started) * 1000);
+    const size = (v: unknown): number => (v === undefined ? 0 : Buffer.byteLength(JSON.stringify(v) ?? ""));
+    const bytesIn = size(raw);
+    return run.pipe(
+      Effect.tap((reply) => Effect.sync(() => stats.call(plugin, method, micros(), undefined, bytesIn, size(reply)))),
+      Effect.tapError((e) => Effect.sync(() => stats.call(plugin, method, micros(), e.code, bytesIn, 0))),
+    );
+  };
 
   return {
     onCall,

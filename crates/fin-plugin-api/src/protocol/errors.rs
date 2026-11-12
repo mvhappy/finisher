@@ -43,6 +43,8 @@ pub mod codes {
     pub const PLUGIN_CRASH_LOOP: &str = "PLUGIN_CRASH_LOOP";
     /// A malformed message or call (the process is not killed for a call).
     pub const PLUGIN_PROTOCOL: &str = "PLUGIN_PROTOCOL";
+    /// A cold kind's output file that fails its checks (`{reason: link|notRegular|linked|size|truncated|schema}`).
+    pub const PLUGIN_OUTPUT_INVALID: &str = "PLUGIN_OUTPUT_INVALID";
     pub const PLUGIN_PERMISSION_DENIED: &str = "PLUGIN_PERMISSION_DENIED";
     pub const EGRESS_DENIED: &str = "EGRESS_DENIED";
     pub const EGRESS_NOT_HTTPS: &str = "EGRESS_NOT_HTTPS";

@@ -73,6 +73,16 @@ export declare class Journal {
   record(kind: string, kv: number, ctxJson: string | null | undefined, payloadJson: string, source: string, session?: string): void;
   /** `record`, written and flushed before it returns (at most `timeoutMs`); true when on disk. */
   recordSync(kind: string, kv: number, ctxJson: string | null | undefined, payloadJson: string, source: string, timeoutMs: number): boolean;
+  /**
+   * Queues a plugin runtime entry (sp8b Task 15) whose plugin is named by its raw id
+   * (`@publisher/name`, no version): `worker.exit` kv 2 (and the `plugin.exit` of the same
+   * exit), `plugin.exit`, `plugin.stats` or `plugin.command` kv 1, `payloadJson` without
+   * `plugin`. fin-node names the plugin (a bundled name or the journal's keyed hash); for
+   * `plugin.command`, `command` is the raw name, `txId` a raw id and `args` the raw arguments
+   * (kept only with training on). Source `finisherd`. Throws `EVENT_INVALID`; builds nothing
+   * while off.
+   */
+  recordPlugin(kind: "worker.exit" | "plugin.exit" | "plugin.stats" | "plugin.command", kv: number, pluginId: string, payloadJson: string): void;
   /** One timing: `rpc` keyed by an RPC method, `eval` by an eval key; `code` for a failure. */
   observe(metric: "rpc" | "eval", key: string, micros: number, code?: string): void;
   /** Resolves to the `DiagnosticsReport` JSON (after a flush; reads every file). */

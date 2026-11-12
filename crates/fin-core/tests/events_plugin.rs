@@ -1,11 +1,14 @@
 //! The plugin diagnostics kinds (8A plan Task 11): `plugin.lifecycle` and `registry.refresh`,
 //! `PluginRef`, and the `BUNDLED_PLUGINS` and `PLUGIN_ACTIONS` tables. The emitters are
 //! `fin-node`'s registry calls (Task 8), tested in `packages/fin-node/test/registry.test.ts`.
+//! 8B Task 15: `plugin.stats`, `plugin.exit`, `plugin.command` and `worker.exit` `kv` 2,
+//! emitted by `finisherd` through `fin-node`'s `recordPlugin` (`journal/plugin_ref.rs`).
 
 #[path = "events_support/plugin.rs"]
 mod plugin_samples;
 
-use fin_core::events::names::{BUNDLED_PLUGINS, PLUGIN_ACTIONS, bundled_plugin_name};
+use fin_core::events::names::{self, BUNDLED_PLUGINS, PLUGIN_ACTIONS, bundled_plugin_name};
+use fin_core::events::names_jobs;
 use fin_core::events::payloads::*;
 use fin_core::events::*;
 use serde_json::{Value, json};
@@ -38,6 +41,11 @@ fn kinds_registered_v1() {
         assert!(!k.reserved && !k.training_only, "{name}");
         assert_eq!(k.sources, &[Source::FinNode], "{name}");
         assert!(kind(name, 0).is_none(), "{name}");
+    }
+    for name in ["plugin.stats", "plugin.exit", "plugin.command"] {
+        let k = kind(name, 1).unwrap_or_else(|| panic!("{name} v1"));
+        assert!(!k.reserved && !k.training_only, "{name}");
+        assert_eq!(k.sources, &[Source::Finisherd], "{name}");
     }
     for p in plugin_samples::samples(hash("x").unwrap(), Code::parse("TUF_ROLLBACK").unwrap()) {
         let v = serde_json::to_value(&p).unwrap();
@@ -211,4 +219,319 @@ fn bundled_ref_is_a_name() {
     assert_eq!(log2_bucket(3), 2);
     assert_eq!(log2_bucket(1024), 11);
     assert_eq!(log2_bucket(u64::MAX), 64);
+}
+
+#[test]
+fn worker_exit_kv2_carries_plugin() {
+    assert!(kind("worker.exit", 1).is_none());
+    let spec = kind("worker.exit", 2).unwrap();
+    let schema = (spec.schema)();
+    assert_eq!(
+        schema["properties"]["plugin"]["$ref"],
+        json!("#/$defs/PluginRef"),
+        "{schema}"
+    );
+    let raw = json!({
+        "role": "worker", "family": "plugin", "reason": "hung", "exitCode": 1,
+        "plugin": { "hashed": hash("@acme/x").unwrap().as_str() },
+        "jobsServed": 3, "lifetimeS": 40, "sandboxed": false,
+    });
+    let AnyPayload::WorkerExit(w) = decode_payload(spec, &raw).unwrap() else {
+        panic!()
+    };
+    assert_eq!(w.plugin, PluginRef::of("@acme/x", hash));
+    // `plugin.exit` comes from the same exit.
+    let e = PluginExit::of(&w).unwrap();
+    assert_eq!(e.reason, PluginExitReason::Timeout);
+    assert_eq!((e.exit_code, e.jobs_served, e.uptime_s), (Some(1), 3, 40));
+    assert_eq!(e.plugin, w.plugin.clone().unwrap());
+    // A process of no plugin has no `plugin.exit`; a raw id is not a reference.
+    let mut none = raw.clone();
+    none.as_object_mut().unwrap().remove("plugin");
+    let AnyPayload::WorkerExit(w) = decode_payload(spec, &none).unwrap() else {
+        panic!()
+    };
+    assert!(PluginExit::of(&w).is_none());
+    let mut bare = raw.clone();
+    bare["plugin"] = json!("@acme/x");
+    assert!(decode_payload(spec, &bare).is_err());
+}
+
+#[test]
+fn plugin_exit_reasons_cover_every_exit() {
+    use PluginExitReason as P;
+    let want = [
+        P::Ok,
+        P::Idle,
+        P::Ok,
+        P::Killed,
+        P::Killed,
+        P::Crash,
+        P::Timeout,
+        P::Timeout,
+        P::Killed,
+        P::Crash,
+        P::Oom,
+        P::Protocol,
+    ];
+    let got: Vec<P> = ExitReason::ALL.iter().map(|r| P::of(*r)).collect();
+    assert_eq!(got, want);
+    let schema = (kind("plugin.exit", 1).unwrap().schema)();
+    assert_eq!(
+        schema["$defs"]["PluginExitReason"]["enum"],
+        json!([
+            "ok", "crash", "timeout", "killed", "oom", "protocol", "sandbox", "idle"
+        ])
+    );
+}
+
+#[test]
+fn plugin_command_training_args_are_content() {
+    let spec = kind("plugin.command", 1).unwrap();
+    let schema = (spec.schema)();
+    let args = &schema["properties"]["args"];
+    assert_eq!(args["x-fin-class"], json!("content"), "{schema}");
+    assert_eq!(args["x-fin-content"], json!("toolArgs"), "{schema}");
+    // The command is a keyed hash, never its name.
+    assert_eq!(
+        schema["properties"]["command"]["$ref"],
+        json!("#/$defs/Hashed")
+    );
+    let p = plugin_samples::samples(
+        hash("x").unwrap(),
+        Code::parse("PLUGIN_TX_INVALID").unwrap(),
+    )
+    .into_iter()
+    .find(|p| p.kind().name == "plugin.command")
+    .unwrap();
+    let full = serde_json::to_value(&p).unwrap();
+    assert_eq!(full["args"], json!({ "inline": { "gapMs": 40 } }));
+    // Without training the arguments go, both typed and as JSON.
+    let mut stripped = p.clone();
+    stripped.strip_content();
+    let v = serde_json::to_value(&stripped).unwrap();
+    assert!(v.get("args").is_none(), "{v}");
+    let mut red = full.clone();
+    redact(spec, &mut red, Purposes::DIAGNOSTICS);
+    assert!(red.get("args").is_none(), "{red}");
+    assert_eq!(red["outcome"], json!("rebased"));
+    assert_eq!(red["ops"], json!({ "item.trim": 2 }));
+    // An op kind outside `OP_KINDS` reads as `other`.
+    let mut raw = red.clone();
+    raw["ops"] = json!({ "drop table": 1 });
+    let AnyPayload::PluginCommand(c) = decode_payload(spec, &raw).unwrap() else {
+        panic!()
+    };
+    assert_eq!(c.ops.0.keys().next(), Some(&Name::OTHER));
+}
+
+#[test]
+fn stats_hold_no_free_text() {
+    let mut payloads = plugin_samples::samples(
+        hash("x").unwrap(),
+        Code::parse("PROJECT_NOT_FOUND").unwrap(),
+    );
+    payloads.retain(|p| matches!(p.kind().name, "plugin.stats" | "plugin.exit"));
+    assert_eq!(payloads.len(), 2);
+    let enums = [
+        "ok", "crash", "timeout", "killed", "oom", "protocol", "sandbox", "idle", "hashed",
+        "bundled",
+    ];
+    let fields = [
+        "plugin",
+        "windowS",
+        "families",
+        "family",
+        "calls",
+        "errors",
+        "reachDenials",
+        "p50Micros",
+        "p95Micros",
+        "bytesInLog2",
+        "bytesOutLog2",
+        "timeouts",
+        "crashes",
+        "logDropped",
+        "stderrDropped",
+        "egress",
+        "requests",
+        "completed",
+        "denied",
+        "notHttps",
+        "privateAddress",
+        "secretMissing",
+        "rateLimited",
+        "tooLarge",
+        "failed",
+        "redirectsFollowed",
+        "redirectsReturned",
+        "reason",
+        "exitCode",
+        "signal",
+        "jobsServed",
+        "uptimeS",
+    ];
+    for p in &payloads {
+        let v = serde_json::to_value(p).unwrap();
+        let mut all = Vec::new();
+        strings(&v, &mut all);
+        for s in all {
+            let ok = enums.contains(&s)
+                || fields.contains(&s)
+                || names::PLUGIN_METHOD_FAMILIES.get(s).is_some()
+                || names_jobs::SIGNALS.get(s).is_some()
+                || Hashed::parse(s).is_some()
+                || Code::parse(s).is_some();
+            assert!(ok, "{}: free string {s:?}", p.kind().name);
+        }
+    }
+    // A family outside the table reads as `other`; a free-text error key does not decode.
+    let spec = kind("plugin.stats", 1).unwrap();
+    let mut raw = serde_json::to_value(&payloads[0]).unwrap();
+    raw["families"][0]["family"] = json!("/home/someone/x");
+    let AnyPayload::PluginStats(s) = decode_payload(spec, &raw).unwrap() else {
+        panic!()
+    };
+    assert_eq!(s.families[0].family, Name::OTHER);
+    raw["families"][0]["errors"] = json!({ "a free message": 1 });
+    assert!(decode_payload(spec, &raw).is_err());
+    raw["families"][0]["errors"] = json!({});
+    raw["origin"] = json!("https://example.com");
+    let p = decode_payload(spec, &raw).unwrap();
+    assert!(!serde_json::to_string(&p).unwrap().contains("example"));
+}
+
+// `fin-node`'s `recordPlugin` builder (`plugin_payloads`).
+
+fn id_ref(s: &str) -> Option<IdRef> {
+    Some(IdRef::classify(s).unwrap_or_else(|_| IdRef::from_hashed(hash(s).unwrap())))
+}
+
+const ON: PluginKeys = PluginKeys {
+    hash: &hash,
+    id_ref: &id_ref,
+    training: true,
+};
+
+fn exit_payload() -> Value {
+    json!({ "role": "worker", "family": "plugin", "reason": "crashed", "exitCode": 3,
+            "jobsServed": 2, "lifetimeS": 9, "sandboxed": false })
+}
+
+#[test]
+fn plugin_ref_is_name_or_keyed_hash() {
+    // A third-party plugin is the keyed hash; the raw id is nowhere in the entry.
+    let ps = plugin_payloads("worker.exit", 2, "@acme/fancy", exit_payload(), &ON).unwrap();
+    assert_eq!(ps.len(), 2);
+    for p in &ps {
+        let text = serde_json::to_string(p).unwrap();
+        assert!(!text.contains("acme") && !text.contains("fancy"), "{text}");
+        assert!(
+            text.contains(hash("@acme/fancy").unwrap().as_str()),
+            "{text}"
+        );
+    }
+    let AnyPayload::PluginExit(e) = &ps[1] else {
+        panic!()
+    };
+    assert_eq!(e.reason, PluginExitReason::Crash);
+    // A bundled plugin is its table name.
+    let ps = plugin_payloads(
+        "plugin.exit",
+        1,
+        "@finisher/captions-basic",
+        json!({
+        "reason": "idle", "jobsServed": 1, "uptimeS": 300 }),
+        &ON,
+    )
+    .unwrap();
+    assert_eq!(
+        serde_json::to_value(&ps[0]).unwrap()["plugin"],
+        json!({ "bundled": "finisher/captions-basic" })
+    );
+    // A `plugin` the caller sent is replaced, never trusted.
+    let mut forged = exit_payload();
+    forged["plugin"] = json!({ "bundled": "finisher/captions-basic" });
+    let ps = plugin_payloads("worker.exit", 2, "@acme/fancy", forged, &ON).unwrap();
+    assert_eq!(
+        serde_json::to_value(&ps[0]).unwrap()["plugin"],
+        json!({ "hashed": hash("@acme/fancy").unwrap().as_str() })
+    );
+    // Without the key (off) nothing is built.
+    let off = PluginKeys {
+        hash: &|_| None,
+        id_ref: &|_| None,
+        training: false,
+    };
+    assert!(
+        plugin_payloads("worker.exit", 2, "@acme/fancy", exit_payload(), &off)
+            .unwrap()
+            .is_empty()
+    );
+    // Only the plugin runtime's kinds.
+    for (k, v) in [("worker.exit", 1), ("plugin.lifecycle", 1), ("job.done", 2)] {
+        assert_eq!(
+            plugin_payloads(k, v, "@acme/fancy", exit_payload(), &ON)
+                .unwrap_err()
+                .code,
+            "EVENT_INVALID"
+        );
+    }
+}
+
+#[test]
+fn command_is_keyed_and_args_are_training_content() {
+    let raw = json!({ "command": "tighten-gaps", "outcome": "accepted",
+        "ops": { "item.trim": 2 }, "txId": "01JC0000000000000000000002", "micros": 5,
+        "args": { "gapMs": 40 } });
+    let ps = plugin_payloads("plugin.command", 1, "@acme/fancy", raw.clone(), &ON).unwrap();
+    let AnyPayload::PluginCommand(c) = &ps[0] else {
+        panic!()
+    };
+    assert_eq!(c.command, hash("@acme/fancy/tighten-gaps").unwrap());
+    assert_eq!(
+        c.tx_id.as_ref().map(|r| r.as_str()),
+        Some("01JC0000000000000000000002")
+    );
+    assert_eq!(c.args, Some(Content(Body::Inline(json!({ "gapMs": 40 })))));
+    assert!(!serde_json::to_string(c).unwrap().contains("tighten"));
+    // Training off: no arguments built.
+    let no_training = PluginKeys {
+        training: false,
+        ..ON
+    };
+    let ps = plugin_payloads(
+        "plugin.command",
+        1,
+        "@acme/fancy",
+        raw.clone(),
+        &no_training,
+    )
+    .unwrap();
+    let AnyPayload::PluginCommand(c) = &ps[0] else {
+        panic!()
+    };
+    assert_eq!((c.args.as_ref(), c.args_omitted), (None, None));
+    // Too large: omitted, and said so.
+    let mut big = raw.clone();
+    big["args"] = json!({ "text": "x".repeat(MAX_COMMAND_ARGS_BYTES) });
+    let ps = plugin_payloads("plugin.command", 1, "@acme/fancy", big, &ON).unwrap();
+    let AnyPayload::PluginCommand(c) = &ps[0] else {
+        panic!()
+    };
+    assert_eq!(
+        (c.args.is_none(), c.args_omitted),
+        (true, Some(ArgsOmitted::TooLarge))
+    );
+    // An unknown op kind reads as `other`; a missing command is refused.
+    let mut odd = raw.clone();
+    odd["ops"] = json!({ "rm -rf": 1 });
+    let ps = plugin_payloads("plugin.command", 1, "@acme/fancy", odd, &ON).unwrap();
+    let AnyPayload::PluginCommand(c) = &ps[0] else {
+        panic!()
+    };
+    assert_eq!(c.ops.0.keys().next(), Some(&Name::OTHER));
+    let mut nameless = raw;
+    nameless.as_object_mut().unwrap().remove("command");
+    assert!(plugin_payloads("plugin.command", 1, "@acme/fancy", nameless, &ON).is_err());
 }
