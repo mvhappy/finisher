@@ -958,3 +958,54 @@ fn mode_schemas_list_their_values() {
         assert_eq!(schema["properties"]["mode"]["enum"], values, "{name}");
     }
 }
+
+/// Review #49 follow-up: a track's and a transition's kinds and a transition's curve are closed
+/// too.
+#[test]
+fn kind_and_curve_schemas_list_their_values() {
+    let prop = |name: &str, p: &str| run(&["schema", name]).json["properties"][p].clone();
+    assert_eq!(
+        prop("track.add", "kind")["enum"],
+        json!(["video", "audio", "caption"])
+    );
+    assert_eq!(
+        prop("transition.set", "kind")["enum"],
+        json!(["dissolve", "crossfade", null])
+    );
+    assert_eq!(
+        prop("transition.set", "curve")["enum"],
+        json!(["linear", "equalPower", null])
+    );
+    // The flags take the same spellings, and the echo is the value applied.
+    let set = dry(&[
+        "transition",
+        "set",
+        "--between",
+        "c1",
+        "c2",
+        "--dur",
+        "1s",
+        "--curve",
+        "equalPower",
+    ]);
+    assert_eq!(set["resolved"]["curve"], "equalPower", "{set}");
+    let add = dry(&["track", "add", "--kind", "caption"]);
+    assert_eq!(add["resolved"]["kind"], "caption", "{add}");
+    refused(&["track", "add", "--kind", "vidoe"], 2, "USAGE", "");
+    refused(
+        &[
+            "transition",
+            "set",
+            "--between",
+            "c1",
+            "c2",
+            "--dur",
+            "1s",
+            "--curve",
+            "equalpower",
+        ],
+        2,
+        "USAGE",
+        "",
+    );
+}

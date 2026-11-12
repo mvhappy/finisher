@@ -182,7 +182,7 @@ fn offline_write_plans_no_pins() {
 fn writes_without_text_never_ask_for_pins() {
     let backend = planning(false, vec![stand_in_pin()]);
     let step = Write::Edit(Edit::Track(track::TrackCmd::Add(track::AddArgs {
-        kind: "video".into(),
+        kind: track::TrackKindArg::Video,
         index: None,
         name: None,
     })));

@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use super::Builder;
+use super::item::closed_arg;
 use crate::addr;
 use crate::output::usage;
 use crate::values;
@@ -33,8 +34,8 @@ fn is_false(b: &bool) -> bool {
 #[derive(Debug, Clone, Args, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct AddArgs {
-    #[arg(long, value_name = "video|audio|caption", value_parser = ["video", "audio", "caption"])]
-    pub kind: String,
+    #[arg(long, value_name = "video|audio|caption")]
+    pub kind: TrackKindArg,
     /// Place in compositing order, bottom first (default: on top).
     #[arg(long, value_name = "n")]
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -44,6 +45,11 @@ pub struct AddArgs {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
 }
+
+closed_arg!(
+    /// A new track's `--kind`.
+    TrackKindArg("kind") { Video = "video", Audio = "audio", Caption = "caption" }
+);
 
 /// Take a track off its timeline; `with-items` also removes its items (and transitions).
 #[derive(Debug, Clone, Args, Deserialize, Serialize, JsonSchema)]
@@ -127,10 +133,10 @@ pub fn plan(b: &mut Builder<'_>, cmd: &TrackCmd, suffix: &str) -> Result<Value, 
                 None => addr::timeline(&b.work, None)?.id.clone(),
             };
             addr::timeline(&b.work, Some(&timeline))?;
-            let kind = match a.kind.as_str() {
-                "audio" => TrackKind::Audio,
-                "caption" => TrackKind::Caption,
-                _ => TrackKind::Video,
+            let kind = match a.kind {
+                TrackKindArg::Video => TrackKind::Video,
+                TrackKindArg::Audio => TrackKind::Audio,
+                TrackKindArg::Caption => TrackKind::Caption,
             };
             let id = format!("$track{suffix}");
             let sent = b.timeline.clone().unwrap_or_else(|| timeline.clone());
@@ -143,7 +149,9 @@ pub fn plan(b: &mut Builder<'_>, cmd: &TrackCmd, suffix: &str) -> Result<Value, 
             }))?;
             let (tl, added) = addr::track(&b.work, &b.id(&format!("$track{suffix}")))?;
             let index = tl.tracks.iter().position(|t| t.id == added.id);
-            Ok(json!({ "timeline": sent, "kind": a.kind, "index": index, "name": added.name }))
+            Ok(
+                json!({ "timeline": sent, "kind": a.kind.name(), "index": index, "name": added.name }),
+            )
         }
         TrackCmd::Remove(a) => {
             let items = addr::track(&b.work, &b.id(&a.track)).map_or(0, |(_, t)| t.items.len());
@@ -170,5 +178,21 @@ pub fn plan(b: &mut Builder<'_>, cmd: &TrackCmd, suffix: &str) -> Result<Value, 
             }))?;
             Ok(json!({ "track": a.target, "path": a.path, "value": value }))
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Review #49 follow-up: an unknown track kind is an error naming the field.
+    #[test]
+    fn an_unknown_kind_is_refused() {
+        let e = serde_json::from_value::<AddArgs>(json!({ "kind": "vidoe" }))
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("kind") && e.contains("caption"), "{e}");
+        let ok: AddArgs = serde_json::from_value(json!({ "kind": "audio" })).unwrap();
+        assert_eq!(json!(ok)["kind"], "audio");
     }
 }

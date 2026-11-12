@@ -3,14 +3,14 @@
 //! delete) for every other kind. Every write echoes `resolved.mode` where the op has one.
 //! A split cuts the whole link group at the time (`compose::split_linked`).
 
-use clap::{Args, Subcommand, ValueEnum};
+use clap::{Args, Subcommand};
 use fin_core::compose::split_linked;
 use fin_core::{
     CoreError, DeleteMode, Edge, InsertMode, ItemDelete, ItemLink, ItemMove, ItemSlide, ItemSlip,
     ItemTrim, ItemUnlink, Project, TrimMode,
 };
 use schemars::JsonSchema;
-use serde::{Deserialize, Deserializer, Serialize};
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use super::Builder;
@@ -123,44 +123,82 @@ pub struct UnlinkArgs {
     pub target: String,
 }
 
-/// A closed `--mode` value set, shared by the flag and a batch line (review #49): clap takes only
-/// the listed spellings, and so does serde, whose error names the field and the values.
-macro_rules! mode_arg {
-    ($(#[$doc:meta])* $name:ident { $($variant:ident = $text:literal),+ $(,)? }) => {
+/// A closed set of flag values (review #49), shared by the clap flag, the serde args and the
+/// JSON schema: each takes exactly the listed spellings, and serde's error names the `field`
+/// and the values.
+macro_rules! closed_arg {
+    ($(#[$doc:meta])* $name:ident ($field:literal) { $($variant:ident = $text:literal),+ $(,)? }) => {
         $(#[$doc])*
-        #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum, Serialize, JsonSchema)]
-        #[serde(rename_all = "lowercase")]
-        #[schemars(inline)]
+        #[derive(Debug, Clone, Copy, PartialEq, Eq)]
         pub enum $name {
             $($variant),+
         }
 
-        impl<'de> Deserialize<'de> for $name {
-            fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
-                let given = String::deserialize(d)?;
-                match given.as_str() {
-                    $($text => Ok($name::$variant),)+
-                    _ => Err(serde::de::Error::custom(format!(
-                        "mode {given:?} is not one of {}",
-                        [$($text),+].join(", ")
-                    ))),
+        impl $name {
+            pub const ALL: &[$name] = &[$($name::$variant),+];
+
+            pub fn name(self) -> &'static str {
+                match self {
+                    $($name::$variant => $text),+
                 }
+            }
+        }
+
+        impl clap::ValueEnum for $name {
+            fn value_variants<'a>() -> &'a [Self] {
+                Self::ALL
+            }
+            fn to_possible_value(&self) -> Option<clap::builder::PossibleValue> {
+                Some(clap::builder::PossibleValue::new(self.name()))
+            }
+        }
+
+        impl serde::Serialize for $name {
+            fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+                s.serialize_str(self.name())
+            }
+        }
+
+        impl<'de> serde::Deserialize<'de> for $name {
+            fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+                let given = String::deserialize(d)?;
+                Self::ALL.iter().copied().find(|v| v.name() == given).ok_or_else(|| {
+                    let names: Vec<&str> = Self::ALL.iter().map(|v| v.name()).collect();
+                    serde::de::Error::custom(format!(
+                        "{} {given:?} is not one of {}",
+                        $field,
+                        names.join(", ")
+                    ))
+                })
+            }
+        }
+
+        impl schemars::JsonSchema for $name {
+            fn schema_name() -> std::borrow::Cow<'static, str> {
+                stringify!($name).into()
+            }
+            fn inline_schema() -> bool {
+                true
+            }
+            fn json_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
+                schemars::json_schema!({ "type": "string", "enum": [$($text),+] })
             }
         }
     };
 }
+pub(crate) use closed_arg;
 
-mode_arg!(
+closed_arg!(
     /// An insert's or a move's `--mode`.
-    InsertModeArg { Ripple = "ripple", Overwrite = "overwrite" }
+    InsertModeArg("mode") { Ripple = "ripple", Overwrite = "overwrite" }
 );
-mode_arg!(
+closed_arg!(
     /// A delete's `--mode`.
-    DeleteModeArg { Ripple = "ripple", Lift = "lift" }
+    DeleteModeArg("mode") { Ripple = "ripple", Lift = "lift" }
 );
-mode_arg!(
+closed_arg!(
     /// A trim's `--mode`.
-    TrimModeArg { Ripple = "ripple", Roll = "roll", Overwrite = "overwrite" }
+    TrimModeArg("mode") { Ripple = "ripple", Roll = "roll", Overwrite = "overwrite" }
 );
 
 pub fn mode_name(mode: InsertMode) -> &'static str {
