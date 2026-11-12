@@ -49,7 +49,9 @@ import { cataloguePricing, type SessionEnvironment, type ToolExecutor } from "./
 import { LayeredRules } from "./rules.ts";
 import { RuleStore } from "./rule-store.ts";
 import type { AclBroker } from "../sandbox/broker.ts";
-import { sessionSandboxes } from "./sandbox.ts";
+import { claudeProviderInfo } from "./claude/detect.ts";
+import { ClaudeModelCache, claudeHarnessAvailable, withClaudePricing } from "./claude/models.ts";
+import { type SessionSandboxDeps, sessionSandboxes } from "./sandbox.ts";
 import { readAgentSettings, resolveFinPath } from "./settings.ts";
 import type { AgentStore } from "./store.ts";
 import { AgentLookup } from "./store-lookup.ts";
@@ -95,6 +97,8 @@ export interface AgentRuntimeParts {
   /** Provider permission requests (7B Task 5). */
   readonly permissions: ProviderPermissions;
   readonly requests: ProviderRequests;
+  /** Claude Code's models per `(version, account)`; Task 7's session records its `initialize` list here. */
+  readonly claudeModels: ClaudeModelCache;
 }
 
 export class AgentRuntimeTag extends Context.Service<AgentRuntimeTag, AgentRuntimeParts>()("finisherd/AgentRuntime") {}
@@ -216,6 +220,7 @@ export const buildAgentRuntime = (d: AgentWiringDeps): Effect.Effect<AgentRuntim
       serverData,
       secrets,
       localPresets: catalogue.localPresets,
+      claudeCode: () => claudeProviderInfo({ sandbox: sandboxDeps }),
       ...(d.options?.fetch === undefined ? {} : { fetch: d.options.fetch }),
       audit: (by, details) => d.audit.append({ kind: "settings.write", principal: { kind: by.kind, id: by.id }, outcome: "ok", details }),
     });
@@ -275,6 +280,7 @@ export const buildAgentRuntime = (d: AgentWiringDeps): Effect.Effect<AgentRuntim
         return { system: rolePrompt(s.role), cwd, env: childEnv({ FIN_SERVER: d.endpoint, FIN_SESSION: s.id, FIN_PROJECT_DIR: dir }) };
       },
     };
+    const claudeModels = new ClaudeModelCache(serverData);
     const planner = sessionPlanner({
       roles,
       catalogue,
@@ -282,6 +288,9 @@ export const buildAgentRuntime = (d: AgentWiringDeps): Effect.Effect<AgentRuntim
       hasKey: (projectId) => admin.hasKey(projectId),
       local: () => admin.local(),
       localModels: (e) => listLocalModels(e.baseUrl, d.options?.fetch),
+      // Claude Code plans only when detected and enabled; until its adapter is registered
+      // (Task 7) `harnesses()` lacks it and a start stays `HARNESS_UNKNOWN`.
+      claudeModels: async () => (claudeHarnessAvailable(await Effect.runPromise(claudeProviderInfo({ sandbox: sandboxDeps }))) ? claudeModels.models() : undefined),
       // Best effort: the cached listing stands when OpenRouter cannot be reached.
       // One fetch at a time, and none for 15 minutes after a failure (`OpenRouterPrices`).
       refreshListing: () =>
@@ -299,7 +308,7 @@ export const buildAgentRuntime = (d: AgentWiringDeps): Effect.Effect<AgentRuntim
     // Every CLI harness's process goes through its session sandbox (plan 7C Task 11); what the
     // launcher observes is audited (`sandbox.violation`, spec §8.8: no path, the root kind).
     const realData = realpathSync(serverData);
-    const sandboxes = sessionSandboxes({
+    const sandboxDeps: SessionSandboxDeps = {
       serverData: realData,
       projectDirOf: d.registry.dirOf,
       finPath,
@@ -311,7 +320,8 @@ export const buildAgentRuntime = (d: AgentWiringDeps): Effect.Effect<AgentRuntim
       ...(d.options?.sandboxLauncher === undefined ? {} : { launcher: () => d.options!.sandboxLauncher! }),
       onViolation: (v) =>
         d.audit.append({ kind: "sandbox.violation", principal: { kind: "agent", id: v.sessionId }, outcome: "denied", details: { session: v.sessionId, op: v.op, profile: v.profile, rootKind: v.rootKind } }),
-    });
+    };
+    const sandboxes = sessionSandboxes(sandboxDeps);
     const runtime = new Runtime({
       core,
       requests,
@@ -329,7 +339,7 @@ export const buildAgentRuntime = (d: AgentWiringDeps): Effect.Effect<AgentRuntim
       ...(d.options?.afterChildOpened === undefined ? {} : { afterChildOpened: d.options.afterChildOpened }),
       ...(d.options?.stopGraceMs === undefined ? {} : { stopGraceMs: d.options.stopGraceMs }),
       journal: core.journal,
-      pricing: cataloguePricing(catalogue),
+      pricing: withClaudePricing(cataloguePricing(catalogue)),
       // Children's roles and limits, live limits (7B Task 6).
       roles,
       ...(settings.limits === undefined ? {} : { limits: settings.limits }),
@@ -352,5 +362,5 @@ export const buildAgentRuntime = (d: AgentWiringDeps): Effect.Effect<AgentRuntim
     });
     approvals = made;
     const grants = grantPort(made, core.store, key, d.options?.afterGrantConsumed);
-    return { runtime, admin, adapters, lookup: new AgentLookup(d.db), catalogue, rules, ruleStore, roles, approvals: made, approvalKey: key, grants, permissions, requests };
+    return { runtime, admin, adapters, lookup: new AgentLookup(d.db), catalogue, rules, ruleStore, roles, approvals: made, approvalKey: key, grants, permissions, requests, claudeModels };
   });

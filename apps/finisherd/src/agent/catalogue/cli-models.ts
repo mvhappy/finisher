@@ -13,6 +13,8 @@ export interface CliModel {
   readonly id: string;
   readonly displayName: string;
   readonly isDefault: boolean;
+  /** Claude Code: the concrete model id an alias resolves to (a model is accepted by `id` or this). */
+  readonly resolvedModel?: string;
 }
 
 const str = (v: unknown): string | undefined => (typeof v === "string" && v !== "" ? v : undefined);
@@ -54,7 +56,8 @@ export function parseClaudeInitialize(message: unknown): CliModel[] {
   for (const x of models as Record<string, unknown>[]) {
     const id = str(x?.value);
     if (id === undefined) continue;
-    out.push({ id, displayName: str(x.displayName) ?? id, isDefault: x.value === "default" || x.isDefault === true });
+    const resolvedModel = str(x.resolvedModel);
+    out.push({ id, displayName: str(x.displayName) ?? id, isDefault: x.value === "default" || x.isDefault === true, ...(resolvedModel === undefined ? {} : { resolvedModel }) });
   }
   return dedupe(out);
 }

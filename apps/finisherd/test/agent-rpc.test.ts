@@ -199,7 +199,8 @@ describe("agent session RPCs", () => {
     const local = await server.local();
     const projectId = await project(local);
     const r = ok<{ providers: { harness: string }[] }>(await local.call("agent.providers", {}));
-    expect(r.providers.map((p) => p.harness)).toEqual(["builtin"]);
+    // Claude Code is listed (off by default, 7D Task 6) but is no harness a session can start on.
+    expect(r.providers.map((p) => p.harness).sort()).toEqual(["builtin", "claudeCode"]);
     expect(code(await start(local, projectId))).toBe("HARNESS_UNKNOWN");
   });
 });
@@ -230,7 +231,7 @@ describe("providers, keys, the local endpoint and the counsel gate", () => {
     const [a, b] = [await project(local, "A"), await project(local, "B")];
     type Providers = { providers: { harness: string; detected: boolean }[]; openrouter: { keySet: boolean; projects?: string[] }; local: { configured: boolean; reachable?: boolean; preset?: string } };
     const before = ok<Providers>(await local.call("agent.providers", {}));
-    expect(before.providers.map((p) => p.harness).sort()).toEqual(["builtin", "fake"]);
+    expect(before.providers.map((p) => p.harness).sort()).toEqual(["builtin", "claudeCode", "fake"]);
     expect(before.openrouter).toEqual({ keySet: false, projects: [] });
     expect(before.local).toEqual({ configured: false });
     const KEY = "sk-or-v1-0123456789abcdef";

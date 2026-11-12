@@ -24,7 +24,9 @@
 import type { Harness, Mode, Principal, Session, Weights } from "@finisher/contracts";
 import { finError } from "../errors.ts";
 import type { Catalogue } from "./catalogue/catalogue.ts";
+import type { CliModel } from "./catalogue/cli-models.ts";
 import { OPENROUTER_ID } from "./catalogue/prices.ts";
+import { claudeModelOffered } from "./claude/models.ts";
 import { budgetFor, MODE_RANK, type Role, roleModel, roleUnknown } from "./roles.ts";
 import { harnessUnknown, type SessionPlan, type SessionPlanner, type StartRequest } from "./runtime-deps.ts";
 import type { LocalEndpoint } from "./settings.ts";
@@ -41,6 +43,11 @@ export interface PlannerDeps {
   readonly localModels: (endpoint: LocalEndpoint) => Promise<readonly string[]>;
   /** Refreshes OpenRouter's listing when it is stale; never rejects. */
   readonly refreshListing?: () => Promise<void>;
+  /**
+   * Claude Code's discovered models (`claude/models.ts`), or `undefined` when the harness is not
+   * usable here (not installed, or `agents.claudeCode.enabled` off): then `HARNESS_UNKNOWN`.
+   */
+  readonly claudeModels?: () => Promise<readonly CliModel[] | undefined>;
 }
 
 const LOCAL_ID = /^[^\s\u0000-\u001f/\\][^\s\u0000-\u001f]{0,199}$/;
@@ -70,6 +77,7 @@ export function sessionPlanner(deps: PlannerDeps): SessionPlanner {
         // Tests only: no model, no key, priced as local (nothing is charged).
         return { ...base, provider: "local", model: req.model ?? "fake", weights: "unknown" };
       }
+      if (harness === "claudeCode") return { ...base, provider: "anthropic", ...(await claudeModel(deps, req.model ?? roleModel(role, harness))) };
       if (harness !== "builtin") harnessUnknown(harness);
       const preset = req.provider ?? (parent?.provider === "local" ? "local" : "openrouter");
       if (preset === "local") return { ...base, provider: "local", ...(await localModel(deps, req.model ?? roleModel(role, harness, "local"))) };
@@ -102,6 +110,21 @@ function childRole(roles: ReadonlyMap<string, Role>, parent: Session, name: stri
     { role: name, parentRole: parent.role, roles: [...allowed] },
     allowed.length === 0 ? `a ${parent.role} session spawns no children` : `spawn one of: ${allowed.join(", ")}`,
   );
+}
+
+/** Claude Code's model: a discovered `value` (`default`, an alias) or a `resolvedModel`; its weights are closed. */
+async function claudeModel(deps: PlannerDeps, model: string | undefined): Promise<{ model: string; weights: Weights }> {
+  const models = await deps.claudeModels?.();
+  if (models === undefined) harnessUnknown("claudeCode");
+  if (model === undefined || !claudeModelOffered(models, model)) {
+    throw finError(
+      "MODEL_UNKNOWN",
+      model === undefined ? "no model was named and the role has no default" : `${model} is not a model the installed Claude Code offers`,
+      { harness: "claudeCode", ...(model === undefined ? {} : { model }), reason: model === undefined ? "noDefault" : "notOffered" },
+      `use one of: ${["default", ...models.map((m) => m.id)].filter((x, i, a) => a.indexOf(x) === i).join(", ")}`,
+    );
+  }
+  return { model, weights: "closed" };
 }
 
 async function localModel(deps: PlannerDeps, model: string | undefined): Promise<{ model: string; weights: Weights }> {
