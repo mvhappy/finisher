@@ -79,8 +79,50 @@ impl Span {
 }
 
 /// A glyph's ink in line px, `None` when it draws nothing.
-fn glyph_ink(sys: &mut System, face: Option<usize>, g: &LayoutGlyph) -> Option<(f32, f32)> {
-    let advance = Some((g.x.min(g.x + g.w), g.x.max(g.x + g.w)));
+/// How far to move every glyph of a line so the letter spacing after its last glyph is gone.
+///
+/// Letter spacing goes between glyphs, not after a line's last one. cosmic-text adds it to
+/// every glyph's advance (the direction mark's excepted), each glyph's spacing lying on its
+/// right in either direction, so a line of advance `w` ends one `spacing` past its rightmost
+/// glyph, and is aligned as `w` wide. This re-aligns it as `w − spacing` wide, with
+/// cosmic-text's own rule: in a box `max` wide (else in the line's own width) the gap is
+/// `max(0, box − width)`; a left-to-right line's left edge sits at 0, ½ or all of the gap
+/// (left, centre, right), a right-to-left line's right edge at the box's right less all, ½
+/// or none of it.
+fn trailing_shift(max: Option<f64>, align: Align, rtl: bool, w: f32, spacing: f32) -> f32 {
+    let trimmed = w - spacing;
+    let (box_c, box_d) = match max {
+        Some(m) => (m as f32, m as f32),
+        None => (w, trimmed),
+    };
+    let (gap_c, gap_d) = ((box_c - w).max(0.0), (box_d - trimmed).max(0.0));
+    if rtl {
+        let f = match align {
+            Align::Left => 1.0,
+            Align::Center => 0.5,
+            Align::Right => 0.0,
+        };
+        // The rightmost glyph's own advance ended `spacing` before cosmic-text's right edge.
+        (box_d - f * gap_d) - (box_c - f * gap_c) + spacing
+    } else {
+        let f = match align {
+            Align::Left => 0.0,
+            Align::Center => 0.5,
+            Align::Right => 1.0,
+        };
+        f * (gap_d - gap_c)
+    }
+}
+
+/// `dx` shifts the glyph from where cosmic-text placed it.
+fn glyph_ink(
+    sys: &mut System,
+    face: Option<usize>,
+    g: &LayoutGlyph,
+    dx: f32,
+) -> Option<(f32, f32)> {
+    let x = g.x + dx;
+    let advance = Some((x.min(x + g.w), x.max(x + g.w)));
     let Some(f) = face.map(|i| &mut sys.faces[i]) else {
         return advance;
     };
@@ -91,7 +133,7 @@ fn glyph_ink(sys: &mut System, face: Option<usize>, g: &LayoutGlyph) -> Option<(
         Ink::None => None,
         Ink::Advance => advance,
         Ink::Outline(lo, hi) => {
-            let origin = g.x + g.font_size * g.x_offset;
+            let origin = x + g.font_size * g.x_offset;
             let scale = g.font_size / ink.upem;
             Some((origin + lo * scale, origin + hi * scale))
         }
@@ -192,8 +234,15 @@ impl Shaper<'_> {
         let (mut ink, mut pen) = (Span::EMPTY, Span::EMPTY);
         let mut spans = vec![(Span::EMPTY, Span::EMPTY); words.len()];
         let lead = mark.len();
+        let spacing = (st.letter_spacing * st.size) as f32;
         for run in buffer.layout_runs() {
             line.baseline = to_64(run.line_y);
+            let tracked = run.glyphs.iter().any(|g| g.end > lead);
+            let dx = if tracked {
+                trailing_shift(self.req.max_width, st.align, run.rtl, run.line_w, spacing)
+            } else {
+                0.0
+            };
             for g in run.glyphs {
                 if g.end <= lead {
                     continue; // the direction mark
@@ -210,8 +259,8 @@ impl Shaper<'_> {
                 if cluster.chars().all(char::is_whitespace) {
                     continue;
                 }
-                let drawn = glyph_ink(sys, face, g);
-                pen.add(g.x, 0.0);
+                let drawn = glyph_ink(sys, face, g, dx);
+                pen.add(g.x + dx, 0.0);
                 if let Some((lo, hi)) = drawn {
                     ink.add(lo, hi - lo);
                 }
@@ -219,7 +268,7 @@ impl Shaper<'_> {
                 let k = ranges.partition_point(|r| r.end <= at);
                 if ranges.get(k).is_some_and(|r| r.start <= at) {
                     let (word_ink, word_pen) = &mut spans[k];
-                    word_pen.add(g.x, 0.0);
+                    word_pen.add(g.x + dx, 0.0);
                     if let Some((lo, hi)) = drawn {
                         word_ink.add(lo, hi - lo);
                     }

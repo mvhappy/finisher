@@ -4484,7 +4484,8 @@ export interface TextStyle {
   family: string;
   italic: boolean;
   /**
-   * Extra advance after every glyph, in em (a multiple of `size`; may be negative).
+   * Extra advance between glyphs, in em (a multiple of `size`; may be negative); none
+   * after a line's last glyph.
    */
   letterSpacing: number;
   /**

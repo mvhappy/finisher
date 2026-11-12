@@ -550,6 +550,50 @@
         "align": "center"
       },
       "maxWidth": 400.0
+    },
+    {
+      "id": "tracking-right",
+      "what": "negative tracking, right-aligned: none after each line's last glyph",
+      "fonts": [
+        "sans"
+      ],
+      "words": [
+        "WW",
+        "Wa",
+        "W"
+      ],
+      "style": {
+        "family": "TestSans",
+        "weight": 400,
+        "italic": false,
+        "size": 100,
+        "lineHeight": 1.25,
+        "letterSpacing": -0.1,
+        "align": "right"
+      },
+      "maxWidth": 400.0
+    },
+    {
+      "id": "tracking-rtl-center",
+      "what": "positive tracking on right-to-left lines, centred",
+      "fonts": [
+        "rtl"
+      ],
+      "words": [
+        "אבג",
+        "דהו",
+        "זחט"
+      ],
+      "style": {
+        "family": "TestRtl",
+        "weight": 400,
+        "italic": false,
+        "size": 100,
+        "lineHeight": 1.25,
+        "letterSpacing": 0.1,
+        "align": "center"
+      },
+      "maxWidth": 400.0
     }
   ]
 }

@@ -16894,7 +16894,7 @@
           "type": "boolean"
         },
         "letterSpacing": {
-          "description": "Extra advance after every glyph, in em (a multiple of `size`; may be negative).",
+          "description": "Extra advance between glyphs, in em (a multiple of `size`; may be negative); none\nafter a line's last glyph.",
           "format": "double",
           "type": "number"
         },

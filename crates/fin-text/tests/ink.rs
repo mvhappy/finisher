@@ -66,9 +66,9 @@ fn pen(align: Align, advance: f64, max: f64) -> f64 {
 const ALIGNS: [Align; 3] = [Align::Left, Align::Center, Align::Right];
 
 /// One glyph, any tracking, any alignment: it sits exactly where it would with no direction
-/// mark in front of it. The line is the glyph's advance plus the tracking after it; the ink is
-/// the outline at the pen. Only a right-aligned glyph whose negative tracking eats its right
-/// side bearing reaches past the box (the outline is really drawn there).
+/// mark in front of it, and letter spacing applies only between glyphs, so a lone glyph's
+/// line is its plain advance (80 px) and nothing moves or overflows; the ink is the outline
+/// at the pen (5..75 px from it).
 #[test]
 fn tracking_gives_the_direction_mark_no_advance() {
     let (m, sans) = font(tf::test_sans());
@@ -78,15 +78,81 @@ fn tracking_gives_the_direction_mark_no_advance() {
             r.style.letter_spacing = tracking;
             r.style.align = align;
             let l = layout(&m, &r);
-            let x = pen(align, 80.0 + 100.0 * tracking, 972.0) + 5.0;
+            let x = pen(align, 80.0, 972.0) + 5.0;
             let what = format!("tracking {tracking}, {align:?}: {l:?}");
             assert_eq!(line_px(&l), (x, 70.0), "{what}");
+            assert!(!l.overflow, "{what}");
             assert_eq!(
                 (l.words[0].x, l.words[0].width),
                 (l.lines[0].x, l.lines[0].width)
             );
-            assert_eq!(l.overflow, x + 70.0 > 972.0, "{what}");
         }
+    }
+}
+
+/// Tracking between glyphs is kept; only the amount after the line's last glyph is dropped
+/// before alignment and fitting. `WW`: the second `W` starts 80 + t px after the first; the
+/// line's advance is 160 + t, its ink 5 .. 80 + t + 75 px from the pen.
+#[test]
+fn trailing_tracking_is_dropped() {
+    let (m, sans) = font(tf::test_sans());
+    for tracking in [-0.1, 0.0, 0.1] {
+        let t = 100.0 * tracking;
+        for align in ALIGNS {
+            let mut r = req(&sans, &["WW"], 100.0, Some(972.0));
+            r.style.letter_spacing = tracking;
+            r.style.align = align;
+            let l = layout(&m, &r);
+            let x = pen(align, 160.0 + t, 972.0) + 5.0;
+            let what = format!("tracking {tracking}, {align:?}: {l:?}");
+            assert_eq!(line_px(&l), (x, 150.0 + t), "{what}");
+            assert!(!l.overflow, "{what}");
+        }
+        // Right-aligned, the last outline ends its side bearing (5 px) before the box's edge.
+        let mut r = req(&sans, &["WW", "W"], 100.0, Some(972.0));
+        r.style.letter_spacing = tracking;
+        r.style.align = Align::Right;
+        let l = layout(&m, &r);
+        assert_eq!(
+            l.lines[0].x + l.lines[0].width,
+            967 * 64,
+            "tracking {tracking}"
+        );
+        // Two words: the space between them is tracked too (`WW` + space + `W`: 4 gaps).
+        let x = pen(Align::Right, 80.0 * 3.0 + 25.0 + 3.0 * t, 972.0) + 5.0;
+        assert_eq!(f64::from(l.lines[0].x) / 64.0, x, "tracking {tracking}");
+    }
+    // A line wider than its box is not aligned (cosmic-text's rule): a left-to-right one
+    // starts at the box's left, a right-to-left one ends at its right, where its rightmost
+    // letter now ends without tracking. 13 `W` + 12 gaps of 10 px: 1160 px.
+    let mut r = req(&sans, &["WWWWWWWWWWWWW"], 100.0, Some(972.0));
+    r.style.letter_spacing = 0.1;
+    for align in ALIGNS {
+        r.style.align = align;
+        let l = layout(&m, &r);
+        assert_eq!(line_px(&l), (5.0, 1150.0), "{align:?}");
+        assert!(l.overflow);
+    }
+    let (m_rtl, rtl) = font(tf::test_rtl());
+    let mut r = req(&rtl, &[&"א".repeat(20)], 100.0, Some(972.0));
+    r.style.letter_spacing = 0.1;
+    for align in ALIGNS {
+        r.style.align = align;
+        let l = layout(&m_rtl, &r);
+        // 20 × 60 + 19 × 10 = 1390 px ending at 972; ink 5 px inside each end.
+        assert_eq!(line_px(&l), (972.0 - 1390.0 + 5.0, 1380.0), "{align:?}");
+    }
+    // Unbounded lines (no box) start at 0 whatever the alignment.
+    let mut r = req(&sans, &["WW"], 100.0, None);
+    r.style.letter_spacing = -0.1;
+    r.style.align = Align::Right;
+    assert_eq!(line_px(&layout(&m, &r)), (5.0, 140.0));
+    let mut r = req(&rtl, &["אב"], 100.0, None);
+    r.style.letter_spacing = -0.1;
+    for align in ALIGNS {
+        r.style.align = align;
+        // 60 − 10 + 60 = 110 px from 0; ink 5 .. 105.
+        assert_eq!(line_px(&layout(&m_rtl, &r)), (5.0, 100.0), "{align:?}");
     }
 }
 
@@ -109,7 +175,7 @@ fn tracking_gives_a_needed_lrm_no_advance() {
             let l = layout(&m, &r);
             assert_eq!(l.lines.len(), 2, "{l:?}");
             assert!(!l.lines[1].rtl);
-            let x = pen(align, 60.0 + 100.0 * tracking, 150.0) + 5.0;
+            let x = pen(align, 60.0, 150.0) + 5.0;
             let line = &l.lines[1];
             let got = (f64::from(line.x) / 64.0, f64::from(line.width) / 64.0);
             assert_eq!(got, (x, 50.0), "tracking {tracking}, {align:?}: {l:?}");
@@ -128,8 +194,8 @@ fn negative_tracking_left_aligned_fits() {
     assert!(!l.overflow, "{l:?}");
 }
 
-/// The same for a right-to-left line (shaped behind an RLM): the letter's origin is the
-/// left end of its tracked advance.
+/// The same for a right-to-left line (shaped behind an RLM): the letter sits at the pen, with
+/// no tracking after it.
 #[test]
 fn tracking_gives_the_rtl_mark_no_advance() {
     let (m, rtl) = font(tf::test_rtl());
@@ -140,13 +206,13 @@ fn tracking_gives_the_rtl_mark_no_advance() {
             r.style.align = align;
             let l = layout(&m, &r);
             assert!(l.lines[0].rtl);
-            let x = pen(align, 60.0 + 100.0 * tracking, 972.0) + 5.0;
+            let x = pen(align, 60.0, 972.0) + 5.0;
             assert_eq!(
                 line_px(&l),
                 (x, 50.0),
                 "tracking {tracking}, {align:?}: {l:?}"
             );
-            assert_eq!(l.overflow, x + 50.0 > 972.0);
+            assert!(!l.overflow, "tracking {tracking}, {align:?}");
         }
     }
     // A Latin line in a Hebrew paragraph is shaped behind an RLM (its own first strong
@@ -167,7 +233,7 @@ fn tracking_gives_the_rtl_mark_no_advance() {
             let l = layout(&both, &r);
             assert_eq!(l.lines.len(), 2, "{l:?}");
             assert!(l.lines[1].rtl);
-            let x = pen(align, 80.0 + 100.0 * tracking, 200.0) + 5.0;
+            let x = pen(align, 80.0, 200.0) + 5.0;
             let line = &l.lines[1];
             let got = (f64::from(line.x) / 64.0, f64::from(line.width) / 64.0);
             assert_eq!(got, (x, 70.0), "tracking {tracking}, {align:?}: {l:?}");
