@@ -196,19 +196,20 @@ pub fn start_try(
 }
 
 /// Ends the try `branch_id` in one update: forgets it and, only while the default is still
-/// `current` (the try, as the default names it), moves the default to `back` (`None`: `main`).
-/// Whether the default moved; a default another fin selected meanwhile is kept (review #50).
+/// that try, moves the default to `back` (`None`: `main`). Answers the default in effect
+/// afterwards (`None`: `main`); one another fin selected meanwhile is kept (review #50).
 pub fn end_try(
     sd: &Path,
     project_id: &str,
     branch_id: &str,
-    current: &str,
     back: Option<&str>,
-) -> Result<bool, CoreError> {
+) -> Result<Option<String>, CoreError> {
     update(sd, |doc| {
-        let moved = swap_default(doc, project_id, current, back);
+        swap_default(doc, project_id, branch_id, back);
         drop_try(doc, project_id, branch_id);
-        moved
+        doc["defaultBranch"][project_id]
+            .as_str()
+            .map(str::to_string)
     })
 }
 
@@ -254,10 +255,10 @@ mod tests {
         );
         assert_eq!(try_parent(sd, "p2", "br2").unwrap().as_deref(), Some("br1"));
         assert_eq!(try_parent(sd, "p1", "br3").unwrap(), None);
-        end_try(sd, "p1", "br2", "br2", None).unwrap();
+        end_try(sd, "p1", "br2", None).unwrap();
         assert_eq!(try_parent(sd, "p1", "br2").unwrap(), None);
         // Forgetting again (a retried `fin try drop`) leaves no empty entry behind.
-        end_try(sd, "p1", "br2", "br2", None).unwrap();
+        end_try(sd, "p1", "br2", None).unwrap();
         assert!(load(sd).unwrap()["tries"].get("p1").is_none());
         assert_eq!(try_parent(sd, "p2", "br2").unwrap().as_deref(), Some("br1"));
         assert!(!sd.join("fin-config.json.lock").exists());
@@ -295,10 +296,16 @@ mod tests {
         start_try(sd, "p", "br2", "br1").unwrap();
         assert_eq!(default_branch(sd, "p").unwrap().as_deref(), Some("br2"));
         // br1 is no longer the default: forgotten, the default kept.
-        assert!(!end_try(sd, "p", "br1", "br1", None).unwrap());
+        assert_eq!(
+            end_try(sd, "p", "br1", None).unwrap().as_deref(),
+            Some("br2")
+        );
         assert_eq!(try_parent(sd, "p", "br1").unwrap(), None);
         assert_eq!(default_branch(sd, "p").unwrap().as_deref(), Some("br2"));
-        assert!(end_try(sd, "p", "br2", "br2", Some("br1")).unwrap());
+        assert_eq!(
+            end_try(sd, "p", "br2", Some("br1")).unwrap().as_deref(),
+            Some("br1")
+        );
         assert_eq!(try_parent(sd, "p", "br2").unwrap(), None);
         assert_eq!(default_branch(sd, "p").unwrap().as_deref(), Some("br1"));
         assert!(load(sd).unwrap()["tries"].get("p").is_none());

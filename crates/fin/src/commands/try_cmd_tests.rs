@@ -85,6 +85,9 @@ fn a_drop_keeps_a_default_selected_while_it_ran() {
     };
     let doc = finish(&backend, &globals(), false).unwrap();
     assert_eq!(doc["branch"]["state"], "archived", "{doc}");
+    // The answer says where the default is, not where it would have gone.
+    assert_eq!(doc["switchedTo"], "br2", "{doc}");
+    assert_eq!(doc["defaultKept"], true, "{doc}");
     assert_eq!(
         config::default_branch(&sd, "p").unwrap().as_deref(),
         Some("br2"),
@@ -104,6 +107,7 @@ fn a_drop_without_interleaving_switches_back() {
     };
     let doc = finish(&backend, &globals(), false).unwrap();
     assert_eq!(doc["switchedTo"], "main", "{doc}");
+    assert!(doc.get("defaultKept").is_none(), "{doc}");
     assert_eq!(config::default_branch(&sd, "p").unwrap(), None);
     assert_eq!(config::try_parent(&sd, "p", "br1").unwrap(), None);
 }
@@ -119,6 +123,8 @@ fn clearing_a_stale_default_keeps_one_selected_meanwhile() {
     };
     let doc = finish(&backend, &globals(), false).unwrap();
     assert_eq!(doc["cleared"], "gone", "{doc}");
+    assert_eq!(doc["switchedTo"], "br2", "{doc}");
+    assert_eq!(doc["defaultKept"], true, "{doc}");
     assert_eq!(
         config::default_branch(&sd, "p").unwrap().as_deref(),
         Some("br2")

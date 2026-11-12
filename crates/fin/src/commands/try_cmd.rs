@@ -194,8 +194,10 @@ fn finish(backend: &dyn Backend, g: &Globals, keep: bool) -> Result<Value, CoreE
         // Cleared only while it is still the default: another fin may have selected a
         // branch meanwhile (review #50).
         if from_config && !keep && !g.dry_run {
-            config::end_try(&sd, &project_id, &current, &current, None)?;
-            return Ok(json!({ "cleared": current, "switchedTo": "main" }));
+            let now = config::end_try(&sd, &project_id, &current, None)?;
+            let mut doc = json!({ "cleared": current });
+            switched(&mut doc, now, "main");
+            return Ok(doc);
         }
         return Err(if from_config {
             super::stale_default(&current, &views)
@@ -228,14 +230,26 @@ fn finish(backend: &dyn Backend, g: &Globals, keep: bool) -> Result<Value, CoreE
         doc["branch"] = archived;
         doc
     };
-    if !g.dry_run {
+    if g.dry_run {
+        doc["switchedTo"] = json!(parent);
+    } else {
         // Back to where the try started, unless the default was moved off it meanwhile: one
         // compare-and-set under the file's lock with forgetting the try (review #50).
         let back = (parent != "main").then_some(parent.as_str());
-        config::end_try(&sd, &project_id, &id, &id, back)?;
+        let now = config::end_try(&sd, &project_id, &id, back)?;
+        switched(&mut doc, now, &parent);
     }
-    doc["switchedTo"] = json!(parent);
     Ok(doc)
+}
+
+/// `switchedTo`: the default in effect after a try ended (`main` when none is set). When it is
+/// not `back`, another fin selected it meanwhile and it was kept: `defaultKept: true`.
+fn switched(doc: &mut Value, now: Option<String>, back: &str) {
+    let now = now.unwrap_or_else(|| "main".to_string());
+    if now != back {
+        doc["defaultKept"] = json!(true);
+    }
+    doc["switchedTo"] = json!(now);
 }
 
 /// `fin try` in an agent session: the branch is made from the session's default (in its

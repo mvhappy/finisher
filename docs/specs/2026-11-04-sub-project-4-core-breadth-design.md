@@ -1149,7 +1149,7 @@ Task 19 has not run. 4A is not mergeable until it has. Each item below was writt
 
 **`try`**
 - `fin try [name]` forks from the target branch's head (default name `try-<n>`), records the try in `fin-config.json` (`tries: {<projectId>: {<branchId>: <parentId>}}`, per project because two projects in one server data both make `br1`) and makes it the default branch.
-- `fin try keep` merges it into its recorded parent; `fin try drop` archives it. Both switch back (the default is cleared when the parent is `main`) and forget the try. Off a recorded try branch both are `USAGE` (`fix: fin try`). `try drop` on a default whose branch is gone clears the default and the try (`{cleared, switchedTo}`).
+- `fin try keep` merges it into its recorded parent; `fin try drop` archives it. Both switch back (the default is cleared when the parent is `main`) and forget the try. Off a recorded try branch both are `USAGE` (`fix: fin try`). `try drop` on a default whose branch is gone clears the default and the try (`{cleared, switchedTo}`). The switch back is a compare-and-set with forgetting the try, under `fin-config.json`'s lock: a default another fin selected meanwhile is kept, and `switchedTo` is always the default in effect afterwards, with `defaultKept: true` when that is not where the try would have gone.
 
 **Archiving**
 - Archived branches are hidden from `fin branch ls` (unless `--all`), kept, and addressed by id or `<name>#<id>`. They refuse writes (`BRANCH_ARCHIVED`, exit 3, `fix: fin branch archive <id> --restore`); they can still be a merge's source.
