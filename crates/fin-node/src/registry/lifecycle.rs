@@ -99,3 +99,22 @@ impl Registry {
         })
     }
 }
+
+/// Each permission's risk within the set (`low`, `medium` or `high`, in order), as a plan shows
+/// it (sp8b Task 11: the developer-mode approval screen, which has no plan).
+#[napi(catch_unwind)]
+pub fn permission_risks(permissions_json: String) -> Result<Vec<String>> {
+    let perms: Vec<fin_plugin_api::Permission> =
+        serde_json::from_str(&permissions_json).map_err(|e| bad_request("permissions", e))?;
+    Ok(fin_plugin_api::risks(&perms)
+        .into_iter()
+        .map(|(_, r)| {
+            match r {
+                fin_plugin_api::Risk::Low => "low",
+                fin_plugin_api::Risk::Medium => "medium",
+                fin_plugin_api::Risk::High => "high",
+            }
+            .to_owned()
+        })
+        .collect())
+}

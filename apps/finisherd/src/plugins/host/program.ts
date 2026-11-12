@@ -41,8 +41,15 @@ export function unusable(row: InstalledFull): ReturnType<typeof finError> | unde
   return undefined;
 }
 
-/** `<serverData>/plugins/<row.dir>`: `dir` is `store/@pub/name/<version-dir>` with plain parts. */
+/**
+ * `<serverData>/plugins/<row.dir>`: `dir` is `store/@pub/name/<version-dir>` with plain parts. A
+ * developer plugin (Task 11) runs from its own folder: its `dir` is that folder's real path.
+ */
 export function storeDirOf(serverData: string, row: InstalledFull): string {
+  if (row.source === "dev") {
+    if (!isAbsolute(row.dir)) throw finError("PLUGIN_NOT_FOUND", `${row.id} has no folder`, { plugin: row.id, reason: "devDir" });
+    return row.dir;
+  }
   const parts = row.dir.split("/");
   if (parts[0] !== "store" || parts.length < 4 || parts.some((p) => p === "" || p === "." || p === ".." || p.includes("\\"))) {
     throw finError("PLUGIN_NOT_FOUND", `${row.id} has no package in the store`, { plugin: row.id, reason: "storeDir" });
