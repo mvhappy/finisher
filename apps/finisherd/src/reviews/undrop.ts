@@ -53,7 +53,9 @@ function dropOf(w: ReviewWorkflow, item: ReviewItem, origin: string): Effect.Eff
 export function decidesOnTarget(c: Caller, item: ReviewItem): boolean {
   const g = c.meta.guard;
   const target = item.target!;
-  return c.principal.scopes.includes("review.decide") && g !== undefined && (g.allowBranches === undefined || g.allowBranches.includes(target)) && !(g.denyBranches ?? []).includes(target);
+  // The auto-merge actor has no scopes: it never accepts, so it never cancels another's drop.
+  const scopes = "scopes" in c.principal ? c.principal.scopes : [];
+  return scopes.includes("review.decide") && g !== undefined && (g.allowBranches === undefined || g.allowBranches.includes(target)) && !(g.denyBranches ?? []).includes(target);
 }
 
 /**

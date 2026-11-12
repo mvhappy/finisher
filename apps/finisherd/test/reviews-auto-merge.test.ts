@@ -74,6 +74,7 @@ const json = <A>(f: () => Promise<string>): Effect.Effect<A, FinError> => Effect
 /** The workflow's engine port over a fin-node `Engine` (one project). */
 function engineOf(e: Engine): ReviewEngine {
   return {
+    records: (_p, branch) => json(() => e.opsSince(branch, 0)),
     resolveBranch: (_p, ref) => json(() => e.resolveBranch(ref)),
     branches: () => json<BranchView[]>(() => e.branches(true)),
     plan: (_p, from, into) => json(() => e.reviewPlan(JSON.stringify({ from, into }))),
@@ -463,6 +464,21 @@ describe("review follow-ups", () => {
     expect(f.reviews.store.events(f.item.id)).toHaveLength(events);
     expect(await f.e.head("main")).toBe(head);
     expect(f.audited).toEqual([]);
+  });
+
+  test("an accepted origin dropped since the decision refuses with dropsChanged", async () => {
+    const f = await fixture();
+    enable(f);
+    const local = callerOf(LOCAL, { actor: { kind: "user" } }, "socket");
+    const snapshot = f.item.snapshot!;
+    await run(f.reviews.workflow.decide(local, { itemId: f.item.id, expect: snapshot, decisions: [{ txId: "f1", decision: "accept" }] }));
+    await f.e.drop(JSON.stringify({ txId: "bob-drop", author: "bob", into: "main", from: f.feature, drops: ["f1"] }));
+    const head = await f.e.head("main");
+    const audited = f.audited.length;
+    expect(await attempt(f, source(passing(snapshot)))).toEqual({ merged: false, reason: "dropsChanged" });
+    expect(f.reviews.store.get(f.item.id)?.state).toBe("open");
+    expect(await f.e.head("main")).toBe(head);
+    expect(f.audited).toHaveLength(audited);
   });
 
   test("a session or verdict id the audit cannot record never empties the row", async () => {

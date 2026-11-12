@@ -69,7 +69,9 @@ export interface AutoMergeDeps {
  * `changesRequested` (a person handed the branch back; only an `open` item is merged), and
  * `replanNeeded` (the change list of the judged snapshot is gone, after a restart or an
  * eviction, and the source moved since, so it cannot be planned again exactly: a person
- * refreshes the review and it is judged again).
+ * refreshes the review and it is judged again), and `dropsChanged` (an accepted origin was
+ * dropped, or a rejected one undropped, since the decision: the review merge's
+ * `REVIEW_UNDECIDED {reason: acceptedDropped | rejectedUndropped}`; a person decides again).
  */
 export type AutoMergeRefusal =
   | "unavailable"
@@ -79,11 +81,16 @@ export type AutoMergeRefusal =
   | "verdictMissing"
   | "verdictFailed"
   | "snapshotMismatch"
-  | "replanNeeded";
+  | "replanNeeded"
+  | "dropsChanged";
 
 export type AutoMergeResult = { readonly merged: true; readonly mergeId: string } | { readonly merged: false; readonly reason: AutoMergeRefusal };
 
 const refused = (reason: AutoMergeRefusal): AutoMergeResult => ({ merged: false, reason });
+
+/** The review merge's refusal for drops that changed since the decisions (Task 7 round 2). */
+const dropsChanged = (e: FinError): boolean =>
+  e.code === "REVIEW_UNDECIDED" && ["acceptedDropped", "rejectedUndropped"].includes(String((e.details as { reason?: unknown } | null)?.reason));
 
 /** The audit principal of the policy actor (it has no connection). */
 const POLICY_PRINCIPAL = { kind: "policy", id: "autoMerge" } as const;
@@ -191,9 +198,13 @@ export function tryAutoMerge(itemId: string, session: string | undefined, deps: 
         }
         const actor: PolicyActor = { kind: "policy", policy: "autoMerge", enabledBy };
         const caller = policyCaller(actor, policyGuard(item, policy.protected), session);
-        const merged = yield* mergeReview(w, caller, { itemId: item.id, expect: snapshot, acceptPending: true, idemKey: idemKeyOf(item) });
+        const merged = yield* mergeReview(w, caller, { itemId: item.id, expect: snapshot, acceptPending: true, idemKey: idemKeyOf(item) }).pipe(
+          Effect.map((m) => ({ ok: m }) as const),
+          Effect.catchIf(dropsChanged, () => Effect.succeed({ ok: undefined })),
+        );
+        if (merged.ok === undefined) return refused("dropsChanged");
         deps.audit.append({ kind: "review.merge", principal: POLICY_PRINCIPAL, outcome: "ok", details });
-        return { merged: true, mergeId: merged.merge.mergeId } as const;
+        return { merged: true, mergeId: merged.ok.merge.mergeId } as const;
       }),
     );
   });
