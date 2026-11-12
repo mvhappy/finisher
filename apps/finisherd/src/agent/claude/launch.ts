@@ -219,37 +219,66 @@ function sandboxDirs(s: Session, env: Readonly<Record<string, string>>, os: Node
  */
 export function launchPlan(s: Session, spec: SessionSpec, probe: ProbeResult, os: NodeJS.Platform, ctx: LaunchContext): LaunchPlan {
   const dirs = sandboxDirs(s, spec.env, os);
-  const at = (name: string) => (os === "win32" ? win32 : posix).join(dirs.settings, name);
   const uuid = sessionUuid(s.id);
   const ref = spec.providerRef;
   if (ref !== null && (ref.kind !== "claudeCode" || ref.id !== uuid)) {
     throw finError("PROVIDER_PROTOCOL", "the session's provider reference is not its Claude Code session", { sessionId: s.id, kind: ref.kind });
   }
   const { tools, shell, dropped } = cliTools(spec.tools, os === "win32" && probe.brokeredShell === true);
-  const mcpTools = [...(shell ? [SHELL_TOOL] : []), ...(probe.permissionPath === "mcp" ? [APPROVE_TOOL] : [])];
-  const budget = ctx.remainingMoneyMicros !== null && !ctx.planSignIn ? ["--max-budget-usd", maxBudgetUsd(s, ctx.remainingMoneyMicros)] : [];
+  const budget = ctx.remainingMoneyMicros !== null && !ctx.planSignIn ? maxBudgetUsd(s, ctx.remainingMoneyMicros) : null;
+  const plan = instancePlan({ binary: ctx.binary, dirs, os, uuid, resume: ref !== null, tools, shell, probe, model: spec.model, system: spec.system, retentionDays: ctx.retentionDays, budgetUsd: budget });
+  // The CLI's temporary directory is the sandbox's own (`assertSessionEnv` holds it to `TMPDIR`).
+  assertSpawnEnv(plan.env, s, os);
+  return { ...plan, dropped };
+}
+
+/** One instance's inputs once the session is resolved (`launchPlan`, and the probe's host instance). */
+export interface InstanceArgs {
+  readonly binary: string;
+  /** The instance's directories as its sandbox spells them (`settings/`, `tmp/`). */
+  readonly dirs: SessionDirs;
+  readonly os: NodeJS.Platform;
+  readonly uuid: string;
+  /** `--resume=<uuid>` instead of `--session-id <uuid>`. */
+  readonly resume: boolean;
+  /** The `--tools` set (`cliTools`). */
+  readonly tools: readonly string[];
+  /** The brokered shell is served (`cliTools`' `shell`). */
+  readonly shell: boolean;
+  readonly probe: Pick<ProbeResult, "permissionPath" | "restricted">;
+  readonly model: string;
+  readonly system: string;
+  readonly retentionDays: number;
+  /** `--max-budget-usd`'s value, or null for none. */
+  readonly budgetUsd: string | null;
+  /** The probe's settings canary (Decision 4): `outputStyle` the init must show. */
+  readonly canary?: boolean;
+}
+
+/** The argv, files and environment of one instance (Decision 1's order). Throws `INTERNAL` for settings that fail their schema. */
+export function instancePlan(a: InstanceArgs): Omit<LaunchPlan, "dropped"> {
+  const at = (name: string) => (a.os === "win32" ? win32 : posix).join(a.dirs.settings, name);
+  const tools = [...a.tools];
+  const mcpTools = [...(a.shell ? [SHELL_TOOL] : []), ...(a.probe.permissionPath === "mcp" ? [APPROVE_TOOL] : [])];
   const files = [
-    { path: at(SETTINGS_FILE), body: `${JSON.stringify(sessionSettings(tools, mcpTools, ctx.retentionDays), null, 2)}\n` },
+    { path: at(SETTINGS_FILE), body: `${JSON.stringify(sessionSettings(tools, mcpTools, a.retentionDays, a.canary === true), null, 2)}\n` },
     { path: at(MCP_FILE), body: `${JSON.stringify(mcpConfig(), null, 2)}\n` },
-    { path: at(ROLE_FILE), body: spec.system },
+    { path: at(ROLE_FILE), body: a.system },
   ];
   const argv = [
-    ctx.binary,
+    a.binary,
     "-p",
     ...["--input-format", "stream-json", "--output-format", "stream-json", "--verbose", "--include-partial-messages"],
     ...["--permission-mode", "manual", "--permission-prompts", "host"],
-    ...["--permission-prompt-tool", probe.permissionPath === "mcp" ? APPROVE_TOOL : "stdio"],
-    ...(probe.restricted === true ? ["--restricted"] : ["--setting-sources", "user"]),
+    ...["--permission-prompt-tool", a.probe.permissionPath === "mcp" ? APPROVE_TOOL : "stdio"],
+    ...(a.probe.restricted === true ? ["--restricted"] : ["--setting-sources", "user"]),
     ...["--settings", at(SETTINGS_FILE), "--strict-mcp-config", "--mcp-config", at(MCP_FILE)],
     ...["--tools", tools.join(","), "--disallowedTools", DISALLOWED_TOOLS.join(","), "--disable-slash-commands"],
-    ...["--append-system-prompt-file", at(ROLE_FILE), "--model", spec.model],
-    ...(ref === null ? ["--session-id", uuid] : [`--resume=${uuid}`]),
-    ...budget,
+    ...["--append-system-prompt-file", at(ROLE_FILE), "--model", a.model],
+    ...(a.resume ? [`--resume=${a.uuid}`] : ["--session-id", a.uuid]),
+    ...(a.budgetUsd === null ? [] : ["--max-budget-usd", a.budgetUsd]),
   ];
-  const env = launchEnv(dirs.tmp);
-  // The CLI's temporary directory is the sandbox's own (`assertSessionEnv` holds it to `TMPDIR`).
-  assertSpawnEnv(env, s, os);
-  return { argv, files, env, tools, mcpTools, dropped };
+  return { argv, files, env: launchEnv(a.dirs.tmp), tools, mcpTools };
 }
 
 /**

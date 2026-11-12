@@ -25,4 +25,10 @@ export interface ProbeResult {
    * 2026-11-12): Windows sessions run `direct` and use the CLI's own `Bash` until then.
    */
   readonly brokeredShell?: boolean;
+  /**
+   * Step 2 is pending the first instance (Decision 8): `initialize` showed a CLI signed in by
+   * other means, so the probe sent no prompt; `tools` is empty until the first real instance's
+   * init passes `checkInit` and `completeProbe` records it.
+   */
+  readonly initPending?: true;
 }
