@@ -42,9 +42,10 @@ fn head(store: &Shared, branch: &str) -> Result<(u64, Project)> {
 }
 
 /// `timeline`, else the project's main (first) timeline, on the head at `head`. A named
-/// timeline is never substituted: missing from a head newer than `rev` (the rev the caller
-/// resolved it at) it was removed since, `CONFLICT` (`reason: TIMELINE_GONE`; read the project
-/// again and retry); missing at `rev`, or with no `rev`, it is fin-core's `NOT_FOUND`.
+/// timeline is never substituted: missing from a head at another rev than `rev` (the rev the
+/// caller resolved it at; the head moved on, or a rewind took it back) the caller's view is
+/// stale, `CONFLICT` (`reason: TIMELINE_GONE`; read the project again and retry); missing at
+/// `rev`, or with no `rev`, it is fin-core's `NOT_FOUND`.
 fn timeline_id(
     project: &Project,
     head: u64,
@@ -64,7 +65,9 @@ fn timeline_id(
         return Err(reject(
             CoreError::new(
                 "CONFLICT",
-                format!("timeline {id} was removed after rev {read} was read"),
+                format!(
+                    "timeline {id} is not on the head (rev {head}) though it was read at rev {read}"
+                ),
             )
             .with_details(
                 json!({ "reason": "TIMELINE_GONE", "timeline": id, "rev": read, "head": head }),

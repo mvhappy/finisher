@@ -149,8 +149,8 @@ export declare class Engine {
    * `at` (a rational time string). Captions are measured with the server's shared measurer;
    * a caption whose font bytes are missing is unmeasured (`layout: null`, `unmeasured`),
    * never an error, and the missing files are queued for fetching. `rev`: the branch rev the
-   * caller resolved `timeline` at; a named timeline missing from a newer head was removed
-   * since: `CONFLICT` (`details: { reason: "TIMELINE_GONE", timeline, rev, head }`), never
+   * caller resolved `timeline` at; a named timeline missing from a head at another rev (moved
+   * on, or rewound) is `CONFLICT` (`details: { reason: "TIMELINE_GONE", timeline, rev, head }`), never
    * another timeline. Missing at `rev` (or with no `rev`): `NOT_FOUND`.
    */
   evalFrame(branch: string, timeline: string | null | undefined, at: string, rev?: number | null): Promise<string>;

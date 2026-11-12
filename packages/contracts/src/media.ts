@@ -8,8 +8,8 @@ import { Schema } from "effect";
  * strings (`"12"`, `"1001/30000"`). Captions are measured with the server's shared measurer
  * from the project's pinned font bytes; a caption whose bytes are missing is unmeasured
  * (`layout: null`, `unmeasured`), never an error. `rev`: the branch rev the caller resolved
- * `timeline` at (`snapshot.get`'s); a named timeline missing from a newer head was removed
- * since, `CONFLICT` (`details.reason: TIMELINE_GONE`; read the project again and retry), while
+ * `timeline` at (`snapshot.get`'s); a named timeline missing from a head at another rev (moved
+ * on, or rewound) is `CONFLICT` (`details.reason: TIMELINE_GONE`; read the project again and retry), while
  * one missing at that rev (or with no `rev`) is `NOT_FOUND`.
  */
 export const EvalFramePayload = Schema.Struct({

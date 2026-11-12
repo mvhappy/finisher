@@ -104,6 +104,10 @@ describe("eval", () => {
       expect(gone.details).toMatchObject({ reason: "TIMELINE_GONE", timeline: "tl1", rev: read });
       expect(gone.fix).toMatch(/again/);
     }
+    // A rev past the head (the history was rewound since the read) is stale too.
+    const rewound = await rejection(e.evalFrame("main", "tl1", "1", read + 5));
+    expect(rewound.code).toBe("CONFLICT");
+    expect(rewound.message).toBe(`timeline tl1 is not on the head (rev ${read + 1}) though it was read at rev ${read + 5}`);
     // Read at the head (or with no rev), a missing timeline is a plain NOT_FOUND.
     expect((await rejection(e.evalFrame("main", "tl1", "1", read + 1))).code).toBe("NOT_FOUND");
     expect((await rejection(e.evalFrame("main", "tl1", "1"))).code).toBe("NOT_FOUND");
