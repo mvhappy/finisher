@@ -19,6 +19,7 @@ import { mcp } from "./commands/mcp.ts";
 import { pair } from "./commands/pair.ts";
 import { project } from "./commands/project.ts";
 import { remote } from "./commands/remote.ts";
+import { review } from "./commands/review.ts";
 import { status } from "./commands/status.ts";
 import { tls } from "./commands/tls.ts";
 import { training } from "./commands/training.ts";
@@ -39,6 +40,7 @@ const COMMANDS: Record<string, (ctx: CommandContext) => Promise<number>> = {
   agent,
   provider,
   training,
+  review,
   mcp,
   auth,
   plugin,
@@ -120,6 +122,8 @@ Agent sessions (sub-project 7):
   provider key ls [--json]                 the stored model keys (never their values)
   provider local show|test [--json]        the local model endpoint, and whether it answers
   training closed-targets [--json]         the counsel gate on closed-model training targets
+  review policy show --project <dir|id> [--json]
+                                           protected branches, required review, auto merge
 These change something (each needs an interactive terminal and your confirmation):
   agent approve <approval> allow|deny [--add <amount>] [--remember session|project|projectLocal]
                                            --add raises a budget: USD, tokens (200k) or time (30m)
@@ -134,6 +138,9 @@ These change something (each needs an interactive terminal and your confirmation
   provider local set <ollama|lmstudio|url>
   provider local rm
   training closed-targets pendingCounsel|cleared|excluded
+  review policy set --project <dir|id> [--protect <branch>]... [--unprotect <branch>]...
+              [--require-review on|off] [--auto-merge on|off]
+                                           auto merge answers AUTO_MERGE_UNAVAILABLE for now
 
 Reading recorded content needs no code:
   diagnostics export --content [--store diagnostics|agentTraces] [--kind <kind>]... [--since <date>] [--project <id>] [--limit <n>]

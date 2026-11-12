@@ -4,7 +4,7 @@
 use schemars::JsonSchema;
 use serde_json::{Value, json};
 
-use crate::commands::{asset, branch, clip, drop, history, look, project, try_cmd, view};
+use crate::commands::{asset, branch, clip, drop, history, look, project, review, try_cmd, view};
 
 pub struct Command {
     /// Dotted name, e.g. "clip.insert" (also the `batch` cmd and op-style name).
@@ -260,6 +260,70 @@ pub const COMMANDS: &[Command] = &[
         summary: "keep a rejected change out of every merge into a branch (--undo brings it back)",
         write: true,
         schema: || schema_of::<drop::DropArgs>("drop"),
+    },
+    Command {
+        name: "review.request",
+        group: "review",
+        args: "[--branch <b>] [--into <b>] --title <t> [--summary <s>]",
+        summary: "ask for a review of a branch (the open one comes back when there is one)",
+        write: true,
+        schema: || schema_of::<review::RequestArgs>("review.request"),
+    },
+    Command {
+        name: "review.ls",
+        group: "review",
+        args: "[--state <s>] [--kind <k>]",
+        summary: "the project's review items",
+        write: false,
+        schema: || schema_of::<review::LsArgs>("review.ls"),
+    },
+    Command {
+        name: "review.show",
+        group: "review",
+        args: "<id>",
+        summary: "an item with its change list, decisions and comments (stale says a head moved)",
+        write: false,
+        schema: || schema_of::<review::IdArgs>("review.show"),
+    },
+    Command {
+        name: "review.refresh",
+        group: "review",
+        args: "<id>",
+        summary: "re-plan the change list at the current heads; decisions stay",
+        write: true,
+        schema: || schema_of::<review::IdArgs>("review.refresh"),
+    },
+    Command {
+        name: "review.comment",
+        group: "review",
+        args: "<id> <text> [--tx <txId>] [--at <t>]",
+        summary: "comment on an item, or on one of its transactions",
+        write: true,
+        schema: || schema_of::<review::CommentArgs>("review.comment"),
+    },
+    Command {
+        name: "review.decide",
+        group: "review",
+        args: "<id> (--accept <txId>… | --reject <txId>… | --pending <txId>…) [--reason <r>] [--request-changes] [--expect <json>]",
+        summary: "mark transactions; a rejection drops it from every merge (REVIEW_STALE if the heads moved)",
+        write: true,
+        schema: || schema_of::<review::DecideArgs>("review.decide"),
+    },
+    Command {
+        name: "review.merge",
+        group: "review",
+        args: "<id> [--accept-pending] [--expect <json>]",
+        summary: "merge only what was reviewed (REVIEW_UNDECIDED lists the pending, REVIEW_STALE a moved head)",
+        write: true,
+        schema: || schema_of::<review::MergeArgs>("review.merge"),
+    },
+    Command {
+        name: "review.close",
+        group: "review",
+        args: "<id> --rejected|--dismissed",
+        summary: "close an item without merging it",
+        write: true,
+        schema: || schema_of::<review::CloseArgs>("review.close"),
     },
     Command {
         name: "revert",
