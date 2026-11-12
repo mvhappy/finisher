@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // finisherd: serves `FinRpcs` over the local socket/pipe and a ticketed WebSocket.
-// Usage: node apps/finisherd/src/main.ts [serve] [--server-data <dir>]
+// Usage: node apps/finisherd/src/main.ts [serve] [--server-data <dir>] [--plugin-dir <dir>]
 //        node apps/finisherd/src/main.ts <command> …   (the owner's console, `console/main.ts`)
 // Serving logs to stderr only; stdout stays empty. Console commands answer on stdout.
 import { realpathSync } from "node:fs";
@@ -9,6 +9,7 @@ import { pathToFileURL } from "node:url";
 import { runMain } from "@effect/platform-node/NodeRuntime";
 import { Cause, Context, Deferred, Effect, Exit, Layer, Logger, Scope } from "effect";
 import {
+  type CliArgs,
   ensureServerData,
   parseArgs,
   cachedOrigins,
@@ -22,7 +23,7 @@ import { serverIdentity } from "@finisher/fin-node";
 import { canonicalEndpoint } from "./auth/crypto.ts";
 import { Handshake, HandshakeTag } from "./auth/handshake.ts";
 import { Credentials, CredentialsTag } from "./auth/credentials.ts";
-import { sweepExpired } from "./auth/revoke.ts";
+import { sweepEvery } from "./auth/revoke.ts";
 import { authDir, excludeFromBackups, KEY_FILES, KeysTag, rotateKeys, writeKeyFile } from "./auth/keys.ts";
 import { ConnectionRegistry, ConnectionRegistryTag, Connections, type ListenerRules, type Transport } from "./connections.ts";
 import { AuditTag, layerAudit } from "./control/audit.ts";
@@ -56,6 +57,8 @@ import { makePluginHost } from "./plugins/host/processes.ts";
 import { PluginCommandsTag, serverPluginCommands } from "./plugins/host/command-rpc.ts";
 import { pluginCallDeps } from "./plugins/host/serve.ts";
 import { PluginTables } from "./plugins/tables.ts";
+import { type DevPlugin, devPluginForRun } from "./plugins/host/dev.ts";
+import { approveDevPlugin, devRefused } from "./console/dev-plugin.ts";
 import { layerProjectRegistry, ProjectRegistry, type RegistryOptions } from "./projects.ts";
 import { registerMediaKinds } from "./jobs/kinds/media.look.ts";
 import { MAX_FRAME } from "./protocol.ts";
@@ -103,6 +106,8 @@ export interface ServeOptions {
   readonly agentListener?: Partial<Pick<ListenerRules, "handshakeTimeoutMs" | "maxConnections" | "maxUnproved">>;
   /** Called once both transports listen and `finisherd.json` is written. */
   readonly onReady?: (info: ServerInfo) => void;
+  /** Developer mode (sp8b Task 11): the plugin the person approved for this run. */
+  readonly dev?: DevPlugin;
 }
 
 /**
@@ -124,6 +129,7 @@ export const serve = ({
   jobs: jobOptions,
   remote: remoteOptions,
   onRemote,
+  dev,
 }: ServeOptions) =>
   Effect.scoped(
     Effect.gen(function* () {
@@ -194,6 +200,8 @@ export const serve = ({
       // the engine's other families (a restart reconciles jobs against them), then bound to it;
       // plugin commands (Task 9) are the enabled plugins' `commands`, run as `plugin.command` jobs.
       const pluginTables = new PluginTables(controlStore);
+      // Developer mode: an earlier run's `@dev` row goes; this run's, if any, until it stops.
+      yield* devPluginForRun(pluginTables, dev, (m) => logSink("warning", m));
       const pluginHost = makePluginHost({ serverData: realpathSync(serverData), control: controlStore, tables: pluginTables, audit: Context.get(control, AuditTag), log: (l, m) => logSink(l === "warning" || l === "error" ? "warning" : "debug", m) });
       const pluginCommands = serverPluginCommands({ serverData: realpathSync(serverData), tables: pluginTables, host: pluginHost });
       const register = (r: Parameters<typeof libraries.register>[0]) => {
@@ -309,23 +317,7 @@ export const serve = ({
         revoke: (ref: { kind: "agent" | "mcp"; id: string }) => credentials.markEnded(ref, "expired"),
         persist: () => credentials.persist(),
       };
-      // A busy store fails one sweep, never the timer: the next one tries again.
-      const sweep = () => {
-        try {
-          sweepExpired(revokeDeps, () => credentials.expired());
-        } catch (e) {
-          process.stderr.write(`finisherd: warning: credential expiry sweep failed: ${String(e)}\n`);
-        }
-      };
-      sweep();
-      yield* Effect.acquireRelease(
-        Effect.sync(() => {
-          const timer = setInterval(sweep, credentialOptions?.sweepMs ?? 60_000);
-          timer.unref();
-          return timer;
-        }),
-        (timer) => Effect.sync(() => clearInterval(timer)),
-      );
+      yield* sweepEvery(revokeDeps, () => credentials.expired(), credentialOptions?.sweepMs ?? 60_000);
       // 5B: routes, the environment, pairing, DPoP, device tokens and their HTTP routes.
       const { routes, environment, pairing, access } = yield* wireRemoteAccess({
         store: controlStore,
@@ -568,15 +560,23 @@ function main(argv: ReadonlyArray<string>): void {
     });
     return;
   }
-  let serverData: string;
+  let args: CliArgs;
   try {
-    ({ serverData } = parseArgs(argv[0] === "serve" ? argv.slice(1) : argv));
+    args = parseArgs(argv[0] === "serve" ? argv.slice(1) : argv);
   } catch (e) {
     process.stderr.write(`finisherd: ${(e as Error).message}\n`);
     process.exitCode = 2;
     return;
   }
-  const program = serve({ serverData }).pipe(
+  // Developer mode: the person approves the plugin's permissions here before anything starts.
+  void approveDevPlugin(args.pluginDir).then(
+    (dev) => start(serve({ serverData: args.serverData, ...(dev === undefined ? {} : { dev }) })),
+    (e: unknown) => void (process.exitCode = devRefused(e)),
+  );
+}
+
+function start(server: ReturnType<typeof serve>): void {
+  const program = server.pipe(
     Effect.catchCause((cause) =>
       Effect.sync(() => {
         if (Cause.hasInterruptsOnly(cause)) return;
