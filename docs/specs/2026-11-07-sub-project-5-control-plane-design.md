@@ -1343,7 +1343,6 @@ The numbers are the **plan's** Decision numbers, not §11's. **As built** = buil
 - **N4, a second `history.drop` audit row on an idempotent replay.** A `CommittedTx` does not say whether it was a replay, so a replayed `history.drop` writes another audit row; telling them apart needs a `replayed` flag from fin-store.
 - **Crash, then a source move, then an auto merge.** The path answers `replanNeeded` and leaves the item open with its transactions on the target until a person closes it (needs a head-hash read at a seq).
 - **`policyGuard` sets no credential.** Sub-project 10's caller must check revocation itself.
-- **Agent `archiveBranch`** (`agent/credentials.ts`, the branch of a session that failed to record) does not call the observer, so a `mergeConflict` item for it is not superseded.
 - **Re-derivation planning cost.** It plans every active agent branch on every load (at most 64 items are created per load), and `onOpened` is bound after `buildAgentRuntime`, so a project that agent recovery opens first is re-derived on its next load.
 - **Lineage scan cost for `droppedBy`.** Reading who dropped an origin reads the target's whole lineage once per decide call (O(n) on a long `main`), only when an accept lifts another's drop.
 - **Disclosure of other drops:** "another principal" is "a drop this review did not make", so an earlier review's drop or the same principal's own `history.drop` is listed and audited too.
@@ -1352,7 +1351,7 @@ The numbers are the **plan's** Decision numbers, not §11's. **As built** = buil
 
 **Follow-ups owed:**
 - Sub-project 10 records QA and critic verdicts in `review_verdicts`, flips `AUTO_MERGE_AVAILABLE` and wires a caller of `tryAutoMerge` (agent §6.5) passing the session id.
-- Sub-project 7 delivers `changesRequested` as a turn, and 7B adds `review.write` to its session credentials (`MODE_SCOPES` lack it).
+- Sub-project 7 delivers `changesRequested` as a turn. (7B Task 11 gave `draft` and `auto` sessions `review.write` and made the runtime's own branch archive tell `observeArchived`.)
 - Plan Task 13: the three-OS run, mixed versions on a shared folder, followers, and the measurements (`review_plan` and a limited merge on a 1,000-record branch, `review.get` from the cache and after a miss, `dropped_for` on a deep lineage).
 
 ---

@@ -26,12 +26,12 @@ import { type Applied, addUsage, approvalExpired, INLINE_MAX, invalid, outboxOf,
 import { sessionInsertArgs, sessionListQuery, toApproval, toNode, toRun, toSession, ZERO_USAGE } from "./store-rows.ts";
 import { SessionTxOutcomes } from "./store-outcomes.ts";
 import { SessionRollbacks } from "./store-rollback.ts";
-import { DbLedger, type SessionBranchState, type SessionTx, SessionStates, SessionTree, SessionTxs, type TxOutcome } from "./store-tables.ts";
+import { DbLedger, type SessionBranchState, SessionReviews, type SessionTx, SessionStates, SessionTree, SessionTxs, type TxOutcome } from "./store-tables.ts";
 
 export type { Appended, Applied, NewApproval, NewNode, NewSession, OutboxEffect, OutboxItem, Recovery, RunStart, SessionQuery } from "./store-rows.ts";
 export type { SessionBranchState, SessionTx, SessionTryRow, TxOutcome } from "./store-tables.ts";
 
-registerChain("agent", [...AGENT_MIGRATIONS], { formatVersion: 10, minReaderVersion: 8 });
+registerChain("agent", [...AGENT_MIGRATIONS], { formatVersion: 11, minReaderVersion: 8 });
 
 const DAY_MS = 86_400_000;
 /** `agents.retentionDays` default (Decision 4). */
@@ -56,6 +56,7 @@ export class AgentStore {
   readonly outcomes: SessionTxOutcomes; // every outcome of every agent transaction (Task 11)
   readonly tree: SessionTree; // parents, children, live counts (7B Task 6)
   readonly rollbacks: SessionRollbacks; // rolled-back runs' nodes (7B Task 8)
+  readonly reviews: SessionReviews; // the review items each session asked for (7B Task 11)
   #closed = 0; // synthetic results written since the store opened
   readonly root: string; // `<server-data>/agents`
 
@@ -70,6 +71,7 @@ export class AgentStore {
     this.outcomes = new SessionTxOutcomes(control);
     this.tree = new SessionTree(control);
     this.rollbacks = new SessionRollbacks(control);
+    this.reviews = new SessionReviews(control);
     this.#s = Object.fromEntries(Object.entries(STORE_SQL).map(([k, sql]) => [k, control.db.prepare(sql)]));
   }
 

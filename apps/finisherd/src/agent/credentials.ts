@@ -36,10 +36,12 @@ import { sessionAuthor } from "./reach.ts";
 import type { AgentStore, NewSession, OutboxItem } from "./store.ts";
 
 /**
- * The scopes of each mode (spec §6.1), as far as 7A has them: `jobs.submit` waits for 5C and
- * `review.write` for 5E, `auto`'s render and critic jobs for 5C and sub-project 10. `draft`
+ * The scopes of each mode (spec §6.1), as far as they are built: `jobs.submit` is a follow-up
+ * (5C-2 has landed), `auto`'s render and critic jobs wait for 6E and sub-project 10. `draft`
  * and `auto` hold `agent.run` (7B Decision 16): a session starts and drives its own children
- * only (`reach.ts`); a credential minted before 7B keeps its scopes, so it cannot spawn. No mode holds `project.create`, a human-only
+ * only (`reach.ts`); and `review.write` (7B Decision 25): it asks for a review of its branch
+ * (`review.request`), comments on and refreshes items (`review-link.ts`). A credential keeps
+ * the scopes it was minted with. No mode holds `project.create`, a human-only
  * scope, `branch.protected`, `review.decide`, `jobs.control`, `project.admin` or `fonts.fetch`;
  * `project.open` is refused to sessions by the chain (`reach.ts`). `diagnostics.record` lets
  * the session's `fin` record its own diagnostics, as every minted credential's default does.
@@ -48,7 +50,7 @@ export const MODE_SCOPES: { readonly [M in Mode]: ReadonlyArray<Scope> } = (() =
   // `agent.read` (7B Task 5): a session waits on and lists its own approval cards; every other
   // `agent.read` RPC stays people's (`SESSION_PEOPLE_READS`, `reach.ts`).
   const plan: ReadonlyArray<Scope> = ["server.read", "project.read", "library.read", "jobs.read", "diagnostics.read", "diagnostics.record", "agent.read"];
-  const draft: ReadonlyArray<Scope> = [...plan, "project.write", "agent.run"];
+  const draft: ReadonlyArray<Scope> = [...plan, "project.write", "agent.run", "review.write"];
   return { plan, draft, auto: draft };
 })();
 
@@ -296,15 +298,17 @@ export interface BranchRegistry {
 /**
  * `SessionBranchOps` over the project registry, as the starter: `meta` is the start call's actor
  * and the chain's guard (`{...actorFor(principal, headers), guard}`), so the root branch is
- * created exactly as the starter's own `branch.create` would be.
+ * created exactly as the starter's own `branch.create` would be. `archived`: told of each
+ * archive, as `branch.set`'s handler tells 5E's review workflow (its conflict items, 7B Task 11).
  */
-export function registryBranchOps(registry: BranchRegistry, meta: CallMeta): SessionBranchOps {
+export function registryBranchOps(registry: BranchRegistry, meta: CallMeta, archived?: (projectId: string, branch: string) => Effect.Effect<void>): SessionBranchOps {
   return {
     branches: (projectId) => Effect.map(registry.branches(projectId, true), (r) => r.branches),
     resolveBranch: (projectId, ref) => registry.resolveBranch(projectId, ref),
     createBranch: (projectId, req) =>
       Effect.map(registry.history(projectId, "branchCreate", { projectId, ...req }, meta), (r) => (r as BranchCreated).branch),
-    archiveBranch: (projectId, req) => registry.history(projectId, "branchSet", { projectId, ...req, archived: true }, meta),
+    archiveBranch: (projectId, req) =>
+      Effect.tap(registry.history(projectId, "branchSet", { projectId, ...req, archived: true }, meta), () => archived?.(projectId, req.branch) ?? Effect.void),
   };
 }
 
@@ -325,8 +329,8 @@ export interface OpenSession extends Omit<NewSession, "id" | "rootBranch" | "bas
    */
   readonly root?: string;
   /**
-   * A child's (7B Task 6): the parent's root branch (an id), whose name prefixes the new root's:
-   * `<parent root name>.<role>-<n>`.
+   * A branch (an id) whose name prefixes the new root's, `<its name>.<role>-<n>`: a child's
+   * parent root (7B Task 6), or the reviewed branch a critic's root is made under (Task 11).
    */
   readonly under?: string;
   readonly budget: BudgetSpec;
