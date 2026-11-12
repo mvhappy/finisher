@@ -6,7 +6,7 @@
 // through the `fin` binary, and asserts the subscriber saw every committed rev in order and
 // that its last rev equals `snapshot.get`'s. The server and the temp dir are always cleaned up.
 //
-// Usage: node scripts/e2e.mjs [--skip-build] [basic|storage|history|reel|diagnostics|plugins|auth|look|agent|library|sandbox|remote ...]  (default: every scenario)
+// Usage: node scripts/e2e.mjs [--skip-build] [basic|storage|history|reel|diagnostics|plugins|plugin-code|auth|look|agent|library|sandbox|remote ...]  (default: every scenario)
 //
 // Builds go to `CARGO_TARGET_DIR` when it is set (else `target/`), and so does the run's
 // `fin` and `fin-plugin`. Scenario temp dirs fall back to `/tmp` when `TMPDIR` is so deep that the
@@ -37,6 +37,14 @@
 // them by their root's hash, a person installs, `fin` and agents are refused, packs, fonts and
 // code plugins, widening updates, advisories, a `TUF_ROLLBACK`, trust kept on removal, the bundled
 // pack's owner switch across tampering, the journal's free-text grep and each step's audit row.
+//
+// The "plugin-code" scenario (scripts/e2e/plugin-code*.mjs) runs code plugins end to end (plan 8B
+// Task 18): both SDK examples and the test probe from a `fin-plugin` registry, installed and
+// enabled by a person, commands committed with `via` by the invoker, `fetch-title` through the
+// egress broker to a loopback origin (its test hooks: finisherd runs `plugin-code-server.mjs`) and
+// `EGRESS_PRIVATE_ADDRESS`, an agent session's reach, authority isolation of memory, temp and
+// pluginData between the person, an agent session and its child, the crash loop, disable,
+// `PLUGINS_UNCONFINED`'s count and the journal's free-text grep.
 //
 // The "auth" scenario (scripts/e2e/auth*.mjs) drives principals and credentials over `fin.sock` and
 // the ticketed WebSocket: an unproved connection, `fin` as `local`, the human-only refusals and the
@@ -88,6 +96,7 @@ import { run as runHistory } from "./e2e/history.mjs";
 import { run as runReel } from "./e2e/reel.mjs";
 import { run as runDiagnostics } from "./e2e/diagnostics.mjs";
 import { run as runPlugins } from "./e2e/plugins.mjs";
+import { run as runPluginCode } from "./e2e/plugin-code.mjs";
 import { run as runAuth } from "./e2e/auth.mjs";
 import { run as runLook } from "./e2e/look.mjs";
 import { run as runAgent } from "./e2e/agent.mjs";
@@ -102,13 +111,14 @@ export { parseFrames } from "./e2e/lib.mjs";
 export { checkRevs };
 
 const DEADLINE_MS = Number(process.env.E2E_DEADLINE_MS ?? 180_000);
-const SCENARIOS = { basic: runBasic, storage: runStorage, history: runHistory, reel: runReel, diagnostics: runDiagnostics, plugins: runPlugins, auth: runAuth, look: runLook, agent: runAgent, library: runLibrary, sandbox: runSandbox, remote: runRemote };
+const SCENARIOS = { basic: runBasic, storage: runStorage, history: runHistory, reel: runReel, diagnostics: runDiagnostics, plugins: runPlugins, "plugin-code": runPluginCode, auth: runAuth, look: runLook, agent: runAgent, library: runLibrary, sandbox: runSandbox, remote: runRemote };
 
 async function main(argv) {
   const names = argv.filter((a) => !a.startsWith("--"));
   if (!argv.includes("--skip-build")) {
     build("cargo", ["build", "--release", "-p", "fin"]);
     build("cargo", ["build", "--release", "-p", "fin-plugin-cli"]); // publisher tooling: the plugins scenario builds registries with it
+    if (names.length === 0 || names.includes("plugin-code")) build("cargo", ["build", "--release", "-p", "example-rust-tools", "--bin", "rust-tools"]); // the Rust example plugin
     build("pnpm", ["--filter", "@finisher/fin-node", "build"]);
     build("pnpm", ["--filter", "@finisher/fin-node", "build:test"]);
     if (names.length === 0 || names.includes("look") || names.includes("sandbox")) {

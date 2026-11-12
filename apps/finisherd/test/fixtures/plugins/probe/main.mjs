@@ -38,6 +38,8 @@ async function attempt(f) {
   }
 }
 
+/** The `marker` op's value in this process's memory. */
+let memoryMarker;
 /** Marks a `run` answer that is the job's error, not its result. */
 const FAIL = Symbol("fail");
 
@@ -95,6 +97,23 @@ async function run(job) {
       // `fail`: a `JobError` as JSON, sent as the job's error (the SDKs' wire form: `fix` in `details`).
       if (v.fail) return { [FAIL]: JSON.parse(v.fail) };
       return JSON.parse((v.out ?? '{"kind":"data","value":null}').replaceAll("$REV", String(rev)));
+    }
+    case "marker": {
+      // Authority isolation (Task 18): what this caller's process sees of a marker in memory, in
+      // its temp directory (`TMPDIR`) and in its `pluginData` (`PluginContext.dirs.data`), then,
+      // with `set`, stores `set` in all three. `say`: stderr lines first. No path is answered.
+      const { existsSync, readFileSync, writeFileSync } = await import("node:fs");
+      const { join } = await import("node:path");
+      for (const l of v.say ?? []) process.stderr.write(`${l}\n`);
+      const data = job.extra?.dirs?.data;
+      const files = { tmp: join(process.env.TMPDIR, "marker"), ...(data === undefined ? {} : { data: join(data, "marker") }) };
+      const read = (f) => (f !== undefined && existsSync(f) ? readFileSync(f, "utf8") : null);
+      const seen = { pid: process.pid, memory: memoryMarker ?? null, tmp: read(files.tmp), data: read(files.data), hasData: data !== undefined };
+      if (v.set) {
+        memoryMarker = v.set;
+        for (const f of Object.values(files)) writeFileSync(f, v.set);
+      }
+      return { kind: "data", value: seen };
     }
     case "echo":
       // A `plugin.command` run's arguments as its data (`fin`'s argument mapping, Task 10).

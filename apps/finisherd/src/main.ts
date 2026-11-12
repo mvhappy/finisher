@@ -13,7 +13,6 @@ import {
   parseArgs,
   cachedOrigins,
   removeServerInfo,
-  type ServerInfo,
   startFailure,
   socketPath,
   writeServerInfo,
@@ -25,7 +24,7 @@ import { Handshake, HandshakeTag } from "./auth/handshake.ts";
 import { Credentials, CredentialsTag } from "./auth/credentials.ts";
 import { sweepEvery } from "./auth/revoke.ts";
 import { authDir, excludeFromBackups, KEY_FILES, KeysTag, rotateKeys, writeKeyFile } from "./auth/keys.ts";
-import { ConnectionRegistry, ConnectionRegistryTag, Connections, type ListenerRules, type Transport } from "./connections.ts";
+import { ConnectionRegistry, ConnectionRegistryTag, Connections, type Transport } from "./connections.ts";
 import { AuditTag, layerAudit } from "./control/audit.ts";
 import { makeTickets, TicketsTag } from "./auth/tickets.ts";
 import { ControlStoreTag, layerControlStore } from "./control/db.ts";
@@ -41,14 +40,14 @@ import { journalVerdicts, OutcomeTracker } from "./agent/outcomes.ts";
 import { AgentJournal } from "./agent/journal.ts";
 import { SessionCredentials } from "./agent/credentials.ts";
 import { BranchLineage } from "./agent/reach.ts";
-import { layerFonts, type FontsOptions } from "./fonts.ts";
-import { Diagnostics, type DiagnosticsOptions, makeDiagnostics } from "./diagnostics.ts";
+import { layerFonts } from "./fonts.ts";
+import { Diagnostics, makeDiagnostics } from "./diagnostics.ts";
 import { withServerLock } from "./lock.ts";
 // Registers the `jobs` migration chain: imported before the control store opens.
 import "./jobs/store.ts";
 import { JobEventSinkTag } from "./jobs/events.ts";
 import { journalSink } from "./jobs/journal-sink.ts";
-import { JobEngineTag, type JobEngineOptions, layerJobEngine } from "./jobs/layer.ts";
+import { JobEngineTag, layerJobEngine } from "./jobs/layer.ts";
 import { LibrariesTag } from "./library/api.ts";
 import { CatalogsTag, layerCatalogs } from "./library/catalog/client.ts";
 import { LibraryServiceTag, librariesHolding, libraryWiring } from "./library/layer.ts";
@@ -57,9 +56,9 @@ import { makePluginHost } from "./plugins/host/processes.ts";
 import { PluginCommandsTag, serverPluginCommands } from "./plugins/host/command-rpc.ts";
 import { pluginCallDeps } from "./plugins/host/serve.ts";
 import { PluginTables } from "./plugins/tables.ts";
-import { type DevPlugin, devPluginForRun } from "./plugins/host/dev.ts";
+import { devPluginForRun } from "./plugins/host/dev.ts";
 import { approveDevPlugin, devRefused } from "./console/dev-plugin.ts";
-import { layerProjectRegistry, ProjectRegistry, type RegistryOptions } from "./projects.ts";
+import { layerProjectRegistry, ProjectRegistry } from "./projects.ts";
 import { registerMediaKinds } from "./jobs/kinds/media.look.ts";
 import { MAX_FRAME } from "./protocol.ts";
 import { claimSocketPath, makeLocalServer, serveRpc } from "./transport.ts";
@@ -76,39 +75,10 @@ import { ServerControlTag } from "./server-admin.ts";
 import { isServeCommand, runConsole } from "./console/main.ts";
 import { aclBroker, sweepAtStart } from "./sandbox/broker.ts";
 import { currentSandboxStatus, reporterFor, sandboxWarnings } from "./sandbox/status.ts";
-import { type AgentRuntimeParts, AgentRuntimeTag, type AgentServeOptions, buildAgentRuntime } from "./agent/wiring.ts";
+import { AgentRuntimeTag, buildAgentRuntime } from "./agent/wiring.ts";
 import { type AgentListener, agentConnections, agentEndpoint, makeAgentListener, makeAgentTcpServer, rateLimited } from "./agent/listener.ts";
-
-export interface ServeOptions {
-  readonly serverData: string;
-  readonly registry?: RegistryOptions;
-  readonly fonts?: FontsOptions;
-  readonly diagnostics?: DiagnosticsOptions;
-  /** Agent and MCP credentials (tests): the clock expiry reads and the sweep's period (60 s). */
-  readonly credentials?: { readonly clock?: () => number; readonly sweepMs?: number };
-  /** The agent runtime's shared pieces, handed to tests once built (7A-2). */
-  readonly onAgentCore?: (core: AgentCore) => void;
-  /** The agent runtime's options (tests: the fake harness's scripts) and its parts once booted. */
-  readonly agents?: AgentServeOptions;
-  readonly onAgentRuntime?: (parts: AgentRuntimeParts) => void;
-  /** The job engine's options (tests: the test kinds). */
-  readonly jobs?: JobEngineOptions;
-  /**
-   * The remote listener in tests (5B Decision 34): `forceTls` starts it on `listen` (e.g.
-   * `127.0.0.1:0`) whatever the settings say; `remoteOf` injects remote addresses.
-   */
-  readonly remote?: { readonly forceTls?: boolean; readonly listen?: string; readonly remoteOf?: (s: never) => string };
-  /** The remote listener, handed to tests once made. */
-  readonly onRemote?: (r: RemoteListener) => void;
-  /** The agent listener (plan 7C Task 6), handed to tests and the session wiring once built. */
-  readonly onAgentListener?: (listener: AgentListener) => void;
-  /** The agent listener's handshake timeout and connection cap (tests lower them). */
-  readonly agentListener?: Partial<Pick<ListenerRules, "handshakeTimeoutMs" | "maxConnections" | "maxUnproved">>;
-  /** Called once both transports listen and `finisherd.json` is written. */
-  readonly onReady?: (info: ServerInfo) => void;
-  /** Developer mode (sp8b Task 11): the plugin the person approved for this run. */
-  readonly dev?: DevPlugin;
-}
+import type { ServeOptions } from "./serve-options.ts";
+export type { ServeOptions };
 
 /**
  * Runs the server until interrupted or `server.stop`; finalizers stop the transports, close
@@ -130,6 +100,7 @@ export const serve = ({
   remote: remoteOptions,
   onRemote,
   dev,
+  plugins: pluginOptions,
 }: ServeOptions) =>
   Effect.scoped(
     Effect.gen(function* () {
@@ -202,7 +173,7 @@ export const serve = ({
       const pluginTables = new PluginTables(controlStore);
       // Developer mode: an earlier run's `@dev` row goes; this run's, if any, until it stops.
       yield* devPluginForRun(pluginTables, dev, (m) => logSink("warning", m), Context.get(control, AuditTag));
-      const pluginHost = makePluginHost({ serverData: realpathSync(serverData), control: controlStore, tables: pluginTables, audit: Context.get(control, AuditTag), journal: diagnostics.journal, log: (l, m) => logSink(l === "warning" || l === "error" ? "warning" : "debug", m) });
+      const pluginHost = makePluginHost({ serverData: realpathSync(serverData), control: controlStore, tables: pluginTables, audit: Context.get(control, AuditTag), journal: diagnostics.journal, log: (l, m) => logSink(l === "warning" || l === "error" ? "warning" : "debug", m), ...(pluginOptions?.egress === undefined ? {} : { egressHooks: pluginOptions.egress }) });
       const pluginCommands = serverPluginCommands({ serverData: realpathSync(serverData), tables: pluginTables, host: pluginHost });
       const register = (r: Parameters<typeof libraries.register>[0]) => {
         pluginHost.register(r);
@@ -575,7 +546,7 @@ function main(argv: ReadonlyArray<string>): void {
   );
 }
 
-function start(server: ReturnType<typeof serve>): void {
+export function start(server: ReturnType<typeof serve>): void {
   const program = server.pipe(
     Effect.catchCause((cause) =>
       Effect.sync(() => {
