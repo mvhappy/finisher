@@ -38,6 +38,14 @@ pub const DENIED_CODES: &[&str] = &[
     // A plugin call or commit whose permission the job's rights (invoker ∩ grants) lack
     // (8B Task 6; `details.perm`).
     "PLUGIN_PERMISSION_DENIED",
+    // Plugin egress (8B Task 8, spec §9.3): an origin the plugin was not approved for
+    // (`details.origin`), a scheme other than HTTPS, a name or literal that is (or resolves to)
+    // a private, loopback, link-local, CGNAT, multicast or unspecified address, a request naming
+    // a secret grant (no injection before 8G; `details.name`).
+    "EGRESS_DENIED",
+    "EGRESS_NOT_HTTPS",
+    "EGRESS_PRIVATE_ADDRESS",
+    "SECRET_MISSING",
     // Agent sessions (7A-2 Task 6b): a session's token, money or wall-clock budget is used up
     // (`details.kind`, `used`, `limit`); a person raises it (`finisherd agent approve`).
     "BUDGET_EXCEEDED",
@@ -142,6 +150,9 @@ pub(super) const VALIDATION_CODES: &[&str] = &[
     // The built-in agent's workspace tools (7A-2 Task 8b): a file that would pass the per-file
     // cap; a file `workspace_write {mode: create}` finds already there.
     "FILE_TOO_LARGE",
+    // A plugin's request body over 768,000 bytes, a response over 64 MiB, or a job holding too
+    // many bodies (8B Task 8; `details.what`, `limit`).
+    "EGRESS_TOO_LARGE",
     "ALREADY_EXISTS",
     // The secret store (7A Task 5): no key with that id; a value it will not store (empty,
     // too long, not text); a store file that does not parse; a store folder or file that is not
@@ -469,6 +480,11 @@ pub(super) const UNAVAILABLE_CODES: &[&str] = &[
     // A plugin call from a process whose authority key was retired by a policy generation
     // change (sp8b Task 7, spec §3.3): run the command again, it starts under the new key.
     "PLUGIN_AUTHORITY_RETIRED",
+    // Plugin egress (8B Task 8): the 120 s cap, the plugin's 10 requests a second
+    // (`details.retryAfterMs`), a name that does not resolve or an origin that does not answer.
+    "EGRESS_TIMEOUT",
+    "EGRESS_RATE_LIMITED",
+    "EGRESS_UNREACHABLE",
     "TOO_MANY_PLANS",
     "TOO_MANY_SUGGESTIONS",
     // Libraries (5D Decision 51): a library offline or paused, a root that cannot be read, a

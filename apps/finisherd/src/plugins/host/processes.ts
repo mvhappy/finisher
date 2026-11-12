@@ -32,7 +32,8 @@ import { type Authority, type AuthorityGenerations, authorityOfWarmKey, classSlu
 import { pluginDataFor } from "./family.ts";
 import { type CallDeps, makeHostCalls, PAGE_BYTES } from "./calls.ts";
 import { bareKey, keyTmpDir, pluginWarmKey, principalClass, sessionRoots } from "./keys.ts";
-import { makePluginLog, type ServerLog } from "./log.ts";
+import { type EgressTestHooks, makeEgress } from "./egress.ts";
+import { makePluginLog, scrubLogText, type ServerLog } from "./log.ts";
 import { splitVia, storeDirOf } from "./program.ts";
 import type { JobRights, Permission, PluginContext } from "@finisher/core-types";
 import { type Invoker, rightsFor } from "./rights.ts";
@@ -69,6 +70,8 @@ export interface PluginHostDeps {
   readonly drainMs?: number;
   /** The server log plugins' `log` calls and stderr go to (Task 7); stderr of the host otherwise. */
   readonly log?: ServerLog;
+  /** The broker's test hooks (`egress-test-hooks.ts`; refused outside a test-hooks build). */
+  readonly egressHooks?: EgressTestHooks;
 }
 
 /** 5C's envelope line (Decision 5). */
@@ -98,7 +101,11 @@ export function makePluginHost(d: PluginHostDeps) {
     clock,
     bundled: (id) => d.tables.installedFull(id)?.source === "bundled",
   });
-  const calls = makeHostCalls({ deps: () => callDeps, keyNow: warmKeyOf, coldKey: (job) => cold.get(job)?.key, log: pluginLog });
+  const serverLog: ServerLog = d.log ?? ((level, message) => void process.stderr.write(`finisherd: ${level}: ${message}\n`));
+  // Refusals go to the server log under the plugin's keyed id, scrubbed (never to the journal).
+  const egressLog = (plugin: string, message: string): void => serverLog("warning", `[${pluginLog.name(plugin)}] ${scrubLogText(message)}`);
+  const egress = makeEgress({ log: egressLog, ...(d.egressHooks === undefined ? {} : { hooks: d.egressHooks }) });
+  const calls = makeHostCalls({ deps: () => callDeps, keyNow: warmKeyOf, coldKey: (job) => cold.get(job)?.key, log: pluginLog, egress });
   const onStderr = (line: string, from: { readonly job?: string; readonly key?: string }): void => {
     const plugin = from.key !== undefined ? (keyPlugin(from.key).split("|")[0] ?? "") : (cold.get(from.job ?? "")?.plugin ?? "");
     pluginLog.stderr(from.key ?? `job:${from.job ?? ""}`, plugin, line);
@@ -317,6 +324,8 @@ export function makePluginHost(d: PluginHostDeps) {
     },
     /** The host calls (tests). */
     calls,
+    /** The egress broker: its per-plugin counters feed `plugin.stats` (Task 15). */
+    egress,
     /**
      * `start.extra`'s `PluginContext` for `job` (Task 9's kind puts it in): the plugin, its
      * grants, its package, the caller's `pluginData` (with `fs pluginData`) and the key's temp.
