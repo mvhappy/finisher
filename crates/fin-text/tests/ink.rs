@@ -1,6 +1,6 @@
 //! Ink boxes (generated fonts; always run): line and word boxes and the overflow check come
-//! from the glyphs' positioned outlines, not their advances; the direction mark that forces a
-//! line's paragraph direction moves nothing, whatever the letter spacing.
+//! from the glyphs' positioned outlines, not their advances (review #57); the direction mark
+//! that forces a line's paragraph direction moves nothing, whatever the letter spacing (#56).
 //!
 //! At 100 px one font unit is 0.1 px. `TestSans` `W` advances 800 units, drawn 50..750;
 //! a `TestRtl` letter advances 600, drawn 50..550; `TestOverhang` is described in
@@ -61,6 +61,136 @@ fn pen(align: Align, advance: f64, max: f64) -> f64 {
         Align::Center => (max - advance) / 2.0,
         Align::Right => max - advance,
     }
+}
+
+const ALIGNS: [Align; 3] = [Align::Left, Align::Center, Align::Right];
+
+/// One glyph, any tracking, any alignment: it sits exactly where it would with no direction
+/// mark in front of it. The line is the glyph's advance plus the tracking after it; the ink is
+/// the outline at the pen. Only a right-aligned glyph whose negative tracking eats its right
+/// side bearing reaches past the box (the outline is really drawn there).
+#[test]
+fn tracking_gives_the_direction_mark_no_advance() {
+    let (m, sans) = font(tf::test_sans());
+    for tracking in [-0.1, 0.0, 0.1] {
+        for align in ALIGNS {
+            let mut r = req(&sans, &["W"], 100.0, Some(972.0));
+            r.style.letter_spacing = tracking;
+            r.style.align = align;
+            let l = layout(&m, &r);
+            let x = pen(align, 80.0 + 100.0 * tracking, 972.0) + 5.0;
+            let what = format!("tracking {tracking}, {align:?}: {l:?}");
+            assert_eq!(line_px(&l), (x, 70.0), "{what}");
+            assert_eq!(
+                (l.words[0].x, l.words[0].width),
+                (l.lines[0].x, l.lines[0].width)
+            );
+            assert_eq!(l.overflow, x + 70.0 > 972.0, "{what}");
+        }
+    }
+}
+
+/// A Hebrew line in a Latin paragraph is shaped behind an LRM: the mark moves nothing.
+#[test]
+fn tracking_gives_a_needed_lrm_no_advance() {
+    let mut bytes = MapBytes::default();
+    let (sans, rtl) = (tf::test_sans(), tf::test_rtl());
+    let faces = vec![
+        face_ref(&bytes.add(sans.clone()), &sans, 0),
+        face_ref(&bytes.add(rtl.clone()), &rtl, 0),
+    ];
+    let m = Measurer::new(Arc::new(bytes));
+    for tracking in [-0.1, 0.1] {
+        for align in ALIGNS {
+            let mut r = req(&faces[0], &["Wa", "א"], 100.0, Some(150.0));
+            r.faces = faces.clone();
+            r.style.letter_spacing = tracking;
+            r.style.align = align;
+            let l = layout(&m, &r);
+            assert_eq!(l.lines.len(), 2, "{l:?}");
+            assert!(!l.lines[1].rtl);
+            let x = pen(align, 60.0 + 100.0 * tracking, 150.0) + 5.0;
+            let line = &l.lines[1];
+            let got = (f64::from(line.x) / 64.0, f64::from(line.width) / 64.0);
+            assert_eq!(got, (x, 50.0), "tracking {tracking}, {align:?}: {l:?}");
+        }
+    }
+}
+
+/// The reviewer's case: a left-aligned `W` with −0.1 em tracking fits its box.
+#[test]
+fn negative_tracking_left_aligned_fits() {
+    let (m, sans) = font(tf::test_sans());
+    let mut r = req(&sans, &["W"], 100.0, Some(972.0));
+    r.style.letter_spacing = -0.1;
+    let l = layout(&m, &r);
+    assert_eq!(line_px(&l), (5.0, 70.0));
+    assert!(!l.overflow, "{l:?}");
+}
+
+/// The same for a right-to-left line (shaped behind an RLM): the letter's origin is the
+/// left end of its tracked advance.
+#[test]
+fn tracking_gives_the_rtl_mark_no_advance() {
+    let (m, rtl) = font(tf::test_rtl());
+    for tracking in [-0.1, 0.0, 0.1] {
+        for align in ALIGNS {
+            let mut r = req(&rtl, &["א"], 100.0, Some(972.0));
+            r.style.letter_spacing = tracking;
+            r.style.align = align;
+            let l = layout(&m, &r);
+            assert!(l.lines[0].rtl);
+            let x = pen(align, 60.0 + 100.0 * tracking, 972.0) + 5.0;
+            assert_eq!(
+                line_px(&l),
+                (x, 50.0),
+                "tracking {tracking}, {align:?}: {l:?}"
+            );
+            assert_eq!(l.overflow, x + 50.0 > 972.0);
+        }
+    }
+    // A Latin line in a Hebrew paragraph is shaped behind an RLM (its own first strong
+    // character is left-to-right): the mark moves nothing there either.
+    let mut bytes = MapBytes::default();
+    let (rtl_data, sans_data) = (tf::test_rtl(), tf::test_sans());
+    let faces = vec![
+        face_ref(&bytes.add(rtl_data.clone()), &rtl_data, 0),
+        face_ref(&bytes.add(sans_data.clone()), &sans_data, 0),
+    ];
+    let both = Measurer::new(Arc::new(bytes));
+    for tracking in [-0.1, 0.1] {
+        for align in ALIGNS {
+            let mut r = req(&faces[0], &["אבג", "W"], 100.0, Some(200.0));
+            r.faces = faces.clone();
+            r.style.letter_spacing = tracking;
+            r.style.align = align;
+            let l = layout(&both, &r);
+            assert_eq!(l.lines.len(), 2, "{l:?}");
+            assert!(l.lines[1].rtl);
+            let x = pen(align, 80.0 + 100.0 * tracking, 200.0) + 5.0;
+            let line = &l.lines[1];
+            let got = (f64::from(line.x) / 64.0, f64::from(line.width) / 64.0);
+            assert_eq!(got, (x, 70.0), "tracking {tracking}, {align:?}: {l:?}");
+        }
+    }
+    // Two words keep the paragraph's order with tracking too.
+    let mut r = req(&rtl, &["אב", "גד"], 100.0, None);
+    r.style.letter_spacing = -0.1;
+    let l = layout(&m, &r);
+    assert!(l.words[0].x > l.words[1].x, "{l:?}");
+}
+
+/// A line needs no direction mark when its own first strong character already gives the
+/// paragraph's direction, so nothing synthetic sits in front of its glyphs: a word that starts
+/// with a combining mark keeps the mark where the font draws it (−35..−15 px), not shifted by
+/// fallback positioning against a hidden mark glyph.
+#[test]
+fn leading_combining_mark_has_no_synthetic_base() {
+    let (m, f) = font(tf::test_overhang());
+    let l = layout(&m, &req(&f, &["\u{301}a"], 100.0, None));
+    // The mark −35..−15, then `a` (pen 0) 5..45.
+    assert_eq!(line_px(&l), (-35.0, 80.0), "{l:?}");
+    assert!(layout(&m, &req(&f, &["\u{301}a"], 100.0, Some(100.0))).overflow);
 }
 
 /// The reviewer's case: `W` advances 20 px but is drawn 5..75 px.

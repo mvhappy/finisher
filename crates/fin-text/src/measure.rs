@@ -7,9 +7,12 @@
 //! its own and overflows.
 //!
 //! **Bidi.** The paragraph direction comes from the whole paragraph (UAX #9 P2–P3, first
-//! strong character); each line is shaped behind a mark (LRM or RLM) forcing that direction,
-//! so a line that starts with a run of the other direction keeps the paragraph's order. The
-//! mark's own glyphs are ignored.
+//! strong character). A line whose own first strong character gives the other direction (or
+//! none, in a right-to-left paragraph) is shaped behind a mark (LRM or RLM) forcing the
+//! paragraph's, so it keeps the paragraph's order. The mark moves nothing: it takes no letter
+//! spacing (its advance stays zero, so neither the pen nor the alignment width shifts), and
+//! its own glyphs are ignored. A line that needs no mark gets none, so nothing synthetic sits
+//! in front of its glyphs (a leading combining mark is not positioned against it).
 //!
 //! **Ink.** Glyphs are placed by their advances (and shaping offsets), but every reported
 //! box is ink: the union of the placed glyphs' outline extents ([`crate::ink`]), side
@@ -133,14 +136,26 @@ fn paragraph_rtl(words: &[String]) -> bool {
 
 struct Shaper<'a> {
     req: &'a TextRequest,
-    mark: &'static str,
+    /// The paragraph's direction.
+    rtl: bool,
     metrics: Metrics,
     max: Option<i32>,
 }
 
 impl Shaper<'_> {
+    /// The mark forcing the paragraph's direction on a line of `words`, or `""` when the
+    /// line's own first strong character already gives it.
+    fn mark(&self, words: &[String]) -> &'static str {
+        match (self.rtl, paragraph_rtl(words)) {
+            (false, false) | (true, true) => "",
+            (false, true) => LRM,
+            (true, false) => RLM,
+        }
+    }
+
     fn shape(&self, sys: &mut System, words: Range<usize>) -> Line {
-        let mut text = String::from(self.mark);
+        let mark = self.mark(&self.req.words[words.clone()]);
+        let mut text = String::from(mark);
         let mut ranges = Vec::with_capacity(words.len());
         for (k, w) in self.req.words[words.clone()].iter().enumerate() {
             if k > 0 {
@@ -155,11 +170,14 @@ impl Shaper<'_> {
         buffer.set_wrap(Wrap::None);
         buffer.set_hinting(Hinting::Disabled);
         buffer.set_size(self.req.max_width.map(|w| w as f32), None);
-        let attrs = Attrs::new()
+        let plain = Attrs::new()
             .family(Family::Name(sys.primary))
-            .weight(Weight(st.weight))
-            .letter_spacing(st.letter_spacing as f32);
-        buffer.set_text(&text, &attrs, Shaping::Advanced, Some(align(st.align)));
+            .weight(Weight(st.weight));
+        let attrs = plain.clone().letter_spacing(st.letter_spacing as f32);
+        // The mark is its own span without letter spacing (cosmic-text adds the spacing to
+        // every glyph's advance, the mark's hidden glyph included).
+        let spans = [(mark, plain), (&text[mark.len()..], attrs.clone())];
+        buffer.set_rich_text(spans, &attrs, Shaping::Advanced, Some(align(st.align)));
         buffer.shape_until_scroll(&mut sys.fs, false);
 
         let mut line = Line {
@@ -173,7 +191,7 @@ impl Shaper<'_> {
         };
         let (mut ink, mut pen) = (Span::EMPTY, Span::EMPTY);
         let mut spans = vec![(Span::EMPTY, Span::EMPTY); words.len()];
-        let lead = self.mark.len();
+        let lead = mark.len();
         for run in buffer.layout_runs() {
             line.baseline = to_64(run.line_y);
             for g in run.glyphs {
@@ -260,7 +278,7 @@ pub(crate) fn layout(sys: &mut System, req: &TextRequest) -> TextLayout {
     let rtl = paragraph_rtl(&req.words);
     let shaper = Shaper {
         req,
-        mark: if rtl { RLM } else { LRM },
+        rtl,
         metrics: Metrics::new(st.size as f32, line_px),
         max: req.max_width.map(|w| to_64(w as f32)),
     };
