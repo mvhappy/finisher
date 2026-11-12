@@ -7,8 +7,8 @@ mod integration_support;
 
 use fin_core::{CommittedTx, CoreError, Op, SCHEMA_VERSION, Tx};
 use fin_store::{
-    BranchCreate, BranchSet, CheckpointReq, CherryPickReq, HistoryReq, MAIN, MergeReq, RecoverReq,
-    RecoverSel, RevertReq, Store, StoreError, WriteGuard,
+    BranchCreate, BranchSet, CheckpointReq, CherryPickReq, DropReq, HistoryReq, MAIN, MergeReq,
+    RecoverReq, RecoverSel, RevertReq, Store, StoreError, WriteGuard,
 };
 use integration_support::diverge::*;
 use integration_support::*;
@@ -541,4 +541,84 @@ fn end_credential_waits_for_writes_in_flight() {
         at_end,
         "nothing landed after end_credential returned"
     );
+}
+
+/// 5E Decision 16: a protected branch (the policy stage's `denyBranches`, by id) stays
+/// protected when it is renamed between the policy stage and the write: every write path
+/// that names it by its new name (a commit, a merge or a drop into it, a checkpoint, an
+/// archive) is `BRANCH_PROTECTED` inside the transaction and writes nothing, while a write
+/// to the branch that took its old name goes through under the same guard. (`main` itself
+/// cannot be renamed or archived: `INVALID_OP`.)
+#[test]
+fn deny_branches_hold_through_a_rename_between_check_and_write() {
+    let e = env();
+    let (mut s, feature, other) = project(&e);
+    // The policy stage resolves `other` and protects it by id.
+    assert_eq!(s.resolve_branch("other").unwrap(), other);
+    let guard = deny(&[MAIN, &other]);
+    // Then it is renamed, and `feature` takes its old name.
+    s.set_branch(set("rn1", &other, Some("release"), None))
+        .unwrap();
+    s.set_branch(set("rn2", &feature, Some("other"), None))
+        .unwrap();
+    let check = |e: CoreError, what: &str| {
+        assert_eq!(e.code, "BRANCH_PROTECTED", "{what}: {e:?}");
+        assert_eq!(e.details["branch"], other.as_str(), "{what}");
+        assert_eq!(e.details["name"], "release", "{what}");
+    };
+    let e = refused(&mut s, guard.clone(), &mut |s: &mut Store| {
+        let tx = tx_on(s, "w1", "release", vec![insert(20, "a1")]);
+        s.commit(tx)
+    });
+    check(e, "commit");
+    let e = refused(&mut s, guard.clone(), &mut |s: &mut Store| {
+        s.merge(merge(&feature, "release"))
+    });
+    check(e, "merge");
+    let e = refused(&mut s, guard.clone(), &mut |s: &mut Store| {
+        s.drop(DropReq {
+            tx_id: "d1".into(),
+            author: "test".into(),
+            into: "release".into(),
+            from: feature.clone(),
+            drops: vec!["f1".into()],
+            undrops: vec![],
+            dry_run: false,
+            args_hash: None,
+        })
+    });
+    check(e, "drop");
+    let e = refused(&mut s, guard.clone(), &mut |s: &mut Store| {
+        s.checkpoint(CheckpointReq {
+            tx_id: "cp1".into(),
+            author: "test".into(),
+            branch: "release".into(),
+            name: "mark".into(),
+            dry_run: false,
+            args_hash: None,
+        })
+    });
+    check(e, "checkpoint");
+    let e = refused(&mut s, guard.clone(), &mut |s: &mut Store| {
+        s.set_branch(set("ar1", "release", None, Some(true)))
+    });
+    check(e, "archive");
+    // `main` is protected the same way, whatever names the others have.
+    let e = refused(&mut s, guard.clone(), &mut |s: &mut Store| {
+        s.drop(DropReq {
+            tx_id: "d2".into(),
+            author: "test".into(),
+            into: MAIN.into(),
+            from: feature.clone(),
+            drops: vec!["f1".into()],
+            undrops: vec![],
+            dry_run: false,
+            args_hash: None,
+        })
+    });
+    assert_eq!(e.code, "BRANCH_PROTECTED", "{e:?}");
+    // `other` now names `feature`, which the guard does not protect.
+    let tx = tx_on(&s, "w2", "other", vec![insert(20, "a1")]);
+    let c = s.with_guard(guard, |s| s.commit(tx)).unwrap();
+    assert_eq!(c.tx.branch, feature);
 }

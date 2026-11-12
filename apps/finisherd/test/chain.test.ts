@@ -319,8 +319,9 @@ describe("the chain", () => {
         expect(code(await h.call("tx.commit", commit(ref))), `${limit} ${ref}`).toBeUndefined();
       }
       expect(code(await h.call("tx.commit", commit("main")))).toBe("BRANCH_NOT_ALLOWED");
-      // The handler gets the ids the store must re-check inside its write transaction.
-      for (const s of h.seen) expect(chainOf(s.options)?.guard).toEqual({ denyBranches: [], allowBranches: ["br3"], credential: "agent:01agent000000000000000000a" });
+      // The handler gets the ids the store must re-check inside its write transaction (and,
+      // without `branch.protected`, the protected ones it may never change: 5E Decision 16).
+      for (const s of h.seen) expect(chainOf(s.options)?.guard).toEqual({ denyBranches: ["main"], allowBranches: ["br3"], credential: "agent:01agent000000000000000000a" });
     }
   });
 

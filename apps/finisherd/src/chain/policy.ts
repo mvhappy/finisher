@@ -1,13 +1,14 @@
 // Stage 5 of the chain (spec §4.4, plan 5A Decision 16): rules that see the resolved request and
-// answer `allow | deny | ask`. 5A ships one, agent branch limits; 5E adds protected branches
-// (filling the guard's `denyBranches`), sub-project 7 command rules and hooks. The outcome's
+// answer `allow | deny | ask`. 5A ships agent branch limits; 5E adds protected branches
+// (`protected.ts`, filling the guard's `denyBranches`); sub-project 7 command rules and hooks. The outcome's
 // guard goes with every write into `fin-node`, which checks it again inside the store's write
 // transaction (Decision 17).
 import type { FinError, FinRpcTag, Principal, RpcRule, RuleLayer } from "@finisher/contracts";
 import type { WriteGuard } from "@finisher/core-types";
 import { Effect } from "effect";
 import { branchNotAllowed } from "./fixes.ts";
-import { type ChainProjects, resolveWrites } from "./resolve.ts";
+import { protectedBranches } from "./protected.ts";
+import { type ChainProjects, type ChainReviews, resolveWrites } from "./resolve.ts";
 
 /**
  * An `ask`: why, and for a command rule (sub-project 7B) the command it decided on and the rule
@@ -37,6 +38,8 @@ export interface PolicyInput {
   readonly projectIds?: ReadonlyArray<string>;
   /** The call's headers (`fin-actor-call`: the `FIN_CALL` a grant is consumed for). */
   readonly headers?: unknown;
+  /** The reviews store's reads (5E): a project's protected branch ids; none, the default policy's. */
+  readonly reviews?: ChainReviews | undefined;
 }
 
 /** A rule's answer; `undefined`: no opinion. A `deny` or `ask` ends the stage. */
@@ -109,7 +112,8 @@ export const agentBranchLimitsExcept = (skip: (p: Principal) => boolean): Policy
     return { allow: true, guard: { denyBranches: [], allowBranches: [...allowed] } } satisfies Outcome;
   });
 
-export const DEFAULT_POLICIES: ReadonlyArray<PolicyRule> = [agentBranchLimits];
+/** Agent branch limits, then protected branches (5E Decision 16). */
+export const DEFAULT_POLICIES: ReadonlyArray<PolicyRule> = [agentBranchLimits, protectedBranches];
 
 /**
  * Runs `rules` in order: the first `deny` or `ask` wins (giving back what earlier allows took,

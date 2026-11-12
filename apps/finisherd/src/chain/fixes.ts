@@ -94,6 +94,16 @@ export function branchNotAllowed(tag: string, branch: string): FinError {
   );
 }
 
+/** A write into a protected branch from a principal without the scope that reaches it (5E Decision 16). */
+export function branchProtected(tag: string, branch: string): FinError {
+  return finError(
+    "BRANCH_PROTECTED",
+    `${tag}: branch ${branch} is protected`,
+    { tag, branch },
+    "This branch is protected: a person reviews these changes and merges them. Write to another branch and ask for a review.",
+  );
+}
+
 export function approvalRequired(tag: string, approvalId: string, reason: string): FinError {
   return finError(
     "APPROVAL_REQUIRED",

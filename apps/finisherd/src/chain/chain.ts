@@ -4,7 +4,8 @@
 //   2. authenticate: anything but the public RPCs from `anonymous` is `UNAUTHENTICATED`;
 //   3. resolve (`resolve.ts`): projects, directories and paths become current facts;
 //   4. authorise (`authorize.ts`): scopes (all), human-only, reach;
-//   5. policy (`policy.ts`): branch write targets resolved through the store, then
+//   5. policy (`policy.ts`): a write takes its project's policy gate shared (5E,
+//      `reviews/gate.ts`) and holds it to its answer; branch write targets resolved through the store, then
 //      `allow {guard} | deny | ask` (`ask` answers `APPROVAL_REQUIRED {approvalId}`; an agent
 //      session's rule ask is durable instead, `APPROVAL_PENDING`, through `agentAsk`); then a
 //      `console` principal's mutating human-only call, and a `device`'s `server.stop` (5B),
@@ -43,6 +44,7 @@ import type { ChainHooks } from "./hooks.ts";
 import { approvalRequired, outOfReach } from "./fixes.ts";
 import { type Ask, authorOf, branchLimited, DEFAULT_POLICIES, type PolicyInput, type PolicyRule, runPolicies, stampsAuthor } from "./policy.ts";
 import { type ChainJobs, type ChainProjects, type ChainReviews, resolve } from "./resolve.ts";
+import type { PolicyGate } from "../reviews/gate.ts";
 
 export type { Ask, Outcome, PolicyRule } from "./policy.ts";
 
@@ -131,6 +133,12 @@ export interface ChainDeps {
   readonly jobs?: ChainJobs;
   /** The reviews store's reads, for the `review` resolver and protected branches (5E). */
   readonly reviews?: ChainReviews;
+  /**
+   * The per-project policy gate (5E Decision 18): every write (a rule with `writes` or
+   * `targets`) holds it shared from the policy stage to its answer, so a policy write (which
+   * holds it exclusive) never lands between a write's check and its commit. None: no gate.
+   */
+  readonly gate?: PolicyGate;
   readonly audit?: Audit;
   /** Counts a unary refusal in `rpc.stats`. */
   readonly timed?: <A>(tag: string, self: Effect.Effect<A, FinError>) => Effect.Effect<A, FinError>;
@@ -247,7 +255,13 @@ export function withChain<H extends object>(handlers: H, deps: ChainDeps): H {
       if (credentialOf(principal) !== undefined) deps.touch?.(principal);
       const resolved = yield* resolve(rule, payload, deps.projects, { principal, jobs: deps.jobs, reviews: deps.reviews });
       yield* authorize(tag, principal, payload, resolved, deps.projects, hooks);
-      const input: PolicyInput = { tag, rule, principal, payload: resolved.payload, projects: deps.projects, projectIds: resolved.projects, headers };
+      // The policy gate, held until the call is answered (the scope `withChain` closes).
+      const gated = (resolved.payload as { projectId?: unknown } | null)?.projectId;
+      if (deps.gate !== undefined && (rule.writes !== undefined || rule.targets !== undefined) && typeof gated === "string") {
+        const gate = deps.gate;
+        yield* Effect.acquireRelease(gate.acquireShared(gated), (release) => Effect.sync(release));
+      }
+      const input: PolicyInput = { tag, rule, principal, payload: resolved.payload, projects: deps.projects, projectIds: resolved.projects, headers, reviews: deps.reviews };
       const outcome = yield* runPolicies(policies, input);
       if ("deny" in outcome) return yield* Effect.fail(outcome.deny);
       if ("ask" in outcome) {
@@ -316,8 +330,10 @@ export function withChain<H extends object>(handlers: H, deps: ChainDeps): H {
       continue;
     }
     out[tag] = (payload, options) =>
-      Effect.flatMap(counted(tag, payload, options.client.id, options.headers), (c) =>
-        Effect.flatMap(undoing(c, handler(c.payload, optionsOf(options, c)) as Effect.Effect<unknown, FinError>), after(tag, c, options.headers)),
+      Effect.scoped(
+        Effect.flatMap(counted(tag, payload, options.client.id, options.headers), (c) =>
+          Effect.flatMap(undoing(c, handler(c.payload, optionsOf(options, c)) as Effect.Effect<unknown, FinError>), after(tag, c, options.headers)),
+        ),
       );
   }
   return out as H;
