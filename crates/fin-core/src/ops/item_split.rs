@@ -5,11 +5,18 @@
 //! or graphic's source moves by `offset`, a clip's times its speed) and gets no link group (a split
 //! of a linked item splits that item only, Decision 17). Its id is the op's one allocation.
 //!
+//! Audio fades are restricted to each part ([`fades`], spec §5.13, review #55), so the gain
+//! envelope is unchanged at every time: a part a fade's window does not reach drops it, a part
+//! it reaches keeps it with its offset advanced by how far the part's edge lies from the
+//! original one. The left part's changed fades are recorded as its `audio.fade*` params (both
+//! paths of a changed fade), so a concurrent edit of them is `SAME_PARAM`.
+//!
 //! `offset` lies strictly inside the item (structural: neither part may be empty) and at least
 //! one frame from each end (policy). A caption is `INVALID_OP` (`caption.split` splits its
 //! words). The inverse is internal: `item.remove` of the right part (lift), then a `strict`
 //! trim of the left part's end by the right part's length, so an undo meets a later edit of the
-//! right part's range as a conflict (B4).
+//! right part's range as a conflict (B4), then a `param.set` back of each left-part fade param
+//! the split changed.
 
 use serde_json::json;
 
@@ -17,10 +24,13 @@ use crate::error::CoreError;
 use crate::ids::{IdAlloc, IdKind};
 use crate::model::{ItemBody, Project};
 use crate::ops::util::{
-    OpDiff, TrackAt, check_unlocked, frame_of, invalid_range, item_index, place, shift_content,
-    wrong_op,
+    OpDiff, TrackAt, check_unlocked, fades, frame_of, invalid_range, item_index, place,
+    shift_content, wrong_op,
 };
-use crate::ops::{Bindings, DeleteMode, Edge, ItemRemove, ItemSplit, ItemTrim, Op, TrimMode};
+use crate::ops::{
+    Bindings, DeleteMode, Edge, ItemRemove, ItemSplit, ItemTrim, Op, ParamSet, TrimMode,
+};
+use crate::params;
 use crate::rebase::{Footprint, Touch};
 use crate::time::Rational;
 use crate::tx::{ChangeKind, Diff};
@@ -110,31 +120,61 @@ pub(crate) fn apply(
     }
     shift_content(&mut right, s.offset.checked_neg()?)?;
     right.common.link = None;
+    let mut put_back = Vec::new();
+    if let Some(audio) = left.common.audio.clone() {
+        let zero = Rational::zero();
+        let (r, changed) = fades::restrict_part(&audio, s.offset, zero)?;
+        if changed.contains(&true) {
+            right.common.audio = r;
+        }
+        let (l, changed) = fades::restrict_part(&audio, zero, right.duration)?;
+        for (paths, changed) in [fades::FADE_IN, fades::FADE_OUT].into_iter().zip(changed) {
+            if changed {
+                for path in paths {
+                    put_back.push((path, params::get(left, path)?));
+                }
+            }
+        }
+        if !put_back.is_empty() {
+            left.common.audio = l;
+        }
+    }
     left.duration = s.offset;
     let length = right.duration;
     place(track, right);
     // The left part's end moved (Decision 20: a stale trim of that end is SAME_EDGE).
     diff.record_edge(&track.id, &id, Edge::End, None);
     diff.record_item(&track.id, &right_id, ChangeKind::Added);
-    Ok(vec![
+    for (path, _) in &put_back {
+        diff.record_path(&track.id, &id, path);
+    }
+    let mut inverse: Vec<Op> = vec![
         ItemRemove {
             id: right_id,
             mode: DeleteMode::Lift,
         }
         .into(),
         ItemTrim {
-            item: id,
+            item: id.clone(),
             edge: Edge::End,
             delta: length,
             mode: TrimMode::Strict,
             alone: false,
         }
         .into(),
-    ])
+    ];
+    inverse.extend(put_back.into_iter().map(|(path, value)| {
+        Op::from(ParamSet {
+            item: id.clone(),
+            path: path.to_string(),
+            value,
+        })
+    }));
+    Ok(inverse)
 }
 
 /// Needs the item and moves its end (its diff's edge change); creates the right part
-/// (Decision 20).
+/// (Decision 20); sets the left part's fade params it changed (its diff's path changes).
 pub(crate) fn footprint(op: &Op, op_diff: &Diff) -> Footprint {
     let mut f = Footprint::on(None, op_diff);
     if let Op::ItemSplit(s) = op {
@@ -157,9 +197,15 @@ pub(crate) fn offsets_mut(op: &mut Op) -> Vec<(String, &mut Rational)> {
     }
 }
 
-/// The inverse is `item.remove` of the right part, then a `strict` trim of the left part.
-pub(crate) fn inverse_len(_op: &Op, _own: &Diff) -> usize {
-    2
+/// The inverse is `item.remove` of the right part, then a `strict` trim of the left part, then
+/// one `param.set` per left-part fade param the split changed (each a `path` change).
+pub(crate) fn inverse_len(_op: &Op, own: &Diff) -> usize {
+    let fade = |p: &str| fades::FADE_IN.contains(&p) || fades::FADE_OUT.contains(&p);
+    2 + own
+        .changes
+        .iter()
+        .filter(|c| c.path.as_deref().is_some_and(fade))
+        .count()
 }
 
 /// The wire name.
