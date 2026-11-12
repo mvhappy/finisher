@@ -42,6 +42,7 @@ mod paths;
 pub mod project_file;
 mod rebuild;
 mod recover;
+mod reserved;
 pub mod scan;
 pub mod segment;
 pub mod server_id;
@@ -98,6 +99,9 @@ pub use project_file::{Genesis, ProjectFile, read_project_file};
 pub use rebuild::fail_next_rebuild_swap_for_test;
 pub use rebuild::{RebuildReport, rebuild_project};
 pub use recover::{RecoverReq, RecoverSel};
+#[cfg(any(test, feature = "test-hooks"))]
+#[doc(hidden)]
+pub use reserved::fail_link_checks_for_test;
 pub use server_id::{ServerIdentity, server_id, server_identity};
 pub use status::{
     BranchStatus, INCOMPLETE_POLLS, ProjectStatus, QuarantineSummary, ReadOnly, StoreEvent, Warning,

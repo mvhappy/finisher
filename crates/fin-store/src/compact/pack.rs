@@ -305,7 +305,9 @@ pub(super) fn snapshot_matches(
     branch: &str,
     path: &Path,
 ) -> Result<Result<(), String>, StoreError> {
-    let bytes = match crate::fsio::read_uncached(path) {
+    let read = crate::reserved::no_links(path.parent().unwrap_or(path))
+        .and_then(|()| crate::fsio::read_uncached(path));
+    let bytes = match read {
         Ok(b) => b,
         Err(e) => return Ok(Err(format!("{}: {e}", path.display()))),
     };

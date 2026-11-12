@@ -14,15 +14,17 @@ use crate::snapfile;
 
 pub(super) fn read(project_dir: &Path, project_id: &str, genesis_hash: &str) -> Vec<Seed> {
     let root = project_dir.join(".finisher").join("snapshots");
-    let Ok(dirs) = fs::read_dir(&root) else {
-        return vec![];
-    };
     let mut out = vec![];
-    for dir in dirs.filter_map(Result::ok) {
-        let Ok(branch) = dir.file_name().into_string() else {
+    // Never through a link (`crate::reserved`): a linked `snapshots/` or branch directory
+    // offers nothing.
+    for dir in crate::reserved::subdirs(&root) {
+        let Some(branch) = dir.file_name().and_then(|n| n.to_str()).map(str::to_owned) else {
             continue;
         };
-        let Ok(files) = fs::read_dir(dir.path()) else {
+        if crate::reserved::no_links(&dir).is_err() {
+            continue;
+        }
+        let Ok(files) = fs::read_dir(&dir) else {
             continue;
         };
         for f in files.filter_map(Result::ok) {

@@ -8,9 +8,11 @@
 
 mod fallback;
 mod info;
+mod ink;
 mod intern;
 mod measure;
 mod system;
+mod tracking;
 
 use std::sync::{Arc, Mutex};
 
@@ -28,8 +30,9 @@ pub trait FontBytes: Send + Sync {
 }
 
 /// Bumped whenever this crate changes a rule its layouts depend on (line breaking, bidi
-/// handling, rounding, coverage), so a plan or golden names the code that produced it.
-pub const FIN_TEXT_REVISION: u32 = 2;
+/// handling, ink boxes, rounding, coverage), so a plan or golden names the code that produced
+/// it.
+pub const FIN_TEXT_REVISION: u32 = 3;
 
 /// The code whose rules a layout depends on: this crate's version and [`FIN_TEXT_REVISION`],
 /// then the shaping crates' versions from `Cargo.lock` (`cosmic-text`, and the `harfrust`,

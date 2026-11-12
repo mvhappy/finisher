@@ -298,7 +298,7 @@ impl Store {
             return Err(self.newer_takeover_refused());
         }
         if !self.holding() {
-            if !self.project_dir.join(".finisher").is_dir() {
+            if !crate::reserved::dot_is_dir(&self.project_dir) {
                 return Err(CoreError::new(
                     "LEASE_TAKEOVER_REFUSED",
                     "the project folder cannot be reached",
@@ -399,7 +399,7 @@ impl Store {
         if self.follow_if_newer() {
             return false;
         }
-        if !self.project_dir.join(".finisher").is_dir() {
+        if !crate::reserved::dot_is_dir(&self.project_dir) {
             self.ctl.seen = LeaseState::Lost {
                 reason: format!("{} cannot be reached", self.project_dir.display()),
             };

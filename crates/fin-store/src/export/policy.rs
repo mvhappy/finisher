@@ -153,6 +153,7 @@ impl TempSweep {
                 };
                 if now.saturating_duration_since(since) >= TEMP_MAX_AGE
                     && may_delete()
+                    && crate::reserved::no_links(dir).is_ok()
                     && fs::remove_file(&path).is_ok()
                 {
                     continue;
@@ -183,6 +184,25 @@ mod tests {
         assert!(temp.exists(), "no lease, no delete");
         sweep.sweep(&dirs, t0 + TEMP_MAX_AGE, &|| true);
         assert!(!temp.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_temp_sweep_never_deletes_through_a_link() {
+        let tmp = tempfile::tempdir().unwrap();
+        let outside = tmp.path().join("outside");
+        fs::create_dir(&outside).unwrap();
+        let temp = outside.join(names::temp_name());
+        fs::write(&temp, b"x").unwrap();
+        let segs = tmp.path().join("project/.finisher/segments");
+        fs::create_dir_all(&segs).unwrap();
+        std::os::unix::fs::symlink(&outside, segs.join("main")).unwrap();
+        let t0 = Instant::now();
+        let mut sweep = TempSweep::default();
+        let dirs = [segs.join("main")];
+        sweep.sweep(&dirs, t0, &|| true);
+        sweep.sweep(&dirs, t0 + TEMP_MAX_AGE, &|| true);
+        assert!(temp.exists(), "deleted beyond the link");
     }
 
     #[test]

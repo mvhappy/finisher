@@ -1,9 +1,9 @@
 {
   "lines": [
     {
-      "x": 0,
+      "x": 98,
       "top": 0,
-      "width": 41414,
+      "width": 40978,
       "height": 5120,
       "baseline": 4050,
       "rtl": false,
@@ -14,26 +14,26 @@
   "words": [
     {
       "line": 0,
-      "x": 0,
-      "width": 16280
+      "x": 98,
+      "width": 16096
     },
     {
       "line": 0,
-      "x": 17250,
-      "width": 11144
+      "x": 17348,
+      "width": 10892
     },
     {
       "line": 0,
-      "x": 29364,
-      "width": 4926
+      "x": 29514,
+      "width": 4614
     },
     {
       "line": 0,
-      "x": 35260,
-      "width": 6154
+      "x": 35410,
+      "width": 5666
     }
   ],
-  "width": 41414,
+  "width": 40978,
   "height": 5120,
   "overflow": false,
   "missing": [],

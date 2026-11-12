@@ -121,6 +121,7 @@ pub(super) fn read(path: &Path) -> Read {
 
 /// The manifests in `dir`, by name.
 pub(super) fn list(dir: &Path) -> io::Result<Vec<ManifestName>> {
+    crate::reserved::no_links(dir)?;
     let rd = match std::fs::read_dir(dir) {
         Ok(rd) => rd,
         Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(vec![]),

@@ -347,6 +347,29 @@ fn seeded_rebuild_equals_full_replay() {
     assert!(!check(&v, "replay_matches_live").ok, "{v:?}");
 }
 
+/// A rebuild never reads snapshots through a linked branch directory (spec §3.6.1).
+#[cfg(unix)]
+#[test]
+fn rebuild_never_seeds_through_a_linked_snapshot_dir() {
+    let e = env();
+    let mut a = e.create("a");
+    commits(&mut a, 4);
+    let (_, at4) = a.snapshot(MAIN).unwrap();
+    commits_from(&mut a, 4, 3);
+    let id = a.project_id().to_string();
+    let hash4 = tx_hash_at(a.db_path(), 4);
+    a.close().unwrap();
+    write_snapshot(&e.dir, &id, 4, &hash4, &at4);
+    let snaps = e.dir.join(".finisher").join("snapshots").join(MAIN);
+    let outside = tempfile::tempdir().unwrap();
+    let moved = outside.path().join("main");
+    fs::rename(&snaps, &moved).unwrap();
+    std::os::unix::fs::symlink(&moved, &snaps).unwrap();
+    let s = e.open("seeded");
+    assert_eq!(s.last_rebuild().unwrap().seeded_from_snapshot, None);
+    assert_eq!(s.head(MAIN), 7);
+}
+
 fn commits_from(s: &mut Store, from: usize, n: usize) {
     for i in from..from + n {
         commit(s, &format!("t{i}"), vec![asset(&format!("/m/{i}.mov"))]);

@@ -40,7 +40,8 @@ pub struct TextStyle {
     pub size: f64,
     /// Line advance as a multiple of `size` (e.g. 1.2).
     pub line_height: f64,
-    /// Extra advance after every glyph, in em (a multiple of `size`; may be negative).
+    /// Extra advance between shaping clusters (a base with its combining marks, or a
+    /// ligature), in em (a multiple of `size`; may be negative); none after a line's last.
     pub letter_spacing: f64,
     pub align: Align,
 }
@@ -75,8 +76,15 @@ pub struct TextRequest {
     pub max_lines: Option<u32>,
 }
 
-/// One line. `x` is the left edge of its ink box after alignment, `top` its top; `baseline` is
-/// measured from the layout's top. `words` is the half-open range of word indices on it.
+/// One line. `x` is the left edge of its ink box after alignment and `width` the box's width,
+/// `top` its top; `baseline` is measured from the layout's top. `words` is the half-open range
+/// of word indices on it.
+///
+/// An ink box is the horizontal union of the line's (or word's) glyph outlines where they are
+/// drawn: glyphs are placed by their advances, letter spacing and shaping offsets, and each
+/// outline's extent (side bearings, overhangs and positioned marks included) is what counts,
+/// so a box may start before the pen or end past the last advance. A glyph with no outline
+/// (a bitmap or colour emoji) counts its advance; whitespace counts nothing.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct LineBox {
@@ -90,7 +98,8 @@ pub struct LineBox {
     pub end_word: u32,
 }
 
-/// One word's horizontal extent on its line (visual order is given by `x`).
+/// One word's ink box on its line (see [`LineBox`]; visual order is given by `x`). A word
+/// that draws nothing has a zero-width box at its pen position.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct WordBox {
@@ -99,9 +108,9 @@ pub struct WordBox {
     pub width: i32,
 }
 
-/// A measured layout, all lengths in 1/64 px. `width` is the widest line, `height` the
-/// lines' total advance. `overflow` is set when a line is wider than `max_width` or there are
-/// more lines than `max_lines`. `missing` lists the code points no face maps (ascending);
+/// A measured layout, all lengths in 1/64 px. `width` is the widest line's ink, `height` the
+/// lines' total advance. `overflow` is set when a line's ink box reaches outside
+/// `0..max_width` (on either side) or there are more lines than `max_lines`. `missing` lists the code points no face maps (ascending);
 /// `faces` the sha256s whose glyphs the layout uses, in request order.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]

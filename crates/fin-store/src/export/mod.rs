@@ -71,6 +71,7 @@ use std::time::Instant;
 use fin_core::CoreError;
 use serde_json::json;
 
+use crate::reserved::{is_linked, no_links};
 use crate::segment;
 use crate::{Store, StoreError, fsio};
 
@@ -91,17 +92,21 @@ pub(crate) fn segments_root(project_dir: &Path) -> PathBuf {
 
 /// The directories temp files are written in: `segments/*`, `snapshots/*` and
 /// `compaction/` by the holder, and `segments/` itself by a listing refresh
-/// (`scan::refresh_listing`, macOS network shares).
+/// (`scan::refresh_listing`, macOS network shares). None reached through a link.
 fn temp_dirs(project_dir: &Path) -> Vec<PathBuf> {
     let dot = project_dir.join(".finisher");
     let mut dirs = vec![dot.join("compaction"), dot.join("segments")];
     for sub in ["segments", "snapshots"] {
+        if no_links(&dot.join(sub)).is_err() {
+            continue;
+        }
         for d in fs::read_dir(dot.join(sub)).into_iter().flatten().flatten() {
             if d.file_type().is_ok_and(|t| t.is_dir()) {
                 dirs.push(d.path());
             }
         }
     }
+    dirs.retain(|d| no_links(d).is_ok());
     dirs
 }
 
@@ -244,7 +249,12 @@ fn export_one(store: &mut Store, branch: &str) -> Result<Step, StoreError> {
     }
     let prev = prev_segment(&store.conn, branch, first)?;
     let dir = segments_root(&store.project_dir).join(branch);
-    if let Err(e) = fs::create_dir_all(&dir) {
+    // Never through a link (`crate::reserved`): checked before `create_dir_all`, which would
+    // follow one, and after it.
+    let made = no_links(&dir)
+        .and_then(|()| fs::create_dir_all(&dir))
+        .and_then(|()| no_links(&dir));
+    if let Err(e) = made {
         return Ok(Step::Failed(folder_error(&dir, branch, &e)));
     }
     let retry = store.export.attempt.take().filter(|a| {
@@ -305,6 +315,11 @@ fn write(store: &mut Store, dir: &Path, a: Attempt) -> Result<Step, StoreError> 
         store.export.attempt = Some(a);
         return Ok(Step::Stopped);
     }
+    if let Err(e) = no_links(dir) {
+        let branch = a.branch.clone();
+        store.export.attempt = Some(a);
+        return Ok(Step::Failed(folder_error(dir, &branch, &e)));
+    }
     let written = fsio::write_once(dir, &a.name, &a.bytes);
     #[cfg(any(test, feature = "test-hooks"))]
     if fail_at == Some(FailPoint::AfterRename) {
@@ -351,6 +366,12 @@ fn write(store: &mut Store, dir: &Path, a: Attempt) -> Result<Step, StoreError> 
             store.export.attempt = Some(a);
             return Ok(Step::Failed(folder_error(&target, &branch, &read_err)));
         }
+    }
+    // A link swapped in during the write: what was read back may lie outside the project.
+    if let Err(e) = no_links(dir) {
+        let branch = a.branch.clone();
+        store.export.attempt = Some(a);
+        return Ok(Step::Failed(folder_error(dir, &branch, &e)));
     }
     #[cfg(any(test, feature = "test-hooks"))]
     if fail_at == Some(FailPoint::BeforeMarkExported) {
@@ -421,7 +442,11 @@ fn folder_error(path: &Path, branch: &str, e: &io::Error) -> CoreError {
         format!("cannot export to {}: {e}", path.display()),
     )
     .with_details(json!({ "path": path.to_string_lossy(), "branch": branch, "reason": e.to_string() }))
-    .with_fix("make the project folder writable or free space; export retries automatically and nothing is lost")
+    .with_fix(if is_linked(e) {
+        "replace the link with the real directory (links in .finisher are never followed); export retries automatically and nothing is lost"
+    } else {
+        "make the project folder writable or free space; export retries automatically and nothing is lost"
+    })
 }
 
 #[cfg(any(test, feature = "test-hooks"))]
