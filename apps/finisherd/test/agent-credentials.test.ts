@@ -38,8 +38,9 @@ describe("MODE_SCOPES (units)", () => {
       expect(scopes, mode).not.toContain("project.create");
     }
     expect(MODE_SCOPES.plan).not.toContain("project.write");
-    // 7B Task 6: a draft or auto session starts and drives its own children.
-    expect(MODE_SCOPES.draft).toEqual([...MODE_SCOPES.plan, "project.write", "agent.run"]);
+    // 7B Task 6: a draft or auto session starts and drives its own children; Task 11: it asks for reviews.
+    expect(MODE_SCOPES.draft).toEqual([...MODE_SCOPES.plan, "project.write", "agent.run", "review.write"]);
+    expect(MODE_SCOPES.auto).toEqual(MODE_SCOPES.draft);
     expect(MODE_SCOPES.plan).not.toContain("agent.run");
   });
 

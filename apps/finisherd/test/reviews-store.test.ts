@@ -57,16 +57,19 @@ describe("the reviews chain", () => {
   test("reviews_chain_migrates_once", async () => {
     const s = control();
     const n = () => s.db.prepare("SELECT COUNT(*) AS n FROM migrations WHERE chain = 'reviews'").get() as { n: number };
-    expect(n().n).toBe(1);
+    expect(n().n).toBe(2);
     const meta = (k: string) => (s.db.prepare("SELECT value FROM meta WHERE key = ?").get(k) as { value: string }).value;
-    expect([meta("formatVersion.reviews"), meta("minReaderVersion.reviews")]).toEqual(["1", "1"]);
+    // 0002 (7B Task 12) adds `review_verdicts.session`; an older reader ignores it.
+    expect([meta("formatVersion.reviews"), meta("minReaderVersion.reviews")]).toEqual(["2", "1"]);
+    const columns = (s.db.prepare("SELECT name FROM pragma_table_info('review_verdicts')").all() as Array<{ name: string }>).map((c) => c.name);
+    expect(columns).toContain("session");
     const tables = (s.db.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all() as Array<{ name: string }>).map((t) => t.name);
     for (const t of ["reviews", "review_decisions", "review_events", "review_comments", "branch_policy", "review_verdicts"]) expect(tables).toContain(t);
     new ReviewStore(s).open(branchReview());
     await s.close();
     stores.pop();
     const again = control();
-    expect((again.db.prepare("SELECT COUNT(*) AS n FROM migrations WHERE chain = 'reviews'").get() as { n: number }).n).toBe(1);
+    expect((again.db.prepare("SELECT COUNT(*) AS n FROM migrations WHERE chain = 'reviews'").get() as { n: number }).n).toBe(2);
     expect(new ReviewStore(again).list(P)).toHaveLength(1);
   });
 
@@ -219,6 +222,29 @@ describe("the reviews chain", () => {
     expect(store.setPolicy(P, DEFAULT_BRANCH_POLICY).old).toEqual(next);
     // Another project keeps the default.
     expect(store.policy("01bbbbbbbbbbbbbbbbbbbbbbbb")).toEqual(DEFAULT_BRANCH_POLICY);
+  });
+  test("auto_merge_roles_round_trip: stored deduplicated, absent means every role, enabledBy kept", () => {
+    const s = control();
+    const store = new ReviewStore(s);
+    store.setPolicy(P, { protected: ["main"], requireReview: false, autoMerge: { enabled: true, roles: ["editor", "editor", "colourist"] } }, "console:console");
+    expect(store.policy(P).autoMerge).toEqual({ enabled: true, roles: ["editor", "colourist"] });
+    expect(store.autoMergeEnabledBy(P)).toBe("console:console");
+    store.setPolicy(P, { protected: ["main"], requireReview: false, autoMerge: { enabled: true } });
+    expect(store.policy(P).autoMerge).toEqual({ enabled: true });
+    expect(store.autoMergeEnabledBy(P)).toBe("console:console");
+  });
+
+  test("verdicts_name_their_session (reviews 0002)", () => {
+    const s = control();
+    const store = new ReviewStore(s);
+    const snapshot = { sourceSeq: 2, targetSeq: 1, plannedAt: 0 };
+    const insert = s.db.prepare("INSERT INTO review_verdicts (verdictId, itemId, kind, snapshot, pass, at, session) VALUES (?, ?, ?, ?, ?, ?, ?)");
+    insert.run("qa1", "it1", "qa", JSON.stringify(snapshot), 1, 1, null);
+    insert.run("cr1", "it1", "critic", JSON.stringify(snapshot), 1, 2, "01critic00000000000000000a");
+    expect(store.verdicts("it1")).toEqual([
+      { verdictId: "qa1", kind: "qa", snapshot, pass: true, at: 1 },
+      { verdictId: "cr1", kind: "critic", snapshot, pass: true, at: 2, session: "01critic00000000000000000a" },
+    ]);
   });
 });
 

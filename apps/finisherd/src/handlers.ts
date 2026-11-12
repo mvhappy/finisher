@@ -27,6 +27,7 @@ import { agentAsk as agentAskPort } from "./agent/approvals.ts";
 import { AgentCoreTag } from "./agent/core.ts";
 import { withOutcomes } from "./agent/outcomes.ts";
 import { agentChainHooks, BranchReach, PathReach } from "./agent/reach.ts";
+import { withReviewLink } from "./agent/review-link.ts";
 import { agentHandlers } from "./agent/rpc.ts";
 import { commandRules } from "./agent/rules.ts";
 import { rulesHandlers } from "./agent/rules-rpc.ts";
@@ -173,7 +174,9 @@ export const HandlersLive = FinRpcs.toLayer(
     // project folder and its libraries, the server's author, `session_txs` after every write.
     const reach = new BranchReach(agents.store, agents.lineage, projects);
     // Then the outcome tracker (Task 11), once the session's own rows are written.
-    const hooks = withOutcomes(agentChainHooks({ reach, paths: new PathReach(agents.store, projects), sessions: agents.store, clock: agents.clock.now }), agents.outcomes, projects);
+    // Then the review link (7B Task 11): a session's `review.request` is recorded and `branchReady` emitted.
+    const tracked = withOutcomes(agentChainHooks({ reach, paths: new PathReach(agents.store, projects), sessions: agents.store, clock: agents.clock.now }), agents.outcomes, projects);
+    const hooks = withReviewLink(tracked, agents.reviewLink, reach);
     // Then command rules (7B Task 2), for agent principals only; a person's allow is a one-time grant (Task 5).
     // Then protected branches (5E Task 6), for every principal without `branch.protected`.
     const policies = [reach.policy, agentBranchLimitsExcept((p) => reach.covers(p)), protectedBranches, commandRules(agentRuntime.rules, agents.store, { grants: agentRuntime.grants })];
@@ -483,7 +486,7 @@ export const HandlersLive = FinRpcs.toLayer(
       ...rulesHandlers({ guard, store: agents.store, rules: agentRuntime.rules, ruleStore: agentRuntime.ruleStore, audit, clock: agents.clock, roles: agentRuntime.roles, dirOf: (id) => registry.dirOf(id) ?? registry.indexedDirOf(id), principalOf }),
       ...savedPromptHandlers({ guard, runtime: agentRuntime.runtime, principalOf, prompts: new SavedPrompts({ serverData: agentRuntime.rules.serverData, roles: agentRuntime.roles, dirOf: (id) => registry.dirOf(id) ?? registry.indexedDirOf(id), trustOf: (id) => agentRuntime.ruleStore.trustOf(id) }) }),
       // 5B: pairing, devices, settings writes and the environment.
-      ...reviewHandlers({ guard, reviews, projects, audit, transport: connections.transport }),
+      ...reviewHandlers({ guard, reviews, projects, audit, transport: connections.transport, roles: () => new Set(agentRuntime.roles.keys()) }),
       ...deviceHandlers({ guard, pairing, access: deviceAccess, connections }),
       ...settingsHandlers({ guard, serverData: admin.control.serverData ?? "", remote: remoteListener, audit }),
       ...envHandlers({ guard, env: environment }),

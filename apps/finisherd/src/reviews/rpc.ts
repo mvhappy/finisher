@@ -24,14 +24,17 @@ export function reviewHandlers({
   projects,
   audit,
   transport,
+  roles,
 }: {
   readonly guard: Guard;
   readonly reviews: Reviews;
   readonly projects: Pick<ChainProjects, "resolveBranch">;
   readonly audit: Audit;
   readonly transport: string;
+  /** The loaded roles' names, for `review.policy`'s `autoMerge.roles` (7B Task 12). */
+  readonly roles?: () => ReadonlySet<string>;
 }) {
-  const policy = policyHandler({ reviews, projects, audit, transport });
+  const policy = policyHandler({ reviews, projects, audit, transport, ...(roles === undefined ? {} : { roles }) });
   const w = reviews.workflow;
   /** The caller of a read: its principal and actor (a call that did not pass the chain is a defect). */
   const reader = (options: Options): Effect.Effect<Caller> =>

@@ -6,8 +6,8 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { auditDetailsValid, DEFAULT_BRANCH_POLICY, type FinError, HUMAN_ONLY, type Principal, SCOPES, type Scope } from "@finisher/contracts";
-import { Effect, Exit, Fiber } from "effect";
+import { auditDetailsValid, DEFAULT_BRANCH_POLICY, type FinError, HUMAN_ONLY, type Principal, ReviewPolicyPayload, SCOPES, type Scope } from "@finisher/contracts";
+import { Effect, Exit, Fiber, Schema } from "effect";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import type { ChainProjects } from "../src/chain/resolve.ts";
 import { type ControlStore, openControlStore } from "../src/control/db.ts";
@@ -185,10 +185,17 @@ describe("the gate", () => {
 
 describe("review.policy", () => {
   /** A chain with the real `review.policy` handler; client 1 is `principal`, 2 the console, 3 an agent. */
-  function setup(principal: Principal = CONSOLE, gate?: PolicyGate) {
+  function setup(principal: Principal = CONSOLE, gate?: PolicyGate, autoMergeAvailable?: boolean, roles?: ReadonlySet<string>) {
     const reviews: Reviews = gate === undefined ? makeReviews(control) : { ...makeReviews(control), gate };
     const h = chainHarness({ 1: principal, 2: CONSOLE, 3: AGENT }, { projects, reviews: reviews.chain, gate: reviews.gate }, ({ audit }) => ({
-      "review.policy": policyHandler({ reviews, projects, audit, transport: "socket" }),
+      "review.policy": policyHandler({
+        reviews,
+        projects,
+        audit,
+        transport: "socket",
+        ...(autoMergeAvailable === undefined ? {} : { autoMergeAvailable }),
+        ...(roles === undefined ? {} : { roles: () => roles }),
+      }),
     }));
     const set = (client: number, body: Record<string, unknown>) => h.call(client, "review.policy", { projectId: A, ...body, challenge: h.challenge(client) });
     return { h, reviews, set };
@@ -262,6 +269,32 @@ describe("review.policy", () => {
     expect(h.audited.filter((e) => e.kind === "review.policy")).toEqual([]);
     // Off stays allowed.
     expect(Exit.isSuccess(await set(1, { autoMerge: { enabled: false } }))).toBe(true);
+  });
+
+  test("auto_merge_roles_are_stored_and_audited (7B Task 12)", async () => {
+    const { h, reviews, set } = setup(CONSOLE, undefined, true, new Set(["editor", "colourist"]));
+    // Deduplicated before it is stored, answered and audited; `into` resolved to the branch's id.
+    const first = await set(1, { autoMerge: { enabled: true, roles: ["editor", "editor"], into: "feature" } });
+    expect(Exit.isSuccess(first) && (first.value as { policy: { autoMerge: unknown } }).policy.autoMerge).toEqual({ enabled: true, roles: ["editor"], into: "br3" });
+    expect(reviews.store.policy(A).autoMerge).toEqual({ enabled: true, roles: ["editor"], into: "br3" });
+    // The whole setting is sent: no roles admits every role again.
+    expect(Exit.isSuccess(await set(1, { autoMerge: { enabled: true } }))).toBe(true);
+    expect(reviews.store.policy(A).autoMerge).toEqual({ enabled: true });
+    const rows = h.audited.filter((e) => e.kind === "review.policy");
+    expect(rows.map((r) => [(r.details as { old: unknown }).old, (r.details as { new: unknown }).new])).toEqual([
+      [{ protected: ["main"], requireReview: false, autoMerge: false }, { protected: ["main"], requireReview: false, autoMerge: true, autoMergeRoles: ["editor"], autoMergeInto: "br3" }],
+      [{ protected: ["main"], requireReview: false, autoMerge: true, autoMergeRoles: ["editor"], autoMergeInto: "br3" }, { protected: ["main"], requireReview: false, autoMerge: true }],
+    ]);
+    // A role the server does not have, or an unknown branch, changes nothing.
+    expect(errorOf(await set(1, { autoMerge: { enabled: true, roles: ["editor", "nobody"] } }))).toMatchObject({ code: "INVALID_REQUEST", details: { field: "roles", role: "nobody" } });
+    expect(codeOf(await set(1, { autoMerge: { enabled: true, into: "nope" } }))).toBe("BRANCH_NOT_FOUND");
+    expect(reviews.store.policy(A).autoMerge).toEqual({ enabled: true });
+    expect(h.audited.filter((e) => e.kind === "review.policy")).toHaveLength(2);
+    for (const r of rows) expect(auditDetailsValid("review.policy", r.details ?? {})).toBe(true);
+    // The payload's schema admits role names only.
+    const decodes = Schema.is(ReviewPolicyPayload);
+    expect(decodes({ projectId: A, autoMerge: { enabled: true, roles: ["editor", "clip-finder"] } })).toBe(true);
+    expect(decodes({ projectId: A, autoMerge: { enabled: true, roles: ["Not A Role"] } })).toBe(false);
   });
 
   test("write_after_policy_change_sees_new_policy", async () => {

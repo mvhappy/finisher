@@ -27,6 +27,7 @@ import { FileSecretStore, type SecretStore } from "../secrets/store.ts";
 import type { ProviderAdapter } from "./adapter.ts";
 import { AgentAdmin, listLocalModels } from "./admin.ts";
 import { AgentApprovals, approvalKey, type GrantPort, grantPort } from "./approvals.ts";
+import type { AutoMergeTriggerOptions } from "./auto-merge.ts";
 import { waitingOnApprovals } from "./builtin/approval-wait.ts";
 import { type ProviderPermissions, providerPermissions } from "./permissions.ts";
 import { ProviderRequests } from "./provider-requests.ts";
@@ -76,6 +77,8 @@ export interface AgentServeOptions {
   readonly stopGraceMs?: number;
   /** Another `fin-sandbox-exec` for sessions (tests: one that fails as the launcher does). */
   readonly sandboxLauncher?: string;
+  /** Tests (7B Task 12): the `auto` merge trigger's availability, verdicts and observer. */
+  readonly autoMerge?: AutoMergeTriggerOptions;
 }
 
 /** What the handlers and the console RPCs use. */

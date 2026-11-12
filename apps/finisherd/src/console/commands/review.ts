@@ -33,7 +33,7 @@ const words = (p: BranchPolicy, rows: ReadonlyArray<BranchRow>): string =>
   [
     `protected branches: ${p.protected.length === 0 ? "none" : p.protected.map((id) => label(rows, id)).join(", ")}`,
     `require review: ${p.requireReview ? "on" : "off"}`,
-    `auto merge: ${p.autoMerge.enabled ? "on" : "off"}`,
+    `auto merge: ${p.autoMerge.enabled ? "on" : "off"}${p.autoMerge.enabled ? ` (into ${label(rows, p.autoMerge.into ?? "main")}${p.autoMerge.roles === undefined ? "" : `; roles: ${p.autoMerge.roles.join(", ") || "none"}`})` : ""}`,
   ].join("\n  ");
 
 /** Every branch of the project, archived ones too (a protected branch may have been archived). */

@@ -29,10 +29,11 @@ import type { StatementSync } from "node:sqlite";
 import type { ControlStore } from "../control/db.ts";
 import { registerChain } from "../control/migrations.ts";
 import { reviews0001 } from "../control/migrations/reviews/0001.ts";
+import { reviews0002 } from "../control/migrations/reviews/0002.ts";
 import { ulid } from "../control/ulid.ts";
 import { finError } from "../errors.ts";
 
-registerChain("reviews", [reviews0001], { formatVersion: 1, minReaderVersion: 1 });
+registerChain("reviews", [reviews0001, reviews0002], { formatVersion: 2, minReaderVersion: 1 });
 
 /** A new item. `snapshot` is a `branchReview`'s; `subject` a conflict list or `{pluginId}`. */
 export interface NewItem {
@@ -400,7 +401,15 @@ export class ReviewStore {
     const r = this.#policyRow(projectId);
     if (r === undefined) return DEFAULT_BRANCH_POLICY;
     const autoMerge = JSON.parse(r.autoMerge) as StoredAutoMerge;
-    return { protected: JSON.parse(r.protected) as string[], requireReview: r.requireReview === 1, autoMerge: { enabled: autoMerge.enabled } };
+    return {
+      protected: JSON.parse(r.protected) as string[],
+      requireReview: r.requireReview === 1,
+      autoMerge: {
+        enabled: autoMerge.enabled,
+        ...(autoMerge.roles === undefined ? {} : { roles: autoMerge.roles }),
+        ...(autoMerge.into === undefined ? {} : { into: autoMerge.into }),
+      },
+    };
   }
 
   /** Who turned the project's auto merge on (`<kind>:<id>`), while it is on (Decision 19). */
@@ -426,7 +435,14 @@ export class ReviewStore {
     return this.#store.tx(() => {
       const old = this.policy(projectId);
       const by = p.autoMerge.enabled ? (enabledBy ?? this.autoMergeEnabledBy(projectId)) : undefined;
-      const autoMerge: StoredAutoMerge = { enabled: p.autoMerge.enabled, ...(by === undefined ? {} : { enabledBy: by }) };
+      const roles = p.autoMerge.roles === undefined ? undefined : [...new Set(p.autoMerge.roles)];
+      const into = p.autoMerge.into;
+      const autoMerge: StoredAutoMerge = {
+        enabled: p.autoMerge.enabled,
+        ...(roles === undefined ? {} : { roles }),
+        ...(into === undefined ? {} : { into }),
+        ...(by === undefined ? {} : { enabledBy: by }),
+      };
       this.#stmt(
         "INSERT INTO branch_policy (projectId, protected, requireReview, autoMerge) VALUES (?, ?, ?, ?) " +
           "ON CONFLICT (projectId) DO UPDATE SET protected = excluded.protected, requireReview = excluded.requireReview, autoMerge = excluded.autoMerge",
@@ -437,23 +453,35 @@ export class ReviewStore {
 
   /**
    * The QA-gate and critic verdicts recorded on an item (`review_verdicts`, reserved for
-   * sub-project 10; 5E writes it only in tests), oldest first, each with the snapshot it judged.
+   * sub-project 10; 5E writes it only in tests), oldest first, each with the snapshot it judged
+   * and, since reviews 0002, the session that judged it (a critic's: 7B Task 12).
    */
   verdicts(itemId: string): ReadonlyArray<StoredVerdict> {
-    const rows = this.#stmt("SELECT verdictId, kind, snapshot, pass, at FROM review_verdicts WHERE itemId = ? ORDER BY at, verdictId").all(itemId) as Array<{
+    const rows = this.#stmt("SELECT verdictId, kind, snapshot, pass, at, session FROM review_verdicts WHERE itemId = ? ORDER BY at, verdictId").all(itemId) as Array<{
       verdictId: string;
       kind: "qa" | "critic";
       snapshot: string;
       pass: number;
       at: number;
+      session: string | null;
     }>;
-    return rows.map((r) => ({ verdictId: r.verdictId, kind: r.kind, snapshot: JSON.parse(r.snapshot) as Snapshot, pass: r.pass === 1, at: r.at }));
+    return rows.map((r) => ({
+      verdictId: r.verdictId,
+      kind: r.kind,
+      snapshot: JSON.parse(r.snapshot) as Snapshot,
+      pass: r.pass === 1,
+      at: r.at,
+      ...(r.session === null ? {} : { session: r.session }),
+    }));
   }
 }
 
-/** `branch_policy.autoMerge` as stored: the switch, and who turned it on. */
+/** `branch_policy.autoMerge` as stored: the switch, the roles it admits (absent: all), its target (absent: `main`) and who turned it on. */
 interface StoredAutoMerge {
   readonly enabled: boolean;
+  readonly roles?: ReadonlyArray<string>;
+  /** The branch id it merges into; absent: `main`. */
+  readonly into?: string;
   readonly enabledBy?: string;
 }
 
@@ -464,4 +492,6 @@ export interface StoredVerdict {
   readonly snapshot: Snapshot;
   readonly pass: boolean;
   readonly at: number;
+  /** The session that judged it (a critic's verdict names its critic session). */
+  readonly session?: string;
 }
