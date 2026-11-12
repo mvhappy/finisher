@@ -13,14 +13,17 @@
 //   (`program.ts`, `node-runtime.ts`);
 // - it runs unconfined until 7C's `plugin` profile applies, with `PLUGINS_UNCONFINED` shown.
 import { realpathSync, statSync } from "node:fs";
-import { resolve } from "node:path";
+import { isAbsolute, join, relative, resolve } from "node:path";
 import type { Manifest, ValidationReport } from "@finisher/core-types";
 import { validateManifest } from "@finisher/fin-node";
 import { Effect } from "effect";
+import type { Audit } from "../../control/audit.ts";
+import { safe } from "../../console/safe.ts";
 import { finError } from "../../errors.ts";
 import { currentSandboxStatus, profileWarning, type SandboxStatus, type SandboxWarning } from "../../sandbox/status.ts";
 import { canonical } from "../plans.ts";
 import type { PluginTables } from "../tables.ts";
+import { PLUGIN_DATA } from "./authority.ts";
 
 /** The publisher every developer plugin has. */
 export const DEV_PUBLISHER = "@dev/";
@@ -28,6 +31,7 @@ export const DEV_PUBLISHER = "@dev/";
 export const DEV_TREE_HASH = "dev";
 /** Who approved a developer plugin's grants: the person at the console that started the server. */
 export const DEV_GRANTED_BY = "console:console";
+const DEV_PRINCIPAL = { kind: "console", id: "console" } as const;
 
 /** A validated developer plugin folder: its real path and its manifest. */
 export interface DevPlugin {
@@ -37,8 +41,30 @@ export interface DevPlugin {
 
 const NOT_A_FOLDER_FIX = "Name the folder that holds your plugin's finisher-plugin.json.";
 
-/** Validates `dir` as a developer plugin; throws the `FinError` that refuses it. */
-export async function loadDevPlugin(dir: string): Promise<DevPlugin> {
+/** `path` resolved through its links where it exists (server data may not yet). */
+const realOrResolved = (path: string): string => {
+  try {
+    return realpathSync(resolve(path));
+  } catch {
+    return resolve(path);
+  }
+};
+
+/** Whether `inner` is `outer` or inside it. */
+const within = (outer: string, inner: string): boolean => {
+  const rel = relative(outer, inner);
+  return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
+};
+
+/** Where `id`'s shared plugin data lives (`authority.ts`'s `pluginDataPath` for person rights). */
+export const devDataDir = (serverData: string, id: string): string => join(serverData, ...PLUGIN_DATA, ...id.split("/"));
+
+/**
+ * Validates `dir` as a developer plugin served from `serverData`; throws the `FinError` that
+ * refuses it. A folder that is server data, holds it or sits inside it is refused: the plugin
+ * could read the server's keys, and server data is not the developer's to edit.
+ */
+export async function loadDevPlugin(dir: string, serverData: string): Promise<DevPlugin> {
   let real: string;
   try {
     real = realpathSync(resolve(dir));
@@ -46,6 +72,10 @@ export async function loadDevPlugin(dir: string): Promise<DevPlugin> {
     throw finError("PLUGIN_NOT_FOUND", `${dir} does not exist`, { path: dir, reason: "devDir" }, NOT_A_FOLDER_FIX);
   }
   if (!statSync(real).isDirectory()) throw finError("PLUGIN_NOT_FOUND", `${dir} is not a folder`, { path: dir, reason: "devDir" }, NOT_A_FOLDER_FIX);
+  const data = realOrResolved(serverData);
+  if (within(real, data) || within(data, real)) {
+    throw finError("USAGE", "the plugin folder is the server's data folder, holds it or sits inside it", { path: real, reason: "devDirServerData" }, "Keep the plugin in a folder of its own, outside the server's data.");
+  }
   // Node's permission flags name the folder: `*` would widen the grant, `,` is refused.
   if (real.includes("*") || real.includes(",")) {
     throw finError("PLUGIN_RUNTIME_UNAVAILABLE", "the plugin folder's path holds a character Node's permission flags cannot take", { path: real, reason: "pathCharacter" }, "Move the folder to a path without * or ,.");
@@ -102,16 +132,21 @@ export function installDevPlugin(tables: PluginTables, dev: DevPlugin, at: numbe
  * The start's developer-mode step (before anything serves): rows an earlier run left go; `dev`,
  * when the person approved one, is installed until the scope closes, and warned about.
  */
-export const devPluginForRun = (tables: PluginTables, dev: DevPlugin | undefined, log: (message: string) => void, clock: () => number = Date.now) =>
+export const devPluginForRun = (tables: PluginTables, dev: DevPlugin | undefined, log: (message: string) => void, audit?: Pick<Audit, "append">, clock: () => number = Date.now) =>
   Effect.acquireRelease(
     Effect.sync(() => {
       clearDevPlugins(tables);
       if (dev === undefined) return;
       installDevPlugin(tables, dev, clock());
       const id = String(dev.manifest.id);
-      log(`finisherd: developer plugin ${id} ${dev.manifest.version} is served from ${dev.dir} for this run only; agents and MCP clients cannot reach it`);
+      const permissions = (dev.manifest.permissions ?? []).length;
+      // Audited as the console's install and grant, like an approved plan's (`plugins/rpc.ts`).
+      const base = { pluginId: id, version: dev.manifest.version, source: "dev" };
+      audit?.append({ kind: "plugin.install", principal: DEV_PRINCIPAL, outcome: "ok", details: { ...base, permissionsAdded: permissions } });
+      if (permissions > 0) audit?.append({ kind: "plugin.grant", principal: DEV_PRINCIPAL, outcome: "ok", details: { ...base, permissionsAdded: permissions } });
+      log(`finisherd: developer plugin ${safe(id)} ${safe(dev.manifest.version)} is served from ${safe(dev.dir)} for this run only; agents and MCP clients cannot reach it`);
       const w = devUnconfined();
-      if (w !== undefined) log(`finisherd: ${w.code} (${id}): ${w.message}`);
+      if (w !== undefined) log(`finisherd: ${w.code} (${safe(id)}): ${w.message}`);
     }),
     () =>
       Effect.sync(() => {

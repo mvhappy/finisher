@@ -18,7 +18,7 @@ export {
   libraryWatchStart,
 } from "./library.js";
 export { PipeServer } from "./pipe.js";
-export { decodePluginCall, PluginCommandArgs, pluginCommandOutcome, pluginProjectView } from "./plugin-calls.js";
+export { decodePluginCall, permissionRisks, PluginCommandArgs, pluginCommandOutcome, pluginProjectView } from "./plugin-calls.js";
 export { checkServerDataLocal, serverId } from "./server-data.js";
 export * from "./sandbox.js";
 export * from "./vault.js"; // 5B: the vault, the identity key; certificates and QR codes (`tls.js`)

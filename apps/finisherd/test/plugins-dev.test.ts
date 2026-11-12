@@ -4,7 +4,8 @@
 // that run only (removed when the server stops, and at the next start after a crash), never to an
 // agent or MCP principal. The plugin is the test-only probe (`fixtures/plugins/probe`) under the
 // real plugin host, job engine, project registry and middleware chain.
-import { cpSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { spawn } from "node:child_process";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -15,10 +16,12 @@ import { sandboxStatus } from "@finisher/fin-node";
 import { Effect, Exit, Layer, Scope } from "effect";
 import { afterEach, describe, expect, test } from "vitest";
 import { withChain } from "../src/chain/chain.ts";
+import { parseArgs } from "../src/config.ts";
 import { Connections } from "../src/connections.ts";
 import { ConsoleError } from "../src/console/client.ts";
 import { approveDevPlugin, devRefused } from "../src/console/dev-plugin.ts";
 import type { Prompt } from "../src/console/prompt.ts";
+import type { AuditInput } from "../src/control/audit.ts";
 import { ControlStoreTag, openControlStore } from "../src/control/db.ts";
 import type { JobEngine } from "../src/jobs/engine.ts";
 import { JobEventSinkTag, memorySink } from "../src/jobs/events.ts";
@@ -36,6 +39,7 @@ import { makeProjectRegistry } from "../src/projects.ts";
 import { addAsset, insert, tx } from "./support/ndjson-client.ts";
 import { run } from "./support/jobs.ts";
 
+const MAIN = fileURLToPath(new URL("../src/main.ts", import.meta.url));
 const FIXTURE = join(dirname(fileURLToPath(import.meta.url)), "fixtures", "plugins", "probe");
 const ID = "@dev/probe";
 const LOOK = `plugin:${ID}/look`;
@@ -177,9 +181,9 @@ const errorCode = async (p: Promise<unknown>): Promise<string | undefined> =>
   );
 
 /** A server run's developer-mode step (`serve`'s), held open until the returned close. */
-async function startRun(r: Rig, dev: DevPlugin | undefined, log: string[] = []): Promise<() => Promise<void>> {
+async function startRun(r: Rig, dev: DevPlugin | undefined, log: string[] = [], audits: AuditInput[] = []): Promise<() => Promise<void>> {
   const scope = Effect.runSync(Scope.make());
-  await Effect.runPromise(Scope.provide(scope)(devPluginForRun(r.tables, dev, (m) => void log.push(m))));
+  await Effect.runPromise(Scope.provide(scope)(devPluginForRun(r.tables, dev, (m) => void log.push(m), { append: (e) => void audits.push(e) })));
   return () => Effect.runPromise(Scope.close(scope, Exit.void));
 }
 
@@ -187,10 +191,16 @@ describe("developer mode", () => {
   test("dev_plugin_runs_for_this_run_only: served from its own folder while the run lasts, gone after it and after a crash", async () => {
     const r = await rig();
     const folder = devFolder();
-    const dev = await loadDevPlugin(folder);
+    const dev = await loadDevPlugin(folder, r.serverData);
     expect(dev).toMatchObject({ dir: folder, manifest: { id: ID, kind: "code" } });
 
-    const stop = await startRun(r, dev);
+    const audits: AuditInput[] = [];
+    const stop = await startRun(r, dev, [], audits);
+    // Audited as the console's install and grant.
+    expect(audits.map((a) => [a.kind, a.principal, a.details])).toEqual([
+      ["plugin.install", { kind: "console", id: "console" }, { pluginId: ID, version: "1.0.0", source: "dev", permissionsAdded: 1 }],
+      ["plugin.grant", { kind: "console", id: "console" }, { pluginId: ID, version: "1.0.0", source: "dev", permissionsAdded: 1 }],
+    ]);
     const row = r.tables.installedFull(ID)!;
     expect(row).toMatchObject({ source: "dev", dir: folder, kind: "code", enabled: true, state: "active", treeHash: "dev", installedBy: "console:console" });
     expect(r.tables.grants(ID).map((g) => JSON.parse(g) as unknown)).toEqual(PERMISSIONS);
@@ -199,7 +209,7 @@ describe("developer mode", () => {
     expect(value(await r.look())).toEqual({ outcome: "data", data: { n: 1 } });
     const job = r.engine.list({ limit: 10 }).jobs.find((j) => j.kind === "plugin.command");
     expect(job?.via).toEqual({ plugin: `${ID}@1.0.0` });
-    expect(() => readFileSync(join(r.serverData, "plugins", "store", "@dev", "probe"))).toThrow();
+    expect(existsSync(join(r.serverData, "plugins", "store", "@dev"))).toBe(false);
     // The start's store check leaves it alone: it is not in the store, and not meant to be.
     const store = { installedDirs: async () => "[]", removePlugin: async () => "{}" } as unknown as Parameters<typeof reconcileStore>[0];
     expect((await Effect.runPromise(reconcileStore(store, r.tables, () => 1))).problems).toEqual([]);
@@ -227,7 +237,7 @@ describe("developer mode", () => {
 
   test("dev_plugin_invisible_to_agents: absent from an agent's or MCP client's list and refused PLUGIN_NOT_FOUND", async () => {
     const r = await rig();
-    const stop = await startRun(r, await loadDevPlugin(devFolder()));
+    const stop = await startRun(r, await loadDevPlugin(devFolder(), r.serverData));
     cleanups.push(stop);
     expect(await names(r)).toEqual([LOOK]);
     for (const kind of ["mcp", "agent"] as const) {
@@ -242,46 +252,72 @@ describe("developer mode", () => {
 
   test("dev_permissions_need_console_approval: no terminal, no answer or a no installs nothing; y approves what was shown", async () => {
     withStatus(ENFORCED);
-    const folder = devFolder(ID, { publisher: { name: "Evil\u001b[2J‮Corp" }, permissions: [{ perm: "project:read" }, { perm: "net", origins: ["https://api.example.org"] }] });
+    const sd = realpathSync(mkdtempSync(join(tmpdir(), "fin-dev-sd-")));
+    cleanups.push(() => rmSync(sd, { recursive: true, force: true }));
+    const folder = devFolder(ID, { publisher: { name: "Evil\u001b[2J\u202eCorp" }, permissions: [{ perm: "project:read" }, { perm: "project:write" }] });
     // Without a terminal nothing is read or asked.
     const pipe = fakePrompt(["y"], false);
-    expect(await errorCode(approveDevPlugin(folder, pipe))).toBe("CONSOLE_NEEDS_TTY");
+    expect(await errorCode(approveDevPlugin(folder, sd, pipe))).toBe("CONSOLE_NEEDS_TTY");
     expect(pipe.shown).toEqual([]);
     // Declined: no answer (end of input or Ctrl-C), or anything but y.
-    for (const answer of ["", "n", "no", "yy"]) expect(await errorCode(approveDevPlugin(folder, fakePrompt([answer])))).toBe("CONFIRMATION_REQUIRED");
+    for (const answer of ["", "n", "no", "yy"]) expect(await errorCode(approveDevPlugin(folder, sd, fakePrompt([answer])))).toBe("CONFIRMATION_REQUIRED");
     // A folder that is not a developer plugin is refused before anything is asked.
     const other = fakePrompt(["y"]);
-    expect(await errorCode(approveDevPlugin(devFolder("@test/probe"), other))).toBe("PLUGIN_MANIFEST_INVALID");
-    expect(await errorCode(approveDevPlugin(join(folder, "missing"), other))).toBe("PLUGIN_NOT_FOUND");
+    expect(await errorCode(approveDevPlugin(devFolder("@test/probe"), sd, other))).toBe("PLUGIN_MANIFEST_INVALID");
+    expect(await errorCode(approveDevPlugin(join(folder, "missing"), sd, other))).toBe("PLUGIN_NOT_FOUND");
     expect(other.shown).toEqual([]);
     // A refusal is reported as the start's error and exit code.
     const written: string[] = [];
-    const code = devRefused(await approveDevPlugin(folder, fakePrompt(["n"])).catch((e: unknown) => e), (t) => void written.push(t));
+    const code = devRefused(await approveDevPlugin(folder, sd, fakePrompt(["n"])).catch((e: unknown) => e), (t) => void written.push(t));
     expect(written[0]).toMatch(/^finisherd: CONFIRMATION_REQUIRED: /);
     expect(code).toBeGreaterThan(0);
 
     // Approved: the screen named the plugin and every permission, with the publisher's text made plain.
     const prompt = fakePrompt(["y"]);
-    const dev = await approveDevPlugin(folder, prompt);
+    const dev = await approveDevPlugin(folder, sd, prompt);
     expect(dev?.dir).toBe(folder);
     const screen = prompt.shown.join("\n");
     expect(screen).toContain(`${ID} 1.0.0`);
     expect(screen).toContain("Permissions (2), granted until this server stops:");
-    expect(screen).toContain("  project:read");
-    expect(screen).toContain("  net (origins: https://api.example.org)");
+    expect(screen).toContain("  [low] project:read");
+    expect(screen).toContain("  [medium] project:write");
     expect(screen).toContain("by Evil[2JCorp");
     expect(screen).not.toMatch(/[\u001b‮]/);
     expect(screen).toContain("Proceed? [y/N]");
     expect(screen).not.toContain("PLUGINS_UNCONFINED");
+    expect(screen).not.toContain("Existing plugin data");
     // Without the flag nothing is asked.
-    expect(await approveDevPlugin(undefined, fakePrompt([], false))).toBeUndefined();
+    expect(await approveDevPlugin(undefined, sd, fakePrompt([], false))).toBeUndefined();
+
+    // A high-risk permission needs the id typed back: y is not enough.
+    const risky = devFolder(ID, { permissions: [{ perm: "project:read" }, { perm: "net", origins: ["https://api.example.org"] }] });
+    expect(await errorCode(approveDevPlugin(risky, sd, fakePrompt(["y"])))).toBe("CONFIRMATION_REQUIRED");
+    const typed = fakePrompt([ID]);
+    expect((await approveDevPlugin(risky, sd, typed))?.manifest.id).toBe(ID);
+    expect(typed.shown.join("\n")).toContain("  [high] net (origins: https://api.example.org)");
+    expect(typed.shown.join("\n")).toContain(`To confirm, type the plugin's id: ${ID}`);
+
+    // Data an earlier run left is named on the screen.
+    mkdirSync(join(sd, "plugins", "data", "@dev", "probe"), { recursive: true });
+    const again = fakePrompt(["y"]);
+    await approveDevPlugin(folder, sd, again);
+    expect(again.shown.join("\n")).toContain(`Existing plugin data will be visible to it: ${join(sd, "plugins", "data", "@dev", "probe")}`);
+
+    // A folder that is, holds or sits inside server data is refused before anything is asked.
+    const inside = join(sd, "dev-plugin");
+    cpSync(folder, inside, { recursive: true });
+    for (const [dir, data] of [[inside, sd], [sd, sd], [dirname(sd), sd]] as const) {
+      const p = fakePrompt(["y"]);
+      expect(await errorCode(approveDevPlugin(dir, data, p))).toBe("USAGE");
+      expect(p.shown).toEqual([]);
+    }
   });
 
   test("the unconfined warning is printed on the approval screen and at start", async () => {
     withStatus(NOT_READY);
     const folder = devFolder();
     const prompt = fakePrompt(["y"]);
-    const dev = await approveDevPlugin(folder, prompt);
+    const dev = await approveDevPlugin(folder, join(folder, "..", "fin-dev-unused-sd"), prompt);
     const screen = prompt.shown.join("\n");
     expect(screen).toContain("!! DEVELOPER PLUGIN");
     expect(screen).toContain("!! PLUGINS_UNCONFINED");
@@ -293,4 +329,28 @@ describe("developer mode", () => {
     expect(log.some((l) => l.includes(`developer plugin ${ID} 1.0.0`) && l.includes("this run only"))).toBe(true);
     expect(log.some((l) => l.startsWith(`finisherd: PLUGINS_UNCONFINED (${ID}): `))).toBe(true);
   });
+
+  test("the flag: parsed for serve, and a start without a terminal is refused before server data exists", async () => {
+    expect(parseArgs(["--plugin-dir", "x", "--server-data", "/sd"])).toEqual({ serverData: "/sd", pluginDir: join(process.cwd(), "x") });
+    expect(parseArgs(["--plugin-dir=/p", "--server-data=/sd"])).toEqual({ serverData: "/sd", pluginDir: "/p" });
+    expect(parseArgs(["--server-data", "/sd"])).toEqual({ serverData: "/sd" });
+    expect(() => parseArgs(["--plugin-dir"])).toThrow("--plugin-dir needs a directory");
+
+    const folder = devFolder();
+    const sd = join(folder, "..", `fin-dev-never-${process.pid}`);
+    const { DO_NOT_TRACK: _d, FIN_DIAGNOSTICS: _f, FIN_TRAINING: _t, FIN_SERVER_DATA: _s, ...env } = process.env;
+    const r = await new Promise<{ code: number | null; out: string; err: string }>((done) => {
+      const child = spawn(process.execPath, [MAIN, "serve", "--plugin-dir", folder, "--server-data", sd], { stdio: ["pipe", "pipe", "pipe"], env });
+      let out = "";
+      let err = "";
+      child.stdout.setEncoding("utf8").on("data", (d: string) => (out += d));
+      child.stderr.setEncoding("utf8").on("data", (d: string) => (err += d));
+      child.stdin.end("y\n"); // what `yes |` would send
+      child.once("exit", (code) => done({ code, out, err }));
+    });
+    expect(r.err).toContain("finisherd: CONSOLE_NEEDS_TTY: --plugin-dir needs an interactive terminal");
+    expect(r.code).toBe(7);
+    expect(r.out).toBe("");
+    expect(existsSync(sd)).toBe(false);
+  }, 30_000);
 });

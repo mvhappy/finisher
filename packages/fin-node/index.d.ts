@@ -252,6 +252,12 @@ export declare class FontManager {
 export declare function validateManifest(dir: string, source?: "registry" | "bundled" | "dev"): Promise<string>;
 
 /**
+ * Each permission's risk within the whole set (`fin_plugin_api::risks`: combinations count), in
+ * order (sp8b Task 11: the developer-mode approval screen).
+ */
+export declare function permissionRisks(permissions: ReadonlyArray<unknown>): Array<"low" | "medium" | "high">;
+
+/**
  * A plugin host call's params decoded by its `fin-plugin-api` type (unknown fields refused):
  * `{ok: true, params}` (canonical), `{ok: false, reserved}` (the batch a later method arrives
  * in), `{ok: false, unknown: true}` or `{ok: false, error}` (sp8b Task 7).

@@ -6,6 +6,11 @@ export function decodePluginCall(method, params) {
   return JSON.parse(sync(() => native.decodePluginCall(method, JSON.stringify(params === undefined ? null : params))));
 }
 
+/** Each permission's risk within the set, in order (sp8b Task 11). */
+export function permissionRisks(permissions) {
+  return sync(() => native.permissionRisks(JSON.stringify(permissions)));
+}
+
 /** `fin view`'s screenplay of a snapshot's project, offline: `{lines, elided, tokens}`. */
 export function pluginProjectView(projectJson, range, budget) {
   return JSON.parse(sync(() => native.pluginProjectView(projectJson, range ?? null, budget ?? null)));

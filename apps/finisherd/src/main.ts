@@ -201,7 +201,7 @@ export const serve = ({
       // plugin commands (Task 9) are the enabled plugins' `commands`, run as `plugin.command` jobs.
       const pluginTables = new PluginTables(controlStore);
       // Developer mode: an earlier run's `@dev` row goes; this run's, if any, until it stops.
-      yield* devPluginForRun(pluginTables, dev, (m) => logSink("warning", m));
+      yield* devPluginForRun(pluginTables, dev, (m) => logSink("warning", m), Context.get(control, AuditTag));
       const pluginHost = makePluginHost({ serverData: realpathSync(serverData), control: controlStore, tables: pluginTables, audit: Context.get(control, AuditTag), log: (l, m) => logSink(l === "warning" || l === "error" ? "warning" : "debug", m) });
       const pluginCommands = serverPluginCommands({ serverData: realpathSync(serverData), tables: pluginTables, host: pluginHost });
       const register = (r: Parameters<typeof libraries.register>[0]) => {
@@ -569,7 +569,7 @@ function main(argv: ReadonlyArray<string>): void {
     return;
   }
   // Developer mode: the person approves the plugin's permissions here before anything starts.
-  void approveDevPlugin(args.pluginDir).then(
+  void approveDevPlugin(args.pluginDir, args.serverData).then(
     (dev) => start(serve({ serverData: args.serverData, ...(dev === undefined ? {} : { dev }) })),
     (e: unknown) => void (process.exitCode = devRefused(e)),
   );
