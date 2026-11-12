@@ -11,6 +11,12 @@
 //! so a line that starts with a run of the other direction keeps the paragraph's order. The
 //! mark's own glyphs are ignored.
 //!
+//! **Ink.** Glyphs are placed by their advances (and shaping offsets), but every reported
+//! box is ink: the union of the placed glyphs' outline extents ([`crate::ink`]), side
+//! bearings, overhangs and positioned marks included. A line fits when its ink lies inside
+//! `0..max_width`. A word with no ink (only empty glyphs) gets a zero-width box at its pen
+//! position.
+//!
 //! Every output length is rounded with `libm::roundf` to 1/64 px; sums saturate.
 
 use std::collections::BTreeSet;
@@ -18,9 +24,10 @@ use std::ops::Range;
 
 use cosmic_text::fontdb::Weight;
 use cosmic_text::skrifa::MetadataProvider;
-use cosmic_text::{Attrs, Buffer, Family, Hinting, Metrics, Shaping, Wrap};
+use cosmic_text::{Attrs, Buffer, Family, Hinting, LayoutGlyph, Metrics, Shaping, Wrap};
 use fin_core::layout::{Align, LineBox, TextLayout, TextRequest, WordBox};
 
+use crate::ink::Ink;
 use crate::system::System;
 
 /// `v` px in 1/64 px, rounded half away from zero (saturating).
@@ -45,18 +52,46 @@ struct Span(f32, f32);
 
 impl Span {
     const EMPTY: Span = Span(f32::INFINITY, f32::NEG_INFINITY);
-    /// Both ends of a glyph: its advance may be negative (letter spacing).
+    /// Both ends of `x..x + w` (`w` may be negative: an advance with letter spacing).
     fn add(&mut self, x: f32, w: f32) {
         self.0 = self.0.min(x).min(x + w);
         self.1 = self.1.max(x).max(x + w);
     }
-    /// `(x, width)` in 1/64 px; `(0, 0)` when nothing was added.
-    fn boxed(self) -> (i32, i32) {
-        if self.0 > self.1 {
-            return (0, 0);
+    fn is_empty(self) -> bool {
+        self.0 > self.1
+    }
+    /// `(x, width)` in 1/64 px: the ink, or a zero-width box where the pen was (`(0, 0)`
+    /// when there was no glyph at all).
+    fn boxed(self, pen: Span) -> (i32, i32) {
+        if self.is_empty() {
+            return if pen.is_empty() {
+                (0, 0)
+            } else {
+                (to_64(pen.0), 0)
+            };
         }
         let (lo, hi) = (to_64(self.0), to_64(self.1));
         (lo, hi.saturating_sub(lo))
+    }
+}
+
+/// A glyph's ink in line px, `None` when it draws nothing.
+fn glyph_ink(sys: &mut System, face: Option<usize>, g: &LayoutGlyph) -> Option<(f32, f32)> {
+    let advance = Some((g.x.min(g.x + g.w), g.x.max(g.x + g.w)));
+    let Some(f) = face.map(|i| &mut sys.faces[i]) else {
+        return advance;
+    };
+    let Some(ink) = f.ink.as_mut() else {
+        return advance;
+    };
+    match ink.glyph(&f.bytes, f.index, g.glyph_id) {
+        Ink::None => None,
+        Ink::Advance => advance,
+        Ink::Outline(lo, hi) => {
+            let origin = g.x + g.font_size * g.x_offset;
+            let scale = g.font_size / ink.upem;
+            Some((origin + lo * scale, origin + hi * scale))
+        }
     }
 }
 
@@ -71,8 +106,15 @@ struct Line {
     missing: BTreeSet<u32>,
 }
 
+/// How far `line`'s ink reaches outside `0..max` (both sides summed), in 1/64 px.
+fn excess(line: &Line, max: Option<i32>) -> i64 {
+    let Some(m) = max else { return 0 };
+    let (lo, hi) = (i64::from(line.x), i64::from(line.x) + i64::from(line.width));
+    (-lo).max(0) + (hi - i64::from(m)).max(0)
+}
+
 fn fits(line: &Line, max: Option<i32>) -> bool {
-    max.is_none_or(|m| line.x >= 0 && i64::from(line.x) + i64::from(line.width) <= i64::from(m))
+    excess(line, max) == 0
 }
 
 fn mapped(sys: &System, c: char) -> bool {
@@ -129,8 +171,8 @@ impl Shaper<'_> {
             used: vec![false; sys.faces.len()],
             missing: BTreeSet::new(),
         };
-        let mut ink = Span::EMPTY;
-        let mut spans = vec![Span::EMPTY; words.len()];
+        let (mut ink, mut pen) = (Span::EMPTY, Span::EMPTY);
+        let mut spans = vec![(Span::EMPTY, Span::EMPTY); words.len()];
         let lead = self.mark.len();
         for run in buffer.layout_runs() {
             line.baseline = to_64(run.line_y);
@@ -138,7 +180,8 @@ impl Shaper<'_> {
                 if g.end <= lead {
                     continue; // the direction mark
                 }
-                if let Some(face) = sys.faces.iter().position(|f| f.id == g.font_id) {
+                let face = sys.faces.iter().position(|f| f.id == g.font_id);
+                if let Some(face) = face {
                     line.used[face] = true;
                 }
                 let cluster = &text[g.start.max(lead)..g.end];
@@ -149,29 +192,40 @@ impl Shaper<'_> {
                 if cluster.chars().all(char::is_whitespace) {
                     continue;
                 }
-                ink.add(g.x, g.w);
+                let drawn = glyph_ink(sys, face, g);
+                pen.add(g.x, 0.0);
+                if let Some((lo, hi)) = drawn {
+                    ink.add(lo, hi - lo);
+                }
                 let at = g.start.max(lead);
                 let k = ranges.partition_point(|r| r.end <= at);
                 if ranges.get(k).is_some_and(|r| r.start <= at) {
-                    spans[k].add(g.x, g.w);
+                    let (word_ink, word_pen) = &mut spans[k];
+                    word_pen.add(g.x, 0.0);
+                    if let Some((lo, hi)) = drawn {
+                        word_ink.add(lo, hi - lo);
+                    }
                 }
             }
         }
-        (line.x, line.width) = ink.boxed();
-        line.boxes = spans.into_iter().map(Span::boxed).collect();
+        (line.x, line.width) = ink.boxed(pen);
+        line.boxes = spans.into_iter().map(|(i, p)| i.boxed(p)).collect();
         line
     }
 
-    /// Greedy: the longest run of words from `first` that fits, at least one word.
+    /// Greedy: the longest run of words from `first` that fits, at least one word. When the
+    /// first word alone already reaches outside the box (an overhang at the line's start), a
+    /// longer run is taken while it reaches out no further.
     fn next_line(&self, sys: &mut System, first: usize) -> Line {
         let n = self.req.words.len();
         if self.max.is_none() {
             return self.shape(sys, first..n);
         }
         let mut best = self.shape(sys, first..first + 1);
+        let allowed = excess(&best, self.max);
         for end in first + 2..=n {
             let candidate = self.shape(sys, first..end);
-            if !fits(&candidate, self.max) {
+            if excess(&candidate, self.max) > allowed {
                 break;
             }
             best = candidate;

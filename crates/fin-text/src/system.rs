@@ -12,6 +12,7 @@ use cosmic_text::fontdb::{self, Language, Source, Stretch, Style, Weight};
 use cosmic_text::{Font, FontSystem};
 
 use crate::fallback::FaceListFallback;
+use crate::ink::FaceInk;
 use crate::intern::intern;
 
 /// The one locale every system uses (never the platform's).
@@ -30,6 +31,8 @@ pub(crate) struct Face {
     pub(crate) index: u32,
     pub(crate) bytes: Arc<[u8]>,
     pub(crate) id: fontdb::ID,
+    /// Outline extents at the system's weight; `None` for a face with no usable `head`.
+    pub(crate) ink: Option<FaceInk>,
 }
 
 pub(crate) struct System {
@@ -51,9 +54,10 @@ pub(crate) fn build(key: &Key, bytes: Vec<Arc<[u8]>>) -> Result<System, String> 
     let mut names = Vec::with_capacity(key.faces.len());
     let mut faces = Vec::with_capacity(key.faces.len());
     for ((sha256, index), data) in key.faces.iter().zip(bytes) {
-        if cosmic_text::skrifa::FontRef::from_index(&data, *index).is_err() {
+        let Ok(font) = cosmic_text::skrifa::FontRef::from_index(&data, *index) else {
             return Err(sha256.clone());
-        }
+        };
+        let ink = FaceInk::new(&font, key.weight);
         let name = face_name(sha256, *index);
         let source: Arc<dyn AsRef<[u8]> + Send + Sync> = Arc::new(Arc::clone(&data));
         let id = db.push_face_info(fontdb::FaceInfo {
@@ -73,6 +77,7 @@ pub(crate) fn build(key: &Key, bytes: Vec<Arc<[u8]>>) -> Result<System, String> 
             index: *index,
             bytes: data,
             id,
+            ink,
         });
     }
     for face in &faces {

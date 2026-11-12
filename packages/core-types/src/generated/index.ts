@@ -4845,9 +4845,9 @@ export interface CaptionPlan {
   words: WordPlan[];
 }
 /**
- * A measured layout, all lengths in 1/64 px. `width` is the widest line, `height` the
- * lines' total advance. `overflow` is set when a line is wider than `max_width` or there are
- * more lines than `max_lines`. `missing` lists the code points no face maps (ascending);
+ * A measured layout, all lengths in 1/64 px. `width` is the widest line's ink, `height` the
+ * lines' total advance. `overflow` is set when a line's ink box reaches outside
+ * `0..max_width` (on either side) or there are more lines than `max_lines`. `missing` lists the code points no face maps (ascending);
  * `faces` the sha256s whose glyphs the layout uses, in request order.
  *
  * This interface was referenced by `FinCore`'s JSON-Schema
@@ -4863,8 +4863,15 @@ export interface TextLayout {
   words: WordBox[];
 }
 /**
- * One line. `x` is the left edge of its ink box after alignment, `top` its top; `baseline` is
- * measured from the layout's top. `words` is the half-open range of word indices on it.
+ * One line. `x` is the left edge of its ink box after alignment and `width` the box's width,
+ * `top` its top; `baseline` is measured from the layout's top. `words` is the half-open range
+ * of word indices on it.
+ *
+ * An ink box is the horizontal union of the line's (or word's) glyph outlines where they are
+ * drawn: glyphs are placed by their advances, letter spacing and shaping offsets, and each
+ * outline's extent (side bearings, overhangs and positioned marks included) is what counts,
+ * so a box may start before the pen or end past the last advance. A glyph with no outline
+ * (a bitmap or colour emoji) counts its advance; whitespace counts nothing.
  *
  * This interface was referenced by `FinCore`'s JSON-Schema
  * via the `definition` "LineBox".
@@ -4880,7 +4887,8 @@ export interface LineBox {
   x: number;
 }
 /**
- * One word's horizontal extent on its line (visual order is given by `x`).
+ * One word's ink box on its line (see [`LineBox`]; visual order is given by `x`). A word
+ * that draws nothing has a zero-width box at its pen position.
  *
  * This interface was referenced by `FinCore`'s JSON-Schema
  * via the `definition` "WordBox".

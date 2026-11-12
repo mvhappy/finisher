@@ -33,7 +33,14 @@ pub struct Spec {
     /// Every mapped code point, in glyph order (duplicates are ignored).
     pub chars: &'static str,
     pub advance: fn(char) -> u16,
+    /// Each glyph's outline `(xMin, xMax)` in font units (`None`: an empty glyph), when it is
+    /// not the default rectangle `50..advance − 50` (empty for the space and advances ≤ 100).
+    /// With it, `hmtx` and `hhea` carry the real side bearings and extents.
+    pub ink: Option<InkFn>,
 }
+
+/// A glyph's outline `(xMin, xMax)` by code point, `None` for an empty glyph.
+pub type InkFn = fn(char) -> Option<(i16, i16)>;
 
 const LATIN: &str = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 .,!?'-/:=";
 const SANS_CHARS: &str = concat!(
@@ -80,6 +87,7 @@ pub const SANS: Spec = Spec {
     italic: false,
     chars: SANS_CHARS,
     advance: sans_advance,
+    ink: None,
 };
 /// `TestRtl` Regular: the Hebrew letters, digits, `.` and `,`.
 pub const RTL: Spec = Spec {
@@ -88,6 +96,7 @@ pub const RTL: Spec = Spec {
     italic: false,
     chars: RTL_CHARS,
     advance: rtl_advance,
+    ink: None,
 };
 /// `TestHan` Regular: ten Han ideographs (full width) and `abc` (700 units, unlike `TestSans`).
 pub const HAN: Spec = Spec {
@@ -96,6 +105,7 @@ pub const HAN: Spec = Spec {
     italic: false,
     chars: HAN_CHARS,
     advance: han_advance,
+    ink: None,
 };
 /// `TestLatin` Bold: Latin only, each advance 50 units wider than `TestSans`.
 pub const LATIN_BOLD: Spec = Spec {
@@ -104,6 +114,7 @@ pub const LATIN_BOLD: Spec = Spec {
     italic: false,
     chars: LATIN,
     advance: bold_advance,
+    ink: None,
 };
 
 pub fn test_sans() -> Vec<u8> {
@@ -114,6 +125,43 @@ pub fn test_rtl() -> Vec<u8> {
 }
 pub fn test_han() -> Vec<u8> {
     build(&HAN)
+}
+
+/// `TestOverhang` Regular: outlines that reach past their advances (`hmtx` and `hhea` say so).
+/// At 1000 units per em: `W` advances 200 but is drawn 50..750 (right side bearing −550); `J`
+/// advances 500, drawn −200..450 (left side bearing −200); `a` advances 500, drawn 50..450;
+/// U+0301 (combining acute) advances 0 and is drawn −350..−150, over the base before it; the
+/// space advances 250. No GDEF, GSUB or GPOS.
+pub const OVERHANG: Spec = Spec {
+    family: "TestOverhang",
+    weight: 400,
+    italic: false,
+    chars: "WJa \u{301}",
+    advance: overhang_advance,
+    ink: Some(overhang_ink),
+};
+
+fn overhang_advance(c: char) -> u16 {
+    match c {
+        'W' => 200,
+        ' ' => 250,
+        '\u{301}' => 0,
+        _ => 500,
+    }
+}
+
+fn overhang_ink(c: char) -> Option<(i16, i16)> {
+    match c {
+        'W' => Some((50, 750)),
+        'J' => Some((-200, 450)),
+        '\u{301}' => Some((-350, -150)),
+        ' ' => None,
+        _ => Some((50, 450)),
+    }
+}
+
+pub fn test_overhang() -> Vec<u8> {
+    build(&OVERHANG)
 }
 
 /// `TestVar`: Latin like `TestLatin` but Regular, variable on `wght` 100–900 (default 400);
@@ -179,14 +227,18 @@ fn assemble_with(spec: &Spec, pad: Option<usize>, wght: Option<i16>) -> Vec<u8> 
     let notdef = rect(50, NOTDEF_ADVANCE as i16 - 50);
     let mut points = vec![points_of(&notdef)];
     glyf.add_glyph(&notdef).unwrap();
+    // Per glyph: the outline's `(xMin, xMax)`, `None` when empty.
+    let mut extents = vec![Some((50, NOTDEF_ADVANCE as i16 - 50))];
     for &c in &chars {
         let adv = (spec.advance)(c);
         advances.push(adv);
-        let glyph = if c == ' ' || adv <= 100 {
-            Glyph::Empty
-        } else {
-            rect(50, adv as i16 - 50)
+        let ink = match spec.ink {
+            Some(ink) => ink(c),
+            None if c == ' ' || adv <= 100 => None,
+            None => Some((50, adv as i16 - 50)),
         };
+        let glyph = ink.map_or(Glyph::Empty, |(x0, x1)| rect(x0, x1));
+        extents.push(ink);
         points.push(points_of(&glyph));
         glyf.add_glyph(&glyph).unwrap();
     }
@@ -217,14 +269,32 @@ fn assemble_with(spec: &Spec, pad: Option<usize>, wght: Option<i16>) -> Vec<u8> 
         8,
         loca_format as i16,
     );
+    // The default fonts keep their historical `hhea` (zero bearings, extent = widest advance)
+    // so their bytes never change; a font with `ink` gets the real ones.
+    let (min_lsb, min_rsb, max_extent) = match spec.ink {
+        None => (0, 0, max_adv as i16),
+        Some(_) => {
+            let inked = || {
+                extents
+                    .iter()
+                    .zip(&advances)
+                    .filter_map(|(e, &a)| e.map(|e| (e, a as i16)))
+            };
+            (
+                inked().map(|((x0, _), _)| x0).min().unwrap_or(0),
+                inked().map(|((_, x1), a)| a - x1).min().unwrap_or(0),
+                inked().map(|((_, x1), _)| x1).max().unwrap_or(0),
+            )
+        }
+    };
     let hhea = Hhea::new(
         FWord::new(ASCENDER),
         FWord::new(DESCENDER),
         FWord::new(0),
         UfWord::new(max_adv),
-        FWord::new(0),
-        FWord::new(0),
-        FWord::new(max_adv as i16),
+        FWord::new(min_lsb),
+        FWord::new(min_rsb),
+        FWord::new(max_extent),
         1,
         0,
         0,
@@ -245,7 +315,15 @@ fn assemble_with(spec: &Spec, pad: Option<usize>, wght: Option<i16>) -> Vec<u8> 
     maxp.max_component_elements = Some(0);
     maxp.max_component_depth = Some(0);
 
-    let metrics = advances.iter().map(|&a| LongMetric::new(a, 50)).collect();
+    let metrics = advances
+        .iter()
+        .zip(&extents)
+        .map(|(&a, e)| match (spec.ink, e) {
+            (Some(_), Some((x0, _))) => LongMetric::new(a, *x0),
+            (Some(_), None) => LongMetric::new(a, 0),
+            (None, _) => LongMetric::new(a, 50),
+        })
+        .collect();
     let hmtx = Hmtx::new(metrics, vec![]);
     let cmap = Cmap::from_mappings(
         chars
