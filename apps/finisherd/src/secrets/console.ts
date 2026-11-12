@@ -4,9 +4,11 @@
 // `y`; removing a key its id's first 8 characters typed back, removing the endpoint the word `local`. **The key is read from the
 // terminal without echo, never from the command line**: `provider key set openrouter <key>` is
 // refused before anything is read or sent, so a key never lands in shell history or `ps`.
-// Listing names keys by id, label and project only. CLI sign-in (`provider signin`) is 7D/7E's.
-import type { AgentWarning, ProviderKey } from "@finisher/contracts";
+// Listing names keys by id, label and project only. `provider signin|signout claudeCode` prints
+// the CLI's own sign-in commands and runs nothing (plan 7D Decision 23, `agent/claude/detect.ts`).
+import { type AgentWarning, FinError, type ProviderKey } from "@finisher/contracts";
 import { KEY_RULE, KEY_RULE_TEXT } from "../agent/admin.ts";
+import { signinLines } from "../agent/claude/detect.ts";
 import { projectArg } from "../agent/console.ts";
 import { type ConsoleConnection, consoleError, valueOf } from "../console/client.ts";
 import { type CommandContext, withConnection } from "../console/commands/context.ts";
@@ -31,7 +33,23 @@ export async function provider(ctx: CommandContext): Promise<number> {
     if (sub === "rm" || sub === "remove") return localRemove(ctx, rest);
     return usage("provider local needs a command: set, show, test or rm");
   }
-  return usage(group === undefined ? "provider needs key or local" : `unknown provider command: ${group}`);
+  if (group === "signin" || group === "signout") return signin(ctx, group, sub, rest);
+  return usage(group === undefined ? "provider needs key, local, signin or signout" : `unknown provider command: ${group}`);
+}
+
+/** Prints the CLI's sign-in (or sign-out) commands for a person to run; runs nothing, needs no server. */
+function signin(ctx: CommandContext, verb: "signin" | "signout", harness: string | undefined, rest: ReadonlyArray<string>): number {
+  onlyFlags(ctx.args, `provider ${verb}`, []);
+  if (harness !== "claudeCode" || rest.length > 0) usage(`provider ${verb} takes claudeCode`);
+  let lines: string[];
+  try {
+    lines = signinLines(ctx.serverData, verb === "signin" ? "login" : "logout");
+  } catch (e) {
+    if (e instanceof FinError) throw consoleError(e.code, e.message, e.details as Record<string, unknown>, e.fix);
+    throw e;
+  }
+  for (const l of lines) ctx.output.out(l);
+  return 0;
 }
 
 function warn(ctx: CommandContext, warnings: ReadonlyArray<AgentWarning> | undefined): void {
