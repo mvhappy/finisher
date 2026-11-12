@@ -111,8 +111,13 @@ export type AuditEntry = typeof AuditEntrySchema.Type;
 
 /** A dotted lowerCamel word: an RPC tag (`history.cherryPick`), a scope, a rule, a reason. */
 const Word = Schema.String.check(Schema.isPattern(/^[a-z][a-zA-Z0-9]{0,47}(\.[a-z][a-zA-Z0-9]{0,47}){0,3}$/));
+/** What an audit `Id` field takes: a ULID-shaped id. */
+export const AUDIT_ID_PATTERN = /^[0-9A-Za-z]{26}$/;
+/** What an auto merge's audited `verdictId` takes (5E Decision 19). */
+export const AUDIT_VERDICT_ID_PATTERN = /^[0-9A-Za-z_-]{1,64}$/;
+
 /** A ULID-shaped id (credentials, projects, devices). */
-const Id = Schema.String.check(Schema.isPattern(/^[0-9A-Za-z]{26}$/));
+const Id = Schema.String.check(Schema.isPattern(AUDIT_ID_PATTERN));
 /** An error code. */
 const Code = Schema.String.check(Schema.isPattern(/^[A-Z][A-Z0-9_]{0,63}$/));
 /** A person's text: a device name or credential label, ≤ 64 characters. */
@@ -224,7 +229,7 @@ const SnapshotWord = Schema.Struct({
 /** A QA-gate or critic verdict an auto merge relied on, by id. */
 const VerdictWord = Schema.Struct({
   kind: Schema.Literals(["qa", "critic"]),
-  verdictId: Schema.String.check(Schema.isPattern(/^[0-9A-Za-z_-]{1,64}$/)),
+  verdictId: Schema.String.check(Schema.isPattern(AUDIT_VERDICT_ID_PATTERN)),
 });
 const REVIEW_FIELDS = {
   item: Schema.optional(Schema.String.check(Schema.isPattern(/^[0-9A-Za-z]{26}$/))),

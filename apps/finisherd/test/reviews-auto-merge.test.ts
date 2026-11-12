@@ -10,9 +10,7 @@ import { dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   auditDetailsValid,
-  type CredentialFile,
   type FinError,
-  HUMAN_ONLY,
   type Principal,
   type PrincipalKind,
   type ReviewItem,
@@ -25,7 +23,6 @@ import type { BranchView, ReviewPlan } from "@finisher/core-types";
 import { Engine } from "@finisher/fin-node";
 import { Effect, Fiber } from "effect";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import { b64u, canonicalEndpoint, proveMac } from "../src/auth/crypto.ts";
 import type { ChainProjects } from "../src/chain/resolve.ts";
 import type { AuditInput } from "../src/control/audit.ts";
 import { type ControlStore, openControlStore } from "../src/control/db.ts";
@@ -33,7 +30,8 @@ import { toFinError } from "../src/errors.ts";
 import { CAPABILITIES } from "../src/handlers.ts";
 import { serve, StderrLogger } from "../src/main.ts";
 import { CONSOLE, LOCAL } from "../src/principal.ts";
-import { type JudgedVerdict, policyGuard, storedVerdicts, tryAutoMerge, type VerdictSource } from "../src/reviews/auto-merge.ts";
+import { type JudgedVerdict, judge, policyGuard, storedVerdicts, tryAutoMerge, type VerdictSource } from "../src/reviews/auto-merge.ts";
+import { mergeReview } from "../src/reviews/merge.ts";
 import type { ReviewEngine } from "../src/reviews/plan.ts";
 import { AUTO_MERGE_AVAILABLE, writePolicy } from "../src/reviews/policy.ts";
 import { reviewHandlers } from "../src/reviews/rpc.ts";
@@ -41,7 +39,7 @@ import { makeReviews, type Reviews } from "../src/reviews/service.ts";
 import type { ReviewVerdictPayload } from "../src/reviews/verdicts.ts";
 import { callerOf } from "../src/reviews/workflow.ts";
 import { chainHarness } from "./support/chain-harness.ts";
-import { addAsset, commit, confirmed, connectProved, hello, NdjsonClient, ok, type ServerInfo, tx } from "./support/ndjson-client.ts";
+import { addAsset, commit, connectProved, type NdjsonClient, ok, type ServerInfo, tx } from "./support/ndjson-client.ts";
 import { type FinRpcTag, SAMPLE_PAYLOADS } from "./support/payloads.ts";
 
 // The spy: every import of the module, the server's included, gets the counted `tryAutoMerge`.
@@ -95,6 +93,8 @@ interface Fixture {
   readonly audited: AuditInput[];
   readonly entries: ReviewVerdictPayload[];
   readonly feature: string;
+  /** The engine port the reviews service uses (a fresh service over it is a restart). */
+  readonly engine: ReviewEngine;
   readonly item: ReviewItem;
   commitOn(branch: string, txId: string): Promise<void>;
 }
@@ -120,14 +120,15 @@ async function fixture(txIds: ReadonlyArray<string> = ["f1", "f2"], wrap: (e: Re
   controls.push(control);
   const audited: AuditInput[] = [];
   const entries: ReviewVerdictPayload[] = [];
+  const engine = wrap(engineOf(e));
   const reviews = makeReviews(control, {
-    engine: wrap(engineOf(e)),
+    engine,
     audit: { append: (a) => void audited.push(a) },
     verdicts: { emit: (_p, _a, es) => void entries.push(...es) },
   });
   const local = callerOf(LOCAL, { actor: { kind: "user" } }, "socket");
   const { item } = await run(reviews.workflow.request(local, { projectId: A, source: "feature", title: "Please look" }));
-  return { e, reviews, control, audited, entries, feature, item, commitOn };
+  return { e, reviews, control, audited, entries, feature, engine, item, commitOn };
 }
 
 /** The owner turned auto merge on (as `review.policy` will once it is available). */
@@ -323,8 +324,17 @@ describe("the merge", () => {
     expect(auditDetailsValid("review.merge", row.details)).toBe(true);
     // The verdict says it was the policy, never a person's acceptance.
     expect(f.entries).toEqual([expect.objectContaining({ itemKind: "branchReview", verdict: "merged", by: "policy", via: "autoMerge", txIds: ["f1", "f2"], accepted: 2, sessionId: SESSION })]);
-    // A second attempt finds the item merged.
-    expect(await Effect.runPromise(Effect.flip(attempt2(f)))).toMatchObject({ code: "REVIEW_CLOSED" });
+    // A second attempt finds the item merged by this path: the same answer, not audited again.
+    expect(await run(attempt2(f))).toEqual(result);
+    expect(f.audited).toHaveLength(1);
+    // A person's merge of another snapshot is not this path's: closed.
+    const local = callerOf(LOCAL, { actor: { kind: "user" } }, "socket");
+    const other = await fixture(["g1"]);
+    enable(other);
+    await run(other.reviews.workflow.decide(local, { itemId: other.item.id, expect: other.item.snapshot!, decisions: [{ txId: "g1", decision: "accept" }] }));
+    const decided = other.reviews.store.get(other.item.id)!;
+    await run(mergeReview(other.reviews.workflow, local, { itemId: decided.id, expect: decided.snapshot!, idemKey: "by-hand" }));
+    expect(await Effect.runPromise(Effect.flip(tryAutoMerge(other.item.id, SESSION, deps(other, source(passing(decided.snapshot!)), true))))).toMatchObject({ code: "REVIEW_CLOSED" });
   });
 
   test("the merge finishes the agent's branch and carries the policy actor's guard", async () => {
@@ -440,6 +450,109 @@ describe("the merge", () => {
   });
 });
 
+describe("review follow-ups", () => {
+  test("changes_requested_refuses", async () => {
+    const f = await fixture();
+    enable(f);
+    const local = callerOf(LOCAL, { actor: { kind: "user" } }, "socket");
+    await run(f.reviews.workflow.decide(local, { itemId: f.item.id, expect: f.item.snapshot!, requestChanges: {} }));
+    const events = f.reviews.store.events(f.item.id).length;
+    const head = await f.e.head("main");
+    expect(await attempt(f, source(passing(f.reviews.store.get(f.item.id)!.snapshot!)))).toEqual({ merged: false, reason: "changesRequested" });
+    expect(f.reviews.store.get(f.item.id)?.state).toBe("changesRequested");
+    expect(f.reviews.store.events(f.item.id)).toHaveLength(events);
+    expect(await f.e.head("main")).toBe(head);
+    expect(f.audited).toEqual([]);
+  });
+
+  test("a session or verdict id the audit cannot record never empties the row", async () => {
+    const f = await fixture();
+    enable(f);
+    const snapshot = f.item.snapshot!;
+    const head = await f.e.head("main");
+    // A session that is not an id: refused before anything is read.
+    const s = source(passing(snapshot));
+    expect(await Effect.runPromise(Effect.flip(tryAutoMerge(f.item.id, "not an id", deps(f, s, true))))).toMatchObject({ code: "INVALID_REQUEST", details: { field: "session" } });
+    expect(s.calls).toBe(0);
+    // A verdict whose id the audit cannot hold does not count: missing.
+    const [qa, critic] = passing(snapshot);
+    expect(await attempt(f, source([qa!, { ...critic!, verdictId: "critic verdict #1" }]))).toEqual({ merged: false, reason: "verdictMissing" });
+    expect(await attempt(f, source([{ ...qa!, verdictId: "q".repeat(65) }, critic!]))).toEqual({ merged: false, reason: "verdictMissing" });
+    await nothingHappened(f, head, 1);
+    // A good one beside a bad one is judged on the good one, and the row keeps every field.
+    expect(await attempt(f, source([qa!, critic!, { ...critic!, verdictId: "bad id", at: 0 }]))).toMatchObject({ merged: true });
+    expect(f.audited).toHaveLength(1);
+    expect(f.audited[0]!.details).toMatchObject({ auto: true, enabledBy: ENABLED_BY, session: SESSION, verdicts: [{ verdictId: "qa1" }, { verdictId: "cr1" }] });
+    expect(auditDetailsValid("review.merge", f.audited[0]!.details)).toBe(true);
+  });
+
+  test("a failing verdict wins a tie", async () => {
+    const snapshot: Snapshot = { sourceSeq: 2, targetSeq: 1, plannedAt: 0 };
+    const [qa, critic] = passing(snapshot);
+    const failing = { ...critic!, verdictId: "cr2", pass: false };
+    expect(judge([qa!, critic!, failing], snapshot)).toBe("verdictFailed");
+    expect(judge([qa!, failing, critic!], snapshot)).toBe("verdictFailed");
+    expect(judge([qa!, { ...critic!, at: 1 }, { ...failing, at: 0 }], snapshot)).toEqual([qa, { ...critic!, at: 1 }]);
+  });
+
+  test("crash_between_merge_and_state_is_finished_by_a_replay", async () => {
+    const f = await fixture();
+    enable(f);
+    const judged = f.item.snapshot!;
+    // The engine merge lands, then the process dies before the item is marked merged.
+    const setState = f.reviews.store.setState.bind(f.reviews.store);
+    f.reviews.store.setState = ((...args: Parameters<typeof setState>) => {
+      if (args[1] === "merged") throw new Error("crash");
+      return setState(...args);
+    }) as typeof setState;
+    await expect(attempt(f, source(passing(judged)))).rejects.toThrow();
+    expect(await statuses(f)).toEqual({ f1: "alreadyPresent", f2: "alreadyPresent" });
+    expect(f.reviews.store.get(f.item.id)?.state).toBe("open");
+    expect(f.audited).toEqual([]);
+    // After a restart (a new service, nothing cached), the replay finishes the item.
+    const audited: AuditInput[] = [];
+    const writes: string[] = [];
+    const engine: ReviewEngine = { ...f.engine, write: (p, op, payload, meta) => Effect.tap(f.engine.write(p, op, payload, meta), () => Effect.sync(() => void writes.push(op))) };
+    const restarted = makeReviews(f.control, { engine, audit: { append: (a) => void audited.push(a) } });
+    const head = await f.e.head("main");
+    const replay = await run(tryAutoMerge(f.item.id, SESSION, { reviews: restarted, verdicts: source(passing(judged)), available: true, audit: { append: (a) => void audited.push(a) } }));
+    expect(replay).toEqual({ merged: true, mergeId: `auto-${f.item.id}-${judged.sourceSeq}` });
+    expect(restarted.store.get(f.item.id)).toMatchObject({ state: "merged", mergeId: replay.merged ? replay.mergeId : "" });
+    // Nothing was copied twice: fin-store answered the stored merge, and the only new record is
+    // the archive of the finished agent branch the crash had cut off (a `branchSet` on main).
+    expect(writes).toEqual(["merge", "branchSet"]);
+    expect(await f.e.head("main")).toBe(head + 1);
+    expect(await statuses(f)).toEqual({ f1: "alreadyPresent", f2: "alreadyPresent" });
+    expect((JSON.parse(await f.e.branches(true)) as BranchView[]).find((b) => b.id === f.feature)?.state).toBe("archived");
+    expect(audited.filter((a) => a.kind === "review.merge")).toHaveLength(1);
+  });
+
+  test("after_a_cache_eviction_it_replans_or_refuses", async () => {
+    // The source has not moved: the judged snapshot's list is planned again, and it merges.
+    {
+      const f = await fixture();
+      enable(f);
+      const restarted = makeReviews(f.control, { engine: f.engine });
+      const r = await run(tryAutoMerge(f.item.id, SESSION, { reviews: restarted, verdicts: source(passing(f.item.snapshot!)), available: true, audit: { append: (a) => void f.audited.push(a) } }));
+      expect(r).toMatchObject({ merged: true });
+      expect(await statuses(f)).toEqual({ f1: "alreadyPresent", f2: "alreadyPresent" });
+    }
+    // The source moved since: the list cannot be planned exactly again, so a person refreshes.
+    {
+      const f = await fixture();
+      enable(f);
+      await f.commitOn(f.feature, "f3");
+      const head = await f.e.head("main");
+      const restarted = makeReviews(f.control, { engine: f.engine });
+      const r = await run(tryAutoMerge(f.item.id, SESSION, { reviews: restarted, verdicts: source(passing(f.item.snapshot!)), available: true, audit: { append: (a) => void f.audited.push(a) } }));
+      expect(r).toEqual({ merged: false, reason: "replanNeeded" });
+      expect(await f.e.head("main")).toBe(head);
+      expect(restarted.store.get(f.item.id)?.state).toBe("open");
+      expect(f.audited).toEqual([]);
+    }
+  });
+});
+
 const tick = () => new Promise((r) => setTimeout(r, 20));
 const attempt2 = (f: Fixture) => tryAutoMerge(f.item.id, SESSION, deps(f, source(passing(f.item.snapshot!)), true));
 const policyDeps = (f: Fixture) => ({
@@ -481,24 +594,61 @@ function permissive(tag: string, ids: { projectId: string; itemId: string; branc
 
 const KINDS: ReadonlyArray<PrincipalKind> = ["anonymous", "local", "console", "device", "agent", "mcp", "plugin"];
 
-/** Source files (under `src/`) that import the auto-merge module. */
-function importersOfAutoMerge(): string[] {
+/** Every `.ts` file under `src/` (path relative to `src/`, text). */
+function sources(): ReadonlyArray<[string, string]> {
   const src = join(dirname(fileURLToPath(import.meta.url)), "..", "src");
-  const found: string[] = [];
+  const found: Array<[string, string]> = [];
   const walk = (dir: string) => {
     for (const name of readdirSync(dir)) {
       const path = join(dir, name);
       if (statSync(path).isDirectory()) walk(path);
-      else if (name.endsWith(".ts") && /auto-merge(\.ts)?["']/.test(readFileSync(path, "utf8"))) found.push(relative(src, path));
+      else if (name.endsWith(".ts")) found.push([relative(src, path).split("\\").join("/"), readFileSync(path, "utf8")]);
     }
   };
   walk(src);
-  return found.filter((p) => p !== join("reviews", "auto-merge.ts"));
+  return found;
 }
+
+const AUTO_MERGE = "reviews/auto-merge.ts";
+/** A static or literal dynamic import of the module, `.ts`, `.js` or bare. */
+const IMPORTS_AUTO_MERGE = /(?:\bfrom\s*|\bimport\s*\(?\s*|\brequire\s*\(\s*)["'`][^"'`\n]*auto-merge(?:\.[cm]?[jt]s)?["'`]/;
+/** A dynamic `import()` whose specifier is not a literal: it could name any module. */
+const COMPUTED_IMPORT = /\bimport\(\s*(?!["'`])/;
+/** Computed imports that exist on purpose: catalog extension modules by their URL (5D). */
+const COMPUTED_IMPORT_SITES = ["library/catalog/extensions.ts"];
+/** What builds a policy `Caller`: the `internal` actor in an object, `policyCaller`, the `policy` principal. */
+const POLICY_CALLER = [/[{,]\s*internal\s*:\s*[A-Za-z_{]/, /\bpolicyCaller\b/, /\bkind\s*:\s*"policy"/];
+/** Where the policy actor and principal are declared as types (`readonly kind: "policy";`), nothing more. */
+const POLICY_TYPE_DECLARATIONS = ["diagnostics.ts", "reviews/workflow.ts"];
 
 describe("no_rpc_reaches_auto_merge", () => {
   test("no source module but the path itself imports it", () => {
-    expect(importersOfAutoMerge()).toEqual([]);
+    const files = sources();
+    expect(files.filter(([p, text]) => p !== AUTO_MERGE && IMPORTS_AUTO_MERGE.test(text)).map(([p]) => p)).toEqual([]);
+    // No computed import could reach it either.
+    expect(files.filter(([, text]) => text.split("\n").some((l) => COMPUTED_IMPORT.test(l) && !l.trimStart().startsWith("//"))).map(([p]) => p)).toEqual(COMPUTED_IMPORT_SITES);
+    // The checks catch what they claim to.
+    for (const spec of ['"./auto-merge.ts"', '"./auto-merge.js"', "'../reviews/auto-merge'"]) {
+      expect(IMPORTS_AUTO_MERGE.test(`import { x } from ${spec};`)).toBe(true);
+      expect(IMPORTS_AUTO_MERGE.test(`const m = await import(${spec});`)).toBe(true);
+      expect(IMPORTS_AUTO_MERGE.test(`import ${spec};`)).toBe(true);
+    }
+    expect(IMPORTS_AUTO_MERGE.test("// the auto-merge path (`auto-merge.ts`) merges")).toBe(false);
+    expect(COMPUTED_IMPORT.test("await import(name)")).toBe(true);
+    expect(COMPUTED_IMPORT.test('await import("node:fs")')).toBe(false);
+  });
+
+  test("only the path builds a policy caller", () => {
+    const offenders = sources().flatMap(([p, text]) => {
+      if (p === AUTO_MERGE) return [];
+      const lines = text.split("\n").filter((l) => !(POLICY_TYPE_DECLARATIONS.includes(p) && /^\s*readonly kind: "policy";\s*$/.test(l)));
+      return lines.filter((l) => POLICY_CALLER.some((re) => re.test(l))).map((l) => `${p}: ${l.trim()}`);
+    });
+    expect(offenders).toEqual([]);
+    // The patterns match the forms that would build one.
+    expect(POLICY_CALLER.some((re) => re.test("const c = { principal: p, internal: actor };"))).toBe(true);
+    expect(POLICY_CALLER.some((re) => re.test('const p = { kind: "policy", id: "autoMerge" };'))).toBe(true);
+    expect(POLICY_CALLER.some((re) => re.test("const c = policyCaller(a, g, s);"))).toBe(true);
   });
 
   test("every review and write RPC, through the chain, for every principal kind with every scope", async () => {
@@ -535,7 +685,7 @@ describe("no_rpc_reaches_auto_merge", () => {
     expect(vi.mocked(tryAutoMerge)).not.toHaveBeenCalled();
   });
 
-  test("every RPC tag on a real server, for every principal it serves", { timeout: 180_000 }, async () => {
+  test("every RPC tag on a real server, as local (the widest reach)", { timeout: 180_000 }, async () => {
     const serverData = join(tmp, "server-data");
     mkdirSync(serverData, { recursive: true, mode: 0o700 });
     let ready!: (i: ServerInfo) => void;
@@ -545,8 +695,7 @@ describe("no_rpc_reaches_auto_merge", () => {
     const clients: NdjsonClient[] = [];
     try {
       const local = await connectProved({ info, serverData }, "local");
-      const console = await connectProved({ info, serverData }, "console");
-      clients.push(local, console);
+      clients.push(local);
       // A project, an agent's branch and an open review of it.
       const { projectId } = ok<{ projectId: string }>(await local.call("project.create", { dir: join(tmp, "p"), name: "Demo", rate: "30" }));
       ok(await commit(local, projectId, tx("m0", 0, [asset("m0")])));
@@ -554,24 +703,9 @@ describe("no_rpc_reaches_auto_merge", () => {
       const headOf = async (id: string) => ok<{ branches: BranchView[] }>(await local.call("branch.list", { projectId, all: true })).branches.find((b) => b.id === id)!.head;
       for (const t of ["f1", "f2"]) ok(await commit(local, projectId, { ...tx(t, await headOf(made.branch.id), [asset(t)]), branch: made.branch.id, author: AGENT_AUTHOR }));
       const { item } = ok<{ item: ReviewItem }>(await local.call("review.request", { projectId, source: "feature", title: "Please look" }));
-      // Agent and MCP credentials with every scope a credential may hold.
-      const credentialScopes = SCOPES.filter((s) => !HUMAN_ONLY.has(s));
-      const credential = async (kind: "agent" | "mcp") => {
-        const { file } = ok<{ file: CredentialFile }>(await confirmed(console, "auth.credential.mint", { kind, label: kind, scopes: credentialScopes }));
-        return credentialClient(info, file);
-      };
-      const anonymous = await NdjsonClient.connect(info.socket);
-      const agent = await credential("agent");
-      const mcp = await credential("mcp");
-      clients.push(anonymous, agent, mcp);
-      const callers: ReadonlyArray<[string, NdjsonClient]> = [
-        ["anonymous", anonymous],
-        ["mcp", mcp],
-        ["agent", agent],
-        ["console", console],
-        ["local", local],
-      ];
-      const LAST = new Set(["server.stop", "auth.revokeSelf"]);
+      const callers: ReadonlyArray<[string, NdjsonClient]> = [["local", local]];
+      // Closing the item would leave `review.merge` nothing to merge: it goes after the merge.
+      const LAST = new Set(["review.close", "server.stop", "auth.revokeSelf"]);
       const tags = CAPABILITIES.filter((t) => !LAST.has(t));
       const sweep = async (c: NdjsonClient, tag: string) => {
         const now = await Promise.race([local.call("review.get", { itemId: item.id }), new Promise<undefined>((r) => setTimeout(r, 2_000))]);
@@ -586,8 +720,8 @@ describe("no_rpc_reaches_auto_merge", () => {
           await Promise.race([c.call(tag, payload), new Promise((r) => setTimeout(r, 2_000))]);
       };
       for (const [, c] of callers) for (const tag of tags) await sweep(c, tag);
-      // The sweep reached the review handlers: a person closed the item (`review.close` comes first).
-      expect(ok<{ item: ReviewItem }>(await local.call("review.get", { itemId: item.id })).item.state).toBe("dismissed");
+      // The sweep reached the review handlers: `local` merged the item by hand.
+      expect(ok<{ item: ReviewItem }>(await local.call("review.get", { itemId: item.id })).item.state).toBe("merged");
       for (const [, c] of callers) for (const tag of LAST) await sweep(c, tag).catch(() => undefined);
       expect(vi.mocked(tryAutoMerge)).not.toHaveBeenCalled();
     } finally {
@@ -598,15 +732,3 @@ describe("no_rpc_reaches_auto_merge", () => {
     }
   });
 });
-
-/** Connects and proves a credential file as `fin` does. */
-async function credentialClient(info: ServerInfo, file: CredentialFile): Promise<NdjsonClient> {
-  const client = await NdjsonClient.connect(info.socket);
-  const key = b64u.decode(file.key)!;
-  const { clientNonce, exit } = await hello(client, { env: file.env, endpoint: canonicalEndpoint(info.socket), credential: { kind: file.kind, id: file.id } });
-  const answer = ok<{ envId: string; endpoint: string; serverNonce: string }>(exit);
-  const mac = proveMac(key, answer.envId, answer.endpoint, b64u.decode(answer.serverNonce)!, clientNonce);
-  ok(await client.call("auth.prove", { mac: b64u.encode(mac) }));
-  return client;
-}
-
