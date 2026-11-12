@@ -103,6 +103,7 @@ export const HandlersLive = FinRpcs.toLayer(
       journalEnabled: () => diagnostics.enabled(),
       jobCaps: () => jobEngine.workers().caps,
       sandboxReporter: reporterFor(diagnostics.journal),
+      ...(pluginCommands?.enabledCode === undefined ? {} : { enabledCodePlugins: pluginCommands.enabledCode }),
     };
     /** The principal the chain bound to this call (`anonymous` outside it: fail closed). */
     const principalOf = (options: object) => chainOf(options)?.principal ?? connections.principalOf((options as { client: { id: number } }).client.id);

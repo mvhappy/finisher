@@ -23,6 +23,8 @@ export interface PluginCommandsService {
   readonly engine: Pick<JobEngine, "submit" | "wait" | "cancel">;
   /** The journal's `plugin.command` (Task 15). */
   readonly onRun?: (e: CommandRunEvent) => void;
+  /** Enabled, active code plugins: `server.status`'s `PLUGINS_UNCONFINED {enabled}` (Decision 17). */
+  readonly enabledCode?: () => number;
 }
 
 export class PluginCommandsTag extends Context.Service<PluginCommandsTag, PluginCommandsService>()("finisherd/PluginCommands") {}
@@ -94,6 +96,9 @@ export function serverPluginCommands(d: { readonly serverData: string; readonly 
     registry,
     kind: pluginCommandKind({ contextOf: (job, o) => d.host.contextOf(job, o), timeoutOf: registry.timeoutOf }) as unknown as KindSpec,
     // Every run, refusals included, is journaled as `plugin.command` (Task 15).
-    service: (engine: PluginCommandsService["engine"]): PluginCommandsService => ({ registry, host: d.host, engine, onRun: (e) => d.host.onCommandRun(e) }),
+    service: (engine: PluginCommandsService["engine"]): PluginCommandsService => ({
+      registry, host: d.host, engine, onRun: (e) => d.host.onCommandRun(e),
+      enabledCode: () => d.tables.installed().filter((r) => r.kind === "code" && r.enabled && r.state === "active").length,
+    }),
   };
 }
