@@ -110,6 +110,26 @@ impl Reporter {
     pub fn call(&self, method: &str, params: Value) -> Result<Value, JobError> {
         self.shared.calls.call(&self.shared.out, method, params)
     }
+
+    /// A host call that is not waited for: its reply is dropped (the plugin SDK's `log`).
+    pub fn call_detached(&self, method: &str, params: Value) {
+        self.shared
+            .calls
+            .call_detached(&self.shared.out, method, params);
+    }
+
+    /// A host call that gives up on a cancel (the plugin SDK's): with `token` set it is not
+    /// sent, and in flight it fails `JOB_CANCELLED` promptly once `token` is set.
+    pub fn call_until(
+        &self,
+        method: &str,
+        params: Value,
+        token: &CancelToken,
+    ) -> Result<Value, JobError> {
+        self.shared
+            .calls
+            .call_until(&self.shared.out, method, params, token)
+    }
 }
 
 /// The context of one job's `run`.

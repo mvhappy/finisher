@@ -1,0 +1,7 @@
+{
+  "commands.trimSilence.title": "Trim silent audio",
+  "commands.trimSilence.thresholdDb": "Items whose gain is at or below this level (dB) count as silent",
+  "commands.trimSilence.mode": "Ripple closes the gaps; lift leaves them",
+  "commands.fetchTitle.title": "Fetch a page title",
+  "commands.fetchTitle.url": "The page to read, on an approved origin"
+}

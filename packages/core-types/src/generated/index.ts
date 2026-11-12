@@ -5152,7 +5152,7 @@ export interface SchemaSubset {
 }
 /**
  * A command run: the host has checked `args` against the command's schema and pinned `rev`
- * to the head of `branch`.
+ * to the head of `branch`. Decoded leniently (a field from a newer host is ignored).
  *
  * This interface was referenced by `FinCore`'s JSON-Schema
  * via the `definition` "CommandRun".
@@ -6180,7 +6180,7 @@ export interface JobError {
  */
 export interface HttpRequest {
   /**
-   * At most 768 KiB before base64.
+   * At most 756 KiB (`PAGE_BYTES`) before base64.
    */
   bodyB64?: string | null;
   headers?: Header[];
@@ -7538,7 +7538,7 @@ export interface NetFetchReply {
 export interface NetRead {
   handle: string;
   /**
-   * At most 768 KiB.
+   * At most 756 KiB (`PAGE_BYTES`).
    */
   length: number;
   offset: number;
@@ -7905,7 +7905,7 @@ export interface ProjectSnapshot {
  */
 export interface ProjectSnapshotPage {
   /**
-   * At most 768 KiB before base64.
+   * At most 756 KiB (`PAGE_BYTES`) before base64.
    */
   bytesB64: string;
   page: number;
@@ -7913,7 +7913,7 @@ export interface ProjectSnapshotPage {
   rev: number;
 }
 /**
- * `project.view`: the `fin view` text of the call's branch, capped at 768 KiB.
+ * `project.view`: the `fin view` text of the call's branch, capped at 756 KiB (`PAGE_BYTES`).
  *
  * This interface was referenced by `FinCore`'s JSON-Schema
  * via the `definition` "ProjectView".

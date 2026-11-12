@@ -179,6 +179,20 @@ pub fn decode_host(line: &[u8], expect_seq: u64) -> Result<HostMsg, CodecError> 
     serde_json::from_value(Value::Object(map)).map_err(|e| CodecError::Json(e.to_string()))
 }
 
+/// Decodes a host's line for a plugin process (plan 8B Decision 21): a `t` this side does not
+/// know (from a newer host) is [`Decoded::Unknown`], not an error. Everything else is checked
+/// as in [`decode_host`].
+pub fn decode_host_lenient(line: &[u8], expect_seq: u64) -> Result<Decoded<HostMsg>, CodecError> {
+    let (map, t) = frame(line, expect_seq)?;
+    if !HostMsg::TYPES.contains(&t.as_str()) {
+        let id = map.get("id").and_then(Value::as_u64);
+        return Ok(Decoded::Unknown { t, id });
+    }
+    serde_json::from_value(Value::Object(map))
+        .map(Decoded::Msg)
+        .map_err(|e| CodecError::Json(e.to_string()))
+}
+
 /// What [`read_line`] read.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Line {

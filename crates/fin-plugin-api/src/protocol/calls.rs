@@ -64,16 +64,17 @@ pub struct ProjectSnapshot {
 
 /// One page of a snapshot; every page of one job has the same `rev`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+// A reply: decoded leniently (a field from a newer host is ignored).
+#[serde(rename_all = "camelCase")]
 pub struct ProjectSnapshotPage {
-    /// At most 768 KiB before base64.
+    /// At most 756 KiB (`PAGE_BYTES`) before base64.
     pub bytes_b64: String,
     pub page: u32,
     pub pages: u32,
     pub rev: u64,
 }
 
-/// `project.view`: the `fin view` text of the call's branch, capped at 768 KiB.
+/// `project.view`: the `fin view` text of the call's branch, capped at 756 KiB (`PAGE_BYTES`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ProjectView {
@@ -86,7 +87,8 @@ pub struct ProjectView {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+// A reply: decoded leniently (a field from a newer host is ignored).
+#[serde(rename_all = "camelCase")]
 pub struct ProjectViewText {
     pub text: String,
 }
@@ -118,7 +120,7 @@ pub struct HttpRequest {
     pub url: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub headers: Vec<Header>,
-    /// At most 768 KiB before base64.
+    /// At most 756 KiB (`PAGE_BYTES`) before base64.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub body_b64: Option<String>,
 }
@@ -136,7 +138,8 @@ pub struct NetFetch {
 /// The response's head; the body (at most 64 MiB) stays with the host and is read by
 /// `net.read` through `handle` until the job ends (Decision 11).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+// A reply: decoded leniently (a field from a newer host is ignored).
+#[serde(rename_all = "camelCase")]
 pub struct NetFetchReply {
     pub status: u16,
     pub headers: Vec<Header>,
@@ -154,12 +157,13 @@ pub struct NetFetchReply {
 pub struct NetRead {
     pub handle: String,
     pub offset: u64,
-    /// At most 768 KiB.
+    /// At most 756 KiB (`PAGE_BYTES`).
     pub length: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+// A reply: decoded leniently (a field from a newer host is ignored).
+#[serde(rename_all = "camelCase")]
 pub struct NetReadPage {
     pub bytes_b64: String,
     /// Whether the page reaches the end of the body.

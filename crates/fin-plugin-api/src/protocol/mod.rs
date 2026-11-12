@@ -11,6 +11,10 @@
 //! - [`PluginError`] ([`errors`]): the `{code, message, details, fix?}` a failed call, job or
 //!   command answers.
 //!
+//! Host → plugin payloads ([`PluginContext`] and its parts, [`CommandRun`], the replies in
+//! [`calls`]) ignore unknown fields, so a newer host can add one; plugin → host payloads (call
+//! params, [`CommandOut`], `log`) refuse them.
+//!
 //! Every line of the envelope is at most [`MAX_MESSAGE_BYTES`] (5C's cap; **deviation from
 //! spec §3.3**'s 16 MiB), so larger payloads are paged in [`PAGE_BYTES`] pages (Decision 5).
 
@@ -42,5 +46,6 @@ pub const MAX_COMMAND_TIMEOUT_S: u16 = 60;
 /// The largest envelope line, in bytes (5C's cap).
 pub const MAX_MESSAGE_BYTES: u32 = 1 << 20;
 /// The largest page of a paged reply (`project.snapshot`, `project.view`, `net.read`), in
-/// bytes before base64.
-pub const PAGE_BYTES: u32 = 768 * 1024;
+/// bytes before base64: 756 KiB (774,144 bytes), whose 1,032,192 base64 characters leave room
+/// for the reply's JSON in a [`MAX_MESSAGE_BYTES`] line.
+pub const PAGE_BYTES: u32 = 756 * 1024;

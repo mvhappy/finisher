@@ -1,5 +1,8 @@
 //! The per-job context a plugin process receives in `start.extra` (Decision 2; spec §3.4's
 //! `initialize`).
+//!
+//! Host → plugin payloads decode leniently: a field from a newer host is ignored (forward
+//! compatibility), so none of these types denies unknown fields.
 
 use schemars::JsonSchema;
 use semver::Version;
@@ -10,7 +13,7 @@ use crate::permission::Permission;
 
 /// A plugin at one version.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct PluginRefFull {
     pub id: PluginId,
     #[schemars(with = "String")]
@@ -19,7 +22,7 @@ pub struct PluginRefFull {
 
 /// Directories the plugin may use, as absolute paths on the host.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct PluginDirs {
     /// The installed package (read-only).
     pub plugin: String,
@@ -34,7 +37,7 @@ pub struct PluginDirs {
 
 /// The limits of this job's calls and results.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct CallLimits {
     /// The job's timeout in seconds (a command's own, at most 60).
     pub timeout_s: u16,
@@ -45,7 +48,7 @@ pub struct CallLimits {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct PluginContext {
     /// The host API the running host implements.
     #[schemars(with = "String")]
