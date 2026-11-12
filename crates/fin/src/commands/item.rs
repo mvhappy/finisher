@@ -3,14 +3,14 @@
 //! delete) for every other kind. Every write echoes `resolved.mode` where the op has one.
 //! A split cuts the whole link group at the time (`compose::split_linked`).
 
-use clap::{Args, Subcommand};
+use clap::{Args, Subcommand, ValueEnum};
 use fin_core::compose::split_linked;
 use fin_core::{
     CoreError, DeleteMode, Edge, InsertMode, ItemDelete, ItemLink, ItemMove, ItemSlide, ItemSlip,
     ItemTrim, ItemUnlink, Project, TrimMode,
 };
 use schemars::JsonSchema;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::{Value, json};
 
 use super::Builder;
@@ -45,9 +45,9 @@ pub struct MoveArgs {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub track: Option<String>,
     /// "ripple" (default for clips) or "overwrite" (default for other kinds).
-    #[arg(long, value_name = "ripple|overwrite", value_parser = ["ripple", "overwrite"])]
+    #[arg(long, value_name = "ripple|overwrite")]
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub mode: Option<String>,
+    pub mode: Option<InsertModeArg>,
 }
 
 /// Cut an item, and each linked member under the time, in two at timeline time `at`.
@@ -67,9 +67,9 @@ pub struct DeleteArgs {
     #[arg(value_name = "i")]
     pub item: String,
     /// "ripple" (default for clips) or "lift" (default for other kinds).
-    #[arg(long, value_name = "ripple|lift", value_parser = ["ripple", "lift"])]
+    #[arg(long, value_name = "ripple|lift")]
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub mode: Option<String>,
+    pub mode: Option<DeleteModeArg>,
 }
 
 /// Move one edge of an item (and its link group) by a signed delta.
@@ -91,9 +91,9 @@ pub struct TrimArgs {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub end: Option<String>,
     /// "ripple" (default for clips), "roll" or "overwrite" (default for other kinds).
-    #[arg(long, value_name = "ripple|roll|overwrite", value_parser = ["ripple", "roll", "overwrite"])]
+    #[arg(long, value_name = "ripple|roll|overwrite")]
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub mode: Option<String>,
+    pub mode: Option<TrimModeArg>,
 }
 
 /// Slip (move the source under the item, in source seconds) or slide (move the item between
@@ -123,6 +123,46 @@ pub struct UnlinkArgs {
     pub target: String,
 }
 
+/// A closed `--mode` value set, shared by the flag and a batch line (review #49): clap takes only
+/// the listed spellings, and so does serde, whose error names the field and the values.
+macro_rules! mode_arg {
+    ($(#[$doc:meta])* $name:ident { $($variant:ident = $text:literal),+ $(,)? }) => {
+        $(#[$doc])*
+        #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum, Serialize, JsonSchema)]
+        #[serde(rename_all = "lowercase")]
+        #[schemars(inline)]
+        pub enum $name {
+            $($variant),+
+        }
+
+        impl<'de> Deserialize<'de> for $name {
+            fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+                let given = String::deserialize(d)?;
+                match given.as_str() {
+                    $($text => Ok($name::$variant),)+
+                    _ => Err(serde::de::Error::custom(format!(
+                        "mode {given:?} is not one of {}",
+                        [$($text),+].join(", ")
+                    ))),
+                }
+            }
+        }
+    };
+}
+
+mode_arg!(
+    /// An insert's or a move's `--mode`.
+    InsertModeArg { Ripple = "ripple", Overwrite = "overwrite" }
+);
+mode_arg!(
+    /// A delete's `--mode`.
+    DeleteModeArg { Ripple = "ripple", Lift = "lift" }
+);
+mode_arg!(
+    /// A trim's `--mode`.
+    TrimModeArg { Ripple = "ripple", Roll = "roll", Overwrite = "overwrite" }
+);
+
 pub fn mode_name(mode: InsertMode) -> &'static str {
     match mode {
         InsertMode::Ripple => "ripple",
@@ -131,36 +171,43 @@ pub fn mode_name(mode: InsertMode) -> &'static str {
 }
 
 /// The insert/move mode given, else `default`.
-pub fn insert_mode(given: Option<&str>, default: InsertMode) -> InsertMode {
+pub fn insert_mode(given: Option<InsertModeArg>, default: InsertMode) -> InsertMode {
     match given {
-        Some("overwrite") => InsertMode::Overwrite,
-        Some("ripple") => InsertMode::Ripple,
-        _ => default,
+        Some(InsertModeArg::Overwrite) => InsertMode::Overwrite,
+        Some(InsertModeArg::Ripple) => InsertMode::Ripple,
+        None => default,
     }
 }
 
 /// The delete mode given, else ripple for clips and lift for other kinds.
-pub fn delete_mode(given: Option<&str>, clip: bool) -> DeleteMode {
+pub fn delete_mode(given: Option<DeleteModeArg>, clip: bool) -> DeleteMode {
     match given {
-        Some("lift") => DeleteMode::Lift,
-        Some("ripple") => DeleteMode::Ripple,
-        _ if clip => DeleteMode::Ripple,
-        _ => DeleteMode::Lift,
+        Some(DeleteModeArg::Lift) => DeleteMode::Lift,
+        Some(DeleteModeArg::Ripple) => DeleteMode::Ripple,
+        None if clip => DeleteMode::Ripple,
+        None => DeleteMode::Lift,
+    }
+}
+
+pub fn delete_name(mode: DeleteMode) -> &'static str {
+    match mode {
+        DeleteMode::Ripple => "ripple",
+        DeleteMode::Lift => "lift",
     }
 }
 
 /// The trim mode given, else ripple for clips and overwrite for other kinds.
-pub fn trim_mode(given: Option<&str>, clip: bool) -> TrimMode {
+pub fn trim_mode(given: Option<TrimModeArg>, clip: bool) -> TrimMode {
     match given {
-        Some("roll") => TrimMode::Roll,
-        Some("overwrite") => TrimMode::Overwrite,
-        Some("ripple") => TrimMode::Ripple,
-        _ if clip => TrimMode::Ripple,
-        _ => TrimMode::Overwrite,
+        Some(TrimModeArg::Roll) => TrimMode::Roll,
+        Some(TrimModeArg::Overwrite) => TrimMode::Overwrite,
+        Some(TrimModeArg::Ripple) => TrimMode::Ripple,
+        None if clip => TrimMode::Ripple,
+        None => TrimMode::Overwrite,
     }
 }
 
-fn trim_name(mode: TrimMode) -> &'static str {
+pub fn trim_name(mode: TrimMode) -> &'static str {
     match mode {
         TrimMode::Ripple => "ripple",
         TrimMode::Roll => "roll",
@@ -209,7 +256,7 @@ pub fn plan(b: &mut Builder<'_>, cmd: &ItemCmd, suffix: &str) -> Result<Value, C
         ItemCmd::Split(a) => plan_split(b, a, suffix),
         ItemCmd::Delete(a) => {
             let item = b.id(&a.item);
-            let mode = delete_mode(a.mode.as_deref(), is_clip(&b.work, &item));
+            let mode = delete_mode(a.mode, is_clip(&b.work, &item));
             let members = members(&b.work, &item);
             b.push(
                 ItemDelete {
@@ -218,12 +265,7 @@ pub fn plan(b: &mut Builder<'_>, cmd: &ItemCmd, suffix: &str) -> Result<Value, C
                 }
                 .into(),
             )?;
-            let mode = if mode == DeleteMode::Lift {
-                "lift"
-            } else {
-                "ripple"
-            };
-            Ok(json!({ "item": a.item, "mode": mode, "items": members }))
+            Ok(json!({ "item": a.item, "mode": delete_name(mode), "items": members }))
         }
         ItemCmd::Trim(a) => plan_trim(b, a),
         ItemCmd::Slip(a) => {
@@ -303,7 +345,7 @@ fn plan_move(b: &mut Builder<'_>, a: &MoveArgs) -> Result<Value, CoreError> {
     } else {
         InsertMode::Overwrite
     };
-    let mode = insert_mode(a.mode.as_deref(), default);
+    let mode = insert_mode(a.mode, default);
     let members = members(&b.work, &item);
     let track_name = a.track.clone().unwrap_or(target_ref);
     b.push(
@@ -341,7 +383,7 @@ fn plan_trim(b: &mut Builder<'_>, a: &TrimArgs) -> Result<Value, CoreError> {
     };
     let item = b.id(&a.item);
     let delta = addr::delta_at(rate_of_item(&b.work, &item), field, input)?;
-    let mode = trim_mode(a.mode.as_deref(), is_clip(&b.work, &item));
+    let mode = trim_mode(a.mode, is_clip(&b.work, &item));
     let members = members(&b.work, &item);
     b.push(
         ItemTrim {
