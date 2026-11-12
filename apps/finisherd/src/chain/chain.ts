@@ -259,7 +259,8 @@ export function withChain<H extends object>(handlers: H, deps: ChainDeps): H {
       const gated = (resolved.payload as { projectId?: unknown } | null)?.projectId;
       if (deps.gate !== undefined && (rule.writes !== undefined || rule.targets !== undefined) && typeof gated === "string") {
         const gate = deps.gate;
-        yield* Effect.acquireRelease(gate.acquireShared(gated), (release) => Effect.sync(release));
+        // Interruptible while queued (a client gone, a shutdown): the waiter leaves the queue.
+        yield* Effect.acquireRelease(gate.acquireShared(gated), (release) => Effect.sync(release), { interruptible: true });
       }
       const input: PolicyInput = { tag, rule, principal, payload: resolved.payload, projects: deps.projects, projectIds: resolved.projects, headers, reviews: deps.reviews };
       const outcome = yield* runPolicies(policies, input);

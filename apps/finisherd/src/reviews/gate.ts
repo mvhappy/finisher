@@ -34,6 +34,18 @@ export function policyBusy(projectId: string, waitedMs: number): FinError {
   );
 }
 
+/**
+ * `f` under a hold taken by `acquire`, released when `f` ends however it ends. The wait stays
+ * interruptible (Effect's `acquireUseRelease` would run it uninterruptibly): a queued caller that
+ * is interrupted leaves the queue at once, and one interrupted as it is granted gives the hold
+ * back (the waiter's own cleanup, `#acquire`).
+ */
+function held<A, E, R, E2>(acquire: Effect.Effect<() => void, E2>, f: Effect.Effect<A, E, R>): Effect.Effect<A, E | E2, R> {
+  return Effect.uninterruptibleMask((restore) =>
+    Effect.flatMap(restore(acquire), (release) => Effect.onExit(restore(f), () => Effect.sync(release))),
+  );
+}
+
 export class PolicyGate {
   readonly #locks = new Map<string, Lock>();
   readonly #waitMs: number;
@@ -44,17 +56,18 @@ export class PolicyGate {
 
   /** `f` with the project's gate held shared (a write). */
   shared<A, E, R>(projectId: string, f: Effect.Effect<A, E, R>): Effect.Effect<A, E, R> {
-    return Effect.acquireUseRelease(this.acquireShared(projectId), () => f, (release) => Effect.sync(release));
+    return held(this.acquireShared(projectId), f);
   }
 
   /** `f` with the project's gate held exclusive (a policy write); `POLICY_BUSY` past `timeoutMs`. */
   exclusive<A, E, R>(projectId: string, f: Effect.Effect<A, E, R>, timeoutMs?: number): Effect.Effect<A, E | FinError, R> {
-    return Effect.acquireUseRelease(this.#acquire(projectId, true, timeoutMs ?? this.#waitMs), () => f, (release) => Effect.sync(release));
+    return held(this.#acquire(projectId, true, timeoutMs ?? this.#waitMs), f);
   }
 
   /**
    * Takes the gate shared and answers its release (call it once). The chain holds it across
-   * stages and the handler (`chain.ts`); prefer `shared` elsewhere.
+   * stages and the handler (`chain.ts`, an interruptible `acquireRelease`); prefer `shared`
+   * elsewhere.
    */
   acquireShared(projectId: string): Effect.Effect<() => void> {
     return this.#acquire(projectId, false, undefined) as Effect.Effect<() => void>;

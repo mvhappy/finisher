@@ -454,7 +454,7 @@ export const HandlersLive = FinRpcs.toLayer(
       ...libraryHandlers({ service: library, engine: jobEngine, guard }),
       // The job engine (5C-2): ownership and reach per job in `jobs/rpc.ts`.
       ...jobHandlers({ engine: jobEngine, guard }),
-      ...agentHandlers({ guard, store: agents.store, reach, agents: agentRuntime, principalOf }),
+      ...agentHandlers({ guard, store: agents.store, reach, agents: agentRuntime, principalOf, protect: { gate: reviews.gate, protectedBranches: reviews.chain.protectedBranches } }),
       ...rulesHandlers({ guard, store: agents.store, rules: agentRuntime.rules, ruleStore: agentRuntime.ruleStore, audit, clock: agents.clock, roles: agentRuntime.roles, dirOf: (id) => registry.dirOf(id) ?? registry.indexedDirOf(id), principalOf }),
       ...savedPromptHandlers({ guard, runtime: agentRuntime.runtime, principalOf, prompts: new SavedPrompts({ serverData: agentRuntime.rules.serverData, roles: agentRuntime.roles, dirOf: (id) => registry.dirOf(id) ?? registry.indexedDirOf(id), trustOf: (id) => agentRuntime.ruleStore.trustOf(id) }) }),
       // 5B: pairing, devices, settings writes and the environment.

@@ -48,7 +48,7 @@ export const ReviewRequestSuccess = Schema.Struct({ item: ReviewItemSchema, exis
 export const ReviewCommentPayload = Schema.Struct({
   itemId: Schema.String,
   body: reviewText({ min: 1, max: REVIEW_COMMENT_MAX, bytes: true }),
-  at: Schema.optional(Schema.String.check(Schema.isMaxLength(REVIEW_COMMENT_AT_MAX))),
+  at: Schema.optional(reviewText({ max: REVIEW_COMMENT_AT_MAX })),
   txId: Schema.optional(TxId),
 });
 export const ReviewCommentSuccess = Schema.Struct({ comment: CommentSchema });

@@ -19,8 +19,10 @@
 import type { FinError, Principal, Session } from "@finisher/contracts";
 import { Effect, Stream } from "effect";
 import { chainOf } from "../chain/chain.ts";
+import { protectedOutcome } from "../chain/protected.ts";
 import { actorFor, type CallMeta } from "../diagnostics.ts";
 import { finError, toFinError } from "../errors.ts";
+import type { PolicyGate } from "../reviews/gate.ts";
 import { approvalHandlers } from "./approvals-rpc.ts";
 import type { BranchReach } from "./reach.ts";
 import { rollbackGuard } from "./rollback.ts";
@@ -40,6 +42,12 @@ export interface AgentRpcDeps {
   readonly agents: AgentRuntimeParts;
   /** The principal the chain bound to the call. */
   readonly principalOf: (options: object) => Principal;
+  /**
+   * Protected branches and the policy gate (5E, Task 6 review S3) for `agent.session.rollback`,
+   * whose writes the chain cannot see (its payload names a session, not a branch). None: no
+   * protection beyond the caller's guard.
+   */
+  readonly protect?: { readonly gate: PolicyGate; readonly protectedBranches: (projectId: string) => ReadonlyArray<string> };
 }
 
 /** The session the calling credential is (its id); `SESSION_NOT_FOUND` for any other. */
@@ -115,9 +123,24 @@ export function agentHandlers(deps: AgentRpcDeps) {
     "agent.session.end": ({ sessionId }: { sessionId: string }, options: Options) =>
       onSession("agent.session.end", options, sessionId, (s, p) => Effect.map(runtime.end(s.id, p), (session) => ({ session }))),
     // 7B Decision 23: the guard is the session's reach (its subtree less its live children's) with the caller's credential.
+    // 5E: a caller without `branch.protected` touches no protected branch of the reach (refused
+    // before any write, and denied in each write's transaction), under the project's policy gate.
     "agent.session.rollback": ({ sessionId, toRun }: { sessionId: string; toRun: number }, options: Options) =>
       onSession("agent.session.rollback", options, sessionId, (s, p) =>
-        Effect.flatMap(deps.reach.subtreeOf(s), (reach) => runtime.rollback(s.id, toRun, p, { actor: metaOf(options).actor, guard: rollbackGuard(reach, chainOf(options)?.guard) })),
+        Effect.flatMap(deps.reach.subtreeOf(s), (reach) => {
+          const caller = chainOf(options)?.guard;
+          const write = (deny: ReadonlyArray<string>) =>
+            runtime.rollback(s.id, toRun, p, { actor: metaOf(options).actor, guard: rollbackGuard(reach, { ...caller, denyBranches: [...new Set([...(caller?.denyBranches ?? []), ...deny])] }) });
+          const protect = deps.protect;
+          if (protect === undefined) return write([]);
+          return protect.gate.shared(
+            s.projectId,
+            Effect.suspend(() => {
+              const outcome = protectedOutcome("agent.session.rollback", p, protect.protectedBranches(s.projectId), reach);
+              return "deny" in outcome ? Effect.fail(outcome.deny) : write("allow" in outcome ? (outcome.guard.denyBranches ?? []) : []);
+            }),
+          );
+        }),
       ),
     "agent.session.list": (q: { projectId?: string; status?: Session["status"]; cursor?: string; limit?: number }, options: Options) =>
       guard("agent.session.list", sync(() => {

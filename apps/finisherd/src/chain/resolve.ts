@@ -265,6 +265,10 @@ export function resolve(
         if (want.has("review")) {
           if (typeof out.target === "string") facts = { ...facts, protectedTarget: protectedIds.includes(out.target) };
         } else if (typeof out.into === "string" && deps.isOpen(pid)) {
+          // `ChainProjects` has no lookup that never opens: a project closed between `isOpen`
+          // and this call is reopened by it. Accepted (Task 6 review, N2): closing races are
+          // rare, the principal's project reach was checked above, and the policy stage checks
+          // the target again after authorisation.
           const target = yield* Effect.orElseSucceed(deps.resolveBranch(pid, out.into), () => undefined);
           if (target !== undefined) facts = { ...facts, protectedTarget: protectedIds.includes(target) };
         }

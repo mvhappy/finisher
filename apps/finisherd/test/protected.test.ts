@@ -35,8 +35,10 @@ const agent = (scopes: ReadonlyArray<Scope> = WIDE, more: Partial<Principal> = {
 });
 
 const BRANCHES: Record<string, string> = { main: "main", feature: "br3", br3: "br3", release: "br4", br4: "br4", mine: "br5", br5: "br5" };
+/** Whether the fake project is open (the resolver reads the protected target only then). */
+let projectOpen = true;
 const fakeProjects: ChainProjects = {
-  isOpen: () => true,
+  isOpen: () => projectOpen,
   dirOf: () => "/p",
   resolveBranch: (_p, ref) => {
     const id = BRANCHES[ref];
@@ -53,6 +55,7 @@ const reviews = { item: () => ({ projectId: A, source: "br5", target: itemTarget
 beforeEach(() => {
   itemTarget = "main";
   protectedIds = ["main"];
+  projectOpen = true;
 });
 
 const harness = (p: Principal) => chainHarness({ 1: p }, { projects: fakeProjects, reviews });
@@ -170,6 +173,25 @@ describe("the policy stage", () => {
       expect(codeOf(await writer.call(1, tag, writeInto(tag, "main"))), tag).toBe("SCOPE_DENIED");
     }
     expect(codeOf(await writer.call(1, "tx.commit", writeInto("tx.commit", "main")))).toBeUndefined();
+    // A closed project: the resolver leaves the protected target unset (it opens nothing before
+    // authorisation), stage 4 asks for `project.write` only, and the policy stage refuses the
+    // drop (Task 6 review, S1). Undrops alike.
+    projectOpen = false;
+    const closed = harness(agent([...WIDE, "branch.protected"]));
+    expect(errorOf(await closed.call(1, "history.drop", writeInto("history.drop", "main")))).toMatchObject({ code: "BRANCH_PROTECTED", details: { branch: "main" } });
+    expect(codeOf(await closed.call(1, "history.drop", { ...writeInto("history.drop", "main"), drops: undefined, undrops: ["01cccccccccccccccccccccccc"] }))).toBe("BRANCH_PROTECTED");
+    // A review item's target is compared without a lookup: still the review scope at stage 4.
+    expect(codeOf(await closed.call(1, "review.merge", writeInto("review.merge", "main")))).toBe("SCOPE_DENIED");
+    expect(closed.seen).toEqual([]);
+    // With `review.decide` it goes ahead, and `branch.protected` keeps the rest open.
+    const both = harness(agent([...WIDE, "branch.protected", "review.decide"]));
+    expect(codeOf(await both.call(1, "history.drop", writeInto("history.drop", "main")))).toBeUndefined();
+    expect(chainOf(both.seen[0]!.options)?.guard.denyBranches).toEqual([]);
+    projectOpen = true;
+    // A policy that protects the target only after the resolver read it: refused at stage 5.
+    let reads = 0;
+    const racing = chainHarness({ 1: agent([...WIDE, "branch.protected"]) }, { projects: fakeProjects, reviews: { ...reviews, protectedBranches: () => (reads++ === 0 ? [] : ["main"]) } });
+    expect(codeOf(await racing.call(1, "history.drop", writeInto("history.drop", "main")))).toBe("BRANCH_PROTECTED");
     // A drop into an unprotected branch needs `project.write` only.
     const plain = harness(agent());
     expect(codeOf(await plain.call(1, "history.drop", writeInto("history.drop", "feature")))).toBeUndefined();

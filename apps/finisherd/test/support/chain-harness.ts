@@ -1,7 +1,7 @@
 // A chain over recording handlers with several bound clients (5E Task 6): client ids map to
 // principals, every write RPC records what reached it, and `real` replaces handlers.
 import { type FinError, type Principal, WRITE_RPCS } from "@finisher/contracts";
-import { Effect, Exit } from "effect";
+import { Effect, Exit, type Fiber } from "effect";
 import { issueChallenge } from "../../src/auth/challenges.ts";
 import { type ChainDeps, withChain } from "../../src/chain/chain.ts";
 import type { ChainProjects, ChainReviews } from "../../src/chain/resolve.ts";
@@ -19,6 +19,8 @@ export interface Harness {
   readonly audited: AuditInput[];
   readonly audit: Audit;
   call(client: number, tag: string, payload: unknown): Promise<Exit.Exit<unknown, FinError>>;
+  /** The call as a running fiber (to interrupt it). */
+  fork(client: number, tag: string, payload: unknown): Fiber.Fiber<unknown, FinError>;
   /** A fresh `console.challenge` code of `client`. */
   challenge(client: number): string;
 }
@@ -51,6 +53,7 @@ export function chainHarness(
     audited,
     audit,
     call: (client, tag, payload) => Effect.runPromiseExit(chained[tag]!(payload, { client: { id: client }, headers: {} }) as Effect.Effect<unknown, FinError>),
+    fork: (client, tag, payload) => Effect.runFork(chained[tag]!(payload, { client: { id: client }, headers: {} }) as Effect.Effect<unknown, FinError>),
     challenge: (client) => issueChallenge(connections.get(client)!).code,
   };
 }

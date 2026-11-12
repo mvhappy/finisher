@@ -108,6 +108,69 @@ describe("the gate", () => {
     expect(ran).toEqual(["queued", "policy"]);
   });
 
+  /** Whether `p` settles within `ms`. */
+  const within = (p: Promise<unknown>, ms = 500) => Promise.race([p.then(() => true), new Promise((r) => setTimeout(() => r(false), ms))]);
+
+  test("a queued shared waiter behind an exclusive one is interrupted at once (Task 6 review, S2)", async () => {
+    const gate = new PolicyGate();
+    const held = latch();
+    const first = Effect.runPromise(gate.shared(A, held.wait));
+    await tick();
+    const ran: string[] = [];
+    const policy = Effect.runPromise(gate.exclusive(A, Effect.sync(() => void ran.push("policy"))));
+    await tick();
+    const queued = Effect.runFork(gate.shared(A, Effect.sync(() => void ran.push("queued"))));
+    await tick();
+    // The hold it waits behind is still taken: the interruption does not wait for it.
+    expect(await within(Effect.runPromise(Fiber.interrupt(queued)))).toBe(true);
+    held.open();
+    await Promise.all([first, policy]);
+    expect(ran).toEqual(["policy"]);
+    await Effect.runPromise(gate.exclusive(A, Effect.void));
+  });
+
+  test("a queued exclusive waiter is interrupted at once and lets the writes behind it go", async () => {
+    const gate = new PolicyGate();
+    const held = latch();
+    const first = Effect.runPromise(gate.shared(A, held.wait));
+    await tick();
+    const ran: string[] = [];
+    const policy = Effect.runFork(gate.exclusive(A, Effect.sync(() => void ran.push("policy"))));
+    await tick();
+    const behind = Effect.runPromise(gate.shared(A, Effect.sync(() => void ran.push("behind"))));
+    await tick();
+    expect(ran).toEqual([]);
+    expect(await within(Effect.runPromise(Fiber.interrupt(policy)))).toBe(true);
+    await behind;
+    expect(ran).toEqual(["behind"]);
+    held.open();
+    await first;
+    await Effect.runPromise(gate.exclusive(A, Effect.void));
+  });
+
+  test("a write queued in the chain behind a policy write is interrupted at once", async () => {
+    const gate = new PolicyGate();
+    const held = latch();
+    const reached: string[] = [];
+    const h = chainHarness({ 3: AGENT }, { projects, reviews: { item: () => undefined, protectedBranches: () => [] }, gate }, () => ({
+      "tx.commit": (p: { tx: { txId: string } }) => Effect.map(p.tx.txId === "first" ? held.wait : Effect.void, () => (reached.push(p.tx.txId), { ok: true })),
+    }));
+    const write = (txId: string) => ({ projectId: A, tx: { txId, branch: "feature", author: "a", ops: [] } });
+    const first = h.call(3, "tx.commit", write("first"));
+    await tick();
+    const policy = Effect.runPromise(gate.exclusive(A, Effect.void));
+    await tick();
+    const queued = h.fork(3, "tx.commit", write("queued"));
+    await tick();
+    expect(await within(Effect.runPromise(Fiber.interrupt(queued)))).toBe(true);
+    held.open();
+    expect(codeOf(await first)).toBeUndefined();
+    await policy;
+    expect(reached).toEqual(["first"]);
+    // Nothing is left held: a policy write gets the gate at once.
+    await Effect.runPromise(gate.exclusive(A, Effect.void, 50));
+  });
+
   test("a failed or interrupted hold is given back", async () => {
     const gate = new PolicyGate({ waitMs: 50 });
     expect(Exit.isFailure(await Effect.runPromiseExit(gate.shared(A, Effect.fail("boom"))))).toBe(true);

@@ -111,6 +111,9 @@ describe("the reviews chain", () => {
     // A comment's `at` is bounded.
     const at = "1".repeat(REVIEW_COMMENT_AT_MAX + 1);
     expect(decodes(ReviewCommentPayload, { itemId: "i", body: "b", at })).toBe(false);
+    // The same rule as the store's: code points, no control characters (Task 6 review, N1).
+    expect(decodes(ReviewCommentPayload, { itemId: "i", body: "b", at: "\u{1F600}".repeat(REVIEW_COMMENT_AT_MAX) })).toBe(true);
+    expect(decodes(ReviewCommentPayload, { itemId: "i", body: "b", at: "1\u0085" })).toBe(false);
     const item = store.list(P)[0]!;
     expect(code(() => store.comment({ itemId: item.id, principal: "local:local", body: "b", at })).details).toMatchObject({ field: "at", reason: "tooLong" });
   });
