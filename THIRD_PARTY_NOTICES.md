@@ -625,7 +625,7 @@ expression in their `Cargo.toml`, with the count; each crate's licence text is i
 `LICENSE-*` file in its package on crates.io. Where the expression has an `OR`, Finisher uses the
 crate under an alternative `deny.toml` allows.
 
-- MIT OR Apache-2.0 (133):
+- MIT OR Apache-2.0 (134):
   `allocator-api2` 0.2.21, `anstyle` 1.0.14, `arrayvec` 0.7.8, `ash` 0.38.0+1.3.281,
   `base64` 0.22.1, 0.23.1, `bitflags` 2.13.2, `block-buffer` 0.12.1, `bstr` 1.13.1,
   `cc` 1.10.0, `cfg-if` 1.0.5, `clap_builder` 4.6.7, `clap_derive` 4.6.7, `clap_lex` 1.1.1,
@@ -651,6 +651,7 @@ crate under an alternative `deny.toml` allows.
   `renderdoc-sys` 1.1.0, `rustc_version` 0.4.1, `scopeguard` 1.2.0,
   `security-framework-sys` 2.17.0, `serde_core` 1.0.229, `serde_derive_internals` 0.30.0,
   `serde_derive` 1.0.229, `serde_json` 1.0.154, `serde` 1.0.229, `shlex` 2.0.1,
+  `signal-hook-registry` 1.4.8,
   `smallvec` 1.16.4, `smol_str` 0.3.7, `snafu-derive` 0.8.9, `stable_deref_trait` 1.2.1,
   `static_assertions` 1.1.0, `syn` 2.0.119, 3.0.9, `tempfile` 3.27.0,
   `thiserror-impl` 1.0.69, 2.0.21, `thiserror` 1.0.69, 2.0.21, `typenum` 1.20.1,
@@ -701,8 +702,8 @@ crate under an alternative `deny.toml` allows.
   `codespan-reporting` 0.13.1, `spirv` 0.4.0+sdk-1.4.341.0.
 - Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT (2):
   `linux-raw-sys` 0.12.1, `rustix` 1.1.6.
-- Apache-2.0/MIT (2):
-  `crc32c` 0.6.8, `pollster` 0.4.0.
+- Apache-2.0/MIT (3):
+  `crc32c` 0.6.8, `pollster` 0.4.0, `signal-hook` 0.3.18.
 - BSD-2-Clause OR Apache-2.0 OR MIT (2):
   `zerocopy-derive` 0.8.63, `zerocopy` 0.8.63.
 - CC0-1.0 OR MIT-0 OR Apache-2.0 (2):

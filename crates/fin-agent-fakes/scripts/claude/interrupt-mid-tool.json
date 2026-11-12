@@ -1,5 +1,6 @@
 {
+  "onInterrupt": "exit",
   "steps": [
-    {"exitOn": "interrupt", "expect": "user", "emit": [{"type": "system", "subtype": "status", "status": "running"}], "sleep": 600000}
+    {"expect": "user", "emit": [{"type": "system", "subtype": "status", "status": "running"}], "sleep": 600000}
   ]
 }

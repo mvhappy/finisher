@@ -3,6 +3,8 @@
 
 use std::collections::BTreeMap;
 
+pub type Refusals = BTreeMap<String, Vec<String>>;
+
 use serde_json::{Value, json};
 
 pub const BOOLS: &[&str] = &[
@@ -14,6 +16,7 @@ pub const BOOLS: &[&str] = &[
     "--disable-slash-commands",
     "--restricted",
     "--safe-mode",
+    "--bare",
     "--version",
 ];
 pub const VALUES: &[&str] = &[
@@ -36,6 +39,7 @@ pub const VALUES: &[&str] = &[
     "--resume",
     "--max-budget-usd",
     "--max-turns",
+    "--add-dir",
 ];
 const MODES: &[&str] = &[
     "default",
@@ -50,7 +54,7 @@ const MODES: &[&str] = &[
 #[derive(Debug, PartialEq)]
 pub enum Command {
     Version,
-    AuthStatus { json: bool },
+    AuthStatus { text: bool },
     Print,
 }
 
@@ -89,14 +93,16 @@ pub fn is_uuid(s: &str) -> bool {
             .all(|(p, n)| p.len() == n && p.bytes().all(|b| b.is_ascii_hexdigit()))
 }
 
-pub fn parse(args: &[String]) -> Result<Args, String> {
+/// Parses `args`; `refuse` names flag values this version does not know.
+pub fn parse(args: &[String], refuse: &Refusals) -> Result<Args, String> {
     if args.first().map(String::as_str) == Some("auth") {
-        let mut json = false;
+        let mut text = false;
         let mut seen_status = false;
         for a in &args[1..] {
             match a.as_str() {
                 "status" => seen_status = true,
-                "--json" => json = true,
+                "--json" => text = false,
+                "--text" => text = true,
                 other if other.starts_with('-') => {
                     return Err(format!("error: unknown option '{other}'"));
                 }
@@ -104,10 +110,10 @@ pub fn parse(args: &[String]) -> Result<Args, String> {
             }
         }
         if !seen_status {
-            return Err("error: fake-claude supports only `auth status [--json]`".into());
+            return Err("error: fake-claude supports only `auth status [--json|--text]`".into());
         }
         return Ok(Args {
-            command: Command::AuthStatus { json },
+            command: Command::AuthStatus { text },
             flags: BTreeMap::new(),
         });
     }
@@ -135,7 +141,16 @@ pub fn parse(args: &[String]) -> Result<Args, String> {
                 }
                 None => return Err(format!("error: option '{name} <value>' argument missing")),
             };
-            flags.insert(name.to_string(), Value::String(value));
+            match flags.get_mut(name) {
+                // A repeated value flag (`--add-dir a --add-dir b`) keeps every value.
+                Some(Value::Array(all)) => all.push(Value::String(value)),
+                Some(first) if name == "--add-dir" => {
+                    *first = Value::Array(vec![first.take(), Value::String(value)]);
+                }
+                _ => {
+                    flags.insert(name.to_string(), Value::String(value));
+                }
+            }
         } else {
             return Err(format!("error: unknown option '{a}'"));
         }
@@ -145,6 +160,13 @@ pub fn parse(args: &[String]) -> Result<Args, String> {
         flags,
     };
     validate(&args)?;
+    for (flag, values) in refuse {
+        if let Some(v) = args.str(flag)
+            && values.iter().any(|r| r == v)
+        {
+            return Err(refused_value(flag, v));
+        }
+    }
     let command = if args.flags.contains_key("--version") {
         Command::Version
     } else {
@@ -191,9 +213,9 @@ fn validate(args: &Args) -> Result<(), String> {
         }
     }
     if let Some(v) = args.str("--max-budget-usd")
-        && !v.parse::<f64>().is_ok_and(|n| n.is_finite() && n > 0.0)
+        && !v.parse::<f64>().is_ok_and(|n| n.is_finite() && n >= 0.0)
     {
-        return Err("Error: --max-budget-usd must be a positive number greater than 0".into());
+        return Err("Error: --max-budget-usd must be a number greater than or equal to 0".into());
     }
     let print = args.flags.contains_key("--print");
     let stream_out = args.str("--output-format") == Some("stream-json");
@@ -222,4 +244,16 @@ fn validate(args: &Args) -> Result<(), String> {
         return Err("Error: --restricted refuses --permission-mode bypassPermissions".into());
     }
     Ok(())
+}
+
+/// The error a version that lacks `value` gives: `--permission-prompt-tool` takes an MCP tool
+/// name, so an unknown value is a missing tool; other flags refuse it as a choice.
+fn refused_value(flag: &str, value: &str) -> String {
+    if flag == "--permission-prompt-tool" {
+        format!(
+            "Error: MCP tool {value} (passed via --permission-prompt-tool) not found. Available MCP tools: none"
+        )
+    } else {
+        format!("error: option '{flag} <value>' argument '{value}' is invalid.")
+    }
 }

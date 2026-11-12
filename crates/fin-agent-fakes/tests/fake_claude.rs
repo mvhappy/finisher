@@ -1,162 +1,69 @@
 //! `fake-claude` against its own binary: handshake, flags, control protocol, resume.
 
-use std::io::{BufRead, BufReader, Write};
+mod common;
+
 use std::path::{Path, PathBuf};
-use std::process::{Child, ChildStdin, Command, Stdio};
-use std::sync::mpsc::{Receiver, channel};
-use std::time::Duration;
+use std::process::Command;
 
+use common::*;
 use serde_json::{Value, json};
-
-const UUID: &str = "0194f2a0-7c3e-4b1a-9d52-3f6a1c8e5b70";
-const OTHER_UUID: &str = "0194f2a0-7c3e-4b1a-9d52-3f6a1c8e5b71";
-const LINE_WAIT: Duration = Duration::from_secs(10);
-
-struct Dir(PathBuf);
-
-impl Dir {
-    fn new(tag: &str) -> Dir {
-        let n = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let p = std::env::temp_dir().join(format!("fake-claude-{tag}-{}-{n}", std::process::id()));
-        std::fs::create_dir_all(&p).unwrap();
-        Dir(p)
-    }
-    fn path(&self, name: &str) -> PathBuf {
-        self.0.join(name)
-    }
-}
-
-impl Drop for Dir {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
-    }
-}
-
-const BASE_ARGS: &[&str] = &[
-    "-p",
-    "--input-format",
-    "stream-json",
-    "--output-format",
-    "stream-json",
-    "--verbose",
-];
-
-struct Fake {
-    child: Child,
-    stdin: Option<ChildStdin>,
-    lines: Receiver<String>,
-}
-
-impl Fake {
-    fn start(dir: &Dir, script: Option<Value>, extra: &[&str], envs: &[(&str, &str)]) -> Fake {
-        let mut cmd = Command::new(env!("CARGO_BIN_EXE_fake-claude"));
-        cmd.args(BASE_ARGS)
-            .args(extra)
-            .env_clear()
-            .env("PATH", std::env::var_os("PATH").unwrap_or_default());
-        cmd.env("CLAUDE_CONFIG_DIR", dir.path("config"))
-            .env("FAKE_CLAUDE_OBSERVED", dir.path("observed.json"));
-        if let Some(s) = script {
-            std::fs::write(dir.path("script.json"), s.to_string()).unwrap();
-            cmd.env("FAKE_CLAUDE_SCRIPT", dir.path("script.json"));
-        }
-        for (k, v) in envs {
-            cmd.env(k, v);
-        }
-        cmd.current_dir(&dir.0)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null());
-        let mut child = cmd.spawn().unwrap();
-        let stdin = child.stdin.take();
-        let stdout = child.stdout.take().unwrap();
-        let (tx, lines) = channel();
-        std::thread::spawn(move || {
-            for l in BufReader::new(stdout).lines().map_while(Result::ok) {
-                if tx.send(l).is_err() {
-                    break;
-                }
-            }
-        });
-        Fake {
-            child,
-            stdin,
-            lines,
-        }
-    }
-
-    fn send(&mut self, v: Value) {
-        let stdin = self.stdin.as_mut().unwrap();
-        writeln!(stdin, "{v}").unwrap();
-        stdin.flush().unwrap();
-    }
-
-    fn user(&mut self, text: &str) {
-        self.send(json!({"type": "user", "message": {"role": "user", "content": [{"type": "text", "text": text}]}, "parent_tool_use_id": null, "session_id": UUID}));
-    }
-
-    fn control(&mut self, id: &str, subtype: &str) {
-        self.send(
-            json!({"type": "control_request", "request_id": id, "request": {"subtype": subtype}}),
-        );
-    }
-
-    fn read(&self) -> Value {
-        let l = self
-            .lines
-            .recv_timeout(LINE_WAIT)
-            .expect("a line from fake-claude");
-        serde_json::from_str(&l).unwrap_or_else(|_| panic!("not JSON: {l}"))
-    }
-
-    fn silent_for(&self, ms: u64) -> bool {
-        self.lines.recv_timeout(Duration::from_millis(ms)).is_err()
-    }
-
-    fn finish(mut self) -> std::process::ExitStatus {
-        self.stdin.take();
-        self.child.wait().unwrap()
-    }
-}
-
-fn observed(dir: &Dir) -> Value {
-    serde_json::from_str(&std::fs::read_to_string(dir.path("observed.json")).unwrap()).unwrap()
-}
 
 fn one_turn(delta: Value) -> Value {
     json!({"steps": [{"expect": "user", "cumulativeUsage": delta, "text": "hi"}]})
 }
+
+const AGENTS: [&str; 5] = [
+    "claude",
+    "Explore",
+    "general-purpose",
+    "Plan",
+    "statusline-setup",
+];
 
 #[test]
 fn fake_answers_initialize_before_prompt() {
     let dir = Dir::new("init");
     let mut f = Fake::start(&dir, None, &["--session-id", UUID], &[]);
     f.control("req-1", "initialize");
-    let r = f.read();
+    let ui = f.read_any();
+    assert_eq!(
+        (ui["type"].as_str(), ui["subtype"].as_str()),
+        (Some("system"), Some("ui_invalidate"))
+    );
+    assert_eq!(ui["session_id"], UUID);
+    let r = f.read_any();
     assert_eq!(r["type"], "control_response");
     assert_eq!(r["response"]["subtype"], "success");
     assert_eq!(r["response"]["request_id"], "req-1");
+    assert_eq!(r["response"]["pending_permission_requests"], json!([]));
     let body = &r["response"]["response"];
     assert_eq!(body["commands"], json!([]));
     assert_eq!(body["models"][0]["value"], "default");
-    assert!(
-        body["models"][0]["resolvedModel"].is_string()
-            && body["models"][0]["displayName"].is_string()
-    );
+    assert_eq!(body["models"][0]["resolvedModel"], "claude-opus-5-5");
+    let names: Vec<&str> = body["agents"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|a| a["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(names, AGENTS);
     assert_eq!(body["account"]["tokenSource"], "claude.ai");
-    assert!(
-        body["claude_code_version"].is_string()
-            && body["capabilities"].is_array()
-            && body["pid"].is_number()
+    assert_eq!(
+        body["capabilities"],
+        json!([
+            "ui_surface_v1",
+            "mcp_call_result_not_for_model_v1",
+            "mcp_call_check_permissions_v1"
+        ])
     );
+    assert_eq!(body["output_style"], "default");
+    assert_eq!(body["current_permission_mode"], "default");
+    assert!(body["claude_code_version"].is_string() && body["pid"].is_number());
     assert!(
         f.silent_for(300),
         "nothing but the initialize response before a prompt"
     );
-    assert!(f.finish().success());
+    assert!(f.finish().success(), "EOF after initialize only exits 0");
 }
 
 #[test]
@@ -169,8 +76,6 @@ fn fake_emits_init_on_first_user_line() {
         "manual",
         "--tools",
         "Read,Edit",
-        "--model",
-        "opus",
     ];
     let mut f = Fake::start(
         &dir,
@@ -178,27 +83,30 @@ fn fake_emits_init_on_first_user_line() {
         &args,
         &[],
     );
-    f.control("req-1", "initialize");
-    assert_eq!(f.read()["type"], "control_response");
+    initialize(&mut f);
     f.user("hello");
-    let init = f.read();
+    let init = f.read_any();
     assert_eq!(
         (init["type"].as_str(), init["subtype"].as_str()),
         (Some("system"), Some("init"))
     );
     assert_eq!(init["session_id"], UUID);
-    assert_eq!(init["tools"], json!(["Read", "Edit"]));
+    assert_eq!(init["tools"], json!(["Edit", "Read"]), "the CLI's order");
     assert_eq!(init["permissionMode"], "default");
-    for k in [
-        "mcp_servers",
-        "plugins",
-        "skills",
-        "slash_commands",
-        "capabilities",
-    ] {
+    assert_eq!(init["model"], "claude-opus-5-5");
+    assert_eq!(init["agents"], json!(AGENTS));
+    assert_eq!(init["mcp_servers"], json!([]));
+    for k in ["plugins", "skills", "slash_commands", "capabilities"] {
         assert!(init[k].is_array(), "{k}");
     }
-    assert!(init["memory_paths"].is_null() && init["apiKeySource"].is_string());
+    assert!(init.get("memory_paths").is_none(), "absent, not null");
+    assert_eq!(init["apiKeySource"], "none");
+    assert!(init["messaging_socket_path"].is_string() || cfg!(not(unix)));
+    let status = f.read_any();
+    assert_eq!(
+        (status["subtype"].as_str(), status["status"].as_str()),
+        (Some("status"), Some("requesting"))
+    );
     let result = f.read();
     assert_eq!(result["type"], "result");
     assert_eq!(result["is_error"], false);
@@ -209,9 +117,74 @@ fn fake_emits_init_on_first_user_line() {
 }
 
 #[test]
+fn fake_init_honours_model_disallowed_tools_and_settings() {
+    let dir = Dir::new("initflags");
+    let settings = dir.write(
+        "s.json",
+        &json!({"outputStyle": "Concise", "disableAllHooks": true, "unknownKey": 1}),
+    );
+    let s = settings.to_str().unwrap();
+    let mut f = Fake::start(
+        &dir,
+        Some(json!({"init": {"plugins": "$remove", "memory_paths": null}})),
+        &[
+            "--tools",
+            "default",
+            "--disallowedTools",
+            "Cron*,Task,Bash(rm *)",
+            "--model",
+            "sonnet",
+            "--settings",
+            s,
+            "--restricted",
+        ],
+        &[],
+    );
+    assert_eq!(initialize(&mut f)["output_style"], "Concise");
+    f.user("x");
+    let init = f.read();
+    assert_eq!(init["model"], "claude-sonnet-5-5");
+    assert_eq!(init["output_style"], "Concise");
+    let tools: Vec<&str> = init["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t.as_str().unwrap())
+        .collect();
+    for gone in [
+        "CronDelete",
+        "CronList",
+        "Task",
+        "Bash",
+        "WebFetch",
+        "Monitor",
+        "Workflow",
+    ] {
+        assert!(!tools.contains(&gone), "{gone} in {tools:?}");
+    }
+    assert!(tools.contains(&"Read") && tools.contains(&"ScheduleWakeup"));
+    assert!(init.get("plugins").is_none(), "$remove deletes a key");
+    assert!(init["memory_paths"].is_null() && init.get("memory_paths").is_some());
+    assert!(
+        init.get("messaging_socket_path").is_none(),
+        "no inbox socket under --restricted"
+    );
+    assert!(f.finish().success());
+    assert_eq!(observed(&dir)["settings"], "applied");
+
+    // One wrongly typed known key: the whole file is ignored, outputStyle included.
+    let dir = Dir::new("badsettings");
+    let bad = dir.write("s.json", &json!({"outputStyle": "Concise", "permissions": {"blockWritesOutsideWorkingDirectories": "yes"}}));
+    let mut f = Fake::start(&dir, None, &["--settings", bad.to_str().unwrap()], &[]);
+    assert_eq!(initialize(&mut f)["output_style"], "default");
+    assert!(f.finish().success());
+    assert_eq!(observed(&dir)["settings"], "ignored");
+}
+
+#[test]
 fn fake_refuses_unknown_flag() {
     let dir = Dir::new("flags");
-    let out = Command::new(env!("CARGO_BIN_EXE_fake-claude"))
+    let out = Command::new(BIN)
         .args(BASE_ARGS)
         .args(["--bogus-flag", "x"])
         .env("FAKE_CLAUDE_OBSERVED", dir.path("observed.json"))
@@ -229,9 +202,9 @@ fn fake_refuses_unknown_flag() {
     for bad in [
         ["--permission-mode", "sometimes"],
         ["--session-id", "not-a-uuid"],
-        ["--max-budget-usd", "0"],
+        ["--max-budget-usd", "-1"],
     ] {
-        let st = Command::new(env!("CARGO_BIN_EXE_fake-claude"))
+        let st = Command::new(BIN)
             .args(BASE_ARGS)
             .args(bad)
             .output()
@@ -267,7 +240,12 @@ fn fake_refuses_unknown_flag() {
             "--model",
             "default",
             "--max-budget-usd",
-            "1.5",
+            "0",
+            "--add-dir",
+            "a",
+            "--add-dir",
+            "b",
+            "--bare",
             "--restricted",
             &format!("--resume={UUID}"),
         ],
@@ -284,6 +262,38 @@ fn fake_refuses_unknown_flag() {
     assert_eq!(obs["flags"]["--resume"], UUID);
     assert_eq!(obs["flags"]["--permission-mode"], "manual");
     assert_eq!(obs["flags"]["--restricted"], true);
+    assert_eq!(obs["flags"]["--bare"], true);
+    assert_eq!(obs["flags"]["--add-dir"], json!(["a", "b"]));
+    assert_eq!(obs["flags"]["--max-budget-usd"], "0");
+}
+
+#[test]
+fn fake_refuses_a_flag_value_the_script_drops() {
+    let dir = Dir::new("refusevalue");
+    let script = json!({"refuseFlagValues": {"--permission-prompt-tool": ["stdio"]}});
+    let mut cmd = command(
+        &dir,
+        Some(script),
+        &["--permission-prompt-tool", "stdio"],
+        &[],
+    );
+    let out = cmd.output().unwrap();
+    assert_eq!(out.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("--permission-prompt-tool"));
+    assert!(
+        observed(&dir)["refused"]
+            .as_str()
+            .unwrap()
+            .contains("stdio")
+    );
+    let script = json!({"refuseFlagValues": {"--permission-prompt-tool": ["stdio"]}});
+    let f = Fake::start(
+        &dir,
+        Some(script),
+        &["--permission-prompt-tool", "mcp__finisher__approve"],
+        &[],
+    );
+    assert!(f.finish().success(), "another value is still accepted");
 }
 
 #[test]
@@ -304,36 +314,47 @@ fn fake_can_use_tool_round_trip() {
     assert_eq!(req["request"]["tool_name"], "Bash");
     assert_eq!(req["request"]["input"], json!({"command": "ls"}));
     assert!(req["request"]["tool_use_id"].is_string());
-    let rid = req["request_id"].clone();
-    f.send(
-        json!({"type": "control_response", "response": {"subtype": "success", "request_id": rid,
-        "response": {"behavior": "allow", "updatedInput": {"command": "ls"}}}}),
+    // Keys out of serde's order: the record keeps the line as sent, byte for byte.
+    let raw = format!(
+        r#"{{"type":"control_response","response":{{"subtype":"success","request_id":{},"response":{{"updatedInput":{{"z":1,"command":"ls"}},"behavior":"allow"}}}}}}"#,
+        req["request_id"]
     );
+    f.send_raw(&raw);
     let allowed = f.read();
     assert_eq!(
         (allowed["subtype"].as_str(), allowed["session_id"].as_str()),
         (Some("allowed"), Some(UUID))
     );
+    assert_eq!(
+        f.read()["type"],
+        "result",
+        "a turn always ends with a result"
+    );
     f.user("again");
     let req = f.read();
     assert_eq!(req["request"]["tool_name"], "Write");
-    f.send(json!({"type": "control_response", "response": {"subtype": "success", "request_id": req["request_id"],
-        "response": {"behavior": "deny", "message": "no"}}}));
+    f.answer(&req, json!({"behavior": "deny", "message": "no"}));
     assert_eq!(f.read()["subtype"], "denied");
     assert!(f.finish().success());
-    let answers = observed(&dir)["answers"].clone();
+    let obs = observed(&dir);
+    let answers = &obs["answers"];
     assert_eq!(answers[0]["answer"]["behavior"], "allow");
+    assert_eq!(answers[0]["raw"], raw);
+    assert_eq!(answers[0]["via"], "stdio");
+    assert_eq!(answers[1]["tool"], "Write");
     assert_eq!(
-        answers[1],
-        json!({"tool": "Write", "answer": {"behavior": "deny", "message": "no"}})
+        answers[1]["answer"],
+        json!({"behavior": "deny", "message": "no"})
     );
+    assert_eq!(obs["controlResponses"].as_array().unwrap().len(), 2);
+    assert_eq!(obs["controlResponses"][0]["raw"], raw);
 }
 
 #[test]
 fn fake_interrupt_then_result() {
     let dir = Dir::new("interrupt");
-    let script = json!({"steps": [
-        {"exitOn": "interrupt", "expect": "user", "sleep": 60000, "emit": [{"type": "system", "subtype": "never"}]},
+    let script = json!({"onInterrupt": "exit", "steps": [
+        {"expect": "user", "sleep": 60000, "emit": [{"type": "system", "subtype": "never"}]},
     ]});
     let mut f = Fake::start(&dir, Some(script), &["--session-id", UUID], &[]);
     f.user("work");
@@ -354,10 +375,11 @@ fn fake_interrupt_then_result() {
     assert_eq!(result["session_id"], UUID);
     assert!(
         f.child.wait().unwrap().success(),
-        "exitOn interrupt ends the process"
+        "onInterrupt exit ends the process"
     );
-    assert!(
-        f.lines.try_recv().is_err(),
+    assert_eq!(
+        f.drain(),
+        Vec::<Value>::new(),
         "the skipped step emitted nothing"
     );
 }
@@ -392,7 +414,12 @@ fn run_session(dir: &Dir, flag: &[&str], delta: Value) -> Value {
     f.user("work");
     assert_eq!(f.read()["subtype"], "init");
     let result = f.read();
-    assert!(f.finish().success());
+    let ok = f.finish().success();
+    assert_eq!(
+        ok,
+        result["is_error"] == false,
+        "EOF exits 1 after an is_error result"
+    );
     result
 }
 
@@ -426,11 +453,13 @@ fn fake_resume_reads_its_transcript() {
     assert_eq!(init["session_id"], UUID, "a resume keeps the session id");
     assert_eq!(f.read()["type"], "result");
     assert!(f.finish().success());
-    let obs = observed(&dir);
-    assert_eq!(obs["resume"]["found"], true);
-    assert!(obs["resume"]["transcriptLines"].as_u64().unwrap() >= 2);
+    let all = observed_all(&dir);
+    assert_eq!(all.len(), 2, "one record per process");
+    assert!(all[0]["resume"].is_null());
+    assert_eq!(all[1]["resume"]["found"], true);
+    assert!(all[1]["resume"]["transcriptLines"].as_u64().unwrap() >= 2);
 
-    let bad = Command::new(env!("CARGO_BIN_EXE_fake-claude"))
+    let bad = Command::new(BIN)
         .args(BASE_ARGS)
         .arg(format!("--resume={OTHER_UUID}"))
         .env("CLAUDE_CONFIG_DIR", dir.path("config"))
@@ -438,6 +467,22 @@ fn fake_resume_reads_its_transcript() {
         .unwrap();
     assert_eq!(bad.status.code(), Some(1));
     assert!(String::from_utf8_lossy(&bad.stderr).contains("No conversation found with session ID"));
+    let line: Value = serde_json::from_slice(&bad.stdout).unwrap();
+    assert_eq!(
+        (
+            line["type"].as_str(),
+            line["subtype"].as_str(),
+            line["is_error"].as_bool(),
+            line["num_turns"].as_u64()
+        ),
+        (
+            Some("result"),
+            Some("error_during_execution"),
+            Some(true),
+            Some(0)
+        )
+    );
+    assert_eq!(line["session_id"], OTHER_UUID);
 }
 
 #[test]
@@ -457,7 +502,7 @@ fn fake_reports_cumulative_usage_after_resume() {
     );
     assert_eq!(second["usage"]["input_tokens"], 150);
     assert_eq!(second["usage"]["output_tokens"], 30);
-    assert_eq!(second["modelUsage"]["claude-fake-1"]["outputTokens"], 30);
+    assert_eq!(second["modelUsage"]["claude-opus-5-5"]["outputTokens"], 30);
     assert!((second["total_cost_usd"].as_f64().unwrap() - 0.03).abs() < 1e-9);
     assert_eq!(second["num_turns"], 2);
     // The budget backstop counts the restored total.
@@ -489,7 +534,7 @@ fn fake_records_env_names_only() {
     assert!(f.finish().success());
     let raw = std::fs::read_to_string(dir.path("observed.json")).unwrap();
     assert!(!raw.contains(secret) && !raw.contains(&dir.0.to_string_lossy().to_string()));
-    let obs: Value = serde_json::from_str(&raw).unwrap();
+    let obs = observed(&dir);
     let names: Vec<&str> = obs["envNames"]
         .as_array()
         .unwrap()
@@ -497,21 +542,17 @@ fn fake_records_env_names_only() {
         .filter_map(Value::as_str)
         .collect();
     assert!(names.contains(&"CLAUDE_CODE_OAUTH_TOKEN") && names.contains(&"DISABLE_AUTOUPDATER"));
-    assert!(
-        obs["envNames"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .all(|n| !n.as_str().unwrap().contains('='))
-    );
+    assert!(names.iter().all(|n| !n.contains('=')));
     assert_eq!(obs["flags"]["--session-id"], UUID);
 }
 
 #[test]
 fn fake_reports_version_and_auth_status() {
     let run = |args: &[&str], script: Option<&Dir>| {
-        let mut c = Command::new(env!("CARGO_BIN_EXE_fake-claude"));
-        c.args(args).env("FAKE_CLAUDE_VERSION", "2.1.400");
+        let mut c = Command::new(BIN);
+        c.args(args)
+            .env("FAKE_CLAUDE_VERSION", "2.1.400")
+            .env("CLAUDE_CONFIG_DIR", "/nonexistent/cfg");
         if let Some(d) = script {
             c.env("FAKE_CLAUDE_SCRIPT", d.path("script.json"));
         }
@@ -522,16 +563,29 @@ fn fake_reports_version_and_auth_status() {
         "2.1.400 (Claude Code)"
     );
     let dir = Dir::new("auth");
-    std::fs::write(
-        dir.path("script.json"),
-        json!({"auth": {"loggedIn": false, "authMethod": "none"}}).to_string(),
-    )
-    .unwrap();
-    let out = run(&["auth", "status", "--json"], Some(&dir));
-    let v: Value = serde_json::from_slice(&out.stdout).unwrap();
-    assert_eq!(v["loggedIn"], false);
-    assert_eq!(out.status.code(), Some(1));
-    let signed = run(&["auth", "status", "--json"], None);
+    dir.write("script.json", &json!({"auth": {"loggedIn": false}}));
+    for args in [&["auth", "status"][..], &["auth", "status", "--json"]] {
+        let out = run(args, Some(&dir));
+        let v: Value = serde_json::from_slice(&out.stdout).unwrap();
+        assert_eq!(v["loggedIn"], false, "{args:?}");
+        assert_eq!(v["authMethod"], "none");
+        assert_eq!(v["apiProvider"], "firstParty");
+        let cfg = Path::new("/nonexistent/cfg");
+        assert_eq!(v["configDirectory"], cfg.to_string_lossy().as_ref());
+        assert_eq!(
+            v["projectsDirectory"],
+            cfg.join("projects").to_string_lossy().as_ref()
+        );
+        assert!(v["loginExpiresAt"].is_null() && v["analyticsDisabled"] == true);
+        assert_eq!(out.status.code(), Some(1));
+    }
+    let text = run(&["auth", "status", "--text"], Some(&dir));
+    assert_eq!(
+        String::from_utf8_lossy(&text.stdout).trim(),
+        "Not logged in. Run claude auth login to authenticate."
+    );
+    assert_eq!(text.status.code(), Some(1));
+    let signed = run(&["auth", "status"], None);
     assert_eq!(
         serde_json::from_slice::<Value>(&signed.stdout).unwrap()["loggedIn"],
         true
@@ -544,7 +598,7 @@ fn fake_shipped_scripts_parse() {
     let scripts = Path::new(env!("CARGO_MANIFEST_DIR")).join("scripts/claude");
     let mut n = 0;
     for entry in std::fs::read_dir(scripts).unwrap().flatten() {
-        let out = Command::new(env!("CARGO_BIN_EXE_fake-claude"))
+        let out = Command::new(BIN)
             .arg("--version")
             .env("FAKE_CLAUDE_SCRIPT", entry.path())
             .output()

@@ -3,59 +3,105 @@
 //! # `fake-claude`
 //!
 //! A stand-in for the Claude Code CLI (`claude -p --input-format stream-json
-//! --output-format stream-json ...`). It parses the flags the real CLI would (an unknown
-//! flag or a bad value exits 1 with a commander-style error on stderr), answers `--version`
-//! and `auth status [--json]`, answers the `initialize` control request before any prompt,
-//! emits `system/init` on the first user line, and then plays a script. It reads nothing but
-//! its script and, for `--resume`, the transcripts under `$CLAUDE_CONFIG_DIR/projects/`.
+//! --output-format stream-json ...`), shaped after the lines 2.1.321 wrote in plan 7D's Task 0.
+//! It parses the flags the real CLI would (an unknown flag or a bad value exits 1 with a
+//! commander-style error on stderr), answers `--version` and `auth status [--json|--text]`,
+//! answers the `initialize` control request before any prompt, emits `system/init` on the
+//! first user line, and then plays a script. It reads nothing but its configuration, its
+//! script, `--settings`, `--mcp-config` and, for `--resume`, the transcripts under
+//! `$CLAUDE_CONFIG_DIR/projects/`.
 //!
-//! ## Environment (all optional)
+//! ## Configuration
 //!
-//! - `FAKE_CLAUDE_SCRIPT`: path of the script (JSON). Without it the fake answers
-//!   `initialize`, emits `system/init`, and ends every user turn with a plain `result`.
-//!   *Tests that sandbox the adapter must admit this name (and the two below) through
-//!   `assertSessionEnv`'s `extra`.*
-//! - `FAKE_CLAUDE_OBSERVED`: path of the file the fake writes (rewritten on every change);
-//!   else the script's `observed` field; else nothing is written.
-//! - `FAKE_CLAUDE_VERSION`: the version for `--version` and `initialize`
-//!   (else the script's `version`, else `2.1.321`).
-//! - `CLAUDE_CONFIG_DIR`: where transcripts live (`projects/<cwd>/<uuid>.jsonl`). Unset: no
-//!   transcript is kept and `--resume` finds nothing.
+//! The sidecar file `<directory of the executable>/fake-claude.json`, `{"script", "observed",
+//! "version"}` (a relative `script` is relative to that directory), so a test that runs the
+//! fake inside a sandbox passes nothing through the environment: it copies the binary into
+//! a directory of its own and writes the sidecar there. The variables `FAKE_CLAUDE_SCRIPT`,
+//! `FAKE_CLAUDE_OBSERVED` and `FAKE_CLAUDE_VERSION` win over the sidecar (the crate's own
+//! tests use them). Without a script the fake answers `initialize`, emits `system/init`, and
+//! ends every user turn with a plain `result`. The version defaults to the script's
+//! `version`, else `2.1.321`. `CLAUDE_CONFIG_DIR` is where transcripts live
+//! (`projects/<cwd>/<uuid>.jsonl`); unset, none is kept and `--resume` finds nothing.
 //!
 //! ## Observed file
 //!
-//! `{"argv": [...], "flags": {"--permission-mode": "manual", "--verbose": true, ...},
-//! "envNames": [sorted names, never values], "resume": {"found", "transcriptLines"},
-//! "answers": [{"tool", "answer"}], "spawned": [{"argv", "code"}], "refused": "<reason>"}`.
+//! `observed` (else the script's `observed`) is an absolute path, or `@config/<name>` for
+//! `<$CLAUDE_CONFIG_DIR>/<name>` (writable inside the sandbox). The file is a JSON array with
+//! one record per process, appended in start order and never removed (a resume test counts
+//! them): `{"id", "pid", "argv", "flags": {"--permission-mode": "manual", "--verbose": true,
+//! "--add-dir": [..], ...}, "envNames": [sorted names, never values], "settings":
+//! "applied"|"ignored"|"absent", "resume": {"found", "transcriptLines"}, "controlRequests":
+//! [{"requestId", "subtype", "request"}], "controlResponses": [{"requestId", "subtype",
+//! "raw"}] (every answer the host sent, the line byte for byte), "answers": [{"tool",
+//! "requestId", "via": "stdio"|"mcp", "answer", "raw"}], "cancelled": [requestId],
+//! "spawned": [{"argv", "code"}], "refused": "<reason>"}`.
 //!
 //! ## Script
 //!
-//! `{"version", "model", "auth": {...}, "initialize": {...}, "init": {...}, "observed",
-//! "steps": [...]}`: `auth` is printed by `auth status --json` (default
-//! `{loggedIn, authMethod, email}`; exit 1 when `loggedIn` is false); `initialize` and `init`
-//! are shallow-merged over the `initialize` response and the `system/init` line. A step runs
-//! its fields in this order (all optional):
+//! `{"version", "model", "auth", "initialize", "init", "observed", "onInterrupt",
+//! "onSigint", "mcpTimeoutMs", "refuseFlagValues", "steps": [...]}`:
 //!
-//! 1. `exitOn: "interrupt"`: from now on an interrupt (control request or SIGINT) answers,
-//!    emits its `result`, and exits 0.
-//! 2. `expect: "user" | "control"` (with `subtype` for control): wait for a user line, or a
-//!    control request of that subtype (answered with an empty success).
-//! 3. `sleep` (ms), still serving control requests and queueing user lines (steers).
-//! 4. `writeFile {path, contents?}`; `spawn {argv}` (waits for it; the exit code is recorded).
-//! 5. `emit [lines]`: JSON values written as lines (`"$session_id"` is replaced; a string
+//! - `auth` is merged over what `auth status` prints (signed in by default; with
+//!   `"loggedIn": false` the CLI's signed-out fields, exit 1).
+//! - `initialize` and `init` are shallow-merged over the `initialize` response and the
+//!   `system/init` line; a value of `"$remove"` deletes that key. Defaults copy the real
+//!   CLI: five built-in `agents`, `capabilities`, the five models (`--model` resolves through
+//!   them, `default` → `claude-opus-5-5`), `memory_paths` absent (present only when
+//!   `--settings` turns `autoMemoryEnabled` on and `CLAUDE_CODE_DISABLE_AUTO_MEMORY` is not
+//!   `1`), `output_style` from `--settings`' `outputStyle`, `tools` from `--tools` (the
+//!   Linux default set; `--restricted` drops the command tools) less `--disallowedTools`
+//!   (bare names and trailing `*`), plus each connected SDK server's `mcp__<server>__<tool>`.
+//!   A `--settings` file in which a known key has the wrong type is ignored whole.
+//! - `onInterrupt` / `onSigint`: `"result"` (default: the open turn ends with an
+//!   `error_during_execution` result and the process stays), `"ignore"`, or `"exit"` (that
+//!   result, then exit 0; 130 for SIGINT). An interrupt with no turn open is answered and
+//!   writes no result.
+//! - `mcpTimeoutMs` (default 1000): how long the first turn waits for the SDK servers.
+//! - `refuseFlagValues`: `{"<flag>": [values]}` this version does not know (exit 1), e.g.
+//!   `--permission-prompt-tool stdio` for a version that dropped it.
+//!
+//! **SDK MCP servers.** For each `--mcp-config` server of `type: "sdk"` the fake sends the
+//! `mcp_message` `initialize` before it answers the host's `initialize` (or at the first turn
+//! when none came), then, once that is answered, `notifications/initialized` and
+//! `tools/list`. A server not through by the first turn's timeout is `failed` in
+//! `init.mcp_servers` and its tools are absent.
+//!
+//! **Turns.** A turn starts at a user line (`system/init` before the first, then
+//! `system/status {status: "requesting"}`) and ends with a `result`; one whose steps wrote
+//! none gets a plain `success` result before the next `expect: "user"` or when the steps run
+//! out. User lines received mid-turn are queued (steers; `result.queued_turn_count`) and
+//! played as the next turns. Then the fake idles: each user line gets a plain turn.
+//! **Stdin EOF** mid-turn lets the turn play to its `result` (a pending `ask` counts as
+//! denied), then the fake exits: 1 when the last result had `is_error`, else 0 (also 0 after
+//! `initialize` only). The system lines `ui_invalidate` (at start) and `status` are written
+//! as the CLI does. An unknown `--resume` writes `result {subtype: "error_during_execution",
+//! is_error: true, num_turns: 0}` on stdout, the CLI's message on stderr, and exits 1.
+//!
+//! A step runs its fields in this order (all optional):
+//!
+//! 1. `expect: "user" | "control"` (with `subtype` for control): wait for a user line (a new
+//!    turn), or a control request of that subtype (answered with an empty success).
+//! 2. `sleep` (ms), still serving control requests and queueing user lines.
+//! 3. `writeFile {path, contents?}`; `spawn {argv}` (waits for it; the exit code is recorded).
+//! 4. `emit [lines]`: JSON values written as lines (`"$session_id"` is replaced; a string
 //!    entry is written verbatim); `unknownLine` (a line of a type no CLI has).
-//! 6. `ask {tool, input}`: send a `can_use_tool` control request and wait for the answer, then
-//!    emit `onAllow` or `onDeny` (an `error` answer counts as a deny).
-//! 7. `notLoggedIn`: the `result` of an unsigned-in first turn.
+//! 5. `ask {tool, input, cancelAfterMs?}`: a `can_use_tool` control request, or with
+//!    `--permission-prompt-tool mcp__<server>__<tool>` an `mcp_message` `tools/call` of that
+//!    tool (the answer's text content is the `{behavior, ...}` JSON). Then `onAllow` or
+//!    `onDeny` (an `error` answer is a deny): a list of lines, or `{writeFile?, spawn?,
+//!    emit}` (so a `spawn` runs only when allowed). Unanswered after `cancelAfterMs`, the
+//!    request is withdrawn with `control_cancel_request` and neither branch runs.
+//! 6. `notLoggedIn`: the unsigned turn of the CLI (a synthetic `assistant` with
+//!    `error: "authentication_failed"`, then `result {subtype: "success", is_error: true,
+//!    terminal_reason: "api_error", modelUsage: {}}`).
 //!    `cumulativeUsage {inputTokens, outputTokens, cacheReadInputTokens,
 //!    cacheCreationInputTokens, costUsd}` (+ `text`): add this turn's delta to the process's
 //!    totals (restored from the transcript on `--resume`) and emit a `result` carrying the
-//!    cumulative `usage`, `modelUsage` and `total_cost_usd`.
-//! 8. `crash {signal: "KILL"|"TERM"|"SEGV"|"INT"|"HUP"}` or `{code}`.
+//!    cumulative `usage`, `modelUsage` and `total_cost_usd` (`error_max_budget_usd` past
+//!    `--max-budget-usd`).
+//! 7. `crash {signal: "KILL"|"TERM"|"SEGV"|"INT"|"HUP"}` or `{code}`.
 //!
-//! An interrupt mid-script emits the `control_response`, then a `result`
-//! (`error_during_execution`, `is_error: true`) and skips the remaining steps up to the next
-//! `expect: "user"`. When the steps run out the fake idles: each user line gets a plain
-//! `result`; EOF on stdin exits 0.
+//! After an interrupt ends a turn, its remaining steps are skipped up to the next
+//! `expect: "user"`.
 
 pub mod claude;

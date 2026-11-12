@@ -32,19 +32,22 @@ fn projects() -> Option<PathBuf> {
     Some(PathBuf::from(dir).join("projects"))
 }
 
+/// `<config dir>/projects/<the working directory, every non-alphanumeric as '-'>`.
+pub fn project_dir() -> Option<PathBuf> {
+    let cwd = std::env::current_dir()
+        .map(|c| c.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let slug: String = cwd
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+        .collect();
+    projects().map(|p| p.join(slug))
+}
+
 impl Transcript {
     /// The transcript for a fresh session in the current directory.
     pub fn create(uuid: &str) -> Transcript {
-        let path = projects().map(|p| {
-            let cwd = std::env::current_dir()
-                .map(|c| c.to_string_lossy().into_owned())
-                .unwrap_or_default();
-            let slug: String = cwd
-                .chars()
-                .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
-                .collect();
-            p.join(slug).join(format!("{uuid}.jsonl"))
-        });
+        let path = project_dir().map(|p| p.join(format!("{uuid}.jsonl")));
         Transcript { path }
     }
 

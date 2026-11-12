@@ -1,5 +1,5 @@
 {
-  "auth": {"loggedIn": false, "authMethod": "none"},
+  "auth": {"loggedIn": false},
   "initialize": {"account": {"tokenSource": "none", "apiProvider": "firstParty"}},
   "steps": [{"expect": "user", "notLoggedIn": true}]
 }

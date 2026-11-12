@@ -4,73 +4,69 @@ use std::collections::VecDeque;
 use std::io::{BufRead, Write};
 use std::process::Stdio;
 use std::sync::Arc;
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, channel};
 use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 
+mod ask;
 mod lines;
+mod mcp;
+mod results;
 
 use super::argv::{self, Args, Command};
+use super::config;
 use super::observed::Observed;
-use super::script::{self, Expect, Script, Step, Usage};
+use super::script::{self, Branch, Expect, OnInterrupt, Script, Spawn, Step, Usage, WriteFile};
+use super::settings::{self, Settings};
 use super::transcript::{Totals, Transcript};
+use ask::Outcome;
+use results::Kind;
 
 const POLL: Duration = Duration::from_millis(20);
 const DEFAULT_VERSION: &str = "2.1.321";
-const DEFAULT_TOOLS: &[&str] = &[
-    "Bash",
-    "Edit",
-    "Glob",
-    "Grep",
-    "Read",
-    "Write",
-    "WebFetch",
-    "WebSearch",
-];
 
 enum Ev {
     User(Value),
-    Answer(Value),
+    /// A `control_response` the host sent, and its raw line.
+    Answer(Value, String),
     Control(String),
+    /// An interrupt ended the open turn.
     Interrupted,
     Timeout,
     Eof,
 }
 
-enum Kind {
-    Turn { text: String, delta: Usage },
-    NotLoggedIn,
-    Interrupted,
-}
-
 pub fn main(argv: Vec<String>) -> i32 {
-    let script = match std::env::var("FAKE_CLAUDE_SCRIPT") {
-        Ok(p) => match script::load(&p) {
-            Ok(s) => s,
-            Err(e) => {
-                eprintln!("{e}");
-                return 1;
-            }
-        },
-        Err(_) => Script::default(),
+    let fail = |e: String| {
+        eprintln!("{e}");
+        1
     };
-    let version = std::env::var("FAKE_CLAUDE_VERSION")
-        .ok()
+    let cfg = match config::load() {
+        Ok(c) => c,
+        Err(e) => return fail(e),
+    };
+    let script = match cfg.script.as_deref().map(script::load) {
+        Some(Ok(s)) => s,
+        Some(Err(e)) => return fail(e),
+        None => Script::default(),
+    };
+    let version = cfg
+        .version
         .or_else(|| script.version.clone())
         .unwrap_or_else(|| DEFAULT_VERSION.to_string());
-    let observed_path = std::env::var("FAKE_CLAUDE_OBSERVED")
-        .ok()
-        .or_else(|| script.observed.clone());
-    let mut observed = Observed::new(observed_path.map(Into::into));
-    let args = match argv::parse(&argv) {
+    let observed_path = cfg
+        .observed
+        .or_else(|| script.observed.clone())
+        .and_then(|s| config::observed_path(&s));
+    let mut observed = Observed::new(observed_path);
+    let args = match argv::parse(&argv, &script.refuse_flag_values) {
         Ok(a) => a,
         Err(e) => {
             observed.start(&argv, json!({}));
             observed.set("refused", json!(e));
-            eprintln!("{e}");
-            return 1;
+            return fail(e);
         }
     };
     observed.start(&argv, args.flags_json());
@@ -79,32 +75,12 @@ pub fn main(argv: Vec<String>) -> i32 {
             println!("{version} (Claude Code)");
             0
         }
-        Command::AuthStatus { json } => auth_status(&script, json),
+        Command::AuthStatus { text } => results::auth_status(&script, text),
         Command::Print => match Runner::new(args, script, version, observed) {
             Ok(r) => r.play(),
-            Err(e) => {
-                eprintln!("{e}");
-                1
-            }
+            Err(code) => code,
         },
     }
-}
-
-fn auth_status(script: &Script, as_json: bool) -> i32 {
-    let status = script.auth.clone().unwrap_or_else(
-        || json!({"loggedIn": true, "authMethod": "claude.ai", "email": "user@example.invalid"}),
-    );
-    if as_json {
-        println!("{status}");
-    } else if status["loggedIn"] == true {
-        println!(
-            "Logged in (login method: {})",
-            status["authMethod"].as_str().unwrap_or("unknown")
-        );
-    } else {
-        println!("Not logged in");
-    }
-    if status["loggedIn"] == false { 1 } else { 0 }
 }
 
 struct Runner {
@@ -112,16 +88,23 @@ struct Runner {
     sigint: Arc<AtomicBool>,
     args: Args,
     script: Script,
+    settings: Settings,
+    mcp: mcp::Mcp,
     version: String,
     mode: String,
     session_id: String,
     transcript: Transcript,
     totals: Totals,
     observed: Observed,
+    /// User lines received while a turn runs (steers), played in order.
     pending: VecDeque<Value>,
+    started: bool,
     init_sent: bool,
+    turn_open: bool,
+    /// An interrupt ended the turn: its remaining steps are skipped.
     interrupted: bool,
-    exit_on_interrupt: bool,
+    eof: bool,
+    last_is_error: bool,
     req_n: u64,
 }
 
@@ -131,7 +114,7 @@ impl Runner {
         script: Script,
         version: String,
         mut observed: Observed,
-    ) -> Result<Runner, String> {
+    ) -> Result<Runner, i32> {
         let (session_id, transcript, totals) = match args.str("--resume") {
             Some(id) => match Transcript::find(id) {
                 Some((t, restored)) => {
@@ -143,7 +126,9 @@ impl Runner {
                 }
                 None => {
                     observed.set("resume", json!({"found": false}));
-                    return Err(format!("No conversation found with session ID: {id}"));
+                    println!("{}", results::resume_missing(id));
+                    eprintln!("No conversation found with session ID: {id}");
+                    return Err(1);
                 }
             },
             None => {
@@ -153,6 +138,9 @@ impl Runner {
                 (id.clone(), Transcript::create(&id), Totals::default())
             }
         };
+        let settings = Settings::load(args.str("--settings"));
+        observed.set("settings", json!(settings.state));
+        let mcp = mcp::Mcp::new(settings::mcp_servers(args.str("--mcp-config")));
         let mode = match args.str("--permission-mode") {
             None | Some("manual") => "default",
             Some(m) => m,
@@ -180,6 +168,8 @@ impl Runner {
             sigint,
             args,
             script,
+            settings,
+            mcp,
             version,
             mode,
             session_id,
@@ -187,9 +177,12 @@ impl Runner {
             totals,
             observed,
             pending: VecDeque::new(),
+            started: false,
             init_sent: false,
+            turn_open: false,
             interrupted: false,
-            exit_on_interrupt: false,
+            eof: false,
+            last_is_error: false,
             req_n: 0,
         })
     }
@@ -229,7 +222,7 @@ impl Runner {
     }
 
     /// Serves one stdin line; returns what a step may care about.
-    fn handle(&mut self, v: Value) -> Option<Ev> {
+    fn handle(&mut self, v: Value, raw: String) -> Option<Ev> {
         match v["type"].as_str() {
             Some("control_request") => {
                 let rid = v["request_id"].clone();
@@ -237,54 +230,92 @@ impl Runner {
                     .as_str()
                     .unwrap_or_default()
                     .to_string();
+                self.observed.push(
+                    "controlRequests",
+                    json!({"requestId": rid, "subtype": sub, "request": v["request"]}),
+                );
                 match sub.as_str() {
-                    "initialize" => self.respond(&rid, self.initialize_body()),
+                    "initialize" => {
+                        // The SDK servers' handshake starts before the answer (Task 0).
+                        self.mcp_start();
+                        self.on_start();
+                        let body = self.initialize_body();
+                        self.emit(&json!({"type": "control_response", "response": {
+                            "subtype": "success", "request_id": rid, "response": body,
+                            "pending_permission_requests": [], "pending_user_dialog_requests": []}}));
+                    }
                     "set_permission_mode" => {
                         if let Some(m) = v["request"]["mode"].as_str() {
-                            self.mode = if m == "manual" {
-                                "default".into()
-                            } else {
-                                m.into()
-                            };
+                            self.mode = if m == "manual" { "default" } else { m }.into();
                         }
                         self.respond(&rid, json!({}));
                     }
                     "interrupt" => {
                         self.respond(&rid, json!({}));
-                        self.interrupt();
-                        return Some(Ev::Interrupted);
+                        return Some(self.interrupt(false).unwrap_or(Ev::Control(sub)));
                     }
                     _ => self.respond(&rid, json!({})),
                 }
                 Some(Ev::Control(sub))
             }
-            Some("control_response") => Some(Ev::Answer(v)),
+            Some("control_response") => {
+                self.observed.push(
+                    "controlResponses",
+                    json!({"requestId": v["response"]["request_id"], "subtype": v["response"]["subtype"], "raw": raw}),
+                );
+                if self.mcp_answer(&v) {
+                    None
+                } else {
+                    Some(Ev::Answer(v, raw))
+                }
+            }
             Some("user") => {
                 self.transcript.append(&v);
-                if !self.init_sent {
-                    self.init_sent = true;
-                    self.emit(&self.init_line());
-                }
                 Some(Ev::User(v))
             }
             _ => None,
         }
     }
 
-    fn interrupt(&mut self) {
-        self.emit_result(Kind::Interrupted);
-        self.interrupted = true;
-        if self.exit_on_interrupt {
-            std::process::exit(0);
+    /// The first output of a session: `system/ui_invalidate` (Task 0: on every start).
+    fn on_start(&mut self) {
+        if !self.started {
+            self.started = true;
+            self.emit(&self.ui_invalidate());
         }
     }
 
+    /// Applies the script's interrupt knob; `Some(Interrupted)` when it ended the open turn.
+    fn interrupt(&mut self, sigint: bool) -> Option<Ev> {
+        let knob = if sigint {
+            self.script.on_sigint
+        } else {
+            self.script.on_interrupt
+        };
+        if knob == OnInterrupt::Ignore {
+            return None;
+        }
+        let ended = self.turn_open;
+        if ended {
+            self.emit_result(Kind::Interrupted);
+            self.interrupted = true;
+        }
+        if knob == OnInterrupt::Exit {
+            let _ = std::io::stdout().flush();
+            std::process::exit(if sigint { 130 } else { 0 });
+        }
+        ended.then_some(Ev::Interrupted)
+    }
+
+    /// The next event; with `timeout`, `Timeout` once it passes. After EOF a timed wait
+    /// still sleeps out its time (the turn plays on); an untimed one returns `Eof`.
     fn next(&mut self, timeout: Option<Duration>) -> Ev {
         let deadline = timeout.map(|t| Instant::now() + t);
         loop {
-            if self.sigint.swap(false, std::sync::atomic::Ordering::SeqCst) {
-                self.interrupt();
-                return Ev::Interrupted;
+            if self.sigint.swap(false, Ordering::SeqCst)
+                && let Some(ev) = self.interrupt(true)
+            {
+                return ev;
             }
             let wait = match deadline {
                 Some(d) => {
@@ -296,80 +327,56 @@ impl Runner {
                 }
                 None => POLL,
             };
+            if self.eof {
+                if deadline.is_none() {
+                    return Ev::Eof;
+                }
+                std::thread::sleep(wait);
+                continue;
+            }
             match self.rx.recv_timeout(wait) {
                 Ok(Some(line)) => {
-                    if let Some(ev) = serde_json::from_str(&line)
-                        .ok()
-                        .and_then(|v| self.handle(v))
+                    if let Ok(v) = serde_json::from_str(&line)
+                        && let Some(ev) = self.handle(v, line)
                     {
                         return ev;
                     }
                 }
-                Ok(None) | Err(RecvTimeoutError::Disconnected) => return Ev::Eof,
+                Ok(None) | Err(RecvTimeoutError::Disconnected) => {
+                    self.eof = true;
+                    return Ev::Eof;
+                }
                 Err(RecvTimeoutError::Timeout) => {}
             }
         }
     }
 
-    fn emit_result(&mut self, kind: Kind) {
-        let (subtype, is_error, text, stop) = match &kind {
-            Kind::Turn { text, delta } => {
-                let t = &mut self.totals;
-                t.input_tokens += delta.input_tokens;
-                t.output_tokens += delta.output_tokens;
-                t.cache_read_input_tokens += delta.cache_read_input_tokens;
-                t.cache_creation_input_tokens += delta.cache_creation_input_tokens;
-                t.cost_usd += delta.cost_usd;
-                t.turns += 1;
-                let over = self
-                    .args
-                    .str("--max-budget-usd")
-                    .and_then(|b| b.parse::<f64>().ok())
-                    .is_some_and(|b| t.cost_usd > b);
-                if over {
-                    ("error_max_budget_usd", true, text.clone(), Value::Null)
-                } else {
-                    ("success", false, text.clone(), json!("end_turn"))
-                }
-            }
-            Kind::NotLoggedIn => (
-                "success",
-                true,
-                "Not logged in · Please run /login".to_string(),
-                Value::Null,
-            ),
-            Kind::Interrupted => ("error_during_execution", true, String::new(), Value::Null),
-        };
-        let t = self.totals;
-        let model = self
-            .script
-            .model
-            .clone()
-            .unwrap_or_else(|| "claude-fake-1".into());
-        self.emit(&json!({
-            "type": "result", "subtype": subtype, "is_error": is_error,
-            "duration_ms": 1, "duration_api_ms": 1, "num_turns": t.turns,
-            "result": text, "stop_reason": stop,
-            "session_id": self.session_id,
-            "total_cost_usd": t.cost_usd,
-            "usage": {
-                "input_tokens": t.input_tokens, "output_tokens": t.output_tokens,
-                "cache_read_input_tokens": t.cache_read_input_tokens,
-                "cache_creation_input_tokens": t.cache_creation_input_tokens,
-            },
-            "modelUsage": {model: {
-                "inputTokens": t.input_tokens, "outputTokens": t.output_tokens,
-                "cacheReadInputTokens": t.cache_read_input_tokens,
-                "cacheCreationInputTokens": t.cache_creation_input_tokens,
-                "costUSD": t.cost_usd,
-            }},
-            "permission_denials": [],
-            "queued_turn_count": self.pending.len(),
-        }));
-        self.transcript.append_totals(&self.totals);
+    /// A turn begins: `system/init` before the first (after the SDK servers' handshake),
+    /// then `system/status {status: "requesting"}`.
+    fn start_turn(&mut self) {
+        if !self.init_sent {
+            self.on_start();
+            self.mcp_wait();
+            self.init_sent = true;
+            self.emit(&self.init_line());
+        }
+        self.emit(&self.status_requesting());
+        self.turn_open = true;
+        self.interrupted = false;
+    }
+
+    /// A turn whose steps wrote no `result` gets a plain one.
+    fn close_turn(&mut self) {
+        if self.turn_open {
+            self.emit_result(Kind::Turn {
+                text: "done".into(),
+                delta: Usage::default(),
+            });
+        }
     }
 
     fn default_turn(&mut self) {
+        self.start_turn();
         let delta = Usage {
             input_tokens: 1,
             output_tokens: 1,
@@ -381,55 +388,50 @@ impl Runner {
         });
     }
 
+    /// The exit code once stdin is closed and the open turn has ended (Task 0): 1 after an
+    /// `is_error` result, else 0.
+    fn exit_code(&self) -> i32 {
+        i32::from(self.last_is_error)
+    }
+
     fn play(mut self) -> i32 {
         let steps = std::mem::take(&mut self.script.steps);
         for step in &steps {
             if step.expect == Some(Expect::User) {
-                self.interrupted = false;
+                self.close_turn();
+                if !self.wait_user() {
+                    return self.exit_code();
+                }
             } else if self.interrupted {
                 continue;
             }
-            if !self.step(step) {
-                return 0;
-            }
+            self.step(step);
         }
-        while let Some(_user) = self.pending.pop_front() {
-            self.default_turn();
-        }
+        self.close_turn();
         loop {
+            if self.pending.pop_front().is_some() {
+                self.default_turn();
+                continue;
+            }
             match self.next(None) {
-                Ev::User(_) => self.default_turn(),
-                Ev::Eof => return 0,
+                Ev::User(u) => self.pending.push_back(u),
+                Ev::Eof => return self.exit_code(),
                 _ => {}
             }
         }
     }
 
-    /// Runs one step; false when stdin ended.
-    fn step(&mut self, s: &Step) -> bool {
-        if s.exit_on.as_deref() == Some("interrupt") {
-            self.exit_on_interrupt = true;
+    fn step(&mut self, s: &Step) {
+        if s.expect == Some(Expect::Control) {
+            self.wait_control(s.subtype.as_deref());
         }
-        match s.expect {
-            Some(Expect::User) => {
-                if !self.wait_user() {
-                    return false;
-                }
-                self.interrupted = false;
-            }
-            Some(Expect::Control) if !self.wait_control(s.subtype.as_deref()) => return false,
-            Some(Expect::Control) => {}
-            None => {}
-        }
-        if let Some(ms) = s.sleep
-            && !self.pause(Duration::from_millis(ms))
-        {
-            return false;
+        if let Some(ms) = s.sleep {
+            self.pause(Duration::from_millis(ms));
         }
         if self.interrupted {
-            return true;
+            return;
         }
-        self.side_effects(s);
+        self.side_effects(s.write_file.as_ref(), s.spawn.as_ref());
         for line in &s.emit {
             self.emit_script_line(line);
         }
@@ -437,18 +439,18 @@ impl Runner {
             self.emit(&json!({"type": "fake_future_type", "session_id": self.session_id, "payload": {"note": "a line no CLI version has"}}));
         }
         if let Some(ask) = &s.ask {
-            let answer = self.ask(&ask.tool, &ask.input);
-            if self.interrupted {
-                return answer.is_some();
+            match self.ask(ask) {
+                Outcome::Interrupted => return,
+                Outcome::Allowed => self.branch(&s.on_allow),
+                Outcome::Denied => self.branch(&s.on_deny),
+                Outcome::Cancelled => {}
             }
-            match answer {
-                None => return false,
-                Some(true) => s.on_allow.iter().for_each(|l| self.emit_script_line(l)),
-                Some(false) => s.on_deny.iter().for_each(|l| self.emit_script_line(l)),
+            if self.interrupted {
+                return;
             }
         }
         if s.not_logged_in {
-            self.emit_result(Kind::NotLoggedIn);
+            self.not_logged_in();
         }
         if let Some(delta) = s.cumulative_usage {
             self.emit_result(Kind::Turn {
@@ -459,14 +461,23 @@ impl Runner {
         if let Some(c) = &s.crash {
             self.crash(c.signal.as_deref(), c.code);
         }
-        true
     }
 
-    fn side_effects(&mut self, s: &Step) {
-        if let Some(w) = &s.write_file {
+    fn branch(&mut self, b: &Branch) {
+        match b {
+            Branch::Lines(lines) => lines.iter().for_each(|l| self.emit_script_line(l)),
+            Branch::Then(t) => {
+                self.side_effects(t.write_file.as_ref(), t.spawn.as_ref());
+                t.emit.iter().for_each(|l| self.emit_script_line(l));
+            }
+        }
+    }
+
+    fn side_effects(&mut self, write: Option<&WriteFile>, spawn: Option<&Spawn>) {
+        if let Some(w) = write {
             let _ = std::fs::write(&w.path, &w.contents);
         }
-        if let Some(sp) = &s.spawn {
+        if let Some(sp) = spawn {
             let code = sp.argv.split_first().and_then(|(prog, rest)| {
                 std::process::Command::new(prog)
                     .args(rest)
@@ -501,27 +512,19 @@ impl Runner {
             }
             std::process::exit(128 + sig);
         }
+        #[cfg(not(unix))]
+        let _ = signal;
         std::process::exit(code.unwrap_or(1));
     }
 
+    /// Takes the next user line (queued first) and starts its turn; false on EOF.
     fn wait_user(&mut self) -> bool {
-        if self.pending.pop_front().is_some() {
-            return true;
-        }
         loop {
-            match self.next(None) {
-                Ev::User(_) => return true,
-                Ev::Eof => return false,
-                _ => {}
+            if self.pending.pop_front().is_some() {
+                self.start_turn();
+                return true;
             }
-        }
-    }
-
-    fn wait_control(&mut self, subtype: Option<&str>) -> bool {
-        loop {
             match self.next(None) {
-                Ev::Control(s) if subtype.is_none_or(|w| w == s) => return true,
-                Ev::Interrupted => return true,
                 Ev::User(u) => self.pending.push_back(u),
                 Ev::Eof => return false,
                 _ => {}
@@ -529,49 +532,26 @@ impl Runner {
         }
     }
 
-    /// Serves the host for `d`, queueing user lines; false on EOF.
-    fn pause(&mut self, d: Duration) -> bool {
+    /// Waits for a control request (of `subtype`); stdin's end ends the wait.
+    fn wait_control(&mut self, subtype: Option<&str>) {
+        loop {
+            match self.next(None) {
+                Ev::Control(s) if subtype.is_none_or(|w| w == s) => return,
+                Ev::Interrupted | Ev::Eof => return,
+                Ev::User(u) => self.pending.push_back(u),
+                _ => {}
+            }
+        }
+    }
+
+    /// Serves the host for `d`, queueing user lines (steers); an interrupt ends it early.
+    fn pause(&mut self, d: Duration) {
         let end = Instant::now() + d;
         loop {
             let left = end.saturating_duration_since(Instant::now());
             match self.next(Some(left)) {
-                Ev::Timeout | Ev::Interrupted => return true,
+                Ev::Timeout | Ev::Interrupted => return,
                 Ev::User(u) => self.pending.push_back(u),
-                Ev::Eof => return false,
-                _ => {}
-            }
-        }
-    }
-
-    /// Sends a `can_use_tool` request; `Some(allowed)`, or None on EOF.
-    fn ask(&mut self, tool: &str, input: &Value) -> Option<bool> {
-        self.req_n += 1;
-        let rid = format!("fake-req-{}", self.req_n);
-        self.emit(&json!({
-            "type": "control_request", "request_id": rid,
-            "request": {
-                "subtype": "can_use_tool", "tool_name": tool, "input": input,
-                "permission_suggestions": [], "blocked_path": null, "decision_reason": null,
-                "tool_use_id": format!("toolu_fake_{}", self.req_n),
-            },
-        }));
-        loop {
-            match self.next(None) {
-                Ev::Answer(v) if v["response"]["request_id"] == rid.as_str() => {
-                    let resp = &v["response"];
-                    let body = if resp["subtype"] == "success" {
-                        resp["response"].clone()
-                    } else {
-                        json!({"error": resp["error"]})
-                    };
-                    let allow = body["behavior"] == "allow";
-                    self.observed
-                        .push("answers", json!({"tool": tool, "answer": body}));
-                    return Some(allow);
-                }
-                Ev::Interrupted => return Some(false),
-                Ev::User(u) => self.pending.push_back(u),
-                Ev::Eof => return None,
                 _ => {}
             }
         }
