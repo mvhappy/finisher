@@ -254,13 +254,20 @@ export function resolve(
       yield* checkOnly((out.root as { path?: unknown } | undefined)?.path);
     }
     // A write into a protected branch needs another scope (5E Decision 17): read from the policy,
-    // for a project the caller reaches only (nothing is opened for one it does not).
+    // for a project the caller reaches only. Nothing is opened here, before authorisation (its
+    // reach and reopen checks): a review item's target is a branch id already; a reference is
+    // resolved only while its project is open. Unset, the call asks for `project.write`, which
+    // a reopen needs anyway, and the policy stage checks the target again (Task 5 review, S1).
     if (rule.protectedNeeds !== undefined && job?.reviews !== undefined) {
       const pid = typeof out.projectId === "string" ? out.projectId : undefined;
-      const ref = typeof out.target === "string" ? out.target : typeof out.into === "string" ? out.into : undefined;
-      if (pid !== undefined && ref !== undefined && (job.principal.projects === "*" || job.principal.projects.includes(pid))) {
-        const target = yield* Effect.orElseSucceed(deps.resolveBranch(pid, ref), () => undefined);
-        if (target !== undefined) facts = { ...facts, protectedTarget: job.reviews.protectedBranches(pid).includes(target) };
+      if (pid !== undefined && (job.principal.projects === "*" || job.principal.projects.includes(pid))) {
+        const protectedIds = job.reviews.protectedBranches(pid);
+        if (want.has("review")) {
+          if (typeof out.target === "string") facts = { ...facts, protectedTarget: protectedIds.includes(out.target) };
+        } else if (typeof out.into === "string" && deps.isOpen(pid)) {
+          const target = yield* Effect.orElseSucceed(deps.resolveBranch(pid, out.into), () => undefined);
+          if (target !== undefined) facts = { ...facts, protectedTarget: protectedIds.includes(target) };
+        }
       }
     }
     return {

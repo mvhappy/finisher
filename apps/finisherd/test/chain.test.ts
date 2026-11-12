@@ -342,6 +342,18 @@ describe("the chain", () => {
     expect(chainOf(local.seen[0]!.options)?.guard).toEqual({ denyBranches: [] });
   });
 
+  test("history_drop_into_a_protected_branch_needs_review_decide (5E Task 5 review, S2)", async () => {
+    open = new Set([A]);
+    const drop = (into: string) => ({ projectId: A, txId: "d1", author: "a", from: "mine", into, drops: ["01cccccccccccccccccccccccc"] });
+    // `project.write` without `review.decide`: refused at stage 4 for `main`, which is protected...
+    const h = harness(agent());
+    expect(error(await h.call("history.drop", drop("main")))).toMatchObject({ code: "SCOPE_DENIED" });
+    expect(h.seen).toEqual([]);
+    // ...and allowed into an unprotected branch.
+    expect(code(await h.call("history.drop", drop("feature")))).toBeUndefined();
+    expect(h.seen.map((s) => s.tag)).toEqual(["history.drop"]);
+  });
+
   test("ask_answers_approval_required", async () => {
     const approvals = new Map();
     const ask: PolicyRule = () => Effect.succeed({ ask: { reason: "testRule" } });

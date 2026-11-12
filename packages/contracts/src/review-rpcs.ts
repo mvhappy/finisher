@@ -12,6 +12,7 @@ import {
   DecisionSchema,
   DecisionValueSchema,
   REVIEW_COMMENT_MAX,
+  REVIEW_COMMENT_AT_MAX,
   REVIEW_DECISIONS_MAX,
   REVIEW_PROTECTED_MAX,
   REVIEW_REASON_MAX,
@@ -21,13 +22,15 @@ import {
   ReviewKindSchema,
   ReviewStateSchema,
   ReviewWatchEventSchema,
+  reviewTextProblem,
   SnapshotSchema,
 } from "./reviews.ts";
 
-/** No control characters but newlines (Decision 10). */
-const NO_CONTROL = /^[^\u0000-\u0009\u000b-\u001f\u007f]*$/;
-const text = (max: number) => Schema.String.check(Schema.isMaxLength(max), Schema.isPattern(NO_CONTROL));
-const Title = Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(REVIEW_TITLE_MAX), Schema.isPattern(NO_CONTROL));
+/** Review text under the store's own rule (`reviewTextProblem`: code points for titles, UTF-8 bytes otherwise). */
+const reviewText = (o: { readonly min?: number; readonly max: number; readonly bytes?: boolean }) =>
+  Schema.String.check(Schema.makeFilter((s: string) => reviewTextProblem(s, o) === undefined, { expected: `review text (${o.bytes === true ? "bytes" : "characters"} ≤ ${o.max}, no control characters but newlines)` }));
+const text = (max: number) => reviewText({ max, bytes: true });
+const Title = reviewText({ min: 1, max: REVIEW_TITLE_MAX });
 const TxId = Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(256));
 
 export const ReviewIdPayload = Schema.Struct({ itemId: Schema.String });
@@ -44,8 +47,8 @@ export const ReviewRequestSuccess = Schema.Struct({ item: ReviewItemSchema, exis
 
 export const ReviewCommentPayload = Schema.Struct({
   itemId: Schema.String,
-  body: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(REVIEW_COMMENT_MAX), Schema.isPattern(NO_CONTROL)),
-  at: Schema.optional(Schema.String),
+  body: reviewText({ min: 1, max: REVIEW_COMMENT_MAX, bytes: true }),
+  at: Schema.optional(Schema.String.check(Schema.isMaxLength(REVIEW_COMMENT_AT_MAX))),
   txId: Schema.optional(TxId),
 });
 export const ReviewCommentSuccess = Schema.Struct({ comment: CommentSchema });

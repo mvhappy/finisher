@@ -40,6 +40,13 @@ export function metaJson(meta: { readonly actor: object } | undefined): string |
  * for every write), else one made here from the request's fields, so a retry of a `txId` with
  * other arguments is `IDEM_KEY_REUSED`, never the first record's answer. The origin lists are
  * sorted first: the order they were named in is not part of the request.
+ *
+ * The hash made here is not `fin`'s: `fin drop` hashes its own command input (`args_hash` over
+ * `[{cmd: "drop", args: {from, into, drops|undrops}}]`, `into` as given or the current branch, only the list it sends),
+ * this one `{cmd: "drop", args: {from, into, drops, undrops}}` with both lists. They are never
+ * compared with each other: each is checked only against a retry of the same txId, which comes
+ * from the same client and so carries the same form. A txId `fin` used and a raw client retries
+ * without a hash is `IDEM_KEY_REUSED`, never a second record (Task 5 review, N3).
  */
 export function dropPayload<P extends { readonly argsHash?: string | undefined }>(
   payload: P & { readonly from: string; readonly into: string; readonly drops?: ReadonlyArray<string> | undefined; readonly undrops?: ReadonlyArray<string> | undefined },

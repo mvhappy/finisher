@@ -19,6 +19,23 @@ export const REVIEW_REASON_MAX = 2 * 1024;
 export const REVIEW_DECISIONS_MAX = 10_000;
 /** Protected branches one project's policy names. */
 export const REVIEW_PROTECTED_MAX = 64;
+/** A comment's `at` (a timeline position as the client wrote it) is at most this many characters. */
+export const REVIEW_COMMENT_AT_MAX = 64;
+
+/** Control characters review text may not hold: C0 but newline, DEL and C1 (Decision 10). */
+export const REVIEW_CONTROL = /[\u0000-\u0009\u000b-\u001f\u007f-\u009f]/;
+
+/**
+ * What is wrong with review text, or `undefined`: the one rule both the RPC schemas and the
+ * reviews store apply. A title's length is in code points, every other text's in UTF-8 bytes
+ * (Decision 10: summaries 8 KiB, comments 16 KiB, reasons 2 KiB).
+ */
+export function reviewTextProblem(value: string, o: { readonly min?: number; readonly max: number; readonly bytes?: boolean }): "empty" | "tooLong" | "control" | undefined {
+  const n = o.bytes === true ? new TextEncoder().encode(value).length : [...value].length;
+  if (n < (o.min ?? 0)) return "empty";
+  if (n > o.max) return "tooLong";
+  return REVIEW_CONTROL.test(value) ? "control" : undefined;
+}
 
 /** `qaFinding` and `criticSummary` join with sub-project 10 (spec §8.1). */
 export const REVIEW_KINDS = ["branchReview", "mergeConflict", "pluginSuggestion"] as const;

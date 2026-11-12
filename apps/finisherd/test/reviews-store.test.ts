@@ -6,13 +6,17 @@ import {
   DEFAULT_BRANCH_POLICY,
   type FinError,
   type Principal,
+  REVIEW_COMMENT_AT_MAX,
   REVIEW_COMMENTS_MAX,
+  ReviewCommentPayload,
+  ReviewRequestPayload,
   REVIEW_LIMIT,
   type ReviewItem,
+  requiredScopes,
   ruleOf,
   type Snapshot,
 } from "@finisher/contracts";
-import { Effect, Fiber, Stream } from "effect";
+import { Effect, Exit, Fiber, Schema, Stream } from "effect";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { type ChainProjects, type ChainReviews, resolve } from "../src/chain/resolve.ts";
 import { type ControlStore, openControlStore } from "../src/control/db.ts";
@@ -85,6 +89,30 @@ describe("the reviews chain", () => {
     const next = store.open(branchReview());
     expect(next.id).not.toBe(a.id);
     expect(next.state).toBe("open");
+  });
+
+  test("the RPC schemas and the store apply one text rule (Task 5 review, N1, N2)", () => {
+    const store = new ReviewStore(control());
+    const decodes = (schema: Schema.Codec<unknown, unknown>, v: unknown) => Exit.isSuccess(Schema.decodeUnknownExit(schema)(v));
+    const request = (title: string, summary?: string) => ({ projectId: P, source: "try", title, ...(summary === undefined ? {} : { summary }) });
+    // A title of 200 astral code points (400 UTF-16 units) is accepted by both; 201 by neither.
+    const astral = "\u{1F600}".repeat(200);
+    expect(decodes(ReviewRequestPayload, request(astral))).toBe(true);
+    expect(store.open(branchReview({ title: astral })).title).toBe(astral);
+    expect(decodes(ReviewRequestPayload, request(`${astral}x`))).toBe(false);
+    expect(code(() => store.open(branchReview({ source: "b2", title: `${astral}x` }))).details).toMatchObject({ reason: "tooLong" });
+    // A summary is counted in UTF-8 bytes by both.
+    const wide = "é".repeat(4 * 1024 + 1);
+    expect(decodes(ReviewRequestPayload, request("t", wide))).toBe(false);
+    expect(code(() => store.open(branchReview({ source: "b3", summary: wide }))).details).toMatchObject({ field: "summary", reason: "tooLong" });
+    // C1 controls are refused by both.
+    expect(decodes(ReviewRequestPayload, request("a\u0085b"))).toBe(false);
+    expect(code(() => store.open(branchReview({ source: "b4", title: "a\u0085b" }))).details).toMatchObject({ reason: "control" });
+    // A comment's `at` is bounded.
+    const at = "1".repeat(REVIEW_COMMENT_AT_MAX + 1);
+    expect(decodes(ReviewCommentPayload, { itemId: "i", body: "b", at })).toBe(false);
+    const item = store.list(P)[0]!;
+    expect(code(() => store.comment({ itemId: item.id, principal: "local:local", body: "b", at })).details).toMatchObject({ field: "at", reason: "tooLong" });
   });
 
   test("limits_and_text_rules", () => {
@@ -275,5 +303,25 @@ describe("the review resolver", () => {
     // A rule without `protectedNeeds` sets no fact.
     const merge = await run("history.merge", { projectId: P, from: "try", into: "main" }, agent([P]), deps(true), store);
     expect(merge._tag === "Success" && merge.value.facts.protectedTarget).toBeUndefined();
+  });
+
+  test("a closed project is not opened to read the protected target (Task 5 review, S1)", async () => {
+    const store = new ReviewStore(control());
+    let lookups = 0;
+    const closed = deps(false, ["br3"]);
+    const counting = { ...closed, projects: { ...closed.projects, resolveBranch: (p: string, ref: string) => (lookups++, closed.projects.resolveBranch(p, ref)) } };
+    // `history.drop` into a branch other than `main` while the project is closed: no lookup (it
+    // would reopen the project before authorisation), the fact stays unset, so the call asks
+    // for `project.write` (which a reopen needs too) and the policy stage checks the target.
+    const drop = await run("history.drop", { projectId: P, txId: "t", author: "a", from: "try", into: "br3", drops: ["x"] }, agent([P]), counting, store);
+    expect(drop._tag === "Success" && drop.value.facts.protectedTarget).toBeUndefined();
+    expect(drop._tag === "Success" && drop.value.facts.reopens).toBe(true);
+    expect(lookups).toBe(0);
+    expect(requiredScopes("history.drop", { projectId: P }, drop._tag === "Success" ? drop.value.facts : {})).toContain("project.write");
+    // A review item's target is an id already: compared with the policy, never looked up.
+    const item = store.open(branchReview({ target: "br3" }));
+    const merge = await run("review.merge", { itemId: item.id }, agent([P]), counting, store);
+    expect(merge._tag === "Success" && merge.value.facts.protectedTarget).toBe(true);
+    expect(lookups).toBe(0);
   });
 });

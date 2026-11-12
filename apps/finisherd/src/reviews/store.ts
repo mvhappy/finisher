@@ -8,6 +8,7 @@ import {
   DEFAULT_BRANCH_POLICY,
   type Decision,
   type DecisionValue,
+  REVIEW_COMMENT_AT_MAX,
   REVIEW_COMMENT_MAX,
   REVIEW_COMMENTS_MAX,
   REVIEW_LIMIT,
@@ -21,6 +22,7 @@ import {
   type ReviewItem,
   type ReviewKind,
   type ReviewState,
+  reviewTextProblem,
   type Snapshot,
 } from "@finisher/contracts";
 import type { StatementSync } from "node:sqlite";
@@ -91,18 +93,14 @@ interface Row {
 const COLUMNS =
   "id, projectId, kind, state, source, target, snapshot, title, summary, requestedBy, createdAt, updatedAt, closedAt, closedBy, mergeId, rederived, subject";
 const OPEN_SQL = REVIEW_OPEN_STATES.map((s) => `'${s}'`).join(", ");
-/** No control characters but newlines. */
-const CONTROL = /[\u0000-\u0009\u000b-\u001f\u007f]/;
 
 const invalid = (field: string, reason: string, extra: object = {}) =>
   finError("INVALID_REQUEST", `${field} is not acceptable (${reason})`, { field, reason, ...extra }, "Shorten it or remove control characters.");
 
-/** The text rules of Decision 10 (a length in characters for titles, bytes for the rest). */
+/** The text rules of Decision 10, the RPC schemas' own (`reviewTextProblem`). */
 function checkText(field: string, value: string, o: { readonly min?: number; readonly max: number; readonly bytes?: boolean }): void {
-  const n = o.bytes === true ? Buffer.byteLength(value, "utf8") : [...value].length;
-  if (n < (o.min ?? 0)) throw invalid(field, "empty");
-  if (n > o.max) throw invalid(field, "tooLong", { max: o.max });
-  if (CONTROL.test(value)) throw invalid(field, "control");
+  const problem = reviewTextProblem(value, o);
+  if (problem !== undefined) throw invalid(field, problem, problem === "tooLong" ? { max: o.max } : {});
 }
 
 const notFound = (id: string) => finError("REVIEW_NOT_FOUND", "no such review item", { itemId: id }, "Check the item's id with a list of the project's reviews.");
@@ -321,6 +319,7 @@ export class ReviewStore {
 
   comment(c: NewComment): Comment {
     checkText("body", c.body, { min: 1, max: REVIEW_COMMENT_MAX, bytes: true });
+    if (c.at !== undefined) checkText("at", c.at, { max: REVIEW_COMMENT_AT_MAX });
     const comment = this.#store.tx(() => {
       this.#writable(c.itemId);
       const n = (this.#stmt("SELECT COUNT(*) AS n FROM review_comments WHERE itemId = ?").get(c.itemId) as { n: number }).n;

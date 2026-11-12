@@ -248,9 +248,10 @@ export const AUDIT_NAME_KINDS: ReadonlySet<AuditKind> = new Set<AuditKind>([
 /** Kinds whose details may hold a remote address (owner decision 4 of 5B: pairing, revocation, failures). */
 export const AUDIT_ADDRESS_KINDS: ReadonlySet<AuditKind> = new Set<AuditKind>([...PAIRING, "device.revoke", "auth.fail"]);
 
-/** Kinds whose details name a library by id. */
+/** Kinds whose details name a review item, counts and branch ids (5E). */
 export const AUDIT_REVIEW_KINDS: ReadonlySet<AuditKind> = new Set<AuditKind>(REVIEW_KINDS_AUDITED);
 
+/** Kinds whose details name a library by id. */
 export const AUDIT_LIBRARY_KINDS: ReadonlySet<AuditKind> = new Set<AuditKind>(["library.add", "library.remove", "library.set"]);
 
 const PlainDetails = Schema.Struct({ ...COMMON, ...SERVER });
