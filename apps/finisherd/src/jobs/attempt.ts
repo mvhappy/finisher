@@ -12,7 +12,7 @@ import type { WorkerExitEvent } from "./events.ts";
 import { type JobDirs, mappedPath } from "./files.ts";
 import { Helpers } from "./helpers.ts";
 import type { ExitVerdict, JobHostExitInfo } from "./host.ts";
-import { exitPluginId, type FamilySpec, type ItemOutcome, type KindSpec } from "./kinds.ts";
+import { exitPluginId, familyStderr, type FamilySpec, type ItemOutcome, type KindSpec } from "./kinds.ts";
 import type { RunControl, StopReason } from "./run-control.ts";
 import type { FailureCause, RunnerEnv } from "./runner.ts";
 import type { JobRow } from "./store.ts";
@@ -134,12 +134,24 @@ export abstract class AttemptBase {
         owner: row.owner,
         ...(row.via === undefined ? {} : { via: row.via }),
         ...(isJobRights(row.rights) ? { rights: row.rights } : {}),
+        ...(this.workerKey() === undefined ? {} : { workerKey: this.workerKey() as string }),
       }),
       (msg) => (this.proc === undefined ? "gone" : env.host.send(this.proc, msg)),
       env.run,
     );
     const qos = row.priority === "interactive" ? "normal" : a.kind.qos;
     this.helpers = new Helpers(env, row, a.dirs, a.files, { group: helperGroup, qos, fail: (e) => this.failWith(e, "helper", "helperFailed") });
+  }
+
+  /** The warm worker's key (a cold attempt has none). */
+  protected workerKey(): string | undefined {
+    return undefined;
+  }
+
+  /** A stderr line of the job's process: the family's hook, else the debug log. */
+  protected stderr(line: string, key?: string): void {
+    const { env, row, family } = this.a;
+    familyStderr(family, line, { job: row.id, ...(key === undefined ? {} : { key }) }, env.log, `[job ${row.id} ${family.family}]`);
   }
 
   /** Kills the job's processes (cold: its group; warm: its helper group and the worker). */

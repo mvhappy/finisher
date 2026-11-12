@@ -1,5 +1,5 @@
 //! Read commands: `fin status` and `fin view` (plan 4C Task 25). Both cover every timeline
-//! (`--timeline` narrows `view` to one); the screenplay lines are [`crate::view`]'s.
+//! (`--timeline` narrows `view` to one); the screenplay lines are [`fin_core::view`]'s.
 
 use clap::Args;
 use fin_core::{CoreError, Project, Timeline, Track, TrackKind};
@@ -10,7 +10,7 @@ use serde_json::{Value, json};
 use super::{Globals, branch, fonts, target_branch};
 use crate::addr;
 use crate::backend::Backend;
-use crate::view::{self, Filter, budget};
+use fin_core::view::{self, Filter, budget};
 
 /// Summarise the project: branch and head (`rev`: the snapshot read, as `fin view` reports
 /// it), lease and read-only state, last export, unmerged branches, every timeline and its

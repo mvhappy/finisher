@@ -64,6 +64,12 @@ export function reaches(reach: Reach, id: string): boolean {
 export type HashedRights = Pick<JobRights, "class" | "scopes" | "projects" | "branch" | "libraries" | "grants">;
 
 /** JSON with object keys sorted and (with `sortLists`) string lists sorted. */
+/**
+ * Canonical JSON of `v`: object keys sorted, `undefined` members left out; with `sortLists`,
+ * an array whose items are all strings is deduplicated and sorted. Any other array (objects,
+ * numbers, mixed) keeps its order and duplicates: callers that need those order-insensitive
+ * canonicalise and sort the items themselves (as `rightsHash` does for grants).
+ */
 function canonical(v: unknown, sortLists: boolean): string {
   if (Array.isArray(v)) {
     const items = sortLists && v.every((x) => typeof x === "string") ? [...new Set(v as string[])].sort() : v;

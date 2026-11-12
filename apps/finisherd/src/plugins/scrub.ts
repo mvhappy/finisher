@@ -13,6 +13,14 @@ const PATH_KEYS = new Set(["path", "dir", "file", "archive", "registryPath", "fo
 
 export const hasPath = (text: string): boolean => PATH_LIKE.test(text);
 
+/** `text` with every path-like run replaced by `<path>` (the separator before it is kept). */
+export function stripPaths(text: string): string {
+  return text.replace(new RegExp(PATH_LIKE.source, "g"), (m) => {
+    const lead = /^[\s"'(=:,]/.test(m) ? m[0] : "";
+    return `${lead}<path>`;
+  });
+}
+
 function cleanValue(v: unknown): unknown {
   if (typeof v === "string") return hasPath(v) ? undefined : v;
   if (Array.isArray(v)) return v.map(cleanValue).filter((x) => x !== undefined);

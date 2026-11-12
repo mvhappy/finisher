@@ -32,8 +32,15 @@ export interface PluginFamilyDeps {
   readonly rootSessionOf?: RootSessionOf;
   /** The classes' policy generations (`storedGenerations` in the server; all 0 when omitted). */
   readonly generations?: AuthorityGenerations;
-  /** Told every key a process is started for (its temp directory is removed once it stops). */
-  readonly onKey?: (key: string) => void;
+  /**
+   * Told every key a process is started for (its temp directory is removed once it stops);
+   * `coldJob`: the job a cold process was started for (its calls check that key, Task 7).
+   */
+  readonly onKey?: (key: string, cold?: { readonly job: string; readonly plugin: string }) => void;
+  /** Host calls (Task 7). */
+  readonly onCall?: FamilySpec["onCall"];
+  /** The processes' stderr (Task 7): scrubbed and capped into the server log. */
+  readonly onStderr?: FamilySpec["onStderr"];
   /** Tests: the runtime's Node, platform and versions (`process.*` otherwise). */
   readonly execPath?: string;
   readonly platform?: string;
@@ -70,7 +77,7 @@ export function pluginProgram(deps: PluginFamilyDeps, job: Parameters<typeof plu
   const data = pluginDataFor(deps, job);
   const rt = resolveRuntime({ serverData: deps.serverData, installed: deps.installed, ...(deps.execPath === undefined ? {} : { execPath: deps.execPath }), ...(deps.platform === undefined ? {} : { platform: deps.platform }) }, job, tmp, data);
   ensurePrivateDir(tmp);
-  deps.onKey?.(key);
+  deps.onKey?.(key, warmKey === undefined ? { job: job.id, plugin: job.via?.plugin ?? "" } : undefined);
   const env: Record<string, string> = {
     ...childEnv(),
     FIN_PLUGIN_PROTOCOL: PLUGIN_PROTOCOL,
@@ -128,6 +135,8 @@ export function pluginFamily(deps: PluginFamilyDeps): FamilySpec {
       return "error" in found ? found.error : undefined;
     },
     warm: PLUGIN_WARM,
+    ...(deps.onCall === undefined ? {} : { onCall: deps.onCall }),
+    ...(deps.onStderr === undefined ? {} : { onStderr: deps.onStderr }),
     memory: { interactive: PLUGIN_MEMORY, batch: PLUGIN_MEMORY },
     mapError: mapPluginError,
   };

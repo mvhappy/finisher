@@ -30,6 +30,8 @@ export const HELPER_CANCEL_GRACE_MS = 500;
 /** What the pool lends an attempt of its worker. */
 export interface WarmLink {
   readonly proc: number;
+  /** The worker's warm key. */
+  readonly key: string;
   /** The worker's own directory: the job visits its `jobs/` for the attempt (plan 7C Decision 19). */
   readonly dir: string;
   /** A confined worker's read roots (fixed at its start); `undefined`: not confined. */
@@ -167,6 +169,10 @@ class WarmAttempt extends AttemptBase {
     this.proc = link.proc;
   }
 
+  protected override workerKey(): string {
+    return this.#link.key;
+  }
+
   /** The helpers' group, and the worker once it has the job (before its `start` it is not the job's). */
   protected kill(reason: KillReason): void {
     if (this.#helperGroup >= 0) void this.a.env.host.killGroup(this.#helperGroup, reason).catch(() => {});
@@ -255,7 +261,7 @@ class WarmAttempt extends AttemptBase {
         if (this.started) this.onMessage(e.msg, e.memory);
         return;
       case "stderr":
-        return this.a.env.log("debug", `[job ${this.a.row.id} ${this.a.family.family}] ${e.line}`);
+        return this.stderr(e.line, this.#link.key);
       case "exit":
         this.#lost = true;
         if (this.started) void this.#onExit(e.info);

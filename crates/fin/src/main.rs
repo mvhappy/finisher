@@ -30,7 +30,6 @@ mod registry_rpcs;
 mod registry_rpcs_edit;
 mod registry_settings;
 mod values;
-mod view;
 
 use std::ffi::OsString;
 use std::io::Read;
