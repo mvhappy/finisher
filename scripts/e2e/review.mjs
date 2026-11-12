@@ -93,7 +93,7 @@ export async function run() {
     const comment = "the intro drags SECRET-COMMENT";
     agentOk(agent, ["review", "comment", itemId, comment, "--tx", edits[0]]);
     const rejectReason = "SECRET-REASON-1";
-    const decided = local(["review", "decide", itemId, "--reject", edits[0], "--accept", edits[1], edits[2], "--reason", rejectReason]);
+    const decided = local(["review", "decide", itemId, "--reject", edits[0], "--accept", `${edits[1]},${edits[2]}`, "--reason", rejectReason]);
     assertEqual(decided.decisions.length, 3, "three decisions");
     const merged = local(["review", "merge", itemId]);
     assertEqual([...merged.merge.merged].sort(), [edits[1], edits[2]].sort(), "exactly the two accepted origins merged");
