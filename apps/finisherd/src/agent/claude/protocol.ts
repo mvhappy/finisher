@@ -16,7 +16,10 @@ import { finError } from "../../errors.ts";
 export const MAX_LINE_BYTES = 16 * 1024 * 1024;
 
 const Str = Schema.String;
-const Num = Schema.Number;
+// Every number the adapter reads is finite and non-negative (JSON `1e400` parses to Infinity);
+// token counts, turns, attempts and indexes are integers too.
+const Count = Schema.Number.check(Schema.isFinite(), Schema.isInt(), Schema.isGreaterThanOrEqualTo(0));
+const Amount = Schema.Number.check(Schema.isFinite(), Schema.isGreaterThanOrEqualTo(0));
 const opt = Schema.optionalKey;
 const JsonObject = Schema.Record(Schema.String, Schema.Unknown);
 
@@ -57,25 +60,29 @@ const USER_BLOCKS: Record<string, Schema.Top> = { text: TextBlock, tool_result: 
 // ---- token usage ----
 
 const Usage = Schema.Struct({
-  input_tokens: Num,
-  output_tokens: Num,
-  cache_creation_input_tokens: opt(Schema.NullOr(Num)),
-  cache_read_input_tokens: opt(Schema.NullOr(Num)),
+  input_tokens: Count,
+  output_tokens: Count,
+  cache_creation_input_tokens: opt(Schema.NullOr(Count)),
+  cache_read_input_tokens: opt(Schema.NullOr(Count)),
 });
 export type Usage = typeof Usage.Type;
 
 const ModelUsage = Schema.Struct({
-  inputTokens: opt(Num),
-  outputTokens: opt(Num),
-  cacheReadInputTokens: opt(Num),
-  cacheCreationInputTokens: opt(Num),
-  costUSD: opt(Num),
+  inputTokens: opt(Count),
+  outputTokens: opt(Count),
+  cacheReadInputTokens: opt(Count),
+  cacheCreationInputTokens: opt(Count),
+  costUSD: opt(Amount),
 });
+const ModelUsageByModel = Schema.Record(Str, ModelUsage);
 
 // ---- the lines ----
 
 const Envelope = { uuid: opt(Str), session_id: opt(Str), parent_tool_use_id: opt(Schema.NullOr(Str)) };
 
+// The isolation fields (`mcp_servers`, `plugins`, `skills`, `slash_commands`, `agents`) are
+// optional here so a decode never fails on them; `checkInit` (Task 5) must treat a missing key as
+// a failure. `memory_paths` is the exception: absent (auto memory off, 2.1.321) or `null` passes.
 const SystemInitLine = Schema.Struct({
   subtype: Schema.Literal("init"),
   session_id: Str,
@@ -84,12 +91,15 @@ const SystemInitLine = Schema.Struct({
   permissionMode: opt(Str),
   apiKeySource: opt(Str),
   cwd: opt(Str),
+  original_cwd: opt(Str),
+  additional_directories: opt(Schema.Array(Str)),
   claude_code_version: opt(Str),
-  mcp_servers: opt(Schema.Array(Schema.Struct({ name: Str, status: opt(Str) }))),
+  mcp_servers: opt(Schema.Array(Schema.Struct({ name: Str, status: opt(Str), source: opt(Str) }))),
   plugins: opt(Schema.Array(Schema.Struct({ name: Str, path: opt(Str), source: opt(Str) }))),
   skills: opt(Schema.Array(Schema.Unknown)),
   slash_commands: opt(Schema.Array(Schema.Unknown)),
-  agents: opt(Schema.Array(Schema.Unknown)),
+  // Names (2.1.321 lists the five built-ins even with subagents off).
+  agents: opt(Schema.Array(Str)),
   // `null` means auto memory is off; absent is not the same and is kept absent.
   memory_paths: opt(Schema.Unknown),
   capabilities: opt(Schema.Array(Str)),
@@ -98,15 +108,15 @@ const SystemInitLine = Schema.Struct({
 });
 const ApiRetryLine = Schema.Struct({
   subtype: Schema.Literal("api_retry"),
-  attempt: Num,
-  retry_delay_ms: Num,
-  max_retries: opt(Num),
-  error_status: opt(Schema.NullOr(Num)),
+  attempt: Count,
+  retry_delay_ms: Amount,
+  max_retries: opt(Count),
+  error_status: opt(Schema.NullOr(Count)),
   error: opt(Schema.Unknown),
 });
 const CompactBoundaryLine = Schema.Struct({
   subtype: Schema.Literal("compact_boundary"),
-  compact_metadata: opt(Schema.Struct({ trigger: opt(Str), pre_tokens: opt(Num) })),
+  compact_metadata: opt(Schema.Struct({ trigger: opt(Str), pre_tokens: opt(Count) })),
 });
 const AssistantLine = Schema.Struct({
   ...Envelope,
@@ -117,6 +127,9 @@ const AssistantLine = Schema.Struct({
     stop_reason: opt(Schema.NullOr(Str)),
     usage: opt(Usage),
   }),
+  // The CLI's own error turn (`model: "<synthetic>"`): the mapper drops it, the `result` carries the failure.
+  error: opt(Str),
+  is_api_error_message: opt(Schema.Boolean),
 });
 const UserLine = Schema.Struct({
   ...Envelope,
@@ -127,16 +140,20 @@ const ResultLine = Schema.Struct({
   subtype: Str,
   is_error: Schema.Boolean,
   usage: Usage,
-  total_cost_usd: Num,
+  total_cost_usd: Amount,
   session_id: opt(Str),
   result: opt(Str),
-  duration_ms: opt(Num),
-  duration_api_ms: opt(Num),
-  num_turns: opt(Num),
+  duration_ms: opt(Amount),
+  duration_api_ms: opt(Amount),
+  num_turns: opt(Count),
   stop_reason: opt(Schema.NullOr(Str)),
-  api_error_status: opt(Schema.NullOr(Num)),
-  queued_turn_count: opt(Num),
-  modelUsage: opt(Schema.Record(Str, ModelUsage)),
+  api_error_status: opt(Schema.NullOr(Count)),
+  queued_turn_count: opt(Count),
+  modelUsage: opt(ModelUsageByModel),
+  model_usage_since_last_result: opt(ModelUsageByModel),
+  result_index: opt(Count),
+  terminal_reason: opt(Str),
+  errors: opt(Schema.Array(Str)),
   permission_denials: opt(Schema.Array(Schema.Unknown)),
 });
 const ControlRequestLine = Schema.Struct({ request_id: Str, request: Schema.Struct({ subtype: Str }) });
@@ -168,10 +185,10 @@ const StreamDelta = {
   input_json_delta: Schema.Struct({ type: Schema.Literal("input_json_delta"), partial_json: Str }),
 };
 const PartialUsage = Schema.Struct({
-  input_tokens: opt(Schema.NullOr(Num)),
-  output_tokens: opt(Schema.NullOr(Num)),
-  cache_creation_input_tokens: opt(Schema.NullOr(Num)),
-  cache_read_input_tokens: opt(Schema.NullOr(Num)),
+  input_tokens: opt(Schema.NullOr(Count)),
+  output_tokens: opt(Schema.NullOr(Count)),
+  cache_creation_input_tokens: opt(Schema.NullOr(Count)),
+  cache_read_input_tokens: opt(Schema.NullOr(Count)),
 });
 const MessageStart = Schema.Struct({
   type: Schema.Literal("message_start"),
@@ -183,9 +200,9 @@ const MessageDelta = Schema.Struct({
   usage: opt(PartialUsage),
 });
 const MessageStop = Schema.Struct({ type: Schema.Literal("message_stop") });
-const BlockStart = Schema.Struct({ type: Schema.Literal("content_block_start"), index: Num, content_block: Schema.Struct({ type: Str }) });
-const BlockDelta = Schema.Struct({ type: Schema.Literal("content_block_delta"), index: Num, delta: Schema.Struct({ type: Str }) });
-const BlockStop = Schema.Struct({ type: Schema.Literal("content_block_stop"), index: Num });
+const BlockStart = Schema.Struct({ type: Schema.Literal("content_block_start"), index: Count, content_block: Schema.Struct({ type: Str }) });
+const BlockDelta = Schema.Struct({ type: Schema.Literal("content_block_delta"), index: Count, delta: Schema.Struct({ type: Str }) });
+const BlockStop = Schema.Struct({ type: Schema.Literal("content_block_stop"), index: Count });
 const STREAM_EVENTS: Record<string, Schema.Top> = {
   message_start: MessageStart,
   message_delta: MessageDelta,
@@ -490,8 +507,9 @@ export interface McpReply {
 
 const line = (v: unknown): string => `${JSON.stringify(v)}\n`;
 
-/** A user turn (or a steer): one text block per entry. The result ends in `\n`. */
+/** A user turn (or a steer): one text block per entry, at least one. The result ends in `\n`. */
 export function encodeUser(text: readonly string[], sessionUuid: string): string {
+  if (text.length === 0) throw finError("INTERNAL", "a claude user line needs at least one text block", {});
   return line({
     type: "user",
     message: { role: "user", content: text.map((t) => ({ type: "text", text: t })) },

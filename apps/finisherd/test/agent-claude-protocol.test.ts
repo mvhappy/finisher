@@ -155,9 +155,119 @@ describe("decoding", () => {
     protocolError({ no: "type" });
   });
 
+  it("decodes_the_real_cli_shapes", () => {
+    // Scrubbed copies of 2.1.321's lines (Task 0, unsigned); the budget stop and the redacted
+    // thinking block were not seen there and are shaped after the lines around them.
+    const lines = fixture("real").map(ok);
+    expect(lines.map((l) => (l.kind === "system" ? `system/${l.subtype}` : l.kind === "result" ? `result/${l.subtype}` : l.kind))).toEqual([
+      "controlRequest",
+      "controlRequest",
+      "system/ui_invalidate",
+      "init",
+      "system/status",
+      "assistant",
+      "result/success",
+      "result/error_during_execution",
+      "result/error_max_budget_usd",
+      "assistant",
+    ]);
+    const [mcpInit, mcpNote] = byKind(lines, "controlRequest");
+    expect(mcpInit!.request).toMatchObject({ subtype: "mcp_message", server_name: "finisher", message: { jsonrpc: "2.0", id: 0, method: "initialize" } });
+    expect(mcpNote!.request).toEqual({ subtype: "mcp_message", server_name: "finisher", message: { jsonrpc: "2.0", method: "notifications/initialized" } });
+
+    const [init] = byKind(lines, "init");
+    // Auto memory off: the key is absent, and stays absent (not `undefined`, not `null`).
+    expect(Object.hasOwn(init!, "memory_paths")).toBe(false);
+    expect(init!.agents).toEqual(["claude", "Explore", "general-purpose", "Plan", "statusline-setup"]);
+    expect(init!.mcp_servers).toEqual([{ name: "finisher", status: "connected", source: "sdk" }]);
+    expect(init!.additional_directories).toEqual([]);
+    expect(init!.original_cwd).toBe("/srv/finisher/workspace/s1");
+    expect(init!.messaging_socket_path).toBe("/tmp/cc-socks-4242/4242.sock");
+    expect(init!.plugins!.every((p) => p.path === "builtin")).toBe(true);
+
+    const [synthetic, redacted] = byKind(lines, "assistant");
+    expect(synthetic).toMatchObject({ error: "authentication_failed", is_api_error_message: true, message: { model: "<synthetic>", content: [{ type: "text", text: "Not logged in · Please run /login" }] } });
+    expect(redacted).not.toHaveProperty("error");
+    expect(redacted!.message.content).toEqual([
+      { type: "redacted_thinking", data: "ZW5jcnlwdGVk" },
+      { type: "text", text: "Done." },
+    ]);
+
+    const [unsigned, exec, budget] = byKind(lines, "result");
+    expect(unsigned).toMatchObject({ subtype: "success", is_error: true, terminal_reason: "api_error", api_error_status: null, result_index: 0, model_usage_since_last_result: {}, modelUsage: {} });
+    expect(exec).toMatchObject({ is_error: true, num_turns: 0, errors: ["No conversation found with session ID: 01890a5d-ac96-774b-bcce-b302099a8057"] });
+    expect(exec).not.toHaveProperty("terminal_reason");
+    expect(budget).toMatchObject({ is_error: true, total_cost_usd: 0.0123, terminal_reason: "max_budget_usd", errors: ["Reached maximum budget ($0.01)"] });
+    const usage = { inputTokens: 12, outputTokens: 40, cacheReadInputTokens: 3400, cacheCreationInputTokens: 0, costUSD: 0.0123 };
+    expect(budget!.modelUsage).toEqual({ "claude-opus-5-5": usage });
+    expect(budget!.model_usage_since_last_result).toEqual({ "claude-opus-5-5": usage });
+  });
+
+  it("numbers_must_be_finite_and_non_negative", () => {
+    /** `o` with the JSON text `raw` at `path` (so `1e400` reaches `JSON.parse` as written). */
+    const at = (o: Record<string, unknown>, path: string[], raw: string): string => {
+      const copy = structuredClone(o);
+      let cur: Record<string, unknown> = copy;
+      for (const k of path.slice(0, -1)) cur = cur[k] as Record<string, unknown>;
+      cur[path.at(-1)!] = "__RAW__";
+      return JSON.stringify(copy).replace('"__RAW__"', raw);
+    };
+    const session = objects("session");
+    const real = objects("real");
+    const result = session.find((o) => o.type === "result")!;
+    const budget = real.find((o) => o.subtype === "error_max_budget_usd")!;
+    const assistant = session.find((o) => o.type === "assistant")!;
+    const retry = session.find((o) => o.subtype === "api_retry")!;
+    const compact = session.find((o) => o.subtype === "compact_boundary")!;
+    const start = session.find((o) => (o.event as { type?: string } | undefined)?.type === "message_start")!;
+    const delta = session.find((o) => (o.event as { type?: string } | undefined)?.type === "message_delta")!;
+    const blockStop = session.find((o) => (o.event as { type?: string } | undefined)?.type === "content_block_stop")!;
+    const m = "claude-opus-5-5";
+    const counts: [Record<string, unknown>, string[]][] = [
+      [result, ["usage", "input_tokens"]],
+      [result, ["usage", "output_tokens"]],
+      [result, ["usage", "cache_read_input_tokens"]],
+      [result, ["usage", "cache_creation_input_tokens"]],
+      [result, ["num_turns"]],
+      [result, ["queued_turn_count"]],
+      [budget, ["result_index"]],
+      [budget, ["modelUsage", m, "inputTokens"]],
+      [budget, ["modelUsage", m, "outputTokens"]],
+      [budget, ["modelUsage", m, "cacheReadInputTokens"]],
+      [budget, ["modelUsage", m, "cacheCreationInputTokens"]],
+      [budget, ["model_usage_since_last_result", m, "outputTokens"]],
+      [assistant, ["message", "usage", "output_tokens"]],
+      [start, ["event", "message", "usage", "input_tokens"]],
+      [start, ["event", "message", "usage", "cache_read_input_tokens"]],
+      [delta, ["event", "usage", "output_tokens"]],
+      [blockStop, ["event", "index"]],
+      [retry, ["attempt"]],
+      [retry, ["max_retries"]],
+      [compact, ["compact_metadata", "pre_tokens"]],
+    ];
+    for (const [o, path] of counts) {
+      for (const raw of ["1e400", "-1e400", "-1", "1.5"]) {
+        expect(decodeLine(at(o, path, raw)), `${path.join(".")} = ${raw}`).toBeInstanceOf(FinError);
+        protocolError(at(o, path, raw));
+      }
+      expect(decodeLine(at(o, path, "0")), `${path.join(".")} = 0`).not.toBeInstanceOf(FinError);
+    }
+    const amounts: [Record<string, unknown>, string[]][] = [
+      [result, ["total_cost_usd"]],
+      [budget, ["modelUsage", m, "costUSD"]],
+      [budget, ["model_usage_since_last_result", m, "costUSD"]],
+      [retry, ["retry_delay_ms"]],
+      [result, ["duration_ms"]],
+    ];
+    for (const [o, path] of amounts) {
+      for (const raw of ["1e400", "-1e400", "-0.01"]) protocolError(at(o, path, raw));
+      expect(decodeLine(at(o, path, "0.5")), `${path.join(".")} = 0.5`).not.toBeInstanceOf(FinError);
+    }
+  });
+
   it("extra_fields_are_ignored", () => {
     const grow = (o: Record<string, unknown>) => ({ ...o, a_newer_field: { nested: [1, 2, 3] }, another: "x" });
-    for (const o of [...objects("session"), ...objects("control")]) {
+    for (const o of [...objects("session"), ...objects("control"), ...objects("real")]) {
       expect(ok(grow(o))).toEqual(ok(o));
     }
     const line = ok(grow(objects("control")[2]!)) as Extract<CliLine, { kind: "controlRequest" }>;
@@ -234,6 +344,8 @@ describe("encoding", () => {
       parent_tool_use_id: null,
       session_id: "01890a5d-ac96-774b-bcce-b302099a8057",
     });
+    // An empty turn is a caller's bug, never a line.
+    expect(() => encodeUser([], "01890a5d-ac96-774b-bcce-b302099a8057")).toThrow(expect.objectContaining({ code: "INTERNAL" }));
     expect(JSON.parse(encodeControl("r1", { subtype: "initialize" }))).toEqual({ type: "control_request", request_id: "r1", request: { subtype: "initialize", hooks: null } });
     expect(JSON.parse(encodeControl("r2", { subtype: "interrupt" }))).toEqual({ type: "control_request", request_id: "r2", request: { subtype: "interrupt" } });
     expect(JSON.parse(encodeControl("r3", { subtype: "set_permission_mode", mode: "plan" }))).toEqual({
@@ -322,7 +434,7 @@ describe("encoding", () => {
 });
 
 describe("robustness", () => {
-  const corpus = [...fixture("session"), ...fixture("control"), ...fixture("unknown")];
+  const corpus = [...fixture("session"), ...fixture("control"), ...fixture("unknown"), ...fixture("real")];
 
   /** A JSON value with one field removed, retyped or replaced, anywhere in the tree. */
   const mutate = (v: unknown, path: number[], replacement: unknown): unknown => {
