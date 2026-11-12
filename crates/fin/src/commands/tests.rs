@@ -430,26 +430,40 @@ fn committed_echo_finds_the_clip_by_placeholder() {
         link: None,
     };
     let mut single = json!({ "at": "0", "in": "1", "duration": "2", "out": "3" });
-    echo::from_commit(&mut single, &["clip.insert".into()], &committed(&ops), None);
+    let clip = json!({ "cmd": "clip.insert", "args": { "noAudio": true } });
+    echo::from_commit(
+        &mut single,
+        std::slice::from_ref(&clip),
+        &committed(&ops),
+        None,
+    );
     assert_eq!(
         single,
-        json!({ "at": "7", "in": "1", "duration": "2", "out": "3" })
+        json!({ "at": "7", "in": "1", "duration": "2", "out": "3",
+                "audio": { "track": "t1", "id": "$audio" } })
     );
-    // A batch: line 2's clip is `$clip2`; line 3's is not in the commit and keeps its plan.
+    // A batch: line 2's clip is `$clip2`; line 3's is not in the commit, so its place is
+    // unknown (never the plan's).
     let ops = [pin, insert("$clip3x", "5", "0"), insert("$clip2", "4", "2")];
-    let line = |n: u64, cmd: &str| json!({ "line": n, "cmd": cmd, "resolved": { "at": "0" } });
+    let planned = json!({ "at": "0", "in": "0", "duration": "0", "out": "0" });
+    let line = |n: u64, cmd: &str| json!({ "line": n, "cmd": cmd, "resolved": planned });
     let mut batch = json!([
         line(1, "asset.add"),
         line(2, "clip.insert"),
         line(3, "clip.insert")
     ]);
-    echo::from_commit(&mut batch, &[], &committed(&ops), None);
-    assert_eq!(batch[0]["resolved"], json!({ "at": "0" }));
+    let asset = json!({ "cmd": "asset.add", "args": {} });
+    let inputs = [asset, clip.clone(), clip];
+    echo::from_commit(&mut batch, &inputs, &committed(&ops), None);
+    assert_eq!(batch[0]["resolved"], planned);
     assert_eq!(
         batch[1]["resolved"],
         json!({ "at": "4", "in": "2", "duration": "2", "out": "4" })
     );
-    assert_eq!(batch[2]["resolved"], json!({ "at": "0" }));
+    assert_eq!(
+        batch[2]["resolved"],
+        json!({ "at": null, "in": null, "duration": null, "out": null })
+    );
 }
 
 /// Decision 7 (spec §5.12.3): `--key` is left out of the `argsHash` input when it is absent,

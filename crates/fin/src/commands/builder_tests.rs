@@ -191,3 +191,96 @@ fn writes_without_text_never_ask_for_pins() {
     assert!(doc["resolved"].get("fonts").is_none());
     assert_eq!(backend.sent.borrow()[0].ops.len(), 1);
 }
+
+/// Caption cap1 on t3 at rev 1; the server stores each commit in canonical form (a time-form
+/// `keyframe.set` becomes the key form, spec §5.12) at rev 2. Counts snapshot reads.
+#[derive(Default)]
+struct Canonical {
+    reads: RefCell<usize>,
+}
+
+impl Canonical {
+    fn base() -> fin_core::Project {
+        let Snapshot { project, .. } = planning(false, Vec::new()).snapshot("main").unwrap();
+        let tx = Tx {
+            tx_id: "seed".into(),
+            author: "fin".into(),
+            branch: "main".into(),
+            base_rev: 0,
+            schema_version: fin_core::SCHEMA_VERSION,
+            args_hash: None,
+            via: None,
+            ops: vec![caption()],
+        };
+        let applied =
+            fin_core::apply_tx(&project, &tx, &mut fin_core::MemIds::after(&project)).unwrap();
+        assert_eq!(applied.bindings["$cap"], "cap1");
+        applied.project
+    }
+}
+
+impl Backend for Canonical {
+    fn snapshot(&self, _branch: &str) -> Result<Snapshot, CoreError> {
+        *self.reads.borrow_mut() += 1;
+        Ok(Snapshot {
+            rev: 1,
+            project: Canonical::base(),
+            generation: None,
+        })
+    }
+    fn commit(&self, tx: &Tx, _generation: Option<&Value>) -> Result<CommittedTx, CoreError> {
+        let stored = fin_core::canonicalize(&Canonical::base(), tx)?;
+        assert_ne!(
+            stored.ops, tx.ops,
+            "the server's form differs from the sent one"
+        );
+        Ok(serde_json::from_value(json!({
+            "rev": 2, "tx": stored, "bindings": {}, "diff": { "changes": [], "shifts": [] },
+        }))
+        .unwrap())
+    }
+    fn tx_get(&self, _tx_id: &str) -> Result<TxLookup, CoreError> {
+        Ok(TxLookup::Unknown)
+    }
+    fn project_call(&self, _tag: &str, _payload: Value) -> Result<Value, CoreError> {
+        unreachable!()
+    }
+    fn rebuild(&self) -> Result<(Value, bool), CoreError> {
+        unreachable!()
+    }
+    fn probe(&self, _path: &Path) -> Result<Probed, CoreError> {
+        unreachable!()
+    }
+    fn create_project(
+        &self,
+        _dir: &Path,
+        _name: &str,
+        _rate: Rational,
+        _idem: Option<&str>,
+    ) -> Result<Value, CoreError> {
+        unreachable!()
+    }
+    fn open_project(&self, _dir: &Path, _relocate: bool) -> Result<Value, CoreError> {
+        unreachable!()
+    }
+}
+
+/// A fresh commit the server stored in canonical form is still this plan's commit: its echo
+/// is kept as planned, with no second snapshot read (review #48 follow-up).
+#[test]
+fn a_canonicalized_fresh_commit_keeps_the_planned_echo() {
+    let backend = Canonical::default();
+    let step = Write::Edit(Edit::Keyframe(keyframe::KeyframeCmd::Set(
+        keyframe::SetArgs {
+            item: "cap1".into(),
+            path: "opacity".into(),
+            at: Some("0".into()),
+            key: None,
+            value: "0.5".into(),
+            interp: None,
+        },
+    )));
+    let doc = write(&backend, &Globals::default(), step).unwrap();
+    assert_eq!(*backend.reads.borrow(), 1, "{doc}");
+    assert_eq!(doc["resolved"]["at"], "0", "{doc}");
+}

@@ -158,17 +158,11 @@ fn keyed_batch_retry_echoes_the_commit() {
     assert_eq!(again["rev"], first["rev"]);
     assert_eq!(again["diff"], first["diff"]);
     assert_eq!(again["bindings"], first["bindings"]);
-    for (n, line) in again["resolved"].as_array().unwrap().iter().enumerate() {
-        let was = &first["resolved"][n]["resolved"];
-        for (k, v) in line["resolved"].as_object().unwrap() {
-            // A value the commit cannot tell (a line's edge before later lines moved it) is
-            // null; anything else is what the commit made.
-            assert!(*v == was[k] || v.is_null(), "line {n} {k}: {v} after {was}");
-        }
-    }
-    // The last line's edge is the commit's.
-    assert_eq!(again["resolved"][2]["resolved"]["edgeAt"], "10", "{again}");
-    assert_eq!(again["resolved"][1], first["resolved"][1]);
+    // Line 1's edge is not the commit's last state (line 3 rippled after it), so the commit
+    // cannot tell it: null. Everything else is exactly what the first answer said.
+    let mut want = first["resolved"].clone();
+    want[0]["resolved"]["edgeAt"] = Value::Null;
+    assert_eq!(again["resolved"], want);
     assert_eq!(t.rev(), first["rev"]);
 }
 
@@ -207,5 +201,137 @@ fn rebased_trim_echoes_the_edge_it_committed() {
     let first = ok(finish(&args, writer.wait_with_output().unwrap()));
     assert_eq!(first["resolved"]["edgeAt"], "7", "{first}");
     let again = ok(fin(&server.sd, &dir, &args));
+    assert_eq!(again, first);
+}
+
+#[test]
+fn keyed_track_add_retry_echoes_the_track_it_made() {
+    let (server, dir) = setup!("keyed_track_add_retry_echoes_the_track_it_made");
+    let t = T(&server, &dir);
+    let first = t.retried(&["--idem-key", "track-key", "track", "add", "--kind", "video"]);
+    assert_eq!(first["bindings"]["$track"], "t3", "{first}");
+    assert_eq!(first["resolved"]["name"], "V2", "{first}");
+}
+
+#[test]
+fn keyed_image_insert_at_end_retry_echoes_where_it_landed() {
+    let (server, dir) = setup!("keyed_image_insert_at_end_retry_echoes_where_it_landed");
+    let t = T(&server, &dir);
+    fin_probe::fixtures::write_png(&dir.join("logo.png"), 64, 36);
+    t.run(&["asset", "add", "logo.png"]);
+    let first = t.retried(&[
+        "--idem-key",
+        "img-key",
+        "image",
+        "insert",
+        "--track",
+        "t1",
+        "--at",
+        "end",
+        "--asset",
+        "a3",
+        "--dur",
+        "1s",
+    ]);
+    assert_eq!(first["resolved"]["at"], "8", "{first}");
+}
+
+#[test]
+fn keyed_overwrite_insert_retry_echoes_its_split() {
+    let (server, dir) = setup!("keyed_overwrite_insert_retry_echoes_its_split");
+    let t = T(&server, &dir);
+    let first = t.retried(&[
+        "--idem-key",
+        "ow-key",
+        "clip",
+        "insert",
+        "--track",
+        "t1",
+        "--at",
+        "1s",
+        "--asset",
+        "a2",
+        "--dur",
+        "1s",
+        "--mode",
+        "overwrite",
+        "--no-audio",
+    ]);
+    assert_eq!(first["resolved"]["split"]["item"], "c1", "{first}");
+    // With the linked-audio path the splits are a list.
+    let av = t.retried(&[
+        "--idem-key",
+        "ow-av",
+        "clip",
+        "insert",
+        "--track",
+        "t1",
+        "--at",
+        "5s",
+        "--asset",
+        "a1",
+        "--dur",
+        "1s",
+        "--mode",
+        "overwrite",
+    ]);
+    assert_eq!(av["resolved"]["splits"][0]["item"], "c2", "{av}");
+}
+
+#[test]
+fn keyed_move_split_and_clip_delete_retries_echo_the_commit() {
+    let (server, dir) = setup!("keyed_move_split_and_clip_delete_retries_echo_the_commit");
+    let t = T(&server, &dir);
+    let split = t.retried(&[
+        "--idem-key",
+        "split-key",
+        "item",
+        "split",
+        "c2",
+        "--at",
+        "6s",
+    ]);
+    assert_eq!(split["resolved"]["at"], "6", "{split}");
+    assert_eq!(split["resolved"]["splits"][0]["item"], "c2", "{split}");
+    let moved = t.retried(&[
+        "--idem-key",
+        "move-key",
+        "item",
+        "move",
+        "c1",
+        "--to",
+        "end",
+    ]);
+    assert_eq!(moved["resolved"]["at"], "8", "{moved}");
+    let deleted = t.retried(&["--idem-key", "del-key", "clip", "delete", "c2"]);
+    assert_eq!(deleted["resolved"]["mode"], "ripple", "{deleted}");
+}
+
+/// Revs are per branch: a retry whose default branch moved (`fin branch default`, `fin try
+/// drop`) reads another branch, which may be at the commit's rev number without holding it.
+#[test]
+fn keyed_retry_after_the_default_branch_moved_echoes_the_commit() {
+    let (server, dir) = setup!("keyed_retry_after_the_default_branch_moved_echoes_the_commit");
+    let t = T(&server, &dir);
+    t.run(&["branch", "new", "side"]);
+    t.run(&["branch", "default", "side"]);
+    let trim = [
+        "--idem-key",
+        "side-trim",
+        "item",
+        "trim",
+        "c1",
+        "--end",
+        "+1s",
+    ];
+    let first = t.run(&trim);
+    assert_eq!(first["resolved"]["edgeAt"], "5", "{first}");
+    t.run(&["branch", "default", "--clear"]);
+    // main reaches the commit's rev number with c1 untouched (ending at 4).
+    while t.rev() != first["rev"] {
+        assert!(t.rev().as_u64() < first["rev"].as_u64(), "{first}");
+        t.run(&["marker", "add", "--at", "0", "--label", "x"]);
+    }
+    let again = t.run(&trim);
     assert_eq!(again, first);
 }
