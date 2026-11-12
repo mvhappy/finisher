@@ -15,6 +15,7 @@ import type { FamilySpec, KindRegistry, MemoryRule, ProgramSpec } from "../../jo
 import { bareKey, ensurePrivateDir, keyTmpDir, pluginWarmKey, principalClass, type RootSessionOf, sweepPluginTmp } from "./keys.ts";
 import { rightsHash } from "./rights.ts";
 import { scrubLogText } from "./log.ts";
+import { pluginAnswerError } from "./plugin-errors.ts";
 import { nodeRuntimeEnv } from "./node-runtime.ts";
 import { type InstalledOf, jobRow, resolveRuntime } from "./program.ts";
 
@@ -155,6 +156,7 @@ export function pluginFamily(deps: PluginFamilyDeps): FamilySpec {
     ...(deps.onStderr === undefined ? {} : { onStderr: deps.onStderr }),
     memory: { interactive: PLUGIN_MEMORY, batch: PLUGIN_MEMORY },
     mapError: mapPluginError,
+    workerError: pluginAnswerError,
   };
 }
 

@@ -28,6 +28,7 @@ import type { JobEngine } from "../../jobs/api.ts";
 import { COMMAND_KIND } from "../../jobs/kinds/plugin.command.ts";
 import { type HostCalls, pinOf } from "./calls.ts";
 import { type CommandEntry, type CommandRegistry, parseCommandName } from "./commands.ts";
+import { principalClass } from "./keys.ts";
 import { scrubLogText } from "./log.ts";
 import { type Invoker, requirePermission } from "./rights.ts";
 import type { JobRights, Permission } from "@finisher/core-types";
@@ -106,15 +107,17 @@ const readOnly = (name: string): FinError =>
 
 /**
  * The job's error as the caller's. The SDKs carry a plugin error's `fix` in `details.fix` (the
- * envelope's `JobError` has no `fix`); it becomes `FinError.fix`, scrubbed like the plugin's log
- * text. Only host-known codes keep details at all (`mapPluginError`: a plugin's own code is
- * `PLUGIN_COMMAND_FAILED` without any), so no other plugin's fix reaches the caller.
+ * envelope's `JobError` has no `fix`); for a person it becomes `FinError.fix`, scrubbed like the
+ * plugin's log text (`plugin-errors.ts` already scrubbed it). An agent or MCP caller never gets
+ * a plugin's fix: it would follow it as the host's next action. Only the codes a plugin may
+ * answer with keep details at all (`pluginAnswerError`), each marked `source: "plugin"`.
  */
-const asError = (e: { code: string; message: string; details?: unknown; fix?: string }): FinError => {
+const asError = (e: { code: string; message: string; details?: unknown; fix?: string }, person: boolean): FinError => {
   const details = e.details !== null && typeof e.details === "object" ? { ...(e.details as Record<string, unknown>) } : {};
   const given = details["fix"];
   delete details["fix"];
-  const fix = e.fix ?? (typeof given === "string" && given.trim() !== "" ? scrubLogText(given) : undefined);
+  const lifted = person && typeof given === "string" && given.trim() !== "" ? scrubLogText(given) : undefined;
+  const fix = e.fix ?? lifted;
   return new FinError({ code: e.code, message: e.message, details, ...(fix === undefined ? {} : { fix }) });
 };
 
@@ -140,7 +143,7 @@ export function makeCommandRun(d: CommandRunDeps) {
           const done = ended[0];
           if (done === undefined) return yield* Effect.fail(finError("INTERNAL", "the command's job vanished", { job: job.id }));
           if (done.state === "succeeded") return done.result;
-          if (done.error !== undefined) return yield* Effect.fail(asError(done.error));
+          if (done.error !== undefined) return yield* Effect.fail(asError(done.error, principalClass(principal) === "person"));
           return yield* Effect.fail(finError("JOB_CANCELLED", `${entry.info.name} was cancelled`, { name: entry.info.name, job: job.id }));
         }),
       (job, exit) => (Exit.isSuccess(exit) ? Effect.void : Effect.ignore(d.engine.cancel(job.id))),

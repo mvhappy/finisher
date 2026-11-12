@@ -5,6 +5,7 @@
 import { type FinError, type FinErrorData, type HelperSpec, type JobOwner, type JobRights, type JobView, type JobVia, type MappedFile, type Priority, SCOPES } from "@finisher/contracts";
 import type { FileHandle } from "node:fs/promises";
 import type { Effect } from "effect";
+import type { JobError as JobErrorMsg } from "@finisher/core-types";
 
 export type PoolName = "cpu" | "gpu" | "hwenc" | "net" | `io:${string}`;
 
@@ -199,6 +200,12 @@ export interface FamilySpec {
    * the job ends `failed`, after the retry policy read the engine's code.
    */
   readonly mapError?: (e: FinErrorData) => FinErrorData;
+  /**
+   * A worker's own error answer (`t: error`) as the family accepts it, when it is read (before
+   * the retry policy and `mapError`): the `plugin` family keeps a plugin from answering with the
+   * host's codes (sp8b, `plugin-errors.ts`). Errors the engine makes never pass through it.
+   */
+  readonly workerError?: (e: JobErrorMsg) => JobErrorMsg;
 }
 
 export interface HelperProgram {

@@ -263,7 +263,7 @@ export abstract class AttemptBase {
           this.items.add(ie.item, outcome);
           env.item(row.id, ie.item, outcome);
         }
-        this.answered({ error: msg.error, retry: msg.error.retry ?? "never" });
+        this.answered({ error: family.workerError?.(msg.error) ?? msg.error, retry: msg.error.retry ?? "never" });
         return;
       case "diag":
         if (this.#diagnostics && (family.diagKinds ?? []).includes(msg.kind)) {
