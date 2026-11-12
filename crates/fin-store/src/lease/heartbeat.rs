@@ -147,6 +147,10 @@ fn beat(inner: &Inner) -> Result<Instant, Failed> {
         ..io.last.clone()
     };
     let path = inner.path();
+    // `.finisher` replaced by a link: the lease there is not this folder's.
+    if let Err(e) = crate::reserved::no_links(path.parent().unwrap_or(&path)) {
+        return Err(Failed::Lost(e.to_string()));
+    }
     match fsio::write_in_place(&path, &record::encode(&next)) {
         Ok(()) => {}
         Err(e) if e.kind() == ErrorKind::NotFound => {

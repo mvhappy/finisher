@@ -49,6 +49,9 @@ pub(super) fn run(
             return Ok(Step::Stopped(why));
         }
         let path = v.seg_dir.join(file);
+        if let Err(e) = crate::reserved::no_links(&v.seg_dir) {
+            return Ok(Step::Wait(e.to_string()));
+        }
         match std::fs::remove_file(&path) {
             Ok(()) => deleted += 1,
             Err(e) if e.kind() == io::ErrorKind::NotFound => {}
@@ -74,6 +77,9 @@ pub(super) fn run(
     }
     let dir = store.project_dir.join(".finisher").join("compaction");
     let path = dir.join(name.to_string());
+    if let Err(e) = crate::reserved::no_links(&dir) {
+        return Ok(Step::Wait(e.to_string()));
+    }
     match std::fs::remove_file(&path) {
         Ok(()) => {}
         Err(e) if e.kind() == io::ErrorKind::NotFound => {}

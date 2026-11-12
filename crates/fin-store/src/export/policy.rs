@@ -153,6 +153,7 @@ impl TempSweep {
                 };
                 if now.saturating_duration_since(since) >= TEMP_MAX_AGE
                     && may_delete()
+                    && crate::reserved::no_links(dir).is_ok()
                     && fs::remove_file(&path).is_ok()
                 {
                     continue;

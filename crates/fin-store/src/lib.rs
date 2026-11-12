@@ -41,6 +41,7 @@ mod paths;
 pub mod project_file;
 mod rebuild;
 mod recover;
+mod reserved;
 pub mod scan;
 pub mod segment;
 pub mod server_id;
