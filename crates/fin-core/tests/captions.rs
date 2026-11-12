@@ -42,33 +42,33 @@ fn blocks_split_on_gap_chars_lines_duration() {
         w("two", "1/2", "1"),
         w("three", "2", "5/2"),
     ];
-    let got = blocks(&words, &style(32, 2, "1/2", None));
+    let got = blocks(&words, &style(32, 2, "1/2", None)).unwrap();
     assert_eq!(got.len(), 2);
     assert_eq!((got[0].start, got[0].end), (r("0"), r("1")));
     assert_eq!(texts(&got[0]), ["one", "two"]);
     assert_eq!((got[1].start, got[1].end), (r("2"), r("5/2")));
     assert_eq!(got[1].words[0], w("three", "0", "1/2"));
     // A gap of 0 never splits.
-    assert_eq!(blocks(&words, &style(32, 2, "0", None)).len(), 1);
+    assert_eq!(blocks(&words, &style(32, 2, "0", None)).unwrap().len(), 1);
     // Lines of at most 7 characters, at most 2 lines: "aa bb" "cc dd" | "ee".
     let words: Vec<Word> = ["aa", "bb", "cc", "dd", "ee"]
         .iter()
         .enumerate()
         .map(|(i, t)| w(t, &i.to_string(), &(i + 1).to_string()))
         .collect();
-    let got = blocks(&words, &style(7, 2, "0", None));
+    let got = blocks(&words, &style(7, 2, "0", None)).unwrap();
     let got: Vec<Vec<&str>> = got.iter().map(texts).collect();
     assert_eq!(got, [vec!["aa", "bb", "cc", "dd"], vec!["ee"]]);
     // One line each.
-    let got = blocks(&words, &style(5, 1, "0", None));
+    let got = blocks(&words, &style(5, 1, "0", None)).unwrap();
     let got: Vec<Vec<&str>> = got.iter().map(texts).collect();
     assert_eq!(got, [vec!["aa", "bb"], vec!["cc", "dd"], vec!["ee"]]);
     // Characters are Unicode scalar values, not bytes: "привет" is 6.
     let words = [w("привет", "0", "1"), w("мир", "1", "2")];
-    assert_eq!(blocks(&words, &style(10, 1, "0", None)).len(), 1);
+    assert_eq!(blocks(&words, &style(10, 1, "0", None)).unwrap().len(), 1);
     // A word longer than a line gets a line of its own (it overflows; measurement says so).
     let words = [w("supercalifragilistic", "0", "1"), w("x", "1", "2")];
-    let got = blocks(&words, &style(5, 1, "0", None));
+    let got = blocks(&words, &style(5, 1, "0", None)).unwrap();
     assert_eq!(
         got.iter().map(texts).collect::<Vec<_>>(),
         [vec!["supercalifragilistic"], vec!["x"]]
@@ -77,12 +77,12 @@ fn blocks_split_on_gap_chars_lines_duration() {
     let words: Vec<Word> = (0..5)
         .map(|i| w("w", &i.to_string(), &(i + 1).to_string()))
         .collect();
-    let got = blocks(&words, &style(100, 5, "0", Some("2")));
+    let got = blocks(&words, &style(100, 5, "0", Some("2"))).unwrap();
     assert_eq!(
         got.iter().map(|b| (b.start, b.end)).collect::<Vec<_>>(),
         [(r("0"), r("2")), (r("2"), r("4")), (r("4"), r("5"))]
     );
-    assert!(blocks(&[], &style(32, 2, "1/2", None)).is_empty());
+    assert!(blocks(&[], &style(32, 2, "1/2", None)).unwrap().is_empty());
 }
 
 #[test]
@@ -347,4 +347,36 @@ fn caption_import_inserts_one_item_per_block() {
         0
     );
     let _ = Rational::zero();
+}
+
+/// Review #42: a block whose times cannot be made relative to its start used to be dropped
+/// (`filter_map`), so an import returned `Ok` with only the other words.
+#[test]
+fn block_time_overflow_fails_the_import() {
+    let mut p = project();
+    p.timelines[0]
+        .tracks
+        .push(Track::new("t3", TrackKind::Caption, "C1"));
+    let words = [
+        w(
+            "huge",
+            "1/9223372036854775807",
+            "9223372036854775807/9223372036854775806",
+        ),
+        w("plain", "2", "3"),
+    ];
+    assert_eq!(
+        blocks(&words, &style(32, 2, "0", None)).unwrap_err().code,
+        "TIME_OVERFLOW"
+    );
+    let err = caption_import(&p, "t3", secs(0), &words, "preset:bold").unwrap_err();
+    assert_eq!(err.code, "TIME_OVERFLOW", "{err:?}");
+    // The ordinary word alone still imports.
+    assert_eq!(
+        caption_import(&p, "t3", secs(0), &words[1..], "preset:bold")
+            .unwrap()
+            .ops
+            .len(),
+        1
+    );
 }

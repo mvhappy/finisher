@@ -220,7 +220,7 @@ Every model change follows core §3.2 (`formatVersion`, `minReaderVersion`, froz
 |---|---|---|
 | `VideoInfo.display`, `rotation`, `pixelAspect` (optional) | 6B | format bump; no upcaster can know an old asset's rotation, so absent means "unknown" and the engine uses the file's `MediaInfo`; `asset.reprobe` (a new op) fills them |
 | `fit` item parameter | 6D | format bump (older readers refuse `param.set fit`); absent = contain, no upcaster |
-| Asset kind `matte`; `Mask.matte` an asset id | 6D (or 8H) | **one `SCHEMA_VERSION` 2 → 3 bump shared with sub-project 8's `Project.plugins`** (pl §4), made by whichever lands first, with frozen upgrade steps and goldens; old free-string mattes stay unresolved (`MATTE_MISSING` until relinked) |
+| Asset kind `matte`; `Mask.matte` an asset id | 6D (or 8H) | **one `SCHEMA_VERSION` bump (4 → 5; written 2 → 3 before the keyframe-id bump to 3 and 6B-1's video fields at 4) shared with sub-project 8's `Project.plugins`** (pl §4), made by whichever lands first, with frozen upgrade steps and goldens; old free-string mattes stay unresolved (`MATTE_MISSING` until relinked) |
 | `mask.set`, `mask.remove` ops (4C Decision 48) | 6D | format bump (new op kinds) |
 | `nested` insert edits (4C Decision 48) | 6D | format bump (new op kinds) |
 | `CaptionStyle.animation` | 6D | format bump; absent = `none`, no upcaster |
