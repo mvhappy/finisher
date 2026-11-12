@@ -144,7 +144,9 @@ describe("runs", () => {
     expect(done.code).toBeUndefined();
     expect(t.sink.exits).toHaveLength(1);
     expect(t.sink.exits[0]).toMatchObject({ role: "worker", family: "test", reason: "done", exitCode: 0, jobsServed: 1, sandboxed: false });
-    expect(t.sink.exits[0]!.lifetimeS).toBeGreaterThan(0);
+    // Whole seconds (worker.exit's u64): a short-lived worker is 0, never a fraction.
+    expect(Number.isInteger(t.sink.exits[0]!.lifetimeS)).toBe(true);
+    expect(t.sink.exits[0]!.lifetimeS).toBeGreaterThanOrEqual(0);
 
     // Interactive with one attempt: neither retried nor isolated (Task 10).
     const failed = await t.runJob("test.crash", { items: ["x"], poison: ["x"], how: "abort" }, { priority: "interactive", maxAttempts: 1 });
