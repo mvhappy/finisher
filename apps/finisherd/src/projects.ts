@@ -90,17 +90,8 @@ export interface ProjectRegistryShape {
   /** `meta`'s guard names the caller's credential: refused once it is revoked (review of 5A Tasks 8–9, L1). */
   readonly acknowledgeRewind: (projectId: string, branch: string, generation: number, meta?: CallMeta) => Effect.Effect<boolean, FinError>;
   readonly acknowledgeSalvage: (projectId: string, copy: string, meta?: CallMeta) => Effect.Effect<boolean, FinError>;
-  /**
-   * `eval.frame`: `branch` resolved first; `timeline` absent: the main timeline. `rev`: the rev
-   * the caller resolved `timeline` at (a timeline removed since is `CONFLICT`, `TIMELINE_GONE`).
-   */
-  readonly evalFrame: (
-    projectId: string,
-    branch: string,
-    timeline: string | undefined,
-    at: string,
-    rev?: number,
-  ) => Effect.Effect<FramePlan, FinError>;
+  /** `eval.frame`: `timeline` absent: the main timeline; one gone since `rev` is `CONFLICT` (`TIMELINE_GONE`). */
+  readonly evalFrame: (projectId: string, branch: string, timeline: string | undefined, at: string, rev?: number) => Effect.Effect<FramePlan, FinError>;
   readonly evalAudio: (
     projectId: string,
     branch: string,
