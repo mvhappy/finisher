@@ -102,6 +102,8 @@ impl Registry {
 
 /// Each permission's risk within the set (`low`, `medium` or `high`, in order), as a plan shows
 /// it (sp8b Task 11: the developer-mode approval screen, which has no plan).
+// napi registers the export; a `cargo test` build has no caller.
+#[cfg_attr(test, allow(dead_code))]
 #[napi(catch_unwind)]
 pub fn permission_risks(permissions_json: String) -> Result<Vec<String>> {
     let perms: Vec<fin_plugin_api::Permission> =
