@@ -26,6 +26,7 @@ import { chmod, lstat, mkdir, open, readlink, rm, symlink, writeFile } from "nod
 import { posix, win32 } from "node:path";
 import type { Harness } from "@finisher/contracts";
 import { sandboxSessionGitConfig } from "@finisher/fin-node";
+import { ulid } from "../control/ulid.ts";
 
 export interface SessionDirs {
   /** `<server-data>/agents/<sessionId>`. */
@@ -122,6 +123,27 @@ export async function ensureSessionDirs(agentsRoot: string, sessionId: string, o
   await writeFile(d.gitConfig, sandboxSessionGitConfig(), { mode: 0o600 });
   if (platform !== "win32") await chmod(d.gitConfig, 0o600);
   return d;
+}
+
+/** The prefix of a host sandbox's directory name: `agents/host-<ulid>/` (no session has it). */
+export const HOST_PREFIX = "host-";
+
+/**
+ * A host sandbox's throwaway directory `agents/host-<ulid>/` (plan 7D Task 3b: detection and the
+ * probe start a CLI without a session): the session layout (`settings/`, `tmp/`, `provider/`,
+ * `git/`, `blobs/`, all 0700), never a credential, never a sign-in store link.
+ * `removeHostDirs` deletes it.
+ */
+export async function ensureHostDirs(agentsRoot: string, opts: EnsureOptions = {}): Promise<{ readonly id: string; readonly dirs: SessionDirs }> {
+  const id = `${HOST_PREFIX}${ulid().toUpperCase()}`;
+  return { id, dirs: await ensureSessionDirs(agentsRoot, id, opts) };
+}
+
+/** Removes a host sandbox's directory (only one named `host-<…>`). */
+export async function removeHostDirs(dirs: SessionDirs): Promise<void> {
+  const { basename } = process.platform === "win32" ? win32 : posix;
+  if (!basename(dirs.dir).startsWith(HOST_PREFIX)) throw new Error(`not a host sandbox's directory: ${dirs.dir}`);
+  await rm(dirs.dir, { recursive: true, force: true, maxRetries: 3 });
 }
 
 /**

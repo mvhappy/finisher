@@ -1,5 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { join, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { fixtureRoot, runGate } from "./gate-helpers.mjs";
 
@@ -45,4 +47,23 @@ test("allows the sandbox, the built-in fin tool and its command map, comments an
 test("the repository passes", () => {
   const r = gate(repo);
   assert.equal(r.code, 0, r.out);
+});
+
+test("the Claude Code adapter's folder starts nothing (plan 7D Task 3b)", async () => {
+  // A fixture: `agent/claude/` is checked like the rest of `agent/`.
+  const r = gate(fixtureRoot({ "apps/finisherd/src/agent/claude/launch.ts": FORBIDDEN.named }));
+  assert.equal(r.code, 1, r.out);
+  assert.match(r.out, /AGENT_SPAWN apps\/finisherd\/src\/agent\/claude\/launch\.ts:1: /);
+  // This repository's folder (whatever is there yet, nothing at all included): no file is
+  // exempt, none names `child_process`.
+  const { checked, findings } = await import("./check-agent-spawn.mjs");
+  const dir = join(repo, "apps/finisherd/src/agent/claude");
+  const files = existsSync(dir) ? readdirSync(dir, { recursive: true, encoding: "utf8" }).filter((f) => /\.(?:[cm]?[jt]s|tsx)$/.test(f)) : [];
+  for (const f of files) {
+    const path = `apps/finisherd/src/agent/claude/${f.split(sep).join("/")}`;
+    assert.equal(checked(path), true, path);
+    const text = readFileSync(join(dir, f), "utf8");
+    assert.deepEqual(findings(path, text), [], path);
+    assert.doesNotMatch(text, /child_process/, path);
+  }
 });
