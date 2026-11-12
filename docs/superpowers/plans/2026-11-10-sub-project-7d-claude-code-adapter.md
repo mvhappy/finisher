@@ -147,7 +147,7 @@ export function encodeControl(requestId: string, req: HostRequest): string;   //
 export function encodeAnswer(requestId: string, a: CanUseToolAnswer | McpReply | { error: string }): string;
 // apps/finisherd/src/agent/sandbox.ts (Task 3b)
 export interface SpawnOptions { cwd: string; stdio: "pipe"; extraRead?: readonly string[]; env?: Readonly<Record<string, string>> }  // env merged over the session's, checked by assertSessionEnv with the harness's `extra`
-export function openHostSandbox(purpose: "detect" | "probe", harness: Harness, deps: SessionSandboxDeps): Effect<SessionSandbox, FinError, Scope>;  // a throwaway dir as workspace, no project, no credential, no store variable
+export function openHostSandbox(purpose: "detect" | "probe", harness: Harness, deps: SessionSandboxDeps): Effect<SessionSandbox, FinError, Scope>;  // a throwaway dir as workspace, no project, no credential; "detect" gets the sign-in store (Decision 22: `auth status`), "probe" never can (Decision 8)
 // apps/finisherd/src/agent/claude/launch.ts
 export interface LaunchPlan { argv: string[]; files: { path: string; body: string }[]; env: Record<string, string> }
 export function launchPlan(s: Session, spec: SessionSpec, probe: ProbeResult, os: NodeJS.Platform): LaunchPlan;
