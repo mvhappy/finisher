@@ -53,7 +53,8 @@ impl NameTable {
 }
 
 /// `fin` commands by registry name (dotted, as `fin`'s registry names them), plus the
-/// `fin diagnostics` commands of Task D6 and the `fin plugin|registry` commands of 8A Task 12c.
+/// `fin diagnostics` commands of Task D6 and the `fin plugin|registry` commands of 8A Task 12c
+/// (`plugin.commands`: 8B Task 10; `fin @<id> <command>` itself is no registry command: `other`).
 pub static CLI_COMMANDS: NameTable = NameTable::new(
     "CLI_COMMANDS",
     &[
@@ -135,6 +136,7 @@ pub static CLI_COMMANDS: NameTable = NameTable::new(
         "media.caps",
         "merge",
         "param.set",
+        "plugin.commands",
         "plugin.disable",
         "plugin.enable",
         "plugin.info",
@@ -350,7 +352,9 @@ pub use super::agent_names::{
 };
 pub use super::names_rpc::RPC_METHODS;
 
-pub use super::plugin_names::{BUNDLED_PLUGINS, PLUGIN_ACTIONS, bundled_plugin_name};
+pub use super::plugin_names::{
+    BUNDLED_PLUGINS, PLUGIN_ACTIONS, PLUGIN_METHOD_FAMILIES, bundled_plugin_name,
+};
 
 /// Every table, for the pattern test.
 pub static TABLES: &[&NameTable] = &[
@@ -374,6 +378,7 @@ pub static TABLES: &[&NameTable] = &[
     &super::names_media::MEDIA_BACKENDS,
     &BUNDLED_PLUGINS,
     &PLUGIN_ACTIONS,
+    &PLUGIN_METHOD_FAMILIES,
 ];
 
 // `deserialize_with` helpers: a `Name` field reads through its table.
@@ -415,6 +420,7 @@ table_fns!(one -> Name:
     agent_tool => AGENT_TOOLS,
     bundled_plugin => BUNDLED_PLUGINS,
     plugin_action => PLUGIN_ACTIONS,
+    plugin_method_family => PLUGIN_METHOD_FAMILIES,
 );
 table_fns!(many -> Vec<Name>: cli_flags => CLI_FLAGS, detail_keys => DETAIL_KEYS);
 table_fns!(counts -> Counts<Name>: op_counts => OP_KINDS);

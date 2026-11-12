@@ -28,6 +28,8 @@ pub mod media;
 pub mod media_caps;
 pub mod param;
 pub mod plugin;
+pub mod plugin_args;
+pub mod plugin_cmd;
 pub mod project;
 pub mod schema;
 pub mod schema_registry;

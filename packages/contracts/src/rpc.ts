@@ -168,6 +168,7 @@ import {
   PluginSuggestSuccess,
 } from "./plugin-lifecycle.ts";
 import { PluginContentGetPayload, PluginContentGetSuccess } from "./plugin-content.ts";
+import { PluginCommandRunPayload, PluginCommandRunSuccess, PluginCommandsPayload, PluginCommandsSuccess } from "./plugin-commands.ts";
 import {
   LibraryAddPayload,
   LibraryAddSuccess,
@@ -543,6 +544,9 @@ export const FinRpcs = RpcGroup.make(
   Rpc.make("plugin.enable", { payload: PluginStatePayload, success: PluginStateSuccess, error: FinError }),
   Rpc.make("plugin.disable", { payload: PluginStatePayload, success: PluginStateSuccess, error: FinError }),
   Rpc.make("plugin.suggest", { payload: PluginSuggestPayload, success: PluginSuggestSuccess, error: FinError }),
+  // Plugin commands (8B Task 9): the list and a run, committed under the invoker with `Tx.via`.
+  Rpc.make("plugin.commands", { payload: PluginCommandsPayload, success: PluginCommandsSuccess, error: FinError }),
+  Rpc.make("plugin.command.run", { payload: PluginCommandRunPayload, success: PluginCommandRunSuccess, error: FinError }),
   // Libraries (sub-project 5D Task 13): the owner's folders of originals, their catalogs and search.
   Rpc.make("library.add", { payload: LibraryAddPayload, success: LibraryAddSuccess, error: FinError }),
   Rpc.make("library.remove", { payload: LibraryRemovePayload, success: LibraryRemoveSuccess, error: FinError }),

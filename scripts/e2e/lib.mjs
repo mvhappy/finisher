@@ -112,21 +112,22 @@ export async function waitFor(what, predicate, timeoutMs, onTimeout = () => "", 
   }
 }
 
-export function serverCommand(serverData) {
+/** The finisherd command line; `entry` replaces `main.ts` (a scenario's own launcher of `serve`). */
+export function serverCommand(serverData, entry) {
   if (process.env.E2E_SERVER_CMD) {
     const [cmd, ...args] = JSON.parse(process.env.E2E_SERVER_CMD).map((a) => a.replaceAll("{serverData}", serverData));
     return [cmd, args];
   }
-  return [process.execPath, [join(ROOT, "apps", "finisherd", "src", "main.ts"), "--server-data", serverData]];
+  return [process.execPath, [entry ?? join(ROOT, "apps", "finisherd", "src", "main.ts"), "--server-data", serverData]];
 }
 
 /**
  * Starts `finisherd --server-data <dir>` (with `env` added to this process's environment) and
  * waits for its `finisherd.json`. If it never becomes ready, the child is stopped before the
- * error propagates.
+ * error propagates. `entry`: a script run in place of `main.ts` (it takes the same arguments).
  */
-export async function startServer(serverData, env = {}) {
-  const [cmd, args] = serverCommand(serverData);
+export async function startServer(serverData, env = {}, { entry } = {}) {
+  const [cmd, args] = serverCommand(serverData, entry);
   rmSync(join(serverData, "finisherd.json"), { force: true }); // a stale file from an earlier run
   const child = spawn(cmd, args, { cwd: ROOT, stdio: ["ignore", "ignore", "pipe"], env: { ...process.env, ...env } });
   live.children.add(child);

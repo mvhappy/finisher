@@ -6,6 +6,9 @@ import { Context, Layer } from "effect";
 
 export type JobDoneEvent = JobDone & { readonly extra?: Readonly<Record<string, unknown>> };
 export type WorkerExitEvent = Omit<WorkerExit, "plugin"> & { readonly pluginId?: string };
+
+/** A process's lifetime in whole seconds (`worker.exit`'s `lifetimeS` is a `u64`). */
+export const lifetimeSeconds = (ms: number): number => (Number.isFinite(ms) && ms > 0 ? Math.floor(ms / 1000) : 0);
 export interface ForwardedEvent {
   readonly origin: { readonly family: string; readonly job?: string };
   readonly kind: string;

@@ -253,6 +253,9 @@ importers:
         specifier: workspace:*
         version: link:../core-types
     devDependencies:
+      '@finisher/fin-node':
+        specifier: workspace:*
+        version: link:../fin-node
       '@types/node':
         specifier: 24.19.2
         version: 24.19.2

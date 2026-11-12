@@ -242,6 +242,21 @@ const outcome = (rules: readonly Rule[], tag: string, payload: Record<string, un
   Effect.runPromise(commandRules(source(rules), { get: (id) => (id === SESSION.id ? SESSION : undefined) }, options)(policyInput(tag, payload, principal)));
 
 describe("the policy", () => {
+  test("host_commit_names_its_plugin_command_and_dry_run (sp8b Task 9 review)", async () => {
+    const commitOf = (host?: PolicyInput["host"]) =>
+      Effect.runPromise(commandRules(source([rule("user", "deny", "plugin:@acme/*"), rule("user", "ask", "rpc:tx.commit")]), { get: (id) => (id === SESSION.id ? SESSION : undefined) })({ ...policyInput("tx.commit", { projectId: "01P", tx: { branch: "br1", ops: [] } }), ...(host === undefined ? {} : { host }) }));
+    const via = { plugin: "@acme/tools@1.0.0", command: "go" };
+    // The plugin host's commit is the plugin command too: its deny holds.
+    expect(await commitOf({ via, dryRun: false })).toMatchObject({ deny: { code: "RULE_DENIED" } });
+    // Without the host's channel there is no plugin command, only the ask on the RPC.
+    expect(await commitOf()).toMatchObject({ ask: {} });
+    const askOnly = (host?: PolicyInput["host"]) =>
+      Effect.runPromise(commandRules(source([rule("user", "ask", "rpc:tx.commit")]), { get: (id) => (id === SESSION.id ? SESSION : undefined) })({ ...policyInput("tx.commit", { projectId: "01P", tx: { branch: "br1", ops: [] } }), ...(host === undefined ? {} : { host }) }));
+    // The host's dry run keeps nothing: no card.
+    expect(await askOnly({ via, dryRun: true })).toBeUndefined();
+    expect(await askOnly({ via, dryRun: false })).toMatchObject({ ask: {} });
+  });
+
   test("where_uses_resolved_values: a branch reference resolved per project, a render's minutes, an asset's bytes", async () => {
     const onReview = [rule("user", "deny", "checkpoint", { branch: "review" })];
     // `review` is br2: a checkpoint on br2 is refused, on br1 it is not.

@@ -11,6 +11,13 @@
     "@finisher/core-types": "workspace:*"
   },
   "devDependencies": {
+    "@finisher/fin-node": "workspace:*",
     "@types/node": "24.19.2"
+  },
+  "engines": {
+    "node": ">=24.22"
+  },
+  "scripts": {
+    "test": "vitest run --root ../.. packages/plugin-sdk"
   }
 }

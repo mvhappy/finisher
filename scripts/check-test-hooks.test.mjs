@@ -80,3 +80,20 @@ test("check_test_hooks_flags_fin", () => {
   assert.equal(on.code, 1);
   assert.match(on.out, /TEST_HOOKS_IN_BUILD: crates\/fin\/Cargo.toml enables "test-hooks" by default/);
 });
+
+test("check_test_hooks_flags_egress_hooks_outside_tests", () => {
+  const app = (src) =>
+    fixtureRoot({
+      "Cargo.toml": '[workspace]\nresolver = "3"\nmembers = ["crates/x"]\n',
+      "crates/x/Cargo.toml": '[package]\nname = "x"\nversion = "0.0.0"\nedition = "2024"\n',
+      "crates/x/src/lib.rs": "",
+      "apps/finisherd/src/plugins/host/egress-test-hooks.ts": 'import { testHooks } from "@finisher/fin-node";\n',
+      "apps/finisherd/test/egress.test.ts": 'import { egressTestHooks } from "../src/plugins/host/egress-test-hooks.ts";\n',
+      "apps/finisherd/src/main.ts": src,
+    });
+  assert.equal(gate(app('import { makeEgress } from "./plugins/host/egress.ts";\n')).code, 0);
+  const bad = gate(app('const x = 1;\nimport { egressTestHooks } from "./plugins/host/egress-test-hooks.ts";\n'));
+  assert.equal(bad.code, 1, bad.out);
+  assert.match(bad.out, /TEST_HOOK_UNGUARDED: apps\/finisherd\/src\/main.ts:2/);
+  assert.match(gate(app('await import("./plugins/host/egress-test-hooks.ts");\n')).out, /TEST_HOOK_UNGUARDED/);
+});

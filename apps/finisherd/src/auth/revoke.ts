@@ -25,6 +25,7 @@
 // `auth.revokeSelf`, the owner's `auth.credential.revoke` and the expiry sweep all call it.
 import type { FinError } from "@finisher/contracts";
 import { endCredential } from "@finisher/fin-node";
+import { Effect } from "effect";
 import type { ConnectionRegistry, Transport } from "../connections.ts";
 import type { Audit } from "../control/audit.ts";
 import { finError } from "../errors.ts";
@@ -136,6 +137,29 @@ export function sweepExpired(deps: RevokeDeps, expired: () => ReadonlyArray<Revo
   }
   return n;
 }
+
+/**
+ * Sweeps now, then every `ms` until the scope closes. A busy store fails one sweep, never the
+ * timer: the next one tries again.
+ */
+export const sweepEvery = (deps: RevokeDeps, expired: () => ReadonlyArray<RevocableRef>, ms: number) => {
+  const sweep = () => {
+    try {
+      sweepExpired(deps, expired);
+    } catch (e) {
+      process.stderr.write(`finisherd: warning: credential expiry sweep failed: ${String(e)}\n`);
+    }
+  };
+  return Effect.acquireRelease(
+    Effect.sync(() => {
+      sweep();
+      const timer = setInterval(sweep, ms);
+      timer.unref();
+      return timer;
+    }),
+    (timer) => Effect.sync(() => clearInterval(timer)),
+  );
+};
 
 // ---- Devices (5B Decision 24) ----
 

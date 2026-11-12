@@ -5,6 +5,7 @@
 import { type FinError, type FinErrorData, type HelperSpec, type JobOwner, type JobRights, type JobView, type JobVia, type MappedFile, type Priority, SCOPES } from "@finisher/contracts";
 import type { FileHandle } from "node:fs/promises";
 import type { Effect } from "effect";
+import type { JobError as JobErrorMsg } from "@finisher/core-types";
 
 export type PoolName = "cpu" | "gpu" | "hwenc" | "net" | `io:${string}`;
 
@@ -138,6 +139,8 @@ export interface CallCtx {
   readonly owner: JobOwner;
   readonly via?: JobVia;
   readonly rights?: JobRights;
+  /** The warm worker's key (`FamilySpec.warmKey`, `<project>/`-prefixed when confined); absent for a cold process. */
+  readonly workerKey?: string;
 }
 
 /**
@@ -166,6 +169,11 @@ export interface FamilySpec {
    */
   readonly usable?: (job: JobView) => FinError | undefined;
   /**
+   * A plugin family's check of a job's rights at submit (sp8b Task 6), after the engine's own
+   * shape check: e.g. that their principal class is the owner's. The error refuses the submit.
+   */
+  readonly checkRights?: (owner: JobOwner, rights: JobRights) => FinError | undefined;
+  /**
    * Under a sandbox (plan 7C Decision 19): the roots a warm worker spawned for `job` may read,
    * fixed at its start and shared by every job of its key (one project): canonical, outside
    * server data. A job whose `reads` fall outside them runs cold.
@@ -173,6 +181,11 @@ export interface FamilySpec {
   readonly warmReads?: (job: JobView) => ReadonlyArray<string>;
   /** Decision 5a. */
   readonly onCall?: OnCall;
+  /**
+   * The family's processes' stderr lines (sp8b Task 7: plugins scrub and cap theirs); the
+   * engine's debug log otherwise. `job`: the job a line came during, `key`: a warm worker's.
+   */
+  readonly onStderr?: (line: string, from: { readonly job?: string; readonly key?: string }) => void;
   readonly diagKinds?: ReadonlyArray<string>;
   readonly pluginId?: string;
   /**
@@ -187,6 +200,12 @@ export interface FamilySpec {
    * the job ends `failed`, after the retry policy read the engine's code.
    */
   readonly mapError?: (e: FinErrorData) => FinErrorData;
+  /**
+   * A worker's own error answer (`t: error`) as the family accepts it, when it is read (before
+   * the retry policy and `mapError`): the `plugin` family keeps a plugin from answering with the
+   * host's codes (sp8b, `plugin-errors.ts`). Errors the engine makes never pass through it.
+   */
+  readonly workerError?: (e: JobErrorMsg) => JobErrorMsg;
 }
 
 export interface HelperProgram {
@@ -196,6 +215,22 @@ export interface HelperProgram {
   resolve(job: JobView): ProgramSpec;
   readonly onCall?: OnCall;
   readonly pluginId?: string;
+}
+
+/** A process's stderr line: the family's `onStderr`, else the debug log under `tag`. */
+export function familyStderr(
+  f: FamilySpec,
+  line: string,
+  from: { readonly job?: string; readonly key?: string },
+  log: (level: "debug" | "error", message: string) => void,
+  tag: string,
+): void {
+  if (f.onStderr === undefined) return log("debug", `${tag} ${line}`);
+  try {
+    f.onStderr(line, from);
+  } catch (e) {
+    log("error", `${tag} the stderr hook failed: ${e instanceof Error ? e.message : String(e)}`);
+  }
 }
 
 export interface KindRegistry {

@@ -93,6 +93,13 @@ function list<T extends string>(field: string, v: ReadonlyArray<T> | undefined, 
 
 const parseList = (text: string): "*" | ReadonlyArray<string> => JSON.parse(text) as "*" | ReadonlyArray<string>;
 
+/** A credential minted or ended (`Credentials.onChange`; the plugin host's policy generations). */
+export interface CredentialChange {
+  readonly kind: CredentialKind;
+  readonly id: string;
+  readonly change: "minted" | "ended";
+}
+
 export class Credentials {
   readonly #store: ControlStore;
   #master: Buffer;
@@ -109,6 +116,7 @@ export class Credentials {
   readonly #unsaved = new Set<string>();
   #retry: ReturnType<typeof setTimeout> | undefined;
   #backoffMs = 500;
+  readonly #changes = new Set<(c: CredentialChange) => void>();
 
   /** `saveMaster` writes a new `credential.master` durably (`rotateMaster`; none in unit tests). */
   constructor(store: ControlStore, master: Buffer, audit: Audit, clock: () => number = Date.now, saveMaster?: (key: Buffer) => void) {
@@ -144,6 +152,25 @@ export class Credentials {
     );
     this.#touch = db.prepare("UPDATE credentials SET lastUsedAt = ? WHERE id = ?");
     this.#end = db.prepare("UPDATE credentials SET revokedAt = ?, revokedReason = ? WHERE id = ? AND revokedAt IS NULL");
+  }
+
+  /**
+   * Told of every credential minted or ended (in memory, before the store has it), after the
+   * fact; a throwing listener is logged. Returns the unsubscribe.
+   */
+  onChange(f: (c: CredentialChange) => void): () => void {
+    this.#changes.add(f);
+    return () => void this.#changes.delete(f);
+  }
+
+  #changed(c: CredentialChange): void {
+    for (const f of [...this.#changes]) {
+      try {
+        f(c);
+      } catch (e) {
+        process.stderr.write(`finisherd: warning: a credential listener failed: ${String(e)}\n`);
+      }
+    }
   }
 
   /** `live`, `revoked` or `expired` at `now`. */
@@ -250,6 +277,7 @@ export class Credentials {
       outcome: "ok",
       details: { credentialId: row.id, scopes: [...scopes] },
     });
+    this.#changed({ kind: row.kind, id: row.id, change: "minted" });
     const key = credentialKey(this.#master, this.#store.envId, row.kind, row.id);
     return { credential: this.view(row), file: { v: 1, kind: row.kind, id: row.id, key: b64u.encode(key), env: this.#store.envId } };
   }
@@ -357,6 +385,7 @@ export class Credentials {
     row.revokedAt = now;
     row.revokedReason = why;
     this.#unsaved.add(row.id);
+    this.#changed({ kind: row.kind, id: row.id, change: "ended" });
     return true;
   }
 

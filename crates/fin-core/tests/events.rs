@@ -411,6 +411,7 @@ fn content_fields_name_their_kind() {
         ("agent.turn.tools".into(), ContentKind::ModelInput),
         ("error.panic.message".into(), ContentKind::ErrorMessage),
         ("log.commit.intent".into(), ContentKind::TxIntent),
+        ("plugin.command.args".into(), ContentKind::ToolArgs),
     ]);
     assert_eq!(seen, want);
     // `redact`'s own walk agrees.
@@ -814,7 +815,7 @@ fn redact_removes_every_content_path() {
     }
     assert_eq!(
         removed,
-        2 * 9,
+        2 * 10,
         "every sample content field was filled and removed"
     );
 }
@@ -1301,8 +1302,9 @@ fn intent_content_holds_free_text_only_in_ops() {
 
 #[test]
 fn job_kinds_registered() {
-    // `job.done` is `kv` 2 (the optional `media` object), `worker.exit` still `kv` 1.
-    for (name, kv) in [("job.done", 2), ("worker.exit", 1)] {
+    // `job.done` is `kv` 2 (the optional `media` object), `worker.exit` `kv` 2 (its plugin a
+    // `PluginRef`, sp8b Task 15).
+    for (name, kv) in [("job.done", 2), ("worker.exit", 2)] {
         let k = kind(name, kv).unwrap_or_else(|| panic!("{name} at v{kv}"));
         assert!(!k.reserved && !k.training_only, "{name}");
         assert_eq!(k.sources, [Source::Finisherd], "{name}");
@@ -1371,7 +1373,7 @@ fn worker_exit_reasons_closed() {
             "protocolError"
         ]
     );
-    let schema = (kind("worker.exit", 1).unwrap().schema)();
+    let schema = (kind("worker.exit", 2).unwrap().schema)();
     let reason = &schema["$defs"]["ExitReason"]["enum"];
     assert_eq!(reason.as_array().map(Vec::len), Some(12), "{schema}");
 }

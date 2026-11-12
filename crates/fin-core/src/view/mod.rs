@@ -1,10 +1,11 @@
-//! `fin view`'s screenplay (plan 4C Task 25, Decision 46): per timeline a header line, then
+//! `fin view`'s screenplay (plan 4C Task 25, Decision 46; in fin-core since sp8b Task 7, so
+//! the plugin host's `project.view` renders the same text through fin-node): per timeline a header line, then
 //! one line per marker, item and transition in time order (markers first at a time, then
 //! items in track order, then transitions), captions with their text inline. [`budget`]
 //! degrades the lines in a fixed order to fit a token budget and says what it elided.
 //!
 //! Captions that will not measure are marked `(unmeasured: <reason>)`: `font unpinned` (no
-//! pin for the style's face or a script of the text, [`fin_core::layout::faces_for`]),
+//! pin for the style's face or a script of the text, [`crate::layout::faces_for`]),
 //! `font missing`, `font fetching` or `font fetch failed` (from the server's file states,
 //! the same `fonts.status` data `fin fonts ls --pinned` shows), `style missing`. Offline
 //! there are no file states, so only `font unpinned` and `style missing` are marked.
@@ -14,10 +15,10 @@ pub mod lines;
 
 use std::collections::BTreeMap;
 
-use fin_core::captions::resolve_style;
-use fin_core::layout::faces_for;
-use fin_core::{CoreError, ItemBody, Project, Rational, Timeline};
-use serde_json::Value;
+use crate::captions::resolve_style;
+use crate::layout::faces_for;
+use crate::{CoreError, ItemBody, Project, Rational, Timeline, parse_time};
+use serde_json::{Value, json};
 
 /// One line's source.
 #[derive(Debug, Clone)]
@@ -73,6 +74,69 @@ impl Filter<'_> {
         };
         after && self.to.is_none_or(|t| start < t)
     }
+}
+
+/// `a..b`, `a..` or `..b`; both ends absolute times at the project rate. Rejects `a >= b`.
+pub fn range(
+    project: &Project,
+    input: &str,
+) -> Result<(Option<Rational>, Option<Rational>), CoreError> {
+    let Some((a, b)) = input.split_once("..") else {
+        return Err(
+            CoreError::new("INVALID_RANGE", format!("range {input:?} is not a..b"))
+                .with_details(json!({ "input": input, "field": "range" }))
+                .with_fix("write the range as 2s..5s, 2s.. or ..5s"),
+        );
+    };
+    let end = |s: &str| {
+        if s.is_empty() {
+            return Ok(None);
+        }
+        parse_time(s, project.rate).map(Some).map_err(|mut e| {
+            if let Some(map) = e.details.as_object_mut() {
+                map.insert("field".to_string(), json!("range"));
+            }
+            e
+        })
+    };
+    let (from, to) = (end(a)?, end(b)?);
+    if let (Some(f), Some(t)) = (from, to)
+        && f >= t
+    {
+        return Err(
+            CoreError::new("INVALID_RANGE", format!("range {input:?} is empty"))
+                .with_details(json!({ "input": input, "from": f, "to": t }))
+                .with_fix("make the start of the range earlier than its end"),
+        );
+    }
+    Ok((from, to))
+}
+
+/// Every timeline's screenplay without the server's font file states (`fin view` offline):
+/// `{lines, elided, tokens}` (`tokens`: the lines' own), the whole document within `budget`,
+/// limited to `range` when given.
+pub fn screenplay(
+    project: &Project,
+    range_input: Option<&str>,
+    budget_tokens: Option<u64>,
+) -> Result<Value, CoreError> {
+    let (from, to) = match range_input {
+        Some(r) => range(project, r)?,
+        None => (None, None),
+    };
+    let timelines: Vec<&Timeline> = project.timelines.iter().collect();
+    let marks = unmeasured(project, None);
+    let filter = Filter {
+        track: None,
+        from,
+        to,
+        detail: false,
+    };
+    let doc = |lines: &[String], elided: &[Value]| json!({ "lines": lines, "elided": elided, "tokens": budget::tokens(lines) });
+    // The budget covers the whole document (compact JSON and a newline), as `fin view`'s does.
+    let size = |l: &[String], e: &[Value]| doc(l, e).to_string().chars().count() as u64 + 1;
+    let (lines, elided) = budget::fit(sections(&timelines, filter, &marks)?, budget_tokens, &size);
+    Ok(doc(&lines, &elided))
 }
 
 /// A timeline's end: its latest item end.
@@ -167,7 +231,7 @@ pub fn sections(
                     .and_then(|v| v.as_str().map(str::to_string))
                     .unwrap_or_default();
                 let mut detail = Vec::new();
-                if tr.curve != fin_core::Curve::Linear {
+                if tr.curve != crate::Curve::Linear {
                     detail.push("equalPower".to_string());
                 }
                 entries.push(Entry {

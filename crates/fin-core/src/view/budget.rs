@@ -18,7 +18,7 @@
 //! items}` (the dropped lines' first start and last end). The same project and budget give
 //! the same lines.
 
-use fin_core::Rational;
+use crate::Rational;
 use serde_json::{Value, json};
 
 use super::{Entry, Section, lines};

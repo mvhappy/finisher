@@ -9,7 +9,19 @@ publish = false
 description = "The plugin test harness: a fake host for the fin-jobs envelope and the conformance profiles behind `fin-plugin test` (sub-project 8B)."
 
 [dependencies]
+# Snapshot pages, `net.read` pages and request bodies are base64 in the envelope.
+base64 = "0.23"
 fin-core = { path = "../fin-core" }
 fin-jobs = { path = "../fin-jobs" }
 fin-plugin-api = { path = "../fin-plugin-api" }
+# The fake HTTPS API (spec §7.4): a loopback TLS server with a certificate made per run and a
+# client that trusts only it. Both are in the tree already (rcgen through fin-node, rustls
+# through fin-fonts and fin-registry; MIT OR Apache-2.0, rustls also ISC), on `ring` as
+# fin-fonts takes it (no C/cmake build).
+rcgen = { version = "0.14", default-features = false, features = ["ring"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+semver = "1"
+serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# The run's private directories (the plugin's temp and `pluginData`).
+tempfile = "3"

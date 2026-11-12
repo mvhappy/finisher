@@ -76,7 +76,25 @@ pub(crate) fn enter(chan: &Channel) -> Result<Option<String>, i32> {
 
 /// Runs `family` over `chan` and returns the exit code (in-memory tests; [`run`] exits with
 /// it). With `chan.hard_exit`, host loss exits the process from the reader thread.
-pub fn run_on(mut family: impl Family, chan: Channel) -> i32 {
+pub fn run_on(family: impl Family, chan: Channel) -> i32 {
+    run_with(family, chan, None)
+}
+
+/// [`run`] for a plugin process (plan 8B Decision 21; the SDKs): `hello` carries `minor`
+/// (the plugin's own) and no `envelope`, and a host message of an unknown type (from a newer
+/// host) is dropped instead of ending the process with [`EXIT_HOST_PROTOCOL`]. `warm` is the
+/// family's ([`Family::warm`]), which a plugin takes from a trailing `--warm` argument.
+pub fn run_plugin(family: impl Family, minor: u32) -> ! {
+    std::process::exit(run_plugin_on(family, Channel::stdio(), minor))
+}
+
+/// [`run_plugin`] over `chan`, returning the exit code (in-memory tests).
+pub fn run_plugin_on(family: impl Family, chan: Channel, minor: u32) -> i32 {
+    run_with(family, chan, Some(minor))
+}
+
+/// `plugin_minor`: a plugin process with that minor.
+fn run_with(mut family: impl Family, chan: Channel, plugin_minor: Option<u32>) -> i32 {
     let profile = match enter(&chan) {
         Ok(p) => p,
         Err(code) => return code,
@@ -86,15 +104,20 @@ pub fn run_on(mut family: impl Family, chan: Channel) -> i32 {
         return EXIT_FAMILY_INIT;
     }
     let shared = Shared::new(chan.output, chan.hard_exit, false);
+    if plugin_minor.is_some() {
+        shared.set_lenient_host();
+    }
     #[allow(unused_mut)]
     let mut hello = Hello {
         v: PROTOCOL,
-        minor: MINOR,
+        minor: plugin_minor.unwrap_or(MINOR),
         role: Role::Worker,
         family: family.name().to_owned(),
         kinds: family.kinds().to_vec(),
         warm: family.warm(),
-        envelope: Some(crate::envelope_id().to_owned()),
+        envelope: plugin_minor
+            .is_none()
+            .then(|| crate::envelope_id().to_owned()),
         self_sandbox: profile,
         pid: chan.pid,
         kind: None,

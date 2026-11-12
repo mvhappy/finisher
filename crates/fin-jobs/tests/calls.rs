@@ -228,3 +228,103 @@ fn helper_exits_70_when_the_host_is_gone() {
     rig.send(&attach());
     assert_eq!(rig.join(), EXIT_HOST_GONE);
 }
+
+#[test]
+fn a_cancel_aware_call_fails_at_once_on_cancel() {
+    let mut rig = Rig::worker(toy(|_, ctx| {
+        let (r, token) = (ctx.reporter(), ctx.cancel_token());
+        let started = std::time::Instant::now();
+        let first = r.call_until("m", json!(1), &token).unwrap_err();
+        let waited = started.elapsed();
+        // A later one is never sent.
+        let second = r.call_until("m", json!(2), &token).unwrap_err();
+        Ok(json!([
+            first.code,
+            second.code,
+            waited < Duration::from_secs(2)
+        ]))
+    }));
+    rig.recv();
+    rig.send(&start("j", "toy.run", json!({})));
+    let WorkerMsg::Call { id, .. } = rig.recv() else {
+        panic!("a call")
+    };
+    // The host holds its reply and cancels the job.
+    rig.send(&HostMsg::Cancel {
+        job: "j".into(),
+        reason: CancelReason::Cancel,
+    });
+    assert_eq!(
+        rig.recv(),
+        WorkerMsg::Result {
+            job: "j".into(),
+            value: json!(["JOB_CANCELLED", "JOB_CANCELLED", true])
+        }
+    );
+    // The late reply finds nobody waiting and is dropped.
+    rig.send(&HostMsg::Reply {
+        id,
+        value: Some(json!("late")),
+        error: None,
+    });
+    rig.join();
+}
+
+#[test]
+fn a_cancel_aware_call_returns_its_reply() {
+    let mut rig = Rig::worker(toy(|_, ctx| {
+        ctx.reporter()
+            .call_until("m", json!({ "x": 1 }), &ctx.cancel_token())
+    }));
+    rig.recv();
+    rig.send(&start("j", "toy.run", json!({})));
+    serve(&mut rig, |_, p| Ok(json!({ "echo": p })));
+    assert_eq!(
+        rig.recv(),
+        WorkerMsg::Result {
+            job: "j".into(),
+            value: json!({ "echo": { "x": 1 } })
+        }
+    );
+    rig.join();
+}
+
+#[test]
+fn a_detached_call_is_not_waited_for() {
+    let mut rig = Rig::worker(toy(|_, ctx| {
+        let r = ctx.reporter();
+        r.call_detached("log", json!("first"));
+        r.call("m", json!("second"))
+    }));
+    rig.recv();
+    rig.send(&start("j", "toy.run", json!({})));
+    let WorkerMsg::Call {
+        id: log, method, ..
+    } = rig.recv()
+    else {
+        panic!("a call")
+    };
+    assert_eq!(method, "log");
+    let WorkerMsg::Call { id, .. } = rig.recv() else {
+        panic!("the second call, sent before the first is answered")
+    };
+    // The detached call's reply is dropped; the other gets its own.
+    rig.send(&HostMsg::Reply {
+        id: log,
+        value: Some(json!("ignored")),
+        error: None,
+    });
+    rig.send(&HostMsg::Reply {
+        id,
+        value: Some(json!("mine")),
+        error: None,
+    });
+    assert_eq!(
+        rig.recv(),
+        WorkerMsg::Result {
+            job: "j".into(),
+            value: json!("mine")
+        }
+    );
+    rig.join();
+}

@@ -25,6 +25,14 @@ pub static PLUGIN_ACTIONS: NameTable = NameTable::new(
     ],
 );
 
+/// The method families `plugin.stats` counts per plugin (sp8b Task 15): the host API's
+/// namespaces (`project.snapshot` → `project`, `net.fetch` → `net`, `log`), `command` for
+/// `plugin.command` jobs, `other` for any other name.
+pub static PLUGIN_METHOD_FAMILIES: NameTable = NameTable::new(
+    "PLUGIN_METHOD_FAMILIES",
+    &["command", "project", "net", "log"],
+);
+
 /// The [`BUNDLED_PLUGINS`] name of plugin id `@publisher/name`, if the table lists it.
 pub fn bundled_plugin_name(id: &str) -> Option<Name> {
     id.strip_prefix('@')

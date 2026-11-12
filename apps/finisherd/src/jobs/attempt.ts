@@ -5,14 +5,14 @@
 // (`runner.ts`) spawns its worker and ends with its exit; a warm one (`warm-run.ts`) borrows a
 // ready worker of the pool and ends with its `ready`.
 import type { CancelReason, Hello, HelperGrant, HostMsg, JobError as JobErrorMsg, Retry, StartJob, WorkerMsg } from "@finisher/core-types";
-import { FinError, type JobProgress, type MappedFile } from "@finisher/contracts";
+import { FinError, isJobRights, type JobProgress, type MappedFile } from "@finisher/contracts";
 import { finError, toFinError } from "../errors.ts";
 import { CallRouter } from "./calls.ts";
-import type { WorkerExitEvent } from "./events.ts";
+import { lifetimeSeconds, type WorkerExitEvent } from "./events.ts";
 import { type JobDirs, mappedPath } from "./files.ts";
 import { Helpers } from "./helpers.ts";
 import type { ExitVerdict, JobHostExitInfo } from "./host.ts";
-import { exitPluginId, type FamilySpec, type ItemOutcome, type KindSpec } from "./kinds.ts";
+import { exitPluginId, familyStderr, type FamilySpec, type ItemOutcome, type KindSpec } from "./kinds.ts";
 import type { RunControl, StopReason } from "./run-control.ts";
 import type { FailureCause, RunnerEnv } from "./runner.ts";
 import type { JobRow } from "./store.ts";
@@ -91,7 +91,7 @@ export function sendWorkerExit(
     family: family.family,
     reason,
     jobsServed,
-    lifetimeS: info.lifetimeMs / 1000,
+    lifetimeS: lifetimeSeconds(info.lifetimeMs),
     sandboxed: env.host.caps().sandboxed,
     ...(info.code === undefined ? {} : { exitCode: info.code }),
     ...(info.signal === undefined ? {} : { signal: info.signal }),
@@ -133,13 +133,25 @@ export abstract class AttemptBase {
         role: "worker",
         owner: row.owner,
         ...(row.via === undefined ? {} : { via: row.via }),
-        ...(row.rights === undefined ? {} : { rights: row.rights }),
+        ...(isJobRights(row.rights) ? { rights: row.rights } : {}),
+        ...(this.workerKey() === undefined ? {} : { workerKey: this.workerKey() as string }),
       }),
       (msg) => (this.proc === undefined ? "gone" : env.host.send(this.proc, msg)),
       env.run,
     );
     const qos = row.priority === "interactive" ? "normal" : a.kind.qos;
     this.helpers = new Helpers(env, row, a.dirs, a.files, { group: helperGroup, qos, fail: (e) => this.failWith(e, "helper", "helperFailed") });
+  }
+
+  /** The warm worker's key (a cold attempt has none). */
+  protected workerKey(): string | undefined {
+    return undefined;
+  }
+
+  /** A stderr line of the job's process: the family's hook, else the debug log. */
+  protected stderr(line: string, key?: string): void {
+    const { env, row, family } = this.a;
+    familyStderr(family, line, { job: row.id, ...(key === undefined ? {} : { key }) }, env.log, `[job ${row.id} ${family.family}]`);
   }
 
   /** Kills the job's processes (cold: its group; warm: its helper group and the worker). */
@@ -251,7 +263,7 @@ export abstract class AttemptBase {
           this.items.add(ie.item, outcome);
           env.item(row.id, ie.item, outcome);
         }
-        this.answered({ error: msg.error, retry: msg.error.retry ?? "never" });
+        this.answered({ error: family.workerError?.(msg.error) ?? msg.error, retry: msg.error.retry ?? "never" });
         return;
       case "diag":
         if (this.#diagnostics && (family.diagKinds ?? []).includes(msg.kind)) {

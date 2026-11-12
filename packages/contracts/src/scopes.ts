@@ -85,7 +85,8 @@ export type FinRpcTag = RpcGroup.Rpcs<typeof FinRpcs>["_tag"];
  * - `job`: the payload's `job` as whose it is to the caller (`RuleFacts.job`).
  */
 /** `libraryRoot`, `registryPaths`: `library.add`'s root and `registry.add`'s folder and root file, checked against a device's roots (5B Decision 32). */
-export type ResolverName = "project" | "openDir" | "createDir" | "probePath" | "importDir" | "outDir" | "libraryRoot" | "registryPaths" | "branch" | "jobProject" | "jobKind" | "job";
+/** `pluginCommand`: `plugin.command.run`'s `name` as whether that command writes (`RuleFacts.commandWrites`). */
+export type ResolverName = "project" | "openDir" | "createDir" | "probePath" | "importDir" | "outDir" | "libraryRoot" | "registryPaths" | "branch" | "jobProject" | "jobKind" | "job" | "pluginCommand";
 
 /** Resolved facts an escalation may read. */
 export interface RuleFacts {
@@ -103,6 +104,12 @@ export interface RuleFacts {
    * owner's, visible through `jobs.control`) or `none` (unknown, or not visible to the caller).
    */
   readonly job?: "own" | "other" | "none";
+  /**
+   * `plugin.command.run`: the named command of an enabled plugin returns a transaction (its
+   * manifest's `writes`), so running it needs `project.write` (8B Task 9). Absent for a name
+   * that resolves to no command (the handler answers `PLUGIN_NOT_FOUND`).
+   */
+  readonly commandWrites?: boolean;
 }
 
 /** Acting on one job: one's own (or one the caller cannot see) takes `jobs.submit`, another's `jobs.control`. */
@@ -352,6 +359,13 @@ export const RPC_SCOPES: { readonly [T in FinRpcTag]: RuleOf<T> } = {
   "plugin.enable": { scopes: ["plugin.admin"] },
   "plugin.disable": { scopes: ["plugin.admin"] },
   "plugin.suggest": { scopes: ["plugin.suggest", "project.read"], resolve: PROJECT },
+  // Plugin commands (8B Task 9): a run reads the project, and a command that writes needs
+  // `project.write` too. Its commit goes through `tx.commit`'s own rule as the live invoker
+  // (branch limits, author, guard), so the run itself names no `writes`. Listing is what the
+  // caller can run, filtered to it, so it needs what a run needs, `project.read` (Task 10:
+  // agent sessions hold no `plugin.read`, and `fin @<id> <command>` maps its line by the list).
+  "plugin.commands": { scopes: ["project.read"] },
+  "plugin.command.run": { scopes: ["project.read"], resolve: ["project", "branch", "pluginCommand"], escalate: (_, facts) => (facts.commandWrites === true ? ["project.write"] : []) },
   // Libraries (5D Decision 47). Adding and removing are the owner's, with a challenge code in the
   // console; `library.set` needs `library.scan` for the ordinary fields and `library.admin`
   // (human-only) for the ones only a person decides. Everything that reads needs `library.read`

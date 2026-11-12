@@ -31,6 +31,16 @@ pub enum PluginCmd {
     Rm(RmArgs),
     Enable(IdArgs),
     Disable(IdArgs),
+    Commands(CommandsArgs),
+}
+
+/// The plugin commands this principal can run (`fin <id> <command>`), of one plugin or all.
+#[derive(Debug, Clone, Args, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct CommandsArgs {
+    #[arg(value_name = "id")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
 }
 
 #[derive(Debug, Clone, Subcommand)]
@@ -254,6 +264,7 @@ pub fn plugin(backend: &dyn Backend, cmd: &PluginCmd) -> Result<Value, CoreError
         }
         PluginCmd::Enable(a) => backend.server_call("plugin.enable", json!({ "id": a.id })),
         PluginCmd::Disable(a) => backend.server_call("plugin.disable", json!({ "id": a.id })),
+        PluginCmd::Commands(a) => crate::commands::plugin_cmd::list(backend, a.id.as_deref()),
     }
 }
 

@@ -1038,7 +1038,12 @@ dependencies = [
 name = "example-rust-tools"
 version = "0.1.0"
 dependencies = [
+ "base64 0.23.1",
+ "fin-core",
+ "fin-jobs",
+ "fin-plugin-api",
  "fin-plugin-sdk",
+ "serde_json",
 ]
 
 [[package]]
@@ -1077,6 +1082,7 @@ dependencies = [
  "clap",
  "fin",
  "fin-core",
+ "fin-plugin-api",
  "fin-probe",
  "fin-sandbox",
  "fin-store",
@@ -1333,6 +1339,7 @@ dependencies = [
  "fin-core",
  "fin-fonts",
  "fin-plugin-api",
+ "fin-plugin-test",
  "fin-registry",
  "semver",
  "serde_json",
@@ -1344,21 +1351,31 @@ dependencies = [
 name = "fin-plugin-sdk"
 version = "0.0.0"
 dependencies = [
+ "base64 0.23.1",
  "fin-core",
  "fin-jobs",
  "fin-plugin-api",
+ "fin-plugin-sdk",
  "fin-shm",
+ "serde",
  "serde_json",
+ "tempfile",
 ]
 
 [[package]]
 name = "fin-plugin-test"
 version = "0.0.0"
 dependencies = [
+ "base64 0.23.1",
  "fin-core",
  "fin-jobs",
  "fin-plugin-api",
+ "rcgen",
+ "rustls",
+ "semver",
+ "serde",
  "serde_json",
+ "tempfile",
 ]
 
 [[package]]

@@ -107,6 +107,7 @@ fn every_registry_command_parses() {
         "plugin rm @acme/fonts --purge-data",
         "plugin enable @acme/fonts",
         "plugin disable @acme/fonts",
+        "plugin commands @acme/tools",
         "registry ls",
         "registry status team",
         "registry refresh team",

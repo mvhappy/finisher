@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // finisherd: serves `FinRpcs` over the local socket/pipe and a ticketed WebSocket.
-// Usage: node apps/finisherd/src/main.ts [serve] [--server-data <dir>]
+// Usage: node apps/finisherd/src/main.ts [serve] [--server-data <dir>] [--plugin-dir <dir>]
 //        node apps/finisherd/src/main.ts <command> …   (the owner's console, `console/main.ts`)
 // Serving logs to stderr only; stdout stays empty. Console commands answer on stdout.
 import { realpathSync } from "node:fs";
@@ -8,11 +8,11 @@ import { join } from "node:path";
 import { runMain } from "@effect/platform-node/NodeRuntime";
 import { Cause, Context, Deferred, Effect, Exit, Layer, Logger, Scope } from "effect";
 import {
+  type CliArgs,
   ensureServerData,
   parseArgs,
   cachedOrigins,
   removeServerInfo,
-  type ServerInfo,
   startFailure,
   socketPath,
   writeServerInfo,
@@ -22,9 +22,9 @@ import { canonicalEndpoint } from "./auth/crypto.ts";
 import { isEntry } from "./entry.ts";
 import { Handshake, HandshakeTag } from "./auth/handshake.ts";
 import { Credentials, CredentialsTag } from "./auth/credentials.ts";
-import { sweepExpired } from "./auth/revoke.ts";
+import { sweepEvery } from "./auth/revoke.ts";
 import { authDir, excludeFromBackups, KEY_FILES, KeysTag, rotateKeys, writeKeyFile } from "./auth/keys.ts";
-import { ConnectionRegistry, ConnectionRegistryTag, Connections, type ListenerRules, type Transport } from "./connections.ts";
+import { ConnectionRegistry, ConnectionRegistryTag, Connections, type Transport } from "./connections.ts";
 import { AuditTag, layerAudit } from "./control/audit.ts";
 import { makeTickets, TicketsTag } from "./auth/tickets.ts";
 import { ControlStoreTag, layerControlStore } from "./control/db.ts";
@@ -41,21 +41,25 @@ import { AgentJournal } from "./agent/journal.ts";
 import { SessionCredentials } from "./agent/credentials.ts";
 import { BranchLineage } from "./agent/reach.ts";
 import { sweepHostSandboxes } from "./agent/session-dirs.ts";
-import { layerFonts, type FontsOptions } from "./fonts.ts";
-import { Diagnostics, type DiagnosticsOptions, makeDiagnostics } from "./diagnostics.ts";
+import { layerFonts } from "./fonts.ts";
+import { Diagnostics, makeDiagnostics } from "./diagnostics.ts";
 import { withServerLock } from "./lock.ts";
 // Registers the `jobs` migration chain: imported before the control store opens.
 import "./jobs/store.ts";
 import { JobEventSinkTag } from "./jobs/events.ts";
 import { journalSink } from "./jobs/journal-sink.ts";
-import { JobEngineTag, type JobEngineOptions, layerJobEngine } from "./jobs/layer.ts";
+import { JobEngineTag, layerJobEngine } from "./jobs/layer.ts";
 import { LibrariesTag } from "./library/api.ts";
 import { CatalogsTag, layerCatalogs } from "./library/catalog/client.ts";
 import { LibraryServiceTag, librariesHolding, libraryWiring } from "./library/layer.ts";
 import { layerPlugins } from "./plugins/registries.ts";
 import { makePluginHost } from "./plugins/host/processes.ts";
+import { PluginCommandsTag, serverPluginCommands } from "./plugins/host/command-rpc.ts";
+import { pluginCallDeps } from "./plugins/host/serve.ts";
 import { PluginTables } from "./plugins/tables.ts";
-import { layerProjectRegistry, ProjectRegistry, type RegistryOptions } from "./projects.ts";
+import { devPluginForRun } from "./plugins/host/dev.ts";
+import { approveDevPlugin, devRefused } from "./console/dev-plugin.ts";
+import { layerProjectRegistry, ProjectRegistry } from "./projects.ts";
 import { registerMediaKinds } from "./jobs/kinds/media.look.ts";
 import { MAX_FRAME } from "./protocol.ts";
 import { claimSocketPath, makeLocalServer, serveRpc } from "./transport.ts";
@@ -72,37 +76,10 @@ import { ServerControlTag } from "./server-admin.ts";
 import { isServeCommand, runConsole } from "./console/main.ts";
 import { aclBroker, sweepAtStart } from "./sandbox/broker.ts";
 import { currentSandboxStatus, reporterFor, sandboxWarnings } from "./sandbox/status.ts";
-import { type AgentRuntimeParts, AgentRuntimeTag, type AgentServeOptions, buildAgentRuntime } from "./agent/wiring.ts";
+import { AgentRuntimeTag, buildAgentRuntime } from "./agent/wiring.ts";
 import { type AgentListener, agentConnections, agentEndpoint, makeAgentListener, makeAgentTcpServer, rateLimited } from "./agent/listener.ts";
-
-export interface ServeOptions {
-  readonly serverData: string;
-  readonly registry?: RegistryOptions;
-  readonly fonts?: FontsOptions;
-  readonly diagnostics?: DiagnosticsOptions;
-  /** Agent and MCP credentials (tests): the clock expiry reads and the sweep's period (60 s). */
-  readonly credentials?: { readonly clock?: () => number; readonly sweepMs?: number };
-  /** The agent runtime's shared pieces, handed to tests once built (7A-2). */
-  readonly onAgentCore?: (core: AgentCore) => void;
-  /** The agent runtime's options (tests: the fake harness's scripts) and its parts once booted. */
-  readonly agents?: AgentServeOptions;
-  readonly onAgentRuntime?: (parts: AgentRuntimeParts) => void;
-  /** The job engine's options (tests: the test kinds). */
-  readonly jobs?: JobEngineOptions;
-  /**
-   * The remote listener in tests (5B Decision 34): `forceTls` starts it on `listen` (e.g.
-   * `127.0.0.1:0`) whatever the settings say; `remoteOf` injects remote addresses.
-   */
-  readonly remote?: { readonly forceTls?: boolean; readonly listen?: string; readonly remoteOf?: (s: never) => string };
-  /** The remote listener, handed to tests once made. */
-  readonly onRemote?: (r: RemoteListener) => void;
-  /** The agent listener (plan 7C Task 6), handed to tests and the session wiring once built. */
-  readonly onAgentListener?: (listener: AgentListener) => void;
-  /** The agent listener's handshake timeout and connection cap (tests lower them). */
-  readonly agentListener?: Partial<Pick<ListenerRules, "handshakeTimeoutMs" | "maxConnections" | "maxUnproved">>;
-  /** Called once both transports listen and `finisherd.json` is written. */
-  readonly onReady?: (info: ServerInfo) => void;
-}
+import type { ServeOptions } from "./serve-options.ts";
+export type { ServeOptions };
 
 /**
  * Runs the server until interrupted or `server.stop`; finalizers stop the transports, close
@@ -123,6 +100,8 @@ export const serve = ({
   jobs: jobOptions,
   remote: remoteOptions,
   onRemote,
+  dev,
+  plugins: pluginOptions,
 }: ServeOptions) =>
   Effect.scoped(
     Effect.gen(function* () {
@@ -192,10 +171,16 @@ export const serve = ({
       );
       const projects = Context.get(registryContext, ProjectRegistry);
       // The code plugins' processes (sp8b Tasks 4, 5): the `plugin` family is registered with
-      // the engine's other families (a restart reconciles jobs against them), then bound to it.
-      const pluginHost = makePluginHost({ serverData: realpathSync(serverData), control: controlStore, tables: new PluginTables(controlStore), audit: Context.get(control, AuditTag) });
+      // the engine's other families (a restart reconciles jobs against them), then bound to it;
+      // plugin commands (Task 9) are the enabled plugins' `commands`, run as `plugin.command` jobs.
+      const pluginTables = new PluginTables(controlStore);
+      // Developer mode: an earlier run's `@dev` row goes; this run's, if any, until it stops.
+      yield* devPluginForRun(pluginTables, dev, (m) => logSink("warning", m), Context.get(control, AuditTag));
+      const pluginHost = makePluginHost({ serverData: realpathSync(serverData), control: controlStore, tables: pluginTables, audit: Context.get(control, AuditTag), journal: diagnostics.journal, log: (l, m) => logSink(l === "warning" || l === "error" ? "warning" : "debug", m), ...(pluginOptions?.egress === undefined ? {} : { egressHooks: pluginOptions.egress }) });
+      const pluginCommands = serverPluginCommands({ serverData: realpathSync(serverData), tables: pluginTables, host: pluginHost });
       const register = (r: Parameters<typeof libraries.register>[0]) => {
         pluginHost.register(r);
+        r.registerKind(pluginCommands.kind);
         registerMediaKinds(r, { serverData, projects, libraryRoots: () => libraryRoots() });
         jobOptions?.register?.(r);
         libraries.register(r);
@@ -230,15 +215,7 @@ export const serve = ({
         onAllow: (allow) => {
           allowPipe = allow;
         },
-        onRefused: (r) =>
-          audit.append({
-            kind: "auth.fail",
-            principal: { kind: "anonymous", id: "" },
-            credentialKind: "pipe",
-            outcome: "failed",
-            code: "UNAUTHENTICATED",
-            details: { reason: r.reason, transport: "pipe", peer: { pid: r.pid, ...(r.sid == null ? {} : { sid: r.sid }) } },
-          }),
+        onRefused: refusalAudits(audit).pipe,
       });
       // The WebSocket (Decision 24): a ticket in `Sec-WebSocket-Protocol`, Host and Origin checked first.
       let wsPort = 0;
@@ -287,6 +264,10 @@ export const serve = ({
         writeKeyFile(join(authDir(serverData), KEY_FILES.credentialMaster), key),
       );
       everyConnection.useLiveness((p) => credentials.isLive(p));
+      // Plugin authority keys (sp8 spec §3.3, Decision 28): a credential minted or ended, or a
+      // device revoked, moves its class's policy generation and retires its plugin processes.
+      const unwatchAuthority = pluginHost.watch({ credentials, devices });
+      yield* Effect.addFinalizer(() => Effect.sync(unwatchAuthority));
       // One last write of ended credentials before the control store closes (it closes after).
       yield* Effect.addFinalizer(() =>
         Effect.sync(() => {
@@ -310,23 +291,7 @@ export const serve = ({
         revoke: (ref: { kind: "agent" | "mcp"; id: string }) => credentials.markEnded(ref, "expired"),
         persist: () => credentials.persist(),
       };
-      // A busy store fails one sweep, never the timer: the next one tries again.
-      const sweep = () => {
-        try {
-          sweepExpired(revokeDeps, () => credentials.expired());
-        } catch (e) {
-          process.stderr.write(`finisherd: warning: credential expiry sweep failed: ${String(e)}\n`);
-        }
-      };
-      sweep();
-      yield* Effect.acquireRelease(
-        Effect.sync(() => {
-          const timer = setInterval(sweep, credentialOptions?.sweepMs ?? 60_000);
-          timer.unref();
-          return timer;
-        }),
-        (timer) => Effect.sync(() => clearInterval(timer)),
-      );
+      yield* sweepEvery(revokeDeps, () => credentials.expired(), credentialOptions?.sweepMs ?? 60_000);
       // 5B: routes, the environment, pairing, DPoP, device tokens and their HTTP routes.
       const { routes, environment, pairing, access } = yield* wireRemoteAccess({
         store: controlStore,
@@ -388,6 +353,8 @@ export const serve = ({
       for (const w of sandboxWarnings(sandbox)) yield* Effect.logWarning(`finisherd: ${w.code} (${String(w.details.profile)}): ${w.message}`);
       // The outcome tracker (Task 11) emits 5E's `review.verdict` into this journal once the kind exists.
       const lineage = new BranchLineage();
+      // Plugin host calls (sp8b Task 7) read live invokers, session branch reach and snapshots.
+      pluginHost.serve(pluginCallDeps({ credentials, devices, sessions: agentStore, lineage, projects }));
       const outcomes = new OutcomeTracker({ store: agentStore, lineage, clock: agentClock.now, verdicts: journalVerdicts(diagnostics.journal) });
       // Its journal records metadata to the diagnostics journal and content to the trace store (D34).
       const agentJournal = new AgentJournal({
@@ -469,6 +436,7 @@ export const serve = ({
           Layer.succeed(Diagnostics, diagnostics),
           Layer.succeedContext(control),
           Layer.succeedContext(jobsContext),
+          Layer.succeed(PluginCommandsTag, pluginCommands.service(engine)),
           Layer.succeed(LibrariesTag, library),
           Layer.succeed(LibraryServiceTag, library),
           Layer.succeed(KeysTag, keys),
@@ -566,15 +534,23 @@ function main(argv: ReadonlyArray<string>): void {
     });
     return;
   }
-  let serverData: string;
+  let args: CliArgs;
   try {
-    ({ serverData } = parseArgs(argv[0] === "serve" ? argv.slice(1) : argv));
+    args = parseArgs(argv[0] === "serve" ? argv.slice(1) : argv);
   } catch (e) {
     process.stderr.write(`finisherd: ${(e as Error).message}\n`);
     process.exitCode = 2;
     return;
   }
-  const program = serve({ serverData }).pipe(
+  // Developer mode: the person approves the plugin's permissions here before anything starts.
+  void approveDevPlugin(args.pluginDir, args.serverData).then(
+    (dev) => start(serve({ serverData: args.serverData, ...(dev === undefined ? {} : { dev }) })),
+    (e: unknown) => void (process.exitCode = devRefused(e)),
+  );
+}
+
+export function start(server: ReturnType<typeof serve>): void {
+  const program = server.pipe(
     Effect.catchCause((cause) =>
       Effect.sync(() => {
         if (Cause.hasInterruptsOnly(cause)) return;

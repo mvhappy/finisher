@@ -268,7 +268,7 @@ class ColdAttempt extends AttemptBase {
       case "message":
         return this.onMessage(e.msg);
       case "stderr":
-        return this.a.env.log("debug", `[job ${this.a.row.id} ${this.a.family.family}] ${e.line}`);
+        return this.stderr(e.line);
       case "exit":
         return void this.#onExit(e.info);
     }

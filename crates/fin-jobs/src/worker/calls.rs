@@ -5,15 +5,20 @@
 use std::collections::HashMap;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::mpsc::{self, SyncSender};
+use std::sync::mpsc::{self, RecvTimeoutError, SyncSender};
+use std::time::Duration;
 
 use serde_json::Value;
 
 use crate::error::JobError;
 use crate::msg_worker::WorkerMsg;
+use crate::worker::ctx::CancelToken;
 use crate::worker::io::Out;
 
 type Answer = Result<Value, JobError>;
+
+/// How often a cancel-aware call looks at its token while it waits.
+const CANCEL_POLL: Duration = Duration::from_millis(10);
 
 /// The calls waiting for a reply.
 #[derive(Default)]
@@ -30,18 +35,43 @@ fn host_gone() -> JobError {
 impl Calls {
     /// Sends `call` and blocks this thread until its reply.
     pub(crate) fn call(&self, out: &Out, method: &str, params: Value) -> Answer {
-        let (id, rx) = self.open()?;
-        let msg = WorkerMsg::Call {
-            id,
-            method: method.to_owned(),
-            params,
-        };
-        if let Err(e) = out.send(&msg) {
-            self.forget(id);
-            return Err(JobError::new("CALL_TOO_LARGE", e.to_string())
-                .with_details(serde_json::json!({ "method": method })));
-        }
+        let (_, rx) = self.send(out, method, params)?;
         rx.recv().unwrap_or_else(|_| Err(host_gone()))
+    }
+
+    /// [`Calls::call`] that gives up on a cancel: a call after `token` is set is not sent, and
+    /// one in flight fails [`JobError::cancelled`] within [`CANCEL_POLL`] of it (its reply,
+    /// when it comes, is dropped).
+    pub(crate) fn call_until(
+        &self,
+        out: &Out,
+        method: &str,
+        params: Value,
+        token: &CancelToken,
+    ) -> Answer {
+        if token.is_cancelled() {
+            return Err(JobError::cancelled());
+        }
+        let (id, rx) = self.send(out, method, params)?;
+        loop {
+            match rx.recv_timeout(CANCEL_POLL) {
+                Ok(answer) => return answer,
+                Err(RecvTimeoutError::Disconnected) => return Err(host_gone()),
+                Err(RecvTimeoutError::Timeout) if token.is_cancelled() => {
+                    self.forget(id);
+                    return Err(JobError::cancelled());
+                }
+                Err(RecvTimeoutError::Timeout) => {}
+            }
+        }
+    }
+
+    /// Sends `call` and does not wait: its reply, whenever it comes, is dropped (fire and
+    /// forget, the plugin SDK's `log`). A call that cannot be sent is dropped too.
+    pub(crate) fn call_detached(&self, out: &Out, method: &str, params: Value) {
+        if let Err(e) = self.send(out, method, params) {
+            eprintln!("fin-jobs: a {method} call was not sent: {}", e.message);
+        }
     }
 
     /// Sends a message of a type the host may not know, with a fresh `id`, and waits for its
@@ -53,6 +83,27 @@ impl Calls {
             |seq| serde_json::json!({ "v": crate::PROTOCOL, "t": t, "seq": seq, "id": id }),
         );
         rx.recv().unwrap_or_else(|_| Err(host_gone()))
+    }
+
+    /// Opens a call and sends it; `CALL_TOO_LARGE` when its line passes the cap.
+    fn send(
+        &self,
+        out: &Out,
+        method: &str,
+        params: Value,
+    ) -> Result<(u64, mpsc::Receiver<Answer>), JobError> {
+        let (id, rx) = self.open()?;
+        let msg = WorkerMsg::Call {
+            id,
+            method: method.to_owned(),
+            params,
+        };
+        if let Err(e) = out.send(&msg) {
+            self.forget(id);
+            return Err(JobError::new("CALL_TOO_LARGE", e.to_string())
+                .with_details(serde_json::json!({ "method": method })));
+        }
+        Ok((id, rx))
     }
 
     fn open(&self) -> Result<(u64, mpsc::Receiver<Answer>), JobError> {

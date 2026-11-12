@@ -222,3 +222,18 @@ fn job_codes_follow_decision_41() {
         assert_eq!(exit_code(code), 6, "{code}");
     }
 }
+
+#[test]
+fn plugin_job_codes_exit_4() {
+    // What a plugin process answers for its own failures (8B cross-SDK contract): a command's
+    // non-protocol failure, a job file that is not what was declared.
+    for code in [
+        "PLUGIN_CRASHED",
+        "PLUGIN_TIMEOUT",
+        "PLUGIN_PROTOCOL",
+        "PLUGIN_COMMAND_FAILED",
+        "PLUGIN_OUTPUT_INVALID",
+    ] {
+        assert_eq!(exit_code(code), 4, "{code}");
+    }
+}

@@ -30,6 +30,20 @@ impl PluginError {
         self.details.insert(key.into(), value.into());
         self
     }
+    /// A command's failure that is not the plugin protocol's (a library's error, a parse that
+    /// failed): `PLUGIN_COMMAND_FAILED` with `e`'s text as the message and no details. Add a
+    /// `reason` with [`PluginError::with`]; never put a path in the details.
+    pub fn failed(e: impl std::fmt::Display) -> PluginError {
+        PluginError::new(codes::PLUGIN_COMMAND_FAILED, e.to_string())
+    }
+}
+
+/// An I/O failure in a command: `PLUGIN_COMMAND_FAILED {reason: io}` (so `?` works on
+/// `std::io` results).
+impl From<std::io::Error> for PluginError {
+    fn from(e: std::io::Error) -> PluginError {
+        PluginError::failed(e).with("reason", "io")
+    }
 }
 
 /// The codes of spec §13 that the protocol itself answers.
@@ -43,9 +57,28 @@ pub mod codes {
     pub const PLUGIN_CRASH_LOOP: &str = "PLUGIN_CRASH_LOOP";
     /// A malformed message or call (the process is not killed for a call).
     pub const PLUGIN_PROTOCOL: &str = "PLUGIN_PROTOCOL";
+    /// A job file the plugin wrote is not what was declared, or a cold kind's output file that
+    /// fails its checks (`{reason: link|notRegular|linked|size|truncated|schema}`). Exit 4.
+    pub const PLUGIN_OUTPUT_INVALID: &str = "PLUGIN_OUTPUT_INVALID";
+    /// A command failed for a reason that is not the plugin protocol's (an I/O error, a
+    /// library's failure: `{reason?}`, never a path), or a plugin job failed with a code the
+    /// host does not know (the plugin's own). Exit 4.
+    pub const PLUGIN_COMMAND_FAILED: &str = "PLUGIN_COMMAND_FAILED";
     pub const PLUGIN_PERMISSION_DENIED: &str = "PLUGIN_PERMISSION_DENIED";
+    /// The process serves an authority whose policy generation moved on (`{retryable: true}`):
+    /// the caller runs the command again under the current authority.
+    pub const PLUGIN_AUTHORITY_RETIRED: &str = "PLUGIN_AUTHORITY_RETIRED";
     pub const EGRESS_DENIED: &str = "EGRESS_DENIED";
     pub const EGRESS_NOT_HTTPS: &str = "EGRESS_NOT_HTTPS";
     pub const EGRESS_PRIVATE_ADDRESS: &str = "EGRESS_PRIVATE_ADDRESS";
     pub const SECRET_MISSING: &str = "SECRET_MISSING";
+    /// A request body over 768,000 bytes, a response over 64 MiB, or a job over its held
+    /// bytes (`{what, limit}`; sp8b Task 8).
+    pub const EGRESS_TOO_LARGE: &str = "EGRESS_TOO_LARGE";
+    /// The 120 s cap of a `net.fetch` call (`{limitS}`).
+    pub const EGRESS_TIMEOUT: &str = "EGRESS_TIMEOUT";
+    /// The plugin's rate or in-flight cap, or the server's (`{reason, limit, retryable}`).
+    pub const EGRESS_RATE_LIMITED: &str = "EGRESS_RATE_LIMITED";
+    /// A name that does not resolve or an origin that does not answer (`{origin, reason}`).
+    pub const EGRESS_UNREACHABLE: &str = "EGRESS_UNREACHABLE";
 }

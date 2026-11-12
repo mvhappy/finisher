@@ -30,7 +30,6 @@ mod registry_rpcs;
 mod registry_rpcs_edit;
 mod registry_settings;
 mod values;
-mod view;
 
 use std::ffi::OsString;
 use std::io::Read;
@@ -258,12 +257,22 @@ fn parse(args: Vec<OsString>) -> Result<Cli, CoreError> {
 }
 
 fn run(args: Vec<OsString>) -> Result<Value, CoreError> {
+    // `fin @<id> <command> …` (sp8b Task 10): a plugin command, not a clap one.
+    if let Some(inv) = commands::plugin_cmd::split(&args) {
+        let inv = inv?;
+        agent_paths::check_project(inv.project.as_deref())?;
+        let backend = backend::select(inv.project.as_deref())?;
+        return commands::plugin_cmd::run(backend.as_ref(), &inv);
+    }
     let (mut cli, name) = parse_named(args)?;
     agent_env::apply(&mut cli.globals, name.as_deref())?;
     let g = &cli.globals;
     let backend = || backend::select(g.project.as_deref());
     match cli.command {
         None | Some(Cmd::Help { topic: None }) => Ok(map::map()),
+        Some(Cmd::Help { topic: Some(t) }) if t.starts_with('@') => {
+            commands::plugin_cmd::list(backend()?.as_ref(), Some(&t))
+        }
         Some(Cmd::Help { topic: Some(t) }) => commands::schema::help(&t),
         Some(Cmd::Schema {
             command,
@@ -345,6 +354,9 @@ fn run(args: Vec<OsString>) -> Result<Value, CoreError> {
         Some(Cmd::Fonts(FontsCmd::Unpin(a))) => edit(g, Edit::Font(FontEdit::Unpin(a))),
         Some(Cmd::Fonts(c)) => commands::fonts::read(backend()?.as_ref(), g, &c),
         Some(Cmd::Diagnostics(c)) => commands::diagnostics::run(backend()?.as_ref(), g, &c),
+        Some(Cmd::Plugin(PluginCmd::Commands(a))) => {
+            commands::plugin_cmd::list(backend()?.as_ref(), a.id.as_deref())
+        }
         Some(Cmd::Plugin(c)) => commands::plugin::plugin(backend()?.as_ref(), &c),
         Some(Cmd::Registry(c)) => commands::plugin::registry(backend()?.as_ref(), &c),
         Some(Cmd::Branch(cmd)) => commands::branch::run(backend()?.as_ref(), g, &cmd),

@@ -617,6 +617,13 @@ status: used (sub-project 5B, Task 7) as an npm dependency of `finisherd` (`jose
 pin, no runtime dependencies); no code is copied. It verifies devices' DPoP proofs (ES256 JWS)
 and computes RFC 7638 key thumbprints (`apps/finisherd/src/auth/dpop.ts`).
 
+## Finisher plugin SDKs (MIT) — `fin-plugin-sdk` and `@finisher/plugin-sdk`
+status: first-party code (sub-project 8B), MIT-licensed, not yet published (sub-project 11 publishes
+them to crates.io and npm). Sub-project 8B links no new third-party code: the SDK, the argument
+schema subset (`regex-automata` 0.4.18, already in the tree through `globset`; MIT OR Apache-2.0) and
+the egress broker (Node's own `https` and `dns`) add no dependency beyond the "Other Cargo
+dependencies" list below (the Rust SDK uses `base64` 0.23, listed there).
+
 ## Other Cargo dependencies — everything else that ships
 status: used, as Cargo dependencies; no code is copied. These crates are in the shipped graph
 (`scripts/check-notices.mjs`: every workspace member but the dev-only ones, normal and build

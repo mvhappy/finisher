@@ -17,7 +17,9 @@ export {
   libraryProbeVersion,
   libraryWatchStart,
 } from "./library.js";
+export { kindNames, kindVersion, validatePrivacy } from "./events.js";
 export { PipeServer } from "./pipe.js";
+export { decodePluginCall, permissionRisks, PluginCommandArgs, pluginCommandOutcome, pluginProjectView } from "./plugin-calls.js";
 export { checkServerDataLocal, serverId } from "./server-data.js";
 export * from "./sandbox.js";
 export * from "./vault.js"; // 5B: the vault, the identity key; certificates and QR codes (`tls.js`)
@@ -308,6 +310,8 @@ export class Journal {
     return sync(() => this.#native.recordSync(kind, kv, ctxJson ?? null, payloadJson, source, timeoutMs));
   }
 
+  recordPlugin(kind, kv, pluginId, payloadJson) { sync(() => this.#native.recordPlugin(kind, kv, pluginId, payloadJson)); }
+
   observe(metric, key, micros, code) {
     this.#native.observe(metric, key, micros, code ?? null);
   }
@@ -389,21 +393,6 @@ export function blake3Hex(data) {
 /** The BLAKE3 of `data` keyed with a 32-byte `key`, 64 lower-case hex digits. */
 export function blake3KeyedHex(key, data) {
   return sync(() => native.blake3KeyedHex(key, data));
-}
-
-/** Every kind name of fin-core's event registry. */
-export function kindNames() {
-  return native.kindNames();
-}
-
-/** The newest payload version of kind `name` that `source` may emit; `null` for none (reserved, unknown, not that source). */
-export function kindVersion(name, source) {
-  return native.kindVersion(name, source) ?? null;
-}
-
-/** Why a `privacy` section (JSON) is not one the journal accepts, naming the key; `undefined` when it is. */
-export function validatePrivacy(privacyJson) {
-  return native.validatePrivacy(privacyJson) ?? undefined;
 }
 
 /** The font manager of a server data folder (shared with the engines opened on it). */

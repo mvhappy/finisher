@@ -95,6 +95,21 @@ jobs:
           # The real-font tests read the warmed cache and fail rather than skip without it.
           FIN_FONT_CACHE: ${{ runner.temp }}/fin-font-cache
           FIN_REQUIRE_FONTS: "1"
+      - name: Plugin conformance (both example plugins through `fin-plugin test --profile command`; the harness's tests)
+        # The plugin tooling and the examples are outside the default members, so they are tested
+        # here: the Rust example runs from its build output (`--exec`), the TypeScript one from
+        # its bundle (`dist/` is git-ignored) on the runner's Node. A finding fails the step
+        # (PLUGIN_TEST_FAILED, exit 3, the findings on stderr).
+        shell: bash
+        # One cargo invocation for the three packages (one feature resolution); it also builds
+        # the `fin-plugin` and `rust-tools` binaries the two runs after it use.
+        run: |
+          node examples/plugins/ts-tools/build.mjs
+          cargo test --release -p fin-plugin-test -p fin-plugin-cli -p example-rust-tools
+          exe=""
+          if [ "$RUNNER_OS" = "Windows" ]; then exe=".exe"; fi
+          target/release/fin-plugin$exe test examples/plugins/rust-tools --profile command --exec target/release/rust-tools$exe
+          target/release/fin-plugin$exe test examples/plugins/ts-tools --profile command
       - name: Codecs (the fixture writers behind the `testing` feature; needs cmake, nasm on x86_64, the submodules)
         run: cargo test --release -p fin-codecs --features testing
       - name: Encode golden of this machine class (informational, prints whether SVT-AV1's bytes match and the entry to record)
