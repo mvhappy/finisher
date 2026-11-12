@@ -4484,8 +4484,8 @@ export interface TextStyle {
   family: string;
   italic: boolean;
   /**
-   * Extra advance between glyphs, in em (a multiple of `size`; may be negative); none
-   * after a line's last glyph.
+   * Extra advance between shaping clusters (a base with its combining marks, or a
+   * ligature), in em (a multiple of `size`; may be negative); none after a line's last.
    */
   letterSpacing: number;
   /**

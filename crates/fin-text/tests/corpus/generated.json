@@ -594,6 +594,48 @@
         "align": "center"
       },
       "maxWidth": 400.0
+    },
+    {
+      "id": "tracking-marks",
+      "what": "tracking between clusters only: combining marks take none (Latin and Hebrew)",
+      "fonts": [
+        "overhang"
+      ],
+      "words": [
+        "a\u0301a",
+        "א\u05b8א"
+      ],
+      "style": {
+        "family": "TestOverhang",
+        "weight": 400,
+        "italic": false,
+        "size": 100,
+        "lineHeight": 1.25,
+        "letterSpacing": 0.3,
+        "align": "center"
+      },
+      "maxWidth": 400.0
+    },
+    {
+      "id": "color-tracking",
+      "what": "colour glyphs inked over advances that exclude tracking",
+      "fonts": [
+        "color"
+      ],
+      "words": [
+        "WW",
+        "W"
+      ],
+      "style": {
+        "family": "TestColor",
+        "weight": 400,
+        "italic": false,
+        "size": 100,
+        "lineHeight": 1.25,
+        "letterSpacing": 0.1,
+        "align": "right"
+      },
+      "maxWidth": 400.0
     }
   ]
 }

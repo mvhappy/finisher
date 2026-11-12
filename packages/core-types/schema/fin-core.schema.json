@@ -16894,7 +16894,7 @@
           "type": "boolean"
         },
         "letterSpacing": {
-          "description": "Extra advance between glyphs, in em (a multiple of `size`; may be negative); none\nafter a line's last glyph.",
+          "description": "Extra advance between shaping clusters (a base with its combining marks, or a\nligature), in em (a multiple of `size`; may be negative); none after a line's last.",
           "format": "double",
           "type": "number"
         },

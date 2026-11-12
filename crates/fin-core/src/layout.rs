@@ -40,8 +40,8 @@ pub struct TextStyle {
     pub size: f64,
     /// Line advance as a multiple of `size` (e.g. 1.2).
     pub line_height: f64,
-    /// Extra advance between glyphs, in em (a multiple of `size`; may be negative); none
-    /// after a line's last glyph.
+    /// Extra advance between shaping clusters (a base with its combining marks, or a
+    /// ligature), in em (a multiple of `size`; may be negative); none after a line's last.
     pub letter_spacing: f64,
     pub align: Align,
 }

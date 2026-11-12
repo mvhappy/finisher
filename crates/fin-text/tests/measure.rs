@@ -30,6 +30,7 @@ fn fonts() -> Fonts {
         ("latinBold", tf::build(&tf::LATIN_BOLD)),
         ("var", tf::test_variable()),
         ("overhang", tf::test_overhang()),
+        ("color", tf::test_color()),
     ] {
         let sha = bytes.add(data.clone());
         refs.insert(name.to_string(), face_ref(&sha, &data, 0));
