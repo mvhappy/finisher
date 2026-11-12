@@ -811,6 +811,7 @@ Spec: `docs/specs/2026-11-07-sub-project-7-agent-runtime-design.md` (revision 7:
 - [ ] Plan 7B (written 2026-11-08, not started): `docs/superpowers/plans/2026-11-08-sub-project-7b-subagents-rules-approvals.md` (Tasks 1–14; 7B-1 needs 7A-2 merged, 7B-2 needs 5E; six questions for the owner at its end)
 - [~] S9 results recorded in plan 7C Task 0 (2026-11-08): macOS B6 done; Linux Landlock status query done (ABI 4, Docker seccomp does not hide it); Linux seccomp moved to Task 4, H2 to 7D/7E; Landlock-disabled boot and Windows B7 still open
 - [ ] Plan 7C (written 2026-11-08, in progress, see "Sub-project 7C: OS sandbox"): `docs/superpowers/plans/2026-11-08-sub-project-7c-os-sandbox.md` (Tasks 0–16; 7C-1, the Linux Landlock `worker` profile, can start now and must land before 6B-1; its Task 0 is the S9 spike above; six questions for the owner at its end)
+- [ ] Plan 7D (written 2026-11-12, not started): `docs/superpowers/plans/2026-11-10-sub-project-7d-claude-code-adapter.md` (Tasks 0–18 with 3b; 7D-0 the Linux facts run on a signed-in CLI, 7D-1 protocol/fake/sandbox seams/launch/probe, 7D-2 sessions/permissions/budgets/resume/accounts/attribution, 7D-3 Windows shell/sandbox data/e2e/transcripts, then spec as built and cross-platform validation; checked against Claude Code 2.1.321). Four questions for the owner at its end: real runs on the owner's own account, when and which Windows shell, Bash/outside-write policy before `agent` is in `READY`, API-key sign-ins (counsel)
 
 ## Sub-project 7A: runtime core
 
