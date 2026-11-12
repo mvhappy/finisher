@@ -42,6 +42,7 @@ fn keyed_slot(slot: &str) -> Option<PlanValue> {
             body: ItemBody::Graphic {
                 asset,
                 slots: Default::default(),
+                source_in: fin_core::Rational::zero(),
             },
         }
         .into(),

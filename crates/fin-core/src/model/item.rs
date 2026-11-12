@@ -48,11 +48,15 @@ pub enum ItemBody {
         #[serde(flatten)]
         block: CaptionBlock,
     },
-    /// A Lottie template with its slot values.
+    /// A Lottie template with its slot values. Template time = `sourceIn + (t − start)`
+    /// (schema 4), so a split or a start-edge move keeps the content's template time.
     Graphic {
         asset: String,
         #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
         slots: BTreeMap<String, ParamValue>,
+        // Offset into the template, in seconds (schema 4); may be negative, eval clamps at 0.
+        #[serde(default, skip_serializing_if = "is_zero_time")]
+        source_in: Rational,
     },
     /// A still image or SVG.
     Image { asset: String },
@@ -272,7 +276,11 @@ pub struct Mask {
     pub invert: bool,
 }
 
-/// The item's own audio: gain in dB, pan in −1…1, fades in seconds.
+/// The item's own audio: gain in dB, pan in −1…1, fades in seconds. A fade's offset
+/// (schema 4) places its window past the item's edge: the fade-in runs over
+/// `[start − fadeInOffset, start − fadeInOffset + fadeIn)`, the fade-out over
+/// `[end + fadeOutOffset − fadeOut, end + fadeOutOffset)`, and only the part inside the item
+/// sounds. A split sets them so each half keeps the original envelope (spec §5.13).
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct AudioParams {
@@ -284,6 +292,10 @@ pub struct AudioParams {
     pub fade_in: Rational,
     #[serde(default, skip_serializing_if = "is_zero_time")]
     pub fade_out: Rational,
+    #[serde(default, skip_serializing_if = "is_zero_time")]
+    pub fade_in_offset: Rational,
+    #[serde(default, skip_serializing_if = "is_zero_time")]
+    pub fade_out_offset: Rational,
 }
 
 /// A keyframe; `at` is relative to the item's start (plan 4C Decision 13). `id` (`kf<n>`) is
@@ -459,7 +471,7 @@ impl ItemBody {
     /// graphic's slots name), mutably.
     pub fn refs_mut(&mut self) -> Vec<&mut String> {
         match self {
-            ItemBody::Graphic { asset, slots } => {
+            ItemBody::Graphic { asset, slots, .. } => {
                 let mut out = vec![asset];
                 out.extend(slots.values_mut().filter_map(ParamValue::asset_mut));
                 out
@@ -474,7 +486,7 @@ impl ItemBody {
     /// The ids [`ItemBody::refs_mut`] lists.
     pub fn ids(&self) -> Vec<&str> {
         match self {
-            ItemBody::Graphic { asset, slots } => {
+            ItemBody::Graphic { asset, slots, .. } => {
                 let mut out = vec![asset.as_str()];
                 out.extend(slots.values().filter_map(ParamValue::asset));
                 out
