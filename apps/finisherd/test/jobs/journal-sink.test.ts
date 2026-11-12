@@ -7,7 +7,7 @@ import { join } from "node:path";
 import type { Envelope, ExportPage } from "@finisher/core-types";
 import { Journal } from "@finisher/fin-node";
 import { afterEach, expect, test } from "vitest";
-import type { JobDoneEvent, WorkerExitEvent } from "../../src/jobs/events.ts";
+import { type JobDoneEvent, lifetimeSeconds, type WorkerExitEvent } from "../../src/jobs/events.ts";
 import { journalSink } from "../../src/jobs/journal-sink.ts";
 
 let journal: Journal | undefined;
@@ -86,6 +86,21 @@ test("worker_exit_kv2_carries_plugin", async () => {
   expect(es.every((e) => e.source === "finisherd" && e.kv === 1)).toBe(true);
   expect(JSON.stringify([...ws, ...es])).not.toContain("acme");
   expect(logs).toEqual([]);
+});
+
+test("worker_exit_lifetime_is_whole_seconds: a fractional lifetime is not refused", async () => {
+  const j = open({ diagnostics: "on" });
+  const logs: string[] = [];
+  const sink = journalSink(j, (_l, m) => logs.push(m));
+  // What a process that lived 2,065 ms used to send (`lifetimeMs / 1000`).
+  sink.workerExit({ ...exit, family: "plugin", lifetimeS: 2.065 });
+  const { pluginId: _none, ...plain } = exit;
+  sink.workerExit({ ...plain, family: "media", lifetimeS: 0.4 });
+  expect(logs).toEqual([]);
+  const ws = await entries(j, ["worker.exit"]);
+  expect(ws.map((w) => (w.payload as { lifetimeS: number }).lifetimeS)).toEqual([2, 0]);
+  expect((await entries(j, ["plugin.exit"])).map((e) => (e.payload as { uptimeS: number }).uptimeS)).toEqual([2]);
+  expect([lifetimeSeconds(2065), lifetimeSeconds(999), lifetimeSeconds(-1), lifetimeSeconds(Number.NaN)]).toEqual([2, 0, 0, 0]);
 });
 
 test("a_refused_event_is_logged_not_thrown", async () => {

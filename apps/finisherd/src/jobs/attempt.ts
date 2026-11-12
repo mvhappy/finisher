@@ -8,7 +8,7 @@ import type { CancelReason, Hello, HelperGrant, HostMsg, JobError as JobErrorMsg
 import { FinError, isJobRights, type JobProgress, type MappedFile } from "@finisher/contracts";
 import { finError, toFinError } from "../errors.ts";
 import { CallRouter } from "./calls.ts";
-import type { WorkerExitEvent } from "./events.ts";
+import { lifetimeSeconds, type WorkerExitEvent } from "./events.ts";
 import { type JobDirs, mappedPath } from "./files.ts";
 import { Helpers } from "./helpers.ts";
 import type { ExitVerdict, JobHostExitInfo } from "./host.ts";
@@ -91,7 +91,7 @@ export function sendWorkerExit(
     family: family.family,
     reason,
     jobsServed,
-    lifetimeS: info.lifetimeMs / 1000,
+    lifetimeS: lifetimeSeconds(info.lifetimeMs),
     sandboxed: env.host.caps().sandboxed,
     ...(info.code === undefined ? {} : { exitCode: info.code }),
     ...(info.signal === undefined ? {} : { signal: info.signal }),

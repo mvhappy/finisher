@@ -10,7 +10,7 @@ import { type FinError, type HelperSpec, isJobRights, type MappedFile } from "@f
 import { finError, toFinError } from "../errors.ts";
 import { childEnv } from "../env.ts";
 import { CallRouter } from "./calls.ts";
-import type { WorkerExitEvent } from "./events.ts";
+import { lifetimeSeconds, type WorkerExitEvent } from "./events.ts";
 import { type JobDirs, mappedPath } from "./files.ts";
 import { mkdirSafe } from "./fsafe.ts";
 import { type JobHostExitInfo, type JobSpawnRequest, type ProcEvent, exitVerdict } from "./host.ts";
@@ -236,7 +236,7 @@ export class Helpers {
         helperKind: p.spec.kind,
         reason: verdict.reason,
         jobsServed: p.attached ? 1 : 0,
-        lifetimeS: info.lifetimeMs / 1000,
+        lifetimeS: lifetimeSeconds(info.lifetimeMs),
         sandboxed: this.#env.host.caps().sandboxed,
         ...(info.code === undefined ? {} : { exitCode: info.code }),
         ...(info.signal === undefined ? {} : { signal: info.signal }),

@@ -10,7 +10,7 @@
 import type { JobDone, JobMedia, WorkerExit } from "@finisher/core-types";
 import type { Journal } from "@finisher/fin-node";
 import { kindNames } from "@finisher/fin-node";
-import type { ForwardedEvent, JobDoneEvent, JobEventSink, WorkerExitEvent } from "./events.ts";
+import { type ForwardedEvent, type JobDoneEvent, type JobEventSink, lifetimeSeconds, type WorkerExitEvent } from "./events.ts";
 
 type Log = (level: "debug" | "warning", message: string) => void;
 type JournalLike = Pick<Journal, "enabled" | "record" | "recordPlugin">;
@@ -31,10 +31,13 @@ export function jobDonePayload(e: JobDoneEvent): JobDone {
   return media === undefined ? payload : { ...payload, media: media as JobMedia };
 }
 
-/** `worker.exit` `kv` 2 without `plugin` (fin-node adds it from the raw id, see above). */
+/**
+ * `worker.exit` `kv` 2 without `plugin` (fin-node adds it from the raw id, see above).
+ * `lifetimeS` is whole seconds: a fraction would fail the journal's `u64` and lose the entry.
+ */
 export function workerExitPayload(e: WorkerExitEvent): Omit<WorkerExit, "plugin"> {
   const { pluginId: _pluginId, ...payload } = e;
-  return payload;
+  return Number.isInteger(payload.lifetimeS) ? payload : { ...payload, lifetimeS: lifetimeSeconds(payload.lifetimeS * 1000) };
 }
 
 /** A sink over `journal`; `log` gets what the journal refused. */
