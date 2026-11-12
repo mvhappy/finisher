@@ -19,4 +19,10 @@ export interface ProbeResult {
    * probe saw it keep the SDK MCP server, the `--tools` names, `--settings` and the sign-in.
    */
   readonly restricted?: boolean;
+  /**
+   * Windows only (Decision 21): the shell is the `finisher` SDK MCP server's `shell` tool, not
+   * the CLI's `Bash`. Off until Task 13 builds the brokered shell and sets it (owner Q2(a),
+   * 2026-11-12): Windows sessions run `direct` and use the CLI's own `Bash` until then.
+   */
+  readonly brokeredShell?: boolean;
 }

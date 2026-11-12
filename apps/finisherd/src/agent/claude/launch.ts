@@ -12,19 +12,26 @@
 //   Finisher's own `finisher` server's tools; `--strict-mcp-config` already admits only that).
 // - **The settings file is written from a typed schema** (Task 0: one wrongly typed known key
 //   makes `-p` drop the whole file silently, `disableAllHooks` and the `ask` list with it).
-// - **Windows** (Decision 21): no `Bash`; the `finisher` SDK MCP server's `shell` tool, which
-//   `finisherd` serves (Task 13), takes its place. The server is declared on every OS: the MCP
-//   permission fallback (Decision 10) and 7G's tools are served by it too.
+// - **A CLI reaches `fin` through its shell**: `fin` in the allow-set enables `Bash` (Decision 2);
+//   every call still asks, and 7B's `permissions.ts` decides it.
+// - **Windows** (Decision 21, owner Q2(a)): until Task 13 builds the brokered shell, Windows
+//   sessions run `direct` and use the CLI's own `Bash`, as on Linux and macOS. Decision 21's
+//   shape (no `Bash`; the `finisher` SDK MCP server's `shell` tool, which `finisherd` serves) is
+//   kept behind `ProbeResult.brokeredShell`, off by default. The server is declared on every OS:
+//   the MCP permission fallback (Decision 10) and 7G's tools are served by it too.
+// - **Paths come from the sandbox**: `settings/` and `CLAUDE_CODE_TMPDIR` are derived from the
+//   session environment's `TMPDIR`, so they name the directories the sandbox protects and grants.
 // - **The session id** is the session ULID's 128 bits written as a UUID (Decision 12), so a
 //   resume is `--resume=<uuid>` with no table between them.
 import { randomBytes } from "node:crypto";
 import { chmod, rename, rm, writeFile } from "node:fs/promises";
+import { posix, win32 } from "node:path";
 import type { Session } from "@finisher/contracts";
 import { Schema } from "effect";
 import { finError } from "../../errors.ts";
 import type { SessionSpec } from "../adapter.ts";
 import { assertSpawnEnv } from "../sandbox-env.ts";
-import { sessionDirs } from "../session-dirs.ts";
+import { type SessionDirs, sessionDirs } from "../session-dirs.ts";
 import type { ProbeResult } from "./probe-types.ts";
 
 /** What one instance is started with: `argv` through the sandbox, `files` written first, `env` added. */
@@ -44,8 +51,6 @@ export interface LaunchPlan {
 export interface LaunchContext {
   /** The detected CLI, absolute (`agents.claudeCode.path` or `PATH`, resolved). */
   readonly binary: string;
-  /** `<server-data>/agents`: the session's directories are under `<agentsRoot>/<id>/`. */
-  readonly agentsRoot: string;
   /** `agents.retentionDays`: the CLI keeps its transcripts as long (`cleanupPeriodDays`). */
   readonly retentionDays: number;
   /** The money left in the session's budget, in micros, at this (re)start; null without a money limit. */
@@ -103,7 +108,8 @@ const ClaudeSettings = Schema.Struct({
     blockWritesOutsideWorkingDirectories: Schema.Literal(true),
     ask: Schema.Array(Schema.String.check(Schema.isMinLength(1))),
   }),
-  env: Schema.Struct({}),
+  // Exactly `{}`: a settings `env` would reach the CLI's tools past the sandbox's environment.
+  env: Schema.Record(Schema.String, Schema.Never),
   /** The probe's canary only (Decision 4): an applied file shows it in `system/init`. */
   outputStyle: Schema.optionalKey(Schema.Literal("Explanatory")),
 });
@@ -121,8 +127,12 @@ export function checkSettings(body: unknown): ClaudeSettings {
   throw finError("INTERNAL", "the Claude Code session settings do not match their schema", { issue: String(r.failure) });
 }
 
-/** The session settings for an instance whose `--tools` are `tools` (Decision 4). */
-export function sessionSettings(tools: readonly string[], retentionDays: number, canary = false): ClaudeSettings {
+/**
+ * The session settings for an instance whose `--tools` are `tools` and whose `finisher` server
+ * serves `mcpTools` (Decision 4): every enabled tool asks; of the server's, only `shell` does
+ * (`approve` is how asking happens).
+ */
+export function sessionSettings(tools: readonly string[], mcpTools: readonly string[], retentionDays: number, canary = false): ClaudeSettings {
   return checkSettings({
     disableAllHooks: true,
     autoMemoryEnabled: false,
@@ -131,7 +141,7 @@ export function sessionSettings(tools: readonly string[], retentionDays: number,
     cleanupPeriodDays: retentionDays,
     // No `deny`/`allow` path rules: deny beats allow, and a single-`/` path is relative to the
     // settings file. The `ask` list makes every call of every enabled tool a `can_use_tool`.
-    permissions: { defaultMode: "default", blockWritesOutsideWorkingDirectories: true, ask: [...tools, SHELL_TOOL] },
+    permissions: { defaultMode: "default", blockWritesOutsideWorkingDirectories: true, ask: [...tools, ...mcpTools.filter((t) => t === SHELL_TOOL)] },
     env: {},
     ...(canary ? { outputStyle: "Explanatory" } : {}),
   });
@@ -144,14 +154,17 @@ export function mcpConfig(): { mcpServers: Record<string, { type: "sdk"; name: s
 
 /**
  * The role's allow-set as `--tools` (Decision 2): the mapped CLI tools it names, in `CLI_TOOLS`
- * order; on Windows never `Bash` (Decision 21). Names that map to nothing are `dropped`.
+ * order, with `Bash` when it names `Bash` or `fin` (a CLI reaches `fin` through its shell). With
+ * the brokered shell (Decision 21, Windows only) that shell is `mcp__finisher__shell`, not
+ * `Bash`. Names that map to nothing are `dropped`.
  */
-export function cliTools(allow: readonly string[] | undefined, os: NodeJS.Platform): { tools: string[]; dropped: string[] } {
+export function cliTools(allow: readonly string[] | undefined, brokered: boolean): { tools: string[]; shell: boolean; dropped: string[] } {
   const named = new Set(allow ?? []);
-  const tools = CLI_TOOLS.filter((t) => named.has(t) && !(t === "Bash" && os === "win32"));
+  const shell = named.has("Bash") || named.has("fin");
+  const tools = CLI_TOOLS.filter((t) => (t === "Bash" ? shell && !brokered : named.has(t)));
   const known = new Set<string>(CLI_TOOLS);
   const dropped = [...named].filter((t) => !known.has(t) && !BUILTIN_ONLY.has(t));
-  return { tools, dropped };
+  return { tools, shell: shell && brokered, dropped };
 }
 
 /** The extra environment of every instance (Decision 5): non-secret switches, never a token. */
@@ -167,29 +180,56 @@ export function launchEnv(tmp: string): Record<string, string> {
   };
 }
 
-/** Micros as the dollars `--max-budget-usd` takes; never negative. */
-const usd = (micros: number): string => String(Math.max(0, Math.floor(micros)) / 1_000_000);
+/**
+ * The money left as the dollars `--max-budget-usd` takes, or `BUDGET_EXCEEDED`: 2.1.321 drops a
+ * value <= 0 (`maxBudgetUsd>0`), which would be no cap at all, so a spent budget (or a remainder
+ * that is no whole number of micros) never launches.
+ */
+function maxBudgetUsd(s: Session, micros: number): string {
+  if (!Number.isSafeInteger(micros) || micros <= 0) {
+    throw finError("BUDGET_EXCEEDED", "the session's money budget is used up", { sessionId: s.id, kind: "money", remaining: String(micros) });
+  }
+  return String(micros / 1_000_000);
+}
+
+/**
+ * The session's directories as its sandbox spells them, from the session environment's
+ * `TMPDIR` (`<agents>/<id>/tmp`), or `SANDBOX_ENV`: absolute, normal, this session's.
+ */
+function sandboxDirs(s: Session, env: Readonly<Record<string, string>>, os: NodeJS.Platform): SessionDirs {
+  const path = os === "win32" ? win32 : posix;
+  const tmp = env.TMPDIR;
+  const own = path.sep + path.join("agents", s.id, "tmp");
+  if (tmp === undefined || !path.isAbsolute(tmp) || path.normalize(tmp) !== tmp || !tmp.endsWith(own)) {
+    throw finError("SANDBOX_ENV", "the session environment is wrong: TMPDIR is not the session's own", { sessionId: s.id, name: "TMPDIR", reason: "not the session's own path" });
+  }
+  const dirs = sessionDirs(path.dirname(path.dirname(tmp)), s.id, os);
+  // `sessionDirs` and the check above spell `tmp/` alike; a drift between them must not launch.
+  if (dirs.tmp !== tmp) throw finError("INTERNAL", "the session's directories do not match its TMPDIR", { sessionId: s.id });
+  return dirs;
+}
 
 /**
  * One instance's launch (Decision 1's order): a new session starts with `--session-id <uuid>`,
  * one with a provider reference resumes with `--resume=<uuid>`. Throws a `FinError`:
  * `PROVIDER_PROTOCOL` for a reference that is not this session's Claude Code session,
- * `INTERNAL` for settings that fail their schema, `SANDBOX_ENV` for an environment name
- * outside the harness's.
+ * `INTERNAL` for settings that fail their schema, `SANDBOX_ENV` for a `TMPDIR` that is not the
+ * session's own or an environment name outside the harness's, `BUDGET_EXCEEDED` for a money
+ * budget with nothing left.
  */
 export function launchPlan(s: Session, spec: SessionSpec, probe: ProbeResult, os: NodeJS.Platform, ctx: LaunchContext): LaunchPlan {
-  const dirs = sessionDirs(ctx.agentsRoot, s.id, os);
-  const sep = os === "win32" ? "\\" : "/";
-  const at = (name: string) => `${dirs.settings}${sep}${name}`;
+  const dirs = sandboxDirs(s, spec.env, os);
+  const at = (name: string) => (os === "win32" ? win32 : posix).join(dirs.settings, name);
   const uuid = sessionUuid(s.id);
   const ref = spec.providerRef;
   if (ref !== null && (ref.kind !== "claudeCode" || ref.id !== uuid)) {
     throw finError("PROVIDER_PROTOCOL", "the session's provider reference is not its Claude Code session", { sessionId: s.id, kind: ref.kind });
   }
-  const { tools, dropped } = cliTools(spec.tools, os);
-  const mcpTools = [...(os === "win32" && spec.tools?.includes("Bash") === true ? [SHELL_TOOL] : []), ...(probe.permissionPath === "mcp" ? [APPROVE_TOOL] : [])];
+  const { tools, shell, dropped } = cliTools(spec.tools, os === "win32" && probe.brokeredShell === true);
+  const mcpTools = [...(shell ? [SHELL_TOOL] : []), ...(probe.permissionPath === "mcp" ? [APPROVE_TOOL] : [])];
+  const budget = ctx.remainingMoneyMicros !== null && !ctx.planSignIn ? ["--max-budget-usd", maxBudgetUsd(s, ctx.remainingMoneyMicros)] : [];
   const files = [
-    { path: at(SETTINGS_FILE), body: `${JSON.stringify(sessionSettings(tools, ctx.retentionDays), null, 2)}\n` },
+    { path: at(SETTINGS_FILE), body: `${JSON.stringify(sessionSettings(tools, mcpTools, ctx.retentionDays), null, 2)}\n` },
     { path: at(MCP_FILE), body: `${JSON.stringify(mcpConfig(), null, 2)}\n` },
     { path: at(ROLE_FILE), body: spec.system },
   ];
@@ -204,9 +244,10 @@ export function launchPlan(s: Session, spec: SessionSpec, probe: ProbeResult, os
     ...["--tools", tools.join(","), "--disallowedTools", DISALLOWED_TOOLS.join(","), "--disable-slash-commands"],
     ...["--append-system-prompt-file", at(ROLE_FILE), "--model", spec.model],
     ...(ref === null ? ["--session-id", uuid] : [`--resume=${uuid}`]),
-    ...(ctx.remainingMoneyMicros !== null && !ctx.planSignIn ? ["--max-budget-usd", usd(ctx.remainingMoneyMicros)] : []),
+    ...budget,
   ];
   const env = launchEnv(dirs.tmp);
+  // The CLI's temporary directory is the sandbox's own (`assertSessionEnv` holds it to `TMPDIR`).
   assertSpawnEnv(env, s, os);
   return { argv, files, env, tools, mcpTools, dropped };
 }

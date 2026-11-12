@@ -8,7 +8,23 @@ import { join } from "node:path";
 import type { FinError, Session } from "@finisher/contracts";
 import { Effect } from "effect";
 import fc from "fast-check";
-import { afterEach, beforeEach, describe, expect, test } from "vitest";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+// Every `rename` and `writeFile` of `writeLaunchFiles` passes through these, so the write-order
+// test sees each step of the write.
+const fsSpy = vi.hoisted(() => ({ before: undefined as undefined | ((from: string, to: string) => void | Promise<void>), writes: [] as string[] }));
+vi.mock("node:fs/promises", async (importOriginal) => {
+  const real = await importOriginal<typeof import("node:fs/promises")>();
+  const rename: typeof real.rename = async (from, to) => {
+    await fsSpy.before?.(String(from), String(to));
+    return real.rename(from, to);
+  };
+  const writeFile = ((path: Parameters<typeof real.writeFile>[0], ...rest: unknown[]) => {
+    fsSpy.writes.push(String(path));
+    return (real.writeFile as (...a: unknown[]) => Promise<void>)(path, ...rest);
+  }) as typeof real.writeFile;
+  return { ...real, default: { ...real, rename, writeFile }, rename, writeFile };
+});
+
 import type { SessionSpec } from "../src/agent/adapter.ts";
 import { manualClock, systemIds } from "../src/agent/clock.ts";
 import {
@@ -38,6 +54,11 @@ const UUID = "019311f2-dc74-254d-63e1-194e81be77df";
 const EDITOR = ["fin", "workspace_read", "workspace_write", "workspace_list", "Read", "Write", "Grep", "Edit", "Bash", "Glob"];
 const ROOT: Record<Os, string> = { linux: "/srv/data/agents", darwin: "/Users/x/data/agents", win32: "C:\\data\\agents" };
 const BIN: Record<Os, string> = { linux: "/opt/claude/bin/claude", darwin: "/opt/claude/bin/claude", win32: "C:\\claude\\claude.exe" };
+const TMP: Record<Os, string> = {
+  linux: `/srv/data/agents/${SID}/tmp`,
+  darwin: `/Users/x/data/agents/${SID}/tmp`,
+  win32: `C:\\data\\agents\\${SID}\\tmp`,
+};
 const SETTINGS: Record<Os, string> = {
   linux: `/srv/data/agents/${SID}/settings`,
   darwin: `/Users/x/data/agents/${SID}/settings`,
@@ -50,7 +71,7 @@ const DISALLOWED =
 
 const session = { id: SID, harness: "claudeCode" } as Session;
 const PROBE: ProbeResult = { version: "2.1.321", permissionPath: "stdio", tools: [], models: [], capabilities: [] };
-const spec = (over: Partial<SessionSpec> = {}): SessionSpec => ({
+const spec = (over: Partial<SessionSpec> = {}, os: Os = "linux"): SessionSpec => ({
   sessionId: SID,
   projectId: "P1",
   model: "default",
@@ -58,26 +79,27 @@ const spec = (over: Partial<SessionSpec> = {}): SessionSpec => ({
   mode: "draft",
   system: "You are Finisher's editor. ROLE-PROMPT-MARKER",
   cwd: `/p/workspace/${SID}`,
-  env: {},
+  // The sandbox's `TMPDIR` (the only name the launch plan reads from the session environment).
+  env: { TMPDIR: TMP[os] },
   providerRef: null,
   tools: EDITOR,
   ...over,
 });
 const ctx = (os: Os, over: Partial<LaunchContext> = {}): LaunchContext => ({
   binary: BIN[os],
-  agentsRoot: ROOT[os],
   retentionDays: 90,
   remainingMoneyMicros: null,
   planSignIn: true,
   ...over,
 });
 const plan = (os: Os = "linux", s: Partial<SessionSpec> = {}, c: Partial<LaunchContext> = {}, p: Partial<ProbeResult> = {}) =>
-  launchPlan(session, spec(s), { ...PROBE, ...p }, os, ctx(os, c));
+  launchPlan(session, spec(s, os), { ...PROBE, ...p }, os, ctx(os, c));
 const flag = (argv: readonly string[], name: string): string | undefined => {
   const i = argv.indexOf(name);
   return i < 0 ? undefined : argv[i + 1];
 };
 const file = (p: ReturnType<typeof plan>, name: string) => p.files.find((f) => f.path.endsWith(name))!;
+const ask = (p: ReturnType<typeof plan>) => (JSON.parse(file(p, "claude.json").body) as { permissions: { ask: string[] } }).permissions.ask;
 const caught = (f: () => unknown): FinError => {
   try {
     f();
@@ -136,18 +158,57 @@ describe("Claude Code launch plan", () => {
   });
 
   test("argv_matches_decision_1 (win32)", () => {
-    // Decision 21: no `Bash` (Git Bash cannot start in an AppContainer); the brokered shell is
-    // the `finisher` SDK MCP server's `shell` tool, which the host serves (Task 13).
+    // Owner Q2(a): until Task 13 builds the brokered shell, Windows sessions run `direct` and use
+    // the CLI's own `Bash`, exactly as on Linux and macOS; no `mcp__finisher__shell` is offered.
     const p = plan("win32");
-    expect(p.argv).toEqual(golden("win32", "Read,Edit,Write,Glob,Grep"));
+    expect(p.argv).toEqual(golden("win32", "Read,Edit,Write,Glob,Grep,Bash"));
     expect(p.argv.some((a) => a.startsWith("--add-dir"))).toBe(false);
-    expect(p.tools).not.toContain("Bash");
+    expect(p.tools).toContain("Bash");
+    // The `finisher` SDK server is declared on every OS (the probe check, Decision 10's fallback).
     expect(JSON.parse(file(p, "mcp.json").body)).toEqual({ mcpServers: { finisher: { type: "sdk", name: "finisher" } } });
-    expect(p.mcpTools).toEqual(["mcp__finisher__shell"]);
+    expect(p.mcpTools).toEqual([]);
+    expect(ask(p)).toEqual(["Read", "Edit", "Write", "Glob", "Grep", "Bash"]);
     expect(p.files.map((f) => f.path)).toEqual(["claude.json", "mcp.json", "role.md"].map((n) => `${SETTINGS.win32}\\${n}`));
-    expect(plan("win32", {}, {}, { restricted: true }).argv).toEqual(golden("win32", "Read,Edit,Write,Glob,Grep", { restricted: true }));
-    // A role without Bash gets no shell either.
-    expect(plan("win32", { tools: ["Read"] }).mcpTools).toEqual([]);
+    expect(plan("win32", {}, {}, { restricted: true }).argv).toEqual(golden("win32", "Read,Edit,Write,Glob,Grep,Bash", { restricted: true }));
+    expect(plan("win32", {}, {}, { brokeredShell: false }).argv).toEqual(p.argv);
+  });
+
+  test("brokered_shell_shape_behind_its_switch", () => {
+    // Decision 21's shape, kept as data until Task 13 sets `brokeredShell`: no `Bash` (Git Bash
+    // cannot start in an AppContainer); the `finisher` SDK server's `shell` tool instead.
+    const p = plan("win32", {}, {}, { brokeredShell: true });
+    expect(p.argv).toEqual(golden("win32", "Read,Edit,Write,Glob,Grep"));
+    expect(p.tools).not.toContain("Bash");
+    expect(p.mcpTools).toEqual(["mcp__finisher__shell"]);
+    expect(ask(p)).toEqual(["Read", "Edit", "Write", "Glob", "Grep", "mcp__finisher__shell"]);
+    // A role with no shell gets none either.
+    const bare = plan("win32", { tools: ["Read"] }, {}, { brokeredShell: true });
+    expect(bare.mcpTools).toEqual([]);
+    expect(ask(bare)).toEqual(["Read"]);
+    // The switch is Windows' only: Linux and macOS keep the CLI's `Bash`.
+    for (const os of ["linux", "darwin"] as const) {
+      const unix = plan(os, {}, {}, { brokeredShell: true });
+      expect(unix.argv).toEqual(golden(os, "Read,Edit,Write,Glob,Grep,Bash"));
+      expect(unix.mcpTools).toEqual([]);
+    }
+  });
+
+  test("fin_in_allow_set_enables_the_shell", () => {
+    // A CLI reaches `fin` through its shell (Decision 2): a role allowing `fin` but not `Bash`
+    // (critic, colourist, mixer, clip-finder, caption-stylist, fixer) still gets one, at `ask`.
+    for (const os of ["linux", "darwin", "win32"] as const) {
+      const p = plan(os, { tools: ["fin", "workspace_read", "Read", "Grep"] });
+      expect(flag(p.argv, "--tools")).toBe("Read,Grep,Bash");
+      expect(p.tools).toEqual(["Read", "Grep", "Bash"]);
+      expect(ask(p)).toEqual(["Read", "Grep", "Bash"]);
+      expect(p.dropped).toEqual([]);
+    }
+    const broker = plan("win32", { tools: ["fin", "Read"] }, {}, { brokeredShell: true });
+    expect(flag(broker.argv, "--tools")).toBe("Read");
+    expect(broker.mcpTools).toEqual(["mcp__finisher__shell"]);
+    expect(ask(broker)).toEqual(["Read", "mcp__finisher__shell"]);
+    // Neither `fin` nor `Bash`: no shell.
+    expect(plan("linux", { tools: ["Read", "workspace_read"] }).tools).toEqual(["Read"]);
   });
 
   test("tools_is_role_allow_set_intersection", () => {
@@ -193,33 +254,112 @@ describe("Claude Code launch plan", () => {
       crossSessionInbound: "refuse",
       attribution: { commit: "", pr: "" },
       cleanupPeriodDays: 30,
-      permissions: { defaultMode: "default", blockWritesOutsideWorkingDirectories: true, ask: ["Read", "Glob", "Bash", "mcp__finisher__shell"] },
+      permissions: { defaultMode: "default", blockWritesOutsideWorkingDirectories: true, ask: ["Read", "Glob", "Bash"] },
       env: {},
     });
     const body = JSON.parse(settings.body) as { permissions: Record<string, unknown> };
     expect(body.permissions.deny).toBeUndefined();
     expect(body.permissions.allow).toBeUndefined();
     // Every enabled tool asks (Decision 4), whatever the role.
-    const all = plan("win32", { tools: [...CLI_TOOLS] });
-    expect((JSON.parse(file(all, "claude.json").body) as { permissions: { ask: string[] } }).permissions.ask).toEqual([...all.tools, "mcp__finisher__shell"]);
+    for (const os of ["linux", "win32"] as const) {
+      const all = plan(os, { tools: [...CLI_TOOLS] });
+      expect(ask(all)).toEqual([...CLI_TOOLS]);
+      expect(ask(all)).toEqual(all.tools);
+    }
+    const brokered = plan("win32", { tools: [...CLI_TOOLS] }, {}, { brokeredShell: true });
+    expect(ask(brokered)).toEqual([...brokered.tools, "mcp__finisher__shell"]);
 
-    // Written 0600, temp-then-rename, into `settings/` (the sandbox's protected, read-only root).
+  });
+
+  test("settings_files_are_written_whole_and_private", async () => {
+    // Written 0600, temp-then-rename, into `settings/` (the sandbox's protected, read-only root):
+    // at every step the final name holds the old file or the whole new one, never anything else,
+    // and no name but the final ones and the one being written exists.
     const tmp = mkdtempSync(join(tmpdir(), "claude-launch-"));
+    const unix = process.platform !== "win32";
     try {
       const dirs = sessionDirs(join(tmp, "agents"), SID);
       mkdirSync(dirs.settings, { recursive: true, mode: 0o700 });
       writeFileSync(join(dirs.settings, "claude.json"), "stale", { mode: 0o644 });
-      const local = launchPlan(session, spec(), PROBE, process.platform, ctx("linux", { agentsRoot: join(tmp, "agents") }));
+      const local = launchPlan(session, spec({ env: { TMPDIR: dirs.tmp } }), PROBE, process.platform, ctx("linux"));
       for (const f of local.files) expect(f.path.startsWith(dirs.settings)).toBe(true);
+      const finals = new Set(local.files.map((f) => f.path));
+      const renamed: string[] = [];
+      fsSpy.writes = [];
+      fsSpy.before = (from, to) => {
+        const f = local.files.find((x) => x.path === to)!;
+        expect(f).toBeDefined();
+        expect(finals.has(from)).toBe(false);
+        expect(from.startsWith(`${to}.`)).toBe(true);
+        // The temporary name is whole and private before it takes the final name.
+        expect(readFileSync(from, "utf8")).toBe(f.body);
+        if (unix) expect(statSync(from).mode & 0o777).toBe(0o600);
+        // The final name still holds the old file (or none); written ones are whole and private.
+        for (const g of local.files) {
+          let body: string | undefined;
+          try {
+            body = readFileSync(g.path, "utf8");
+          } catch {
+            body = undefined;
+          }
+          const done = renamed.includes(g.path);
+          if (done) {
+            expect(body).toBe(g.body);
+            if (unix) expect(statSync(g.path).mode & 0o777).toBe(0o600);
+          } else expect(body === undefined || (g.path.endsWith("claude.json") && body === "stale")).toBe(true);
+        }
+        const names = readdirSync(dirs.settings).map((n) => join(dirs.settings, n));
+        expect(names.filter((n) => !finals.has(n))).toEqual([from]);
+        renamed.push(to);
+      };
       await writeLaunchFiles(local, process.platform);
+      expect(renamed).toEqual(local.files.map((f) => f.path));
+      // Nothing is ever written at a final name directly.
+      expect(fsSpy.writes.filter((w) => finals.has(w))).toEqual([]);
       expect(readdirSync(dirs.settings).sort()).toEqual(["claude.json", "mcp.json", "role.md"]);
       for (const f of local.files) {
         expect(readFileSync(f.path, "utf8")).toBe(f.body);
-        if (process.platform !== "win32") expect(statSync(f.path).mode & 0o777).toBe(0o600);
+        if (unix) expect(statSync(f.path).mode & 0o777).toBe(0o600);
       }
+
+      // A rename that fails leaves the old file and no temporary name behind.
+      writeFileSync(join(dirs.settings, "claude.json"), "stale", { mode: 0o600 });
+      fsSpy.before = () => {
+        throw Object.assign(new Error("EIO"), { code: "EIO" });
+      };
+      await expect(writeLaunchFiles(local, process.platform)).rejects.toThrow("EIO");
+      expect(readFileSync(join(dirs.settings, "claude.json"), "utf8")).toBe("stale");
+      expect(readdirSync(dirs.settings).sort()).toEqual(["claude.json", "mcp.json", "role.md"]);
     } finally {
+      fsSpy.before = undefined;
       rmSync(tmp, { recursive: true, force: true });
     }
+  });
+
+  test("settings_paths_and_tmpdir_are_the_sandboxes", () => {
+    // The `settings/` paths and `CLAUDE_CODE_TMPDIR` come from the sandbox's own `TMPDIR`, so
+    // they cannot name another directory than the one the sandbox protects.
+    for (const os of ["linux", "darwin", "win32"] as const) {
+      const p = plan(os);
+      expect(p.env.CLAUDE_CODE_TMPDIR).toBe(TMP[os]);
+      for (const f of p.files) expect(f.path.startsWith(SETTINGS[os] + sep(os))).toBe(true);
+    }
+    const other = "01JC8Z5Q3M4N6P7R8S9T0VWXY0";
+    for (const env of [
+      {},
+      { TMPDIR: "" },
+      { TMPDIR: "tmp" },
+      { TMPDIR: `agents/${SID}/tmp` },
+      { TMPDIR: `/srv/data/agents/${other}/tmp` },
+      { TMPDIR: `/srv/data/agents/${SID}/provider` },
+      { TMPDIR: `/srv/data/agents/x/../${SID}/tmp` },
+      { TMPDIR: `/srv/data/agents/${SID}/tmp/` },
+      { TMPDIR: `/srv/data/other/${SID}/tmp` },
+    ]) {
+      expect(caught(() => launchPlan(session, spec({ env }), PROBE, "linux", ctx("linux"))).code).toBe("SANDBOX_ENV");
+    }
+    // Spelled for the OS: a POSIX `TMPDIR` is not a Windows session's.
+    expect(caught(() => launchPlan(session, spec({ env: { TMPDIR: TMP.linux } }), PROBE, "win32", ctx("win32"))).code).toBe("SANDBOX_ENV");
   });
 
   test("settings_body_is_schema_checked", () => {
@@ -234,6 +374,11 @@ describe("Claude Code launch plan", () => {
     // The probe's canary (Decision 4) is a typed key too.
     expect(() => checkSettings({ ...good, outputStyle: "Explanatory" })).not.toThrow();
     expect(caught(() => checkSettings({ ...good, outputStyle: 1 })).code).toBe("INTERNAL");
+    // `env` is exactly `{}`: a settings `env` would reach the CLI's tools past the sandbox's.
+    expect(good.env).toEqual({});
+    for (const env of [{ FOO: "1" }, { CLAUDE_CODE_OAUTH_TOKEN: "x" }, { "": "" }, { PATH: undefined }, [], null, "x"]) {
+      expect(caught(() => checkSettings({ ...good, env })).code).toBe("INTERNAL");
+    }
   });
 
   test("role_prompt_in_file_not_argv", () => {
@@ -262,8 +407,14 @@ describe("Claude Code launch plan", () => {
     expect(at(2_500_000)).toBe("2.5");
     expect(at(1_234_567)).toBe("1.234567");
     expect(at(1)).toBe("0.000001");
-    expect(at(0)).toBe("0");
-    expect(at(-40)).toBe("0");
+    // 2.1.321 drops a value <= 0 (`maxBudgetUsd>0`), which is no cap at all: a spent budget
+    // (or a remainder that is no whole number of micros) refuses the launch instead.
+    for (const spent of [0, -40, Number.NaN, 1.5, Number.POSITIVE_INFINITY, 2 ** 53]) {
+      const e = caught(() => plan("linux", {}, { planSignIn: false, remainingMoneyMicros: spent }));
+      expect(e.code).toBe("BUDGET_EXCEEDED");
+    }
+    // A plan sign-in has no backstop to set, so nothing to refuse here.
+    expect(plan("linux", {}, { planSignIn: true, remainingMoneyMicros: 0 }).argv).not.toContain("--max-budget-usd");
     // Set on every (re)start to what is left then.
     const resumed = plan("linux", { providerRef: { kind: "claudeCode", id: UUID } }, { planSignIn: false, remainingMoneyMicros: 700_000 });
     expect(resumed.argv.slice(-3)).toEqual([`--resume=${UUID}`, "--max-budget-usd", "0.7"]);
@@ -358,8 +509,11 @@ describe("Claude Code launch plan", () => {
     // The prompt tool itself never asks (it is how asking happens).
     expect(file(p, "claude.json").body).not.toContain("mcp__finisher__approve");
     const win = plan("win32", {}, {}, { permissionPath: "mcp", restricted: true });
-    expect(win.argv).toEqual(golden("win32", "Read,Edit,Write,Glob,Grep", { prompt: "mcp__finisher__approve", restricted: true }));
-    expect(win.mcpTools).toEqual(["mcp__finisher__shell", "mcp__finisher__approve"]);
+    expect(win.argv).toEqual(golden("win32", "Read,Edit,Write,Glob,Grep,Bash", { prompt: "mcp__finisher__approve", restricted: true }));
+    expect(win.mcpTools).toEqual(["mcp__finisher__approve"]);
+    const brokered = plan("win32", {}, {}, { permissionPath: "mcp", brokeredShell: true });
+    expect(brokered.mcpTools).toEqual(["mcp__finisher__shell", "mcp__finisher__approve"]);
+    expect(ask(brokered)).not.toContain("mcp__finisher__approve");
   });
 });
 
