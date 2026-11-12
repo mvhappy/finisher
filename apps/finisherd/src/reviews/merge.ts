@@ -143,8 +143,22 @@ export function mergeReview(w: ReviewWorkflow, c: Caller, req: ReviewMergeReq): 
     const decisions = w.store.decisions(item.id);
     const pending = live.filter((o) => !decisions.has(o));
     if (w.store.policy(item.projectId).requireReview && pending.length > 0) return yield* Effect.fail(undecided(item, pending.length));
-    // Accepted ones go in whatever their state: a real drop is fin-store's `DROPPED`.
+    // An accepted origin someone dropped since it was accepted would be left out silently
+    // (`DROPPED`): the reviewer accepts it again (which undrops it) or sets it pending.
     const accepted = listed.filter((o) => decisions.get(o)?.decision === "accept");
+    const acceptedDropped = accepted.filter((o) => status.get(o) === "dropped");
+    if (acceptedDropped.length > 0) {
+      return yield* Effect.fail(
+        finError("REVIEW_UNDECIDED", "transaction(s) the review accepted were dropped since", { itemId: item.id, reason: "acceptedDropped", txIds: acceptedDropped }, "Accept them again to bring them back, or set them pending, then merge."),
+      );
+    }
+    // And the mirror: a rejection someone undropped since would merge later through a plain merge.
+    const rejectedUndropped = listed.filter((o) => decisions.get(o)?.decision === "reject" && status.get(o) === "open");
+    if (rejectedUndropped.length > 0) {
+      return yield* Effect.fail(
+        finError("REVIEW_UNDECIDED", "transaction(s) the review rejected were undropped since", { itemId: item.id, reason: "rejectedUndropped", txIds: rejectedUndropped }, "Reject them again to drop them, or accept them, then merge."),
+      );
+    }
     const include = [...accepted, ...(req.acceptPending === true ? pending : [])].sort();
     // Nothing accepted while the review still lists open transactions: not a merge (S2).
     if (include.length === 0 && live.length > 0) return yield* Effect.fail(undecided(item, pending.length, "nothingAccepted"));

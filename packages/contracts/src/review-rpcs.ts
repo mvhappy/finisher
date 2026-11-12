@@ -63,6 +63,11 @@ export const ReviewViewSchema = Schema.Struct({
   plan: Schema.optional(Schema.Unknown),
   decisions: Schema.Array(DecisionSchema),
   comments: Schema.Array(CommentSchema),
+  /**
+   * `review.decide` only: the drops another principal made that its accepts cancelled (owner
+   * decision 2026-11-12, a reviewer of the target only): the origin, the drop record, its author.
+   */
+  undropped: Schema.optional(Schema.Array(Schema.Struct({ txId: Schema.String, dropTx: Schema.String, droppedBy: Schema.String }))),
 });
 export type ReviewView = Omit<typeof ReviewViewSchema.Type, "plan"> & { readonly plan?: ReviewPlan };
 

@@ -7,11 +7,12 @@
 // without the source records above the snapshot's source seq: what the item's merge could still
 // copy (`sourceUpTo`), which is what a decision may name.
 import type { FinError, ReviewItem, Snapshot } from "@finisher/contracts";
-import type { BranchView, EntryStatus, ReviewPlan } from "@finisher/core-types";
+import type { BranchView, CommittedTx, EntryStatus, ReviewPlan } from "@finisher/core-types";
 import { Effect } from "effect";
 import type { CallMeta } from "../diagnostics.ts";
 import type { HistoryOp, HistoryPayload } from "../history.ts";
 import type { ProjectRegistryShape } from "../projects.ts";
+import { attemptJson, finError } from "../errors.ts";
 
 /** Change lists kept in memory (Decision 9). */
 export const PLAN_CACHE_MAX = 64;
@@ -22,12 +23,20 @@ export interface ReviewEngine {
   /** Every branch, archived ones too. */
   readonly branches: (projectId: string) => Effect.Effect<ReadonlyArray<BranchView>, FinError>;
   readonly plan: (projectId: string, from: string, into: string) => Effect.Effect<ReviewPlan, FinError>;
+  /** A branch's own records, oldest first (an accept looks up who dropped an origin, `undrop.ts`). */
+  readonly records: (projectId: string, branch: string) => Effect.Effect<ReadonlyArray<CommittedTx>, FinError>;
   /** A write through the registry's one path (the commit lock, the hubs, the guard in `meta`). */
   readonly write: (projectId: string, op: Extract<HistoryOp, "merge" | "drop" | "branchSet">, payload: HistoryPayload, meta: CallMeta) => Effect.Effect<unknown, FinError>;
 }
 
-export function registryEngine(registry: Pick<ProjectRegistryShape, "resolveBranch" | "branches" | "history">): ReviewEngine {
+export function registryEngine(registry: Pick<ProjectRegistryShape, "resolveBranch" | "branches" | "history" | "ensure" | "engineOf">): ReviewEngine {
   return {
+    records: (projectId, branch) =>
+      Effect.andThen(registry.ensure(projectId), () => {
+        const engine = registry.engineOf(projectId);
+        if (engine === undefined) return Effect.fail(finError("PROJECT_NOT_FOUND", `project ${projectId} is not open`, { projectId }));
+        return attemptJson<ReadonlyArray<CommittedTx>>(() => engine.opsSince(branch, 0));
+      }),
     resolveBranch: registry.resolveBranch,
     branches: (projectId) => Effect.map(registry.branches(projectId, true), (r) => r.branches),
     plan: (projectId, from, into) => Effect.map(registry.history(projectId, "reviewPlan", { projectId, from, into }), (r) => r as ReviewPlan),
@@ -159,13 +168,17 @@ export class Planner {
    * snapshot list, which a later drop or undrop does not change.
    */
   statusNow(item: ReviewItem): Effect.Effect<ReadonlyMap<string, "open" | "present" | "dropped">, FinError> {
-    return Effect.map(this.now(item.projectId, item.source!, item.target!), (plan) => {
+    return Effect.flatMap(this.now(item.projectId, item.source!, item.target!), (plan) => {
+      // A cut list cannot say where the origins past it stand: never guess them not open.
+      if (plan.truncated) {
+        return Effect.fail(finError("REVIEW_STALE", "the branch has more transactions than one review plans", { itemId: item.id, reason: "truncated" }, "Merge or review the branch in smaller parts."));
+      }
       const out = new Map<string, "open" | "present" | "dropped">();
       for (const e of restrict(plan, item.snapshot!.sourceSeq).entries) {
         const s = e.status === "alreadyPresent" ? "present" : e.status === "dropped" ? "dropped" : "open";
         if (out.get(e.origin) !== "open") out.set(e.origin, s);
       }
-      return out;
+      return Effect.succeed(out);
     });
   }
 }

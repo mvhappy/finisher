@@ -20,6 +20,7 @@ import { finError, toFinError } from "../errors.ts";
 import { dropPayload } from "../history.ts";
 import { isOpenEntry, Planner, type ReviewEngine, sameSnapshot, snapshotOf } from "./plan.ts";
 import type { DecisionInput, ReviewStore } from "./store.ts";
+import { auditCancelled, othersDrops } from "./undrop.ts";
 import { NO_VERDICTS, type ReviewVerdictSink, type ReviewVerdictValue, verdictBy, verdictEntries } from "./verdicts.ts";
 
 /** fin-core's `MAX_DROP_IDS`: origins one `drop` record names, drops and undrops together. */
@@ -306,16 +307,27 @@ export class ReviewWorkflow {
       }
       const current = self.store.decisions(item.id);
       const all = [...wanted.values()];
-      // Drops as they are now, not as the snapshot's list says (review of Task 7, B1 and S1): a
-      // rejection drops what is not dropped; an accept undrops what is (whoever dropped it); a
-      // pending takes back only the review's own rejection; nothing undrops what is not dropped.
+      // Drops as they are now, not as the snapshot's list says (Task 7 review, rounds 1 and 2): a
+      // rejection always writes the review's own drop record unless the origin is on the target;
+      // a pending lifts the drop only when the review's rejection found the origin open (an
+      // undrop lifts every drop of an origin, so one someone made first would go too); an accept
+      // undrops whoever dropped it (`undropped` names those the review did not make).
       const status = all.length === 0 ? new Map<string, string>() : yield* self.planner.statusNow(item);
       const dropped = (id: string) => status.get(id) === "dropped";
-      const drops = all.filter((d) => d.decision === "reject" && status.get(d.txId) === "open").map((d) => d.txId);
-      const undrops = all.filter((d) => dropped(d.txId) && (d.decision === "accept" || (d.decision === "pending" && current.get(d.txId)?.decision === "reject"))).map((d) => d.txId);
+      const ours = (id: string) => current.get(id)?.decision === "reject" && self.#reviewDropped(item.id, id);
+      const drops = all.filter((d) => d.decision === "reject" && (status.get(d.txId) === "open" || dropped(d.txId))).map((d) => d.txId);
+      const undrops = all.filter((d) => dropped(d.txId) && (d.decision === "accept" || (d.decision === "pending" && ours(d.txId)))).map((d) => d.txId);
+      const undropped = all.filter((d) => d.decision === "accept" && dropped(d.txId) && !ours(d.txId)).map((d) => d.txId);
+      // Which rejections found the origin open (the review's drop is its only one) and which joined another's.
+      const fresh = drops.filter((id) => !dropped(id) || ours(id));
+      const joined = drops.filter((id) => !fresh.includes(id));
+      // Drops someone else made that these accepts cancel: only a reviewer of the target may (owner, 2026-11-12).
+      const cancelled = undropped.length === 0 ? [] : yield* othersDrops(self, c, item, undropped);
+      const dropDetails = { ...(fresh.length === 0 ? {} : { ownDrops: fresh }), ...(joined.length === 0 ? {} : { joinedDrops: joined }) };
       const written = yield* self.writeDrops(c, item, drops, undrops);
       const by = principalKey(c.principal);
-      if (all.length > 0) yield* sync(() => self.store.setDecisions(item.id, all, by));
+      auditCancelled(self, c, item, cancelled);
+      if (all.length > 0) yield* sync(() => self.store.setDecisions(item.id, all, by, dropDetails));
       if (req.requestChanges !== undefined) item = yield* sync(() => self.store.setState(item.id, "changesRequested", by));
       if (written.length > 0) item = yield* self.#afterOwnDrops(c, item, written);
       const batch = (v: "accept" | "reject") => all.filter((d) => d.decision === v);
@@ -328,8 +340,20 @@ export class ReviewWorkflow {
       if (accepted.length > 0) self.emit(c, item, "accepted", accepted.map((d) => d.txId), "accepted", reasonOf(accepted));
       if (rejected.length > 0) self.emit(c, item, "rejected", rejected.map((d) => d.txId), "rejected", reasonOf(rejected));
       if (req.requestChanges !== undefined) self.emit(c, item, "changesRequested", [], "none", req.requestChanges.reason);
-      return yield* self.view(self.store.get(item.id) ?? item);
+      const view = yield* self.view(self.store.get(item.id) ?? item);
+      return cancelled.length === 0 ? view : { ...view, undropped: cancelled };
     });
+  }
+
+  /** Whether the item's newest rejection of `origin` found it open, so the drop is the review's alone. */
+  #reviewDropped(itemId: string, origin: string): boolean {
+    const events = this.store.events(itemId);
+    for (let i = events.length - 1; i >= 0; i--) {
+      const d = events[i]!.details as { ownDrops?: ReadonlyArray<string>; joinedDrops?: ReadonlyArray<string> };
+      if (d.ownDrops?.includes(origin) === true) return true;
+      if (d.joinedDrops?.includes(origin) === true) return false;
+    }
+    return false;
   }
 
   /**

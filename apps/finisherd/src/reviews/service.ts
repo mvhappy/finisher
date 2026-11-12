@@ -35,7 +35,7 @@ export interface ReviewsOptions {
 }
 
 const noEngine = (): Effect.Effect<never, ReturnType<typeof finError>> => Effect.fail(finError("INTERNAL", "the reviews service has no project registry", { reason: "noEngine" }));
-const NO_ENGINE: ReviewEngine = { resolveBranch: noEngine, branches: noEngine, plan: noEngine, write: noEngine };
+const NO_ENGINE: ReviewEngine = { resolveBranch: noEngine, branches: noEngine, plan: noEngine, records: noEngine, write: noEngine };
 
 export function makeReviews(control: ControlStore, options: ReviewsOptions = {}): Reviews {
   const hub = new ReviewHub();

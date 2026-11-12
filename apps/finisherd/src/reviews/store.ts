@@ -252,8 +252,8 @@ export class ReviewStore {
     return new Map(rows.map((r) => [r.txId, { txId: r.txId, decision: r.decision, decidedBy: r.decidedBy, ...(r.reason === null ? {} : { reason: r.reason }), at: r.at }]));
   }
 
-  /** Records decisions in one transaction; `pending` deletes the mark. Later entries win. */
-  setDecisions(id: string, ds: ReadonlyArray<DecisionInput>, by: string): void {
+  /** Records decisions in one transaction; `pending` deletes the mark. Later entries win. `details` join the event (ids and counts only). */
+  setDecisions(id: string, ds: ReadonlyArray<DecisionInput>, by: string, details: object = {}): void {
     for (const d of ds) if (d.reason !== undefined) checkText("reason", d.reason, { max: REVIEW_REASON_MAX, bytes: true });
     this.#store.tx(() => {
       this.#writable(id);
@@ -273,7 +273,7 @@ export class ReviewStore {
         else rejected++;
       }
       this.#stmt("UPDATE reviews SET updatedAt = ? WHERE id = ?").run(now, id);
-      this.#event(id, "decided", by, { accepted, rejected, pending: ds.length - accepted - rejected });
+      this.#event(id, "decided", by, { accepted, rejected, pending: ds.length - accepted - rejected, ...details });
     });
     this.#changed(id);
   }

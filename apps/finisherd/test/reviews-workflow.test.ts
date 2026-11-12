@@ -165,6 +165,7 @@ describe("request, get, refresh", () => {
       resolveBranch: (_, r) => Effect.succeed(r),
       branches: () => Effect.succeed([]),
       plan: () => Effect.succeed(plan(hash)),
+      records: () => Effect.succeed([]),
       write: () => Effect.die("no writes"),
     };
     const item = {
@@ -430,6 +431,93 @@ describe("review follow-ups (Task 7 review)", () => {
   });
 });
 
+describe("drops someone else made (Task 7 review, round 2)", () => {
+  const drop = (projectId: string, txId: string, lists: object) => local.call("history.drop", { projectId, txId, author: "bob", from: "feature", into: "main", ...lists });
+
+  test("P1: pending after a rejection of something bob dropped keeps bob's drop", async () => {
+    const projectId = await project();
+    await branch(projectId, "feature", "ann", ["f1", "f2"]);
+    const item = await request(projectId, "feature");
+    ok(await drop(projectId, "bob-1", { drops: ["f1"] }));
+    const before = await head(projectId, "main");
+    const rejected = ok<ReviewView>(await decide(item, [["f1", "reject"]]));
+    // The review writes its own drop record even though f1 is dropped already.
+    expect(await head(projectId, "main")).toBe(before + 1);
+    ok(await decide(rejected.item, [["f1", "pending"]]));
+    // Pending takes back the review's drop only: bob's still holds.
+    expect((await plainMerge(projectId, "feature")).dropped).toEqual(["f1"]);
+  });
+
+  test("P2: a rejection bob undrops afterwards refuses the review merge until it is rejected again", async () => {
+    const projectId = await project();
+    await branch(projectId, "feature", "ann", ["f1", "f2"]);
+    const item = await request(projectId, "feature");
+    ok(await drop(projectId, "bob-1", { drops: ["f1"] }));
+    const decided = ok<ReviewView>(await decide(item, [["f1", "reject"], ["f2", "accept"]]));
+    ok(await drop(projectId, "bob-2", { undrops: ["f1"] }));
+    const before = await head(projectId, "main");
+    const refused = await merge(decided.item, "m1");
+    expect(code(refused)).toBe("REVIEW_UNDECIDED");
+    expect(refused.ok ? undefined : refused.error.details).toMatchObject({ reason: "rejectedUndropped", txIds: ["f1"] });
+    expect(await head(projectId, "main")).toBe(before);
+    const again = ok<ReviewView>(await decide(decided.item, [["f1", "reject"]], {}, (await get(item.id)).item.snapshot!));
+    expect(ok<{ merge: MergeReport }>(await merge(again.item, "m1")).merge.merged).toEqual(["f2"]);
+    expect(await plainMerge(projectId, "feature")).toEqual({ merged: [], dropped: ["f1"] });
+  });
+
+  test("P3: an accepted transaction dropped since refuses the merge (agent branch: nothing written, not archived)", async () => {
+    const projectId = await project();
+    const work = await branch(projectId, "feature", "agent:01jc0000000000000000000agt", ["f1"]);
+    const item = await request(projectId, work);
+    const accepted = ok<ReviewView>(await decide(item, [["f1", "accept"]]));
+    ok(await drop(projectId, "bob-1", { drops: ["f1"] }));
+    const before = await head(projectId, "main");
+    const refused = await merge(accepted.item, "m1");
+    expect(code(refused)).toBe("REVIEW_UNDECIDED");
+    expect(refused.ok ? undefined : refused.error.details).toMatchObject({ reason: "acceptedDropped", txIds: ["f1"] });
+    expect(await head(projectId, "main")).toBe(before);
+    expect((await get(item.id)).item.state).toBe("open");
+    expect((await branches(projectId)).find((b) => b.id === work)?.state).not.toBe("archived");
+  });
+
+  test("P6: accepted f1 dropped elsewhere, f2 rejected: refused, the item stays open", async () => {
+    const projectId = await project();
+    await branch(projectId, "feature", "ann", ["f1", "f2"]);
+    const item = await request(projectId, "feature");
+    const decided = ok<ReviewView>(await decide(item, [["f1", "accept"], ["f2", "reject"]]));
+    ok(await drop(projectId, "bob-1", { drops: ["f1"] }));
+    const refused = await merge(decided.item, "m1");
+    expect(refused.ok ? undefined : refused.error.details).toMatchObject({ reason: "acceptedDropped", txIds: ["f1"] });
+    expect((await get(item.id)).item.state).toBe("open");
+    // Accepting it again undrops it (and says so); the merge then copies it.
+    const fresh = (await get(item.id)).item;
+    const back = ok<ReviewView>(await decide(fresh, [["f1", "accept"]]));
+    expect(back.undropped).toEqual([{ txId: "f1", dropTx: "bob-1", droppedBy: "bob" }]);
+    expect(ok<{ merge: MergeReport }>(await merge(back.item, "m1")).merge.merged).toEqual(["f1"]);
+  });
+
+  test("P4: an accept that lifts someone else's drop says so in `undropped`; lifting the review's own does not", async () => {
+    const projectId = await project();
+    await branch(projectId, "feature", "ann", ["f1", "f2"]);
+    const item = await request(projectId, "feature");
+    ok(await drop(projectId, "bob-1", { drops: ["f1"] }));
+    // The cached list (planned before bob's drop) still shows f1 to merge.
+    expect((await get(item.id)).plan.entries.find((e) => e.origin === "f1")?.status).toBe("willMerge");
+    const accepted = ok<ReviewView>(await decide(item, [["f1", "accept"]]));
+    // `local` holds `review.decide` on main: it may cancel bob's drop, and it is told and audited.
+    expect(accepted.undropped).toEqual([{ txId: "f1", dropTx: "bob-1", droppedBy: "bob" }]);
+    expect((await plainMerge(projectId, "feature")).dropped).toEqual([]);
+    const audit = await call<{ entries: Array<{ kind: string; principal: string; details: Record<string, unknown> }> }>("auth.audit.list", { kind: "history.drop" }, await connect("console"));
+    const row = audit.entries.find((e) => e.details.dropTx !== undefined);
+    expect(row?.details).toMatchObject({ item: item.id, txId: "f1", dropTx: "bob-1", droppedBy: "other", count: 1 });
+    expect(JSON.stringify(row)).toContain("local");
+    const fresh = (await get(item.id)).item;
+    const own = ok<ReviewView>(await decide(fresh, [["f2", "reject"]]));
+    const backAgain = ok<ReviewView>(await decide(own.item, [["f2", "accept"]]));
+    expect(backAgain.undropped).toBeUndefined();
+  });
+});
+
 describe("the workflow on a fake engine", () => {
   const snapshot = { sourceSeq: 4, sourceHash: "h1", targetSeq: 2, targetHash: "t", plannedAt: 0 };
   const entry = (origin: string, seq: number) => ({ origin, txId: origin, branch: "s", seq, kind: "edit" as const, author: "a", opsCount: 1, committedAt: 0, status: "willMerge" as const });
@@ -443,6 +531,7 @@ describe("the workflow on a fake engine", () => {
       resolveBranch: (_, r) => Effect.succeed(r),
       branches: () => Effect.succeed([]),
       plan: () => Effect.succeed(plan),
+      records: () => Effect.succeed([]),
       write: (_, op) => {
         writes.push(op);
         return Effect.succeed({ rev: 3, tx: { txId: "d", branch: "main" }, bindings: {} });
@@ -458,14 +547,56 @@ describe("the workflow on a fake engine", () => {
     return { w, item, writes, caller: callerOf(LOCAL, { actor: { kind: "user" }, guard: { denyBranches: [] } }, "pipe") };
   }
 
-  test("S3: after a cold cache and a source rewound below the snapshot's seq, acceptPending is REVIEW_STALE", async () => {
-    // The source now has another record at seq 4 (hash h2): the cut plan holds `r4`, never in the snapshot.
-    const plan: ReviewPlan = { source: { branch: "s", seq: 4, hash: "h2" }, target: { branch: "main", seq: 2, hash: "t" }, entries: [entry("f1", 3), entry("r4", 4)], conflicts: [], truncated: false };
+  for (const [name, head, entries] of [
+    // Rewound and re-resolved to the same seq with another record (hash h2): `r4` was never in the snapshot.
+    ["to the snapshot's seq with another hash", { seq: 4, hash: "h2" }, [entry("f1", 3), entry("r4", 4)]],
+    // Rewound below the snapshot's seq: `r3` replaced the snapshot's seq-3 record.
+    ["below the snapshot's seq", { seq: 3, hash: "h3" }, [entry("r3", 3)]],
+  ] as const) {
+    test(`S3: after a cold cache and a source rewound ${name}, acceptPending is REVIEW_STALE`, async () => {
+      const plan: ReviewPlan = { source: { branch: "s", ...head }, target: { branch: "main", seq: 2, hash: "t" }, entries: [...entries], conflicts: [], truncated: false };
+      const { w, item, writes, caller } = setup(plan);
+      const exit = await Effect.runPromiseExit(mergeReview(w, caller, { itemId: item.id, expect: snapshot, acceptPending: true, idemKey: "m1" }));
+      expect(JSON.stringify(exit)).toContain("REVIEW_STALE");
+      expect(JSON.stringify(exit)).toContain("replan");
+      expect(writes).toEqual([]);
+    });
+  }
+
+  test("a truncated fresh plan is REVIEW_STALE {reason: truncated}, never origins counted as not open", async () => {
+    const plan: ReviewPlan = { source: { branch: "s", seq: 4, hash: "h1" }, target: { branch: "main", seq: 2, hash: "t" }, entries: [entry("f1", 3)], conflicts: [], truncated: true };
     const { w, item, writes, caller } = setup(plan);
-    const exit = await Effect.runPromiseExit(mergeReview(w, caller, { itemId: item.id, expect: snapshot, acceptPending: true, idemKey: "m1" }));
-    expect(JSON.stringify(exit)).toContain("REVIEW_STALE");
-    expect(JSON.stringify(exit)).toContain("replan");
+    const runs: ReadonlyArray<Effect.Effect<unknown, unknown>> = [
+      w.decide(caller, { itemId: item.id, expect: snapshot, decisions: [{ txId: "f1", decision: "reject" }] }),
+      mergeReview(w, caller, { itemId: item.id, expect: snapshot, acceptPending: true, idemKey: "m1" }),
+    ];
+    for (const run of runs) {
+      const exit = JSON.stringify(await Effect.runPromiseExit(run));
+      expect(exit).toContain("REVIEW_STALE");
+      expect(exit).toContain("truncated");
+    }
     expect(writes).toEqual([]);
+  });
+
+  test("an accept against another's drop by a principal whose reach leaves out the target is CONFLICT {droppedByOther}; nothing is written", async () => {
+    const plan: ReviewPlan = { source: { branch: "s", seq: 4, hash: "h1" }, target: { branch: "main", seq: 2, hash: "t" }, entries: [{ ...entry("f1", 3), status: "dropped" }], conflicts: [], truncated: false };
+    const { w, item, writes } = setup(plan);
+    const dropRecord = { rev: 2, tx: { txId: "bob-1", author: "agent:01jc0000000000000000000bob", branch: "main" }, link: { kind: "drop", from: "s", drops: ["f1"] }, bindings: {} };
+    (w.engine as { records: ReviewEngine["records"] }).records = () => Effect.succeed([dropRecord as never]);
+    const reviewer = { ...LOCAL, kind: "agent" as const, id: "01jc0000000000000000000rev", scopes: [...LOCAL.scopes] };
+    for (const guard of [{ denyBranches: [], allowBranches: ["s"] }, { denyBranches: ["main"] }]) {
+      const caller = callerOf(reviewer, { actor: { kind: "agent" }, guard }, "pipe");
+      const exit = JSON.stringify(await Effect.runPromiseExit(w.decide(caller, { itemId: item.id, expect: snapshot, decisions: [{ txId: "f1", decision: "accept" }] })));
+      expect(exit).toContain("CONFLICT");
+      expect(exit).toContain("droppedByOther");
+      expect(exit).toContain("agent:01jc0000000000000000000bob");
+    }
+    // Without the scope too, whatever the reach.
+    const unscoped = callerOf({ ...reviewer, scopes: reviewer.scopes.filter((x) => x !== "review.decide") }, { actor: { kind: "agent" }, guard: { denyBranches: [] } }, "pipe");
+    expect(JSON.stringify(await Effect.runPromiseExit(w.decide(unscoped, { itemId: item.id, expect: snapshot, decisions: [{ txId: "f1", decision: "accept" }] })))).toContain("droppedByOther");
+    expect(writes).toEqual([]);
+    expect(w.store.decisions(item.id).size).toBe(0);
+    expect(w.store.get(item.id)?.state).toBe("open");
   });
 
   test("N6: the drop is durable before the item changes", async () => {
