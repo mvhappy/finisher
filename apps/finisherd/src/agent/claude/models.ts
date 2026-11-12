@@ -5,8 +5,9 @@
 // - every real instance's signed-in `initialize` list replaces it (`recordInstanceModels`, which
 //   Task 7's session calls after its `initialize`), because an account may offer other models.
 // Instance lists live in memory only: after a restart the probe file seeds the cache again and
-// the next instance replaces it. The planner reads `models()` (the newest list for the probed
-// version); a model the account lacks fails that session's first turn with the CLI's own error.
+// the next instance replaces it. The planner reads `models(version, accountHash)` (that account's
+// list, or the version's newest while the account is unknown); a model the account lacks fails
+// that session's first turn with the CLI's own error.
 import type { ProviderInfo } from "@finisher/contracts";
 import type { CliModel } from "../catalogue/cli-models.ts";
 import type { Pricing } from "../runtime-deps.ts";
@@ -31,21 +32,41 @@ export class ClaudeModelCache {
   }
 
   /**
-   * The models to plan against: the newest instance list of the probed version, else the probe's
-   * unsigned list, else the newest instance list of any version; empty when nothing is known yet.
+   * The models to plan against for `version` and the signed-in account `accountHash`: that
+   * account's own instance list; else, only when the account is not known, the newest instance
+   * list of the version (another account's list never answers for a known one); else the
+   * probe's unsigned list for exactly that version; else empty (nothing discovered yet).
    */
-  async models(): Promise<readonly CliModel[]> {
+  async models(version: string, accountHash?: string): Promise<readonly CliModel[]> {
+    const exact = accountHash === undefined ? undefined : this.#instances.get(`${version}\0${accountHash}`);
+    if (exact !== undefined) return exact.models;
+    if (accountHash === undefined) {
+      const newest = [...this.#instances.values()].filter((i) => i.version === version).at(-1);
+      if (newest !== undefined) return newest.models;
+    }
     const hash = probeFlagsHash(this.#os);
-    const seed = (await readProbeCache(this.#serverData)).filter((e) => e.flagsHash === hash && e.os === this.#os).at(-1);
-    const instances = [...this.#instances.values()];
-    const recorded = seed === undefined ? instances.at(-1) : instances.filter((i) => i.version === seed.version).at(-1);
-    return recorded?.models ?? seed?.result.models ?? [];
+    const seed = (await readProbeCache(this.#serverData)).filter((e) => e.version === version && e.flagsHash === hash && e.os === this.#os).at(-1);
+    return seed?.result.models ?? [];
   }
 }
 
-/** Whether `model` is one the CLI offers: a discovered `value` (`default`, an alias) or a `resolvedModel`. `default` always is. */
+/**
+ * Whether `model` is one the CLI offers: a discovered `value` (`default`, an alias) or a
+ * `resolvedModel`. `default` always is. Before anything is discovered any non-empty id passes:
+ * the CLI's own first-turn error is mapped to `MODEL_UNKNOWN` (Decision 11).
+ */
 export const claudeModelOffered = (models: readonly CliModel[], model: string): boolean =>
-  model === "default" || models.some((m) => m.id === model || m.resolvedModel === model);
+  model !== "" && (models.length === 0 || model === "default" || models.some((m) => m.id === model || m.resolvedModel === model));
+
+/** What planning knows of Claude Code: `undefined` when it is not usable here, else its models or the version it is too old at. */
+export type ClaudeAccess = { readonly models: readonly CliModel[] } | { readonly tooOld: { readonly version?: string; readonly floor: string } } | undefined;
+
+/** Planning's view of `info`: absent unless detected and enabled; too old below the floor; else the models for its version and account. */
+export async function claudeAccess(info: Pick<ProviderInfo, "detected" | "enabled" | "supported" | "version" | "floor" | "accountHash">, cache: ClaudeModelCache): Promise<ClaudeAccess> {
+  if (!claudeHarnessAvailable(info)) return undefined;
+  if (info.supported === false) return { tooOld: { ...(info.version === undefined ? {} : { version: info.version }), floor: info.floor ?? "" } };
+  return { models: info.version === undefined ? [] : await cache.models(info.version, info.accountHash) };
+}
 
 /** Sessions may start on Claude Code only when it is found and turned on (`agents.claudeCode.enabled`). */
 export const claudeHarnessAvailable = (info: Pick<ProviderInfo, "detected" | "enabled">): boolean => info.detected && info.enabled === true;

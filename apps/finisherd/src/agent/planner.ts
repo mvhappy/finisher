@@ -24,9 +24,8 @@
 import type { Harness, Mode, Principal, Session, Weights } from "@finisher/contracts";
 import { finError } from "../errors.ts";
 import type { Catalogue } from "./catalogue/catalogue.ts";
-import type { CliModel } from "./catalogue/cli-models.ts";
 import { OPENROUTER_ID } from "./catalogue/prices.ts";
-import { claudeModelOffered } from "./claude/models.ts";
+import { type ClaudeAccess, claudeModelOffered } from "./claude/models.ts";
 import { budgetFor, MODE_RANK, type Role, roleModel, roleUnknown } from "./roles.ts";
 import { harnessUnknown, type SessionPlan, type SessionPlanner, type StartRequest } from "./runtime-deps.ts";
 import type { LocalEndpoint } from "./settings.ts";
@@ -46,8 +45,9 @@ export interface PlannerDeps {
   /**
    * Claude Code's discovered models (`claude/models.ts`), or `undefined` when the harness is not
    * usable here (not installed, or `agents.claudeCode.enabled` off): then `HARNESS_UNKNOWN`.
+   * Below the floor: `PROVIDER_VERSION`.
    */
-  readonly claudeModels?: () => Promise<readonly CliModel[] | undefined>;
+  readonly claude?: () => Promise<ClaudeAccess>;
 }
 
 const LOCAL_ID = /^[^\s\u0000-\u001f/\\][^\s\u0000-\u001f]{0,199}$/;
@@ -114,8 +114,13 @@ function childRole(roles: ReadonlyMap<string, Role>, parent: Session, name: stri
 
 /** Claude Code's model: a discovered `value` (`default`, an alias) or a `resolvedModel`; its weights are closed. */
 async function claudeModel(deps: PlannerDeps, model: string | undefined): Promise<{ model: string; weights: Weights }> {
-  const models = await deps.claudeModels?.();
-  if (models === undefined) harnessUnknown("claudeCode");
+  const access = await deps.claude?.();
+  if (access === undefined) harnessUnknown("claudeCode");
+  if ("tooOld" in access) {
+    const { version, floor } = access.tooOld;
+    throw finError("PROVIDER_VERSION", `Claude Code${version === undefined ? "" : ` ${version}`} is older than ${floor}, the oldest this Finisher supports`, { harness: "claudeCode", ...(version === undefined ? {} : { version }), floor }, `update Claude Code to ${floor} or later`);
+  }
+  const { models } = access;
   if (model === undefined || !claudeModelOffered(models, model)) {
     throw finError(
       "MODEL_UNKNOWN",
