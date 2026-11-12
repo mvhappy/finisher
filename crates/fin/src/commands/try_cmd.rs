@@ -165,8 +165,7 @@ fn start(backend: &dyn Backend, g: &Globals, name: Option<&str>) -> Result<Value
     if adopt(g, &r) {
         let id = branch_id(&view)?;
         let parent = view["parent"].as_str().unwrap_or("main");
-        config::record_try(&sd, &project_id, id, parent)?;
-        config::set_default_branch(&sd, &project_id, Some(id))?;
+        config::start_try(&sd, &project_id, id, parent)?;
     }
     let mut doc = record_doc(&r["record"], dry);
     doc["branch"] = view;
@@ -192,9 +191,10 @@ fn finish(backend: &dyn Backend, g: &Globals, keep: bool) -> Result<Value, CoreE
     };
     let Ok(view) = find(&views, &current) else {
         // A stale default (the branch is gone): `drop` is the way out of it.
+        // Cleared only while it is still the default: another fin may have selected a
+        // branch meanwhile (review #50).
         if from_config && !keep && !g.dry_run {
-            config::set_default_branch(&sd, &project_id, None)?;
-            config::forget_try(&sd, &project_id, &current)?;
+            config::end_try(&sd, &project_id, &current, &current, None)?;
             return Ok(json!({ "cleared": current, "switchedTo": "main" }));
         }
         return Err(if from_config {
@@ -229,12 +229,10 @@ fn finish(backend: &dyn Backend, g: &Globals, keep: bool) -> Result<Value, CoreE
         doc
     };
     if !g.dry_run {
-        // Back to where the try started, unless the default was moved off it meanwhile.
-        if config::default_branch(&sd, &project_id)?.as_deref() == Some(id.as_str()) {
-            let back = (parent != "main").then_some(parent.as_str());
-            config::set_default_branch(&sd, &project_id, back)?;
-        }
-        config::forget_try(&sd, &project_id, &id)?;
+        // Back to where the try started, unless the default was moved off it meanwhile: one
+        // compare-and-set under the file's lock with forgetting the try (review #50).
+        let back = (parent != "main").then_some(parent.as_str());
+        config::end_try(&sd, &project_id, &id, &id, back)?;
     }
     doc["switchedTo"] = json!(parent);
     Ok(doc)
@@ -325,3 +323,7 @@ fn branch_id(view: &Value) -> Result<&str, CoreError> {
         .with_fix("report this as a bug in finisherd")),
     }
 }
+
+#[cfg(test)]
+#[path = "try_cmd_tests.rs"]
+mod tests;
