@@ -241,6 +241,7 @@ export class Runtime extends RuntimeEngine {
             ...(req.base === undefined || child !== undefined ? {} : { base: req.base }),
             ...(req.title === undefined ? {} : { title: req.title }),
             ...(trigger === undefined ? {} : { trigger }),
+            ...(plan.tools === undefined ? {} : { tools: plan.tools }),
           },
           by,
         ),

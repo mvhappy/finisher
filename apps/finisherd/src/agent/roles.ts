@@ -18,9 +18,9 @@
 //   download without a recorded licence (`where.unlicensedDownload`), which 7G resolves; until
 //   then the condition never holds, so the rule ships inert (7B Task 2).
 // - **Tools.** `tools.allow` is the allow-set of tool names: the built-in agent's (`fin`,
-//   `workspace_*`) and the Claude Code vocabulary 7D builds `--disallowedTools` from (everything
-//   the CLI lists that is not named here is denied, spec §4.5). A name outside that vocabulary
-//   (a scope, say) is refused.
+//   `workspace_*`) and the Claude Code vocabulary 7D builds `--tools` from (the CLI enables
+//   exactly the named tools it maps, plan 7D Decision 2; a tool a newer CLI adds stays off). A
+//   name outside that vocabulary (a scope, say) is refused.
 // - **Skills** are `fin guide` topics (7G): slugs the server resolves; the prompt only names them.
 // - **Spawn.** `spawn.roles` are the roles a session of this one may start as children
 //   (Decision 17); every name must be another file in the directory (itself included).
@@ -53,7 +53,7 @@ export const MODE_RANK: Readonly<Record<Mode, number>> = { plan: 0, draft: 1, au
 /** The tool names a role may allow: the built-in agent's, and Claude Code's (spec §4.5). */
 export const KNOWN_TOOLS: ReadonlySet<string> = new Set([
   "fin", "workspace_read", "workspace_write", "workspace_list",
-  "Read", "Edit", "Write", "Grep", "Glob", "Bash", "WebFetch",
+  "Read", "Edit", "Write", "Grep", "Glob", "Bash", "WebFetch", "WebSearch",
 ]);
 
 const Slug = Schema.String.check(Schema.isPattern(/^[a-z][a-z0-9]*(-[a-z0-9]+)*$/), Schema.isMaxLength(64));

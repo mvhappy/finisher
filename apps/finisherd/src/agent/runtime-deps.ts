@@ -225,6 +225,9 @@ export function parseRef(ref: string | undefined): ProviderRef | null {
   }
 }
 
+/** `SessionSpec.tools` from the stored allow-set (agent 0010): absent when none was recorded. */
+export const toolsOf = (tools: readonly string[] | null): { readonly tools?: readonly string[] } => (tools === null ? {} : { tools });
+
 export function harnessUnknown(harness: string): never {
   throw finError("HARNESS_UNKNOWN", `no ${harness} harness on this server`, { harness }, "list them with `finisherd agent providers`");
 }
