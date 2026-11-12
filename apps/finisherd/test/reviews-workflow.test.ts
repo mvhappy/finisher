@@ -434,6 +434,79 @@ describe("review follow-ups (Task 7 review)", () => {
 describe("drops someone else made (Task 7 review, round 2)", () => {
   const drop = (projectId: string, txId: string, lists: object) => local.call("history.drop", { projectId, txId, author: "bob", from: "feature", into: "main", ...lists });
 
+  /** The review rejects f1 (its own drop), then bob drops f1 again: the newest drop is bob's (round 3, B1). */
+  async function rejectedThenBob() {
+    const projectId = await project();
+    await branch(projectId, "feature", "ann", ["f1", "f2"]);
+    const item = await request(projectId, "feature");
+    const rejected = ok<ReviewView>(await decide(item, [["f1", "reject"]]));
+    ok(await drop(projectId, "bob-later", { drops: ["f1"] }));
+    return { projectId, item: (await get(rejected.item.id)).item };
+  }
+
+  const auditRows = async () =>
+    (await call<{ entries: Array<{ details: Record<string, unknown> }> }>("auth.audit.list", { kind: "history.drop" }, await connect("console"))).entries.filter((e) => e.details.dropTx !== undefined).map((e) => e.details);
+
+  test("probe E: bob drops, the review rejects (joining it), then accepts: bob's record is named, not the review's", async () => {
+    const projectId = await project();
+    await branch(projectId, "feature", "ann", ["f1", "f2"]);
+    const item = await request(projectId, "feature");
+    ok(await drop(projectId, "bob-1", { drops: ["f1"] }));
+    const rejected = ok<ReviewView>(await decide(item, [["f1", "reject"]]));
+    const accepted = ok<ReviewView>(await decide((await get(rejected.item.id)).item, [["f1", "accept"]]));
+    expect(accepted.undropped).toEqual([{ txId: "f1", dropTx: "bob-1", droppedBy: "bob" }]);
+    expect((await auditRows()).map((d) => [d.txId, d.dropTx, d.droppedBy])).toEqual([["f1", "bob-1", "other"]]);
+    expect((await plainMerge(projectId, "feature")).dropped).toEqual([]);
+  });
+
+  test("probe A: bob drops twice: both records are listed and audited, newest first", async () => {
+    const projectId = await project();
+    await branch(projectId, "feature", "ann", ["f1"]);
+    const item = await request(projectId, "feature");
+    ok(await drop(projectId, "bob-1", { drops: ["f1"] }));
+    ok(await drop(projectId, "bob-2", { drops: ["f1"] }));
+    const accepted = ok<ReviewView>(await decide(item, [["f1", "accept"]]));
+    expect(accepted.undropped?.map((d) => d.dropTx)).toEqual(["bob-2", "bob-1"]);
+    expect((await auditRows()).map((d) => d.dropTx).sort()).toEqual(["bob-1", "bob-2"]);
+  });
+
+  test("probe F: a drop inherited from main is named on a review into a branch of main", async () => {
+    const projectId = await project();
+    await branch(projectId, "feature", "ann", ["f1", "f2"]);
+    ok(await drop(projectId, "bob-1", { drops: ["f1"] }));
+    const dev = await call<{ branch: BranchView }>("branch.create", { projectId, txId: "b-dev", author: "ann", name: "dev", from: "main" });
+    const { item } = await call<{ item: ReviewItem }>("review.request", { projectId, source: "feature", into: dev.branch.id, title: "Into dev" });
+    const accepted = ok<ReviewView>(await decide(item, [["f1", "accept"]]));
+    expect(accepted.undropped).toEqual([{ txId: "f1", dropTx: "bob-1", droppedBy: "bob" }]);
+    expect((await auditRows()).map((d) => d.dropTx)).toEqual(["bob-1"]);
+  });
+
+  test("B1r3: an accept after a later drop by bob goes through the owner's rule: listed and audited", async () => {
+    const { projectId, item } = await rejectedThenBob();
+    const accepted = ok<ReviewView>(await decide(item, [["f1", "accept"]]));
+    expect(accepted.undropped).toEqual([{ txId: "f1", dropTx: "bob-later", droppedBy: "bob" }]);
+    expect((await plainMerge(projectId, "feature")).dropped).toEqual([]);
+    const audit = await call<{ entries: Array<{ details: Record<string, unknown> }> }>("auth.audit.list", { kind: "history.drop" }, await connect("console"));
+    expect(audit.entries.some((e) => e.details.dropTx === "bob-later" && e.details.txId === "f1")).toBe(true);
+  });
+
+  test("B1r3: pending after a later drop by bob writes no undrop; f1 stays dropped", async () => {
+    const { projectId, item } = await rejectedThenBob();
+    const before = await head(projectId, "main");
+    const pending = ok<ReviewView>(await decide(item, [["f1", "pending"]]));
+    expect(pending.undropped).toBeUndefined();
+    expect(await head(projectId, "main")).toBe(before);
+    expect(await plainMerge(projectId, "feature")).toEqual({ merged: ["f2"], dropped: ["f1"] });
+  });
+
+  test("B1r3: reject again after bob's drop, then pending: the review joined bob's drop, so f1 stays dropped", async () => {
+    const { projectId, item } = await rejectedThenBob();
+    const again = ok<ReviewView>(await decide(item, [["f1", "reject"]]));
+    const pending = ok<ReviewView>(await decide(again.item, [["f1", "pending"]]));
+    expect(pending.undropped).toBeUndefined();
+    expect(await plainMerge(projectId, "feature")).toEqual({ merged: ["f2"], dropped: ["f1"] });
+  });
+
   test("P1: pending after a rejection of something bob dropped keeps bob's drop", async () => {
     const projectId = await project();
     await branch(projectId, "feature", "ann", ["f1", "f2"]);
@@ -576,6 +649,18 @@ describe("the workflow on a fake engine", () => {
       expect(exit).toContain("truncated");
     }
     expect(writes).toEqual([]);
+  });
+
+  test("N2: a dropped origin with no drop record to name is REVIEW_STALE {dropUnknown}; nothing is written", async () => {
+    const plan: ReviewPlan = { source: { branch: "s", seq: 4, hash: "h1" }, target: { branch: "main", seq: 2, hash: "t" }, entries: [{ ...entry("f1", 3), status: "dropped" }], conflicts: [], truncated: false };
+    const { w, item, writes, caller } = setup(plan);
+    for (const decision of ["accept", "pending"] as const) {
+      const exit = JSON.stringify(await Effect.runPromiseExit(w.decide(caller, { itemId: item.id, expect: snapshot, decisions: [{ txId: "f1", decision }] })));
+      expect(exit).toContain("REVIEW_STALE");
+      expect(exit).toContain("dropUnknown");
+    }
+    expect(writes).toEqual([]);
+    expect(w.store.decisions(item.id).size).toBe(0);
   });
 
   test("an accept against another's drop by a principal whose reach leaves out the target is CONFLICT {droppedByOther}; nothing is written", async () => {

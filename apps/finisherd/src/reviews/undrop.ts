@@ -24,29 +24,56 @@ const AUTHOR_WORD = /^(agent|mcp|device|plugin|local|console):[0-9A-Za-z]{1,64}$
 /** The audit's form of a txId: a key of word characters, else `other`. */
 const TX_WORD = /^[0-9A-Za-z._:-]{1,128}$/;
 
+/** The drop records on the target's lineage, per origin (`dropIndex`). */
+export interface DropIndex {
+  /** The newest drop record naming `origin` since its newest undrop; none when it is not dropped. */
+  newest(origin: string): CancelledDrop | undefined;
+  /** Every drop record naming `origin` since its newest undrop, newest first. */
+  since(origin: string): ReadonlyArray<CancelledDrop>;
+}
+
+export const NO_DROPS: DropIndex = { newest: () => undefined, since: () => [] };
+
 /**
- * The newest `drop` record on the target's lineage that names `origin` (its own records, then
- * each ancestor's up to the fork), when it drops it.
+ * Reads the target's lineage once (`opsSince(target, 0)` answers every ancestor's records up to
+ * each fork, then the target's own) and indexes its drop records per origin.
  */
-function dropOf(w: ReviewWorkflow, item: ReviewItem, origin: string): Effect.Effect<CancelledDrop | undefined, FinError> {
-  return Effect.gen(function* () {
-    const branches = yield* w.engine.branches(item.projectId);
-    let branch: string | undefined = item.target!;
-    let upTo = Number.POSITIVE_INFINITY;
-    while (branch !== undefined) {
-      const records: ReadonlyArray<CommittedTx> = yield* w.engine.records(item.projectId, branch);
-      for (let i = records.length - 1; i >= 0; i--) {
-        const r = records[i]!;
-        if (r.rev > upTo || r.link?.kind !== "drop") continue;
-        if (r.link.drops?.includes(origin) === true) return { txId: origin, dropTx: r.tx.txId, droppedBy: r.tx.author };
-        if (r.link.undrops?.includes(origin) === true) return undefined;
+export function dropIndex(w: ReviewWorkflow, item: ReviewItem): Effect.Effect<DropIndex, FinError> {
+  return Effect.map(w.engine.records(item.projectId, item.target!), (records) => {
+    const drops = records.filter((r) => r.link?.kind === "drop");
+    const since = (origin: string): ReadonlyArray<CancelledDrop> => {
+      const out: CancelledDrop[] = [];
+      for (let i = drops.length - 1; i >= 0; i--) {
+        const r = drops[i]!;
+        const link = r.link as { drops?: ReadonlyArray<string>; undrops?: ReadonlyArray<string> };
+        if (link.undrops?.includes(origin) === true) break;
+        if (link.drops?.includes(origin) === true) out.push({ txId: origin, dropTx: r.tx.txId, droppedBy: r.tx.author });
       }
-      const view = branches.find((b) => b.id === branch);
-      branch = view?.parent ?? undefined;
-      upTo = view?.forkSeq ?? 0;
-    }
-    return undefined;
+      return out;
+    };
+    return { since, newest: (origin) => since(origin)[0] };
   });
+}
+
+/** The txIds of the drop records the review itself wrote (`dropTxs` in its `decided` events). */
+export function reviewDrops(w: ReviewWorkflow, itemId: string): ReadonlySet<string> {
+  const out = new Set<string>();
+  for (const e of w.store.events(itemId)) for (const tx of (e.details as { dropTxs?: ReadonlyArray<string> }).dropTxs ?? []) out.add(tx);
+  return out;
+}
+
+/** The drops holding `origin` now that the review did not make, newest first. */
+export function othersOf(index: DropIndex, own: ReadonlySet<string>, origin: string): ReadonlyArray<CancelledDrop> {
+  return index.since(origin).filter((d) => !own.has(d.dropTx));
+}
+
+/**
+ * Whether the drop that holds `origin` now is the review's alone: since the origin's newest
+ * undrop, every drop record naming it is one the review wrote (round 4: a drop the review joined,
+ * or one made after it, names its own author).
+ */
+export function isReviewsOwn(index: DropIndex, own: ReadonlySet<string>, origin: string): boolean {
+  return index.newest(origin) !== undefined && othersOf(index, own, origin).length === 0;
 }
 
 /** Whether `c` holds `review.decide` on the item's target: the scope and the target in its branch reach. */
@@ -58,24 +85,33 @@ export function decidesOnTarget(c: Caller, item: ReviewItem): boolean {
   return scopes.includes("review.decide") && g !== undefined && (g.allowBranches === undefined || g.allowBranches.includes(target)) && !(g.denyBranches ?? []).includes(target);
 }
 
+/** `REVIEW_STALE {reason: dropUnknown}`: the plan says dropped, yet no drop record names the origin. */
+export const dropUnknown = (item: ReviewItem, origin: string): FinError =>
+  finError("REVIEW_STALE", "no drop record holds a transaction the review lists as dropped", { itemId: item.id, reason: "dropUnknown", txId: origin }, "Refresh the review and decide again.");
+
 /**
- * The drops of `origins` (dropped now, not by the review) that accepting them cancels; refused
- * with `CONFLICT {reason: droppedByOther}` unless the caller decides on the target.
+ * The drops of `origins` (dropped now, not the review's alone) that accepting them cancels: every
+ * drop record since the origin's newest undrop that the review did not write, newest first, each
+ * its own entry. Refused with `CONFLICT {reason: droppedByOther}` (naming the newest of them)
+ * unless the caller decides on the target; `REVIEW_STALE {reason: dropUnknown}` when none is found.
  */
-export function othersDrops(w: ReviewWorkflow, c: Caller, item: ReviewItem, origins: ReadonlyArray<string>): Effect.Effect<ReadonlyArray<CancelledDrop>, FinError> {
-  return Effect.forEach(origins, (origin) =>
-    Effect.flatMap(dropOf(w, item, origin), (found) => {
-      const drop = found ?? { txId: origin, dropTx: "", droppedBy: "" };
-      if (decidesOnTarget(c, item)) return Effect.succeed(drop);
+export function othersDrops(c: Caller, item: ReviewItem, index: DropIndex, own: ReadonlySet<string>, origins: ReadonlyArray<string>): Effect.Effect<ReadonlyArray<CancelledDrop>, FinError> {
+  return Effect.map(
+    Effect.forEach(origins, (origin) => {
+      const others = othersOf(index, own, origin);
+      const newest = others[0];
+      if (newest === undefined) return Effect.fail(dropUnknown(item, origin));
+      if (decidesOnTarget(c, item)) return Effect.succeed(others);
       return Effect.fail(
         finError(
           "CONFLICT",
           "the transaction was dropped by someone else, and only a reviewer of the target branch may bring it back",
-          { itemId: item.id, reason: "droppedByOther", txId: origin, droppedBy: drop.droppedBy, dropTx: drop.dropTx },
+          { itemId: item.id, reason: "droppedByOther", txId: origin, droppedBy: newest.droppedBy, dropTx: newest.dropTx },
           "Ask a reviewer of the target branch to accept it, or leave it pending.",
         ),
       );
     }),
+    (lists) => lists.flat(),
   );
 }
 
