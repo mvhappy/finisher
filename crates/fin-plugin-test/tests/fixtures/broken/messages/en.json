@@ -2,5 +2,10 @@
   "commands.sneaky": "Read the project without project:read",
   "commands.slow": "Take longer than the timeout",
   "commands.crash": "Exit in the middle of a command",
-  "commands.leaky": "Log a path and a cookie"
+  "commands.leaky": "Log a path and a cookie",
+  "commands.badTx": "Propose a transaction fin-core refuses",
+  "commands.readonlyTx": "Return a transaction from a read-only command",
+  "commands.farFetch": "Fetch an origin the manifest does not name",
+  "commands.oddCalls": "Call methods host API 1.1 lacks, with bad params",
+  "commands.noReady": "Skip ready after the job"
 }

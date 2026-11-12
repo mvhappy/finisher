@@ -67,7 +67,27 @@ pub fn child_env(tmp: &Path) -> Vec<(OsString, OsString)> {
 /// Node's permission flags for a `node` plugin (`node-runtime.ts`'s `nodeArgs`): read its
 /// package, read (and write, when granted) `pluginData`, read and write its temp; no child
 /// processes, addons, workers or WASI.
-pub fn node_args(plugin_dir: &Path, main: &Path, dirs: &RunDirs) -> Vec<OsString> {
+pub fn node_args(
+    plugin_dir: &Path,
+    main: &Path,
+    dirs: &RunDirs,
+) -> Result<Vec<OsString>, HarnessError> {
+    // Node expands `*` in a flag's path and warns on `,` (`node-runtime.ts`'s `flagPath`).
+    let mut paths = vec![plugin_dir, main, dirs.tmp.as_path()];
+    if let Some((d, _)) = &dirs.data {
+        paths.push(d);
+    }
+    if paths
+        .iter()
+        .any(|p| p.to_string_lossy().contains(['*', ',']))
+    {
+        return Err(HarnessError::new(
+            "PLUGIN_RUNTIME_UNAVAILABLE",
+            "a plugin path holds a character Node's permission flags cannot take",
+        )
+        .with("runtime", "node")
+        .with("reason", "pathCharacter"));
+    }
     let flag = |name: &str, p: &Path| {
         let mut s = OsString::from(format!("--allow-fs-{name}="));
         s.push(p);
@@ -83,7 +103,17 @@ pub fn node_args(plugin_dir: &Path, main: &Path, dirs: &RunDirs) -> Vec<OsString
     args.push(flag("read", &dirs.tmp));
     args.push(flag("write", &dirs.tmp));
     args.push(main.into());
-    args
+    Ok(args)
+}
+
+/// What became of a message to the process.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Sent {
+    Ok,
+    /// The process no longer reads.
+    Gone,
+    /// Over the envelope's 1 MiB line: not sent.
+    TooLarge,
 }
 
 /// What the process sent, or how its output ended.
@@ -117,7 +147,7 @@ impl PluginProcess {
     ) -> Result<PluginProcess, HarnessError> {
         let (program, mut args): (&Path, Vec<OsString>) = match &plugin.program {
             Program::Native { exe } => (exe, Vec::new()),
-            Program::Node { node, main } => (node, node_args(&plugin.dir, main, dirs)),
+            Program::Node { node, main } => (node, node_args(&plugin.dir, main, dirs)?),
         };
         if warm {
             args.push(WARM_ARG.into());
@@ -156,14 +186,20 @@ impl PluginProcess {
         })
     }
 
-    /// Sends `msg`; `false` when the process no longer reads (it exited).
-    pub fn send(&mut self, msg: &HostMsg) -> bool {
+    /// Sends `msg`: [`Sent::Gone`] when the process no longer reads (it exited),
+    /// [`Sent::TooLarge`] (nothing sent, `seq` unchanged) when it does not fit one line.
+    pub fn send(&mut self, msg: &HostMsg) -> Sent {
+        let Ok(line) = codec::encode(self.seq + 1, msg) else {
+            return Sent::TooLarge;
+        };
         self.seq += 1;
         let Some(stdin) = self.stdin.as_mut() else {
-            return false;
+            return Sent::Gone;
         };
-        let line = codec::encode(self.seq, msg).expect("host messages encode");
-        stdin.write_all(&line).and_then(|()| stdin.flush()).is_ok()
+        match stdin.write_all(&line).and_then(|()| stdin.flush()) {
+            Ok(()) => Sent::Ok,
+            Err(_) => Sent::Gone,
+        }
     }
 
     /// The next event other than `alive` before `deadline`; `None` when none came. After

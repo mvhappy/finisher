@@ -130,8 +130,11 @@ impl Calls {
             .collect()
     }
 
-    pub fn answer(&mut self, method: &str, params: &Value) -> Answer {
-        let Some(m) = HostMethod::from_name(method) else {
+    pub fn answer(&mut self, raw_method: &str, params: &Value) -> Answer {
+        // Plugin text echoed in a reply is clipped, so the reply always fits one line.
+        let method = clip(raw_method);
+        let method = method.as_str();
+        let Some(m) = HostMethod::from_name(raw_method) else {
             let e = match reserved_method(method) {
                 Some(batch) => err(
                     "INVALID_REQUEST",
@@ -153,6 +156,7 @@ impl Calls {
         let params = match decode_params(m, params) {
             Ok(p) => p,
             Err(error) => {
+                let error = clip(&error);
                 let e = err(
                     "PLUGIN_PROTOCOL",
                     format!("the {method} call's params do not decode: {error}"),
@@ -261,7 +265,7 @@ impl Calls {
     }
 
     fn fetch(&mut self, p: NetFetch) -> Answer {
-        if let Some(name) = p.grant {
+        if let Some(name) = p.grant.as_deref().map(clip) {
             return Answer::refused(err(
                 "SECRET_MISSING",
                 format!(
@@ -281,18 +285,13 @@ impl Calls {
             Err(e) => return Answer::refused(e),
         };
         if !self.origins().contains(&target.origin.as_str()) {
+            let origin = clip(&target.origin);
             let e = err(
                 "EGRESS_DENIED",
-                format!(
-                    "{} is not an origin this plugin was approved to reach",
-                    target.origin
-                ),
-                json!({ "origin": target.origin }),
+                format!("{origin} is not an origin this plugin was approved to reach"),
+                json!({ "origin": origin }),
             );
-            let why = format!(
-                "fetched {}, an origin its net permission does not name",
-                target.origin
-            );
+            let why = format!("fetched {origin}, an origin its net permission does not name");
             return Answer::violation(e, "permission", why);
         }
         let body = match body_b64.map(|b| B64.decode(b)).transpose() {
@@ -316,6 +315,12 @@ impl Calls {
             .ok()
             .and_then(|m| m.as_str().map(String::from))
             .unwrap_or_default();
+        if let Some(refused) = headers
+            .iter()
+            .find_map(|h| header_problem(&h.name, &h.value))
+        {
+            return Answer::refused(refused);
+        }
         let headers: Vec<(String, String)> =
             headers.into_iter().map(|h| (h.name, h.value)).collect();
         let Some(api) = &self.api else {
@@ -376,6 +381,67 @@ impl Calls {
     }
 }
 
+/// At most 128 characters of plugin-controlled `s`, an ellipsis marking a cut.
+pub fn clip(s: &str) -> String {
+    const MAX: usize = 128;
+    if s.chars().count() <= MAX {
+        return s.to_owned();
+    }
+    let mut out: String = s.chars().take(MAX).collect();
+    out.push('…');
+    out
+}
+
+/// Headers the broker owns or that are hop-by-hop (`egress.ts`'s `REFUSED_HEADERS`).
+const REFUSED_HEADERS: &[&str] = &[
+    "host",
+    "connection",
+    "content-length",
+    "transfer-encoding",
+    "te",
+    "trailer",
+    "upgrade",
+    "keep-alive",
+    "expect",
+    "proxy-authorization",
+    "proxy-connection",
+    "http2-settings",
+];
+
+/// Why the broker refuses a request header (`egress.ts`): a name that is not an RFC 9110
+/// token, a hop-by-hop or broker-owned name, a value with CR, LF or NUL.
+fn header_problem(name: &str, value: &str) -> Option<JobError> {
+    let lower = name.to_ascii_lowercase();
+    let token = !lower.is_empty()
+        && lower
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"!#$%&'*+.^_`|~-".contains(&b));
+    let refused = |extra: Value| {
+        Some(err(
+            "INVALID_REQUEST",
+            "net.fetch refused the request (header)",
+            json!({ "method": "net.fetch", "reason": "header" })
+                .as_object()
+                .map(|m| {
+                    let mut m = m.clone();
+                    if let Value::Object(e) = extra {
+                        m.extend(e);
+                    }
+                    Value::Object(m)
+                })
+                .unwrap_or(Value::Null),
+        ))
+    };
+    if !token || REFUSED_HEADERS.contains(&lower.as_str()) || lower.starts_with("proxy-") {
+        let shown: String = lower.chars().take(64).collect();
+        return refused(json!({ "name": shown }));
+    }
+    if value.contains(['\r', '\n', '\0']) {
+        return refused(json!({ "name": clip(&lower), "problem": "value" }));
+    }
+    None
+}
+
 /// `lines` cut to whole lines so that their JSON encoding stays within [`VIEW_BYTES`].
 fn cap_view(lines: &[String]) -> String {
     let mut out: Vec<String> = Vec::new();
@@ -407,14 +473,14 @@ pub fn parse_https(url: &str) -> Result<Target, JobError> {
     let invalid = |reason: &str| {
         err(
             "INVALID_REQUEST",
-            format!("net.fetch: {url:?} is not a URL the broker takes ({reason})"),
+            format!("net.fetch refused the request ({reason})"),
             json!({ "method": "net.fetch", "reason": reason }),
         )
     };
     let Some((scheme, rest)) = url.split_once("://") else {
         return Err(invalid("url"));
     };
-    let scheme = scheme.to_ascii_lowercase();
+    let scheme = clip(&scheme.to_ascii_lowercase());
     if scheme != "https" {
         return Err(err(
             "EGRESS_NOT_HTTPS",
@@ -453,6 +519,28 @@ pub fn parse_https(url: &str) -> Result<Target, JobError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn echoed_text_is_clipped_and_headers_refused() {
+        let long = "m".repeat(5000);
+        let mut calls = Calls::new(Vec::new(), Snapshot::builtin(), None);
+        let a = calls.answer(&long, &json!({}));
+        let e = a.reply.unwrap_err();
+        assert!(e.message.len() < 400 && e.details["method"].as_str().unwrap().ends_with('…'));
+        for (name, value) in [
+            ("Host", "x"),
+            ("bad name", "x"),
+            ("proxy-x", "x"),
+            ("x-ok", "a\r\nb"),
+        ] {
+            assert_eq!(
+                header_problem(name, value).unwrap().details["reason"],
+                "header",
+                "{name}"
+            );
+        }
+        assert!(header_problem("Accept", "text/html").is_none());
+    }
 
     #[test]
     fn urls_and_origins() {

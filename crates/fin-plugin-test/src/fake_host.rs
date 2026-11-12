@@ -18,7 +18,7 @@ use serde_json::{Value, json};
 
 use crate::calls::{Calls, PAGE_BYTES};
 use crate::plugin::Plugin;
-use crate::process::{Event, PluginProcess, RunDirs};
+use crate::process::{Event, PluginProcess, RunDirs, Sent};
 use crate::report::{CallRecord, Finding};
 use crate::{HarnessError, report};
 
@@ -57,7 +57,12 @@ pub struct JobRun {
 /// One command job to run.
 pub struct Job<'a> {
     pub command: &'a str,
+    /// The command's schema: the host checks `args` with it before anything is sent.
+    pub schema: &'a CompiledArgs,
     pub args: Value,
+    /// When the job was submitted, if before now: the process it runs on was started for it
+    /// (the real host counts a command's timeout from the submit, the process start included).
+    pub submitted: Option<Instant>,
     pub timeout: Duration,
     /// `warm`, `cold` or `cancel` (in the records).
     pub phase: &'static str,
@@ -72,6 +77,8 @@ pub struct FakeHost<'a> {
     pub records: Vec<CallRecord>,
     /// Calls that should not have been made, as findings.
     pub violations: Vec<Finding>,
+    /// Every `start` sent: (command, args).
+    pub sent: Vec<(String, Value)>,
     next_job: u64,
 }
 
@@ -87,6 +94,7 @@ impl<'a> FakeHost<'a> {
             calls,
             records: Vec::new(),
             violations: Vec::new(),
+            sent: Vec::new(),
             next_job: 0,
         }
     }
@@ -159,7 +167,8 @@ impl<'a> FakeHost<'a> {
             Some(format!(
                 "hello does not name {COMMAND_KIND} v{COMMAND_KIND_VERSION}"
             ))
-        } else if h.warm != p.warm {
+        } else if p.warm && !h.warm {
+            // A cold process's `warm` is not read (`jobs/attempt.ts`).
             Some(format!(
                 "hello says warm: {} for a process started warm: {}",
                 h.warm, p.warm
@@ -226,21 +235,65 @@ impl<'a> FakeHost<'a> {
         });
     }
 
-    fn record(&mut self, job: &Job<'_>, method: &str, code: Option<String>, held: bool) {
+    fn record(&mut self, job: &Job<'_>, method: &str, code: Option<String>, after_cancel: bool) {
         self.records.push(CallRecord {
             command: job.command.into(),
             phase: job.phase,
             method: method.into(),
             code,
-            held,
+            after_cancel,
         });
+    }
+
+    /// Answers a call; a reply over one envelope line is answered `INTERNAL` instead (the
+    /// host's `CallRouter#reply`).
+    fn answer(
+        &mut self,
+        p: &mut PluginProcess,
+        job: &Job<'_>,
+        call: u64,
+        method: &str,
+        params: &Value,
+        after_cancel: bool,
+    ) {
+        let answer = self.calls.answer(method, params);
+        let code = answer.reply.as_ref().err().map(|e| e.code.clone());
+        self.record(job, method, code, after_cancel);
+        if let (Some((check, message)), Err(e)) = (&answer.violation, &answer.reply) {
+            self.violations.push(report::Finding {
+                check,
+                code: e.code.clone(),
+                command: Some(job.command.into()),
+                phase: Some(job.phase),
+                message: message.clone(),
+                details: e.details.clone(),
+            });
+        }
+        let (value, error) = match answer.reply {
+            Ok(v) => (Some(v), None),
+            Err(e) => (None, Some(e)),
+        };
+        let reply = HostMsg::Reply {
+            id: call,
+            value,
+            error,
+        };
+        if p.send(&reply) == Sent::TooLarge {
+            let e = JobError::new("INTERNAL", "the reply does not fit one envelope line")
+                .with_details(json!({ "reason": "replyTooLarge" }));
+            p.send(&HostMsg::Reply {
+                id: call,
+                value: None,
+                error: Some(e),
+            });
+        }
     }
 
     /// Runs one job on `p` to its end.
     pub fn run(&mut self, p: &mut PluginProcess, job: &Job<'_>) -> JobRun {
         self.next_job += 1;
         let id = format!("j{}", self.next_job);
-        let start = Instant::now();
+        let start = job.submitted.unwrap_or_else(Instant::now);
         let done = |ended: Ended, cancelled: Option<Instant>| {
             let now = Instant::now();
             JobRun {
@@ -250,14 +303,28 @@ impl<'a> FakeHost<'a> {
                 cancel_ignored: false,
             }
         };
+        // Arguments outside the schema never reach the plugin.
+        if let Err(e) = Self::check_args(job.schema, &job.args) {
+            return done(Ended::Error(e), None);
+        }
         self.calls.start_job(job.command, job.phase);
         let msg = self.start_msg(&id, job);
-        if !p.send(&msg) {
-            let code = p.wait_exit(Duration::from_secs(1)).and_then(|s| s.code());
-            return done(Ended::Crashed(code), None);
+        match p.send(&msg) {
+            Sent::Ok => self.sent.push((job.command.into(), job.args.clone())),
+            Sent::Gone => {
+                let code = p.wait_exit(Duration::from_secs(1)).and_then(|s| s.code());
+                return done(Ended::Crashed(code), None);
+            }
+            Sent::TooLarge => {
+                let e = JobError::new(
+                    "PLUGIN_COMMAND_ARGS",
+                    "the job does not fit one envelope line",
+                );
+                return done(Ended::Error(e), None);
+            }
         }
         let deadline = start + job.timeout;
-        let mut cancel_due = job.cancel.then(|| start + CANCEL_AFTER);
+        let mut cancel_due = job.cancel.then(|| Instant::now() + CANCEL_AFTER);
         let mut cancelled: Option<Instant> = None;
         let mut timed_out = false;
         let result = loop {
@@ -289,38 +356,15 @@ impl<'a> FakeHost<'a> {
                     method,
                     params,
                 })) => {
-                    if cancelled.is_some() || cancel_due.is_some() {
-                        // The host holds a call made after (or racing) its cancel.
-                        self.record(job, &method, None, true);
-                        if cancelled.is_none() {
-                            Self::cancel(p, &id);
-                            cancelled = Some(now);
-                            cancel_due = None;
-                        }
-                        continue;
+                    if cancelled.is_none() && cancel_due.is_some() {
+                        // A cancel run: cancelled at its first call, which is still answered
+                        // (the host answers calls whatever the job's state; an SDK drops it).
+                        Self::cancel(p, &id);
+                        cancelled = Some(now);
+                        cancel_due = None;
                     }
-                    let answer = self.calls.answer(&method, &params);
-                    let code = answer.reply.as_ref().err().map(|e| e.code.clone());
-                    self.record(job, &method, code, false);
-                    if let (Some((check, message)), Err(e)) = (&answer.violation, &answer.reply) {
-                        self.violations.push(report::Finding {
-                            check,
-                            code: e.code.clone(),
-                            command: Some(job.command.into()),
-                            phase: Some(job.phase),
-                            message: message.clone(),
-                            details: e.details.clone(),
-                        });
-                    }
-                    let (value, error) = match answer.reply {
-                        Ok(v) => (Some(v), None),
-                        Err(e) => (None, Some(e)),
-                    };
-                    p.send(&HostMsg::Reply {
-                        id: call,
-                        value,
-                        error,
-                    });
+                    let after = cancelled.is_some();
+                    self.answer(p, job, call, &method, &params, after);
                 }
                 Some(Event::Msg(WorkerMsg::Result { job: j, value })) if j == id => {
                     break Ended::Result(value);

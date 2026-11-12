@@ -96,9 +96,10 @@ fn assert_passes(r: &Report) {
     for m in ["project.snapshot", "net.fetch", "net.read", "log"] {
         assert!(methods.contains(&m), "{m} in {methods:?}");
     }
+    // The call a cancel lands on is still answered (the SDK drops the reply).
     assert!(
-        r.calls.iter().any(|c| c.held),
-        "the cancelled calls are held"
+        r.calls.iter().any(|c| c.after_cancel),
+        "a call after the cancel"
     );
 }
 
@@ -210,6 +211,76 @@ fn broken_plugin_fails_with_its_findings() {
             .iter()
             .any(|c| c.command == "leaky" && c.method == "net.fetch" && c.code.is_none())
     );
+    // A transaction fin-core refuses, and one from a read-only command.
+    let tx_invalid = |cmd: &str| {
+        f.iter().find(|x| {
+            x.code == "PLUGIN_TX_INVALID"
+                && x.command.as_deref() == Some(cmd)
+                && x.phase == Some("warm")
+        })
+    };
+    assert_eq!(
+        tx_invalid("bad-tx").map(|x| x.check),
+        Some("ops"),
+        "{shown}"
+    );
+    assert!(tx_invalid("bad-tx").unwrap().details["problems"].is_array());
+    assert_eq!(
+        tx_invalid("readonly-tx").unwrap().details,
+        json!({ "reason": "readOnlyCommand" })
+    );
+    // An origin the manifest does not name.
+    assert!(
+        has(
+            f,
+            "permission",
+            "EGRESS_DENIED",
+            Some("far-fetch"),
+            Some("warm")
+        ),
+        "{shown}"
+    );
+    // A later batch's method, an unknown one, and params that do not decode.
+    let odd: Vec<_> = f
+        .iter()
+        .filter(|x| x.command.as_deref() == Some("odd-calls") && x.phase == Some("warm"))
+        .map(|x| {
+            (
+                x.check,
+                x.code.as_str(),
+                x.details
+                    .get("availableFrom")
+                    .or(x.details.get("reason"))
+                    .cloned(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        odd,
+        [
+            ("protocol", "INVALID_REQUEST", Some(json!("8C"))),
+            ("protocol", "INVALID_REQUEST", Some(json!("unknownMethod"))),
+            ("protocol", "PLUGIN_PROTOCOL", None),
+        ],
+        "{shown}"
+    );
+    // No `ready` after a job in a warm process.
+    let ready = f
+        .iter()
+        .find(|x| x.command.as_deref() == Some("no-ready") && x.phase == Some("warm"))
+        .unwrap();
+    assert_eq!(
+        (ready.check, ready.code.as_str(), &ready.details),
+        ("protocol", "PLUGIN_PROTOCOL", &json!({ "reason": "ready" }))
+    );
+    // The secret written to stderr.
+    assert!(
+        f.iter()
+            .any(|x| x.code == "LOG_LEAK" && x.details["stream"] == "stderr"),
+        "{shown}"
+    );
+    // Every job sent carried arguments inside its schema.
+    assert!(!f.iter().any(|x| x.code == "ARGS_DELIVERED"));
     // Nothing that failed warm runs cold (`leaky` answered: its leaks are the logs').
     let cold: Vec<_> = r
         .commands

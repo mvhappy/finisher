@@ -3,7 +3,12 @@
 // - `sneaky` reads the project without declaring `project:read`;
 // - `slow` answers after 5 s, past its 1 s timeout;
 // - `crash` exits in the middle of the command;
-// - `leaky` logs the cookie the fake API set and a path.
+// - `leaky` logs the cookie the fake API set and a path, and writes the cookie to stderr;
+// - `bad-tx` proposes an op fin-core refuses; `readonly-tx` returns a transaction from a
+//   command that does not say `writes`;
+// - `far-fetch` fetches an origin the manifest does not name;
+// - `odd-calls` calls a later batch's method, an unknown one, and `log` with bad params;
+// - `no-ready` leaves out `ready` after its job in a warm process.
 import { createInterface } from "node:readline";
 
 const warm = process.argv.at(-1) === "--warm";
@@ -21,10 +26,11 @@ const call = (method, params) =>
 
 const data = (value) => ({ value: { kind: "data", value } });
 
-function end(job, fields) {
+function end(job, fields, ready = true) {
   if (fields.error !== undefined) send("error", { job: job.id, error: fields.error });
   else send("result", { job: job.id, value: fields.value });
-  if (warm) send("ready", {});
+  if (warm && ready) send("ready", {});
+  else if (warm) return;
   else send("alive", {}, () => process.exit(0));
 }
 
@@ -44,8 +50,25 @@ async function run(job) {
       const cookie = head.value?.headers?.find((h) => h.name === "set-cookie")?.value ?? "";
       await call("log", { level: "info", msg: `the session is ${cookie}` });
       await call("log", { level: "warn", msg: "saved to /home/someone/notes/plugin.txt" });
+      process.stderr.write(`debug: ${cookie}\n`);
       return end(job, data({}));
     }
+    case "bad-tx":
+      return end(job, { value: { kind: "tx", ops: [{ op: "item.delete", item: "no-such-item", mode: "lift" }] } });
+    case "readonly-tx":
+      return end(job, { value: { kind: "tx", ops: [{ op: "item.delete", item: "adj1", mode: "lift" }] } });
+    case "far-fetch": {
+      const r = await call("net.fetch", { request: { method: "GET", url: "https://elsewhere.example.com/" } });
+      return end(job, data({ refused: r.error?.code ?? null }));
+    }
+    case "odd-calls": {
+      await call("media.pcm", {});
+      await call("no.such.method", {});
+      await call("log", { level: "loud", msg: "x" });
+      return end(job, data({}));
+    }
+    case "no-ready":
+      return end(job, data({}), false);
     default:
       return end(job, { error: { code: "PLUGIN_PROTOCOL", message: `unknown command ${command}`, details: { reason: "unknownCommand", command } } });
   }

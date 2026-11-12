@@ -70,9 +70,9 @@ pub struct CallRecord {
     /// The error code it was answered with, if refused.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub code: Option<String>,
-    /// Not answered: it came after a cancel (the host holds it).
+    /// Made after the job's cancel (still answered, as the host answers it).
     #[serde(skip_serializing_if = "std::ops::Not::not")]
-    pub held: bool,
+    pub after_cancel: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]

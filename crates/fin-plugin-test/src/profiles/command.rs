@@ -16,7 +16,7 @@
 
 use std::collections::hash_map::RandomState;
 use std::hash::{BuildHasher, Hasher};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use fin_plugin_api::protocol::DEFAULT_COMMAND_TIMEOUT_S;
 use fin_plugin_api::schema_subset::CompiledArgs;
@@ -41,6 +41,7 @@ fn canary() -> String {
 
 struct Cmd {
     name: String,
+    schema: CompiledArgs,
     writes: bool,
     timeout_s: u16,
     args: Option<Value>,
@@ -107,15 +108,22 @@ impl Runner<'_> {
         let Some(args) = cmd.args.clone() else {
             return true;
         };
+        // A process started for this job counts in its timeout, as the host counts from submit.
+        let mut submitted = None;
         let mut p = match self.warm.take() {
             Some(p) => p,
-            None => match self.start(true, Some(&cmd.name)) {
-                Some(p) => p,
-                None => return false,
-            },
+            None => {
+                submitted = Some(Instant::now());
+                match self.start(true, Some(&cmd.name)) {
+                    Some(p) => p,
+                    None => return false,
+                }
+            }
         };
         let job = Job {
             command: &cmd.name,
+            schema: &cmd.schema,
+            submitted,
             args,
             timeout: Duration::from_secs(cmd.timeout_s.into()),
             phase,
@@ -160,11 +168,14 @@ impl Runner<'_> {
 
     fn cold_run(&mut self, cmd: &mut Cmd) {
         let Some(args) = cmd.args.clone() else { return };
+        let submitted = Some(Instant::now());
         let Some(mut p) = self.start(false, Some(&cmd.name)) else {
             return;
         };
         let job = Job {
             command: &cmd.name,
+            schema: &cmd.schema,
+            submitted,
             args,
             timeout: Duration::from_secs(cmd.timeout_s.into()),
             phase: "cold",
@@ -283,24 +294,27 @@ pub fn run(plugin: &Plugin, snapshot: &Snapshot) -> Result<Report, HarnessError>
                 format!("{}'s args schema: {}", c.name, e.message),
             )
         })?;
+        // A host-side guarantee (the subset refuses unknown keys at every object); what the
+        // fake host actually sent is checked after the runs.
         report.outside_args_refused = FakeHost::check_args(&schema, &outside_args()).is_err();
-        if !report.outside_args_refused {
-            runner.findings.push(finding(
-                "args",
-                "ARGS_DELIVERED",
-                Some(&c.name),
-                None,
-                "arguments outside the schema would reach the plugin",
-                Value::Null,
-            ));
-        }
         let args = sample_args(&schema, c.args.as_value());
         match &args {
             Some(a) => report.args = a.clone(),
-            None => report.skipped = Some("no sample arguments pass the schema: not run".into()),
+            None => {
+                report.skipped = Some("no sample arguments pass the schema: not run".into());
+                runner.findings.push(finding(
+                    "args",
+                    "COMMAND_NOT_RUN",
+                    Some(&c.name),
+                    None,
+                    "no sample arguments made from the schema pass it, so the command was not tested",
+                    Value::Null,
+                ));
+            }
         }
         cmds.push(Cmd {
             name: c.name.clone(),
+            schema,
             writes: c.writes,
             timeout_s,
             args,
@@ -341,6 +355,21 @@ pub fn run(plugin: &Plugin, snapshot: &Snapshot) -> Result<Report, HarnessError>
                 .any(|f| f.command.as_deref() == Some(&cmd.name) && f.phase == Some("warm"));
         if passed {
             runner.cold_run(cmd);
+        }
+    }
+
+    // Every `start` the fake host sent carried arguments inside its command's schema.
+    for (command, args) in &runner.host.sent {
+        let schema = cmds.iter().find(|c| &c.name == command).map(|c| &c.schema);
+        if schema.is_none_or(|s| FakeHost::check_args(s, args).is_err()) {
+            runner.findings.push(finding(
+                "args",
+                "ARGS_DELIVERED",
+                Some(command),
+                None,
+                "a job reached the plugin with arguments outside its command's schema",
+                Value::Null,
+            ));
         }
     }
 

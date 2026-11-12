@@ -14,6 +14,33 @@ use crate::fixtures::Snapshot;
 use crate::plugin::Plugin;
 use crate::report::{Finding, RunSummary};
 
+/// Codes a plugin's `error` keeps (`plugins/host/plugin-errors.ts`'s `PLUGIN_ANSWER_CODES`).
+const PLUGIN_ANSWER_CODES: &[&str] = &[
+    "PLUGIN_COMMAND_ARGS",
+    "PLUGIN_PROTOCOL",
+    "PLUGIN_OUTPUT_INVALID",
+    "PLUGIN_COMMAND_FAILED",
+    "PLUGIN_PERMISSION_DENIED",
+    "EGRESS_DENIED",
+    "EGRESS_NOT_HTTPS",
+    "EGRESS_PRIVATE_ADDRESS",
+    "EGRESS_TOO_LARGE",
+    "EGRESS_TIMEOUT",
+    "EGRESS_RATE_LIMITED",
+    "EGRESS_UNREACHABLE",
+    "SECRET_MISSING",
+];
+
+/// A plugin's `error` as the host takes it (`pluginAnswerError`): `JOB_CANCELLED` and the
+/// codes above kept, any other code `PLUGIN_COMMAND_FAILED {cause: plugin}`.
+pub fn answer_error(e: &fin_jobs::JobError) -> fin_jobs::JobError {
+    if e.code == "JOB_CANCELLED" || PLUGIN_ANSWER_CODES.contains(&e.code.as_str()) {
+        return e.clone();
+    }
+    fin_jobs::JobError::new("PLUGIN_COMMAND_FAILED", "the plugin's job failed")
+        .with_details(json!({ "cause": "plugin", "pluginCode": crate::calls::clip(&e.code) }))
+}
+
 pub struct Judge<'a> {
     pub plugin: &'a Plugin,
     pub snapshot: &'a Snapshot,
@@ -92,6 +119,7 @@ impl Judge<'_> {
                 }
             },
             Ended::Error(e) => {
+                let e = &answer_error(e);
                 summary.code = Some(e.code.clone());
                 if phase != "cancel" {
                     find(
@@ -197,5 +225,66 @@ impl Judge<'_> {
                 json!({ "problems": [e] }),
             )),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::plugin::Program;
+
+    #[test]
+    fn a_transaction_needs_project_write_and_unknown_codes_are_command_failed() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/broken");
+        let mut manifest: fin_plugin_api::Manifest =
+            serde_json::from_slice(&std::fs::read(dir.join("finisher-plugin.json")).unwrap())
+                .unwrap();
+        manifest
+            .permissions
+            .retain(|p| !matches!(p, Permission::ProjectWrite));
+        let plugin = Plugin {
+            manifest,
+            dir: dir.clone(),
+            program: Program::Native { exe: dir },
+        };
+        let snapshot = Snapshot::builtin();
+        let judge = Judge {
+            plugin: &plugin,
+            snapshot: &snapshot,
+        };
+        let tx = json!({ "kind": "tx", "ops": [{ "op": "item.delete", "item": "adj1", "mode": "lift" }] });
+        let run = |ended| JobRun {
+            ended,
+            ms: 1,
+            after_cancel_ms: None,
+            cancel_ignored: false,
+        };
+        let mut out = Vec::new();
+        let s = judge.run(
+            "bad-tx",
+            true,
+            10,
+            "warm",
+            &run(Ended::Result(tx)),
+            &mut out,
+        );
+        assert_eq!(s.outcome, "tx");
+        assert_eq!(
+            (out[0].check, out[0].code.as_str()),
+            ("permission", "PLUGIN_PERMISSION_DENIED")
+        );
+        assert_eq!(
+            out[0].details,
+            json!({ "perm": "project:write", "missing": "grant" })
+        );
+
+        let mut out = Vec::new();
+        let own = fin_jobs::JobError::new("MY_OWN_CODE", "no");
+        judge.run("x", false, 10, "warm", &run(Ended::Error(own)), &mut out);
+        assert_eq!(out[0].code, "PLUGIN_COMMAND_FAILED");
+        assert_eq!(
+            answer_error(&fin_jobs::JobError::cancelled()).code,
+            "JOB_CANCELLED"
+        );
     }
 }
