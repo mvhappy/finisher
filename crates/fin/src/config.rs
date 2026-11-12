@@ -28,11 +28,38 @@ fn load(sd: &Path) -> Result<Value, CoreError> {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(json!({})),
         Err(e) => return Err(unreadable(&path, e)),
     };
-    match serde_json::from_str::<Value>(&text) {
-        Ok(v) if v.is_object() => Ok(v),
-        Ok(_) => Err(unreadable(&path, "not a JSON object")),
-        Err(e) => Err(unreadable(&path, e)),
+    let doc = serde_json::from_str::<Value>(&text).map_err(|e| unreadable(&path, e))?;
+    check(&doc).map_err(|why| unreadable(&path, why))?;
+    Ok(doc)
+}
+
+/// The file's shape (review #25: a section or an entry of the wrong type is a broken file, not
+/// an absent one): an object whose `defaultBranch`, when present, maps project ids to branch
+/// references (non-empty strings) and whose `tries`, when present, maps project ids to
+/// `{<branchId>: <parentId>}` objects of non-empty strings. Other keys are left alone.
+fn check(doc: &Value) -> Result<(), String> {
+    let root = doc.as_object().ok_or("not a JSON object")?;
+    let strings = |at: &str, v: &Value| -> Result<(), String> {
+        let map = v.as_object().ok_or(format!("{at} is not an object"))?;
+        for (k, v) in map {
+            if !v.as_str().is_some_and(|s| !s.is_empty()) {
+                return Err(format!(
+                    "{at}.{k} is not a branch reference (a non-empty string)"
+                ));
+            }
+        }
+        Ok(())
+    };
+    if let Some(d) = root.get("defaultBranch") {
+        strings("defaultBranch", d)?;
     }
+    if let Some(t) = root.get("tries") {
+        let map = t.as_object().ok_or("tries is not an object")?;
+        for (project, v) in map {
+            strings(&format!("tries.{project}"), v)?;
+        }
+    }
+    Ok(())
 }
 
 fn save(sd: &Path, doc: &Value) -> Result<(), CoreError> {
@@ -168,9 +195,8 @@ pub fn try_parent(
 /// Forgets a try branch once it was kept or dropped.
 pub fn forget_try(sd: &Path, project_id: &str, branch_id: &str) -> Result<(), CoreError> {
     update(sd, |doc| {
-        if project_tries(doc, project_id).remove(branch_id).is_some()
-            && project_tries(doc, project_id).is_empty()
-        {
+        project_tries(doc, project_id).remove(branch_id);
+        if project_tries(doc, project_id).is_empty() {
             section(doc, "tries").remove(project_id);
         }
     })
@@ -201,6 +227,9 @@ mod tests {
         assert_eq!(try_parent(sd, "p1", "br3").unwrap(), None);
         forget_try(sd, "p1", "br2").unwrap();
         assert_eq!(try_parent(sd, "p1", "br2").unwrap(), None);
+        // Forgetting again (a retried `fin try drop`) leaves no empty entry behind.
+        forget_try(sd, "p1", "br2").unwrap();
+        assert!(load(sd).unwrap()["tries"].get("p1").is_none());
         assert_eq!(try_parent(sd, "p2", "br2").unwrap().as_deref(), Some("br1"));
         assert!(!sd.join("fin-config.json.lock").exists());
         let doc: Value =
@@ -242,8 +271,37 @@ mod tests {
     #[test]
     fn a_broken_file_is_an_error_not_main() {
         let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join(FILE), "{nope").unwrap();
-        assert!(default_branch(dir.path(), "p").is_err());
-        assert!(set_default_branch(dir.path(), "p", Some("b")).is_err());
+        for bad in [
+            "{nope",
+            "[]",
+            r#"{"defaultBranch":42}"#,
+            r#"{"defaultBranch":{"p":false}}"#,
+            r#"{"defaultBranch":{"p":""}}"#,
+            r#"{"defaultBranch":{"other":7}}"#,
+            r#"{"tries":[]}"#,
+            r#"{"tries":{"p":"br1"}}"#,
+            r#"{"tries":{"p":{"br1":null}}}"#,
+        ] {
+            std::fs::write(dir.path().join(FILE), bad).unwrap();
+            assert!(default_branch(dir.path(), "p").is_err(), "{bad}");
+            assert!(try_parent(dir.path(), "p", "br1").is_err(), "{bad}");
+            assert!(
+                set_default_branch(dir.path(), "p", Some("b")).is_err(),
+                "{bad}"
+            );
+            assert!(set_default_branch(dir.path(), "p", None).is_err(), "{bad}");
+            assert!(record_try(dir.path(), "p", "br1", "main").is_err(), "{bad}");
+            assert_eq!(std::fs::read_to_string(dir.path().join(FILE)).unwrap(), bad);
+        }
+    }
+
+    #[test]
+    fn absent_sections_and_entries_are_none() {
+        let dir = tempfile::tempdir().unwrap();
+        for good in ["{}", r#"{"defaultBranch":{},"tries":{}}"#, r#"{"other":1}"#] {
+            std::fs::write(dir.path().join(FILE), good).unwrap();
+            assert_eq!(default_branch(dir.path(), "p").unwrap(), None, "{good}");
+            assert_eq!(try_parent(dir.path(), "p", "br1").unwrap(), None, "{good}");
+        }
     }
 }

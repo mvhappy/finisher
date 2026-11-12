@@ -67,6 +67,10 @@ export class Engine {
     return call(this.#native.status());
   }
 
+  statusAt() {
+    return call(this.#native.statusAt());
+  }
+
   txGet(txId) {
     return call(this.#native.txGet(txId));
   }
@@ -143,9 +147,9 @@ export class Engine {
     if (typeof cb !== "function") throw new TypeError("onEvent needs a function");
     // A throw here would reach the threadsafe-function trampoline and become an
     // uncaughtException; it is reported as a process warning instead.
-    this.#native.onEvent((json) => {
+    this.#native.onEvent((json, seq) => {
       try {
-        cb(json);
+        cb(json, seq);
       } catch (e) {
         const err = e instanceof Error ? e : new Error(String(e));
         process.emitWarning(`an Engine.onEvent callback threw: ${err.message}`, {

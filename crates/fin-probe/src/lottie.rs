@@ -1,5 +1,5 @@
 //! dotLottie templates (`.lottie`, a zip): `manifest.json` names the animations; the first
-//! one, `animations/<id>.json`, gives the canvas (`w`, `h`), the rate (`fr`), the frames
+//! one gives the canvas (`w`, `h`), the rate (`fr`), the frames
 //! (`ip`..`op`), the slots (`slots`, by value kind) and the fonts (`fonts.list`). Malformed
 //! JSON, slots or `chars` (glyph shapes thorvg crashes on, arch §27.10) are
 //! `UNSUPPORTED_CONTAINER` with `details.reason`.
@@ -64,10 +64,28 @@ fn member<R: Read + Seek>(
     Ok(bytes)
 }
 
+/// The archive directory of animations by manifest `version`: dotLottie 1 (`"1"`, `"1.0"`, or
+/// no version, as early writers left it out) keeps them in `animations/`, dotLottie 2
+/// (<https://dotlottie.io/spec/2.0/>, `"2"`) in `a/`. Its themes, state machines and other
+/// members are not read. Any other version is refused rather than guessed at.
+fn animation_dir(manifest: &Value) -> Result<&'static str, String> {
+    match manifest.get("version") {
+        None => Ok("animations"),
+        Some(Value::String(v)) => match v.as_str() {
+            "1" | "1.0" => Ok("animations"),
+            "2" | "2.0" => Ok("a"),
+            other => Err(format!(
+                "unsupported dotLottie version {other:?} (versions 1 and 2 are read)"
+            )),
+        },
+        Some(other) => Err(format!(
+            "unsupported dotLottie version {other} (versions 1 and 2 are read)"
+        )),
+    }
+}
+
 /// The first animation's id: a plain file name (no separators, not `.`/`..`).
-fn first_animation(manifest: &[u8]) -> Result<String, String> {
-    let manifest: Value = serde_json::from_slice(manifest)
-        .map_err(|e| format!("malformed JSON in manifest.json: {e}"))?;
+fn first_animation(manifest: &Value) -> Result<String, String> {
     let id = manifest
         .get("animations")
         .and_then(Value::as_array)
@@ -96,6 +114,8 @@ struct Animation<'a> {
     ip: Option<&'a RawValue>,
     #[serde(borrow, default)]
     op: Option<&'a RawValue>,
+    #[serde(borrow, default)]
+    layers: Option<&'a RawValue>,
     #[serde(borrow, default)]
     slots: Option<&'a RawValue>,
     #[serde(borrow, default)]
@@ -297,14 +317,15 @@ fn check_chars(raw: Option<&RawValue>) -> Result<(), String> {
 }
 
 fn info(bytes: &[u8], name: &str) -> Result<LottieInfo, String> {
-    let object = bytes.iter().find(|b| !b.is_ascii_whitespace()) == Some(&b'{');
-    let anim: Animation<'_> = serde_json::from_slice(bytes).map_err(|e| {
-        if object {
-            format!("malformed JSON in {name}: {e}")
-        } else {
-            format!("malformed JSON in {name}: the animation is not a JSON object")
-        }
-    })?;
+    // A derived `Deserialize` also reads a JSON array positionally, so an array such as
+    // `[64,36,30,0,30,null,…]` would pass for an animation: require the object first.
+    if bytes.iter().find(|b| !b.is_ascii_whitespace()) != Some(&b'{') {
+        return Err(format!(
+            "malformed JSON in {name}: the animation is not a JSON object"
+        ));
+    }
+    let anim: Animation<'_> =
+        serde_json::from_slice(bytes).map_err(|e| format!("malformed JSON in {name}: {e}"))?;
     let (width, height) = (dim(anim.w, "w")?, dim(anim.h, "h")?);
     let rate = rate(number(anim.fr, "fr")?).ok_or("animation fr must be between 0 and 1000")?;
     let (ip, op) = (number(anim.ip, "ip")?, number(anim.op, "op")?);
@@ -312,6 +333,12 @@ fn info(bytes: &[u8], name: &str) -> Result<LottieInfo, String> {
         .filter(|n| n.is_positive())
         .and_then(|n| n.checked_div(rate).ok())
         .ok_or("animation op must be after ip")?;
+    let layers = anim
+        .layers
+        .is_some_and(|l| l.get().trim_start().starts_with('['));
+    if !layers {
+        return Err("animation layers must be an array (a Lottie animation has `layers`)".into());
+    }
     check_chars(anim.chars)?;
     Ok(LottieInfo {
         width,
@@ -331,9 +358,18 @@ pub(crate) fn probe<R: Read + Seek>(
     let parsed = (|| {
         let mut archive =
             zip::ZipArchive::new(file).map_err(|e| format!("not a dotLottie archive: {e}"))?;
-        let manifest = member(&mut archive, size, "manifest.json", MANIFEST_LIMIT)?;
-        let id = first_animation(&manifest)?;
-        let name = format!("animations/{id}.json");
+        let bytes = member(&mut archive, size, "manifest.json", MANIFEST_LIMIT)?;
+        // The manifest's text and tree are dropped before the (up to 32 MiB) animation is read.
+        let name = {
+            let manifest: Value = serde_json::from_slice(&bytes)
+                .map_err(|e| format!("malformed JSON in manifest.json: {e}"))?;
+            format!(
+                "{}/{}.json",
+                animation_dir(&manifest)?,
+                first_animation(&manifest)?
+            )
+        };
+        drop(bytes);
         let anim = member(&mut archive, size, &name, ANIMATION_LIMIT)?;
         info(&anim, &name)
     })();

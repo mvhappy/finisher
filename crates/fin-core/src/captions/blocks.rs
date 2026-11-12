@@ -1,6 +1,7 @@
 //! Words → caption blocks by a style's splitting rule (spec §5.5: the rule is part of the
 //! style).
 
+use crate::error::CoreError;
 use crate::model::{CaptionStyle, Word};
 use crate::time::Rational;
 
@@ -26,9 +27,10 @@ fn chars(w: &Word) -> u32 {
 ///   and a block at most `maxLines` lines. A word longer than a line gets a line of its own
 ///   (measurement reports the overflow).
 ///
-/// A block ends at its last word's end. Exact rational arithmetic; arithmetic overflow ends
-/// the block where it stands.
-pub fn blocks(words: &[Word], style: &CaptionStyle) -> Vec<BlockDraft> {
+/// A block ends at its last word's end. Exact rational arithmetic; overflow while deciding a
+/// split ends the block where it stands, but a block whose times cannot be made relative to its
+/// start is `TIME_OVERFLOW` (never silently dropped: the caller's import is atomic).
+pub fn blocks(words: &[Word], style: &CaptionStyle) -> Result<Vec<BlockDraft>, CoreError> {
     let mut out: Vec<Vec<&Word>> = Vec::new();
     let (mut lines, mut line) = (0u32, 0u32);
     let mut prev: Option<&Word> = None;
@@ -67,20 +69,23 @@ pub fn blocks(words: &[Word], style: &CaptionStyle) -> Vec<BlockDraft> {
         prev = Some(w);
     }
     out.into_iter()
-        .filter_map(|block| {
-            let start = block.first()?.start;
-            let end = block.last()?.end;
+        .map(|block| {
+            let (Some(first), Some(last)) = (block.first(), block.last()) else {
+                return Ok(None);
+            };
+            let (start, end) = (first.start, last.end);
             let words = block
                 .into_iter()
                 .map(|w| {
-                    Some(Word {
+                    Ok(Word {
                         text: w.text.clone(),
-                        start: w.start.checked_sub(start).ok()?,
-                        end: w.end.checked_sub(start).ok()?,
+                        start: w.start.checked_sub(start)?,
+                        end: w.end.checked_sub(start)?,
                     })
                 })
-                .collect::<Option<Vec<Word>>>()?;
-            Some(BlockDraft { start, end, words })
+                .collect::<Result<Vec<Word>, CoreError>>()?;
+            Ok(Some(BlockDraft { start, end, words }))
         })
+        .filter_map(Result::transpose)
         .collect()
 }

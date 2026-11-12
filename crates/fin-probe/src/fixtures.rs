@@ -265,7 +265,7 @@ pub fn sample_lottie() -> serde_json::Value {
 /// its members stored or deflated.
 pub fn write_dotlottie(path: &Path, animation: &serde_json::Value, deflated: bool) {
     let manifest = serde_json::json!({
-        "version": "2", "generator": "fin-probe fixtures", "animations": [{ "id": "main" }],
+        "version": "1.0", "generator": "fin-probe fixtures", "animations": [{ "id": "main" }],
     });
     let members = [
         ("manifest.json", manifest.to_string()),

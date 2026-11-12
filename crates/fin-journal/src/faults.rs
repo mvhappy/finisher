@@ -12,6 +12,13 @@ pub(crate) struct Faults;
 
 #[cfg(not(feature = "test-hooks"))]
 impl Faults {
+    /// No faults: the same constructor the `test-hooks` type has, so callers do not name `default()`
+    /// (clippy rejects `Default::default()` on a unit struct).
+    #[inline]
+    pub(crate) fn new() -> Self {
+        Self
+    }
+
     #[inline]
     pub(crate) fn before_write(&self) -> std::io::Result<()> {
         Ok(())
@@ -81,6 +88,11 @@ mod hooks {
     }
 
     impl Faults {
+        /// No faults set.
+        pub fn new() -> Self {
+            Self::default()
+        }
+
         /// Every file write first sleeps `by` (a slow disk); zero turns it off.
         pub fn stall_writes(&self, by: Duration) {
             self.stall_ms.store(by.as_millis() as u64, Ordering::SeqCst);

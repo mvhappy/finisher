@@ -256,15 +256,16 @@ fn remove_stale_temps(dir: &Path) {
 fn pre_migration_ts(name: &str) -> Option<&str> {
     let rest = name.strip_prefix("pre-migrate-")?.strip_suffix(".fdb")?;
     let mut parts = rest.splitn(3, '-');
-    let digits = |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit());
+    // Bytes, not `str` slices: a multi-byte character may straddle a field boundary.
+    let digits = |s: &[u8]| !s.is_empty() && s.iter().all(u8::is_ascii_digit);
     let (from, to, ts) = (parts.next()?, parts.next()?, parts.next()?);
     let b = ts.as_bytes();
-    let ok = digits(from)
-        && digits(to)
+    let ok = digits(from.as_bytes())
+        && digits(to.as_bytes())
         && b.len() == 19
-        && digits(&ts[..8])
+        && digits(&b[..8])
         && b[8] == b'T'
-        && digits(&ts[9..18])
+        && digits(&b[9..18])
         && b[18] == b'Z';
     ok.then_some(ts)
 }
@@ -358,6 +359,9 @@ mod tests {
             "pre-migrate-0-1-20261104-101530042Z.fdb",
             "pre-migrate-0-1-junk.fdb",
             "pre-migrate-a-1-20261104T101530042Z.fdb",
+            // 19 bytes with a multi-byte character across byte 8 (review #37).
+            "pre-migrate-1-2-1234567\u{e9}123456789Z.fdb",
+            "pre-migrate-1-2-12345678T12345678\u{e9}.fdb",
         ] {
             assert_eq!(pre_migration_ts(name), None, "{name}");
         }

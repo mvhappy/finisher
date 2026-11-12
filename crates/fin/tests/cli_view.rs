@@ -24,11 +24,25 @@ fn project() -> Value {
 }
 
 fn view(args: &[&str]) -> Value {
+    view_of(&project(), args)
+}
+
+/// `fin view` of `p`; checks that `responseTokens` is `ceil(chars / 4)` of what was printed
+/// (the document and its newline) and `lineTokens` that of the lines (review #43).
+fn view_of(p: &Value, args: &[&str]) -> Value {
     let mut all = vec!["view"];
     all.extend_from_slice(args);
-    let r = offline(&project(), &all);
+    let r = offline(p, &all);
     assert_eq!(r.code, 0, "{}", r.stdout);
+    let printed = (r.stdout.chars().count() as u64).div_ceil(4);
+    assert_eq!(r.json["responseTokens"], printed, "{}", r.stdout);
+    assert_eq!(r.json["lineTokens"], estimate(&r.json), "{}", r.stdout);
+    assert!(r.json.get("tokens").is_none());
     r.json
+}
+
+fn response(v: &Value) -> u64 {
+    v["responseTokens"].as_u64().unwrap()
 }
 
 fn lines(v: &Value) -> Vec<String> {
@@ -79,7 +93,6 @@ fn view_full_matches_golden() {
     assert_eq!(v["rev"], 12);
     assert_eq!(v["timeline"], Value::Null, "every timeline");
     assert_eq!(v["elided"], json!([]));
-    assert_eq!(v["tokens"], estimate(&v));
     let l = lines(&v);
     assert!(l[0].starts_with("== tl1 \"Main\" 1080x1920 30fps 00:10.0"));
     assert!(
@@ -103,7 +116,6 @@ fn view_detail_lists_keyframe_ids_and_times() {
     let plain = view(&[]);
     let v = view(&["--detail"]);
     assert_eq!(v["resolved"], json!({ "detail": true }));
-    assert_eq!(v["tokens"], estimate(&v));
     let c3 = "00:07.5–00:10.0  V1  c3 clip a1 [10.0s+2.5s] rot 90";
     for (a, b) in lines(&plain).iter().zip(lines(&v).iter()) {
         if a.starts_with(c3) {
@@ -139,15 +151,25 @@ fn view_budget_degrades_in_order_and_says_so() {
     let full = view(&[]);
     let at = |b: u64| view(&["--budget", &b.to_string()]);
     // A budget the full view fits in changes nothing.
-    let roomy = at(full["tokens"].as_u64().unwrap());
+    let roomy = at(response(&full) + 10);
     assert_eq!(roomy["lines"], full["lines"]);
     assert_eq!(roomy["elided"], json!([]));
     let b200 = at(200);
     golden("budget_200.txt", &text(&b200));
-    assert_eq!(b200["elided"], json!([{ "step": "detail", "items": 11 }]));
+    // `items` counts the lines shown: details of the clips the merge folded are not counted.
+    assert_eq!(
+        b200["elided"],
+        json!([{ "step": "detail", "items": 6 }, { "step": "merge", "items": 9 }])
+    );
+    assert_eq!(
+        at(240)["elided"],
+        json!([{ "step": "detail", "items": 11 }])
+    );
     let order = ["detail", "text", "merge", "tail"];
-    let mut last = 0;
-    for b in [200, 150, 120, 90, 60, 30] {
+    let mut shown = usize::MAX;
+    // The smallest response: no line left, the envelope and one tail entry per timeline.
+    let floor = response(&at(0));
+    for b in [240, 200, 150, 120, 100, 90, 80, 60, 30] {
         let v = at(b);
         let s = steps(&v);
         // The steps run in the fixed order (tail may repeat, one per timeline).
@@ -156,18 +178,34 @@ fn view_budget_degrades_in_order_and_says_so() {
             .map(|x| order.iter().position(|o| o == x).unwrap())
             .collect();
         assert!(idx.windows(2).all(|w| w[0] <= w[1]), "{b}: {s:?}");
-        assert!(s.len() >= last, "more steps as the budget shrinks: {b}");
-        last = s.len();
-        assert_eq!(v["tokens"], estimate(&v), "{b}");
+        let n = lines(&v).len();
+        assert!(n <= shown, "fewer lines as the budget shrinks: {b}");
+        shown = n;
+        // Headers go last: only once no item line is left.
         let headers = lines(&v).iter().filter(|l| l.starts_with("== ")).count();
-        assert_eq!(headers, 2, "headers stay: {b}");
-        if b >= 60 {
-            assert!(v["tokens"].as_u64().unwrap() <= b, "{b}: {}", v["tokens"]);
+        assert!(headers == 2 || headers == n, "{b}: {}", text(&v));
+        if b >= floor {
+            assert!(response(&v) <= b, "{b}: {}", v["responseTokens"]);
+        } else {
+            assert_eq!(response(&v), floor, "{b}");
         }
         assert_eq!(v["resolved"]["budget"], b);
     }
+    // Below the headers, they go too, last timeline first, each marked on its tail entry.
+    let v = at(90);
+    assert_eq!(lines(&v).len(), 1, "{v}");
+    assert_eq!(v["elided"][1]["header"], true, "{v}");
+    assert_eq!(v["elided"][0].get("header"), None, "{v}");
+    let v = at(0);
+    assert!(lines(&v).is_empty());
+    assert_eq!(
+        v["elided"][1],
+        json!({ "step": "tail", "timeline": "tl2", "from": "0", "to": "2001/1000", "items": 2, "header": true })
+    );
+    let v = at(200);
     // Merging folds runs of a kind on a track; the tail cut names its range per timeline.
-    let v = at(60);
+    assert!(steps(&v).contains(&"merge".to_string()), "{v}");
+    let v = at(150);
     assert!(
         lines(&v).iter().any(|l| l.contains("c1…c3 3 clips")),
         "{}",
@@ -184,17 +222,58 @@ fn view_budget_degrades_in_order_and_says_so() {
         assert!(t["timeline"].is_string() && t["from"].is_string() && t["to"].is_string());
         assert!(t["items"].as_u64().unwrap() > 0);
     }
-    // Just past the detail step, the text step shortens long caption text, and stops there.
-    let v = at(188);
-    assert_eq!(steps(&v), ["detail", "text"]);
+    // Just past the detail step, the text step shortens long caption text, and stops there
+    // (a caption long enough for that to pay for its own `elided` entry).
+    let mut p = project();
+    let words: Vec<Value> = (0..60)
+        .map(|n| json!({ "start": "0", "end": "0", "text": format!("word{n}") }))
+        .collect();
+    for tl in p["project"]["timelines"].as_array_mut().unwrap() {
+        for t in tl["tracks"].as_array_mut().unwrap() {
+            for i in t["items"].as_array_mut().unwrap() {
+                if i["id"] == "cap3" {
+                    i["words"] = json!(words);
+                }
+            }
+        }
+    }
+    // Without `--budget` the response lacks `resolved.budget`, so this budget is just short.
+    let full = response(&view_of(&p, &[]));
+    let detail_only = view_of(&p, &["--budget", &full.to_string()]);
+    assert_eq!(steps(&detail_only), ["detail"], "{detail_only}");
+    let after_detail = response(&detail_only) - 5;
+    let v = view_of(&p, &["--budget", &after_detail.to_string()]);
+    assert_eq!(steps(&v), ["detail", "text"], "{v}");
     assert_eq!(v["elided"][1], json!({ "step": "text", "items": 1 }));
     assert!(
         lines(&v)
             .iter()
-            .any(|l| l.ends_with("cap3 \"This caption has…\" (st1)")),
+            .any(|l| l.ends_with("cap3 \"word0 word1 word2…\" (st1)")),
         "{}",
         text(&v)
     );
+}
+
+/// Review #43 (owner decision 2026-11-09): the budget caps the whole printed response, not
+/// only the lines: budget 90 on the golden project, and a label of 400 newlines (escaped
+/// twice: `\n` in the line, `\\n` in JSON) under 240.
+#[test]
+fn view_budget_covers_the_whole_response() {
+    let v = view(&["--budget", "90"]);
+    assert!(response(&v) <= 90, "{v}");
+    assert!(response(&v) > v["lineTokens"].as_u64().unwrap());
+    let mut p = project();
+    p["project"]["timelines"][0]["markers"][0]["label"] = json!("\n".repeat(400));
+    let full = view_of(&p, &[]);
+    assert!(response(&full) > 300, "{full}");
+    for b in [240, 400, 1000] {
+        let v = view_of(&p, &["--budget", &b.to_string()]);
+        assert!(response(&v) <= b, "{b}: {v}");
+    }
+    // A roomier budget keeps more.
+    let small = lines(&view_of(&p, &["--budget", "240"])).len();
+    let big = lines(&view_of(&p, &["--budget", "1000"])).len();
+    assert!(small <= big);
 }
 
 #[test]

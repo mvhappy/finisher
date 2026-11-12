@@ -479,7 +479,7 @@ export type Op =
       op: "clip.delete";
     };
 /**
- * Exact rational seconds in canonical form: "n/d" in lowest terms with d > 1, or "n" when d is 1; no leading zeros, no "+", no "-0".
+ * Exact rational seconds in canonical form: "n/d" in lowest terms with d > 1, or "n" when d is 1; no leading zeros, no "+", no "-0". The pattern checks the shape; lowest terms is checked by the parser.
  *
  * This interface was referenced by `FinCore`'s JSON-Schema
  * via the `definition` "Rational".
@@ -6969,7 +6969,7 @@ export interface MediaInfo {
   audio?: AudioTrackInfo;
   container: ContainerKind;
   /**
-   * Exact rational seconds in canonical form: "n/d" in lowest terms with d > 1, or "n" when d is 1; no leading zeros, no "+", no "-0".
+   * Exact rational seconds in canonical form: "n/d" in lowest terms with d > 1, or "n" when d is 1; no leading zeros, no "+", no "-0". The pattern checks the shape; lowest terms is checked by the parser.
    */
   duration: string;
   fragmented?: boolean;
@@ -7004,11 +7004,11 @@ export interface VideoTrackInfo {
   icc?: boolean;
   level?: number;
   /**
-   * Exact rational seconds in canonical form: "n/d" in lowest terms with d > 1, or "n" when d is 1; no leading zeros, no "+", no "-0".
+   * Exact rational seconds in canonical form: "n/d" in lowest terms with d > 1, or "n" when d is 1; no leading zeros, no "+", no "-0". The pattern checks the shape; lowest terms is checked by the parser.
    */
   nominalRate: string;
   /**
-   * Exact rational seconds in canonical form: "n/d" in lowest terms with d > 1, or "n" when d is 1; no leading zeros, no "+", no "-0".
+   * Exact rational seconds in canonical form: "n/d" in lowest terms with d > 1, or "n" when d is 1; no leading zeros, no "+", no "-0". The pattern checks the shape; lowest terms is checked by the parser.
    */
   pixelAspect: string;
   profile?: number;
@@ -7449,7 +7449,7 @@ export interface MediaInfo1 {
   audio?: AudioTrackInfo;
   container: ContainerKind;
   /**
-   * Exact rational seconds in canonical form: "n/d" in lowest terms with d > 1, or "n" when d is 1; no leading zeros, no "+", no "-0".
+   * Exact rational seconds in canonical form: "n/d" in lowest terms with d > 1, or "n" when d is 1; no leading zeros, no "+", no "-0". The pattern checks the shape; lowest terms is checked by the parser.
    */
   duration: string;
   fragmented?: boolean;

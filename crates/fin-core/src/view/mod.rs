@@ -43,6 +43,8 @@ pub struct Entry {
     pub tail: String,
     /// A transition's items.
     pub between: Option<[String; 2]>,
+    /// How many lines the `merge` step folded into this one (0: not a merged line).
+    pub folded: usize,
 }
 
 /// One timeline's lines.
@@ -111,7 +113,8 @@ pub fn range(
 }
 
 /// Every timeline's screenplay without the server's font file states (`fin view` offline):
-/// `{lines, elided, tokens}` within `budget`, limited to `range` when given.
+/// `{lines, elided, tokens}` (`tokens`: the lines' own), the whole document within `budget`,
+/// limited to `range` when given.
 pub fn screenplay(
     project: &Project,
     range_input: Option<&str>,
@@ -129,8 +132,13 @@ pub fn screenplay(
         to,
         detail: false,
     };
-    let (lines, elided, tokens) = budget::fit(sections(&timelines, filter, &marks)?, budget_tokens);
-    Ok(json!({ "lines": lines, "elided": elided, "tokens": tokens }))
+    let doc = |lines: &[String], elided: &[Value]| {
+        json!({ "lines": lines, "elided": elided, "tokens": budget::tokens(lines) })
+    };
+    // The budget covers the whole document (compact JSON and a newline), as `fin view`'s does.
+    let size = |l: &[String], e: &[Value]| doc(l, e).to_string().chars().count() as u64 + 1;
+    let (lines, elided) = budget::fit(sections(&timelines, filter, &marks)?, budget_tokens, &size);
+    Ok(doc(&lines, &elided))
 }
 
 /// A timeline's end: its latest item end.
@@ -171,6 +179,7 @@ pub fn sections(
                     words: None,
                     tail: String::new(),
                     between: None,
+                    folded: 0,
                 });
             }
         }
@@ -211,6 +220,7 @@ pub fn sections(
                     words,
                     tail,
                     between: None,
+                    folded: 0,
                 });
             }
             for tr in &t.transitions {
@@ -245,6 +255,7 @@ pub fn sections(
                     words: None,
                     tail: String::new(),
                     between: Some(tr.between.clone()),
+                    folded: 0,
                 });
             }
         }
