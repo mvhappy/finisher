@@ -90,6 +90,25 @@ describe("eval", () => {
     expect((await rejection(e.evalFrame("nope", null, "1"))).code).toBe("BRANCH_NOT_FOUND");
   });
 
+  test("a timeline removed after the caller read it is a CONFLICT, never another timeline (review #52)", async () => {
+    const e = await project();
+    const added = JSON.parse(
+      await e.commit(tx("t2", 1, [{ op: "timeline.add", id: "$t", name: "Alt", rate: "30", resolution: { width: 1280, height: 720 } }])),
+    ) as { rev: number };
+    const read = added.rev;
+    expect(JSON.parse(await e.evalFrame("main", "tl1", "1", read)).timeline).toBe("tl1");
+    await e.commit(tx("t3", read, [{ op: "timeline.remove", timeline: "tl1" }]));
+    for (const call of [() => e.evalFrame("main", "tl1", "1", read), () => e.evalAudio("main", "tl1", "0", "1", read)]) {
+      const gone = await rejection(call());
+      expect(gone.code).toBe("CONFLICT");
+      expect(gone.details).toMatchObject({ reason: "TIMELINE_GONE", timeline: "tl1", rev: read });
+      expect(gone.fix).toMatch(/again/);
+    }
+    // Read at the head (or with no rev), a missing timeline is a plain NOT_FOUND.
+    expect((await rejection(e.evalFrame("main", "tl1", "1", read + 1))).code).toBe("NOT_FOUND");
+    expect((await rejection(e.evalFrame("main", "tl1", "1"))).code).toBe("NOT_FOUND");
+  });
+
   test("evalAudio plans a range", async () => {
     const e = await project();
     const plan = JSON.parse(await e.evalAudio("main", null, "0", "10")) as AudioPlan;

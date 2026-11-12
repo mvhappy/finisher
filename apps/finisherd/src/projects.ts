@@ -90,14 +90,24 @@ export interface ProjectRegistryShape {
   /** `meta`'s guard names the caller's credential: refused once it is revoked (review of 5A Tasks 8–9, L1). */
   readonly acknowledgeRewind: (projectId: string, branch: string, generation: number, meta?: CallMeta) => Effect.Effect<boolean, FinError>;
   readonly acknowledgeSalvage: (projectId: string, copy: string, meta?: CallMeta) => Effect.Effect<boolean, FinError>;
-  /** `eval.frame`: `branch` resolved first; `timeline` absent: the main timeline. */
-  readonly evalFrame: (projectId: string, branch: string, timeline: string | undefined, at: string) => Effect.Effect<FramePlan, FinError>;
+  /**
+   * `eval.frame`: `branch` resolved first; `timeline` absent: the main timeline. `rev`: the rev
+   * the caller resolved `timeline` at (a timeline removed since is `CONFLICT`, `TIMELINE_GONE`).
+   */
+  readonly evalFrame: (
+    projectId: string,
+    branch: string,
+    timeline: string | undefined,
+    at: string,
+    rev?: number,
+  ) => Effect.Effect<FramePlan, FinError>;
   readonly evalAudio: (
     projectId: string,
     branch: string,
     timeline: string | undefined,
     from: string,
     to: string,
+    rev?: number,
   ) => Effect.Effect<AudioPlan, FinError>;
   /** `fonts.plan`: the pins to prepend to a tx of `ops` on `branch` (nothing is committed). */
   readonly fontsPlan: (projectId: string, branch: string, ops: ReadonlyArray<unknown>) => Effect.Effect<FontsPlan, FinError>;
@@ -565,13 +575,13 @@ export function makeProjectRegistry(
       openDirs: () => [...byId.values()].map((p) => p.dir).concat([...closedHere.values()]),
       indexedDirOf: (projectId) => (closed ? undefined : index.dirOf(projectId)),
       resolveBranch,
-      evalFrame: (projectId, requested, timeline, at) =>
+      evalFrame: (projectId, requested, timeline, at, rev) =>
         Effect.flatMap(resolveBranch(projectId, requested), (branch) =>
-          on<FramePlan>(projectId, (e) => e.evalFrame(branch, timeline, at)),
+          on<FramePlan>(projectId, (e) => e.evalFrame(branch, timeline, at, rev)),
         ),
-      evalAudio: (projectId, requested, timeline, from, to) =>
+      evalAudio: (projectId, requested, timeline, from, to, rev) =>
         Effect.flatMap(resolveBranch(projectId, requested), (branch) =>
-          on<AudioPlan>(projectId, (e) => e.evalAudio(branch, timeline, from, to)),
+          on<AudioPlan>(projectId, (e) => e.evalAudio(branch, timeline, from, to, rev)),
         ),
       fontsPlan: (projectId, requested, ops) =>
         Effect.flatMap(resolveBranch(projectId, requested), (branch) =>

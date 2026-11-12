@@ -90,11 +90,13 @@ pub(crate) enum Call {
     EvalFrame {
         branch: String,
         timeline: Option<String>,
+        rev: Option<f64>,
         at: String,
     },
     EvalAudio {
         branch: String,
         timeline: Option<String>,
+        rev: Option<f64>,
         from: String,
         to: String,
     },
