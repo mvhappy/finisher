@@ -111,7 +111,10 @@ export interface SessionSandboxDeps {
   readonly symlink?: LinkOptions["symlink"];
   /** The open scopes per session owner (default: one per broker). */
   readonly sessionGrants?: SessionGrants;
-  /** Where a host sandbox's empty project folder is made (default: the OS temporary directory). */
+  /**
+   * Where the server's one host project folder (`fin-host-<hash>`, `ensureHostProject`) is made
+   * (default: the OS temporary directory); each host sandbox uses `workspace/host-<ulid>/` in it.
+   */
   readonly hostRoot?: string;
 }
 

@@ -3,7 +3,7 @@
 // host sandbox (`openHostSandbox`) that starts a CLI with no session for detection and the
 // probe: no project, no credential, no sign-in store, a throwaway directory removed at close,
 // and the same mode rules as a session. `sandbox.ts` stays the only module that starts one.
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, relative, sep } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -12,7 +12,8 @@ import { sandboxStatus } from "@finisher/fin-node";
 import { Effect, Exit, Scope } from "effect";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from "vitest";
 import { assertSessionEnv, openHostSandbox, openSessionSandbox, type SandboxedChild, type SessionSandbox, type SessionSandboxDeps } from "../src/agent/sandbox.ts";
-import { CLAUDE_CODE_ENV, harnessExtra, NEVER_IN_SESSION, sessionKeys } from "../src/agent/sandbox-env.ts";
+import { assertSpawnEnv, CLAUDE_CODE_ENV, harnessExtra, NEVER_IN_SESSION, sessionKeys } from "../src/agent/sandbox-env.ts";
+import { ensureHostDirs, hostProjectDir, removeHostDirs, sweepHostSandboxes } from "../src/agent/session-dirs.ts";
 import { resolveSandboxExecPath } from "../src/sandbox/exec.ts";
 import type { SandboxStatus } from "../src/sandbox/status.ts";
 
@@ -183,18 +184,80 @@ describe("a process's own environment (SpawnOptions.env)", () => {
       });
     }
   });
+
+  test("spawn_env_values_checked", async () => {
+    const flags = ["DISABLE_AUTOUPDATER", "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC", "CLAUDE_CODE_DISABLE_AUTO_MEMORY", "CLAUDE_CODE_DISABLE_CLAUDE_MDS", "CLAUDE_CODE_DISABLE_BACKGROUND_TASKS"];
+    await within(openSessionSandbox(session("claudeCode"), "claudeCode", deps()), async (box) => {
+      const tmpDir = box.env.TMPDIR!;
+      // Plan 7D Decision 5's values, and a call id as `fin` takes it (`agent/reach.ts`).
+      const good: Record<string, string> = { CLAUDE_CODE_TMPDIR: tmpDir, ...Object.fromEntries(flags.map((k) => [k, "1"])), BASH_DEFAULT_TIMEOUT_MS: "120000", FIN_CALL: "toolu_01AbC.x:2-y" };
+      const r = await run(box, printEnv(...Object.keys(good)), good);
+      expect(r.code, r.stderr).toBe(0);
+      expect(lines(r.stdout)).toEqual(good);
+      const bad: Array<readonly [string, string]> = [
+        ["CLAUDE_CODE_TMPDIR", "/tmp"],
+        ["CLAUDE_CODE_TMPDIR", join(tmpDir, "x")],
+        ["CLAUDE_CODE_TMPDIR", `${tmpDir}/`],
+        ["CLAUDE_CODE_TMPDIR", ""],
+        ...flags.flatMap((k) => ["0", "true", "", " 1", "1\n", "01"].map((v) => [k, v] as const)),
+        ...["", "-1", "1e9", "120000ms", " 5", "5 ", "0x10", "1.5"].map((v) => ["BASH_DEFAULT_TIMEOUT_MS", v] as const),
+        ...["", "a b", "a/b", "../x", "x".repeat(129), "a\nb", "é"].map((v) => ["FIN_CALL", v] as const),
+      ];
+      for (const [k, v] of bad) {
+        expect(await refusal(box, ["/bin/true"], { ...good, [k]: v }), `${k}=${JSON.stringify(v)}`).toEqual({ code: "SANDBOX_ENV", name: k, reason: "a wrong value" });
+        // The contract itself, as an adapter calls it on a launch environment.
+        expect(() => assertSessionEnv({ ...box.env, ...good, [k]: v }, { id: SESSION_ID, harness: "claudeCode" }, { extra: CLAUDE_CODE_ENV }), `${k}=${JSON.stringify(v)}`).toThrow(/a wrong value/);
+      }
+      expect(() => assertSessionEnv({ ...box.env, ...good }, { id: SESSION_ID, harness: "claudeCode" }, { extra: CLAUDE_CODE_ENV, expect: box.env })).not.toThrow();
+      // A name in another case is the same variable on Windows: a session name, a name that
+      // never passes, or not the harness's exact name.
+      for (const [k, reason] of [
+        ["fin_session", "a session variable"],
+        ["Fin_Credential", "a session variable"],
+        ["Claude_Securestorage_Config_Dir", "a session variable"],
+        ["claude_config_dir", "a session variable"],
+        ["tmpdir", "a session variable"],
+        ["Path", "a variable outside the harness's"],
+        ["claude_code_oauth_token", "a variable that never passes"],
+        ["Ssh_Auth_Sock", "a variable that never passes"],
+        ["fin_call_idem", "a variable that never passes"],
+        ["anthropic_api_key", "a secret"],
+        ["fin_call", "a variable outside the harness's"],
+        ["disable_autoupdater", "a variable outside the harness's"],
+      ] as const) {
+        expect(await refusal(box, ["/bin/true"], { [k]: "1" }), k).toEqual({ code: "SANDBOX_ENV", name: k, reason });
+        expect(() => assertSpawnEnv({ [k]: "1" }, { id: SESSION_ID, harness: "claudeCode" }, "win32"), k).toThrow(new RegExp(reason));
+      }
+      // Empty values are refused (O4), the flags' and the call id's alike.
+      for (const k of [...flags, "FIN_CALL", "CLAUDE_CODE_TMPDIR", "BASH_DEFAULT_TIMEOUT_MS"]) {
+        expect((await refusal(box, ["/bin/true"], { [k]: "" })).reason, k).toBe("a wrong value");
+      }
+    });
+    // Any harness's call id is checked; a host sandbox's too.
+    await within(openSessionSandbox(session("fake"), "fake", deps()), async (box) => {
+      expect(await refusal(box, ["/bin/true"], { FIN_CALL: "" })).toEqual({ code: "SANDBOX_ENV", name: "FIN_CALL", reason: "a wrong value" });
+    });
+    await within(openHostSandbox("probe", "claudeCode", deps()), async (box) => {
+      expect(await refusal(box, ["/bin/true"], { CLAUDE_CODE_TMPDIR: "/tmp" })).toEqual({ code: "SANDBOX_ENV", name: "CLAUDE_CODE_TMPDIR", reason: "a wrong value" });
+      expect(await refusal(box, ["/bin/true"], { claude_securestorage_config_dir: "/x" })).toEqual({ code: "SANDBOX_ENV", name: "claude_securestorage_config_dir", reason: "a session variable" });
+      expect((await run(box, printEnv("CLAUDE_CODE_TMPDIR"), { CLAUDE_CODE_TMPDIR: box.env.TMPDIR! })).stdout.trim()).toBe(`CLAUDE_CODE_TMPDIR=${box.env.TMPDIR}`);
+    });
+  });
 });
 
-/** The host sandboxes' directories in server data, and the throwaway projects. */
-const hostDirs = (d: SessionSandboxDeps) => [
-  ...(existsSync(join(d.serverData, "agents")) ? readdirSync(join(d.serverData, "agents")).filter((n) => n.startsWith("host-")) : []),
-  ...readdirSync(d.hostRoot!),
-];
+/** The host sandboxes' directories in server data, and their workspaces in the host project folder. */
+const hostDirs = (d: SessionSandboxDeps) => {
+  const workspaces = join(hostProjectDir(d.hostRoot!, d.serverData), "workspace");
+  return [
+    ...(existsSync(join(d.serverData, "agents")) ? readdirSync(join(d.serverData, "agents")).filter((n) => n.startsWith("host-")) : []),
+    ...(existsSync(workspaces) ? readdirSync(workspaces) : []),
+  ];
+};
 
 describe("the host sandbox (detection and the probe)", () => {
   test("host_sandbox_has_no_credential_no_project_no_store", async () => {
     const d = deps();
-    await within(openHostSandbox("detect", "claudeCode", d), async (box) => {
+    await within(openHostSandbox("probe", "claudeCode", d), async (box) => {
       expect(box.mode).toBe("direct");
       expect(box.warning).toMatchObject({ code: "SANDBOX_DISABLED", details: { profile: "agent", reason: "profileNotReady" } });
       // The environment: no connection to the server, no session, no credential, no project,
@@ -218,8 +281,10 @@ describe("the host sandbox (detection and the probe)", () => {
       expect(existsSync(join(dir, "credential.json"))).toBe(false);
       expect(readdirSync(join(dir, "provider"))).toEqual([]);
       expect(existsSync(join(d.serverData, "providers"))).toBe(false);
-      // The workspace is an empty throwaway folder: in no project, outside server data.
+      // The workspace is an empty throwaway folder `workspace/<id>` of the server's one host
+      // project folder: in no project, outside server data.
       expect(readdirSync(box.workspace)).toEqual([]);
+      expect(box.workspace).toBe(join(hostProjectDir(d.hostRoot!, d.serverData), "workspace", id!));
       expect(relative(d.serverData, box.workspace).startsWith("..")).toBe(true);
       expect(box.workspace.startsWith(join(tmp, "P") + sep)).toBe(false);
       // What a process there sees, and that it cannot be handed a session name either.
@@ -312,6 +377,181 @@ describe("the host sandbox (detection and the probe)", () => {
       }),
     );
     expect(hostDirs(d)).toEqual([]);
+  });
+
+  test.skipIf(WIN)("probe_host_sandbox_never_has_store", async () => {
+    const stub = join(tmp, "launcher.sh");
+    const request = join(tmp, "request.json");
+    writeFileSync(stub, `#!/bin/sh\ncat <&3 > '${request}'\nshift 3\nexec "$@"\n`, { mode: 0o755 });
+    const d = deps({ status: ENFORCED_STUB, launcher: () => stub });
+    for (const harness of ["claudeCode", "fake", "codex"] as const) {
+      await within(openHostSandbox("probe", harness, d), async (box) => {
+        expect(box.env.CLAUDE_SECURESTORAGE_CONFIG_DIR).toBeUndefined();
+        const r = await run(box, printEnv("CLAUDE_SECURESTORAGE_CONFIG_DIR"));
+        expect(r.stdout.trim()).toBe("CLAUDE_SECURESTORAGE_CONFIG_DIR=-");
+        const req = JSON.parse(readFileSync(request, "utf8")) as { input: Record<string, unknown> };
+        expect(req.input.signInStore, harness).toBeUndefined();
+        // No link to a store in its provider directory either.
+        expect(readdirSync(join(String(req.input.sessionDir), "provider")), harness).toEqual([]);
+        const host = { id: String(req.input.sessionId), harness };
+        expect(() => assertSessionEnv(box.env, host, { host: true, expect: box.env })).not.toThrow();
+      });
+    }
+    expect(existsSync(join(d.serverData, "providers"))).toBe(false);
+  });
+
+  test.skipIf(WIN)("detect_host_sandbox_has_store_only_by_purpose", async () => {
+    const stub = join(tmp, "launcher.sh");
+    const request = join(tmp, "request.json");
+    writeFileSync(stub, `#!/bin/sh\ncat <&3 > '${request}'\nshift 3\nexec "$@"\n`, { mode: 0o755 });
+    const d = deps({ status: ENFORCED_STUB, launcher: () => stub });
+    const home = (h: string) => join(d.serverData, "providers", h, "home");
+    const store = join(home("claudeCode"), "store");
+    await within(openHostSandbox("detect", "claudeCode", d), async (box) => {
+      // Decision 22: `auth status --json` reads the CLI's own store, so detection names it; the
+      // configuration directory stays the host directory's throwaway one.
+      expect(box.env.CLAUDE_SECURESTORAGE_CONFIG_DIR).toBe(store);
+      const r = await run(box, printEnv("CLAUDE_SECURESTORAGE_CONFIG_DIR", "CLAUDE_CONFIG_DIR"));
+      const req = JSON.parse(readFileSync(request, "utf8")) as { input: Record<string, unknown> };
+      const id = String(req.input.sessionId);
+      expect(lines(r.stdout)).toEqual({ CLAUDE_SECURESTORAGE_CONFIG_DIR: store, CLAUDE_CONFIG_DIR: join(d.serverData, "agents", id, "provider") });
+      expect(req.input.signInStore).toBe(store);
+      expect(req.input.fin).toBeUndefined();
+      // The contract's store switch: with it the variable is required and must be the
+      // harness's store; without it the variable is refused.
+      const host = { id, harness: "claudeCode" as const };
+      expect(() => assertSessionEnv(box.env, host, { host: true, store: true, expect: box.env })).not.toThrow();
+      expect(() => assertSessionEnv(box.env, host, { host: true })).toThrow(/a session variable in a host sandbox/);
+      const { CLAUDE_SECURESTORAGE_CONFIG_DIR: _s, ...without } = box.env;
+      expect(() => assertSessionEnv(without, host, { host: true, store: true })).toThrow(/a missing variable/);
+      expect(() => assertSessionEnv({ ...box.env, CLAUDE_SECURESTORAGE_CONFIG_DIR: join(home("codex"), "store") }, host, { host: true, store: true })).toThrow(/not the harness's store/);
+      expect(() => assertSessionEnv({ ...box.env, CLAUDE_SECURESTORAGE_CONFIG_DIR: "/elsewhere" }, host, { host: true, store: true, expect: box.env })).toThrow(/not the harness's store/);
+      // A process still cannot name the store itself.
+      expect(await refusal(box, ["/bin/true"], { CLAUDE_SECURESTORAGE_CONFIG_DIR: store })).toEqual({ code: "SANDBOX_ENV", name: "CLAUDE_SECURESTORAGE_CONFIG_DIR", reason: "a session variable" });
+    });
+    // A link-store harness: the link in the host directory's provider folder, the store granted.
+    await within(openHostSandbox("detect", "fake", d), async (box) => {
+      expect((await run(box, ["/bin/true"])).code).toBe(0);
+      const req = JSON.parse(readFileSync(request, "utf8")) as { input: Record<string, unknown> };
+      const link = join(String(req.input.sessionDir), "provider", "sign-in.json");
+      expect(lstatSync(link).isSymbolicLink()).toBe(true);
+      expect(req.input.signInStore).toBe(join(home("fake"), "sign-in.json"));
+    });
+    // Nothing is made or read under `providers/` (spec §8.6).
+    expect(existsSync(join(d.serverData, "providers"))).toBe(false);
+    // Under the real launcher (the profile validates the store grant).
+    const m = sandboxStatus().agent;
+    if (m.kind !== "enforced" || !existsSync(resolveSandboxExecPath())) {
+      expect(require, `FIN_REQUIRE_LANDLOCK=1 but the agent profile is ${JSON.stringify(m)}`).toBe(false);
+      return;
+    }
+    const { status: _stub, launcher: _l, ...real } = d;
+    await within(openHostSandbox("detect", "claudeCode", real), async (box) => {
+      expect(box.mode).toBe("launcher");
+      const r = await run(box, ["/bin/sh", "-c", 'echo "$CLAUDE_SECURESTORAGE_CONFIG_DIR"']);
+      expect(r.code, r.stderr).toBe(0);
+      expect(r.stdout).toBe(`${store}\n`);
+    });
+  });
+
+  test.skipIf(WIN)("host_project_folder_stable_and_private", async () => {
+    const d = deps();
+    const folder = hostProjectDir(d.hostRoot!, d.serverData);
+    expect(folder.startsWith(d.hostRoot! + sep)).toBe(true);
+    expect(relative(d.serverData, folder).startsWith("..")).toBe(true);
+    // One per server: another server's data has another folder.
+    expect(hostProjectDir(d.hostRoot!, join(tmp, "data2"))).not.toBe(folder);
+    const seen = new Set<string>();
+    for (const purpose of ["detect", "probe", "probe"] as const) {
+      await within(openHostSandbox(purpose, "claudeCode", d), async (box) => {
+        seen.add(box.env.TMPDIR!);
+        expect(box.workspace.startsWith(join(folder, "workspace") + sep)).toBe(true);
+        expect(statSync(folder).mode & 0o777).toBe(0o700);
+      });
+    }
+    // The same folder each time (one AppContainer profile on Windows), each open its own workspace.
+    expect(seen.size).toBe(3);
+    expect(readdirSync(folder)).toEqual(["workspace"]);
+    expect(readdirSync(join(folder, "workspace"))).toEqual([]);
+    // Made private again.
+    chmodSync(folder, 0o755);
+    await within(openHostSandbox("probe", "claudeCode", d), async () => expect(statSync(folder).mode & 0o777).toBe(0o700));
+    // A link or a file planted at its name is refused, never followed; nothing is left behind.
+    const elsewhere = join(tmp, "elsewhere");
+    mkdirSync(elsewhere);
+    rmSync(folder, { recursive: true });
+    for (const plant of [() => symlinkSync(elsewhere, folder), () => writeFileSync(folder, "x")]) {
+      plant();
+      const refused = await Effect.runPromiseExit(Effect.scoped(openHostSandbox("probe", "claudeCode", d)));
+      expect(Exit.isFailure(refused) && JSON.stringify(refused.cause)).toMatch(/SANDBOX_UNAVAILABLE/);
+      expect(readdirSync(join(d.serverData, "agents")).filter((n) => n.startsWith("host-"))).toEqual([]);
+      expect(readdirSync(elsewhere)).toEqual([]);
+      rmSync(folder);
+    }
+  });
+
+  test("host_sandboxes_swept_at_start", async () => {
+    const d = deps();
+    const agents = join(d.serverData, "agents");
+    // What a crash leaves: open host sandboxes, never closed.
+    const scope = await Effect.runPromise(Scope.make());
+    for (const p of ["detect", "probe"] as const) await Effect.runPromise(Scope.provide(scope)(openHostSandbox(p, "claudeCode", d)));
+    mkdirSync(join(agents, SESSION_ID, "tmp"), { recursive: true });
+    mkdirSync(join(agents, "host-notanid"));
+    const other = hostProjectDir(d.hostRoot!, join(tmp, "data2"));
+    mkdirSync(other, { mode: 0o700 });
+    const folder = hostProjectDir(d.hostRoot!, d.serverData);
+    expect(existsSync(folder)).toBe(true);
+    await sweepHostSandboxes(d.serverData, { hostRoot: d.hostRoot! });
+    // Every host directory and this server's host folder go; a session's, a name that is not a
+    // host id and another server's folder stay.
+    expect(readdirSync(agents).sort()).toEqual([SESSION_ID, "host-notanid"].sort());
+    expect(existsSync(folder)).toBe(false);
+    expect(existsSync(other)).toBe(true);
+    await Effect.runPromise(Scope.close(scope, Exit.void));
+    // Nothing to sweep is fine; a link at the folder's name goes, its target stays.
+    await sweepHostSandboxes(join(tmp, "nothing"), { hostRoot: d.hostRoot! });
+    if (!WIN) {
+      const elsewhere = join(tmp, "elsewhere");
+      mkdirSync(elsewhere);
+      writeFileSync(join(elsewhere, "keep"), "x");
+      symlinkSync(elsewhere, folder);
+      await sweepHostSandboxes(d.serverData, { hostRoot: d.hostRoot! });
+      expect(existsSync(folder)).toBe(false);
+      expect(readdirSync(elsewhere)).toEqual(["keep"]);
+    }
+    // The server sweeps after the ACL broker's sweep and before anything listens (no host
+    // sandbox is alive then).
+    const main = readFileSync(new URL("../src/main.ts", import.meta.url), "utf8");
+    const at = main.indexOf("sweepHostSandboxes(serverData");
+    expect(at).toBeGreaterThan(main.indexOf("sweepAtStart(acl)"));
+    expect(at).toBeLessThan(main.indexOf("new RemoteListener("));
+    expect(at).toBeLessThan(main.indexOf("makeAgentListener(() =>"));
+  });
+
+  test("host_dirs_partial_creation_removed", async () => {
+    const agents = join(tmp, "data", "agents");
+    const id = "host-01ARZ3NDEKTSV4RRFFQ69G5FAV";
+    // A directory where the git configuration file goes: the creation fails after the first folders.
+    mkdirSync(join(agents, id, "git", "config"), { recursive: true });
+    await expect(ensureHostDirs(agents, { id })).rejects.toThrow();
+    expect(existsSync(join(agents, id))).toBe(false);
+    const made = await ensureHostDirs(agents);
+    expect(made.id).toMatch(/^host-[0-9A-Z]{26}$/);
+    expect(made.dirs.dir).toBe(join(agents, made.id));
+    await removeHostDirs(agents, made.id);
+    expect(existsSync(made.dirs.dir)).toBe(false);
+  });
+
+  test("remove_host_dirs_only_host_ids", async () => {
+    const agents = join(tmp, "data", "agents");
+    mkdirSync(join(agents, SESSION_ID), { recursive: true });
+    mkdirSync(join(tmp, "data", "host-01ARZ3NDEKTSV4RRFFQ69G5FAV"), { recursive: true });
+    for (const id of [SESSION_ID, "shared", "host-", "host-x", "host-01arz3ndektsv4rrffq69g5fav", "host-01ARZ3NDEKTSV4RRFFQ69G5FAVX", `host-01ARZ3NDEKTSV4RRFFQ69G5FAV/../${SESSION_ID}`, "../host-01ARZ3NDEKTSV4RRFFQ69G5FAV", "host-01ARZ3NDEKTSV4RRFFQ69G5FA/"]) {
+      await expect(removeHostDirs(agents, id), id).rejects.toThrow(/not a host sandbox's directory/);
+    }
+    expect(existsSync(join(agents, SESSION_ID))).toBe(true);
+    expect(existsSync(join(tmp, "data", "host-01ARZ3NDEKTSV4RRFFQ69G5FAV"))).toBe(true);
   });
 });
 

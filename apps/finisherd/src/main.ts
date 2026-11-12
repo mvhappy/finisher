@@ -40,6 +40,7 @@ import { journalVerdicts, OutcomeTracker } from "./agent/outcomes.ts";
 import { AgentJournal } from "./agent/journal.ts";
 import { SessionCredentials } from "./agent/credentials.ts";
 import { BranchLineage } from "./agent/reach.ts";
+import { sweepHostSandboxes } from "./agent/session-dirs.ts";
 import { layerFonts, type FontsOptions } from "./fonts.ts";
 import { Diagnostics, type DiagnosticsOptions, makeDiagnostics } from "./diagnostics.ts";
 import { withServerLock } from "./lock.ts";
@@ -135,6 +136,8 @@ export const serve = ({
       // a broker that cannot open at all makes every later grant fail, so agents fail closed.
       const acl = aclBroker(serverData);
       yield* sweepAtStart(acl);
+      // Host sandboxes (plan 7D Task 3b) a crash left: none is alive before anything listens.
+      yield* Effect.promise(() => sweepHostSandboxes(serverData));
       // The control store (5A Task 1) before any listener: the environment id, the audit log.
       // The id, and why it was just renewed (a copy, or moved): 5B's moved check reads it below.
       const identity = yield* Effect.try({ try: () => serverIdentity(serverData), catch: startFailure });

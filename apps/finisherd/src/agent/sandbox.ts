@@ -39,9 +39,10 @@
 // (`allowPipe`).
 // A **host sandbox** (`openHostSandbox`, plan 7D Task 3b) starts a CLI without a session, for
 // detection and the capability probe, under the same mode rules: a throwaway directory, no
-// project, no credential, no sign-in store. Non-spawning parts live in `sandbox-input.ts`.
+// project, no credential; the sign-in store for detection only. Non-spawning parts live in
+// `sandbox-input.ts`.
 import { type ChildProcess, spawn as spawnChild } from "node:child_process";
-import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { mkdir, rm } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Readable, Writable } from "node:stream";
@@ -70,7 +71,7 @@ import {
   type SandboxViolation,
   within,
 } from "./sandbox-input.ts";
-import { ensureHostDirs, ensureSessionDirs, linkSignInStore, removeHostDirs, type SessionDirs } from "./session-dirs.ts";
+import { ensureHostDirs, ensureHostProject, ensureSessionDirs, linkSignInStore, newHostId, removeHostDirs } from "./session-dirs.ts";
 
 export { assertSessionEnv, sessionEnv } from "./sandbox-env.ts";
 export {
@@ -96,6 +97,8 @@ interface Prepared {
   readonly input: AgentInput;
   /** Under the launcher, after the input's check and before the grants (Windows: the pipe). */
   readonly beforeGrant?: () => void;
+  /** The environment names the sign-in store (`AssertOptions.store`; default: a session's does). */
+  readonly store?: boolean;
 }
 
 /** One sandbox: `prepare` makes its directories and input; `cleanup` runs when it is gone. */
@@ -168,51 +171,62 @@ export function openSessionSandbox(s: Session, harness: Harness, deps: SessionSa
 /**
  * Opens a host sandbox in the current scope (plan 7D Task 3b, Decisions 8 and 22): a CLI started
  * without a session, for `detect` (its version, its sign-in status) or `probe` (its flags and
- * first lines). Its directory `agents/host-<ulid>/` is the CLI's provider configuration
- * directory and temporary directory; its workspace is an empty throwaway folder outside server
- * data (`fin-sandbox`'s `agent` input needs a project folder, and that one holds nothing). No
- * project, no credential, no `fin` endpoint, no sign-in store variable and no store grant: an
- * adapter that needs the store (`auth status`) passes nothing of it here. The same mode rules
- * as a session's; closing the scope kills every process it started, then removes both folders.
+ * first lines). Its directory `agents/host-<ulid>/` is the CLI's throwaway provider configuration
+ * directory and temporary directory; its workspace is `workspace/host-<ulid>/` of the server's
+ * one host project folder outside server data (`ensureHostProject`: `fin-sandbox`'s `agent`
+ * input needs a project folder, and that one holds nothing). No project, no credential, no `fin`
+ * endpoint. The sign-in store follows the purpose alone, never an option: `detect` has it
+ * (`auth status --json` reads the CLI's own store: the store variable or link, and its grant),
+ * `probe` never (Decision 8: the probe runs unsigned). The same mode rules as a session's;
+ * closing the scope kills every process it started, then removes the directory and workspace.
  */
 export function openHostSandbox(purpose: "detect" | "probe", harness: Harness, deps: SessionSandboxDeps): Effect.Effect<SessionSandbox, FinError, Scope.Scope> {
   const platform = deps.platform ?? process.platform;
-  const made: { dirs?: SessionDirs; project?: string } = {};
-  // The id is known once the directory is made; `openBox` reads it lazily for its errors.
-  const spec: { -readonly [K in keyof BoxSpec]: BoxSpec[K] } = {
-    id: `host-${purpose}`,
-    harness,
-    host: true,
-    prepare: async () => {
-      const { id, dirs } = await ensureHostDirs(join(deps.serverData, "agents"), { platform });
-      made.dirs = dirs;
-      spec.id = id;
-      const project = await canonical(await mkdtemp(join(deps.hostRoot ?? tmpdir(), "fin-host-")));
-      made.project = project;
-      const workspace = join(project, "workspace", id);
-      await mkdir(workspace, { recursive: true, mode: 0o700 });
-      const env = hostEnv({ harness, dirs, platform, ...(deps.parent === undefined ? {} : { parent: deps.parent }) });
-      assertSessionEnv(env, { id, harness }, { host: true, expect: env, platform });
-      const input: AgentInput = {
-        sessionId: id,
-        mode: "plan",
+  const agents = join(deps.serverData, "agents");
+  return Effect.suspend(() => {
+    // Chosen first (per run): whatever the open made before a failure is removed by `cleanup`.
+    const id = newHostId();
+    let workspace: string | undefined;
+    return openBox(
+      {
+        id,
         harness,
-        projectDir: project,
-        workspaceDir: workspace,
-        libraryRoots: [],
-        sessionDir: dirs.dir,
-        toolchains: sandboxToolchainBase(),
-        serverData: deps.serverData,
-        home: await canonical(homedir()),
-      };
-      return { env, workspace, roots: [workspace], input };
-    },
-    cleanup: async () => {
-      if (made.project !== undefined) await rm(made.project, { recursive: true, force: true, maxRetries: 3 }).catch(() => 0);
-      if (made.dirs !== undefined) await removeHostDirs(made.dirs).catch(() => 0);
-    },
-  };
-  return openBox(spec, deps);
+        host: true,
+        prepare: async () => {
+          const { dirs } = await ensureHostDirs(agents, { platform, id });
+          const store = purpose === "detect" ? await linkSignInStore(harness, deps.serverData, dirs, { platform, ...(deps.symlink === undefined ? {} : { symlink: deps.symlink }) }) : undefined;
+          const project = await ensureHostProject(deps.hostRoot ?? tmpdir(), deps.serverData, { platform });
+          workspace = join(project, "workspace", id);
+          await mkdir(join(project, "workspace"), { mode: 0o700 }).catch((e: NodeJS.ErrnoException) => {
+            if (e.code !== "EEXIST") throw e;
+          });
+          await mkdir(workspace, { mode: 0o700 });
+          const env = hostEnv({ harness, dirs, store, platform, ...(deps.parent === undefined ? {} : { parent: deps.parent }) });
+          const withStore = store?.env !== undefined;
+          assertSessionEnv(env, { id, harness }, { host: true, store: withStore, expect: env, platform });
+          const input: AgentInput = {
+            sessionId: id,
+            mode: "plan",
+            harness,
+            projectDir: project,
+            workspaceDir: workspace,
+            libraryRoots: [],
+            sessionDir: dirs.dir,
+            ...(store === undefined ? {} : { signInStore: store.grant }),
+            toolchains: sandboxToolchainBase(),
+            serverData: deps.serverData,
+            home: await canonical(homedir()),
+          };
+          return { env, workspace, roots: [workspace], input, store: withStore };
+        },
+        cleanup: async () => {
+          if (workspace !== undefined) await rm(workspace, { recursive: true, force: true, maxRetries: 3 }).catch(() => 0);
+          await removeHostDirs(agents, id).catch(() => 0);
+        },
+      },
+      deps,
+    );
+  });
 }
 
 /** The sandbox of `b` in the current scope: the mode, the grants, `spawn` and the kill at close. */
@@ -283,7 +297,7 @@ function openBox(b: BoxSpec, deps: SessionSandboxDeps): Effect.Effect<SessionSan
                 const s = { id: b.id, harness: b.harness };
                 assertSpawnEnv(opts.env, s, platform);
                 childEnv = { ...env, ...opts.env };
-                assertSessionEnv(childEnv, s, { expect: env, extra: harnessExtra(b.harness), host: b.host, platform });
+                assertSessionEnv(childEnv, s, { expect: env, extra: harnessExtra(b.harness), host: b.host, store: p.store ?? !b.host, platform });
               }
               let input = base;
               if (opts.extraRead !== undefined && opts.extraRead.length > 0) {
