@@ -74,6 +74,8 @@ export interface PluginLogDeps {
   readonly clock?: () => number;
   /** Whether `id` is a bundled plugin (named in the clear). */
   readonly bundled?: (id: string) => boolean;
+  /** A message or line of `plugin` dropped by its limit (`plugin.stats`, Task 15). */
+  readonly dropped?: (plugin: string, what: "log" | "stderr") => void;
 }
 
 /** The plugin id (no version) of `<id>@<version>`. */
@@ -82,7 +84,9 @@ const idOf = (plugin: string): string => (plugin.lastIndexOf("@") > 0 ? plugin.s
 export function makePluginLog(d: PluginLogDeps) {
   const clock = d.clock ?? Date.now;
   // A key of this run only: the server log is this process's, and the journal's keyed hash
-  // (which never reaches TypeScript) is for the journal.
+  // (which never reaches TypeScript) is for the journal. It is not fin-node's hash (Task 15
+  // looked): that hash exists only while the journal records, and the log needs a name when
+  // it does not.
   const key = randomBytes(32);
   const name = (plugin: string): string => {
     const id = idOf(plugin);
@@ -108,6 +112,7 @@ export function makePluginLog(d: PluginLogDeps) {
       const { ok, reportDropped } = w.take(clock(), 1);
       if (reportDropped > 0) d.write("warning", `[${name(plugin)}] ${reportDropped} log messages dropped (over ${LOG_PER_SECOND} a second)`);
       if (ok) d.write(level(lvl), `[${name(plugin)}] ${scrubLogText(msg)}`);
+      else d.dropped?.(plugin, "log");
       return ok;
     },
     /** A stderr line of the process `source`. */
@@ -118,6 +123,7 @@ export function makePluginLog(d: PluginLogDeps) {
       const text = ok ? scrubLogText(line) : "";
       if (reportDropped > 0) d.write("warning", `[${name(plugin)} stderr] ${reportDropped} lines dropped (over ${STDERR_BYTES_PER_MINUTE} bytes a minute)`);
       if (ok) d.write("debug", `[${name(plugin)} stderr] ${text}`);
+      else d.dropped?.(plugin, "stderr");
       return ok;
     },
   };

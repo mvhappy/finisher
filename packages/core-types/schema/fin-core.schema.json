@@ -707,6 +707,15 @@
           "$ref": "#/$defs/RegistryRefresh"
         },
         {
+          "$ref": "#/$defs/PluginStats"
+        },
+        {
+          "$ref": "#/$defs/PluginExit"
+        },
+        {
+          "$ref": "#/$defs/PluginCommand"
+        },
+        {
           "$ref": "#/$defs/ErrorInternal"
         },
         {
@@ -861,6 +870,13 @@
         "message"
       ],
       "type": "object"
+    },
+    "ArgsOmitted": {
+      "description": "Why `args` is absent although training is on.",
+      "enum": [
+        "tooLarge"
+      ],
+      "type": "string"
     },
     "Asset": {
       "properties": {
@@ -4072,6 +4088,72 @@
           "additionalProperties": false,
           "properties": {
             "kind": {
+              "const": "plugin.stats",
+              "type": "string"
+            },
+            "kv": {
+              "const": 1,
+              "type": "integer"
+            },
+            "payload": {
+              "$ref": "#/$defs/PluginStats"
+            }
+          },
+          "required": [
+            "kind",
+            "kv",
+            "payload"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "plugin.exit",
+              "type": "string"
+            },
+            "kv": {
+              "const": 1,
+              "type": "integer"
+            },
+            "payload": {
+              "$ref": "#/$defs/PluginExit"
+            }
+          },
+          "required": [
+            "kind",
+            "kv",
+            "payload"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "plugin.command",
+              "type": "string"
+            },
+            "kv": {
+              "const": 1,
+              "type": "integer"
+            },
+            "payload": {
+              "$ref": "#/$defs/PluginCommand"
+            }
+          },
+          "required": [
+            "kind",
+            "kv",
+            "payload"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
               "const": "error.internal",
               "type": "string"
             },
@@ -4142,7 +4224,7 @@
               "type": "string"
             },
             "kv": {
-              "const": 1,
+              "const": 2,
               "type": "integer"
             },
             "payload": {
@@ -12512,6 +12594,68 @@
       ],
       "type": "string"
     },
+    "PluginCommand": {
+      "description": "`plugin.command`: one run of a plugin command (`plugin.command.run`).",
+      "properties": {
+        "args": {
+          "allOf": [
+            {
+              "$ref": "#/$defs/Body"
+            },
+            {
+              "x-fin-class": "content",
+              "x-fin-content": "toolArgs"
+            }
+          ],
+          "description": "Training only: the arguments as validated."
+        },
+        "argsOmitted": {
+          "$ref": "#/$defs/ArgsOmitted"
+        },
+        "code": {
+          "$ref": "#/$defs/Code"
+        },
+        "command": {
+          "$ref": "#/$defs/Hashed"
+        },
+        "dryRun": {
+          "type": "boolean"
+        },
+        "micros": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "ops": {
+          "additionalProperties": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "description": "Op kind → count of the ops it returned (`OP_KINDS`).",
+          "propertyNames": {
+            "$ref": "#/$defs/Name"
+          },
+          "type": "object"
+        },
+        "outcome": {
+          "$ref": "#/$defs/PluginCommandOutcome"
+        },
+        "plugin": {
+          "$ref": "#/$defs/PluginRef"
+        },
+        "txId": {
+          "$ref": "#/$defs/IdRef"
+        }
+      },
+      "required": [
+        "plugin",
+        "command",
+        "outcome",
+        "micros"
+      ],
+      "type": "object"
+    },
     "PluginCommandInfo": {
       "additionalProperties": false,
       "description": "One command as `plugin.commands` lists it.",
@@ -12577,6 +12721,44 @@
         "commands"
       ],
       "type": "object"
+    },
+    "PluginCommandOutcome": {
+      "description": "How a plugin command ended (spec §11; `failed`: the process crashed, broke the protocol or\nthe host failed, a deviation: the spec's list has no outcome for it).",
+      "oneOf": [
+        {
+          "enum": [
+            "conflict",
+            "timeout",
+            "failed"
+          ],
+          "type": "string"
+        },
+        {
+          "const": "accepted",
+          "description": "Its transaction was committed as is (or, with `dryRun`, validated).",
+          "type": "string"
+        },
+        {
+          "const": "rebased",
+          "description": "Committed after a rebase.",
+          "type": "string"
+        },
+        {
+          "const": "refused",
+          "description": "Refused by a check (permission, reach, a disabled plugin).",
+          "type": "string"
+        },
+        {
+          "const": "invalid",
+          "description": "Its arguments or its returned ops were invalid (`PLUGIN_COMMAND_ARGS`,\n`PLUGIN_TX_INVALID`).",
+          "type": "string"
+        },
+        {
+          "const": "data",
+          "description": "It returned data, not a transaction.",
+          "type": "string"
+        }
+      ]
     },
     "PluginCommandRunRequest": {
       "additionalProperties": false,
@@ -12742,6 +12924,101 @@
       ],
       "type": "object"
     },
+    "PluginEgressStats": {
+      "description": "The egress broker's counts for one plugin in a `plugin.stats` window (Task 8's counters,\ndifferenced per window). Refusals by reason; no origin, URL or body.",
+      "properties": {
+        "bytesInLog2": {
+          "format": "uint8",
+          "maximum": 255,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "bytesOutLog2": {
+          "format": "uint8",
+          "maximum": 255,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "completed": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "denied": {
+          "description": "`EGRESS_DENIED`: an origin it was not granted.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "failed": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "notHttps": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "privateAddress": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "rateLimited": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "redirectsFollowed": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "redirectsReturned": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "requests": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "secretMissing": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "timeouts": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "tooLarge": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "requests",
+        "completed",
+        "denied",
+        "notHttps",
+        "privateAddress",
+        "secretMissing",
+        "rateLimited",
+        "tooLarge",
+        "timeouts",
+        "failed",
+        "redirectsFollowed",
+        "redirectsReturned",
+        "bytesInLog2",
+        "bytesOutLog2"
+      ],
+      "type": "object"
+    },
     "PluginError": {
       "additionalProperties": false,
       "properties": {
@@ -12768,6 +13045,55 @@
         "message"
       ],
       "type": "object"
+    },
+    "PluginExit": {
+      "description": "`plugin.exit`: a plugin process ended (built from the same exit as its `worker.exit`).",
+      "properties": {
+        "exitCode": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "jobsServed": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "plugin": {
+          "$ref": "#/$defs/PluginRef"
+        },
+        "reason": {
+          "$ref": "#/$defs/PluginExitReason"
+        },
+        "signal": {
+          "$ref": "#/$defs/Name"
+        },
+        "uptimeS": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "plugin",
+        "reason",
+        "jobsServed",
+        "uptimeS"
+      ],
+      "type": "object"
+    },
+    "PluginExitReason": {
+      "description": "Why a plugin process ended (spec §11).",
+      "enum": [
+        "ok",
+        "crash",
+        "timeout",
+        "killed",
+        "oom",
+        "protocol",
+        "sandbox",
+        "idle"
+      ],
+      "type": "string"
     },
     "PluginId": {
       "description": "`@<publisher>/<name>` (8A Decision 2).",
@@ -12977,6 +13303,71 @@
       ],
       "type": "object"
     },
+    "PluginMethodStats": {
+      "description": "One method family's calls in a `plugin.stats` window.",
+      "properties": {
+        "bytesInLog2": {
+          "description": "Params bytes over the window, as a log₂ bucket.",
+          "format": "uint8",
+          "maximum": 255,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "bytesOutLog2": {
+          "description": "Reply bytes over the window, as a log₂ bucket.",
+          "format": "uint8",
+          "maximum": 255,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "calls": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "errors": {
+          "additionalProperties": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "description": "Error code → count.",
+          "propertyNames": {
+            "$ref": "#/$defs/Code"
+          },
+          "type": "object"
+        },
+        "family": {
+          "$ref": "#/$defs/Name"
+        },
+        "p50Micros": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "p95Micros": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "reachDenials": {
+          "description": "Calls refused for reach (`PROJECT_NOT_FOUND`, `BRANCH_NOT_ALLOWED`, a library).",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "family",
+        "calls",
+        "reachDenials",
+        "p50Micros",
+        "p95Micros",
+        "bytesInLog2",
+        "bytesOutLog2"
+      ],
+      "type": "object"
+    },
     "PluginOutcome": {
       "description": "How a plugin or registry call ended.",
       "oneOf": [
@@ -13062,6 +13453,63 @@
         "dev"
       ],
       "type": "string"
+    },
+    "PluginStats": {
+      "description": "`plugin.stats`: one plugin's host traffic over one window (a minute), sent when the\nplugin did anything in it.",
+      "properties": {
+        "crashes": {
+          "description": "Its jobs that ended `PLUGIN_CRASHED`.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "egress": {
+          "$ref": "#/$defs/PluginEgressStats"
+        },
+        "families": {
+          "description": "Per method family (`PLUGIN_METHOD_FAMILIES`), each at most once.",
+          "items": {
+            "$ref": "#/$defs/PluginMethodStats"
+          },
+          "type": "array"
+        },
+        "logDropped": {
+          "description": "`log` calls dropped by the rate limit.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "plugin": {
+          "$ref": "#/$defs/PluginRef"
+        },
+        "stderrDropped": {
+          "description": "stderr lines dropped by the byte limit.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "timeouts": {
+          "description": "Its jobs that ended `PLUGIN_TIMEOUT`.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "windowS": {
+          "description": "The window's length in seconds.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "plugin",
+        "windowS",
+        "timeouts",
+        "crashes",
+        "logDropped",
+        "stderrDropped"
+      ],
+      "type": "object"
     },
     "PreviewStats": {
       "type": "object"
@@ -17669,7 +18117,7 @@
       "type": "object"
     },
     "WorkerExit": {
-      "description": "`worker.exit` (`kv` 1).",
+      "description": "`worker.exit` (`kv` 2: `plugin` is a [`PluginRef`], Decision 22 of sp8b; `kv` 1 had a\n`Hashed` that nothing ever filled).",
       "properties": {
         "exitCode": {
           "format": "int64",
@@ -17692,7 +18140,7 @@
           "type": "integer"
         },
         "plugin": {
-          "$ref": "#/$defs/Hashed"
+          "$ref": "#/$defs/PluginRef"
         },
         "reason": {
           "$ref": "#/$defs/ExitReason"

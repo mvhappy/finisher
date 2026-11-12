@@ -202,7 +202,7 @@ export const serve = ({
       const pluginTables = new PluginTables(controlStore);
       // Developer mode: an earlier run's `@dev` row goes; this run's, if any, until it stops.
       yield* devPluginForRun(pluginTables, dev, (m) => logSink("warning", m), Context.get(control, AuditTag));
-      const pluginHost = makePluginHost({ serverData: realpathSync(serverData), control: controlStore, tables: pluginTables, audit: Context.get(control, AuditTag), log: (l, m) => logSink(l === "warning" || l === "error" ? "warning" : "debug", m) });
+      const pluginHost = makePluginHost({ serverData: realpathSync(serverData), control: controlStore, tables: pluginTables, audit: Context.get(control, AuditTag), journal: diagnostics.journal, log: (l, m) => logSink(l === "warning" || l === "error" ? "warning" : "debug", m) });
       const pluginCommands = serverPluginCommands({ serverData: realpathSync(serverData), tables: pluginTables, host: pluginHost });
       const register = (r: Parameters<typeof libraries.register>[0]) => {
         pluginHost.register(r);

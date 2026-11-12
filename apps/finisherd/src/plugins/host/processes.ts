@@ -12,9 +12,14 @@
 // its class, a device revoked bumps `person`; a bump retires the class's warm processes of
 // older generations, then (once they and the class's running jobs are gone) removes their temp
 // directories and the class's authority-keyed `pluginData`. The start sweeps both.
+//
+// Diagnostics (Task 15): the host, never a plugin, records `plugin.stats` each minute
+// (`stats.ts`: calls, its jobs' timeouts and crashes, dropped log and stderr, egress) and
+// `plugin.command` through `onCommandRun` (`command-journal.ts`); `worker.exit` and
+// `plugin.exit` come from the job engine's sink (`jobs/journal-sink.ts`).
 import { rmSync } from "node:fs";
 import { type FinError, isJobRights, type JobState, type JobView } from "@finisher/contracts";
-import { validateManifest } from "@finisher/fin-node";
+import { type Journal, validateManifest } from "@finisher/fin-node";
 import type { ValidationReport } from "@finisher/core-types";
 import { Effect, Fiber } from "effect";
 import type { CredentialChange } from "../../auth/credentials.ts";
@@ -34,6 +39,8 @@ import { type CallDeps, makeHostCalls, PAGE_BYTES } from "./calls.ts";
 import { bareKey, keyTmpDir, pluginWarmKey, principalClass, sessionRoots } from "./keys.ts";
 import { type EgressTestHooks, makeEgress } from "./egress.ts";
 import { makePluginLog, scrubLogText, type ServerLog } from "./log.ts";
+import { type CommandRunEventLike, type CommandRunExtra, commandRunOf, journalPluginCommand } from "./command-journal.ts";
+import { makePluginStats } from "./stats.ts";
 import { splitVia, storeDirOf } from "./program.ts";
 import type { JobRights, Permission, PluginContext } from "@finisher/core-types";
 import { type Invoker, rightsFor } from "./rights.ts";
@@ -72,6 +79,8 @@ export interface PluginHostDeps {
   readonly log?: ServerLog;
   /** The broker's test hooks (`egress-test-hooks.ts`; refused outside a test-hooks build). */
   readonly egressHooks?: EgressTestHooks;
+  /** The diagnostics journal: `plugin.stats` and `plugin.command` (Task 15). */
+  readonly journal?: Pick<Journal, "enabled" | "training" | "recordPlugin">;
 }
 
 /** 5C's envelope line (Decision 5). */
@@ -96,16 +105,23 @@ export function makePluginHost(d: PluginHostDeps) {
   const cold = new Map<string, { readonly key: string; readonly plugin: string }>();
   let callDeps: CallDeps | undefined;
   const warmKeyOf = (job: JobView): string => pluginWarmKey(job, rootSessionOf, generations);
+  const serverLog: ServerLog = d.log ?? ((level, message) => void process.stderr.write(`finisherd: ${level}: ${message}\n`));
+  const stats = makePluginStats({
+    ...(d.journal === undefined ? {} : { journal: d.journal }),
+    egress: () => egress.stats(),
+    log: (m) => serverLog("warning", m),
+    now: clock,
+  });
   const pluginLog = makePluginLog({
-    write: d.log ?? ((level, message) => void process.stderr.write(`finisherd: ${level}: ${message}\n`)),
+    write: serverLog,
     clock,
     bundled: (id) => d.tables.installedFull(id)?.source === "bundled",
+    dropped: (plugin, what) => stats.dropped(plugin, what),
   });
-  const serverLog: ServerLog = d.log ?? ((level, message) => void process.stderr.write(`finisherd: ${level}: ${message}\n`));
   // Refusals go to the server log under the plugin's keyed id, scrubbed (never to the journal).
   const egressLog = (plugin: string, message: string): void => serverLog("warning", `[${pluginLog.name(plugin)}] ${scrubLogText(message)}`);
   const egress = makeEgress({ log: egressLog, ...(d.egressHooks === undefined ? {} : { hooks: d.egressHooks }) });
-  const calls = makeHostCalls({ deps: () => callDeps, keyNow: warmKeyOf, coldKey: (job) => cold.get(job)?.key, log: pluginLog, egress });
+  const calls = makeHostCalls({ deps: () => callDeps, keyNow: warmKeyOf, coldKey: (job) => cold.get(job)?.key, log: pluginLog, egress, stats });
   const onStderr = (line: string, from: { readonly job?: string; readonly key?: string }): void => {
     const plugin = from.key !== undefined ? (keyPlugin(from.key).split("|")[0] ?? "") : (cold.get(from.job ?? "")?.plugin ?? "");
     pluginLog.stderr(from.key ?? `job:${from.job ?? ""}`, plugin, line);
@@ -157,6 +173,10 @@ export function makePluginHost(d: PluginHostDeps) {
   /** Interrupts every drain (their removals are left to the next start's sweep). */
   const close = (): Effect.Effect<void> =>
     Effect.suspend(() => {
+      if (!closed) {
+        stats.stop();
+        stats.flush();
+      }
       closed = true;
       const all = [...drains.values()];
       drains.clear();
@@ -326,6 +346,18 @@ export function makePluginHost(d: PluginHostDeps) {
     calls,
     /** The egress broker: its per-plugin counters feed `plugin.stats` (Task 15). */
     egress,
+    /** `plugin.stats`' counters (tests flush them). */
+    stats,
+    /**
+     * Task 9's `onRun` hook (once per `plugin.command.run`, every outcome): records
+     * `plugin.command` and counts the run in `plugin.stats`' `command` family; never throws.
+     * `extra` carries what its `CommandRunEvent` lacks (`txId`, `ops`, the validated `args`).
+     */
+    onCommandRun(e: CommandRunEventLike, extra?: CommandRunExtra): void {
+      const run = commandRunOf(e, extra);
+      journalPluginCommand(d.journal, run, (m) => serverLog("warning", m));
+      stats.call(run.plugin, "command", run.durationMs * 1000, run.code, 0, 0);
+    },
     /**
      * `start.extra`'s `PluginContext` for `job` (Task 9's kind puts it in): the plugin, its
      * grants, its package, the caller's `pluginData` (with `fs pluginData`) and the key's temp.
@@ -357,7 +389,9 @@ export function makePluginHost(d: PluginHostDeps) {
         calls.release(job.id);
         cold.delete(job.id);
         crashLoop.onDone(job);
+        if (job.family === PLUGIN_FAMILY && job.via !== undefined) stats.jobEnded(job.via.plugin, job.error?.code);
       });
+      if (!closed) stats.start();
       // A generation bump the store could not record must not be handed out again after a
       // restart: a job still queued under it raises its class back to it.
       for (let cursor: string | undefined, page = 0; page < 100; page++) {

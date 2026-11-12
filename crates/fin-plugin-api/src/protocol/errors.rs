@@ -43,6 +43,10 @@ pub mod codes {
     pub const PLUGIN_CRASH_LOOP: &str = "PLUGIN_CRASH_LOOP";
     /// A malformed message or call (the process is not killed for a call).
     pub const PLUGIN_PROTOCOL: &str = "PLUGIN_PROTOCOL";
+    /// A cold kind's output file that fails its checks (`{reason: link|notRegular|linked|size|truncated|schema}`).
+    pub const PLUGIN_OUTPUT_INVALID: &str = "PLUGIN_OUTPUT_INVALID";
+    /// A plugin job that failed with a code the host does not know (the plugin's own).
+    pub const PLUGIN_COMMAND_FAILED: &str = "PLUGIN_COMMAND_FAILED";
     pub const PLUGIN_PERMISSION_DENIED: &str = "PLUGIN_PERMISSION_DENIED";
     /// The process serves an authority whose policy generation moved on (`{retryable: true}`):
     /// the caller runs the command again under the current authority.

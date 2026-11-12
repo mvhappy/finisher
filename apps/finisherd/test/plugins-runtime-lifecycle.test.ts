@@ -224,7 +224,7 @@ describe("crash loop", () => {
     expect((await r.submit({ op: "crash" }, { priority: "normal" })).error?.code).toBe("PLUGIN_CRASHED");
     for (let i = 0; i < 100 && r.s.tables.installedOne(ID)?.state !== "crashLoop"; i++) await new Promise((x) => setTimeout(x, 20));
     expect(r.s.tables.installedOne(ID)).toMatchObject({ enabled: true, state: "crashLoop", problem: "PLUGIN_CRASH_LOOP" });
-    expect(r.s.rows().filter((x) => x.kind === "plugin.crashLoop")).toMatchObject([{ principalKind: "system", outcome: "ok", code: "PLUGIN_CRASH_LOOP", details: { pluginId: ID, version: "1.0.0" } }]);
+    expect(r.s.rows().filter((x) => x.kind === "plugin.crashLoop")).toMatchObject([{ principalKind: "system", outcome: "ok", code: "PLUGIN_CRASH_LOOP", details: { pluginId: ID, version: "1.0.0", auto: true } }]);
     expect((await r.submit({ op: "pid" })).error?.code).toBe("PLUGIN_CRASH_LOOP");
     expect((await run(r.s.h["plugin.list"]())).plugins.find((p) => p.id === ID)).toMatchObject({ state: "crashLoop", problem: "PLUGIN_CRASH_LOOP" });
   });
