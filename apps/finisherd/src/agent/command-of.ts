@@ -87,16 +87,8 @@ export const RPC_ONLY: ReadonlySet<FinRpcTag> = new Set<FinRpcTag>([
   "agent.local.show",
   "agent.local.test",
   "agent.local.remove",
-  // 5E: the review RPCs, until Task 10 gives `fin review` its rows; `finisherd review policy` is the console's.
-  "review.request",
-  "review.comment",
-  "review.refresh",
-  "review.list",
-  "review.get",
+  // 5E: `review.watch` is a stream and `review.policy*` is the console's; the rest are `fin review`.
   "review.watch",
-  "review.decide",
-  "review.merge",
-  "review.close",
   "review.policy",
   "review.policy.get",
   // 5B: pairing, devices, the environment and settings, reached through the console and apps.

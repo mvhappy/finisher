@@ -30,6 +30,7 @@ pub mod media_caps;
 pub mod param;
 pub mod plugin;
 pub mod project;
+pub mod review;
 pub mod schema;
 pub mod schema_registry;
 pub mod search;

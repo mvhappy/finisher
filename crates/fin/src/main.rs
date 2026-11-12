@@ -64,6 +64,7 @@ use commands::media_caps::MediaCmd;
 use commands::param::ParamCmd;
 use commands::plugin::{PluginCmd, RegistryCmd};
 use commands::project::ProjectCmd;
+use commands::review::ReviewCmd;
 use commands::search::SearchArgs;
 use commands::style::StyleCmd;
 use commands::timeline::TimelineCmd;
@@ -149,6 +150,8 @@ enum Cmd {
     Merge(MergeArgs),
     CherryPick(CherryPickArgs),
     Drop(DropArgs),
+    #[command(subcommand)]
+    Review(ReviewCmd),
     Revert(RevertArgs),
     Try(TryArgs),
     Batch,
@@ -355,6 +358,7 @@ fn run(args: Vec<OsString>) -> Result<Value, CoreError> {
         Some(Cmd::Checkpoint(a)) => commands::history::checkpoint(backend()?.as_ref(), g, &a),
         Some(Cmd::Merge(a)) => commands::history::merge(backend()?.as_ref(), g, &a),
         Some(Cmd::CherryPick(a)) => commands::history::cherry_pick(backend()?.as_ref(), g, &a),
+        Some(Cmd::Review(c)) => commands::review::run(backend()?.as_ref(), g, &c),
         Some(Cmd::Drop(a)) => commands::drop::run(backend()?.as_ref(), g, &a),
         Some(Cmd::Revert(a)) => commands::history::revert(backend()?.as_ref(), g, &a),
         Some(Cmd::Try(a)) => commands::try_cmd::run(backend()?.as_ref(), g, &a),
