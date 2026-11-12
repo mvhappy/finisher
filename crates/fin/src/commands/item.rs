@@ -320,6 +320,7 @@ pub fn plan(b: &mut Builder<'_>, cmd: &ItemCmd, suffix: &str) -> Result<Value, C
                 .ok()
                 .and_then(|(_, _, it)| match &it.body {
                     fin_core::ItemBody::Clip { source_in, .. }
+                    | fin_core::ItemBody::Graphic { source_in, .. }
                     | fin_core::ItemBody::Nested { source_in, .. } => Some(*source_in),
                     _ => None,
                 });

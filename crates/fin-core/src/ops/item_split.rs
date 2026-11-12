@@ -1,8 +1,8 @@
 //! `item.split`: cuts an item in two at `offset` (item-relative, plan 4C Decision 13).
 //!
 //! The left part keeps the id and ends at `offset`. The right part copies the body and the
-//! common fields (effects keep their ids; keyframes move by `−offset`; a clip's or nested
-//! item's source moves by `offset`, a clip's times its speed) and gets no link group (a split
+//! common fields (effects keep their ids; keyframes move by `−offset`; a clip's, nested item's
+//! or graphic's source moves by `offset`, a clip's times its speed) and gets no link group (a split
 //! of a linked item splits that item only, Decision 17). Its id is the op's one allocation.
 //!
 //! `offset` lies strictly inside the item (structural: neither part may be empty) and at least
@@ -103,7 +103,9 @@ pub(crate) fn apply(
         ItemBody::Clip {
             source_in, speed, ..
         } => *source_in = source_in.checked_add(s.offset.checked_mul(*speed)?)?,
-        ItemBody::Nested { source_in, .. } => *source_in = source_in.checked_add(s.offset)?,
+        ItemBody::Nested { source_in, .. } | ItemBody::Graphic { source_in, .. } => {
+            *source_in = source_in.checked_add(s.offset)?;
+        }
         _ => {}
     }
     shift_content(&mut right, s.offset.checked_neg()?)?;
