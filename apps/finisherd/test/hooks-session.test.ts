@@ -283,6 +283,61 @@ describe("command order and live slots (Task 6 review)", () => {
   });
 });
 
+describe("hook context a provider hands back (7F with 7D Decision 13)", () => {
+  const CTX = "preserve the audio";
+  const UP = () => [hook("audio", "UserPrompt", ["--reply", `context:${CTX}`])];
+  /** A Claude-like provider: steers held, handed back at an interrupt (the turn's tail). */
+  const HOLDING: FakeScript = { name: "holding", holdSteers: true, turns: [[{ emit: [msg("working")] }, { awaitAnswer: "never" }], [{ emit: [msg("again")] }, { awaitAnswer: "never" }]] };
+  const texts = (id: string) => store.nodes(id).filter((n) => n.kind === "notice" && payload(n).steerReturned !== undefined).map((n) => (payload(n).steerReturned as { steers: Array<{ text: string }> }).steers.map((x) => x.text));
+
+  test("tail_hand_back_keeps_context_out_of_resend: the steer comes back, the context waits for the next run", async () => {
+    const h = hooked([HOLDING], UP());
+    await h.runtime.boot();
+    const { session } = await run(h.runtime.start({ projectId: "P1", prompt: "go" }, PEOPLE, META));
+    await until(() => h.adapter.log.turns.length === 1, "the run");
+    expect(await run(h.runtime.steer(session.id, "trim", PEOPLE))).toEqual({ queued: false });
+    await until(() => h.adapter.log.steers.length === 2, "the steer and its context");
+    await run(h.runtime.interrupt(session.id, PEOPLE));
+    await until(() => texts(session.id).length === 1, "handed back");
+    expect(texts(session.id)).toEqual([["trim"]]);
+    await run(h.runtime.resume(session.id, PEOPLE, undefined, true));
+    await until(() => h.adapter.log.turns.length === 2, "the resend");
+    expect(h.adapter.log.turns[1]!.text).toBe(`trim${block([CTX, CTX])}`);
+  });
+
+  test("in_run_hand_back_holds_context_for_next_prompt: only the steer in the notice; the context joins the next run", async () => {
+    const script: FakeScript = { name: "returns", holdSteers: true, turns: [[{ emit: [msg("working")] }, { returnHeld: 1000 }], [{ emit: [msg("ok"), done] }]] };
+    const h = hooked([script], UP());
+    await h.runtime.boot();
+    const { session } = await run(h.runtime.start({ projectId: "P1", prompt: "go" }, PEOPLE, META));
+    await until(() => h.adapter.log.turns.length === 1, "the run");
+    await run(h.runtime.steer(session.id, "trim", PEOPLE));
+    await until(() => status(session.id) === "idle", "the run's end");
+    expect(texts(session.id)).toEqual([["trim"]]);
+    await run(h.runtime.prompt(session.id, "next", PEOPLE));
+    await until(() => h.adapter.log.turns.length === 2, "the next run");
+    expect(h.adapter.log.turns[1]!.text).toBe(`next${block([CTX, CTX])}`);
+  });
+
+  test("hand_back_after_admission_keeps_context_out: steered in at admission, handed back at the interrupt", async () => {
+    const h = hooked([HOLDING], UP(), { limits: { maxLiveBuiltin: 1 } });
+    await h.runtime.boot();
+    const { session: a } = await run(h.runtime.start({ projectId: "P1", prompt: "busy" }, PEOPLE, META));
+    await until(() => status(a.id) === "running" && h.adapter.log.turns.length === 1, "a runs");
+    const { session: b } = await run(h.runtime.start({ projectId: "P1", prompt: "go" }, PEOPLE, META));
+    await until(() => store.nodes(b.id).some((n) => n.kind === "notice" && payload(n).code === "SESSION_QUEUED"), "b queued");
+    expect(await run(h.runtime.steer(b.id, "trim", PEOPLE))).toEqual({ queued: true });
+    await run(h.runtime.interrupt(a.id, PEOPLE));
+    await until(() => h.adapter.log.steers.length === 2, "b's steers at admission");
+    await run(h.runtime.interrupt(b.id, PEOPLE));
+    await until(() => texts(b.id).length === 1, "handed back");
+    expect(texts(b.id)).toEqual([["trim"]]);
+    await run(h.runtime.resume(b.id, PEOPLE, undefined, true));
+    await until(() => h.adapter.log.turns.length === 3, "b's resend");
+    expect(h.adapter.log.turns[2]!.text).toBe(`trim${block([CTX, CTX])}`);
+  });
+});
+
 describe("SessionStart and SessionEnd (Decisions 1, 16)", () => {
   test("session_start_context_joins_first_run: held without a prompt, delivered with the first", async () => {
     const h = hooked([ENDS], [hook("intro", "SessionStart", ["--reply", "context:the project uses British spelling"])]);
@@ -386,6 +441,19 @@ describe("Notification and Approval from the runtime's tap (Decision 18)", () =>
       { kind: "budget", budget: "tokens", used: 850, limit: 1000, at: 0.8 },
       { kind: "budget", budget: "money", used: 850, limit: 1000, at: 0.8 },
     ]);
+  });
+
+  test("tail_usage_crossing_fires_notification_unwatched: a replaced instance's late usage crosses 80 %", async () => {
+    const crashed: FakeScript = { name: "crashed", turns: [[{ late: [usage(850, 0)] }, { crash: { code: null, signal: "SIGKILL" } }]] };
+    const h = hooked([crashed, WORKING], [hook("spend", "Notification", rec("note"), { match: "budget.*" })]);
+    await h.runtime.boot();
+    const { session } = await run(h.runtime.start({ projectId: "P1", prompt: "one", budget: { tokens: 1000 } }, PEOPLE, META));
+    await until(() => status(session.id) === "interrupted", "the crash");
+    await run(h.runtime.resume(session.id, PEOPLE, "again"));
+    await until(() => store.get(session.id)!.usage.input === 850, "the tail charged");
+    await until(() => requests("note").length === 1, "the notification");
+    await h.wiring.engine.settled();
+    expect(requests("note").map((r) => r.payload)).toEqual([{ kind: "budget", budget: "tokens", used: 850, limit: 1000, at: 0.8 }]);
   });
 
   test("attaching_a_watcher_changes_no_hook_runs: each status change and budget notice runs its hook once", async () => {

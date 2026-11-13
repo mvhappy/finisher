@@ -14,8 +14,12 @@
 //   logged and dropped; at most `HELD_MAX` items wait per session (the rest are logged).
 // - **A run waiting for a live slot** (`live-limits.ts`) takes context with its steers: its
 //   `userMessage {trigger: "hook"}` is recorded in that run and the block steered in at admission.
-//   A queued run that never starts its turn (interrupted, ended, failed) hands its person's steers
-//   back (`steerReturned`) but not hook context: that is held again (`requeue`) for the next run.
+// - **Handed back** (7D Decision 13): a steered block keeps its `userMessage` node's id with the
+//   provider (as every steer does). A `steerReturned` notice, a provider's (in the run or its
+//   tail) or a queued run's that never started (`live-limits.ts`), passes `returned` as it is
+//   written: hook context, known by its node id (never by its text), is held again for the next
+//   run and named in `hookContextHeld {nodeIds}`; only the person's steers stay in
+//   `steerReturned`, so `resendReturned` never resends a block as a prompt.
 // - **Command order** (`CommandOrder`): a session's commands run one after another in the order
 //   they came, each with its `UserPrompt` hook inside its turn, so a slow hook never lets a later
 //   command (a steer, an end) overtake it. The order is its own queue, in front of the session's
@@ -23,7 +27,7 @@
 //   are not in it (they never wait for a hook); an interrupt, an end and a delete cancel the
 //   prompts queued before them that have not passed their hook (`SESSION_INTERRUPTED`,
 //   `SESSION_ENDED`): such a prompt never runs.
-import type { FinError, NodeKind, Session } from "@finisher/contracts";
+import type { FinError, NodeKind, Principal, Session } from "@finisher/contracts";
 import { finError } from "../errors.ts";
 import type { ContextPort, HookContextItem } from "../hooks/session.ts";
 import { call, type Live } from "./runtime-live.ts";
@@ -43,9 +47,9 @@ export interface ContextInternals {
   session(sessionId: string): Session | undefined;
   activeRun(sessionId: string): string | null;
   live(sessionId: string): Live | undefined;
-  append(n: { sessionId: string; runId: string; kind: NodeKind; payload: unknown }): Promise<unknown>;
-  /** Queues `text` (recorded as `payload`; `item` handed back unsent) with the session's run waiting for a live slot; false when it has none. */
-  queued(sessionId: string, text: string, payload: Readonly<Record<string, unknown>>, item: HookContextItem): Promise<boolean>;
+  append(n: { sessionId: string; runId: string; kind: NodeKind; payload: unknown }): Promise<{ readonly node: { readonly id: string; readonly createdAt: number } }>;
+  /** Queues `text` (recorded as `payload`) with the session's run waiting for a live slot: its node's id; undefined when it has none. */
+  queued(sessionId: string, text: string, payload: Readonly<Record<string, unknown>>): Promise<{ readonly nodeId?: string } | undefined>;
   /** In the session's queue (`RuntimeEngine.background`). */
   background(sessionId: string, what: string, f: () => Promise<void>): void;
   log(message: string, details: Record<string, unknown>): void;
@@ -54,6 +58,8 @@ export interface ContextInternals {
 export class HookContexts {
   readonly #d: ContextInternals;
   readonly #held = new Map<string, Held[]>();
+  /** Context steered to a provider or a queued run, by its `userMessage` node's id. */
+  readonly #sent = new Map<string, { readonly sessionId: string; readonly item: HookContextItem }>();
 
   constructor(d: ContextInternals) {
     this.#d = d;
@@ -92,10 +98,12 @@ export class HookContexts {
     const live = this.#d.live(sessionId);
     const text = hookContextBlock([item.text]);
     const payload = { text, trigger: "hook", hookContext: { event: item.event, hooks: item.hooks } };
-    if (s?.status === "running" && (await this.#d.queued(sessionId, text, payload, item))) return;
+    const queued = s?.status === "running" ? await this.#d.queued(sessionId, text, payload) : undefined;
+    if (queued !== undefined) return void (queued.nodeId === undefined || this.#sent.set(queued.nodeId, { sessionId, item }));
     if ((s?.status === "running" || s?.status === "waitingApproval") && live?.runId != null && live.caps.steer) {
-      await this.#d.append({ sessionId, runId: live.runId, kind: "userMessage", payload });
-      const err = await call(live.provider.steer({ text }));
+      const { node } = await this.#d.append({ sessionId, runId: live.runId, kind: "userMessage", payload });
+      this.#sent.set(node.id, { sessionId, item });
+      const err = await call(live.provider.steer({ text, nodeId: node.id, at: node.createdAt }));
       if (err !== null) this.#d.log("agent runtime: the provider refused hook context", { sessionId, code: err.code });
       return;
     }
@@ -108,14 +116,27 @@ export class HookContexts {
     return a;
   }
 
-  /** Context a queued run never sent (`LiveLimits.handBack`): held again for the next run. */
-  requeue(sessionId: string, item: HookContextItem): void {
-    this.#hold(sessionId, { context: item });
+  /** A node about to be written: a `steerReturned` notice without its hook context, which is held again (module docs). */
+  returned<N extends { readonly kind: NodeKind; readonly payload: unknown }>(n: N): N {
+    const p = n.payload as { steerReturned?: { steers?: unknown } } | null;
+    const steers = n.kind === "notice" ? p?.steerReturned?.steers : undefined;
+    if (!Array.isArray(steers)) return n;
+    const ids = steers.flatMap((x: { nodeId?: unknown }) => (typeof x.nodeId === "string" && this.#sent.has(x.nodeId) ? [x.nodeId] : []));
+    if (ids.length === 0) return n;
+    for (const id of ids) {
+      const { sessionId, item } = this.#sent.get(id)!;
+      this.#sent.delete(id);
+      this.#hold(sessionId, { context: item });
+    }
+    const person = steers.filter((x: { nodeId?: unknown }) => !ids.includes(x.nodeId as string));
+    const { steerReturned, ...rest } = p as { steerReturned: Record<string, unknown> };
+    return { ...n, payload: { ...rest, ...(person.length === 0 ? {} : { steerReturned: { ...steerReturned, steers: person } }), hookContextHeld: { nodeIds: ids } } };
   }
 
-  /** The session ended: what it held is dropped. */
+  /** The session ended: what it held is dropped, and what it sent forgotten. */
   forget(sessionId: string): void {
     this.#held.delete(sessionId);
+    for (const [id, e] of this.#sent) if (e.sessionId === sessionId) this.#sent.delete(id);
   }
 
   #notice(sessionId: string, payload: Readonly<Record<string, unknown>>): void {
@@ -138,6 +159,9 @@ export class HookContexts {
     this.#held.set(sessionId, held);
   }
 }
+
+/** A prompt's `UserPrompt` hook input (a resume's is known only in its turn: `resendReturned`). */
+export type Prompted = { readonly by: Principal; readonly text: string; readonly origin: "prompt" | "steer" };
 
 /** Each session's commands, in the order they came (see the module docs). */
 export class CommandOrder {

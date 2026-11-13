@@ -18,16 +18,14 @@
 //   starts its turn (interrupted or ended in the queue, gone stale, or its turn failing to start)
 //   hands them back in its run, as a provider does (plan 7D Decision 13, owner decision
 //   2026-11-13): `notice {steerReturned: {harness, steers: [{text, nodeId, at}]}}`, so
-//   `agent.session.resume {resendReturned}` sends them again. Hook context queued with it (7F,
-//   `hook-context.ts`) is not a steer to resend: it goes back to the session's held context
-//   (`unsent`), for its next run.
+//   `agent.session.resume {resendReturned}` sends them again (hook context among them is held
+//   again as the notice is written, `hook-context.ts`).
 // - In memory only: a restart interrupts every running session, queued ones too.
 // - **The turn** (`enter`, `begin`): an admitted run's provider turn starts here, its budget's
 //   run clock with it; a turn that cannot start fails the run (an `error` node, the session
 //   `interrupted`).
 import type { FinError, Harness, Session } from "@finisher/contracts";
 import { toFinError } from "../errors.ts";
-import type { HookContextItem } from "../hooks/session.ts";
 import type { UserInput } from "./adapter.ts";
 import { call, type Live } from "./runtime-live.ts";
 import type { NewNode } from "./store.ts";
@@ -43,14 +41,9 @@ export interface QueuedRun {
   readonly harness: string;
   /** The first turn's text. */
   readonly text: string;
-  /** The steers held for it, with their `userMessage` nodes (hook context with its item). */
-  readonly steers: HeldSteer[];
+  /** The steers held for it, with their `userMessage` nodes. */
+  readonly steers: UserInput[];
 }
-
-export type HeldSteer = UserInput & { readonly context?: HookContextItem };
-
-/** A held steer as a provider takes it. */
-const inputOf = (t: HeldSteer): UserInput => ({ text: t.text, ...(t.nodeId === undefined ? {} : { nodeId: t.nodeId }), ...(t.at === undefined ? {} : { at: t.at }) });
 
 export interface LiveLimitDeps {
   readonly max: () => { readonly builtin: number; readonly provider: number };
@@ -59,8 +52,6 @@ export interface LiveLimitDeps {
   /** Whether `runId` is still the session's active run. */
   readonly current: (sessionId: string, runId: string) => boolean;
   readonly turns: TurnHost;
-  /** Hook context a queued run never sent: held again for the session's next run. */
-  readonly unsent?: (sessionId: string, context: HookContextItem) => void;
 }
 
 /** What starting a turn asks of the runtime (each call in the session's queue). */
@@ -147,20 +138,17 @@ export class LiveLimits {
     }
     for (const t of q.steers) {
       if (!live.caps.steer) live.held.push(t.text);
-      else if (await call(live.provider.steer(inputOf(t)))) live.held.push(t.text);
+      else if (await call(live.provider.steer(t))) live.held.push(t.text);
     }
   }
 
   /**
    * The steers held for `q`, whose turn never started, handed back in its run (`notice
    * {steerReturned}`, the shape a provider uses): recorded, never sent. Nothing when none.
-   * Its hook context goes to `unsent` instead.
    */
   async handBack(q: QueuedRun): Promise<void> {
-    const held = q.steers.splice(0);
-    for (const t of held) if (t.context !== undefined) this.#d.unsent?.(q.sessionId, t.context);
-    const steers = held.filter((t) => t.context === undefined).map(inputOf);
-    if (steers.length === 0) return;
+    if (q.steers.length === 0) return;
+    const steers = q.steers.splice(0).map((t) => ({ text: t.text, ...(t.nodeId === undefined ? {} : { nodeId: t.nodeId }), ...(t.at === undefined ? {} : { at: t.at }) }));
     await this.#d.turns.append({ sessionId: q.sessionId, runId: q.runId, kind: "notice", payload: { steerReturned: { harness: q.harness, steers } } });
   }
 
@@ -175,13 +163,13 @@ export class LiveLimits {
     await this.#d.turns.interrupt(sessionId, e.code);
   }
 
-  /** A steer (or hook `context`) to the session's queued run: recorded (its `userMessage`, `payload`) and held; false when it has none. */
-  async hold(sessionId: string, text: string, payload: Readonly<Record<string, unknown>> = { text, trigger: "steer" }, context?: HookContextItem): Promise<boolean> {
+  /** A steer to the session's queued run: recorded (its `userMessage`, `payload`) and held, its node's id answered; undefined when it has none. */
+  async hold(sessionId: string, text: string, payload: Readonly<Record<string, unknown>> = { text, trigger: "steer" }): Promise<{ readonly nodeId?: string } | undefined> {
     const q = this.#queue.find((x) => x.sessionId === sessionId);
-    if (q === undefined || !this.#d.current(sessionId, q.runId)) return false;
+    if (q === undefined || !this.#d.current(sessionId, q.runId)) return undefined;
     const node = await this.#d.turns.append({ sessionId, runId: q.runId, kind: "userMessage", payload });
-    q.steers.push({ text, ...(node === undefined ? {} : { nodeId: node.id, at: node.createdAt }), ...(context === undefined ? {} : { context }) });
-    return true;
+    q.steers.push({ text, ...(node === undefined ? {} : { nodeId: node.id, at: node.createdAt }) });
+    return node === undefined ? {} : { nodeId: node.id };
   }
 
   isQueued(sessionId: string): boolean {

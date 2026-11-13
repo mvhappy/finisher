@@ -94,6 +94,7 @@ export abstract class RuntimeEngine {
       // A tail's stop: the session's current instance stops its run, if one is going on.
       stop: (id, r) => (this.lives.has(id) ? this.requestStop(this.lives.get(id)!, r) : Promise.resolve()),
       dropped: () => void this.dropped++,
+      events: this.deps.sessionEvents,
     });
   }
 
@@ -486,10 +487,7 @@ export abstract class RuntimeEngine {
   }
 
   protected async crossings(live: Live, runId: string, c: Crossings): Promise<void> {
-    for (const n of c.notices) {
-      await this.append({ sessionId: live.sessionId, runId, kind: "notice", payload: { budget: n.kind, used: n.used, limit: n.limit, at: 0.8 } });
-      this.deps.sessionEvents?.budget(live.sessionId, n);
-    }
+    await this.#usage.notices(live.sessionId, runId, c.notices);
     if (c.stop) await this.requestStop(live, c.stop);
   }
 

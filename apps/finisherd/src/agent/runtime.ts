@@ -29,7 +29,7 @@ import { finError, toFinError } from "../errors.ts";
 import { DEFAULT_BUDGET } from "./budget.ts";
 import { childCarve } from "./carve.ts";
 import { interruptReason, resumeDenied, resumePrompt } from "./child-resume.ts";
-import { CommandOrder, HookContexts, type HookContextItem } from "./hook-context.ts";
+import { CommandOrder, HookContexts, type HookContextItem, type Prompted } from "./hook-context.ts";
 import { AgentCoreTag } from "./core.ts";
 import { openSession, registryBranchOps } from "./credentials.ts";
 import { type RuntimeDeps, RuntimeEngine, STOP_GRACE_MS } from "./runtime-engine.ts";
@@ -39,7 +39,7 @@ import { LiveLimits } from "./live-limits.ts";
 import { CRITIC_ROLE } from "./outcomes.ts";
 import { BUNDLED_ROLES } from "./roles.ts";
 import { DEFAULT_LIMITS } from "./settings.ts";
-import type { Applied, Recovery } from "./store.ts";
+import type { Appended, Applied, NewNode, Recovery } from "./store.ts";
 import { type ChildOpen, Subagents } from "./subagents.ts";
 import { conversationOps, type RollbackResult, type Rollbacks } from "./rollback.ts";
 import { agentWarnings } from "./warnings.ts";
@@ -69,9 +69,6 @@ async function exitOf<A>(e: Effect.Effect<A, FinError>): Promise<A> {
   throw Option.isSome(err) ? err.value : Cause.squash(exit.cause);
 }
 
-/** A prompt's `UserPrompt` hook input (a resume's is known only in its turn: `resendReturned`). */
-type Prompted = { readonly by: Principal; readonly text: string; readonly origin: "prompt" | "steer" };
-
 /** The runtime over the server's `AgentCore` (Task 12 builds it in `main.ts`, after the core). */
 /** The runtime's deps: the engine's, and the rollbacks (7B Task 8, `rollback.ts`). */
 type Deps = RuntimeDeps & { readonly rollbacks?: Rollbacks };
@@ -89,7 +86,7 @@ export class Runtime extends RuntimeEngine {
   readonly #limits: LiveLimits;
   readonly subagents: Subagents;
   readonly #rollbacks: Rollbacks | undefined;
-  readonly #contexts = new HookContexts({ session: (id) => this.store.get(id), activeRun: (id) => this.store.activeRun(id), live: (id) => this.lives.get(id), append: (n) => this.append(n), queued: (id, t, p, item) => this.#limits.hold(id, t, p, item), background: (id, what, f) => this.background(id, what, f), log: (m, d) => this.log(m, d) });
+  readonly #contexts = new HookContexts({ session: (id) => this.store.get(id), activeRun: (id) => this.store.activeRun(id), live: (id) => this.lives.get(id), append: (n) => this.append(n), queued: (id, t, p) => this.#limits.hold(id, t, p), background: (id, what, f) => this.background(id, what, f), log: (m, d) => this.log(m, d) });
   readonly #order = new CommandOrder();
   readonly #conversation = conversationOps({ lives: this.lives, adapter: (h) => this.adapter(h), open: (s) => this.ensureLive(s), close: (id) => this.stopLive(id), append: (n) => this.append(n) });
 
@@ -102,7 +99,6 @@ export class Runtime extends RuntimeEngine {
       max: () => ({ builtin: limits().maxLiveBuiltin, provider: limits().maxLiveProviders }),
       active: () => this.store.tree.active(),
       current: (id, runId) => this.store.get(id)?.status === "running" && this.store.activeRun(id) === runId,
-      unsent: (id, c) => this.#contexts.requeue(id, c),
       turns: {
         session: (id) => this.session(id),
         open: (s) => this.ensureLive(s),
@@ -585,6 +581,11 @@ export class Runtime extends RuntimeEngine {
     for (const approval of this.store.approvals(s.id)) {
       if (approval.status === "expired") this.record("an approval", () => this.journal.approval({ session: s, approval }));
     }
+  }
+
+  /** Every node: a `steerReturned` notice without its hook context, held again (`HookContexts.returned`). */
+  protected override append(n: NewNode): Promise<Appended> {
+    return super.append(this.#contexts.returned(n));
   }
 
   /** `agent.watch`: the stored nodes from `fromSeq`, the status, then live items until `ended`. */
