@@ -15,6 +15,7 @@ import { projectIdIn } from "./chain/resolve.ts";
 import { holdLibraries, movedFrom, type OpenProject } from "./open-project.ts";
 import { projectEvents, type StatusAt } from "./project-events.ts";
 import { ProjectIndex } from "./project-index.ts";
+import { branchReads } from "./branch-reads.ts";
 
 /** What `prepareMediaJob` resolves to: the rev written, the plan's BLAKE3 at each time and the files the worker opens. */
 export interface MediaJobPrepared {
@@ -558,7 +559,6 @@ export function makeProjectRegistry(
       rebuild: (projectId) => on(projectId, (e) => e.rebuild()),
       compact: (projectId) => on(projectId, (e) => e.compact()),
       txGet: (projectId, txId) => on<TxGetResult>(projectId, async (e) => (await e.txGet(txId)) ?? "null"),
-      historyLog: (projectId, branch, before, limit) => on<HistoryLogResult>(projectId, (e) => e.log(branch, before, limit)),
       acknowledgeRewind: (projectId, requested, generation, meta) =>
         Effect.flatMap(resolveBranch(projectId, requested), (branch) =>
           on<boolean>(projectId, async (e) => String(await e.acknowledgeRewind(branch, generation, metaJson(meta)))),
@@ -570,23 +570,7 @@ export function makeProjectRegistry(
       openDirs: () => [...byId.values()].map((p) => p.dir).concat([...closedHere.values()]),
       indexedDirOf: (projectId) => (closed ? undefined : index.dirOf(projectId)),
       resolveBranch,
-      evalFrame: (projectId, requested, timeline, at, rev) =>
-        Effect.flatMap(resolveBranch(projectId, requested), (branch) =>
-          on<FramePlan>(projectId, (e) => e.evalFrame(branch, timeline, at, rev)),
-        ),
-      evalAudio: (projectId, requested, timeline, from, to, rev) =>
-        Effect.flatMap(resolveBranch(projectId, requested), (branch) =>
-          on<AudioPlan>(projectId, (e) => e.evalAudio(branch, timeline, from, to, rev)),
-        ),
-      fontsPlan: (projectId, requested, ops) =>
-        Effect.flatMap(resolveBranch(projectId, requested), (branch) =>
-          on<FontsPlan>(projectId, (e) => e.fontsPlan(branch, JSON.stringify(ops))),
-        ),
-
-      prepareMediaJob: (projectId, requested, timeline, at, inputDir, fontCache, paramsJson) =>
-        Effect.flatMap(resolveBranch(projectId, requested), (branch) =>
-          on<MediaJobPrepared>(projectId, (e) => e.prepareMediaJob(branch, timeline, [...at], inputDir, { fontCache: fontCache ?? null, paramsJson: paramsJson ?? null })),
-        ),
+      ...branchReads(resolveBranch, on),
 
       hubCount: () => hubs.size,
       engineOf: (projectId) => byId.get(projectId)?.engine,
