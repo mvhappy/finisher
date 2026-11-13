@@ -1,6 +1,8 @@
 // jobs 0001 (5C-1 Task 7, Decision 25): `jobs` and `job_items`. Frozen once merged: never edit.
 // No foreign key leaves the chain; `isolation` holds Decision 32's state (JSON), `phase` is
 // `run` or `hooks` (Decision 40).
+// One edit after merge, while Finisher had no users: `jobs_dedupe` gained the owner and
+// `createdAt` (5C-2 scoped dedupe to the owner, and `jobs_owner_created` then won the plan).
 import type { DatabaseSync } from "node:sqlite";
 import type { Migration } from "../../migrations.ts";
 
@@ -18,7 +20,7 @@ export const jobs0001: Migration = {
         result TEXT, error TEXT, isolation TEXT, createdAt INTEGER NOT NULL, startedAt INTEGER,
         finishedAt INTEGER, nextRunAt INTEGER);
       CREATE UNIQUE INDEX jobs_idem ON jobs (ownerKind, ownerId, idemKey) WHERE idemKey IS NOT NULL;
-      CREATE INDEX jobs_dedupe ON jobs (kind, dedupeKey) WHERE dedupeKey IS NOT NULL;
+      CREATE INDEX jobs_dedupe ON jobs (kind, dedupeKey, ownerKind, ownerId, createdAt) WHERE dedupeKey IS NOT NULL;
       CREATE INDEX jobs_active ON jobs (state, priority, createdAt) WHERE finishedAt IS NULL;
       CREATE INDEX jobs_finished ON jobs (finishedAt) WHERE finishedAt IS NOT NULL;
       CREATE INDEX jobs_owner ON jobs (ownerKind, ownerId, createdAt);

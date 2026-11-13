@@ -208,6 +208,19 @@ const COLUMNS =
   "pausedFrom, warm, attempts, maxAttempts, idemKey, dedupeKey, checkpoint, extra, result, error, isolation, stats, createdAt, " +
   "startedAt, finishedAt, nextRunAt";
 
+/**
+ * The dedupe lookups (parameters: kind, dedupeKey, ownerKind, ownerId). Exported so a test can
+ * check their plan: they must read `jobs_dedupe`, whose columns cover the whole filter.
+ */
+export const DEDUPE_SQL = {
+  active:
+    `SELECT ${COLUMNS} FROM jobs WHERE kind = ? AND dedupeKey = ? AND ownerKind = ? AND ownerId = ? AND state IN ('queued', 'running', 'paused') ` +
+    "ORDER BY createdAt DESC LIMIT 1",
+  poisoned:
+    `SELECT ${COLUMNS} FROM jobs WHERE kind = ? AND dedupeKey = ? AND ownerKind = ? AND ownerId = ? AND state = 'failed' AND json_extract(error, '$.code') = 'POISON_ITEM' ` +
+    "ORDER BY finishedAt DESC LIMIT 1",
+} as const;
+
 export class JobStore {
   readonly #store: ControlStore;
   readonly #clock: () => number;
@@ -231,13 +244,8 @@ export class JobStore {
         "SELECT jobId, item, error FROM job_items WHERE error IS NOT NULL AND jobId IN (SELECT value FROM json_each(?)) ORDER BY jobId, item",
       ),
       byIdem: p(`SELECT ${COLUMNS} FROM jobs WHERE ownerKind = ? AND ownerId = ? AND idemKey = ?`),
-      activeByDedupe: p(
-        `SELECT ${COLUMNS} FROM jobs WHERE kind = ? AND dedupeKey = ? AND ownerKind = ? AND ownerId = ? AND state IN ('queued', 'running', 'paused') ORDER BY createdAt DESC LIMIT 1`,
-      ),
-      poisonedByDedupe: p(
-        `SELECT ${COLUMNS} FROM jobs WHERE kind = ? AND dedupeKey = ? AND ownerKind = ? AND ownerId = ? AND state = 'failed' AND json_extract(error, '$.code') = 'POISON_ITEM' ` +
-          "ORDER BY finishedAt DESC LIMIT 1",
-      ),
+      activeByDedupe: p(DEDUPE_SQL.active),
+      poisonedByDedupe: p(DEDUPE_SQL.poisoned),
       update: p(
         "UPDATE jobs SET state = ?, phase = ?, pausedFrom = ?, warm = ?, attempts = ?, priority = ?, checkpoint = ?, extra = ?, " +
           "result = ?, error = ?, isolation = ?, stats = ?, startedAt = ?, finishedAt = ?, nextRunAt = ? WHERE id = ? AND state = ? AND phase = ?",

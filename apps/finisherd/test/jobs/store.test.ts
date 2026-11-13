@@ -7,7 +7,7 @@ import { Effect } from "effect";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { type ControlStore, openControlStore } from "../../src/control/db.ts";
 import { CONTROL_CHAINS, ChainRegistry } from "../../src/control/migrations.ts";
-import { JobStore, type NewJobRow } from "../../src/jobs/store.ts";
+import { DEDUPE_SQL, JobStore, type NewJobRow } from "../../src/jobs/store.ts";
 
 let dir: string;
 const open: ControlStore[] = [];
@@ -85,6 +85,26 @@ describe("job store", () => {
     const mine = plan("SELECT id FROM jobs WHERE ownerKind = 'local' AND ownerId = 'local' ORDER BY createdAt DESC, id DESC LIMIT 51");
     expect(mine).toContain("jobs_owner_created");
     expect(mine).not.toContain("TEMP B-TREE");
+  });
+
+  test("dedupe_lookups_read_the_dedupe_index", () => {
+    // 5C-2 added the owner to both filters; `jobs_owner_created` then won the plan and walked
+    // every row of the owner (3.2 ms p99 at 10,000 jobs against a 1 ms budget).
+    // EXPLAIN QUERY PLAN text is not a stable format: match the index and each equality term
+    // on their own rather than one exact line.
+    const s = control();
+    const plan = (sql: string) =>
+      (s.db.prepare(`EXPLAIN QUERY PLAN ${sql}`).all("test.echo", "d", "local", "local") as Array<{ detail: string }>).map((r) => r.detail);
+    const seeksDedupe = (details: string[]) => {
+      const search = details.find((d) => /\bjobs_dedupe\b/.test(d));
+      expect(search, details.join(" | ")).toBeDefined();
+      for (const term of ["kind=?", "dedupeKey=?", "ownerKind=?", "ownerId=?"]) expect(search).toContain(term);
+      expect(details.join(" | ")).not.toContain("jobs_owner_created");
+    };
+    const active = plan(DEDUPE_SQL.active);
+    seeksDedupe(active);
+    expect(active.join(" | ")).not.toContain("TEMP B-TREE");
+    seeksDedupe(plan(DEDUPE_SQL.poisoned));
   });
 
   test("insert_and_get_keep_every_field", () => {
