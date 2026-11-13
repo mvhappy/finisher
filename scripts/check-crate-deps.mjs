@@ -5,6 +5,10 @@
 //   `fin-media`, `fin-container` and, for the job-output move, `fin-shm`);
 // - only `fin-workers` links `fin-codecs` (and `fin-svt-sys` and `fin-dav1d-sys`, through
 //   it), and only `fin-workers` and `fin-wasm` link `fin-compositor`;
+// - `fin-audio` is linked only by `fin-workers` and `fin-wasm` (never `fin-codecs`) and links only
+//   `fin-core` and `fin-media`; the opus and vo-aacenc sys crates only by `fin-codecs`/`fin-workers`;
+//   AudioToolbox bindings only on macOS, `fin-aacenc-sys` and symphonia's `aac` feature only on
+//   Linux; no `rustfft` anywhere (6C Task 1).
 // - `fin-workers` takes `fin-fonts` with `default-features = false` and without `fetch`
 //   (workers never fetch).
 // - `fin-codecs`' platform codec crates are target-gated (6B-1 plan Global Constraints): the
@@ -34,6 +38,7 @@ export const RULES = [
 /** Members whose closure may hold no other workspace member than the listed ones. */
 export const CONFINED = [
   { crate: "fin-dataset-inputs", may: ["fin-core"], why: "the dataset builder reads the journal's files only, never control.db" },
+  { crate: "fin-audio", may: ["fin-core", "fin-media"], why: "the audio crate is pure: it links fin-core and fin-media only" },
   { crate: "fin-plugin-sdk", may: ["fin-core", "fin-jobs", "fin-plugin-api", "fin-shm"], why: "a plugin built on the SDK carries nothing of the server or the media engine" },
 ];
 /** Crates only the listed members may link. */
@@ -42,13 +47,24 @@ export const ONLY = [
   { crate: "fin-svt-sys", by: ["fin-codecs", "fin-workers"] },
   { crate: "fin-dav1d-sys", by: ["fin-codecs", "fin-workers"] },
   { crate: "fin-compositor", by: ["fin-workers", "fin-wasm"] },
+  // Transitive: `fin-codecs` hands out decoded audio at its native rate and layout, and the
+  // worker converts it (6C Global Constraints).
+  { crate: "fin-audio", by: ["fin-workers", "fin-wasm"] },
+  { crate: "fin-opus-sys", by: ["fin-codecs", "fin-workers"] },
+  { crate: "fin-aacenc-sys", by: ["fin-codecs", "fin-workers"] },
 ];
 
 /** Direct dependencies a member may declare only under the given `cfg` target. */
 export const TARGETED = [
   { crate: "fin-codecs", deps: ["objc2", "objc2-core-foundation", "objc2-core-media", "objc2-core-video", "objc2-video-toolbox"], cfg: 'cfg(target_os = "macos")' },
   { crate: "fin-codecs", deps: ["windows"], cfg: "cfg(windows)" },
+  { crate: "fin-codecs", deps: ["objc2-audio-toolbox", "objc2-core-audio-types"], cfg: 'cfg(target_os = "macos")' },
+  { crate: "fin-codecs", deps: ["fin-aacenc-sys"], cfg: 'cfg(target_os = "linux")' },
 ];
+/** The one Linux-gated feature of symphonia (6C Decision 9: Finisher's own AAC code is Linux-only). */
+const AAC_CFG = 'cfg(target_os = "linux")';
+/** Packages no shipped member may reach: `rustfft` is symphonia's `opt-simd-*` path (spec §8.1). */
+const BANNED = [{ name: "rustfft", why: "no FFT crate in the shipped graph: symphonia's opt-simd features are off" }];
 
 export function check(doc) {
   const g = new Graph(doc);
@@ -87,6 +103,15 @@ export function check(doc) {
       out.push(`CRATE_DEPENDENCY: ${t.crate} takes ${d.name} ${d.target ? `under ${d.target}` : "for every target"} (only under ${t.cfg})`);
     }
   }
+  for (const [id, p] of g.packages) {
+    if (!g.members.has(id)) continue;
+    for (const d of p.dependencies ?? []) {
+      if (d.name !== "symphonia" || d.kind === "dev" || !(d.features ?? []).includes("aac") || d.target === AAC_CFG) continue;
+      out.push(`CRATE_DEPENDENCY: ${p.name} takes symphonia's aac feature ${d.target ? `under ${d.target}` : "for every target"} (only under ${AAC_CFG})`);
+    }
+  }
+  for (const b of BANNED)
+    for (const id of g.members) if (reach(g.name(id)).has(b.name)) breach(g.name(id), b.name, b.why);
   const workers = g.packages.get(g.member("fin-workers"));
   for (const d of workers?.dependencies ?? []) {
     if (d.name !== "fin-fonts" || d.kind === "dev") continue;

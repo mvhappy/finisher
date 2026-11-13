@@ -831,7 +831,34 @@ Spec: `docs/specs/2026-11-07-sub-project-6-media-engine-design.md` (§24 maps th
     - Room left, not built (mobile note `docs/specs/2026-11-08-mobile-offline-editing-decisions.md`): a phone-sized proxy tier beside `540`/`1080`, and the iOS reuse of the VideoToolbox backend
 - [ ] 6B-2: stateless platform codecs (`cros-codecs`, VA-API, D3D11VA)
 - [ ] 6C: audio (incl. built-in audio effects, PCM feeds)
-  - [ ] Plan written 2026-11-13, not started: `docs/superpowers/plans/2026-11-13-sub-project-6c-audio.md` (24 tasks in batches A–F: A `fin-audio` crate, channels/layouts, polyphase resampler, WSOLA; B audio effect kinds in the registry (model version +1 at landing), `AudioItem.effects`; C mixer, EQ, compressor/gate/de-esser, loudness/limiter/peaks, the A0 corpus native and wasm32-wasip1; D audio decoders (symphonia 0.6.1 MPL-2.0, libopus 1.6.1, Linux vo-aacenc fork, AudioToolbox, Media Foundation) and audio probing (`PROBE_VERSION` +1 at landing); E `pcm48`/`pcm16m` caches, `media.pcm`, `media.waveform`, proxy Opus audio, `media.listen`/`fin listen`; F diagnostics, e2e, validation, spec as built). Batches A–C start now; E waits on 6B-1 Tasks 13–14, Task 17 on 6B-1 Task 8, Tasks 15–16 on 6B-1's macOS/Windows batches. Unblocks 6E, 6F, 8C's `media.pcm`. Eight owner questions at its end, each with a default the plan uses; the vo-aacenc fork must exist before Task 14 merges
+  - Plan (written 2026-11-13): `docs/superpowers/plans/2026-11-13-sub-project-6c-audio.md`, 24 tasks in batches A-F; implementers branch `sp6c-t<N>` from integration. Reviewer per task: recorded on each line. Eight owner questions at the plan's end, each with a default the plan uses; the vo-aacenc fork must exist before Task 14 merges. Unblocks 6E, 6F, 8C's `media.pcm`.
+  - 6B-1 Tasks 14-22 are in flight on `home/sp6b1` (Tasks 1-13 are there already); 6C's Task 17 needs 6B-1 Task 8, Task 20 needs 6B-1 Task 14, Tasks 15-16 need 6B-1's macOS/Windows batches.
+  - Batches: A `fin-audio` foundations and the DSP core (Tasks 1-4); B the plan grows, audio effect kinds in the registry and `AudioItem.effects` (5-6, parallel with A); C mixer, effects, loudness and the A0 corpus (7-11; needs 3, 4, 6); D decoders, encoders and audio probing (12-17; 12 needs 2, 15 and 16 need 6B-1's platform batches, 17 needs 6B-1 Task 8); E PCM feeds, peaks, proxy audio and `fin listen` (18-21; 20 needs 6B-1 Task 14); F diagnostics, e2e, validation and spec as built (22-24).
+  - Merge points with 6B-1 (plan Decision 1; each is named in its task): `fin-media/src/cache.rs` (`RECIPES`), `fin-media/src/jobs/{mod,caps,manifest}.rs`, `fin-workers/src/media/mod.rs` (`KINDS`), `fin-workers/src/media/proxy.rs` (Task 20, after 6B-1 Task 14), `fin-codecs/src/probe/guidance.rs` (Task 17, after 6B-1 Task 8), `fin-codecs/src/mf/com.rs` (Task 16), `fin-media/src/format.rs` (6B-1 `ContainerKind`, 6C `AudioCodec::Vorbis`), `fin-container/src/mux/{mod,mp4}.rs` (6C only), `fin-core/src/events/{names_media.rs, payloads/media.rs}`, `scripts/check-encoder-call-sites.mjs`, `packages/contracts/src/media-rpcs.ts`, `TASKS.md`. Re-read each file on integration before editing; 6C never edits `fin-codecs/src/{registry,hung,traits}.rs` or `fin-media/src/backend.rs`.
+  - [x] Task 1: tracker, the `fin-audio` crate, dependencies and gates
+  - [ ] Task 2: channels, test signals and analysis helpers
+  - [ ] Task 3: the scalar polyphase resampler
+  - [ ] Task 4: WSOLA time-stretch
+  - [ ] Task 5: the audio effect kinds in the registry, `effect.add` by domain, the model bump
+  - [ ] Task 6: `AudioItem.effects` in `eval_audio`
+  - [ ] Task 7: the mixer: timing, gain, shapes, pan, speed
+  - [ ] Task 8: parameter interpolation and the EQ
+  - [ ] Task 9: compressor, gate and de-esser
+  - [ ] Task 10: loudness measurement, the true-peak limiter, normalisation, peaks
+  - [ ] Task 11: the A0 corpus, native and wasm32 bit-identical
+  - [ ] Task 12: audio decoder traits, the symphonia backend and MP4 audio
+  - [ ] Task 13: libopus decode and encode
+  - [ ] Task 14: AAC-LC on Linux: symphonia decode and vendored vo-aacenc
+  - [ ] Task 15: AudioToolbox AAC decode and encode (macOS host)
+  - [ ] Task 16: Media Foundation AAC decode and encode (Windows 11 host)
+  - [ ] Task 17: probing audio containers; audio rows in the capability report
+  - [ ] Task 18: `pcm48` and `pcm16m`: recipes, `media.pcm`, the library stage
+  - [ ] Task 19: `media.waveform`
+  - [ ] Task 20: proxy recipe v2: Opus audio in proxies
+  - [ ] Task 21: `media.listen` and `fin listen`
+  - [ ] Task 22: diagnostics, the e2e `listen` scenario and CI
+  - [ ] Task 23: performance and cross-platform validation (controller-run)
+  - [ ] Task 24: spec as built, notices and tracker
 - [ ] 6D: layers (effects, masks and mattes, nested, images, SVG, Lottie, captions raster)
 - [ ] 6E: export
 - [ ] 6F: preview engine

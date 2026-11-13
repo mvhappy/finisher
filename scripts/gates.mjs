@@ -38,6 +38,8 @@ const steps = [
   ["cargo", ["build", "-q", "-p", "fin-text", "--target", "wasm32-unknown-unknown"]],
   ["cargo", ["build", "-q", "-p", "fin-plugin-api", "--target", "wasm32-unknown-unknown"]],
   ["cargo", ["build", "-q", "-p", "fin-media", "-p", "fin-container", "--target", "wasm32-unknown-unknown"]],
+  // The audio crate: mixer, resampler, effects and limiter build for the browser too (6C).
+  ["cargo", ["build", "-q", "-p", "fin-audio", "--target", "wasm32-unknown-unknown"]],
   // The compositor builds for the browser too (spec §5.3); 6A checks it, fin-wasm (6F) links it.
   ["cargo", ["check", "-q", "-p", "fin-compositor", "--features", "reference", "--target", "wasm32-unknown-unknown"]],
 ];

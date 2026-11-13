@@ -1,0 +1,19 @@
+//! The audio engine (sub-project 6 spec §8, plan 6C): rational time to sample index, planar
+//! stereo buffers and, in later tasks, the mixer, resampler, time-stretch, effects and loudness.
+//! No I/O, no clocks, no randomness; builds for `wasm32-unknown-unknown`, and every hashed
+//! output is bit-identical native and on wasm32 (`scripts/check-eval-floats.mjs` holds the float
+//! rules, `libm::` for transcendentals).
+
+#![forbid(unsafe_code)]
+
+pub mod buf;
+pub mod time;
+
+pub use buf::Stereo;
+pub use time::sample_at;
+
+/// The engine's sample rate: every mixed or cached feed is 48 kHz.
+pub const RATE: u32 = 48_000;
+
+/// Bumped when any hashed audio output changes (the A0 golden hashes are re-blessed with it).
+pub const AUDIO_VERSION: u32 = 1;

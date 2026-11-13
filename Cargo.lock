@@ -1110,6 +1110,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "fin-audio"
+version = "0.0.0"
+dependencies = [
+ "fin-audio",
+ "fin-core",
+ "libm",
+]
+
+[[package]]
 name = "fin-codecs"
 version = "0.0.0"
 dependencies = [

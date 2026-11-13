@@ -172,3 +172,26 @@ test("the tone mapping and soft clip are render modules, and must stay where the
   assert.match(moved.out, /colour\/tonemap\.rs: missing/);
   assert.equal(moved.out.trim().split("\n").length, 1, moved.out);
 });
+
+test("audio_module_refuses_powf: a fin-audio render module takes libm::, not platform floats (6C Task 1)", () => {
+  const r = gate(
+    fixtureRoot({
+      "crates/fin-audio/src/mix/curves.rs": "fn g(x: f32, y: f32) -> f32 { x.powf(y) + libm::powf(x, y) }\n",
+      "crates/fin-audio/src/mix/pan.rs": "fn p(x: f32) -> f32 { libm::sqrtf(x) }\n",
+    }),
+  );
+  assert.equal(r.code, 1);
+  assert.equal(r.out.trim().split("\n").length, 1, r.out);
+  assert.match(r.out, /fin-audio\/src\/mix\/curves\.rs:1: calls \.powf\(\) \(render floats/);
+});
+
+test("audio_meter_exempt: the loudness meter and the test helpers are outside the audio rules", () => {
+  const r = gate(
+    fixtureRoot({
+      "crates/fin-audio/src/loudness/meter.rs": "fn m(x: f64) -> f64 { x.powf(2.0) + x.log10() }\n",
+      "crates/fin-audio/src/testing/signals.rs": "fn s(x: f64) -> f64 { x.sin() }\n",
+      "crates/fin-audio/src/loudness/limiter.rs": "fn l(x: f32) -> f32 { libm::expf(x) }\n",
+    }),
+  );
+  assert.equal(r.code, 0, r.out);
+});
