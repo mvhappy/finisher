@@ -61,6 +61,7 @@ pub(super) use crate::TickPoint as Point;
 /// The test points outside test builds (never armed).
 #[cfg(not(any(test, feature = "test-hooks")))]
 #[derive(Clone, Copy)]
+#[expect(clippy::enum_variant_names, reason = "the names of `TickPoint`'s variants")]
 pub(super) enum Point {
     CompactList,
     CompactRead,
