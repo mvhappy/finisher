@@ -6,6 +6,7 @@ import { dirname, join } from "node:path";
 import { fixtureRoot, runGate } from "./gate-helpers.mjs";
 
 const FILE = "crates/fin-audio/tests/a0/expected.json";
+const LIB = "crates/fin-audio/src/lib.rs";
 const gate = (root) => runGate("./check-a0-history.mjs", ["--root", root]);
 
 function git(root, ...args) {
@@ -22,13 +23,25 @@ function expected(audioVersion, plans) {
   return JSON.stringify({ audioVersion, chunkFrames: 480, plans }, null, 2) + "\n";
 }
 
-function write(root, text) {
-  const full = join(root, FILE);
+function put(root, path, text) {
+  const full = join(root, path);
   mkdirSync(dirname(full), { recursive: true });
   writeFileSync(full, text);
 }
 
-/// A repository whose expected.json goes through `versions` (one commit each).
+function lib(version) {
+  return `//! fin-audio\n\n/// Bumped when any hashed audio output changes.\npub const AUDIO_VERSION: u32 = ${version};\n`;
+}
+
+/// Writes expected.json and lib.rs: `v` is the JSON text (lib.rs then carries its
+/// audioVersion) or `{ json, lib }` (the Rust version given apart; `json` may be omitted).
+function write(root, v) {
+  const { json, rust } = typeof v === "string" ? { json: v, rust: JSON.parse(v).audioVersion } : { json: v.json, rust: v.lib };
+  if (json !== undefined) put(root, FILE, json);
+  if (rust !== undefined) put(root, LIB, lib(rust));
+}
+
+/// A repository whose expected.json and lib.rs go through `versions` (one commit each).
 function history(...versions) {
   const root = fixtureRoot({ "README.md": "x\n" });
   git(root, "init", "-q", "-b", "main");
@@ -136,4 +149,52 @@ test("no git repository fails loudly", () => {
   const r = gate(root);
   assert.equal(r.code, 1, r.out);
   assert.match(r.out, /A0_HISTORY_UNAVAILABLE/);
+});
+
+test("audioVersion raised in the JSON but not in lib.rs is a finding at that commit", () => {
+  // Commit A moves a hash and bumps the JSON only; commit B catches lib.rs up.
+  const root = history(expected(1, P1), { json: expected(2, P1_MOVED), lib: 1 });
+  const a = git(root, "rev-parse", "--short=12", "HEAD");
+  write(root, { lib: 2 });
+  git(root, "commit", "-q", "-am", "catch up");
+  const r = gate(root);
+  assert.equal(r.code, 1, r.out);
+  assert.match(r.out, new RegExp(`A0_VERSION_MISMATCH: commit ${a}.*audioVersion 2.*AUDIO_VERSION 1`));
+});
+
+test("a lib.rs-only bump without a re-bless is a finding", () => {
+  const r = gate(history(expected(1, P1), { lib: 2 }));
+  assert.equal(r.code, 1, r.out);
+  assert.match(r.out, /A0_VERSION_MISMATCH: commit .*audioVersion 1.*AUDIO_VERSION 2/);
+});
+
+test("the working tree's lib.rs must match its expected.json", () => {
+  const root = history(expected(1, P1));
+  write(root, { lib: 3 });
+  const r = gate(root);
+  assert.equal(r.code, 1, r.out);
+  assert.match(r.out, /A0_VERSION_MISMATCH: working tree/);
+});
+
+test("a lib.rs without AUDIO_VERSION is a finding", () => {
+  const root = history(expected(1, P1));
+  put(root, LIB, "//! no constant\n");
+  git(root, "commit", "-q", "-am", "drop");
+  const r = gate(root);
+  assert.equal(r.code, 1, r.out);
+  assert.match(r.out, /A0_VERSION_MISMATCH: .*no `pub const AUDIO_VERSION/);
+});
+
+test("a root commit holding the file is the baseline", () => {
+  const root = fixtureRoot({});
+  git(root, "init", "-q", "-b", "main");
+  write(root, expected(1, P1));
+  git(root, "add", ".");
+  git(root, "commit", "-q", "-m", "root");
+  write(root, expected(2, P1_MOVED));
+  git(root, "add", ".");
+  // Staged but uncommitted: the index must not stand in for the root commit's parent.
+  write(root, expected(2, P1_MOVED));
+  const r = gate(root);
+  assert.equal(r.code, 0, r.out);
 });
