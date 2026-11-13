@@ -397,7 +397,10 @@ describe("the host sandbox (detection and the probe)", () => {
     expect(hostDirs(d)).toEqual([]);
     expect(existsSync(box.workspace)).toBe(false);
     // A closed host sandbox starts nothing more.
-    expect(Exit.isFailure(await Effect.runPromiseExit(box.spawn(["/bin/true"], { cwd: tmp, stdio: "pipe" })))).toBe(true);
+    // (`/bin/sh`, which every Unix has, in the workspace, so only the closed guard can refuse it.)
+    const closed = await Effect.runPromiseExit(box.spawn(["/bin/sh", "-c", "true"], { cwd: box.workspace, stdio: "pipe" }));
+    expect(Exit.isFailure(closed)).toBe(true);
+    expect(JSON.stringify(Exit.isFailure(closed) ? closed.cause : null)).toContain('"code":"SESSION_INTERRUPTED"');
     // Two at once never share a directory.
     await within(openHostSandbox("detect", "claudeCode", d), (a) =>
       within(openHostSandbox("probe", "claudeCode", d), async (b) => {
