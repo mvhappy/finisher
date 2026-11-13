@@ -1118,6 +1118,21 @@ export type GuidanceCode =
   | "codecPlugin"
   | "laterBatch";
 /**
+ * A resolved value (plan 4C Decision 12): colours are sRGB `[r, g, b, a]` in 0…1.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "PlanValue".
+ */
+export type PlanValue =
+  | boolean
+  | number
+  | [number, number]
+  | [number, number, number, number]
+  | string
+  | {
+      asset: string;
+    };
+/**
  * This interface was referenced by `FinCore`'s JSON-Schema
  * via the `definition` "ShapeKind".
  */
@@ -1397,20 +1412,13 @@ export type ProjectPolicy = "default" | "never" | "unknown";
  */
 export type JournalState = "off" | "on" | "suspended";
 /**
- * A resolved value (plan 4C Decision 12): colours are sRGB `[r, g, b, a]` in 0…1.
+ * What an effect kind processes: pictures (on items of video tracks) or sound (on clips of
+ * audio tracks).
  *
  * This interface was referenced by `FinCore`'s JSON-Schema
- * via the `definition` "PlanValue".
+ * via the `definition` "EffectDomain".
  */
-export type PlanValue =
-  | boolean
-  | number
-  | [number, number]
-  | [number, number, number, number]
-  | string
-  | {
-      asset: string;
-    };
+export type EffectDomain = "visual" | "audio";
 /**
  * One engine event (`Engine.onEvent`), tagged by `type`.
  *
@@ -4857,16 +4865,61 @@ export interface Guidance {
   fix: string;
 }
 /**
+ * One effect of an audio item: `numbers` cover the item's span `[from, to)` without gaps, in
+ * order; `values` are the params that do not move (enums, bools, text).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "AudioEffectPlan".
+ */
+export interface AudioEffectPlan {
+  id: string;
+  kind: string;
+  numbers?: {
+    [k: string]: ParamSegment[];
+  };
+  values?: {
+    [k: string]: PlanValue;
+  };
+}
+/**
+ * A number over `[from, to)`, read like a gain segment: the value at progress `x` of the
+ * segment is `lerp(v[0], v[1], ease(lerp(u[0], u[1], x)))`.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "ParamSegment".
+ */
+export interface ParamSegment {
+  from: Rational;
+  interp: Interp;
+  to: Rational;
+  /**
+   * @minItems 2
+   * @maxItems 2
+   */
+  u: [number, number];
+  /**
+   * @minItems 2
+   * @maxItems 2
+   */
+  v: [number, number];
+}
+/**
  * One item's part of the range: it plays `asset` from `sourceFrom` at `speed` over the
  * timeline span `[from, to)`. `gain` and `pan` cover that span without gaps, in order. An
  * item of a nested timeline lists the nested items it sounds through in `via`, outermost
- * first (its `item` and `track` are its own, on the nested timeline).
+ * first (its `item` and `track` are its own, on the nested timeline). `effects` are its
+ * enabled effects with their numbers as segments over the same span.
  *
  * This interface was referenced by `FinCore`'s JSON-Schema
  * via the `definition` "AudioItem".
  */
 export interface AudioItem {
   asset: string;
+  /**
+   * The item's enabled audio effects in its order (plan 6C Decision 15); absent when none,
+   * so plans without effects hash as before.
+   */
+  effects?: AudioEffectPlan[];
   from: Rational;
   gain: GainSegment[];
   item: string;

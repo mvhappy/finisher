@@ -1,7 +1,7 @@
 //! The settings registry (plan 4C Task 11, spec §5.2): every parameter of every item kind,
-//! built-in effect, track, timeline and marker, as a [`ParamSpec`] with its type, range, unit,
-//! default and fix text. `param.set`, `keyframe.*` and `effect.*` validate through it, and
-//! `fin schema param` lists it.
+//! built-in effect (visual and audio, plan 6C Decision 13), track, timeline and marker, as a
+//! [`ParamSpec`] with its type, range, unit, default and fix text. `param.set`, `keyframe.*` and
+//! `effect.*` validate through it, and `fin schema param` lists it.
 //!
 //! - [`find`] resolves a path in a scope (`PARAM_UNKNOWN` with the closest paths, or
 //!   `SLOT_UNKNOWN` for a graphic's template);
@@ -29,6 +29,7 @@ use crate::error::CoreError;
 use crate::model::{Item, LottieInfo};
 
 mod access;
+mod audio_effects;
 mod check;
 mod effects;
 mod item;
@@ -38,8 +39,8 @@ mod style;
 pub use access::{get, set};
 pub(crate) use check::fill as fill_fix;
 pub use check::{check_range, check_shape, validate};
-pub use effects::effect_kinds;
 pub(crate) use effects::of as effect_specs;
+pub use effects::{EffectDomain, effect_domain, effect_kinds};
 pub use item::slot_spec;
 pub use scopes::{get_marker, get_timeline, get_track, set_marker, set_timeline, set_track};
 #[cfg(test)]
@@ -150,6 +151,8 @@ static ALL: LazyLock<Vec<ParamSpec>> = LazyLock::new(|| {
         item::SPECS,
         item::SLOTS,
         effects::SPECS,
+        audio_effects::EQ,
+        audio_effects::DYNAMICS,
         scopes::TRACK,
         scopes::TIMELINE,
         scopes::MARKER,
@@ -158,8 +161,8 @@ static ALL: LazyLock<Vec<ParamSpec>> = LazyLock::new(|| {
     .concat()
 });
 
-/// Every spec, in a fixed order: item paths, slot kinds, effects, tracks, timelines, markers,
-/// styles.
+/// Every spec, in a fixed order: item paths, slot kinds, visual effects, audio effects, tracks,
+/// timelines, markers, styles.
 pub fn specs() -> &'static [ParamSpec] {
     &ALL
 }

@@ -7,7 +7,8 @@
 //!   version 4 adds 5E's derived `drops` index ([`m0004_drops`]); version 5 is the
 //!   stable-keyframe-ids bump (model v3, [`m0005_keyframe_ids`]); version 6 is the graphic
 //!   `sourceIn` and fade-offsets bump (model v4, [`m0006_fade_offsets`]); version 7 is the
-//!   `VideoInfo` display and `asset.reprobe` bump (model v5, [`m0007_video_display`]).
+//!   `VideoInfo` display and `asset.reprobe` bump (model v5, [`m0007_video_display`]); version 8
+//!   is the audio effect kinds bump (model v6, [`m0008_audio_effects`]).
 //! - The sub-project 2 layout predates both: `application_id` 0, `user_version` 0, a `meta`
 //!   table and a `txs.json` column. It is version 0.
 //! - [`check`] reads all of this through a read-only connection, so a database this code
@@ -23,6 +24,7 @@ mod m0004_drops;
 mod m0005_keyframe_ids;
 mod m0006_fade_offsets;
 mod m0007_video_display;
+mod m0008_audio_effects;
 
 use std::path::{Path, PathBuf};
 
@@ -37,9 +39,9 @@ use crate::{StoreError, backup};
 /// `PRAGMA application_id` of a Finisher project database: "FIN1".
 pub const APPLICATION_ID: i32 = 0x4649_4E31;
 /// The database schema version this code writes (`PRAGMA user_version`).
-pub const DB_VERSION: u32 = 7;
+pub const DB_VERSION: u32 = 8;
 /// The oldest code (by `DB_VERSION`) that can read what this code writes.
-pub(crate) const MIN_READER_VERSION: u32 = 7;
+pub(crate) const MIN_READER_VERSION: u32 = 8;
 
 /// One migration: the database at `from` → `from + 1`. `run` must not touch `user_version`.
 struct Step {
@@ -75,6 +77,10 @@ const STEPS: &[Step] = &[
     Step {
         from: 6,
         run: m0007_video_display::run,
+    },
+    Step {
+        from: 7,
+        run: m0008_audio_effects::run,
     },
 ];
 

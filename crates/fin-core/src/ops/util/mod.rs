@@ -35,8 +35,8 @@ pub(crate) use caption::{
 };
 pub(crate) use carve::{carve, check_carve};
 pub(crate) use check::{
-    check_frame, check_kind, check_source, check_speed, check_track, check_tracks, invalid_range,
-    kind_name, media_duration,
+    check_effect_domains, check_frame, check_kind, check_source, check_speed, check_track,
+    check_tracks, invalid_range, kind_name, media_duration,
 };
 pub(crate) use content::{move_start_edge, shift_content};
 pub(crate) use group::{group_items, members};
