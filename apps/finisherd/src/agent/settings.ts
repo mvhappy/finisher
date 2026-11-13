@@ -25,9 +25,9 @@
 // nothing here throws on read.
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
 import type { AgentWarning, ClosedModelTargets } from "@finisher/contracts";
 import { workersBinaryPath } from "@finisher/fin-node";
+import { cargoProfileDirs } from "../cargo-target.ts";
 import { settingsPath } from "../config.ts";
 import { finError } from "../errors.ts";
 import { patchSection } from "../settings-write.ts";
@@ -228,12 +228,11 @@ const finIn = (dir: string) => join(dir, process.platform === "win32" ? "fin.exe
 
 /**
  * The `fin` the built-in tools run: `agents.finPath`, else the one beside the bundled binaries
- * (fin-node's directory), else a checkout's `target/release/fin` or `target/debug/fin`. The
+ * (fin-node's directory), else `release/fin` or `debug/fin` under `CARGO_TARGET_DIR` and then the checkout's `target/`. The
  * last candidate is answered even when missing: the provider reports it not installed.
  */
-export function resolveFinPath(settings: AgentSettings): string {
+export function resolveFinPath(settings: AgentSettings, env: Record<string, string | undefined> = process.env, repo?: string): string {
   if (settings.finPath !== undefined) return settings.finPath;
-  const repo = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "..");
-  const candidates = [finIn(dirname(workersBinaryPath())), finIn(join(repo, "target", "release")), finIn(join(repo, "target", "debug"))];
+  const candidates = [finIn(dirname(workersBinaryPath())), ...cargoProfileDirs(repo, env).map(finIn)];
   return candidates.find((p) => existsSync(p)) ?? candidates[candidates.length - 1]!;
 }
