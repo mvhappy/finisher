@@ -29,13 +29,13 @@ use crate::source::{SourceFrame, SourceProvider, walk};
 
 pub(crate) const ACC: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
 pub(crate) const OUT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
-fn floats(v: &[f32]) -> Vec<u8> {
+pub(crate) fn floats(v: &[f32]) -> Vec<u8> {
     v.iter().flat_map(|f| f.to_ne_bytes()).collect()
 }
 
 /// A uniform buffer holding `v` (written through the queue: `create_buffer_init` maps at
 /// creation, which panics on a lost device).
-fn uniform(gpu: &Gpu, v: &[f32]) -> wgpu::Buffer {
+pub(crate) fn uniform(gpu: &Gpu, v: &[f32]) -> wgpu::Buffer {
     let bytes = floats(v);
     let b = gpu.device().create_buffer(&wgpu::BufferDescriptor {
         label: Some("fin-compositor uniforms"),
@@ -47,12 +47,12 @@ fn uniform(gpu: &Gpu, v: &[f32]) -> wgpu::Buffer {
     b
 }
 
-fn view(t: &wgpu::Texture) -> wgpu::TextureView {
+pub(crate) fn view(t: &wgpu::Texture) -> wgpu::TextureView {
     t.create_view(&wgpu::TextureViewDescriptor::default())
 }
 
 /// A bind group of `resources` at bindings `first`, `first + 1`, …
-fn bind_from(
+pub(crate) fn bind_from(
     device: &wgpu::Device,
     pipeline: &wgpu::RenderPipeline,
     first: u32,
@@ -73,7 +73,7 @@ fn bind_from(
     })
 }
 
-fn bind(
+pub(crate) fn bind(
     device: &wgpu::Device,
     pipeline: &wgpu::RenderPipeline,
     resources: Vec<wgpu::BindingResource<'_>>,
@@ -82,7 +82,7 @@ fn bind(
 }
 
 /// One full-target draw (limited to `scissor`, `[x, y, w, h]`, when given).
-fn pass(
+pub(crate) fn pass(
     enc: &mut wgpu::CommandEncoder,
     target: &wgpu::Texture,
     load: wgpu::LoadOp<wgpu::Color>,
@@ -115,7 +115,7 @@ fn pass(
     rp.draw(0..3, 0..1);
 }
 
-fn too_large(what: &str, size: Size, max: u32) -> CoreError {
+pub(crate) fn too_large(what: &str, size: Size, max: u32) -> CoreError {
     CoreError::new(
         "MEDIA_LIMIT",
         format!("the {what} is larger than the GPU's {max}-pixel texture limit"),
@@ -136,8 +136,8 @@ struct Frame<'a> {
 
 /// The GPU compositor: pipelines, the texture pool, the sampler and the readback buffer.
 pub struct Compositor {
-    pipelines: Pipelines,
-    pool: Pool,
+    pub(crate) pipelines: Pipelines,
+    pub(crate) pool: Pool,
     sampler: wgpu::Sampler,
     readback: Readback,
     shader_blends: bool,
@@ -211,6 +211,27 @@ impl Compositor {
                 skipped,
             });
         }
+        let (skipped, buffer) = self.scoped(gpu, |c| c.encode(gpu, plan, src, out))?;
+        let started = std::time::Instant::now();
+        let rgba8 = readback::read(gpu, &buffer, out.width, out.height)?;
+        self.last_readback_micros =
+            u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX);
+        Ok(RenderOutput {
+            size: out,
+            rgba8,
+            skipped,
+        })
+    }
+
+    /// Runs `f` (which records and submits GPU work) inside out-of-memory, internal and
+    /// validation error scopes and ends the pool's frame; the first error a scope caught, or a
+    /// lost device, wins over `f`'s own answer. Anything but `INTERNAL` clears the pool and the
+    /// readback buffer.
+    pub(crate) fn scoped<T>(
+        &mut self,
+        gpu: &Gpu,
+        f: impl FnOnce(&mut Self) -> Result<T, CoreError>,
+    ) -> Result<T, CoreError> {
         let oom = gpu
             .device()
             .push_error_scope(wgpu::ErrorFilter::OutOfMemory);
@@ -218,7 +239,7 @@ impl Compositor {
         // the cause of the validation errors that follow it; it is reported first.
         let internal = gpu.device().push_error_scope(wgpu::ErrorFilter::Internal);
         let validation = gpu.device().push_error_scope(wgpu::ErrorFilter::Validation);
-        let encoded = self.encode(gpu, plan, src, out);
+        let encoded = f(self);
         let invalid = pollster::block_on(validation.pop());
         let broken = pollster::block_on(internal.pop());
         let no_memory = pollster::block_on(oom.pop());
@@ -236,16 +257,7 @@ impl Compositor {
             }
             return Err(e);
         }
-        let (skipped, buffer) = encoded?;
-        let started = std::time::Instant::now();
-        let rgba8 = readback::read(gpu, &buffer, out.width, out.height)?;
-        self.last_readback_micros =
-            u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX);
-        Ok(RenderOutput {
-            size: out,
-            rgba8,
-            skipped,
-        })
+        encoded
     }
 
     fn encode(

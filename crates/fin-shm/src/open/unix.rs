@@ -214,6 +214,26 @@ pub(crate) fn create(path: &Path) -> Result<Opened, Fail> {
     })
 }
 
+/// Makes the directory `path` names (mode 0700) below a no-follow walk; one already there is
+/// kept when it is a real directory (a retried attempt's), refused when it is a link or not a
+/// directory.
+pub(crate) fn create_dir(path: &Path) -> Result<(), Fail> {
+    let (parent, name) = walk(path)?;
+    // SAFETY: a valid directory descriptor and C string.
+    let r = unsafe { libc::mkdirat(parent.as_raw_fd(), name.as_ptr(), 0o700) };
+    if r < 0 {
+        let e = io::Error::last_os_error();
+        if e.raw_os_error() != Some(libc::EEXIST) {
+            return Err(Fail::io(e));
+        }
+    }
+    match facts_of(&stat_nofollow(parent.as_raw_fd(), &name).map_err(Fail::io)?).kind {
+        Kind::Dir => Ok(()),
+        Kind::Link => Err(Fail::new(Reason::Link, "the directory is a link")),
+        _ => Err(Fail::new(Reason::NotRegular, "the path is not a directory")),
+    }
+}
+
 /// Unlinks the entry `path` names (a file or a link, never followed), below a no-follow walk.
 pub(crate) fn remove(path: &Path) -> Result<(), Fail> {
     let (parent, name) = walk(path)?;

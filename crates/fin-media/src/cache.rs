@@ -27,6 +27,7 @@ use std::fmt;
 use crate::RENDER_VERSION;
 use crate::backend::VendorClass;
 use crate::info::MediaInfo;
+use crate::jobs::ToneMapped;
 
 /// A cache recipe: what an entry holds and how it was made (spec §7.2's table).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -237,6 +238,10 @@ pub struct EntryMeta {
     /// The original's `MediaInfo` (proxies: rotation and pixel aspect are applied from it).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub media: Option<MediaInfo>,
+    /// How an HDR source was brought to SDR (proxies, plan 6B-1 Decision 9); absent for SDR.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "ToneMapped")]
+    pub tone_mapped: Option<ToneMapped>,
     /// Unix milliseconds.
     pub created_at: i64,
 }

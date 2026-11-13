@@ -10,7 +10,10 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use fin_core::CoreError;
-use fin_shm::{commit_output, commit_output_copy, create_new_output, create_output, write_input};
+use fin_shm::{
+    commit_output, commit_output_copy, create_new_output, create_output, create_output_dir,
+    write_input,
+};
 
 const CAP: u64 = 1 << 20;
 
@@ -175,4 +178,48 @@ fn write_input_refuses_a_linked_dir_and_replaces_a_linked_name() {
     );
     assert_eq!(std::fs::read(&victim).unwrap(), b"keep me");
     assert_eq!(names(&input), ["snapshot.json"]);
+}
+
+/// 6B-1 Task 14: an output directory (a cache entry's `out/<key>/`) is made below no link, kept
+/// when a retry made it already, and refused when a link or a file has its name.
+#[cfg(unix)]
+#[test]
+fn create_output_dir_makes_or_keeps_a_real_directory_only() {
+    use std::os::unix::fs::PermissionsExt;
+    let (_t, root) = tmp();
+    let dir = root.join("out/key");
+    create_output_dir(&dir).unwrap();
+    let meta = std::fs::symlink_metadata(&dir).unwrap();
+    assert!(meta.is_dir());
+    assert_eq!(meta.permissions().mode() & 0o777, 0o700);
+    // A retried attempt's directory is kept, with what it holds.
+    write(&dir.join("old"), b"x");
+    create_output_dir(&dir).unwrap();
+    assert!(dir.join("old").exists());
+    // Files go in it through the checked create.
+    create_output(&dir.join("meta.json")).unwrap();
+    // A link of that name, to a directory or anywhere, is refused and never followed.
+    let link = root.join("out/linked");
+    std::os::unix::fs::symlink(root.join("elsewhere"), &link).unwrap();
+    assert_eq!(reason(&create_output_dir(&link).unwrap_err()), "link");
+    // A file of that name is not a directory.
+    write(&root.join("out/file"), b"x");
+    assert_eq!(
+        reason(&create_output_dir(&root.join("out/file")).unwrap_err()),
+        "notRegular"
+    );
+    // A linked parent is refused before anything is made.
+    let job = root.join("job");
+    std::fs::create_dir(&job).unwrap();
+    std::os::unix::fs::symlink(root.join("elsewhere"), job.join("out")).unwrap();
+    assert_eq!(
+        reason(&create_output_dir(&job.join("out/key")).unwrap_err()),
+        "link"
+    );
+    assert!(names(&root.join("elsewhere")).is_empty());
+    // Relative paths and `..` are refused.
+    assert_eq!(
+        reason(&create_output_dir(Path::new("out/key")).unwrap_err()),
+        "notAbsolute"
+    );
 }

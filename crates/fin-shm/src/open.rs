@@ -88,6 +88,15 @@ pub fn create_new_output(path: &Path) -> Result<File, CoreError> {
     create_new(path).map(|o| o.file)
 }
 
+/// Makes the output directory `path` for a worker to fill (a cache entry's `out/<key>/`, plan
+/// 6B-1 Task 14): no segment may be a link, the directory itself is made new (mode 0700 on
+/// unix) or, when a retried attempt already made it, kept if it is a real directory. A link,
+/// reparse point or file of that name is `SHM_REFUSED`.
+pub fn create_output_dir(path: &Path) -> Result<(), CoreError> {
+    check_path(path).map_err(|f| to_error(path, f))?;
+    os::create_dir(path).map_err(|f| to_error(path, f))
+}
+
 /// Writes `bytes` as `dir/name` for a worker to read: to `dir/<name>.tmp` made new (an earlier
 /// attempt's leftover is unlinked first), synced, then renamed over `dir/name`. No segment of
 /// `dir` may be a link, and the rename happens on the descriptor of the directory the

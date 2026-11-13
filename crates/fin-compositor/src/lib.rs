@@ -20,6 +20,7 @@ mod layer;
 #[cfg(not(target_os = "wasi"))]
 mod mipgen;
 pub mod mips;
+pub mod nv12;
 mod output;
 #[cfg(not(target_os = "wasi"))]
 mod pipelines;
@@ -30,6 +31,7 @@ mod pool;
 mod readback;
 #[cfg(feature = "reference")]
 pub mod reference;
+pub mod scale;
 mod source;
 
 #[cfg(not(target_os = "wasi"))]
@@ -42,5 +44,7 @@ pub use pool::PoolStats;
 pub use coverage::coverage;
 pub use geometry::{RectF64, base_box, crop_quad, invert, layer_matrix, transform_point};
 pub use mips::mip_level;
+pub use nv12::Nv12Frame;
 pub use output::{RenderOutput, Skipped};
+pub use scale::scale_level;
 pub use source::{LayerIssue, SourceFrame, SourceProvider};

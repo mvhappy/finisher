@@ -7,7 +7,7 @@ use fin_container::{Mp4Options, Mp4Writer, VideoTrackConfig};
 use fin_core::{CoreError, Rational};
 use fin_media::backend::EncodePurpose;
 use fin_media::testing::pattern;
-use fin_media::{ColourTags, Rotation, Size, VideoCodec};
+use fin_media::{ColourTags, HdrInfo, Rotation, Size, VideoCodec};
 
 use crate::config::{EncoderConfig, Gop, RateControl};
 use crate::frame::{EncodedPacket, RawFrame};
@@ -27,6 +27,14 @@ pub struct ClipSpec {
     pub crf: u8,
     pub preset: u8,
     pub seed: u64,
+    /// The colour tags the stream and its `colr` box carry (the pixels are the pattern's either
+    /// way: a PQ- or HLG-tagged clip is an HDR source to every reader).
+    pub colour: ColourTags,
+    /// `mdcv`/`clli` boxes.
+    pub hdr: Option<HdrInfo>,
+    /// An edit list (`(movie ticks, media time or None)`, in the track's ticks) in place of the
+    /// computed one.
+    pub edits: Option<Vec<(u64, Option<u64>)>>,
 }
 
 impl Default for ClipSpec {
@@ -41,6 +49,9 @@ impl Default for ClipSpec {
             crf: 30,
             preset: 10,
             seed: 1,
+            colour: ColourTags::BT709,
+            hdr: None,
+            edits: None,
         }
     }
 }
@@ -71,7 +82,7 @@ pub fn fixture_config(spec: &ClipSpec, codec: VideoCodec) -> EncoderConfig {
         adapter: None,
         preset: Some(spec.preset),
         threads: 1,
-        colour: ColourTags::BT709,
+        colour: spec.colour,
     }
 }
 
@@ -141,9 +152,18 @@ pub fn pattern_clip(spec: &ClipSpec) -> Result<Vec<u8>, CoreError> {
         timescale,
         rotation: spec.rotation,
         pixel_aspect: Rational::from_int(1),
-        colour: ColourTags::BT709,
-        hdr: None,
+        colour: spec.colour,
+        hdr: spec.hdr,
     })?;
+    if let Some(edits) = &spec.edits {
+        w.set_knobs(
+            track,
+            fin_container::mux::knobs::TrackKnobs {
+                edits: Some(edits.clone()),
+                ..Default::default()
+            },
+        );
+    }
     pts.push(t);
     // AV1 temporal units come out in presentation order, one per input frame; the packet's
     // pts is the frame index it was sent with.

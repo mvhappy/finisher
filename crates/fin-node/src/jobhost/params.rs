@@ -3,7 +3,7 @@
 
 use fin_jobs::KindParams;
 use fin_jobs::kinds::{find, schema_as, validate_as};
-use fin_media::jobs::{CapabilitiesParams, LookParams, ProbeDeepParams};
+use fin_media::jobs::{CapabilitiesParams, LookParams, ProbeDeepParams, ProxyParams};
 use napi_derive::napi;
 use serde_json::{Value, json};
 
@@ -47,7 +47,21 @@ static MEDIA: &[KindParams] = &[
         validate: validate_as::<ProbeDeepParams>,
         schema: schema_as::<ProbeDeepParams>,
     },
+    KindParams {
+        kind: "media.proxy",
+        version: 1,
+        validate: validate_proxy,
+        schema: schema_as::<ProxyParams>,
+    },
 ];
+
+/// `ProxyParams`, then one source and a well-formed key (6B-1 Task 14).
+fn validate_proxy(params: &Value) -> Result<Value, Vec<String>> {
+    let filled = validate_as::<ProxyParams>(params)?;
+    let p: ProxyParams = serde_json::from_value(filled.clone()).map_err(|e| vec![e.to_string()])?;
+    p.check().map_err(|e| vec![e.message])?;
+    Ok(filled)
+}
 
 /// `LookParams`, then the checks serde cannot make (counts, sizes, the output name), as the
 /// worker makes them.

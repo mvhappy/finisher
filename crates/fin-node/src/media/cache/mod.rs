@@ -9,7 +9,8 @@
 //!   projects it serves, pinned for the open ones), `commit(jobOutDir, key, projects)` (rename,
 //!   then insert; `commit.rs`), `pin`/`unpin(key, holder)`, `release(holder)`,
 //!   `pinProject`/`unpinProject(projectId)`, `entriesFor(fingerprint)`, `projectsOf(key)`,
-//!   `status()`, `gc(targetBytes?)`, `setCap(capBytes?)`, `entryDir(key)`.
+//!   `status()`, `gc(targetBytes?)`, `setCap(capBytes?)`, `entryDir(key)`, and
+//!   `readFile(key, file, offset, len)` (an entry's listed file for HTTP; `read.rs`).
 //!
 //! Eviction runs after each commit (here) and every 10 minutes (finisherd's timer calls `gc`).
 
@@ -17,6 +18,7 @@ mod adopt;
 mod commit;
 mod evict;
 mod index;
+mod read;
 mod state;
 
 use std::path::PathBuf;
@@ -189,7 +191,7 @@ impl MediaCache {
         self.run(env, move |c| c.serve(&key, &projects))
     }
 
-    /// Pins `key` for `holder` (`job:<id>`, `project:<id>`); false when there is no such entry.
+    /// Pins `key` for `holder` (`job:<id>`, `project:<id>`, `http:<n>`); false when there is no such entry.
     #[napi(catch_unwind, ts_return_type = "Promise<boolean>")]
     pub fn pin<'e>(&self, env: &'e Env, key: String, holder: String) -> Result<Object<'e>> {
         self.run(env, move |c| c.pin(&key, &holder))
@@ -221,6 +223,25 @@ impl MediaCache {
     #[napi(catch_unwind, ts_return_type = "Promise<string>")]
     pub fn entries_for<'e>(&self, env: &'e Env, fingerprint: String) -> Result<Object<'e>> {
         self.run(env, move |c| json_of(&c.entries_for(&fingerprint)?))
+    }
+
+    /// Up to `len` bytes (at most 1 MiB) of the entry file `file` from `offset`, opened without
+    /// following a link; empty at or past its end; `null` when the entry lists no such file
+    /// (spec §7.3). `SHM_REFUSED` when the file is a link or larger than listed.
+    #[napi(catch_unwind, ts_return_type = "Promise<Buffer | null>")]
+    pub fn read_file<'e>(
+        &self,
+        env: &'e Env,
+        key: String,
+        file: String,
+        offset: f64,
+        len: f64,
+    ) -> Result<Object<'e>> {
+        let offset = bytes_arg("offset", Some(offset))?.unwrap_or(0);
+        let len = bytes_arg("len", Some(len))?.unwrap_or(0);
+        self.run(env, move |c| {
+            Ok(c.read_file(&key, &file, offset, len)?.map(Buffer::from))
+        })
     }
 
     /// The projects `key` serves (reach, spec §7.3).

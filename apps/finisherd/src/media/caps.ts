@@ -27,12 +27,17 @@ export function hwencSize(answer: unknown): number {
   return limits.length === 0 ? HWENC_DEFAULT : Math.min(...limits);
 }
 
+/** The cache's ask, and its answer so far (sync: the `media.proxy` kind's resources read it, 6B-1 Task 14). */
+export type CapabilitiesCache = ((owner: JobOwner) => Effect.Effect<MediaCapabilities, FinError>) & { readonly current: () => MediaCapabilities | undefined };
+
 /** The cache of one server run: the answer, or the ask in flight (concurrent calls share it). */
 export function mediaCapabilities(deps: {
   readonly engine: MediaRpcDeps["engine"] & Partial<Pick<JobEngine, "definePool">>;
-}): (owner: JobOwner) => Effect.Effect<MediaCapabilities, FinError> {
+  /** Called once, with the first answer (6B-1 Task 14: the `proxy540` stage registers then). */
+  readonly onAnswer?: (answer: MediaCapabilities) => void;
+}): CapabilitiesCache {
   let cached: MediaCapabilities | undefined;
-  return (owner) =>
+  const ask = (owner: JobOwner): Effect.Effect<MediaCapabilities, FinError> =>
     Effect.suspend(() => {
       if (cached !== undefined) return Effect.succeed(cached);
       return Effect.gen(function* () {
@@ -45,7 +50,9 @@ export function mediaCapabilities(deps: {
         cached = done.result as MediaCapabilities;
         const size = hwencSize(cached);
         if (size !== HWENC_DEFAULT) deps.engine.definePool?.("hwenc", size);
+        deps.onAnswer?.(cached);
         return cached;
       });
     });
+  return Object.assign(ask, { current: () => cached });
 }

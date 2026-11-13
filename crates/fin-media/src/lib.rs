@@ -12,6 +12,7 @@ pub mod format;
 pub mod info;
 pub mod jobs;
 pub mod sample;
+pub mod table_bin;
 #[cfg(feature = "testing")]
 pub mod testing;
 mod version;
