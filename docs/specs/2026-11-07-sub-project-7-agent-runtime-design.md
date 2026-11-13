@@ -325,7 +325,7 @@ interface Capabilities { steer; rollback; resume; reasoning; images; parallelToo
 
 **As built (7A):** an agent's edits land by a person's `fin merge <branch>` (the branch is a positional) as `local`, or from the console; the outcome tracker records them (§12.5). No setting enables the `auto` policy yet: `AUTO_MERGE_UNAVAILABLE` is reserved in the exit-code tables for turning it on, and nothing raises it until sub-project 10 builds the policy.
 
-**As built (7B):** a `draft` or `auto` session asks for a review with `fin review request` (`review.write`, §6.1) for its own root; the request emits `branchReady` and leaves a `notice {review}` in the session's run, which goes on (§9.1: the run does **not** end with a summary node). A parent merges a child's branch into its own with `fin merge <child branch>` (a read of the child's branch, §6.3). 5E's `review.policy` turning `auto` merge on still answers `AUTO_MERGE_UNAVAILABLE` (§6.5).
+**As built (7B):** a `draft` or `auto` session asks for a review with `fin review request` (`review.write`, §6.1) for its own root; the request emits `branchReady` and leaves a `notice {review}` in the session's run, which goes on (§9.1: the run does **not** end with a summary node; approved by the owner on 2026-11-12). A parent merges a child's branch into its own with `fin merge <child branch>` (a read of the child's branch, §6.3). 5E's `review.policy` turning `auto` merge on still answers `AUTO_MERGE_UNAVAILABLE` (§6.5).
 
 ### 5.5 Concurrency
 
@@ -1271,7 +1271,7 @@ The numbers are the **plan's** Decision numbers. **As built** = built as decided
 | 22 | Carve-outs, default half the parent's remaining | As built; **deviation (owner decision 2026-11-09):** tokens and money only, not the wall clock | §13.1 |
 | 23 | Rollback by people and a parent for its own children | As built with deviations: "to run *r*" is the end of run *r* (0: before the first run); the session's later undos and redos are reversed too; one `afterSeq` undo per branch (owner decision 2026-11-09); runs are never renumbered; the answer and the interface widened | §5.3 |
 | 24 | Compaction at 75 %, `summary` node, `purpose: compaction` | **Deviation (owner decision 2026-11-09):** a compaction that cannot be made falls back to the uncompacted request while it fits | §4.4 |
-| 25 | Review requests from sessions; `branchReady`; the run ends with a summary node | **Deviation:** the run does not end; a `notice {review}` instead; the event also carries `projectId` | §9.1 |
+| 25 | Review requests from sessions; `branchReady`; the run ends with a summary node | **Approved change (owner, 2026-11-12):** the run does not end; a `notice {review}` instead (ending a turn from inside an RPC would cut the agent off mid-call); the event also carries `projectId` | §9.1 |
 | 26 | Critics on `<reviewed>/critic-<n>` | **Deviation:** `<reviewed>.critic-<n>`, decided in `Runtime.start` (the planner has no reviews); `sessions.baseHash` recorded | §6.2 |
 | 27 | The `auto` merge trigger's session side, then `tryAutoMerge` | As built with deviations: `roles` and `into` added to 5E's `branch_policy.autoMerge`; `review_verdicts.session`; extra reasons (`noReview`, `notOwnBranch`, `targetNotAllowed`, `hookBlocked`, `criticUnknown`, `criticNotCritic`); the session side re-run under 5E's gate (`admit`); nothing merges until sub-project 10 | §6.5 |
 
