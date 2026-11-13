@@ -1,7 +1,7 @@
-//! `asset.reprobe` (schema 4, sub-project 6 spec §6.3): replaces a `media` asset's `video` and
+//! `asset.reprobe` (schema 5, sub-project 6 spec §6.3): replaces a `media` asset's `video` and
 //! `audio` with what a fresh probe of its file found (an absent field clears that stream). The
 //! server sends it after probing the unchanged file again (`asset.reprobe` RPC), so an asset
-//! imported before schema 4 gains its display size, rotation and pixel aspect.
+//! imported before schema 5 gains its display size, rotation and pixel aspect.
 //!
 //! Structural: the asset exists (`NOT_FOUND`) and is a `media` asset (`INVALID_OP`, as
 //! `asset.add`'s kind shapes); every item showing it on a video or audio track keeps the

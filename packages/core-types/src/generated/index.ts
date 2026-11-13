@@ -386,6 +386,9 @@ export type Op =
   | (AssetMove & {
       op: "asset.move";
     })
+  | (AssetReprobe & {
+      op: "asset.reprobe";
+    })
   | (TrackRestore & {
       op: "track.restore";
     })
@@ -492,6 +495,13 @@ export type Rational = string;
  * via the `definition` "FontFormat".
  */
 export type FontFormat = "ttf" | "otf" | "ttc";
+/**
+ * Clockwise display rotation in degrees, from the track matrix.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "Rotation".
+ */
+export type Rotation = 0 | 90 | 180 | 270;
 /**
  * `item.insert`: an item of any kind (the flattened `body`, tagged by `kind`) at `at` on
  * `track`, `duration` long, with default common fields. `id` is a `$name` placeholder bound
@@ -1307,12 +1317,12 @@ export type Switch = "on" | "off";
  */
 export type TrainingState = "on" | "off" | "undecided";
 /**
- * The container family, from `ftyp`'s brands.
+ * The container family, from `ftyp`'s brands or the EBML `DocType`.
  *
  * This interface was referenced by `FinCore`'s JSON-Schema
  * via the `definition` "ContainerKind".
  */
-export type ContainerKind = "mp4" | "mov";
+export type ContainerKind = "mp4" | "mov" | "webm" | "matroska";
 /**
  * Every key of spec §4.2, consumed or not.
  *
@@ -1672,6 +1682,14 @@ export type FileState =
       state: "failed";
     };
 /**
+ * A decoded picture's memory layout.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "PixelFormat".
+ */
+export type PixelFormat =
+  ("rgba8" | "rgba16f") | "nv12" | "p010" | "i420" | "i420p10" | "i422" | "i422p10" | "i444" | "i444p10";
+/**
  * The item kinds, as they appear in plans.
  *
  * This interface was referenced by `FinCore`'s JSON-Schema
@@ -1695,6 +1713,13 @@ export type FsAccess = "read" | "readWrite";
  * via the `definition` "FsScope".
  */
 export type FsScope = "pluginData";
+/**
+ * Where [`ProbeDeepResult::hdr`] came from.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "HdrSource".
+ */
+export type HdrSource = "container" | "sei" | "containerAndSei";
 /**
  * A helper's kind.
  *
@@ -2103,13 +2128,6 @@ export type JobSpawnProgram =
  * via the `definition` "JobSpawnRole".
  */
 export type JobSpawnRole = "worker" | "helper";
-/**
- * Clockwise display rotation in degrees, from the track matrix.
- *
- * This interface was referenced by `FinCore`'s JSON-Schema
- * via the `definition` "Rotation".
- */
-export type Rotation = 0 | 90 | 180 | 270;
 /**
  * What a scan lists (`WalkMode`).
  *
@@ -2963,8 +2981,27 @@ export interface LutInfo {
  * via the `definition` "VideoInfo".
  */
 export interface VideoInfo {
+  display?: DisplaySize;
+  /**
+   * The coded height, in px.
+   */
   height: number;
+  pixelAspect?: Rational;
   rate: Rational;
+  rotation?: Rotation;
+  /**
+   * The coded width, in px.
+   */
+  width: number;
+}
+/**
+ * A picture's display size in px (`VideoInfo.display`).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "DisplaySize".
+ */
+export interface DisplaySize {
+  height: number;
   width: number;
 }
 /**
@@ -3296,6 +3333,17 @@ export interface BinRemove {
 export interface AssetMove {
   asset: string;
   bin?: string;
+}
+/**
+ * `asset.reprobe`: `asset`'s streams are now `video` and `audio`.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "AssetReprobe".
+ */
+export interface AssetReprobe {
+  asset: string;
+  audio?: AudioInfo;
+  video?: VideoInfo;
 }
 /**
  * `track.restore` (internal): puts `track` back on `timeline` at `index`.
@@ -4889,6 +4937,54 @@ export interface Via {
   plugin: string;
 }
 /**
+ * What one `gc` (or eviction pass) did.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "CacheGcResult".
+ */
+export interface CacheGcResult {
+  /**
+   * What the cache holds afterwards (above the target only when the rest is pinned).
+   */
+  bytes: number;
+  evicted: number;
+  freedBytes: number;
+}
+/**
+ * `media.cache.status` (`fin cache status`): what the cache holds against its cap.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "CacheStatus".
+ */
+export interface CacheStatus {
+  byRecipe: {
+    [k: string]: RecipeUsage;
+  };
+  /**
+   * Every entry's files and `meta.json`.
+   */
+  bytes: number;
+  /**
+   * Eviction keeps `bytes` at or below this (Decision 12).
+   */
+  capBytes: number;
+  entries: number;
+  /**
+   * Entries with at least one pin (never evicted).
+   */
+  pinned: number;
+}
+/**
+ * One recipe's share of the cache.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "RecipeUsage".
+ */
+export interface RecipeUsage {
+  bytes: number;
+  entries: number;
+}
+/**
  * The limits of this job's calls and results.
  *
  * This interface was referenced by `FinCore`'s JSON-Schema
@@ -5587,6 +5683,180 @@ export interface EncoderCaps {
   sessionLimit?: number;
 }
 /**
+ * The encoder that made an entry (proxies), for diagnostics and the export rule that a
+ * `gpu`-encoded file never leaves the cache.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "EntryEncoder".
+ */
+export interface EntryEncoder {
+  backend: string;
+  class: VendorClass;
+}
+/**
+ * One payload file of an entry.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "EntryFile".
+ */
+export interface EntryFile {
+  /**
+   * BLAKE3 of the file, 64 lower-case hex digits.
+   */
+  blake3: string;
+  bytes: number;
+  /**
+   * `[A-Za-z0-9_][A-Za-z0-9._-]{0,63}`, not `meta.json`.
+   */
+  name: string;
+}
+/**
+ * An entry's `meta.json` (spec §7.2): the key and its input, the files and, for proxies, the
+ * original's `MediaInfo`.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "EntryMeta".
+ */
+export interface EntryMeta {
+  /**
+   * Unix milliseconds.
+   */
+  createdAt: number;
+  decoderClass: VendorClass;
+  encoder?: EntryEncoder | null;
+  files: EntryFile[];
+  fingerprint: string;
+  key: string;
+  /**
+   * The original's `MediaInfo` (proxies: rotation and pixel aspect are applied from it).
+   */
+  media?: MediaInfo | null;
+  params: unknown;
+  recipe: string;
+  recipeVersion: number;
+  renderVersion: number;
+}
+/**
+ * What a media file is (spec §6.3).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "MediaInfo".
+ */
+export interface MediaInfo {
+  audio?: AudioTrackInfo;
+  container: ContainerKind;
+  /**
+   * Exact rational seconds in canonical form: "n/d" in lowest terms with d > 1, or "n" when d is 1; no leading zeros, no "+", no "-0". The pattern checks the shape; lowest terms is checked by the parser.
+   */
+  duration: string;
+  fragmented?: boolean;
+  ignored?: IgnoredTrack[];
+  video?: VideoTrackInfo;
+}
+/**
+ * A track `fin-container` does not interpret (a second video or audio track, timecode, …).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "IgnoredTrack".
+ */
+export interface IgnoredTrack {
+  /**
+   * The `hdlr` handler type (`vide`, `soun`, `tmcd`, …).
+   */
+  handler: string;
+  id: number;
+}
+/**
+ * The first video track.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "VideoTrackInfo".
+ */
+export interface VideoTrackInfo {
+  bitDepth: number;
+  chroma: Chroma;
+  codec: VideoCodec;
+  coded: Size;
+  colour: ColourTags;
+  display: Size1;
+  /**
+   * The sample entry type (`av01`, `hvc1`, …).
+   */
+  fourcc: string;
+  /**
+   * Frames presented, after edit lists.
+   */
+  frames: number;
+  hdr?: HdrInfo;
+  /**
+   * An ICC profile was given instead of code points (`colr` `prof`/`rICC`).
+   */
+  icc?: boolean;
+  level?: number;
+  /**
+   * Exact rational seconds in canonical form: "n/d" in lowest terms with d > 1, or "n" when d is 1; no leading zeros, no "+", no "-0". The pattern checks the shape; lowest terms is checked by the parser.
+   */
+  nominalRate: string;
+  /**
+   * Exact rational seconds in canonical form: "n/d" in lowest terms with d > 1, or "n" when d is 1; no leading zeros, no "+", no "-0". The pattern checks the shape; lowest terms is checked by the parser.
+   */
+  pixelAspect: string;
+  profile?: number;
+  rotation: Rotation;
+  /**
+   * Frame durations differ by more than 0.1 % (the last frame ignored).
+   */
+  vfr: boolean;
+}
+/**
+ * The sample entry's coded size.
+ */
+export interface Size {
+  height: number;
+  width: number;
+}
+/**
+ * `coded` after the pixel aspect and the rotation ([`display_size`]).
+ */
+export interface Size1 {
+  height: number;
+  width: number;
+}
+/**
+ * HDR metadata a source carries (kept for HDR export later, spec §10.1).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "HdrInfo".
+ */
+export interface HdrInfo {
+  contentLight?: ContentLight;
+  dolbyVision?: DolbyVision;
+  mastering?: MasteringDisplay;
+}
+/**
+ * SMPTE ST 2086 mastering display colour volume (`mdcv`), in the box's own units:
+ * chromaticities in 0.00002, luminance in 0.0001 cd/m².
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "MasteringDisplay".
+ */
+export interface MasteringDisplay {
+  maxLuminance: number;
+  minLuminance: number;
+  /**
+   * `[x, y]` for green, blue, red (the box's order).
+   *
+   * @minItems 3
+   * @maxItems 3
+   */
+  primaries: [[number, number], [number, number], [number, number]];
+  /**
+   * @minItems 2
+   * @maxItems 2
+   */
+  whitePoint: [number, number];
+}
+/**
  * One journal entry (Decision 2), as read from disk: `payload` is a `Value` (whose schema
  * is [`AnyPayload`]'s). In memory a payload is an [`AnyPayload`], and the journal's writer
  * thread serialises an [`EnvelopeRef`], which has the same JSON.
@@ -5688,6 +5958,17 @@ export interface Filter {
    * Entries with `ts` < this.
    */
   until?: number;
+}
+/**
+ * The first decoded picture.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "FirstFrame".
+ */
+export interface FirstFrame {
+  format: PixelFormat;
+  height: number;
+  width: number;
 }
 /**
  * This interface was referenced by `FinCore`'s JSON-Schema
@@ -6008,40 +6289,6 @@ export interface HashOutcome {
   state: string;
 }
 /**
- * HDR metadata a source carries (kept for HDR export later, spec §10.1).
- *
- * This interface was referenced by `FinCore`'s JSON-Schema
- * via the `definition` "HdrInfo".
- */
-export interface HdrInfo {
-  contentLight?: ContentLight;
-  dolbyVision?: DolbyVision;
-  mastering?: MasteringDisplay;
-}
-/**
- * SMPTE ST 2086 mastering display colour volume (`mdcv`), in the box's own units:
- * chromaticities in 0.00002, luminance in 0.0001 cd/m².
- *
- * This interface was referenced by `FinCore`'s JSON-Schema
- * via the `definition` "MasteringDisplay".
- */
-export interface MasteringDisplay {
-  maxLuminance: number;
-  minLuminance: number;
-  /**
-   * `[x, y]` for green, blue, red (the box's order).
-   *
-   * @minItems 3
-   * @maxItems 3
-   */
-  primaries: [[number, number], [number, number], [number, number]];
-  /**
-   * @minItems 2
-   * @maxItems 2
-   */
-  whitePoint: [number, number];
-}
-/**
  * This interface was referenced by `FinCore`'s JSON-Schema
  * via the `definition` "Header".
  */
@@ -6311,19 +6558,6 @@ export interface HttpRequest {
    * An `https://` URL.
    */
   url: string;
-}
-/**
- * A track `fin-container` does not interpret (a second video or audio track, timecode, …).
- *
- * This interface was referenced by `FinCore`'s JSON-Schema
- * via the `definition` "IgnoredTrack".
- */
-export interface IgnoredTrack {
-  /**
-   * The `hdlr` handler type (`vide`, `soun`, `tmcd`, …).
-   */
-  handler: string;
-  id: number;
 }
 /**
  * What a person approves: made by [`super::make_plan`], kept in `staging/<planId>/plan.json`
@@ -6841,6 +7075,31 @@ export interface JournalStatus {
   state: JournalState;
 }
 /**
+ * What a cache key is computed from (Decision 11).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "KeyInput".
+ */
+export interface KeyInput {
+  /**
+   * Who provides a backend (spec §6.1).
+   */
+  decoderClass: "os" | "gpu" | "software" | "plugin";
+  /**
+   * The source's fingerprint (the asset's `fingerprint`).
+   */
+  fingerprint: string;
+  /**
+   * The recipe's parameters (a tier, a codec, thumbnail times, …).
+   */
+  params: {
+    [k: string]: unknown;
+  };
+  recipe: string;
+  recipeVersion: number;
+  renderVersion: number;
+}
+/**
  * One directory the catalog knows (Decision 27) as the walker holds it. A line of a scan
  * job's `in/dirs.ndjson` is `{dir, mtimeNs, listed}` (written by the indexer; `listed`
  * becomes `listed_gen` of the scan's generation) with these fields optional
@@ -7078,16 +7337,14 @@ export interface Probe {
   kind: AssetKind;
   lottie?: LottieInfo | null;
   lut?: LutInfo | null;
-  media?: MediaInfo;
+  media?: MediaInfo1;
   size: number;
   video?: VideoInfo | null;
 }
 /**
- * MP4/MOV: what the file is (sub-project 6 spec §6.3): display size and rotation, colour,
- * HDR, VFR, edit lists. In the `asset.probe` answer only: an `asset.add` never carries it
- * (spec §4.4).
+ * What a media file is (spec §6.3).
  */
-export interface MediaInfo {
+export interface MediaInfo1 {
   audio?: AudioTrackInfo;
   container: ContainerKind;
   /**
@@ -7097,62 +7354,6 @@ export interface MediaInfo {
   fragmented?: boolean;
   ignored?: IgnoredTrack[];
   video?: VideoTrackInfo;
-}
-/**
- * The first video track.
- *
- * This interface was referenced by `FinCore`'s JSON-Schema
- * via the `definition` "VideoTrackInfo".
- */
-export interface VideoTrackInfo {
-  bitDepth: number;
-  chroma: Chroma;
-  codec: VideoCodec;
-  coded: Size;
-  colour: ColourTags;
-  display: Size1;
-  /**
-   * The sample entry type (`av01`, `hvc1`, …).
-   */
-  fourcc: string;
-  /**
-   * Frames presented, after edit lists.
-   */
-  frames: number;
-  hdr?: HdrInfo;
-  /**
-   * An ICC profile was given instead of code points (`colr` `prof`/`rICC`).
-   */
-  icc?: boolean;
-  level?: number;
-  /**
-   * Exact rational seconds in canonical form: "n/d" in lowest terms with d > 1, or "n" when d is 1; no leading zeros, no "+", no "-0". The pattern checks the shape; lowest terms is checked by the parser.
-   */
-  nominalRate: string;
-  /**
-   * Exact rational seconds in canonical form: "n/d" in lowest terms with d > 1, or "n" when d is 1; no leading zeros, no "+", no "-0". The pattern checks the shape; lowest terms is checked by the parser.
-   */
-  pixelAspect: string;
-  profile?: number;
-  rotation: Rotation;
-  /**
-   * Frame durations differ by more than 0.1 % (the last frame ignored).
-   */
-  vfr: boolean;
-}
-/**
- * The sample entry's coded size.
- */
-export interface Size {
-  height: number;
-  width: number;
-}
-/**
- * `coded` after the pixel aspect and the rotation ([`display_size`]).
- */
-export interface Size1 {
-  height: number;
-  width: number;
 }
 /**
  * `library.scan`.
@@ -7560,23 +7761,6 @@ export interface WorkerInfo {
    * The `fin-workers` crate's version.
    */
   version: string;
-}
-/**
- * What a media file is (spec §6.3).
- *
- * This interface was referenced by `FinCore`'s JSON-Schema
- * via the `definition` "MediaInfo".
- */
-export interface MediaInfo1 {
-  audio?: AudioTrackInfo;
-  container: ContainerKind;
-  /**
-   * Exact rational seconds in canonical form: "n/d" in lowest terms with d > 1, or "n" when d is 1; no leading zeros, no "+", no "-0". The pattern checks the shape; lowest terms is checked by the parser.
-   */
-  duration: string;
-  fragmented?: boolean;
-  ignored?: IgnoredTrack[];
-  video?: VideoTrackInfo;
 }
 /**
  * The answer of [`Store::merge`](crate::Store::merge): merge group `merge_id`'s records on
@@ -8012,6 +8196,91 @@ export interface PrivacySettings {
    */
   tracesRetentionDays?: number | null;
   training?: Switch | null;
+}
+/**
+ * `media.probeDeep` v1: probe `asset`, whose content is `fingerprint`.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "ProbeDeepParams".
+ */
+export interface ProbeDeepParams {
+  asset: string;
+  /**
+   * The branch whose head names the asset (`main` when absent). Host only.
+   */
+  branch?: string | null;
+  capsDigest?: string | null;
+  display?: Size3;
+  /**
+   * The asset's fingerprint as the submitter saw it. The manifest's must equal it, else the
+   * job fails `ASSET_CHANGED` (the model changed between the request and the run).
+   */
+  fingerprint: string;
+  /**
+   * The project the asset is in. Only the host reads it (`prepare` writes the manifest
+   * from it); the worker works from the job directory.
+   */
+  projectId?: string | null;
+  /**
+   * The worker's `RENDER_VERSION` and a digest of its capability report, which with the
+   * fingerprint make the job's identity (`dedupe`): another decoder set probes again.
+   * Host only.
+   */
+  renderVersion?: number | null;
+}
+/**
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "Size".
+ */
+export interface Size3 {
+  height: number;
+  width: number;
+}
+/**
+ * What `media.probeDeep` v1 answers. `backend`, `class`, `hw` and `firstFrame` are present
+ * exactly when `decodable`; otherwise `failure` says why.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "ProbeDeepResult".
+ */
+export interface ProbeDeepResult {
+  asset: string;
+  /**
+   * The decoder's backend (`dav1d`, `videotoolbox`, …), a `fin_media::backend::BACKENDS`
+   * name.
+   */
+  backend?: string;
+  class?: VendorClass;
+  /**
+   * The video track's codec.
+   */
+  codec: ("av1" | "h264" | "hevc" | "vp9" | "vp8" | "proRes") | "other";
+  /**
+   * The first frame decoded.
+   */
+  decodable: boolean;
+  failure?: ProbeFailure;
+  fingerprint: string;
+  firstFrame?: FirstFrame;
+  hdr?: HdrInfo;
+  hdrSource?: HdrSource;
+  /**
+   * The frame was decoded on hardware.
+   */
+  hw?: boolean;
+}
+/**
+ * Why the first frame did not decode: the decoder's error code and message (a codec nothing
+ * on this machine decodes is `CODEC_UNAVAILABLE`; a bitstream the decoder refused is
+ * `DECODE_FAILED` or `MEDIA_CORRUPT`).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "ProbeFailure".
+ */
+export interface ProbeFailure {
+  code: string;
+  details?: unknown;
+  message: string;
 }
 /**
  * `project.snapshot`: one page of the call's project and branch at the job's pinned `rev`,
@@ -8472,14 +8741,6 @@ export interface SetAside {
   origin: string;
   reason: string;
   txId: string;
-}
-/**
- * This interface was referenced by `FinCore`'s JSON-Schema
- * via the `definition` "Size".
- */
-export interface Size3 {
-  height: number;
-  width: number;
 }
 /**
  * An asset and the time to read from it, in seconds.

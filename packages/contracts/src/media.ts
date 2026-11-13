@@ -80,7 +80,7 @@ export const MediaProbeDeepPayload = Schema.Struct({
 export const MediaProbeDeepSuccess = Schema.Unknown;
 /**
  * 6B-1 Task 11: `asset.reprobe` probes a `media` asset's file again and commits one
- * `asset.reprobe` op (schema 4) with what it found: `video` (display, rotation and pixel aspect
+ * `asset.reprobe` op (schema 5) with what it found: `video` (display, rotation and pixel aspect
  * included) and `audio`. `deep`: run `media.probeDeep` first and refuse an asset this machine
  * cannot decode (`CODEC_UNAVAILABLE`). A write like the history writes: `txId` is the
  * idempotency key, `author` the record's, `argsHash` stored; `dryRun` probes and commits nothing.

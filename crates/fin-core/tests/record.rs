@@ -612,9 +612,9 @@ fn drop_record_golden() {
         bytes,
         concat!(
             r#"{"txId":"tx-test","seq":7,"kind":"drop","from":"br2","drops":["o1","o2"],"#,
-            r#""undrops":["o3"],"schemaVersion":4,"parentHash":null,"author":"test","#,
+            r#""undrops":["o3"],"schemaVersion":5,"parentHash":null,"author":"test","#,
             r#""committedAt":1700000000000,"intent":{"txId":"tx-test","author":"test","#,
-            r#""branch":"main","baseRev":0,"schemaVersion":4,"ops":[]},"resolved":[],"#,
+            r#""branch":"main","baseRev":0,"schemaVersion":5,"ops":[]},"resolved":[],"#,
             r#""inverse":[],"bindings":{}}"#
         )
     );
@@ -899,7 +899,7 @@ proptest::proptest! {
         proptest::prop_assert_eq!(encode_record(&read), bytes);
     }
 
-    /// 6B-1 Task 11: an `asset.reprobe` (schema 4) comes back from record bytes as it was
+    /// 6B-1 Task 11: an `asset.reprobe` (schema 5) comes back from record bytes as it was
     /// written, display, rotation and pixel aspect included, and re-encodes to the same bytes.
     #[test]
     fn reprobe_values_round_trip_through_record_bytes(

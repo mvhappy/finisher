@@ -1,4 +1,4 @@
-//! `asset.reprobe` (schema 4, plan 6B-1 Task 11): a media asset's `video` and `audio` replaced
+//! `asset.reprobe` (schema 5, plan 6B-1 Task 11): a media asset's `video` and `audio` replaced
 //! by a fresh probe's, with the previous values as the inverse.
 
 mod common;
@@ -167,10 +167,10 @@ fn stale_reprobe_of_a_removed_asset_conflicts() {
     assert_eq!(conflict_reason(&e), "REMOVED");
 }
 
-/// A committed record holding the op is stamped with the current schema (4), and reads back
+/// A committed record holding the op is stamped with the current schema (5), and reads back
 /// as it was written.
 #[test]
-fn a_reprobe_record_is_schema_4_and_round_trips() {
+fn a_reprobe_record_is_schema_5_and_round_trips() {
     let p = base();
     let t = tx(vec![reprobe("a1", Some(portrait()), Some(stereo()))]);
     let a = apply(&p, t.ops.clone());
@@ -188,7 +188,7 @@ fn a_reprobe_record_is_schema_4_and_round_trips() {
     );
     let bytes = encode_record(&record);
     let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-    assert_eq!((v["schemaVersion"].as_u64(), SCHEMA_VERSION), (Some(4), 4));
+    assert_eq!((v["schemaVersion"].as_u64(), SCHEMA_VERSION), (Some(5), 5));
     assert_eq!(
         v["resolved"][0]["video"],
         serde_json::json!({ "width": 1920, "height": 1080, "rate": "30", "rotation": 90,

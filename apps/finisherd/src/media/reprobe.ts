@@ -1,6 +1,6 @@
 // `asset.reprobe` (6B-1 plan Task 11): probes a `media` asset's file again and commits one
-// `asset.reprobe` op (model schema 4) with what the probe found, so an asset imported before
-// schema 4 gains its display size, rotation and pixel aspect.
+// `asset.reprobe` op (model schema 5) with what the probe found, so an asset imported before
+// schema 5 gains its display size, rotation and pixel aspect.
 //
 // The handler reads the branch head once (the asset, its path, its fingerprint, the model's
 // schema version), probes the file through `probeFor` (the probe `asset.probe` and so `fin
@@ -162,7 +162,7 @@ export function reprobe(
       author: req.author,
       branch,
       baseRev: snap.rev,
-      // The head's model version is this engine's: the op exists from schema 4 on.
+      // The head's model version is this engine's: the op exists from schema 5 on.
       schemaVersion: project.schemaVersion,
       ops: [op],
       ...(req.argsHash === undefined ? {} : { argsHash: req.argsHash }),

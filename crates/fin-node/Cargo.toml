@@ -55,7 +55,7 @@ fin-testfonts = { path = "../fin-testfonts", optional = true }
 fin-text = { path = "../fin-text" }
 # The media cache's index `cache/media/index.db` (6B-1 plan Decision 10): the version and
 # features fin-store takes (MIT; bundled SQLite, public domain; already in the tree).
-rusqlite = { version = "0.37", features = ["bundled"] }
+rusqlite = { version = "0.41", features = ["bundled", "fallible_uint"] }
 napi = { version = "3", default-features = false, features = ["napi8"] }
 napi-derive = { version = "3", default-features = false, features = ["strict"] }
 semver = { version = "1", features = ["serde"] }

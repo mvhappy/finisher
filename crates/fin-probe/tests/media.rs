@@ -172,7 +172,7 @@ fn webm_probes_by_its_magic() {
 }
 
 /// 6B-1 Task 11: a portrait phone clip (1920×1080 coded, a 90° `tkhd` matrix) imported before
-/// schema 4 has no display geometry; `asset.reprobe` with a fresh probe's streams gives it
+/// schema 5 has no display geometry; `asset.reprobe` with a fresh probe's streams gives it
 /// `display` 1080×1920 and `rotation` 90, and its inverse takes them away again.
 #[test]
 fn reprobe_fills_rotation_of_portrait_clip() {

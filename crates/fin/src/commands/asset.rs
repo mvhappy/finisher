@@ -2,7 +2,7 @@
 //! media, image, SVG, dotLottie template, font or LUT), then the probe result is committed as
 //! `asset.add` of that kind; `move` files an asset in a bin (or at the top level), `remove`
 //! takes an unused one off the project (`ASSET_IN_USE` lists its users); `reprobe` has the
-//! server probe a media asset's unchanged file again and commit `asset.reprobe` (schema 4:
+//! server probe a media asset's unchanged file again and commit `asset.reprobe` (schema 5:
 //! display size, rotation, pixel aspect), with `--deep` after a decode-level probe.
 
 use clap::{Args, Subcommand};

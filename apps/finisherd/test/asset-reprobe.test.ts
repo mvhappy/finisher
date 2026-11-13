@@ -93,7 +93,7 @@ describe("asset.reprobe", () => {
     const want = { width: 320, height: 180, rate: "25", display: { width: 180, height: 320 }, rotation: 90, pixelAspect: "1" };
     expect(r.video).toEqual(want);
     expect((await asset("a1")).video).toEqual(want);
-    // One record, of the one op, at schema 4.
+    // One record, of the one op, at schema 5.
     const records = JSON.parse(await engine.opsSince("main", r0)) as { tx: { schemaVersion: number; ops: { op: string }[] } }[];
     expect(records).toHaveLength(1);
     expect(records[0]!.tx.schemaVersion).toBe(5);
