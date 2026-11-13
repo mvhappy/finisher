@@ -419,7 +419,7 @@ describe("agent runtime", () => {
     const { session } = await run(h.runtime.start({ projectId: "P1", prompt: "merge" }, PEOPLE, META));
     await until(idle(session.id), "idle");
     expect(payload(store.nodes(session.id)[1]!)).toMatchObject({ requestId: "req_1", decision: "deny", by: "policy" });
-    expect(adapter.log.answers.map((a) => a.answer)).toEqual([{ kind: "approval", allow: false }]);
+    expect(adapter.log.answers.map((a) => a.answer)).toEqual([{ kind: "approval", allow: false, message: expect.any(String) }]);
   });
 
   test("boot recovers, sweeps orphans and drains the outbox", async () => {

@@ -16,6 +16,7 @@ const samples: ProviderEvent[] = [
   { type: "toolCompleted", providerId: "call_1", ok: true, output: { txId: "x" } },
   { type: "request", id: "r1", kind: "approval", tool: "fin", input: { argv: ["merge"] } },
   { type: "request", id: "r2", kind: "userInput" },
+  { type: "requestCancelled", id: "r1" },
   { type: "usage", input: 10, output: 2, cacheRead: 100, cacheWrite: 0, reasoning: 1, costMicros: 42 },
   { type: "usage", input: 0, output: 0, cacheRead: 0, cacheWrite: 0, reasoning: 0 },
   { type: "turnCompleted", stopReason: "endTurn" },

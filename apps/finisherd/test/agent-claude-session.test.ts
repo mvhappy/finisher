@@ -544,7 +544,7 @@ describe("review of Task 7", () => {
     expect(w.events[0]).toMatchObject({ error: { code: "PROVIDER_VERSION", details: { missing: "oauth" } } });
   });
 
-  withFake("can_use_tool is denied by default: nothing runs the runtime did not decide", async () => {
+  withFake("can_use_tool is never answered on the adapter's own: it waits for the runtime's decision", async () => {
     const w = await openWatched({
       steps: [
         {
@@ -557,12 +557,20 @@ describe("review of Task 7", () => {
       ],
     });
     await run(w.provider.startTurn({ runId: "r1", text: "go" }));
+    await waitFor(w, "request");
+    const answered = () =>
+      ((observed(w.serverData, SESSION_ID).at(-1) as { controlResponses?: { raw: string }[] } | undefined)?.controlResponses ?? [])
+        .map((a) => JSON.parse(a.raw) as { response: { response?: { behavior?: string } } })
+        .find((a) => a.response.response?.behavior !== undefined);
+    // Nothing answered while the runtime has not decided (Task 8's port; Task 7's interim one denied at once).
+    await new Promise((r) => setTimeout(r, 300));
+    expect(answered()).toBeUndefined();
+    expect(w.events.some((e) => e.type === "toolCompleted")).toBe(false);
+    const req = w.events.find((e) => e.type === "request") as { id: string };
+    await run(w.provider.respond(req.id, { kind: "approval", allow: false, message: "denied by the runtime" }));
     await waitFor(w, "turnCompleted");
-    const answers = (observed(w.serverData, SESSION_ID).at(-1) as { controlResponses?: { raw: string }[] }).controlResponses ?? [];
-    const answer = answers.map((a) => JSON.parse(a.raw) as { response: { response?: { behavior?: string } } }).find((a) => a.response.response?.behavior !== undefined);
-    expect(answer?.response.response?.behavior).toBe("deny");
+    expect(answered()?.response.response?.behavior).toBe("deny");
     expect(w.events.filter((e) => e.type === "toolCompleted")).toEqual([{ type: "toolCompleted", providerId: "toolu_fake_1", ok: false, output: "denied" }]);
-    expect(w.events.some((e) => e.type === "request")).toBe(false);
   });
 
   withFake("a refused init lets none of the adapter's own events through", async () => {

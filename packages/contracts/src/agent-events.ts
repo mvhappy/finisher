@@ -79,6 +79,11 @@ const Request = ev("request", {
   tool: Schema.optionalKey(Schema.String),
   input: Schema.optionalKey(Schema.Unknown),
 });
+/**
+ * The provider withdrew request `id` before it was answered (Claude Code's
+ * `control_cancel_request`): its card is expired (`withdrawn`) and no answer is sent.
+ */
+const RequestCancelled = ev("requestCancelled", { id: Schema.String });
 const UsageEvent = ev("usage", {
   input: Count,
   output: Count,
@@ -116,6 +121,7 @@ export const ProviderEvent = Schema.Union([
   ToolOutputDelta,
   ToolCompleted,
   Request,
+  RequestCancelled,
   UsageEvent,
   TurnCompleted,
   TurnFailed,
@@ -139,6 +145,7 @@ export const PROVIDER_EVENT_TYPES = [
   "toolOutputDelta",
   "toolCompleted",
   "request",
+  "requestCancelled",
   "usage",
   "turnCompleted",
   "turnFailed",

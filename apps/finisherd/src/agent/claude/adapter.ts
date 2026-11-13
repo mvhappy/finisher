@@ -60,7 +60,7 @@ export interface ClaudeDeps {
   readonly closeGraceMs?: number;
   /** `agents.claudeCode.enabled`, read at each open (default: `settings.json`); off refuses the open. */
   readonly enabled?: () => boolean;
-  /** Where CLI requests go (Task 8 fills it; default: refused). */
+  /** Where CLI requests go (default: `claudePermissions()`, through the runtime; tests). */
   readonly requests?: () => RequestPort;
   readonly log?: (message: string, details: Record<string, unknown>) => void;
 }

@@ -190,9 +190,11 @@ export interface FirstTurnGate {
   readonly state: "waiting" | "open" | "refused";
 }
 
+/** An MCP `tools/call`: a CLI request like `can_use_tool` (Task 8), never part of the handshake. */
+export const isMcpToolCall = (message: unknown): boolean => typeof message === "object" && message !== null && (message as { method?: unknown }).method === "tools/call";
+
 /** Lines the caller always handles at once: the SDK MCP handshake and answers to its own requests. */
-const passes = (l: CliLine): boolean =>
-  (l.kind === "controlRequest" && l.request.subtype === "mcp_message") || l.kind === "controlResponse" || l.kind === "controlCancel";
+const passes = (l: CliLine): boolean => (l.kind === "controlRequest" && l.request.subtype === "mcp_message" && !isMcpToolCall(l.request.message)) || l.kind === "controlResponse";
 
 /**
  * Holds every event of an instance back until its `system/init` passes `checkInit` (Decision 8,
@@ -201,10 +203,12 @@ const passes = (l: CliLine): boolean =>
  * an init on every turn: each one is checked, in any state, and a failing one refuses (the
  * caller kills the instance and fails the turn). A `result` before any init releases that
  * `result` alone when it is an error (an unknown `--resume`), dropping what was held, and
- * refuses otherwise. Held lines include `can_use_tool` and every other CLI request. Control
- * lines the caller must answer at once (the MCP handshake, control
- * responses, cancels) always pass; a refused instance's other control requests too, so a caller
- * may deny them (Task 7's session instead kills the instance at once and drops every later line).
+ * refuses otherwise. Held lines include `can_use_tool`, an MCP `tools/call` and every other CLI
+ * request. A cancel whose request is held drops that request (it never reaches the runtime, Task
+ * 8); any other cancel is forwarded. Control lines the caller must answer at once (the MCP
+ * handshake, control responses) always pass; a refused instance's other control requests too,
+ * so a caller may deny them (Task 7's session instead kills the instance at once and drops every
+ * later line).
  */
 export function firstTurnGate(plan: Pick<LaunchPlan, "argv" | "tools" | "mcpTools">, opts: CheckOptions = {}): FirstTurnGate {
   let state: FirstTurnGate["state"] = "waiting";
@@ -221,6 +225,12 @@ export function firstTurnGate(plan: Pick<LaunchPlan, "argv" | "tools" | "mcpTool
     push(line) {
       if (passes(line)) return { kind: "forward", lines: [line] };
       if (state === "refused") return line.kind === "controlRequest" ? { kind: "forward", lines: [line] } : { kind: "drop" };
+      if (line.kind === "controlCancel") {
+        const i = held.findIndex((h) => h.kind === "controlRequest" && h.request_id === line.request_id);
+        if (i < 0) return { kind: "forward", lines: [line] };
+        held.splice(i, 1);
+        return { kind: "drop" };
+      }
       if (line.kind === "init") {
         const e = checkInit(line, plan, opts);
         if (e !== null) return refuse(e);
