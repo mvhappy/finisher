@@ -1,6 +1,7 @@
-//! Phase 1 (module docs of `compact`): plan the packs of one branch (with the store), then
-//! write the snapshot, the packs and the manifest (without it), each fenced, written once and
-//! read back; each pack's `segments` row is recorded with the store.
+//! Phase 1 (module docs of `compact`): plan the packs of one branch from a view checked with
+//! the store (encoding and hashing them without it), then write the snapshot, the packs and
+//! the manifest (without it), each fenced, written once and read back; the snapshot's state
+//! is read and each pack's `segments` row recorded with the store.
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -32,22 +33,38 @@ pub(super) struct PackPlan {
 enum SnapPlan {
     /// A verified snapshot at that seq and `txHash` is there already.
     Existing { name: String, path: PathBuf },
-    New {
-        name: String,
-        bytes: Vec<u8>,
-        hash: String,
-    },
+    /// To write: the state at `seq` (its record `tx_hash`), read with the store.
+    New { seq: u64, tx_hash: String },
+}
+
+/// What planning needs from the store, taken with it ([`Ctx::new`]): `.finisher/`, the
+/// database's genesis hash, and the packs' and the manifest's `projectId`, `writerId` and
+/// `kind`.
+pub(super) struct Ctx {
+    dot: PathBuf,
+    genesis: String,
+    project_id: String,
+    writer_id: String,
+    kind: String,
+}
+
+impl Ctx {
+    pub(super) fn new(store: &Store) -> Result<Ctx, StoreError> {
+        Ok(Ctx {
+            dot: store.project_dir.join(".finisher"),
+            genesis: crate::project_file::db_genesis_hash(&store.conn)?,
+            project_id: store.project_id.clone(),
+            writer_id: store.server_id.clone(),
+            kind: store.storage_kind().to_string(),
+        })
+    }
 }
 
 /// What phase 1 found to do.
 pub(super) struct Plan {
     pub(super) packs: Vec<PackPlan>,
-    snapshot: Option<(u64, SnapPlan)>,
-    /// `.finisher/`, and the manifest's `projectId`, `writerId` and `kind`.
-    dot: PathBuf,
-    project_id: String,
-    writer_id: String,
-    kind: String,
+    snapshot: Option<SnapPlan>,
+    ctx: Ctx,
 }
 
 /// What may be packed: every non-pack segment wholly on the resolved chain and exported in
@@ -112,17 +129,17 @@ fn runs<'v>(elig: &[&'v SegRef]) -> Vec<Vec<&'v SegRef>> {
     runs
 }
 
-/// Plans the packs and the snapshot for `v` (`None`: nothing worth packing).
+/// Plans the packs and the snapshot for `v` (`None`: nothing worth packing). Without the
+/// store: `v` was checked against the database with it, and what it needs from the store is
+/// in `ctx`; the pack and manifest writes check again that nothing overtook the run.
 pub(super) fn plan(
-    store: &Store,
+    ctx: Ctx,
     branch: &str,
     v: &View,
     protected: &HashSet<String>,
     protected_names: &HashSet<String>,
-    lease_epoch: u64,
 ) -> Result<Option<Plan>, StoreError> {
     let elig = eligible(v, protected, protected_names);
-    let genesis = crate::project_file::db_genesis_hash(&store.conn)?;
     let mut packs = vec![];
     for run in runs(&elig) {
         let mut i = 0;
@@ -145,7 +162,7 @@ pub(super) fn plan(
             }
             i += take.len().max(1);
             while take.len() >= 2 {
-                let p = encode(store, branch, &genesis, &take, &elig)?;
+                let p = encode(&ctx, branch, &take, &elig)?;
                 if p.bytes.len() <= segment::MAX_BYTES {
                     packs.push(p);
                     break;
@@ -159,28 +176,22 @@ pub(super) fn plan(
         return Ok(None);
     }
     let seq = v.exported_through;
-    let snapshot = match v.chain.get(&seq) {
-        Some(tx_hash) => {
-            snapshot_plan(store, branch, v, seq, tx_hash, &genesis, lease_epoch)?.map(|p| (seq, p))
-        }
-        None => None,
-    };
+    let snapshot = v
+        .chain
+        .get(&seq)
+        .map(|tx_hash| snapshot_plan(&ctx, v, seq, tx_hash));
     Ok(Some(Plan {
         packs,
         snapshot,
-        dot: store.project_dir.join(".finisher"),
-        project_id: store.project_id.clone(),
-        writer_id: store.server_id.clone(),
-        kind: store.storage_kind().to_string(),
+        ctx,
     }))
 }
 
 /// The pack of `primaries` (consecutive), replacing them and every other eligible segment
 /// wholly inside their range whose epoch is not above the last one's.
 fn encode(
-    store: &Store,
+    ctx: &Ctx,
     branch: &str,
-    genesis: &str,
     primaries: &[&SegRef],
     elig: &[&SegRef],
 ) -> Result<PackPlan, StoreError> {
@@ -217,9 +228,9 @@ fn encode(
     let header = Header {
         format_version,
         min_reader_version,
-        project_id: store.project_id.clone(),
+        project_id: ctx.project_id.clone(),
         branch: branch.to_string(),
-        writer_id: store.server_id.clone(),
+        writer_id: ctx.writer_id.clone(),
         epoch,
         first_seq: first.first_seq,
         last_seq: last.last_seq,
@@ -242,7 +253,7 @@ fn encode(
             .map(|s| s.header().created_at)
             .max()
             .unwrap_or(0),
-        genesis_hash: genesis.to_string(),
+        genesis_hash: ctx.genesis.clone(),
         // A branch's pack names the same `branch` record as the segments it replaces.
         branch_record: first.branch_record.clone(),
         pack: true,
@@ -267,50 +278,51 @@ fn encode(
     })
 }
 
-fn snapshot_plan(
-    store: &Store,
-    branch: &str,
-    v: &View,
-    seq: u64,
-    tx_hash: &str,
-    genesis: &str,
-    lease_epoch: u64,
-) -> Result<Option<SnapPlan>, StoreError> {
-    if let Some(s) = v.snaps.iter().find(|s| {
+fn snapshot_plan(ctx: &Ctx, v: &View, seq: u64, tx_hash: &str) -> SnapPlan {
+    match v.snaps.iter().find(|s| {
         s.header.seq == seq
             && s.header.tx_hash == tx_hash
-            && s.header.project_id == store.project_id
-            && s.header.genesis_hash == genesis
+            && s.header.project_id == ctx.project_id
+            && s.header.genesis_hash == ctx.genesis
     }) {
-        return Ok(Some(SnapPlan::Existing {
+        Some(s) => SnapPlan::Existing {
             name: s.name.to_string(),
             path: s.path.clone(),
-        }));
+        },
+        None => SnapPlan::New {
+            seq,
+            tx_hash: tx_hash.to_string(),
+        },
     }
-    let project = view::state_at(store, branch, seq)?;
+}
+
+/// The new snapshot of `project` (the state at `seq`, record `tx_hash`) at `lease_epoch`:
+/// its name, bytes and hash, unless it is above the cap (without the store).
+fn snapshot_new(
+    ctx: &Ctx,
+    branch: &str,
+    (seq, tx_hash): (u64, String),
+    project: &fin_core::Project,
+    lease_epoch: u64,
+) -> Option<(String, Vec<u8>, String)> {
     let header = SnapHeader {
         format_version: snapfile::FORMAT_VERSION,
         min_reader_version: snapfile::MIN_READER_VERSION,
-        project_id: store.project_id.clone(),
+        project_id: ctx.project_id.clone(),
         branch: branch.to_string(),
         seq,
-        tx_hash: tx_hash.to_string(),
+        tx_hash,
         model_schema_version: project.schema_version,
-        writer_id: store.server_id.clone(),
+        writer_id: ctx.writer_id.clone(),
         epoch: lease_epoch,
-        genesis_hash: genesis.to_string(),
+        genesis_hash: ctx.genesis.clone(),
     };
-    let (bytes, hash) = snapfile::encode(&header, &project);
+    let (bytes, hash) = snapfile::encode(&header, project);
     if bytes.len() as u64 > crate::scan::SNAPSHOT_CAP {
-        return Ok(None);
+        return None;
     }
-    Ok(hash12(&hash)
-        .and_then(|h| SnapName::new(seq, h))
-        .map(|name| SnapPlan::New {
-            name: name.to_string(),
-            bytes,
-            hash,
-        }))
+    let name = hash12(&hash).and_then(|h| SnapName::new(seq, h))?;
+    Some((name.to_string(), bytes, hash))
 }
 
 /// Reads and decodes the snapshot at `path` (folder I/O, without the store).
@@ -384,14 +396,14 @@ pub(super) fn write<A: StoreAccess>(
     plan: Plan,
     now_ms: i64,
 ) -> Result<Option<Step<(ManifestName, Manifest)>>, StoreError> {
-    let dot = plan.dot.clone();
+    let dot = plan.ctx.dot.clone();
     let mut lease_epoch = match planned.check(0) {
         Fence::Held(e) => e,
         Fence::Lost(why) => return Ok(Some(Step::Stopped(why))),
     };
     let snapshot = match plan.snapshot {
         None => None,
-        Some((_, SnapPlan::Existing { name, path })) => {
+        Some(SnapPlan::Existing { name, path }) => {
             let read = read_snapshot(&path);
             let ok = with!(access, |s| -> Result<Result<(), Step<_>>, StoreError> {
                 if !planned.fresh(s) {
@@ -407,13 +419,28 @@ pub(super) fn write<A: StoreAccess>(
             }
             Some(name)
         }
-        Some((_, SnapPlan::New { name, bytes, hash })) => {
-            let dir = dot.join("snapshots").join(branch);
-            let check = |b: &[u8]| snapfile::decode(b).is_ok_and(|s| s.hash == hash);
-            if let Err(why) = fsio_write(&dir, &name, &bytes, &check) {
-                return Ok(Some(Step::Wait(why)));
+        Some(SnapPlan::New { seq, tx_hash }) => {
+            let project = with!(access, |s| -> Result<Option<_>, StoreError> {
+                if !planned.fresh(s) {
+                    return Ok(None);
+                }
+                view::state_at(s, branch, seq).map(Some)
+            })?;
+            let Some(project) = project else {
+                return Ok(Some(Step::Overtaken));
+            };
+            // Encoded and hashed without the store; none above the cap.
+            match snapshot_new(&plan.ctx, branch, (seq, tx_hash), &project, lease_epoch) {
+                None => None,
+                Some((name, bytes, hash)) => {
+                    let dir = dot.join("snapshots").join(branch);
+                    let check = |b: &[u8]| snapfile::decode(b).is_ok_and(|s| s.hash == hash);
+                    if let Err(why) = fsio_write(&dir, &name, &bytes, &check) {
+                        return Ok(Some(Step::Wait(why)));
+                    }
+                    Some(name)
+                }
             }
-            Some(name)
         }
     };
     with!(access, |s| hit(s, super::CompactFail::AfterSnapshot))?;
@@ -436,15 +463,15 @@ pub(super) fn write<A: StoreAccess>(
         magic: manifest::MAGIC.to_string(),
         format_version: manifest::FORMAT_VERSION,
         min_reader_version: manifest::FORMAT_VERSION,
-        project_id: plan.project_id.clone(),
-        writer_id: plan.writer_id.clone(),
+        project_id: plan.ctx.project_id.clone(),
+        writer_id: plan.ctx.writer_id.clone(),
         epoch: lease_epoch,
         branch: branch.to_string(),
         replaced: plan.packs.iter().flat_map(|p| p.replaced.clone()).collect(),
         packs: plan.packs.iter().map(|p| p.name.clone()).collect(),
         snapshot,
         created_ms: now_ms,
-        kind: plan.kind.clone(),
+        kind: plan.ctx.kind.clone(),
     };
     if !with!(access, |s| planned.fresh(s)) {
         return Ok(Some(Step::Overtaken));

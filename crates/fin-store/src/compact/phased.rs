@@ -255,6 +255,10 @@ fn phase2_done(
     Ok(false)
 }
 
+/// A branch's fresh read checked with the store: the view, the segment hashes and names an
+/// abandoned compaction holds, and what planning needs from the store.
+type Checked = (view::View, HashSet<String>, HashSet<String>, pack::Ctx);
+
 /// Phase 1 of `branch`. `Some(true)`: stop (the lease is lost, or the step was overtaken).
 fn phase1<A: StoreAccess>(
     access: &mut A,
@@ -266,9 +270,9 @@ fn phase1<A: StoreAccess>(
 ) -> Result<Option<bool>, StoreError> {
     let vplan = with!(access, |s| view::plan(s, branch))?;
     // Without the store: the full lease check, the fresh read.
-    let super::Fence::Held(lease_epoch) = planned.check(0) else {
+    if let super::Fence::Lost(_) = planned.check(0) {
         return Ok(Some(true));
-    };
+    }
     let scanned = vplan.scan();
     planned.at(Point::CompactRead);
     let wait = |store: &mut Store, report: &mut CompactReport, why: String| {
@@ -278,11 +282,9 @@ fn phase1<A: StoreAccess>(
             .insert(branch.to_string(), now + RETRY);
         report.waiting.push((branch.to_string(), why));
     };
-    // With it: the read against the database now, and the packs to write.
-    let plan = with!(access, |s| -> Result<
-        Option<Option<pack::Plan>>,
-        StoreError,
-    > {
+    // With it: the read against the database now, what an abandoned compaction holds, and
+    // what planning needs from the store.
+    let checked = with!(access, |s| -> Result<Option<Option<Checked>>, StoreError> {
         if !planned.fresh(s) {
             return Ok(None);
         }
@@ -309,21 +311,31 @@ fn phase1<A: StoreAccess>(
                 }
             }
         }
-        let plan = pack::plan(s, branch, &v, &protected, &protected_names, lease_epoch)?;
-        if plan.is_none() {
-            s.compact
-                .retry_plan
-                .insert(branch.to_string(), now + REPLAN);
-        }
-        Ok(Some(plan))
+        Ok(Some(Some((
+            v,
+            protected,
+            protected_names,
+            pack::Ctx::new(s)?,
+        ))))
     })?;
-    let plan = match plan {
+    let (v, protected, protected_names, ctx) = match checked {
         None => {
             report.skipped = Some(OVERTAKEN.into());
             return Ok(Some(true));
         }
         Some(None) => return Ok(Some(false)),
-        Some(Some(plan)) => plan,
+        Some(Some(checked)) => checked,
+    };
+    // Without it: the packs encoded and hashed (each pack's row and the manifest are written
+    // only if nothing overtook the run meanwhile, `pack::write`).
+    let Some(plan) = pack::plan(ctx, branch, &v, &protected, &protected_names)? else {
+        // Overtaken meanwhile: the next run plans the branch afresh, without the delay.
+        with!(access, |s| if planned.fresh(s) {
+            s.compact
+                .retry_plan
+                .insert(branch.to_string(), now + REPLAN);
+        });
+        return Ok(Some(false));
     };
     let packs = u32::try_from(plan.packs.len()).unwrap_or(u32::MAX);
     let replaced: usize = plan.packs.iter().map(|p| p.replaced.len()).sum();
