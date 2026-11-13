@@ -4,13 +4,24 @@
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::time::Duration;
 
-/// Where a held tick stops (both outside the store lock: `Store::tick_phased`).
+/// Where a held tick stops (all outside the store lock: `Store::tick_phased`, and the phased
+/// compaction step `Store::run_due_compaction_step_phased`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TickPoint {
     /// In an import pass, after it scanned and verified the folder, before it applies.
     ImportRead,
     /// In an export step, with the segment encoded, before the fence right before its write.
     ExportWrite,
+    /// In compaction, with `compaction/` listed and its new manifests read, before they are
+    /// noted (a run, and the light tick's due check).
+    CompactList,
+    /// In a compaction step, with the branch read afresh, before it is checked against the
+    /// database (phase 1 and phase 2).
+    CompactRead,
+    /// In phase 1, before a pack's fence and write.
+    CompactWrite,
+    /// In phase 2, checked already, before a replaced segment's fence and delete.
+    CompactDelete,
 }
 
 #[derive(Debug, Default)]

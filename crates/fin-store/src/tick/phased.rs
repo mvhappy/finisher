@@ -93,6 +93,17 @@ impl Store {
         run(access, now, opts)
     }
 
+    /// [`Store::run_due_compaction_step`] through `access`. `None` when it did not run to its
+    /// end: a tick of this store was running, or `access` lost the store.
+    pub fn run_due_compaction_step_phased<A: StoreAccess>(
+        access: &mut A,
+    ) -> Result<Option<crate::CompactReport>, StoreError> {
+        let Some(Some(_guard)) = access.with(|s| TickGuard::take(&s.phase.ticking)) else {
+            return Ok(None);
+        };
+        access.with(Store::run_due_compaction_step).transpose()
+    }
+
     /// Events of import passes (and rebuilds) not yet taken, then a `Status` event queued at
     /// the end of a tick if the status changed.
     pub fn take_events(&mut self) -> Vec<crate::StoreEvent> {
