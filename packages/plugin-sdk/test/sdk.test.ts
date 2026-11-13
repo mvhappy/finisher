@@ -1,7 +1,7 @@
 // The SDK against a fake host over real stdio (plan 8B Task 13): a bundled test plugin and the
 // bundled `ts-tools` example run as `node` processes, the permission one under the flags the
 // `node` runtime uses (`apps/finisherd/src/plugins/host/node-runtime.ts`).
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, afterEach, beforeAll, describe, expect, test } from "vitest";
@@ -17,7 +17,9 @@ let example: string;
 const hosts: FakeHost[] = [];
 
 beforeAll(() => {
-  tmp = mkdtempSync(join(tmpdir(), "fin-plugin-sdk-"));
+  // Resolved, as finisherd resolves its server data (`main.ts`) and `--plugin-dir` (`dev.ts`):
+  // Node's permission model realpaths `main`, so a grant under macOS's `/tmp` link is denied.
+  tmp = realpathSync(mkdtempSync(join(tmpdir(), "fin-plugin-sdk-")));
   pkg = join(tmp, "pkg");
   probe = join(pkg, "dist", "probe.mjs");
   bundle({ entry: join(import.meta.dirname, "fixtures", "probe-plugin.ts"), outfile: probe });
@@ -379,7 +381,7 @@ describe("errors", () => {
   });
 
   test("node_permission_denials_surface_as_errors", async () => {
-    const outside = mkdtempSync(join(tmpdir(), "fin-plugin-outside-"));
+    const outside = realpathSync(mkdtempSync(join(tmpdir(), "fin-plugin-outside-")));
     try {
       writeFileSync(join(outside, "secret.txt"), "no");
       const h = confined(probe, pkg, true);
