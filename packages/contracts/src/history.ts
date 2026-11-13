@@ -7,6 +7,7 @@ import type {
   BranchView,
   CommittedTx,
   Conflict,
+  HistoryLog,
   HistoryResult,
   MergeReport,
   RecoverReport,
@@ -165,9 +166,26 @@ export const ProjectRecoverPayload = Schema.Struct({
 });
 export const RecoverReportSuccess = Schema.Unknown;
 
+/** The most records one `history.log` page holds (`fin log --limit`). */
+export const HISTORY_LOG_MAX = 100;
+/**
+ * `history.log` (review batch L): the branch's head and its last `limit` records below rev
+ * `before` (default: through the head), oldest first; `fin log` summarises them.
+ */
+export const HistoryLogPayload = Schema.Struct({
+  projectId: Schema.String,
+  branch: Schema.String,
+  before: Schema.optional(
+    Schema.Number.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(1), Schema.isLessThanOrEqualTo(Number.MAX_SAFE_INTEGER)),
+  ),
+  limit: Schema.Number.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(1), Schema.isLessThanOrEqualTo(HISTORY_LOG_MAX)),
+});
+export const HistoryLogSuccess = Schema.Unknown;
+
 /** Narrowed views of the `Schema.Unknown` results. */
 export type BranchCreatedPayload = BranchCreated;
 export type HistoryResultPayload = HistoryResult;
 export type MergeReportPayload = MergeReport;
 export type RecoverReportPayload = RecoverReport;
 export type RecordPayload = CommittedTx;
+export type HistoryLogResult = HistoryLog;

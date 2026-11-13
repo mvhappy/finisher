@@ -2,7 +2,7 @@
 // per-project event hubs fed by each engine's `onEvent`.
 import { resolve } from "node:path";
 import type { AudioPlan, BranchView, CommittedTx, FontsPlan, FramePlan } from "@finisher/core-types";
-import type { FinError, Generation, ProjectEvent, TxGetResult } from "@finisher/contracts";
+import type { FinError, Generation, HistoryLogResult, ProjectEvent, TxGetResult } from "@finisher/contracts";
 import { Engine } from "@finisher/fin-node";
 import { Context, Effect, Layer, type Scope, Semaphore, type Stream } from "effect";
 import { attempt, attemptJson, finError, isEngineDead } from "./errors.ts";
@@ -87,6 +87,8 @@ export interface ProjectRegistryShape {
   readonly rebuild: (projectId: string) => Effect.Effect<unknown, FinError>;
   readonly compact: (projectId: string) => Effect.Effect<unknown, FinError>;
   readonly txGet: (projectId: string, txId: string) => Effect.Effect<TxGetResult, FinError>;
+  /** `history.log`: the head and the last `limit` records of `branch` below `before`, oldest first. */
+  readonly historyLog: (projectId: string, branch: string, before: number | undefined, limit: number) => Effect.Effect<HistoryLogResult, FinError>;
   /** `meta`'s guard names the caller's credential: refused once it is revoked (review of 5A Tasks 8–9, L1). */
   readonly acknowledgeRewind: (projectId: string, branch: string, generation: number, meta?: CallMeta) => Effect.Effect<boolean, FinError>;
   readonly acknowledgeSalvage: (projectId: string, copy: string, meta?: CallMeta) => Effect.Effect<boolean, FinError>;
@@ -556,6 +558,7 @@ export function makeProjectRegistry(
       rebuild: (projectId) => on(projectId, (e) => e.rebuild()),
       compact: (projectId) => on(projectId, (e) => e.compact()),
       txGet: (projectId, txId) => on<TxGetResult>(projectId, async (e) => (await e.txGet(txId)) ?? "null"),
+      historyLog: (projectId, branch, before, limit) => on<HistoryLogResult>(projectId, (e) => e.log(branch, before, limit)),
       acknowledgeRewind: (projectId, requested, generation, meta) =>
         Effect.flatMap(resolveBranch(projectId, requested), (branch) =>
           on<boolean>(projectId, async (e) => String(await e.acknowledgeRewind(branch, generation, metaJson(meta)))),
