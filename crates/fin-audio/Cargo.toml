@@ -1,0 +1,23 @@
+[package]
+name = "fin-audio"
+version = "0.0.0"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+description = "Pure audio engine: the mixer, the polyphase resampler, WSOLA time-stretch, the built-in audio effects, loudness and peaks (no I/O; bit-identical native and on wasm32)."
+
+[features]
+# Signal generators and analysis helpers for tests and fixtures; never in a shipped build.
+testing = []
+
+[dependencies]
+fin-core = { path = "../fin-core" }
+fin-media = { path = "../fin-media" }
+# The pinned transcendentals on the hashed path (spec §13.4).
+libm = { workspace = true }
+serde_json = "1"
+
+[dev-dependencies]
+fin-audio = { path = ".", features = ["testing"] }
+blake3 = "1"
