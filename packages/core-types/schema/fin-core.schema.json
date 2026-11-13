@@ -15393,9 +15393,7 @@
         "trusted",
         "plugins",
         "advisories",
-        "staleDays",
-        "maxStaleDays",
-        "lastRefreshAt"
+        "maxStaleDays"
       ],
       "type": "object"
     },
@@ -18473,10 +18471,7 @@
         }
       },
       "required": [
-        "root",
-        "timestamp",
-        "snapshot",
-        "targets"
+        "root"
       ],
       "type": "object"
     },
@@ -18692,8 +18687,7 @@
         }
       },
       "required": [
-        "ok",
-        "errors"
+        "ok"
       ],
       "type": "object"
     },

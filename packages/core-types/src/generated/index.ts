@@ -8656,7 +8656,7 @@ export interface RegistryStatus {
   /**
    * Seconds since the epoch of the last successful refresh, `None` before the first.
    */
-  lastRefreshAt: number;
+  lastRefreshAt?: number;
   /**
    * `maxStaleDays` from the signed root (default 7, at most 90).
    */
@@ -8673,7 +8673,7 @@ export interface RegistryStatus {
   /**
    * Whole days past the trusted metadata's earliest expiry, `None` while fresh.
    */
-  staleDays: number;
+  staleDays?: number;
   trusted: TrustedVersions;
 }
 /**
@@ -8684,9 +8684,9 @@ export interface RegistryStatus {
  */
 export interface TrustedVersions {
   root: number;
-  snapshot: number;
-  targets: number;
-  timestamp: number;
+  snapshot?: number;
+  targets?: number;
+  timestamp?: number;
 }
 /**
  * `in/manifest.json` (spec §4.2): built by `fin-node` from the snapshot's asset table,
@@ -9306,7 +9306,7 @@ export interface TxSetAside {
  * via the `definition` "ValidationReport".
  */
 export interface ValidationReport {
-  errors: Invalid[];
+  errors?: Invalid[];
   manifest?: Manifest;
   ok: boolean;
 }

@@ -37,6 +37,9 @@ struct Probe {
     written_null_ref: Option<Inner>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     list: Vec<u32>,
+    /// Skipped when empty, but required on input (no serde default).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    skipped_no_default: Vec<u32>,
     #[serde(default)]
     defaulted: u32,
     plain: u32,
@@ -80,9 +83,17 @@ fn omitted_fields_are_optional_and_not_null() {
     );
     assert_eq!(props["omittedEnum"], json!({ "$ref": "#/$defs/Mode" }));
     assert_eq!(props["omittedList"]["type"], "array");
-    for name in ["omitted", "omittedRef", "omittedEnum", "omittedList"] {
+    for name in [
+        "omitted",
+        "omittedRef",
+        "omittedEnum",
+        "omittedList",
+        "list",
+        "skippedNoDefault",
+    ] {
         assert!(!required(probe).contains(&name), "{name} is optional");
     }
+    assert!(required(probe).contains(&"plain"));
 }
 
 #[test]

@@ -60,7 +60,9 @@ fn definitions(
 }
 
 /// Walks `read` (a deserialize-contract schema) beside `written` (the same schema under the
-/// serialize contract) and takes `null` out of each property `written` does not require.
+/// serialize contract) and takes `null` out of each property `written` does not require, which
+/// is then optional in `read` too (a skipped field Rust requires on input is still one the wire
+/// omits).
 /// Under the serialize contract schemars makes a field optional exactly when it has
 /// `skip_serializing_if` (a serde default alone does not: the field is always written), so
 /// such a property is one the wire omits rather than writes as `null`. Only the `null` schemars
@@ -76,6 +78,7 @@ fn omitted_not_null(read: &mut Value, written: &Value) {
                 .and_then(Value::as_array)
                 .map(|a| a.iter().filter_map(Value::as_str).collect())
                 .unwrap_or_default();
+            let mut omitted: Vec<String> = Vec::new();
             for (k, x) in r.iter_mut() {
                 let Some(wx) = w.get(k) else { continue };
                 if k == "required" {
@@ -93,7 +96,14 @@ fn omitted_not_null(read: &mut Value, written: &Value) {
                     omitted_not_null(p, wp);
                     if !required.contains(&name.as_str()) {
                         strip_null(p);
+                        omitted.push(name.clone());
                     }
+                }
+            }
+            if let Some(Value::Array(req)) = r.get_mut("required") {
+                req.retain(|n| !n.as_str().is_some_and(|n| omitted.iter().any(|o| o == n)));
+                if req.is_empty() {
+                    r.remove("required");
                 }
             }
         }
