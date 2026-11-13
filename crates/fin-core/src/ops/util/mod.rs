@@ -11,6 +11,7 @@ mod carve;
 mod check;
 mod content;
 pub(crate) mod contents;
+pub(crate) mod fades;
 mod group;
 pub(crate) mod keys;
 mod limits;

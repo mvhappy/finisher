@@ -114,6 +114,7 @@ fn graphic(id: &str, at: i64, slots: BTreeMap<String, ParamValue>) -> Op {
         body: ItemBody::Graphic {
             asset: "a2".into(),
             slots,
+            source_in: fin_core::Rational::zero(),
         },
     }
     .into()

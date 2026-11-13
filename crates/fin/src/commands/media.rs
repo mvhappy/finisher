@@ -184,6 +184,7 @@ pub fn plan_graphic(
     let body = ItemBody::Graphic {
         asset: template,
         slots,
+        source_in: Rational::zero(),
     };
     let echo = insert(b, &track, at, duration, body, mode, "$graphic", suffix)?;
     let mut resolved = json!({

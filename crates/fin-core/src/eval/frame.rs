@@ -22,7 +22,7 @@ use crate::eval::plan::{
     FramePlan, GraphicPlan, ItemKind, Layer, NestedPlan, PlanCrop, PlanTransform,
 };
 use crate::eval::resolve::Resolver;
-use crate::eval::source::source_of;
+use crate::eval::source::{source_of, template_time};
 use crate::eval::transition::TrackIndex;
 use crate::eval::{check_frame, timeline_of};
 use crate::layout::TextMeasurer;
@@ -162,7 +162,11 @@ impl<'a> Ctx<'a> {
                 self.measured |= plan.layout.is_some();
                 layer.caption = Some(plan);
             }
-            ItemBody::Graphic { asset, slots } => {
+            ItemBody::Graphic {
+                asset,
+                slots,
+                source_in,
+            } => {
                 let template = self
                     .project
                     .assets
@@ -170,7 +174,7 @@ impl<'a> Ctx<'a> {
                     .and_then(|a| a.lottie.as_ref());
                 layer.graphic = Some(GraphicPlan {
                     asset: asset.clone(),
-                    time: local,
+                    time: template_time(*source_in, local)?,
                     slots: r.slots(slots, template),
                 });
             }

@@ -441,9 +441,9 @@ impl<'a> Ctx<'a> {
 fn source_in(project: &Project, item: &str) -> Option<Value> {
     let (_, _, it) = addr::item(project, item).ok()?;
     match &it.body {
-        ItemBody::Clip { source_in, .. } | ItemBody::Nested { source_in, .. } => {
-            Some(json!(source_in))
-        }
+        ItemBody::Clip { source_in, .. }
+        | ItemBody::Graphic { source_in, .. }
+        | ItemBody::Nested { source_in, .. } => Some(json!(source_in)),
         _ => None,
     }
 }

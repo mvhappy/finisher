@@ -49,7 +49,7 @@ fn new_project_has_default_timeline_and_tracks() {
     assert!(tl.markers.is_empty());
     assert_eq!(p.rate, rate());
     assert_eq!(p.schema_version, SCHEMA_VERSION);
-    assert_eq!(SCHEMA_VERSION, 3);
+    assert_eq!(SCHEMA_VERSION, 4);
     assert!(p.bins.is_empty() && p.assets.is_empty() && p.styles.is_empty());
     assert!(p.fonts.is_empty());
 }
@@ -60,7 +60,7 @@ fn new_project_has_default_timeline_and_tracks() {
 fn defaults_are_omitted() {
     let p = new_project("p1".into(), "Demo".into(), rate()).unwrap();
     let golden = concat!(
-        r#"{"id":"p1","name":"Demo","schemaVersion":3,"rate":"30000/1001","timelines":["#,
+        r#"{"id":"p1","name":"Demo","schemaVersion":4,"rate":"30000/1001","timelines":["#,
         r#"{"id":"tl1","name":"Timeline 1","rate":"30000/1001","#,
         r#""resolution":{"width":1080,"height":1920},"tracks":["#,
         r#"{"id":"t1","kind":"video","name":"V1","items":[]},"#,
@@ -88,7 +88,7 @@ fn project_json_round_trips_byte_identically() {
     let back: Project = serde_json::from_str(&json).unwrap();
     assert_eq!(back, p);
     assert_eq!(serde_json::to_string(&back).unwrap(), json);
-    assert!(json.contains("\"schemaVersion\":3") && json.contains("\"sourceIn\":\"1/2\""));
+    assert!(json.contains("\"schemaVersion\":4") && json.contains("\"sourceIn\":\"1/2\""));
 }
 
 /// Common fields away from every default, so each one is written.
@@ -125,6 +125,8 @@ fn busy_common() -> Common {
             pan: 0.25,
             fade_in: r("1/2"),
             fade_out: r("0"),
+            fade_in_offset: r("1/4"),
+            fade_out_offset: r("0"),
         }),
         keyframes: BTreeMap::from([(
             "opacity".into(),
@@ -202,6 +204,7 @@ fn every_kind() -> Vec<Item> {
             ItemBody::Graphic {
                 asset: "a2".into(),
                 slots: BTreeMap::from([("title".into(), ParamValue::Text("Hi".into()))]),
+                source_in: fin_core::Rational::zero(),
             },
             Common::default(),
         ),

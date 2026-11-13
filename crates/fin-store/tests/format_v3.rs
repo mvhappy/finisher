@@ -352,9 +352,9 @@ fn fixture_4c_opens_identically() {
     let v: i64 = conn
         .query_row("PRAGMA user_version", [], |r| r.get(0))
         .unwrap();
-    assert_eq!((v, DB_VERSION), (5, 5));
-    assert_eq!(meta(&conn, "formatVersion").as_deref(), Some("5"));
-    assert_eq!(meta(&conn, "minReaderVersion").as_deref(), Some("5"));
+    assert_eq!((v, DB_VERSION), (6, 6));
+    assert_eq!(meta(&conn, "formatVersion").as_deref(), Some("6"));
+    assert_eq!(meta(&conn, "minReaderVersion").as_deref(), Some("6"));
     let rows: i64 = conn
         .query_row("SELECT COUNT(*) FROM drops", [], |r| r.get(0))
         .unwrap();

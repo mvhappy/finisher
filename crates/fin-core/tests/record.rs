@@ -612,9 +612,9 @@ fn drop_record_golden() {
         bytes,
         concat!(
             r#"{"txId":"tx-test","seq":7,"kind":"drop","from":"br2","drops":["o1","o2"],"#,
-            r#""undrops":["o3"],"schemaVersion":3,"parentHash":null,"author":"test","#,
+            r#""undrops":["o3"],"schemaVersion":4,"parentHash":null,"author":"test","#,
             r#""committedAt":1700000000000,"intent":{"txId":"tx-test","author":"test","#,
-            r#""branch":"main","baseRev":0,"schemaVersion":3,"ops":[]},"resolved":[],"#,
+            r#""branch":"main","baseRev":0,"schemaVersion":4,"ops":[]},"resolved":[],"#,
             r#""inverse":[],"bindings":{}}"#
         )
     );
@@ -871,7 +871,7 @@ proptest::proptest! {
             at: secs(0),
             duration: secs(1),
             mode: InsertMode::Ripple,
-            body: ItemBody::Graphic { asset: "a1".into(), slots: slots.clone() },
+            body: ItemBody::Graphic { asset: "a1".into(), slots: slots.clone(), source_in: fin_core::Rational::zero() },
         }
         .into();
         let mut record = sample();
