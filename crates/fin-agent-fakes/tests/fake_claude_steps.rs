@@ -315,3 +315,101 @@ fn fake_spawn_in_on_allow_runs_only_when_allowed() {
     assert_eq!(parent["spawned"][0]["code"], 0);
     assert_eq!(parent["answers"][1]["answer"]["behavior"], "allow");
 }
+
+#[test]
+fn fake_bash_announces_runs_and_reports_the_result() {
+    let dir = Dir::new("bash");
+    let marker = dir.path("ran.txt");
+    let bash =
+        |input: serde_json::Value| json!({"ask": {"tool": "Bash", "input": input, "bash": true}});
+    let script = json!({"steps": [
+        {"expect": "user", "ask": {"tool": "Bash", "bash": true, "toolUseId": "toolu_a",
+            "input": {"command": format!("echo hi; echo x > '{}'", marker.display()), "description": "d"}}},
+        bash(json!({"command": "sleep 5; echo late", "run_in_background": true})),
+        bash(json!({"command": "echo never"})),
+    ]});
+    let mut f = Fake::start(&dir, Some(script), &[], &[]);
+    f.user("go");
+    assert_eq!(f.read()["subtype"], "init");
+    // The call is announced before its prompt, with the prompt's tool_use_id.
+    let announced = f.read();
+    assert_eq!(announced["type"], "assistant");
+    assert_eq!(announced["message"]["content"][0]["id"], "toolu_a");
+    assert_eq!(announced["message"]["content"][0]["name"], "Bash");
+    let req = f.read();
+    assert_eq!(req["request"]["tool_use_id"], "toolu_a");
+    f.answer(
+        &req,
+        json!({"behavior": "allow", "updatedInput": req["request"]["input"]}),
+    );
+    let result = f.read();
+    let block = &result["message"]["content"][0];
+    assert_eq!(
+        (result["type"].as_str(), block["tool_use_id"].as_str()),
+        (Some("user"), Some("toolu_a"))
+    );
+    assert_eq!(
+        (block["content"].as_str(), block["is_error"].as_bool()),
+        (Some("hi\n"), Some(false))
+    );
+    assert!(marker.exists(), "the command ran before its result");
+    // In the background: the result comes at once, before the process ends.
+    let _ = f.read();
+    let req = f.read();
+    let started = std::time::Instant::now();
+    f.answer(
+        &req,
+        json!({"behavior": "allow", "updatedInput": req["request"]["input"]}),
+    );
+    let result = f.read();
+    assert!(started.elapsed() < std::time::Duration::from_secs(4));
+    let text = result["message"]["content"][0]["content"]
+        .as_str()
+        .unwrap_or_default();
+    assert!(text.starts_with("Command running in background"), "{text}");
+    // Denied: an error result, nothing run.
+    let _ = f.read();
+    let req = f.read();
+    f.answer(&req, json!({"behavior": "deny", "message": "no"}));
+    let result = f.read();
+    assert_eq!(result["message"]["content"][0]["is_error"], true);
+    assert_eq!(f.read()["type"], "result");
+    assert!(f.finish().success());
+    let spawned = observed(&dir)["spawned"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    assert_eq!(spawned.len(), 2);
+    assert_eq!(spawned[1]["background"], true);
+}
+
+#[test]
+fn fake_bash_in_background_is_rejected_while_background_tasks_are_disabled() {
+    let dir = Dir::new("bash-bg-off");
+    let marker = dir.path("bg.txt");
+    let command = format!("echo x > '{}'", marker.display());
+    let script = json!({"steps": [{"expect": "user",
+        "ask": {"tool": "Bash", "bash": true, "input": {"command": command, "run_in_background": true}}}]});
+    let mut f = Fake::start(
+        &dir,
+        Some(script),
+        &[],
+        &[("CLAUDE_CODE_DISABLE_BACKGROUND_TASKS", "1")],
+    );
+    f.user("go");
+    assert_eq!(f.read()["subtype"], "init");
+    assert_eq!(f.read()["type"], "assistant");
+    // No prompt: the unknown parameter is refused at once (verified 2.1.321, Task 0).
+    let result = f.read();
+    let block = &result["message"]["content"][0];
+    assert_eq!(block["is_error"], true);
+    assert!(
+        block["content"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("run_in_background")
+    );
+    assert_eq!(f.read()["type"], "result");
+    assert!(f.finish().success());
+    assert!(!marker.exists(), "nothing ran");
+}

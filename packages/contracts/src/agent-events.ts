@@ -78,6 +78,8 @@ const Request = ev("request", {
   kind: Schema.Literals(["approval", "userInput"]),
   tool: Schema.optionalKey(Schema.String),
   input: Schema.optionalKey(Schema.Unknown),
+  /** The tool call it asks about (its `toolStarted.providerId`), when the provider names it. */
+  providerId: Schema.optionalKey(Schema.String),
 });
 /**
  * The provider withdrew request `id` before it was answered (Claude Code's

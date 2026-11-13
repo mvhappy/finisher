@@ -335,7 +335,7 @@ export class AgentJournal implements RuntimeJournal {
     });
   }
 
-  toolResult(r: { sessionId: string; runId: string; callId: string; ok: boolean; output: unknown; synthetic: boolean }): void {
+  toolResult(r: { sessionId: string; runId: string; callId: string; ok: boolean; output: unknown; synthetic: boolean; ambiguous?: readonly string[] }): void {
     this.#guard("a tool result", () => {
       if (!this.#on() || this.#done.has(`call:${r.callId}`)) return;
       const s = this.#d.store.get(r.sessionId) ?? this.#sessions.get(r.sessionId);
@@ -343,7 +343,8 @@ export class AgentJournal implements RuntimeJournal {
       this.#done.set(`call:${r.callId}`, true);
       const call = this.#calls.get(r.callId);
       this.#calls.delete(r.callId);
-      const txs = this.#d.store.txsOfCall(r.callId);
+      // Its own commits, then those matched to it among other calls (`ambiguous`, no call on the row).
+      const txs: { txId: string; attribution: Attribution }[] = [...this.#d.store.txsOfCall(r.callId), ...(r.ambiguous ?? []).map((txId) => ({ txId, attribution: "ambiguous" as const }))];
       const out = (r.output ?? null) as { code?: unknown; exit?: unknown } | null;
       const code = r.synthetic ? "SESSION_INTERRUPTED" : r.ok ? undefined : resultCodeOf(out?.code);
       const exit = typeof out?.exit === "number" && Number.isInteger(out.exit) ? out.exit : undefined;

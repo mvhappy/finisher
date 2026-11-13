@@ -11,6 +11,7 @@ use std::time::{Duration, Instant};
 use serde_json::{Value, json};
 
 mod ask;
+mod bash;
 mod lines;
 mod mcp;
 mod results;
@@ -469,7 +470,11 @@ impl Runner {
             self.emit(&json!({"type": "fake_future_type", "session_id": self.session_id, "payload": {"note": "a line no CLI version has"}}));
         }
         if let Some(ask) = &s.ask {
-            match self.ask(ask) {
+            let (outcome, tool_use_id) = self.ask(ask);
+            if ask.bash && matches!(outcome, Outcome::Allowed | Outcome::Denied) {
+                self.bash(ask, &tool_use_id, matches!(outcome, Outcome::Allowed));
+            }
+            match outcome {
                 Outcome::Interrupted => return,
                 Outcome::Allowed => self.branch(&s.on_allow),
                 Outcome::Denied => self.branch(&s.on_deny),

@@ -381,6 +381,7 @@ export abstract class RuntimeEngine {
           respond: (a) => call(live.provider.respond(e.id, a)),
           log: (m, d) => this.log(m, { sessionId, ...d }),
           unconfined: live.sandbox !== undefined && live.sandbox.status.kind !== "enforced",
+          callId: e.providerId === undefined ? undefined : live.calls.get(e.providerId)?.callId,
         }, e);
       case "requestCancelled":
         return this.deps.requests?.withdraw(sessionId, e.id);

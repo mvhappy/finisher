@@ -106,6 +106,11 @@ pub struct Ask {
     pub input: Value,
     /// Withdraw the request (`control_cancel_request`) when unanswered after this long.
     pub cancel_after_ms: Option<u64>,
+    /// The call's `tool_use_id` (default `toolu_fake_<n>`).
+    pub tool_use_id: Option<String>,
+    /// The CLI's `Bash` tool (`runner/bash.rs`): announced, run when allowed, its result written.
+    #[serde(default)]
+    pub bash: bool,
 }
 
 #[derive(Debug, Default, Clone, Copy, Deserialize)]

@@ -26,6 +26,8 @@
 //   enforced) is handed to `permissions.ts`, whose managed rule then applies (owner Q3a).
 // - **Gone.** Requests waiting here are the live instance's: a restart loses them with the
 //   instance (the provider is gone too); an answer then reaches no one and is still recorded.
+// - **Allowed shell calls** (7D Task 12): every allow, by policy or by a person, first opens the
+//   call's attribution window (`attribution.allowed`), then the answer goes out.
 // - `userInput` requests have no one to answer them yet: the provider is told to go on without.
 import type { Approval, FinError, ProviderEvent, Session } from "@finisher/contracts";
 import { Effect, Exit } from "effect";
@@ -47,6 +49,8 @@ export interface RequestContext {
   readonly log: (message: string, details: Record<string, unknown>) => void;
   /** The session's sandbox does not enforce the `agent` profile (`permissions.ts`, owner Q3a). */
   readonly unconfined?: boolean;
+  /** The Finisher call the request asks about (`request.providerId`'s), when announced. */
+  readonly callId?: string | undefined;
 }
 
 export interface ProviderRequestsDeps {
@@ -58,6 +62,8 @@ export interface ProviderRequestsDeps {
   readonly consume: (approvalId: string) => void;
   /** Runs `f` in `ms` of real time; answers the cancel (default `setTimeout`, unref'd). */
   readonly schedule?: Schedule;
+  /** Opens an allowed shell call's window before its answer (`claude/attribution.ts`). */
+  readonly attribution?: { allowed(sessionId: string, callId: string | undefined, tool: string, input: unknown): Promise<void> };
 }
 
 export type Schedule = (ms: number, f: () => void) => () => void;
@@ -102,6 +108,7 @@ interface Pending {
   readonly ctx: RequestContext;
   readonly requestId: string;
   readonly tool: string;
+  readonly input: unknown;
 }
 
 const run = <A, E>(e: Effect.Effect<A, E>) => Effect.runPromiseExit(e);
@@ -163,6 +170,7 @@ export class ProviderRequests {
     const base = { requestId: e.id, kind: "provider", tool, input };
     const answer = async (allow: boolean, node: { readonly reason: string; readonly rule?: string; readonly layer?: string }) => {
       await ctx.node({ ...base, decision: allow ? "allow" : "deny", by: "policy", ...node });
+      if (allow) await this.#opened(ctx, tool, input);
       const err = await ctx.respond(allow ? { kind: "approval", allow } : { kind: "approval", allow, message: denyMessage(node) });
       if (err) ctx.log("agent runtime: the provider refused an answer", { code: err.code });
     };
@@ -182,9 +190,18 @@ export class ProviderRequests {
     }
     if (asked.value === undefined) return answer(false, { reason: "noRun" });
     const list = this.#pending.get(asked.value.id) ?? [];
-    list.push({ ctx, requestId: e.id, tool });
+    list.push({ ctx, requestId: e.id, tool, input });
     this.#pending.set(asked.value.id, list);
     if (!this.#timers.has(asked.value.id)) this.#arm(asked.value.id, asked.value.approval.expiresAt);
+  }
+
+  /** An allowed call's attribution window, opened before the answer goes out (never fails the answer). */
+  async #opened(ctx: RequestContext, tool: string, input: unknown): Promise<void> {
+    try {
+      await this.#d.attribution?.allowed(ctx.session.id, ctx.callId, tool, input);
+    } catch (e) {
+      ctx.log("agent runtime: a shell call's attribution window did not open", { error: String(e) });
+    }
   }
 
   /** A card was answered or expired: its requests get the decision (`by: user`, or a policy `deny` on expiry). */
@@ -200,6 +217,7 @@ export class ProviderRequests {
     for (const p of list) {
       const node = a.status === "answered" ? { decision: a.decision, by: "user", answeredBy: a.by } : { decision: "deny", by: "policy", reason: "expired" };
       await p.ctx.node({ approvalId: a.id, requestId: p.requestId, kind: "provider", tool: p.tool, ...node });
+      if (allow) await this.#opened(p.ctx, p.tool, p.input);
       const err = await p.ctx.respond(allow ? { kind: "approval", allow } : { kind: "approval", allow, message: denyMessage({ reason: a.status === "answered" ? "user" : "expired" }) });
       if (err) p.ctx.log("agent runtime: the provider refused an answer", { code: err.code });
     }
