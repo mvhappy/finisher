@@ -3655,6 +3655,14 @@
       ],
       "type": "object"
     },
+    "EffectDomain": {
+      "description": "What an effect kind processes: pictures (on items of video tracks) or sound (on clips of\naudio tracks).",
+      "enum": [
+        "visual",
+        "audio"
+      ],
+      "type": "string"
+    },
     "EffectMove": {
       "description": "`effect.move`: `effect` of `item` to index `to`.",
       "properties": {

@@ -1,6 +1,8 @@
 //! `item.move`: moves an item to a track and position, and its link group with it (plan 4C
 //! Decisions 15 and 19): every member moves by the named item's time delta on its own track;
-//! only the named item changes track (to one on the same timeline, whose kind fits it).
+//! only the named item changes track (to one on the same timeline, whose kind fits it, and,
+//! policy, whose kind fits the domain of each of its effects: `TRACK_KIND_MISMATCH`, plan 6C
+//! Decision 13).
 //!
 //! `at` is in the frame before the op. Member by member (the named item first):
 //! - `ripple`: a close where it was (`{end, −duration}`), then an open at its target mapped
@@ -30,8 +32,9 @@ use crate::model::{Item, Project};
 use crate::ops::item_insert::check_body;
 use crate::ops::item_slide::START;
 use crate::ops::util::{
-    OpDiff, TrackAt, carve, check_unlocked, clip_containing, frame_of, insert_inside,
-    invalid_range, item_index, members, place, policy_frame, ripple, track_index, wrong_op,
+    OpDiff, TrackAt, carve, check_effect_domains, check_unlocked, clip_containing, frame_of,
+    insert_inside, invalid_range, item_index, members, place, policy_frame, ripple, track_index,
+    wrong_op,
 };
 use crate::ops::{Bindings, DeleteMode, InsertMode, ItemMove, ItemRemove, ItemRestore, Op};
 use crate::rebase::{Assoc, Footprint, StepMap, Touch};
@@ -125,6 +128,10 @@ fn plan(project: &Project, m: &ItemMove, bindings: &Bindings) -> Result<Vec<Leg>
             id: member,
         };
         if bindings.policy() {
+            if leg.to != t {
+                let kinds = item.common.effects.iter().map(|e| e.kind.as_str());
+                check_effect_domains(leg.to.get(project), &leg.id, kinds, bindings)?;
+            }
             check_unlocked(t.get(project), Some(&leg.id), bindings)?;
             check_unlocked(leg.to.get(project), Some(&leg.id), bindings)?;
             if leg.at.is_negative() {

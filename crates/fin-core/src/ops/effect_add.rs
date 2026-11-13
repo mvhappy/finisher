@@ -8,8 +8,11 @@
 //! of its shape (structural) and range (policy). `enabled` is not a param: added effects are
 //! enabled (`param.set effects.<fx>.enabled` turns one off). The change is the effect's
 //! `added`, plus the item's `effects` order when `at` is given; the inverse is `effect.remove`.
-//! Built-in effects are visual: on an item of an audio track they are `TRACK_KIND_MISMATCH`
-//! (policy).
+//! A registry kind's domain must match the item's track (plan 6C Decision 13): a visual effect
+//! on an item of an audio track, and an audio effect (`eq`, `compressor`, `gate`, `deEsser`)
+//! on an item of any other track, are `TRACK_KIND_MISMATCH` (policy, `check_effect_domains`,
+//! shared with `effect.restore`, `item.move` and `item.restore`). An unknown kind has no
+//! domain and is judged by the kind check alone.
 
 use std::collections::BTreeMap;
 
@@ -19,10 +22,11 @@ use serde_json::json;
 
 use crate::error::CoreError;
 use crate::ids::{IdAlloc, IdKind};
-use crate::model::{Effect, ParamValue, Project, Track, TrackKind};
+use crate::model::{Effect, ParamValue, Project};
 use crate::ops::util::param_check::{about_item, check_value};
 use crate::ops::util::{
-    OpDiff, check_unlocked, invalid_range, item_index, normalize_value, wrong_op,
+    OpDiff, check_effect_domains, check_unlocked, invalid_range, item_index, normalize_value,
+    wrong_op,
 };
 use crate::ops::{Bindings, EffectRemove, Op};
 use crate::params::{self, ScopeOf};
@@ -96,31 +100,6 @@ fn checked_params(
     Ok(out)
 }
 
-/// Every built-in effect is visual: one on an item of an audio track is `TRACK_KIND_MISMATCH`
-/// (policy).
-fn check_visual_track(
-    track: &Track,
-    item: &str,
-    kind: &str,
-    bindings: &Bindings,
-) -> Result<(), CoreError> {
-    if !bindings.policy()
-        || track.kind != TrackKind::Audio
-        || !params::effect_kinds().contains(&kind)
-    {
-        return Ok(());
-    }
-    Err(CoreError::new(
-        "TRACK_KIND_MISMATCH",
-        format!(
-            "{kind} is a visual effect; item {item} is on audio track {}",
-            track.id
-        ),
-    )
-    .with_details(json!({ "item": item, "kind": kind, "track": track.id, "trackKind": "audio" }))
-    .with_fix("add visual effects to items on video tracks"))
-}
-
 /// The inverse is one `effect.remove`.
 pub(crate) fn inverse_len(_op: &Op, _own: &Diff) -> usize {
     1
@@ -149,7 +128,7 @@ pub(crate) fn apply(
         None => len,
     };
     check_unlocked(ti.get(project), Some(&item), bindings)?;
-    check_visual_track(ti.get(project), &item, &a.kind, bindings)?;
+    check_effect_domains(ti.get(project), &item, [a.kind.as_str()], bindings)?;
     let params = checked_params(project, a, bindings).map_err(|e| about_item(e, &item))?;
     let fx = bindings.create(project, &a.id, IdKind::Effect, ids)?;
     let track = ti.get_mut(project);

@@ -1397,6 +1397,14 @@ export type ProjectPolicy = "default" | "never" | "unknown";
  */
 export type JournalState = "off" | "on" | "suspended";
 /**
+ * What an effect kind processes: pictures (on items of video tracks) or sound (on clips of
+ * audio tracks).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "EffectDomain".
+ */
+export type EffectDomain = "visual" | "audio";
+/**
  * A resolved value (plan 4C Decision 12): colours are sRGB `[r, g, b, a]` in 0…1.
  *
  * This interface was referenced by `FinCore`'s JSON-Schema

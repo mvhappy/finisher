@@ -293,6 +293,11 @@ fn corpus_covers_the_plan() {
                 };
                 want.insert(format!("slots.<{kind}>"));
             }
+            // Audio effects are not in frame plans: their parameters reach the audio plan
+            // (plan 6C Task 6), whose corpus case keys them.
+            Scope::Effect { kind }
+                if fin_core::params::effect_domain(kind)
+                    == Some(fin_core::params::EffectDomain::Audio) => {}
             Scope::Item { .. } | Scope::Effect { .. } => {
                 want.insert(s.path.to_string());
             }
