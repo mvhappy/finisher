@@ -93,7 +93,7 @@ export interface AutoMergeDeps<R extends string = never> {
  * eviction, and the source moved since, so it cannot be planned again exactly: a person
  * refreshes the review and it is judged again), and `dropsChanged` (an accepted origin was
  * dropped, or a rejected one undropped, since the decision: the review merge's
- * `REVIEW_UNDECIDED {reason: acceptedDropped | rejectedUndropped}`; a person decides again).
+ * `REVIEW_STALE {reason: acceptedDropped | rejectedUndropped}`; a person decides again).
  */
 export type AutoMergeRefusal =
   | "unavailable"
@@ -119,7 +119,7 @@ const refused = (reason: AutoMergeRefusal): AutoMergeResult => ({ merged: false,
 
 /** The review merge's refusal for drops that changed since the decisions (Task 7 round 2). */
 const dropsChanged = (e: FinError): boolean =>
-  e.code === "REVIEW_UNDECIDED" && ["acceptedDropped", "rejectedUndropped"].includes(String((e.details as { reason?: unknown } | null)?.reason));
+  e.code === "REVIEW_STALE" && ["acceptedDropped", "rejectedUndropped"].includes(String((e.details as { reason?: unknown } | null)?.reason));
 
 /** The audit principal of the policy actor (it has no connection). */
 const POLICY_PRINCIPAL = { kind: "policy", id: "autoMerge" } as const;

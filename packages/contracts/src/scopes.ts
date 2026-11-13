@@ -296,6 +296,7 @@ export const RPC_SCOPES: { readonly [T in FinRpcTag]: RuleOf<T> } = {
   "project.acknowledgeSalvage": { scopes: ["project.write"], resolve: PROJECT },
   "project.events": { scopes: ["project.read"], resolve: PROJECT },
   "tx.get": { scopes: ["project.read"], resolve: PROJECT },
+  "history.log": { scopes: ["project.read"], resolve: BRANCH },
   "eval.frame": { scopes: ["project.read"], resolve: BRANCH },
   "eval.audio": { scopes: ["project.read"], resolve: BRANCH },
   "fonts.catalog": { scopes: ["server.read"] },

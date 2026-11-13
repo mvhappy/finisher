@@ -4,12 +4,64 @@
 use fin_core::{CoreError, Item, Project, Rational, Timeline, Track, parse_time};
 use serde_json::json;
 
+/// At most this many `alternatives` a `NOT_FOUND` lists (review batch L): the closest ids.
+pub const ALTERNATIVES_CAP: usize = 10;
+
+/// `NOT_FOUND` for `kind` `id`, listing the existing ids closest to `id` (by edit distance,
+/// ties in project order). Past [`ALTERNATIVES_CAP`] the list is cut, `alternativesTotal`
+/// counts every id, and the fix names the command that lists them all.
 pub fn not_found(kind: &str, id: &str, alternatives: Vec<String>) -> CoreError {
+    let total = alternatives.len();
+    let lister = crate::follow::cmd(match kind {
+        "track" => "track ls",
+        "timeline" => "status",
+        "bin" => "bin ls",
+        _ => "view",
+    });
+    let mut details = json!({ "id": id, "kind": kind });
+    if total > ALTERNATIVES_CAP {
+        details["alternatives"] = json!(closest(id, alternatives));
+        details["alternativesTotal"] = json!(total);
+    } else {
+        details["alternatives"] = json!(alternatives);
+    }
     CoreError::new("NOT_FOUND", format!("{kind} {id} does not exist"))
-        .with_details(json!({ "id": id, "kind": kind, "alternatives": alternatives }))
+        .with_details(details)
         .with_fix(format!(
-            "use the id of an existing {kind}; `fin view` lists them"
+            "use the id of an existing {kind}; `{lister}` lists them"
         ))
+}
+
+/// The [`ALTERNATIVES_CAP`] of `ids` closest to `id`.
+fn closest(id: &str, ids: Vec<String>) -> Vec<String> {
+    let mut ranked: Vec<(usize, usize, String)> = ids
+        .into_iter()
+        .enumerate()
+        .map(|(i, c)| (distance(id, &c), i, c))
+        .collect();
+    ranked.sort();
+    ranked.truncate(ALTERNATIVES_CAP);
+    ranked.into_iter().map(|(_, _, c)| c).collect()
+}
+
+/// Levenshtein distance over chars.
+fn distance(a: &str, b: &str) -> usize {
+    let b: Vec<char> = b.chars().collect();
+    let mut row: Vec<usize> = (0..=b.len()).collect();
+    for (i, ca) in a.chars().enumerate() {
+        let mut prev = row[0];
+        row[0] = i + 1;
+        for (j, cb) in b.iter().enumerate() {
+            let cur = row[j + 1];
+            row[j + 1] = if ca == *cb {
+                prev
+            } else {
+                1 + prev.min(cur).min(row[j])
+            };
+            prev = cur;
+        }
+    }
+    row[b.len()]
 }
 
 /// Tags a time error with the flag it came from.
@@ -199,6 +251,27 @@ pub fn range(
 mod tests {
     use super::*;
     use fin_core::{Asset, AssetKind, Item, new_project};
+
+    /// Review batch L: a missing id among many lists the 10 closest, the total and the lister.
+    #[test]
+    fn not_found_caps_alternatives_to_the_closest() {
+        let ids: Vec<String> = (1..=10_000).map(|i| format!("c{i}")).collect();
+        let e = not_found("item", "c99999", ids);
+        let alts = e.details["alternatives"].as_array().unwrap();
+        assert_eq!(alts.len(), ALTERNATIVES_CAP);
+        assert_eq!(alts[0], "c9999", "one edit away comes first");
+        assert_eq!(e.details["alternativesTotal"], 10_000);
+        assert!(e.fix.unwrap().contains("`fin view` lists them"));
+        let few = not_found("track", "t9", vec!["t1".into(), "t2".into()]);
+        assert_eq!(
+            few.details["alternatives"],
+            json!(["t1", "t2"]),
+            "short lists as they are"
+        );
+        assert!(few.details.get("alternativesTotal").is_none());
+        assert!(few.fix.unwrap().contains("`fin track ls`"));
+        assert_eq!(distance("kitten", "sitting"), 3);
+    }
 
     fn r(s: &str) -> Rational {
         s.parse().unwrap()

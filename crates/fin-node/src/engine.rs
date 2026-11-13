@@ -342,6 +342,17 @@ impl Engine {
         self.task(Call::TxGet { tx_id })
     }
 
+    /// Resolves to the `HistoryLog` JSON of `branch`: its head and its last `limit` records
+    /// below rev `before` (default: through the head), oldest first.
+    #[napi(catch_unwind)]
+    pub fn log(&self, branch: String, before: Option<f64>, limit: f64) -> AsyncTask<StoreTask> {
+        self.task(Call::Log {
+            branch,
+            before,
+            limit,
+        })
+    }
+
     /// Stops status reporting the rewind of `branch` that started generation `n`; resolves to
     /// `false` when no such rewind is recorded. `meta_json`'s guard names the credential, if
     /// any, refused once ended (`CREDENTIAL_REVOKED`), as a write's is.

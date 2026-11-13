@@ -267,6 +267,15 @@ pub struct MergeReport {
     pub placements: Vec<Placement>,
 }
 
+/// `history.log`: the branch's head rev and a window of its records, oldest first (review
+/// batch L; `fin log` summarises them).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct HistoryLog {
+    pub head: u64,
+    pub records: Vec<CommittedTx>,
+}
+
 /// A branch head as a review plan saw it: the branch id, its head seq and the `txHash` of the
 /// record there (absent at a root's start), so a rewind to the same seq is told apart (plan 5E
 /// Decision 9).

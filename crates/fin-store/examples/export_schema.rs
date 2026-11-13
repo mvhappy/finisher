@@ -1,7 +1,7 @@
 //! Prints the JSON Schema of the TypeScript contract to stdout: `fin-core`'s types plus the
 //! envelope types the engine sends (and `Tx.via`'s `Via`, by name) that live above it (fin-store's
 //! [`Generation`], [`EngineEvent`], [`TxSetAside`], [`HistoryResult`], [`MergeReport`],
-//! [`DropReq`] (the one history request whose shape the contracts take from here, plan 5E),
+//! [`HistoryLog`], [`DropReq`] (the one history request whose shape the contracts take from here, plan 5E),
 //! [`ReviewPlan`] (with fin-core's `ReviewEntry`, plan 5E Decision 7), [`RecoverReport`],
 //! the status fin-node serves ([`ProjectStatusView`]: [`ProjectStatus`] and the font summary),
 //! the [`VerifyReport`], [`RebuildReport`] and [`CompactReport`] of the long calls,
@@ -33,9 +33,9 @@
 use fin_fonts::{FileState, FontCatalog, FontsPlan, FontsStatus};
 use fin_probe::Probe;
 use fin_store::{
-    BranchCreated, BranchView, CompactReport, DropReq, EngineEvent, Generation, HistoryResult,
-    MergeReport, ProjectStatus, ProjectStatusView, RebuildReport, RecoverGroup, RecoverReport,
-    ReviewPlan, SkippedFile, TxSetAside, VerifyReport, WriteGuard,
+    BranchCreated, BranchView, CompactReport, DropReq, EngineEvent, Generation, HistoryLog,
+    HistoryResult, MergeReport, ProjectStatus, ProjectStatusView, RebuildReport, RecoverGroup,
+    RecoverReport, ReviewPlan, SkippedFile, TxSetAside, VerifyReport, WriteGuard,
 };
 
 fn main() {
@@ -50,6 +50,7 @@ fn main() {
         g.subschema_for::<BranchCreated>();
         g.subschema_for::<HistoryResult>();
         g.subschema_for::<MergeReport>();
+        g.subschema_for::<HistoryLog>();
         g.subschema_for::<DropReq>();
         g.subschema_for::<ReviewPlan>();
         g.subschema_for::<RecoverGroup>();

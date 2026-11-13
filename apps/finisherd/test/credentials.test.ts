@@ -371,6 +371,31 @@ describe("credentials on a server", () => {
     expect(code(await commit(a, projectId, { ...tx("t2", 1, [insert(0)]), branch: mine!.id }))).toBeUndefined();
   });
 
+  test("history.log: limit 1..100, the branch resolved by name, reads open to a branch-limited credential (review batch L)", async () => {
+    await startInProcess();
+    const local = await connectProved({ info: running!.info, serverData });
+    clients.push(local);
+    const projectId = await project(local);
+    ok(await commit(local, projectId, tx("t0", 0, [addAsset()])));
+    ok(await commit(local, projectId, tx("t1", 1, [insert(0)])));
+    for (const limit of [0, 101, 1.5]) expect(code(await local.call("history.log", { projectId, branch: "main", limit })), String(limit)).toBe("INVALID_REQUEST");
+    ok(await local.call("branch.create", { projectId, txId: "01bbbbbbbbbbbbbbbbbbbbbbbb", author: "someone", from: "main", name: "side" }));
+    // By name, as every other branch read: the side branch holds main's records below its fork.
+    const side = ok<{ head: number; records: Array<{ rev: number; tx: { txId: string; branch: string } }> }>(
+      await local.call("history.log", { projectId, branch: "side", limit: 100 }),
+    );
+    expect(side.records.map((r) => r.tx.txId)).toEqual(["t0", "t1"]);
+    const one = ok<{ head: number; records: Array<{ rev: number }> }>(await local.call("history.log", { projectId, branch: "main", limit: 1, before: 2 }));
+    expect(one.records.map((r) => r.rev)).toEqual([1]);
+    expect(code(await local.call("history.log", { projectId, branch: "nope", limit: 1 }))).toBe("BRANCH_NOT_FOUND");
+    // Branch limits bound writes only (`chain/policy.ts`, `agent/reach.ts`): like `snapshot.get`
+    // and `tx.get`, a credential limited to its own branches reads main's log.
+    const { file } = await mint({ branches: ["own"] });
+    const a = await agentClient(file);
+    expect(code(await a.call("history.log", { projectId, branch: "main", limit: 5 }))).toBeUndefined();
+    expect(code(await a.call("snapshot.get", { projectId, branch: "main" }))).toBeUndefined();
+  });
+
   test("revoke_closes_live_connections: a live ops.subscribe ends with CREDENTIAL_REVOKED within 100 ms", async () => {
     await startInProcess();
     const local = await connectProved({ info: running!.info, serverData });

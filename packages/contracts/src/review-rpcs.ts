@@ -100,7 +100,11 @@ export const ReviewDecidePayload = Schema.Struct({
   requestChanges: Schema.optional(Schema.Struct({ reason: Schema.optional(text(REVIEW_REASON_MAX)) })),
 });
 
-/** `idemKey` is the merge's `txId`; `acceptPending` adds the snapshot's pending entries to `include`. */
+/**
+ * `idemKey` is the merge's `txId`; `acceptPending` adds the snapshot's pending entries to `include`.
+ * An accepted origin dropped since, or a rejected one undropped since, is `REVIEW_STALE {reason:
+ * acceptedDropped | rejectedUndropped, txIds}` (exit 4: the branch changed under the review).
+ */
 export const ReviewMergePayload = Schema.Struct({
   itemId: Schema.String,
   expect: SnapshotSchema,

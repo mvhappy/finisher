@@ -32,6 +32,7 @@ const ROOTS = [
   "BranchCreated",
   "BranchView",
   "Conflict",
+  "HistoryLog",
   "HistoryResult",
   "MergeReport",
   "RecoverReport",

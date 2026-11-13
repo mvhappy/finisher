@@ -15,6 +15,7 @@ pub enum BinCmd {
     Add(AddArgs),
     Move(MoveArgs),
     Remove(RemoveArgs),
+    Ls(super::inspect::BinLsArgs),
 }
 
 /// Add a bin; binds $bin.
@@ -52,11 +53,13 @@ pub fn name(cmd: &BinCmd) -> &'static str {
         BinCmd::Add(_) => "bin.add",
         BinCmd::Move(_) => "bin.move",
         BinCmd::Remove(_) => "bin.remove",
+        BinCmd::Ls(_) => "bin.ls",
     }
 }
 
 pub fn plan(b: &mut Builder<'_>, cmd: &BinCmd, suffix: &str) -> Result<Value, CoreError> {
     match cmd {
+        BinCmd::Ls(_) => Err(super::inspect::not_a_write(name(cmd))),
         BinCmd::Add(a) => {
             let id = format!("$bin{suffix}");
             b.push(Op::BinAdd(BinAdd {

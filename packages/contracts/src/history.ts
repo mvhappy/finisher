@@ -3,6 +3,7 @@
 // (`generated/schemas.ts`, from the same JSON Schema): exact, since a `Struct` drops any field
 // it does not list. A `CommittedTx` (the records in each result) is passed through unvalidated,
 // typed as the generated type (fin-core validated it on commit).
+import type { HistoryLog } from "@finisher/core-types";
 import { Schema } from "effect";
 import {
   BranchCreatedSchema,
@@ -10,6 +11,7 @@ import {
   BranchViewSchema,
   CommittedTxSchema,
   ConflictSchema,
+  HistoryLogSchema,
   HistoryResultSchema,
   MergeReportSchema,
   RecoverReportSchema,
@@ -137,3 +139,21 @@ export const ProjectRecoverPayload = Schema.Struct({
   dryRun: Schema.optional(Schema.Boolean),
 });
 export const RecoverReportSuccess = RecoverReportSchema;
+
+/** The most records one `history.log` page holds (`fin log --limit`). */
+export const HISTORY_LOG_MAX = 100;
+/**
+ * `history.log` (review batch L): the branch's head and its last `limit` records below rev
+ * `before` (default: through the head), oldest first; `fin log` summarises them.
+ */
+export const HistoryLogPayload = Schema.Struct({
+  projectId: Schema.String,
+  branch: Schema.String,
+  before: Schema.optional(
+    Schema.Number.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(1), Schema.isLessThanOrEqualTo(Number.MAX_SAFE_INTEGER)),
+  ),
+  limit: Schema.Number.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(1), Schema.isLessThanOrEqualTo(HISTORY_LOG_MAX)),
+});
+export const HistoryLogSuccess = HistoryLogSchema;
+export type HistoryLogResult = HistoryLog;
+

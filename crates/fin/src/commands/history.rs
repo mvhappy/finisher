@@ -60,6 +60,10 @@ pub struct MergeArgs {
     #[arg(long = "up-to", value_name = "seq")]
     #[serde(default, rename = "upTo")]
     pub up_to: Option<u64>,
+    /// A refusal lists 20 conflicts from this one (its `conflictsNext` names the next page).
+    #[arg(long = "conflicts-from", value_name = "n")]
+    #[serde(default, rename = "conflictsFrom")]
+    pub conflicts_from: Option<usize>,
 }
 
 /// Re-apply one record of another branch here.
@@ -426,6 +430,8 @@ pub fn merge_doc(report: &Value) -> Value {
 pub struct Limits<'a> {
     pub include: Option<&'a [String]>,
     pub up_to: Option<u64>,
+    /// The first conflict a refusal lists ([`super::refusal`]); not sent, not hashed.
+    pub conflicts_from: usize,
 }
 
 /// Merges `from` into `into`, copying what `limits` admit. `cmd` names the command for
@@ -458,18 +464,22 @@ pub fn merge_refs(
         args["sourceUpTo"] = json!(n);
         fields["sourceUpTo"] = json!(n);
     }
-    send(
-        backend,
-        g,
-        Req {
-            tag: "history.merge",
-            cmd,
-            args,
-            fields,
-            hashed: true,
-            group: true,
-        },
-    )
+    let call = super::refusal::MergeCall {
+        from,
+        into,
+        include: limits.include,
+        up_to: limits.up_to,
+        conflicts_from: limits.conflicts_from,
+    };
+    let req = Req {
+        tag: "history.merge",
+        cmd,
+        args,
+        fields,
+        hashed: true,
+        group: true,
+    };
+    send(backend, g, req).map_err(|e| super::refusal::page(e, &call))
 }
 
 pub fn merge(backend: &dyn Backend, g: &Globals, a: &MergeArgs) -> Result<Value, CoreError> {
@@ -480,6 +490,7 @@ pub fn merge(backend: &dyn Backend, g: &Globals, a: &MergeArgs) -> Result<Value,
     let limits = Limits {
         include: a.include.as_deref(),
         up_to: a.up_to,
+        conflicts_from: a.conflicts_from.unwrap_or(0),
     };
     let report = merge_refs(
         backend,

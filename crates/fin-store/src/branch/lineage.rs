@@ -251,6 +251,31 @@ fn ranges(segs: &[LineageSeg], after: u64) -> impl Iterator<Item = (&LineageSeg,
         .filter(|(s, lo)| s.through.is_none_or(|t| t > *lo))
 }
 
+/// [`records_since`] up to `through`: the records with `after < rev <= through`, in rev order
+/// (`fin log`'s window, review batch L). Only the lineage branches the window reaches are read.
+pub(crate) fn records_between(
+    conn: &Connection,
+    branch: &str,
+    after: u64,
+    through: u64,
+) -> Result<Vec<CommittedTx>, StoreError> {
+    let segs = lineage(conn, branch)?;
+    let mut out = vec![];
+    for (seg, lo) in ranges(&segs, after) {
+        if lo >= through {
+            break;
+        }
+        let hi = Some(seg.through.map_or(through, |t| t.min(through)));
+        if crate::diffs::pending(conn, &seg.branch)?.is_some_and(|p| p > lo) {
+            crate::diffs::fill(conn, &seg.branch)?;
+        }
+        let txs = db::txs_in(conn, &seg.branch, lo, hi)?;
+        check_contiguous(&seg.branch, lo, hi, txs.iter().map(|c| c.rev))?;
+        out.extend(txs);
+    }
+    Ok(out)
+}
+
 /// The raw rows of the lineage with `seq > after`, in order, with the branch holding each.
 fn rows_since(
     conn: &Connection,

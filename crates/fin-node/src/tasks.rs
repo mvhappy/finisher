@@ -35,6 +35,11 @@ pub(crate) enum Call {
     TxGet {
         tx_id: String,
     },
+    Log {
+        branch: String,
+        before: Option<f64>,
+        limit: f64,
+    },
     // These three change the store outside `Store::write`: each holds its credential's
     // check (`fin_store::live_credential`) through the change, as a write does.
     AcknowledgeRewind {
@@ -361,6 +366,19 @@ fn run(store: &Shared, call: Call) -> Result<Reply> {
         Call::TxGet { tx_id } => with_store(store, |s| {
             tx_json(&tx_id, s.tx_status(&tx_id).map_err(reject)?)
         }),
+        Call::Log {
+            branch,
+            before,
+            limit,
+        } => {
+            let before = before.map(|b| parse_count("before", b)).transpose()?;
+            let limit = parse_count("limit", limit)?;
+            with_store(store, |s| {
+                Ok(Reply::Json(encode(
+                    &s.log(&branch, before, limit).map_err(reject)?,
+                )?))
+            })
+        }
         Call::AcknowledgeRewind {
             branch,
             generation,
@@ -414,6 +432,7 @@ impl Call {
             Call::OpsSince { .. } | Call::OpsSinceAt { .. } => "ops.subscribe",
             Call::Status { .. } => "project.status",
             Call::TxGet { .. } => "tx.get",
+            Call::Log { .. } => "history.log",
             Call::AcknowledgeRewind { .. } => "project.acknowledgeRewind",
             Call::AcknowledgeSalvage { .. } => "project.acknowledgeSalvage",
             Call::BranchCreate { .. } => "branch.create",

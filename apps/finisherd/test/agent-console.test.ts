@@ -171,6 +171,19 @@ describe("agent sessions from the console", () => {
     expect(server.agents.ruleStore.get(rule!)).toMatchObject({ effect: "deny", command: "checkpoint", sessionId: session.id, source: `approval:${approval.id}` });
   });
 
+  test("agent rollback takes --to-run <seq> as its usage says (found by the e2e subagents scenario)", async () => {
+    const local = await server.local();
+    const p = await project(local);
+    const started = await run(["agent", "start", "--project", p.id, "--harness", "fake", "--prompt", "one", "--json"]);
+    const { session } = JSON.parse(started.out) as { session: Session };
+    await until(local, session.id, "idle");
+    // `--to-run 0` with a space: the session id is the only word (before the fix, `0` was a second one: USAGE).
+    const r = await run(["agent", "rollback", session.id, "--to-run", "0", "--json"]);
+    expect(r.err).not.toContain("USAGE");
+    expect(r.code, r.err).toBe(0);
+    expect(JSON.parse(r.out)).toMatchObject({ session: { id: session.id }, undone: [] });
+  });
+
   test("agent providers", async () => {
     const r = await run(["agent", "providers"]);
     expect(r.code, r.err).toBe(0);

@@ -530,7 +530,7 @@ describe("drops someone else made (Task 7 review, round 2)", () => {
     ok(await drop(projectId, "bob-2", { undrops: ["f1"] }));
     const before = await head(projectId, "main");
     const refused = await merge(decided.item, "m1");
-    expect(code(refused)).toBe("REVIEW_UNDECIDED");
+    expect(code(refused)).toBe("REVIEW_STALE");
     expect(refused.ok ? undefined : refused.error.details).toMatchObject({ reason: "rejectedUndropped", txIds: ["f1"] });
     expect(await head(projectId, "main")).toBe(before);
     const again = ok<ReviewView>(await decide(decided.item, [["f1", "reject"]], {}, (await get(item.id)).item.snapshot!));
@@ -546,7 +546,7 @@ describe("drops someone else made (Task 7 review, round 2)", () => {
     ok(await drop(projectId, "bob-1", { drops: ["f1"] }));
     const before = await head(projectId, "main");
     const refused = await merge(accepted.item, "m1");
-    expect(code(refused)).toBe("REVIEW_UNDECIDED");
+    expect(code(refused)).toBe("REVIEW_STALE");
     expect(refused.ok ? undefined : refused.error.details).toMatchObject({ reason: "acceptedDropped", txIds: ["f1"] });
     expect(await head(projectId, "main")).toBe(before);
     expect((await get(item.id)).item.state).toBe("open");
@@ -560,6 +560,7 @@ describe("drops someone else made (Task 7 review, round 2)", () => {
     const decided = ok<ReviewView>(await decide(item, [["f1", "accept"], ["f2", "reject"]]));
     ok(await drop(projectId, "bob-1", { drops: ["f1"] }));
     const refused = await merge(decided.item, "m1");
+    expect(code(refused)).toBe("REVIEW_STALE");
     expect(refused.ok ? undefined : refused.error.details).toMatchObject({ reason: "acceptedDropped", txIds: ["f1"] });
     expect((await get(item.id)).item.state).toBe("open");
     // Accepting it again undrops it (and says so); the merge then copies it.

@@ -92,6 +92,10 @@ export class Engine {
     return call(this.#native.txGet(txId));
   }
 
+  log(branch, before, limit) {
+    return call(this.#native.log(branch, before ?? null, limit));
+  }
+
   acknowledgeRewind(branch, generation, metaJson) {
     return call(this.#native.acknowledgeRewind(branch, generation, metaJson));
   }

@@ -6,6 +6,9 @@
 //   `acceptPending`; with the policy's `requireReview`, a pending one refuses the merge
 //   (`REVIEW_UNDECIDED`) whatever `acceptPending` says. `sourceUpTo` is the snapshot's source
 //   seq, so a commit made on the source after the snapshot is never merged by it.
+// - An accepted origin dropped since the decision, or a rejected one undropped since, is
+//   `REVIEW_STALE {reason: acceptedDropped | rejectedUndropped, txIds}` (exit 4, owner decision
+//   2026-11-12): the branch changed under the review; nothing is written.
 // - A conflict (`DEPENDS_ON_SKIPPED` included) is `REVIEW_HAS_CONFLICTS` with the list; nothing is
 //   written.
 // - A target that moved since the snapshot does not block it (owner decision, 2026-11-08): the
@@ -152,14 +155,14 @@ export function mergeReview(w: ReviewWorkflow, c: Caller, req: ReviewMergeReq): 
     const acceptedDropped = accepted.filter((o) => status.get(o) === "dropped");
     if (acceptedDropped.length > 0) {
       return yield* Effect.fail(
-        finError("REVIEW_UNDECIDED", "transaction(s) the review accepted were dropped since", { itemId: item.id, reason: "acceptedDropped", txIds: acceptedDropped }, "Accept them again to bring them back, or set them pending, then merge."),
+        finError("REVIEW_STALE", "transaction(s) the review accepted were dropped since", { itemId: item.id, reason: "acceptedDropped", txIds: acceptedDropped }, "Accept them again to bring them back, or set them pending, then merge."),
       );
     }
     // And the mirror: a rejection someone undropped since would merge later through a plain merge.
     const rejectedUndropped = listed.filter((o) => decisions.get(o)?.decision === "reject" && status.get(o) === "open");
     if (rejectedUndropped.length > 0) {
       return yield* Effect.fail(
-        finError("REVIEW_UNDECIDED", "transaction(s) the review rejected were undropped since", { itemId: item.id, reason: "rejectedUndropped", txIds: rejectedUndropped }, "Reject them again to drop them, or accept them, then merge."),
+        finError("REVIEW_STALE", "transaction(s) the review rejected were undropped since", { itemId: item.id, reason: "rejectedUndropped", txIds: rejectedUndropped }, "Reject them again to drop them, or accept them, then merge."),
       );
     }
     const include = [...accepted, ...(req.acceptPending === true ? pending : [])].sort();

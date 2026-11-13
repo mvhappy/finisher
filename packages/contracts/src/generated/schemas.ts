@@ -215,6 +215,11 @@ export const HdrInfoSchema = Schema.Struct({
   mastering: Schema.optionalKey(MasteringDisplaySchema),
 });
 export const hdrInfoMatches: Same<typeof HdrInfoSchema.Type, T.HdrInfo> = true;
+export const HistoryLogSchema = Schema.Struct({
+  head: Schema.Number.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(0)),
+  records: Schema.mutable(Schema.Array(CommittedTxSchema)),
+});
+export const historyLogMatches: Same<typeof HistoryLogSchema.Type, T.HistoryLog> = true;
 export const RationalSchema = Schema.String.check(Schema.isPattern(new RegExp("^(0|-?[1-9]\\d*(/([2-9]\\d*|1\\d+))?)$", "u")));
 export const rationalMatches: Same<typeof RationalSchema.Type, T.Rational> = true;
 export const LandedSchema = Schema.Struct({
