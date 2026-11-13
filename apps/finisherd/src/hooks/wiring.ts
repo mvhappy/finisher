@@ -2,7 +2,8 @@
 // agent runtime (`agent/wiring.ts`), which closes it on shutdown. The event sources of Tasks 6–8
 // add themselves here: the session side (Task 6: `session`, the engine's `SessionNotices` and
 // the runtime's `hooks` and `sessionEvents`), the chain's policy rules and its after stage
-// (Task 7); the plugin layer's port (Task 10). The review and job listeners (Task 8, `review.ts`,
+// (Task 7, `chain.ts`; the reviews workflow bound by `startAgentReviews`); the plugin layer's
+// port (Task 10). The review and job listeners (Task 8, `review.ts`,
 // `jobs.ts`) are subscribed by `startAgentReviews`, which holds the review link and the job
 // engine, and reach the session through `notices`. The `fin` hooks' credentials (Task 5):
 // leftovers swept here at start, every one held ended at `close`, after the engine (no run is
@@ -11,6 +12,8 @@ import { readdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import type { ChainHooks } from "../chain/hooks.ts";
 import type { PolicyRule } from "../chain/policy.ts";
+import type { Session } from "@finisher/contracts";
+import { chainHooks, type ReviewItems } from "./chain.ts";
 import type { HookConfig } from "./config.ts";
 import { type HookCredentialDeps, HookCredentials } from "./credential.ts";
 import { type HookEngineDeps, type HookEngineImpl, makeHookEngine, type SessionNotices } from "./engine.ts";
@@ -22,7 +25,7 @@ export type HookServeOptions = Pick<HookProcessDeps, "status" | "launcher">;
 
 export interface HooksWiring {
   readonly engine: HookEngineImpl;
-  /** Stage 5 rules (Task 7: `PreCommand`, `PreMerge`), appended after the command rules. */
+  /** Stage 5 rules (Task 7: `PreCommand`, then `PreMerge`), appended after the command rules. */
   readonly policies: readonly PolicyRule[];
   /** Stage 7 (Task 7: `PostCommand`, `PostMerge`), wrapped after the review link. */
   readonly wrapAfter: (hooks: ChainHooks) => ChainHooks;
@@ -32,6 +35,8 @@ export interface HooksWiring {
   readonly session: SessionHooks;
   /** The engine's session port, for the review bridge's notices (Task 8, `review.ts`): `session`. */
   readonly notices: SessionNotices;
+  /** The reviews workflow `review.merge`'s `PreMerge` reads its item through (`startAgentReviews`). */
+  bindReviews(reviews: ReviewItems): void;
   close(): Promise<void>;
 }
 
@@ -41,6 +46,8 @@ export interface BuildHooksDeps extends Omit<HookEngineDeps, "process" | "creden
   readonly process?: HookEngineDeps["process"];
   /** 5A's credentials and revoke path, for `fin` hooks. */
   readonly credentials?: Omit<HookCredentialDeps, "serverData" | "log">;
+  /** The agent sessions (a chain event's session: an agent principal's id is its session's). */
+  readonly sessions?: { get(id: string): Session | undefined };
 }
 
 /** Removes the private temps of hook runs a crash left (`<server-data>/hooks/run/*`). */
@@ -56,7 +63,7 @@ export function sweepRunDirs(serverData: string): void {
 }
 
 export function buildHooks(d: BuildHooksDeps): HooksWiring {
-  const { options, process, credentials: base, ...rest } = d;
+  const { options, process, credentials: base, sessions, ...rest } = d;
   // Before any hook runs: no run of this server is under way yet.
   sweepRunDirs(d.serverData);
   const credentials = base === undefined ? undefined : new HookCredentials({ ...base, serverData: d.serverData, ...(d.log === undefined ? {} : { log: d.log }) });
@@ -67,5 +74,16 @@ export function buildHooks(d: BuildHooksDeps): HooksWiring {
     await engine.close();
     credentials?.close();
   };
-  return { engine, policies: [], wrapAfter: (hooks) => hooks, ...(credentials === undefined ? {} : { credentials }), session, notices: session, close };
+  let reviews: ReviewItems | undefined;
+  const chain = chainHooks({ engine, sessions: sessions ?? { get: () => undefined }, notices: session, reviews: () => reviews, ...(d.log === undefined ? {} : { log: d.log }) });
+  return {
+    engine,
+    policies: [chain.preCommand, chain.preMerge],
+    wrapAfter: chain.withHooksAfter,
+    ...(credentials === undefined ? {} : { credentials }),
+    session,
+    notices: session,
+    bindReviews: (r) => void (reviews = r),
+    close,
+  };
 }

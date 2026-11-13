@@ -349,7 +349,7 @@ export const buildAgentRuntime = (d: AgentWiringDeps): Effect.Effect<AgentRuntim
     // `fin` hooks (7F Task 5): their own credentials through 5A's, `fin` and its endpoint as the session sandbox's.
     const finServer = (launcher: boolean) => (launcher ? launcherServer(sandboxDeps, process.platform) : Promise.resolve({ env: d.endpoint }));
     const hookProcess = { finPath, finServer, ...(d.acl === undefined ? {} : { acl: d.acl }), ...(d.allowPipe === undefined ? {} : { allowPipe: d.allowPipe }) };
-    const hookWiring = buildHooks({ config: hooks, serverData: realData, audit: d.audit, log, credentials: core.credentials.base, process: hookProcess, ...(d.options?.hooks === undefined ? {} : { options: d.options.hooks }) });
+    const hookWiring = buildHooks({ config: hooks, serverData: realData, audit: d.audit, log, credentials: core.credentials.base, sessions: core.store, process: hookProcess, ...(d.options?.hooks === undefined ? {} : { options: d.options.hooks }) });
     yield* Effect.addFinalizer(() => Effect.promise(() => hookWiring.close()));
     const key = approvalKey(serverData);
     const permissions = providerPermissions({ rules, dirOf });
@@ -429,6 +429,8 @@ export interface AgentReviewsDeps {
 export function startAgentReviews(d: AgentReviewsDeps): ReturnType<typeof startReviews> {
   const started = startReviews(d.control, { engine: registryEngine(d.projects), audit: d.audit, verdicts: journalReviewVerdicts(d.journal) });
   d.core.reviewLink.bind(reviewPort(started.reviews));
+  // `review.merge`'s `PreMerge` reads its item through the workflow (7F Task 7).
+  d.hooks.bindReviews(started.reviews.workflow);
   const hooks = reviewHooks({ engine: d.hooks.engine, sessions: d.core.store, ...(d.hooks.notices === undefined ? {} : { notices: d.hooks.notices }) });
   d.core.reviewLink.onBranchReady(hooks.branchReady);
   const autoMerge = { store: d.core.store, reviews: started.reviews, audit: d.audit, outcomes: d.core.outcomes, projects: registryProjects(d.projects), budgetSpent: d.runtime.budgetSpent.bind(d.runtime), preMerge: hooks.preMerge, ...d.autoMerge };
