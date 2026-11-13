@@ -27,7 +27,7 @@ import { finError } from "../../errors.ts";
 import type { Capabilities } from "../adapter.ts";
 import { openHostSandbox, type SandboxedChild, type SessionSandbox, type SessionSandboxDeps } from "../sandbox.ts";
 import { type ClaudeCodeSettings, claudeCodeSettings } from "../settings.ts";
-import { accountChanged, accountCheck, accountKey, ClaudeAccounts, labelOfOutput } from "./account.ts";
+import { accountChanged, accountCheck, accountKey, accountProblem, ClaudeAccounts, labelOfOutput } from "./account.ts";
 
 /**
  * The lowest supported version (Decision 9): at least 2.1.314 (the `--setting-sources` leak fix)
@@ -48,7 +48,8 @@ const OUTPUT_CAP = 64 * 1024;
  * The sign-in methods kept by name; any other answer is `"other"`, never the CLI's text (it could
  * be a label). `claude.ai` and `console` are what the CLI documents. ASSUMPTION (plan Task 0's
  * signed-in half confirms the real values): `oauth` and `apiKey` are not known to be printed, so
- * they are not listed; add a value here once Task 0 sees it.
+ * they are not listed; add a value here once Task 0 sees it. Until then an API-key sign-in that
+ * names no account is `other` and fails closed (`account.ts` `API_KEY_METHODS`).
  */
 const AUTH_METHODS: ReadonlySet<string> = new Set(["claude.ai", "console"]);
 
@@ -260,8 +261,13 @@ function authAnswer(serverData: string, r: Ran): AuthAnswer {
   const a = parseAuthStatus(r.code, r.stdout);
   if (!a.signedIn) return a;
   const label = labelOfOutput(r.stdout);
-  const { hash } = accountCheck({ ...a, ...(label === undefined ? {} : { label }) }, accountKey(serverData), null);
-  return { ...a, accountHash: hash };
+  try {
+    const { hash } = accountCheck({ ...a, ...(label === undefined ? {} : { label }) }, accountKey(serverData), null);
+    return { ...a, accountHash: hash };
+  } catch (e) {
+    // A subscription sign-in naming no account: signed in, but a change could not be seen.
+    return { ...a, problem: e as FinError };
+  }
 }
 
 // Detection runs on every `agent.providers` call and every claudeCode plan, so its answers are
@@ -394,8 +400,18 @@ export function claudeProviderInfo(deps: ClaudeDetectDeps): Effect.Effect<Provid
     }
     return detectClaude({ ...deps, settings: () => settings }).pipe(
       Effect.map((d): ProviderInfo => {
-        const seen = d.accountHash === undefined ? undefined : new ClaudeAccounts(deps.sandbox.serverData).record(d.accountHash, d.authMethod);
-        const problem = d.problem ?? (seen?.changed === true ? accountChanged(seen.hash) : undefined);
+        // Recorded when this answer named an account; a pending change (or a state that cannot be
+        // read) stands whatever this answer was: a failed `auth status` lets nothing through.
+        let problem = d.problem;
+        let waiting: string | undefined;
+        try {
+          const seen = d.accountHash === undefined ? undefined : new ClaudeAccounts(deps.sandbox.serverData).record(d.accountHash, d.authMethod);
+          waiting = seen?.changed === true ? seen.hash : new ClaudeAccounts(deps.sandbox.serverData).pending();
+          if (waiting !== undefined) problem = accountChanged(waiting);
+        } catch (e) {
+          problem = e as FinError;
+        }
+        const accountHash = d.accountHash ?? waiting;
         return {
           ...base,
           detected: true,
@@ -403,18 +419,21 @@ export function claudeProviderInfo(deps: ClaudeDetectDeps): Effect.Effect<Provid
           supported: true,
           signedIn: d.signedIn,
           ...(d.authMethod === undefined ? {} : { authMethod: d.authMethod }),
-          ...(d.accountHash === undefined ? {} : { accountHash: d.accountHash }),
+          ...(accountHash === undefined ? {} : { accountHash }),
           ...(problem === undefined ? {} : { problem: problemOf(problem) }),
         };
       }),
       Effect.catch((e: FinError) => {
         const version = (e.details as { version?: unknown } | null)?.version;
+        // Found but unusable (too old, garbled, a shim) is detected; not found or no sandbox is not.
+        const detected = e.code === "PROVIDER_VERSION" || e.code === "PROVIDER_PROTOCOL" || (e.details as { reason?: unknown } | null)?.reason === "npmShim";
+        // A found CLI that answered nothing usable still carries a waiting account change.
+        const account = detected && typeof version !== "string" ? accountProblem(deps.sandbox.serverData) : undefined;
         return Effect.succeed<ProviderInfo>({
           ...base,
-          // Found but unusable (too old, garbled, a shim) is detected; not found or no sandbox is not.
-          detected: e.code === "PROVIDER_VERSION" || e.code === "PROVIDER_PROTOCOL" || (e.details as { reason?: unknown } | null)?.reason === "npmShim",
+          detected,
           ...(typeof version === "string" ? { version, supported: false } : {}),
-          problem: problemOf(e),
+          problem: problemOf(account ?? e),
         });
       }),
       // A sandbox that cannot open, or any other failure, is a problem on the line, never a failed RPC.

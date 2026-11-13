@@ -162,6 +162,9 @@ const SERVER = {
   credentials: Schema.optional(Schema.Int),
   platform: Schema.optional(Schema.Literals(PLATFORMS)),
   route: Schema.optional(Schema.Literals(ROUTE_KINDS)),
+  // `settings.write {rpc: agent.account.confirm}` (7D Decision 19): Claude Code's keyed account hashes, never a label.
+  accountHash: Schema.optional(Schema.String.check(Schema.isPattern(/^[0-9a-f]{8}$/))),
+  previousHash: Schema.optional(Schema.String.check(Schema.isPattern(/^[0-9a-f]{8}$/))),
 };
 // `library.add|remove|set` (plan 5D Decision 49): the library's id, its storage kind and the
 // field names a human-only `library.set` changed; never a library's name, root, alias or path.

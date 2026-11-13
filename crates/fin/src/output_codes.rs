@@ -377,6 +377,8 @@ pub(super) const CONFLICT_CODES: &[&str] = &[
     "REVIEW_HAS_CONFLICTS",
     "REVIEW_CLOSED",
     "REVIEW_LIMIT",
+    // 7D Decision 19: another Claude Code account waits than the one the person confirmed.
+    "ACCOUNT_CONFIRM_STALE",
 ];
 
 /// Codes of a job that ended without succeeding (exit 4, 5C-1 Decision 41): its outcome, and

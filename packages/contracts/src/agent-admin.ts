@@ -76,7 +76,13 @@ const AccountHash = Schema.String.check(Schema.isPattern(/^[0-9a-f]{8}$/));
  * `agent.account.confirm` (plan 7D Decision 19): a person at the console takes the CLI's new
  * account as the one sessions run on (`next`: the next change, for `provider signin --confirm`).
  */
-export const AgentAccountConfirmPayload = Schema.Struct({ harness: Schema.Literal("claudeCode"), next: Schema.optionalKey(Schema.Boolean), challenge: ChallengeField });
+export const AgentAccountConfirmPayload = Schema.Struct({
+  harness: Schema.Literal("claudeCode"),
+  next: Schema.optionalKey(Schema.Boolean),
+  /** The waiting account the person was shown (required unless `next`): another is `ACCOUNT_CONFIRM_STALE`. */
+  accountHash: Schema.optionalKey(AccountHash),
+  challenge: ChallengeField,
+});
 export const AgentAccountConfirmSuccess = Schema.Struct({
   /** A change was waiting and is now the account (false: nothing waited, or `next`). */
   confirmed: Schema.Boolean,

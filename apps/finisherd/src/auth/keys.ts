@@ -87,11 +87,20 @@ const REAL_FS: KeyFs = fs;
  * journals the rename itself.
  */
 export function writeKeyFile(path: string, key: Buffer, platform: NodeJS.Platform = process.platform, io: KeyFs = REAL_FS): void {
-  const tmp = `${path}.${process.pid}.tmp`;
+  writePrivateFile(path, `${b64u.encode(key)}\n`, platform, io);
+}
+
+/**
+ * `writeKeyFile` for any text (`agent/claude/account.ts`'s state): a temp file unique to this
+ * call, 0600 at every write, fsynced, renamed over `path` (retried on Windows), the directory
+ * fsynced.
+ */
+export function writePrivateFile(path: string, text: string, platform: NodeJS.Platform = process.platform, io: KeyFs = REAL_FS): void {
+  const tmp = `${path}.${process.pid}.${randomBytes(6).toString("hex")}.tmp`;
   io.rmSync(tmp, { force: true });
   const fd = io.openSync(tmp, "wx", 0o600);
   try {
-    io.writeSync(fd, `${b64u.encode(key)}\n`);
+    io.writeSync(fd, text);
     io.fsyncSync(fd);
   } finally {
     io.closeSync(fd);

@@ -43,7 +43,7 @@ export async function provider(ctx: CommandContext): Promise<number> {
   return usage(group === undefined ? "provider needs key, local, account, signin or signout" : `unknown provider command: ${group}`);
 }
 
-type ProviderLine = { harness: string; accountHash?: string; problem?: { code: string } };
+type ProviderLine = { harness: string; accountHash?: string; problem?: { code: string; message: string; fix?: string } };
 
 /** `provider account confirm claudeCode`: the account the CLI is signed in to now becomes the one sessions run on. */
 async function accountConfirm(ctx: CommandContext, rest: ReadonlyArray<string>): Promise<number> {
@@ -54,13 +54,16 @@ async function accountConfirm(ctx: CommandContext, rest: ReadonlyArray<string>):
     const { providers } = await call<{ providers: ProviderLine[] }>(c, "agent.providers", {});
     const line = providers.find((p) => p.harness === "claudeCode");
     if (line?.problem?.code !== "PROVIDER_ACCOUNT_CHANGED") return undefined;
+    // No account to show (none named, or the record unreadable): nothing a confirmation can take.
+    if (line.accountHash === undefined) throw consoleError(line.problem.code, line.problem.message, { harness: "claudeCode" }, line.problem.fix);
+    // The server takes this account only if it is still the one waiting (else ACCOUNT_CONFIRM_STALE).
     return confirmed<{ confirmed: boolean; accountHash?: string; previous?: string }>(
       c,
       ctx.prompt,
-      `Claude Code is signed in to another account (${safe(line.accountHash ?? "unknown")}) than the one this server's sessions ran on. This makes it the account new sessions run on.`,
+      `Claude Code is signed in to another account (${safe(line.accountHash)}) than the one this server's sessions ran on. This makes it the account new sessions run on.`,
       proceed,
       "agent.account.confirm",
-      { harness: "claudeCode" },
+      { harness: "claudeCode", accountHash: line.accountHash },
     );
   });
   if (r === undefined || !r.confirmed) ctx.output.out("No Claude Code account change waits for a confirmation.");
