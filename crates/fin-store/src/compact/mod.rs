@@ -78,18 +78,21 @@
 //! - **Without the store:** the `compaction/` listing and the manifests' reads (also the light
 //!   tick's due check), every full lease check (through the fence of the lease in force when
 //!   the run started: one the store let go fails at once), the fresh read of a branch (scan,
-//!   verification, resolution), reading a snapshot, writing the snapshot, the packs and the
-//!   manifest, the "would a verdict change" resolutions, directory fsyncs.
-//! - **With the store:** planning (what the read needs from the database), checking each read
-//!   against the database as it is then (exported rows, the branch's record and fork point,
-//!   the snapshot's state), the pack plan, the `segments` rows, the abandoned list, the
-//!   grace periods, and **every delete** (`remove_file`, with the in-memory lease check).
+//!   verification, resolution), reading a snapshot, planning, encoding and hashing the packs
+//!   and the snapshot (from a view checked with the store), writing the snapshot, the packs
+//!   and the manifest, the "would a verdict change" resolutions, directory fsyncs.
+//! - **With the store:** what each read needs from the database, checking each read against
+//!   the database as it is then (exported rows, the branch's record and fork point, the
+//!   snapshot's state), what an abandoned compaction holds, the state a new snapshot holds,
+//!   the `segments` rows, the abandoned list, the grace periods, and **every delete**
+//!   (`remove_file`, with the in-memory lease check).
 //! - **Overtaken:** a run notes `Phase::io_gen` and the lease when it starts (bumping it:
 //!   an import read before is stale). Each step with the store first checks both are
-//!   unchanged; otherwise the run ends there (`skipped`, nothing abandoned, no retry delay)
-//!   and the next one reads afresh. `io_gen` moves with everything that changes what the
-//!   checks rest on: an applied import, a marked export, another compaction run (`fin
-//!   project compact`), a rebuild, a recovery, a lease change.
+//!   unchanged; otherwise the run ends there (`skipped`, nothing abandoned, no retry delay;
+//!   the deletes it made before still count in `deleted` and `lastRunMs`) and the next one
+//!   reads afresh. `io_gen` moves with everything that changes what the checks rest on: an
+//!   applied import, a marked export, another compaction run (`fin project compact`), a
+//!   rebuild, a recovery, a lease change.
 //! - **Why a delete is safe:** each delete runs with the store, after the same `io_gen` and
 //!   lease check, so it rests on a fresh read checked against the database as it is at the
 //!   delete. Whatever ran with the store since the check (a short call, or a long call that
