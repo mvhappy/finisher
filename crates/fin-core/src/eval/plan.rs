@@ -250,7 +250,8 @@ pub enum UnmeasuredReason {
     NoMeasurer,
 }
 
-/// A graphic's template, its time (from the item's start) and its slot values.
+/// A graphic's template, its template time (`sourceIn` + the time from the item's start, held
+/// at 0) and its slot values.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct GraphicPlan {

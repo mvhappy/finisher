@@ -143,6 +143,7 @@ fn normalize_makes_insert_values_canonical() {
             body: fin_core::ItemBody::Graphic {
                 asset: "a1".into(),
                 slots: [("x".to_string(), fin_core::ParamValue::Vec2([x, 1.0]))].into(),
+                source_in: fin_core::Rational::zero(),
             },
         }
         .into()

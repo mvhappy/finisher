@@ -47,6 +47,8 @@ pub fn get(item: &Item, path: &str) -> Result<Option<ParamValue>, CoreError> {
                 "audio.pan" => ParamValue::Number(a.pan),
                 "audio.fadeIn" => time(a.fade_in),
                 "audio.fadeOut" => time(a.fade_out),
+                "audio.fadeInOffset" => time(a.fade_in_offset),
+                "audio.fadeOutOffset" => time(a.fade_out_offset),
                 _ => return Err(unknown(&item.id, path)),
             }
         }
@@ -110,6 +112,8 @@ pub fn set(
                 "audio.pan" => a.pan = number(path, v, 0.0)?,
                 "audio.fadeIn" => a.fade_in = rational(path, v, Rational::zero())?,
                 "audio.fadeOut" => a.fade_out = rational(path, v, Rational::zero())?,
+                "audio.fadeInOffset" => a.fade_in_offset = rational(path, v, Rational::zero())?,
+                "audio.fadeOutOffset" => a.fade_out_offset = rational(path, v, Rational::zero())?,
                 _ => return Err(unknown(&id, path)),
             }
             let drop = v.is_none() && a == AudioParams::default() && bits_default(&a);
@@ -150,7 +154,14 @@ fn bits_default(a: &AudioParams) -> bool {
     a.gain.to_bits() == 0 && a.pan.to_bits() == 0
 }
 
-const AUDIO: &[&str] = &["audio.gain", "audio.pan", "audio.fadeIn", "audio.fadeOut"];
+const AUDIO: &[&str] = &[
+    "audio.gain",
+    "audio.pan",
+    "audio.fadeIn",
+    "audio.fadeOut",
+    "audio.fadeInOffset",
+    "audio.fadeOutOffset",
+];
 
 fn slots<'a>(item: &'a Item, path: &str) -> Result<&'a BTreeMap<String, ParamValue>, CoreError> {
     match (&item.body, path.strip_prefix("slots.")) {

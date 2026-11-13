@@ -1166,12 +1166,18 @@
       "type": "object"
     },
     "AudioParams": {
-      "description": "The item's own audio: gain in dB, pan in −1…1, fades in seconds.",
+      "description": "The item's own audio: gain in dB, pan in −1…1, fades in seconds. A fade's offset\n(schema 4) places its window past the item's edge: the fade-in runs over\n`[start − fadeInOffset, start − fadeInOffset + fadeIn)`, the fade-out over\n`[end + fadeOutOffset − fadeOut, end + fadeOutOffset)`, and only the part inside the item\nsounds. A split sets them so each half keeps the original envelope (spec §5.13).",
       "properties": {
         "fadeIn": {
           "$ref": "#/$defs/Rational"
         },
+        "fadeInOffset": {
+          "$ref": "#/$defs/Rational"
+        },
         "fadeOut": {
+          "$ref": "#/$defs/Rational"
+        },
+        "fadeOutOffset": {
           "$ref": "#/$defs/Rational"
         },
         "gain": {
@@ -5612,7 +5618,7 @@
       "type": "object"
     },
     "GraphicPlan": {
-      "description": "A graphic's template, its time (from the item's start) and its slot values.",
+      "description": "A graphic's template, its template time (`sourceIn` + the time from the item's start, held\nat 0) and its slot values.",
       "properties": {
         "asset": {
           "type": "string"
@@ -6639,7 +6645,7 @@
           "type": "object"
         },
         {
-          "description": "A Lottie template with its slot values.",
+          "description": "A Lottie template with its slot values. Template time = `sourceIn + (t − start)`\n(schema 4), so a split or a start-edge move keeps the content's template time.",
           "properties": {
             "asset": {
               "type": "string"
@@ -6653,6 +6659,9 @@
                 "$ref": "#/$defs/ParamValue"
               },
               "type": "object"
+            },
+            "sourceIn": {
+              "$ref": "#/$defs/Rational"
             }
           },
           "required": [
@@ -6863,7 +6872,7 @@
           "type": "object"
         },
         {
-          "description": "A Lottie template with its slot values.",
+          "description": "A Lottie template with its slot values. Template time = `sourceIn + (t − start)`\n(schema 4), so a split or a start-edge move keeps the content's template time.",
           "properties": {
             "asset": {
               "type": "string"
@@ -6877,6 +6886,9 @@
                 "$ref": "#/$defs/ParamValue"
               },
               "type": "object"
+            },
+            "sourceIn": {
+              "$ref": "#/$defs/Rational"
             }
           },
           "required": [

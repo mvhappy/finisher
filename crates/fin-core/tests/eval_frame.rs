@@ -500,6 +500,7 @@ fn image_and_graphic_layers() {
         ItemBody::Graphic {
             asset: "a3".into(),
             slots: slots.into_iter().collect(),
+            source_in: fin_core::Rational::zero(),
         },
     );
     let g = keyed(
@@ -723,6 +724,7 @@ fn busy() -> Project {
             slots: [("tint".to_string(), ParamValue::Text("#336699".into()))]
                 .into_iter()
                 .collect(),
+            source_in: fin_core::Rational::zero(),
         },
     );
     let n = Item::new(

@@ -1,5 +1,6 @@
 //! Source times (plan 4C Decision 14): a clip reads `sourceIn + local × speed`, a nested item
-//! evaluates its timeline at `sourceIn + local`. Exact rationals; the source extent is policy,
+//! evaluates its timeline at `sourceIn + local`, a graphic shows its template at
+//! `sourceIn + local` clamped at 0 (schema 4). Exact rationals; the source extent is policy,
 //! so a time past the asset (a transition's handle, a slip) is reported as is.
 
 use crate::error::CoreError;
@@ -16,8 +17,14 @@ pub(crate) fn clip_time(
     source_in.checked_add(local.checked_mul(speed)?)
 }
 
+/// A graphic's template time: `sourceIn + local`, held at 0 before the template's start (a
+/// start edge extended past it leaves `sourceIn` negative).
+pub(crate) fn template_time(source_in: Rational, local: Rational) -> Result<Rational, CoreError> {
+    Ok(source_in.checked_add(local)?.max(Rational::zero()))
+}
+
 /// The asset an item shows and the time to read from it: a clip's source time, an image's 0,
-/// a graphic's template time (`local`). Other kinds have none.
+/// a graphic's template time ([`template_time`]). Other kinds have none.
 pub(crate) fn source_of(item: &Item, local: Rational) -> Result<Option<SourceRef>, CoreError> {
     let r = |asset: &String, time| {
         Some(SourceRef {
@@ -32,7 +39,9 @@ pub(crate) fn source_of(item: &Item, local: Rational) -> Result<Option<SourceRef
             speed,
         } => r(asset, clip_time(*source_in, *speed, local)?),
         ItemBody::Image { asset } => r(asset, Rational::zero()),
-        ItemBody::Graphic { asset, .. } => r(asset, local),
+        ItemBody::Graphic {
+            asset, source_in, ..
+        } => r(asset, template_time(*source_in, local)?),
         ItemBody::Caption { .. } | ItemBody::Adjustment {} | ItemBody::Nested { .. } => None,
     })
 }
