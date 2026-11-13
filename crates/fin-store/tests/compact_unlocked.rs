@@ -7,14 +7,17 @@ mod integration_support;
 
 use std::fs;
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, TryLockError};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
-use fin_store::lease::MonoClock;
+use fin_store::lease::{FakeClock, MonoClock, Params, record};
+use fin_store::storage_kind::StorageKind;
 use fin_store::{
     CompactReport, MAIN, Store, StoreAccess, StoreError, TickOptions, TickPoint, TickReport,
 };
+use integration_support::diverge::freeze;
 use integration_support::*;
 
 const GRACE: Duration = Duration::from_secs(5);
@@ -226,13 +229,87 @@ fn a_lease_change_while_deletes_are_held_stops_them() {
     hooks.hang(TickPoint::CompactDelete);
     let tick = spawn_tick(&e, &a);
     hooks.wait_hung();
-    // The lease in force changes (as a takeover or a lost lease would make it): the deletes
-    // checked under the old one must not run.
+    // The store's lease in force changes (as a takeover or a lost lease would make it): the
+    // deletes checked under the old one must not run. This moves `io_gen` too, so the step
+    // with the store stops them; the two tests below reach the lease checks alone.
     a.call(|s| s.set_test_lease(1, false));
     hooks.release();
     let r = compacted(tick);
     assert_eq!(r.deleted, 0, "{r:?}");
     assert_eq!((originals(&e.dir), manifests(&e.dir)), (3, 1));
+}
+
+/// Another server takes `lease.json` over (the next epoch), written into the folder without
+/// going through the store: only a full lease check sees it.
+fn take_over_lease_file(dir: &Path) {
+    let path = dir.join(".finisher").join("lease.json");
+    let mut r = record::decode(&fs::read(&path).unwrap()).unwrap();
+    (r.server_id, r.epoch) = ("serverb".into(), r.epoch + 1);
+    fin_store::fsio::write_in_place(&path, &record::encode(&r)).unwrap();
+}
+
+#[test]
+fn a_takeover_in_the_lease_file_while_deletes_are_held_stops_them() {
+    let e = env();
+    let a = manifest_past_grace(&e, 3);
+    let hooks = a.call(|s| s.tick_hooks());
+    hooks.hang(TickPoint::CompactDelete);
+    let tick = spawn_tick(&e, &a);
+    hooks.wait_hung();
+    // Neither `io_gen` nor the store's lease moves: the unlocked full check before the
+    // delete is the only thing that reads the folder's lease files.
+    take_over_lease_file(&e.dir);
+    hooks.release();
+    let r = compacted(tick);
+    assert!(r.skipped.is_some(), "{r:?}");
+    assert_eq!(r.deleted, 0, "{r:?}");
+    assert_eq!((originals(&e.dir), manifests(&e.dir)), (3, 1));
+}
+
+/// [`Shared`], but once armed, its next `with` first moves the clock past the lease's
+/// self-fence: the lease is lost in memory between the unlocked full check before a delete
+/// and the delete with the store, with no store call (so no `io_gen` change) between them.
+struct SelfFencing {
+    s: Shared,
+    clock: Arc<FakeClock>,
+    armed: Arc<AtomicBool>,
+}
+
+impl StoreAccess for SelfFencing {
+    fn with<R>(&mut self, f: impl FnOnce(&mut Store) -> R) -> Option<R> {
+        if self.armed.swap(false, Ordering::SeqCst) {
+            let fence = Params::for_kind(StorageKind::Local).self_fence;
+            self.clock.advance(fence + Duration::from_secs(1));
+        }
+        self.s.with(f)
+    }
+}
+
+#[test]
+fn a_lease_lost_in_memory_right_before_a_delete_stops_it() {
+    let e = env();
+    let a = manifest_past_grace(&e, 3);
+    let hooks = a.call(|s| s.tick_hooks());
+    hooks.hang(TickPoint::CompactDelete);
+    let armed = Arc::new(AtomicBool::new(false));
+    a.call(|s| s.poll_now_for_test());
+    let mut access = SelfFencing {
+        s: a.clone(),
+        clock: e.clock.clone(),
+        armed: armed.clone(),
+    };
+    let now = e.clock.now();
+    let tick = thread::spawn(move || Store::tick_phased(&mut access, now, TickOptions::default()));
+    hooks.wait_hung();
+    // No heartbeat renews the lease once the clock moves.
+    a.call(|s| freeze(s));
+    // After the release: the full check (passes), then the store, then the delete's checks.
+    armed.store(true, Ordering::SeqCst);
+    hooks.release();
+    let r = compacted(tick);
+    assert!(!armed.load(Ordering::SeqCst), "the delete took the store");
+    assert!(r.skipped.is_some(), "{r:?}");
+    assert_eq!((originals(&e.dir), manifests(&e.dir)), (3, 1), "{r:?}");
 }
 
 #[test]
