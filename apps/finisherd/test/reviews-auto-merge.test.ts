@@ -484,6 +484,20 @@ describe("review follow-ups", () => {
     expect(f.audited).toHaveLength(audited);
   });
 
+  test("a rejected origin undropped since the decision refuses with dropsChanged", async () => {
+    const f = await fixture();
+    enable(f);
+    const local = callerOf(LOCAL, { actor: { kind: "user" } }, "socket");
+    const snapshot = f.item.snapshot!;
+    await run(f.reviews.workflow.decide(local, { itemId: f.item.id, expect: snapshot, decisions: [{ txId: "f1", decision: "reject" }] }));
+    await f.e.drop(JSON.stringify({ txId: "bob-undrop", author: "bob", into: "main", from: f.feature, undrops: ["f1"] }));
+    const head = await f.e.head("main");
+    // A rejection writes a drop, so the item's snapshot moved with it; the verdicts are for that one.
+    expect(await attempt(f, source(passing(f.reviews.store.get(f.item.id)!.snapshot!)))).toEqual({ merged: false, reason: "dropsChanged" });
+    expect(f.reviews.store.get(f.item.id)?.state).toBe("open");
+    expect(await f.e.head("main")).toBe(head);
+  });
+
   test("a session or verdict id the audit cannot record never empties the row", async () => {
     const f = await fixture();
     enable(f);

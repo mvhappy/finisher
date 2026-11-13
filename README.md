@@ -231,8 +231,11 @@ fin review close <id> --rejected | --dismissed        # --rejected keeps every u
   request) unless you pass `--accept-pending`; when the project requires review, any pending
   one stops the merge (`REVIEW_UNDECIDED`). With nothing accepted and transactions still open,
   the merge is `REVIEW_UNDECIDED` too. A conflict is `REVIEW_HAS_CONFLICTS` and nothing is
-  written. If the target moved since the snapshot, the merge still goes ahead on what was
-  reviewed and says `targetMoved`. An agent's branch is archived once nothing of it is left.
+  written. If an accepted transaction was dropped, or a rejected one undropped, since you
+  decided, the branch changed under the review: the merge is `REVIEW_STALE` (exit 4,
+  `reason` `acceptedDropped` or `rejectedUndropped`, with the `txIds`) and nothing is written;
+  decide those again, then merge. If the target moved since the snapshot, the merge still goes
+  ahead on what was reviewed and says `targetMoved`. An agent's branch is archived once nothing of it is left.
 - **Merge conflicts** from any `fin merge` appear as `mergeConflict` items, and a plugin's
   suggestion as a `pluginSuggestion` item; close those with `fin review close`.
 - **Server moves.** Rejections travel with the project. Open reviews and their comments and

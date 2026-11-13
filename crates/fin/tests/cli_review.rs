@@ -429,7 +429,7 @@ fn a_drop_made_after_the_decision_is_reported() {
     // Someone else drops the accepted transaction: the merge says which, before writing.
     ok(w.local(&["drop", &o[0], "--from", "work"]));
     let r = w.local(&["review", "merge", &id, "--accept-pending"]);
-    assert_error(&r, 3, "REVIEW_UNDECIDED");
+    assert_error(&r, 4, "REVIEW_STALE");
     assert_eq!(
         r.json["error"]["details"]["reason"], "acceptedDropped",
         "{}",

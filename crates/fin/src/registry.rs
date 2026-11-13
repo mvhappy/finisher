@@ -313,7 +313,7 @@ pub const COMMANDS: &[Command] = &[
         name: "review.merge",
         group: "review",
         args: "<id> [--accept-pending] [--expect <json>] [--idem-key <k>]",
-        summary: "merge only what was reviewed; a moved target merges and says targetMoved. REVIEW_UNDECIDED: pending (a count) under requireReview, nothingAccepted, or txIds acceptedDropped/rejectedUndropped; REVIEW_STALE: --expect mismatch, replan (with --accept-pending) or truncated. --idem-key applies to merge only",
+        summary: "merge only what was reviewed; a moved target merges and says targetMoved. REVIEW_UNDECIDED (exit 3): pending (a count) under requireReview, or nothingAccepted; REVIEW_STALE (exit 4): --expect mismatch, replan (with --accept-pending), truncated, or txIds acceptedDropped/rejectedUndropped (the branch changed under the review: decide again). --idem-key applies to merge only",
         write: true,
         schema: || schema_of::<review::MergeArgs>("review.merge"),
     },
