@@ -24,6 +24,7 @@ mod pipe_client;
 mod private_windows;
 mod registry;
 mod registry_edit;
+mod registry_inspect;
 mod registry_library;
 mod registry_plugins;
 mod registry_rpcs;
@@ -56,6 +57,7 @@ use commands::item::ItemCmd;
 use commands::job::{JobCmd, WaitArgs};
 use commands::keyframe::KeyframeCmd;
 use commands::library::LibraryCmd;
+use commands::log::LogArgs;
 use commands::look::LookArgs;
 use commands::marker::MarkerCmd;
 use commands::media::{GraphicCmd, ImageCmd};
@@ -143,6 +145,7 @@ enum Cmd {
     Registry(RegistryCmd),
     #[command(subcommand)]
     Branch(BranchCmd),
+    Log(LogArgs),
     Undo(UndoArgs),
     Redo,
     Checkpoint(CheckpointArgs),
@@ -329,6 +332,12 @@ fn run(args: Vec<OsString>) -> Result<Value, CoreError> {
         Some(Cmd::Clip(ClipCmd::Delete(a))) => {
             commands::write(backend()?.as_ref(), g, Write::ClipDelete(a))
         }
+        Some(Cmd::Asset(AssetCmd::Ls(a))) => commands::inspect::assets(backend()?.as_ref(), g, &a),
+        Some(Cmd::Track(TrackCmd::Ls(a))) => commands::inspect::tracks(backend()?.as_ref(), g, &a),
+        Some(Cmd::Bin(BinCmd::Ls(a))) => commands::inspect::bins(backend()?.as_ref(), g, &a),
+        Some(Cmd::Effect(EffectCmd::Ls(a))) => {
+            commands::inspect::effects(backend()?.as_ref(), g, &a)
+        }
         Some(Cmd::Asset(AssetCmd::Move(a))) => edit(g, Edit::Asset(AssetEdit::Move(a))),
         Some(Cmd::Asset(AssetCmd::Remove(a))) => edit(g, Edit::Asset(AssetEdit::Remove(a))),
         Some(Cmd::Image(c)) => edit(g, Edit::Image(c)),
@@ -365,6 +374,7 @@ fn run(args: Vec<OsString>) -> Result<Value, CoreError> {
         Some(Cmd::Plugin(c)) => commands::plugin::plugin(backend()?.as_ref(), &c),
         Some(Cmd::Registry(c)) => commands::plugin::registry(backend()?.as_ref(), &c),
         Some(Cmd::Branch(cmd)) => commands::branch::run(backend()?.as_ref(), g, &cmd),
+        Some(Cmd::Log(a)) => commands::log::run(backend()?.as_ref(), g, &a),
         Some(Cmd::Undo(a)) => commands::history::undo(backend()?.as_ref(), g, &a),
         Some(Cmd::Redo) => commands::history::redo(backend()?.as_ref(), g),
         Some(Cmd::Checkpoint(a)) => commands::history::checkpoint(backend()?.as_ref(), g, &a),

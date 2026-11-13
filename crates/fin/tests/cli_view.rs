@@ -100,7 +100,7 @@ fn view_full_matches_golden() {
             .any(|x| x.starts_with("== tl2 \"Alt\" 1920x1080 29.97fps"))
     );
     for want in [
-        "00:04.0–00:07.5  V1  c2 clip a1 [2.0s+5.25s] x1.5 opacity 0.8 fx: blur  ⟷ lk1",
+        "00:04.0–00:07.5  V1  c2 clip a1 [2.0s+5.25s] x1.5 opacity 0.8 fx: blur=fx1  ⟷ lk1",
         "00:06.0  ──  marker m1 \"drop\"",
         "00:07.0–00:08.0  V1  tr1 dissolve c2→c3 1.0s",
         "00:00.0–00:02.0  C1  cap1 \"Hello world\" (st1)",
@@ -109,18 +109,23 @@ fn view_full_matches_golden() {
     }
 }
 
-/// `--detail` lists each animated path's keys as `<key>@<at>` (item-relative); every other
-/// line, and the lines without it, are as before (spec §5.12.3).
+/// `--detail` lists each animated path's keys as `<key>@<at>` (item-relative) and each effect's
+/// stored params (review batch L); every other line, and the lines without it, are as before
+/// (spec §5.12.3).
 #[test]
 fn view_detail_lists_keyframe_ids_and_times() {
     let plain = view(&[]);
     let v = view(&["--detail"]);
     assert_eq!(v["resolved"], json!({ "detail": true }));
     let c3 = "00:07.5–00:10.0  V1  c3 clip a1 [10.0s+2.5s] rot 90";
+    let c2 = "00:04.0–00:07.5  V1  c2 clip a1 [2.0s+5.25s] x1.5 opacity 0.8 fx: blur=fx1";
     for (a, b) in lines(&plain).iter().zip(lines(&v).iter()) {
         if a.starts_with(c3) {
             assert_eq!(a, &format!("{c3} kf: opacity"));
             assert_eq!(b, &format!("{c3} kf: opacity[kf1@0.0s,kf2@1.0s]"));
+        } else if a.starts_with(c2) {
+            assert_eq!(a, &format!("{c2}  ⟷ lk1"));
+            assert_eq!(b, &format!("{c2}{{radius=4}}  ⟷ lk1"));
         } else {
             assert_eq!(a, b);
         }
@@ -167,9 +172,10 @@ fn view_budget_degrades_in_order_and_says_so() {
     );
     let order = ["detail", "text", "merge", "tail"];
     let mut shown = usize::MAX;
-    // The smallest response: no line left, the envelope and one tail entry per timeline.
+    // The smallest response: no line left, the envelope and one tail entry per timeline (each
+    // with its `next`, which repeats the budget: a few more digits for a larger one).
     let floor = response(&at(0));
-    for b in [240, 200, 150, 120, 100, 90, 80, 60, 30] {
+    for b in [240, 200, 150, 120, 115, 100, 90, 80, 60, 30] {
         let v = at(b);
         let s = steps(&v);
         // The steps run in the fixed order (tail may repeat, one per timeline).
@@ -184,15 +190,16 @@ fn view_budget_degrades_in_order_and_says_so() {
         // Headers go last: only once no item line is left.
         let headers = lines(&v).iter().filter(|l| l.starts_with("== ")).count();
         assert!(headers == 2 || headers == n, "{b}: {}", text(&v));
-        if b >= floor {
+        if b >= floor + 2 {
             assert!(response(&v) <= b, "{b}: {}", v["responseTokens"]);
         } else {
-            assert_eq!(response(&v), floor, "{b}");
+            assert!(lines(&v).is_empty(), "{b}: {}", text(&v));
+            assert!(response(&v) <= floor + 2, "{b}: {}", v["responseTokens"]);
         }
         assert_eq!(v["resolved"]["budget"], b);
     }
     // Below the headers, they go too, last timeline first, each marked on its tail entry.
-    let v = at(90);
+    let v = at(115);
     assert_eq!(lines(&v).len(), 1, "{v}");
     assert_eq!(v["elided"][1]["header"], true, "{v}");
     assert_eq!(v["elided"][0].get("header"), None, "{v}");
@@ -200,12 +207,13 @@ fn view_budget_degrades_in_order_and_says_so() {
     assert!(lines(&v).is_empty());
     assert_eq!(
         v["elided"][1],
-        json!({ "step": "tail", "timeline": "tl2", "from": "0", "to": "2001/1000", "items": 2, "header": true })
+        json!({ "step": "tail", "timeline": "tl2", "from": "0", "to": "2001/1000", "items": 2, "header": true,
+                "next": "fin view --timeline tl2 --range 0.. --budget 0" })
     );
     let v = at(200);
     // Merging folds runs of a kind on a track; the tail cut names its range per timeline.
     assert!(steps(&v).contains(&"merge".to_string()), "{v}");
-    let v = at(150);
+    let v = at(160);
     assert!(
         lines(&v).iter().any(|l| l.contains("c1…c3 3 clips")),
         "{}",
@@ -221,6 +229,10 @@ fn view_budget_degrades_in_order_and_says_so() {
     for t in tails {
         assert!(t["timeline"].is_string() && t["from"].is_string() && t["to"].is_string());
         assert!(t["items"].as_u64().unwrap() > 0);
+        // Review batch L: the exact command for the cut lines, same budget.
+        let next = t["next"].as_str().unwrap();
+        assert!(next.starts_with("fin view --timeline tl"), "{next}");
+        assert!(next.ends_with(" --budget 160"), "{next}");
     }
     // Just past the detail step, the text step shortens long caption text, and stops there
     // (a caption long enough for that to pay for its own `elided` entry).
@@ -259,8 +271,9 @@ fn view_budget_degrades_in_order_and_says_so() {
 /// twice: `\n` in the line, `\\n` in JSON) under 240.
 #[test]
 fn view_budget_covers_the_whole_response() {
-    let v = view(&["--budget", "90"]);
-    assert!(response(&v) <= 90, "{v}");
+    // 120: the golden's two tail entries with their `next` commands (review batch L) fit.
+    let v = view(&["--budget", "120"]);
+    assert!(response(&v) <= 120, "{v}");
     assert!(response(&v) > v["lineTokens"].as_u64().unwrap());
     let mut p = project();
     p["project"]["timelines"][0]["markers"][0]["label"] = json!("\n".repeat(400));

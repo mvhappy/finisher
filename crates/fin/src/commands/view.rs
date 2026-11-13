@@ -2,12 +2,12 @@
 //! (`--timeline` narrows `view` to one); the screenplay lines are [`fin_core::view`]'s.
 
 use clap::Args;
-use fin_core::{CoreError, Project, Timeline, Track, TrackKind};
+use fin_core::{CoreError, Project, Rational, Timeline, Track, TrackKind};
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-use super::{Globals, branch, fonts, target_branch};
+use super::{Globals, branch, fonts, inspect, target_branch};
 use crate::addr;
 use crate::backend::Backend;
 use fin_core::view::{self, Filter, budget};
@@ -37,11 +37,23 @@ pub struct ViewArgs {
     #[arg(long, value_name = "tokens")]
     #[serde(default)]
     pub budget: Option<u64>,
-    /// List each animated path's keyframes as `<key>@<at>` (item-relative).
+    /// List each animated path's keyframes as `<key>@<at>` (item-relative) and each effect's
+    /// stored params.
     #[arg(long)]
     #[serde(default)]
     pub detail: bool,
+    /// Every line, however long the response: no default page. Without it or `--budget` a
+    /// response over [`DEFAULT_PAGE_TOKENS`] keeps its first lines and says where the rest
+    /// starts (`elided` tail entries with `next`).
+    #[arg(long, conflicts_with = "budget")]
+    #[serde(default)]
+    pub full: bool,
 }
+
+/// The tokens (chars / 4) a `fin view` without `--budget` or `--full` prints at most: past them
+/// the view is a page (its first lines at full detail; review batch L, owner decision: bounded
+/// default reads). About 16,000 characters.
+pub const DEFAULT_PAGE_TOKENS: u64 = 4_000;
 
 fn kind(track: &Track) -> &'static str {
     match track.kind {
@@ -51,7 +63,8 @@ fn kind(track: &Track) -> &'static str {
     }
 }
 
-/// Every timeline with its tracks (item count and end).
+/// Every timeline with its tracks (item count and end), at most [`inspect::SUMMARY_CAP`] tracks
+/// each (`tracksTotal`, `tracksNext`: the `fin track ls` page that follows).
 fn timelines(p: &Project) -> Result<Vec<Value>, CoreError> {
     p.timelines
         .iter()
@@ -64,11 +77,18 @@ fn timelines(p: &Project) -> Result<Vec<Value>, CoreError> {
                                "items": t.items.len(), "end": addr::track_end(p, &t.id)? }))
                 })
                 .collect::<Result<Vec<_>, CoreError>>()?;
-            Ok(json!({
+            let mut doc = json!({
                 "id": tl.id, "name": tl.name, "rate": tl.rate,
                 "resolution": format!("{}x{}", tl.resolution.width, tl.resolution.height),
                 "end": view::timeline_end(tl)?, "markers": tl.markers.len(), "tracks": tracks,
-            }))
+            });
+            let next = format!(
+                "fin track ls --timeline {} --offset {}",
+                tl.id,
+                inspect::SUMMARY_CAP
+            );
+            inspect::cut(&mut doc, "tracks", &next);
+            Ok(doc)
         })
         .collect()
 }
@@ -87,11 +107,13 @@ pub fn status(backend: &dyn Backend, g: &Globals) -> Result<Value, CoreError> {
     let project = json!({ "id": p.id, "name": p.name });
     if backend.dry_run_only() {
         let marks = view::unmeasured(p, None);
-        return Ok(json!({
+        let mut doc = json!({
             "project": project, "branch": reference, "head": snap.rev, "rev": snap.rev,
             "server": false, "timelines": timelines(p)?, "assets": p.assets.keys().collect::<Vec<_>>(),
             "fonts": { "unmeasured": unmeasured_list(&marks) },
-        }));
+        });
+        summarise(&mut doc);
+        return Ok(doc);
     }
     let st = backend.project_call("project.status", json!({}))?;
     let views = branch::list(backend, true)?;
@@ -113,7 +135,7 @@ pub fn status(backend: &dyn Backend, g: &Globals) -> Result<Value, CoreError> {
     let files = fonts::file_states(backend)?;
     let marks = view::unmeasured(p, files.as_ref());
     let list = |k: &str| st["fonts"][k].as_array().cloned().unwrap_or_default();
-    Ok(json!({
+    let mut doc = json!({
         "project": project,
         "branch": current.as_ref().map_or(json!(reference), |v| v["display"].clone()),
         "head": head,
@@ -127,7 +149,19 @@ pub fn status(backend: &dyn Backend, g: &Globals) -> Result<Value, CoreError> {
         "fonts": { "missing": list("missing"), "fetching": list("fetching"),
                    "failed": list("failed"), "unmeasured": unmeasured_list(&marks) },
         "warnings": st["warnings"].as_array().cloned().unwrap_or_default(),
-    }))
+    });
+    summarise(&mut doc);
+    Ok(doc)
+}
+
+/// `fin status` is a summary (review batch L): its project-sized lists keep
+/// [`inspect::SUMMARY_CAP`] entries, with `<key>Total` and `<key>Next` (the listing command)
+/// when cut. Timelines are not cut; their tracks are ([`timelines`]).
+fn summarise(doc: &mut Value) {
+    let assets = format!("fin asset ls --offset {}", inspect::SUMMARY_CAP);
+    inspect::cut(doc, "assets", &assets);
+    inspect::cut(doc, "unmergedBranches", "fin branch ls");
+    inspect::cut(&mut doc["fonts"], "unmeasured", "fin view");
 }
 
 /// The timelines `fin view` shows: `--timeline`'s, the one holding `--track`, else all.
@@ -221,9 +255,63 @@ pub fn view(backend: &dyn Backend, g: &Globals, a: &ViewArgs) -> Result<Value, C
     if a.detail {
         resolved["detail"] = json!(true);
     }
+    if a.full {
+        resolved["full"] = json!(true);
+    }
     let base = json!({ "rev": snap.rev, "timeline": g.timeline });
-    let doc = |lines: &[String], elided: &[Value]| respond(&base, &resolved, lines, elided);
-    let (lines, elided) = budget::fit(sections, a.budget, &|l, e| doc(l, e).1);
+    let page = Page { args: a, to };
+    let doc = |lines: &[String], elided: &[Value]| {
+        respond(&base, &resolved, lines, &page.decorate(elided))
+    };
+    let size = |l: &[String], e: &[Value]| doc(l, e).1;
+    let (lines, elided) = match a.budget {
+        None if !a.full => budget::fit_page(sections, DEFAULT_PAGE_TOKENS, &size),
+        b => budget::fit(sections, b, &size),
+    };
     let (out, _) = doc(&lines, &elided);
     Ok(out)
+}
+
+/// What a `tail` entry's `next` repeats: the command's own flags.
+struct Page<'a> {
+    args: &'a ViewArgs,
+    /// The resolved end of `--range`, kept by the next page.
+    to: Option<Rational>,
+}
+
+impl Page<'_> {
+    /// `elided` with `next` on each tail entry that cut item lines: the exact `fin view` that
+    /// shows them, from the first one cut on (`--timeline`, the same `--track`, `--budget`
+    /// and `--detail`, and `--range <from>..` up to the range's end). Exact rationals, so the
+    /// page boundary does not round; an item spanning it shows on both pages.
+    fn decorate(&self, elided: &[Value]) -> Vec<Value> {
+        elided
+            .iter()
+            .map(|e| {
+                let mut e = e.clone();
+                if e["step"] == "tail"
+                    && let (Some(tl), Some(from)) = (e["timeline"].as_str(), e["from"].as_str())
+                {
+                    e["next"] = json!(self.next(tl, from));
+                }
+                e
+            })
+            .collect()
+    }
+
+    fn next(&self, timeline: &str, from: &str) -> String {
+        let mut cmd = format!("fin view --timeline {timeline}");
+        if let Some(t) = &self.args.track {
+            cmd.push_str(&format!(" --track {t}"));
+        }
+        let to = self.to.map(|t| t.to_string()).unwrap_or_default();
+        cmd.push_str(&format!(" --range {from}..{to}"));
+        if let Some(b) = self.args.budget {
+            cmd.push_str(&format!(" --budget {b}"));
+        }
+        if self.args.detail {
+            cmd.push_str(" --detail");
+        }
+        cmd
+    }
 }
