@@ -8,12 +8,14 @@
 
 pub mod buf;
 pub mod channels;
+pub mod resample;
 pub mod stretch;
 #[cfg(feature = "testing")]
 pub mod testing;
 pub mod time;
 
 pub use buf::Stereo;
+pub use resample::{Resampler, resampled_len};
 pub use stretch::Wsola;
 pub use time::sample_at;
 
