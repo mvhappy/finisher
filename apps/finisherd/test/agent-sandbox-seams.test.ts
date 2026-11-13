@@ -298,7 +298,8 @@ describe("the host sandbox (detection and the probe)", () => {
 
   test("host_sandbox_has_throwaway_home", async () => {
     // `$HOME/.config/anthropic/*` and the like can sign a CLI in: a host sandbox's `HOME` is its
-    // own empty directory `tmp/home`, never the server's. A session keeps the server's.
+    // own empty directory `tmp/home`, never the server's. So is a Claude Code session's (7D
+    // Decision 5, Task 0 signed in); a Codex session keeps the server's.
     const d = deps();
     await within(openHostSandbox("probe", "claudeCode", d), async (box) => {
       const [id] = readdirSync(join(d.serverData, "agents"));
@@ -318,9 +319,18 @@ describe("the host sandbox (detection and the probe)", () => {
     await within(openHostSandbox("detect", "claudeCode", d), async (box) => {
       expect(box.env.HOME).toMatch(/[\\/]tmp[\\/]home$/);
     });
+    await within(openSessionSandbox(session("claudeCode"), "claudeCode", d), async (box) => {
+      const home = join(d.serverData, "agents", SESSION_ID, "tmp", "home");
+      expect(box.env.HOME).toBe(home);
+      if (WIN) expect(box.env.USERPROFILE).toBe(home);
+      else expect(box.env.SHELL).toMatch(/^\/bin\/(ba)?sh$/);
+      expect(readdirSync(home)).toEqual([]);
+      expect(lines((await run(box, printEnv("HOME"))).stdout)).toEqual({ HOME: home });
+    });
     if (!WIN) {
-      await within(openSessionSandbox(session("claudeCode"), "claudeCode", d), async (box) => {
+      await within(openSessionSandbox(session("codex"), "codex", d), async (box) => {
         expect(box.env.HOME).toBe("/home/u");
+        expect(box.env.SHELL).toBeUndefined();
       });
     }
   });

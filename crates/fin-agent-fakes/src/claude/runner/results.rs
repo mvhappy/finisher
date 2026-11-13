@@ -117,8 +117,9 @@ impl Runner {
                 )
             }
             Kind::Interrupted { aborted_tools } => {
-                // Verified 2.1.321, Task 0 (s1b): an interrupt mid-tool ends the turn so, with
-                // no `result` key and a diagnostic in `errors`.
+                // Verified on 2.1.321 (7D Task 0, s1b, s2b): an interrupt mid-tool ends the turn
+                // so, with no `result` key and a diagnostic in `errors`. TODO(7D Task 0 Step 1):
+                // an interrupt with no tool running; modelled the same with no `terminal_reason`.
                 let stop = if *aborted_tools {
                     json!("tool_use")
                 } else {
@@ -177,7 +178,7 @@ impl Runner {
             "modelUsage": model_usage,
             "model_usage_since_last_result": since,
             "result_index": t.results,
-            "permission_denials": [],
+            "permission_denials": std::mem::take(&mut self.denials),
             "uuid": fresh_uuid(),
             "queued_turn_count": self.pending.len(),
         }).as_object().expect("an object"));

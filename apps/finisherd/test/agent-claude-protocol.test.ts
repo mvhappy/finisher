@@ -119,7 +119,7 @@ describe("decoding", () => {
   it("unknown_type_is_unknown_not_error", () => {
     const lines = fixture("unknown").map(ok);
     expect(lines[0]).toEqual({ kind: "unknown", type: "keep_alive" });
-    expect(lines[1]).toEqual({ kind: "unknown", type: "rate_limit_event" });
+    expect(lines[1]).toEqual({ kind: "unknown", type: "fake_heartbeat" });
     expect(lines[2]).toEqual({ kind: "system", subtype: "status" });
     expect(lines[3]).toEqual({ kind: "system", subtype: "permission_denied" });
     expect(lines[4]).toEqual({ kind: "controlRequest", request_id: "cli-9", request: { subtype: "unknown", name: "elicitation" } });
@@ -197,10 +197,34 @@ describe("decoding", () => {
     expect(unsigned).toMatchObject({ subtype: "success", is_error: true, terminal_reason: "api_error", api_error_status: null, result_index: 0, model_usage_since_last_result: {}, modelUsage: {} });
     expect(exec).toMatchObject({ is_error: true, num_turns: 0, errors: ["No conversation found with session ID: 01890a5d-ac96-774b-bcce-b302099a8057"] });
     expect(exec).not.toHaveProperty("terminal_reason");
-    expect(budget).toMatchObject({ is_error: true, total_cost_usd: 0.0123, terminal_reason: "max_budget_usd", errors: ["Reached maximum budget ($0.01)"] });
+    expect(budget).toMatchObject({ is_error: true, total_cost_usd: 0.0123, terminal_reason: "budget_exhausted", errors: ["Reached maximum budget ($0.01)"] });
     const usage = { inputTokens: 12, outputTokens: 40, cacheReadInputTokens: 3400, cacheCreationInputTokens: 0, costUSD: 0.0123 };
     expect(budget!.modelUsage).toEqual({ "claude-opus-5-5": usage });
     expect(budget!.model_usage_since_last_result).toEqual({ "claude-opus-5-5": usage });
+  });
+
+  it("decodes_the_signed_in_cli_shapes (7D Task 0, 2.1.321)", () => {
+    const lines = fixture("signed-in").map(ok);
+    expect(lines.map((l) => (l.kind === "result" ? `result/${l.terminal_reason}` : l.kind))).toEqual([
+      "rateLimit",
+      "assistant",
+      "user",
+      "assistant",
+      "user",
+      "result/completed",
+      "user",
+      "user",
+      "result/aborted_tools",
+      "result/budget_exhausted",
+    ]);
+    const [, aborted] = byKind(lines, "result");
+    expect(aborted).toMatchObject({ subtype: "error_during_execution", is_error: true, stop_reason: "tool_use", permission_denials: [] });
+    expect(Object.hasOwn(aborted!, "result")).toBe(false);
+    // `rate_limit_info.status` is what the mapper needs; numbers are checked like the rest.
+    protocolError({ type: "rate_limit_event", rate_limit_info: {} });
+    protocolError({ type: "rate_limit_event" });
+    protocolError({ type: "rate_limit_event", rate_limit_info: { status: "rejected", utilization: -1 } });
+    expect(ok(JSON.stringify({ type: "rate_limit_event", rate_limit_info: { status: "allowed", resetsAt: null, overageStatus: "x" } }))).toEqual({ kind: "rateLimit", rate_limit_info: { status: "allowed", resetsAt: null } });
   });
 
   it("numbers_must_be_finite_and_non_negative", () => {

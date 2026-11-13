@@ -151,6 +151,9 @@ pub struct Ask {
     /// The CLI's `Bash` tool (`runner/bash.rs`): announced, run when allowed, its result written.
     #[serde(default)]
     pub bash: bool,
+    /// Once allowed, run the call as the CLI does (`Bash`: a login shell, `runner/bash.rs`).
+    #[serde(default)]
+    pub run: bool,
 }
 
 #[derive(Debug, Default, Clone, Copy, Deserialize)]

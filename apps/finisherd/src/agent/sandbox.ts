@@ -54,7 +54,7 @@ import { finError, toFinError } from "../errors.ts";
 import { grantTable, sessionOwner } from "../sandbox/broker.ts";
 import { resolveSandboxExecPath } from "../sandbox/exec.ts";
 import { currentSandboxStatus, profileWarning } from "../sandbox/status.ts";
-import { assertSessionEnv, assertSpawnEnv, harnessExtra, hostEnv, hostHome, sessionEnv } from "./sandbox-env.ts";
+import { assertSessionEnv, assertSpawnEnv, harnessExtra, hostEnv, sessionEnv } from "./sandbox-env.ts";
 import {
   canonical,
   type ChildExit,
@@ -201,7 +201,6 @@ export function openHostSandbox(purpose: "detect" | "probe", harness: Harness, d
             if (e.code !== "EEXIST") throw e;
           });
           await mkdir(workspace, { mode: 0o700 });
-          await mkdir(hostHome(dirs, platform), { mode: 0o700 });
           const env = hostEnv({ harness, dirs, store, platform, ...(deps.parent === undefined ? {} : { parent: deps.parent }) });
           const withStore = store?.env !== undefined;
           assertSessionEnv(env, { id, harness }, { host: true, store: withStore, expect: env, platform });

@@ -496,14 +496,16 @@ describe("the interrupt (Decision 16)", () => {
     expect(w.events.at(-1)).toEqual({ type: "exited", code: null, signal: "SIGKILL" });
   });
 
-  withFake("an answered interrupt sends no signal: the turn fails SESSION_INTERRUPTED", async () => {
+  withFake("an answered interrupt sends no signal: the turn ends interrupted, never failed", async () => {
+    // Verified on 2.1.321 (7D Task 0, s1b): the interrupt's own `aborted_tools` result (Decision 14).
     const w = await openWatched(TOOL_THEN_WAIT({}), { interruptWaitMs: 5000 });
     await run(w.provider.startTurn({ runId: "r1", text: "go" }));
     await waitFor(w, "toolStarted");
     await run(w.provider.interrupt());
     expect(w.kills).toEqual([]);
-    await waitFor(w, "turnFailed");
-    expect(w.events.find((e) => e.type === "turnFailed")).toMatchObject({ error: { code: "SESSION_INTERRUPTED" } });
+    await waitFor(w, "turnCompleted");
+    expect(w.events.find((e) => e.type === "turnCompleted")).toEqual({ type: "turnCompleted", stopReason: "interrupted" });
+    expect(w.events.some((e) => e.type === "turnFailed")).toBe(false);
   });
 
   withFake("SIGINT ends a turn the request did not: no group kill", async () => {

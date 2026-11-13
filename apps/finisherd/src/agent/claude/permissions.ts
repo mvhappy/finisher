@@ -24,6 +24,11 @@
 // - **No re-run on resume** (Task 10, Review Focus 5): a prompt for a call an earlier instance
 //   of the session announced (`tool_use_id`, `PortOptions.rerun`) is denied at once with a
 //   `rerunRefused` notice; the runtime already gave that call its (synthetic) result.
+// - **Refused by the CLI itself.** Verified on 2.1.321 (7D Task 0, s2a): a Write or Edit outside
+//   the working directory never sends `can_use_tool`: `blockWritesOutsideWorkingDirectories`
+//   refuses it first (an `is_error` `tool_result`), and it shows up only in the turn's
+//   `result.permission_denials`. No `approval` node exists for it; `asked` tells the mapper
+//   which denials no prompt named, and each becomes a `notice {cliDenied}` (`map.ts`).
 // - **Anything else** is answered `error` at once: a `hook_callback` (no SDK hooks are registered,
 //   Decision 18) and a request subtype this host does not know, each with a notice; an MCP
 //   `tools/call` of another tool (the brokered shell is Task 13's) a JSON-RPC error.
@@ -33,6 +38,7 @@ import type { RuntimeAnswer } from "../adapter.ts";
 import { MCP_SERVER } from "./launch.ts";
 import { isMcpToolCall, mcpReply } from "./probe-check.ts";
 import { type CanUseToolAnswer, type CliRequest, encodeAnswer } from "./protocol.ts";
+import type { Denial } from "./map.ts";
 import type { RequestPort } from "./session.ts";
 
 /** The `finisher` server's tool that answers permission prompts on the MCP path (Decision 10). */
@@ -48,6 +54,18 @@ interface Waiting {
   /** The JSON-RPC id of an MCP `approve` call (absent on the `stdio` path). */
   readonly rpc?: { readonly id: unknown };
 }
+
+/** JSON with object keys sorted, so the same input matches whatever order its keys came in. */
+const stable = (v: unknown): string => {
+  if (Array.isArray(v)) return `[${v.map(stable).join(",")}]`;
+  if (typeof v === "object" && v !== null) {
+    const o = v as Record<string, unknown>;
+    return `{${Object.keys(o).sort().map((k) => `${JSON.stringify(k)}:${stable(o[k])}`).join(",")}}`;
+  }
+  return JSON.stringify(v) ?? "null";
+};
+/** One call as a key: its tool and input. */
+const callKey = (tool: string, input: unknown) => `${tool}\u0000${stable(input)}`;
 
 const isObject = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
 const clip = (s: string) => s.slice(0, 64);
@@ -69,8 +87,16 @@ export function claudePermissions(opts: PortOptions = {}): RequestPort {
   const byCli = new Map<string, string>();
   /** Every CLI id a permission prompt has used (module docs). */
   const used = new Set<string>();
+  /**
+   * What this turn's prompts named, answered or not: their `tool_use_id`s, and each call as
+   * `callKey` (an MCP `approve` may carry no id). Cleared at each `result` (`turnEnded`).
+   */
+  const asked = new Set<string>();
+  const askedCalls = new Set<string>();
   let generation = 0;
   const ask = (cli: string, tool: string, input: Readonly<Record<string, unknown>>, toolUseId: unknown, rpc?: { id: unknown }) => {
+    if (typeof toolUseId === "string") asked.add(toolUseId);
+    askedCalls.add(callKey(tool, input));
     if (used.has(cli)) {
       const body: CanUseToolAnswer = { behavior: "deny", message: "Finisher refuses a permission prompt that reuses a request id." };
       return {
@@ -99,22 +125,17 @@ export function claudePermissions(opts: PortOptions = {}): RequestPort {
     request(id: string, r: CliRequest) {
       switch (r.subtype) {
         case "can_use_tool":
-          // TODO(7D Task 0 Step 2): that with `--permission-prompt-tool stdio`, Decision 4's `ask`
-          // list and `--permission-mode manual`, EVERY call of every enabled tool sends
-          // `can_use_tool` (a `Read` in the workspace, a read-only `ls`, a preapproved WebFetch
-          // domain), with these fields; modelled by fake-claude as one `can_use_tool {tool_name,
-          // input, tool_use_id, permission_suggestions: [], blocked_path: null, decision_reason:
-          // null}` per script `ask`.
+          // Verified on 2.1.321 (7D Task 0, s2a): with Decision 4's `ask` list every tested call
+          // sent `can_use_tool` (Read in and outside the workspace, Glob, Grep, Bash, WebFetch,
+          // Edit and Write in the workspace); a write outside it never does (module docs).
           return ask(id, r.tool_name, r.input, r.tool_use_id);
         case "mcp_message": {
           const m = r.message as { id?: unknown; params?: { name?: unknown; arguments?: unknown } };
           if (r.server_name !== MCP_SERVER || !isMcpToolCall(r.message)) return { answer: encodeAnswer(id, mcpReply(r.server_name, r.message, [])) };
           const rpcId = m.id ?? null;
           if (m.params?.name !== APPROVE) return { answer: encodeAnswer(id, mcpError(rpcId, `tool not served here: ${clip(String(m.params?.name))}`)) };
-          // TODO(7D Task 0 Step 2): the MCP fallback's call shape (`tools/call` of `approve` with
-          // `arguments {tool_name, input, tool_use_id}`) and that the CLI reads the answer from
-          // the first text content; modelled by fake-claude's `ask` under
-          // `--permission-prompt-tool mcp__finisher__approve`.
+          // Verified on 2.1.321 (7D Task 0, s2c): `tools/call` of `approve` with `arguments
+          // {tool_name, input, tool_use_id}`; the CLI honours the JSON in `content[0].text`.
           const args = m.params.arguments;
           if (!isObject(args) || typeof args.tool_name !== "string" || !isObject(args.input)) return { answer: encodeAnswer(id, mcpError(rpcId, "approve takes {tool_name, input}")) };
           return ask(id, args.tool_name, args.input, args.tool_use_id, { id: rpcId });
@@ -146,14 +167,22 @@ export function claudePermissions(opts: PortOptions = {}): RequestPort {
 
     /** `id` is the CLI's `request_id`; the event names the runtime's. */
     cancel(id: string): readonly ProviderEvent[] {
-      // TODO(7D Task 0 Step 2): when the CLI sends `control_cancel_request` (an interrupt, a
-      // timeout of its own?); modelled by fake-claude as one after the script's `cancelAfterMs`
-      // for an unanswered `ask`, which then waits for no answer.
+      // Verified on 2.1.321 (7D Task 0, s2b): sent when the host interrupts while a prompt
+      // waits, before the interrupt's `control_response`; none came in 5 s of holding one.
+      // TODO(7D Task 0 Step 2): whether the CLI ever withdraws a prompt on a timeout of its own;
+      // modelled by fake-claude's `cancelAfterMs` for an unanswered `ask`.
       const runtimeId = byCli.get(id);
       if (runtimeId === undefined) return [];
       byCli.delete(id);
       waiting.delete(runtimeId);
       return [{ type: "requestCancelled", id: runtimeId }];
+    },
+
+    asked: (d: Denial) => (d.tool_use_id !== undefined && asked.has(d.tool_use_id)) || (d.tool_input !== undefined && askedCalls.has(callKey(d.tool_name, d.tool_input))),
+
+    turnEnded: () => {
+      asked.clear();
+      askedCalls.clear();
     },
   };
 }

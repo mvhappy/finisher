@@ -142,7 +142,8 @@ const ResultLine = Schema.Struct({
   usage: Usage,
   total_cost_usd: Amount,
   session_id: opt(Str),
-  // Verified 2.1.321, Task 0 (s1b): `null` when an interrupt stopped a tool (`aborted_tools`).
+  // Verified on 2.1.321 (7D Task 0, s1b/s1f): absent (not `null`) on the interrupt's
+  // `aborted_tools` result and on `error_max_budget_usd`; `null` is accepted too.
   result: opt(Schema.NullOr(Str)),
   duration_ms: opt(Amount),
   duration_api_ms: opt(Amount),
@@ -155,7 +156,21 @@ const ResultLine = Schema.Struct({
   result_index: opt(Count),
   terminal_reason: opt(Str),
   errors: opt(Schema.Array(Str)),
+  // Verified on 2.1.321 (7D Task 0, s2a/s2b): every call refused in the turn, by the host's answer,
+  // a withdrawn prompt, or the CLI itself (a Write/Edit outside the working directory never asks).
+  // Entries are read leniently by the mapper (`denialOf`): the line carries the turn's usage, so
+  // one odd entry must not fail it.
   permission_denials: opt(Schema.Array(Schema.Unknown)),
+});
+// Verified on 2.1.321 (7D Task 0, s1a): a top-level line on a process's first turn, before the
+// `result`; `status` was `allowed_warning` at 29 % of a seven-day window.
+const RateLimitLine = Schema.Struct({
+  rate_limit_info: Schema.Struct({
+    status: Str,
+    resetsAt: opt(Schema.NullOr(Amount)),
+    rateLimitType: opt(Schema.NullOr(Str)),
+    utilization: opt(Schema.NullOr(Amount)),
+  }),
 });
 const ControlRequestLine = Schema.Struct({ request_id: Str, request: Schema.Struct({ subtype: Str }) });
 const CanUseTool = Schema.Struct({
@@ -249,6 +264,8 @@ export interface StreamEvent extends Env {
   readonly event: StreamPayload;
 }
 export type ResultMsg = { readonly kind: "result" } & typeof ResultLine.Type;
+/** `rate_limit_event`: the sign-in's rate-limit window as the CLI last saw it. */
+export type RateLimit = { readonly kind: "rateLimit" } & typeof RateLimitLine.Type;
 export type CanUseToolRequest = typeof CanUseTool.Type;
 export type CliRequest =
   | CanUseToolRequest
@@ -272,7 +289,7 @@ export interface Unknown {
   readonly type: string;
 }
 
-export type CliLine = SystemInit | SystemOther | AssistantMsg | UserMsg | StreamEvent | ResultMsg | ControlRequest | ControlResponse | ControlCancel | Unknown;
+export type CliLine = SystemInit | SystemOther | AssistantMsg | UserMsg | StreamEvent | ResultMsg | RateLimit | ControlRequest | ControlResponse | ControlCancel | Unknown;
 
 // ---- decoding ----
 
@@ -371,6 +388,8 @@ function decodeObject(o: Record<string, unknown>): CliLine {
     }
     case "result":
       return { kind: "result", ...must<typeof ResultLine.Type>(ResultLine, o, "result") };
+    case "rate_limit_event":
+      return { kind: "rateLimit", ...must<typeof RateLimitLine.Type>(RateLimitLine, o, "rate_limit_event") };
     case "control_request":
       return controlRequest(o);
     case "control_response":

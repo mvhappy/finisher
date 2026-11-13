@@ -15,6 +15,8 @@ pub(super) enum Outcome {
     /// Withdrawn by `cancelAfterMs` (`control_cancel_request`); neither branch runs.
     Cancelled,
     Interrupted,
+    /// Refused by the CLI itself before any prompt (`bash.rs`: a write outside the cwd).
+    Refused,
 }
 
 /// The MCP tool `--permission-prompt-tool` names, as `(server, tool)`.
@@ -58,6 +60,11 @@ impl Runner {
                 return (Outcome::Cancelled, tool_use_id);
             }
         }
+        if self.refuse_outside_write(ask, &tool_use_id) {
+            // The id is taken: the next call gets its own.
+            self.req_n += 1;
+            return (Outcome::Refused, tool_use_id);
+        }
         let rid = match &via {
             None => {
                 let rid = self.next_rid();
@@ -93,6 +100,9 @@ impl Runner {
                 )
             }
         };
+        // Listed as refused until it is allowed: an interrupt's `result` (written before this
+        // wait ends) lists the withdrawn prompt too (verified on 2.1.321, 7D Task 0, s2b).
+        self.deny(ask, &tool_use_id);
         let deadline = ask
             .cancel_after_ms
             .map(|ms| Instant::now() + Duration::from_millis(ms));
@@ -112,12 +122,14 @@ impl Runner {
                             "via": if via.is_some() { "mcp" } else { "stdio" },
                             "answer": body, "raw": raw}),
                     );
-                    let outcome = if allowed {
-                        Outcome::Allowed
-                    } else {
-                        Outcome::Denied
-                    };
-                    return (outcome, tool_use_id);
+                    if !allowed {
+                        return (Outcome::Denied, tool_use_id);
+                    }
+                    self.denials.pop();
+                    if ask.run && ask.tool == "Bash" {
+                        self.run_bash(ask, &tool_use_id);
+                    }
+                    return (Outcome::Allowed, tool_use_id);
                 }
                 Ev::Timeout => {
                     self.emit(&json!({"type": "control_cancel_request", "request_id": rid}));

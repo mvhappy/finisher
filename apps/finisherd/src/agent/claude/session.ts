@@ -27,7 +27,7 @@ import { finError } from "../../errors.ts";
 import type { BoundEvent, CallGate, ProjectedUsage, ProviderRef, ProviderSession, RuntimeAnswer, TurnInput, UserInput } from "../adapter.ts";
 import type { SandboxedChild } from "../sandbox.ts";
 import type { LaunchPlan } from "./launch.ts";
-import { LineMapper, type UsageSource } from "./map.ts";
+import { type Denial, LineMapper, type UsageSource } from "./map.ts";
 import { claudePermissions } from "./permissions.ts";
 import { type CheckOptions, firstTurnGate, isMcpToolCall, mcpReply } from "./probe-check.ts";
 import { type CliLine, type CliRequest, decodeLine, encodeAnswer, encodeControl, encodeUser, lineFramer, type SystemInit } from "./protocol.ts";
@@ -55,6 +55,10 @@ export interface RequestPort {
   respond(id: string, a: RuntimeAnswer): string | FinError;
   /** The CLI withdrew `requestId` (`control_cancel_request`). */
   cancel(requestId: string): readonly ProviderEvent[];
+  /** Whether a prompt of this turn named the denied call (else its denial is the CLI's own). */
+  asked?(d: Denial): boolean;
+  /** A `result` ended the turn: forget its prompts. */
+  turnEnded?(): void;
 }
 
 /** Where an instance's events go instead of its own stream (`ClaudeSession`, Task 10). */
@@ -129,8 +133,8 @@ export class ClaudeInstance {
     this.#o = o;
     this.#queue = queue;
     this.#gate = firstTurnGate(o.plan, o.check ?? {});
-    this.#map = new LineMapper(o.usage);
     this.#requests = o.requests ?? claudePermissions();
+    this.#map = new LineMapper(o.usage, { asked: (d) => this.#requests.asked?.(d) === true, turnEnded: () => this.#requests.turnEnded?.() });
     this.#pending = [...(o.notices ?? [])];
     this.#initialized = new Promise((resolve) => (this.#answerInitialize = resolve));
   }
@@ -382,7 +386,7 @@ export class ClaudeInstance {
     // Verified 2.1.321, Task 0 (s1b): the request is answered `{still_queued: []}` at once, a
     // tool in flight is stopped (its error `tool_result`, then `[Request interrupted by user for
     // tool use]`) and the turn ends `result {error_during_execution, terminal_reason:
-    // "aborted_tools", result: null}`; fake-claude plays that shape (`onInterrupt: "result"`).
+    // "aborted_tools"}` with no `result` key; fake-claude plays that shape (`onInterrupt: "result"`).
     const ask: { readonly id: string; answer?: "success" | "error" } = { id: `finisher-interrupt-${++this.#control}` };
     this.#interruptAsk = ask;
     this.#write(encodeControl(ask.id, { subtype: "interrupt" }));
