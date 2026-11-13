@@ -20,6 +20,7 @@
 // - **The deadline** (Decision 10) is finisherd's: the hook's `timeoutS` from the call, slot
 //   wait included (at most `HOOK_LIMITS.processes` at once, `HookSlots`); at it the process is
 //   killed with its tree (`SIGKILL` of its group, or the launcher hung up and then its group).
+//   The server's `signal` (it stops) does the same at once, and nothing starts after it.
 // - **The reply** (Decision 2): exit 0 with empty stdout is `allow`; else exactly one JSON line
 //   that `decodeHookReply` accepts, `reason` ≤ 1 KiB and `text` ≤ 16 KiB after control
 //   characters (but `\n`, `\t`) are stripped. Anything else is a `HookFailure`: `timeout`,
@@ -69,6 +70,8 @@ export interface HookFailure {
   readonly detail: string;
   /** The start of what it wrote on stderr (at most 512 bytes), for an `exit` or `signal`. */
   readonly stderr?: string;
+  /** Its process had started (`HookStats.runs` counts it). */
+  readonly started?: true;
 }
 
 /** A hook that did not run because it no longer applies (its configuration or a bound file changed). */
@@ -106,6 +109,8 @@ export interface HookProcessDeps {
   readonly onStart?: (s: { readonly mode: SandboxMode; readonly warning?: SandboxWarning }) => void;
   /** Overrides the hook's `timeoutS` (tests). */
   readonly timeoutMs?: number;
+  /** The server stopping: nothing starts after it, a running process is killed (`unavailable`). */
+  readonly signal?: AbortSignal;
 }
 
 /** At most `n` hook processes at once (Decision 10): FIFO, a waiter gives up at its deadline. */
@@ -118,7 +123,8 @@ export class HookSlots {
   }
 
   /** A slot's release, or `undefined` when none was free by `deadline` (ms since the epoch). */
-  acquire(deadline: number): Promise<(() => void) | undefined> {
+  acquire(deadline: number, signal?: AbortSignal): Promise<(() => void) | undefined> {
+    if (signal?.aborted === true) return Promise.resolve(undefined);
     if (this.#free > 0) {
       this.#free -= 1;
       return Promise.resolve(this.#release());
@@ -126,13 +132,17 @@ export class HookSlots {
     return new Promise((resolve) => {
       const take = (release: () => void) => {
         clearTimeout(timer);
+        signal?.removeEventListener("abort", give);
         resolve(release);
       };
-      const timer = setTimeout(() => {
+      const give = () => {
+        clearTimeout(timer);
         const i = this.#waiting.indexOf(take);
         if (i >= 0) this.#waiting.splice(i, 1);
         resolve(undefined);
-      }, Math.max(0, deadline - Date.now()));
+      };
+      const timer = setTimeout(give, Math.max(0, deadline - Date.now()));
+      signal?.addEventListener("abort", give, { once: true });
       this.#waiting.push(take);
     });
   }
@@ -167,7 +177,11 @@ async function runOnce(h: ResolvedHook, req: HookRequest, deps: HookProcessDeps)
   const status = (deps.status ?? currentSandboxStatus)();
   const mode = sandboxMode(status.hook, status.os, "hook");
   if (typeof mode !== "string") return fail("unavailable", mode.message);
-  const release = await deps.slots.acquire(deadline);
+  const release = await deps.slots.acquire(deadline, deps.signal);
+  if (deps.signal?.aborted === true) {
+    release?.();
+    return fail("unavailable", STOPPING);
+  }
   if (release === undefined) return fail("timeout", `no process slot within ${timeoutMs} ms`);
   try {
     const base = (deps.toolchainBase ?? sandboxToolchainBase)();
@@ -200,6 +214,7 @@ async function runOnce(h: ResolvedHook, req: HookRequest, deps: HookProcessDeps)
         }
         const warning = profileWarning("hook", status.os, status.hook);
         deps.onStart?.({ mode, ...(warning === undefined ? {} : { warning }) });
+        if (deps.signal?.aborted === true) return fail("unavailable", STOPPING);
         let launcherFailed = false;
         let child: SandboxedChild;
         try {
@@ -207,7 +222,8 @@ async function runOnce(h: ResolvedHook, req: HookRequest, deps: HookProcessDeps)
         } catch (e) {
           return fail("unavailable", message(e));
         }
-        return await collect(child, req, deadline, timeoutMs, () => launcherFailed);
+        const r = await collect(child, req, deadline, timeoutMs, () => launcherFailed, deps.signal);
+        return "kind" in r ? { ...r, started: true } : r;
       } finally {
         // A revoke that fails stays in the broker's log; the next start's sweep completes it.
         if (owner !== undefined) await acl?.revoke(owner).catch(() => 0);
@@ -219,6 +235,8 @@ async function runOnce(h: ResolvedHook, req: HookRequest, deps: HookProcessDeps)
 }
 
 const changed = (detail: string): HookNotRun => ({ notRun: "changed", detail });
+/** A run refused or ended because the server stops. */
+const STOPPING = "the server is stopping";
 
 /**
  * A project hook's bound files, each read once, checked against its bound hash and written to
@@ -329,7 +347,7 @@ function requestLine(req: HookRequest): string {
 }
 
 /** Feeds the request, reads stdout under its cap and stderr's start, and enforces the deadline. */
-async function collect(child: SandboxedChild, req: HookRequest, deadline: number, timeoutMs: number, launcherFailed: () => boolean): Promise<HookReply | HookFailure> {
+async function collect(child: SandboxedChild, req: HookRequest, deadline: number, timeoutMs: number, launcherFailed: () => boolean, signal?: AbortSignal): Promise<HookReply | HookFailure> {
   child.stdin.on("error", () => {});
   child.stdin.end(requestLine(req));
   const out: Buffer[] = [];
@@ -362,18 +380,27 @@ async function collect(child: SandboxedChild, req: HookRequest, deadline: number
     timedOut = true;
     child.kill("SIGKILL");
   }, Math.max(0, deadline - Date.now()));
+  let stopped = false;
+  const stop = () => {
+    stopped = true;
+    child.kill("SIGKILL");
+  };
+  if (signal?.aborted === true) stop();
+  else signal?.addEventListener("abort", stop, { once: true });
   let exit: ChildExit;
   try {
     exit = await child.exited;
   } finally {
     // An exit in time is never a timeout, however long its stdout takes to close.
     clearTimeout(timer);
+    signal?.removeEventListener("abort", stop);
   }
   // What it wrote before it exited (a descendant still holding stdout is given a second).
   await Promise.race([closed, new Promise((r) => setTimeout(r, 1_000).unref())]);
   child.stdout.destroy();
   // At most `STDERR_BYTES`, a character cut at the end dropped.
   const stderr = Buffer.concat(err).toString("utf8").replace(/\uFFFD$/, "");
+  if (stopped) return fail("unavailable", STOPPING);
   if (timedOut) return fail("timeout", `no reply within ${timeoutMs} ms`);
   if (over) return fail("tooLarge", `more than ${HOOK_LIMITS.stdoutBytes} bytes on stdout`);
   if (exit.code === LAUNCHER_UNAVAILABLE && launcherFailed()) return fail("unavailable", "the hook sandbox could not be applied");

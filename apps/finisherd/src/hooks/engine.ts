@@ -24,8 +24,9 @@
 //   (`unavailable`).
 // - **Off the caller's path** (`observe`: `PostCommand` and the observe-only events): one FIFO
 //   per server, one event at a time, at most `HOOK_LIMITS.queue` waiting (the next is dropped
-//   and counted). Its hooks are resolved when it is taken off the queue, so a configuration
-//   change while it waits applies to it. Its outcome (context, a `PostCommand` block) goes to
+//   and counted). An event with no hook when it is observed is not queued (it takes no slot);
+//   a queued event's hooks are resolved again when it is taken off the queue, so a
+//   configuration change while it waits applies to it. Its outcome (context, a `PostCommand` block) goes to
 //   `SessionNotices.deliver` (Task 6 steers or holds it).
 // - **Freshness and cost** (Decision 5): every dispatch `stat`s each configuration file that
 //   applies (managed, user, the local layer's, and the project's only while its trust record
@@ -39,7 +40,12 @@
 //   edited while the index is kept is caught by the re-check before its process starts.
 // - **Sandbox warning:** a hook that runs unconfined (`direct`) is logged once per server start
 //   (`server.status` lists the `hook` profile's warning all along).
-// - **Stats** (Decision 21): per event `runs` (processes started), `blocks` (every block reply,
+// - **Closing** (`close`, at server stop): the queue is dropped, running processes are killed
+//   (their group, as at a deadline) and waited for, so their temps are removed; afterwards
+//   nothing starts and each hook a dispatch finds is an `unavailable` failure under its
+//   `onTimeout` (`PreMerge` blocks, the rest pass). `buildHooks` sweeps temps a crash left.
+// - **Stats** (Decision 21): per event `runs` (hooks that started: a process, or a plugin
+//   handler that answered; not a slot timeout, a missing program or a refused start), `blocks` (every block reply,
 //   ignored ones included, and failures resolved to a block), `timeouts`, `failures`; `dropped`;
 //   `unreadable` layers.
 import { statSync } from "node:fs";
@@ -74,7 +80,7 @@ export interface HookOutcome {
   readonly context?: string;
   /** The hooks whose context is in `context`, in order. */
   readonly contextHooks?: readonly string[];
-  /** Hook processes started. */
+  /** Hooks that started (`HookStats.runs`). */
   readonly ran: number;
 }
 
@@ -192,6 +198,10 @@ class Engine implements HookEngineImpl {
   readonly #unreadable = new Map<string, readonly HookLayer[]>();
   readonly #counters = Object.fromEntries(EVENTS.map((e) => [e, { runs: 0, blocks: 0, timeouts: 0, failures: 0 }])) as Record<HookEvent, HookCounters>;
   readonly #queue: Queued[] = [];
+  /** Aborted by `close`: running processes are killed, none starts after it. */
+  readonly #stopping = new AbortController();
+  /** Hook runs under way (`close` waits for them, so their temps are removed). */
+  readonly #running = new Set<Promise<unknown>>();
   #draining: Promise<void> | undefined;
   #dropped = 0;
   #warned = false;
@@ -212,6 +222,8 @@ class Engine implements HookEngineImpl {
 
   observe(event: HookEvent, at: HookAt, payload: unknown): void {
     if (this.#closed) return;
+    // No hook for it now: it takes no queue slot (a hook added meanwhile does not see it).
+    if (this.#applying(event, at).length === 0) return;
     if (this.#draining !== undefined) {
       if (this.#queue.length >= HOOK_LIMITS.queue) this.#dropped += 1;
       else this.#queue.push({ event, at, payload });
@@ -244,14 +256,18 @@ class Engine implements HookEngineImpl {
   async close(): Promise<void> {
     this.#closed = true;
     this.#queue.length = 0;
-    const running = this.#draining;
-    if (running !== undefined) await Promise.race([running, new Promise((r) => setTimeout(r, 2_000).unref())]);
+    // Kills the running processes (their group, as at a deadline); their temps are removed as they end.
+    this.#stopping.abort();
+    await Promise.allSettled([...this.#running]);
+    const draining = this.#draining;
+    if (draining !== undefined) await Promise.race([draining, new Promise((r) => setTimeout(r, 2_000).unref())]);
   }
 
   stats(): HookStats {
-    // The server layers as they are now; projects' as their last dispatch saw them.
+    // The server layers as they are now; each project's local layer as its last dispatch saw it.
     this.#index(undefined);
-    const seen = new Set([...this.#unreadable.values()].flat());
+    const seen = new Set<HookLayer>(this.#unreadable.get("") ?? []);
+    for (const [slot, layers] of this.#unreadable) if (slot !== "" && layers.includes("local")) seen.add("local");
     return {
       events: Object.fromEntries(EVENTS.map((e) => [e, { ...this.#counters[e] }])) as Record<HookEvent, HookCounters>,
       dropped: this.#dropped,
@@ -303,6 +319,7 @@ class Engine implements HookEngineImpl {
       if (list === undefined) index.set(h.event, [h]);
       else list.push(h);
     }
+    if (this.#unreadable.size >= MEMO_MAX) this.#unreadable.clear();
     this.#unreadable.set(slot, [...new Set(resolved.hooks.filter((h) => h.unreadable === true).map((h) => h.layer))]);
     if (racy || resolved.projectChanged) {
       this.#memo.delete(slot);
@@ -336,7 +353,7 @@ class Engine implements HookEngineImpl {
       } else {
         const r = await this.#run(h, req, at, dir);
         if (r === undefined || isNotRun(r)) continue;
-        if (!("kind" in r) || r.kind !== "unavailable") {
+        if (!("kind" in r) || r.started === true) {
           ran += 1;
           counters.runs += 1;
         }
@@ -373,15 +390,33 @@ class Engine implements HookEngineImpl {
     return outcome();
   }
 
-  /** One hook's run: its process, or the plugin layer's handler (none until Task 10: skipped). */
+  /**
+   * One hook's run: its process, or the plugin layer's handler (none until Task 10: skipped).
+   * A run that rejects is an `unavailable` failure (Decision 3), never a defect of the caller.
+   */
   async #run(h: ConfiguredHook, req: HookRequest, at: HookAt, dir: string | undefined): Promise<HookRun | undefined> {
-    if (!isCommandHook(h)) return this.#d.plugins?.run(h, req, at);
-    if (dir === undefined) return { kind: "unavailable", detail: "the project is not open on this server" } satisfies HookFailure;
+    // After `close`: nothing starts; the failure follows `onTimeout` (`PreMerge` blocks).
+    if (this.#closed) return { kind: "unavailable", detail: "the server is stopping" } satisfies HookFailure;
+    const run = this.#start(h, req, at, dir);
+    this.#running.add(run);
+    try {
+      return await run;
+    } catch (e) {
+      return { kind: "unavailable", detail: e instanceof Error ? e.message : String(e) } satisfies HookFailure;
+    } finally {
+      this.#running.delete(run);
+    }
+  }
+
+  #start(h: ConfiguredHook, req: HookRequest, at: HookAt, dir: string | undefined): Promise<HookRun | undefined> {
+    if (!isCommandHook(h)) return this.#d.plugins?.run(h, req, at) ?? Promise.resolve(undefined);
+    if (dir === undefined) return Promise.resolve({ kind: "unavailable", detail: "the project is not open on this server" } satisfies HookFailure);
     return Effect.runPromise(
       runCommandHook(h, req, {
         ...this.#d.process,
         serverData: this.#d.serverData,
         slots: this.#slots,
+        signal: this.#stopping.signal,
         recheck: () => this.#d.config.applies(at.projectId, h),
         onStart: ({ warning }) => {
           if (warning === undefined || this.#warned) return;
@@ -406,6 +441,14 @@ class Engine implements HookEngineImpl {
 
   /** `hook.block` as the caller's: never the reason (the session's notice holds it). */
   #audit(h: ConfiguredHook, at: HookAt, event: HookEvent, after: boolean): void {
+    try {
+      this.#append(h, at, event, after);
+    } catch (e) {
+      this.#d.log?.(`hooks: hook.block not audited: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }
+
+  #append(h: ConfiguredHook, at: HookAt, event: HookEvent, after: boolean): void {
     this.#d.audit.append({
       kind: "hook.block",
       principal: { kind: at.principal.kind, id: at.principal.id },

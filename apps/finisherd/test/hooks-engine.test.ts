@@ -5,7 +5,7 @@
 // caller's path on one bounded queue whose hooks are resolved when the event runs, a block is
 // audited without its reason, the counters `server.status` reports, and the cost contract: an
 // event with no hook costs one map lookup and one `stat` per applying configuration file.
-import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, utimesSync, writeFileSync, existsSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { HookEvent, Principal, Session } from "@finisher/contracts";
@@ -15,6 +15,7 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import type { AuditInput } from "../src/control/audit.ts";
 import type { ProjectTrust } from "../src/agent/rule-store.ts";
 import { HookConfig } from "../src/hooks/config.ts";
+import { buildHooks } from "../src/hooks/wiring.ts";
 import { type HookAt, type HookNotice, type HookOutcome, makeHookEngine, type HookEngineDeps, type HookEngineImpl } from "../src/hooks/engine.ts";
 import { AgentServer } from "./support/agent-server.ts";
 import { ok } from "./support/ndjson-client.ts";
@@ -153,6 +154,9 @@ describe("order and chain (Decision 4)", () => {
     expect(f.audits).toMatchObject([{ kind: "hook.block", outcome: "denied", details: { event: "PreMerge", hookId: "user.unreadable", layer: "user", projectId: "p1", session: "s1" } }]);
     expect((await fire(e, "SessionStart")).blocked).toBeUndefined();
     expect(e.stats().unreadable).toEqual(["user"]);
+    // Fixed: it clears at once (a project's last view of the server layers does not keep it).
+    user(f, []);
+    expect(e.stats().unreadable).toEqual([]);
   });
 });
 
@@ -262,15 +266,36 @@ describe("the observe queue (Decisions 1, 4, 18)", () => {
     expect(f.delivered).toEqual([{ event: "PostCommand", outcome: { ran: 2, blocked: { hook: "b", reason: "revert it", layer: "user" } } }]);
   });
 
-  test("observe_queue_bounded: 256 wait, the next is dropped and counted", async () => {
+  test("observe_queue_bounded: 256 wait, the next is dropped and counted, an earlier one runs", { timeout: 20_000 }, async () => {
     const f = fixture();
-    user(f, [hook("slow", "JobDone", ["--sleep", "500"], { match: "slow" })]);
+    const early = join(tmp, "early");
+    const late = join(tmp, "late");
+    const hooks = [hook("slow", "JobDone", ["--sleep", "500"], { match: "slow" }), hook("early", "JobDone", mark(early), { match: "early" }), hook("late", "JobDone", mark(late), { match: "late" })];
+    user(f, [...hooks, hook("fast", "JobDone", [], { match: "fast" })]);
     const e = engine(f);
     e.observe("JobDone", at({ names: ["slow"] }), {});
-    for (let i = 0; i < 257; i++) e.observe("JobDone", at({ names: ["fast"] }), {});
+    e.observe("JobDone", at({ names: ["early"] }), {});
+    for (let i = 0; i < 255; i++) e.observe("JobDone", at({ names: ["fast"] }), {});
+    e.observe("JobDone", at({ names: ["late"] }), {});
     expect(e.stats().dropped).toBe(1);
+    // The fillers find no hook when they run (resolved then): the queue drains fast.
+    user(f, hooks);
     await e.settled();
-    expect(e.stats().events.JobDone.runs).toBe(1);
+    expect(existsSync(early)).toBe(true);
+    expect(existsSync(late)).toBe(false);
+  });
+
+  test("hookless events take no queue slot: 300 behind a slow hook drop nothing", async () => {
+    const f = fixture();
+    const later = join(tmp, "later");
+    user(f, [hook("slow", "JobDone", ["--sleep", "500"], { match: "slow" }), hook("later", "JobDone", mark(later), { match: "later" })]);
+    const e = engine(f);
+    e.observe("JobDone", at({ names: ["slow"] }), {});
+    for (let i = 0; i < 300; i++) e.observe("Notification", at({ names: ["status.idle"] }), {});
+    e.observe("JobDone", at({ names: ["later"] }), {});
+    expect(e.stats().dropped).toBe(0);
+    await e.settled();
+    expect(existsSync(later)).toBe(true);
   });
 
   test("queued_event_resolves_hooks_when_it_runs: a change while it waits applies to it", { timeout: 20_000 }, async () => {
@@ -368,6 +393,97 @@ describe("freshness and cost (Decision 5)", () => {
     console.log(`no-hook dispatch p50 ${unchanged[5000]!.toFixed(4)} ms, p99 ${p99(unchanged).toFixed(4)} ms; changed p50 ${changed[100]!.toFixed(4)} ms, p99 ${p99(changed).toFixed(4)} ms`);
     expect(p99(unchanged)).toBeLessThanOrEqual(strict ? 0.1 : 5);
     expect(p99(changed)).toBeLessThanOrEqual(strict ? 2 : 50);
+  });
+});
+
+describe("the kept index and shutdown (review of Task 4)", () => {
+  test("kept_index_sees_a_change: stats and the trusted hash key it", { timeout: 60_000 }, async () => {
+    const f = fixture();
+    const projectRan = join(tmp, "project-ran");
+    user(f, [hook("u", "UserPrompt", [])]);
+    local(f, [hook("l", "UserPrompt", [])]);
+    project(f, [hook("p", "PreMerge", mark(projectRan))]);
+    const resolve = vi.spyOn(f.config, "resolve");
+    const applies = vi.spyOn(f.config, "applies");
+    const e = engine(f);
+    /** Waits past `RACY_MS`, then proves the index is kept (one resolve, then none). */
+    const kept = async () => {
+      await settle();
+      await fire(e, "SessionStart");
+      resolve.mockClear();
+      await fire(e, "SessionStart");
+      expect(resolve).not.toHaveBeenCalled();
+    };
+    await kept();
+    // A user block hook appears: seen at once.
+    user(f, [hook("u", "UserPrompt", []), hook("ub", "PreCommand", block("user says no"))]);
+    expect((await fire(e, "PreCommand")).blocked?.hook).toBe("ub");
+    await kept();
+    local(f, [hook("l", "UserPrompt", []), hook("lb", "UserPrompt", block("local says no"))]);
+    expect((await fire(e, "UserPrompt")).blocked?.hook).toBe("lb");
+    // The trusted project file edited: its hook leaves the index (never even re-checked).
+    await kept();
+    writeFileSync(join(f.dir, "finisher.hooks.json"), JSON.stringify({ hooks: [hook("p", "PreMerge", mark(projectRan), { timeoutS: 2 })] }));
+    applies.mockClear();
+    expect(await fire(e, "PreMerge")).toEqual({ ran: 0 });
+    expect(applies).not.toHaveBeenCalled();
+    // Restored and trusted as it is, kept again; then the trust record names another hash.
+    project(f, [hook("p", "PreMerge", mark(projectRan))]);
+    await kept();
+    const t = f.trusts.get("p1")!;
+    f.trusts.set("p1", { ...t, hooksHash: `sha256:${"0".repeat(64)}` });
+    applies.mockClear();
+    expect(await fire(e, "PreMerge")).toEqual({ ran: 0 });
+    expect(applies).not.toHaveBeenCalled();
+    expect(existsSync(projectRan)).toBe(false);
+  });
+
+  test("close_kills_running_hook: its process and temp are gone", { timeout: 20_000 }, async () => {
+    const f = fixture();
+    const marker = join(tmp, "after-close");
+    user(f, [hook("slow", "JobDone", ["--sleep", "1500", ...mark(marker)])]);
+    const e = engine(f);
+    e.observe("JobDone", at(), {});
+    const runs = join(f.serverData, "hooks", "run");
+    await until(() => (existsSync(runs) && readdirSync(runs).length > 0 ? true : undefined));
+    await new Promise((r) => setTimeout(r, 300));
+    await e.close();
+    expect(readdirSync(runs)).toEqual([]);
+    await new Promise((r) => setTimeout(r, 2_000));
+    expect(existsSync(marker)).toBe(false);
+  });
+
+  test("fire_after_close_starts_nothing: PreMerge fails closed, others pass", async () => {
+    const f = fixture();
+    const marker = join(tmp, "ran");
+    user(f, [hook("merge", "PreMerge", mark(marker)), hook("prompt", "UserPrompt", mark(marker))]);
+    const e = engine(f);
+    await e.close();
+    expect((await fire(e, "PreMerge")).blocked).toEqual({ hook: "merge", reason: "failed", layer: "user" });
+    expect(await fire(e, "UserPrompt")).toEqual({ ran: 0 });
+    e.observe("JobDone", at(), {});
+    await e.settled();
+    expect(existsSync(marker)).toBe(false);
+    expect(e.stats().events.PreMerge.runs).toBe(0);
+  });
+
+  test("stale_run_dirs_swept_at_start", () => {
+    const f = fixture();
+    const stale = join(f.serverData, "hooks", "run", "01STALE");
+    mkdirSync(join(stale, ".hook", "0"), { recursive: true });
+    writeFileSync(join(stale, ".hook", "0", "x.mjs"), "x");
+    const w = buildHooks({ config: f.config, serverData: f.serverData, audit: { append: () => undefined } });
+    engines.push(w.engine);
+    expect(readdirSync(join(f.serverData, "hooks", "run"))).toEqual([]);
+  });
+
+  test("a rejected run is a failure under onTimeout, not a defect", async () => {
+    const f = fixture();
+    const config = new HookConfig({ serverData: f.serverData, trustOf: () => undefined, dirOf: () => f.dir, plugins: () => [{ plugin: "p", event: "PreMerge", handler: "h" }, { plugin: "p", event: "UserPrompt", handler: "u" }] });
+    const e = engine(f, { config, plugins: { run: () => Promise.reject(new Error("plugin host gone")), digest: () => "d" } });
+    expect((await fire(e, "PreMerge")).blocked).toEqual({ hook: "h", reason: "failed", layer: "plugin" });
+    expect((await fire(e, "UserPrompt")).blocked).toBeUndefined();
+    expect(f.notices.map((n) => n.notice)).toContainEqual({ hook: { event: "UserPrompt", id: "u", layer: "plugin", failed: "unavailable", detail: "plugin host gone" } });
   });
 });
 
