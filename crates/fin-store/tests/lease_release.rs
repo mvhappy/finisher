@@ -88,7 +88,10 @@ fn a_released_lease_is_taken_at_once() {
 }
 
 #[test]
-fn a_released_lease_is_taken_at_once_on_a_sync_folder_too() {
+fn on_a_sync_folder_a_released_lease_needs_confirmation_from_another_server() {
+    // The released record syncs, but its holder may reopen offline and re-take it (the
+    // restart shortcut): another machine taking it as well would fork. So, as for a stale
+    // holder there, only a confirmed takeover takes it; its own server re-takes it at once.
     let (_t, dir) = folder();
     let c = FakeClock::new();
     let sync = || {
@@ -99,7 +102,33 @@ fn a_released_lease_is_taken_at_once_on_a_sync_folder_too() {
     };
     let a = acquire(&dir, A, sync());
     assert!(a.release());
-    assert_eq!(contender(&dir, B, sync()).try_acquire().unwrap().epoch(), 2);
+    let mut b = contender(&dir, B, sync());
+    match b.try_acquire() {
+        Err(LeaseState::Stale { holder, epoch }) => {
+            assert_eq!(epoch, 1);
+            assert!(holder.contains("released"), "{holder}");
+        }
+        other => panic!("expected Stale, got {other:?}"),
+    }
+    let refused = b.takeover(false).unwrap_err();
+    assert_eq!(refused.details["reason"], "CONFIRM_REQUIRED", "{refused:?}");
+    assert!(refused.message.contains("released"), "{refused:?}");
+    assert!(read_record(&dir).released, "nothing written");
+    assert_eq!(b.takeover(true).unwrap().epoch(), 2);
+}
+
+#[test]
+fn on_a_sync_folder_the_releasing_process_retakes_its_own_released_lease() {
+    let (_t, dir) = folder();
+    let c = FakeClock::new();
+    let sync = || {
+        params(
+            StorageKind::Sync(fin_store::conflict_names::Provider::Dropbox),
+            &c,
+        )
+    };
+    assert!(acquire(&dir, A, sync()).release());
+    assert_eq!(acquire(&dir, A, sync()).epoch(), 2);
 }
 
 #[test]
