@@ -38,6 +38,9 @@ jobs:
           # third_party/svt-av1 and third_party/dav1d (fin-svt-sys and fin-dav1d-sys build SVT-AV1
           # and dav1d from them; shallow per .gitmodules).
           submodules: true
+          # The whole history: scripts/check-a0-history.mjs (in `pnpm gates`) checks every
+          # commit that touched the A0 hashes, and fails on a shallow clone.
+          fetch-depth: 0
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version-file: .node-version

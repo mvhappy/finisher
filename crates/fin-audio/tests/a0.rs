@@ -5,25 +5,33 @@
 //! **The plans.** Each `tests/a0/plans/<name>.json` holds a small project (`project`, model JSON
 //! read through the snapshot upcaster), the `range` of `timeline` it renders, the generated
 //! `sources` its assets play (signals from `fin_audio::testing::signals` with fixed seeds,
-//! summed per channel, `secs` long, from source frame 0), an optional `master` stage (the
+//! summed per channel, `secs` long, from source frame 0; a source with a `rate` other than
+//! 48,000 is generated at that rate and converted by [`Resampler`] fed in chunks of the render's
+//! block length, as `fin-workers`' `DecodedSource` does), an optional `master` stage (the
 //! true-peak limiter after the mix, and whether the output's waveform peaks are hashed) and
 //! `plan`: the `fin_core::eval::eval_audio` output for that project and range. The plan is the
 //! A0 input; `plans_follow_their_projects` checks it is still what `eval_audio` gives, and
 //! `FIN_A0_REGEN=1` rewrites it (natively) when a fin-core change moves it.
 //!
 //! **The hashes.** The output is BLAKE3 over the interleaved (L, R) little-endian `f32` bytes;
-//! `expected.json` holds it per plan with 16-hex-digit BLAKE3 prefixes of every
-//! [`CHUNK`]-frame chunk (to name the first differing frames on a mismatch), the peaks file's
-//! hash where asked, and the `audioVersion` it was blessed at. `FIN_A0_BLESS=1` rewrites it
+//! `expected.json` holds it per plan with `chunks`, the 8-hex-digit BLAKE3 prefixes of every
+//! [`CHUNK`]-frame (10 ms) chunk concatenated, the peaks file's hash where asked, and the
+//! `audioVersion` it was blessed at. A mismatch names the plan, the first differing 10 ms
+//! window (its frames and time) and the values computed there. Naming the exact sample needs
+//! the reference samples themselves, which are not committed (no media files): use
+//! `FIN_A0_DUMP` below. `FIN_A0_BLESS=1` rewrites it
 //! natively after review; it is refused under `CI`, and refused when a plan's hash moves while
 //! `fin_audio::AUDIO_VERSION` still equals the blessed one: a change that moves an A0 hash
 //! bumps `AUDIO_VERSION` in the same commit. `a0_hash_change_requires_audio_version_bump`
-//! fails until the bumped version is blessed.
+//! fails until the bumped version is blessed, and `scripts/check-a0-history.mjs` (a gate)
+//! walks every commit that touched `expected.json`, so editing or dropping a hash by hand
+//! without a bump fails too.
 //!
 //! **Exact first differing sample across machines.** `FIN_A0_DUMP=<dir>` (inside the package
 //! directory for wasm, with `--env FIN_A0_DUMP` in the runner) writes each plan's output as
 //! `<dir>/<name>.f32` when the file is absent, and compares with it when present: run once
 //! natively, then on the other target, and a mismatch names the frame, channel and both values.
+//! Writing dumps is refused under `CI`; comparing with them is not.
 //!
 //! The files are read relative to the package directory (where `cargo test` runs), so the wasm
 //! runner needs only `--dir .`. A panic aborts on wasm32-wasip1, so the harness shows its
@@ -39,7 +47,9 @@ use std::sync::OnceLock;
 use fin_audio::channels::Canonical;
 use fin_audio::testing::signals::{db_to_amp, noise, pink, sine, sweep, tone_burst};
 use fin_audio::testing::source::MemSource;
-use fin_audio::{AUDIO_VERSION, Limiter, Mixer, PcmSource, RATE, Stereo, peaks, sample_at};
+use fin_audio::{
+    AUDIO_VERSION, Limiter, Mixer, PcmSource, RATE, Resampler, Stereo, peaks, sample_at,
+};
 use fin_core::eval::{AudioPlan, eval_audio};
 use fin_core::{Rational, upcast_snapshot};
 use serde_json::{Map, Value, json};
@@ -49,8 +59,10 @@ const DIR: &str = "tests/a0";
 const MAIN_BLOCK: usize = 1_000;
 /// `block_size_invariant_corpus` renders every plan in each of these.
 const BLOCKS: [usize; 3] = [128, 1_000, 48_000];
-/// Frames per chunk hash.
-const CHUNK: usize = 4_800;
+/// Frames per chunk hash (10 ms).
+const CHUNK: usize = 480;
+/// Hex digits kept of each chunk's BLAKE3.
+const CHUNK_HEX: usize = 8;
 
 /// One corpus file.
 struct Case {
@@ -114,8 +126,8 @@ fn num(v: &Value, key: &str) -> f64 {
         .unwrap_or_else(|| panic!("signal {v}: no number `{key}`"))
 }
 
-/// One signal component, `secs` long.
-fn component(c: &Value, secs: f64) -> Vec<f32> {
+/// One signal component, `secs` long at `rate`.
+fn component(c: &Value, secs: f64, rate: u32) -> Vec<f32> {
     let db = num(c, "db");
     let scaled = |x: Vec<f32>| -> Vec<f32> {
         let a = db_to_amp(db) as f32;
@@ -123,27 +135,27 @@ fn component(c: &Value, secs: f64) -> Vec<f32> {
     };
     let seed = || c["seed"].as_u64().expect("a noise seed");
     match c["kind"].as_str() {
-        Some("sine") => sine(num(c, "hz"), db, secs, RATE),
-        Some("sweep") => scaled(sweep(num(c, "from"), num(c, "to"), secs, RATE)),
-        Some("noise") => scaled(noise(seed(), secs, RATE)),
-        Some("pink") => scaled(pink(seed(), secs, RATE)),
+        Some("sine") => sine(num(c, "hz"), db, secs, rate),
+        Some("sweep") => scaled(sweep(num(c, "from"), num(c, "to"), secs, rate)),
+        Some("noise") => scaled(noise(seed(), secs, rate)),
+        Some("pink") => scaled(pink(seed(), secs, rate)),
         Some("burst") => tone_burst(
             num(c, "hz"),
             db,
             num(c, "start"),
             num(c, "burst"),
             secs,
-            RATE,
+            rate,
         ),
         _ => panic!("unknown signal component {c}"),
     }
 }
 
 /// The components of one channel, summed in order.
-fn channel(list: &Value, secs: f64) -> Vec<f32> {
+fn channel(list: &Value, secs: f64, rate: u32) -> Vec<f32> {
     let mut out: Vec<f32> = Vec::new();
     for c in list.as_array().expect("a list of signal components") {
-        let x = component(c, secs);
+        let x = component(c, secs, rate);
         if out.is_empty() {
             out = x;
         } else {
@@ -155,16 +167,33 @@ fn channel(list: &Value, secs: f64) -> Vec<f32> {
     out
 }
 
-fn sources(spec: &Value) -> BTreeMap<String, Box<dyn PcmSource>> {
+/// `x` at `rate` converted to 48 kHz, fed to the resampler `block` frames at a time.
+fn to_48k(x: Vec<f32>, rate: u32, block: usize) -> Vec<f32> {
+    if rate == RATE {
+        return x;
+    }
+    let mut rs = Resampler::new(rate, RATE).unwrap();
+    let mut out = Vec::new();
+    for part in x.chunks(block) {
+        rs.process(part, &mut out);
+    }
+    rs.finish(&mut out);
+    out
+}
+
+/// The plan's sources; one at another rate is resampled in chunks of `block` frames.
+fn sources(spec: &Value, block: usize) -> BTreeMap<String, Box<dyn PcmSource>> {
     let spec = spec.as_object().expect("`sources` maps assets to signals");
     spec.iter()
         .map(|(asset, s)| {
             let secs = num(s, "secs");
+            let rate = s["rate"].as_u64().map_or(RATE, |r| r as u32);
+            let ch = |list: &Value| to_48k(channel(list, secs, rate), rate, block);
             let c = match s.get("mono") {
-                Some(m) => Canonical::Mono(channel(m, secs)),
+                Some(m) => Canonical::Mono(ch(m)),
                 None => Canonical::Stereo(Stereo {
-                    l: channel(&s["l"], secs),
-                    r: channel(&s["r"], secs),
+                    l: ch(&s["l"]),
+                    r: ch(&s["r"]),
                 }),
             };
             (asset.clone(), MemSource::boxed(c))
@@ -182,7 +211,7 @@ struct Output {
 /// master limiter when it has one.
 fn render(case: &Case, block: usize) -> Output {
     let plan = case.plan();
-    let mut mixer = Mixer::new(plan, sources(&case.file["sources"]))
+    let mut mixer = Mixer::new(plan, sources(&case.file["sources"], block))
         .unwrap_or_else(|e| panic!("{}: {e:?}", case.name));
     assert!(mixer.missing().is_empty(), "{}: missing sources", case.name);
     assert!(
@@ -237,9 +266,10 @@ fn hash(b: &[u8]) -> String {
     blake3::hash(b).to_hex().to_string()
 }
 
-fn chunk_hashes(pcm: &[f32]) -> Vec<String> {
+/// The chunk hash prefixes, concatenated.
+fn chunk_hashes(pcm: &[f32]) -> String {
     pcm.chunks(CHUNK * 2)
-        .map(|c| hash(&bytes(c))[..16].to_string())
+        .map(|c| hash(&bytes(c))[..CHUNK_HEX].to_string())
         .collect()
 }
 
@@ -338,6 +368,7 @@ fn dump_or_compare(name: &str, pcm: &[f32]) -> Option<String> {
             first_difference(&theirs, pcm).map(|d| format!("against {}: {d}", path.display()))
         }
         Err(_) => {
+            refuse_under_ci("writing FIN_A0_DUMP");
             std::fs::create_dir_all(&dir).unwrap();
             std::fs::write(&path, bytes(pcm)).unwrap();
             None
@@ -382,28 +413,39 @@ fn mismatch(c: &Case, o: &Output, want: &Value) -> Option<String> {
     }
     let mut msg = Vec::new();
     if want["blake3"] != got["blake3"] {
-        let chunks = want["chunks"].as_array().cloned().unwrap_or_default();
-        let at = got["chunks"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .zip(chunks.iter().chain(std::iter::repeat(&Value::Null)))
-            .position(|(g, w)| g != w)
-            .unwrap_or(chunks.len());
+        let (w, g) = (
+            want["chunks"].as_str().unwrap_or(""),
+            got["chunks"].as_str().unwrap(),
+        );
+        let per = |x: &str| {
+            x.as_bytes()
+                .chunks(CHUNK_HEX)
+                .map(<[u8]>::to_vec)
+                .collect::<Vec<_>>()
+        };
+        let (w, g) = (per(w), per(g));
+        let at = (0..g.len().max(w.len()))
+            .find(|&i| g.get(i) != w.get(i))
+            .unwrap_or(0);
         let f0 = at * CHUNK;
-        let first: Vec<String> = o.pcm[(f0 * 2).min(o.pcm.len())..]
-            .iter()
-            .take(4)
-            .map(|v| format!("{v:e}"))
+        let frames = o.pcm.len() / 2;
+        let here: Vec<String> = o.pcm[(f0 * 2).min(o.pcm.len())..]
+            .chunks(2)
+            .take(3)
+            .map(|f| format!("({:e}, {:e})", f[0], f[1]))
             .collect();
         msg.push(format!(
-            "{}: output hash {} (expected {}); first differing chunk {at}: frames {f0}..{}, \
-             which here start [{}]",
+            "{}: output hash {} (expected {}); the first differing 10 ms window is frames \
+             {f0}..{} ({:.3} s into the render; {} expected windows, {} computed), whose first \
+             frames here are [{}]; for the exact sample, compare with a dump (FIN_A0_DUMP)",
             c.name,
             got["blake3"],
             want["blake3"],
-            f0 + CHUNK,
-            first.join(", ")
+            (f0 + CHUNK).min(frames),
+            f0 as f64 / f64::from(RATE),
+            w.len(),
+            g.len(),
+            here.join(", ")
         ));
     }
     if want["peaks"] != got["peaks"] {
@@ -421,7 +463,7 @@ fn mismatch(c: &Case, o: &Output, want: &Value) -> Option<String> {
 /// The cross-machine check: every plan's output (and peaks) hash equals the committed one.
 fn corpus_matches_expected() {
     let all = computed();
-    assert_eq!(all.len(), 10, "the A0 corpus has 10 plans");
+    assert_eq!(all.len(), 11, "the A0 corpus has 11 plans");
     if env_is("FIN_A0_BLESS") {
         bless(all);
         return;
@@ -579,7 +621,7 @@ fn perf() {
         Rational::from_int(SECS),
     )
     .unwrap();
-    let mut mixer = Mixer::new(&plan, sources(&Value::Object(srcs))).unwrap();
+    let mut mixer = Mixer::new(&plan, sources(&Value::Object(srcs), 1_024)).unwrap();
     let total = SECS as usize * RATE as usize;
     let start = std::time::Instant::now();
     let mut done = 0;
