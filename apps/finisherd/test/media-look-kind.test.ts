@@ -512,7 +512,7 @@ describe("replay", () => {
     const done = JSON.parse(await s.p.engine.prepareMediaJob("main", "tl1", ["0", "3/5"], join(jobDir, "in"), { fontCache: join(s.serverData, "fonts"), paramsJson: JSON.stringify(params) })) as {
       planSamples: { at: string; blake3: string }[];
     };
-    const run = spawnSync(workersBinaryPath(), ["media", "--replay", jobDir, "--originals-anywhere"], { env: { FIN_GPU: process.env.FIN_GPU ?? "software" }, encoding: "utf8" });
+    const run = spawnSync(workersBinaryPath(), ["media", "--replay", jobDir, "--originals-anywhere"], { env: { ...passEnv(["VK_ICD_FILENAMES", "VK_DRIVER_FILES", "VK_ADD_DRIVER_FILES"], process.env), FIN_GPU: process.env.FIN_GPU ?? "software" }, encoding: "utf8" });
     const answer = JSON.parse(run.stdout) as { result?: LookResult; error?: { code: string } };
     if (answer.error?.code === "GPU_UNAVAILABLE" && !GPU_REQUIRED) return;
     expect(answer.error).toBeUndefined();
