@@ -59,10 +59,10 @@ export interface LaunchContext {
   readonly planSignIn: boolean;
   /**
    * On a resume, the money the CLI counts from earlier runs against `--max-budget-usd` (Facts:
-   * "on `--resume` totals restored from earlier runs count"): the session's charged money, so the
-   * flag is the remainder on top of it. TODO(7D Task 0 Step 1): restored totals on `--resume`;
-   * modelled by fake-claude as restored (its `resumeTotals` default). If they reset, the backstop
-   * is looser by this much; the runtime's own budget still holds.
+   * "on `--resume` totals restored from earlier runs count"), so the flag is the remainder on
+   * top of it. TODO(7D Task 0 Step 1): restored totals on `--resume`; modelled by fake-claude as
+   * restored (its `resumeTotals` default). Set only once Task 0 pins `resumeTotals: restored`;
+   * until then 0 (fail closed, as `usage.ts` charges a resume): a restoring CLI stops early.
    */
   readonly restoredCostMicros?: number;
 }

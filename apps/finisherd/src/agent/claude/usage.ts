@@ -8,16 +8,20 @@
 // - **The `result`:** its `usage` and `total_cost_usd` are cumulative per process; the event is
 //   what they add beyond what this instance already emitted (live or at earlier `result`s), so
 //   the `result` settles the turn's money and any tokens the stream did not show.
-// - **Across instances:** a resumed instance starts from the session's charged usage
-//   (`baseline`, the store's running total: what the runtime accepted, crash-consistent with the
-//   ledger). Whether `--resume` restores the CLI's totals is unverified, so both are handled
-//   (`resumeTotals`); in doubt nothing is charged twice (a smaller charge, never a second one).
+// - **Across instances:** whether `--resume` restores the CLI's totals is unverified, so a
+//   resumed instance fails closed: everything its totals report is charged, as if they had
+//   reset (`resumeTotals: reset`, the default). If they are restored, the session's earlier
+//   usage is charged again on each resume: an over-charge, never an under-charge, which no
+//   heuristic can rule out (a reset turn can report exactly the earlier totals). Task 0 pins
+//   `restored`, which counts from the session's charged usage (`baseline`, the store's running
+//   total, crash-consistent with the ledger).
 // - **The basis:** `subscription` for a plan sign-in (money shown, never charged; spec §13.1),
 //   else `reported` (the CLI's own estimate). `modelUsage` gives a per-model split, recorded as a
 //   `notice {modelUsage}` per `result`.
 //
-// The runtime charges a turn's tail (the `result` an interrupt or a budget stop produced) to the
-// session's last run (`runtime-engine.ts`), so every delta emitted here is charged exactly once.
+// The runtime charges a turn's tail (the `result` an interrupt, a budget stop or a replacement
+// left) to the run its instance served (`runtime-usage.ts`), so every delta emitted here is
+// charged exactly once.
 import type { ProviderEvent } from "@finisher/contracts";
 import type { ResultMsg, StreamPayload } from "./protocol.ts";
 
@@ -44,7 +48,6 @@ export interface UsageTotals {
 const KEYS = ["input", "output", "cacheRead", "cacheWrite", "costMicros"] as const;
 export const ZERO_TOTALS: UsageTotals = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, costMicros: 0 };
 
-const tokens = (t: UsageTotals): number => t.input + t.output + t.cacheRead + t.cacheWrite;
 const add = (a: UsageTotals, b: UsageTotals): UsageTotals => ({ input: a.input + b.input, output: a.output + b.output, cacheRead: a.cacheRead + b.cacheRead, cacheWrite: a.cacheWrite + b.cacheWrite, costMicros: a.costMicros + b.costMicros });
 /** `a − b` per field, never below 0. */
 const over = (a: UsageTotals, b: UsageTotals): UsageTotals => ({
@@ -63,12 +66,14 @@ export function resultTotals(r: ResultMsg): UsageTotals {
 }
 
 /**
- * What `--resume` does with the CLI's totals. `detect` (the default until Task 0 decides):
- * restored when the first `result` is at least the baseline plus what this instance already
- * emitted, else reset; a reset whose turn is that large reads as restored and charges less,
- * never twice.
+ * What `--resume` does with the CLI's totals. `reset` (the default until Task 0 decides) charges
+ * all a resumed instance reports; `restored` counts from the session's charged usage.
+ * TODO(7D Task 0 Step 1): `--resume` restoring the cumulative totals (CLI reference: "totals
+ * restored from earlier runs count"); modelled by fake-claude as `resumeTotals: restored`
+ * (default) or `reset`. Until it is known the default fails closed: a restoring CLI's earlier
+ * usage is charged again on every resume (over-charged, never under-charged).
  */
-export type ResumeTotals = "restored" | "reset" | "detect";
+export type ResumeTotals = "restored" | "reset";
 
 export interface ClaudeUsageOptions {
   /** The session's charged usage when this instance opened (`Session.usage`). */
@@ -89,8 +94,8 @@ export class ClaudeUsage implements UsageSource {
   readonly #resumed: boolean;
   readonly #basis: "reported" | "subscription";
   readonly #mode: ResumeTotals;
-  /** What the CLI's totals held before this instance (null until its first `result`). */
-  #offset: UsageTotals | null;
+  /** What the CLI's totals held before this instance. */
+  readonly #offset: UsageTotals;
   /** What this instance emitted. */
   #emitted: UsageTotals = ZERO_TOTALS;
   /** The open message's usage as the stream reported it so far (a top-level message). */
@@ -102,10 +107,13 @@ export class ClaudeUsage implements UsageSource {
     this.#baseline = o.baseline ?? ZERO_TOTALS;
     this.#resumed = o.resumed === true;
     this.#basis = o.basis ?? "reported";
-    this.#mode = o.resumeTotals ?? "detect";
-    // A fresh transcript (`--session-id`) counts from zero; so does a session that spent nothing.
-    this.#offset = !this.#resumed || isZero(this.#baseline) ? ZERO_TOTALS : null;
-    if (this.#offset !== null) this.#models = new Map();
+    this.#mode = o.resumeTotals ?? "reset";
+    // A fresh transcript (`--session-id`) counts from zero; so does a resumed one whose totals
+    // are not known to be restored (fail closed: Review Focus 4).
+    const restored = this.#resumed && this.#mode === "restored" && !isZero(this.#baseline);
+    this.#offset = restored ? this.#baseline : ZERO_TOTALS;
+    // A restored instance's first split is unknown (its per-model totals hold earlier runs).
+    if (!restored) this.#models = new Map();
   }
 
   /** The basis this instance's events carry. */
@@ -145,11 +153,10 @@ export class ClaudeUsage implements UsageSource {
   }
 
   // TODO(7D Task 0 Step 1): `result.usage`/`total_cost_usd` cumulative per process (docs), and
-  // whether `--resume` restores them (CLI reference: "totals restored from earlier runs count");
-  // modelled by fake-claude as cumulative, with `resumeTotals: restored` (default) or `reset`.
+  // whether `--resume` restores them (`ResumeTotals`); modelled by fake-claude as cumulative,
+  // with `resumeTotals: restored` (default) or `reset`.
   usage(r: ResultMsg): Event[] {
     const now = resultTotals(r);
-    if (this.#offset === null) this.#offset = this.#decide(now);
     const d = over(now, add(this.#offset, this.#emitted));
     const out: Event[] = [];
     if (!isZero(d)) {
@@ -159,12 +166,6 @@ export class ClaudeUsage implements UsageSource {
     const split = this.#split(r, d);
     if (split !== null) out.push({ type: "notice", name: "modelUsage", details: split });
     return out;
-  }
-
-  #decide(first: UsageTotals): UsageTotals {
-    const restored = this.#mode === "restored" || (this.#mode === "detect" && tokens(first) >= tokens(this.#baseline) + tokens(this.#emitted));
-    if (!restored) this.#models = new Map();
-    return restored ? this.#baseline : ZERO_TOTALS;
   }
 
   /**

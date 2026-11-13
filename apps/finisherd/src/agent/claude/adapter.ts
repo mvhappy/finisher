@@ -54,7 +54,7 @@ export interface ClaudeDeps {
   readonly remaining?: (sessionId: string) => { readonly tokens: number | null; readonly moneyMicros: number | null };
   /** `agents.claudeCode.chargePlanMoney`: a plan sign-in's money is charged too (spec §13.1). */
   readonly chargePlanMoney?: () => boolean;
-  /** What `--resume` does with the CLI's totals (`usage.ts`; default `detect` until Task 0). */
+  /** What `--resume` does with the CLI's totals (`usage.ts`; default `reset`, fail closed, until Task 0). */
   readonly resumeTotals?: ResumeTotals;
   /** The per-turn projection, in tokens (default `TURN_ESTIMATE_TOKENS`). */
   readonly turnEstimateTokens?: number;
@@ -105,7 +105,7 @@ export function ClaudeCodeAdapter(deps: ClaudeDeps): ProviderAdapter {
         const planSignIn = d.authMethod === "claude.ai" && deps.chargePlanMoney?.() !== true;
         const baseline = baselineOf(s.usage);
         const plan = yield* attempt(() =>
-          launchPlan(s, spec, found, os, { binary, retentionDays: deps.retentionDays ?? 90, remainingMoneyMicros: deps.remaining?.(s.id).moneyMicros ?? null, planSignIn, restoredCostMicros: baseline.costMicros }),
+          launchPlan(s, spec, found, os, { binary, retentionDays: deps.retentionDays ?? 90, remainingMoneyMicros: deps.remaining?.(s.id).moneyMicros ?? null, planSignIn, restoredCostMicros: deps.resumeTotals === "restored" ? baseline.costMicros : 0 }),
         );
         const usage = new ClaudeUsage({ baseline, resumed: spec.providerRef !== null, basis: planSignIn ? "subscription" : "reported", ...(deps.resumeTotals === undefined ? {} : { resumeTotals: deps.resumeTotals }) });
         yield* attempt(() => writeLaunchFiles(plan, os));

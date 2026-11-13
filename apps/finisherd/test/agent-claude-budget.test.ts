@@ -69,8 +69,8 @@ describe("usage memory", () => {
 
   const BASE = { input: 1000, output: 100, cacheRead: 0, cacheWrite: 0, costMicros: 50_000 };
 
-  test("delta_after_resume: restored totals charge only what the turn added", () => {
-    const u = new ClaudeUsage({ baseline: BASE, resumed: true });
+  test("delta_after_resume: restored totals (pinned) charge only what the turn added", () => {
+    const u = new ClaudeUsage({ baseline: BASE, resumed: true, resumeTotals: "restored" });
     expect(u.stream(stream({ type: "message_start", message: { usage: { input_tokens: 30 } } }))).toEqual(ev(30, 0, 0));
     expect(usageOf(u.usage(result(1030, 105, 0.06)))).toEqual([ev(0, 5, 10_000)]);
     expect(usageOf(u.usage(result(1050, 110, 0.07)))).toEqual([ev(20, 5, 10_000)]);
@@ -83,14 +83,26 @@ describe("usage memory", () => {
     expect(usageOf(u.usage(result(50, 10, 0.02)))).toEqual([ev(20, 5, 10_000)]);
   });
 
-  test("delta_after_resume: an ambiguous first result is never charged twice; the mode can be pinned", () => {
-    // A reset whose first turn is larger than everything before, with no live usage: read as
-    // restored, so less is charged (the turn minus the baseline), never the baseline again.
-    const detect = new ClaudeUsage({ baseline: BASE, resumed: true });
-    const [charged] = usageOf(detect.usage(result(2000, 200, 0.2)));
-    expect(charged).toEqual(ev(1000, 100, 150_000));
-    // Pinned (Task 0 decides): the same line charged as a reset's.
-    expect(usageOf(new ClaudeUsage({ baseline: BASE, resumed: true, resumeTotals: "reset" }).usage(result(2000, 200, 0.2)))).toEqual([ev(2000, 200, 200_000)]);
+  test("delta_after_resume fails closed: a resumed instance's totals are charged whole until Task 0 pins the mode", () => {
+    // The review's repro: a reset turn that reports exactly the earlier totals, no live usage.
+    // Read as restored it charged nothing, and every repeat of the resume was free.
+    let baseline = BASE;
+    let spent = 0;
+    for (let resume = 0; resume < 3; resume++) {
+      const charged = usageOf(new ClaudeUsage({ baseline, resumed: true }).usage(result(1000, 100, 0.05)));
+      expect(charged).toEqual([ev(1000, 100, 50_000)]);
+      for (const e of charged) spent += e.type === "usage" ? (e.costMicros ?? 0) : 0;
+      baseline = { ...baseline, input: baseline.input + 1000, output: baseline.output + 100, costMicros: baseline.costMicros + 50_000 };
+    }
+    expect(spent).toBe(150_000);
+    // A turn larger than everything before: charged whole, not the turn minus the baseline.
+    expect(usageOf(new ClaudeUsage({ baseline: BASE, resumed: true }).usage(result(2000, 200, 0.2)))).toEqual([ev(2000, 200, 200_000)]);
+    // Live usage first: the result adds only what the stream did not show.
+    const live = new ClaudeUsage({ baseline: BASE, resumed: true });
+    expect(live.stream(stream({ type: "message_start", message: { usage: { input_tokens: 1200 } } }))).toEqual(ev(1200, 0, 0));
+    expect(usageOf(live.usage(result(1000, 100, 0.05)))).toEqual([ev(0, 100, 50_000)]);
+    // Pinned (Task 0 decides): restored counts from the baseline.
+    expect(usageOf(new ClaudeUsage({ baseline: BASE, resumed: true, resumeTotals: "restored" }).usage(result(2000, 200, 0.2)))).toEqual([ev(1000, 100, 150_000)]);
     expect(usageOf(new ClaudeUsage({ baseline: BASE, resumed: true, resumeTotals: "restored" }).usage(result(30, 5, 0.01)))).toEqual([]);
     // A fresh transcript (`--session-id`) counts from zero whatever the session spent.
     expect(usageOf(new ClaudeUsage({ baseline: BASE, resumed: false }).usage(result(30, 5, 0.01)))).toEqual([ev(30, 5, 10_000)]);
@@ -103,7 +115,7 @@ describe("usage memory", () => {
     expect(split(u.usage(result(15, 1, 0.01, mu(10, 5))))).toEqual({ type: "notice", name: "modelUsage", details: { "claude-opus-5-5": { input: 10, output: 1, cacheRead: 0, cacheWrite: 0, costMicros: 10_000 }, "claude-haiku-5-5": { input: 5, output: 0, cacheRead: 0, cacheWrite: 0, costMicros: 0 } } });
     expect(split(u.usage(result(25, 1, 0.02, mu(20, 5))))).toEqual({ type: "notice", name: "modelUsage", details: { "claude-opus-5-5": { input: 10, output: 0, cacheRead: 0, cacheWrite: 0, costMicros: 10_000 } } });
     // A restored instance's first split with several models is unknown: none rather than a wrong one.
-    const r = new ClaudeUsage({ baseline: { ...ZERO_TOTALS, input: 15, output: 1, costMicros: 10_000 }, resumed: true });
+    const r = new ClaudeUsage({ baseline: { ...ZERO_TOTALS, input: 15, output: 1, costMicros: 10_000 }, resumed: true, resumeTotals: "restored" });
     expect(split(r.usage(result(25, 1, 0.02, mu(20, 5))))).toBeUndefined();
   });
 
@@ -264,8 +276,11 @@ describe("through the runtime", () => {
     expect(observed(r.serverData, s.id)).toHaveLength(1);
   });
 
+  // Until Task 0 pins the mode a resume fails closed: a CLI that restores its totals has the
+  // earlier usage (100/10/$0.01) charged again; one that resets them is charged exactly.
+  const RESUMED = { restored: { input: 250, output: 30, moneyMicros: 40_000, tokens: 280 }, reset: { input: 150, output: 20, moneyMicros: 30_000, tokens: 170 } };
   for (const mode of ["restored", "reset"] as const) {
-    withFake(`delta_after_resume (${mode}): nothing is charged twice`, async () => {
+    withFake(`delta_after_resume (${mode}): never under-charged`, async () => {
       const r = await claudeServer({ ...CONSOLE, steps: [{ expect: "user", cumulativeUsage: { inputTokens: 100, outputTokens: 10, costUsd: 0.01 } }] });
       const s = await start(r);
       await settle(s.id);
@@ -273,9 +288,10 @@ describe("through the runtime", () => {
       expect(done.status).toBe("idle");
       const runs = observed(r.serverData, s.id);
       expect(runs[1]!.argv.some((a) => a.startsWith("--resume="))).toBe(true);
-      expect(done.usage).toMatchObject({ input: 150, output: 20, moneyMicros: 30_000 });
-      expect(ledger(s.id, "tokens").used).toBe(170);
-      expect(ledger(s.id, "money")).toMatchObject({ used: 30_000, reserved: 0 });
+      const want = RESUMED[mode];
+      expect(done.usage).toMatchObject({ input: want.input, output: want.output, moneyMicros: want.moneyMicros });
+      expect(ledger(s.id, "tokens").used).toBe(want.tokens);
+      expect(ledger(s.id, "money")).toMatchObject({ used: want.moneyMicros, reserved: 0 });
     });
   }
 
@@ -291,8 +307,8 @@ describe("through the runtime", () => {
     expect(nodes(s.id).find((n) => n.kind === "usage")!.runId).toBe(runId);
     expect(get(s.id).usage).toMatchObject({ input: 500, output: 50, moneyMicros: 20_000 });
     expect(ledger(s.id, "money").used).toBe(20_000);
-    // The next instance (restored totals) does not charge it again.
-    const done = await restart(r, s, { ...CONSOLE, steps: [{ expect: "user", cumulativeUsage: { inputTokens: 1, outputTokens: 1, costUsd: 0.001 } }] });
+    // The next instance (totals reset) does not charge it again.
+    const done = await restart(r, s, { ...CONSOLE, resumeTotals: "reset", steps: [{ expect: "user", cumulativeUsage: { inputTokens: 1, outputTokens: 1, costUsd: 0.001 } }] });
     expect(done.usage).toMatchObject({ input: 501, output: 51, moneyMicros: 21_000 });
   }, 30_000);
 
@@ -355,7 +371,7 @@ describe("through the runtime", () => {
     expect(ledger(s.id, "money").used).toBe(20_000);
   });
 
-  withFake("budget_flag_tracks_remaining_on_restart: remaining money on top of what the CLI restores", async () => {
+  withFake("budget_flag_tracks_remaining_on_restart: the remainder on each start (fail closed on resume)", async () => {
     const r = await claudeServer({ ...CONSOLE, steps: [{ expect: "user", cumulativeUsage: { inputTokens: 10, outputTokens: 1, costUsd: 0.25 } }] });
     const s = await start(r, { moneyMicros: 1_000_000 });
     await settle(s.id);
@@ -366,10 +382,11 @@ describe("through the runtime", () => {
     const done = await restart(r, s, { ...CONSOLE, steps: [{ expect: "user", cumulativeUsage: { inputTokens: 1, outputTokens: 1, costUsd: 0.5 } }] });
     const [first, second] = observed(r.serverData, s.id);
     expect(flag(first!.argv)).toBe("1");
-    // 1.75 left, plus the 0.25 the resumed CLI counts again.
-    expect(flag(second!.argv)).toBe("2");
+    // 1.75 left; the 0.25 a restoring CLI counts again is not added until Task 0 pins
+    // `restored` (a restoring CLI stops early, as its restored 0.25 is charged again).
+    expect(flag(second!.argv)).toBe("1.75");
     expect(done.status).toBe("idle");
-    expect(ledger(s.id, "money").used).toBe(750_000);
+    expect(ledger(s.id, "money").used).toBe(1_000_000);
   });
 
   withFake("per_model_split_recorded: modelUsage as a notice per result", async () => {
