@@ -332,10 +332,11 @@ export function mcpReply(serverName: string, message: unknown, mcpTools: readonl
 // ---- untested versions ----
 
 /**
- * The versions Task 15's recorded transcript suite passes. Empty until Task 15 records one: every
- * version then runs on the probe alone, with the notice below (spec §4.5).
+ * The versions Task 15's recorded transcript suite passes (`test/fixtures/claude/<version>/`,
+ * checked by `floor_is_lowest_passing_version`): they run without the `untestedVersion` notice,
+ * every other version on the probe alone (spec §4.5). Added per Finisher release with a recording.
  */
-export const TESTED_VERSIONS: readonly string[] = [];
+export const TESTED_VERSIONS: readonly string[] = ["2.1.321"];
 
 /**
  * A notice source for the session layer (Task 7): `notice {untestedVersion}` the first time a

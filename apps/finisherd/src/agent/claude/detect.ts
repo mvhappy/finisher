@@ -36,7 +36,8 @@ import { accountChanged, accountCheck, accountIdentified, accountKey, accountPro
 
 /**
  * The lowest supported version (Decision 9): at least 2.1.314 (the `--setting-sources` leak fix)
- * and the version Task 0 validated, 2.1.321. Task 15's contract suite may raise it.
+ * and the version Task 0 validated, 2.1.321; Task 15's `floor_is_lowest_passing_version` keeps it
+ * equal to the highest of that and the lowest recorded version whose transcripts pass.
  */
 export const CLAUDE_FLOOR = "2.1.321";
 
