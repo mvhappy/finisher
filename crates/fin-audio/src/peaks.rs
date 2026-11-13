@@ -8,7 +8,7 @@
 //! `peaks.bin`: a 32-byte header — `FINWAVE1`, the level count (`u32`, 5), the channel count
 //! (`u32`, 2), the frame count (`u64`) and 8 zero bytes, all little-endian — then the levels in
 //! order; a level holds `ceil(frames / samples_per_peak)` peaks, each peak every channel's `min`
-//! then `max` as `i16` LE.
+//! then `max` as `i16` LE (`min ≤ max`).
 
 use fin_core::CoreError;
 use serde_json::json;
@@ -168,7 +168,11 @@ impl Peaks {
                 (0..CHANNELS).map(|_| Vec::with_capacity(count)).collect();
             for _ in 0..count {
                 for ch in &mut channels {
-                    ch.push((i16_at(at), i16_at(at + 2)));
+                    let (lo, hi) = (i16_at(at), i16_at(at + 2));
+                    if lo > hi {
+                        return Err(corrupt("a peak's minimum is above its maximum", at));
+                    }
+                    ch.push((lo, hi));
                     at += 4;
                 }
             }

@@ -2,6 +2,15 @@
 //! `I | LRA | TRUE_PEAK | SAMPLE_PEAK`. Its numbers are reported, never hashed (spec §8.6), so
 //! this file is outside the float gate; the normalisation gain derived from them is quantised
 //! to 0.01 dB before it is applied.
+//!
+//! **True peak at the end of the stream.** `ebur128`'s 4× interpolator delays its output by
+//! a few frames, so a crest in the last frames would never be read. The meter keeps the true
+//! peak in its own `TRUE_PEAK` instance (the loudness instance runs `I | LRA | SAMPLE_PEAK`,
+//! untouched) and the last `TAIL` frames; `measured()` feeds those frames, the first half
+//! faded in with a raised cosine (so the fresh interpolator's onset cannot ring above the
+//! signal), then `TAIL` zeros, to a throwaway `TRUE_PEAK` instance, and reports the larger of
+//! the two. The streaming state is never flushed, so readings can be taken at any time and the
+//! stream continues undisturbed.
 
 use ebur128::{EbuR128, Mode};
 
@@ -26,9 +35,15 @@ pub struct Measured {
 /// The short-term loudness is read at this hop (100 ms at 48 kHz).
 const HOP: usize = RATE as usize / 10;
 
+/// Frames kept for the end-of-stream true peak (the interpolator's reach is 12 frames).
+const TAIL: usize = 64;
+
 /// A streaming loudness meter over 48 kHz audio.
 pub struct Meter {
     ebu: EbuR128,
+    tp: EbuR128,
+    /// The last `TAIL` (or fewer) frames, per channel.
+    tail: [Vec<f32>; 2],
     channels: u32,
     /// Frames since the last short-term reading.
     since_hop: usize,
@@ -47,11 +62,12 @@ impl Meter {
     /// A meter for mono (`1`: the left channel of each block) or stereo (`2`, any other value).
     pub fn new(channels: u16) -> Meter {
         let channels = if channels == 1 { 1 } else { 2 };
-        let mode = Mode::I | Mode::LRA | Mode::TRUE_PEAK | Mode::SAMPLE_PEAK;
-        let ebu = EbuR128::new(channels, RATE, mode)
+        let ebu = EbuR128::new(channels, RATE, Mode::I | Mode::LRA | Mode::SAMPLE_PEAK)
             .expect("one or two channels at 48 kHz are valid ebur128 parameters");
         Meter {
             ebu,
+            tp: true_peak_meter(channels),
+            tail: [Vec::new(), Vec::new()],
             channels,
             since_hop: 0,
             short_term_max: f64::NEG_INFINITY,
@@ -65,9 +81,15 @@ impl Meter {
             let n = (HOP - self.since_hop).min(block.len() - at);
             let (l, r) = (&block.l[at..at + n], &block.r[at..at + n]);
             let planes: &[&[f32]] = if self.channels == 1 { &[l] } else { &[l, r] };
-            self.ebu
-                .add_frames_planar_f32(planes)
-                .expect("the planes have the meter's channel count and equal lengths");
+            for e in [&mut self.ebu, &mut self.tp] {
+                e.add_frames_planar_f32(planes)
+                    .expect("the planes have the meter's channel count and equal lengths");
+            }
+            for (t, x) in self.tail.iter_mut().zip([l, r]) {
+                t.extend_from_slice(x);
+                let drop = t.len().saturating_sub(TAIL);
+                t.drain(..drop);
+            }
             at += n;
             self.since_hop += n;
             if self.since_hop == HOP {
@@ -77,6 +99,38 @@ impl Meter {
                 }
             }
         }
+    }
+
+    /// The true peak of the last frames with the interpolator flushed (linear).
+    fn flushed_true_peak(&self) -> f64 {
+        if self.tail[0].is_empty() {
+            return 0.0;
+        }
+        let half = TAIL / 2;
+        let feed = |x: &[f32]| -> Vec<f32> {
+            let mut v: Vec<f32> = x
+                .iter()
+                .enumerate()
+                .map(|(k, &s)| {
+                    let w = if k < half {
+                        0.5 * (1.0 - (core::f64::consts::PI * k as f64 / half as f64).cos())
+                    } else {
+                        1.0
+                    };
+                    (f64::from(s) * w) as f32
+                })
+                .collect();
+            v.resize(v.len() + TAIL, 0.0);
+            v
+        };
+        let (l, r) = (feed(&self.tail[0]), feed(&self.tail[1]));
+        let planes: &[&[f32]] = if self.channels == 1 { &[&l] } else { &[&l, &r] };
+        let mut e = true_peak_meter(self.channels);
+        e.add_frames_planar_f32(planes)
+            .expect("the planes have the meter's channel count and equal lengths");
+        (0..self.channels)
+            .filter_map(|c| e.true_peak(c).ok())
+            .fold(0.0f64, f64::max)
     }
 
     /// The measurements so far.
@@ -94,9 +148,14 @@ impl Meter {
                 .ok()
                 .filter(|v| v.is_finite())
                 .unwrap_or(0.0),
-            true_peak: db(peak(&|c| self.ebu.true_peak(c))),
+            true_peak: db(peak(&|c| self.tp.true_peak(c)).max(self.flushed_true_peak())),
             sample_peak: db(peak(&|c| self.ebu.sample_peak(c))),
             short_term_max: finite(self.short_term_max),
         }
     }
+}
+
+fn true_peak_meter(channels: u32) -> EbuR128 {
+    EbuR128::new(channels, RATE, Mode::TRUE_PEAK)
+        .expect("one or two channels at 48 kHz are valid ebur128 parameters")
 }

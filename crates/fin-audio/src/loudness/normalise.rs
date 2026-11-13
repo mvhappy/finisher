@@ -1,11 +1,18 @@
 //! The normalisation decision between an export's two passes (plan 6C Decision 18, spec §8.6):
 //! one static gain, quantised to 0.01 dB so a measurement's last digits never reach the hashed
 //! output, and whether the true-peak limiter must run.
+//!
+//! [`normalise`] is a fast prediction from the first measurement alone and can under-predict
+//! what the limiter costs (dense transients far above the ceiling). The binding check is
+//! [`verify`] on a second measurement of the output: **6E's export must measure after the gain
+//! and the limiter and call `verify`**, raising its warning even when `normalise` gave none.
+//! [`normalise_pcm`] runs both passes over an in-memory signal.
 
 use fin_core::CoreError;
 use serde_json::{Value, json};
 
-use super::Measured;
+use super::{Limiter, Measured, Meter};
+use crate::Stereo;
 
 /// Below this integrated loudness (the BS.1770 absolute gate) the input counts as silent.
 const SILENT_LUFS: f64 = -70.0;
@@ -50,6 +57,7 @@ fn unreachable(measured: Option<f64>, target: f64, why: &str) -> CoreError {
 ///   whose loudness equals its peak, exactly so). When that excess (the short-term maximum, or
 ///   the integrated loudness when there is none, plus the gain, minus the ceiling) is more than
 ///   1 LU, the target is unreachable: the gain and the limiter still apply, with the warning.
+///   This is a prediction and can miss transient-driven loss; [`verify`] is the binding check.
 pub fn normalise(m: &Measured, target_lufs: f64, ceiling_dbtp: f64) -> GainDecision {
     let Some(integrated) = m.integrated.filter(|&i| i >= SILENT_LUFS) else {
         return GainDecision {
@@ -78,4 +86,51 @@ pub fn normalise(m: &Measured, target_lufs: f64, ceiling_dbtp: f64) -> GainDecis
         limit,
         warning,
     }
+}
+
+/// The binding check on the second pass: `after` is the measurement of the output (after the
+/// gain and the limiter). `LOUDNESS_TARGET_UNREACHABLE {measured: after.integrated, target}`
+/// when it is silent or misses the target by more than 1 LU, else `None`.
+pub fn verify(after: &Measured, target_lufs: f64) -> Option<CoreError> {
+    match after.integrated.filter(|&i| i >= SILENT_LUFS) {
+        Some(i) if (i - target_lufs).abs() <= MAX_LIMIT_LU => None,
+        Some(i) => Some(unreachable(
+            Some(i),
+            target_lufs,
+            "the result misses it by more than 1 LU",
+        )),
+        None => Some(unreachable(
+            after.integrated,
+            target_lufs,
+            "the result is silent",
+        )),
+    }
+}
+
+/// Both passes over an in-memory 48 kHz stereo signal: measure, [`normalise`], apply the gain
+/// (and the limiter when the decision asks for it), measure again and [`verify`]. Returns the
+/// output, the decision and the binding warning (the second pass's, or the decision's own for
+/// silent input).
+pub fn normalise_pcm(
+    pcm: &Stereo,
+    target_lufs: f64,
+    ceiling_dbtp: f64,
+) -> (Stereo, GainDecision, Option<CoreError>) {
+    let mut meter = Meter::new(2);
+    meter.push(pcm);
+    let d = normalise(&meter.measured(), target_lufs, ceiling_dbtp);
+    let g = d.linear();
+    let mut out = Stereo {
+        l: pcm.l.iter().map(|&v| v * g).collect(),
+        r: pcm.r.iter().map(|&v| v * g).collect(),
+    };
+    if d.limit {
+        let mut lim = Limiter::new(ceiling_dbtp);
+        lim.process(&mut out);
+        lim.finish(&mut out);
+    }
+    let mut after = Meter::new(2);
+    after.push(&out);
+    let warning = verify(&after.measured(), target_lufs);
+    (out, d, warning)
 }

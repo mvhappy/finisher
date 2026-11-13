@@ -115,6 +115,19 @@ fn peaks_parse_refuses_truncated() {
     assert_eq!(Peaks::parse(&chans).unwrap_err().code, "MEDIA_CORRUPT");
 }
 
+/// A pair whose `min` is above its `max` is refused, at the pair's byte offset.
+#[test]
+fn peaks_parse_refuses_inverted_pair() {
+    let mut b = peaks(&ramp()).to_bytes();
+    // The second peak of the first level, channel 1: min at 32 + 8 + 4, max at 32 + 8 + 6.
+    let at = 32 + 8 + 4;
+    b[at..at + 2].copy_from_slice(&100i16.to_le_bytes());
+    b[at + 2..at + 4].copy_from_slice(&(-100i16).to_le_bytes());
+    let e = Peaks::parse(&b).unwrap_err();
+    assert_eq!(e.code, "MEDIA_CORRUPT");
+    assert_eq!(e.details["at"], at);
+}
+
 /// Pinned: a change here moves an A0 hash and is re-blessed only with an `AUDIO_VERSION` bump.
 #[test]
 fn peaks_golden_hash() {

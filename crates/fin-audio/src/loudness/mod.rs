@@ -8,4 +8,4 @@ pub mod normalise;
 
 pub use limiter::Limiter;
 pub use meter::{Measured, Meter};
-pub use normalise::{GainDecision, normalise};
+pub use normalise::{GainDecision, normalise, normalise_pcm, verify};

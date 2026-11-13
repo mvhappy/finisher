@@ -6,9 +6,9 @@
 //! fs/4 whose phase puts the samples below the waveform's crest, so the true peak is known
 //! analytically (`20·log10(A)`) while the sample peak is lower.
 
-use fin_audio::loudness::{Limiter, Measured, Meter, normalise};
+use fin_audio::loudness::{Limiter, Measured, Meter, normalise, normalise_pcm, verify};
 use fin_audio::testing::signals::*;
-use fin_audio::{RATE, Stereo};
+use fin_audio::{RATE, Resampler, Stereo};
 
 const TAU: f64 = 2.0 * core::f64::consts::PI;
 
@@ -227,4 +227,97 @@ fn normalise_unreachable_beyond_1lu_warns() {
     // −0.5 LUFS needs about 0.5 LU: limited, no warning.
     let d = normalise(&m, -0.5, -1.0);
     assert!(d.limit && d.warning.is_none(), "{d:?}");
+}
+
+/// The true peak by 8× oversampling through the resampler (a 140-tap Kaiser kernel), dBTP.
+fn reference_true_peak(s: &Stereo) -> f64 {
+    let mut peak = 0.0f32;
+    for x in [&s.l, &s.r] {
+        let mut r = Resampler::new(RATE, 8 * RATE).unwrap();
+        let mut o = Vec::new();
+        r.process(x, &mut o);
+        r.finish(&mut o);
+        peak = o.iter().fold(peak, |m, v| m.max(v.abs()));
+    }
+    20.0 * libm::log10(f64::from(peak))
+}
+
+/// A crest in the last frames of the stream is measured: the meter flushes the true-peak
+/// interpolator's tail. Within +0.2 / −0.4 dB of the 8× reference, and normalising to −1 dBTP
+/// asks for the limiter.
+#[test]
+fn true_peak_at_end_of_stream() {
+    let mut x: Vec<f32> = (0..5 * RATE as usize)
+        .map(|i| (0.05 * libm::sin(TAU * 997.0 * i as f64 / f64::from(RATE))) as f32)
+        .collect();
+    x.extend([0.707_106_77, 0.707_106_77, -0.707_106_77, -0.707_106_77]);
+    let s = stereo(x.clone(), x);
+    let reference = reference_true_peak(&s);
+    let m = measure(&s);
+    let tp = m.true_peak.unwrap();
+    assert!(
+        tp - reference <= 0.2 && reference - tp <= 0.4,
+        "meter {tp} dBTP, reference {reference}"
+    );
+    // Measuring again, or pushing more after a reading, does not disturb the stream.
+    let mut meter = Meter::new(2);
+    meter.push(&s);
+    assert_eq!(meter.measured(), meter.measured());
+    meter.push(&Stereo::silence(4_800));
+    assert_eq!(meter.measured().true_peak, Some(tp));
+    let d = normalise(&m, m.integrated.unwrap(), -1.0);
+    assert!(d.limit, "{m:?} {d:?}");
+}
+
+/// `verify` is the binding check: the second measurement (after the gain and the limiter)
+/// within 1 LU of the target, else `LOUDNESS_TARGET_UNREACHABLE {measured, target}`.
+#[test]
+fn verify_checks_the_second_pass() {
+    let after = |i: Option<f64>| Measured {
+        integrated: i,
+        range: 0.0,
+        true_peak: None,
+        sample_peak: None,
+        short_term_max: None,
+    };
+    assert!(verify(&after(Some(-14.9)), -14.0).is_none());
+    assert!(verify(&after(Some(-13.1)), -14.0).is_none());
+    let w = verify(&after(Some(-15.2)), -14.0).expect("a warning");
+    assert_eq!(w.code, "LOUDNESS_TARGET_UNREACHABLE");
+    assert_eq!(w.details["measured"], -15.2);
+    assert_eq!(w.details["target"], -14.0);
+    let w = verify(&after(None), -14.0).expect("silence warns");
+    assert_eq!(w.details["measured"], serde_json::Value::Null);
+}
+
+/// Transient-driven limiting: a click of 10.0 every 240 frames over a quiet sine. The fast
+/// prediction does not warn (it can under-predict), but the two-pass check does: limiting the
+/// clicks costs far more than 1 LU.
+#[test]
+fn normalise_pcm_warns_on_transient_loss() {
+    let x: Vec<f32> = (0..5 * RATE as usize)
+        .map(|i| {
+            if i % 240 == 0 {
+                10.0
+            } else {
+                (0.1 * libm::sin(TAU * 997.0 * i as f64 / f64::from(RATE))) as f32
+            }
+        })
+        .collect();
+    let s = stereo(x.clone(), x);
+    let (out, d, warning) = normalise_pcm(&s, -14.0, -1.0);
+    assert!(d.limit);
+    assert_eq!(out.len(), s.len());
+    let after = measure(&out).integrated.unwrap();
+    assert!(-14.0 - after > 1.0, "{after} LUFS");
+    let w = warning.expect("the second pass warns");
+    assert_eq!(w.code, "LOUDNESS_TARGET_UNREACHABLE");
+    assert_eq!(w.details["target"], -14.0);
+    let measured = w.details["measured"].as_f64().unwrap();
+    assert!((measured - after).abs() < 1e-9, "{measured} vs {after}");
+    // Pink noise reaches its target through the same helper, with no warning.
+    let pink = stereo(pink(11, 10.0, RATE), pink(12, 10.0, RATE));
+    let (out, _, warning) = normalise_pcm(&pink, -14.0, -1.0);
+    assert!(warning.is_none(), "{warning:?}");
+    assert!((measure(&out).integrated.unwrap() + 14.0).abs() <= 0.2);
 }
