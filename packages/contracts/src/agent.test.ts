@@ -166,6 +166,7 @@ const ADMIN_RPCS = {
   "agent.local.show": { scopes: ["agent.admin"], confirmed: false },
   "agent.local.test": { scopes: ["agent.admin"], confirmed: false },
   "agent.local.remove": { scopes: ["agent.admin"], confirmed: true },
+  "agent.account.confirm": { scopes: ["agent.admin"], confirmed: true },
   // 7F Task 2: the hooks of every layer, a person's to read (no code: it changes nothing).
   "agent.hooks.list": { scopes: ["agent.admin"], confirmed: false },
   "training.closedTargets.get": { scopes: ["server.read"], confirmed: false },
@@ -209,7 +210,8 @@ const TABLE: Record<AgentTag, { scopes: string[]; kinds?: string[]; confirmed?: 
   "agent.session.prompt": { scopes: ["agent.run"], kinds: ["local", "console", "device", "agent"] },
   "agent.session.steer": { scopes: ["agent.run"], kinds: ["local", "console", "device", "agent"] },
   "agent.session.interrupt": { scopes: ["agent.run"], kinds: ["local", "console", "device", "agent"] },
-  "agent.session.resume": { scopes: ["agent.run"], kinds: ["local", "console", "device"] },
+  // 7B Decision 16 as amended (2026-11-13): a parent resumes a child it interrupted (stage 4).
+  "agent.session.resume": { scopes: ["agent.run"], kinds: ["local", "console", "device", "agent"] },
   "agent.session.end": { scopes: ["agent.run"], kinds: ["local", "console", "device", "agent"] },
   // 7B Decision 16: a parent drives its own children (the stage-4 check); waits on them too.
   "agent.session.wait": { scopes: ["agent.run"], kinds: ["local", "console", "device", "agent"] },

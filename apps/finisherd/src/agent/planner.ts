@@ -25,6 +25,7 @@ import type { Harness, Mode, Principal, Session, Weights } from "@finisher/contr
 import { finError } from "../errors.ts";
 import type { Catalogue } from "./catalogue/catalogue.ts";
 import { OPENROUTER_ID } from "./catalogue/prices.ts";
+import { accountChanged } from "./claude/account.ts";
 import { type ClaudeAccess, claudeModelOffered } from "./claude/models.ts";
 import { budgetFor, MODE_RANK, type Role, roleModel, roleUnknown } from "./roles.ts";
 import { harnessUnknown, type SessionPlan, type SessionPlanner, type StartRequest } from "./runtime-deps.ts";
@@ -45,7 +46,7 @@ export interface PlannerDeps {
   /**
    * Claude Code's discovered models (`claude/models.ts`), or `undefined` when the harness is not
    * usable here (not installed, or `agents.claudeCode.enabled` off): then `HARNESS_UNKNOWN`.
-   * Below the floor: `PROVIDER_VERSION`.
+   * Below the floor: `PROVIDER_VERSION`; an unconfirmed account change: `PROVIDER_ACCOUNT_CHANGED`.
    */
   readonly claude?: () => Promise<ClaudeAccess>;
 }
@@ -120,6 +121,7 @@ async function claudeModel(deps: PlannerDeps, model: string | undefined): Promis
     const { version, floor } = access.tooOld;
     throw finError("PROVIDER_VERSION", `Claude Code${version === undefined ? "" : ` ${version}`} is older than ${floor}, the oldest this Finisher supports`, { harness: "claudeCode", ...(version === undefined ? {} : { version }), floor }, `update Claude Code to ${floor} or later`);
   }
+  if ("accountChanged" in access) throw accountChanged(access.accountChanged.accountHash);
   const { models } = access;
   if (model === undefined || !claudeModelOffered(models, model)) {
     throw finError(

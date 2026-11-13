@@ -191,6 +191,7 @@ pub fn agent(t: &Path) -> fin_sandbox::launch::LaunchRequest {
         shared_dir: None,
         library_roots: vec![],
         session_dir: t.join("data/agents/s1"),
+        sign_in_home: None,
         sign_in_store: None,
         toolchains: fin_sandbox::data::toolchain_base_resolved(fin_sandbox::Os::Macos),
         server_data: t.join("data"),

@@ -33,6 +33,7 @@ fn agent_input() -> AgentInput {
         shared_dir: Some(p("/u/proj/workspace/shared")),
         library_roots: vec![p("/u/lib")],
         session_dir: p("/u/data/agents/s1"),
+        sign_in_home: None,
         sign_in_store: Some(p("/u/data/providers/claudeCode/home/.credentials.json")),
         toolchains: vec![p("/usr"), p("/bin"), p("/private/etc")],
         server_data: p("/u/data"),

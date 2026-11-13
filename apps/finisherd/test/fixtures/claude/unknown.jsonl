@@ -1,5 +1,5 @@
 {"type":"keep_alive"}
-{"type":"rate_limit_event","rate_limit_info":{"status":"allowed"}}
+{"type":"fake_heartbeat","at":1}
 {"type":"system","subtype":"status","status":"compacting","session_id":"01890a5d-ac96-774b-bcce-b302099a8057"}
 {"type":"system","subtype":"permission_denied","tool_name":"Bash","session_id":"01890a5d-ac96-774b-bcce-b302099a8057"}
 {"type":"control_request","request_id":"cli-9","request":{"subtype":"elicitation","message":"?"}}

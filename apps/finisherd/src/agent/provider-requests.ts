@@ -15,8 +15,19 @@
 //   (`Runtime.expireApprovals`), so a request waits at most the card's 30 minutes; the hourly
 //   sweep stays as a backstop. A request that cannot get a card (the
 //   run ended, `APPROVAL_LIMIT`) is denied by policy.
+// - **Withdrawn.** A provider may take back a request it still waits on (Claude Code's
+//   `control_cancel_request`, the `requestCancelled` event): `withdraw` drops it with an
+//   `approval` node `{status: expired, reason: withdrawn}` and sends no answer; the card, once no
+//   identical request waits on it, is expired (`Expiry.withdraw`). A request already answered is
+//   not withdrawn (nothing waits).
+// - **Deny messages.** Every deny carries the server's reason (`denyMessage`), which a provider
+//   shows its model (Claude Code's `deny.message`).
+// - **Unconfined.** `RequestContext.unconfined` (the session sandbox's `agent` profile is not
+//   enforced) is handed to `permissions.ts`, whose managed rule then applies (owner Q3a).
 // - **Gone.** Requests waiting here are the live instance's: a restart loses them with the
 //   instance (the provider is gone too); an answer then reaches no one and is still recorded.
+// - **Allowed shell calls** (7D Task 12): every allow, by policy or by a person, first opens the
+//   call's attribution window (`attribution.allowed`), then the answer goes out.
 // - `userInput` requests have no one to answer them yet: the provider is told to go on without.
 import type { Approval, FinError, ProviderEvent, Session } from "@finisher/contracts";
 import { Effect, Exit } from "effect";
@@ -36,6 +47,10 @@ export interface RequestContext {
   /** Answers the provider's request (the error it refused the answer with, if any). */
   readonly respond: (a: RuntimeAnswer) => Promise<FinError | null | undefined>;
   readonly log: (message: string, details: Record<string, unknown>) => void;
+  /** The session's sandbox does not enforce the `agent` profile (`permissions.ts`, owner Q3a). */
+  readonly unconfined?: boolean;
+  /** The Finisher call the request asks about (`request.providerId`'s), when announced. */
+  readonly callId?: string | undefined;
 }
 
 export interface ProviderRequestsDeps {
@@ -47,6 +62,8 @@ export interface ProviderRequestsDeps {
   readonly consume: (approvalId: string) => void;
   /** Runs `f` in `ms` of real time; answers the cancel (default `setTimeout`, unref'd). */
   readonly schedule?: Schedule;
+  /** Opens an allowed shell call's window before its answer (`claude/attribution.ts`). */
+  readonly attribution?: { allowed(sessionId: string, callId: string | undefined, tool: string, input: unknown): Promise<void> };
 }
 
 export type Schedule = (ms: number, f: () => void) => () => void;
@@ -56,6 +73,26 @@ export interface Expiry {
   readonly clock: Clock;
   /** Expires every overdue approval and settles the provider requests waiting on them. */
   readonly expire: () => void;
+  /** Expires card `approvalId` now: the requests that waited on it were withdrawn. */
+  readonly withdraw?: (approvalId: string) => void;
+}
+
+/** Why the runtime denied a request, in words for the provider's model. */
+export function denyMessage(why: { readonly reason: string; readonly rule?: string; readonly layer?: string }): string {
+  switch (why.reason) {
+    case "rule":
+      return `Finisher's rule ${why.rule ?? "?"} (${why.layer ?? "?"} layer) denies this call. Do not retry it.`;
+    case "mode":
+      return "This session is in plan mode: Finisher refuses a write outside the session's workspace.";
+    case "unconfined":
+      return "The agent sandbox is not enforced on this host: Finisher refuses a write outside the session's workspace.";
+    case "expired":
+      return "No one answered this request in time: it is denied.";
+    case "user":
+      return "A person denied this call.";
+    default:
+      return `Finisher denied this call (${why.reason}).`;
+  }
 }
 
 /** The longest one timer waits (`setTimeout` holds at most 2^31 - 1 ms). */
@@ -71,6 +108,7 @@ interface Pending {
   readonly ctx: RequestContext;
   readonly requestId: string;
   readonly tool: string;
+  readonly input: unknown;
 }
 
 const run = <A, E>(e: Effect.Effect<A, E>) => Effect.runPromiseExit(e);
@@ -78,7 +116,7 @@ const run = <A, E>(e: Effect.Effect<A, E>) => Effect.runPromiseExit(e);
 /** The 7A answer, kept for a runtime without provider permissions (and for `userInput`). */
 async function declined(ctx: RequestContext, e: RequestEvent, reason: string): Promise<void> {
   await ctx.node({ requestId: e.id, kind: e.kind, ...(e.tool === undefined ? {} : { tool: e.tool }), input: e.input ?? null, decision: "deny", by: "policy", reason });
-  const answer: RuntimeAnswer = e.kind === "approval" ? { kind: "approval", allow: false } : { kind: "userInput", text: "No one can answer now: continue without it." };
+  const answer: RuntimeAnswer = e.kind === "approval" ? { kind: "approval", allow: false, message: denyMessage({ reason }) } : { kind: "userInput", text: "No one can answer now: continue without it." };
   const err = await ctx.respond(answer);
   if (err) ctx.log("agent runtime: the provider refused an answer", { code: err.code });
 }
@@ -130,12 +168,13 @@ export class ProviderRequests {
     const tool = e.tool ?? "unknown";
     const input = e.input ?? null;
     const base = { requestId: e.id, kind: "provider", tool, input };
-    const answer = async (allow: boolean, node: Record<string, unknown>) => {
+    const answer = async (allow: boolean, node: { readonly reason: string; readonly rule?: string; readonly layer?: string }) => {
       await ctx.node({ ...base, decision: allow ? "allow" : "deny", by: "policy", ...node });
-      const err = await ctx.respond({ kind: "approval", allow });
+      if (allow) await this.#opened(ctx, tool, input);
+      const err = await ctx.respond(allow ? { kind: "approval", allow } : { kind: "approval", allow, message: denyMessage(node) });
       if (err) ctx.log("agent runtime: the provider refused an answer", { code: err.code });
     };
-    const decided = await run(this.#d.permissions.explain(ctx.session, { tool, input }));
+    const decided = await run(this.#d.permissions.explain(ctx.session, { tool, input, ...(ctx.unconfined === true ? { unconfined: true } : {}) }));
     if (Exit.isFailure(decided)) return answer(false, { reason: "rulesUnreadable" });
     const x = decided.value;
     const why = { reason: x.reason, ...(x.rule === undefined ? {} : { rule: x.rule }), ...(x.layer === undefined ? {} : { layer: x.layer }) };
@@ -151,9 +190,18 @@ export class ProviderRequests {
     }
     if (asked.value === undefined) return answer(false, { reason: "noRun" });
     const list = this.#pending.get(asked.value.id) ?? [];
-    list.push({ ctx, requestId: e.id, tool });
+    list.push({ ctx, requestId: e.id, tool, input });
     this.#pending.set(asked.value.id, list);
     if (!this.#timers.has(asked.value.id)) this.#arm(asked.value.id, asked.value.approval.expiresAt);
+  }
+
+  /** An allowed call's attribution window, opened before the answer goes out (never fails the answer). */
+  async #opened(ctx: RequestContext, tool: string, input: unknown): Promise<void> {
+    try {
+      await this.#d.attribution?.allowed(ctx.session.id, ctx.callId, tool, input);
+    } catch (e) {
+      ctx.log("agent runtime: a shell call's attribution window did not open", { error: String(e) });
+    }
   }
 
   /** A card was answered or expired: its requests get the decision (`by: user`, or a policy `deny` on expiry). */
@@ -169,8 +217,29 @@ export class ProviderRequests {
     for (const p of list) {
       const node = a.status === "answered" ? { decision: a.decision, by: "user", answeredBy: a.by } : { decision: "deny", by: "policy", reason: "expired" };
       await p.ctx.node({ approvalId: a.id, requestId: p.requestId, kind: "provider", tool: p.tool, ...node });
-      const err = await p.ctx.respond({ kind: "approval", allow });
+      if (allow) await this.#opened(p.ctx, p.tool, p.input);
+      const err = await p.ctx.respond(allow ? { kind: "approval", allow } : { kind: "approval", allow, message: denyMessage({ reason: a.status === "answered" ? "user" : "expired" }) });
       if (err) p.ctx.log("agent runtime: the provider refused an answer", { code: err.code });
+    }
+  }
+
+  /**
+   * The provider withdrew request `requestId` of `sessionId` (module docs): it leaves its card
+   * unanswered, with a node; the card is expired once no request waits on it.
+   */
+  async withdraw(sessionId: string, requestId: string): Promise<void> {
+    for (const [id, list] of this.#pending) {
+      const i = list.findIndex((p) => p.ctx.session.id === sessionId && p.requestId === requestId);
+      if (i < 0) continue;
+      const [p] = list.splice(i, 1);
+      if (list.length === 0) {
+        this.#pending.delete(id);
+        this.#timers.get(id)?.();
+        this.#timers.delete(id);
+        this.#expiry?.withdraw?.(id);
+      }
+      await p!.ctx.node({ approvalId: id, requestId, kind: "provider", tool: p!.tool, status: "expired", reason: "withdrawn" });
+      return;
     }
   }
 

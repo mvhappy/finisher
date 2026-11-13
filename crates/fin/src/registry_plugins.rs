@@ -239,4 +239,18 @@ pub const AGENT_COMMANDS: &[Command] = &[
         "undo a child's runs after <seq>, all or nothing (CONFLICT: nothing changed)",
         || schema_of::<agent::RollbackArgs>("agent.rollback"),
     ),
+    cmd(
+        "agent.resume",
+        "agent",
+        "<id> [text...] [--resend-returned]",
+        "resume a child you interrupted, with text or the steers it handed back (else ask a person)",
+        || schema_of::<agent::ResumeArgs>("agent.resume"),
+    ),
+    cmd(
+        "agent.interrupt",
+        "agent",
+        "<id>",
+        "interrupt a child (its branch stays; you may resume it: fin agent resume)",
+        || schema_of::<agent::InterruptArgs>("agent.interrupt"),
+    ),
 ];

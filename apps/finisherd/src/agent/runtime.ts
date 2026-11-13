@@ -27,6 +27,7 @@ import type { CallMeta } from "../diagnostics.ts";
 import { finError, toFinError } from "../errors.ts";
 import { DEFAULT_BUDGET } from "./budget.ts";
 import { childCarve } from "./carve.ts";
+import { interruptReason, resendPrompt, resumeDenied } from "./child-resume.ts";
 import { AgentCoreTag } from "./core.ts";
 import { openSession, registryBranchOps } from "./credentials.ts";
 import { type RuntimeDeps, RuntimeEngine, STOP_GRACE_MS } from "./runtime-engine.ts";
@@ -98,7 +99,7 @@ export class Runtime extends RuntimeEngine {
         started: (live, runId) => this.#sandboxNotices(live, runId),
         startClock: (s) => this.budget(s).startRun(),
         facts: (s) => this.facts(s),
-        append: async (n) => void (await this.append(n)),
+        append: async (n) => (await this.append(n)).node,
         interrupt: async (id, reason) => void (await this.apply(id, { kind: "interrupted", reason })),
       },
     });
@@ -119,7 +120,7 @@ export class Runtime extends RuntimeEngine {
       startQueued: (q) => this.background(q.sessionId, "a queued run", () => this.#limits.begin(q).catch(() => {})),
     });
     // A provider card is settled at its `expiresAt`, not only by the hourly sweep (7B Task 5).
-    deps.requests?.bind({ clock: this.clock, expire: () => this.expireApprovals() });
+    deps.requests?.bind({ clock: this.clock, expire: () => this.expireApprovals(), withdraw: (id) => this.#withdrawn(id) });
     // A session's review request is a `notice` in its active run (7B Task 11); the run goes on.
     this.core.reviewLink.onBranchReady(({ sessionId, branch, headSeq, reviewId }) => {
       const runId = reviewId === undefined ? null : this.store.activeRun(sessionId);
@@ -158,7 +159,7 @@ export class Runtime extends RuntimeEngine {
     this.deps.requests?.close();
     const lives = [...this.lives.values()];
     this.lives.clear();
-    await Promise.allSettled(lives.map((l) => closeLive(l)));
+    await Promise.allSettled(lives.map((l) => closeLive(l, (m, d) => this.log(m, d))));
   }
 
   /** A crash, for tests: nothing more is written, nothing is cleaned up in the store. */
@@ -389,8 +390,8 @@ export class Runtime extends RuntimeEngine {
             live.held.push(text);
             return { queued: true };
           }
-          await this.append({ sessionId, runId: live.runId, kind: "userMessage", payload: { text, trigger: "steer" } });
-          const err = await call(live.provider.steer({ text }));
+          const { node } = await this.append({ sessionId, runId: live.runId, kind: "userMessage", payload: { text, trigger: "steer" } });
+          const err = await call(live.provider.steer({ text, nodeId: node.id, at: node.createdAt }));
           if (err) throw err;
           return { queued: false };
         }
@@ -401,10 +402,10 @@ export class Runtime extends RuntimeEngine {
   }
 
   /** `agent.session.interrupt`: the run stops, open calls get a synthetic result, the branch stays. */
-  interrupt(sessionId: string, _by: Principal): Effect.Effect<Session, FinError> {
+  interrupt(sessionId: string, by: Principal): Effect.Effect<Session, FinError> {
     return attempt(() => {
       this.#guard();
-      return this.serial(sessionId, () => this.#interruptIn(sessionId, "userInterrupt"));
+      return this.serial(sessionId, () => this.#interruptIn(sessionId, interruptReason(this.session(sessionId), by)));
     });
   }
 
@@ -432,12 +433,17 @@ export class Runtime extends RuntimeEngine {
 
   /**
    * `agent.session.resume`: `interrupted` → `idle` with the credential's expiry refreshed; the
-   * provider reopens with its resume reference at the next run, which `prompt` starts at once.
+   * provider reopens with its resume reference at the next run, which `prompt` starts at once
+   * (`resendReturned`: the texts the last run handed back). An agent resumes only a child it
+   * interrupted itself (`child-resume.ts`, checked again here under the session's lock).
    */
-  resume(sessionId: string, _by: Principal, prompt?: string): Effect.Effect<{ session: Session; run?: Run }, FinError> {
+  resume(sessionId: string, by: Principal, given?: string, resendReturned = false): Effect.Effect<{ session: Session; run?: Run }, FinError> {
     return attempt(() => {
       this.#guard();
       return this.serial(sessionId, async () => {
+        const denied = resumeDenied(this.session(sessionId), by);
+        if (denied !== null) throw denied;
+        const prompt = await resendPrompt(this.store, this.session(sessionId), given, resendReturned);
         await this.#refresh(this.session(sessionId));
         await this.apply(sessionId, { kind: "resumed" });
         const run = prompt === undefined ? undefined : await this.promptIn(sessionId, prompt, "prompt");
@@ -541,6 +547,14 @@ export class Runtime extends RuntimeEngine {
     if (runId !== null) await this.append({ sessionId: s.id, runId, kind: "approval", payload: node });
     this.publish(s.id, { type: "approvalOpened", approval: a });
     this.publishStatus(s, runId);
+  }
+
+  /** A card whose requests the provider withdrew (7D Task 8): expired now, with its session's status and journal. */
+  #withdrawn(approvalId: string): void {
+    const s = this.store.expireApproval(approvalId);
+    if (s === undefined) return;
+    this.publishStatus(s, this.store.activeRun(s.id));
+    this.#journalExpired(s);
   }
 
   /** Journals the session's expired approvals (the journal records each once). */

@@ -127,6 +127,7 @@ mod sandboxed {
             project_dir: project.clone(),
             library_roots: vec![],
             session_dir,
+            sign_in_home: None,
             sign_in_store: None,
             toolchains,
             server_data: sd,

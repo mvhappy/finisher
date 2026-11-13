@@ -2,7 +2,6 @@
 
 use std::collections::VecDeque;
 use std::io::{BufRead, Write};
-use std::process::Stdio;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, channel};
@@ -10,15 +9,18 @@ use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 
+mod account;
 mod ask;
+mod bash;
 mod lines;
 mod mcp;
 mod results;
+mod resume;
 
 use super::argv::{self, Args, Command};
 use super::config;
 use super::observed::Observed;
-use super::script::{self, Branch, Expect, OnInterrupt, Script, Spawn, Step, Usage, WriteFile};
+use super::script::{self, Branch, Expect, OnInterrupt, ResumeTotals, Script, Step, Usage};
 use super::settings::{self, Settings};
 use super::transcript::{Totals, Transcript};
 use ask::Outcome;
@@ -47,11 +49,14 @@ pub fn main(argv: Vec<String>) -> i32 {
         Ok(c) => c,
         Err(e) => return fail(e),
     };
-    let script = match cfg.script.as_deref().map(script::load) {
+    let mut script = match cfg.script.as_deref().map(script::load) {
         Some(Ok(s)) => s,
         Some(Err(e)) => return fail(e),
         None => Script::default(),
     };
+    if let Some(label) = cfg.account.as_deref() {
+        account::with_account(&mut script, label);
+    }
     let version = cfg
         .version
         .or_else(|| script.version.clone())
@@ -95,8 +100,10 @@ struct Runner {
     session_id: String,
     transcript: Transcript,
     totals: Totals,
+    /// A resumed transcript's calls without a result (`resume.rs`).
+    dangling: Vec<(String, String, Value)>,
     observed: Observed,
-    /// User lines received while a turn runs (steers), played in order.
+    /// User lines received while a turn runs (steers): the next turn takes them all.
     pending: VecDeque<Value>,
     started: bool,
     init_sent: bool,
@@ -106,6 +113,8 @@ struct Runner {
     eof: bool,
     last_is_error: bool,
     req_n: u64,
+    /// The open turn's refused calls (`result.permission_denials`).
+    denials: Vec<Value>,
 }
 
 impl Runner {
@@ -115,14 +124,22 @@ impl Runner {
         version: String,
         mut observed: Observed,
     ) -> Result<Runner, i32> {
+        let mut dangling = Vec::new();
         let (session_id, transcript, totals) = match args.str("--resume") {
             Some(id) => match Transcript::find(id) {
                 Some((t, restored)) => {
+                    let ids: Vec<&String> = restored.dangling.iter().map(|d| &d.0).collect();
                     observed.set(
                         "resume",
-                        json!({"found": true, "transcriptLines": restored.lines}),
+                        json!({"found": true, "transcriptLines": restored.lines, "dangling": ids}),
                     );
-                    (id.to_string(), t, restored.totals)
+                    // Verified 2.1.321, Task 0: restored after a clean exit, restarted after a kill.
+                    let totals = match (script.resume_totals, restored.clean) {
+                        (ResumeTotals::Restored, _) | (ResumeTotals::Auto, true) => restored.totals,
+                        _ => Totals::default(),
+                    };
+                    dangling = restored.dangling;
+                    (id.to_string(), t, totals)
                 }
                 None => {
                     observed.set("resume", json!({"found": false}));
@@ -175,6 +192,7 @@ impl Runner {
             session_id,
             transcript,
             totals,
+            dangling,
             observed,
             pending: VecDeque::new(),
             started: false,
@@ -184,14 +202,14 @@ impl Runner {
             eof: false,
             last_is_error: false,
             req_n: 0,
+            denials: Vec::new(),
         })
     }
 
     fn emit(&self, v: &Value) {
+        // A host gone does not stop the turn (verified 2.1.321, Task 0, s5C).
         let mut out = std::io::stdout().lock();
-        if writeln!(out, "{v}").and_then(|()| out.flush()).is_err() {
-            std::process::exit(0);
-        }
+        let _ = writeln!(out, "{v}").and_then(|()| out.flush());
     }
 
     fn emit_script_line(&self, v: &Value) {
@@ -200,7 +218,14 @@ impl Runner {
                 let mut out = std::io::stdout().lock();
                 let _ = writeln!(out, "{raw}").and_then(|()| out.flush());
             }
-            other => self.emit(&self.substitute(other.clone())),
+            other => {
+                let v = self.substitute(other.clone());
+                // The conversation's lines go into the transcript, as the CLI's own do.
+                if matches!(v["type"].as_str(), Some("assistant" | "user")) {
+                    self.transcript.append(&v);
+                }
+                self.emit(&v);
+            }
         }
     }
 
@@ -235,15 +260,7 @@ impl Runner {
                     json!({"requestId": rid, "subtype": sub, "request": v["request"]}),
                 );
                 match sub.as_str() {
-                    "initialize" => {
-                        // The SDK servers' handshake starts before the answer (Task 0).
-                        self.mcp_start();
-                        self.on_start();
-                        let body = self.initialize_body();
-                        self.emit(&json!({"type": "control_response", "response": {
-                            "subtype": "success", "request_id": rid, "response": body,
-                            "pending_permission_requests": [], "pending_user_dialog_requests": []}}));
-                    }
+                    "initialize" => self.answer_initialize(&rid),
                     "set_permission_mode" => {
                         if let Some(m) = v["request"]["mode"].as_str() {
                             self.mode = if m == "manual" { "default" } else { m }.into();
@@ -251,7 +268,9 @@ impl Runner {
                         self.respond(&rid, json!({}));
                     }
                     "interrupt" => {
-                        self.respond(&rid, json!({}));
+                        // Verified on 2.1.321 (7D Task 0, s1b): `{still_queued: []}`.
+                        let queued = self.script.interrupt_still_queued.clone();
+                        self.respond(&rid, json!({"still_queued": queued}));
                         return Some(self.interrupt(false).unwrap_or(Ev::Control(sub)));
                     }
                     _ => self.respond(&rid, json!({})),
@@ -271,8 +290,10 @@ impl Runner {
             }
             Some("user") => {
                 // Every user line the host sent (a test proves none was sent).
-                self.observed
-                    .push("userLines", json!({"sessionId": v["session_id"]}));
+                self.observed.push(
+                    "userLines",
+                    json!({"sessionId": v["session_id"], "content": v["message"]["content"]}),
+                );
                 self.transcript.append(&v);
                 Some(Ev::User(v))
             }
@@ -300,12 +321,13 @@ impl Runner {
         }
         let ended = self.turn_open;
         if ended {
-            self.emit_result(Kind::Interrupted);
+            let aborted_tools = self.abort_tools();
+            self.emit_result(Kind::Interrupted { aborted_tools });
             self.interrupted = true;
         }
         if knob == OnInterrupt::Exit {
             let _ = std::io::stdout().flush();
-            std::process::exit(if sigint { 130 } else { 0 });
+            std::process::exit(self.finish_with(if sigint { 130 } else { 0 }));
         }
         ended.then_some(Ev::Interrupted)
     }
@@ -361,11 +383,13 @@ impl Runner {
             self.on_start();
             self.mcp_wait();
             self.init_sent = true;
-            self.emit(&self.init_line());
         }
+        // Verified 2.1.321, Task 0: `system/init` precedes every turn, not only the first.
+        self.emit(&self.init_line());
         self.emit(&self.status_requesting());
         self.turn_open = true;
         self.interrupted = false;
+        self.reask_dangling();
     }
 
     /// A turn whose steps wrote no `result` gets a plain one.
@@ -374,6 +398,7 @@ impl Runner {
             self.emit_result(Kind::Turn {
                 text: "done".into(),
                 delta: Usage::default(),
+                model: None,
             });
         }
     }
@@ -388,11 +413,11 @@ impl Runner {
         self.emit_result(Kind::Turn {
             text: "ok".into(),
             delta,
+            model: None,
         });
     }
 
-    /// The exit code once stdin is closed and the open turn has ended (Task 0): 1 after an
-    /// `is_error` result, else 0.
+    /// The exit code at stdin's end once the turn ended (Task 0): 1 after an `is_error` result.
     fn exit_code(&self) -> i32 {
         i32::from(self.last_is_error)
     }
@@ -402,8 +427,9 @@ impl Runner {
         for step in &steps {
             if step.expect == Some(Expect::User) {
                 self.close_turn();
+                self.script.init.extend(step.init.clone());
                 if !self.wait_user() {
-                    return self.exit_code();
+                    return self.finish();
                 }
             } else if self.interrupted {
                 continue;
@@ -412,13 +438,13 @@ impl Runner {
         }
         self.close_turn();
         loop {
-            if self.pending.pop_front().is_some() {
+            if self.take_queued() {
                 self.default_turn();
                 continue;
             }
             match self.next(None) {
                 Ev::User(u) => self.pending.push_back(u),
-                Ev::Eof => return self.exit_code(),
+                Ev::Eof => return self.finish(),
                 _ => {}
             }
         }
@@ -442,11 +468,15 @@ impl Runner {
             self.emit(&json!({"type": "fake_future_type", "session_id": self.session_id, "payload": {"note": "a line no CLI version has"}}));
         }
         if let Some(ask) = &s.ask {
-            match self.ask(ask) {
+            let (outcome, tool_use_id) = self.ask(ask);
+            if ask.bash && matches!(outcome, Outcome::Allowed | Outcome::Denied) {
+                self.bash(ask, &tool_use_id, matches!(outcome, Outcome::Allowed));
+            }
+            match outcome {
                 Outcome::Interrupted => return,
                 Outcome::Allowed => self.branch(&s.on_allow),
                 Outcome::Denied => self.branch(&s.on_deny),
-                Outcome::Cancelled => {}
+                Outcome::Cancelled | Outcome::Refused => {}
             }
             if self.interrupted {
                 return;
@@ -455,10 +485,17 @@ impl Runner {
         if s.not_logged_in {
             self.not_logged_in();
         }
+        if let Some(u) = s.hidden_usage {
+            self.add_usage(&u, s.usage_model.as_deref());
+        }
+        if let Some(u) = s.live_usage {
+            self.live_usage(&u, s.usage_model.as_deref());
+        }
         if let Some(delta) = s.cumulative_usage {
             self.emit_result(Kind::Turn {
                 text: s.text.clone().unwrap_or_else(|| "done".into()),
                 delta,
+                model: s.usage_model.clone(),
             });
         }
         if let Some(c) = &s.crash {
@@ -473,26 +510,6 @@ impl Runner {
                 self.side_effects(t.write_file.as_ref(), t.spawn.as_ref());
                 t.emit.iter().for_each(|l| self.emit_script_line(l));
             }
-        }
-    }
-
-    fn side_effects(&mut self, write: Option<&WriteFile>, spawn: Option<&Spawn>) {
-        if let Some(w) = write {
-            let _ = std::fs::write(&w.path, &w.contents);
-        }
-        if let Some(sp) = spawn {
-            let code = sp.argv.split_first().and_then(|(prog, rest)| {
-                std::process::Command::new(prog)
-                    .args(rest)
-                    .stdin(Stdio::null())
-                    .stdout(Stdio::null())
-                    .status()
-                    .ok()
-            });
-            self.observed.push(
-                "spawned",
-                json!({"argv": sp.argv, "code": code.and_then(|c| c.code())}),
-            );
         }
     }
 
@@ -523,7 +540,7 @@ impl Runner {
     /// Takes the next user line (queued first) and starts its turn; false on EOF.
     fn wait_user(&mut self) -> bool {
         loop {
-            if self.pending.pop_front().is_some() {
+            if self.take_queued() {
                 self.start_turn();
                 return true;
             }

@@ -268,6 +268,7 @@ mod unix {
             shared_dir: Some(t.p("p/workspace/shared")),
             library_roots: vec![],
             session_dir: t.p("data/agents/s1"),
+            sign_in_home: None,
             sign_in_store: Some(t.p("data/providers/codex/home/auth.json")),
             toolchains: toolchains(),
             server_data: t.p("data"),

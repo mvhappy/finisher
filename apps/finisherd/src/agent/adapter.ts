@@ -95,10 +95,14 @@ export interface TurnInput {
 
 export interface UserInput {
   readonly text: string;
+  /** A steer's `userMessage` node and its time (`agent.session.steer` records it first), when the runtime has one. */
+  readonly nodeId?: string;
+  readonly at?: number;
 }
 
 export type RuntimeAnswer =
-  | { readonly kind: "approval"; readonly allow: boolean }
+  /** `message`: the server's reason for a deny, for the provider to show its model (Claude Code's `deny.message`). */
+  | { readonly kind: "approval"; readonly allow: boolean; readonly message?: string }
   | { readonly kind: "userInput"; readonly text: string }
   /** The result of a tool the runtime ran for the adapter (the built-in loop's tools, the fake's). */
   | { readonly kind: "toolResult"; readonly ok: boolean; readonly output: unknown };

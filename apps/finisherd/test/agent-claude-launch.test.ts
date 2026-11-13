@@ -40,7 +40,7 @@ import {
 import type { ProbeResult } from "../src/agent/claude/probe-types.ts";
 import { FakeAdapter, type FakeScript } from "../src/agent/fake.ts";
 import { assertSessionEnv, sessionEnv } from "../src/agent/sandbox.ts";
-import { CLAUDE_CODE_ENV, harnessExtra, NEVER_IN_SESSION } from "../src/agent/sandbox-env.ts";
+import { CLAUDE_CODE_ENV, harnessExtra, NEVER_IN_SESSION, sessionShell } from "../src/agent/sandbox-env.ts";
 import { sessionDirs } from "../src/agent/session-dirs.ts";
 import { AgentStore } from "../src/agent/store.ts";
 import { type ControlStore, openControlStore } from "../src/control/db.ts";
@@ -442,6 +442,11 @@ describe("Claude Code launch plan", () => {
         BASH_DEFAULT_TIMEOUT_MS: "120000",
       });
       expect(() => assertSessionEnv({ ...env, ...p.env }, session, { extra: harnessExtra("claudeCode"), expect: env, platform: "linux" })).not.toThrow();
+      // Decision 5 (Task 0 signed in): the CLI's own home and an explicit shell, never the
+      // user's (the passwd login shell sourced the user's rc files); a plan cannot move them.
+      expect([env.HOME, env.SHELL]).toEqual([dirs.home, sessionShell()]);
+      expect(() => assertSessionEnv({ ...env, ...p.env, HOME: "/home/u" }, session, { extra: harnessExtra("claudeCode"), platform: "linux" })).toThrow(/not the session's own path/);
+      expect(() => assertSessionEnv({ ...env, ...p.env, SHELL: "/usr/bin/zsh" }, session, { extra: harnessExtra("claudeCode"), platform: "linux" })).toThrow(/not a session shell/);
       // Windows: the same names, never `CLAUDE_CODE_GIT_BASH_PATH` (Decision 21).
       const win = plan("win32");
       expect(Object.keys(win.env).sort()).toEqual([...CLAUDE_CODE_ENV].sort());

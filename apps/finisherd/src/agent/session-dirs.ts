@@ -44,6 +44,11 @@ export interface SessionDirs {
   readonly blobs: string;
   /** `tmp/gnupg`: a private `GNUPGHOME` (spec §8.3), so no user's keyring is reached. */
   readonly gnupg: string;
+  /**
+   * `tmp/home`: a host sandbox's `HOME`, and a Claude Code session's (plan 7D Decision 5), so no
+   * rc file or CLI state of the user's home is read (`sandbox-env.ts`).
+   */
+  readonly home: string;
   /** Windows: `localappdata/`, the session's `LOCALAPPDATA` (S9 point 7). */
   readonly localAppData: string;
 }
@@ -64,6 +69,7 @@ export function sessionDirs(agentsRoot: string, sessionId: string, platform: Nod
     gitConfig: join(git, "config"),
     blobs: join(dir, "blobs"),
     gnupg: join(tmp, "gnupg"),
+    home: join(tmp, "home"),
     localAppData: join(dir, "localappdata"),
   };
 }
@@ -120,7 +126,7 @@ export async function ensureSessionDirs(agentsRoot: string, sessionId: string, o
   const d = sessionDirs(agentsRoot, sessionId);
   // `agents/` is the server's (never a write root); below it, one level at a time.
   await mkdir(agentsRoot, { recursive: true, mode: 0o700 });
-  const dirs = [d.dir, d.settings, d.tmp, d.provider, d.git, d.blobs, d.gnupg, ...(platform === "win32" ? [d.localAppData] : [])];
+  const dirs = [d.dir, d.settings, d.tmp, d.provider, d.git, d.blobs, d.gnupg, d.home, ...(platform === "win32" ? [d.localAppData] : [])];
   for (const p of dirs) await privateDir(p, platform);
   // `git/` is not writable inside the sandbox, so its file cannot have been replaced.
   await writeFile(d.gitConfig, sandboxSessionGitConfig(), { mode: 0o600 });
@@ -260,6 +266,12 @@ export interface LinkedStore {
   readonly grant: string;
   /** For a `dir` store: the variable and its value. */
   readonly env?: { readonly name: string; readonly value: string };
+  /**
+   * Detection's only (`LinkOptions.home`): the sign-in home as the CLI's configuration directory
+   * (plan 7D Decision 19), granted **read only** (the sandbox's `signInHome`); `grant` stays the
+   * store inside it, the only path there detection writes.
+   */
+  readonly configDir?: string;
 }
 
 /**
@@ -273,6 +285,15 @@ export interface LinkOptions {
   readonly platform?: NodeJS.Platform;
   /** The link call (tests: a host without the symlink privilege). */
   readonly symlink?: typeof symlink;
+  /**
+   * Detection's host sandbox, a `dir` store, not on Windows (plan 7D Decision 19 as 7D Task 0
+   * amended it): the sign-in home is named as the CLI's configuration directory, where `auth
+   * status` finds the account's profile (`.claude.json`), and granted read only (review S1:
+   * verified on 2.1.321 that `auth status` answers from a read-only home; with write it only
+   * keeps house, `.claude.json.lock`, `backups/`, a rewritten `.claude.json`). Still no call
+   * under `providers/`.
+   */
+  readonly home?: boolean;
 }
 
 export async function linkSignInStore(harness: Harness, serverData: string, dirs: SessionDirs, opts: LinkOptions = {}): Promise<LinkedStore | undefined> {
@@ -285,7 +306,10 @@ export async function linkSignInStore(harness: Harness, serverData: string, dirs
   // Not created here (that would `mkdir` and, when it exists, `stat` under `providers/`): the
   // user's sign-in command makes it. A store missing at launch is not granted (Landlock skips a
   // missing root), so the CLI reports itself signed out.
-  if (store.kind === "dir") return { grant: target, env: { name: store.env, value: target } };
+  if (store.kind === "dir") {
+    const env = { name: store.env, value: target };
+    return opts.home === true && platform !== "win32" ? { grant: target, env, configDir: home } : { grant: target, env };
+  }
   const link = join(dirs.provider, store.name);
   const existing = await lstat(link).catch(() => undefined);
   if (existing?.isSymbolicLink() === true && (await readlink(link)) === target) return { grant: target };

@@ -45,6 +45,7 @@ fn session(harness: Harness, mode: AgentMode) -> AgentInput {
         shared_dir: Some(abs("projects/p/workspace/shared")),
         library_roots: vec![abs("media/lib")],
         session_dir: abs("data/agents/s1"),
+        sign_in_home: None,
         sign_in_store: Some(abs("data/providers/codex/home/auth.json")),
         toolchains: vec![abs("usr/bin"), abs("usr/lib")],
         server_data: abs("data"),
@@ -241,6 +242,7 @@ fn agent_inputs_are_checked() {
     );
     input_error(
         agent(&AgentInput {
+            sign_in_home: None,
             sign_in_store: Some(abs("data/providers/codex/home")),
             ..s()
         }),
@@ -684,4 +686,106 @@ fn inputs_schema_is_generated() {
     }))
     .unwrap();
     assert!(worker(&w).is_ok());
+}
+
+/// A host sandbox's input (plan 7D Task 3b): `host-<ulid>`, plan mode, no shared folder.
+fn host(harness: Harness, store: &str, home: Option<&str>) -> AgentInput {
+    let id = "host-01JQ0000000000000000000000";
+    AgentInput {
+        session_id: id.into(),
+        mode: AgentMode::Plan,
+        harness,
+        project_dir: abs("hosts/h"),
+        workspace_dir: abs(&format!("hosts/h/workspace/{id}")),
+        shared_dir: None,
+        library_roots: vec![],
+        session_dir: abs(&format!("data/agents/{id}")),
+        sign_in_home: home.map(abs),
+        sign_in_store: Some(abs(store)),
+        toolchains: vec![abs("usr/bin")],
+        server_data: abs("data"),
+        home: abs("home/u"),
+        fin: None,
+    }
+}
+
+const CLAUDE_HOME: &str = "data/providers/claudeCode/home";
+const CLAUDE_STORE: &str = "data/providers/claudeCode/home/store";
+
+#[test]
+fn agent_detect_host_reads_the_sign_in_home_and_writes_only_its_store() {
+    // Plan 7D Decision 19 (review of the follow-up, S1): detection's `auth status` reads the
+    // account's profile from the sign-in home (verified on 2.1.321: a read-only home still
+    // answers), so the host sandbox reads the home and writes only the store inside it; it never
+    // rewrites the profile, plants settings or hooks, or leaves a lock there.
+    let p = agent(&host(Harness::ClaudeCode, CLAUDE_STORE, Some(CLAUDE_HOME))).unwrap();
+    for f in [
+        ".claude.json",
+        "settings.json",
+        ".claude.json.lock",
+        "backups/x",
+    ] {
+        let f = abs(&format!("{CLAUDE_HOME}/{f}"));
+        assert!(p.readable(&f) && !p.writable(&f), "{}", f.display());
+    }
+    let creds = abs(&format!("{CLAUDE_STORE}/.credentials.json"));
+    assert!(p.readable(&creds) && p.writable(&creds));
+    assert!(!p.readable(&abs("data/providers/codex/home/auth.json")));
+    assert!(!p.readable(&abs("data/agents/s1/credential.json")));
+    // The store alone (no home) as before.
+    let only = agent(&host(Harness::ClaudeCode, CLAUDE_STORE, None)).unwrap();
+    assert!(!only.readable(&abs(&format!("{CLAUDE_HOME}/.claude.json"))));
+    // The whole home is never the store.
+    input_error(
+        agent(&host(Harness::ClaudeCode, CLAUDE_HOME, None)),
+        "signInStore",
+    );
+    // Never another harness's home (a Codex host given its own), never above it.
+    input_error(
+        agent(&host(
+            Harness::Codex,
+            "data/providers/codex/home/auth.json",
+            Some("data/providers/codex/home"),
+        )),
+        "signInHome",
+    );
+    input_error(
+        agent(&host(
+            Harness::ClaudeCode,
+            CLAUDE_STORE,
+            Some("data/providers/claudeCode"),
+        )),
+        "signInHome",
+    );
+    // Only detection's host: a `host-<ULID>` id, `plan`, no `fin`; never a session's.
+    let mut s = session(Harness::ClaudeCode, AgentMode::Draft);
+    s.sign_in_store = Some(abs(CLAUDE_STORE));
+    s.sign_in_home = Some(abs(CLAUDE_HOME));
+    input_error(agent(&s), "signInHome");
+    let mut h = host(Harness::ClaudeCode, CLAUDE_STORE, Some(CLAUDE_HOME));
+    h.mode = AgentMode::Draft;
+    input_error(agent(&h), "signInHome");
+    let mut h = host(Harness::ClaudeCode, CLAUDE_STORE, Some(CLAUDE_HOME));
+    h.fin = Some(FinEndpoint::Tcp { port: 7000 });
+    input_error(agent(&h), "signInHome");
+    for id in [
+        "host-x",
+        "host-01JQ000000000000000000000U",
+        "host-01jq0000000000000000000000",
+    ] {
+        let mut h = host(Harness::ClaudeCode, CLAUDE_STORE, Some(CLAUDE_HOME));
+        h.workspace_dir = abs(&format!("hosts/h/workspace/{id}"));
+        h.session_dir = abs(&format!("data/agents/{id}"));
+        h.session_id = id.into();
+        input_error(agent(&h), "signInHome");
+    }
+    // Windows grants a store to the harness's sign-in capability, which every session holds:
+    // no home there (TODO(7D Task 13)).
+    input_error(
+        fin_sandbox::profile::for_os::agent(
+            fin_sandbox::Os::Windows,
+            &host(Harness::ClaudeCode, CLAUDE_STORE, Some(CLAUDE_HOME)),
+        ),
+        "signInHome",
+    );
 }

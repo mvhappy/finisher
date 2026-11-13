@@ -70,6 +70,28 @@ export const AgentLocalTestSuccess = Schema.Struct({
 export const AgentLocalRemovePayload = Schema.Struct({ challenge: ChallengeField });
 export const AgentLocalRemoveSuccess = Schema.Struct({ removed: Schema.Boolean });
 
+/** An account's keyed hash as `agent.providers` reports it (8 hex characters; never the label). */
+const AccountHash = Schema.String.check(Schema.isPattern(/^[0-9a-f]{8}$/));
+/**
+ * `agent.account.confirm` (plan 7D Decision 19): a person at the console takes the CLI's new
+ * account as the one sessions run on (`next`: the next change, for `provider signin --confirm`).
+ */
+export const AgentAccountConfirmPayload = Schema.Struct({
+  harness: Schema.Literal("claudeCode"),
+  next: Schema.optionalKey(Schema.Boolean),
+  /** The waiting account the person was shown (required unless `next`): another is `ACCOUNT_CONFIRM_STALE`. */
+  accountHash: Schema.optionalKey(AccountHash),
+  challenge: ChallengeField,
+});
+export const AgentAccountConfirmSuccess = Schema.Struct({
+  /** A change was waiting and is now the account (false: nothing waited, or `next`). */
+  confirmed: Schema.Boolean,
+  /** `next`: the next change will be taken without a confirmation. */
+  expecting: Schema.optionalKey(Schema.Boolean),
+  accountHash: Schema.optionalKey(AccountHash),
+  previous: Schema.optionalKey(AccountHash),
+});
+
 /**
  * The counsel gate (spec §12.7; Owner decision 1): whether closed-model outputs may become
  * training targets. `pendingCounsel` (the default) and `excluded` both drop them; nothing in
