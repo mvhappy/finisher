@@ -5,6 +5,7 @@
 //! platform and on wasm32. A plan never holds NaN or ∞ (`INTERNAL` if it would).
 
 mod audio;
+mod audio_effects;
 mod caption;
 mod frame;
 mod interp;
@@ -15,6 +16,7 @@ mod source;
 mod transition;
 
 pub use audio::{AudioItem, AudioPlan, GainSegment, PanSegment, Shape, ShapeKind, eval_audio};
+pub use audio_effects::{AudioEffectPlan, ParamSegment};
 pub use frame::{MAX_NESTED_LAYERS, MAX_NESTING, eval_frame};
 pub use interp::{PRESETS, ValueType, bezier_y, colour_hex, interpolate, parse_colour};
 pub use plan::{
@@ -122,6 +124,20 @@ pub(crate) fn check_audio(plan: &AudioPlan) -> Result<(), CoreError> {
                 &format!("/items/{i}/pan/{j}"),
                 &[s.pan[0], s.pan[1], s.u[0], s.u[1]],
             )?;
+        }
+        for (j, e) in item.effects.iter().enumerate() {
+            let p = format!("/items/{i}/effects/{j}");
+            for (name, segs) in &e.numbers {
+                for (k, s) in segs.iter().enumerate() {
+                    finite(
+                        &format!("{p}/numbers/{name}/{k}"),
+                        &[s.v[0], s.v[1], s.u[0], s.u[1]],
+                    )?;
+                }
+            }
+            for (name, v) in &e.values {
+                check_value(&format!("{p}/values/{name}"), v)?;
+            }
         }
     }
     Ok(())

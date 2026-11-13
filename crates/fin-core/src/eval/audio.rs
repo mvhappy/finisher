@@ -19,6 +19,8 @@
 //!   [`super::MAX_NESTED_LAYERS`] nested items in all `NESTED_TOO_LARGE`.
 //! - Gain segments break at gain keyframes, fade ends and transition edges; pan segments at
 //!   pan keyframes; both are clipped to `[from, to)`.
+//! - Each clip's enabled audio effects come with it ([`super::audio_effects`]); a nested
+//!   item's are shifted with its gain and pan.
 //! - Each track is indexed once ([`TrackIndex`]) and only the items that can meet the range
 //!   are visited.
 
@@ -28,6 +30,7 @@ use serde_json::json;
 
 use crate::error::CoreError;
 use crate::eval::MAX_NESTED_LAYERS;
+use crate::eval::audio_effects::{AudioEffectPlan, effects_of};
 use crate::eval::frame::{nested_cycle, nested_too_large};
 use crate::eval::segments::{NumberCurve, breakpoints};
 use crate::eval::source::clip_time;
@@ -51,7 +54,8 @@ pub struct AudioPlan {
 /// One item's part of the range: it plays `asset` from `sourceFrom` at `speed` over the
 /// timeline span `[from, to)`. `gain` and `pan` cover that span without gaps, in order. An
 /// item of a nested timeline lists the nested items it sounds through in `via`, outermost
-/// first (its `item` and `track` are its own, on the nested timeline).
+/// first (its `item` and `track` are its own, on the nested timeline). `effects` are its
+/// enabled effects with their numbers as segments over the same span.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct AudioItem {
@@ -66,6 +70,10 @@ pub struct AudioItem {
     pub speed: Rational,
     pub gain: Vec<GainSegment>,
     pub pan: Vec<PanSegment>,
+    /// The item's enabled audio effects in its order (plan 6C Decision 15); absent when none,
+    /// so plans without effects hash as before.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub effects: Vec<AudioEffectPlan>,
 }
 
 /// Gain over `[from, to)` in dB: `db` are the end values of the keyframe span the segment
@@ -245,6 +253,14 @@ impl<'a> Mix<'a> {
                 s.from = s.from.checked_add(offset)?;
                 s.to = s.to.checked_add(offset)?;
             }
+            for s in x
+                .effects
+                .iter_mut()
+                .flat_map(|e| e.numbers.values_mut().flatten())
+            {
+                s.from = s.from.checked_add(offset)?;
+                s.to = s.to.checked_add(offset)?;
+            }
             x.via.insert(0, item.id.clone());
             items.push(x);
         }
@@ -332,6 +348,7 @@ fn audio_item(
         speed: *speed,
         gain: gain_segments,
         pan: pan_segments,
+        effects: effects_of(item, a, b)?,
     }))
 }
 

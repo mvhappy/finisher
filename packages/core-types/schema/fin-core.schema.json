@@ -1098,6 +1098,37 @@
       ],
       "type": "object"
     },
+    "AudioEffectPlan": {
+      "description": "One effect of an audio item: `numbers` cover the item's span `[from, to)` without gaps, in\norder; `values` are the params that do not move (enums, bools, text).",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "kind": {
+          "type": "string"
+        },
+        "numbers": {
+          "additionalProperties": {
+            "items": {
+              "$ref": "#/$defs/ParamSegment"
+            },
+            "type": "array"
+          },
+          "type": "object"
+        },
+        "values": {
+          "additionalProperties": {
+            "$ref": "#/$defs/PlanValue"
+          },
+          "type": "object"
+        }
+      },
+      "required": [
+        "id",
+        "kind"
+      ],
+      "type": "object"
+    },
     "AudioInfo": {
       "properties": {
         "channels": {
@@ -1119,10 +1150,17 @@
       "type": "object"
     },
     "AudioItem": {
-      "description": "One item's part of the range: it plays `asset` from `sourceFrom` at `speed` over the\ntimeline span `[from, to)`. `gain` and `pan` cover that span without gaps, in order. An\nitem of a nested timeline lists the nested items it sounds through in `via`, outermost\nfirst (its `item` and `track` are its own, on the nested timeline).",
+      "description": "One item's part of the range: it plays `asset` from `sourceFrom` at `speed` over the\ntimeline span `[from, to)`. `gain` and `pan` cover that span without gaps, in order. An\nitem of a nested timeline lists the nested items it sounds through in `via`, outermost\nfirst (its `item` and `track` are its own, on the nested timeline). `effects` are its\nenabled effects with their numbers as segments over the same span.",
       "properties": {
         "asset": {
           "type": "string"
+        },
+        "effects": {
+          "description": "The item's enabled audio effects in its order (plan 6C Decision 15); absent when none,\nso plans without effects hash as before.",
+          "items": {
+            "$ref": "#/$defs/AudioEffectPlan"
+          },
+          "type": "array"
         },
         "from": {
           "$ref": "#/$defs/Rational"
@@ -12601,6 +12639,46 @@
         "fin"
       ],
       "type": "string"
+    },
+    "ParamSegment": {
+      "description": "A number over `[from, to)`, read like a gain segment: the value at progress `x` of the\nsegment is `lerp(v[0], v[1], ease(lerp(u[0], u[1], x)))`.",
+      "properties": {
+        "from": {
+          "$ref": "#/$defs/Rational"
+        },
+        "interp": {
+          "$ref": "#/$defs/Interp"
+        },
+        "to": {
+          "$ref": "#/$defs/Rational"
+        },
+        "u": {
+          "items": {
+            "format": "double",
+            "type": "number"
+          },
+          "maxItems": 2,
+          "minItems": 2,
+          "type": "array"
+        },
+        "v": {
+          "items": {
+            "format": "double",
+            "type": "number"
+          },
+          "maxItems": 2,
+          "minItems": 2,
+          "type": "array"
+        }
+      },
+      "required": [
+        "from",
+        "to",
+        "v",
+        "interp",
+        "u"
+      ],
+      "type": "object"
     },
     "ParamSet": {
       "description": "`param.set`: sets `path` of `item` to `value`; no `value` resets it to its default.",

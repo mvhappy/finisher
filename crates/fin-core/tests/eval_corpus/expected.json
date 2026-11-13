@@ -904,5 +904,42 @@
       "14"
     ],
     "blake3": "7cc009ab0335aca08ce6024c6bf5559f26b53d6c6e50ee3db6c5552321e2691b"
+  },
+  {
+    "case": "21-audio-effects",
+    "t": "2",
+    "blake3": "7a6366a01c1b127f2f969fdc7482c61a5e80bff30676c97b86e8cc35da0d9188"
+  },
+  {
+    "case": "21-audio-effects",
+    "range": [
+      "0",
+      "10"
+    ],
+    "blake3": "1bcfff63b3ca01b1fb74e9e8f63f7a90d767a879b1d0253f0186a1b771f57502"
+  },
+  {
+    "case": "21-audio-effects",
+    "range": [
+      "3/2",
+      "11/2"
+    ],
+    "blake3": "e9386d33084bce9f5741c30d2a366f7b9d2224a6b2abe09092a49390d45e68c8"
+  },
+  {
+    "case": "21-audio-effects",
+    "range": [
+      "5",
+      "37/4"
+    ],
+    "blake3": "59013551060433cb66a4ef1e023b2c6a4d242f3895ec9c5ee26e7f2c74deaa7b"
+  },
+  {
+    "case": "21-audio-effects",
+    "range": [
+      "7",
+      "8"
+    ],
+    "blake3": "dd6e914bd352aa241279a12ff6a72889e38edb7cfbd44eed1c347613763c291f"
   }
 ]

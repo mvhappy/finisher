@@ -7,7 +7,8 @@
 //! the [`VerifyReport`], [`RebuildReport`] and [`CompactReport`] of the long calls,
 //! and the [`WriteGuard`] finisherd sends with every write;
 //! fin-probe's [`Probe`]; fin-fonts' [`FontCatalog`], [`FileState`], [`FontsStatus`],
-//! [`FontsPlan`]). `FramePlan`, `AudioPlan`, `TextLayout`, `ParamSpec` and `EffectDomain` (an
+//! [`FontsPlan`]). `FramePlan`, `AudioPlan` (with its items' `AudioEffectPlan` and
+//! `ParamSegment`, plan 6C Decision 15), `TextLayout`, `ParamSpec` and `EffectDomain` (an
 //! effect kind's domain, plan 6C Decision 13) come from fin-core, and
 //! so do the diagnostics event types (`events::Envelope`, `AnyPayload`, the kind-keyed
 //! `EventPayload` and every payload type, by `events::kinds::register_schemas`), and the
@@ -69,6 +70,8 @@ fn main() {
         g.subschema_for::<Probe>();
         g.subschema_for::<fin_core::TextLayout>();
         g.subschema_for::<fin_core::params::EffectDomain>();
+        g.subschema_for::<fin_core::eval::AudioEffectPlan>();
+        g.subschema_for::<fin_core::eval::ParamSegment>();
         g.subschema_for::<FontCatalog>();
         g.subschema_for::<FileState>();
         g.subschema_for::<FontsStatus>();
