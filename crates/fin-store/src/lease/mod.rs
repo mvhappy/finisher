@@ -150,7 +150,7 @@ impl Params {
 }
 
 /// The lease as one server sees it.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, schemars::JsonSchema)]
 #[serde(
     tag = "state",
     rename_all = "camelCase",

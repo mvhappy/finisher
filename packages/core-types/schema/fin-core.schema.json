@@ -236,7 +236,11 @@
           ]
         },
         "harness": {
-          "$ref": "#/$defs/Harness",
+          "allOf": [
+            {
+              "$ref": "#/$defs/Harness"
+            }
+          ],
           "description": "`claudeCode`, `codex` or `fake`; the built-in agent needs no sandbox (spec §8.9)."
         },
         "home": {
@@ -1531,6 +1535,61 @@
       ],
       "type": "string"
     },
+    "BranchStatus": {
+      "properties": {
+        "branch": {
+          "description": "The branch id.",
+          "type": "string"
+        },
+        "exportedThrough": {
+          "description": "The highest seq in the folder (0: none).",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "forkSeq": {
+          "description": "The parent's seq it forks at (0 for `main`).",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "generation": {
+          "description": "Bumped whenever an import takes records out of this branch's history (a rewind).",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "head": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "name": {
+          "description": "Its display name (`main` for `main`; a branch without an index row: its id).",
+          "type": "string"
+        },
+        "parent": {
+          "description": "The parent's id (`None` for `main`).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "state": {
+          "$ref": "#/$defs/BranchState"
+        }
+      },
+      "required": [
+        "branch",
+        "name",
+        "forkSeq",
+        "state",
+        "head",
+        "exportedThrough",
+        "generation"
+      ],
+      "type": "object"
+    },
     "BranchView": {
       "additionalProperties": false,
       "description": "A branch as listings show it ([`Store::branches`](crate::Store::branches), `branch.list`):\n`display` is the reference that names it (its name, or `<name>#<id>` for an archived\nbranch or the second holder of a duplicate name); `head` its head seq (its fork seq until\nits first record).",
@@ -1584,6 +1643,24 @@
         "release"
       ],
       "type": "string"
+    },
+    "Busy": {
+      "description": "The long call a status was answered during (`status()`'s `busy`).",
+      "properties": {
+        "operation": {
+          "type": "string"
+        },
+        "sinceMs": {
+          "description": "Unix ms the call started.",
+          "format": "int64",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "operation",
+        "sinceMs"
+      ],
+      "type": "object"
     },
     "CallLimits": {
       "description": "The limits of this job's calls and results.",
@@ -1805,7 +1882,11 @@
           "type": "string"
         },
         "source": {
-          "$ref": "#/$defs/CaptionSource",
+          "allOf": [
+            {
+              "$ref": "#/$defs/CaptionSource"
+            }
+          ],
           "description": "The caption's source (none: no source)."
         },
         "words": {
@@ -2237,6 +2318,24 @@
       ],
       "type": "string"
     },
+    "Check": {
+      "description": "One check's outcome.",
+      "properties": {
+        "details": true,
+        "name": {
+          "type": "string"
+        },
+        "ok": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "name",
+        "ok",
+        "details"
+      ],
+      "type": "object"
+    },
     "Chroma": {
       "description": "Chroma subsampling.",
       "enum": [
@@ -2664,6 +2763,122 @@
         "tx",
         "diff",
         "bindings"
+      ],
+      "type": "object"
+    },
+    "CompactReport": {
+      "description": "What one compaction run did (serialised camelCase; `waiting` and `abandoned` as\n`[name, why]` pairs).",
+      "properties": {
+        "abandoned": {
+          "description": "`(manifest, why)`: abandoned this run.",
+          "items": {
+            "maxItems": 2,
+            "minItems": 2,
+            "prefixItems": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "type": "array"
+          },
+          "type": "array"
+        },
+        "deleted": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "finished": {
+          "description": "Manifests finished (phase 2) and the segment files deleted.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "manifests": {
+          "description": "Manifests written (phase 1).",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "packsWritten": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "replaced": {
+          "description": "Segments the new manifests replace.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "skipped": {
+          "description": "Why nothing ran (not holding the lease, read-only).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "waiting": {
+          "description": "`(manifest or branch, why)`: steps that wait and are retried.",
+          "items": {
+            "maxItems": 2,
+            "minItems": 2,
+            "prefixItems": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "type": "array"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "manifests",
+        "packsWritten",
+        "replaced",
+        "finished",
+        "deleted",
+        "waiting",
+        "abandoned"
+      ],
+      "type": "object"
+    },
+    "CompactionStatus": {
+      "description": "Compaction in `fin project status`.",
+      "properties": {
+        "lastError": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "lastRunMs": {
+          "description": "Unix ms of the last run that wrote or deleted something.",
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "pending": {
+          "description": "Manifests seen while holding the lease.",
+          "items": {
+            "$ref": "#/$defs/PendingCompaction"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "pending"
       ],
       "type": "object"
     },
@@ -3284,10 +3499,7 @@
       "description": "[`Store::drop`](crate::Store::drop)'s request (`history.drop`, plan 5E Decision 5).\n\n- `tx_id`: the idempotency key, the `drop` record's txId;\n- `author`: the record's author;\n- `into`: the branch the rejection binds (a reference; the record is written there);\n- `from`: the source branch (a reference; it may be archived);\n- `drops`, `undrops`: origin-root txIds of records on `from`'s lineage after its common\n  point with `into`, at least one in all; sorted and deduplicated at write;\n- `dry_run`: plan against the local database and keep nothing, on a follower too;\n- `args_hash`: the command input's hash, stored on the record's intent; a retry of the\n  txId with another hash is `IDEM_KEY_REUSED`.",
       "properties": {
         "argsHash": {
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": "string"
         },
         "author": {
           "type": "string"
@@ -3551,9 +3763,11 @@
         },
         {
           "additionalProperties": false,
-          "description": "The status changed (fin-store's `ProjectStatus`).",
+          "description": "The status changed: [`ProjectStatusView`] (without `busy`).",
           "properties": {
-            "status": true,
+            "status": {
+              "$ref": "#/$defs/ProjectStatusView"
+            },
             "type": {
               "const": "status",
               "type": "string"
@@ -5039,6 +5253,59 @@
       ],
       "type": "object"
     },
+    "FontFailed": {
+      "description": "A pinned font file whose fetch failed, retried after `retry_at` (unix ms).",
+      "properties": {
+        "key": {
+          "type": "string"
+        },
+        "reason": {
+          "type": "string"
+        },
+        "retryAt": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "sha256": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "key",
+        "sha256",
+        "reason",
+        "retryAt"
+      ],
+      "type": "object"
+    },
+    "FontFetching": {
+      "description": "A pinned font file being fetched (queued: `bytes` 0): `bytes` of `total` so far.",
+      "properties": {
+        "bytes": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "key": {
+          "type": "string"
+        },
+        "sha256": {
+          "type": "string"
+        },
+        "total": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "key",
+        "sha256",
+        "bytes",
+        "total"
+      ],
+      "type": "object"
+    },
     "FontFile": {
       "description": "An imported font file (plan 4C Decision 37): its whole-file SHA-256, size, format and faces.",
       "properties": {
@@ -5142,6 +5409,26 @@
         "ttc"
       ],
       "type": "string"
+    },
+    "FontMissing": {
+      "description": "A pinned font file not available: `key` (the face key), its `sha256` and why (`offline`,\n`notInCatalog`, `notFetched`, `damaged`, `hashMismatch`, or an asset file's problem).",
+      "properties": {
+        "key": {
+          "type": "string"
+        },
+        "reason": {
+          "type": "string"
+        },
+        "sha256": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "key",
+        "sha256",
+        "reason"
+      ],
+      "type": "object"
     },
     "FontPin": {
       "description": "One face of one exact file: `face` is the index inside a collection (0 for a single font).",
@@ -5418,6 +5705,35 @@
         "autoFetch",
         "damaged",
         "files"
+      ],
+      "type": "object"
+    },
+    "FontsSummary": {
+      "description": "A project's font summary (fin-node, 4C Decision 34): the pinned files missing on this\nserver, being fetched, and whose fetch failed.",
+      "properties": {
+        "failed": {
+          "items": {
+            "$ref": "#/$defs/FontFailed"
+          },
+          "type": "array"
+        },
+        "fetching": {
+          "items": {
+            "$ref": "#/$defs/FontFetching"
+          },
+          "type": "array"
+        },
+        "missing": {
+          "items": {
+            "$ref": "#/$defs/FontMissing"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "missing",
+        "fetching",
+        "failed"
       ],
       "type": "object"
     },
@@ -5939,10 +6255,7 @@
           "type": "boolean"
         },
         "noOp": {
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": "string"
         },
         "origins": {
           "items": {
@@ -7310,7 +7623,11 @@
           "type": "boolean"
         },
         "profiles": {
-          "$ref": "#/$defs/JobHostProfiles",
+          "allOf": [
+            {
+              "$ref": "#/$defs/JobHostProfiles"
+            }
+          ],
           "description": "What each sandbox profile gets (plan 7C Decision 4)."
         },
         "sandbox": {
@@ -7739,7 +8056,11 @@
           "type": "string"
         },
         "cgroups": {
-          "$ref": "#/$defs/JobHostCgroups",
+          "allOf": [
+            {
+              "$ref": "#/$defs/JobHostCgroups"
+            }
+          ],
           "description": "Delegated cgroups where they are ours (Linux; default `auto`)."
         },
         "eventQueue": {
@@ -7871,7 +8192,11 @@
           "type": "boolean"
         },
         "resolution": {
-          "$ref": "#/$defs/ResolutionBucket",
+          "allOf": [
+            {
+              "$ref": "#/$defs/ResolutionBucket"
+            }
+          ],
           "description": "The largest frame the job produced."
         },
         "rtFactorMilli": {
@@ -7972,7 +8297,11 @@
           "$ref": "#/$defs/Reach"
         },
         "principal": {
-          "$ref": "#/$defs/RightsPrincipal",
+          "allOf": [
+            {
+              "$ref": "#/$defs/RightsPrincipal"
+            }
+          ],
           "description": "The invoker the plugin acts for (audit and journal name `plugin:<id>@<version>` acting\nfor it)."
         },
         "projects": {
@@ -8151,7 +8480,11 @@
           "type": "string"
         },
         "limits": {
-          "$ref": "#/$defs/JobSpawnLimits",
+          "allOf": [
+            {
+              "$ref": "#/$defs/JobSpawnLimits"
+            }
+          ],
           "description": "Limits the host applies whatever the spawner does (sp8b Decision 9)."
         },
         "profile": {
@@ -8576,7 +8909,11 @@
           "$ref": "#/$defs/MaskPlan"
         },
         "nested": {
-          "$ref": "#/$defs/NestedPlan",
+          "allOf": [
+            {
+              "$ref": "#/$defs/NestedPlan"
+            }
+          ],
           "description": "A nested item's timeline, time and frame size."
         },
         "opacity": {
@@ -8584,7 +8921,11 @@
           "type": "number"
         },
         "source": {
-          "$ref": "#/$defs/SourceRef",
+          "allOf": [
+            {
+              "$ref": "#/$defs/SourceRef"
+            }
+          ],
           "description": "The asset and its time: a clip's source time (through speed), an image's 0, a\ngraphic's template time."
         },
         "track": {
@@ -8608,6 +8949,100 @@
         "blend"
       ],
       "type": "object"
+    },
+    "LeaseState": {
+      "description": "The lease as one server sees it.",
+      "oneOf": [
+        {
+          "description": "This server writes, at `epoch`.",
+          "properties": {
+            "epoch": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "state": {
+              "const": "held",
+              "type": "string"
+            }
+          },
+          "required": [
+            "state",
+            "epoch"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Another server holds it. `age_server_ms`: server time since its last stamp, when this\nround's probe could tell.",
+          "properties": {
+            "ageServerMs": {
+              "format": "int64",
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "epoch": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "holder": {
+              "type": "string"
+            },
+            "state": {
+              "const": "heldElsewhere",
+              "type": "string"
+            }
+          },
+          "required": [
+            "state",
+            "holder",
+            "epoch"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "The holder is confirmed stopped, but this storage kind needs confirmation to take over.",
+          "properties": {
+            "epoch": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "holder": {
+              "type": "string"
+            },
+            "state": {
+              "const": "stale",
+              "type": "string"
+            }
+          },
+          "required": [
+            "state",
+            "holder",
+            "epoch"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "This server's lease is lost (or could not be acquired: the folder is unreachable).",
+          "properties": {
+            "reason": {
+              "type": "string"
+            },
+            "state": {
+              "const": "lost",
+              "type": "string"
+            }
+          },
+          "required": [
+            "state",
+            "reason"
+          ],
+          "type": "object"
+        }
+      ]
     },
     "LegacyCodecCaps": {
       "description": "v1: one codec's support, the shape of `fin-codecs`' `CodecSupport`.",
@@ -8841,7 +9276,11 @@
           "type": "string"
         },
         "volume": {
-          "$ref": "#/$defs/VolumeIdentity",
+          "allOf": [
+            {
+              "$ref": "#/$defs/VolumeIdentity"
+            }
+          ],
           "description": "The stored identity the root is judged against before and during the job."
         }
       },
@@ -9092,7 +9531,11 @@
           "type": "integer"
         },
         "identity": {
-          "$ref": "#/$defs/VolumeIdentity",
+          "allOf": [
+            {
+              "$ref": "#/$defs/VolumeIdentity"
+            }
+          ],
           "description": "The identity the first stat measured (refreshed into the library after a full scan)."
         },
         "incomplete": {
@@ -9753,7 +10196,11 @@
           ]
         },
         "size": {
-          "$ref": "#/$defs/Size",
+          "allOf": [
+            {
+              "$ref": "#/$defs/Size"
+            }
+          ],
           "description": "The frame size; the timeline's resolution when absent. Each side 1 to\n[`LOOK_MAX_SIDE`]."
         },
         "timeline": {
@@ -10347,7 +10794,11 @@
           "$ref": "#/$defs/ContainerKind"
         },
         "duration": {
-          "$ref": "#/$defs/Rational",
+          "allOf": [
+            {
+              "$ref": "#/$defs/Rational"
+            }
+          ],
           "description": "Seconds: the longest interpreted track after edit lists."
         },
         "fragmented": {
@@ -12131,6 +12582,49 @@
       ],
       "description": "A parameter value: finite numbers round-trip bit for bit through stored JSON (serde_json's\n`float_roundtrip`). Times, rationals, colours (`#rrggbb[aa]`) and enum values are text; an\nasset reference is `{\"asset\": id}`, so every id a value carries is found without the\nregistry (plan 4C Decision 24)."
     },
+    "PendingCompaction": {
+      "description": "One manifest as status shows it.",
+      "properties": {
+        "branch": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "graceEndsMs": {
+          "description": "Unix ms (this machine's clock, informational) when the grace period ends, once it runs.",
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "manifest": {
+          "type": "string"
+        },
+        "reason": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "state": {
+          "description": "`arriving` (its packs or snapshot are not all here yet), `grace`, `waiting`,\n`abandoned` or `unreadable`.",
+          "type": "string"
+        },
+        "writerId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "manifest",
+        "state"
+      ],
+      "type": "object"
+    },
     "Permission": {
       "description": "One permission, tagged by `perm`. The set is closed: an unknown `perm` or field fails the\nparse (a unit permission with any other field too, which serde's tagged enums allow).",
       "oneOf": [
@@ -12706,7 +13200,11 @@
           "$ref": "#/$defs/Permission"
         },
         "risk": {
-          "$ref": "#/$defs/Risk",
+          "allOf": [
+            {
+              "$ref": "#/$defs/Risk"
+            }
+          ],
           "description": "Within the whole set (combinations count, spec §4.3)."
         }
       },
@@ -13382,7 +13880,11 @@
       "description": "`plugin.lifecycle`: one plugin call (plan, install, update, downgrade, remove, enable,\ndisable, revoke).",
       "properties": {
         "action": {
-          "$ref": "#/$defs/Name",
+          "allOf": [
+            {
+              "$ref": "#/$defs/Name"
+            }
+          ],
           "description": "From `PLUGIN_ACTIONS`."
         },
         "bytesLog2": {
@@ -13739,25 +14241,15 @@
       "type": "object"
     },
     "Probe": {
-      "description": "What the server needs to register an asset: its kind and that kind's fields (the\n`asset.add` fields, plan 4C Task 7). Its serde form is what `asset.probe` answers\n(`@finisher/core-types` exports it as `Probe`); absent fields are omitted.",
+      "description": "What the server needs to register an asset: its kind and that kind's fields (the\n`asset.add` fields, plan 4C Task 7). Its serde form is what `asset.probe` answers\n(`@finisher/core-types` exports it as `Probe`); absent fields are omitted, never `null`, so\neach optional field's schema is its type's (`#[schemars(with)]`: optional, not nullable).",
       "properties": {
         "audio": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/AudioInfo"
-            },
-            {
-              "type": "null"
-            }
-          ]
+          "$ref": "#/$defs/AudioInfo"
         },
         "duration": {
-          "anyOf": [
+          "allOf": [
             {
               "$ref": "#/$defs/Rational"
-            },
-            {
-              "type": "null"
             }
           ],
           "description": "Seconds: `media` and `lottieTemplate` only."
@@ -13766,23 +14258,17 @@
           "type": "string"
         },
         "font": {
-          "anyOf": [
+          "allOf": [
             {
               "$ref": "#/$defs/FontFile"
-            },
-            {
-              "type": "null"
             }
           ],
           "description": "A font's whole-file SHA-256, format and faces (Decision 37)."
         },
         "image": {
-          "anyOf": [
+          "allOf": [
             {
               "$ref": "#/$defs/ImageInfo"
-            },
-            {
-              "type": "null"
             }
           ],
           "description": "`image` and `svg`: the pixel size."
@@ -13791,27 +14277,17 @@
           "$ref": "#/$defs/AssetKind"
         },
         "lottie": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/LottieInfo"
-            },
-            {
-              "type": "null"
-            }
-          ]
+          "$ref": "#/$defs/LottieInfo"
         },
         "lut": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/LutInfo"
-            },
-            {
-              "type": "null"
-            }
-          ]
+          "$ref": "#/$defs/LutInfo"
         },
         "media": {
-          "$ref": "#/$defs/MediaInfo",
+          "allOf": [
+            {
+              "$ref": "#/$defs/MediaInfo"
+            }
+          ],
           "description": "MP4/MOV: what the file is (sub-project 6 spec §6.3): display size and rotation, colour,\nHDR, VFR, edit lists. In the `asset.probe` answer only: an `asset.add` never carries it\n(spec §4.4)."
         },
         "size": {
@@ -13820,14 +14296,7 @@
           "type": "integer"
         },
         "video": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/VideoInfo"
-            },
-            {
-              "type": "null"
-            }
-          ]
+          "$ref": "#/$defs/VideoInfo"
         }
       },
       "required": [
@@ -14118,6 +14587,297 @@
       ],
       "type": "object"
     },
+    "ProjectStatus": {
+      "description": "`fin project status` (serialised camelCase).",
+      "properties": {
+        "branches": {
+          "items": {
+            "$ref": "#/$defs/BranchStatus"
+          },
+          "type": "array"
+        },
+        "compaction": {
+          "allOf": [
+            {
+              "$ref": "#/$defs/CompactionStatus"
+            }
+          ],
+          "description": "Pending compaction manifests, the last run, its last problem."
+        },
+        "exportError": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CoreError"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "foreign": {
+          "description": "Foreign files, relative to the project folder.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "importError": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CoreError"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The last import pass's error (a record that cannot be applied, an unlistable folder)."
+        },
+        "incarnation": {
+          "description": "The database's incarnation: with a branch's `generation`, what a caller passes to\ncommit against what it read (`Generation`). New whenever the database is rebuilt.",
+          "type": "string"
+        },
+        "lastExportMs": {
+          "description": "Unix ms of the last export that wrote a segment (this process).",
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "lease": {
+          "$ref": "#/$defs/LeaseState"
+        },
+        "leaseCheck": {
+          "description": "The last fencing check failed only because `.finisher/` could not be listed.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "pending": {
+          "description": "Segments neither imported nor set aside yet (beyond a fork, behind a gap).",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "projectId": {
+          "type": "string"
+        },
+        "quarantine": {
+          "$ref": "#/$defs/QuarantineSummary"
+        },
+        "readOnly": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ReadOnly"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "storage": {
+          "$ref": "#/$defs/StorageKind"
+        },
+        "storageWarning": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "unknownBranches": {
+          "description": "Folder branch directories waiting for their `branch` record (never read-only).",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "waiting": {
+          "description": "Missing predecessor segments (gaps): imported once they arrive.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "warnings": {
+          "items": {
+            "$ref": "#/$defs/StatusWarning"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "projectId",
+        "storage",
+        "lease",
+        "branches",
+        "quarantine",
+        "foreign",
+        "waiting",
+        "pending",
+        "unknownBranches",
+        "warnings",
+        "incarnation",
+        "compaction"
+      ],
+      "type": "object"
+    },
+    "ProjectStatusView": {
+      "description": "A project's status as fin-node serves it (`status()`, `takeover()` and the `status` event:\n`project.status`, `project.takeover`, `project.events`): the store's [`ProjectStatus`] with\nthe server's font summary merged in (`fonts`, and its warnings after the store's; 4C\nDecision 34) and, from `status()` only, `busy`. fin-node merges the parts as JSON; this type\nnames the result for the schema.",
+      "properties": {
+        "branches": {
+          "items": {
+            "$ref": "#/$defs/BranchStatus"
+          },
+          "type": "array"
+        },
+        "busy": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Busy"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "`status()` only (absent elsewhere): the long call running now, `null` when none is. The\nrest is then the status cached after the last tick or long call."
+        },
+        "compaction": {
+          "allOf": [
+            {
+              "$ref": "#/$defs/CompactionStatus"
+            }
+          ],
+          "description": "Pending compaction manifests, the last run, its last problem."
+        },
+        "exportError": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CoreError"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "fonts": {
+          "allOf": [
+            {
+              "$ref": "#/$defs/FontsSummary"
+            }
+          ],
+          "description": "What the project's font pins lack on this server; absent until the server has read the\nproject's pins."
+        },
+        "foreign": {
+          "description": "Foreign files, relative to the project folder.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "importError": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CoreError"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The last import pass's error (a record that cannot be applied, an unlistable folder)."
+        },
+        "incarnation": {
+          "description": "The database's incarnation: with a branch's `generation`, what a caller passes to\ncommit against what it read (`Generation`). New whenever the database is rebuilt.",
+          "type": "string"
+        },
+        "lastExportMs": {
+          "description": "Unix ms of the last export that wrote a segment (this process).",
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "lease": {
+          "$ref": "#/$defs/LeaseState"
+        },
+        "leaseCheck": {
+          "description": "The last fencing check failed only because `.finisher/` could not be listed.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "pending": {
+          "description": "Segments neither imported nor set aside yet (beyond a fork, behind a gap).",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "projectId": {
+          "type": "string"
+        },
+        "quarantine": {
+          "$ref": "#/$defs/QuarantineSummary"
+        },
+        "readOnly": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ReadOnly"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "storage": {
+          "$ref": "#/$defs/StorageKind"
+        },
+        "storageWarning": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "unknownBranches": {
+          "description": "Folder branch directories waiting for their `branch` record (never read-only).",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "waiting": {
+          "description": "Missing predecessor segments (gaps): imported once they arrive.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "warnings": {
+          "items": {
+            "$ref": "#/$defs/StatusWarning"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "projectId",
+        "storage",
+        "lease",
+        "branches",
+        "quarantine",
+        "foreign",
+        "waiting",
+        "pending",
+        "unknownBranches",
+        "warnings",
+        "incarnation",
+        "compaction"
+      ],
+      "type": "object"
+    },
     "ProjectView": {
       "additionalProperties": false,
       "description": "`project.view`: the `fin view` text of the call's branch, capped at 756 KiB (`PAGE_BYTES`).",
@@ -14278,6 +15038,38 @@
       "type": "array",
       "uniqueItems": true
     },
+    "QuarantineSummary": {
+      "description": "Records set aside now (`current` quarantine rows).",
+      "properties": {
+        "count": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "origins": {
+          "description": "`folder`, `local`, `foreign`.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "reasons": {
+          "additionalProperties": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "description": "Count per reason (`STALE_EPOCH`, `MALFORMED`, `DIVERGED_TAIL`, `SUPERSEDED`,\n`CONFLICT_COPY`, `ID_COLLISION`, `IMPORTED`, `SALVAGED`, `MISSING_FROM_FOLDER`).",
+          "type": "object"
+        }
+      },
+      "required": [
+        "count",
+        "origins",
+        "reasons"
+      ],
+      "type": "object"
+    },
     "Range": {
       "oneOf": [
         {
@@ -14335,6 +15127,152 @@
         "all"
       ],
       "type": "string"
+    },
+    "ReadOnly": {
+      "properties": {
+        "fix": {
+          "type": "string"
+        },
+        "reason": {
+          "$ref": "#/$defs/ReadOnlyReason"
+        }
+      },
+      "required": [
+        "reason",
+        "fix"
+      ],
+      "type": "object"
+    },
+    "ReadOnlyReason": {
+      "description": "Why the project is read-only (spec §3.7). Import sets `ChainFork`, `ConflictCopy`,\n`NewerFormat` and `ImportError`; the lease sets `LeaseHeld`, `LeaseLost` and\n`CatchingUp` (`Store::read_only` combines them).\n\nNot in the spec's table (Task 20 adds them):\n- `ImportError`: a record on the resolved chain cannot be applied\n  ([`ImportReport::error`]). Writing past it would build a line that servers able to\n  replay it see as a fork, so commits and export wait until a later pass no longer\n  reports it.\n- `CatchingUp`: the lease was just acquired, and no import pass at the new epoch has yet\n  resolved every branch with nothing waiting (after waiting out the directory-cache\n  window when another server wrote before). Until then a commit or an export could extend\n  a line the folder has already moved past (plan Task 11, ordering rule).\n\nPrecedence, highest first: `ChainFork`, `ConflictCopy`, `NewerFormat`, `ImportError`\n(the folder's content: a person or an update must act, whoever holds the lease), then\n`LeaseLost`, `LeaseHeld`, `CatchingUp` (the lease: resolved by waiting or a takeover).",
+      "enum": [
+        "LEASE_HELD",
+        "LEASE_LOST",
+        "CHAIN_FORK",
+        "CONFLICT_COPY",
+        "NEWER_FORMAT",
+        "IMPORT_ERROR",
+        "CATCHING_UP"
+      ],
+      "type": "string"
+    },
+    "RebuildReport": {
+      "description": "What a rebuild did.",
+      "properties": {
+        "corruptCopy": {
+          "description": "Where the old database was kept (`project.fdb.corrupt-<ts>`, or\n`project.fdb.replaced-<ts>` after a manual rebuild).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "genesisMismatch": {
+          "description": "The project file's genesis does not describe the old database's rev 0 (that rev 0\nwas used).",
+          "type": "boolean"
+        },
+        "importError": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CoreError"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Why the import stopped early (it stopped where any open would)."
+        },
+        "keptForRecovery": {
+          "description": "Kept copies whose salvage could not read everything and that are not acknowledged:\nnever pruned (`Store::acknowledge_salvage`).",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "missingFromFolder": {
+          "description": "Of those, exported records the folder no longer yields (`MISSING_FROM_FOLDER`).",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "problem": {
+          "description": "What made the old database count as damaged (`corrupt`).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "reason": {
+          "description": "`missing`, `corrupt` or `manual`.",
+          "type": "string"
+        },
+        "rebuiltThrough": {
+          "description": "The head of `main` in the new database.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "records": {
+          "description": "Records in the new database.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "salvageComplete": {
+          "description": "Everything in the old databases could be read.",
+          "type": "boolean"
+        },
+        "salvageErrors": {
+          "description": "What could not be read.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "salvaged": {
+          "description": "Rows salvaged into quarantine: records the new database lacks (`SALVAGED`,\n`MISSING_FROM_FOLDER`) and the old databases' own quarantine rows.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "salvagedCopies": {
+          "description": "Earlier kept copies salvaged too.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "seededFromSnapshot": {
+          "description": "The seq of the folder snapshot the rebuild was seeded from.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "verify": {
+          "allOf": [
+            {
+              "$ref": "#/$defs/VerifyReport"
+            }
+          ],
+          "description": "The checks of the new database that need no replay."
+        }
+      },
+      "required": [
+        "reason",
+        "records",
+        "salvaged",
+        "missingFromFolder",
+        "rebuiltThrough",
+        "salvageComplete",
+        "salvageErrors",
+        "salvagedCopies",
+        "keptForRecovery",
+        "genesisMismatch",
+        "verify"
+      ],
+      "type": "object"
     },
     "RecordKind": {
       "description": "What a record does (spec §4.2). Sub-project 4A writes only edits; 4B adds the rest up to\n`branchSet`; 5E adds `drop` (durable rejections, sub-project 5 spec §8.3).",
@@ -14618,7 +15556,11 @@
           "type": "boolean"
         },
         "code": {
-          "$ref": "#/$defs/Code",
+          "allOf": [
+            {
+              "$ref": "#/$defs/Code"
+            }
+          ],
           "description": "A `TUF_*` code, `CLOCK_SUSPECT`, `REGISTRY_UNREACHABLE`, ..."
         },
         "micros": {
@@ -14924,10 +15866,7 @@
           "type": "string"
         },
         "hash": {
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": "string"
         },
         "seq": {
           "format": "uint64",
@@ -16347,6 +17286,26 @@
       ],
       "type": "object"
     },
+    "StatusWarning": {
+      "description": "One status warning (`StatusWarning` in the schema). The store's carry a code and a message; the server's font warnings\n(fin-node, 4C Decision 34) also `details` and a `fix`.",
+      "properties": {
+        "code": {
+          "type": "string"
+        },
+        "details": true,
+        "fix": {
+          "type": "string"
+        },
+        "message": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "code",
+        "message"
+      ],
+      "type": "object"
+    },
     "StopReason": {
       "enum": [
         "endTurn",
@@ -16355,6 +17314,20 @@
         "stopSequence",
         "refusal",
         "other"
+      ],
+      "type": "string"
+    },
+    "StorageKind": {
+      "description": "The project folder's storage kind: `local`, `network` or `sync:<provider>`.",
+      "enum": [
+        "local",
+        "network",
+        "sync:dropbox",
+        "sync:syncthing",
+        "sync:icloud",
+        "sync:onedrive",
+        "sync:googledrive",
+        "sync:unknown"
       ],
       "type": "string"
     },
@@ -17934,7 +18907,11 @@
           "type": "array"
         },
         "source": {
-          "$ref": "#/$defs/UnitSource",
+          "allOf": [
+            {
+              "$ref": "#/$defs/UnitSource"
+            }
+          ],
           "description": "The record whose stored `inverse` an undo uses: the unit's records, or the redo\nrecord that recreated it (Decision 23)."
         }
       },
@@ -18120,6 +19097,25 @@
       ],
       "type": "string"
     },
+    "VerifyReport": {
+      "description": "[`Store::verify`]: `ok` when every check is.",
+      "properties": {
+        "checks": {
+          "items": {
+            "$ref": "#/$defs/Check"
+          },
+          "type": "array"
+        },
+        "ok": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "ok",
+        "checks"
+      ],
+      "type": "object"
+    },
     "Version": {
       "pattern": "^[0-9]{1,5}\\.[0-9]{1,5}\\.[0-9]{1,5}(-[0-9a-z.]{1,32})?$",
       "type": "string",
@@ -18264,14 +19260,22 @@
           "$ref": "#/$defs/VideoCodec"
         },
         "coded": {
-          "$ref": "#/$defs/Size",
+          "allOf": [
+            {
+              "$ref": "#/$defs/Size"
+            }
+          ],
           "description": "The sample entry's coded size."
         },
         "colour": {
           "$ref": "#/$defs/ColourTags"
         },
         "display": {
-          "$ref": "#/$defs/Size",
+          "allOf": [
+            {
+              "$ref": "#/$defs/Size"
+            }
+          ],
           "description": "`coded` after the pixel aspect and the rotation ([`display_size`])."
         },
         "fourcc": {
@@ -18298,11 +19302,19 @@
           "type": "integer"
         },
         "nominalRate": {
-          "$ref": "#/$defs/Rational",
+          "allOf": [
+            {
+              "$ref": "#/$defs/Rational"
+            }
+          ],
           "description": "Frames per second of the most common frame duration."
         },
         "pixelAspect": {
-          "$ref": "#/$defs/Rational",
+          "allOf": [
+            {
+              "$ref": "#/$defs/Rational"
+            }
+          ],
           "description": "Horizontal over vertical spacing (`pasp`); 1 when absent."
         },
         "profile": {

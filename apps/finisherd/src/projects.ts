@@ -1,13 +1,13 @@
 // ProjectRegistry: open Engines, the `app.db` project index, per-(project, branch) op hubs and
 // per-project event hubs fed by each engine's `onEvent`.
 import { resolve } from "node:path";
-import type { AudioPlan, BranchView, CommittedTx, FontsPlan, FramePlan } from "@finisher/core-types";
+import type { AudioPlan, BranchView, CommittedTx, CompactReport, FontsPlan, FramePlan, ProjectStatusView, RebuildReport, VerifyReport } from "@finisher/core-types";
 import type { FinError, Generation, ProjectEvent, TxGetResult } from "@finisher/contracts";
 import { Engine } from "@finisher/fin-node";
 import { Context, Effect, Layer, type Scope, Semaphore, type Stream } from "effect";
 import { attempt, attemptJson, finError, isEngineDead } from "./errors.ts";
 import type { CallMeta } from "./diagnostics.ts";
-import { callEngine, type HistoryOp, type HistoryPayload, metaJson, publishResult } from "./history.ts";
+import { callEngine, type HistoryOp, type HistoryPayload, type HistoryResults, metaJson, publishResult } from "./history.ts";
 import { Hubs } from "./hubs.ts";
 import { routeEngineEvent } from "./engine-events.ts";
 import { engineEvicted, opStream } from "./op-stream.ts";
@@ -60,7 +60,7 @@ export interface ProjectRegistryShape {
    * less `projectId`). Runs under the commit lock; afterwards every record of the result is
    * published to its own branch's hub, in rev order (nothing for a dry run).
    */
-  readonly history: (projectId: string, op: HistoryOp, payload: HistoryPayload, meta?: CallMeta) => Effect.Effect<unknown, FinError>;
+  readonly history: <O extends HistoryOp>(projectId: string, op: O, payload: HistoryPayload, meta?: CallMeta) => Effect.Effect<HistoryResults[O], FinError>;
   /**
    * `branch` is resolved to its id first (hubs are keyed by id). Replays `rev > fromRev`, then follows live commits and imports: every rev exactly once, in
    * order. Ends with `HISTORY_REWOUND` once history it reported (or started from) is rewound,
@@ -81,11 +81,11 @@ export interface ProjectRegistryShape {
   readonly close: (projectId: string) => Effect.Effect<{ closed: boolean }, FinError>;
   /** The status now, then every status change and rewind/rebuild/background error. */
   readonly events: (projectId: string) => Stream.Stream<ProjectEvent, FinError>;
-  readonly status: (projectId: string) => Effect.Effect<unknown, FinError>;
-  readonly takeover: (projectId: string, confirm: boolean) => Effect.Effect<unknown, FinError>;
-  readonly verify: (projectId: string) => Effect.Effect<unknown, FinError>;
-  readonly rebuild: (projectId: string) => Effect.Effect<unknown, FinError>;
-  readonly compact: (projectId: string) => Effect.Effect<unknown, FinError>;
+  readonly status: (projectId: string) => Effect.Effect<ProjectStatusView, FinError>;
+  readonly takeover: (projectId: string, confirm: boolean) => Effect.Effect<ProjectStatusView, FinError>;
+  readonly verify: (projectId: string) => Effect.Effect<VerifyReport, FinError>;
+  readonly rebuild: (projectId: string) => Effect.Effect<RebuildReport, FinError>;
+  readonly compact: (projectId: string) => Effect.Effect<CompactReport, FinError>;
   readonly txGet: (projectId: string, txId: string) => Effect.Effect<TxGetResult, FinError>;
   /** `meta`'s guard names the caller's credential: refused once it is revoked (review of 5A Tasks 8–9, L1). */
   readonly acknowledgeRewind: (projectId: string, branch: string, generation: number, meta?: CallMeta) => Effect.Effect<boolean, FinError>;
@@ -455,7 +455,7 @@ export function makeProjectRegistry(
     /** The status and the last event it covers, from the engine that read it (`project.events`). */
     const statusAt = (projectId: string): Effect.Effect<StatusAt, FinError> =>
       withOpen(projectId, (p) =>
-        Effect.map(call<{ status: unknown; seq: number }>(p, (e) => e.statusAt()), (r) => ({ status: r.status, seq: r.seq, source: p.epoch })),
+        Effect.map(call<{ status: ProjectStatusView; seq: number }>(p, (e) => e.statusAt()), (r) => ({ status: r.status, seq: r.seq, source: p.epoch })),
       );
 
     /** The id a branch reference names (`BRANCH_NOT_FOUND` when none does); `main` needs no call. */
@@ -529,12 +529,12 @@ export function makeProjectRegistry(
       branches: (projectId, all) =>
         Effect.map(on<BranchView[]>(projectId, (e) => e.branches(all)), (branches) => ({ branches })),
 
-      history: (projectId, op, payload, meta) =>
+      history: <O extends HistoryOp>(projectId: string, op: O, payload: HistoryPayload, meta?: CallMeta) =>
         withOpen(projectId, (p) =>
           using(p, p.commitLock.withPermits(1)(
             Effect.uninterruptible(
               Effect.tap(
-                call<unknown>(p, (e) => callEngine(e, op, payload, metaJson(meta))),
+                call<HistoryResults[O]>(p, (e) => callEngine(e, op, payload, metaJson(meta))),
                 (result) => Effect.sync(() => publishResult(hubs, projectId, result, payload.dryRun === true)),
               ),
             ),
@@ -550,11 +550,11 @@ export function makeProjectRegistry(
           const p = byId.get(projectId);
           return Effect.map(p === undefined ? Effect.succeed(false) : closeProject(p, false), (closed) => ({ closed }));
         }),
-      status: (projectId) => on(projectId, (e) => e.status()),
-      takeover: (projectId, confirm) => on(projectId, (e) => e.takeover(confirm)),
-      verify: (projectId) => on(projectId, (e) => e.verify()),
-      rebuild: (projectId) => on(projectId, (e) => e.rebuild()),
-      compact: (projectId) => on(projectId, (e) => e.compact()),
+      status: (projectId) => on<ProjectStatusView>(projectId, (e) => e.status()),
+      takeover: (projectId, confirm) => on<ProjectStatusView>(projectId, (e) => e.takeover(confirm)),
+      verify: (projectId) => on<VerifyReport>(projectId, (e) => e.verify()),
+      rebuild: (projectId) => on<RebuildReport>(projectId, (e) => e.rebuild()),
+      compact: (projectId) => on<CompactReport>(projectId, (e) => e.compact()),
       txGet: (projectId, txId) => on<TxGetResult>(projectId, async (e) => (await e.txGet(txId)) ?? "null"),
       acknowledgeRewind: (projectId, requested, generation, meta) =>
         Effect.flatMap(resolveBranch(projectId, requested), (branch) =>

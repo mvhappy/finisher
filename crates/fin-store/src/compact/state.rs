@@ -7,6 +7,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::Path;
 use std::time::{Duration, Instant};
 
+use schemars::JsonSchema;
 use serde::Serialize;
 
 #[cfg(any(test, feature = "test-hooks"))]
@@ -20,7 +21,7 @@ const ABANDONED_KEY: &str = "compactionAbandoned";
 
 /// What one compaction run did (serialised camelCase; `waiting` and `abandoned` as
 /// `[name, why]` pairs).
-#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct CompactReport {
     /// Why nothing ran (not holding the lease, read-only).
@@ -40,7 +41,7 @@ pub struct CompactReport {
 }
 
 /// One manifest as status shows it.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct PendingCompaction {
     pub manifest: String,
@@ -55,7 +56,7 @@ pub struct PendingCompaction {
 }
 
 /// Compaction in `fin project status`.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct CompactionStatus {
     /// Manifests seen while holding the lease.

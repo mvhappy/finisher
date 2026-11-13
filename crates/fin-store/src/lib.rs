@@ -115,8 +115,9 @@ pub use tick::hooks::{TickHooks, TickPoint};
 pub use tick::{DueWork, StoreAccess, TickOptions, TickReport};
 pub use verify::{Check, VerifyReport};
 pub use wire::{
-    BranchCreated, BranchView, DropReq, EngineEvent, HistoryResult, MergeReport, RecoverGroup,
-    RecoverReport, ReviewHead, ReviewPlan, SetAside, SkippedFile, TxSetAside,
+    BranchCreated, BranchView, Busy, DropReq, EngineEvent, FontFailed, FontFetching, FontMissing,
+    FontsSummary, HistoryResult, MergeReport, ProjectStatusView, RecoverGroup, RecoverReport,
+    ReviewHead, ReviewPlan, SetAside, SkippedFile, TxSetAside,
 };
 pub use write::WriteOutcome;
 

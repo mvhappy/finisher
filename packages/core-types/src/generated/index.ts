@@ -857,6 +857,15 @@ export type PanicWhere = "finNode" | "finisherd" | "fin";
  */
 export type CopyPath = "copy" | "zeroCopy";
 /**
+ * A frame size as a bucket: the smallest standard size the frame fits within, by pixel count
+ * (so a portrait clip buckets as its landscape twin): `sd` ≤ 960×540, `hd720` ≤ 1280×720,
+ * `hd1080` ≤ 2048×1080, `qhd` ≤ 2560×1440, `uhd4k` ≤ 4096×2160, `uhd8k` above.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "ResolutionBucket".
+ */
+export type ResolutionBucket = "sd" | "hd720" | "hd1080" | "qhd" | "uhd4k" | "uhd8k";
+/**
  * A job's terminal state.
  *
  * This interface was referenced by `FinCore`'s JSON-Schema
@@ -1404,7 +1413,7 @@ export type EngineEvent =
       type: "applied";
     }
   | {
-      status: unknown;
+      status: ProjectStatusView;
       type: "status";
     }
   | {
@@ -1433,6 +1442,71 @@ export type EngineEvent =
       collect: CollectPolicy;
       type: "collect";
     };
+/**
+ * The lease as one server sees it.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "LeaseState".
+ */
+export type LeaseState =
+  | {
+      epoch: number;
+      state: "held";
+    }
+  | {
+      ageServerMs?: number | null;
+      epoch: number;
+      holder: string;
+      state: "heldElsewhere";
+    }
+  | {
+      epoch: number;
+      holder: string;
+      state: "stale";
+    }
+  | {
+      reason: string;
+      state: "lost";
+    };
+/**
+ * Why the project is read-only (spec §3.7). Import sets `ChainFork`, `ConflictCopy`,
+ * `NewerFormat` and `ImportError`; the lease sets `LeaseHeld`, `LeaseLost` and
+ * `CatchingUp` (`Store::read_only` combines them).
+ *
+ * Not in the spec's table (Task 20 adds them):
+ * - `ImportError`: a record on the resolved chain cannot be applied
+ *   ([`ImportReport::error`]). Writing past it would build a line that servers able to
+ *   replay it see as a fork, so commits and export wait until a later pass no longer
+ *   reports it.
+ * - `CatchingUp`: the lease was just acquired, and no import pass at the new epoch has yet
+ *   resolved every branch with nothing waiting (after waiting out the directory-cache
+ *   window when another server wrote before). Until then a commit or an export could extend
+ *   a line the folder has already moved past (plan Task 11, ordering rule).
+ *
+ * Precedence, highest first: `ChainFork`, `ConflictCopy`, `NewerFormat`, `ImportError`
+ * (the folder's content: a person or an update must act, whoever holds the lease), then
+ * `LeaseLost`, `LeaseHeld`, `CatchingUp` (the lease: resolved by waiting or a takeover).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "ReadOnlyReason".
+ */
+export type ReadOnlyReason =
+  "LEASE_HELD" | "LEASE_LOST" | "CHAIN_FORK" | "CONFLICT_COPY" | "NEWER_FORMAT" | "IMPORT_ERROR" | "CATCHING_UP";
+/**
+ * The project folder's storage kind: `local`, `network` or `sync:<provider>`.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "StorageKind".
+ */
+export type StorageKind =
+  | "local"
+  | "network"
+  | "sync:dropbox"
+  | "sync:syncthing"
+  | "sync:icloud"
+  | "sync:onedrive"
+  | "sync:googledrive"
+  | "sync:unknown";
 /**
  * What a merge does with a source record (the review's `status`).
  *
@@ -1834,14 +1908,14 @@ export type SecretMode = "brokered" | "raw";
 export type LicenceClass = "permissive" | "weakCopyleft" | "copyleft" | "nonCommercial" | "unknown";
 /**
  * This interface was referenced by `FinCore`'s JSON-Schema
- * via the `definition` "PluginKind".
- */
-export type PluginKind = "content" | "code";
-/**
- * This interface was referenced by `FinCore`'s JSON-Schema
  * via the `definition` "Risk".
  */
 export type Risk = "low" | "medium" | "high";
+/**
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "PluginKind".
+ */
+export type PluginKind = "content" | "code";
 /**
  * This interface was referenced by `FinCore`'s JSON-Schema
  * via the `definition` "SourceKind".
@@ -2291,15 +2365,6 @@ export type PurgeSelector =
 export type RecordKind =
   "edit" | "undo" | "redo" | "merge" | "cherryPick" | "revert" | "checkpoint" | "branch" | "branchSet" | "drop";
 /**
- * A frame size as a bucket: the smallest standard size the frame fits within, by pixel count
- * (so a portrait clip buckets as its landscape twin): `sd` ≤ 960×540, `hd720` ≤ 1280×720,
- * `hd1080` ≤ 2048×1080, `qhd` ≤ 2560×1440, `uhd4k` ≤ 4096×2160, `uhd8k` above.
- *
- * This interface was referenced by `FinCore`'s JSON-Schema
- * via the `definition` "ResolutionBucket".
- */
-export type ResolutionBucket = "sd" | "hd720" | "hd1080" | "qhd" | "uhd4k" | "uhd8k";
-/**
  * A root's state (Decision 17): `online` carries the identity measured now (its key may
  * differ from the stored one when the change was confirmed harmless); every other state
  * puts the library offline with its catalog intact (Decision 18).
@@ -2383,6 +2448,20 @@ export type SandboxMechanism =
  */
 export type SandboxProfile = "agent" | "hook" | "worker" | "plugin";
 /**
+ * Where an undo takes a unit's inverse from ([`UnitEntry::source`]).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "UnitSource".
+ */
+export type UnitSource =
+  | {
+      kind: "records";
+    }
+  | {
+      kind: "redo";
+      txId: string;
+    };
+/**
  * How `test.crash` dies: `abort`, `SIGSEGV`/an access violation, `SIGBUS`/
  * `EXCEPTION_IN_PAGE_ERROR`, Windows `__fastfail`, `exit(3)`, or by allocating until its
  * group's memory limit kills it (`oom`; it aborts past 2 GiB).
@@ -2419,20 +2498,6 @@ export type TestGarbage = "json" | "seq" | "long" | "otherJob" | "unknownType";
  * via the `definition` "TestHelperBehaviour".
  */
 export type TestHelperBehaviour = "ok" | "exitEarly" | "hang" | "spawn" | "call";
-/**
- * Where an undo takes a unit's inverse from ([`UnitEntry::source`]).
- *
- * This interface was referenced by `FinCore`'s JSON-Schema
- * via the `definition` "UnitSource".
- */
-export type UnitSource =
-  | {
-      kind: "records";
-    }
-  | {
-      kind: "redo";
-      txId: string;
-    };
 /**
  * What one worker serves.
  *
@@ -2572,9 +2637,9 @@ export interface BlobRef {
 export interface AgentInput {
   fin?: FinEndpoint | null;
   /**
-   * What runs the agent.
+   * `claudeCode`, `codex` or `fake`; the built-in agent needs no sandbox (spec §8.9).
    */
-  harness: "builtin" | "claudeCode" | "codex" | "fake" | "plugin";
+  harness: Harness;
   home: string;
   /**
    * The roots of the libraries the project references (read-only).
@@ -3726,19 +3791,11 @@ export interface CaptionSetText {
  */
 export interface CaptionSetWords {
   item: string;
-  source?: CaptionSource1;
-  words: Word[];
-}
-/**
- * The transcript artifact a caption came from, and its word range (`[first, end)`).
- */
-export interface CaptionSource1 {
-  artifact: string;
   /**
-   * @minItems 2
-   * @maxItems 2
+   * The caption's source (none: no source).
    */
-  wordRange: [number, number];
+  source?: CaptionSource;
+  words: Word[];
 }
 /**
  * `caption.split`: cuts `item` before word `word`; the right part is `id`.
@@ -3865,9 +3922,9 @@ export interface StorageState {
  */
 export interface PluginLifecycle {
   /**
-   * A name from code or a static table (fin-core events::names); "other" for a value not in the table.
+   * From `PLUGIN_ACTIONS`.
    */
-  action: string;
+  action: Name;
   /**
    * The package's unpacked bytes as a log₂ bucket ([`log2_bucket`]).
    */
@@ -3899,7 +3956,7 @@ export interface RegistryRefresh {
   /**
    * A `TUF_*` code, `CLOCK_SUSPECT`, `REGISTRY_UNREACHABLE`, ...
    */
-  code?: string;
+  code?: Code;
   micros: number;
   outcome: PluginOutcome;
   /**
@@ -4141,7 +4198,7 @@ export interface JobMedia {
   /**
    * The largest frame the job produced.
    */
-  resolution: "sd" | "hd720" | "hd1080" | "qhd" | "uhd4k" | "uhd8k";
+  resolution: ResolutionBucket;
   /**
    * Media seconds produced per wall second of rendering, in thousandths (1000 = real
    * time): the frames' durations at the timeline's rate over decode + composite +
@@ -4889,6 +4946,51 @@ export interface Via {
   plugin: string;
 }
 /**
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "BranchStatus".
+ */
+export interface BranchStatus {
+  /**
+   * The branch id.
+   */
+  branch: string;
+  /**
+   * The highest seq in the folder (0: none).
+   */
+  exportedThrough: number;
+  /**
+   * The parent's seq it forks at (0 for `main`).
+   */
+  forkSeq: number;
+  /**
+   * Bumped whenever an import takes records out of this branch's history (a rewind).
+   */
+  generation: number;
+  head: number;
+  /**
+   * Its display name (`main` for `main`; a branch without an index row: its id).
+   */
+  name: string;
+  /**
+   * The parent's id (`None` for `main`).
+   */
+  parent?: string | null;
+  state: BranchState;
+}
+/**
+ * The long call a status was answered during (`status()`'s `busy`).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "Busy".
+ */
+export interface Busy {
+  operation: string;
+  /**
+   * Unix ms the call started.
+   */
+  sinceMs: number;
+}
+/**
  * The limits of this job's calls and results.
  *
  * This interface was referenced by `FinCore`'s JSON-Schema
@@ -5158,6 +5260,17 @@ export interface Cause {
   txId: string;
 }
 /**
+ * One check's outcome.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "Check".
+ */
+export interface Check {
+  details: unknown;
+  name: string;
+  ok: boolean;
+}
+/**
  * What this machine can decode and encode: the shape of `fin-codecs`' `Capabilities`.
  *
  * This interface was referenced by `FinCore`'s JSON-Schema
@@ -5269,6 +5382,79 @@ export interface CommandRun {
   snapshot?: string | null;
 }
 /**
+ * What one compaction run did (serialised camelCase; `waiting` and `abandoned` as
+ * `[name, why]` pairs).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "CompactReport".
+ */
+export interface CompactReport {
+  /**
+   * `(manifest, why)`: abandoned this run.
+   */
+  abandoned: [string, string][];
+  deleted: number;
+  /**
+   * Manifests finished (phase 2) and the segment files deleted.
+   */
+  finished: string[];
+  /**
+   * Manifests written (phase 1).
+   */
+  manifests: string[];
+  packsWritten: number;
+  /**
+   * Segments the new manifests replace.
+   */
+  replaced: number;
+  /**
+   * Why nothing ran (not holding the lease, read-only).
+   */
+  skipped?: string | null;
+  /**
+   * `(manifest or branch, why)`: steps that wait and are retried.
+   */
+  waiting: [string, string][];
+}
+/**
+ * Compaction in `fin project status`.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "CompactionStatus".
+ */
+export interface CompactionStatus {
+  lastError?: string | null;
+  /**
+   * Unix ms of the last run that wrote or deleted something.
+   */
+  lastRunMs?: number | null;
+  /**
+   * Manifests seen while holding the lease.
+   */
+  pending: PendingCompaction[];
+}
+/**
+ * One manifest as status shows it.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "PendingCompaction".
+ */
+export interface PendingCompaction {
+  branch?: string | null;
+  /**
+   * Unix ms (this machine's clock, informational) when the grace period ends, once it runs.
+   */
+  graceEndsMs?: number | null;
+  manifest: string;
+  reason?: string | null;
+  /**
+   * `arriving` (its packs or snapshot are not all here yet), `grace`, `waiting`,
+   * `abandoned` or `unreadable`.
+   */
+  state: string;
+  writerId?: string | null;
+}
+/**
  * One op that cannot be carried to the head: which op of which tx, why (a reason code), the
  * record to blame when there is one (else null), and what to do. A re-run failure keeps its
  * error's `details` (an `INVALID_RANGE`'s `min` and `max`, say); other conflicts have none.
@@ -5281,9 +5467,7 @@ export interface Conflict {
   /**
    * Boxed: rarely present, and it keeps `Result<_, Conflict>` small.
    */
-  details?: {
-    [k: string]: unknown;
-  };
+  details?: unknown;
   fix: string;
   opIndex: number;
   reason: string;
@@ -5534,7 +5718,7 @@ export interface DolbyVision {
  * via the `definition` "DropReq".
  */
 export interface DropReq {
-  argsHash?: string | null;
+  argsHash?: string;
   author: string;
   drops?: string[];
   dryRun?: boolean;
@@ -5585,6 +5769,163 @@ export interface EncoderCaps {
    * Concurrent sessions that opened, up to 4; absent when not counted.
    */
   sessionLimit?: number;
+}
+/**
+ * A project's status as fin-node serves it (`status()`, `takeover()` and the `status` event:
+ * `project.status`, `project.takeover`, `project.events`): the store's [`ProjectStatus`] with
+ * the server's font summary merged in (`fonts`, and its warnings after the store's; 4C
+ * Decision 34) and, from `status()` only, `busy`. fin-node merges the parts as JSON; this type
+ * names the result for the schema.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "ProjectStatusView".
+ */
+export interface ProjectStatusView {
+  branches: BranchStatus[];
+  /**
+   * `status()` only (absent elsewhere): the long call running now, `null` when none is. The
+   * rest is then the status cached after the last tick or long call.
+   */
+  busy?: Busy | null;
+  /**
+   * Pending compaction manifests, the last run, its last problem.
+   */
+  compaction: CompactionStatus;
+  exportError?: CoreError | null;
+  /**
+   * What the project's font pins lack on this server; absent until the server has read the
+   * project's pins.
+   */
+  fonts?: FontsSummary;
+  /**
+   * Foreign files, relative to the project folder.
+   */
+  foreign: string[];
+  /**
+   * The last import pass's error (a record that cannot be applied, an unlistable folder).
+   */
+  importError?: CoreError | null;
+  /**
+   * The database's incarnation: with a branch's `generation`, what a caller passes to
+   * commit against what it read (`Generation`). New whenever the database is rebuilt.
+   */
+  incarnation: string;
+  /**
+   * Unix ms of the last export that wrote a segment (this process).
+   */
+  lastExportMs?: number | null;
+  lease: LeaseState;
+  /**
+   * The last fencing check failed only because `.finisher/` could not be listed.
+   */
+  leaseCheck?: string | null;
+  /**
+   * Segments neither imported nor set aside yet (beyond a fork, behind a gap).
+   */
+  pending: string[];
+  projectId: string;
+  quarantine: QuarantineSummary;
+  readOnly?: ReadOnly | null;
+  storage: StorageKind;
+  storageWarning?: string | null;
+  /**
+   * Folder branch directories waiting for their `branch` record (never read-only).
+   */
+  unknownBranches: string[];
+  /**
+   * Missing predecessor segments (gaps): imported once they arrive.
+   */
+  waiting: string[];
+  warnings: StatusWarning[];
+}
+/**
+ * A project's font summary (fin-node, 4C Decision 34): the pinned files missing on this
+ * server, being fetched, and whose fetch failed.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "FontsSummary".
+ */
+export interface FontsSummary {
+  failed: FontFailed[];
+  fetching: FontFetching[];
+  missing: FontMissing[];
+}
+/**
+ * A pinned font file whose fetch failed, retried after `retry_at` (unix ms).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "FontFailed".
+ */
+export interface FontFailed {
+  key: string;
+  reason: string;
+  retryAt: number;
+  sha256: string;
+}
+/**
+ * A pinned font file being fetched (queued: `bytes` 0): `bytes` of `total` so far.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "FontFetching".
+ */
+export interface FontFetching {
+  bytes: number;
+  key: string;
+  sha256: string;
+  total: number;
+}
+/**
+ * A pinned font file not available: `key` (the face key), its `sha256` and why (`offline`,
+ * `notInCatalog`, `notFetched`, `damaged`, `hashMismatch`, or an asset file's problem).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "FontMissing".
+ */
+export interface FontMissing {
+  key: string;
+  reason: string;
+  sha256: string;
+}
+/**
+ * Records set aside now (`current` quarantine rows).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "QuarantineSummary".
+ */
+export interface QuarantineSummary {
+  count: number;
+  /**
+   * `folder`, `local`, `foreign`.
+   */
+  origins: string[];
+  /**
+   * Count per reason (`STALE_EPOCH`, `MALFORMED`, `DIVERGED_TAIL`, `SUPERSEDED`,
+   * `CONFLICT_COPY`, `ID_COLLISION`, `IMPORTED`, `SALVAGED`, `MISSING_FROM_FOLDER`).
+   */
+  reasons: {
+    [k: string]: number;
+  };
+}
+/**
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "ReadOnly".
+ */
+export interface ReadOnly {
+  fix: string;
+  reason: ReadOnlyReason;
+}
+/**
+ * One status warning (`StatusWarning` in the schema). The store's carry a code and a message; the server's font warnings
+ * (fin-node, 4C Decision 34) also `details` and a `fix`.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "StatusWarning".
+ */
+export interface StatusWarning {
+  code: string;
+  details?: unknown;
+  fix?: string;
+  message: string;
 }
 /**
  * One journal entry (Decision 2), as read from disk: `payload` is a `Value` (whose schema
@@ -5840,8 +6181,15 @@ export interface Layer {
   kind: ItemKind;
   local: Rational;
   mask?: MaskPlan;
+  /**
+   * A nested item's timeline, time and frame size.
+   */
   nested?: NestedPlan;
   opacity: number;
+  /**
+   * The asset and its time: a clip's source time (through speed), an image's 0, a
+   * graphic's template time.
+   */
   source?: SourceRef;
   track: string;
   transform: PlanTransform;
@@ -5887,7 +6235,11 @@ export interface MaskPlan {
   matte: string;
 }
 /**
- * A nested item's timeline, time and frame size.
+ * The nested timeline of a group layer, the time evaluated on it (`sourceIn + local`) and
+ * its frame size.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "NestedPlan".
  */
 export interface NestedPlan {
   resolution: Resolution;
@@ -5895,8 +6247,10 @@ export interface NestedPlan {
   timeline: string;
 }
 /**
- * The asset and its time: a clip's source time (through speed), an image's 0, a
- * graphic's template time.
+ * An asset and the time to read from it, in seconds.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "SourceRef".
  */
 export interface SourceRef {
   asset: string;
@@ -6119,7 +6473,7 @@ export interface HelperGrant {
 export interface HistoryResult {
   committed: CommittedTx[];
   dryRun: boolean;
-  noOp?: string | null;
+  noOp?: string;
   origins?: string[];
   /**
    * Where the record put each item back that a ripple restore or move placed (owner
@@ -6245,15 +6599,11 @@ export interface StartJob {
   /**
    * The last checkpoint (resumable kinds).
    */
-  checkpoint?: {
-    [k: string]: unknown;
-  };
+  checkpoint?: unknown;
   /**
    * What the kind's `prepare` hook returned (Decision 40).
    */
-  extra?: {
-    [k: string]: unknown;
-  };
+  extra?: unknown;
   id: string;
   kind: string;
   kindVersion: number;
@@ -6288,9 +6638,7 @@ export interface Limits {
  */
 export interface JobError {
   code: string;
-  details?: {
-    [k: string]: unknown;
-  };
+  details?: unknown;
   message: string;
   retry?: Retry;
 }
@@ -6442,7 +6790,7 @@ export interface PlannedPermission {
   /**
    * Within the whole set (combinations count, spec §4.3).
    */
-  risk: "low" | "medium" | "high";
+  risk: Risk;
 }
 /**
  * This interface was referenced by `FinCore`'s JSON-Schema
@@ -6565,6 +6913,9 @@ export interface JobHostCaps {
    * enforced profile only then.
    */
   perJobGrants: boolean;
+  /**
+   * What each sandbox profile gets (plan 7C Decision 4).
+   */
   profiles: JobHostProfiles;
   /**
    * The spawner's name (`none` unsandboxed).
@@ -6577,7 +6928,10 @@ export interface JobHostCaps {
   watchdog: boolean;
 }
 /**
- * What each sandbox profile gets (plan 7C Decision 4).
+ * [`JobHostProfileState`] per profile.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "JobHostProfiles".
  */
 export interface JobHostProfiles {
   plugin: JobHostProfileState;
@@ -6610,7 +6964,7 @@ export interface JobHostOptions {
   /**
    * Delegated cgroups where they are ours (Linux; default `auto`).
    */
-  cgroups?: "auto" | "off";
+  cgroups?: JobHostCgroups;
   /**
    * Events waiting for the JS thread before the host's readers wait too (default 1,024).
    */
@@ -6643,16 +6997,6 @@ export interface JobHostTiming {
   hungMs?: number;
   killWaitMs?: number;
   rssSampleMs?: number;
-}
-/**
- * [`JobHostProfileState`] per profile.
- *
- * This interface was referenced by `FinCore`'s JSON-Schema
- * via the `definition` "JobHostProfiles".
- */
-export interface JobHostProfiles1 {
-  plugin: JobHostProfileState;
-  worker: JobHostProfileState;
 }
 /**
  * A group memory rule (Decision 20).
@@ -6692,6 +7036,10 @@ export interface JobRights {
    */
   grants: Permission[];
   libraries: Reach;
+  /**
+   * The invoker the plugin acts for (audit and journal name `plugin:<id>@<version>` acting
+   * for it).
+   */
   principal: RightsPrincipal;
   projects: Reach;
   /**
@@ -6717,8 +7065,10 @@ export interface RightsBranch {
   subtree: boolean;
 }
 /**
- * The invoker the plugin acts for (audit and journal name `plugin:<id>@<version>` acting
- * for it).
+ * The invoking principal (sub-project 5's `{kind, id}`; the job's owner).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "RightsPrincipal".
  */
 export interface RightsPrincipal {
   id: string;
@@ -6782,18 +7132,14 @@ export interface JobSpawnRequest {
   grants?: JobSpawnGrant[];
   helper?: JobSpawnHelper;
   label?: string;
-  limits?: JobSpawnLimits1;
+  /**
+   * Limits the host applies whatever the spawner does (sp8b Decision 9).
+   */
+  limits?: JobSpawnLimits;
   profile?: JobSpawnProfile;
   program: JobSpawnProgram;
   qos?: "normal" | "utility" | "background";
   role: JobSpawnRole;
-}
-/**
- * Limits the host applies whatever the spawner does (sp8b Decision 9).
- */
-export interface JobSpawnLimits1 {
-  openFiles?: number;
-  processes?: number;
 }
 /**
  * `watch`'s argument: `stallMs` without `begin`, `item` or `progress`; `timeoutMs` from now.
@@ -6980,31 +7326,10 @@ export interface LibraryProbeParams {
    */
   readBps?: number | null;
   root: string;
-  volume: VolumeIdentity1;
-}
-/**
- * A root's volume (Decision 15), measured at add and refreshed at each full scan.
- *
- * - `key`: BLAKE3-16 (hex) of the OS's identity fields ([`crate::volume::key`]); the raw
- *   fields are never stored;
- * - `kind`: the filesystem type (`apfs`, `smbfs`, `ext4`, `nfs4`, `NTFS`, …);
- * - `dev_id`: the device id, informational only (never compared alone);
- * - `mount_root`: the root is a mount root (Decision 17's unmount rule);
- * - `enumeration`: how directories are read (`getdents64`, `getattrlistbulk`, a Windows
- *   information class, `fake`);
- * - `root_file_id`, `sample`: the root's file id and up to 16 top-level entries, to confirm a
- *   key change.
- */
-export interface VolumeIdentity1 {
-  caseSensitive: boolean;
-  devId: string;
-  enumeration: string;
-  key: string;
-  kind: string;
-  mountRoot: boolean;
-  remote: boolean;
-  rootFileId?: string | null;
-  sample: SampleEntry[];
+  /**
+   * The stored identity the root is judged against before and during the job.
+   */
+  volume: VolumeIdentity;
 }
 /**
  * What `library.probe` reports: outcomes by state (the outcomes themselves went through
@@ -7055,45 +7380,52 @@ export interface ProbeOutcome {
 /**
  * What the server needs to register an asset: its kind and that kind's fields (the
  * `asset.add` fields, plan 4C Task 7). Its serde form is what `asset.probe` answers
- * (`@finisher/core-types` exports it as `Probe`); absent fields are omitted.
+ * (`@finisher/core-types` exports it as `Probe`); absent fields are omitted, never `null`, so
+ * each optional field's schema is its type's (`#[schemars(with)]`: optional, not nullable).
  *
  * This interface was referenced by `FinCore`'s JSON-Schema
  * via the `definition` "Probe".
  */
 export interface Probe {
-  audio?: AudioInfo | null;
+  audio?: AudioInfo;
   /**
    * Seconds: `media` and `lottieTemplate` only.
    */
-  duration?: Rational | null;
+  duration?: Rational;
   fingerprint: string;
   /**
    * A font's whole-file SHA-256, format and faces (Decision 37).
    */
-  font?: FontFile | null;
+  font?: FontFile;
   /**
    * `image` and `svg`: the pixel size.
    */
-  image?: ImageInfo | null;
+  image?: ImageInfo;
   kind: AssetKind;
-  lottie?: LottieInfo | null;
-  lut?: LutInfo | null;
+  lottie?: LottieInfo;
+  lut?: LutInfo;
+  /**
+   * MP4/MOV: what the file is (sub-project 6 spec §6.3): display size and rotation, colour,
+   * HDR, VFR, edit lists. In the `asset.probe` answer only: an `asset.add` never carries it
+   * (spec §4.4).
+   */
   media?: MediaInfo;
   size: number;
-  video?: VideoInfo | null;
+  video?: VideoInfo;
 }
 /**
- * MP4/MOV: what the file is (sub-project 6 spec §6.3): display size and rotation, colour,
- * HDR, VFR, edit lists. In the `asset.probe` answer only: an `asset.add` never carries it
- * (spec §4.4).
+ * What a media file is (spec §6.3).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "MediaInfo".
  */
 export interface MediaInfo {
   audio?: AudioTrackInfo;
   container: ContainerKind;
   /**
-   * Exact rational seconds in canonical form: "n/d" in lowest terms with d > 1, or "n" when d is 1; no leading zeros, no "+", no "-0". The pattern checks the shape; lowest terms is checked by the parser.
+   * Seconds: the longest interpreted track after edit lists.
    */
-  duration: string;
+  duration: Rational;
   fragmented?: boolean;
   ignored?: IgnoredTrack[];
   video?: VideoTrackInfo;
@@ -7108,9 +7440,15 @@ export interface VideoTrackInfo {
   bitDepth: number;
   chroma: Chroma;
   codec: VideoCodec;
+  /**
+   * The sample entry's coded size.
+   */
   coded: Size;
   colour: ColourTags;
-  display: Size1;
+  /**
+   * `coded` after the pixel aspect and the rotation ([`display_size`]).
+   */
+  display: Size;
   /**
    * The sample entry type (`av01`, `hvc1`, …).
    */
@@ -7126,13 +7464,13 @@ export interface VideoTrackInfo {
   icc?: boolean;
   level?: number;
   /**
-   * Exact rational seconds in canonical form: "n/d" in lowest terms with d > 1, or "n" when d is 1; no leading zeros, no "+", no "-0". The pattern checks the shape; lowest terms is checked by the parser.
+   * Frames per second of the most common frame duration.
    */
-  nominalRate: string;
+  nominalRate: Rational;
   /**
-   * Exact rational seconds in canonical form: "n/d" in lowest terms with d > 1, or "n" when d is 1; no leading zeros, no "+", no "-0". The pattern checks the shape; lowest terms is checked by the parser.
+   * Horizontal over vertical spacing (`pasp`); 1 when absent.
    */
-  pixelAspect: string;
+  pixelAspect: Rational;
   profile?: number;
   rotation: Rotation;
   /**
@@ -7141,16 +7479,10 @@ export interface VideoTrackInfo {
   vfr: boolean;
 }
 /**
- * The sample entry's coded size.
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "Size".
  */
 export interface Size {
-  height: number;
-  width: number;
-}
-/**
- * `coded` after the pixel aspect and the rotation ([`display_size`]).
- */
-export interface Size1 {
   height: number;
   width: number;
 }
@@ -7223,7 +7555,10 @@ export interface LibraryScanResult {
    */
   datalessPolicy: string;
   entries: number;
-  identity: VolumeIdentity2;
+  /**
+   * The identity the first stat measured (refreshed into the library after a full scan).
+   */
+  identity: VolumeIdentity;
   incomplete: number;
   listed: number;
   skipped: number;
@@ -7233,30 +7568,6 @@ export interface LibraryScanResult {
   stuck: number;
   timeouts: number;
   unchanged: number;
-}
-/**
- * A root's volume (Decision 15), measured at add and refreshed at each full scan.
- *
- * - `key`: BLAKE3-16 (hex) of the OS's identity fields ([`crate::volume::key`]); the raw
- *   fields are never stored;
- * - `kind`: the filesystem type (`apfs`, `smbfs`, `ext4`, `nfs4`, `NTFS`, …);
- * - `dev_id`: the device id, informational only (never compared alone);
- * - `mount_root`: the root is a mount root (Decision 17's unmount rule);
- * - `enumeration`: how directories are read (`getdents64`, `getattrlistbulk`, a Windows
- *   information class, `fake`);
- * - `root_file_id`, `sample`: the root's file id and up to 16 top-level entries, to confirm a
- *   key change.
- */
-export interface VolumeIdentity2 {
-  caseSensitive: boolean;
-  devId: string;
-  enumeration: string;
-  key: string;
-  kind: string;
-  mountRoot: boolean;
-  remote: boolean;
-  rootFileId?: string | null;
-  sample: SampleEntry[];
 }
 /**
  * A plugin in search results: its newest version that is not yanked.
@@ -7350,7 +7661,11 @@ export interface LookParams {
    * snapshots the head it finds, and `in/snapshot.json` says which rev that was.
    */
   rev?: number | null;
-  size?: Size2;
+  /**
+   * The frame size; the timeline's resolution when absent. Each side 1 to
+   * [`LOOK_MAX_SIDE`].
+   */
+  size?: Size;
   timeline: string;
 }
 /**
@@ -7363,14 +7678,6 @@ export interface LookParams {
 export interface PlanSample {
   at: Rational;
   blake3: string;
-}
-/**
- * The frame size; the timeline's resolution when absent. Each side 1 to
- * [`LOOK_MAX_SIDE`].
- */
-export interface Size2 {
-  height: number;
-  width: number;
 }
 /**
  * What `media.look` v1 answers.
@@ -7562,23 +7869,6 @@ export interface WorkerInfo {
   version: string;
 }
 /**
- * What a media file is (spec §6.3).
- *
- * This interface was referenced by `FinCore`'s JSON-Schema
- * via the `definition` "MediaInfo".
- */
-export interface MediaInfo1 {
-  audio?: AudioTrackInfo;
-  container: ContainerKind;
-  /**
-   * Exact rational seconds in canonical form: "n/d" in lowest terms with d > 1, or "n" when d is 1; no leading zeros, no "+", no "-0". The pattern checks the shape; lowest terms is checked by the parser.
-   */
-  duration: string;
-  fragmented?: boolean;
-  ignored?: IgnoredTrack[];
-  video?: VideoTrackInfo;
-}
-/**
  * The answer of [`Store::merge`](crate::Store::merge): merge group `merge_id`'s records on
  * the target, in order (or planned and rolled back, `dry_run`); `merged`: the source txIds
  * they copy; `skipped`: the candidates that conflict and were left on the source (with
@@ -7611,18 +7901,6 @@ export interface MergeReport {
   placements?: Placement[];
   skipped: Conflict[];
   sourceState: BranchState;
-}
-/**
- * The nested timeline of a group layer, the time evaluated on it (`sourceIn + local`) and
- * its frame size.
- *
- * This interface was referenced by `FinCore`'s JSON-Schema
- * via the `definition` "NestedPlan".
- */
-export interface NestedPlan1 {
-  resolution: Resolution;
-  time: Rational;
-  timeline: string;
 }
 /**
  * `net.fetch`: brokered HTTPS egress (Decision 10). `grant` names a secret grant; in 8B
@@ -7747,9 +8025,7 @@ export interface PluginCommandList {
  * via the `definition` "PluginCommandRunRequest".
  */
 export interface PluginCommandRunRequest {
-  args?: {
-    [k: string]: unknown;
-  };
+  args?: unknown;
   /**
    * A branch name, id or `name#id`; `main` when absent.
    */
@@ -7772,9 +8048,7 @@ export interface PluginCommandRunResult {
   /**
    * A data command's value as the plugin returned it.
    */
-  data?: {
-    [k: string]: unknown;
-  };
+  data?: unknown;
   /**
    * A dry run: nothing was committed.
    */
@@ -8039,6 +8313,60 @@ export interface ProjectSnapshotPage {
   rev: number;
 }
 /**
+ * `fin project status` (serialised camelCase).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "ProjectStatus".
+ */
+export interface ProjectStatus {
+  branches: BranchStatus[];
+  /**
+   * Pending compaction manifests, the last run, its last problem.
+   */
+  compaction: CompactionStatus;
+  exportError?: CoreError | null;
+  /**
+   * Foreign files, relative to the project folder.
+   */
+  foreign: string[];
+  /**
+   * The last import pass's error (a record that cannot be applied, an unlistable folder).
+   */
+  importError?: CoreError | null;
+  /**
+   * The database's incarnation: with a branch's `generation`, what a caller passes to
+   * commit against what it read (`Generation`). New whenever the database is rebuilt.
+   */
+  incarnation: string;
+  /**
+   * Unix ms of the last export that wrote a segment (this process).
+   */
+  lastExportMs?: number | null;
+  lease: LeaseState;
+  /**
+   * The last fencing check failed only because `.finisher/` could not be listed.
+   */
+  leaseCheck?: string | null;
+  /**
+   * Segments neither imported nor set aside yet (beyond a fork, behind a gap).
+   */
+  pending: string[];
+  projectId: string;
+  quarantine: QuarantineSummary;
+  readOnly?: ReadOnly | null;
+  storage: StorageKind;
+  storageWarning?: string | null;
+  /**
+   * Folder branch directories waiting for their `branch` record (never read-only).
+   */
+  unknownBranches: string[];
+  /**
+   * Missing predecessor segments (gaps): imported once they arrive.
+   */
+  waiting: string[];
+  warnings: StatusWarning[];
+}
+/**
  * `project.view`: the `fin view` text of the call's branch, capped at 756 KiB (`PAGE_BYTES`).
  *
  * This interface was referenced by `FinCore`'s JSON-Schema
@@ -8077,6 +8405,88 @@ export interface PurgeReport {
    * Entries.
    */
   removed: number;
+}
+/**
+ * What a rebuild did.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "RebuildReport".
+ */
+export interface RebuildReport {
+  /**
+   * Where the old database was kept (`project.fdb.corrupt-<ts>`, or
+   * `project.fdb.replaced-<ts>` after a manual rebuild).
+   */
+  corruptCopy?: string | null;
+  /**
+   * The project file's genesis does not describe the old database's rev 0 (that rev 0
+   * was used).
+   */
+  genesisMismatch: boolean;
+  /**
+   * Why the import stopped early (it stopped where any open would).
+   */
+  importError?: CoreError | null;
+  /**
+   * Kept copies whose salvage could not read everything and that are not acknowledged:
+   * never pruned (`Store::acknowledge_salvage`).
+   */
+  keptForRecovery: string[];
+  /**
+   * Of those, exported records the folder no longer yields (`MISSING_FROM_FOLDER`).
+   */
+  missingFromFolder: number;
+  /**
+   * What made the old database count as damaged (`corrupt`).
+   */
+  problem?: string | null;
+  /**
+   * `missing`, `corrupt` or `manual`.
+   */
+  reason: string;
+  /**
+   * The head of `main` in the new database.
+   */
+  rebuiltThrough: number;
+  /**
+   * Records in the new database.
+   */
+  records: number;
+  /**
+   * Everything in the old databases could be read.
+   */
+  salvageComplete: boolean;
+  /**
+   * What could not be read.
+   */
+  salvageErrors: string[];
+  /**
+   * Rows salvaged into quarantine: records the new database lacks (`SALVAGED`,
+   * `MISSING_FROM_FOLDER`) and the old databases' own quarantine rows.
+   */
+  salvaged: number;
+  /**
+   * Earlier kept copies salvaged too.
+   */
+  salvagedCopies: string[];
+  /**
+   * The seq of the folder snapshot the rebuild was seeded from.
+   */
+  seededFromSnapshot?: number | null;
+  /**
+   * The checks of the new database that need no replay.
+   */
+  verify: VerifyReport;
+}
+/**
+ * [`Store::verify`]: `ok` when every check is.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "VerifyReport".
+ */
+export interface VerifyReport {
+  checks: Check[];
+  ok: boolean;
 }
 /**
  * One group of quarantined records ([`Store::recover_groups`](crate::Store::recover_groups)).
@@ -8331,7 +8741,7 @@ export interface ReviewEntry {
  */
 export interface ReviewHead {
   branch: string;
-  hash?: string | null;
+  hash?: string;
   seq: number;
 }
 /**
@@ -8351,16 +8761,6 @@ export interface ReviewPlan {
   source: ReviewHead;
   target: ReviewHead;
   truncated: boolean;
-}
-/**
- * The invoking principal (sub-project 5's `{kind, id}`; the job's owner).
- *
- * This interface was referenced by `FinCore`'s JSON-Schema
- * via the `definition` "RightsPrincipal".
- */
-export interface RightsPrincipal1 {
-  id: string;
-  kind: string;
 }
 /**
  * What `fin-sandbox-exec --probe` prints.
@@ -8453,9 +8853,7 @@ export interface SchemaError {
  * via the `definition` "SelfSandbox".
  */
 export interface SelfSandbox {
-  args?: {
-    [k: string]: unknown;
-  };
+  args?: unknown;
   profile: string;
 }
 /**
@@ -8472,24 +8870,6 @@ export interface SetAside {
   origin: string;
   reason: string;
   txId: string;
-}
-/**
- * This interface was referenced by `FinCore`'s JSON-Schema
- * via the `definition` "Size".
- */
-export interface Size3 {
-  height: number;
-  width: number;
-}
-/**
- * An asset and the time to read from it, in seconds.
- *
- * This interface was referenced by `FinCore`'s JSON-Schema
- * via the `definition` "SourceRef".
- */
-export interface SourceRef1 {
-  asset: string;
-  time: Rational;
 }
 /**
  * An author's undo and redo stacks on a branch, bottom first (the top is the last entry).
@@ -8521,14 +8901,7 @@ export interface UnitEntry {
    * The record whose stored `inverse` an undo uses: the unit's records, or the redo
    * record that recreated it (Decision 23).
    */
-  source:
-    | {
-        kind: "records";
-      }
-    | {
-        kind: "redo";
-        txId: string;
-      };
+  source: UnitSource;
 }
 /**
  * A package target's signed custom metadata (`custom` in its publisher's delegated role): one
@@ -8570,9 +8943,7 @@ export interface TestBadHelloParams {}
  */
 export interface TestCallParams {
   method: string;
-  params?: {
-    [k: string]: unknown;
-  };
+  params?: unknown;
 }
 /**
  * `test.checkpoint` (resumable): a checkpoint per step; crashes on attempt 1 at
