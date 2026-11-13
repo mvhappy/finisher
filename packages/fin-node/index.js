@@ -218,12 +218,10 @@ export class Engine {
     return this.#hook("maintenanceRunningForTest")();
   }
 
-  /** @internal Test builds only: the next tick stops in its folder I/O (a `TickPoint`). */
+  /** @internal Test builds only: the next tick stops (`hang…`) or panics (`panic…`) in its folder I/O at a `TickPoint`. */
   hangNextTickForTest(point) {
     sync(() => this.#hook("hangNextTickForTest")(point));
   }
-
-  /** @internal Test builds only: the next tick panics in its folder I/O (a `TickPoint`). */
   panicNextTickIoForTest(point) {
     sync(() => this.#hook("panicNextTickIoForTest")(point));
   }
