@@ -76,9 +76,9 @@ async function setup() {
   const asset = async (id: string): Promise<Asset> => (JSON.parse(await engine.snapshot("main")).project.assets as Record<string, Asset>)[id]!;
   const rev = async (): Promise<number> => JSON.parse(await engine.snapshot("main")).rev;
   const run = (over: Partial<ReprobeRequest> = {}) =>
-    Effect.runPromise(reprobe(deps, LOCAL, OWNER, META, { projectId: engine.projectId, asset: "a1", txId: "01reprobe0000000000000001", author: "test", ...over }));
+    Effect.runPromise(reprobe(deps, LOCAL, OWNER, META, { projectId: engine.projectId, asset: "a1", branch: "main", txId: "01reprobe0000000000000001", author: "test", ...over }));
   const fail = (over: Partial<ReprobeRequest> = {}) =>
-    Effect.runPromise(Effect.flip(reprobe(deps, LOCAL, OWNER, META, { projectId: engine.projectId, asset: "a1", txId: "01reprobe0000000000000002", author: "test", ...over }))) as Promise<FinError>;
+    Effect.runPromise(Effect.flip(reprobe(deps, LOCAL, OWNER, META, { projectId: engine.projectId, asset: "a1", branch: "main", txId: "01reprobe0000000000000002", author: "test", ...over }))) as Promise<FinError>;
   return { engine, clip, jobs, asset, rev, run, fail };
 }
 

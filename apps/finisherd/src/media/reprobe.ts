@@ -26,7 +26,7 @@ import { type ProbeDeepDeps, probeDeep } from "./probe-deep.ts";
 export interface ReprobeRequest {
   readonly projectId: string;
   readonly asset: string;
-  readonly branch?: string | undefined;
+  readonly branch: string;
   readonly deep?: boolean | undefined;
   readonly txId: string;
   readonly author: string;
@@ -103,7 +103,7 @@ export function reprobe(
       const logged = fromLog(req, yield* deps.registry.txGet(req.projectId, req.txId));
       if (logged !== undefined) return yield* logged;
     }
-    const branch = yield* deps.registry.resolveBranch(req.projectId, req.branch ?? "main");
+    const branch = yield* deps.registry.resolveBranch(req.projectId, req.branch);
     const snap = yield* deps.registry.snapshot(req.projectId, branch);
     const project = (snap.project ?? {}) as { schemaVersion?: unknown; assets?: Record<string, AssetJson> };
     const assets = project.assets ?? {};

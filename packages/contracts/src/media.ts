@@ -84,11 +84,12 @@ export const MediaProbeDeepSuccess = Schema.Unknown;
  * included) and `audio`. `deep`: run `media.probeDeep` first and refuse an asset this machine
  * cannot decode (`CODEC_UNAVAILABLE`). A write like the history writes: `txId` is the
  * idempotency key, `author` the record's, `argsHash` stored; `dryRun` probes and commits nothing.
+ * `branch` is required, as on every guarded write: the protected-branches stage checks it.
  */
 export const AssetReprobePayload = Schema.Struct({
   projectId: Schema.String,
   asset: Schema.String,
-  branch: Schema.optional(Schema.String),
+  branch: Schema.String,
   deep: Schema.optional(Schema.Boolean),
   txId: Schema.String,
   author: Schema.String,

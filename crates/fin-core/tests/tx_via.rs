@@ -23,7 +23,7 @@ const PINNED: &str = concat!(
     r#""fingerprint":"fp","duration":"60","video":{"width":1920,"height":1080,"rate":"30"},"#,
     r#""audio":{"sampleRate":48000,"channels":2}}],"inverse":[],"bindings":{"$a":"a1"}}"#,
 );
-const PINNED_HASH: &str = "e59f0bc25814b226bbd4b92b05285fcd23cdb1723e04df72b971e513ad9026d4";
+const PINNED_HASH: &str = "9bc171980ffe2f821c356be657e5a875d87300d244231cd8f16942efe8f2cb98";
 
 fn via() -> Via {
     Via {
