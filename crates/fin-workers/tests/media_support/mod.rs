@@ -223,6 +223,7 @@ impl Fixture {
             kind: fin_core::AssetKind::Media,
             fingerprint: fp.into(),
             original: Some(original(p)),
+            proxies: Vec::new(),
         };
         RenderManifest {
             version: MANIFEST_VERSION,
@@ -252,6 +253,7 @@ impl Fixture {
             branch: None,
             rev: None,
             out_dir: None,
+            originals: false,
         }
     }
 
@@ -370,4 +372,122 @@ pub fn write_params(job: &Job, params: &LookParams) {
         serde_json::to_vec(params).unwrap(),
     )
     .unwrap();
+}
+
+/// A proxy cache entry of the fixture's AV1 clip, in a cache directory of its own
+/// (`<root>/<key[0..2]>/<key>/{proxy.mp4,table.bin,meta.json}`).
+pub struct ProxyEntry {
+    pub _root: tempfile::TempDir,
+    pub dir: PathBuf,
+    pub key: String,
+}
+
+impl ProxyEntry {
+    /// The manifest's view of the entry.
+    pub fn listed(&self) -> fin_media::jobs::ManifestProxy {
+        fin_media::jobs::ManifestProxy {
+            tier: fin_media::jobs::ProxyTier::Preview,
+            key: self.key.clone(),
+            dir: self.dir.to_str().unwrap().into(),
+            codec: fin_media::jobs::ProxyCodec::Av1,
+        }
+    }
+}
+
+/// Runs `media.proxy` (tier `1080`, AV1) on the fixture's AV1 clip and files its output the way
+/// the cache does.
+pub fn make_proxy(fx: &Fixture) -> ProxyEntry {
+    use fin_media::backend::VendorClass;
+    use fin_media::jobs::{ProxyCodec, ProxyParams, ProxyTier, proxy_key};
+    let tier = ProxyTier::Preview;
+    let key = proxy_key("fp-av1", tier, ProxyCodec::Av1, VendorClass::Software).to_string();
+    let params = ProxyParams {
+        fingerprint: "fp-av1".into(),
+        tier,
+        codec: ProxyCodec::Av1,
+        decoder_class: VendorClass::Software,
+        key: key.clone(),
+        asset: Some(fx.av1_id.clone()),
+        file: None,
+        project_id: None,
+        branch: None,
+        display: None,
+        intra_ok: false,
+    };
+    let job = Job::new();
+    let manifest = RenderManifest {
+        assets: vec![fx.manifest().asset(&fx.av1_id).unwrap().clone()],
+        ..fx.manifest()
+    };
+    std::fs::write(
+        job.path("in/manifest.json"),
+        serde_json::to_vec(&manifest).unwrap(),
+    )
+    .unwrap();
+    let mut w = crate::support::spawn_with(&["media"], &worker_env());
+    w.hello();
+    let start = job.start(
+        "media.proxy",
+        serde_json::to_value(&params).unwrap(),
+        &["in/manifest.json", "out/"],
+    );
+    w.send(&fin_jobs::HostMsg::Start(start));
+    let run = w.drive(crate::support::no_calls);
+    assert!(
+        matches!(run.end, crate::support::End::Result(_)),
+        "{:?}",
+        run.end
+    );
+    assert!(
+        run.events
+            .iter()
+            .any(|e| matches!(e, crate::support::Ev::Item(_, Some(_)))),
+        "a proxy: {:?}",
+        run.events
+    );
+    let root = tempfile::tempdir().unwrap();
+    let dir = std::fs::canonicalize(root.path())
+        .unwrap()
+        .join(&key[..2])
+        .join(&key);
+    std::fs::create_dir_all(&dir).unwrap();
+    for f in ["proxy.mp4", "table.bin", "meta.json"] {
+        std::fs::copy(job.out().join(&key).join(f), dir.join(f)).unwrap();
+    }
+    ProxyEntry {
+        _root: root,
+        dir,
+        key,
+    }
+}
+
+impl Fixture {
+    /// The manifest with `proxy` listed for the AV1 asset.
+    pub fn manifest_with(&self, proxy: &ProxyEntry) -> RenderManifest {
+        let mut m = self.manifest();
+        for a in &mut m.assets {
+            if a.asset == self.av1_id {
+                a.proxies = vec![proxy.listed()];
+            }
+        }
+        m
+    }
+}
+
+/// PSNR in dB over the colour channels of two RGBA8 images (infinite when equal).
+pub fn psnr_rgb(a: &[u8], b: &[u8]) -> f64 {
+    assert_eq!(a.len(), b.len());
+    let (mut sq, mut n) = (0f64, 0f64);
+    // Every fourth byte is alpha.
+    for (i, (x, y)) in a.iter().zip(b).enumerate() {
+        if i % 4 != 3 {
+            sq += (f64::from(*x) - f64::from(*y)).powi(2);
+            n += 1.0;
+        }
+    }
+    if sq == 0.0 {
+        f64::INFINITY
+    } else {
+        10.0 * (255.0 * 255.0 / (sq / n)).log10()
+    }
 }

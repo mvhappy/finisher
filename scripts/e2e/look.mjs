@@ -7,7 +7,9 @@
 // clip picks the earlier frame); every PNG against the CPU reference over a copy of the same job
 // directory (tolerance T1; its hashes against `look-golden/t0.json` when this machine's fixtures
 // have an entry); the same directory replayed by `fin-workers media --replay`; `skipped` naming
-// the caption; and a look whose worker is killed mid-job, which the job engine retries.
+// the caption; a look whose worker is killed mid-job, which the job engine retries; and (6B-1
+// Task 16) the same frames read through the `1080` proxies, which name their source and pick the
+// same original frames. Every look above is `--originals`: a first-use proxy may land at any time.
 // `E2E_LOOK_BLESS=1` rewrites the goldens (refused under CI). Needs a GPU adapter (`FIN_GPU`);
 // without one the scenario is skipped, unless `FIN_REQUIRE_GPU=1`.
 import { spawnSync } from "node:child_process";
@@ -125,7 +127,7 @@ export async function run() {
       // The job directory is removed once the job ends: copy its `in/` aside while it runs.
       rmSync(asideDir, { recursive: true, force: true });
       let done = false;
-      const pending = finAsync(sd, project, ["look", "--at", AT.join(",")]).finally(() => (done = true));
+      const pending = finAsync(sd, project, ["look", "--at", AT.join(","), "--originals"]).finally(() => (done = true));
       jobDir = await copyJobAside(jobs, asideDir, () => done);
       const r = await pending;
       if (r.status !== 0) throw new Error(`fin look exited ${r.status}: ${r.text} ${r.stderr}`);
@@ -183,6 +185,9 @@ export async function run() {
     step(10, "diagnostics: job.done carries the media object; media.capabilities and render.stats name no adapter");
     await diagnostics(server);
 
+    step(11, "fin look reads the 1080 proxies through the originals' tables: same frame ids, named for their source");
+    await proxyLook(f, result, cfr0());
+
     log(`PASS look in ${((Date.now() - started) / 1000).toFixed(1)}s`);
   } finally {
     try {
@@ -191,6 +196,34 @@ export async function run() {
       removeTmp(tmp);
     }
   }
+}
+
+const cfr0 = () => Array.from({ length: 90 }, (_, i) => i);
+
+/**
+ * `fin look` without `--originals` after both assets have their `1080` proxy: every frame says
+ * `proxy`, its file is named for it (beside, never over, the original's), and the CFR clip's frame
+ * ids at the first four times are the ones the originals gave.
+ */
+async function proxyLook(f, originals, cfr) {
+  for (const asset of ["a1", "a2"]) {
+    const made = f(["media", "proxy", asset, "--tier", "1080"]);
+    assertEqual([made.tier, made.state], ["1080", "ready"], `the 1080 proxy of ${asset}`);
+  }
+  const first = AT.slice(0, 4);
+  const look = f(["look", "--at", first.join(",")]);
+  assertEqual(look.frames.map((fr) => fr.source), first.map(() => "proxy"), "frames read from the proxies");
+  assertEqual(look.frames.map((fr) => fr.plan), originals.frames.slice(0, 4).map((fr) => fr.plan), "the same plans");
+  for (const [i, fr] of look.frames.entries()) {
+    if (!fr.file.endsWith("-proxy.png")) throw new Error(`a proxy frame is not named for its source: ${fr.file}`);
+    if (fr.file === originals.frames[i].file) throw new Error("a proxy frame replaced the original's file");
+    const want = nearestFrame(cfr, [0, 15, 30, 45][i]);
+    assertEqual(readFrameId(readPng(fr.file), placeFlat, 1.125), want, `frame id at ${first[i]} through the proxy`);
+  }
+  // `--originals` still reads the originals, and its files are as they were.
+  const again = f(["look", "--at", first.join(","), "--originals"]);
+  assertEqual(again.frames.map((fr) => fr.source), first.map(() => "original"), "--originals");
+  assertEqual(again.frames.map((fr) => fr.file), originals.frames.slice(0, 4).map((fr) => fr.file), "the originals' files");
 }
 
 /** The journal's `job.done` of the two `media.look` jobs (the 7-frame look; the killed 64-frame one, run twice), and the media kinds. */
@@ -248,7 +281,7 @@ const T0_NOTE =
 async function killedLook(sd, project, tmp, jobs) {
   const out = join(tmp, "killed-look");
   const at = Array.from({ length: 64 }, (_, i) => `f${i}`);
-  const pending = finAsync(sd, project, ["look", "--at", at.join(","), "--size", "540x960", "--out", out]);
+  const pending = finAsync(sd, project, ["look", "--at", at.join(","), "--size", "540x960", "--out", out, "--originals"]);
   await waitFor("the first PNG of the job", () => pngsBelow(jobs).length > 0, 60_000, () => `: ${pngsBelow(jobs).length} found`, 5);
   const workers = mediaWorkers();
   if (workers.length === 0) throw new Error("no fin-workers media process to kill");

@@ -10450,6 +10450,21 @@
           "description": "The plan's BLAKE3 (lowercase hex).",
           "type": "string"
         },
+        "proxyFallbacks": {
+          "description": "The assets whose proxy was listed in the manifest but could not be read (their layers\nread the original); absent when none.",
+          "items": {
+            "$ref": "#/$defs/LookProxyFallback"
+          },
+          "type": "array"
+        },
+        "source": {
+          "allOf": [
+            {
+              "$ref": "#/$defs/LookSource"
+            }
+          ],
+          "description": "Where the frame's pictures came from."
+        },
         "width": {
           "format": "uint32",
           "minimum": 0,
@@ -10461,7 +10476,8 @@
         "file",
         "width",
         "height",
-        "plan"
+        "plan",
+        "source"
       ],
       "type": "object"
     },
@@ -10479,6 +10495,10 @@
         "branch": {
           "description": "The branch of the snapshot (an id, a name or `<name>#<id>`).",
           "type": "string"
+        },
+        "originals": {
+          "description": "Read the originals only: a layer never reads a proxy (`fin look --originals`, plan\n6B-1 Task 16). Part of the job's identity (`dedupe`).",
+          "type": "boolean"
         },
         "outDir": {
           "description": "Where the kind's `onSucceeded` moves the frames: absolute, or relative to the project\nfolder; `workspace/shared/look/` when absent. Never inside `.finisher/` or `assets/`\n(`EXPORT_DESTINATION`). The worker ignores it.",
@@ -10522,6 +10542,23 @@
         "timeline",
         "at",
         "outName"
+      ],
+      "type": "object"
+    },
+    "LookProxyFallback": {
+      "description": "Why a layer that had a proxy read its original instead (`LookFrame.proxyFallbacks`): the\nentry or its files were gone, changed or unreadable between the manifest and the open.",
+      "properties": {
+        "asset": {
+          "type": "string"
+        },
+        "reason": {
+          "description": "`missing`, `changed`, `invalid` (the entry's files do not agree with each other or the\noriginal) or `decode` (a proxy frame did not decode).",
+          "type": "string"
+        }
+      },
+      "required": [
+        "asset",
+        "reason"
       ],
       "type": "object"
     },
@@ -10583,6 +10620,21 @@
         "details"
       ],
       "type": "object"
+    },
+    "LookSource": {
+      "description": "What a look frame's pictures were read from (plan 6B-1 Task 16).",
+      "oneOf": [
+        {
+          "const": "proxy",
+          "description": "At least one layer of the frame read a `1080` proxy through its original's sample\ntable: the frame is within T5 of the original's, not bit-equal to it.",
+          "type": "string"
+        },
+        {
+          "const": "original",
+          "description": "Every media layer read its original (or the frame has none).",
+          "type": "string"
+        }
+      ]
     },
     "LookStats": {
       "description": "What a warm worker reused (spec §3.2 item 1: caches keyed by content).",
@@ -10780,6 +10832,13 @@
             }
           ],
           "description": "The file on this machine (plan 6A Decision 5: the model's stored path), `null` when it\nis missing."
+        },
+        "proxies": {
+          "description": "The proxies the media cache holds for this asset's fingerprint when the manifest was\nwritten (spec §4.2 \"from 6B\"; plan 6B-1 Task 16), pinned for the job's life by the host.\nA layer reads the `1080` one when `media.look` does not ask for originals\n([`ManifestAsset::proxy`]).",
+          "items": {
+            "$ref": "#/$defs/ManifestProxy"
+          },
+          "type": "array"
         }
       },
       "required": [
@@ -10804,6 +10863,32 @@
           "type": "array"
         }
       },
+      "type": "object"
+    },
+    "ManifestProxy": {
+      "description": "One proxy entry of the media cache (`cache/media/<key[0..2]>/<key>/`): `proxy.mp4`,\n`table.bin` (the original's sample table) and `meta.json` (plan 6B-1 Decision 7).",
+      "properties": {
+        "codec": {
+          "$ref": "#/$defs/ProxyCodec"
+        },
+        "dir": {
+          "description": "The entry's directory on this machine, absolute.",
+          "type": "string"
+        },
+        "key": {
+          "description": "The entry's cache key.",
+          "type": "string"
+        },
+        "tier": {
+          "$ref": "#/$defs/ProxyTier"
+        }
+      },
+      "required": [
+        "tier",
+        "key",
+        "dir",
+        "codec"
+      ],
       "type": "object"
     },
     "Marker": {

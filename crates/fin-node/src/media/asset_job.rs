@@ -58,6 +58,7 @@ fn prepare(store: &Shared, branch: &str, asset: &str, dir: PathBuf) -> Result<St
             kind: a.kind,
             fingerprint: a.fingerprint.clone(),
             original,
+            proxies: Vec::new(),
         }],
         fonts: ManifestFonts::default(),
     };

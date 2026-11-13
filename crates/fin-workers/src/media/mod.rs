@@ -31,6 +31,7 @@ mod look;
 mod open_cache;
 mod probe_deep;
 mod proxy;
+mod proxy_source;
 pub mod replay;
 mod scale;
 mod sources;

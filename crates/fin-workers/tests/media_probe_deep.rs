@@ -71,6 +71,7 @@ fn job_for(asset: &str, fp: &str, path: &std::path::Path) -> Job {
             kind: fin_core::AssetKind::Media,
             fingerprint: fp.into(),
             original: Some(original(path)),
+            proxies: Vec::new(),
         }],
         fonts: ManifestFonts::default(),
     };
