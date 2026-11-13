@@ -71,4 +71,16 @@ export class UsageAccounting {
     for (const n of c.notices) await h.append({ sessionId, runId, kind: "notice", payload: { budget: n.kind, used: n.used, limit: n.limit, at: 0.8 } });
     if (c.stop) await h.stop(sessionId, c.stop);
   }
+
+  /**
+   * Steers a turn's tail hands back (`notice {steerReturned}`, plan 7D Decision 13, owner decision
+   * 2026-11-13: an interrupted turn's held steers, never sent): recorded in the run it served, so
+   * the texts are not lost with the run's end.
+   */
+  async tailNotice(origin: Live, e: Extract<ProviderEvent, { type: "notice" }>): Promise<void> {
+    const h = this.#h;
+    const runId = origin.served ?? h.store.runs(origin.sessionId).at(-1)?.id;
+    if (runId === undefined) return h.dropped();
+    await h.append({ sessionId: origin.sessionId, runId, kind: "notice", payload: { [e.name]: e.details ?? true } });
+  }
 }

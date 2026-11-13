@@ -389,8 +389,8 @@ export class Runtime extends RuntimeEngine {
             live.held.push(text);
             return { queued: true };
           }
-          await this.append({ sessionId, runId: live.runId, kind: "userMessage", payload: { text, trigger: "steer" } });
-          const err = await call(live.provider.steer({ text }));
+          const { node } = await this.append({ sessionId, runId: live.runId, kind: "userMessage", payload: { text, trigger: "steer" } });
+          const err = await call(live.provider.steer({ text, nodeId: node.id, at: node.createdAt }));
           if (err) throw err;
           return { queued: false };
         }

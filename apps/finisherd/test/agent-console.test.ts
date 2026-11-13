@@ -129,6 +129,26 @@ describe("agent sessions from the console", () => {
     expect((await run(["agent", "show", session.id])).code).toBe(3);
   });
 
+  test("agent resume <id> <text>: resumes and prompts in one command (steers handed back, sent again)", async () => {
+    const local = await server.local();
+    const p = await project(local);
+    const started = await run(["agent", "start", "--project", p.id, "--harness", "fake", "--prompt", "one", "--json"]);
+    const { session } = JSON.parse(started.out) as { session: Session };
+    await until(local, session.id, "idle");
+    expect((await run(["agent", "interrupt", session.id])).code).toBe(0);
+    await until(local, session.id, "interrupted");
+    // An interrupted session takes no prompt ...
+    expect((await run(["agent", "prompt", session.id, "again"])).code).not.toBe(0);
+    // ... but resume with the text starts a run on it at once.
+    const r = await run(["agent", "resume", session.id, "also this", "and this"]);
+    expect(r.code, r.err).toBe(0);
+    expect(r.out).toMatch(/Run \S+ started/);
+    await until(local, session.id, "idle");
+    expect((await run(["agent", "show", session.id, "--nodes"])).out).toContain("you: also this and this");
+    // Without text, a plain resume.
+    expect((await run(["agent", "resume", session.id])).code).toBe(0);
+  });
+
   test("a budget approval is answered with --add, which resumes the session", async () => {
     const local = await server.local();
     const p = await project(local);

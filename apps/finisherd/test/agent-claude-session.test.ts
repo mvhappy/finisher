@@ -238,6 +238,37 @@ describe("a turn through the runtime", () => {
     expect(observed(r.serverData, s.id)[0]!.userLines).toHaveLength(2);
   });
 
+  // Owner decision 2026-11-13 (Decision 13): an interrupt hands the held steers back (their
+  // texts in order, each with its `userMessage` node), never sent; one `agent.session.resume`
+  // with the texts as its prompt sends them again.
+  withFake("steer_returned_then_resent: interrupted with two held steers, handed back, resent in one resume", async () => {
+    const r = await claudeServer({
+      steps: [
+        { expect: "user", emit: [assistant([{ type: "tool_use", id: "toolu_1", name: "Bash", input: { command: "sleep 600" } }])] },
+        { sleep: 60_000 },
+        { expect: "user", cumulativeUsage: { inputTokens: 1, outputTokens: 1 } },
+      ],
+    });
+    const s = await start(r);
+    await until(() => (nodes(s.id).some((n) => n.kind === "toolCall") ? true : undefined));
+    ok(await r.local.call("agent.session.steer", { sessionId: s.id, text: "also this" }));
+    ok(await r.local.call("agent.session.steer", { sessionId: s.id, text: "and this" }));
+    ok(await r.local.call("agent.session.interrupt", { sessionId: s.id }));
+    expect((await settle(r, s.id)).status).toBe("interrupted");
+    const steers = nodes(s.id).filter((n) => n.kind === "userMessage" && (n.payload as { trigger?: string }).trigger === "steer");
+    expect(steers).toHaveLength(2);
+    expect(notices(nodes(s.id), "steerReturned")).toEqual([{ harness: "claudeCode", steers: steers.map((n) => ({ text: (n.payload as { text: string }).text, nodeId: n.id, at: n.createdAt })) }]);
+    // Nothing of them reached the CLI.
+    expect((observed(r.serverData, s.id).at(-1)!.userLines as { content: { text?: string }[] }[]).flatMap((l) => l.content.map((b) => b.text))).not.toContain("also this");
+    // The resend: one call (the resumed CLI is a new process, which plays this script).
+    writeFileSync(join(dirname(r.binary), "script.json"), JSON.stringify({ steps: [{ expect: "user", cumulativeUsage: { inputTokens: 1, outputTokens: 1 } }] }));
+    const resumed = ok<{ session: Session; run?: { id: string } }>(await r.local.call("agent.session.resume", { sessionId: s.id, prompt: "also this\n\nand this" }));
+    expect(resumed.run?.id).toBeDefined();
+    expect((await settle(r, s.id)).status).toBe("idle");
+    const last = (observed(r.serverData, s.id).at(-1)!.userLines as { content: { text?: string }[] }[]).at(-1)!;
+    expect(last.content.map((b) => b.text)).toContain("also this\n\nand this");
+  });
+
   withFake("steer_stays_in_run: two steers in one turn run as one next turn (two results in all)", async () => {
     const r = await claudeServer({
       steps: [
@@ -612,7 +643,9 @@ describe("steers held host-side (Decision 13 as 7D Task 0 amended it)", () => {
   const usage = { inputTokens: 1, outputTokens: 1 };
   const lines = (w: Watched) => ((observed(w.serverData, SESSION_ID).at(-1)?.userLines ?? []) as { content: { text?: string }[] }[]).map((l) => l.content.map((b) => b.text));
   const types = (w: Watched) => w.events.map((e) => e.type);
-  const dropped = (w: Watched) => w.events.filter((e) => e.type === "notice" && e.name === "steerDropped").map((e) => (e as { details: unknown }).details);
+  // Owner decision 2026-11-13 (Decision 13): held steers a turn cannot take are handed back whole.
+  const returned = (w: Watched) => w.events.filter((e) => e.type === "notice" && e.name === "steerReturned").map((e) => (e as { details: unknown }).details);
+  const back = (...texts: string[]) => [{ harness: "claudeCode", steers: texts.map((text) => ({ text })) }];
   const quiet = () => new Promise((r) => setTimeout(r, 400));
 
   withFake("a steer right after startTurn, before the turn's init, is the run's next CLI turn", async () => {
@@ -647,46 +680,47 @@ describe("steers held host-side (Decision 13 as 7D Task 0 amended it)", () => {
     expect(lines(w)).toEqual([["one"]]);
   });
 
-  withFake("a failed result drops the held steer with a notice", async () => {
+  withFake("a failed result hands the held steer back", async () => {
     const w = await openWatched({ steps: [{ expect: "user", sleep: 500, notLoggedIn: true }, { expect: "user", cumulativeUsage: usage }] });
     await run(w.provider.startTurn({ runId: "r1", text: "one" }));
     await run(w.provider.steer({ text: "x" }));
     await waitFor(w, "turnFailed");
     await quiet();
-    expect(dropped(w)).toEqual([{ harness: "claudeCode", count: 1 }]);
+    expect(returned(w)).toEqual(back("x"));
     // In the run: before its end.
-    expect(w.events.findIndex((e) => e.type === "notice" && e.name === "steerDropped")).toBeLessThan(types(w).indexOf("turnFailed"));
+    expect(w.events.findIndex((e) => e.type === "notice" && e.name === "steerReturned")).toBeLessThan(types(w).indexOf("turnFailed"));
     expect(lines(w)).toEqual([["one"]]);
   });
 
-  withFake("an interrupt drops the held steer with a notice", async () => {
+  withFake("an interrupt hands the held steers back, in order, with their nodes; nothing more is written", async () => {
     const w = await openWatched(TOOL_THEN_WAIT({}), { interruptWaitMs: 5000 });
     await run(w.provider.startTurn({ runId: "r1", text: "go" }));
     await waitFor(w, "toolStarted");
-    await run(w.provider.steer({ text: "x" }));
+    await run(w.provider.steer({ text: "x", nodeId: "01N0000000000000000000000X", at: 1_700_000_000_001 }));
+    await run(w.provider.steer({ text: "y" }));
     await run(w.provider.interrupt());
     // Part B: the interrupt's aborted result ends the turn as interrupted, not failed.
     await waitFor(w, "turnCompleted");
     expect(w.events.find((e) => e.type === "turnCompleted")).toMatchObject({ stopReason: "interrupted" });
     await quiet();
-    expect(dropped(w)).toEqual([{ harness: "claudeCode", count: 1 }]);
+    expect(returned(w)).toEqual([{ harness: "claudeCode", steers: [{ text: "x", nodeId: "01N0000000000000000000000X", at: 1_700_000_000_001 }, { text: "y" }] }]);
     expect(lines(w)).toEqual([["go"]]);
     expect(w.kills).toEqual([]);
   });
 
-  withFake("an interrupt crossing a successful result drops the held steer: the run ends there", async () => {
+  withFake("an interrupt crossing a successful result hands the held steer back: the run ends there", async () => {
     const w = await openWatched({ onInterrupt: "ignore", steps: [{ expect: "user", sleep: 700, cumulativeUsage: usage }, { expect: "user", cumulativeUsage: usage }] }, { interruptWaitMs: 5000 });
     await run(w.provider.startTurn({ runId: "r1", text: "one" }));
     await run(w.provider.steer({ text: "x" }));
     await run(w.provider.interrupt());
     await waitFor(w, "turnCompleted");
     await quiet();
-    expect(dropped(w)).toEqual([{ harness: "claudeCode", count: 1 }]);
+    expect(returned(w)).toEqual(back("x"));
     expect(lines(w)).toEqual([["one"]]);
     expect(w.kills).toEqual([]);
   });
 
-  withFake("each steer turn asks the budget gate; a refusal ends the run and drops the texts", async () => {
+  withFake("each steer turn asks the budget gate; a refusal ends the run and hands the texts back", async () => {
     let calls = 0;
     const refuse = { code: "BUDGET_EXCEEDED", message: "over", details: { kind: "money" } } as unknown as FinError;
     const gate: CallGate = { beforeCall: () => (++calls === 2 ? { ok: false, error: refuse } : { ok: true }), release: () => undefined };
@@ -696,7 +730,7 @@ describe("steers held host-side (Decision 13 as 7D Task 0 amended it)", () => {
     await waitFor(w, "turnFailed");
     await quiet();
     expect(calls).toBe(2);
-    expect(dropped(w)).toEqual([{ harness: "claudeCode", count: 1 }]);
+    expect(returned(w)).toEqual(back("x"));
     expect(w.events.find((e) => e.type === "turnFailed")).toMatchObject({ error: { code: "BUDGET_EXCEEDED" } });
     expect(types(w)).not.toContain("turnCompleted");
     expect(lines(w)).toEqual([["one"]]);

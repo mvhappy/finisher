@@ -95,6 +95,9 @@ export interface TurnInput {
 
 export interface UserInput {
   readonly text: string;
+  /** A steer's `userMessage` node and its time (`agent.session.steer` records it first), when the runtime has one. */
+  readonly nodeId?: string;
+  readonly at?: number;
 }
 
 export type RuntimeAnswer =

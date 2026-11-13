@@ -350,6 +350,7 @@ export abstract class RuntimeEngine {
     if (live === undefined || live.instance !== instance || live.runId === null) {
       // A turn's tail after an interrupt, a stop or a replacement (7D Task 9): charged to its run.
       if (e.type === "usage" && origin.instance === instance) return this.#usage.tail(origin, e);
+      if (e.type === "notice" && e.name === "steerReturned" && origin.instance === instance) return this.#usage.tailNotice(origin, e);
       if (live !== undefined && live.instance === instance && e.type === "exited") return this.#exited(live, e);
       if (e.type !== "turnStarted") this.dropped++;
       return;

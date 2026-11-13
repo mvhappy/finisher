@@ -260,10 +260,12 @@ async function send(ctx: CommandContext, verb: "prompt" | "steer", rest: Readonl
 
 async function control(ctx: CommandContext, verb: "interrupt" | "resume" | "end", rest: ReadonlyArray<string>): Promise<number> {
   onlyFlags(ctx.args, `agent ${verb}`, ["json"]);
-  const id = idOf(verb, rest);
-  const { session } = await withConnection(ctx, (c) => call<{ session: Session }>(c, `agent.session.${verb}`, { sessionId: id }));
-  if (has(ctx.args, "json")) ctx.output.out(JSON.stringify({ session }));
-  else ctx.output.out(`${sessionLine(session)}${verb === "end" && session.rootBranch !== undefined ? "  (its branch stays)" : ""}`);
+  // `agent resume <id> [text…]`: the text starts a run at once (a `steerReturned` notice's steers, sent again).
+  const prompt = verb === "resume" ? rest.slice(1).join(" ") : "";
+  const id = idOf(verb, prompt === "" ? rest : rest.slice(0, 1));
+  const r = await withConnection(ctx, (c) => call<{ session: Session; run?: Run }>(c, `agent.session.${verb}`, { sessionId: id, ...(prompt.trim() === "" ? {} : { prompt }) }));
+  if (has(ctx.args, "json")) ctx.output.out(JSON.stringify(r.run === undefined ? { session: r.session } : r));
+  else ctx.output.out(`${sessionLine(r.session)}${verb === "end" && r.session.rootBranch !== undefined ? "  (its branch stays)" : ""}${r.run === undefined ? "" : `\nRun ${r.run.id} started. Follow it with: finisherd agent watch ${id}`}`);
   return 0;
 }
 

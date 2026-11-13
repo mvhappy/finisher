@@ -19,8 +19,9 @@
 //   a CLI turn runs: at that turn's successful `result` every held text goes as one user line (a
 //   next CLI turn inside the same run, asked of the budget gate like any turn) and the run stays
 //   open; it ends at a successful `result` with nothing held. An interrupt (also one that crosses
-//   a successful `result`), a failed `result`, a refused init or the exit drops what is held with
-//   `notice {steerDropped: {count}}`. A steer reaching an instance whose run already ended is
+//   a successful `result`), a failed `result`, a refused init or the exit hands what is held back,
+//   never written: `notice {steerReturned: {steers: [{text, nodeId?, at?}]}}` in order (owner
+//   decision 2026-11-13). A steer reaching an instance whose run already ended is
 //   refused `SESSION_BUSY {reason: "runEnded"}` (the caller sends it again: a new run).
 // - **Interrupt** (Decision 16): the `interrupt` request, then up to `interruptWaitMs` (5 s) for
 //   the turn's `result`; then SIGINT and up to `sigintGraceMs`; then the sandbox's group kill.
@@ -122,8 +123,8 @@ export class ClaudeInstance {
   #turnWritten: Promise<boolean> = Promise.resolve(false);
   /** A user line is written and its CLI turn has not ended (its `result`). */
   #cliTurn = false;
-  /** Steers held for the next CLI turn of the open run. */
-  #held: string[] = [];
+  /** Steers held for the next CLI turn of the open run, in order (with their `userMessage` nodes). */
+  #held: UserInput[] = [];
   /** The model the instance's first init named (a later change is a notice). */
   #model: string | undefined;
   #interrupting = false;
@@ -189,7 +190,7 @@ export class ClaudeInstance {
       await Promise.race([ended, new Promise((r) => setTimeout(r, 500).unref())]);
       this.#exit = { code: e.code, signal: e.signal ?? null };
       this.#answerInitialize(null);
-      this.#dropHeld();
+      this.#returnHeld();
       this.#turnOpen = false;
       this.#cliTurn = false;
       this.#notify();
@@ -287,25 +288,30 @@ export class ClaudeInstance {
     this.#deliver(p);
   }
 
-  /** Held steers that will never be written: a notice says how many. */
-  #dropHeld(): void {
+  /**
+   * Held steers this run's CLI will never take (owner decision 2026-11-13, Decision 13): handed
+   * back whole in `notice {steerReturned: {steers: [{text, nodeId?, at?}]}}`, in order, never
+   * written to the CLI; a person (or the parent) sends them again (`agent.session.resume
+   * {prompt}`, or `prompt` on an idle session).
+   */
+  #returnHeld(): void {
     if (this.#held.length === 0) return;
-    const count = this.#held.length;
+    const steers = this.#held.map((h) => ({ text: h.text, ...(h.nodeId === undefined ? {} : { nodeId: h.nodeId }), ...(h.at === undefined ? {} : { at: h.at }) }));
     this.#held = [];
-    this.#deliver([{ type: "notice", name: "steerDropped", details: { harness: "claudeCode", count } }]);
+    this.#deliver([{ type: "notice", name: "steerReturned", details: { harness: "claudeCode", steers } }]);
   }
 
   /**
-   * The next CLI turn of the open run, with `texts` as its one user line (Decision 15: the gate is
-   * asked once per turn). A refusal ends the run as `startTurn`'s does, the texts dropped.
+   * The next CLI turn of the open run, with `steers` as its one user line (Decision 15: the gate is
+   * asked once per turn). A refusal ends the run as `startTurn`'s does, the steers handed back.
    */
-  #steerTurn(texts: readonly string[]): void {
+  #steerTurn(steers: readonly UserInput[]): void {
     const o = this.#o;
     const g = o.gate?.beforeCall(o.projection?.() ?? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, reasoning: 0 });
     if (g !== undefined && !g.ok) {
       const e = g.error;
-      this.#held = [...texts];
-      this.#dropHeld();
+      this.#held = [...steers];
+      this.#returnHeld();
       const capped = (e.details as { kind?: unknown } | null)?.kind === "modelCalls";
       this.#deliver([capped ? { type: "turnCompleted", stopReason: "modelCallCap" } : { type: "turnFailed", error: { code: e.code, message: e.message, details: e.details ?? {}, ...(e.fix === undefined ? {} : { fix: e.fix }) } }]);
       this.#turnOpen = false;
@@ -313,13 +319,13 @@ export class ClaudeInstance {
       return;
     }
     this.#reserved = g !== undefined;
-    if (this.#write(encodeUser(texts, o.uuid))) this.#cliTurn = true;
+    if (this.#write(encodeUser(steers.map((h) => h.text), o.uuid))) this.#cliTurn = true;
   }
 
   /** The instance cannot go on: its turn fails with `error`, its group is killed at once. */
   #refuse(error: FinError): void {
     this.#pending = [];
-    this.#dropHeld();
+    this.#returnHeld();
     this.#deliver([{ type: "turnFailed", error: { code: error.code, message: error.message, details: error.details, ...(error.fix === undefined ? {} : { fix: error.fix }) } }]);
     this.#turnOpen = false;
     this.#refused = true;
@@ -400,7 +406,7 @@ export class ClaudeInstance {
     const mapped = this.#map.map(l, this.#interrupting);
     const events = more ? mapped.filter((e) => e.type !== "turnCompleted") : mapped;
     if (events.some((e) => e.type === "usage")) this.#reserved = false;
-    if (l.kind === "result" && !more) this.#dropHeld();
+    if (l.kind === "result" && !more) this.#returnHeld();
     this.#deliver(events);
     if (more) {
       if (this.#reserved) this.#o.gate?.release();
@@ -537,8 +543,8 @@ export class ClaudeInstance {
           // Decision 13 (as 7D Task 0 amended it): held while a CLI turn runs, written with the
           // others at its successful `result` (`#forwarded`); at once when none runs.
           if (!this.#turnOpen) return fail(finError("SESSION_BUSY", "the Claude Code run ended before this steer reached it: send it again", { instance: o.instance, reason: "runEnded" }));
-          if (this.#cliTurn || this.#interrupting) this.#held.push(i.text);
-          else this.#steerTurn([i.text]);
+          if (this.#cliTurn || this.#interrupting) this.#held.push(i);
+          else this.#steerTurn([i]);
           return Effect.void;
         }),
       interrupt: () => Effect.promise(() => this.#interrupt()),
