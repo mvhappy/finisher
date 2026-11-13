@@ -9,7 +9,9 @@
 pub mod buf;
 pub mod channels;
 pub mod effects;
+pub mod loudness;
 pub mod mix;
+pub mod peaks;
 pub mod resample;
 pub mod stretch;
 #[cfg(feature = "testing")]
@@ -17,7 +19,9 @@ pub mod testing;
 pub mod time;
 
 pub use buf::Stereo;
+pub use loudness::{GainDecision, Limiter, Measured, Meter, normalise};
 pub use mix::{Mixer, PcmSource, SourceLayout};
+pub use peaks::{Peaks, peaks};
 pub use resample::{Resampler, resampled_len};
 pub use stretch::Wsola;
 pub use time::sample_at;
