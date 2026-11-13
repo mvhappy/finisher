@@ -25,6 +25,7 @@ import { ServerStartError } from "../config.ts";
 import type { Audit } from "../control/audit.ts";
 import type { Environment } from "../env/descriptor.ts";
 import { type FrontRefusal, makeFront, type Route } from "../http/front.ts";
+import type { MediaRequestHandler } from "../media/http.ts";
 import { type ListenerPolicy, loopbackHosts, MAX_UNAUTHENTICATED, normalOrigin, PER_ADDRESS } from "../http/policy.ts";
 import type { Tickets } from "../auth/tickets.ts";
 import type { NonceSource } from "../http/front.ts";
@@ -55,6 +56,8 @@ export interface RemoteDeps {
   readonly onUpgradeRefused: (r: Extract<UpgradeResult, { ok: false }>) => void;
   /** Tests inject remote addresses (Decision 34). */
   readonly remoteOf?: ((s: never) => string) | undefined;
+  /** The media route of this listener (6B-1 Task 17), built with the listener's own Host and Origin lists. */
+  readonly media?: ((policy: ListenerPolicy) => MediaRequestHandler) | undefined;
 }
 
 interface Running {
@@ -209,6 +212,7 @@ export class RemoteListener {
           port: listen.port,
           tls: { key: pair.key, cert: pair.cert },
           onRequest: makeFront(self.#d.httpRoutes, policy, self.#d.nonces, { onRefused: self.#d.onRefused, ...(self.#d.remoteOf === undefined ? {} : { remoteOf: self.#d.remoteOf as never }) }),
+          ...(self.#d.media === undefined ? {} : { media: self.#d.media(policy) }),
           onRefused: self.#d.onUpgradeRefused,
           ...(self.#d.remoteOf === undefined ? {} : { remoteOf: self.#d.remoteOf as never }),
         }),

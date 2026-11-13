@@ -33,6 +33,7 @@ import * as NetAddress from "effect/net/NetAddress";
 import * as Socket from "effect/socket/Socket";
 import { SocketServer, SocketServerError, SocketServerOpenError } from "effect/socket/SocketServer";
 import { WebSocketServer, type WebSocket } from "ws";
+import { isMediaRequest, type MediaRequestHandler } from "./media/http.ts";
 import type { Principal } from "./principal.ts";
 import { principalKeyOf, type Tickets } from "./auth/tickets.ts";
 import { hostAllowed, type ListenerPolicy, loopbackPolicy, MAX_UNAUTHENTICATED, originAllowed, RPC_PATH } from "./http/policy.ts";
@@ -148,6 +149,12 @@ export interface WebSocketServerOptions {
   readonly remoteOf?: (socket: Duplex) => string;
   /** Plain HTTP requests (5B's front, `http/front.ts`); default 5A's 404, or 426 on `/rpc`. */
   readonly onRequest?: (req: IncomingMessage, res: ServerResponse) => void;
+  /**
+   * Media over HTTP (6B-1 Task 17): `GET`/`HEAD /media/cap/<token>/<file>` and every other path
+   * under `/media/` go here, before `onRequest`, with this listener's own Host and Origin lists
+   * (`media/http.ts`). A request whose token checks out stops counting as unauthenticated.
+   */
+  readonly media?: MediaRequestHandler;
   /** The port to listen on (default 0: any). */
   readonly port?: number;
   /** TLS (5B's remote listener): `node:https` with this key and certificate, TLS 1.2 or later. */
@@ -249,11 +256,24 @@ export const makeTicketedWebSocketServer = (options: WebSocketServerOptions) =>
           res.writeHead(status, { "content-type": "application/json", connection: "close" });
           res.end(status === 426 ? JSON.stringify({ protocol: { min: PROTOCOL_VERSION, max: PROTOCOL_VERSION } }) : "");
         };
+        const front = options.onRequest ?? plain;
+        const media = options.media;
+        const route =
+          media === undefined
+            ? front
+            : (req: IncomingMessage, res: ServerResponse) =>
+                isMediaRequest(req.url)
+                  ? media(req, res, () => {
+                      // Over TLS the request comes on the `TLSSocket`; the pool tracked its raw socket (`_parent`).
+                      const socket = req.socket as Duplex & { _parent?: Duplex };
+                      (unauthenticated.get(socket) ?? unauthenticated.get(socket._parent as Duplex))?.upgraded();
+                    })
+                  : front(req, res);
         const opts = { headersTimeout: timeout, requestTimeout: timeout, connectionsCheckingInterval: 1000 };
         const server: Server =
           options.tls === undefined
-            ? createServer(opts, options.onRequest ?? plain)
-            : (createHttpsServer({ ...opts, key: options.tls.key, cert: options.tls.cert, minVersion: "TLSv1.2" }, options.onRequest ?? plain) as unknown as Server);
+            ? createServer(opts, route)
+            : (createHttpsServer({ ...opts, key: options.tls.key, cert: options.tls.cert, minVersion: "TLSv1.2" }, route) as unknown as Server);
         // A backstop only: the caps below decide first.
         server.maxConnections = maxUnauthenticated + maxWebSockets;
         return server;

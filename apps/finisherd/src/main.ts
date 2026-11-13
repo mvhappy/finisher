@@ -56,6 +56,8 @@ import { LibrariesTag } from "./library/api.ts";
 import { CatalogsTag, layerCatalogs } from "./library/catalog/client.ts";
 import { LibraryServiceTag, librariesHolding, libraryWiring } from "./library/layer.ts";
 import { makeMediaCache, MediaCacheTag, releaseAll } from "./media/cache.ts";
+import { CapTokens, CapTokensTag } from "./media/cap-tokens.ts";
+import { makeMediaHttp } from "./media/http.ts";
 import { layerPlugins } from "./plugins/registries.ts";
 import { makePluginHost } from "./plugins/host/processes.ts";
 import { PluginCommandsTag, serverPluginCommands } from "./plugins/host/command-rpc.ts";
@@ -69,7 +71,7 @@ import { MAX_FRAME } from "./protocol.ts";
 import { claimSocketPath, makeLocalServer, serveRpc } from "./transport.ts";
 import { makeTicketedWebSocketServer, makeUpgradeCheck, WebSocketSlots } from "./upgrade.ts";
 import { makeFront, refusalAudits, type Route } from "./http/front.ts";
-import { loopbackPolicy } from "./http/policy.ts";
+import { type ListenerPolicy, loopbackPolicy } from "./http/policy.ts";
 import { RemoteListener, RemoteListenerTag } from "./net/remote.ts";
 import { readServerSettings } from "./net/server-settings.ts";
 import { EnvironmentTag } from "./env/descriptor.ts";
@@ -161,6 +163,10 @@ export const serve = ({
       });
       // The media cache (6B-1 Task 13) before the registry: an open project pins its entries (a failed open is logged, CACHE_IO).
       const mediaCache = yield* makeMediaCache(serverData, { log: (m) => logSink("warning", m) });
+      // Capability URLs for the cache's bytes (Task 17): in memory, dropped with their principal's tickets by every revoke path.
+      const capTokens = new CapTokens();
+      tickets.onDrop((pred) => capTokens.dropWhere(pred));
+      const mediaHttp = (policy: ListenerPolicy) => makeMediaHttp({ tokens: capTokens, cache: () => mediaCache.cache }, policy);
       // The job engine (5C-1) after the control store and the journal, so it closes before them
       // (its `close` stops every worker); `<server-data>/jobs/` is made private. Its events go
       // to the journal (D34).
@@ -249,6 +255,7 @@ export const serve = ({
           policy: loopback,
           ...(serverSettings.loopbackPort === undefined ? {} : { port: serverSettings.loopbackPort }),
           onRequest: makeFront(httpRoutes, loopback, nonces, { onRefused: refusals.front }),
+          media: mediaHttp(loopback),
           onRefused: refusals.upgrade("ws"),
         }),
         (e) => startFailure(e.reason.cause ?? e),
@@ -334,6 +341,7 @@ export const serve = ({
         onRefused: refusals.front,
         onUpgradeRefused: refusals.upgrade("wss"),
         remoteOf: remoteOptions?.remoteOf,
+        media: mediaHttp,
       });
       onRemote?.(remote);
       if (checkMoved(environment, controlStore, identity.renewed)) {
@@ -455,6 +463,7 @@ export const serve = ({
           Layer.succeed(LibrariesTag, library),
           Layer.succeed(LibraryServiceTag, library),
           Layer.succeed(MediaCacheTag, mediaCache),
+          Layer.succeed(CapTokensTag, capTokens),
           Layer.succeed(KeysTag, keys),
           Layer.succeed(HandshakeTag, handshake),
           Layer.succeed(CredentialsTag, credentials),

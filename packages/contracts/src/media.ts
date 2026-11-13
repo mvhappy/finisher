@@ -145,3 +145,15 @@ export const FontsPlanPayload = Schema.Struct({
 });
 export const FontsPlanSchema = Schema.Unknown;
 export type FontsPlanResult = FontsPlan;
+
+/**
+ * 6B-1 Task 17: `media.url {key, file}` mints a capability URL for one file of a media cache
+ * entry (spec 6 §7.3, plan Decisions 13 and 14). It needs `project.read` and reach over one of
+ * the projects the entry serves (`"*"` reaches all); a key the caller cannot reach, a key that
+ * is not there and a file the entry's `meta.json` does not list are all `NOT_FOUND`. `url` is
+ * origin-relative, `/media/cap/<token>/<file>`: fetch it with `GET` or `HEAD` (single `bytes=`
+ * ranges) on the HTTP origin the connection reached the server on; it works for that file only,
+ * until `expiresAt` (ms since the epoch, at most 10 minutes) or until the principal is revoked.
+ */
+export const MediaUrlPayload = Schema.Struct({ key: Schema.String, file: Schema.String });
+export const MediaUrlSuccess = Schema.Struct({ url: Schema.String, expiresAt: Schema.Number });

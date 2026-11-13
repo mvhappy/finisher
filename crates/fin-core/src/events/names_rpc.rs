@@ -12,8 +12,8 @@ use super::names::NameTable;
 /// (8A Tasks 9a and 9b) and plugin commands (8B Task 9), the `library.*` RPCs (5D), the `jobs.*` RPCs (5C-2), the `agent.*` RPCs (7A Task 2) and the owner's agent settings,
 /// `agent.key.*`, `agent.local.*` and `training.closedTargets.*` (7A Task 12), 5B's pairing,
 /// device, environment and `settings.write` RPCs, the review RPCs with `history.drop`
-/// (5E Task 4), `history.log` (review batch L), and 6B-1's `media.cache.status|gc` and
-/// `asset.reprobe`.
+/// (5E Task 4), `history.log` (review batch L), and 6B-1's `media.cache.status|gc`,
+/// `asset.reprobe` and `media.url`.
 pub static RPC_METHODS: NameTable = NameTable::new(
     "RPC_METHODS",
     &[
@@ -122,6 +122,7 @@ pub static RPC_METHODS: NameTable = NameTable::new(
         "media.capabilities",
         "media.look",
         "media.probeDeep",
+        "media.url",
         "ops.subscribe",
         "plugin.command.run",
         "plugin.commands",
