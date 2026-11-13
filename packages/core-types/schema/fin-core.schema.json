@@ -6521,6 +6521,25 @@
       ],
       "type": "object"
     },
+    "HookEvent": {
+      "description": "An event a hook can subscribe to (arch §10 without `PreOp`/`PostOp`, spec §9.1).\n`PreRender` and `PostRender` are accepted and inert until a render job kind exists.",
+      "enum": [
+        "SessionStart",
+        "SessionEnd",
+        "UserPrompt",
+        "PreCommand",
+        "PostCommand",
+        "BranchReady",
+        "PreMerge",
+        "PostMerge",
+        "PreRender",
+        "PostRender",
+        "JobDone",
+        "Approval",
+        "Notification"
+      ],
+      "type": "string"
+    },
     "HookFin": {
       "additionalProperties": false,
       "properties": {
@@ -6588,6 +6607,156 @@
         "tmp",
         "serverData",
         "home"
+      ],
+      "type": "object"
+    },
+    "HookProject": {
+      "description": "The project an event belongs to.",
+      "properties": {
+        "dir": {
+          "description": "The project folder (read-only to the hook).",
+          "type": "string"
+        },
+        "id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "dir"
+      ],
+      "type": "object"
+    },
+    "HookReply": {
+      "description": "A hook's answer (Decision 2): one JSON object on stdout, or a `plugin.hook` job's result.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "A struct variant, not a unit one: serde's internally tagged unit variants ignore unknown\nfields, and a reply refuses them.",
+          "properties": {
+            "reply": {
+              "const": "allow",
+              "type": "string"
+            }
+          },
+          "required": [
+            "reply"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "reason": {
+              "type": "string"
+            },
+            "reply": {
+              "const": "block",
+              "type": "string"
+            }
+          },
+          "required": [
+            "reply",
+            "reason"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "reply": {
+              "const": "context",
+              "type": "string"
+            },
+            "text": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "reply",
+            "text"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "HookRequest": {
+      "description": "What a hook reads: one JSON line on stdin, then EOF (Decision 9).",
+      "properties": {
+        "event": {
+          "$ref": "#/$defs/HookEvent"
+        },
+        "payload": {
+          "description": "The event's payload (over 1 MiB: `{payloadOmitted: true, bytes}`)."
+        },
+        "project": {
+          "$ref": "#/$defs/HookProject"
+        },
+        "session": {
+          "allOf": [
+            {
+              "$ref": "#/$defs/HookSession"
+            }
+          ],
+          "description": "Absent for events outside a session (`JobDone` of a job, a person's merge, `UserPrompt`\nbefore `agent.session.start` opens the session)."
+        },
+        "v": {
+          "description": "[`HOOK_PROTOCOL_VERSION`].",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "event",
+        "v",
+        "project",
+        "payload"
+      ],
+      "type": "object"
+    },
+    "HookRun": {
+      "description": "A `plugin.hook` v1 job's params: the manifest handler to call with the request.",
+      "properties": {
+        "handler": {
+          "type": "string"
+        },
+        "request": {
+          "$ref": "#/$defs/HookRequest"
+        }
+      },
+      "required": [
+        "handler",
+        "request"
+      ],
+      "type": "object"
+    },
+    "HookSession": {
+      "description": "The session an event belongs to.",
+      "properties": {
+        "harness": {
+          "$ref": "#/$defs/Harness"
+        },
+        "id": {
+          "type": "string"
+        },
+        "mode": {
+          "$ref": "#/$defs/AgentMode"
+        },
+        "role": {
+          "description": "The session's role name.",
+          "type": "string"
+        },
+        "rootBranch": {
+          "description": "The branch the session's root works on, when it has one.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "role",
+        "mode",
+        "harness"
       ],
       "type": "object"
     },

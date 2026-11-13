@@ -5,6 +5,8 @@
 //!   directories, locale, limits), in place of spec §3.4's `initialize`;
 //! - [`CommandRun`] and [`CommandOut`] ([`command`]): the params and result of a
 //!   `plugin.command` v1 job (spec §3.6's `command.run`);
+//! - [`hook`]: the hook events, [`HookRequest`] and [`HookReply`] (7F), shared by command hooks
+//!   and a `plugin.hook` v1 job's params ([`HookRun`]) and result;
 //! - [`calls`]: the plugin → host calls (`call {id, method, params}` → `reply`) of host API 1.1;
 //! - [`JobRights`] ([`rights`]): a plugin job's invoker ∩ grants (Decision 8);
 //! - the client RPCs of commands ([`rpc`]): `plugin.commands`, `plugin.command.run`;
@@ -22,6 +24,7 @@ pub mod calls;
 pub mod command;
 pub mod context;
 pub mod errors;
+pub mod hook;
 pub mod rights;
 pub mod rpc;
 
@@ -29,6 +32,9 @@ pub use calls::HostMethod;
 pub use command::{CommandOut, CommandRun};
 pub use context::{CallLimits, PluginContext, PluginDirs, PluginRefFull};
 pub use errors::PluginError;
+pub use hook::{
+    HookClass, HookEvent, HookOut, HookProject, HookReply, HookRequest, HookRun, HookSession,
+};
 pub use rights::{JobRights, PluginScope, Reach, ReachAll, RightsBranch, RightsPrincipal};
 pub use rpc::{
     CommandOutcome, PluginCommandInfo, PluginCommandList, PluginCommandRunRequest,

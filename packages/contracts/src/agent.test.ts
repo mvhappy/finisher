@@ -166,6 +166,8 @@ const ADMIN_RPCS = {
   "agent.local.show": { scopes: ["agent.admin"], confirmed: false },
   "agent.local.test": { scopes: ["agent.admin"], confirmed: false },
   "agent.local.remove": { scopes: ["agent.admin"], confirmed: true },
+  // 7F Task 2: the hooks of every layer, a person's to read (no code: it changes nothing).
+  "agent.hooks.list": { scopes: ["agent.admin"], confirmed: false },
   "training.closedTargets.get": { scopes: ["server.read"], confirmed: false },
   "training.closedTargets.set": { scopes: ["settings.admin"], confirmed: true },
 } as const;

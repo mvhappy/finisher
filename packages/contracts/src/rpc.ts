@@ -69,6 +69,7 @@ import {
   AgentRulesRemovePayload,
   AgentRulesRemoveSuccess,
 } from "./rules.ts";
+import { AgentHooksListPayload, AgentHooksListSuccess } from "./hooks.ts";
 import { AgentSavedPromptListPayload, AgentSavedPromptListSuccess, AgentSavedPromptRunPayload, AgentSavedPromptRunSuccess } from "./saved-prompts.ts";
 import {
   AgentKeyListSuccess,
@@ -224,7 +225,6 @@ export type {
 export type TxPayload = Omit<Tx, "via">;
 export type ProjectPayload = Project;
 export type CommittedTxPayload = CommittedTx;
-
 
 /**
  * `idemKey`: makes a retry of this create (its answer lost) return the project it made rather
@@ -534,6 +534,7 @@ export const FinRpcs = RpcGroup.make(
   Rpc.make("agent.rules.add", { payload: AgentRulesAddPayload, success: AgentRulesAddSuccess, error: FinError }),
   Rpc.make("agent.rules.remove", { payload: AgentRulesRemovePayload, success: AgentRulesRemoveSuccess, error: FinError }),
   Rpc.make("agent.project.trust", { payload: AgentProjectTrustPayload, success: AgentProjectTrustSuccess, error: FinError }),
+  Rpc.make("agent.hooks.list", { payload: AgentHooksListPayload, success: AgentHooksListSuccess, error: FinError }), // 7F
   Rpc.make("agent.savedPrompt.list", { payload: AgentSavedPromptListPayload, success: AgentSavedPromptListSuccess, error: FinError }),
   Rpc.make("agent.savedPrompt.run", { payload: AgentSavedPromptRunPayload, success: AgentSavedPromptRunSuccess, error: FinError }),
   Rpc.make("agent.key.set", { payload: AgentKeySetPayload, success: AgentKeySetSuccess, error: FinError }),

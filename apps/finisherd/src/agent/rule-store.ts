@@ -12,7 +12,9 @@
 //   never by an RPC that takes a rule from its caller. It is what proves a remembered `allow`
 //   for the lift (`rules.ts`); a rule's `source` text proves nothing.
 // - **Trust** records the hash of a project's `finisher.rules.json` a person trusted
-//   (`trust.ts`), so a changed file stops applying until it is trusted again.
+//   (`trust.ts`), so a changed file stops applying until it is trusted again; with it, that of
+//   its saved prompts (`promptsHash`) and its `finisher.hooks.json` (`hooksHash`, 7F), each
+//   recorded only when the person trusted it too.
 import type { DatabaseSync, StatementSync } from "node:sqlite";
 import { type Rule, RuleWhere } from "@finisher/contracts";
 import { Schema } from "effect";
@@ -85,6 +87,7 @@ const SQL = {
   applicable: `SELECT ${COLUMNS} FROM agent_rules WHERE (projectId IS NULL OR projectId = ?) AND (sessionId IS NULL OR sessionId = ?) ORDER BY createdAt, id`,
   trustOf: "SELECT projectId, rulesHash, hooksHash, promptsHash, trustedAt, by FROM project_trust WHERE projectId = ?",
   trustPrompts: "UPDATE project_trust SET promptsHash = ? WHERE projectId = ?",
+  trustHooks: "UPDATE project_trust SET hooksHash = ? WHERE projectId = ?",
   trust: `INSERT INTO project_trust (projectId, rulesHash, trustedAt, by) VALUES (?, ?, ?, ?)
     ON CONFLICT (projectId) DO UPDATE SET rulesHash = excluded.rulesHash, trustedAt = excluded.trustedAt, by = excluded.by`,
 } as const;
@@ -231,6 +234,12 @@ export class RuleStore {
   /** Records the trusted prompt files' hash on the project's trust record (made by `trust`). */
   trustPrompts(projectId: string, promptsHash: string): ProjectTrust {
     this.#s.trustPrompts.run(promptsHash, projectId);
+    return this.trustOf(projectId)!;
+  }
+
+  /** Records the trusted hooks file's hash on the project's trust record (made by `trust`; 7F). */
+  trustHooks(projectId: string, hooksHash: string): ProjectTrust {
+    this.#s.trustHooks.run(hooksHash, projectId);
     return this.trustOf(projectId)!;
   }
 }

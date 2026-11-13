@@ -8,6 +8,7 @@ import { Effect } from "effect";
 import { chainOf } from "../chain/chain.ts";
 import { actorFor, type CallMeta } from "../diagnostics.ts";
 import { toFinError } from "../errors.ts";
+import type { HookConfig } from "../hooks/config.ts";
 import type { Runtime } from "./runtime.ts";
 import { expand, type SavedPrompts } from "./saved-prompts.ts";
 
@@ -19,6 +20,8 @@ export interface SavedPromptRpcDeps {
   readonly prompts: SavedPrompts;
   readonly runtime: Runtime;
   readonly principalOf: (options: object) => Principal;
+  /** Adds `PROJECT_HOOKS_UNTRUSTED` to the start's warnings, as `agent.session.start` does (7F). */
+  readonly hooks?: HookConfig;
 }
 
 export function savedPromptHandlers(deps: SavedPromptRpcDeps) {
@@ -42,8 +45,8 @@ export function savedPromptHandlers(deps: SavedPromptRpcDeps) {
             },
             catch: toFinError,
           }),
-          ({ prompt, text }) =>
-            runtime.start(
+          ({ prompt, text }) => {
+            const started = runtime.start(
               {
                 projectId: req.projectId,
                 role: prompt.role,
@@ -59,7 +62,9 @@ export function savedPromptHandlers(deps: SavedPromptRpcDeps) {
               meta,
               undefined,
               "savedPrompt",
-            ),
+            );
+            return deps.hooks === undefined ? started : deps.hooks.withWarnings(req.projectId, started);
+          },
         );
       })),
   };

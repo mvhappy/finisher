@@ -41,6 +41,22 @@ describe("audit details", () => {
     expect(auditDetailsValid("settings.write", { ruleId: id })).toBe(false);
   });
 
+  test("hook_block_details_are_closed", () => {
+    const id = "01m6yfjx51brn5wdjt6gsrsq7g";
+    const row = { event: "PreCommand", hookId: "no-friday-trims", layer: "project", session: id, projectId: id, rpc: "item.trim" };
+    expect(auditDetailsValid("hook.block", row)).toBe(true);
+    expect(auditDetailsValid("hook.block", { ...row, event: "PostCommand", after: true })).toBe(true);
+    expect(auditDetailsValid("hook.block", { event: "PreMerge", hookId: "managed.unreadable", layer: "managed" })).toBe(true);
+    expect(auditDetailsValid("hook.block", { event: "JobDone", hookId: "x", layer: "plugin" })).toBe(true);
+    // Never the reason text (the session's notice holds it), a path, or a free word.
+    for (const bad of [{ reason: "no trims on Fridays" }, { reason: "timeout" }, { text: "context" }, { event: "PreOp" }, { layer: "role" }, { hookId: "Has Spaces" }, { hookId: "../x" }, { after: false }, { session: "not an id" }, { path: "/home/someone/hook.mjs" }]) {
+      expect(auditDetailsValid("hook.block", { ...row, ...bad }), JSON.stringify(bad)).toBe(false);
+    }
+    // The fields are hook.block's own.
+    expect(auditDetailsValid("auth.denied", { hookId: "x" })).toBe(false);
+    expect(auditDetailsValid("hook.modify", { hookId: "x" })).toBe(false);
+  });
+
   test("an auth.denied row may name the card an ask opened (APPROVAL_PENDING, outcome pending); no other kind", () => {
     const id = "01m6yfjx51brn5wdjt6gsrsq7g";
     expect(auditDetailsValid("auth.denied", { rpc: "history.checkpoint", rule: "ask", approval: id })).toBe(true);

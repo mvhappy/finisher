@@ -37,6 +37,10 @@ const ROOTS = [
   "MergeReport",
   "RecoverReport",
   "Probe",
+  // 7F: the hook protocol (the contracts' `HookEvent` is this generated schema).
+  "HookEvent",
+  "HookReply",
+  "HookRequest",
 ];
 const OPAQUE = ["CommittedTx"];
 

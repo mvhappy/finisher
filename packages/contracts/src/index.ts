@@ -8,6 +8,7 @@ export * from "./agent.ts";
 export * from "./agent-admin.ts";
 export * from "./rules.ts";
 export * from "./saved-prompts.ts";
+export * from "./hooks.ts";
 export * from "./diagnostics.ts";
 export * from "./auth.ts";
 export * from "./credentials.ts";

@@ -475,6 +475,7 @@ export const RPC_SCOPES: { readonly [T in FinRpcTag]: RuleOf<T> } = {
   "agent.rules.add": { scopes: ["agent.admin"], resolve: PROJECT, kinds: PEOPLE },
   "agent.rules.remove": { scopes: ["agent.admin"], kinds: PEOPLE },
   "agent.project.trust": { scopes: ["agent.admin"], resolve: PROJECT, kinds: PEOPLE },
+  "agent.hooks.list": { scopes: ["agent.admin"], resolve: PROJECT, kinds: PEOPLE, unconfirmed: "readOnly" }, // 7F: the hooks, a person's to read
   // Saved prompts (7B Task 10, spec §6.4): anyone may read the list; running one starts a session
   // as the starter (so the root branch and mode's scopes need `project.write`), people only.
   "agent.savedPrompt.list": { scopes: ["agent.read"], resolve: PROJECT },

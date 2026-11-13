@@ -11,6 +11,8 @@ type Same<A, B> = [A] extends [B] ? ([B] extends [A] ? true : never) : never;
 /** A value Rust has validated, passed through: `Schema.Unknown` typed as its generated type. */
 const opaque = <A>() => Schema.Unknown as unknown as Schema.Codec<A>;
 
+export const AgentModeSchema = Schema.Literals(["plan", "draft", "auto"]);
+export const agentModeMatches: Same<typeof AgentModeSchema.Type, T.AgentMode> = true;
 export const AssetKindSchema = Schema.Literals(["media", "image", "svg", "lottieTemplate", "font", "lut"]);
 export const assetKindMatches: Same<typeof AssetKindSchema.Type, T.AssetKind> = true;
 export const AudioCodecSchema = Schema.Union([Schema.Literals(["aac", "opus", "mp3", "flac", "alac", "pcm", "ac3", "eac3"]), Schema.Literal("other")], { mode: "oneOf" });
@@ -207,6 +209,8 @@ export const FontsSummarySchema = Schema.Struct({
   missing: Schema.mutable(Schema.Array(FontMissingSchema)),
 });
 export const fontsSummaryMatches: Same<typeof FontsSummarySchema.Type, T.FontsSummary> = true;
+export const HarnessSchema = Schema.Literals(["builtin", "claudeCode", "codex", "fake", "plugin"]);
+export const harnessMatches: Same<typeof HarnessSchema.Type, T.Harness> = true;
 export const MasteringDisplaySchema = Schema.Struct({
   maxLuminance: Schema.Number.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(0)),
   minLuminance: Schema.Number.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(0)),
@@ -255,6 +259,39 @@ export const HistoryResultSchema = Schema.Struct({
   undone: Schema.mutable(Schema.Array(Schema.String)),
 });
 export const historyResultMatches: Same<typeof HistoryResultSchema.Type, T.HistoryResult> = true;
+export const HookEventSchema = Schema.Literals(["SessionStart", "SessionEnd", "UserPrompt", "PreCommand", "PostCommand", "BranchReady", "PreMerge", "PostMerge", "PreRender", "PostRender", "JobDone", "Approval", "Notification"]);
+export const hookEventMatches: Same<typeof HookEventSchema.Type, T.HookEvent> = true;
+export const HookProjectSchema = Schema.Struct({
+  dir: Schema.String,
+  id: Schema.String,
+});
+export const hookProjectMatches: Same<typeof HookProjectSchema.Type, T.HookProject> = true;
+export const HookReplySchema = Schema.Union([Schema.Struct({
+  reply: Schema.Literal("allow"),
+}), Schema.Struct({
+  reason: Schema.String,
+  reply: Schema.Literal("block"),
+}), Schema.Struct({
+  reply: Schema.Literal("context"),
+  text: Schema.String,
+})], { mode: "oneOf" });
+export const hookReplyMatches: Same<typeof HookReplySchema.Type, T.HookReply> = true;
+export const HookSessionSchema = Schema.Struct({
+  harness: HarnessSchema,
+  id: Schema.String,
+  mode: AgentModeSchema,
+  role: Schema.String,
+  rootBranch: Schema.optionalKey(Schema.String),
+});
+export const hookSessionMatches: Same<typeof HookSessionSchema.Type, T.HookSession> = true;
+export const HookRequestSchema = Schema.Struct({
+  event: HookEventSchema,
+  payload: Schema.Unknown,
+  project: HookProjectSchema,
+  session: Schema.optionalKey(HookSessionSchema),
+  v: Schema.Number.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(0)),
+});
+export const hookRequestMatches: Same<typeof HookRequestSchema.Type, T.HookRequest> = true;
 export const IgnoredTrackSchema = Schema.Struct({
   handler: Schema.String,
   id: Schema.Number.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(0)),

@@ -47,6 +47,7 @@ import { sessionPlanner } from "./planner.ts";
 import { BUNDLED_ROLES, type Role } from "./roles.ts";
 import { Runtime } from "./runtime.ts";
 import { cataloguePricing, type Pricing, type SessionEnvironment, type ToolExecutor } from "./runtime-deps.ts";
+import { HookConfig } from "../hooks/config.ts";
 import { LayeredRules } from "./rules.ts";
 import { RuleStore } from "./rule-store.ts";
 import type { AclBroker } from "../sandbox/broker.ts";
@@ -91,6 +92,8 @@ export interface AgentRuntimeParts {
   /** Command rules (7B Task 2): every layer, and the `local` layer and trust in `control.db`. */
   readonly rules: LayeredRules;
   readonly ruleStore: RuleStore;
+  /** Hook configuration (7F Task 2): every layer, project files against `project_trust.hooksHash`. */
+  readonly hooks: HookConfig;
   readonly roles: ReadonlyMap<string, Role>;
   /** Durable approvals for agents' asks (7B Task 4) and the key of their `argsHash`. */
   readonly approvals: AgentApprovals;
@@ -328,6 +331,7 @@ export const buildAgentRuntime = (d: AgentWiringDeps): Effect.Effect<AgentRuntim
     const ruleStore = new RuleStore(d.db);
     const dirOf = (projectId: string) => d.registry.dirOf(projectId) ?? d.registry.indexedDirOf?.(projectId);
     const rules = new LayeredRules({ serverData, store: ruleStore, roles, dirOf });
+    const hooks = new HookConfig({ serverData, trustOf: (id) => ruleStore.trustOf(id), dirOf });
     const key = approvalKey(serverData);
     const permissions = providerPermissions({ rules, dirOf });
     // The approvals need the runtime (their nodes, answers): made after it, looked up late.
@@ -374,5 +378,5 @@ export const buildAgentRuntime = (d: AgentWiringDeps): Effect.Effect<AgentRuntim
     });
     approvals = made;
     const grants = grantPort(made, core.store, key, d.options?.afterGrantConsumed);
-    return { runtime, admin, adapters, lookup: new AgentLookup(d.db), catalogue, rules, ruleStore, roles, approvals: made, approvalKey: key, grants, permissions, requests };
+    return { runtime, admin, adapters, lookup: new AgentLookup(d.db), catalogue, rules, ruleStore, hooks, roles, approvals: made, approvalKey: key, grants, permissions, requests };
   });
