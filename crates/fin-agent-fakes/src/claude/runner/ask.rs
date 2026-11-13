@@ -46,8 +46,14 @@ impl Runner {
     }
 
     pub(super) fn ask(&mut self, ask: &Ask) -> Outcome {
+        self.ask_for(ask, None)
+    }
+
+    /// `ask` for the call `tool_use_id` (default: a fresh id).
+    pub(super) fn ask_for(&mut self, ask: &Ask, tool_use_id: Option<&str>) -> Outcome {
         let via = mcp_tool(self.args.str("--permission-prompt-tool"));
-        let tool_use_id = format!("toolu_fake_{}", self.req_n + 1);
+        let tool_use_id =
+            tool_use_id.map_or_else(|| format!("toolu_fake_{}", self.req_n + 1), str::to_string);
         let rid = match &via {
             None => {
                 let rid = self.next_rid();

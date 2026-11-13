@@ -8,8 +8,9 @@
 // - **The `result`:** its `usage` and `total_cost_usd` are cumulative per process; the event is
 //   what they add beyond what this instance already emitted (live or at earlier `result`s), so
 //   the `result` settles the turn's money and any tokens the stream did not show.
-// - **Across instances:** whether `--resume` restores the CLI's totals is unverified, so a
-//   resumed instance fails closed: everything its totals report is charged, as if they had
+// - **Across instances:** `--resume` restores the CLI's totals after a clean exit and restarts
+//   them after a kill (verified 2.1.321, Task 0; the adapter passes the mode, Task 10). Where
+//   the last end is unknown a resumed instance fails closed: everything its totals report is charged, as if they had
 //   reset (`resumeTotals: reset`, the default). If they are restored, the session's earlier
 //   usage is charged again on each resume: an over-charge, never an under-charge, which no
 //   heuristic can rule out (a reset turn can report exactly the earlier totals). Task 0 pins
@@ -66,12 +67,11 @@ export function resultTotals(r: ResultMsg): UsageTotals {
 }
 
 /**
- * What `--resume` does with the CLI's totals. `reset` (the default until Task 0 decides) charges
- * all a resumed instance reports; `restored` counts from the session's charged usage.
- * TODO(7D Task 0 Step 1): `--resume` restoring the cumulative totals (CLI reference: "totals
- * restored from earlier runs count"); modelled by fake-claude as `resumeTotals: restored`
- * (default) or `reset`. Until it is known the default fails closed: a restoring CLI's earlier
- * usage is charged again on every resume (over-charged, never under-charged).
+ * What `--resume` does with the CLI's totals. `reset` (this class's default) charges all a
+ * resumed instance reports; `restored` counts from the session's charged usage. Verified 2.1.321,
+ * Task 0 (s1d/s1e): restored after the last process's clean exit, restarted after a kill; the
+ * adapter picks the mode from how the last process ended (`provider.pid`), and an end nobody saw
+ * fails closed (`reset`: over-charged, never under-charged).
  */
 export type ResumeTotals = "restored" | "reset";
 

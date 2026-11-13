@@ -142,7 +142,8 @@ const ResultLine = Schema.Struct({
   usage: Usage,
   total_cost_usd: Amount,
   session_id: opt(Str),
-  result: opt(Str),
+  // Verified 2.1.321, Task 0 (s1b): `null` when an interrupt stopped a tool (`aborted_tools`).
+  result: opt(Schema.NullOr(Str)),
   duration_ms: opt(Amount),
   duration_api_ms: opt(Amount),
   num_turns: opt(Count),

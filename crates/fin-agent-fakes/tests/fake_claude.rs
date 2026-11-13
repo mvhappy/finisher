@@ -331,6 +331,8 @@ fn fake_can_use_tool_round_trip() {
         "a turn always ends with a result"
     );
     f.user("again");
+    // Verified 2.1.321, Task 0: `system/init` precedes every turn.
+    assert_eq!(f.read()["subtype"], "init");
     let req = f.read();
     assert_eq!(req["request"]["tool_name"], "Write");
     f.answer(&req, json!({"behavior": "deny", "message": "no"}));
@@ -405,6 +407,7 @@ fn fake_sigint_ends_the_turn_and_keeps_running() {
     );
     assert_eq!(f.read()["subtype"], "error_during_execution");
     f.user("next");
+    assert_eq!(f.read()["subtype"], "init", "every turn has its init");
     assert_eq!(f.read()["type"], "result", "idle turns get a plain result");
     assert!(f.finish().success());
 }

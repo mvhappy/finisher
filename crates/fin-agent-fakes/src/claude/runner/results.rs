@@ -14,7 +14,10 @@ pub(super) enum Kind {
         model: Option<String>,
     },
     NotLoggedIn,
-    Interrupted,
+    /// `aborted_tools`: a tool call was stopped (its error result already written).
+    Interrupted {
+        aborted_tools: bool,
+    },
 }
 
 const NOT_LOGGED_IN: &str = "Not logged in · Please run /login";
@@ -100,7 +103,19 @@ impl Runner {
                     json!("stop_sequence"),
                 )
             }
-            Kind::Interrupted => ("error_during_execution", true, String::new(), Value::Null),
+            Kind::Interrupted { aborted_tools } => {
+                // Verified 2.1.321, Task 0 (s1b): an interrupt mid-tool ends the turn so.
+                if *aborted_tools {
+                    over.insert("terminal_reason".into(), json!("aborted_tools"));
+                    over.insert("result".into(), Value::Null);
+                }
+                let stop = if *aborted_tools {
+                    json!("tool_use")
+                } else {
+                    Value::Null
+                };
+                ("error_during_execution", true, String::new(), stop)
+            }
         };
         let t = self.totals.clone();
         // TODO(7D Task 0 Step 1): `modelUsage`'s shape (cumulative per model, like `usage`).
@@ -136,7 +151,6 @@ impl Runner {
         });
         merge(&mut line, &over);
         self.emit(&line);
-        self.transcript.append_totals(&self.totals);
         self.turn_open = false;
         self.last_is_error = is_error;
     }

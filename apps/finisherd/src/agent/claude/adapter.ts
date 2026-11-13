@@ -13,15 +13,16 @@
 // decides whether a session may start on it, and each open checks the setting again. Nothing
 // runs the CLI at boot.
 import { realpathSync } from "node:fs";
-import { dirname } from "node:path";
-import type { FinError, ProviderEvent, Session } from "@finisher/contracts";
+import { dirname, join } from "node:path";
+import type { FinError, Node, ProviderEvent, Session } from "@finisher/contracts";
 import { Effect } from "effect";
 import { finError, toFinError } from "../../errors.ts";
-import type { Detection, ProviderAdapter, ProviderSession, SessionSpec } from "../adapter.ts";
+import type { Detection, ProviderAdapter, ProviderRef, ProviderSession, SessionSpec } from "../adapter.ts";
 import { parseClaudeInitialize } from "../catalogue/cli-models.ts";
 import type { Ids } from "../clock.ts";
 import { systemIds } from "../clock.ts";
-import type { SessionSandboxDeps } from "../sandbox.ts";
+import { forgetProcess, lastEnd, recordProcess } from "../provider-pid.ts";
+import type { SessionSandbox, SessionSandboxDeps } from "../sandbox.ts";
 import { claudeCodeSettings } from "../settings.ts";
 import { CLAUDE_CAPABILITIES, type ClaudeDetection, detectClaude } from "./detect.ts";
 import { launchPlan, sessionUuid, writeLaunchFiles } from "./launch.ts";
@@ -29,7 +30,10 @@ import { instanceAccount, instanceAccountHash, labelOf } from "./account.ts";
 import type { ClaudeModelCache } from "./models.ts";
 import { completeProbe, probe, probeFlagsHash } from "./probe.ts";
 import { unsignedAccount, untestedVersionNotices } from "./probe-check.ts";
-import { ClaudeInstance, type RequestPort } from "./session.ts";
+import { ClaudeSession, IDLE_CLOSE_MS } from "./instances.ts";
+import { claudePermissions } from "./permissions.ts";
+import { interruptedNote, resumeState } from "./resume.ts";
+import { ClaudeInstance, type EventSink, type RequestPort } from "./session.ts";
 import { baselineOf, ClaudeUsage, type ResumeTotals, turnProjection } from "./usage.ts";
 
 export { sessionUuid } from "./launch.ts";
@@ -69,6 +73,10 @@ export interface ClaudeDeps {
   readonly enabled?: () => boolean;
   /** Where CLI requests go (default: `claudePermissions()`, through the runtime; tests). */
   readonly requests?: () => RequestPort;
+  /** A session's nodes, oldest first: what a resumed instance is told and refused (Task 10, `resume.ts`). */
+  readonly nodes?: (sessionId: string) => Promise<readonly Node[]> | readonly Node[];
+  /** Decision 12's idle close (default: `agents.claudeCode.idleCloseS`, 300 s); ≤ 0 never. */
+  readonly idleCloseMs?: number;
   readonly log?: (message: string, details: Record<string, unknown>) => void;
 }
 
@@ -84,6 +92,7 @@ export function ClaudeCodeAdapter(deps: ClaudeDeps): ProviderAdapter {
   // One notice per version per server (spec §4.5).
   const untested = untestedVersionNotices();
   const log = deps.log ?? (() => {});
+  const idleCloseMs = () => deps.idleCloseMs ?? (claudeCodeSettings(deps.sandbox.serverData).idleCloseS ?? IDLE_CLOSE_MS / 1000) * 1000;
 
   return {
     harness: "claudeCode",
@@ -93,6 +102,37 @@ export function ClaudeCodeAdapter(deps: ClaudeDeps): ProviderAdapter {
         // Review Focus 3: the session sandbox is the only way this adapter starts a process.
         const box = spec.sandbox;
         if (box === undefined) return yield* Effect.fail(finError("SANDBOX_UNAVAILABLE", "a Claude Code session starts only in its session sandbox", { harness: "claudeCode", sessionId: spec.sessionId }));
+        if (deps.sessions.get(spec.sessionId) === undefined) return yield* Effect.fail(finError("SESSION_NOT_FOUND", "no such session", { sessionId: spec.sessionId }));
+        const uuid = sessionUuid(spec.sessionId);
+        const ref = { kind: "claudeCode", id: uuid };
+        // A resumed session (Task 10): the calls its CLI is told of, and refused again (`resume.ts`).
+        const resumed = spec.providerRef !== null;
+        const state = resumed && deps.nodes !== undefined ? resumeState(yield* Effect.promise(async () => deps.nodes!(spec.sessionId))) : undefined;
+        // Its last process ended while no server watched (Decision 17; verified 2.1.321, Task 0
+        // s5C: it may have finished the turn into its transcript): the CLI and a person are told.
+        const unseen = resumed && lastEnd(sessionDir(spec.sessionId)) === "unseen";
+        const proc = startProcess(spec, box, uuid, ref, ids.ulid(), unseen);
+        const note = [interruptedNote(state?.interrupted ?? []), unseen ? UNSEEN_NOTE : undefined].filter((n) => n !== undefined).join("\n\n");
+        const session = yield* ClaudeSession.open(
+          { instance: proc.instance, ref, start: proc.start, idleCloseMs, log, ...(state === undefined ? {} : { known: state.known }), ...(note === "" ? {} : { note }) },
+          resumed,
+        );
+        yield* Effect.addFinalizer(() => Effect.promise(() => session.close()));
+        return session.session() satisfies ProviderSession;
+      }),
+  };
+
+  /**
+   * One process of the session's instance `instance` (Decision 12: the first, or one resumed
+   * after an idle close): detection, the probe, the launch plan, the spawn through the session
+   * sandbox (recorded in `provider.pid` for Decision 17's sweep), then the `initialize` answer
+   * (the account, the models). A refused process is closed before the failure.
+   */
+  function startProcess(spec: SessionSpec, box: SessionSandbox, uuid: string, ref: ProviderRef, instance: string, unseen: boolean) {
+    // The `unseenTail` notice goes with the first process only.
+    let first = true;
+    const start = ({ resume, sink, rerun }: { readonly resume: boolean; readonly sink: EventSink; readonly rerun: (id: string) => boolean }) =>
+      Effect.gen(function* () {
         const s = deps.sessions.get(spec.sessionId);
         if (s === undefined) return yield* Effect.fail(finError("SESSION_NOT_FOUND", "no such session", { sessionId: spec.sessionId }));
         // Planning reads the setting live; so does each open (it may have been turned off since).
@@ -110,13 +150,20 @@ export function ClaudeCodeAdapter(deps: ClaudeDeps): ProviderAdapter {
         // `authMethod` of a plan sign-in; modelled by fake-claude as `claude.ai` (its default).
         const planSignIn = d.authMethod === "claude.ai" && deps.chargePlanMoney?.() !== true;
         const baseline = baselineOf(s.usage);
+        // Verified 2.1.321, Task 0 (s1d/s1e): `--resume` restores the CLI's totals after a clean
+        // exit and restarts them after a kill; an end nobody saw counts as a kill (fail closed:
+        // all it reports is charged, never less).
+        const totals: ResumeTotals = deps.resumeTotals ?? (resume && lastEnd(sessionDir(s.id)) === "clean" ? "restored" : "reset");
         const plan = yield* attempt(() =>
-          launchPlan(s, spec, found, os, { binary, retentionDays: deps.retentionDays ?? 90, remainingMoneyMicros: deps.remaining?.(s.id).moneyMicros ?? null, planSignIn, restoredCostMicros: deps.resumeTotals === "restored" ? baseline.costMicros : 0 }),
+          launchPlan(s, { ...spec, providerRef: resume ? ref : null }, found, os, { binary, retentionDays: deps.retentionDays ?? 90, remainingMoneyMicros: deps.remaining?.(s.id).moneyMicros ?? null, planSignIn, restoredCostMicros: totals === "restored" ? baseline.costMicros : 0 }),
         );
-        const usage = new ClaudeUsage({ baseline, resumed: spec.providerRef !== null, basis: planSignIn ? "subscription" : "reported", ...(deps.resumeTotals === undefined ? {} : { resumeTotals: deps.resumeTotals }) });
+        const usage = new ClaudeUsage({ baseline, resumed: resume, basis: planSignIn ? "subscription" : "reported", resumeTotals: totals });
         yield* attempt(() => writeLaunchFiles(plan, os));
         const child = yield* box.spawn(plan.argv, { cwd: box.workspace, stdio: "pipe", env: plan.env, extraRead });
+        track(sessionDir(s.id), instance, child.pid, child.exited);
         const notices: ProviderEvent[] = plan.dropped.map((tool) => ({ type: "notice", name: "toolDropped", details: { harness: "claudeCode", tool } }));
+        if (unseen && first) notices.push({ type: "notice", name: "unseenTail", details: { harness: "claudeCode", reason: "exitedWhileServerDown" } });
+        first = false;
         const key = { version: d.version, flagsHash, os };
         // Decision 8: the sign-in counts as ignored only when `auth status` reports one and this
         // instance's own `initialize.account` is exactly unsigned (`apiKeySource: "none"` alone
@@ -129,14 +176,16 @@ export function ClaudeCodeAdapter(deps: ClaudeDeps): ProviderAdapter {
             return ignoredSignIn;
           },
         };
-        const instance = yield* ClaudeInstance.start({
-          instance: ids.ulid(),
+        const i = yield* ClaudeInstance.start({
+          instance,
           child,
           plan,
-          uuid: sessionUuid(s.id),
-          ref: { kind: "claudeCode", id: sessionUuid(s.id) },
+          uuid,
+          ref,
+          sink,
           check,
           notices,
+          // Resume re-checks the init too (Task 5's predicate on every process).
           onInit: (init) => {
             if (found.initPending === true) {
               void Effect.runPromise(Effect.result(completeProbe(deps.sandbox.serverData, key, init, plan, { signedIn: ignoredSignIn }))).then((r) => {
@@ -147,21 +196,27 @@ export function ClaudeCodeAdapter(deps: ClaudeDeps): ProviderAdapter {
             return n === null ? [] : [n];
           },
           usage,
+          requests: deps.requests?.() ?? claudePermissions({ rerun }),
           ...(spec.gate === undefined ? {} : { gate: spec.gate, projection: () => turnProjection(deps.remaining?.(s.id).tokens ?? null, deps.turnEstimateTokens) }),
-          ...(deps.requests === undefined ? {} : { requests: deps.requests() }),
           ...(deps.interruptWaitMs === undefined ? {} : { interruptWaitMs: deps.interruptWaitMs }),
           ...(deps.sigintGraceMs === undefined ? {} : { sigintGraceMs: deps.sigintGraceMs }),
           ...(deps.closeGraceMs === undefined ? {} : { closeGraceMs: deps.closeGraceMs }),
         });
-        yield* Effect.addFinalizer(() => Effect.promise(() => instance.close()));
+        const refuse = (e: FinError) => Effect.andThen(Effect.promise(() => i.close()), Effect.fail(e));
         // The `initialize` answer: the account (Decision 19) and the models (Decision 11). A
-        // process that ends first (an unknown `--resume`) opens all the same: its lines say why.
-        const body = yield* Effect.promise(() => Promise.race([instance.initialized(), new Promise((r) => setTimeout(() => r(null), INITIALIZE_TIMEOUT_MS).unref())]));
+        // process that ends first opens all the same (its lines say why), except a resume whose
+        // transcript the CLI cannot find (Decision 17, Task 0): that one is refused.
+        const body = yield* Effect.promise(() => Promise.race([i.initialized(), new Promise((r) => setTimeout(() => r(null), INITIALIZE_TIMEOUT_MS).unref())]));
+        const early = i.early();
+        if (body === null && resume && early !== null && early.subtype === "error_during_execution") {
+          return yield* refuse(finError("PROVIDER_EXITED", "Claude Code has no transcript of this session to resume", { harness: "claudeCode", reason: "transcriptLost", detail: early.text }, "end this session and start a new one"));
+        }
         if (body !== null && typeof body === "object") {
           const account = (body as { account?: unknown }).account;
           ignoredSignIn = d.signedIn === true && unsignedAccount(account);
-          const seen = sessionAccount(deps.sandbox.serverData, d, account, spec.providerRef === null);
-          if (seen.refused !== null) return yield* Effect.fail(seen.refused);
+          // A new session (no provider reference) may be refused; a resumed process never is.
+          const seen = sessionAccount(deps.sandbox.serverData, d, account, spec.providerRef === null && !resume);
+          if (seen.refused !== null) return yield* refuse(seen.refused);
           try {
             const models = parseClaudeInitialize(body);
             // Before Task 11's hash exists (signed out, or no account named) the version's own list.
@@ -170,10 +225,35 @@ export function ClaudeCodeAdapter(deps: ClaudeDeps): ProviderAdapter {
             log("claude initialize without models", { sessionId: s.id, error: String(e).slice(0, 200) });
           }
         }
-        return instance.session() satisfies ProviderSession;
-      }),
-  };
+        return i;
+      });
+    return { instance, start };
+  }
+
+  /** Decision 17: the process is in `provider.pid` while it runs (a failure to record it is logged, not fatal). */
+  function sessionDir(sessionId: string): string {
+    return join(deps.sandbox.serverData, "agents", sessionId);
+  }
+
+  function track(dir: string, instance: string, pid: number, exited: Promise<{ readonly signal?: string | null }>): void {
+    try {
+      recordProcess(dir, instance, pid);
+    } catch (e) {
+      log("claude process not recorded", { pid, error: String(e).slice(0, 200) });
+    }
+    void exited.then((e) => {
+      try {
+        forgetProcess(dir, pid, e.signal === null || e.signal === undefined ? "clean" : "killed");
+      } catch {
+        // The directory is gone (the session was deleted).
+      }
+    });
+  }
 }
+
+/** What a resumed CLI is told when its last process ended unwatched (`provider-pid.ts`). */
+const UNSEEN_NOTE =
+  "Finisher: the session's previous process went on after the server stopped and ended unwatched; what it did after that point (its last turn may have finished) is in your transcript but was not recorded by Finisher.";
 
 /** The models of an instance whose account has no hash (signed out, or naming none). */
 export const UNKNOWN_ACCOUNT = "unknown";

@@ -15,6 +15,7 @@ mod ask;
 mod lines;
 mod mcp;
 mod results;
+mod resume;
 
 use super::argv::{self, Args, Command};
 use super::config;
@@ -101,6 +102,8 @@ struct Runner {
     session_id: String,
     transcript: Transcript,
     totals: Totals,
+    /// A resumed transcript's calls without a result (`resume.rs`).
+    dangling: Vec<(String, String, Value)>,
     observed: Observed,
     /// User lines received while a turn runs (steers), played in order.
     pending: VecDeque<Value>,
@@ -121,18 +124,21 @@ impl Runner {
         version: String,
         mut observed: Observed,
     ) -> Result<Runner, i32> {
+        let mut dangling = Vec::new();
         let (session_id, transcript, totals) = match args.str("--resume") {
             Some(id) => match Transcript::find(id) {
                 Some((t, restored)) => {
+                    let ids: Vec<&String> = restored.dangling.iter().map(|d| &d.0).collect();
                     observed.set(
                         "resume",
-                        json!({"found": true, "transcriptLines": restored.lines}),
+                        json!({"found": true, "transcriptLines": restored.lines, "dangling": ids}),
                     );
-                    // TODO(7D Task 0 Step 1): whether `--resume` restores the cumulative totals.
-                    let totals = match script.resume_totals {
-                        ResumeTotals::Restored => restored.totals,
-                        ResumeTotals::Reset => Totals::default(),
+                    // Verified 2.1.321, Task 0: restored after a clean exit, restarted after a kill.
+                    let totals = match (script.resume_totals, restored.clean) {
+                        (ResumeTotals::Restored, _) | (ResumeTotals::Auto, true) => restored.totals,
+                        _ => Totals::default(),
                     };
+                    dangling = restored.dangling;
                     (id.to_string(), t, totals)
                 }
                 None => {
@@ -186,6 +192,7 @@ impl Runner {
             session_id,
             transcript,
             totals,
+            dangling,
             observed,
             pending: VecDeque::new(),
             started: false,
@@ -199,10 +206,9 @@ impl Runner {
     }
 
     fn emit(&self, v: &Value) {
+        // A host gone does not stop the turn (verified 2.1.321, Task 0, s5C).
         let mut out = std::io::stdout().lock();
-        if writeln!(out, "{v}").and_then(|()| out.flush()).is_err() {
-            std::process::exit(0);
-        }
+        let _ = writeln!(out, "{v}").and_then(|()| out.flush());
     }
 
     fn emit_script_line(&self, v: &Value) {
@@ -211,7 +217,14 @@ impl Runner {
                 let mut out = std::io::stdout().lock();
                 let _ = writeln!(out, "{raw}").and_then(|()| out.flush());
             }
-            other => self.emit(&self.substitute(other.clone())),
+            other => {
+                let v = self.substitute(other.clone());
+                // The conversation's lines go into the transcript, as the CLI's own do.
+                if matches!(v["type"].as_str(), Some("assistant" | "user")) {
+                    self.transcript.append(&v);
+                }
+                self.emit(&v);
+            }
         }
     }
 
@@ -282,8 +295,10 @@ impl Runner {
             }
             Some("user") => {
                 // Every user line the host sent (a test proves none was sent).
-                self.observed
-                    .push("userLines", json!({"sessionId": v["session_id"]}));
+                self.observed.push(
+                    "userLines",
+                    json!({"sessionId": v["session_id"], "content": v["message"]["content"]}),
+                );
                 self.transcript.append(&v);
                 Some(Ev::User(v))
             }
@@ -311,12 +326,13 @@ impl Runner {
         }
         let ended = self.turn_open;
         if ended {
-            self.emit_result(Kind::Interrupted);
+            let aborted_tools = self.abort_tools();
+            self.emit_result(Kind::Interrupted { aborted_tools });
             self.interrupted = true;
         }
         if knob == OnInterrupt::Exit {
             let _ = std::io::stdout().flush();
-            std::process::exit(if sigint { 130 } else { 0 });
+            std::process::exit(self.finish_with(if sigint { 130 } else { 0 }));
         }
         ended.then_some(Ev::Interrupted)
     }
@@ -372,11 +388,13 @@ impl Runner {
             self.on_start();
             self.mcp_wait();
             self.init_sent = true;
-            self.emit(&self.init_line());
         }
+        // Verified 2.1.321, Task 0: `system/init` precedes every turn, not only the first.
+        self.emit(&self.init_line());
         self.emit(&self.status_requesting());
         self.turn_open = true;
         self.interrupted = false;
+        self.reask_dangling();
     }
 
     /// A turn whose steps wrote no `result` gets a plain one.
@@ -416,7 +434,7 @@ impl Runner {
             if step.expect == Some(Expect::User) {
                 self.close_turn();
                 if !self.wait_user() {
-                    return self.exit_code();
+                    return self.finish();
                 }
             } else if self.interrupted {
                 continue;
@@ -431,7 +449,7 @@ impl Runner {
             }
             match self.next(None) {
                 Ev::User(u) => self.pending.push_back(u),
-                Ev::Eof => return self.exit_code(),
+                Ev::Eof => return self.finish(),
                 _ => {}
             }
         }

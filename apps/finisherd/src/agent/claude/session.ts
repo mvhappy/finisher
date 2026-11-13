@@ -19,6 +19,8 @@
 //   Never SIGTERM (it records no result).
 // - **Exit**: the process's end (after its last line) is `exited {code, signal}`, then the
 //   stream ends. Closing the instance's scope drops its later lines and kills it.
+// - **One process of a session** (Task 10): `ClaudeSession` (`instances.ts`) runs a session's
+//   successive processes behind one `ProviderSession`, each instance writing to its `sink`.
 import type { FinError, ProviderEvent } from "@finisher/contracts";
 import { Cause, Effect, Queue, Stream } from "effect";
 import { finError } from "../../errors.ts";
@@ -50,9 +52,18 @@ export interface RequestPort {
   cancel(requestId: string): readonly ProviderEvent[];
 }
 
+/** Where an instance's events go instead of its own stream (`ClaudeSession`, Task 10). */
+export interface EventSink {
+  offer(event: ProviderEvent): void;
+  /** The process is gone (after its `exited`), or the instance closed. */
+  end(): void;
+}
+
 export interface InstanceOptions {
   /** This instance's id (a ULID): every event carries it. */
   readonly instance: string;
+  /** Default: the instance's own stream (`session().events`). */
+  readonly sink?: EventSink;
   readonly child: SandboxedChild;
   readonly plan: Pick<LaunchPlan, "argv" | "tools" | "mcpTools">;
   /** The session's UUID (`--session-id`/`--resume=`): every user line names it. */
@@ -96,6 +107,8 @@ export class ClaudeInstance {
   /** The gate refused the init, or a line did not decode: later lines are dropped. */
   #refused = false;
   #exit: { code: number | null; signal: string | null } | null = null;
+  /** A failed `result` before any turn and before the `initialize` answer (an unknown `--resume`). */
+  #early: { readonly subtype: string; readonly text: string } | null = null;
   #wake: (() => void)[] = [];
   #control = 0;
   /** The open interrupt request's id and, once answered, its answer. */
@@ -152,9 +165,34 @@ export class ClaudeInstance {
       this.#answerInitialize(null);
       this.#turnOpen = false;
       this.#notify();
-      if (!this.#closed) Queue.offerUnsafe(this.#queue, { instance: this.#o.instance, event: { type: "exited", code: e.code, signal: e.signal ?? null } });
-      Queue.endUnsafe(this.#queue);
+      if (!this.#closed) this.#out({ type: "exited", code: e.code, signal: e.signal ?? null });
+      this.#end();
     });
+  }
+
+  #out(event: ProviderEvent): void {
+    if (this.#o.sink !== undefined) this.#o.sink.offer(event);
+    else Queue.offerUnsafe(this.#queue, { instance: this.#o.instance, event });
+  }
+
+  #end(): void {
+    if (this.#o.sink !== undefined) this.#o.sink.end();
+    else Queue.endUnsafe(this.#queue);
+  }
+
+  /** A turn is open (its `result` not yet seen). */
+  busy(): boolean {
+    return this.#turnOpen && this.#exit === null && !this.#closed && !this.#refused;
+  }
+
+  /** The process has exited. */
+  exited(): boolean {
+    return this.#exit !== null;
+  }
+
+  /** The failed `result` the process wrote before any turn and before answering `initialize`, if any. */
+  early(): { readonly subtype: string; readonly text: string } | null {
+    return this.#early;
   }
 
   #notify(): void {
@@ -174,7 +212,7 @@ export class ClaudeInstance {
   /** Events to the runtime now. */
   #deliver(events: readonly ProviderEvent[]): void {
     if (this.#closed) return;
-    for (const event of events) Queue.offerUnsafe(this.#queue, { instance: this.#o.instance, event });
+    for (const event of events) this.#out(event);
   }
 
   /** The adapter's own events: held until the gate lets the instance's lines through. */
@@ -219,6 +257,12 @@ export class ClaudeInstance {
         this.#notify();
       }
       return;
+    }
+    // Task 0 (unsigned, 2.1.321): `--resume=<uuid>` of an id the config dir lacks answers with
+    // `result {subtype: "error_during_execution", is_error: true, num_turns: 0}` before the
+    // `initialize` answer, then exits 1 (the adapter maps it as a lost transcript).
+    if (l.kind === "result" && l.is_error && !this.#turnOpen && !this.#inited && this.#early === null) {
+      this.#early = { subtype: l.subtype, text: (l.errors?.[0] ?? l.result ?? "").slice(0, 200) };
     }
     if (l.kind === "controlCancel") {
       // Through the gate: a cancel of a held request drops it there (no card, no answer).
@@ -302,9 +346,10 @@ export class ClaudeInstance {
     if (!this.#turnOpen || this.#gone() !== null) return;
     const { child } = this.#o;
     this.#interrupting = true;
-    // TODO(7D Task 0 Step 1): that the `interrupt` request ends the turn with a `result` (and
-    // what the tool's process gets); modelled by fake-claude as an `error_during_execution`
-    // result after the `control_response` (`onInterrupt: "result"`, the default).
+    // Verified 2.1.321, Task 0 (s1b): the request is answered `{still_queued: []}` at once, a
+    // tool in flight is stopped (its error `tool_result`, then `[Request interrupted by user for
+    // tool use]`) and the turn ends `result {error_during_execution, terminal_reason:
+    // "aborted_tools", result: null}`; fake-claude plays that shape (`onInterrupt: "result"`).
     const ask: { readonly id: string; answer?: "success" | "error" } = { id: `finisher-interrupt-${++this.#control}` };
     this.#interruptAsk = ask;
     this.#write(encodeControl(ask.id, { subtype: "interrupt" }));
@@ -330,7 +375,7 @@ export class ClaudeInstance {
       this.#pending = [];
       this.#notify();
     }
-    Queue.endUnsafe(this.#queue);
+    this.#end();
     try {
       this.#o.child.stdin.end();
     } catch {

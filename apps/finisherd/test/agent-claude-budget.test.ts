@@ -276,19 +276,21 @@ describe("through the runtime", () => {
     expect(observed(r.serverData, s.id)).toHaveLength(1);
   });
 
-  // Until Task 0 pins the mode a resume fails closed: a CLI that restores its totals has the
-  // earlier usage (100/10/$0.01) charged again; one that resets them is charged exactly.
-  const RESUMED = { restored: { input: 250, output: 30, moneyMicros: 40_000, tokens: 280 }, reset: { input: 150, output: 20, moneyMicros: 30_000, tokens: 170 } };
-  for (const mode of ["restored", "reset"] as const) {
-    withFake(`delta_after_resume (${mode}): never under-charged`, async () => {
-      const r = await claudeServer({ ...CONSOLE, steps: [{ expect: "user", cumulativeUsage: { inputTokens: 100, outputTokens: 10, costUsd: 0.01 } }] });
+  // Verified 2.1.321, Task 0 (s1d/s1e): `--resume` restores the totals after a clean exit (the
+  // interrupt's close: stdin's end) and restarts them after a kill; the fake does the same, and
+  // the adapter follows how the last process ended (`provider.pid`): charged exactly either way.
+  const RESUMED = { input: 150, output: 20, moneyMicros: 30_000, tokens: 170 };
+  for (const ended of ["clean", "killed"] as const) {
+    withFake(`delta_after_resume (${ended}): charged exactly`, async () => {
+      const first = { expect: "user", cumulativeUsage: { inputTokens: 100, outputTokens: 10, costUsd: 0.01 } };
+      const r = await claudeServer({ ...CONSOLE, steps: ended === "clean" ? [first] : [first, { crash: { signal: "KILL" } }] });
       const s = await start(r);
       await settle(s.id);
-      const done = await restart(r, s, { ...CONSOLE, resumeTotals: mode, steps: [{ expect: "user", liveUsage: { inputTokens: 30, outputTokens: 4 }, cumulativeUsage: { inputTokens: 20, outputTokens: 6, costUsd: 0.02 } }] });
+      const done = await restart(r, s, { ...CONSOLE, steps: [{ expect: "user", liveUsage: { inputTokens: 30, outputTokens: 4 }, cumulativeUsage: { inputTokens: 20, outputTokens: 6, costUsd: 0.02 } }] });
       expect(done.status).toBe("idle");
       const runs = observed(r.serverData, s.id);
       expect(runs[1]!.argv.some((a) => a.startsWith("--resume="))).toBe(true);
-      const want = RESUMED[mode];
+      const want = RESUMED;
       expect(done.usage).toMatchObject({ input: want.input, output: want.output, moneyMicros: want.moneyMicros });
       expect(ledger(s.id, "tokens").used).toBe(want.tokens);
       expect(ledger(s.id, "money")).toMatchObject({ used: want.moneyMicros, reserved: 0 });
@@ -307,8 +309,8 @@ describe("through the runtime", () => {
     expect(nodes(s.id).find((n) => n.kind === "usage")!.runId).toBe(runId);
     expect(get(s.id).usage).toMatchObject({ input: 500, output: 50, moneyMicros: 20_000 });
     expect(ledger(s.id, "money").used).toBe(20_000);
-    // The next instance (totals reset) does not charge it again.
-    const done = await restart(r, s, { ...CONSOLE, resumeTotals: "reset", steps: [{ expect: "user", cumulativeUsage: { inputTokens: 1, outputTokens: 1, costUsd: 0.001 } }] });
+    // The next instance (the interrupt's close is a clean exit: its totals restored) does not charge it again.
+    const done = await restart(r, s, { ...CONSOLE, steps: [{ expect: "user", cumulativeUsage: { inputTokens: 1, outputTokens: 1, costUsd: 0.001 } }] });
     expect(done.usage).toMatchObject({ input: 501, output: 51, moneyMicros: 21_000 });
   }, 30_000);
 
@@ -371,7 +373,7 @@ describe("through the runtime", () => {
     expect(ledger(s.id, "money").used).toBe(20_000);
   });
 
-  withFake("budget_flag_tracks_remaining_on_restart: the remainder on each start (fail closed on resume)", async () => {
+  withFake("budget_flag_tracks_remaining_on_restart: the remainder on each start", async () => {
     const r = await claudeServer({ ...CONSOLE, steps: [{ expect: "user", cumulativeUsage: { inputTokens: 10, outputTokens: 1, costUsd: 0.25 } }] });
     const s = await start(r, { moneyMicros: 1_000_000 });
     await settle(s.id);
@@ -382,11 +384,12 @@ describe("through the runtime", () => {
     const done = await restart(r, s, { ...CONSOLE, steps: [{ expect: "user", cumulativeUsage: { inputTokens: 1, outputTokens: 1, costUsd: 0.5 } }] });
     const [first, second] = observed(r.serverData, s.id);
     expect(flag(first!.argv)).toBe("1");
-    // 1.75 left; the 0.25 a restoring CLI counts again is not added until Task 0 pins
-    // `restored` (a restoring CLI stops early, as its restored 0.25 is charged again).
-    expect(flag(second!.argv)).toBe("1.75");
+    // 1.75 left, plus the 0.25 the CLI restores after its clean exit and counts against the flag
+    // (verified 2.1.321, Task 0).
+    expect(flag(second!.argv)).toBe("2");
     expect(done.status).toBe("idle");
-    expect(ledger(s.id, "money").used).toBe(1_000_000);
+    // Charged exactly: 0.25, then the restored 0.75 less the 0.25 already charged.
+    expect(ledger(s.id, "money").used).toBe(750_000);
   });
 
   withFake("per_model_split_recorded: modelUsage as a notice per result", async () => {

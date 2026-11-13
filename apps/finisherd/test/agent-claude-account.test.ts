@@ -697,9 +697,49 @@ describe("the sign-in store", () => {
     expect(readFileSync(join(store, "credentials"), "utf8")).toBe("not for finisherd");
   });
 
-  // TODO(7D Tasks 7–10): extend the spy over a full scripted Claude Code session — a permission
-  // prompt answered through `permissions.ts`, an interrupt and `--resume` (Task 10), and the end —
-  // with the same `underProviders(...) === []` check. It needs the adapter and its registration
-  // (`claude/session.ts`, `adapter.ts`, `wiring.ts`), which are not on this branch.
-  test.todo("finisherd_never_opens_sign_in_store: a scripted session with a permission prompt, resume and end (Tasks 7–10)");
+  withFake("finisherd_never_opens_sign_in_store: a scripted session with a permission prompt, an interrupt, a resume and the end", async () => {
+    const turn = { expect: "user", ask: { tool: "Read", input: { file_path: "notes.txt" } }, onAllow: [], cumulativeUsage: { inputTokens: 1, outputTokens: 1 } };
+    const { bin } = installFake("cli", { account: LABEL_A, script: { init: { apiKeySource: "/login managed key" }, steps: [turn, { expect: "user", sleep: 60_000 }] } });
+    const serverData = join(tmp, "server-data");
+    mkdirSync(serverData, { recursive: true, mode: 0o700 });
+    writeFileSync(join(serverData, "settings.json"), JSON.stringify({ agents: { claudeCode: { enabled: true, path: bin } } }));
+    const store = join(serverData, "providers", "claudeCode", "home", "store");
+    mkdirSync(store, { recursive: true, mode: 0o700 });
+    writeFileSync(join(store, "credentials"), "not for finisherd");
+    const previous = setSandboxStatusSource(NOT_READY);
+    const server = new AgentServer(serverData);
+    try {
+      await server.start();
+      const local = await server.local();
+      const projectId = ok<{ projectId: string }>(await local.call("project.create", { dir: join(tmp, "P"), name: "P", rate: "30" })).projectId;
+      ok(await commit(local, projectId, tx("01aaaaaaaaaaaaaaaaaaaaaaaP", 0, [addAsset()])));
+      spy.touched.length = 0;
+      const status = async (id: string) => ok<{ session: { status: string } }>(await local.call("agent.session.get", { sessionId: id })).session.status;
+      const until = async (id: string, want: string) => {
+        for (const end = Date.now() + 25_000; (await status(id)) !== want; await new Promise((r) => setTimeout(r, 20))) if (Date.now() > end) throw new Error(`not ${want}`);
+      };
+      // The first turn's permission prompt (`can_use_tool`) is decided by the runtime.
+      const id = ok<{ session: { id: string } }>(await local.call("agent.session.start", { projectId, harness: "claudeCode", prompt: "read the notes" })).session.id;
+      await until(id, "idle");
+      expect(server.core.store.nodes(id, 1, 100).some((n) => n.kind === "approval")).toBe(true);
+      // A second turn interrupted mid-way, then resumed (`--resume=`), then the end.
+      ok(await local.call("agent.session.prompt", { sessionId: id, text: "more" }));
+      await until(id, "running");
+      ok(await local.call("agent.session.interrupt", { sessionId: id }));
+      await until(id, "interrupted");
+      writeFileSync(join(tmp, "cli", "script.json"), JSON.stringify({ init: { apiKeySource: "/login managed key" }, steps: [{ expect: "user", cumulativeUsage: { inputTokens: 1, outputTokens: 1 } }] }));
+      ok(await local.call("agent.session.resume", { sessionId: id }));
+      ok(await local.call("agent.session.prompt", { sessionId: id, text: "again" }));
+      await until(id, "idle");
+      ok(await local.call("agent.session.end", { sessionId: id }));
+      await until(id, "ended");
+    } finally {
+      await server.stop();
+      setSandboxStatusSource(previous);
+    }
+    const seen = [...spy.touched];
+    expect(seen.some((p) => p.startsWith(join(serverData, "agents")))).toBe(true);
+    expect(underProviders(serverData, seen)).toEqual([]);
+    expect(readFileSync(join(store, "credentials"), "utf8")).toBe("not for finisherd");
+  });
 });

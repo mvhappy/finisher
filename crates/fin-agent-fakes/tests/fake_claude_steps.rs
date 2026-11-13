@@ -156,6 +156,7 @@ fn fake_steer_is_queued_and_counted() {
         ),
         (Some("first"), Some(1))
     );
+    assert_eq!(f.read()["subtype"], "init", "every turn has its init");
     let second = f.read();
     assert_eq!(
         second["type"], "result",
@@ -249,6 +250,7 @@ fn fake_interrupt_knobs() {
     f.read();
     assert_eq!(f.read()["subtype"], "error_during_execution");
     f.user("again");
+    assert_eq!(f.read()["subtype"], "init", "every turn has its init");
     assert_eq!(f.read()["is_error"], false);
     assert!(f.finish().success());
 }
@@ -298,6 +300,7 @@ fn fake_spawn_in_on_allow_runs_only_when_allowed() {
     assert_eq!(f.read()["subtype"], "refused");
     assert_eq!(f.read()["type"], "result");
     f.user("two");
+    assert_eq!(f.read()["subtype"], "init", "every turn has its init");
     let req = f.read();
     f.answer(
         &req,
@@ -314,4 +317,77 @@ fn fake_spawn_in_on_allow_runs_only_when_allowed() {
     );
     assert_eq!(parent["spawned"][0]["code"], 0);
     assert_eq!(parent["answers"][1]["answer"]["behavior"], "allow");
+}
+
+#[test]
+fn fake_resume_reasks_a_dangling_call_only_under_reask() {
+    let dir = Dir::new("dangling");
+    // A process killed mid-tool: its transcript holds the call and no result.
+    let use_line = json!({"type": "assistant", "session_id": "$session_id", "parent_tool_use_id": null,
+        "message": {"id": "m1", "role": "assistant", "model": "m", "content": [
+            {"type": "tool_use", "id": "toolu_D", "name": "Bash", "input": {"command": "fin bin add"}}]}});
+    let first =
+        json!({"steps": [{"expect": "user", "emit": [use_line], "crash": {"signal": "KILL"}}]});
+    let mut f = Fake::start(&dir, Some(first), &["--session-id", UUID], &[]);
+    f.user("go");
+    f.read();
+    assert_eq!(f.read()["type"], "assistant");
+    assert!(!f.finish().success());
+
+    let resume = format!("--resume={UUID}");
+    let plain = |mode: &str| json!({"onResumeDangling": mode, "steps": [{"expect": "user", "cumulativeUsage": {"inputTokens": 1}}]});
+    // `leave`: nothing is asked.
+    let mut f = Fake::start(&dir, Some(plain("leave")), &[&resume], &[]);
+    f.user("again");
+    assert_eq!(f.read()["subtype"], "init");
+    assert_eq!(f.read()["type"], "result");
+    assert!(f.finish().success());
+    // `reask`: the same tool_use_id, run again only when allowed (here denied).
+    let mut f = Fake::start(&dir, Some(plain("reask")), &[&resume], &[]);
+    f.user("again");
+    assert_eq!(f.read()["subtype"], "init");
+    let req = f.read();
+    assert_eq!(req["request"]["subtype"], "can_use_tool");
+    assert_eq!(req["request"]["tool_use_id"], "toolu_D");
+    f.answer(&req, json!({"behavior": "deny", "message": "no"}));
+    assert_eq!(f.read()["type"], "result");
+    assert!(f.finish().success());
+    let all = observed_all(&dir);
+    assert_eq!(all[1]["resume"]["dangling"], json!(["toolu_D"]));
+    assert!(all[1]["rerunDenied"].is_null());
+    assert_eq!(all[2]["rerunDenied"], json!(["toolu_D"]));
+    assert!(all[2]["reran"].is_null());
+}
+
+/// Task 0 (verified 2.1.321, s1d/s1e): `--resume` restores the totals after a clean exit and
+/// restarts them after a kill mid-turn.
+#[test]
+fn fake_resume_totals_follow_how_the_last_process_ended() {
+    let turn = |cost: f64| json!({"steps": [{"expect": "user", "cumulativeUsage": {"inputTokens": 10, "costUsd": cost}}]});
+    let resume = format!("--resume={UUID}");
+    let total = |dir: &Dir| {
+        let mut f = Fake::start(dir, Some(turn(0.02)), &[&resume], &[]);
+        f.user("again");
+        assert_eq!(f.read()["subtype"], "init");
+        let r = f.read();
+        assert!(f.finish().success());
+        r["total_cost_usd"].as_f64().unwrap()
+    };
+    // A clean exit (stdin's end): the totals carry on.
+    let clean = Dir::new("totals-clean");
+    let mut f = Fake::start(&clean, Some(turn(0.01)), &["--session-id", UUID], &[]);
+    f.user("go");
+    f.read();
+    f.read();
+    assert!(f.finish().success());
+    assert!((total(&clean) - 0.03).abs() < 1e-9);
+    // Killed after its turn's result: they restart.
+    let killed = Dir::new("totals-killed");
+    let script = json!({"steps": [{"expect": "user", "cumulativeUsage": {"inputTokens": 10, "costUsd": 0.01}}, {"crash": {"signal": "KILL"}}]});
+    let mut f = Fake::start(&killed, Some(script), &["--session-id", UUID], &[]);
+    f.user("go");
+    f.read();
+    f.read();
+    assert!(!f.finish().success());
+    assert!((total(&killed) - 0.02).abs() < 1e-9);
 }

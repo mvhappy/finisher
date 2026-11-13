@@ -38,6 +38,42 @@ pub struct Transcript {
 pub struct Restored {
     pub lines: usize,
     pub totals: Totals,
+    /// The transcript ends with a clean exit's `cost-state` entry (Task 0: totals are restored).
+    pub clean: bool,
+    /// `tool_use` blocks without a `tool_result`, in order: `(id, tool, input)`.
+    pub dangling: Vec<(String, String, Value)>,
+}
+
+/// The `tool_use` blocks of `text`'s assistant lines that no later `tool_result` answers.
+fn dangling(text: &str) -> Vec<(String, String, Value)> {
+    let mut open: Vec<(String, String, Value)> = Vec::new();
+    for v in text
+        .lines()
+        .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+    {
+        let Some(blocks) = v["message"]["content"].as_array() else {
+            continue;
+        };
+        for b in blocks {
+            match (
+                v["type"].as_str(),
+                b["type"].as_str(),
+                b["id"].as_str(),
+                b["tool_use_id"].as_str(),
+            ) {
+                (Some("assistant"), Some("tool_use"), Some(id), _) => open.push((
+                    id.to_string(),
+                    b["name"].as_str().unwrap_or_default().to_string(),
+                    b["input"].clone(),
+                )),
+                (Some("user"), Some("tool_result"), _, Some(id)) => {
+                    open.retain(|(o, _, _)| o != id)
+                }
+                _ => {}
+            }
+        }
+    }
+    open
 }
 
 fn projects() -> Option<PathBuf> {
@@ -73,7 +109,7 @@ impl Transcript {
                 let mut totals = Totals::default();
                 for line in text.lines() {
                     if let Ok(v) = serde_json::from_str::<Value>(line)
-                        && v["type"] == "fake_totals"
+                        && v["type"] == "cost-state"
                         && let Ok(t) = serde_json::from_value(v["totals"].clone())
                     {
                         totals = t;
@@ -84,11 +120,25 @@ impl Transcript {
                     Restored {
                         lines: text.lines().count(),
                         totals,
+                        clean: text
+                            .lines()
+                            .rev()
+                            .find_map(|l| serde_json::from_str::<Value>(l).ok())
+                            .is_some_and(|v| v["type"] == "cost-state"),
+                        dangling: dangling(&text),
                     },
                 ));
             }
         }
         None
+    }
+
+    /// The calls this transcript holds without a result.
+    pub fn open_calls(&self) -> Vec<(String, String, Value)> {
+        self.path
+            .as_ref()
+            .and_then(|p| fs::read_to_string(p).ok())
+            .map_or_else(Vec::new, |t| dangling(&t))
     }
 
     pub fn append(&self, line: &Value) {
@@ -102,6 +152,6 @@ impl Transcript {
     }
 
     pub fn append_totals(&self, totals: &Totals) {
-        self.append(&json!({"type": "fake_totals", "totals": totals}));
+        self.append(&json!({"type": "cost-state", "totals": totals}));
     }
 }
