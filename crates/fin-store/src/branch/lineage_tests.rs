@@ -357,3 +357,85 @@ fn parent_short_of_the_fork_is_db_error() {
     assert!(records_since(&s.conn, "br1", 5).unwrap().is_empty());
     assert_eq!(state_at(&s.conn, "br1", 5).unwrap(), head);
 }
+
+/// `(rev, tx.branch)` of `records`.
+fn revs(records: &[CommittedTx]) -> Vec<(u64, String)> {
+    records
+        .iter()
+        .map(|c| (c.rev, c.tx.branch.clone()))
+        .collect()
+}
+
+/// main m1..m5, br1 forked at 3 with b4, b5.
+fn forked() -> (tempfile::TempDir, Store) {
+    let (tmp, mut s) = store();
+    main_with(&mut s, 5);
+    fork(&s.conn, "br1", MAIN, 3);
+    s.commit(tx("b4", "br1", 3, vec![insert("$e", 0, 3)]))
+        .unwrap();
+    s.commit(tx("b5", "br1", 4, vec![insert("$f", 0, 3)]))
+        .unwrap();
+    (tmp, s)
+}
+
+/// Review batch L: `records_between` reads a window that crosses the fork into the ancestor's
+/// rows, and stops at `through`.
+#[test]
+fn records_between_crosses_the_fork_and_stops_at_through() {
+    let (_tmp, s) = forked();
+    let main = |n: u64| (n, MAIN.to_string());
+    let br = |n: u64| (n, "br1".to_string());
+    assert_eq!(
+        revs(&records_between(&s.conn, "br1", 2, 4).unwrap()),
+        vec![main(3), br(4)]
+    );
+    assert_eq!(
+        revs(&records_between(&s.conn, "br1", 0, 3).unwrap()),
+        vec![main(1), main(2), main(3)]
+    );
+    assert_eq!(
+        revs(&records_between(&s.conn, "br1", 3, 5).unwrap()),
+        vec![br(4), br(5)]
+    );
+    assert_eq!(
+        records_between(&s.conn, "br1", 0, 5).unwrap(),
+        records_since(&s.conn, "br1", 0).unwrap()
+    );
+    assert!(records_between(&s.conn, "br1", 4, 4).unwrap().is_empty());
+    // On main, the window ignores the child's rows.
+    assert_eq!(
+        revs(&records_between(&s.conn, MAIN, 3, 5).unwrap()),
+        vec![main(4), main(5)]
+    );
+}
+
+/// Review batch L: `Store::log` windows: the last `limit` through the head, below `before`
+/// (clamped to the head), nothing below rev 1, an unknown branch refused.
+#[test]
+fn store_log_windows() {
+    let (_tmp, s) = forked();
+    let log = s.log("br1", None, 2).unwrap();
+    assert_eq!(log.head, 5);
+    assert_eq!(
+        revs(&log.records),
+        vec![(4, "br1".into()), (5, "br1".into())]
+    );
+    let below = s.log("br1", Some(4), 10).unwrap();
+    assert_eq!(
+        revs(&below.records).iter().map(|r| r.0).collect::<Vec<_>>(),
+        vec![1, 2, 3]
+    );
+    assert!(
+        below.records.iter().all(|c| c.tx.branch == MAIN),
+        "below the fork: main's"
+    );
+    let past = s.log("br1", Some(99), 3).unwrap();
+    assert_eq!(
+        revs(&past.records).iter().map(|r| r.0).collect::<Vec<_>>(),
+        vec![3, 4, 5]
+    );
+    assert!(s.log("br1", Some(1), 5).unwrap().records.is_empty());
+    assert!(s.log("br1", None, 0).unwrap().records.is_empty());
+    assert_eq!(s.log(MAIN, None, 100).unwrap().records.len(), 5);
+    assert!(s.log("nope", None, 1).is_err());
+}
