@@ -619,3 +619,225 @@ fn missing_source_is_silent_and_reported() {
     let out = render(&mut m, 48_000, 1_000);
     assert!(out.l.iter().all(|&v| v == 0.25));
 }
+
+// ---- Review of Task 7: overflow, curve oracles, the control grid, source contract ----
+
+#[test]
+fn source_position_overflow_is_time_overflow() {
+    // The anchor is i64::MAX − 7: a read's exclusive end must fit an i64, so 7 frames read
+    // up to i64::MAX and the next 8-frame block is past it.
+    let mut it = item("i1", "a", s(0), r(16, 48_000));
+    it.source_from = r(i64::MAX - 7, 48_000);
+    let p = plan(s(0), r(16, 48_000), vec![it]);
+    let src: Vec<(&str, Box<dyn PcmSource>)> = vec![("a", Box::new(Const(1.0, 1.0)))];
+    let mut m = Mixer::new(&p, sources(src)).unwrap();
+    let mut b = Stereo::silence(7);
+    m.render(&mut b).unwrap();
+    assert!(b.l.iter().all(|&v| v == 1.0));
+    let err = m.render(&mut Stereo::silence(8)).unwrap_err();
+    assert_eq!(err.code, "TIME_OVERFLOW");
+    // The stretch path too.
+    let mut it = item("i1", "a", s(0), r(48_000, 48_000));
+    it.source_from = r(i64::MAX - 7, 48_000);
+    it.speed = r(3, 2);
+    let p = plan(s(0), s(1), vec![it]);
+    let src: Vec<(&str, Box<dyn PcmSource>)> = vec![("a", Box::new(Const(1.0, 1.0)))];
+    let mut m = Mixer::new(&p, sources(src)).unwrap();
+    let err = m.render(&mut Stereo::silence(8)).unwrap_err();
+    assert_eq!(err.code, "TIME_OVERFLOW");
+}
+
+#[test]
+fn position_overflow_is_time_overflow() {
+    let from = r(i64::MAX - 7, 48_000);
+    let p = plan(from, r(i64::MAX, 48_000), vec![]);
+    let mut m = Mixer::new(&p, BTreeMap::new()).unwrap();
+    assert_eq!(m.position(), i64::MAX - 7);
+    let err = m.render(&mut Stereo::silence(8)).unwrap_err();
+    assert_eq!(err.code, "TIME_OVERFLOW");
+    assert_eq!(m.position(), i64::MAX - 7);
+    m.render(&mut Stereo::silence(7)).unwrap();
+    assert_eq!(m.position(), i64::MAX);
+}
+
+/// CSS cubic-bézier y at x, by 200 bisection steps on the curve parameter (an oracle
+/// independent of `fin_core::eval::bezier_y`'s Newton solve).
+fn bezier_oracle(c: [f64; 4], x: f64) -> f64 {
+    let coord = |p1: f64, p2: f64, t: f64| {
+        3.0 * (1.0 - t) * (1.0 - t) * t * p1 + 3.0 * (1.0 - t) * t * t * p2 + t * t * t
+    };
+    let (mut lo, mut hi) = (0.0f64, 1.0f64);
+    for _ in 0..200 {
+        let mid = 0.5 * (lo + hi);
+        if coord(c[0], c[2], mid) < x {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+    }
+    coord(c[1], c[3], 0.5 * (lo + hi))
+}
+
+/// Renders one 1 s item over a constant 1.0 stereo source with `seg` as its only gain
+/// segment: the output is the gain amplitude.
+fn gain_amplitude(seg: GainSegment) -> Vec<f32> {
+    let mut it = item("i1", "a", s(0), s(1));
+    it.gain = vec![seg];
+    let p = plan(s(0), s(1), vec![it]);
+    let src: Vec<(&str, Box<dyn PcmSource>)> = vec![("a", Box::new(Const(1.0, 1.0)))];
+    mix(&p, src, 48_000).l
+}
+
+/// Checks `out` against `want(x)` (x = n/48000) at every control point (multiples of 32,
+/// within `at_point` dB) and between them against the linear amplitude ramp of the oracle's
+/// control-point values (within `between` absolute).
+fn check_oracle(out: &[f32], want: impl Fn(f64) -> f64, at_point: f64, between: f64) {
+    for c in (0..48_000usize).step_by(32) {
+        let a0 = want(c as f64 / 48_000.0);
+        let got = f64::from(out[c]);
+        assert!(
+            (20.0 * (got / a0).log10()).abs() <= at_point,
+            "control point {c}: {got} vs {a0}"
+        );
+        let a1 = want((c + 32) as f64 / 48_000.0);
+        for k in [8usize, 16, 31] {
+            let ramp = a0 + (a1 - a0) * k as f64 / 32.0;
+            let got = f64::from(out[c + k]);
+            assert!(
+                (got - ramp).abs() <= between,
+                "sample {}: {got} vs {ramp}",
+                c + k
+            );
+        }
+    }
+}
+
+#[test]
+fn bezier_gain_matches_oracle() {
+    let c = [0.42, 0.0, 1.0, 1.0]; // easeIn
+    let out = gain_amplitude(GainSegment {
+        from: s(0),
+        to: s(1),
+        db: [-20.0, 0.0],
+        interp: Interp::Bezier {
+            x1: c[0],
+            y1: c[1],
+            x2: c[2],
+            y2: c[3],
+        },
+        u: [0.0, 1.0],
+        shapes: vec![],
+    });
+    let want = |x: f64| 10f64.powf((-20.0 + 20.0 * bezier_oracle(c, x)) / 20.0);
+    check_oracle(&out, want, 0.001, 1e-5);
+    // Not linear in dB: at a quarter, easeIn is far below −15 dB.
+    assert!(db(out[12_000]) < -18.0, "{}", db(out[12_000]));
+}
+
+#[test]
+fn clipped_progress_range_matches_oracle() {
+    // A segment cut out of the middle of its keyframe span: u = [0.25, 0.75].
+    let out = gain_amplitude(GainSegment {
+        from: s(0),
+        to: s(1),
+        db: [-20.0, 0.0],
+        interp: Interp::Linear,
+        u: [0.25, 0.75],
+        shapes: vec![],
+    });
+    let want = |x: f64| 10f64.powf((-20.0 + 20.0 * (0.25 + 0.5 * x)) / 20.0);
+    check_oracle(&out, want, 0.001, 1e-5);
+    assert!((db(out[0]) + 15.0).abs() <= 0.001, "{}", db(out[0]));
+}
+
+#[test]
+fn shape_progress_matches_oracle() {
+    // The second half of a linear fade-in, then the first half of an equal-power fade-out.
+    let half_in = Shape {
+        kind: ShapeKind::FadeIn,
+        curve: Curve::Linear,
+        p: [0.5, 1.0],
+    };
+    let out = gain_amplitude(gain(s(0), s(1), [0.0, 0.0], vec![half_in]));
+    check_oracle(&out, |x| 0.5 + 0.5 * x, 0.001, 1e-6);
+    let half_out = Shape {
+        kind: ShapeKind::FadeOut,
+        curve: Curve::EqualPower,
+        p: [0.0, 0.5],
+    };
+    let out = gain_amplitude(gain(s(0), s(1), [0.0, 0.0], vec![half_out]));
+    check_oracle(&out, |x| (1.0 - 0.5 * x).sqrt(), 0.001, 1e-6);
+}
+
+#[test]
+fn hold_segment_holds_its_first_value() {
+    let out = gain_amplitude(GainSegment {
+        from: s(0),
+        to: s(1),
+        db: [-20.0, 0.0],
+        interp: Interp::Hold,
+        u: [0.0, 1.0],
+        shapes: vec![],
+    });
+    let want = libm::powf(10.0, -1.0);
+    assert!(out.iter().all(|&v| v == want), "hold moved");
+}
+
+#[test]
+fn control_grid_is_on_the_timeline() {
+    // The same 64-sample equal-power fade-in, starting at timeline sample 0 and at 1: control
+    // points are the timeline's multiples of 32 (and segment edges), so relative sample 16
+    // ramps between sqrt(0) and sqrt(32/64) in the first case and between sqrt(0) and
+    // sqrt(31/64) over 31 samples in the second.
+    let at16 = |start: i64| -> f32 {
+        let (from, to) = (r(start, 48_000), r(start + 64, 48_000));
+        let mut it = item("i1", "a", from, to);
+        it.gain = vec![gain(
+            from,
+            to,
+            [0.0, 0.0],
+            vec![shape(ShapeKind::FadeIn, Curve::EqualPower)],
+        )];
+        let p = plan(s(0), r(128, 48_000), vec![it]);
+        let src: Vec<(&str, Box<dyn PcmSource>)> = vec![("a", Box::new(Const(1.0, 1.0)))];
+        mix(&p, src, 128).l[start as usize + 16]
+    };
+    let (a, b) = (f64::from(at16(0)), f64::from(at16(1)));
+    assert!((a - 0.353_553).abs() <= 1e-6, "{a}");
+    assert!((b - 0.359_211).abs() <= 1e-6, "{b}");
+}
+
+/// A source that breaks the `PcmSource` contract.
+struct Bad {
+    wrong_layout: bool,
+}
+
+impl PcmSource for Bad {
+    fn layout(&self) -> SourceLayout {
+        SourceLayout::Stereo
+    }
+
+    fn read(&mut self, _at: i64, frames: usize, out: &mut Canonical) -> Result<(), CoreError> {
+        *out = if self.wrong_layout {
+            mono(vec![0.0; frames])
+        } else {
+            stereo(vec![0.0; frames + 1], vec![0.0; frames + 1])
+        };
+        Ok(())
+    }
+}
+
+#[test]
+fn malformed_source_is_internal() {
+    for wrong_layout in [true, false] {
+        for speed in [s(1), r(3, 2)] {
+            let mut it = item("i1", "a", s(0), s(1));
+            it.speed = speed;
+            let p = plan(s(0), s(1), vec![it]);
+            let src: Vec<(&str, Box<dyn PcmSource>)> = vec![("a", Box::new(Bad { wrong_layout }))];
+            let mut m = Mixer::new(&p, sources(src)).unwrap();
+            let err = m.render(&mut Stereo::silence(1_000)).unwrap_err();
+            assert_eq!(err.code, "INTERNAL", "layout {wrong_layout}, speed {speed}");
+        }
+    }
+}

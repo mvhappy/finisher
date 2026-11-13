@@ -15,6 +15,7 @@ use crate::effects::Chain;
 use crate::mix::curves::{Control, Gain, Pan, gain_at, gain_curve, interval, pan_at, pan_curve};
 use crate::mix::pan::sides;
 use crate::mix::{PcmSource, SourceLayout};
+use crate::time::range_end;
 use crate::{Stereo, Wsola, sample_at};
 
 fn internal(message: &str) -> CoreError {
@@ -35,6 +36,14 @@ fn check_read(buf: &Canonical, layout: SourceLayout, frames: usize) -> Result<()
             "a PCM source answered with another layout or length than asked",
         ))
     }
+}
+
+/// The first source frame of a read of `frames` frames at `rel` frames past `anchor`;
+/// `TIME_OVERFLOW` unless the whole range's exclusive end fits an `i64`.
+fn read_at(anchor: i64, rel: u64, frames: usize) -> Result<i64, CoreError> {
+    let at = range_end(anchor, rel)?;
+    range_end(at, frames as u64)?;
+    Ok(at)
 }
 
 /// The stretch path of an item: its WSOLA, the source frames pushed so far (relative to the
@@ -77,7 +86,7 @@ impl Stretch {
         if need > self.pushed {
             let k = usize::try_from(need - self.pushed)
                 .map_err(|_| internal("a stretch read does not fit memory"))?;
-            src.read(anchor + self.pushed as i64, k, &mut self.feed)?;
+            src.read(read_at(anchor, self.pushed, k)?, k, &mut self.feed)?;
             check_read(&self.feed, layout, k)?;
             self.feed_st.clear();
             match &self.feed {
@@ -156,17 +165,19 @@ impl ItemMix {
         })
     }
 
-    /// Adds the item's part of the block starting at timeline sample `b0` into `out`.
+    /// Adds the item's part of the block `[b0, b1)` (`b1 − b0 = out.len()`, checked by the
+    /// mixer) into `out`.
     pub fn render(
         &mut self,
         src: &mut dyn PcmSource,
         b0: i64,
+        b1: i64,
         out: &mut Stereo,
     ) -> Result<(), CoreError> {
         let Some(layout) = self.layout else {
             return Ok(());
         };
-        let (s, e) = (self.start.max(b0), self.end.min(b0 + out.len() as i64));
+        let (s, e) = (self.start.max(b0), self.end.min(b1));
         if s >= e {
             return Ok(());
         }
@@ -174,7 +185,7 @@ impl ItemMix {
         let rel = (s - self.start) as u64;
         match &mut self.stretch {
             None => {
-                src.read(self.anchor + rel as i64, n, &mut self.buf)?;
+                src.read(read_at(self.anchor, rel, n)?, n, &mut self.buf)?;
                 check_read(&self.buf, layout, n)?;
             }
             Some(st) => st.take(src, self.anchor, layout, rel, n, &mut self.buf)?,

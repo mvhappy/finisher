@@ -11,6 +11,15 @@
 //!   timeline grid and at every segment edge) and ramped linearly in amplitude between them;
 //!   gain is `10^(dB/20)` (`libm::powf`), `equalPower` is `sqrt(x)`, beziers ease through
 //!   `fin_core::eval::bezier_y`.
+//! - **Decision (Task 7 review): the control grid is the timeline's.** The every-32-samples
+//!   control points are the multiples of 32 of the *absolute timeline sample index*, not of
+//!   the item's own first sample. Every item and every crossfade partner therefore
+//!   shares one grid, and a control interval is a function of the sample index alone. The
+//!   cost: an item moved by a number of samples that is not a multiple of 32 ramps between
+//!   slightly different points, so it is not bit-identical to the original shifted (pinned by
+//!   the `control_grid_is_on_the_timeline` test).
+//! - **Overflow:** a block's end, an item's source reads and their exclusive ends must fit an
+//!   `i64`; otherwise `render` answers `TIME_OVERFLOW` instead of wrapping.
 //! - **Pan** is constant power for a mono source (which is also its one −3 dB upmix) and
 //!   balance for stereo ([`pan`]); effects therefore run on one channel for mono.
 //! - **Streaming:** [`Mixer::render`] fills blocks of any length from the plan's `from` on, and
@@ -29,6 +38,7 @@ use fin_core::CoreError;
 use fin_core::eval::AudioPlan;
 
 use crate::channels::Canonical;
+use crate::time::range_end;
 use crate::{Stereo, sample_at};
 use item::ItemMix;
 
@@ -83,8 +93,9 @@ impl Mixer {
     }
 
     /// Fills `out` (its length is the block length; `r` is resized to match `l`) with the next
-    /// frames of the mix and advances [`Mixer::position`] by that length. A source's read error
-    /// is returned as is; the mixer's item state is then partly advanced, so drop it (a new one
+    /// frames of the mix and advances [`Mixer::position`] by that length. `TIME_OVERFLOW` (and
+    /// no change) when the block's end, or a source read's, would pass `i64::MAX`. A source's
+    /// read error is returned as is; the mixer's item state is then partly advanced, so drop it (a new one
     /// starts again from the plan's `from`).
     pub fn render(&mut self, out: &mut Stereo) -> Result<(), CoreError> {
         let n = out.l.len();
@@ -92,15 +103,16 @@ impl Mixer {
         out.r.clear();
         out.r.resize(n, 0.0);
         let b0 = self.position;
+        let b1 = range_end(b0, n as u64)?;
         for item in &mut self.items {
-            if item.end <= b0 || item.start >= b0 + n as i64 {
+            if item.end <= b0 || item.start >= b1 {
                 continue;
             }
             if let Some(src) = self.sources.get_mut(&item.asset) {
-                item.render(src.as_mut(), b0, out)?;
+                item.render(src.as_mut(), b0, b1, out)?;
             }
         }
-        self.position = b0 + n as i64;
+        self.position = b1;
         Ok(())
     }
 

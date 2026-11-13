@@ -21,11 +21,9 @@ impl MemSource {
 /// Copies `src[at .. at + dst.len()]` into `dst`, zeros outside `src`.
 pub fn copy_at(src: &[f32], at: i64, dst: &mut [f32]) {
     for (i, d) in dst.iter_mut().enumerate() {
-        let k = at + i as i64;
-        *d = if k >= 0 && (k as u64) < src.len() as u64 {
-            src[k as usize]
-        } else {
-            0.0
+        *d = match at.checked_add(i as i64) {
+            Some(k) if k >= 0 && (k as u64) < src.len() as u64 => src[k as usize],
+            _ => 0.0,
         };
     }
 }

@@ -67,7 +67,8 @@ impl<T> Piece<T> {
 
     /// The progress of control point `c` through the piece, in `[0, 1]`.
     pub fn progress(&self, c: i64) -> f64 {
-        ((c - self.start) as f64 / (self.end - self.start) as f64).clamp(0.0, 1.0)
+        let (c, start, end) = (i128::from(c), i128::from(self.start), i128::from(self.end));
+        ((c - start) as f64 / (end - start) as f64).clamp(0.0, 1.0)
     }
 
     /// The plan value at control point `c`.
@@ -124,7 +125,7 @@ impl<T> Piecewise<T> {
             },
             None => Located {
                 lo: lo_gap.min(n),
-                hi: self.end.max(n + 1),
+                hi: self.end.max(n.saturating_add(1)),
                 piece: None,
             },
         }
@@ -211,6 +212,6 @@ impl Control {
 pub(crate) fn interval(n: i64, g: &Located<'_, Vec<Shape>>, p: &Located<'_, ()>) -> (i64, i64) {
     let cell = n.div_euclid(CONTROL) * CONTROL;
     let c0 = cell.max(g.lo).max(p.lo);
-    let c1 = (cell + CONTROL).min(g.hi).min(p.hi);
+    let c1 = cell.saturating_add(CONTROL).min(g.hi).min(p.hi);
     (c0, c1)
 }
