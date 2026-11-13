@@ -27,7 +27,7 @@ import { FileSecretStore, type SecretStore } from "../secrets/store.ts";
 import type { ProviderAdapter } from "./adapter.ts";
 import { AgentAdmin, listLocalModels } from "./admin.ts";
 import { AgentApprovals, approvalKey, type GrantPort, grantPort } from "./approvals.ts";
-import type { AutoMergeTriggerOptions } from "./auto-merge.ts";
+import { type AutoMergeTriggerOptions, autoMergeTrigger, registryProjects } from "./auto-merge.ts";
 import { waitingOnApprovals } from "./builtin/approval-wait.ts";
 import { type ProviderPermissions, providerPermissions } from "./permissions.ts";
 import { ProviderRequests } from "./provider-requests.ts";
@@ -56,6 +56,10 @@ import { type ClaudeAccess, ClaudeModelCache, claudeAccess, withClaudePricing } 
 import { type SessionSandboxDeps, sessionSandboxes } from "./sandbox.ts";
 import { readAgentSettings, resolveFinPath } from "./settings.ts";
 import type { AgentStore } from "./store.ts";
+import { reviewPort } from "./review-link.ts";
+import type { ProjectRegistryShape } from "../projects.ts";
+import type { Journal } from "@finisher/fin-node";
+import { journalReviewVerdicts, registryEngine, startReviews } from "../reviews/service.ts";
 import { AgentLookup } from "./store-lookup.ts";
 
 /** `serve`'s agent options (tests). */
@@ -380,3 +384,27 @@ export const buildAgentRuntime = (d: AgentWiringDeps): Effect.Effect<AgentRuntim
     const grants = grantPort(made, core.store, key, d.options?.afterGrantConsumed);
     return { runtime, admin, adapters, lookup: new AgentLookup(d.db), catalogue, rules, ruleStore, hooks, roles, approvals: made, approvalKey: key, grants, permissions, requests };
   });
+
+/** What `startAgentReviews` needs: the project registry, the diagnostics journal, the agent core and runtime. */
+export interface AgentReviewsDeps {
+  readonly control: ControlStore;
+  readonly projects: ProjectRegistryShape;
+  readonly audit: Audit;
+  readonly journal: Journal;
+  readonly core: AgentCore;
+  readonly runtime: Runtime;
+  /** Tests (7B Task 12): the trigger's availability, verdicts and observer. */
+  readonly autoMerge?: AutoMergeTriggerOptions;
+}
+
+/**
+ * The reviews (5E), bound to the agent core's review link, and the `auto` merge policy's
+ * trigger (7B Task 12) on its `branchReady`: unavailable until sub-project 10, so nothing merges.
+ */
+export function startAgentReviews(d: AgentReviewsDeps): ReturnType<typeof startReviews> {
+  const started = startReviews(d.control, { engine: registryEngine(d.projects), audit: d.audit, verdicts: journalReviewVerdicts(d.journal) });
+  d.core.reviewLink.bind(reviewPort(started.reviews));
+  const autoMerge = { store: d.core.store, reviews: started.reviews, audit: d.audit, outcomes: d.core.outcomes, projects: registryProjects(d.projects), budgetSpent: d.runtime.budgetSpent.bind(d.runtime), ...d.autoMerge };
+  d.core.reviewLink.onBranchReady(autoMergeTrigger(autoMerge));
+  return started;
+}

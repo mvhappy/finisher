@@ -657,9 +657,9 @@ const POLICY_TYPE_DECLARATIONS = ["diagnostics.ts", "reviews/workflow.ts"];
 describe("no_rpc_reaches_auto_merge", () => {
   test("no source module but the path itself, the session-side trigger and the server wiring imports it", () => {
     const files = sources();
-    // 7B Task 12: the trigger (`agent/auto-merge.ts`) imports the path; `main.ts` builds the
-    // trigger and `agent/wiring.ts` holds its options' type. No handler or RPC module does.
-    expect(files.filter(([p, text]) => p !== AUTO_MERGE && IMPORTS_AUTO_MERGE.test(text)).map(([p]) => p).sort()).toEqual(["agent/auto-merge.ts", "agent/wiring.ts", "main.ts"]);
+    // 7B Task 12: the trigger (`agent/auto-merge.ts`) imports the path; `agent/wiring.ts`
+    // (`startAgentReviews`) builds the trigger. No handler or RPC module does.
+    expect(files.filter(([p, text]) => p !== AUTO_MERGE && IMPORTS_AUTO_MERGE.test(text)).map(([p]) => p).sort()).toEqual(["agent/auto-merge.ts", "agent/wiring.ts"]);
     const importsPath = /["'`][^"'`\n]*reviews\/auto-merge(?:\.[cm]?[jt]s)?["'`]/;
     expect(files.filter(([, text]) => importsPath.test(text)).map(([p]) => p)).toEqual(["agent/auto-merge.ts"]);
     // No computed import could reach it either.
