@@ -6,7 +6,9 @@
 //! animated, each list is non-empty and strictly in time order, and the values are finite. An
 //! index past the end (an undo re-run after other effects were removed) is the end, in every
 //! mode, so the replay of what the undo committed puts it where the undo did. The change is
-//! the effect's `added`; the footprint also touches the item's effect order.
+//! the effect's `added`; the footprint also touches the item's effect order. Policy: the
+//! effect's domain fits the item's track (`TRACK_KIND_MISMATCH`, plan 6C Decision 13), since
+//! the item may have changed track since the removal.
 
 use std::collections::BTreeMap;
 
@@ -20,7 +22,8 @@ use crate::model::{Effect, Keyframe, ParamValue, Project};
 use crate::ops::effect_remove::prefix;
 use crate::ops::util::keys::check_key_lists;
 use crate::ops::util::{
-    OpDiff, check_unlocked, item_index, normalize_interp, normalize_value, wrong_op,
+    OpDiff, check_effect_domains, check_unlocked, item_index, normalize_interp, normalize_value,
+    wrong_op,
 };
 use crate::ops::{Bindings, EffectRemove, Op, check_literal};
 use crate::rebase::Footprint;
@@ -121,6 +124,7 @@ pub(crate) fn apply(
             .with_details(json!({ "item": item, "effect": effect.id, "path": p })));
         }
         check_unlocked(ti.get(project), Some(&item), bindings)?;
+        check_effect_domains(ti.get(project), it, [effect.kind.as_str()], bindings)?;
     }
     let track = ti.get_mut(project);
     let track_id = track.id.clone();

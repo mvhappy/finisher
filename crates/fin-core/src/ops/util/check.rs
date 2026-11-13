@@ -3,8 +3,10 @@
 use serde_json::json;
 
 use crate::error::CoreError;
-use crate::model::{Asset, AssetKind, Project, Track, TrackKind};
+use crate::model::{Asset, AssetKind, Item, ItemBody, Project, Track, TrackKind};
+use crate::ops::Bindings;
 use crate::ops::util::{TrackAt, end};
+use crate::params::{self, EffectDomain};
 use crate::time::Rational;
 
 pub(crate) fn invalid_range(
@@ -40,6 +42,63 @@ pub(crate) fn check_kind(track: &Track, asset: &Asset) -> Result<(), CoreError> 
     .with_fix(format!(
         "put the asset on a track whose kind it has a stream for, not {want}"
     )))
+}
+
+/// Policy (plan 6C Decision 13): every registry effect in `kinds` (of `item`) has the domain
+/// of `track`: visual effects on items of video (and caption) tracks, audio effects on clips of
+/// audio tracks; otherwise `TRACK_KIND_MISMATCH` for the first that does not. An audio effect on
+/// an item that is not a clip (a nested item) is `INVALID_OP`: the mixer runs effects per clip
+/// and a container's own effects are not in the audio plan until nested-bus processing exists
+/// (compressing a sum is not compressing its parts). Unknown kinds have no domain and pass.
+/// Shared by every op that puts an effect on an item or an item with effects on a track:
+/// `effect.add`, `effect.restore`, `item.move`, `item.restore` and track restores. Skipped on
+/// replay.
+pub(crate) fn check_effect_domains<'a>(
+    track: &Track,
+    item: &Item,
+    kinds: impl IntoIterator<Item = &'a str>,
+    bindings: &Bindings,
+) -> Result<(), CoreError> {
+    if !bindings.policy() {
+        return Ok(());
+    }
+    let audio_track = track.kind == TrackKind::Audio;
+    let id = &item.id;
+    for kind in kinds {
+        let (what, fix) = match params::effect_domain(kind) {
+            Some(EffectDomain::Visual) if audio_track => {
+                ("a visual", "add visual effects to items on video tracks")
+            }
+            Some(EffectDomain::Audio) if !audio_track => {
+                ("an audio", "add audio effects to clips on audio tracks")
+            }
+            Some(EffectDomain::Audio) if !matches!(item.body, ItemBody::Clip { .. }) => {
+                let item_kind = item.kind_name();
+                return Err(CoreError::new(
+                    "INVALID_OP",
+                    format!(
+                        "{kind} is an audio effect; item {id} is a {item_kind} item, not a clip"
+                    ),
+                )
+                .with_details(json!({ "item": id, "kind": kind, "itemKind": item_kind }))
+                .with_fix(
+                    "add audio effects to clips; effects on nested items are not applied yet",
+                ));
+            }
+            _ => continue,
+        };
+        let shown = kind_name(track.kind);
+        return Err(CoreError::new(
+            "TRACK_KIND_MISMATCH",
+            format!(
+                "{kind} is {what} effect; item {id} is on {shown} track {}",
+                track.id
+            ),
+        )
+        .with_details(json!({ "item": id, "kind": kind, "track": track.id, "trackKind": shown }))
+        .with_fix(fix));
+    }
+    Ok(())
 }
 
 /// The wire name of a track kind.

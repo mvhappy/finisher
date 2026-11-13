@@ -15,7 +15,7 @@
   "project": {
     "id": "p1",
     "name": "Corpus",
-    "schemaVersion": 5,
+    "schemaVersion": 6,
     "rate": "30",
     "timelines": [
       {

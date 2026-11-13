@@ -3,7 +3,8 @@
 //! nothing (and records none), and an overlap it would make is `CLIP_OVERLAP`, so an undo
 //! meets a later edit of the gap as a conflict. Its id may be a
 //! `$placeholder` (spec §4.3): the item then gets a newly allocated id, which replay hands
-//! out again from the recorded bindings.
+//! out again from the recorded bindings. Policy: the item's effects fit the track's domain
+//! (`TRACK_KIND_MISMATCH`, plan 6C Decision 13).
 
 use serde_json::json;
 
@@ -13,8 +14,8 @@ use crate::model::Project;
 use crate::ops::item_insert::{check_body, resolve_body};
 use crate::ops::util::keys::check_key_lists;
 use crate::ops::util::{
-    OpDiff, TrackAt, check_track, check_unlocked, clip_containing, frame_of, insert_inside,
-    invalid_range, normalize_item, place, ripple, track_index, wrong_op,
+    OpDiff, TrackAt, check_effect_domains, check_track, check_unlocked, clip_containing, frame_of,
+    insert_inside, invalid_range, normalize_item, place, ripple, track_index, wrong_op,
 };
 use crate::ops::{Bindings, DeleteMode, ItemRemove, ItemRestore, Op};
 use crate::rebase::Footprint;
@@ -51,6 +52,8 @@ pub(crate) fn validate(
         return Ok(ti);
     }
     check_unlocked(track, Some(&item.id), bindings)?;
+    let kinds = item.common.effects.iter().map(|e| e.kind.as_str());
+    check_effect_domains(track, item, kinds, bindings)?;
     if item.start < Rational::zero() {
         return Err(invalid_range(
             "item start must not be negative",

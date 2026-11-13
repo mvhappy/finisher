@@ -167,8 +167,8 @@ fn stale_reprobe_of_a_removed_asset_conflicts() {
     assert_eq!(conflict_reason(&e), "REMOVED");
 }
 
-/// A committed record holding the op is stamped with the current schema (5), and reads back
-/// as it was written.
+/// A committed record holding the op is stamped with the current schema (5 or later), and
+/// reads back as it was written.
 #[test]
 fn a_reprobe_record_is_schema_5_and_round_trips() {
     let p = base();
@@ -188,7 +188,7 @@ fn a_reprobe_record_is_schema_5_and_round_trips() {
     );
     let bytes = encode_record(&record);
     let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-    assert_eq!((v["schemaVersion"].as_u64(), SCHEMA_VERSION), (Some(5), 5));
+    assert_eq!(v["schemaVersion"].as_u64(), Some(u64::from(SCHEMA_VERSION)));
     assert_eq!(
         v["resolved"][0]["video"],
         serde_json::json!({ "width": 1920, "height": 1080, "rate": "30", "rotation": 90,
