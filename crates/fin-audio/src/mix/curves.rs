@@ -47,7 +47,7 @@ pub(crate) struct Piece<T> {
 }
 
 impl<T> Piece<T> {
-    fn new(
+    pub(crate) fn new(
         from: Rational,
         to: Rational,
         v: [f64; 2],
@@ -99,10 +99,17 @@ pub(crate) struct Piecewise<T> {
 }
 
 impl<T> Piecewise<T> {
-    fn new(mut pieces: Vec<Piece<T>>, start: i64, end: i64) -> Piecewise<T> {
+    pub(crate) fn new(mut pieces: Vec<Piece<T>>, start: i64, end: i64) -> Piecewise<T> {
         pieces.retain(|p| p.start < p.end);
         pieces.sort_by_key(|p| p.start);
         Piecewise { pieces, start, end }
+    }
+
+    /// The piece holding sample `n`, else the nearest one before it, else the first (`None`
+    /// only without pieces). A piece's value clamps its progress, so outside it reads its end.
+    pub fn nearest(&self, n: i64) -> Option<&Piece<T>> {
+        let i = self.pieces.partition_point(|p| p.start <= n);
+        self.pieces.get(i.saturating_sub(1))
     }
 
     pub fn locate(&self, n: i64) -> Located<'_, T> {

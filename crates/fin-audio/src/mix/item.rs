@@ -165,6 +165,11 @@ impl ItemMix {
         })
     }
 
+    /// The item's effects the chain skipped (unknown kinds).
+    pub fn skipped_effects(&self) -> &[crate::effects::SkippedEffect] {
+        self.chain.skipped()
+    }
+
     /// Adds the item's part of the block `[b0, b1)` (`b1 − b0 = out.len()`, checked by the
     /// mixer) into `out`.
     pub fn render(

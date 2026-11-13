@@ -26,9 +26,10 @@
 //!   the output does not depend on the block lengths: control intervals are a function of the
 //!   sample index, the stretcher and the effects carry their state across blocks, and each
 //!   item's state starts at its first sample.
-//! - A source missing from the map is silent and listed by [`Mixer::missing`].
+//! - A source missing from the map is silent and listed by [`Mixer::missing`]; an effect of a
+//!   kind the engine does not know is skipped and listed by [`Mixer::skipped_effects`].
 
-mod curves;
+pub(crate) mod curves;
 mod item;
 mod pan;
 
@@ -38,6 +39,7 @@ use fin_core::CoreError;
 use fin_core::eval::AudioPlan;
 
 use crate::channels::Canonical;
+use crate::effects::SkippedEffect;
 use crate::time::range_end;
 use crate::{Stereo, sample_at};
 use item::ItemMix;
@@ -64,6 +66,7 @@ pub struct Mixer {
     items: Vec<ItemMix>,
     sources: BTreeMap<String, Box<dyn PcmSource>>,
     missing: Vec<String>,
+    skipped: Vec<SkippedEffect>,
     position: i64,
 }
 
@@ -77,17 +80,21 @@ impl Mixer {
     ) -> Result<Mixer, CoreError> {
         let mut missing = BTreeSet::new();
         let mut items = Vec::with_capacity(plan.items.len());
+        let mut skipped = Vec::new();
         for it in &plan.items {
             let layout = sources.get(&it.asset).map(|s| s.layout());
             if layout.is_none() {
                 missing.insert(it.asset.clone());
             }
-            items.push(ItemMix::new(it, layout)?);
+            let item = ItemMix::new(it, layout)?;
+            skipped.extend_from_slice(item.skipped_effects());
+            items.push(item);
         }
         Ok(Mixer {
             items,
             sources,
             missing: missing.into_iter().collect(),
+            skipped,
             position: sample_at(plan.from)?,
         })
     }
@@ -119,6 +126,12 @@ impl Mixer {
     /// The timeline sample the next `render` starts at.
     pub fn position(&self) -> i64 {
         self.position
+    }
+
+    /// The effects of kinds this engine does not know (a newer model's), in plan order:
+    /// skipped, so their items play without them.
+    pub fn skipped_effects(&self) -> &[SkippedEffect] {
+        &self.skipped
     }
 
     /// The assets the plan names but no source was given for (sorted, once each); their items
