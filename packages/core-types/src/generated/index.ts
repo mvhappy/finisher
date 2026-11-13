@@ -1146,8 +1146,8 @@ export type Link =
       from: string;
       kind: "cherryPick";
       origin: string;
-      originHash?: string | null;
-      recovers?: string | null;
+      originHash?: string;
+      recovers?: string;
     }
   | {
       kind: "revert";
@@ -1156,29 +1156,29 @@ export type Link =
   | {
       kind: "checkpoint";
       name: string;
-      recovers?: string | null;
+      recovers?: string;
     }
   | {
       branchId: string;
       epoch: number;
-      forkHash?: string | null;
+      forkHash?: string;
       forkSeq: number;
       kind: "branch";
       name: string;
-      recovers?: string | null;
+      recovers?: string;
     }
   | {
-      archived?: boolean | null;
+      archived?: boolean;
       branchId: string;
       kind: "branchSet";
-      name?: string | null;
-      recovers?: string | null;
+      name?: string;
+      recovers?: string;
     }
   | {
       drops?: string[];
       from: string;
       kind: "drop";
-      recovers?: string | null;
+      recovers?: string;
       undrops?: string[];
     };
 /**
@@ -2381,7 +2381,7 @@ export type RootState =
       kind: string;
       mountRoot: boolean;
       remote: boolean;
-      rootFileId?: string | null;
+      rootFileId?: string;
       sample: SampleEntry[];
       state: "online";
     }
@@ -2635,7 +2635,7 @@ export interface BlobRef {
  * via the `definition` "AgentInput".
  */
 export interface AgentInput {
-  fin?: FinEndpoint | null;
+  fin?: FinEndpoint;
   /**
    * `claudeCode`, `codex` or `fake`; the built-in agent needs no sandbox (spec §8.9).
    */
@@ -2659,12 +2659,12 @@ export interface AgentInput {
   /**
    * `<projectDir>/workspace/shared`; written only outside `plan` mode.
    */
-  sharedDir?: string | null;
+  sharedDir?: string;
   /**
    * The harness's sign-in store file, inside `<serverData>/providers/<harness>/home/`
    * (spec §8.6): read and written in place, never its directory.
    */
-  signInStore?: string | null;
+  signInStore?: string;
   /**
    * The base toolchain list plus the harness's own (files and directories, read-only).
    */
@@ -3627,13 +3627,13 @@ export interface EffectMove {
  * via the `definition` "KeyframeSet".
  */
 export interface KeyframeSet {
-  at?: Rational | null;
+  at?: Rational;
   interp: Interp;
   item: string;
   /**
    * A key id (`kf<n>`), or a `$name` placeholder for a new key.
    */
-  key?: string | null;
+  key?: string;
   path: string;
   value: ParamValue;
 }
@@ -3645,9 +3645,9 @@ export interface KeyframeSet {
  * via the `definition` "KeyframeRemove".
  */
 export interface KeyframeRemove {
-  at?: Rational | null;
+  at?: Rational;
   item: string;
-  key?: string | null;
+  key?: string;
   path: string;
 }
 /**
@@ -4282,16 +4282,16 @@ export interface AuthPair {
   /**
    * From the redeem to the owner's answer (`approved`, `rejected`).
    */
-  micros?: number | null;
+  micros?: number;
   outcome: PairOutcome;
   /**
    * The device's platform, once a device redeemed the offer.
    */
-  platform?: PairPlatform | null;
+  platform?: PairPlatform;
   /**
    * How the device reached the server, once it redeemed.
    */
-  route?: PairRoute | null;
+  route?: PairRoute;
 }
 /**
  * This interface was referenced by `FinCore`'s JSON-Schema
@@ -4907,7 +4907,7 @@ export interface CommittedTx {
    * The record's kind and links; omitted for an `edit`. Boxed: most txs are edits, and a
    * link would double the size of every `CommittedTx`.
    */
-  link?: Link | null;
+  link?: Link;
   rev: number;
   tx: Tx;
 }
@@ -4924,7 +4924,7 @@ export interface Tx {
    * this can. The store refuses a `txId` it holds with another `argsHash`
    * (`IDEM_KEY_REUSED`). Stored with the record, so every server that imported it checks.
    */
-  argsHash?: string | null;
+  argsHash?: string;
   author: string;
   baseRev: number;
   branch: string;
@@ -5126,7 +5126,7 @@ export interface CaptionStyleContribution {
   /**
    * A message key in the `en` catalogue for the style's display name.
    */
-  title?: string | null;
+  title?: string;
 }
 /**
  * This interface was referenced by `FinCore`'s JSON-Schema
@@ -5204,7 +5204,7 @@ export interface CatalogFile {
    * A variable font's `wght` axis. Only a variable file may serve several styles (one per
    * weight in the range; the request's weight drives the axis).
    */
-  variable?: Variable | null;
+  variable?: Variable;
 }
 /**
  * This interface was referenced by `FinCore`'s JSON-Schema
@@ -5241,9 +5241,9 @@ export interface Variable {
  * via the `definition` "CatalogSource".
  */
 export interface CatalogSource {
-  archive?: ArchiveMember | null;
-  sha256?: string | null;
-  size?: number | null;
+  archive?: ArchiveMember;
+  sha256?: string;
+  size?: number;
   url: string;
 }
 /**
@@ -5339,7 +5339,7 @@ export interface CommandContribution {
   /**
    * Seconds, 1 to 60; 10 when absent.
    */
-  timeoutS?: number | null;
+  timeoutS?: number;
   /**
    * A message key in the `en` catalogue.
    */
@@ -5379,7 +5379,7 @@ export interface CommandRun {
    * every page the run reads comes from that snapshot, of this run only, so a rewind or
    * rebuild that reaches `rev` again in a newer history is never served from an older one.
    */
-  snapshot?: string | null;
+  snapshot?: string;
 }
 /**
  * What one compaction run did (serialised camelCase; `waiting` and `abandoned` as
@@ -5543,7 +5543,7 @@ export interface FontCatalogContribution {
 export interface CoreError {
   code: string;
   details: unknown;
-  fix?: string | null;
+  fix?: string;
   message: string;
 }
 /**
@@ -5629,12 +5629,12 @@ export interface DiagnosticsReport {
  * via the `definition` "DirDone".
  */
 export interface DirDone {
-  code?: string | null;
+  code?: string;
   complete: boolean;
   dir: RawRel;
   entries: number;
-  mtimeNs?: string | null;
-  volume?: VolumeIdentity | null;
+  mtimeNs?: string;
+  volume?: VolumeIdentity;
 }
 /**
  * Raw components below a library root, outermost first (empty for the root): base64 of each name's bytes (Unix bytes; Windows UTF-16 as WTF-8).
@@ -5669,7 +5669,7 @@ export interface VolumeIdentity {
   kind: string;
   mountRoot: boolean;
   remote: boolean;
-  rootFileId?: string | null;
+  rootFileId?: string;
   sample: SampleEntry[];
 }
 /**
@@ -5680,7 +5680,7 @@ export interface VolumeIdentity {
  * via the `definition` "SampleEntry".
  */
 export interface SampleEntry {
-  fileId?: string | null;
+  fileId?: string;
   mtimeNs: string;
   size: number;
 }
@@ -5968,7 +5968,7 @@ export interface ExcludeSpec {
    */
   caseSensitive: boolean;
   exclude?: string[];
-  include?: string[] | null;
+  include?: string[];
 }
 /**
  * What an open must find (Decision 19 step 3): the catalogued size, mtime and, when the
@@ -5983,8 +5983,8 @@ export interface Expect {
    * opener crosses them and checks the opened handle against this device; without one,
    * the handle must be on the root's mount.
    */
-  dev?: string | null;
-  fileId?: string | null;
+  dev?: string;
+  fileId?: string;
   mtimeNs: string;
   size: number;
 }
@@ -6129,7 +6129,7 @@ export interface FontsStatus {
   damaged: {
     code: string;
     details: unknown;
-    fix?: string | null;
+    fix?: string;
     message: string;
   };
   files: FontFileStatus[];
@@ -6557,7 +6557,7 @@ export interface HookInput {
    * Present only when the hook declares `fin`: its credential file and the endpoint. Without
    * it the hook has no network and no credential.
    */
-  fin?: HookFin | null;
+  fin?: HookFin;
   home: string;
   /**
    * The hook's own file.
@@ -6572,7 +6572,7 @@ export interface HookInput {
    * The hook's time limit (`Limits.wall_ms`): the launcher ends the whole tree when it passes
    * (on Windows also the backstop for a Node process stuck on piped stdio, Decision 25).
    */
-  timeoutMs?: number | null;
+  timeoutMs?: number;
   /**
    * A private temporary directory, the only write root.
    */
@@ -6663,7 +6663,7 @@ export interface HttpRequest {
   /**
    * At most 756 KiB (`PAGE_BYTES`) before base64.
    */
-  bodyB64?: string | null;
+  bodyB64?: string;
   headers?: Header[];
   method: HttpMethod;
   /**
@@ -6715,7 +6715,7 @@ export interface InstallPlan {
   /**
    * The installed version an update or downgrade replaces.
    */
-  from?: string | null;
+  from?: string;
   licence: PlanLicence;
   models?: PlanModel[];
   /**
@@ -6724,13 +6724,13 @@ export interface InstallPlan {
   permissions: PlannedPermission[];
   planId: string;
   plugin: PlanPlugin;
-  registryStaleDays?: number | null;
+  registryStaleDays?: number;
   risk: Risk;
   source: PlanSource;
   /**
    * The signed target's SHA-256, for registry plans.
    */
-  targetSha256?: string | null;
+  targetSha256?: string;
   /**
    * `package::tree_hash` of the staged tree; re-checked at commit.
    */
@@ -6787,7 +6787,7 @@ export interface PlanLicence {
  * via the `definition` "PlanModel".
  */
 export interface PlanModel {
-  attribution?: string | null;
+  attribution?: string;
   bytes: number;
   id: string;
   licence: string;
@@ -6826,7 +6826,7 @@ export interface PlanPlugin {
  */
 export interface PlanSource {
   kind: SourceKind;
-  registryId?: string | null;
+  registryId?: string;
 }
 /**
  * A warning shown with the plan: `thirdPartyCode {confined}`, `yanked`, `advisory` (from the
@@ -6860,9 +6860,9 @@ export interface InstalledPlugin {
    * The granted permissions.
    */
   permissions?: Permission[];
-  registryId?: string | null;
+  registryId?: string;
   source: SourceKind;
-  targetSha256?: string | null;
+  targetSha256?: string;
   treeHash: string;
   version: string;
 }
@@ -7031,7 +7031,7 @@ export interface JobRights {
   /**
    * Set for an agent session: its branch subtree.
    */
-  branch?: RightsBranch | null;
+  branch?: RightsBranch;
   /**
    * The principal class of the process key (spec §3.3): `person`, `agent:<root session>`,
    * `system`, or `<kind>:<id>` for any other invoker.
@@ -7222,10 +7222,10 @@ export interface JournalStatus {
 export interface KnownDir {
   dir: RawRel;
   entries?: number;
-  listedGen?: number | null;
+  listedGen?: number;
   mountRoot?: boolean;
-  mtimeNs?: string | null;
-  volume?: VolumeIdentity | null;
+  mtimeNs?: string;
+  volume?: VolumeIdentity;
 }
 /**
  * What `media.capabilities` v1 answers (plan 6A Task 13): codecs, the GPU a render would use
@@ -7290,7 +7290,7 @@ export interface LibraryHashParams {
   hydrate: boolean;
   items: string[];
   library: string;
-  readBps?: number | null;
+  readBps?: number;
   root: string;
   volume: VolumeIdentity;
 }
@@ -7321,7 +7321,7 @@ export interface LibraryProbeParams {
    * Extensions to probe (lower case, no dot); absent probes everything (`kinds: all`).
    * Others are `skipped` with code [`KIND_FILTER`] (Decision 37).
    */
-  extensions?: string[] | null;
+  extensions?: string[];
   /**
    * The grant that holds the lines.
    */
@@ -7335,7 +7335,7 @@ export interface LibraryProbeParams {
   /**
    * The library's bandwidth budget for this job's slot, in bytes per second (Decision 36).
    */
-  readBps?: number | null;
+  readBps?: number;
   root: string;
   /**
    * The stored identity the root is judged against before and during the job.
@@ -7391,8 +7391,8 @@ export interface ProbeOutcome {
 /**
  * What the server needs to register an asset: its kind and that kind's fields (the
  * `asset.add` fields, plan 4C Task 7). Its serde form is what `asset.probe` answers
- * (`@finisher/core-types` exports it as `Probe`); absent fields are omitted, never `null`, so
- * each optional field's schema is its type's (`#[schemars(with)]`: optional, not nullable).
+ * (`@finisher/core-types` exports it as `Probe`); absent fields are omitted, never `null`
+ * (the contract schema types each one optional, not nullable: `fin_core::json_schema_with`).
  *
  * This interface was referenced by `FinCore`'s JSON-Schema
  * via the `definition` "Probe".
@@ -7507,7 +7507,7 @@ export interface LibraryScanParams {
   /**
    * `mode: dirs`: the directories to list.
    */
-  dirs?: RawRel[] | null;
+  dirs?: RawRel[];
   excludes: ExcludeSpec;
   /**
    * The generation a full scan writes (`gen`; a word reserved in Rust 2024).
@@ -7523,16 +7523,16 @@ export interface LibraryScanParams {
    * Read threads; absent means 64 (local roots), the service passes 32 for network and
    * sync roots (Decision 9).
    */
-  threads?: number | null;
+  threads?: number;
   /**
    * Scaled deadlines. Test builds only: a release worker refuses the field.
    */
-  timing?: Timing | null;
+  timing?: Timing;
   /**
    * The library's stored volume identity, which the first stat is judged against
    * (Decision 17); absent for the first scan of a new library.
    */
-  volume?: VolumeIdentity | null;
+  volume?: VolumeIdentity;
 }
 /**
  * How long the walker waits.
@@ -7642,13 +7642,13 @@ export interface LookParams {
   /**
    * The branch of the snapshot (an id, a name or `<name>#<id>`).
    */
-  branch?: string | null;
+  branch?: string;
   /**
    * Where the kind's `onSucceeded` moves the frames: absolute, or relative to the project
    * folder; `workspace/shared/look/` when absent. Never inside `.finisher/` or `assets/`
    * (`EXPORT_DESTINATION`). The worker ignores it.
    */
-  outDir?: string | null;
+  outDir?: string;
   /**
    * The stem of the files written: `out/<outName>-<i>.png`. `[A-Za-z0-9_-]`, 1 to
    * [`OUT_NAME_MAX`] characters.
@@ -7666,12 +7666,12 @@ export interface LookParams {
    * The project the look is of. Only the host reads it (the kind's `dedupe` and `prepare`);
    * the worker works from the job directory.
    */
-  projectId?: string | null;
+  projectId?: string;
   /**
    * The branch's rev the submitter saw: part of the job's identity (`dedupe`). `prepare`
    * snapshots the head it finds, and `in/snapshot.json` says which rev that was.
    */
-  rev?: number | null;
+  rev?: number;
   /**
    * The frame size; the timeline's resolution when absent. Each side 1 to
    * [`LOOK_MAX_SIDE`].
@@ -7773,7 +7773,7 @@ export interface Manifest {
   /**
    * The package directory holding `<locale>.json` ICU catalogues.
    */
-  messages?: string | null;
+  messages?: string;
   models?: ModelRef[];
   permissions?: Permission[];
   /**
@@ -7784,7 +7784,7 @@ export interface Manifest {
   /**
    * Code plugins only.
    */
-  runtime?: Runtime | null;
+  runtime?: Runtime;
   /**
    * Semver 2.0 without build metadata, immutable once published.
    */
@@ -7797,11 +7797,11 @@ export interface Manifest {
  * via the `definition` "ModelRef".
  */
 export interface ModelRef {
-  attribution?: string | null;
+  attribution?: string;
   bytes: number;
   id: string;
   license: string;
-  provenance?: string | null;
+  provenance?: string;
   /**
    * A message key in the `en` catalogue.
    */
@@ -7815,7 +7815,7 @@ export interface ModelRef {
  */
 export interface Publisher {
   name: string;
-  url?: string | null;
+  url?: string;
 }
 /**
  * One asset of the manifest.
@@ -7921,7 +7921,7 @@ export interface MergeReport {
  * via the `definition` "NetFetch".
  */
 export interface NetFetch {
-  grant?: string | null;
+  grant?: string;
   request: HttpRequest;
 }
 /**
@@ -7941,7 +7941,7 @@ export interface NetFetchReply {
   /**
    * A cross-origin redirect, returned unfollowed (its `location` is in `headers`).
    */
-  redirectNotFollowed?: boolean | null;
+  redirectNotFollowed?: boolean;
   status: number;
 }
 /**
@@ -8040,11 +8040,11 @@ export interface PluginCommandRunRequest {
   /**
    * A branch name, id or `name#id`; `main` when absent.
    */
-  branch?: string | null;
+  branch?: string;
   /**
    * Validate the returned transaction against the snapshot the plugin saw; commit nothing.
    */
-  dryRun?: boolean | null;
+  dryRun?: boolean;
   /**
    * `plugin:<id>/<command>`.
    */
@@ -8063,20 +8063,20 @@ export interface PluginCommandRunResult {
   /**
    * A dry run: nothing was committed.
    */
-  dryRun?: boolean | null;
+  dryRun?: boolean;
   /**
    * The proposed ops (dry run, conflict).
    */
-  ops?: Op[] | null;
+  ops?: Op[];
   outcome: CommandOutcome;
   /**
    * The committed revision; for a dry run or a conflict, the revision the plugin saw.
    */
-  rev?: number | null;
+  rev?: number;
   /**
    * The committed transaction's id (accepted, rebased).
    */
-  txId?: string | null;
+  txId?: string;
 }
 /**
  * This interface was referenced by `FinCore`'s JSON-Schema
@@ -8112,7 +8112,7 @@ export interface PluginDirs {
    * `plugins/data/@pub/name/<projectId|_>/` for uniform `person`/`system` rights, else
    * `plugins/authdata/@pub/name/<projectId|_>/<authorityKey>/`.
    */
-  data?: string | null;
+  data?: string;
   /**
    * The installed package (read-only).
    */
@@ -8152,7 +8152,7 @@ export interface PluginError {
   details?: {
     [k: string]: unknown;
   };
-  fix?: string | null;
+  fix?: string;
   message: string;
 }
 /**
@@ -8192,7 +8192,7 @@ export interface SignedAdvisory {
    */
   signedBy: string;
   summary: string;
-  url?: string | null;
+  url?: string;
   /**
    * A semver range of affected versions.
    */
@@ -8240,7 +8240,7 @@ export interface PluginInput {
   /**
    * The manifest's declared memory need (default 2 GiB, at most 16 GiB; sp8 §3.3).
    */
-  memoryBytes?: number | null;
+  memoryBytes?: number;
   /**
    * The model files the manifest names.
    */
@@ -8248,11 +8248,11 @@ export interface PluginInput {
   /**
    * ONNX Runtime's library.
    */
-  onnxRuntime?: string | null;
+  onnxRuntime?: string;
   /**
    * The per-project plugin data directory, when the manifest is granted `fs pluginData`.
    */
-  pluginData?: PluginData | null;
+  pluginData?: PluginData;
   /**
    * The runtime: finisherd's Node or the Electron framework, for `node` plugins.
    */
@@ -8279,24 +8279,24 @@ export interface PluginInput {
  * via the `definition` "PrivacySettings".
  */
 export interface PrivacySettings {
-  diagnostics?: Switch | null;
+  diagnostics?: Switch;
   /**
    * The size cap in MiB over the files and blobs, 16–4096 (default 128).
    */
-  maxMiB?: number | null;
+  maxMiB?: number;
   /**
    * The age cap in days, 1–365 (default 30).
    */
-  retentionDays?: number | null;
+  retentionDays?: number;
   /**
    * The agent-trace store's size cap in MiB, 64–65536 (default 2048).
    */
-  tracesMaxMiB?: number | null;
+  tracesMaxMiB?: number;
   /**
    * The agent-trace store's age cap in days, 1–365 (default 90; sp7 §12.1).
    */
-  tracesRetentionDays?: number | null;
-  training?: Switch | null;
+  tracesRetentionDays?: number;
+  training?: Switch;
 }
 /**
  * `project.snapshot`: one page of the call's project and branch at the job's pinned `rev`,
@@ -8306,7 +8306,7 @@ export interface PrivacySettings {
  * via the `definition` "ProjectSnapshot".
  */
 export interface ProjectSnapshot {
-  page?: number | null;
+  page?: number;
 }
 /**
  * One page of a snapshot; every page of one job has the same `rev`.
@@ -8387,11 +8387,11 @@ export interface ProjectView {
   /**
    * `fin view --budget`.
    */
-  budget?: number | null;
+  budget?: number;
   /**
    * `fin view --range` (`2s..5s`, `2s..`, `..5s`).
    */
-  range?: string | null;
+  range?: string;
 }
 /**
  * This interface was referenced by `FinCore`'s JSON-Schema
@@ -8594,7 +8594,7 @@ export interface RefreshReport {
   /**
    * Whole days the metadata is past its earliest expiry, when it is.
    */
-  staleDays?: number | null;
+  staleDays?: number;
   targetsVersion: number;
   timestampVersion: number;
   warnings: Warning[];
@@ -8731,13 +8731,13 @@ export interface ManifestFonts1 {
 export interface ReviewEntry {
   actor?: unknown;
   author: string;
-  blame?: string | null;
+  blame?: string;
   branch: string;
   committedAt: number;
   kind: RecordKind;
   opsCount: number;
   origin: string;
-  reason?: string | null;
+  reason?: string;
   seq: number;
   status: EntryStatus;
   txId: string;
@@ -8827,19 +8827,19 @@ export interface ScanBatch {
  */
 export interface ScanEntry {
   automount: boolean;
-  dev?: string | null;
+  dev?: string;
   dir: RawRel;
   entryType: EntryType;
-  excluded?: string | null;
-  fileId?: string | null;
+  excluded?: string;
+  fileId?: string;
   mountRoot: boolean;
   mtimeNs: string;
   name: string;
   nameLossy: boolean;
   nameNfc: string;
-  placeholder?: Placeholder | null;
+  placeholder?: Placeholder;
   relKey: string;
-  reparseTag?: number | null;
+  reparseTag?: number;
   size: number;
 }
 /**
@@ -9307,7 +9307,7 @@ export interface TxSetAside {
  */
 export interface ValidationReport {
   errors: Invalid[];
-  manifest?: Manifest | null;
+  manifest?: Manifest;
   ok: boolean;
 }
 /**

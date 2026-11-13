@@ -182,7 +182,7 @@ export class Rollbacks {
         archived.add(branch);
         continue;
       }
-      const rec: LaterRec = { txId: t.txId, rev: got.rev, link: got.link ?? null };
+      const rec: LaterRec = got.link === undefined ? { txId: t.txId, rev: got.rev } : { txId: t.txId, rev: got.rev, link: got.link };
       const share = shares.get(branch);
       if (share === undefined) shares.set(branch, { branch, recs: [rec], newest: { at: t.at, txId: t.txId } });
       else {

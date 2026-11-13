@@ -19,7 +19,7 @@ import type { JobError, PluginError as PluginErrorData } from "@finisher/core-ty
 export class PluginError extends Error implements PluginErrorData {
   readonly code: string;
   readonly details: { [k: string]: unknown };
-  readonly fix?: string | null;
+  readonly fix?: string;
 
   constructor(code: string, message: string, details: { [k: string]: unknown } = {}, fix?: string) {
     super(message);

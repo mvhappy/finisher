@@ -76,7 +76,7 @@ export function makeCommandRegistry(d: CommandRegistryDeps) {
       if (p === undefined) {
         p = (async () => {
           const report = JSON.parse(await validateManifest(storeDirOf(d.serverData, row), row.source)) as ValidationReport;
-          if (!report.ok || report.manifest === undefined || report.manifest === null) {
+          if (!report.ok || report.manifest === undefined) {
             throw finError("PLUGIN_MANIFEST_INVALID", `${row.id}@${row.version}'s manifest no longer validates`, { plugin: row.id, version: row.version });
           }
           const commands = report.manifest.contributes?.commands ?? [];

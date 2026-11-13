@@ -3,7 +3,7 @@
 import { describe, expect, test } from "vitest";
 import { type LaterRec, planBranch } from "../src/agent/rollback-plan.ts";
 
-const edit = (txId: string, rev: number): LaterRec => ({ txId, rev, link: null });
+const edit = (txId: string, rev: number): LaterRec => ({ txId, rev });
 const undo = (txId: string, rev: number, ...undoes: string[]): LaterRec => ({ txId, rev, link: { kind: "undo", undoes } });
 const redo = (txId: string, rev: number, redoes: string): LaterRec => ({ txId, rev, link: { kind: "redo", redoes } });
 const why = (recs: LaterRec[]) => {

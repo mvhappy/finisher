@@ -100,7 +100,6 @@ pub struct ProjectStatusView {
     /// What the project's font pins lack on this server; absent until the server has read the
     /// project's pins.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[schemars(with = "FontsSummary")]
     pub fonts: Option<FontsSummary>,
     /// `status()` only (absent elsewhere): the long call running now, `null` when none is. The
     /// rest is then the status cached after the last tick or long call.
@@ -222,7 +221,6 @@ pub struct HistoryResult {
     pub undone: Vec<String>,
     pub dry_run: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[schemars(with = "String")]
     pub no_op: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub origins: Vec<String>,
@@ -285,7 +283,6 @@ pub struct ReviewHead {
     pub branch: String,
     pub seq: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[schemars(with = "String")]
     pub hash: Option<String>,
 }
 
@@ -397,6 +394,5 @@ pub struct DropReq {
     #[serde(default)]
     pub dry_run: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[schemars(with = "String")]
     pub args_hash: Option<String>,
 }
