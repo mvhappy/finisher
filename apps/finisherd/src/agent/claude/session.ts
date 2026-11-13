@@ -38,6 +38,11 @@ export const INTERRUPT_WAIT_MS = 5_000;
 export const SIGINT_GRACE_MS = 2_000;
 /** How long a closed instance may take to exit after its stdin's end (writing its transcript, which `--resume` reads) before it is killed. */
 export const CLOSE_GRACE_MS = 2_000;
+/**
+ * How long a killed instance may take to be gone (the sandbox's group kill: SIGHUP under the
+ * launchers, `REAP_GRACE_MS`, then SIGKILL) before `close` reports it still running.
+ */
+export const CLOSE_EXIT_WAIT_MS = 5_000;
 
 /**
  * Where the CLI's requests other than the MCP handshake go (`can_use_tool`, an MCP `tools/call`,
@@ -84,6 +89,7 @@ export interface InstanceOptions {
   readonly interruptWaitMs?: number;
   readonly sigintGraceMs?: number;
   readonly closeGraceMs?: number;
+  readonly exitWaitMs?: number;
   readonly ref: ProviderRef;
 }
 
@@ -100,6 +106,8 @@ export class ClaudeInstance {
   #pending: ProviderEvent[];
   #inited = false;
   #turnOpen = false;
+  /** The last `startTurn` wrote its user line to the CLI's stdin. */
+  #turnWritten = false;
   #interrupting = false;
   /** The gate reserved for the open turn and no `usage` has settled it yet. */
   #reserved = false;
@@ -178,6 +186,16 @@ export class ClaudeInstance {
   #end(): void {
     if (this.#o.sink !== undefined) this.#o.sink.end();
     else Queue.endUnsafe(this.#queue);
+  }
+
+  /** Whether the last `startTurn` wrote its user line to the CLI's stdin (a refused turn wrote none). */
+  turnWritten(): boolean {
+    return this.#turnWritten;
+  }
+
+  /** One of the adapter's own events for the open turn, behind the init gate like `turnStarted`. */
+  notice(event: ProviderEvent): void {
+    if (!this.#closed && !this.#refused) this.#emit(event);
   }
 
   /** A turn is open (its `result` not yet seen). */
@@ -368,8 +386,9 @@ export class ClaudeInstance {
   /**
    * Ends the instance (its scope closes): later lines are dropped; stdin's end lets the process
    * finish its transcript (`--resume` reads it) for up to `closeGraceMs`, then it is killed.
+   * True once the process is gone; false when it is still running `exitWaitMs` after the kill.
    */
-  async close(): Promise<void> {
+  async close(): Promise<boolean> {
     if (!this.#closed) {
       this.#closed = true;
       this.#pending = [];
@@ -381,11 +400,13 @@ export class ClaudeInstance {
     } catch {
       // Already closed.
     }
-    const grace = this.#o.closeGraceMs ?? CLOSE_GRACE_MS;
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    const exited = await Promise.race([this.#o.child.exited.then(() => true), new Promise<boolean>((r) => (timer = setTimeout(() => r(false), grace)))]);
-    clearTimeout(timer);
-    if (!exited) this.#o.child.kill("SIGKILL");
+    const gone = (ms: number) => {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      return Promise.race([this.#o.child.exited.then(() => true), new Promise<boolean>((r) => (timer = setTimeout(() => r(false), ms)))]).finally(() => clearTimeout(timer));
+    };
+    if (await gone(this.#o.closeGraceMs ?? CLOSE_GRACE_MS)) return true;
+    this.#o.child.kill("SIGKILL");
+    return gone(this.#o.exitWaitMs ?? CLOSE_EXIT_WAIT_MS);
   }
 
   session(): ProviderSession {
@@ -401,6 +422,7 @@ export class ClaudeInstance {
           if (this.#turnOpen) return fail(finError("SESSION_BUSY", "a Claude Code turn is running", { instance: o.instance }));
           // Decision 15: the CLI's calls are invisible, so the gate is asked once per turn; the
           // turn's `usage` settles the reservation. A refusal ends the turn before any line.
+          this.#turnWritten = false;
           const g = o.gate?.beforeCall(o.projection?.() ?? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, reasoning: 0 });
           if (g !== undefined && !g.ok) {
             const e = g.error;
@@ -412,7 +434,7 @@ export class ClaudeInstance {
           this.#turnOpen = true;
           this.#interrupting = false;
           this.#emit({ type: "turnStarted" });
-          this.#write(encodeUser([...(i.facts === undefined || i.facts === "" ? [] : [i.facts]), i.text], o.uuid));
+          this.#turnWritten = this.#write(encodeUser([...(i.facts === undefined || i.facts === "" ? [] : [i.facts]), i.text], o.uuid));
           return Effect.void;
         }),
       steer: (i: UserInput) =>

@@ -9,13 +9,14 @@
 //   what they add beyond what this instance already emitted (live or at earlier `result`s), so
 //   the `result` settles the turn's money and any tokens the stream did not show.
 // - **Across instances:** `--resume` restores the CLI's totals after a clean exit and restarts
-//   them after a kill (verified 2.1.321, Task 0; the adapter passes the mode, Task 10). Where
-//   the last end is unknown a resumed instance fails closed: everything its totals report is charged, as if they had
-//   reset (`resumeTotals: reset`, the default). If they are restored, the session's earlier
-//   usage is charged again on each resume: an over-charge, never an under-charge, which no
-//   heuristic can rule out (a reset turn can report exactly the earlier totals). Task 0 pins
-//   `restored`, which counts from the session's charged usage (`baseline`, the store's running
-//   total, crash-consistent with the ledger).
+//   them after a kill (verified 2.1.321, Task 0; the adapter passes the mode, Task 10). What it
+//   restores is **that process's** cumulative totals, not the session's lifetime spend (a kill
+//   before it restarted them: Task 10 review), so a restored instance counts from the CLI's own
+//   accounting baseline, kept in `provider.pid` at each clean end (`restoredOffset`): never more
+//   than the totals that process reported, nor than its offset plus what the ledger charged since
+//   it started (`Session.usage`, durable with the ledger): a crash between the charge and the
+//   record over-charges, never under-charges. An end nobody saw, a kill, or no record fail closed
+//   (`reset`: all a resumed instance reports is charged).
 // - **The basis:** `subscription` for a plan sign-in (money shown, never charged; spec §13.1),
 //   else `reported` (the CLI's own estimate). `modelUsage` gives a per-model split, recorded as a
 //   `notice {modelUsage}` per `result`.
@@ -24,6 +25,7 @@
 // left) to the run its instance served (`runtime-usage.ts`), so every delta emitted here is
 // charged exactly once.
 import type { ProviderEvent } from "@finisher/contracts";
+import type { CliBaseline } from "../provider-pid.ts";
 import type { ResultMsg, StreamPayload } from "./protocol.ts";
 
 type UsageEvent = Extract<ProviderEvent, { type: "usage" }>;
@@ -76,7 +78,7 @@ export function resultTotals(r: ResultMsg): UsageTotals {
 export type ResumeTotals = "restored" | "reset";
 
 export interface ClaudeUsageOptions {
-  /** The session's charged usage when this instance opened (`Session.usage`). */
+  /** The CLI's restored totals this instance counts from under `restored` (`restoredOffset`). */
   readonly baseline?: UsageTotals;
   /** The instance continues an earlier transcript (`--resume=`). */
   readonly resumed?: boolean;
@@ -88,6 +90,20 @@ export interface ClaudeUsageOptions {
 /** At most this many models in one split, each id at most 128 characters. */
 const MAX_MODELS = 16;
 
+const max = (a: UsageTotals, b: UsageTotals): UsageTotals => ({ input: Math.max(a.input, b.input), output: Math.max(a.output, b.output), cacheRead: Math.max(a.cacheRead, b.cacheRead), cacheWrite: Math.max(a.cacheWrite, b.cacheWrite), costMicros: Math.max(a.costMicros, b.costMicros) });
+
+/**
+ * What a process resumed after `b`'s clean end counts from, per field: the CLI's totals at that
+ * end, but never more than the offset it counted from plus what the ledger charged since it
+ * started (`chargedNow − b.charged`), so a charge the ledger never made is charged again. None
+ * recorded: zero (fail closed).
+ */
+export function restoredOffset(b: CliBaseline | undefined, chargedNow: UsageTotals): UsageTotals {
+  if (b === undefined) return ZERO_TOTALS;
+  const f = (k: (typeof KEYS)[number]) => Math.max(0, Math.min(b.cli[k], b.offset[k] + Math.max(0, chargedNow[k] - b.charged[k])));
+  return { input: f("input"), output: f("output"), cacheRead: f("cacheRead"), cacheWrite: f("cacheWrite"), costMicros: f("costMicros") };
+}
+
 /** One instance's usage memory: what it emitted, and the offset its CLI's totals count from. */
 export class ClaudeUsage implements UsageSource {
   readonly #baseline: UsageTotals;
@@ -98,6 +114,8 @@ export class ClaudeUsage implements UsageSource {
   readonly #offset: UsageTotals;
   /** What this instance emitted. */
   #emitted: UsageTotals = ZERO_TOTALS;
+  /** The CLI's cumulative totals as its `result`s reported them (at least the offset). */
+  #cli: UsageTotals;
   /** The open message's usage as the stream reported it so far (a top-level message). */
   #message: UsageTotals = ZERO_TOTALS;
   /** The last `modelUsage` seen on this instance (the per-model split's baseline), or null. */
@@ -112,8 +130,19 @@ export class ClaudeUsage implements UsageSource {
     // are not known to be restored (fail closed: Review Focus 4).
     const restored = this.#resumed && this.#mode === "restored" && !isZero(this.#baseline);
     this.#offset = restored ? this.#baseline : ZERO_TOTALS;
+    this.#cli = this.#offset;
     // A restored instance's first split is unknown (its per-model totals hold earlier runs).
     if (!restored) this.#models = new Map();
+  }
+
+  /** What this instance counts the CLI's totals from. */
+  get offset(): UsageTotals {
+    return this.#offset;
+  }
+
+  /** The CLI's cumulative totals at its last `result` (the offset before any): `provider.pid`'s baseline at a clean end. */
+  cliTotals(): UsageTotals {
+    return this.#cli;
   }
 
   /** The basis this instance's events carry. */
@@ -157,6 +186,7 @@ export class ClaudeUsage implements UsageSource {
   // with `resumeTotals: restored` (default) or `reset`.
   usage(r: ResultMsg): Event[] {
     const now = resultTotals(r);
+    this.#cli = max(this.#cli, now);
     const d = over(now, add(this.#offset, this.#emitted));
     const out: Event[] = [];
     if (!isZero(d)) {

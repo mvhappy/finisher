@@ -21,8 +21,8 @@ import type { Detection, ProviderAdapter, ProviderRef, ProviderSession, SessionS
 import { parseClaudeInitialize } from "../catalogue/cli-models.ts";
 import type { Ids } from "../clock.ts";
 import { systemIds } from "../clock.ts";
-import { forgetProcess, lastEnd, recordProcess } from "../provider-pid.ts";
-import type { SessionSandbox, SessionSandboxDeps } from "../sandbox.ts";
+import { type CliBaseline, forgetProcess, lastBaseline, lastEnd, recordProcess } from "../provider-pid.ts";
+import type { SandboxedChild, SessionSandbox, SessionSandboxDeps } from "../sandbox.ts";
 import { claudeCodeSettings } from "../settings.ts";
 import { CLAUDE_CAPABILITIES, type ClaudeDetection, detectClaude } from "./detect.ts";
 import { launchPlan, sessionUuid, writeLaunchFiles } from "./launch.ts";
@@ -32,9 +32,9 @@ import { completeProbe, probe, probeFlagsHash } from "./probe.ts";
 import { unsignedAccount, untestedVersionNotices } from "./probe-check.ts";
 import { ClaudeSession, IDLE_CLOSE_MS } from "./instances.ts";
 import { claudePermissions } from "./permissions.ts";
-import { interruptedNote, resumeState } from "./resume.ts";
-import { ClaudeInstance, type EventSink, type RequestPort } from "./session.ts";
-import { baselineOf, ClaudeUsage, type ResumeTotals, turnProjection } from "./usage.ts";
+import { interruptedNote, resumeState, toldIds } from "./resume.ts";
+import { ClaudeInstance, CLOSE_EXIT_WAIT_MS, type EventSink, type RequestPort } from "./session.ts";
+import { baselineOf, ClaudeUsage, type ResumeTotals, restoredOffset, turnProjection, ZERO_TOTALS } from "./usage.ts";
 
 export { sessionUuid } from "./launch.ts";
 
@@ -57,8 +57,6 @@ export interface ClaudeDeps {
   readonly remaining?: (sessionId: string) => { readonly tokens: number | null; readonly moneyMicros: number | null };
   /** `agents.claudeCode.chargePlanMoney`: a plan sign-in's money is charged too (spec §13.1). */
   readonly chargePlanMoney?: () => boolean;
-  /** What `--resume` does with the CLI's totals (`usage.ts`; default `reset`, fail closed, until Task 0). */
-  readonly resumeTotals?: ResumeTotals;
   /** The per-turn projection, in tokens (default `TURN_ESTIMATE_TOKENS`). */
   readonly turnEstimateTokens?: number;
   readonly os?: NodeJS.Platform;
@@ -69,6 +67,8 @@ export interface ClaudeDeps {
   readonly interruptWaitMs?: number;
   readonly sigintGraceMs?: number;
   readonly closeGraceMs?: number;
+  /** How long a killed process may take to be gone (default `CLOSE_EXIT_WAIT_MS`). */
+  readonly exitWaitMs?: number;
   /** `agents.claudeCode.enabled`, read at each open (default: `settings.json`); off refuses the open. */
   readonly enabled?: () => boolean;
   /** Where CLI requests go (default: `claudePermissions()`, through the runtime; tests). */
@@ -114,7 +114,7 @@ export function ClaudeCodeAdapter(deps: ClaudeDeps): ProviderAdapter {
         const proc = startProcess(spec, box, uuid, ref, ids.ulid(), unseen);
         const note = [interruptedNote(state?.interrupted ?? []), unseen ? UNSEEN_NOTE : undefined].filter((n) => n !== undefined).join("\n\n");
         const session = yield* ClaudeSession.open(
-          { instance: proc.instance, ref, start: proc.start, idleCloseMs, log, ...(state === undefined ? {} : { known: state.known }), ...(note === "" ? {} : { note }) },
+          { instance: proc.instance, ref, start: proc.start, idleCloseMs, log, ...(state === undefined ? {} : { known: state.known }), ...(note === "" ? {} : { note, told: toldIds(state?.interrupted ?? []) }) },
           resumed,
         );
         yield* Effect.addFinalizer(() => Effect.promise(() => session.close()));
@@ -149,18 +149,23 @@ export function ClaudeCodeAdapter(deps: ClaudeDeps): ProviderAdapter {
         // it has no `--max-budget-usd` backstop. TODO(7D Task 0 Step 4): the `auth status`
         // `authMethod` of a plan sign-in; modelled by fake-claude as `claude.ai` (its default).
         const planSignIn = d.authMethod === "claude.ai" && deps.chargePlanMoney?.() !== true;
-        const baseline = baselineOf(s.usage);
+        const dir = sessionDir(s.id);
+        const charged = baselineOf(s.usage);
         // Verified 2.1.321, Task 0 (s1d/s1e): `--resume` restores the CLI's totals after a clean
         // exit and restarts them after a kill; an end nobody saw counts as a kill (fail closed:
-        // all it reports is charged, never less).
-        const totals: ResumeTotals = deps.resumeTotals ?? (resume && lastEnd(sessionDir(s.id)) === "clean" ? "restored" : "reset");
+        // all it reports is charged, never less). Restored, they are the last process's own
+        // totals (its baseline in `provider.pid`), not the session's lifetime spend.
+        const clean = resume && lastEnd(dir) === "clean";
+        const offset = clean ? restoredOffset(lastBaseline(dir), charged) : ZERO_TOTALS;
+        const totals: ResumeTotals = clean ? "restored" : "reset";
         const plan = yield* attempt(() =>
-          launchPlan(s, { ...spec, providerRef: resume ? ref : null }, found, os, { binary, retentionDays: deps.retentionDays ?? 90, remainingMoneyMicros: deps.remaining?.(s.id).moneyMicros ?? null, planSignIn, restoredCostMicros: totals === "restored" ? baseline.costMicros : 0 }),
+          launchPlan(s, { ...spec, providerRef: resume ? ref : null }, found, os, { binary, retentionDays: deps.retentionDays ?? 90, remainingMoneyMicros: deps.remaining?.(s.id).moneyMicros ?? null, planSignIn, restoredCostMicros: offset.costMicros }),
         );
-        const usage = new ClaudeUsage({ baseline, resumed: resume, basis: planSignIn ? "subscription" : "reported", resumeTotals: totals });
+        const usage = new ClaudeUsage({ baseline: offset, resumed: resume, basis: planSignIn ? "subscription" : "reported", resumeTotals: totals });
         yield* attempt(() => writeLaunchFiles(plan, os));
-        const child = yield* box.spawn(plan.argv, { cwd: box.workspace, stdio: "pipe", env: plan.env, extraRead });
-        track(sessionDir(s.id), instance, child.pid, child.exited);
+        const spawned = yield* box.spawn(plan.argv, { cwd: box.workspace, stdio: "pipe", env: plan.env, extraRead });
+        // Decision 17: recorded before the instance takes any work, or killed and refused.
+        const child = yield* tracked(dir, instance, spawned, () => ({ cli: usage.cliTotals(), offset: usage.offset, charged }));
         const notices: ProviderEvent[] = plan.dropped.map((tool) => ({ type: "notice", name: "toolDropped", details: { harness: "claudeCode", tool } }));
         if (unseen && first) notices.push({ type: "notice", name: "unseenTail", details: { harness: "claudeCode", reason: "exitedWhileServerDown" } });
         first = false;
@@ -201,6 +206,7 @@ export function ClaudeCodeAdapter(deps: ClaudeDeps): ProviderAdapter {
           ...(deps.interruptWaitMs === undefined ? {} : { interruptWaitMs: deps.interruptWaitMs }),
           ...(deps.sigintGraceMs === undefined ? {} : { sigintGraceMs: deps.sigintGraceMs }),
           ...(deps.closeGraceMs === undefined ? {} : { closeGraceMs: deps.closeGraceMs }),
+          ...(deps.exitWaitMs === undefined ? {} : { exitWaitMs: deps.exitWaitMs }),
         });
         const refuse = (e: FinError) => Effect.andThen(Effect.promise(() => i.close()), Effect.fail(e));
         // The `initialize` answer: the account (Decision 19) and the models (Decision 11). A
@@ -230,23 +236,41 @@ export function ClaudeCodeAdapter(deps: ClaudeDeps): ProviderAdapter {
     return { instance, start };
   }
 
-  /** Decision 17: the process is in `provider.pid` while it runs (a failure to record it is logged, not fatal). */
   function sessionDir(sessionId: string): string {
     return join(deps.sandbox.serverData, "agents", sessionId);
   }
 
-  function track(dir: string, instance: string, pid: number, exited: Promise<{ readonly signal?: string | null }>): void {
-    try {
-      recordProcess(dir, instance, pid);
-    } catch (e) {
-      log("claude process not recorded", { pid, error: String(e).slice(0, 200) });
-    }
-    void exited.then((e) => {
+  /**
+   * Decision 17: the process is in `provider.pid` while it runs. A record that cannot be written
+   * refuses the process: its group is killed (and waited for) before the failure, so nothing
+   * runs that a crash recovery could not sweep. The child handed on settles `exited` only once
+   * the end is recorded (`clean` only for exit 0 with no signal: anything else may have
+   * restarted the CLI's totals), so a later process reads it fresh.
+   */
+  function tracked(dir: string, instance: string, child: SandboxedChild, baseline: () => CliBaseline): Effect.Effect<SandboxedChild, FinError> {
+    const unrecorded = Effect.promise(async () => {
       try {
-        forgetProcess(dir, pid, e.signal === null || e.signal === undefined ? "clean" : "killed");
-      } catch {
-        // The directory is gone (the session was deleted).
+        recordProcess(dir, instance, child.pid);
+        return null;
+      } catch (e) {
+        child.kill("SIGKILL");
+        await Promise.race([child.exited, new Promise((r) => setTimeout(r, deps.exitWaitMs ?? CLOSE_EXIT_WAIT_MS).unref())]);
+        return String(e).slice(0, 200);
       }
+    });
+    return Effect.flatMap(unrecorded, (error) => {
+      if (error !== null) return Effect.fail(finError("INTERNAL", "the Claude Code process could not be recorded for the orphan sweep", { harness: "claudeCode", reason: "processNotRecorded", error }));
+      const exited = child.exited.then((e) => {
+        try {
+          forgetProcess(dir, child.pid, e.code === 0 && (e.signal ?? null) === null ? "clean" : "killed", baseline());
+        } catch (err) {
+          // The directory is gone (the session was deleted), or the disk failed: the record stays
+          // and the next recovery counts the process as unseen (fail closed).
+          log("claude process end not recorded", { pid: child.pid, error: String(err).slice(0, 200) });
+        }
+        return e;
+      });
+      return Effect.succeed({ pid: child.pid, stdin: child.stdin, stdout: child.stdout, stderr: child.stderr, exited, kill: (signal?: NodeJS.Signals) => child.kill(signal) });
     });
   }
 }

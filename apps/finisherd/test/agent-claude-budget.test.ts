@@ -17,7 +17,7 @@ import { CLAUDE_FLOOR } from "../src/agent/claude/detect.ts";
 import { resultError } from "../src/agent/claude/map.ts";
 import { ClaudeModelCache } from "../src/agent/claude/models.ts";
 import { decodeLine, type ResultMsg, type StreamPayload } from "../src/agent/claude/protocol.ts";
-import { ClaudeUsage, remainingIn, turnProjection, ZERO_TOTALS } from "../src/agent/claude/usage.ts";
+import { ClaudeUsage, remainingIn, restoredOffset, turnProjection, ZERO_TOTALS } from "../src/agent/claude/usage.ts";
 import { finError } from "../src/errors.ts";
 import { openSessionSandbox, type SessionSandboxDeps } from "../src/agent/sandbox.ts";
 import { readAgentSettings } from "../src/agent/settings.ts";
@@ -106,6 +106,22 @@ describe("usage memory", () => {
     expect(usageOf(new ClaudeUsage({ baseline: BASE, resumed: true, resumeTotals: "restored" }).usage(result(30, 5, 0.01)))).toEqual([]);
     // A fresh transcript (`--session-id`) counts from zero whatever the session spent.
     expect(usageOf(new ClaudeUsage({ baseline: BASE, resumed: false }).usage(result(30, 5, 0.01)))).toEqual([ev(30, 5, 10_000)]);
+  });
+
+  test("review of Task 10: a restored instance counts from the CLI's own baseline, never above what the ledger charged", () => {
+    const money = (costMicros: number) => ({ ...ZERO_TOTALS, costMicros });
+    // A spent $0.100 and was killed; B reset its totals, spent $0.010 and exited cleanly; C restores B's $0.010.
+    const b = { cli: money(10_000), offset: ZERO_TOTALS, charged: money(100_000) };
+    expect(restoredOffset(b, money(110_000))).toEqual(money(10_000));
+    const c = new ClaudeUsage({ baseline: restoredOffset(b, money(110_000)), resumed: true, resumeTotals: "restored" });
+    expect(usageOf(c.usage(result(0, 0, 0.015)))).toEqual([ev(0, 0, 5_000)]);
+    expect(c.cliTotals()).toEqual(money(15_000));
+    // A crash between B's last charge and its record: the ledger never charged B's spend, so C's
+    // offset is B's own (zero) and all C restores is charged again: over, never under.
+    expect(restoredOffset(b, money(100_000))).toEqual(ZERO_TOTALS);
+    expect(restoredOffset(b, money(104_000))).toEqual(money(4_000));
+    // No baseline recorded: zero (fail closed).
+    expect(restoredOffset(undefined, money(110_000))).toEqual(ZERO_TOTALS);
   });
 
   test("per_model_split: modelUsage against the last one seen", () => {
@@ -297,6 +313,30 @@ describe("through the runtime", () => {
     });
   }
 
+  withFake("review of Task 10: a clean resume after a reset counts from the CLI's restored totals, not the session's (A killed, B clean, C)", async () => {
+    const turn = (costUsd: number) => ({ expect: "user", cumulativeUsage: { inputTokens: 1, outputTokens: 1, costUsd } });
+    const r = await claudeServer({ ...CONSOLE, steps: [turn(0.1), { crash: { signal: "KILL" } }] });
+    const s = await start(r, { moneyMicros: 1_000_000 });
+    await until(() => (get(s.id).status === "interrupted" ? true : undefined));
+    const resumeTo = async (n: number, script: Record<string, unknown>) => {
+      if (get(s.id).status !== "interrupted") ok(await r.local.call("agent.session.interrupt", { sessionId: s.id }));
+      await until(() => (get(s.id).status === "interrupted" ? true : undefined));
+      rescript(r.binary, script);
+      ok(await r.local.call("agent.session.resume", { sessionId: s.id }));
+      ok(await r.local.call("agent.session.prompt", { sessionId: s.id, text: "again" }));
+      await until(() => (observed(r.serverData, s.id).length === n && get(s.id).status !== "running" ? true : undefined));
+      return settle(s.id);
+    };
+    // B: the CLI restarted its totals after A's kill; it spends $0.010 and closes cleanly.
+    expect((await resumeTo(2, { ...CONSOLE, steps: [turn(0.01)] })).usage.moneyMicros).toBe(110_000);
+    // C: the CLI restores B's $0.010 (not the session's $0.110) and adds $0.005.
+    const done = await resumeTo(3, { ...CONSOLE, steps: [turn(0.005)] });
+    expect(done.usage.moneyMicros).toBe(115_000);
+    expect(ledger(s.id, "money").used).toBe(115_000);
+    // The backstop: $0.890 left plus the $0.010 the CLI counts against it, not plus $0.110.
+    expect(flag(observed(r.serverData, s.id)[2]!.argv)).toBe("0.9");
+  });
+
   withFake("interrupted_turn_usage_charged: an interrupt's result is charged to the run it ended", async () => {
     const r = await claudeServer({ ...CONSOLE, steps: [{ expect: "user", hiddenUsage: { inputTokens: 500, outputTokens: 50, costUsd: 0.02 } }, { sleep: 60_000 }] });
     const s = await start(r);
@@ -309,9 +349,10 @@ describe("through the runtime", () => {
     expect(nodes(s.id).find((n) => n.kind === "usage")!.runId).toBe(runId);
     expect(get(s.id).usage).toMatchObject({ input: 500, output: 50, moneyMicros: 20_000 });
     expect(ledger(s.id, "money").used).toBe(20_000);
-    // The next instance (the interrupt's close is a clean exit: its totals restored) does not charge it again.
+    // The interrupt's close ends the process with exit 1 (Task 0 s1b), which is not known to keep
+    // the CLI's totals: the next instance's restored totals are charged again (fail closed).
     const done = await restart(r, s, { ...CONSOLE, steps: [{ expect: "user", cumulativeUsage: { inputTokens: 1, outputTokens: 1, costUsd: 0.001 } }] });
-    expect(done.usage).toMatchObject({ input: 501, output: 51, moneyMicros: 21_000 });
+    expect(done.usage).toMatchObject({ input: 1001, output: 101, moneyMicros: 41_000 });
   }, 30_000);
 
   withFake("live_tokens_stop_mid_turn: stream usage past the limit interrupts the turn, BUDGET_EXCEEDED, a budget card", async () => {

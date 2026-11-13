@@ -17,8 +17,18 @@
 // CLI's cumulative totals after a clean exit and restarts them after a kill (s1d/s1e); and a CLI
 // left by a SIGKILLed host in direct mode ran its allowed tool, finished the turn into its
 // transcript and exited about 14 s later (s5C), so `unseen` means a tail the runtime never saw.
-import { lstatSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+//
+// A clean end also keeps the CLI's own accounting baseline (`baseline`, Task 10 review): what
+// the process's cumulative totals were at its last `result`, the offset it counted from, and the
+// session's charged usage when it started. `--resume` after that end restores the CLI's totals of
+// that process (not the session's lifetime spend: a killed process before it restarted them), so
+// the next process's offset is derived from it (`claude/usage.ts` `restoredOffset`).
+//
+// Every write is durable (`writePrivateFile`: temp file, fsync, rename, directory fsync), and a
+// process is recorded before its instance takes any work (the adapter kills it otherwise).
+import { lstatSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
+import { type KeyFs, writePrivateFile } from "../auth/keys.ts";
 import { processStart } from "../sandbox/process-start.ts";
 
 export const PROVIDER_PID = "provider.pid";
@@ -37,48 +47,84 @@ export interface ProviderProcess {
 /** How the session's last process ended (module docs). */
 export type LastEnd = "clean" | "killed" | "unseen";
 
+/** Tokens and money (micros), as the CLI totals them (`claude/usage.ts` `UsageTotals`). */
+export interface Totals {
+  readonly input: number;
+  readonly output: number;
+  readonly cacheRead: number;
+  readonly cacheWrite: number;
+  readonly costMicros: number;
+}
+
+/** The CLI's own accounting at a process's clean end (module docs). */
+export interface CliBaseline {
+  /** The CLI's cumulative totals at the process's last `result` (≤ what `--resume` restores). */
+  readonly cli: Totals;
+  /** What the process counted from (its own restored offset). */
+  readonly offset: Totals;
+  /** The session's charged usage (`Session.usage`) when the process started. */
+  readonly charged: Totals;
+}
+
 interface PidFile {
   readonly v: 1;
   readonly processes: readonly ProviderProcess[];
   readonly last?: LastEnd;
+  /** Only with `last: clean`. */
+  readonly baseline?: CliBaseline;
 }
+
+const TOTAL_KEYS = ["input", "output", "cacheRead", "cacheWrite", "costMicros"] as const;
+const isCount = (n: unknown): boolean => typeof n === "number" && Number.isSafeInteger(n) && n >= 0;
+const isTotals = (v: unknown): v is Totals => typeof v === "object" && v !== null && TOTAL_KEYS.every((k) => isCount((v as Record<string, unknown>)[k]));
+const isBaseline = (v: unknown): v is CliBaseline => typeof v === "object" && v !== null && isTotals((v as CliBaseline).cli) && isTotals((v as CliBaseline).offset) && isTotals((v as CliBaseline).charged);
 
 const fileOf = (sessionDir: string) => join(sessionDir, PROVIDER_PID);
 
 const LAST = new Set<string>(["clean", "killed", "unseen"]);
 
-function readFile(sessionDir: string): { processes: ProviderProcess[]; last?: LastEnd } {
+type Ended = Pick<PidFile, "last" | "baseline">;
+
+function readFile(sessionDir: string): { processes: ProviderProcess[] } & Ended {
   try {
     const f = JSON.parse(readFileSync(fileOf(sessionDir), "utf8")) as Partial<PidFile>;
     const processes = Array.isArray(f.processes) ? f.processes.filter((p) => typeof p?.pid === "number" && Number.isInteger(p.pid) && p.pid > 0) : [];
-    return typeof f.last === "string" && LAST.has(f.last) ? { processes, last: f.last } : { processes };
+    if (typeof f.last !== "string" || !LAST.has(f.last)) return { processes };
+    return f.last === "clean" && isBaseline(f.baseline) ? { processes, last: f.last, baseline: f.baseline } : { processes, last: f.last };
   } catch {
     return { processes: [] };
   }
 }
 const read = (sessionDir: string) => readFile(sessionDir).processes;
+const endOf = (f: Ended): Ended => (f.last === undefined ? {} : f.baseline === undefined ? { last: f.last } : { last: f.last, baseline: f.baseline });
 
-/** Written whole: a temp file (0600) renamed over the record. */
-function write(sessionDir: string, processes: readonly ProviderProcess[], last = readFile(sessionDir).last): void {
-  const file = fileOf(sessionDir);
-  const tmp = `${file}.${process.pid}.${Date.now()}.tmp`;
-  writeFileSync(tmp, JSON.stringify({ v: 1, processes, ...(last === undefined ? {} : { last }) } satisfies PidFile), { mode: 0o600 });
-  renameSync(tmp, file);
+/** Written whole and durably (`writePrivateFile`: 0600, fsynced, renamed, the directory fsynced). */
+function write(sessionDir: string, processes: readonly ProviderProcess[], ended: Ended = endOf(readFile(sessionDir)), io?: KeyFs): void {
+  writePrivateFile(fileOf(sessionDir), JSON.stringify({ v: 1, processes, ...endOf(ended) } satisfies PidFile), process.platform, io);
 }
 
-/** Records a process the session's instance started (its start time read now). */
-export function recordProcess(sessionDir: string, instance: string, pid: number, platform: NodeJS.Platform = process.platform): void {
-  write(sessionDir, [...read(sessionDir).filter((p) => p.pid !== pid), { instance, pid, start: processStart(pid, platform) }]);
+/**
+ * Records a process the session's instance started (its start time read now). It throws when
+ * the record cannot be written: the caller kills the process before it takes any work.
+ */
+export function recordProcess(sessionDir: string, instance: string, pid: number, platform: NodeJS.Platform = process.platform, io?: KeyFs): void {
+  write(sessionDir, [...read(sessionDir).filter((p) => p.pid !== pid), { instance, pid, start: processStart(pid, platform) }], undefined, io);
 }
 
-/** The process has ended (`clean`: by itself, no signal): it leaves the record, which keeps how. */
-export function forgetProcess(sessionDir: string, pid: number, end: Exclude<LastEnd, "unseen"> = "clean"): void {
+/**
+ * The process has ended (`clean`: by itself, no signal): it leaves the record, which keeps how,
+ * and after a clean end the CLI's accounting baseline (a kill drops it: the CLI restarts its totals).
+ */
+export function forgetProcess(sessionDir: string, pid: number, end: Exclude<LastEnd, "unseen"> = "clean", baseline?: CliBaseline): void {
   const all = read(sessionDir);
-  if (all.some((p) => p.pid === pid)) write(sessionDir, all.filter((p) => p.pid !== pid), end);
+  if (all.some((p) => p.pid === pid)) write(sessionDir, all.filter((p) => p.pid !== pid), end === "clean" && baseline !== undefined ? { last: end, baseline } : { last: end });
 }
 
 /** How the session's last process ended, if the record says. */
 export const lastEnd = (sessionDir: string): LastEnd | undefined => readFile(sessionDir).last;
+
+/** The CLI's accounting baseline of the session's last process, when it ended cleanly. */
+export const lastBaseline = (sessionDir: string): CliBaseline | undefined => readFile(sessionDir).baseline;
 
 export interface SweepDeps {
   readonly platform?: NodeJS.Platform;
@@ -128,7 +174,7 @@ export function sweepProviderProcesses(sessionDir: string, deps: SweepDeps = {})
     if (platform !== "win32") removeSocket(`/tmp/cc-socks-${process.getuid?.() ?? 0}/${p.pid}.sock`);
   }
   // A recorded process already gone ended while no server watched it (its tail is unseen).
-  if (recorded.length > 0) write(sessionDir, [], killed.length > 0 ? "killed" : "unseen");
+  if (recorded.length > 0) write(sessionDir, [], { last: killed.length > 0 ? "killed" : "unseen" });
   return { killed, left };
 }
 

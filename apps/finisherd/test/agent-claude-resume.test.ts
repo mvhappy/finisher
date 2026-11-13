@@ -17,7 +17,9 @@ import { sessionUuid } from "../src/agent/claude/adapter.ts";
 import { claudePermissions } from "../src/agent/claude/permissions.ts";
 import { decodeLine } from "../src/agent/claude/protocol.ts";
 import { interruptedNote, resumeState } from "../src/agent/claude/resume.ts";
-import { forgetProcess, lastEnd, PROVIDER_PID, recordProcess, sweepProviderProcesses } from "../src/agent/provider-pid.ts";
+import * as fs from "node:fs";
+import type { KeyFs } from "../src/auth/keys.ts";
+import { forgetProcess, lastBaseline, lastEnd, PROVIDER_PID, recordProcess, sweepProviderProcesses } from "../src/agent/provider-pid.ts";
 import { resolveFinPath } from "../src/agent/settings.ts";
 import { processStart } from "../src/sandbox/process-start.ts";
 import { type SandboxStatus, setSandboxStatusSource } from "../src/sandbox/status.ts";
@@ -214,9 +216,61 @@ describe("the provider.pid record and its sweep", () => {
     ];
     const st = resumeState(ns);
     expect([...st.known]).toEqual(["toolu_1", "toolu_2", "toolu_3"]);
-    expect(st.interrupted).toEqual([{ providerId: "toolu_2", tool: "Bash", code: "SESSION_INTERRUPTED", reason: "serverRestart" }]);
+    // An assistant message after a synthetic result does not show the CLI was told of it.
+    expect(st.interrupted.map((c) => c.providerId)).toEqual(["toolu_1", "toolu_2"]);
+    expect(st.interrupted[1]).toEqual({ providerId: "toolu_2", tool: "Bash", code: "SESSION_INTERRUPTED", reason: "serverRestart" });
     expect(interruptedNote(st.interrupted)).toContain("toolu_2 (Bash): SESSION_INTERRUPTED (serverRestart)");
     expect(interruptedNote([])).toBeUndefined();
+  });
+
+  test("review of Task 10: a synthetic result stays due until it was written to a CLI or the CLI's own result came", () => {
+    const n = (seq: number, kind: string, extra: Record<string, unknown>) => ({ id: `n${seq}`, sessionId: "s", runId: "r", seq, kind, createdAt: seq, ...extra }) as unknown as Node;
+    const synthetic = { ok: false, code: "SESSION_INTERRUPTED", reason: "interrupted", synthetic: true };
+    // The probe: Task 9 drains the interrupted turn's queued usage after the synthetic result.
+    const probe = [n(1, "toolCall", { providerId: "toolu_1", callId: "c1", payload: { tool: "Bash", input: {} } }), n(2, "toolResult", { callId: "c1", payload: synthetic }), n(3, "usage", { payload: { input: 1 } })];
+    expect(resumeState(probe).interrupted).toEqual([{ providerId: "toolu_1", tool: "Bash", code: "SESSION_INTERRUPTED", reason: "interrupted" }]);
+    expect(interruptedNote(resumeState(probe).interrupted)).toContain("toolu_1 (Bash)");
+    // Told: the note was written to a CLI's stdin.
+    expect(resumeState([...probe, n(4, "notice", { payload: { interruptedDelivered: { harness: "claudeCode", toolUseIds: ["toolu_1"] } } })]).interrupted).toEqual([]);
+    // The CLI's own result for it, after the synthetic one (the runtime's notice).
+    expect(resumeState([...probe, n(4, "notice", { payload: { unmatchedToolResult: "toolu_1" } })]).interrupted).toEqual([]);
+    // The CLI's own result for another call clears only that call.
+    const two = [...probe, n(4, "toolCall", { providerId: "toolu_2", callId: "c2", payload: { tool: "Read", input: {} } }), n(5, "toolResult", { callId: "c2", payload: { ok: true, output: "x" } })];
+    expect(resumeState(two).interrupted.map((c) => c.providerId)).toEqual(["toolu_1"]);
+  });
+
+  test("review of Task 10: provider.pid is written durably and keeps the CLI's baseline of a clean end only", () => {
+    const dir = join(tmp, "d");
+    mkdirSync(dir);
+    const calls: string[] = [];
+    const fds = new Map<number, string>();
+    const io: KeyFs = {
+      openSync: ((p: fs.PathLike, flags: fs.OpenMode, mode?: fs.Mode) => {
+        const fd = fs.openSync(p, flags, mode);
+        fds.set(fd, String(p).endsWith(".tmp") ? "tmp" : String(p) === dir ? "dir" : String(p));
+        return fd;
+      }) as typeof fs.openSync,
+      writeSync: (fd, data) => (calls.push(`write ${fds.get(fd)}`), fs.writeSync(fd, data)),
+      fsyncSync: (fd) => (calls.push(`fsync ${fds.get(fd)}`), fs.fsyncSync(fd)),
+      closeSync: fs.closeSync,
+      renameSync: (a, b) => (calls.push("rename"), fs.renameSync(a, b)),
+      rmSync: fs.rmSync,
+      chmodSync: fs.chmodSync,
+    };
+    recordProcess(dir, "01I", process.pid, process.platform, io);
+    expect(calls).toEqual(WIN ? ["write tmp", "fsync tmp", "rename"] : ["write tmp", "fsync tmp", "rename", "fsync dir"]);
+    if (!WIN) expect(fs.statSync(join(dir, PROVIDER_PID)).mode & 0o777).toBe(0o600);
+    const t = (costMicros: number) => ({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0, costMicros });
+    const baseline = { cli: t(10_000), offset: t(0), charged: t(100_000) };
+    forgetProcess(dir, process.pid, "clean", baseline);
+    expect(lastEnd(dir)).toBe("clean");
+    expect(lastBaseline(dir)).toEqual(baseline);
+    // A new process keeps it while it runs; its kill drops it (the CLI restarts its totals).
+    recordProcess(dir, "01J", process.pid);
+    expect(lastBaseline(dir)).toEqual(baseline);
+    forgetProcess(dir, process.pid, "killed", baseline);
+    expect(lastEnd(dir)).toBe("killed");
+    expect(lastBaseline(dir)).toBeUndefined();
   });
 
   test("the interrupt mid-tool's result line decodes (verified 2.1.321, Task 0: `result: null`)", () => {
@@ -346,6 +400,9 @@ describe("crash and resume", () => {
       expect(resumed.resume?.dangling).toEqual(["toolu_A"]);
       expect(first).toContain("toolu_A (Bash): SESSION_INTERRUPTED (serverRestart)");
       expect(resumed.rerunDenied).toEqual(["toolu_A"]);
+      // Told once: the note's line reached the CLI, so the next resume has nothing due.
+      expect(notices(nodes(c.sessionId), "interruptedDelivered")).toEqual([{ harness: "claudeCode", toolUseIds: ["toolu_A"] }]);
+      expect(resumeState(nodes(c.sessionId)).interrupted).toEqual([]);
       expect(notices(nodes(c.sessionId), "rerunRefused")).toEqual([{ harness: "claudeCode", toolUseId: "toolu_A", tool: "Bash" }]);
     }
   }, 120_000);

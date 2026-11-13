@@ -9,11 +9,17 @@
 //   process's lines are dropped (`ClaudeInstance` closed) and its end is not an exit.
 // - **A real exit** (a crash, an exit mid-turn) is the instance's `exited`, and the stream ends:
 //   the runtime fails the turn `PROVIDER_EXITED` and interrupts the session (resumable).
-// - **One process at a time:** a new one starts only once the closed one has exited (or been
-//   killed), so two processes never write one transcript.
+// - **One process at a time:** a new one starts only once the closed one is confirmed gone (its
+//   exit seen and its end recorded in `provider.pid`; a kill alone is not an exit: under the
+//   launchers the group kill sends SIGHUP and reaps later), so two processes never write one
+//   transcript and the next one reads how the last one ended. A closed process still running
+//   `exitWaitMs` after its kill fails the reopen (`PROVIDER_UNAVAILABLE {reason:
+//   previousProcessAlive}`) instead of overlapping it; a later turn tries again.
 // - **The resumed instance's first user line** carries the runtime's synthetic results
-//   (`resume.ts`), once, ahead of the run's facts.
-import type { FinError } from "@finisher/contracts";
+//   (`resume.ts`), once, ahead of the run's facts; once that line is written to the CLI's stdin a
+//   `notice {interruptedDelivered}` records which calls it told, so a later resume does not tell
+//   them again (and one that never wrote it does).
+import type { FinError, ProviderEvent } from "@finisher/contracts";
 import { Cause, Effect, Queue, Stream } from "effect";
 import { finError } from "../../errors.ts";
 import type { BoundEvent, ProviderRef, ProviderSession, RuntimeAnswer, TurnInput, UserInput } from "../adapter.ts";
@@ -37,8 +43,12 @@ export interface ClaudeSessionOptions {
   readonly known?: ReadonlySet<string>;
   /** The first user line's leading block (`interruptedNote`). */
   readonly note?: string | undefined;
+  /** The calls `note` tells of (their `tool_use_id`s): the `interruptedDelivered` notice's. */
+  readonly told?: readonly string[];
   readonly log?: (message: string, details: Record<string, unknown>) => void;
 }
+
+const delivered = (toolUseIds: readonly string[]): ProviderEvent => ({ type: "notice", name: "interruptedDelivered", details: { harness: "claudeCode", toolUseIds: [...toolUseIds] } });
 
 export class ClaudeSession {
   readonly #o: ClaudeSessionOptions;
@@ -47,8 +57,9 @@ export class ClaudeSession {
   #current: ClaudeInstance | null = null;
   /** The current process's sink (made inert when it is closed for idleness). */
   #sink: { live: boolean } | null = null;
-  /** The idle-closed process's close, awaited before the next one starts. */
-  #closing: Promise<void> = Promise.resolve();
+  /** The idle-closed process and its close (true: confirmed gone), awaited before the next one starts. */
+  #closing: Promise<boolean> = Promise.resolve(true);
+  #closed: ClaudeInstance | null = null;
   #timer: ReturnType<typeof setTimeout> | null = null;
   #ended = false;
   #note: string | undefined;
@@ -127,6 +138,7 @@ export class ClaudeSession {
     if (this.#sink !== null) this.#sink.live = false;
     this.#sink = null;
     this.#o.log?.("claude instance closed for idleness", { instance: this.#o.instance });
+    this.#closed = i;
     this.#closing = i.close();
   }
 
@@ -137,7 +149,13 @@ export class ClaudeSession {
       if (this.#current !== null) return Effect.succeed(this.#current);
       return Effect.flatMap(
         Effect.promise(() => this.#closing),
-        () => this.#spawn(true),
+        (gone) => {
+          if (!gone && this.#closed !== null && !this.#closed.exited()) {
+            this.#o.log?.("claude closed process still running", { instance: this.#o.instance });
+            return Effect.fail(finError("PROVIDER_UNAVAILABLE", "the session's closed Claude Code process has not exited yet", { harness: "claudeCode", reason: "previousProcessAlive" }, "prompt again in a moment"));
+          }
+          return this.#spawn(true);
+        },
       );
     });
   }
@@ -170,8 +188,12 @@ export class ClaudeSession {
           const input = note === undefined ? i : { ...i, facts: i.facts === undefined || i.facts === "" ? note : `${note}\n\n${i.facts}` };
           return Effect.tap(p.session().startTurn(input), () =>
             Effect.sync(() => {
-              // Told once: the user line was written (a turn the gate refused wrote none).
-              if (p.busy()) this.#note = undefined;
+              // Told once: the user line was written to the CLI's stdin (a turn the gate refused
+              // wrote none), and the session's nodes say so for a later resume (`resume.ts`).
+              if (note === undefined || !p.turnWritten()) return;
+              this.#note = undefined;
+              const told = this.#o.told ?? [];
+              if (told.length > 0) p.notice(delivered(told));
             }),
           );
         }),

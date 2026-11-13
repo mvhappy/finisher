@@ -6,6 +6,11 @@
 //   `SESSION_INTERRUPTED` result. The resumed CLI's transcript holds the call; the next user line
 //   carries the synthetic results, as a text block before the run's facts, so the model knows the
 //   call ended there and was not run again (whatever it changed is already in the project).
+// - **Told once, and only once told:** a synthetic result stays due until the CLI was told of it
+//   (an `interruptedDelivered` notice: its note was written to a CLI's stdin, `instances.ts`) or
+//   the CLI's own result for the call came (a `toolResult` node of the CLI's, or the runtime's
+//   `unmatchedToolResult` notice for one after the synthetic result). Nothing else clears it: the
+//   usage a runtime drains after an interrupt, say, does not show the CLI ever saw the result.
 // - **No re-run:** a permission prompt for a call an earlier process announced (its
 //   `tool_use_id`) is denied at once, never reaching the runtime (`claudePermissions`' `rerun`).
 // Verified 2.1.321, Task 0 (s1d): `--resume` after a SIGKILL mid-turn finds the transcript with
@@ -27,12 +32,9 @@ export interface InterruptedCall {
 export interface ResumeState {
   /** Every call an earlier instance announced (`toolCall` nodes' provider ids). */
   readonly known: ReadonlySet<string>;
-  /** The synthetic results the CLI has not been told of: after the last line it produced. */
+  /** The synthetic results the CLI has not been told of (module docs). */
   readonly interrupted: readonly InterruptedCall[];
 }
-
-/** Nodes the CLI's own lines produced: a synthetic result before one of them was already behind it. */
-const FROM_CLI = new Set(["assistantMessage", "reasoning", "usage"]);
 
 const isObject = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
 
@@ -40,22 +42,33 @@ const isObject = (v: unknown): v is Record<string, unknown> => typeof v === "obj
 export function resumeState(nodes: readonly Node[]): ResumeState {
   const known = new Set<string>();
   const calls = new Map<string, { providerId: string; tool: string }>();
-  let interrupted: InterruptedCall[] = [];
+  /** By provider id, in the order the runtime closed them. */
+  const due = new Map<string, InterruptedCall>();
   for (const n of nodes) {
+    const p = n.payload;
     if (n.kind === "toolCall" && n.providerId !== undefined) {
       known.add(n.providerId);
-      const tool = isObject(n.payload) && typeof n.payload.tool === "string" ? n.payload.tool : "tool";
+      const tool = isObject(p) && typeof p.tool === "string" ? p.tool : "tool";
       if (n.callId !== undefined) calls.set(n.callId, { providerId: n.providerId, tool });
     } else if (n.kind === "toolResult" && n.callId !== undefined) {
-      const p = n.payload;
       const call = calls.get(n.callId);
-      if (isObject(p) && p.synthetic === true && call !== undefined) {
-        interrupted.push({ ...call, code: typeof p.code === "string" ? p.code : "SESSION_INTERRUPTED", reason: typeof p.reason === "string" ? p.reason : null });
-      } else interrupted = [];
-    } else if (FROM_CLI.has(n.kind)) interrupted = [];
+      if (call === undefined) continue;
+      if (isObject(p) && p.synthetic === true) due.set(call.providerId, { ...call, code: typeof p.code === "string" ? p.code : "SESSION_INTERRUPTED", reason: typeof p.reason === "string" ? p.reason : null });
+      else due.delete(call.providerId);
+    } else if (n.kind === "notice" && isObject(p)) {
+      if (typeof p.unmatchedToolResult === "string") due.delete(p.unmatchedToolResult);
+      const told = isObject(p.interruptedDelivered) ? p.interruptedDelivered.toolUseIds : undefined;
+      if (Array.isArray(told)) for (const id of told) if (typeof id === "string") due.delete(id);
+    }
   }
-  return { known, interrupted };
+  return { known, interrupted: [...due.values()] };
 }
+
+/** At most this many calls are listed in one note (the rest stay due). */
+const NOTE_CALLS = 32;
+
+/** The calls `interruptedNote(calls)` tells of: its `interruptedDelivered` notice's ids. */
+export const toldIds = (calls: readonly InterruptedCall[]): string[] => calls.slice(0, NOTE_CALLS).map((c) => c.providerId);
 
 const clip = (s: string, n: number) => (s.length > n ? `${s.slice(0, n)}…` : s);
 
@@ -63,7 +76,7 @@ const clip = (s: string, n: number) => (s.length > n ? `${s.slice(0, n)}…` : s
 export function interruptedNote(calls: readonly InterruptedCall[]): string | undefined {
   if (calls.length === 0) return undefined;
   const list = calls
-    .slice(0, 32)
+    .slice(0, NOTE_CALLS)
     .map((c) => `- ${clip(c.providerId, 64)} (${clip(c.tool, 64)}): ${c.code}${c.reason === null ? "" : ` (${clip(c.reason, 64)})`}`)
     .join("\n");
   return [
