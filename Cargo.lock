@@ -1115,7 +1115,9 @@ version = "0.0.0"
 dependencies = [
  "fin-audio",
  "fin-core",
+ "fin-media",
  "libm",
+ "serde_json",
 ]
 
 [[package]]

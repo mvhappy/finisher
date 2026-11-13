@@ -7,6 +7,9 @@
 #![forbid(unsafe_code)]
 
 pub mod buf;
+pub mod channels;
+#[cfg(feature = "testing")]
+pub mod testing;
 pub mod time;
 
 pub use buf::Stereo;
