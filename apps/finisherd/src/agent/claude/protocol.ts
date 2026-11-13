@@ -235,6 +235,9 @@ export type SystemOther =
 export interface AssistantMsg extends Env {
   readonly kind: "assistant";
   readonly message: Omit<typeof AssistantLine.Type.message, "content"> & { readonly content: readonly AssistantBlock[] };
+  /** The CLI's own error turn (`model: "<synthetic>"`). */
+  readonly error?: string;
+  readonly is_api_error_message?: boolean;
 }
 export interface UserMsg extends Env {
   readonly kind: "user";

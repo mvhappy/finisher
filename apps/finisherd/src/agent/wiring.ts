@@ -50,6 +50,7 @@ import { cataloguePricing, type Pricing, type SessionEnvironment, type ToolExecu
 import { LayeredRules } from "./rules.ts";
 import { RuleStore } from "./rule-store.ts";
 import type { AclBroker } from "../sandbox/broker.ts";
+import { claudeAdapterFor } from "./claude/adapter.ts";
 import { claudeProviderInfo } from "./claude/detect.ts";
 import { type ClaudeAccess, ClaudeModelCache, claudeAccess, withClaudePricing } from "./claude/models.ts";
 import { type SessionSandboxDeps, sessionSandboxes } from "./sandbox.ts";
@@ -295,6 +296,10 @@ export const buildAgentRuntime = (d: AgentWiringDeps): Effect.Effect<AgentRuntim
       }),
     );
     if (fakeAllowed()) adapters.set("fake", FakeAdapter(fakeScriptsOf(d.options?.fakeScripts)));
+    // Claude Code (plan 7D Task 7): registered only when detected and `agents.claudeCode.enabled`.
+    const claude = claudeWiring(() => Effect.runPromise(claudeInfo()), serverData);
+    const claudeAdapter = claudeAdapterFor(yield* claudeInfo(), { sandbox: sandboxDeps, sessions: core.store, models: claude.cache, ids: core.ids, ...(settings.retentionDays === undefined ? {} : { retentionDays: settings.retentionDays }), log: (m, x) => log(`${m} ${JSON.stringify(x)}`) });
+    if (claudeAdapter !== undefined) adapters.set("claudeCode", claudeAdapter);
     const rolePrompt = (role: string) => (roles.get(role) ?? roles.get("editor"))!.prompt.text;
     const builtinEnv = builtinEnvironment({ finPath, server: d.endpoint, projectDirOf: d.registry.dirOf, rolePrompt });
     const environment: SessionEnvironment = {
@@ -308,7 +313,6 @@ export const buildAgentRuntime = (d: AgentWiringDeps): Effect.Effect<AgentRuntim
         return { system: rolePrompt(s.role), cwd, env: childEnv({ FIN_SERVER: d.endpoint, FIN_SESSION: s.id, FIN_PROJECT_DIR: dir }) };
       },
     };
-    const claude = claudeWiring(() => Effect.runPromise(claudeInfo()), serverData);
     const planner = sessionPlanner({
       roles,
       catalogue,
@@ -316,8 +320,7 @@ export const buildAgentRuntime = (d: AgentWiringDeps): Effect.Effect<AgentRuntim
       hasKey: (projectId) => admin.hasKey(projectId),
       local: () => admin.local(),
       localModels: (e) => listLocalModels(e.baseUrl, d.options?.fetch),
-      // Claude Code plans only when detected and enabled; until its adapter is registered
-      // (Task 7) `harnesses()` lacks it and a start stays `HARNESS_UNKNOWN`.
+      // Claude Code plans only when detected and enabled (its adapter is registered then).
       claude: claude.planning,
       // Best effort: the cached listing stands when OpenRouter cannot be reached.
       // One fetch at a time, and none for 15 minutes after a failure (`OpenRouterPrices`).
