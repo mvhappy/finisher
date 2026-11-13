@@ -18,8 +18,8 @@ mod item;
 mod timeline;
 
 pub use asset::{
-    Asset, AssetKind, AudioInfo, FontFace, FontFile, ImageInfo, LottieInfo, LutInfo,
-    MAX_IMAGE_DIMENSION, SlotSpec, VideoInfo,
+    Asset, AssetKind, AudioInfo, DisplaySize, FontFace, FontFile, ImageInfo, LottieInfo, LutInfo,
+    MAX_IMAGE_DIMENSION, Rotation, SlotSpec, VideoInfo,
 };
 pub use caption::{
     Anchor, CaptionBlock, CaptionBox, CaptionPosition, CaptionSource, CaptionStyle, Stroke, Word,
@@ -34,8 +34,9 @@ pub use timeline::{
 };
 
 /// Version of the serialized model and op format. 3: stable keyframe ids (spec §5.12). 4: a
-/// graphic's `sourceIn` and the audio fade offsets (spec §5.13, review #54 and #55).
-pub const SCHEMA_VERSION: u32 = 4;
+/// graphic's `sourceIn` and the audio fade offsets (spec §5.13, review #54 and #55). 5:
+/// `VideoInfo` display, rotation and pixel aspect, and `asset.reprobe` (sub-project 6 §6.3).
+pub const SCHEMA_VERSION: u32 = 5;
 
 /// The resolution of a new project's timeline, and of a pre-4C project's (owner decision,
 /// plan 4C Decision 9): vertical 1080×1920.

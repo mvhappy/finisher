@@ -57,4 +57,11 @@ pub fn register_schemas(g: &mut SchemaGenerator) {
     g.subschema_for::<calls::NetReadPage>();
     g.subschema_for::<calls::LogLevel>();
     g.subschema_for::<calls::Log>();
+    // 7F: the hook protocol.
+    g.subschema_for::<protocol::HookEvent>();
+    g.subschema_for::<protocol::HookSession>();
+    g.subschema_for::<protocol::HookProject>();
+    g.subschema_for::<protocol::HookRequest>();
+    g.subschema_for::<protocol::HookReply>();
+    g.subschema_for::<protocol::HookRun>();
 }

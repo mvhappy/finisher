@@ -28,10 +28,8 @@ import {
   FontsPlanPayload,
   FontsPlanSchema,
   FramePlanSchema,
-  MediaCapabilitiesSuccess,
-  MediaLookPayload,
-  MediaLookSuccess,
 } from "./media.ts";
+import { MEDIA_RPCS } from "./media-rpcs.ts";
 import {
   AgentApprovalAnswerPayload,
   AgentApprovalAnswerSuccess,
@@ -73,6 +71,7 @@ import {
   AgentRulesRemovePayload,
   AgentRulesRemoveSuccess,
 } from "./rules.ts";
+import { AgentHooksListPayload, AgentHooksListSuccess } from "./hooks.ts";
 import { AgentSavedPromptListPayload, AgentSavedPromptListSuccess, AgentSavedPromptRunPayload, AgentSavedPromptRunSuccess } from "./saved-prompts.ts";
 import {
   AgentAccountConfirmPayload,
@@ -230,7 +229,6 @@ export type {
 export type TxPayload = Omit<Tx, "via">;
 export type ProjectPayload = Project;
 export type CommittedTxPayload = CommittedTx;
-
 
 /**
  * `idemKey`: makes a retry of this create (its answer lost) return the project it made rather
@@ -464,9 +462,7 @@ export const FinRpcs = RpcGroup.make(
   Rpc.make("fonts.status", { payload: Schema.Struct({}), success: FontStatusSchema, error: FinError }),
   Rpc.make("fonts.fetch", { payload: FontsFetchPayload, success: FontStatusSchema, error: FinError }),
   Rpc.make("fonts.plan", { payload: FontsPlanPayload, success: FontsPlanSchema, error: FinError }),
-  /** Plan 6A Task 13: looks at a timeline, and what this machine's media worker can do. */
-  Rpc.make("media.look", { payload: MediaLookPayload, success: MediaLookSuccess, error: FinError }),
-  Rpc.make("media.capabilities", { payload: Schema.Struct({}), success: MediaCapabilitiesSuccess, error: FinError }),
+  ...MEDIA_RPCS, // `media.look`, `media.capabilities` (6A), `media.cache.*`, `media.probeDeep` (6B-1; `media-rpcs.ts`)
   // 5C-2: the job engine (spec §6.7). Others' jobs and jobs out of reach are `JOB_NOT_FOUND`.
   Rpc.make("jobs.submit", { payload: JobsSubmitPayload, success: JobViewSchema, error: FinError }),
   Rpc.make("jobs.get", { payload: JobIdPayload, success: JobViewSchema, error: FinError }),
@@ -542,6 +538,7 @@ export const FinRpcs = RpcGroup.make(
   Rpc.make("agent.rules.add", { payload: AgentRulesAddPayload, success: AgentRulesAddSuccess, error: FinError }),
   Rpc.make("agent.rules.remove", { payload: AgentRulesRemovePayload, success: AgentRulesRemoveSuccess, error: FinError }),
   Rpc.make("agent.project.trust", { payload: AgentProjectTrustPayload, success: AgentProjectTrustSuccess, error: FinError }),
+  Rpc.make("agent.hooks.list", { payload: AgentHooksListPayload, success: AgentHooksListSuccess, error: FinError }), // 7F
   Rpc.make("agent.savedPrompt.list", { payload: AgentSavedPromptListPayload, success: AgentSavedPromptListSuccess, error: FinError }),
   Rpc.make("agent.savedPrompt.run", { payload: AgentSavedPromptRunPayload, success: AgentSavedPromptRunSuccess, error: FinError }),
   Rpc.make("agent.key.set", { payload: AgentKeySetPayload, success: AgentKeySetSuccess, error: FinError }),

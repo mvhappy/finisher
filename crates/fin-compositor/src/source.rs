@@ -2,7 +2,7 @@
 
 use fin_core::Rational;
 use fin_core::eval::{FramePlan, ItemKind, Layer};
-use fin_media::{ColourTags, PixelFormat, Rotation, Size};
+use fin_media::{ColourTags, HdrInfo, PixelFormat, Rotation, Size};
 use serde_json::{Value, json};
 
 use crate::output::Skipped;
@@ -26,6 +26,9 @@ pub struct SourceFrame<'a> {
     pub strides: [usize; 3],
     /// Resolved tags (the untagged rule applied).
     pub colour: ColourTags,
+    /// The source's HDR metadata (`clli`, `mdcv`): a PQ source's peak for the tone mapping
+    /// (spec §10.1); `None` for SDR and for HDR without it (1,000 nits).
+    pub hdr: Option<HdrInfo>,
     pub rotation: Rotation,
     pub pixel_aspect: Rational,
 }

@@ -1,6 +1,8 @@
 //! The MP4/MOV demuxer (spec §6.1, §6.3): `mp4-atom` decodes the boxes; which frame is shown,
 //! what the file is, and what a hostile file can make us allocate are decided here. The first
 //! video and the first audio track are read; other tracks are listed in `MediaInfo.ignored`.
+//! A file that starts with the EBML magic is read by the WebM/Matroska demuxer ([`webm`]) into
+//! the same tracks.
 
 mod aac;
 mod codec_config;
@@ -10,6 +12,7 @@ mod fragment;
 mod matrix;
 mod reader;
 mod table;
+mod webm;
 
 use std::io::{Read, Seek, SeekFrom};
 
@@ -22,6 +25,7 @@ use mp4_atom::{Ftyp, Mdhd, Mvhd, Tkhd};
 use serde_json::json;
 
 use self::codec_config::Entry;
+pub use self::codec_config::sei::{in_band_hdr, sei_hdr};
 use self::colour::ColrInfo;
 use self::edit_list::Edit;
 use self::reader::{BoxHeader, Reader, be_u32, decode};
@@ -314,6 +318,9 @@ fn roll(rd: &mut Reader<impl Read + Seek>, b: &Boxes) -> Result<Option<i16>, Cor
 type Parsed = (MediaInfo, Option<VideoTrack>, Option<AudioTrack>);
 
 fn parse<R: Read + Seek>(r: &mut R, limits: Limits) -> Result<Parsed, CoreError> {
+    if webm::sniff(r)? {
+        return webm::parse(r, limits);
+    }
     let mut rd = Reader::new(r, limits)?;
     if rd.len < 8 {
         return Err(unsupported_container(

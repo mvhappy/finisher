@@ -2,6 +2,8 @@
 //! ITU-T H.273 (CICP) code points as `colr` `nclx` and codec headers carry them.
 
 pub mod convert;
+pub mod softclip;
+pub mod tonemap;
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};

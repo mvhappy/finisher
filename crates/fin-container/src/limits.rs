@@ -1,6 +1,13 @@
 //! What a hostile file may make `fin-container` do (spec §6.1): every box size is checked
 //! against the bytes left and `max_box_bytes`, and every declared count against its box's
 //! size, before anything is allocated or handed to `mp4-atom`.
+//!
+//! WebM/Matroska reads the same limits: an EBML element is a box (its size checked against
+//! the bytes its parent has left, nesting against `max_depth`, a body read whole only within
+//! `max_box_bytes`), every element outside clusters counts against `max_boxes`, and the blocks
+//! inside clusters count as samples instead: `max_samples` frames per track (laced audio
+//! frames each), and `maxPresentedFrames` as MP4. Unknown sizes are accepted only for
+//! `Segment` and `Cluster`.
 
 /// Container limits; exceeding one is `MEDIA_LIMIT`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

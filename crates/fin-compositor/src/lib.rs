@@ -21,6 +21,8 @@ mod layer;
 mod mipgen;
 pub mod mips;
 mod output;
+#[cfg(not(target_os = "wasi"))]
+mod pipelines;
 pub mod placement;
 #[cfg(not(target_os = "wasi"))]
 mod pool;

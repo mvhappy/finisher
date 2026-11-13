@@ -24,12 +24,14 @@ import { jobDirs } from "../files.ts";
 import { mkdirSafe } from "../fsafe.ts";
 import { type KindRegistry, type KindSpec, type MemoryRule, projectOfJob } from "../kinds.ts";
 import { mediaCapabilitiesKind } from "./media.capabilities.ts";
+import { mediaProbeDeepKind } from "./media.probeDeep.ts";
 
 export const MEDIA_FAMILY = "media";
 export const MEDIA_LOOK = "media.look";
 
 /**
- * The `interactive:media` group's limit. A warm worker keeps up to 8 open sources, each with up
+ * The `interactive:media` group's limit (kept by 6B-1, Decision 18: a deviation from
+ * spec §14's interactive row for the warm frame cache; batch kinds use `media/memory.ts`). A warm worker keeps up to 8 open sources, each with up
  * to 64 decoded frames (about 200 MB per 1080p source), the GPU's staging and the PNGs being
  * encoded: half the RAM, at most 6 GiB (Decision 20's rule shape).
  */
@@ -51,7 +53,7 @@ export interface MediaKindDeps {
   /** `<server-data>`: the jobs root and the font cache are below it. */
   readonly serverData: string;
   /** The project registry's reads: the engine call and the folder a project lives in. */
-  readonly projects: Pick<ProjectRegistryShape, "prepareMediaJob" | "dirOf">;
+  readonly projects: Pick<ProjectRegistryShape, "prepareMediaJob" | "dirOf"> & Partial<Pick<ProjectRegistryShape, "onBranch">>;
   /** `<server-data>/jobs` (default: `join(serverData, "jobs")`, which `ensureJobsRoot` makes). */
   readonly jobsRoot?: string;
   /** The libraries' roots (5D; every library in v1): what a confined warm media worker may read beside its project's `sources/`. */
@@ -353,9 +355,11 @@ function planSamplesOf(extra: unknown): ReadonlyArray<string> {
   return samples.map((s) => String(s.blake3));
 }
 
-/** Registers the family and its kinds (`media.look`, `media.capabilities`). */
+/** Registers the family and its kinds (`media.look`, `media.capabilities`; `media.probeDeep` given `projects.onBranch`). */
 export function registerMediaKinds(registry: KindRegistry, deps: MediaKindDeps): void {
   registerMediaFamily(registry, deps);
   registry.registerKind(mediaLookKind(deps));
   registry.registerKind(mediaCapabilitiesKind());
+  const { onBranch } = deps.projects;
+  if (onBranch !== undefined) registry.registerKind(mediaProbeDeepKind({ ...deps, projects: { onBranch } }));
 }

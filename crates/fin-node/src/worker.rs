@@ -39,9 +39,14 @@ pub(crate) struct Worker {
 
 impl Worker {
     pub(crate) fn spawn() -> Result<Worker> {
+        Worker::spawn_named("fin-node-worker")
+    }
+
+    /// A worker thread called `name` (the media cache's own thread is `fin-node-cache`).
+    pub(crate) fn spawn_named(name: &str) -> Result<Worker> {
         let (jobs, queue) = mpsc::channel::<Job>();
         std::thread::Builder::new()
-            .name("fin-node-worker".to_string())
+            .name(name.to_string())
             .spawn(move || {
                 for job in queue {
                     // Jobs catch their own panics; this only keeps the thread alive.
@@ -51,7 +56,7 @@ impl Worker {
             .map_err(|e| {
                 reject(CoreError::new(
                     "INTERNAL",
-                    format!("cannot start the engine worker thread: {e}"),
+                    format!("cannot start the {name} thread: {e}"),
                 ))
             })?;
         Ok(Worker { jobs })

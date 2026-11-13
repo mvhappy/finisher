@@ -10,6 +10,7 @@ import { connectConsole, ConsoleError } from "./client.ts";
 import { agent } from "./commands/agent.ts";
 import { audit } from "./commands/audit.ts";
 import { auth } from "./commands/auth.ts";
+import { cache } from "./commands/cache.ts";
 import type { CommandContext } from "./commands/context.ts";
 import { devices, revoke } from "./commands/devices.ts";
 import { diagnostics } from "./commands/diagnostics.ts";
@@ -40,6 +41,7 @@ const COMMANDS: Record<string, (ctx: CommandContext) => Promise<number>> = {
   agent,
   provider,
   training,
+  cache,
   review,
   mcp,
   auth,
@@ -124,6 +126,7 @@ Agent sessions (sub-project 7):
   provider local show|test [--json]        the local model endpoint, and whether it answers
   provider signin|signout claudeCode       prints the CLI's own sign-in commands to run here; runs nothing
   training closed-targets [--json]         the counsel gate on closed-model training targets
+  cache status [--json]                    the media cache: its size against the cap, by recipe
   review policy show --project <dir|id> [--json]
                                            protected branches, required review, auto merge
 These change something (each needs an interactive terminal and your confirmation):
@@ -142,6 +145,7 @@ These change something (each needs an interactive terminal and your confirmation
   provider signin claudeCode --confirm     the sign-in commands, and the next account change goes through
   provider account confirm claudeCode      new Claude Code sessions run on the account it is signed in to now
   training closed-targets pendingCounsel|cleared|excluded
+  cache gc [--to <GiB>]                    evict unpinned media cache entries down to the cap or lower
   review policy set --project <dir|id> [--protect <branch>]... [--unprotect <branch>]...
               [--require-review on|off] [--auto-merge on|off]
                                            auto merge answers AUTO_MERGE_UNAVAILABLE for now

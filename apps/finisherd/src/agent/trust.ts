@@ -5,8 +5,8 @@
 //   `agents.rules`) and `project` (`finisher.rules.json` beside `finisher.project.json`,
 //   `{"rules": […]}`). A rule in a file is `{id, effect, command, where?}`, as in a role file;
 //   the reader fills `layer`, `source` (the file's name) and `createdAt` 0. Files are checked at
-//   every decision, so an edit applies at once: each is opened and `fstat`ed, and its parsed
-//   rules are kept by `(path, ino, size, mtime, ctime)`; any change re-reads it, hashing and
+//   every decision, so an edit applies at once (`file-cache.ts`): each is opened and `fstat`ed,
+//   and its parsed rules are kept by `(path, ino, size, mtime, ctime)`; any change re-reads it, hashing and
 //   parsing the one buffer read (what is hashed is what applies). A file changed within
 //   `RACY_MS` of being read is not kept (a second change in the same timestamp tick could keep
 //   its key). A rule that does not decode is named in the error (`rule "<id>": …`).
@@ -26,25 +26,21 @@
 //   between is refused (`INVALID_REQUEST {field: expectedHash, reason: changed}`). Trusting a
 //   file that does not read as rules is refused, so a trusted file reads (unless a later
 //   server's schema refuses one of its rules: it then denies, as an unreadable layer).
-import { createHash } from "node:crypto";
-import { closeSync, constants, fstatSync, openSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { type Rule, RuleCommand, RuleEffect, type RuleLayer, RuleWhere } from "@finisher/contracts";
 import { Schema } from "effect";
 import { settingsPath } from "../config.ts";
 import { finError } from "../errors.ts";
+import { CONFIG_FILE_MAX, firstLine, hashOf, RACY_MS, type Read as FileRead, readCached } from "./file-cache.ts";
 import type { ProjectTrust, RuleStore } from "./rule-store.ts";
 
+export { hashOf, RACY_MS };
 export const RULES_FILE = "finisher.rules.json";
 export const MANAGED_SETTINGS = "managed-settings.json";
 /** The hash trust records for a project with no rules file. */
 export const NO_FILE = "none";
 /** The largest rules file read; a larger one is unreadable. */
-export const RULES_FILE_MAX = 256 * 1024;
-/** A file changed this recently (ms) is read again at every decision (see the module docs). */
-export const RACY_MS = 2000;
-/** Files whose parsed rules are kept at most (past it the cache starts again). */
-const CACHE_MAX = 1024;
+export const RULES_FILE_MAX = CONFIG_FILE_MAX;
 
 /** A rule as a file writes it (roles, settings, the project file). */
 export const FileRule = Schema.Struct({
@@ -77,7 +73,6 @@ export function unreadable(layer: RuleLayer, source: string): Rule {
 }
 
 const isObject = (v: unknown): v is Record<string, unknown> => v !== null && typeof v === "object" && !Array.isArray(v);
-const firstLine = (e: unknown) => (e instanceof Error ? e.message : String(e)).replace(/\s+/g, " ").trim();
 
 /** Decodes a file's rules one by one, so an error names the rule (`rule "<id>": …`). */
 function decodeRules(list: unknown, layer: RuleLayer, source: string): Rule[] {
@@ -95,50 +90,11 @@ function decodeRules(list: unknown, layer: RuleLayer, source: string): Rule[] {
 /** A file's state: absent, unreadable, or read (its hash, and its rules or why they do not decode). */
 type Read = { readonly absent: true } | { readonly error: string } | { readonly hash: string; readonly rules?: readonly Rule[]; readonly invalid?: string };
 
-const cache = new Map<string, { readonly key: string; readonly read: Read }>();
-/** Not following a FIFO into a blocking open (Windows has no such flag: 0). */
-const NONBLOCK = constants.O_NONBLOCK ?? 0;
-/** A rules file's hash as trust records it (`sha256:<hex>` of its bytes). */
-export const hashOf = (bytes: Buffer) => `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
-
-/** `path` read and parsed with `parse` (cached per `slot`, see the module docs). */
+/** `path` read and parsed with `parse` (cached per `slot`, `file-cache.ts`). */
 function readRules(path: string, slot: string, parse: (json: unknown) => Rule[]): Read {
-  let fd: number;
-  try {
-    fd = openSync(path, constants.O_RDONLY | NONBLOCK);
-  } catch (e) {
-    const code = (e as { code?: unknown }).code;
-    return code === "ENOENT" || code === "ENOTDIR" ? { absent: true } : { error: String(code ?? e) };
-  }
-  try {
-    const st = fstatSync(fd);
-    if (!st.isFile()) return { error: "not a regular file" };
-    if (st.size > RULES_FILE_MAX) return { error: `larger than ${RULES_FILE_MAX} bytes` };
-    const key = `${path}\0${st.ino}\0${st.size}\0${st.mtimeMs}\0${st.ctimeMs}`;
-    const hit = cache.get(slot);
-    if (hit?.key === key) return hit.read;
-    const readAt = Date.now();
-    const bytes = readFileSync(fd);
-    if (bytes.length > RULES_FILE_MAX) return { error: `larger than ${RULES_FILE_MAX} bytes` };
-    const hash = hashOf(bytes);
-    let read: Read;
-    try {
-      read = { hash, rules: parse(JSON.parse(bytes.toString("utf8")) as unknown) };
-    } catch (e) {
-      read = { hash, invalid: firstLine(e) };
-    }
-    if (Math.max(st.mtimeMs, st.ctimeMs) < readAt - RACY_MS) {
-      if (cache.size >= CACHE_MAX) cache.clear();
-      cache.set(slot, { key, read });
-    } else {
-      cache.delete(slot);
-    }
-    return read;
-  } catch (e) {
-    return { error: String((e as { code?: unknown }).code ?? e) };
-  } finally {
-    closeSync(fd);
-  }
+  const read: FileRead<Rule[]> = readCached(path, slot, parse);
+  if (!("hash" in read)) return read;
+  return { hash: read.hash, ...(read.value === undefined ? {} : { rules: read.value }), ...(read.invalid === undefined ? {} : { invalid: read.invalid }) };
 }
 
 /** `agents.rules` of a settings file (`managed` or `user`): none without the file or the key. */

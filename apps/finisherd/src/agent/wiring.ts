@@ -27,7 +27,7 @@ import { FileSecretStore, type SecretStore } from "../secrets/store.ts";
 import type { ProviderAdapter } from "./adapter.ts";
 import { AgentAdmin, listLocalModels } from "./admin.ts";
 import { AgentApprovals, approvalKey, type GrantPort, grantPort } from "./approvals.ts";
-import type { AutoMergeTriggerOptions } from "./auto-merge.ts";
+import { type AutoMergeTriggerOptions, autoMergeTrigger, registryProjects } from "./auto-merge.ts";
 import { waitingOnApprovals } from "./builtin/approval-wait.ts";
 import { type ProviderPermissions, providerPermissions } from "./permissions.ts";
 import { ProviderRequests } from "./provider-requests.ts";
@@ -48,6 +48,8 @@ import { sessionPlanner } from "./planner.ts";
 import { BUNDLED_ROLES, type Role } from "./roles.ts";
 import { Runtime } from "./runtime.ts";
 import { cataloguePricing, type Pricing, type SessionEnvironment, type ToolExecutor } from "./runtime-deps.ts";
+import { HookConfig } from "../hooks/config.ts";
+import { buildHooks, type HookServeOptions, type HooksWiring } from "../hooks/wiring.ts";
 import { LayeredRules } from "./rules.ts";
 import { RuleStore } from "./rule-store.ts";
 import type { AclBroker } from "../sandbox/broker.ts";
@@ -56,8 +58,13 @@ import { claudeProviderInfo } from "./claude/detect.ts";
 import { remainingIn } from "./claude/usage.ts";
 import { type ClaudeAccess, ClaudeModelCache, claudeAccess, withClaudePricing } from "./claude/models.ts";
 import { type SessionSandboxDeps, sessionSandboxes } from "./sandbox.ts";
+import { launcherServer } from "./sandbox-input.ts";
 import { claudeCodeSettings, readAgentSettings, resolveFinPath } from "./settings.ts";
 import type { AgentStore } from "./store.ts";
+import { reviewPort } from "./review-link.ts";
+import type { ProjectRegistryShape } from "../projects.ts";
+import type { Journal } from "@finisher/fin-node";
+import { journalReviewVerdicts, registryEngine, startReviews } from "../reviews/service.ts";
 import { AgentLookup } from "./store-lookup.ts";
 
 /** `serve`'s agent options (tests). */
@@ -82,6 +89,8 @@ export interface AgentServeOptions {
   readonly sandboxLauncher?: string;
   /** Tests (7B Task 12): the `auto` merge trigger's availability, verdicts and observer. */
   readonly autoMerge?: AutoMergeTriggerOptions;
+  /** Tests (7F Task 4): the hook processes' sandbox status or launcher. */
+  readonly hooks?: HookServeOptions;
 }
 
 /** What the handlers and the console RPCs use. */
@@ -94,6 +103,10 @@ export interface AgentRuntimeParts {
   /** Command rules (7B Task 2): every layer, and the `local` layer and trust in `control.db`. */
   readonly rules: LayeredRules;
   readonly ruleStore: RuleStore;
+  /** Hook configuration (7F Task 2): every layer, project files against `project_trust.hooksHash`. */
+  readonly hooks: HookConfig;
+  /** The hook engine (7F Task 4) and what the chain takes from it; closed on shutdown. */
+  readonly hookWiring: HooksWiring;
   readonly roles: ReadonlyMap<string, Role>;
   /** Durable approvals for agents' asks (7B Task 4) and the key of their `argsHash`. */
   readonly approvals: AgentApprovals;
@@ -335,6 +348,12 @@ export const buildAgentRuntime = (d: AgentWiringDeps): Effect.Effect<AgentRuntim
     const ruleStore = new RuleStore(d.db);
     const dirOf = (projectId: string) => d.registry.dirOf(projectId) ?? d.registry.indexedDirOf?.(projectId);
     const rules = new LayeredRules({ serverData, store: ruleStore, roles, dirOf });
+    const hooks = new HookConfig({ serverData, trustOf: (id) => ruleStore.trustOf(id), dirOf });
+    // `fin` hooks (7F Task 5): their own credentials through 5A's, `fin` and its endpoint as the session sandbox's.
+    const finServer = (launcher: boolean) => (launcher ? launcherServer(sandboxDeps, process.platform) : Promise.resolve({ env: d.endpoint }));
+    const hookProcess = { finPath, finServer, ...(d.acl === undefined ? {} : { acl: d.acl }), ...(d.allowPipe === undefined ? {} : { allowPipe: d.allowPipe }) };
+    const hookWiring = buildHooks({ config: hooks, serverData: realData, audit: d.audit, log, credentials: core.credentials.base, process: hookProcess, ...(d.options?.hooks === undefined ? {} : { options: d.options.hooks }) });
+    yield* Effect.addFinalizer(() => Effect.promise(() => hookWiring.close()));
     const key = approvalKey(serverData);
     const permissions = providerPermissions({ rules, dirOf });
     // The approvals need the runtime (their nodes, answers): made after it, looked up late.
@@ -382,5 +401,29 @@ export const buildAgentRuntime = (d: AgentWiringDeps): Effect.Effect<AgentRuntim
     });
     approvals = made;
     const grants = grantPort(made, core.store, key, d.options?.afterGrantConsumed);
-    return { runtime, admin, adapters, lookup: new AgentLookup(d.db), catalogue, rules, ruleStore, roles, approvals: made, approvalKey: key, grants, permissions, requests, attribution };
+    return { runtime, admin, adapters, lookup: new AgentLookup(d.db), catalogue, rules, ruleStore, hooks, hookWiring, roles, approvals: made, approvalKey: key, grants, permissions, requests, attribution };
   });
+
+/** What `startAgentReviews` needs: the project registry, the diagnostics journal, the agent core and runtime. */
+export interface AgentReviewsDeps {
+  readonly control: ControlStore;
+  readonly projects: ProjectRegistryShape;
+  readonly audit: Audit;
+  readonly journal: Journal;
+  readonly core: AgentCore;
+  readonly runtime: Runtime;
+  /** Tests (7B Task 12): the trigger's availability, verdicts and observer. */
+  readonly autoMerge?: AutoMergeTriggerOptions;
+}
+
+/**
+ * The reviews (5E), bound to the agent core's review link, and the `auto` merge policy's
+ * trigger (7B Task 12) on its `branchReady`: unavailable until sub-project 10, so nothing merges.
+ */
+export function startAgentReviews(d: AgentReviewsDeps): ReturnType<typeof startReviews> {
+  const started = startReviews(d.control, { engine: registryEngine(d.projects), audit: d.audit, verdicts: journalReviewVerdicts(d.journal) });
+  d.core.reviewLink.bind(reviewPort(started.reviews));
+  const autoMerge = { store: d.core.store, reviews: started.reviews, audit: d.audit, outcomes: d.core.outcomes, projects: registryProjects(d.projects), budgetSpent: d.runtime.budgetSpent.bind(d.runtime), ...d.autoMerge };
+  d.core.reviewLink.onBranchReady(autoMergeTrigger(autoMerge));
+  return started;
+}

@@ -7,7 +7,6 @@ use crate::model::{
     AssetKind, AudioInfo, Curve, FontFile, ImageInfo, Item, ItemBody, LottieInfo, LutInfo,
     TransitionKind, VideoInfo,
 };
-use crate::ops::asset_move::AssetMove;
 use crate::ops::bin_add::BinAdd;
 use crate::ops::bin_move::BinMove;
 use crate::ops::bin_remove::BinRemove;
@@ -32,6 +31,7 @@ use crate::ops::track_move::TrackMove;
 use crate::ops::track_remove::TrackRemove;
 use crate::ops::track_restore::TrackRestore;
 use crate::ops::track_set::TrackSet;
+use crate::ops::{asset_move::AssetMove, asset_reprobe::AssetReprobe};
 use crate::ops::{caption_merge::CaptionMerge, caption_set_style::CaptionSetStyle};
 use crate::ops::{caption_set_text::CaptionSetText, caption_set_words::CaptionSetWords};
 use crate::ops::{font_pin::FontPinOp, font_repin::FontRepin, font_unpin::FontUnpin};
@@ -124,6 +124,9 @@ pub enum Op {
     /// Puts an asset in a bin, or at the top.
     #[serde(rename = "asset.move")]
     AssetMove(AssetMove),
+    /// Replaces a media asset's video and audio with a fresh probe's (schema 5).
+    #[serde(rename = "asset.reprobe")]
+    AssetReprobe(Box<AssetReprobe>),
     /// Internal (inverse of `track.remove`): puts a whole track back.
     #[serde(rename = "track.restore")]
     TrackRestore(Box<TrackRestore>),

@@ -1,5 +1,5 @@
 //! File probe and fast file fingerprint used to register assets. The kind comes from the
-//! file's first bytes, never its name: MP4/MOV/M4A and WAV (`media`), PNG/JPEG/WebP
+//! file's first bytes, never its name: MP4/MOV/M4A, WebM/MKV and WAV (`media`), PNG/JPEG/WebP
 //! (`image`), SVG (`svg`), dotLottie (`lottieTemplate`), TTF/OTF/TTC (`font`) and `.cube`
 //! (`lut`).
 //!
@@ -26,7 +26,8 @@ mod wav;
 
 use fin_container::{Demuxer, Limits};
 use fin_core::{
-    AssetKind, AudioInfo, CoreError, FontFile, ImageInfo, LottieInfo, LutInfo, Rational, VideoInfo,
+    AssetKind, AudioInfo, CoreError, DisplaySize, FontFile, ImageInfo, LottieInfo, LutInfo,
+    Rational, VideoInfo,
 };
 use fin_media::MediaInfo;
 use schemars::JsonSchema;
@@ -36,8 +37,9 @@ use serde_json::json;
 /// The version of what [`probe_reader`] puts in a [`Probe`] (plan 5D Decision 35). The library
 /// catalog stores it per file; a higher number re-queues only the probe stage. **Bump it
 /// whenever probe output changes** for the same bytes: a new kind or field, a changed
-/// decision (sub-project 6 does, from 6A-2 on).
-pub const PROBE_VERSION: u32 = 1;
+/// decision (sub-project 6 does, from 6A-2 on). 2: WebM/Matroska probes as media (6B-1
+/// Task 12; refused before).
+pub const PROBE_VERSION: u32 = 2;
 
 const SAMPLE: u64 = 64 * 1024;
 /// Files smaller than this are hashed whole instead of as head/middle/tail samples.
@@ -68,9 +70,9 @@ pub struct Probe {
     pub font: Option<FontFile>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lut: Option<LutInfo>,
-    /// MP4/MOV: what the file is (sub-project 6 spec §6.3): display size and rotation, colour,
-    /// HDR, VFR, edit lists. In the `asset.probe` answer only: an `asset.add` never carries it
-    /// (spec §4.4).
+    /// MP4/MOV, WebM/Matroska: what the file is (sub-project 6 spec §6.3): display size and
+    /// rotation, colour, HDR, VFR, edit lists. In the `asset.probe` answer only: an
+    /// `asset.add` never carries it (spec §4.4).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub media: Option<MediaInfo>,
     pub fingerprint: String,
@@ -121,7 +123,7 @@ pub(crate) fn unsupported(path: &Path, reason: &str) -> CoreError {
     )
     .with_details(json!({ "path": absolute(path).to_string_lossy(), "reason": reason }))
     .with_fix(
-        "use an MP4, MOV, M4A or WAV file, a PNG, JPEG, WebP or SVG image, a dotLottie \
+        "use an MP4, MOV, M4A, WebM, MKV or WAV file, a PNG, JPEG, WebP or SVG image, a dotLottie \
          template, a TTF, OTF or TTC font, or a 3D .cube LUT",
     )
 }
@@ -129,7 +131,8 @@ pub(crate) fn unsupported(path: &Path, reason: &str) -> CoreError {
 /// What a file's first bytes say it is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Sniffed {
-    Mp4,
+    /// MP4/MOV, or WebM/Matroska (the EBML magic): both read by `fin-container`.
+    Media,
     Image,
     Wav,
     Zip,
@@ -144,8 +147,8 @@ fn sniff(head: &[u8]) -> Sniffed {
     use fin_core::FontFormat::{Otf, Ttc, Ttf};
     let at = |i: usize, magic: &[u8]| head.get(i..i + magic.len()) == Some(magic);
     let mp4_box = |b: &[u8]| matches!(b, b"ftyp" | b"moov" | b"mdat" | b"wide" | b"free" | b"skip");
-    if head.get(4..8).is_some_and(mp4_box) {
-        Sniffed::Mp4
+    if head.get(4..8).is_some_and(mp4_box) || at(0, &[0x1A, 0x45, 0xDF, 0xA3]) {
+        Sniffed::Media
     } else if at(0, b"\x89PNG\r\n\x1a\n")
         || at(0, &[0xFF, 0xD8, 0xFF])
         || at(0, b"RIFF") && at(8, b"WEBP")
@@ -238,9 +241,9 @@ pub struct ProbeOutcome {
 /// do that), and relative paths resolve against the current directory. Error `details.path`
 /// is absolute (canonical when the file exists; on Windows without a `\\?\` verbatim prefix).
 ///
-/// MP4/MOV (fragmented too) are read by `fin-container`; a broken or hostile file is
-/// `MEDIA_CORRUPT`, `MEDIA_LIMIT`, `UNSUPPORTED_CONTAINER` or `UNSUPPORTED_TRANSFORM` with
-/// `details.path`.
+/// MP4/MOV (fragmented too) and WebM/Matroska are read by `fin-container`; a broken or
+/// hostile file is `MEDIA_CORRUPT`, `MEDIA_LIMIT`, `UNSUPPORTED_CONTAINER` or
+/// `UNSUPPORTED_TRANSFORM` with `details.path`.
 ///
 /// For a project file. A file under a library root goes through [`probe_with`]. The file is
 /// opened without blocking and must be a regular file (a folder, FIFO, socket or device is
@@ -309,12 +312,14 @@ fn probe_kind<R: Read + Seek>(file: &mut R, size: u64, path: &Path) -> Result<Pr
     match sniff(&head) {
         // fin-container never panics on input (it is fuzzed); a panic is a bug, reported as
         // a corrupt file rather than taking the server down.
-        Sniffed::Mp4 => catch_unwind(AssertUnwindSafe(|| parse(file, path))).unwrap_or_else(|_| {
-            Err(with_path(
-                CoreError::new("MEDIA_CORRUPT", "the container could not be read"),
-                path,
-            ))
-        }),
+        Sniffed::Media => {
+            catch_unwind(AssertUnwindSafe(|| parse(file, path))).unwrap_or_else(|_| {
+                Err(with_path(
+                    CoreError::new("MEDIA_CORRUPT", "the container could not be read"),
+                    path,
+                ))
+            })
+        }
         Sniffed::Image => image::probe(file, path),
         Sniffed::Wav => wav::probe(file, size, path),
         Sniffed::Zip => lottie::probe(file, size, path),
@@ -360,8 +365,11 @@ fn with_path(mut e: CoreError, path: &Path) -> CoreError {
         e.details = json!({});
     }
     e.details["path"] = json!(absolute(path).to_string_lossy());
-    if e.code == "UNSUPPORTED_CONTAINER" {
+    // A reason code the container gave (`contentEncoding`) is kept; else the message's text.
+    if e.code == "UNSUPPORTED_CONTAINER" && e.details.get("reason").is_none() {
         e.details["reason"] = json!(e.message.trim_start_matches("cannot read this container: "));
+    }
+    if e.code == "UNSUPPORTED_CONTAINER" {
         e.fix = unsupported(path, "").fix;
     }
     e
@@ -369,8 +377,9 @@ fn with_path(mut e: CoreError, path: &Path) -> CoreError {
 
 /// The model's fields keep their 4C meaning (spec §4.4): `width`/`height` the coded size, the
 /// rate the average (`samples × timescale / track duration`), the audio rate the audio's own
-/// sample rate (sample entry, else the AAC config; never the media timescale); `media`
-/// carries the rest.
+/// sample rate (sample entry, else the AAC config; never the media timescale). Schema 5 adds
+/// the display geometry (`display`, `rotation`, `pixelAspect`, as `MediaInfo` reads them);
+/// `media` carries the rest and is never stored.
 fn parse<R: Read + Seek>(file: &mut R, path: &Path) -> Result<Probe, CoreError> {
     let d = Demuxer::open(io::BufReader::new(file), &Limits::default())
         .map_err(|e| with_path(e, path))?;
@@ -391,6 +400,12 @@ fn parse<R: Read + Seek>(file: &mut R, path: &Path) -> Result<Probe, CoreError> 
                 width: v.coded.width,
                 height: v.coded.height,
                 rate,
+                display: Some(DisplaySize {
+                    width: v.display.width,
+                    height: v.display.height,
+                }),
+                rotation: Some(v.rotation),
+                pixel_aspect: Some(v.pixel_aspect),
             })
         }
         _ => None,

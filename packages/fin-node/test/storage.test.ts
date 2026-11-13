@@ -112,7 +112,16 @@ async function compactionDue(engine: Engine): Promise<void> {
   engine.setCompactionGraceForTest(0);
   for (const [i, id] of ["tx-1", "tx-2"].entries()) {
     await engine.commit(tx(id, i, [addAsset]));
-    await until(() => (segmentFiles().length === i + 1 ? true : undefined), 10_000, `${id} exported`);
+    // Exported means recorded as exported (`exportedThrough`), which compaction packs by: the
+    // file appears before its read-back and that record (slow fsyncs on macOS widen the gap).
+    await until(
+      async () => {
+        const main = JSON.parse(await engine.status()).branches.find((b: { name: string }) => b.name === "main");
+        return segmentFiles().length === i + 1 && main?.exportedThrough === i + 1 ? true : undefined;
+      },
+      10_000,
+      `${id} exported`,
+    );
   }
   expect(JSON.parse(await engine.compact()).manifests).toHaveLength(1);
 }

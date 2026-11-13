@@ -16,6 +16,7 @@ const OPTED_OUT: Record<string, "readOnly" | "service"> = {
   "agent.key.list": "readOnly",
   "agent.local.show": "readOnly",
   "agent.local.test": "readOnly",
+  "agent.hooks.list": "readOnly",
   "auth.pair.pending": "readOnly",
   "auth.device.list": "readOnly",
   "auth.devices.watch": "readOnly",
@@ -80,6 +81,10 @@ test("media_look_needs_project_write_only_to_name_a_folder (6A Tasks 11-12 revie
   expect(requiredScopes("media.look", { projectId: "p", at: ["0"] })).toEqual(["project.read", "jobs.submit"]);
   expect(requiredScopes("media.look", { projectId: "p", at: ["0"], out: "/d" })).toEqual(["project.read", "jobs.submit", "project.write"]);
   expect(requiredScopes("media.capabilities", {})).toEqual(["server.read"]);
+  // 6B-1 Task 13: reading the cache's state is the server's; evicting is the owner's (human-only).
+  expect(requiredScopes("media.cache.status", {})).toEqual(["server.read"]);
+  expect(requiredScopes("media.cache.gc", {})).toEqual(["settings.admin"]);
+  expect(requiredScopes("media.cache.gc", { toGiB: 1 })).toEqual(["settings.admin"]);
 });
 
 test("diagnostics_admin_guards_consent_purge_project_default_and_content (5A Task 7)", () => {
@@ -169,6 +174,7 @@ test("writes_required_on_writing_rules: exactly the RPCs whose handlers write th
   // The handlers that pass a write guard to the store (`meta(options)` in finisherd's handlers).
   expect([...WRITE_RPCS].sort()).toEqual(
     [
+      "asset.reprobe",
       "branch.create",
       "branch.set",
       "history.checkpoint",

@@ -992,6 +992,24 @@
       ],
       "type": "object"
     },
+    "AssetReprobe": {
+      "description": "`asset.reprobe`: `asset`'s streams are now `video` and `audio`.",
+      "properties": {
+        "asset": {
+          "type": "string"
+        },
+        "audio": {
+          "$ref": "#/$defs/AudioInfo"
+        },
+        "video": {
+          "$ref": "#/$defs/VideoInfo"
+        }
+      },
+      "required": [
+        "asset"
+      ],
+      "type": "object"
+    },
     "Attach": {
       "description": "`attach`: a helper's job, its files only, and its directories.",
       "properties": {
@@ -1637,6 +1655,75 @@
       "required": [
         "operation",
         "sinceMs"
+      ],
+      "type": "object"
+    },
+    "CacheGcResult": {
+      "description": "What one `gc` (or eviction pass) did.",
+      "properties": {
+        "bytes": {
+          "description": "What the cache holds afterwards (above the target only when the rest is pinned).",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "evicted": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "freedBytes": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "evicted",
+        "freedBytes",
+        "bytes"
+      ],
+      "type": "object"
+    },
+    "CacheStatus": {
+      "description": "`media.cache.status` (`fin cache status`): what the cache holds against its cap.",
+      "properties": {
+        "byRecipe": {
+          "additionalProperties": {
+            "$ref": "#/$defs/RecipeUsage"
+          },
+          "type": "object"
+        },
+        "bytes": {
+          "description": "Every entry's files and `meta.json`.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "capBytes": {
+          "description": "Eviction keeps `bytes` at or below this (Decision 12).",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "entries": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "pinned": {
+          "description": "Entries with at least one pin (never evicted).",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "bytes",
+        "entries",
+        "capBytes",
+        "pinned",
+        "byRecipe"
       ],
       "type": "object"
     },
@@ -2951,7 +3038,7 @@
       "type": "object"
     },
     "ContainerKind": {
-      "description": "The container family, from `ftyp`'s brands.",
+      "description": "The container family, from `ftyp`'s brands or the EBML `DocType`.",
       "oneOf": [
         {
           "enum": [
@@ -2962,6 +3049,16 @@
         {
           "const": "mov",
           "description": "QuickTime (`qt  ` major brand).",
+          "type": "string"
+        },
+        {
+          "const": "webm",
+          "description": "EBML `DocType` `webm`.",
+          "type": "string"
+        },
+        {
+          "const": "matroska",
+          "description": "EBML `DocType` `matroska`.",
           "type": "string"
         }
       ]
@@ -3383,6 +3480,26 @@
       "required": [
         "job",
         "tmp"
+      ],
+      "type": "object"
+    },
+    "DisplaySize": {
+      "description": "A picture's display size in px (`VideoInfo.display`).",
+      "properties": {
+        "height": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "width": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "width",
+        "height"
       ],
       "type": "object"
     },
@@ -3852,6 +3969,111 @@
         "font"
       ],
       "type": "string"
+    },
+    "EntryEncoder": {
+      "additionalProperties": false,
+      "description": "The encoder that made an entry (proxies), for diagnostics and the export rule that a\n`gpu`-encoded file never leaves the cache.",
+      "properties": {
+        "backend": {
+          "type": "string"
+        },
+        "class": {
+          "$ref": "#/$defs/VendorClass"
+        }
+      },
+      "required": [
+        "backend",
+        "class"
+      ],
+      "type": "object"
+    },
+    "EntryFile": {
+      "additionalProperties": false,
+      "description": "One payload file of an entry.",
+      "properties": {
+        "blake3": {
+          "description": "BLAKE3 of the file, 64 lower-case hex digits.",
+          "type": "string"
+        },
+        "bytes": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "name": {
+          "description": "`[A-Za-z0-9_][A-Za-z0-9._-]{0,63}`, not `meta.json`.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "bytes",
+        "blake3"
+      ],
+      "type": "object"
+    },
+    "EntryMeta": {
+      "additionalProperties": false,
+      "description": "An entry's `meta.json` (spec §7.2): the key and its input, the files and, for proxies, the\noriginal's `MediaInfo`.",
+      "properties": {
+        "createdAt": {
+          "description": "Unix milliseconds.",
+          "format": "int64",
+          "type": "integer"
+        },
+        "decoderClass": {
+          "$ref": "#/$defs/VendorClass"
+        },
+        "encoder": {
+          "$ref": "#/$defs/EntryEncoder"
+        },
+        "files": {
+          "items": {
+            "$ref": "#/$defs/EntryFile"
+          },
+          "type": "array"
+        },
+        "fingerprint": {
+          "type": "string"
+        },
+        "key": {
+          "type": "string"
+        },
+        "media": {
+          "allOf": [
+            {
+              "$ref": "#/$defs/MediaInfo"
+            }
+          ],
+          "description": "The original's `MediaInfo` (proxies: rotation and pixel aspect are applied from it)."
+        },
+        "params": true,
+        "recipe": {
+          "type": "string"
+        },
+        "recipeVersion": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "renderVersion": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "key",
+        "fingerprint",
+        "recipe",
+        "recipeVersion",
+        "params",
+        "renderVersion",
+        "decoderClass",
+        "files",
+        "createdAt"
+      ],
+      "type": "object"
     },
     "EntryStatus": {
       "description": "What a merge does with a source record (the review's `status`).",
@@ -5100,6 +5322,31 @@
         }
       ]
     },
+    "FirstFrame": {
+      "additionalProperties": false,
+      "description": "The first decoded picture.",
+      "properties": {
+        "format": {
+          "$ref": "#/$defs/PixelFormat"
+        },
+        "height": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "width": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "width",
+        "height",
+        "format"
+      ],
+      "type": "object"
+    },
     "FontCatalog": {
       "additionalProperties": false,
       "properties": {
@@ -5997,6 +6244,26 @@
       },
       "type": "object"
     },
+    "HdrSource": {
+      "description": "Where [`ProbeDeepResult::hdr`] came from.",
+      "oneOf": [
+        {
+          "const": "container",
+          "description": "The sample entry's `mdcv`/`clli`/`dvcC` boxes.",
+          "type": "string"
+        },
+        {
+          "const": "sei",
+          "description": "H.264/HEVC SEI in the first sample (no `mdcv`/`clli` box).",
+          "type": "string"
+        },
+        {
+          "const": "containerAndSei",
+          "description": "Both, field by field: the boxes' fields, and from SEI the mastering display or content\nlight level the boxes lack (a `dvcC` without `mdcv`/`clli`, or `mdcv` without `clli`).",
+          "type": "string"
+        }
+      ]
+    },
     "Header": {
       "additionalProperties": false,
       "properties": {
@@ -6246,6 +6513,25 @@
       ],
       "type": "object"
     },
+    "HookEvent": {
+      "description": "An event a hook can subscribe to (arch §10 without `PreOp`/`PostOp`, spec §9.1).\n`PreRender` and `PostRender` are accepted and inert until a render job kind exists.",
+      "enum": [
+        "SessionStart",
+        "SessionEnd",
+        "UserPrompt",
+        "PreCommand",
+        "PostCommand",
+        "BranchReady",
+        "PreMerge",
+        "PostMerge",
+        "PreRender",
+        "PostRender",
+        "JobDone",
+        "Approval",
+        "Notification"
+      ],
+      "type": "string"
+    },
     "HookFin": {
       "additionalProperties": false,
       "properties": {
@@ -6313,6 +6599,156 @@
         "tmp",
         "serverData",
         "home"
+      ],
+      "type": "object"
+    },
+    "HookProject": {
+      "description": "The project an event belongs to.",
+      "properties": {
+        "dir": {
+          "description": "The project folder (read-only to the hook).",
+          "type": "string"
+        },
+        "id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "dir"
+      ],
+      "type": "object"
+    },
+    "HookReply": {
+      "description": "A hook's answer (Decision 2): one JSON object on stdout, or a `plugin.hook` job's result.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "A struct variant, not a unit one: serde's internally tagged unit variants ignore unknown\nfields, and a reply refuses them.",
+          "properties": {
+            "reply": {
+              "const": "allow",
+              "type": "string"
+            }
+          },
+          "required": [
+            "reply"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "reason": {
+              "type": "string"
+            },
+            "reply": {
+              "const": "block",
+              "type": "string"
+            }
+          },
+          "required": [
+            "reply",
+            "reason"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "reply": {
+              "const": "context",
+              "type": "string"
+            },
+            "text": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "reply",
+            "text"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "HookRequest": {
+      "description": "What a hook reads: one JSON line on stdin, then EOF (Decision 9).",
+      "properties": {
+        "event": {
+          "$ref": "#/$defs/HookEvent"
+        },
+        "payload": {
+          "description": "The event's payload (over 1 MiB: `{payloadOmitted: true, bytes}`)."
+        },
+        "project": {
+          "$ref": "#/$defs/HookProject"
+        },
+        "session": {
+          "allOf": [
+            {
+              "$ref": "#/$defs/HookSession"
+            }
+          ],
+          "description": "Absent for events outside a session (`JobDone` of a job, a person's merge, `UserPrompt`\nbefore `agent.session.start` opens the session)."
+        },
+        "v": {
+          "description": "[`HOOK_PROTOCOL_VERSION`].",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "event",
+        "v",
+        "project",
+        "payload"
+      ],
+      "type": "object"
+    },
+    "HookRun": {
+      "description": "A `plugin.hook` v1 job's params: the manifest handler to call with the request.",
+      "properties": {
+        "handler": {
+          "type": "string"
+        },
+        "request": {
+          "$ref": "#/$defs/HookRequest"
+        }
+      },
+      "required": [
+        "handler",
+        "request"
+      ],
+      "type": "object"
+    },
+    "HookSession": {
+      "description": "The session an event belongs to.",
+      "properties": {
+        "harness": {
+          "$ref": "#/$defs/Harness"
+        },
+        "id": {
+          "type": "string"
+        },
+        "mode": {
+          "$ref": "#/$defs/AgentMode"
+        },
+        "role": {
+          "description": "The session's role name.",
+          "type": "string"
+        },
+        "rootBranch": {
+          "description": "The branch the session's root works on, when it has one.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "role",
+        "mode",
+        "harness"
       ],
       "type": "object"
     },
@@ -8556,6 +8992,49 @@
         "blobs",
         "blobBytes",
         "dropped"
+      ],
+      "type": "object"
+    },
+    "KeyInput": {
+      "additionalProperties": false,
+      "description": "What a cache key is computed from (Decision 11).",
+      "properties": {
+        "decoderClass": {
+          "allOf": [
+            {
+              "$ref": "#/$defs/VendorClass"
+            }
+          ],
+          "description": "The vendor class of the backend that decoded the source."
+        },
+        "fingerprint": {
+          "description": "The source's fingerprint (the asset's `fingerprint`).",
+          "type": "string"
+        },
+        "params": {
+          "description": "The recipe's parameters (a tier, a codec, thumbnail times, …)."
+        },
+        "recipe": {
+          "type": "string"
+        },
+        "recipeVersion": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "renderVersion": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "fingerprint",
+        "recipe",
+        "recipeVersion",
+        "params",
+        "renderVersion",
+        "decoderClass"
       ],
       "type": "object"
     },
@@ -11404,6 +11883,26 @@
         {
           "allOf": [
             {
+              "$ref": "#/$defs/AssetReprobe"
+            },
+            {
+              "properties": {
+                "op": {
+                  "const": "asset.reprobe",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "op"
+              ],
+              "type": "object"
+            }
+          ],
+          "description": "Replaces a media asset's video and audio with a fresh probe's (schema 5)."
+        },
+        {
+          "allOf": [
+            {
               "$ref": "#/$defs/TrackRestore"
             },
             {
@@ -12655,6 +13154,58 @@
         "riskUp"
       ],
       "type": "object"
+    },
+    "PixelFormat": {
+      "description": "A decoded picture's memory layout.",
+      "oneOf": [
+        {
+          "enum": [
+            "rgba8",
+            "rgba16f"
+          ],
+          "type": "string"
+        },
+        {
+          "const": "nv12",
+          "description": "8-bit 4:2:0, Y plane then interleaved UV.",
+          "type": "string"
+        },
+        {
+          "const": "p010",
+          "description": "10-bit 4:2:0 in 16-bit words (high bits), Y then interleaved UV.",
+          "type": "string"
+        },
+        {
+          "const": "i420",
+          "description": "8-bit 4:2:0, three planes.",
+          "type": "string"
+        },
+        {
+          "const": "i420p10",
+          "description": "10-bit 4:2:0, three planes of 16-bit words (low bits).",
+          "type": "string"
+        },
+        {
+          "const": "i422",
+          "description": "8-bit 4:2:2, three planes.",
+          "type": "string"
+        },
+        {
+          "const": "i422p10",
+          "description": "10-bit 4:2:2, three planes of 16-bit words (low bits).",
+          "type": "string"
+        },
+        {
+          "const": "i444",
+          "description": "8-bit 4:4:4, three planes.",
+          "type": "string"
+        },
+        {
+          "const": "i444p10",
+          "description": "10-bit 4:4:4, three planes of 16-bit words (low bits).",
+          "type": "string"
+        }
+      ]
     },
     "Placeholder": {
       "description": "A cloud placeholder (Decision 12): catalogued from metadata only, never opened unless the\nlibrary has `hydrate`.",
@@ -14029,7 +14580,7 @@
               "$ref": "#/$defs/MediaInfo"
             }
           ],
-          "description": "MP4/MOV: what the file is (sub-project 6 spec §6.3): display size and rotation, colour,\nHDR, VFR, edit lists. In the `asset.probe` answer only: an `asset.add` never carries it\n(spec §4.4)."
+          "description": "MP4/MOV, WebM/Matroska: what the file is (sub-project 6 spec §6.3): display size and\nrotation, colour, HDR, VFR, edit lists. In the `asset.probe` answer only: an\n`asset.add` never carries it (spec §4.4)."
         },
         "size": {
           "format": "uint64",
@@ -14044,6 +14595,116 @@
         "kind",
         "fingerprint",
         "size"
+      ],
+      "type": "object"
+    },
+    "ProbeDeepParams": {
+      "additionalProperties": false,
+      "description": "`media.probeDeep` v1: probe `asset`, whose content is `fingerprint`.",
+      "properties": {
+        "asset": {
+          "type": "string"
+        },
+        "branch": {
+          "description": "The branch whose head names the asset (`main` when absent). Host only.",
+          "type": "string"
+        },
+        "capsDigest": {
+          "type": "string"
+        },
+        "display": {
+          "$ref": "#/$defs/Size"
+        },
+        "fingerprint": {
+          "description": "The asset's fingerprint as the submitter saw it. The manifest's must equal it, else the\njob fails `ASSET_CHANGED` (the model changed between the request and the run).",
+          "type": "string"
+        },
+        "projectId": {
+          "description": "The project the asset is in. Only the host reads it (`prepare` writes the manifest\nfrom it); the worker works from the job directory.",
+          "type": "string"
+        },
+        "renderVersion": {
+          "description": "The worker's `RENDER_VERSION` and a digest of its capability report, which with the\nfingerprint make the job's identity (`dedupe`): another decoder set probes again.\nHost only.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "asset",
+        "fingerprint"
+      ],
+      "type": "object"
+    },
+    "ProbeDeepResult": {
+      "additionalProperties": false,
+      "description": "What `media.probeDeep` v1 answers. `backend`, `class`, `hw` and `firstFrame` are present\nexactly when `decodable`; otherwise `failure` says why.",
+      "properties": {
+        "asset": {
+          "type": "string"
+        },
+        "backend": {
+          "description": "The decoder's backend (`dav1d`, `videotoolbox`, …), a `fin_media::backend::BACKENDS`\nname.",
+          "type": "string"
+        },
+        "class": {
+          "$ref": "#/$defs/VendorClass"
+        },
+        "codec": {
+          "allOf": [
+            {
+              "$ref": "#/$defs/VideoCodec"
+            }
+          ],
+          "description": "The video track's codec."
+        },
+        "decodable": {
+          "description": "The first frame decoded.",
+          "type": "boolean"
+        },
+        "failure": {
+          "$ref": "#/$defs/ProbeFailure"
+        },
+        "fingerprint": {
+          "type": "string"
+        },
+        "firstFrame": {
+          "$ref": "#/$defs/FirstFrame"
+        },
+        "hdr": {
+          "$ref": "#/$defs/HdrInfo"
+        },
+        "hdrSource": {
+          "$ref": "#/$defs/HdrSource"
+        },
+        "hw": {
+          "description": "The frame was decoded on hardware.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "asset",
+        "fingerprint",
+        "codec",
+        "decodable"
+      ],
+      "type": "object"
+    },
+    "ProbeFailure": {
+      "additionalProperties": false,
+      "description": "Why the first frame did not decode: the decoder's error code and message (a codec nothing\non this machine decodes is `CODEC_UNAVAILABLE`; a bitstream the decoder refused is\n`DECODE_FAILED` or `MEDIA_CORRUPT`).",
+      "properties": {
+        "code": {
+          "type": "string"
+        },
+        "details": true,
+        "message": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "code",
+        "message"
       ],
       "type": "object"
     },
@@ -15000,6 +15661,26 @@
         "keptForRecovery",
         "genesisMismatch",
         "verify"
+      ],
+      "type": "object"
+    },
+    "RecipeUsage": {
+      "description": "One recipe's share of the cache.",
+      "properties": {
+        "bytes": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "entries": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "bytes",
+        "entries"
       ],
       "type": "object"
     },
@@ -18899,15 +19580,26 @@
     },
     "VideoInfo": {
       "properties": {
+        "display": {
+          "$ref": "#/$defs/DisplaySize"
+        },
         "height": {
+          "description": "The coded height, in px.",
           "format": "uint32",
           "minimum": 0,
           "type": "integer"
         },
+        "pixelAspect": {
+          "$ref": "#/$defs/Rational"
+        },
         "rate": {
           "$ref": "#/$defs/Rational"
         },
+        "rotation": {
+          "$ref": "#/$defs/Rotation"
+        },
         "width": {
+          "description": "The coded width, in px.",
           "format": "uint32",
           "minimum": 0,
           "type": "integer"

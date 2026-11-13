@@ -11,7 +11,7 @@ mod common;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use common::{Case, cases, write_png};
+use common::{COLOUR_CASES, Case, cases, write_png};
 use fin_compositor::compare::{diff_image, passes, t1};
 use fin_compositor::{AdapterChoice, Compositor, Gpu, Stage, reference};
 
@@ -115,6 +115,34 @@ fn every_corpus_case_is_within_t1_of_the_reference() {
         "outside T1 on {:?}: {failed:?} (images in {})",
         gpu.info(),
         out_dir(&gpu).display()
+    );
+}
+
+/// The tone mapping and gamut compression of `tonemap.wgsl` against `fin_media::colour::tonemap`
+/// (spec §10.1, §13.2 T1 and T4): every wide-gamut and HDR case, from I420.
+#[test]
+fn gpu_tonemap_within_t1() {
+    let Some(gpu) = gpu() else { return };
+    let mut c = Compositor::new(&gpu);
+    let all = cases();
+    let mut failed = Vec::new();
+    for name in COLOUR_CASES {
+        let case = all.iter().find(|c| c.name == name).unwrap();
+        let want = reference::render(&case.plan, &mut case.patterns(), case.size());
+        let got = render(&mut c, &gpu, case);
+        let m = t1(&want.rgba8, &got);
+        eprintln!(
+            "{name:<24} max |Δ| {:>2}  over2 {:.5}  psnr {:>6.2} dB",
+            m.max_abs, m.over_2, m.psnr
+        );
+        if !passes(&m) {
+            failed.push((name, m));
+        }
+    }
+    assert!(
+        failed.is_empty(),
+        "outside T1 on {:?}: {failed:?}",
+        gpu.info()
     );
 }
 

@@ -52,6 +52,9 @@ pub fn assets() -> BTreeMap<String, Asset> {
         width: 1920,
         height: 1080,
         rate: secs(30),
+        display: None,
+        rotation: None,
+        pixel_aspect: None,
     });
     media.audio = Some(AudioInfo {
         sample_rate: 48000,

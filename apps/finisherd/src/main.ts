@@ -37,8 +37,7 @@ import { AgentStore } from "./agent/store.ts";
 import { systemClock, systemIds } from "./agent/clock.ts";
 import { type AgentCore, AgentCoreTag } from "./agent/core.ts";
 import { journalVerdicts, OutcomeTracker } from "./agent/outcomes.ts";
-import { ReviewLink, reviewPort } from "./agent/review-link.ts";
-import { autoMergeTrigger, registryProjects } from "./agent/auto-merge.ts";
+import { ReviewLink } from "./agent/review-link.ts";
 import { AgentJournal } from "./agent/journal.ts";
 import { SessionCredentials } from "./agent/credentials.ts";
 import { BranchLineage } from "./agent/reach.ts";
@@ -48,13 +47,14 @@ import { Diagnostics, makeDiagnostics } from "./diagnostics.ts";
 import { withServerLock } from "./lock.ts";
 // Registers the `jobs` migration chain: imported before the control store opens.
 import "./jobs/store.ts";
-import { journalReviewVerdicts, registryEngine, ReviewsTag, startReviews } from "./reviews/service.ts";
+import { ReviewsTag } from "./reviews/service.ts";
 import { JobEventSinkTag } from "./jobs/events.ts";
 import { journalSink } from "./jobs/journal-sink.ts";
 import { JobEngineTag, layerJobEngine } from "./jobs/layer.ts";
 import { LibrariesTag } from "./library/api.ts";
 import { CatalogsTag, layerCatalogs } from "./library/catalog/client.ts";
 import { LibraryServiceTag, librariesHolding, libraryWiring } from "./library/layer.ts";
+import { makeMediaCache, MediaCacheTag, releaseAll } from "./media/cache.ts";
 import { layerPlugins } from "./plugins/registries.ts";
 import { makePluginHost } from "./plugins/host/processes.ts";
 import { PluginCommandsTag, serverPluginCommands } from "./plugins/host/command-rpc.ts";
@@ -79,7 +79,7 @@ import { ServerControlTag } from "./server-admin.ts";
 import { isServeCommand, runConsole } from "./console/main.ts";
 import { aclBroker, sweepAtStart } from "./sandbox/broker.ts";
 import { currentSandboxStatus, reporterFor, sandboxWarnings } from "./sandbox/status.ts";
-import { AgentRuntimeTag, buildAgentRuntime } from "./agent/wiring.ts";
+import { AgentRuntimeTag, buildAgentRuntime, startAgentReviews } from "./agent/wiring.ts";
 import { type AgentListener, agentConnections, agentEndpoint, makeAgentListener, makeAgentTcpServer, rateLimited } from "./agent/listener.ts";
 import type { ServeOptions } from "./serve-options.ts";
 export type { ServeOptions };
@@ -158,6 +158,8 @@ export const serve = ({
       const libraries = libraryWiring({
         serverData, jobsRoot, catalogs, control: Context.get(control, ControlStoreTag), audit: Context.get(control, AuditTag), journal: diagnostics.journal, log: logSink,
       });
+      // The media cache (6B-1 Task 13) before the registry: an open project pins its entries (a failed open is logged, CACHE_IO).
+      const mediaCache = yield* makeMediaCache(serverData, { log: (m) => logSink("warning", m) });
       // The job engine (5C-1) after the control store and the journal, so it closes before them
       // (its `close` stops every worker); `<server-data>/jobs/` is made private. Its events go
       // to the journal (D34).
@@ -171,7 +173,7 @@ export const serve = ({
       let libraryRoots: () => ReadonlyArray<string> = () => [];
       let onOpened: ((projectId: string) => void) | undefined; // re-derived reviews (5E Decision 22), bound with the reviews
       const registryContext = yield* Layer.build(
-        layerProjectRegistry(serverData, { ...registry, libraryUse: (paths) => libraryHold?.(paths) ?? { release: () => {} }, onOpened: (id) => onOpened?.(id) }),
+        layerProjectRegistry(serverData, { ...registry, libraryUse: (paths, projectId) => releaseAll([libraryHold?.(paths), mediaCache.holdProject(projectId)]), onOpened: (id) => onOpened?.(id) }),
       );
       const projects = Context.get(registryContext, ProjectRegistry);
       // The code plugins' processes (sp8b Tasks 4, 5): the `plugin` family is registered with
@@ -413,12 +415,8 @@ export const serve = ({
         },
       });
       onAgentRuntime?.(agentRuntime);
-      const started = startReviews(controlStore, { engine: registryEngine(projects), audit, verdicts: journalReviewVerdicts(diagnostics.journal) });
+      const started = startAgentReviews({ control: controlStore, projects, audit, journal: diagnostics.journal, core: agentCore, runtime: agentRuntime.runtime, ...(agentOptions?.autoMerge === undefined ? {} : { autoMerge: agentOptions.autoMerge }) });
       onOpened = started.opened;
-      agentCore.reviewLink.bind(reviewPort(started.reviews));
-      // The `auto` merge policy's trigger (7B Task 12): unavailable until sub-project 10, so nothing merges.
-      const autoMerge = { store: agentStore, reviews: started.reviews, audit, outcomes, projects: registryProjects(projects), budgetSpent: agentRuntime.runtime.budgetSpent.bind(agentRuntime.runtime), ...agentOptions?.autoMerge };
-      agentCore.reviewLink.onBranchReady(autoMergeTrigger(autoMerge));
       // One font layer for the handlers and the plugins, which feed it the packs' catalogs.
       const fontsLayer = layerFonts(serverData, fonts);
       // `server.stop` (5A Task 8): `serve` returns, and its scope's finalizers stop everything.
@@ -451,6 +449,7 @@ export const serve = ({
           Layer.succeed(PluginCommandsTag, pluginCommands.service(engine)),
           Layer.succeed(LibrariesTag, library),
           Layer.succeed(LibraryServiceTag, library),
+          Layer.succeed(MediaCacheTag, mediaCache),
           Layer.succeed(KeysTag, keys),
           Layer.succeed(HandshakeTag, handshake),
           Layer.succeed(CredentialsTag, credentials),

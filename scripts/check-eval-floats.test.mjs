@@ -147,3 +147,28 @@ test("render modules refuse platform transcendentals and SIMD but allow libm and
   assert.match(r.out, /colour\/convert\.rs:1: uses SIMD intrinsics/);
   assert.match(r.out, /colour\/convert\.rs:2: calls \.mul_add\(\)/);
 });
+
+test("the tone mapping and soft clip are render modules, and must stay where the gate looks", () => {
+  const r = gate(
+    fixtureRoot({
+      "crates/fin-media/src/colour/mod.rs": "pub mod softclip;\npub mod tonemap;\n",
+      "crates/fin-media/src/colour/tonemap.rs": "fn pq(x: f32) -> f32 { x.powf(78.84) + libm::powf(x, 0.1593) }\n",
+      "crates/fin-media/src/colour/softclip.rs": "fn s(t: f32) -> f32 { libm::sqrtf(1.0 + t * t) + f32::exp(t) }\n",
+    }),
+  );
+  assert.equal(r.code, 1);
+  assert.equal(r.out.trim().split("\n").length, 2, r.out);
+  assert.match(r.out, /colour\/tonemap\.rs:1: calls \.powf\(\) \(render floats/);
+  assert.match(r.out, /colour\/softclip\.rs:1: calls ::exp/);
+
+  const moved = gate(
+    fixtureRoot({
+      "crates/fin-media/src/colour/mod.rs": "pub mod softclip;\n",
+      "crates/fin-media/src/colour/softclip.rs": "fn s(t: f32) -> f32 { libm::sqrtf(t) }\n",
+      "crates/fin-media/src/hdr.rs": "fn pq(x: f32) -> f32 { x.powf(78.84) }\n",
+    }),
+  );
+  assert.equal(moved.code, 1);
+  assert.match(moved.out, /colour\/tonemap\.rs: missing/);
+  assert.equal(moved.out.trim().split("\n").length, 1, moved.out);
+});

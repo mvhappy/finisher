@@ -119,14 +119,12 @@ export interface ProjectRegistryShape {
     fontCache: string | undefined,
     paramsJson: string | undefined,
   ) => Effect.Effect<MediaJobPrepared, FinError>;
+  /** `f` on the project's engine (opened on demand) with `branch` resolved to its id; `f` resolves to JSON (6B-1 Task 11: `prepareAssetJob`). */
+  readonly onBranch: <A>(projectId: string, branch: string, f: (engine: Engine, branch: string) => Promise<string>) => Effect.Effect<A, FinError>;
   /** Fails with `PROJECT_NOT_FOUND` unless the project is known (opened on demand). */
   readonly ensure: (projectId: string) => Effect.Effect<void, FinError>;
-  /**
-   * The chain's view (5A Task 5): open here now; its folder; a branch reference's id. A project
-   * the registry closed (idle, `project.close`) still counts as open here, with its folder,
-   * until it reopens: reopening it on demand is the registry's housekeeping, so it needs no
-   * `project.write` and keeps a device's roots, an agent's and a job's folder as they were.
-   */
+  /** The chain's view (5A Task 5): open here now; its folder; a branch reference's id. A project closed idle or by `project.close` still counts as open here, with its folder, until it reopens
+   * (reopening on demand is the registry's housekeeping: no `project.write`; a device's roots and an agent's or a job's folder stay as they were). */
   readonly isOpen: (projectId: string) => boolean;
   readonly dirOf: (projectId: string) => string | undefined;
   /** The folders of the projects open here now (a device's roots, 5B Decision 32). */
@@ -147,8 +145,8 @@ export class ProjectRegistry extends Context.Service<ProjectRegistry, ProjectReg
 export interface RegistryOptions {
   /** Per-hub buffer; a subscriber that falls further behind is caught up from the op log. */
   readonly hubCapacity?: number;
-  /** Holds the libraries holding these asset paths in use while the project is open (5D Decision 28). */
-  readonly libraryUse?: (assetPaths: ReadonlyArray<string>) => { release(): void };
+  /** Holds the libraries holding these asset paths in use (5D Decision 28), and the project's media cache entries (6B-1), while it is open. */
+  readonly libraryUse?: (assetPaths: ReadonlyArray<string>, projectId: string) => { release(): void };
   /**
    * An engine with no subscriber and no call in flight (no commit lock held or awaited, no long
    * call) for this long is closed (owner decision on review #11); the next call reopens it.

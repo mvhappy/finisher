@@ -163,5 +163,5 @@ fn fp_survives_probe_failure() {
 
 #[test]
 fn probe_version_is_exported() {
-    assert_eq!(PROBE_VERSION, 1);
+    assert_eq!(PROBE_VERSION, 2);
 }

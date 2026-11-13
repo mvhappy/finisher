@@ -13,7 +13,7 @@
 
 **Architecture:**
 - **`fin-core`** gains `RecordKind::Drop` with `drops`/`undrops`, `history/drops.rs` (what is dropped for a lineage), the `DROPPED` reason, `include`/`sourceUpTo` in `plan_merge`, and `history/review.rs` (the change list with every candidate's status).
-- **`fin-store`** gains format-3 segments for `drop` records, migration `m0004_drops` (a derived index), `Store::drop`, the merge limits, `Store::review_plan`, and the protected-branch check through 5A's `WriteGuard.deny_branches`.
+- **`fin-store`** gains format-3 segments for `drop` records, migration `m0004_drops` (a derived index; renumbered `m0006_drops` on 2026-11-09: m0004 and m0005 are model v3's and v4's version bumps), `Store::drop`, the merge limits, `Store::review_plan`, and the protected-branch check through 5A's `WriteGuard.deny_branches`.
 - **`fin-node`** gains `engine.drop`, `engine.reviewPlan` and the new merge fields.
 - **`fin-core::events`** fills `review.verdict` at version 1.
 - **`@finisher/contracts`** gains `reviews.ts` and `review-rpcs.ts` (the RPCs spread into `FinRpcs`), `history.drop`, the `review` resolver, rules and codes.
@@ -157,7 +157,7 @@ Decisions 1–3.
 ### Task 2: Format 3, the `drops` index and `Store::drop` — tier: opus — after Task 1
 
 **Files:**
-- Create: `crates/fin-store/src/history_ops/drop.rs`, `crates/fin-store/src/migrations/m0004_drops.rs`, `crates/fin-store/tests/drops.rs`, `crates/fin-store/tests/format_v3.rs`.
+- Create: `crates/fin-store/src/history_ops/drop.rs`, `crates/fin-store/src/migrations/m0006_drops.rs` (was `m0004_drops.rs`), `crates/fin-store/tests/drops.rs`, `crates/fin-store/tests/format_v3.rs`.
 - Modify: `crates/fin-store/src/segment.rs` (`version_for`, `version_for_branch`, `READER_VERSION = 3`), `crates/fin-store/src/{derived.rs, rebuild/*, import/*}` (the index maintained and rebuilt), `crates/fin-store/src/history.rs` (`SqlLog` serves `drops_on` from the index), `crates/fin-store/src/wire.rs` (`DropReq`), `crates/fin-node/src/history.rs` (`drop`), `packages/fin-node` (typings), the regenerated types, `TASKS.md`.
 - Test: the files above; a 4C-era fixture project (checked in under `crates/fin-store/tests/fixtures/`, made by the 4C build beside `fixture_4b.rs`'s) opens with identical state.
 

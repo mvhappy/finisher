@@ -41,11 +41,9 @@
 // detection and the capability probe, under the same mode rules: a throwaway directory, no
 // project, no credential; the sign-in store for detection only. Non-spawning parts live in
 // `sandbox-input.ts`.
-import { type ChildProcess, spawn as spawnChild } from "node:child_process";
 import { mkdir, rm } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
-import type { Readable, Writable } from "node:stream";
 import type { FinError, Harness, Session } from "@finisher/contracts";
 import type { AgentInput } from "@finisher/core-types";
 import { sandboxAgentGrants, sandboxContainerSid, sandboxProjectContainer, sandboxToolchainBase } from "@finisher/fin-node";
@@ -53,16 +51,15 @@ import { Effect, type Scope } from "effect";
 import { finError, toFinError } from "../errors.ts";
 import { grantTable, sessionOwner } from "../sandbox/broker.ts";
 import { resolveSandboxExecPath } from "../sandbox/exec.ts";
+import { killAll, startProcess } from "../sandbox/launch.ts";
 import { currentSandboxStatus, profileWarning } from "../sandbox/status.ts";
 import { assertSessionEnv, assertSpawnEnv, harnessExtra, hostEnv, sessionEnv } from "./sandbox-env.ts";
 import {
   canonical,
-  type ChildExit,
   checkInput,
   grantsOf,
   LAUNCHER_UNAVAILABLE,
   launcherServer,
-  REAP_GRACE_MS,
   type SandboxedChild,
   type SandboxMode,
   sandboxMode,
@@ -317,7 +314,7 @@ function openBox(b: BoxSpec, deps: SessionSandboxDeps): Effect.Effect<SessionSan
                 }
               }
               if (closed.v) throw finError("SESSION_INTERRUPTED", "the session's sandbox is closed", { sessionId: b.id });
-              const child = await start(mode === "launcher" ? { launcher, request: { profile: "agent", input } } : undefined, argv, cwd, childEnv, platform, (exit, launcherFailed) => {
+              const child = await startProcess(mode === "launcher" ? { launcher, request: { profile: "agent", input } } : undefined, argv, cwd, childEnv, platform, (exit, launcherFailed) => {
                 if (launcherFailed && exit.code === LAUNCHER_UNAVAILABLE) deps.onViolation?.({ sessionId: b.id, op: "apply", profile: "agent", rootKind: "none" });
               });
               children.add(child);
@@ -342,108 +339,6 @@ function openBox(b: BoxSpec, deps: SessionSandboxDeps): Effect.Effect<SessionSan
       await gone();
     }),
   );
-}
-
-/** Starts one process (through the launcher when `via` is given) in a process group of its own. */
-function start(
-  via: { launcher: string; request: unknown } | undefined,
-  argv: readonly string[],
-  cwd: string,
-  env: Readonly<Record<string, string>>,
-  platform: NodeJS.Platform,
-  onExit: (e: ChildExit, launcherFailed: boolean) => void,
-): Promise<SandboxedChild> {
-  // The Linux and macOS launchers stay the parent and reap the session (see the header).
-  const reaps = via !== undefined && (platform === "linux" || platform === "darwin");
-  const [program, args] = via === undefined ? [argv[0]!, argv.slice(1)] : [via.launcher, ["--policy-fd", "3", "--", ...argv]];
-  const child: ChildProcess = spawnChild(program, args, {
-    cwd,
-    env,
-    stdio: via === undefined ? ["pipe", "pipe", "pipe"] : ["pipe", "pipe", "pipe", "pipe"],
-    detached: platform !== "win32",
-    windowsHide: true,
-  });
-  // The launcher's own failure line, written back on descriptor 3 (end of file alone: the exec happened).
-  let report = "";
-  const reported = new Promise<void>((resolve) => {
-    const r = via === undefined ? undefined : (child.stdio[3] as (Writable & Readable) | null);
-    if (r === undefined || r === null || typeof r.on !== "function") return resolve();
-    r.on("data", (c: Buffer) => {
-      if (report.length < 4096) report += c.toString("utf8");
-    });
-    r.on("error", () => resolve());
-    r.on("close", () => resolve());
-    r.on("end", () => resolve());
-  });
-  let gone = false;
-  const exited = new Promise<ChildExit>((resolve) => {
-    child.once("exit", (code, signal) => {
-      gone = true;
-      const e = { code, signal };
-      // What the leader left running in its group goes with it, while the group's id cannot
-      // yet name another process's (under the Linux launcher the group is the launcher alone,
-      // which has reaped the session).
-      if (platform !== "win32" && child.pid !== undefined) {
-        try {
-          process.kill(-child.pid, "SIGKILL");
-        } catch {
-          // The group is gone.
-        }
-      }
-      void reported.then(() => {
-        onExit(e, /"code":"SANDBOX_UNAVAILABLE"/.test(report));
-        resolve(e);
-      });
-    });
-  });
-  return new Promise((resolve, reject) => {
-    child.once("error", (e) =>
-      reject(finError("SANDBOX_UNAVAILABLE", `cannot start ${via === undefined ? program : "the sandbox launcher"}: ${e.message}`, { profile: "agent", program: via === undefined ? program : "fin-sandbox-exec" })),
-    );
-    child.once("spawn", () => {
-      if (via !== undefined) {
-        // The launcher reads descriptor 3 to its end: our end is closed once written.
-        const req = child.stdio[3] as Writable;
-        req.on("error", () => {});
-        req.end(JSON.stringify(via.request));
-      }
-      const pid = child.pid!;
-      resolve({
-        pid,
-        stdin: child.stdin!,
-        stdout: child.stdout!,
-        stderr: child.stderr!,
-        exited,
-        kill: (signal = "SIGTERM") => {
-          // After the exit the group's id may name another process's group.
-          if (gone) return;
-          try {
-            if (platform === "win32") child.kill(signal);
-            else if (reaps && signal === "SIGKILL") {
-              // The reaper's session end; its group alone if it does not end in time.
-              process.kill(-pid, "SIGHUP");
-              setTimeout(() => {
-                if (gone) return;
-                try {
-                  process.kill(-pid, "SIGKILL");
-                } catch {
-                  // Gone meanwhile.
-                }
-              }, REAP_GRACE_MS).unref();
-            } else process.kill(-pid, signal);
-          } catch {
-            // Already gone.
-          }
-        },
-      });
-    });
-  });
-}
-
-async function killAll(children: Set<SandboxedChild>, graceMs: number): Promise<void> {
-  const all = [...children];
-  for (const c of all) c.kill("SIGKILL");
-  await Promise.race([Promise.all(all.map((c) => c.exited)), new Promise((r) => setTimeout(r, graceMs).unref())]);
 }
 
 /** The runtime's view of session sandboxes (one per server; `wiring.ts` builds it). */

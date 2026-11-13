@@ -67,3 +67,17 @@ test("the Claude Code adapter's folder starts nothing (plan 7D Task 3b)", async 
     assert.doesNotMatch(text, /child_process/, path);
   }
 });
+
+test("hooks_dir_may_not_import_child_process (7F plan Task 3): hooks start processes through sandbox/launch.ts only", async () => {
+  for (const [name, text] of Object.entries(FORBIDDEN)) {
+    const r = gate(fixtureRoot({ "apps/finisherd/src/hooks/process.ts": text }));
+    assert.equal(r.code, 1, `${name}: ${r.out}`);
+    assert.match(r.out, /AGENT_SPAWN apps\/finisherd\/src\/hooks\/process\.ts:1: /);
+  }
+  // No file under `hooks/` is exempt; the launcher module sits outside both folders.
+  const { checked } = await import("./check-agent-spawn.mjs");
+  assert.equal(checked("apps/finisherd/src/hooks/wiring.ts"), true);
+  assert.equal(checked("apps/finisherd/src/sandbox/launch.ts"), false);
+  const r = gate(fixtureRoot({ "apps/finisherd/src/sandbox/launch.ts": FORBIDDEN.named }));
+  assert.equal(r.code, 0, r.out);
+});

@@ -78,12 +78,18 @@ fn esds(rate: u32) -> Vec<u8> {
 }
 
 pub fn write_fixture_mp4(path: &Path, opts: FixtureOpts) {
-    write(path, opts, true, b"isom", &[b"isom", b"mp41"]);
+    write_fixture_mp4_rotated(path, opts, Rotation::R0);
+}
+
+/// [`write_fixture_mp4`] with a `tkhd` matrix of `rotation`: [`Rotation::R90`] is a portrait
+/// phone clip (coded 320x180, displayed 180x320).
+pub fn write_fixture_mp4_rotated(path: &Path, opts: FixtureOpts, rotation: Rotation) {
+    write(path, opts, rotation, true, b"isom", &[b"isom", b"mp41"]);
 }
 
 /// [`write_fixture_mp4`] as a QuickTime file: `ftyp` major brand `qt  `.
 pub fn write_fixture_mov(path: &Path, opts: FixtureOpts) {
-    write(path, opts, true, b"qt  ", &[b"qt  "]);
+    write(path, opts, Rotation::R0, true, b"qt  ", &[b"qt  "]);
 }
 
 /// An audio-only M4A (`ftyp` brand `M4A `): one AAC-tagged stereo track, `opts.audio` ignored.
@@ -92,10 +98,24 @@ pub fn write_m4a(path: &Path, opts: FixtureOpts) {
         audio: true,
         ..opts
     };
-    write(path, opts, false, b"M4A ", &[b"M4A ", b"mp42", b"isom"]);
+    write(
+        path,
+        opts,
+        Rotation::R0,
+        false,
+        b"M4A ",
+        &[b"M4A ", b"mp42", b"isom"],
+    );
 }
 
-fn write(path: &Path, opts: FixtureOpts, video: bool, brand: &[u8; 4], compatible: &[&[u8; 4]]) {
+fn write(
+    path: &Path,
+    opts: FixtureOpts,
+    rotation: Rotation,
+    video: bool,
+    brand: &[u8; 4],
+    compatible: &[&[u8; 4]],
+) {
     let brands = Brands {
         major: *brand,
         compatible: compatible.iter().map(|b| **b).collect(),
@@ -111,7 +131,7 @@ fn write(path: &Path, opts: FixtureOpts, video: bool, brand: &[u8; 4], compatibl
             config: CodecConfig::Avc { avcc: avcc() },
             coded: Size::new(320, 180),
             timescale: opts.fps * 1000,
-            rotation: Rotation::R0,
+            rotation,
             pixel_aspect: Rational::from_int(1),
             colour: ColourTags::BT709,
             hdr: None,

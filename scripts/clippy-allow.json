@@ -114,5 +114,13 @@
   {
     "path": "crates/fin-node/tests/acl_broker.rs",
     "reason": "Tests build and inspect temporary trees and the broker's log by path; none is a library reader."
+  },
+  {
+    "path": "crates/fin-node/src/media/cache",
+    "reason": "The media cache lists, moves and removes its own entry directories under server data (cache/media/); never a library path. Entry files are opened through fin-shm's checked open."
+  },
+  {
+    "path": "crates/fin-node/tests/media_cache.rs",
+    "reason": "Tests build and inspect temporary cache trees by path; none is a library reader."
   }
 ]

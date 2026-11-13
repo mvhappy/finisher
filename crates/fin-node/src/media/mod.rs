@@ -8,13 +8,20 @@
 //!   ([`fin_media::jobs::RenderManifest`]) and, when given the job's params, `params.json`
 //!   (with the plan samples filled) into the job's `in/` directory. Resolves to
 //!   `{rev, planSamples, sources}` (the files the worker opens).
+//! - `Engine::prepare_asset_job` (`asset_job.rs`, 6B-1 Task 11): the manifest of one asset,
+//!   for `media.probeDeep`.
 //! - [`commit_job_output`]: `fin_shm::commit_output` as an async call. The kind's
 //!   `onSucceeded` moves each finished file out of the job directory with it, after the
 //!   worker can no longer write (spec §3.3).
 //!
+//! - [`cache`]: the media cache (`MediaCache`, 6B-1 Task 13): its index, commits, pins and
+//!   eviction.
+//!
 //! `fin-node` links `fin-media` and `fin-shm` but no codec, compositor or GPU crate
 //! (`scripts/check-crate-deps.mjs`).
 
+mod asset_job;
+pub mod cache;
 mod inputs;
 
 use std::path::{Path, PathBuf};

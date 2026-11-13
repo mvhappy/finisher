@@ -1,6 +1,7 @@
 // The evaluation, `media.*` and `fonts.*` payloads of `FinRpcs` (`rpc.ts`).
 import type { AudioPlan, FontCatalog, FontsPlan, FontsStatus, FramePlan } from "@finisher/core-types";
 import { Schema } from "effect";
+import { ChallengeField } from "./auth.ts";
 
 /**
  * Plan 4C Decisions 40–43: evaluation runs on the server. `branch` defaults to `main` (an id,
@@ -52,6 +53,55 @@ export const MediaLookPayload = Schema.Struct({
 export const MediaLookSuccess = Schema.Unknown;
 /** The generated `MediaCapabilities`: `{codecs, gpu, worker}`. */
 export const MediaCapabilitiesSuccess = Schema.Unknown;
+/**
+ * 6B-1 Task 13: the media cache (spec §7.2). `media.cache.status` (`server.read`) answers the
+ * generated `CacheStatus` (`{bytes, entries, capBytes, pinned, byRecipe}`); `media.cache.gc`
+ * (`settings.admin`, the owner's) evicts unpinned entries, least recently used first, down to
+ * the cap (`media.cacheMaxGiB` in `settings.json`, default `min(50 GiB, 15 % of the volume)`)
+ * or to `toGiB` when lower, and answers the generated `CacheGcResult` (`{evicted, freedBytes,
+ * bytes}`). Pinned entries (a running job's, an open project's) are never evicted.
+ */
+export const MediaCacheStatusSuccess = Schema.Unknown;
+/** `challenge`: the console's confirmation code (the owner's change, as `settings.write`). */
+export const MediaCacheGcPayload = Schema.Struct({ toGiB: Schema.optional(Schema.Number), challenge: ChallengeField });
+export const MediaCacheGcSuccess = Schema.Unknown;
+/**
+ * Plan 6B-1 Task 11: the decode-level probe of one `media` asset by a `media.probeDeep` job:
+ * the first frame decoded with the decoder this machine picks, and in-band HDR SEI read when
+ * the container has no HDR boxes. `branch` defaults to `main`. Waits for the job (up to 120 s)
+ * and commits nothing.
+ */
+export const MediaProbeDeepPayload = Schema.Struct({
+  projectId: Schema.String,
+  asset: Schema.String,
+  branch: Schema.optional(Schema.String),
+});
+/** The generated `ProbeDeepResult`: `{asset, fingerprint, codec, decodable, backend?, class?, hw?, hdr?, hdrSource?, firstFrame?, failure?}`. */
+export const MediaProbeDeepSuccess = Schema.Unknown;
+/**
+ * 6B-1 Task 11: `asset.reprobe` probes a `media` asset's file again and commits one
+ * `asset.reprobe` op (schema 5) with what it found: `video` (display, rotation and pixel aspect
+ * included) and `audio`. `deep`: run `media.probeDeep` first and refuse an asset this machine
+ * cannot decode (`CODEC_UNAVAILABLE`). A write like the history writes: `txId` is the
+ * idempotency key, `author` the record's, `argsHash` stored; `dryRun` probes and commits nothing.
+ * `branch` is required, as on every guarded write: the protected-branches stage checks it.
+ */
+export const AssetReprobePayload = Schema.Struct({
+  projectId: Schema.String,
+  asset: Schema.String,
+  branch: Schema.String,
+  deep: Schema.optional(Schema.Boolean),
+  txId: Schema.String,
+  author: Schema.String,
+  dryRun: Schema.optional(Schema.Boolean),
+  argsHash: Schema.optional(Schema.String),
+});
+/**
+ * `{asset, video?, audio?, deep?, rev?, txId?, dryRun?}`: the streams committed (fin-core's
+ * `VideoInfo` and `AudioInfo`), the `media.probeDeep` answer with `deep`, and the record's `rev`
+ * and `txId` (none for a dry run).
+ */
+export const AssetReprobeSuccess = Schema.Unknown;
 /** fin-core's `FramePlan` / `AudioPlan` (the generated types). */
 export const FramePlanSchema = Schema.Unknown;
 export const AudioPlanSchema = Schema.Unknown;

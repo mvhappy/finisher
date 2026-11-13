@@ -1,6 +1,8 @@
 //! Writes the fuzz corpus seeds for `fuzz/` (muxer files: CFR, B-frames, an empty edit, a
-//! rotation, pixel aspect, HDR boxes, fragments, audio with priming) into the folder given.
-//! `cargo run -p fin-container --example fuzz_seeds --features testing -- <dir>`.
+//! rotation, pixel aspect, HDR boxes, fragments, audio with priming) into the folder given, and
+//! with a second folder the `webm` target's seeds (the test-only WebM writer: cues, unknown
+//! sizes, block groups, the three lacings, HDR colour, VP9, Matroska).
+//! `cargo run -p fin-container --example fuzz_seeds --features testing -- <dir> [<webm dir>]`.
 
 use std::io::Cursor;
 
@@ -159,6 +161,114 @@ fn main() {
         let mut bytes = fragmented();
         bytes.extend(moof(size, count, tfdt));
         std::fs::write(dir.join(name), bytes).expect("seed written");
+    }
+    if let Some(webm) = std::env::args().nth(2) {
+        webm_seeds(std::path::Path::new(&webm));
+    }
+}
+
+fn webm_seeds(dir: &std::path::Path) {
+    use fin_container::testing::webm_writer::{
+        Block, Lacing, Options, Track, TrackKind, hdr10_colour, opus_head, write,
+    };
+    std::fs::create_dir_all(dir).expect("corpus folder");
+    let av1 = Track {
+        private: Some(vec![0x81, 0x08, 0x0c, 0x00]),
+        default_duration: Some(33_366_667),
+        ..Track::video(1, "V_AV1", 64, 36)
+    };
+    let opus = Track {
+        private: Some(opus_head(2, 312)),
+        codec_delay: Some(6_500_000),
+        ..Track::audio(2, "A_OPUS", 48_000.0, 2)
+    };
+    let blocks = |group: bool, lacing: Lacing| {
+        let mut v: Vec<Block> = (0..12)
+            .map(|i| Block {
+                group,
+                duration: group.then_some(33),
+                ..Block::simple(1, i * 33, i % 4 == 0, vec![i as u8; 7])
+            })
+            .collect();
+        for k in 0..10 {
+            v.push(Block {
+                frames: match lacing {
+                    Lacing::None => vec![vec![0xa0 | k as u8; 3]],
+                    _ => vec![vec![0xb0; 3], vec![0xb1; 300], vec![0xb2; 5]],
+                },
+                lacing,
+                ..Block::simple(2, k * 40, true, vec![])
+            });
+        }
+        v.sort_by_key(|b| (b.ts, b.track));
+        v
+    };
+    let mut hdr = av1.clone();
+    hdr.kind = TrackKind::Video {
+        width: 64,
+        height: 36,
+        display: Some((96, 36)),
+        extra: hdr10_colour(1000, 400),
+    };
+    let vp9 = Track {
+        codec_id: "V_VP9".into(),
+        private: Some(vec![1, 1, 2, 2, 1, 31, 3, 1, 10, 4, 1, 1]),
+        ..av1.clone()
+    };
+    let cued = Options {
+        cues: true,
+        ..Options::default()
+    };
+    let unknown = Options {
+        unknown_size_clusters: true,
+        unknown_size_segment: true,
+        cues: true,
+        ..Options::default()
+    };
+    let mkv = Options {
+        doc_type: "matroska".into(),
+        cluster_blocks: 3,
+        ..Options::default()
+    };
+    let plain = Options::default();
+    let none = Lacing::None;
+    let cases: Vec<(&str, &Options, Vec<Track>, Vec<Block>)> = vec![
+        (
+            "webm-av1-opus",
+            &plain,
+            vec![av1.clone(), opus.clone()],
+            blocks(false, none),
+        ),
+        (
+            "webm-cues",
+            &cued,
+            vec![av1.clone(), opus.clone()],
+            blocks(false, none),
+        ),
+        (
+            "webm-unknown",
+            &unknown,
+            vec![av1.clone(), opus.clone()],
+            blocks(false, none),
+        ),
+        ("webm-groups", &plain, vec![av1.clone()], blocks(true, none)),
+        (
+            "webm-xiph",
+            &plain,
+            vec![av1.clone(), opus.clone()],
+            blocks(false, Lacing::Xiph),
+        ),
+        (
+            "webm-ebml",
+            &mkv,
+            vec![av1.clone(), opus.clone()],
+            blocks(false, Lacing::Ebml),
+        ),
+        ("webm-hdr", &plain, vec![hdr], blocks(false, none)),
+        ("webm-vp9", &cued, vec![vp9], blocks(false, none)),
+    ];
+    for (name, o, tracks, list) in cases {
+        std::fs::write(dir.join(name), write(o, &tracks, &list)).expect("seed written");
     }
 }
 

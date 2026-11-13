@@ -6,8 +6,8 @@
 // removal answers `removed: false`, exactly as a missing one. Listing a project gives its
 // file's `rulesHash`, which trusting must send back (`expectedHash`: what the person saw).
 // Changes are audited `agent.rule.add|remove` (the rule id, its layer, effect, project and
-// session) and `agent.project.trust` (the project and the `rulesHash` and `promptsHash` trusted); never the
-// command text.
+// session) and `agent.project.trust` (the project and the `rulesHash`, `promptsHash` and
+// `hooksHash` trusted); never the command text.
 import type { FinError, ListedRule, Principal, Rule, Session } from "@finisher/contracts";
 import { Effect } from "effect";
 import type { Audit } from "../control/audit.ts";
@@ -18,6 +18,7 @@ import type { LayeredRules } from "./rules.ts";
 import type { LocalRule, RuleStore } from "./rule-store.ts";
 import { sessionInReach } from "./session-access.ts";
 import type { Role } from "./roles.ts";
+import { checkTrustedHooks } from "../hooks/config.ts";
 import { checkTrustedPrompts } from "./saved-prompts.ts";
 import type { AgentStore } from "./store.ts";
 import { managedRules, trustProject, userRules } from "./trust.ts";
@@ -136,17 +137,23 @@ export function rulesHandlers(deps: RulesRpcDeps) {
         audited("agent.rule.remove", p, ruleDetails("agent.rules.remove", rule));
         return { removed: true };
       })),
-    "agent.project.trust": ({ projectId, expectedHash, expectedPromptsHash }: { projectId: string; expectedHash: string; expectedPromptsHash?: string }, options: object) =>
+    "agent.project.trust": (
+      { projectId, expectedHash, expectedPromptsHash, expectedHooksHash }: { projectId: string; expectedHash: string; expectedPromptsHash?: string; expectedHooksHash?: string },
+      options: object,
+    ) =>
       guard("agent.project.trust", sync(() => {
         const p = by(options);
         const dir = deps.dirOf(projectId);
         if (dir === undefined) throw finError("PROJECT_NOT_FOUND", "no such project on this server", { projectId }, "open the project first");
-        // The saved prompts (Task 10) are checked first, so a refusal changes nothing.
+        // The hooks file (7F) and the saved prompts (Task 10) are checked first, so a refusal changes nothing.
+        const hooksHash = expectedHooksHash === undefined ? undefined : checkTrustedHooks(dir, projectId, expectedHooksHash);
         const promptsHash = expectedPromptsHash === undefined ? undefined : checkTrustedPrompts(dir, projectId, expectedPromptsHash, deps.roles);
         const { trust, rules: count } = trustProject(ruleStore, projectId, dir, expectedHash, `${p.kind}:${p.id}`, deps.clock.now());
         if (promptsHash !== undefined) ruleStore.trustPrompts(projectId, promptsHash);
-        audited("agent.project.trust", p, { rpc: "agent.project.trust", projectId, rulesHash: trust.rulesHash, ...(promptsHash === undefined ? {} : { promptsHash }) });
-        return { projectId, rulesHash: trust.rulesHash, rules: count, ...(promptsHash === undefined ? {} : { promptsHash }), trustedAt: trust.trustedAt };
+        if (hooksHash !== undefined) ruleStore.trustHooks(projectId, hooksHash);
+        const hashes = { ...(promptsHash === undefined ? {} : { promptsHash }), ...(hooksHash === undefined ? {} : { hooksHash }) };
+        audited("agent.project.trust", p, { rpc: "agent.project.trust", projectId, rulesHash: trust.rulesHash, ...hashes });
+        return { projectId, rulesHash: trust.rulesHash, rules: count, ...hashes, trustedAt: trust.trustedAt };
       })),
   };
 }

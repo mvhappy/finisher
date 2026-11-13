@@ -188,7 +188,8 @@ describe("probe", () => {
     const p = JSON.parse(await probe(file));
     expect(p.kind).toBe("media");
     expect(p.duration).toBe("2");
-    expect(p.video).toEqual({ width: 320, height: 180, rate: "25" });
+    // Schema 4 (6B-1 Task 11): the display geometry too.
+    expect(p.video).toEqual({ width: 320, height: 180, rate: "25", display: { width: 320, height: 180 }, rotation: 0, pixelAspect: "1" });
     expect(p.audio).toEqual({ sampleRate: 44100, channels: 2 });
     expect(p.fingerprint).toMatch(/\S/);
     expect(p.size).toBeGreaterThan(0);
@@ -212,7 +213,10 @@ describe("probe", () => {
     const [record] = JSON.parse(await engine.opsSince("main", 0));
     expect(record.tx.ops[0].op).toBe("asset.add");
     expect(record.tx.ops[0]).not.toHaveProperty("media");
-    expect(JSON.stringify(record)).not.toContain("rotation");
+    // Schema 4: the model keeps the display geometry; the rest of `MediaInfo` stays out.
+    expect(record.tx.ops[0].video).toMatchObject({ width: 320, height: 180, rotation: 0, display: { width: 320, height: 180 }, pixelAspect: "1" });
+    expect(JSON.stringify(record)).not.toContain("codec");
+    expect(JSON.stringify(record)).not.toContain("vfr");
   });
 
   test("each asset kind resolves to its kind and info", async () => {
