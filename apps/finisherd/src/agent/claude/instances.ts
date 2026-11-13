@@ -16,7 +16,7 @@
 //   `exitWaitMs` after its kill fails the reopen (`PROVIDER_UNAVAILABLE {reason:
 //   previousProcessAlive}`) instead of overlapping it; a later turn tries again.
 // - **The resumed instance's first user line** carries the runtime's synthetic results
-//   (`resume.ts`), once, ahead of the run's facts; once that line is written to the CLI's stdin a
+//   (`resume.ts`), once, ahead of the run's facts; once that line's write reports success a
 //   `notice {interruptedDelivered}` records which calls it told, so a later resume does not tell
 //   them again (and one that never wrote it does).
 import type { FinError, ProviderEvent } from "@finisher/contracts";
@@ -188,12 +188,16 @@ export class ClaudeSession {
           const input = note === undefined ? i : { ...i, facts: i.facts === undefined || i.facts === "" ? note : `${note}\n\n${i.facts}` };
           return Effect.tap(p.session().startTurn(input), () =>
             Effect.sync(() => {
-              // Told once: the user line was written to the CLI's stdin (a turn the gate refused
-              // wrote none), and the session's nodes say so for a later resume (`resume.ts`).
-              if (note === undefined || !p.turnWritten()) return;
-              this.#note = undefined;
+              // Told once: only once the user line's write reported success (a turn the gate
+              // refused wrote none; an asynchronous EPIPE is no delivery), and the session's nodes
+              // say so for a later resume (`resume.ts`). Until then the note stays due.
+              if (note === undefined) return;
               const told = this.#o.told ?? [];
-              if (told.length > 0) p.notice(delivered(told));
+              void p.turnWritten().then((ok) => {
+                if (!ok) return;
+                if (this.#note === note) this.#note = undefined;
+                if (told.length > 0) p.notice(delivered(told));
+              });
             }),
           );
         }),

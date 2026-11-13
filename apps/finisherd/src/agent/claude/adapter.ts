@@ -16,6 +16,7 @@ import { realpathSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { FinError, Node, ProviderEvent, Session } from "@finisher/contracts";
 import { Effect } from "effect";
+import type { KeyFs } from "../../auth/keys.ts";
 import { finError, toFinError } from "../../errors.ts";
 import type { Detection, ProviderAdapter, ProviderRef, ProviderSession, SessionSpec } from "../adapter.ts";
 import { parseClaudeInitialize } from "../catalogue/cli-models.ts";
@@ -67,6 +68,8 @@ export interface ClaudeDeps {
   readonly interruptWaitMs?: number;
   readonly sigintGraceMs?: number;
   readonly closeGraceMs?: number;
+  /** The file calls `provider.pid`'s record of a starting process makes (tests inject failures). */
+  readonly pidIo?: KeyFs;
   /** How long a killed process may take to be gone (default `CLOSE_EXIT_WAIT_MS`). */
   readonly exitWaitMs?: number;
   /** `agents.claudeCode.enabled`, read at each open (default: `settings.json`); off refuses the open. */
@@ -251,7 +254,7 @@ export function ClaudeCodeAdapter(deps: ClaudeDeps): ProviderAdapter {
   function tracked(dir: string, instance: string, child: SandboxedChild, baseline: () => CliBaseline): Effect.Effect<SandboxedChild, FinError> {
     const unrecorded = Effect.promise(async () => {
       try {
-        recordProcess(dir, instance, child.pid);
+        recordProcess(dir, instance, child.pid, process.platform, deps.pidIo);
         return null;
       } catch (e) {
         child.kill("SIGKILL");

@@ -89,9 +89,17 @@ impl Runner {
                     .and_then(|b| b.parse::<f64>().ok())
                     .is_some_and(|b| t.cost_usd > b);
                 if over_budget {
-                    ("error_max_budget_usd", true, text.clone(), Value::Null)
+                    // Verified 2.1.321, Task 0 (s1f): no `result` key, the cap in `errors`.
+                    let cap = self.args.str("--max-budget-usd").unwrap_or_default();
+                    over.insert("terminal_reason".into(), json!("budget_exhausted"));
+                    over.insert(
+                        "errors".into(),
+                        json!([format!("Reached maximum budget (${cap})")]),
+                    );
+                    ("error_max_budget_usd", true, None, json!("end_turn"))
                 } else {
-                    ("success", false, text.clone(), json!("end_turn"))
+                    over.insert("terminal_reason".into(), json!("completed"));
+                    ("success", false, Some(text.clone()), json!("end_turn"))
                 }
             }
             Kind::NotLoggedIn => {
@@ -101,22 +109,29 @@ impl Runner {
                 (
                     "success",
                     true,
-                    NOT_LOGGED_IN.to_string(),
+                    Some(NOT_LOGGED_IN.to_string()),
                     json!("stop_sequence"),
                 )
             }
             Kind::Interrupted { aborted_tools } => {
-                // Verified 2.1.321, Task 0 (s1b): an interrupt mid-tool ends the turn so.
-                if *aborted_tools {
-                    over.insert("terminal_reason".into(), json!("aborted_tools"));
-                    over.insert("result".into(), Value::Null);
-                }
+                // Verified 2.1.321, Task 0 (s1b): an interrupt mid-tool ends the turn so, with
+                // no `result` key and a diagnostic in `errors`.
                 let stop = if *aborted_tools {
                     json!("tool_use")
                 } else {
                     Value::Null
                 };
-                ("error_during_execution", true, String::new(), stop)
+                if *aborted_tools {
+                    over.insert("terminal_reason".into(), json!("aborted_tools"));
+                }
+                over.insert(
+                    "errors".into(),
+                    json!([format!(
+                        "[ede_diagnostic] result_type=user last_content_type=n/a stop_reason={}",
+                        stop.as_str().unwrap_or("null")
+                    )]),
+                );
+                ("error_during_execution", true, None, stop)
             }
         };
         let t = self.totals.clone();
@@ -141,10 +156,18 @@ impl Runner {
         }
         self.totals.at_last_result = t.models.clone();
         self.totals.results += 1;
-        let mut line = json!({
+        // The keys every real result has (Task 0), then a turn's that produced text.
+        let mut line = defaults()["result"].clone();
+        if let Some(text) = &text {
+            merge(
+                &mut line,
+                defaults()["resultText"].as_object().expect("an object"),
+            );
+            over.insert("result".into(), json!(text));
+        }
+        merge(&mut line, json!({
             "type": "result", "subtype": subtype, "is_error": is_error,
-            "duration_ms": 1, "duration_api_ms": if is_error { 0 } else { 1 },
-            "num_turns": t.turns, "result": text, "stop_reason": stop,
+            "num_turns": t.turns, "stop_reason": stop,
             "session_id": self.session_id,
             "total_cost_usd": t.cost_usd,
             "usage": usage(turn.input_tokens, turn.output_tokens, turn.cache_read_input_tokens, turn.cache_creation_input_tokens),
@@ -154,7 +177,7 @@ impl Runner {
             "permission_denials": [],
             "uuid": fresh_uuid(),
             "queued_turn_count": self.pending.len(),
-        });
+        }).as_object().expect("an object"));
         merge(&mut line, &over);
         self.emit(&line);
         self.turn_open = false;
@@ -210,15 +233,20 @@ fn per_model(
         if since.is_some() && !moved {
             continue;
         }
-        let mut v = json!({
-            "inputTokens": d.input_tokens, "outputTokens": d.output_tokens,
-            "cacheReadInputTokens": d.cache_read_input_tokens,
-            "cacheCreationInputTokens": d.cache_creation_input_tokens,
-            "webSearchRequests": 0, "costUSD": d.cost_usd,
-        });
-        if since.is_some() {
-            v["costBasis"] = json!("list");
-        }
+        // Verified 2.1.321, Task 0: both maps carry the model's metadata and `costBasis`.
+        let mut v = defaults()["modelUsage"].clone();
+        merge(
+            &mut v,
+            json!({
+                "inputTokens": d.input_tokens, "outputTokens": d.output_tokens,
+                "cacheReadInputTokens": d.cache_read_input_tokens,
+                "cacheCreationInputTokens": d.cache_creation_input_tokens,
+                "cacheCreationEphemeral1hInputTokens": d.cache_creation_input_tokens,
+                "costUSD": d.cost_usd, "canonicalModel": name,
+            })
+            .as_object()
+            .expect("an object"),
+        );
         out.insert(name.clone(), v);
     }
     out

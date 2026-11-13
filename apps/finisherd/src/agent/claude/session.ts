@@ -106,8 +106,8 @@ export class ClaudeInstance {
   #pending: ProviderEvent[];
   #inited = false;
   #turnOpen = false;
-  /** The last `startTurn` wrote its user line to the CLI's stdin. */
-  #turnWritten = false;
+  /** The last `startTurn`'s user line: true once the write's callback reported success. */
+  #turnWritten: Promise<boolean> = Promise.resolve(false);
   #interrupting = false;
   /** The gate reserved for the open turn and no `usage` has settled it yet. */
   #reserved = false;
@@ -188,9 +188,24 @@ export class ClaudeInstance {
     else Queue.endUnsafe(this.#queue);
   }
 
-  /** Whether the last `startTurn` wrote its user line to the CLI's stdin (a refused turn wrote none). */
-  turnWritten(): boolean {
+  /**
+   * Whether the last `startTurn`'s user line reached the CLI's stdin: true only once the write's
+   * callback reports success (an asynchronous EPIPE is false; a refused turn wrote none).
+   */
+  turnWritten(): Promise<boolean> {
     return this.#turnWritten;
+  }
+
+  /** `line` to the CLI's stdin, settled by the write's callback (false on any error). */
+  #writeAcked(line: string): Promise<boolean> {
+    if (this.#exit !== null || this.#closed) return Promise.resolve(false);
+    return new Promise((resolve) => {
+      try {
+        this.#o.child.stdin.write(line, (e) => resolve(e === null || e === undefined));
+      } catch {
+        resolve(false);
+      }
+    });
   }
 
   /** One of the adapter's own events for the open turn, behind the init gate like `turnStarted`. */
@@ -422,7 +437,7 @@ export class ClaudeInstance {
           if (this.#turnOpen) return fail(finError("SESSION_BUSY", "a Claude Code turn is running", { instance: o.instance }));
           // Decision 15: the CLI's calls are invisible, so the gate is asked once per turn; the
           // turn's `usage` settles the reservation. A refusal ends the turn before any line.
-          this.#turnWritten = false;
+          this.#turnWritten = Promise.resolve(false);
           const g = o.gate?.beforeCall(o.projection?.() ?? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, reasoning: 0 });
           if (g !== undefined && !g.ok) {
             const e = g.error;
@@ -434,7 +449,7 @@ export class ClaudeInstance {
           this.#turnOpen = true;
           this.#interrupting = false;
           this.#emit({ type: "turnStarted" });
-          this.#turnWritten = this.#write(encodeUser([...(i.facts === undefined || i.facts === "" ? [] : [i.facts]), i.text], o.uuid));
+          this.#turnWritten = this.#writeAcked(encodeUser([...(i.facts === undefined || i.facts === "" ? [] : [i.facts]), i.text], o.uuid));
           return Effect.void;
         }),
       steer: (i: UserInput) =>

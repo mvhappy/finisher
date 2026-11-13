@@ -17,6 +17,8 @@ import { accountCheck, accountKey, ClaudeAccounts } from "../src/agent/claude/ac
 import { CLAUDE_FLOOR } from "../src/agent/claude/detect.ts";
 import { ClaudeModelCache } from "../src/agent/claude/models.ts";
 import { readProbeCache } from "../src/agent/claude/probe.ts";
+import * as fs from "node:fs";
+import type { KeyFs } from "../src/auth/keys.ts";
 import { PROVIDER_PID } from "../src/agent/provider-pid.ts";
 import { processStart } from "../src/sandbox/process-start.ts";
 import { openSessionSandbox, type SandboxedChild, type SessionSandbox, type SessionSandboxDeps, type SpawnOptions } from "../src/agent/sandbox.ts";
@@ -368,6 +370,11 @@ interface WatchOptions {
   readonly idleCloseMs?: number;
   readonly closeGraceMs?: number;
   readonly exitWaitMs?: number;
+  readonly pidIo?: KeyFs;
+  /** The session's nodes (a resumed session's synthetic results). */
+  readonly nodes?: readonly Node[];
+  /** A user line's write reports an asynchronous failure (EPIPE) after its bytes were passed on. */
+  readonly failUserLines?: boolean;
 }
 
 /** `openWatched` whose open may fail: then its error and what was spawned. */
@@ -395,9 +402,26 @@ async function openWatched(script: Record<string, unknown>, opts: WatchOptions &
       Effect.map(box.spawn(argv, o), (child): SandboxedChild => {
         const spawn: Watched["spawns"][number] = { argv, opts: o, pid: child.pid, at: Date.now() };
         spawns.push(spawn);
+        // The bytes go to the CLI, but a user line's write reports failure (the stream stays usable).
+        const epipe = () => Object.assign(new Error("write EPIPE"), { code: "EPIPE" });
+        const failing = (chunk: unknown, a?: unknown, b?: unknown) => {
+          const done = (typeof a === "function" ? a : b) as ((e?: Error | null) => void) | undefined;
+          const user = String(chunk).includes('"type":"user"');
+          return child.stdin.write(chunk as string, (e) => done?.(user ? epipe() : e));
+        };
+        const stdin =
+          opts.failUserLines === true
+            ? new Proxy(child.stdin, {
+                get: (t, k) => {
+                  if (k === "write") return failing;
+                  const v = Reflect.get(t, k, t) as unknown;
+                  return typeof v === "function" ? (v as (...x: unknown[]) => unknown).bind(t) : v;
+                },
+              })
+            : child.stdin;
         return {
           pid: child.pid,
-          stdin: child.stdin,
+          stdin,
           stdout: child.stdout,
           stderr: child.stderr,
           exited: child.exited.then((e) => ((spawn.exitedAt = Date.now()), e)),
@@ -421,6 +445,8 @@ async function openWatched(script: Record<string, unknown>, opts: WatchOptions &
     ...(opts.idleCloseMs === undefined ? {} : { idleCloseMs: opts.idleCloseMs }),
     ...(opts.closeGraceMs === undefined ? {} : { closeGraceMs: opts.closeGraceMs }),
     ...(opts.exitWaitMs === undefined ? {} : { exitWaitMs: opts.exitWaitMs }),
+    ...(opts.pidIo === undefined ? {} : { pidIo: opts.pidIo }),
+    ...(opts.nodes === undefined ? {} : { nodes: () => opts.nodes! }),
     enabled: () => opts.enabled ?? true,
     detect: () => Effect.succeed({ path: binary, version: VERSION, floor: CLAUDE_FLOOR, signedIn: opts.signedIn ?? true, ...(opts.accountHash === undefined ? {} : { accountHash: opts.accountHash }) }),
   });
@@ -661,6 +687,46 @@ describe("review of Task 10", () => {
     // No process left: the group was killed and its exit awaited before the failure.
     expect(failed.spawns[0]!.exitedAt).toBeDefined();
     expect(processStart(pid)).toBeNull();
+  });
+
+  /** A file layer whose writes take at most `limit` bytes per call. */
+  const shortWrites = (limit: number): KeyFs => ({ ...fs, writeSync: (fd, data) => fs.writeSync(fd, data, 0, Math.min(limit, data.byteLength)) });
+
+  withFake("second review: a short write of provider.pid is completed; one that writes nothing kills the process and fails the open", async () => {
+    const w = await openWatched(TURN, { pidIo: shortWrites(10) });
+    const rec = JSON.parse(readFileSync(join(w.serverData, "agents", SESSION_ID, PROVIDER_PID), "utf8")) as { processes: { pid: number }[] };
+    expect(rec.processes.map((p) => p.pid)).toEqual([w.spawns[0]!.pid]);
+    await w.close();
+    const failed = await openWatched(TURN, { mayFail: true, pidIo: shortWrites(0) });
+    expect(failed.failure).toMatchObject({ code: "INTERNAL", details: { reason: "processNotRecorded" } });
+    expect(failed.spawns).toHaveLength(1);
+    expect(failed.spawns[0]!.exitedAt).toBeDefined();
+    expect(processStart(failed.spawns[0]!.pid)).toBeNull();
+  });
+
+  withFake("second review: a note whose line never reached the CLI is not marked told, and the next resume tells it", async () => {
+    const n = (seq: number, kind: string, extra: Record<string, unknown>) => ({ id: `n${seq}`, sessionId: SESSION_ID, runId: "r", seq, kind, createdAt: seq, ...extra }) as unknown as Node;
+    const ns = [n(1, "toolCall", { providerId: "toolu_X", callId: "c1", payload: { tool: "Bash", input: {} } }), n(2, "toolResult", { callId: "c1", payload: { ok: false, code: "SESSION_INTERRUPTED", reason: "serverRestart", synthetic: true } })];
+    const told = (w: Watched) => w.events.filter((e) => e.type === "notice" && e.name === "interruptedDelivered");
+    const first = await openWatched(TURN);
+    await run(first.provider.startTurn({ runId: "r0", text: "go" }));
+    await waitFor(first, "turnCompleted");
+    await first.close();
+    // The write reports an asynchronous failure (EPIPE): no delivery is recorded, though the
+    // turn ran (the gate opened, so a delivery notice would have reached the runtime).
+    const broken = await openWatched(TURN, { resume: true, nodes: ns, failUserLines: true, closeGraceMs: 200 });
+    await run(broken.provider.startTurn({ runId: "r1", text: "go" }));
+    await waitFor(broken, "turnCompleted");
+    await new Promise((r) => setTimeout(r, 200));
+    expect(told(broken)).toEqual([]);
+    await broken.close();
+    // The crash's recovery resumes again from the same nodes: the note is sent, and now told.
+    const resumed = await openWatched(TURN, { resume: true, nodes: ns });
+    await run(resumed.provider.startTurn({ runId: "r2", text: "again" }));
+    await until(() => (told(resumed).length === 1 ? true : undefined));
+    expect(told(resumed)[0]).toMatchObject({ details: { toolUseIds: ["toolu_X"] } });
+    const lines = observed(resumed.serverData, SESSION_ID).at(-1)!.userLines as { content: { text?: string }[] }[];
+    expect(lines[0]!.content.map((b) => b.text ?? "").join("\n")).toContain("toolu_X (Bash): SESSION_INTERRUPTED");
   });
 
   withFake("the lazy resume starts only once the idle-closed process has exited", async () => {
