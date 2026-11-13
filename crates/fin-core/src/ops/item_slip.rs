@@ -1,8 +1,10 @@
-//! `item.slip`: moves the source of a clip or nested item under it (`sourceIn += delta`, in
-//! source seconds). Its place on the timeline and its item-relative times stay (plan 4C
-//! Decision 13: a slip moves no content offset). Other item kinds have no source to slip
-//! (`INVALID_OP`, in every apply mode). The source range is policy (a clip's within its asset, a
-//! nested item's from 0); replay's track check still refuses a negative `sourceIn`.
+//! `item.slip`: moves the source of a clip, nested item or graphic under it (`sourceIn +=
+//! delta`, in source seconds; a graphic's is its template time, review #54). Its place on the
+//! timeline and its item-relative times stay (plan 4C Decision 13: a slip moves no content
+//! offset). Other item kinds have no source to slip (`INVALID_OP`, in every apply mode). The
+//! source range is policy (a clip's within its asset, a nested item's from 0); replay's track
+//! check still refuses a negative clip or nested `sourceIn`. A graphic's is unbounded: eval
+//! holds the template's first frame before 0, and the template's end is the renderer's.
 
 use serde_json::json;
 
@@ -50,13 +52,19 @@ fn validate(
             (*source_in, Some(max))
         }
         ItemBody::Nested { source_in, .. } => (*source_in, None),
+        ItemBody::Graphic { .. } => {
+            if bindings.policy() {
+                check_unlocked(track, Some(id), bindings)?;
+            }
+            return Ok(());
+        }
         _ => {
             return Err(CoreError::new(
                 "INVALID_OP",
                 format!("a {} item has no source to slip", it.body.kind_name()),
             )
             .with_details(json!({ "item": id, "kind": it.body.kind_name() }))
-            .with_fix("slip a clip or a nested item"));
+            .with_fix("slip a clip, a nested item or a graphic"));
         }
     };
     if !bindings.policy() {
@@ -90,7 +98,9 @@ pub(crate) fn apply(
     let track_id = track.id.clone();
     let it = &mut track.items[ci];
     match &mut it.body {
-        ItemBody::Clip { source_in, .. } | ItemBody::Nested { source_in, .. } => {
+        ItemBody::Clip { source_in, .. }
+        | ItemBody::Nested { source_in, .. }
+        | ItemBody::Graphic { source_in, .. } => {
             *source_in = source_in.checked_add(s.delta)?;
         }
         _ => return Err(wrong_op(op)),

@@ -13,9 +13,10 @@
 //!   `None` resets to the default, so every set has an exact inverse.
 //!
 //! Item paths: `transform.position|scale|rotation|anchor`, `crop.left|right|top|bottom`,
-//! `opacity`, `blend`, `audio.gain|pan|fadeIn|fadeOut`, `mask.feather|choke|invert` (only on an
-//! item with a mask), `speed` (clips), `slots.<id>` (graphics, typed by the template's slot
-//! kind) and `effects.<fx>.<param>` (an effect's `enabled`, or a param of its kind).
+//! `opacity`, `blend`, `audio.gain|pan|fadeIn|fadeOut|fadeInOffset|fadeOutOffset`,
+//! `mask.feather|choke|invert` (only on an item with a mask), `speed` (clips), `slots.<id>`
+//! (graphics, typed by the template's slot kind) and `effects.<fx>.<param>` (an effect's
+//! `enabled`, or a param of its kind).
 //!
 //! Evaluation-pure (Global Constraints, Determinism): comparisons only, no float functions.
 

@@ -42,8 +42,8 @@ const VALUED = new Set([
   "session", "preset", "bytes-over", "minutes-over",
   // Remembered answers (7B Task 5).
   "remember",
-  // Saved prompts (7B Task 10).
-  "param",
+  // Saved prompts (7B Task 10); rollback (7B Task 8).
+  "param", "to-run",
   // Review policy (5E Task 10).
   "protect", "unprotect", "require-review", "auto-merge",
   "name", "storage", "include", "exclude", "kinds", "poll", "full", "bandwidth", "alias", "accept-unmounted",

@@ -564,6 +564,35 @@ fin merge <branch>                           # take its work into your branch
   scripts, Node hooks, Node MCP servers) fail fast with `WINDOWS_NODE_PIPES` inside the Windows
   sandbox, until Node ships libuv's fix. Warm media workers run cold there under the sandbox.
 
+**Rules, approvals and subagents.** Command rules (`allow`, `ask` or `deny` on a command
+pattern) apply to every agent call the server gets, however it arrives. They come from
+`managed-settings.json`, your local rules, `agents.rules` in `settings.json`, the session's role
+and, once you trust the project, its `finisher.rules.json`; a `deny` from any of them wins, then
+an `ask`. An `ask` puts an approval card in front of you and the agent waits; `allow` lets that
+one call, with exactly those arguments, through once, and `--remember` also adds a rule. A
+session can start child sessions on child branches, each with a share of its budget, and merge
+their work into its own branch.
+
+```bash
+finisherd agent rules ls [--project <dir|id>] [--session <id>]
+finisherd agent rules add ask asset.add --project <dir|id> [--branch …] [--mode …] [--bytes-over …]
+finisherd agent rules rm <rule>                  # type the rule id's first 8 characters
+finisherd project trust <dir|id>                 # shows its rules and saved prompts, then trusts them
+finisherd agent approve <approval> allow|deny [--remember session|project|projectLocal]
+finisherd agent prompts [--project <dir|id>]     # saved prompts, such as make-shorts
+finisherd agent run make-shorts --project <dir|id> --param count=3
+finisherd agent rollback <session> --to-run <seq> # undo the edits of its later runs (0: every run)
+```
+
+- `--remember session` keeps the rule for that session, `projectLocal` for the project on this
+  server only, and `project` writes it into the project's shared `finisher.rules.json`. When a
+  project's rules or saved-prompt files change, they stop applying until you trust it again.
+- Agents use `fin agent spawn|wait|ls|send|stop|rollback` for their own children and
+  `fin approval wait|ls` for their own cards. A command waiting for your answer exits 8 ("wait,
+  then repeat"); a denied one exits 7. Children go at most 3 deep, with 8 live per root session
+  (`agents.subagents.maxDepth`, `.maxLive`); at most 4 CLI and 8 built-in sessions run at once
+  (`agents.maxLiveProviders`, `agents.maxLiveBuiltin`), and the rest queue.
+
 ## Plugins
 
 A plugin adds something to Finisher: a content pack (styles, presets, templates) or a code

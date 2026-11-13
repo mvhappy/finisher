@@ -193,6 +193,24 @@ pub(super) const SPECS: &[ParamSpec] = &[
         "use a fade-out of at least {min} {unit}",
     ),
     spec(
+        "audio.fadeInOffset",
+        SOURCED,
+        FADE,
+        false,
+        DefaultValue::Text("0"),
+        Some("s"),
+        "use a fade-in offset of at least {min} {unit}",
+    ),
+    spec(
+        "audio.fadeOutOffset",
+        SOURCED,
+        FADE,
+        false,
+        DefaultValue::Text("0"),
+        Some("s"),
+        "use a fade-out offset of at least {min} {unit}",
+    ),
+    spec(
         "mask.feather",
         ALL,
         ParamType::Number {

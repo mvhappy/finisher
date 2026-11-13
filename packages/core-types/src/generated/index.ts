@@ -539,6 +539,7 @@ export type ItemInsert1 =
       slots?: {
         [k: string]: ParamValue;
       };
+      sourceIn?: Rational;
     }
   | {
       asset: string;
@@ -689,6 +690,7 @@ export type Item1 =
       slots?: {
         [k: string]: ParamValue;
       };
+      sourceIn?: Rational;
     }
   | {
       asset: string;
@@ -3328,14 +3330,20 @@ export interface Track {
   transitions?: Transition[];
 }
 /**
- * The item's own audio: gain in dB, pan in −1…1, fades in seconds.
+ * The item's own audio: gain in dB, pan in −1…1, fades in seconds. A fade's offset
+ * (schema 4) places its window past the item's edge: the fade-in runs over
+ * `[start − fadeInOffset, start − fadeInOffset + fadeIn)`, the fade-out over
+ * `[end + fadeOutOffset − fadeOut, end + fadeOutOffset)`, and only the part inside the item
+ * sounds. A split sets them so each half keeps the original envelope (spec §5.13).
  *
  * This interface was referenced by `FinCore`'s JSON-Schema
  * via the `definition` "AudioParams".
  */
 export interface AudioParams {
   fadeIn?: Rational;
+  fadeInOffset?: Rational;
   fadeOut?: Rational;
+  fadeOutOffset?: Rational;
   gain?: number;
   pan?: number;
 }
@@ -5853,7 +5861,8 @@ export interface PlanCrop {
   top: number;
 }
 /**
- * A graphic's template, its time (from the item's start) and its slot values.
+ * A graphic's template, its template time (`sourceIn` + the time from the item's start, held
+ * at 0) and its slot values.
  *
  * This interface was referenced by `FinCore`'s JSON-Schema
  * via the `definition` "GraphicPlan".

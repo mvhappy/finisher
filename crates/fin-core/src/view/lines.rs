@@ -145,7 +145,14 @@ pub fn item_parts(item: &Item, keys: bool) -> (String, Vec<String>) {
             format!("{} clip {asset}", item.id)
         }
         ItemBody::Caption { .. } => item.id.clone(),
-        ItemBody::Graphic { asset, slots } => {
+        ItemBody::Graphic {
+            asset,
+            slots,
+            source_in,
+        } => {
+            if !source_in.is_zero() {
+                detail.push(format!("[{}+{}]", secs(*source_in), secs(item.duration)));
+            }
             detail.extend(slots.iter().map(|(k, v)| format!("{k}={}", value(v))));
             format!("{} graphic {asset}", item.id)
         }
@@ -219,7 +226,19 @@ fn common(item: &Item, keys: bool, out: &mut Vec<String>) {
             out.push(format!("pan {}", num(a.pan)));
         }
         if !a.fade_in.is_zero() || !a.fade_out.is_zero() {
-            out.push(format!("fade {}/{}", secs(a.fade_in), secs(a.fade_out)));
+            // An offset (a split part's share of a longer fade) follows its fade: `4.0s(+2.0s)`.
+            let fade = |len: Rational, off: Rational| {
+                if off.is_zero() {
+                    secs(len)
+                } else {
+                    format!("{}(+{})", secs(len), secs(off))
+                }
+            };
+            out.push(format!(
+                "fade {}/{}",
+                fade(a.fade_in, a.fade_in_offset),
+                fade(a.fade_out, a.fade_out_offset)
+            ));
         }
     }
     if !c.keyframes.is_empty() && keys {
