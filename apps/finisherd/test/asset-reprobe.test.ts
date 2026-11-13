@@ -1,6 +1,6 @@
 // `asset.reprobe` (6B-1 plan Task 11): the RPC over a real project engine and the real probe
 // `asset.add` uses (fin-node's `probe`), with a fake job engine for `deep`. An asset added as
-// schema 3 stored it (coded size and rate only) gains its display geometry from one committed
+// schema 4 stored it (coded size and rate only) gains its display geometry from one committed
 // `asset.reprobe` record; a changed file, an undecodable codec (with `deep`), an unknown or
 // non-media asset and a dry run commit nothing.
 import { mkdtempSync, rmSync } from "node:fs";
@@ -36,7 +36,7 @@ interface Asset {
   readonly video?: { width: number; height: number; rate: string; display?: unknown; rotation?: number; pixelAspect?: string };
 }
 
-/** A project whose a1 is a portrait clip added the schema 3 way (no display, rotation or pixel aspect) and a2 an image. */
+/** A project whose a1 is a portrait clip added the schema 4 way (no display, rotation or pixel aspect) and a2 an image. */
 async function setup() {
   const serverData = mkdtempSync(join(work, "sd-"));
   const dir = join(mkdtempSync(join(work, "proj-")), "p");

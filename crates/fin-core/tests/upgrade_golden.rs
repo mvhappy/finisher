@@ -521,18 +521,18 @@ fn golden(name: &str) -> Value {
 #[test]
 fn upcast_v1_snapshot_golden() {
     let got = upcast_snapshot(golden("snapshot_v1.json")).unwrap();
-    let mut v4 = golden("snapshot_v2.json");
-    v4["schemaVersion"] = json!(5);
-    let want: Project = serde_json::from_value(v4.clone()).unwrap();
+    let mut current = golden("snapshot_v2.json");
+    current["schemaVersion"] = json!(5);
+    let want: Project = serde_json::from_value(current.clone()).unwrap();
     assert_eq!(got, want);
-    assert_eq!(serde_json::to_value(&got).unwrap(), v4);
+    assert_eq!(serde_json::to_value(&got).unwrap(), current);
     assert_eq!(upcast_snapshot(golden("snapshot_v2.json")).unwrap(), want);
 }
 
 /// The v2 → v3 snapshot step (spec §5.12.2): every key gets `kf<n>` in document order (items,
 /// then paths in order, effect paths included), and nothing else changes. `corpus_05_v2.json`
-/// is the v2 corpus case 05 (item and effect keys); the corpus holds it at v4 (v3 → v4 only
-/// stamps the version).
+/// is the v2 corpus case 05 (item and effect keys); the corpus holds it at v5 (v3 → v4 and v4 → v5 only
+/// stamp the version).
 #[test]
 fn upcast_v2_snapshot_labels_keys_in_document_order() {
     let case = |dir: &str, name: &str| -> Value {
@@ -727,16 +727,19 @@ fn upcast_v3_snapshot_is_identity() {
         v["project"].clone()
     };
     let v3 = case("upgrade_golden", "corpus_20_v3.json");
-    let v4 = case("eval_corpus/projects", "20-mixed-reel.json");
+    let current = case("eval_corpus/projects", "20-mixed-reel.json");
     assert_eq!(
-        (v3["schemaVersion"].clone(), v4["schemaVersion"].clone()),
+        (
+            v3["schemaVersion"].clone(),
+            current["schemaVersion"].clone()
+        ),
         (json!(3), json!(5))
     );
     let got = upcast_snapshot(v3.clone()).unwrap();
-    assert_eq!(serde_json::to_value(&got).unwrap(), v4);
+    assert_eq!(serde_json::to_value(&got).unwrap(), current);
     let mut relabelled = v3;
     relabelled["schemaVersion"] = json!(5);
-    assert_eq!(relabelled, v4, "only the version differs");
+    assert_eq!(relabelled, current, "only the version differs");
     let items: Vec<_> = got
         .timelines
         .iter()

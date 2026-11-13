@@ -10,9 +10,9 @@
 //! v3 value is a valid v4 value, and the bump only makes older readers refuse v4 values
 //! (`NEWER_FORMAT`) rather than drop the new fields. Version 5 (`VideoInfo` display, rotation
 //! and pixel aspect, and `asset.reprobe`; sub-project 6 spec §6.3) has [`snapshot_v4`] and
-//! [`record_v4`], frozen identities on the same terms (absent means unknown). Adding version `n + 1` means bumping
-//! `SCHEMA_VERSION` and appending a `Step { from: n, .. }` to each table, with a golden test
-//! (frozen old shape in, expected new shape out).
+//! [`record_v4`], frozen identities on the same terms (absent means unknown). Adding version
+//! `n + 1` means bumping `SCHEMA_VERSION` and appending a `Step { from: n, .. }` to each
+//! table, with a golden test (frozen old shape in, expected new shape out).
 //!
 //! Stored diffs (`txs.diff`) are not versioned themselves: [`upcast_diff`] reads their shape
 //! (plan 4C Decision 5, [`diff_v1`]).

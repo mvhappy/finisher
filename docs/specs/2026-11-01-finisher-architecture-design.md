@@ -176,7 +176,7 @@ MyProject/                      (may live on local disk, NAS, or a cloud-synced 
 - `Timeline` → `Track`s → `Item`s: clip, gap, caption block, Lottie graphic, SVG/image, adjustment layer.
 - Items carry typed `Effect`s, a `mask` (§12.6), audio params (§12.7) and `Keyframe` lanes.
 - Time is rational.
-- **Analysis artifacts** attach to assets and are referenced by ops but are not timeline state: transcripts, alignments, scenes, embeddings, face tracks, loudness, beats. **Mattes are project assets** in `assets/` (owner decision of 2026-11-07, sub-project 8 decision 3; project schema version 5), not regenerable cache, because a matte producer's output may not be reproducible.
+- **Analysis artifacts** attach to assets and are referenced by ops but are not timeline state: transcripts, alignments, scenes, embeddings, face tracks, loudness, beats. **Mattes are project assets** in `assets/` (owner decision of 2026-11-07, sub-project 8 decision 3; project schema version 6), not regenerable cache, because a matte producer's output may not be reproducible.
 
 ### 6.3 Operations
 
