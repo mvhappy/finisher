@@ -1,11 +1,13 @@
 // The server's proxy wiring (6B-1 Task 14), kept out of `main.ts`: the capability cache and the
 // proxy service, made once the job engine runs; the project registry's hooks (an asset first used
-// here, by opening its project or adding it, gets a background 1080 proxy); the `media.proxy`
+// here, by opening its project or adding it, gets a background 1080 proxy; a commit's added assets
+// only; a project opened before the service starts is scanned when it does); the `media.proxy`
 // kind's view of the cache and the report; and the `proxy540` stage, registered with the first
 // capability answer (which a server with libraries asks for at start). Also the capability
 // URLs of Task 17: the tokens (dropped with their principal's tickets) and each listener's
 // media route.
 import type { CommittedTx } from "@finisher/core-types";
+import { testHooks } from "@finisher/fin-node";
 import { Effect } from "effect";
 import type { Tickets } from "../auth/tickets.ts";
 import type { ListenerPolicy } from "../http/policy.ts";
@@ -42,12 +44,20 @@ export function mediaWiring(mediaCache: MediaCacheService, tickets: Pick<Tickets
   tickets.onDrop((pred) => capTokens.dropWhere(pred));
   let caps: CapabilitiesCache | undefined;
   let proxies: ProxyService | undefined;
+  /** Projects opened (or committed to) before `start`: scanned whole once the service runs. */
+  const early = new Set<string>();
   return {
     capTokens,
     http: (policy) => makeMediaHttp({ tokens: capTokens, cache: () => mediaCache.cache }, policy),
-    onOpened: (id) => proxies?.used(id),
+    onOpened: (id) => {
+      if (proxies === undefined) early.add(id);
+      else void proxies.used(id);
+    },
     onCommitted: (id, committed) => {
-      if (committed.tx.ops.some((o) => (o as { op?: unknown }).op === "asset.add")) proxies?.used(id);
+      const added = committed.diff.changes.filter((c) => c.kind === "asset" && c.change === "added").map((c) => c.id);
+      if (added.length === 0) return;
+      if (proxies === undefined) early.add(id);
+      else void proxies.used(id, added);
     },
     kindDeps: { cache: () => mediaCache.cache, report: () => caps?.current() },
     start(engine, library, projects) {
@@ -61,8 +71,11 @@ export function mediaWiring(mediaCache: MediaCacheService, tickets: Pick<Tickets
         },
       });
       caps = capabilities;
-      proxies = makeProxyService({ registry: projects, engine, capabilities, cache: () => mediaCache.cache, log });
+      const delay = testHooks === undefined ? 0 : Number(process.env.FIN_TEST_PROXY_DELAY_MS ?? 0);
+      proxies = makeProxyService({ registry: projects, engine, capabilities, cache: () => mediaCache.cache, log, ...(Number.isFinite(delay) && delay > 0 ? { testDelayMs: delay } : {}) });
       if (library.registry.list().length > 0) void Effect.runPromise(Effect.ignore(capabilities(MEDIA_SYSTEM_OWNER)));
+      for (const id of early) void proxies.used(id);
+      early.clear();
       return { capabilities, proxies };
     },
   };

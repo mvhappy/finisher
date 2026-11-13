@@ -275,6 +275,7 @@ fn make(p: &ProxyParams, ctx: &mut JobCtx<'_>, warm: &mut Warm) -> Result<ProxyR
         frames,
         step: (frames / 100).max(1),
         path: out.join(PROXY_FILE),
+        dir: &dir,
         tone_mapped: &mut tone_mapped,
     };
     let encoded = encode_pipeline::encode(
@@ -288,8 +289,11 @@ fn make(p: &ProxyParams, ctx: &mut JobCtx<'_>, warm: &mut Warm) -> Result<ProxyR
         frames,
         &mut src,
     )?;
-    write_file(&out.join(TABLE_FILE), &table_bin::encode(&table))?;
-    let files = vec![entry_file(&out, PROXY_FILE)?, entry_file(&out, TABLE_FILE)?];
+    write_file(&dir, &out.join(TABLE_FILE), &table_bin::encode(&table))?;
+    let files = vec![
+        entry_file(&dir, &out, PROXY_FILE)?,
+        entry_file(&dir, &out, TABLE_FILE)?,
+    ];
     let input = p.key_input(decoder_class);
     let meta = EntryMeta {
         key: key.to_string(),
@@ -311,7 +315,7 @@ fn make(p: &ProxyParams, ctx: &mut JobCtx<'_>, warm: &mut Warm) -> Result<ProxyR
     let bytes = meta.bytes()?;
     let text =
         serde_json::to_vec_pretty(&meta).map_err(|e| CoreError::new("INTERNAL", e.to_string()))?;
-    write_file(&out.join(META_FILE), &text)?;
+    write_file(&dir, &out.join(META_FILE), &text)?;
     Ok(ProxyResult {
         key: key.to_string(),
         tier: p.tier,
@@ -342,16 +346,16 @@ fn io_error(path: &Path, e: impl std::fmt::Display) -> CoreError {
 }
 
 /// Writes `bytes` as a new output file (no link at any segment).
-fn write_file(path: &Path, bytes: &[u8]) -> Result<(), CoreError> {
-    let mut f = fin_shm::create_output(path)?;
+fn write_file(dir: &JobDir, path: &Path, bytes: &[u8]) -> Result<(), CoreError> {
+    let mut f = fin_shm::create_output(path).map_err(|e| inputs::relative(dir, e))?;
     f.write_all(bytes).map_err(|e| io_error(path, e))?;
     f.sync_all().map_err(|e| io_error(path, e))
 }
 
 /// The size and BLAKE3 of `out/<key>/<name>`, read back through the checked open.
-fn entry_file(dir: &Path, name: &str) -> Result<EntryFile, CoreError> {
+fn entry_file(job: &JobDir, dir: &Path, name: &str) -> Result<EntryFile, CoreError> {
     let path = dir.join(name);
-    let mut f = fin_shm::checked_open(&path, u64::MAX)?;
+    let mut f = fin_shm::checked_open(&path, u64::MAX).map_err(|e| inputs::relative(job, e))?;
     let mut hasher = blake3::Hasher::new();
     let mut buf = vec![0u8; 1 << 20];
     let mut bytes = 0u64;
@@ -383,6 +387,8 @@ struct Source<'a, 'c> {
     /// Progress is sent every `step` frames (1 %).
     step: u64,
     path: PathBuf,
+    /// The job directory: errors name `path` relative to it.
+    dir: &'a JobDir,
     tone_mapped: &'a mut Option<fin_media::jobs::ToneMapped>,
 }
 
@@ -416,6 +422,6 @@ impl Frames for Source<'_, '_> {
     }
 
     fn output(&mut self) -> Result<File, CoreError> {
-        fin_shm::create_output(&self.path)
+        fin_shm::create_output(&self.path).map_err(|e| inputs::relative(self.dir, e))
     }
 }

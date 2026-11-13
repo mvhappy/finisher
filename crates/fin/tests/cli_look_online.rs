@@ -11,7 +11,8 @@ mod support;
 use std::ffi::OsString;
 
 use serde_json::{Value, json};
-use support::{Server, assert_error, fin, media, ok};
+use support::fontserver::{test_native_dir, why_no_test_hooks};
+use support::{Server, assert_error, fin, fin_env, media, ok};
 
 fn gpu_required() -> bool {
     std::env::var("FIN_REQUIRE_GPU").is_ok_and(|v| v == "1")
@@ -311,6 +312,35 @@ fn media_proxy_and_status_answer_typed() {
     );
     let bad = fin(sd, &dir, &["media", "proxy", "a1", "--codec", "hevc"]);
     assert_eq!(bad.code, 2, "{}", bad.stdout);
+}
+
+/// `fin media proxy` waits as long as the server does (review of Task 14): the server's answer is
+/// held past fin's ordinary call timeout (`FIN_TEST_PROXY_DELAY_MS`, test-hooks builds only), and
+/// fin still prints it rather than `SERVER_TIMEOUT`.
+#[test]
+fn media_proxy_waits_past_the_call_timeout() {
+    let env = vec![
+        ("FIN_NODE_BINARY_DIR".into(), test_native_dir().into()),
+        ("FIN_TEST_PROXY_DELAY_MS".into(), OsString::from("2500")),
+    ];
+    let Some(server) = Server::start_with("media_proxy_waits", env, why_no_test_hooks()) else {
+        return;
+    };
+    let (sd, root) = (&server.sd, &server.root);
+    ok(fin(
+        sd,
+        root,
+        &["project", "create", "film", "--name", "Film"],
+    ));
+    let dir = root.join("film");
+    media(&dir.join("clip.mp4"), 1);
+    ok(fin(sd, &dir, &["asset", "add", "clip.mp4"]));
+    let short = [("FIN_TEST_CALL_TIMEOUT_MS", std::ffi::OsStr::new("1000"))];
+    let r = fin_env(sd, &dir, &["media", "proxy", "a1"], &short);
+    let code = r.json["error"]["code"].as_str().unwrap_or("");
+    assert_ne!(code, "SERVER_TIMEOUT", "{}", r.stdout);
+    // The server's own answer: a proxy (a decoder for H.264 here), or none to plan (Linux).
+    assert!(r.code == 0 || code == "CODEC_UNAVAILABLE", "{}", r.stdout);
 }
 
 #[test]

@@ -496,3 +496,30 @@ fn dolby_vision_profile_5_is_codec_unavailable() {
     let job = job_for("fp", &c.path);
     outcome(&run(&job, &params("fp", ProxyTier::Scrub)), "fp").unwrap();
 }
+
+/// Review of Task 14: an output the worker cannot write names it relative to the job directory;
+/// no absolute path of the host reaches the job's error (each output file in turn).
+#[test]
+fn refused_outputs_name_no_absolute_path() {
+    if !gpu_or_skip("refused_outputs_name_no_absolute_path") {
+        return;
+    }
+    let c = clip(&spec(2, Size::new(320, 180)));
+    for blocked in [PROXY_FILE, TABLE_FILE, META_FILE] {
+        let job = job_for("fp", &c.path);
+        let p = params("fp", ProxyTier::Scrub);
+        // A directory (not empty) where the output file goes: it cannot be made.
+        let dir = entry(&job, &p.key).join(blocked);
+        std::fs::create_dir_all(dir.join("x")).unwrap();
+        let run = run(&job, &p);
+        let root = std::fs::canonicalize(job.dir.path()).unwrap();
+        let text = format!("{:?} {:?}", run.end, run.events);
+        assert!(
+            matches!(run.end, End::Error(_)) || text.contains("ItemFailed"),
+            "{blocked}: {text}"
+        );
+        for p in [root.as_path(), job.dir.path()] {
+            assert!(!text.contains(&*p.to_string_lossy()), "{blocked}: {text}");
+        }
+    }
+}

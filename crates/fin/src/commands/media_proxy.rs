@@ -8,8 +8,12 @@
 //!   exit 5). Answers `{asset, tier, codec, key, state, cached?, job?, result?}`: a cache hit at
 //!   once (`state: ready, cached: true`); otherwise the server waits up to 10 minutes for the job
 //!   (`result` is its `ProxyResult`), or with `--no-wait` answers `state: making` and the `job`.
+//!   A waiting call is a long call (as `fin job wait`): its own connection, timed at the server's
+//!   wait plus [`WAIT_SLACK`], outside the overall deadline.
 //! - `status`: `{asset, fingerprint, tiers: [{tier, state, key?, codec?, job?, code?}]}`, `state`
 //!   one of `ready`, `making`, `failed`, `none`.
+
+use std::time::Duration;
 
 use clap::{Args, ValueEnum};
 use fin_core::CoreError;
@@ -19,7 +23,14 @@ use serde_json::{Value, json};
 
 use super::{Globals, target_branch};
 use crate::backend::Backend;
+use crate::client::Client;
+use crate::endpoint;
 use crate::output::unavailable;
+
+/// How long the server waits for the proxy's job (finisherd's `PROXY_WAIT_MS`).
+const PROXY_WAIT: Duration = Duration::from_secs(10 * 60);
+/// The server's answer after its wait: a margin for it to reach fin.
+const WAIT_SLACK: Duration = Duration::from_secs(30);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum, Serialize, Deserialize, JsonSchema)]
 pub enum TierArg {
@@ -87,8 +98,13 @@ pub fn proxy(backend: &dyn Backend, globals: &Globals, a: &ProxyArgs) -> Result<
     }
     if a.no_wait {
         req["wait"] = json!(false);
+        return backend.project_call("media.proxy", req);
     }
-    backend.project_call("media.proxy", req)
+    req["projectId"] = json!(backend.project_id()?);
+    // A long call with its own timeout: outside the overall deadline, as `fin job wait`.
+    let mut client =
+        Client::connect(&endpoint::resolve()?, PROXY_WAIT + WAIT_SLACK)?.without_deadline();
+    client.call("media.proxy", req)
 }
 
 pub fn status(

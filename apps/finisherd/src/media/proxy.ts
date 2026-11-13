@@ -11,8 +11,16 @@
 //   worker, typed: `CODEC_UNAVAILABLE` with `open_encoder`'s guidance.
 // - **A cache hit** answers at once (`serve` records that the entry serves the project and pins
 //   it while the project is open); otherwise a job is submitted (dedupe: the key) and, unless
-//   `wait: false`, waited for. An explicit request runs at `normal` priority; first-use proxies at
-//   the kind's `background`.
+//   `wait: false`, waited for. An explicit request, and a consumer's `ensure`, run at `normal`
+//   priority; first-use proxies at the kind's `background`.
+// - **A failed proxy** (review of Task 14): a job that already ended (the poisoned job dedupe
+//   answers) is answered with its error, never `PROXY_UNAVAILABLE`. A content failure
+//   (`CONTENT_FAILURES`) is remembered per key this run: `ensure` and first use answer it without
+//   submitting again (a new fingerprint is a new key); an explicit `media.proxy` tries again.
+// - **First use** scans `main` only: every video asset when a project opens here (or was open
+//   before the service started), the assets a commit adds otherwise. An asset counts as asked
+//   for once its proxy was submitted or found, or it failed for good; a transient failure is
+//   tried again at the next open or commit.
 import { isAbsolute, join } from "node:path";
 import type { FinError, JobOwner, JobView } from "@finisher/contracts";
 import type { EntryMeta, ProxyParams, ProxyResult, ProxyStatus, ProxyTierStatus } from "@finisher/core-types";
@@ -65,6 +73,8 @@ export interface ProxyServiceDeps {
   /** fin-node's `probe` (JSON); tests replace it. */
   readonly probe?: (path: string) => Promise<string>;
   readonly log?: (message: string) => void;
+  /** Test-hooks builds only (`FIN_TEST_PROXY_DELAY_MS`): holds a waiting `media.proxy` answer this long. */
+  readonly testDelayMs?: number;
 }
 
 export interface ProxyService {
@@ -76,8 +86,11 @@ export interface ProxyService {
    * none runs). For consumers that read proxies (Tasks 15, 16; 6F).
    */
   readonly ensure: (owner: JobOwner, req: Pick<ProxyRequest, "projectId" | "asset" | "branch" | "tier">) => Effect.Effect<EntryMeta, FinError>;
-  /** A project opened or committed here: a background `1080` proxy of each video asset not asked for yet this run. */
-  readonly used: (projectId: string) => void;
+  /**
+   * A project opened (or, with `assets`, a commit added those assets) here: a background `1080`
+   * proxy of each video asset of `main` not asked for yet this run. Resolves when all were asked.
+   */
+  readonly used: (projectId: string, assets?: ReadonlyArray<string>) => Promise<void>;
 }
 
 interface AssetJson {
@@ -124,6 +137,22 @@ function resultOf(job: JobView, fingerprint: string): ProxyResult | undefined {
 
 const MAKING = new Set(["queued", "running", "paused"]);
 
+/**
+ * Failures of the content (or of what this machine can do with it), not of the moment: the same
+ * key fails the same way again, so it is answered from memory rather than submitted again.
+ */
+export const CONTENT_FAILURES: ReadonlySet<string> = new Set([
+  "POISON_ITEM",
+  "MEDIA_CORRUPT",
+  "PLAN_MISMATCH",
+  "CODEC_UNAVAILABLE",
+  "ASSET_TYPE_UNSUPPORTED",
+  "ASSET_CHANGED",
+]);
+
+/** A job that ended without its proxy (failed, cancelled; a poisoned job included). */
+const endedWithout = (job: JobView): boolean => !MAKING.has(job.state) && job.state !== "succeeded";
+
 /** The server's capability cache and proxy service, for the handlers (absent in handler tests built without them). */
 export class MediaProxyTag extends Context.Service<MediaProxyTag, { readonly capabilities: CapabilitiesCache; readonly proxies: ProxyService }>()("finisherd/MediaProxy") {}
 
@@ -136,6 +165,10 @@ export function makeProxyService(deps: ProxyServiceDeps): ProxyService {
   const jobs = new Map<string, string>();
   /** `<project>\0<fingerprint>` already asked for at first use this run. */
   const used = new Set<string>();
+  /** `<project>\0<fingerprint>` being asked for now (two scans at once ask once). */
+  const asking = new Set<string>();
+  /** The content failure of each key this run (`CONTENT_FAILURES`). */
+  const failed = new Map<string, FinError>();
 
   const sourceCodec = (path: string, fingerprint: string): Effect.Effect<string, FinError> => {
     const id = `${path}\0${fingerprint}`;
@@ -152,14 +185,22 @@ export function makeProxyService(deps: ProxyServiceDeps): ProxyService {
     );
   };
 
+  const assetsOf = (projectId: string, branch: string): Effect.Effect<Record<string, AssetJson>, FinError> =>
+    Effect.map(deps.registry.snapshot(projectId, branch), (snap) => ((snap.project as { assets?: Record<string, AssetJson> } | null)?.assets ?? {}) as Record<string, AssetJson>);
+
   const source = (projectId: string, asset: string, requested: string | undefined): Effect.Effect<Source, FinError> =>
     Effect.gen(function* () {
       yield* deps.registry.ensure(projectId);
       const branch = yield* deps.registry.resolveBranch(projectId, requested ?? "main");
-      const snap = yield* deps.registry.snapshot(projectId, branch);
-      const assets = ((snap.project as { assets?: Record<string, AssetJson> } | null)?.assets ?? {}) as Record<string, AssetJson>;
+      const assets = yield* assetsOf(projectId, branch);
       const a = Object.hasOwn(assets, asset) ? assets[asset] : undefined;
       if (a === undefined) return yield* Effect.fail(finError("ASSET_NOT_FOUND", `no asset ${asset} on ${branch}`, { asset, branch }, "use the id of an existing asset"));
+      return yield* sourceOf(projectId, branch, asset, a);
+    });
+
+  /** The planner's view of asset `asset` (its JSON `a`, from a snapshot of `branch`). */
+  const sourceOf = (projectId: string, branch: string, asset: string, a: AssetJson): Effect.Effect<Source, FinError> =>
+    Effect.gen(function* () {
       if (a.kind !== "media" || typeof a.fingerprint !== "string" || typeof a.path !== "string" || !isObj(a.video)) {
         return yield* Effect.fail(finError("ASSET_TYPE_UNSUPPORTED", `asset ${asset} is not a video asset`, { asset, kind: a.kind ?? null }, "make proxies of video assets"));
       }
@@ -206,13 +247,35 @@ export function makeProxyService(deps: ProxyServiceDeps): ProxyService {
       return meta;
     });
 
+  /** Remembers a content failure of `key` (`CONTENT_FAILURES`). */
+  const remember = (key: string, e: FinError): FinError => {
+    if (CONTENT_FAILURES.has(e.code)) failed.set(key, e);
+    return e;
+  };
+
+  /** The content failure of `key` this run, when its last job (or planning) ended with one. */
+  const rememberedFailure = (key: string): Effect.Effect<FinError | undefined, FinError> =>
+    Effect.gen(function* () {
+      const known = failed.get(key);
+      if (known !== undefined) return known;
+      const id = jobs.get(key);
+      if (id === undefined) return undefined;
+      const view = yield* Effect.result(deps.engine.get(id));
+      if (view._tag === "Failure" || !endedWithout(view.success)) return undefined;
+      const e = remember(key, errorOf(view.success));
+      return CONTENT_FAILURES.has(e.code) ? e : undefined;
+    });
+
+  /** Submits `planned` (dedupe: its key); a job that already ended (a poisoned one) fails with its error. */
   const submit = (owner: JobOwner, planned: Planned, priority?: "normal"): Effect.Effect<JobView, FinError> =>
-    Effect.tap(deps.engine.submit(owner, { kind: MEDIA_PROXY, params: planned.params, project: planned.params.projectId!, ...(priority === undefined ? {} : { priority }) }), (job) =>
-      Effect.sync(() => jobs.set(planned.key, job.id)),
-    );
+    Effect.flatMap(deps.engine.submit(owner, { kind: MEDIA_PROXY, params: planned.params, project: planned.params.projectId!, ...(priority === undefined ? {} : { priority }) }), (job) => {
+      jobs.set(planned.key, job.id);
+      return endedWithout(job) ? Effect.fail(remember(planned.key, errorOf(job))) : Effect.succeed(job);
+    });
 
   const request = (owner: JobOwner, req: ProxyRequest): Effect.Effect<ProxyAnswer, FinError> =>
     Effect.gen(function* () {
+      if (req.wait !== false && deps.testDelayMs !== undefined && deps.testDelayMs > 0) yield* Effect.sleep(deps.testDelayMs);
       const src = yield* source(req.projectId, req.asset, req.branch);
       const report = yield* deps.capabilities(owner);
       const tier = req.tier ?? "540";
@@ -225,7 +288,7 @@ export function makeProxyService(deps: ProxyServiceDeps): ProxyService {
         Effect.mapError((e) => (e.code === "WAIT_TIMEOUT" ? finError(e.code, e.message, { ...(e.details as object), job: job.id }, "the proxy is still being made: fin media status <asset>") : e)),
       );
       const view = done as JobView;
-      if (view.state !== "succeeded") return yield* Effect.fail(errorOf(view));
+      if (view.state !== "succeeded") return yield* Effect.fail(remember(planned.key, errorOf(view)));
       const result = resultOf(view, src.fingerprint);
       return { ...base, state: "ready", job: job.id, ...(result === undefined ? {} : { result }) };
     });
@@ -271,35 +334,44 @@ export function makeProxyService(deps: ProxyServiceDeps): ProxyService {
       const planned = yield* plan(report, src, tier, undefined);
       const meta = yield* hit(planned.key, req.projectId);
       if (meta !== undefined) return meta;
-      // The job making it (dedupe answers the running one).
-      const job = yield* submit(owner, planned);
+      const known = yield* rememberedFailure(planned.key);
+      if (known !== undefined) return yield* Effect.fail(known);
+      // The job making it (dedupe answers the running one; an ended one fails with its error).
+      const job = yield* submit(owner, planned, "normal");
       return yield* Effect.fail(proxyUnavailable(req.asset, tier, job.id));
     });
 
-  const usedHere = (projectId: string): void => {
-    void Effect.runPromise(
+  /** Asks for the first-use `1080` proxy of one asset; whether it counts as asked for. */
+  const askFirstUse = (projectId: string, id: string, a: AssetJson): Effect.Effect<void, FinError> =>
+    Effect.gen(function* () {
+      const src = yield* sourceOf(projectId, "main", id, a);
+      const report = yield* deps.capabilities(MEDIA_SYSTEM_OWNER);
+      const planned = yield* plan(report, src, "1080", undefined);
+      if ((yield* hit(planned.key, projectId)) !== undefined) return;
+      const known = yield* rememberedFailure(planned.key);
+      if (known !== undefined) return yield* Effect.fail(known);
+      yield* submit(MEDIA_SYSTEM_OWNER, planned);
+    });
+
+  const usedHere = (projectId: string, only?: ReadonlyArray<string>): Promise<void> =>
+    Effect.runPromise(
       Effect.gen(function* () {
-        const snap = yield* deps.registry.snapshot(projectId, "main");
-        const assets = ((snap.project as { assets?: Record<string, AssetJson> } | null)?.assets ?? {}) as Record<string, AssetJson>;
-        for (const [id, a] of Object.entries(assets)) {
+        const assets = yield* assetsOf(projectId, "main");
+        const ids = only === undefined ? Object.keys(assets) : only.filter((id) => Object.hasOwn(assets, id));
+        for (const id of ids) {
+          const a = assets[id]!;
           if (a.kind !== "media" || !isObj(a.video) || typeof a.fingerprint !== "string") continue;
           const seen = `${projectId}\0${a.fingerprint}`;
-          if (used.has(seen)) continue;
-          used.add(seen);
-          const asked = yield* Effect.result(
-            Effect.gen(function* () {
-              const src = yield* source(projectId, id, "main");
-              const report = yield* deps.capabilities(MEDIA_SYSTEM_OWNER);
-              const planned = yield* plan(report, src, "1080", undefined);
-              if ((yield* hit(planned.key, projectId)) !== undefined) return;
-              yield* submit(MEDIA_SYSTEM_OWNER, planned);
-            }),
-          );
+          if (used.has(seen) || asking.has(seen)) continue;
+          asking.add(seen);
+          const asked = yield* Effect.result(askFirstUse(projectId, id, a));
+          asking.delete(seen);
+          // Asked for, or failed for good: not again this run. A transient failure is tried again.
+          if (asked._tag === "Success" || CONTENT_FAILURES.has(asked.failure.code)) used.add(seen);
           if (asked._tag === "Failure") log(`finisherd: media proxy: no 1080 proxy of ${id} in ${projectId} (${asked.failure.code})`);
         }
       }),
     ).catch(() => undefined);
-  };
 
   return { request, status, ensure, used: usedHere };
 }

@@ -6,7 +6,8 @@
 //   here decodes are skipped.
 // - `version`: `<recipe version>.<RENDER_VERSION>`, so a new recipe or render version makes
 //   every proxy again (their keys change too).
-// - `isDone`: the cache holds a `proxy-540` entry of the fingerprint (adopted entries included).
+// - `isDone`: the cache holds a `proxy-540` entry of the fingerprint made at this build's recipe
+//   and render versions (adopted entries included); an older one is made again.
 // - `params`: the file as the catalogue knows it (raw chain and `Expect`), the codec of
 //   Decision 5 and the key planned from the report (`mediaProxyPlan`).
 import type { ProxyParams } from "@finisher/core-types";
@@ -39,7 +40,7 @@ function videoOf(f: StageFile): { readonly codec: string; readonly display?: { w
 /** `media.proxy` params for `f` at `540`; throws `CODEC_UNAVAILABLE` when nothing decodes it. */
 function paramsOf(report: unknown, f: StageFile): ProxyParams {
   const video = videoOf(f);
-  if (video === undefined) throw new Error(`${f.display} has no video track`);
+  if (video === undefined) throw new Error("the file has no video track");
   const codec = proxyCodec(report);
   const plan = mediaProxyPlan({ fingerprint: f.fp, tier: "540", codec, sourceCodec: video.codec, decoders: decodersOf(report, video.codec) });
   return {
@@ -56,9 +57,10 @@ function paramsOf(report: unknown, f: StageFile): ProxyParams {
 /** The `proxy540` stage. */
 export function proxy540Stage(deps: MediaStageDeps): StageSpec {
   const v = mediaVersions();
+  const recipeVersion = v.recipes[PROXY540_RECIPE] ?? 0;
   return {
     name: PROXY540_STAGE,
-    version: `${v.recipes[PROXY540_RECIPE] ?? 0}.${v.renderVersion}`,
+    version: `${recipeVersion}.${v.renderVersion}`,
     jobKind: MEDIA_PROXY,
     batch: 1,
     maxInFlight: 1,
@@ -77,7 +79,7 @@ export function proxy540Stage(deps: MediaStageDeps): StageSpec {
         const cache = deps.cache();
         if (cache === undefined) return false;
         try {
-          return (await cache.entriesFor({ fingerprint: fp })).some((e) => e.recipe === PROXY540_RECIPE);
+          return (await cache.entriesFor({ fingerprint: fp })).some((e) => e.recipe === PROXY540_RECIPE && e.recipeVersion === recipeVersion && e.renderVersion === v.renderVersion);
         } catch {
           return false;
         }
