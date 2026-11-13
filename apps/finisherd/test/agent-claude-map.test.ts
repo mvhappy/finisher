@@ -84,12 +84,14 @@ describe("results", () => {
     expect(u.usage(result({ total_cost_usd: 0.001, usage: { input_tokens: 0, output_tokens: 0 } }))).toEqual([]);
   });
 
-  test("steer_stays_in_run: a result with a queued steer does not end the run", () => {
+  test("queued_turn_count_never_holds_the_end: a successful result ends the turn whatever it counts", () => {
+    // Verified on 2.1.321 (7D Task 0, s1b/s1d): the CLI writes `queued_turn_count: 0` even with a
+    // steer queued; the session holds steers itself (`session.ts`) and withholds the end there.
     const m = new LineMapper();
-    const first = m.map(result({ queued_turn_count: 1, total_cost_usd: 0.001, usage: { input_tokens: 4, output_tokens: 1 } }));
-    expect(first.map((e) => e.type)).toEqual(["usage"]);
-    const second = m.map(result({ queued_turn_count: 0, total_cost_usd: 0.002, usage: { input_tokens: 8, output_tokens: 2 } }));
-    expect(second.map((e) => e.type)).toEqual(["usage", "turnCompleted"]);
+    for (const queued of [1, 3, 0]) {
+      const out = m.map(result({ queued_turn_count: queued, total_cost_usd: 0.001 * (queued + 1), usage: { input_tokens: 4, output_tokens: 1 } }));
+      expect(out.map((e) => e.type), String(queued)).toEqual(["usage", "turnCompleted"]);
+    }
   });
 
   test("not_logged_in_is_provider_auth_with_fix: keyed on is_error, not subtype", () => {

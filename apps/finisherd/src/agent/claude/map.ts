@@ -18,8 +18,9 @@
 //   keyed on `terminal_reason` before `is_error` (Decision 14): while Finisher interrupts, the
 //   `aborted_*` result is `turnCompleted {stopReason: "interrupted"}` (as the built-in loop ends
 //   an interrupted turn), never a failure; otherwise `turnFailed` when `is_error` (never keyed on `subtype`:
-//   2.1.321 writes `success` on the "Not logged in" turn), else `turnCompleted` once no steer is
-//   queued (`queued_turn_count == 0`, Decision 13).
+//   2.1.321 writes `success` on the "Not logged in" turn), else `turnCompleted` (Decision 13:
+//   a held steer's next CLI turn is the session's to withhold, `session.ts`; `queued_turn_count`
+//   is not read).
 // - `rate_limit_event` → nothing while its `status` is `allowed*`, else `notice {rateLimit}`.
 // - `system/api_retry` → `notice {retry: {attempt, code, delayMs}}` (`code` as the built-in agent's); `system/compact_boundary` → `notice {compacted}`;
 //   `system/status`, `system/ui_invalidate`, `system/permission_denied` → nothing; `system/init`
@@ -290,10 +291,8 @@ export class LineMapper {
       out.push({ type: "turnFailed", error: { code: e.code, message: e.message, details: e.details, ...(e.fix === undefined ? {} : { fix: e.fix }) } });
       return out;
     }
-    // TODO(7D Task 0 Step 1): whether a steer joins the running turn or is queued as the next
-    // one; modelled by fake-claude as queued (`queued_turn_count` counts it, its own `result`
-    // follows). Either way the Finisher run ends at the first `result` with none queued.
-    if ((r.queued_turn_count ?? 0) > 0) return out;
+    // Verified on 2.1.321 (7D Task 0, s1b/s1d): `queued_turn_count` is 0 even with a steer
+    // queued, so it decides nothing; the session holds steers and withholds this end itself.
     const stop = r.stop_reason ?? "end_turn";
     out.push({ type: "turnCompleted", stopReason: STOP_REASONS[stop] ?? stop.slice(0, 64) });
     return out;
