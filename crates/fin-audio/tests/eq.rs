@@ -445,3 +445,78 @@ fn golden_hash() {
         "46c0e17d671eacae6f74c9a6e6ae06a5112177aa7af2ebfe8ac2798ef222ca1d"
     );
 }
+
+#[test]
+fn out_of_range_numbers_clamp_to_the_registry() {
+    // A plan can carry numbers outside the registry ranges (a hand-edited or newer model);
+    // each band clamps freq to 20…20,000 Hz, gain to ±24 dB and Q to 0.1…18 before designing.
+    let x = pink(12, 1.0, RATE);
+    let wild = [
+        ("peak", 30_000.0, 40.0, 50.0),
+        ("lowShelf", 5.0, -40.0, 0.01),
+        ("highPass", -100.0, 0.0, 0.0),
+    ];
+    let clamped = [
+        ("peak", 20_000.0, 24.0, 18.0),
+        ("lowShelf", 20.0, -24.0, 0.1),
+        ("highPass", 20.0, 0.0, 0.1),
+    ];
+    let run = |bands: &[Band]| {
+        let it = item("a", s(0), s(1), vec![eq(s(0), s(1), bands)]);
+        chain_mono(&it, &x, 1_000)
+    };
+    let (a, b) = (run(&wild), run(&clamped));
+    assert!(b.iter().all(|v| v.is_finite()) && b != x);
+    assert!(
+        a.iter().zip(&b).all(|(p, q)| p.to_bits() == q.to_bits()),
+        "out-of-range numbers must play as their clamped values"
+    );
+}
+
+/// `x` through one biquad of `c`.
+fn through(c: &fin_audio::effects::biquad::Coeffs, x: &[f32]) -> Vec<f32> {
+    let mut y = x.to_vec();
+    Biquad::default().run(c, &mut y);
+    y
+}
+
+#[test]
+fn band_pass_unity_at_centre_bandwidth_from_q_rejects_dc_and_nyquist() {
+    // The de-esser's split filter: RBJ "BPF, constant 0 dB peak gain".
+    let (f0, fs) = (6_500.0, f64::from(RATE));
+    for q in [2.0, 4.0] {
+        let c = design(BandKind::BandPass, f0, 0.0, q, fs);
+        // Unity at the centre (6,500 whole periods in the last second): 0 ± 0.05 dB.
+        let x = sine(f0, -12.0, 1.5, RATE);
+        let y = through(&c, &x);
+        let g = goertzel_db(&y[24_000..], f0, RATE) - goertzel_db(&x[24_000..], f0, RATE);
+        assert!(g.abs() <= 0.05, "Q {q}: {g} dB at the centre (0 ± 0.05)");
+        // The −3 dB edges follow Q through the bilinear transform: |Ω − 1/Ω| = 1/Q with
+        // Ω = tan(πf/fs)/tan(πf0/fs). RMS over 2 s (not whole periods): −3.01 ± 0.05 dB.
+        let t0 = libm::tan(core::f64::consts::PI * f0 / fs);
+        let k = 1.0 / (2.0 * q);
+        for omega in [libm::sqrt(k * k + 1.0) + k, libm::sqrt(k * k + 1.0) - k] {
+            let f = fs / core::f64::consts::PI * libm::atan(omega * t0);
+            let x = sine(f, -12.0, 2.5, RATE);
+            let y = through(&c, &x);
+            let g = rms_dbfs(&y[24_000..]) - rms_dbfs(&x[24_000..]);
+            assert!(
+                (g + 3.0103).abs() <= 0.05,
+                "Q {q}: {g} dB at the edge {f} Hz (−3.01 ± 0.05)"
+            );
+        }
+        // DC and Nyquist: below −100 dB relative to the input after settling.
+        let dc = through(&c, &vec![0.5f32; 48_000]);
+        let ny: Vec<f32> = (0..48_000)
+            .map(|n| if n % 2 == 0 { 0.5 } else { -0.5 })
+            .collect();
+        let ny = through(&c, &ny);
+        for (name, y) in [("DC", dc), ("Nyquist", ny)] {
+            let worst = y[24_000..].iter().fold(0.0f32, |m, v| m.max(v.abs()));
+            assert!(
+                f64::from(worst) <= 0.5 * amp(-100.0),
+                "Q {q}: {name} leaks at {worst}"
+            );
+        }
+    }
+}
