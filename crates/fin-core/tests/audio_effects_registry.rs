@@ -620,3 +620,36 @@ fn item_restore_onto_other_domain_refused() {
     .unwrap_err();
     mismatch(&e, "c2", "compressor", "video");
 }
+
+#[test]
+fn track_restore_onto_other_domain_refused() {
+    let p = apply(&av_both(), vec![add("c2", "$fx", "compressor", &[])]).project;
+    let removed = apply(
+        &p,
+        vec![
+            fin_core::TrackRemove {
+                track: "t2".into(),
+                with_items: true,
+            }
+            .into(),
+        ],
+    );
+    let Op::TrackRestore(mut r) = removed.inverse[0].clone() else {
+        panic!("{:?}", removed.inverse)
+    };
+    // As stored it is fine.
+    apply_internal(
+        &removed.project,
+        &tx(vec![Op::TrackRestore(r.clone())]),
+        &mut MemIds::after(&removed.project),
+    )
+    .unwrap();
+    r.track.kind = fin_core::TrackKind::Video;
+    let e = apply_internal(
+        &removed.project,
+        &tx(vec![Op::TrackRestore(r)]),
+        &mut MemIds::after(&removed.project),
+    )
+    .unwrap_err();
+    mismatch(&e, "c2", "compressor", "video");
+}
