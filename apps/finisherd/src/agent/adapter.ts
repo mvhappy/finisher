@@ -52,6 +52,11 @@ export interface SessionSpec {
   /** The session environment (§8.5) for processes the adapter starts. */
   readonly env: Readonly<Record<string, string>>;
   readonly providerRef: ProviderRef | null;
+  /**
+   * The role's tool allow-set the session started with (`sessions.tools`, plan 7D Task 4): a
+   * CLI harness enables exactly these of its tools, on its first instance and on every resume.
+   */
+  readonly tools?: readonly string[];
   /** The runtime's budget check before each model call, for an adapter whose loop runs here (7A-2). */
   readonly gate?: CallGate;
   /**

@@ -29,6 +29,8 @@ fn fonts() -> Fonts {
         ("han", tf::test_han()),
         ("latinBold", tf::build(&tf::LATIN_BOLD)),
         ("var", tf::test_variable()),
+        ("overhang", tf::test_overhang()),
+        ("color", tf::test_color()),
     ] {
         let sha = bytes.add(data.clone());
         refs.insert(name.to_string(), face_ref(&sha, &data, 0));
@@ -142,17 +144,18 @@ fn fallback_follows_face_order() {
     let (sans_first, han_first) = (f.faces(&["sans", "han"]), f.faces(&["han", "sans"]));
     let (sans_sha, han_sha) = (sans_first[0].sha256.clone(), han_first[0].sha256.clone());
     let (m, _) = f.measurer();
-    // 100 px: one font unit is 0.1 px = 6.4/64 px.
+    // 100 px: one font unit is 0.1 px = 6.4/64 px. Widths are ink: every generated glyph is
+    // drawn 50 units inside its advance on both sides.
     let a = layout(&m, &req(&["a中"], sans_first, style(100.0)));
     let b = layout(&m, &req(&["a中"], han_first, style(100.0)));
     assert_eq!(
         a.words[0].width,
-        (500 + 1000) * 64 / 10,
+        (500 + 1000 - 100) * 64 / 10,
         "a from TestSans, 中 from TestHan"
     );
     assert_eq!(
         b.words[0].width,
-        (700 + 1000) * 64 / 10,
+        (700 + 1000 - 100) * 64 / 10,
         "both from TestHan"
     );
     assert_eq!(a.faces, [sans_sha.clone(), han_sha.clone()]);
@@ -202,7 +205,7 @@ fn rtl_run_is_rtl() {
         l.words[0].x > l.words[1].x,
         "the first word is on the right: {l:?}"
     );
-    assert_eq!(l.words[0].width, 3 * 600 * 50 * 64 / 1000);
+    assert_eq!(l.words[0].width, (3 * 600 - 100) * 50 * 64 / 1000);
 }
 
 #[test]
@@ -251,19 +254,20 @@ fn letter_spacing_and_alignment() {
     let faces = f.faces(&["sans"]);
     let (m, _) = f.measurer();
     let plain = layout(&m, &req(&["abc"], faces.clone(), style(100.0)));
-    assert_eq!(plain.width, 1500 * 64 / 10);
+    // `abc` advances 1500 units, drawn 50..1450.
+    assert_eq!((plain.lines[0].x, plain.width), (5 * 64, 1400 * 64 / 10));
     let mut spaced = style(100.0);
     spaced.letter_spacing = 0.1;
     let spaced = layout(&m, &req(&["abc"], faces.clone(), spaced));
     assert_eq!(
         spaced.width,
-        plain.width + 3 * 10 * 64,
-        "0.1 em = 10 px after each glyph"
+        plain.width + 2 * 10 * 64,
+        "0.1 em = 10 px after each glyph; the ink ends at the last glyph's outline"
     );
     for (align, x) in [
-        (Align::Left, 0),
-        (Align::Center, (1000 - 150) * 64 / 2),
-        (Align::Right, (1000 - 150) * 64),
+        (Align::Left, 5 * 64),
+        (Align::Center, (1000 - 150) * 64 / 2 + 5 * 64),
+        (Align::Right, (1000 - 150) * 64 + 5 * 64),
     ] {
         let mut st = style(100.0);
         st.align = align;
@@ -485,12 +489,17 @@ fn requested_weight_drives_wght() {
     let width = |weight: u16| {
         let mut st = style(100.0);
         st.weight = weight;
-        layout(&m, &req(&["a"], vec![face.clone()], st)).words[0].width
+        layout(&m, &req(&["aa"], vec![face.clone()], st)).words[0].width
     };
-    // `a` is 550 units at the default; +200 units at wght 900, linearly from 400; at 100 px
-    // one unit is 6.4/64 px.
-    assert_eq!(width(400), 550 * 64 / 10);
-    assert_eq!(width(300), 550 * 64 / 10, "no deltas below the default");
-    assert_eq!(width(700), 670 * 64 / 10);
-    assert_eq!(width(900), 750 * 64 / 10);
+    // `a` advances 550 units at the default; +200 units at wght 900, linearly from 400 (its
+    // outline, 50..500, does not move); at 100 px one unit is 6.4/64 px. The ink of `aa` is
+    // one advance and one outline less its side bearing: advance + 450.
+    assert_eq!(width(400), (550 + 450) * 64 / 10);
+    assert_eq!(
+        width(300),
+        (550 + 450) * 64 / 10,
+        "no deltas below the default"
+    );
+    assert_eq!(width(700), (670 + 450) * 64 / 10);
+    assert_eq!(width(900), (750 + 450) * 64 / 10);
 }

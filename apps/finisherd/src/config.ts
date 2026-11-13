@@ -43,10 +43,13 @@ export function socketPath(
 
 export interface CliArgs {
   readonly serverData: string;
+  /** Developer mode (sp8b Task 11): one unpacked `@dev/<name>` plugin for this run. */
+  readonly pluginDir?: string;
 }
 
 export function parseArgs(argv: ReadonlyArray<string>, env: NodeJS.ProcessEnv = process.env): CliArgs {
   let serverData: string | undefined;
+  let pluginDir: string | undefined;
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
     if (arg === "--server-data") {
@@ -55,11 +58,17 @@ export function parseArgs(argv: ReadonlyArray<string>, env: NodeJS.ProcessEnv = 
       serverData = resolve(value);
     } else if (arg?.startsWith("--server-data=")) {
       serverData = resolve(arg.slice("--server-data=".length));
+    } else if (arg === "--plugin-dir") {
+      const value = argv[++i];
+      if (!value) throw new Error("--plugin-dir needs a directory");
+      pluginDir = resolve(value);
+    } else if (arg?.startsWith("--plugin-dir=")) {
+      pluginDir = resolve(arg.slice("--plugin-dir=".length));
     } else {
       throw new Error(`unknown argument: ${arg}`);
     }
   }
-  return { serverData: serverData ?? defaultServerData(env) };
+  return { serverData: serverData ?? defaultServerData(env), ...(pluginDir === undefined ? {} : { pluginDir }) };
 }
 
 /**

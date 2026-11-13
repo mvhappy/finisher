@@ -81,13 +81,13 @@ describe("plugins chain", () => {
     // 8A's code opens the same database: the chain is added, nothing else is touched.
     control = openControlStore(serverData, { serverId: "sid-1", checkpoint: false });
     expect(control.envId).toBe(env);
-    for (const t of ["registries", "plugins", "plugin_grants", "plugin_plans", "plugin_suggestions"]) {
+    for (const t of ["registries", "plugins", "plugin_grants", "plugin_plans", "plugin_authority"]) {
       expect(control.db.prepare(`SELECT COUNT(*) AS n FROM ${t}`).get(), t).toEqual({ n: 0 });
     }
     const meta = (k: string) => (control.db.prepare("SELECT value FROM meta WHERE key = ?").get(k) as { value: string } | undefined)?.value;
-    expect(meta("formatVersion.plugins")).toBe("4");
+    expect(meta("formatVersion.plugins")).toBe("6");
     expect(meta("minReaderVersion.plugins")).toBe("1");
-    expect(control.db.prepare("SELECT n FROM migrations WHERE chain = 'plugins' ORDER BY n").all()).toEqual([{ n: 1 }, { n: 2 }, { n: 3 }, { n: 4 }]);
+    expect(control.db.prepare("SELECT n FROM migrations WHERE chain = 'plugins' ORDER BY n").all()).toEqual([{ n: 1 }, { n: 2 }, { n: 3 }, { n: 4 }, { n: 5 }, { n: 6 }]);
     expect(control.db.prepare("SELECT COUNT(*) AS n FROM audit WHERE kind = 'listener.start'").get()).toEqual({ n: 1 });
   });
 

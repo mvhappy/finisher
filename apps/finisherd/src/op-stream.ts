@@ -116,7 +116,7 @@ export function opStream(
           },
         );
       };
-      const backlog = read.ops.map((tx): Stamped<CommittedTx> => ({ seq: -1, value: tx }));
+      const backlog = read.ops.map((tx): Stamped<CommittedTx> => ({ seq: -1, n: 0, value: tx }));
       return Stream.concat(Stream.fromIterable(backlog), Stream.fromSubscription(live)).pipe(
         Stream.mapEffect(emit),
         Stream.flattenIterable,

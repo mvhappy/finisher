@@ -74,7 +74,8 @@ export const Session = Schema.Struct({
    */
   rootBranch: Schema.optionalKey(Schema.String),
   /** The branch and revision it was started from. */
-  base: Schema.Struct({ branch: Schema.String, seq: Count }),
+  /** `hash`: the head's hash, recorded for a critic on a branch under review (7B Task 12: `criticStale`). */
+  base: Schema.Struct({ branch: Schema.String, seq: Count, hash: Schema.optionalKey(Schema.String) }),
   parent: Schema.optionalKey(Id),
   /** A child's (7B): the session at the top of its tree, and how far below it (1–3). Absent on a root. */
   rootSession: Schema.optionalKey(Id),
@@ -428,6 +429,14 @@ export const ProviderInfo = Schema.Struct({
   signedIn: Schema.optionalKey(Schema.NullOr(Schema.Boolean)),
   account: Schema.optionalKey(Schema.String),
   capabilities: Capabilities,
+  /** The lowest CLI version this Finisher supports (plan 7D Decision 9), when it has one. */
+  floor: Schema.optionalKey(Schema.String),
+  /** How the CLI says it is signed in (`claude.ai`, `console`, …): a word, never a label or token. */
+  authMethod: Schema.optionalKey(Schema.String),
+  /** A keyed hash of the signed-in account (8 hex characters, plan 7D Task 11): never the label. */
+  accountHash: Schema.optionalKey(Schema.String.check(Schema.isPattern(/^[0-9a-f]{8}$/))),
+  /** Whether sessions may start on the harness (`agents.claudeCode.enabled`, default off). */
+  enabled: Schema.optionalKey(Schema.Boolean),
   /** Why detection failed, as `{code, message, details, fix?}`. */
   problem: Schema.optionalKey(Schema.Struct({ code: Schema.String, message: Schema.String, fix: Schema.optionalKey(Schema.String) })),
 });

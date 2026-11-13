@@ -137,7 +137,7 @@ fn newer_segment_lets_go_of_the_lease() {
     let mut h = seg.header.clone();
     (h.first_seq, h.last_seq) = (2, 2);
     h.prev_segment_hash = Some(seg.hash.clone());
-    (h.format_version, h.min_reader_version) = (3, 3);
+    (h.format_version, h.min_reader_version) = (4, 4);
     let (bytes, hash) = fin_store::segment::encode(&h, &[b"{\"future\":true}".as_slice()]);
     let name =
         fin_store::names::SegmentName::new(1, 2, 2, fin_store::names::hash12(&hash).unwrap())

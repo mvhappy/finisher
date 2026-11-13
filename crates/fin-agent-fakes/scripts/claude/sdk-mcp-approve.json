@@ -1,0 +1,10 @@
+{
+  "steps": [
+    {
+      "expect": "user",
+      "ask": {"tool": "mcp__finisher__shell", "input": {"command": "fin view"}},
+      "onAllow": {"emit": [{"type": "system", "subtype": "status", "status": "running", "session_id": "$session_id"}]},
+      "cumulativeUsage": {"inputTokens": 10, "outputTokens": 2, "costUsd": 0.001}
+    }
+  ]
+}

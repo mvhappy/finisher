@@ -30,7 +30,6 @@ mod registry_rpcs;
 mod registry_rpcs_edit;
 mod registry_settings;
 mod values;
-mod view;
 
 use std::ffi::OsString;
 use std::io::Read;
@@ -49,6 +48,7 @@ use commands::cache::CacheCmd;
 use commands::caption::CaptionCmd;
 use commands::clip::ClipCmd;
 use commands::diagnostics::DiagnosticsCmd;
+use commands::drop::DropArgs;
 use commands::effect::EffectCmd;
 use commands::eval::EvalCmd;
 use commands::fonts::{FontEdit, FontsCmd};
@@ -64,6 +64,7 @@ use commands::media_caps::MediaCmd;
 use commands::param::ParamCmd;
 use commands::plugin::{PluginCmd, RegistryCmd};
 use commands::project::ProjectCmd;
+use commands::review::ReviewCmd;
 use commands::search::SearchArgs;
 use commands::style::StyleCmd;
 use commands::timeline::TimelineCmd;
@@ -150,6 +151,9 @@ enum Cmd {
     Checkpoint(CheckpointArgs),
     Merge(MergeArgs),
     CherryPick(CherryPickArgs),
+    Drop(DropArgs),
+    #[command(subcommand)]
+    Review(ReviewCmd),
     Revert(RevertArgs),
     Try(TryArgs),
     Batch,
@@ -261,12 +265,22 @@ fn parse(args: Vec<OsString>) -> Result<Cli, CoreError> {
 }
 
 fn run(args: Vec<OsString>) -> Result<Value, CoreError> {
+    // `fin @<id> <command> …` (sp8b Task 10): a plugin command, not a clap one.
+    if let Some(inv) = commands::plugin_cmd::split(&args) {
+        let inv = inv?;
+        agent_paths::check_project(inv.project.as_deref())?;
+        let backend = backend::select(inv.project.as_deref())?;
+        return commands::plugin_cmd::run(backend.as_ref(), &inv);
+    }
     let (mut cli, name) = parse_named(args)?;
     agent_env::apply(&mut cli.globals, name.as_deref())?;
     let g = &cli.globals;
     let backend = || backend::select(g.project.as_deref());
     match cli.command {
         None | Some(Cmd::Help { topic: None }) => Ok(map::map()),
+        Some(Cmd::Help { topic: Some(t) }) if t.starts_with('@') => {
+            commands::plugin_cmd::list(backend()?.as_ref(), Some(&t))
+        }
         Some(Cmd::Help { topic: Some(t) }) => commands::schema::help(&t),
         Some(Cmd::Schema {
             command,
@@ -352,6 +366,9 @@ fn run(args: Vec<OsString>) -> Result<Value, CoreError> {
         Some(Cmd::Fonts(FontsCmd::Unpin(a))) => edit(g, Edit::Font(FontEdit::Unpin(a))),
         Some(Cmd::Fonts(c)) => commands::fonts::read(backend()?.as_ref(), g, &c),
         Some(Cmd::Diagnostics(c)) => commands::diagnostics::run(backend()?.as_ref(), g, &c),
+        Some(Cmd::Plugin(PluginCmd::Commands(a))) => {
+            commands::plugin_cmd::list(backend()?.as_ref(), a.id.as_deref())
+        }
         Some(Cmd::Plugin(c)) => commands::plugin::plugin(backend()?.as_ref(), &c),
         Some(Cmd::Registry(c)) => commands::plugin::registry(backend()?.as_ref(), &c),
         Some(Cmd::Branch(cmd)) => commands::branch::run(backend()?.as_ref(), g, &cmd),
@@ -360,6 +377,8 @@ fn run(args: Vec<OsString>) -> Result<Value, CoreError> {
         Some(Cmd::Checkpoint(a)) => commands::history::checkpoint(backend()?.as_ref(), g, &a),
         Some(Cmd::Merge(a)) => commands::history::merge(backend()?.as_ref(), g, &a),
         Some(Cmd::CherryPick(a)) => commands::history::cherry_pick(backend()?.as_ref(), g, &a),
+        Some(Cmd::Review(c)) => commands::review::run(backend()?.as_ref(), g, &c),
+        Some(Cmd::Drop(a)) => commands::drop::run(backend()?.as_ref(), g, &a),
         Some(Cmd::Revert(a)) => commands::history::revert(backend()?.as_ref(), g, &a),
         Some(Cmd::Try(a)) => commands::try_cmd::run(backend()?.as_ref(), g, &a),
         Some(Cmd::Whoami) => commands::whoami::run(),

@@ -129,6 +129,7 @@ fn candidates_exclude_merged_cherry_picked_and_merge_records() {
     let c = candidates(
         &source,
         &Roots::new(&log, &to_main, &source, &target).unwrap(),
+        &Default::default(),
     );
     let picked: Vec<&str> = c
         .picks
@@ -142,6 +143,7 @@ fn candidates_exclude_merged_cherry_picked_and_merge_records() {
     let c = candidates(
         &target,
         &Roots::new(&log, &to_br1, &target, &source).unwrap(),
+        &Default::default(),
     );
     let picked: Vec<&str> = c
         .picks

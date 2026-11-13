@@ -335,8 +335,10 @@ fn audio_item(
     }))
 }
 
-/// The fades (over the item's own first and last stretch; linear) and the crossfade sides. A
-/// side with a crossfade has no fade: the crossfade shapes it already.
+/// The fades (linear, from the item's own edges, each window placed past its edge by its
+/// offset, [`AudioParams`]) and the crossfade sides. A side with a crossfade has no fade: the
+/// crossfade shapes it already. A fade window that does not reach into the item shapes
+/// nothing; one that reaches past an edge keeps the progress of the whole window.
 fn shape_windows(
     params: &AudioParams,
     item: &Item,
@@ -353,13 +355,19 @@ fn shape_windows(
         })
     };
     if params.fade_in.is_positive() && into.is_none() {
-        let e = item.start.checked_add(params.fade_in)?;
-        push(ShapeKind::FadeIn, Curve::Linear, item.start, e);
+        let s = item.start.checked_sub(params.fade_in_offset)?;
+        let e = s.checked_add(params.fade_in)?;
+        if e > item.start {
+            push(ShapeKind::FadeIn, Curve::Linear, s, e);
+        }
     }
     if params.fade_out.is_positive() && out.is_none() {
         let end = item.end()?;
-        let s = end.checked_sub(params.fade_out)?;
-        push(ShapeKind::FadeOut, Curve::Linear, s, end);
+        let e = end.checked_add(params.fade_out_offset)?;
+        let s = e.checked_sub(params.fade_out)?;
+        if s < end {
+            push(ShapeKind::FadeOut, Curve::Linear, s, e);
+        }
     }
     if let Some(w) = into {
         push(ShapeKind::CrossIn, w.curve, w.start, w.end);

@@ -211,3 +211,23 @@ describe("statuses in use", () => {
     expect(prev).toBe(sandboxStatus);
   });
 });
+
+describe("plugins unconfined (sp8b Decision 17)", () => {
+  const pluginWarnings = async (status: SandboxStatus, enabled: number, profiles: Record<string, string> = caps.profiles) => {
+    const s = await Effect.runPromise(serverStatus({ ...deps(status), jobCaps: () => ({ ...caps, profiles }) as never, enabledCodePlugins: () => enabled }));
+    return s.warnings.filter((w) => (w.details as { profile?: string }).profile === "plugin");
+  };
+
+  test("plugins_unconfined_counts_enabled_code_plugins_and_goes_with_the_last", async () => {
+    expect(await pluginWarnings(all(NOT_READY), 2)).toEqual([
+      expect.objectContaining({ code: "PLUGINS_UNCONFINED", details: { profile: "plugin", os: "linux", reason: "profileNotReady", enabled: 2 }, fix: NOT_READY_FIX }),
+    ]);
+    expect(await pluginWarnings(all(DISABLED), 1)).toEqual([expect.objectContaining({ code: "PLUGINS_UNCONFINED", details: expect.objectContaining({ reason: "landlockDisabled", enabled: 1 }) })]);
+    // No enabled code plugin: nothing runs unconfined, so nothing warns.
+    expect(await pluginWarnings(all(NOT_READY), 0)).toEqual([]);
+    // The profile enforced and applied by the spawner: no warning whatever the count.
+    expect(await pluginWarnings(all(ENFORCED), 3, { ...caps.profiles, plugin: "enforced" })).toEqual([]);
+    // Enforceable here, but the job host's spawner does not apply it: still unconfined.
+    expect(await pluginWarnings(all(ENFORCED), 1)).toEqual([expect.objectContaining({ code: "PLUGINS_UNCONFINED", details: expect.objectContaining({ reason: "spawnerUnconfined", enabled: 1 }) })]);
+  });
+});

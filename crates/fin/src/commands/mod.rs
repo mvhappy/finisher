@@ -12,6 +12,8 @@ pub mod cache;
 pub mod caption;
 pub mod clip;
 pub mod diagnostics;
+pub mod drop;
+mod echo;
 pub mod edit;
 pub mod effect;
 pub mod eval;
@@ -30,7 +32,10 @@ pub mod media_caps;
 pub mod media_probe;
 pub mod param;
 pub mod plugin;
+pub mod plugin_args;
+pub mod plugin_cmd;
 pub mod project;
+pub mod review;
 pub mod schema;
 pub mod schema_registry;
 pub mod search;
@@ -203,54 +208,6 @@ fn idem_key_reused(committed: &CommittedTx) -> CoreError {
     .with_fix("use a new --idem-key for a different command")
 }
 
-/// Echoes what was committed rather than what was planned: the server may have rebased the tx
-/// over concurrent commits (moving insert positions), or returned an earlier commit for the same
-/// `--idem-key` (planned against an earlier state). Each `clip.insert` echo gets the clip its
-/// commit placed, found among the committed ops themselves, by its placeholder (`$clip`, or `$clipN` on batch line
-/// N), not by where this attempt's plan put it: the commit may hold pins, splits or audio ops
-/// this plan does not, or lack some it has.
-fn echo_committed(resolved: &mut Value, ops: &[Op]) {
-    let clip = |placeholder: &str| {
-        ops.iter().find_map(|op| match op {
-            Op::ItemInsert(i)
-                if i.id == placeholder && matches!(i.body, fin_core::ItemBody::Clip { .. }) =>
-            {
-                Some(i)
-            }
-            _ => None,
-        })
-    };
-    let patch = |r: &mut Value, i: &fin_core::ItemInsert| {
-        if let (Some(map), fin_core::ItemBody::Clip { source_in, .. }) =
-            (r.as_object_mut(), &i.body)
-        {
-            map.insert("at".to_string(), json!(i.at));
-            map.insert("in".to_string(), json!(source_in));
-            map.insert("duration".to_string(), json!(i.duration));
-            if let Ok(out) = source_in.checked_add(i.duration) {
-                map.insert("out".to_string(), json!(out));
-            }
-        }
-    };
-    match resolved {
-        Value::Array(lines) => {
-            for line in lines.iter_mut() {
-                let Some(n) = line.get("line").and_then(Value::as_u64) else {
-                    continue;
-                };
-                if let (Some(r), Some(i)) = (line.get_mut("resolved"), clip(&format!("$clip{n}"))) {
-                    patch(r, i);
-                }
-            }
-        }
-        single => {
-            if let Some(i) = clip("$clip") {
-                patch(single, i);
-            }
-        }
-    }
-}
-
 /// `blake3:<hex>` of the command input `inputs` (`[{cmd, args}]`, keys sorted): what
 /// `Tx.argsHash` carries for an `--idem-key` commit. It hashes what the user asked for, not
 /// the ops: a retry plans its ops against a newer snapshot (`end`, `after:` and rebases move
@@ -284,9 +241,15 @@ pub(crate) fn input(step: &Write) -> Value {
 /// command (`$clip`). Returns the step's resolved values.
 pub fn plan(b: &mut Builder<'_>, step: &Write, n: Option<usize>) -> Result<Value, CoreError> {
     let mut hashed = input(step);
-    // `--timeline` is hashed only when given (Decision 7: an equivalent 4B call is unchanged).
+    // `--timeline` and `--branch` are hashed only when given (Decision 7: an equivalent 4B call
+    // is unchanged). An explicit `--branch` names the target, so the same key on another
+    // branch is another command (review #26); the default branch is not hashed: it may move
+    // between attempts (`fin try`), and a retry then still answers from the log.
     if let Some(tl) = &b.timeline {
         hashed["timeline"] = json!(tl);
+    }
+    if let Some(branch) = &b.explicit_branch {
+        hashed["branch"] = json!(branch);
     }
     crate::diag::note_input(&hashed);
     b.inputs.push(hashed);
@@ -343,6 +306,46 @@ fn batch_step(cmd: &str, args: Value) -> Result<Write, CoreError> {
     })
 }
 
+/// A batch line's envelope, closed as its schema says (`registry::batch_line`: `cmd`, and an
+/// object `args`; nothing else). An unknown field (a `dryRun`, a misspelt `arg`) is `USAGE` for
+/// the whole batch, before anything is planned (review #44).
+fn batch_envelope(entry: &Value, n: usize) -> Result<(String, Value), CoreError> {
+    let fix = "send one {\"cmd\",\"args\"} object per line; flags such as --dry-run go on the command line";
+    let Some(map) = entry.as_object() else {
+        return Err(usage(
+            format!("line {n} is not a JSON object"),
+            json!({}),
+            fix,
+        ));
+    };
+    if let Some(field) = map.keys().find(|k| !matches!(k.as_str(), "cmd" | "args")) {
+        return Err(usage(
+            format!("line {n} has an unknown field {field:?}"),
+            json!({ "field": field, "allowed": ["cmd", "args"] }),
+            fix,
+        ));
+    }
+    let Some(cmd) = map.get("cmd").and_then(Value::as_str) else {
+        return Err(usage(
+            format!("line {n} has no \"cmd\""),
+            json!({}),
+            "add \"cmd\": \"clip.insert\" or similar",
+        ));
+    };
+    let args = match map.get("args") {
+        None => json!({}),
+        Some(a) if a.is_object() => a.clone(),
+        Some(_) => {
+            return Err(usage(
+                format!("line {n}: \"args\" is not an object"),
+                json!({ "field": "args", "cmd": cmd }),
+                format!("see `fin schema {cmd}`"),
+            ));
+        }
+    };
+    Ok((cmd.to_string(), args))
+}
+
 /// `fin batch`: JSONL of `{ "cmd", "args" }` on stdin → one transaction. Line `n` binds
 /// `$clipN` / `$assetN`.
 pub fn batch(backend: &dyn Backend, globals: &Globals, input: &str) -> Result<Value, CoreError> {
@@ -360,15 +363,9 @@ pub fn batch(backend: &dyn Backend, globals: &Globals, input: &str) -> Result<Va
                 "send one {\"cmd\",\"args\"} object per line",
             ))
         })?;
-        let Some(cmd) = entry.get("cmd").and_then(Value::as_str) else {
-            return Err(at_line(usage(
-                format!("line {n} has no \"cmd\""),
-                json!({}),
-                "add \"cmd\": \"clip.insert\" or similar",
-            )));
-        };
-        let args = entry.get("args").cloned().unwrap_or_else(|| json!({}));
-        steps.push((n, cmd.to_string(), batch_step(cmd, args).map_err(at_line)?));
+        let (cmd, args) = batch_envelope(&entry, n).map_err(at_line)?;
+        let step = batch_step(&cmd, args).map_err(at_line)?;
+        steps.push((n, cmd, step));
     }
     if steps.is_empty() {
         return Err(usage(

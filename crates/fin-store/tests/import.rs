@@ -496,9 +496,9 @@ fn newer_segment_makes_read_only_newer_format() {
     export(&mut a);
     let prev = segments(&e.dir)[0].1.hash.clone();
     let mut h = header(&a, 0, 2, 2, Some(prev.clone()));
-    // 4B reads formats 1 and 2: 3 is newer.
-    h.format_version = 3;
-    h.min_reader_version = 3;
+    // 5E reads formats 1 to 3: 4 is newer.
+    h.format_version = 4;
+    h.min_reader_version = 4;
     let path = {
         let (bytes, hash) = segment::encode(&h, &[b"{\"future\":true}".as_slice()]);
         let name = SegmentName::new(0, 2, 2, hash12(&hash).unwrap()).unwrap();

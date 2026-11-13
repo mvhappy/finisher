@@ -1,7 +1,7 @@
 // `FinRpcs` handlers. Every failure reaches the client as `FinError { code, message, details, fix }`.
 import { randomBytes } from "node:crypto";
 import { type FinError, FinRpcs, PROTOCOL_VERSION } from "@finisher/contracts";
-import { Effect, Stream } from "effect";
+import { Effect, Option, Stream } from "effect";
 import { SERVER_VERSION } from "./config.ts";
 import { HandshakeTag, revokeSelf } from "./auth/handshake.ts";
 import { TicketsTag } from "./auth/tickets.ts";
@@ -27,6 +27,7 @@ import { agentAsk as agentAskPort } from "./agent/approvals.ts";
 import { AgentCoreTag } from "./agent/core.ts";
 import { withOutcomes } from "./agent/outcomes.ts";
 import { agentChainHooks, BranchReach, PathReach } from "./agent/reach.ts";
+import { withReviewLink } from "./agent/review-link.ts";
 import { agentHandlers } from "./agent/rpc.ts";
 import { commandRules } from "./agent/rules.ts";
 import { rulesHandlers } from "./agent/rules-rpc.ts";
@@ -34,6 +35,7 @@ import { SavedPrompts } from "./agent/saved-prompts.ts";
 import { savedPromptHandlers } from "./agent/saved-prompts-rpc.ts";
 import { AgentRuntimeTag } from "./agent/wiring.ts";
 import { agentBranchLimitsExcept } from "./chain/policy.ts";
+import { protectedBranches } from "./chain/protected.ts";
 import { Fonts } from "./fonts.ts";
 import { JobEngineTag } from "./jobs/layer.ts";
 import { chainJobs, jobHandlers } from "./jobs/rpc.ts";
@@ -43,16 +45,23 @@ import { look as mediaLook } from "./media/look.ts";
 import { probeDeep } from "./media/probe-deep.ts";
 import { reprobe } from "./media/reprobe.ts";
 import { requireAbsolute, requireAbsoluteOpt } from "./paths.ts";
-import { metaJson } from "./history.ts";
+import { dropPayload, metaJson } from "./history.ts";
 import { LibraryServiceTag } from "./library/layer.ts";
 import { cataloguedAt } from "./library/reach.ts";
 import { libraryHandlers } from "./library/rpc.ts";
 import { pluginHandlers } from "./plugins/rpc.ts";
+import { commandHandlers, PluginCommandsTag } from "./plugins/host/command-rpc.ts";
+import { txToCommit } from "./plugins/host/commit-channel.ts";
+import type { PluginCommandRunRequest } from "@finisher/core-types";
 import { PluginsTag } from "./plugins/registries.ts";
 import { probeFor } from "./probe.ts";
 import { ProjectRegistry } from "./projects.ts";
 import { type AdminDeps, auditList, auditPurge, ServerControlTag, serverStatus, serverStop } from "./server-admin.ts";
 import { reporterFor } from "./sandbox/status.ts";
+import { observingArchive, observingMerge } from "./reviews/conflicts.ts";
+import { principalKey } from "./reviews/workflow.ts";
+import { reviewHandlers } from "./reviews/rpc.ts";
+import { ReviewsTag } from "./reviews/service.ts";
 
 /** Advertised in `server.hello`: the RPC tags this server implements. */
 export const CAPABILITIES: ReadonlyArray<string> = [...FinRpcs.requests.keys()].sort();
@@ -90,11 +99,14 @@ export const HandlersLive = FinRpcs.toLayer(
     const jobEngine = yield* JobEngineTag;
     const agents = yield* AgentCoreTag;
     const agentRuntime = yield* AgentRuntimeTag;
+    const reviews = yield* ReviewsTag;
     const environment = yield* EnvironmentTag;
     const pairing = yield* PairingTag;
     const deviceAccess = yield* DeviceAccessTag;
     const remoteListener = yield* RemoteListenerTag;
     const mediaCache = yield* MediaCacheTag;
+    // Plugin commands (sp8b Task 9): served only where the plugin host runs.
+    const pluginCommands = Option.getOrUndefined(yield* Effect.serviceOption(PluginCommandsTag));
     const admin: AdminDeps = {
       control: yield* ServerControlTag,
       audit,
@@ -102,6 +114,7 @@ export const HandlersLive = FinRpcs.toLayer(
       journalEnabled: () => diagnostics.enabled(),
       jobCaps: () => jobEngine.workers().caps,
       sandboxReporter: reporterFor(diagnostics.journal),
+      ...(pluginCommands?.enabledCode === undefined ? {} : { enabledCodePlugins: pluginCommands.enabledCode }),
     };
     /** The principal the chain bound to this call (`anonymous` outside it: fail closed). */
     const principalOf = (options: object) => chainOf(options)?.principal ?? connections.principalOf((options as { client: { id: number } }).client.id);
@@ -126,7 +139,7 @@ export const HandlersLive = FinRpcs.toLayer(
         return f({ ...actorFor(c.principal, options.headers), guard: { denyBranches: [], ...(credential === undefined ? {} : { credential }) } });
       });
     /** An `ok` audit row of `kind` for the call's principal (consent changes, purges). */
-    const auditAs = (options: object, kind: "consent.change" | "diagnostics.purge", details: Record<string, string>) => {
+    const auditAs = (options: object, kind: "consent.change" | "diagnostics.purge" | "history.drop", details: Record<string, string | number>) => {
       const p = principalOf(options);
       audit.append({ kind, principal: { kind: p.kind, id: p.id }, outcome: "ok", details: { ...details, transport: connections.transport } });
     };
@@ -165,9 +178,12 @@ export const HandlersLive = FinRpcs.toLayer(
     // project folder and its libraries, the server's author, `session_txs` after every write.
     const reach = new BranchReach(agents.store, agents.lineage, projects);
     // Then the outcome tracker (Task 11), once the session's own rows are written.
-    const hooks = withOutcomes(agentChainHooks({ reach, paths: new PathReach(agents.store, projects), sessions: agents.store, clock: agents.clock.now }), agents.outcomes, projects);
+    // Then the review link (7B Task 11): a session's `review.request` is recorded and `branchReady` emitted.
+    const tracked = withOutcomes(agentChainHooks({ reach, paths: new PathReach(agents.store, projects), sessions: agents.store, clock: agents.clock.now }), agents.outcomes, projects);
+    const hooks = withReviewLink(tracked, agents.reviewLink, reach);
     // Then command rules (7B Task 2), for agent principals only; a person's allow is a one-time grant (Task 5).
-    const policies = [reach.policy, agentBranchLimitsExcept((p) => reach.covers(p)), commandRules(agentRuntime.rules, agents.store, { grants: agentRuntime.grants })];
+    // Then protected branches (5E Task 6), for every principal without `branch.protected`.
+    const policies = [reach.policy, agentBranchLimitsExcept((p) => reach.covers(p)), protectedBranches, commandRules(agentRuntime.rules, agents.store, { grants: agentRuntime.grants })];
     // A running session's rule ask becomes a durable card (7B Task 4): `APPROVAL_PENDING`.
     const agentAsk = agentAskPort(agentRuntime.approvals, agents.store, agentRuntime.approvalKey);
     /** An agent session's default branch, for `auth.whoami` (Decision 14a); none for any other principal. */
@@ -175,7 +191,17 @@ export const HandlersLive = FinRpcs.toLayer(
       const s = p.kind === "agent" ? agents.store.get(p.id) : undefined;
       return s === undefined ? {} : { defaultBranch: agents.store.state(s.id).defaultBranch };
     };
-    return withChain(FinRpcs.of({
+    /** The chained handlers, for a plugin command's commit as its invoker (set below). */
+    let chained: Record<string, (payload: unknown, options: object) => Effect.Effect<unknown, FinError>> = {};
+    const commands = commandHandlers({
+      service: pluginCommands,
+      projects: registry,
+      chained: () => chained,
+      sessionRootOf: (p) => (p.kind === "agent" ? agents.store.get(p.id)?.rootBranch : undefined),
+      authorOf: (p) => hooks.authorOf?.(p),
+      guard,
+    });
+    const served = withChain(FinRpcs.of({
       // Public: the handshake (5A Decisions 8 and 9).
       "server.hello": (req, { client }) =>
         guard(
@@ -349,8 +375,12 @@ export const HandlersLive = FinRpcs.toLayer(
           ),
         ),
       // The chain already strips a client's `via`; this is the backstop for a chainless caller.
-      "tx.commit": ({ projectId, tx, generation }, options) =>
-        guard("tx.commit", withMeta(options, (m) => registry.commit(projectId, withoutVia(tx), generation, m))),
+      // The plugin host's own commit (sp8b Task 9, `commit-channel.ts`) adds its `via`, or checks
+      // everything and commits nothing for a dry run.
+      "tx.commit": ({ projectId, tx, generation }, options) => {
+        const sent = txToCommit(tx, options, withoutVia);
+        return guard("tx.commit", withMeta(options, (m) => ("dryRun" in sent ? Effect.succeed(sent as never) : registry.commit(projectId, sent.tx, generation, m))));
+      },
       "snapshot.get": ({ projectId, branch }) => guard("snapshot.get", registry.snapshot(projectId, branch)),
       // Errors (unknown project, bad range) travel in the stream's error channel.
       "ops.subscribe": ({ projectId, branch, fromRev, generation }) =>
@@ -377,7 +407,7 @@ export const HandlersLive = FinRpcs.toLayer(
         guard("branch.create", withMeta(options, (m) => registry.history(payload.projectId, "branchCreate", payload, m))),
       "branch.list": ({ projectId, all }) => guard("branch.list", registry.branches(projectId, all === true)),
       "branch.set": (payload, options) =>
-        guard("branch.set", withMeta(options, (m) => registry.history(payload.projectId, "branchSet", payload, m))),
+        guard("branch.set", withMeta(options, (m) => registry.history(payload.projectId, "branchSet", payload, m).pipe(observingArchive(reviews.workflow, principalKey(principalOf(options)), payload)))),
       "history.undo": (payload, options) =>
         guard("history.undo", withMeta(options, (m) => registry.history(payload.projectId, "undo", payload, m))),
       "history.redo": (payload, options) =>
@@ -385,11 +415,20 @@ export const HandlersLive = FinRpcs.toLayer(
       "history.checkpoint": (payload, options) =>
         guard("history.checkpoint", withMeta(options, (m) => registry.history(payload.projectId, "checkpoint", payload, m))),
       "history.merge": (payload, options) =>
-        guard("history.merge", withMeta(options, (m) => registry.history(payload.projectId, "merge", payload, m))),
+        guard("history.merge", withMeta(options, (m) => registry.history(payload.projectId, "merge", payload, m).pipe(observingMerge(reviews.workflow, principalKey(principalOf(options)), payload)))),
       "history.cherryPick": (payload, options) =>
         guard("history.cherryPick", withMeta(options, (m) => registry.history(payload.projectId, "cherryPick", payload, m))),
       "history.revert": (payload, options) =>
         guard("history.revert", withMeta(options, (m) => registry.history(payload.projectId, "revert", payload, m))),
+      // 5E: a rejection that outlives the review. Audited with a count only: no review text, no txIds.
+      "history.drop": (payload, options) =>
+        guard(
+          "history.drop",
+          Effect.tap(
+            withMeta(options, (m) => registry.history(payload.projectId, "drop", dropPayload(payload), m)),
+            () => Effect.sync(() => (payload.dryRun === true ? undefined : auditAs(options, "history.drop", { count: (payload.drops?.length ?? 0) + (payload.undrops?.length ?? 0) }))),
+          ),
+        ),
       // Not records, but changes a revoked credential must not make either (L1): the guard's credential.
       "project.acknowledgeRewind": ({ projectId, branch, generation }, options) =>
         guard(
@@ -399,9 +438,10 @@ export const HandlersLive = FinRpcs.toLayer(
       "project.acknowledgeSalvage": ({ projectId, copy }, options) =>
         guard("project.acknowledgeSalvage", withCredential(options, (meta) => Effect.map(registry.acknowledgeSalvage(projectId, copy, meta), (acknowledged) => ({ acknowledged })))),
       "tx.get": ({ projectId, txId }) => guard("tx.get", registry.txGet(projectId, txId)),
-      "eval.frame": ({ projectId, branch, timeline, at }) => guard("eval.frame", registry.evalFrame(projectId, branch ?? "main", timeline, at)),
-      "eval.audio": ({ projectId, branch, timeline, from, to }) =>
-        guard("eval.audio", registry.evalAudio(projectId, branch ?? "main", timeline, from, to)),
+      "eval.frame": ({ projectId, branch, timeline, at, rev }) =>
+        guard("eval.frame", registry.evalFrame(projectId, branch ?? "main", timeline, at, rev)),
+      "eval.audio": ({ projectId, branch, timeline, from, to, rev }) =>
+        guard("eval.audio", registry.evalAudio(projectId, branch ?? "main", timeline, from, to, rev)),
       "media.look": (req, options) => guard("media.look", mediaLook(mediaDeps, ownerOf(options), req)),
       "media.capabilities": (_, options) => guard("media.capabilities", capabilitiesOf(ownerOf(options))),
       // The media cache (6B-1 Task 13): its state, and an eviction down to the cap or `toGiB`.
@@ -450,13 +490,16 @@ export const HandlersLive = FinRpcs.toLayer(
           diagnostics.record({ principal: principalOf(options), connection: `${connections.transport}:${options.client.id}` }, req, options.headers),
         ),
       ...pluginHandlers({ plugins, audit, guard }),
+      "plugin.commands": (payload, options) => commands["plugin.commands"](payload, options),
+      "plugin.command.run": (payload, options) => commands["plugin.command.run"](payload as PluginCommandRunRequest, options),
       ...libraryHandlers({ service: library, engine: jobEngine, guard }),
       // The job engine (5C-2): ownership and reach per job in `jobs/rpc.ts`.
       ...jobHandlers({ engine: jobEngine, guard }),
-      ...agentHandlers({ guard, store: agents.store, reach, agents: agentRuntime, principalOf }),
+      ...agentHandlers({ guard, store: agents.store, reach, agents: agentRuntime, principalOf, protect: { gate: reviews.gate, protectedBranches: reviews.chain.protectedBranches } }),
       ...rulesHandlers({ guard, store: agents.store, rules: agentRuntime.rules, ruleStore: agentRuntime.ruleStore, audit, clock: agents.clock, roles: agentRuntime.roles, dirOf: (id) => registry.dirOf(id) ?? registry.indexedDirOf(id), principalOf }),
       ...savedPromptHandlers({ guard, runtime: agentRuntime.runtime, principalOf, prompts: new SavedPrompts({ serverData: agentRuntime.rules.serverData, roles: agentRuntime.roles, dirOf: (id) => registry.dirOf(id) ?? registry.indexedDirOf(id), trustOf: (id) => agentRuntime.ruleStore.trustOf(id) }) }),
       // 5B: pairing, devices, settings writes and the environment.
+      ...reviewHandlers({ guard, reviews, projects, audit, transport: connections.transport, roles: () => new Set(agentRuntime.roles.keys()) }),
       ...deviceHandlers({ guard, pairing, access: deviceAccess, connections }),
       ...settingsHandlers({ guard, serverData: admin.control.serverData ?? "", remote: remoteListener, audit }),
       ...envHandlers({ guard, env: environment }),
@@ -464,6 +507,8 @@ export const HandlersLive = FinRpcs.toLayer(
       connections,
       projects,
       jobs: chainJobs(jobEngine),
+      reviews: reviews.chain,
+      gate: reviews.gate,
       audit,
       timed: guard,
       touch: (p) => credentials.touch(p.id),
@@ -472,6 +517,9 @@ export const HandlersLive = FinRpcs.toLayer(
       agentAsk,
       // Copied or moved server data refuses devices until its owner decides (5B Decision 31).
       refuse: (p) => (p.kind === "device" && environment.state() === "moved" ? envMoved() : undefined),
+      pluginCommands: { writes: (p, name) => (pluginCommands === undefined ? Effect.succeed(undefined) : pluginCommands.registry.writes(p, name)) },
     });
+    chained = served as unknown as typeof chained;
+    return served;
   }),
 );

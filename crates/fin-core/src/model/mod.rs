@@ -33,9 +33,10 @@ pub use timeline::{
     Bin, Curve, Marker, Resolution, Timeline, Track, TrackKind, Transition, TransitionKind,
 };
 
-/// Version of the serialized model and op format. 3: stable keyframe ids (spec §5.12). 4:
+/// Version of the serialized model and op format. 3: stable keyframe ids (spec §5.12). 4: a
+/// graphic's `sourceIn` and the audio fade offsets (spec §5.13, review #54 and #55). 5:
 /// `VideoInfo` display, rotation and pixel aspect, and `asset.reprobe` (sub-project 6 §6.3).
-pub const SCHEMA_VERSION: u32 = 4;
+pub const SCHEMA_VERSION: u32 = 5;
 
 /// The resolution of a new project's timeline, and of a pre-4C project's (owner decision,
 /// plan 4C Decision 9): vertical 1080×1920.

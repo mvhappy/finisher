@@ -41,11 +41,41 @@ fn head(store: &Shared, branch: &str) -> Result<(u64, Project)> {
     with_store(store, |s| s.snapshot(branch).map_err(reject))
 }
 
-/// `timeline`, else the project's main (first) timeline.
-fn timeline_id(project: &Project, timeline: Option<String>) -> Result<String> {
-    timeline
-        .or_else(|| project.timelines.first().map(|t| t.id.clone()))
-        .ok_or_else(|| reject(CoreError::new("NOT_FOUND", "the project has no timeline")))
+/// `timeline`, else the project's main (first) timeline, on the head at `head`. A named
+/// timeline is never substituted: missing from a head at another rev than `rev` (the rev the
+/// caller resolved it at; the head moved on, or a rewind took it back) the caller's view is
+/// stale, `CONFLICT` (`reason: TIMELINE_GONE`; read the project again and retry); missing at
+/// `rev`, or with no `rev`, it is fin-core's `NOT_FOUND`.
+fn timeline_id(
+    project: &Project,
+    head: u64,
+    timeline: Option<String>,
+    rev: Option<f64>,
+) -> Result<String> {
+    let Some(id) = timeline else {
+        return project
+            .timelines
+            .first()
+            .map(|t| t.id.clone())
+            .ok_or_else(|| reject(CoreError::new("NOT_FOUND", "the project has no timeline")));
+    };
+    if let Some(read) = rev.filter(|r| *r != head as f64)
+        && !project.timelines.iter().any(|t| t.id == id)
+    {
+        return Err(reject(
+            CoreError::new(
+                "CONFLICT",
+                format!(
+                    "timeline {id} is not on the head (rev {head}) though it was read at rev {read}"
+                ),
+            )
+            .with_details(
+                json!({ "reason": "TIMELINE_GONE", "timeline": id, "rev": read, "head": head }),
+            )
+            .with_fix("read the project again (fin view) and run the command again"),
+        ));
+    }
+    Ok(id)
 }
 
 /// Each call's duration goes to `eval.stats` (key `eval.frame`, `eval.audio` or `fonts.plan`,
@@ -77,11 +107,12 @@ fn eval(store: &Shared, call: Call) -> Result<Reply> {
         Call::EvalFrame {
             branch,
             timeline,
+            rev,
             at,
         } => {
             let at = time("at", &at)?;
-            let (_, project) = head(store, &branch)?;
-            let timeline = timeline_id(&project, timeline)?;
+            let (now, project) = head(store, &branch)?;
+            let timeline = timeline_id(&project, now, timeline, rev)?;
             let m = store.fonts.manager().measurer();
             let plan =
                 fin_core::eval::eval_frame(&project, &timeline, at, Some(&*m)).map_err(reject)?;
@@ -90,12 +121,13 @@ fn eval(store: &Shared, call: Call) -> Result<Reply> {
         Call::EvalAudio {
             branch,
             timeline,
+            rev,
             from,
             to,
         } => {
             let (from, to) = (time("from", &from)?, time("to", &to)?);
-            let (_, project) = head(store, &branch)?;
-            let timeline = timeline_id(&project, timeline)?;
+            let (now, project) = head(store, &branch)?;
+            let timeline = timeline_id(&project, now, timeline, rev)?;
             let plan = fin_core::eval::eval_audio(&project, &timeline, from, to).map_err(reject)?;
             Ok(Reply::Json(encode(&plan)?))
         }
@@ -136,22 +168,26 @@ impl Engine {
     /// Resolves to the `FramePlan` JSON of `timeline` (default: the main timeline) on
     /// `branch` at `at` (a rational time such as `"12"` or `"1001/30000"`). Captions are
     /// measured with the server's shared measurer; missing bytes leave them unmeasured.
+    /// `rev`: the rev the caller resolved `timeline` at (a timeline removed since is
+    /// `CONFLICT`, `TIMELINE_GONE`, never another one).
     #[napi(catch_unwind)]
     pub fn eval_frame(
         &self,
         branch: String,
         timeline: Option<String>,
         at: String,
+        rev: Option<f64>,
     ) -> AsyncTask<StoreTask> {
         self.task(Call::EvalFrame {
             branch,
             timeline,
+            rev,
             at,
         })
     }
 
     /// Resolves to the `AudioPlan` JSON of `timeline` (default: the main one) on `branch`
-    /// over `[from, to)`.
+    /// over `[from, to)`. `rev` as [`Engine::eval_frame`]'s.
     #[napi(catch_unwind)]
     pub fn eval_audio(
         &self,
@@ -159,10 +195,12 @@ impl Engine {
         timeline: Option<String>,
         from: String,
         to: String,
+        rev: Option<f64>,
     ) -> AsyncTask<StoreTask> {
         self.task(Call::EvalAudio {
             branch,
             timeline,
+            rev,
             from,
             to,
         })

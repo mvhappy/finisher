@@ -229,6 +229,7 @@ fn insert_each_allowed_kind_golden() {
             ItemBody::Graphic {
                 asset: "a3".into(),
                 slots: [("title".to_string(), ParamValue::Text("Hi".into()))].into(),
+                source_in: fin_core::Rational::zero(),
             },
             "g1",
         ),
@@ -292,6 +293,7 @@ fn insert_rules_per_kind() {
     let graphic = ItemBody::Graphic {
         asset: "a2".into(),
         slots: BTreeMap::new(),
+        source_in: fin_core::Rational::zero(),
     };
     assert_eq!(code("t1", graphic), "INVALID_OP");
     let font_clip = ItemBody::Clip {
@@ -1087,6 +1089,7 @@ fn negative_zero_is_stored_as_zero_and_non_finite_is_refused() {
     let body = |v: f64| ItemBody::Graphic {
         asset: "a2".into(),
         slots: [("size".to_string(), ParamValue::Number(v))].into(),
+        source_in: fin_core::Rational::zero(),
     };
     let a = apply(
         &p,

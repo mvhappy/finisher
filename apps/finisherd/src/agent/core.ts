@@ -7,6 +7,7 @@ import type { SessionCredentials } from "./credentials.ts";
 import type { OutcomeTracker } from "./outcomes.ts";
 import type { RuntimeJournal } from "./runtime-deps.ts";
 import type { BranchLineage } from "./reach.ts";
+import type { ReviewLink } from "./review-link.ts";
 import type { AgentStore } from "./store.ts";
 
 export interface AgentCore {
@@ -15,6 +16,8 @@ export interface AgentCore {
   readonly lineage: BranchLineage;
   /** What became of each agent transaction (Task 11): the chains' after stage and session delete feed it. */
   readonly outcomes: OutcomeTracker;
+  /** Sessions and 5E's reviews (7B Task 11): review requests, `branchReady`, critics' roots. */
+  readonly reviewLink: ReviewLink;
   readonly clock: Clock;
   readonly ids: Ids;
   /** The runtime's journal (Task 10's `AgentJournal` over both D34 stores). */

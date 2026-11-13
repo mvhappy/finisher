@@ -96,7 +96,7 @@ describe("asset.reprobe", () => {
     // One record, of the one op, at schema 4.
     const records = JSON.parse(await engine.opsSince("main", r0)) as { tx: { schemaVersion: number; ops: { op: string }[] } }[];
     expect(records).toHaveLength(1);
-    expect(records[0]!.tx.schemaVersion).toBe(4);
+    expect(records[0]!.tx.schemaVersion).toBe(5);
     expect(records[0]!.tx.ops.map((o) => o.op)).toEqual(["asset.reprobe"]);
   }, 60_000);
 

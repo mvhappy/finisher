@@ -145,6 +145,44 @@ fn abort_try_restores_default() {
     assert_error(&host.agent(&s, &ws, &["try", "drop"]), 2, "USAGE");
 }
 
+/// Review #27 under an agent credential: keyed retries of `try` and `try drop` answer the
+/// first attempt, although it moved the session's default.
+#[test]
+fn keyed_try_retries_answer_the_first_attempt() {
+    let Some(host) = AgentHost::start("keyed_try_retries_answer_the_first_attempt") else {
+        return;
+    };
+    let (dir, project) = host.project();
+    let s = host.open(&project, "draft");
+    let ws = host.workspace(&dir, &s);
+    let root = s.root.clone().unwrap();
+    let tried = ok(host.agent(&s, &ws, &["--idem-key", "t1", "try"]));
+    let again = ok(host.agent(&s, &ws, &["--idem-key", "t1", "try"]));
+    assert_eq!(again["branch"]["id"], tried["branch"]["id"], "{again}");
+    assert_eq!(again["txId"], tried["txId"]);
+    let dropped = ok(host.agent(&s, &ws, &["--idem-key", "d1", "try", "drop"]));
+    let again = ok(host.agent(&s, &ws, &["--idem-key", "d1", "try", "drop"]));
+    assert_eq!(again["txId"], dropped["txId"], "{again}");
+    assert_eq!(again["switchedTo"], root.as_str());
+    assert_eq!(default_of(&host, &s, &ws), root);
+    // A keep retry merges into what the first attempt did: a try made with `--branch <root>`
+    // from inside another try merges into the default it replaced (the outer try), not its
+    // parent.
+    let outer = ok(host.agent(&s, &ws, &["try", "outer"]));
+    let outer_id = outer["branch"]["id"].as_str().unwrap().to_string();
+    ok(host.agent(&s, &ws, &["--branch", &root, "try", "inner"]));
+    ok(host.agent(&s, &ws, INSERT));
+    let kept = ok(host.agent(&s, &ws, &["--idem-key", "k1", "try", "keep"]));
+    assert_eq!(kept["switchedTo"], outer_id.as_str(), "{kept}");
+    let again = ok(host.agent(&s, &ws, &["--idem-key", "k1", "try", "keep"]));
+    assert_eq!(
+        again["merge"]["mergeId"], kept["merge"]["mergeId"],
+        "{again}"
+    );
+    assert_eq!(again["switchedTo"], outer_id.as_str());
+    assert_eq!(items_on(&host, &dir, &outer_id), 1);
+}
+
 #[test]
 fn fin_with_credential_never_uses_local_key() {
     let Some(host) = AgentHost::start("fin_with_credential_never_uses_local_key") else {

@@ -32,14 +32,17 @@ import { finError, toFinError } from "../errors.ts";
 import type { HistoryPayload } from "../history.ts";
 import { removeSessionDir } from "./blobs.ts";
 import type { Ids } from "./clock.ts";
+import { CRITIC_ROLE } from "./outcomes.ts";
 import { sessionAuthor } from "./reach.ts";
 import type { AgentStore, NewSession, OutboxItem } from "./store.ts";
 
 /**
- * The scopes of each mode (spec §6.1), as far as 7A has them: `jobs.submit` waits for 5C and
- * `review.write` for 5E, `auto`'s render and critic jobs for 5C and sub-project 10. `draft`
+ * The scopes of each mode (spec §6.1), as far as they are built: `jobs.submit` is a follow-up
+ * (5C-2 has landed), `auto`'s render and critic jobs wait for 6E and sub-project 10. `draft`
  * and `auto` hold `agent.run` (7B Decision 16): a session starts and drives its own children
- * only (`reach.ts`); a credential minted before 7B keeps its scopes, so it cannot spawn. No mode holds `project.create`, a human-only
+ * only (`reach.ts`); and `review.write` (7B Decision 25): it asks for a review of its branch
+ * (`review.request`), comments on and refreshes items (`review-link.ts`). A credential keeps
+ * the scopes it was minted with. No mode holds `project.create`, a human-only
  * scope, `branch.protected`, `review.decide`, `jobs.control`, `project.admin` or `fonts.fetch`;
  * `project.open` is refused to sessions by the chain (`reach.ts`). `diagnostics.record` lets
  * the session's `fin` record its own diagnostics, as every minted credential's default does.
@@ -48,7 +51,7 @@ export const MODE_SCOPES: { readonly [M in Mode]: ReadonlyArray<Scope> } = (() =
   // `agent.read` (7B Task 5): a session waits on and lists its own approval cards; every other
   // `agent.read` RPC stays people's (`SESSION_PEOPLE_READS`, `reach.ts`).
   const plan: ReadonlyArray<Scope> = ["server.read", "project.read", "library.read", "jobs.read", "diagnostics.read", "diagnostics.record", "agent.read"];
-  const draft: ReadonlyArray<Scope> = [...plan, "project.write", "agent.run"];
+  const draft: ReadonlyArray<Scope> = [...plan, "project.write", "agent.run", "review.write"];
   return { plan, draft, auto: draft };
 })();
 
@@ -284,6 +287,10 @@ export interface SessionBranchOps {
   ): Effect.Effect<BranchView, FinError>;
   /** `branch.set {archived: true}` as the starter: a branch made for a session never recorded. */
   archiveBranch?(projectId: string, req: { readonly txId: string; readonly author: string; readonly branch: string }): Effect.Effect<unknown, FinError>;
+  /** Whether `branch` (an id) is the source of an open `branchReview` (7B Task 11): no critic takes it as its root. */
+  underReview?(projectId: string, branch: string): boolean;
+  /** The head (seq and hash) of a branch under review, from a review plan of it (7B Task 12); undefined when none. */
+  reviewedHead?(projectId: string, branch: string): Effect.Effect<{ readonly seq: number; readonly hash?: string } | undefined>;
 }
 
 /** What `registryBranchOps` needs of the project registry (`ProjectRegistry`). */
@@ -296,15 +303,25 @@ export interface BranchRegistry {
 /**
  * `SessionBranchOps` over the project registry, as the starter: `meta` is the start call's actor
  * and the chain's guard (`{...actorFor(principal, headers), guard}`), so the root branch is
- * created exactly as the starter's own `branch.create` would be.
+ * created exactly as the starter's own `branch.create` would be. `reviews` (7B Task 11): `archived`
+ * is told of each archive, as `branch.set`'s handler tells 5E's review workflow (its conflict
+ * items); `underReview` answers `SessionBranchOps.underReview`.
  */
-export function registryBranchOps(registry: BranchRegistry, meta: CallMeta): SessionBranchOps {
+export function registryBranchOps(
+  registry: BranchRegistry,
+  meta: CallMeta,
+  reviews: Pick<SessionBranchOps, "underReview" | "reviewedHead"> & { readonly archived?: (projectId: string, branch: string) => Effect.Effect<void> } = {},
+): SessionBranchOps {
+  const { archived, underReview, reviewedHead } = reviews;
   return {
+    ...(underReview === undefined ? {} : { underReview }),
+    ...(reviewedHead === undefined ? {} : { reviewedHead }),
     branches: (projectId) => Effect.map(registry.branches(projectId, true), (r) => r.branches),
     resolveBranch: (projectId, ref) => registry.resolveBranch(projectId, ref),
     createBranch: (projectId, req) =>
       Effect.map(registry.history(projectId, "branchCreate", { projectId, ...req }, meta), (r) => (r as BranchCreated).branch),
-    archiveBranch: (projectId, req) => registry.history(projectId, "branchSet", { projectId, ...req, archived: true }, meta),
+    archiveBranch: (projectId, req) =>
+      Effect.tap(registry.history(projectId, "branchSet", { projectId, ...req, archived: true }, meta), () => archived?.(projectId, req.branch) ?? Effect.void),
   };
 }
 
@@ -325,8 +342,8 @@ export interface OpenSession extends Omit<NewSession, "id" | "rootBranch" | "bas
    */
   readonly root?: string;
   /**
-   * A child's (7B Task 6): the parent's root branch (an id), whose name prefixes the new root's:
-   * `<parent root name>.<role>-<n>`.
+   * A branch (an id) whose name prefixes the new root's, `<its name>.<role>-<n>`: a child's
+   * parent root (7B Task 6), or the reviewed branch a critic's root is made under (Task 11).
    */
   readonly under?: string;
   readonly budget: BudgetSpec;
@@ -371,8 +388,16 @@ export function openSession(
     const branches = yield* deps.ops.branches(req.projectId);
     const base = branches.find((b) => b.id === baseId);
     if (base === undefined) return yield* Effect.fail(finError("BRANCH_NOT_FOUND", `no branch ${baseRef}`, { branch: baseRef }));
+    // A critic on a branch under review records the reviewed head's hash too (`criticStale`), when
+    // the plan's head is the one it starts from; otherwise none, and the trigger fails closed.
+    const reviewed = req.under === undefined || deps.ops.reviewedHead === undefined ? undefined : yield* deps.ops.reviewedHead(req.projectId, req.under);
+    const hash = reviewed !== undefined && reviewed.seq === base.head ? reviewed.hash : undefined;
     let root: string | undefined;
     if (req.mode !== "plan" && req.root !== undefined) {
+      // A critic works beside the reviewed branch, never on it (Decision 26; review N2).
+      if (req.role === CRITIC_ROLE && deps.ops.underReview?.(req.projectId, base.id) === true) {
+        return yield* Effect.fail(finError("INVALID_REQUEST", "a critic cannot work on a branch under review itself", { field: "root", reason: "underReview", branch: base.id }, "Start the critic with that branch as its base: it works on a child branch of it."));
+      }
       root = base.id;
       yield* deps.creds.claimRoot(req.projectId, root);
     } else if (req.mode !== "plan") {
@@ -389,7 +414,8 @@ export function openSession(
     const made = root !== undefined && req.root === undefined ? root : undefined;
     const session = yield* Effect.tapError(
       Effect.tryPromise({
-        try: () => deps.store.createSession({ ...rest, id, base: { branch: base.id, seq: base.head }, ...(root === undefined ? {} : { rootBranch: root }) }),
+        try: () =>
+          deps.store.createSession({ ...rest, id, base: { branch: base.id, seq: base.head, ...(hash === undefined ? {} : { hash }) }, ...(root === undefined ? {} : { rootBranch: root }) }),
         catch: toFinError,
       }),
       () => unmade(deps, req.projectId, id, sessionAuthor({ role: req.role, id }), made),

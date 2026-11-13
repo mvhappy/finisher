@@ -74,3 +74,21 @@ fn a_refresh_that_cannot_write_is_harmless() {
         assert_eq!(temps_left(tmp.path()), 0);
     }
 }
+
+#[cfg(unix)]
+#[test]
+fn a_refreshing_scan_never_probes_through_a_linked_segments_dir() {
+    let tmp = layout();
+    let outside = tempfile::tempdir().unwrap();
+    let moved = outside.path().join("segments");
+    let segs = tmp.path().join(".finisher").join("segments");
+    fs::rename(&segs, &moved).unwrap();
+    std::os::unix::fs::symlink(&moved, &segs).unwrap();
+    keep_refresh_probes_for_test(true);
+    let before = refreshes();
+    let r = Scanner::new().walk(tmp.path(), true);
+    keep_refresh_probes_for_test(false);
+    assert!(r.is_err_and(|e| crate::reserved::is_linked(&e)));
+    assert_eq!(refreshes(), before);
+    assert_eq!(temps_left(&moved), 0);
+}

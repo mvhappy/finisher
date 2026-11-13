@@ -9,7 +9,7 @@
 use std::collections::{BTreeMap, BTreeSet, HashSet, VecDeque};
 
 use fin_core::branch::{Absorbed, BranchIndex, MAIN};
-use fin_core::history::{Lineage, LogRec, LogView, left_to_merge, lineage_in};
+use fin_core::history::{DropMark, Lineage, LogRec, LogView, left_to_merge, lineage_in};
 use fin_core::{CoreError, Diff, Link, Project, RecordKind};
 use rusqlite::{Connection, OptionalExtension, params};
 
@@ -152,7 +152,7 @@ fn with_merged(ix: &BranchIndex, merged: &BTreeSet<String>) -> BranchIndex {
     }))
 }
 
-/// Drops the `record_links` rows whose record is gone, and writes what [`compute`] derives
+/// Drops the `record_links` and `drops` rows whose record is gone, and writes what [`compute`] derives
 /// from the log: the branch index and the inert marks (`record_links.ignored`). Runs inside
 /// the caller's transaction (`import::cascade` after every rewind, diverged tail or
 /// cascade).
@@ -161,6 +161,7 @@ pub(crate) fn recompute(txn: &Connection) -> Result<(), StoreError> {
         "DELETE FROM record_links WHERE tx_id NOT IN (SELECT tx_id FROM txs)",
         [],
     )?;
+    crate::drops_index::forget_gone(txn)?;
     let d = compute(txn)?;
     write_marks(txn, &d)?;
     index::replace_all(txn, &d.index)
@@ -215,6 +216,7 @@ pub(crate) fn merged_branches(
         ix,
         links,
         found: Default::default(),
+        drops: Default::default(),
     };
     let mut out = BTreeSet::new();
     for (b, t) in pairs {
@@ -241,7 +243,9 @@ pub(crate) fn merged_branches(
 /// elsewhere do. So, for a write, a merged branch that got records of its own is recomputed
 /// (an edit a write made just clears the flag: it is left to merge), and every branch holding a
 /// record of a new copy's origin root is recomputed ([`root_branches`]), with the copy's
-/// source branch. An import pass applies
+/// source branch. A `drop` record (plan 5E) changes what is left to merge into its branch and
+/// the branches forked from it later: its `from` branch and every branch holding a record of
+/// a root it names are recomputed, as for a copy. An import pass applies
 /// records in folder order, not in the order they were written: a copy may arrive before the
 /// records it copies, or before the `branch` record of their branch. So every branch an import
 /// gave records, and every branch an imported `branch` record makes, is recomputed whatever
@@ -255,9 +259,9 @@ pub(crate) struct Touched {
     own: BTreeSet<String>,
     /// Branches an import gave records, or made: always recomputed.
     imported: BTreeSet<String>,
-    /// The `from` branches of new copies.
+    /// The `from` branches of new copies and drops.
     sources: BTreeSet<String>,
-    /// The `origin`s of new copies.
+    /// The `origin`s of new copies, and the roots new drops name.
     origins: BTreeSet<String>,
 }
 
@@ -290,6 +294,17 @@ impl Touched {
             None
             | Some(Link::Edit | Link::Undo { .. } | Link::Redo { .. } | Link::Revert { .. }) => {
                 own.insert(branch.to_string());
+            }
+            // What is dropped for `branch` (and the branches forked from it after the record)
+            // changes: the source, and every branch holding a record of a named root.
+            Some(Link::Drop {
+                from,
+                drops,
+                undrops,
+                ..
+            }) => {
+                self.sources.insert(from.clone());
+                self.origins.extend(drops.iter().chain(undrops).cloned());
             }
             // A branch made after the copies of its records arrived (import only: a write's
             // new branch has no records yet, and no copies).
@@ -392,7 +407,9 @@ fn root_branches(conn: &Connection, origin: &str) -> Result<BTreeSet<String>, St
 
 /// The log as [`left_to_merge`] reads it: lineages from an index (the one [`compute`] derives,
 /// which may differ from the table), records without their diffs (never filled: verify reads
-/// through it and writes nothing). States are never read.
+/// through it and writes nothing), and the `drop` marks along a lineage's bounds: from the
+/// `drops` index with `links`, else from the `drop` records alone
+/// ([`crate::drops_index::marks_parsed`]). States are never read.
 struct IndexLog<'a> {
     conn: &'a Connection,
     ix: &'a BranchIndex,
@@ -402,7 +419,12 @@ struct IndexLog<'a> {
     /// [`LogView::find`] answers, by txId: origin roots are followed for every record of
     /// every pair, and mostly reach the same few records.
     found: std::cell::RefCell<BTreeMap<String, Option<LogRec>>>,
+    /// [`LogView::drops_on`] answers, by lineage: the pairs of one target share it.
+    drops: std::cell::RefCell<BTreeMap<Segs, Vec<DropMark>>>,
 }
+
+/// A lineage's segments ([`Lineage::segs`]), as a cache key.
+type Segs = Vec<(String, u64, Option<u64>)>;
 
 impl IndexLog<'_> {
     fn rec(&self, branch: String, seq: i64, bytes: &[u8]) -> Result<LogRec, StoreError> {
@@ -503,6 +525,21 @@ impl LogView for IndexLog<'_> {
 
     fn merged_away(&self, _: &str) -> Result<HashSet<String>, CoreError> {
         Err(no_states())
+    }
+
+    fn drops_on(&self, lineage: &Lineage) -> Result<Vec<DropMark>, CoreError> {
+        if let Some(hit) = self.drops.borrow().get(&lineage.segs) {
+            return Ok(hit.clone());
+        }
+        let marks = if self.links {
+            crate::drops_index::marks(self.conn, lineage)?
+        } else {
+            crate::drops_index::marks_parsed(self.conn, lineage)?
+        };
+        self.drops
+            .borrow_mut()
+            .insert(lineage.segs.clone(), marks.clone());
+        Ok(marks)
     }
 }
 

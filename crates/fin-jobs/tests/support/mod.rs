@@ -77,6 +77,14 @@ impl Rig {
         )
     }
 
+    /// A plugin process's runtime (`worker::run_plugin_on`, plan 8B Decision 21).
+    pub fn plugin(family: impl Family + 'static, minor: u32) -> Rig {
+        Rig::start(
+            move |c| fin_jobs::worker::run_plugin_on(family, c, minor),
+            None,
+        )
+    }
+
     pub fn helper(helper: impl fin_jobs::helper::Helper + 'static) -> Rig {
         Rig::start(move |c| fin_jobs::helper::run_on(helper, c), None)
     }
@@ -103,6 +111,11 @@ impl Rig {
             .expect("stdin open")
             .write_all(&bytes)
             .unwrap();
+    }
+
+    /// Counts `n` lines sent raw (their `seq`s) so the next [`Rig::send`] follows them.
+    pub fn skip_seq(&mut self, n: u64) {
+        self.seq += n;
     }
 
     /// Writes raw bytes to the runtime's stdin.

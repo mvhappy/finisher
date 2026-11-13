@@ -126,17 +126,17 @@ fn truncated_is_incomplete_not_corrupt() {
 #[test]
 fn newer_min_reader_is_reported() {
     let mut h = header();
-    h.format_version = 3;
-    h.min_reader_version = 3;
+    h.format_version = 4;
+    h.min_reader_version = 4;
     let (bytes, _) = segment::encode(&h, &RECORDS);
     assert!(matches!(
         segment::decode(&bytes),
-        Err(SegError::Newer { min_reader: 3 })
+        Err(SegError::Newer { min_reader: 4 })
     ));
 
     // Readable by us although written by a newer format revision.
     let mut h = header();
-    h.format_version = 3;
+    h.format_version = 4;
     let (bytes, hash) = segment::encode(&h, &RECORDS);
     assert_eq!(segment::decode(&bytes).unwrap().hash, hash);
 }
@@ -145,17 +145,19 @@ fn newer_min_reader_is_reported() {
 fn unknown_hash_prefix_is_unsupported() {
     let other = format!("sha256:{}", "cd".repeat(32));
     let mut h = header();
-    h.format_version = 3;
+    h.format_version = 4;
     let bytes = with_trailer_hash(&segment::encode(&h, &RECORDS).0, &other);
     assert!(matches!(
         segment::decode(&bytes),
         Err(SegError::UnsupportedHash)
     ));
-    // Formats 1 and 2 always use BLAKE3, so another algorithm there is damage.
-    let mut h = header();
-    h.format_version = 2;
-    let bytes = with_trailer_hash(&segment::encode(&h, &RECORDS).0, &other);
-    assert!(matches!(segment::decode(&bytes), Err(SegError::Corrupt(_))));
+    // Formats 1 to 3 always use BLAKE3, so another algorithm there is damage.
+    for format in [2, 3] {
+        let mut h = header();
+        h.format_version = format;
+        let bytes = with_trailer_hash(&segment::encode(&h, &RECORDS).0, &other);
+        assert!(matches!(segment::decode(&bytes), Err(SegError::Corrupt(_))));
+    }
     let bytes = with_trailer_hash(&small_segment(), &other);
     assert!(matches!(segment::decode(&bytes), Err(SegError::Corrupt(_))));
     // A wrong BLAKE3 digest with a good CRC is damage too.

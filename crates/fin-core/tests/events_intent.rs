@@ -134,7 +134,7 @@ fn intent_decode_refuses_a_raw_path() {
     assert_eq!(back.bytes(), intent.bytes());
     v["ops"][0]["path"] = json!("/home/alice/a.mp4");
     assert!(serde_json::from_value::<IntentTx>(v.clone()).is_err());
-    let spec = kind("log.commit", 1).unwrap();
+    let spec = kind("log.commit", 2).unwrap();
     let payload = json!({ "record": "edit", "outcome": "accepted", "micros": 1, "intent": [v] });
     assert_eq!(
         decode_payload(spec, &payload).unwrap_err().code,
@@ -293,7 +293,8 @@ fn every_kind_fin_sends_has_a_wire_form() {
         .collect();
     assert!(fin.iter().all(|k| WIRE_KINDS.contains(k)), "{fin:?}");
     // `finisherd` sends the agent kinds through wire forms too (raw model ids and upstreams,
-    // unkeyed hashes, and the approvals' provenance; sub-project 7A review H1, H2, M3; Task 10 B1).
+    // unkeyed hashes, and the approvals' provenance; sub-project 7A review H1, H2, M3; Task 10 B1) and `review.verdict`
+    // (raw txIds and session id; 5E Task 4).
     assert_eq!(
         WIRE_KINDS,
         [
@@ -303,7 +304,8 @@ fn every_kind_fin_sends_has_a_wire_form() {
             "agent.turn",
             "agent.toolCall",
             "agent.toolResult",
-            "agent.approval"
+            "agent.approval",
+            "review.verdict"
         ]
     );
 }

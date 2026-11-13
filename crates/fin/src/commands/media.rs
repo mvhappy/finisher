@@ -16,7 +16,7 @@ use serde_json::{Value, json};
 use super::Builder;
 use super::builder::rename_json;
 use super::clip::merge_echo;
-use super::item::{insert_mode, mode_name};
+use super::item::{InsertModeArg, insert_mode, mode_name};
 use crate::addr;
 use crate::output::usage;
 use crate::values;
@@ -46,9 +46,9 @@ pub struct ImageArgs {
     #[arg(long, value_name = "time")]
     pub dur: String,
     /// "overwrite" (default) or "ripple".
-    #[arg(long, value_name = "overwrite|ripple", value_parser = ["ripple", "overwrite"])]
+    #[arg(long, value_name = "overwrite|ripple")]
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub mode: Option<String>,
+    pub mode: Option<InsertModeArg>,
 }
 
 /// Place a Lottie template on a video track; binds $graphic. `dur` defaults to the template's
@@ -69,9 +69,9 @@ pub struct GraphicArgs {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub slots: Vec<String>,
     /// "overwrite" (default) or "ripple".
-    #[arg(long, value_name = "overwrite|ripple", value_parser = ["ripple", "overwrite"])]
+    #[arg(long, value_name = "overwrite|ripple")]
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub mode: Option<String>,
+    pub mode: Option<InsertModeArg>,
 }
 
 /// One insert of `body` at `at` on `track`: a plain insert in ripple mode, an overwrite (split
@@ -128,7 +128,7 @@ fn place(
 pub fn plan_image(b: &mut Builder<'_>, a: &ImageArgs, suffix: &str) -> Result<Value, CoreError> {
     let (track, at, rate) = place(b, &a.track, &a.at)?;
     let duration = addr::time_at(rate, "dur", &a.dur)?;
-    let mode = insert_mode(a.mode.as_deref(), InsertMode::Overwrite);
+    let mode = insert_mode(a.mode, InsertMode::Overwrite);
     let body = ItemBody::Image {
         asset: b.id(&a.asset),
     };
@@ -179,11 +179,12 @@ pub fn plan_graphic(
             values::parse(spec, &format!("slots.{id}"), value, rate)?,
         );
     }
-    let mode = insert_mode(a.mode.as_deref(), InsertMode::Overwrite);
+    let mode = insert_mode(a.mode, InsertMode::Overwrite);
     let echo_slots = json!(slots);
     let body = ItemBody::Graphic {
         asset: template,
         slots,
+        source_in: Rational::zero(),
     };
     let echo = insert(b, &track, at, duration, body, mode, "$graphic", suffix)?;
     let mut resolved = json!({

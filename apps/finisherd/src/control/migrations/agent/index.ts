@@ -8,5 +8,8 @@ import { agent0006 } from "./0006.ts";
 import { agent0007 } from "./0007.ts";
 import { agent0008 } from "./0008.ts";
 import { agent0009 } from "./0009.ts";
+import { agent0010 } from "./0010.ts";
+import { agent0011 } from "./0011.ts";
+import { agent0012 } from "./0012.ts";
 
-export const AGENT_MIGRATIONS = [agent0001, agent0002, agent0003, agent0004, agent0005, agent0006, agent0007, agent0008, agent0009] as const;
+export const AGENT_MIGRATIONS = [agent0001, agent0002, agent0003, agent0004, agent0005, agent0006, agent0007, agent0008, agent0009, agent0010, agent0011, agent0012] as const;

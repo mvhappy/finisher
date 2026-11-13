@@ -1,7 +1,7 @@
 // 7A Task 11: the outcome tracker (Decision 27; spec §12.5). Against a real engine on a server:
 // merges, cherry-picks, undos, reverts, archives and deletes of agent transactions become
 // outcomes in `session_txs` (one per `(txId, via)`), and 5E's `review.verdict` is emitted
-// only once that kind is registered.
+// once that kind is registered (5E Task 4: v1).
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -102,9 +102,12 @@ describe("outcomes on a server", () => {
       ]);
       expect(latest(t)).toBe("reverted");
     }
-    // Without 5E's kind nothing was emitted.
-    expect(kindVersion("review.verdict", "agent")).toBeNull();
-    expect(server.core.store.outcomes.bySession(s.id).every((o) => !o.emitted)).toBe(true);
+    // 5E's kind exists (v1): fin-core validated every outcome as `review.verdict` and the
+    // journal took it.
+    expect(kindVersion("review.verdict", "agent")).toBe(1);
+    const all = server.core.store.outcomes.bySession(s.id);
+    expect(all.length).toBeGreaterThan(0);
+    expect(all.every((o) => o.emitted)).toBe(true);
   });
 
   test("abandoned_when_archived_unmerged: a merged one is not; another session's are not", async () => {
@@ -250,8 +253,9 @@ describe("verdict sink", () => {
     expect(recorded).toEqual([["review.verdict", 1, JSON.stringify({ project: "P1", txId: "T1", actor: { kind: "agent", session: "S1" } }), JSON.stringify(v), "agent"]]);
   });
 
-  test("kindVersion: reserved, unknown and foreign-source kinds have none", () => {
-    expect(kindVersion("review.verdict", "agent")).toBeNull();
+  test("kindVersion: unknown and foreign-source kinds have none; review.verdict is v1 for agent", () => {
+    expect(kindVersion("review.verdict", "agent")).toBe(1);
+    expect(kindVersion("review.verdict", "ui")).toBeNull();
     expect(kindVersion("no.such", "agent")).toBeNull();
     expect(kindVersion("agent.session", "agent")).toBe(1);
     expect(kindVersion("agent.session", "fin")).toBeNull();

@@ -41,8 +41,15 @@ export function unusable(row: InstalledFull): ReturnType<typeof finError> | unde
   return undefined;
 }
 
-/** `<serverData>/plugins/<row.dir>`: `dir` is `store/@pub/name/<version-dir>` with plain parts. */
+/**
+ * `<serverData>/plugins/<row.dir>`: `dir` is `store/@pub/name/<version-dir>` with plain parts. A
+ * developer plugin (Task 11) runs from its own folder: its `dir` is that folder's real path.
+ */
 export function storeDirOf(serverData: string, row: InstalledFull): string {
+  if (row.source === "dev") {
+    if (!isAbsolute(row.dir)) throw finError("PLUGIN_NOT_FOUND", `${row.id} has no folder`, { plugin: row.id, reason: "devDir" });
+    return row.dir;
+  }
   const parts = row.dir.split("/");
   if (parts[0] !== "store" || parts.length < 4 || parts.some((p) => p === "" || p === "." || p === ".." || p.includes("\\"))) {
     throw finError("PLUGIN_NOT_FOUND", `${row.id} has no package in the store`, { plugin: row.id, reason: "storeDir" });
@@ -96,8 +103,11 @@ export function jobRow(installed: InstalledOf, job: JobView): { readonly row: In
   }
 }
 
-/** The job's plugin, its package and its runtime's program; `tmp` is the key's temp. */
-export function resolveRuntime(deps: ResolveDeps, job: JobView, tmp: string): ResolvedRuntime {
+/**
+ * The job's plugin, its package and its runtime's program; `tmp` is the key's temp, `data` the
+ * caller's `pluginData` directory when `fs pluginData` is granted (a `node` plugin's flags name it).
+ */
+export function resolveRuntime(deps: ResolveDeps, job: JobView, tmp: string, data?: { readonly path: string; readonly write: boolean }): ResolvedRuntime {
   const found = jobRow(deps.installed, job);
   if ("error" in found) throw found.error;
   const { row } = found;
@@ -118,7 +128,7 @@ export function resolveRuntime(deps: ResolveDeps, job: JobView, tmp: string): Re
   }
   if (rt?.type === "node") {
     const main = inPackage(storeDir, rt.main, id);
-    return { row, storeDir, runtime: "node", path: deps.execPath ?? process.execPath, args: nodeArgs({ pluginDir: storeDir, main, tmp }) };
+    return { row, storeDir, runtime: "node", path: deps.execPath ?? process.execPath, args: nodeArgs({ pluginDir: storeDir, main, tmp, ...(data === undefined ? {} : { data }) }) };
   }
   throw finError("PLUGIN_RUNTIME_UNAVAILABLE", `${id} has no runtime this host runs`, { plugin: id, runtime: (rt as { type?: unknown } | undefined)?.type ?? null });
 }

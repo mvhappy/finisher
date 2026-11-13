@@ -48,6 +48,14 @@ pub static AGENT_MODELS: NameTable = NameTable::new(
         "gpt-6-sol",
         "gpt-6-luna",
         "gpt-6-astra",
+        // Claude Code 2.1.321's unsigned `initialize` list (7D Task 0): its values and the
+        // resolved id the claude-opus/-sonnet/-haiku rows above do not already name.
+        "default",
+        "opus",
+        "sonnet",
+        "haiku",
+        "fable",
+        "claude-fable-5-2",
         "other",
     ],
 );

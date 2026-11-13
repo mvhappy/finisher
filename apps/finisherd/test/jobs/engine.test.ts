@@ -144,7 +144,9 @@ describe("runs", () => {
     expect(done.code).toBeUndefined();
     expect(t.sink.exits).toHaveLength(1);
     expect(t.sink.exits[0]).toMatchObject({ role: "worker", family: "test", reason: "done", exitCode: 0, jobsServed: 1, sandboxed: false });
-    expect(t.sink.exits[0]!.lifetimeS).toBeGreaterThan(0);
+    // Whole seconds (worker.exit's u64): a short-lived worker is 0, never a fraction.
+    expect(Number.isInteger(t.sink.exits[0]!.lifetimeS)).toBe(true);
+    expect(t.sink.exits[0]!.lifetimeS).toBeGreaterThanOrEqual(0);
 
     // Interactive with one attempt: neither retried nor isolated (Task 10).
     const failed = await t.runJob("test.crash", { items: ["x"], poison: ["x"], how: "abort" }, { priority: "interactive", maxAttempts: 1 });
@@ -156,12 +158,13 @@ describe("runs", () => {
 
   test("owner_via_rights_are_kept", async () => {
     const t = await testEngine();
+    const rights = { principal: OWNER, class: "person", scopes: ["project.read"], projects: "all", libraries: [], grants: [{ perm: "project:read" }], rightsHash: "0".repeat(32), generation: 0 };
     const done: unknown[] = [];
     t.engine.onDone((j) => done.push(j));
-    const v = await t.runJob("test.call", { method: "test.echo", params: { x: 1 } }, { via: { plugin: "p.one" }, rights: { r: ["a"] } });
+    const v = await t.runJob("test.call", { method: "test.echo", params: { x: 1 } }, { via: { plugin: "p.one" }, rights });
     expect(v.state).toBe("succeeded");
-    expect(v.result).toEqual({ echo: { x: 1 }, job: v.id, role: "worker", owner: OWNER, via: { plugin: "p.one" }, rights: { r: ["a"] } });
-    expect(v).toMatchObject({ owner: OWNER, via: { plugin: "p.one" }, rights: { r: ["a"] } });
+    expect(v.result).toEqual({ echo: { x: 1 }, job: v.id, role: "worker", owner: OWNER, via: { plugin: "p.one" }, rights });
+    expect(v).toMatchObject({ owner: OWNER, via: { plugin: "p.one" }, rights });
     expect(done).toEqual([v]);
   });
 

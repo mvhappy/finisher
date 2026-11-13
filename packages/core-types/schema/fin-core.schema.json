@@ -707,6 +707,15 @@
           "$ref": "#/$defs/RegistryRefresh"
         },
         {
+          "$ref": "#/$defs/PluginStats"
+        },
+        {
+          "$ref": "#/$defs/PluginExit"
+        },
+        {
+          "$ref": "#/$defs/PluginCommand"
+        },
+        {
           "$ref": "#/$defs/ErrorInternal"
         },
         {
@@ -862,6 +871,13 @@
       ],
       "type": "object"
     },
+    "ArgsOmitted": {
+      "description": "Why `args` is absent although training is on.",
+      "enum": [
+        "tooLarge"
+      ],
+      "type": "string"
+    },
     "Asset": {
       "properties": {
         "audio": {
@@ -978,24 +994,6 @@
         },
         "bin": {
           "type": "string"
-        }
-      },
-      "required": [
-        "asset"
-      ],
-      "type": "object"
-    },
-    "AssetReprobe": {
-      "description": "`asset.reprobe`: `asset`'s streams are now `video` and `audio`.",
-      "properties": {
-        "asset": {
-          "type": "string"
-        },
-        "audio": {
-          "$ref": "#/$defs/AudioInfo"
-        },
-        "video": {
-          "$ref": "#/$defs/VideoInfo"
         }
       },
       "required": [
@@ -1168,12 +1166,18 @@
       "type": "object"
     },
     "AudioParams": {
-      "description": "The item's own audio: gain in dB, pan in −1…1, fades in seconds.",
+      "description": "The item's own audio: gain in dB, pan in −1…1, fades in seconds. A fade's offset\n(schema 4) places its window past the item's edge: the fade-in runs over\n`[start − fadeInOffset, start − fadeInOffset + fadeIn)`, the fade-out over\n`[end + fadeOutOffset − fadeOut, end + fadeOutOffset)`, and only the part inside the item\nsounds. A split sets them so each half keeps the original envelope (spec §5.13).",
       "properties": {
         "fadeIn": {
           "$ref": "#/$defs/Rational"
         },
+        "fadeInOffset": {
+          "$ref": "#/$defs/Rational"
+        },
         "fadeOut": {
+          "$ref": "#/$defs/Rational"
+        },
+        "fadeOutOffset": {
           "$ref": "#/$defs/Rational"
         },
         "gain": {
@@ -1581,77 +1585,7 @@
       ],
       "type": "string"
     },
-    "CacheGcResult": {
-      "description": "What one `gc` (or eviction pass) did.",
-      "properties": {
-        "bytes": {
-          "description": "What the cache holds afterwards (above the target only when the rest is pinned).",
-          "format": "uint64",
-          "minimum": 0,
-          "type": "integer"
-        },
-        "evicted": {
-          "format": "uint64",
-          "minimum": 0,
-          "type": "integer"
-        },
-        "freedBytes": {
-          "format": "uint64",
-          "minimum": 0,
-          "type": "integer"
-        }
-      },
-      "required": [
-        "evicted",
-        "freedBytes",
-        "bytes"
-      ],
-      "type": "object"
-    },
-    "CacheStatus": {
-      "description": "`media.cache.status` (`fin cache status`): what the cache holds against its cap.",
-      "properties": {
-        "byRecipe": {
-          "additionalProperties": {
-            "$ref": "#/$defs/RecipeUsage"
-          },
-          "type": "object"
-        },
-        "bytes": {
-          "description": "Every entry's files and `meta.json`.",
-          "format": "uint64",
-          "minimum": 0,
-          "type": "integer"
-        },
-        "capBytes": {
-          "description": "Eviction keeps `bytes` at or below this (Decision 12).",
-          "format": "uint64",
-          "minimum": 0,
-          "type": "integer"
-        },
-        "entries": {
-          "format": "uint64",
-          "minimum": 0,
-          "type": "integer"
-        },
-        "pinned": {
-          "description": "Entries with at least one pin (never evicted).",
-          "format": "uint64",
-          "minimum": 0,
-          "type": "integer"
-        }
-      },
-      "required": [
-        "bytes",
-        "entries",
-        "capBytes",
-        "pinned",
-        "byRecipe"
-      ],
-      "type": "object"
-    },
     "CallLimits": {
-      "additionalProperties": false,
       "description": "The limits of this job's calls and results.",
       "properties": {
         "messageBytes": {
@@ -2604,9 +2538,33 @@
         }
       ]
     },
+    "CommandOutcome": {
+      "description": "What became of a command run.",
+      "oneOf": [
+        {
+          "const": "accepted",
+          "description": "The transaction was committed on the revision the plugin saw.",
+          "type": "string"
+        },
+        {
+          "const": "rebased",
+          "description": "The branch had moved on: fin-core rebased the transaction and committed it.",
+          "type": "string"
+        },
+        {
+          "const": "conflict",
+          "description": "fin-core refused it (`CONFLICT`): nothing was committed; `ops` are what was proposed.",
+          "type": "string"
+        },
+        {
+          "const": "data",
+          "description": "The command returned data, or a dry run validated its transaction.",
+          "type": "string"
+        }
+      ]
+    },
     "CommandRun": {
-      "additionalProperties": false,
-      "description": "A command run: the host has checked `args` against the command's schema and pinned `rev`\nto the head of `branch`.",
+      "description": "A command run: the host has checked `args` against the command's schema and pinned `rev`\nto the head of `branch`. Decoded leniently (a field from a newer host is ignored).",
       "properties": {
         "args": true,
         "branch": {
@@ -2623,6 +2581,13 @@
           "format": "uint64",
           "minimum": 0,
           "type": "integer"
+        },
+        "snapshot": {
+          "description": "The host's handle on the snapshot it read for this run at submit (opaque to plugins):\nevery page the run reads comes from that snapshot, of this run only, so a rewind or\nrebuild that reaches `rev` again in a newer history is never served from an older one.",
+          "type": [
+            "string",
+            "null"
+          ]
         }
       },
       "required": [
@@ -2657,7 +2622,8 @@
         "checkpoint",
         "branch",
         "branchSet",
-        "recover"
+        "recover",
+        "drop"
       ],
       "type": "string"
     },
@@ -2820,7 +2786,7 @@
       "type": "object"
     },
     "ContainerKind": {
-      "description": "The container family, from `ftyp`'s brands or the EBML `DocType`.",
+      "description": "The container family, from `ftyp`'s brands.",
       "oneOf": [
         {
           "enum": [
@@ -2831,16 +2797,6 @@
         {
           "const": "mov",
           "description": "QuickTime (`qt  ` major brand).",
-          "type": "string"
-        },
-        {
-          "const": "webm",
-          "description": "EBML `DocType` `webm`.",
-          "type": "string"
-        },
-        {
-          "const": "matroska",
-          "description": "EBML `DocType` `matroska`.",
           "type": "string"
         }
       ]
@@ -3281,26 +3237,6 @@
       ],
       "type": "object"
     },
-    "DisplaySize": {
-      "description": "A picture's display size in px (`VideoInfo.display`).",
-      "properties": {
-        "height": {
-          "format": "uint32",
-          "minimum": 0,
-          "type": "integer"
-        },
-        "width": {
-          "format": "uint32",
-          "minimum": 0,
-          "type": "integer"
-        }
-      },
-      "required": [
-        "width",
-        "height"
-      ],
-      "type": "object"
-    },
     "DolbyVision": {
       "description": "A Dolby Vision configuration record (`dvcC`/`dvvC`).",
       "properties": {
@@ -3340,6 +3276,55 @@
         "enhancementLayer",
         "baseLayer",
         "compatibility"
+      ],
+      "type": "object"
+    },
+    "DropReq": {
+      "additionalProperties": false,
+      "description": "[`Store::drop`](crate::Store::drop)'s request (`history.drop`, plan 5E Decision 5).\n\n- `tx_id`: the idempotency key, the `drop` record's txId;\n- `author`: the record's author;\n- `into`: the branch the rejection binds (a reference; the record is written there);\n- `from`: the source branch (a reference; it may be archived);\n- `drops`, `undrops`: origin-root txIds of records on `from`'s lineage after its common\n  point with `into`, at least one in all; sorted and deduplicated at write;\n- `dry_run`: plan against the local database and keep nothing, on a follower too;\n- `args_hash`: the command input's hash, stored on the record's intent; a retry of the\n  txId with another hash is `IDEM_KEY_REUSED`.",
+      "properties": {
+        "argsHash": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "author": {
+          "type": "string"
+        },
+        "drops": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "dryRun": {
+          "default": false,
+          "type": "boolean"
+        },
+        "from": {
+          "type": "string"
+        },
+        "into": {
+          "type": "string"
+        },
+        "txId": {
+          "type": "string"
+        },
+        "undrops": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "txId",
+        "author",
+        "into",
+        "from"
       ],
       "type": "object"
     },
@@ -3720,120 +3705,40 @@
       ],
       "type": "string"
     },
-    "EntryEncoder": {
-      "additionalProperties": false,
-      "description": "The encoder that made an entry (proxies), for diagnostics and the export rule that a\n`gpu`-encoded file never leaves the cache.",
-      "properties": {
-        "backend": {
+    "EntryStatus": {
+      "description": "What a merge does with a source record (the review's `status`).",
+      "oneOf": [
+        {
+          "const": "willMerge",
+          "description": "Copied by the merge.",
           "type": "string"
         },
-        "class": {
-          "$ref": "#/$defs/VendorClass"
+        {
+          "const": "alreadyPresent",
+          "description": "The target holds its origin root already (merged, picked, or its own).",
+          "type": "string"
+        },
+        {
+          "const": "dropped",
+          "description": "Its origin root is dropped for the target (`DROPPED`).",
+          "type": "string"
+        },
+        {
+          "const": "excluded",
+          "description": "Left out, not a conflict: `UNDOES_TARGET_RECORDS`, or `NOT_INCLUDED` by the merge's\nlimits (`reason` says which).",
+          "type": "string"
+        },
+        {
+          "const": "dependsOnSkipped",
+          "description": "A conflict: it depends on a record the merge does not copy (`DEPENDS_ON_SKIPPED`).",
+          "type": "string"
+        },
+        {
+          "const": "conflict",
+          "description": "A conflict of another reason (`reason`, `blame`).",
+          "type": "string"
         }
-      },
-      "required": [
-        "backend",
-        "class"
-      ],
-      "type": "object"
-    },
-    "EntryFile": {
-      "additionalProperties": false,
-      "description": "One payload file of an entry.",
-      "properties": {
-        "blake3": {
-          "description": "BLAKE3 of the file, 64 lower-case hex digits.",
-          "type": "string"
-        },
-        "bytes": {
-          "format": "uint64",
-          "minimum": 0,
-          "type": "integer"
-        },
-        "name": {
-          "description": "`[A-Za-z0-9_][A-Za-z0-9._-]{0,63}`, not `meta.json`.",
-          "type": "string"
-        }
-      },
-      "required": [
-        "name",
-        "bytes",
-        "blake3"
-      ],
-      "type": "object"
-    },
-    "EntryMeta": {
-      "additionalProperties": false,
-      "description": "An entry's `meta.json` (spec §7.2): the key and its input, the files and, for proxies, the\noriginal's `MediaInfo`.",
-      "properties": {
-        "createdAt": {
-          "description": "Unix milliseconds.",
-          "format": "int64",
-          "type": "integer"
-        },
-        "decoderClass": {
-          "$ref": "#/$defs/VendorClass"
-        },
-        "encoder": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/EntryEncoder"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
-        "files": {
-          "items": {
-            "$ref": "#/$defs/EntryFile"
-          },
-          "type": "array"
-        },
-        "fingerprint": {
-          "type": "string"
-        },
-        "key": {
-          "type": "string"
-        },
-        "media": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/MediaInfo"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "description": "The original's `MediaInfo` (proxies: rotation and pixel aspect are applied from it)."
-        },
-        "params": true,
-        "recipe": {
-          "type": "string"
-        },
-        "recipeVersion": {
-          "format": "uint32",
-          "minimum": 0,
-          "type": "integer"
-        },
-        "renderVersion": {
-          "format": "uint32",
-          "minimum": 0,
-          "type": "integer"
-        }
-      },
-      "required": [
-        "key",
-        "fingerprint",
-        "recipe",
-        "recipeVersion",
-        "params",
-        "renderVersion",
-        "decoderClass",
-        "files",
-        "createdAt"
-      ],
-      "type": "object"
+      ]
     },
     "EntryType": {
       "description": "The type of a directory entry as listed (never by following a link). Windows reparse\npoints with a name-surrogate tag (symlinks, junctions, mount points) are `symlink` in a\n[`ScanEntry`] (see [`crate::listing`]); anything that is neither a regular file, a\ndirectory nor a link (sockets, devices, FIFOs) is `other`.",
@@ -4100,7 +4005,7 @@
               "type": "string"
             },
             "kv": {
-              "const": 1,
+              "const": 2,
               "type": "integer"
             },
             "payload": {
@@ -4272,6 +4177,72 @@
           "additionalProperties": false,
           "properties": {
             "kind": {
+              "const": "plugin.stats",
+              "type": "string"
+            },
+            "kv": {
+              "const": 1,
+              "type": "integer"
+            },
+            "payload": {
+              "$ref": "#/$defs/PluginStats"
+            }
+          },
+          "required": [
+            "kind",
+            "kv",
+            "payload"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "plugin.exit",
+              "type": "string"
+            },
+            "kv": {
+              "const": 1,
+              "type": "integer"
+            },
+            "payload": {
+              "$ref": "#/$defs/PluginExit"
+            }
+          },
+          "required": [
+            "kind",
+            "kv",
+            "payload"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "plugin.command",
+              "type": "string"
+            },
+            "kv": {
+              "const": 1,
+              "type": "integer"
+            },
+            "payload": {
+              "$ref": "#/$defs/PluginCommand"
+            }
+          },
+          "required": [
+            "kind",
+            "kv",
+            "payload"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
               "const": "error.internal",
               "type": "string"
             },
@@ -4342,7 +4313,7 @@
               "type": "string"
             },
             "kv": {
-              "const": 1,
+              "const": 2,
               "type": "integer"
             },
             "payload": {
@@ -4562,7 +4533,7 @@
               "type": "string"
             },
             "kv": {
-              "const": 0,
+              "const": 1,
               "type": "integer"
             },
             "payload": {
@@ -4989,31 +4960,6 @@
           "type": "object"
         }
       ]
-    },
-    "FirstFrame": {
-      "additionalProperties": false,
-      "description": "The first decoded picture.",
-      "properties": {
-        "format": {
-          "$ref": "#/$defs/PixelFormat"
-        },
-        "height": {
-          "format": "uint32",
-          "minimum": 0,
-          "type": "integer"
-        },
-        "width": {
-          "format": "uint32",
-          "minimum": 0,
-          "type": "integer"
-        }
-      },
-      "required": [
-        "width",
-        "height",
-        "format"
-      ],
-      "type": "object"
     },
     "FontCatalog": {
       "additionalProperties": false,
@@ -5518,7 +5464,7 @@
       "oneOf": [
         {
           "const": "pluginData",
-          "description": "`<server-data>/plugins/data/<id>/<projectId|_>/` (spec §5.1). `workspace` is not in v1.",
+          "description": "The caller's plugin data directory (spec §5.1): `<server-data>/plugins/data/<id>/<projectId|_>/`\nfor uniform `person`/`system` rights, else `plugins/authdata/<id>/<projectId|_>/<authorityKey>/`.\n`workspace` is not in v1.",
           "type": "string"
         }
       ]
@@ -5672,7 +5618,7 @@
       "type": "object"
     },
     "GraphicPlan": {
-      "description": "A graphic's template, its time (from the item's start) and its slot values.",
+      "description": "A graphic's template, its template time (`sourceIn` + the time from the item's start, held\nat 0) and its slot values.",
       "properties": {
         "asset": {
           "type": "string"
@@ -5812,26 +5758,6 @@
         }
       },
       "type": "object"
-    },
-    "HdrSource": {
-      "description": "Where [`ProbeDeepResult::hdr`] came from.",
-      "oneOf": [
-        {
-          "const": "container",
-          "description": "The sample entry's `mdcv`/`clli`/`dvcC` boxes.",
-          "type": "string"
-        },
-        {
-          "const": "sei",
-          "description": "H.264/HEVC SEI in the first sample (no `mdcv`/`clli` box).",
-          "type": "string"
-        },
-        {
-          "const": "containerAndSei",
-          "description": "Both, field by field: the boxes' fields, and from SEI the mastering display or content\nlight level the boxes lack (a `dvcC` without `mdcv`/`clli`, or `mdcv` without `clli`).",
-          "type": "string"
-        }
-      ]
     },
     "Header": {
       "additionalProperties": false,
@@ -6287,7 +6213,7 @@
       "description": "An HTTPS request to one of the plugin's approved `net` origins.",
       "properties": {
         "bodyB64": {
-          "description": "At most 768 KiB before base64.",
+          "description": "At most 756 KiB (`PAGE_BYTES`) before base64.",
           "type": [
             "string",
             "null"
@@ -6719,7 +6645,7 @@
           "type": "object"
         },
         {
-          "description": "A Lottie template with its slot values.",
+          "description": "A Lottie template with its slot values. Template time = `sourceIn + (t − start)`\n(schema 4), so a split or a start-edge move keeps the content's template time.",
           "properties": {
             "asset": {
               "type": "string"
@@ -6733,6 +6659,9 @@
                 "$ref": "#/$defs/ParamValue"
               },
               "type": "object"
+            },
+            "sourceIn": {
+              "$ref": "#/$defs/Rational"
             }
           },
           "required": [
@@ -6943,7 +6872,7 @@
           "type": "object"
         },
         {
-          "description": "A Lottie template with its slot values.",
+          "description": "A Lottie template with its slot values. Template time = `sourceIn + (t − start)`\n(schema 4), so a split or a start-edge move keeps the content's template time.",
           "properties": {
             "asset": {
               "type": "string"
@@ -6957,6 +6886,9 @@
                 "$ref": "#/$defs/ParamValue"
               },
               "type": "object"
+            },
+            "sourceIn": {
+              "$ref": "#/$defs/Rational"
             }
           },
           "required": [
@@ -8004,6 +7936,72 @@
       ],
       "type": "string"
     },
+    "JobRights": {
+      "additionalProperties": false,
+      "description": "A plugin job's rights: invoker ∩ grants (Decision 8), with the authority they run under\n(class + `rights_hash` + `generation`, spec §3.3 and Decision 28).",
+      "properties": {
+        "branch": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RightsBranch"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Set for an agent session: its branch subtree."
+        },
+        "class": {
+          "description": "The principal class of the process key (spec §3.3): `person`, `agent:<root session>`,\n`system`, or `<kind>:<id>` for any other invoker.",
+          "type": "string"
+        },
+        "generation": {
+          "description": "The class's policy generation when the rights were computed (spec §3.3): it increments\nwhen a credential of the class is narrowed or revoked or its agent session tree changes.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "grants": {
+          "description": "The plugin's granted permissions at submit.",
+          "items": {
+            "$ref": "#/$defs/Permission"
+          },
+          "type": "array"
+        },
+        "libraries": {
+          "$ref": "#/$defs/Reach"
+        },
+        "principal": {
+          "$ref": "#/$defs/RightsPrincipal",
+          "description": "The invoker the plugin acts for (audit and journal name `plugin:<id>@<version>` acting\nfor it)."
+        },
+        "projects": {
+          "$ref": "#/$defs/Reach"
+        },
+        "rightsHash": {
+          "description": "The hash of the plugin-relevant rights above (class, scopes, projects, branch, libraries,\ngrants; not the principal, so callers of one class with identical rights share it): 32\nlower-case hex characters, computed by the host (spec §3.3's authority key, Decision 28).",
+          "type": "string"
+        },
+        "scopes": {
+          "description": "The invoker's scopes that the plugin's grants map to.",
+          "items": {
+            "$ref": "#/$defs/PluginScope"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "principal",
+        "class",
+        "scopes",
+        "projects",
+        "libraries",
+        "grants",
+        "rightsHash",
+        "generation"
+      ],
+      "type": "object"
+    },
     "JobSnapshot": {
       "description": "`in/snapshot.json` (plan 6A Decision 2).",
       "properties": {
@@ -8308,45 +8306,6 @@
         "blobs",
         "blobBytes",
         "dropped"
-      ],
-      "type": "object"
-    },
-    "KeyInput": {
-      "additionalProperties": false,
-      "description": "What a cache key is computed from (Decision 11).",
-      "properties": {
-        "decoderClass": {
-          "$ref": "#/$defs/VendorClass",
-          "description": "The vendor class of the backend that decoded the source."
-        },
-        "fingerprint": {
-          "description": "The source's fingerprint (the asset's `fingerprint`).",
-          "type": "string"
-        },
-        "params": {
-          "description": "The recipe's parameters (a tier, a codec, thumbnail times, …)."
-        },
-        "recipe": {
-          "type": "string"
-        },
-        "recipeVersion": {
-          "format": "uint32",
-          "minimum": 0,
-          "type": "integer"
-        },
-        "renderVersion": {
-          "format": "uint32",
-          "minimum": 0,
-          "type": "integer"
-        }
-      },
-      "required": [
-        "fingerprint",
-        "recipe",
-        "recipeVersion",
-        "params",
-        "renderVersion",
-        "decoderClass"
       ],
       "type": "object"
     },
@@ -9247,7 +9206,7 @@
       "type": "object"
     },
     "LineBox": {
-      "description": "One line. `x` is the left edge of its ink box after alignment, `top` its top; `baseline` is\nmeasured from the layout's top. `words` is the half-open range of word indices on it.",
+      "description": "One line. `x` is the left edge of its ink box after alignment and `width` the box's width,\n`top` its top; `baseline` is measured from the layout's top. `words` is the half-open range\nof word indices on it.\n\nAn ink box is the horizontal union of the line's (or word's) glyph outlines where they are\ndrawn: glyphs are placed by their advances, letter spacing and shaping offsets, and each\noutline's extent (side bearings, overhangs and positioned marks included) is what counts,\nso a box may start before the pen or end past the last advance. A glyph with no outline\n(a bitmap or colour emoji) counts its advance; whitespace counts nothing.",
       "properties": {
         "baseline": {
           "format": "int32",
@@ -9522,6 +9481,41 @@
           "required": [
             "kind",
             "branchId"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Drops (and undrops) origin roots of branch `from` for this record's branch: a merge\ninto it leaves a dropped origin out (plan 5E Decisions 1–3). Each list sorted and\ndeduplicated, at least one non-empty, no id in both ([`Link::new_drop`]). `recovers`:\nthe quarantined `drop` record a recovery's record stands for (plan 5E Task 2).",
+          "properties": {
+            "drops": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "from": {
+              "type": "string"
+            },
+            "kind": {
+              "const": "drop",
+              "type": "string"
+            },
+            "recovers": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "undrops": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "kind",
+            "from"
           ],
           "type": "object"
         }
@@ -10377,7 +10371,7 @@
     },
     "MergeReport": {
       "additionalProperties": false,
-      "description": "The answer of [`Store::merge`](crate::Store::merge): merge group `merge_id`'s records on\nthe target, in order (or planned and rolled back, `dry_run`); `merged`: the source txIds\nthey copy; `skipped`: the candidates that conflict and were left on the source (with\n`skipConflicting`; they are offered again by the next merge); `excluded`: source records\nnever offered (`UNDOES_TARGET_RECORDS`); `source_state`: the source branch's state after\nthe merge; `origins`: `merged` with the records their `origin` chains lead to (a copy of a\ncopy), first seen first (7A Decision 27). A retry of a committed merge answers from the\nlog: its records and their origins, `skipped` and `excluded` empty, `dry_run` false.\nNothing left to merge is an empty answer, not an error.",
+      "description": "The answer of [`Store::merge`](crate::Store::merge): merge group `merge_id`'s records on\nthe target, in order (or planned and rolled back, `dry_run`); `merged`: the source txIds\nthey copy; `skipped`: the candidates that conflict and were left on the source (with\n`skipConflicting`; they are offered again by the next merge); `excluded`: source records\nnever offered (`DROPPED`, `UNDOES_TARGET_RECORDS`); `not_included`: the origin roots of the\ncandidates the merge's `include` and `sourceUpTo` left on the source, oldest first (plan 5E\nDecision 6; omitted when empty); `source_state`: the source branch's state after\nthe merge; `origins`: `merged` with the records their `origin` chains lead to (a copy of a\ncopy), first seen first (7A Decision 27). A retry of a committed merge answers from the\nlog: its records and their origins, `skipped`, `excluded` and `not_included` empty,\n`dry_run` false.\nNothing left to merge is an empty answer, not an error.",
       "properties": {
         "committed": {
           "items": {
@@ -10398,6 +10392,12 @@
           "type": "string"
         },
         "merged": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "notIncluded": {
           "items": {
             "type": "string"
           },
@@ -10540,7 +10540,6 @@
       "type": "object"
     },
     "NetFetchReply": {
-      "additionalProperties": false,
       "description": "The response's head; the body (at most 64 MiB) stays with the host and is read by\n`net.read` through `handle` until the job ends (Decision 11).",
       "properties": {
         "handle": {
@@ -10588,7 +10587,7 @@
           "type": "string"
         },
         "length": {
-          "description": "At most 768 KiB.",
+          "description": "At most 756 KiB (`PAGE_BYTES`).",
           "format": "uint32",
           "minimum": 0,
           "type": "integer"
@@ -10607,7 +10606,6 @@
       "type": "object"
     },
     "NetReadPage": {
-      "additionalProperties": false,
       "properties": {
         "bytesB64": {
           "type": "string"
@@ -11145,26 +11143,6 @@
             }
           ],
           "description": "Puts an asset in a bin, or at the top."
-        },
-        {
-          "allOf": [
-            {
-              "$ref": "#/$defs/AssetReprobe"
-            },
-            {
-              "properties": {
-                "op": {
-                  "const": "asset.reprobe",
-                  "type": "string"
-                }
-              },
-              "required": [
-                "op"
-              ],
-              "type": "object"
-            }
-          ],
-          "description": "Replaces a media asset's video and audio with a fresh probe's (schema 4)."
         },
         {
           "allOf": [
@@ -12378,58 +12356,6 @@
       ],
       "type": "object"
     },
-    "PixelFormat": {
-      "description": "A decoded picture's memory layout.",
-      "oneOf": [
-        {
-          "enum": [
-            "rgba8",
-            "rgba16f"
-          ],
-          "type": "string"
-        },
-        {
-          "const": "nv12",
-          "description": "8-bit 4:2:0, Y plane then interleaved UV.",
-          "type": "string"
-        },
-        {
-          "const": "p010",
-          "description": "10-bit 4:2:0 in 16-bit words (high bits), Y then interleaved UV.",
-          "type": "string"
-        },
-        {
-          "const": "i420",
-          "description": "8-bit 4:2:0, three planes.",
-          "type": "string"
-        },
-        {
-          "const": "i420p10",
-          "description": "10-bit 4:2:0, three planes of 16-bit words (low bits).",
-          "type": "string"
-        },
-        {
-          "const": "i422",
-          "description": "8-bit 4:2:2, three planes.",
-          "type": "string"
-        },
-        {
-          "const": "i422p10",
-          "description": "10-bit 4:2:2, three planes of 16-bit words (low bits).",
-          "type": "string"
-        },
-        {
-          "const": "i444",
-          "description": "8-bit 4:4:4, three planes.",
-          "type": "string"
-        },
-        {
-          "const": "i444p10",
-          "description": "10-bit 4:4:4, three planes of 16-bit words (low bits).",
-          "type": "string"
-        }
-      ]
-    },
     "Placeholder": {
       "description": "A cloud placeholder (Decision 12): catalogued from metadata only, never opened unless the\nlibrary has `hydrate`.",
       "oneOf": [
@@ -12802,8 +12728,256 @@
       ],
       "type": "string"
     },
-    "PluginContext": {
+    "PluginCommand": {
+      "description": "`plugin.command`: one run of a plugin command (`plugin.command.run`).",
+      "properties": {
+        "args": {
+          "allOf": [
+            {
+              "$ref": "#/$defs/Body"
+            },
+            {
+              "x-fin-class": "content",
+              "x-fin-content": "toolArgs"
+            }
+          ],
+          "description": "Training only: the arguments as validated."
+        },
+        "argsOmitted": {
+          "$ref": "#/$defs/ArgsOmitted"
+        },
+        "code": {
+          "$ref": "#/$defs/Code"
+        },
+        "command": {
+          "$ref": "#/$defs/Hashed"
+        },
+        "dryRun": {
+          "type": "boolean"
+        },
+        "micros": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "ops": {
+          "additionalProperties": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "description": "Op kind → count of the ops it returned (`OP_KINDS`).",
+          "propertyNames": {
+            "$ref": "#/$defs/Name"
+          },
+          "type": "object"
+        },
+        "outcome": {
+          "$ref": "#/$defs/PluginCommandOutcome"
+        },
+        "plugin": {
+          "$ref": "#/$defs/PluginRef"
+        },
+        "txId": {
+          "$ref": "#/$defs/IdRef"
+        }
+      },
+      "required": [
+        "plugin",
+        "command",
+        "outcome",
+        "micros"
+      ],
+      "type": "object"
+    },
+    "PluginCommandInfo": {
       "additionalProperties": false,
+      "description": "One command as `plugin.commands` lists it.",
+      "properties": {
+        "args": {
+          "$ref": "#/$defs/SchemaSubset"
+        },
+        "command": {
+          "description": "The command's name in its manifest.",
+          "type": "string"
+        },
+        "name": {
+          "description": "The registry name, `plugin:<id>/<command>` (the name 7B's command rules match).",
+          "type": "string"
+        },
+        "plugin": {
+          "description": "`<id>@<version>` of the enabled plugin that serves it.",
+          "type": "string"
+        },
+        "timeoutS": {
+          "description": "Its timeout in seconds (the manifest's, 10 when absent, at most 60).",
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "title": {
+          "description": "A message key in the plugin's `en` catalogue.",
+          "type": "string"
+        },
+        "writes": {
+          "description": "Whether it returns a transaction (running it needs `project.write`).",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "name",
+        "plugin",
+        "command",
+        "title",
+        "args",
+        "writes",
+        "timeoutS"
+      ],
+      "type": "object"
+    },
+    "PluginCommandList": {
+      "additionalProperties": false,
+      "description": "`plugin.commands`: `digest` is the BLAKE3 of the canonical JSON of `commands`, so a client\ncaches the list per server and digest.",
+      "properties": {
+        "commands": {
+          "items": {
+            "$ref": "#/$defs/PluginCommandInfo"
+          },
+          "type": "array"
+        },
+        "digest": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "digest",
+        "commands"
+      ],
+      "type": "object"
+    },
+    "PluginCommandOutcome": {
+      "description": "How a plugin command ended (spec §11; `failed`: the process crashed, broke the protocol or\nthe host failed, a deviation: the spec's list has no outcome for it).",
+      "oneOf": [
+        {
+          "enum": [
+            "conflict",
+            "timeout",
+            "failed"
+          ],
+          "type": "string"
+        },
+        {
+          "const": "accepted",
+          "description": "Its transaction was committed as is (or, with `dryRun`, validated).",
+          "type": "string"
+        },
+        {
+          "const": "rebased",
+          "description": "Committed after a rebase.",
+          "type": "string"
+        },
+        {
+          "const": "refused",
+          "description": "Refused by a check (permission, reach, a disabled plugin).",
+          "type": "string"
+        },
+        {
+          "const": "invalid",
+          "description": "Its arguments or its returned ops were invalid (`PLUGIN_COMMAND_ARGS`,\n`PLUGIN_TX_INVALID`).",
+          "type": "string"
+        },
+        {
+          "const": "data",
+          "description": "It returned data, not a transaction.",
+          "type": "string"
+        }
+      ]
+    },
+    "PluginCommandRunRequest": {
+      "additionalProperties": false,
+      "description": "`plugin.command.run`'s request.",
+      "properties": {
+        "args": {
+          "default": null
+        },
+        "branch": {
+          "description": "A branch name, id or `name#id`; `main` when absent.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "dryRun": {
+          "description": "Validate the returned transaction against the snapshot the plugin saw; commit nothing.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "name": {
+          "description": "`plugin:<id>/<command>`.",
+          "type": "string"
+        },
+        "projectId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "projectId",
+        "name"
+      ],
+      "type": "object"
+    },
+    "PluginCommandRunResult": {
+      "additionalProperties": false,
+      "properties": {
+        "data": {
+          "description": "A data command's value as the plugin returned it."
+        },
+        "dryRun": {
+          "description": "A dry run: nothing was committed.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "ops": {
+          "description": "The proposed ops (dry run, conflict).",
+          "items": {
+            "$ref": "#/$defs/Op"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "outcome": {
+          "$ref": "#/$defs/CommandOutcome"
+        },
+        "rev": {
+          "description": "The committed revision; for a dry run or a conflict, the revision the plugin saw.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "txId": {
+          "description": "The committed transaction's id (accepted, rebased).",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "outcome"
+      ],
+      "type": "object"
+    },
+    "PluginContext": {
       "properties": {
         "dirs": {
           "$ref": "#/$defs/PluginDirs"
@@ -12858,11 +13032,10 @@
       "type": "object"
     },
     "PluginDirs": {
-      "additionalProperties": false,
       "description": "Directories the plugin may use, as absolute paths on the host.",
       "properties": {
         "data": {
-          "description": "The per-project data directory, only when `fs pluginData` is granted.",
+          "description": "The caller's `pluginData` directory, only when `fs pluginData` is granted (spec §5.1):\n`plugins/data/@pub/name/<projectId|_>/` for uniform `person`/`system` rights, else\n`plugins/authdata/@pub/name/<projectId|_>/<authorityKey>/`.",
           "type": [
             "string",
             "null"
@@ -12880,6 +13053,101 @@
       "required": [
         "plugin",
         "tmp"
+      ],
+      "type": "object"
+    },
+    "PluginEgressStats": {
+      "description": "The egress broker's counts for one plugin in a `plugin.stats` window (Task 8's counters,\ndifferenced per window). Refusals by reason; no origin, URL or body.",
+      "properties": {
+        "bytesInLog2": {
+          "format": "uint8",
+          "maximum": 255,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "bytesOutLog2": {
+          "format": "uint8",
+          "maximum": 255,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "completed": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "denied": {
+          "description": "`EGRESS_DENIED`: an origin it was not granted.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "failed": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "notHttps": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "privateAddress": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "rateLimited": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "redirectsFollowed": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "redirectsReturned": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "requests": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "secretMissing": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "timeouts": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "tooLarge": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "requests",
+        "completed",
+        "denied",
+        "notHttps",
+        "privateAddress",
+        "secretMissing",
+        "rateLimited",
+        "tooLarge",
+        "timeouts",
+        "failed",
+        "redirectsFollowed",
+        "redirectsReturned",
+        "bytesInLog2",
+        "bytesOutLog2"
       ],
       "type": "object"
     },
@@ -12909,6 +13177,55 @@
         "message"
       ],
       "type": "object"
+    },
+    "PluginExit": {
+      "description": "`plugin.exit`: a plugin process ended (built from the same exit as its `worker.exit`).",
+      "properties": {
+        "exitCode": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "jobsServed": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "plugin": {
+          "$ref": "#/$defs/PluginRef"
+        },
+        "reason": {
+          "$ref": "#/$defs/PluginExitReason"
+        },
+        "signal": {
+          "$ref": "#/$defs/Name"
+        },
+        "uptimeS": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "plugin",
+        "reason",
+        "jobsServed",
+        "uptimeS"
+      ],
+      "type": "object"
+    },
+    "PluginExitReason": {
+      "description": "Why a plugin process ended (spec §11).",
+      "enum": [
+        "ok",
+        "crash",
+        "timeout",
+        "killed",
+        "oom",
+        "protocol",
+        "sandbox",
+        "idle"
+      ],
+      "type": "string"
     },
     "PluginId": {
       "description": "`@<publisher>/<name>` (8A Decision 2).",
@@ -13118,6 +13435,71 @@
       ],
       "type": "object"
     },
+    "PluginMethodStats": {
+      "description": "One method family's calls in a `plugin.stats` window.",
+      "properties": {
+        "bytesInLog2": {
+          "description": "Params bytes over the window, as a log₂ bucket.",
+          "format": "uint8",
+          "maximum": 255,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "bytesOutLog2": {
+          "description": "Reply bytes over the window, as a log₂ bucket.",
+          "format": "uint8",
+          "maximum": 255,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "calls": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "errors": {
+          "additionalProperties": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "description": "Error code → count.",
+          "propertyNames": {
+            "$ref": "#/$defs/Code"
+          },
+          "type": "object"
+        },
+        "family": {
+          "$ref": "#/$defs/Name"
+        },
+        "p50Micros": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "p95Micros": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "reachDenials": {
+          "description": "Calls refused for reach (`PROJECT_NOT_FOUND`, `BRANCH_NOT_ALLOWED`, a library).",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "family",
+        "calls",
+        "reachDenials",
+        "p50Micros",
+        "p95Micros",
+        "bytesInLog2",
+        "bytesOutLog2"
+      ],
+      "type": "object"
+    },
     "PluginOutcome": {
       "description": "How a plugin or registry call ended.",
       "oneOf": [
@@ -13169,7 +13551,6 @@
       ]
     },
     "PluginRefFull": {
-      "additionalProperties": false,
       "description": "A plugin at one version.",
       "properties": {
         "id": {
@@ -13185,6 +13566,16 @@
       ],
       "type": "object"
     },
+    "PluginScope": {
+      "description": "A sub-project 5 scope a plugin job may hold, each from one permission (spec §3.7):\n`project:read` → `project.read`; `project:write` → `project.write` (only the `tx.commit` of\nthe command's returned transaction); `media:read` → `library.read` (and asset reads);\n`jobs:submit` → `jobs.submit` (the plugin's own kinds only, 8C).",
+      "enum": [
+        "project.read",
+        "project.write",
+        "library.read",
+        "jobs.submit"
+      ],
+      "type": "string"
+    },
     "PluginSourceName": {
       "description": "Where an installed plugin came from (spec §5.2).",
       "enum": [
@@ -13193,6 +13584,63 @@
         "dev"
       ],
       "type": "string"
+    },
+    "PluginStats": {
+      "description": "`plugin.stats`: one plugin's host traffic over one window (a minute), sent when the\nplugin did anything in it.",
+      "properties": {
+        "crashes": {
+          "description": "Its jobs that ended `PLUGIN_CRASHED`.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "egress": {
+          "$ref": "#/$defs/PluginEgressStats"
+        },
+        "families": {
+          "description": "Per method family (`PLUGIN_METHOD_FAMILIES`), each at most once.",
+          "items": {
+            "$ref": "#/$defs/PluginMethodStats"
+          },
+          "type": "array"
+        },
+        "logDropped": {
+          "description": "`log` calls dropped by the rate limit.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "plugin": {
+          "$ref": "#/$defs/PluginRef"
+        },
+        "stderrDropped": {
+          "description": "stderr lines dropped by the byte limit.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "timeouts": {
+          "description": "Its jobs that ended `PLUGIN_TIMEOUT`.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "windowS": {
+          "description": "The window's length in seconds.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "plugin",
+        "windowS",
+        "timeouts",
+        "crashes",
+        "logDropped",
+        "stderrDropped"
+      ],
+      "type": "object"
     },
     "PreviewStats": {
       "type": "object"
@@ -13364,7 +13812,7 @@
         },
         "media": {
           "$ref": "#/$defs/MediaInfo",
-          "description": "MP4/MOV, WebM/Matroska: what the file is (sub-project 6 spec §6.3): display size and\nrotation, colour, HDR, VFR, edit lists. In the `asset.probe` answer only: an\n`asset.add` never carries it (spec §4.4)."
+          "description": "MP4/MOV: what the file is (sub-project 6 spec §6.3): display size and rotation, colour,\nHDR, VFR, edit lists. In the `asset.probe` answer only: an `asset.add` never carries it\n(spec §4.4)."
         },
         "size": {
           "format": "uint64",
@@ -13386,124 +13834,6 @@
         "kind",
         "fingerprint",
         "size"
-      ],
-      "type": "object"
-    },
-    "ProbeDeepParams": {
-      "additionalProperties": false,
-      "description": "`media.probeDeep` v1: probe `asset`, whose content is `fingerprint`.",
-      "properties": {
-        "asset": {
-          "type": "string"
-        },
-        "branch": {
-          "description": "The branch whose head names the asset (`main` when absent). Host only.",
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "capsDigest": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "display": {
-          "$ref": "#/$defs/Size"
-        },
-        "fingerprint": {
-          "description": "The asset's fingerprint as the submitter saw it. The manifest's must equal it, else the\njob fails `ASSET_CHANGED` (the model changed between the request and the run).",
-          "type": "string"
-        },
-        "projectId": {
-          "description": "The project the asset is in. Only the host reads it (`prepare` writes the manifest\nfrom it); the worker works from the job directory.",
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "renderVersion": {
-          "description": "The worker's `RENDER_VERSION` and a digest of its capability report, which with the\nfingerprint make the job's identity (`dedupe`): another decoder set probes again.\nHost only.",
-          "format": "uint32",
-          "minimum": 0,
-          "type": [
-            "integer",
-            "null"
-          ]
-        }
-      },
-      "required": [
-        "asset",
-        "fingerprint"
-      ],
-      "type": "object"
-    },
-    "ProbeDeepResult": {
-      "additionalProperties": false,
-      "description": "What `media.probeDeep` v1 answers. `backend`, `class`, `hw` and `firstFrame` are present\nexactly when `decodable`; otherwise `failure` says why.",
-      "properties": {
-        "asset": {
-          "type": "string"
-        },
-        "backend": {
-          "description": "The decoder's backend (`dav1d`, `videotoolbox`, …), a `fin_media::backend::BACKENDS`\nname.",
-          "type": "string"
-        },
-        "class": {
-          "$ref": "#/$defs/VendorClass"
-        },
-        "codec": {
-          "$ref": "#/$defs/VideoCodec",
-          "description": "The video track's codec."
-        },
-        "decodable": {
-          "description": "The first frame decoded.",
-          "type": "boolean"
-        },
-        "failure": {
-          "$ref": "#/$defs/ProbeFailure"
-        },
-        "fingerprint": {
-          "type": "string"
-        },
-        "firstFrame": {
-          "$ref": "#/$defs/FirstFrame"
-        },
-        "hdr": {
-          "$ref": "#/$defs/HdrInfo"
-        },
-        "hdrSource": {
-          "$ref": "#/$defs/HdrSource"
-        },
-        "hw": {
-          "description": "The frame was decoded on hardware.",
-          "type": "boolean"
-        }
-      },
-      "required": [
-        "asset",
-        "fingerprint",
-        "codec",
-        "decodable"
-      ],
-      "type": "object"
-    },
-    "ProbeFailure": {
-      "additionalProperties": false,
-      "description": "Why the first frame did not decode: the decoder's error code and message (a codec nothing\non this machine decodes is `CODEC_UNAVAILABLE`; a bitstream the decoder refused is\n`DECODE_FAILED` or `MEDIA_CORRUPT`).",
-      "properties": {
-        "code": {
-          "type": "string"
-        },
-        "details": true,
-        "message": {
-          "type": "string"
-        }
-      },
-      "required": [
-        "code",
-        "message"
       ],
       "type": "object"
     },
@@ -13758,11 +14088,10 @@
       "type": "object"
     },
     "ProjectSnapshotPage": {
-      "additionalProperties": false,
       "description": "One page of a snapshot; every page of one job has the same `rev`.",
       "properties": {
         "bytesB64": {
-          "description": "At most 768 KiB before base64.",
+          "description": "At most 756 KiB (`PAGE_BYTES`) before base64.",
           "type": "string"
         },
         "page": {
@@ -13791,7 +14120,7 @@
     },
     "ProjectView": {
       "additionalProperties": false,
-      "description": "`project.view`: the `fin view` text of the call's branch, capped at 768 KiB.",
+      "description": "`project.view`: the `fin view` text of the call's branch, capped at 756 KiB (`PAGE_BYTES`).",
       "properties": {
         "budget": {
           "description": "`fin view --budget`.",
@@ -13813,7 +14142,6 @@
       "type": "object"
     },
     "ProjectViewText": {
-      "additionalProperties": false,
       "properties": {
         "text": {
           "type": "string"
@@ -13966,8 +14294,8 @@
       ]
     },
     "Rational": {
-      "description": "Exact rational seconds in canonical form: \"n/d\" in lowest terms with d > 1, or \"n\" when d is 1; no leading zeros, no \"+\", no \"-0\".",
-      "pattern": "^(0|-?[1-9]\\d*)(/[1-9]\\d*)?$",
+      "description": "Exact rational seconds in canonical form: \"n/d\" in lowest terms with d > 1, or \"n\" when d is 1; no leading zeros, no \"+\", no \"-0\". The pattern checks the shape; lowest terms is checked by the parser.",
+      "pattern": "^(0|-?[1-9]\\d*(/([2-9]\\d*|1\\d+))?)$",
       "type": "string"
     },
     "RawRel": {
@@ -13987,25 +14315,42 @@
       ],
       "type": "object"
     },
-    "RecipeUsage": {
-      "description": "One recipe's share of the cache.",
-      "properties": {
-        "bytes": {
-          "format": "uint64",
-          "minimum": 0,
-          "type": "integer"
+    "Reach": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ReachAll"
         },
-        "entries": {
-          "format": "uint64",
-          "minimum": 0,
-          "type": "integer"
+        {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
         }
-      },
-      "required": [
-        "bytes",
-        "entries"
       ],
-      "type": "object"
+      "description": "Which projects or libraries a job reaches: `\"all\"` or a list of ids."
+    },
+    "ReachAll": {
+      "description": "`\"all\"`: every project (or library) of this server.",
+      "enum": [
+        "all"
+      ],
+      "type": "string"
+    },
+    "RecordKind": {
+      "description": "What a record does (spec §4.2). Sub-project 4A writes only edits; 4B adds the rest up to\n`branchSet`; 5E adds `drop` (durable rejections, sub-project 5 spec §8.3).",
+      "enum": [
+        "edit",
+        "undo",
+        "redo",
+        "merge",
+        "cherryPick",
+        "revert",
+        "checkpoint",
+        "branch",
+        "branchSet",
+        "drop"
+      ],
+      "type": "string"
     },
     "RecoverGroup": {
       "additionalProperties": false,
@@ -14508,7 +14853,239 @@
         }
       ]
     },
+    "ReviewEntry": {
+      "additionalProperties": false,
+      "description": "One entry of a review plan: a source record (`tx_id` on `branch` at `seq`) and its origin\nroot (`origin`, what decisions and `include` name), its kind, record author, number of\nintent ops and commit time (unix ms), and what the merge does with it. `reason`: the\nconflict or exclusion reason (absent for `willMerge` and `alreadyPresent`); `blame`: the\nrecord a conflict is blamed on, when there is one. `actor`: the agent actor the server\nknows for the record (sub-project 7A's tracker), never set by the planner.",
+      "properties": {
+        "actor": true,
+        "author": {
+          "type": "string"
+        },
+        "blame": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "branch": {
+          "type": "string"
+        },
+        "committedAt": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "kind": {
+          "$ref": "#/$defs/RecordKind"
+        },
+        "opsCount": {
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "origin": {
+          "type": "string"
+        },
+        "reason": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "seq": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "status": {
+          "$ref": "#/$defs/EntryStatus"
+        },
+        "txId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "origin",
+        "txId",
+        "branch",
+        "seq",
+        "kind",
+        "author",
+        "opsCount",
+        "committedAt",
+        "status"
+      ],
+      "type": "object"
+    },
+    "ReviewHead": {
+      "additionalProperties": false,
+      "description": "A branch head as a review plan saw it: the branch id, its head seq and the `txHash` of the\nrecord there (absent at a root's start), so a rewind to the same seq is told apart (plan 5E\nDecision 9).",
+      "properties": {
+        "branch": {
+          "type": "string"
+        },
+        "hash": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "seq": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "branch",
+        "seq"
+      ],
+      "type": "object"
+    },
+    "ReviewItemKind": {
+      "description": "What the verdict is about (`none` for the outcome tracker's entries).",
+      "enum": [
+        "branchReview",
+        "mergeConflict",
+        "qaFinding",
+        "criticSummary",
+        "pluginSuggestion",
+        "none"
+      ],
+      "type": "string"
+    },
+    "ReviewPlan": {
+      "additionalProperties": false,
+      "description": "[`Store::review_plan`](crate::Store::review_plan)'s answer (plan 5E Decision 7): what a\nmerge of `source` into `target` would do at these heads, one entry per candidate and per\nsource record the target already holds, oldest first; `conflicts`: the candidates that\nconflict (as a `skipConflicting` merge would skip them). At most\n[`REVIEW_PLAN_MAX`](crate::REVIEW_PLAN_MAX) entries and conflicts, the oldest:\n`truncated` when there were more.",
+      "properties": {
+        "conflicts": {
+          "items": {
+            "$ref": "#/$defs/Conflict"
+          },
+          "type": "array"
+        },
+        "entries": {
+          "items": {
+            "$ref": "#/$defs/ReviewEntry"
+          },
+          "type": "array"
+        },
+        "source": {
+          "$ref": "#/$defs/ReviewHead"
+        },
+        "target": {
+          "$ref": "#/$defs/ReviewHead"
+        },
+        "truncated": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "source",
+        "target",
+        "entries",
+        "conflicts",
+        "truncated"
+      ],
+      "type": "object"
+    },
     "ReviewVerdict": {
+      "description": "`review.verdict`.",
+      "properties": {
+        "accepted": {
+          "description": "Counts of the transactions accepted and rejected by the decision.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "by": {
+          "$ref": "#/$defs/VerdictBy"
+        },
+        "itemKind": {
+          "$ref": "#/$defs/ReviewItemKind"
+        },
+        "openS": {
+          "description": "Seconds since the item opened (or since the transaction, for the tracker's entries).",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "reason": {
+          "allOf": [
+            {
+              "$ref": "#/$defs/Scrubbed"
+            },
+            {
+              "x-fin-class": "content",
+              "x-fin-content": "userText"
+            }
+          ],
+          "description": "Training only: the reason the person gave."
+        },
+        "rejected": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "sessionId": {
+          "$ref": "#/$defs/IdRef"
+        },
+        "txIds": {
+          "items": {
+            "$ref": "#/$defs/IdRef"
+          },
+          "maxItems": 64,
+          "type": "array"
+        },
+        "verdict": {
+          "$ref": "#/$defs/Verdict"
+        },
+        "via": {
+          "$ref": "#/$defs/VerdictVia"
+        }
+      },
+      "required": [
+        "itemKind",
+        "verdict",
+        "by",
+        "txIds",
+        "accepted",
+        "rejected",
+        "openS"
+      ],
+      "type": "object"
+    },
+    "RightsBranch": {
+      "additionalProperties": false,
+      "description": "An agent session's branch reach (sub-project 7 §5.1): its root branch and, with `subtree`,\nthe branches beneath it (less its live children's).",
+      "properties": {
+        "root": {
+          "type": "string"
+        },
+        "subtree": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "root",
+        "subtree"
+      ],
+      "type": "object"
+    },
+    "RightsPrincipal": {
+      "additionalProperties": false,
+      "description": "The invoking principal (sub-project 5's `{kind, id}`; the job's owner).",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "kind": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "id"
+      ],
       "type": "object"
     },
     "Risk": {
@@ -16605,7 +17182,7 @@
       "type": "object"
     },
     "TextLayout": {
-      "description": "A measured layout, all lengths in 1/64 px. `width` is the widest line, `height` the\nlines' total advance. `overflow` is set when a line is wider than `max_width` or there are\nmore lines than `max_lines`. `missing` lists the code points no face maps (ascending);\n`faces` the sha256s whose glyphs the layout uses, in request order.",
+      "description": "A measured layout, all lengths in 1/64 px. `width` is the widest line's ink, `height` the\nlines' total advance. `overflow` is set when a line's ink box reaches outside\n`0..max_width` (on either side) or there are more lines than `max_lines`. `missing` lists the code points no face maps (ascending);\n`faces` the sha256s whose glyphs the layout uses, in request order.",
       "properties": {
         "faces": {
           "items": {
@@ -16669,7 +17246,7 @@
           "type": "boolean"
         },
         "letterSpacing": {
-          "description": "Extra advance after every glyph, in em (a multiple of `size`; may be negative).",
+          "description": "Extra advance between shaping clusters (a base with its combining marks, or a\nligature), in em (a multiple of `size`; may be negative); none after a line's last.",
           "format": "double",
           "type": "number"
         },
@@ -17507,6 +18084,42 @@
         }
       ]
     },
+    "Verdict": {
+      "description": "What was decided or became of the work.",
+      "enum": [
+        "accepted",
+        "rejected",
+        "merged",
+        "dismissed",
+        "changesRequested",
+        "undone",
+        "reverted",
+        "abandoned"
+      ],
+      "type": "string"
+    },
+    "VerdictBy": {
+      "description": "Who brought it about.",
+      "enum": [
+        "user",
+        "agent",
+        "critic",
+        "policy"
+      ],
+      "type": "string"
+    },
+    "VerdictVia": {
+      "description": "How the outcome came about; absent for a person's decision on an item.",
+      "enum": [
+        "undo",
+        "revert",
+        "archive",
+        "merge",
+        "critic",
+        "autoMerge"
+      ],
+      "type": "string"
+    },
     "Version": {
       "pattern": "^[0-9]{1,5}\\.[0-9]{1,5}\\.[0-9]{1,5}(-[0-9a-z.]{1,32})?$",
       "type": "string",
@@ -17614,26 +18227,15 @@
     },
     "VideoInfo": {
       "properties": {
-        "display": {
-          "$ref": "#/$defs/DisplaySize"
-        },
         "height": {
-          "description": "The coded height, in px.",
           "format": "uint32",
           "minimum": 0,
           "type": "integer"
         },
-        "pixelAspect": {
-          "$ref": "#/$defs/Rational"
-        },
         "rate": {
           "$ref": "#/$defs/Rational"
         },
-        "rotation": {
-          "$ref": "#/$defs/Rotation"
-        },
         "width": {
-          "description": "The coded width, in px.",
           "format": "uint32",
           "minimum": 0,
           "type": "integer"
@@ -17846,7 +18448,7 @@
       "type": "object"
     },
     "WordBox": {
-      "description": "One word's horizontal extent on its line (visual order is given by `x`).",
+      "description": "One word's ink box on its line (see [`LineBox`]; visual order is given by `x`). A word\nthat draws nothing has a zero-width box at its pen position.",
       "properties": {
         "line": {
           "format": "uint32",
@@ -17894,7 +18496,7 @@
       "type": "object"
     },
     "WorkerExit": {
-      "description": "`worker.exit` (`kv` 1).",
+      "description": "`worker.exit` (`kv` 2: `plugin` is a [`PluginRef`], Decision 22 of sp8b; `kv` 1 had a\n`Hashed` that nothing ever filled).",
       "properties": {
         "exitCode": {
           "format": "int64",
@@ -17917,7 +18519,7 @@
           "type": "integer"
         },
         "plugin": {
-          "$ref": "#/$defs/Hashed"
+          "$ref": "#/$defs/PluginRef"
         },
         "reason": {
           "$ref": "#/$defs/ExitReason"

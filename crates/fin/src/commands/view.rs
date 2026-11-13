@@ -1,5 +1,5 @@
 //! Read commands: `fin status` and `fin view` (plan 4C Task 25). Both cover every timeline
-//! (`--timeline` narrows `view` to one); the screenplay lines are [`crate::view`]'s.
+//! (`--timeline` narrows `view` to one); the screenplay lines are [`fin_core::view`]'s.
 
 use clap::Args;
 use fin_core::{CoreError, Project, Timeline, Track, TrackKind};
@@ -10,7 +10,7 @@ use serde_json::{Value, json};
 use super::{Globals, branch, fonts, target_branch};
 use crate::addr;
 use crate::backend::Backend;
-use crate::view::{self, Filter, budget};
+use fin_core::view::{self, Filter, budget};
 
 /// Summarise the project: branch and head (`rev`: the snapshot read, as `fin view` reports
 /// it), lease and read-only state, last export, unmerged branches, every timeline and its
@@ -31,8 +31,9 @@ pub struct ViewArgs {
     #[arg(long, value_name = "a..b", allow_hyphen_values = true)]
     #[serde(default)]
     pub range: Option<String>,
-    /// At most about this many tokens (chars / 4): details, caption text, then runs of
-    /// items are folded, then the tail is cut, each step listed in `elided`.
+    /// At most about this many tokens (chars / 4) for the whole JSON response: details,
+    /// caption text, then runs of items are folded, then the tail is cut (headers last), each
+    /// step listed in `elided`.
     #[arg(long, value_name = "tokens")]
     #[serde(default)]
     pub budget: Option<u64>,
@@ -152,12 +153,41 @@ fn shown<'p>(p: &'p Project, g: &Globals, a: &ViewArgs) -> Result<Vec<&'p Timeli
     })
 }
 
+/// `fin view`'s document for `lines` and `elided`, and its size in chars as printed (compact
+/// JSON and a newline): `{rev, timeline, lines, elided, lineTokens, responseTokens, resolved?}`.
+/// `responseTokens` is `ceil(chars / 4)` of this very document, its own digits included.
+fn respond(base: &Value, resolved: &Value, lines: &[String], elided: &[Value]) -> (Value, u64) {
+    let mut out = base.clone();
+    out["lines"] = json!(lines);
+    out["elided"] = json!(elided);
+    out["lineTokens"] = json!(budget::tokens(lines));
+    if resolved != &json!({}) {
+        out["resolved"] = resolved.clone();
+    }
+    let mut guess = 0;
+    loop {
+        out["responseTokens"] = json!(guess);
+        let chars = out.to_string().chars().count() as u64 + 1;
+        let t = chars.div_ceil(4);
+        // Rising only (more digits, more chars), so this ends.
+        if t <= guess {
+            return (out, chars);
+        }
+        guess = t;
+    }
+}
+
+/// `fin view`. Frames in `--range` (`f30..f31`) count at the rate of the timelines shown:
+/// `--timeline`'s, the one holding `--track`, or, with neither, every timeline's when they all
+/// share one. When the shown timelines' rates differ a frame is ambiguous and refused (`USAGE`,
+/// `details.reason: MIXED_RATES`, fix: name a timeline or use seconds); seconds, clock times
+/// and rationals resolve whatever the rates.
 pub fn view(backend: &dyn Backend, g: &Globals, a: &ViewArgs) -> Result<Value, CoreError> {
     let snap = backend.snapshot(&target_branch(backend, g)?)?;
     let p = &snap.project;
     let tls = shown(p, g, a)?;
     let (from, to) = match &a.range {
-        Some(r) => addr::range(p, r)?,
+        Some(r) => addr::range(p, &tls, r)?,
         None => (None, None),
     };
     let has_captions = tls.iter().any(|tl| {
@@ -178,10 +208,6 @@ pub fn view(backend: &dyn Backend, g: &Globals, a: &ViewArgs) -> Result<Value, C
         detail: a.detail,
     };
     let sections = view::sections(&tls, filter, &marks)?;
-    let (lines, elided, tokens) = budget::fit(sections, a.budget);
-    let mut out = json!({
-        "rev": snap.rev, "timeline": g.timeline, "lines": lines, "elided": elided, "tokens": tokens,
-    });
     let mut resolved = json!({});
     if let Some(t) = &a.track {
         resolved["track"] = json!(t);
@@ -195,8 +221,9 @@ pub fn view(backend: &dyn Backend, g: &Globals, a: &ViewArgs) -> Result<Value, C
     if a.detail {
         resolved["detail"] = json!(true);
     }
-    if resolved != json!({}) {
-        out["resolved"] = resolved;
-    }
+    let base = json!({ "rev": snap.rev, "timeline": g.timeline });
+    let doc = |lines: &[String], elided: &[Value]| respond(&base, &resolved, lines, elided);
+    let (lines, elided) = budget::fit(sections, a.budget, &|l, e| doc(l, e).1);
+    let (out, _) = doc(&lines, &elided);
     Ok(out)
 }

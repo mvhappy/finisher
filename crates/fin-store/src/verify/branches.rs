@@ -41,6 +41,8 @@ pub(super) fn check(s: &Subject, f: &Folder) -> Result<(bool, Value), StoreError
     let d = derived::compute(s.conn)?;
     let (index, stateless, unindexed) = index(s, &d, &mut count)?;
     let links = links(s, &d, &mut count)?;
+    let (drops, n) = crate::drops_index::drift(s.conn, LIST)?;
+    count += n;
     let (segments, (waiting, pending, ahead)) = segments(s, f, &mut count)?;
     // The recovered marks' side table against the quarantine rows' bytes.
     let mut marks = vec![];
@@ -50,7 +52,7 @@ pub(super) fn check(s: &Subject, f: &Folder) -> Result<(bool, Value), StoreError
     Ok((
         count == 0,
         json!({ "index": index, "stateless": stateless, "unindexed": unindexed,
-                "links": links, "segments": segments, "waiting": waiting,
+                "links": links, "drops": drops, "segments": segments, "waiting": waiting,
                 "pending": pending, "ahead": ahead, "marks": marks, "problemCount": count }),
     ))
 }

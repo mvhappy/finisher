@@ -12,6 +12,7 @@ use serde_json::{Value, json};
 
 use super::Builder;
 use super::builder::rename_json;
+use super::item::closed_arg;
 use crate::addr;
 
 #[derive(Debug, Clone, Subcommand, Serialize)]
@@ -33,21 +34,30 @@ pub struct SetArgs {
     #[arg(long, value_names = ["a", "b"], num_args = 2, required = true)]
     pub between: Vec<String>,
     /// "dissolve" (video) or "crossfade" (audio); default by the track's kind.
-    #[arg(long, value_name = "dissolve|crossfade", value_parser = ["dissolve", "crossfade"])]
+    #[arg(long, value_name = "dissolve|crossfade")]
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub kind: Option<String>,
+    pub kind: Option<TransitionKindArg>,
     /// Length, centred on the cut.
     #[arg(long, value_name = "time")]
     pub dur: String,
     /// "linear" (default) or "equalPower".
-    #[arg(long, value_name = "linear|equalPower", value_parser = ["linear", "equalPower"])]
+    #[arg(long, value_name = "linear|equalPower")]
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub curve: Option<String>,
+    pub curve: Option<CurveArg>,
     /// Leave the link partners' cuts alone.
     #[arg(long = "no-linked")]
     #[serde(default, skip_serializing_if = "is_false")]
     pub no_linked: bool,
 }
+
+closed_arg!(
+    /// A transition's `--kind`.
+    TransitionKindArg("kind") { Dissolve = "dissolve", Crossfade = "crossfade" }
+);
+closed_arg!(
+    /// A transition's `--curve`.
+    CurveArg("curve") { Linear = "linear", EqualPower = "equalPower" }
+);
 
 /// Take a transition off its track.
 #[derive(Debug, Clone, Args, Deserialize, Serialize, JsonSchema)]
@@ -80,15 +90,16 @@ fn plan_set(b: &mut Builder<'_>, a: &SetArgs, suffix: &str) -> Result<Value, Cor
     let out = b.id(&a.between[0]);
     let inc = b.id(&a.between[1]);
     let (tl, track, _) = addr::item(&b.work, &out)?;
-    let kind = match a.kind.as_deref() {
-        Some("crossfade") => TransitionKind::Crossfade,
-        Some(_) => TransitionKind::Dissolve,
+    let kind = match a.kind {
+        Some(TransitionKindArg::Crossfade) => TransitionKind::Crossfade,
+        Some(TransitionKindArg::Dissolve) => TransitionKind::Dissolve,
         None if track.kind == TrackKind::Audio => TransitionKind::Crossfade,
         None => TransitionKind::Dissolve,
     };
-    let curve = match a.curve.as_deref() {
-        Some("equalPower") => Curve::EqualPower,
-        _ => Curve::Linear,
+    let curve_arg = a.curve.unwrap_or(CurveArg::Linear);
+    let curve = match curve_arg {
+        CurveArg::Linear => Curve::Linear,
+        CurveArg::EqualPower => Curve::EqualPower,
     };
     let duration = addr::time_at(tl.rate, "dur", &a.dur)?;
     let mut composed =
@@ -128,8 +139,34 @@ fn plan_set(b: &mut Builder<'_>, a: &SetArgs, suffix: &str) -> Result<Value, Cor
     };
     let mut resolved = json!({
         "between": a.between, "kind": kind_name, "duration": duration,
-        "curve": a.curve.as_deref().unwrap_or("linear"),
+        "curve": curve_arg.name(),
     });
     super::clip::merge_echo(&mut resolved, echo);
     Ok(resolved)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Review #49 follow-up: an unknown kind or curve is an error naming the field, never a
+    /// silent default.
+    #[test]
+    fn unknown_kinds_and_curves_are_refused() {
+        let args = |extra: Value| {
+            let mut a = json!({ "between": ["c1", "c2"], "dur": "1s" });
+            a.as_object_mut()
+                .unwrap()
+                .extend(extra.as_object().unwrap().clone());
+            serde_json::from_value::<SetArgs>(a)
+        };
+        let e = args(json!({ "curve": "equalpower" }))
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("curve") && e.contains("equalPower"), "{e}");
+        let e = args(json!({ "kind": "wipe" })).unwrap_err().to_string();
+        assert!(e.contains("kind") && e.contains("crossfade"), "{e}");
+        let ok = args(json!({ "kind": "crossfade", "curve": "equalPower" })).unwrap();
+        assert_eq!(json!(ok)["curve"], "equalPower");
+    }
 }

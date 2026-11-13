@@ -194,6 +194,25 @@ fn exit_codes_follow_the_contract() {
     }
 }
 
+/// 5E Decision 26: the review codes and the protected-branch refusal.
+#[test]
+fn review_codes_follow_decision_26() {
+    for code in ["REVIEW_NOT_FOUND", "REVIEW_UNDECIDED"] {
+        assert_eq!(exit_code(code), 3, "{code}");
+    }
+    for code in [
+        "REVIEW_STALE",
+        "REVIEW_HAS_CONFLICTS",
+        "REVIEW_CLOSED",
+        "REVIEW_LIMIT",
+        "AUTO_MERGE_UNAVAILABLE",
+    ] {
+        assert_eq!(exit_code(code), 4, "{code}");
+    }
+    assert_eq!(exit_code("POLICY_BUSY"), 5);
+    assert_eq!(exit_code("BRANCH_PROTECTED"), 7);
+}
+
 #[test]
 fn job_codes_follow_decision_41() {
     for code in [
@@ -221,5 +240,20 @@ fn job_codes_follow_decision_41() {
     // Only in `reply` errors to a worker: never an exit of their own.
     for code in ["UNKNOWN_MESSAGE", "CALL_LIMIT"] {
         assert_eq!(exit_code(code), 6, "{code}");
+    }
+}
+
+#[test]
+fn plugin_job_codes_exit_4() {
+    // What a plugin process answers for its own failures (8B cross-SDK contract): a command's
+    // non-protocol failure, a job file that is not what was declared.
+    for code in [
+        "PLUGIN_CRASHED",
+        "PLUGIN_TIMEOUT",
+        "PLUGIN_PROTOCOL",
+        "PLUGIN_COMMAND_FAILED",
+        "PLUGIN_OUTPUT_INVALID",
+    ] {
+        assert_eq!(exit_code(code), 4, "{code}");
     }
 }

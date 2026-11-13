@@ -210,6 +210,8 @@ fn via_survives_merge() {
             skip_conflicting: false,
             dry_run: false,
             args_hash: None,
+            include: None,
+            source_up_to: None,
         })
         .unwrap();
     assert_eq!(report.merged, vec!["f1".to_string()], "{report:?}");

@@ -1,7 +1,7 @@
 [
   {
     "t": "0.2s",
-    "sha256": "62880c6b8abe7760dc9d93967b15288351766abcaa1650ab139e40cf0d15b0e2",
+    "sha256": "62c59dfd77a52d9b73456d8683acac1a26414be0aac2b3ff283240407f472e4d",
     "captions": [
       {
         "item": "cap1",
@@ -9,19 +9,19 @@
         "faces": [
           "4989b125924991b90d05b2d16e0e388c48f7d5bb8b30539bbf9c755278d0ccaf"
         ],
-        "width": 25384,
+        "width": 24792,
         "height": 5530,
         "words": 2,
         "missing": []
       }
     ],
     "layers": [
-      "cap1 caption t3 1 lines, 1 faces, 25384x5530/64 px"
+      "cap1 caption t3 1 lines, 1 faces, 24792x5530/64 px"
     ]
   },
   {
     "t": "1.8s",
-    "sha256": "a9d6dc942b003bbc93c909bfea136a8d18bd0bd12abc8f6e586929f778e21468",
+    "sha256": "ddcf6e1845f4d0bfed95914b94b5ff8aa26b622573aaf4ee0e4970af40f13954",
     "captions": [
       {
         "item": "cap2",
@@ -30,19 +30,19 @@
           "4989b125924991b90d05b2d16e0e388c48f7d5bb8b30539bbf9c755278d0ccaf",
           "bd86ca02f087d7f3c3788ba458fb6b73744c7639ed276b8d870dba6def6c40d0"
         ],
-        "width": 22094,
+        "width": 21772,
         "height": 5530,
         "words": 2,
         "missing": []
       }
     ],
     "layers": [
-      "cap2 caption t3 1 lines, 2 faces, 22094x5530/64 px"
+      "cap2 caption t3 1 lines, 2 faces, 21772x5530/64 px"
     ]
   },
   {
     "t": "3.2s",
-    "sha256": "6d0eebc7732614917824139558a1cca9960712051da0f4534682e33f1735918d",
+    "sha256": "31792da09306366daca86236746f714e33c41b3a06f72ce6a1feb02954489c32",
     "captions": [
       {
         "item": "cap3",
@@ -51,14 +51,14 @@
           "4989b125924991b90d05b2d16e0e388c48f7d5bb8b30539bbf9c755278d0ccaf",
           "b76b0433203017ca80401b2ee0dd69350349871c4b19d504c34dbdd80541690a"
         ],
-        "width": 19524,
+        "width": 19275,
         "height": 5530,
         "words": 2,
         "missing": []
       }
     ],
     "layers": [
-      "cap3 caption t3 1 lines, 2 faces, 19524x5530/64 px"
+      "cap3 caption t3 1 lines, 2 faces, 19275x5530/64 px"
     ]
   },
   {

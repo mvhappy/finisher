@@ -147,6 +147,15 @@ fn beat(inner: &Inner) -> Result<Instant, Failed> {
         ..io.last.clone()
     };
     let path = inner.path();
+    // `.finisher` replaced by a link: the lease there is not this folder's. Any other failure
+    // of the check (a share dropping for a moment) is a failed beat, as a failed write is.
+    if let Err(e) = crate::reserved::no_links(path.parent().unwrap_or(&path)) {
+        if crate::reserved::is_linked(&e) {
+            return Err(Failed::Lost(e.to_string()));
+        }
+        inner.doubt();
+        return Err(Failed::Retry);
+    }
     match fsio::write_in_place(&path, &record::encode(&next)) {
         Ok(()) => {}
         Err(e) if e.kind() == ErrorKind::NotFound => {

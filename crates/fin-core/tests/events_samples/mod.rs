@@ -211,7 +211,7 @@ fn samples_before_plugins() -> Vec<AnyPayload> {
             role: ProcessRole::Helper,
             family: names_jobs::WORKER_FAMILIES.get("media").unwrap(),
             helper_kind: Some(ProcessHelperKind::Plugin),
-            plugin: Some(h('e')),
+            plugin: Some(PluginRef::Hashed(h('e'))),
             reason: ExitReason::Crashed,
             exit_code: None,
             signal: names_jobs::SIGNALS.get("segv"),
@@ -291,12 +291,27 @@ fn samples_before_plugins() -> Vec<AnyPayload> {
         }))
         .into(),
         UiAction {}.into(),
-        ReviewVerdict {}.into(),
+        review_verdict().into(),
         media_capabilities().into(),
         render_stats().into(),
         PreviewStats {}.into(),
         RenderSample {}.into(),
     ]
+}
+
+pub fn review_verdict() -> ReviewVerdict {
+    ReviewVerdict {
+        item_kind: ReviewItemKind::BranchReview,
+        verdict: Verdict::Rejected,
+        via: None,
+        by: VerdictBy::User,
+        tx_ids: vec![id(TX)],
+        accepted: 2,
+        rejected: 1,
+        session_id: Some(id(SESSION)),
+        open_s: 90,
+        reason: Some(Content(Scrubbed::new("too loud", &ScrubCtx::default()))),
+    }
 }
 
 pub fn job_media() -> JobMedia {

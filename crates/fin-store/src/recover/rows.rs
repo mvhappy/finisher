@@ -69,6 +69,7 @@ impl Runner<'_, '_, '_> {
             }
             RecordKind::Branch => self.branch_row(g, i, rec, &at),
             RecordKind::BranchSet => self.branch_set(g, i, rec),
+            RecordKind::Drop => self.drop_row(g, i, rec, branch),
             _ => Ok(Ok((0, false))),
         }
     }
@@ -78,7 +79,8 @@ impl Runner<'_, '_, '_> {
         let tx_id = self.next_id()?;
         let author = self.author;
         let ctx = self.ctx.as_deref_mut().expect("writing");
-        let draft = metadata_draft(ctx, branch, &tx_id, author, link)?;
+        let mut draft = metadata_draft(ctx, branch, &tx_id, author, link)?;
+        draft.intent.args_hash.clone_from(&self.args_hash);
         self.committed.push(ctx.append(draft)?);
         Ok(())
     }
@@ -116,7 +118,7 @@ impl Runner<'_, '_, '_> {
             Err(c) => return Ok(Err(c)),
         };
         tx.author = self.author.to_string();
-        tx.args_hash = None;
+        tx.args_hash.clone_from(&self.args_hash);
         if let Some(b) = branch {
             tx.tx_id = self.next_id()?;
             tx.branch = b.to_string();
@@ -279,7 +281,7 @@ impl Runner<'_, '_, '_> {
                 from,
                 at: Some(At::Seq(seq)),
                 dry_run: ctx.dry_run,
-                args_hash: None,
+                args_hash: self.args_hash.clone(),
             },
             Some(self.forest.rows[i].hash.clone()),
         )?;
@@ -338,6 +340,73 @@ impl Runner<'_, '_, '_> {
                 recovers: Some(self.forest.rows[i].hash.clone()),
             };
             self.no_op_record(&parent, link)?;
+        }
+        Ok(Ok((0, true)))
+    }
+
+    /// A `drop` row (plan 5E Task 2): a rejection binds the branch it is on, so it is never
+    /// moved to a recovered branch that only stands beside it. On a branch set aside with it,
+    /// in its place on the recovered branch that stands for that one (as a checkpoint); on a
+    /// live branch, the same drop again there, guarded as `Store::drop` is; left with a note
+    /// when that branch is gone or archived. A drop made again is written at the live branch's
+    /// head, so it is that branch's newest mark for each origin it names: it overrides a drop or
+    /// undrop written there since the lost one (lineage order, `fin_core::history::dropped_for`).
+    fn drop_row(
+        &mut self,
+        g: usize,
+        i: usize,
+        rec: &Record,
+        branch: Option<&str>,
+    ) -> Result<Done, StoreError> {
+        let Ok(Link::Drop {
+            from,
+            drops,
+            undrops,
+            ..
+        }) = rec.link()
+        else {
+            self.notes[g].push(note(
+                &rec.tx_id,
+                "INVALID_FORMAT",
+                "the drop record does not decode; dismiss the group (fin project recover --dismiss <group>)".into(),
+            ));
+            return Ok(Ok((0, false)));
+        };
+        let link = Link::Drop {
+            from,
+            drops,
+            undrops,
+            recovers: Some(self.forest.rows[i].hash.clone()),
+        };
+        if self.forest.in_place(rec) {
+            if let Some(b) = branch {
+                self.no_op_record(b, link)?;
+            }
+            return Ok(Ok((1, true)));
+        }
+        let target = rec.intent.branch.clone();
+        let ix = index::load(self.conn)?;
+        let Some(info) = ix.get(&target) else {
+            self.notes[g].push(note(
+                &rec.tx_id,
+                "BRANCH_NOT_FOUND",
+                format!("branch {target} the rejection binds is gone; dismiss the group (fin project recover --dismiss <group>)"),
+            ));
+            return Ok(Ok((0, false)));
+        };
+        if info.archived {
+            self.notes[g].push(note(
+                &rec.tx_id,
+                "BRANCH_ARCHIVED",
+                format!(
+                    "fin branch archive {target} --restore, then fin project recover --create all"
+                ),
+            ));
+            return Ok(Ok((0, false)));
+        }
+        if let Some(ctx) = self.ctx.as_deref() {
+            ctx.guarded(info)?;
+            self.no_op_record(&target, link)?;
         }
         Ok(Ok((0, true)))
     }

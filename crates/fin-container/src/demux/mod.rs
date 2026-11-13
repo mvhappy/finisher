@@ -4,6 +4,7 @@
 //! A file that starts with the EBML magic is read by the WebM/Matroska demuxer ([`webm`]) into
 //! the same tracks.
 
+mod aac;
 mod codec_config;
 mod colour;
 mod edit_list;
@@ -465,7 +466,15 @@ fn parse<R: Read + Seek>(r: &mut R, limits: Limits) -> Result<Parsed, CoreError>
         if let Some(stsd) = t.boxes.stsd {
             let e = codec_config::entry(&mut rd, &stsd, false, 6)?;
             let (channels, rate) = e.audio.unwrap_or((0, 0));
-            let rate = if rate == 0 { t.timescale } else { rate };
+            // The sample entry's rate, else the AAC config's; the media timescale only as a last
+            // resort (a time unit, which a file may set to anything).
+            let rate = Some(rate)
+                .filter(|r| *r > 0)
+                .or_else(|| match &e.config {
+                    CodecConfig::Aac { esds } => aac::sample_rate(esds),
+                    _ => None,
+                })
+                .unwrap_or(t.timescale);
             let (mut priming, shown) =
                 edit_list::audio_timing(&samples, &t.edits, t.timescale, movie_ts);
             let to_samples =

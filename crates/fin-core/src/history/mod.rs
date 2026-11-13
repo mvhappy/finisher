@@ -12,16 +12,22 @@
 //!   it copies.
 //! - [`pick`]: the cherry-pick and revert planners ([`plan_cherry_pick`], [`plan_revert`]).
 //! - [`merged`]: the derived `merged` state ([`left_to_merge`]).
+//! - [`limits`]: merges limited to what was reviewed ([`MergeLimits`], [`plan_merge_limited`]);
+//!   [`review`]: the review plan's entries ([`ReviewEntry`]), from the merge planner itself.
+//! - [`drops`]: what a lineage's `drop` records leave dropped ([`dropped_for`]).
 //! - [`origin`]: origin chains and their roots ([`root_of`]), and what they say about a
 //!   merge's records ([`Roots`]).
 
 mod absorbs;
 pub mod candidates;
 pub mod checkpoint;
+pub mod drops;
+pub mod limits;
 pub mod merge;
 pub mod merged;
 pub mod origin;
 pub mod pick;
+pub mod review;
 pub mod undo;
 
 use std::collections::HashSet;
@@ -35,10 +41,13 @@ use crate::tx::{Applied, CommittedTx, Diff, Tx};
 
 pub use candidates::{Candidates, candidates};
 pub use checkpoint::plan_undo_to;
-pub use merge::{MergePlan, candidate_steps, common_point, plan_merge};
+pub use drops::{DropMark, Held, check_drop, dropped_for, source_roots};
+pub use limits::{MAX_INCLUDE, MergeLimits};
+pub use merge::{MergePlan, candidate_steps, common_point, plan_merge, plan_merge_limited};
 pub use merged::{left_to_merge, lineage_in};
 pub use origin::{Roots, root, root_of, target_roots};
 pub use pick::{plan_cherry_pick, plan_revert};
+pub use review::{EntryStatus, ReviewEntry};
 pub use undo::{StackRec, Stacks, UnitEntry, UnitSource, derive_stacks, plan_redo, plan_undo};
 
 /// One stored record with its place in the log and its diff (the store's `txs` row).
@@ -119,6 +128,12 @@ pub trait LogView {
     /// `from = branch` on a branch that is not a descendant of `branch` (Decision 22).
     /// Cherry-picks never count.
     fn merged_away(&self, branch: &str) -> Result<HashSet<String>, CoreError>;
+    /// Every origin the `drop` records on `lineage` name, in lineage order
+    /// ([`drops::marks_from_records`], the default, which reads the records). A store answers
+    /// from its `drops` index.
+    fn drops_on(&self, lineage: &Lineage) -> Result<Vec<DropMark>, CoreError> {
+        drops::marks_from_records(self, lineage)
+    }
     /// The measurer the planned record's re-run at the head checks caption overflow with
     /// (plan 4C Task 20); `None` (the default) measures nothing.
     fn measurer(&self) -> Option<&dyn TextMeasurer> {

@@ -550,7 +550,7 @@ Native code compiled into Finisher's binaries by a crate's build script, as
 `third_party/native.json` lists it (sub-project 6 spec §16.3; `scripts/check-native-deps.mjs`
 checks that every such package is listed, its licence allowed and named here).
 
-### SQLite (public domain) — `libsqlite3-sys` 0.35, bundled by `rusqlite`
+### SQLite 3.54.0 (public domain) — `libsqlite3-sys` 0.39, bundled by `rusqlite` 0.41
 status: used (`fin-store`), the SQLite amalgamation compiled from the crate's sources. SQLite
 is dedicated to the public domain (`blessing`); `libsqlite3-sys` itself is MIT.
 
@@ -617,6 +617,13 @@ status: used (sub-project 5B, Task 7) as an npm dependency of `finisherd` (`jose
 pin, no runtime dependencies); no code is copied. It verifies devices' DPoP proofs (ES256 JWS)
 and computes RFC 7638 key thumbprints (`apps/finisherd/src/auth/dpop.ts`).
 
+## Finisher plugin SDKs (MIT) — `fin-plugin-sdk` and `@finisher/plugin-sdk`
+status: first-party code (sub-project 8B), MIT-licensed, not yet published (sub-project 11 publishes
+them to crates.io and npm). Sub-project 8B links no new third-party code: the SDK, the argument
+schema subset (`regex-automata` 0.4.18, already in the tree through `globset`; MIT OR Apache-2.0) and
+the egress broker (Node's own `https` and `dns`) add no dependency beyond the "Other Cargo
+dependencies" list below (the Rust SDK uses `base64` 0.23, listed there).
+
 ## Other Cargo dependencies — everything else that ships
 status: used, as Cargo dependencies; no code is copied. These crates are in the shipped graph
 (`scripts/check-notices.mjs`: every workspace member but the dev-only ones, normal and build
@@ -625,7 +632,7 @@ expression in their `Cargo.toml`, with the count; each crate's licence text is i
 `LICENSE-*` file in its package on crates.io. Where the expression has an `OR`, Finisher uses the
 crate under an alternative `deny.toml` allows.
 
-- MIT OR Apache-2.0 (133):
+- MIT OR Apache-2.0 (134):
   `allocator-api2` 0.2.21, `anstyle` 1.0.14, `arrayvec` 0.7.8, `ash` 0.38.0+1.3.281,
   `base64` 0.22.1, 0.23.1, `bitflags` 2.13.2, `block-buffer` 0.12.1, `bstr` 1.13.1,
   `cc` 1.10.0, `cfg-if` 1.0.5, `clap_builder` 4.6.7, `clap_derive` 4.6.7, `clap_lex` 1.1.1,
@@ -637,7 +644,7 @@ crate under an alternative `deny.toml` allows.
   `futures-channel` 0.3.34, `futures-core` 0.3.34, `futures-executor` 0.3.34,
   `futures-io` 0.3.34, `futures-macro` 0.3.34, `futures-sink` 0.3.34, `futures-task` 0.3.34,
   `futures-util` 0.3.34, `futures` 0.3.34, `getrandom` 0.2.17, 0.3.4, 0.4.3,
-  `gpu-allocator` 0.28.0, `half` 2.7.1, `hashbrown` 0.15.5, 0.16.1, 0.17.1, `hashlink` 0.10.0,
+  `gpu-allocator` 0.28.0, `half` 2.7.1, `hashbrown` 0.16.1, 0.17.1, `hashlink` 0.12.2,
   `heck` 0.5.0, `hex` 0.4.3, `hmac` 0.13.0, `hybrid-array` 0.4.15, `idna` 1.1.0, `itoa` 1.0.18,
   `jobserver` 0.1.35, `landlock` 0.4.7, `libc` 0.2.191, `litrs` 1.0.1, `lock_api` 0.4.14, `log` 0.4.34,
   `memmap2` 0.9.12, `mp4-atom` 0.17.0, `naga-types` 30.0.1, `naga` 30.0.1, `num-bigint` 0.4.8,
@@ -651,6 +658,7 @@ crate under an alternative `deny.toml` allows.
   `renderdoc-sys` 1.1.0, `rustc_version` 0.4.1, `scopeguard` 1.2.0,
   `security-framework-sys` 2.17.0, `serde_core` 1.0.229, `serde_derive_internals` 0.30.0,
   `serde_derive` 1.0.229, `serde_json` 1.0.154, `serde` 1.0.229, `shlex` 2.0.1,
+  `signal-hook-registry` 1.4.8,
   `smallvec` 1.16.4, `smol_str` 0.3.7, `snafu-derive` 0.8.9, `stable_deref_trait` 1.2.1,
   `static_assertions` 1.1.0, `syn` 2.0.119, 3.0.9, `tempfile` 3.27.0,
   `thiserror-impl` 1.0.69, 2.0.21, `thiserror` 1.0.69, 2.0.21, `typenum` 1.20.1,
@@ -701,8 +709,8 @@ crate under an alternative `deny.toml` allows.
   `codespan-reporting` 0.13.1, `spirv` 0.4.0+sdk-1.4.341.0.
 - Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT (2):
   `linux-raw-sys` 0.12.1, `rustix` 1.1.6.
-- Apache-2.0/MIT (2):
-  `crc32c` 0.6.8, `pollster` 0.4.0.
+- Apache-2.0/MIT (3):
+  `crc32c` 0.6.8, `pollster` 0.4.0, `signal-hook` 0.3.18.
 - BSD-2-Clause OR Apache-2.0 OR MIT (2):
   `zerocopy-derive` 0.8.63, `zerocopy` 0.8.63.
 - CC0-1.0 OR MIT-0 OR Apache-2.0 (2):
@@ -710,7 +718,7 @@ crate under an alternative `deny.toml` allows.
 - Unlicense/MIT (2):
   `same-file` 1.0.6, `walkdir` 2.5.0.
 - Zlib (2):
-  `foldhash` 0.1.5, 0.2.0, `slotmap` 1.1.1.
+  `foldhash` 0.2.0, `slotmap` 1.1.1.
 - 0BSD OR Apache-2.0 (1):
   `interprocess` 2.4.7.
 - 0BSD OR MIT OR Apache-2.0 (1):

@@ -15,7 +15,17 @@ static PARAMS: &[&[KindParams]] = &[
     #[cfg(feature = "test-hooks")]
     fin_library::params_test::PARAMS,
     MEDIA,
+    PLUGIN,
 ];
+
+/// Sub-project 8B's plugin kinds: a command run (`fin_plugin_api::protocol::CommandRun`; the
+/// kind itself is registered by finisherd's plugin host, Task 9).
+static PLUGIN: &[KindParams] = &[KindParams {
+    kind: "plugin.command",
+    version: 1,
+    validate: validate_as::<fin_plugin_api::protocol::CommandRun>,
+    schema: schema_as::<fin_plugin_api::protocol::CommandRun>,
+}];
 
 /// Sub-project 6's media kinds (`fin_media::jobs`; the worker side is `fin-workers media`).
 static MEDIA: &[KindParams] = &[

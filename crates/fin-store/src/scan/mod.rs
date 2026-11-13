@@ -14,7 +14,11 @@
 //! - Not scanned: any other directory.
 //!
 //! A path that is not a regular file (symlink, FIFO, socket, device) is `Foreign` and never
-//! opened. Known OS and sync litter is skipped: `.DS_Store`, AppleDouble `._*`,
+//! opened. A link in place of `.finisher/` itself or of `segments/`, `snapshots/` or
+//! `compaction/` fails the scan ([`crate::reserved`]): each listed directory is checked from
+//! `.finisher` down before it is refreshed or listed and after it is listed, and all of them
+//! again once the files are read. A linked branch directory is a `Foreign` entry, not
+//! entered. Known OS and sync litter is skipped: `.DS_Store`, AppleDouble `._*`,
 //! `desktop.ini`, `Thumbs.db`, `.dropbox`, `.dropbox.attr`, `.nfs*`, `.fuse_hidden*`,
 //! `.smbdelete*`. Sync temp files (`.syncthing.*.tmp`, `~syncthing~*.tmp`) are
 //! `NotArrived { Temp }`.
@@ -178,8 +182,8 @@ impl Scanner {
     }
 
     /// Scans `<project_dir>/.finisher/`. A missing directory is an empty result; only a
-    /// directory that cannot be listed fails the scan. Entries are ordered by directory,
-    /// then name.
+    /// directory that cannot be listed, or a reserved directory that is a link, fails the
+    /// scan. Entries are ordered by directory, then name.
     pub fn scan(&mut self, project_dir: &Path) -> io::Result<Vec<Entry>> {
         self.walk(project_dir, false)
     }
@@ -200,6 +204,7 @@ impl Scanner {
             out: Vec::new(),
         };
         let base = project_dir.join(".finisher");
+        let mut listed = vec![base.clone()];
         for (path, meta) in list(&base)? {
             if !meta.is_dir() {
                 file::entry(&mut w, &path, &meta, Place::Root);
@@ -207,7 +212,10 @@ impl Scanner {
         }
         for (sub, is_seg) in [("segments", true), ("snapshots", false)] {
             let refresh = refresh && is_seg;
+            listed.push(base.join(sub));
             if refresh {
+                // The probe is a write: never through a link.
+                crate::reserved::no_links(&base.join(sub))?;
                 refresh_listing(&base.join(sub));
             }
             for (path, meta) in list(&base.join(sub))? {
@@ -233,7 +241,9 @@ impl Scanner {
                     });
                     continue;
                 };
+                listed.push(path.clone());
                 if refresh {
+                    crate::reserved::no_links(&path)?;
                     refresh_listing(&path);
                 }
                 for (p, m) in list(&path)? {
@@ -248,6 +258,7 @@ impl Scanner {
                 }
             }
         }
+        listed.push(base.join("compaction"));
         for (path, meta) in list(&base.join("compaction"))? {
             if meta.is_dir() {
                 w.out.push(Entry::Foreign {
@@ -258,6 +269,10 @@ impl Scanner {
             } else {
                 file::entry(&mut w, &path, &meta, Place::Compaction);
             }
+        }
+        // A link swapped in while the files were read: nothing read through it is used.
+        for dir in &listed {
+            crate::reserved::no_links(dir)?;
         }
         self.cache = w.new;
         Ok(w.out)
@@ -298,8 +313,10 @@ pub(crate) fn valid_branch(b: &str) -> bool {
 
 /// The directory's entries with their `DirEntry::metadata()` (symlinks are not followed),
 /// sorted by path. A missing directory is empty; an entry that vanishes mid-listing (a
-/// writer's temp file renamed) is skipped.
+/// writer's temp file renamed) is skipped. `dir` or a directory above it up to `.finisher`
+/// that is a link, before or after the listing, is an error ([`crate::reserved::no_links`]).
 fn list(dir: &Path) -> io::Result<Vec<(PathBuf, fs::Metadata)>> {
+    crate::reserved::no_links(dir)?;
     let rd = match fs::read_dir(dir) {
         Ok(rd) => rd,
         Err(e)
@@ -325,6 +342,7 @@ fn list(dir: &Path) -> io::Result<Vec<(PathBuf, fs::Metadata)>> {
             Err(e) => return Err(e),
         }
     }
+    crate::reserved::no_links(dir)?;
     v.sort_by(|a, b| a.0.cmp(&b.0));
     Ok(v)
 }

@@ -572,6 +572,7 @@ fn asset_remove_in_use_lists_items() {
             ItemBody::Graphic {
                 asset: "$x1".into(),
                 slots: BTreeMap::new(),
+                source_in: fin_core::Rational::zero(),
             },
         ),
     ] {

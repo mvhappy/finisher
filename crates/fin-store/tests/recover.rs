@@ -978,6 +978,8 @@ fn merge(s: &mut Store, tx: &str, from: &str, into: &str) -> fin_store::MergeRep
         skip_conflicting: false,
         dry_run: false,
         args_hash: None,
+        include: None,
+        source_up_to: None,
     })
     .unwrap()
 }

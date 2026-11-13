@@ -24,7 +24,7 @@ export interface NewSession {
   readonly mode: Mode;
   /** The session's branch; required unless `mode` is `plan`, which has none. */
   readonly rootBranch?: string;
-  readonly base: { readonly branch: string; readonly seq: number };
+  readonly base: { readonly branch: string; readonly seq: number; readonly hash?: string };
   readonly parent?: string;
   /** `savedPrompt`: started from a saved prompt (7B Task 10). */
   readonly trigger?: "savedPrompt";
@@ -37,6 +37,8 @@ export interface NewSession {
   readonly createdBy: Session["createdBy"];
   readonly title?: string;
   readonly providerRef?: string;
+  /** The role's tool allow-set (`SessionPlan.tools`), kept for resume (agent 0010, plan 7D Task 4). */
+  readonly tools?: readonly string[];
 }
 
 export interface NewNode {
@@ -112,11 +114,14 @@ export interface SessionRow {
   rootSession: string | null;
   depth: number;
   trigger: string | null;
+  tools: string | null;
+  /** Agent 0012: the base head's hash (a critic on a branch under review, 7B Task 12). */
+  baseHash: string | null;
 }
 
 export const SESSION_COLUMNS =
   "id, projectId, harness, provider, model, weights, role, mode, rootBranch, baseBranch, baseSeq, parent, status, " +
-  "statusReason, runId, approvals, credentialId, providerRef, budget, usage, createdBy, createdAt, endedAt, title, rootSession, depth, trigger";
+  "statusReason, runId, approvals, credentialId, providerRef, budget, usage, createdBy, createdAt, endedAt, title, rootSession, depth, trigger, tools, baseHash";
 
 export interface RunRow {
   id: string;
@@ -183,7 +188,7 @@ export function toSession(r: SessionRow): Session {
     role: r.role,
     mode: r.mode as Mode,
     ...opt("rootBranch", r.rootBranch),
-    base: { branch: r.baseBranch, seq: r.baseSeq },
+    base: { branch: r.baseBranch, seq: r.baseSeq, ...opt("hash", r.baseHash) },
     ...opt("parent", r.parent),
     // A root is its own root at depth 0: only a child names them.
     ...(r.parent === null ? {} : { ...opt("rootSession", r.rootSession), depth: r.depth }),
@@ -338,7 +343,8 @@ export function sessionInsertArgs(s: NewSession, status: string, now: number): A
   return [
     s.id, s.projectId, s.harness, s.provider, s.model, s.weights, s.role, s.mode, s.rootBranch ?? null, s.base.branch, s.base.seq,
     s.parent ?? null, status, s.id, s.providerRef ?? null, JSON.stringify(s.budget), JSON.stringify(ZERO_USAGE), JSON.stringify(s.createdBy),
-    now, s.title ?? null, s.rootSession ?? null, s.depth ?? 0, s.trigger ?? null,
+    now, s.title ?? null, s.rootSession ?? null, s.depth ?? 0, s.trigger ?? null, s.tools === undefined ? null : JSON.stringify(s.tools),
+    s.base.hash ?? null,
   ];
 }
 
@@ -367,7 +373,7 @@ export function approvalExpired(id: string): FinError {
 
 /** Every statement `AgentStore` prepares, once, by name. */
 export const STORE_SQL: Readonly<Record<string, string>> = {
-  insertSession: `INSERT INTO sessions (${SESSION_COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, '[]', ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?)`,
+  insertSession: `INSERT INTO sessions (${SESSION_COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, '[]', ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?)`,
   session: `SELECT ${SESSION_COLUMNS} FROM sessions WHERE id = ?`,
   setState: "UPDATE sessions SET status = ?, statusReason = ?, runId = ?, approvals = ?, endedAt = COALESCE(endedAt, ?) WHERE id = ?",
   live: "SELECT id FROM sessions WHERE status IN ('starting', 'running', 'waitingApproval') ORDER BY id",

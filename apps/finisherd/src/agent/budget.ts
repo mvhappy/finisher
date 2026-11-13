@@ -225,6 +225,23 @@ export class Budget {
     for (const kind of BUDGET_KINDS) if ((add[kind] ?? 0) > 0) this.noticed.delete(kind);
   }
 
+  /**
+   * The first budget used up, counting what is held (`reserved`: calls in flight, live
+   * children's carve-outs): a session kind, or the server's money for today. Null while every
+   * one has room. The `auto` merge trigger's "within budget" (7B Task 12).
+   */
+  spent(): Reading | null {
+    this.tick();
+    for (const kind of BUDGET_KINDS) {
+      const l = this.ledger.read(this.sessionId, kind);
+      const limit = l.limit ?? this.limits[LIMIT_OF[kind]];
+      if (l.used + l.reserved >= limit) return { kind, used: l.used + l.reserved, limit };
+    }
+    const d = this.ledger.daily(utcDay(this.clock.now()));
+    if (d.used + d.reserved >= this.limits.dailyMoneyMicros) return { kind: "dailyMoney", used: d.used + d.reserved, limit: this.limits.dailyMoneyMicros };
+    return null;
+  }
+
   /** Every reading (money as spent, not held), for the budget facts at the head of a run. */
   readings(): Reading[] {
     this.tick();

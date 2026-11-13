@@ -132,12 +132,19 @@ pub const EDIT_ROWS: &[Row] = &[
     row!("batch", crate::registry_rpcs::rpc!("tx.commit"), TX),
 ];
 
-/// The name pattern of a plugin command, exported as the last registry entry: the server
-/// composes `plugin:<id>/<command>` from the plugin host's own record of the calling plugin
-/// and command (`{plugin: "<id>@<version>", command}`). A payload's `tx.via` is the caller's
-/// claim and names nothing, so the entry has no payload condition.
+/// The name pattern of a plugin command, exported as the last registry entry. `fin @<id>
+/// <command>` sends `plugin.command.run {name: "plugin:<id>/<command>"}`, named by that `name`
+/// (the host runs exactly that command or none); the transaction it commits is a `tx.commit`
+/// the server names from the plugin host's own record (`{plugin: "<id>@<version>", command}`),
+/// never from a payload's `tx.via`. Neither has a payload condition here.
 pub const PLUGIN_COMMAND: &str = "plugin:<id>/<command>";
-pub const PLUGIN_COMMAND_RPC: RpcUse = RpcUse {
-    method: "tx.commit",
-    matches: &[],
-};
+pub const PLUGIN_COMMAND_RPCS: &[RpcUse] = &[
+    RpcUse {
+        method: "plugin.command.run",
+        matches: &[],
+    },
+    RpcUse {
+        method: "tx.commit",
+        matches: &[],
+    },
+];

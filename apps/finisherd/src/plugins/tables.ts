@@ -1,5 +1,5 @@
 // The `plugins` chain's tables (8A Task 9a, spec §5.1): the only module that touches
-// `registries`, `plugins`, `plugin_grants`, `plugin_plans` and `plugin_suggestions`. Importing it registers the chain
+// `registries`, `plugins`, `plugin_grants`, `plugin_plans` (`plugin_authority` is `host/authority.ts`'s). Importing it registers the chain
 // (`main.ts` imports it before it opens the control store). Statements are prepared once.
 import type { StatementSync } from "node:sqlite";
 import type { InstalledRow, RegistryEntry } from "@finisher/contracts";
@@ -9,8 +9,10 @@ import { plugins0001 } from "../control/migrations/plugins/0001.ts";
 import { plugins0002 } from "../control/migrations/plugins/0002.ts";
 import { plugins0003 } from "../control/migrations/plugins/0003.ts";
 import { plugins0004 } from "../control/migrations/plugins/0004.ts";
+import { plugins0005 } from "../control/migrations/plugins/0005.ts";
+import { plugins0006 } from "../control/migrations/plugins/0006.ts";
 
-registerChain("plugins", [plugins0001, plugins0002, plugins0003, plugins0004], { formatVersion: 4, minReaderVersion: 1 });
+registerChain("plugins", [plugins0001, plugins0002, plugins0003, plugins0004, plugins0005, plugins0006], { formatVersion: 6, minReaderVersion: 1 });
 
 /** `<kind>:<id>` of a principal, as stored in `addedBy`, `installedBy` and `lastRefreshBy`. */
 export const actorOf = (p: { readonly kind: string; readonly id: string }): string => `${p.kind}:${p.id}`;
@@ -98,16 +100,6 @@ export interface PlanRow {
   readonly expiresAt: number;
 }
 
-export interface SuggestionRow {
-  readonly id: string;
-  readonly pluginId: string;
-  readonly projectId: string;
-  readonly reason: string;
-  readonly byKind: string;
-  readonly byId: string;
-  readonly createdAt: number;
-}
-
 interface PluginDbRow {
   id: string;
   version: string;
@@ -193,9 +185,6 @@ export class PluginTables {
       deletePlan: p("DELETE FROM plugin_plans WHERE id = ?"),
       expiredPlans: p("DELETE FROM plugin_plans WHERE expiresAt <= ?"),
       openPlans: p("SELECT COUNT(*) AS n FROM plugin_plans WHERE byKind = ? AND byId = ? AND expiresAt > ?"),
-      addSuggestion: p("INSERT INTO plugin_suggestions (id, pluginId, projectId, reason, byKind, byId, createdAt) VALUES (?, ?, ?, ?, ?, ?, ?)"),
-      suggestions: p("SELECT * FROM plugin_suggestions ORDER BY createdAt, id"),
-      suggested: p("SELECT * FROM plugin_suggestions WHERE byKind = ? AND byId = ? AND projectId = ? ORDER BY createdAt, id"),
     };
   }
 
@@ -348,16 +337,4 @@ export class PluginTables {
     return row !== undefined && this.rootMatches(row);
   }
 
-  addSuggestion(r: SuggestionRow): void {
-    this.#s.addSuggestion!.run(r.id, r.pluginId, r.projectId, r.reason, r.byKind, r.byId, r.createdAt);
-  }
-
-  /** The suggestions `by` made for `projectId`, oldest first. */
-  suggestedBy(by: { readonly kind: string; readonly id: string }, projectId: string): SuggestionRow[] {
-    return this.#s.suggested!.all(by.kind, by.id, projectId) as unknown as SuggestionRow[];
-  }
-
-  suggestions(): SuggestionRow[] {
-    return this.#s.suggestions!.all() as unknown as SuggestionRow[];
-  }
 }

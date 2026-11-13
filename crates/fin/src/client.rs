@@ -24,6 +24,14 @@ use crate::output::unavailable;
 /// Connect, read and write timeout for one server conversation.
 pub const TIMEOUT: Duration = Duration::from_secs(30);
 
+/// [`TIMEOUT`], or `FIN_TEST_CALL_TIMEOUT_MS` (test hook: lowers an ordinary conversation's
+/// timeout, so a test can show a long call has its own).
+pub fn call_timeout() -> Duration {
+    crate::backend::test_hook("FIN_TEST_CALL_TIMEOUT_MS")
+        .and_then(|v| v.to_str()?.parse::<u64>().ok())
+        .map_or(TIMEOUT, Duration::from_millis)
+}
+
 /// One decoded server frame.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Frame {

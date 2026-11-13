@@ -78,7 +78,9 @@ pub(crate) fn check_body(
             named(a)?;
             (TrackKind::Video, &[AssetKind::Image, AssetKind::Svg])
         }
-        ItemBody::Graphic { asset: a, slots } => {
+        ItemBody::Graphic {
+            asset: a, slots, ..
+        } => {
             // Slots are checked against the template's (plan 4C Task 11).
             if let Some(template) = &named(a)?.lottie {
                 for (slot, v) in slots {

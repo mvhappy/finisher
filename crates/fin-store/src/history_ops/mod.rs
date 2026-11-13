@@ -5,14 +5,17 @@
 //! - [`undo`]: `Store::undo` (also `undo --to <checkpoint>`), `Store::redo`,
 //!   `Store::undo_stacks`.
 //! - [`checkpoint`]: `Store::checkpoint`, `Store::find_checkpoint`.
-//! - [`merge`] holds `Store::merge`.
+//! - [`drop`]: `Store::drop` (durable rejections, plan 5E Decision 5), `Store::dropped`.
+//! - [`merge`] holds `Store::merge`; [`review_plan`] `Store::review_plan` (plan 5E Decision 7).
 //! - [`pick`]: `Store::cherry_pick`, `Store::revert`.
 //! - [`origins`]: what a result's records stand for (`origins`, 7A Decision 27).
 
 pub(crate) mod checkpoint;
+pub(crate) mod drop;
 pub(crate) mod merge;
 pub(crate) mod origins;
 pub(crate) mod pick;
+pub(crate) mod review_plan;
 pub(crate) mod undo;
 
 #[cfg(test)]
@@ -21,7 +24,7 @@ mod stack_rows_tests;
 
 use std::collections::{HashMap, HashSet};
 
-use fin_core::history::{Lineage, LogRec, LogView, StackRec};
+use fin_core::history::{DropMark, Lineage, LogRec, LogView, StackRec};
 use fin_core::layout::TextMeasurer;
 use fin_core::{CoreError, Link, Project, RecordKind};
 use rusqlite::{Connection, OptionalExtension, params};
@@ -330,6 +333,10 @@ impl LogView for SqlLog<'_> {
 
     fn merged_away(&self, branch: &str) -> Result<HashSet<String>, CoreError> {
         Ok(self.merged_away_ids(branch)?)
+    }
+
+    fn drops_on(&self, lineage: &Lineage) -> Result<Vec<DropMark>, CoreError> {
+        Ok(crate::drops_index::marks(self.conn, lineage)?)
     }
 }
 

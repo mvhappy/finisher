@@ -155,9 +155,9 @@ fn sp2_fixture_migrates_to_identical_state() {
     assert_eq!(pragma(&conn, "user_version"), i64::from(DB_VERSION));
     assert_eq!(pragma(&conn, "application_id"), i64::from(APPLICATION_ID));
     assert!(!columns(&conn, "txs").contains(&"json".to_string()));
-    // Migrations 0002 to 0005 run after 0001.
-    assert_eq!(meta(&conn, "formatVersion").as_deref(), Some("5"));
-    assert_eq!(meta(&conn, "minReaderVersion").as_deref(), Some("5"));
+    // Migrations 0002 to 0007 run after 0001.
+    assert_eq!(meta(&conn, "formatVersion").as_deref(), Some("7"));
+    assert_eq!(meta(&conn, "minReaderVersion").as_deref(), Some("7"));
     assert!(
         meta(&conn, "lastOpenedBy")
             .unwrap()
@@ -311,8 +311,8 @@ fn fresh_and_migrated_schemas_match() {
     for table in ["segments", "lease_state", "quarantine"] {
         assert!(!columns(&a, table).is_empty(), "{table}");
     }
-    assert_eq!(meta(&a, "formatVersion").as_deref(), Some("5"));
-    assert_eq!(meta(&a, "minReaderVersion").as_deref(), Some("5"));
+    assert_eq!(meta(&a, "formatVersion").as_deref(), Some("7"));
+    assert_eq!(meta(&a, "minReaderVersion").as_deref(), Some("7"));
     let created_by = meta(&a, "createdBy").unwrap();
     assert_eq!(
         created_by,
@@ -328,7 +328,7 @@ fn migration_backs_up_first() {
     drop(sp2.open().unwrap());
     let names = backup_names(&sp2.backups());
     assert_eq!(names.len(), 1, "{names:?}");
-    assert!(names[0].starts_with("pre-migrate-0-5-"), "{names:?}");
+    assert!(names[0].starts_with("pre-migrate-0-7-"), "{names:?}");
     assert!(names[0].ends_with(".fdb"), "{names:?}");
     // The backup is the database as it was before the first step.
     let conn = read_only(&sp2.backups().join(&names[0]));
@@ -538,6 +538,8 @@ fn prune_never_deletes_the_new_backup() {
         "pre-migrate-0-1-19990101T000000000Z.fdb.bak",
         "pre-migrate-x-1-19990101T000000000Z.fdb",
         "pre-migrate-0-1-1999010T1000000000Z.fdb",
+        // Valid UTF-8, 19 bytes, a non-ASCII timestamp character (review #37: a panic).
+        "pre-migrate-1-2-1234567\u{e9}123456789Z.fdb",
         "notes.txt",
     ];
     for name in future.iter().chain(&foreign) {
@@ -715,22 +717,15 @@ fn rows(conn: &Connection, table: &str) -> Vec<Vec<Option<String>>> {
     .collect()
 }
 
-/// Migrations 0003, 0004 and 0005 are frozen (plan 4C Decision 3, spec §5.12.2, plan 6B-1
-/// Task 11): on the 4B fixture (a v2 database) they set `user_version` 5 and the version
-/// `meta` keys to `"5"`, and change nothing else: no table, no stored record, diff or
-/// snapshot.
-#[test]
-fn migrations_0003_to_0005_are_frozen() {
-    let tmp = tempfile::tempdir().unwrap();
-    let (data, folder) = integration_support::fixture_4b(tmp.path());
-    let id = fin_store::read_project_file(&folder).unwrap().id;
-    let db = db_path(&data, &id);
+/// What the frozen migrations from a fixture's database leave (plan 4C Decision 3, plan 5E
+/// Decision 4, spec §5.12.2, §5.13): the fixture opened, migrated from `from` to version 7:
+/// `user_version` 7, the version `meta` keys `"7"`, the tables of before plus `added` only, and
+/// every stored record, diff, snapshot and branch row as stored.
+fn assert_frozen_from(data: &Path, folder: &Path, from: i64, added: &[&str]) {
+    let id = fin_store::read_project_file(folder).unwrap().id;
+    let db = db_path(data, &id);
     let before = read_only(&db);
-    assert_eq!(
-        pragma(&before, "user_version"),
-        2,
-        "the fixture is a 4B database"
-    );
+    assert_eq!(pragma(&before, "user_version"), from);
     let (schema_before, txs, snapshots, branches) = (
         schema(&before),
         rows(&before, "txs"),
@@ -742,38 +737,82 @@ fn migrations_0003_to_0005_are_frozen() {
         relocate: true,
         ..OpenOptions::default()
     };
-    drop(Store::open_with(&data, &folder, opts).unwrap());
+    drop(Store::open_with(data, folder, opts).unwrap());
     let conn = read_only(&db);
-    assert_eq!(pragma(&conn, "user_version"), 5);
-    assert_eq!(meta(&conn, "formatVersion").as_deref(), Some("5"));
-    assert_eq!(meta(&conn, "minReaderVersion").as_deref(), Some("5"));
-    assert_eq!(schema(&conn), schema_before, "no table changes");
+    assert_eq!(pragma(&conn, "user_version"), 7);
+    assert_eq!(meta(&conn, "formatVersion").as_deref(), Some("7"));
+    assert_eq!(meta(&conn, "minReaderVersion").as_deref(), Some("7"));
+    let mut want: Vec<String> = schema_before.iter().map(|(n, _)| n.clone()).collect();
+    want.extend(added.iter().map(|n| n.to_string()));
+    want.sort();
+    let have: Vec<String> = schema(&conn).into_iter().map(|(n, _)| n).collect();
+    assert_eq!(have, want, "only the drops index is added");
+    for (name, sql) in &schema_before {
+        assert!(
+            schema(&conn).contains(&(name.clone(), sql.clone())),
+            "{name} unchanged"
+        );
+    }
     assert_eq!(rows(&conn, "txs"), txs, "records and diffs as stored");
     assert_eq!(rows(&conn, "snapshots"), snapshots, "snapshots as stored");
     assert_eq!(rows(&conn, "branches"), branches);
+    let n: i64 = conn
+        .query_row("SELECT COUNT(*) FROM drops", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(n, 0, "no drop record before 5E");
     let names = backup_names(&db.parent().unwrap().join("backups"));
+    let prefix = format!("pre-migrate-{from}-7-");
     assert!(
-        names.len() == 1 && names[0].starts_with("pre-migrate-2-5-"),
+        names.len() == 1 && names[0].starts_with(&prefix),
         "{names:?}"
     );
 }
 
-/// Migration 0004 then 0005: a 4C database (version 3) becomes version 5 with only the
-/// version keys changed.
+const DROPS: &[&str] = &["drops", "drops_at", "sqlite_autoindex_drops_1"];
+
+/// Migrations 0003 (4C's version bump), 0004 (5E's `drops` index), 0005 (the
+/// stable-keyframe-ids bump), 0006 (the model-v4 bump) and 0007 (the model-v5 bump) are frozen:
+/// on the 4B fixture (a v2 database) they add the `drops` table and index and change nothing
+/// else.
 #[test]
-fn migration_0004_from_a_4c_database() {
-    bump_only_from(3);
+fn migrations_0003_to_0007_are_frozen() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (data, folder) = integration_support::fixture_4b(tmp.path());
+    assert_frozen_from(&data, &folder, 2, DROPS);
 }
 
-/// Migration 0005 alone (plan 6B-1 Task 11): a keyframe-ids database (version 4) becomes
-/// version 5 with only the version keys changed.
+/// Migrations 0004 to 0007 are frozen: on the 4C fixture (a v3 database) they add the
+/// `drops` table and index and change nothing else.
+#[test]
+fn migrations_0004_to_0007_are_frozen() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (data, folder) = integration_support::fixture_4c(tmp.path());
+    assert_frozen_from(&data, &folder, 3, DROPS);
+}
+
+/// Migrations 0005 to 0007: a 5E database (version 4) becomes version 7 with only the
+/// version keys changed.
 #[test]
 fn migration_0005_from_a_v4_database() {
     bump_only_from(4);
 }
 
-/// A fresh database set back to version `from` (header and `meta`) opens at version 5, with
-/// its tables and rows as they were and a `pre-migrate-<from>-5-` backup.
+/// Migrations 0006 and 0007 (spec §5.13): a keyframe-ids database (version 5) becomes version
+/// 7 with only the version keys changed.
+#[test]
+fn migration_0006_from_a_v5_database() {
+    bump_only_from(5);
+}
+
+/// Migration 0007 alone (plan 6B-1 Task 11): a model-v4 database (version 6) becomes version 7
+/// with only the version keys changed.
+#[test]
+fn migration_0007_from_a_v6_database() {
+    bump_only_from(6);
+}
+
+/// A fresh database set back to version `from` (header and `meta`) opens at version 7, with
+/// its tables and rows as they were and a `pre-migrate-<from>-7-` backup.
 fn bump_only_from(from: u32) {
     let (_tmp, data, dir, db) = fresh();
     {
@@ -793,9 +832,9 @@ fn bump_only_from(from: u32) {
     drop(before);
     drop(Store::open(&data, &dir).unwrap());
     let conn = read_only(&db);
-    assert_eq!(pragma(&conn, "user_version"), 5);
-    assert_eq!(meta(&conn, "formatVersion").as_deref(), Some("5"));
-    assert_eq!(meta(&conn, "minReaderVersion").as_deref(), Some("5"));
+    assert_eq!(pragma(&conn, "user_version"), 7);
+    assert_eq!(meta(&conn, "formatVersion").as_deref(), Some("7"));
+    assert_eq!(meta(&conn, "minReaderVersion").as_deref(), Some("7"));
     assert_eq!(schema(&conn), schema_before);
     assert_eq!(rows(&conn, "txs"), txs);
     assert_eq!(rows(&conn, "snapshots"), snapshots);
@@ -803,37 +842,36 @@ fn bump_only_from(from: u32) {
     assert!(
         names
             .iter()
-            .any(|n| n.starts_with(&format!("pre-migrate-{from}-5-"))),
+            .any(|n| n.starts_with(&format!("pre-migrate-{from}-7-"))),
         "{names:?}"
     );
 }
 
-/// A schema-4 database (model v4: `VideoInfo` display, `asset.reprobe`) says `user_version`
-/// 5 and `minReaderVersion` "5"; a reader at version N refuses a database above N on either
-/// (`DB_TOO_NEW`, untouched), so a keyframe-ids reader (N = 4) refuses it (plan 6B-1 Task
-/// 11, `older_reader_refuses_reprobe_op` at the DB level). Shown here one version up,
-/// through the refusal helper: this reader (N = 5) refuses version 6 on either key.
+/// A model-v5 database (`VideoInfo` display, `asset.reprobe`) says `user_version` 7 and
+/// `minReaderVersion` "7"; a reader at version N refuses a database above N on either
+/// (`DB_TOO_NEW`, untouched), so a model-v4 reader (N = 6) refuses it. Shown here one version
+/// up, through the refusal helper: this reader (N = 7) refuses version 8 on either key.
 #[test]
-fn db_v5_is_refused_by_a_v4_reader() {
+fn db_v7_is_refused_by_a_v6_reader() {
     let (_tmp, _data, _dir, db) = fresh();
     let conn = read_only(&db);
-    assert_eq!(pragma(&conn, "user_version"), 5);
-    assert_eq!(meta(&conn, "minReaderVersion").as_deref(), Some("5"));
+    assert_eq!(pragma(&conn, "user_version"), 7);
+    assert_eq!(meta(&conn, "minReaderVersion").as_deref(), Some("7"));
     drop(conn);
-    assert_eq!(DB_VERSION, 5);
-    for e in refused("PRAGMA user_version = 6") {
+    assert_eq!(DB_VERSION, 7);
+    for e in refused("PRAGMA user_version = 8") {
         assert_eq!(e.code, "DB_TOO_NEW");
         assert_eq!(
             (
                 e.details["dbVersion"].clone(),
                 e.details["supported"].clone()
             ),
-            (6.into(), 5.into())
+            (8.into(), 7.into())
         );
     }
-    for e in refused("UPDATE meta SET value = '6' WHERE key = 'minReaderVersion'") {
+    for e in refused("UPDATE meta SET value = '8' WHERE key = 'minReaderVersion'") {
         assert_eq!(e.code, "DB_TOO_NEW");
-        assert_eq!(e.details["minReaderVersion"], 6);
+        assert_eq!(e.details["minReaderVersion"], 8);
     }
 }
 

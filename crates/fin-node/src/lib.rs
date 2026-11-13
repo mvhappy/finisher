@@ -68,6 +68,7 @@ mod pipe_sec;
 mod pipe_server;
 #[cfg(windows)]
 mod pipe_win;
+mod plugin_calls;
 mod private_dir;
 mod private_file;
 mod qr;

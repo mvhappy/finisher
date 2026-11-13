@@ -365,3 +365,13 @@ test("remote: dpopProof is an ES256 JWS over its header and claims, verifiable w
   const want = createHash("sha256").update(`{"crv":"P-256","kty":"EC","x":"${key.jwk.x}","y":"${key.jwk.y}"}`).digest("base64url");
   assert.equal(key.jkt, want);
 });
+
+test("the review scenario is registered and an unknown name lists it", () => {
+  const r = spawnSync(process.execPath, [SCRIPT, "--skip-build", "no-such-scenario"], {
+    encoding: "utf8",
+    timeout: 30_000,
+    env: { ...process.env, E2E_SERVER_CMD: JSON.stringify([process.execPath, "-e", "0"]) },
+  });
+  assert.equal(r.status, 1, r.stderr);
+  assert.match(r.stderr, /unknown scenario no-such-scenario; known: .*\breview\b/);
+});

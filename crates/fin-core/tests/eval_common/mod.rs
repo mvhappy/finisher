@@ -207,6 +207,7 @@ pub fn with_audio(
         pan,
         fade_in,
         fade_out,
+        ..AudioParams::default()
     });
     item
 }

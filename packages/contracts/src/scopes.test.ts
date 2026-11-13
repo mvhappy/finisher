@@ -1,6 +1,8 @@
 import { expect, test } from "vitest";
 import { defaultScopes } from "./auth.ts";
 import { DEVICE_RPCS } from "./device-rpcs.ts";
+import { STREAM_RPCS } from "./diagnostics.ts";
+import { REVIEW_RPCS } from "./review-rpcs.ts";
 import { FinRpcs } from "./rpc.ts";
 import { HUMAN_ONLY, needsConfirmation, RPC_SCOPES, requiredScopes, type ResolverName, ruleOf, SCOPES, WRITE_RPCS } from "./scopes.ts";
 
@@ -32,6 +34,7 @@ const NEEDS: Record<string, ResolverName> = {
   out: "outDir",
   project: "jobProject",
   job: "job",
+  itemId: "review",
 };
 
 test("rpc_scopes_cover_every_rpc", () => {
@@ -51,7 +54,11 @@ test("rpc_scopes_cover_every_rpc", () => {
       if (need !== undefined && !notAFile) expect(rule.resolve ?? [], `${tag}.${f}`).toContain(need);
     }
     // Every write target is a payload field the branch resolver covers.
-    for (const w of [...(rule.writes ?? []), ...(rule.targets ?? [])]) expect(fields, tag).toContain(w.split(".")[0]);
+    // (A review item's `target` is added by the `review` resolver, not sent.)
+    for (const w of [...(rule.writes ?? []), ...(rule.targets ?? [])]) {
+      if (w === "target" && (rule.resolve ?? []).includes("review")) continue;
+      expect(fields, tag).toContain(w.split(".")[0]);
+    }
     if (rule.author !== undefined) expect(fields, tag).toContain(rule.author);
   }
   // A library's root is a device's path to check (5B Decision 32).
@@ -171,11 +178,15 @@ test("writes_required_on_writing_rules: exactly the RPCs whose handlers write th
       "branch.set",
       "history.checkpoint",
       "history.cherryPick",
+      "history.drop",
       "history.merge",
       "history.redo",
       "history.revert",
       "history.undo",
       "project.recover",
+      "review.close",
+      "review.decide",
+      "review.merge",
       "tx.commit",
     ].sort(),
   );
@@ -252,4 +263,44 @@ test("device_confirmed_rules_take_a_code (5B Task 4: the payload keeps `challeng
     const rpc = FinRpcs.requests.get(tag) as unknown as { payloadSchema: { fields?: Record<string, unknown> } };
     expect(Object.keys(rpc.payloadSchema.fields ?? {}), tag).toContain("challenge");
   }
+});
+
+test("review_rpcs_have_rules (5E Decision 23, spec §8.6)", () => {
+  // Opening, commenting and refreshing are `review.write`; reading is `project.read`.
+  for (const t of ["review.request", "review.comment", "review.refresh"] as const) expect(requiredScopes(t, {}), t).toEqual(["review.write"]);
+  for (const t of ["review.list", "review.get", "review.watch", "review.policy.get"] as const) expect(requiredScopes(t, {}), t).toEqual(["project.read"]);
+  // Deciding, merging and closing are `review.decide`, write the item's target through the guard,
+  // and take `review.decide` where `branch.protected` would be.
+  for (const t of ["review.decide", "review.merge", "review.close"] as const) {
+    expect(requiredScopes(t, {}), t).toEqual(["review.decide"]);
+    expect(ruleOf(t).writes, t).toEqual(["target"]);
+    expect(ruleOf(t).protectedNeeds, t).toBe("review.decide");
+    expect(WRITE_RPCS.has(t), t).toBe(true);
+    expect(ruleOf(t).resolve, t).toEqual(["review"]);
+  }
+  // The policy is the owner's: human-only, confirmed, with a challenge field.
+  expect(requiredScopes("review.policy", { projectId: "p" })).toEqual(["auth.admin"]);
+  expect(needsConfirmation("review.policy", { projectId: "p" })).toBe(true);
+  expect(FinRpcs.requests.has("review.policy")).toBe(true);
+  for (const t of ["review.request", "review.comment", "review.refresh", "review.list", "review.get", "review.watch", "review.policy.get"] as const) {
+    expect(WRITE_RPCS.has(t), t).toBe(false);
+  }
+  // Only the review rules, `history.drop` and nothing else declare `protectedNeeds`.
+  const needs = (Object.keys(RPC_SCOPES) as Array<keyof typeof RPC_SCOPES>).filter((t) => ruleOf(t).protectedNeeds !== undefined).sort();
+  expect(needs).toEqual(["history.drop", "review.close", "review.decide", "review.merge"]);
+  expect(STREAM_RPCS.filter((t) => t.startsWith("review."))).toEqual(["review.watch"]);
+  // `REVIEW_RPCS` carries `history.drop` too (moved there so `rpc.ts` stays within its size limit).
+  expect(REVIEW_RPCS.map((r) => r._tag).sort()).toEqual([...Object.keys(RPC_SCOPES).filter((t) => t.startsWith("review.")), "history.drop"].sort());
+});
+
+test("history_drop_scopes_follow_protection (5E Decision 17)", () => {
+  const p = { projectId: "p", txId: "t", author: "a", from: "try", into: "main", drops: ["x"] };
+  expect(requiredScopes("history.drop", p, { protectedTarget: true })).toEqual(["project.read", "review.decide"]);
+  expect(requiredScopes("history.drop", p, { protectedTarget: false })).toEqual(["project.read", "project.write"]);
+  expect(requiredScopes("history.drop", p, {})).toEqual(["project.read", "project.write"]);
+  expect(ruleOf("history.drop").writes).toEqual(["into"]);
+  // No human-only scope: `fin` (local) drops without a typed code.
+  expect(needsConfirmation("history.drop", p, { protectedTarget: true })).toBe(false);
+  // `local` keeps both scopes (owner decision 5); an agent holds neither by default.
+  for (const s of ["review.decide", "project.write"] as const) expect(defaultScopes("local")).toContain(s);
 });

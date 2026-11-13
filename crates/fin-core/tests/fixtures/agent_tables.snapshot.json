@@ -17,7 +17,13 @@
     "gpt-6-sol",
     "gpt-6-luna",
     "gpt-6-astra",
-    "other"
+    "other",
+    "default",
+    "opus",
+    "sonnet",
+    "haiku",
+    "fable",
+    "claude-fable-5-2"
   ],
   "AGENT_PROVIDERS": [
     "openrouter",

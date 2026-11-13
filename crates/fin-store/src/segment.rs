@@ -10,8 +10,10 @@
 //!
 //! The version follows content (plan 4B Decision 4): a segment or pack whose records are all
 //! `edit` is written as format 1 (`minReaderVersion` 1, readable by 4A), one holding any 4B kind
-//! as format 2 ([`version_for`]). So a re-export is byte-identical, and a 4A follower keeps
-//! following until a 4B kind is used. Readers accept both.
+//! as format 2 ([`version_for`]), and one holding a `drop` record (sub-project 5 spec §8.3) as
+//! format 3 (`minReaderVersion` 3). So a re-export is byte-identical, a 4A follower keeps
+//! following until a 4B kind is used, and a 4C one until a `drop` is (it then opens the
+//! project read-only, `NEWER_FORMAT`). Readers accept all three.
 //!
 //! Decoding tells a file that has not fully arrived ([`SegError::Incomplete`]: retried on the
 //! next poll) from a damaged one ([`SegError::Corrupt`]). A truncated file is always
@@ -25,8 +27,11 @@ use serde_json::{Map, Value};
 pub const FORMAT_VERSION: u32 = 2;
 /// The oldest reader that can read such a file.
 pub const MIN_READER_VERSION: u32 = 2;
-/// This code reads any segment whose `minReaderVersion` is at most this (versions 1 and 2).
-pub const READER_VERSION: u32 = 2;
+/// The segment format (and oldest reader) of a file holding a `drop` record (plan 5E
+/// Decision 4): `fin_core::record_format` of the kind.
+pub const DROP_VERSION: u32 = 3;
+/// This code reads any segment whose `minReaderVersion` is at most this (versions 1 to 3).
+pub const READER_VERSION: u32 = 3;
 /// The format of a file whose records are all `edit`: what sub-project 4A writes and reads.
 const EDIT_ONLY_VERSION: u32 = 1;
 /// A segment holds at most this many records ([`max_records`])…
@@ -142,18 +147,18 @@ pub fn encode(header: &Header, records: &[&[u8]]) -> (Vec<u8>, String) {
     encode_frame(MAGIC, header, records)
 }
 
-/// `(formatVersion, minReaderVersion)` for a segment holding `records`: `(1, 1)` when every
-/// record's `kind` is `edit`, else `(2, 2)`. The kind is read from each record's bytes; bytes
-/// whose kind cannot be read count as needing format 2.
+/// `(formatVersion, minReaderVersion)` for a segment holding `records`: `(3, 3)` when any
+/// record is a `drop` ([`DROP_VERSION`]), else `(1, 1)` when every record's `kind` is `edit`,
+/// else `(2, 2)`. The kind is read from each record's bytes; bytes whose kind cannot be read
+/// count as needing format 2.
 pub fn version_for(records: &[&[u8]]) -> (u32, u32) {
-    #[derive(Deserialize)]
-    struct Kind {
-        kind: fin_core::RecordKind,
-    }
-    let edit_only = records
+    let kinds = kinds(records);
+    if has_drop(&kinds) {
+        (DROP_VERSION, DROP_VERSION)
+    } else if kinds
         .iter()
-        .all(|r| serde_json::from_slice::<Kind>(r).is_ok_and(|k| k.kind.is_4a()));
-    if edit_only {
+        .all(|k| k.is_some_and(fin_core::RecordKind::is_4a))
+    {
         (EDIT_ONLY_VERSION, EDIT_ONLY_VERSION)
     } else {
         (FORMAT_VERSION, MIN_READER_VERSION)
@@ -161,13 +166,32 @@ pub fn version_for(records: &[&[u8]]) -> (u32, u32) {
 }
 
 /// [`version_for`] on `branch`: a segment of a 4B branch (not `main`) names its `branch`
-/// record ([`Header::branch_record`]), which needs format 2 whatever its records hold.
+/// record ([`Header::branch_record`]), which needs format 2 whatever its records hold, and
+/// format 3 with a `drop` record.
 pub fn version_for_branch(branch: &str, records: &[&[u8]]) -> (u32, u32) {
     if branch == crate::MAIN {
         version_for(records)
+    } else if has_drop(&kinds(records)) {
+        (DROP_VERSION, DROP_VERSION)
     } else {
         (FORMAT_VERSION, MIN_READER_VERSION)
     }
+}
+
+/// Each record's kind, `None` where it cannot be read.
+fn kinds(records: &[&[u8]]) -> Vec<Option<fin_core::RecordKind>> {
+    #[derive(Deserialize)]
+    struct Kind {
+        kind: fin_core::RecordKind,
+    }
+    records
+        .iter()
+        .map(|r| serde_json::from_slice::<Kind>(r).ok().map(|k| k.kind))
+        .collect()
+}
+
+fn has_drop(kinds: &[Option<fin_core::RecordKind>]) -> bool {
+    kinds.contains(&Some(fin_core::RecordKind::Drop))
 }
 
 /// Decodes and verifies a segment of any format this code reads.
@@ -197,16 +221,25 @@ pub fn decode_with_reader(bytes: &[u8], reader_version: u32) -> Result<Segment, 
             header.last_seq
         )));
     }
-    if header.format_version == EDIT_ONLY_VERSION {
-        // A format 1 label means edit-only (what 4A reads): a 4B kind in it is damage.
+    // A label below what the records need is damage: format 1 means edit-only (what 4A
+    // reads), and a `drop` needs format 3 (a 4C reader would read past it).
+    if header.format_version < DROP_VERSION {
         #[derive(Deserialize)]
         struct Kind {
             kind: Option<fin_core::RecordKind>,
         }
-        let has_4b = frame.lines.iter().any(|l| {
-            serde_json::from_slice::<Kind>(l).is_ok_and(|k| k.kind.is_some_and(|k| !k.is_4a()))
-        });
-        if has_4b {
+        let kinds: Vec<_> = frame
+            .lines
+            .iter()
+            .filter_map(|l| serde_json::from_slice::<Kind>(l).ok().and_then(|k| k.kind))
+            .collect();
+        if kinds.contains(&fin_core::RecordKind::Drop) {
+            return Err(corrupt(format!(
+                "a format {} segment holds a drop record",
+                header.format_version
+            )));
+        }
+        if header.format_version == EDIT_ONLY_VERSION && kinds.iter().any(|k| !k.is_4a()) {
             return Err(corrupt("a format 1 segment holds a record of a 4B kind"));
         }
     }

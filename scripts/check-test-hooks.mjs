@@ -66,4 +66,18 @@ for (const [file, text] of texts) {
     }
   });
 }
+// finisherd's test hooks: the egress broker's resolver and address exception
+// (`egress-test-hooks.ts`, sp8b Task 8) are made only by tests; an import of that file from
+// any other source of an app is TEST_HOOK_UNGUARDED (the broker also refuses hooks unless
+// fin-node is its `test-hooks` build).
+const TS_HOOK_IMPORT = /(?:from\s*|import\s*\(\s*|import\s+)["'][^"']*\/egress-test-hooks(?:\.ts)?["']/;
+for (const file of walk(root)) {
+  if (!/^apps\/[^/]+\/src\/.*\.(?:ts|mts|js|mjs)$/.test(file) || file.endsWith("/egress-test-hooks.ts")) continue;
+  readFileSync(join(root, file), "utf8").split("\n").forEach((line, i) => {
+    if (TS_HOOK_IMPORT.test(line)) {
+      console.log(`TEST_HOOK_UNGUARDED: ${file}:${i + 1} imports the egress test hooks; only tests may`);
+      failed = true;
+    }
+  });
+}
 if (failed) process.exitCode = 1;

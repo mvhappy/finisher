@@ -11,11 +11,16 @@ export {
   libraryProbeVersion,
   libraryWatchStart,
 } from "./library.js";
+export { kindNames, kindVersion, validatePrivacy } from "./events.js";
 export { MediaCache } from "./media-cache.js";
 export { PipeServer } from "./pipe.js";
+export { decodePluginCall, permissionRisks, PluginCommandArgs, pluginCommandOutcome, pluginProjectView } from "./plugin-calls.js";
 export { checkServerDataLocal, serverId } from "./server-data.js";
 export * from "./sandbox.js";
 export * from "./vault.js"; // 5B: the vault, the identity key; certificates and QR codes (`tls.js`)
+
+const HISTORY_CALLS = ["branchCreate", "branchSet", "undo", "redo", "checkpoint", "merge", "cherryPick", "revert", "drop", "recover"];
+
 export class Engine {
   #native;
 
@@ -23,6 +28,19 @@ export class Engine {
   constructor(nativeEngine) {
     if (!(nativeEngine instanceof native.Engine)) throw new TypeError("use Engine.create or Engine.open");
     this.#native = nativeEngine;
+  }
+
+  // The branch and history writes: `(reqJson, metaJson?)`, each the native call of its name
+  // (index.d.ts documents them one by one).
+  static {
+    // Defined like class methods: non-enumerable, and named so stack traces show the call.
+    for (const name of HISTORY_CALLS) {
+      const method = function (reqJson, metaJson) {
+        return call(this.#native[name](reqJson, metaJson ?? null));
+      };
+      Object.defineProperty(method, "name", { value: name });
+      Object.defineProperty(Engine.prototype, name, { value: method, writable: true, configurable: true, enumerable: false });
+    }
   }
 
   static async create(serverData, projectDir, name, rate, options = {}) {
@@ -61,6 +79,10 @@ export class Engine {
     return call(this.#native.status());
   }
 
+  statusAt() {
+    return call(this.#native.statusAt());
+  }
+
   txGet(txId) {
     return call(this.#native.txGet(txId));
   }
@@ -73,48 +95,16 @@ export class Engine {
     return call(this.#native.acknowledgeSalvage(copy, metaJson));
   }
 
-  branchCreate(reqJson, metaJson) {
-    return call(this.#native.branchCreate(reqJson, metaJson ?? null));
-  }
-
   branches(all) {
     return call(this.#native.branches(all === true));
-  }
-
-  branchSet(reqJson, metaJson) {
-    return call(this.#native.branchSet(reqJson, metaJson ?? null));
   }
 
   resolveBranch(name) {
     return call(this.#native.resolveBranch(name));
   }
 
-  undo(reqJson, metaJson) {
-    return call(this.#native.undo(reqJson, metaJson ?? null));
-  }
-
-  redo(reqJson, metaJson) {
-    return call(this.#native.redo(reqJson, metaJson ?? null));
-  }
-
-  checkpoint(reqJson, metaJson) {
-    return call(this.#native.checkpoint(reqJson, metaJson ?? null));
-  }
-
-  merge(reqJson, metaJson) {
-    return call(this.#native.merge(reqJson, metaJson ?? null));
-  }
-
-  cherryPick(reqJson, metaJson) {
-    return call(this.#native.cherryPick(reqJson, metaJson ?? null));
-  }
-
-  revert(reqJson, metaJson) {
-    return call(this.#native.revert(reqJson, metaJson ?? null));
-  }
-
-  recover(reqJson, metaJson) {
-    return call(this.#native.recover(reqJson, metaJson ?? null));
+  reviewPlan(reqJson) {
+    return call(this.#native.reviewPlan(reqJson));
   }
 
   takeover(confirm) {
@@ -137,9 +127,9 @@ export class Engine {
     if (typeof cb !== "function") throw new TypeError("onEvent needs a function");
     // A throw here would reach the threadsafe-function trampoline and become an
     // uncaughtException; it is reported as a process warning instead.
-    this.#native.onEvent((json) => {
+    this.#native.onEvent((json, seq) => {
       try {
-        cb(json);
+        cb(json, seq);
       } catch (e) {
         const err = e instanceof Error ? e : new Error(String(e));
         process.emitWarning(`an Engine.onEvent callback threw: ${err.message}`, {
@@ -150,12 +140,12 @@ export class Engine {
     });
   }
 
-  evalFrame(branch, timeline, at) {
-    return call(this.#native.evalFrame(branch, timeline ?? null, at));
+  evalFrame(branch, timeline, at, rev) {
+    return call(this.#native.evalFrame(branch, timeline ?? null, at, rev ?? null));
   }
 
-  evalAudio(branch, timeline, from, to) {
-    return call(this.#native.evalAudio(branch, timeline ?? null, from, to));
+  evalAudio(branch, timeline, from, to, rev) {
+    return call(this.#native.evalAudio(branch, timeline ?? null, from, to, rev ?? null));
   }
 
   fontsPlan(branch, opsJson) {
@@ -303,6 +293,8 @@ export class Journal {
     return sync(() => this.#native.recordSync(kind, kv, ctxJson ?? null, payloadJson, source, timeoutMs));
   }
 
+  recordPlugin(kind, kv, pluginId, payloadJson) { sync(() => this.#native.recordPlugin(kind, kv, pluginId, payloadJson)); }
+
   observe(metric, key, micros, code) {
     this.#native.observe(metric, key, micros, code ?? null);
   }
@@ -384,21 +376,6 @@ export function blake3Hex(data) {
 /** The BLAKE3 of `data` keyed with a 32-byte `key`, 64 lower-case hex digits. */
 export function blake3KeyedHex(key, data) {
   return sync(() => native.blake3KeyedHex(key, data));
-}
-
-/** Every kind name of fin-core's event registry. */
-export function kindNames() {
-  return native.kindNames();
-}
-
-/** The newest payload version of kind `name` that `source` may emit; `null` for none (reserved, unknown, not that source). */
-export function kindVersion(name, source) {
-  return native.kindVersion(name, source) ?? null;
-}
-
-/** Why a `privacy` section (JSON) is not one the journal accepts, naming the key; `undefined` when it is. */
-export function validatePrivacy(privacyJson) {
-  return native.validatePrivacy(privacyJson) ?? undefined;
 }
 
 /** The font manager of a server data folder (shared with the engines opened on it). */

@@ -12,6 +12,10 @@
 // - `agents.subagents.maxDepth` (1–8, default 3) and `.maxLive` (1–64, default 8): children per
 //   root session (7B Decision 17); `agents.maxLiveProviders` (1–64, default 4) and
 //   `agents.maxLiveBuiltin` (1–256, default 8): sessions in a run at once (Decision 19);
+// - `agents.claudeCode`: `{path?, enabled}` (plan 7D Decision 22): the Claude Code CLI to use (an
+//   absolute path; else `claude` on the server's `PATH`) and whether sessions may start on it,
+//   **off by default** until the counsel item on the CLI's terms is answered (plan 7D, "Decided
+//   here, not asked");
 // - `agents.savedPrompts`: the owner's saved prompts (7B Task 10), a list read as-is here and
 //   decoded one by one by `saved-prompts.ts` (a bad one is reported, never the whole list);
 // - `training.closedModelTargets`: the counsel gate, default `pendingCounsel` (an unusable value
@@ -45,6 +49,28 @@ export interface AgentSettings {
   readonly toolTimeoutS?: number;
   readonly limits?: Partial<SessionLimits>;
   readonly savedPrompts?: readonly unknown[];
+  readonly claudeCode: ClaudeCodeSettings;
+}
+
+/** `agents.claudeCode` (plan 7D Decision 22): where the CLI is, and whether it may be used. */
+export interface ClaudeCodeSettings {
+  readonly path?: string;
+  readonly enabled: boolean;
+}
+
+export const CLAUDE_CODE_DEFAULT: ClaudeCodeSettings = { enabled: false };
+
+/** `agents.claudeCode`, each key checked on its own; a bad one is reported and reads as the default. */
+function readClaudeCode(v: unknown, problems: string[]): ClaudeCodeSettings {
+  if (v === undefined) return CLAUDE_CODE_DEFAULT;
+  if (!isObject(v)) {
+    problems.push("agents.claudeCode must be an object");
+    return CLAUDE_CODE_DEFAULT;
+  }
+  const path = typeof v.path === "string" && v.path !== "" ? v.path : undefined;
+  if (v.path !== undefined && path === undefined) problems.push("agents.claudeCode.path must be a path");
+  if (v.enabled !== undefined && typeof v.enabled !== "boolean") problems.push("agents.claudeCode.enabled must be true or false");
+  return { ...(path === undefined ? {} : { path }), enabled: v.enabled === true };
 }
 
 /** How far sessions spread (7B Decisions 17, 19). */
@@ -114,10 +140,10 @@ function readLocal(v: unknown): LocalEndpoint | undefined {
 /** The `agents` section, each key checked on its own (a bad key is dropped, with `error`). */
 export function readAgentSettings(serverData: string): { settings: AgentSettings; error?: string } {
   const { raw, error } = readRaw(serverData);
-  if (error !== undefined) return { settings: { models: [] }, error };
+  if (error !== undefined) return { settings: { models: [], claudeCode: CLAUDE_CODE_DEFAULT }, error };
   const agents = raw.agents;
-  if (agents === undefined) return { settings: { models: [] } };
-  if (!isObject(agents)) return { settings: { models: [] }, error: "agents must be an object" };
+  if (agents === undefined) return { settings: { models: [], claudeCode: CLAUDE_CODE_DEFAULT } };
+  if (!isObject(agents)) return { settings: { models: [], claudeCode: CLAUDE_CODE_DEFAULT }, error: "agents must be an object" };
   const problems: string[] = [];
   const models = agents.models === undefined ? [] : Array.isArray(agents.models) ? (agents.models as ExtraModel[]) : (problems.push("agents.models must be a list"), []);
   const local = agents.local === undefined ? undefined : readLocal(agents.local);
@@ -131,8 +157,10 @@ export function readAgentSettings(serverData: string): { settings: AgentSettings
   const limits = readLimits(agents, problems);
   const savedPrompts = Array.isArray(agents.savedPrompts) ? (agents.savedPrompts as unknown[]) : undefined;
   if (agents.savedPrompts !== undefined && savedPrompts === undefined) problems.push("agents.savedPrompts must be a list");
+  const claudeCode = readClaudeCode(agents.claudeCode, problems);
   const settings: AgentSettings = {
     models,
+    claudeCode,
     ...(local === undefined ? {} : { local }),
     ...(finPath === undefined ? {} : { finPath }),
     ...(retentionDays === undefined ? {} : { retentionDays }),
@@ -146,6 +174,11 @@ export function readAgentSettings(serverData: string): { settings: AgentSettings
 /** The local endpoint now (re-read at each use: the owner may set it while the server runs). */
 export function localEndpoint(serverData: string): LocalEndpoint | undefined {
   return readAgentSettings(serverData).settings.local;
+}
+
+/** `agents.claudeCode` now (re-read at each use, as the local endpoint). */
+export function claudeCodeSettings(serverData: string): ClaudeCodeSettings {
+  return readAgentSettings(serverData).settings.claudeCode;
 }
 
 /** The counsel gate (Decision 28): `pendingCounsel` unless a person recorded another state. */

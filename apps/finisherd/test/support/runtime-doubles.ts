@@ -12,6 +12,7 @@ import type { AgentCore } from "../../src/agent/core.ts";
 import { type BranchRegistry, SessionCredentials } from "../../src/agent/credentials.ts";
 import type { Rollbacks } from "../../src/agent/rollback.ts";
 import { OutcomeTracker } from "../../src/agent/outcomes.ts";
+import { ReviewLink } from "../../src/agent/review-link.ts";
 import { BranchLineage } from "../../src/agent/reach.ts";
 import { Runtime, type RuntimeDeps } from "../../src/agent/runtime.ts";
 import type { Pricing, RuntimeJournal, SessionPlan, SessionPlanner, StartRequest, ToolCall, ToolExecutor, ToolOutcome } from "../../src/agent/runtime-deps.ts";
@@ -108,7 +109,7 @@ export function testCore(store: AgentStore, control: ControlStore, clock: Clock)
   });
   const lineage = new BranchLineage();
   const outcomes = new OutcomeTracker({ store, lineage, clock: () => clock.now(), verdicts: { version: () => null, emit: () => false } });
-  return { store, credentials, lineage, outcomes, clock, ids: systemIds(clock), journal: NO_JOURNAL, auth };
+  return { store, credentials, lineage, outcomes, reviewLink: new ReviewLink({ store }), clock, ids: systemIds(clock), journal: NO_JOURNAL, auth };
 }
 
 export function journal(): RuntimeJournal & { readonly entries: { kind: string; [k: string]: unknown }[]; failSessions: boolean } {

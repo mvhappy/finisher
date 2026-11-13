@@ -99,7 +99,7 @@ fin keyframe set img1 opacity --at 0 0 --interp easeOut
 fin keyframe set img1 opacity --at 1s 1
 fin transition set --between c1 c3 --kind dissolve --dur 1s     # the linked audio gets a crossfade
 fin caption import --track t4 --words words.json --style preset:bold   # [{"text","start","end"}]
-fin view --budget 400                                # screenplay view, elided to fit the budget
+fin view --budget 400                                # screenplay view; the whole JSON answer fits ~400 tokens
 fin status                                           # timelines, fonts, unmeasured captions, warnings
 fin eval frame --at 2s                               # the frame plan (needs finisherd)
 fin eval audio --range 0..7s
@@ -141,6 +141,7 @@ fin --branch feature clip trim c1 --end +1s         # edit on the branch
 fin branch ls                                       # branches, heads and states (--all: archived too)
 fin merge feature                                   # into the current branch; CONFLICT (exit 4) lists conflicts
 fin merge feature --skip-conflicting                # merge the rest, leave conflicting records on the branch
+fin merge feature --include <txId>[,<txId>…] --up-to <seq>  # merge only what was reviewed; the rest is notIncluded
 fin undo                                            # undo your last edit or merge (fin redo reverses it)
 fin checkpoint before-cut                           # name the head; fin undo --to before-cut
 fin cherry-pick <txId>                              # copy one record; fin revert <mergeId> undoes a merge
@@ -195,6 +196,77 @@ can run it. `kill` (SIGTERM) also shuts down cleanly on macOS and Linux.
 
 `pnpm e2e` runs the whole flow (`fin` → `finisherd` → a WebSocket subscriber) in a temp
 directory.
+
+## Reviews
+
+An agent's branch goes through a review that you decide, one transaction at a time. What you
+decide binds every later merge: a merge copies only what was reviewed, and a rejection is kept
+in the project's history, so it holds on every server that opens the project.
+
+```bash
+fin --branch feature review request --title "Tighten the intro" [--into main] [--summary "…"]
+fin review ls [--state open] [--kind branchReview]   # kinds: branchReview, mergeConflict, pluginSuggestion
+fin review show <id>                                  # JSON: the change list, your marks, comments, "stale"
+fin review comment <id> "too slow here" [--tx <txId>]
+fin review decide <id> --accept <txId> --accept <txId> --reject <txId> [--pending <txId>] [--reason "…"]   # or --accept a,b
+fin review decide <id> --request-changes --reason "…"   # hand the branch back to its agent
+fin review refresh <id>                               # re-plan at the current heads; your marks stay
+fin review merge <id> [--accept-pending]              # copy the accepted transactions (and the pending ones with the flag)
+fin review close <id> --rejected | --dismissed        # --rejected keeps every unmerged change out of later merges
+```
+
+- **Requesting.** A review lists the branch's transactions that `main` (or `--into`) does not
+  hold yet, with a status each (`willMerge`, `dropped`, `dependsOnSkipped`, `conflict`, …). One
+  review is open per branch pair; asking again returns it. Review text (titles, summaries,
+  comments) stays on the server and is never audited or sent to diagnostics.
+- **Deciding.** `accept`, `reject` or leave `pending`. Every `decide` and `merge` sends the
+  snapshot it saw, so a view that is out of date is `REVIEW_STALE` (exit 4) with the fresh list;
+  `fin review refresh` moves the snapshot and keeps your marks. A rejection writes a `drop`
+  record on the target branch at once, before anything else. `--accept` brings a rejected
+  transaction back (a drop someone else made needs `review.decide` on the target); `--pending`
+  lifts the review's own rejection.
+- **Merging.** `fin review merge` copies exactly the accepted transactions, up to the
+  snapshot: anything the branch gained after the review is not merged by it. Pending
+  transactions are left out (the review closes as merged, and you review the rest with a new
+  request) unless you pass `--accept-pending`; when the project requires review, any pending
+  one stops the merge (`REVIEW_UNDECIDED`). With nothing accepted and transactions still open,
+  the merge is `REVIEW_UNDECIDED` too. A conflict is `REVIEW_HAS_CONFLICTS` and nothing is
+  written. If the target moved since the snapshot, the merge still goes ahead on what was
+  reviewed and says `targetMoved`. An agent's branch is archived once nothing of it is left.
+- **Merge conflicts** from any `fin merge` appear as `mergeConflict` items, and a plugin's
+  suggestion as a `pluginSuggestion` item; close those with `fin review close`.
+- **Server moves.** Rejections travel with the project. Open reviews and their comments and
+  marks live in the server's own data: on another server, open agent branches get a fresh
+  review, marked re-derived.
+
+```bash
+fin drop <txId>… --from feature [--into main]         # keep changes out of every merge into a branch, without a review
+fin drop --undo <txId>… --from feature [--into main]  # bring them back
+fin merge feature --include <txId>… --up-to <seq>     # merge only what you name, up to a record on the branch
+```
+
+A plain `fin merge` leaves a dropped transaction out (`excluded`, reason `DROPPED`), and a
+cherry-pick of it is still allowed.
+
+**Protected branches.** `main` is protected by default: a caller without the
+`branch.protected` scope cannot write it, and the server refuses again inside the write
+transaction itself (`BRANCH_PROTECTED`, exit 7). `fin` run by you keeps the scope, so you can still
+edit `main` directly; agent and MCP credentials do not have it, and `review merge`, `review
+decide`, `review close` and `fin drop` into a protected branch need `review.decide`, which
+only you hold by default. Plugin commands commit as whoever runs them, so the same rule binds
+them: an MCP credential's command into protected `main` is `BRANCH_PROTECTED`. The policy is yours alone, set at the server's console:
+
+```bash
+finisherd review policy show --project <id> [--json]
+finisherd review policy set --project <id> --protect release --unprotect old-line   # branch names
+finisherd review policy set --project <id> --require-review on                       # pending never merges
+finisherd review policy set --project <id> --auto-merge on                           # refused: AUTO_MERGE_UNAVAILABLE
+```
+
+`--protect` and `--unprotect` take branch names (or ids), may be repeated, and add to or remove
+from the project's list as it is when the change lands; the console asks `Proceed? [y/N]` first, like the other human-only actions. Automatic merging by
+policy is built but switched off: turning it on is refused until the QA gate and critic
+(sub-project 10) can vouch for a change.
 
 ## Remote access
 
@@ -416,6 +488,15 @@ things only you can do, confirmed on the console. But an agent harness running i
 as you can read `<server-data>/auth/console.key` and make and approve a pairing offer through
 the console, or read the key files in `<server-data>/secrets/` when they are not in the
 keychain. As above, this stays true until Finisher sandboxes agents.
+
+**Protected branches and raw-shell agents.** A protected branch (`main` by default) binds
+the credentials that go through the server: an agent or MCP credential cannot write it, decide a
+review or merge into it, and the server enforces that inside the store's write transaction, so a
+renamed or re-resolved branch cannot slip past. Like the human-only list above, this is advisory
+against an agent in a plain shell as you until Finisher sandboxes agents: such an agent can read
+`<server-data>/auth/local.key`, which holds `review.decide` and `branch.protected` (so `fin`
+keeps writing `main`), or `<server-data>/auth/console.key`, which can change the policy. Run
+harnesses with their own credential (above), and the sandbox closes the rest.
 
 The audit log (`finisherd audit`) records sign-in failures, refusals, credential changes and the
 other security events, locally and for you only.

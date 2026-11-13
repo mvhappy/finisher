@@ -138,7 +138,7 @@ impl Resolver<'_> {
         let specs: Vec<&ParamSpec> = effect_specs(&e.kind)
             .filter(|s| param_name(s) != "enabled")
             .collect();
-        let mut names = self.names(&e.params, &prefix);
+        let mut names = self.names(&e.params, &prefix, false);
         names.extend(specs.iter().map(|s| param_name(s).to_string()));
         names.remove("enabled");
         names
@@ -167,7 +167,7 @@ impl Resolver<'_> {
                 .and_then(|t| t.slots.iter().find(|s| s.id == id))
                 .map(|s| s.kind.as_str())
         };
-        self.names(slots, "slots.")
+        self.names(slots, "slots.", true)
             .into_iter()
             .filter_map(|id| {
                 let path = format!("slots.{id}");
@@ -182,11 +182,18 @@ impl Resolver<'_> {
             .collect()
     }
 
-    /// The stored names plus those only keyframed under `prefix` (one level deep).
-    fn names(&self, stored: &BTreeMap<String, ParamValue>, prefix: &str) -> BTreeSet<String> {
+    /// The stored names plus those only keyframed under `prefix`: one level deep, or, with
+    /// `whole`, the entire rest of the path (a slot id is everything after `slots.`, dots
+    /// included, as at import and mutation; review #51).
+    fn names(
+        &self,
+        stored: &BTreeMap<String, ParamValue>,
+        prefix: &str,
+        whole: bool,
+    ) -> BTreeSet<String> {
         let keyed = self.item.common.keyframes.keys().filter_map(|k| {
             k.strip_prefix(prefix)
-                .filter(|rest| !rest.is_empty() && !rest.contains('.'))
+                .filter(|rest| !rest.is_empty() && (whole || !rest.contains('.')))
         });
         stored
             .keys()

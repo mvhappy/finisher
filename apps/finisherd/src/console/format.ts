@@ -46,6 +46,8 @@ const VALUED = new Set([
   "remember",
   // Saved prompts (7B Task 10).
   "param",
+  // Review policy (5E Task 10).
+  "protect", "unprotect", "require-review", "auto-merge",
   "name", "storage", "include", "exclude", "kinds", "poll", "full", "bandwidth", "alias", "accept-unmounted",
   // 5B: pairing and remote access.
   "ttl", "listen", "tls", "cert", "key", "public-url",

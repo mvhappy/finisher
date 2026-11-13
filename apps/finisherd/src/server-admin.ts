@@ -39,6 +39,8 @@ export interface AdminDeps {
   readonly sandbox?: () => SandboxStatus;
   /** Records `sandbox.unconfined` when a profile's status changed since the last report. */
   readonly sandboxReporter?: SandboxReporter;
+  /** Enabled, active code plugins (sp8b Decision 17); without it the plugin profile warns as any other. */
+  readonly enabledCodePlugins?: () => number;
 }
 
 /**
@@ -54,6 +56,23 @@ export function sandboxWarning(caps: JobHostCaps, status: SandboxStatus = curren
   // The profile could be enforced, but the job host's spawner does not apply it.
   const base = profileWarning("worker", status.os, { kind: "disabled", reason: "profileNotReady" });
   return { ...base, details: { ...base?.details, reason: "spawnerUnconfined" }, sandbox: caps.sandbox };
+}
+
+/**
+ * `PLUGINS_UNCONFINED {enabled, reason}` (sp8b Decision 17): on every host while at least one
+ * enabled code plugin would run unconfined, i.e. the `plugin` profile is not enforced here or the
+ * job host's spawner does not apply it (`reason: spawnerUnconfined`). None while no code plugin
+ * is enabled.
+ */
+export function pluginWarnings(caps: JobHostCaps, status: SandboxStatus, enabled: number): Array<Record<string, unknown>> {
+  if (enabled === 0) return [];
+  // The plugin profile's own warning: `PLUGINS_UNCONFINED`, or `SANDBOX_UNAVAILABLE` where an
+  // enforced profile cannot apply (the plugin profile has no sockets warning).
+  const own = sandboxWarnings(status, ["plugin"]).find((w) => w.code === "PLUGINS_UNCONFINED" || w.code === "SANDBOX_UNAVAILABLE");
+  if (own !== undefined) return [{ ...own, details: { ...own.details, enabled } }];
+  if (caps.profiles.plugin === "enforced") return [];
+  const base = profileWarning("plugin", status.os, { kind: "disabled", reason: "profileNotReady" });
+  return base === undefined ? [] : [{ ...base, details: { ...base.details, reason: "spawnerUnconfined", enabled } }];
 }
 
 export interface AuditPurgeRequest {
@@ -94,7 +113,8 @@ export function serverStatus(deps: AdminDeps) {
       // profile not enforced on this host warns (plan 7C Decision 23, owner decision F2).
       warnings: [
         ...(sandbox === undefined ? [] : [sandbox]),
-        ...(sandboxWarnings(status, ["plugin", "hook"]) as unknown as Array<Record<string, unknown>>),
+        ...(deps.enabledCodePlugins === undefined ? (sandboxWarnings(status, ["plugin"]) as unknown as Array<Record<string, unknown>>) : pluginWarnings(caps, status, deps.enabledCodePlugins())),
+        ...(sandboxWarnings(status, ["hook"]) as unknown as Array<Record<string, unknown>>),
         ...(agentWarnings(status) as Array<Record<string, unknown>>),
         // Where secrets are kept (5B Decision 4): a file store standing in for the keychain.
         ...(deps.control.warnings?.() ?? []),

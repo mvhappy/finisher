@@ -3,7 +3,8 @@
 //! (`eval.frame`, `eval.audio`) with its shared measurer, so captions carry layouts when their
 //! pinned fonts are cached (else `layout: null` and `unmeasured`). Times are typed as
 //! anywhere else (frames count at the timeline's rate) and sent as rationals. `--timeline`
-//! picks the timeline (default the first), `--branch` the branch.
+//! picks the timeline (default the first), `--branch` the branch; the timeline is resolved
+//! on the snapshot read and always sent with its rev.
 
 use clap::{Args, Subcommand};
 use fin_core::{CoreError, Rational};
@@ -70,10 +71,10 @@ pub fn run(backend: &dyn Backend, globals: &Globals, cmd: &EvalCmd) -> Result<Va
     let branch = target_branch(backend, globals)?;
     let snap = backend.snapshot(&branch)?;
     let tl = addr::timeline(&snap.project, globals.timeline.as_deref())?;
-    let mut payload = json!({ "branch": branch });
-    if globals.timeline.is_some() {
-        payload["timeline"] = json!(tl.id);
-    }
+    // The timeline resolved here is always named, with the rev it was read at, so the server
+    // never re-resolves a default against a newer head: one removed meanwhile is `CONFLICT`
+    // (`TIMELINE_GONE`; read again and retry), never another timeline.
+    let mut payload = json!({ "branch": branch, "timeline": tl.id, "rev": snap.rev });
     match cmd {
         EvalCmd::Frame(a) => payload["at"] = json!(addr::time_at(tl.rate, "at", &a.at)?),
         EvalCmd::Audio(a) => {
@@ -85,3 +86,7 @@ pub fn run(backend: &dyn Backend, globals: &Globals, cmd: &EvalCmd) -> Result<Va
     let plan = backend.project_call(tag, payload)?;
     Ok(json!({ "timeline": tl.id, "plan": plan }))
 }
+
+#[cfg(test)]
+#[path = "eval_tests.rs"]
+mod tests;

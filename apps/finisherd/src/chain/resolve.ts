@@ -54,6 +54,20 @@ export interface ChainJobs {
   kindScopes(kind: string): ReadonlyArray<Scope> | undefined;
 }
 
+/** What the chain needs from the reviews store (5E Decisions 16–17, 23): it reads, never changes. */
+export interface ChainReviews {
+  /** An item's project and branch ids, or `undefined` when there is no such item. */
+  item(id: string): { readonly projectId: string; readonly source?: string | undefined; readonly target?: string | undefined } | undefined;
+  /** The branch ids the project's policy protects. */
+  protectedBranches(projectId: string): ReadonlyArray<string>;
+}
+
+/** What the chain asks of plugin commands (8B Task 9): whether a command name writes. */
+export interface ChainPluginCommands {
+  /** `true`/`false` for a command `principal` may run, `undefined` for any other name. */
+  writes(principal: Principal, name: string): Effect.Effect<boolean | undefined>;
+}
+
 export interface Resolved {
   /** The payload the handler receives (canonical paths in place of the given ones). */
   readonly payload: unknown;
@@ -138,7 +152,12 @@ export function resolve(
   rule: RpcRule,
   payload: unknown,
   deps: ChainProjects,
-  job?: { readonly principal: Principal; readonly jobs?: ChainJobs | undefined },
+  job?: {
+    readonly principal: Principal;
+    readonly jobs?: ChainJobs | undefined;
+    readonly reviews?: ChainReviews | undefined;
+    readonly pluginCommands?: ChainPluginCommands | undefined;
+  },
 ): Effect.Effect<Resolved, FinError> {
   return Effect.gen(function* () {
     const want = new Set(rule.resolve ?? []);
@@ -173,10 +192,34 @@ export function resolve(
       const scopes = typeof kind === "string" ? job?.jobs?.kindScopes(kind) : undefined;
       if (scopes !== undefined) facts = { ...facts, kindScopes: scopes };
     }
+    // A writing command needs `project.write`: a rule without the commands' view would let
+    // every run through on `project.read` alone, a wiring defect, never an open rule.
+    if (want.has("pluginCommand")) {
+      if (job?.pluginCommands === undefined) return yield* Effect.fail(finError("INTERNAL", "a plugin command rule reached the chain without the commands", { reason: "noPluginCommands" }));
+      const name = field(payload, "name");
+      const writes = typeof name === "string" ? yield* job.pluginCommands.writes(job.principal, name) : undefined;
+      if (writes !== undefined) facts = { ...facts, commandWrites: writes };
+    }
     if (want.has("job")) {
       const id = field(payload, "job");
       const rel = typeof id === "string" && job !== undefined && job.jobs !== undefined ? job.jobs.relation(job.principal, id) : "none";
       facts = { ...facts, job: rel };
+    }
+    // A review item: its project is checked for reach, and its branches join the payload (5E
+    // Decision 23). An item outside the caller's reach is `REVIEW_NOT_FOUND`, as an unknown one.
+    if (want.has("review")) {
+      if (job?.reviews === undefined) {
+        return yield* Effect.fail(finError("INTERNAL", "a reviews rule reached the chain without the reviews store", { reason: "noReviews" }));
+      }
+      const id = field(payload, "itemId");
+      const item = typeof id === "string" ? job.reviews.item(id) : undefined;
+      const reach = item !== undefined && (job.principal.projects === "*" || job.principal.projects.includes(item.projectId));
+      if (item === undefined || !reach) {
+        return yield* Effect.fail(finError("REVIEW_NOT_FOUND", "no such review item", { itemId: typeof id === "string" ? id : null }, "Check the item's id with a list of the project's reviews."));
+      }
+      projects.push(item.projectId);
+      if (!deps.isOpen(item.projectId)) facts = { ...facts, reopens: true };
+      out = { ...out, projectId: item.projectId, ...(item.source === undefined ? {} : { source: item.source }), ...(item.target === undefined ? {} : { target: item.target }) };
     }
     // The handler gets the canonical folder, so it opens what was checked (review H2).
     if (want.has("openDir")) {
@@ -228,6 +271,27 @@ export function resolve(
     if (want.has("registryPaths")) {
       yield* checkOnly((out.cfg as { path?: unknown } | undefined)?.path);
       yield* checkOnly((out.root as { path?: unknown } | undefined)?.path);
+    }
+    // A write into a protected branch needs another scope (5E Decision 17): read from the policy,
+    // for a project the caller reaches only. Nothing is opened here, before authorisation (its
+    // reach and reopen checks): a review item's target is a branch id already; a reference is
+    // resolved only while its project is open. Unset, the call asks for `project.write`, which
+    // a reopen needs anyway, and the policy stage checks the target again (Task 5 review, S1).
+    if (rule.protectedNeeds !== undefined && job?.reviews !== undefined) {
+      const pid = typeof out.projectId === "string" ? out.projectId : undefined;
+      if (pid !== undefined && (job.principal.projects === "*" || job.principal.projects.includes(pid))) {
+        const protectedIds = job.reviews.protectedBranches(pid);
+        if (want.has("review")) {
+          if (typeof out.target === "string") facts = { ...facts, protectedTarget: protectedIds.includes(out.target) };
+        } else if (typeof out.into === "string" && deps.isOpen(pid)) {
+          // `ChainProjects` has no lookup that never opens: a project closed between `isOpen`
+          // and this call is reopened by it. Accepted (Task 6 review, N2): closing races are
+          // rare, the principal's project reach was checked above, and the policy stage checks
+          // the target again after authorisation.
+          const target = yield* Effect.orElseSucceed(deps.resolveBranch(pid, out.into), () => undefined);
+          if (target !== undefined) facts = { ...facts, protectedTarget: protectedIds.includes(target) };
+        }
+      }
     }
     return {
       payload: out,

@@ -91,6 +91,8 @@ fn settings_commit_and_eval_reads_them() {
     let frame = run(&["eval", "frame", "--at", "1s"]);
     assert_eq!(frame["timeline"], "tl1");
     let plan = &frame["plan"];
+    // The timeline fin resolved is the one the server evaluated (review #52).
+    assert_eq!(plan["timeline"], frame["timeline"], "{frame}");
     assert_eq!(plan["t"], "1");
     let layers = plan["layers"].as_array().unwrap();
     let clip = layers.iter().find(|l| l["item"] == "c1").unwrap();

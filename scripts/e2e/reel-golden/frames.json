@@ -1,7 +1,7 @@
 [
   {
     "t": "0",
-    "sha256": "c80a734e83dda9c8f5957732b7712e0495c08790bbeaba2adcd25a2bb7464c81",
+    "sha256": "2eea555711de32eadd6b59e89ffe00538615794e976e9a8558ee6794c468381f",
     "captions": [
       {
         "item": "cap1",
@@ -9,7 +9,7 @@
         "faces": [
           "d0dad936f1e9e7b2e519ed012e39bbecad8e09ca2bc7ce1e99fe4aad172ee4c1"
         ],
-        "width": 45158,
+        "width": 44698,
         "height": 11060,
         "words": 5,
         "missing": []
@@ -17,12 +17,12 @@
     ],
     "layers": [
       "c1 clip t1 src 0",
-      "cap1 caption t4 2 lines, 1 faces, 45158x11060/64 px"
+      "cap1 caption t4 2 lines, 1 faces, 44698x11060/64 px"
     ]
   },
   {
     "t": "0.5s",
-    "sha256": "558e164074e90298b868867803f4c68c6e2db7c629800b0caf51254706468512",
+    "sha256": "50730977cb70a472c5dbbb2f70ff3c2caadcca2b081a1d50be96e40d92da1f58",
     "captions": [
       {
         "item": "cap1",
@@ -30,7 +30,7 @@
         "faces": [
           "d0dad936f1e9e7b2e519ed012e39bbecad8e09ca2bc7ce1e99fe4aad172ee4c1"
         ],
-        "width": 45158,
+        "width": 44698,
         "height": 11060,
         "words": 5,
         "missing": []
@@ -38,12 +38,12 @@
     ],
     "layers": [
       "c1 clip t1 src 1/2",
-      "cap1 caption t4 2 lines, 1 faces, 45158x11060/64 px"
+      "cap1 caption t4 2 lines, 1 faces, 44698x11060/64 px"
     ]
   },
   {
     "t": "4.9s",
-    "sha256": "411bdbae7c2ce4f419047e0ae6034d489674e5e34f27c4b85ec2e966bb617320",
+    "sha256": "e2dd4c521e5e9da9b82a867ca3dcb99f7972a0beb697b7351285bd1c263cca15",
     "captions": [
       {
         "item": "cap2",
@@ -52,7 +52,7 @@
           "d0dad936f1e9e7b2e519ed012e39bbecad8e09ca2bc7ce1e99fe4aad172ee4c1",
           "5c54d42b6178df4d24d644b33b84e5406bd88a3eb6bd7f305efb4d891949c36a"
         ],
-        "width": 41472,
+        "width": 41012,
         "height": 5530,
         "words": 4,
         "missing": []
@@ -60,7 +60,7 @@
     ],
     "layers": [
       "c1 clip t1 src 49/10",
-      "cap2 caption t4 1 lines, 2 faces, 41472x5530/64 px",
+      "cap2 caption t4 1 lines, 2 faces, 41012x5530/64 px",
       "img1 image t5 src 0 opacity 0.9988512587765868"
     ]
   },

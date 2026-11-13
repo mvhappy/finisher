@@ -1,6 +1,8 @@
 //! Prints the JSON Schema of the TypeScript contract to stdout: `fin-core`'s types plus the
-//! envelope types the engine sends (and `Tx.via`'s `Via`, by name) that live above it (fin-store's [`Generation`],
-//! [`EngineEvent`], [`TxSetAside`], [`HistoryResult`], [`MergeReport`], [`RecoverReport`],
+//! envelope types the engine sends (and `Tx.via`'s `Via`, by name) that live above it (fin-store's
+//! [`Generation`], [`EngineEvent`], [`TxSetAside`], [`HistoryResult`], [`MergeReport`],
+//! [`DropReq`] (the one history request whose shape the contracts take from here, plan 5E),
+//! [`ReviewPlan`] (with fin-core's `ReviewEntry`, plan 5E Decision 7), [`RecoverReport`],
 //! and the [`WriteGuard`] finisherd sends with every write;
 //! fin-probe's [`Probe`]; fin-fonts' [`FontCatalog`], [`FileState`], [`FontsStatus`],
 //! [`FontsPlan`]). `FramePlan`, `AudioPlan`, `TextLayout` and `ParamSpec` come from fin-core, and
@@ -16,7 +18,7 @@
 //! the plugin model's (`fin-plugin-api`: `Manifest`, `Permission`, `PermissionDiff`, `Risk`,
 //! `LicenceClass`, `ContributionKind`, `Invalid`, the `commands` and `hooks` contributions,
 //! the argument schema subset's `SchemaSubset`, `SchemaError` and `ArgProblem`, and the plugin
-//! protocol's context, command, call and error types, by `schema::register_schemas`) and its
+//! protocol's context, command, call, rights and error types, by `schema::register_schemas`) and its
 //! store's (`fin-registry`: `InstallPlan`, `InstalledPlugin`, `Accept`, `ValidationReport`,
 //! `TargetCustom`), the sandbox profiles' typed inputs (`fin-sandbox`: `AgentInput`,
 //! `HookInput`, `WorkerInput`, `PluginInput`, `SandboxProfile`; sub-project 7C), and
@@ -29,8 +31,8 @@
 use fin_fonts::{FileState, FontCatalog, FontsPlan, FontsStatus};
 use fin_probe::Probe;
 use fin_store::{
-    BranchCreated, BranchView, EngineEvent, Generation, HistoryResult, MergeReport, RecoverGroup,
-    RecoverReport, SkippedFile, TxSetAside, WriteGuard,
+    BranchCreated, BranchView, DropReq, EngineEvent, Generation, HistoryResult, MergeReport,
+    RecoverGroup, RecoverReport, ReviewPlan, SkippedFile, TxSetAside, WriteGuard,
 };
 
 fn main() {
@@ -45,6 +47,8 @@ fn main() {
         g.subschema_for::<BranchCreated>();
         g.subschema_for::<HistoryResult>();
         g.subschema_for::<MergeReport>();
+        g.subschema_for::<DropReq>();
+        g.subschema_for::<ReviewPlan>();
         g.subschema_for::<RecoverGroup>();
         g.subschema_for::<SkippedFile>();
         g.subschema_for::<RecoverReport>();

@@ -502,7 +502,12 @@ impl Handle {
 
     /// The store's status JSON with the font summary merged in.
     pub(crate) fn merged(&self, raw: Value) -> Value {
-        self.manager.merged(self.key, raw)
+        self.manager.merged(self.key, raw, || ()).0
+    }
+
+    /// `merged`, and what `then` reads while the summary's `publish` lock is held.
+    pub(crate) fn merged_then<T>(&self, raw: Value, then: impl FnOnce() -> T) -> (Value, T) {
+        self.manager.merged(self.key, raw, then)
     }
 
     /// Emits the store's status event (see [`Manager::emit_status`]; the caller holds the

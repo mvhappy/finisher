@@ -6,8 +6,8 @@ use fin_core::{CoreError, ItemBody, MemIds, Op, Project, SCHEMA_VERSION, Tx, app
 use serde_json::{Value, json};
 
 use super::{
-    Globals, IN_FLIGHT_CODES, args_hash, author, echo_committed, idem_key_reused, lookup,
-    same_command, target_branch,
+    Globals, IN_FLIGHT_CODES, args_hash, author, echo, idem_key_reused, lookup, same_command,
+    target_branch,
 };
 use crate::backend::{Backend, Snapshot};
 use crate::output::{VALIDATION, exit_code, usage};
@@ -24,8 +24,9 @@ pub struct Builder<'a> {
     ids: MemIds,
     bound: BTreeMap<String, String>,
     ops: Vec<Op>,
-    /// `--idem-key` on a real commit: an op that fails local validation is still sent, because
-    /// it may be a retry of a tx that already committed (the server then returns that commit).
+    /// `--idem-key` with a server (also for `--dry-run`): an op that fails local validation is
+    /// kept, because it may be a retry of a tx that already committed (that commit is then the
+    /// answer); with nothing committed, a real commit sends it and a dry run returns the error.
     lenient: bool,
     /// The first local validation error a lenient build let through.
     deferred: Option<CoreError>,
@@ -38,10 +39,12 @@ pub struct Builder<'a> {
     pub timeline: Option<String>,
     /// `--project`: the folder an agent session's file arguments are confined to (14c).
     pub project: Option<std::path::PathBuf>,
+    /// `--branch` as given (hashed into `argsHash` when present).
+    pub(super) explicit_branch: Option<String>,
 }
 
 /// `$name` with a batch line's number: `$clip` → `$clip3`, `$split2` → `$split2_3`.
-fn suffixed(placeholder: &str, suffix: &str) -> String {
+pub(super) fn suffixed(placeholder: &str, suffix: &str) -> String {
     if placeholder.ends_with(|c: char| c.is_ascii_digit()) {
         format!("{placeholder}_{suffix}")
     } else {
@@ -96,7 +99,9 @@ impl<'a> Builder<'a> {
         let branch = target_branch(backend, globals)?;
         let base = backend.snapshot(&branch)?;
         let ids = MemIds::after(&base.project);
-        let lenient = globals.idem_key.is_some() && !globals.dry_run && !backend.dry_run_only();
+        // A `--dry-run` with a key is lenient too: the key may have committed, and then that
+        // commit is the answer, not a plan against the state it made (review #31).
+        let lenient = globals.idem_key.is_some() && !backend.dry_run_only();
         Ok(Builder {
             backend,
             work: base.project.clone(),
@@ -112,6 +117,7 @@ impl<'a> Builder<'a> {
             inputs: Vec::new(),
             project: globals.project.clone(),
             timeline: globals.timeline.clone(),
+            explicit_branch: globals.branch.clone(),
         })
     }
 
@@ -223,6 +229,15 @@ impl<'a> Builder<'a> {
         Ok(())
     }
 
+    /// Whether `id` (a commit's branch, always an id) is the branch this plan read.
+    fn names_branch(&self, id: &str) -> bool {
+        id == self.branch
+            || super::branch::list(self.backend, true)
+                .ok()
+                .and_then(|views| super::branch::find(&views, &self.branch).ok())
+                .is_some_and(|v| v["id"] == id)
+    }
+
     fn tx(&self, ops: Vec<Op>) -> Tx {
         Tx {
             tx_id: String::new(),
@@ -255,11 +270,13 @@ impl<'a> Builder<'a> {
             tx.args_hash = Some(args_hash(&self.inputs));
         }
         let dry = globals.dry_run || self.backend.dry_run_only();
-        // A retry (`--idem-key`): ask what became of the key first. Already committed: that
-        // commit is the answer (with the pins it was planned with). Set aside (lost to another
-        // server's history, salvaged): it is reported, never sent again blindly.
+        // A retry (`--idem-key`): ask what became of the key first, for a `--dry-run` too
+        // (spec §3.11: a committed key answers that commit, without `dryRun`). Already
+        // committed: that commit is the answer (with the pins it was planned with). Set aside
+        // (lost to another server's history, salvaged): it is reported, never sent again
+        // blindly.
         let earlier = match &globals.idem_key {
-            Some(_) if !dry => lookup(self.backend, &tx.tx_id)?,
+            Some(_) if !self.backend.dry_run_only() => lookup(self.backend, &tx.tx_id)?,
             _ => None,
         };
         if let (None, Some(e)) = (&earlier, &self.unplanned) {
@@ -272,7 +289,11 @@ impl<'a> Builder<'a> {
             tx.ops.splice(0..0, pins);
         }
         let resolved = with_fonts(resolved, &fonts);
-        if dry {
+        if dry && earlier.is_none() {
+            // Nothing committed under the key: the plan must hold locally after all.
+            if let Some(e) = self.deferred {
+                return Err(e);
+            }
             let applied = apply_tx(
                 &self.base.project,
                 &tx,
@@ -289,14 +310,17 @@ impl<'a> Builder<'a> {
             return Ok(doc);
         }
         let generation = self.base.generation.as_ref();
+        // Whether the answer is the commit this attempt just sent (so on its branch).
+        let mut fresh = earlier.is_none();
         let sent = match earlier {
             Some(c) => Ok(c),
             None => self.backend.commit(&tx, generation),
         };
-        let committed = match (sent, self.deferred) {
+        let committed = match (sent, &self.deferred) {
             (Ok(committed), _) => committed,
             // The answer was lost (timeout, dropped connection): ask whether it landed.
             (Err(e), _) if IN_FLIGHT_CODES.contains(&e.code.as_str()) => {
+                fresh = false;
                 match lookup(self.backend, &tx.tx_id) {
                     Ok(Some(c)) => c,
                     Err(aside) if aside.code == "TX_SET_ASIDE" => return Err(aside),
@@ -306,7 +330,7 @@ impl<'a> Builder<'a> {
             // The server also rejected it as invalid, so it was not a retry after all: report the
             // local error, which names the failing input. Any other server answer (conflict,
             // shutting down, internal, transport) is the more useful one and keeps its exit code.
-            (Err(e), Some(local)) if exit_code(&e.code) == VALIDATION => return Err(local),
+            (Err(e), Some(local)) if exit_code(&e.code) == VALIDATION => return Err(local.clone()),
             (Err(e), _) => return Err(e),
         };
         // The command input's hash decides when both have one; a commit without one (an older
@@ -319,7 +343,26 @@ impl<'a> Builder<'a> {
             return Err(idem_key_reused(&committed));
         }
         let mut resolved = resolved;
-        echo_committed(&mut resolved, &committed.tx.ops);
+        // A retry answered from the log, a lost answer found again or a rebased commit: the
+        // plan's values are not the commit's (review #48). Revs are per branch, so the plan's
+        // base says nothing of a commit on another branch (the default moved since).
+        let ours = fresh || self.names_branch(&committed.tx.branch);
+        let canonical = || {
+            fin_core::canonicalize(&self.base.project, &tx)
+                .map_or_else(|_| tx.ops.clone(), |t| t.ops)
+        };
+        if !(ours && echo::planned_is_committed(&canonical(), self.base.rev, &committed)) {
+            let after = if ours && committed.rev == self.base.rev {
+                Some(self.base.project)
+            } else if !ours || committed.rev > self.base.rev {
+                (self.backend.snapshot(&committed.tx.branch).ok())
+                    .filter(|s| s.rev == committed.rev)
+                    .map(|s| s.project)
+            } else {
+                None
+            };
+            echo::from_commit(&mut resolved, &self.inputs, &committed, after.as_ref());
+        }
         super::keyframe::echo_key(&mut resolved, &committed);
         let mut doc = json!({
             "rev": committed.rev,

@@ -22,6 +22,7 @@ mod db;
 mod dblock;
 mod derived;
 mod diffs;
+mod drops_index;
 mod export;
 pub mod fsio;
 mod guard;
@@ -41,6 +42,7 @@ mod paths;
 pub mod project_file;
 mod rebuild;
 mod recover;
+mod reserved;
 pub mod scan;
 pub mod segment;
 pub mod server_id;
@@ -83,6 +85,7 @@ pub use history::Generation;
 pub use history_ops::checkpoint::CheckpointReq;
 pub use history_ops::merge::MergeReq;
 pub use history_ops::pick::{CherryPickReq, RevertReq};
+pub use history_ops::review_plan::REVIEW_PLAN_MAX;
 pub use history_ops::undo::HistoryReq;
 pub use import::{ForeignFile, ImportReport, ReadOnlyReason, Rewind};
 #[cfg(any(test, feature = "test-hooks"))]
@@ -96,6 +99,9 @@ pub use project_file::{Genesis, ProjectFile, read_project_file};
 pub use rebuild::fail_next_rebuild_swap_for_test;
 pub use rebuild::{RebuildReport, rebuild_project};
 pub use recover::{RecoverReq, RecoverSel};
+#[cfg(any(test, feature = "test-hooks"))]
+#[doc(hidden)]
+pub use reserved::fail_link_checks_for_test;
 pub use server_id::{ServerIdentity, server_id, server_identity};
 pub use status::{
     BranchStatus, INCOMPLETE_POLLS, ProjectStatus, QuarantineSummary, ReadOnly, StoreEvent, Warning,
@@ -103,8 +109,8 @@ pub use status::{
 pub use tick::{DueWork, TickOptions, TickReport};
 pub use verify::{Check, VerifyReport};
 pub use wire::{
-    BranchCreated, BranchView, EngineEvent, HistoryResult, MergeReport, RecoverGroup,
-    RecoverReport, SetAside, SkippedFile, TxSetAside,
+    BranchCreated, BranchView, DropReq, EngineEvent, HistoryResult, MergeReport, RecoverGroup,
+    RecoverReport, ReviewHead, ReviewPlan, SetAside, SkippedFile, TxSetAside,
 };
 pub use write::WriteOutcome;
 

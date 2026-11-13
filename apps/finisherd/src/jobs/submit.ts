@@ -2,7 +2,7 @@
 // the kind's project rules, `maxAttempts`, files, pools and stuck pools), answered from an equal
 // `idemKey` or an active `dedupeKey`, refused past the queue limit or the owner's own limit
 // (5C-2 review M4), then inserted, indexed and dispatched in its own turn. `wait` resolves once all (or `any`) of the jobs finished, or fails `WAIT_TIMEOUT`.
-import { type FinError, JOB_OWNER_LIMIT, type JobOwner, type JobView } from "@finisher/contracts";
+import { type FinError, isJobRights, JOB_OWNER_LIMIT, type JobOwner, type JobRights, type JobView } from "@finisher/contracts";
 import { validateJobParams } from "@finisher/fin-node";
 import { Effect } from "effect";
 import { finError } from "../errors.ts";
@@ -18,6 +18,12 @@ export function submitJob(e: Engine, owner: JobOwner, spec: SubmitSpec): JobView
   const checked = validateJobParams(kind.kind, kind.version, spec.params);
   if (!checked.ok) throw finError("JOB_PARAMS_INVALID", `the params of ${kind.kind} are invalid: ${checked.errors.join("; ")}`, { errors: checked.errors });
   const params = checked.params;
+  const family = e.kinds.family(kind.family);
+  if (family !== undefined && (family.profile === "plugin" || family.pluginId !== undefined)) {
+    pluginJobRights(kind.kind, owner, spec);
+    const refused = family.checkRights?.(owner, spec.rights as JobRights);
+    if (refused !== undefined) throw refused;
+  }
   if (kind.requiresProject === true && spec.project === undefined) {
     throw finError("INVALID_REQUEST", `a ${kind.kind} job names its project`, { field: "project", kind: kind.kind });
   }
@@ -79,6 +85,18 @@ export function submitJob(e: Engine, owner: JobOwner, spec: SubmitSpec): JobView
   // A warm job with a ready worker of its key goes to it now, without `schedule()` (Decision 35).
   if (!e.warmPools.handOff(view.id)) e.pump();
   return e.view(view.id) ?? view;
+}
+
+/**
+ * A plugin family's job (sp8b Task 6) names its plugin (`via`) and carries its rights
+ * (invoker ∩ grants, `plugins/host/rights.ts`), built for this owner: the host checks every
+ * host call and commit against them, so a job without them would run with no bound.
+ */
+function pluginJobRights(kind: string, owner: JobOwner, spec: SubmitSpec): void {
+  if (spec.via === undefined || spec.via.plugin === "") throw finError("INVALID_REQUEST", `a ${kind} job names its plugin`, { field: "via", kind });
+  if (!isJobRights(spec.rights)) throw finError("INVALID_REQUEST", `a ${kind} job carries its rights`, { field: "rights", kind });
+  const p = spec.rights.principal;
+  if (p.kind !== owner.kind || p.id !== owner.id) throw finError("INVALID_REQUEST", `a ${kind} job's rights are its owner's`, { field: "rights", kind });
 }
 
 export function waitJobs(e: Engine, ids: ReadonlyArray<string>, opts: { readonly any?: boolean; readonly timeoutMs: number }): Effect.Effect<ReadonlyArray<JobView>, FinError> {

@@ -9,10 +9,10 @@ use super::names::NameTable;
 /// `auth.revokeSelf` (5A Task 6), `console.challenge` (5A Task 7), `server.status`, `server.stop`
 /// and `auth.audit.list|purge` (5A Task 8), `auth.credential.mint|list|revoke` (5A Task 9),
 /// `auth.credential.rotateMaster` (review of 5A Tasks 8–9, M3), the plugin and registry RPCs
-/// (8A Tasks 9a and 9b), the `library.*` RPCs (5D), the `jobs.*` RPCs (5C-2), the `agent.*` RPCs (7A Task 2) and the owner's agent settings,
-/// `agent.key.*`, `agent.local.*` and `training.closedTargets.*` (7A Task 12), and 5B's pairing,
-/// device, environment and `settings.write` RPCs, and 6B-1's `media.cache.status|gc` and
-/// `asset.reprobe`.
+/// (8A Tasks 9a and 9b) and plugin commands (8B Task 9), the `library.*` RPCs (5D), the `jobs.*` RPCs (5C-2), the `agent.*` RPCs (7A Task 2) and the owner's agent settings,
+/// `agent.key.*`, `agent.local.*` and `training.closedTargets.*` (7A Task 12), 5B's pairing,
+/// device, environment and `settings.write` RPCs, the review RPCs with `history.drop`
+/// (5E Task 4), and 6B-1's `media.cache.status|gc` and `asset.reprobe`.
 pub static RPC_METHODS: NameTable = NameTable::new(
     "RPC_METHODS",
     &[
@@ -90,6 +90,7 @@ pub static RPC_METHODS: NameTable = NameTable::new(
         "fonts.status",
         "history.checkpoint",
         "history.cherryPick",
+        "history.drop",
         "history.merge",
         "history.redo",
         "history.revert",
@@ -120,6 +121,8 @@ pub static RPC_METHODS: NameTable = NameTable::new(
         "media.look",
         "media.probeDeep",
         "ops.subscribe",
+        "plugin.command.run",
+        "plugin.commands",
         "plugin.content.get",
         "plugin.disable",
         "plugin.discard",
@@ -149,6 +152,17 @@ pub static RPC_METHODS: NameTable = NameTable::new(
         "registry.refresh",
         "registry.remove",
         "registry.status",
+        "review.close",
+        "review.comment",
+        "review.decide",
+        "review.get",
+        "review.list",
+        "review.merge",
+        "review.policy",
+        "review.policy.get",
+        "review.refresh",
+        "review.request",
+        "review.watch",
         "server.hello",
         "server.status",
         "server.stop",

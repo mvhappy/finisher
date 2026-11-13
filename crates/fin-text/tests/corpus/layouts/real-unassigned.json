@@ -1,9 +1,9 @@
 {
   "lines": [
     {
-      "x": 0,
+      "x": 74,
       "top": 0,
-      "width": 6713,
+      "width": 6639,
       "height": 5120,
       "baseline": 4149,
       "rtl": false,
@@ -14,11 +14,11 @@
   "words": [
     {
       "line": 0,
-      "x": 0,
-      "width": 6713
+      "x": 74,
+      "width": 6639
     }
   ],
-  "width": 6713,
+  "width": 6639,
   "height": 5120,
   "overflow": false,
   "missing": [

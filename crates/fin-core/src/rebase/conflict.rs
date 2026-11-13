@@ -24,6 +24,12 @@ pub mod reasons {
     pub const ID_COLLISION: &str = "ID_COLLISION";
     /// Undoing this unit would undo the target branch's own records (merge).
     pub const UNDOES_TARGET_RECORDS: &str = "UNDOES_TARGET_RECORDS";
+    /// Not a conflict: a merge leaves the record out because its origin root is dropped for
+    /// the target (a `drop` record, sub-project 5 spec §8.3).
+    pub const DROPPED: &str = "DROPPED";
+    /// Not a conflict: a limited merge leaves the record out because its origin root is not
+    /// in `include`, or it is on the source branch above `sourceUpTo` (spec §8.4).
+    pub const NOT_INCLUDED: &str = "NOT_INCLUDED";
     /// `undo --to`: a redo unit stands for units made on both sides of the checkpoint, so
     /// neither undoing it nor keeping it gives the checkpoint's state.
     pub const STRADDLES_CHECKPOINT: &str = "STRADDLES_CHECKPOINT";
@@ -110,6 +116,9 @@ fn fix_for(reason: &str) -> &'static str {
         reasons::ALREADY_PRESENT => "the change is already present; skip it",
         reasons::ID_COLLISION => "the entity id is taken; recreate the entity under a new id",
         reasons::UNDOES_TARGET_RECORDS => "undo the change on the target branch itself",
+        reasons::DROPPED => {
+            "it was rejected for this branch; undrop it (fin drop --undo) or cherry-pick it"
+        }
         reasons::STRADDLES_CHECKPOINT => {
             "undo it with plain undos (fin undo), or undo --to an earlier checkpoint"
         }

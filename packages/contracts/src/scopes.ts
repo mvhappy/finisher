@@ -82,10 +82,15 @@ export type FinRpcTag = RpcGroup.Rpcs<typeof FinRpcs>["_tag"];
  *   opens nothing, so it adds no reopen rule;
  * - `jobKind`: the payload's `kind` as that kind's own scopes (`RuleFacts.kindScopes`), for a
  *   kind clients may submit;
- * - `job`: the payload's `job` as whose it is to the caller (`RuleFacts.job`).
+ * - `job`: the payload's `job` as whose it is to the caller (`RuleFacts.job`);
+ * - `review` (5E): the payload's `itemId` as the item's project (reach), `source` and `target`
+ *   branch ids (added to the resolved payload, so `writes: ["target"]` finds them); an unknown
+ *   item and one outside the caller's reach are both `REVIEW_NOT_FOUND`. A rule with
+ *   `protectedNeeds` also gets `RuleFacts.protectedTarget` from the project's policy.
  */
 /** `libraryRoot`, `registryPaths`: `library.add`'s root and `registry.add`'s folder and root file, checked against a device's roots (5B Decision 32). */
-export type ResolverName = "project" | "openDir" | "createDir" | "probePath" | "importDir" | "outDir" | "libraryRoot" | "registryPaths" | "branch" | "jobProject" | "jobKind" | "job";
+/** `pluginCommand`: `plugin.command.run`'s `name` as whether that command writes (`RuleFacts.commandWrites`). */
+export type ResolverName = "project" | "openDir" | "createDir" | "probePath" | "importDir" | "outDir" | "libraryRoot" | "registryPaths" | "branch" | "jobProject" | "jobKind" | "job" | "review" | "pluginCommand";
 
 /** Resolved facts an escalation may read. */
 export interface RuleFacts {
@@ -103,6 +108,17 @@ export interface RuleFacts {
    * owner's, visible through `jobs.control`) or `none` (unknown, or not visible to the caller).
    */
   readonly job?: "own" | "other" | "none";
+  /**
+   * The branch a call with `protectedNeeds` writes into (`into`, or a review item's target) is
+   * protected by the project's policy (5E Decision 17); absent when it could not be resolved.
+   */
+  readonly protectedTarget?: boolean;
+  /**
+   * `plugin.command.run`: the named command of an enabled plugin returns a transaction (its
+   * manifest's `writes`), so running it needs `project.write` (8B Task 9). Absent for a name
+   * that resolves to no command (the handler answers `PLUGIN_NOT_FOUND`).
+   */
+  readonly commandWrites?: boolean;
 }
 
 /** Acting on one job: one's own (or one the caller cannot see) takes `jobs.submit`, another's `jobs.control`. */
@@ -131,6 +147,11 @@ export interface RuleOf<T extends FinRpcTag> {
    * like `writes` (agent branch limits; review of Task 6, finding 7).
    */
   readonly targets?: ReadonlyArray<string>;
+  /**
+   * The scope that takes the place of `branch.protected` for a write into a protected branch
+   * (5E Decision 16): `review.decide` for `history.drop` and the calls that decide a review.
+   */
+  readonly protectedNeeds?: Scope;
   /**
    * The payload field holding the author a new branch records (`createdBy`): for a principal
    * with branch limits the server sets it to the principal's own author, so `"own"` cannot be
@@ -181,6 +202,7 @@ export interface RpcRule {
   readonly escalate?: (payload: never, facts: RuleFacts) => ReadonlyArray<Scope>;
   readonly writes?: ReadonlyArray<string>;
   readonly targets?: ReadonlyArray<string>;
+  readonly protectedNeeds?: Scope;
   readonly author?: string;
   readonly unconfirmed?: "readOnly" | "service";
   readonly unconfirmedIf?: (payload: never) => "readOnly" | "service" | undefined;
@@ -191,6 +213,7 @@ export interface RpcRule {
 
 const PROJECT: ReadonlyArray<ResolverName> = ["project"];
 const BRANCH: ReadonlyArray<ResolverName> = ["project", "branch"];
+const REVIEW: ReadonlyArray<ResolverName> = ["review"];
 /** Who drives agent sessions in 7A: people, through `fin` (`local`), the console and the app (Decision 15). */
 const SESSION_DRIVERS: ReadonlyArray<PrincipalKind> = ["local", "console", "device"];
 /** The only kind with a session of its own. */
@@ -260,6 +283,14 @@ export const RPC_SCOPES: { readonly [T in FinRpcTag]: RuleOf<T> } = {
   "history.merge": { scopes: ["project.write"], resolve: BRANCH, writes: ["into"] },
   "history.cherryPick": { scopes: ["project.write"], resolve: BRANCH, writes: ["into"] },
   "history.revert": { scopes: ["project.write"], resolve: BRANCH, writes: ["branch"] },
+  // 5E Decision 17: a drop into a protected branch is a reviewer's (`review.decide`), elsewhere a write.
+  "history.drop": {
+    scopes: ["project.read"],
+    resolve: BRANCH,
+    writes: ["into"],
+    protectedNeeds: "review.decide",
+    escalate: (_, facts) => (facts.protectedTarget === true ? ["review.decide"] : ["project.write"]),
+  },
   // Clears a branch's rewind warning: a branch-limited principal only on its own branches.
   "project.acknowledgeRewind": { scopes: ["project.write"], resolve: BRANCH, targets: ["branch"] },
   "project.acknowledgeSalvage": { scopes: ["project.write"], resolve: PROJECT },
@@ -365,6 +396,13 @@ export const RPC_SCOPES: { readonly [T in FinRpcTag]: RuleOf<T> } = {
   "plugin.enable": { scopes: ["plugin.admin"] },
   "plugin.disable": { scopes: ["plugin.admin"] },
   "plugin.suggest": { scopes: ["plugin.suggest", "project.read"], resolve: PROJECT },
+  // Plugin commands (8B Task 9): a run reads the project, and a command that writes needs
+  // `project.write` too. Its commit goes through `tx.commit`'s own rule as the live invoker
+  // (branch limits, author, guard), so the run itself names no `writes`. Listing is what the
+  // caller can run, filtered to it, so it needs what a run needs, `project.read` (Task 10:
+  // agent sessions hold no `plugin.read`, and `fin @<id> <command>` maps its line by the list).
+  "plugin.commands": { scopes: ["project.read"] },
+  "plugin.command.run": { scopes: ["project.read"], resolve: ["project", "branch", "pluginCommand"], escalate: (_, facts) => (facts.commandWrites === true ? ["project.write"] : []) },
   // Libraries (5D Decision 47). Adding and removing are the owner's, with a challenge code in the
   // console; `library.set` needs `library.scan` for the ordinary fields and `library.admin`
   // (human-only) for the ones only a person decides. Everything that reads needs `library.read`
@@ -463,6 +501,21 @@ export const RPC_SCOPES: { readonly [T in FinRpcTag]: RuleOf<T> } = {
   "env.reset": { scopes: ["auth.admin"] },
   "env.rotateIdentity": { scopes: ["auth.admin"] },
   "settings.write": { scopes: ["settings.admin"] },
+  // The review workflow (5E Decision 23, spec §8.6). Opening one, commenting and refreshing are
+  // `review.write` (an agent holds it); deciding, merging and closing are `review.decide` and
+  // write the item's target (`drop`, `merge` or `branchSet` records) through the guard, so agent
+  // branch limits and protected branches see it like any write's. The policy is human-only.
+  "review.request": { scopes: ["review.write"], resolve: BRANCH },
+  "review.comment": { scopes: ["review.write"], resolve: REVIEW },
+  "review.refresh": { scopes: ["review.write"], resolve: REVIEW },
+  "review.list": { scopes: ["project.read"], resolve: PROJECT },
+  "review.get": { scopes: ["project.read"], resolve: REVIEW },
+  "review.watch": { scopes: ["project.read"], resolve: PROJECT },
+  "review.decide": { scopes: ["review.decide"], resolve: REVIEW, writes: ["target"], protectedNeeds: "review.decide" },
+  "review.merge": { scopes: ["review.decide"], resolve: REVIEW, writes: ["target"], protectedNeeds: "review.decide" },
+  "review.close": { scopes: ["review.decide"], resolve: REVIEW, writes: ["target"], protectedNeeds: "review.decide" },
+  "review.policy": { scopes: ["auth.admin"], resolve: PROJECT },
+  "review.policy.get": { scopes: ["project.read"], resolve: PROJECT },
 };
 
 /** The RPCs that write through the store's guard: exactly the rules with `writes`. */

@@ -125,6 +125,8 @@ fn busy_common() -> Common {
             pan: 0.25,
             fade_in: r("1/2"),
             fade_out: r("0"),
+            fade_in_offset: r("1/4"),
+            fade_out_offset: r("0"),
         }),
         keyframes: BTreeMap::from([(
             "opacity".into(),
@@ -202,6 +204,7 @@ fn every_kind() -> Vec<Item> {
             ItemBody::Graphic {
                 asset: "a2".into(),
                 slots: BTreeMap::from([("title".into(), ParamValue::Text("Hi".into()))]),
+                source_in: fin_core::Rational::zero(),
             },
             Common::default(),
         ),

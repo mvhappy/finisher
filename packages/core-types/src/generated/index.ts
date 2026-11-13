@@ -230,6 +230,9 @@ export type AnyPayload =
   | StorageState
   | PluginLifecycle
   | RegistryRefresh
+  | PluginStats
+  | PluginExit
+  | PluginCommand
   | ErrorInternal
   | ErrorPanic
   | JobDone
@@ -383,9 +386,6 @@ export type Op =
   | (AssetMove & {
       op: "asset.move";
     })
-  | (AssetReprobe & {
-      op: "asset.reprobe";
-    })
   | (TrackRestore & {
       op: "track.restore";
     })
@@ -479,7 +479,7 @@ export type Op =
       op: "clip.delete";
     };
 /**
- * Exact rational seconds in canonical form: "n/d" in lowest terms with d > 1, or "n" when d is 1; no leading zeros, no "+", no "-0".
+ * Exact rational seconds in canonical form: "n/d" in lowest terms with d > 1, or "n" when d is 1; no leading zeros, no "+", no "-0". The pattern checks the shape; lowest terms is checked by the parser.
  *
  * This interface was referenced by `FinCore`'s JSON-Schema
  * via the `definition` "Rational".
@@ -492,13 +492,6 @@ export type Rational = string;
  * via the `definition` "FontFormat".
  */
 export type FontFormat = "ttf" | "otf" | "ttc";
-/**
- * Clockwise display rotation in degrees, from the track matrix.
- *
- * This interface was referenced by `FinCore`'s JSON-Schema
- * via the `definition` "Rotation".
- */
-export type Rotation = 0 | 90 | 180 | 270;
 /**
  * `item.insert`: an item of any kind (the flattened `body`, tagged by `kind`) at `at` on
  * `track`, `duration` long, with default common fields. `id` is a `$name` placeholder bound
@@ -546,6 +539,7 @@ export type ItemInsert1 =
       slots?: {
         [k: string]: ParamValue;
       };
+      sourceIn?: Rational;
     }
   | {
       asset: string;
@@ -696,6 +690,7 @@ export type Item1 =
       slots?: {
         [k: string]: ParamValue;
       };
+      sourceIn?: Rational;
     }
   | {
       asset: string;
@@ -751,7 +746,7 @@ export type CommitOutcome = "accepted" | "rebased" | "deduped" | "noOp" | "confl
  * via the `definition` "CommitRecord".
  */
 export type CommitRecord =
-  "edit" | "undo" | "redo" | "merge" | "pick" | "revert" | "checkpoint" | "branch" | "branchSet" | "recover";
+  "edit" | "undo" | "redo" | "merge" | "pick" | "revert" | "checkpoint" | "branch" | "branchSet" | "recover" | "drop";
 /**
  * This interface was referenced by `FinCore`'s JSON-Schema
  * via the `definition` "FetchOutcome".
@@ -804,6 +799,29 @@ export type RiskName = "low" | "medium" | "high" | "unknown";
  * via the `definition` "PluginSourceName".
  */
 export type PluginSourceName = "bundled" | "registry" | "dev";
+/**
+ * Why a plugin process ended (spec §11).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "PluginExitReason".
+ */
+export type PluginExitReason = "ok" | "crash" | "timeout" | "killed" | "oom" | "protocol" | "sandbox" | "idle";
+/**
+ * Why `args` is absent although training is on.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "ArgsOmitted".
+ */
+export type ArgsOmitted = "tooLarge";
+/**
+ * How a plugin command ended (spec §11; `failed`: the process crashed, broke the protocol or
+ * the host failed, a deviation: the spec's list has no outcome for it).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "PluginCommandOutcome".
+ */
+export type PluginCommandOutcome =
+  ("conflict" | "timeout" | "failed") | "accepted" | "rebased" | "refused" | "invalid" | "data";
 /**
  * This interface was referenced by `FinCore`'s JSON-Schema
  * via the `definition` "SrcLoc".
@@ -943,6 +961,36 @@ export type PairPlatform = "macos" | "windows" | "linux" | "ios" | "android" | "
  * via the `definition` "PairRoute".
  */
 export type PairRoute = "loopback" | "lan" | "tailscale" | "public" | "connect" | "other";
+/**
+ * Who brought it about.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "VerdictBy".
+ */
+export type VerdictBy = "user" | "agent" | "critic" | "policy";
+/**
+ * What the verdict is about (`none` for the outcome tracker's entries).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "ReviewItemKind".
+ */
+export type ReviewItemKind =
+  "branchReview" | "mergeConflict" | "qaFinding" | "criticSummary" | "pluginSuggestion" | "none";
+/**
+ * What was decided or became of the work.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "Verdict".
+ */
+export type Verdict =
+  "accepted" | "rejected" | "merged" | "dismissed" | "changesRequested" | "undone" | "reverted" | "abandoned";
+/**
+ * How the outcome came about; absent for a person's decision on an item.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "VerdictVia".
+ */
+export type VerdictVia = "undo" | "revert" | "archive" | "merge" | "critic" | "autoMerge";
 /**
  * Who provides a backend (spec §6.1): the export-encoder policy and the capability report key
  * on it.
@@ -1116,6 +1164,13 @@ export type Link =
       kind: "branchSet";
       name?: string | null;
       recovers?: string | null;
+    }
+  | {
+      drops?: string[];
+      from: string;
+      kind: "drop";
+      recovers?: string | null;
+      undrops?: string[];
     };
 /**
  * Why a `cancel` was sent.
@@ -1230,6 +1285,13 @@ export type CommandOut =
       value: unknown;
     };
 /**
+ * What became of a command run.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "CommandOutcome".
+ */
+export type CommandOutcome = "accepted" | "rebased" | "conflict" | "data";
+/**
  * One purpose's switch.
  *
  * This interface was referenced by `FinCore`'s JSON-Schema
@@ -1245,12 +1307,12 @@ export type Switch = "on" | "off";
  */
 export type TrainingState = "on" | "off" | "undecided";
 /**
- * The container family, from `ftyp`'s brands or the EBML `DocType`.
+ * The container family, from `ftyp`'s brands.
  *
  * This interface was referenced by `FinCore`'s JSON-Schema
  * via the `definition` "ContainerKind".
  */
-export type ContainerKind = "mp4" | "mov" | "webm" | "matroska";
+export type ContainerKind = "mp4" | "mov";
 /**
  * Every key of spec §4.2, consumed or not.
  *
@@ -1372,6 +1434,13 @@ export type EngineEvent =
       type: "collect";
     };
 /**
+ * What a merge does with a source record (the review's `status`).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "EntryStatus".
+ */
+export type EntryStatus = "willMerge" | "alreadyPresent" | "dropped" | "excluded" | "dependsOnSkipped" | "conflict";
+/**
  * The type of a directory entry as listed (never by following a link). Windows reparse
  * points with a name-surrogate tag (symlinks, junctions, mount points) are `symlink` in a
  * [`ScanEntry`] (see [`crate::listing`]); anything that is neither a regular file, a
@@ -1433,7 +1502,7 @@ export type EventPayload =
     }
   | {
       kind: "log.commit";
-      kv: 1;
+      kv: 2;
       payload: LogCommit;
     }
   | {
@@ -1472,6 +1541,21 @@ export type EventPayload =
       payload: RegistryRefresh;
     }
   | {
+      kind: "plugin.stats";
+      kv: 1;
+      payload: PluginStats;
+    }
+  | {
+      kind: "plugin.exit";
+      kv: 1;
+      payload: PluginExit;
+    }
+  | {
+      kind: "plugin.command";
+      kv: 1;
+      payload: PluginCommand;
+    }
+  | {
       kind: "error.internal";
       kv: 1;
       payload: ErrorInternal;
@@ -1488,7 +1572,7 @@ export type EventPayload =
     }
   | {
       kind: "worker.exit";
-      kv: 1;
+      kv: 2;
       payload: WorkerExit;
     }
   | {
@@ -1538,7 +1622,7 @@ export type EventPayload =
     }
   | {
       kind: "review.verdict";
-      kv: 0;
+      kv: 1;
       payload: ReviewVerdict;
     }
   | {
@@ -1588,14 +1672,6 @@ export type FileState =
       state: "failed";
     };
 /**
- * A decoded picture's memory layout.
- *
- * This interface was referenced by `FinCore`'s JSON-Schema
- * via the `definition` "PixelFormat".
- */
-export type PixelFormat =
-  ("rgba8" | "rgba16f") | "nv12" | "p010" | "i420" | "i420p10" | "i422" | "i422p10" | "i444" | "i444p10";
-/**
  * The item kinds, as they appear in plans.
  *
  * This interface was referenced by `FinCore`'s JSON-Schema
@@ -1619,13 +1695,6 @@ export type FsAccess = "read" | "readWrite";
  * via the `definition` "FsScope".
  */
 export type FsScope = "pluginData";
-/**
- * Where [`ProbeDeepResult::hdr`] came from.
- *
- * This interface was referenced by `FinCore`'s JSON-Schema
- * via the `definition` "HdrSource".
- */
-export type HdrSource = "container" | "sei" | "containerAndSei";
 /**
  * A helper's kind.
  *
@@ -1988,6 +2057,30 @@ export type JobHostKillReason =
  */
 export type JobHostQos = "normal" | "utility" | "background";
 /**
+ * Which projects or libraries a job reaches: `"all"` or a list of ids.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "Reach".
+ */
+export type Reach = ReachAll | string[];
+/**
+ * `"all"`: every project (or library) of this server.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "ReachAll".
+ */
+export type ReachAll = "all";
+/**
+ * A sub-project 5 scope a plugin job may hold, each from one permission (spec §3.7):
+ * `project:read` → `project.read`; `project:write` → `project.write` (only the `tx.commit` of
+ * the command's returned transaction); `media:read` → `library.read` (and asset reads);
+ * `jobs:submit` → `jobs.submit` (the plugin's own kinds only, 8C).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "PluginScope".
+ */
+export type PluginScope = "project.read" | "project.write" | "library.read" | "jobs.submit";
+/**
  * This interface was referenced by `FinCore`'s JSON-Schema
  * via the `definition` "JobSpawnProfile".
  */
@@ -2010,6 +2103,13 @@ export type JobSpawnProgram =
  * via the `definition` "JobSpawnRole".
  */
 export type JobSpawnRole = "worker" | "helper";
+/**
+ * Clockwise display rotation in degrees, from the track matrix.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "Rotation".
+ */
+export type Rotation = 0 | 90 | 180 | 270;
 /**
  * What a scan lists (`WalkMode`).
  *
@@ -2181,6 +2281,15 @@ export type PurgeSelector =
   | {
       before: number;
     };
+/**
+ * What a record does (spec §4.2). Sub-project 4A writes only edits; 4B adds the rest up to
+ * `branchSet`; 5E adds `drop` (durable rejections, sub-project 5 spec §8.3).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "RecordKind".
+ */
+export type RecordKind =
+  "edit" | "undo" | "redo" | "merge" | "cherryPick" | "revert" | "checkpoint" | "branch" | "branchSet" | "drop";
 /**
  * A frame size as a bucket: the smallest standard size the frame fits within, by pixel count
  * (so a portrait clip buckets as its landscape twin): `sd` ≤ 960×540, `hd720` ≤ 1280×720,
@@ -2854,27 +2963,8 @@ export interface LutInfo {
  * via the `definition` "VideoInfo".
  */
 export interface VideoInfo {
-  display?: DisplaySize;
-  /**
-   * The coded height, in px.
-   */
   height: number;
-  pixelAspect?: Rational;
   rate: Rational;
-  rotation?: Rotation;
-  /**
-   * The coded width, in px.
-   */
-  width: number;
-}
-/**
- * A picture's display size in px (`VideoInfo.display`).
- *
- * This interface was referenced by `FinCore`'s JSON-Schema
- * via the `definition` "DisplaySize".
- */
-export interface DisplaySize {
-  height: number;
   width: number;
 }
 /**
@@ -3208,17 +3298,6 @@ export interface AssetMove {
   bin?: string;
 }
 /**
- * `asset.reprobe`: `asset`'s streams are now `video` and `audio`.
- *
- * This interface was referenced by `FinCore`'s JSON-Schema
- * via the `definition` "AssetReprobe".
- */
-export interface AssetReprobe {
-  asset: string;
-  audio?: AudioInfo;
-  video?: VideoInfo;
-}
-/**
  * `track.restore` (internal): puts `track` back on `timeline` at `index`.
  *
  * This interface was referenced by `FinCore`'s JSON-Schema
@@ -3251,14 +3330,20 @@ export interface Track {
   transitions?: Transition[];
 }
 /**
- * The item's own audio: gain in dB, pan in −1…1, fades in seconds.
+ * The item's own audio: gain in dB, pan in −1…1, fades in seconds. A fade's offset
+ * (schema 4) places its window past the item's edge: the fade-in runs over
+ * `[start − fadeInOffset, start − fadeInOffset + fadeIn)`, the fade-out over
+ * `[end + fadeOutOffset − fadeOut, end + fadeOutOffset)`, and only the part inside the item
+ * sounds. A split sets them so each half keeps the original envelope (spec §5.13).
  *
  * This interface was referenced by `FinCore`'s JSON-Schema
  * via the `definition` "AudioParams".
  */
 export interface AudioParams {
   fadeIn?: Rational;
+  fadeInOffset?: Rational;
   fadeOut?: Rational;
+  fadeOutOffset?: Rational;
   gain?: number;
   pan?: number;
 }
@@ -3831,6 +3916,137 @@ export interface RegistryRefresh {
   targetsLog2: number;
 }
 /**
+ * `plugin.stats`: one plugin's host traffic over one window (a minute), sent when the
+ * plugin did anything in it.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "PluginStats".
+ */
+export interface PluginStats {
+  /**
+   * Its jobs that ended `PLUGIN_CRASHED`.
+   */
+  crashes: number;
+  egress?: PluginEgressStats;
+  /**
+   * Per method family (`PLUGIN_METHOD_FAMILIES`), each at most once.
+   */
+  families?: PluginMethodStats[];
+  /**
+   * `log` calls dropped by the rate limit.
+   */
+  logDropped: number;
+  plugin: PluginRef;
+  /**
+   * stderr lines dropped by the byte limit.
+   */
+  stderrDropped: number;
+  /**
+   * Its jobs that ended `PLUGIN_TIMEOUT`.
+   */
+  timeouts: number;
+  /**
+   * The window's length in seconds.
+   */
+  windowS: number;
+}
+/**
+ * The egress broker's counts for one plugin in a `plugin.stats` window (Task 8's counters,
+ * differenced per window). Refusals by reason; no origin, URL or body.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "PluginEgressStats".
+ */
+export interface PluginEgressStats {
+  bytesInLog2: number;
+  bytesOutLog2: number;
+  completed: number;
+  /**
+   * `EGRESS_DENIED`: an origin it was not granted.
+   */
+  denied: number;
+  failed: number;
+  notHttps: number;
+  privateAddress: number;
+  rateLimited: number;
+  redirectsFollowed: number;
+  redirectsReturned: number;
+  requests: number;
+  secretMissing: number;
+  timeouts: number;
+  tooLarge: number;
+}
+/**
+ * One method family's calls in a `plugin.stats` window.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "PluginMethodStats".
+ */
+export interface PluginMethodStats {
+  /**
+   * Params bytes over the window, as a log₂ bucket.
+   */
+  bytesInLog2: number;
+  /**
+   * Reply bytes over the window, as a log₂ bucket.
+   */
+  bytesOutLog2: number;
+  calls: number;
+  /**
+   * Error code → count.
+   */
+  errors?: {
+    [k: string]: number;
+  };
+  family: Name;
+  p50Micros: number;
+  p95Micros: number;
+  /**
+   * Calls refused for reach (`PROJECT_NOT_FOUND`, `BRANCH_NOT_ALLOWED`, a library).
+   */
+  reachDenials: number;
+}
+/**
+ * `plugin.exit`: a plugin process ended (built from the same exit as its `worker.exit`).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "PluginExit".
+ */
+export interface PluginExit {
+  exitCode?: number;
+  jobsServed: number;
+  plugin: PluginRef;
+  reason: PluginExitReason;
+  signal?: Name;
+  uptimeS: number;
+}
+/**
+ * `plugin.command`: one run of a plugin command (`plugin.command.run`).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "PluginCommand".
+ */
+export interface PluginCommand {
+  /**
+   * Training only: the arguments as validated.
+   */
+  args?: Body;
+  argsOmitted?: ArgsOmitted;
+  code?: Code;
+  command: Hashed;
+  dryRun?: boolean;
+  micros: number;
+  /**
+   * Op kind → count of the ops it returned (`OP_KINDS`).
+   */
+  ops?: {
+    [k: string]: number;
+  };
+  outcome: PluginCommandOutcome;
+  plugin: PluginRef;
+  txId?: IdRef;
+}
+/**
  * An `INTERNAL` error, or one of the store's unexpected codes, returned through `fin-node`.
  *
  * This interface was referenced by `FinCore`'s JSON-Schema
@@ -3934,7 +4150,8 @@ export interface JobMedia {
   rtFactorMilli: number;
 }
 /**
- * `worker.exit` (`kv` 1).
+ * `worker.exit` (`kv` 2: `plugin` is a [`PluginRef`], Decision 22 of sp8b; `kv` 1 had a
+ * `Hashed` that nothing ever filled).
  *
  * This interface was referenced by `FinCore`'s JSON-Schema
  * via the `definition` "WorkerExit".
@@ -3945,7 +4162,7 @@ export interface WorkerExit {
   helperKind?: ProcessHelperKind;
   jobsServed: number;
   lifetimeS: number;
-  plugin?: Hashed;
+  plugin?: PluginRef;
   reason: ExitReason;
   role: ProcessRole;
   sandboxed: boolean;
@@ -4025,10 +4242,35 @@ export interface AuthPair {
  */
 export interface UiAction {}
 /**
+ * `review.verdict`.
+ *
  * This interface was referenced by `FinCore`'s JSON-Schema
  * via the `definition` "ReviewVerdict".
  */
-export interface ReviewVerdict {}
+export interface ReviewVerdict {
+  /**
+   * Counts of the transactions accepted and rejected by the decision.
+   */
+  accepted: number;
+  by: VerdictBy;
+  itemKind: ReviewItemKind;
+  /**
+   * Seconds since the item opened (or since the transaction, for the tracker's entries).
+   */
+  openS: number;
+  /**
+   * Training only: the reason the person gave.
+   */
+  reason?: Scrubbed;
+  rejected: number;
+  sessionId?: IdRef;
+  /**
+   * @maxItems 64
+   */
+  txIds: IdRef[];
+  verdict: Verdict;
+  via?: VerdictVia;
+}
 /**
  * `media.capabilities` (`kv` 1): once per server run, what the media worker can decode,
  * encode and draw on.
@@ -4328,7 +4570,8 @@ export interface TextStyle {
   family: string;
   italic: boolean;
   /**
-   * Extra advance after every glyph, in em (a multiple of `size`; may be negative).
+   * Extra advance between shaping clusters (a base with its combining marks, or a
+   * ligature), in em (a multiple of `size`; may be negative); none after a line's last.
    */
   letterSpacing: number;
   /**
@@ -4646,54 +4889,6 @@ export interface Via {
   plugin: string;
 }
 /**
- * What one `gc` (or eviction pass) did.
- *
- * This interface was referenced by `FinCore`'s JSON-Schema
- * via the `definition` "CacheGcResult".
- */
-export interface CacheGcResult {
-  /**
-   * What the cache holds afterwards (above the target only when the rest is pinned).
-   */
-  bytes: number;
-  evicted: number;
-  freedBytes: number;
-}
-/**
- * `media.cache.status` (`fin cache status`): what the cache holds against its cap.
- *
- * This interface was referenced by `FinCore`'s JSON-Schema
- * via the `definition` "CacheStatus".
- */
-export interface CacheStatus {
-  byRecipe: {
-    [k: string]: RecipeUsage;
-  };
-  /**
-   * Every entry's files and `meta.json`.
-   */
-  bytes: number;
-  /**
-   * Eviction keeps `bytes` at or below this (Decision 12).
-   */
-  capBytes: number;
-  entries: number;
-  /**
-   * Entries with at least one pin (never evicted).
-   */
-  pinned: number;
-}
-/**
- * One recipe's share of the cache.
- *
- * This interface was referenced by `FinCore`'s JSON-Schema
- * via the `definition` "RecipeUsage".
- */
-export interface RecipeUsage {
-  bytes: number;
-  entries: number;
-}
-/**
  * The limits of this job's calls and results.
  *
  * This interface was referenced by `FinCore`'s JSON-Schema
@@ -4737,9 +4932,9 @@ export interface CaptionPlan {
   words: WordPlan[];
 }
 /**
- * A measured layout, all lengths in 1/64 px. `width` is the widest line, `height` the
- * lines' total advance. `overflow` is set when a line is wider than `max_width` or there are
- * more lines than `max_lines`. `missing` lists the code points no face maps (ascending);
+ * A measured layout, all lengths in 1/64 px. `width` is the widest line's ink, `height` the
+ * lines' total advance. `overflow` is set when a line's ink box reaches outside
+ * `0..max_width` (on either side) or there are more lines than `max_lines`. `missing` lists the code points no face maps (ascending);
  * `faces` the sha256s whose glyphs the layout uses, in request order.
  *
  * This interface was referenced by `FinCore`'s JSON-Schema
@@ -4755,8 +4950,15 @@ export interface TextLayout {
   words: WordBox[];
 }
 /**
- * One line. `x` is the left edge of its ink box after alignment, `top` its top; `baseline` is
- * measured from the layout's top. `words` is the half-open range of word indices on it.
+ * One line. `x` is the left edge of its ink box after alignment and `width` the box's width,
+ * `top` its top; `baseline` is measured from the layout's top. `words` is the half-open range
+ * of word indices on it.
+ *
+ * An ink box is the horizontal union of the line's (or word's) glyph outlines where they are
+ * drawn: glyphs are placed by their advances, letter spacing and shaping offsets, and each
+ * outline's extent (side bearings, overhangs and positioned marks included) is what counts,
+ * so a box may start before the pen or end past the last advance. A glyph with no outline
+ * (a bitmap or colour emoji) counts its advance; whitespace counts nothing.
  *
  * This interface was referenced by `FinCore`'s JSON-Schema
  * via the `definition` "LineBox".
@@ -4772,7 +4974,8 @@ export interface LineBox {
   x: number;
 }
 /**
- * One word's horizontal extent on its line (visual order is given by `x`).
+ * One word's ink box on its line (see [`LineBox`]; visual order is given by `x`). A word
+ * that draws nothing has a zero-width box at its pen position.
  *
  * This interface was referenced by `FinCore`'s JSON-Schema
  * via the `definition` "WordBox".
@@ -5044,7 +5247,7 @@ export interface SchemaSubset {
 }
 /**
  * A command run: the host has checked `args` against the command's schema and pinned `rev`
- * to the head of `branch`.
+ * to the head of `branch`. Decoded leniently (a field from a newer host is ignored).
  *
  * This interface was referenced by `FinCore`'s JSON-Schema
  * via the `definition` "CommandRun".
@@ -5058,6 +5261,12 @@ export interface CommandRun {
   command: string;
   project: string;
   rev: number;
+  /**
+   * The host's handle on the snapshot it read for this run at submit (opaque to plugins):
+   * every page the run reads comes from that snapshot, of this run only, so a rewind or
+   * rebuild that reaches `rev` again in a newer history is never served from an older one.
+   */
+  snapshot?: string | null;
 }
 /**
  * One op that cannot be carried to the head: which op of which tx, why (a reason code), the
@@ -5309,6 +5518,32 @@ export interface DolbyVision {
   rpu: boolean;
 }
 /**
+ * [`Store::drop`](crate::Store::drop)'s request (`history.drop`, plan 5E Decision 5).
+ *
+ * - `tx_id`: the idempotency key, the `drop` record's txId;
+ * - `author`: the record's author;
+ * - `into`: the branch the rejection binds (a reference; the record is written there);
+ * - `from`: the source branch (a reference; it may be archived);
+ * - `drops`, `undrops`: origin-root txIds of records on `from`'s lineage after its common
+ *   point with `into`, at least one in all; sorted and deduplicated at write;
+ * - `dry_run`: plan against the local database and keep nothing, on a follower too;
+ * - `args_hash`: the command input's hash, stored on the record's intent; a retry of the
+ *   txId with another hash is `IDEM_KEY_REUSED`.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "DropReq".
+ */
+export interface DropReq {
+  argsHash?: string | null;
+  author: string;
+  drops?: string[];
+  dryRun?: boolean;
+  from: string;
+  into: string;
+  txId: string;
+  undrops?: string[];
+}
+/**
  * One enabled effect with its parameters resolved at the plan's time. `params` holds the
  * effect's stored and keyframed parameters (the registry's defaults fill the rest).
  *
@@ -5350,180 +5585,6 @@ export interface EncoderCaps {
    * Concurrent sessions that opened, up to 4; absent when not counted.
    */
   sessionLimit?: number;
-}
-/**
- * The encoder that made an entry (proxies), for diagnostics and the export rule that a
- * `gpu`-encoded file never leaves the cache.
- *
- * This interface was referenced by `FinCore`'s JSON-Schema
- * via the `definition` "EntryEncoder".
- */
-export interface EntryEncoder {
-  backend: string;
-  class: VendorClass;
-}
-/**
- * One payload file of an entry.
- *
- * This interface was referenced by `FinCore`'s JSON-Schema
- * via the `definition` "EntryFile".
- */
-export interface EntryFile {
-  /**
-   * BLAKE3 of the file, 64 lower-case hex digits.
-   */
-  blake3: string;
-  bytes: number;
-  /**
-   * `[A-Za-z0-9_][A-Za-z0-9._-]{0,63}`, not `meta.json`.
-   */
-  name: string;
-}
-/**
- * An entry's `meta.json` (spec §7.2): the key and its input, the files and, for proxies, the
- * original's `MediaInfo`.
- *
- * This interface was referenced by `FinCore`'s JSON-Schema
- * via the `definition` "EntryMeta".
- */
-export interface EntryMeta {
-  /**
-   * Unix milliseconds.
-   */
-  createdAt: number;
-  decoderClass: VendorClass;
-  encoder?: EntryEncoder | null;
-  files: EntryFile[];
-  fingerprint: string;
-  key: string;
-  /**
-   * The original's `MediaInfo` (proxies: rotation and pixel aspect are applied from it).
-   */
-  media?: MediaInfo | null;
-  params: unknown;
-  recipe: string;
-  recipeVersion: number;
-  renderVersion: number;
-}
-/**
- * What a media file is (spec §6.3).
- *
- * This interface was referenced by `FinCore`'s JSON-Schema
- * via the `definition` "MediaInfo".
- */
-export interface MediaInfo {
-  audio?: AudioTrackInfo;
-  container: ContainerKind;
-  /**
-   * Exact rational seconds in canonical form: "n/d" in lowest terms with d > 1, or "n" when d is 1; no leading zeros, no "+", no "-0".
-   */
-  duration: string;
-  fragmented?: boolean;
-  ignored?: IgnoredTrack[];
-  video?: VideoTrackInfo;
-}
-/**
- * A track `fin-container` does not interpret (a second video or audio track, timecode, …).
- *
- * This interface was referenced by `FinCore`'s JSON-Schema
- * via the `definition` "IgnoredTrack".
- */
-export interface IgnoredTrack {
-  /**
-   * The `hdlr` handler type (`vide`, `soun`, `tmcd`, …).
-   */
-  handler: string;
-  id: number;
-}
-/**
- * The first video track.
- *
- * This interface was referenced by `FinCore`'s JSON-Schema
- * via the `definition` "VideoTrackInfo".
- */
-export interface VideoTrackInfo {
-  bitDepth: number;
-  chroma: Chroma;
-  codec: VideoCodec;
-  coded: Size;
-  colour: ColourTags;
-  display: Size1;
-  /**
-   * The sample entry type (`av01`, `hvc1`, …).
-   */
-  fourcc: string;
-  /**
-   * Frames presented, after edit lists.
-   */
-  frames: number;
-  hdr?: HdrInfo;
-  /**
-   * An ICC profile was given instead of code points (`colr` `prof`/`rICC`).
-   */
-  icc?: boolean;
-  level?: number;
-  /**
-   * Exact rational seconds in canonical form: "n/d" in lowest terms with d > 1, or "n" when d is 1; no leading zeros, no "+", no "-0".
-   */
-  nominalRate: string;
-  /**
-   * Exact rational seconds in canonical form: "n/d" in lowest terms with d > 1, or "n" when d is 1; no leading zeros, no "+", no "-0".
-   */
-  pixelAspect: string;
-  profile?: number;
-  rotation: Rotation;
-  /**
-   * Frame durations differ by more than 0.1 % (the last frame ignored).
-   */
-  vfr: boolean;
-}
-/**
- * The sample entry's coded size.
- */
-export interface Size {
-  height: number;
-  width: number;
-}
-/**
- * `coded` after the pixel aspect and the rotation ([`display_size`]).
- */
-export interface Size1 {
-  height: number;
-  width: number;
-}
-/**
- * HDR metadata a source carries (kept for HDR export later, spec §10.1).
- *
- * This interface was referenced by `FinCore`'s JSON-Schema
- * via the `definition` "HdrInfo".
- */
-export interface HdrInfo {
-  contentLight?: ContentLight;
-  dolbyVision?: DolbyVision;
-  mastering?: MasteringDisplay;
-}
-/**
- * SMPTE ST 2086 mastering display colour volume (`mdcv`), in the box's own units:
- * chromaticities in 0.00002, luminance in 0.0001 cd/m².
- *
- * This interface was referenced by `FinCore`'s JSON-Schema
- * via the `definition` "MasteringDisplay".
- */
-export interface MasteringDisplay {
-  maxLuminance: number;
-  minLuminance: number;
-  /**
-   * `[x, y]` for green, blue, red (the box's order).
-   *
-   * @minItems 3
-   * @maxItems 3
-   */
-  primaries: [[number, number], [number, number], [number, number]];
-  /**
-   * @minItems 2
-   * @maxItems 2
-   */
-  whitePoint: [number, number];
 }
 /**
  * One journal entry (Decision 2), as read from disk: `payload` is a `Value` (whose schema
@@ -5627,17 +5688,6 @@ export interface Filter {
    * Entries with `ts` < this.
    */
   until?: number;
-}
-/**
- * The first decoded picture.
- *
- * This interface was referenced by `FinCore`'s JSON-Schema
- * via the `definition` "FirstFrame".
- */
-export interface FirstFrame {
-  format: PixelFormat;
-  height: number;
-  width: number;
 }
 /**
  * This interface was referenced by `FinCore`'s JSON-Schema
@@ -5811,7 +5861,8 @@ export interface PlanCrop {
   top: number;
 }
 /**
- * A graphic's template, its time (from the item's start) and its slot values.
+ * A graphic's template, its template time (`sourceIn` + the time from the item's start, held
+ * at 0) and its slot values.
  *
  * This interface was referenced by `FinCore`'s JSON-Schema
  * via the `definition` "GraphicPlan".
@@ -5955,6 +6006,40 @@ export interface HashOutcome {
    * As [`crate::probe::ProbeOutcome::state`]: `present`, or why there is no hash.
    */
   state: string;
+}
+/**
+ * HDR metadata a source carries (kept for HDR export later, spec §10.1).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "HdrInfo".
+ */
+export interface HdrInfo {
+  contentLight?: ContentLight;
+  dolbyVision?: DolbyVision;
+  mastering?: MasteringDisplay;
+}
+/**
+ * SMPTE ST 2086 mastering display colour volume (`mdcv`), in the box's own units:
+ * chromaticities in 0.00002, luminance in 0.0001 cd/m².
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "MasteringDisplay".
+ */
+export interface MasteringDisplay {
+  maxLuminance: number;
+  minLuminance: number;
+  /**
+   * `[x, y]` for green, blue, red (the box's order).
+   *
+   * @minItems 3
+   * @maxItems 3
+   */
+  primaries: [[number, number], [number, number], [number, number]];
+  /**
+   * @minItems 2
+   * @maxItems 2
+   */
+  whitePoint: [number, number];
 }
 /**
  * This interface was referenced by `FinCore`'s JSON-Schema
@@ -6217,7 +6302,7 @@ export interface JobError {
  */
 export interface HttpRequest {
   /**
-   * At most 768 KiB before base64.
+   * At most 756 KiB (`PAGE_BYTES`) before base64.
    */
   bodyB64?: string | null;
   headers?: Header[];
@@ -6226,6 +6311,19 @@ export interface HttpRequest {
    * An `https://` URL.
    */
   url: string;
+}
+/**
+ * A track `fin-container` does not interpret (a second video or audio track, timecode, …).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "IgnoredTrack".
+ */
+export interface IgnoredTrack {
+  /**
+   * The `hdlr` handler type (`vide`, `soun`, `tmcd`, …).
+   */
+  handler: string;
+  id: number;
 }
 /**
  * What a person approves: made by [`super::make_plan`], kept in `staging/<planId>/plan.json`
@@ -6568,6 +6666,65 @@ export interface JobMemoryRule {
   ramFraction?: number;
 }
 /**
+ * A plugin job's rights: invoker ∩ grants (Decision 8), with the authority they run under
+ * (class + `rights_hash` + `generation`, spec §3.3 and Decision 28).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "JobRights".
+ */
+export interface JobRights {
+  /**
+   * Set for an agent session: its branch subtree.
+   */
+  branch?: RightsBranch | null;
+  /**
+   * The principal class of the process key (spec §3.3): `person`, `agent:<root session>`,
+   * `system`, or `<kind>:<id>` for any other invoker.
+   */
+  class: string;
+  /**
+   * The class's policy generation when the rights were computed (spec §3.3): it increments
+   * when a credential of the class is narrowed or revoked or its agent session tree changes.
+   */
+  generation: number;
+  /**
+   * The plugin's granted permissions at submit.
+   */
+  grants: Permission[];
+  libraries: Reach;
+  principal: RightsPrincipal;
+  projects: Reach;
+  /**
+   * The hash of the plugin-relevant rights above (class, scopes, projects, branch, libraries,
+   * grants; not the principal, so callers of one class with identical rights share it): 32
+   * lower-case hex characters, computed by the host (spec §3.3's authority key, Decision 28).
+   */
+  rightsHash: string;
+  /**
+   * The invoker's scopes that the plugin's grants map to.
+   */
+  scopes: PluginScope[];
+}
+/**
+ * An agent session's branch reach (sub-project 7 §5.1): its root branch and, with `subtree`,
+ * the branches beneath it (less its live children's).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "RightsBranch".
+ */
+export interface RightsBranch {
+  root: string;
+  subtree: boolean;
+}
+/**
+ * The invoker the plugin acts for (audit and journal name `plugin:<id>@<version>` acting
+ * for it).
+ */
+export interface RightsPrincipal {
+  id: string;
+  kind: string;
+}
+/**
  * `in/snapshot.json` (plan 6A Decision 2).
  *
  * This interface was referenced by `FinCore`'s JSON-Schema
@@ -6682,31 +6839,6 @@ export interface JournalStatus {
    */
   skippedUnknownProject?: number;
   state: JournalState;
-}
-/**
- * What a cache key is computed from (Decision 11).
- *
- * This interface was referenced by `FinCore`'s JSON-Schema
- * via the `definition` "KeyInput".
- */
-export interface KeyInput {
-  /**
-   * Who provides a backend (spec §6.1).
-   */
-  decoderClass: "os" | "gpu" | "software" | "plugin";
-  /**
-   * The source's fingerprint (the asset's `fingerprint`).
-   */
-  fingerprint: string;
-  /**
-   * The recipe's parameters (a tier, a codec, thumbnail times, …).
-   */
-  params: {
-    [k: string]: unknown;
-  };
-  recipe: string;
-  recipeVersion: number;
-  renderVersion: number;
 }
 /**
  * One directory the catalog knows (Decision 27) as the walker holds it. A line of a scan
@@ -6946,23 +7078,81 @@ export interface Probe {
   kind: AssetKind;
   lottie?: LottieInfo | null;
   lut?: LutInfo | null;
-  media?: MediaInfo1;
+  media?: MediaInfo;
   size: number;
   video?: VideoInfo | null;
 }
 /**
- * What a media file is (spec §6.3).
+ * MP4/MOV: what the file is (sub-project 6 spec §6.3): display size and rotation, colour,
+ * HDR, VFR, edit lists. In the `asset.probe` answer only: an `asset.add` never carries it
+ * (spec §4.4).
  */
-export interface MediaInfo1 {
+export interface MediaInfo {
   audio?: AudioTrackInfo;
   container: ContainerKind;
   /**
-   * Exact rational seconds in canonical form: "n/d" in lowest terms with d > 1, or "n" when d is 1; no leading zeros, no "+", no "-0".
+   * Exact rational seconds in canonical form: "n/d" in lowest terms with d > 1, or "n" when d is 1; no leading zeros, no "+", no "-0". The pattern checks the shape; lowest terms is checked by the parser.
    */
   duration: string;
   fragmented?: boolean;
   ignored?: IgnoredTrack[];
   video?: VideoTrackInfo;
+}
+/**
+ * The first video track.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "VideoTrackInfo".
+ */
+export interface VideoTrackInfo {
+  bitDepth: number;
+  chroma: Chroma;
+  codec: VideoCodec;
+  coded: Size;
+  colour: ColourTags;
+  display: Size1;
+  /**
+   * The sample entry type (`av01`, `hvc1`, …).
+   */
+  fourcc: string;
+  /**
+   * Frames presented, after edit lists.
+   */
+  frames: number;
+  hdr?: HdrInfo;
+  /**
+   * An ICC profile was given instead of code points (`colr` `prof`/`rICC`).
+   */
+  icc?: boolean;
+  level?: number;
+  /**
+   * Exact rational seconds in canonical form: "n/d" in lowest terms with d > 1, or "n" when d is 1; no leading zeros, no "+", no "-0". The pattern checks the shape; lowest terms is checked by the parser.
+   */
+  nominalRate: string;
+  /**
+   * Exact rational seconds in canonical form: "n/d" in lowest terms with d > 1, or "n" when d is 1; no leading zeros, no "+", no "-0". The pattern checks the shape; lowest terms is checked by the parser.
+   */
+  pixelAspect: string;
+  profile?: number;
+  rotation: Rotation;
+  /**
+   * Frame durations differ by more than 0.1 % (the last frame ignored).
+   */
+  vfr: boolean;
+}
+/**
+ * The sample entry's coded size.
+ */
+export interface Size {
+  height: number;
+  width: number;
+}
+/**
+ * `coded` after the pixel aspect and the rotation ([`display_size`]).
+ */
+export interface Size1 {
+  height: number;
+  width: number;
 }
 /**
  * `library.scan`.
@@ -7372,14 +7562,34 @@ export interface WorkerInfo {
   version: string;
 }
 /**
+ * What a media file is (spec §6.3).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "MediaInfo".
+ */
+export interface MediaInfo1 {
+  audio?: AudioTrackInfo;
+  container: ContainerKind;
+  /**
+   * Exact rational seconds in canonical form: "n/d" in lowest terms with d > 1, or "n" when d is 1; no leading zeros, no "+", no "-0". The pattern checks the shape; lowest terms is checked by the parser.
+   */
+  duration: string;
+  fragmented?: boolean;
+  ignored?: IgnoredTrack[];
+  video?: VideoTrackInfo;
+}
+/**
  * The answer of [`Store::merge`](crate::Store::merge): merge group `merge_id`'s records on
  * the target, in order (or planned and rolled back, `dry_run`); `merged`: the source txIds
  * they copy; `skipped`: the candidates that conflict and were left on the source (with
  * `skipConflicting`; they are offered again by the next merge); `excluded`: source records
- * never offered (`UNDOES_TARGET_RECORDS`); `source_state`: the source branch's state after
+ * never offered (`DROPPED`, `UNDOES_TARGET_RECORDS`); `not_included`: the origin roots of the
+ * candidates the merge's `include` and `sourceUpTo` left on the source, oldest first (plan 5E
+ * Decision 6; omitted when empty); `source_state`: the source branch's state after
  * the merge; `origins`: `merged` with the records their `origin` chains lead to (a copy of a
  * copy), first seen first (7A Decision 27). A retry of a committed merge answers from the
- * log: its records and their origins, `skipped` and `excluded` empty, `dry_run` false.
+ * log: its records and their origins, `skipped`, `excluded` and `not_included` empty,
+ * `dry_run` false.
  * Nothing left to merge is an empty answer, not an error.
  *
  * This interface was referenced by `FinCore`'s JSON-Schema
@@ -7391,6 +7601,7 @@ export interface MergeReport {
   excluded: Conflict[];
   mergeId: string;
   merged: string[];
+  notIncluded?: string[];
   origins?: string[];
   /**
    * As [`HistoryResult::placements`], each with its copy's txId, plus the `conflict`
@@ -7453,7 +7664,7 @@ export interface NetFetchReply {
 export interface NetRead {
   handle: string;
   /**
-   * At most 768 KiB.
+   * At most 756 KiB (`PAGE_BYTES`).
    */
   length: number;
   offset: number;
@@ -7486,6 +7697,103 @@ export interface ParamSpec {
   unit?: string | null;
 }
 /**
+ * One command as `plugin.commands` lists it.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "PluginCommandInfo".
+ */
+export interface PluginCommandInfo {
+  args: SchemaSubset;
+  /**
+   * The command's name in its manifest.
+   */
+  command: string;
+  /**
+   * The registry name, `plugin:<id>/<command>` (the name 7B's command rules match).
+   */
+  name: string;
+  /**
+   * `<id>@<version>` of the enabled plugin that serves it.
+   */
+  plugin: string;
+  /**
+   * Its timeout in seconds (the manifest's, 10 when absent, at most 60).
+   */
+  timeoutS: number;
+  /**
+   * A message key in the plugin's `en` catalogue.
+   */
+  title: string;
+  /**
+   * Whether it returns a transaction (running it needs `project.write`).
+   */
+  writes: boolean;
+}
+/**
+ * `plugin.commands`: `digest` is the BLAKE3 of the canonical JSON of `commands`, so a client
+ * caches the list per server and digest.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "PluginCommandList".
+ */
+export interface PluginCommandList {
+  commands: PluginCommandInfo[];
+  digest: string;
+}
+/**
+ * `plugin.command.run`'s request.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "PluginCommandRunRequest".
+ */
+export interface PluginCommandRunRequest {
+  args?: {
+    [k: string]: unknown;
+  };
+  /**
+   * A branch name, id or `name#id`; `main` when absent.
+   */
+  branch?: string | null;
+  /**
+   * Validate the returned transaction against the snapshot the plugin saw; commit nothing.
+   */
+  dryRun?: boolean | null;
+  /**
+   * `plugin:<id>/<command>`.
+   */
+  name: string;
+  projectId: string;
+}
+/**
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "PluginCommandRunResult".
+ */
+export interface PluginCommandRunResult {
+  /**
+   * A data command's value as the plugin returned it.
+   */
+  data?: {
+    [k: string]: unknown;
+  };
+  /**
+   * A dry run: nothing was committed.
+   */
+  dryRun?: boolean | null;
+  /**
+   * The proposed ops (dry run, conflict).
+   */
+  ops?: Op[] | null;
+  outcome: CommandOutcome;
+  /**
+   * The committed revision; for a dry run or a conflict, the revision the plugin saw.
+   */
+  rev?: number | null;
+  /**
+   * The committed transaction's id (accepted, rebased).
+   */
+  txId?: string | null;
+}
+/**
  * This interface was referenced by `FinCore`'s JSON-Schema
  * via the `definition` "PluginContext".
  */
@@ -7515,7 +7823,9 @@ export interface PluginContext {
  */
 export interface PluginDirs {
   /**
-   * The per-project data directory, only when `fs pluginData` is granted.
+   * The caller's `pluginData` directory, only when `fs pluginData` is granted (spec §5.1):
+   * `plugins/data/@pub/name/<projectId|_>/` for uniform `person`/`system` rights, else
+   * `plugins/authdata/@pub/name/<projectId|_>/<authorityKey>/`.
    */
   data?: string | null;
   /**
@@ -7704,91 +8014,6 @@ export interface PrivacySettings {
   training?: Switch | null;
 }
 /**
- * `media.probeDeep` v1: probe `asset`, whose content is `fingerprint`.
- *
- * This interface was referenced by `FinCore`'s JSON-Schema
- * via the `definition` "ProbeDeepParams".
- */
-export interface ProbeDeepParams {
-  asset: string;
-  /**
-   * The branch whose head names the asset (`main` when absent). Host only.
-   */
-  branch?: string | null;
-  capsDigest?: string | null;
-  display?: Size3;
-  /**
-   * The asset's fingerprint as the submitter saw it. The manifest's must equal it, else the
-   * job fails `ASSET_CHANGED` (the model changed between the request and the run).
-   */
-  fingerprint: string;
-  /**
-   * The project the asset is in. Only the host reads it (`prepare` writes the manifest
-   * from it); the worker works from the job directory.
-   */
-  projectId?: string | null;
-  /**
-   * The worker's `RENDER_VERSION` and a digest of its capability report, which with the
-   * fingerprint make the job's identity (`dedupe`): another decoder set probes again.
-   * Host only.
-   */
-  renderVersion?: number | null;
-}
-/**
- * This interface was referenced by `FinCore`'s JSON-Schema
- * via the `definition` "Size".
- */
-export interface Size3 {
-  height: number;
-  width: number;
-}
-/**
- * What `media.probeDeep` v1 answers. `backend`, `class`, `hw` and `firstFrame` are present
- * exactly when `decodable`; otherwise `failure` says why.
- *
- * This interface was referenced by `FinCore`'s JSON-Schema
- * via the `definition` "ProbeDeepResult".
- */
-export interface ProbeDeepResult {
-  asset: string;
-  /**
-   * The decoder's backend (`dav1d`, `videotoolbox`, …), a `fin_media::backend::BACKENDS`
-   * name.
-   */
-  backend?: string;
-  class?: VendorClass;
-  /**
-   * The video track's codec.
-   */
-  codec: ("av1" | "h264" | "hevc" | "vp9" | "vp8" | "proRes") | "other";
-  /**
-   * The first frame decoded.
-   */
-  decodable: boolean;
-  failure?: ProbeFailure;
-  fingerprint: string;
-  firstFrame?: FirstFrame;
-  hdr?: HdrInfo;
-  hdrSource?: HdrSource;
-  /**
-   * The frame was decoded on hardware.
-   */
-  hw?: boolean;
-}
-/**
- * Why the first frame did not decode: the decoder's error code and message (a codec nothing
- * on this machine decodes is `CODEC_UNAVAILABLE`; a bitstream the decoder refused is
- * `DECODE_FAILED` or `MEDIA_CORRUPT`).
- *
- * This interface was referenced by `FinCore`'s JSON-Schema
- * via the `definition` "ProbeFailure".
- */
-export interface ProbeFailure {
-  code: string;
-  details?: unknown;
-  message: string;
-}
-/**
  * `project.snapshot`: one page of the call's project and branch at the job's pinned `rev`,
  * as canonical JSON (page 0 when absent).
  *
@@ -7806,7 +8031,7 @@ export interface ProjectSnapshot {
  */
 export interface ProjectSnapshotPage {
   /**
-   * At most 768 KiB before base64.
+   * At most 756 KiB (`PAGE_BYTES`) before base64.
    */
   bytesB64: string;
   page: number;
@@ -7814,7 +8039,7 @@ export interface ProjectSnapshotPage {
   rev: number;
 }
 /**
- * `project.view`: the `fin view` text of the call's branch, capped at 768 KiB.
+ * `project.view`: the `fin view` text of the call's branch, capped at 756 KiB (`PAGE_BYTES`).
  *
  * This interface was referenced by `FinCore`'s JSON-Schema
  * via the `definition` "ProjectView".
@@ -8072,6 +8297,72 @@ export interface ManifestFonts1 {
   files?: FontFileRef[];
 }
 /**
+ * One entry of a review plan: a source record (`tx_id` on `branch` at `seq`) and its origin
+ * root (`origin`, what decisions and `include` name), its kind, record author, number of
+ * intent ops and commit time (unix ms), and what the merge does with it. `reason`: the
+ * conflict or exclusion reason (absent for `willMerge` and `alreadyPresent`); `blame`: the
+ * record a conflict is blamed on, when there is one. `actor`: the agent actor the server
+ * knows for the record (sub-project 7A's tracker), never set by the planner.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "ReviewEntry".
+ */
+export interface ReviewEntry {
+  actor?: unknown;
+  author: string;
+  blame?: string | null;
+  branch: string;
+  committedAt: number;
+  kind: RecordKind;
+  opsCount: number;
+  origin: string;
+  reason?: string | null;
+  seq: number;
+  status: EntryStatus;
+  txId: string;
+}
+/**
+ * A branch head as a review plan saw it: the branch id, its head seq and the `txHash` of the
+ * record there (absent at a root's start), so a rewind to the same seq is told apart (plan 5E
+ * Decision 9).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "ReviewHead".
+ */
+export interface ReviewHead {
+  branch: string;
+  hash?: string | null;
+  seq: number;
+}
+/**
+ * [`Store::review_plan`](crate::Store::review_plan)'s answer (plan 5E Decision 7): what a
+ * merge of `source` into `target` would do at these heads, one entry per candidate and per
+ * source record the target already holds, oldest first; `conflicts`: the candidates that
+ * conflict (as a `skipConflicting` merge would skip them). At most
+ * [`REVIEW_PLAN_MAX`](crate::REVIEW_PLAN_MAX) entries and conflicts, the oldest:
+ * `truncated` when there were more.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "ReviewPlan".
+ */
+export interface ReviewPlan {
+  conflicts: Conflict[];
+  entries: ReviewEntry[];
+  source: ReviewHead;
+  target: ReviewHead;
+  truncated: boolean;
+}
+/**
+ * The invoking principal (sub-project 5's `{kind, id}`; the job's owner).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "RightsPrincipal".
+ */
+export interface RightsPrincipal1 {
+  id: string;
+  kind: string;
+}
+/**
  * What `fin-sandbox-exec --probe` prints.
  *
  * This interface was referenced by `FinCore`'s JSON-Schema
@@ -8181,6 +8472,14 @@ export interface SetAside {
   origin: string;
   reason: string;
   txId: string;
+}
+/**
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "Size".
+ */
+export interface Size3 {
+  height: number;
+  width: number;
 }
 /**
  * An asset and the time to read from it, in seconds.

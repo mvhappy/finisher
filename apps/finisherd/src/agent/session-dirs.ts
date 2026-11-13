@@ -22,10 +22,14 @@
 // What a sandboxed process planted at a directory's name (a junction, a file link, a file) is
 // removed, never followed, as on Unix.
 import { constants } from "node:fs";
-import { chmod, lstat, mkdir, open, readlink, rm, symlink, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { chmod, lstat, mkdir, open, readdir, readlink, realpath, rm, symlink, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { posix, win32 } from "node:path";
 import type { Harness } from "@finisher/contracts";
 import { sandboxSessionGitConfig } from "@finisher/fin-node";
+import { ulid } from "../control/ulid.ts";
+import { finError } from "../errors.ts";
 
 export interface SessionDirs {
   /** `<server-data>/agents/<sessionId>`. */
@@ -122,6 +126,105 @@ export async function ensureSessionDirs(agentsRoot: string, sessionId: string, o
   await writeFile(d.gitConfig, sandboxSessionGitConfig(), { mode: 0o600 });
   if (platform !== "win32") await chmod(d.gitConfig, 0o600);
   return d;
+}
+
+/** The prefix of a host sandbox's directory name: `agents/host-<ulid>/` (no session has it). */
+export const HOST_PREFIX = "host-";
+
+/** A host sandbox's id: `host-` and an upper-case ULID (`removeHostDirs` takes nothing else). */
+export const HOST_ID = /^host-[0-9A-Z]{26}$/;
+
+/** A new host sandbox id. */
+export const newHostId = () => `${HOST_PREFIX}${ulid().toUpperCase()}`;
+
+/**
+ * A host sandbox's throwaway directory `agents/host-<ulid>/` (plan 7D Task 3b: detection and the
+ * probe start a CLI without a session): the session layout (`settings/`, `tmp/`, `provider/`,
+ * `git/`, `blobs/`, all 0700), never a credential. The id is chosen first (`id`: tests), so a
+ * creation that fails part-way is removed before the error is passed on. `removeHostDirs`
+ * deletes it.
+ */
+export async function ensureHostDirs(agentsRoot: string, opts: EnsureOptions & { readonly id?: string } = {}): Promise<{ readonly id: string; readonly dirs: SessionDirs }> {
+  const id = opts.id ?? newHostId();
+  try {
+    return { id, dirs: await ensureSessionDirs(agentsRoot, id, opts) };
+  } catch (e) {
+    await removeHostDirs(agentsRoot, id).catch(() => 0);
+    throw e;
+  }
+}
+
+/** Removes the host sandbox `id`'s directory, only one named `host-<ulid>` directly under `agentsRoot`. */
+export async function removeHostDirs(agentsRoot: string, id: string): Promise<void> {
+  if (!HOST_ID.test(id)) throw new Error(`not a host sandbox's directory: ${JSON.stringify(id)}`);
+  await rm(sessionDirs(agentsRoot, id).dir, { recursive: true, force: true, maxRetries: 3 });
+}
+
+/**
+ * The server's host project folder (plan 7D Task 3b): `fin-sandbox`'s `agent` input needs a
+ * project folder, and a host sandbox has none, so each server keeps one empty folder outside
+ * server data, `<root>/fin-host-<hash of server data>` (`root`: the OS temporary directory unless
+ * the server names another), and each host sandbox uses only `workspace/host-<ulid>/` in it. One
+ * stable folder, not one per run: on Windows the container profile and the folder's grant
+ * follow the project folder. `root` and `serverData` canonical.
+ */
+export function hostProjectDir(root: string, serverData: string): string {
+  const { join } = process.platform === "win32" ? win32 : posix;
+  return join(root, `fin-host-${createHash("sha256").update(serverData).digest("hex").slice(0, 16)}`);
+}
+
+/**
+ * Makes (once) or checks the host project folder of `hostProjectDir(root, serverData)` and
+ * answers it: a real directory (never a link, a junction or a file planted at its name, which is
+ * refused, not followed or removed), owned by this user and private (0700, made so again), whose
+ * canonical path is itself. Windows: no modes or owner check (the temporary directory is the
+ * user's own); the link check holds.
+ */
+export async function ensureHostProject(root: string, serverData: string, opts: EnsureOptions = {}): Promise<string> {
+  const platform = opts.platform ?? process.platform;
+  const base = await realpath(root).catch(() => root);
+  const dir = hostProjectDir(base, await realpath(serverData).catch(() => serverData));
+  const refuse = (need: string): never => {
+    throw finError("SANDBOX_UNAVAILABLE", `the host project folder is not usable: ${need}`, { profile: "agent", os: platform, need: `a private host project folder (${need})` });
+  };
+  await mkdir(base, { recursive: true, mode: 0o700 });
+  await mkdir(dir, { mode: 0o700 }).catch((e: NodeJS.ErrnoException) => {
+    if (e.code !== "EEXIST") throw e;
+  });
+  const st = await lstat(dir);
+  if (st.isSymbolicLink() || !st.isDirectory()) refuse("not a directory");
+  if (platform !== "win32") {
+    if (st.uid !== process.getuid?.()) refuse("not owned by this user");
+    const fh = await open(dir, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW).catch(() => refuse("not a directory"));
+    try {
+      const at = await fh.stat();
+      if (at.ino !== st.ino || at.dev !== st.dev) refuse("replaced while checked");
+      await fh.chmod(0o700);
+    } finally {
+      await fh.close();
+    }
+  }
+  if ((await realpath(dir)) !== dir) refuse("not its own canonical path");
+  return dir;
+}
+
+/**
+ * The start's sweep (plan 7D Task 3b; no host sandbox is alive then): removes every
+ * `agents/host-<ulid>/` a crash left and this server's host project folder (a link or a file at
+ * its name is removed, never followed; a folder of another user is left). Never fails the start.
+ */
+export async function sweepHostSandboxes(serverData: string, opts: { readonly hostRoot?: string; readonly platform?: NodeJS.Platform } = {}): Promise<void> {
+  const platform = opts.platform ?? process.platform;
+  const data = await realpath(serverData).catch(() => serverData);
+  const agents = (process.platform === "win32" ? win32 : posix).join(data, "agents");
+  const names = await readdir(agents).catch(() => [] as string[]);
+  for (const n of names) if (HOST_ID.test(n)) await removeHostDirs(agents, n).catch(() => 0);
+  const root = await realpath(opts.hostRoot ?? tmpdir()).catch(() => opts.hostRoot ?? tmpdir());
+  const dir = hostProjectDir(root, data);
+  const st = await lstat(dir).catch(() => undefined);
+  if (st === undefined) return;
+  if (st.isSymbolicLink() || !st.isDirectory()) await rm(dir, { force: true }).catch(() => 0);
+  else if (platform === "win32" || st.uid === process.getuid?.()) await rm(dir, { recursive: true, force: true, maxRetries: 3 }).catch(() => 0);
 }
 
 /**

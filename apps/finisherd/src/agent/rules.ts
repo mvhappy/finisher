@@ -359,12 +359,14 @@ export function commandRules(rules: RuleSource, sessions: RuleSessions, options:
       const { rules: all, lifts } = yield* Effect.try({ try: () => rules.layers({ ...(session === undefined ? {} : { session }), projectIds }), catch: (e) => finError("INTERNAL", `command rules cannot be read: ${String(e)}`) });
       if (all.length === 0) return undefined;
       const set = new RuleSet(all, lifts);
-      const names = commandsOf(input.tag, input.payload);
+      // A plugin host's commit is named by its plugin command too (`via` from the host's channel only).
+      const names = commandsOf(input.tag, input.payload, input.host === undefined ? undefined : { via: input.host.via });
       const resolved = yield* resolveFor(set.rules, input, projectId, options);
       const outcome = set.decide(names, session, resolved);
       if (outcome.effect === "deny") return { deny: ruleDenied(outcome.command ?? names[0]!, outcome.rule, outcome.layer) } satisfies Outcome;
       // A dry run keeps nothing: an ask lets it through (no card, no quota); a deny still refuses it.
-      if (outcome.effect === "ask" && isDryRun(input.tag, input.payload)) return undefined;
+      // The plugin host's dry-run commit says so beside the payload, never in it.
+      if (outcome.effect === "ask" && (isDryRun(input.tag, input.payload) || input.host?.dryRun === true)) return undefined;
       if (outcome.effect === "ask") {
         const ask = { reason: `rule ${outcome.rule.id} (${outcome.layer} layer) asks a person first`, command: outcome.command ?? names[0]!, rule: outcome.rule.id, layer: outcome.layer };
         const undo = options.grants === undefined ? undefined : yield* options.grants(input, ask);

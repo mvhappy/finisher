@@ -75,6 +75,12 @@ export declare class Engine {
    */
   status(): Promise<string>;
   /**
+   * `{ status, seq }` JSON: `status()`'s answer and the number of the last event (`onEvent`'s
+   * `seq`) emitted before it was read. Events numbered up to `seq` are older than it (their
+   * changes are in it), later ones never older: a subscriber starting from it drops the former.
+   */
+  statusAt(): Promise<string>;
+  /**
    * What became of `txId`: the `CommittedTx` JSON; or, when it was set aside,
    * `{ "setAside": { txId, branch, reason, origin } }` JSON (`reason`: `SUPERSEDED`,
    * `DIVERGED_TAIL`, `SALVAGED`, `MISSING_FROM_FOLDER`, `STALE_EPOCH`, `MALFORMED`,
@@ -96,6 +102,12 @@ export declare class Engine {
   branchSet(reqJson: string, metaJson?: string): Promise<string>;
   /** Resolves to the JSON string of the id a branch reference (id, name, `<name>#<id>`) names. */
   resolveBranch(name: string): Promise<string>;
+  /**
+   * What a merge of `from` into `into` would do at their heads now: `{from, into}` JSON (branch
+   * references); resolves to the `ReviewPlan` JSON (one entry per source record, oldest first,
+   * at most 10,000: `truncated`). A read: writes nothing, works on a follower (plan 5E Decision 7).
+   */
+  reviewPlan(reqJson: string): Promise<string>;
   /** `HistoryReq` JSON (`to`: undo back to a checkpoint); resolves to the `HistoryResult` JSON. */
   undo(reqJson: string, metaJson?: string): Promise<string>;
   /** `HistoryReq` JSON; resolves to the `HistoryResult` JSON. */
@@ -108,6 +120,8 @@ export declare class Engine {
   cherryPick(reqJson: string, metaJson?: string): Promise<string>;
   /** `RevertReq` JSON; resolves to the `HistoryResult` JSON. */
   revert(reqJson: string, metaJson?: string): Promise<string>;
+  /** `DropReq` JSON (drop or undrop origins of a source branch for a target); resolves to the `CommittedTx` JSON. */
+  drop(reqJson: string, metaJson?: string): Promise<string>;
   /** Long call: lists recoverable groups and, with `create`, makes their branches (`RecoverReq` JSON); resolves to the `RecoverReport` JSON. */
   recover(reqJson: string, metaJson?: string): Promise<string>;
   /** Long call: takes the lease over; resolves to the `ProjectStatus` JSON. */
@@ -134,15 +148,20 @@ export declare class Engine {
    * - `{ type: "error", error: { code, message, details, fix? }, fatal: boolean }`: a tick or an
    *   automatic backup/compaction failed (`fatal`: it panicked and the engine is dead);
    * - `{ type: "lagged", dropped }`: first after registration when the buffer overflowed.
+   *
+   * `seq` numbers the events as they are emitted, from 1 (`lagged`: 0); see `statusAt`.
    */
-  onEvent(cb: (json: string) => void): void;
+  onEvent(cb: (json: string, seq: number) => void): void;
   /**
    * Resolves to the `FramePlan` JSON of `timeline` (`null`: the main timeline) on `branch` at
    * `at` (a rational time string). Captions are measured with the server's shared measurer;
    * a caption whose font bytes are missing is unmeasured (`layout: null`, `unmeasured`),
-   * never an error, and the missing files are queued for fetching.
+   * never an error, and the missing files are queued for fetching. `rev`: the branch rev the
+   * caller resolved `timeline` at; a named timeline missing from a head at another rev (moved
+   * on, or rewound) is `CONFLICT` (`details: { reason: "TIMELINE_GONE", timeline, rev, head }`), never
+   * another timeline. Missing at `rev` (or with no `rev`): `NOT_FOUND`.
    */
-  evalFrame(branch: string, timeline: string | null | undefined, at: string): Promise<string>;
+  evalFrame(branch: string, timeline: string | null | undefined, at: string, rev?: number | null): Promise<string>;
   /**
    * Prepares a `media.look` job's inputs (plan 6A Task 12): evaluates the plan of `timeline` on
    * `branch`'s head at every time of `at` (rational seconds), and writes `snapshot.json`
@@ -171,8 +190,11 @@ export declare class Engine {
    * for an asset that is not `media`.
    */
   prepareAssetJob(branch: string, asset: string, inputDir: string): Promise<string>;
-  /** Resolves to the `AudioPlan` JSON of `timeline` on `branch` over `[from, to)`. */
-  evalAudio(branch: string, timeline: string | null | undefined, from: string, to: string): Promise<string>;
+  /**
+   * Resolves to the `AudioPlan` JSON of `timeline` on `branch` over `[from, to)`. `rev` as
+   * `evalFrame`'s.
+   */
+  evalAudio(branch: string, timeline: string | null | undefined, from: string, to: string, rev?: number | null): Promise<string>;
   /**
    * Resolves to the `FontsPlan` JSON (`{ ops, notes }`): the `font.pin` ops to prepend to a tx
    * of `opsJson` (a JSON `Op[]`) on `branch`. The ops are applied to a copy of the head first,
@@ -259,6 +281,52 @@ export declare class FontManager {
  * `bundled` or `dev`); resolves to the `ValidationReport` JSON.
  */
 export declare function validateManifest(dir: string, source?: "registry" | "bundled" | "dev"): Promise<string>;
+
+/**
+ * Each permission's risk within the whole set (`fin_plugin_api::risks`: combinations count), in
+ * order (sp8b Task 11: the developer-mode approval screen).
+ */
+export declare function permissionRisks(permissions: ReadonlyArray<unknown>): Array<"low" | "medium" | "high">;
+
+/**
+ * A plugin host call's params decoded by its `fin-plugin-api` type (unknown fields refused):
+ * `{ok: true, params}` (canonical), `{ok: false, reserved}` (the batch a later method arrives
+ * in), `{ok: false, unknown: true}` or `{ok: false, error}` (sp8b Task 7).
+ */
+export declare function decodePluginCall(
+  method: string,
+  params: unknown,
+): { ok: true; params: unknown } | { ok: false; reserved: string } | { ok: false; unknown: true } | { ok: false; error: string };
+
+/**
+ * `fin view`'s screenplay of `projectJson` (a snapshot's project) without font file states:
+ * every timeline, limited to `range` (`2s..5s`), within `budget` tokens. Throws
+ * `INVALID_RANGE`/`INVALID_TIME` for a bad range.
+ */
+export declare function pluginProjectView(projectJson: string, range?: string, budget?: number): { lines: string[]; elided: unknown[]; tokens: number };
+
+/**
+ * A command's argument schema (a manifest's `args`), compiled once (sp8b Task 9). The
+ * constructor throws `PLUGIN_MANIFEST_INVALID {at, problem}` for a schema outside the subset.
+ */
+export declare class PluginCommandArgs {
+  constructor(schema: unknown);
+  validate(args: unknown): { ok: true } | { ok: false; problems: Array<{ path: string; reason: string; message: string }> };
+}
+
+/**
+ * A `plugin.command` job's result (`CommandOut`) decoded; a transaction is built on `txFields`
+ * and applied to `projectJson` (the project the plugin saw, at `baseRev`).
+ */
+export declare function pluginCommandOutcome(
+  projectJson: string,
+  out: unknown,
+  txFields: { txId: string; author: string; branch: string; baseRev: number; via: { plugin: string; command: string } },
+):
+  | { ok: true; kind: "data"; value: unknown }
+  | { ok: true; kind: "tx"; tx: import("@finisher/core-types").Tx; bindings: Record<string, string>; diff: unknown }
+  | { ok: false; protocol: string }
+  | { ok: false; invalid: { code: string; message: string; details?: Record<string, unknown>; fix?: string } };
 
 /** A held exclusive file lock; the descriptor stays open until `release()` or process exit. */
 export declare class ServerLock {

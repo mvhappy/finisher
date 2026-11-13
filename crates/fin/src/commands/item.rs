@@ -45,9 +45,9 @@ pub struct MoveArgs {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub track: Option<String>,
     /// "ripple" (default for clips) or "overwrite" (default for other kinds).
-    #[arg(long, value_name = "ripple|overwrite", value_parser = ["ripple", "overwrite"])]
+    #[arg(long, value_name = "ripple|overwrite")]
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub mode: Option<String>,
+    pub mode: Option<InsertModeArg>,
 }
 
 /// Cut an item, and each linked member under the time, in two at timeline time `at`.
@@ -67,9 +67,9 @@ pub struct DeleteArgs {
     #[arg(value_name = "i")]
     pub item: String,
     /// "ripple" (default for clips) or "lift" (default for other kinds).
-    #[arg(long, value_name = "ripple|lift", value_parser = ["ripple", "lift"])]
+    #[arg(long, value_name = "ripple|lift")]
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub mode: Option<String>,
+    pub mode: Option<DeleteModeArg>,
 }
 
 /// Move one edge of an item (and its link group) by a signed delta.
@@ -91,9 +91,9 @@ pub struct TrimArgs {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub end: Option<String>,
     /// "ripple" (default for clips), "roll" or "overwrite" (default for other kinds).
-    #[arg(long, value_name = "ripple|roll|overwrite", value_parser = ["ripple", "roll", "overwrite"])]
+    #[arg(long, value_name = "ripple|roll|overwrite")]
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub mode: Option<String>,
+    pub mode: Option<TrimModeArg>,
 }
 
 /// Slip (move the source under the item, in source seconds) or slide (move the item between
@@ -123,6 +123,84 @@ pub struct UnlinkArgs {
     pub target: String,
 }
 
+/// A closed set of flag values (review #49), shared by the clap flag, the serde args and the
+/// JSON schema: each takes exactly the listed spellings, and serde's error names the `field`
+/// and the values.
+macro_rules! closed_arg {
+    ($(#[$doc:meta])* $name:ident ($field:literal) { $($variant:ident = $text:literal),+ $(,)? }) => {
+        $(#[$doc])*
+        #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+        pub enum $name {
+            $($variant),+
+        }
+
+        impl $name {
+            pub const ALL: &[$name] = &[$($name::$variant),+];
+
+            pub fn name(self) -> &'static str {
+                match self {
+                    $($name::$variant => $text),+
+                }
+            }
+        }
+
+        impl clap::ValueEnum for $name {
+            fn value_variants<'a>() -> &'a [Self] {
+                Self::ALL
+            }
+            fn to_possible_value(&self) -> Option<clap::builder::PossibleValue> {
+                Some(clap::builder::PossibleValue::new(self.name()))
+            }
+        }
+
+        impl serde::Serialize for $name {
+            fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+                s.serialize_str(self.name())
+            }
+        }
+
+        impl<'de> serde::Deserialize<'de> for $name {
+            fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+                let given = String::deserialize(d)?;
+                Self::ALL.iter().copied().find(|v| v.name() == given).ok_or_else(|| {
+                    let names: Vec<&str> = Self::ALL.iter().map(|v| v.name()).collect();
+                    serde::de::Error::custom(format!(
+                        "{} {given:?} is not one of {}",
+                        $field,
+                        names.join(", ")
+                    ))
+                })
+            }
+        }
+
+        impl schemars::JsonSchema for $name {
+            fn schema_name() -> std::borrow::Cow<'static, str> {
+                stringify!($name).into()
+            }
+            fn inline_schema() -> bool {
+                true
+            }
+            fn json_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
+                schemars::json_schema!({ "type": "string", "enum": [$($text),+] })
+            }
+        }
+    };
+}
+pub(crate) use closed_arg;
+
+closed_arg!(
+    /// An insert's or a move's `--mode`.
+    InsertModeArg("mode") { Ripple = "ripple", Overwrite = "overwrite" }
+);
+closed_arg!(
+    /// A delete's `--mode`.
+    DeleteModeArg("mode") { Ripple = "ripple", Lift = "lift" }
+);
+closed_arg!(
+    /// A trim's `--mode`.
+    TrimModeArg("mode") { Ripple = "ripple", Roll = "roll", Overwrite = "overwrite" }
+);
+
 pub fn mode_name(mode: InsertMode) -> &'static str {
     match mode {
         InsertMode::Ripple => "ripple",
@@ -131,36 +209,43 @@ pub fn mode_name(mode: InsertMode) -> &'static str {
 }
 
 /// The insert/move mode given, else `default`.
-pub fn insert_mode(given: Option<&str>, default: InsertMode) -> InsertMode {
+pub fn insert_mode(given: Option<InsertModeArg>, default: InsertMode) -> InsertMode {
     match given {
-        Some("overwrite") => InsertMode::Overwrite,
-        Some("ripple") => InsertMode::Ripple,
-        _ => default,
+        Some(InsertModeArg::Overwrite) => InsertMode::Overwrite,
+        Some(InsertModeArg::Ripple) => InsertMode::Ripple,
+        None => default,
     }
 }
 
 /// The delete mode given, else ripple for clips and lift for other kinds.
-pub fn delete_mode(given: Option<&str>, clip: bool) -> DeleteMode {
+pub fn delete_mode(given: Option<DeleteModeArg>, clip: bool) -> DeleteMode {
     match given {
-        Some("lift") => DeleteMode::Lift,
-        Some("ripple") => DeleteMode::Ripple,
-        _ if clip => DeleteMode::Ripple,
-        _ => DeleteMode::Lift,
+        Some(DeleteModeArg::Lift) => DeleteMode::Lift,
+        Some(DeleteModeArg::Ripple) => DeleteMode::Ripple,
+        None if clip => DeleteMode::Ripple,
+        None => DeleteMode::Lift,
+    }
+}
+
+pub fn delete_name(mode: DeleteMode) -> &'static str {
+    match mode {
+        DeleteMode::Ripple => "ripple",
+        DeleteMode::Lift => "lift",
     }
 }
 
 /// The trim mode given, else ripple for clips and overwrite for other kinds.
-pub fn trim_mode(given: Option<&str>, clip: bool) -> TrimMode {
+pub fn trim_mode(given: Option<TrimModeArg>, clip: bool) -> TrimMode {
     match given {
-        Some("roll") => TrimMode::Roll,
-        Some("overwrite") => TrimMode::Overwrite,
-        Some("ripple") => TrimMode::Ripple,
-        _ if clip => TrimMode::Ripple,
-        _ => TrimMode::Overwrite,
+        Some(TrimModeArg::Roll) => TrimMode::Roll,
+        Some(TrimModeArg::Overwrite) => TrimMode::Overwrite,
+        Some(TrimModeArg::Ripple) => TrimMode::Ripple,
+        None if clip => TrimMode::Ripple,
+        None => TrimMode::Overwrite,
     }
 }
 
-fn trim_name(mode: TrimMode) -> &'static str {
+pub fn trim_name(mode: TrimMode) -> &'static str {
     match mode {
         TrimMode::Ripple => "ripple",
         TrimMode::Roll => "roll",
@@ -209,7 +294,7 @@ pub fn plan(b: &mut Builder<'_>, cmd: &ItemCmd, suffix: &str) -> Result<Value, C
         ItemCmd::Split(a) => plan_split(b, a, suffix),
         ItemCmd::Delete(a) => {
             let item = b.id(&a.item);
-            let mode = delete_mode(a.mode.as_deref(), is_clip(&b.work, &item));
+            let mode = delete_mode(a.mode, is_clip(&b.work, &item));
             let members = members(&b.work, &item);
             b.push(
                 ItemDelete {
@@ -218,12 +303,7 @@ pub fn plan(b: &mut Builder<'_>, cmd: &ItemCmd, suffix: &str) -> Result<Value, C
                 }
                 .into(),
             )?;
-            let mode = if mode == DeleteMode::Lift {
-                "lift"
-            } else {
-                "ripple"
-            };
-            Ok(json!({ "item": a.item, "mode": mode, "items": members }))
+            Ok(json!({ "item": a.item, "mode": delete_name(mode), "items": members }))
         }
         ItemCmd::Trim(a) => plan_trim(b, a),
         ItemCmd::Slip(a) => {
@@ -240,6 +320,7 @@ pub fn plan(b: &mut Builder<'_>, cmd: &ItemCmd, suffix: &str) -> Result<Value, C
                 .ok()
                 .and_then(|(_, _, it)| match &it.body {
                     fin_core::ItemBody::Clip { source_in, .. }
+                    | fin_core::ItemBody::Graphic { source_in, .. }
                     | fin_core::ItemBody::Nested { source_in, .. } => Some(*source_in),
                     _ => None,
                 });
@@ -303,7 +384,7 @@ fn plan_move(b: &mut Builder<'_>, a: &MoveArgs) -> Result<Value, CoreError> {
     } else {
         InsertMode::Overwrite
     };
-    let mode = insert_mode(a.mode.as_deref(), default);
+    let mode = insert_mode(a.mode, default);
     let members = members(&b.work, &item);
     let track_name = a.track.clone().unwrap_or(target_ref);
     b.push(
@@ -341,7 +422,7 @@ fn plan_trim(b: &mut Builder<'_>, a: &TrimArgs) -> Result<Value, CoreError> {
     };
     let item = b.id(&a.item);
     let delta = addr::delta_at(rate_of_item(&b.work, &item), field, input)?;
-    let mode = trim_mode(a.mode.as_deref(), is_clip(&b.work, &item));
+    let mode = trim_mode(a.mode, is_clip(&b.work, &item));
     let members = members(&b.work, &item);
     b.push(
         ItemTrim {

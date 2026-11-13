@@ -1,9 +1,9 @@
 {
   "lines": [
     {
-      "x": 0,
+      "x": 160,
       "top": 0,
-      "width": 16160,
+      "width": 15840,
       "height": 4000,
       "baseline": 2960,
       "rtl": true,
@@ -11,9 +11,9 @@
       "endWord": 2
     },
     {
-      "x": 0,
+      "x": 160,
       "top": 4000,
-      "width": 11360,
+      "width": 11040,
       "height": 4000,
       "baseline": 6960,
       "rtl": true,
@@ -24,26 +24,26 @@
   "words": [
     {
       "line": 0,
-      "x": 8480,
-      "width": 7680
+      "x": 8640,
+      "width": 7360
     },
     {
       "line": 0,
-      "x": 0,
-      "width": 7680
+      "x": 160,
+      "width": 7360
     },
     {
       "line": 1,
-      "x": 6560,
-      "width": 4800
+      "x": 6720,
+      "width": 4480
     },
     {
       "line": 1,
-      "x": 0,
-      "width": 5760
+      "x": 160,
+      "width": 5440
     }
   ],
-  "width": 16160,
+  "width": 15840,
   "height": 8000,
   "overflow": false,
   "missing": [],

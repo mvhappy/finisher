@@ -8,16 +8,17 @@
 
 use clap::{Args, Subcommand};
 use fin_core::compose::{clip_with_audio, overwrite};
-use fin_core::{
-    CoreError, DeleteMode, Edge, InsertMode, ItemBody, ItemDelete, ItemInsert, ItemTrim, Rational,
-};
+use fin_core::{CoreError, Edge, InsertMode, ItemBody, ItemDelete, ItemInsert, ItemTrim, Rational};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 
 use super::Builder;
 use super::builder::rename_json;
-use super::item::{delete_mode, edge_at, insert_mode, mode_name, trim_mode};
+use super::item::{
+    DeleteModeArg, InsertModeArg, TrimModeArg, delete_mode, delete_name, edge_at, insert_mode,
+    mode_name, trim_mode, trim_name,
+};
 use crate::addr;
 use crate::output::usage;
 
@@ -66,9 +67,9 @@ pub struct InsertArgs {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub out: Option<String>,
     /// "ripple" (default: later items move) or "overwrite" (takes the range over).
-    #[arg(long, value_name = "ripple|overwrite", value_parser = ["ripple", "overwrite"])]
+    #[arg(long, value_name = "ripple|overwrite")]
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub mode: Option<String>,
+    pub mode: Option<InsertModeArg>,
     /// Insert the video alone, without its linked audio.
     #[arg(long = "no-audio", conflicts_with = "audio_track")]
     #[serde(default, skip_serializing_if = "is_false")]
@@ -103,9 +104,9 @@ pub struct TrimArgs {
     pub end: Option<String>,
     /// "ripple" (default), "roll" (moves the cut with the touching neighbour) or "overwrite"
     /// (the edge alone: carves what it extends over, leaves a gap when it shrinks).
-    #[arg(long, value_name = "ripple|roll|overwrite", value_parser = ["ripple", "roll", "overwrite"])]
+    #[arg(long, value_name = "ripple|roll|overwrite")]
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub mode: Option<String>,
+    pub mode: Option<TrimModeArg>,
 }
 
 /// Delete a clip: "ripple" (default) closes the gap, "lift" leaves it.
@@ -116,9 +117,9 @@ pub struct DeleteArgs {
     #[arg(value_name = "cN")]
     pub clip: String,
     /// "ripple" (default) or "lift".
-    #[arg(long, value_name = "ripple|lift", value_parser = ["ripple", "lift"])]
+    #[arg(long, value_name = "ripple|lift")]
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub mode: Option<String>,
+    pub mode: Option<DeleteModeArg>,
 }
 
 /// Exactly one of two optional flags.
@@ -164,7 +165,7 @@ fn in_past_end(asset: &str, source_in: Rational, length: Rational) -> CoreError 
 
 pub fn plan_insert(b: &mut Builder<'_>, a: &InsertArgs, suffix: &str) -> Result<Value, CoreError> {
     let (by_dur, length) = one_of("clip.insert", ("dur", &a.dur), ("out", &a.out))?;
-    let mode = insert_mode(a.mode.as_deref(), InsertMode::Ripple);
+    let mode = insert_mode(a.mode, InsertMode::Ripple);
     let track = b.id(&a.track);
     let asset = b.id(&a.asset);
     let p = &b.work;
@@ -271,7 +272,7 @@ pub fn plan_trim(b: &mut Builder<'_>, a: &TrimArgs) -> Result<Value, CoreError> 
     let item = b.id(&a.clip);
     let rate = addr::item(&b.work, &item).map_or(b.work.rate, |(tl, _, _)| tl.rate);
     let delta = addr::delta_at(rate, field, input)?;
-    let mode = trim_mode(a.mode.as_deref(), true);
+    let mode = trim_mode(a.mode, true);
     b.push(
         ItemTrim {
             item: a.clip.clone(),
@@ -286,13 +287,13 @@ pub fn plan_trim(b: &mut Builder<'_>, a: &TrimArgs) -> Result<Value, CoreError> 
         "clip": a.clip,
         "edge": edge,
         "delta": delta,
-        "mode": a.mode.as_deref().unwrap_or("ripple"),
+        "mode": trim_name(mode),
         "edgeAt": edge_at(&b.work, &item, edge)?,
     }))
 }
 
 pub fn plan_delete(b: &mut Builder<'_>, a: &DeleteArgs) -> Result<Value, CoreError> {
-    let mode = delete_mode(a.mode.as_deref(), true);
+    let mode = delete_mode(a.mode, true);
     b.push(
         ItemDelete {
             item: a.clip.clone(),
@@ -300,9 +301,5 @@ pub fn plan_delete(b: &mut Builder<'_>, a: &DeleteArgs) -> Result<Value, CoreErr
         }
         .into(),
     )?;
-    let name = match mode {
-        DeleteMode::Ripple => "ripple",
-        DeleteMode::Lift => "lift",
-    };
-    Ok(json!({ "clip": a.clip, "mode": name }))
+    Ok(json!({ "clip": a.clip, "mode": delete_name(mode) }))
 }

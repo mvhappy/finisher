@@ -245,6 +245,8 @@ fn checkpoint_record_has_no_ops_and_is_skipped_by_stacks() {
         skip_conflicting: false,
         dry_run: false,
         args_hash: None,
+        include: None,
+        source_up_to: None,
     };
     s.merge(m.clone()).unwrap();
     assert_eq!(branch_state(&s, &br), BranchState::Merged);
@@ -678,6 +680,8 @@ fn checkpoint_and_undo_to_retry_same_tx_id() {
         skip_conflicting: false,
         dry_run: false,
         args_hash: None,
+        include: None,
+        source_up_to: None,
     })
     .unwrap();
     let err = code(s.checkpoint(cp_req("m", MAIN, "v4")).unwrap_err());

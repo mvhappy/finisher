@@ -55,6 +55,9 @@ interface Seen {
   options: Record<string, unknown>;
 }
 
+/** Every review item is project A's, from `other` into the agent's own branch `mine` (5E); `main` is protected. */
+const reviews = { item: () => ({ projectId: A, source: "other", target: "mine" }), protectedBranches: () => ["main"] };
+
 /** A chain over recording handlers; `principal` is bound to client 1. */
 function harness(principal: Principal, more: Partial<ChainDeps> = {}, real: Record<string, unknown> = {}) {
   const seen: Seen[] = [];
@@ -86,7 +89,7 @@ function harness(principal: Principal, more: Partial<ChainDeps> = {}, real: Reco
   for (const t of [...WRITE_RPCS, "snapshot.get", "project.acknowledgeRewind", "diagnostics.consent", "diagnostics.purge", "diagnostics.project", "diagnostics.export", "agent.approval.answer", "agent.session.delete", "agent.session.start", "agent.session.prompt", "agent.session.resume", "agent.session.list", "agent.self", "agent.self.try"]) handlers[t] ??= unary(t);
   Object.assign(handlers, real);
   const audit = { append: (e: AuditInput) => audited.push(e) } as unknown as Audit;
-  const chained = withChain(handlers, { connections, projects, audit, ...more }) as unknown as Record<string, (p: unknown, o: unknown) => unknown>;
+  const chained = withChain(handlers, { connections, projects, audit, reviews, ...more }) as unknown as Record<string, (p: unknown, o: unknown) => unknown>;
   const call = (tag: string, payload: unknown) =>
     Effect.runPromiseExit(chained[tag]!(payload, { client: { id: 1 }, headers: {} }) as Effect.Effect<unknown, FinError>);
   const stream = (tag: string, payload: unknown) =>
@@ -316,8 +319,9 @@ describe("the chain", () => {
         expect(code(await h.call("tx.commit", commit(ref))), `${limit} ${ref}`).toBeUndefined();
       }
       expect(code(await h.call("tx.commit", commit("main")))).toBe("BRANCH_NOT_ALLOWED");
-      // The handler gets the ids the store must re-check inside its write transaction.
-      for (const s of h.seen) expect(chainOf(s.options)?.guard).toEqual({ denyBranches: [], allowBranches: ["br3"], credential: "agent:01agent000000000000000000a" });
+      // The handler gets the ids the store must re-check inside its write transaction (and,
+      // without `branch.protected`, the protected ones it may never change: 5E Decision 16).
+      for (const s of h.seen) expect(chainOf(s.options)?.guard).toEqual({ denyBranches: ["main"], allowBranches: ["br3"], credential: "agent:01agent000000000000000000a" });
     }
   });
 
@@ -336,6 +340,18 @@ describe("the chain", () => {
     const local = harness(LOCAL);
     await local.call("tx.commit", commit("main"));
     expect(chainOf(local.seen[0]!.options)?.guard).toEqual({ denyBranches: [] });
+  });
+
+  test("history_drop_into_a_protected_branch_needs_review_decide (5E Task 5 review, S2)", async () => {
+    open = new Set([A]);
+    const drop = (into: string) => ({ projectId: A, txId: "d1", author: "a", from: "mine", into, drops: ["01cccccccccccccccccccccccc"] });
+    // `project.write` without `review.decide`: refused at stage 4 for `main`, which is protected...
+    const h = harness(agent());
+    expect(error(await h.call("history.drop", drop("main")))).toMatchObject({ code: "SCOPE_DENIED" });
+    expect(h.seen).toEqual([]);
+    // ...and allowed into an unprotected branch.
+    expect(code(await h.call("history.drop", drop("feature")))).toBeUndefined();
+    expect(h.seen.map((s) => s.tag)).toEqual(["history.drop"]);
   });
 
   test("ask_answers_approval_required", async () => {

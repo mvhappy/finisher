@@ -9,7 +9,7 @@ use std::sync::mpsc::Sender;
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
-use crate::codec::{self, CodecError, Line, MAX_LINE};
+use crate::codec::{self, CodecError, Decoded, Line, MAX_LINE};
 use crate::msg_host::{Attach, HostMsg, Start};
 use crate::msg_worker::WorkerMsg;
 use crate::worker::calls::Calls;
@@ -164,6 +164,9 @@ pub(crate) struct Shared {
     hard_exit: bool,
     /// A helper: `shutdown` also cancels the running `run`.
     shutdown_cancels: bool,
+    /// A plugin process (plan 8B Decision 21): a host message of an unknown type is dropped,
+    /// not a protocol error.
+    lenient_host: AtomicBool,
 }
 
 impl Shared {
@@ -185,7 +188,13 @@ impl Shared {
             stop_reading: AtomicBool::new(false),
             hard_exit,
             shutdown_cancels,
+            lenient_host: AtomicBool::new(false),
         })
+    }
+
+    /// Drops host messages of unknown types from here on (a plugin process).
+    pub(crate) fn set_lenient_host(&self) {
+        self.lenient_host.store(true, Ordering::Relaxed);
     }
 
     /// The job whose `cancel` messages reach `token`.
@@ -290,6 +299,8 @@ fn read_loop(input: Box<dyn Read + Send>, shared: &Shared, tx: &Sender<Inbound>)
     let mut r = BufReader::new(input);
     let mut buf = Vec::new();
     let mut seq = 1u64;
+    // Unknown host types already reported: each is logged once, however often it comes.
+    let mut dropped = std::collections::HashSet::new();
     loop {
         if shared.stop_reading.load(Ordering::Relaxed) {
             // Never reads again: the host's writes fill the pipe, and EOF goes unseen.
@@ -304,11 +315,23 @@ fn read_loop(input: Box<dyn Read + Send>, shared: &Shared, tx: &Sender<Inbound>)
                 return protocol(shared, tx, &CodecError::TooLong { len });
             }
         };
-        let msg = match codec::decode_host(line, seq) {
-            Ok(m) => m,
-            Err(e) => return protocol(shared, tx, &e),
+        let decoded = if shared.lenient_host.load(Ordering::Relaxed) {
+            codec::decode_host_lenient(line, seq)
+        } else {
+            codec::decode_host(line, seq).map(Decoded::Msg)
         };
         seq += 1;
+        let msg = match decoded {
+            Ok(Decoded::Msg(m)) => m,
+            Ok(Decoded::Unknown { t, .. }) => {
+                if !dropped.contains(&t) {
+                    eprintln!("fin-jobs: dropped host messages of unknown type {t:?}");
+                    dropped.insert(t);
+                }
+                continue;
+            }
+            Err(e) => return protocol(shared, tx, &e),
+        };
         let inbound = match msg {
             HostMsg::Reply { id, value, error } => {
                 shared.calls.resolve(id, value, error);

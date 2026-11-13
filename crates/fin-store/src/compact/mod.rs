@@ -157,7 +157,10 @@ pub(super) fn fsio_write(
     bytes: &[u8],
     check: &dyn Fn(&[u8]) -> bool,
 ) -> Result<(), String> {
+    let no_links = || crate::reserved::no_links(dir).map_err(|e| e.to_string());
+    no_links()?;
     std::fs::create_dir_all(dir).map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
+    no_links()?;
     let written = fsio::write_once(dir, name, bytes);
     let path = dir.join(name);
     let mut left = crate::export::READBACK_RETRIES;

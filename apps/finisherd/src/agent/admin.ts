@@ -31,6 +31,12 @@ export interface AdminDeps {
   readonly fetch?: typeof fetch;
   /** How long `agent.local.test` and `agent.providers` wait for the local server (ms). */
   readonly probeMs?: number;
+  /**
+   * Claude Code's line in `agent.providers` (`claude/detect.ts` `claudeProviderInfo`, plan 7D
+   * Task 3): its floor, sign-in method and `enabled`, never a label or token. It replaces the
+   * adapter's own detection once one is registered.
+   */
+  readonly claudeCode?: () => Effect.Effect<ProviderInfo>;
 }
 
 /** What an API key looks like (the console checks the same before it asks for a confirmation). */
@@ -196,6 +202,7 @@ export class AgentAdmin {
     return Effect.promise(async () => {
       const providers: ProviderInfo[] = [];
       for (const [harness, adapter] of adapters) {
+        if (harness === "claudeCode" && this.deps.claudeCode !== undefined) continue;
         const exit = await Effect.runPromiseExit(adapter.detect());
         if (exit._tag === "Success") {
           const d = exit.value;
@@ -218,6 +225,7 @@ export class AgentAdmin {
           });
         }
       }
+      if (this.deps.claudeCode !== undefined) providers.push(await Effect.runPromise(this.deps.claudeCode()));
       const l = this.local();
       let reachable: boolean | undefined;
       if (l !== undefined) reachable = await listLocalModels(l.baseUrl, this.deps.fetch, this.deps.probeMs).then(() => true, () => false);

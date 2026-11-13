@@ -354,6 +354,26 @@ describe("storage", () => {
     expect(events.some((e) => e.type === "lagged")).toBe(false);
   });
 
+  test("events are numbered as emitted; statusAt names the last one its status covers (review #39)", async () => {
+    const engine = keep(await Engine.create(serverData, projectDir, "Demo", "30"));
+    const seen: Array<{ type: string; seq: number }> = [];
+    engine.onEvent((json, seq) => seen.push({ type: (JSON.parse(json) as Event).type, seq }));
+    // Emitted before the status is read: covered by it, though delivered later.
+    engine.emitRewoundForTest("main", 1);
+    engine.emitRewoundForTest("main", 2);
+    const at = JSON.parse(await engine.statusAt()) as { status: { incarnation: string; busy: unknown }; seq: number };
+    expect(at.status.incarnation).toBe(JSON.parse(await engine.status()).incarnation);
+    expect(at.status.busy).toBeNull();
+    engine.emitRewoundForTest("main", 3);
+    await until(() => (seen.filter((e) => e.type === "rewound").length === 3 ? true : undefined), 1_000, "three rewinds");
+    const seqs = seen.map((e) => e.seq);
+    expect(seqs).toEqual([...seqs].sort((a, b) => a - b));
+    expect(new Set(seqs).size).toBe(seqs.length);
+    const rewinds = seen.filter((e) => e.type === "rewound").map((e) => e.seq);
+    expect(rewinds[0]! <= at.seq && rewinds[1]! <= at.seq).toBe(true);
+    expect(rewinds[2]).toBeGreaterThan(at.seq);
+  });
+
   test("rewound events carry the generation and incarnation", async () => {
     const engine = keep(await Engine.create(serverData, projectDir, "Demo", "30"));
     const events = listen(engine);

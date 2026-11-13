@@ -33,6 +33,7 @@ import { type RuntimeDeps, RuntimeEngine, STOP_GRACE_MS } from "./runtime-engine
 import { budgetError, harnessUnknown, pricingUnknown, type StartRequest } from "./runtime-deps.ts";
 import { call, closeLive, type Live } from "./runtime-live.ts";
 import { LiveLimits } from "./live-limits.ts";
+import { CRITIC_ROLE } from "./outcomes.ts";
 import { BUNDLED_ROLES } from "./roles.ts";
 import { DEFAULT_LIMITS } from "./settings.ts";
 import type { Applied, Recovery } from "./store.ts";
@@ -119,6 +120,11 @@ export class Runtime extends RuntimeEngine {
     });
     // A provider card is settled at its `expiresAt`, not only by the hourly sweep (7B Task 5).
     deps.requests?.bind({ clock: this.clock, expire: () => this.expireApprovals() });
+    // A session's review request is a `notice` in its active run (7B Task 11); the run goes on.
+    this.core.reviewLink.onBranchReady(({ sessionId, branch, headSeq, reviewId }) => {
+      const runId = reviewId === undefined ? null : this.store.activeRun(sessionId);
+      if (runId !== null) this.background(sessionId, "a review notice", () => this.append({ sessionId, runId, kind: "notice", payload: { review: { itemId: reviewId, branch, headSeq } } }).then(() => {}));
+    });
   }
 
   /**
@@ -223,9 +229,17 @@ export class Runtime extends RuntimeEngine {
       else if (plan.harness === "claudeCode" || plan.harness === "codex") throw finError("SANDBOX_UNAVAILABLE", "this runtime has no session sandbox for CLI harnesses", { profile: "agent", harness: plan.harness });
       // A money budget without a price would fail open: refused before anything is made.
       if (plan.provider !== "local" && !this.pricing.known(plan.provider, plan.model)) throw pricingUnknown(plan.provider, plan.model);
+      // A critic on a branch under review works on a child branch of it (7B Decision 26, `review-link.ts`).
+      const under = child === undefined && plan.role === CRITIC_ROLE && req.base !== undefined ? await exitOf(this.core.reviewLink.criticUnder(req.projectId, req.base)) : undefined;
+      const link = this.core.reviewLink;
+      const ops = registryBranchOps(this.deps.registry, meta, {
+        archived: (p, b) => link.archived(p, b, principalRef(by)),
+        underReview: (p, b) => link.underReview(p, b),
+        reviewedHead: (p, b) => link.reviewedHead(p, b),
+      });
       const opened = await exitOf(
         openSession(
-          { creds: this.core.credentials, store: this.store, ops: registryBranchOps(this.deps.registry, meta), ids: this.ids },
+          { creds: this.core.credentials, store: this.store, ops, ids: this.ids },
           {
             projectId: req.projectId,
             harness: plan.harness,
@@ -239,8 +253,10 @@ export class Runtime extends RuntimeEngine {
             createdBy: { principal: { kind: by.kind, id: by.id } },
             ...(child === undefined ? {} : child),
             ...(req.base === undefined || child !== undefined ? {} : { base: req.base }),
+            ...(under === undefined ? {} : { under }),
             ...(req.title === undefined ? {} : { title: req.title }),
             ...(trigger === undefined ? {} : { trigger }),
+            ...(plan.tools === undefined ? {} : { tools: plan.tools }),
           },
           by,
         ),
@@ -407,10 +423,11 @@ export class Runtime extends RuntimeEngine {
     if (!(await this.subagents.settled(live.sessionId))) await super.settled(live);
   }
 
-  /** Every transition: then the children and the live limits see it (7B Task 6). */
+  /** Every transition: then the children and the live limits see it (7B Task 6), and an end the review link (Task 11). */
   protected override async after(sessionId: string, applied: Applied): Promise<void> {
     await super.after(sessionId, applied);
     this.subagents.observe(applied);
+    if (applied.effects.some((e) => e.kind === "journal" && e.phase === "ended")) this.core.reviewLink.sessionEnded(applied.session);
   }
 
   /**

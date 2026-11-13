@@ -1,14 +1,15 @@
 //! `job.done` and `worker.exit` (5C-1 plan, Decision 42): one per job that reaches a terminal
 //! state, and one per process the job engine started (the watchdog excepted). Names come from
-//! `names_jobs.rs`; a plugin id is keyed-hashed by the sink.
+//! `names_jobs.rs`; a plugin is a `PluginRef` built in `fin-node` from the raw id.
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::events::approx::approx_struct;
-use crate::events::class::{Code, Hashed, Name};
+use crate::events::class::{Code, Name};
 use crate::events::names_jobs;
 use crate::events::payloads::JobMedia;
+use crate::events::payloads::plugin::PluginRef;
 
 /// `job.done` (`kv` 2: `kv` 1 plus the optional `media` object of sub-project 6).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -86,7 +87,8 @@ pub enum JobPriority {
     Background,
 }
 
-/// `worker.exit` (`kv` 1).
+/// `worker.exit` (`kv` 2: `plugin` is a [`PluginRef`], Decision 22 of sp8b; `kv` 1 had a
+/// `Hashed` that nothing ever filled).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct WorkerExit {
@@ -97,10 +99,10 @@ pub struct WorkerExit {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(with = "ProcessHelperKind")]
     pub helper_kind: Option<ProcessHelperKind>,
-    // The keyed hash of a plugin process's plugin id.
+    // A plugin process's plugin (a bundled name or the journal's keyed hash of its id).
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[schemars(with = "Hashed")]
-    pub plugin: Option<Hashed>,
+    #[schemars(with = "PluginRef")]
+    pub plugin: Option<PluginRef>,
     pub reason: ExitReason,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(with = "i64")]

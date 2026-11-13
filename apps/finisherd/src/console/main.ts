@@ -20,6 +20,7 @@ import { mcp } from "./commands/mcp.ts";
 import { pair } from "./commands/pair.ts";
 import { project } from "./commands/project.ts";
 import { remote } from "./commands/remote.ts";
+import { review } from "./commands/review.ts";
 import { status } from "./commands/status.ts";
 import { tls } from "./commands/tls.ts";
 import { training } from "./commands/training.ts";
@@ -41,6 +42,7 @@ const COMMANDS: Record<string, (ctx: CommandContext) => Promise<number>> = {
   provider,
   training,
   cache,
+  review,
   mcp,
   auth,
   plugin,
@@ -121,8 +123,11 @@ Agent sessions (sub-project 7):
                                            command rules of every layer, and which apply
   provider key ls [--json]                 the stored model keys (never their values)
   provider local show|test [--json]        the local model endpoint, and whether it answers
+  provider signin|signout claudeCode       prints the CLI's own sign-in commands to run here; runs nothing
   training closed-targets [--json]         the counsel gate on closed-model training targets
   cache status [--json]                    the media cache: its size against the cap, by recipe
+  review policy show --project <dir|id> [--json]
+                                           protected branches, required review, auto merge
 These change something (each needs an interactive terminal and your confirmation):
   agent approve <approval> allow|deny [--add <amount>] [--remember session|project|projectLocal]
                                            --add raises a budget: USD, tokens (200k) or time (30m)
@@ -138,6 +143,9 @@ These change something (each needs an interactive terminal and your confirmation
   provider local rm
   training closed-targets pendingCounsel|cleared|excluded
   cache gc [--to <GiB>]                    evict unpinned media cache entries down to the cap or lower
+  review policy set --project <dir|id> [--protect <branch>]... [--unprotect <branch>]...
+              [--require-review on|off] [--auto-merge on|off]
+                                           auto merge answers AUTO_MERGE_UNAVAILABLE for now
 
 Reading recorded content needs no code:
   diagnostics export --content [--store diagnostics|agentTraces] [--kind <kind>]... [--since <date>] [--project <id>] [--limit <n>]

@@ -35,6 +35,7 @@ use crate::{fsio, names};
 /// failed that did land (a lost reply) is recognised by reading the record back. The temp
 /// file is removed on every path but a crash; [`remove_temps`] sweeps those.
 pub(super) fn create_record(dir: &Path, path: &Path, bytes: &[u8]) -> io::Result<()> {
+    crate::reserved::no_links(dir)?;
     let tmp = dir.join(names::temp_name());
     let staged = OpenOptions::new()
         .write(true)
@@ -132,7 +133,9 @@ pub(super) fn remove_temps(dir: &Path) {
         return;
     };
     for e in entries.flatten() {
-        if e.file_name().to_str().is_some_and(names::is_temp) {
+        if e.file_name().to_str().is_some_and(names::is_temp)
+            && crate::reserved::no_links(dir).is_ok()
+        {
             let _ = std::fs::remove_file(e.path());
         }
     }

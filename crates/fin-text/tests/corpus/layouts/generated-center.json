@@ -1,9 +1,9 @@
 {
   "lines": [
     {
-      "x": 3098,
+      "x": 3302,
       "top": 0,
-      "width": 25804,
+      "width": 25396,
       "height": 5120,
       "baseline": 3789,
       "rtl": false,
@@ -11,9 +11,9 @@
       "endWord": 3
     },
     {
-      "x": 4736,
+      "x": 4941,
       "top": 5120,
-      "width": 22528,
+      "width": 22118,
       "height": 5120,
       "baseline": 8909,
       "rtl": false,
@@ -24,36 +24,36 @@
   "words": [
     {
       "line": 0,
-      "x": 3098,
-      "width": 6144
+      "x": 3302,
+      "width": 5735
     },
     {
       "line": 0,
-      "x": 10266,
-      "width": 7372
+      "x": 10470,
+      "width": 6964
     },
     {
       "line": 0,
-      "x": 18662,
-      "width": 10240
+      "x": 18867,
+      "width": 9831
     },
     {
       "line": 1,
-      "x": 4736,
-      "width": 8192
+      "x": 4941,
+      "width": 7782
     },
     {
       "line": 1,
-      "x": 13952,
-      "width": 7168
+      "x": 14157,
+      "width": 6758
     },
     {
       "line": 1,
-      "x": 22144,
-      "width": 5120
+      "x": 22349,
+      "width": 4710
     }
   ],
-  "width": 25804,
+  "width": 25396,
   "height": 10240,
   "overflow": false,
   "missing": [],

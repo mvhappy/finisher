@@ -231,6 +231,8 @@ pub fn merger(a: &Args, em: &mut Emitter) -> Result<(), String> {
         skip_conflicting: true,
         dry_run: false,
         args_hash: None,
+        include: None,
+        source_up_to: None,
     });
     let ms = t.elapsed().as_millis() as u64;
     let rep = match r {

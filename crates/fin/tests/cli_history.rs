@@ -863,6 +863,45 @@ fn recover_dismiss_of_an_unknown_group_is_not_found() {
     );
 }
 
+#[test]
+fn cli_merge_include_and_up_to() {
+    let (server, dir) = setup!("cli_merge_include_and_up_to");
+    let t = T(&server, &dir);
+    t.run(&["branch", "new", "side"]);
+    let side = ["--branch", "side"];
+    let a = t.insert(&side, "t1");
+    let b = t.insert(&side, "t2");
+    let c = t.insert(&side, "t1");
+    let id = |v: &Value| v["txId"].as_str().unwrap().to_string();
+    let (a, b_rev, b, c) = (id(&a), b["rev"].as_u64().unwrap(), id(&b), id(&c));
+    // c is named but above --up-to; b is under it but not named.
+    let up_to = b_rev.to_string();
+    let m = t.run(&[
+        "merge",
+        "side",
+        "--include",
+        &format!("{c},{a}"),
+        "--include",
+        &a,
+        "--up-to",
+        &up_to,
+    ]);
+    assert_eq!(m["merge"]["merged"], json!([a]), "{m}");
+    assert_eq!(m["merge"]["notIncluded"], json!([b, c]), "{m}");
+    assert_eq!(m["merge"]["records"], 1);
+    assert_eq!(t.clips(&[]), ["c1"]);
+    // --include takes one id per flag, so the positional after it stays the source;
+    // --up-to bounds the source branch: b merges, c stays.
+    let m = t.run(&["merge", "--include", &b, "side", "--up-to", &up_to]);
+    assert_eq!(m["merge"]["merged"], json!([b]), "{m}");
+    assert_eq!(m["merge"]["notIncluded"], json!([c]), "{m}");
+    // Without limits the rest merges and nothing is left out.
+    let m = t.run(&["merge", "side"]);
+    assert_eq!(m["merge"]["merged"], json!([c]), "{m}");
+    assert!(m["merge"].get("notIncluded").is_none(), "{m}");
+    assert_error(&t.raw(&["merge", "side", "--up-to", "x"]), 2, "USAGE");
+}
+
 /// Owner decisions of 2026-11-09 (SP4 §4.3 *Placement of restored items*), as `fin` shows
 /// them. c1 c2 c3; the author deletes c2, bob deletes c1 and c3. Under an agent session
 /// (`FIN_SESSION`) the undo is exit 4 `CONFLICT` with reason `NEIGHBOURS_GONE` and changes

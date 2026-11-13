@@ -189,6 +189,37 @@ export class SessionStates {
   }
 }
 
+/**
+ * `session_state.reviews` (7B Task 11, agent 0011): the `branchReview` items a session asked
+ * for, oldest first; recording one twice keeps one. Gone with the session's product state.
+ */
+export class SessionReviews {
+  readonly #cs: ControlStore;
+  readonly #s: Record<string, StatementSync>;
+
+  constructor(cs: ControlStore) {
+    this.#cs = cs;
+    this.#s = prepare(cs, {
+      get: "SELECT reviews FROM session_state WHERE sessionId = ?",
+      set: "UPDATE session_state SET reviews = ? WHERE sessionId = ?",
+    });
+  }
+
+  /** The session's review items; none for a session that is gone. */
+  of(sessionId: string): string[] {
+    const r = this.#s.get!.get(sessionId) as { reviews: string } | undefined;
+    return r === undefined ? [] : (JSON.parse(r.reviews) as string[]);
+  }
+
+  /** Records `itemId` on the session (once); nothing for a session that is gone. */
+  record(sessionId: string, itemId: string): void {
+    this.#cs.tx(() => {
+      const now = this.of(sessionId);
+      if (!now.includes(itemId)) this.#s.set!.run(JSON.stringify([...now, itemId]), sessionId);
+    });
+  }
+}
+
 /** `CarveRecords` over `budget_carves` (7B Task 7, agent 0007). */
 class DbCarves implements CarveRecords {
   readonly #s: Record<string, StatementSync>;

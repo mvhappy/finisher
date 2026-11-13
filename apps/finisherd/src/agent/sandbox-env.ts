@@ -6,7 +6,7 @@ import { posix, win32 } from "node:path";
 import type { Harness, Session } from "@finisher/contracts";
 import { childEnv, NEVER_PASSED, secretName } from "../env.ts";
 import { finError } from "../errors.ts";
-import { type LinkedStore, PROVIDER_DIR_ENV, type SessionDirs } from "./session-dirs.ts";
+import { type LinkedStore, PROVIDER_DIR_ENV, SIGN_IN_STORES, type SessionDirs } from "./session-dirs.ts";
 
 /**
  * The session's git settings at command-line precedence (`GIT_CONFIG_COUNT`), because a
@@ -18,6 +18,69 @@ export const GIT_OVERRIDES: ReadonlyArray<readonly [string, string]> = [
   ["core.fsmonitor", "false"],
   ["credential.helper", ""],
 ];
+
+/**
+ * The names a host sandbox (detection, the probe: no session) never has: the session's
+ * connection to the server and its project, and the sign-in store variable (spec §8.6), which
+ * only detection's host sandbox has (`AssertOptions.store`).
+ */
+export const SESSION_ONLY: ReadonlyArray<string> = ["FIN_SERVER", "FIN_SESSION", "FIN_CREDENTIAL", "FIN_PROJECT_DIR", "CLAUDE_SECURESTORAGE_CONFIG_DIR"];
+
+/**
+ * Claude Code's own switches a launch adds (plan 7D Decision 5): non-secret, documented, each
+ * fixed by the adapter. Not `CLAUDE_CODE_GIT_BASH_PATH` (Decision 21), not
+ * `CLAUDE_CODE_ENTRYPOINT` (Finisher is not the SDK), never a token.
+ */
+export const CLAUDE_CODE_ENV: ReadonlyArray<string> = [
+  "CLAUDE_CODE_TMPDIR",
+  "DISABLE_AUTOUPDATER",
+  "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC",
+  "CLAUDE_CODE_DISABLE_AUTO_MEMORY",
+  "CLAUDE_CODE_DISABLE_CLAUDE_MDS",
+  "CLAUDE_CODE_DISABLE_BACKGROUND_TASKS",
+  "BASH_DEFAULT_TIMEOUT_MS",
+];
+
+/**
+ * The names a harness's adapter may add to one process (`SpawnOptions.env`, the `extra` of
+ * `assertSessionEnv`): Claude Code's switches, and for every harness `FIN_CALL` (a per-call
+ * process's call id, spec §12.3). Nothing else.
+ */
+export function harnessExtra(harness: Harness): ReadonlyArray<string> {
+  return harness === "claudeCode" ? [...CLAUDE_CODE_ENV, "FIN_CALL"] : ["FIN_CALL"];
+}
+
+/** A call id as `fin` takes it from `FIN_CALL` (`agent/reach.ts`, `crates/fin/src/agent_env.rs`). */
+const CALL_ID = /^[0-9A-Za-z._:-]{1,128}$/;
+
+/**
+ * The value each name a harness adds must have (plan 7D Decision 5): the switches exactly `1`,
+ * the timeout a whole number of milliseconds, the CLI's temporary directory the sandbox's own
+ * `TMPDIR`, the call id one `fin` accepts. `env` is the whole launch environment.
+ */
+const EXTRA_VALUES: Readonly<Record<string, (v: string, env: Readonly<Record<string, string | undefined>>) => boolean>> = {
+  CLAUDE_CODE_TMPDIR: (v, env) => v !== "" && v === env.TMPDIR,
+  DISABLE_AUTOUPDATER: (v) => v === "1",
+  CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: (v) => v === "1",
+  CLAUDE_CODE_DISABLE_AUTO_MEMORY: (v) => v === "1",
+  CLAUDE_CODE_DISABLE_CLAUDE_MDS: (v) => v === "1",
+  CLAUDE_CODE_DISABLE_BACKGROUND_TASKS: (v) => v === "1",
+  BASH_DEFAULT_TIMEOUT_MS: (v) => /^\d+$/.test(v),
+  FIN_CALL: (v) => CALL_ID.test(v),
+};
+
+/** The variable naming `harness`'s sign-in store directory, when its store is one (Claude Code). */
+export function storeEnvName(harness: Harness): string | undefined {
+  const store = SIGN_IN_STORES[harness];
+  return store?.kind === "dir" ? store.env : undefined;
+}
+
+/** `names` holds `k` in any case (Windows reads environment names case-insensitively). */
+const hasFolded = (names: Iterable<string>, k: string) => {
+  const u = k.toUpperCase();
+  for (const n of names) if (n.toUpperCase() === u) return true;
+  return false;
+};
 
 /** Every name `sessionEnv` adds on top of `childEnv`'s allow-list, by harness. */
 export function sessionKeys(harness: Harness, platform: NodeJS.Platform = process.platform): Set<string> {
@@ -35,7 +98,8 @@ export function sessionKeys(harness: Harness, platform: NodeJS.Platform = proces
   ]);
   const provider = PROVIDER_DIR_ENV[harness];
   if (provider !== undefined) keys.add(provider);
-  if (harness === "claudeCode") keys.add("CLAUDE_SECURESTORAGE_CONFIG_DIR");
+  const store = storeEnvName(harness);
+  if (store !== undefined) keys.add(store);
   if (platform === "win32") for (const k of ["TEMP", "TMP", "LOCALAPPDATA"]) keys.add(k);
   return keys;
 }
@@ -52,6 +116,13 @@ export interface SessionEnvInput {
   readonly platform?: NodeJS.Platform;
 }
 
+/** The names a host sandbox's environment adds on top of `childEnv`'s allow-list. */
+export function hostKeys(harness: Harness, platform: NodeJS.Platform = process.platform): Set<string> {
+  const keys = sessionKeys(harness, platform);
+  for (const k of SESSION_ONLY) keys.delete(k);
+  return keys;
+}
+
 /** The session environment (§8.5). */
 export function sessionEnv(i: SessionEnvInput): Record<string, string> {
   const platform = i.platform ?? process.platform;
@@ -60,23 +131,58 @@ export function sessionEnv(i: SessionEnvInput): Record<string, string> {
     i.parent ?? process.env,
     platform,
   );
-  env.TMPDIR = i.dirs.tmp;
-  if (platform === "win32") {
-    env.TEMP = i.dirs.tmp;
-    env.TMP = i.dirs.tmp;
-    env.LOCALAPPDATA = i.dirs.localAppData;
-  }
-  const provider = PROVIDER_DIR_ENV[i.session.harness];
-  if (provider !== undefined) env[provider] = i.dirs.provider;
   if (i.store?.env !== undefined) env[i.store.env.name] = i.store.env.value;
-  env.GIT_CONFIG_GLOBAL = i.dirs.gitConfig;
+  return ownDirs(env, i.session.harness, i.dirs, platform);
+}
+
+export interface HostEnvInput {
+  readonly harness: Harness;
+  readonly dirs: SessionDirs;
+  /** Detection's host sandbox only (Decision 22): the sign-in store `linkSignInStore` answered. */
+  readonly store?: LinkedStore | undefined;
+  readonly parent?: NodeJS.ProcessEnv;
+  readonly platform?: NodeJS.Platform;
+}
+
+/** A host sandbox's own `HOME` (Task 5 review): `tmp/home`, an empty directory the open makes. */
+export function hostHome(dirs: SessionDirs, platform: NodeJS.Platform = process.platform): string {
+  return (platform === "win32" ? win32 : posix).join(dirs.tmp, "home");
+}
+
+/**
+ * A host sandbox's environment (plan 7D Task 3b): `childEnv()` and the directory's own `TMPDIR`,
+ * provider directory, git settings and `GNUPGHOME`; no `FIN_*` connection, no project, no
+ * credential; the sign-in store variable only with `store` (detection's). `HOME` (and Windows'
+ * `USERPROFILE`) is the throwaway `hostHome`, never the server's: what a CLI reads under the
+ * user's home (`$HOME/.config/anthropic/…`) cannot sign the probe in. Sessions keep the server's.
+ */
+export function hostEnv(i: HostEnvInput): Record<string, string> {
+  const platform = i.platform ?? process.platform;
+  const env = childEnv({}, i.parent ?? process.env, platform);
+  if (i.store?.env !== undefined) env[i.store.env.name] = i.store.env.value;
+  env.HOME = hostHome(i.dirs, platform);
+  if (platform === "win32") env.USERPROFILE = env.HOME;
+  return ownDirs(env, i.harness, i.dirs, platform);
+}
+
+/** The directory-derived names of a session or host environment. */
+function ownDirs(env: Record<string, string>, harness: Harness, dirs: SessionDirs, platform: NodeJS.Platform): Record<string, string> {
+  env.TMPDIR = dirs.tmp;
+  if (platform === "win32") {
+    env.TEMP = dirs.tmp;
+    env.TMP = dirs.tmp;
+    env.LOCALAPPDATA = dirs.localAppData;
+  }
+  const provider = PROVIDER_DIR_ENV[harness];
+  if (provider !== undefined) env[provider] = dirs.provider;
+  env.GIT_CONFIG_GLOBAL = dirs.gitConfig;
   env.GIT_CONFIG_NOSYSTEM = "1";
   env.GIT_CONFIG_COUNT = String(GIT_OVERRIDES.length);
   GIT_OVERRIDES.forEach(([k, v], n) => {
     env[`GIT_CONFIG_KEY_${n}`] = k;
     env[`GIT_CONFIG_VALUE_${n}`] = v;
   });
-  env.GNUPGHOME = i.dirs.gnupg;
+  env.GNUPGHOME = dirs.gnupg;
   return env;
 }
 
@@ -98,6 +204,18 @@ export interface AssertOptions {
    * Code's non-secret `CLAUDE_CODE_*` among them). Never a name of `NEVER_IN_SESSION` or a key.
    */
   readonly extra?: ReadonlyArray<string>;
+  /**
+   * A host sandbox's environment (`hostEnv`; `s.id` is its `host-<ulid>`): the names of
+   * `SESSION_ONLY` are refused instead of required, the own paths are checked from `TMPDIR`, and
+   * `HOME` (Windows: `USERPROFILE` too) must be its throwaway `tmp/home`.
+   */
+  readonly host?: boolean;
+  /**
+   * The harness's sign-in store variable (a `dir` store: Claude Code's) is required and must name
+   * `providers/<harness>/home/<store>`; without it the variable is refused. Default: a session
+   * has it, a host sandbox not (only detection's has it, plan 7D Decision 22; the probe never).
+   */
+  readonly store?: boolean;
   readonly platform?: NodeJS.Platform;
 }
 
@@ -111,9 +229,11 @@ const isKey = (k: string) => /_API_KEY$/i.test(k);
  * `TMPDIR`, the provider directory, the git configuration and `GNUPGHOME` are the session's own
  * paths under `agents/<id>/` (absolute); the git settings are exactly `GIT_OVERRIDES` with
  * `GIT_CONFIG_NOSYSTEM=1`; `FIN_PROJECT_DIR` is absolute; no name of `NEVER_IN_SESSION` and no
- * key; nothing outside the allow-list, `LC_*`, the session's names, `FIN_CALL` and
- * `opts.extra`. With `opts.expect` (the sandbox's `env`), every session name has its value
- * exactly. 7D and 7E call it on every launch environment.
+ * key (names in any case); nothing outside the allow-list, `LC_*`, the session's names,
+ * `FIN_CALL` and `opts.extra`; `FIN_CALL` and the extra names with their fixed values
+ * (`EXTRA_VALUES`); the sign-in store variable as `opts.store` says. With `opts.expect` (the
+ * sandbox's `env`), every session name has its value exactly. 7D and 7E call it on every launch
+ * environment.
  */
 export function assertSessionEnv(env: Readonly<Record<string, string | undefined>>, s: Pick<Session, "id" | "harness">, opts: AssertOptions = {}): void {
   const platform = opts.platform ?? process.platform;
@@ -121,12 +241,23 @@ export function assertSessionEnv(env: Readonly<Record<string, string | undefined
   const fail = (reason: string, name: string): never => {
     throw finError("SANDBOX_ENV", `the session environment is wrong: ${reason}`, { sessionId: s.id, name, reason });
   };
-  const keys = sessionKeys(s.harness, platform);
+  const host = opts.host === true;
+  const keys = host ? hostKeys(s.harness, platform) : sessionKeys(s.harness, platform);
+  const storeName = storeEnvName(s.harness);
+  const withStore = opts.store ?? !host;
+  if (storeName !== undefined) {
+    if (withStore) keys.add(storeName);
+    else keys.delete(storeName);
+  }
   const extra = new Set(opts.extra ?? []);
   for (const [k, v] of Object.entries(env)) {
     if (v === undefined) continue;
-    if (NEVER_IN_SESSION.includes(k)) fail("a variable that never passes", k);
+    if (hasFolded(NEVER_IN_SESSION, k)) fail("a variable that never passes", k);
     if (isKey(k)) fail("a secret", k);
+    if (host && hasFolded(SESSION_ONLY, k) && !(withStore && k === storeName)) fail("a session variable in a host sandbox", k);
+    if (!host && storeName !== undefined && !withStore && k.toUpperCase() === storeName) fail("a sign-in store without one", k);
+    const value = EXTRA_VALUES[k];
+    if (value !== undefined && (extra.has(k) || k === "FIN_CALL") && !value(v, env)) fail("a wrong value", k);
     if (extra.has(k) && !keys.has(k)) continue;
     if (secretName(k)) fail("a secret", k);
     if (!(ALLOW_LIST.has(k) || k.startsWith("LC_") || keys.has(k) || k === "FIN_CALL")) fail("a variable outside the session's", k);
@@ -137,20 +268,26 @@ export function assertSessionEnv(env: Readonly<Record<string, string | undefined
     return v!;
   };
   for (const k of keys) need(k);
-  if (need("FIN_SESSION") !== s.id) fail("another session's id", "FIN_SESSION");
+  if (!host && need("FIN_SESSION") !== s.id) fail("another session's id", "FIN_SESSION");
   const own = (k: string, ...rel: string[]) => {
     const v = need(k);
     if (!path.isAbsolute(v) || path.normalize(v) !== v || !v.endsWith(path.sep + path.join("agents", s.id, ...rel))) fail("not the session's own path", k);
     return v;
   };
-  const cred = own("FIN_CREDENTIAL", "credential.json");
-  const base = cred.slice(0, cred.length - "credential.json".length - 1);
+  // The session's (or host sandbox's) directory, from the credential (or `TMPDIR`).
+  const [anchor, rel] = host ? ["TMPDIR", "tmp"] : ["FIN_CREDENTIAL", "credential.json"];
+  const first = own(anchor, rel);
+  const base = first.slice(0, first.length - rel.length - 1);
   const under = (k: string, ...rel: string[]) => {
     if (own(k, ...rel) !== path.join(base, ...rel)) fail("not the session's own path", k);
   };
   under("TMPDIR", "tmp");
   under("GIT_CONFIG_GLOBAL", "git", "config");
   under("GNUPGHOME", "tmp", "gnupg");
+  if (host) {
+    under("HOME", "tmp", "home");
+    if (platform === "win32") under("USERPROFILE", "tmp", "home");
+  }
   const provider = PROVIDER_DIR_ENV[s.harness];
   if (provider !== undefined) under(provider, "provider");
   if (platform === "win32") {
@@ -158,9 +295,10 @@ export function assertSessionEnv(env: Readonly<Record<string, string | undefined
     under("TMP", "tmp");
     under("LOCALAPPDATA", "localappdata");
   }
-  if (s.harness === "claudeCode") {
-    const store = need("CLAUDE_SECURESTORAGE_CONFIG_DIR");
-    if (!path.isAbsolute(store) || !store.endsWith(path.sep + path.join("providers", "claudeCode", "home", "store"))) fail("not the harness's store", "CLAUDE_SECURESTORAGE_CONFIG_DIR");
+  const storeOf = SIGN_IN_STORES[s.harness];
+  if (storeName !== undefined && withStore && storeOf !== undefined) {
+    const store = need(storeName);
+    if (!path.isAbsolute(store) || path.normalize(store) !== store || !store.endsWith(path.sep + path.join("providers", s.harness, "home", storeOf.name))) fail("not the harness's store", storeName);
   }
   if (need("GIT_CONFIG_NOSYSTEM") !== "1") fail("system git configuration read", "GIT_CONFIG_NOSYSTEM");
   if (need("GIT_CONFIG_COUNT") !== String(GIT_OVERRIDES.length)) fail("not the session's git settings", "GIT_CONFIG_COUNT");
@@ -168,8 +306,31 @@ export function assertSessionEnv(env: Readonly<Record<string, string | undefined
     if (need(`GIT_CONFIG_KEY_${n}`) !== k) fail("not the session's git settings", `GIT_CONFIG_KEY_${n}`);
     if (need(`GIT_CONFIG_VALUE_${n}`) !== v) fail("not the session's git settings", `GIT_CONFIG_VALUE_${n}`);
   });
-  if (!path.isAbsolute(need("FIN_PROJECT_DIR"))) fail("not an absolute folder", "FIN_PROJECT_DIR");
+  if (!host && !path.isAbsolute(need("FIN_PROJECT_DIR"))) fail("not an absolute folder", "FIN_PROJECT_DIR");
   if (opts.expect !== undefined) {
     for (const k of keys) if (env[k] !== opts.expect[k]) fail("not the sandbox's value", k);
+  }
+}
+
+/**
+ * Throws `SANDBOX_ENV` unless `add` (one process's `SpawnOptions.env`) only names what `harness`
+ * may add (`harnessExtra`): never a name of `NEVER_IN_SESSION` or a key, never a session name
+ * (`sessionKeys`, `SESSION_ONLY`: a process cannot move its credential, server, project,
+ * temporary, provider or git directories), nothing outside the harness's list; names compared in
+ * any case. The merged environment is then held to `assertSessionEnv` as a whole, which checks
+ * the values (`EXTRA_VALUES`).
+ */
+export function assertSpawnEnv(add: Readonly<Record<string, string>>, s: Pick<Session, "id" | "harness">, platform: NodeJS.Platform = process.platform): void {
+  const fail = (reason: string, name: string): never => {
+    throw finError("SANDBOX_ENV", `a process's environment is wrong: ${reason}`, { sessionId: s.id, name, reason });
+  };
+  const session = sessionKeys(s.harness, platform);
+  const allowed = harnessExtra(s.harness);
+  for (const k of Object.keys(add)) {
+    // Names in any case: Windows reads `fin_session` as `FIN_SESSION`.
+    if (hasFolded(NEVER_IN_SESSION, k)) fail("a variable that never passes", k);
+    if (isKey(k)) fail("a secret", k);
+    if (hasFolded(session, k) || hasFolded(SESSION_ONLY, k)) fail("a session variable", k);
+    if (!allowed.includes(k)) fail("a variable outside the harness's", k);
   }
 }

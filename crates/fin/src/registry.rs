@@ -4,7 +4,7 @@
 use schemars::JsonSchema;
 use serde_json::{Value, json};
 
-use crate::commands::{asset, branch, clip, history, look, project, try_cmd, view};
+use crate::commands::{asset, branch, clip, drop, history, look, project, review, try_cmd, view};
 
 pub struct Command {
     /// Dotted name, e.g. "clip.insert" (also the `batch` cmd and op-style name).
@@ -240,7 +240,7 @@ pub const COMMANDS: &[Command] = &[
     Command {
         name: "merge",
         group: "history",
-        args: "<branch> [--into <b>] [--skip-conflicting]",
+        args: "<branch> [--into <b>] [--skip-conflicting] [--include <txId>…] [--up-to <seq>]",
         summary: "merge a branch (CONFLICT lists conflicts)",
         write: true,
         schema: || schema_of::<history::MergeArgs>("merge"),
@@ -252,6 +252,78 @@ pub const COMMANDS: &[Command] = &[
         summary: "copy one record onto a branch",
         write: true,
         schema: || schema_of::<history::CherryPickArgs>("cherry-pick"),
+    },
+    Command {
+        name: "drop",
+        group: "history",
+        args: "<txId>… --from <b> [--into <b>] [--undo]",
+        summary: "keep a rejected change out of every merge into a branch (--undo brings it back)",
+        write: true,
+        schema: || schema_of::<drop::DropArgs>("drop"),
+    },
+    Command {
+        name: "review.request",
+        group: "review",
+        args: "[--branch <b>] [--into <b>] --title <t> [--summary <s>]",
+        summary: "ask for a review of a branch (the open one comes back when there is one)",
+        write: true,
+        schema: || schema_of::<review::RequestArgs>("review.request"),
+    },
+    Command {
+        name: "review.ls",
+        group: "review",
+        args: "[--state <s>] [--kind <k>]",
+        summary: "the project's review items",
+        write: false,
+        schema: || schema_of::<review::LsArgs>("review.ls"),
+    },
+    Command {
+        name: "review.show",
+        group: "review",
+        args: "<id>",
+        summary: "an item with its change list, decisions and comments (stale says a head moved)",
+        write: false,
+        schema: || schema_of::<review::IdArgs>("review.show"),
+    },
+    Command {
+        name: "review.refresh",
+        group: "review",
+        args: "<id>",
+        summary: "re-plan the change list at the current heads; decisions stay",
+        write: true,
+        schema: || schema_of::<review::IdArgs>("review.refresh"),
+    },
+    Command {
+        name: "review.comment",
+        group: "review",
+        args: "<id> <text> [--tx <txId>] [--at <t>]",
+        summary: "comment on an item, or on one of its transactions",
+        write: true,
+        schema: || schema_of::<review::CommentArgs>("review.comment"),
+    },
+    Command {
+        name: "review.decide",
+        group: "review",
+        args: "<id> (--accept <txId>,… | --reject <txId>,… | --pending <txId>,…) [--reason <r>] [--request-changes] [--expect <json>]",
+        summary: "mark transactions; a rejection drops it from every merge, accepting a dropped one lifts the drop (undropped lists drops of others cancelled; CONFLICT droppedByOther when another reviewer dropped it; REVIEW_STALE on an --expect mismatch or dropUnknown)",
+        write: true,
+        schema: || schema_of::<review::DecideArgs>("review.decide"),
+    },
+    Command {
+        name: "review.merge",
+        group: "review",
+        args: "<id> [--accept-pending] [--expect <json>] [--idem-key <k>]",
+        summary: "merge only what was reviewed; a moved target merges and says targetMoved. REVIEW_UNDECIDED: pending (a count) under requireReview, nothingAccepted, or txIds acceptedDropped/rejectedUndropped; REVIEW_STALE: --expect mismatch, replan (with --accept-pending) or truncated. --idem-key applies to merge only",
+        write: true,
+        schema: || schema_of::<review::MergeArgs>("review.merge"),
+    },
+    Command {
+        name: "review.close",
+        group: "review",
+        args: "<id> --rejected|--dismissed",
+        summary: "close an item without merging it",
+        write: true,
+        schema: || schema_of::<review::CloseArgs>("review.close"),
     },
     Command {
         name: "revert",
