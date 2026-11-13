@@ -342,3 +342,40 @@ fn non_finite_effect_number_is_internal() {
     assert_eq!(e.code, "INTERNAL");
     assert_eq!(e.details["path"], "/items/0/effects/0/numbers/ratio/0");
 }
+
+/// A non-finite bézier control point in an effect segment's (or a gain or pan segment's)
+/// `interp` is `INTERNAL` too: the mixer would ease with it.
+#[test]
+fn non_finite_bezier_is_internal() {
+    let bad = Interp::Bezier {
+        x1: 0.25,
+        y1: f64::NAN,
+        x2: 0.25,
+        y2: 1.0,
+    };
+    let keys = || {
+        vec![
+            kf(secs(1), num(-6.0), bad),
+            kf(secs(3), num(6.0), Interp::Hold),
+        ]
+    };
+    let p = with_effects(
+        4,
+        vec![effect("fx1", "eq", &[], true)],
+        vec![("effects.fx1.band1Gain", keys())],
+    );
+    let e = eval_audio(&p, "tl1", secs(0), secs(4)).unwrap_err();
+    assert_eq!(e.code, "INTERNAL");
+    assert_eq!(e.details["path"], "/items/0/effects/0/numbers/band1Gain/1");
+    for (path, want) in [
+        ("audio.gain", "/items/0/gain/1"),
+        ("audio.pan", "/items/0/pan/1"),
+    ] {
+        let p = with_effects(4, vec![], vec![(path, keys())]);
+        let e = eval_audio(&p, "tl1", secs(0), secs(4)).unwrap_err();
+        assert_eq!(
+            (e.code.as_str(), &e.details["path"]),
+            ("INTERNAL", &serde_json::json!(want))
+        );
+    }
+}

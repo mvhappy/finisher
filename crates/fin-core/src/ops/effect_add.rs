@@ -11,8 +11,9 @@
 //! A registry kind's domain must match the item's track (plan 6C Decision 13): a visual effect
 //! on an item of an audio track, and an audio effect (`eq`, `compressor`, `gate`, `deEsser`)
 //! on an item of any other track, are `TRACK_KIND_MISMATCH` (policy, `check_effect_domains`,
-//! shared with `effect.restore`, `item.move` and `item.restore`). An unknown kind has no
-//! domain and is judged by the kind check alone.
+//! shared with `effect.restore`, `item.move` and `item.restore`); an audio effect on an
+//! audio-track item that is not a clip (a nested item) is `INVALID_OP` until nested-bus
+//! processing exists. An unknown kind has no domain and is judged by the kind check alone.
 
 use std::collections::BTreeMap;
 
@@ -128,7 +129,12 @@ pub(crate) fn apply(
         None => len,
     };
     check_unlocked(ti.get(project), Some(&item), bindings)?;
-    check_effect_domains(ti.get(project), &item, [a.kind.as_str()], bindings)?;
+    check_effect_domains(
+        ti.get(project),
+        &ti.get(project).items[ci],
+        [a.kind.as_str()],
+        bindings,
+    )?;
     let params = checked_params(project, a, bindings).map_err(|e| about_item(e, &item))?;
     let fx = bindings.create(project, &a.id, IdKind::Effect, ids)?;
     let track = ti.get_mut(project);

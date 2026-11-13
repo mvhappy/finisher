@@ -124,7 +124,7 @@ pub(crate) fn apply(
             .with_details(json!({ "item": item, "effect": effect.id, "path": p })));
         }
         check_unlocked(ti.get(project), Some(&item), bindings)?;
-        check_effect_domains(ti.get(project), &item, [effect.kind.as_str()], bindings)?;
+        check_effect_domains(ti.get(project), it, [effect.kind.as_str()], bindings)?;
     }
     let track = ti.get_mut(project);
     let track_id = track.id.clone();

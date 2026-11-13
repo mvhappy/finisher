@@ -653,3 +653,57 @@ fn track_restore_onto_other_domain_refused() {
     .unwrap_err();
     mismatch(&e, "c2", "compressor", "video");
 }
+
+/// `av()` with a nested item `n1` (on `[20, 30)`, a second timeline `tl2`) on the audio track:
+/// built literally, as `item.insert` cannot insert nested items yet.
+fn with_nested() -> Project {
+    let mut p = av();
+    let mut inner = p.timelines[0].clone();
+    inner.id = "tl2".into();
+    inner.tracks.iter_mut().for_each(|t| t.items.clear());
+    let body = fin_core::ItemBody::Nested {
+        timeline: "tl2".into(),
+        source_in: secs(0),
+    };
+    let track = &mut p.timelines[0].tracks[1];
+    assert_eq!(track.kind, fin_core::TrackKind::Audio);
+    track.items.push(Item::new("n1", secs(20), secs(10), body));
+    p.timelines.push(inner);
+    p
+}
+
+/// An audio effect on a container (a nested item) would not be applied: the mixer runs effects
+/// per clip, and compressing a sum is not compressing its parts. Refused until nested-bus
+/// processing exists (policy); stored ops replay.
+#[test]
+fn audio_effect_on_nested_item_refused() {
+    let p = with_nested();
+    let op = add("n1", "$fx", "compressor", &[]);
+    let e = apply_tx(&p, &tx(vec![op.clone()]), &mut MemIds::after(&p)).unwrap_err();
+    assert_eq!(e.code, "INVALID_OP", "{e:?}");
+    assert_eq!(
+        (
+            &e.details["item"],
+            &e.details["kind"],
+            &e.details["itemKind"]
+        ),
+        (&json!("n1"), &json!("compressor"), &json!("nested"))
+    );
+    assert_eq!(
+        e.fix.as_deref(),
+        Some("add audio effects to clips; effects on nested items are not applied yet")
+    );
+    let mut literal = op;
+    literal.for_each_ref(|r| {
+        if r == "$fx" {
+            *r = "fx9".into();
+        }
+    });
+    apply_tx_mode(
+        &p,
+        &tx(vec![literal]),
+        &mut MemIds::after(&p),
+        ApplyMode::Replay,
+    )
+    .unwrap();
+}

@@ -125,7 +125,7 @@ pub(crate) fn returning_track(
     for item in &track.items {
         check_body(project, &track, &item.body, item.duration, frame, bindings)?;
         let kinds = item.common.effects.iter().map(|e| e.kind.as_str());
-        super::check_effect_domains(&track, &item.id, kinds, bindings)?;
+        super::check_effect_domains(&track, item, kinds, bindings)?;
     }
     for t in &track.transitions {
         check_returning(project, &t.id, IdKind::Transition, bindings, seen)?;

@@ -53,7 +53,7 @@ pub(crate) fn validate(
     }
     check_unlocked(track, Some(&item.id), bindings)?;
     let kinds = item.common.effects.iter().map(|e| e.kind.as_str());
-    check_effect_domains(track, &item.id, kinds, bindings)?;
+    check_effect_domains(track, item, kinds, bindings)?;
     if item.start < Rational::zero() {
         return Err(invalid_range(
             "item start must not be negative",

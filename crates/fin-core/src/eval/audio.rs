@@ -20,7 +20,10 @@
 //! - Gain segments break at gain keyframes, fade ends and transition edges; pan segments at
 //!   pan keyframes; both are clipped to `[from, to)`.
 //! - Each clip's enabled audio effects come with it ([`super::audio_effects`]); a nested
-//!   item's are shifted with its gain and pan.
+//!   item's are shifted with its gain and pan. A container's own effects (a nested item's) are
+//!   not in the plan: effects run per clip, and compressing a sum is not compressing its
+//!   parts; `effect.add` refuses audio effects on anything but a clip until nested-bus
+//!   processing exists.
 //! - Each track is indexed once ([`TrackIndex`]) and only the items that can meet the range
 //!   are visited.
 

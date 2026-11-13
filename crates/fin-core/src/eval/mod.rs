@@ -28,7 +28,7 @@ pub use plan::{
 use serde_json::json;
 
 use crate::error::CoreError;
-use crate::model::{Project, Timeline};
+use crate::model::{Interp, Project, Timeline};
 
 pub(crate) fn timeline_of<'a>(project: &'a Project, id: &str) -> Result<&'a Timeline, CoreError> {
     project
@@ -110,29 +110,32 @@ pub(crate) fn check_frame(plan: &FramePlan) -> Result<(), CoreError> {
     check_layers("/layers", &plan.layers)
 }
 
+/// A segment's ends and progress, and its bézier control points (the mixer eases with them).
+fn check_segment(path: &str, v: [f64; 2], u: [f64; 2], interp: &Interp) -> Result<(), CoreError> {
+    finite(path, &[v[0], v[1], u[0], u[1]])?;
+    match *interp {
+        Interp::Bezier { x1, y1, x2, y2 } => finite(path, &[x1, y1, x2, y2]),
+        Interp::Hold | Interp::Linear => Ok(()),
+    }
+}
+
 pub(crate) fn check_audio(plan: &AudioPlan) -> Result<(), CoreError> {
     for (i, item) in plan.items.iter().enumerate() {
         for (j, s) in item.gain.iter().enumerate() {
             let p = format!("/items/{i}/gain/{j}");
-            finite(&p, &[s.db[0], s.db[1], s.u[0], s.u[1]])?;
+            check_segment(&p, s.db, s.u, &s.interp)?;
             for sh in &s.shapes {
                 finite(&p, &sh.p)?;
             }
         }
         for (j, s) in item.pan.iter().enumerate() {
-            finite(
-                &format!("/items/{i}/pan/{j}"),
-                &[s.pan[0], s.pan[1], s.u[0], s.u[1]],
-            )?;
+            check_segment(&format!("/items/{i}/pan/{j}"), s.pan, s.u, &s.interp)?;
         }
         for (j, e) in item.effects.iter().enumerate() {
             let p = format!("/items/{i}/effects/{j}");
             for (name, segs) in &e.numbers {
                 for (k, s) in segs.iter().enumerate() {
-                    finite(
-                        &format!("{p}/numbers/{name}/{k}"),
-                        &[s.v[0], s.v[1], s.u[0], s.u[1]],
-                    )?;
+                    check_segment(&format!("{p}/numbers/{name}/{k}"), s.v, s.u, &s.interp)?;
                 }
             }
             for (name, v) in &e.values {

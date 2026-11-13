@@ -130,7 +130,7 @@ fn plan(project: &Project, m: &ItemMove, bindings: &Bindings) -> Result<Vec<Leg>
         if bindings.policy() {
             if leg.to != t {
                 let kinds = item.common.effects.iter().map(|e| e.kind.as_str());
-                check_effect_domains(leg.to.get(project), &leg.id, kinds, bindings)?;
+                check_effect_domains(leg.to.get(project), item, kinds, bindings)?;
             }
             check_unlocked(t.get(project), Some(&leg.id), bindings)?;
             check_unlocked(leg.to.get(project), Some(&leg.id), bindings)?;
