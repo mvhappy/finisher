@@ -91,6 +91,12 @@
 //!    `onDeny` (an `error` answer is a deny): a list of lines, or `{writeFile?, spawn?,
 //!    emit}` (so a `spawn` runs only when allowed). Unanswered after `cancelAfterMs`, the
 //!    request is withdrawn with `control_cancel_request` and neither branch runs.
+//!    `toolUseId` names the call (default `toolu_fake_<n>`). `bash: true` plays the CLI's `Bash`
+//!    tool as 2.1.321 does: an `assistant` `tool_use` before the prompt (whose fields are the
+//!    CLI's Bash request's); once answered, an allowed `input.command` runs with `/bin/sh -c`
+//!    and the call's `tool_result` is written (an error one when denied), recorded under
+//!    `spawned`. `input.run_in_background: true` is refused before any prompt under
+//!    `CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1`; without it the process is not waited for.
 //! 6. `notLoggedIn`: the unsigned turn of the CLI (a synthetic `assistant` with
 //!    `error: "authentication_failed"`, then `result {subtype: "success", is_error: true,
 //!    terminal_reason: "api_error", modelUsage: {}}`).

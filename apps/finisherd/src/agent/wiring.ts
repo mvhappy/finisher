@@ -35,6 +35,7 @@ import { remember } from "./remember.ts";
 import { builtinEnvironment } from "./builtin/environment.ts";
 import { localClient, type ModelClient, openrouterClient } from "./builtin/compat.ts";
 import { finIndex } from "./builtin/fin-tool.ts";
+import { indexOf, ShellAttribution } from "./claude/attribution.ts";
 import { BuiltinAdapter } from "./builtin/loop.ts";
 import { builtinTools } from "./builtin/tools.ts";
 import { BUNDLED_CATALOGUE, Catalogue } from "./catalogue/catalogue.ts";
@@ -102,6 +103,8 @@ export interface AgentRuntimeParts {
   /** Provider permission requests (7B Task 5). */
   readonly permissions: ProviderPermissions;
   readonly requests: ProviderRequests;
+  /** CLI shells' inferred attribution (7D Task 12): the chains' after stage matches with it. */
+  readonly attribution: ShellAttribution;
 }
 
 export class AgentRuntimeTag extends Context.Service<AgentRuntimeTag, AgentRuntimeParts>()("finisherd/AgentRuntime") {}
@@ -336,7 +339,8 @@ export const buildAgentRuntime = (d: AgentWiringDeps): Effect.Effect<AgentRuntim
     const permissions = providerPermissions({ rules, dirOf });
     // The approvals need the runtime (their nodes, answers): made after it, looked up late.
     let approvals: AgentApprovals | undefined;
-    const requests = new ProviderRequests({ permissions, approvals: () => approvals, key, consume: (id) => core.store.consumeApproval(id) });
+    const attribution = new ShellAttribution({ index: indexOf(() => finIndex(finPath)), finPath });
+    const requests = new ProviderRequests({ permissions, approvals: () => approvals, key, consume: (id) => core.store.consumeApproval(id), attribution });
     const sandboxes = sessionSandboxes(sandboxDeps);
     const runtime = new Runtime({
       core,
@@ -354,7 +358,7 @@ export const buildAgentRuntime = (d: AgentWiringDeps): Effect.Effect<AgentRuntim
       },
       ...(d.options?.afterChildOpened === undefined ? {} : { afterChildOpened: d.options.afterChildOpened }),
       ...(d.options?.stopGraceMs === undefined ? {} : { stopGraceMs: d.options.stopGraceMs }),
-      journal: core.journal,
+      journal: attribution.journal(core.journal),
       pricing: claude.pricing(cataloguePricing(catalogue)),
       // Children's roles and limits, live limits (7B Task 6).
       roles,
@@ -378,5 +382,5 @@ export const buildAgentRuntime = (d: AgentWiringDeps): Effect.Effect<AgentRuntim
     });
     approvals = made;
     const grants = grantPort(made, core.store, key, d.options?.afterGrantConsumed);
-    return { runtime, admin, adapters, lookup: new AgentLookup(d.db), catalogue, rules, ruleStore, roles, approvals: made, approvalKey: key, grants, permissions, requests };
+    return { runtime, admin, adapters, lookup: new AgentLookup(d.db), catalogue, rules, ruleStore, roles, approvals: made, approvalKey: key, grants, permissions, requests, attribution };
   });

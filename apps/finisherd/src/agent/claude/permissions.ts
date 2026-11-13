@@ -58,7 +58,7 @@ export function claudePermissions(): RequestPort {
   /** Every CLI id a permission prompt has used (module docs). */
   const used = new Set<string>();
   let generation = 0;
-  const ask = (cli: string, tool: string, input: Readonly<Record<string, unknown>>, rpc?: { id: unknown }) => {
+  const ask = (cli: string, tool: string, input: Readonly<Record<string, unknown>>, rpc?: { id: unknown }, toolUseId?: unknown) => {
     if (used.has(cli)) {
       const body: CanUseToolAnswer = { behavior: "deny", message: "Finisher refuses a permission prompt that reuses a request id." };
       return {
@@ -70,7 +70,9 @@ export function claudePermissions(): RequestPort {
     const id = `${cli}#${++generation}`;
     waiting.set(id, rpc === undefined ? { cli, tool, input } : { cli, tool, input, rpc });
     byCli.set(cli, id);
-    return { events: [{ type: "request", id, kind: "approval", tool, input } satisfies ProviderEvent] };
+    // The call it asks about, so an allowed shell call's window opens on it (Task 12).
+    const providerId = typeof toolUseId === "string" ? { providerId: toolUseId } : {};
+    return { events: [{ type: "request", id, kind: "approval", tool, input, ...providerId } satisfies ProviderEvent] };
   };
   const mcpError = (id: unknown, message: string) => ({ mcp_response: { jsonrpc: "2.0", id, error: { code: -32602, message } } });
 
@@ -84,7 +86,7 @@ export function claudePermissions(): RequestPort {
           // domain), with these fields; modelled by fake-claude as one `can_use_tool {tool_name,
           // input, tool_use_id, permission_suggestions: [], blocked_path: null, decision_reason:
           // null}` per script `ask`.
-          return ask(id, r.tool_name, r.input);
+          return ask(id, r.tool_name, r.input, undefined, r.tool_use_id);
         case "mcp_message": {
           const m = r.message as { id?: unknown; params?: { name?: unknown; arguments?: unknown } };
           if (r.server_name !== MCP_SERVER || !isMcpToolCall(r.message)) return { answer: encodeAnswer(id, mcpReply(r.server_name, r.message, [])) };
@@ -96,7 +98,7 @@ export function claudePermissions(): RequestPort {
           // `--permission-prompt-tool mcp__finisher__approve`.
           const args = m.params.arguments;
           if (!isObject(args) || typeof args.tool_name !== "string" || !isObject(args.input)) return { answer: encodeAnswer(id, mcpError(rpcId, "approve takes {tool_name, input}")) };
-          return ask(id, args.tool_name, args.input, { id: rpcId });
+          return ask(id, args.tool_name, args.input, { id: rpcId }, args.tool_use_id);
         }
         case "hook_callback":
           // No SDK hooks are registered (`initialize {hooks: null}`): one cannot arrive.

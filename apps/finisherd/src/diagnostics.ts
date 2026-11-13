@@ -75,7 +75,7 @@ export interface CallMeta {
  * Effect RPC hands a handler the request's headers as a record of lower-case names (pairs are
  * accepted too). An empty or over-long value is dropped.
  */
-function header(headers: unknown, name: string): string | undefined {
+export function headerOf(headers: unknown, name: string): string | undefined {
   let v: unknown;
   if (Array.isArray(headers)) {
     const hit = headers.find((h) => Array.isArray(h) && String(h[0]).toLowerCase() === name);
@@ -96,7 +96,7 @@ function header(headers: unknown, name: string): string | undefined {
  * The ids stay raw: the journal keys every one that is not a ULID.
  */
 export function actorFor(p: Principal, headers: unknown): CallMeta {
-  const call = header(headers, "fin-actor-call");
+  const call = headerOf(headers, "fin-actor-call");
   const withCall = call === undefined ? {} : { call };
   switch (p.kind) {
     case "agent":
@@ -107,8 +107,8 @@ export function actorFor(p: Principal, headers: unknown): CallMeta {
     case "console":
       return { actor: { kind: "user" } };
     case "local": {
-      const kind = header(headers, "fin-actor-kind");
-      const session = header(headers, "fin-actor-session");
+      const kind = headerOf(headers, "fin-actor-kind");
+      const session = headerOf(headers, "fin-actor-session");
       return {
         actor: {
           kind: kind !== undefined && LOCAL_ACTOR_KINDS.has(kind) ? kind : "unknown",

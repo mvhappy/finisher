@@ -146,7 +146,8 @@ describe("the port", () => {
     const port = claudePermissions();
     const call = (id: string, name: string, args: unknown) => ({ subtype: "mcp_message" as const, server_name: "finisher", message: { jsonrpc: "2.0", id: 7, method: "tools/call", params: { name, arguments: args } } });
     const r = port.request("m1", call("m1", "approve", { tool_name: "Bash", input: { command: "ls" }, tool_use_id: "t1" }));
-    expect(r.events).toEqual([{ type: "request", id: idOf(r), kind: "approval", tool: "Bash", input: { command: "ls" } }]);
+    // The call it asks about (`tool_use_id`) rides along: an allowed shell call's window opens on it (Task 12).
+    expect(r.events).toEqual([{ type: "request", id: idOf(r), kind: "approval", tool: "Bash", input: { command: "ls" }, providerId: "t1" }]);
     const a = answerOf(port.respond(idOf(r), { kind: "approval", allow: false, message: "no" }));
     expect(a.response.response).toEqual({ mcp_response: { jsonrpc: "2.0", id: 7, result: { content: [{ type: "text", text: JSON.stringify({ behavior: "deny", message: "no" }) }] } } });
     const shell = answerOf(port.request("m2", call("m2", "shell", { command: "ls" })).answer!);
