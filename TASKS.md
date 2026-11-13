@@ -821,6 +821,7 @@ Spec: `docs/specs/2026-11-07-sub-project-6-media-engine-design.md` (§24 maps th
     - Room left, not built (mobile note `docs/specs/2026-11-08-mobile-offline-editing-decisions.md`): a phone-sized proxy tier beside `540`/`1080`, and the iOS reuse of the VideoToolbox backend
 - [ ] 6B-2: stateless platform codecs (`cros-codecs`, VA-API, D3D11VA)
 - [ ] 6C: audio (incl. built-in audio effects, PCM feeds)
+  - [ ] Plan written 2026-11-13, not started: `docs/superpowers/plans/2026-11-13-sub-project-6c-audio.md` (24 tasks in batches A–F: A `fin-audio` crate, channels/layouts, polyphase resampler, WSOLA; B audio effect kinds in the registry (model version +1 at landing), `AudioItem.effects`; C mixer, EQ, compressor/gate/de-esser, loudness/limiter/peaks, the A0 corpus native and wasm32-wasip1; D audio decoders (symphonia 0.6.1 MPL-2.0, libopus 1.6.1, Linux vo-aacenc fork, AudioToolbox, Media Foundation) and audio probing (`PROBE_VERSION` +1 at landing); E `pcm48`/`pcm16m` caches, `media.pcm`, `media.waveform`, proxy Opus audio, `media.listen`/`fin listen`; F diagnostics, e2e, validation, spec as built). Batches A–C start now; E waits on 6B-1 Tasks 13–14, Task 17 on 6B-1 Task 8, Tasks 15–16 on 6B-1's macOS/Windows batches. Unblocks 6E, 6F, 8C's `media.pcm`. Eight owner questions at its end, each with a default the plan uses; the vo-aacenc fork must exist before Task 14 merges
 - [ ] 6D: layers (effects, masks and mattes, nested, images, SVG, Lottie, captions raster)
 - [ ] 6E: export
 - [ ] 6F: preview engine
