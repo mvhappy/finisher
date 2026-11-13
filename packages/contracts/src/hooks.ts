@@ -143,14 +143,21 @@ export const ListedHook = Schema.Struct({
   /** A command hook's program and arguments, as configured (what a person trusts). */
   run: Schema.optionalKey(Schema.Array(Schema.String)),
   match: Schema.optionalKey(Schema.String),
+  /** What a person weighs before trusting, as configured: its own file, everyone's calls, a `fin` credential, its failure answer. */
+  file: Schema.optionalKey(Schema.String),
+  principals: Schema.optionalKey(Schema.Literals(["agent", "all"])),
+  fin: Schema.optionalKey(Schema.Literal(true)),
+  timeoutS: Schema.optionalKey(Schema.Number),
+  onTimeout: Schema.optionalKey(Schema.Literals(["allow", "block"])),
 });
 export type ListedHook = typeof ListedHook.Type;
 
 /**
  * `agent.hooks.list` (a person's, `agent.admin`): every layer's hooks, those of a project's
  * file listed with `applies: false` while it does not apply. With a project: whether its
- * `finisher.hooks.json` applies, its hash now (what `agent.project.trust` binds through
- * `expectedHooksHash`; absent when it cannot be read) and why it does not apply as it is.
+ * `finisher.hooks.json` applies, its hash now with the project files its hooks name (what
+ * `agent.project.trust` binds through `expectedHooksHash`; absent when one cannot be read or a
+ * path leaves the project) and why it does not apply as it is.
  */
 export const AgentHooksListPayload = Schema.Struct({ projectId: Schema.optionalKey(Schema.String) });
 export const AgentHooksListSuccess = Schema.Struct({
@@ -158,5 +165,7 @@ export const AgentHooksListSuccess = Schema.Struct({
   projectHooks: Schema.optionalKey(Schema.Literals(["none", "trusted", "untrusted", "changed"])),
   hooksHash: Schema.optionalKey(Schema.String.check(Schema.isPattern(/^(?:sha256:[0-9a-f]{64}|none)$/))),
   projectHooksReason: Schema.optionalKey(Schema.Literals(["deleted", "unreadable", "invalidHooks"])),
+  /** The project files its hooks name (relative to the project), which `hooksHash` binds too. */
+  projectHooksFiles: Schema.optionalKey(Schema.Array(Schema.String)),
 });
 export type AgentHooksListSuccess = typeof AgentHooksListSuccess.Type;

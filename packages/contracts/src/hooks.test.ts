@@ -157,7 +157,7 @@ describe("HookReply (parity with fin_plugin_api::protocol::hook::HookReply)", ()
 });
 
 describe("event classes and the listing (7F plan Task 2)", () => {
-  test("hook_classes_are_decision_1: as fin_plugin_api's HookEvent::class()", () => {
+  test("hook_classes_are_decision_1: each event's class as Decision 1 lists it", () => {
     const by = (c: string) => Object.entries(HOOK_CLASSES).filter(([, k]) => k === c).map(([e]) => e).sort();
     expect(by("blockingBefore")).toEqual(["BranchReady", "PreCommand", "PreMerge", "PreRender", "UserPrompt"]);
     expect(by("blockingAfter")).toEqual(["PostCommand"]);
@@ -166,13 +166,22 @@ describe("event classes and the listing (7F plan Task 2)", () => {
   });
 
   test("agent_hooks_list_shapes", () => {
-    const listed = { layer: "project", source: "finisher.hooks.json", id: "lint", event: "PreCommand", applies: false, run: ["node", "x.mjs"], match: "item.*" };
-    expect(Schema.decodeUnknownSync(AgentHooksListSuccess)({ hooks: [listed], projectHooks: "changed", hooksHash: "none", projectHooksReason: "deleted" })).toEqual({
-      hooks: [listed],
-      projectHooks: "changed",
-      hooksHash: "none",
-      projectHooksReason: "deleted",
-    });
+    const listed = {
+      layer: "project",
+      source: "finisher.hooks.json",
+      id: "lint",
+      event: "PreCommand",
+      applies: false,
+      run: ["node", "x.mjs"],
+      match: "item.*",
+      file: "hooks/x.mjs",
+      principals: "all",
+      fin: true,
+      timeoutS: 30,
+      onTimeout: "block",
+    };
+    const answer = { hooks: [listed], projectHooks: "changed", hooksHash: "none", projectHooksReason: "deleted", projectHooksFiles: ["hooks/x.mjs"] };
+    expect(Schema.decodeUnknownSync(AgentHooksListSuccess)(answer)).toEqual(answer);
     expect(() => Schema.decodeUnknownSync(AgentHooksListSuccess)({ hooks: [], hooksHash: "sha256:nope" })).toThrow();
     expect(Schema.decodeUnknownSync(AgentHooksListPayload)({})).toEqual({});
   });

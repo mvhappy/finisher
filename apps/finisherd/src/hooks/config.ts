@@ -19,15 +19,25 @@
 //   edit it), so its hooks apply only while its hash is `project_trust.hooksHash`; untrusted,
 //   changed, deleted or unreadable it simply applies nothing. Trusting binds what the person
 //   saw (`checkTrustedHooks`, from `agent.project.trust`'s `expectedHooksHash`).
+// - **`hooksHash` binds the project files the hooks name** (review of Task 2): each `run[0]`
+//   with a separator and each `file` that is project content (relative, or absolute inside the
+//   project folder) is read like the hooks file at every read, and `hooksHash` (`hooksHashOf`)
+//   is `sha256:` over the hooks file's hash and the sorted `[relative path, hash]` pairs, so an
+//   edited, deleted or replaced script is `changed` at once. A relative path out of the project
+//   (by `..`, or through a symlink: checked on `realpath` whenever the file's key changes) makes
+//   the file untrustable (`invalidHooks`); a missing one too (`unreadable`), with no hash. An
+//   absolute path outside the project and a bare program name are not project content.
 // - **Paths** (Decision 6): `run[0]` with a separator, and `file`, are relative to the folder
 //   of the file that declares them unless absolute; absent `file` is `run[0]` when that is such
 //   a declaring-folder path. A bare program name is kept as written (Task 3 resolves it).
-import { isAbsolute, join, resolve } from "node:path";
+import { createHash } from "node:crypto";
+import { realpathSync } from "node:fs";
+import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { type AgentHooksListSuccess, type AgentWarning, HOOK_CLASSES, HOOK_LIMITS, type HookEvent, type HookLayer, HookSpec, type ListedHook } from "@finisher/contracts";
-import { Schema } from "effect";
+import { Effect, Schema } from "effect";
 import { settingsPath } from "../config.ts";
 import { finError } from "../errors.ts";
-import { firstLine, type Read, readCached } from "../agent/file-cache.ts";
+import { firstLine, type Read, readCached, readCachedBytes } from "../agent/file-cache.ts";
 import type { ProjectTrust } from "../agent/rule-store.ts";
 import { MANAGED_SETTINGS, NO_FILE } from "../agent/trust.ts";
 
@@ -71,9 +81,16 @@ export interface ProjectHooks {
   readonly hooks: readonly ConfiguredHook[];
   /** The file's hooks that do not apply (untrusted, changed), for listing. */
   readonly ignored: readonly ConfiguredHook[];
-  /** The file's hash now (`none`: no file), what a person trusts; absent when it cannot be read. */
+  /**
+   * The hash a person trusts now (`hooksHashOf`; `none`: no file); absent when the file or a
+   * project file it names cannot be read, or a path leaves the project.
+   */
   readonly hooksHash?: string;
+  /** The project files (relative, `/`-separated, sorted) the hash binds besides the hooks file. */
+  readonly files: readonly string[];
   readonly reason?: ProjectHooksReason;
+  /** Why it does not read as trustable hooks, for a person. */
+  readonly invalid?: string;
 }
 
 export interface HookConfigDeps {
@@ -139,38 +156,112 @@ function readProject(dir: string): Read<ConfiguredHook[]> {
   return hooksFile(join(dir, HOOKS_FILE), "project", "project", HOOKS_FILE, dir, false);
 }
 
+/** A script a hook names is read up to this size (a larger one cannot be trusted). */
+const REFERENCED_MAX = 16 * 1024 * 1024;
+const sha256 = (text: string) => `sha256:${createHash("sha256").update(text).digest("hex")}`;
+/** `rel` (from `relative`) stays inside the folder. */
+const inside = (rel: string) => rel !== "" && rel !== ".." && !rel.startsWith(`..${sep}`) && !isAbsolute(rel);
+
+/** The trusted hash of a hooks file whose bytes hash to `fileHash` and the project files it names. */
+export function hooksHashOf(fileHash: string, files: ReadonlyArray<readonly [string, string]>): string {
+  const sorted = [...files].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+  return sha256(JSON.stringify({ file: fileHash, files: sorted }));
+}
+
+/** A problem with the project files the hooks name: no hash can be trusted. */
+interface Problem {
+  readonly reason: "invalidHooks" | "unreadable";
+  readonly invalid: string;
+}
+
+/** The project files `hooks` name (relative, `/`-separated, sorted), or the first path that leaves the project. */
+function referenced(dir: string, hooks: readonly ConfiguredHook[]): { files: string[] } | Problem {
+  const files = new Set<string>();
+  for (const h of hooks) {
+    const program = h.spec?.run[0];
+    const named = [...(program !== undefined && hasSeparator(program) ? [program] : []), ...(h.spec?.file === undefined ? [] : [h.spec.file])];
+    for (const path of named) {
+      const rel = relative(dir, resolve(dir, path));
+      if (inside(rel)) files.add(rel.split(sep).join("/"));
+      else if (!isAbsolute(path)) return { reason: "invalidHooks", invalid: `hook "${h.id}": ${path} is outside the project` };
+    }
+  }
+  return { files: [...files].sort() };
+}
+
+/** Each named file's hash, re-validated as the hooks file is; a file whose real path leaves the project is invalid. */
+function hashFiles(dir: string, files: readonly string[]): Array<[string, string]> | Problem {
+  const pairs: Array<[string, string]> = [];
+  for (const rel of files) {
+    const path = join(dir, ...rel.split("/"));
+    const read = readCachedBytes(path, `hookfile\0${path}`, () => {
+      // On every change of the file's key: a symlink (of the file or a folder) out of the project is not project content.
+      if (!inside(relative(realpathSync(dir), realpathSync(path)))) throw new Error(`${rel} resolves outside the project`);
+      return true;
+    }, REFERENCED_MAX);
+    if ("absent" in read) return { reason: "unreadable", invalid: `${rel} does not exist` };
+    if ("error" in read) return { reason: "unreadable", invalid: `${rel} cannot be read: ${read.error}` };
+    if (read.value === undefined) return { reason: "invalidHooks", invalid: read.invalid ?? rel };
+    pairs.push([rel, read.hash]);
+  }
+  return pairs;
+}
+
+type ProjectRead =
+  | { readonly absent: true }
+  | { readonly error: string }
+  | { readonly hooks?: ConfiguredHook[]; readonly hash?: string; readonly files: string[]; readonly problem?: Problem; readonly invalid?: string };
+
+/** The project's hooks file and the files it names: the hash to trust, or why there is none. */
+function readProjectAll(dir: string): ProjectRead {
+  const read = readProject(dir);
+  if (!("hash" in read)) return read;
+  // Not hooks: its own hash stands (trusting it is refused for what it is).
+  if (read.value === undefined) return { hash: hooksHashOf(read.hash, []), files: [], ...(read.invalid === undefined ? {} : { invalid: read.invalid }) };
+  const refs = referenced(dir, read.value);
+  if ("reason" in refs) return { hooks: read.value, files: [], problem: refs };
+  const pairs = hashFiles(dir, refs.files);
+  if ("reason" in pairs) return { hooks: read.value, files: refs.files, problem: pairs };
+  return { hooks: read.value, hash: hooksHashOf(read.hash, pairs), files: refs.files };
+}
+
 /** A project's hooks file and whether it applies, against its trust record. */
 export function projectHooks(dir: string | undefined, trust: ProjectTrust | undefined): ProjectHooks {
-  const none: ProjectHooks = { status: "none", hooks: [], ignored: [] };
+  const none: ProjectHooks = { status: "none", hooks: [], ignored: [], files: [] };
   if (dir === undefined) return none;
   const trusted = trust?.hooksHash;
-  const read = readProject(dir);
+  const read = readProjectAll(dir);
   if ("absent" in read) {
     // A trusted file since deleted is a change (its hooks no longer apply), not "no file".
-    return trusted !== undefined && trusted !== NO_FILE ? { status: "changed", hooks: [], ignored: [], hooksHash: NO_FILE, reason: "deleted" } : { ...none, hooksHash: NO_FILE };
+    return trusted !== undefined && trusted !== NO_FILE ? { ...none, status: "changed", hooksHash: NO_FILE, reason: "deleted" } : { ...none, hooksHash: NO_FILE };
   }
-  if ("error" in read) return { status: trusted === undefined ? "untrusted" : "changed", hooks: [], ignored: [], reason: "unreadable" };
-  const status: ProjectHooksStatus = trusted === undefined ? "untrusted" : trusted === read.hash ? "trusted" : "changed";
-  const reason = read.value === undefined ? { reason: "invalidHooks" as const } : {};
-  if (status === "trusted") return { status, hooks: read.value ?? [], ignored: [], hooksHash: read.hash, ...reason };
-  return { status, hooks: [], ignored: read.value ?? [], hooksHash: read.hash, ...reason };
+  if ("error" in read) return { ...none, status: trusted === undefined ? "untrusted" : "changed", reason: "unreadable" };
+  const status: ProjectHooksStatus = trusted === undefined ? "untrusted" : read.hash !== undefined && trusted === read.hash ? "trusted" : "changed";
+  const why = read.problem ?? (read.hooks === undefined ? { reason: "invalidHooks" as const, invalid: read.invalid ?? "" } : undefined);
+  const base = { files: read.files, ...(read.hash === undefined ? {} : { hooksHash: read.hash }), ...(why === undefined ? {} : { reason: why.reason, invalid: why.invalid }) };
+  if (status === "trusted") return { status, hooks: read.hooks ?? [], ignored: [], ...base };
+  return { status, hooks: [], ignored: read.hooks ?? [], ...base };
 }
 
 /**
- * Checks a project's hooks file against what the person saw (`agent.project.trust`'s
- * `expectedHooksHash`): its hash, or `none` for no file, must be `expected`, else
- * `INVALID_REQUEST {field: expectedHooksHash, reason: changed}`; a file that cannot be read or
- * does not read as hooks is `INVALID_REQUEST`. Records nothing: the caller does once every
- * check passed. Answers the hash to record.
+ * Checks a project's hooks file and the files it names against what the person saw
+ * (`agent.project.trust`'s `expectedHooksHash`): `hooksHashOf` them, or `none` for no file,
+ * must be `expected`, else `INVALID_REQUEST {field: expectedHooksHash, reason: changed}`; a file
+ * that cannot be read, does not read as hooks, names a missing file or a path out of the
+ * project is `INVALID_REQUEST`. Records nothing: the caller does once every check passed.
+ * Answers the hash to record.
  */
 export function checkTrustedHooks(dir: string, projectId: string, expected: string): string {
-  const read = readProject(dir);
+  const read = readProjectAll(dir);
   if ("error" in read) throw finError("INVALID_REQUEST", `${HOOKS_FILE} cannot be read`, { projectId, reason: "unreadable" }, `fix or remove ${HOOKS_FILE}, then trust the project again`);
-  const hash = "absent" in read ? NO_FILE : read.hash;
-  if (hash !== expected) {
-    throw finError("INVALID_REQUEST", `${HOOKS_FILE} changed since it was shown`, { projectId, field: "expectedHooksHash", reason: "changed", hooksHash: hash }, "list the project's hooks again and trust what they show now");
+  if (!("absent" in read) && read.problem !== undefined) {
+    throw finError("INVALID_REQUEST", `${HOOKS_FILE}: ${read.problem.invalid}`, { projectId, reason: read.problem.reason }, "a hook's own files must be files inside the project; fix it, then trust the project again");
   }
-  if ("hash" in read && read.value === undefined) {
+  const hash = "absent" in read ? NO_FILE : (read.hash ?? "");
+  if (hash !== expected) {
+    throw finError("INVALID_REQUEST", `${HOOKS_FILE} or a file it names changed since it was shown`, { projectId, field: "expectedHooksHash", reason: "changed", hooksHash: hash }, "list the project's hooks again and trust what they show now");
+  }
+  if (!("absent" in read) && read.hooks === undefined) {
     throw finError("INVALID_REQUEST", `${HOOKS_FILE} is not a hooks file: ${read.invalid ?? ""}`, { projectId, reason: "invalidHooks" }, `a hooks file is {"hooks": [{"id", "event", "run", ...}]}`);
   }
   return hash;
@@ -190,6 +281,11 @@ export function listedHook(h: ConfiguredHook, applies: boolean): ListedHook {
     ...(h.plugin === undefined ? {} : { plugin: h.plugin }),
     ...(h.spec === undefined ? {} : { run: [...h.spec.run] }),
     ...(h.spec?.match === undefined ? {} : { match: h.spec.match }),
+    ...(h.spec?.file === undefined ? {} : { file: h.spec.file }),
+    ...(h.spec?.principals === undefined ? {} : { principals: h.spec.principals }),
+    ...(h.spec?.fin === undefined ? {} : { fin: h.spec.fin }),
+    ...(h.spec?.timeoutS === undefined ? {} : { timeoutS: h.spec.timeoutS }),
+    ...(h.spec?.onTimeout === undefined ? {} : { onTimeout: h.spec.onTimeout }),
   };
 }
 
@@ -250,7 +346,13 @@ export class HookConfig {
       projectHooks: p.status,
       ...(p.hooksHash === undefined ? {} : { hooksHash: p.hooksHash }),
       ...(p.reason === undefined ? {} : { projectHooksReason: p.reason }),
+      ...(p.files.length === 0 ? {} : { projectHooksFiles: [...p.files] }),
     };
+  }
+
+  /** `start` (a session's start, a spawn, a saved prompt's run) with `warnings(projectId)` added to its warnings. */
+  withWarnings<A extends { readonly warnings: readonly AgentWarning[] }, E>(projectId: string, start: Effect.Effect<A, E>): Effect.Effect<A, E> {
+    return Effect.map(start, (r) => ({ ...r, warnings: [...r.warnings, ...this.warnings(projectId)] }));
   }
 
   /** `PROJECT_HOOKS_UNTRUSTED` while the project has a hooks file that does not apply (Owner question 8). */

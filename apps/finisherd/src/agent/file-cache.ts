@@ -33,6 +33,11 @@ export const firstLine = (e: unknown) => (e instanceof Error ? e.message : Strin
  * rules and the hooks of `settings.json`) never share a parsed value.
  */
 export function readCached<T>(path: string, slot: string, parse: (json: unknown) => T): Read<T> {
+  return readCachedBytes(path, slot, (bytes) => parse(JSON.parse(bytes.toString("utf8")) as unknown));
+}
+
+/** As `readCached`, for any file (`parse` takes its bytes), at most `max` bytes. */
+export function readCachedBytes<T>(path: string, slot: string, parse: (bytes: Buffer) => T, max = CONFIG_FILE_MAX): Read<T> {
   let fd: number;
   try {
     fd = openSync(path, constants.O_RDONLY | NONBLOCK);
@@ -43,17 +48,17 @@ export function readCached<T>(path: string, slot: string, parse: (json: unknown)
   try {
     const st = fstatSync(fd);
     if (!st.isFile()) return { error: "not a regular file" };
-    if (st.size > CONFIG_FILE_MAX) return { error: `larger than ${CONFIG_FILE_MAX} bytes` };
+    if (st.size > max) return { error: `larger than ${max} bytes` };
     const key = `${path}\0${st.ino}\0${st.size}\0${st.mtimeMs}\0${st.ctimeMs}`;
     const hit = cache.get(slot);
     if (hit?.key === key) return hit.read as Read<T>;
     const readAt = Date.now();
     const bytes = readFileSync(fd);
-    if (bytes.length > CONFIG_FILE_MAX) return { error: `larger than ${CONFIG_FILE_MAX} bytes` };
+    if (bytes.length > max) return { error: `larger than ${max} bytes` };
     const hash = hashOf(bytes);
     let read: Read<T>;
     try {
-      read = { hash, value: parse(JSON.parse(bytes.toString("utf8")) as unknown) };
+      read = { hash, value: parse(bytes) };
     } catch (e) {
       read = { hash, invalid: firstLine(e) };
     }

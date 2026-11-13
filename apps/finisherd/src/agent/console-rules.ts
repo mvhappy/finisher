@@ -23,10 +23,15 @@ export function ruleLine(r: ListedRule): string {
   return `${r.id}  ${r.layer}  ${r.effect} ${safe(r.command)}${where}${scope}  (${safe(r.source)})${r.applies ? "" : "  [ignored: project not trusted]"}${r.remembered === true ? "  [remembered: lifts a matching ask]" : ""}`;
 }
 
-/** A project hook as `project trust` shows it: id, event, what it matches and the program it runs. */
+/**
+ * A project hook as `project trust` shows it: id, event, what it matches, the program it runs,
+ * and what makes it weigh more: its own file, everyone's calls, a `fin` credential, its timeout
+ * and what a failure answers.
+ */
 export function hookLine(h: ListedHook): string {
-  const match = h.match === undefined ? "" : `  match ${safe(h.match)}`;
-  return `${safe(h.id)}  ${h.event}${match}  run ${safe(JSON.stringify(h.run ?? []))}  (${safe(h.source)})${h.applies ? "" : "  [not trusted]"}`;
+  const opt = (label: string, v: unknown) => (v === undefined ? "" : `  ${label} ${safe(String(v))}`);
+  const extra = `${opt("file", h.file)}${opt("principals", h.principals)}${h.fin === true ? "  fin" : ""}${opt("timeout", h.timeoutS === undefined ? undefined : `${h.timeoutS}s`)}${opt("onTimeout", h.onTimeout)}`;
+  return `${safe(h.id)}  ${h.event}${opt("match", h.match)}  run ${safe(JSON.stringify(h.run ?? []))}${extra}  (${safe(h.source)})${h.applies ? "" : "  [not trusted]"}`;
 }
 
 export async function agentRules(ctx: CommandContext, rest: ReadonlyArray<string>): Promise<number> {
@@ -124,18 +129,23 @@ export async function projectTrust(ctx: CommandContext, target: string): Promise
     const promptsHash = broken ? undefined : saved.promptsHash;
     if (broken) ctx.output.err("finisherd: a prompt file does not load; its prompts stay untrusted (see `agent prompts --project`)");
     // The project's hooks (finisher.hooks.json, 7F): each with its event and the program it runs.
-    const hooks = await call<{ hooks: ListedHook[]; hooksHash?: string; projectHooksReason?: string }>(c, "agent.hooks.list", { projectId });
+    const hooks = await call<{ hooks: ListedHook[]; hooksHash?: string; projectHooksReason?: string; projectHooksFiles?: string[] }>(c, "agent.hooks.list", { projectId });
     const ownHooks = hooks.hooks.filter((h) => h.layer === "project");
     for (const h of ownHooks) ctx.prompt.show(hookLine(h));
+    // The trusted hash binds the scripts the hooks name too: an edit to one stops them all.
+    const named = hooks.projectHooksFiles ?? [];
+    if (named.length > 0) ctx.prompt.show(`The trust binds ${HOOKS_FILE} and the project files its hooks name: ${named.map(safe).join(", ")}`);
     const hooksBroken = hooks.hooksHash === undefined || hooks.projectHooksReason === "invalidHooks";
     const hooksHash = hooksBroken ? undefined : hooks.hooksHash;
-    if (hooksBroken) ctx.output.err(`finisherd: ${HOOKS_FILE} does not load; its hooks stay untrusted (fix it, then trust the project again)`);
+    if (hooksBroken) ctx.output.err(`finisherd: ${HOOKS_FILE} or a file it names does not load; its hooks stay untrusted (fix it, then trust the project again)`);
     const alsoPrompts = promptsHash === undefined || own.length === 0 ? "" : ` and its ${own.length} saved prompts (prompts/*.json, above)`;
-    const alsoHooks = hooksHash === undefined || ownHooks.length === 0 ? "" : ` and its ${ownHooks.length} hooks (${HOOKS_FILE}, above: each runs its program on its event)`;
+    // Hooks run their programs on agents' calls, and on people's too for `PreMerge`/`PostMerge` and `principals: all`.
+    const people = ownHooks.some((h) => h.principals === "all" || h.event === "PreMerge" || h.event === "PostMerge") ? ", and some on people's calls too (PreMerge, PostMerge or principals all)" : "";
+    const alsoHooks = hooksHash === undefined || ownHooks.length === 0 ? "" : ` and its ${ownHooks.length} hooks (${HOOKS_FILE} and the files it names, above: each runs its program on its event in agent sessions${people})`;
     return confirmed<{ rulesHash: string; rules: number; promptsHash?: string; hooksHash?: string }>(
       c,
       ctx.prompt,
-      `This trusts project ${projectId}'s finisher.rules.json as it is now (${file.length} rules above)${alsoPrompts}${alsoHooks}: they apply to agent sessions until a file changes.`,
+      `This trusts project ${projectId}'s finisher.rules.json as it is now (${file.length} rules above)${alsoPrompts}${alsoHooks}: they apply until a file changes.`,
       typeName("project id's first 8 characters", projectId.slice(0, 8)),
       "agent.project.trust",
       // What was shown: a file changed since is refused.

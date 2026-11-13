@@ -94,8 +94,7 @@ export function agentHandlers(deps: AgentRpcDeps) {
       return Effect.flatMap(sessionInReach(store, p, sessionId), (s) => f(s, p));
     }));
   /** A project hooks file that does not apply is a warning on the start (7F Task 2, Owner question 8). */
-  const withHookWarnings = <A extends { warnings: AgentWarning[] }>(projectId: string, start: Effect.Effect<A, FinError>) =>
-    Effect.map(start, (r) => ({ ...r, warnings: [...r.warnings, ...agents.hooks.warnings(projectId)] }));
+  const withHookWarnings = <A extends { warnings: AgentWarning[] }>(projectId: string, start: Effect.Effect<A, FinError>) => agents.hooks.withWarnings(projectId, start);
   const metaOf = (options: Options): CallMeta => {
     const c = chainOf(options);
     return { ...actorFor(by(options), options.headers), ...(c === undefined ? {} : { guard: c.guard }) };

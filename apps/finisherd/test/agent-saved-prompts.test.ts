@@ -214,6 +214,15 @@ describe("saved prompts", () => {
     expect(ok<{ projectHooks: string }>(await owner.call("agent.hooks.list", { projectId })).projectHooks).toBe("trusted");
   });
 
+  test("a saved prompt's run warns PROJECT_HOOKS_UNTRUSTED as a start does (review of 7F Task 2)", async () => {
+    const { local, dir, projectId } = await setUp();
+    type Started = { warnings?: Array<{ code: string; details: Record<string, unknown> }> };
+    const hookWarnings = async () => (ok<Started>(await run(local, projectId, "make-shorts")).warnings ?? []).filter((w) => w.code === "PROJECT_HOOKS_UNTRUSTED");
+    expect(await hookWarnings()).toEqual([]);
+    writeFileSync(join(dir, "finisher.hooks.json"), JSON.stringify({ hooks: [{ id: "h", event: "SessionEnd", run: ["node"] }] }));
+    expect((await hookWarnings()).map((w) => w.details)).toEqual([{ projectId, status: "untrusted" }]);
+  });
+
   test("people_only: an agent principal is SCOPE_DENIED; fin has no command for it", async () => {
     const { local, projectId } = await setUp();
     const opened = await open(server.core, local, projectId, { harness: "fake" });
