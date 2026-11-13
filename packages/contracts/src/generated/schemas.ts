@@ -13,7 +13,7 @@ const opaque = <A>() => Schema.Unknown as unknown as Schema.Codec<A>;
 
 export const AssetKindSchema = Schema.Literals(["media", "image", "svg", "lottieTemplate", "font", "lut"]);
 export const assetKindMatches: Same<typeof AssetKindSchema.Type, T.AssetKind> = true;
-export const AudioCodecSchema = Schema.Union([Schema.Literals(["aac", "opus", "mp3", "flac", "alac", "pcm", "ac3", "eac3"]), Schema.Literal("other")]);
+export const AudioCodecSchema = Schema.Union([Schema.Literals(["aac", "opus", "mp3", "flac", "alac", "pcm", "ac3", "eac3"]), Schema.Literal("other")], { mode: "oneOf" });
 export const audioCodecMatches: Same<typeof AudioCodecSchema.Type, T.AudioCodec> = true;
 export const AudioInfoSchema = Schema.Struct({
   channels: Schema.Number.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(0), Schema.isLessThanOrEqualTo(65535)),
@@ -83,15 +83,15 @@ export const CheckSchema = Schema.Struct({
 export const checkMatches: Same<typeof CheckSchema.Type, T.Check> = true;
 export const ChromaSchema = Schema.Literals(["mono", "yuv420", "yuv422", "yuv444"]);
 export const chromaMatches: Same<typeof ChromaSchema.Type, T.Chroma> = true;
-export const ChromaSitingSchema = Schema.Union([Schema.Literal("unknown"), Schema.Literal("left"), Schema.Literal("center"), Schema.Literal("topLeft")]);
+export const ChromaSitingSchema = Schema.Union([Schema.Literal("unknown"), Schema.Literal("left"), Schema.Literal("center"), Schema.Literal("topLeft")], { mode: "oneOf" });
 export const chromaSitingMatches: Same<typeof ChromaSitingSchema.Type, T.ChromaSiting> = true;
-export const MatrixSchema = Schema.Union([Schema.Literals(["bt709", "bt601", "unknown"]), Schema.Literal("bt2020Ncl"), Schema.Literal("identity")]);
+export const MatrixSchema = Schema.Union([Schema.Literals(["bt709", "bt601", "unknown"]), Schema.Literal("bt2020Ncl"), Schema.Literal("identity")], { mode: "oneOf" });
 export const matrixMatches: Same<typeof MatrixSchema.Type, T.Matrix> = true;
-export const PrimariesSchema = Schema.Union([Schema.Literals(["bt709", "bt2020", "unknown"]), Schema.Literal("bt601_625"), Schema.Literal("bt601_525"), Schema.Literal("displayP3")]);
+export const PrimariesSchema = Schema.Union([Schema.Literals(["bt709", "bt2020", "unknown"]), Schema.Literal("bt601_625"), Schema.Literal("bt601_525"), Schema.Literal("displayP3")], { mode: "oneOf" });
 export const primariesMatches: Same<typeof PrimariesSchema.Type, T.Primaries> = true;
-export const RangeSchema = Schema.Union([Schema.Literal("full"), Schema.Literal("limited")]);
+export const RangeSchema = Schema.Union([Schema.Literal("full"), Schema.Literal("limited")], { mode: "oneOf" });
 export const rangeMatches: Same<typeof RangeSchema.Type, T.Range> = true;
-export const TransferSchema = Schema.Union([Schema.Literals(["srgb", "linear", "unknown"]), Schema.Literal("bt709"), Schema.Literal("pq"), Schema.Literal("hlg")]);
+export const TransferSchema = Schema.Union([Schema.Literals(["srgb", "linear", "unknown"]), Schema.Literal("bt709"), Schema.Literal("pq"), Schema.Literal("hlg")], { mode: "oneOf" });
 export const transferMatches: Same<typeof TransferSchema.Type, T.Transfer> = true;
 export const ColourTagsSchema = Schema.Struct({
   matrix: MatrixSchema,
@@ -136,7 +136,7 @@ export const ConflictSchema = Schema.Struct({
   txId: Schema.String,
 });
 export const conflictMatches: Same<typeof ConflictSchema.Type, T.Conflict> = true;
-export const ContainerKindSchema = Schema.Union([Schema.Literal("mp4"), Schema.Literal("mov")]);
+export const ContainerKindSchema = Schema.Union([Schema.Literal("mp4"), Schema.Literal("mov")], { mode: "oneOf" });
 export const containerKindMatches: Same<typeof ContainerKindSchema.Type, T.ContainerKind> = true;
 export const ContentLightSchema = Schema.Struct({
   maxCll: Schema.Number.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(0), Schema.isLessThanOrEqualTo(65535)),
@@ -270,7 +270,7 @@ export const LeaseStateSchema = Schema.Union([Schema.Struct({
 }), Schema.Struct({
   reason: Schema.String,
   state: Schema.Literal("lost"),
-})]);
+})], { mode: "oneOf" });
 export const leaseStateMatches: Same<typeof LeaseStateSchema.Type, T.LeaseState> = true;
 export const SlotSpecSchema = Schema.Struct({
   id: Schema.String,
@@ -297,7 +297,7 @@ export const SizeSchema = Schema.Struct({
   width: Schema.Number.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(0)),
 });
 export const sizeMatches: Same<typeof SizeSchema.Type, T.Size> = true;
-export const VideoCodecSchema = Schema.Union([Schema.Literals(["av1", "h264", "hevc", "vp9", "vp8", "proRes"]), Schema.Literal("other")]);
+export const VideoCodecSchema = Schema.Union([Schema.Literals(["av1", "h264", "hevc", "vp9", "vp8", "proRes"]), Schema.Literal("other")], { mode: "oneOf" });
 export const videoCodecMatches: Same<typeof VideoCodecSchema.Type, T.VideoCodec> = true;
 export const VideoTrackInfoSchema = Schema.Struct({
   bitDepth: Schema.Number.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(0), Schema.isLessThanOrEqualTo(255)),

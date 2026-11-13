@@ -7,7 +7,10 @@
 //
 // - an object (`properties`, `required`; `additionalProperties: false` or absent) is a `Struct`,
 //   its optional fields `optionalKey`; an object of `additionalProperties` alone a `Record`;
-// - `anyOf`/`oneOf` a `Union` (a `null` member: `NullOr`), `allOf` of one member that member;
+// - `anyOf`/`oneOf` a `Union` (`oneOf`: `mode: "oneOf"`, exactly one member matches; a `null`
+//   member: `NullOr`); two or more object members need a required `const` tag distinct per
+//   member, or it throws (a `Struct` drops keys, so an untagged union could pick the wrong
+//   member); `allOf` of one member that member;
 // - `type: [T, "null"]` is `NullOr(T)`; `const`/`enum` are `Literal`/`Literals`;
 // - arrays are `Array` (mutable, as the generated types), or a `Tuple`: `prefixItems`, or
 //   `items` with `minItems` = `maxItems` (json-schema-to-typescript writes these as tuples);
@@ -65,7 +68,7 @@ export function effectSchemas(doc: { $defs?: Record<string, unknown> }, o: Effec
     }
     const used = new Set<string>();
     code.set(name, ""); // guards against revisiting while walking
-    const expr = opaque.has(name) ? `opaque<T.${name}>()` : translate(defs[name], name, used);
+    const expr = opaque.has(name) ? `opaque<T.${name}>()` : translate(defs[name], name, used, defs);
     code.set(name, expr);
     deps.set(name, used);
     for (const d of used) visit(d);
@@ -108,8 +111,15 @@ function topological(deps: Map<string, Set<string>>): string[] {
   return out;
 }
 
-/** The Effect expression of `schema` (inside definition `where`), recording its `$ref`s in `used`. */
-export function translate(schema: unknown, where: string, used: Set<string>): string {
+/** The definitions `$ref`s of the schema being translated resolve against (unions look into them). */
+let defsInScope: Record<string, unknown> = {};
+
+/**
+ * The Effect expression of `schema` (inside definition `where`), recording its `$ref`s in `used`;
+ * `defs`: what they refer to.
+ */
+export function translate(schema: unknown, where: string, used: Set<string>, defs: Record<string, unknown> = {}): string {
+  defsInScope = defs;
   try {
     return expr(schema, used);
   } catch (e) {
@@ -154,9 +164,13 @@ function expr(schema: unknown, used: Set<string>): string {
       const members = s[k] as unknown[];
       if (!Array.isArray(members) || members.length === 0) fail(`empty ${k}`, s);
       const isNull = (m: unknown) => typeof m === "object" && m !== null && shapeKeys(m as Json).length === 1 && (m as Json).type === "null";
-      const rest = members.filter((m) => !isNull(m)).map((m) => expr(m, used));
+      const nonNull = members.filter((m) => !isNull(m));
+      if (nonNull.length > 1) tagged(nonNull, s);
+      const rest = nonNull.map((m) => expr(m, used));
       if (rest.length === 0) return "Schema.Null";
-      const inner = rest.length === 1 ? rest[0]! : `Schema.Union([${rest.join(", ")}])`;
+      // A JSON `oneOf` admits exactly one member; Effect's default union takes the first match.
+      const mode = k === "oneOf" ? ', { mode: "oneOf" }' : "";
+      const inner = rest.length === 1 ? rest[0]! : `Schema.Union([${rest.join(", ")}]${mode})`;
       return rest.length === members.length ? inner : `Schema.NullOr(${inner})`;
     }
   }
@@ -170,6 +184,58 @@ function expr(schema: unknown, used: Set<string>): string {
     return nonNull.length === types.length ? union : `Schema.NullOr(${union})`;
   }
   return typed(s, used);
+}
+
+/** `m` with its `$ref`s and single-member `allOf`s followed (a missing definition is `undefined`). */
+function resolved(m: unknown, seen = new Set<string>()): unknown {
+  if (m === null || typeof m !== "object" || Array.isArray(m)) return m;
+  const j = m as Json;
+  if (typeof j.$ref === "string" && j.$ref.startsWith(REF)) {
+    const name = j.$ref.slice(REF.length);
+    if (seen.has(name)) return undefined;
+    return resolved(defsInScope[name], new Set([...seen, name]));
+  }
+  if (Array.isArray(j.allOf) && j.allOf.length === 1) return resolved(j.allOf[0], seen);
+  return m;
+}
+
+/** Whether `m` describes objects: `type: object`, or a union with such members. */
+function isObjectish(m: unknown): boolean {
+  const r = resolved(m);
+  if (r === null || typeof r !== "object" || Array.isArray(r)) return false;
+  const j = r as Json;
+  if (j.type === "object" || (Array.isArray(j.type) && j.type.includes("object"))) return true;
+  return ["anyOf", "oneOf"].some((k) => Array.isArray(j[k]) && (j[k] as unknown[]).some(isObjectish));
+}
+
+/** The value of `m`'s required single-value property `key` (`const` or one-value `enum`), if any. */
+function tagOf(m: unknown, key: string): { value: unknown } | undefined {
+  const r = resolved(m) as Json | undefined;
+  if (!r || r.type !== "object" || !Array.isArray(r.required) || !r.required.includes(key)) return undefined;
+  const p = resolved((r.properties as Json | undefined)?.[key]) as Json | undefined;
+  if (!p || typeof p !== "object") return undefined;
+  if ("const" in p) return { value: p.const };
+  if (Array.isArray(p.enum) && p.enum.length === 1) return { value: p.enum[0] };
+  return undefined;
+}
+
+/**
+ * Throws unless the object members of a union (two or more) share a required property whose
+ * `const` differs per member. A `Struct` drops keys it does not list, so an untagged union of
+ * objects (one's fields a subset of another's) could decode as the wrong member and lose data.
+ */
+function tagged(members: unknown[], s: Json) {
+  const objects = members.filter(isObjectish);
+  if (objects.length < 2) return;
+  const first = resolved(objects[0]) as Json | undefined;
+  const keys = first && Array.isArray(first.required) ? (first.required as string[]) : [];
+  const ok = keys.some((key) => {
+    const tags = objects.map((o) => tagOf(o, key));
+    if (tags.some((t) => t === undefined)) return false;
+    const values = tags.map((t) => JSON.stringify(t!.value));
+    return new Set(values).size === values.length;
+  });
+  if (!ok) fail("a union of objects without a distinct required const tag", s);
 }
 
 function literals(s: Json): string {

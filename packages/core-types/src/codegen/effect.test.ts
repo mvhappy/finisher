@@ -35,7 +35,7 @@ test("nullable: a type list with null, anyOf with a null member", () => {
 test("$ref, allOf of one member, unions", () => {
   const used = new Set<string>();
   expect(translate({ allOf: [{ $ref: "#/$defs/A" }], description: "field doc" }, "X", used)).toBe("ASchema");
-  expect(translate({ oneOf: [{ $ref: "#/$defs/B" }, { type: "string" }] }, "X", used)).toBe("Schema.Union([BSchema, Schema.String])");
+  expect(translate({ oneOf: [{ $ref: "#/$defs/B" }, { type: "string" }] }, "X", used)).toBe('Schema.Union([BSchema, Schema.String], { mode: "oneOf" })');
   expect([...used].sort()).toEqual(["A", "B"]);
   expect(t({ oneOf: [{ $ref: "#/$defs/A" }] })).toBe("ASchema");
 });
@@ -48,7 +48,7 @@ test("const and enum: literals, integer ones, null among them", () => {
   expect(t({ enum: [true] })).toBe("Schema.Literal(true)");
   // A tagged enum as schemars writes it (`oneOf` of string groups and consts).
   expect(t({ oneOf: [{ enum: ["a", "b"], type: "string" }, { const: "c", type: "string" }] })).toBe(
-    'Schema.Union([Schema.Literals(["a", "b"]), Schema.Literal("c")])',
+    'Schema.Union([Schema.Literals(["a", "b"]), Schema.Literal("c")], { mode: "oneOf" })',
   );
 });
 
@@ -160,4 +160,29 @@ test("the committed contracts schemas cover the RPC results (the drift gate comp
     expect(schema.$defs[name]).toBeDefined();
   }
   expect(committed).toContain("export const CommittedTxSchema = opaque<T.CommittedTx>();");
+});
+
+test("a oneOf is a oneOf union (exactly one member matches), an anyOf a first-match one", () => {
+  expect(t({ oneOf: [{ type: "string" }, { type: "boolean" }] })).toBe('Schema.Union([Schema.String, Schema.Boolean], { mode: "oneOf" })');
+  expect(t({ anyOf: [{ type: "string" }, { type: "boolean" }] })).toBe("Schema.Union([Schema.String, Schema.Boolean])");
+  expect(t({ oneOf: [{ $ref: "#/$defs/A" }, { type: "null" }] })).toBe("Schema.NullOr(ASchema)");
+});
+
+test("a union of objects needs a required const tag, distinct per member, or it throws", () => {
+  const held = { type: "object", properties: { state: { const: "held", type: "string" }, epoch: { type: "integer" } }, required: ["state", "epoch"] };
+  const lost = { type: "object", properties: { state: { const: "lost", type: "string" }, reason: { type: "string" } }, required: ["state", "reason"] };
+  expect(t({ oneOf: [held, lost] })).toMatch(/^Schema\.Union\(\[Schema\.Struct\(\{[\s\S]*\], \{ mode: "oneOf" \}\)$/);
+  // Members behind `$ref`s are looked up in the definitions.
+  const defs = { H: held, L: lost, U: { type: "object", properties: { epoch: { type: "integer" } }, required: ["epoch"] } };
+  expect(translate({ oneOf: [{ $ref: "#/$defs/H" }, { $ref: "#/$defs/L" }] }, "X", new Set(), defs)).toBe('Schema.Union([HSchema, LSchema], { mode: "oneOf" })');
+  // One variant's fields a subset of another's: decoding could take the wrong one and drop fields.
+  const untagged = [
+    { anyOf: [{ $ref: "#/$defs/U" }, { $ref: "#/$defs/H" }] },
+    { oneOf: [{ $ref: "#/$defs/H" }, { $ref: "#/$defs/H" }] },
+    { anyOf: [held, { ...lost, required: ["reason"] }] },
+    { oneOf: [held, { type: "object", additionalProperties: { type: "string" } }] },
+  ];
+  for (const s of untagged) expect(() => translate(s, "X", new Set(), defs), JSON.stringify(s)).toThrow(/effect schemas: X: a union of objects without a distinct required const tag/);
+  // An object beside non-objects is told apart by its type; null beside one object is NullOr.
+  expect(translate({ anyOf: [{ $ref: "#/$defs/U" }, { type: "string" }, { type: "null" }] }, "X", new Set(), defs)).toBe("Schema.NullOr(Schema.Union([USchema, Schema.String]))");
 });
