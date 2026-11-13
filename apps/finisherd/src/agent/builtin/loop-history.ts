@@ -14,9 +14,10 @@
 // the session was rolled back to. A `summary` node (7B Decision 24) replaces every message of
 // the runs before its own with the summary's message, as the loop did live; before it the
 // conversation is whole. A rollback to a run the summary covers rolls its run back too, so the
-// covered runs come back whole. Hooks' context (7F Decision 16) is joined back: a prompt's
-// `hookContext` notices before its `userMessage` as the block after its text, and a steer of
-// context (`trigger: "hook"`) as a steer.
+// covered runs come back whole. A run's first `userMessage` starts it (its turn's text, whatever
+// its trigger: a prompt, an idle steer, held steers); later ones in the run are steers. Hooks'
+// context (7F Decision 16) is joined back: the `hookContext` notices of a run before its first
+// `userMessage`, as the block after its text, and a steer of context (`trigger: "hook"`) as a steer.
 import type { Node } from "@finisher/contracts";
 import { hookContextBlock } from "../hook-context.ts";
 import { summaryMessage } from "./compact.ts";
@@ -72,8 +73,10 @@ export function historyFromNodes(nodes: ReadonlyArray<Node>, limits: CutLimits):
   let run = "";
   const results = new Map<string, string>();
   const steers: string[] = [];
-  /** `hookContext` texts for the next prompt. */
-  const context: string[] = [];
+  /** `hookContext` texts of the run whose first message is still to come. */
+  const context: { run: string; text: string }[] = [];
+  /** Runs whose first `userMessage` (the turn's text) was read. */
+  const opened = new Set<string>();
   let reply: Reply | null = null;
   let reasoning: unknown[] | undefined;
   let pending: Reply[] = [];
@@ -124,14 +127,16 @@ export function historyFromNodes(nodes: ReadonlyArray<Node>, limits: CutLimits):
     switch (n.kind) {
       case "userMessage": {
         const text = typeof p.text === "string" ? p.text : "";
-        if (p.trigger === "steer" || p.trigger === "hook") {
+        if (opened.has(run) && (p.trigger === "steer" || p.trigger === "hook")) {
           // A steer enters the conversation where the loop took it (`steersTaken`).
           steers.push(text);
           break;
         }
         flush();
         write();
-        const suffix = context.length === 0 ? "" : `\n\n${hookContextBlock(context.splice(0))}`;
+        opened.add(run);
+        const own = context.splice(0).filter((c) => c.run === run).map((c) => c.text);
+        const suffix = own.length === 0 ? "" : `\n\n${hookContextBlock(own)}`;
         put({ role: "user", content: [{ type: "text", text: text + suffix }] }, run);
         break;
       }
@@ -140,7 +145,7 @@ export function historyFromNodes(nodes: ReadonlyArray<Node>, limits: CutLimits):
         break;
       case "notice": {
         const hook = p.hookContext as { text?: unknown } | undefined;
-        if (typeof hook?.text === "string") context.push(hook.text);
+        if (typeof hook?.text === "string") context.push({ run, text: hook.text });
         const taken = (p.steersTaken as { count?: unknown } | undefined)?.count;
         if (typeof taken === "number" && taken > 0) {
           flush();

@@ -406,6 +406,32 @@ describe("built-in loop", () => {
       { role: "assistant", text: "Fixing." },
     ]);
   });
+
+  test("history_steer_started_runs (Task 6 review): an idle steer's run and a run of held steers start with their text and own context", () => {
+    let seq = 0;
+    const n = (runId: string, kind: Node["kind"], payload: unknown): Node => ({ id: `n${++seq}`, runId, sessionId: "S", seq, kind, payload, createdAt: 0 });
+    const reply = (runId: string, text: string) => [n(runId, "usage", { input: 1 }), n(runId, "assistantMessage", { role: "assistant", blocks: [{ type: "text", text }] })];
+    const h = historyFromNodes([
+      // An idle session steered: the steer starts R1, with its UserPrompt context.
+      n("R1", "notice", { hookContext: { event: "UserPrompt", hooks: ["u"], text: "C1" } }),
+      n("R1", "userMessage", { text: "first", trigger: "steer" }),
+      ...reply("R1", "one"),
+      // Steers held for a provider that cannot take them mid-run start R2 when R1 ends.
+      n("R2", "userMessage", { text: "held a\n\nheld b", trigger: "steer" }),
+      ...reply("R2", "two"),
+      n("R3", "notice", { hookContext: { event: "UserPrompt", hooks: ["u"], text: "C3" } }),
+      n("R3", "userMessage", { text: "third", trigger: "prompt" }),
+      ...reply("R3", "three"),
+    ], LOOP_LIMITS);
+    expect(h).toEqual([
+      { role: "user", content: [{ type: "text", text: "first\n\n<hook-context>\nC1\n</hook-context>" }] },
+      { role: "assistant", text: "one" },
+      { role: "user", content: [{ type: "text", text: "held a\n\nheld b" }] },
+      { role: "assistant", text: "two" },
+      { role: "user", content: [{ type: "text", text: "third\n\n<hook-context>\nC3\n</hook-context>" }] },
+      { role: "assistant", text: "three" },
+    ]);
+  });
 });
 
 describe("built-in loop: review findings (Task 8b)", () => {

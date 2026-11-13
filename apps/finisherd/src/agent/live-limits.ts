@@ -134,12 +134,12 @@ export class LiveLimits {
     await this.#d.turns.interrupt(sessionId, e.code);
   }
 
-  /** A steer to the session's queued run: recorded (its `userMessage`) and held; false when it has none. */
-  async hold(sessionId: string, text: string): Promise<boolean> {
+  /** A steer to the session's queued run: recorded (its `userMessage`, `payload`) and held; false when it has none. */
+  async hold(sessionId: string, text: string, payload: Readonly<Record<string, unknown>> = { text, trigger: "steer" }): Promise<boolean> {
     const q = this.#queue.find((x) => x.sessionId === sessionId);
     if (q === undefined || !this.#d.current(sessionId, q.runId)) return false;
     q.texts.push(text);
-    await this.#d.turns.append({ sessionId, runId: q.runId, kind: "userMessage", payload: { text, trigger: "steer" } });
+    await this.#d.turns.append({ sessionId, runId: q.runId, kind: "userMessage", payload });
     return true;
   }
 

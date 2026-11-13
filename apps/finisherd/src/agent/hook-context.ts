@@ -12,6 +12,12 @@
 //   next run. It never starts a run.
 // - **Notices** go into the active run, else are held for the next. An ended session's are
 //   logged and dropped; at most `HELD_MAX` items wait per session (the rest are logged).
+// - **A run waiting for a live slot** (`live-limits.ts`) takes context with its steers: its
+//   `userMessage {trigger: "hook"}` is recorded in that run and the block steered in at admission.
+// - **Command order** (`CommandOrder`): a session's commands run one after another in the order
+//   they came, each with its `UserPrompt` hook inside its turn, so a slow hook never lets a later
+//   command (a steer, an end) overtake it. The order is its own queue, in front of the session's
+//   queue: provider events and timers go on while a hook runs.
 import type { NodeKind, Session } from "@finisher/contracts";
 import type { ContextPort, HookContextItem } from "../hooks/session.ts";
 import { call, type Live } from "./runtime-live.ts";
@@ -32,6 +38,8 @@ export interface ContextInternals {
   activeRun(sessionId: string): string | null;
   live(sessionId: string): Live | undefined;
   append(n: { sessionId: string; runId: string; kind: NodeKind; payload: unknown }): Promise<unknown>;
+  /** Queues `text` (recorded as `payload`) with the session's run waiting for a live slot; false when it has none. */
+  queued(sessionId: string, text: string, payload: Readonly<Record<string, unknown>>): Promise<boolean>;
   /** In the session's queue (`RuntimeEngine.background`). */
   background(sessionId: string, what: string, f: () => Promise<void>): void;
   log(message: string, details: Record<string, unknown>): void;
@@ -76,9 +84,11 @@ export class HookContexts {
   async deliver(sessionId: string, item: HookContextItem): Promise<void> {
     const s = this.#d.session(sessionId);
     const live = this.#d.live(sessionId);
+    const text = hookContextBlock([item.text]);
+    const payload = { text, trigger: "hook", hookContext: { event: item.event, hooks: item.hooks } };
+    if (s?.status === "running" && (await this.#d.queued(sessionId, text, payload))) return;
     if ((s?.status === "running" || s?.status === "waitingApproval") && live?.runId != null && live.caps.steer) {
-      const text = hookContextBlock([item.text]);
-      await this.#d.append({ sessionId, runId: live.runId, kind: "userMessage", payload: { text, trigger: "hook", hookContext: { event: item.event, hooks: item.hooks } } });
+      await this.#d.append({ sessionId, runId: live.runId, kind: "userMessage", payload });
       const err = await call(live.provider.steer({ text }));
       if (err !== null) this.#d.log("agent runtime: the provider refused hook context", { sessionId, code: err.code });
       return;
@@ -115,5 +125,24 @@ export class HookContexts {
     }
     held.push(h);
     this.#held.set(sessionId, held);
+  }
+}
+
+/** Each session's commands, in the order they came (see the module docs). */
+export class CommandOrder {
+  readonly #tails = new Map<string, Promise<unknown>>();
+
+  /** Runs `f` once every earlier command of the session has finished. */
+  run<A>(sessionId: string, f: () => Promise<A>): Promise<A> {
+    const done = (this.#tails.get(sessionId) ?? Promise.resolve()).then(f);
+    const tail = done.then(
+      () => {},
+      () => {},
+    );
+    this.#tails.set(sessionId, tail);
+    void tail.then(() => {
+      if (this.#tails.get(sessionId) === tail) this.#tails.delete(sessionId);
+    });
+    return done;
   }
 }

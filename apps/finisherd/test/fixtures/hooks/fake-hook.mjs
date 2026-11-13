@@ -17,12 +17,13 @@
 //   --read <path>        observes whether <path> can be read
 //   --write <path>       observes whether <path> can be written
 //   --append <path>      appends its request (stdin, one line) to <path> (a log of its runs)
+//   --gate-if <s> <path> when its request holds <s>, waits until <path> exists
 //   --connect <port>     observes whether TCP 127.0.0.1:<port> connects
 //   --connects <p,q>     observes, per port, whether TCP 127.0.0.1:<port> connects
 //   --fin <json args>    runs `fin` (found on its `PATH`) with the JSON array's arguments and
 //                        observes its exit code and its error's code and message
 import { spawn, spawnSync } from "node:child_process";
-import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { connect } from "node:net";
 import { networkInterfaces } from "node:os";
 import { join } from "node:path";
@@ -101,6 +102,11 @@ for (let i = 0; i < args.length; i++) {
     case "--write": {
       const p = next();
       seen.write = { ...seen.write, [p]: errCode(() => writeFileSync(p, "hook\n")) };
+      break;
+    }
+    case "--gate-if": {
+      const [s, p] = [next(), next()];
+      while (stdin.includes(s) && !existsSync(p)) await new Promise((r) => setTimeout(r, 20));
       break;
     }
     case "--append":

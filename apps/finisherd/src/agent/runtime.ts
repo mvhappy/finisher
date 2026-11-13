@@ -10,7 +10,7 @@
 //   (`provider-requests.ts`).
 // - A start of a non-local model without a price is refused (`PRICING_UNKNOWN`); every start
 //   answers the persistent warnings (`SANDBOX_DISABLED` until 7C, owner decision F2).
-// - Every command runs in its session's queue, after the events and commands before it.
+// - Every command runs after the session's earlier commands (`CommandOrder`), then in its queue.
 // - Children (7B Task 6, `subagents.ts`): `spawnChild` starts one for a parent session,
 //   `waitChildren` waits on them; after every transition the subagents see it (a brief's end,
 //   the parent's `subagent` node, the cascade; a root's end waits for a descendant's calls in
@@ -29,7 +29,7 @@ import type { CallMeta } from "../diagnostics.ts";
 import { finError, toFinError } from "../errors.ts";
 import { DEFAULT_BUDGET } from "./budget.ts";
 import { childCarve } from "./carve.ts";
-import { HookContexts, type HookContextItem } from "./hook-context.ts";
+import { CommandOrder, HookContexts, type HookContextItem } from "./hook-context.ts";
 import { AgentCoreTag } from "./core.ts";
 import { openSession, registryBranchOps } from "./credentials.ts";
 import { type RuntimeDeps, RuntimeEngine, STOP_GRACE_MS } from "./runtime-engine.ts";
@@ -86,7 +86,8 @@ export class Runtime extends RuntimeEngine {
   readonly #limits: LiveLimits;
   readonly subagents: Subagents;
   readonly #rollbacks: Rollbacks | undefined;
-  readonly #contexts = new HookContexts({ session: (id) => this.store.get(id), activeRun: (id) => this.store.activeRun(id), live: (id) => this.lives.get(id), append: (n) => this.append(n), background: (id, what, f) => this.background(id, what, f), log: (m, d) => this.log(m, d) });
+  readonly #contexts = new HookContexts({ session: (id) => this.store.get(id), activeRun: (id) => this.store.activeRun(id), live: (id) => this.lives.get(id), append: (n) => this.append(n), queued: (id, t, p) => this.#limits.hold(id, t, p), background: (id, what, f) => this.background(id, what, f), log: (m, d) => this.log(m, d) });
+  readonly #order = new CommandOrder();
 
   constructor(deps: Deps) {
     super(deps);
@@ -211,6 +212,12 @@ export class Runtime extends RuntimeEngine {
     if (!this.#booted) throw finError("SERVER_UNAVAILABLE", "the agent runtime has not recovered yet", { reason: "agentRuntimeBooting" });
   }
 
+  /** A session command after its earlier ones (`CommandOrder`): a prompt's `UserPrompt` hook, then `f` in the session's queue. */
+  #command<A>(sessionId: string, f: (context?: HookContextItem) => Promise<A>, p?: { by: Principal; text: string; origin: "prompt" | "steer" }): Promise<A> {
+    const hook = async () => (p === undefined ? undefined : this.deps.hooks?.userPrompt(this.session(sessionId), p.by, p.text, p.origin));
+    return this.#order.run(sessionId, () => hook().then((c) => this.serial(sessionId, () => f(c))));
+  }
+
   // Commands --------------------------------------------------------------------------------
 
   /**
@@ -307,7 +314,7 @@ export class Runtime extends RuntimeEngine {
       this.#guard();
       const rb = this.#rollbacks;
       if (rb === undefined) throw finError("SERVER_UNAVAILABLE", "rollback is not wired on this server", { reason: "noRollback" });
-      return this.serial(sessionId, async () => {
+      return this.#command(sessionId, async () => {
         const ops: ConversationOps = {
           caps: async (s) => this.lives.get(s.id)?.caps ?? (await exitOf((this.adapter(s.harness) ?? harnessUnknown(s.harness)).detect())).capabilities,
           live: (id) => this.lives.get(id)?.provider,
@@ -323,10 +330,9 @@ export class Runtime extends RuntimeEngine {
 
   /** `agent.session.prompt`: a run; `SESSION_BUSY` while one runs, `BUDGET_EXCEEDED` when nothing is left. */
   prompt(sessionId: string, text: string, by: Principal, attachments?: ReadonlyArray<unknown>): Effect.Effect<Run, FinError> {
-    return attempt(async () => {
+    return attempt(() => {
       this.#guard();
-      const context = await this.deps.hooks?.userPrompt(this.session(sessionId), by, text, "prompt");
-      return this.serial(sessionId, () => this.promptIn(sessionId, text, "prompt", attachments, context));
+      return this.#command(sessionId, (context) => this.promptIn(sessionId, text, "prompt", attachments, context), { by, text, origin: "prompt" });
     });
   }
 
@@ -387,10 +393,9 @@ export class Runtime extends RuntimeEngine {
    * (`queued: true`). On an idle session it starts a run.
    */
   steer(sessionId: string, text: string, by: Principal): Effect.Effect<{ queued: boolean }, FinError> {
-    return attempt(async () => {
+    return attempt(() => {
       this.#guard();
-      const context = await this.deps.hooks?.userPrompt(this.session(sessionId), by, text, "steer");
-      return this.serial(sessionId, async () => {
+      return this.#command(sessionId, async (context) => {
         const s = this.session(sessionId);
         const live = this.lives.get(sessionId);
         // A run waiting for a slot takes the steer into its first turn.
@@ -407,7 +412,7 @@ export class Runtime extends RuntimeEngine {
         }
         await this.promptIn(sessionId, text, "steer", undefined, context);
         return { queued: false };
-      });
+      }, { by, text, origin: "steer" });
     });
   }
 
@@ -415,7 +420,7 @@ export class Runtime extends RuntimeEngine {
   interrupt(sessionId: string, _by: Principal): Effect.Effect<Session, FinError> {
     return attempt(() => {
       this.#guard();
-      return this.serial(sessionId, () => this.#interruptIn(sessionId, "userInterrupt"));
+      return this.#command(sessionId, () => this.#interruptIn(sessionId, "userInterrupt"));
     });
   }
 
@@ -449,15 +454,14 @@ export class Runtime extends RuntimeEngine {
    * provider reopens with its resume reference at the next run, which `prompt` starts at once.
    */
   resume(sessionId: string, by: Principal, prompt?: string): Effect.Effect<{ session: Session; run?: Run }, FinError> {
-    return attempt(async () => {
+    return attempt(() => {
       this.#guard();
-      const context = prompt === undefined ? undefined : await this.deps.hooks?.userPrompt(this.session(sessionId), by, prompt, "prompt");
-      return this.serial(sessionId, async () => {
+      return this.#command(sessionId, async (context) => {
         await this.#refresh(this.session(sessionId));
         await this.apply(sessionId, { kind: "resumed" });
         const run = prompt === undefined ? undefined : await this.promptIn(sessionId, prompt, "prompt", undefined, context);
         return { session: this.session(sessionId), ...(run === undefined ? {} : { run }) };
-      });
+      }, prompt === undefined ? undefined : { by, text: prompt, origin: "prompt" });
     });
   }
 
@@ -465,7 +469,7 @@ export class Runtime extends RuntimeEngine {
   end(sessionId: string, _by: Principal): Effect.Effect<Session, FinError> {
     return attempt(() => {
       this.#guard();
-      return this.serial(sessionId, async () => {
+      return this.#command(sessionId, async () => {
         const session = await this.#endIn(sessionId, "userEnded");
         this.forgetBudget(sessionId);
         return session;
@@ -486,7 +490,7 @@ export class Runtime extends RuntimeEngine {
   delete(sessionId: string, _by: Principal): Effect.Effect<void, FinError> {
     return attempt(() => {
       this.#guard();
-      return this.serial(sessionId, async () => {
+      return this.#command(sessionId, async () => {
         const session = this.session(sessionId);
         if (session.status !== "ended") await this.#endIn(sessionId, "deleted");
         // Its unmerged transactions are abandoned (Task 11) before its product state goes.
@@ -509,7 +513,7 @@ export class Runtime extends RuntimeEngine {
       const found = this.store.approval(approvalId) ?? (() => {
         throw finError("APPROVAL_NOT_FOUND", "no such approval", { id: approvalId });
       })();
-      return this.serial(found.sessionId, async () => {
+      return this.#command(found.sessionId, async () => {
         const raising = found.kind === "budget" && decision === "allow";
         // The session's `Budget` puts its limits in the ledger first, outside the transaction below.
         const b = raising ? this.budget(this.session(found.sessionId)) : undefined;

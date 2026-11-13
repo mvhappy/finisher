@@ -87,12 +87,12 @@ interface Hooked extends ReturnType<typeof makeRuntime> {
   readonly wiring: HooksWiring;
 }
 
-function hooked(scripts: readonly FakeScript[], hooks: unknown[]): Hooked {
+function hooked(scripts: readonly FakeScript[], hooks: unknown[], opts: Parameters<typeof makeRuntime>[2] = {}): Hooked {
   writeFileSync(join(serverData, "settings.json"), JSON.stringify({ hooks }));
   const config = new HookConfig({ serverData, trustOf: () => undefined, dirOf: (id) => (id === "P1" ? join(tmp, "P") : undefined) });
   const wiring = buildHooks({ config, serverData, audit: { append: (a) => void audits.push(a) }, log: (m) => void logs.push(m), options: { status: DIRECT } });
   const adapter = FakeAdapter(scripts);
-  const h = makeRuntime({ store, control }, adapter, { clock, hooks: wiring.session, sessionEvents: wiring.session });
+  const h = makeRuntime({ store, control }, adapter, { clock, hooks: wiring.session, sessionEvents: wiring.session, ...opts });
   cleanups.push(() => wiring.close());
   cleanups.push(() => h.runtime.close());
   return { ...h, adapter, wiring };
@@ -175,6 +175,58 @@ describe("UserPrompt (Decision 16)", () => {
     expect(nodes.slice(0, 2).map((n) => n.kind)).toEqual(["notice", "userMessage"]);
     expect(payload(nodes[0]!)).toEqual({ hookContext: { event: "UserPrompt", hooks: ["style"], text: "use the style guide" } });
     expect(payload(nodes[1]!)).toMatchObject({ text: "tighten the intro", trigger: "prompt" });
+  });
+});
+
+describe("command order and live slots (Task 6 review)", () => {
+  /** Holds every `UserPrompt` whose request holds `GATED` until `<tmp>/open` exists. */
+  const gated = () => hook("gate", "UserPrompt", ["--gate-if", "GATED", join(tmp, "open")]);
+  const open = () => writeFileSync(join(tmp, "open"), "");
+
+  test("slow_user_prompt_keeps_command_order: a later steer waits for an earlier one's hook", async () => {
+    const h = hooked([WORKING], [gated()]);
+    await h.runtime.boot();
+    const { session } = await run(h.runtime.start({ projectId: "P1", prompt: "go" }, PEOPLE, META));
+    await until(() => status(session.id) === "running" && h.adapter.log.turns.length === 1, "running");
+    const first = run(h.runtime.steer(session.id, "first GATED", PEOPLE));
+    const second = run(h.runtime.steer(session.id, "second", PEOPLE));
+    await new Promise((r) => setTimeout(r, 500));
+    expect(h.adapter.log.steers).toEqual([]);
+    open();
+    await Promise.all([first, second]);
+    expect(h.adapter.log.steers.map((s) => s.text)).toEqual(["first GATED", "second"]);
+  });
+
+  test("slow_user_prompt_holds_a_later_end: the prompt's run starts, then the session ends", async () => {
+    const h = hooked([ENDS], [gated()]);
+    await h.runtime.boot();
+    const { session } = await run(h.runtime.start({ projectId: "P1" }, PEOPLE, META));
+    const prompted = run(h.runtime.prompt(session.id, "trim GATED", PEOPLE));
+    const ended = run(h.runtime.end(session.id, PEOPLE));
+    await new Promise((r) => setTimeout(r, 300));
+    expect(status(session.id)).toBe("idle");
+    open();
+    const r = await prompted;
+    expect((await ended).status).toBe("ended");
+    expect(h.adapter.log.turns.map((t) => t.text)).toEqual(["trim GATED"]);
+    expect(store.run(r.id)).toBeDefined();
+  });
+
+  test("steer_to_a_run_waiting_for_a_slot_keeps_its_context: delivered with the steer at admission", async () => {
+    const h = hooked([WORKING], [hook("audio", "UserPrompt", ["--reply", "context:preserve the audio"])], { limits: { maxLiveBuiltin: 1 } });
+    await h.runtime.boot();
+    const { session: a } = await run(h.runtime.start({ projectId: "P1", prompt: "busy" }, PEOPLE, META));
+    await until(() => status(a.id) === "running" && h.adapter.log.turns.length === 1, "a runs");
+    const { session: b, run: rb } = await run(h.runtime.start({ projectId: "P1", prompt: "go" }, PEOPLE, META));
+    await until(() => store.nodes(b.id).some((n) => n.kind === "notice" && payload(n).code === "SESSION_QUEUED"), "b queued");
+    expect(await run(h.runtime.steer(b.id, "trim", PEOPLE))).toEqual({ queued: true });
+    await run(h.runtime.interrupt(a.id, PEOPLE));
+    await until(() => h.adapter.log.steers.length === 2, "b's steers");
+    const ctx = "<hook-context>\npreserve the audio\n</hook-context>";
+    expect(h.adapter.log.turns[1]!.text).toBe(`go\n\n${ctx}`);
+    expect(h.adapter.log.steers.map((s) => s.text)).toEqual(["trim", ctx]);
+    const steered = store.nodes(b.id).filter((n) => n.kind === "userMessage" && n.runId === rb!.id).map((n) => payload(n));
+    expect(steered).toMatchObject([{ text: "go", trigger: "prompt" }, { text: "trim", trigger: "steer" }, { text: ctx, trigger: "hook", hookContext: { event: "UserPrompt", hooks: ["audio"] } }]);
   });
 });
 
