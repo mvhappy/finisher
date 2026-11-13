@@ -1153,6 +1153,7 @@ Spike code, evidence and the report are throwaway and live in the git-ignored `a
       - a claim above the holder's epoch that is younger than 45 s loses the lease (claims are the authority on epochs), and each acquisition creates a single claim at `base + 1`;
       - a commit trusts a full check that passed within the last 1 s;
       - a restart re-takes its own lease at once through an OS lock in server data, never in the project folder.
+      - a clean close with nothing left unexported writes a final `released` record, which any server takes at once through a fresh claim; a crash or a drop releases nothing.
     - **The folder:** hash-chained, write-once segments labelled by commit epoch; reader-side epoch rule with rewind of a lost applied line; quarantine instead of deletion; rebuild with salvage; verify; daily and pre-migration backups; two-phase compaction into packs that keep full history.
     - **§6.7 polling:** project folders are polled (local 2 s, network 1 s, sync 10 s), not watched, and the heartbeat is 5 s, not 15 s.
     - **Still outstanding:** cross-host and sync-folder validation (sub-project 4 spec §3.13). This replaces the "Still to validate" line of item 9 for the lease.

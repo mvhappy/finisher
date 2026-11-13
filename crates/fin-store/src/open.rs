@@ -149,6 +149,9 @@ impl Store {
         let db_path = db_path(server_data, &file.id);
         opts.check_local(db_path.parent().unwrap_or(server_data))?;
         let identity = server_identity(server_data)?;
+        // The folder names this id: a create mark left by a crash after its commit point goes.
+        crate::orphans::unmark(db_path.parent().unwrap_or(server_data));
+        crate::orphans::sweep_once(server_data);
         let kind = storage_kind::resolve(project_dir, file.storage_override.as_ref());
         let plan = rebuild::Plan {
             db_path: &db_path,

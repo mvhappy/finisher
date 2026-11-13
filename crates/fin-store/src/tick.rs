@@ -278,13 +278,13 @@ impl Store {
     }
 
     /// Flushes the export without waiting for the delay (when writable), then closes the
-    /// store. The lease is not released: it stops heartbeating, and other servers wait out
-    /// its staleness (45 s plus confirmation) before taking over; this process may re-take
-    /// its own stopped lease at once. Dropping a `Store` does not flush: folder I/O can block
-    /// for seconds on a network share, and a drop must not.
+    /// store. A holder with nothing left unexported releases the lease (`export::close`), so
+    /// another server takes it at once; otherwise others wait out its staleness. Dropping a
+    /// `Store` flushes and releases nothing: folder I/O can block for seconds on a network
+    /// share, and a drop must not.
     pub fn close(mut self) -> Result<ExportReport, StoreError> {
         let now = self.ctl.now();
-        export::export_pending(&mut self, now, true)
+        export::close(&mut self, now)
     }
 
     /// Takes the lease over (`fin project takeover [--confirm]`, spec §3.5): see
