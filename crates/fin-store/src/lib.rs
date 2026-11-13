@@ -38,6 +38,7 @@ mod migrations;
 pub mod names;
 mod newer;
 mod open;
+pub mod orphans;
 mod paths;
 pub mod project_file;
 mod rebuild;
@@ -75,7 +76,10 @@ pub use compact::{
 pub use copies::mount_root_for_test as copies_mount_root_for_test;
 pub use create::validate_name;
 #[cfg(any(test, feature = "test-hooks"))]
-pub use create::{delay_next_create_start_for_test, fail_next_create_marker_for_test};
+pub use create::{
+    crash_next_create_after_db_rename_for_test, delay_next_create_start_for_test,
+    fail_next_create_marker_for_test,
+};
 pub use db::{SNAPSHOT_EVERY, replay_record};
 pub use export::ExportReport;
 #[cfg(any(test, feature = "test-hooks"))]

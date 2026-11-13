@@ -25,8 +25,11 @@
 //! [`CREATOR_LEASE_WAIT`] for the folder's `lease.json` before it opens, so it follows the
 //! creator rather than taking the lease from under it.
 //!
-//! A crash between steps 3 and 4 leaves a database in server data that no project file names;
-//! it is never opened, and costs only its space (a later sweep can remove it).
+//! A crash between steps 3 and 4 leaves a database in server data that no project file names.
+//! Step 3 marks the database's directory first (`create.pending`, naming the folder) and step 4
+//! removes the mark once the project file is in place; the orphan sweep (`crate::orphans`)
+//! removes a marked database only when its folder is present and shows that the create never
+//! reached its commit point. The database's lock is held from before the mark on.
 
 use std::collections::HashMap;
 use std::fs;
@@ -62,6 +65,7 @@ pub fn validate_name(name: &str) -> Result<(), CoreError> {
 #[cfg(any(test, feature = "test-hooks"))]
 thread_local! {
     static FAIL_MARKER: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static CRASH_AFTER_DB: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     static DELAY_START: std::cell::Cell<Option<std::time::Duration>> =
         const { std::cell::Cell::new(None) };
 }
@@ -78,6 +82,22 @@ pub fn delay_next_create_start_for_test(d: std::time::Duration) {
 #[cfg(any(test, feature = "test-hooks"))]
 pub fn fail_next_create_marker_for_test() {
     FAIL_MARKER.with(|f| f.set(true));
+}
+
+/// Test hook: the next create on this thread "crashes" right after its database is renamed
+/// into place, before its project file is written: it returns `TEST_FAULT` and leaves
+/// everything as a crash would (the orphan the sweep removes, `crate::orphans`).
+#[cfg(any(test, feature = "test-hooks"))]
+pub fn crash_next_create_after_db_rename_for_test() {
+    CRASH_AFTER_DB.with(|f| f.set(true));
+}
+
+fn crash_point() -> Result<(), StoreError> {
+    #[cfg(any(test, feature = "test-hooks"))]
+    if CRASH_AFTER_DB.with(|f| f.replace(false)) {
+        return Err(CoreError::new("TEST_FAULT", "injected crash after the DB rename").into());
+    }
+    Ok(())
 }
 
 fn write_marker(project_dir: &Path, bytes: &[u8]) -> io::Result<()> {
@@ -172,6 +192,7 @@ impl Store {
         let made_dir = !project_dir.exists();
         fs::create_dir_all(project_dir).map_err(unwritable(project_dir))?;
         let identity = server_identity(server_data)?;
+        crate::orphans::sweep_once(server_data);
         let db_path = db_path(server_data, &id);
         let db_dir = db_path.parent().unwrap_or(server_data).to_path_buf();
         let undo = Undo {
@@ -179,20 +200,28 @@ impl Store {
             made_dir: made_dir.then_some(project_dir),
         };
         let (kind, warning) = storage_kind::resolve(project_dir, None);
+        // Held from before the marker until the store owns it: the orphan sweep never touches
+        // a database whose lock it cannot take (`crate::orphans`).
+        let mut db_lock = None;
         let built = (|| {
             fs::create_dir_all(&db_dir).map_err(StoreError::io(&db_dir))?;
+            db_lock = Some(crate::dblock::shared(&db_dir)?);
+            crate::orphans::mark(&db_dir, project_dir).map_err(StoreError::io(&db_dir))?;
             build(&db_path, &project, project_dir, idem)
         })();
         if let Err(e) = built {
+            drop(db_lock.take());
             undo.run();
             return Err(e);
         }
+        crash_point()?;
         let file = ProjectFile::new(&id, genesis.clone(), kind.to_string());
         let mut bytes = serde_json::to_vec_pretty(&file)?;
         bytes.push(b'\n');
         match write_marker(project_dir, &bytes) {
             Ok(()) => {}
             Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {
+                drop(db_lock.take());
                 undo.run();
                 return existing(server_data, project_dir, &genesis, idem, opts);
             }
@@ -200,15 +229,16 @@ impl Store {
             // project file is ours and the create stands.
             Err(_) if pf::read_project_file_once(project_dir).is_ok_and(|f| f.id == id) => {}
             Err(e) => {
+                drop(db_lock.take());
                 undo.run();
                 return Err(unwritable(&paths::project_file(project_dir))(e));
             }
         }
+        crate::orphans::unmark(&db_dir);
         #[cfg(any(test, feature = "test-hooks"))]
         if let Some(d) = DELAY_START.with(|c| c.take()) {
             std::thread::sleep(d);
         }
-        let db_lock = crate::dblock::shared(&db_dir)?;
         let conn = db::connect(&db_path, false)?;
         let heads = HashMap::from([(
             MAIN.to_string(),
@@ -228,7 +258,7 @@ impl Store {
             (kind, warning),
             &opts,
         );
-        store.db_lock = Some(db_lock);
+        store.db_lock = db_lock;
         store.start(None)?;
         Ok(store)
     }
