@@ -27,6 +27,7 @@ import { finError } from "../../errors.ts";
 import type { Capabilities } from "../adapter.ts";
 import { openHostSandbox, type SandboxedChild, type SessionSandbox, type SessionSandboxDeps } from "../sandbox.ts";
 import { type ClaudeCodeSettings, claudeCodeSettings } from "../settings.ts";
+import { accountChanged, accountCheck, accountKey, accountProblem, ClaudeAccounts, labelOfOutput } from "./account.ts";
 
 /**
  * The lowest supported version (Decision 9): at least 2.1.314 (the `--setting-sources` leak fix)
@@ -47,7 +48,8 @@ const OUTPUT_CAP = 64 * 1024;
  * The sign-in methods kept by name; any other answer is `"other"`, never the CLI's text (it could
  * be a label). `claude.ai` and `console` are what the CLI documents. ASSUMPTION (plan Task 0's
  * signed-in half confirms the real values): `oauth` and `apiKey` are not known to be printed, so
- * they are not listed; add a value here once Task 0 sees it.
+ * they are not listed; add a value here once Task 0 sees it. Until then an API-key sign-in that
+ * names no account is `other` and fails closed (`account.ts` `API_KEY_METHODS`).
  */
 const AUTH_METHODS: ReadonlySet<string> = new Set(["claude.ai", "console"]);
 
@@ -75,6 +77,8 @@ export interface ClaudeDetection {
   /** `null` when `auth status` gave no usable answer (`problem` says why). */
   readonly signedIn: boolean | null;
   readonly authMethod?: string;
+  /** The signed-in account's keyed hash (`account.ts`); the label itself is never kept. */
+  readonly accountHash?: string;
   readonly problem?: FinError;
 }
 
@@ -248,7 +252,22 @@ const sync = <A>(f: () => A): Effect.Effect<A, FinError> => Effect.try({ try: f,
 interface AuthAnswer {
   readonly signedIn: boolean | null;
   readonly authMethod?: string;
+  readonly accountHash?: string;
   readonly problem?: FinError;
+}
+
+/** `auth status`'s answer with the account hashed at once (`account.ts`): the label goes no further. */
+function authAnswer(serverData: string, r: Ran): AuthAnswer {
+  const a = parseAuthStatus(r.code, r.stdout);
+  if (!a.signedIn) return a;
+  const label = labelOfOutput(r.stdout);
+  try {
+    const { hash } = accountCheck({ ...a, ...(label === undefined ? {} : { label }) }, accountKey(serverData), null);
+    return { ...a, accountHash: hash };
+  } catch (e) {
+    // A subscription sign-in naming no account: signed in, but a change could not be seen.
+    return { ...a, problem: e as FinError };
+  }
 }
 
 // Detection runs on every `agent.providers` call and every claudeCode plan, so its answers are
@@ -289,7 +308,7 @@ function probe(deps: ClaudeDetectDeps, real: string, key: string | undefined, pl
           if (key !== undefined && gen === generation) versions.set(key, version);
         }
         if (compareVersions(version, CLAUDE_FLOOR) >= 0 && auth === undefined) {
-          const a = yield* Effect.result(run(box, real, ["auth", "status", "--json"], ms, platform).pipe(Effect.flatMap((r) => sync(() => parseAuthStatus(r.code, r.stdout)))));
+          const a = yield* Effect.result(run(box, real, ["auth", "status", "--json"], ms, platform).pipe(Effect.flatMap((r) => sync(() => authAnswer(deps.sandbox.serverData, r)))));
           auth = a._tag === "Failure" ? { signedIn: null, problem: a.failure } : a.success;
           if (authKey !== undefined && gen === generation) auths.set(authKey, { at: now(), answer: auth });
         }
@@ -354,9 +373,11 @@ const problemOf = (e: FinError) => ({ code: e.code, message: e.message, ...(e.fi
 
 /**
  * Claude Code's line in `agent.providers`: what detection found, the floor, whether it is
- * signed in and how (one word), and whether sessions may start on it. Never a label or token
- * (`account` stays unset; `accountHash` is Task 11's). Off (`agents.claudeCode.enabled`, the
- * default): the CLI is looked for but not run.
+ * signed in and how (one word), the account's keyed hash, and whether sessions may start on it.
+ * Never a label or token (`account` stays unset). Each answer is recorded (`account.ts`): an
+ * account other than the recorded one, unconfirmed, is the problem `PROVIDER_ACCOUNT_CHANGED`,
+ * which stops new sessions. Off (`agents.claudeCode.enabled`, the default): the CLI is looked
+ * for but not run.
  */
 export function claudeProviderInfo(deps: ClaudeDetectDeps): Effect.Effect<ProviderInfo> {
   const platform = deps.platform ?? deps.sandbox.platform ?? process.platform;
@@ -378,25 +399,41 @@ export function claudeProviderInfo(deps: ClaudeDetectDeps): Effect.Effect<Provid
       });
     }
     return detectClaude({ ...deps, settings: () => settings }).pipe(
-      Effect.map(
-        (d): ProviderInfo => ({
+      Effect.map((d): ProviderInfo => {
+        // Recorded when this answer named an account; a pending change (or a state that cannot be
+        // read) stands whatever this answer was: a failed `auth status` lets nothing through.
+        let problem = d.problem;
+        let waiting: string | undefined;
+        try {
+          const seen = d.accountHash === undefined ? undefined : new ClaudeAccounts(deps.sandbox.serverData).record(d.accountHash, d.authMethod);
+          waiting = seen?.changed === true ? seen.hash : new ClaudeAccounts(deps.sandbox.serverData).pending();
+          if (waiting !== undefined) problem = accountChanged(waiting);
+        } catch (e) {
+          problem = e as FinError;
+        }
+        const accountHash = d.accountHash ?? waiting;
+        return {
           ...base,
           detected: true,
           version: d.version,
           supported: true,
           signedIn: d.signedIn,
           ...(d.authMethod === undefined ? {} : { authMethod: d.authMethod }),
-          ...(d.problem === undefined ? {} : { problem: problemOf(d.problem) }),
-        }),
-      ),
+          ...(accountHash === undefined ? {} : { accountHash }),
+          ...(problem === undefined ? {} : { problem: problemOf(problem) }),
+        };
+      }),
       Effect.catch((e: FinError) => {
         const version = (e.details as { version?: unknown } | null)?.version;
+        // Found but unusable (too old, garbled, a shim) is detected; not found or no sandbox is not.
+        const detected = e.code === "PROVIDER_VERSION" || e.code === "PROVIDER_PROTOCOL" || (e.details as { reason?: unknown } | null)?.reason === "npmShim";
+        // A found CLI that answered nothing usable still carries a waiting account change.
+        const account = detected && typeof version !== "string" ? accountProblem(deps.sandbox.serverData) : undefined;
         return Effect.succeed<ProviderInfo>({
           ...base,
-          // Found but unusable (too old, garbled, a shim) is detected; not found or no sandbox is not.
-          detected: e.code === "PROVIDER_VERSION" || e.code === "PROVIDER_PROTOCOL" || (e.details as { reason?: unknown } | null)?.reason === "npmShim",
+          detected,
           ...(typeof version === "string" ? { version, supported: false } : {}),
-          problem: problemOf(e),
+          problem: problemOf(account ?? e),
         });
       }),
       // A sandbox that cannot open, or any other failure, is a problem on the line, never a failed RPC.

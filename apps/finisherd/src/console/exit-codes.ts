@@ -31,6 +31,8 @@ export const CONFLICT_CODES: ReadonlyArray<string> = [
   "PAIRING_USED", "DEVICE_LIMIT",
   // Reviews (5E Decision 26).
   "REVIEW_STALE", "REVIEW_HAS_CONFLICTS", "REVIEW_CLOSED", "REVIEW_LIMIT",
+  // 7D Decision 19: another Claude Code account waits than the one the person confirmed.
+  "ACCOUNT_CONFIRM_STALE",
 ];
 
 /** A job that ended without succeeding (5C-1 Decision 41): exit 4, as `CONFLICT_CODES`. */

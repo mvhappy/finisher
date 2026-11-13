@@ -138,6 +138,8 @@ These change something (each needs an interactive terminal and your confirmation
   provider key rm <id>
   provider local set <ollama|lmstudio|url>
   provider local rm
+  provider signin claudeCode --confirm     the sign-in commands, and the next account change goes through
+  provider account confirm claudeCode      new Claude Code sessions run on the account it is signed in to now
   training closed-targets pendingCounsel|cleared|excluded
   review policy set --project <dir|id> [--protect <branch>]... [--unprotect <branch>]...
               [--require-review on|off] [--auto-merge on|off]

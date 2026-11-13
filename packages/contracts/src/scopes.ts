@@ -470,6 +470,9 @@ export const RPC_SCOPES: { readonly [T in FinRpcTag]: RuleOf<T> } = {
   "agent.local.show": { scopes: ["agent.admin"], unconfirmed: "readOnly" },
   "agent.local.test": { scopes: ["agent.admin"], unconfirmed: "readOnly" },
   "agent.local.remove": { scopes: ["agent.admin"] },
+  // 7D Decision 19: taking Claude Code's new account is a person's at the server's console (y/N),
+  // never a device's or an agent's.
+  "agent.account.confirm": { scopes: ["agent.admin"], kinds: ["console"] },
   "training.closedTargets.get": { scopes: ["server.read"] },
   "training.closedTargets.set": { scopes: ["settings.admin"] },
   // 5B (plan Decision 1, spec §5.9): pairing, devices and the environment are the owner's

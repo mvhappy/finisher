@@ -1,6 +1,7 @@
 //! Where the fake's configuration comes from: `FAKE_CLAUDE_*` variables, else the sidecar
 //! `<directory of the executable>/fake-claude.json` (`{script, observed, version}`), else the
-//! script itself (`observed`, `version`).
+//! script itself (`observed`, `version`). `account` is the label a signed-in CLI reports (in
+//! `auth status` and `initialize.account`), so a test can switch accounts without a new script.
 
 use std::path::{Path, PathBuf};
 
@@ -14,6 +15,7 @@ struct Sidecar {
     script: Option<String>,
     observed: Option<String>,
     version: Option<String>,
+    account: Option<String>,
 }
 
 #[derive(Debug, Default)]
@@ -21,6 +23,7 @@ pub struct Config {
     pub script: Option<String>,
     pub observed: Option<String>,
     pub version: Option<String>,
+    pub account: Option<String>,
 }
 
 /// The sidecar next to the running executable, merged under the environment.
@@ -47,6 +50,7 @@ pub fn load() -> Result<Config, String> {
         script: env("FAKE_CLAUDE_SCRIPT").or(side_script),
         observed: env("FAKE_CLAUDE_OBSERVED").or(side.observed),
         version: env("FAKE_CLAUDE_VERSION").or(side.version),
+        account: env("FAKE_CLAUDE_ACCOUNT").or(side.account),
     })
 }
 

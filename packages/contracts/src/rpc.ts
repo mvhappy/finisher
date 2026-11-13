@@ -73,6 +73,8 @@ import {
 } from "./rules.ts";
 import { AgentSavedPromptListPayload, AgentSavedPromptListSuccess, AgentSavedPromptRunPayload, AgentSavedPromptRunSuccess } from "./saved-prompts.ts";
 import {
+  AgentAccountConfirmPayload,
+  AgentAccountConfirmSuccess,
   AgentKeyListSuccess,
   AgentKeyRemovePayload,
   AgentKeyRemoveSuccess,
@@ -547,6 +549,7 @@ export const FinRpcs = RpcGroup.make(
   Rpc.make("agent.local.show", { payload: Schema.Struct({}), success: AgentLocalShowSuccess, error: FinError }),
   Rpc.make("agent.local.test", { payload: Schema.Struct({}), success: AgentLocalTestSuccess, error: FinError }),
   Rpc.make("agent.local.remove", { payload: AgentLocalRemovePayload, success: AgentLocalRemoveSuccess, error: FinError }),
+  Rpc.make("agent.account.confirm", { payload: AgentAccountConfirmPayload, success: AgentAccountConfirmSuccess, error: FinError }),
   Rpc.make("training.closedTargets.get", { payload: Schema.Struct({}), success: TrainingClosedTargetsSuccess, error: FinError }),
   Rpc.make("training.closedTargets.set", { payload: TrainingClosedTargetsSetPayload, success: TrainingClosedTargetsSuccess, error: FinError }),
   ...DEVICE_RPCS, // 5B: pairing, devices, the environment and settings writes (`device-rpcs.ts`)
