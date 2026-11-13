@@ -264,7 +264,12 @@ interface AuthAnswer {
 /** `<server-data>/providers/claudeCode/home`: a path only, never opened here. */
 const signInHome = (serverData: string, platform: NodeJS.Platform) => pathOf(platform).join(serverData, "providers", HARNESS, "home");
 
-/** Signed in, but the sign-in home names no account (Decision 19): sessions cannot tell it apart. */
+/**
+ * Signed in, but the sign-in home names no account (Decision 19): sessions cannot tell it apart.
+ * TODO(7D Task 18): assumes the person's `auth login` fills the sign-in home's `.claude.json`
+ * with the profile (only the owner's long-lived config dir was observed); if it does not, every
+ * fresh sign-in is refused here until the CLI has written the profile.
+ */
 const noAccount = () =>
   finError(
     "PROVIDER_AUTH",

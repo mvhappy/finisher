@@ -872,6 +872,7 @@ fn the_real_grant_tables_pass_the_protect_rules() {
         shared_dir: Some(t.project.join("workspace/shared")),
         library_roots: vec![lib],
         session_dir: d.join("agents/s1"),
+        sign_in_home: None,
         sign_in_store: Some(d.join("providers/codex/home/auth.json")),
         toolchains: toolchains.clone(),
         server_data: d.clone(),

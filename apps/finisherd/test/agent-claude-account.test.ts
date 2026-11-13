@@ -13,7 +13,7 @@ import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSyn
 import { tmpdir } from "node:os";
 import { join, sep } from "node:path";
 import { fileURLToPath } from "node:url";
-import { type Principal, type ProviderInfo, ruleOf } from "@finisher/contracts";
+import { type Principal, type ProviderInfo, ruleOf, type Session } from "@finisher/contracts";
 import { sandboxStatus } from "@finisher/fin-node";
 import { Effect, Exit } from "effect";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test, vi } from "vitest";
@@ -197,8 +197,6 @@ describe("the account hash", () => {
     const b = accountCheck(SIGNED_IN(LABEL_B), k1, a.hash);
     expect(b.changed).toBe(true);
     expect(b.hash).not.toBe(a.hash);
-    // No label, signed in with an API key: the method alone, never equal to a labelled account.
-    expect(accountCheck({ signedIn: true, authMethod: "apiKey" }, k1, null).hash).not.toBe(a.hash);
     // Signed out: no account to hash.
     expect(() => accountCheck({ signedIn: false }, k1, null)).toThrow(expect.objectContaining({ code: "PROVIDER_AUTH" }));
     expect(labelOf({ loggedIn: true, email: LABEL_A })).toBe(LABEL_A);
@@ -482,15 +480,15 @@ describe("the account record fails closed", () => {
     expect(accounts.confirm(c)).toEqual({ confirmed: false, accountHash: c });
   });
 
-  test("no_label_subscription_is_not_identified: only an API-key method hashes without a label", () => {
+  test("no_label_subscription_is_not_identified: no sign-in is identified without a label", () => {
     const k = Buffer.alloc(32, 1);
-    for (const authMethod of ["claude.ai", "console", "other", undefined]) {
+    // Detection keeps only `claude.ai` and `console` by name (anything else is `other`), so a
+    // method alone never tells two accounts apart (review of Decision 19, O4).
+    for (const authMethod of ["claude.ai", "console", "other", "apiKey", undefined]) {
       const status = { signedIn: true, ...(authMethod === undefined ? {} : { authMethod }) };
       expect(accountIdentified(status), String(authMethod)).toBe(false);
       expect(() => accountCheck(status, k, null), String(authMethod)).toThrow(expect.objectContaining({ code: "INTERNAL" }));
     }
-    expect(accountIdentified({ signedIn: true, authMethod: "apiKey" })).toBe(true);
-    expect(accountCheck({ signedIn: true, authMethod: "apiKey" }, k, null).hash).toMatch(/^[0-9a-f]{8}$/);
     // The instance seam: nothing recorded, no refusal unless a change already waits.
     const data = join(tmp, "data");
     mkdirSync(data, { recursive: true, mode: 0o700 });
@@ -543,6 +541,41 @@ describe("the account record fails closed", () => {
       const r = await local.call("agent.session.start", { projectId, harness: "claudeCode", prompt: "go" });
       expect(r.ok ? undefined : r.error).toMatchObject({ code: "PROVIDER_AUTH", fix: expect.stringContaining("finisherd provider signin claudeCode") });
       expect(existsSync(join(serverData, "agents", "claude-account.json"))).toBe(false);
+    } finally {
+      await server.stop();
+      setSandboxStatusSource(restore);
+    }
+  });
+
+  withFake("no_label_subscription_is_not_identified: a running session's later process is not refused PROVIDER_AUTH (review of Decision 19, S4)", async () => {
+    const restore = setSandboxStatusSource(NOT_READY);
+    const cli = installFake("cli", { account: "a.7d2@example.invalid", script: { steps: [{ expect: "user", cumulativeUsage: { inputTokens: 1, outputTokens: 1 } }] } });
+    const serverData = join(tmp, "server-data");
+    writeFileSync(join(serverData, "settings.json"), JSON.stringify({ agents: { claudeCode: { enabled: true, path: cli.bin } } }));
+    const server = new AgentServer(serverData);
+    await server.start();
+    try {
+      const local = await server.local();
+      const projectId = ok<{ projectId: string }>(await local.call("project.create", { dir: join(tmp, "P"), name: "P", rate: "30" })).projectId;
+      ok(await commit(local, projectId, tx("01aaaaaaaaaaaaaaaaaaaaaaaP", 0, [addAsset()])));
+      const { session } = ok<{ session: Session }>(await local.call("agent.session.start", { projectId, harness: "claudeCode", prompt: "go" }));
+      const settled = async (want: string) => {
+        for (const end = Date.now() + 20_000; Date.now() < end; await new Promise((r) => setTimeout(r, 20))) {
+          const s = server.core.store.get(session.id)!;
+          if (s.status === want && server.core.store.runs(session.id).at(-1)?.status !== "running") return s;
+        }
+        throw new Error(`not ${want}`);
+      };
+      await settled("idle");
+      // The sign-in home now names no account: a new session would be refused ...
+      signInHome({ displayName: "no e-mail, no organization" });
+      ok(await local.call("agent.session.interrupt", { sessionId: session.id }));
+      await settled("interrupted");
+      // ... but this session's next process (its resume) starts and runs.
+      ok(await local.call("agent.session.resume", { sessionId: session.id, prompt: "again" }));
+      expect(await settled("idle")).toMatchObject({ status: "idle" });
+      expect(server.core.store.runs(session.id).at(-1)?.status).toBe("completed");
+      expect(server.core.store.nodes(session.id).filter((n) => n.kind === "error")).toEqual([]);
     } finally {
       await server.stop();
       setSandboxStatusSource(restore);

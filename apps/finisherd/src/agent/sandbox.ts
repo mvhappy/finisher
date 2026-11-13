@@ -180,9 +180,10 @@ export function openSessionSandbox(s: Session, harness: Harness, deps: SessionSa
  * endpoint. The sign-in store follows the purpose alone, never an option: `detect` has it
  * (`auth status --json` reads the CLI's own store: the store variable or link, and its grant),
  * `probe` never (Decision 8: the probe runs unsigned). Off Windows, `detect` of a store-folder
- * harness (Claude Code) is granted the whole sign-in home and names it as the CLI's configuration
- * directory instead of its own `provider/` (Decision 19 as 7D Task 0 amended it: `auth status`
- * names the account from the profile there); finisherd still opens nothing under `providers/`. The same mode rules as a session's;
+ * harness (Claude Code) reads the sign-in home (`signInHome`, read only; it writes only the
+ * store) and names it as the CLI's configuration directory instead of its own `provider/`
+ * (Decision 19 as 7D Task 0 amended it: `auth status` names the account from the profile there);
+ * finisherd still opens nothing under `providers/`. The same mode rules as a session's;
  * closing the scope kills every process it started, then removes the directory and workspace.
  */
 export function openHostSandbox(purpose: "detect" | "probe", harness: Harness, deps: SessionSandboxDeps): Effect.Effect<SessionSandbox, FinError, Scope.Scope> {
@@ -220,6 +221,7 @@ export function openHostSandbox(purpose: "detect" | "probe", harness: Harness, d
             libraryRoots: [],
             sessionDir: dirs.dir,
             ...(store === undefined ? {} : { signInStore: store.grant }),
+            ...(store?.configDir === undefined ? {} : { signInHome: store.configDir }),
             toolchains: sandboxToolchainBase(),
             serverData: deps.serverData,
             home: await canonical(homedir()),

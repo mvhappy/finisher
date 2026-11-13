@@ -329,7 +329,8 @@ export function assertSessionEnv(env: Readonly<Record<string, string | undefined
   if (provider !== undefined && opts.signInHome === true) {
     if (!host || !withStore) fail("a sign-in home outside detection's host sandbox", provider);
     const home = need(provider);
-    if (!path.isAbsolute(home) || path.normalize(home) !== home || !home.endsWith(path.sep + path.join("providers", s.harness, "home"))) fail("not the harness's sign-in home", provider);
+    // This server's own: `base` is `<server-data>/agents/<id>` (review of Decision 19, O5).
+    if (home !== path.join(path.dirname(path.dirname(base)), "providers", s.harness, "home")) fail("not the harness's sign-in home", provider);
     const storeOf = SIGN_IN_STORES[s.harness];
     if (storeName !== undefined && storeOf !== undefined && env[storeName] !== path.join(home, storeOf.name)) fail("not the sign-in home's store", storeName);
   } else if (provider !== undefined) under(provider, "provider");

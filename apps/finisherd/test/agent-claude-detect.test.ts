@@ -93,6 +93,9 @@ const parent = WIN ? { Path: process.env.Path ?? process.env.PATH ?? "", SystemR
 function sandboxDeps(): SessionSandboxDeps {
   const data = join(tmp, "data");
   mkdirSync(data, { recursive: true, mode: 0o700 });
+  // Signed in (the store a person's sign-in makes; `fake-claude` is signed out without it), its
+  // home holding no profile unless a test writes one (`signInHome`).
+  mkdirSync(join(data, "providers", "claudeCode", "home", "store"), { recursive: true, mode: 0o700 });
   mkdirSync(join(tmp, "hosts"), { recursive: true });
   return { serverData: data, projectDirOf: () => undefined, finPath: "/bin/sh", localEndpoint: join(data, "run", "fin.sock"), status: NOT_READY, killGraceMs: 2000, parent, hostRoot: join(tmp, "hosts") };
 }
@@ -334,10 +337,14 @@ describe("detection", () => {
       expect(line.problem?.fix).toContain("finisherd provider signin claudeCode");
       expect(line.accountHash).toBeUndefined();
     }
-    // No sign-in home at all (never signed in here) is the same answer.
-    const fresh = await Effect.runPromise(detectClaude(deps(installFake("fresh"))));
-    expect(fresh).toMatchObject({ signedIn: true, problem: { code: "PROVIDER_AUTH" } });
+    // No sign-in home at all (never signed in here): the store the variable names is missing, so
+    // the CLI is signed out (verified on 2.1.321, 7D Task 0 Step 4 A/C: `loggedIn: false`, exit 1).
+    const never = deps(installFake("fresh"));
+    rmSync(join(never.sandbox.serverData, "providers"), { recursive: true, force: true });
+    const fresh = await Effect.runPromise(detectClaude(never));
+    expect(fresh.signedIn).toBe(false);
     expect(fresh.accountHash).toBeUndefined();
+    expect((fresh.problem?.details as { reason?: unknown } | undefined)?.reason).not.toBe("noAccount");
   });
 
   test.skipIf(NO_FAKE)("providers_never_carry_label_or_token", async () => {
