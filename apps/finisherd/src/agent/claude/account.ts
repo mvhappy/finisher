@@ -1,7 +1,7 @@
 // Claude Code's account-change detection (plan 7D Decision 19, spec §8.6).
 //
-// - **What is kept**: the keyed hash of the account label the CLI reports (`auth status --json`;
-//   Task 7's instances may also read it from `initialize.account`) and the one-word sign-in
+// - **What is kept**: the keyed hash of the account label the CLI reports (each instance's
+//   `initialize.account.email`, or `auth status --json` when it names one) and the one-word sign-in
 //   method, in `<server-data>/agents/claude-account.json` (0600). Never the label itself: the
 //   label lives only in the parsed answer in memory, and is hashed at once. The key is
 //   `<server-data>/auth/account.key` (32 random bytes, made once, the approval key's sibling),
@@ -15,10 +15,20 @@
 // - **An expected change**: `finisherd provider signin claudeCode --confirm` (refused while a
 //   change is pending) lets the next different account through without a confirmation, within
 //   `EXPECT_TTL_MS`; taking it is audited (hashes only) under the person who expected it.
-// - **Fail closed**: a state file that cannot be read (anything but missing) and a subscription
-//   sign-in that names no account are `PROVIDER_ACCOUNT_CHANGED` too: a change could not be seen.
-// - **Where it is observed**: detection (`detect.ts`, every `agent.providers` and every plan) and,
-//   once Task 7's session runs `auth status` at each instance's start, `instanceAccount` there.
+// - **Fail closed**: a state file that cannot be read (anything but missing) is
+//   `PROVIDER_ACCOUNT_CHANGED` too: a change could not be seen.
+// - **Nothing names the account** (verified on 2.1.321, 7D Task 0): `auth status` under a fresh
+//   config dir (detection's, a session's first start) reports `email`/`orgId`/`orgName` as
+//   `null`, and an instance's `initialize.account` has `email` only once the CLI holds the profile
+//   in its config dir (a resumed process, or the profile fetch finishing first). A signed-in
+//   answer that names no account is no refusal: nothing is recorded, and a new session is
+//   refused only while a change already waits or the record cannot be read (`instanceAccount`).
+//   The session's later processes name the account and record it; until one does, a switch to
+//   another account is not seen (the residual risk of this choice; the plan's Decision 19 run of
+//   `auth status` against the sign-in home would close it, once its sandbox grant exists).
+// - **Where it is observed**: each instance's start (`instanceAccount`, from its `initialize`
+//   answer) and detection (`detect.ts`, every `agent.providers` and every plan) when its
+//   `auth status` names the account.
 //
 // **Finisher opens nothing under `providers/`**: the label comes from what the CLI prints.
 import { createHmac, randomBytes } from "node:crypto";
@@ -47,19 +57,16 @@ export const ACCOUNT_FILE = "claude-account.json";
 export const EXPECT_TTL_MS = 30 * 60_000;
 
 /**
- * The fields of `auth status --json` (and `initialize.account`) that name the signed-in account,
- * in order of preference; their values are joined into the hashed label.
+ * The fields of `auth status --json` (and `initialize.account`) that name the signed-in account;
+ * their values are joined into the hashed label. Verified on 2.1.321 (7D Task 0): `email` is the
+ * one both carry (`auth status` also has `orgId`/`orgName`, `initialize.account` never). Never
+ * `subscriptionType`: its text varies for one account ("Claude Max", "Claude Ultra").
  */
-// TODO(7D Task 0 Step 4): which fields carry the account label when signed in (Task 0's
-// unsigned half saw none), and whether `auth status` prints it when run with detect's throwaway
-// CLAUDE_CONFIG_DIR (the sign-in store reached in place) or only from the config dir's
-// `.claude.json` (then detection would see no label and fail closed); modelled by fake-claude as
-// `email` (its `account` sidecar knob), printed whatever the config dir.
 export const LABEL_FIELDS = ["email"] as const;
 
 /**
- * Sign-in methods that may name no account (an API key): hashed by the method alone. A
- * subscription sign-in without a label fails closed instead, since two accounts would look alike.
+ * Sign-in methods that may name no account (an API key): hashed by the method alone. Any other
+ * sign-in without a label is not identified (`accountIdentified`): two accounts would look alike.
  */
 // TODO(7D Task 0 Step 4): the method names the CLI prints for an API key (`apiKey` is assumed).
 export const API_KEY_METHODS: ReadonlySet<string> = new Set(["apiKey"]);
@@ -95,24 +102,19 @@ export function accountChanged(hash?: string): FinError {
   );
 }
 
-/** A subscription sign-in that names no account: a change of account could not be seen. */
-const noAccountLabel = (authMethod: string | undefined) =>
-  finError(
-    "PROVIDER_ACCOUNT_CHANGED",
-    "Claude Code is signed in but names no account, so Finisher cannot tell whether the account changed",
-    { harness: HARNESS, reason: "noAccountLabel", ...(authMethod === undefined ? {} : { authMethod }) },
-    "sign the CLI in again with the commands `finisherd provider signin claudeCode` prints; if it still names no account, this Claude Code version is not supported yet",
-  );
+/** Whether `status` (signed in) tells the account apart: a label, or an API-key method. */
+export const accountIdentified = (status: AuthStatus): boolean => status.label !== undefined || API_KEY_METHODS.has(status.authMethod ?? "");
 
 /**
  * The keyed hash of `status`'s account (8 hex characters, what `agent.providers` reports) and
  * whether it differs from `last`, the last recorded one (`null`: none yet, so no change).
- * Signed in without a label: an API-key method hashes the method alone; any other method is
- * `PROVIDER_ACCOUNT_CHANGED {reason: noAccountLabel}`. Signed out is `PROVIDER_AUTH`.
+ * Signed in without a label: an API-key method hashes the method alone; any other method is not
+ * identified and has no hash (`INTERNAL`: callers ask `accountIdentified` first). Signed out is
+ * `PROVIDER_AUTH`.
  */
 export function accountCheck(status: AuthStatus, key: Buffer, last: string | null): { hash: string; changed: boolean } {
   if (!status.signedIn) throw finError("PROVIDER_AUTH", "Claude Code is not signed in", { harness: HARNESS }, "sign it in with the commands `finisherd provider signin claudeCode` prints");
-  if (status.label === undefined && !API_KEY_METHODS.has(status.authMethod ?? "")) throw noAccountLabel(status.authMethod);
+  if (!accountIdentified(status)) throw finError("INTERNAL", "no account to hash: the sign-in names none", { harness: HARNESS });
   const subject = status.label === undefined ? `method\0${status.authMethod}` : `label\0${status.label}`;
   const hash = createHmac("sha256", key).update(HASH_LABEL, "utf8").update(subject, "utf8").digest("hex").slice(0, 8);
   return { hash, changed: last !== null && last !== hash };
@@ -357,15 +359,26 @@ export function accountProblem(serverData: string): FinError | undefined {
 }
 
 /**
- * The session layer's check at each instance's start (Task 7 calls it with the `auth status` it
- * ran under the session environment, or what `initialize.account` reports): records the account
+ * The session layer's check at each instance's start (the adapter calls it with what the
+ * instance's `initialize.account` names, else detection's `auth status`): records the account
  * and answers its hash (for `ClaudeModelCache.recordInstanceModels`) and, for a **new** session
- * while a change waits (or the account cannot be told), `PROVIDER_ACCOUNT_CHANGED`. A running
+ * while a change waits (or the record cannot be read), `PROVIDER_ACCOUNT_CHANGED`. A running
  * session's instance (a respawn, a resume) is never refused: it started on the earlier check.
- * Signed out: no hash, no refusal (the CLI's own error is `PROVIDER_AUTH`).
+ * Signed out: no hash, no refusal (the CLI's own error is `PROVIDER_AUTH`). Signed in naming no
+ * account (`accountIdentified`): no hash, nothing recorded; a new session is refused only by a
+ * change that already waits (or a record that cannot be read).
  */
 export function instanceAccount(serverData: string, status: AuthStatus, o: { readonly newSession: boolean; readonly accounts?: ClaudeAccounts }): { hash?: string; refused: FinError | null } {
   if (!status.signedIn) return { refused: null };
+  if (!accountIdentified(status)) {
+    if (!o.newSession) return { refused: null };
+    try {
+      const waiting = (o.accounts ?? new ClaudeAccounts(serverData)).pending();
+      return { refused: waiting === undefined ? null : accountChanged(waiting) };
+    } catch (e) {
+      return { refused: e as FinError };
+    }
+  }
   try {
     const seen = (o.accounts ?? new ClaudeAccounts(serverData)).observe(status, accountKey(serverData));
     return { hash: seen.hash, refused: seen.changed && o.newSession ? accountChanged(seen.hash) : null };

@@ -57,6 +57,9 @@
 //!   result, then exit 0; 130 for SIGINT). An interrupt with no turn open is answered and
 //!   writes no result.
 //! - `mcpTimeoutMs` (default 1000): how long the first turn waits for the SDK servers.
+//! - `initializeSilent`: `initialize` gets no answer (the SDK handshake still starts).
+//! - `interruptStillQueued`: the `still_queued` list of the `interrupt` answer (default `[]`,
+//!   as 2.1.321 answered).
 //! - `refuseFlagValues`: `{"<flag>": [values]}` this version does not know (exit 1), e.g.
 //!   `--permission-prompt-tool stdio` for a version that dropped it.
 //!
@@ -66,11 +69,12 @@
 //! `tools/list`. A server not through by the first turn's timeout is `failed` in
 //! `init.mcp_servers` and its tools are absent.
 //!
-//! **Turns.** A turn starts at a user line (`system/init` before the first, then
+//! **Turns.** A turn starts at a user line (`system/init` before every one, then
 //! `system/status {status: "requesting"}`) and ends with a `result`; one whose steps wrote
 //! none gets a plain `success` result before the next `expect: "user"` or when the steps run
-//! out. User lines received mid-turn are queued (steers; `result.queued_turn_count`) and
-//! played as the next turns. Then the fake idles: each user line gets a plain turn.
+//! out. User lines received mid-turn are queued (steers) and all played as the one next turn
+//! (as 2.1.321 does: the running turn's `result` has `queued_turn_count: 0`). Then the fake
+//! idles: each user line (or lines queued together) gets a plain turn.
 //! **Stdin EOF** mid-turn lets the turn play to its `result` (a pending `ask` counts as
 //! denied), then the fake exits: 1 when the last result had `is_error`, else 0 (also 0 after
 //! `initialize` only). The system lines `ui_invalidate` (at start) and `status` are written
@@ -81,6 +85,8 @@
 //!
 //! 1. `expect: "user" | "control"` (with `subtype` for control): wait for a user line (a new
 //!    turn), or a control request of that subtype (answered with an empty success).
+//!    With `expect: "user"`, `init {…}` is merged into the script's `init` from the turn it starts
+//!    on, e.g. a tool set that changes mid-instance.
 //! 2. `sleep` (ms), still serving control requests and queueing user lines.
 //! 3. `writeFile {path, contents?}`; `spawn {argv}` (waits for it; the exit code is recorded).
 //! 4. `emit [lines]`: JSON values written as lines (`"$session_id"` is replaced; a string

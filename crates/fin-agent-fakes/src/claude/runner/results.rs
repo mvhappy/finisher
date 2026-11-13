@@ -180,7 +180,8 @@ impl Runner {
             "result_index": t.results,
             "permission_denials": std::mem::take(&mut self.denials),
             "uuid": fresh_uuid(),
-            "queued_turn_count": self.pending.len(),
+            // Verified on 2.1.321 (7D Task 0, s1b/s1d): 0 even with a steer queued.
+            "queued_turn_count": 0,
         }).as_object().expect("an object"));
         merge(&mut line, &over);
         self.emit(&line);
@@ -271,24 +272,24 @@ pub(super) fn resume_missing(id: &str) -> Value {
 pub(super) fn auth_status(script: &Script, text: bool) -> i32 {
     let over = script.auth.clone().unwrap_or_default();
     let signed_out = over.get("loggedIn") == Some(&Value::Bool(false));
-    let mut status = if signed_out {
-        let mut s = defaults()["authSignedOut"].clone();
-        let config = std::env::var_os("CLAUDE_CONFIG_DIR")
-            .map(std::path::PathBuf::from)
-            .or_else(|| {
-                std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(".claude"))
-            });
-        if let (Value::Object(o), Some(c)) = (&mut s, config) {
-            o.insert(
-                "projectsDirectory".into(),
-                json!(c.join("projects").to_string_lossy()),
-            );
-            o.insert("configDirectory".into(), json!(c.to_string_lossy()));
-        }
-        s
+    // Verified on 2.1.321 (7D Task 0): both answers name the config dir; signed in under a
+    // fresh one, the label fields are `null` (`defaults.json`).
+    let shape = if signed_out {
+        "authSignedOut"
     } else {
-        defaults()["authSignedIn"].clone()
+        "authSignedIn"
     };
+    let mut status = defaults()[shape].clone();
+    let config = std::env::var_os("CLAUDE_CONFIG_DIR")
+        .map(std::path::PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(".claude")));
+    if let (Value::Object(o), Some(c)) = (&mut status, config) {
+        o.insert(
+            "projectsDirectory".into(),
+            json!(c.join("projects").to_string_lossy()),
+        );
+        o.insert("configDirectory".into(), json!(c.to_string_lossy()));
+    }
     merge(&mut status, &over);
     if !text {
         println!(

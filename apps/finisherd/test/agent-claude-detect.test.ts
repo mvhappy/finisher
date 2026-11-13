@@ -291,6 +291,18 @@ describe("detection", () => {
     expect((await Effect.runPromise(detectClaude(d))).version).toBe("2.1.401");
   });
 
+  test.skipIf(NO_FAKE)("signed_in_naming_no_account_is_no_problem", async () => {
+    needFake();
+    // Verified on 2.1.321 (7D Task 0, 04-auth-status B): detection's fresh config dir answers a
+    // claude.ai sign-in with `email`/`orgId`/`orgName` null (the fake's default): signed in, no
+    // hash, no problem (each instance's `initialize.account` names the account, Decision 19).
+    const d = deps(installFake("nolabel"));
+    const line = await Effect.runPromise(claudeProviderInfo(d));
+    expect(line).toMatchObject({ detected: true, signedIn: true, authMethod: "claude.ai" });
+    expect(line.accountHash).toBeUndefined();
+    expect(line.problem).toBeUndefined();
+  });
+
   test.skipIf(NO_FAKE)("providers_never_carry_label_or_token", async () => {
     needFake();
     const label = "owner-label-7c1@example.invalid";

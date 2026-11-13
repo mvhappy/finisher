@@ -26,6 +26,10 @@ pub struct Script {
     /// What a resumed process does with the tool calls its transcript holds without a result
     /// (Task 10: unverified on the real CLI, so both are modelled).
     pub on_resume_dangling: OnDangling,
+    /// `initialize` gets no answer (a host must not open without one).
+    pub initialize_silent: bool,
+    /// The `still_queued` list of the `interrupt` answer (2.1.321 answered `[]`).
+    pub interrupt_still_queued: Vec<Value>,
     pub steps: Vec<Step>,
 }
 
@@ -78,6 +82,9 @@ pub enum Expect {
 #[serde(default, deny_unknown_fields, rename_all = "camelCase")]
 pub struct Step {
     pub expect: Option<Expect>,
+    /// With `expect: "user"`: merged into the script's `init` from the turn it starts on, e.g. a
+    /// tool set that changes mid-instance.
+    pub init: Map<String, Value>,
     pub subtype: Option<String>,
     pub sleep: Option<u64>,
     pub write_file: Option<WriteFile>,

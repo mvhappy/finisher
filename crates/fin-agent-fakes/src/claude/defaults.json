@@ -1,5 +1,5 @@
 {
-  "_comment": "Line shapes copied from Claude Code 2.1.321 (plan Task 0, unsigned runs, 2026-11-12); descriptions shortened.",
+  "_comment": "Line shapes copied from Claude Code 2.1.321 (plan Task 0, unsigned runs, 2026-11-12; the signed-in `initialize.account` and `authSignedIn`: signed-in runs, 2026-11-13, a fresh config dir); descriptions shortened.",
   "defaultTools": ["Task", "AskUserQuestion", "Bash", "CronCreate", "CronDelete", "CronList", "Edit", "EnterPlanMode", "ExitPlanMode", "ListAgents", "Monitor", "NotebookEdit", "Read", "ReportFindings", "ScheduleWakeup", "SendMessage", "TaskStop", "ToolSearch", "WebFetch", "WebSearch", "Workflow", "Write"],
   "restrictedDrops": ["Bash", "WebFetch", "Monitor", "Workflow", "CronCreate"],
   "initialize": {
@@ -19,7 +19,7 @@
       {"value": "sonnet", "resolvedModel": "claude-sonnet-5-5", "displayName": "Sonnet", "description": "Sonnet 5.5 · Efficient for routine tasks · $2/$10 per Mtok", "supportsEffort": true, "supportedEffortLevels": ["low", "medium", "high", "xhigh", "max"], "supportsAdaptiveThinking": true, "supportsAutoMode": true, "supportsThinkingOff": false},
       {"value": "haiku", "resolvedModel": "claude-haiku-5-5", "displayName": "Haiku", "description": "Haiku 5.5 · Fastest for quick answers · $0.10/$0.50 per Mtok", "supportsEffort": true, "supportedEffortLevels": ["low", "medium", "high", "xhigh", "max"], "supportsAdaptiveThinking": true, "supportsAutoMode": true, "supportsThinkingOff": false}
     ],
-    "account": {"tokenSource": "claude.ai", "apiProvider": "firstParty"},
+    "account": {"subscriptionType": "Claude Max", "apiProvider": "firstParty"},
     "hook_on_failure_supported": true,
     "other_hook_ask_outranks_host": true,
     "feedback_mode": {"kind": "disabled"},
@@ -59,6 +59,6 @@
   "resultText": {"api_error_status": null, "ttft_ms": 1, "ttft_stream_ms": 1, "time_to_request_ms": 1, "first_content_frame_ms": 1},
   "modelUsage": {"webSearchRequests": 0, "contextWindow": 1000000, "maxOutputTokens": 128000, "thinkingTokens": 0, "cacheCreationEphemeral5mInputTokens": 0, "cacheCreationEphemeral1hInputTokens": 0, "provider": "firstParty", "costBasis": "list"},
   "usage": {"output_tokens_details": {"thinking_tokens": 0}, "server_tool_use": {"web_search_requests": 0, "web_fetch_requests": 0}, "service_tier": "standard", "cache_creation": {"ephemeral_1h_input_tokens": 0, "ephemeral_5m_input_tokens": 0}, "inference_geo": "", "iterations": [], "speed": "standard", "fallback_credit": null},
-  "authSignedIn": {"loggedIn": true, "authMethod": "claude.ai", "apiProvider": "firstParty", "email": "user@example.invalid"},
+  "authSignedIn": {"loggedIn": true, "authMethod": "claude.ai", "apiProvider": "firstParty", "analyticsDisabled": false, "loginExpiresAt": "2026-12-02T02:34:57.327Z", "email": null, "orgId": null, "orgName": null, "subscriptionType": "max", "storedClaudeAiLogin": true, "planTier": "max_20x"},
   "authSignedOut": {"loggedIn": false, "authMethod": "none", "apiProvider": "firstParty", "analyticsDisabled": true, "loginExpiresAt": null}
 }

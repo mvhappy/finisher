@@ -7,11 +7,11 @@ import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpat
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { Node, ProviderEvent, Session } from "@finisher/contracts";
+import type { FinError, Node, ProviderEvent, Session } from "@finisher/contracts";
 import { sandboxStatus } from "@finisher/fin-node";
 import { Effect, Exit, Scope, Stream } from "effect";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from "vitest";
-import type { ProviderSession, SessionSpec } from "../src/agent/adapter.ts";
+import type { CallGate, ProviderSession, SessionSpec } from "../src/agent/adapter.ts";
 import { ClaudeCodeAdapter, sessionUuid } from "../src/agent/claude/adapter.ts";
 import { accountCheck, accountKey, ClaudeAccounts } from "../src/agent/claude/account.ts";
 import { CLAUDE_FLOOR } from "../src/agent/claude/detect.ts";
@@ -73,9 +73,10 @@ function enforced(): boolean {
   return false;
 }
 
-/** A Console API-key sign-in's init shape (`apiKeySource` names the key's source); a claude.ai sign-in reports `none` (the fake's default). */
-const CONSOLE_KEY = { init: { apiKeySource: "/login managed key" } };
-/** The account the fake reports signed in (`auth status` and `initialize.account`). */
+// The fake's defaults are a claude.ai sign-in as 2.1.321 reports it (7D Task 0): `system/init`
+// with `apiKeySource: "none"`, `initialize.account {subscriptionType, apiProvider}` plus the
+// `account` knob's `email`, and an `auth status` naming no account.
+/** The account the fake's `initialize.account.email` names. */
 const ACCOUNT = "tester@example.invalid";
 const UUID_VAR = "$session_id";
 
@@ -84,7 +85,7 @@ function install(script: Record<string, unknown>, observedAt = "@config/observed
   const dir = mkdtempSync(join(tmp, "cli-"));
   const binary = join(dir, "claude");
   copyFileSync(FAKE, binary);
-  writeFileSync(join(dir, "script.json"), JSON.stringify({ ...CONSOLE_KEY, ...script }));
+  writeFileSync(join(dir, "script.json"), JSON.stringify(script));
   writeFileSync(join(dir, "fake-claude.json"), JSON.stringify({ script: "script.json", observed: observedAt, version: VERSION, account }));
   return binary;
 }
@@ -212,6 +213,9 @@ describe("a turn through the runtime", () => {
     await promptToNodes(withAgent(sandboxStatus().agent));
   });
 
+  // Verified on 2.1.321 (7D Task 0, s1b/s1d): a steer never joins the running turn, whose
+  // `result` has `queued_turn_count: 0` (as the fake's now). The session holds the steer and
+  // writes it at that `result` as the next CLI turn of the same run.
   withFake("steer_stays_in_run: two results, one Finisher run", async () => {
     const r = await claudeServer({
       steps: [
@@ -232,6 +236,31 @@ describe("a turn through the runtime", () => {
     expect(observed(r.serverData, s.id)[0]!.userLines).toHaveLength(2);
   });
 
+  withFake("steer_stays_in_run: two steers in one turn run as one next turn (two results in all)", async () => {
+    const r = await claudeServer({
+      steps: [
+        { expect: "user", emit: [assistant([{ type: "text", text: "first" }])] },
+        { sleep: 1500, cumulativeUsage: { inputTokens: 5, outputTokens: 1, costUsd: 0.001 } },
+        { expect: "user", emit: [assistant([{ type: "text", text: "second" }])], cumulativeUsage: { inputTokens: 4, outputTokens: 2, costUsd: 0.001 } },
+      ],
+    });
+    const s = await start(r);
+    await until(() => (nodes(s.id).some((n) => n.kind === "assistantMessage") ? true : undefined));
+    ok(await r.local.call("agent.session.steer", { sessionId: s.id, text: "also this" }));
+    ok(await r.local.call("agent.session.steer", { sessionId: s.id, text: "and this" }));
+    await settle(r, s.id);
+    // A third turn (the steers played apart) would show by now.
+    await new Promise((res) => setTimeout(res, 600));
+    const ns = nodes(s.id);
+    expect(new Set(ns.map((n) => n.runId)).size).toBe(1);
+    expect(kinds(ns.filter((n) => n.kind !== "notice"))).toEqual(["userMessage", "assistantMessage", "userMessage", "userMessage", "usage", "assistantMessage", "usage"]);
+    expect(runOf(s.id, ns[0]!.runId!)).toMatchObject({ status: "completed" });
+    // Both steers went as one user line, after the first turn's `result`.
+    const lines = observed(r.serverData, s.id)[0]!.userLines as { content: { text: string }[] }[];
+    expect(lines).toHaveLength(2);
+    expect(lines[1]!.content.map((b) => b.text)).toEqual(["also this", "and this"]);
+  });
+
   withFake("interrupt: the tool in flight gets the synthetic result; the next prompt resumes", async () => {
     const r = await claudeServer({ steps: [{ expect: "user", emit: [assistant([{ type: "tool_use", id: "toolu_9", name: "Bash", input: { command: "sleep 600" } }])] }, { sleep: 60_000 }] });
     const s = await start(r);
@@ -244,7 +273,7 @@ describe("a turn through the runtime", () => {
     // Interrupted through the request (the fake answers with its `result`), never a signal first.
     expect(observed(r.serverData, s.id)[0]!.controlRequests?.map((c) => c.subtype)).toEqual(["initialize", "interrupt"]);
     // The resumed process plays a plain turn.
-    writeFileSync(join(dirname(r.binary), "script.json"), JSON.stringify({ ...CONSOLE_KEY, steps: [{ expect: "user", cumulativeUsage: { inputTokens: 1, outputTokens: 1 } }] }));
+    writeFileSync(join(dirname(r.binary), "script.json"), JSON.stringify({ steps: [{ expect: "user", cumulativeUsage: { inputTokens: 1, outputTokens: 1 } }] }));
     ok(await r.local.call("agent.session.resume", { sessionId: s.id }));
     ok(await r.local.call("agent.session.prompt", { sessionId: s.id, text: "again" }));
     await until(() => (nodes(s.id).filter((n) => n.kind === "usage").length === 1 ? true : undefined));
@@ -283,7 +312,7 @@ describe("a turn through the runtime", () => {
   });
 
   withFake("init_mismatch_stops_instance: nothing of it reaches the runtime", async () => {
-    const r = await claudeServer({ init: { ...CONSOLE_KEY.init, tools: ["Read", "Task"] }, steps: [{ expect: "user", emit: [assistant([{ type: "text", text: "never" }])] }, { sleep: 30_000 }] });
+    const r = await claudeServer({ init: { tools: ["Read", "Task"] }, steps: [{ expect: "user", emit: [assistant([{ type: "text", text: "never" }])] }, { sleep: 30_000 }] });
     const s = await start(r);
     expect((await settle(r, s.id)).status).toBe("interrupted");
     const ns = nodes(s.id);
@@ -377,6 +406,12 @@ interface WatchOptions {
   readonly nodes?: readonly Node[];
   /** A user line's write reports an asynchronous failure (EPIPE) after its bytes were passed on. */
   readonly failUserLines?: boolean;
+  /** Detection's sign-in method (default none: not a plan sign-in). */
+  readonly authMethod?: string;
+  /** The runtime's budget gate for the session (Decision 15). */
+  readonly gate?: CallGate;
+  /** How long the `initialize` answer may take. */
+  readonly initializeTimeoutMs?: number;
 }
 
 /** `openWatched` whose open may fail: then its error and what was spawned. */
@@ -451,10 +486,11 @@ async function openWatched(script: Record<string, unknown>, opts: WatchOptions &
     ...(opts.processStart === undefined ? {} : { processStart: opts.processStart }),
     ...(opts.nodes === undefined ? {} : { nodes: () => opts.nodes! }),
     enabled: () => opts.enabled ?? true,
-    detect: () => Effect.succeed({ path: binary, version: VERSION, floor: CLAUDE_FLOOR, signedIn: opts.signedIn ?? true, ...(opts.accountHash === undefined ? {} : { accountHash: opts.accountHash }) }),
+    ...(opts.initializeTimeoutMs === undefined ? {} : { initializeTimeoutMs: opts.initializeTimeoutMs }),
+    detect: () => Effect.succeed({ path: binary, version: VERSION, floor: CLAUDE_FLOOR, signedIn: opts.signedIn ?? true, ...(opts.accountHash === undefined ? {} : { accountHash: opts.accountHash }), ...(opts.authMethod === undefined ? {} : { authMethod: opts.authMethod }) }),
   });
   const ref = opts.resume === true ? { kind: "claudeCode", id: sessionUuid(s.id) } : null;
-  const spec: SessionSpec = { sessionId: s.id, projectId: s.projectId, model: "default", role: "editor", mode: "draft", system: "You edit.", cwd: box.workspace, env: box.env, providerRef: ref, tools: opts.tools ?? ["Read", "Bash"], sandbox: watched };
+  const spec: SessionSpec = { sessionId: s.id, projectId: s.projectId, model: "default", role: "editor", mode: "draft", system: "You edit.", cwd: box.workspace, env: box.env, providerRef: ref, tools: opts.tools ?? ["Read", "Bash"], sandbox: watched, ...(opts.gate === undefined ? {} : { gate: opts.gate }) };
   const exit = await Effect.runPromiseExit(Scope.provide(scope)(adapter.open(spec)));
   if (Exit.isFailure(exit)) {
     await Effect.runPromise(Scope.close(scope, Exit.void));
@@ -570,11 +606,119 @@ describe("the instance", () => {
   });
 });
 
+describe("steers held host-side (Decision 13 as 7D Task 0 amended it)", () => {
+  const usage = { inputTokens: 1, outputTokens: 1 };
+  const lines = (w: Watched) => ((observed(w.serverData, SESSION_ID).at(-1)?.userLines ?? []) as { content: { text?: string }[] }[]).map((l) => l.content.map((b) => b.text));
+  const types = (w: Watched) => w.events.map((e) => e.type);
+  const dropped = (w: Watched) => w.events.filter((e) => e.type === "notice" && e.name === "steerDropped").map((e) => (e as { details: unknown }).details);
+  const quiet = () => new Promise((r) => setTimeout(r, 400));
+
+  withFake("a steer right after startTurn, before the turn's init, is the run's next CLI turn", async () => {
+    const w = await openWatched({ steps: [{ expect: "user", cumulativeUsage: usage }, { expect: "user", emit: [assistant([{ type: "text", text: "second" }])], cumulativeUsage: usage }] });
+    await run(w.provider.startTurn({ runId: "r1", text: "one" }));
+    await run(w.provider.steer({ text: "held" }));
+    await waitFor(w, "turnCompleted");
+    await quiet();
+    expect(types(w).filter((t) => t === "turnCompleted" || t === "usage")).toEqual(["usage", "usage", "turnCompleted"]);
+    expect(JSON.stringify(w.events)).toContain("second");
+    expect(lines(w)).toEqual([["one"], ["held"]]);
+  });
+
+  withFake("two steers in one turn go as one user line", async () => {
+    const w = await openWatched({ steps: [{ expect: "user", sleep: 500, cumulativeUsage: usage }, { expect: "user", cumulativeUsage: usage }] });
+    await run(w.provider.startTurn({ runId: "r1", text: "one" }));
+    await run(w.provider.steer({ text: "a" }));
+    await run(w.provider.steer({ text: "b" }));
+    await waitFor(w, "turnCompleted");
+    await quiet();
+    expect(types(w).filter((t) => t === "turnCompleted")).toHaveLength(1);
+    expect(lines(w)).toEqual([["one"], ["a", "b"]]);
+  });
+
+  withFake("a steer reaching an instance whose run ended is refused SESSION_BUSY and never written", async () => {
+    const w = await openWatched({ steps: [{ expect: "user", cumulativeUsage: usage }, { expect: "user", cumulativeUsage: usage }] });
+    await run(w.provider.startTurn({ runId: "r1", text: "one" }));
+    await waitFor(w, "turnCompleted");
+    const exit = await Effect.runPromiseExit(w.provider.steer({ text: "late" }));
+    expect(JSON.stringify(exit)).toMatch(/SESSION_BUSY.*runEnded|runEnded.*SESSION_BUSY/);
+    await quiet();
+    expect(lines(w)).toEqual([["one"]]);
+  });
+
+  withFake("a failed result drops the held steer with a notice", async () => {
+    const w = await openWatched({ steps: [{ expect: "user", sleep: 500, notLoggedIn: true }, { expect: "user", cumulativeUsage: usage }] });
+    await run(w.provider.startTurn({ runId: "r1", text: "one" }));
+    await run(w.provider.steer({ text: "x" }));
+    await waitFor(w, "turnFailed");
+    await quiet();
+    expect(dropped(w)).toEqual([{ harness: "claudeCode", count: 1 }]);
+    // In the run: before its end.
+    expect(w.events.findIndex((e) => e.type === "notice" && e.name === "steerDropped")).toBeLessThan(types(w).indexOf("turnFailed"));
+    expect(lines(w)).toEqual([["one"]]);
+  });
+
+  withFake("an interrupt drops the held steer with a notice", async () => {
+    const w = await openWatched(TOOL_THEN_WAIT({}), { interruptWaitMs: 5000 });
+    await run(w.provider.startTurn({ runId: "r1", text: "go" }));
+    await waitFor(w, "toolStarted");
+    await run(w.provider.steer({ text: "x" }));
+    await run(w.provider.interrupt());
+    // Part B: the interrupt's aborted result ends the turn as interrupted, not failed.
+    await waitFor(w, "turnCompleted");
+    expect(w.events.find((e) => e.type === "turnCompleted")).toMatchObject({ stopReason: "interrupted" });
+    await quiet();
+    expect(dropped(w)).toEqual([{ harness: "claudeCode", count: 1 }]);
+    expect(lines(w)).toEqual([["go"]]);
+    expect(w.kills).toEqual([]);
+  });
+
+  withFake("an interrupt crossing a successful result drops the held steer: the run ends there", async () => {
+    const w = await openWatched({ onInterrupt: "ignore", steps: [{ expect: "user", sleep: 700, cumulativeUsage: usage }, { expect: "user", cumulativeUsage: usage }] }, { interruptWaitMs: 5000 });
+    await run(w.provider.startTurn({ runId: "r1", text: "one" }));
+    await run(w.provider.steer({ text: "x" }));
+    await run(w.provider.interrupt());
+    await waitFor(w, "turnCompleted");
+    await quiet();
+    expect(dropped(w)).toEqual([{ harness: "claudeCode", count: 1 }]);
+    expect(lines(w)).toEqual([["one"]]);
+    expect(w.kills).toEqual([]);
+  });
+
+  withFake("each steer turn asks the budget gate; a refusal ends the run and drops the texts", async () => {
+    let calls = 0;
+    const refuse = { code: "BUDGET_EXCEEDED", message: "over", details: { kind: "money" } } as unknown as FinError;
+    const gate: CallGate = { beforeCall: () => (++calls === 2 ? { ok: false, error: refuse } : { ok: true }), release: () => undefined };
+    const w = await openWatched({ steps: [{ expect: "user", sleep: 400, cumulativeUsage: usage }, { expect: "user", cumulativeUsage: usage }] }, { gate });
+    await run(w.provider.startTurn({ runId: "r1", text: "one" }));
+    await run(w.provider.steer({ text: "x" }));
+    await waitFor(w, "turnFailed");
+    await quiet();
+    expect(calls).toBe(2);
+    expect(dropped(w)).toEqual([{ harness: "claudeCode", count: 1 }]);
+    expect(w.events.find((e) => e.type === "turnFailed")).toMatchObject({ error: { code: "BUDGET_EXCEEDED" } });
+    expect(types(w)).not.toContain("turnCompleted");
+    expect(lines(w)).toEqual([["one"]]);
+  });
+
+  withFake("an interrupt answer still naming queued lines is a notice", async () => {
+    const w = await openWatched(TOOL_THEN_WAIT({ interruptStillQueued: [{ uuid: "q1" }] }), { interruptWaitMs: 5000 });
+    await run(w.provider.startTurn({ runId: "r1", text: "go" }));
+    await waitFor(w, "toolStarted");
+    await run(w.provider.interrupt());
+    // Part B: the interrupt's aborted result ends the turn as interrupted, not failed.
+    await waitFor(w, "turnCompleted");
+    expect(w.events.find((e) => e.type === "turnCompleted")).toMatchObject({ stopReason: "interrupted" });
+    expect(w.events.filter((e) => e.type === "notice" && e.name === "stillQueued")).toEqual([{ type: "notice", name: "stillQueued", details: { harness: "claudeCode", count: 1 } }]);
+  });
+});
+
 describe("review of Task 7", () => {
   const TURN = { steps: [{ expect: "user", cumulativeUsage: { inputTokens: 1, outputTokens: 1 } }] };
 
   withFake("a claude.ai sign-in (apiKeySource none, a signed-in account) passes the gate and completes the probe", async () => {
-    const w = await openWatched({ ...TURN, init: { apiKeySource: "none" } });
+    // As 2.1.321 reports it on a first start (7D Task 0, s1a): `initialize.account
+    // {subscriptionType, apiProvider}`, no e-mail yet, `apiKeySource: "none"`.
+    const w = await openWatched({ ...TURN, init: { apiKeySource: "none" }, initialize: { account: { email: "$remove" } } }, { authMethod: "claude.ai" });
     await run(w.provider.startTurn({ runId: "r1", text: "go" }));
     await waitFor(w, "turnCompleted");
     expect(w.events.some((e) => e.type === "turnFailed")).toBe(false);
@@ -588,6 +732,58 @@ describe("review of Task 7", () => {
     await waitFor(w, "exited");
     expect(w.events.map((e) => e.type)).toEqual(["turnFailed", "exited"]);
     expect(w.events[0]).toMatchObject({ error: { code: "PROVIDER_VERSION", details: { missing: "oauth" } } });
+  });
+
+  withFake("a plan sign-in whose initialize.account names no plan is refused oauth", async () => {
+    const w = await openWatched({ ...TURN, initialize: { account: { subscriptionType: "$remove" } } }, { authMethod: "claude.ai" });
+    await run(w.provider.startTurn({ runId: "r1", text: "go" }));
+    await waitFor(w, "exited");
+    expect(w.events.map((e) => e.type)).toEqual(["turnFailed", "exited"]);
+    expect(w.events[0]).toMatchObject({ error: { code: "PROVIDER_VERSION", details: { missing: "oauth", item: "account" } } });
+  });
+
+  withFake("init_every_turn_rechecked: each turn's init passes once; a later one that differs stops the instance", async () => {
+    const usage = { inputTokens: 1, outputTokens: 1 };
+    const w = await openWatched({
+      steps: [
+        { expect: "user", cumulativeUsage: usage },
+        { expect: "user", cumulativeUsage: usage },
+        { expect: "user", init: { agents: ["claude", "Explore"] }, emit: [assistant([{ type: "text", text: "never" }])], cumulativeUsage: usage },
+      ],
+    });
+    const completed = (n: number) => until(() => (w.events.filter((e) => e.type === "turnCompleted").length === n ? true : undefined));
+    await run(w.provider.startTurn({ runId: "r1", text: "one" }));
+    await completed(1);
+    await run(w.provider.startTurn({ runId: "r2", text: "two" }));
+    await completed(2);
+    // Nothing held or released twice: the untested-version notice once, each turn's events once.
+    expect(w.events.map((e) => e.type)).toEqual(["turnStarted", "notice", "usage", "notice", "turnCompleted", "turnStarted", "usage", "notice", "turnCompleted"]);
+    await run(w.provider.startTurn({ runId: "r3", text: "three" }));
+    await waitFor(w, "exited");
+    expect(w.events.slice(9).map((e) => e.type)).toEqual(["turnStarted", "turnFailed", "exited"]);
+    expect(w.events[10]).toMatchObject({ error: { code: "PROVIDER_VERSION", details: { missing: "isolation", item: "init:agents" } } });
+    expect(JSON.stringify(w.events)).not.toContain("never");
+  });
+
+  withFake("init_every_turn_rechecked: a later init naming another model is a notice, not a refusal", async () => {
+    const usage = { inputTokens: 1, outputTokens: 1 };
+    const w = await openWatched({ steps: [{ expect: "user", cumulativeUsage: usage }, { expect: "user", init: { model: "claude-sonnet-5-5" }, cumulativeUsage: usage }] });
+    await run(w.provider.startTurn({ runId: "r1", text: "one" }));
+    await waitFor(w, "turnCompleted");
+    await run(w.provider.startTurn({ runId: "r2", text: "two" }));
+    await until(() => (w.events.filter((e) => e.type === "turnCompleted").length === 2 ? true : undefined));
+    expect(w.events.some((e) => e.type === "turnFailed")).toBe(false);
+    expect(w.events.filter((e) => e.type === "notice" && e.name === "modelChanged")).toEqual([
+      { type: "notice", name: "modelChanged", details: { harness: "claudeCode", from: expect.any(String), to: "claude-sonnet-5-5" } },
+    ]);
+  });
+
+  withFake("an initialize that never answers fails the open closed (no sign-in or account check could run)", async () => {
+    // The probe (cached per version) answered once; the instance's CLI then stays silent.
+    await (await openWatched({ steps: [] })).close();
+    const refused = await openWatched({ initializeSilent: true, steps: [{ expect: "user", cumulativeUsage: { inputTokens: 1, outputTokens: 1 } }] }, { mayFail: true, initializeTimeoutMs: 600 });
+    expect(refused.failure).toMatchObject({ code: "PROVIDER_PROTOCOL", details: { reason: "initializeTimeout" } });
+    expect(refused.spawns).toHaveLength(1);
   });
 
   withFake("can_use_tool is never answered on the adapter's own: it waits for the runtime's decision", async () => {
@@ -621,7 +817,7 @@ describe("review of Task 7", () => {
 
   withFake("a refused init lets none of the adapter's own events through", async () => {
     // `NotATool` maps to no CLI tool: a `toolDropped` notice the gate holds.
-    const w = await openWatched({ ...TURN, init: { ...CONSOLE_KEY.init, tools: ["Read", "Task"] } }, { tools: ["Read", "Bash", "NotATool"] });
+    const w = await openWatched({ ...TURN, init: { tools: ["Read", "Task"] } }, { tools: ["Read", "Bash", "NotATool"] });
     await run(w.provider.startTurn({ runId: "r1", text: "go" }));
     await waitFor(w, "exited");
     expect(w.events.map((e) => e.type)).toEqual(["turnFailed", "exited"]);
@@ -644,6 +840,37 @@ describe("review of Task 7", () => {
     await resumed.close();
     // ... a new session is refused until a person confirms.
     const refused = await openWatched(TURN, { account: "other@example.invalid", mayFail: true });
+    expect(refused.failure).toMatchObject({ code: "PROVIDER_ACCOUNT_CHANGED", details: { accountHash: waiting } });
+  });
+
+  withFake("account: a first start naming no account opens and records nothing; the resumed process records it", async () => {
+    // 2.1.321 (7D Task 0): a fresh config dir's first `initialize` often lacks `email`, and
+    // detection's `auth status` names none (no hash): no refusal, nothing recorded.
+    const first = await openWatched({ ...TURN, initialize: { account: { email: "$remove" } } }, { authMethod: "claude.ai" });
+    await run(first.provider.startTurn({ runId: "r1", text: "go" }));
+    await waitFor(first, "turnCompleted");
+    await first.close();
+    expect(new ClaudeAccounts(first.serverData).state()).toEqual({ v: 1 });
+    // The CLI holds the profile by its next process: `initialize.account.email` names it.
+    const resumed = await openWatched(TURN, { resume: true, authMethod: "claude.ai" });
+    await resumed.close();
+    expect(new ClaudeAccounts(first.serverData).state().current?.hash).toBe(accountCheck({ signedIn: true, label: ACCOUNT }, accountKey(first.serverData), null).hash);
+  });
+
+  withFake("account: naming no account, a new session is still refused while a change waits", async () => {
+    let waiting = "";
+    const refused = await openWatched(
+      { ...TURN, initialize: { account: { email: "$remove" } } },
+      {
+        authMethod: "claude.ai",
+        mayFail: true,
+        before: (data) => {
+          const accounts = new ClaudeAccounts(data);
+          accounts.observe({ signedIn: true, authMethod: "claude.ai", label: ACCOUNT }, accountKey(data));
+          waiting = accounts.observe({ signedIn: true, authMethod: "claude.ai", label: "other@example.invalid" }, accountKey(data)).hash;
+        },
+      },
+    );
     expect(refused.failure).toMatchObject({ code: "PROVIDER_ACCOUNT_CHANGED", details: { accountHash: waiting } });
   });
 

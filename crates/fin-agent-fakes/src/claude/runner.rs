@@ -103,7 +103,7 @@ struct Runner {
     /// A resumed transcript's calls without a result (`resume.rs`).
     dangling: Vec<(String, String, Value)>,
     observed: Observed,
-    /// User lines received while a turn runs (steers), played in order.
+    /// User lines received while a turn runs (steers): the next turn takes them all.
     pending: VecDeque<Value>,
     started: bool,
     init_sent: bool,
@@ -260,15 +260,7 @@ impl Runner {
                     json!({"requestId": rid, "subtype": sub, "request": v["request"]}),
                 );
                 match sub.as_str() {
-                    "initialize" => {
-                        // The SDK servers' handshake starts before the answer (Task 0).
-                        self.mcp_start();
-                        self.on_start();
-                        let body = self.initialize_body();
-                        self.emit(&json!({"type": "control_response", "response": {
-                            "subtype": "success", "request_id": rid, "response": body,
-                            "pending_permission_requests": [], "pending_user_dialog_requests": []}}));
-                    }
+                    "initialize" => self.answer_initialize(&rid),
                     "set_permission_mode" => {
                         if let Some(m) = v["request"]["mode"].as_str() {
                             self.mode = if m == "manual" { "default" } else { m }.into();
@@ -276,7 +268,9 @@ impl Runner {
                         self.respond(&rid, json!({}));
                     }
                     "interrupt" => {
-                        self.respond(&rid, json!({}));
+                        // Verified on 2.1.321 (7D Task 0, s1b): `{still_queued: []}`.
+                        let queued = self.script.interrupt_still_queued.clone();
+                        self.respond(&rid, json!({"still_queued": queued}));
                         return Some(self.interrupt(false).unwrap_or(Ev::Control(sub)));
                     }
                     _ => self.respond(&rid, json!({})),
@@ -423,8 +417,7 @@ impl Runner {
         });
     }
 
-    /// The exit code once stdin is closed and the open turn has ended (Task 0): 1 after an
-    /// `is_error` result, else 0.
+    /// The exit code at stdin's end once the turn ended (Task 0): 1 after an `is_error` result.
     fn exit_code(&self) -> i32 {
         i32::from(self.last_is_error)
     }
@@ -434,6 +427,7 @@ impl Runner {
         for step in &steps {
             if step.expect == Some(Expect::User) {
                 self.close_turn();
+                self.script.init.extend(step.init.clone());
                 if !self.wait_user() {
                     return self.finish();
                 }
@@ -444,7 +438,7 @@ impl Runner {
         }
         self.close_turn();
         loop {
-            if self.pending.pop_front().is_some() {
+            if self.take_queued() {
                 self.default_turn();
                 continue;
             }
@@ -546,7 +540,7 @@ impl Runner {
     /// Takes the next user line (queued first) and starts its turn; false on EOF.
     fn wait_user(&mut self) -> bool {
         loop {
-            if self.pending.pop_front().is_some() {
+            if self.take_queued() {
                 self.start_turn();
                 return true;
             }

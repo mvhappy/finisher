@@ -141,28 +141,53 @@ fn fake_unknown_line_has_a_type_no_cli_has() {
 }
 
 #[test]
-fn fake_steer_is_queued_and_counted() {
+fn fake_steer_runs_as_the_next_turn() {
+    // Verified on 2.1.321 (7D Task 0, s1b/s1d): the running turn ends with its own `result`
+    // (`queued_turn_count: 0`); lines queued during it run as one next turn.
     let dir = Dir::new("steer");
     let script = json!({"steps": [{"expect": "user", "sleep": 400, "cumulativeUsage": {"outputTokens": 1}, "text": "first"}]});
     let mut f = Fake::start(&dir, Some(script), &[], &[]);
     f.user("one");
     assert_eq!(f.read()["subtype"], "init");
-    f.user("steer");
+    f.user("steer 1");
+    f.user("steer 2");
     let first = f.read();
     assert_eq!(
         (
             first["result"].as_str(),
             first["queued_turn_count"].as_u64()
         ),
-        (Some("first"), Some(1))
+        (Some("first"), Some(0))
     );
     assert_eq!(f.read()["subtype"], "init", "every turn has its init");
     let second = f.read();
     assert_eq!(
         second["type"], "result",
-        "the queued line runs as the next turn"
+        "the queued lines run as the next turn"
     );
     assert_eq!(second["queued_turn_count"], 0);
+    assert!(f.silent_for(600), "the two steers ran as one turn");
+    assert!(f.finish().success());
+}
+
+#[test]
+fn fake_turn_init_override() {
+    let dir = Dir::new("turn-init");
+    let script = json!({"steps": [
+        {"expect": "user"},
+        {"expect": "user", "init": {"tools": ["Read", "Task"]}}
+    ]});
+    let mut f = Fake::start(&dir, Some(script), &["--tools", "Read"], &[]);
+    f.user("one");
+    assert_eq!(f.read()["tools"], json!(["Read"]));
+    f.user("two");
+    let init = loop {
+        let l = f.read();
+        if l["subtype"] == "init" {
+            break l;
+        }
+    };
+    assert_eq!(init["tools"], json!(["Read", "Task"]));
     assert!(f.finish().success());
 }
 
@@ -221,7 +246,10 @@ fn fake_interrupt_knobs() {
     let dir = Dir::new("knobs");
     let mut f = Fake::start(&dir, None, &[], &[]);
     f.control("i-1", "interrupt");
-    assert_eq!(f.read()["response"]["request_id"], "i-1");
+    let answer = f.read();
+    assert_eq!(answer["response"]["request_id"], "i-1");
+    // Verified on 2.1.321 (7D Task 0, s1b).
+    assert_eq!(answer["response"]["response"], json!({"still_queued": []}));
     assert!(f.silent_for(300), "no result without a turn");
     assert!(f.finish().success());
 
@@ -488,4 +516,20 @@ fn fake_resume_totals_follow_how_the_last_process_ended() {
     f.read();
     assert!(!f.finish().success());
     assert!((total(&killed) - 0.02).abs() < 1e-9);
+}
+
+#[test]
+fn fake_initialize_silent_and_still_queued_knobs() {
+    let dir = Dir::new("silent");
+    let script = json!({"initializeSilent": true, "interruptStillQueued": [{"uuid": "q1"}]});
+    let mut f = Fake::start(&dir, Some(script), &[], &[]);
+    f.control("req-init", "initialize");
+    assert_eq!(f.read_any()["subtype"], "ui_invalidate");
+    assert!(f.silent_for(400), "no initialize answer");
+    f.control("i-1", "interrupt");
+    assert_eq!(
+        f.read()["response"]["response"]["still_queued"],
+        json!([{"uuid": "q1"}])
+    );
+    assert!(f.finish().success());
 }
