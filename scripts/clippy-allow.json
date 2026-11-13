@@ -122,5 +122,9 @@
   {
     "path": "crates/fin-node/tests/media_cache.rs",
     "reason": "Tests build and inspect temporary cache trees by path; none is a library reader."
+  },
+  {
+    "path": "crates/fin-node/tests/media_cache_proxies.rs",
+    "reason": "Tests build and inspect temporary cache trees by path; none is a library reader."
   }
 ]

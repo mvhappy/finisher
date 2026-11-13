@@ -293,6 +293,7 @@ pub static CLI_FLAGS: NameTable = NameTable::new(
         "no-linked",
         "no-wait",
         "offset",
+        "originals",
         "out",
         "parent",
         "path",

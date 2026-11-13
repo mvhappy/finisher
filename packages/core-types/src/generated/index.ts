@@ -2261,6 +2261,13 @@ export type LibraryScanMode = "full" | "dirs" | "poll";
  */
 export type LogLevel = "debug" | "info" | "warn" | "error";
 /**
+ * What a look frame's pictures were read from (plan 6B-1 Task 16).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "LookSource".
+ */
+export type LookSource = "proxy" | "original";
+/**
  * `@<publisher>/<name>` (8A Decision 2).
  *
  * This interface was referenced by `FinCore`'s JSON-Schema
@@ -2297,6 +2304,20 @@ export type Runtime =
       node: string;
       type: "node";
     };
+/**
+ * The codec of a proxy (Decision 5).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "ProxyCodec".
+ */
+export type ProxyCodec = "h264" | "av1";
+/**
+ * A proxy tier (spec §7.1).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "ProxyTier".
+ */
+export type ProxyTier = "540" | "1080";
 /**
  * The OS confinement the worker applied to itself (spec §3.5.1).
  *
@@ -2405,20 +2426,6 @@ export type Placeholder =
  * via the `definition` "Severity".
  */
 export type Severity = "low" | "medium" | "high" | "critical";
-/**
- * The codec of a proxy (Decision 5).
- *
- * This interface was referenced by `FinCore`'s JSON-Schema
- * via the `definition` "ProxyCodec".
- */
-export type ProxyCodec = "h264" | "av1";
-/**
- * A proxy tier (spec §7.1).
- *
- * This interface was referenced by `FinCore`'s JSON-Schema
- * via the `definition` "ProxyTier".
- */
-export type ProxyTier = "540" | "1080";
 /**
  * What to purge (`fin diagnostics purge`, `diagnostics.purge`).
  *
@@ -7961,7 +7968,31 @@ export interface LookFrame {
    * The plan's BLAKE3 (lowercase hex).
    */
   plan: string;
+  /**
+   * The assets whose proxy was listed in the manifest but could not be read (their layers
+   * read the original); absent when none.
+   */
+  proxyFallbacks?: LookProxyFallback[];
+  /**
+   * Where the frame's pictures came from.
+   */
+  source: LookSource;
   width: number;
+}
+/**
+ * Why a layer that had a proxy read its original instead (`LookFrame.proxyFallbacks`): the
+ * entry or its files were gone, changed or unreadable between the manifest and the open.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "LookProxyFallback".
+ */
+export interface LookProxyFallback {
+  asset: string;
+  /**
+   * `missing`, `changed`, `invalid` (the entry's files do not agree with each other or the
+   * original) or `decode` (a proxy frame did not decode).
+   */
+  reason: string;
 }
 /**
  * `media.look` v1: frames of `timeline` at each time in `at`, as PNGs in `out/`.
@@ -7978,6 +8009,11 @@ export interface LookParams {
    * The branch of the snapshot (an id, a name or `<name>#<id>`).
    */
   branch?: string;
+  /**
+   * Read the originals only: a layer never reads a proxy (`fin look --originals`, plan
+   * 6B-1 Task 16). Part of the job's identity (`dedupe`).
+   */
+  originals?: boolean;
   /**
    * Where the kind's `onSucceeded` moves the frames: absolute, or relative to the project
    * folder; `workspace/shared/look/` when absent. Never inside `.finisher/` or `assets/`
@@ -8167,6 +8203,32 @@ export interface ManifestAsset {
    * is missing.
    */
   original?: OriginalFile | null;
+  /**
+   * The proxies the media cache holds for this asset's fingerprint when the manifest was
+   * written (spec §4.2 "from 6B"; plan 6B-1 Task 16), pinned for the job's life by the host.
+   * A layer reads the `1080` one when `media.look` does not ask for originals
+   * ([`ManifestAsset::proxy`]).
+   */
+  proxies?: ManifestProxy[];
+}
+/**
+ * One proxy entry of the media cache (`cache/media/<key[0..2]>/<key>/`): `proxy.mp4`,
+ * `table.bin` (the original's sample table) and `meta.json` (plan 6B-1 Decision 7).
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "ManifestProxy".
+ */
+export interface ManifestProxy {
+  codec: ProxyCodec;
+  /**
+   * The entry's directory on this machine, absolute.
+   */
+  dir: string;
+  /**
+   * The entry's cache key.
+   */
+  key: string;
+  tier: ProxyTier;
 }
 /**
  * Font bytes for captions (plan 6A Decision 3): the server's font cache, read-only, then the

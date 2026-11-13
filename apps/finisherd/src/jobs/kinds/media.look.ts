@@ -15,7 +15,7 @@ import { realpathSync } from "node:fs";
 import { mkdir, realpath, stat } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { FinError, type JobView } from "@finisher/contracts";
-import type { LookFrame, LookParams, LookResult } from "@finisher/core-types";
+import type { LookFrame, LookParams, LookResult, LookSource } from "@finisher/core-types";
 import { commitJobOutput } from "@finisher/fin-node";
 import { Effect } from "effect";
 import { finError, toFinError } from "../../errors.ts";
@@ -69,21 +69,22 @@ export type LookJobParams = LookParams;
 
 const invalid = (field: string, why: string): FinError => finError("JOB_PARAMS_INVALID", `params.${field}: ${why}`, { field }, "submit a media.look with its project, branch and rev");
 
-/** The `(project, branch, rev, timeline, at, size, out)` a look is: equal looks coalesce. */
+/** The `(project, branch, rev, timeline, at, size, out, originals)` a look is: equal looks coalesce. */
 export function lookDedupe(p: LookJobParams): string | undefined {
   if (p.projectId == null || p.branch == null || p.rev == null) return undefined;
-  return JSON.stringify([p.projectId, p.branch, p.rev, p.timeline, p.at, p.size ?? null, p.outName, p.outDir ?? null]);
+  return JSON.stringify([p.projectId, p.branch, p.rev, p.timeline, p.at, p.size ?? null, p.outName, p.outDir ?? null, p.originals === true]);
 }
 
 const RATIONAL = /^-?\d{1,38}(?:\/\d{1,38})?$/;
 const PLAN_HASH = /^[0-9a-f]{64}$/;
 
 /**
- * `<timeline>-<n>_<d>-<w>x<h>-<plan hash, 8 hex>.png` (Decision 7). The size is in the name
- * because the plan hash does not cover it: two looks of the same times at different sizes into
- * one folder must keep both files.
+ * `<timeline>-<n>_<d>-<w>x<h>-<plan hash, 8 hex>.png` (Decision 7), `….-proxy.png` for a frame
+ * read from a proxy. The size and the source are in the name because the plan hash covers
+ * neither: two looks of the same times at different sizes, or from a proxy and from the
+ * original, into one folder must keep both files.
  */
-export function finalName(timeline: string, at: string, size: { readonly width: number; readonly height: number }, plan: string): string {
+export function finalName(timeline: string, at: string, size: { readonly width: number; readonly height: number }, plan: string, source: LookSource = "original"): string {
   if (!RATIONAL.test(at)) throw finError("JOB_FAILED", "a frame time is not a rational number", { at });
   for (const side of [size.width, size.height]) {
     if (!Number.isSafeInteger(side) || side < 1 || side > LOOK_MAX_SIDE) throw finError("JOB_FAILED", "a frame size is not a pixel count", { width: size.width, height: size.height });
@@ -91,7 +92,7 @@ export function finalName(timeline: string, at: string, size: { readonly width: 
   if (!PLAN_HASH.test(plan)) throw finError("JOB_FAILED", "a frame's plan hash is not a BLAKE3 digest", { plan });
   const [n, d] = at.split("/");
   const safe = timeline.replace(/[^A-Za-z0-9_-]/g, "_");
-  return `${safe}-${n}_${d ?? "1"}-${size.width}x${size.height}-${plan.slice(0, 8)}.png`;
+  return `${safe}-${n}_${d ?? "1"}-${size.width}x${size.height}-${plan.slice(0, 8)}${source === "proxy" ? "-proxy" : ""}.png`;
 }
 
 const FOLD = process.platform === "win32" || process.platform === "darwin";
@@ -275,7 +276,14 @@ export function mediaLookKind(deps: MediaKindDeps): KindSpec<LookJobParams, Look
           join(deps.serverData, "fonts"),
           JSON.stringify(request),
         );
-        const reads = yield* Effect.promise(() => canonicalReads([...(done.sources ?? []), join(deps.serverData, "fonts")]));
+        // The proxies the cache holds for the manifest's assets (6B-1 Task 16), pinned for this
+        // job's life (released when it ends: `releaseLookPins`) and serving the project (a hit:
+        // it reaches them and pins them while open), and the files the worker reads from them.
+        // A look of originals lists none; a cache that is down lists none.
+        const projectId = p.projectId;
+        const cache = p.originals === true ? undefined : deps.proxy?.cache();
+        const proxyFiles = cache === undefined ? [] : yield* Effect.tryPromise({ try: () => cache.attachProxies(join(dirs.job, "in"), `job:${ctx.job.id}`, [projectId]), catch: toFinError });
+        const reads = yield* Effect.promise(() => canonicalReads([...(done.sources ?? []), ...proxyFiles, join(deps.serverData, "fonts")]));
         return { extra: { planSamples: done.planSamples, rev: done.rev, reads } };
       }),
     // The sources and the font cache, granted to the worker per file (plan 7C Task 7).
@@ -306,7 +314,8 @@ export function mediaLookKind(deps: MediaKindDeps): KindSpec<LookJobParams, Look
             if (p.size != null && (f.width !== p.size.width || f.height !== p.size.height)) {
               throw finError("JOB_FAILED", "the worker drew a frame at another size than the one asked for", { frame: i });
             }
-            const to = join(dest, finalName(p.timeline, at, { width: f.width, height: f.height }, f.plan));
+            if (f.source !== "proxy" && f.source !== "original") throw finError("JOB_FAILED", "the worker did not say where a frame was read from", { frame: i });
+            const to = join(dest, finalName(p.timeline, at, { width: f.width, height: f.height }, f.plan, f.source));
             if (dirname(to) !== dest) throw finError("JOB_FAILED", "a frame's destination is outside its folder", { frame: i });
             try {
               await commitJobOutput(join(jobDir, "out", f.file), to, MAX_FRAME_BYTES, true);

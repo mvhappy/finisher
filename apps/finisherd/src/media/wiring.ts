@@ -12,6 +12,7 @@ import { Effect } from "effect";
 import type { Tickets } from "../auth/tickets.ts";
 import type { ListenerPolicy } from "../http/policy.ts";
 import type { JobEngine } from "../jobs/api.ts";
+import { MEDIA_LOOK } from "../jobs/kinds/media.look.ts";
 import type { ProxyKindDeps } from "../jobs/kinds/media.proxy.ts";
 import type { LibraryService } from "../library/service.ts";
 import type { ProjectRegistryShape } from "../projects.ts";
@@ -72,6 +73,10 @@ export function mediaWiring(mediaCache: MediaCacheService, tickets: Pick<Tickets
         },
       });
       caps = capabilities;
+      // A look's pins on the proxies its manifest lists (6B-1 Task 16) end with the job, however it ends.
+      engine.onDone((job) => {
+        if (job.kind === MEDIA_LOOK) void mediaCache.cache?.release(`job:${job.id}`).catch(() => undefined);
+      });
       const delay = testHooks === undefined ? 0 : Number(process.env.FIN_TEST_PROXY_DELAY_MS ?? 0);
       proxies = makeProxyService({ registry: projects, engine, capabilities, cache: () => mediaCache.cache, log, ...(Number.isFinite(delay) && delay > 0 ? { testDelayMs: delay } : {}) });
       if (library.registry.list().length > 0) void Effect.runPromise(Effect.ignore(capabilities(MEDIA_SYSTEM_OWNER)));

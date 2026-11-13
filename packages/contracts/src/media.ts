@@ -38,7 +38,8 @@ export const EvalAudioPayload = Schema.Struct({
  * only inside its project's folder, a device inside the server's allowed roots (5B Decision 32). `size`: each side 1 to 8192 (the timeline's resolution when
  * absent). `wait` (default true) answers the `LookResult` (frames with their final paths, what
  * was `skipped`, the adapter) once the job finished, or its error; `wait: false` answers
- * `{job}` at once.
+ * `{job}` at once. `originals` (6B-1 Task 16): read originals only; by default a layer reads its
+ * asset's `1080` proxy when the media cache holds one (each frame's `source` says which).
  */
 export const MediaLookPayload = Schema.Struct({
   projectId: Schema.String,
@@ -48,6 +49,7 @@ export const MediaLookPayload = Schema.Struct({
   out: Schema.optional(Schema.String),
   size: Schema.optional(Schema.Struct({ width: Schema.Number, height: Schema.Number })),
   wait: Schema.optional(Schema.Boolean),
+  originals: Schema.optional(Schema.Boolean),
 });
 /** The generated `LookResult` (`wait`), or `{job}` (the job's view: `wait: false`). */
 export const MediaLookSuccess = Schema.Unknown;
