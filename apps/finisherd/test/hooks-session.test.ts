@@ -263,6 +263,24 @@ describe("command order and live slots (Task 6 review)", () => {
     const steered = store.nodes(b.id).filter((n) => n.kind === "userMessage" && n.runId === rb!.id).map((n) => payload(n));
     expect(steered).toMatchObject([{ text: "go", trigger: "prompt" }, { text: "trim", trigger: "steer" }, { text: ctx, trigger: "hook", hookContext: { event: "UserPrompt", hooks: ["audio"] } }]);
   });
+  test("interrupted_queued_run_hands_back_steers_not_context: the steer comes back, the context waits for the next run", async () => {
+    const h = hooked([WORKING], [hook("audio", "UserPrompt", ["--reply", "context:preserve the audio"])], { limits: { maxLiveBuiltin: 1 } });
+    await h.runtime.boot();
+    const { session: a } = await run(h.runtime.start({ projectId: "P1", prompt: "busy" }, PEOPLE, META));
+    await until(() => status(a.id) === "running" && h.adapter.log.turns.length === 1, "a runs");
+    const { session: b, run: rb } = await run(h.runtime.start({ projectId: "P1", prompt: "go" }, PEOPLE, META));
+    await until(() => store.nodes(b.id).some((n) => n.kind === "notice" && payload(n).code === "SESSION_QUEUED"), "b queued");
+    expect(await run(h.runtime.steer(b.id, "trim", PEOPLE))).toEqual({ queued: true });
+    await run(h.runtime.interrupt(b.id, PEOPLE));
+    const returned = await until(() => store.nodes(b.id).find((n) => n.runId === rb!.id && n.kind === "notice" && payload(n).steerReturned !== undefined), "b's steers handed back");
+    expect((payload(returned).steerReturned as { steers: Array<{ text: string }> }).steers.map((x) => x.text)).toEqual(["trim"]);
+    await run(h.runtime.interrupt(a.id, PEOPLE));
+    // The resume's prompt is the handed-back steer; its UserPrompt hook runs on it, after the held context.
+    await run(h.runtime.resume(b.id, PEOPLE, undefined, true));
+    await until(() => h.adapter.log.turns.length === 2, "b's next run");
+    expect(h.adapter.log.turns[1]!.text).toBe(`trim${block(["preserve the audio", "preserve the audio"])}`);
+    expect(h.adapter.log.steers).toEqual([]);
+  });
 });
 
 describe("SessionStart and SessionEnd (Decisions 1, 16)", () => {

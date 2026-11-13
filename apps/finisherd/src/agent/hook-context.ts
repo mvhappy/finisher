@@ -14,6 +14,8 @@
 //   logged and dropped; at most `HELD_MAX` items wait per session (the rest are logged).
 // - **A run waiting for a live slot** (`live-limits.ts`) takes context with its steers: its
 //   `userMessage {trigger: "hook"}` is recorded in that run and the block steered in at admission.
+//   A queued run that never starts its turn (interrupted, ended, failed) hands its person's steers
+//   back (`steerReturned`) but not hook context: that is held again (`requeue`) for the next run.
 // - **Command order** (`CommandOrder`): a session's commands run one after another in the order
 //   they came, each with its `UserPrompt` hook inside its turn, so a slow hook never lets a later
 //   command (a steer, an end) overtake it. The order is its own queue, in front of the session's
@@ -42,8 +44,8 @@ export interface ContextInternals {
   activeRun(sessionId: string): string | null;
   live(sessionId: string): Live | undefined;
   append(n: { sessionId: string; runId: string; kind: NodeKind; payload: unknown }): Promise<unknown>;
-  /** Queues `text` (recorded as `payload`) with the session's run waiting for a live slot; false when it has none. */
-  queued(sessionId: string, text: string, payload: Readonly<Record<string, unknown>>): Promise<boolean>;
+  /** Queues `text` (recorded as `payload`; `item` handed back unsent) with the session's run waiting for a live slot; false when it has none. */
+  queued(sessionId: string, text: string, payload: Readonly<Record<string, unknown>>, item: HookContextItem): Promise<boolean>;
   /** In the session's queue (`RuntimeEngine.background`). */
   background(sessionId: string, what: string, f: () => Promise<void>): void;
   log(message: string, details: Record<string, unknown>): void;
@@ -90,7 +92,7 @@ export class HookContexts {
     const live = this.#d.live(sessionId);
     const text = hookContextBlock([item.text]);
     const payload = { text, trigger: "hook", hookContext: { event: item.event, hooks: item.hooks } };
-    if (s?.status === "running" && (await this.#d.queued(sessionId, text, payload))) return;
+    if (s?.status === "running" && (await this.#d.queued(sessionId, text, payload, item))) return;
     if ((s?.status === "running" || s?.status === "waitingApproval") && live?.runId != null && live.caps.steer) {
       await this.#d.append({ sessionId, runId: live.runId, kind: "userMessage", payload });
       const err = await call(live.provider.steer({ text }));
@@ -104,6 +106,11 @@ export class HookContexts {
   async deliverThen<A>(sessionId: string, item: HookContextItem | undefined, a: A): Promise<A> {
     if (item !== undefined) await this.deliver(sessionId, item);
     return a;
+  }
+
+  /** Context a queued run never sent (`LiveLimits.handBack`): held again for the next run. */
+  requeue(sessionId: string, item: HookContextItem): void {
+    this.#hold(sessionId, { context: item });
   }
 
   /** The session ended: what it held is dropped. */

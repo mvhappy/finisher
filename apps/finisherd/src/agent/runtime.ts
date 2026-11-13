@@ -89,7 +89,7 @@ export class Runtime extends RuntimeEngine {
   readonly #limits: LiveLimits;
   readonly subagents: Subagents;
   readonly #rollbacks: Rollbacks | undefined;
-  readonly #contexts = new HookContexts({ session: (id) => this.store.get(id), activeRun: (id) => this.store.activeRun(id), live: (id) => this.lives.get(id), append: (n) => this.append(n), queued: (id, t, p) => this.#limits.hold(id, t, p), background: (id, what, f) => this.background(id, what, f), log: (m, d) => this.log(m, d) });
+  readonly #contexts = new HookContexts({ session: (id) => this.store.get(id), activeRun: (id) => this.store.activeRun(id), live: (id) => this.lives.get(id), append: (n) => this.append(n), queued: (id, t, p, item) => this.#limits.hold(id, t, p, item), background: (id, what, f) => this.background(id, what, f), log: (m, d) => this.log(m, d) });
   readonly #order = new CommandOrder();
   readonly #conversation = conversationOps({ lives: this.lives, adapter: (h) => this.adapter(h), open: (s) => this.ensureLive(s), close: (id) => this.stopLive(id), append: (n) => this.append(n) });
 
@@ -102,6 +102,7 @@ export class Runtime extends RuntimeEngine {
       max: () => ({ builtin: limits().maxLiveBuiltin, provider: limits().maxLiveProviders }),
       active: () => this.store.tree.active(),
       current: (id, runId) => this.store.get(id)?.status === "running" && this.store.activeRun(id) === runId,
+      unsent: (id, c) => this.#contexts.requeue(id, c),
       turns: {
         session: (id) => this.session(id),
         open: (s) => this.ensureLive(s),
