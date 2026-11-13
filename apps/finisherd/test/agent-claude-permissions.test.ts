@@ -5,7 +5,7 @@
 // is not enforced a shell command is asked and a write outside the workspace denied in every
 // mode. The real runtime, store and `control.db` over `fake-claude`, plus unit cases for the port,
 // the gate and the managed rule.
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -42,6 +42,12 @@ const requestOf = (l: CliLine) => {
   if (l.kind !== "controlRequest") throw new Error(l.kind);
   return l.request;
 };
+/** The runtime's id of the request a port turned into an event. */
+const idOf = (r: { events?: readonly ProviderEvent[] }) => {
+  const e = r.events?.[0];
+  if (e?.type !== "request") throw new Error("no request event");
+  return e.id;
+};
 const answerOf = (line: string | { code: string }) => {
   if (typeof line !== "string") throw new Error(line.code);
   return JSON.parse(line) as { response: { subtype: string; request_id: string; error?: string; response?: Record<string, unknown> } };
@@ -60,8 +66,9 @@ describe("the port", () => {
         const l = canUseTool("r1", tool, inp, { permission_suggestions: [{ type: "addRules", rules: [{ toolName: tool }] }] });
         const r = port.request("r1", requestOf(l));
         expect(r.answer).toBeUndefined();
-        expect(r.events).toEqual([{ type: "request", id: "r1", kind: "approval", tool, input: inp }]);
-        const a = answerOf(port.respond("r1", { kind: "approval", allow: true }));
+        expect(r.events).toEqual([{ type: "request", id: idOf(r), kind: "approval", tool, input: inp }]);
+        const a = answerOf(port.respond(idOf(r), { kind: "approval", allow: true }));
+        expect(a.response.request_id).toBe("r1");
         expect(a.response.response).toEqual({ behavior: "allow", updatedInput: inp });
         expect(JSON.stringify(a.response.response!.updatedInput)).toBe(JSON.stringify(inp));
       }),
@@ -71,10 +78,10 @@ describe("the port", () => {
 
   test("never_sends_updated_permissions; a deny carries the server's message", () => {
     const port = claudePermissions();
-    port.request("r1", requestOf(canUseTool("r1", "Bash", { command: "ls" }, { permission_suggestions: [{ type: "addRules" }] })));
-    port.request("r2", requestOf(canUseTool("r2", "Bash", { command: "rm -rf x" })));
-    const allow = answerOf(port.respond("r1", { kind: "approval", allow: true }));
-    const deny = answerOf(port.respond("r2", { kind: "approval", allow: false, message: "Finisher's rule rm (local layer) denies this call." }));
+    const r1 = idOf(port.request("r1", requestOf(canUseTool("r1", "Bash", { command: "ls" }, { permission_suggestions: [{ type: "addRules" }] }))));
+    const r2 = idOf(port.request("r2", requestOf(canUseTool("r2", "Bash", { command: "rm -rf x" }))));
+    const allow = answerOf(port.respond(r1, { kind: "approval", allow: true }));
+    const deny = answerOf(port.respond(r2, { kind: "approval", allow: false, message: "Finisher's rule rm (local layer) denies this call." }));
     expect(Object.keys(allow.response.response!)).toEqual(["behavior", "updatedInput"]);
     expect(deny.response.response).toEqual({ behavior: "deny", message: "Finisher's rule rm (local layer) denies this call." });
     for (const raw of [allow, deny].map((x) => JSON.stringify(x))) expect(raw).not.toMatch(/updatedPermissions|permission_suggestions/);
@@ -82,17 +89,47 @@ describe("the port", () => {
 
   test("nothing is answered the runtime did not decide: no answer at request time, none twice, none after a cancel", () => {
     const port = claudePermissions();
-    expect(port.request("r1", requestOf(canUseTool("r1", "Read", { file_path: "a" }))).answer).toBeUndefined();
-    // A reused id while the first waits is refused, never allowed.
-    expect(answerOf(port.request("r1", requestOf(canUseTool("r1", "Read", { file_path: "b" }))).answer!).response.subtype).toBe("error");
+    const first = port.request("r1", requestOf(canUseTool("r1", "Read", { file_path: "a" })));
+    expect(first.answer).toBeUndefined();
+    const r1 = idOf(first);
+    // A reused id while the first waits is refused (a deny), never allowed, and noticed.
+    const again = port.request("r1", requestOf(canUseTool("r1", "Read", { file_path: "b" })));
+    expect(answerOf(again.answer!).response.response).toMatchObject({ behavior: "deny" });
+    expect(again.events).toEqual([{ type: "notice", name: "reusedRequestId", details: { harness: "claudeCode", requestId: "r1" } }]);
     expect(port.respond("nope", { kind: "approval", allow: true })).toMatchObject({ code: "PROVIDER_PROTOCOL" });
-    expect(port.respond("r1", { kind: "userInput", text: "x" })).toMatchObject({ code: "PROVIDER_PROTOCOL" });
-    expect(typeof port.respond("r1", { kind: "approval", allow: true })).toBe("string");
+    // The CLI's own id is not the runtime's: only the exact request instance is answered.
     expect(port.respond("r1", { kind: "approval", allow: true })).toMatchObject({ code: "PROVIDER_PROTOCOL" });
-    port.request("r2", requestOf(canUseTool("r2", "Read", { file_path: "a" })));
-    expect(port.cancel("r2")).toEqual([{ type: "requestCancelled", id: "r2" }]);
+    expect(port.respond(r1, { kind: "userInput", text: "x" })).toMatchObject({ code: "PROVIDER_PROTOCOL" });
+    expect(typeof port.respond(r1, { kind: "approval", allow: true })).toBe("string");
+    expect(port.respond(r1, { kind: "approval", allow: true })).toMatchObject({ code: "PROVIDER_PROTOCOL" });
+    const r2 = idOf(port.request("r2", requestOf(canUseTool("r2", "Read", { file_path: "a" }))));
+    expect(port.cancel("r2")).toEqual([{ type: "requestCancelled", id: r2 }]);
     expect(port.cancel("r2")).toEqual([]);
-    expect(port.respond("r2", { kind: "approval", allow: true })).toMatchObject({ code: "PROVIDER_PROTOCOL" });
+    expect(port.respond(r2, { kind: "approval", allow: true })).toMatchObject({ code: "PROVIDER_PROTOCOL" });
+  });
+
+  test("a stale answer never authorizes a later request that reuses a retired id (review repro)", () => {
+    const port = claudePermissions();
+    // In one burst: Read(r1), cancel r1, Write(r1) outside the workspace.
+    const read = idOf(port.request("r1", requestOf(canUseTool("r1", "Read", { file_path: "safe.txt" }))));
+    expect(port.cancel("r1")).toEqual([{ type: "requestCancelled", id: read }]);
+    const write = port.request("r1", requestOf(canUseTool("r1", "Write", { file_path: "/tmp/outside", content: "x" })));
+    // The reuse is refused at once: a deny for r1, nothing for the runtime to decide.
+    expect(answerOf(write.answer!).response).toMatchObject({ request_id: "r1", response: { behavior: "deny" } });
+    expect(write.events?.some((e) => e.type === "request")).toBe(false);
+    // The runtime's allow of the Read reaches no one.
+    expect(port.respond(read, { kind: "approval", allow: true })).toMatchObject({ code: "PROVIDER_PROTOCOL" });
+    // Answered ids are retired too.
+    const r3 = idOf(port.request("r3", requestOf(canUseTool("r3", "Read", { file_path: "a" }))));
+    port.respond(r3, { kind: "approval", allow: false });
+    expect(answerOf(port.request("r3", requestOf(canUseTool("r3", "Write", { file_path: "/x" }))).answer!).response.response).toMatchObject({ behavior: "deny" });
+    // MCP: a reused control id is refused with a deny body as well.
+    const call = { subtype: "mcp_message" as const, server_name: "finisher", message: { jsonrpc: "2.0", id: 9, method: "tools/call", params: { name: "approve", arguments: { tool_name: "Write", input: { file_path: "/x" } } } } };
+    const m = idOf(port.request("m1", call));
+    port.cancel("m1");
+    const reused = answerOf(port.request("m1", call).answer!);
+    expect(JSON.parse((reused.response.response as { mcp_response: { result: { content: { text: string }[] } } }).mcp_response.result.content[0]!.text)).toMatchObject({ behavior: "deny" });
+    expect(port.respond(m, { kind: "approval", allow: true })).toMatchObject({ code: "PROVIDER_PROTOCOL" });
   });
 
   test("hook_callback_answered_error (unit) and an unknown subtype", () => {
@@ -109,8 +146,8 @@ describe("the port", () => {
     const port = claudePermissions();
     const call = (id: string, name: string, args: unknown) => ({ subtype: "mcp_message" as const, server_name: "finisher", message: { jsonrpc: "2.0", id: 7, method: "tools/call", params: { name, arguments: args } } });
     const r = port.request("m1", call("m1", "approve", { tool_name: "Bash", input: { command: "ls" }, tool_use_id: "t1" }));
-    expect(r.events).toEqual([{ type: "request", id: "m1", kind: "approval", tool: "Bash", input: { command: "ls" } }]);
-    const a = answerOf(port.respond("m1", { kind: "approval", allow: false, message: "no" }));
+    expect(r.events).toEqual([{ type: "request", id: idOf(r), kind: "approval", tool: "Bash", input: { command: "ls" } }]);
+    const a = answerOf(port.respond(idOf(r), { kind: "approval", allow: false, message: "no" }));
     expect(a.response.response).toEqual({ mcp_response: { jsonrpc: "2.0", id: 7, result: { content: [{ type: "text", text: JSON.stringify({ behavior: "deny", message: "no" }) }] } } });
     const shell = answerOf(port.request("m2", call("m2", "shell", { command: "ls" })).answer!);
     expect(shell.response.response).toMatchObject({ mcp_response: { id: 7, error: { code: -32602 } } });
@@ -119,21 +156,54 @@ describe("the port", () => {
 });
 
 describe("the first-turn gate", () => {
-  const plan = { argv: [], tools: ["Read"], mcpTools: ["mcp__finisher__approve"] };
-  test("a cancel of a held request drops it: the runtime never sees it (no orphaned card)", () => {
+  const UUID = "019311f2-dc74-254d-63e1-194e81be77df";
+  const plan = { argv: ["claude", "-p", "--session-id", UUID], tools: ["Read"], mcpTools: ["mcp__finisher__approve"] };
+  const init = (): CliLine => {
+    const l = decodeLine(
+      JSON.stringify({
+        type: "system",
+        subtype: "init",
+        session_id: UUID,
+        tools: ["Read", "mcp__finisher__approve"],
+        model: "claude-opus-5-5",
+        permissionMode: "default",
+        apiKeySource: "none",
+        claude_code_version: VERSION,
+        mcp_servers: [{ name: "finisher", status: "connected", source: "sdk" }],
+        plugins: [],
+        skills: [],
+        slash_commands: [],
+        agents: ["claude", "Explore", "general-purpose", "Plan", "statusline-setup"],
+        output_style: "default",
+      }),
+    );
+    if (!("kind" in l) || l.kind !== "init") throw new Error(`bad fixture ${JSON.stringify(l)}`);
+    return l;
+  };
+  const mcp = (id: string, method: string): CliLine => ({ kind: "controlRequest", request_id: id, request: { subtype: "mcp_message", server_name: "finisher", message: { jsonrpc: "2.0", id: 1, method, params: { name: "approve", arguments: { tool_name: "Read", input: {} } } } } });
+  const ids = (lines: readonly CliLine[]) => lines.map((l) => (l.kind === "controlRequest" ? l.request_id : l.kind));
+
+  test("a cancel of a held request drops it: once the gate opens only the others come out (no orphaned card)", () => {
     const gate = firstTurnGate(plan);
     expect(gate.push(canUseTool("r1", "Read", { file_path: "a" })).kind).toBe("hold");
+    expect(gate.push(mcp("m1", "tools/call")).kind).toBe("hold");
     expect(gate.push(canUseTool("r2", "Read", { file_path: "b" })).kind).toBe("hold");
+    expect(gate.push(mcp("m2", "tools/call")).kind).toBe("hold");
     expect(gate.push({ kind: "controlCancel", request_id: "r1" }).kind).toBe("drop");
+    expect(gate.push({ kind: "controlCancel", request_id: "m1" }).kind).toBe("drop");
     // A cancel of a request that is not held goes on (the port ignores it when nothing waits).
     expect(gate.push({ kind: "controlCancel", request_id: "zz" })).toMatchObject({ kind: "forward" });
+    const opened = gate.push(init());
+    expect(opened.kind).toBe("forward");
+    expect(ids(opened.kind === "forward" ? opened.lines : [])).toEqual(["r2", "m2", "init"]);
   });
 
   test("an MCP `tools/call` is held until the init passes; the handshake is not", () => {
     const gate = firstTurnGate(plan);
-    const mcp = (method: string): CliLine => ({ kind: "controlRequest", request_id: method, request: { subtype: "mcp_message", server_name: "finisher", message: { jsonrpc: "2.0", id: 1, method } } });
-    expect(gate.push(mcp("tools/list")).kind).toBe("forward");
-    expect(gate.push(mcp("tools/call")).kind).toBe("hold");
+    expect(gate.push(mcp("l1", "tools/list")).kind).toBe("forward");
+    expect(gate.push(mcp("c1", "tools/call")).kind).toBe("hold");
+    const opened = gate.push(init());
+    expect(ids(opened.kind === "forward" ? opened.lines : [])).toEqual(["c1", "init"]);
   });
 });
 
@@ -151,7 +221,8 @@ describe("the managed rule while the agent profile is not enforced (owner Q3a)",
       }
       for (const tool of ["Edit", "Write"]) {
         expect((await explain([], mode, tool, { file_path: "/proj/finisher.project.json" }, true)).decision, `${mode} ${tool}`).toBe("deny");
-        expect((await explain([], mode, tool, { file_path: "/proj/workspace/S1/notes.md" }, true)).decision, `${mode} ${tool}`).toBe("allow");
+        // `/proj` is not on disk: an unresolvable workspace fails closed (real paths below).
+        expect((await explain([], mode, tool, { file_path: "/proj/workspace/S1/notes.md" }, true)).decision, `${mode} ${tool}`).toBe("deny");
       }
       expect((await explain([], mode, "Read", { file_path: "/proj/x" }, true)).decision).toBe("allow");
     }
@@ -159,6 +230,64 @@ describe("the managed rule while the agent profile is not enforced (owner Q3a)",
     // A user allow does not lift a managed ask; a deny rule still denies first.
     expect((await explain([rule("ls", "allow", "tool:Bash(ls *)", "user")], "draft", "Bash", { command: "ls -la" }, true)).decision).toBe("ask");
     expect(await explain([rule("ls", "deny", "tool:Bash(ls *)")], "draft", "Bash", { command: "ls -la" }, true)).toMatchObject({ decision: "deny", reason: "rule" });
+  });
+
+  describe("symlinks never carry an unconfined write outside the workspace (review of Task 8)", () => {
+    let root: string;
+    let ws: string;
+    const at = (p: string, platform?: NodeJS.Platform) =>
+      Effect.runPromise(providerPermissions({ rules: source([]), dirOf: () => join(root, "P"), ...(platform === undefined ? {} : { platform }) }).explain(s("draft"), { tool: "Write", input: { file_path: p }, unconfined: true }));
+    const decide = (tool: string, mode: Session["mode"], p: string) =>
+      Effect.runPromise(providerPermissions({ rules: source([]), dirOf: () => join(root, "P") }).explain(s(mode), { tool, input: { [tool === "NotebookEdit" ? "notebook_path" : "file_path"]: p }, unconfined: true }));
+    beforeEach(() => {
+      root = realpathSync(mkdtempSync(join(tmpdir(), "agent-claude-links-")));
+      ws = join(root, "P", "workspace", "S1");
+      mkdirSync(join(ws, "sub", "deep"), { recursive: true });
+      mkdirSync(join(root, "outside", "dir"), { recursive: true });
+      writeFileSync(join(root, "outside", "secret.txt"), "x");
+      writeFileSync(join(ws, "real.txt"), "x");
+      symlinkSync(join(root, "outside", "secret.txt"), join(ws, "link.txt"));
+      symlinkSync(join(root, "outside", "dir"), join(ws, "linkdir"));
+      symlinkSync(join(ws, "real.txt"), join(ws, "inner.txt"));
+      symlinkSync(join(root, "outside", "nowhere.txt"), join(ws, "dangling.txt"));
+      symlinkSync(join(ws, "loop"), join(ws, "loop"));
+    });
+    afterEach(() => rmSync(root, { recursive: true, force: true }));
+
+    test("each write tool, every mode: a symlinked file or parent dir that leads outside is denied", async () => {
+      const outside = [
+        "link.txt",
+        join(ws, "link.txt"),
+        "linkdir/new.txt",
+        join(ws, "linkdir", "a", "b", "new.txt"),
+        "sub/../link.txt",
+        "linkdir/../escape.txt",
+        "dangling.txt",
+        "loop/x.txt",
+        // `..` past a missing component: the kernel cannot resolve it, so neither does the check.
+        "nothere/../real.txt",
+      ];
+      for (const tool of ["Edit", "Write", "MultiEdit", "NotebookEdit"]) {
+        for (const mode of ["plan", "draft", "auto"] as const) {
+          for (const p of outside) expect((await decide(tool, mode, p)).decision, `${tool} ${mode} ${p}`).toBe("deny");
+          for (const p of ["real.txt", "inner.txt", "sub/deep/new.txt", "new/dir/file.txt", join(ws, "sub", "..", "real.txt")]) {
+            expect((await decide(tool, mode, p)).decision, `${tool} ${mode} ${p}`).toBe("allow");
+          }
+        }
+      }
+    });
+
+    test("fails closed: no workspace on disk denies", async () => {
+      rmSync(join(root, "P"), { recursive: true, force: true });
+      expect((await at("new.txt")).decision).toBe("deny");
+    });
+
+    test("case-insensitive file systems compare folded paths", async () => {
+      const cased = join(root, "P", "WORKSPACE", "s1", "x.txt");
+      expect((await at(cased, "darwin")).decision).toBe("allow");
+      expect((await at(cased, "win32")).decision).toBe("allow");
+      expect((await at(cased, "linux")).decision).toBe("deny");
+    });
   });
 
   test("enforced: normal rules (shells allowed, outside writes allowed outside plan: the sandbox is the bound)", async () => {
@@ -281,9 +410,13 @@ const observed = (r: Running, id: string): Observed => {
 const answers = (r: Running, id: string) => observed(r, id).flatMap((o) => o.answers ?? []);
 const openCard = (id: string) => until(() => server!.core.store.approvals(id).find((a: Approval) => a.status === "open"));
 
+/** The runtime's id of a CLI request (`<CLI id>#<generation>`, review of Task 8). */
+const ofCli = (cliId: string) => expect.stringMatching(new RegExp(`^${cliId.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}#\\d+$`));
+const cliOf = (runtimeId: unknown) => String(runtimeId).replace(/#\d+$/, "");
+
 /** Review Focus 3: every allow the CLI heard is an `allow` decision the runtime recorded for that request. */
 function everyAllowDecided(r: Running, id: string): void {
-  const decided = approvalNodes(id).filter((p) => p.decision === "allow").map((p) => p.requestId);
+  const decided = approvalNodes(id).filter((p) => p.decision === "allow").map((p) => cliOf(p.requestId));
   for (const a of answers(r, id)) if (a.answer.behavior === "allow") expect(decided, `allow of ${a.requestId}`).toContain(a.requestId);
 }
 
@@ -295,8 +428,8 @@ describe("through the runtime", () => {
     const got = answers(r, s.id);
     expect(got.map((a) => [a.tool, a.via, a.answer.behavior])).toEqual([["Read", "stdio", "allow"], ["Bash", "stdio", "deny"]]);
     expect(approvalNodes(s.id)).toEqual([
-      expect.objectContaining({ requestId: got[0]!.requestId, kind: "provider", tool: "Read", decision: "allow", by: "policy", reason: "sandbox" }),
-      expect.objectContaining({ requestId: got[1]!.requestId, kind: "provider", tool: "Bash", decision: "deny", by: "policy", reason: "rule", layer: "local" }),
+      expect.objectContaining({ requestId: ofCli(got[0]!.requestId), kind: "provider", tool: "Read", decision: "allow", by: "policy", reason: "sandbox" }),
+      expect.objectContaining({ requestId: ofCli(got[1]!.requestId), kind: "provider", tool: "Bash", decision: "deny", by: "policy", reason: "rule", layer: "local" }),
     ]);
     expect(got[1]!.answer.message).toMatch(/rule .* \(local layer\) denies/);
     everyAllowDecided(r, s.id);
@@ -393,7 +526,7 @@ describe("through the runtime", () => {
     expect(answers(r, s.id)).toEqual([]);
     // Nothing was written for the withdrawn request (only the handshake's answers).
     expect((obs.controlResponses ?? []).filter((c) => c.requestId === obs.cancelled![0])).toEqual([]);
-    expect(approvalNodes(s.id).at(-1)).toMatchObject({ approvalId: card.id, requestId: obs.cancelled![0], status: "expired", reason: "withdrawn" });
+    expect(approvalNodes(s.id).at(-1)).toMatchObject({ approvalId: card.id, requestId: ofCli(obs.cancelled![0]!), status: "expired", reason: "withdrawn" });
     // A late answer reaches no one.
     expect((await confirmed(r.owner, "agent.approval.answer", { id: card.id, decision: "allow" })).ok).toBe(false);
   }, 20_000);
@@ -429,6 +562,22 @@ describe("through the runtime", () => {
     const resp = (observed(r, s.id)[0]!.controlResponses ?? []).find((c) => c.requestId === "hook-1");
     expect(resp).toMatchObject({ subtype: "error" });
     expect(nodes(s.id).filter((n) => n.kind === "notice").map((n) => n.payload)).toContainEqual({ hookCallback: { harness: "claudeCode", callbackId: "cb_9" } });
+  });
+
+  withFake("a stale answer never authorizes a request that reuses a cancelled id (review repro)", async () => {
+    const line = (tool: string, input: unknown) => ({ type: "control_request", request_id: "r1", request: { subtype: "can_use_tool", tool_name: tool, input, tool_use_id: "toolu_x", permission_suggestions: [], blocked_path: null, decision_reason: null } });
+    const burst = [line("Read", { file_path: "safe.txt" }), { type: "control_cancel_request", request_id: "r1" }, line("Write", { file_path: "/tmp/outside.txt", content: "x" })];
+    const r = await claudeServer({ steps: [{ expect: "user", emit: burst }, { sleep: 1000, cumulativeUsage: { inputTokens: 1, outputTokens: 1 } }] });
+    const s = await start(r);
+    expect((await settle(s.id)).status).toBe("idle");
+    const toR1 = (observed(r, s.id)[0]!.controlResponses ?? []).filter((c) => c.requestId === "r1").map((c) => JSON.parse(c.raw) as { response: { response?: { behavior?: string; updatedInput?: unknown } } });
+    // The refused reuse is r1's last answer; an allow can only be the Read's, had it been decided
+    // before the cancel arrived (lines can come in separate chunks): never one with the Write's input.
+    expect(toR1.at(-1)?.response.response?.behavior).toBe("deny");
+    for (const c of toR1.slice(0, -1)) expect(c.response.response).toEqual({ behavior: "allow", updatedInput: { file_path: "safe.txt" } });
+    expect(toR1.length).toBeLessThanOrEqual(2);
+    expect(approvalNodes(s.id).some((p) => p.tool === "Write")).toBe(false);
+    expect(nodes(s.id).filter((n) => n.kind === "notice").map((n) => n.payload)).toContainEqual({ reusedRequestId: { harness: "claudeCode", requestId: "r1" } });
   });
 
   withFake("mcp_prompt_tool_path_same_decisions (Decision 10's fallback)", async () => {

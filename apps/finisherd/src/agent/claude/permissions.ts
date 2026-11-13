@@ -16,6 +16,11 @@
 //   An answer for no waiting request (answered, withdrawn, unknown) writes nothing.
 // - **Withdrawn.** A `control_cancel_request` for a waiting request is `requestCancelled {id}`:
 //   the runtime expires its card and nothing is answered.
+// - **One answer per request instance** (review of Task 8). The runtime's id of a request is
+//   `<CLI request_id>#<generation>`, unique per port, and `respond` answers only that exact
+//   instance. A CLI `request_id` is used once: a permission prompt reusing one (still waiting,
+//   answered or withdrawn) is denied at once with a `reusedRequestId` notice and never reaches
+//   the runtime, so a late decision on a withdrawn request can never answer a later one.
 // - **Anything else** is answered `error` at once: a `hook_callback` (no SDK hooks are registered,
 //   Decision 18) and a request subtype this host does not know, each with a notice; an MCP
 //   `tools/call` of another tool (the brokered shell is Task 13's) a JSON-RPC error.
@@ -33,6 +38,8 @@ const APPROVE = "approve";
 const DENIED = "Finisher denied this call.";
 
 interface Waiting {
+  /** The CLI's `request_id` the answer goes to. */
+  readonly cli: string;
   readonly tool: string;
   readonly input: Readonly<Record<string, unknown>>;
   /** The JSON-RPC id of an MCP `approve` call (absent on the `stdio` path). */
@@ -44,17 +51,31 @@ const clip = (s: string) => s.slice(0, 64);
 
 /** One instance's port (each instance has its own waiting requests). */
 export function claudePermissions(): RequestPort {
+  /** By the runtime's id (`<cli>#<generation>`). */
   const waiting = new Map<string, Waiting>();
-  const ask = (id: string, tool: string, input: Readonly<Record<string, unknown>>, rpc?: { id: unknown }) => {
-    waiting.set(id, rpc === undefined ? { tool, input } : { tool, input, rpc });
+  /** The runtime's id of each CLI id still waiting. */
+  const byCli = new Map<string, string>();
+  /** Every CLI id a permission prompt has used (module docs). */
+  const used = new Set<string>();
+  let generation = 0;
+  const ask = (cli: string, tool: string, input: Readonly<Record<string, unknown>>, rpc?: { id: unknown }) => {
+    if (used.has(cli)) {
+      const body: CanUseToolAnswer = { behavior: "deny", message: "Finisher refuses a permission prompt that reuses a request id." };
+      return {
+        answer: encodeAnswer(cli, rpc === undefined ? body : { mcp_response: { jsonrpc: "2.0", id: rpc.id, result: { content: [{ type: "text", text: JSON.stringify(body) }] } } }),
+        events: [{ type: "notice", name: "reusedRequestId", details: { harness: "claudeCode", requestId: clip(cli) } } satisfies ProviderEvent],
+      };
+    }
+    used.add(cli);
+    const id = `${cli}#${++generation}`;
+    waiting.set(id, rpc === undefined ? { cli, tool, input } : { cli, tool, input, rpc });
+    byCli.set(cli, id);
     return { events: [{ type: "request", id, kind: "approval", tool, input } satisfies ProviderEvent] };
   };
   const mcpError = (id: unknown, message: string) => ({ mcp_response: { jsonrpc: "2.0", id, error: { code: -32602, message } } });
 
   return {
     request(id: string, r: CliRequest) {
-      // A request id the CLI reuses while its first is unanswered: refused, the first stands.
-      if (waiting.has(id)) return { answer: encodeAnswer(id, { error: "a request with this id is waiting" }) };
       switch (r.subtype) {
         case "can_use_tool":
           // TODO(7D Task 0 Step 2): that with `--permission-prompt-tool stdio`, Decision 4's `ask`
@@ -96,17 +117,23 @@ export function claudePermissions(): RequestPort {
       if (w === undefined) return finError("PROVIDER_PROTOCOL", "no Claude Code request is waiting for this answer", { id: clip(id) });
       if (a.kind !== "approval") return finError("PROVIDER_PROTOCOL", "a Claude Code permission prompt takes an approval", { id: clip(id), kind: a.kind });
       waiting.delete(id);
+      byCli.delete(w.cli);
       // The input as the CLI sent it, the same object: never rewritten.
       const body: CanUseToolAnswer = a.allow ? { behavior: "allow", updatedInput: w.input } : { behavior: "deny", message: a.message ?? DENIED };
-      if (w.rpc === undefined) return encodeAnswer(id, body);
-      return encodeAnswer(id, { mcp_response: { jsonrpc: "2.0", id: w.rpc.id, result: { content: [{ type: "text", text: JSON.stringify(body) }] } } });
+      if (w.rpc === undefined) return encodeAnswer(w.cli, body);
+      return encodeAnswer(w.cli, { mcp_response: { jsonrpc: "2.0", id: w.rpc.id, result: { content: [{ type: "text", text: JSON.stringify(body) }] } } });
     },
 
+    /** `id` is the CLI's `request_id`; the event names the runtime's. */
     cancel(id: string): readonly ProviderEvent[] {
       // TODO(7D Task 0 Step 2): when the CLI sends `control_cancel_request` (an interrupt, a
       // timeout of its own?); modelled by fake-claude as one after the script's `cancelAfterMs`
       // for an unanswered `ask`, which then waits for no answer.
-      return waiting.delete(id) ? [{ type: "requestCancelled", id }] : [];
+      const runtimeId = byCli.get(id);
+      if (runtimeId === undefined) return [];
+      byCli.delete(id);
+      waiting.delete(runtimeId);
+      return [{ type: "requestCancelled", id: runtimeId }];
     },
   };
 }

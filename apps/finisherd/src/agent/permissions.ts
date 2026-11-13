@@ -25,11 +25,17 @@
 //   a managed-layer rule applies: a write tool's path outside `workspace/<session>/` is denied in
 //   every mode (as `plan` denies it always), and a shell command is asked (`UNCONFINED_SHELL_RULE`,
 //   layer `managed`: no remembered allow lifts it), so a person sees every shell command until
-//   the sandbox is on. A `deny` rule still denies first. Once the profile is enforced the
+//   the sandbox is on. With no sandbox to stop a link, the write's path is resolved as the kernel
+//   would (`realTarget`: every existing component's links followed, `..` after them, the
+//   workspace's own real path; on macOS and Windows compared case-folded) and **denied when it
+//   cannot be resolved** (a loop, a dangling link, `..` past a missing component, no workspace).
+//   A link swapped after the decision (a TOCTOU race) is outside what an unconfined host can stop:
+//   that limit is why Q3a asks for every shell command while the profile is off. A `deny` rule still denies first. Once the profile is enforced the
 //   normal order above applies.
 // - A layer that cannot be read denies (its synthetic `deny **`, `trust.ts`), so a broken file
 //   never opens a tool.
-import { isAbsolute, join, relative, resolve } from "node:path";
+import { lstatSync, realpathSync } from "node:fs";
+import { dirname, isAbsolute, join, parse, relative, resolve } from "node:path";
 import type { FinError, Rule, Session } from "@finisher/contracts";
 import { Effect } from "effect";
 import { finError } from "../errors.ts";
@@ -114,8 +120,65 @@ export function insideWorkspace(workspace: string, path: string): boolean {
   return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
 }
 
+/**
+ * `path` (absolute, or relative to `workspace`) resolved as the kernel resolves it (module docs),
+ * or null when it cannot be: links of every existing component followed in order, `..` taken
+ * after them, components past the deepest existing one kept as written (`..` among them: null).
+ */
+export function realTarget(workspace: string, path: string): string | null {
+  try {
+    const root = isAbsolute(path) ? parse(path).root : "";
+    let cur = realpathSync.native(root === "" ? workspace : root);
+    let missing = false;
+    // `\` separates only on Windows (on POSIX it is a file name's character).
+    for (const c of path.slice(root.length).split(process.platform === "win32" ? /[\\/]+/ : /\/+/)) {
+      if (c === "" || c === ".") continue;
+      if (c === "..") {
+        if (missing) return null;
+        cur = dirname(cur);
+        continue;
+      }
+      const next = join(cur, c);
+      if (missing) {
+        cur = next;
+        continue;
+      }
+      let link: boolean;
+      try {
+        link = lstatSync(next).isSymbolicLink();
+      } catch (e) {
+        if ((e as { code?: unknown }).code !== "ENOENT") return null;
+        missing = true;
+        cur = next;
+        continue;
+      }
+      // A link's target, wholly resolved; a dangling or looping one throws (null).
+      cur = link ? realpathSync.native(next) : next;
+    }
+    return cur;
+  } catch {
+    return null;
+  }
+}
+
+/** Whether `path` really lies inside `workspace` (`realTarget`; case-folded on macOS and Windows); false when unresolvable. */
+export function insideWorkspaceReal(workspace: string, path: string, platform: NodeJS.Platform = process.platform): boolean {
+  const target = realTarget(workspace, path);
+  let ws: string;
+  try {
+    ws = realpathSync.native(workspace);
+  } catch {
+    return false;
+  }
+  if (target === null) return false;
+  const fold = platform === "darwin" || platform === "win32" ? (p: string) => p.toLowerCase() : (p: string) => p;
+  return insideWorkspace(fold(ws), fold(target));
+}
+
 export interface PermissionsDeps {
   readonly rules: RuleSource;
+  /** The OS whose file system the paths are on (case folding); default this process's. */
+  readonly platform?: NodeJS.Platform;
   /** The folder of a project (its session's workspace is `workspace/<sessionId>/` in it). */
   readonly dirOf: (projectId: string) => string | undefined;
 }
@@ -146,7 +209,10 @@ export function providerPermissions(d: PermissionsDeps): ProviderPermissions {
       if ((s.mode === "plan" || unconfined) && WRITE_TOOLS.has(req.tool)) {
         const dir = d.dirOf(s.projectId);
         const path = PATH_FIELDS.map((k) => field(req.input, k)).find((v): v is string => typeof v === "string" && v !== "");
-        if (dir === undefined || path === undefined || !insideWorkspace(join(dir, "workspace", s.id), path)) return { decision: "deny", reason: s.mode === "plan" ? "mode" : "unconfined", command } satisfies Explained;
+        const ws = dir === undefined ? undefined : join(dir, "workspace", s.id);
+        // Unconfined, nothing else stops a link: the real path decides (module docs).
+        const inside = ws !== undefined && path !== undefined && (unconfined ? insideWorkspaceReal(ws, path, d.platform) : insideWorkspace(ws, path));
+        if (!inside) return { decision: "deny", reason: s.mode === "plan" ? "mode" : "unconfined", command } satisfies Explained;
       }
       if (o.effect === "ask") return { decision: "ask", reason: "rule", rule: o.rule.id, layer: o.layer, command } satisfies Explained;
       if (big) return { decision: "ask", reason: "size", rule: OVERSIZED_RULE, layer: "managed", command } satisfies Explained;
