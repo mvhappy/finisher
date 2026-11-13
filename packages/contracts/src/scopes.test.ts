@@ -16,6 +16,7 @@ const OPTED_OUT: Record<string, "readOnly" | "service"> = {
   "agent.key.list": "readOnly",
   "agent.local.show": "readOnly",
   "agent.local.test": "readOnly",
+  "agent.hooks.list": "readOnly",
   "auth.pair.pending": "readOnly",
   "auth.device.list": "readOnly",
   "auth.devices.watch": "readOnly",

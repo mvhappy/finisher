@@ -37,6 +37,7 @@ import { AgentRuntimeTag } from "./agent/wiring.ts";
 import { agentBranchLimitsExcept } from "./chain/policy.ts";
 import { protectedBranches } from "./chain/protected.ts";
 import { Fonts } from "./fonts.ts";
+import { hooksHandlers } from "./hooks/rpc.ts";
 import { JobEngineTag } from "./jobs/layer.ts";
 import { chainJobs, jobHandlers } from "./jobs/rpc.ts";
 import { mediaCapabilities } from "./media/caps.ts";
@@ -485,6 +486,7 @@ export const HandlersLive = FinRpcs.toLayer(
       ...jobHandlers({ engine: jobEngine, guard }),
       ...agentHandlers({ guard, store: agents.store, reach, agents: agentRuntime, principalOf, protect: { gate: reviews.gate, protectedBranches: reviews.chain.protectedBranches } }),
       ...rulesHandlers({ guard, store: agents.store, rules: agentRuntime.rules, ruleStore: agentRuntime.ruleStore, audit, clock: agents.clock, roles: agentRuntime.roles, dirOf: (id) => registry.dirOf(id) ?? registry.indexedDirOf(id), principalOf }),
+      ...hooksHandlers({ guard, hooks: agentRuntime.hooks, dirOf: (id) => registry.dirOf(id) ?? registry.indexedDirOf(id) }),
       ...savedPromptHandlers({ guard, runtime: agentRuntime.runtime, principalOf, prompts: new SavedPrompts({ serverData: agentRuntime.rules.serverData, roles: agentRuntime.roles, dirOf: (id) => registry.dirOf(id) ?? registry.indexedDirOf(id), trustOf: (id) => agentRuntime.ruleStore.trustOf(id) }) }),
       // 5B: pairing, devices, settings writes and the environment.
       ...reviewHandlers({ guard, reviews, projects, audit, transport: connections.transport, roles: () => new Set(agentRuntime.roles.keys()) }),

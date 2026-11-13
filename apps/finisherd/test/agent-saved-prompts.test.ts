@@ -200,6 +200,20 @@ describe("saved prompts", () => {
     expect(errOf(e)?.code).toBe("INVALID_REQUEST");
   });
 
+  test("trust with all three hashes: the rules, the prompt files and the hooks file at once (7F Task 2)", async () => {
+    const { local, owner, dir, projectId } = await setUp();
+    mkdirSync(join(dir, "prompts"), { recursive: true });
+    writeFileSync(join(dir, "prompts", "outro.json"), JSON.stringify(prompt("outro")));
+    writeFileSync(join(dir, "finisher.hooks.json"), JSON.stringify({ hooks: [{ id: "h", event: "SessionEnd", run: ["node"] }] }));
+    const rules = ok<{ rulesHash: string }>(await owner.call("agent.rules.list", { projectId })).rulesHash;
+    const promptsHash = (await list(local, projectId)).promptsHash;
+    const hooksHash = ok<{ hooksHash: string }>(await owner.call("agent.hooks.list", { projectId })).hooksHash;
+    const r = ok<Record<string, unknown>>(await confirmed(owner, "agent.project.trust", { projectId, expectedHash: rules, expectedPromptsHash: promptsHash, expectedHooksHash: hooksHash }));
+    expect(r).toMatchObject({ rulesHash: rules, promptsHash, hooksHash });
+    expect((await list(local, projectId)).projectPrompts).toBe("trusted");
+    expect(ok<{ projectHooks: string }>(await owner.call("agent.hooks.list", { projectId })).projectHooks).toBe("trusted");
+  });
+
   test("people_only: an agent principal is SCOPE_DENIED; fin has no command for it", async () => {
     const { local, projectId } = await setUp();
     const opened = await open(server.core, local, projectId, { harness: "fake" });

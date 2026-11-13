@@ -2,7 +2,7 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, test } from "vitest";
 import { Schema } from "effect";
-import { HOOK_LIMITS, HookEvent, HookMatch, decodeHookReply, decodeHookSpec } from "./hooks.ts";
+import { AgentHooksListPayload, AgentHooksListSuccess, HOOK_CLASSES, HOOK_LIMITS, HookEvent, HookMatch, decodeHookReply, decodeHookSpec } from "./hooks.ts";
 
 const ok = (raw: unknown) => decodeHookSpec(raw)._tag === "Success";
 
@@ -153,5 +153,27 @@ describe("HookReply (parity with fin_plugin_api::protocol::hook::HookReply)", ()
     ]) {
       expect(ok(bad), JSON.stringify(bad)).toBe(false);
     }
+  });
+});
+
+describe("event classes and the listing (7F plan Task 2)", () => {
+  test("hook_classes_are_decision_1: as fin_plugin_api's HookEvent::class()", () => {
+    const by = (c: string) => Object.entries(HOOK_CLASSES).filter(([, k]) => k === c).map(([e]) => e).sort();
+    expect(by("blockingBefore")).toEqual(["BranchReady", "PreCommand", "PreMerge", "PreRender", "UserPrompt"]);
+    expect(by("blockingAfter")).toEqual(["PostCommand"]);
+    expect(by("awaited")).toEqual(["SessionStart"]);
+    expect(by("observe")).toEqual(["Approval", "JobDone", "Notification", "PostMerge", "PostRender", "SessionEnd"]);
+  });
+
+  test("agent_hooks_list_shapes", () => {
+    const listed = { layer: "project", source: "finisher.hooks.json", id: "lint", event: "PreCommand", applies: false, run: ["node", "x.mjs"], match: "item.*" };
+    expect(Schema.decodeUnknownSync(AgentHooksListSuccess)({ hooks: [listed], projectHooks: "changed", hooksHash: "none", projectHooksReason: "deleted" })).toEqual({
+      hooks: [listed],
+      projectHooks: "changed",
+      hooksHash: "none",
+      projectHooksReason: "deleted",
+    });
+    expect(() => Schema.decodeUnknownSync(AgentHooksListSuccess)({ hooks: [], hooksHash: "sha256:nope" })).toThrow();
+    expect(Schema.decodeUnknownSync(AgentHooksListPayload)({})).toEqual({});
   });
 });

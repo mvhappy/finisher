@@ -16,7 +16,7 @@
 //   branch and tries, which `fin` reads and writes in place of `fin-config.json`.
 // - The owner's settings (`agent.key.*`, `agent.local.*`, `training.closedTargets.*`) are
 //   `admin.ts`'s; no answer holds a key.
-import type { FinError, Principal, Session } from "@finisher/contracts";
+import type { AgentWarning, FinError, Principal, Session } from "@finisher/contracts";
 import { Effect, Stream } from "effect";
 import { chainOf } from "../chain/chain.ts";
 import { protectedOutcome } from "../chain/protected.ts";
@@ -93,6 +93,9 @@ export function agentHandlers(deps: AgentRpcDeps) {
       const p = by(options);
       return Effect.flatMap(sessionInReach(store, p, sessionId), (s) => f(s, p));
     }));
+  /** A project hooks file that does not apply is a warning on the start (7F Task 2, Owner question 8). */
+  const withHookWarnings = <A extends { warnings: AgentWarning[] }>(projectId: string, start: Effect.Effect<A, FinError>) =>
+    Effect.map(start, (r) => ({ ...r, warnings: [...r.warnings, ...agents.hooks.warnings(projectId)] }));
   const metaOf = (options: Options): CallMeta => {
     const c = chainOf(options);
     return { ...actorFor(by(options), options.headers), ...(c === undefined ? {} : { guard: c.guard }) };
@@ -103,12 +106,12 @@ export function agentHandlers(deps: AgentRpcDeps) {
       guard("agent.session.start", Effect.suspend(() => {
         const p = by(options);
         const parent = p.kind === "agent" ? store.get(p.id) : undefined;
-        if (parent === undefined) return runtime.start(req, p, metaOf(options));
+        if (parent === undefined) return withHookWarnings(req.projectId, runtime.start(req, p, metaOf(options)));
         if (req.base !== undefined) return Effect.fail(finError("INVALID_REQUEST", "a child starts from its parent's branch", { field: "base", reason: "subagent" }, "spawn it without base"));
         if (req.prompt === undefined || req.prompt.trim() === "") return Effect.fail(finError("INVALID_REQUEST", "a child starts with a brief", { field: "prompt", reason: "subagent" }, "spawn it with a brief (`fin agent spawn --brief`)"));
         // Reach keeps a session to its project; a child is of its parent's in any case.
         if (req.projectId !== parent.projectId) return Effect.fail(finError("PROJECT_NOT_FOUND", "no such project", { projectId: req.projectId }, "spawn children in your own project"));
-        return runtime.spawnChild(parent, req, p, metaOf(options));
+        return withHookWarnings(req.projectId, runtime.spawnChild(parent, req, p, metaOf(options)));
       })),
     "agent.session.wait": ({ ids, any, timeoutMs }: { ids: ReadonlyArray<string>; any?: boolean; timeoutMs: number }, options: Options) =>
       guard("agent.session.wait", Effect.map(runtime.waitChildren(by(options), ids, any === true, timeoutMs), (children) => ({ children }))),

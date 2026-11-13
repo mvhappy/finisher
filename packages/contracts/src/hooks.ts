@@ -46,6 +46,28 @@ export const HOOK_LIMITS = {
   queue: 256,
 } as const;
 
+/**
+ * How an event's hooks run (Decision 1; `HookEvent::class()` in Rust): a block refuses the
+ * action (`blockingBefore`), stops the later handlers of a landed command (`blockingAfter`),
+ * is ignored with a notice (`awaited`: waited for its context; `observe`: detached).
+ */
+export type HookClass = "blockingBefore" | "blockingAfter" | "awaited" | "observe";
+export const HOOK_CLASSES: Readonly<Record<HookEvent, HookClass>> = {
+  UserPrompt: "blockingBefore",
+  PreCommand: "blockingBefore",
+  PreMerge: "blockingBefore",
+  BranchReady: "blockingBefore",
+  PreRender: "blockingBefore",
+  PostCommand: "blockingAfter",
+  SessionStart: "awaited",
+  SessionEnd: "observe",
+  PostMerge: "observe",
+  PostRender: "observe",
+  JobDone: "observe",
+  Approval: "observe",
+  Notification: "observe",
+};
+
 /** Where a hook is configured, in the order its hooks run (spec §9.1). */
 export const HookLayer = Schema.Literals(["managed", "user", "project", "local", "plugin"]);
 export type HookLayer = typeof HookLayer.Type;
@@ -118,5 +140,23 @@ export const ListedHook = Schema.Struct({
   /** Accepted but never fired: `PreRender`/`PostRender` until a render job kind exists. */
   inert: Schema.optionalKey(Schema.Literal("noRenderKind")),
   plugin: Schema.optionalKey(Schema.String),
+  /** A command hook's program and arguments, as configured (what a person trusts). */
+  run: Schema.optionalKey(Schema.Array(Schema.String)),
+  match: Schema.optionalKey(Schema.String),
 });
 export type ListedHook = typeof ListedHook.Type;
+
+/**
+ * `agent.hooks.list` (a person's, `agent.admin`): every layer's hooks, those of a project's
+ * file listed with `applies: false` while it does not apply. With a project: whether its
+ * `finisher.hooks.json` applies, its hash now (what `agent.project.trust` binds through
+ * `expectedHooksHash`; absent when it cannot be read) and why it does not apply as it is.
+ */
+export const AgentHooksListPayload = Schema.Struct({ projectId: Schema.optionalKey(Schema.String) });
+export const AgentHooksListSuccess = Schema.Struct({
+  hooks: Schema.Array(ListedHook),
+  projectHooks: Schema.optionalKey(Schema.Literals(["none", "trusted", "untrusted", "changed"])),
+  hooksHash: Schema.optionalKey(Schema.String.check(Schema.isPattern(/^(?:sha256:[0-9a-f]{64}|none)$/))),
+  projectHooksReason: Schema.optionalKey(Schema.Literals(["deleted", "unreadable", "invalidHooks"])),
+});
+export type AgentHooksListSuccess = typeof AgentHooksListSuccess.Type;

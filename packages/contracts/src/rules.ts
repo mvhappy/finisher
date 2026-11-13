@@ -131,6 +131,8 @@ export const AgentProjectTrustPayload = Schema.Struct({
   expectedHash: RulesHash,
   /** Also trust `prompts/*.json` as the person saw it (`agent.savedPrompt.list`'s `promptsHash`); absent: they stay untrusted. */
   expectedPromptsHash: Schema.optionalKey(RulesHash),
+  /** Also trust `finisher.hooks.json` as the person saw it (`agent.hooks.list`'s `hooksHash`); absent: its hooks stay as they are. */
+  expectedHooksHash: Schema.optionalKey(RulesHash),
   challenge: ChallengeField,
 });
 export const AgentProjectTrustSuccess = Schema.Struct({
@@ -140,5 +142,7 @@ export const AgentProjectTrustSuccess = Schema.Struct({
   rules: Count,
   /** The prompt files' combined hash, when `expectedPromptsHash` trusted them. */
   promptsHash: Schema.optionalKey(Schema.String),
+  /** The hooks file's hash, when `expectedHooksHash` trusted it. */
+  hooksHash: Schema.optionalKey(Schema.String),
   trustedAt: Count,
 });

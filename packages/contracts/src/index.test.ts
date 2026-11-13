@@ -24,6 +24,7 @@ test("the group exposes exactly the protocol 2 RPC tags", () => {
       "agent.approval.answer",
       "agent.approval.list",
       "agent.approval.wait",
+      "agent.hooks.list",
       "agent.key.list",
       "agent.key.remove",
       "agent.key.set",
