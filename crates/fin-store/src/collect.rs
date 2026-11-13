@@ -87,6 +87,8 @@ impl Store {
             crate::fsio::sync_dir(&self.project_dir).map_err(io)?;
             Ok(())
         })();
+        // A tick's project-file read from before this write is stale (`crate::tick`).
+        self.phase.io_gen += 1;
         if written.is_err() {
             let _ = std::fs::remove_file(&tmp);
         }

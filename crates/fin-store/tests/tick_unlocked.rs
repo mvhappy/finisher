@@ -256,3 +256,35 @@ fn a_lease_let_go_during_an_unlocked_export_writes_nothing() {
     assert_eq!((r.export.segments_written, r.export.records), (0, 0));
     assert!(folder_tx_ids(&e.dir).is_empty());
 }
+
+#[test]
+fn a_project_file_read_overtaken_by_set_collect_is_not_installed() {
+    let e = env();
+    let a = Shared::new(e.create("a"));
+    assert_eq!(
+        a.call(|s| s.collect_policy()),
+        fin_store::CollectPolicy::Default
+    );
+    let hooks = a.call(|s| s.tick_hooks());
+    hooks.hang(TickPoint::ImportRead);
+    let tick = spawn_tick(&e, &a);
+    hooks.wait_hung();
+    // The paused pass read the project file before this write.
+    a.call(|s| s.set_collect(fin_store::CollectPolicy::Never))
+        .unwrap();
+    hooks.release();
+    let r = tick.join().unwrap().unwrap().expect("the tick ran");
+    assert!(
+        r.imports.is_empty(),
+        "the overtaken pass is not applied: {r:?}"
+    );
+    assert_eq!(
+        a.call(|s| s.collect_policy()),
+        fin_store::CollectPolicy::Never
+    );
+    a.call(|s| e.poll(s));
+    assert_eq!(
+        a.call(|s| s.collect_policy()),
+        fin_store::CollectPolicy::Never
+    );
+}

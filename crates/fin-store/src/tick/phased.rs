@@ -36,7 +36,8 @@ impl StoreAccess for Direct<'_> {
 pub(crate) struct Phase {
     /// Bumped by everything that changes what an import pass reads the folder against: an
     /// applied pass, a marked export, compaction, a rebuild, a recovery, the lease in force
-    /// changing. A pass whose read started at another value is not applied.
+    /// changing, a project-file write (`set_collect`). A pass whose read started at another
+    /// value is not applied.
     pub(crate) io_gen: u64,
     /// A tick is running: one at a time ([`TickGuard`]).
     ticking: Arc<AtomicBool>,
@@ -112,13 +113,15 @@ impl Store {
         started: Instant,
         mut read: ImportRead,
     ) -> Result<Option<ImportReport>, StoreError> {
-        if let Some(f) = read.project_file.take() {
-            self.observe_project_file(&f);
-        }
+        let file = read.project_file.take();
         let copies = std::mem::take(&mut read.project_file_copies);
         let Some(r) = self.import_apply(read)? else {
             return Ok(None);
         };
+        // Only an applied pass's read: an overtaken one may predate a write (`set_collect`).
+        if let Some(f) = file {
+            self.observe_project_file(&f);
+        }
         self.after_pass(started, &r, copies);
         Ok(Some(r))
     }

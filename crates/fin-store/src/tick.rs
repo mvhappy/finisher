@@ -43,7 +43,8 @@
 //!   hydration, verification, the full lease check, the lease files) and is applied with it
 //!   (`Store::import_apply`: the one transaction) unless something changed what it read
 //!   against since it was planned (`Phase::io_gen`: another pass, a marked export,
-//!   compaction, a rebuild, a recovery, the lease in force); then the next poll reads afresh;
+//!   compaction, a rebuild, a recovery, the lease in force, a project-file write); then the
+//!   next poll reads afresh, and the pass's project-file read is not observed either;
 //! - an export writes segment by segment: rows read with the store, the fence, encoding,
 //!   write and read-back without it (fenced by the planned lease: one the store let go since
 //!   fails), marked with it only if the rows are still exactly the next unexported ones; it
