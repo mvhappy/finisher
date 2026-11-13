@@ -95,7 +95,7 @@ export function branchInUse(branch: string, sessionId: string): FinError {
  * Writes `file` to `path` private from creation, then renames it into place (temp-then-rename).
  * The temp name is random, so one a crash left behind never blocks a later write.
  */
-function writeCredentialFile(path: string, file: CredentialFile): void {
+export function writeCredentialFile(path: string, file: CredentialFile): void {
   const tmp = `${path}.${randomBytes(8).toString("hex")}.tmp`;
   const f = createPrivateFile(tmp);
   try {
@@ -120,6 +120,11 @@ export class SessionCredentials {
 
   constructor(deps: SessionCredentialDeps) {
     this.#d = deps;
+  }
+
+  /** 5A's credentials and its one revoke path, for the server's other agent credentials (7F's hooks). */
+  get base(): Pick<SessionCredentialDeps, "credentials" | "revoke"> {
+    return this.#d;
   }
 
   /**

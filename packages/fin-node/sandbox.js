@@ -23,6 +23,10 @@ export function sandboxAgentCheck(input) {
   return native.sandboxAgentCheck(JSON.stringify(input)) ?? null;
 }
 
+export function sandboxHookCheck(input) {
+  return native.sandboxHookCheck(JSON.stringify(input)) ?? null;
+}
+
 // The ACL broker (plan 7C Task 10): grants and revokes run on the libuv pool.
 export function aclGrant(serverData, grant) {
   return call(native.aclGrant(serverData, grant.path, grant.sid, grant.mask, grant.inherit, grant.owner));
