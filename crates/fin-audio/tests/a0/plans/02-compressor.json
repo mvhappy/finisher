@@ -1,0 +1,292 @@
+{
+  "plan": {
+    "from": "0",
+    "items": [
+      {
+        "asset": "a2",
+        "effects": [
+          {
+            "id": "fx2",
+            "kind": "compressor",
+            "numbers": {
+              "attack": [
+                {
+                  "from": "0",
+                  "interp": {
+                    "type": "hold"
+                  },
+                  "to": "6",
+                  "u": [
+                    0.0,
+                    1.0
+                  ],
+                  "v": [
+                    5.0,
+                    5.0
+                  ]
+                }
+              ],
+              "knee": [
+                {
+                  "from": "0",
+                  "interp": {
+                    "type": "hold"
+                  },
+                  "to": "6",
+                  "u": [
+                    0.0,
+                    1.0
+                  ],
+                  "v": [
+                    6.0,
+                    6.0
+                  ]
+                }
+              ],
+              "makeup": [
+                {
+                  "from": "0",
+                  "interp": {
+                    "type": "hold"
+                  },
+                  "to": "6",
+                  "u": [
+                    0.0,
+                    1.0
+                  ],
+                  "v": [
+                    6.0,
+                    6.0
+                  ]
+                }
+              ],
+              "ratio": [
+                {
+                  "from": "0",
+                  "interp": {
+                    "type": "hold"
+                  },
+                  "to": "6",
+                  "u": [
+                    0.0,
+                    1.0
+                  ],
+                  "v": [
+                    4.0,
+                    4.0
+                  ]
+                }
+              ],
+              "release": [
+                {
+                  "from": "0",
+                  "interp": {
+                    "type": "hold"
+                  },
+                  "to": "6",
+                  "u": [
+                    0.0,
+                    1.0
+                  ],
+                  "v": [
+                    80.0,
+                    80.0
+                  ]
+                }
+              ],
+              "threshold": [
+                {
+                  "from": "0",
+                  "interp": {
+                    "type": "linear"
+                  },
+                  "to": "6",
+                  "u": [
+                    0.0,
+                    1.0
+                  ],
+                  "v": [
+                    -30.0,
+                    -12.0
+                  ]
+                }
+              ]
+            },
+            "values": {
+              "detector": "rms"
+            }
+          }
+        ],
+        "from": "0",
+        "gain": [
+          {
+            "db": [
+              0.0,
+              0.0
+            ],
+            "from": "0",
+            "interp": {
+              "type": "hold"
+            },
+            "to": "6",
+            "u": [
+              0.0,
+              1.0
+            ]
+          }
+        ],
+        "item": "c1",
+        "pan": [
+          {
+            "from": "0",
+            "interp": {
+              "type": "hold"
+            },
+            "pan": [
+              0.0,
+              0.0
+            ],
+            "to": "6",
+            "u": [
+              0.0,
+              1.0
+            ]
+          }
+        ],
+        "sourceFrom": "0",
+        "speed": "1",
+        "to": "6",
+        "track": "t1"
+      }
+    ],
+    "timeline": "tl1",
+    "to": "6"
+  },
+  "project": {
+    "assets": {
+      "a2": {
+        "audio": {
+          "channels": 1,
+          "sampleRate": 48000
+        },
+        "duration": "600",
+        "fingerprint": "fp-a2",
+        "id": "a2",
+        "kind": "media",
+        "path": "a2.bin"
+      }
+    },
+    "id": "p1",
+    "name": "A0",
+    "rate": "30",
+    "schemaVersion": 6,
+    "timelines": [
+      {
+        "id": "tl1",
+        "name": "tl1",
+        "rate": "30",
+        "resolution": {
+          "height": 1080,
+          "width": 1920
+        },
+        "tracks": [
+          {
+            "id": "t1",
+            "items": [
+              {
+                "asset": "a2",
+                "duration": "6",
+                "effects": [
+                  {
+                    "id": "fx2",
+                    "kind": "compressor",
+                    "params": {
+                      "attack": 5.0,
+                      "knee": 6.0,
+                      "makeup": 6.0,
+                      "ratio": 4.0,
+                      "release": 80.0,
+                      "threshold": -24.0
+                    }
+                  }
+                ],
+                "id": "c1",
+                "keyframes": {
+                  "effects.fx2.threshold": [
+                    {
+                      "at": "0",
+                      "id": "kf1",
+                      "interp": {
+                        "type": "linear"
+                      },
+                      "value": -30.0
+                    },
+                    {
+                      "at": "6",
+                      "id": "kf2",
+                      "interp": {
+                        "type": "linear"
+                      },
+                      "value": -12.0
+                    }
+                  ]
+                },
+                "kind": "clip",
+                "sourceIn": "0",
+                "start": "0"
+              }
+            ],
+            "kind": "audio",
+            "name": "T1"
+          }
+        ]
+      }
+    ]
+  },
+  "range": [
+    "0",
+    "6"
+  ],
+  "sources": {
+    "a2": {
+      "mono": [
+        {
+          "burst": 0.9,
+          "db": -6.0,
+          "hz": 180.0,
+          "kind": "burst",
+          "start": 0.25
+        },
+        {
+          "burst": 1.2,
+          "db": -18.0,
+          "hz": 240.0,
+          "kind": "burst",
+          "start": 1.5
+        },
+        {
+          "burst": 0.6,
+          "db": -10.0,
+          "hz": 6500.0,
+          "kind": "burst",
+          "start": 3.0
+        },
+        {
+          "burst": 1.5,
+          "db": -3.0,
+          "hz": 150.0,
+          "kind": "burst",
+          "start": 4.0
+        },
+        {
+          "db": -50.0,
+          "kind": "noise",
+          "seed": 3
+        }
+      ],
+      "secs": 8
+    }
+  },
+  "timeline": "tl1",
+  "what": "a peak compressor with knee and makeup on mono bursts, keyed threshold"
+}

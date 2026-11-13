@@ -122,5 +122,9 @@
   {
     "path": "crates/fin-node/tests/media_cache.rs",
     "reason": "Tests build and inspect temporary cache trees by path; none is a library reader."
+  },
+  {
+    "path": "crates/fin-audio/tests/a0.rs",
+    "reason": "The A0 corpus reads its committed plan and expected files (and optional debug dumps) under the package directory; none is a library reader."
   }
 ]
