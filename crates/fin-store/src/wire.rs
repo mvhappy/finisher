@@ -153,6 +153,7 @@ pub struct HistoryResult {
     pub undone: Vec<String>,
     pub dry_run: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "String")]
     pub no_op: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub origins: Vec<String>,
@@ -206,6 +207,7 @@ pub struct ReviewHead {
     pub branch: String,
     pub seq: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "String")]
     pub hash: Option<String>,
 }
 
@@ -317,5 +319,6 @@ pub struct DropReq {
     #[serde(default)]
     pub dry_run: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "String")]
     pub args_hash: Option<String>,
 }

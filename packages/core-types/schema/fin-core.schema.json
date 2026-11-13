@@ -236,7 +236,11 @@
           ]
         },
         "harness": {
-          "$ref": "#/$defs/Harness",
+          "allOf": [
+            {
+              "$ref": "#/$defs/Harness"
+            }
+          ],
           "description": "`claudeCode`, `codex` or `fake`; the built-in agent needs no sandbox (spec §8.9)."
         },
         "home": {
@@ -1805,7 +1809,11 @@
           "type": "string"
         },
         "source": {
-          "$ref": "#/$defs/CaptionSource",
+          "allOf": [
+            {
+              "$ref": "#/$defs/CaptionSource"
+            }
+          ],
           "description": "The caption's source (none: no source)."
         },
         "words": {
@@ -3284,10 +3292,7 @@
       "description": "[`Store::drop`](crate::Store::drop)'s request (`history.drop`, plan 5E Decision 5).\n\n- `tx_id`: the idempotency key, the `drop` record's txId;\n- `author`: the record's author;\n- `into`: the branch the rejection binds (a reference; the record is written there);\n- `from`: the source branch (a reference; it may be archived);\n- `drops`, `undrops`: origin-root txIds of records on `from`'s lineage after its common\n  point with `into`, at least one in all; sorted and deduplicated at write;\n- `dry_run`: plan against the local database and keep nothing, on a follower too;\n- `args_hash`: the command input's hash, stored on the record's intent; a retry of the\n  txId with another hash is `IDEM_KEY_REUSED`.",
       "properties": {
         "argsHash": {
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": "string"
         },
         "author": {
           "type": "string"
@@ -5939,10 +5944,7 @@
           "type": "boolean"
         },
         "noOp": {
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": "string"
         },
         "origins": {
           "items": {
@@ -7310,7 +7312,11 @@
           "type": "boolean"
         },
         "profiles": {
-          "$ref": "#/$defs/JobHostProfiles",
+          "allOf": [
+            {
+              "$ref": "#/$defs/JobHostProfiles"
+            }
+          ],
           "description": "What each sandbox profile gets (plan 7C Decision 4)."
         },
         "sandbox": {
@@ -7739,7 +7745,11 @@
           "type": "string"
         },
         "cgroups": {
-          "$ref": "#/$defs/JobHostCgroups",
+          "allOf": [
+            {
+              "$ref": "#/$defs/JobHostCgroups"
+            }
+          ],
           "description": "Delegated cgroups where they are ours (Linux; default `auto`)."
         },
         "eventQueue": {
@@ -7871,7 +7881,11 @@
           "type": "boolean"
         },
         "resolution": {
-          "$ref": "#/$defs/ResolutionBucket",
+          "allOf": [
+            {
+              "$ref": "#/$defs/ResolutionBucket"
+            }
+          ],
           "description": "The largest frame the job produced."
         },
         "rtFactorMilli": {
@@ -7972,7 +7986,11 @@
           "$ref": "#/$defs/Reach"
         },
         "principal": {
-          "$ref": "#/$defs/RightsPrincipal",
+          "allOf": [
+            {
+              "$ref": "#/$defs/RightsPrincipal"
+            }
+          ],
           "description": "The invoker the plugin acts for (audit and journal name `plugin:<id>@<version>` acting\nfor it)."
         },
         "projects": {
@@ -8151,7 +8169,11 @@
           "type": "string"
         },
         "limits": {
-          "$ref": "#/$defs/JobSpawnLimits",
+          "allOf": [
+            {
+              "$ref": "#/$defs/JobSpawnLimits"
+            }
+          ],
           "description": "Limits the host applies whatever the spawner does (sp8b Decision 9)."
         },
         "profile": {
@@ -8576,7 +8598,11 @@
           "$ref": "#/$defs/MaskPlan"
         },
         "nested": {
-          "$ref": "#/$defs/NestedPlan",
+          "allOf": [
+            {
+              "$ref": "#/$defs/NestedPlan"
+            }
+          ],
           "description": "A nested item's timeline, time and frame size."
         },
         "opacity": {
@@ -8584,7 +8610,11 @@
           "type": "number"
         },
         "source": {
-          "$ref": "#/$defs/SourceRef",
+          "allOf": [
+            {
+              "$ref": "#/$defs/SourceRef"
+            }
+          ],
           "description": "The asset and its time: a clip's source time (through speed), an image's 0, a\ngraphic's template time."
         },
         "track": {
@@ -8841,7 +8871,11 @@
           "type": "string"
         },
         "volume": {
-          "$ref": "#/$defs/VolumeIdentity",
+          "allOf": [
+            {
+              "$ref": "#/$defs/VolumeIdentity"
+            }
+          ],
           "description": "The stored identity the root is judged against before and during the job."
         }
       },
@@ -9092,7 +9126,11 @@
           "type": "integer"
         },
         "identity": {
-          "$ref": "#/$defs/VolumeIdentity",
+          "allOf": [
+            {
+              "$ref": "#/$defs/VolumeIdentity"
+            }
+          ],
           "description": "The identity the first stat measured (refreshed into the library after a full scan)."
         },
         "incomplete": {
@@ -9753,7 +9791,11 @@
           ]
         },
         "size": {
-          "$ref": "#/$defs/Size",
+          "allOf": [
+            {
+              "$ref": "#/$defs/Size"
+            }
+          ],
           "description": "The frame size; the timeline's resolution when absent. Each side 1 to\n[`LOOK_MAX_SIDE`]."
         },
         "timeline": {
@@ -10347,7 +10389,11 @@
           "$ref": "#/$defs/ContainerKind"
         },
         "duration": {
-          "$ref": "#/$defs/Rational",
+          "allOf": [
+            {
+              "$ref": "#/$defs/Rational"
+            }
+          ],
           "description": "Seconds: the longest interpreted track after edit lists."
         },
         "fragmented": {
@@ -12706,7 +12752,11 @@
           "$ref": "#/$defs/Permission"
         },
         "risk": {
-          "$ref": "#/$defs/Risk",
+          "allOf": [
+            {
+              "$ref": "#/$defs/Risk"
+            }
+          ],
           "description": "Within the whole set (combinations count, spec §4.3)."
         }
       },
@@ -13382,7 +13432,11 @@
       "description": "`plugin.lifecycle`: one plugin call (plan, install, update, downgrade, remove, enable,\ndisable, revoke).",
       "properties": {
         "action": {
-          "$ref": "#/$defs/Name",
+          "allOf": [
+            {
+              "$ref": "#/$defs/Name"
+            }
+          ],
           "description": "From `PLUGIN_ACTIONS`."
         },
         "bytesLog2": {
@@ -13739,25 +13793,15 @@
       "type": "object"
     },
     "Probe": {
-      "description": "What the server needs to register an asset: its kind and that kind's fields (the\n`asset.add` fields, plan 4C Task 7). Its serde form is what `asset.probe` answers\n(`@finisher/core-types` exports it as `Probe`); absent fields are omitted.",
+      "description": "What the server needs to register an asset: its kind and that kind's fields (the\n`asset.add` fields, plan 4C Task 7). Its serde form is what `asset.probe` answers\n(`@finisher/core-types` exports it as `Probe`); absent fields are omitted, never `null`, so\neach optional field's schema is its type's (`#[schemars(with)]`: optional, not nullable).",
       "properties": {
         "audio": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/AudioInfo"
-            },
-            {
-              "type": "null"
-            }
-          ]
+          "$ref": "#/$defs/AudioInfo"
         },
         "duration": {
-          "anyOf": [
+          "allOf": [
             {
               "$ref": "#/$defs/Rational"
-            },
-            {
-              "type": "null"
             }
           ],
           "description": "Seconds: `media` and `lottieTemplate` only."
@@ -13766,23 +13810,17 @@
           "type": "string"
         },
         "font": {
-          "anyOf": [
+          "allOf": [
             {
               "$ref": "#/$defs/FontFile"
-            },
-            {
-              "type": "null"
             }
           ],
           "description": "A font's whole-file SHA-256, format and faces (Decision 37)."
         },
         "image": {
-          "anyOf": [
+          "allOf": [
             {
               "$ref": "#/$defs/ImageInfo"
-            },
-            {
-              "type": "null"
             }
           ],
           "description": "`image` and `svg`: the pixel size."
@@ -13791,27 +13829,17 @@
           "$ref": "#/$defs/AssetKind"
         },
         "lottie": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/LottieInfo"
-            },
-            {
-              "type": "null"
-            }
-          ]
+          "$ref": "#/$defs/LottieInfo"
         },
         "lut": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/LutInfo"
-            },
-            {
-              "type": "null"
-            }
-          ]
+          "$ref": "#/$defs/LutInfo"
         },
         "media": {
-          "$ref": "#/$defs/MediaInfo",
+          "allOf": [
+            {
+              "$ref": "#/$defs/MediaInfo"
+            }
+          ],
           "description": "MP4/MOV: what the file is (sub-project 6 spec §6.3): display size and rotation, colour,\nHDR, VFR, edit lists. In the `asset.probe` answer only: an `asset.add` never carries it\n(spec §4.4)."
         },
         "size": {
@@ -13820,14 +13848,7 @@
           "type": "integer"
         },
         "video": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/VideoInfo"
-            },
-            {
-              "type": "null"
-            }
-          ]
+          "$ref": "#/$defs/VideoInfo"
         }
       },
       "required": [
@@ -14618,7 +14639,11 @@
           "type": "boolean"
         },
         "code": {
-          "$ref": "#/$defs/Code",
+          "allOf": [
+            {
+              "$ref": "#/$defs/Code"
+            }
+          ],
           "description": "A `TUF_*` code, `CLOCK_SUSPECT`, `REGISTRY_UNREACHABLE`, ..."
         },
         "micros": {
@@ -14924,10 +14949,7 @@
           "type": "string"
         },
         "hash": {
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": "string"
         },
         "seq": {
           "format": "uint64",
@@ -17934,7 +17956,11 @@
           "type": "array"
         },
         "source": {
-          "$ref": "#/$defs/UnitSource",
+          "allOf": [
+            {
+              "$ref": "#/$defs/UnitSource"
+            }
+          ],
           "description": "The record whose stored `inverse` an undo uses: the unit's records, or the redo\nrecord that recreated it (Decision 23)."
         }
       },
@@ -18264,14 +18290,22 @@
           "$ref": "#/$defs/VideoCodec"
         },
         "coded": {
-          "$ref": "#/$defs/Size",
+          "allOf": [
+            {
+              "$ref": "#/$defs/Size"
+            }
+          ],
           "description": "The sample entry's coded size."
         },
         "colour": {
           "$ref": "#/$defs/ColourTags"
         },
         "display": {
-          "$ref": "#/$defs/Size",
+          "allOf": [
+            {
+              "$ref": "#/$defs/Size"
+            }
+          ],
           "description": "`coded` after the pixel aspect and the rotation ([`display_size`])."
         },
         "fourcc": {
@@ -18298,11 +18332,19 @@
           "type": "integer"
         },
         "nominalRate": {
-          "$ref": "#/$defs/Rational",
+          "allOf": [
+            {
+              "$ref": "#/$defs/Rational"
+            }
+          ],
           "description": "Frames per second of the most common frame duration."
         },
         "pixelAspect": {
-          "$ref": "#/$defs/Rational",
+          "allOf": [
+            {
+              "$ref": "#/$defs/Rational"
+            }
+          ],
           "description": "Horizontal over vertical spacing (`pasp`); 1 when absent."
         },
         "profile": {

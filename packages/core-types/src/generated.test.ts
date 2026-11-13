@@ -47,10 +47,14 @@ test("CoreError.details is required", () => {
 test("the envelope types above fin-core are generated too", () => {
   // fin-probe's Probe (asset.probe), with its kind and Rational times.
   expect(block("Probe")).toMatch(/kind: AssetKind;/);
-  expect(block("Probe")).toMatch(/duration\?: Rational \| null;/);
-  expect(block("Probe")).toMatch(/font\?: FontFile \| null;/);
+  // Fields the wire omits when absent (never `null`): optional, not nullable.
+  expect(block("Probe")).toMatch(/duration\?: Rational;/);
+  expect(block("Probe")).toMatch(/font\?: FontFile;/);
   expect(block("Probe")).toMatch(/size: number;/);
-  expect(block("Probe")).toMatch(/video\?: VideoInfo \| null;|video: VideoInfo \| null;/);
+  for (const f of ["audio?: AudioInfo;", "video?: VideoInfo;", "image?: ImageInfo;", "lottie?: LottieInfo;", "lut?: LutInfo;", "media?: MediaInfo;"]) {
+    expect(block("Probe")).toContain(f);
+  }
+  expect(block("Probe")).not.toContain("null");
   // fin-store's Generation, tx.get's set-aside answer, and the engine events.
   expect(block("Generation")).toMatch(/incarnation: string;/);
   expect(block("Generation")).toMatch(/n: number;/);

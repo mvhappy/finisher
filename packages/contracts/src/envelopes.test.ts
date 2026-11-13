@@ -65,8 +65,11 @@ test("ProbeSchema is fin-probe's Probe, with each kind's info", () => {
   const theirs = defs.Probe as { properties: Json; required: string[] };
   expect(Object.keys(ours.properties).sort()).toEqual(Object.keys(theirs.properties).sort());
   expect([...(ours.required ?? [])].sort()).toEqual([...theirs.required].sort());
+  // Absent fields are omitted, never `null`: neither side admits `null`.
+  for (const [k, v] of Object.entries(theirs.properties)) expect(JSON.stringify(v), k).not.toContain('"null"');
+  for (const [k, v] of Object.entries(ours.properties)) expect(JSON.stringify(v), k).not.toContain('"null"');
   const info = (v: unknown) => {
-    const s = (v as { anyOf: Json[] }).anyOf.find((a) => a.properties) as { properties: Json; required: string[] };
+    const s = v as { properties: Json; required: string[] };
     return { keys: Object.keys(s.properties).sort(), required: [...s.required].sort() };
   };
   for (const [ours_, rust_] of [

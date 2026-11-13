@@ -261,7 +261,8 @@ export const ProjectRefSuccess = Schema.Struct({
 
 /** Protocol 2: the probe is for `projectId` (reach: in that project's folder for an agent or MCP principal; a device's allowed roots, 5B Decision 32). */
 export const AssetProbePayload = Schema.Struct({ projectId: Schema.String, path: Schema.String });
-const Optional = <S extends Schema.Top>(s: S) => Schema.optionalKey(Schema.NullOr(s));
+/** A `Probe` field the wire omits when absent (never `null`). */
+const Optional = <S extends Schema.Top>(s: S) => Schema.optionalKey(s);
 const ImageInfoSchema = Schema.Struct({ height: Schema.Number, width: Schema.Number });
 const LottieInfoSchema = Schema.Struct({
   duration: Schema.String,
