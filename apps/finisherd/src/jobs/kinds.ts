@@ -293,10 +293,12 @@ export const MAX_PLUGIN_WARM_SLOTS = 16;
 
 /**
  * The variables of `finisherd`'s environment a family may pass to its processes (`FamilySpec.env`):
- * `FIN_GPU` (the adapter) and the Vulkan loader's `VK_ICD_FILENAMES` (its driver, set by whoever
- * started `finisherd`, never by a client; 6B-1 Task 14).
+ * `FIN_GPU` (the adapter) and the Vulkan loader's ICD variables (`VK_ICD_FILENAMES`, and the newer
+ * loaders' `VK_DRIVER_FILES` and `VK_ADD_DRIVER_FILES`: its driver, set by whoever started
+ * `finisherd`, never by a client; 6B-1 Task 14). Under the worker profile the manifests they name
+ * and their libraries are granted read-only (`fin_sandbox::linux::gpu::devices`).
  */
-export const FAMILY_ENV: ReadonlySet<string> = new Set(["FIN_GPU", "VK_ICD_FILENAMES"]);
+export const FAMILY_ENV: ReadonlySet<string> = new Set(["FIN_GPU", "VK_ICD_FILENAMES", "VK_DRIVER_FILES", "VK_ADD_DRIVER_FILES"]);
 
 const KNOWN_SCOPES: ReadonlySet<string> = new Set(SCOPES);
 const FAMILY = /^[a-z][a-z0-9]{0,31}$/;

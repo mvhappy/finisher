@@ -227,8 +227,9 @@ export function registerMediaFamily(registry: KindRegistry, deps?: Pick<MediaKin
     program: { binary: "fin-workers", args: [MEDIA_FAMILY] },
     memory: { interactive: MEDIA_MEMORY, batch: MEDIA_MEMORY },
     // 5C clears a worker's environment; `FIN_GPU` picks the adapter (`software` for CI), and the
-    // Vulkan loader's `VK_ICD_FILENAMES` the driver (a host with only a user-space one, 6B-1 Task 14).
-    env: ["FIN_GPU", "VK_ICD_FILENAMES"],
+    // Vulkan loader's ICD variables the driver (a host with only a user-space one, 6B-1 Task 14;
+    // the worker profile grants the files they name).
+    env: ["FIN_GPU", "VK_ICD_FILENAMES", "VK_DRIVER_FILES", "VK_ADD_DRIVER_FILES"],
     // The kinds the worker may send as `diag` (Task 14); the journal sink records them.
     diagKinds: ["media.capabilities", "render.stats"],
   });

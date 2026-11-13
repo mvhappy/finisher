@@ -231,6 +231,14 @@ fn make(p: &ProxyParams, ctx: &mut JobCtx<'_>, warm: &mut Warm) -> Result<ProxyR
     }
     let table = reader.table().clone();
     let frames = table.len() as u64;
+    // A source that presents no frame has nothing to proxy: typed, never an empty proxy.
+    if frames == 0 {
+        return Err(item(
+            "MEDIA_CORRUPT",
+            "the video track presents no frame".into(),
+            json!({ "reason": "noFrames" }),
+        ));
+    }
     let size = p.tier.fit(video.coded);
     let (timescale, tick) = encode_pipeline::timing(video.nominal_rate)?;
     let (every, intra_only) = gop(

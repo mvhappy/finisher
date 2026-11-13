@@ -523,3 +523,13 @@ fn refused_outputs_name_no_absolute_path() {
         }
     }
 }
+
+/// Review of Task 14: a source that presents no frame is `MEDIA_CORRUPT`, not an empty proxy.
+#[test]
+fn a_source_without_frames_is_media_corrupt() {
+    let c = clip(&spec(0, Size::new(320, 180)));
+    let job = job_for("fp", &c.path);
+    let p = params("fp", ProxyTier::Scrub);
+    assert_eq!(outcome(&run(&job, &p), "fp").unwrap_err(), "MEDIA_CORRUPT");
+    assert!(!entry(&job, &p.key).join(META_FILE).exists());
+}

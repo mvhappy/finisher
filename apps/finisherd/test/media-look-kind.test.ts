@@ -118,7 +118,7 @@ describe("the kind", () => {
     });
     const r = makeKindRegistry();
     registerMediaKinds(r, { serverData: "/sd", projects: { prepareMediaJob: () => fail(0), dirOf: () => undefined } });
-    expect(r.family("media")).toMatchObject({ profile: "worker", env: ["FIN_GPU", "VK_ICD_FILENAMES"] });
+    expect(r.family("media")).toMatchObject({ profile: "worker", env: ["FIN_GPU", "VK_ICD_FILENAMES", "VK_DRIVER_FILES", "VK_ADD_DRIVER_FILES"] });
     expect(r.program("media", { params: {} } as never, "warm")).toEqual({ binary: "fin-workers", args: ["media", "--warm"] });
     expect(r.program("media", { params: {} } as never, "cold")).toEqual({ binary: "fin-workers", args: ["media"] });
   });
