@@ -934,7 +934,7 @@ Spec: `docs/specs/2026-11-07-sub-project-7-agent-runtime-design.md` (revision 7:
 
 Plan `docs/superpowers/plans/2026-11-10-sub-project-7d-claude-code-adapter.md`; owner answers 2026-11-12: 1a, 2a, 3a, 4a.
 
-- [~] Task 0: facts on the real CLI, Linux VM: unsigned half done (`a95e5acf`, 2.1.321); signed-in half and the sandboxed half blocked on the owner's sign-in
+- [~] Task 0: facts on the real CLI, Linux VM: unsigned half done (`a95e5acf`, 2.1.321); signed-in half done 2026-11-13 on the owner's existing sign-in (`d42ce813`, review fixes `f3619cb0`; Steps 1–3 and 6 ran, Steps 4–5 partly; 10 contradictions passed to 7D-2). Owed for Task 18 or an isolated account: `auth login`, token refresh and concurrent refresh, a signed-in run under the sandbox, planting in the sign-in home, the `attribution` setting
 - [x] Task 1: `fake-claude` (`bc4512ae`, review fixes `9d60dd7f`: sidecar `fake-claude.json` config, Task 0 line shapes, SDK MCP handshake, interrupt/SIGINT knobs, EOF plays the turn out)
 - [x] Task 2: the protocol codec (`a72b0372`, review fixes `17ce3ff5`: finite non-negative numbers, fields the mapper needs, real-shape fixtures)
 - [x] Task 3: detection, `agent.providers` and the sign-in commands (`7a37e294`, review fixes `4f641f61`: cached and single-flight detection, PowerShell quoting, a wider `env -u` list, `authMethod` allow-list; `agents.claudeCode.enabled` default off; floor 2.1.321)
