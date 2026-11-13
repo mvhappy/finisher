@@ -46,6 +46,7 @@ import { actorFor, headerOf } from "../diagnostics.ts";
 import { finError } from "../errors.ts";
 import { committedOf } from "../history.ts";
 import { ARGS_HASH_HEADER, type Matched } from "./claude/attribution.ts";
+import { resumeDenied } from "./child-resume.ts";
 import type { SessionTx } from "./store-tables.ts";
 
 /** What reach reads of the agent store (`AgentStore` is one). */
@@ -303,7 +304,10 @@ export const SESSION_PEOPLE_READS: ReadonlySet<string> = new Set(["agent.session
  */
 export const REVIEW_SOURCE_RPCS: ReadonlySet<string> = new Set(["review.request", "review.refresh"]);
 
-/** The RPCs a session calls on its own children only (7B Decision 16): `sessionId`, or `ids` of a wait. */
+/**
+ * The RPCs a session calls on its own children only (7B Decision 16): `sessionId`, or `ids` of a
+ * wait. A resume is checked apart (`resumeCheck`): a child the parent interrupted itself only.
+ */
 export const CHILD_RPCS: ReadonlySet<string> = new Set(["agent.session.prompt", "agent.session.steer", "agent.session.interrupt", "agent.session.end", "agent.session.wait"]);
 
 /**
@@ -312,6 +316,7 @@ export const CHILD_RPCS: ReadonlySet<string> = new Set(["agent.session.prompt", 
  */
 function childCheck(tag: string, principal: Principal, payload: unknown, deps: AgentHookDeps): Effect.Effect<void, FinError> {
   if (principal.kind === "agent" && tag === "agent.session.rollback") return rollbackCheck(principal, payload, deps);
+  if (principal.kind === "agent" && tag === "agent.session.resume") return resumeCheck(principal, payload, deps);
   if (principal.kind !== "agent" || (tag !== "agent.session.start" && !CHILD_RPCS.has(tag))) return Effect.void;
   if (!deps.reach.covers(principal)) {
     return Effect.fail(finError("SCOPE_DENIED", `${tag} is for a session's own children`, { tag, scopes: [], principal: "agent", reason: "noSession" }, "Run it from inside an agent session, or as a person."));
@@ -337,6 +342,19 @@ function rollbackCheck(principal: Principal, payload: unknown, deps: AgentHookDe
   return Effect.fail(
     finError("SCOPE_DENIED", "a session rolls back its own direct children only", { tag: "agent.session.rollback", scopes: [], principal: "agent", reason }, "Roll back your own child (`fin agent ls`), or ask a person to."),
   );
+}
+
+/**
+ * Stage 4 for an agent's resume (7B Decision 16 as amended 2026-11-13): its own child, and one it
+ * interrupted itself (`child-resume.ts`); else `SCOPE_DENIED`. The runtime checks again.
+ */
+function resumeCheck(principal: Principal, payload: unknown, deps: AgentHookDeps): Effect.Effect<void, FinError> {
+  if (!deps.reach.covers(principal)) {
+    return Effect.fail(finError("SCOPE_DENIED", "a session resumes its own children only", { tag: "agent.session.resume", scopes: [], principal: "agent", reason: "noSession" }, "Run it from inside an agent session, or as a person."));
+  }
+  const id = (payload as { sessionId?: unknown } | null)?.sessionId;
+  const denied = resumeDenied(typeof id === "string" ? deps.sessions.get(id) : undefined, principal);
+  return denied === null ? Effect.void : Effect.fail(denied);
 }
 
 /** `SCOPE_DENIED` for a session calling one of `SESSION_REFUSED_RPCS`. */

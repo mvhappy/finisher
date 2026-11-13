@@ -424,11 +424,12 @@ export const RPC_SCOPES: { readonly [T in FinRpcTag]: RuleOf<T> } = {
     kinds: CHILD_DRIVERS,
   },
   // 7B Decision 16: a session starts children (`fin agent spawn`) and drives its own ones; a
-  // resume and a delete stay people's.
+  // delete stays people's, and so does a resume except of a child the parent itself interrupted
+  // (owner decision 2026-11-13: stage 4, `child-resume.ts`).
   "agent.session.prompt": { scopes: ["agent.run"], kinds: CHILD_DRIVERS },
   "agent.session.steer": { scopes: ["agent.run"], kinds: CHILD_DRIVERS },
   "agent.session.interrupt": { scopes: ["agent.run"], kinds: CHILD_DRIVERS },
-  "agent.session.resume": { scopes: ["agent.run"], kinds: SESSION_DRIVERS },
+  "agent.session.resume": { scopes: ["agent.run"], kinds: CHILD_DRIVERS },
   "agent.session.end": { scopes: ["agent.run"], kinds: CHILD_DRIVERS },
   "agent.session.wait": { scopes: ["agent.run"], kinds: CHILD_DRIVERS },
   // 7B Decision 23 (owner decision 2026-11-08): people, and a parent for its own direct children

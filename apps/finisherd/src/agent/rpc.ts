@@ -118,8 +118,8 @@ export function agentHandlers(deps: AgentRpcDeps) {
       onSession("agent.session.steer", options, sessionId, (s, p) => runtime.steer(s.id, text, p)),
     "agent.session.interrupt": ({ sessionId }: { sessionId: string }, options: Options) =>
       onSession("agent.session.interrupt", options, sessionId, (s, p) => Effect.map(runtime.interrupt(s.id, p), (session) => ({ session }))),
-    "agent.session.resume": ({ sessionId, prompt }: { sessionId: string; prompt?: string }, options: Options) =>
-      onSession("agent.session.resume", options, sessionId, (s, p) => runtime.resume(s.id, p, prompt)),
+    "agent.session.resume": ({ sessionId, prompt, resendReturned }: { sessionId: string; prompt?: string; resendReturned?: boolean }, options: Options) =>
+      onSession("agent.session.resume", options, sessionId, (s, p) => runtime.resume(s.id, p, prompt, resendReturned === true)),
     "agent.session.end": ({ sessionId }: { sessionId: string }, options: Options) =>
       onSession("agent.session.end", options, sessionId, (s, p) => Effect.map(runtime.end(s.id, p), (session) => ({ session }))),
     // 7B Decision 23: the guard is the session's reach (its subtree less its live children's) with the caller's credential.

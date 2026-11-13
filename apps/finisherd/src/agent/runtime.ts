@@ -27,6 +27,7 @@ import type { CallMeta } from "../diagnostics.ts";
 import { finError, toFinError } from "../errors.ts";
 import { DEFAULT_BUDGET } from "./budget.ts";
 import { childCarve } from "./carve.ts";
+import { interruptReason, resendPrompt, resumeDenied } from "./child-resume.ts";
 import { AgentCoreTag } from "./core.ts";
 import { openSession, registryBranchOps } from "./credentials.ts";
 import { type RuntimeDeps, RuntimeEngine, STOP_GRACE_MS } from "./runtime-engine.ts";
@@ -401,10 +402,10 @@ export class Runtime extends RuntimeEngine {
   }
 
   /** `agent.session.interrupt`: the run stops, open calls get a synthetic result, the branch stays. */
-  interrupt(sessionId: string, _by: Principal): Effect.Effect<Session, FinError> {
+  interrupt(sessionId: string, by: Principal): Effect.Effect<Session, FinError> {
     return attempt(() => {
       this.#guard();
-      return this.serial(sessionId, () => this.#interruptIn(sessionId, "userInterrupt"));
+      return this.serial(sessionId, () => this.#interruptIn(sessionId, interruptReason(this.session(sessionId), by)));
     });
   }
 
@@ -432,12 +433,17 @@ export class Runtime extends RuntimeEngine {
 
   /**
    * `agent.session.resume`: `interrupted` → `idle` with the credential's expiry refreshed; the
-   * provider reopens with its resume reference at the next run, which `prompt` starts at once.
+   * provider reopens with its resume reference at the next run, which `prompt` starts at once
+   * (`resendReturned`: the texts the last run handed back). An agent resumes only a child it
+   * interrupted itself (`child-resume.ts`, checked again here under the session's lock).
    */
-  resume(sessionId: string, _by: Principal, prompt?: string): Effect.Effect<{ session: Session; run?: Run }, FinError> {
+  resume(sessionId: string, by: Principal, given?: string, resendReturned = false): Effect.Effect<{ session: Session; run?: Run }, FinError> {
     return attempt(() => {
       this.#guard();
       return this.serial(sessionId, async () => {
+        const denied = resumeDenied(this.session(sessionId), by);
+        if (denied !== null) throw denied;
+        const prompt = await resendPrompt(this.store, this.session(sessionId), given, resendReturned);
         await this.#refresh(this.session(sessionId));
         await this.apply(sessionId, { kind: "resumed" });
         const run = prompt === undefined ? undefined : await this.promptIn(sessionId, prompt, "prompt");
