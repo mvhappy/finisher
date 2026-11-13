@@ -4,6 +4,7 @@
 //! capability and template types; frame-id test patterns behind the `testing` feature. No I/O, no clocks, no randomness; builds for
 //! `wasm32-unknown-unknown`.
 
+pub mod audio_layout;
 pub mod backend;
 pub mod cache;
 pub mod colour;

@@ -5,6 +5,10 @@
 //   `fin-media`, `fin-container` and, for the job-output move, `fin-shm`);
 // - only `fin-workers` links `fin-codecs` (and `fin-svt-sys` and `fin-dav1d-sys`, through
 //   it), and only `fin-workers` and `fin-wasm` link `fin-compositor`;
+// - `fin-audio` is linked only by `fin-workers` and `fin-wasm` (never `fin-codecs`) and links only
+//   `fin-core` and `fin-media`; the opus and vo-aacenc sys crates only by `fin-codecs`/`fin-workers`;
+//   AudioToolbox bindings only on macOS, `fin-aacenc-sys` and symphonia's `aac` feature only on
+//   Linux; no `rustfft` anywhere (6C Task 1).
 // - `fin-workers` takes `fin-fonts` with `default-features = false` and without `fetch`
 //   (workers never fetch).
 // - `fin-codecs`' platform codec crates are target-gated (6B-1 plan Global Constraints): the
@@ -19,7 +23,7 @@
 // - `fin` and `fin-node` link neither the SDK nor the harness (`fin-plugin-test`).
 // Each breach is CRATE_DEPENDENCY naming the path's two ends.
 import { fileURLToPath } from "node:url";
-import { Graph, documents, metadata } from "./cargo-graph.mjs";
+import { Graph, denyTargets, documents, metadata } from "./cargo-graph.mjs";
 import { report, rootArg } from "./walk.mjs";
 
 export const MEDIA = ["fin-media", "fin-container", "fin-codecs", "fin-compositor", "fin-shm", "fin-graphics", "fin-audio", "fin-captions"];
@@ -34,6 +38,7 @@ export const RULES = [
 /** Members whose closure may hold no other workspace member than the listed ones. */
 export const CONFINED = [
   { crate: "fin-dataset-inputs", may: ["fin-core"], why: "the dataset builder reads the journal's files only, never control.db" },
+  { crate: "fin-audio", may: ["fin-core", "fin-media"], why: "the audio crate is pure: it links fin-core and fin-media only" },
   { crate: "fin-plugin-sdk", may: ["fin-core", "fin-jobs", "fin-plugin-api", "fin-shm"], why: "a plugin built on the SDK carries nothing of the server or the media engine" },
 ];
 /** Crates only the listed members may link. */
@@ -42,13 +47,29 @@ export const ONLY = [
   { crate: "fin-svt-sys", by: ["fin-codecs", "fin-workers"] },
   { crate: "fin-dav1d-sys", by: ["fin-codecs", "fin-workers"] },
   { crate: "fin-compositor", by: ["fin-workers", "fin-wasm"] },
+  // Transitive: `fin-codecs` hands out decoded audio at its native rate and layout, and the
+  // worker converts it (6C Global Constraints).
+  { crate: "fin-audio", by: ["fin-workers", "fin-wasm"] },
+  { crate: "fin-opus-sys", by: ["fin-codecs", "fin-workers"] },
+  { crate: "fin-aacenc-sys", by: ["fin-codecs", "fin-workers"] },
 ];
 
 /** Direct dependencies a member may declare only under the given `cfg` target. */
 export const TARGETED = [
   { crate: "fin-codecs", deps: ["objc2", "objc2-core-foundation", "objc2-core-media", "objc2-core-video", "objc2-video-toolbox"], cfg: 'cfg(target_os = "macos")' },
   { crate: "fin-codecs", deps: ["windows"], cfg: "cfg(windows)" },
+  // Every member, not only fin-codecs: the audio platform crates are gated wherever they are taken.
+  { crate: "*", deps: ["objc2-audio-toolbox", "objc2-core-audio-types"], cfg: 'cfg(target_os = "macos")' },
+  { crate: "*", deps: ["fin-aacenc-sys"], cfg: 'cfg(target_os = "linux")' },
 ];
+/** Finisher's own AAC code (patents, spec §16.4): in no non-Linux closure. */
+const LINUX_ONLY_PACKAGES = ["symphonia-codec-aac", "fin-aacenc-sys"];
+/** symphonia features that include `aac` (the umbrella ones too). */
+const AAC_FEATURES = ["aac", "all", "all-codecs"];
+/** The one Linux-gated feature of symphonia (6C Decision 9: Finisher's own AAC code is Linux-only). */
+const AAC_CFG = 'cfg(target_os = "linux")';
+/** Packages no shipped member may reach: `rustfft` is symphonia's `opt-simd-*` path (spec §8.1). */
+const BANNED = [{ name: "rustfft", why: "no FFT crate in the shipped graph: symphonia's opt-simd features are off" }];
 
 export function check(doc) {
   const g = new Graph(doc);
@@ -82,11 +103,23 @@ export function check(doc) {
     }
   }
   for (const t of TARGETED) {
-    for (const d of g.packages.get(g.member(t.crate))?.dependencies ?? []) {
+    const owners = t.crate === "*" ? [...g.members] : [g.member(t.crate)];
+    for (const owner of owners)
+    for (const d of g.packages.get(owner)?.dependencies ?? []) {
       if (!t.deps.includes(d.name) || d.kind === "dev" || d.target === t.cfg) continue;
-      out.push(`CRATE_DEPENDENCY: ${t.crate} takes ${d.name} ${d.target ? `under ${d.target}` : "for every target"} (only under ${t.cfg})`);
+      out.push(`CRATE_DEPENDENCY: ${g.name(owner)} takes ${d.name} ${d.target ? `under ${d.target}` : "for every target"} (only under ${t.cfg})`);
     }
   }
+  for (const [id, p] of g.packages) {
+    if (!g.members.has(id)) continue;
+    for (const d of p.dependencies ?? []) {
+      const aac = d.name === "symphonia-codec-aac" || (d.name === "symphonia" && (d.features ?? []).some((f) => AAC_FEATURES.includes(f)));
+      if (!aac || d.kind === "dev" || d.target === AAC_CFG) continue;
+      out.push(`CRATE_DEPENDENCY: ${p.name} takes ${d.name === "symphonia" ? "symphonia's aac feature" : d.name} ${d.target ? `under ${d.target}` : "for every target"} (only under ${AAC_CFG})`);
+    }
+  }
+  for (const b of BANNED)
+    for (const id of g.members) if (reach(g.name(id)).has(b.name)) breach(g.name(id), b.name, b.why);
   const workers = g.packages.get(g.member("fin-workers"));
   for (const d of workers?.dependencies ?? []) {
     if (d.name !== "fin-fonts" || d.kind === "dev") continue;
@@ -96,10 +129,26 @@ export function check(doc) {
   return out;
 }
 
+/** A `cargo metadata --filter-platform <triple>` document of a non-Linux target: the resolved
+ * graph (features forwarded through any member included) holds no Linux-only AAC code. */
+export function checkTarget(doc, triple) {
+  const g = new Graph(doc);
+  const out = [];
+  for (const id of g.members) {
+    const got = new Set([...g.closure([id])].filter((x) => x !== id).map((x) => g.name(x)));
+    for (const bad of LINUX_ONLY_PACKAGES)
+      if (got.has(bad)) out.push(`CRATE_DEPENDENCY: ${g.name(id)} reaches ${bad} on ${triple} (Finisher's own AAC code is Linux-only)`);
+  }
+  return out;
+}
+
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const root = rootArg();
   try {
-    report(documents(process.argv, () => [metadata(root)]).flatMap(check));
+    const found = documents(process.argv, () => [metadata(root)]).flatMap(check);
+    if (!process.argv.includes("--metadata"))
+      for (const t of denyTargets(root).filter((x) => !x.includes("linux"))) found.push(...checkTarget(metadata(root, t), t));
+    report(found);
   } catch (e) {
     report([`CRATE_DEPENDENCY: ${e.message}`]);
   }

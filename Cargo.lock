@@ -1110,6 +1110,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "fin-audio"
+version = "0.0.0"
+dependencies = [
+ "blake3",
+ "fin-audio",
+ "fin-core",
+ "fin-media",
+ "libm",
+ "serde_json",
+]
+
+[[package]]
 name = "fin-codecs"
 version = "0.0.0"
 dependencies = [
