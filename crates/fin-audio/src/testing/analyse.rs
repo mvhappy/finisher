@@ -31,7 +31,7 @@ pub fn peak_dbfs(x: &[f32]) -> f64 {
     }
 }
 
-/// The level in dBFS of the sine component at `hz` (single-bin Goertzel; a full-scale sine
+/// The level in dBFS of the sine component at `hz`, valid for `0 < hz < rate/2` (single-bin Goertzel; a full-scale sine
 /// reads 0 dB), exact for whole numbers of periods and close otherwise.
 pub fn goertzel_db(x: &[f32], hz: f64, rate: u32) -> f64 {
     let (re, im) = correlate(x, hz, rate);
@@ -58,8 +58,12 @@ fn correlate(x: &[f32], hz: f64, rate: u32) -> (f64, f64) {
 
 /// THD+N in dB relative to the fundamental: the fundamental is fitted by least squares
 /// (`a·cos + b·sin`, orthogonal over whole periods and solved exactly otherwise) and removed;
-/// the residual's RMS over the fitted component's RMS. A pure sine reads far below −120 dB.
+/// the residual's RMS over the fitted component's RMS. A pure sine reads far below −120 dB. Panics at 0 Hz or Nyquist (singular fit).
 pub fn thd_n_db(x: &[f32], fundamental_hz: f64, rate: u32) -> f64 {
+    assert!(
+        fundamental_hz > 0.0 && fundamental_hz < f64::from(rate) / 2.0,
+        "thd_n_db needs 0 < fundamental < Nyquist (the fit is singular at 0 Hz and Nyquist)"
+    );
     let w = TAU * fundamental_hz / f64::from(rate);
     let (mut cc, mut ss, mut cs, mut xc, mut xs) = (0.0f64, 0.0, 0.0, 0.0, 0.0);
     for (n, &v) in x.iter().enumerate() {
@@ -83,7 +87,8 @@ pub fn thd_n_db(x: &[f32], fundamental_hz: f64, rate: u32) -> f64 {
     to_db(res / fit)
 }
 
-/// The dominant frequency from rising zero crossings, interpolated linearly between samples.
+/// The dominant frequency of a clean tone (it counts zero crossings, so noise or several
+/// partials give garbage) from rising zero crossings, interpolated linearly between samples.
 pub fn dominant_hz(x: &[f32], rate: u32) -> f64 {
     let mut first = None;
     let (mut last, mut count) = (0.0f64, 0u32);
@@ -104,8 +109,12 @@ pub fn dominant_hz(x: &[f32], rate: u32) -> f64 {
     }
 }
 
-/// The level of `a − b` in dBFS RMS (over the shorter length): how well two signals null.
+/// The level of `a − b` in dBFS RMS (equal lengths required): how well two signals null.
 pub fn null_db(a: &[f32], b: &[f32]) -> f64 {
+    assert!(
+        !a.is_empty() && a.len() == b.len(),
+        "null_db needs two non-empty signals of equal length"
+    );
     let d: Vec<f32> = a.iter().zip(b).map(|(x, y)| x - y).collect();
     rms_dbfs(&d)
 }

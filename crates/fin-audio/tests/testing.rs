@@ -56,3 +56,21 @@ fn ebu_cases_are_generated() {
     assert!(ebu3341_case(6).is_none());
     assert_eq!(ebu3342_case(4).unwrap().len(), 100 * 48_000);
 }
+
+#[test]
+#[should_panic(expected = "null_db needs")]
+fn null_db_refuses_empty_input() {
+    null_db(&[], &[]);
+}
+
+#[test]
+#[should_panic(expected = "null_db needs")]
+fn null_db_refuses_length_mismatch() {
+    null_db(&[0.0; 3], &[0.0; 4]);
+}
+
+#[test]
+#[should_panic(expected = "thd_n_db needs")]
+fn thd_n_refuses_nyquist() {
+    thd_n_db(&[0.0; 16], 24_000.0, R);
+}

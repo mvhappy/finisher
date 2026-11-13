@@ -17,7 +17,7 @@ pub enum ChannelPos {
     Rb,
     /// Back centre.
     Cb,
-    /// Front left/right of centre ("wide").
+    /// Front left/right of centre (WAVE bits 6/7, AAC Lc/Rc).
     Lw,
     Rw,
     /// A position this engine has no rule for (the layout is refused).
@@ -49,22 +49,26 @@ impl ChannelLayout {
         match n {
             1 => Self::of(&[ChannelPos::C]),
             2 => Self::of(&[ChannelPos::L, ChannelPos::R]),
-            3 => Self::wave_mask(0x7),
-            4 => Self::wave_mask(0x33),
-            5 => Self::wave_mask(0x37),
-            6 => Self::wave_mask(0x3F),
-            7 => Self::wave_mask(0x70F),
-            8 => Self::wave_mask(0x63F),
+            3 => Self::wave_mask(0x7, 3),
+            4 => Self::wave_mask(0x33, 4),
+            5 => Self::wave_mask(0x37, 5),
+            6 => Self::wave_mask(0x3F, 6),
+            7 => Self::wave_mask(0x70F, 7),
+            8 => Self::wave_mask(0x63F, 8),
             _ => Self::unknown(n),
         }
     }
 
-    /// A `WAVEFORMATEXTENSIBLE` `dwChannelMask`: one channel per set bit, lowest bit first.
-    /// Back left/right (bits 4, 5) are `Ls`/`Rs` unless the mask also has side left/right
-    /// (bits 9, 10), when they are `Lb`/`Rb`. Bits beyond 17 and the top positions are
-    /// `Unknown`.
-    pub fn wave_mask(mask: u32) -> Self {
+    /// A `WAVEFORMATEXTENSIBLE` `dwChannelMask` for `n` channels: one channel per set bit,
+    /// lowest bit first; set bits beyond the `n`th are ignored and channels beyond the mask's
+    /// popcount are `Unknown`. Mask 0 falls back to [`ChannelLayout::wave_default`]. Back
+    /// left/right (bits 4, 5) are `Ls`/`Rs` unless the mask also has side left/right (bits 9,
+    /// 10), when they are `Lb`/`Rb`. Bits 11 and up (the top speakers) are `Unknown`.
+    pub fn wave_mask(mask: u32, n: usize) -> Self {
         use ChannelPos::*;
+        if mask == 0 {
+            return Self::wave_default(n);
+        }
         let sides = mask & (1 << 9) != 0 && mask & (1 << 10) != 0;
         let mut out = Vec::new();
         for bit in 0..32 {
@@ -88,6 +92,8 @@ impl ChannelLayout {
                 _ => Unknown,
             });
         }
+        out.truncate(n);
+        out.resize(n, Unknown);
         ChannelLayout(out)
     }
 
@@ -107,8 +113,9 @@ impl ChannelLayout {
         }
     }
 
-    /// AAC `channelConfiguration` (ISO/IEC 14496-3 Table 1.19), 1 to 7 (7 is the 8-channel
-    /// 7.1). Other values give an empty layout (refused by the conversion).
+    /// AAC `channelConfiguration` (ISO/IEC 14496-3 Table 1.19), 1 to 7. Configuration 7 is
+    /// the front-wide 7.1 (SCE CPE CPE CPE LFE: C, Lc, Rc, L, R, Ls, Rs, LFE); the plan text
+    /// said back 7.1, which Table 1.19 does not have (deviation recorded by the orchestrator). Other values give an empty layout (refused by the conversion).
     pub fn aac_config(config: usize) -> Self {
         use ChannelPos::*;
         match config {
@@ -118,7 +125,7 @@ impl ChannelLayout {
             4 => Self::of(&[C, L, R, Cb]),
             5 => Self::of(&[C, L, R, Ls, Rs]),
             6 => Self::of(&[C, L, R, Ls, Rs, Lfe]),
-            7 => Self::of(&[C, L, R, Ls, Rs, Lb, Rb, Lfe]),
+            7 => Self::of(&[C, Lw, Rw, L, R, Ls, Rs, Lfe]),
             _ => ChannelLayout(Vec::new()),
         }
     }

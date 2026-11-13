@@ -40,11 +40,20 @@ fn gains(pos: ChannelPos) -> Option<(f32, f32)> {
     })
 }
 
+/// Positions in the fixed order the downmix accumulates them, so the result does not depend
+/// on the source's channel order.
+const ORDER: [ChannelPos; 10] = {
+    use ChannelPos::*;
+    [L, R, C, Ls, Rs, Lb, Rb, Cb, Lw, Rw]
+};
+
 /// Converts interleaved frames in `layout` to the canonical form: 1 channel stays mono (bit
-/// exact), 2 channels are stereo (bit exact, also when L = R), 3 to 8 are mapped by position
-/// and folded to stereo (C, Ls, Rs, Lb, Rb at −3 dB, Cb at −6 dB to both, LFE dropped; in
-/// channel order). An `Unknown` position among 3 or more channels, more than 8 channels, no
-/// channels or a ragged buffer is `CODEC_UNAVAILABLE {reason: channels}`.
+/// exact); exactly `[L, R]` is stereo (bit exact, also when L = R); anything else with 2 to 8
+/// channels is mapped by position and folded to stereo (C, Ls, Rs, Lb, Rb, Lw, Rw at -3 dB, Cb
+/// at -6 dB to both, LFE dropped), accumulating in a fixed position order so every channel
+/// order of the same positions gives bit-identical output. An `Unknown` position at any
+/// channel count, more than 8 channels, no channels or a ragged buffer is
+/// `CODEC_UNAVAILABLE {reason: channels}`.
 pub fn canonical(interleaved: &[f32], layout: &ChannelLayout) -> Result<Canonical, CoreError> {
     let n = layout.channels();
     if n == 0 || n > 8 {
@@ -58,34 +67,39 @@ pub fn canonical(interleaved: &[f32], layout: &ChannelLayout) -> Result<Canonica
             interleaved.len()
         )));
     }
-    match n {
-        1 => return Ok(Canonical::Mono(interleaved.to_vec())),
-        2 => {
-            let mut s = Stereo::default();
-            for f in interleaved.as_chunks::<2>().0 {
-                s.push(f[0], f[1]);
-            }
-            return Ok(Canonical::Stereo(s));
-        }
-        _ => {}
-    }
     if layout.0.contains(&ChannelPos::Unknown) {
         return Err(unavailable(
             "a channel has no known position in the room".to_string(),
         ));
     }
-    let table: Vec<Option<(f32, f32)>> = layout.0.iter().map(|p| gains(*p)).collect();
+    if n == 1 {
+        return Ok(Canonical::Mono(interleaved.to_vec()));
+    }
     let mut s = Stereo::default();
+    if layout.0 == [ChannelPos::L, ChannelPos::R] {
+        for f in interleaved.as_chunks::<2>().0 {
+            s.push(f[0], f[1]);
+        }
+        return Ok(Canonical::Stereo(s));
+    }
+    // (channel index, gain to L, gain to R) in position order.
+    let mut table: Vec<(usize, f32, f32)> = Vec::new();
+    for pos in ORDER {
+        let (gl, gr) = gains(pos).unwrap_or((0.0, 0.0));
+        for (i, p) in layout.0.iter().enumerate() {
+            if *p == pos {
+                table.push((i, gl, gr));
+            }
+        }
+    }
     for f in interleaved.chunks_exact(n) {
         let (mut l, mut r) = (0.0f32, 0.0f32);
-        for (x, g) in f.iter().zip(&table) {
-            if let Some((gl, gr)) = g {
-                if *gl != 0.0 {
-                    l += x * gl;
-                }
-                if *gr != 0.0 {
-                    r += x * gr;
-                }
+        for &(i, gl, gr) in &table {
+            if gl != 0.0 {
+                l += f[i] * gl;
+            }
+            if gr != 0.0 {
+                r += f[i] * gr;
             }
         }
         s.push(l, r);

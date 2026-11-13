@@ -11,6 +11,8 @@ fn expect_of(p: ChannelPos) -> (f32, f32) {
         Ls | Lb => (M3, 0.0),
         Rs | Rb => (0.0, M3),
         Cb => (0.5, 0.5),
+        Lw => (M3, 0.0),
+        Rw => (0.0, M3),
         Lfe => (0.0, 0.0),
         other => panic!("not in this test: {other:?}"),
     }
@@ -32,8 +34,9 @@ fn layouts() -> Vec<(String, ChannelLayout)> {
     for c in 3..=7 {
         v.push((format!("aac {c}"), ChannelLayout::aac_config(c)));
     }
-    for m in [0x7u32, 0x33, 0x37, 0x3F, 0x63F, 0x60F, 0x70F] {
-        v.push((format!("mask {m:#x}"), ChannelLayout::wave_mask(m)));
+    for m in [0x7u32, 0x33, 0x37, 0x3F, 0x63F, 0x60F, 0x70F, 0xFF] {
+        let n = m.count_ones() as usize;
+        v.push((format!("mask {m:#x}"), ChannelLayout::wave_mask(m, n)));
     }
     v
 }
@@ -59,13 +62,38 @@ fn each_channel_isolated_per_layout() {
     }
 }
 
+/// Random frames of per-position values rendered in two layouts must downmix bit-identically.
+fn same_positions_same_bits(a: &ChannelLayout, b: &ChannelLayout) {
+    use fin_audio::testing::signals::Rng;
+    let mut rng = Rng::new(0xC0FFEE);
+    let (mut fa, mut fb) = (Vec::new(), Vec::new());
+    for _ in 0..2000 {
+        let vals: Vec<(ChannelPos, f32)> = a.0.iter().map(|p| (*p, rng.uniform())).collect();
+        let at = |layout: &ChannelLayout, out: &mut Vec<f32>| {
+            for p in &layout.0 {
+                out.push(vals.iter().find(|(q, _)| q == p).unwrap().1);
+            }
+        };
+        at(a, &mut fa);
+        at(b, &mut fb);
+    }
+    assert_eq!(canonical(&fa, a).unwrap(), canonical(&fb, b).unwrap());
+}
+
 #[test]
 fn vorbis_and_wave_51_differ_by_index_not_by_result() {
-    let w = ChannelLayout::wave_default(6); // L R C LFE Ls Rs
-    let v = ChannelLayout::vorbis_order(6); // L C R Ls Rs LFE
-    let wf = [0.1f32, 0.2, 0.3, 0.4, 0.5, 0.6];
-    let vf = [0.1f32, 0.3, 0.2, 0.5, 0.6, 0.4];
-    assert_eq!(canonical(&wf, &w).unwrap(), canonical(&vf, &v).unwrap());
+    same_positions_same_bits(
+        &ChannelLayout::wave_default(6),
+        &ChannelLayout::vorbis_order(6),
+    );
+    same_positions_same_bits(
+        &ChannelLayout::wave_default(6),
+        &ChannelLayout::aac_config(6),
+    );
+    same_positions_same_bits(
+        &ChannelLayout::wave_mask(0x63F, 8),
+        &ChannelLayout::vorbis_order(8),
+    );
 }
 
 #[test]
@@ -111,4 +139,19 @@ fn mono_fold_is_half_sum() {
     };
     fold_mono(&Canonical::Stereo(s), &mut out);
     assert_eq!(out, [0.75, 0.0]);
+}
+
+#[test]
+fn unknown_refused_at_any_count_and_two_channel_by_position() {
+    for n in 1..=8 {
+        let e = canonical(&vec![0.0; n], &ChannelLayout(vec![Unknown; n])).unwrap_err();
+        assert_eq!(reason(&e).1, "channels", "{n}");
+    }
+    let top = ChannelLayout::wave_mask(1 << 11, 1);
+    assert_eq!(reason(&canonical(&[0.0], &top).unwrap_err()).1, "channels");
+    let Canonical::Stereo(s) = canonical(&[0.5, 0.25], &ChannelLayout(vec![L, Lfe])).unwrap()
+    else {
+        panic!()
+    };
+    assert_eq!((s.l, s.r), (vec![0.5], vec![0.0]));
 }
