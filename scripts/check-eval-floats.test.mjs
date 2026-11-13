@@ -189,9 +189,15 @@ test("audio_meter_exempt: the loudness meter and the test helpers are outside th
   const r = gate(
     fixtureRoot({
       "crates/fin-audio/src/loudness/meter.rs": "fn m(x: f64) -> f64 { x.powf(2.0) + x.log10() }\n",
-      "crates/fin-audio/src/testing/signals.rs": "fn s(x: f64) -> f64 { x.sin() }\n",
+      "crates/fin-audio/src/testing/analyse.rs": "fn s(x: f64) -> f64 { x.sin() }\n",
       "crates/fin-audio/src/loudness/limiter.rs": "fn l(x: f32) -> f32 { libm::expf(x) }\n",
     }),
   );
   assert.equal(r.code, 0, r.out);
+});
+
+test("the A0 inputs are hashed: testing/signals.rs follows the audio rules, only analyse.rs is exempt", () => {
+  const r = gate(fixtureRoot({ "crates/fin-audio/src/testing/signals.rs": "fn s(x: f64) -> f64 { x.sin() }\n" }));
+  assert.equal(r.code, 1);
+  assert.match(r.out, /testing\/signals\.rs:1: calls \.sin\(\)/);
 });

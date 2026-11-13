@@ -14,7 +14,7 @@
 // and paths), the metavariable forms and SIMD intrinsics (`std::arch`/`core::arch`), but must
 // use the pinned `libm::` for transcendentals, so `libm::sin` and the float constants pass there.
 // `fin-audio`'s mixer, resampler, stretcher, effects and limiter (sub-project 6C) follow the same
-// rules, all of `crates/fin-audio/src` except `loudness/meter.rs` and `testing/`.
+// rules, all of `crates/fin-audio/src` except `loudness/meter.rs` and `testing/analyse.rs` (the signal generators feed the hashed A0 corpus).
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { report, rootArg, walk } from "./walk.mjs";
@@ -23,8 +23,8 @@ const SCOPE = /^crates\/fin-core\/src\/.*\.rs$/;
 const RENDER =
   /^crates\/(fin-media\/src\/(colour\/.*|sample)|fin-compositor\/src\/(geometry|coverage|mips|reference\/.*))\.rs$/;
 // The audio crate (6C Task 1): every file but the loudness meter (`ebur128` is the oracle there,
-// not a hashed path) and the test helpers is a render module: `libm::` for transcendentals.
-const AUDIO = /^crates\/fin-audio\/src\/(?!loudness\/meter\.rs$|testing\/).*\.rs$/;
+// not a hashed path) and the analysis helpers (never hashed) is a render module: `libm::` for transcendentals.
+const AUDIO = /^crates\/fin-audio\/src\/(?!loudness\/meter\.rs$|testing\/analyse\.rs$).*\.rs$/;
 // Render modules that must exist: a rename out of the scope above fails instead of escaping it.
 const REQUIRED = ["crates/fin-media/src/colour/tonemap.rs", "crates/fin-media/src/colour/softclip.rs"];
 const FNS =

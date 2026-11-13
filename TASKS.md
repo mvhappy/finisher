@@ -833,9 +833,18 @@ Spec: `docs/specs/2026-11-07-sub-project-6-media-engine-design.md` (§24 maps th
 - [ ] 6C: audio (incl. built-in audio effects, PCM feeds)
   - Plan (written 2026-11-13): `docs/superpowers/plans/2026-11-13-sub-project-6c-audio.md`, 24 tasks in batches A-F; implementers branch `sp6c-t<N>` from integration. Reviewer per task: recorded on each line. Eight owner questions at the plan's end, each with a default the plan uses; the vo-aacenc fork must exist before Task 14 merges. Unblocks 6E, 6F, 8C's `media.pcm`.
   - 6B-1 Tasks 14-22 are in flight on `home/sp6b1` (Tasks 1-13 are there already); 6C's Task 17 needs 6B-1 Task 8, Task 20 needs 6B-1 Task 14, Tasks 15-16 need 6B-1's macOS/Windows batches.
-  - Batches: A `fin-audio` foundations and the DSP core (Tasks 1-4); B the plan grows, audio effect kinds in the registry and `AudioItem.effects` (5-6, parallel with A); C mixer, effects, loudness and the A0 corpus (7-11; needs 3, 4, 6); D decoders, encoders and audio probing (12-17; 12 needs 2, 15 and 16 need 6B-1's platform batches, 17 needs 6B-1 Task 8); E PCM feeds, peaks, proxy audio and `fin listen` (18-21; 20 needs 6B-1 Task 14); F diagnostics, e2e, validation and spec as built (22-24).
+  - Batches:
+
+    | Batch | Tasks | Needs | Can run beside |
+    |---|---|---|---|
+    | A: `fin-audio` foundations, DSP core | 1-4 | nothing | B |
+    | B: audio effect kinds, `AudioItem.effects` | 5-6 | nothing | A |
+    | C: mixer, effects, loudness, A0 corpus | 7-11 | 3, 4, 6 | D (12-14) |
+    | D: decoders, encoders, audio probing | 12-17 | 12 needs 2; 15-16 need 6B-1's macOS/Windows batches; 17 needs 6B-1 Task 8 | C |
+    | E: PCM feeds, peaks, proxy audio, `fin listen` | 18-21 | 12-14 (18), 10 (19), 13 and 6B-1 Task 14 (20), 7-10 (21) | late D |
+    | F: diagnostics, e2e, validation, spec as built | 22-24 | 18-21 | nothing |
   - Merge points with 6B-1 (plan Decision 1; each is named in its task): `fin-media/src/cache.rs` (`RECIPES`), `fin-media/src/jobs/{mod,caps,manifest}.rs`, `fin-workers/src/media/mod.rs` (`KINDS`), `fin-workers/src/media/proxy.rs` (Task 20, after 6B-1 Task 14), `fin-codecs/src/probe/guidance.rs` (Task 17, after 6B-1 Task 8), `fin-codecs/src/mf/com.rs` (Task 16), `fin-media/src/format.rs` (6B-1 `ContainerKind`, 6C `AudioCodec::Vorbis`), `fin-container/src/mux/{mod,mp4}.rs` (6C only), `fin-core/src/events/{names_media.rs, payloads/media.rs}`, `scripts/check-encoder-call-sites.mjs`, `packages/contracts/src/media-rpcs.ts`, `TASKS.md`. Re-read each file on integration before editing; 6C never edits `fin-codecs/src/{registry,hung,traits}.rs` or `fin-media/src/backend.rs`.
-  - [x] Task 1: tracker, the `fin-audio` crate, dependencies and gates
+  - [x] Task 1: tracker, the `fin-audio` crate, dependencies and gates (reviewer: Claude Opus 5.5 (codex-o out of usage))
   - [ ] Task 2: channels, test signals and analysis helpers
   - [ ] Task 3: the scalar polyphase resampler
   - [ ] Task 4: WSOLA time-stretch

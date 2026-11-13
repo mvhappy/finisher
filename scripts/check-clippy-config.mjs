@@ -13,7 +13,7 @@ import { fileURLToPath } from "node:url";
 import { report, rootArg, walk } from "./walk.mjs";
 
 /** The crates that handle library paths (each is checked once it exists). */
-export const CRATES = ["fin-library", "fin-workers", "fin-node", "fin-media", "fin-analyze"];
+export const CRATES = ["fin-library", "fin-workers", "fin-node", "fin-media", "fin-analyze", "fin-audio"];
 
 /** The methods no library reader may call (Decision 21). */
 export const DISALLOWED = [
