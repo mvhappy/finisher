@@ -31,6 +31,7 @@ import type { JobEngine } from "../jobs/api.ts";
 import { MEDIA_PROXY, decodersOf, proxyCodec } from "../jobs/kinds/media.proxy.ts";
 import type { ProjectRegistryShape } from "../projects.ts";
 import type { CapabilitiesCache } from "./caps.ts";
+import type { ThumbsService } from "./thumbs.ts";
 
 /** How long `media.proxy` waits for its job. */
 export const PROXY_WAIT_MS = 10 * 60_000;
@@ -87,6 +88,18 @@ export interface ProxyService {
    */
   readonly ensure: (owner: JobOwner, req: Pick<ProxyRequest, "projectId" | "asset" | "branch" | "tier">) => Effect.Effect<EntryMeta, FinError>;
   /**
+   * The planner's view of a project's video asset: its content, codec, duration and display size
+   * (`ASSET_NOT_FOUND`, `ASSET_TYPE_UNSUPPORTED`). For consumers that plan cache keys (Task 15).
+   */
+  readonly source: (projectId: string, asset: string, branch?: string | undefined) => Effect.Effect<AssetSource, FinError>;
+  /**
+   * The `1080` proxy entry of `asset` when the cache holds one (the preferred codec's first),
+   * served for the project and pinned while it is open, with its directory: never submits a job.
+   * `undefined` when there is none (or the cache is down). For consumers that read proxies if they
+   * can (Task 15).
+   */
+  readonly peek: (owner: JobOwner, req: Pick<ProxyRequest, "projectId" | "asset" | "branch">) => Effect.Effect<PeekedProxy | undefined, FinError>;
+  /**
    * A project opened (or, with `assets`, a commit added those assets) here: a background `1080`
    * proxy of each video asset of `main` not asked for yet this run. Resolves when all were asked.
    */
@@ -107,7 +120,19 @@ interface Source {
   readonly asset: string;
   readonly fingerprint: string;
   readonly sourceCodec: string;
+  /** `MediaInfo.duration` as the probe wrote it (a rational string), when it gave one. */
+  readonly duration?: string;
   readonly display?: { readonly width: number; readonly height: number };
+}
+
+export type AssetSource = Source;
+
+/** A `1080` proxy entry found in the cache: its key, directory, codec and `meta.json`. */
+export interface PeekedProxy {
+  readonly key: string;
+  readonly dir: string;
+  readonly codec: ProxyCodec;
+  readonly meta: EntryMeta;
 }
 
 interface Planned {
@@ -154,13 +179,13 @@ export const CONTENT_FAILURES: ReadonlySet<string> = new Set([
 const endedWithout = (job: JobView): boolean => !MAKING.has(job.state) && job.state !== "succeeded";
 
 /** The server's capability cache and proxy service, for the handlers (absent in handler tests built without them). */
-export class MediaProxyTag extends Context.Service<MediaProxyTag, { readonly capabilities: CapabilitiesCache; readonly proxies: ProxyService }>()("finisherd/MediaProxy") {}
+export class MediaProxyTag extends Context.Service<MediaProxyTag, { readonly capabilities: CapabilitiesCache; readonly proxies: ProxyService; readonly thumbs?: ThumbsService }>()("finisherd/MediaProxy") {}
 
 export function makeProxyService(deps: ProxyServiceDeps): ProxyService {
   const probe = deps.probe ?? probeFile;
   const log = deps.log ?? (() => {});
-  /** The source codec of a file, by path and fingerprint (a new fingerprint probes again). */
-  const codecs = new Map<string, string>();
+  /** The source codec and duration of a file, by path and fingerprint (a new fingerprint probes again). */
+  const codecs = new Map<string, { readonly codec: string; readonly duration?: string }>();
   /** The last job of each key this run (status, ensure). */
   const jobs = new Map<string, string>();
   /** `<project>\0<fingerprint>` already asked for at first use this run. */
@@ -170,17 +195,19 @@ export function makeProxyService(deps: ProxyServiceDeps): ProxyService {
   /** The content failure of each key this run (`CONTENT_FAILURES`). */
   const failed = new Map<string, FinError>();
 
-  const sourceCodec = (path: string, fingerprint: string): Effect.Effect<string, FinError> => {
+  const sourceCodec = (path: string, fingerprint: string): Effect.Effect<{ readonly codec: string; readonly duration?: string }, FinError> => {
     const id = `${path}\0${fingerprint}`;
     const known = codecs.get(id);
     if (known !== undefined) return Effect.succeed(known);
     return Effect.flatMap(
       attempt(() => probe(path)),
       (json) => {
-        const codec = (JSON.parse(json) as { media?: { video?: { codec?: unknown } } }).media?.video?.codec;
+        const media = (JSON.parse(json) as { media?: { duration?: unknown; video?: { codec?: unknown } } }).media;
+        const codec = media?.video?.codec;
         if (typeof codec !== "string") return Effect.fail(finError("ASSET_TYPE_UNSUPPORTED", "the asset's file has no video track", { reason: "noVideo" }, "make proxies of video assets"));
-        codecs.set(id, codec);
-        return Effect.succeed(codec);
+        const found = { codec, ...(typeof media?.duration === "string" ? { duration: media.duration } : {}) };
+        codecs.set(id, found);
+        return Effect.succeed(found);
       },
     );
   };
@@ -206,10 +233,10 @@ export function makeProxyService(deps: ProxyServiceDeps): ProxyService {
       }
       const dir = deps.registry.dirOf(projectId);
       const path = isAbsolute(a.path) || dir === undefined ? a.path : join(dir, a.path);
-      const codec = yield* sourceCodec(path, a.fingerprint);
+      const { codec, duration } = yield* sourceCodec(path, a.fingerprint);
       const d = a.video.display ?? a.video;
       const display = typeof d.width === "number" && typeof d.height === "number" ? { width: d.width, height: d.height } : undefined;
-      return { projectId, branch, asset, fingerprint: a.fingerprint, sourceCodec: codec, ...(display === undefined ? {} : { display }) };
+      return { projectId, branch, asset, fingerprint: a.fingerprint, sourceCodec: codec, ...(duration === undefined ? {} : { duration }), ...(display === undefined ? {} : { display }) };
     });
 
   const plan = (report: unknown, src: Source, tier: ProxyTier, asked: ProxyCodec | undefined): Effect.Effect<Planned, FinError> =>
@@ -341,6 +368,23 @@ export function makeProxyService(deps: ProxyServiceDeps): ProxyService {
       return yield* Effect.fail(proxyUnavailable(req.asset, tier, job.id));
     });
 
+  const peek = (owner: JobOwner, req: Pick<ProxyRequest, "projectId" | "asset" | "branch">): Effect.Effect<PeekedProxy | undefined, FinError> =>
+    Effect.gen(function* () {
+      const src = yield* source(req.projectId, req.asset, req.branch);
+      const report = yield* deps.capabilities(owner);
+      const preferred = proxyCodec(report);
+      const order: ProxyCodec[] = preferred === "h264" ? ["h264", "av1"] : ["av1", "h264"];
+      for (const codec of order) {
+        // A codec nothing here decodes has no entry to find.
+        const planned = yield* Effect.result(plan(report, src, "1080", codec));
+        if (planned._tag === "Failure") continue;
+        const meta = yield* hit(planned.success.key, req.projectId);
+        const dir = meta === undefined ? null : yield* attempt(async () => deps.cache()?.entryDir(planned.success.key) ?? null);
+        if (meta !== undefined && dir !== null) return { key: planned.success.key, dir, codec, meta };
+      }
+      return undefined;
+    });
+
   /** Asks for the first-use `1080` proxy of one asset; whether it counts as asked for. */
   const askFirstUse = (projectId: string, id: string, a: AssetJson): Effect.Effect<void, FinError> =>
     Effect.gen(function* () {
@@ -373,5 +417,5 @@ export function makeProxyService(deps: ProxyServiceDeps): ProxyService {
       }),
     ).catch(() => undefined);
 
-  return { request, status, ensure, used: usedHere };
+  return { request, status, ensure, source, peek, used: usedHere };
 }

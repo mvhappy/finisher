@@ -211,6 +211,19 @@ pub const ROWS: &[Row] = &[
         rpc!("media.proxy.status"),
         &["projectId", "branch", "asset"]
     ),
+    row!(
+        "media.thumbs",
+        rpc!("media.thumbs"),
+        &[
+            "projectId",
+            "branch",
+            "asset",
+            "at",
+            "strip",
+            "maxSide",
+            "tileHeight"
+        ]
+    ),
     row!("fonts.ls", rpc!("fonts.catalog"), NONE),
     row!(
         "fonts.fetch",

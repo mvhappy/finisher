@@ -34,3 +34,12 @@ pub fn scale_rgb(src: &SourceFrame, out: Size) -> Vec<[f32; 3]> {
 pub fn scale_nv12(src: &SourceFrame, out: Size) -> Nv12Frame {
     nv12::from_rgb(&scale_rgb(src, out), out)
 }
+
+/// `src` scaled to `out` as opaque 8-bit RGBA, row-major (a thumbnail's pixels): the R′G′B′ of
+/// [`scale_rgb`] clamped to 0…1, scaled to 255 and rounded half to even.
+pub fn scale_rgba8(src: &SourceFrame, out: Size) -> Vec<u8> {
+    scale_rgb(src, out)
+        .iter()
+        .flat_map(|c| [c[0], c[1], c[2], 1.0].map(crate::scale::code8))
+        .collect()
+}

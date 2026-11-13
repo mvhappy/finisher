@@ -462,6 +462,12 @@ export const HandlersLive = FinRpcs.toLayer(
       // 6B-1 Task 14: a proxy of a project asset, and the state of its tiers.
       "media.proxy": (req, options) => guard("media.proxy", proxiesOf((p) => p.request(ownerOf(options), req))),
       "media.proxy.status": (req, options) => guard("media.proxy.status", proxiesOf((p) => p.status(ownerOf(options), req))),
+      // 6B-1 Task 15: thumbnails at source times, or the filmstrip, of a video asset.
+      "media.thumbs": (req, options) =>
+        guard(
+          "media.thumbs",
+          mediaProxy?.thumbs === undefined ? Effect.fail(finError("SERVER_UNAVAILABLE", "thumbnails are not served here", { feature: "mediaThumbs" })) : mediaProxy.thumbs.request(ownerOf(options), req),
+        ),
       "asset.reprobe": (req, options) =>
         guard(
           "asset.reprobe",

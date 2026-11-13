@@ -3,7 +3,7 @@
 
 use fin_jobs::KindParams;
 use fin_jobs::kinds::{find, schema_as, validate_as};
-use fin_media::jobs::{CapabilitiesParams, LookParams, ProbeDeepParams, ProxyParams};
+use fin_media::jobs::{CapabilitiesParams, LookParams, ProbeDeepParams, ProxyParams, ThumbsParams};
 use napi_derive::napi;
 use serde_json::{Value, json};
 
@@ -53,12 +53,27 @@ static MEDIA: &[KindParams] = &[
         validate: validate_proxy,
         schema: schema_as::<ProxyParams>,
     },
+    KindParams {
+        kind: "media.thumbs",
+        version: 1,
+        validate: validate_thumbs,
+        schema: schema_as::<ThumbsParams>,
+    },
 ];
 
 /// `ProxyParams`, then one source and a well-formed key (6B-1 Task 14).
 fn validate_proxy(params: &Value) -> Result<Value, Vec<String>> {
     let filled = validate_as::<ProxyParams>(params)?;
     let p: ProxyParams = serde_json::from_value(filled.clone()).map_err(|e| vec![e.to_string()])?;
+    p.check().map_err(|e| vec![e.message])?;
+    Ok(filled)
+}
+
+/// `ThumbsParams`, then its counts, sizes and key (6B-1 Task 15).
+fn validate_thumbs(params: &Value) -> Result<Value, Vec<String>> {
+    let filled = validate_as::<ThumbsParams>(params)?;
+    let p: ThumbsParams =
+        serde_json::from_value(filled.clone()).map_err(|e| vec![e.to_string()])?;
     p.check().map_err(|e| vec![e.message])?;
     Ok(filled)
 }

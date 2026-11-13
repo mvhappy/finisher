@@ -216,6 +216,14 @@ pub const SETTINGS_COMMANDS: &[Command] = &[
         || schema_of::<crate::commands::media_proxy::StatusArgs>("media.status"),
     ),
     cmd(
+        "media.thumbs",
+        "media",
+        "<asset> --at <t>[,<t>…] [--max-side <px>] | --strip [--tile-height <px>] [--no-wait]",
+        "thumbnails at source times, or the filmstrip, of a video asset (server only)",
+        false,
+        || schema_of::<crate::commands::media_thumbs::ThumbsArgs>("media.thumbs"),
+    ),
+    cmd(
         "fonts.ls",
         "fonts",
         "[--catalog|--cached|--pinned] [--detail]",

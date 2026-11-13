@@ -55,7 +55,8 @@ fn hello_lists_the_media_kinds() {
             "media.look",
             "media.capabilities",
             "media.probeDeep",
-            "media.proxy"
+            "media.proxy",
+            "media.thumbs"
         ]
     );
     assert!(WORKER_FAMILIES.get("media").is_some());

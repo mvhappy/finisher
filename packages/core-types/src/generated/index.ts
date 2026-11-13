@@ -2577,6 +2577,28 @@ export type TestGarbage = "json" | "seq" | "long" | "otherJob" | "unknownType";
  */
 export type TestHelperBehaviour = "ok" | "exitEarly" | "hang" | "spawn" | "call";
 /**
+ * What `media.thumbs` makes.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "ThumbsMode".
+ */
+export type ThumbsMode =
+  | {
+      thumbs: {
+        maxSide: number;
+        times: Rational[];
+      };
+    }
+  | {
+      strip: {
+        /**
+         * 0 in a plan request: the host fills it from the duration.
+         */
+        sprites?: number;
+        tileHeight: number;
+      };
+    };
+/**
  * What one worker serves.
  *
  * This interface was referenced by `FinCore`'s JSON-Schema
@@ -9459,6 +9481,47 @@ export interface UnitEntry {
   source: UnitSource;
 }
 /**
+ * `strip.json`: where each time of the source is in the sprites.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "StripIndex".
+ */
+export interface StripIndex {
+  /**
+   * [`STRIP_SPRITE_SECONDS`].
+   */
+  spriteSeconds: number;
+  sprites: StripSprite[];
+  tileHeight: number;
+  /**
+   * [`STRIP_TILE_SECONDS`].
+   */
+  tileSeconds: number;
+  tileWidth: number;
+  version: number;
+}
+/**
+ * One sprite of `strip.json`.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "StripSprite".
+ */
+export interface StripSprite {
+  file: string;
+  tiles: StripTile[];
+}
+/**
+ * One tile of a sprite in `strip.json`: its source time and the original frame it shows; its
+ * x offset in the sprite is its position times the tile width.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "StripTile".
+ */
+export interface StripTile {
+  at: Rational;
+  frame: number;
+}
+/**
  * A package target's signed custom metadata (`custom` in its publisher's delegated role): one
  * type for the editor that signs it, the TUF client that reads it and the plan that checks it.
  *
@@ -9833,6 +9896,116 @@ export interface TestWarmResult {
   probes?: (number | null)[];
   served: number;
   value: unknown;
+}
+/**
+ * What a thumbnail item reports (`item` value): its file in the entry and what it shows.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "ThumbItem".
+ */
+export interface ThumbItem {
+  /**
+   * The requested time (thumbnails).
+   */
+  at?: Rational;
+  file: string;
+  /**
+   * The original frame index shown (`frame_at`), thumbnails only.
+   */
+  frame?: number;
+  height: number;
+  /**
+   * The tiles of the sprite (filmstrips).
+   */
+  tiles?: number;
+  width: number;
+}
+/**
+ * `media.thumbs` v1: thumbnails or a filmstrip of the asset `asset` (content `fingerprint`),
+ * which the cache knows as `key`. A batch kind whose items are the thumbnails or sprites.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "ThumbsParams".
+ */
+export interface ThumbsParams {
+  /**
+   * A project asset, through the job's `in/manifest.json` (its fingerprint there must be
+   * `fingerprint`, else `ASSET_CHANGED`).
+   */
+  asset: string;
+  /**
+   * The branch whose head names the asset (`main` when absent). Host only.
+   */
+  branch?: string;
+  /**
+   * The vendor class the host expects the original's decoder to have (part of the key).
+   */
+  decoderClass: VendorClass;
+  /**
+   * The source's display size, for the kind's memory rule (Decision 18). Host only.
+   */
+  display?: Size;
+  fingerprint: string;
+  /**
+   * [`thumbs_key`] of the fields above: where the host commits the entry.
+   */
+  key: string;
+  mode: ThumbsMode;
+  /**
+   * The items still to make (a retry after a crash: the engine restricts the params to the
+   * items it has not acknowledged); all of them when absent. Files of the others are kept.
+   */
+  only?: string[];
+  /**
+   * The project that asked (host only: `prepare` writes the manifest from its branch head,
+   * `onSucceeded` commits the entry for it).
+   */
+  projectId?: string;
+  /**
+   * Read this proxy instead of the original (a proxy that cannot be read falls back to the
+   * original).
+   */
+  proxy?: ThumbsProxy;
+}
+/**
+ * A `1080` proxy entry the worker reads instead of the original: its key and directory in
+ * the media cache (the host looked it up and holds it for the job) and its codec.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "ThumbsProxy".
+ */
+export interface ThumbsProxy {
+  codec: ProxyCodec;
+  /**
+   * The entry's directory (absolute, canonical): `proxy.mp4`, `table.bin` and `meta.json`
+   * are opened below it with the no-follow opener.
+   */
+  dir: string;
+  key: string;
+}
+/**
+ * What a `media.thumbs` run answers: where its frames came from.
+ *
+ * This interface was referenced by `FinCore`'s JSON-Schema
+ * via the `definition` "ThumbsRun".
+ */
+export interface ThumbsRun {
+  /**
+   * The entry is complete (`meta.json` written).
+   */
+  complete: boolean;
+  /**
+   * Items made in this run.
+   */
+  made: number;
+  /**
+   * The error code of a proxy that could not be read (the original was read instead).
+   */
+  proxyFailed?: string;
+  /**
+   * `proxy` or `original`.
+   */
+  source: string;
 }
 /**
  * `tx.get` for a transaction that is not (or no longer) on its branch.

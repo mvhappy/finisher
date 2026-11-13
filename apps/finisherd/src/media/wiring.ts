@@ -20,6 +20,7 @@ import { CapTokens } from "./cap-tokens.ts";
 import { makeMediaHttp, type MediaRequestHandler } from "./http.ts";
 import { type CapabilitiesCache, mediaCapabilities } from "./caps.ts";
 import { MEDIA_SYSTEM_OWNER, type ProxyService, makeProxyService } from "./proxy.ts";
+import { type ThumbsService, makeThumbsService } from "./thumbs.ts";
 import { proxy540Stage } from "./stages.ts";
 
 export interface MediaWiring {
@@ -36,7 +37,7 @@ export interface MediaWiring {
     engine: JobEngine,
     library: Pick<LibraryService, "registerStage" | "registry">,
     projects: Pick<ProjectRegistryShape, "ensure" | "snapshot" | "resolveBranch" | "dirOf">,
-  ) => { readonly capabilities: CapabilitiesCache; readonly proxies: ProxyService };
+  ) => { readonly capabilities: CapabilitiesCache; readonly proxies: ProxyService; readonly thumbs: ThumbsService };
 }
 
 export function mediaWiring(mediaCache: MediaCacheService, tickets: Pick<Tickets, "onDrop">, log: (message: string) => void): MediaWiring {
@@ -76,7 +77,7 @@ export function mediaWiring(mediaCache: MediaCacheService, tickets: Pick<Tickets
       if (library.registry.list().length > 0) void Effect.runPromise(Effect.ignore(capabilities(MEDIA_SYSTEM_OWNER)));
       for (const id of early) void proxies.used(id);
       early.clear();
-      return { capabilities, proxies };
+      return { capabilities, proxies, thumbs: makeThumbsService({ engine, capabilities, proxies, cache: () => mediaCache.cache }) };
     },
   };
 }
