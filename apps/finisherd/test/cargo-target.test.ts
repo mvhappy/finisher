@@ -8,6 +8,8 @@ import { type AgentSettings, resolveFinPath } from "../src/agent/settings.ts";
 import { resolveSandboxExecPath } from "../src/sandbox/exec.ts";
 
 const NONE = {} as AgentSettings;
+// Tests pass a bundled location that holds nothing, so a test build of fin-node beside the package does not win.
+const NOWHERE = "/nonexistent-finisherd-bundle";
 let repo: string;
 beforeEach(() => {
   repo = mkdtempSync(join(tmpdir(), "finisherd-target-"));
@@ -48,20 +50,20 @@ describe("binary lookups", () => {
     const custom = join(repo, "custom");
     touch(join(repo, "target", "release"), "fin");
     touch(join(custom, "debug"), "fin");
-    expect(resolveFinPath(NONE, { CARGO_TARGET_DIR: custom }, repo)).toBe(join(custom, "debug", exe("fin")));
-    expect(resolveFinPath(NONE, {}, repo)).toBe(join(repo, "target", "release", exe("fin")));
+    expect(resolveFinPath(NONE, { CARGO_TARGET_DIR: custom }, repo, NOWHERE)).toBe(join(custom, "debug", exe("fin")));
+    expect(resolveFinPath(NONE, {}, repo, NOWHERE)).toBe(join(repo, "target", "release", exe("fin")));
   });
 
   test("fin: falls back to target/ when CARGO_TARGET_DIR has none; explicit finPath wins", () => {
     touch(join(repo, "target", "debug"), "fin");
-    expect(resolveFinPath(NONE, { CARGO_TARGET_DIR: join(repo, "none") }, repo)).toBe(join(repo, "target", "debug", exe("fin")));
+    expect(resolveFinPath(NONE, { CARGO_TARGET_DIR: join(repo, "none") }, repo, NOWHERE)).toBe(join(repo, "target", "debug", exe("fin")));
     expect(resolveFinPath({ ...NONE, finPath: "/x/fin" }, { CARGO_TARGET_DIR: join(repo, "none") }, repo)).toBe("/x/fin");
   });
 
   test("fin-sandbox-exec: found under CARGO_TARGET_DIR", () => {
     const custom = join(repo, "custom");
     touch(join(custom, "release"), "fin-sandbox-exec");
-    const got = resolveSandboxExecPath({ CARGO_TARGET_DIR: custom }, repo);
+    const got = resolveSandboxExecPath({ CARGO_TARGET_DIR: custom }, repo, join(repo, "bundled", exe("fin-sandbox-exec")));
     expect(got).toBe(join(custom, "release", exe("fin-sandbox-exec")));
   });
 });

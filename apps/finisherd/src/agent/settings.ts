@@ -231,8 +231,13 @@ const finIn = (dir: string) => join(dir, process.platform === "win32" ? "fin.exe
  * (fin-node's directory), else `release/fin` or `debug/fin` under `CARGO_TARGET_DIR` and then the checkout's `target/`. The
  * last candidate is answered even when missing: the provider reports it not installed.
  */
-export function resolveFinPath(settings: AgentSettings, env: Record<string, string | undefined> = process.env, repo?: string): string {
+export function resolveFinPath(
+  settings: AgentSettings,
+  env: Record<string, string | undefined> = process.env,
+  repo?: string,
+  bundledDir: string = dirname(workersBinaryPath()),
+): string {
   if (settings.finPath !== undefined) return settings.finPath;
-  const candidates = [finIn(dirname(workersBinaryPath())), ...cargoProfileDirs(repo, env).map(finIn)];
+  const candidates = [finIn(bundledDir), ...cargoProfileDirs(repo, env).map(finIn)];
   return candidates.find((p) => existsSync(p)) ?? candidates[candidates.length - 1]!;
 }

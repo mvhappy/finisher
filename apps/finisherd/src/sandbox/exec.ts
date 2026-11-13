@@ -9,7 +9,11 @@ import { sandboxExecPath } from "@finisher/fin-node";
 const exeIn = (dir: string) => join(dir, process.platform === "win32" ? "fin-sandbox-exec.exe" : "fin-sandbox-exec");
 
 /** The launcher's path; the last candidate is answered even when missing (the start then fails). */
-export function resolveSandboxExecPath(env: Record<string, string | undefined> = process.env, repo?: string): string {
-  const candidates = [sandboxExecPath(), ...cargoProfileDirs(repo, env).map(exeIn)];
+export function resolveSandboxExecPath(
+  env: Record<string, string | undefined> = process.env,
+  repo?: string,
+  bundled: string = sandboxExecPath(),
+): string {
+  const candidates = [bundled, ...cargoProfileDirs(repo, env).map(exeIn)];
   return candidates.find((p) => existsSync(p)) ?? candidates[candidates.length - 1]!;
 }
