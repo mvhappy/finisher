@@ -27,6 +27,7 @@ import { resolveFinPath } from "../src/agent/settings.ts";
 import { type SandboxStatus, setSandboxStatusSource } from "../src/sandbox/status.ts";
 import { AgentServer } from "./support/agent-server.ts";
 import { addAsset, commit, type NdjsonClient, ok, tx } from "./support/ndjson-client.ts";
+import { signInClaude } from "./support/claude-sign-in.ts";
 
 const WIN = process.platform === "win32";
 const FAKE = fileURLToPath(new URL(`../../../target/debug/fake-claude${WIN ? ".exe" : ""}`, import.meta.url));
@@ -117,6 +118,7 @@ async function claudeServer(script: Record<string, unknown>, opts: { status?: ()
   mkdirSync(serverData, { recursive: true, mode: 0o700 });
   const binary = opts.path ?? install(script);
   writeFileSync(join(serverData, "settings.json"), JSON.stringify({ agents: { claudeCode: { enabled: opts.enabled ?? true, path: binary } } }));
+  signInClaude(serverData);
   server = new AgentServer(serverData, { timers: false });
   await server.start();
   const local = await server.local();

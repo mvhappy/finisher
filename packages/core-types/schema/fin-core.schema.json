@@ -269,7 +269,7 @@
           "type": "string"
         },
         "signInStore": {
-          "description": "The harness's sign-in store file, inside `<serverData>/providers/<harness>/home/`\n(spec §8.6): read and written in place, never its directory.",
+          "description": "The harness's sign-in store file, inside `<serverData>/providers/<harness>/home/`\n(spec §8.6): read and written in place, never its directory; detection's host sandbox\n(`host-<ulid>`, Claude Code, not Windows) may name the home itself (plan 7D Decision 19).",
           "type": "string"
         },
         "toolchains": {

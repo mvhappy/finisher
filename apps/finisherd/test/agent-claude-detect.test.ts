@@ -24,6 +24,7 @@ import {
   resolveClaudePath,
   signinCommands,
 } from "../src/agent/claude/detect.ts";
+import { accountCheck, accountKey } from "../src/agent/claude/account.ts";
 import type { SessionSandboxDeps } from "../src/agent/sandbox.ts";
 import { readAgentSettings } from "../src/agent/settings.ts";
 import { runConsole } from "../src/console/main.ts";
@@ -202,7 +203,7 @@ describe("detection", () => {
     expect(seen.length, "the fs spy records finisherd's calls").toBeGreaterThan(0);
     expect(seen.some((p) => p.includes(`${sep}agents${sep}host-`))).toBe(true);
     expect(seen.filter((p) => p === providers || p.startsWith(providers + sep))).toEqual([]);
-    // The CLI's own config dir was the host sandbox's throwaway one, removed at close.
+    // The CLI's own config dir: off Windows the sign-in home (Decision 19), which only the CLI reads; on Windows the host sandbox's throwaway one.
     const out = await Effect.runPromise(
       Effect.scoped(
         Effect.gen(function* () {
@@ -212,7 +213,8 @@ describe("detection", () => {
         }),
       ),
     );
-    expect(out.config).toMatch(new RegExp(`${join(d.sandbox.serverData, "agents").replaceAll("\\", "\\\\")}.host-[0-9A-Z]{26}.provider$`));
+    if (WIN) expect(out.config).toMatch(new RegExp(`${join(d.sandbox.serverData, "agents").replaceAll("\\", "\\\\")}.host-[0-9A-Z]{26}.provider$`));
+    else expect(out.config).toBe(join(d.sandbox.serverData, "providers", "claudeCode", "home"));
     expect(out.store).toBe(store);
     expect(readdirSync(join(d.sandbox.serverData, "agents")).filter((n) => n.startsWith("host-"))).toEqual([]);
     expect(readdirSync(store)).toEqual(["credentials"]);
@@ -220,7 +222,8 @@ describe("detection", () => {
 
   test.skipIf(NO_FAKE)("signed_in_from_auth_status_json", async () => {
     needFake();
-    const signedIn = await Effect.runPromise(detectClaude(deps(installFake("in"))));
+    // An answer naming the account (as under a sign-in home holding the profile, Decision 19).
+    const signedIn = await Effect.runPromise(detectClaude(deps(installFake("in", { auth: { email: "in.7d2@example.invalid" } }))));
     expect(signedIn).toMatchObject({ signedIn: true, authMethod: "claude.ai" });
     expect(signedIn.problem).toBeUndefined();
     // Signed out: exit 1 with JSON is an answer, not a failure; no method is kept.
@@ -291,16 +294,50 @@ describe("detection", () => {
     expect((await Effect.runPromise(detectClaude(d))).version).toBe("2.1.401");
   });
 
-  test.skipIf(NO_FAKE)("signed_in_naming_no_account_is_no_problem", async () => {
+  /** What the person's `auth login` (Decision 23) leaves in the sign-in home: the profile, or none. */
+  const signInHome = (d: ClaudeDetectDeps, profile: Record<string, unknown> | undefined) => {
+    const home = join(d.sandbox.serverData, "providers", "claudeCode", "home");
+    mkdirSync(join(home, "store"), { recursive: true, mode: 0o700 });
+    writeFileSync(join(home, ".claude.json"), JSON.stringify(profile === undefined ? { numStartups: 1 } : { oauthAccount: profile }));
+    invalidateClaudeDetection();
+  };
+  const hashOf = (d: ClaudeDetectDeps, label: string) => accountCheck({ signedIn: true, authMethod: "claude.ai", label }, accountKey(d.sandbox.serverData), null).hash;
+
+  test.skipIf(NO_FAKE || WIN)("account_label_from_sign_in_home: the e-mail, else the organization, of the sign-in home's profile (Decision 19)", async () => {
     needFake();
-    // Verified on 2.1.321 (7D Task 0, 04-auth-status B): detection's fresh config dir answers a
-    // claude.ai sign-in with `email`/`orgId`/`orgName` null (the fake's default): signed in, no
-    // hash, no problem (each instance's `initialize.account` names the account, Decision 19).
-    const d = deps(installFake("nolabel"));
-    const line = await Effect.runPromise(claudeProviderInfo(d));
-    expect(line).toMatchObject({ detected: true, signedIn: true, authMethod: "claude.ai" });
-    expect(line.accountHash).toBeUndefined();
-    expect(line.problem).toBeUndefined();
+    const d = deps(installFake("home"));
+    // Verified on 2.1.321 (7D Task 0, 04-auth-status D): with the sign-in home as its config dir
+    // `auth status` names the account; the e-mail is hashed, as an instance's `initialize.account.email` is.
+    signInHome(d, { emailAddress: "home-a.7d2@example.invalid", organizationUuid: "org-a", organizationName: "Org A" });
+    const a = await Effect.runPromise(claudeProviderInfo(d));
+    expect(a).toMatchObject({ detected: true, signedIn: true, authMethod: "claude.ai", accountHash: hashOf(d, "home-a.7d2@example.invalid") });
+    expect(a.problem).toBeUndefined();
+    // No e-mail: the organization names it (another subject than any e-mail).
+    signInHome(d, { organizationUuid: "org-b" });
+    const b = await Effect.runPromise(detectClaude(d));
+    expect(b.accountHash).toMatch(/^[0-9a-f]{8}$/);
+    expect(b.accountHash).not.toBe(a.accountHash);
+    expect(b.accountHash).not.toBe(hashOf(d, "org-b"));
+    expect(b.problem).toBeUndefined();
+  });
+
+  test.skipIf(NO_FAKE || WIN)("signed_in_naming_no_account_is_provider_auth: a sign-in home naming neither e-mail nor organization (Decision 19)", async () => {
+    needFake();
+    // Verified on 2.1.321 (7D Task 0, 04-auth-status B): a config dir without the profile answers
+    // a claude.ai sign-in with `email`/`orgId`/`orgName` null. Under the sign-in home that is a
+    // sign-in Finisher cannot tell apart from another: refused, never hashed.
+    for (const profile of [undefined, { displayName: "x" }]) {
+      const d = deps(installFake("nolabel"));
+      signInHome(d, profile);
+      const line = await Effect.runPromise(claudeProviderInfo(d));
+      expect(line).toMatchObject({ detected: true, signedIn: true, authMethod: "claude.ai", problem: { code: "PROVIDER_AUTH" } });
+      expect(line.problem?.fix).toContain("finisherd provider signin claudeCode");
+      expect(line.accountHash).toBeUndefined();
+    }
+    // No sign-in home at all (never signed in here) is the same answer.
+    const fresh = await Effect.runPromise(detectClaude(deps(installFake("fresh"))));
+    expect(fresh).toMatchObject({ signedIn: true, problem: { code: "PROVIDER_AUTH" } });
+    expect(fresh.accountHash).toBeUndefined();
   });
 
   test.skipIf(NO_FAKE)("providers_never_carry_label_or_token", async () => {

@@ -1,8 +1,8 @@
 //! Where the fake's configuration comes from: `FAKE_CLAUDE_*` variables, else the sidecar
 //! `<directory of the executable>/fake-claude.json` (`{script, observed, version}`), else the
 //! script itself (`observed`, `version`). `account` is the label a signed-in CLI reports in
-//! `initialize.account.email` (never in `auth status`, which a fresh config dir answers with
-//! `null` labels on 2.1.321), so a test can switch accounts without a new script.
+//! `initialize.account.email` (never in `auth status`, which names the account only from its
+//! config dir's profile on 2.1.321), so a test can switch accounts without a new script.
 
 use std::path::{Path, PathBuf};
 

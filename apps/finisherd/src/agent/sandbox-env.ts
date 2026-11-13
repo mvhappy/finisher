@@ -168,7 +168,9 @@ export interface HostEnvInput {
 /**
  * A host sandbox's environment (plan 7D Task 3b): `childEnv()` and the directory's own `TMPDIR`,
  * provider directory, git settings and `GNUPGHOME`; no `FIN_*` connection, no project, no
- * credential; the sign-in store variable only with `store` (detection's). `HOME` (and Windows'
+ * credential; the sign-in store variable only with `store` (detection's), and with its
+ * `configDir` (detection's, off Windows: plan 7D Decision 19) the provider directory variable names
+ * the sign-in home instead of the throwaway `provider/`. `HOME` (and Windows'
  * `USERPROFILE`) is the throwaway `SessionDirs.home`, never the server's: what a CLI reads under the
  * user's home (`$HOME/.config/anthropic/…`) cannot sign the probe in. Sessions keep the server's,
  * but for Claude Code's (`OWN_HOME`).
@@ -180,7 +182,11 @@ export function hostEnv(i: HostEnvInput): Record<string, string> {
   // `tmp/home` (`SessionDirs.home`, made by `ensureSessionDirs`), the one spelling of it.
   env.HOME = i.dirs.home;
   if (platform === "win32") env.USERPROFILE = env.HOME;
-  return ownDirs(env, i.harness, i.dirs, platform);
+  const own = ownDirs(env, i.harness, i.dirs, platform);
+  // Detection's (plan 7D Decision 19): the CLI's configuration directory is the sign-in home.
+  const provider = PROVIDER_DIR_ENV[i.harness];
+  if (i.store?.configDir !== undefined && provider !== undefined) own[provider] = i.store.configDir;
+  return own;
 }
 
 /** The directory-derived names of a session or host environment. */
@@ -239,6 +245,12 @@ export interface AssertOptions {
    * has it, a host sandbox not (only detection's has it, plan 7D Decision 22; the probe never).
    */
   readonly store?: boolean;
+  /**
+   * A host sandbox whose provider directory variable is the harness's sign-in home
+   * (`providers/<harness>/home`, plan 7D Decision 19: detection's, with `store`), not its own
+   * `provider/`. Without it the variable must be the sandbox's own.
+   */
+  readonly signInHome?: boolean;
   readonly platform?: NodeJS.Platform;
 }
 
@@ -314,7 +326,13 @@ export function assertSessionEnv(env: Readonly<Record<string, string | undefined
   }
   if (keys.has("SHELL") && !SESSION_SHELLS.includes(need("SHELL"))) fail("not a session shell", "SHELL");
   const provider = PROVIDER_DIR_ENV[s.harness];
-  if (provider !== undefined) under(provider, "provider");
+  if (provider !== undefined && opts.signInHome === true) {
+    if (!host || !withStore) fail("a sign-in home outside detection's host sandbox", provider);
+    const home = need(provider);
+    if (!path.isAbsolute(home) || path.normalize(home) !== home || !home.endsWith(path.sep + path.join("providers", s.harness, "home"))) fail("not the harness's sign-in home", provider);
+    const storeOf = SIGN_IN_STORES[s.harness];
+    if (storeName !== undefined && storeOf !== undefined && env[storeName] !== path.join(home, storeOf.name)) fail("not the sign-in home's store", storeName);
+  } else if (provider !== undefined) under(provider, "provider");
   if (platform === "win32") {
     under("TEMP", "tmp");
     under("TMP", "tmp");

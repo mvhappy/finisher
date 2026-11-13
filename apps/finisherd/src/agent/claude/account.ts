@@ -17,18 +17,19 @@
 //   `EXPECT_TTL_MS`; taking it is audited (hashes only) under the person who expected it.
 // - **Fail closed**: a state file that cannot be read (anything but missing) is
 //   `PROVIDER_ACCOUNT_CHANGED` too: a change could not be seen.
-// - **Nothing names the account** (verified on 2.1.321, 7D Task 0): `auth status` under a fresh
-//   config dir (detection's, a session's first start) reports `email`/`orgId`/`orgName` as
-//   `null`, and an instance's `initialize.account` has `email` only once the CLI holds the profile
-//   in its config dir (a resumed process, or the profile fetch finishing first). A signed-in
-//   answer that names no account is no refusal: nothing is recorded, and a new session is
-//   refused only while a change already waits or the record cannot be read (`instanceAccount`).
-//   The session's later processes name the account and record it; until one does, a switch to
-//   another account is not seen (the residual risk of this choice; the plan's Decision 19 run of
-//   `auth status` against the sign-in home would close it, once its sandbox grant exists).
-// - **Where it is observed**: each instance's start (`instanceAccount`, from its `initialize`
-//   answer) and detection (`detect.ts`, every `agent.providers` and every plan) when its
-//   `auth status` names the account.
+// - **Where the account is named** (verified on 2.1.321, 7D Task 0): `auth status` names it only
+//   from a config dir holding the sign-in's profile (`.claude.json` `oauthAccount`): a fresh one
+//   reports `email`/`orgId`/`orgName` as `null`. So detection (`detect.ts`, every
+//   `agent.providers`, every plan and every instance's start) runs it with the **sign-in home** as
+//   its config dir (Decision 19 as amended; the person's `auth login` writes the profile there),
+//   in the detect host sandbox (off Windows: TODO(7D Task 13)), and hashes the `email`, else the
+//   `orgId`; signed in naming neither is `PROVIDER_AUTH` there. An instance's
+//   `initialize.account.email` (present once the CLI holds the profile in the session's own config
+//   dir: a resumed process, or the profile fetch finishing first) is recorded too, under the same
+//   subject as detection's e-mail, so both give one hash.
+// - **Nothing names the account** (Windows, where detection keeps a throwaway config dir; or an
+//   API-key sign-in): no refusal by itself: nothing is recorded, and a new session is refused
+//   only while a change already waits or the record cannot be read (`instanceAccount`).
 //
 // **Finisher opens nothing under `providers/`**: the label comes from what the CLI prints.
 import { createHmac, randomBytes } from "node:crypto";
@@ -79,14 +80,28 @@ export function labelOf(answer: unknown): string | undefined {
   return parts.length === 0 ? undefined : parts.join("\0");
 }
 
-/** `labelOf` of `auth status`'s raw output (not JSON: none). */
+/** What an organization-only label starts with (an e-mail never holds a NUL). */
+const ORG_LABEL = "orgId\0";
+
+/**
+ * The account `auth status --json`'s raw output names (not JSON: none): its `email` (the same
+ * label, so the same hash, as an instance's `initialize.account.email`), else its `orgId` (a label
+ * of its own kind, never equal to an e-mail's). Verified on 2.1.321 (7D Task 0, 04-auth-status D):
+ * both come from the config dir's profile (`oauthAccount`), the sign-in home's for detection.
+ */
 export function labelOfOutput(stdout: string): string | undefined {
+  let v: unknown;
   try {
-    return labelOf(JSON.parse(stdout));
+    v = JSON.parse(stdout);
   } catch {
     return undefined;
   }
+  const email = labelOf(v);
+  if (email !== undefined) return email;
+  const org = v !== null && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, unknown>).orgId : undefined;
+  return typeof org === "string" && org !== "" ? `${ORG_LABEL}${org}` : undefined;
 }
+
 
 const HASH_LABEL = "finisher.claudeCode.account.v1\0";
 const HARNESS = "claudeCode";

@@ -3,7 +3,8 @@
 //! Reads, by allow-list: the toolchains, the project folder (other sessions' workspaces of
 //! the same project included: owner decision 2026-11-08), the referenced library roots, the
 //! session directory's `credential.json`, `settings/`, `tmp/`, `provider/` and `git/`, and the
-//! harness's sign-in store file. Writes: the session's workspace, `workspace/shared/` (not in
+//! harness's sign-in store file (detection's host sandbox: the whole sign-in home, plan 7D
+//! Decision 19). Writes: the session's workspace, `workspace/shared/` (not in
 //! `plan`), `tmp/`, `provider/` and the sign-in store file. Protected: the project's state
 //! (`.finisher/`, `assets/`, `finisher.project.json`, `finisher.rules.json`) and the session's
 //! credential and settings. Denied as a second layer: server data (the session directory's
@@ -28,6 +29,8 @@ pub const PROJECT_STATE: &[&str] = &[
 ];
 /// What Claude Code would load from the project folder by itself (spec §4.5).
 pub const CLAUDE_PROJECT_FILES: &[&str] = &["CLAUDE.md", "CLAUDE.local.md", ".claude"];
+/// A host sandbox's id prefix (`agents/host-<ulid>/`, plan 7D Task 3b; `session-dirs.ts`).
+const HOST_PREFIX: &str = "host-";
 /// The session directory's entries the sandbox reads (spec §8.5); `blobs/` is not one.
 const SESSION_READ: &[&str] = &["credential.json", "settings", "tmp", "provider", "git"];
 
@@ -85,11 +88,18 @@ pub fn agent_on(os: Os, i: &AgentInput) -> Result<SandboxPolicy, PolicyError> {
         &under(&i.server_data, "agents").join(&i.session_id),
     )?;
     if let Some(store) = &i.sign_in_store {
-        inside(
-            "signInStore",
-            store,
-            &under(&i.server_data, &format!("providers/{harness}/home")),
-        )?;
+        let home = under(&i.server_data, &format!("providers/{harness}/home"));
+        // Plan 7D Decision 19 (as 7D Task 0 amended it): detection's host sandbox may hold the
+        // whole sign-in home (Claude Code's `auth status` reads the account's profile from its
+        // config dir there). Never a session's; not on Windows, where a store is granted to the
+        // harness's sign-in capability that every session holds (TODO(7D Task 13)).
+        let detect_home = store == &home
+            && i.harness == Harness::ClaudeCode
+            && i.session_id.starts_with(HOST_PREFIX)
+            && os != Os::Windows;
+        if !detect_home {
+            inside("signInStore", store, &home)?;
+        }
     }
 
     let mut deny = vec![i.server_data.clone()];

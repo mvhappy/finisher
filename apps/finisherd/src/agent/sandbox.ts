@@ -99,6 +99,8 @@ interface Prepared {
   readonly beforeGrant?: () => void;
   /** The environment names the sign-in store (`AssertOptions.store`; default: a session's does). */
   readonly store?: boolean;
+  /** The CLI's configuration directory is the sign-in home (`AssertOptions.signInHome`: detection's). */
+  readonly signInHome?: boolean;
 }
 
 /** One sandbox: `prepare` makes its directories and input; `cleanup` runs when it is gone. */
@@ -177,7 +179,10 @@ export function openSessionSandbox(s: Session, harness: Harness, deps: SessionSa
  * input needs a project folder, and that one holds nothing). No project, no credential, no `fin`
  * endpoint. The sign-in store follows the purpose alone, never an option: `detect` has it
  * (`auth status --json` reads the CLI's own store: the store variable or link, and its grant),
- * `probe` never (Decision 8: the probe runs unsigned). The same mode rules as a session's;
+ * `probe` never (Decision 8: the probe runs unsigned). Off Windows, `detect` of a store-folder
+ * harness (Claude Code) is granted the whole sign-in home and names it as the CLI's configuration
+ * directory instead of its own `provider/` (Decision 19 as 7D Task 0 amended it: `auth status`
+ * names the account from the profile there); finisherd still opens nothing under `providers/`. The same mode rules as a session's;
  * closing the scope kills every process it started, then removes the directory and workspace.
  */
 export function openHostSandbox(purpose: "detect" | "probe", harness: Harness, deps: SessionSandboxDeps): Effect.Effect<SessionSandbox, FinError, Scope.Scope> {
@@ -194,7 +199,8 @@ export function openHostSandbox(purpose: "detect" | "probe", harness: Harness, d
         host: true,
         prepare: async () => {
           const { dirs } = await ensureHostDirs(agents, { platform, id });
-          const store = purpose === "detect" ? await linkSignInStore(harness, deps.serverData, dirs, { platform, ...(deps.symlink === undefined ? {} : { symlink: deps.symlink }) }) : undefined;
+          // Decision 19: detection's CLI reads the account from the sign-in home (`home`, off Windows).
+          const store = purpose === "detect" ? await linkSignInStore(harness, deps.serverData, dirs, { platform, home: true, ...(deps.symlink === undefined ? {} : { symlink: deps.symlink }) }) : undefined;
           const project = await ensureHostProject(deps.hostRoot ?? tmpdir(), deps.serverData, { platform });
           workspace = join(project, "workspace", id);
           await mkdir(join(project, "workspace"), { mode: 0o700 }).catch((e: NodeJS.ErrnoException) => {
@@ -203,7 +209,8 @@ export function openHostSandbox(purpose: "detect" | "probe", harness: Harness, d
           await mkdir(workspace, { mode: 0o700 });
           const env = hostEnv({ harness, dirs, store, platform, ...(deps.parent === undefined ? {} : { parent: deps.parent }) });
           const withStore = store?.env !== undefined;
-          assertSessionEnv(env, { id, harness }, { host: true, store: withStore, expect: env, platform });
+          const signInHome = store?.configDir !== undefined;
+          assertSessionEnv(env, { id, harness }, { host: true, store: withStore, signInHome, expect: env, platform });
           const input: AgentInput = {
             sessionId: id,
             mode: "plan",
@@ -217,7 +224,7 @@ export function openHostSandbox(purpose: "detect" | "probe", harness: Harness, d
             serverData: deps.serverData,
             home: await canonical(homedir()),
           };
-          return { env, workspace, roots: [workspace], input, store: withStore };
+          return { env, workspace, roots: [workspace], input, store: withStore, signInHome };
         },
         cleanup: async () => {
           if (workspace !== undefined) await rm(workspace, { recursive: true, force: true, maxRetries: 3 }).catch(() => 0);
@@ -297,7 +304,7 @@ function openBox(b: BoxSpec, deps: SessionSandboxDeps): Effect.Effect<SessionSan
                 const s = { id: b.id, harness: b.harness };
                 assertSpawnEnv(opts.env, s, platform);
                 childEnv = { ...env, ...opts.env };
-                assertSessionEnv(childEnv, s, { expect: env, extra: harnessExtra(b.harness), host: b.host, store: p.store ?? !b.host, platform });
+                assertSessionEnv(childEnv, s, { expect: env, extra: harnessExtra(b.harness), host: b.host, store: p.store ?? !b.host, signInHome: p.signInHome === true, platform });
               }
               let input = base;
               if (opts.extraRead !== undefined && opts.extraRead.length > 0) {

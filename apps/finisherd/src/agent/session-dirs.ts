@@ -266,6 +266,11 @@ export interface LinkedStore {
   readonly grant: string;
   /** For a `dir` store: the variable and its value. */
   readonly env?: { readonly name: string; readonly value: string };
+  /**
+   * Detection's only (`LinkOptions.home`): the sign-in home as the CLI's configuration directory
+   * (plan 7D Decision 19); `grant` is then the home itself.
+   */
+  readonly configDir?: string;
 }
 
 /**
@@ -279,6 +284,13 @@ export interface LinkOptions {
   readonly platform?: NodeJS.Platform;
   /** The link call (tests: a host without the symlink privilege). */
   readonly symlink?: typeof symlink;
+  /**
+   * Detection's host sandbox, a `dir` store, not on Windows (plan 7D Decision 19 as 7D Task 0
+   * amended it): the whole sign-in home is granted and named as the CLI's configuration
+   * directory, where `auth status` finds the account's profile (`.claude.json`). Still no call
+   * under `providers/`.
+   */
+  readonly home?: boolean;
 }
 
 export async function linkSignInStore(harness: Harness, serverData: string, dirs: SessionDirs, opts: LinkOptions = {}): Promise<LinkedStore | undefined> {
@@ -291,7 +303,10 @@ export async function linkSignInStore(harness: Harness, serverData: string, dirs
   // Not created here (that would `mkdir` and, when it exists, `stat` under `providers/`): the
   // user's sign-in command makes it. A store missing at launch is not granted (Landlock skips a
   // missing root), so the CLI reports itself signed out.
-  if (store.kind === "dir") return { grant: target, env: { name: store.env, value: target } };
+  if (store.kind === "dir") {
+    const env = { name: store.env, value: target };
+    return opts.home === true && platform !== "win32" ? { grant: home, env, configDir: home } : { grant: target, env };
+  }
   const link = join(dirs.provider, store.name);
   const existing = await lstat(link).catch(() => undefined);
   if (existing?.isSymbolicLink() === true && (await readlink(link)) === target) return { grant: target };

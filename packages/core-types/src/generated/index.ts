@@ -2662,7 +2662,8 @@ export interface AgentInput {
   sharedDir?: string;
   /**
    * The harness's sign-in store file, inside `<serverData>/providers/<harness>/home/`
-   * (spec §8.6): read and written in place, never its directory.
+   * (spec §8.6): read and written in place, never its directory; detection's host sandbox
+   * (`host-<ulid>`, Claude Code, not Windows) may name the home itself (plan 7D Decision 19).
    */
   signInStore?: string;
   /**

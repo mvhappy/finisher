@@ -397,7 +397,8 @@ describe("the host sandbox (detection and the probe)", () => {
     const d = deps();
     const scope = await Effect.runPromise(Scope.make());
     const box = await Effect.runPromise(Scope.provide(scope)(openHostSandbox("detect", "claudeCode", d)));
-    writeFileSync(join(box.env.CLAUDE_CONFIG_DIR!, "settings.json"), "{}");
+    // Its own `provider/` (detection's CLI is given the sign-in home instead, Decision 19).
+    writeFileSync(join(box.env.TMPDIR!, "..", "provider", "settings.json"), "{}");
     writeFileSync(join(box.workspace, "left.txt"), "x");
     const child = await Effect.runPromise(box.spawn([process.execPath, "-e", "setTimeout(() => {}, 300000)"], { cwd: box.workspace, stdio: "pipe" }));
     expect(hostDirs(d)).toHaveLength(2);
@@ -450,24 +451,38 @@ describe("the host sandbox (detection and the probe)", () => {
     const home = (h: string) => join(d.serverData, "providers", h, "home");
     const store = join(home("claudeCode"), "store");
     await within(openHostSandbox("detect", "claudeCode", d), async (box) => {
-      // Decision 22: `auth status --json` reads the CLI's own store, so detection names it; the
-      // configuration directory stays the host directory's throwaway one.
+      // Decision 22: `auth status --json` reads the CLI's own store, so detection names it.
+      // Decision 19 (as 7D Task 0 amended it): its configuration directory is the sign-in home,
+      // where the account's profile is; the home (store included) is granted, nothing else of it.
       expect(box.env.CLAUDE_SECURESTORAGE_CONFIG_DIR).toBe(store);
       const r = await run(box, printEnv("CLAUDE_SECURESTORAGE_CONFIG_DIR", "CLAUDE_CONFIG_DIR"));
       const req = JSON.parse(readFileSync(request, "utf8")) as { input: Record<string, unknown> };
       const id = String(req.input.sessionId);
-      expect(lines(r.stdout)).toEqual({ CLAUDE_SECURESTORAGE_CONFIG_DIR: store, CLAUDE_CONFIG_DIR: join(d.serverData, "agents", id, "provider") });
-      expect(req.input.signInStore).toBe(store);
+      expect(lines(r.stdout)).toEqual({ CLAUDE_SECURESTORAGE_CONFIG_DIR: store, CLAUDE_CONFIG_DIR: home("claudeCode") });
+      expect(req.input.signInStore).toBe(home("claudeCode"));
       expect(req.input.fin).toBeUndefined();
       // The contract's store switch: with it the variable is required and must be the
       // harness's store; without it the variable is refused.
       const host = { id, harness: "claudeCode" as const };
-      expect(() => assertSessionEnv(box.env, host, { host: true, store: true, expect: box.env })).not.toThrow();
-      expect(() => assertSessionEnv(box.env, host, { host: true })).toThrow(/a session variable in a host sandbox/);
-      const { CLAUDE_SECURESTORAGE_CONFIG_DIR: _s, ...without } = box.env;
+      const own: Record<string, string | undefined> = { ...box.env, CLAUDE_CONFIG_DIR: join(d.serverData, "agents", id, "provider") };
+      expect(() => assertSessionEnv(box.env, host, { host: true, store: true, signInHome: true, expect: box.env })).not.toThrow();
+      expect(() => assertSessionEnv(own, host, { host: true, store: true })).not.toThrow();
+      expect(() => assertSessionEnv(own, host, { host: true })).toThrow(/a session variable in a host sandbox/);
+      const { CLAUDE_SECURESTORAGE_CONFIG_DIR: _s, ...without } = own;
       expect(() => assertSessionEnv(without, host, { host: true, store: true })).toThrow(/a missing variable/);
-      expect(() => assertSessionEnv({ ...box.env, CLAUDE_SECURESTORAGE_CONFIG_DIR: join(home("codex"), "store") }, host, { host: true, store: true })).toThrow(/not the harness's store/);
-      expect(() => assertSessionEnv({ ...box.env, CLAUDE_SECURESTORAGE_CONFIG_DIR: "/elsewhere" }, host, { host: true, store: true, expect: box.env })).toThrow(/not the harness's store/);
+      expect(() => assertSessionEnv({ ...own, CLAUDE_SECURESTORAGE_CONFIG_DIR: join(home("codex"), "store") }, host, { host: true, store: true })).toThrow(/not the harness's store/);
+      expect(() => assertSessionEnv({ ...own, CLAUDE_SECURESTORAGE_CONFIG_DIR: "/elsewhere" }, host, { host: true, store: true })).toThrow(/not the harness's store/);
+      // The sign-in home as the configuration directory only where it was asked for, and only
+      // the harness's own, with its own store.
+      expect(() => assertSessionEnv(box.env, host, { host: true, store: true })).toThrow(/not the session's own path/);
+      expect(() => assertSessionEnv(own, host, { host: true, store: true, signInHome: true })).toThrow(/not the harness's sign-in home/);
+      expect(() => assertSessionEnv({ ...box.env, CLAUDE_CONFIG_DIR: home("codex") }, host, { host: true, store: true, signInHome: true })).toThrow(/not the harness's sign-in home/);
+      expect(() => assertSessionEnv({ ...box.env, CLAUDE_CONFIG_DIR: `${home("claudeCode")}${sep}x${sep}..` }, host, { host: true, store: true, signInHome: true })).toThrow(/not the harness's sign-in home/);
+      expect(() => assertSessionEnv({ ...box.env, CLAUDE_CONFIG_DIR: join(tmp, "other", "providers", "claudeCode", "home") }, host, { host: true, store: true, signInHome: true })).toThrow(/not the sign-in home's store/);
+      expect(() => assertSessionEnv(box.env, host, { host: true, signInHome: true })).toThrow(/a session variable in a host sandbox|a sign-in home outside/);
+      expect(() => assertSessionEnv(box.env, { id: "01JQ0000000000000000000000", harness: "claudeCode" }, { signInHome: true })).toThrow(/SANDBOX_ENV|session environment/);
+      // A process cannot name the home either.
+      expect(await refusal(box, ["/bin/true"], { CLAUDE_CONFIG_DIR: home("claudeCode") })).toEqual({ code: "SANDBOX_ENV", name: "CLAUDE_CONFIG_DIR", reason: "a session variable" });
       // A process still cannot name the store itself.
       expect(await refusal(box, ["/bin/true"], { CLAUDE_SECURESTORAGE_CONFIG_DIR: store })).toEqual({ code: "SANDBOX_ENV", name: "CLAUDE_SECURESTORAGE_CONFIG_DIR", reason: "a session variable" });
     });
@@ -489,11 +504,23 @@ describe("the host sandbox (detection and the probe)", () => {
       return;
     }
     const { status: _stub, launcher: _l, ...real } = d;
+    // A person signed in: the sign-in home holds the profile and the store (made by the test).
+    mkdirSync(store, { recursive: true, mode: 0o700 });
+    writeFileSync(join(home("claudeCode"), ".claude.json"), '{"oauthAccount":{}}');
+    mkdirSync(home("codex"), { recursive: true, mode: 0o700 });
+    writeFileSync(join(home("codex"), "auth.json"), "{}");
     await within(openHostSandbox("detect", "claudeCode", real), async (box) => {
       expect(box.mode).toBe("launcher");
       const r = await run(box, ["/bin/sh", "-c", 'echo "$CLAUDE_SECURESTORAGE_CONFIG_DIR"']);
       expect(r.code, r.stderr).toBe(0);
       expect(r.stdout).toBe(`${store}\n`);
+      // Decision 19: the CLI reads the profile and writes its own files back in the home ...
+      const rw = await run(box, ["/bin/sh", "-c", 'cat "$CLAUDE_CONFIG_DIR/.claude.json" && echo x > "$CLAUDE_CONFIG_DIR/.claude.json.tmp" && mv "$CLAUDE_CONFIG_DIR/.claude.json.tmp" "$CLAUDE_CONFIG_DIR/.claude.json"']);
+      expect(rw.code, rw.stderr).toBe(0);
+      expect(rw.stdout).toBe('{"oauthAccount":{}}');
+      // ... and nothing beside it: another harness's home, server data's own files.
+      const other = await run(box, ["/bin/sh", "-c", `cat '${join(home("codex"), "auth.json")}'`]);
+      expect(other.code).not.toBe(0);
     });
   });
 

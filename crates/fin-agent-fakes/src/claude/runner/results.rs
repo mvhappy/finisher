@@ -289,6 +289,25 @@ pub(super) fn auth_status(script: &Script, text: bool) -> i32 {
             json!(c.join("projects").to_string_lossy()),
         );
         o.insert("configDirectory".into(), json!(c.to_string_lossy()));
+        // Verified on 2.1.321 (7D Task 0, 04-auth-status B/D): the label fields come from the
+        // config dir's `.claude.json` `oauthAccount` (the sign-in home's, which `auth login`
+        // writes); a fresh dir has none, so they stay `null`.
+        if !signed_out {
+            let profile = std::fs::read_to_string(c.join(".claude.json"))
+                .ok()
+                .and_then(|t| serde_json::from_str::<Value>(&t).ok())
+                .map(|v| v["oauthAccount"].clone())
+                .unwrap_or(Value::Null);
+            for (field, key) in [
+                ("email", "emailAddress"),
+                ("orgId", "organizationUuid"),
+                ("orgName", "organizationName"),
+            ] {
+                if let Some(v) = profile[key].as_str() {
+                    o.insert(field.into(), json!(v));
+                }
+            }
+        }
     }
     merge(&mut status, &over);
     if !text {

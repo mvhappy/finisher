@@ -42,7 +42,9 @@
 //! "onSigint", "mcpTimeoutMs", "refuseFlagValues", "steps": [...]}`:
 //!
 //! - `auth` is merged over what `auth status` prints (signed in by default; with
-//!   `"loggedIn": false` the CLI's signed-out fields, exit 1).
+//!   `"loggedIn": false` the CLI's signed-out fields, exit 1). Signed in, `email`/`orgId`/
+//!   `orgName` come from `$CLAUDE_CONFIG_DIR/.claude.json`'s `oauthAccount` (`emailAddress`,
+//!   `organizationUuid`, `organizationName`; the sign-in home's, Decision 19), else `null`.
 //! - `initialize` and `init` are shallow-merged over the `initialize` response and the
 //!   `system/init` line; a value of `"$remove"` deletes that key. Defaults copy the real
 //!   CLI: five built-in `agents`, `capabilities`, the five models (`--model` resolves through

@@ -25,6 +25,7 @@ import { processStart } from "../src/sandbox/process-start.ts";
 import { type SandboxStatus, setSandboxStatusSource } from "../src/sandbox/status.ts";
 import { AgentServer } from "./support/agent-server.ts";
 import { addAsset, commit, type NdjsonClient, ok, tx } from "./support/ndjson-client.ts";
+import { signInClaude } from "./support/claude-sign-in.ts";
 
 const WIN = process.platform === "win32";
 const LINUX = process.platform === "linux";
@@ -111,6 +112,7 @@ interface Running {
 function settings(serverData: string, binary: string, extra: Record<string, unknown> = {}): void {
   mkdirSync(serverData, { recursive: true, mode: 0o700 });
   writeFileSync(join(serverData, "settings.json"), JSON.stringify({ agents: { claudeCode: { enabled: true, path: binary, ...extra } } }));
+  signInClaude(serverData);
 }
 
 /** A server in this process over `serverData` (direct mode); with `project`, a new project in it. */

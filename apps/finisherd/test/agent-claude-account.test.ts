@@ -5,11 +5,10 @@
 // and finisherd makes no file-system call under `<server-data>/providers/`. Everything runs
 // `fake-claude` (its `account` sidecar knob is the label), never the real CLI.
 //
-// On 2.1.321 (7D Task 0) detection's `auth status` names no account (its fresh config dir has no
-// profile): only each instance's `initialize.account.email` does. Detection hashes a label when
-// its answer names one (a config dir that holds the profile), which `setAccount` models here so
-// the record, confirm and expect machinery runs through `agent.providers`; the real flow (no
-// label at detection) is `no_label_subscription_*`.
+// On 2.1.321 (7D Task 0) `auth status` names the account only from a config dir holding the
+// sign-in's profile; Decision 19 (as amended) runs detection's against the sign-in home, where the
+// person's `auth login` writes it (`setAccount` models that), and hashes its e-mail (else the
+// organization); a sign-in home naming neither is `PROVIDER_AUTH` (`no_label_subscription_*`).
 import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, sep } from "node:path";
@@ -123,17 +122,31 @@ function installFake(name: string, o: { account?: string; script?: unknown } = {
   return { dir, bin };
 }
 
+/** The server data folders these tests run on: where the person's sign-in command writes. */
+const DATA_ROOTS = () => [join(tmp, "data"), join(tmp, "server-data")];
+
 /**
- * The person signs the CLI in to another account (the sidecar's label, in `initialize.account`);
- * its `auth status` names it too (`auth.email`, as a config dir holding the profile would);
- * detection asks again.
+ * The person signs the CLI in to another account (Decision 23's command): its sign-in home's
+ * `.claude.json` holds that account's profile (`oauthAccount`, which the CLI's `auth status`
+ * reads there, Decision 19), and the sidecar's label is what `initialize.account.email` names.
+ * `undefined` leaves the sign-in home as it is. These writes are the test's, not finisherd's: the
+ * store spy forgets them. Detection asks again.
  */
 function setAccount(dir: string, account: string | undefined): void {
   writeFileSync(join(dir, "fake-claude.json"), JSON.stringify({ script: "script.json", ...(account === undefined ? {} : { account }) }));
-  if (account !== undefined) {
-    const script = JSON.parse(readFileSync(join(dir, "script.json"), "utf8")) as { auth?: Record<string, unknown> };
-    writeFileSync(join(dir, "script.json"), JSON.stringify({ ...script, auth: { ...script.auth, email: account } }));
+  if (account !== undefined) signInHome({ emailAddress: account, organizationUuid: `org-of-${account}` });
+  invalidateClaudeDetection();
+}
+
+/** The sign-in home's profile (`undefined`: a home whose `.claude.json` names no account). */
+function signInHome(profile: Record<string, unknown> | undefined): void {
+  const mark = spy.touched.length;
+  for (const data of DATA_ROOTS()) {
+    const home = join(data, "providers", "claudeCode", "home");
+    mkdirSync(join(home, "store"), { recursive: true, mode: 0o700 });
+    writeFileSync(join(home, ".claude.json"), JSON.stringify(profile === undefined ? { numStartups: 1 } : { oauthAccount: profile }));
   }
+  spy.touched.splice(mark);
   invalidateClaudeDetection();
 }
 
@@ -360,6 +373,33 @@ describe("an account change", () => {
       setSandboxStatusSource(restore);
     }
   });
+
+  withFake("account_change_stops_new_sessions on the first session: no process ever names the e-mail, the sign-in home does (Decision 19)", async () => {
+    // Verified on 2.1.321 (7D Task 0, s1a): a first start's `initialize.account` has no e-mail.
+    // Detection's `auth status` against the sign-in home names the account all the same, so a
+    // switch is seen before any session's later process could name it.
+    const restore = setSandboxStatusSource(NOT_READY);
+    const turn = { expect: "user", cumulativeUsage: { inputTokens: 1, outputTokens: 1 } };
+    const cli = installFake("cli", { account: LABEL_A, script: { initialize: { account: { email: "$remove" } }, steps: [turn] } });
+    const serverData = join(tmp, "server-data");
+    writeFileSync(join(serverData, "settings.json"), JSON.stringify({ agents: { claudeCode: { enabled: true, path: cli.bin } } }));
+    const server = new AgentServer(serverData);
+    await server.start();
+    try {
+      const local = await server.local();
+      const projectId = ok<{ projectId: string }>(await local.call("project.create", { dir: join(tmp, "P"), name: "P", rate: "30" })).projectId;
+      ok(await commit(local, projectId, tx("01aaaaaaaaaaaaaaaaaaaaaaaP", 0, [addAsset()])));
+      ok(await local.call("agent.session.start", { projectId, harness: "claudeCode", prompt: "first" }));
+      // Recorded from the sign-in home, under the subject an instance's e-mail would have.
+      expect(new ClaudeAccounts(serverData).state().current?.hash).toBe(accountCheck(SIGNED_IN(LABEL_A), accountKey(serverData), null).hash);
+      setAccount(cli.dir, LABEL_B);
+      const refused = await local.call("agent.session.start", { projectId, harness: "claudeCode", prompt: "new" });
+      expect(refused.ok ? undefined : refused.error).toMatchObject({ code: "PROVIDER_ACCOUNT_CHANGED", details: { accountHash: accountCheck(SIGNED_IN(LABEL_B), accountKey(serverData), null).hash } });
+    } finally {
+      await server.stop();
+      setSandboxStatusSource(restore);
+    }
+  });
 });
 
 // ---- failing closed ----
@@ -466,17 +506,17 @@ describe("the account record fails closed", () => {
     expect(instanceAccount(data, { signedIn: true, authMethod: "claude.ai" }, { newSession: true }).refused).toMatchObject({ code: "PROVIDER_ACCOUNT_CHANGED", details: { reason: "stateUnreadable" } });
   });
 
-  withFake("no_label_subscription_is_not_identified: a claude.ai sign-in naming no account (2.1.321's fresh config dir) plans; a waiting change still stops it", async () => {
-    // The fake's default `auth status` is 2.1.321's under a fresh config dir: labels `null`.
+  withFake("no_label_subscription_is_not_identified: a claude.ai sign-in whose sign-in home names no account is PROVIDER_AUTH; a waiting change still stands", async () => {
+    // Verified on 2.1.321 (7D Task 0, 04-auth-status B): a config dir without the profile names no
+    // account (`email`/`orgId` null). Decision 19: under the sign-in home that is refused, never hashed.
     const { dir, bin } = installFake("cli");
+    signInHome(undefined);
     const data = join(tmp, "data");
     const d = detectDeps(data, bin);
     const l = await line(d);
-    expect(l).toMatchObject({ signedIn: true, authMethod: "claude.ai" });
-    expect(l.problem).toBeUndefined();
+    expect(l).toMatchObject({ signedIn: true, authMethod: "claude.ai", problem: { code: "PROVIDER_AUTH" } });
     expect(l.accountHash).toBeUndefined();
-    const planner = sessionPlanner({ roles: BUNDLED_ROLES, catalogue: Catalogue.load(BUNDLED_CATALOGUE), harnesses: () => new Set(["claudeCode"] as never[]), hasKey: () => false, local: () => undefined, localModels: async () => [], claude: claudeWiring(() => line(d), data).planning });
-    await planner.plan(startReq, PEOPLE);
+    expect(new ClaudeAccounts(data).state()).toEqual({ v: 1 });
     // A change seen elsewhere (an instance's `initialize.account`) waits: detection shows it.
     const accounts = new ClaudeAccounts(data);
     accounts.observe(SIGNED_IN(LABEL_A), accountKey(data));
@@ -484,7 +524,29 @@ describe("the account record fails closed", () => {
     setAccount(dir, undefined);
     const after = await line(d);
     expect(after).toMatchObject({ signedIn: true, accountHash: waiting, problem: { code: "PROVIDER_ACCOUNT_CHANGED" } });
+    const planner = sessionPlanner({ roles: BUNDLED_ROLES, catalogue: Catalogue.load(BUNDLED_CATALOGUE), harnesses: () => new Set(["claudeCode"] as never[]), hasKey: () => false, local: () => undefined, localModels: async () => [], claude: claudeWiring(() => line(d), data).planning });
     await expect(planner.plan(startReq, PEOPLE)).rejects.toMatchObject({ code: "PROVIDER_ACCOUNT_CHANGED" });
+  });
+
+  withFake("no_label_subscription_is_not_identified: a new session on a sign-in home naming no account is refused PROVIDER_AUTH before the CLI starts", async () => {
+    const restore = setSandboxStatusSource(NOT_READY);
+    const cli = installFake("cli", { script: { initialize: { account: { email: "$remove" } }, steps: [{ expect: "user", cumulativeUsage: { inputTokens: 1, outputTokens: 1 } }] } });
+    signInHome({ displayName: "no e-mail, no organization" });
+    const serverData = join(tmp, "server-data");
+    writeFileSync(join(serverData, "settings.json"), JSON.stringify({ agents: { claudeCode: { enabled: true, path: cli.bin } } }));
+    const server = new AgentServer(serverData);
+    await server.start();
+    try {
+      const local = await server.local();
+      const projectId = ok<{ projectId: string }>(await local.call("project.create", { dir: join(tmp, "P"), name: "P", rate: "30" })).projectId;
+      ok(await commit(local, projectId, tx("01aaaaaaaaaaaaaaaaaaaaaaaP", 0, [addAsset()])));
+      const r = await local.call("agent.session.start", { projectId, harness: "claudeCode", prompt: "go" });
+      expect(r.ok ? undefined : r.error).toMatchObject({ code: "PROVIDER_AUTH", fix: expect.stringContaining("finisherd provider signin claudeCode") });
+      expect(existsSync(join(serverData, "agents", "claude-account.json"))).toBe(false);
+    } finally {
+      await server.stop();
+      setSandboxStatusSource(restore);
+    }
   });
 
   withFake("pending_change_survives_a_failed_auth_status: a garbled, signed-out or missing answer lets nothing through", async () => {
@@ -694,7 +756,6 @@ describe("the sign-in store", () => {
     const store = join(serverData, "providers", "claudeCode", "home", "store");
     mkdirSync(store, { recursive: true, mode: 0o700 });
     writeFileSync(join(store, "credentials"), "not for finisherd");
-    writeFileSync(join(serverData, "providers", "claudeCode", "home", ".claude.json"), JSON.stringify({ email: LABEL_A }));
     spy.touched.length = 0;
 
     // Detection (in this process, as the server's would) and the capability probe.

@@ -12,12 +12,17 @@
 //   (`CLAUDE_FLOOR`, data changed per Finisher release) is `PROVIDER_VERSION {version, floor}`.
 // - **Signed in**: `claude auth status --json`, whose JSON answer Finisher reads (the CLI reads
 //   its own store). Task 0: it exits 1 when signed out, which is an answer, not a failure. Only
-//   `loggedIn` and a one-word `authMethod` are kept: never a label, an e-mail or a token.
+//   `loggedIn`, a one-word `authMethod` and the account's keyed hash (Decision 19: its e-mail,
+//   else its organization; neither is `PROVIDER_AUTH`) are kept: never a label, an e-mail or a token.
 //
-// Both commands run in a host sandbox (`openHostSandbox("detect")`): a throwaway
-// `CLAUDE_CONFIG_DIR` (`auth status` writes `.claude.json` and `backups/` there) and the sign-in
-// store variable, so the CLI reads its own store. **Finisher opens nothing under `providers/`**:
-// the sign-in commands below are printed for a person to run, and run nothing here.
+// Both commands run in a host sandbox (`openHostSandbox("detect")`) with the sign-in store
+// variable, so the CLI reads its own store, and, off Windows, the sign-in home as
+// `CLAUDE_CONFIG_DIR` (Decision 19 as 7D Task 0 amended it: `auth status` names the account only
+// from the profile there, which the person's `auth login` writes; the CLI also writes its
+// `.claude.json` and `backups/` there, as that sign-in did). On Windows it stays the host
+// directory's throwaway one (TODO(7D Task 13): the sign-in capability every session holds would
+// get the home too). **Finisher opens nothing under `providers/`**: only the CLI, in the
+// sandbox, reads the home; the sign-in commands below are printed for a person to run.
 import { realpathSync, statSync, accessSync, constants } from "node:fs";
 import { posix, win32 } from "node:path";
 import type { FinError, ProviderInfo } from "@finisher/contracts";
@@ -256,18 +261,32 @@ interface AuthAnswer {
   readonly problem?: FinError;
 }
 
+/** `<server-data>/providers/claudeCode/home`: a path only, never opened here. */
+const signInHome = (serverData: string, platform: NodeJS.Platform) => pathOf(platform).join(serverData, "providers", HARNESS, "home");
+
+/** Signed in, but the sign-in home names no account (Decision 19): sessions cannot tell it apart. */
+const noAccount = () =>
+  finError(
+    "PROVIDER_AUTH",
+    "Claude Code is signed in, but its sign-in names no account (no e-mail, no organization) that Finisher could tell apart from another",
+    { harness: HARNESS, reason: "noAccount" },
+    "sign it in again with the commands `finisherd provider signin claudeCode` prints",
+  );
+
 /**
  * `auth status`'s answer with the account hashed at once (`account.ts`): the label goes no
- * further. Verified on 2.1.321 (7D Task 0): under detection's throwaway config dir a claude.ai
- * sign-in names no account (`email`/`orgId`/`orgName` `null`): signed in with no hash and no
- * problem; each instance's `initialize.account` names it (`adapter.ts`).
+ * further. With `home` (detection's config dir is the sign-in home, off Windows: Decision 19 as
+ * 7D Task 0 amended it) the answer names the account (verified on 2.1.321, 04-auth-status D:
+ * `email`, `orgId` from the home's profile), and a sign-in naming neither is `PROVIDER_AUTH`
+ * (case B's `null`s: never hashed). Without it (Windows) a sign-in naming none is signed in with
+ * no hash and no problem; each instance's `initialize.account` may name it (`adapter.ts`).
  */
-function authAnswer(serverData: string, r: Ran): AuthAnswer {
+function authAnswer(serverData: string, r: Ran, home: boolean): AuthAnswer {
   const a = parseAuthStatus(r.code, r.stdout);
   if (!a.signedIn) return a;
   const label = labelOfOutput(r.stdout);
   const status = { ...a, ...(label === undefined ? {} : { label }) };
-  if (!accountIdentified(status)) return a;
+  if (!accountIdentified(status)) return home ? { ...a, problem: noAccount() } : a;
   try {
     return { ...a, accountHash: accountCheck(status, accountKey(serverData), null).hash };
   } catch (e) {
@@ -314,7 +333,8 @@ function probe(deps: ClaudeDetectDeps, real: string, key: string | undefined, pl
           if (key !== undefined && gen === generation) versions.set(key, version);
         }
         if (compareVersions(version, CLAUDE_FLOOR) >= 0 && auth === undefined) {
-          const a = yield* Effect.result(run(box, real, ["auth", "status", "--json"], ms, platform).pipe(Effect.flatMap((r) => sync(() => authAnswer(deps.sandbox.serverData, r)))));
+          const home = box.env.CLAUDE_CONFIG_DIR === signInHome(deps.sandbox.serverData, platform);
+          const a = yield* Effect.result(run(box, real, ["auth", "status", "--json"], ms, platform).pipe(Effect.flatMap((r) => sync(() => authAnswer(deps.sandbox.serverData, r, home)))));
           auth = a._tag === "Failure" ? { signedIn: null, problem: a.failure } : a.success;
           if (authKey !== undefined && gen === generation) auths.set(authKey, { at: now(), answer: auth });
         }

@@ -701,6 +701,44 @@ fn fake_reports_the_configured_account_label() {
         status(Some(json!({"auth": {"email": "own@example.invalid"}})))["email"],
         "own@example.invalid"
     );
+    // Verified on 2.1.321 (7D Task 0, 04-auth-status D): a config dir holding the sign-in's
+    // profile (`.claude.json` `oauthAccount`, which the user's `auth login` writes into the sign-in
+    // home) names the account: `email` from `emailAddress`, `orgId` from `organizationUuid`.
+    let home = Dir::new("account-home");
+    home.write(
+        ".claude.json",
+        &json!({"oauthAccount": {"emailAddress": "home@example.invalid", "organizationUuid": "org-uuid-1", "organizationName": "Org One", "displayName": "x"}}),
+    );
+    let in_home = |script: Option<Value>| {
+        let mut c = Command::new(BIN);
+        c.args(["auth", "status"])
+            .env("CLAUDE_CONFIG_DIR", home.path(""));
+        if let Some(s) = script {
+            c.env("FAKE_CLAUDE_SCRIPT", dir.write("script.json", &s));
+        }
+        serde_json::from_slice::<Value>(&c.output().unwrap().stdout).unwrap()
+    };
+    let d = in_home(None);
+    assert_eq!(
+        (&d["email"], &d["orgId"], &d["orgName"]),
+        (
+            &json!("home@example.invalid"),
+            &json!("org-uuid-1"),
+            &json!("Org One")
+        )
+    );
+    // A profile without the e-mail names the organization only; signed out names nothing.
+    home.write(
+        ".claude.json",
+        &json!({"oauthAccount": {"organizationUuid": "org-uuid-2"}}),
+    );
+    let org = in_home(None);
+    assert!(org["email"].is_null() && org["orgName"].is_null());
+    assert_eq!(org["orgId"], "org-uuid-2");
+    assert!(in_home(Some(json!({"auth": {"loggedIn": false}})))["orgId"].is_null());
+    // A config dir without the profile (B): `null`, as above.
+    home.write(".claude.json", &json!({"numStartups": 1}));
+    assert!(in_home(None)["orgId"].is_null());
     // `initialize.account` carries it.
     let mut f = Fake::start(
         &dir,

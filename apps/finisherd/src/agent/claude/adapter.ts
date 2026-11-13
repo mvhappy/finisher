@@ -147,6 +147,10 @@ export function ClaudeCodeAdapter(deps: ClaudeDeps): ProviderAdapter {
           return yield* Effect.fail(finError("PROVIDER_UNAVAILABLE", "Claude Code is off on this server", { harness: "claudeCode", reason: "disabled" }, "set agents.claudeCode.enabled to true in settings.json"));
         }
         const d = yield* detect();
+        // Decision 19 (as 7D Task 0 amended it): signed in, but the sign-in home names no account
+        // (neither e-mail nor organization): a new session is refused before the CLI starts; a
+        // running session's later process is not (it started on the earlier check).
+        if (d.problem?.code === "PROVIDER_AUTH" && spec.providerRef === null && !resume) return yield* Effect.fail(d.problem);
         const binary = yield* attempt(() => realpathSync(d.path));
         // Decision 7: the CLI's install tree, resolved, which its process reads.
         const extraRead = [dirname(binary)];
@@ -332,12 +336,13 @@ export const UNKNOWN_ACCOUNT = "unknown";
 
 /**
  * The account check of one instance (Decision 19, `account.ts`): the label its `initialize.account`
- * names, else the hash detection's `auth status` gave, else none (`instanceAccount`: nothing
- * recorded; a new session is refused only by a change already waiting). A new session (no
- * provider reference yet) is refused while a change waits; a running session's respawn or resume
- * never is. Verified on 2.1.321 (7D Task 0): `initialize.account.email` names the account once the
- * CLI holds the profile in the session's config dir (a resumed process; a first start only when
- * the profile fetch wins), and detection's `auth status` names none.
+ * names, else the hash detection's `auth status` gave from the sign-in home (the same subject for
+ * an e-mail, so the same hash), else none (`instanceAccount`: nothing recorded; a new session is
+ * refused only by a change already waiting). A new session (no provider reference yet) is refused
+ * while a change waits; a running session's respawn or resume never is. Verified on 2.1.321 (7D
+ * Task 0): `initialize.account.email` names the account once the CLI holds the profile in the
+ * session's config dir (a resumed process; a first start only when the profile fetch wins), so on
+ * a first start detection's hash names it.
  */
 function sessionAccount(serverData: string, d: ClaudeDetection, account: unknown, newSession: boolean): { hash?: string; refused: FinError | null } {
   const label = labelOf(account);
