@@ -74,14 +74,14 @@ describe("the session fixture", () => {
 });
 
 describe("results", () => {
-  test("usage is what each result added (cumulative per process)", () => {
+  test("usage is what each result added (verified 2.1.321, Task 0: `usage` per turn, `total_cost_usd` cumulative)", () => {
     const u = new ClaudeUsage();
     const ev = (input: number, output: number, cacheRead: number, costMicros: number) => ({ type: "usage", input, output, cacheRead, cacheWrite: 0, reasoning: 0, costMicros, costBasis: "reported" });
     expect(u.usage(result({ total_cost_usd: 0.001, usage: { input_tokens: 10, output_tokens: 2, cache_read_input_tokens: 5 } }))).toEqual([ev(10, 2, 5, 1000)]);
-    expect(u.usage(result({ total_cost_usd: 0.003, usage: { input_tokens: 25, output_tokens: 6, cache_read_input_tokens: 5 } }))).toEqual([ev(15, 4, 0, 2000)]);
+    expect(u.usage(result({ total_cost_usd: 0.003, usage: { input_tokens: 15, output_tokens: 4 } }))).toEqual([ev(15, 4, 0, 2000)]);
     // Nothing added: no event; a total that goes back charges nothing.
-    expect(u.usage(result({ total_cost_usd: 0.003, usage: { input_tokens: 25, output_tokens: 6, cache_read_input_tokens: 5 } }))).toEqual([]);
-    expect(u.usage(result({ total_cost_usd: 0.001, usage: { input_tokens: 1, output_tokens: 1 } }))).toEqual([]);
+    expect(u.usage(result({ total_cost_usd: 0.003, usage: { input_tokens: 0, output_tokens: 0 } }))).toEqual([]);
+    expect(u.usage(result({ total_cost_usd: 0.001, usage: { input_tokens: 0, output_tokens: 0 } }))).toEqual([]);
   });
 
   test("steer_stays_in_run: a result with a queued steer does not end the run", () => {

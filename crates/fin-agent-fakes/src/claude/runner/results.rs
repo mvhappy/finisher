@@ -6,6 +6,8 @@ use serde_json::{Value, json};
 use super::Runner;
 use super::lines::{defaults, fresh_uuid, merge};
 use crate::claude::script::{Script, Usage};
+use crate::claude::transcript::ModelTotals;
+use std::collections::BTreeMap;
 
 pub(super) enum Kind {
     Turn {
@@ -118,33 +120,37 @@ impl Runner {
             }
         };
         let t = self.totals.clone();
-        // TODO(7D Task 0 Step 1): `modelUsage`'s shape (cumulative per model, like `usage`).
-        let model_usage: serde_json::Map<String, Value> = if matches!(kind, Kind::NotLoggedIn) {
-            serde_json::Map::new()
-        } else {
-            t.models
-                .iter()
-                .map(|(name, m)| {
-                    (
-                        name.clone(),
-                        json!({
-                            "inputTokens": m.input_tokens, "outputTokens": m.output_tokens,
-                            "cacheReadInputTokens": m.cache_read_input_tokens,
-                            "cacheCreationInputTokens": m.cache_creation_input_tokens,
-                            "costUSD": m.cost_usd,
-                        }),
-                    )
-                })
-                .collect()
-        };
+        // Verified 2.1.321, Task 0 (s1a, s1b, s1d, s1e, s1f): `modelUsage` and `total_cost_usd`
+        // cumulative per process (restored after a clean exit), `model_usage_since_last_result`
+        // the turn's per model (`costBasis: "list"`) on every result, `usage` the turn's only
+        // (all zeros on `error_max_budget_usd`), `result_index` from 0 per process.
+        let plain = !matches!(kind, Kind::NotLoggedIn);
+        let model_usage = per_model(&t.models, None, plain);
+        let since = per_model(&t.models, Some(&t.at_last_result), plain);
+        let mut turn = ModelTotals::default();
+        if subtype != "error_max_budget_usd" {
+            for (name, m) in &t.models {
+                let l = t.at_last_result.get(name).copied().unwrap_or_default();
+                turn.input_tokens += m.input_tokens - l.input_tokens;
+                turn.output_tokens += m.output_tokens - l.output_tokens;
+                turn.cache_read_input_tokens +=
+                    m.cache_read_input_tokens - l.cache_read_input_tokens;
+                turn.cache_creation_input_tokens +=
+                    m.cache_creation_input_tokens - l.cache_creation_input_tokens;
+            }
+        }
+        self.totals.at_last_result = t.models.clone();
+        self.totals.results += 1;
         let mut line = json!({
             "type": "result", "subtype": subtype, "is_error": is_error,
             "duration_ms": 1, "duration_api_ms": if is_error { 0 } else { 1 },
             "num_turns": t.turns, "result": text, "stop_reason": stop,
             "session_id": self.session_id,
             "total_cost_usd": t.cost_usd,
-            "usage": usage(t.input_tokens, t.output_tokens, t.cache_read_input_tokens, t.cache_creation_input_tokens),
+            "usage": usage(turn.input_tokens, turn.output_tokens, turn.cache_read_input_tokens, turn.cache_creation_input_tokens),
             "modelUsage": model_usage,
+            "model_usage_since_last_result": since,
+            "result_index": t.results,
             "permission_denials": [],
             "uuid": fresh_uuid(),
             "queued_turn_count": self.pending.len(),
@@ -172,6 +178,50 @@ impl Runner {
         }));
         self.emit_result(Kind::NotLoggedIn);
     }
+}
+
+/// `modelUsage` (cumulative) or, with `since`, `model_usage_since_last_result` (the models with
+/// usage since then); empty when `plain` is false (the unsigned turn).
+fn per_model(
+    models: &BTreeMap<String, ModelTotals>,
+    since: Option<&BTreeMap<String, ModelTotals>>,
+    plain: bool,
+) -> serde_json::Map<String, Value> {
+    if !plain {
+        return serde_json::Map::new();
+    }
+    let mut out = serde_json::Map::new();
+    for (name, m) in models {
+        let l = since.and_then(|s| s.get(name)).copied().unwrap_or_default();
+        let d = ModelTotals {
+            input_tokens: m.input_tokens - l.input_tokens,
+            output_tokens: m.output_tokens - l.output_tokens,
+            cache_read_input_tokens: m.cache_read_input_tokens - l.cache_read_input_tokens,
+            cache_creation_input_tokens: m.cache_creation_input_tokens
+                - l.cache_creation_input_tokens,
+            cost_usd: m.cost_usd - l.cost_usd,
+        };
+        let moved = d.input_tokens
+            + d.output_tokens
+            + d.cache_read_input_tokens
+            + d.cache_creation_input_tokens
+            > 0
+            || d.cost_usd > 0.0;
+        if since.is_some() && !moved {
+            continue;
+        }
+        let mut v = json!({
+            "inputTokens": d.input_tokens, "outputTokens": d.output_tokens,
+            "cacheReadInputTokens": d.cache_read_input_tokens,
+            "cacheCreationInputTokens": d.cache_creation_input_tokens,
+            "webSearchRequests": 0, "costUSD": d.cost_usd,
+        });
+        if since.is_some() {
+            v["costBasis"] = json!("list");
+        }
+        out.insert(name.clone(), v);
+    }
+    out
 }
 
 /// `--resume` of a session the config dir lacks: this line on stdout, the message on stderr.

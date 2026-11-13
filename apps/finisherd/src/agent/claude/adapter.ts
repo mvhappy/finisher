@@ -152,14 +152,15 @@ export function ClaudeCodeAdapter(deps: ClaudeDeps): ProviderAdapter {
         const dir = sessionDir(s.id);
         const charged = baselineOf(s.usage);
         // Verified 2.1.321, Task 0 (s1d/s1e): `--resume` restores the CLI's totals after a clean
-        // exit and restarts them after a kill; an end nobody saw counts as a kill (fail closed:
-        // all it reports is charged, never less). Restored, they are the last process's own
-        // totals (its baseline in `provider.pid`), not the session's lifetime spend.
-        const clean = resume && lastEnd(dir) === "clean";
-        const offset = clean ? restoredOffset(lastBaseline(dir), charged) : ZERO_TOTALS;
-        const totals: ResumeTotals = clean ? "restored" : "reset";
+        // exit and restarts them after a kill. What a resumed process restored is checked against
+        // the last process's own baseline (`provider.pid`), not the session's lifetime spend;
+        // beyond it, or with none (an end nobody saw), it is charged (`usage.ts`). The flag adds
+        // the restored money only after a clean end (exit 0, no signal), when the CLI counts it.
+        const offset = resume ? restoredOffset(lastBaseline(dir), charged) : ZERO_TOTALS;
+        const totals: ResumeTotals = resume ? "restored" : "reset";
+        const restoredCostMicros = resume && lastEnd(dir) === "clean" ? offset.costMicros : 0;
         const plan = yield* attempt(() =>
-          launchPlan(s, { ...spec, providerRef: resume ? ref : null }, found, os, { binary, retentionDays: deps.retentionDays ?? 90, remainingMoneyMicros: deps.remaining?.(s.id).moneyMicros ?? null, planSignIn, restoredCostMicros: offset.costMicros }),
+          launchPlan(s, { ...spec, providerRef: resume ? ref : null }, found, os, { binary, retentionDays: deps.retentionDays ?? 90, remainingMoneyMicros: deps.remaining?.(s.id).moneyMicros ?? null, planSignIn, restoredCostMicros }),
         );
         const usage = new ClaudeUsage({ baseline: offset, resumed: resume, basis: planSignIn ? "subscription" : "reported", resumeTotals: totals });
         yield* attempt(() => writeLaunchFiles(plan, os));

@@ -489,7 +489,7 @@ fn fake_resume_reads_its_transcript() {
 }
 
 #[test]
-fn fake_reports_cumulative_usage_after_resume() {
+fn fake_result_usage_keys_match_the_real_cli_after_resume() {
     let dir = Dir::new("usage");
     let first = run_session(
         &dir,
@@ -497,16 +497,26 @@ fn fake_reports_cumulative_usage_after_resume() {
         json!({"inputTokens": 100, "outputTokens": 10, "costUsd": 0.01}),
     );
     assert_eq!(first["usage"]["output_tokens"], 10);
+    assert_eq!(first["result_index"], 0);
     let resume = format!("--resume={UUID}");
     let second = run_session(
         &dir,
         &[&resume],
         json!({"inputTokens": 50, "outputTokens": 20, "costUsd": 0.02}),
     );
-    assert_eq!(second["usage"]["input_tokens"], 150);
-    assert_eq!(second["usage"]["output_tokens"], 30);
+    // Verified 2.1.321, Task 0 (s1e): after a clean exit `modelUsage` and `total_cost_usd` are
+    // the restored totals plus this turn; `usage` and `model_usage_since_last_result` this turn
+    // only; `result_index` restarts at 0.
+    assert_eq!(second["usage"]["input_tokens"], 50);
+    assert_eq!(second["usage"]["output_tokens"], 20);
     assert_eq!(second["modelUsage"]["claude-opus-5-5"]["outputTokens"], 30);
+    let since = &second["model_usage_since_last_result"]["claude-opus-5-5"];
+    assert_eq!(since["inputTokens"], 50);
+    assert_eq!(since["outputTokens"], 20);
+    assert_eq!(since["costBasis"], "list");
+    assert!((since["costUSD"].as_f64().unwrap() - 0.02).abs() < 1e-9);
     assert!((second["total_cost_usd"].as_f64().unwrap() - 0.03).abs() < 1e-9);
+    assert_eq!(second["result_index"], 0);
     assert_eq!(second["num_turns"], 2);
     // The budget backstop counts the restored total.
     let third = run_session(
@@ -516,6 +526,11 @@ fn fake_reports_cumulative_usage_after_resume() {
     );
     assert_eq!(third["subtype"], "error_max_budget_usd");
     assert_eq!(third["is_error"], true);
+    // Task 0 (s1f): that result's `usage` is all zeros; its spend is in the since key only.
+    assert_eq!(third["usage"]["input_tokens"], 0);
+    assert_eq!(third["usage"]["output_tokens"], 0);
+    let spent = &third["model_usage_since_last_result"]["claude-opus-5-5"]["costUSD"];
+    assert!((spent.as_f64().unwrap() - 0.02).abs() < 1e-9);
 }
 
 #[test]

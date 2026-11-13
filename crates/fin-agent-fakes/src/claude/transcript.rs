@@ -20,6 +20,13 @@ pub struct Totals {
     /// The same totals per model (`modelUsage`).
     #[serde(default)]
     pub models: BTreeMap<String, ModelTotals>,
+    /// `models` at this process's last `result` (or as restored): what
+    /// `model_usage_since_last_result` counts from (verified 2.1.321, Task 0: s1e).
+    #[serde(skip)]
+    pub at_last_result: BTreeMap<String, ModelTotals>,
+    /// This process's `result`s so far (`result_index`, from 0 per process; Task 0).
+    #[serde(skip)]
+    pub results: u64,
 }
 
 #[derive(Debug, Default, Clone, Copy, Serialize, Deserialize)]
@@ -110,9 +117,12 @@ impl Transcript {
                 for line in text.lines() {
                     if let Ok(v) = serde_json::from_str::<Value>(line)
                         && v["type"] == "cost-state"
-                        && let Ok(t) = serde_json::from_value(v["totals"].clone())
+                        && let Ok(t) = serde_json::from_value::<Totals>(v["totals"].clone())
                     {
-                        totals = t;
+                        totals = Totals {
+                            at_last_result: t.models.clone(),
+                            ..t
+                        };
                     }
                 }
                 return Some((

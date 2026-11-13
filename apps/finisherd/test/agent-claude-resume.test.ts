@@ -239,7 +239,7 @@ describe("the provider.pid record and its sweep", () => {
     expect(resumeState(two).interrupted.map((c) => c.providerId)).toEqual(["toolu_1"]);
   });
 
-  test("review of Task 10: provider.pid is written durably and keeps the CLI's baseline of a clean end only", () => {
+  test("review of Task 10: provider.pid is written durably and keeps the CLI's baseline of an end a server saw", () => {
     const dir = join(tmp, "d");
     mkdirSync(dir);
     const calls: string[] = [];
@@ -265,11 +265,17 @@ describe("the provider.pid record and its sweep", () => {
     forgetProcess(dir, process.pid, "clean", baseline);
     expect(lastEnd(dir)).toBe("clean");
     expect(lastBaseline(dir)).toEqual(baseline);
-    // A new process keeps it while it runs; its kill drops it (the CLI restarts its totals).
+    // A new process keeps it while it runs; its own end (a kill too) replaces it.
     recordProcess(dir, "01J", process.pid);
     expect(lastBaseline(dir)).toEqual(baseline);
-    forgetProcess(dir, process.pid, "killed", baseline);
+    const killed = { ...baseline, cli: t(20_000) };
+    forgetProcess(dir, process.pid, "killed", killed);
     expect(lastEnd(dir)).toBe("killed");
+    expect(lastBaseline(dir)).toEqual(killed);
+    // An end nobody saw (the sweep) has none.
+    recordProcess(dir, "01K", 999_999_999);
+    sweepProviderProcesses(dir, { start: () => null });
+    expect(lastEnd(dir)).toBe("unseen");
     expect(lastBaseline(dir)).toBeUndefined();
   });
 

@@ -5,18 +5,22 @@
 //   `message_delta`: the message's output so far) is a `usage` event at once, with no money
 //   (`costMicros: 0`), so the runtime's token budget sees a turn's spend while it runs and stops
 //   the session mid-turn (its budget stop: the interrupt, `BUDGET_EXCEEDED`, a `budget` card).
-// - **The `result`:** its `usage` and `total_cost_usd` are cumulative per process; the event is
-//   what they add beyond what this instance already emitted (live or at earlier `result`s), so
-//   the `result` settles the turn's money and any tokens the stream did not show.
+// - **The `result`** (verified 2.1.321, Task 0: s1a, s1b, s1d, s1e, s1f): `usage` is the last
+//   turn's only (all zeros on `error_max_budget_usd`), `total_cost_usd` and `modelUsage` are
+//   cumulative per process, `model_usage_since_last_result` is the turn's per model (tokens and
+//   `costUSD`; its sum is the `total_cost_usd` jump), on every result (the interrupted
+//   `aborted_tools` and the budget stop's too). A turn is charged from that key, never from
+//   `usage`, and at least what the cumulative totals moved since the last `result` (or since the
+//   offset, below), less what the stream already showed of it live.
 // - **Across instances:** `--resume` restores the CLI's totals after a clean exit and restarts
-//   them after a kill (verified 2.1.321, Task 0; the adapter passes the mode, Task 10). What it
-//   restores is **that process's** cumulative totals, not the session's lifetime spend (a kill
-//   before it restarted them: Task 10 review), so a restored instance counts from the CLI's own
-//   accounting baseline, kept in `provider.pid` at each clean end (`restoredOffset`): never more
-//   than the totals that process reported, nor than its offset plus what the ledger charged since
-//   it started (`Session.usage`, durable with the ledger): a crash between the charge and the
-//   record over-charges, never under-charges. An end nobody saw, a kill, or no record fail closed
-//   (`reset`: all a resumed instance reports is charged).
+//   them after a kill (s1d, s1e): the resumed process's first cumulative totals are the restored
+//   part plus the turn. What it restores is **that process's** totals, not the session's
+//   lifetime spend (Task 10 review), so the restored part is checked against the CLI's own
+//   accounting baseline, kept in `provider.pid` at each end a server saw (`restoredOffset`:
+//   never more than the totals that process reported, nor than its offset plus what the ledger
+//   charged since it started, `Session.usage`, durable with the ledger): whatever it restores
+//   beyond the offset is charged. An end nobody saw has no baseline: the restored part is charged
+//   in full (an orphan may have finished a turn into it, s5C). In doubt, over, never under.
 // - **The basis:** `subscription` for a plan sign-in (money shown, never charged; spec §13.1),
 //   else `reported` (the CLI's own estimate). `modelUsage` gives a per-model split, recorded as a
 //   `notice {modelUsage}` per `result`.
@@ -63,9 +67,23 @@ const over = (a: UsageTotals, b: UsageTotals): UsageTotals => ({
 const isZero = (t: UsageTotals): boolean => KEYS.every((k) => t[k] === 0);
 const micros = (usd: number | undefined): number => (usd === undefined || !Number.isFinite(usd) || usd <= 0 ? 0 : Math.round(usd * 1_000_000));
 
-/** A `result`'s cumulative totals. */
-export function resultTotals(r: ResultMsg): UsageTotals {
-  return { input: r.usage.input_tokens, output: r.usage.output_tokens, cacheRead: r.usage.cache_read_input_tokens ?? 0, cacheWrite: r.usage.cache_creation_input_tokens ?? 0, costMicros: micros(r.total_cost_usd) };
+type ByModel = NonNullable<ResultMsg["modelUsage"]>;
+const modelTotals = (u: ByModel[string]): UsageTotals => ({ input: u.inputTokens ?? 0, output: u.outputTokens ?? 0, cacheRead: u.cacheReadInputTokens ?? 0, cacheWrite: u.cacheCreationInputTokens ?? 0, costMicros: micros(u.costUSD) });
+const sumModels = (m: ByModel): UsageTotals => Object.values(m).reduce<UsageTotals>((t, u) => add(t, modelTotals(u)), ZERO_TOTALS);
+
+/** The turn a `result` closes: `model_usage_since_last_result` (null when absent). */
+export function turnTotals(r: ResultMsg): UsageTotals | null {
+  return r.model_usage_since_last_result === undefined ? null : sumModels(r.model_usage_since_last_result);
+}
+
+/**
+ * A `result`'s cumulative totals: tokens from `modelUsage` (absent: `prev` plus the turn, `turn`
+ * else `usage`, the last turn's), money from `total_cost_usd`.
+ */
+export function cumulativeTotals(r: ResultMsg, prev: UsageTotals, turn: UsageTotals | null): UsageTotals {
+  const last = turn ?? { input: r.usage.input_tokens, output: r.usage.output_tokens, cacheRead: r.usage.cache_read_input_tokens ?? 0, cacheWrite: r.usage.cache_creation_input_tokens ?? 0, costMicros: 0 };
+  const tokens = r.modelUsage === undefined ? add(prev, last) : sumModels(r.modelUsage);
+  return { ...tokens, costMicros: micros(r.total_cost_usd) };
 }
 
 /**
@@ -112,9 +130,9 @@ export class ClaudeUsage implements UsageSource {
   readonly #mode: ResumeTotals;
   /** What the CLI's totals held before this instance. */
   readonly #offset: UsageTotals;
-  /** What this instance emitted. */
-  #emitted: UsageTotals = ZERO_TOTALS;
-  /** The CLI's cumulative totals as its `result`s reported them (at least the offset). */
+  /** What the stream showed live since the last `result` (the open turn's, charged already). */
+  #live: UsageTotals = ZERO_TOTALS;
+  /** The CLI's cumulative totals at its last `result` (the offset before any). */
   #cli: UsageTotals;
   /** The open message's usage as the stream reported it so far (a top-level message). */
   #message: UsageTotals = ZERO_TOTALS;
@@ -154,12 +172,10 @@ export class ClaudeUsage implements UsageSource {
     return { type: "usage", input: d.input, output: d.output, cacheRead: d.cacheRead, cacheWrite: d.cacheWrite, reasoning: 0, costMicros: d.costMicros, costBasis: this.#basis };
   }
 
-  // TODO(7D Task 0 Step 1): the `stream_event` usage the CLI forwards with
-  // `--include-partial-messages`; modelled by fake-claude (`liveUsage`) on the Messages API
-  // stream: `message_start.message.usage` with the input side and `output_tokens` ≤ 1, then
-  // `message_delta.usage.output_tokens` as the message's output so far. Any field a later event
-  // reports is taken as that message's total so far, so a cumulative `message_delta` that also
-  // repeats the input side charges it once.
+  // Verified 2.1.321, Task 0 (s1a): `message_start.message.usage` holds the input side,
+  // `message_delta.usage` repeats the input and cache fields and gives `output_tokens` as the
+  // message's running total. Any field a later event reports is taken as that message's total
+  // so far, so the repeated input side is charged once.
   stream(e: StreamPayload): UsageEvent | null {
     let seen: Partial<Record<"input_tokens" | "output_tokens" | "cache_read_input_tokens" | "cache_creation_input_tokens", number | null>> | undefined;
     if (e.type === "message_start") {
@@ -177,23 +193,26 @@ export class ClaudeUsage implements UsageSource {
     const d = over(now, this.#message);
     this.#message = now;
     if (isZero(d)) return null;
-    this.#emitted = add(this.#emitted, d);
+    this.#live = add(this.#live, d);
     return this.#event(d);
   }
 
-  // TODO(7D Task 0 Step 1): `result.usage`/`total_cost_usd` cumulative per process (docs), and
-  // whether `--resume` restores them (`ResumeTotals`); modelled by fake-claude as cumulative,
-  // with `resumeTotals: restored` (default) or `reset`.
+  /**
+   * The turn this `result` closes (module docs): per field the larger of its
+   * `model_usage_since_last_result` and what the cumulative totals moved since the last `result`
+   * (on a resumed instance's first, since the offset: the restored part beyond it), less what the
+   * stream already showed live.
+   */
   usage(r: ResultMsg): Event[] {
-    const now = resultTotals(r);
-    this.#cli = max(this.#cli, now);
-    const d = over(now, add(this.#offset, this.#emitted));
+    const turn = turnTotals(r);
+    const now = cumulativeTotals(r, this.#cli, turn);
+    const step = max(turn ?? ZERO_TOTALS, over(now, this.#cli));
+    this.#cli = now;
+    const d = over(step, this.#live);
+    this.#live = ZERO_TOTALS;
     const out: Event[] = [];
-    if (!isZero(d)) {
-      this.#emitted = add(this.#emitted, d);
-      out.push(this.#event(d));
-    }
-    const split = this.#split(r, d);
+    if (!isZero(d)) out.push(this.#event(d));
+    const split = this.#split(r, step);
     if (split !== null) out.push({ type: "notice", name: "modelUsage", details: split });
     return out;
   }
@@ -202,12 +221,9 @@ export class ClaudeUsage implements UsageSource {
    * The per-model split of this `result`: `model_usage_since_last_result` when the CLI gives it,
    * else `modelUsage` against the last one this instance saw. Unknown (null) for the first
    * `result` of an instance that restored earlier totals with several models in them.
-   * TODO(7D Task 0 Step 1): the `modelUsage` shape (per model, cumulative like `usage`);
-   * modelled by fake-claude so.
    */
   #split(r: ResultMsg, total: UsageTotals): Record<string, UsageTotals> | null {
-    const byModel = (m: NonNullable<ResultMsg["modelUsage"]>): Map<string, UsageTotals> =>
-      new Map(Object.entries(m).map(([id, u]) => [id, { input: u.inputTokens ?? 0, output: u.outputTokens ?? 0, cacheRead: u.cacheReadInputTokens ?? 0, cacheWrite: u.cacheCreationInputTokens ?? 0, costMicros: micros(u.costUSD) }]));
+    const byModel = (m: ByModel): Map<string, UsageTotals> => new Map(Object.entries(m).map(([id, u]) => [id, modelTotals(u)]));
     const now = r.modelUsage === undefined ? null : byModel(r.modelUsage);
     const last = this.#models;
     if (now !== null) this.#models = now;
