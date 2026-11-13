@@ -124,7 +124,7 @@ pub enum Op {
     /// Puts an asset in a bin, or at the top.
     #[serde(rename = "asset.move")]
     AssetMove(AssetMove),
-    /// Replaces a media asset's video and audio with a fresh probe's (schema 4).
+    /// Replaces a media asset's video and audio with a fresh probe's (schema 5).
     #[serde(rename = "asset.reprobe")]
     AssetReprobe(Box<AssetReprobe>),
     /// Internal (inverse of `track.remove`): puts a whole track back.

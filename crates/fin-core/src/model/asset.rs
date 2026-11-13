@@ -64,8 +64,8 @@ pub struct VideoInfo {
     /// The coded height, in px.
     pub height: u32,
     pub rate: Rational,
-    // Schema 4 (sub-project 6 spec §6.3); each absent means unknown (an asset probed before
-    // schema 4). No doc comments: a schema `$ref` with a sibling `description` would be
+    // Schema 5 (sub-project 6 spec §6.3); each absent means unknown (an asset probed before
+    // schema 5). No doc comments: a schema `$ref` with a sibling `description` would be
     // inlined in the generated TypeScript instead of naming its type.
     // `display`: the coded size after the pixel aspect and the rotation
     // (`fin_media::display_size`).

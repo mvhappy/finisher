@@ -11478,7 +11478,7 @@
               "type": "object"
             }
           ],
-          "description": "Replaces a media asset's video and audio with a fresh probe's (schema 4)."
+          "description": "Replaces a media asset's video and audio with a fresh probe's (schema 5)."
         },
         {
           "allOf": [

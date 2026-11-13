@@ -884,4 +884,10 @@ fn upcast_v4_record_refuses_v5_shapes() {
     let turned = json!([{ "op": "param.set", "item": "c1", "path": "transform.rotation",
                           "value": 90.0 }]);
     assert!(fin_core::upcast_record(v4(turned)).is_ok());
+    // A graphic's text slots are user data: a slot named `op` holding `asset.reprobe` is v4
+    // text, not an op.
+    let slots = json!([{ "op": "item.insert", "id": "$g", "track": "t1", "at": "0",
+                         "duration": "1", "mode": "ripple", "kind": "graphic", "asset": "a1",
+                         "slots": { "op": "asset.reprobe" } }]);
+    assert!(fin_core::upcast_record(v4(slots)).is_ok());
 }
