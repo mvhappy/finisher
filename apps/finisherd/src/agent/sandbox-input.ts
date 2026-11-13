@@ -1,9 +1,9 @@
 // The session sandbox's types and the parts of opening one that start nothing (plan 7C Task 11,
 // 7D Task 3b): the mode from the `agent` profile's status, the launcher's endpoint per OS, the
-// profile input's check and the Windows grant counting. `sandbox.ts` starts the processes.
+// profile input's check and the Windows grant counting. `sandbox.ts` starts the processes
+// (through `sandbox/launch.ts`).
 import { realpath } from "node:fs/promises";
 import { isAbsolute, relative, sep } from "node:path";
-import type { Readable, Writable } from "node:stream";
 import type { FinError } from "@finisher/contracts";
 import type { AgentInput, FinEndpoint } from "@finisher/core-types";
 import { sandboxAgentCheck, type sandboxAgentGrants } from "@finisher/fin-node";
@@ -11,30 +11,11 @@ import type { Effect } from "effect";
 import { canonicalEndpoint } from "../auth/crypto.ts";
 import { finError } from "../errors.ts";
 import type { AclBroker } from "../sandbox/broker.ts";
+import type { SandboxedChild } from "../sandbox/launch.ts";
 import type { SandboxMechanism, SandboxStatus, SandboxWarning } from "../sandbox/status.ts";
 import type { LinkOptions } from "./session-dirs.ts";
 
-/** How long a hung-up Linux launcher may take to reap its session before its group is killed. */
-export const REAP_GRACE_MS = 2_000;
-
-/** The launcher's own exit code for `SANDBOX_UNAVAILABLE` (`launch.rs` `EXIT_UNAVAILABLE`). */
-export const LAUNCHER_UNAVAILABLE = 78;
-
-export interface ChildExit {
-  readonly code: number | null;
-  readonly signal: NodeJS.Signals | null;
-}
-
-export interface SandboxedChild {
-  readonly pid: number;
-  readonly stdin: Writable;
-  readonly stdout: Readable;
-  readonly stderr: Readable;
-  /** Settles when the process has exited. */
-  readonly exited: Promise<ChildExit>;
-  /** Signals the child's whole process group. */
-  kill(signal?: NodeJS.Signals): void;
-}
+export { type ChildExit, LAUNCHER_UNAVAILABLE, REAP_GRACE_MS, type SandboxedChild } from "../sandbox/launch.ts";
 
 export type SandboxMode = "launcher" | "direct";
 
