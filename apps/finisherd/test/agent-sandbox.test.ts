@@ -21,7 +21,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, onTestFin
 import type { FakeScript } from "../src/agent/fake.ts";
 import { Effect, Exit, Scope } from "effect";
 import { assertSessionEnv, openSessionSandbox, REAP_GRACE_MS, sandboxMode, sessionEnv } from "../src/agent/sandbox.ts";
-import { sessionKeys } from "../src/agent/sandbox-env.ts";
+import { sessionKeys, sessionShell } from "../src/agent/sandbox-env.ts";
 import { ensureSessionDirs, linkSignInStore, sessionDirs } from "../src/agent/session-dirs.ts";
 import { resolveFinPath } from "../src/agent/settings.ts";
 import { childEnv } from "../src/env.ts";
@@ -89,7 +89,9 @@ describe("the session environment (spec §8.5)", () => {
     const env = make();
     expect(env).toEqual({
       PATH: "/usr/bin:/bin",
-      HOME: "/home/u",
+      // Claude Code: its own home and shell (7D Decision 5, Task 0 signed in), never the user's.
+      HOME: `/data/agents/${SESSION.id}/tmp/home`,
+      SHELL: sessionShell(),
       LANG: "C.UTF-8",
       LC_ALL: "C",
       FIN_SERVER: "tcp:127.0.0.1:4100",
@@ -113,12 +115,15 @@ describe("the session environment (spec §8.5)", () => {
     const codex = make({ session: { id: SESSION.id, harness: "codex" }, store: { grant: "/data/providers/codex/home/auth.json" } });
     expect(codex.CODEX_HOME).toBe(`/data/agents/${SESSION.id}/provider`);
     expect(codex.CLAUDE_CONFIG_DIR).toBeUndefined();
+    expect([codex.HOME, codex.SHELL]).toEqual(["/home/u", undefined]);
+    expect(() => assertSessionEnv(codex, { id: SESSION.id, harness: "codex" }, { expect: codex, platform: "linux" })).not.toThrow();
     // Windows: the session's temp and LOCALAPPDATA (spike S9 point 7).
     const store = "C:\\data\\providers\\claudeCode\\home\\store";
     const win = make({ platform: "win32", parent: { ...parent, TEMP: "C:\\T", TMP: "C:\\T", LOCALAPPDATA: "C:\\L" }, store: { grant: store, env: { name: "CLAUDE_SECURESTORAGE_CONFIG_DIR", value: store } } });
     expect([win.TEMP, win.TMP, win.LOCALAPPDATA]).toEqual([win.TMPDIR, win.TMPDIR, win32.join(`/data/agents/${SESSION.id}`, "localappdata")]);
     // Spelled for the platform named, whatever the host.
     expect(win.TMPDIR).toBe(`\\data\\agents\\${SESSION.id}\\tmp`);
+    expect([win.HOME, win.USERPROFILE, win.SHELL]).toEqual([`${win.TMPDIR}\\home`, `${win.TMPDIR}\\home`, undefined]);
     expect(() => assertSessionEnv(win, SESSION, { expect: win, platform: "win32" })).not.toThrow();
   });
 
@@ -159,6 +164,13 @@ describe("the session environment (spec §8.5)", () => {
       ["CLAUDE_CODE_OAUTH_TOKEN", { ...good, CLAUDE_CODE_OAUTH_TOKEN: "t" }],
       ["EDITOR", { ...good, EDITOR: "vi" }],
       ["FIN_CALL_IDEM", { ...good, FIN_CALL_IDEM: "1" }],
+      // Claude Code's own home and shell (Decision 5): the user's would source their rc files.
+      ["HOME", { ...good, HOME: "/home/u" }],
+      ["HOME", { ...good, HOME: undefined }],
+      ["HOME", { ...good, HOME: `/data/agents/${SESSION.id}/tmp/home2` }],
+      ["SHELL", { ...good, SHELL: "/bin/zsh" }],
+      ["SHELL", { ...good, SHELL: "/usr/bin/bash" }],
+      ["SHELL", { ...good, SHELL: undefined }],
     ];
     const never = ["FIN_SERVER_DATA", "FIN_AUTHOR", "FIN_TRAINING", "FIN_DIAGNOSTICS", "SSH_AUTH_SOCK", "GPG_AGENT_INFO", "DBUS_SESSION_BUS_ADDRESS", "DOCKER_HOST", "DISPLAY", "WAYLAND_DISPLAY", "CLAUDE_CODE_OAUTH_TOKEN", "FIN_CALL_IDEM"];
     for (const k of never) reasons.push([k, { ...good, [k]: "x" }]);
@@ -181,6 +193,12 @@ describe("the session environment (spec §8.5)", () => {
       expect(() => assertSessionEnv({ ...good, [k]: "x" }, SESSION, { extra: [k], platform: "linux" }), k).toThrow(/the session environment is wrong/);
     }
     expect([...sessionKeys("codex", "linux")]).not.toContain("CLAUDE_SECURESTORAGE_CONFIG_DIR");
+    // Another harness has no `SHELL` to set; one there is outside its environment.
+    const codex = make({ session: { id: SESSION.id, harness: "codex" }, store: { grant: "/data/providers/codex/home/auth.json" } });
+    expect(() => assertSessionEnv({ ...codex, SHELL: "/bin/sh" }, { id: SESSION.id, harness: "codex" }, { platform: "linux" })).toThrow(/outside the session's/);
+    expect(sessionShell((p) => p === "/bin/sh")).toBe("/bin/sh");
+    expect(sessionShell(() => false)).toBe("/bin/sh");
+    expect(sessionShell(() => true)).toBe("/bin/bash");
   });
 
   test("git_settings_beat_a_repositorys_own_configuration", async () => {
@@ -220,7 +238,7 @@ describe("the session's directories (spec §8.5, §8.6)", () => {
     const agents = agentsRoot();
     mkdirSync(join(agents, SESSION.id, "tmp"), { recursive: true, mode: 0o755 });
     const d = await ensureSessionDirs(agents, SESSION.id);
-    const all = [d.dir, d.settings, d.tmp, d.provider, d.git, d.blobs, d.gnupg, ...(WIN ? [d.localAppData] : [])];
+    const all = [d.dir, d.settings, d.tmp, d.provider, d.git, d.blobs, d.gnupg, d.home, ...(WIN ? [d.localAppData] : [])];
     if (WIN) {
       // No modes: each is a real directory that only this user, SYSTEM and Administrators
       // open (inherited from server data's protected DACL).

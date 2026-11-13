@@ -2,7 +2,6 @@
 
 use std::collections::VecDeque;
 use std::io::{BufRead, Write};
-use std::process::Stdio;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, channel};
@@ -12,6 +11,7 @@ use serde_json::{Value, json};
 
 mod account;
 mod ask;
+mod bash;
 mod lines;
 mod mcp;
 mod results;
@@ -20,9 +20,7 @@ mod resume;
 use super::argv::{self, Args, Command};
 use super::config;
 use super::observed::Observed;
-use super::script::{
-    self, Branch, Expect, OnInterrupt, ResumeTotals, Script, Spawn, Step, Usage, WriteFile,
-};
+use super::script::{self, Branch, Expect, OnInterrupt, ResumeTotals, Script, Step, Usage};
 use super::settings::{self, Settings};
 use super::transcript::{Totals, Transcript};
 use ask::Outcome;
@@ -115,6 +113,8 @@ struct Runner {
     eof: bool,
     last_is_error: bool,
     req_n: u64,
+    /// The open turn's refused calls (`result.permission_denials`).
+    denials: Vec<Value>,
 }
 
 impl Runner {
@@ -202,6 +202,7 @@ impl Runner {
             eof: false,
             last_is_error: false,
             req_n: 0,
+            denials: Vec::new(),
         })
     }
 
@@ -477,7 +478,7 @@ impl Runner {
                 Outcome::Interrupted => return,
                 Outcome::Allowed => self.branch(&s.on_allow),
                 Outcome::Denied => self.branch(&s.on_deny),
-                Outcome::Cancelled => {}
+                Outcome::Cancelled | Outcome::Refused => {}
             }
             if self.interrupted {
                 return;
@@ -511,26 +512,6 @@ impl Runner {
                 self.side_effects(t.write_file.as_ref(), t.spawn.as_ref());
                 t.emit.iter().for_each(|l| self.emit_script_line(l));
             }
-        }
-    }
-
-    fn side_effects(&mut self, write: Option<&WriteFile>, spawn: Option<&Spawn>) {
-        if let Some(w) = write {
-            let _ = std::fs::write(&w.path, &w.contents);
-        }
-        if let Some(sp) = spawn {
-            let code = sp.argv.split_first().and_then(|(prog, rest)| {
-                std::process::Command::new(prog)
-                    .args(rest)
-                    .stdin(Stdio::null())
-                    .stdout(Stdio::null())
-                    .status()
-                    .ok()
-            });
-            self.observed.push(
-                "spawned",
-                json!({"argv": sp.argv, "code": code.and_then(|c| c.code())}),
-            );
         }
     }
 

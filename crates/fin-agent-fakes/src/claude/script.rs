@@ -146,6 +146,9 @@ pub struct Ask {
     pub input: Value,
     /// Withdraw the request (`control_cancel_request`) when unanswered after this long.
     pub cancel_after_ms: Option<u64>,
+    /// Once allowed, run the call as the CLI does (`Bash`: a login shell, `runner/bash.rs`).
+    #[serde(default)]
+    pub run: bool,
 }
 
 #[derive(Debug, Default, Clone, Copy, Deserialize)]

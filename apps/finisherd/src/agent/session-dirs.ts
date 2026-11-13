@@ -44,6 +44,11 @@ export interface SessionDirs {
   readonly blobs: string;
   /** `tmp/gnupg`: a private `GNUPGHOME` (spec §8.3), so no user's keyring is reached. */
   readonly gnupg: string;
+  /**
+   * `tmp/home`: a host sandbox's `HOME`, and a Claude Code session's (plan 7D Decision 5), so no
+   * rc file or CLI state of the user's home is read (`sandbox-env.ts`).
+   */
+  readonly home: string;
   /** Windows: `localappdata/`, the session's `LOCALAPPDATA` (S9 point 7). */
   readonly localAppData: string;
 }
@@ -64,6 +69,7 @@ export function sessionDirs(agentsRoot: string, sessionId: string, platform: Nod
     gitConfig: join(git, "config"),
     blobs: join(dir, "blobs"),
     gnupg: join(tmp, "gnupg"),
+    home: join(tmp, "home"),
     localAppData: join(dir, "localappdata"),
   };
 }
@@ -120,7 +126,7 @@ export async function ensureSessionDirs(agentsRoot: string, sessionId: string, o
   const d = sessionDirs(agentsRoot, sessionId);
   // `agents/` is the server's (never a write root); below it, one level at a time.
   await mkdir(agentsRoot, { recursive: true, mode: 0o700 });
-  const dirs = [d.dir, d.settings, d.tmp, d.provider, d.git, d.blobs, d.gnupg, ...(platform === "win32" ? [d.localAppData] : [])];
+  const dirs = [d.dir, d.settings, d.tmp, d.provider, d.git, d.blobs, d.gnupg, d.home, ...(platform === "win32" ? [d.localAppData] : [])];
   for (const p of dirs) await privateDir(p, platform);
   // `git/` is not writable inside the sandbox, so its file cannot have been replaced.
   await writeFile(d.gitConfig, sandboxSessionGitConfig(), { mode: 0o600 });

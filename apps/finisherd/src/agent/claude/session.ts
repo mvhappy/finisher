@@ -50,6 +50,8 @@ export interface RequestPort {
   respond(id: string, a: RuntimeAnswer): string | FinError;
   /** The CLI withdrew `requestId` (`control_cancel_request`). */
   cancel(requestId: string): readonly ProviderEvent[];
+  /** Whether a permission prompt named the call `toolUseId` (else a denial of it is the CLI's own). */
+  asked?(toolUseId: string): boolean;
 }
 
 /** Where an instance's events go instead of its own stream (`ClaudeSession`, Task 10). */
@@ -121,8 +123,8 @@ export class ClaudeInstance {
     this.#o = o;
     this.#queue = queue;
     this.#gate = firstTurnGate(o.plan, o.check ?? {});
-    this.#map = new LineMapper(o.usage);
     this.#requests = o.requests ?? claudePermissions();
+    this.#map = new LineMapper(o.usage, (id) => this.#requests.asked?.(id) === true);
     this.#pending = [...(o.notices ?? [])];
     this.#initialized = new Promise((resolve) => (this.#answerInitialize = resolve));
   }
@@ -349,7 +351,7 @@ export class ClaudeInstance {
     // Verified 2.1.321, Task 0 (s1b): the request is answered `{still_queued: []}` at once, a
     // tool in flight is stopped (its error `tool_result`, then `[Request interrupted by user for
     // tool use]`) and the turn ends `result {error_during_execution, terminal_reason:
-    // "aborted_tools", result: null}`; fake-claude plays that shape (`onInterrupt: "result"`).
+    // "aborted_tools"}` with no `result` key; fake-claude plays that shape (`onInterrupt: "result"`).
     const ask: { readonly id: string; answer?: "success" | "error" } = { id: `finisher-interrupt-${++this.#control}` };
     this.#interruptAsk = ask;
     this.#write(encodeControl(ask.id, { subtype: "interrupt" }));

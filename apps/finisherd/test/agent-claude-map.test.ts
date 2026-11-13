@@ -138,3 +138,70 @@ describe("notices", () => {
     expect(m.map(line({ type: "stream_event", session_id: "s", parent_tool_use_id: "toolu_9", event: { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "x" } } }))).toEqual([]);
   });
 });
+
+describe("the signed-in CLI's lines (7D Task 0, 2.1.321)", () => {
+  // Scrubbed copies: s1a's rate_limit_event, s2a's refused outside writes and its result, s1b's
+  // interrupt (two user lines and the aborted result), s1f's budget stop.
+  const real = fixture("signed-in");
+  const results = real.filter((l): l is ResultMsg => l.kind === "result");
+
+  test("rate_limit_event_is_silent_while_allowed: a notice once it is not", () => {
+    const m = new LineMapper();
+    expect(real[0]).toMatchObject({ kind: "rateLimit", rate_limit_info: { status: "allowed_warning", rateLimitType: "seven_day", utilization: 0.29 } });
+    expect(all(m, [real[0]!])).toEqual([]);
+    expect(all(m, [line({ type: "rate_limit_event", rate_limit_info: { status: "allowed" } })])).toEqual([]);
+    expect(all(m, [line({ type: "rate_limit_event", rate_limit_info: { status: "rejected", resetsAt: 1795093200, rateLimitType: "five_hour", utilization: 1 } })])).toEqual([
+      { type: "notice", name: "rateLimit", details: { harness: "claudeCode", status: "rejected", window: "five_hour", resetsAt: 1795093200, utilization: 1 } },
+    ]);
+  });
+
+  test("interrupt_result_ends_the_turn_interrupted: never turnFailed, with or without Finisher's interrupt in flight", () => {
+    const tail = real.slice(-4, -1);
+    expect(tail.map((l) => l.kind)).toEqual(["user", "user", "result"]);
+    for (const interrupting of [true, false]) {
+      const events = all(new LineMapper(), tail, interrupting);
+      expect(events.filter((e) => e.type !== "usage" && !(e.type === "notice" && e.name === "modelUsage"))).toEqual([
+        { type: "toolCompleted", providerId: "toolu_01S", ok: false, output: expect.stringMatching(/^The user doesn't want to proceed/) },
+        { type: "turnCompleted", stopReason: "interrupted" },
+      ]);
+    }
+    // Absent, not null (s1b): the key is not there at all.
+    expect(Object.hasOwn(results[1]!, "result")).toBe(false);
+    // Unverified: an interrupt with no tool running; counted only while Finisher interrupts.
+    const streaming = result({ is_error: true, subtype: "error_during_execution", result: undefined, stop_reason: null });
+    expect(new LineMapper().map(streaming, true).at(-1)).toEqual({ type: "turnCompleted", stopReason: "interrupted" });
+    expect(new LineMapper().map(streaming, false).at(-1)).toMatchObject({ type: "turnFailed", error: { code: "PROVIDER_UNAVAILABLE" } });
+  });
+
+  test("outside_write_is_cli_denied: a notice per denial no prompt asked about, never an approval", () => {
+    const asked = new Set(["toolu_01B"]);
+    const events = all(new LineMapper(undefined, (id) => asked.has(id)), real.slice(1, 6));
+    expect(events.filter((e) => e.type === "request")).toEqual([]);
+    expect(events.filter((e) => e.type === "toolCompleted").map((e) => e.type === "toolCompleted" && [e.providerId, e.ok])).toEqual([
+      ["toolu_01W", false],
+      ["toolu_01E", false],
+    ]);
+    expect(events.filter((e) => e.type === "notice" && e.name === "cliDenied")).toEqual([
+      { type: "notice", name: "cliDenied", details: { harness: "claudeCode", tool: "Write", toolUseId: "toolu_01W", path: "/srv/finisher/proj/out.txt" } },
+      { type: "notice", name: "cliDenied", details: { harness: "claudeCode", tool: "Edit", toolUseId: "toolu_01E", path: "/srv/finisher/proj/b.txt" } },
+    ]);
+    expect(events.at(-1)).toEqual({ type: "turnCompleted", stopReason: "endTurn" });
+    // A malformed entry is drift: the result does not decode.
+    expect(decodeLine(JSON.stringify({ ...JSON.parse(JSON.stringify(results[0])), kind: undefined, type: "result", permission_denials: [{ tool_name: "Write" }] }))).toBeInstanceOf(FinError);
+  });
+
+  test("budget_stop_is_budget_exceeded: keyed on terminal_reason too", () => {
+    const budget = results[2]!;
+    expect(budget).toMatchObject({ subtype: "error_max_budget_usd", terminal_reason: "budget_exhausted", errors: ["Reached maximum budget ($0.0002)"] });
+    expect(Object.hasOwn(budget, "result")).toBe(false);
+    expect(all(new LineMapper(), [budget]).at(-1)).toMatchObject({ type: "turnFailed", error: { code: "BUDGET_EXCEEDED", details: { kind: "money" } } });
+    expect(resultError(result({ is_error: true, subtype: "error_during_execution", terminal_reason: "budget_exhausted" }), false).code).toBe("BUDGET_EXCEEDED");
+  });
+
+  test("background_task_lines_are_unsolicited_turn_notices", () => {
+    const m = new LineMapper();
+    for (const sub of ["task_updated", "task_notification", "background_tasks_changed"]) {
+      expect(all(m, [line({ type: "system", subtype: sub, session_id: "s" })])).toEqual([{ type: "notice", name: "unsolicitedTurn", details: { harness: "claudeCode", line: `system/${sub}` } }]);
+    }
+  });
+});

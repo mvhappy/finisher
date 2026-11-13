@@ -24,6 +24,11 @@
 // - **No re-run on resume** (Task 10, Review Focus 5): a prompt for a call an earlier instance
 //   of the session announced (`tool_use_id`, `PortOptions.rerun`) is denied at once with a
 //   `rerunRefused` notice; the runtime already gave that call its (synthetic) result.
+// - **Refused by the CLI itself.** Verified on 2.1.321 (7D Task 0, s2a): a Write or Edit outside
+//   the working directory never sends `can_use_tool`: `blockWritesOutsideWorkingDirectories`
+//   refuses it first (an `is_error` `tool_result`), and it shows up only in the turn's
+//   `result.permission_denials`. No `approval` node exists for it; `asked` tells the mapper
+//   which denials no prompt named, and each becomes a `notice {cliDenied}` (`map.ts`).
 // - **Anything else** is answered `error` at once: a `hook_callback` (no SDK hooks are registered,
 //   Decision 18) and a request subtype this host does not know, each with a notice; an MCP
 //   `tools/call` of another tool (the brokered shell is Task 13's) a JSON-RPC error.
@@ -69,8 +74,11 @@ export function claudePermissions(opts: PortOptions = {}): RequestPort {
   const byCli = new Map<string, string>();
   /** Every CLI id a permission prompt has used (module docs). */
   const used = new Set<string>();
+  /** Every `tool_use_id` a permission prompt named, answered or not. */
+  const asked = new Set<string>();
   let generation = 0;
   const ask = (cli: string, tool: string, input: Readonly<Record<string, unknown>>, toolUseId: unknown, rpc?: { id: unknown }) => {
+    if (typeof toolUseId === "string") asked.add(toolUseId);
     if (used.has(cli)) {
       const body: CanUseToolAnswer = { behavior: "deny", message: "Finisher refuses a permission prompt that reuses a request id." };
       return {
@@ -97,22 +105,17 @@ export function claudePermissions(opts: PortOptions = {}): RequestPort {
     request(id: string, r: CliRequest) {
       switch (r.subtype) {
         case "can_use_tool":
-          // TODO(7D Task 0 Step 2): that with `--permission-prompt-tool stdio`, Decision 4's `ask`
-          // list and `--permission-mode manual`, EVERY call of every enabled tool sends
-          // `can_use_tool` (a `Read` in the workspace, a read-only `ls`, a preapproved WebFetch
-          // domain), with these fields; modelled by fake-claude as one `can_use_tool {tool_name,
-          // input, tool_use_id, permission_suggestions: [], blocked_path: null, decision_reason:
-          // null}` per script `ask`.
+          // Verified on 2.1.321 (7D Task 0, s2a): with Decision 4's `ask` list every tested call
+          // sent `can_use_tool` (Read in and outside the workspace, Glob, Grep, Bash, WebFetch,
+          // Edit and Write in the workspace); a write outside it never does (module docs).
           return ask(id, r.tool_name, r.input, r.tool_use_id);
         case "mcp_message": {
           const m = r.message as { id?: unknown; params?: { name?: unknown; arguments?: unknown } };
           if (r.server_name !== MCP_SERVER || !isMcpToolCall(r.message)) return { answer: encodeAnswer(id, mcpReply(r.server_name, r.message, [])) };
           const rpcId = m.id ?? null;
           if (m.params?.name !== APPROVE) return { answer: encodeAnswer(id, mcpError(rpcId, `tool not served here: ${clip(String(m.params?.name))}`)) };
-          // TODO(7D Task 0 Step 2): the MCP fallback's call shape (`tools/call` of `approve` with
-          // `arguments {tool_name, input, tool_use_id}`) and that the CLI reads the answer from
-          // the first text content; modelled by fake-claude's `ask` under
-          // `--permission-prompt-tool mcp__finisher__approve`.
+          // Verified on 2.1.321 (7D Task 0, s2c): `tools/call` of `approve` with `arguments
+          // {tool_name, input, tool_use_id}`; the CLI honours the JSON in `content[0].text`.
           const args = m.params.arguments;
           if (!isObject(args) || typeof args.tool_name !== "string" || !isObject(args.input)) return { answer: encodeAnswer(id, mcpError(rpcId, "approve takes {tool_name, input}")) };
           return ask(id, args.tool_name, args.input, args.tool_use_id, { id: rpcId });
@@ -144,14 +147,17 @@ export function claudePermissions(opts: PortOptions = {}): RequestPort {
 
     /** `id` is the CLI's `request_id`; the event names the runtime's. */
     cancel(id: string): readonly ProviderEvent[] {
-      // TODO(7D Task 0 Step 2): when the CLI sends `control_cancel_request` (an interrupt, a
-      // timeout of its own?); modelled by fake-claude as one after the script's `cancelAfterMs`
-      // for an unanswered `ask`, which then waits for no answer.
+      // Verified on 2.1.321 (7D Task 0, s2b): sent when the host interrupts while a prompt
+      // waits, before the interrupt's `control_response`; none came in 5 s of holding one.
+      // TODO(7D Task 0 Step 2): whether the CLI ever withdraws a prompt on a timeout of its own;
+      // modelled by fake-claude's `cancelAfterMs` for an unanswered `ask`.
       const runtimeId = byCli.get(id);
       if (runtimeId === undefined) return [];
       byCli.delete(id);
       waiting.delete(runtimeId);
       return [{ type: "requestCancelled", id: runtimeId }];
     },
+
+    asked: (toolUseId: string) => asked.has(toolUseId),
   };
 }

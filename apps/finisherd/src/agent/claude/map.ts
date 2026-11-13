@@ -12,16 +12,22 @@
 // - `user` → a `toolCompleted` per `tool_result` block; text blocks (replays) → nothing.
 // - A line with a non-null `parent_tool_use_id` (a subagent's: subagents are off, Decision 6)
 //   → `notice {unexpectedSubagent}` only.
-// - `result` → `usage` and `notice {modelUsage}` (`UsageSource`, `usage.ts`), then
-//   `turnCompleted` once no steer is queued
-//   (`queued_turn_count == 0`, Decision 13), or `turnFailed` when `is_error` (keyed on
-//   `is_error`, never `subtype`: 2.1.321 writes `success` on the "Not logged in" turn).
+// - `result` → `usage` and `notice {modelUsage}` (`UsageSource`, `usage.ts`), a
+//   `notice {cliDenied}` per `permission_denials` entry no permission prompt asked about (the
+//   CLI refused it itself: a Write/Edit outside the working directory), then the turn's end,
+//   keyed on `terminal_reason` before `is_error` (Decision 14): an interrupt's `aborted_*` result
+//   is `turnCompleted {stopReason: "interrupted"}` (as the built-in loop ends an interrupted
+//   turn), never a failure; otherwise `turnFailed` when `is_error` (never keyed on `subtype`:
+//   2.1.321 writes `success` on the "Not logged in" turn), else `turnCompleted` once no steer is
+//   queued (`queued_turn_count == 0`, Decision 13).
+// - `rate_limit_event` → nothing while its `status` is `allowed*`, else `notice {rateLimit}`.
 // - `system/api_retry` → `notice {retry: {attempt, code, delayMs}}` (`code` as the built-in agent's); `system/compact_boundary` → `notice {compacted}`;
 //   `system/status`, `system/ui_invalidate`, `system/permission_denied` → nothing; `system/init`
-//   → nothing (the gate checked it); any other type or subtype → `unknown`, once per name.
+//   → nothing (the gate checked it); a background task's line → `notice {unsolicitedTurn}`
+//   (Decision 5 turns them off); any other type or subtype → `unknown`, once per name.
 import type { FinError, ProviderEvent } from "@finisher/contracts";
 import { finError } from "../../errors.ts";
-import type { AssistantMsg, CliLine, ResultMsg, UserMsg } from "./protocol.ts";
+import type { AssistantMsg, CliLine, RateLimit, ResultMsg, UserMsg } from "./protocol.ts";
 import { ClaudeUsage, type UsageSource } from "./usage.ts";
 
 export type { UsageSource } from "./usage.ts";
@@ -30,6 +36,15 @@ type Event = ProviderEvent;
 
 /** `system` subtypes that occur on every start and turn and carry nothing the record needs. */
 const SILENT_SYSTEM: ReadonlySet<string> = new Set(["status", "ui_invalidate", "permission_denied"]);
+
+/**
+ * Verified on 2.1.321 (7D Task 0, s3E): the `system` lines of a background task, which starts a
+ * turn of its own after a `result`; `CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1` keeps them away.
+ */
+const BACKGROUND_SYSTEM: ReadonlySet<string> = new Set(["task_updated", "task_notification", "background_tasks_changed"]);
+
+/** The input fields that name a refused call's file. */
+const PATH_KEYS = ["file_path", "notebook_path", "path"] as const;
 
 /** The "Not logged in" turn's `result` text (Task 0, 2.1.321: "Not logged in · Please run /login"). */
 const NOT_LOGGED_IN = /^Not logged in\b/;
@@ -55,6 +70,19 @@ const text200 = (s: string | undefined): string => (s ?? "").slice(0, 200);
  * `PROVIDER_OVERLOADED`, the money backstop → `BUDGET_EXCEEDED`, a turn Finisher interrupted →
  * `SESSION_INTERRUPTED`; anything else is the CLI's own error, `PROVIDER_UNAVAILABLE`.
  */
+/**
+ * Whether `r` is the end of a turn an interrupt stopped. Verified on 2.1.321 (7D Task 0, s1b,
+ * s2b): `subtype: "error_during_execution"`, `is_error: true`, `terminal_reason: "aborted_tools"`,
+ * no `result` key, `stop_reason: "tool_use"`. TODO(7D Task 0 Step 1): an interrupt while the
+ * model streams with no tool running (another `aborted_*` reason?); modelled by fake-claude as
+ * `error_during_execution` with no `terminal_reason`, so while Finisher's interrupt is in flight
+ * that subtype counts too.
+ */
+export function isInterruptEnd(r: ResultMsg, interrupting: boolean): boolean {
+  if (r.terminal_reason?.startsWith("aborted") === true) return true;
+  return interrupting && r.is_error && r.subtype === "error_during_execution" && r.terminal_reason === undefined;
+}
+
 export function resultError(r: ResultMsg, interrupting: boolean): FinError {
   const status = r.api_error_status ?? null;
   const details = { harness: "claudeCode", subtype: r.subtype.slice(0, 64), ...(status === null ? {} : { status }) };
@@ -62,11 +90,11 @@ export function resultError(r: ResultMsg, interrupting: boolean): FinError {
   if (status === 401 || status === 403) return finError("PROVIDER_AUTH", "Claude Code's sign-in was refused", details, SIGNIN_FIX);
   if (status === 429) return finError("PROVIDER_RATE_LIMITED", "Claude Code is rate limited", details);
   if (status === 529) return finError("PROVIDER_OVERLOADED", "Claude Code's model is overloaded", details);
-  // TODO(7D Task 0 Step 1): the `--max-budget-usd` stop's `result` shape; modelled by
-  // fake-claude as `subtype: "error_max_budget_usd"`, `is_error: true` (Task 9 maps it fully).
-  if (r.subtype === "error_max_budget_usd") return finError("BUDGET_EXCEEDED", "the session's money budget is used up", { ...details, kind: "money" });
-  // TODO(7D Task 0 Step 1): the `result` of a turn the `interrupt` request (or SIGINT) ended;
-  // modelled by fake-claude as `subtype: "error_during_execution"`, `is_error: true`, empty text.
+  // Verified on 2.1.321 (7D Task 0, s1f): the `--max-budget-usd` stop is `subtype:
+  // "error_max_budget_usd"`, `terminal_reason: "budget_exhausted"`, `is_error: true`, no `result`.
+  if (r.subtype === "error_max_budget_usd" || r.terminal_reason === "budget_exhausted") return finError("BUDGET_EXCEEDED", "the session's money budget is used up", { ...details, kind: "money" });
+  // An interrupted turn ends as `interrupted` (`LineMapper`), never here; an error the CLI
+  // reported while an interrupt was in flight is still named as the interrupt's.
   if (interrupting) return finError("SESSION_INTERRUPTED", "the Claude Code turn was interrupted", details);
   return finError("PROVIDER_UNAVAILABLE", `Claude Code failed the turn: ${text200(r.result ?? r.errors?.[0])}`, { ...details, reason: "turnError" });
 }
@@ -74,10 +102,13 @@ export function resultError(r: ResultMsg, interrupting: boolean): FinError {
 /** What one instance's lines become, with the memory the mapping needs. */
 export class LineMapper {
   readonly #usage: UsageSource;
+  readonly #asked: (toolUseId: string) => boolean;
   readonly #noticed = new Set<string>();
 
-  constructor(usage: UsageSource = new ClaudeUsage()) {
+  /** `asked`: whether a permission prompt of this instance named the call (`RequestPort.asked`). */
+  constructor(usage: UsageSource = new ClaudeUsage(), asked: (toolUseId: string) => boolean = () => false) {
     this.#usage = usage;
+    this.#asked = asked;
   }
 
   /** `unknown {name}` the first time `name` is seen on this instance, else nothing. */
@@ -113,12 +144,16 @@ export class LineMapper {
         return this.#user(line);
       case "result":
         return this.#result(line, interrupting);
+      case "rateLimit":
+        return this.#rateLimit(line);
       case "apiRetry":
         return [{ type: "notice", name: "retry", details: { attempt: line.attempt, code: retryCode(line.error_status ?? null), delayMs: line.retry_delay_ms } }];
       case "compactBoundary":
         return [{ type: "notice", name: "compacted", details: { trigger: line.compact_metadata?.trigger ?? null, preTokens: line.compact_metadata?.pre_tokens ?? null } }];
       case "system":
-        return SILENT_SYSTEM.has(line.subtype) ? [] : this.#unknown(`system/${line.subtype}`);
+        if (SILENT_SYSTEM.has(line.subtype)) return [];
+        if (BACKGROUND_SYSTEM.has(line.subtype)) return [{ type: "notice", name: "unsolicitedTurn", details: { harness: "claudeCode", line: `system/${line.subtype}` } }];
+        return this.#unknown(`system/${line.subtype}`);
       case "unknown":
         return this.#unknown(line.type);
       case "init":
@@ -183,9 +218,32 @@ export class LineMapper {
     return out;
   }
 
+  #rateLimit(l: RateLimit): Event[] {
+    const i = l.rate_limit_info;
+    if (i.status.startsWith("allowed")) return [];
+    return [{ type: "notice", name: "rateLimit", details: { harness: "claudeCode", status: i.status.slice(0, 64), window: i.rateLimitType?.slice(0, 64) ?? null, resetsAt: i.resetsAt ?? null, utilization: i.utilization ?? null } }];
+  }
+
+  /** A `cliDenied` notice per refused call no permission prompt named (Decision 18, Task 0). */
+  #cliDenied(r: ResultMsg): Event[] {
+    const out: Event[] = [];
+    for (const d of r.permission_denials ?? []) {
+      if (this.#asked(d.tool_use_id)) continue;
+      const path = PATH_KEYS.map((k) => d.tool_input?.[k]).find((v): v is string => typeof v === "string");
+      out.push({ type: "notice", name: "cliDenied", details: { harness: "claudeCode", tool: d.tool_name.slice(0, 64), toolUseId: d.tool_use_id.slice(0, 128), ...(path === undefined ? {} : { path: path.slice(0, 1024) }) } });
+    }
+    return out;
+  }
+
   #result(r: ResultMsg, interrupting: boolean): Event[] {
     const out: Event[] = [];
     out.push(...this.#usage.usage(r));
+    out.push(...this.#cliDenied(r));
+    if (isInterruptEnd(r, interrupting)) {
+      // The interrupt's own end (Decision 14): the run is stopped, not failed.
+      out.push({ type: "turnCompleted", stopReason: "interrupted" });
+      return out;
+    }
     if (r.is_error) {
       const e = resultError(r, interrupting);
       out.push({ type: "turnFailed", error: { code: e.code, message: e.message, details: e.details, ...(e.fix === undefined ? {} : { fix: e.fix }) } });

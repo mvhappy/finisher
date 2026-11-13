@@ -350,7 +350,14 @@ interface Answer {
   answer: { behavior?: string; message?: string; updatedInput?: unknown; error?: unknown };
   raw: string;
 }
-type Observed = { argv: string[]; answers?: Answer[]; cancelled?: string[]; controlResponses?: { requestId: string; subtype: string; raw: string }[] }[];
+type Observed = {
+  argv: string[];
+  answers?: Answer[];
+  cancelled?: string[];
+  controlResponses?: { requestId: string; subtype: string; raw: string }[];
+  cliRefused?: { tool: string; toolUseId: string }[];
+  bash?: { command: string; shell: string; code: number | null; stdout: string }[];
+}[];
 
 interface Running {
   readonly local: NdjsonClient;
@@ -361,7 +368,7 @@ interface Running {
 }
 
 /** Steps of one turn: an `ask` per entry, each its own step, then the turn's `result`. */
-const asks = (...list: { tool: string; input: unknown; cancelAfterMs?: number }[]) => ({
+const asks = (...list: { tool: string; input: unknown; cancelAfterMs?: number; run?: boolean }[]) => ({
   steps: [...list.map((ask, i) => ({ ...(i === 0 ? { expect: "user" } : {}), ask })), { cumulativeUsage: { inputTokens: 1, outputTokens: 1 } }],
 });
 
@@ -408,6 +415,7 @@ const observed = (r: Running, id: string): Observed => {
   return existsSync(p) ? (JSON.parse(readFileSync(p, "utf8")) as Observed) : [];
 };
 const answers = (r: Running, id: string) => observed(r, id).flatMap((o) => o.answers ?? []);
+const noticesOf = (id: string, name: string) => nodes(id).flatMap((n) => (n.kind === "notice" && Object.hasOwn(n.payload as object, name) ? [(n.payload as Record<string, unknown>)[name]] : []));
 const openCard = (id: string) => until(() => server!.core.store.approvals(id).find((a: Approval) => a.status === "open"));
 
 /** The runtime's id of a CLI request (`<CLI id>#<generation>`, review of Task 8). */
@@ -433,6 +441,8 @@ describe("through the runtime", () => {
     ]);
     expect(got[1]!.answer.message).toMatch(/rule .* \(local layer\) denies/);
     everyAllowDecided(r, s.id);
+    // The denied `ls` is in the result's `permission_denials`, but a prompt named it: no cliDenied.
+    expect(noticesOf(s.id, "cliDenied")).toEqual([]);
   });
 
   withFake("can_use_tool_allowed_by_policy: by policy; updatedInput is the request's input byte for byte", async () => {
@@ -448,17 +458,23 @@ describe("through the runtime", () => {
     expect(a!.raw).not.toMatch(/updatedPermissions/);
   });
 
-  withFake("plan_mode_write_outside_workspace_denied, with the server's message", async () => {
+  withFake("plan_mode_write_outside_workspace_denied: by the CLI itself, before any prompt; a cliDenied notice, no approval", async () => {
+    // Verified on 2.1.321 (7D Task 0, s2a): `blockWritesOutsideWorkingDirectories` refuses a
+    // write outside the working directory with no `can_use_tool`; it is only in the result's
+    // `permission_denials`. Finisher's own plan-mode deny (the unit tests above) stays the
+    // second layer for a path the CLI lets through.
     const r = await claudeServer(asks({ tool: "Write", input: { file_path: "/tmp/elsewhere.txt", content: "x" } }, { tool: "Write", input: { file_path: "notes.md", content: "x" } }));
     const s = await start(r, "plan");
     expect((await settle(s.id)).status).toBe("idle");
     const got = answers(r, s.id);
-    expect(got.map((a) => a.answer.behavior)).toEqual(["deny", "allow"]);
-    expect(got[0]!.answer.message).toMatch(/plan mode/);
-    expect(approvalNodes(s.id)[0]).toMatchObject({ decision: "deny", reason: "mode" });
+    expect(got.map((a) => [a.tool, a.answer.behavior])).toEqual([["Write", "allow"]]);
+    expect(approvalNodes(s.id).map((p) => [p.tool, (p.input as { file_path?: string }).file_path, p.decision])).toEqual([["Write", "notes.md", "allow"]]);
+    const refused = observed(r, s.id).flatMap((o) => o.cliRefused ?? []);
+    expect(refused).toEqual([{ tool: "Write", toolUseId: expect.any(String) }]);
+    expect(noticesOf(s.id, "cliDenied")).toEqual([{ harness: "claudeCode", tool: "Write", toolUseId: refused[0]!.toolUseId, path: "/tmp/elsewhere.txt" }]);
   });
 
-  withFake("unconfined (direct): a shell command opens a managed card; a write outside the workspace is denied in draft", async () => {
+  withFake("unconfined (direct): a shell command opens a managed card; the CLI refuses a write outside the workspace itself", async () => {
     const r = await claudeServer(asks({ tool: "Bash", input: { command: "git status" } }, { tool: "Edit", input: { file_path: "/tmp/x.txt", old_string: "a", new_string: "b" } }));
     const s = await start(r);
     expect(s.mode).not.toBe("plan");
@@ -468,9 +484,9 @@ describe("through the runtime", () => {
     ok(await confirmed(r.owner, "agent.approval.answer", { id: card.id, decision: "allow" }));
     expect((await settle(s.id)).status).toBe("idle");
     const got = answers(r, s.id);
-    expect(got.map((a) => [a.tool, a.answer.behavior])).toEqual([["Bash", "allow"], ["Edit", "deny"]]);
-    expect(got[1]!.answer.message).toMatch(/sandbox is not enforced/);
-    expect(approvalNodes(s.id).find((p) => p.tool === "Edit")).toMatchObject({ decision: "deny", reason: "unconfined" });
+    expect(got.map((a) => [a.tool, a.answer.behavior])).toEqual([["Bash", "allow"]]);
+    expect(approvalNodes(s.id).find((p) => p.tool === "Edit")).toBeUndefined();
+    expect(noticesOf(s.id, "cliDenied")).toEqual([expect.objectContaining({ tool: "Edit", path: "/tmp/x.txt" })]);
     everyAllowDecided(r, s.id);
   });
 
@@ -479,8 +495,62 @@ describe("through the runtime", () => {
     const r = await claudeServer(asks({ tool: "Bash", input: { command: "git status" } }, { tool: "Edit", input: { file_path: "/tmp/x.txt", old_string: "a", new_string: "b" } }), { status: withAgent(sandboxStatus().agent) });
     const s = await start(r);
     expect((await settle(s.id)).status).toBe("idle");
-    expect(answers(r, s.id).map((a) => [a.tool, a.answer.behavior])).toEqual([["Bash", "allow"], ["Edit", "allow"]]);
+    expect(answers(r, s.id).map((a) => [a.tool, a.answer.behavior])).toEqual([["Bash", "allow"]]);
+    expect(noticesOf(s.id, "cliDenied")).toEqual([expect.objectContaining({ tool: "Edit", path: "/tmp/x.txt" })]);
     expect(server!.core.store.approvals(s.id)).toEqual([]);
+  });
+
+  describe("the session's Bash has its own HOME and SHELL (7D Decision 5, Task 0 signed in)", () => {
+    // Verified on 2.1.321 (7D Task 0, s3B): with the server's `HOME` and no `SHELL` the CLI's Bash
+    // started the passwd login shell, which sourced the user's rc files and passed on what they
+    // export. fake-claude runs an allowed Bash call as the CLI does (`$SHELL -l -c`, `/bin/sh`
+    // standing in for the passwd shell), under the session's sandbox.
+    const LEAK = "FIN_RC_LEAK_PROBE";
+    let userHome: string;
+    let saved: string | undefined;
+    beforeEach(() => {
+      userHome = mkdtempSync(join(tmp, "user-home-"));
+      for (const rc of [".profile", ".bash_profile", ".bashrc", ".zshenv"]) writeFileSync(join(userHome, rc), `export ${LEAK}=leaked\n`);
+      saved = process.env.HOME;
+      process.env.HOME = userHome;
+    });
+    afterEach(() => {
+      if (saved === undefined) delete process.env.HOME;
+      else process.env.HOME = saved;
+    });
+
+    const bashEnv = async (r: Running) => {
+      const s = await start(r);
+      if (statusOf(s.id) !== "idle") {
+        const card = await until(() => (statusOf(s.id) === "idle" ? null : server!.core.store.approvals(s.id).find((a: Approval) => a.status === "open")));
+        if (card !== null) ok(await confirmed(r.owner, "agent.approval.answer", { id: card.id, decision: "allow" }));
+      }
+      expect((await settle(s.id)).status).toBe("idle");
+      const [run] = observed(r, s.id).flatMap((o) => o.bash ?? []);
+      expect(run, "the Bash call ran").toBeDefined();
+      const env = Object.fromEntries(run!.stdout.split("\n").filter((l) => l.includes("=")).map((l) => [l.slice(0, l.indexOf("=")), l.slice(l.indexOf("=") + 1)]));
+      return { s, run: run!, env };
+    };
+    const check = ({ s, run, env }: Awaited<ReturnType<typeof bashEnv>>, r: Running) => {
+      const home = join(r.serverData, "agents", s.id, "tmp", "home");
+      expect(run.code).toBe(0);
+      expect(env.HOME).toBe(home);
+      expect(["/bin/bash", "/bin/sh"]).toContain(env.SHELL);
+      expect(run.shell).toBe(env.SHELL);
+      expect(env).not.toHaveProperty(LEAK);
+      expect(run.stdout).not.toContain(userHome);
+    };
+
+    withFake("direct: the login shell reads nothing of the user's home", async () => {
+      const r = await claudeServer(asks({ tool: "Bash", input: { command: "env" }, run: true }));
+      check(await bashEnv(r), r);
+    });
+
+    withFake("enforced (launcher): the same under the agent profile", async () => {
+      if (!enforced()) return;
+      const r = await claudeServer(asks({ tool: "Bash", input: { command: "env" }, run: true }), { status: withAgent(sandboxStatus().agent) });
+      check(await bashEnv(r), r);
+    });
   });
 
   withFake("rule_ask_opens_provider_card: waitingApproval; a person's allow answers the CLI; the card is consumed", async () => {

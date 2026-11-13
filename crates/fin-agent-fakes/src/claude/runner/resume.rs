@@ -23,10 +23,11 @@ impl Runner {
                 tool,
                 input,
                 cancel_after_ms: None,
+                run: false,
             };
             let key = match self.ask_for(&ask, Some(&id)) {
                 Outcome::Allowed => "reran",
-                Outcome::Denied => "rerunDenied",
+                Outcome::Denied | Outcome::Refused => "rerunDenied",
                 Outcome::Cancelled | Outcome::Interrupted => "rerunDropped",
             };
             self.observed.push(key, json!(id));
