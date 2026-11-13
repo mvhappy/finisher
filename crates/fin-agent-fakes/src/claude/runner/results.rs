@@ -8,7 +8,11 @@ use super::lines::{defaults, fresh_uuid, merge};
 use crate::claude::script::{Script, Usage};
 
 pub(super) enum Kind {
-    Turn { text: String, delta: Usage },
+    Turn {
+        text: String,
+        delta: Usage,
+        model: Option<String>,
+    },
     NotLoggedIn,
     Interrupted,
 }
@@ -28,17 +32,51 @@ fn usage(input: u64, output: u64, cache_read: u64, cache_create: u64) -> Value {
 }
 
 impl Runner {
+    /// Adds one call's usage to the process totals and to `model`'s (default: the session's).
+    pub(super) fn add_usage(&mut self, delta: &Usage, model: Option<&str>) {
+        let model = model.map_or_else(|| self.model(), str::to_string);
+        let t = &mut self.totals;
+        t.input_tokens += delta.input_tokens;
+        t.output_tokens += delta.output_tokens;
+        t.cache_read_input_tokens += delta.cache_read_input_tokens;
+        t.cache_creation_input_tokens += delta.cache_creation_input_tokens;
+        t.cost_usd += delta.cost_usd;
+        let m = t.models.entry(model).or_default();
+        m.input_tokens += delta.input_tokens;
+        m.output_tokens += delta.output_tokens;
+        m.cache_read_input_tokens += delta.cache_read_input_tokens;
+        m.cache_creation_input_tokens += delta.cache_creation_input_tokens;
+        m.cost_usd += delta.cost_usd;
+    }
+
+    /// One model call's usage as the stream reports it (`--include-partial-messages`), then added
+    /// to the totals. TODO(7D Task 0 Step 1): the `stream_event` usage shape; modelled on the
+    /// Messages API stream: `message_start.message.usage` holds the input side (output 1 at most),
+    /// `message_delta.usage.output_tokens` the message's output so far.
+    pub(super) fn live_usage(&mut self, u: &Usage, model: Option<&str>) {
+        let name = model.map_or_else(|| self.model(), str::to_string);
+        let id = fresh_uuid();
+        let event = |e: Value| json!({"type": "stream_event", "uuid": fresh_uuid(), "session_id": self.session_id, "parent_tool_use_id": null, "event": e});
+        self.emit(&event(json!({"type": "message_start", "message": {
+            "id": id, "model": name, "type": "message", "role": "assistant", "content": [],
+            "usage": {"input_tokens": u.input_tokens, "output_tokens": u.output_tokens.min(1),
+                "cache_read_input_tokens": u.cache_read_input_tokens,
+                "cache_creation_input_tokens": u.cache_creation_input_tokens},
+        }})));
+        self.emit(&event(
+            json!({"type": "message_delta", "delta": {"stop_reason": "end_turn"},
+            "usage": {"output_tokens": u.output_tokens}}),
+        ));
+        self.emit(&event(json!({"type": "message_stop"})));
+        self.add_usage(u, Some(&name));
+    }
+
     pub(super) fn emit_result(&mut self, kind: Kind) {
-        let model = self.model();
         let mut over = serde_json::Map::new();
         let (subtype, is_error, text, stop) = match &kind {
-            Kind::Turn { text, delta } => {
+            Kind::Turn { text, delta, model } => {
+                self.add_usage(delta, model.as_deref());
                 let t = &mut self.totals;
-                t.input_tokens += delta.input_tokens;
-                t.output_tokens += delta.output_tokens;
-                t.cache_read_input_tokens += delta.cache_read_input_tokens;
-                t.cache_creation_input_tokens += delta.cache_creation_input_tokens;
-                t.cost_usd += delta.cost_usd;
                 t.turns += 1;
                 let over_budget = self
                     .args
@@ -64,16 +102,25 @@ impl Runner {
             }
             Kind::Interrupted => ("error_during_execution", true, String::new(), Value::Null),
         };
-        let t = self.totals;
-        let model_usage = if matches!(kind, Kind::NotLoggedIn) {
-            json!({})
+        let t = self.totals.clone();
+        // TODO(7D Task 0 Step 1): `modelUsage`'s shape (cumulative per model, like `usage`).
+        let model_usage: serde_json::Map<String, Value> = if matches!(kind, Kind::NotLoggedIn) {
+            serde_json::Map::new()
         } else {
-            json!({model: {
-                "inputTokens": t.input_tokens, "outputTokens": t.output_tokens,
-                "cacheReadInputTokens": t.cache_read_input_tokens,
-                "cacheCreationInputTokens": t.cache_creation_input_tokens,
-                "costUSD": t.cost_usd,
-            }})
+            t.models
+                .iter()
+                .map(|(name, m)| {
+                    (
+                        name.clone(),
+                        json!({
+                            "inputTokens": m.input_tokens, "outputTokens": m.output_tokens,
+                            "cacheReadInputTokens": m.cache_read_input_tokens,
+                            "cacheCreationInputTokens": m.cache_creation_input_tokens,
+                            "costUSD": m.cost_usd,
+                        }),
+                    )
+                })
+                .collect()
         };
         let mut line = json!({
             "type": "result", "subtype": subtype, "is_error": is_error,

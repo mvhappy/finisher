@@ -107,6 +107,9 @@ export async function closeLive(live: Live): Promise<void> {
   live.stopDeadline = null;
   const pump = live.pump;
   live.pump = null;
+  // What the instance already queued is pumped first (7D Task 9: an interrupt's `result` and its
+  // usage, charged as the turn's tail), then the pump stops.
+  for (let tick = 0; pump && tick < 2; tick++) await new Promise((r) => setImmediate(r));
   if (pump) await Effect.runPromise(Fiber.interrupt(pump));
   await Effect.runPromise(Scope.close(live.scope, Exit.void));
 }

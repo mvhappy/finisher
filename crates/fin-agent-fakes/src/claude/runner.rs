@@ -18,7 +18,9 @@ mod results;
 use super::argv::{self, Args, Command};
 use super::config;
 use super::observed::Observed;
-use super::script::{self, Branch, Expect, OnInterrupt, Script, Spawn, Step, Usage, WriteFile};
+use super::script::{
+    self, Branch, Expect, OnInterrupt, ResumeTotals, Script, Spawn, Step, Usage, WriteFile,
+};
 use super::settings::{self, Settings};
 use super::transcript::{Totals, Transcript};
 use ask::Outcome;
@@ -122,7 +124,12 @@ impl Runner {
                         "resume",
                         json!({"found": true, "transcriptLines": restored.lines}),
                     );
-                    (id.to_string(), t, restored.totals)
+                    // TODO(7D Task 0 Step 1): whether `--resume` restores the cumulative totals.
+                    let totals = match script.resume_totals {
+                        ResumeTotals::Restored => restored.totals,
+                        ResumeTotals::Reset => Totals::default(),
+                    };
+                    (id.to_string(), t, totals)
                 }
                 None => {
                     observed.set("resume", json!({"found": false}));
@@ -374,6 +381,7 @@ impl Runner {
             self.emit_result(Kind::Turn {
                 text: "done".into(),
                 delta: Usage::default(),
+                model: None,
             });
         }
     }
@@ -388,6 +396,7 @@ impl Runner {
         self.emit_result(Kind::Turn {
             text: "ok".into(),
             delta,
+            model: None,
         });
     }
 
@@ -455,10 +464,17 @@ impl Runner {
         if s.not_logged_in {
             self.not_logged_in();
         }
+        if let Some(u) = s.hidden_usage {
+            self.add_usage(&u, s.usage_model.as_deref());
+        }
+        if let Some(u) = s.live_usage {
+            self.live_usage(&u, s.usage_model.as_deref());
+        }
         if let Some(delta) = s.cumulative_usage {
             self.emit_result(Kind::Turn {
                 text: s.text.clone().unwrap_or_else(|| "done".into()),
                 delta,
+                model: s.usage_model.clone(),
             });
         }
         if let Some(c) = &s.crash {

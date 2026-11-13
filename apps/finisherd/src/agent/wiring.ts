@@ -52,9 +52,10 @@ import { RuleStore } from "./rule-store.ts";
 import type { AclBroker } from "../sandbox/broker.ts";
 import { claudeAdapterFor } from "./claude/adapter.ts";
 import { claudeProviderInfo } from "./claude/detect.ts";
+import { remainingIn } from "./claude/usage.ts";
 import { type ClaudeAccess, ClaudeModelCache, claudeAccess, withClaudePricing } from "./claude/models.ts";
 import { type SessionSandboxDeps, sessionSandboxes } from "./sandbox.ts";
-import { readAgentSettings, resolveFinPath } from "./settings.ts";
+import { claudeCodeSettings, readAgentSettings, resolveFinPath } from "./settings.ts";
 import type { AgentStore } from "./store.ts";
 import { AgentLookup } from "./store-lookup.ts";
 
@@ -298,7 +299,7 @@ export const buildAgentRuntime = (d: AgentWiringDeps): Effect.Effect<AgentRuntim
     if (fakeAllowed()) adapters.set("fake", FakeAdapter(fakeScriptsOf(d.options?.fakeScripts)));
     // Claude Code (plan 7D Task 7): registered only when detected and `agents.claudeCode.enabled`.
     const claude = claudeWiring(() => Effect.runPromise(claudeInfo()), serverData);
-    const claudeAdapter = claudeAdapterFor(yield* claudeInfo(), { sandbox: sandboxDeps, sessions: core.store, models: claude.cache, ids: core.ids, ...(settings.retentionDays === undefined ? {} : { retentionDays: settings.retentionDays }), log: (m, x) => log(`${m} ${JSON.stringify(x)}`) });
+    const claudeAdapter = claudeAdapterFor(yield* claudeInfo(), { sandbox: sandboxDeps, sessions: core.store, models: claude.cache, ids: core.ids, remaining: remainingIn(() => core.store.ledger()), chargePlanMoney: () => claudeCodeSettings(serverData).chargePlanMoney === true, ...(settings.retentionDays === undefined ? {} : { retentionDays: settings.retentionDays }), log: (m, x) => log(`${m} ${JSON.stringify(x)}`) });
     if (claudeAdapter !== undefined) adapters.set("claudeCode", claudeAdapter);
     const rolePrompt = (role: string) => (roles.get(role) ?? roles.get("editor"))!.prompt.text;
     const builtinEnv = builtinEnvironment({ finPath, server: d.endpoint, projectDirOf: d.registry.dirOf, rolePrompt });

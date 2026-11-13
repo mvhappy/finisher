@@ -20,7 +20,7 @@ import type { Approval, BudgetState, FinError, Harness, ProviderEvent, Run, Sess
 import { Effect } from "effect";
 import { finError, toFinError } from "../errors.ts";
 import type { BoundEvent, CallGate, Capabilities, ProviderAdapter } from "./adapter.ts";
-import { Budget, type Crossings, DEFAULT_BUDGET, type Reading } from "./budget.ts";
+import { Budget, type Crossings, DEFAULT_BUDGET, type Reading, type Reservation } from "./budget.ts";
 import type { Clock, Ids } from "./clock.ts";
 import type { AgentCore } from "./core.ts";
 import { credentialPath } from "./credentials.ts";
@@ -332,17 +332,15 @@ export abstract class RuntimeEngine {
 
   async #handle(sessionId: string, { instance, event: e }: BoundEvent): Promise<void> {
     const live = this.lives.get(sessionId);
-    if (live === undefined || live.instance !== instance) {
-      this.dropped++;
+    if (live === undefined || live.instance !== instance || live.runId === null) {
+      // A turn's tail after an interrupt or a stop (7D Task 9): its usage was spent all the same.
+      if (e.type === "usage") return this.#lateUsage(sessionId, e);
+      if (live !== undefined && live.instance === instance && e.type === "exited") return this.#exited(live, e);
+      if (e.type !== "turnStarted") this.dropped++;
       return;
     }
     if (e.type === "exited") return this.#exited(live, e);
     const runId = live.runId;
-    if (runId === null) {
-      // Nothing is running on this instance: a turn's tail after an interrupt or a stop.
-      if (e.type !== "turnStarted") this.dropped++;
-      return;
-    }
     await this.#onRunEvent(live, runId, e);
   }
 
@@ -463,23 +461,34 @@ export abstract class RuntimeEngine {
   }
 
   async #usage(live: Live, runId: string, e: Extract<ProviderEvent, { type: "usage" }>): Promise<void> {
-    const s = this.session(live.sessionId);
+    await this.crossings(live, runId, await this.#charge(this.session(live.sessionId), runId, e, live.reservations.shift() ?? null));
+  }
+
+  /** A tail's usage goes to the session's last run; a stop is the next prompt's (it is refused). */
+  async #lateUsage(sessionId: string, e: Extract<ProviderEvent, { type: "usage" }>): Promise<void> {
+    const s = this.store.get(sessionId);
+    const runId = s === undefined ? undefined : this.store.runs(sessionId).at(-1)?.id;
+    if (s === undefined || runId === undefined) return void this.dropped++;
+    for (const n of (await this.#charge(s, runId, e, null)).notices) await this.append({ sessionId, runId, kind: "notice", payload: { budget: n.kind, used: n.used, limit: n.limit, at: 0.8 } });
+  }
+
+  async #charge(s: Session, runId: string, e: Extract<ProviderEvent, { type: "usage" }>, reservation: Reservation | null): Promise<Crossings> {
     const tokens = { input: e.input, output: e.output, cacheRead: e.cacheRead, cacheWrite: e.cacheWrite, reasoning: e.reasoning };
     const priced = this.pricing.price(s, tokens, e.costMicros);
-    const reservation = live.reservations.shift() ?? null;
     // A non-local call with neither a reported cost nor a price is charged what was held for
     // it (its projection), never 0: an unknown price must not make the money budget fail open.
     const projection = reservation?.micros ?? this.pricing.projected(s, tokens) ?? 0;
     const micros = priced.basis === "unknown" && s.provider !== "local" ? Math.max(priced.micros, projection) : priced.micros;
-    const basis = priced.basis;
+    // The adapter's basis first (7D Decision 15): a plan sign-in's money is shown, never charged.
+    const basis = e.costBasis ?? priced.basis;
     const b = this.budget(s);
-    const crossings = b.charge(tokens, micros, { reservation });
+    const crossings = b.charge(tokens, basis === "subscription" ? 0 : micros, { reservation });
     const usage: Usage = { ...tokens, moneyMicros: micros, costBasis: basis };
     const { run, session } = this.store.addUsage(runId, usage);
     await this.append({ sessionId: s.id, runId, kind: "usage", payload: usage });
     this.record("a turn", () => this.journal.turn({ session, runId, usage }));
     this.publish(s.id, { type: "usageUpdated", runId, usage: run.usage, session: session.usage, budget: this.budgetState(b) });
-    await this.crossings(live, runId, crossings);
+    return crossings;
   }
 
   protected async crossings(live: Live, runId: string, c: Crossings): Promise<void> {

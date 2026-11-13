@@ -22,7 +22,7 @@
 import type { FinError, ProviderEvent } from "@finisher/contracts";
 import { Cause, Effect, Queue, Stream } from "effect";
 import { finError } from "../../errors.ts";
-import type { BoundEvent, ProviderRef, ProviderSession, RuntimeAnswer, TurnInput, UserInput } from "../adapter.ts";
+import type { BoundEvent, CallGate, ProjectedUsage, ProviderRef, ProviderSession, RuntimeAnswer, TurnInput, UserInput } from "../adapter.ts";
 import type { SandboxedChild } from "../sandbox.ts";
 import type { LaunchPlan } from "./launch.ts";
 import { LineMapper, type UsageSource } from "./map.ts";
@@ -77,6 +77,9 @@ export interface InstanceOptions {
   readonly onInit?: (init: SystemInit) => readonly ProviderEvent[];
   readonly requests?: RequestPort;
   readonly usage?: UsageSource;
+  /** The runtime's budget check, once per turn (Task 9, Decision 15), with the turn's projection. */
+  readonly gate?: CallGate;
+  readonly projection?: () => ProjectedUsage;
   readonly interruptWaitMs?: number;
   readonly sigintGraceMs?: number;
   readonly ref: ProviderRef;
@@ -96,6 +99,8 @@ export class ClaudeInstance {
   #inited = false;
   #turnOpen = false;
   #interrupting = false;
+  /** The gate reserved for the open turn and no `usage` has settled it yet. */
+  #reserved = false;
   #closed = false;
   /** The gate refused the init, or a line did not decode: later lines are dropped. */
   #refused = false;
@@ -233,8 +238,13 @@ export class ClaudeInstance {
       this.#inited = true;
       this.#deliver(this.#o.onInit?.(l) ?? []);
     }
-    this.#deliver(this.#map.map(l, this.#interrupting));
+    const events = this.#map.map(l, this.#interrupting);
+    if (events.some((e) => e.type === "usage")) this.#reserved = false;
+    this.#deliver(events);
     if (l.kind === "result" && (l.is_error || (l.queued_turn_count ?? 0) === 0)) {
+      // A turn that reported no usage returns the gate's reservation (as the built-in loop does).
+      if (this.#reserved) this.#o.gate?.release();
+      this.#reserved = false;
       this.#turnOpen = false;
       this.#notify();
     }
@@ -308,6 +318,16 @@ export class ClaudeInstance {
           const gone = this.#gone();
           if (gone !== null) return fail(gone);
           if (this.#turnOpen) return fail(finError("SESSION_BUSY", "a Claude Code turn is running", { instance: o.instance }));
+          // Decision 15: the CLI's calls are invisible, so the gate is asked once per turn; the
+          // turn's `usage` settles the reservation. A refusal ends the turn before any line.
+          const g = o.gate?.beforeCall(o.projection?.() ?? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, reasoning: 0 });
+          if (g !== undefined && !g.ok) {
+            const e = g.error;
+            const capped = (e.details as { kind?: unknown } | null)?.kind === "modelCalls";
+            this.#deliver([{ type: "turnStarted" }, capped ? { type: "turnCompleted", stopReason: "modelCallCap" } : { type: "turnFailed", error: { code: e.code, message: e.message, details: e.details ?? {}, ...(e.fix === undefined ? {} : { fix: e.fix }) } }]);
+            return Effect.void;
+          }
+          this.#reserved = g !== undefined;
           this.#turnOpen = true;
           this.#interrupting = false;
           this.#emit({ type: "turnStarted" });

@@ -1,6 +1,7 @@
 //! Session transcripts under `$CLAUDE_CONFIG_DIR/projects/<cwd>/<uuid>.jsonl`, and the
 //! cumulative totals a resume restores.
 
+use std::collections::BTreeMap;
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::PathBuf;
@@ -8,7 +9,7 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-#[derive(Debug, Default, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct Totals {
     pub input_tokens: u64,
     pub output_tokens: u64,
@@ -16,6 +17,18 @@ pub struct Totals {
     pub cache_creation_input_tokens: u64,
     pub cost_usd: f64,
     pub turns: u64,
+    /// The same totals per model (`modelUsage`).
+    #[serde(default)]
+    pub models: BTreeMap<String, ModelTotals>,
+}
+
+#[derive(Debug, Default, Clone, Copy, Serialize, Deserialize)]
+pub struct ModelTotals {
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub cache_read_input_tokens: u64,
+    pub cache_creation_input_tokens: u64,
+    pub cost_usd: f64,
 }
 
 pub struct Transcript {

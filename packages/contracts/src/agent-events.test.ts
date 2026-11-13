@@ -18,6 +18,8 @@ const samples: ProviderEvent[] = [
   { type: "request", id: "r2", kind: "userInput" },
   { type: "usage", input: 10, output: 2, cacheRead: 100, cacheWrite: 0, reasoning: 1, costMicros: 42 },
   { type: "usage", input: 0, output: 0, cacheRead: 0, cacheWrite: 0, reasoning: 0 },
+  { type: "usage", input: 3, output: 1, cacheRead: 0, cacheWrite: 0, reasoning: 0, costMicros: 4200, costBasis: "subscription" },
+  { type: "usage", input: 3, output: 1, cacheRead: 0, cacheWrite: 0, reasoning: 0, costMicros: 0, costBasis: "reported" },
   { type: "turnCompleted", stopReason: "endTurn" },
   { type: "turnFailed", error: { code: "PROVIDER_EXITED", message: "exited 1", details: { code: 1 }, fix: "resume" } },
   { type: "exited", code: 1, signal: null },
@@ -49,6 +51,8 @@ describe("ProviderEvent", () => {
     expect(() => decode({ type: "toolStarted", tool: "fin", input: {} })).toThrow();
     expect(() => decode({ type: "usage", input: -1, output: 0, cacheRead: 0, cacheWrite: 0, reasoning: 0 })).toThrow();
     expect(() => decode({ type: "usage", input: 1.5, output: 0, cacheRead: 0, cacheWrite: 0, reasoning: 0 })).toThrow();
+    // An adapter names how it knows the cost, never the runtime's own pricing bases.
+    expect(() => decode({ type: "usage", input: 0, output: 0, cacheRead: 0, cacheWrite: 0, reasoning: 0, costBasis: "priced" })).toThrow();
     expect(() => decode({ type: "message", role: "system", blocks: [] })).toThrow();
   });
 });

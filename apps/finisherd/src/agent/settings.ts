@@ -12,7 +12,7 @@
 // - `agents.subagents.maxDepth` (1–8, default 3) and `.maxLive` (1–64, default 8): children per
 //   root session (7B Decision 17); `agents.maxLiveProviders` (1–64, default 4) and
 //   `agents.maxLiveBuiltin` (1–256, default 8): sessions in a run at once (Decision 19);
-// - `agents.claudeCode`: `{path?, enabled}` (plan 7D Decision 22): the Claude Code CLI to use (an
+// - `agents.claudeCode`: `{path?, enabled, chargePlanMoney?}` (plan 7D Decision 22): the Claude Code CLI to use (an
 //   absolute path; else `claude` on the server's `PATH`) and whether sessions may start on it,
 //   **off by default** until the counsel item on the CLI's terms is answered (plan 7D, "Decided
 //   here, not asked");
@@ -56,6 +56,11 @@ export interface AgentSettings {
 export interface ClaudeCodeSettings {
   readonly path?: string;
   readonly enabled: boolean;
+  /**
+   * Charge a plan sign-in's money against money budgets (spec §13.1 "unless the user asks";
+   * plan 7D Task 9). Off: its money is shown (`costBasis: subscription`), its tokens charged.
+   */
+  readonly chargePlanMoney?: boolean;
 }
 
 export const CLAUDE_CODE_DEFAULT: ClaudeCodeSettings = { enabled: false };
@@ -70,7 +75,8 @@ function readClaudeCode(v: unknown, problems: string[]): ClaudeCodeSettings {
   const path = typeof v.path === "string" && v.path !== "" ? v.path : undefined;
   if (v.path !== undefined && path === undefined) problems.push("agents.claudeCode.path must be a path");
   if (v.enabled !== undefined && typeof v.enabled !== "boolean") problems.push("agents.claudeCode.enabled must be true or false");
-  return { ...(path === undefined ? {} : { path }), enabled: v.enabled === true };
+  if (v.chargePlanMoney !== undefined && typeof v.chargePlanMoney !== "boolean") problems.push("agents.claudeCode.chargePlanMoney must be true or false");
+  return { ...(path === undefined ? {} : { path }), enabled: v.enabled === true, ...(v.chargePlanMoney === true ? { chargePlanMoney: true } : {}) };
 }
 
 /** How far sessions spread (7B Decisions 17, 19). */
