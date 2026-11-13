@@ -6,7 +6,9 @@
 //! x − band`. The linked RMS [`Detector`] (10 ms window) reads the band only; the hard-knee
 //! [`static_gain`], capped at `−range`, is smoothed in dB ([`ATTACK_MS`], [`RELEASE_MS`]) and
 //! applied to the band only: `y = residual + G·band`, computed as `x − (1 − G)·band` (the same
-//! sum; with no reduction `G = 1` and the output is the input bit for bit). The numbers are
+//! sum; with no reduction `G = 1` and the output is the input bit for bit). The applied gain
+//! is never below the block's `−range`, so an animated `range` caps the reduction at once
+//! (the smoothed state is capped too). The numbers are
 //! read, clamped and turned into coefficients on each block start; the filter states, the
 //! detector and the gain start at rest at the item's first sample.
 
@@ -105,7 +107,11 @@ impl Effect for DeEsser {
             } else {
                 self.release
             };
-            let cut = 1.0 - amp(self.gain.step(target, a));
+            // The applied gain never goes below the block's cap, even while the smoothed gain
+            // lags an animated `range` (the state keeps the capped value).
+            self.gain.step(target, a);
+            self.gain.g = self.gain.g.max(self.floor);
+            let cut = 1.0 - amp(self.gain.g);
             for (x, b) in ch.iter_mut().zip(band) {
                 x[i] -= cut * b;
             }

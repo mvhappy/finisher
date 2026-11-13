@@ -8,6 +8,12 @@
 //! `10^((g + makeup)/20)`. The numbers are read, clamped to the registry ranges and turned into
 //! coefficients on each block start ([`super::Effect::update`]); the detector and the gain
 //! carry across blocks and start at rest (empty window, 0 dB) at the item's first sample.
+//!
+//! Both detectors read a 10 ms window ([`super::detector`]): `rms` its mean square, `peak` the
+//! linked sample peak over the same window (a sliding maximum). So after a level drop the
+//! release starts ~10 ms late (once the loud samples have left the window); the attack is not
+//! delayed. Animated numbers move the target and are followed by the smoother: there is no
+//! range parameter to cap the applied gain against.
 
 use fin_core::CoreError;
 use fin_core::eval::AudioEffectPlan;

@@ -406,6 +406,42 @@ fn deesser_range_caps_reduction() {
     }
 }
 
+/// `effect` with `name` at `a` until 1 s, then `b`.
+fn switch(mut effect: AudioEffectPlan, name: &str, a: f64, b: f64) -> AudioEffectPlan {
+    effect.numbers.insert(
+        name.to_string(),
+        vec![constant(s(0), s(1), a), constant(s(1), s(100), b)],
+    );
+    effect
+}
+
+#[test]
+fn animated_range_caps_the_applied_gain_at_once() {
+    // De-esser: a steady −6 dBFS 6.5 kHz sine held 12 dB down; at 1 s the range drops to 0, so
+    // from that block on nothing may be reduced (the smoothed gain must not lag the cap).
+    let x = sine(6_500.0, -6.0, 2.0, RATE);
+    let y = run_mono(switch(deesser(20.0, 12.0), "range", 12.0, 0.0), &x);
+    near(
+        peak_dbfs(&y[40_000..48_000]),
+        -18.0,
+        0.1,
+        "reduced 12 dB before 1 s",
+    );
+    assert!(
+        y[48_000..] == x[48_000..],
+        "reduction left after the range went to 0 dB"
+    );
+    // Gate: closed on −70 dBFS, its range rises from −80 to −20 dB at 1 s: the gain is at most
+    // 20 dB down from that sample on.
+    let (g, at) = step(switch(gate(0.0), "range", -80.0, -20.0), -70.0, -70.0);
+    assert!(g[at + 23_000] <= -79.5, "closed to −80 dB before 1 s");
+    let worst = g[at + 24_000..].iter().fold(0.0f64, |m, &v| m.min(v));
+    assert!(
+        worst >= -20.0 - 1e-4,
+        "{worst} dB below the −20 dB range after 1 s"
+    );
+}
+
 #[test]
 fn no_nan_on_silence() {
     let zero = silence(1.0, RATE);

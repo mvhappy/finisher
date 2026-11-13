@@ -9,6 +9,12 @@
 //! and every channel is multiplied by `10^(g/20)`. At the item's first sample the gate is open
 //! with its hold full (as if a signal had just stopped), so the item's first transient is never
 //! cut. The numbers are read, clamped and turned into coefficients on each block start.
+//!
+//! The level is the linked sample peak over a 10 ms window (a sliding maximum,
+//! [`super::detector`]), so the hold countdown starts ~10 ms (479 samples) after the signal
+//! drops: the gate closes `hold` + 10 ms after the drop. The applied gain is never below the
+//! block's `range`, so an animated `range` that rises takes effect at once rather than at the
+//! attack's pace.
 
 use fin_core::CoreError;
 use fin_core::eval::AudioEffectPlan;
@@ -105,7 +111,11 @@ impl Effect for Gate {
             } else {
                 c.release
             };
-            let g = amp(self.gain.step(target, a));
+            // Never below the block's `range`, even while the smoothed gain lags an animated
+            // one (the state keeps the capped value).
+            self.gain.step(target, a);
+            self.gain.g = self.gain.g.max(c.range);
+            let g = amp(self.gain.g);
             for x in ch.iter_mut() {
                 x[i] *= g;
             }

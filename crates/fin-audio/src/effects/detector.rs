@@ -3,16 +3,27 @@
 //!
 //! **Detection** is linked across the channels it is handed (1 for mono, 2 for L/R), over a
 //! window of the last [`WINDOW`] samples (10 ms), the current one included:
-//! - [`Measure::Peak`]: the sample peak `max |x|` of every channel in the window (a monotonic
-//!   queue, exact). A window, not the instantaneous `|x|`, so a steady tone reads its peak on
-//!   every sample (the gain does not chase each half cycle) and the gate does not chatter at
-//!   zero crossings.
+//! - [`Measure::Peak`] (`detector: peak`, and the gate): the linked sample peak `max |x|` of
+//!   every channel over the **same 10 ms window** (a sliding maximum in a monotonic queue,
+//!   exact). A window, not the instantaneous `|x|`, so a steady tone reads its peak on every
+//!   sample (the gain does not chase each half cycle) and the gate does not chatter at zero
+//!   crossings. The cost: a level drop is seen only once the loud samples leave the window, so
+//!   the compressor's release and the gate's hold countdown start ~10 ms (479 samples) after
+//!   the drop. Attack is not delayed (a louder sample enters the window at once). The tests
+//!   time release from the gain's first movement.
 //! - [`Measure::Rms`]: the mean over the window of the per-frame mean square
-//!   `(L² + R²)/2` (or `x²`). The squares are exact in `f64` and kept in a ring; the running sum
-//!   adds the new square and removes the leaving one, and is **recomputed exactly from the ring
-//!   in ring order every time the ring wraps**, so rounding never builds up beyond one window
-//!   and the value depends only on the item's samples since its first, never on how the calls
-//!   cut them.
+//!   `(L² + R²)/2` (or `x²`). The squares are kept in a ring and summed into a running sum that
+//!   adds the new square and removes the leaving one; the sum is **recomputed from the ring in
+//!   ring order every time the ring wraps**. That bounds rounding error to what one window can
+//!   accumulate (it does not make the running sum mathematically exact), and the value depends
+//!   only on the item's samples since its first, never on how the calls cut them.
+//!
+//! **Exception to "scalar `f32`" (plan 6C Determinism):** the RMS squares, ring and sum are
+//! `f64`. Only `+ − ×` and one division are used, which IEEE 754 rounds correctly on every
+//! target (wasm32 included), in a fixed order and with no `mul_add`, so the result is
+//! bit-identical everywhere; no `f64` transcendental is involved (the mean square is cast to
+//! `f32` once before `log10f`). An `f32` square of an `f32` sample is exact in `f64`, and the
+//! wider sum keeps the window's rounding far below the level's resolution.
 //!
 //! The level is in dBFS of that measure (a sine's RMS is its peak − 3.01 dB), computed in `f32`
 //! with `libm::log10f` and floored at −200 dBFS, so silence never reaches `log(0)`.
@@ -139,7 +150,7 @@ impl Detector {
         self.pos += 1;
         if self.pos == WINDOW {
             self.pos = 0;
-            // The exact recompute (see the module docs): a fixed order, once per window.
+            // The periodic recompute (see the module docs): a fixed order, once per window.
             self.sum = self.ring.iter().fold(0.0, |s, &v| s + v);
         }
         let ms = (self.sum / WINDOW as f64) as f32;
