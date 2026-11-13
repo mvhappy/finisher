@@ -20,6 +20,7 @@ import { finError } from "../errors.ts";
 import { dirOlderThan, ensureAgentsRoot, listSessionDirs, makeSessionDirs, readBlob, removeBlob, removeSessionDir, sweepBlobs, writeBlob } from "./blobs.ts";
 import type { Clock, Ids } from "./clock.ts";
 import type { LedgerStore } from "./ledger.ts";
+import { sweepSession } from "./provider-pid.ts";
 import { initialState, next, type SessionEffect, type SessionEvent, type SessionState } from "./session.ts";
 import type { Appended, ApprovalRow, NewApproval, NewNode, NewSession, NodeRow, OutboxEffect, OutboxItem, Recovery, RunRow, RunStart, SessionQuery, SessionRow } from "./store-rows.ts";
 import { type Applied, addUsage, approvalExpired, INLINE_MAX, invalid, outboxOf, SYNTHETIC_RESULT, STORE_SQL, sessionNotFound, stateOf } from "./store-rows.ts";
@@ -38,8 +39,7 @@ const DAY_MS = 86_400_000;
 export const RETENTION_DAYS = 90;
 /** An orphan blob or session directory younger than this is left alone by the hourly sweep. */
 export const ORPHAN_GRACE_MS = 60 * 60_000;
-const NODE_PAGE_MAX = 1000;
-const SWEEP_PAGE = 100;
+const [NODE_PAGE_MAX, SWEEP_PAGE] = [1000, 100];
 /** The reason a session interrupted by a restart carries (spec §3.4). */
 export const SERVER_RESTART = "serverRestart";
 
@@ -506,15 +506,16 @@ export class AgentStore {
    * calls given a synthetic result and its approvals expired; a run still open under any other
    * session is closed the same way. Each session is one transaction; running it again finds
    * nothing to do. The journal entries owed are in `outbox()`, with those an earlier start left.
+   * Before each is interrupted, a provider process it left running is killed (`provider-pid.ts`).
    */
   recoverAfterCrash(): Recovery {
     const interrupted: string[] = [];
     const before = this.#closed;
-    // Money and tokens held for model calls that died with the last process: no call settles
-    // them now, so they are returned before anything else (the outbox included) runs.
-    // Children's carves are held again, and settled for children that have ended (`carve.ts`).
+    // Money and tokens held for calls that died with the last process are returned before anything
+    // else runs; children's carves are held again and settled for those that ended (`carve.ts`).
     this.#cs.tx(() => this.#ledger.recover());
     for (const { id } of this.#s.live!.all() as Array<{ id: string }>) {
+      sweepSession(this.root, id);
       this.#cs.tx(() => this.#applyIn(id, { kind: "interrupted", reason: SERVER_RESTART }, {}));
       interrupted.push(id);
     }

@@ -60,9 +60,8 @@ export interface LaunchContext {
   /**
    * On a resume, the money the CLI counts from earlier runs against `--max-budget-usd` (Facts:
    * "on `--resume` totals restored from earlier runs count"), so the flag is the remainder on
-   * top of it. TODO(7D Task 0 Step 1): restored totals on `--resume`; modelled by fake-claude as
-   * restored (its `resumeTotals` default). Set only once Task 0 pins `resumeTotals: restored`;
-   * until then 0 (fail closed, as `usage.ts` charges a resume): a restoring CLI stops early.
+   * top of it. Verified 2.1.321, Task 0: the totals are restored after the last process's clean
+   * exit (then the adapter sets this), restarted after a kill (then 0).
    */
   readonly restoredCostMicros?: number;
 }

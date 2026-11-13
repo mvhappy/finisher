@@ -303,7 +303,7 @@ export const buildAgentRuntime = (d: AgentWiringDeps): Effect.Effect<AgentRuntim
     // Claude Code (plan 7D Task 7): always registered, nothing run at boot; planning decides live
     // (detected and `agents.claudeCode.enabled`), and each open checks the setting again.
     const claude = claudeWiring(() => Effect.runPromise(claudeInfo()), serverData);
-    adapters.set("claudeCode", ClaudeCodeAdapter({ sandbox: sandboxDeps, sessions: core.store, models: claude.cache, ids: core.ids, remaining: remainingIn(() => core.store.ledger()), chargePlanMoney: () => claudeCodeSettings(serverData).chargePlanMoney === true, ...(settings.retentionDays === undefined ? {} : { retentionDays: settings.retentionDays }), log: (m, x) => log(`${m} ${JSON.stringify(x)}`) }));
+    adapters.set("claudeCode", ClaudeCodeAdapter({ sandbox: sandboxDeps, sessions: core.store, nodes: (id) => allNodes(core.store, id), models: claude.cache, ids: core.ids, remaining: remainingIn(() => core.store.ledger()), chargePlanMoney: () => claudeCodeSettings(serverData).chargePlanMoney === true, ...(settings.retentionDays === undefined ? {} : { retentionDays: settings.retentionDays }), log: (m, x) => log(`${m} ${JSON.stringify(x)}`) }));
     const rolePrompt = (role: string) => (roles.get(role) ?? roles.get("editor"))!.prompt.text;
     const builtinEnv = builtinEnvironment({ finPath, server: d.endpoint, projectDirOf: d.registry.dirOf, rolePrompt });
     const environment: SessionEnvironment = {

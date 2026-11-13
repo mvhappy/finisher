@@ -19,6 +19,8 @@
 //   Never SIGTERM (it records no result).
 // - **Exit**: the process's end (after its last line) is `exited {code, signal}`, then the
 //   stream ends. Closing the instance's scope drops its later lines and kills it.
+// - **One process of a session** (Task 10): `ClaudeSession` (`instances.ts`) runs a session's
+//   successive processes behind one `ProviderSession`, each instance writing to its `sink`.
 import type { FinError, ProviderEvent } from "@finisher/contracts";
 import { Cause, Effect, Queue, Stream } from "effect";
 import { finError } from "../../errors.ts";
@@ -36,6 +38,11 @@ export const INTERRUPT_WAIT_MS = 5_000;
 export const SIGINT_GRACE_MS = 2_000;
 /** How long a closed instance may take to exit after its stdin's end (writing its transcript, which `--resume` reads) before it is killed. */
 export const CLOSE_GRACE_MS = 2_000;
+/**
+ * How long a killed instance may take to be gone (the sandbox's group kill: SIGHUP under the
+ * launchers, `REAP_GRACE_MS`, then SIGKILL) before `close` reports it still running.
+ */
+export const CLOSE_EXIT_WAIT_MS = 5_000;
 
 /**
  * Where the CLI's requests other than the MCP handshake go (`can_use_tool`, an MCP `tools/call`,
@@ -50,9 +57,18 @@ export interface RequestPort {
   cancel(requestId: string): readonly ProviderEvent[];
 }
 
+/** Where an instance's events go instead of its own stream (`ClaudeSession`, Task 10). */
+export interface EventSink {
+  offer(event: ProviderEvent): void;
+  /** The process is gone (after its `exited`), or the instance closed. */
+  end(): void;
+}
+
 export interface InstanceOptions {
   /** This instance's id (a ULID): every event carries it. */
   readonly instance: string;
+  /** Default: the instance's own stream (`session().events`). */
+  readonly sink?: EventSink;
   readonly child: SandboxedChild;
   readonly plan: Pick<LaunchPlan, "argv" | "tools" | "mcpTools">;
   /** The session's UUID (`--session-id`/`--resume=`): every user line names it. */
@@ -73,6 +89,7 @@ export interface InstanceOptions {
   readonly interruptWaitMs?: number;
   readonly sigintGraceMs?: number;
   readonly closeGraceMs?: number;
+  readonly exitWaitMs?: number;
   readonly ref: ProviderRef;
 }
 
@@ -89,6 +106,8 @@ export class ClaudeInstance {
   #pending: ProviderEvent[];
   #inited = false;
   #turnOpen = false;
+  /** The last `startTurn`'s user line: true once the write's callback reported success. */
+  #turnWritten: Promise<boolean> = Promise.resolve(false);
   #interrupting = false;
   /** The gate reserved for the open turn and no `usage` has settled it yet. */
   #reserved = false;
@@ -96,6 +115,8 @@ export class ClaudeInstance {
   /** The gate refused the init, or a line did not decode: later lines are dropped. */
   #refused = false;
   #exit: { code: number | null; signal: string | null } | null = null;
+  /** A failed `result` before any turn and before the `initialize` answer (an unknown `--resume`). */
+  #early: { readonly subtype: string; readonly text: string } | null = null;
   #wake: (() => void)[] = [];
   #control = 0;
   /** The open interrupt request's id and, once answered, its answer. */
@@ -152,9 +173,59 @@ export class ClaudeInstance {
       this.#answerInitialize(null);
       this.#turnOpen = false;
       this.#notify();
-      if (!this.#closed) Queue.offerUnsafe(this.#queue, { instance: this.#o.instance, event: { type: "exited", code: e.code, signal: e.signal ?? null } });
-      Queue.endUnsafe(this.#queue);
+      if (!this.#closed) this.#out({ type: "exited", code: e.code, signal: e.signal ?? null });
+      this.#end();
     });
+  }
+
+  #out(event: ProviderEvent): void {
+    if (this.#o.sink !== undefined) this.#o.sink.offer(event);
+    else Queue.offerUnsafe(this.#queue, { instance: this.#o.instance, event });
+  }
+
+  #end(): void {
+    if (this.#o.sink !== undefined) this.#o.sink.end();
+    else Queue.endUnsafe(this.#queue);
+  }
+
+  /**
+   * Whether the last `startTurn`'s user line reached the CLI's stdin: true only once the write's
+   * callback reports success (an asynchronous EPIPE is false; a refused turn wrote none).
+   */
+  turnWritten(): Promise<boolean> {
+    return this.#turnWritten;
+  }
+
+  /** `line` to the CLI's stdin, settled by the write's callback (false on any error). */
+  #writeAcked(line: string): Promise<boolean> {
+    if (this.#exit !== null || this.#closed) return Promise.resolve(false);
+    return new Promise((resolve) => {
+      try {
+        this.#o.child.stdin.write(line, (e) => resolve(e === null || e === undefined));
+      } catch {
+        resolve(false);
+      }
+    });
+  }
+
+  /** One of the adapter's own events for the open turn, behind the init gate like `turnStarted`. */
+  notice(event: ProviderEvent): void {
+    if (!this.#closed && !this.#refused) this.#emit(event);
+  }
+
+  /** A turn is open (its `result` not yet seen). */
+  busy(): boolean {
+    return this.#turnOpen && this.#exit === null && !this.#closed && !this.#refused;
+  }
+
+  /** The process has exited. */
+  exited(): boolean {
+    return this.#exit !== null;
+  }
+
+  /** The failed `result` the process wrote before any turn and before answering `initialize`, if any. */
+  early(): { readonly subtype: string; readonly text: string } | null {
+    return this.#early;
   }
 
   #notify(): void {
@@ -174,7 +245,7 @@ export class ClaudeInstance {
   /** Events to the runtime now. */
   #deliver(events: readonly ProviderEvent[]): void {
     if (this.#closed) return;
-    for (const event of events) Queue.offerUnsafe(this.#queue, { instance: this.#o.instance, event });
+    for (const event of events) this.#out(event);
   }
 
   /** The adapter's own events: held until the gate lets the instance's lines through. */
@@ -219,6 +290,12 @@ export class ClaudeInstance {
         this.#notify();
       }
       return;
+    }
+    // Task 0 (unsigned, 2.1.321): `--resume=<uuid>` of an id the config dir lacks answers with
+    // `result {subtype: "error_during_execution", is_error: true, num_turns: 0}` before the
+    // `initialize` answer, then exits 1 (the adapter maps it as a lost transcript).
+    if (l.kind === "result" && l.is_error && !this.#turnOpen && !this.#inited && this.#early === null) {
+      this.#early = { subtype: l.subtype, text: (l.errors?.[0] ?? l.result ?? "").slice(0, 200) };
     }
     if (l.kind === "controlCancel") {
       // Through the gate: a cancel of a held request drops it there (no card, no answer).
@@ -302,9 +379,10 @@ export class ClaudeInstance {
     if (!this.#turnOpen || this.#gone() !== null) return;
     const { child } = this.#o;
     this.#interrupting = true;
-    // TODO(7D Task 0 Step 1): that the `interrupt` request ends the turn with a `result` (and
-    // what the tool's process gets); modelled by fake-claude as an `error_during_execution`
-    // result after the `control_response` (`onInterrupt: "result"`, the default).
+    // Verified 2.1.321, Task 0 (s1b): the request is answered `{still_queued: []}` at once, a
+    // tool in flight is stopped (its error `tool_result`, then `[Request interrupted by user for
+    // tool use]`) and the turn ends `result {error_during_execution, terminal_reason:
+    // "aborted_tools", result: null}`; fake-claude plays that shape (`onInterrupt: "result"`).
     const ask: { readonly id: string; answer?: "success" | "error" } = { id: `finisher-interrupt-${++this.#control}` };
     this.#interruptAsk = ask;
     this.#write(encodeControl(ask.id, { subtype: "interrupt" }));
@@ -323,24 +401,27 @@ export class ClaudeInstance {
   /**
    * Ends the instance (its scope closes): later lines are dropped; stdin's end lets the process
    * finish its transcript (`--resume` reads it) for up to `closeGraceMs`, then it is killed.
+   * True once the process is gone; false when it is still running `exitWaitMs` after the kill.
    */
-  async close(): Promise<void> {
+  async close(): Promise<boolean> {
     if (!this.#closed) {
       this.#closed = true;
       this.#pending = [];
       this.#notify();
     }
-    Queue.endUnsafe(this.#queue);
+    this.#end();
     try {
       this.#o.child.stdin.end();
     } catch {
       // Already closed.
     }
-    const grace = this.#o.closeGraceMs ?? CLOSE_GRACE_MS;
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    const exited = await Promise.race([this.#o.child.exited.then(() => true), new Promise<boolean>((r) => (timer = setTimeout(() => r(false), grace)))]);
-    clearTimeout(timer);
-    if (!exited) this.#o.child.kill("SIGKILL");
+    const gone = (ms: number) => {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      return Promise.race([this.#o.child.exited.then(() => true), new Promise<boolean>((r) => (timer = setTimeout(() => r(false), ms)))]).finally(() => clearTimeout(timer));
+    };
+    if (await gone(this.#o.closeGraceMs ?? CLOSE_GRACE_MS)) return true;
+    this.#o.child.kill("SIGKILL");
+    return gone(this.#o.exitWaitMs ?? CLOSE_EXIT_WAIT_MS);
   }
 
   session(): ProviderSession {
@@ -356,6 +437,7 @@ export class ClaudeInstance {
           if (this.#turnOpen) return fail(finError("SESSION_BUSY", "a Claude Code turn is running", { instance: o.instance }));
           // Decision 15: the CLI's calls are invisible, so the gate is asked once per turn; the
           // turn's `usage` settles the reservation. A refusal ends the turn before any line.
+          this.#turnWritten = Promise.resolve(false);
           const g = o.gate?.beforeCall(o.projection?.() ?? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, reasoning: 0 });
           if (g !== undefined && !g.ok) {
             const e = g.error;
@@ -367,7 +449,7 @@ export class ClaudeInstance {
           this.#turnOpen = true;
           this.#interrupting = false;
           this.#emit({ type: "turnStarted" });
-          this.#write(encodeUser([...(i.facts === undefined || i.facts === "" ? [] : [i.facts]), i.text], o.uuid));
+          this.#turnWritten = this.#writeAcked(encodeUser([...(i.facts === undefined || i.facts === "" ? [] : [i.facts]), i.text], o.uuid));
           return Effect.void;
         }),
       steer: (i: UserInput) =>

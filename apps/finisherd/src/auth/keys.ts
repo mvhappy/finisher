@@ -69,7 +69,8 @@ function sleepSync(ms: number): void {
 /** The `node:fs` calls a key write makes (tests inject a recording one). */
 export interface KeyFs {
   openSync: typeof fs.openSync;
-  writeSync: (fd: number, data: string) => number;
+  /** Writes some of `data` (a short write is possible), returning how many bytes. */
+  writeSync: (fd: number, data: Uint8Array) => number;
   fsyncSync: typeof fs.fsyncSync;
   closeSync: typeof fs.closeSync;
   renameSync: typeof fs.renameSync;
@@ -91,20 +92,29 @@ export function writeKeyFile(path: string, key: Buffer, platform: NodeJS.Platfor
 }
 
 /**
- * `writeKeyFile` for any text (`agent/claude/account.ts`'s state): a temp file unique to this
- * call, 0600 at every write, fsynced, renamed over `path` (retried on Windows), the directory
- * fsynced.
+ * `writeKeyFile` for any text (`agent/claude/account.ts`'s state, `agent/provider-pid.ts`): a
+ * temp file unique to this call, 0600 at every write, written whole (a short write is continued;
+ * one that writes nothing fails), fsynced, renamed over `path` (retried on Windows), the
+ * directory fsynced.
  */
 export function writePrivateFile(path: string, text: string, platform: NodeJS.Platform = process.platform, io: KeyFs = REAL_FS): void {
   const tmp = `${path}.${process.pid}.${randomBytes(6).toString("hex")}.tmp`;
   io.rmSync(tmp, { force: true });
   const fd = io.openSync(tmp, "wx", 0o600);
   try {
-    io.writeSync(fd, text);
+    const bytes = Buffer.from(text, "utf8");
+    for (let done = 0; done < bytes.byteLength; ) {
+      const n = io.writeSync(fd, bytes.subarray(done));
+      if (!(n > 0)) throw new Error(`short write: ${done} of ${bytes.byteLength} bytes of ${path}`);
+      done += n;
+    }
     io.fsyncSync(fd);
-  } finally {
+  } catch (e) {
     io.closeSync(fd);
+    io.rmSync(tmp, { force: true });
+    throw e;
   }
+  io.closeSync(fd);
   if (platform !== "win32") io.chmodSync(tmp, 0o600);
   for (let attempt = 0; ; attempt++) {
     try {

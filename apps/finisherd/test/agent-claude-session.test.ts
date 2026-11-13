@@ -17,6 +17,11 @@ import { accountCheck, accountKey, ClaudeAccounts } from "../src/agent/claude/ac
 import { CLAUDE_FLOOR } from "../src/agent/claude/detect.ts";
 import { ClaudeModelCache } from "../src/agent/claude/models.ts";
 import { readProbeCache } from "../src/agent/claude/probe.ts";
+import { spawn } from "node:child_process";
+import * as fs from "node:fs";
+import type { KeyFs } from "../src/auth/keys.ts";
+import { PROVIDER_PID } from "../src/agent/provider-pid.ts";
+import { processStart } from "../src/sandbox/process-start.ts";
 import { openSessionSandbox, type SandboxedChild, type SessionSandbox, type SessionSandboxDeps, type SpawnOptions } from "../src/agent/sandbox.ts";
 import { resolveFinPath } from "../src/agent/settings.ts";
 import { type SandboxStatus, setSandboxStatusSource } from "../src/sandbox/status.ts";
@@ -336,7 +341,7 @@ interface Watched {
   readonly provider: ProviderSession;
   readonly events: ProviderEvent[];
   readonly kills: { signal: string; at: number }[];
-  readonly spawns: { argv: readonly string[]; opts: SpawnOptions }[];
+  readonly spawns: { argv: readonly string[]; opts: SpawnOptions; pid: number; at: number; exitedAt?: number }[];
   readonly serverData: string;
   readonly binary: string;
   readonly models: ClaudeModelCache;
@@ -361,6 +366,17 @@ interface WatchOptions {
   readonly account?: string;
   /** Detection's account hash (its `auth status` named one). */
   readonly accountHash?: string;
+  /** A kill reaches the child this much later (the launchers' SIGHUP and reap). */
+  readonly killDelayMs?: number;
+  readonly idleCloseMs?: number;
+  readonly closeGraceMs?: number;
+  readonly exitWaitMs?: number;
+  readonly pidIo?: KeyFs;
+  readonly processStart?: (pid: number) => string | null;
+  /** The session's nodes (a resumed session's synthetic results). */
+  readonly nodes?: readonly Node[];
+  /** A user line's write reports an asynchronous failure (EPIPE) after its bytes were passed on. */
+  readonly failUserLines?: boolean;
 }
 
 /** `openWatched` whose open may fail: then its error and what was spawned. */
@@ -386,16 +402,36 @@ async function openWatched(script: Record<string, unknown>, opts: WatchOptions &
     ...box,
     spawn: (argv, o) =>
       Effect.map(box.spawn(argv, o), (child): SandboxedChild => {
-        spawns.push({ argv, opts: o });
+        const spawn: Watched["spawns"][number] = { argv, opts: o, pid: child.pid, at: Date.now() };
+        spawns.push(spawn);
+        // The bytes go to the CLI, but a user line's write reports failure (the stream stays usable).
+        const epipe = () => Object.assign(new Error("write EPIPE"), { code: "EPIPE" });
+        const failing = (chunk: unknown, a?: unknown, b?: unknown) => {
+          const done = (typeof a === "function" ? a : b) as ((e?: Error | null) => void) | undefined;
+          const user = String(chunk).includes('"type":"user"');
+          return child.stdin.write(chunk as string, (e) => done?.(user ? epipe() : e));
+        };
+        const stdin =
+          opts.failUserLines === true
+            ? new Proxy(child.stdin, {
+                get: (t, k) => {
+                  if (k === "write") return failing;
+                  const v = Reflect.get(t, k, t) as unknown;
+                  return typeof v === "function" ? (v as (...x: unknown[]) => unknown).bind(t) : v;
+                },
+              })
+            : child.stdin;
         return {
           pid: child.pid,
-          stdin: child.stdin,
+          stdin,
           stdout: child.stdout,
           stderr: child.stderr,
-          exited: child.exited,
+          exited: child.exited.then((e) => ((spawn.exitedAt = Date.now()), e)),
           kill: (signal = "SIGTERM") => {
             kills.push({ signal, at: Date.now() });
-            if (opts.keepAlive !== true) child.kill(signal);
+            if (opts.keepAlive === true) return;
+            if (opts.killDelayMs === undefined) child.kill(signal);
+            else setTimeout(() => child.kill(signal), opts.killDelayMs).unref();
           },
         };
       }),
@@ -408,6 +444,12 @@ async function openWatched(script: Record<string, unknown>, opts: WatchOptions &
     models,
     interruptWaitMs: opts.interruptWaitMs ?? 300,
     sigintGraceMs: opts.sigintGraceMs ?? 300,
+    ...(opts.idleCloseMs === undefined ? {} : { idleCloseMs: opts.idleCloseMs }),
+    ...(opts.closeGraceMs === undefined ? {} : { closeGraceMs: opts.closeGraceMs }),
+    ...(opts.exitWaitMs === undefined ? {} : { exitWaitMs: opts.exitWaitMs }),
+    ...(opts.pidIo === undefined ? {} : { pidIo: opts.pidIo }),
+    ...(opts.processStart === undefined ? {} : { processStart: opts.processStart }),
+    ...(opts.nodes === undefined ? {} : { nodes: () => opts.nodes! }),
     enabled: () => opts.enabled ?? true,
     detect: () => Effect.succeed({ path: binary, version: VERSION, floor: CLAUDE_FLOOR, signedIn: opts.signedIn ?? true, ...(opts.accountHash === undefined ? {} : { accountHash: opts.accountHash }) }),
   });
@@ -612,7 +654,7 @@ describe("review of Task 7", () => {
   });
 
   withFake("an interrupt after close sends nothing", async () => {
-    const w = await openWatched(TOOL_THEN_WAIT({ onInterrupt: "ignore", onSigint: "ignore" }), { keepAlive: true, interruptWaitMs: 5000 });
+    const w = await openWatched(TOOL_THEN_WAIT({ onInterrupt: "ignore", onSigint: "ignore" }), { keepAlive: true, interruptWaitMs: 5000, exitWaitMs: 300 });
     await run(w.provider.startTurn({ runId: "r1", text: "go" }));
     await waitFor(w, "toolStarted");
     const interrupted = run(w.provider.interrupt());
@@ -623,5 +665,148 @@ describe("review of Task 7", () => {
     // The wait ended with the close (no SIGINT); only the close's own kill after its grace.
     expect(w.kills.map((k) => k.signal)).toEqual(["SIGKILL"]);
     expect(Date.now() - t0).toBeLessThan(4000);
+  });
+});
+
+describe("review of Task 10", () => {
+  const TURN = { steps: [{ expect: "user", cumulativeUsage: { inputTokens: 1, outputTokens: 1 } }] };
+  /** A turn, then a process that does not notice stdin's end for a minute (the close's grace runs out). */
+  const TURN_THEN_DEAF = { steps: [...TURN.steps, { sleep: 60_000 }] };
+  const turns = (w: Watched) => w.events.filter((e) => e.type === "turnCompleted").length;
+  const killGroup = (pid: number) => {
+    try {
+      process.kill(-pid, "SIGKILL");
+    } catch {
+      // Gone.
+    }
+  };
+
+  withFake("a process that cannot be recorded in provider.pid is killed and the open fails", async () => {
+    // An injected write failure: the record's path is a directory the rename cannot replace.
+    const failed = await openWatched(TURN, { mayFail: true, before: (serverData) => mkdirSync(join(serverData, "agents", SESSION_ID, PROVIDER_PID, "x"), { recursive: true }) });
+    expect(failed.failure).toMatchObject({ code: "INTERNAL", details: { harness: "claudeCode", reason: "processNotRecorded" } });
+    expect(failed.spawns).toHaveLength(1);
+    const pid = failed.spawns[0]!.pid;
+    // No process left: the group was killed and its exit awaited before the failure.
+    expect(failed.spawns[0]!.exitedAt).toBeDefined();
+    expect(processStart(pid)).toBeNull();
+  });
+
+  /** A file layer whose writes take at most `limit` bytes per call. */
+  const shortWrites = (limit: number): KeyFs => ({ ...fs, writeSync: (fd, data) => fs.writeSync(fd, data, 0, Math.min(limit, data.byteLength)) });
+
+  withFake("second review: a short write of provider.pid is completed; one that writes nothing kills the process and fails the open", async () => {
+    const w = await openWatched(TURN, { pidIo: shortWrites(10) });
+    const rec = JSON.parse(readFileSync(join(w.serverData, "agents", SESSION_ID, PROVIDER_PID), "utf8")) as { processes: { pid: number }[] };
+    expect(rec.processes.map((p) => p.pid)).toEqual([w.spawns[0]!.pid]);
+    await w.close();
+    const failed = await openWatched(TURN, { mayFail: true, pidIo: shortWrites(0) });
+    expect(failed.failure).toMatchObject({ code: "INTERNAL", details: { reason: "processNotRecorded" } });
+    expect(failed.spawns).toHaveLength(1);
+    expect(failed.spawns[0]!.exitedAt).toBeDefined();
+    expect(processStart(failed.spawns[0]!.pid)).toBeNull();
+  });
+
+  withFake("second review: a note whose line never reached the CLI is not marked told, and the next resume tells it", async () => {
+    const n = (seq: number, kind: string, extra: Record<string, unknown>) => ({ id: `n${seq}`, sessionId: SESSION_ID, runId: "r", seq, kind, createdAt: seq, ...extra }) as unknown as Node;
+    const ns = [n(1, "toolCall", { providerId: "toolu_X", callId: "c1", payload: { tool: "Bash", input: {} } }), n(2, "toolResult", { callId: "c1", payload: { ok: false, code: "SESSION_INTERRUPTED", reason: "serverRestart", synthetic: true } })];
+    const told = (w: Watched) => w.events.filter((e) => e.type === "notice" && e.name === "interruptedDelivered");
+    const first = await openWatched(TURN);
+    await run(first.provider.startTurn({ runId: "r0", text: "go" }));
+    await waitFor(first, "turnCompleted");
+    await first.close();
+    // The write reports an asynchronous failure (EPIPE): no delivery is recorded, though the
+    // turn ran (the gate opened, so a delivery notice would have reached the runtime).
+    const broken = await openWatched(TURN, { resume: true, nodes: ns, failUserLines: true, closeGraceMs: 200 });
+    await run(broken.provider.startTurn({ runId: "r1", text: "go" }));
+    await waitFor(broken, "turnCompleted");
+    await new Promise((r) => setTimeout(r, 200));
+    expect(told(broken)).toEqual([]);
+    await broken.close();
+    // The crash's recovery resumes again from the same nodes: the note is sent, and now told.
+    const resumed = await openWatched(TURN, { resume: true, nodes: ns });
+    await run(resumed.provider.startTurn({ runId: "r2", text: "again" }));
+    await until(() => (told(resumed).length === 1 ? true : undefined));
+    expect(told(resumed)[0]).toMatchObject({ details: { toolUseIds: ["toolu_X"] } });
+    const lines = observed(resumed.serverData, SESSION_ID).at(-1)!.userLines as { content: { text?: string }[] }[];
+    expect(lines[0]!.content.map((b) => b.text ?? "").join("\n")).toContain("toolu_X (Bash): SESSION_INTERRUPTED");
+  });
+
+  withFake("third review: a process whose start time cannot be read is killed and the open fails", async () => {
+    const failed = await openWatched(TURN, { mayFail: true, processStart: () => null });
+    expect(failed.failure).toMatchObject({ code: "INTERNAL", details: { reason: "processNotRecorded" } });
+    expect(failed.spawns).toHaveLength(1);
+    expect(failed.spawns[0]!.exitedAt).toBeDefined();
+    expect(processStart(failed.spawns[0]!.pid)).toBeNull();
+  });
+
+  withFake("third review: no process starts beside a recorded one still alive; each result's baseline is recorded", async () => {
+    const sleeper = spawn("sleep", ["60"], { detached: true, stdio: "ignore" });
+    sleeper.unref();
+    try {
+      const refused = await openWatched(TURN, {
+        mayFail: true,
+        resume: true,
+        before: (serverData) => {
+          const dir = join(serverData, "agents", SESSION_ID);
+          mkdirSync(dir, { recursive: true });
+          writeFileSync(join(dir, PROVIDER_PID), JSON.stringify({ v: 1, processes: [{ instance: "01OLD", pid: sleeper.pid, start: processStart(sleeper.pid!) }] }));
+        },
+      });
+      expect(refused.failure).toMatchObject({ code: "PROVIDER_UNAVAILABLE", details: { reason: "previousProcessAlive" } });
+      expect(refused.spawns).toEqual([]);
+    } finally {
+      sleeper.kill("SIGKILL");
+    }
+    await until(() => (processStart(sleeper.pid!) === null ? true : undefined));
+    const w = await openWatched({ steps: [{ expect: "user", cumulativeUsage: { inputTokens: 3, outputTokens: 1, costUsd: 0.002 } }, { sleep: 60_000 }] });
+    await run(w.provider.startTurn({ runId: "r1", text: "go" }));
+    await waitFor(w, "turnCompleted");
+    const rec = JSON.parse(readFileSync(join(w.serverData, "agents", SESSION_ID, PROVIDER_PID), "utf8")) as { processes: { pid: number; baseline?: { cli: { costMicros: number; input: number } } }[] };
+    expect(rec.processes.find((p) => p.pid === w.spawns[0]!.pid)?.baseline?.cli).toMatchObject({ input: 3, costMicros: 2_000 });
+    try {
+      process.kill(-w.spawns[0]!.pid, "SIGKILL");
+    } catch {
+      // Gone.
+    }
+  });
+
+  withFake("the lazy resume starts only once the idle-closed process has exited", async () => {
+    // The kill reaches the process 1.5 s after it is asked for (the launchers' SIGHUP, then the reap).
+    const w = await openWatched(TURN_THEN_DEAF, { idleCloseMs: 200, closeGraceMs: 100, killDelayMs: 1500, exitWaitMs: 5000 });
+    await run(w.provider.startTurn({ runId: "r1", text: "go" }));
+    await waitFor(w, "turnCompleted");
+    await until(() => (w.kills.length === 1 ? true : undefined));
+    expect(w.kills[0]!.signal).toBe("SIGKILL");
+    await run(w.provider.startTurn({ runId: "r2", text: "again" }));
+    expect(w.spawns).toHaveLength(2);
+    expect(w.spawns[1]!.argv.some((a) => a.startsWith("--resume="))).toBe(true);
+    // Never two processes on one transcript: the first one's exit came before the second spawn.
+    expect(w.spawns[0]!.exitedAt).toBeDefined();
+    expect(w.spawns[1]!.at).toBeGreaterThanOrEqual(w.spawns[0]!.exitedAt!);
+    await until(() => (turns(w) === 2 ? true : undefined));
+    killGroup(w.spawns[1]!.pid);
+  });
+
+  withFake("a closed process that never exits fails the reopen instead of overlapping it", async () => {
+    const w = await openWatched(TURN_THEN_DEAF, { idleCloseMs: 200, closeGraceMs: 100, keepAlive: true, exitWaitMs: 300 });
+    const pid = () => w.spawns[0]!.pid;
+    try {
+      await run(w.provider.startTurn({ runId: "r1", text: "go" }));
+      await waitFor(w, "turnCompleted");
+      await until(() => (w.kills.length === 1 ? true : undefined));
+      const reopened = await Effect.runPromiseExit(w.provider.startTurn({ runId: "r2", text: "again" }));
+      expect(Exit.isFailure(reopened)).toBe(true);
+      expect(JSON.stringify(reopened)).toContain("previousProcessAlive");
+      expect(w.spawns).toHaveLength(1);
+      expect(processStart(pid())).not.toBeNull();
+    } finally {
+      killGroup(pid());
+    }
+    // Gone at last: the next turn resumes.
+    await until(async () => (Exit.isSuccess(await Effect.runPromiseExit(w.provider.startTurn({ runId: "r3", text: "now" }))) ? true : undefined));
+    expect(w.spawns).toHaveLength(2);
+    await until(() => (turns(w) === 2 ? true : undefined));
+    killGroup(w.spawns[1]!.pid);
   });
 });
