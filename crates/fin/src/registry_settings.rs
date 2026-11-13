@@ -52,7 +52,7 @@ pub const SETTINGS_COMMANDS: &[Command] = &[
     cmd(
         "effect.add",
         "effect",
-        "<i> <colorAdjust|lut|blur> [--at <n>] [--set p=v]...",
+        "<i> <colorAdjust|lut|blur|eq|compressor|gate|deEsser> [--at <n>] [--set p=v]...",
         "add an effect to an item; binds $fx",
         true,
         || schema_of::<effect::AddArgs>("effect.add"),

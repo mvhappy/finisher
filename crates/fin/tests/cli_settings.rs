@@ -343,8 +343,17 @@ fn schema_param_lists_the_registry() {
             .as_array()
             .unwrap()
             .iter()
-            .any(|p| p["path"] == "blur.radius" && p["unit"] == "px")
+            .any(|p| p["path"] == "blur.radius" && p["unit"] == "px" && p["domain"] == "visual")
     );
+    // Audio effects (plan 6C Decision 13) carry their domain; item paths have none.
+    let comp = run(&["schema", "param", "--scope", "compressor"]);
+    let comp = comp.json["params"].as_array().unwrap();
+    assert!(comp.iter().any(|p| p["path"] == "compressor.ratio"));
+    assert!(comp.iter().all(|p| p["domain"] == "audio"), "{comp:?}");
+    let eq = run(&["schema", "param", "--scope", "eq", "--path", "eq.band8"]);
+    assert_eq!(eq.json["count"], 4);
+    let item = run(&["schema", "param", "--scope", "item", "--path", "opacity"]);
+    assert!(item.json["params"][0].get("domain").is_none());
     let captions = run(&["schema", "param", "--scope", "caption"]);
     assert!(captions.json["count"].as_u64().unwrap() > 0);
     let bad = run(&["schema", "param", "--scope", "planet"]);

@@ -21,7 +21,8 @@ pub enum EffectCmd {
     Ls(super::inspect::EffectLsArgs),
 }
 
-/// Add an effect of `kind` (colorAdjust, lut, blur) to an item; binds $fx.
+/// Add an effect of `kind` to an item; binds $fx. Visual kinds (colorAdjust, lut, blur) go on
+/// items of video tracks, audio kinds (eq, compressor, gate, deEsser) on clips of audio tracks.
 #[derive(Debug, Clone, Args, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct AddArgs {
