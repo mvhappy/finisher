@@ -868,39 +868,49 @@ fn upcast_v4_record_is_identity() {
 /// never a v4 writer's), while an item's `transform.rotation` is v4 as ever.
 #[test]
 fn upcast_v4_record_refuses_v5_shapes() {
-    let v4 = |ops: Value| -> Value {
-        let mut r = v1_record(vec![], vec![], vec![], json!({}));
-        r["schemaVersion"] = json!(4);
-        r["intent"]["schemaVersion"] = json!(4);
-        r["intent"]["ops"] = ops.clone();
-        r["resolved"] = ops;
-        r
-    };
-    let reprobe = json!([{ "op": "asset.reprobe", "asset": "a1" }]);
-    let e = fin_core::upcast_record(v4(reprobe)).unwrap_err();
-    assert_eq!(
-        (e.code.as_str(), &e.details["schemaVersion"]),
-        ("INVALID_FORMAT", &json!(4))
-    );
-    for field in ["display", "rotation", "pixelAspect"] {
-        let mut video = json!({ "width": 1920, "height": 1080, "rate": "30" });
-        video[field] = match field {
-            "display" => json!({ "width": 1080, "height": 1920 }),
-            "rotation" => json!(90),
-            _ => json!("1"),
+    // Each of the three op lists on its own (the others empty), so a scan of any one list
+    // dropped fails here.
+    for at in ["/intent/ops", "/resolved", "/inverse"] {
+        let v4 = |ops: Value| -> Value {
+            let mut r = v1_record(vec![], vec![], vec![], json!({}));
+            r["schemaVersion"] = json!(4);
+            r["intent"]["schemaVersion"] = json!(4);
+            *r.pointer_mut(at).unwrap() = ops;
+            r
         };
-        let add = json!([{ "op": "asset.add", "id": "$a", "kind": "media", "path": "a.mov",
-                           "fingerprint": "fp", "duration": "1", "video": video }]);
-        let e = fin_core::upcast_record(v4(add)).unwrap_err();
-        assert_eq!(e.code, "INVALID_FORMAT", "{field}");
+        let reprobe = json!([{ "op": "asset.reprobe", "asset": "a1" }]);
+        let e = fin_core::upcast_record(v4(reprobe)).unwrap_err();
+        assert_eq!(
+            (e.code.as_str(), &e.details["schemaVersion"]),
+            ("INVALID_FORMAT", &json!(4)),
+            "{at}"
+        );
+        for field in ["display", "rotation", "pixelAspect"] {
+            let mut video = json!({ "width": 1920, "height": 1080, "rate": "30" });
+            video[field] = match field {
+                "display" => json!({ "width": 1080, "height": 1920 }),
+                "rotation" => json!(90),
+                _ => json!("1"),
+            };
+            let add = json!([{ "op": "asset.add", "id": "$a", "kind": "media", "path": "a.mov",
+                               "fingerprint": "fp", "duration": "1", "video": video }]);
+            let e = fin_core::upcast_record(v4(add)).unwrap_err();
+            assert_eq!(e.code, "INVALID_FORMAT", "{at} {field}");
+        }
+        let turned = json!([{ "op": "param.set", "item": "c1", "path": "transform.rotation",
+                              "value": 90.0 }]);
+        assert!(fin_core::upcast_record(v4(turned)).is_ok(), "{at}");
+        // A graphic's text slots are user data: a slot named `op` holding `asset.reprobe` is
+        // v4 text, not an op, and comes through unchanged.
+        let slots = json!([{ "op": "item.insert", "id": "$g", "track": "t1", "at": "0",
+                             "duration": "1", "mode": "ripple", "kind": "graphic",
+                             "asset": "a1", "slots": { "op": "asset.reprobe" } }]);
+        let up = fin_core::upcast_record(v4(slots.clone())).unwrap();
+        let got = serde_json::to_value(&up).unwrap();
+        assert_eq!(
+            got.pointer(at).unwrap()[0]["slots"],
+            slots[0]["slots"],
+            "{at}"
+        );
     }
-    let turned = json!([{ "op": "param.set", "item": "c1", "path": "transform.rotation",
-                          "value": 90.0 }]);
-    assert!(fin_core::upcast_record(v4(turned)).is_ok());
-    // A graphic's text slots are user data: a slot named `op` holding `asset.reprobe` is v4
-    // text, not an op.
-    let slots = json!([{ "op": "item.insert", "id": "$g", "track": "t1", "at": "0",
-                         "duration": "1", "mode": "ripple", "kind": "graphic", "asset": "a1",
-                         "slots": { "op": "asset.reprobe" } }]);
-    assert!(fin_core::upcast_record(v4(slots)).is_ok());
 }
