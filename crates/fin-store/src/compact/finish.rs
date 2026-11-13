@@ -1,16 +1,22 @@
 //! Phase 2 (module docs of `compact`): after the grace period, check a manifest's packs and
 //! snapshot against a fresh read of the folder, delete the segments they replace, then the
-//! manifest.
+//! manifest. The reads, the "would a verdict change" resolutions and the fences run without
+//! the store; the check against the database and every delete with it (module docs,
+//! "Locking").
 
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::io;
+use std::path::Path;
 
-use super::manifest::Manifest;
-use super::view::{self, View};
-use super::{Fence, Step, fence, hit};
+use super::manifest::{self, Manifest};
+use super::planned::{Planned, Point};
+use super::view::{self, Scanned, View};
+use super::{Fence, Step, hit};
 use crate::chain::{ForkSide, Known, Resolution, SegRef, resolve};
 use crate::names::ManifestName;
-use crate::{Store, StoreError, fsio};
+use crate::snapfile::Snapshot;
+use crate::storage_kind::StorageKind;
+use crate::{Store, StoreAccess, StoreError, fsio};
 
 /// What checking a manifest against the folder decided.
 enum Checked {
@@ -20,73 +26,157 @@ enum Checked {
     Abandon(String),
 }
 
-/// Phase 2 for manifest `name`. `Step::Done(n)`: `n` files deleted and the manifest with them.
-pub(super) fn run(
-    store: &mut Store,
+/// What the check with the store hands the deletes: the view, the files to delete, and what
+/// the verdicts are resolved with (the storage kind; this database's `Known`).
+type ToDelete = (View, Vec<String>, StorageKind, Known);
+
+/// Phase 2 for manifest `name` through `access`. `Step::Done(n)`: `n` files deleted and the
+/// manifest with them. `None`: `access` lost the store.
+pub(super) fn run<A: StoreAccess>(
+    access: &mut A,
+    planned: &Planned,
     name: &ManifestName,
     m: &Manifest,
-) -> Result<Step<u32>, StoreError> {
-    // A manifest written at an epoch above ours: someone holds a newer lease.
-    if let Fence::Lost(why) = fence(store, m.epoch) {
-        return Ok(Step::Stopped(why));
+) -> Result<Option<Step<u32>>, StoreError> {
+    let (vplan, dir) = with!(access, |s| -> Result<_, StoreError> {
+        let dir = s.project_dir.join(".finisher").join("compaction");
+        Ok((view::plan(s, &m.branch)?, dir))
+    })?;
+    // Without the store: the fence (a manifest written at an epoch above ours: someone holds
+    // a newer lease), the manifest again, the branch afresh, the snapshot it names.
+    if let Fence::Lost(why) = planned.check(m.epoch) {
+        return Ok(Some(Step::Stopped(why)));
     }
-    let v = match view::read(store, &m.branch)? {
-        Ok(v) => v,
-        Err(why) => return Ok(Step::Wait(why)),
+    let path = dir.join(name.to_string());
+    match manifest::read(&path) {
+        manifest::Read::Ok(again) if again == *m => {}
+        manifest::Read::Ok(_) => return Ok(Some(Step::Abandon("the manifest changed".into()))),
+        manifest::Read::Gone => return Ok(Some(Step::Gone)),
+        manifest::Read::Unreadable(why) => return Ok(Some(Step::Wait(why))),
+    }
+    let scanned = match vplan.scan() {
+        Ok(s) => s,
+        Err(why) => return Ok(Some(Step::Wait(why))),
     };
-    let files = match check(store, m, &v)? {
-        Checked::Delete(files) => files,
-        Checked::Wait(why) => return Ok(Step::Wait(why)),
-        Checked::Abandon(why) => return Ok(Step::Abandon(why)),
+    let snap = m
+        .snapshot
+        .as_ref()
+        .and_then(|n| scanned.snap(n))
+        .map(|s| super::pack::read_snapshot(&s.path));
+    planned.at(Point::CompactRead);
+    // With it: the read checked against the database as it is now.
+    let (v, files, kind, ours) = match with!(access, |s| check_now(s, planned, m, scanned, snap))? {
+        Ok(checked) => checked,
+        Err(step) => return Ok(Some(step)),
     };
-    if let Some(why) = verdict_changes(store, &m.branch, &v, &files)? {
-        return Ok(Step::Abandon(why));
+    // Without it again (resolutions only): the deletes below run only while nothing changed
+    // since the check, so `ours` is still this database's.
+    if let Some(why) = verdict_changes(kind, &v, &files, ours) {
+        return Ok(Some(Step::Abandon(why)));
     }
     let mut deleted = 0;
     for file in &files {
+        planned.at(Point::CompactDelete);
         // The fence, right before every delete: the folder belongs to whoever holds the lease.
-        if let Fence::Lost(why) = fence(store, m.epoch) {
-            return Ok(Step::Stopped(why));
+        if let Fence::Lost(why) = planned.check(m.epoch) {
+            return Ok(Some(Step::Stopped(why)));
         }
         let path = v.seg_dir.join(file);
-        if let Err(e) = crate::reserved::no_links(&v.seg_dir) {
-            return Ok(Step::Wait(e.to_string()));
+        match with!(access, |s| delete_now(
+            s, planned, m.epoch, &v.seg_dir, &path, true
+        ))? {
+            Ok(true) => deleted += 1,
+            Ok(false) => {}
+            Err(step) => return Ok(Some(step)),
         }
-        match std::fs::remove_file(&path) {
-            Ok(()) => deleted += 1,
-            Err(e) if e.kind() == io::ErrorKind::NotFound => {}
-            Err(e) => return Ok(Step::Wait(format!("cannot delete {}: {e}", path.display()))),
-        }
-        #[cfg(any(test, feature = "test-hooks"))]
-        if let Some(f) = store.compact.on_delete.as_mut() {
-            f(&path);
-        }
-        hit(store, super::CompactFail::AfterDelete)?;
     }
     if deleted > 0
         && let Err(e) = fsio::sync_dir(&v.seg_dir)
     {
-        return Ok(Step::Wait(format!(
+        return Ok(Some(Step::Wait(format!(
             "cannot sync {}: {e}",
             v.seg_dir.display()
-        )));
+        ))));
     }
-    hit(store, super::CompactFail::BeforeManifestDelete)?;
-    if let Fence::Lost(why) = fence(store, m.epoch) {
-        return Ok(Step::Stopped(why));
+    with!(access, |s| hit(s, super::CompactFail::BeforeManifestDelete))?;
+    if let Fence::Lost(why) = planned.check(m.epoch) {
+        return Ok(Some(Step::Stopped(why)));
     }
-    let dir = store.project_dir.join(".finisher").join("compaction");
-    let path = dir.join(name.to_string());
-    if let Err(e) = crate::reserved::no_links(&dir) {
-        return Ok(Step::Wait(e.to_string()));
-    }
-    match std::fs::remove_file(&path) {
-        Ok(()) => {}
-        Err(e) if e.kind() == io::ErrorKind::NotFound => {}
-        Err(e) => return Ok(Step::Wait(format!("cannot delete {}: {e}", path.display()))),
+    if let Err(step) = with!(access, |s| delete_now(
+        s, planned, m.epoch, &dir, &path, false
+    ))? {
+        return Ok(Some(step));
     }
     let _ = fsio::sync_dir(&dir);
-    Ok(Step::Done(deleted))
+    Ok(Some(Step::Done(deleted)))
+}
+
+/// With the store: unless overtaken, `scanned` checked against the database now
+/// ([`Scanned::finish`], [`check`]), and this database's `Known` for the verdicts.
+fn check_now(
+    store: &mut Store,
+    planned: &Planned,
+    m: &Manifest,
+    scanned: Scanned,
+    snap: Option<Result<Snapshot, String>>,
+) -> Result<Result<ToDelete, Step<u32>>, StoreError> {
+    if !planned.fresh(store) {
+        return Ok(Err(Step::Overtaken));
+    }
+    let v = match scanned.finish(store)? {
+        Ok(v) => v,
+        Err(why) => return Ok(Err(Step::Wait(why))),
+    };
+    let files = match check(store, m, &v, snap)? {
+        Checked::Delete(files) => files,
+        Checked::Wait(why) => return Ok(Err(Step::Wait(why))),
+        Checked::Abandon(why) => return Ok(Err(Step::Abandon(why))),
+    };
+    let kind = store.import.kind;
+    let ours = crate::import::known_now(&store.conn, &m.branch, true, kind)?;
+    Ok(Ok((v, files, kind, ours)))
+}
+
+/// Deletes `path` (in `dir`) with the store, only while nothing changed since the check
+/// (`planned`: the same `io_gen` and lease) and the lease is still in force at `min_epoch`:
+/// the delete then rests on the fresh read checked against the database as it is now (module
+/// docs, "Locking"). `Ok(true)`: deleted; `Ok(false)`: absent already. `replaced`: a replaced
+/// segment (the test hooks).
+fn delete_now(
+    store: &mut Store,
+    planned: &Planned,
+    min_epoch: u64,
+    dir: &Path,
+    path: &Path,
+    replaced: bool,
+) -> Result<Result<bool, Step<u32>>, StoreError> {
+    if !planned.fresh(store) {
+        return Ok(Err(Step::Overtaken));
+    }
+    if let Fence::Lost(why) = planned.held(store, min_epoch) {
+        return Ok(Err(Step::Stopped(why)));
+    }
+    if let Err(e) = crate::reserved::no_links(dir) {
+        return Ok(Err(Step::Wait(e.to_string())));
+    }
+    let gone = match std::fs::remove_file(path) {
+        Ok(()) => true,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => false,
+        Err(e) => {
+            return Ok(Err(Step::Wait(format!(
+                "cannot delete {}: {e}",
+                path.display()
+            ))));
+        }
+    };
+    if replaced {
+        #[cfg(any(test, feature = "test-hooks"))]
+        if let Some(f) = store.compact.on_delete.as_mut() {
+            f(path);
+        }
+        hit(store, super::CompactFail::AfterDelete)?;
+    }
+    Ok(Ok(gone))
 }
 
 /// Checks everything before anything is deleted:
@@ -103,7 +193,12 @@ pub(super) fn run(
 ///
 /// Missing files and a database behind the folder wait; anything that contradicts the
 /// manifest abandons it (nothing is deleted, ever, for it).
-fn check(store: &Store, m: &Manifest, v: &View) -> Result<Checked, StoreError> {
+fn check(
+    store: &Store,
+    m: &Manifest,
+    v: &View,
+    snap_read: Option<Result<Snapshot, String>>,
+) -> Result<Checked, StoreError> {
     let mut records: HashMap<String, &[u8]> = HashMap::new();
     // Replaced hash → the highest epoch of a listed pack that replaces it.
     let mut replaces: HashMap<&str, u64> = HashMap::new();
@@ -156,7 +251,13 @@ fn check(store: &Store, m: &Manifest, v: &View) -> Result<Checked, StoreError> {
                 "snapshot {snap} is not on the resolved chain"
             )));
         }
-        if let Err(why) = super::pack::snapshot_matches(store, &m.branch, &s.path)? {
+        // Read without the store with the branch (`run`).
+        let read = snap_read.unwrap_or_else(|| Err(format!("{}: not read", s.path.display())));
+        let matches = match read {
+            Ok(snap) => super::pack::snapshot_matches(store, &m.branch, &s.path, &snap)?,
+            Err(why) => Err(why),
+        };
+        if let Err(why) = matches {
             return Ok(Checked::Abandon(why));
         }
     }
@@ -268,15 +369,11 @@ fn verdicts(res: &Resolution) -> Verdicts {
 /// Why deleting `files` would change what a reader decides, if it would: the branch resolved
 /// without them must give the same verdicts as with them, for a fresh reader
 /// (`Known::for_branch` at the branch's fork point)
-/// and for this database. (A file that is malformed only because its named predecessor is
-/// present could otherwise link through a pack once it is gone; a replaced segment at a
-/// higher epoch than its pack would lower a line's epoch.)
-fn verdict_changes(
-    store: &Store,
-    branch: &str,
-    v: &View,
-    files: &[String],
-) -> Result<Option<String>, StoreError> {
+/// and for this database (`ours`). (A file that is malformed only because its named
+/// predecessor is present could otherwise link through a pack once it is gone; a replaced
+/// segment at a higher epoch than its pack would lower a line's epoch.) Resolutions only: no
+/// store, no folder I/O.
+fn verdict_changes(kind: StorageKind, v: &View, files: &[String], ours: Known) -> Option<String> {
     let gone: HashSet<&str> = files
         .iter()
         .filter_map(|f| v.by_name.get(f).map(|s| s.hash()))
@@ -287,12 +384,10 @@ fn verdict_changes(
         .filter(|s| !gone.contains(s.hash()))
         .cloned()
         .collect();
-    let kind = store.import.kind;
     // These two suffice: the record graph is built from the files alone (no DB input), and
     // only epochs, malformed files or lying packs can change with the file set, all of which
     // show in the verdicts of a fresh reader; this DB's line and tail add the competitions
     // that only it sees.
-    let ours = crate::import::known_now(&store.conn, branch, true, kind)?;
     for (who, known) in [
         ("a fresh reader", Known::for_branch(kind, v.fork.clone())),
         ("this database", ours),
@@ -304,10 +399,10 @@ fn verdict_changes(
         };
         let now = verdicts(&resolve(&after, &known));
         if before != now {
-            return Ok(Some(format!(
+            return Some(format!(
                 "deleting the replaced segments would change what {who} resolves"
-            )));
+            ));
         }
     }
-    Ok(None)
+    None
 }

@@ -50,8 +50,12 @@
 //!   fails), marked with it only if the rows are still exactly the next unexported ones; it
 //!   exports what was pending when its delay passed;
 //! - the re-check's folder read runs without the store, applied only to the lease it checked;
-//!   acquisition, the backup and compaction run with it (compaction rereads the folder against
-//!   the database step by step before it deletes; it is not phased);
+//!   acquisition and the backup run with it;
+//! - compaction (a run, or the light tick's due check) is phased too: its listing, fresh reads,
+//!   writes and fences run without the store, its checks against the database and every
+//!   delete with it, and a run something overtook ends (`crate::compact` module docs,
+//!   "Locking"); [`Store::run_due_compaction_step_phased`] is the light tick's due step the
+//!   same way;
 //! - one tick at a time ([`Store::tick_phased`] returns `None` while another runs); a store
 //!   that goes away between two steps ends the tick there.
 //!

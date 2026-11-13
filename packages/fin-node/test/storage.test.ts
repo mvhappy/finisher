@@ -95,6 +95,28 @@ async function busyStatus(engine: Engine, operation: string) {
   );
 }
 
+/** The segment files of `main` in the project folder. */
+function segmentFiles(): string[] {
+  try {
+    return readdirSync(join(projectDir, ".finisher", "segments", "main"));
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Two exported segments and a manifest of them (`compact`'s phase 1) with no grace period:
+ * the next tick finds its phase 2 due.
+ */
+async function compactionDue(engine: Engine): Promise<void> {
+  engine.setCompactionGraceForTest(0);
+  for (const [i, id] of ["tx-1", "tx-2"].entries()) {
+    await engine.commit(tx(id, i, [addAsset]));
+    await until(() => (segmentFiles().length === i + 1 ? true : undefined), 10_000, `${id} exported`);
+  }
+  expect(JSON.parse(await engine.compact()).manifests).toHaveLength(1);
+}
+
 describe("storage", () => {
   test("status reports lease held and storage kind", async () => {
     const engine = keep(await Engine.create(serverData, projectDir, "Demo", "30"));
@@ -371,6 +393,48 @@ describe("storage", () => {
     expect(dead.details.reason).toBe("panicked");
     expect(b.maintenanceRunningForTest()).toBe(false);
   }, 20_000);
+
+  test("short calls answer while an automatic compaction step reads the folder", async () => {
+    const a = keep(await Engine.create(serverData, projectDir, "Demo", "30"));
+    await compactionDue(a);
+    a.hangNextTickForTest("compactRead");
+    a.setAutoIdleForTest(0);
+    await until(() => (a.tickHungForTest() ? true : undefined), 10_000, "the step to stop in its read");
+    // The store mutex is free while the step reads the folder afresh.
+    const started = Date.now();
+    expect(JSON.parse(await a.status()).compaction.pending).toHaveLength(1);
+    expect(JSON.parse(await a.commit(tx("tx-3", 2, [addAsset]))).rev).toBe(3);
+    expect(Date.now() - started).toBeLessThan(1_000);
+    a.releaseTickForTest();
+    // Then it deletes the replaced segments (the commit meanwhile changes none of its checks).
+    await until(
+      async () => (JSON.parse(await a.status()).compaction.pending.length === 0 ? true : undefined),
+      10_000,
+      "the manifest finished",
+    );
+    expect(JSON.parse(await a.verify()).ok).toBe(true);
+    const b = keep(await Engine.open(join(tmp, "server-data-2"), projectDir));
+    await until(async () => ((await b.head("main")) === 3 ? true : undefined), 15_000, "every record at b");
+  }, 40_000);
+
+  test("a panic in an automatic compaction step's folder I/O marks the engine panicked", async () => {
+    const a = keep(await Engine.create(serverData, projectDir, "Demo", "30"));
+    await compactionDue(a);
+    const events = listen(a);
+    a.panicNextTickIoForTest("compactRead");
+    a.setAutoIdleForTest(0);
+    const fatal = await until(() => events.find((e) => e.type === "error"), 10_000, "the error event");
+    expect(fatal.fatal).toBe(true);
+    expect((fatal.error as { code: string }).code).toBe("INTERNAL");
+    const dead = await rejection(a.head("main"));
+    expect(dead.code).toBe("ENGINE_CLOSED");
+    expect(dead.details.reason).toBe("panicked");
+    expect(a.maintenanceRunningForTest()).toBe(false);
+    // Nothing was deleted: the project reopens whole.
+    const again = keep(await Engine.open(serverData, projectDir));
+    expect(await again.head("main")).toBe(2);
+    expect(JSON.parse(await again.verify()).ok).toBe(true);
+  }, 30_000);
 
   test("records imported at open are announced as applied", async () => {
     const a = keep(await Engine.create(serverData, projectDir, "Demo", "30"));

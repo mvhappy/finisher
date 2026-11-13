@@ -218,14 +218,19 @@ export class Engine {
     return this.#hook("maintenanceRunningForTest")();
   }
 
-  /** @internal Test builds only: the next tick stops in its folder I/O (`import` or `export`). */
+  /** @internal Test builds only: the next tick stops in its folder I/O (a `TickPoint`). */
   hangNextTickForTest(point) {
     sync(() => this.#hook("hangNextTickForTest")(point));
   }
 
-  /** @internal Test builds only: the next tick panics in its folder I/O (`import` or `export`). */
+  /** @internal Test builds only: the next tick panics in its folder I/O (a `TickPoint`). */
   panicNextTickIoForTest(point) {
     sync(() => this.#hook("panicNextTickIoForTest")(point));
+  }
+
+  /** @internal Test builds only: the grace period between compaction's phases is `ms`. */
+  setCompactionGraceForTest(ms) {
+    sync(() => this.#hook("setCompactionGraceForTest")(ms));
   }
 
   /** @internal Test builds only: whether a tick is stopped at the armed point. */

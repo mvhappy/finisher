@@ -20,8 +20,9 @@
 //! All three share the store through one mutex ([`engine::Inner`]). A long call takes the
 //! store out of it for its duration (the state reads `Busy`), so short calls during a long call
 //! fail at once with `ENGINE_BUSY` (transient, exit 5) instead of occupying the libuv pool, and
-//! ticks are skipped. A tick holds the mutex for its duration: usually milliseconds, longer when
-//! it takes the daily backup or compacts; a short call then waits for it.
+//! ticks are skipped. A tick, and the automatic compaction step after it, take the mutex step
+//! by step, around database work only, never across folder I/O ([`maintenance`]); a short call
+//! waits at most for one such step.
 //!
 //! # Errors and panics
 //!

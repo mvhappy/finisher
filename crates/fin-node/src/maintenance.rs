@@ -15,14 +15,15 @@
 //! The ticks leave the heavy steps out (`TickOptions` off): after each tick, the daily backup
 //! or compaction it found due runs as automatic work (`crate::auto`): only once the engine is
 //! quiet, the backup off the store on a thread of its own, compaction one step at a time
-//! (under the mutex).
+//! through the same step-by-step access as a tick (its folder I/O without the mutex).
 //!
 //! Every `status` event also refreshes the engine's cached status (what `status()` answers
 //! during a long call).
 //!
-//! A tick is skipped while a long call has the store (`Busy`). A panic anywhere in a tick, in a
-//! step under the mutex or in the folder I/O between steps, drops the store (`Panicked`, like
-//! any call) and ends the thread after a fatal `error` event. A tick that fails with a
+//! A tick is skipped while a long call has the store (`Busy`). A panic anywhere in a tick or
+//! an automatic compaction step, in a step under the mutex or in the folder I/O between
+//! steps, drops the store (`Panicked`, like any call) and ends the thread after a fatal
+//! `error` event. A tick that fails with a
 //! database error emits a non-fatal `error` event and the thread goes on.
 //!
 //! # Events (JSON strings)
@@ -240,22 +241,33 @@ fn tick(inner: &Shared) -> bool {
         State::Busy { .. } => return true,
         State::Closed | State::Panicked => return false,
     }
+    // `None`: a long call took the store between two steps; the next tick starts afresh.
+    phased(inner, true, |access| {
+        fin_store::Store::tick_phased(access, Instant::now(), LIGHT).map(|_| ())
+    })
+}
+
+/// Runs `f` (a tick, or the automatic compaction step) through the store's [`Access`], step
+/// by step. `false` once the engine is dead. A panic in a step under the mutex is handled by
+/// `Access::with`; one in the folder I/O between steps (the store not held) ends here, the
+/// same way: the store is dropped (`Panicked`) and a fatal `error` event emitted. A failure is
+/// a non-fatal `error` event. `first`: the first step is where the test tick panic fires.
+pub(crate) fn phased(
+    inner: &Shared,
+    first: bool,
+    f: impl FnOnce(&mut Access<'_>) -> std::result::Result<(), fin_store::StoreError>,
+) -> bool {
     let mut access = Access {
         inner,
-        first: true,
+        first,
         dead: false,
     };
-    // `None`: a long call took the store between two steps; the next tick starts afresh. A
-    // panic in a step under the mutex is handled by `Access::with`; one in the folder I/O
-    // between steps (the store not held) ends here, the same way.
-    let result = catch_unwind(AssertUnwindSafe(|| {
-        fin_store::Store::tick_phased(&mut access, Instant::now(), LIGHT)
-    }));
+    let result = catch_unwind(AssertUnwindSafe(|| f(&mut access)));
     if access.dead {
         return false;
     }
     match result {
-        Ok(Ok(_)) => true,
+        Ok(Ok(())) => true,
         Ok(Err(e)) => {
             let e: CoreError = e.into();
             inner.events.emit(error_json(&json!(e), false));
@@ -278,7 +290,7 @@ fn tick(inner: &Shared) -> bool {
 
 /// The store as a tick's steps reach it (module docs): under the state mutex, only while it
 /// is `Open`. The events a step queued are forwarded before the mutex is released.
-struct Access<'a> {
+pub(crate) struct Access<'a> {
     inner: &'a Shared,
     /// The first step (where the test panic hook fires).
     first: bool,

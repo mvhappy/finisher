@@ -123,8 +123,9 @@ impl Engine {
     }
 
     /// The next tick stops in its folder I/O, outside the store mutex: `import` (after the
-    /// scan, before the apply) or `export` (a segment encoded, before its write), until
-    /// `releaseTickForTest`.
+    /// scan, before the apply), `export` (a segment encoded, before its write) or a point in
+    /// the automatic compaction step (`compactList`, `compactRead`, `compactWrite`,
+    /// `compactDelete`), until `releaseTickForTest`.
     #[napi(catch_unwind)]
     pub fn hang_next_tick_for_test(&self, point: String) -> Result<()> {
         let point = tick_point(&point)?;
@@ -132,8 +133,8 @@ impl Engine {
         Ok(())
     }
 
-    /// The next tick panics in its folder I/O, outside the store mutex (`import` or `export`,
-    /// as for `hangNextTickForTest`).
+    /// The next tick panics in its folder I/O, outside the store mutex (a point as for
+    /// `hangNextTickForTest`).
     #[napi(catch_unwind)]
     pub fn panic_next_tick_io_for_test(&self, point: String) -> Result<()> {
         let point = tick_point(&point)?;
@@ -154,6 +155,18 @@ impl Engine {
         Ok(())
     }
 
+    /// The grace period between compaction's phases is `ms` (instead of 10 min or 24 h).
+    #[napi(catch_unwind)]
+    pub fn set_compaction_grace_for_test(&self, ms: u32) -> Result<()> {
+        match &mut *lock(&self.inner.state) {
+            crate::engine::State::Open(s) => {
+                s.set_compaction_grace_for_test(Duration::from_millis(u64::from(ms)));
+                Ok(())
+            }
+            other => Err(reject(other.unavailable())),
+        }
+    }
+
     /// Whether the maintenance thread runs.
     #[napi(catch_unwind)]
     pub fn maintenance_running_for_test(&self) -> bool {
@@ -163,11 +176,16 @@ impl Engine {
     }
 }
 
-/// `import` or `export`.
+/// `import`, `export`, or a compaction step's `compactList`, `compactRead`, `compactWrite`,
+/// `compactDelete` (`fin_store::TickPoint`).
 fn tick_point(point: &str) -> Result<fin_store::TickPoint> {
     match point {
         "import" => Ok(fin_store::TickPoint::ImportRead),
         "export" => Ok(fin_store::TickPoint::ExportWrite),
+        "compactList" => Ok(fin_store::TickPoint::CompactList),
+        "compactRead" => Ok(fin_store::TickPoint::CompactRead),
+        "compactWrite" => Ok(fin_store::TickPoint::CompactWrite),
+        "compactDelete" => Ok(fin_store::TickPoint::CompactDelete),
         other => Err(reject(CoreError::new(
             "INVALID_OP",
             format!("no tick point {other:?}"),

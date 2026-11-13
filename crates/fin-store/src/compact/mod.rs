@@ -15,7 +15,7 @@
 //! When the branch has more than [`TRIGGER`] non-pack segments that no present pack replaces
 //! (or `force`), and no compaction of it is pending (nor any manifest that cannot be read,
 //! whose branch is unknown):
-//! 1. **Read afresh** ([`view::read`]): an uncached scan, a fresh resolution (no fork, nothing
+//! 1. **Read afresh** ([`view::ViewPlan::scan`]): an uncached scan, a fresh resolution (no fork, nothing
 //!    waiting or pending, every file under `segments/<branch>/` settled), and the database's
 //!    exported rows exactly the chain's prefix. Otherwise wait (retried after [`RETRY`]). A
 //!    4B branch is the segments naming its index record, resolved from its fork point
@@ -69,25 +69,72 @@
 //! at the same seq, and import never records a pack the resolution sets aside.
 //!
 //! Interrupted during phase 2, the next holder finishes it: absent replaced files are skipped.
+//!
+//! # Locking
+//!
+//! A run goes through a [`crate::StoreAccess`] step by step ([`run_with`]: the phased tick and
+//! fin-node's automatic step, `Store::run_due_compaction_step_phased`; `fin project compact`
+//! has the store throughout), taking the store only for database work and in-memory state:
+//! - **Without the store:** the `compaction/` listing and the manifests' reads (also the light
+//!   tick's due check), every full lease check (through the fence of the lease in force when
+//!   the run started: one the store let go fails at once), the fresh read of a branch (scan,
+//!   verification, resolution), reading a snapshot, writing the snapshot, the packs and the
+//!   manifest, the "would a verdict change" resolutions, directory fsyncs.
+//! - **With the store:** planning (what the read needs from the database), checking each read
+//!   against the database as it is then (exported rows, the branch's record and fork point,
+//!   the snapshot's state), the pack plan, the `segments` rows, the abandoned list, the
+//!   grace periods, and **every delete** (`remove_file`, with the in-memory lease check).
+//! - **Overtaken:** a run notes `Phase::io_gen` and the lease when it starts (bumping it:
+//!   an import read before is stale). Each step with the store first checks both are
+//!   unchanged; otherwise the run ends there (`skipped`, nothing abandoned, no retry delay)
+//!   and the next one reads afresh. `io_gen` moves with everything that changes what the
+//!   checks rest on: an applied import, a marked export, another compaction run (`fin
+//!   project compact`), a rebuild, a recovery, a lease change.
+//! - **Why a delete is safe:** each delete runs with the store, after the same `io_gen` and
+//!   lease check, so it rests on a fresh read checked against the database as it is at the
+//!   delete. Whatever ran with the store since the check (a short call, or a long call that
+//!   took it, each atomic with respect to the delete) either moved `io_gen` or left the
+//!   folder files and everything the check rests on as they were (a commit adds only an
+//!   unexported row above the branch's exported head; status, verify and other reads change
+//!   nothing), so it commutes with the delete as it would with one made under the lock
+//!   throughout. A tick's import and export, the only other folder I/O without the store,
+//!   never run meanwhile (one at a time). Other servers are kept out by the lease as before:
+//!   a full check without the store right before every delete, the in-memory check with it. Writes need no such care: a pack or
+//!   snapshot is a duplicate until a manifest names it, and a manifest only starts a grace
+//!   period after which phase 2 checks everything afresh.
+//! - One step at a time: the automatic step takes the phased tick's guard (no tick's import
+//!   reads the folder meanwhile); a panic in the folder I/O unwinds to the caller (fin-node:
+//!   the engine is `Panicked`).
+
+/// Runs `$f` on the store through `$access`; returns `Ok(None)` from the caller when the store
+/// is gone (closed, taken by a long call).
+macro_rules! with {
+    ($access:expr, $f:expr) => {
+        match $access.with($f) {
+            Some(r) => r,
+            None => return Ok(None),
+        }
+    };
+}
 
 mod finish;
 mod manifest;
 mod pack;
+mod phased;
+mod planned;
 mod state;
 mod view;
 
-use std::collections::HashSet;
 use std::io;
 use std::path::Path;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
-use crate::names::ManifestName;
 use crate::storage_kind::StorageKind;
-use crate::{Store, StoreError, db, fsio};
-use manifest::Manifest;
+use crate::tick::Direct;
+use crate::{Store, StoreError, fsio};
+pub(crate) use phased::{due_with, run_with};
 pub(crate) use state::CompactState;
 pub use state::{CompactReport, CompactionStatus, PendingCompaction};
-use state::{Seen, State};
 
 /// A branch is compacted once it has more than this many non-pack segments.
 pub const TRIGGER: usize = 200;
@@ -95,6 +142,10 @@ pub const TRIGGER: usize = 200;
 pub(crate) const RETRY: Duration = Duration::from_secs(60);
 /// …and a branch above the trigger with nothing worth packing is planned again after this.
 pub(crate) const REPLAN: Duration = Duration::from_secs(10 * 60);
+
+/// Why a run ended at a step that something else overtook (module docs, "Locking").
+pub(crate) const OVERTAKEN: &str =
+    "the folder or the database changed during the compaction step; it runs again afresh";
 
 /// The grace period between phase 1 and phase 2 on `kind` (spec §3.9).
 pub fn grace(kind: StorageKind) -> Duration {
@@ -130,6 +181,11 @@ pub(super) enum Step<T> {
     Abandon(String),
     /// The lease is not held.
     Stopped(String),
+    /// Something changed what the step read against ([`OVERTAKEN`]): nothing more is done
+    /// and nothing is noted; the next run reads afresh.
+    Overtaken,
+    /// The manifest is gone (finished or removed by someone else meanwhile).
+    Gone,
 }
 
 pub(super) enum Fence {
@@ -137,10 +193,10 @@ pub(super) enum Fence {
     Lost(String),
 }
 
-/// The full lease check before a folder write or delete; `Lost` also when our epoch is below
-/// `min_epoch` (a file labelled above the lease we hold).
-pub(super) fn fence(store: &Store, min_epoch: u64) -> Fence {
-    match store.export.lease.check() {
+/// A lease check's verdict at `min_epoch`; `Lost` also when our epoch is below it (a file
+/// labelled above the lease we hold).
+pub(super) fn fence_at(checked: Result<u64, fin_core::CoreError>, min_epoch: u64) -> Fence {
+    match checked {
         Ok(e) if e >= min_epoch => Fence::Held(e),
         Ok(e) => Fence::Lost(format!(
             "a file at epoch {min_epoch} is above our lease ({e})"
@@ -199,25 +255,8 @@ pub(super) fn hit(store: &mut Store, point: CompactFail) -> Result<(), StoreErro
     Ok(())
 }
 
-/// Non-pack segments of `branch` that no present pack replaces, from the last import's scan.
-fn unpacked(store: &Store, branch: &str) -> usize {
-    let segs: Vec<_> = store
-        .import
-        .segrefs()
-        .filter(|s| s.header().branch == branch)
-        .collect();
-    let replaced: HashSet<&str> = segs
-        .iter()
-        .filter(|s| s.header().pack)
-        .flat_map(|s| s.header().replaces.iter().map(|r| r.hash.as_str()))
-        .collect();
-    segs.iter()
-        .filter(|s| !s.header().pack && !replaced.contains(s.hash()))
-        .count()
-}
-
-/// One compaction run (module docs). `Err` only for a database failure (or an injected
-/// fault); folder problems are in the report and status.
+/// One compaction run on a store the caller has (module docs). `Err` only for a database
+/// failure (or an injected fault); folder problems are in the report and status.
 pub(crate) fn run(
     store: &mut Store,
     now_ms: i64,
@@ -232,260 +271,8 @@ pub(crate) fn run_bounded(
     store: &mut Store,
     now_ms: i64,
     force: bool,
-    mut units: usize,
+    units: usize,
 ) -> Result<CompactReport, StoreError> {
-    // It may rewrite the folder and the `segments` rows: an import read before is stale.
-    store.phase.io_gen += 1;
-    let mut report = CompactReport::default();
-    if let Some(why) = cannot_run(store) {
-        report.skipped = Some(why);
-        return Ok(report);
-    }
-    let now = store.ctl.now();
-    if force {
-        store.compact.retry_plan.clear();
-        state::set_abandoned(store, &Default::default())?;
-        for s in store.compact.seen.values_mut() {
-            s.retry_at = None;
-            if matches!(s.state, State::Abandoned(_)) {
-                s.state = State::Grace;
-            }
-        }
-    }
-    let dir = store.project_dir.join(".finisher").join("compaction");
-    let names = match manifest::list(&dir) {
-        Ok(n) => n,
-        Err(e) => {
-            store.compact.last_error = Some(format!("cannot list {}: {e}", dir.display()));
-            return Ok(report);
-        }
-    };
-    state::observe(store, &dir, &names, now, now_ms)?;
-    if phase2(store, &mut report, now, &mut units)? {
-        return Ok(report);
-    }
-    for branch in db::branches(&store.conn)? {
-        if units == 0 {
-            break;
-        }
-        if !branch_due(store, &branch, now, force) {
-            continue;
-        }
-        units -= 1;
-        if phase1(store, &mut report, &branch, now, now_ms)? {
-            break;
-        }
-    }
-    let worked = !report.manifests.is_empty() || !report.finished.is_empty() || report.deleted > 0;
-    if worked {
-        store.compact.last_run_ms = Some(now_ms);
-    }
-    store.compact.last_error = report
-        .waiting
-        .last()
-        .or(report.abandoned.last())
-        .map(|(what, why)| format!("{what}: {why}"));
-    Ok(report)
-}
-
-/// Why compaction cannot run now (read-only, not holding); forgets the manifests seen then.
-fn cannot_run(store: &mut Store) -> Option<String> {
-    if let Some(r) = store.read_only() {
-        store.compact.seen.clear();
-        return Some(format!("the project is read-only ({})", r.code()));
-    }
-    // In memory only: every write and delete takes the full check first.
-    if let Err(e) = store.export.lease.quick_check() {
-        store.compact.seen.clear();
-        return Some(e.message);
-    }
-    None
-}
-
-/// Whether phase 1 should plan `branch` now.
-fn branch_due(store: &Store, branch: &str, now: Instant, force: bool) -> bool {
-    let pending = store.compact.seen.values().any(|s| s.blocks(branch));
-    let due = force
-        || (unpacked(store, branch) > TRIGGER
-            && store
-                .compact
-                .retry_plan
-                .get(branch)
-                .is_none_or(|t| now >= *t));
-    !pending && due
-}
-
-/// The cheap part of a run (`Store::tick` under `TickOptions { compaction: false }`): observes
-/// the manifests (their grace periods start here as in a run) and tells whether a run would
-/// do anything: a manifest past its grace, or a branch to plan. Writes nothing to the folder.
-pub(crate) fn due(store: &mut Store) -> Result<bool, StoreError> {
-    if cannot_run(store).is_some() {
-        return Ok(false);
-    }
-    let now = store.ctl.now();
-    let dir = store.project_dir.join(".finisher").join("compaction");
-    let names = match manifest::list(&dir) {
-        Ok(n) => n,
-        Err(e) => {
-            store.compact.last_error = Some(format!("cannot list {}: {e}", dir.display()));
-            return Ok(false);
-        }
-    };
-    state::observe(store, &dir, &names, now, crate::commit::now_ms())?;
-    if !ready(store, now).is_empty() {
-        return Ok(true);
-    }
-    for branch in db::branches(&store.conn)? {
-        if branch_due(store, &branch, now, false) {
-            return Ok(true);
-        }
-    }
-    Ok(false)
-}
-
-/// The manifests whose grace period is over (and whose retry time has come).
-fn ready(store: &Store, now: Instant) -> Vec<(ManifestName, Manifest)> {
-    store
-        .compact
-        .seen
-        .iter()
-        .filter_map(|(n, s)| {
-            let m = s.manifest.as_ref()?;
-            let ready = matches!(s.state, State::Grace | State::Waiting(_))
-                && s.observed.is_some_and(|t| {
-                    now.saturating_duration_since(t) >= state::grace_of(store, Some(m))
-                })
-                && s.retry_at.is_none_or(|t| now >= t);
-            ready.then(|| (n.clone(), m.clone()))
-        })
-        .collect()
-}
-
-/// Phase 2 of every manifest past its grace period. `true`: stop (the lease is lost).
-fn phase2(
-    store: &mut Store,
-    report: &mut CompactReport,
-    now: Instant,
-    units: &mut usize,
-) -> Result<bool, StoreError> {
-    let due = ready(store, now);
-    for (name, m) in due {
-        if *units == 0 {
-            break;
-        }
-        *units -= 1;
-        let label = name.to_string();
-        let path = store
-            .project_dir
-            .join(".finisher")
-            .join("compaction")
-            .join(&label);
-        let step = match manifest::read(&path) {
-            manifest::Read::Ok(again) if again == m => finish::run(store, &name, &m)?,
-            manifest::Read::Ok(_) => Step::Abandon("the manifest changed".into()),
-            manifest::Read::Gone => {
-                // Finished (or removed) by someone else meanwhile.
-                store.compact.seen.remove(&name);
-                continue;
-            }
-            manifest::Read::Unreadable(why) => Step::Wait(why),
-        };
-        match step {
-            Step::Done(n) => {
-                store.compact.seen.remove(&name);
-                report.finished.push(label);
-                report.deleted += n;
-            }
-            Step::Wait(why) => {
-                if let Some(s) = store.compact.seen.get_mut(&name) {
-                    s.state = State::Waiting(why.clone());
-                    s.retry_at = Some(now + RETRY);
-                }
-                report.waiting.push((label, why));
-            }
-            Step::Abandon(why) => {
-                let mut all = state::abandoned(store)?;
-                all.insert(label.clone(), why.clone());
-                state::set_abandoned(store, &all)?;
-                if let Some(s) = store.compact.seen.get_mut(&name) {
-                    s.state = State::Abandoned(why.clone());
-                }
-                report.abandoned.push((label, why));
-            }
-            Step::Stopped(why) => {
-                report.skipped = Some(why);
-                store.compact.seen.clear();
-                return Ok(true);
-            }
-        }
-    }
-    Ok(false)
-}
-
-/// Phase 1 of `branch`. `true`: stop (the lease is lost).
-fn phase1(
-    store: &mut Store,
-    report: &mut CompactReport,
-    branch: &str,
-    now: Instant,
-    now_ms: i64,
-) -> Result<bool, StoreError> {
-    let Fence::Held(lease_epoch) = fence(store, 0) else {
-        return Ok(true);
-    };
-    let wait = |store: &mut Store, report: &mut CompactReport, why: String| {
-        store
-            .compact
-            .retry_plan
-            .insert(branch.to_string(), now + RETRY);
-        report.waiting.push((branch.to_string(), why));
-    };
-    let v = match view::read(store, branch)? {
-        Ok(v) => v,
-        Err(why) => {
-            wait(store, report, why);
-            return Ok(false);
-        }
-    };
-    // What an abandoned compaction of this branch holds is left alone.
-    let (mut protected, mut protected_names) = (HashSet::new(), HashSet::new());
-    for s in store.compact.seen.values() {
-        if let Some(m) = s.manifest.as_ref().filter(|m| m.branch == branch) {
-            protected_names.extend(m.replaced.iter().cloned());
-            for p in &m.packs {
-                if let Some(seg) = v.by_name.get(p) {
-                    protected.extend(seg.header().replaces.iter().map(|r| r.hash.clone()));
-                }
-            }
-        }
-    }
-    let Some(plan) = pack::plan(store, branch, &v, &protected, &protected_names, lease_epoch)?
-    else {
-        store
-            .compact
-            .retry_plan
-            .insert(branch.to_string(), now + REPLAN);
-        return Ok(false);
-    };
-    let packs = u32::try_from(plan.packs.len()).unwrap_or(u32::MAX);
-    let replaced: usize = plan.packs.iter().map(|p| p.replaced.len()).sum();
-    match pack::write(store, branch, plan, now_ms)? {
-        Step::Done((name, m)) => {
-            report.manifests.push(name.to_string());
-            report.packs_written += packs;
-            report.replaced += u32::try_from(replaced).unwrap_or(u32::MAX);
-            let g = state::grace_of(store, Some(&m));
-            let ends = now_ms.saturating_add(i64::try_from(g.as_millis()).unwrap_or(i64::MAX));
-            store.compact.seen.insert(name, Seen::written(m, now, ends));
-            Ok(false)
-        }
-        Step::Wait(why) | Step::Abandon(why) => {
-            wait(store, report, why);
-            Ok(false)
-        }
-        Step::Stopped(why) => {
-            report.skipped = Some(why);
-            Ok(true)
-        }
-    }
+    // `Direct` always has the store: the run goes to its end.
+    Ok(run_with(&mut Direct(store), now_ms, force, units)?.unwrap_or_default())
 }
