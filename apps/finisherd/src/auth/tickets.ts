@@ -65,6 +65,7 @@ export class Tickets {
   readonly #live = new Map<string, { readonly principal: Principal; readonly owner: string; readonly key: string; readonly expiresAt: number }>();
   readonly #buckets = new Map<string, { tokens: number; at: number }>();
   readonly #now: () => number;
+  readonly #dropHooks: Array<(pred: (p: Principal) => boolean) => void> = [];
 
   constructor(now: () => number = Date.now) {
     this.#now = now;
@@ -140,6 +141,16 @@ export class Tickets {
     return entry.expiresAt > this.#now() ? { principal: entry.principal, owner: entry.owner } : undefined;
   }
 
+  /**
+   * Runs `hook` with the same predicate whenever `dropWhere` drops the tickets of revoked
+   * principals: what else a principal holds in memory (6B-1: its media capability URLs) goes
+   * with its tickets, through every revoke path (credentials, devices, rotation). A hook that
+   * throws never stops the revocation.
+   */
+  onDrop(hook: (pred: (p: Principal) => boolean) => void): void {
+    this.#dropHooks.push(hook);
+  }
+
   /** Drops the tickets of the principals `pred` selects (a credential revoked). */
   dropWhere(pred: (p: Principal) => boolean): number {
     let n = 0;
@@ -147,6 +158,13 @@ export class Tickets {
       if (!pred(entry.principal)) continue;
       this.#live.delete(key);
       n++;
+    }
+    for (const hook of this.#dropHooks) {
+      try {
+        hook(pred);
+      } catch (e) {
+        process.stderr.write(`finisherd: warning: a revocation hook failed: ${String(e)}\n`);
+      }
     }
     return n;
   }

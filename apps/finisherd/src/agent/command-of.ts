@@ -106,6 +106,8 @@ export const RPC_ONLY: ReadonlySet<FinRpcTag> = new Set<FinRpcTag>([
   "env.reset",
   "env.rotateIdentity",
   "settings.write",
+  // 6B-1 Task 17: a capability URL for media bytes, for clients (apps, a preview) that fetch them.
+  "media.url",
 ]);
 
 type Condition = readonly [path: string, expect: RegistryMatch];

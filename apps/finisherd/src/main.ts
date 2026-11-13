@@ -58,6 +58,7 @@ import { LibraryServiceTag, librariesHolding, libraryWiring } from "./library/la
 import { makeMediaCache, MediaCacheTag, releaseAll } from "./media/cache.ts";
 import { MediaProxyTag } from "./media/proxy.ts";
 import { mediaWiring } from "./media/wiring.ts";
+import { CapTokensTag } from "./media/cap-tokens.ts";
 import { layerPlugins } from "./plugins/registries.ts";
 import { makePluginHost } from "./plugins/host/processes.ts";
 import { PluginCommandsTag, serverPluginCommands } from "./plugins/host/command-rpc.ts";
@@ -175,7 +176,7 @@ export const serve = ({
       // confined warm media worker (Decision 19). Bound once the service runs.
       let libraryRoots: () => ReadonlyArray<string> = () => [];
       let onOpened: ((projectId: string) => void) | undefined; // re-derived reviews (5E Decision 22), bound with the reviews
-      const media = mediaWiring(mediaCache, (m) => logSink("warning", m)); // proxies (6B-1 Task 14)
+      const media = mediaWiring(mediaCache, tickets, (m) => logSink("warning", m)); // proxies, media URLs (6B-1 Tasks 14, 17)
       const registryContext = yield* Layer.build(
         layerProjectRegistry(serverData, { ...registry, libraryUse: (paths, projectId) => releaseAll([libraryHold?.(paths), mediaCache.holdProject(projectId)]), onOpened: (id) => (onOpened?.(id), media.onOpened(id)), onCommitted: media.onCommitted }),
       );
@@ -253,6 +254,7 @@ export const serve = ({
           policy: loopback,
           ...(serverSettings.loopbackPort === undefined ? {} : { port: serverSettings.loopbackPort }),
           onRequest: makeFront(httpRoutes, loopback, nonces, { onRefused: refusals.front }),
+          media: media.http(loopback),
           onRefused: refusals.upgrade("ws"),
         }),
         (e) => startFailure(e.reason.cause ?? e),
@@ -338,6 +340,7 @@ export const serve = ({
         onRefused: refusals.front,
         onUpgradeRefused: refusals.upgrade("wss"),
         remoteOf: remoteOptions?.remoteOf,
+        media: media.http,
       });
       onRemote?.(remote);
       if (checkMoved(environment, controlStore, identity.renewed)) {
@@ -460,6 +463,7 @@ export const serve = ({
           Layer.succeed(LibraryServiceTag, library),
           Layer.succeed(MediaCacheTag, mediaCache),
           Layer.succeed(MediaProxyTag, mediaProxy),
+          Layer.succeed(CapTokensTag, media.capTokens),
           Layer.succeed(KeysTag, keys),
           Layer.succeed(HandshakeTag, handshake),
           Layer.succeed(CredentialsTag, credentials),

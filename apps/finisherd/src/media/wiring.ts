@@ -2,19 +2,29 @@
 // proxy service, made once the job engine runs; the project registry's hooks (an asset first used
 // here, by opening its project or adding it, gets a background 1080 proxy); the `media.proxy`
 // kind's view of the cache and the report; and the `proxy540` stage, registered with the first
-// capability answer (which a server with libraries asks for at start).
+// capability answer (which a server with libraries asks for at start). Also the capability
+// URLs of Task 17: the tokens (dropped with their principal's tickets) and each listener's
+// media route.
 import type { CommittedTx } from "@finisher/core-types";
 import { Effect } from "effect";
+import type { Tickets } from "../auth/tickets.ts";
+import type { ListenerPolicy } from "../http/policy.ts";
 import type { JobEngine } from "../jobs/api.ts";
 import type { ProxyKindDeps } from "../jobs/kinds/media.proxy.ts";
 import type { LibraryService } from "../library/service.ts";
 import type { ProjectRegistryShape } from "../projects.ts";
 import type { MediaCacheService } from "./cache.ts";
+import { CapTokens } from "./cap-tokens.ts";
+import { makeMediaHttp, type MediaRequestHandler } from "./http.ts";
 import { type CapabilitiesCache, mediaCapabilities } from "./caps.ts";
 import { MEDIA_SYSTEM_OWNER, type ProxyService, makeProxyService } from "./proxy.ts";
 import { proxy540Stage } from "./stages.ts";
 
 export interface MediaWiring {
+  /** The capability URL tokens (Task 17), dropped with their principal. */
+  readonly capTokens: CapTokens;
+  /** A listener's `/media/` route, under its policy. */
+  readonly http: (policy: ListenerPolicy) => MediaRequestHandler;
   readonly onOpened: (projectId: string) => void;
   readonly onCommitted: (projectId: string, committed: CommittedTx) => void;
   /** For `registerMediaKinds`' `proxy`. */
@@ -27,10 +37,14 @@ export interface MediaWiring {
   ) => { readonly capabilities: CapabilitiesCache; readonly proxies: ProxyService };
 }
 
-export function mediaWiring(mediaCache: MediaCacheService, log: (message: string) => void): MediaWiring {
+export function mediaWiring(mediaCache: MediaCacheService, tickets: Pick<Tickets, "onDrop">, log: (message: string) => void): MediaWiring {
+  const capTokens = new CapTokens();
+  tickets.onDrop((pred) => capTokens.dropWhere(pred));
   let caps: CapabilitiesCache | undefined;
   let proxies: ProxyService | undefined;
   return {
+    capTokens,
+    http: (policy) => makeMediaHttp({ tokens: capTokens, cache: () => mediaCache.cache }, policy),
     onOpened: (id) => proxies?.used(id),
     onCommitted: (id, committed) => {
       if (committed.tx.ops.some((o) => (o as { op?: unknown }).op === "asset.add")) proxies?.used(id);

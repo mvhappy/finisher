@@ -40,6 +40,7 @@ import { Fonts } from "./fonts.ts";
 import { JobEngineTag } from "./jobs/layer.ts";
 import { chainJobs, jobHandlers } from "./jobs/rpc.ts";
 import { MediaCacheTag } from "./media/cache.ts";
+import { CapTokensTag, mediaUrl } from "./media/cap-tokens.ts";
 import { mediaCapabilities } from "./media/caps.ts";
 import { look as mediaLook } from "./media/look.ts";
 import { probeDeep } from "./media/probe-deep.ts";
@@ -106,6 +107,7 @@ export const HandlersLive = FinRpcs.toLayer(
     const deviceAccess = yield* DeviceAccessTag;
     const remoteListener = yield* RemoteListenerTag;
     const mediaCache = yield* MediaCacheTag;
+    const capTokens = yield* CapTokensTag;
     // Plugin commands (sp8b Task 9): served only where the plugin host runs.
     const pluginCommands = Option.getOrUndefined(yield* Effect.serviceOption(PluginCommandsTag));
     const admin: AdminDeps = {
@@ -453,6 +455,8 @@ export const HandlersLive = FinRpcs.toLayer(
       // The media cache (6B-1 Task 13): its state, and an eviction down to the cap or `toGiB`.
       "media.cache.status": () => guard("media.cache.status", mediaCache.status()),
       "media.cache.gc": ({ toGiB }) => guard("media.cache.gc", mediaCache.gc(toGiB)),
+      // 6B-1 Task 17: a capability URL, with reach over the entry's projects (the chain checked `project.read`).
+      "media.url": (req, options) => guard("media.url", mediaUrl({ cache: mediaCache, tokens: capTokens }, principalOf(options), req)),
       "media.probeDeep": (req, options) => guard("media.probeDeep", probeDeep({ ...mediaDeps, capabilities: capabilitiesOf }, ownerOf(options), req)),
       // 6B-1 Task 14: a proxy of a project asset, and the state of its tiers.
       "media.proxy": (req, options) => guard("media.proxy", proxiesOf((p) => p.request(ownerOf(options), req))),

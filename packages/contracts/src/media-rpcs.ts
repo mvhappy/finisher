@@ -3,7 +3,7 @@
 import { Rpc } from "effect/rpc";
 import { Schema } from "effect";
 import { FinError } from "./errors.ts";
-import { AssetReprobePayload, AssetReprobeSuccess, MediaCacheGcPayload, MediaCacheGcSuccess, MediaCacheStatusSuccess, MediaCapabilitiesSuccess, MediaLookPayload, MediaLookSuccess, MediaProbeDeepPayload, MediaProbeDeepSuccess, MediaProxyPayload, MediaProxyStatusPayload, MediaProxyStatusSuccess, MediaProxySuccess } from "./media.ts";
+import { AssetReprobePayload, AssetReprobeSuccess, MediaCacheGcPayload, MediaCacheGcSuccess, MediaCacheStatusSuccess, MediaCapabilitiesSuccess, MediaLookPayload, MediaLookSuccess, MediaProbeDeepPayload, MediaProbeDeepSuccess, MediaProxyPayload, MediaProxyStatusPayload, MediaProxyStatusSuccess, MediaProxySuccess, MediaUrlPayload, MediaUrlSuccess } from "./media.ts";
 
 export const MEDIA_RPCS = [
   /** Plan 6A Task 13: looks at a timeline, and what this machine's media worker can do. */
@@ -14,6 +14,8 @@ export const MEDIA_RPCS = [
   Rpc.make("media.cache.gc", { payload: MediaCacheGcPayload, success: MediaCacheGcSuccess, error: FinError }),
   /** 6B-1 Task 11: the decode-level probe of one asset (commits nothing). */
   Rpc.make("media.probeDeep", { payload: MediaProbeDeepPayload, success: MediaProbeDeepSuccess, error: FinError }),
+  /** 6B-1 Task 17: a capability URL for one file of a media cache entry (`project.read`, reach over the entry's projects). */
+  Rpc.make("media.url", { payload: MediaUrlPayload, success: MediaUrlSuccess, error: FinError }),
   /** 6B-1 Task 11: probes a media asset's file again and commits one `asset.reprobe` op. */
   Rpc.make("asset.reprobe", { payload: AssetReprobePayload, success: AssetReprobeSuccess, error: FinError }),
   /** 6B-1 Task 14: a proxy of a video asset, and the state of its tiers. */

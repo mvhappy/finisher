@@ -84,6 +84,8 @@ test("media_look_needs_project_write_only_to_name_a_folder (6A Tasks 11-12 revie
   expect(requiredScopes("media.cache.status", {})).toEqual(["server.read"]);
   expect(requiredScopes("media.cache.gc", {})).toEqual(["settings.admin"]);
   expect(requiredScopes("media.cache.gc", { toGiB: 1 })).toEqual(["settings.admin"]);
+  // 6B-1 Task 17: a capability URL takes `project.read` (reach over the entry's projects is the handler's).
+  expect(requiredScopes("media.url", { key: "k", file: "proxy.mp4" })).toEqual(["project.read"]);
 });
 
 test("diagnostics_admin_guards_consent_purge_project_default_and_content (5A Task 7)", () => {
