@@ -10,8 +10,11 @@
 // The file is read by `MediaCache.readFile` (fin-shm's checked opener, no link at any segment),
 // 1 MiB at a time, the entry pinned `http:<n>` until the response ends (an evicted entry would
 // otherwise vanish mid-stream). Single `bytes=` ranges answer 206, a range past the end 416;
-// a `Range` that is not one range of bytes is ignored (200). A reader that stops reading for
-// `STALL_MS` is cut off. `Cache-Control: private, max-age=600, immutable` (an entry is
+// a `Range` that is not one range of bytes is ignored (200); `If-None-Match` with the file's own
+// `ETag` is a 304. A reader that stops reading for `STALL_MS` is cut off. Streams are capped:
+// `MAX_MEDIA_STREAMS` on one listener, `MAX_MEDIA_STREAMS_PER_PRINCIPAL` per principal (the
+// tokens'), each further one a 503 before it counts; the listener keeps counting the socket
+// against its per-address cap (`upgrade.ts`), and a revoked principal's streams are cut. `Cache-Control: private, max-age=600, immutable` (an entry is
 // content-addressed and never changes) and `Cross-Origin-Resource-Policy: same-origin`.
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { MEDIA_READ_MAX, type MediaCache } from "@finisher/fin-node";
@@ -22,12 +25,15 @@ import type { CapGrant, CapTokens } from "./cap-tokens.ts";
 export const MEDIA_PREFIX = "/media/";
 /** A reader that takes nothing for this long is cut off (its pin and socket are released). */
 export const STALL_MS = 60_000;
+/** Streams one listener serves at once; `upgrade.ts` adds them to its connection backstop. */
+export const MAX_MEDIA_STREAMS = 16;
 
 export interface MediaHttpDeps {
   readonly tokens: CapTokens;
   /** The cache, read per request (`undefined`: it did not open, every request is a 404). */
   readonly cache: () => MediaCache | undefined;
   readonly stallMs?: number;
+  readonly maxStreams?: number;
 }
 
 /** Handles a request `isMediaRequest` accepted; `authorised` is called once its token is live. */
@@ -72,8 +78,9 @@ export function parseRange(header: string | undefined, size: number): RangeAnswe
   if (m === null || (m[1] === "" && m[2] === "")) return { kind: "whole" };
   const [first, last] = [m[1]!, m[2]!];
   if (first === "") {
-    // A suffix: the last `n` bytes.
-    const n = last.length > MAX_DIGITS ? size : Number(last);
+    // A suffix: the last `n` bytes (leading zeros say nothing).
+    const digits = last.replace(/^0+(?=\d)/, "");
+    const n = digits.length > MAX_DIGITS ? size : Number(digits);
     if (n === 0 || size === 0) return { kind: "unsatisfiable" };
     return { kind: "range", start: Math.max(0, size - n), end: size - 1 };
   }
@@ -90,6 +97,12 @@ const NOT_FOUND = { "Cache-Control": "no-store", "Content-Length": "0", "X-Conte
 function notFound(res: ServerResponse): void {
   if (res.headersSent) return void res.destroy();
   res.writeHead(404, NOT_FOUND);
+  res.end();
+}
+
+/** Over a stream cap: nothing was served, try again later. */
+function busy(res: ServerResponse): void {
+  res.writeHead(503, { "Retry-After": "5", "Cache-Control": "no-store", "Content-Length": "0", "X-Content-Type-Options": "nosniff", Connection: "close" });
   res.end();
 }
 
@@ -115,6 +128,8 @@ let seq = 0;
 
 export function makeMediaHttp(deps: MediaHttpDeps, policy: ListenerPolicy): MediaRequestHandler {
   const stallMs = deps.stallMs ?? STALL_MS;
+  const maxStreams = deps.maxStreams ?? MAX_MEDIA_STREAMS;
+  let streams = 0;
   return (req, res, authorised) => {
     const host = typeof req.headers.host === "string" ? req.headers.host : undefined;
     if (!hostAllowed(policy, host)) return refuse(res, 403, hostRefused());
@@ -128,10 +143,20 @@ export function makeMediaHttp(deps: MediaHttpDeps, policy: ListenerPolicy): Medi
     const asked = parsePath(req.url ?? "");
     const grant = asked === undefined ? undefined : deps.tokens.resolve(asked.token);
     if (asked === undefined || grant === undefined || grant.file !== asked.file) return notFound(res);
+    if (streams >= maxStreams) return busy(res);
+    const release = deps.tokens.stream(grant, () => res.destroy());
+    if (release === undefined) return busy(res);
+    streams++;
     // A token that checks out is a client the server has reason to serve: its socket no longer
-    // counts against the pre-upgrade pool or its header timeout (a stream outlives both).
+    // counts against the pre-upgrade pool or its header timeout (a stream outlives both), but
+    // still against its address's share.
     authorised();
-    void serve(deps, grant, req, res, method === "HEAD", stallMs).catch(() => notFound(res));
+    void serve(deps, grant, req, res, method === "HEAD", stallMs)
+      .catch(() => notFound(res))
+      .finally(() => {
+        streams--;
+        release();
+      });
   };
 }
 
@@ -173,6 +198,11 @@ async function serve(deps: MediaHttpDeps, grant: CapGrant, req: IncomingMessage,
     // `If-Range` names a validator: anything but this file's own is a stale copy, sent whole.
     const ifRange = req.headers["if-range"];
     if (answer.kind !== "whole" && ifRange !== undefined && ifRange !== etag) answer = { kind: "whole" };
+    const ifNoneMatch = req.headers["if-none-match"];
+    if (typeof ifNoneMatch === "string" && ifNoneMatch.split(",").some((t) => t.trim() === etag || t.trim() === "*")) {
+      res.writeHead(304, { ETag: etag, "Cache-Control": "private, max-age=600, immutable" });
+      return void res.end();
+    }
     const headers: Record<string, string> = {
       "Content-Type": contentTypeOf(grant.file),
       "Accept-Ranges": "bytes",

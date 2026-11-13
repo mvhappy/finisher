@@ -33,7 +33,7 @@ import * as NetAddress from "effect/net/NetAddress";
 import * as Socket from "effect/socket/Socket";
 import { SocketServer, SocketServerError, SocketServerOpenError } from "effect/socket/SocketServer";
 import { WebSocketServer, type WebSocket } from "ws";
-import { isMediaRequest, type MediaRequestHandler } from "./media/http.ts";
+import { isMediaRequest, MAX_MEDIA_STREAMS, type MediaRequestHandler } from "./media/http.ts";
 import type { Principal } from "./principal.ts";
 import { principalKeyOf, type Tickets } from "./auth/tickets.ts";
 import { hostAllowed, type ListenerPolicy, loopbackPolicy, MAX_UNAUTHENTICATED, originAllowed, RPC_PATH } from "./http/policy.ts";
@@ -152,7 +152,8 @@ export interface WebSocketServerOptions {
   /**
    * Media over HTTP (6B-1 Task 17): `GET`/`HEAD /media/cap/<token>/<file>` and every other path
    * under `/media/` go here, before `onRequest`, with this listener's own Host and Origin lists
-   * (`media/http.ts`). A request whose token checks out stops counting as unauthenticated.
+   * (`media/http.ts`). A request whose token checks out leaves the unauthenticated pool and its
+   * header timeout, but its socket still counts against its address's `perAddress`.
    */
   readonly media?: MediaRequestHandler;
   /** The port to listen on (default 0: any). */
@@ -245,7 +246,7 @@ export const makeTicketedWebSocketServer = (options: WebSocketServerOptions) =>
     /** Pre-upgrade sockets per remote address (only counted with `perAddress`). */
     const byAddress = new Map<string, number>();
     /** Sockets that have not upgraded: when each opened, and what marks it upgraded (it stops counting). */
-    const unauthenticated = new Map<Duplex, { readonly openedAt: number; readonly upgraded: () => void }>();
+    const unauthenticated = new Map<Duplex, { readonly openedAt: number; readonly upgraded: () => void; readonly served: () => void }>();
     const http: Server = yield* Effect.acquireRelease(
       Effect.sync(() => {
         // Slow or idle clients before the upgrade are cut off (checked every second); the
@@ -266,7 +267,7 @@ export const makeTicketedWebSocketServer = (options: WebSocketServerOptions) =>
                   ? media(req, res, () => {
                       // Over TLS the request comes on the `TLSSocket`; the pool tracked its raw socket (`_parent`).
                       const socket = req.socket as Duplex & { _parent?: Duplex };
-                      (unauthenticated.get(socket) ?? unauthenticated.get(socket._parent as Duplex))?.upgraded();
+                      (unauthenticated.get(socket) ?? unauthenticated.get(socket._parent as Duplex))?.served();
                     })
                   : front(req, res);
         const opts = { headersTimeout: timeout, requestTimeout: timeout, connectionsCheckingInterval: 1000 };
@@ -275,7 +276,7 @@ export const makeTicketedWebSocketServer = (options: WebSocketServerOptions) =>
             ? createServer(opts, route)
             : (createHttpsServer({ ...opts, key: options.tls.key, cert: options.tls.cert, minVersion: "TLSv1.2" }, route) as unknown as Server);
         // A backstop only: the caps below decide first.
-        server.maxConnections = maxUnauthenticated + maxWebSockets;
+        server.maxConnections = maxUnauthenticated + maxWebSockets + (media === undefined ? 0 : MAX_MEDIA_STREAMS);
         return server;
       }),
       (server) =>
@@ -324,7 +325,12 @@ export const makeTicketedWebSocketServer = (options: WebSocketServerOptions) =>
           else byAddress.set(address, n);
         }
       };
-      unauthenticated.set(socket, { openedAt: Date.now(), upgraded });
+      // A media stream (`media/http.ts`) leaves the pool and its timeout, not its address's count.
+      const served = () => {
+        clearTimeout(timer);
+        unauthenticated.delete(socket);
+      };
+      unauthenticated.set(socket, { openedAt: Date.now(), upgraded, served });
       socket.once("close", upgraded);
     });
     http.on("upgrade", (req: IncomingMessage, socket: Duplex, head: Buffer) => {

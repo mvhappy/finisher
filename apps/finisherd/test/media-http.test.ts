@@ -7,23 +7,26 @@
 import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { request } from "node:http";
+import { request as httpsRequest } from "node:https";
+import type { Duplex } from "node:stream";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { FinError, Principal } from "@finisher/contracts";
-import { MediaCache } from "@finisher/fin-node";
+import type { CredentialFile, FinError, Principal } from "@finisher/contracts";
+import { generateIdentityKey, MediaCache, selfSignedCert } from "@finisher/fin-node";
 import { Effect, Exit, Scope } from "effect";
-import { afterEach, beforeEach, describe, expect, test } from "vitest";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import { b64u, canonicalEndpoint, proveMac } from "../src/auth/crypto.ts";
 import { revokeCredential } from "../src/auth/revoke.ts";
 import { Tickets } from "../src/auth/tickets.ts";
 import { ConnectionRegistry } from "../src/connections.ts";
 import { loopbackPolicy } from "../src/http/policy.ts";
-import { CAP_TTL_MS, CapTokens, MAX_CAP_TOKENS_PER_PRINCIPAL, mediaUrl } from "../src/media/cap-tokens.ts";
+import { CAP_TTL_MS, CapTokens, MAX_CAP_TOKENS_PER_PRINCIPAL, MAX_MEDIA_STREAMS_PER_PRINCIPAL, mediaUrl } from "../src/media/cap-tokens.ts";
 import { makeMediaCache, type MediaCacheService } from "../src/media/cache.ts";
 import { contentTypeOf, makeMediaHttp, parseRange } from "../src/media/http.ts";
 import { LOCAL } from "../src/principal.ts";
 import { makeTicketedWebSocketServer } from "../src/upgrade.ts";
 import { pattern, writeEntry } from "./support/media-entry.ts";
-import { connectProved, ok, startServer, type RunningServer } from "./support/ndjson-client.ts";
+import { confirmed, connectProved, hello, NdjsonClient, ok, startServer, type RunningServer } from "./support/ndjson-client.ts";
 
 const agentOf = (id: string, projects: Principal["projects"]): Principal => ({ kind: "agent", id, scopes: ["project.read"], projects, branches: "*", human: false });
 const A = "01jpa000000000000000000001";
@@ -93,8 +96,22 @@ interface Rig {
   readonly get: (token: string, file: string, headers?: Record<string, string>, method?: string) => Promise<Got>;
 }
 
-async function rig(options: { headersTimeoutMs?: number; maxUnauthenticated?: number; stallMs?: number; files?: Record<string, Buffer | string> } = {}): Promise<Rig> {
-  const { files, stallMs, ...listener } = options;
+interface RigOptions {
+  headersTimeoutMs?: number;
+  maxUnauthenticated?: number;
+  maxWebSockets?: number;
+  perAddress?: number;
+  remoteOf?: (socket: Duplex) => string;
+  stallMs?: number;
+  /** The listener's stream cap (`makeMediaHttp`) and the tokens' per principal. */
+  maxStreams?: number;
+  maxStreamsPerPrincipal?: number;
+  tls?: { key: string; cert: string };
+  files?: Record<string, Buffer | string>;
+}
+
+async function rig(options: RigOptions = {}): Promise<Rig> {
+  const { files, stallMs, maxStreams, maxStreamsPerPrincipal, ...listener } = options;
   const scope = Effect.runSync(Scope.make());
   scopes.push(scope);
   const svc = await Effect.runPromise(Scope.provide(scope)(makeMediaCache(serverData, { everyMs: 3_600_000 })));
@@ -102,7 +119,7 @@ async function rig(options: { headersTimeoutMs?: number; maxUnauthenticated?: nu
   const key = await commitEntry(cache, "fp-rig", [A], files);
   const live = { cache: svc.cache };
   const clock = { now: 1_800_000_000_000 };
-  const tokens = new CapTokens({ now: () => clock.now });
+  const tokens = new CapTokens({ now: () => clock.now, ...(maxStreamsPerPrincipal === undefined ? {} : { maxStreams: maxStreamsPerPrincipal }) });
   let port = 0;
   const policy = loopbackPolicy(() => port, () => ["https://app.example.test"]);
   const built = await Effect.runPromise(
@@ -111,7 +128,7 @@ async function rig(options: { headersTimeoutMs?: number; maxUnauthenticated?: nu
         check: () => ({ ok: false, status: 401, reason: "badTicket" }),
         maxPayload: 1024,
         policy,
-        media: makeMediaHttp({ tokens, cache: () => live.cache, ...(stallMs === undefined ? {} : { stallMs }) }, policy),
+        media: makeMediaHttp({ tokens, cache: () => live.cache, ...(stallMs === undefined ? {} : { stallMs }), ...(maxStreams === undefined ? {} : { maxStreams }) }, policy),
         ...listener,
       }),
       scope,
@@ -120,7 +137,8 @@ async function rig(options: { headersTimeoutMs?: number; maxUnauthenticated?: nu
   port = built.port;
   const call = (method: string, path: string, headers: Record<string, string> = {}) =>
     new Promise<Got>((resolve, reject) => {
-      const req = request({ host: "127.0.0.1", port, method, path, headers: { host: `127.0.0.1:${port}`, ...headers }, agent: false }, (res) => {
+      const send = options.tls === undefined ? request : httpsRequest;
+      const req = send({ host: "127.0.0.1", port, method, path, headers: { host: `127.0.0.1:${port}`, ...headers }, agent: false, rejectUnauthorized: false }, (res) => {
         const chunks: Buffer[] = [];
         res.on("data", (c: Buffer) => chunks.push(c));
         res.on("end", () => resolve({ status: res.statusCode ?? 0, headers: res.headers, body: Buffer.concat(chunks) }));
@@ -144,6 +162,57 @@ async function rig(options: { headersTimeoutMs?: number; maxUnauthenticated?: nu
 }
 
 const sha = (b: Buffer) => createHash("sha256").update(b).digest("hex");
+
+interface Paused {
+  readonly status: number;
+  /** Reads the rest: the bytes, or the error that ended the stream. */
+  readonly finish: () => Promise<Buffer | Error>;
+  readonly destroy: () => void;
+}
+
+/** A `GET` of `path` whose body is not read (a slow reader); rejects when the socket is refused. */
+function openPaused(port: number, path: string): Promise<Paused> {
+  return new Promise<Paused>((resolve, reject) => {
+    const req = request({ host: "127.0.0.1", port, path, headers: { host: `127.0.0.1:${port}` }, agent: false }, (res) => {
+      res.pause();
+      const chunks: Buffer[] = [];
+      resolve({
+        status: res.statusCode ?? 0,
+        finish: () =>
+          new Promise<Buffer | Error>((done) => {
+            res.on("data", (c: Buffer) => chunks.push(c));
+            res.on("end", () => done(Buffer.concat(chunks)));
+            res.on("error", (e) => done(e));
+            res.on("aborted", () => done(new Error("aborted")));
+            res.resume();
+          }),
+        destroy: () => req.destroy(),
+      });
+    });
+    req.on("error", reject);
+    req.end();
+  });
+}
+
+/** A WebSocket upgrade of `/rpc` with no ticket: the status the listener answers (it reached `check`). */
+function upgradeStatus(port: number): Promise<number> {
+  return new Promise<number>((resolve, reject) => {
+    const req = request({
+      host: "127.0.0.1",
+      port,
+      path: "/rpc",
+      headers: { host: `127.0.0.1:${port}`, connection: "Upgrade", upgrade: "websocket", "sec-websocket-version": "13", "sec-websocket-key": "dGhlIHNhbXBsZSBub25jZQ==" },
+      agent: false,
+    });
+    req.on("response", (res) => {
+      resolve(res.statusCode ?? 0);
+      res.resume();
+    });
+    req.on("upgrade", () => resolve(101));
+    req.on("error", reject);
+    req.end();
+  });
+}
 
 describe("tokens", () => {
   test("a token is 32 random bytes in base64url, bound to its grant, expiring in 10 minutes at most", () => {
@@ -600,6 +669,84 @@ describe("serving", () => {
   });
 });
 
+describe("stream caps and revocation (review of Task 17)", () => {
+  test("a principal reads at most its share of streams at once; the WebSocket path keeps its slots", { timeout: 60_000 }, async () => {
+    const r = await rig({ maxUnauthenticated: 2, maxWebSockets: 2, files: HUGE_FILES });
+    const t = r.mint("proxy.mp4");
+    const path = `/media/cap/${t}/proxy.mp4`;
+    const held: Paused[] = [];
+    for (let i = 0; i < MAX_MEDIA_STREAMS_PER_PRINCIPAL; i++) held.push(await openPaused(r.port, path));
+    expect(held.map((h) => h.status)).toEqual(held.map(() => 200));
+    // One more on the same principal (any token of its own) is refused before it counts.
+    const over = await r.get(r.mint("proxy.mp4"), "proxy.mp4");
+    expect([over.status, over.headers["retry-after"], over.body.length]).toEqual([503, "5", 0]);
+    expect(r.tokens.streams).toBe(MAX_MEDIA_STREAMS_PER_PRINCIPAL);
+    // Another principal is served, and an upgrade still reaches the ticket check (401, not a hang-up).
+    expect((await r.get(r.mint("thumb.png", ONLY_A), "thumb.png")).status).toBe(200);
+    expect(await upgradeStatus(r.port)).toBe(401);
+    for (const h of held) h.destroy();
+    await vi.waitFor(() => expect(r.tokens.streams).toBe(0));
+    expect((await r.get(r.mint("thumb.png"), "thumb.png")).status).toBe(200);
+  });
+
+  test("a listener serves at most its streams at once, whoever reads them", { timeout: 60_000 }, async () => {
+    const r = await rig({ maxStreams: 2, files: HUGE_FILES });
+    const a = await openPaused(r.port, `/media/cap/${r.mint("proxy.mp4", ONLY_A)}/proxy.mp4`);
+    const b = await openPaused(r.port, `/media/cap/${r.mint("proxy.mp4", ONLY_B)}/proxy.mp4`);
+    expect([a.status, b.status]).toEqual([200, 200]);
+    expect((await r.get(r.mint("thumb.png"), "thumb.png")).status).toBe(503);
+    a.destroy();
+    await vi.waitFor(() => expect(r.tokens.streams).toBe(1));
+    expect((await r.get(r.mint("thumb.png"), "thumb.png")).status).toBe(200);
+    b.destroy();
+  });
+
+  test("a valid token does not lift the per-address cap", { timeout: 60_000 }, async () => {
+    const r = await rig({ perAddress: 1, remoteOf: () => "10.0.0.9", files: HUGE_FILES });
+    const first = await openPaused(r.port, `/media/cap/${r.mint("proxy.mp4")}/proxy.mp4`);
+    expect(first.status).toBe(200);
+    // The address's one socket is the stream's: a second from it is closed unanswered.
+    await expect(openPaused(r.port, `/media/cap/${r.mint("thumb.png")}/thumb.png`)).rejects.toThrow();
+    first.destroy();
+    await vi.waitFor(async () => expect((await r.get(r.mint("thumb.png"), "thumb.png")).status).toBe(200));
+  });
+
+  test("revoking a principal cuts its streams in flight", { timeout: 60_000 }, async () => {
+    const r = await rig({ files: HUGE_FILES });
+    const agent = agentOf("01agentcutcutcutcutcutcutcu", [A]);
+    const mine = await openPaused(r.port, `/media/cap/${r.mint("proxy.mp4", agent)}/proxy.mp4`);
+    const other = await openPaused(r.port, `/media/cap/${r.mint("proxy.mp4", ONLY_B)}/proxy.mp4`);
+    expect([mine.status, other.status]).toEqual([200, 200]);
+    expect(r.tokens.dropWhere((p) => p.kind === "agent" && p.id === agent.id)).toBe(1);
+    const cut = await mine.finish();
+    expect(cut instanceof Error || cut.length < HUGE.length).toBe(true);
+    // Another principal's stream is untouched.
+    const whole = await other.finish();
+    expect(whole instanceof Buffer && sha(whole) === sha(HUGE)).toBe(true);
+    await vi.waitFor(() => expect(r.tokens.streams).toBe(0));
+  });
+
+  test("If-None-Match with the file's ETag is a 304 with no body", async () => {
+    const r = await rig();
+    const t = r.mint("proxy.mp4");
+    const first = await r.get(t, "proxy.mp4", { range: "bytes=0-0" });
+    const etag = String(first.headers.etag);
+    const again = await r.get(t, "proxy.mp4", { "if-none-match": `"other", ${etag}` });
+    expect([again.status, again.body.length, again.headers.etag]).toEqual([304, 0, etag]);
+    expect((await r.get(t, "proxy.mp4", { "if-none-match": '"other"' })).status).toBe(200);
+  });
+
+  test("the remote (TLS) listener routes media with its own checks", { timeout: 60_000 }, async () => {
+    const id = generateIdentityKey();
+    const r = await rig({ tls: { key: id.pem, cert: selfSignedCert(id.pem, ["127.0.0.1"], 2) } });
+    const t = r.mint("proxy.mp4");
+    const got = await r.get(t, "proxy.mp4", { range: "bytes=10-19" });
+    expect([got.status, got.body.equals(BIG.subarray(10, 20))]).toEqual([206, true]);
+    expect((await r.get(t, "thumb.png")).status).toBe(404);
+    expect((await r.call("GET", `/media/cap/${t}/proxy.mp4`, { host: "evil.example.test" })).status).toBe(403);
+  });
+});
+
 describe("ranges (units)", () => {
   test("parseRange", () => {
     const p = (h: string | undefined, size = 100) => parseRange(h, size);
@@ -619,6 +766,8 @@ describe("ranges (units)", () => {
     expect(p("bytes=1e2-")).toEqual({ kind: "whole" });
     expect(p("bytes=-")).toEqual({ kind: "whole" });
     expect(p("bytes=99999999999999999999-")).toEqual({ kind: "unsatisfiable" });
+    // Leading zeros say nothing: a suffix of one byte is one byte.
+    expect(p("bytes=-0000000000000000000001")).toEqual({ kind: "range", start: 99, end: 99 });
   });
 });
 
@@ -664,5 +813,35 @@ describe("on a running server", () => {
     // The cache's pin of an entry served leaves nothing behind.
     expect(ok<{ pinned: number }>(await c.call("media.cache.status", {})).pinned).toBe(0);
     await c.close();
+  });
+
+  test("revoking a credential through the RPC drops its tokens (main.ts wires the tickets to them)", { timeout: 120_000 }, async () => {
+    server = await startServer(serverData);
+    const local = await connectProved(server);
+    const projectId = ok<{ projectId: string }>(await local.call("project.create", { dir: join(tmp, "P"), name: "P", rate: "30" })).projectId;
+    await local.close();
+    await server.stop();
+    const offline = await MediaCache.open(serverData);
+    const key = await commitEntry(offline, "fp-revoke", [projectId]);
+    server = await startServer(serverData);
+    const console = await connectProved(server, "console");
+    const minted = ok<{ credential: { id: string }; file: CredentialFile }>(
+      await confirmed(console, "auth.credential.mint", { kind: "agent", label: "media", projects: [projectId] }),
+    );
+    const agent = await NdjsonClient.connect(server.info.socket);
+    const file = minted.file;
+    const k = b64u.decode(file.key)!;
+    const endpoint = canonicalEndpoint(server.info.socket);
+    const { clientNonce, exit } = await hello(agent, { env: file.env, endpoint, credential: { kind: file.kind, id: file.id } });
+    const answer = ok<{ envId: string; endpoint: string; serverNonce: string }>(exit);
+    const serverNonce = b64u.decode(answer.serverNonce)!;
+    ok(await agent.call("auth.prove", { mac: b64u.encode(proveMac(k, answer.envId, answer.endpoint, serverNonce, clientNonce)) }));
+    const url = ok<{ url: string }>(await agent.call("media.url", { key, file: "thumb.png" })).url;
+    const base = `http://127.0.0.1:${server.info.wsPort}`;
+    expect((await fetch(base + url)).status).toBe(200);
+    ok(await confirmed(console, "auth.credential.revoke", { id: minted.credential.id }));
+    expect((await fetch(base + url)).status).toBe(404);
+    await agent.close().catch(() => undefined);
+    await console.close();
   });
 });

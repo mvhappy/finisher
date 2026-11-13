@@ -5,7 +5,8 @@
 // base64url, held in memory only (as its SHA-256, like a ticket), bound to `{key, file,
 // principal}` and live for `CAP_TTL_MS`; a principal holds `MAX_CAP_TOKENS_PER_PRINCIPAL` at
 // once (a newer one drops its oldest) and loses them all when it is revoked (`Tickets.onDrop`,
-// the one revoke path). The URL is origin-relative: the client resolves it against the HTTP
+// the one revoke path): its streams in flight are cut then too, as a revoked connection's are.
+// A principal reads at most `MAX_MEDIA_STREAMS_PER_PRINCIPAL` streams at once. The URL is origin-relative: the client resolves it against the HTTP
 // origin it reached the server on (the loopback listener, or the remote one over TLS).
 import { createHash, randomBytes } from "node:crypto";
 import type { FinError } from "@finisher/contracts";
@@ -21,6 +22,8 @@ export const CAP_TTL_MS = 10 * 60_000;
 export const MAX_CAP_TOKENS_PER_PRINCIPAL = 64;
 /** A token is 32 random bytes in base64url. */
 export const CAP_TOKEN_BYTES = 32;
+/** Streams one principal reads at once, every listener together (a further one is refused 503). */
+export const MAX_MEDIA_STREAMS_PER_PRINCIPAL = 8;
 const TOKEN_SHAPE = /^[A-Za-z0-9_-]{43}$/;
 
 export interface CapGrant {
@@ -40,6 +43,12 @@ export interface CapTokensOptions {
   readonly now?: () => number;
   readonly ttlMs?: number;
   readonly max?: number;
+  readonly maxStreams?: number;
+}
+
+interface Stream {
+  readonly principal: Principal;
+  readonly cut: () => void;
 }
 
 export class CapTokens {
@@ -47,11 +56,15 @@ export class CapTokens {
   readonly #now: () => number;
   readonly #ttl: number;
   readonly #max: number;
+  readonly #maxStreams: number;
+  /** Streams being served, by principal key. */
+  readonly #streams = new Map<string, Set<Stream>>();
 
   constructor(options: CapTokensOptions = {}) {
     this.#now = options.now ?? Date.now;
     this.#ttl = Math.min(options.ttlMs ?? CAP_TTL_MS, CAP_TTL_MS);
     this.#max = options.max ?? MAX_CAP_TOKENS_PER_PRINCIPAL;
+    this.#maxStreams = options.maxStreams ?? MAX_MEDIA_STREAMS_PER_PRINCIPAL;
   }
 
   /** A token for `file` of the entry `key`, for `principal`. Reach is the caller's to have checked. */
@@ -81,7 +94,24 @@ export class CapTokens {
     return held;
   }
 
-  /** Drops the tokens of the principals `pred` selects (a credential revoked); how many. */
+  /**
+   * Holds a stream of `grant`'s principal, cut by `cut` if the principal is revoked; the release,
+   * or `undefined` when the principal already reads its `maxStreams`.
+   */
+  stream(grant: CapGrant, cut: () => void): (() => void) | undefined {
+    const owner = principalKeyOf(grant.principal);
+    const held = this.#streams.get(owner) ?? new Set<Stream>();
+    if (held.size >= this.#maxStreams) return undefined;
+    const s: Stream = { principal: grant.principal, cut };
+    held.add(s);
+    this.#streams.set(owner, held);
+    return () => {
+      held.delete(s);
+      if (held.size === 0 && this.#streams.get(owner) === held) this.#streams.delete(owner);
+    };
+  }
+
+  /** Drops the tokens of the principals `pred` selects (a credential revoked) and cuts their streams; how many tokens. */
   dropWhere(pred: (p: Principal) => boolean): number {
     let n = 0;
     for (const [d, g] of this.#live) {
@@ -89,6 +119,16 @@ export class CapTokens {
       this.#live.delete(d);
       n++;
     }
+    for (const held of [...this.#streams.values()]) {
+      for (const s of [...held]) if (pred(s.principal)) s.cut();
+    }
+    return n;
+  }
+
+  /** Streams being served (all principals). */
+  get streams(): number {
+    let n = 0;
+    for (const held of this.#streams.values()) n += held.size;
     return n;
   }
 

@@ -191,7 +191,7 @@ impl MediaCache {
         self.run(env, move |c| c.serve(&key, &projects))
     }
 
-    /// Pins `key` for `holder` (`job:<id>`, `project:<id>`); false when there is no such entry.
+    /// Pins `key` for `holder` (`job:<id>`, `project:<id>`, `http:<n>`); false when there is no such entry.
     #[napi(catch_unwind, ts_return_type = "Promise<boolean>")]
     pub fn pin<'e>(&self, env: &'e Env, key: String, holder: String) -> Result<Object<'e>> {
         self.run(env, move |c| c.pin(&key, &holder))
