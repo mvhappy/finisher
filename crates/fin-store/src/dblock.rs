@@ -14,8 +14,11 @@ use serde_json::json;
 
 use crate::StoreError;
 
+/// The lock file's name in a project's server-data directory.
+pub(crate) const FILE: &str = "db.lock";
+
 fn path(project_data: &Path) -> PathBuf {
-    project_data.join("db.lock")
+    project_data.join(FILE)
 }
 
 fn file(project_data: &Path) -> Result<File, StoreError> {

@@ -116,16 +116,41 @@ fn sweep_one(dir: &Path, id: &str, min_age: Duration) -> bool {
         Ok(text) if !text.is_empty() => look(Path::new(&text), id),
         _ => Folder::Unknown,
     };
-    drop(lock);
     match folder {
         Folder::Ours => {
+            drop(lock);
             unmark(dir);
             false
         }
         Folder::Unknown => false,
-        // A fresh id's directory: everything in it is that create's.
-        Folder::Orphan => fs::remove_dir_all(dir).is_ok(),
+        Folder::Orphan => remove_locked(dir, lock),
     }
+}
+
+/// Removes an orphan's directory (a fresh id's: everything in it is that create's) while
+/// holding its exclusive `db.lock`, so no store can open the database halfway through. The
+/// lock file itself goes last, after the lock is let go: Windows cannot delete a file that is
+/// open. Nothing can open a database in between: no project file names this id.
+fn remove_locked(dir: &Path, lock: fs::File) -> bool {
+    let lock_name = std::ffi::OsStr::new(dblock::FILE);
+    let Ok(entries) = fs::read_dir(dir) else {
+        return false;
+    };
+    for e in entries.flatten() {
+        if e.file_name() == lock_name {
+            continue;
+        }
+        let p = e.path();
+        let gone = match e.file_type() {
+            Ok(t) if t.is_dir() => fs::remove_dir_all(&p),
+            _ => fs::remove_file(&p),
+        };
+        if gone.is_err() {
+            return false;
+        }
+    }
+    drop(lock);
+    fs::remove_dir_all(dir).is_ok()
 }
 
 fn look(project_dir: &Path, id: &str) -> Folder {
