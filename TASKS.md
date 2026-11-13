@@ -1089,6 +1089,13 @@ Plan `docs/superpowers/plans/2026-11-10-sub-project-7d-claude-code-adapter.md`; 
   - docs: plan Decision 13 (owner decision), sub-project 7 spec §4.1 notice list and the RPC table (the architecture spec lists no notices)
   - tests: `agent-claude-session.test.ts` (the four held-steer cases now expect `steerReturned`; the interrupt case with two steers, ids and order, nothing written after it; runtime-level `steer_returned_then_resent`: two RPC steers, interrupt, the notice with both `userMessage` nodes, the fake saw neither, `agent.session.resume {prompt}` sends them in one call), `agent-console.test.ts` (`agent resume <id> <text>`)
   - mutants (all killed): held steers written at the interrupt; ids dropped; order reversed; the tail notice not recorded; resume ignoring `prompt`; the runtime's steer without its node
+- [x] Review of the hand-back (commit `fix(agent): held steers are handed back on every exit path`)
+  - S1: an interrupt the CLI ignores (SIGINT too) ends in the group kill, and the runtime closes the instance (`stopProvider`) before its exit is seen, so the exit's hand-back was dropped; `ClaudeInstance.close()` now hands the held steers back before it marks itself closed (also a scope close and an end)
+  - O1: `#steerTurn` keeps the batch it wrote (`#inFlight`) until the next `result`; an exit (or close) before that `result` hands it back first, then what is still held
+  - O2 (residual, not a marker): after a `finisherd` crash the held steers are only the interrupted run's `userMessage {trigger: steer}` nodes; recovery does not hand them back. A marker would be a durable record per written batch (an extra node every steer turn) and still could not say whether the dying CLI read the last batch; the nodes stay in the run for a person to resend. Plan Decision 13 says so
+  - O3: `fake-claude`'s `ask.bash` runs the command as `ask.run` does (a login shell of `$SHELL`, `runner/bash.rs` `login_shell`), so `fin` inside the CLI's shell meets the session's HOME and PATH as under the real CLI (s3B); `agent-attribution.test.ts` passes on it
+  - tests: `agent-claude-session.test.ts` `steer_returned_after_group_kill` (runtime, the reviewer's repro), a process exit mid-turn, a refused init, a batch written at a result the CLI exits after, a batch whose turn ended not handed back; `fake_claude_results.rs` `fake_bash_tool_runs_a_login_shell_of_shell`
+  - mutants (all killed): no hand-back in `close()`; none in the exit handler; none in `#refuse`; `#inFlight` not set; `#inFlight` not cleared at a `result`; `ask.bash` back on `/bin/sh -c`
 - [ ] 7D-2 (Tasks 7–12), 7D-3 (Tasks 14–16; Task 13 with 7C Task 16's Windows validation), close (17, 18)
 
 ## Sub-project 7A: runtime core
