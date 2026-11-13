@@ -62,7 +62,8 @@ const findFlag = (flags: ReadonlyArray<FinFlag>, word: string): { flag: FinFlag;
  * `argv` (the words after `fin`) as clap parses it, by the index: the command words with global
  * flags before or between them, then the command's flags by their value counts, `--` and the
  * positionals. Undefined where clap's reading cannot be known from the index (an unknown or
- * clustered flag, a word starting with `-` where a value goes, an open value count): no hash
+ * clustered flag, a word starting with `-` where a value goes, an open value count, a repeated
+ * flag other than a list flag): no hash
  * is derived and the call is opaque.
  */
 export function parsedArgs(argv: ReadonlyArray<string>, index: CommandIndex): ParsedArgs | undefined {
@@ -134,6 +135,10 @@ export function parsedArgs(argv: ReadonlyArray<string>, index: CommandIndex): Pa
     const d = hit.flag.delimiter;
     if (d !== undefined) values = values.flatMap((v) => v.split(d));
     const key = hit.flag.long.slice(2);
+    // A repeated flag: a list flag's values append (as clap's); any other repeat (a global
+    // given at two levels overrides, a single-value flag errors or overrides) derives nothing
+    // (review of Task 12).
+    if (flags.has(key) && d === undefined) return undefined;
     flags.set(key, [...(flags.get(key) ?? []), ...values]);
   }
   // A global flag the command lacks shares its id with one of its positionals (`timeline
@@ -167,8 +172,8 @@ export function argsHashOf(argv: ReadonlyArray<string>, index: CommandIndex): st
 }
 
 /** The `fin` hashes a shell command shows, and whether it may run `fin` unseen. */
-export function derive(command: string, index: CommandIndex | undefined): { hashes: ReadonlySet<string>; opaque: boolean } {
-  const seen = finRuns(command);
+export function derive(command: string, index: CommandIndex | undefined, finPath?: string): { hashes: ReadonlySet<string>; opaque: boolean } {
+  const seen = finRuns(command, finPath);
   const hashes = new Set<string>();
   let opaque = seen.opaque;
   for (const argv of seen.runs) {
@@ -190,6 +195,8 @@ interface Window {
 export interface ShellAttributionDeps {
   /** `fin schema commands` of the `fin` the sessions run (`finIndex`); undefined when it cannot be read. */
   readonly index: () => Promise<CommandIndex | undefined>;
+  /** The configured `fin` (`agents.finPath`, resolved): a command naming it by this exact path is a `fin` run. */
+  readonly finPath?: string;
   readonly shellTools?: ReadonlySet<string>;
 }
 
@@ -230,7 +237,7 @@ export class ShellAttribution {
     const command = this.commandOf(tool, input);
     if (callId === undefined || command === undefined) return;
     const index = await this.#d.index().catch(() => undefined);
-    const { hashes, opaque } = derive(command, index);
+    const { hashes, opaque } = derive(command, index, this.#d.finPath);
     let calls = this.#open.get(sessionId);
     if (calls === undefined) this.#open.set(sessionId, (calls = new Map()));
     calls.set(callId, { callId, hashes, opaque, ambiguous: [] });

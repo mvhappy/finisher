@@ -338,7 +338,7 @@ export const buildAgentRuntime = (d: AgentWiringDeps): Effect.Effect<AgentRuntim
     const permissions = providerPermissions({ rules, dirOf });
     // The approvals need the runtime (their nodes, answers): made after it, looked up late.
     let approvals: AgentApprovals | undefined;
-    const attribution = new ShellAttribution({ index: indexOf(() => finIndex(finPath)) });
+    const attribution = new ShellAttribution({ index: indexOf(() => finIndex(finPath)), finPath });
     const requests = new ProviderRequests({ permissions, approvals: () => approvals, key, consume: (id) => core.store.consumeApproval(id), attribution });
     const sandboxes = sessionSandboxes(sandboxDeps);
     const runtime = new Runtime({

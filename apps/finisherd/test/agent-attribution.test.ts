@@ -40,19 +40,24 @@ const idx = async (): Promise<CommandIndex> => (index ??= (await indexOf(() => f
 // ---- the shell reader ----
 
 describe("finRuns", () => {
-  test("static runs, wrappers, lists and redirections", () => {
+  const FINPATH = "/opt/finisher/bin/fin";
+
+  test("static runs: bare or configured fin, the allowlisted commands, lists, pipes and redirections", () => {
     expect(finRuns("fin undo")).toEqual({ runs: [["undo"]], opaque: false });
-    expect(finRuns(`cd x && FOO=1 /usr/local/bin/fin clip insert --at "1 s" 'a b' 2>&1 | tee out.txt; ls -la`)).toEqual({ runs: [["clip", "insert", "--at", "1 s", "a b"]], opaque: false });
-    expect(finRuns("nohup fin undo > /dev/null 2>&1 &")).toEqual({ runs: [["undo"]], opaque: false });
-    expect(finRuns("timeout 10 env -i A=b nice -n 5 fin redo\nfin undo # fin comment")).toEqual({ runs: [["redo"], ["undo"]], opaque: false });
-    expect(finRuns("if [ -f x ]; then { fin undo; }; fi")).toEqual({ runs: [["undo"]], opaque: false });
-    expect(finRuns("(sleep 1; fin undo) &")).toEqual({ runs: [["undo"]], opaque: false });
-    expect(finRuns("git status; ls *.txt; echo $HOME")).toEqual({ runs: [], opaque: false });
+    expect(finRuns(`cd x && fin clip insert --at "1 s" 'a b' 2>&1 > out.txt; ls -la`)).toEqual({ runs: [["clip", "insert", "--at", "1 s", "a b"]], opaque: false });
+    expect(finRuns("fin undo > /dev/null 2>&1 &")).toEqual({ runs: [["undo"]], opaque: false });
+    expect(finRuns("echo start; sleep 1 && fin redo || true\nfin undo # fin comment")).toEqual({ runs: [["redo"], ["undo"]], opaque: false });
+    expect(finRuns("cat cuts.txt | fin batch")).toEqual({ runs: [["batch"]], opaque: false });
+    expect(finRuns("ls *.txt; pwd; false")).toEqual({ runs: [], opaque: false });
     expect(finRuns(`fin view --json \\\n  "a\\"b"`)).toEqual({ runs: [["view", "--json", 'a"b']], opaque: false });
+    // The configured fin by its exact path (quoted or not); any other path is not trusted.
+    expect(finRuns(`'${FINPATH}' undo; ${FINPATH} redo`, FINPATH)).toEqual({ runs: [["undo"], ["redo"]], opaque: false });
+    expect(finRuns(`'${FINPATH}' undo`)).toMatchObject({ opaque: true });
   });
 
-  test("shell_expansion_ambiguous (unit): what cannot be read statically is opaque", () => {
+  test("shell_expansion_ambiguous (unit): everything outside the small grammar is opaque", () => {
     for (const c of [
+      // expansion and substitution
       "fin $CMD",
       "fin clip insert --at ${T}",
       'fin bin add --name "$N"',
@@ -62,15 +67,46 @@ describe("finRuns", () => {
       "$FIN undo",
       "echo $(fin undo)",
       "x=`fin undo`",
+      "echo ${PATH:=/tmp}; fin undo",
+      "cat <(fin undo)",
+      "fin batch <<< '{}'",
+      "cat <<EOF | fin batch\n{}\nEOF",
+      "fin undo 'unterminated",
+      // review of Task 12, 1: wrappers and their options
+      "command -v fin undo",
+      "exec -a fin undo",
+      "nohup fin undo &",
+      "timeout 10 fin undo",
+      "env fin undo",
+      // 2: quoting, reserved words, assignments, functions, groups, aliases, sourcing
+      '"A=B" fin undo',
+      '"if" fin undo',
+      "if true; then fin undo; fi",
+      "fin() { printf X; }; fin undo",
+      "{ fin undo; }",
+      "(fin undo)",
+      "alias fin=ls; fin undo",
+      "source x.sh; fin undo",
+      ". x.sh; fin undo",
+      "eval fin undo",
+      "A=1",
+      "case $x in a) fin undo;; esac",
+      // 3: paths and PATH
+      "/workspace/fin undo",
+      "./fin undo",
+      "PATH=/tmp fin undo",
+      "export PATH=/tmp; fin undo",
+      "printf -v PATH /tmp; fin undo",
+      // 4: anything that could run code
+      "python3 edit.py",
+      "node edit.js",
+      "perl edit.pl",
+      "git status",
       "bash -c 'fin undo'",
       "sh script.sh",
       "./do-edits.sh",
       "xargs fin undo < ids",
       "find . -name '*.mov' -exec fin asset add {} ;",
-      "cat <<EOF | fin batch\n{}\nEOF",
-      "case $x in a) fin undo;; esac",
-      "fin undo 'unterminated",
-      "eval fin undo",
     ]) {
       expect(finRuns(c).opaque, c).toBe(true);
     }
@@ -179,6 +215,16 @@ describe("the hash", () => {
 
   withFin("a parse the index cannot follow derives nothing (opaque), never a wrong hash", async () => {
     const ix = await idx();
+    // Review of Task 12, 5: a repeated flag (globals override across levels in clap) derives
+    // nothing, though fin itself sends a hash for it; a list flag's repeats append (compared above).
+    const repeated = [["--branch", "a", "undo", "--branch", "b"], ["--dry-run", "undo", "--dry-run"]];
+    // Twice at one level clap refuses (no request), and nothing is derived either.
+    expect(argsHashOf(["undo", "--branch", "a", "--branch", "b"], ix)).toBeUndefined();
+    const theirs = await finsOwn(repeated);
+    repeated.forEach((argv, i) => {
+      expect(theirs[i], JSON.stringify(argv)).toBeDefined();
+      expect(argsHashOf(argv, ix), JSON.stringify(argv)).toBeUndefined();
+    });
     for (const argv of [["undo", "--no-such-flag"], ["undo", "-xyz"], ["clip", "insert", "--at"], ["nonsense"], ["undo", "--dry-run=true"], ["bin", "add", "--name", "-n"]]) {
       expect(argsHashOf(argv, ix), JSON.stringify(argv)).toBeUndefined();
     }
@@ -258,11 +304,30 @@ describe("the matcher", () => {
     expect(results).toEqual([{ callId: "C1", ambiguous: ["T1"] }, { callId: "C2", ambiguous: ["T1"] }, { callId: "C3" }]);
   });
 
+  withFin("review of Task 12: an interpreter beside a fin call makes its commit ambiguous, txIds on both", async () => {
+    const ix = await idx();
+    const a = new ShellAttribution({ index: async () => ix, finPath: FIN });
+    const { journal, results } = recording();
+    const j = a.journal(journal);
+    const { rows, commitOf } = afterStage(a);
+    await a.allowed("S1", "C1", "Bash", { command: "fin undo" });
+    await a.allowed("S1", "C2", "Bash", { command: "python3 edit.py" });
+    commitOf("T1", [[ARGS_HASH_HEADER, H(["undo"])]]);
+    expect(rows[0]).toMatchObject({ txId: "T1", callId: null, attribution: "ambiguous" });
+    for (const callId of ["C1", "C2"]) j.toolResult({ sessionId: "S1", runId: "R1", callId, ok: true, output: null, synthetic: false });
+    expect(results).toEqual([{ callId: "C1", ambiguous: ["T1"] }, { callId: "C2", ambiguous: ["T1"] }]);
+    // Only the configured fin's path is trusted; another `.../fin` is opaque.
+    await a.allowed("S1", "C3", "Bash", { command: `'${FIN}' undo` });
+    expect(a.match("S1", H(["undo"]), ["T2"])).toEqual({ callId: "C3", attribution: "inferred" });
+    await a.allowed("S1", "C4", "Bash", { command: "/workspace/fin undo" });
+    expect(a.match("S1", H(["undo"]), ["T3"]).attribution).toBe("ambiguous");
+  });
+
   withFin("an opaque call is a candidate for every hash; a call that runs no fin is none", async () => {
     const ix = await idx();
     const a = new ShellAttribution({ index: async () => ix });
     const { rows, commitOf } = afterStage(a);
-    await a.allowed("S1", "C1", "Bash", { command: "ls -la && git status" });
+    await a.allowed("S1", "C1", "Bash", { command: "ls -la && pwd" });
     commitOf("T1", [[ARGS_HASH_HEADER, H(["undo"])]]);
     expect(rows[0]).toMatchObject({ callId: null, attribution: "none" });
     await a.allowed("S1", "C2", "Bash", { command: "./edit.sh" });
