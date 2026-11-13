@@ -63,10 +63,9 @@ export const RPC_ONLY: ReadonlySet<FinRpcTag> = new Set<FinRpcTag>([
   "training.closedTargets.get",
   "training.closedTargets.set",
   // The agent runtime (plan 7A), reached through the console; `fin agent spawn|wait|ls|send|stop`
-  // name start, wait, list, steer and end (7B Task 6).
+  // name start, wait, list, steer and end (7B Task 6), `fin agent resume|interrupt` resume and
+  // interrupt.
   "agent.session.prompt",
-  "agent.session.interrupt",
-  "agent.session.resume",
   "agent.session.get",
   "agent.session.delete",
   "agent.watch",

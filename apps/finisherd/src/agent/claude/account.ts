@@ -22,14 +22,24 @@
 //   reports `email`/`orgId`/`orgName` as `null`. So detection (`detect.ts`, every
 //   `agent.providers`, every plan and every instance's start) runs it with the **sign-in home** as
 //   its config dir (Decision 19 as amended; the person's `auth login` writes the profile there),
-//   in the detect host sandbox (off Windows: TODO(7D Task 13)), and hashes the `email`, else the
+//   in the detect host sandbox (the home read only, its store read-write; off Windows: TODO(7D
+//   Task 13)), and hashes the `email`, else the
 //   `orgId`; signed in naming neither is `PROVIDER_AUTH` there. An instance's
 //   `initialize.account.email` (present once the CLI holds the profile in the session's own config
 //   dir: a resumed process, or the profile fetch finishing first) is recorded too, under the same
 //   subject as detection's e-mail, so both give one hash.
-// - **Nothing names the account** (Windows, where detection keeps a throwaway config dir; or an
-//   API-key sign-in): no refusal by itself: nothing is recorded, and a new session is refused
+// - **Nothing names the account**: off Windows that is `PROVIDER_AUTH {reason: noAccount}` (above;
+//   a method alone never identifies an account). On Windows, where detection keeps a throwaway
+//   config dir, nothing is recorded and there is no refusal by itself: a new session is refused
 //   only while a change already waits or the record cannot be read (`instanceAccount`).
+// - **Residual (review of Decision 19, S2)**: the hashed label is the sign-in home's cached
+//   profile (`.claude.json` `oauthAccount`), not bound to the credential. A session's `agent`
+//   profile reads and writes `home/store/`, so it can swap `.credentials.json` for another
+//   account's token while detection keeps hashing the old profile; and on a resume
+//   `initialize.account.email` comes from the session's own `provider/.claude.json`, which the
+//   session can write. So "a switch is seen on the first session" holds only for a switch made
+//   with `auth login` (which rewrites the profile). TODO(7D Task 18): that the person's `auth
+//   login` fills the sign-in home's `.claude.json` (only the owner's long-lived dir was seen).
 //
 // **Finisher opens nothing under `providers/`**: the label comes from what the CLI prints.
 import { createHmac, randomBytes } from "node:crypto";
@@ -65,13 +75,6 @@ export const EXPECT_TTL_MS = 30 * 60_000;
  */
 export const LABEL_FIELDS = ["email"] as const;
 
-/**
- * Sign-in methods that may name no account (an API key): hashed by the method alone. Any other
- * sign-in without a label is not identified (`accountIdentified`): two accounts would look alike.
- */
-// TODO(7D Task 0 Step 4): the method names the CLI prints for an API key (`apiKey` is assumed).
-export const API_KEY_METHODS: ReadonlySet<string> = new Set(["apiKey"]);
-
 /** The label `answer` names (`auth status --json`'s object or `initialize.account`), else undefined. */
 export function labelOf(answer: unknown): string | undefined {
   if (answer === null || typeof answer !== "object" || Array.isArray(answer)) return undefined;
@@ -102,7 +105,6 @@ export function labelOfOutput(stdout: string): string | undefined {
   return typeof org === "string" && org !== "" ? `${ORG_LABEL}${org}` : undefined;
 }
 
-
 const HASH_LABEL = "finisher.claudeCode.account.v1\0";
 const HARNESS = "claudeCode";
 const CONFIRM_FIX = "a person at the server confirms the new account with `finisherd provider account confirm claudeCode`";
@@ -117,20 +119,24 @@ export function accountChanged(hash?: string): FinError {
   );
 }
 
-/** Whether `status` (signed in) tells the account apart: a label, or an API-key method. */
-export const accountIdentified = (status: AuthStatus): boolean => status.label !== undefined || API_KEY_METHODS.has(status.authMethod ?? "");
+/**
+ * Whether `status` (signed in) tells the account apart: only by a label. A method alone never
+ * does (two accounts would look alike, and detection keeps only `claude.ai` and `console` by
+ * name). TODO(7D Task 0 Step 4): an API-key sign-in's answer (not run): if it names no account,
+ * it is not identified (`PROVIDER_AUTH {reason: noAccount}` off Windows).
+ */
+export const accountIdentified = (status: AuthStatus): boolean => status.label !== undefined;
 
 /**
  * The keyed hash of `status`'s account (8 hex characters, what `agent.providers` reports) and
  * whether it differs from `last`, the last recorded one (`null`: none yet, so no change).
- * Signed in without a label: an API-key method hashes the method alone; any other method is not
- * identified and has no hash (`INTERNAL`: callers ask `accountIdentified` first). Signed out is
- * `PROVIDER_AUTH`.
+ * Signed in without a label is not identified and has no hash (`INTERNAL`: callers ask
+ * `accountIdentified` first). Signed out is `PROVIDER_AUTH`.
  */
 export function accountCheck(status: AuthStatus, key: Buffer, last: string | null): { hash: string; changed: boolean } {
   if (!status.signedIn) throw finError("PROVIDER_AUTH", "Claude Code is not signed in", { harness: HARNESS }, "sign it in with the commands `finisherd provider signin claudeCode` prints");
   if (!accountIdentified(status)) throw finError("INTERNAL", "no account to hash: the sign-in names none", { harness: HARNESS });
-  const subject = status.label === undefined ? `method\0${status.authMethod}` : `label\0${status.label}`;
+  const subject = `label\0${status.label}`;
   const hash = createHmac("sha256", key).update(HASH_LABEL, "utf8").update(subject, "utf8").digest("hex").slice(0, 8);
   return { hash, changed: last !== null && last !== hash };
 }

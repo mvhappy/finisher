@@ -42,7 +42,8 @@
 //! "onSigint", "mcpTimeoutMs", "refuseFlagValues", "steps": [...]}`:
 //!
 //! - `auth` is merged over what `auth status` prints (signed in by default; with
-//!   `"loggedIn": false` the CLI's signed-out fields, exit 1). Signed in, `email`/`orgId`/
+//!   `"loggedIn": false`, or `CLAUDE_SECURESTORAGE_CONFIG_DIR` naming no folder, the CLI's
+//!   signed-out fields, exit 1). Signed in, `email`/`orgId`/
 //!   `orgName` come from `$CLAUDE_CONFIG_DIR/.claude.json`'s `oauthAccount` (`emailAddress`,
 //!   `organizationUuid`, `organizationName`; the sign-in home's, Decision 19), else `null`.
 //! - `initialize` and `init` are shallow-merged over the `initialize` response and the

@@ -314,6 +314,12 @@ describe("the session's directories (spec §8.5, §8.6)", () => {
     const cc = await linkSignInStore("claudeCode", data, d);
     expect(cc).toEqual({ grant: join(data, "providers", "claudeCode", "home", "store"), env: { name: "CLAUDE_SECURESTORAGE_CONFIG_DIR", value: join(data, "providers", "claudeCode", "home", "store") } });
     expect(existsSync(join(data, "providers", "claudeCode"))).toBe(false);
+    // Detection's (`home`): the sign-in home is the configuration directory, the store still the
+    // only grant (the home is read only, `signInHome`); never on Windows (review of Decision 19).
+    const home = join(data, "providers", "claudeCode", "home");
+    expect(await linkSignInStore("claudeCode", data, d, { home: true, platform: "linux" })).toEqual({ ...cc, configDir: home });
+    expect(await linkSignInStore("claudeCode", data, d, { home: true, platform: "win32" })).toEqual(cc);
+    expect(existsSync(join(data, "providers", "claudeCode"))).toBe(false);
     expect(await linkSignInStore("builtin", data, d)).toBeUndefined();
   });
 });

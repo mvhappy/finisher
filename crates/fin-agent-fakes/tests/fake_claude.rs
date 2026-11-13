@@ -671,6 +671,21 @@ fn fake_reports_version_and_auth_status() {
         true
     );
     assert!(signed.status.success());
+    // Verified on 2.1.321 (7D Task 0 Step 4, A/C): the store variable decides the sign-in; one
+    // naming no store (no sign-in home: never signed in here) is signed out, exit 1. The fake
+    // keeps an existing store folder signed in (the tests' stand-in for a sign-in).
+    let store = Dir::new("auth-store");
+    for (dir, want) in [(store.path("missing"), false), (store.path(""), true)] {
+        let out = Command::new(BIN)
+            .args(["auth", "status", "--json"])
+            .env("CLAUDE_CONFIG_DIR", "/nonexistent/cfg")
+            .env("CLAUDE_SECURESTORAGE_CONFIG_DIR", &dir)
+            .output()
+            .unwrap();
+        let v: Value = serde_json::from_slice(&out.stdout).unwrap();
+        assert_eq!(v["loggedIn"], want, "{}", dir.display());
+        assert_eq!(out.status.code(), Some(i32::from(!want)));
+    }
 }
 
 #[test]

@@ -268,7 +268,8 @@ export interface LinkedStore {
   readonly env?: { readonly name: string; readonly value: string };
   /**
    * Detection's only (`LinkOptions.home`): the sign-in home as the CLI's configuration directory
-   * (plan 7D Decision 19); `grant` is then the home itself.
+   * (plan 7D Decision 19), granted **read only** (the sandbox's `signInHome`); `grant` stays the
+   * store inside it, the only path there detection writes.
    */
   readonly configDir?: string;
 }
@@ -286,8 +287,10 @@ export interface LinkOptions {
   readonly symlink?: typeof symlink;
   /**
    * Detection's host sandbox, a `dir` store, not on Windows (plan 7D Decision 19 as 7D Task 0
-   * amended it): the whole sign-in home is granted and named as the CLI's configuration
-   * directory, where `auth status` finds the account's profile (`.claude.json`). Still no call
+   * amended it): the sign-in home is named as the CLI's configuration directory, where `auth
+   * status` finds the account's profile (`.claude.json`), and granted read only (review S1:
+   * verified on 2.1.321 that `auth status` answers from a read-only home; with write it only
+   * keeps house, `.claude.json.lock`, `backups/`, a rewritten `.claude.json`). Still no call
    * under `providers/`.
    */
   readonly home?: boolean;
@@ -305,7 +308,7 @@ export async function linkSignInStore(harness: Harness, serverData: string, dirs
   // missing root), so the CLI reports itself signed out.
   if (store.kind === "dir") {
     const env = { name: store.env, value: target };
-    return opts.home === true && platform !== "win32" ? { grant: home, env, configDir: home } : { grant: target, env };
+    return opts.home === true && platform !== "win32" ? { grant: target, env, configDir: home } : { grant: target, env };
   }
   const link = join(dirs.provider, store.name);
   const existing = await lstat(link).catch(() => undefined);

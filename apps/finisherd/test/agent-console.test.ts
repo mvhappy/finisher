@@ -139,12 +139,20 @@ describe("agent sessions from the console", () => {
     await until(local, session.id, "interrupted");
     // An interrupted session takes no prompt ...
     expect((await run(["agent", "prompt", session.id, "again"])).code).not.toBe(0);
-    // ... but resume with the text starts a run on it at once.
+    // ... but resume with the text starts a run on it at once: each argument one steer's text,
+    // joined as the runtime joins held steers (a blank line).
     const r = await run(["agent", "resume", session.id, "also this", "and this"]);
     expect(r.code, r.err).toBe(0);
     expect(r.out).toMatch(/Run \S+ started/);
     await until(local, session.id, "idle");
-    expect((await run(["agent", "show", session.id, "--nodes"])).out).toContain("you: also this and this");
+    const prompts = server.core.store.nodes(session.id).filter((n) => n.kind === "userMessage").map((n) => (n.payload as { text: string }).text);
+    expect(prompts.at(-1)).toBe("also this\n\nand this");
+    // --resend-returned takes the texts from the last run's notice: none here.
+    expect((await run(["agent", "interrupt", session.id])).code).toBe(0);
+    const none = await run(["agent", "resume", session.id, "--resend-returned"]);
+    expect(none.code).not.toBe(0);
+    expect(none.err).toMatch(/handed no steers back/);
+    expect((await run(["agent", "resume", session.id, "x", "--resend-returned"])).code).not.toBe(0);
     // Without text, a plain resume.
     expect((await run(["agent", "resume", session.id])).code).toBe(0);
   });

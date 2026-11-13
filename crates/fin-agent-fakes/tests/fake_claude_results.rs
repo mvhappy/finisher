@@ -188,3 +188,40 @@ fn fake_bash_runs_a_login_shell_of_shell() {
         f.finish();
     }
 }
+
+/// `ask.bash` runs the command as `ask.run` does (s3B): a login shell of `$SHELL` that sources
+/// `$HOME/.profile`, so `fin` inside the CLI's shell meets the session's HOME and PATH.
+#[cfg(unix)]
+#[test]
+fn fake_bash_tool_runs_a_login_shell_of_shell() {
+    let dir = Dir::new("bash-login");
+    let home = dir.path("home");
+    std::fs::create_dir_all(&home).unwrap();
+    std::fs::write(home.join(".profile"), "export FAKE_RC_PROBE=sourced\n").unwrap();
+    let script = json!({"steps": [{"expect": "user",
+        "ask": {"tool": "Bash", "bash": true, "input": {"command": "echo \"$FAKE_RC_PROBE\""}}}]});
+    let home_s = home.to_str().unwrap();
+    let mut f = Fake::start(
+        &dir,
+        Some(script),
+        &[],
+        &[("HOME", home_s), ("SHELL", "/bin/sh")],
+    );
+    f.user("go");
+    f.read();
+    let _announced = f.read();
+    let req = f.read();
+    f.answer(
+        &req,
+        json!({"behavior": "allow", "updatedInput": req["request"]["input"]}),
+    );
+    let u = f.read();
+    let block = &u["message"]["content"][0];
+    assert_eq!(block["content"].as_str().map(str::trim), Some("sourced"));
+    assert_eq!(block["is_error"], false);
+    f.finish();
+    assert_eq!(
+        observed(&dir)["spawned"][0]["argv"],
+        json!(["/bin/sh", "-l", "-c", "echo \"$FAKE_RC_PROBE\""])
+    );
+}

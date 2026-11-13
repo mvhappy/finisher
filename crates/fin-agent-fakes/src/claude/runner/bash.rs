@@ -1,8 +1,9 @@
 //! The CLI's `Bash` tool (`ask {bash: true}`, plan 7D Task 12), in the shapes 2.1.321 wrote
 //! (verified 2.1.321, Task 0): the call is announced as an `assistant` `tool_use` before its
 //! `can_use_tool`; the input is `{command, description?, timeout?, run_in_background?}`; once
-//! answered, an allowed command runs with `/bin/sh -c` in the fake's working directory and
-//! environment and the call's `tool_result` is written (a denied one gets an error result).
+//! answered, an allowed command runs as the CLI runs it (a login shell of `$SHELL`, as
+//! `ask.run`: verified on 2.1.321, s3B) in the fake's working directory and environment, and the
+//! call's `tool_result` is written (a denied one gets an error result).
 //!
 //! `run_in_background: true` under `CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1` (Finisher's launch
 //! sets it) is rejected as an unknown parameter before any prompt: an error `tool_result`, no
@@ -28,6 +29,13 @@ const UNKNOWN_BACKGROUND: &str = "<tool_use_error>InputValidationError: Bash fai
 
 fn background(ask: &Ask) -> bool {
     ask.input["run_in_background"] == true
+}
+
+/// The CLI's shell (verified on 2.1.321, 7D Task 0, s3B): `$SHELL`, else the passwd shell (this
+/// fake stands in `/bin/sh`), as a login shell, which sources the rc files under `$HOME`.
+fn login_shell(command: &str) -> (String, [String; 3]) {
+    let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into());
+    (shell, ["-l".into(), "-c".into(), command.into()])
 }
 
 impl Runner {
@@ -61,15 +69,16 @@ impl Runner {
         let (content, is_error) = if !allowed {
             ("Permission to use Bash has been denied.".to_string(), true)
         } else if background(ask) {
-            let started = std::process::Command::new("/bin/sh")
-                .args(["-c", &command])
+            let (shell, args) = login_shell(&command);
+            let started = std::process::Command::new(&shell)
+                .args(&args)
                 .stdin(Stdio::null())
                 .stdout(Stdio::null())
                 .stderr(Stdio::null())
                 .spawn();
             self.observed.push(
                 "spawned",
-                json!({"argv": ["/bin/sh", "-c", command], "background": true}),
+                json!({"argv": [&shell, &args[0], &args[1], &args[2]], "background": true}),
             );
             match started {
                 Ok(child) => (
@@ -79,14 +88,15 @@ impl Runner {
                 Err(e) => (e.to_string(), true),
             }
         } else {
-            let out = std::process::Command::new("/bin/sh")
-                .args(["-c", &command])
+            let (shell, args) = login_shell(&command);
+            let out = std::process::Command::new(&shell)
+                .args(&args)
                 .stdin(Stdio::null())
                 .output();
             let code = out.as_ref().ok().and_then(|o| o.status.code());
             self.observed.push(
                 "spawned",
-                json!({"argv": ["/bin/sh", "-c", command], "code": code}),
+                json!({"argv": [&shell, &args[0], &args[1], &args[2]], "code": code}),
             );
             match out {
                 Ok(o) => {
@@ -205,14 +215,13 @@ impl Runner {
         );
     }
 
-    /// An allowed `Bash` call (`ask.run`) as the CLI runs it: verified on 2.1.321 (7D Task 0,
-    /// s3B), a login shell, `$SHELL` or else the passwd shell (this fake stands in `/bin/sh`),
-    /// which sources the rc files under `$HOME`. Its stdout is the call's `tool_result`.
+    /// An allowed `Bash` call (`ask.run`) as the CLI runs it (`login_shell`). Its stdout is the
+    /// call's `tool_result`.
     pub(super) fn run_bash(&mut self, ask: &Ask, tool_use_id: &str) {
         let command = ask.input["command"].as_str().unwrap_or_default();
-        let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into());
+        let (shell, args) = login_shell(command);
         let out = std::process::Command::new(&shell)
-            .args(["-l", "-c", command])
+            .args(&args)
             .stdin(Stdio::null())
             .stderr(Stdio::null())
             .output();

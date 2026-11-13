@@ -150,6 +150,8 @@ export function ClaudeCodeAdapter(deps: ClaudeDeps): ProviderAdapter {
         // Decision 19 (as 7D Task 0 amended it): signed in, but the sign-in home names no account
         // (neither e-mail nor organization): a new session is refused before the CLI starts; a
         // running session's later process is not (it started on the earlier check).
+        // TODO(7D Task 18): depends on the person's `auth login` filling the sign-in home's
+        // `.claude.json` (assumed; only the owner's long-lived config dir was observed).
         if (d.problem?.code === "PROVIDER_AUTH" && spec.providerRef === null && !resume) return yield* Effect.fail(d.problem);
         const binary = yield* attempt(() => realpathSync(d.path));
         // Decision 7: the CLI's install tree, resolved, which its process reads.

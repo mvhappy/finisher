@@ -43,11 +43,15 @@ pub struct AgentInput {
     pub library_roots: Vec<PathBuf>,
     /// `<serverData>/agents/<sessionId>`.
     pub session_dir: PathBuf,
-    /// The harness's sign-in store file, inside `<serverData>/providers/<harness>/home/`
-    /// (spec §8.6): read and written in place, never its directory; detection's host sandbox
-    /// (`host-<ulid>`, Claude Code, not Windows) may name the home itself (plan 7D Decision 19).
+    /// The harness's sign-in store, inside `<serverData>/providers/<harness>/home/` (spec
+    /// §8.6): read and written in place (a file, or Claude Code's `store/` directory).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sign_in_store: Option<PathBuf>,
+    /// Detection's host sandbox only (plan 7D Decision 19; Claude Code, `host-<ULID>`, `plan`,
+    /// no `fin`, not Windows): `<serverData>/providers/claudeCode/home`, **read only** (`auth
+    /// status` reads the account's profile there); the store inside it stays read-write.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sign_in_home: Option<PathBuf>,
     /// The base toolchain list plus the harness's own (files and directories, read-only).
     #[serde(default)]
     pub toolchains: Vec<PathBuf>,

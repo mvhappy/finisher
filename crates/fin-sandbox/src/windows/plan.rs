@@ -206,6 +206,7 @@ mod tests {
             shared_dir: None,
             library_roots: vec![],
             session_dir: r.join("data").join("agents").join("s1"),
+            sign_in_home: None,
             sign_in_store: None,
             toolchains: vec![],
             server_data: r.join("data"),

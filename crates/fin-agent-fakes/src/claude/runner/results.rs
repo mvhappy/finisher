@@ -271,7 +271,12 @@ pub(super) fn resume_missing(id: &str) -> Value {
 /// `auth status`: JSON by default, `--text` the alternative; exit 1 when signed out.
 pub(super) fn auth_status(script: &Script, text: bool) -> i32 {
     let over = script.auth.clone().unwrap_or_default();
-    let signed_out = over.get("loggedIn") == Some(&Value::Bool(false));
+    // Verified on 2.1.321 (7D Task 0 Step 4, A/C): the store variable decides the sign-in; a store
+    // that is not there (no sign-in home) is signed out. An existing store folder stands in for a
+    // sign-in here (the real CLI also needs its `.credentials.json`).
+    let no_store = std::env::var_os("CLAUDE_SECURESTORAGE_CONFIG_DIR")
+        .is_some_and(|d| !std::path::Path::new(&d).is_dir());
+    let signed_out = over.get("loggedIn") == Some(&Value::Bool(false)) || no_store;
     // Verified on 2.1.321 (7D Task 0): both answers name the config dir; signed in under a
     // fresh one, the label fields are `null` (`defaults.json`).
     let shape = if signed_out {

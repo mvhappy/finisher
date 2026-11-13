@@ -19,10 +19,11 @@
 //   a CLI turn runs: at that turn's successful `result` every held text goes as one user line (a
 //   next CLI turn inside the same run, asked of the budget gate like any turn) and the run stays
 //   open; it ends at a successful `result` with nothing held. An interrupt (also one that crosses
-//   a successful `result`), a failed `result`, a refused init or the exit hands what is held back,
-//   never written: `notice {steerReturned: {steers: [{text, nodeId?, at?}]}}` in order (owner
-//   decision 2026-11-13). A steer reaching an instance whose run already ended is
-//   refused `SESSION_BUSY {reason: "runEnded"}` (the caller sends it again: a new run).
+//   a successful `result`), a failed `result`, a refused init, the exit or the close hands what is
+//   held back (with a batch written whose turn has no `result` yet), never written: `notice
+//   {steerReturned: {steers: [{text, nodeId?, at?}]}}` in order (owner decision 2026-11-13). A
+//   steer reaching an instance whose run already ended is refused `SESSION_BUSY {reason:
+//   "runEnded"}` (the caller sends it again: a new run).
 // - **Interrupt** (Decision 16): the `interrupt` request, then up to `interruptWaitMs` (5 s) for
 //   the turn's `result`; then SIGINT and up to `sigintGraceMs`; then the sandbox's group kill.
 //   Never SIGTERM (it records no result).
@@ -125,6 +126,8 @@ export class ClaudeInstance {
   #cliTurn = false;
   /** Steers held for the next CLI turn of the open run, in order (with their `userMessage` nodes). */
   #held: UserInput[] = [];
+  /** The held steers last written as a CLI turn's line, until that turn's `result` (the CLI may exit before it reads them). */
+  #inFlight: UserInput[] = [];
   /** The model the instance's first init named (a later change is a notice). */
   #model: string | undefined;
   #interrupting = false;
@@ -292,9 +295,12 @@ export class ClaudeInstance {
    * Held steers this run's CLI will never take (owner decision 2026-11-13, Decision 13): handed
    * back whole in `notice {steerReturned: {steers: [{text, nodeId?, at?}]}}`, in order, never
    * written to the CLI; a person (or the parent) sends them again (`agent.session.resume
-   * {prompt}`, or `prompt` on an idle session).
+   * {prompt}`, or `prompt` on an idle session). A batch written whose turn has no `result` yet
+   * (`#inFlight`) goes first: the CLI may have exited before reading it.
    */
   #returnHeld(): void {
+    this.#held = [...this.#inFlight, ...this.#held];
+    this.#inFlight = [];
     if (this.#held.length === 0) return;
     const steers = this.#held.map((h) => ({ text: h.text, ...(h.nodeId === undefined ? {} : { nodeId: h.nodeId }), ...(h.at === undefined ? {} : { at: h.at }) }));
     this.#held = [];
@@ -319,6 +325,7 @@ export class ClaudeInstance {
       return;
     }
     this.#reserved = g !== undefined;
+    this.#inFlight = [...steers];
     if (this.#write(encodeUser(steers.map((h) => h.text), o.uuid))) this.#cliTurn = true;
   }
 
@@ -400,7 +407,10 @@ export class ClaudeInstance {
         this.#model = l.model;
       }
     }
-    if (l.kind === "result") this.#cliTurn = false;
+    if (l.kind === "result") {
+      this.#cliTurn = false;
+      this.#inFlight = [];
+    }
     // Held steers after a successful `result`: the run goes on with them as the next CLI turn.
     const more = l.kind === "result" && !l.is_error && this.#turnOpen && !this.#interrupting && this.#held.length > 0;
     const mapped = this.#map.map(l, this.#interrupting);
@@ -486,6 +496,9 @@ export class ClaudeInstance {
    */
   async close(): Promise<boolean> {
     if (!this.#closed) {
+      // Before the close drops every later event: an interrupt that ended in the group kill
+      // closes the instance before its exit is seen (review of the hand-back, S1).
+      this.#returnHeld();
       this.#closed = true;
       this.#pending = [];
       this.#notify();
@@ -530,6 +543,7 @@ export class ClaudeInstance {
           this.#turnOpen = true;
           this.#interrupting = false;
           this.#held = [];
+          this.#inFlight = [];
           this.#emit({ type: "turnStarted" });
           const written = this.#writeAcked(encodeUser([...(i.facts === undefined || i.facts === "" ? [] : [i.facts]), i.text], o.uuid));
           this.#turnWritten = written.acked;

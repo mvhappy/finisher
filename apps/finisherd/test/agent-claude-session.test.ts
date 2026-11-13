@@ -269,6 +269,20 @@ describe("a turn through the runtime", () => {
     expect(last.content.map((b) => b.text)).toContain("also this\n\nand this");
   });
 
+  withFake("steer_returned_after_group_kill: an interrupt the CLI ignores (SIGINT too) still hands the held steer back", async () => {
+    // The interrupt ends in the group kill and the runtime closes the instance before the exit
+    // is seen: the close hands the steers back (review of the hand-back, S1).
+    const r = await claudeServer({ onInterrupt: "ignore", onSigint: "ignore", steps: [{ expect: "user", emit: [assistant([{ type: "tool_use", id: "toolu_1", name: "Bash", input: { command: "sleep 600" } }])] }, { sleep: 60_000 }] });
+    const s = await start(r);
+    await until(() => (nodes(s.id).some((n) => n.kind === "toolCall") ? true : undefined));
+    ok(await r.local.call("agent.session.steer", { sessionId: s.id, text: "also this" }));
+    ok(await r.local.call("agent.session.interrupt", { sessionId: s.id }));
+    expect((await settle(r, s.id)).status).toBe("interrupted");
+    const back = await until(() => notices(nodes(s.id), "steerReturned")[0]);
+    expect(back).toMatchObject({ harness: "claudeCode", steers: [{ text: "also this" }] });
+    expect(notices(nodes(s.id), "steerReturned")).toHaveLength(1);
+  }, 40_000);
+
   withFake("steer_stays_in_run: two steers in one turn run as one next turn (two results in all)", async () => {
     const r = await claudeServer({
       steps: [
@@ -734,6 +748,47 @@ describe("steers held host-side (Decision 13 as 7D Task 0 amended it)", () => {
     expect(w.events.find((e) => e.type === "turnFailed")).toMatchObject({ error: { code: "BUDGET_EXCEEDED" } });
     expect(types(w)).not.toContain("turnCompleted");
     expect(lines(w)).toEqual([["one"]]);
+  });
+
+  withFake("a process exit mid-turn hands the held steer back, before its exited", async () => {
+    const w = await openWatched({ steps: [{ expect: "user", sleep: 500, crash: { code: 1 } }] });
+    await run(w.provider.startTurn({ runId: "r1", text: "one" }));
+    await run(w.provider.steer({ text: "x" }));
+    await waitFor(w, "exited");
+    expect(returned(w)).toEqual(back("x"));
+    expect(w.events.findIndex((e) => e.type === "notice" && e.name === "steerReturned")).toBeLessThan(types(w).indexOf("exited"));
+    expect(lines(w)).toEqual([["one"]]);
+  });
+
+  withFake("a refused init hands the held steer back", async () => {
+    const w = await openWatched({ init: { tools: ["Read", "Task"] }, steps: [{ expect: "user", cumulativeUsage: usage }] });
+    await run(w.provider.startTurn({ runId: "r1", text: "one" }));
+    await run(w.provider.steer({ text: "x" }));
+    await waitFor(w, "exited");
+    expect(types(w)).toEqual(["notice", "turnFailed", "exited"]);
+    expect(returned(w)).toEqual(back("x"));
+  });
+
+  withFake("a steer batch written at a result the CLI exits after is handed back (O1)", async () => {
+    // The batch goes as the next CLI turn's line at the successful result; the CLI exits before
+    // that turn's result, so the steers are handed back with the exit.
+    const w = await openWatched({ steps: [{ expect: "user", sleep: 500, cumulativeUsage: usage, crash: { code: 1 } }] });
+    await run(w.provider.startTurn({ runId: "r1", text: "one" }));
+    await run(w.provider.steer({ text: "x" }));
+    await run(w.provider.steer({ text: "y" }));
+    await waitFor(w, "exited");
+    expect(returned(w)).toEqual(back("x", "y"));
+    expect(types(w)).not.toContain("turnCompleted");
+  });
+
+  withFake("a steer batch whose turn ended is not handed back by the exit", async () => {
+    const w = await openWatched({ steps: [{ expect: "user", sleep: 500, cumulativeUsage: usage }, { expect: "user", cumulativeUsage: usage, crash: { code: 1 } }] });
+    await run(w.provider.startTurn({ runId: "r1", text: "one" }));
+    await run(w.provider.steer({ text: "x" }));
+    await waitFor(w, "exited");
+    expect(types(w).filter((t) => t === "turnCompleted")).toHaveLength(1);
+    expect(returned(w)).toEqual([]);
+    expect(lines(w)).toEqual([["one"], ["x"]]);
   });
 
   withFake("an interrupt answer still naming queued lines is a notice", async () => {
