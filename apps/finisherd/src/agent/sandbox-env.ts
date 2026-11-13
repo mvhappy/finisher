@@ -166,18 +166,10 @@ export interface HostEnvInput {
 }
 
 /**
- * A host sandbox's own `HOME` (Task 5 review), and a Claude Code session's (Decision 5):
- * `tmp/home`, which `ensureSessionDirs` makes.
- */
-export function hostHome(dirs: SessionDirs, platform: NodeJS.Platform = process.platform): string {
-  return (platform === "win32" ? win32 : posix).join(dirs.tmp, "home");
-}
-
-/**
  * A host sandbox's environment (plan 7D Task 3b): `childEnv()` and the directory's own `TMPDIR`,
  * provider directory, git settings and `GNUPGHOME`; no `FIN_*` connection, no project, no
  * credential; the sign-in store variable only with `store` (detection's). `HOME` (and Windows'
- * `USERPROFILE`) is the throwaway `hostHome`, never the server's: what a CLI reads under the
+ * `USERPROFILE`) is the throwaway `SessionDirs.home`, never the server's: what a CLI reads under the
  * user's home (`$HOME/.config/anthropic/…`) cannot sign the probe in. Sessions keep the server's,
  * but for Claude Code's (`OWN_HOME`).
  */
@@ -185,7 +177,8 @@ export function hostEnv(i: HostEnvInput): Record<string, string> {
   const platform = i.platform ?? process.platform;
   const env = childEnv({}, i.parent ?? process.env, platform);
   if (i.store?.env !== undefined) env[i.store.env.name] = i.store.env.value;
-  env.HOME = hostHome(i.dirs, platform);
+  // `tmp/home` (`SessionDirs.home`, made by `ensureSessionDirs`), the one spelling of it.
+  env.HOME = i.dirs.home;
   if (platform === "win32") env.USERPROFILE = env.HOME;
   return ownDirs(env, i.harness, i.dirs, platform);
 }
@@ -209,7 +202,7 @@ function ownDirs(env: Record<string, string>, harness: Harness, dirs: SessionDir
   });
   env.GNUPGHOME = dirs.gnupg;
   if (OWN_HOME.has(harness)) {
-    env.HOME = hostHome(dirs, platform);
+    env.HOME = dirs.home;
     if (platform === "win32") env.USERPROFILE = env.HOME;
     else env.SHELL = sessionShell();
   }

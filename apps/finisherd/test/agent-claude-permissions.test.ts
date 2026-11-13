@@ -153,6 +153,21 @@ describe("the port", () => {
     expect(shell.response.response).toMatchObject({ mcp_response: { id: 7, error: { code: -32602 } } });
     expect(answerOf(port.request("m3", call("m3", "approve", { tool_name: 1 })).answer!).response.response).toMatchObject({ mcp_response: { error: {} } });
   });
+
+  test("asked: what a prompt named this turn, by id or (no id, the MCP path) by the call; forgotten at the turn's end (review of part B)", () => {
+    const port = claudePermissions();
+    const call = (args: unknown) => ({ subtype: "mcp_message" as const, server_name: "finisher", message: { jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "approve", arguments: args } } });
+    port.request("c1", requestOf(canUseTool("c1", "Read", { file_path: "a" }, { tool_use_id: "t1" })));
+    port.request("c2", call({ tool_name: "Write", input: { file_path: "/x", content: "y" } }));
+    const asked = (d: { tool_name: string; tool_use_id?: string; tool_input?: Record<string, unknown> }) => port.asked!(d);
+    expect(asked({ tool_name: "Read", tool_use_id: "t1" })).toBe(true);
+    expect(asked({ tool_name: "Write", tool_use_id: "t9", tool_input: { content: "y", file_path: "/x" } })).toBe(true);
+    expect(asked({ tool_name: "Write", tool_use_id: "t9", tool_input: { file_path: "/elsewhere" } })).toBe(false);
+    expect(asked({ tool_name: "Edit", tool_use_id: "t2" })).toBe(false);
+    port.turnEnded!();
+    expect(asked({ tool_name: "Read", tool_use_id: "t1" })).toBe(false);
+    expect(asked({ tool_name: "Write", tool_input: { file_path: "/x", content: "y" } })).toBe(false);
+  });
 });
 
 describe("the first-turn gate", () => {

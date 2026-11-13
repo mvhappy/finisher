@@ -38,6 +38,7 @@ import type { RuntimeAnswer } from "../adapter.ts";
 import { MCP_SERVER } from "./launch.ts";
 import { isMcpToolCall, mcpReply } from "./probe-check.ts";
 import { type CanUseToolAnswer, type CliRequest, encodeAnswer } from "./protocol.ts";
+import type { Denial } from "./map.ts";
 import type { RequestPort } from "./session.ts";
 
 /** The `finisher` server's tool that answers permission prompts on the MCP path (Decision 10). */
@@ -53,6 +54,18 @@ interface Waiting {
   /** The JSON-RPC id of an MCP `approve` call (absent on the `stdio` path). */
   readonly rpc?: { readonly id: unknown };
 }
+
+/** JSON with object keys sorted, so the same input matches whatever order its keys came in. */
+const stable = (v: unknown): string => {
+  if (Array.isArray(v)) return `[${v.map(stable).join(",")}]`;
+  if (typeof v === "object" && v !== null) {
+    const o = v as Record<string, unknown>;
+    return `{${Object.keys(o).sort().map((k) => `${JSON.stringify(k)}:${stable(o[k])}`).join(",")}}`;
+  }
+  return JSON.stringify(v) ?? "null";
+};
+/** One call as a key: its tool and input. */
+const callKey = (tool: string, input: unknown) => `${tool}\u0000${stable(input)}`;
 
 const isObject = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
 const clip = (s: string) => s.slice(0, 64);
@@ -74,11 +87,16 @@ export function claudePermissions(opts: PortOptions = {}): RequestPort {
   const byCli = new Map<string, string>();
   /** Every CLI id a permission prompt has used (module docs). */
   const used = new Set<string>();
-  /** Every `tool_use_id` a permission prompt named, answered or not. */
+  /**
+   * What this turn's prompts named, answered or not: their `tool_use_id`s, and each call as
+   * `callKey` (an MCP `approve` may carry no id). Cleared at each `result` (`turnEnded`).
+   */
   const asked = new Set<string>();
+  const askedCalls = new Set<string>();
   let generation = 0;
   const ask = (cli: string, tool: string, input: Readonly<Record<string, unknown>>, toolUseId: unknown, rpc?: { id: unknown }) => {
     if (typeof toolUseId === "string") asked.add(toolUseId);
+    askedCalls.add(callKey(tool, input));
     if (used.has(cli)) {
       const body: CanUseToolAnswer = { behavior: "deny", message: "Finisher refuses a permission prompt that reuses a request id." };
       return {
@@ -158,6 +176,11 @@ export function claudePermissions(opts: PortOptions = {}): RequestPort {
       return [{ type: "requestCancelled", id: runtimeId }];
     },
 
-    asked: (toolUseId: string) => asked.has(toolUseId),
+    asked: (d: Denial) => (d.tool_use_id !== undefined && asked.has(d.tool_use_id)) || (d.tool_input !== undefined && askedCalls.has(callKey(d.tool_name, d.tool_input))),
+
+    turnEnded: () => {
+      asked.clear();
+      askedCalls.clear();
+    },
   };
 }

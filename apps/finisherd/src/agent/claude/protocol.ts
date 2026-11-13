@@ -158,7 +158,9 @@ const ResultLine = Schema.Struct({
   errors: opt(Schema.Array(Str)),
   // Verified on 2.1.321 (7D Task 0, s2a/s2b): every call refused in the turn, by the host's answer,
   // a withdrawn prompt, or the CLI itself (a Write/Edit outside the working directory never asks).
-  permission_denials: opt(Schema.Array(Schema.Struct({ tool_name: Str, tool_use_id: Str, tool_input: opt(JsonObject) }))),
+  // Entries are read leniently by the mapper (`denialOf`): the line carries the turn's usage, so
+  // one odd entry must not fail it.
+  permission_denials: opt(Schema.Array(Schema.Unknown)),
 });
 // Verified on 2.1.321 (7D Task 0, s1a): a top-level line on a process's first turn, before the
 // `result`; `status` was `allowed_warning` at 29 % of a seven-day window.

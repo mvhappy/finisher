@@ -27,7 +27,7 @@ import { finError } from "../../errors.ts";
 import type { BoundEvent, CallGate, ProjectedUsage, ProviderRef, ProviderSession, RuntimeAnswer, TurnInput, UserInput } from "../adapter.ts";
 import type { SandboxedChild } from "../sandbox.ts";
 import type { LaunchPlan } from "./launch.ts";
-import { LineMapper, type UsageSource } from "./map.ts";
+import { type Denial, LineMapper, type UsageSource } from "./map.ts";
 import { claudePermissions } from "./permissions.ts";
 import { type CheckOptions, firstTurnGate, isMcpToolCall, mcpReply } from "./probe-check.ts";
 import { type CliLine, type CliRequest, decodeLine, encodeAnswer, encodeControl, encodeUser, lineFramer, type SystemInit } from "./protocol.ts";
@@ -50,8 +50,10 @@ export interface RequestPort {
   respond(id: string, a: RuntimeAnswer): string | FinError;
   /** The CLI withdrew `requestId` (`control_cancel_request`). */
   cancel(requestId: string): readonly ProviderEvent[];
-  /** Whether a permission prompt named the call `toolUseId` (else a denial of it is the CLI's own). */
-  asked?(toolUseId: string): boolean;
+  /** Whether a prompt of this turn named the denied call (else its denial is the CLI's own). */
+  asked?(d: Denial): boolean;
+  /** A `result` ended the turn: forget its prompts. */
+  turnEnded?(): void;
 }
 
 /** Where an instance's events go instead of its own stream (`ClaudeSession`, Task 10). */
@@ -124,7 +126,7 @@ export class ClaudeInstance {
     this.#queue = queue;
     this.#gate = firstTurnGate(o.plan, o.check ?? {});
     this.#requests = o.requests ?? claudePermissions();
-    this.#map = new LineMapper(o.usage, (id) => this.#requests.asked?.(id) === true);
+    this.#map = new LineMapper(o.usage, { asked: (d) => this.#requests.asked?.(d) === true, turnEnded: () => this.#requests.turnEnded?.() });
     this.#pending = [...(o.notices ?? [])];
     this.#initialized = new Promise((resolve) => (this.#answerInitialize = resolve));
   }

@@ -15,9 +15,9 @@
 // - `result` → `usage` and `notice {modelUsage}` (`UsageSource`, `usage.ts`), a
 //   `notice {cliDenied}` per `permission_denials` entry no permission prompt asked about (the
 //   CLI refused it itself: a Write/Edit outside the working directory), then the turn's end,
-//   keyed on `terminal_reason` before `is_error` (Decision 14): an interrupt's `aborted_*` result
-//   is `turnCompleted {stopReason: "interrupted"}` (as the built-in loop ends an interrupted
-//   turn), never a failure; otherwise `turnFailed` when `is_error` (never keyed on `subtype`:
+//   keyed on `terminal_reason` before `is_error` (Decision 14): while Finisher interrupts, the
+//   `aborted_*` result is `turnCompleted {stopReason: "interrupted"}` (as the built-in loop ends
+//   an interrupted turn), never a failure; otherwise `turnFailed` when `is_error` (never keyed on `subtype`:
 //   2.1.321 writes `success` on the "Not logged in" turn), else `turnCompleted` once no steer is
 //   queued (`queued_turn_count == 0`, Decision 13).
 // - `rate_limit_event` → nothing while its `status` is `allowed*`, else `notice {rateLimit}`.
@@ -35,16 +35,43 @@ export type { UsageSource } from "./usage.ts";
 type Event = ProviderEvent;
 
 /** `system` subtypes that occur on every start and turn and carry nothing the record needs. */
-const SILENT_SYSTEM: ReadonlySet<string> = new Set(["status", "ui_invalidate", "permission_denied"]);
+// Verified on 2.1.321 (7D Task 0): `thinking_tokens {estimated_tokens, estimated_tokens_delta}`
+// comes with every thinking block (s2a, s2c, s3A, s3C, s3D); its estimate is not usage.
+const SILENT_SYSTEM: ReadonlySet<string> = new Set(["status", "ui_invalidate", "permission_denied", "thinking_tokens"]);
 
 /**
  * Verified on 2.1.321 (7D Task 0, s3E): the `system` lines of a background task, which starts a
  * turn of its own after a `result`; `CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1` keeps them away.
  */
-const BACKGROUND_SYSTEM: ReadonlySet<string> = new Set(["task_updated", "task_notification", "background_tasks_changed"]);
+const BACKGROUND_SYSTEM: ReadonlySet<string> = new Set(["task_started", "task_updated", "task_notification", "background_tasks_changed"]);
 
 /** The input fields that name a refused call's file. */
 const PATH_KEYS = ["file_path", "notebook_path", "path"] as const;
+
+/** One `result.permission_denials` entry, as far as it is readable. */
+export interface Denial {
+  readonly tool_name: string;
+  readonly tool_use_id?: string;
+  readonly tool_input?: Readonly<Record<string, unknown>>;
+}
+
+/** What the mapper asks the instance's permission prompts (`RequestPort`). */
+export interface PromptMemory {
+  /** Whether a prompt of this turn named the call (else its denial is the CLI's own). */
+  asked(d: Denial): boolean;
+  /** A `result` ended the turn: the turn's prompts are forgotten. */
+  turnEnded(): void;
+}
+
+const NO_PROMPTS: PromptMemory = { asked: () => false, turnEnded: () => {} };
+
+const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
+
+/** A readable entry (a string `tool_name`; the other fields kept when well typed), or null. */
+function denialOf(v: unknown): Denial | null {
+  if (!isRecord(v) || typeof v.tool_name !== "string") return null;
+  return { tool_name: v.tool_name, ...(typeof v.tool_use_id === "string" ? { tool_use_id: v.tool_use_id } : {}), ...(isRecord(v.tool_input) ? { tool_input: v.tool_input } : {}) };
+}
 
 /** The "Not logged in" turn's `result` text (Task 0, 2.1.321: "Not logged in · Please run /login"). */
 const NOT_LOGGED_IN = /^Not logged in\b/;
@@ -71,21 +98,23 @@ const text200 = (s: string | undefined): string => (s ?? "").slice(0, 200);
  * `SESSION_INTERRUPTED`; anything else is the CLI's own error, `PROVIDER_UNAVAILABLE`.
  */
 /**
- * Whether `r` is the end of a turn an interrupt stopped. Verified on 2.1.321 (7D Task 0, s1b,
- * s2b): `subtype: "error_during_execution"`, `is_error: true`, `terminal_reason: "aborted_tools"`,
- * no `result` key, `stop_reason: "tool_use"`. TODO(7D Task 0 Step 1): an interrupt while the
- * model streams with no tool running (another `aborted_*` reason?); modelled by fake-claude as
- * `error_during_execution` with no `terminal_reason`, so while Finisher's interrupt is in flight
- * that subtype counts too.
+ * Whether `r` is the end of a turn Finisher's interrupt stopped. Verified on 2.1.321 (7D Task 0,
+ * s1b, s2b): `subtype: "error_during_execution"`, `is_error: true`, `terminal_reason:
+ * "aborted_tools"`, no `result` key, `stop_reason: "tool_use"`. Only while Finisher interrupts
+ * (review of part B): an abort it did not ask for fails the turn (fail closed: a held steer
+ * then starts no run of its own). TODO(7D Task 0 Step 1): an interrupt while the model streams
+ * with no tool running (another `aborted_*` reason?); modelled by fake-claude as
+ * `error_during_execution` with no `terminal_reason`, which counts too.
  */
 export function isInterruptEnd(r: ResultMsg, interrupting: boolean): boolean {
+  if (!interrupting || !r.is_error) return false;
   if (r.terminal_reason?.startsWith("aborted") === true) return true;
-  return interrupting && r.is_error && r.subtype === "error_during_execution" && r.terminal_reason === undefined;
+  return r.subtype === "error_during_execution" && r.terminal_reason === undefined;
 }
 
 export function resultError(r: ResultMsg, interrupting: boolean): FinError {
   const status = r.api_error_status ?? null;
-  const details = { harness: "claudeCode", subtype: r.subtype.slice(0, 64), ...(status === null ? {} : { status }) };
+  const details = { harness: "claudeCode", subtype: r.subtype.slice(0, 64), ...(status === null ? {} : { status }), ...(r.terminal_reason === undefined ? {} : { terminalReason: r.terminal_reason.slice(0, 64) }) };
   if (NOT_LOGGED_IN.test(r.result ?? "")) return finError("PROVIDER_AUTH", "Claude Code is not signed in on this server", { ...details, reason: "notLoggedIn" }, SIGNIN_FIX);
   if (status === 401 || status === 403) return finError("PROVIDER_AUTH", "Claude Code's sign-in was refused", details, SIGNIN_FIX);
   if (status === 429) return finError("PROVIDER_RATE_LIMITED", "Claude Code is rate limited", details);
@@ -102,13 +131,13 @@ export function resultError(r: ResultMsg, interrupting: boolean): FinError {
 /** What one instance's lines become, with the memory the mapping needs. */
 export class LineMapper {
   readonly #usage: UsageSource;
-  readonly #asked: (toolUseId: string) => boolean;
+  readonly #prompts: PromptMemory;
   readonly #noticed = new Set<string>();
 
-  /** `asked`: whether a permission prompt of this instance named the call (`RequestPort.asked`). */
-  constructor(usage: UsageSource = new ClaudeUsage(), asked: (toolUseId: string) => boolean = () => false) {
+  /** `prompts`: what this instance's permission prompts named (`RequestPort.asked`). */
+  constructor(usage: UsageSource = new ClaudeUsage(), prompts: PromptMemory = NO_PROMPTS) {
     this.#usage = usage;
-    this.#asked = asked;
+    this.#prompts = prompts;
   }
 
   /** `unknown {name}` the first time `name` is seen on this instance, else nothing. */
@@ -224,14 +253,26 @@ export class LineMapper {
     return [{ type: "notice", name: "rateLimit", details: { harness: "claudeCode", status: i.status.slice(0, 64), window: i.rateLimitType?.slice(0, 64) ?? null, resetsAt: i.resetsAt ?? null, utilization: i.utilization ?? null } }];
   }
 
-  /** A `cliDenied` notice per refused call no permission prompt named (Decision 18, Task 0). */
+  /**
+   * A `cliDenied` notice per refused call no permission prompt named (Decision 18, Task 0); an
+   * unreadable entry is skipped, counted in one `malformedDenials` notice. The turn's prompts are
+   * forgotten afterwards.
+   */
   #cliDenied(r: ResultMsg): Event[] {
     const out: Event[] = [];
-    for (const d of r.permission_denials ?? []) {
-      if (this.#asked(d.tool_use_id)) continue;
+    let malformed = 0;
+    for (const raw of r.permission_denials ?? []) {
+      const d = denialOf(raw);
+      if (d === null) {
+        malformed++;
+        continue;
+      }
+      if (this.#prompts.asked(d)) continue;
       const path = PATH_KEYS.map((k) => d.tool_input?.[k]).find((v): v is string => typeof v === "string");
-      out.push({ type: "notice", name: "cliDenied", details: { harness: "claudeCode", tool: d.tool_name.slice(0, 64), toolUseId: d.tool_use_id.slice(0, 128), ...(path === undefined ? {} : { path: path.slice(0, 1024) }) } });
+      out.push({ type: "notice", name: "cliDenied", details: { harness: "claudeCode", tool: d.tool_name.slice(0, 64), toolUseId: d.tool_use_id?.slice(0, 128) ?? null, ...(path === undefined ? {} : { path: path.slice(0, 1024) }) } });
     }
+    if (malformed > 0) out.push({ type: "notice", name: "malformedDenials", details: { harness: "claudeCode", count: malformed } });
+    this.#prompts.turnEnded();
     return out;
   }
 

@@ -155,16 +155,18 @@ describe("the signed-in CLI's lines (7D Task 0, 2.1.321)", () => {
     ]);
   });
 
-  test("interrupt_result_ends_the_turn_interrupted: never turnFailed, with or without Finisher's interrupt in flight", () => {
+  test("interrupt_result_ends_the_turn_interrupted: only while Finisher interrupts; an abort it did not ask for fails the turn", () => {
     const tail = real.slice(-4, -1);
     expect(tail.map((l) => l.kind)).toEqual(["user", "user", "result"]);
-    for (const interrupting of [true, false]) {
-      const events = all(new LineMapper(), tail, interrupting);
-      expect(events.filter((e) => e.type !== "usage" && !(e.type === "notice" && e.name === "modelUsage"))).toEqual([
-        { type: "toolCompleted", providerId: "toolu_01S", ok: false, output: expect.stringMatching(/^The user doesn't want to proceed/) },
-        { type: "turnCompleted", stopReason: "interrupted" },
-      ]);
-    }
+    const content = (interrupting: boolean) => all(new LineMapper(), tail, interrupting).filter((e) => e.type !== "usage" && !(e.type === "notice" && e.name === "modelUsage"));
+    expect(content(true)).toEqual([
+      { type: "toolCompleted", providerId: "toolu_01S", ok: false, output: expect.stringMatching(/^The user doesn't want to proceed/) },
+      { type: "turnCompleted", stopReason: "interrupted" },
+    ]);
+    // Review of part B (S1): fail closed, so a held steer never starts a run of its own.
+    const unasked = content(false);
+    expect(unasked.some((e) => e.type === "turnCompleted")).toBe(false);
+    expect(unasked.at(-1)).toMatchObject({ type: "turnFailed", error: { code: "PROVIDER_UNAVAILABLE", details: { terminalReason: "aborted_tools" } } });
     // Absent, not null (s1b): the key is not there at all.
     expect(Object.hasOwn(results[1]!, "result")).toBe(false);
     // Unverified: an interrupt with no tool running; counted only while Finisher interrupts.
@@ -175,7 +177,10 @@ describe("the signed-in CLI's lines (7D Task 0, 2.1.321)", () => {
 
   test("outside_write_is_cli_denied: a notice per denial no prompt asked about, never an approval", () => {
     const asked = new Set(["toolu_01B"]);
-    const events = all(new LineMapper(undefined, (id) => asked.has(id)), real.slice(1, 6));
+    let ended = 0;
+    const events = all(new LineMapper(undefined, { asked: (d) => d.tool_use_id !== undefined && asked.has(d.tool_use_id), turnEnded: () => ended++ }), real.slice(1, 6));
+    // The prompts' memory is per turn: dropped at each result.
+    expect(ended).toBe(1);
     expect(events.filter((e) => e.type === "request")).toEqual([]);
     expect(events.filter((e) => e.type === "toolCompleted").map((e) => e.type === "toolCompleted" && [e.providerId, e.ok])).toEqual([
       ["toolu_01W", false],
@@ -186,8 +191,15 @@ describe("the signed-in CLI's lines (7D Task 0, 2.1.321)", () => {
       { type: "notice", name: "cliDenied", details: { harness: "claudeCode", tool: "Edit", toolUseId: "toolu_01E", path: "/srv/finisher/proj/b.txt" } },
     ]);
     expect(events.at(-1)).toEqual({ type: "turnCompleted", stopReason: "endTurn" });
-    // A malformed entry is drift: the result does not decode.
-    expect(decodeLine(JSON.stringify({ ...JSON.parse(JSON.stringify(results[0])), kind: undefined, type: "result", permission_denials: [{ tool_name: "Write" }] }))).toBeInstanceOf(FinError);
+    // Review of part B (O1): a malformed entry is skipped with a notice; the result (its usage)
+    // still decodes and ends the turn. An entry without a `tool_use_id` is still a denial.
+    const odd = line({ ...JSON.parse(JSON.stringify(results[0])), kind: undefined, type: "result", permission_denials: [{ tool_name: 7 }, "x", null, { tool_name: "Write", tool_input: { file_path: "/x" } }] });
+    const oddEvents = all(new LineMapper(), [odd]);
+    expect(oddEvents.filter((e) => e.type === "notice" && (e.name === "cliDenied" || e.name === "malformedDenials"))).toEqual([
+      { type: "notice", name: "cliDenied", details: { harness: "claudeCode", tool: "Write", toolUseId: null, path: "/x" } },
+      { type: "notice", name: "malformedDenials", details: { harness: "claudeCode", count: 3 } },
+    ]);
+    expect(oddEvents.at(-1)).toEqual({ type: "turnCompleted", stopReason: "endTurn" });
   });
 
   test("budget_stop_is_budget_exceeded: keyed on terminal_reason too", () => {
@@ -198,9 +210,16 @@ describe("the signed-in CLI's lines (7D Task 0, 2.1.321)", () => {
     expect(resultError(result({ is_error: true, subtype: "error_during_execution", terminal_reason: "budget_exhausted" }), false).code).toBe("BUDGET_EXCEEDED");
   });
 
+  test("thinking_tokens_is_silent (review of part B: s2a, s2c, s3A, s3C, s3D)", () => {
+    const m = new LineMapper();
+    // A scrubbed copy of s2a's line.
+    const real = line({ type: "system", subtype: "thinking_tokens", estimated_tokens: 50, estimated_tokens_delta: 50, session_id: "01890a5d-ac96-774b-bcce-b302099a8057", uuid: "5b1c3e1a-0d55-4a8f-9d4c-2c1f8e9e1100" });
+    expect(all(m, [real, real])).toEqual([]);
+  });
+
   test("background_task_lines_are_unsolicited_turn_notices", () => {
     const m = new LineMapper();
-    for (const sub of ["task_updated", "task_notification", "background_tasks_changed"]) {
+    for (const sub of ["task_started", "task_updated", "task_notification", "background_tasks_changed"]) {
       expect(all(m, [line({ type: "system", subtype: sub, session_id: "s" })])).toEqual([{ type: "notice", name: "unsolicitedTurn", details: { harness: "claudeCode", line: `system/${sub}` } }]);
     }
   });
