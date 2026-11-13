@@ -101,8 +101,11 @@ export interface RuntimeJournal {
   capture(r: { session: Session; runId: string; request: unknown; response: unknown }): void;
   /** A call announced; its turn is the run's last recorded one (its model call's `usage` came first). */
   toolCall(r: { session: Session; runId: string; callId: string; providerId: string; tool: string; input: unknown }): void;
-  /** A result; `synthetic` for one recovery or an interrupt wrote. */
-  toolResult(r: { sessionId: string; runId: string; callId: string; ok: boolean; output: unknown; synthetic: boolean }): void;
+  /**
+   * A result; `synthetic` for one recovery or an interrupt wrote. `ambiguous`: txIds matched to
+   * this call among others (a CLI shell's, `claude/attribution.ts`), listed beside its own.
+   */
+  toolResult(r: { sessionId: string; runId: string; callId: string; ok: boolean; output: unknown; synthetic: boolean; ambiguous?: readonly string[] }): void;
   /** An approval opened, answered or expired (`agent.approval` records the decisions). */
   approval(r: { session: Session; approval: Approval }): void;
 }

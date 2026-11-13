@@ -17,7 +17,7 @@
 //   (the safe point) for at most `stopGraceMs` (30 s), then aborts them, interrupts the session
 //   with `BUDGET_EXCEEDED` and opens a `budget` approval.
 // - **The hooks' tap** (7F Decision 18): every published item and 80 % notice, watched or not.
-import type { Approval, BudgetState, FinError, Harness, ProviderEvent, Run, Session, Usage, WatchItem } from "@finisher/contracts";
+import type { Approval, BudgetState, FinError, Harness, ProviderEvent, Run, Session, WatchItem } from "@finisher/contracts";
 import { Effect } from "effect";
 import { finError, toFinError } from "../errors.ts";
 import type { BoundEvent, CallGate, Capabilities, ProviderAdapter } from "./adapter.ts";
@@ -25,10 +25,10 @@ import { Budget, type Crossings, DEFAULT_BUDGET, type Reading } from "./budget.t
 import type { Clock, Ids } from "./clock.ts";
 import type { AgentCore } from "./core.ts";
 import { credentialPath } from "./credentials.ts";
-import type { Pricing, RuntimeDeps, RuntimeJournal, ToolExecutor } from "./runtime-deps.ts";
-import { budgetError, errorShape, harnessUnknown, limitsOf, NO_JOURNAL, parseRef, REPORTED_PRICING, runFacts, toolsOf } from "./runtime-deps.ts";
+import { budgetError, errorShape, harnessUnknown, limitsOf, NO_JOURNAL, parseRef, type Pricing, REPORTED_PRICING, type RuntimeDeps, type RuntimeJournal, runFacts, type ToolExecutor, toolsOf } from "./runtime-deps.ts";
 import { call, closeLive, closeScope, type Live, openLive } from "./runtime-live.ts";
 import { OutboxDrainer } from "./runtime-outbox.ts";
+import { UsageAccounting } from "./runtime-usage.ts";
 import { handleRequest } from "./provider-requests.ts";
 import type { SessionSandboxes } from "./sandbox.ts";
 import type { SessionEvent } from "./session.ts";
@@ -62,6 +62,7 @@ export abstract class RuntimeEngine {
   readonly #budgets = new Map<string, Budget>();
   readonly #queues = new Map<string, Promise<unknown>>();
   readonly #outbox: OutboxDrainer;
+  readonly #usage: UsageAccounting;
   protected dead = false;
   protected dropped = 0;
 
@@ -80,6 +81,19 @@ export abstract class RuntimeEngine {
       journal: this.journal,
       dead: () => this.dead,
       log: (m, d) => this.log(m, d),
+    });
+    this.#usage = new UsageAccounting({
+      store: this.store,
+      pricing: this.pricing,
+      journal: this.journal,
+      budget: (s) => this.budget(s),
+      budgetState: (b) => this.budgetState(b),
+      append: (n) => this.append(n),
+      record: (what, f) => this.record(what, f),
+      publish: (id, item) => this.publish(id, item),
+      // A tail's stop: the session's current instance stops its run, if one is going on.
+      stop: (id, r) => (this.lives.has(id) ? this.requestStop(this.lives.get(id)!, r) : Promise.resolve()),
+      dropped: () => void this.dropped++,
     });
   }
 
@@ -260,7 +274,7 @@ export abstract class RuntimeEngine {
       },
       liveEnv,
       caps,
-      (b) => this.#onEvent(s.id, b),
+      (b, l) => this.#onEvent(s.id, b, l),
       (l) => this.#onEnd(l),
       this.sandboxFor(s),
     );
@@ -280,7 +294,7 @@ export abstract class RuntimeEngine {
     if (!live) return;
     this.lives.delete(sessionId);
     this.#release(live);
-    await closeLive(live);
+    await closeLive(live, (m, d) => this.log(m, d));
   }
 
   #release(live: Live): void {
@@ -289,9 +303,9 @@ export abstract class RuntimeEngine {
     for (const r of live.reservations.splice(0)) this.budget(s).release(r);
   }
 
-  #onEvent(sessionId: string, b: BoundEvent): void {
+  #onEvent(sessionId: string, b: BoundEvent, origin: Live): void {
     if (this.dead) return;
-    this.background(sessionId, `the ${b.event.type} event`, () => this.#handle(sessionId, b));
+    this.background(sessionId, `the ${b.event.type} event`, () => this.#handle(sessionId, b, origin));
   }
 
   #onEnd(live: Live): void {
@@ -332,19 +346,18 @@ export abstract class RuntimeEngine {
 
   // Events ----------------------------------------------------------------------------------
 
-  async #handle(sessionId: string, { instance, event: e }: BoundEvent): Promise<void> {
+  async #handle(sessionId: string, { instance, event: e }: BoundEvent, origin: Live): Promise<void> {
     const live = this.lives.get(sessionId);
-    if (live === undefined || live.instance !== instance) {
-      this.dropped++;
+    if (live === undefined || live.instance !== instance || live.runId === null) {
+      // A turn's tail after an interrupt, a stop or a replacement (7D Task 9): charged to its run.
+      if (e.type === "usage" && origin.instance === instance) return this.#usage.tail(origin, e);
+      if (e.type === "notice" && e.name === "steerReturned" && origin.instance === instance) return this.#usage.tailNotice(origin, e);
+      if (live !== undefined && live.instance === instance && e.type === "exited") return this.#exited(live, e);
+      if (e.type !== "turnStarted") this.dropped++;
       return;
     }
     if (e.type === "exited") return this.#exited(live, e);
     const runId = live.runId;
-    if (runId === null) {
-      // Nothing is running on this instance: a turn's tail after an interrupt or a stop.
-      if (e.type !== "turnStarted") this.dropped++;
-      return;
-    }
     await this.#onRunEvent(live, runId, e);
   }
 
@@ -382,9 +395,13 @@ export abstract class RuntimeEngine {
           node: async (payload) => void (await node("approval", payload)),
           respond: (a) => call(live.provider.respond(e.id, a)),
           log: (m, d) => this.log(m, { sessionId, ...d }),
+          unconfined: live.sandbox !== undefined && live.sandbox.status.kind !== "enforced",
+          callId: e.providerId === undefined ? undefined : live.calls.get(e.providerId)?.callId,
         }, e);
+      case "requestCancelled":
+        return this.deps.requests?.withdraw(sessionId, e.id);
       case "usage":
-        return this.#usage(live, runId, e);
+        return this.#charge(live, runId, e);
       case "turnCompleted":
         return this.runEnded(live, runId, e.stopReason);
       case "turnFailed":
@@ -464,24 +481,8 @@ export abstract class RuntimeEngine {
     if (live.pendingStop) await this.stop(live, live.pendingStop);
   }
 
-  async #usage(live: Live, runId: string, e: Extract<ProviderEvent, { type: "usage" }>): Promise<void> {
-    const s = this.session(live.sessionId);
-    const tokens = { input: e.input, output: e.output, cacheRead: e.cacheRead, cacheWrite: e.cacheWrite, reasoning: e.reasoning };
-    const priced = this.pricing.price(s, tokens, e.costMicros);
-    const reservation = live.reservations.shift() ?? null;
-    // A non-local call with neither a reported cost nor a price is charged what was held for
-    // it (its projection), never 0: an unknown price must not make the money budget fail open.
-    const projection = reservation?.micros ?? this.pricing.projected(s, tokens) ?? 0;
-    const micros = priced.basis === "unknown" && s.provider !== "local" ? Math.max(priced.micros, projection) : priced.micros;
-    const basis = priced.basis;
-    const b = this.budget(s);
-    const crossings = b.charge(tokens, micros, { reservation });
-    const usage: Usage = { ...tokens, moneyMicros: micros, costBasis: basis };
-    const { run, session } = this.store.addUsage(runId, usage);
-    await this.append({ sessionId: s.id, runId, kind: "usage", payload: usage });
-    this.record("a turn", () => this.journal.turn({ session, runId, usage }));
-    this.publish(s.id, { type: "usageUpdated", runId, usage: run.usage, session: session.usage, budget: this.budgetState(b) });
-    await this.crossings(live, runId, crossings);
+  async #charge(live: Live, runId: string, e: Extract<ProviderEvent, { type: "usage" }>): Promise<void> {
+    await this.crossings(live, runId, await this.#usage.charge(this.session(live.sessionId), runId, e, live.reservations.shift() ?? null));
   }
 
   protected async crossings(live: Live, runId: string, c: Crossings): Promise<void> {

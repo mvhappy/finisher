@@ -22,8 +22,9 @@ fn arg_kinds(name: &str) -> serde_json::Map<String, Value> {
         .collect()
 }
 
-/// The named arguments of a built command: each flag's long and short spelling and how many
-/// values it takes (`values`: 0 for a switch, `null` for an open count).
+/// The named arguments of a built command: each flag's long and short spelling, how many
+/// values it takes (`values`: 0 for a switch, `null` for an open count) and the character a
+/// list flag splits its values at (`delimiter`).
 fn flags(cmd: &clap::Command) -> Vec<Value> {
     cmd.get_arguments()
         .filter(|a| !a.is_positional())
@@ -44,13 +45,17 @@ fn flags(cmd: &clap::Command) -> Vec<Value> {
             if let Some(short) = a.get_short() {
                 f["short"] = json!(format!("-{short}"));
             }
+            // A list flag (`--accept a,b`): clap splits each value at it before anything reads it.
+            if let Some(d) = a.get_value_delimiter() {
+                f["delimiter"] = json!(d.to_string());
+            }
             f
         })
         .collect()
 }
 
 /// `fin schema commands`: every command's name, whether it writes, its flags with their value
-/// counts (the global ones included), and its path arguments with the flag (or the position)
+/// counts (the global ones included), its positionals' ids, and its path arguments with the flag (or the position)
 /// that carries each, from the command line itself; `globals`: the flags that may come before
 /// or between the command words. The built-in agent's `fin` tool reads it once per `fin` binary
 /// (plan 7A Decisions 11, 14c) to find the command and its path values.
@@ -77,7 +82,12 @@ pub fn index(cli: &clap::Command) -> Value {
                 })
                 .collect();
             let flags = cmd.map(flags).unwrap_or_default();
-            json!({ "name": c.name, "write": c.write, "paths": paths, "flags": flags })
+            // The positionals' ids in order: one that shares a global flag's id (`timeline
+            // remove <timeline>`) also reads as that flag in a parse (`diag::describe`).
+            let positionals: Vec<&str> = cmd
+                .map(|x| x.get_positionals().map(|a| a.get_id().as_str()).collect())
+                .unwrap_or_default();
+            json!({ "name": c.name, "write": c.write, "paths": paths, "flags": flags, "positionals": positionals })
         })
         .collect();
     json!({ "commands": list, "globals": flags(&built) })

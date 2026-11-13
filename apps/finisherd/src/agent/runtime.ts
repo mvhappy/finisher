@@ -28,6 +28,7 @@ import type { CallMeta } from "../diagnostics.ts";
 import { finError, toFinError } from "../errors.ts";
 import { DEFAULT_BUDGET } from "./budget.ts";
 import { childCarve } from "./carve.ts";
+import { interruptReason, resumeDenied, resumePrompt } from "./child-resume.ts";
 import { CommandOrder, HookContexts, type HookContextItem } from "./hook-context.ts";
 import { AgentCoreTag } from "./core.ts";
 import { openSession, registryBranchOps } from "./credentials.ts";
@@ -40,7 +41,7 @@ import { BUNDLED_ROLES } from "./roles.ts";
 import { DEFAULT_LIMITS } from "./settings.ts";
 import type { Applied, Recovery } from "./store.ts";
 import { type ChildOpen, Subagents } from "./subagents.ts";
-import type { ConversationOps, RollbackResult, Rollbacks } from "./rollback.ts";
+import { conversationOps, type RollbackResult, type Rollbacks } from "./rollback.ts";
 import { agentWarnings } from "./warnings.ts";
 
 export type { RuntimeDeps } from "./runtime-engine.ts";
@@ -68,6 +69,9 @@ async function exitOf<A>(e: Effect.Effect<A, FinError>): Promise<A> {
   throw Option.isSome(err) ? err.value : Cause.squash(exit.cause);
 }
 
+/** A prompt's `UserPrompt` hook input (a resume's is known only in its turn: `resendReturned`). */
+type Prompted = { readonly by: Principal; readonly text: string; readonly origin: "prompt" | "steer" };
+
 /** The runtime over the server's `AgentCore` (Task 12 builds it in `main.ts`, after the core). */
 /** The runtime's deps: the engine's, and the rollbacks (7B Task 8, `rollback.ts`). */
 type Deps = RuntimeDeps & { readonly rollbacks?: Rollbacks };
@@ -87,6 +91,7 @@ export class Runtime extends RuntimeEngine {
   readonly #rollbacks: Rollbacks | undefined;
   readonly #contexts = new HookContexts({ session: (id) => this.store.get(id), activeRun: (id) => this.store.activeRun(id), live: (id) => this.lives.get(id), append: (n) => this.append(n), queued: (id, t, p) => this.#limits.hold(id, t, p), background: (id, what, f) => this.background(id, what, f), log: (m, d) => this.log(m, d) });
   readonly #order = new CommandOrder();
+  readonly #conversation = conversationOps({ lives: this.lives, adapter: (h) => this.adapter(h), open: (s) => this.ensureLive(s), close: (id) => this.stopLive(id), append: (n) => this.append(n) });
 
   constructor(deps: Deps) {
     super(deps);
@@ -103,7 +108,7 @@ export class Runtime extends RuntimeEngine {
         started: (live, runId) => this.#sandboxNotices(live, runId),
         startClock: (s) => this.budget(s).startRun(),
         facts: (s) => this.facts(s),
-        append: async (n) => void (await this.append(n)),
+        append: async (n) => (await this.append(n)).node,
         interrupt: async (id, reason) => void (await this.apply(id, { kind: "interrupted", reason })),
       },
     });
@@ -124,7 +129,7 @@ export class Runtime extends RuntimeEngine {
       startQueued: (q) => this.background(q.sessionId, "a queued run", () => this.#limits.begin(q).catch(() => {})),
     });
     // A provider card is settled at its `expiresAt`, not only by the hourly sweep (7B Task 5).
-    deps.requests?.bind({ clock: this.clock, expire: () => this.expireApprovals() });
+    deps.requests?.bind({ clock: this.clock, expire: () => this.expireApprovals(), withdraw: (id) => this.#withdrawn(id) });
     // A session's review request is a `notice` in its active run (7B Task 11); the run goes on.
     this.core.reviewLink.onBranchReady(({ sessionId, branch, headSeq, reviewId }) => {
       const runId = reviewId === undefined ? null : this.store.activeRun(sessionId);
@@ -163,7 +168,7 @@ export class Runtime extends RuntimeEngine {
     this.deps.requests?.close();
     const lives = [...this.lives.values()];
     this.lives.clear();
-    await Promise.allSettled(lives.map((l) => closeLive(l)));
+    await Promise.allSettled(lives.map((l) => closeLive(l, (m, d) => this.log(m, d))));
   }
 
   /** A crash, for tests: nothing more is written, nothing is cleaned up in the store. */
@@ -212,9 +217,12 @@ export class Runtime extends RuntimeEngine {
   }
 
   /** A session command after its earlier ones (`CommandOrder`): a prompt's `UserPrompt` hook, then `f` in the session's queue. */
-  #command<A>(sessionId: string, f: (context?: HookContextItem) => Promise<A>, p?: { by: Principal; text: string; origin: "prompt" | "steer" } | "ends"): Promise<A> {
+  #command<A>(sessionId: string, f: (context?: HookContextItem) => Promise<A>, p?: Prompted | (() => Promise<Prompted | undefined>) | "ends"): Promise<A> {
     if (p === "ends") this.#order.cancel(sessionId, "ended");
-    const hook = typeof p === "object" ? async () => this.deps.hooks?.userPrompt(this.session(sessionId), p.by, p.text, p.origin) : undefined;
+    const hook = p === undefined || p === "ends" ? undefined : async () => {
+      const q = typeof p === "function" ? await p() : p;
+      return q === undefined ? undefined : this.deps.hooks?.userPrompt(this.session(sessionId), q.by, q.text, q.origin);
+    };
     return this.#order.run(sessionId, (c) => this.serial(sessionId, () => f(c)), hook);
   }
 
@@ -314,17 +322,7 @@ export class Runtime extends RuntimeEngine {
       this.#guard();
       const rb = this.#rollbacks;
       if (rb === undefined) throw finError("SERVER_UNAVAILABLE", "rollback is not wired on this server", { reason: "noRollback" });
-      return this.#command(sessionId, async () => {
-        const ops: ConversationOps = {
-          caps: async (s) => this.lives.get(s.id)?.caps ?? (await exitOf((this.adapter(s.harness) ?? harnessUnknown(s.harness)).detect())).capabilities,
-          live: (id) => this.lives.get(id)?.provider,
-          open: async (s) => (await this.ensureLive(s)).provider,
-          close: (id) => this.stopLive(id),
-          append: async (n) => void (await this.append(n)),
-        };
-        const r = await rb.rollback(this.session(sessionId), toRun, by, meta, ops);
-        return { ...r, session: this.session(sessionId) };
-      });
+      return this.#command(sessionId, async () => ({ ...(await rb.rollback(this.session(sessionId), toRun, by, meta, this.#conversation)), session: this.session(sessionId) }));
     });
   }
 
@@ -405,8 +403,8 @@ export class Runtime extends RuntimeEngine {
             live.held.push(text);
             return this.#contexts.deliverThen(sessionId, context, { queued: true });
           }
-          await this.append({ sessionId, runId: live.runId, kind: "userMessage", payload: { text, trigger: "steer" } });
-          const err = await call(live.provider.steer({ text }));
+          const { node } = await this.append({ sessionId, runId: live.runId, kind: "userMessage", payload: { text, trigger: "steer" } });
+          const err = await call(live.provider.steer({ text, nodeId: node.id, at: node.createdAt }));
           if (err) throw err;
           return this.#contexts.deliverThen(sessionId, context, { queued: false });
         }
@@ -417,10 +415,10 @@ export class Runtime extends RuntimeEngine {
   }
 
   /** `agent.session.interrupt`: the run stops, open calls get a synthetic result, the branch stays. */
-  interrupt(sessionId: string, _by: Principal): Effect.Effect<Session, FinError> {
+  interrupt(sessionId: string, by: Principal): Effect.Effect<Session, FinError> {
     return attempt(() => {
       this.#guard();
-      return this.serial(sessionId, () => this.#interruptIn(sessionId, "userInterrupt"));
+      return this.serial(sessionId, () => this.#interruptIn(sessionId, interruptReason(this.session(sessionId), by)));
     });
   }
 
@@ -452,17 +450,27 @@ export class Runtime extends RuntimeEngine {
 
   /**
    * `agent.session.resume`: `interrupted` → `idle` with the credential's expiry refreshed; the
-   * provider reopens with its resume reference at the next run, which `prompt` starts at once.
+   * provider reopens with its resume reference at the next run, which `prompt` starts at once
+   * (`resendReturned`: the texts the last run handed back). An agent resumes only a child it
+   * interrupted itself (`child-resume.ts`, checked again here under the session's lock).
    */
-  resume(sessionId: string, by: Principal, prompt?: string): Effect.Effect<{ session: Session; run?: Run }, FinError> {
+  resume(sessionId: string, by: Principal, given?: string, resendReturned = false): Effect.Effect<{ session: Session; run?: Run }, FinError> {
     return attempt(() => {
       this.#guard();
+      let prompt = given;
+      // In the session's order: the check and the prompt (`resendReturned`'s read), then its `UserPrompt` hook.
+      const prompted = async () => {
+        prompt = await resumePrompt(this.store, this.session(sessionId), by, given, resendReturned);
+        return prompt === undefined ? undefined : { by, text: prompt, origin: "prompt" as const };
+      };
       return this.#command(sessionId, async (context) => {
+        const denied = resumeDenied(this.session(sessionId), by);
+        if (denied !== null) throw denied;
         await this.#refresh(this.session(sessionId));
         await this.apply(sessionId, { kind: "resumed" });
         const run = prompt === undefined ? undefined : await this.promptIn(sessionId, prompt, "prompt", undefined, context);
         return { session: this.session(sessionId), ...(run === undefined ? {} : { run }) };
-      }, prompt === undefined ? undefined : { by, text: prompt, origin: "prompt" });
+      }, given === undefined && !resendReturned ? undefined : prompted);
     });
   }
 
@@ -561,6 +569,14 @@ export class Runtime extends RuntimeEngine {
     if (runId !== null) await this.append({ sessionId: s.id, runId, kind: "approval", payload: node });
     this.publish(s.id, { type: "approvalOpened", approval: a });
     this.publishStatus(s, runId);
+  }
+
+  /** A card whose requests the provider withdrew (7D Task 8): expired now, with its session's status and journal. */
+  #withdrawn(approvalId: string): void {
+    const s = this.store.expireApproval(approvalId);
+    if (s === undefined) return;
+    this.publishStatus(s, this.store.activeRun(s.id));
+    this.#journalExpired(s);
   }
 
   /** Journals the session's expired approvals (the journal records each once). */

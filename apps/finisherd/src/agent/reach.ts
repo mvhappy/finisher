@@ -32,7 +32,8 @@
 // - **Author and `session_txs`:** every write carries the session's author
 //   (`agent:<role>:<sessionId>`), whatever it sent, and every commit, undo, redo, revert,
 //   cherry-pick and merge it makes is recorded in `session_txs` after the engine answers,
-//   whatever its call attribution.
+//   whatever its call attribution: `exact` with a `FIN_CALL`; without one (a CLI agent's own
+//   shell) what `claude/attribution.ts` infers from the `fin-args-hash` header (7D Task 12).
 import { join } from "node:path";
 import type { FinError, FinRpcTag, Principal, Session } from "@finisher/contracts";
 import { ruleOf } from "@finisher/contracts";
@@ -41,9 +42,11 @@ import type { ChainHooks } from "../chain/hooks.ts";
 import { branchNotAllowed } from "../chain/fixes.ts";
 import type { Outcome, PolicyRule } from "../chain/policy.ts";
 import { canonicalPath, type ChainProjects, resolveWrites, rootsOf } from "../chain/resolve.ts";
-import { actorFor } from "../diagnostics.ts";
+import { actorFor, headerOf } from "../diagnostics.ts";
 import { finError } from "../errors.ts";
 import { committedOf } from "../history.ts";
+import { ARGS_HASH_HEADER, type Matched } from "./claude/attribution.ts";
+import { resumeDenied } from "./child-resume.ts";
 import type { SessionTx } from "./store-tables.ts";
 
 /** What reach reads of the agent store (`AgentStore` is one). */
@@ -301,7 +304,10 @@ export const SESSION_PEOPLE_READS: ReadonlySet<string> = new Set(["agent.session
  */
 export const REVIEW_SOURCE_RPCS: ReadonlySet<string> = new Set(["review.request", "review.refresh"]);
 
-/** The RPCs a session calls on its own children only (7B Decision 16): `sessionId`, or `ids` of a wait. */
+/**
+ * The RPCs a session calls on its own children only (7B Decision 16): `sessionId`, or `ids` of a
+ * wait. A resume is checked apart (`resumeCheck`): a child the parent interrupted itself only.
+ */
 export const CHILD_RPCS: ReadonlySet<string> = new Set(["agent.session.prompt", "agent.session.steer", "agent.session.interrupt", "agent.session.end", "agent.session.wait"]);
 
 /**
@@ -310,6 +316,7 @@ export const CHILD_RPCS: ReadonlySet<string> = new Set(["agent.session.prompt", 
  */
 function childCheck(tag: string, principal: Principal, payload: unknown, deps: AgentHookDeps): Effect.Effect<void, FinError> {
   if (principal.kind === "agent" && tag === "agent.session.rollback") return rollbackCheck(principal, payload, deps);
+  if (principal.kind === "agent" && tag === "agent.session.resume") return resumeCheck(principal, payload, deps);
   if (principal.kind !== "agent" || (tag !== "agent.session.start" && !CHILD_RPCS.has(tag))) return Effect.void;
   if (!deps.reach.covers(principal)) {
     return Effect.fail(finError("SCOPE_DENIED", `${tag} is for a session's own children`, { tag, scopes: [], principal: "agent", reason: "noSession" }, "Run it from inside an agent session, or as a person."));
@@ -337,6 +344,19 @@ function rollbackCheck(principal: Principal, payload: unknown, deps: AgentHookDe
   );
 }
 
+/**
+ * Stage 4 for an agent's resume (7B Decision 16 as amended 2026-11-13): its own child, and one it
+ * interrupted itself (`child-resume.ts`); else `SCOPE_DENIED`. The runtime checks again.
+ */
+function resumeCheck(principal: Principal, payload: unknown, deps: AgentHookDeps): Effect.Effect<void, FinError> {
+  if (!deps.reach.covers(principal)) {
+    return Effect.fail(finError("SCOPE_DENIED", "a session resumes its own children only", { tag: "agent.session.resume", scopes: [], principal: "agent", reason: "noSession" }, "Run it from inside an agent session, or as a person."));
+  }
+  const id = (payload as { sessionId?: unknown } | null)?.sessionId;
+  const denied = resumeDenied(typeof id === "string" ? deps.sessions.get(id) : undefined, principal);
+  return denied === null ? Effect.void : Effect.fail(denied);
+}
+
 /** `SCOPE_DENIED` for a session calling one of `SESSION_REFUSED_RPCS`. */
 function refusedToSessions(tag: string): FinError {
   const fix =
@@ -351,6 +371,8 @@ export interface AgentHookDeps {
   readonly paths: PathReach;
   readonly sessions: SessionSource;
   readonly clock?: () => number;
+  /** CLI shells' inferred attribution (7D Task 12); without it a commit with no call is `none`. */
+  readonly attribution?: { match(sessionId: string, argsHash: string | undefined, txIds: ReadonlyArray<string>): Matched };
 }
 
 /** The chain's hooks for agent sessions (`chain/hooks.ts`). */
@@ -377,9 +399,10 @@ export function agentChainHooks(deps: AgentHookDeps): ChainHooks {
         const callId = call !== undefined && CALL_ID.test(call) ? call : null;
         const at = clock();
         try {
-          for (const c of committedOf(result)) {
-            deps.sessions.recordTx({ txId: c.tx.txId, sessionId: s.id, callId, attribution: callId === null ? "none" : "exact", at });
-          }
+          const txs = committedOf(result).map((c) => c.tx.txId);
+          const hash = headerOf(headers, ARGS_HASH_HEADER);
+          const m: Matched = callId !== null ? { callId, attribution: "exact" } : (deps.attribution?.match(s.id, hash, txs) ?? { callId: null, attribution: "none" });
+          for (const txId of txs) deps.sessions.recordTx({ txId, sessionId: s.id, callId: m.callId, attribution: m.attribution, at });
         } catch (e) {
           // The write landed; a lost row is reported, never turned into a failed call.
           process.stderr.write(`finisherd: warning: cannot record session ${s.id}'s transaction: ${String(e)}\n`);

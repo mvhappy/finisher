@@ -113,6 +113,7 @@ impl Tree {
             shared_dir: Some(self.p("p/workspace/shared")),
             library_roots: vec![],
             session_dir: self.p("data/agents/s1"),
+            sign_in_home: None,
             sign_in_store: (harness == Harness::Codex)
                 .then(|| self.p("data/providers/codex/home/auth.json")),
             toolchains: Tree::toolchains(),

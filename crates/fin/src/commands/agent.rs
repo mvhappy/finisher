@@ -1,4 +1,4 @@
-//! `fin agent spawn|wait|ls|send|stop|rollback` (plan 7B Tasks 6, 8, Decisions 16–23; spec §5.3, §6.3, §11.2): a
+//! `fin agent spawn|wait|ls|send|stop|rollback|resume|interrupt` (plan 7B Tasks 6, 8, Decisions 16–23; spec §5.3, §6.3, §11.2): a
 //! running session's children. Each child is its own session on a child branch of the parent's
 //! current branch, with its own credential, a mode at most the parent's and a role the parent's
 //! role may spawn; the parent composes by `fin merge <child branch>` into its own branch.
@@ -18,6 +18,16 @@
 //!   reversed on every branch, all or nothing (`CONFLICT` leaves them all as they were), then
 //!   its conversation. A direct child only, and
 //!   one that is not running and has no live child (`SESSION_BUSY`).
+//! - `fin agent resume <id> [text…] [--resend-returned]`: resumes an interrupted session and,
+//!   with text (each argument one text, joined by a blank line as held steers are) or the steers
+//!   its last run handed back (`--resend-returned`, plan 7D Decision 13), starts a run at once.
+//!   Under an agent credential: a direct child only, and only one the parent interrupted itself
+//!   (7B Decision 16 as amended by the owner decision 2026-11-13; `SCOPE_DENIED` otherwise: a
+//!   person resumes it). A person's `fin` resumes any session in reach.
+//! - `fin agent interrupt <id>`: interrupts the child (its run stops, its branch stays); a
+//!   parent's interrupt is recorded as its own (`reason: parentInterrupt`), so it may resume the
+//!   child later. Under an agent credential a direct child only (`SESSION_NOT_FOUND`); a person's
+//!   `fin` interrupts any session in reach.
 //!
 //! All are `agent.session.*` RPCs: offline they are `SERVER_UNAVAILABLE`.
 use std::path::Path;
@@ -56,6 +66,10 @@ pub enum AgentCmd {
     Stop(StopArgs),
     /// Rolls a child back to the end of one of its runs.
     Rollback(RollbackArgs),
+    /// Resumes a child it interrupted (a person: any session), with text or the steers handed back.
+    Resume(ResumeArgs),
+    /// Interrupts a child; its branch stays, and its parent may resume it.
+    Interrupt(InterruptArgs),
 }
 
 #[derive(Debug, Clone, Args, Deserialize, Serialize, JsonSchema)]
@@ -126,6 +140,38 @@ pub struct RollbackArgs {
     #[arg(long = "to-run", value_name = "seq")]
     #[serde(rename = "toRun")]
     pub to_run: u64,
+}
+
+#[derive(Debug, Clone, Args, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ResumeArgs {
+    /// The session's id.
+    pub id: String,
+    /// What to tell it at once (each argument one text, joined by a blank line).
+    #[serde(default)]
+    pub text: Vec<String>,
+    /// Send again the steers its last run handed back (`notice {steerReturned}`).
+    #[arg(long = "resend-returned", conflicts_with = "text")]
+    #[serde(default, rename = "resendReturned")]
+    pub resend_returned: bool,
+}
+
+#[derive(Debug, Clone, Args, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct InterruptArgs {
+    /// The child's session id.
+    pub id: String,
+}
+
+/// The `agent.session.resume` payload: the texts joined by a blank line (as held steers are).
+pub fn resume_payload(a: &ResumeArgs) -> Value {
+    let mut p = json!({ "sessionId": a.id });
+    if a.resend_returned {
+        p["resendReturned"] = json!(true);
+    } else if !a.text.is_empty() {
+        p["prompt"] = json!(a.text.join("\n\n"));
+    }
+    p
 }
 
 fn offline(operation: &str) -> CoreError {
@@ -249,6 +295,8 @@ pub fn run(
             AgentCmd::Send(_) => "agent.session.steer",
             AgentCmd::Stop(_) => "agent.session.end",
             AgentCmd::Rollback(_) => "agent.session.rollback",
+            AgentCmd::Resume(_) => "agent.session.resume",
+            AgentCmd::Interrupt(_) => "agent.session.interrupt",
         };
         return Err(offline(op));
     }
@@ -304,6 +352,18 @@ pub fn run(
             }
             Ok(out)
         }
+        AgentCmd::Resume(a) => {
+            let r = backend.server_call("agent.session.resume", resume_payload(a))?;
+            let mut out = brief_view(&r["session"]);
+            if let Some(run) = r.get("run").filter(|x| !x.is_null()) {
+                out["run"] = run["id"].clone();
+            }
+            Ok(out)
+        }
+        AgentCmd::Interrupt(a) => {
+            let r = backend.server_call("agent.session.interrupt", json!({ "sessionId": a.id }))?;
+            Ok(brief_view(&r["session"]))
+        }
     }
 }
 
@@ -358,6 +418,24 @@ mod tests {
         assert_eq!(
             spawn_payload(&a, "fix it".into()).unwrap(),
             json!({ "role": "fixer", "prompt": "fix it", "mode": "draft", "budget": { "tokens": 1000 } })
+        );
+    }
+
+    #[test]
+    fn resume_joins_texts_by_a_blank_line() {
+        let a = |text: &[&str], resend_returned| ResumeArgs {
+            id: "s1".into(),
+            text: text.iter().map(|t| t.to_string()).collect(),
+            resend_returned,
+        };
+        assert_eq!(resume_payload(&a(&[], false)), json!({ "sessionId": "s1" }));
+        assert_eq!(
+            resume_payload(&a(&["one", "two"], false)),
+            json!({ "sessionId": "s1", "prompt": "one\n\ntwo" })
+        );
+        assert_eq!(
+            resume_payload(&a(&[], true)),
+            json!({ "sessionId": "s1", "resendReturned": true })
         );
     }
 

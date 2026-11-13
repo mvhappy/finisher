@@ -10,13 +10,15 @@ use super::names::NameTable;
 /// and `auth.audit.list|purge` (5A Task 8), `auth.credential.mint|list|revoke` (5A Task 9),
 /// `auth.credential.rotateMaster` (review of 5A Tasks 8–9, M3), the plugin and registry RPCs
 /// (8A Tasks 9a and 9b) and plugin commands (8B Task 9), the `library.*` RPCs (5D), the `jobs.*` RPCs (5C-2), the `agent.*` RPCs (7A Task 2) and the owner's agent settings,
-/// `agent.key.*`, `agent.local.*` and `training.closedTargets.*` (7A Task 12), 5B's pairing,
-/// device, environment and `settings.write` RPCs, the review RPCs with `history.drop`
+/// `agent.key.*`, `agent.local.*` and `training.closedTargets.*` (7A Task 12),
+/// `agent.account.confirm` (7D Task 11), 5B's pairing, device, environment and
+/// `settings.write` RPCs, the review RPCs with `history.drop`
 /// (5E Task 4), `history.log` (review batch L), 6B-1's `media.cache.status|gc` and
 /// `asset.reprobe`, and `agent.hooks.list` (7F Task 2).
 pub static RPC_METHODS: NameTable = NameTable::new(
     "RPC_METHODS",
     &[
+        "agent.account.confirm",
         "agent.approval.answer",
         "agent.approval.list",
         "agent.approval.wait",

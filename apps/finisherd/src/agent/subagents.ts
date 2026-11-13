@@ -232,6 +232,7 @@ export class Subagents {
     const { store, live } = this.#d;
     if (s.status !== "running" && s.status !== "waitingApproval") live.drop(s.id);
     for (const q of live.next()) ops.startQueued(q);
+    for (const q of live.takeDropped()) ops.background(q.sessionId, "a queued run's steers", () => live.handBack(q));
     if (s.parent !== undefined) this.#wake();
     const phase = applied.effects.find((e) => e.kind === "journal")?.phase;
     // A brief that ran to its end.

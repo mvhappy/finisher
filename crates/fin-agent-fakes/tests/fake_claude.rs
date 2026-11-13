@@ -47,7 +47,11 @@ fn fake_answers_initialize_before_prompt() {
         .map(|a| a["name"].as_str().unwrap())
         .collect();
     assert_eq!(names, AGENTS);
-    assert_eq!(body["account"]["tokenSource"], "claude.ai");
+    // Verified on 2.1.321 (7D Task 0): signed in, no `tokenSource` key.
+    assert_eq!(
+        body["account"],
+        json!({"subscriptionType": "Claude Max", "apiProvider": "firstParty"})
+    );
     assert_eq!(
         body["capabilities"],
         json!([
@@ -331,6 +335,8 @@ fn fake_can_use_tool_round_trip() {
         "a turn always ends with a result"
     );
     f.user("again");
+    // Verified 2.1.321, Task 0: `system/init` precedes every turn.
+    assert_eq!(f.read()["subtype"], "init");
     let req = f.read();
     assert_eq!(req["request"]["tool_name"], "Write");
     f.answer(&req, json!({"behavior": "deny", "message": "no"}));
@@ -405,6 +411,7 @@ fn fake_sigint_ends_the_turn_and_keeps_running() {
     );
     assert_eq!(f.read()["subtype"], "error_during_execution");
     f.user("next");
+    assert_eq!(f.read()["subtype"], "init", "every turn has its init");
     assert_eq!(f.read()["type"], "result", "idle turns get a plain result");
     assert!(f.finish().success());
 }
@@ -486,7 +493,7 @@ fn fake_resume_reads_its_transcript() {
 }
 
 #[test]
-fn fake_reports_cumulative_usage_after_resume() {
+fn fake_result_usage_keys_match_the_real_cli_after_resume() {
     let dir = Dir::new("usage");
     let first = run_session(
         &dir,
@@ -494,16 +501,26 @@ fn fake_reports_cumulative_usage_after_resume() {
         json!({"inputTokens": 100, "outputTokens": 10, "costUsd": 0.01}),
     );
     assert_eq!(first["usage"]["output_tokens"], 10);
+    assert_eq!(first["result_index"], 0);
     let resume = format!("--resume={UUID}");
     let second = run_session(
         &dir,
         &[&resume],
         json!({"inputTokens": 50, "outputTokens": 20, "costUsd": 0.02}),
     );
-    assert_eq!(second["usage"]["input_tokens"], 150);
-    assert_eq!(second["usage"]["output_tokens"], 30);
+    // Verified 2.1.321, Task 0 (s1e): after a clean exit `modelUsage` and `total_cost_usd` are
+    // the restored totals plus this turn; `usage` and `model_usage_since_last_result` this turn
+    // only; `result_index` restarts at 0.
+    assert_eq!(second["usage"]["input_tokens"], 50);
+    assert_eq!(second["usage"]["output_tokens"], 20);
     assert_eq!(second["modelUsage"]["claude-opus-5-5"]["outputTokens"], 30);
+    let since = &second["model_usage_since_last_result"]["claude-opus-5-5"];
+    assert_eq!(since["inputTokens"], 50);
+    assert_eq!(since["outputTokens"], 20);
+    assert_eq!(since["costBasis"], "list");
+    assert!((since["costUSD"].as_f64().unwrap() - 0.02).abs() < 1e-9);
     assert!((second["total_cost_usd"].as_f64().unwrap() - 0.03).abs() < 1e-9);
+    assert_eq!(second["result_index"], 0);
     assert_eq!(second["num_turns"], 2);
     // The budget backstop counts the restored total.
     let third = run_session(
@@ -513,6 +530,69 @@ fn fake_reports_cumulative_usage_after_resume() {
     );
     assert_eq!(third["subtype"], "error_max_budget_usd");
     assert_eq!(third["is_error"], true);
+    // Task 0 (s1f): that result's `usage` is all zeros; its spend is in the since key only.
+    assert_eq!(third["usage"]["input_tokens"], 0);
+    assert_eq!(third["usage"]["output_tokens"], 0);
+    let spent = &third["model_usage_since_last_result"]["claude-opus-5-5"]["costUSD"];
+    assert!((spent.as_f64().unwrap() - 0.02).abs() < 1e-9);
+}
+
+#[test]
+fn fake_resume_reset_counts_from_zero() {
+    let dir = Dir::new("usage-reset");
+    run_session(
+        &dir,
+        &["--session-id", UUID],
+        json!({"inputTokens": 100, "outputTokens": 10, "costUsd": 0.01}),
+    );
+    let resume = format!("--resume={UUID}");
+    let mut f = Fake::start(
+        &dir,
+        Some(
+            json!({"resumeTotals": "reset", "steps": [{"expect": "user", "cumulativeUsage": {"inputTokens": 50, "outputTokens": 20, "costUsd": 0.02}}]}),
+        ),
+        &[&resume],
+        &[],
+    );
+    f.user("work");
+    assert_eq!(f.read()["subtype"], "init");
+    let r = f.read();
+    assert!(f.finish().success());
+    assert_eq!(r["usage"]["input_tokens"], 50);
+    assert_eq!(r["usage"]["output_tokens"], 20);
+    assert!((r["total_cost_usd"].as_f64().unwrap() - 0.02).abs() < 1e-9);
+}
+
+#[test]
+fn fake_live_and_hidden_usage_reach_the_totals() {
+    let dir = Dir::new("usage-live");
+    let script = json!({"steps": [{"expect": "user",
+        "hiddenUsage": {"inputTokens": 7, "costUsd": 0.001},
+        "liveUsage": {"inputTokens": 40, "outputTokens": 9, "cacheReadInputTokens": 3, "costUsd": 0.002},
+        "usageModel": "claude-haiku-5-5"},
+        {"cumulativeUsage": {"inputTokens": 1, "outputTokens": 1}}]});
+    let mut f = Fake::start(&dir, Some(script), &["--session-id", UUID], &[]);
+    f.user("work");
+    assert_eq!(f.read()["subtype"], "init");
+    let start = f.read();
+    assert_eq!(start["type"], "stream_event");
+    assert_eq!(start["event"]["type"], "message_start");
+    assert_eq!(start["event"]["message"]["usage"]["input_tokens"], 40);
+    assert_eq!(start["event"]["message"]["usage"]["output_tokens"], 1);
+    assert_eq!(start["event"]["message"]["model"], "claude-haiku-5-5");
+    let delta = f.read();
+    assert_eq!(delta["event"]["type"], "message_delta");
+    assert_eq!(delta["event"]["usage"]["output_tokens"], 9);
+    // Verified 2.1.321, Task 0 (s1a): the delta repeats the input side.
+    assert_eq!(delta["event"]["usage"]["input_tokens"], 40);
+    assert_eq!(f.read()["event"]["type"], "message_stop");
+    let r = f.read();
+    assert!(f.finish().success());
+    assert_eq!(r["usage"]["input_tokens"], 48);
+    assert_eq!(r["usage"]["output_tokens"], 10);
+    assert_eq!(r["modelUsage"]["claude-haiku-5-5"]["inputTokens"], 47);
+    assert_eq!(r["modelUsage"]["claude-opus-5-5"]["inputTokens"], 1);
+    assert!((r["total_cost_usd"].as_f64().unwrap() - 0.003).abs() < 1e-9);
 }
 
 #[test]
@@ -591,6 +671,111 @@ fn fake_reports_version_and_auth_status() {
         true
     );
     assert!(signed.status.success());
+    // Verified on 2.1.321 (7D Task 0 Step 4, A/C): the store variable decides the sign-in; one
+    // naming no store (no sign-in home: never signed in here) is signed out, exit 1. The fake
+    // keeps an existing store folder signed in (the tests' stand-in for a sign-in).
+    let store = Dir::new("auth-store");
+    for (dir, want) in [(store.path("missing"), false), (store.path(""), true)] {
+        let out = Command::new(BIN)
+            .args(["auth", "status", "--json"])
+            .env("CLAUDE_CONFIG_DIR", "/nonexistent/cfg")
+            .env("CLAUDE_SECURESTORAGE_CONFIG_DIR", &dir)
+            .output()
+            .unwrap();
+        let v: Value = serde_json::from_slice(&out.stdout).unwrap();
+        assert_eq!(v["loggedIn"], want, "{}", dir.display());
+        assert_eq!(out.status.code(), Some(i32::from(!want)));
+    }
+}
+
+#[test]
+fn fake_reports_the_configured_account_label() {
+    let dir = Dir::new("account");
+    let status = |script: Option<Value>| {
+        let mut c = Command::new(BIN);
+        c.args(["auth", "status"])
+            .env("FAKE_CLAUDE_ACCOUNT", "person-b@example.invalid")
+            .env("CLAUDE_CONFIG_DIR", "/nonexistent/cfg");
+        if let Some(s) = script {
+            c.env("FAKE_CLAUDE_SCRIPT", dir.write("script.json", &s));
+        }
+        serde_json::from_slice::<Value>(&c.output().unwrap().stdout).unwrap()
+    };
+    // Verified on 2.1.321 (7D Task 0): a fresh config dir's `auth status` names no account.
+    let signed = status(None);
+    assert_eq!(
+        (&signed["email"], &signed["orgId"], &signed["orgName"]),
+        (&Value::Null, &Value::Null, &Value::Null)
+    );
+    assert_eq!(signed["subscriptionType"], "max");
+    assert_eq!(signed["configDirectory"], "/nonexistent/cfg");
+    // Signed out: no label.
+    assert!(status(Some(json!({"auth": {"loggedIn": false}})))["email"].is_null());
+    // A script's own label (a config dir holding the profile).
+    assert_eq!(
+        status(Some(json!({"auth": {"email": "own@example.invalid"}})))["email"],
+        "own@example.invalid"
+    );
+    // Verified on 2.1.321 (7D Task 0, 04-auth-status D): a config dir holding the sign-in's
+    // profile (`.claude.json` `oauthAccount`, which the user's `auth login` writes into the sign-in
+    // home) names the account: `email` from `emailAddress`, `orgId` from `organizationUuid`.
+    let home = Dir::new("account-home");
+    home.write(
+        ".claude.json",
+        &json!({"oauthAccount": {"emailAddress": "home@example.invalid", "organizationUuid": "org-uuid-1", "organizationName": "Org One", "displayName": "x"}}),
+    );
+    let in_home = |script: Option<Value>| {
+        let mut c = Command::new(BIN);
+        c.args(["auth", "status"])
+            .env("CLAUDE_CONFIG_DIR", home.path(""));
+        if let Some(s) = script {
+            c.env("FAKE_CLAUDE_SCRIPT", dir.write("script.json", &s));
+        }
+        serde_json::from_slice::<Value>(&c.output().unwrap().stdout).unwrap()
+    };
+    let d = in_home(None);
+    assert_eq!(
+        (&d["email"], &d["orgId"], &d["orgName"]),
+        (
+            &json!("home@example.invalid"),
+            &json!("org-uuid-1"),
+            &json!("Org One")
+        )
+    );
+    // A profile without the e-mail names the organization only; signed out names nothing.
+    home.write(
+        ".claude.json",
+        &json!({"oauthAccount": {"organizationUuid": "org-uuid-2"}}),
+    );
+    let org = in_home(None);
+    assert!(org["email"].is_null() && org["orgName"].is_null());
+    assert_eq!(org["orgId"], "org-uuid-2");
+    assert!(in_home(Some(json!({"auth": {"loggedIn": false}})))["orgId"].is_null());
+    // A config dir without the profile (B): `null`, as above.
+    home.write(".claude.json", &json!({"numStartups": 1}));
+    assert!(in_home(None)["orgId"].is_null());
+    // `initialize.account` carries it.
+    let mut f = Fake::start(
+        &dir,
+        None,
+        &["--session-id", UUID],
+        &[("FAKE_CLAUDE_ACCOUNT", "person-b@example.invalid")],
+    );
+    let body = initialize(&mut f);
+    assert_eq!(
+        body["account"],
+        json!({"email": "person-b@example.invalid", "subscriptionType": "Claude Max", "apiProvider": "firstParty"})
+    );
+    assert!(f.finish().success());
+    // A script's `"email": "$remove"`: a first start before the profile fetch.
+    let mut f = Fake::start(
+        &dir,
+        Some(json!({"initialize": {"account": {"email": "$remove"}}})),
+        &["--session-id", UUID],
+        &[("FAKE_CLAUDE_ACCOUNT", "person-b@example.invalid")],
+    );
+    assert!(initialize(&mut f)["account"].get("email").is_none());
+    assert!(f.finish().success());
 }
 
 #[test]

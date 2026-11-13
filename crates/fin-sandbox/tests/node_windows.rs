@@ -78,6 +78,7 @@ impl Setup {
             shared_dir: None,
             library_roots: vec![],
             session_dir: t.p("data/agents/s1"),
+            sign_in_home: None,
             sign_in_store: None,
             toolchains: vec![t.p("tools")],
             server_data: t.p("data"),

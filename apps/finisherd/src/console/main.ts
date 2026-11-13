@@ -116,6 +116,8 @@ Agent sessions (sub-project 7):
   agent show <id> [--nodes] [--json]
   agent prompt|steer <id> <text>
   agent interrupt|resume|end <id>          a session's branch stays when it is interrupted or ended
+  agent resume <id> [<text…> | --resend-returned]
+                                           resume and prompt at once: each text one steer, or the ones the last run handed back
   agent rollback <id> --to-run <seq>       undo its runs after <seq> on every branch, all or nothing
   agent watch <id> [--json]                its conversation as it happens, until the session ends
   agent providers [--json]                 the harnesses, whether keys are set, the local endpoint
@@ -141,6 +143,8 @@ These change something (each needs an interactive terminal and your confirmation
   provider key rm <id>
   provider local set <ollama|lmstudio|url>
   provider local rm
+  provider signin claudeCode --confirm     the sign-in commands, and the next account change goes through
+  provider account confirm claudeCode      new Claude Code sessions run on the account it is signed in to now
   training closed-targets pendingCounsel|cleared|excluded
   cache gc [--to <GiB>]                    evict unpinned media cache entries down to the cap or lower
   review policy set --project <dir|id> [--protect <branch>]... [--unprotect <branch>]...

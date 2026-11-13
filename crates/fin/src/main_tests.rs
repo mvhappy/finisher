@@ -154,6 +154,8 @@ fn every_registry_command_parses() {
         "agent send 01s hello",
         "agent stop 01s",
         "agent rollback 01s --to-run 1",
+        "agent resume 01s go on",
+        "agent interrupt 01s",
         "batch",
         "help clip",
         "whoami",

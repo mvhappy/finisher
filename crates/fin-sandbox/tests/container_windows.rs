@@ -92,6 +92,7 @@ impl Setup {
             shared_dir: Some(p.join("workspace").join("shared")),
             library_roots: vec![],
             session_dir: self.t.p("data/agents").join(session),
+            sign_in_home: None,
             sign_in_store: None,
             toolchains: vec![self.t.p("tools")],
             server_data: self.t.p("data"),

@@ -297,6 +297,7 @@ mod tests {
             shared_dir: Some(p.join("workspace").join("shared")),
             library_roots: vec![r.join("lib")],
             session_dir: data.join("agents").join("s1"),
+            sign_in_home: None,
             sign_in_store: (harness == Harness::Codex).then(|| {
                 data.join("providers")
                     .join("codex")

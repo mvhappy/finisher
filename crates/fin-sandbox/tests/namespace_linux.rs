@@ -88,6 +88,7 @@ impl Tree {
             shared_dir: None,
             library_roots: vec![],
             session_dir: self.p("data/agents/s1"),
+            sign_in_home: None,
             sign_in_store: None,
             toolchains: self.toolchains(),
             server_data: self.p("data"),

@@ -118,10 +118,34 @@ pub fn actor_headers_from(session: Option<&str>, call: Option<&str>) -> Vec<[Str
     out
 }
 
-/// The actor of this run, from `FIN_SESSION` and `FIN_CALL`.
+/// The header that names an agent run's parse (plan 7D Task 12, agent spec §12.3).
+pub const ARGS_HASH_HEADER: &str = "fin-args-hash";
+
+/// The actor of this run, from `FIN_SESSION` and `FIN_CALL`; an agent's run also sends
+/// [`ARGS_HASH_HEADER`], the canonical hash of its parse (`describe`). A CLI agent's own shell
+/// cannot set `FIN_CALL` per tool call, so `finisherd` ties the run's writes to the call whose
+/// allowed command line hashes the same (`agent/claude/attribution.ts` derives it from the
+/// command string with `fin schema commands`).
 pub fn actor_headers() -> Vec<[String; 2]> {
     let env = |k: &str| std::env::var(k).ok();
-    actor_headers_from(env("FIN_SESSION").as_deref(), env("FIN_CALL").as_deref())
+    let session = env("FIN_SESSION");
+    let mut out = actor_headers_from(session.as_deref(), env("FIN_CALL").as_deref());
+    if session.is_some()
+        && let Some(hash) = parse_hash()
+    {
+        out.push(header(ARGS_HASH_HEADER, &hash));
+    }
+    out
+}
+
+/// The parse's hash, when `note_matches` ran; never waits on the state (a panic report may
+/// connect while another thread holds it).
+fn parse_hash() -> Option<String> {
+    match STATE.try_lock() {
+        Ok(s) => s.parse_hash.clone(),
+        Err(std::sync::TryLockError::Poisoned(e)) => e.into_inner().parse_hash.clone(),
+        Err(std::sync::TryLockError::WouldBlock) => None,
+    }
 }
 
 // ---- the gate -------------------------------------------------------------------------------

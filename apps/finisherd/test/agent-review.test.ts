@@ -294,6 +294,8 @@ describe("7. a budget stop has a deadline", () => {
     await until(() => signals.length === 1 && store.nodes(session.id).some((n) => n.kind === "usage"), "the call and its usage");
     expect(status(session.id)).toBe("running");
     await until(() => status(session.id) === "interrupted", "the stop after the grace period", 2000);
+    // The approval opens once the instance is closed (its queued events drained first).
+    await until(() => store.approvals(session.id).length > 0, "the budget approval", 2000);
     expect(store.get(session.id)!.statusReason).toBe("BUDGET_EXCEEDED");
     expect(signals[0]!.aborted).toBe(true);
     const result = store.nodes(session.id).find((n) => n.kind === "toolResult")!;
