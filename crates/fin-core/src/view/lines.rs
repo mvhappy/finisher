@@ -82,9 +82,20 @@ fn blend(b: BlendMode) -> &'static str {
 }
 
 /// The timeline's header: id, name, resolution, rate, end, and its tracks as `name=id` with
-/// their flags.
-pub fn header(tl: &Timeline, end: Rational) -> String {
-    let tracks: Vec<String> = tl.tracks.iter().map(track_label).collect();
+/// their flags. With `only` (`fin view --track`) just that track is listed, followed by
+/// `(+N tracks)` for the timeline's others (review batch L: a narrow view's header stays
+/// narrow; `fin track ls` lists them all).
+pub fn header(tl: &Timeline, end: Rational, only: Option<&str>) -> String {
+    let shown: Vec<&Track> = tl
+        .tracks
+        .iter()
+        .filter(|t| only.is_none_or(|id| t.id == id))
+        .collect();
+    let mut tracks: Vec<String> = shown.iter().map(|t| track_label(t)).collect();
+    let others = tl.tracks.len() - shown.len();
+    if others > 0 {
+        tracks.push(format!("(+{others} tracks)"));
+    }
     format!(
         "== {} {:?} {}x{} {} {}  {}",
         tl.id,
@@ -115,8 +126,9 @@ fn track_label(t: &Track) -> String {
 }
 
 /// An item's head (`c3 clip a1`; a caption's is its id alone) and its detail parts, which
-/// the budget's first step drops. `keys` (`fin view --detail`): each animated path's keys as
-/// `<key>@<at>`.
+/// the budget's first step drops. Effects show as `kind=id` (`(off)` when disabled). `keys`
+/// (`fin view --detail`): each animated path's keys as `<key>@<at>`, and each effect's stored
+/// params as `{name=value,...}`.
 pub fn item_parts(item: &Item, keys: bool) -> (String, Vec<String>) {
     let mut detail = Vec::new();
     let head = match &item.body {
@@ -228,15 +240,25 @@ fn common(item: &Item, keys: bool, out: &mut Vec<String>) {
         out.push(format!("kf: {}", paths.join(",")));
     }
     if !c.effects.is_empty() {
+        // `kind=id`, as the header's `name=id`; `--detail` adds the stored params (review
+        // batch L: an effect is addressable from the view; `fin effect ls` has every value).
         let fx: Vec<String> = c
             .effects
             .iter()
             .map(|e| {
-                if e.enabled {
-                    e.kind.clone()
-                } else {
-                    format!("{}(off)", e.kind)
+                let mut s = format!("{}={}", e.kind, e.id);
+                if !e.enabled {
+                    s.push_str("(off)");
                 }
+                if keys && !e.params.is_empty() {
+                    let params: Vec<String> = e
+                        .params
+                        .iter()
+                        .map(|(k, v)| format!("{k}={}", value(v)))
+                        .collect();
+                    s.push_str(&format!("{{{}}}", params.join(",")));
+                }
+                s
             })
             .collect();
         out.push(format!("fx: {}", fx.join(",")));

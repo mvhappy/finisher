@@ -62,7 +62,8 @@ pub struct Filter<'a> {
     pub track: Option<&'a str>,
     pub from: Option<Rational>,
     pub to: Option<Rational>,
-    /// `--detail`: an item's keyframes are listed with their ids and times.
+    /// `--detail`: an item's keyframes are listed with their ids and times, its effects with
+    /// their stored params.
     pub detail: bool,
 }
 
@@ -298,7 +299,7 @@ pub fn sections(
         entries.sort_by_key(|a| (a.start, a.rank, a.track));
         out.push(Section {
             timeline: tl.id.clone(),
-            header: lines::header(tl, timeline_end(tl)?),
+            header: lines::header(tl, timeline_end(tl)?, filter.track),
             entries,
         });
     }
