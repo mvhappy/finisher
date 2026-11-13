@@ -10,8 +10,9 @@
 //   --exit <code>        exits with <code> after the reply
 //   --kill               kills itself with SIGKILL
 //   --sleep <ms>         waits
-//   --fork-sleeper       starts a sleeping child in its own process group's tree and writes
-//                        its pid to `sleeper.pid` in the working directory
+//   --fork-sleeper <m>   starts a sleeping child (in its process group, <m> in its argv) and
+//                        writes its pid to `sleeper.pid` in the working directory
+//   --stderr <text>      writes <text> to stderr
 //   --report <what>      observes `env`, `args`, `stdin`, `cwd` or `net` (interfaces with an address)
 //   --read <path>        observes whether <path> can be read
 //   --write <path>       observes whether <path> can be written
@@ -68,11 +69,14 @@ for (let i = 0; i < args.length; i++) {
     case "--kill":
       process.kill(process.pid, "SIGKILL");
       break;
+    case "--stderr":
+      process.stderr.write(next());
+      break;
     case "--sleep":
       await new Promise((r) => setTimeout(r, Number(next())));
       break;
     case "--fork-sleeper": {
-      const child = spawn(process.execPath, ["-e", "setTimeout(() => {}, 600000)"], { stdio: "ignore" });
+      const child = spawn(process.execPath, ["-e", "setTimeout(() => {}, 600000)", next()], { stdio: "ignore" });
       writeFileSync(join(process.cwd(), "sleeper.pid"), String(child.pid));
       break;
     }

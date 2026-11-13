@@ -25,20 +25,28 @@
 //   characters (but `\n`, `\t`) are stripped. Anything else is a `HookFailure`: `timeout`,
 //   `exit`, `signal`, `invalid`, `tooLarge` (stdout over 64 KiB: killed at once; a reason or
 //   text too long) or `unavailable` (the profile, the program, the input or the start).
-// - **The check before the start:** `recheck` (the engine's: `HookConfig.applies`) runs after
-//   the slot is taken, right before the process starts, so a hook whose file (or, for a project
-//   hook, a script its `hooksHash` binds) changed while it waited does not run. What remains is
-//   the time from that check to the program's own open of its files (the launcher's start, the
-//   interpreter's read): a write in it by someone who may write the project is not seen.
+// - **The file that runs** (review of Task 3): an argument in `run[1..]` exactly equal to the
+//   spec's `file` (as written) is replaced by the path of the file that runs, so the plan's
+//   `run: ["node", "fake-hook.mjs"], file: "fake-hook.mjs"` works from the private temp.
+// - **Nothing unverified runs from the project:** after `recheck` (the engine's:
+//   `HookConfig.applies`, every layer re-read), a project hook's bound files (`bound`: its
+//   program in the project, its `file`) are read once, hashed, compared with the hashes its
+//   `hooksHash` binds, and the bytes read are written to `<temp>/.hook/<n>/<name>` (0700); the
+//   copy runs (it is `run[0]` and the `file` argument) and `HookInput.hookFile` names it (a
+//   read root, so Linux executes it although the temp is not an execute root). A failed
+//   re-check or a hash that differs is `HookNotRun {notRun: changed}`: the hook does not
+//   apply, which is not a failure. The race left is the other layers' (server data, written
+//   by a person): from `recheck` to the program's own reads.
 import { accessSync, constants, statSync } from "node:fs";
-import { mkdir, rm } from "node:fs/promises";
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
-import { dirname, join, posix, win32 } from "node:path";
+import { basename, dirname, join, posix, win32 } from "node:path";
 import { decodeHookReply, HOOK_LIMITS, type HookReply } from "@finisher/contracts";
 import type { AclGrant, HookInput, HookRequest } from "@finisher/core-types";
 import { sandboxHookCheck, sandboxHookGrants, sandboxToolchainBase } from "@finisher/fin-node";
 import { Effect, Exit } from "effect";
 import { canonical, type SandboxMode, sandboxMode, within } from "../agent/sandbox-input.ts";
+import { hashOf } from "../agent/file-cache.ts";
 import { ulid } from "../control/ulid.ts";
 import type { AclBroker } from "../sandbox/broker.ts";
 import { grantTable } from "../sandbox/broker.ts";
@@ -63,6 +71,17 @@ export interface HookFailure {
   readonly stderr?: string;
 }
 
+/** A hook that did not run because it no longer applies (its configuration or a bound file changed). */
+export interface HookNotRun {
+  readonly notRun: "changed";
+  readonly detail: string;
+}
+
+/** What one run of a command hook answers. */
+export type HookRun = HookReply | HookFailure | HookNotRun;
+
+export const isNotRun = (r: HookRun): r is HookNotRun => "notRun" in r;
+
 export interface HookProcessDeps {
   /** Server data (its `hooks/run/` holds the private temps). */
   readonly serverData: string;
@@ -79,8 +98,10 @@ export interface HookProcessDeps {
   readonly hookGrants?: (input: HookInput) => AclGrant[];
   /** A container's SID by name (default: fin-node's; tests). */
   readonly containerSid?: (name: string) => string | null;
-  /** Whether the hook still applies, right before its process starts (false: `unavailable`). */
+  /** Whether the hook still applies, right before its process starts (false: `HookNotRun`). */
   readonly recheck?: () => boolean;
+  /** Tests: called after the re-check (`checked`) and after the verified copies (`copied`). */
+  readonly onStage?: (stage: "checked" | "copied") => void | Promise<void>;
   /** Told how the process starts, with the profile's warning where it runs unconfined. */
   readonly onStart?: (s: { readonly mode: SandboxMode; readonly warning?: SandboxWarning }) => void;
   /** Overrides the hook's `timeoutS` (tests). */
@@ -135,11 +156,11 @@ const message = (e: unknown) => (e instanceof Error ? e.message : String(e)).spl
  * Runs `h` once for `req` (see the module docs): its reply, or why there is none. Never fails:
  * every error is a `HookFailure`.
  */
-export function runCommandHook(h: ResolvedHook, req: HookRequest, deps: HookProcessDeps): Effect.Effect<HookReply | HookFailure> {
+export function runCommandHook(h: ResolvedHook, req: HookRequest, deps: HookProcessDeps): Effect.Effect<HookRun> {
   return Effect.promise(() => runOnce(h, req, deps).catch((e: unknown) => fail("unavailable", message(e))));
 }
 
-async function runOnce(h: ResolvedHook, req: HookRequest, deps: HookProcessDeps): Promise<HookReply | HookFailure> {
+async function runOnce(h: ResolvedHook, req: HookRequest, deps: HookProcessDeps): Promise<HookRun> {
   const platform = deps.platform ?? process.platform;
   const timeoutMs = deps.timeoutMs ?? (h.spec?.timeoutS ?? HOOK_LIMITS.timeoutS.default) * 1000;
   const deadline = Date.now() + timeoutMs;
@@ -150,17 +171,25 @@ async function runOnce(h: ResolvedHook, req: HookRequest, deps: HookProcessDeps)
   if (release === undefined) return fail("timeout", `no process slot within ${timeoutMs} ms`);
   try {
     const base = (deps.toolchainBase ?? sandboxToolchainBase)();
-    const program = findProgram(h.program, base, platform);
-    if (typeof program !== "string") return program;
+    const found = findProgram(h.program, base, platform);
+    if (typeof found !== "string") return found;
+    if (deps.recheck !== undefined && !deps.recheck()) return changed("the hook's configuration changed before it started");
+    await deps.onStage?.("checked");
     return await inTemp(deps.serverData, async (tmp, id) => {
+      const copies = await verifiedCopies(h, tmp);
+      if (!(copies instanceof Map)) return copies;
+      await deps.onStage?.("copied");
+      const program = copies.get(found) ?? found;
+      const file = h.file === undefined ? undefined : (copies.get(h.file) ?? h.file);
+      const named = h.spec?.file;
+      const argv = [program, ...h.run.slice(1).map((a) => (named !== undefined && file !== undefined && a === named ? file : a))];
       const env = hookEnv(tmp, req.event, base, platform);
-      const argv = [program, ...h.run.slice(1)];
       let via: LaunchVia | undefined;
       let owner: string | undefined;
       const acl = platform === "win32" && deps.acl?.active === true ? deps.acl : undefined;
       try {
         if (mode === "launcher") {
-          const input = await hookInput(h, program, req, tmp, deps.serverData, base, timeoutMs);
+          const input = await hookInput(h, program, file ?? program, req, tmp, deps.serverData, base, Math.max(1, deadline - Date.now()));
           const reason = sandboxHookCheck(input);
           if (reason !== null) return fail("unavailable", `the hook sandbox cannot be built: ${reason}`);
           if (acl !== undefined) {
@@ -169,7 +198,6 @@ async function runOnce(h: ResolvedHook, req: HookRequest, deps: HookProcessDeps)
           }
           via = { launcher: (deps.launcher ?? resolveSandboxExecPath)(), request: { profile: "hook", input } };
         }
-        if (deps.recheck !== undefined && !deps.recheck()) return fail("unavailable", "the hook's configuration changed before it started");
         const warning = profileWarning("hook", status.os, status.hook);
         deps.onStart?.({ mode, ...(warning === undefined ? {} : { warning }) });
         let launcherFailed = false;
@@ -188,6 +216,33 @@ async function runOnce(h: ResolvedHook, req: HookRequest, deps: HookProcessDeps)
   } finally {
     release();
   }
+}
+
+const changed = (detail: string): HookNotRun => ({ notRun: "changed", detail });
+
+/**
+ * A project hook's bound files, each read once, checked against its bound hash and written to
+ * `<tmp>/.hook/<n>/<name>` (0700): resolved path → the copy. A file missing or changed is
+ * `HookNotRun`.
+ */
+async function verifiedCopies(h: ResolvedHook, tmp: string): Promise<Map<string, string> | HookNotRun> {
+  const copies = new Map<string, string>();
+  let n = 0;
+  for (const [path, hash] of Object.entries(h.bound ?? {})) {
+    let bytes: Buffer;
+    try {
+      bytes = await readFile(path);
+    } catch {
+      return changed(`${basename(path)} cannot be read since it was trusted`);
+    }
+    if (hashOf(bytes) !== hash) return changed(`${basename(path)} changed since it was trusted`);
+    const dir = join(tmp, ".hook", String(n++));
+    await mkdir(dir, { recursive: true, mode: 0o700 });
+    const copy = join(dir, basename(path));
+    await writeFile(copy, bytes, { mode: 0o700, flag: "wx" });
+    copies.set(path, copy);
+  }
+  return copies;
 }
 
 /** Runs `f` in a new private temp `<server-data>/hooks/run/<ulid>/` (0700), removed after. */
@@ -247,10 +302,10 @@ function hookEnv(tmp: string, event: string, base: readonly string[], platform: 
 }
 
 /** The `hook` profile's input: canonical paths, the program (and `node`'s folder) readable. */
-async function hookInput(h: ResolvedHook, program: string, req: HookRequest, tmp: string, serverData: string, base: readonly string[], timeoutMs: number): Promise<HookInput> {
+async function hookInput(h: ResolvedHook, program: string, file: string, req: HookRequest, tmp: string, serverData: string, base: readonly string[], timeoutMs: number): Promise<HookInput> {
   const projectDir = await canonical(req.project.dir);
   const prog = await canonical(program);
-  const hookFile = h.file === undefined ? prog : await canonical(h.file);
+  const hookFile = await canonical(file);
   // The program is read through `toolchains` unless it is the hook's own file or project content.
   const own = prog === hookFile || within(prog, projectDir) ? [] : [prog];
   const node = "node" in h.program ? [dirname(prog)] : [];
@@ -281,7 +336,8 @@ async function collect(child: SandboxedChild, req: HookRequest, deadline: number
   let size = 0;
   let over = false;
   let timedOut = false;
-  let err = "";
+  const err: Buffer[] = [];
+  let errBytes = 0;
   child.stdout.on("data", (c: Buffer) => {
     if (over) return;
     size += c.length;
@@ -293,7 +349,10 @@ async function collect(child: SandboxedChild, req: HookRequest, deadline: number
     out.push(c);
   });
   child.stderr.on("data", (c: Buffer) => {
-    if (err.length < 512) err += c.toString("utf8").slice(0, 512 - err.length);
+    if (errBytes >= STDERR_BYTES) return;
+    const part = c.subarray(0, STDERR_BYTES - errBytes);
+    err.push(part);
+    errBytes += part.length;
   });
   const closed = new Promise<void>((resolve) => {
     child.stdout.once("close", () => resolve());
@@ -306,20 +365,25 @@ async function collect(child: SandboxedChild, req: HookRequest, deadline: number
   let exit: ChildExit;
   try {
     exit = await child.exited;
-    // What it wrote before it exited (a descendant still holding stdout is given a second).
-    await Promise.race([closed, new Promise((r) => setTimeout(r, 1_000).unref())]);
   } finally {
+    // An exit in time is never a timeout, however long its stdout takes to close.
     clearTimeout(timer);
   }
+  // What it wrote before it exited (a descendant still holding stdout is given a second).
+  await Promise.race([closed, new Promise((r) => setTimeout(r, 1_000).unref())]);
   child.stdout.destroy();
+  // At most `STDERR_BYTES`, a character cut at the end dropped.
+  const stderr = Buffer.concat(err).toString("utf8").replace(/\uFFFD$/, "");
   if (timedOut) return fail("timeout", `no reply within ${timeoutMs} ms`);
   if (over) return fail("tooLarge", `more than ${HOOK_LIMITS.stdoutBytes} bytes on stdout`);
   if (exit.code === LAUNCHER_UNAVAILABLE && launcherFailed()) return fail("unavailable", "the hook sandbox could not be applied");
-  if (exit.signal !== null) return fail("signal", `killed by ${exit.signal}`, err);
-  if (exit.code !== 0) return fail("exit", `exit ${exit.code}`, err);
+  if (exit.signal !== null) return fail("signal", `killed by ${exit.signal}`, stderr);
+  if (exit.code !== 0) return fail("exit", `exit ${exit.code}`, stderr);
   return parseReply(Buffer.concat(out));
 }
 
+/** Bytes of stderr kept for a failure's `stderr`. */
+const STDERR_BYTES = 512;
 const utf8 = new TextDecoder("utf-8", { fatal: true });
 /** Control characters but `\n` and `\t`. */
 const CONTROL = /[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/g;
@@ -332,9 +396,11 @@ export function parseReply(bytes: Uint8Array): HookReply | HookFailure {
   } catch {
     return fail("invalid", "stdout is not UTF-8");
   }
-  const line = text.trim();
-  if (line === "") return { reply: "allow" };
-  if (line.includes("\n")) return fail("invalid", "more than one line on stdout");
+  if (text === "") return { reply: "allow" };
+  // Exactly one line: at most one trailing `\n` or `\r\n`, nothing blank.
+  const line = text.endsWith("\r\n") ? text.slice(0, -2) : text.endsWith("\n") ? text.slice(0, -1) : text;
+  if (line.trim() === "") return fail("invalid", "a blank line on stdout");
+  if (/[\r\n]/.test(line)) return fail("invalid", "more than one line on stdout");
   let json: unknown;
   try {
     json = JSON.parse(line);

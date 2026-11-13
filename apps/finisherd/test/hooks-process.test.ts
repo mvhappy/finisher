@@ -12,14 +12,13 @@ import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSyn
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import type { HookReply } from "@finisher/contracts";
 import type { AclGrant, HookInput, HookRequest } from "@finisher/core-types";
 import { sandboxHookCheck, sandboxHookGrants, sandboxStatus } from "@finisher/fin-node";
 import { Effect } from "effect";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from "vitest";
 import type { ProjectTrust } from "../src/agent/rule-store.ts";
 import { type ConfiguredHook, HookConfig, programOf } from "../src/hooks/config.ts";
-import { type HookFailure, type HookProcessDeps, HookSlots, isCommandHook, type ResolvedHook, runCommandHook } from "../src/hooks/process.ts";
+import { type HookProcessDeps, type HookRun, HookSlots, isCommandHook, type ResolvedHook, runCommandHook } from "../src/hooks/process.ts";
 import type { AclBroker } from "../src/sandbox/broker.ts";
 import { probeLauncher, type SandboxStatus } from "../src/sandbox/status.ts";
 
@@ -68,7 +67,7 @@ interface Fixture {
   readonly trusts: Map<string, ProjectTrust>;
 }
 
-/** Server data and project `p1` in `tmp`, the fake hook copied into the project. */
+/** Server data and project `p1` in `tmp`, the fake hook copied into both (the user layer declares hooks in server data). */
 function fixture(): Fixture {
   const serverData = join(tmp, "server-data");
   const dir = join(tmp, "P");
@@ -76,15 +75,33 @@ function fixture(): Fixture {
   mkdirSync(dir, { recursive: true });
   const script = join(dir, "fake-hook.mjs");
   copyFileSync(FAKE, script);
+  copyFileSync(FAKE, join(serverData, "fake-hook.mjs"));
   const trusts = new Map<string, ProjectTrust>();
   const config = new HookConfig({ serverData, trustOf: (id) => trusts.get(id), dirOf: (id) => (id === "p1" ? dir : undefined) });
   return { serverData, dir, script, config, trusts };
 }
 
-/** A user-layer hook running the fake hook with `args` (its own file the script). */
+/** The plan's configuration of the fake hook: `run: ["node", "fake-hook.mjs", <args…>], file: "fake-hook.mjs"`. */
+const fakeSpec = (id: string, args: readonly string[], more: Record<string, unknown> = {}) => ({ id, event: "PreCommand", run: ["node", "fake-hook.mjs", ...args], file: "fake-hook.mjs", ...more });
+
+/** A user-layer hook running the fake hook (in server data) with `args`. */
 function userHook(f: Fixture, args: readonly string[], more: Record<string, unknown> = {}, id = "h"): ResolvedHook {
-  writeFileSync(join(f.serverData, "settings.json"), JSON.stringify({ hooks: [{ id, event: "PreCommand", run: ["node", f.script, ...args], file: f.script, ...more }] }));
+  writeFileSync(join(f.serverData, "settings.json"), JSON.stringify({ hooks: [fakeSpec(id, args, more)] }));
   return cmd(f.config.hooks("p1").find((x) => x.id === id));
+}
+
+/** Trusts the project's hooks file as it is now. */
+function trustNow(f: Fixture): void {
+  const hooksHash = f.config.list("p1").hooksHash;
+  if (hooksHash === undefined) throw new Error(`not trustable: ${JSON.stringify(f.config.list("p1"))}`);
+  f.trusts.set("p1", { projectId: "p1", rulesHash: "none", hooksHash, trustedAt: 0, by: "console:owner" });
+}
+
+/** A trusted project-layer hook: `specs` written to `finisher.hooks.json`, the one with `id` answered. */
+function projectHook(f: Fixture, specs: readonly unknown[], id: string): ResolvedHook {
+  writeFileSync(join(f.dir, "finisher.hooks.json"), JSON.stringify({ hooks: specs }));
+  trustNow(f);
+  return cmd(f.config.hooks("p1").find((x) => x.layer === "project" && x.id === id));
 }
 
 /** `h` as a command hook. */
@@ -107,11 +124,23 @@ function deps(f: Fixture, over: Partial<HookProcessDeps> = {}): HookProcessDeps 
 }
 
 const run = (h: ResolvedHook, req: HookRequest, d: HookProcessDeps) => Effect.runPromise(runCommandHook(h, req, d));
-const isFailure = (r: HookReply | HookFailure): r is HookFailure => !("reply" in r);
 /** What the fake hook observed (its context reply's text). */
-function seen(r: HookReply | HookFailure): Record<string, any> {
-  if (isFailure(r) || r.reply !== "context") throw new Error(`not an observation: ${JSON.stringify(r)}`);
+function seen(r: HookRun): Record<string, any> {
+  if (!("reply" in r) || r.reply !== "context") throw new Error(`not an observation: ${JSON.stringify(r)}`);
   return JSON.parse(r.text);
+}
+
+/** Whether a process whose argv holds `marker` is alive (Linux: each process's `cmdline` under `/proc`). */
+function markerAlive(marker: string): boolean {
+  for (const pid of readdirSync("/proc")) {
+    if (!/^\d+$/.test(pid)) continue;
+    try {
+      if (readFileSync(join("/proc", pid, "cmdline"), "utf8").includes(marker)) return true;
+    } catch {
+      // Gone meanwhile.
+    }
+  }
+  return false;
 }
 
 function alive(pid: number): boolean {
@@ -163,6 +192,23 @@ describe("the reply (Decision 2)", () => {
     }
     // Invalid UTF-8 (a lone continuation byte).
     expect(await run(userHook(f, ["--raw-file", rawFile(f, Buffer.from([0x7b, 0x80, 0x7d, 0x0a]))]), request(f), deps(f))).toMatchObject({ kind: "invalid" });
+  });
+
+  test("one_line_strictly: empty is allow, one trailing newline or CRLF, whitespace-only is invalid", async () => {
+    const f = fixture();
+    const allow = JSON.stringify({ reply: "allow" });
+    expect(await run(userHook(f, ["--raw", `${allow}\r\n`]), request(f), deps(f))).toEqual({ reply: "allow" });
+    expect(await run(userHook(f, ["--raw", allow]), request(f), deps(f))).toEqual({ reply: "allow" });
+    for (const raw of [" \n", "\n", `${allow}\n\n`, `\n${allow}\n`, `${allow}\r\n\r\n`]) {
+      expect(await run(userHook(f, ["--raw", raw]), request(f), deps(f)), JSON.stringify(raw)).toMatchObject({ kind: "invalid" });
+    }
+  });
+
+  test("stderr_is_capped_in_bytes", async () => {
+    const f = fixture();
+    const r = await run(userHook(f, ["--stderr", "é".repeat(600), "--exit", "2"]), request(f), deps(f));
+    expect(r).toMatchObject({ kind: "exit" });
+    expect(Buffer.byteLength((r as { stderr: string }).stderr)).toBeLessThanOrEqual(512);
   });
 
   test("stdout_over_cap_is_failure_and_killed", async () => {
@@ -228,7 +274,7 @@ describe("the process (Decision 9)", () => {
 
   test.skipIf(WIN)("cwd_is_private_temp: owner-only", async () => {
     const f = fixture();
-    const h = userHook(f, ["--fork-sleeper", "--sleep", "60000"], { timeoutS: 2 });
+    const h = userHook(f, ["--fork-sleeper", "owner-only", "--sleep", "60000"], { timeoutS: 2 });
     const pending = run(h, request(f), deps(f));
     const runDir = join(f.serverData, "hooks", "run");
     const one = await until(() => (existsSync(runDir) ? readdirSync(runDir)[0] : undefined));
@@ -251,7 +297,7 @@ describe("the deadline and the slots (Decision 10)", () => {
   test("timeout_kills_tree: the hook and a child it forked are gone at the deadline", async () => {
     if (WIN) return;
     const f = fixture();
-    const h = userHook(f, ["--fork-sleeper", "--sleep", "60000"], { timeoutS: 1 });
+    const h = userHook(f, ["--fork-sleeper", `sleeper-${Math.random()}`, "--sleep", "60000"], { timeoutS: 1 });
     const t0 = Date.now();
     const pending = run(h, request(f), deps(f));
     const runDir = join(f.serverData, "hooks", "run");
@@ -391,9 +437,7 @@ describe("the program (Decision 6)", () => {
 
   test("project_hook_is_rechecked_before_it_starts: a script changed while the hook waits for a slot does not run", async () => {
     const f = fixture();
-    writeFileSync(join(f.dir, "finisher.hooks.json"), JSON.stringify({ hooks: [{ id: "p", event: "PreCommand", run: ["node", f.script, "--reply", "allow"], file: "fake-hook.mjs" }] }));
-    f.trusts.set("p1", { projectId: "p1", rulesHash: "none", hooksHash: f.config.list("p1").hooksHash!, trustedAt: 0, by: "console:owner" });
-    const h = cmd(f.config.hooks("p1").find((x) => x.layer === "project"));
+    const h = projectHook(f, [fakeSpec("p", ["--reply", "allow"])], "p");
     const slots = new HookSlots(1);
     const held = await slots.acquire(Date.now() + 1000);
     const d = deps(f, { slots, recheck: () => f.config.applies("p1", h) });
@@ -401,12 +445,66 @@ describe("the program (Decision 6)", () => {
     await new Promise((r) => setTimeout(r, 100));
     writeFileSync(f.script, `${readFileSync(f.script, "utf8")}\n// changed\n`);
     held!();
-    expect(await pending).toMatchObject({ kind: "unavailable", detail: expect.stringMatching(/changed/) });
+    // Not a failure (Decision 3 does not apply): the hook no longer applies.
+    expect(await pending).toEqual({ notRun: "changed", detail: expect.stringMatching(/changed/) });
     // Unchanged, it runs.
     writeFileSync(f.script, readFileSync(FAKE));
-    f.trusts.set("p1", { projectId: "p1", rulesHash: "none", hooksHash: f.config.list("p1").hooksHash!, trustedAt: 0, by: "console:owner" });
-    const again = cmd(f.config.hooks("p1").find((x) => x.layer === "project"));
+    const again = projectHook(f, [fakeSpec("p", ["--reply", "allow"])], "p");
     expect(await run(again, request(f), deps(f, { recheck: () => f.config.applies("p1", again) }))).toEqual({ reply: "allow" });
+  });
+
+  test("plan_configuration_runs: node fake-hook.mjs with file fake-hook.mjs, in the user and the project layer", async () => {
+    const f = fixture();
+    const user = userHook(f, ["--reply", "context:user"]);
+    expect(user.run).toEqual(["node", "fake-hook.mjs", "--reply", "context:user"]);
+    expect(await run(user, request(f), deps(f))).toEqual({ reply: "context", text: "user" });
+    // The project's runs from a verified copy in the hook's temp (its argv names the copy).
+    const project = projectHook(f, [fakeSpec("p", ["--report", "args"])], "p");
+    expect(project.bound).toEqual({ [f.script]: expect.stringMatching(/^sha256:/) });
+    const r = seen(await run(project, request(f), deps(f)));
+    expect(r.args).toEqual(["--report", "args"]);
+    // A relative argument that is not `file` is left as written.
+    const other = userHook(f, ["--read", "fake-hook.mjs.not"]);
+    expect(other.run.slice(2)).toEqual(["--read", "fake-hook.mjs.not"]);
+  });
+
+  test("script_swapped_after_check_is_not_run: the trusted bytes run, or nothing does", async () => {
+    const f = fixture();
+    const trusted = `${readFileSync(FAKE, "utf8")}\n// trusted\n`;
+    const edited = `process.stdin.resume(); process.stdin.on("end", () => console.log(JSON.stringify({ reply: "context", text: "edited" })));\n`;
+    writeFileSync(f.script, trusted);
+    const h = projectHook(f, [fakeSpec("p", ["--reply", "context:trusted"])], "p");
+    const swapAt = (stage: string) => async (s: string) => {
+      if (s === stage) writeFileSync(f.script, edited);
+    };
+    // Swapped after the check, before the copy: the copy's hash differs, the hook does not run.
+    expect(await run(h, request(f), deps(f, { recheck: () => f.config.applies("p1", h), onStage: swapAt("checked") }))).toEqual({ notRun: "changed", detail: expect.any(String) });
+    // Swapped after the copy, before the start: the verified copy runs.
+    writeFileSync(f.script, trusted);
+    const h2 = projectHook(f, [fakeSpec("p", ["--reply", "context:trusted"])], "p");
+    expect(await run(h2, request(f), deps(f, { recheck: () => f.config.applies("p1", h2), onStage: swapAt("copied") }))).toEqual({ reply: "context", text: "trusted" });
+  });
+
+  test("project_run_args_are_refused: an absolute path into the project, a .. segment, a project program with another file", () => {
+    const f = fixture();
+    mkdirSync(join(tmp, "outside"));
+    const cases: Array<[unknown, RegExp]> = [
+      [fakeSpec("a", ["--read", join(f.dir, "secret.txt")]), /names the project folder/],
+      [fakeSpec("b", ["--read", "sub/../fake-hook.mjs"]), /\.\. segment/],
+      [fakeSpec("c", ["--read", "..\\up"]), /\.\. segment/],
+      [{ id: "d", event: "PreCommand", run: ["./fake-hook.mjs"], file: "data.json" }, /is the hook's own file/],
+    ];
+    writeFileSync(join(f.dir, "data.json"), "{}");
+    for (const [spec, why] of cases) {
+      writeFileSync(join(f.dir, "finisher.hooks.json"), JSON.stringify({ hooks: [spec] }));
+      const p = f.config.project("p1");
+      expect(p.reason, JSON.stringify(spec)).toBe("invalidHooks");
+      expect(p.invalid).toMatch(why);
+      expect(p.hooksHash).toBeUndefined();
+    }
+    // An absolute path outside the project is fine (not project content).
+    writeFileSync(join(f.dir, "finisher.hooks.json"), JSON.stringify({ hooks: [fakeSpec("e", ["--read", join(tmp, "outside", "x")])] }));
+    expect(f.config.project("p1").reason).toBeUndefined();
   });
 });
 
@@ -445,7 +543,13 @@ describe("Windows grants (Decision 12)", () => {
         ] as AclGrant[];
       },
     });
-    expect(await run(userHook(f, ["--reply", "allow"]), request(f), d)).toEqual({ reply: "allow" });
+    // The input's limit is what is left of the deadline once a slot is taken (N1).
+    const slots = new HookSlots(1);
+    const held = await slots.acquire(Date.now() + 1000);
+    setTimeout(() => held!(), 400);
+    expect(await run(userHook(f, ["--reply", "allow"]), request(f), { ...d, slots })).toEqual({ reply: "allow" });
+    expect(tables[0]!.timeoutMs).toBeLessThanOrEqual(10_000 - 350);
+    expect(tables[0]!.timeoutMs).toBeGreaterThan(0);
     const owner = `call:${tables[0]!.tmp.split(/[\\/]/).at(-1)}`;
     expect(log).toEqual([`grant ${owner} ${tables[0]!.tmp} 1301bf`, `grant static ${f.dir} 1200a9`, `revoke ${owner}`]);
     // A start that fails after the grants revokes them too.
@@ -569,17 +673,39 @@ describe("the hook profile under the real launcher (Linux and macOS)", () => {
   test.skipIf(WIN)("timeout_kills_tree: under the launcher (hung up)", async () => {
     if (!enforced("timeout_kills_tree_under_the_launcher")) return;
     const f = fixture();
-    const h = userHook(f, ["--fork-sleeper", "--sleep", "60000"], { timeoutS: 2 });
+    // A marker in the sleeper's argv: its pid is the launcher's namespace's, so it is found by name.
+    const marker = `hook-sleeper-${process.pid}-${Math.random().toString(36).slice(2)}`;
+    const h = userHook(f, ["--fork-sleeper", marker, "--sleep", "60000"], { timeoutS: 2 });
     const pending = run(h, request(f), launched(f));
-    const runDir = join(f.serverData, "hooks", "run");
-    const pid = await until(() => {
-      const d = existsSync(runDir) ? readdirSync(runDir)[0] : undefined;
-      const p = d === undefined ? undefined : join(runDir, d, "sleeper.pid");
-      return p !== undefined && existsSync(p) && readFileSync(p, "utf8") !== "" ? Number(readFileSync(p, "utf8")) : undefined;
-    });
+    if (LINUX) await until(() => (markerAlive(marker) ? true : undefined));
     expect(await pending).toMatchObject({ kind: "timeout" });
-    // The pid is the namespace's on Linux (a pid namespace): the run folder is gone with it.
-    await until(() => (existsSync(join(runDir)) && readdirSync(runDir).length === 0 ? true : undefined));
-    if (!LINUX) await until(() => (alive(pid) ? undefined : true));
+    if (LINUX) {
+      await until(() => (markerAlive(marker) ? undefined : true));
+      expect(markerAlive(marker)).toBe(false);
+    }
+  });
+
+  test.skipIf(WIN)("hook_env_is_cleared: under the launcher", async () => {
+    if (!enforced("hook_env_is_cleared_under_the_launcher")) return;
+    const f = fixture();
+    process.env.SECRET_X = "s3cret";
+    try {
+      const env = seen(await run(userHook(f, ["--report", "env"]), request(f), launched(f))).env as Record<string, string>;
+      expect(Object.keys(env).sort()).toEqual(["FIN_HOOK_EVENT", "HOME", "LANG", "PATH", "TEMP", "TMP", "TMPDIR"]);
+    } finally {
+      delete process.env.SECRET_X;
+    }
+  });
+
+  test.skipIf(WIN)("plan_configuration_runs_under_the_launcher: user and project layers, a native project program from its copy", async () => {
+    if (!enforced("plan_configuration_runs_under_the_launcher")) return;
+    const f = fixture();
+    expect(await run(userHook(f, ["--reply", "context:user"]), request(f), launched(f))).toEqual({ reply: "context", text: "user" });
+    mkdirSync(join(f.dir, "hooks"));
+    writeFileSync(join(f.dir, "hooks", "check.sh"), `#!/bin/sh\ncat >/dev/null\necho '{"reply":"context","text":"native"}'\n`, { mode: 0o755 });
+    const specs = [fakeSpec("p", ["--reply", "context:project"]), { id: "n", event: "PreCommand", run: ["./hooks/check.sh"] }];
+    expect(await run(projectHook(f, specs, "p"), request(f), launched(f))).toEqual({ reply: "context", text: "project" });
+    // Landlock executes the copy only as the hook's own file (the temp is not an execute root).
+    expect(await run(projectHook(f, specs, "n"), request(f), launched(f))).toEqual({ reply: "context", text: "native" });
   });
 });
