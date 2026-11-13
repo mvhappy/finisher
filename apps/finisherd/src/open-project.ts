@@ -25,11 +25,14 @@ export interface OpenProject {
 const MAIN = "main";
 
 /** Holds the libraries the project's assets (on `main`, at open) live in, until it closes. */
-export function holdLibraries(p: OpenProject, use: (assetPaths: ReadonlyArray<string>) => { release(): void }): void {
+export function holdLibraries(
+  p: OpenProject,
+  use: (assetPaths: ReadonlyArray<string>, projectId: string) => { release(): void },
+): void {
   void p.engine.snapshot(MAIN).then(
     (json) => {
       const assets = (JSON.parse(json) as { project?: { assets?: Record<string, { path?: unknown }> } }).project?.assets ?? {};
-      const held = use(Object.values(assets).flatMap((a) => (typeof a.path === "string" ? [a.path] : [])));
+      const held = use(Object.values(assets).flatMap((a) => (typeof a.path === "string" ? [a.path] : [])), p.engine.projectId);
       if (p.release === undefined) p.release = () => held.release();
       else held.release();
     },

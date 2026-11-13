@@ -61,6 +61,9 @@ fn asset(id: &str, duration: Rational, video: bool, audio: bool) -> Op {
             width: 1920,
             height: 1080,
             rate: secs(30),
+            display: None,
+            rotation: None,
+            pixel_aspect: None,
         }),
         audio.then_some(AudioInfo {
             sample_rate: 48_000,

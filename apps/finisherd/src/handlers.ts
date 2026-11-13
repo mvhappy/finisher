@@ -40,8 +40,11 @@ import { Fonts } from "./fonts.ts";
 import { hooksHandlers } from "./hooks/rpc.ts";
 import { JobEngineTag } from "./jobs/layer.ts";
 import { chainJobs, jobHandlers } from "./jobs/rpc.ts";
+import { MediaCacheTag } from "./media/cache.ts";
 import { mediaCapabilities } from "./media/caps.ts";
 import { look as mediaLook } from "./media/look.ts";
+import { probeDeep } from "./media/probe-deep.ts";
+import { reprobe } from "./media/reprobe.ts";
 import { requireAbsolute, requireAbsoluteOpt } from "./paths.ts";
 import { dropPayload, metaJson } from "./history.ts";
 import { LibraryServiceTag } from "./library/layer.ts";
@@ -102,6 +105,7 @@ export const HandlersLive = FinRpcs.toLayer(
     const pairing = yield* PairingTag;
     const deviceAccess = yield* DeviceAccessTag;
     const remoteListener = yield* RemoteListenerTag;
+    const mediaCache = yield* MediaCacheTag;
     // Plugin commands (sp8b Task 9): served only where the plugin host runs.
     const pluginCommands = Option.getOrUndefined(yield* Effect.serviceOption(PluginCommandsTag));
     const admin: AdminDeps = {
@@ -442,6 +446,15 @@ export const HandlersLive = FinRpcs.toLayer(
         guard("eval.audio", registry.evalAudio(projectId, branch ?? "main", timeline, from, to, rev)),
       "media.look": (req, options) => guard("media.look", mediaLook(mediaDeps, ownerOf(options), req)),
       "media.capabilities": (_, options) => guard("media.capabilities", capabilitiesOf(ownerOf(options))),
+      // The media cache (6B-1 Task 13): its state, and an eviction down to the cap or `toGiB`.
+      "media.cache.status": () => guard("media.cache.status", mediaCache.status()),
+      "media.cache.gc": ({ toGiB }) => guard("media.cache.gc", mediaCache.gc(toGiB)),
+      "media.probeDeep": (req, options) => guard("media.probeDeep", probeDeep({ ...mediaDeps, capabilities: capabilitiesOf }, ownerOf(options), req)),
+      "asset.reprobe": (req, options) =>
+        guard(
+          "asset.reprobe",
+          withMeta(options, (m) => reprobe({ ...mediaDeps, registry, capabilities: capabilitiesOf, projects }, chainOf(options)?.principal, ownerOf(options), m, req)),
+        ),
       "fonts.catalog": () => guard("fonts.catalog", fonts.catalog()),
       "fonts.status": () => guard("fonts.status", fonts.status()),
       // `pinned` needs the project open (its pins are the engine's): opened on demand.

@@ -12,7 +12,7 @@ type On = <A>(projectId: string, f: (engine: Engine) => Promise<string>) => Effe
 export function branchReads(
   resolveBranch: Resolve,
   on: On,
-): Pick<ProjectRegistryShape, "evalFrame" | "evalAudio" | "fontsPlan" | "prepareMediaJob" | "historyLog"> {
+): Pick<ProjectRegistryShape, "evalFrame" | "evalAudio" | "fontsPlan" | "prepareMediaJob" | "historyLog" | "onBranch"> {
   const at = <A>(projectId: string, requested: string, f: (engine: Engine, branch: string) => Promise<string>) =>
     Effect.flatMap(resolveBranch(projectId, requested), (branch) => on<A>(projectId, (e) => f(e, branch)));
   return {
@@ -26,5 +26,7 @@ export function branchReads(
       ),
     // Review batch L: resolved like every other branch read.
     historyLog: (projectId, requested, before, limit) => at<HistoryLogResult>(projectId, requested, (e, b) => e.log(b, before, limit)),
+    // 6B-1: any other engine read at a resolved branch (`asset.reprobe`'s probe).
+    onBranch: at,
   };
 }

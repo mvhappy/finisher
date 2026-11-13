@@ -14,16 +14,16 @@ use fin_core::{Record, Tx, apply_committed, apply_tx, encode_record};
 /// The bytes of [`record`] before `via` existed (and its hash): a record without `via` must
 /// keep them exactly, or every stored chain would re-hash.
 const PINNED: &str = concat!(
-    r#"{"txId":"tx-test","seq":1,"kind":"edit","schemaVersion":4,"parentHash":"blake3:00","#,
+    r#"{"txId":"tx-test","seq":1,"kind":"edit","schemaVersion":5,"parentHash":"blake3:00","#,
     r#""author":"test","committedAt":1700000000000,"intent":{"txId":"tx-test","author":"test","#,
-    r#""branch":"main","baseRev":0,"schemaVersion":4,"ops":[{"op":"asset.add","id":"$a","#,
+    r#""branch":"main","baseRev":0,"schemaVersion":5,"ops":[{"op":"asset.add","id":"$a","#,
     r#""kind":"media","path":"/media/a.mov","fingerprint":"fp","duration":"60","#,
     r#""video":{"width":1920,"height":1080,"rate":"30"},"audio":{"sampleRate":48000,"channels":2}}]},"#,
     r#""resolved":[{"op":"asset.add","id":"$a","kind":"media","path":"/media/a.mov","#,
     r#""fingerprint":"fp","duration":"60","video":{"width":1920,"height":1080,"rate":"30"},"#,
     r#""audio":{"sampleRate":48000,"channels":2}}],"inverse":[],"bindings":{"$a":"a1"}}"#,
 );
-const PINNED_HASH: &str = "e59f0bc25814b226bbd4b92b05285fcd23cdb1723e04df72b971e513ad9026d4";
+const PINNED_HASH: &str = "9bc171980ffe2f821c356be657e5a875d87300d244231cd8f16942efe8f2cb98";
 
 fn via() -> Via {
     Via {

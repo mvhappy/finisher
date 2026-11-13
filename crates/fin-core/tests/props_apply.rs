@@ -34,6 +34,9 @@ fn asset_op(id: &str, secs_long: i64, video: bool) -> Op {
             width: 1920,
             height: 1080,
             rate: secs(30),
+            display: None,
+            rotation: None,
+            pixel_aspect: None,
         }),
         Some(AudioInfo {
             sample_rate: 48_000,
@@ -396,6 +399,9 @@ fn any_op() -> impl Strategy<Value = Op> {
                     width: 1280,
                     height: 720,
                     rate: secs(25),
+                    display: None,
+                    rotation: None,
+                    pixel_aspect: None,
                 }),
                 a.then_some(AudioInfo {
                     sample_rate: 44_100,

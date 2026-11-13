@@ -55,6 +55,7 @@ import { JobEngineTag, layerJobEngine } from "./jobs/layer.ts";
 import { LibrariesTag } from "./library/api.ts";
 import { CatalogsTag, layerCatalogs } from "./library/catalog/client.ts";
 import { LibraryServiceTag, librariesHolding, libraryWiring } from "./library/layer.ts";
+import { makeMediaCache, MediaCacheTag, releaseAll } from "./media/cache.ts";
 import { layerPlugins } from "./plugins/registries.ts";
 import { makePluginHost } from "./plugins/host/processes.ts";
 import { PluginCommandsTag, serverPluginCommands } from "./plugins/host/command-rpc.ts";
@@ -158,6 +159,8 @@ export const serve = ({
       const libraries = libraryWiring({
         serverData, jobsRoot, catalogs, control: Context.get(control, ControlStoreTag), audit: Context.get(control, AuditTag), journal: diagnostics.journal, log: logSink,
       });
+      // The media cache (6B-1 Task 13) before the registry: an open project pins its entries (a failed open is logged, CACHE_IO).
+      const mediaCache = yield* makeMediaCache(serverData, { log: (m) => logSink("warning", m) });
       // The job engine (5C-1) after the control store and the journal, so it closes before them
       // (its `close` stops every worker); `<server-data>/jobs/` is made private. Its events go
       // to the journal (D34).
@@ -171,7 +174,7 @@ export const serve = ({
       let libraryRoots: () => ReadonlyArray<string> = () => [];
       let onOpened: ((projectId: string) => void) | undefined; // re-derived reviews (5E Decision 22), bound with the reviews
       const registryContext = yield* Layer.build(
-        layerProjectRegistry(serverData, { ...registry, libraryUse: (paths) => libraryHold?.(paths) ?? { release: () => {} }, onOpened: (id) => onOpened?.(id) }),
+        layerProjectRegistry(serverData, { ...registry, libraryUse: (paths, projectId) => releaseAll([libraryHold?.(paths), mediaCache.holdProject(projectId)]), onOpened: (id) => onOpened?.(id) }),
       );
       const projects = Context.get(registryContext, ProjectRegistry);
       // The code plugins' processes (sp8b Tasks 4, 5): the `plugin` family is registered with
@@ -451,6 +454,7 @@ export const serve = ({
           Layer.succeed(PluginCommandsTag, pluginCommands.service(engine)),
           Layer.succeed(LibrariesTag, library),
           Layer.succeed(LibraryServiceTag, library),
+          Layer.succeed(MediaCacheTag, mediaCache),
           Layer.succeed(KeysTag, keys),
           Layer.succeed(HandshakeTag, handshake),
           Layer.succeed(CredentialsTag, credentials),

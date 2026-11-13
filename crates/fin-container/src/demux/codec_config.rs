@@ -1,6 +1,9 @@
 //! The first sample entry of a track's `stsd`: the coded size or audio format, the codec
 //! configuration box (kept as bytes for the decoder) and what it says (profile, level, bit
-//! depth, chroma), and the colour, aspect and HDR boxes beside it.
+//! depth, chroma), and the colour, aspect and HDR boxes beside it. In-band HDR metadata (H.264
+//! and HEVC SEI) is [`sei`]'s.
+
+pub(crate) mod sei;
 
 use std::io::{Read, Seek};
 
@@ -44,7 +47,7 @@ fn header_len(body: &[u8], video: bool) -> usize {
     }
 }
 
-fn config_info(e: &mut Entry, kind: &[u8; 4], b: &[u8]) {
+pub(crate) fn config_info(e: &mut Entry, kind: &[u8; 4], b: &[u8]) {
     match kind {
         b"av1C" if b.len() >= 4 => {
             e.profile = Some(b[1] >> 5);

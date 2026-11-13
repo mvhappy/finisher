@@ -2,14 +2,15 @@
 //! BLAKE3 equals `golden/t0.json` on every OS and on wasm32 (`wasm32-wasip1`); frame ids read
 //! from the output equal `frame_at`'s choice; layers it cannot draw are reported.
 //!
-//! `FIN_BLESS_T0=1` rewrites the goldens (native only); `FIN_REFERENCE_PNG=<dir>` writes each
-//! output as a PNG for inspection.
+//! `FIN_BLESS_T0=1` rewrites the goldens (native only) after a `RENDER_VERSION` bump, and refuses
+//! moved hashes at the goldens' own version (`FIN_BLESS_T0=same-version` re-blesses a version
+//! not yet committed); `FIN_REFERENCE_PNG=<dir>` writes each output as a PNG for inspection.
 
 mod common;
 
 use std::collections::{BTreeMap, HashMap};
 
-use common::{Case, Patterns, SourceSpec, cases, write_png};
+use common::{COLOUR_CASES, Case, Patterns, SourceSpec, cases, write_png};
 use fin_compositor::{
     LayerIssue, SourceFrame, SourceProvider, base_box, layer_matrix, reference, transform_point,
 };
@@ -87,27 +88,147 @@ fn corpus_matches_the_t0_goldens_and_frame_ids_read_back() {
         }
         got.insert(c.name.clone(), blake3::hash(&r.rgba8).to_hex().to_string());
     }
-    if std::env::var("FIN_BLESS_T0").as_deref() == Ok("1") {
+    let bless = std::env::var("FIN_BLESS_T0").ok();
+    if let Some(mode) = bless
+        .as_deref()
+        .filter(|m| *m == "1" || *m == "same-version")
+    {
+        // A plain bless refuses moved hashes at the golden's own version: bump first.
+        if let Err(e) = t0_verdict(&golden, &got, RENDER_VERSION) {
+            assert!(
+                mode == "same-version" || golden.render_version != RENDER_VERSION,
+                "{e}; FIN_BLESS_T0=same-version re-blesses an unreleased version"
+            );
+        }
         let doc = json!({ "renderVersion": RENDER_VERSION, "hashes": got });
         let path = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/golden/t0.json");
         std::fs::write(path, serde_json::to_string_pretty(&doc).unwrap() + "\n").unwrap();
         return;
     }
+    if let Err(e) = t0_verdict(&golden, &got, RENDER_VERSION) {
+        panic!("{e}");
+    }
+}
+
+/// The T0 rule (spec §13.4): every hash equals the golden's, and the golden was blessed at
+/// `version`. Moved hashes fail whatever the version; a bumped version with unchanged
+/// goldens fails until they are re-blessed.
+fn t0_verdict(golden: &Golden, got: &BTreeMap<String, String>, version: u32) -> Result<(), String> {
     let changed: Vec<&String> = got
         .iter()
         .filter(|(k, v)| golden.hashes.get(*k) != Some(*v))
         .map(|(k, _)| k)
         .collect();
+    let gone: Vec<&String> = golden
+        .hashes
+        .keys()
+        .filter(|k| !got.contains_key(*k))
+        .collect();
+    if !changed.is_empty() || !gone.is_empty() {
+        return Err(format!(
+            "T0 hashes changed for {changed:?}, gone {gone:?} (render version {}). If the change is intended, bump \
+             RENDER_VERSION (fin-media) and re-bless with FIN_BLESS_T0=1; otherwise the reference drifted",
+            golden.render_version
+        ));
+    }
+    if golden.render_version != version {
+        return Err(format!(
+            "the goldens are at render version {}, RENDER_VERSION is {version}: re-bless the goldens \
+             after bumping RENDER_VERSION",
+            golden.render_version
+        ));
+    }
+    Ok(())
+}
+
+/// A T0 change without a `RENDER_VERSION` bump fails, and so does a bump whose goldens were
+/// not re-blessed (spec §13.4). The corpus test applies this rule to the real goldens.
+#[test]
+fn t0_change_without_bump_fails() {
+    let golden = Golden {
+        render_version: 2,
+        hashes: BTreeMap::from([("a".into(), "1".into()), ("b".into(), "2".into())]),
+    };
+    let same = golden.hashes.clone();
+    assert_eq!(t0_verdict(&golden, &same, 2), Ok(()));
+    let mut moved = same.clone();
+    moved.insert("b".into(), "3".into());
+    let e = t0_verdict(&golden, &moved, 2).unwrap_err();
+    assert!(e.contains("bump") && e.contains("[\"b\"]"), "{e}");
+    // Bumping alone does not pass: the goldens must be re-blessed at the new version.
+    assert!(t0_verdict(&golden, &moved, 3).is_err());
     assert!(
-        changed.is_empty() && got.len() == golden.hashes.len(),
-        "T0 hashes changed for {changed:?} (render version {}). If the change is intended, bump RENDER_VERSION \
-         (fin-media) and re-bless with FIN_BLESS_T0=1; otherwise the reference drifted",
-        golden.render_version
+        t0_verdict(&golden, &same, 3)
+            .unwrap_err()
+            .contains("re-bless")
     );
-    assert_eq!(
-        golden.render_version, RENDER_VERSION,
-        "re-bless the goldens after bumping RENDER_VERSION"
+    // A case that disappears is a change too.
+    let mut fewer = same.clone();
+    fewer.remove("a");
+    assert!(t0_verdict(&golden, &fewer, 2).is_err());
+    // The committed goldens are at the current version.
+    let committed: Golden = serde_json::from_str(GOLDEN).unwrap();
+    assert_eq!(committed.render_version, RENDER_VERSION);
+}
+
+/// Wide-gamut SDR and HDR sources (spec §10.1) at `RENDER_VERSION` 2: the gamut compression
+/// replaced 6A's hard clip (the BT.2020 case moved off its version-1 hash) and HDR is tone-mapped by
+/// the BT.2390 EETF, its source peak from the metadata. Each case's hash is in the goldens.
+#[test]
+fn wide_gamut_softclip_t0() {
+    let golden: Golden = serde_json::from_str(GOLDEN).unwrap();
+    const { assert!(RENDER_VERSION >= 2) };
+    let all = cases();
+    let render = |name: &str| {
+        let c = all.iter().find(|c| c.name == name).unwrap();
+        reference::render(&c.plan, &mut c.patterns(), c.size()).rgba8
+    };
+    let mut seen = BTreeMap::new();
+    for name in COLOUR_CASES {
+        let px = render(name);
+        let hash = blake3::hash(&px).to_hex().to_string();
+        assert_eq!(golden.hashes.get(name), Some(&hash), "{name}: T0 golden");
+        // The pictures are not flat (a broken conversion tends to black or white).
+        let levels: std::collections::BTreeSet<u8> = px.chunks(4).map(|p| p[1]).collect();
+        assert!(levels.len() > 64, "{name}: {} green levels", levels.len());
+        assert!(
+            seen.insert(hash, name).is_none(),
+            "{name} renders like another case"
+        );
+    }
+    // 6A hard-clipped the BT.2020 case to this hash (render version 1).
+    assert_ne!(
+        golden.hashes["bt2020-gamut"],
+        "6a1bc264337a6e3866920f0c28263e020fe530c47b7db4167cd553292ef2ca79"
     );
+}
+
+/// Owner decision 2026-11-09 (spec §10.1): what Rec.709 can show passes through. The Display P3
+/// case, tagged Rec.709 instead, renders every neutral pixel (white, the greys, black) to the
+/// same bytes.
+#[test]
+fn wide_gamut_keeps_what_rec709_shows() {
+    for name in ["p3-gamut", "bt2020-gamut"] {
+        let mut c = cases().into_iter().find(|c| c.name == name).unwrap();
+        let wide = reference::render(&c.plan, &mut c.patterns(), c.size()).rgba8;
+        for spec in c.sources.values_mut() {
+            spec.colour.primaries = fin_media::Primaries::Bt709;
+        }
+        let narrow = reference::render(&c.plan, &mut c.patterns(), c.size()).rgba8;
+        let (mut neutral, mut moved) = (0, 0);
+        for (w, n) in wide.chunks(4).zip(narrow.chunks(4)) {
+            if n[0] == n[1] && n[1] == n[2] {
+                assert_eq!(w, n, "{name}: a neutral pixel moved");
+                neutral += 1;
+            } else if w != n {
+                moved += 1;
+            }
+        }
+        assert!(neutral > 1000, "{name}: {neutral} neutral pixels");
+        // The coloured pixels are different colours in the two gamuts, so they differ; the
+        // neutral ones are the check (white itself: fin-media's tests/gamut.rs).
+        assert!(moved > 0);
+    }
 }
 
 #[test]
@@ -182,6 +303,7 @@ impl SourceProvider for Fixed {
                 self.size.width.div_ceil(2) as usize,
             ],
             colour: ColourTags::BT709,
+            hdr: None,
             rotation: Rotation::R0,
             pixel_aspect: Rational::from_int(1),
         })

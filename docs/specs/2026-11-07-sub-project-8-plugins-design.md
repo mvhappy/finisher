@@ -717,7 +717,7 @@ A fake HTTPS provider API: estimates match the catalog; a crash after submit nev
 
 - **Contribution:** `matteProducers: [{id, subjects: [person|foreground|object|key], prompted, temporal, maxSide, resources}]`.
 - **Protocol:** `matte.run {asset, range, size, prompts?}` in a job; rgb8 frames in through an `in/` ring, gray8 alpha out through an `out/` ring, **one per source frame, in order**; the host encodes the luma video with sub-project 6's encoder at the source rate (media §11.3).
-- **Where mattes live** (owner decision 3): a matte a mask uses is a project asset of kind `matte` in `assets/` (write-once, synced), and `Mask.matte` names that asset, so export on another machine never depends on a cache or on a model reproducing its pixels. `AssetKind::Matte` is part of the `SCHEMA_VERSION` 3 bump (§3.9); project folders grow by the encoded matte.
+- **Where mattes live** (owner decision 3): a matte a mask uses is a project asset of kind `matte` in `assets/` (write-once, synced), and `Mask.matte` names that asset, so export on another machine never depends on a cache or on a model reproducing its pixels. `AssetKind::Matte` is part of the `SCHEMA_VERSION` 6 bump (§3.9; renumbered from 3, after review batch J's v4 and 6B-1's v5); project folders grow by the encoded matte.
 - **Reference producer:** `@finisher/key-matte` (Rust, no model): chroma and luma keying with spill and edge controls; the conformance fixture and a v1 green-screen feature.
 - **Conformance (`matte` profile):** frame count and order, value range, size, declared determinism, cancel within 2 s, crash recovery.
 - **After v1:** background removal from BiRefNet (MIT), MODNet (Apache-2.0), SAM2 (Apache-2.0) or MediaPipe (Apache-2.0); excluded: RVM (GPL-3.0) and RMBG-2.0 (non-commercial).
@@ -848,7 +848,7 @@ No plugin is refused for lack of a sandbox: a host with Landlock disabled runs p
 | SDKs | example plugins of each SDK pass their conformance profiles | 8B |
 | Analyzers | **A0** pure Rust stages bit-exact by hash on three OSes and wasm32; **A1** ONNX stages on fixtures: identical transcript text across OSes, word times within ±10 ms, embeddings cosine ≥ 0.999, boxes within 2 px; **A2** quality metrics on evaluation sets as trends, the speech gate as a merge gate | 8C–8F |
 | Builders | golden ops, inverses, inclusion in the 4B property generators | fin-core |
-| Pins | the same op log with pinned ParamSpecs validates identically with and without the pack installed; schema 2 → 3 upgrade goldens | 8H |
+| Pins | the same op log with pinned ParamSpecs validates identically with and without the pack installed; schema 5 → 6 upgrade goldens | 8H |
 
 **As built (8A).**
 - *Manifest and packages:* `fin-plugin-api` unit tests per rule family; `hostile_archive_corpus` (refused archives built byte by byte in code, plus entry, byte, manifest and corrupt-archive cases), `pack_is_reproducible`, `tree_hash_changes_on_any_byte_or_mode`.

@@ -484,16 +484,16 @@ fn migration_0002_from_4a_fixture() {
     let v: i64 = conn
         .query_row("PRAGMA user_version", [], |r| r.get(0))
         .unwrap();
-    // 0003 (4C's version bump), 0004 (5E's drops index), 0005 (the keyframe-ids bump) and 0006
-    // (the model-v4 bump) run after 0002.
-    assert_eq!((v, DB_VERSION), (6, 6));
-    assert_eq!(meta(&conn, "formatVersion").as_deref(), Some("6"));
-    assert_eq!(meta(&conn, "minReaderVersion").as_deref(), Some("6"));
+    // 0003 (4C's version bump), 0004 (5E's drops index), 0005 (the keyframe-ids bump), 0006
+    // (the model-v4 bump) and 0007 (the model-v5 bump) run after 0002.
+    assert_eq!((v, DB_VERSION), (7, 7));
+    assert_eq!(meta(&conn, "formatVersion").as_deref(), Some("7"));
+    assert_eq!(meta(&conn, "minReaderVersion").as_deref(), Some("7"));
     assert_eq!(branch_rows(&conn), main_only());
     assert!(link_rows(&conn).is_empty());
     let names = backups(store.db_path());
     assert!(
-        names.iter().any(|n| n.starts_with("pre-migrate-1-6-")),
+        names.iter().any(|n| n.starts_with("pre-migrate-1-7-")),
         "{names:?}"
     );
     // The records 4A wrote are kept byte for byte.
@@ -528,16 +528,16 @@ fn sp2_fixture_migrates_through_0002() {
     let v: i64 = conn
         .query_row("PRAGMA user_version", [], |r| r.get(0))
         .unwrap();
-    // 0003 (4C's version bump), 0004 (5E's drops index), 0005 (the keyframe-ids bump) and 0006
-    // (the model-v4 bump) run after 0002.
-    assert_eq!(v, 6);
-    assert_eq!(meta(&conn, "formatVersion").as_deref(), Some("6"));
-    assert_eq!(meta(&conn, "minReaderVersion").as_deref(), Some("6"));
+    // 0003 (4C's version bump), 0004 (5E's drops index), 0005 (the keyframe-ids bump), 0006
+    // (the model-v4 bump) and 0007 (the model-v5 bump) run after 0002.
+    assert_eq!(v, 7);
+    assert_eq!(meta(&conn, "formatVersion").as_deref(), Some("7"));
+    assert_eq!(meta(&conn, "minReaderVersion").as_deref(), Some("7"));
     assert_eq!(branch_rows(&conn), main_only());
     assert!(link_rows(&conn).is_empty());
     let names = backups(&db);
     assert_eq!(names.len(), 1, "{names:?}");
-    assert!(names[0].starts_with("pre-migrate-0-6-"), "{names:?}");
+    assert!(names[0].starts_with("pre-migrate-0-7-"), "{names:?}");
 }
 
 #[test]
@@ -546,8 +546,8 @@ fn fresh_project_has_main_branch_row() {
     let a = e.create("a");
     let conn = read_only(a.db_path());
     assert_eq!(branch_rows(&conn), main_only());
-    assert_eq!(meta(&conn, "formatVersion").as_deref(), Some("6"));
-    assert_eq!(meta(&conn, "minReaderVersion").as_deref(), Some("6"));
+    assert_eq!(meta(&conn, "formatVersion").as_deref(), Some("7"));
+    assert_eq!(meta(&conn, "minReaderVersion").as_deref(), Some("7"));
 }
 
 #[test]

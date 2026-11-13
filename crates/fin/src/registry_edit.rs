@@ -209,4 +209,11 @@ pub const EDIT_COMMANDS: &[Command] = &[
         "remove an unused asset (ASSET_IN_USE lists its users)",
         || schema_of::<asset::RemoveArgs>("asset.remove"),
     ),
+    write(
+        "asset.reprobe",
+        "asset",
+        "<aN> [--deep]",
+        "probe a media asset's unchanged file again and record its display size, rotation and pixel aspect (server only)",
+        || schema_of::<asset::ReprobeArgs>("asset.reprobe"),
+    ),
 ];

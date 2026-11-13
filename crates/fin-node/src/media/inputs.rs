@@ -77,7 +77,7 @@ pub fn referenced_assets(plans: &[FramePlan]) -> BTreeSet<String> {
 /// `stored` as an absolute path: itself, else below `project_dir`, component by component, so
 /// a stored `assets/x.mp4` takes the platform's separator (`…\assets\x.mp4` on Windows, not
 /// `…\assets/x.mp4`).
-fn resolve(project_dir: &Path, stored: &str) -> PathBuf {
+pub(super) fn resolve(project_dir: &Path, stored: &str) -> PathBuf {
     let p = Path::new(stored);
     if p.is_absolute() {
         p.to_path_buf()

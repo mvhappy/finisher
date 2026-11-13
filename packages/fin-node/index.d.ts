@@ -194,6 +194,15 @@ export declare class Engine {
     options?: PrepareMediaOptions | null,
   ): Promise<string>;
   /**
+   * Prepares a job about one asset (plan 6B-1 Task 11: `media.probeDeep`): writes
+   * `manifest.json` (`RenderManifest` naming only `asset` of `branch`'s head, `original: null`
+   * when its file is missing) into `inputDir` (the job's existing `in/`). Resolves to
+   * `{ rev, fingerprint, sources }` as JSON: the rev read, the asset's fingerprint there and the
+   * original's path (none when missing). Rejects `ASSET_NOT_FOUND`, and `ASSET_TYPE_UNSUPPORTED`
+   * for an asset that is not `media`.
+   */
+  prepareAssetJob(branch: string, asset: string, inputDir: string): Promise<string>;
+  /**
    * Resolves to the `AudioPlan` JSON of `timeline` on `branch` over `[from, to)`. `rev` as
    * `evalFrame`'s.
    */
@@ -511,6 +520,8 @@ export * from "./jobhost.js";
 export * from "./sandbox.js";
 // `asset.probe` of a catalogued library file (`library.js`).
 export * from "./library.js";
+// The media cache (`media-cache.js`, 6B-1 Task 13).
+export * from "./media-cache.js";
 // The native Windows pipe listener (`pipe.js`).
 export * from "./pipe.js";
 // The vault and the identity key (`vault.js`, 5B).
@@ -538,10 +549,11 @@ export declare const testHooks:
       /** How many stats of library root `root` have started. */
       libraryProbeStarted(root: string): number;
       /** Writes a small `png`/`jpeg`/`webp` (64x48), `svg` (640x360), `dotlottie`, `cube`
-       * (4³), `wav` (1 s, 48 kHz stereo; `wav:<seconds>`, 1–600, for longer) or `m4a` (2 s,
-       * 48 kHz stereo) fixture. */
+       * (4³), `wav` (1 s, 48 kHz stereo; `wav:<seconds>`, 1–600, for longer), `m4a` (2 s,
+       * 48 kHz stereo) or `mp4-r90` (a portrait clip: 320x180 coded, a 90° `tkhd` matrix)
+       * fixture. */
       writeFixture(
-        kind: "png" | "jpeg" | "webp" | "svg" | "dotlottie" | "cube" | "wav" | `wav:${number}` | "m4a",
+        kind: "png" | "jpeg" | "webp" | "svg" | "dotlottie" | "cube" | "wav" | `wav:${number}` | "m4a" | "mp4-r90",
         path: string,
       ): void;
       /** Packs an unpacked plugin into a `.finpkg`; returns the archive's SHA-256. */

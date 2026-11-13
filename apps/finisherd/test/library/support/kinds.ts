@@ -7,6 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { JobView } from "@finisher/contracts";
 import type { LibraryScanParams, Timing } from "@finisher/core-types";
+import { libraryProbeVersion } from "@finisher/fin-node";
 import { Effect } from "effect";
 import { type Catalogs, startCatalogThreads } from "../../../src/library/catalog/client.ts";
 import { rootHealth } from "../../../src/library/health.ts";
@@ -177,7 +178,7 @@ export async function closeRigs(): Promise<void> {
 
 /** Every catalogued file id of `lib` that the probe stage would take now. */
 export async function pendingIds(rig: Rig, lib: string, limit = 1000): Promise<number[]> {
-  const { files } = await run(rig.catalogs.indexer.pending(lib, { stage: "probe", probeVersion: 1, exts: null, limit }));
+  const { files } = await run(rig.catalogs.indexer.pending(lib, { stage: "probe", probeVersion: libraryProbeVersion(), exts: null, limit }));
   return files.map((f) => f.fileId);
 }
 

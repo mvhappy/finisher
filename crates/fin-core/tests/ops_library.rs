@@ -148,6 +148,9 @@ fn asset_of(kind: AssetKind, id: &str) -> AssetAdd {
                 width: 2,
                 height: 2,
                 rate: secs(30),
+                display: None,
+                rotation: None,
+                pixel_aspect: None,
             });
         }
         AssetKind::Image | AssetKind::Svg => {

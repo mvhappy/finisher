@@ -98,11 +98,15 @@ impl AudioCodec {
     }
 }
 
-/// The container family, from `ftyp`'s brands.
+/// The container family, from `ftyp`'s brands or the EBML `DocType`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub enum ContainerKind {
     Mp4,
     /// QuickTime (`qt  ` major brand).
     Mov,
+    /// EBML `DocType` `webm`.
+    Webm,
+    /// EBML `DocType` `matroska`.
+    Matroska,
 }

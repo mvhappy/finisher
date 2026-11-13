@@ -168,6 +168,11 @@ impl OpenCache {
         self.confine = root;
     }
 
+    /// The directory originals are confined to (`--replay`), if any.
+    pub fn confined(&self) -> Option<&Path> {
+        self.confine.as_deref()
+    }
+
     /// The entry of `asset` (its `original` present), opened now if it is not open.
     pub fn get(
         &mut self,

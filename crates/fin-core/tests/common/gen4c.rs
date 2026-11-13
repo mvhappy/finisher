@@ -7,15 +7,16 @@
 use std::collections::BTreeMap;
 
 use fin_core::{
-    ApplyMode, AssetAdd, AssetKind, AssetMove, BinAdd, BinMove, BinRemove, CaptionBlock,
-    CaptionMerge, CaptionSetStyle, CaptionSetText, CaptionSplit, Curve, DeleteMode, Edge,
-    EffectAdd, EffectMove, EffectRemove, FontFace, FontFile, FontFormat, FontPin, FontPinOp,
-    FontRepin, FontSource, FontUnpin, InsertMode, Interp, Item, ItemBody, ItemDelete, ItemInsert,
-    ItemLink, ItemMove, ItemRemove, ItemRestore, ItemSlide, ItemSlip, ItemSplit, ItemTrim,
-    ItemUnlink, KeyframeRemove, KeyframeSet, LutInfo, MarkerAdd, MarkerRemove, MarkerSet, MemIds,
-    Op, ParamSet, ParamValue, Project, Rational, Resolution, StyleAdd, StyleRemove, StyleSet,
-    TimelineAdd, TimelineRemove, TimelineSet, Track, TrackAdd, TrackKind, TrackMove, TrackRemove,
-    TrackSet, TransitionKind, TransitionRemove, TransitionSet, TrimMode, Word, apply_tx_mode,
+    ApplyMode, AssetAdd, AssetKind, AssetMove, AssetReprobe, BinAdd, BinMove, BinRemove,
+    CaptionBlock, CaptionMerge, CaptionSetStyle, CaptionSetText, CaptionSplit, Curve, DeleteMode,
+    DisplaySize, Edge, EffectAdd, EffectMove, EffectRemove, FontFace, FontFile, FontFormat,
+    FontPin, FontPinOp, FontRepin, FontSource, FontUnpin, InsertMode, Interp, Item, ItemBody,
+    ItemDelete, ItemInsert, ItemLink, ItemMove, ItemRemove, ItemRestore, ItemSlide, ItemSlip,
+    ItemSplit, ItemTrim, ItemUnlink, KeyframeRemove, KeyframeSet, LutInfo, MarkerAdd, MarkerRemove,
+    MarkerSet, MemIds, Op, ParamSet, ParamValue, Project, Rational, Resolution, Rotation, StyleAdd,
+    StyleRemove, StyleSet, TimelineAdd, TimelineRemove, TimelineSet, Track, TrackAdd, TrackKind,
+    TrackMove, TrackRemove, TrackSet, TransitionKind, TransitionRemove, TransitionSet, TrimMode,
+    VideoInfo, Word, apply_tx_mode,
 };
 use proptest::prelude::*;
 
@@ -582,7 +583,7 @@ pub fn g_any() -> impl Strategy<Value = G> {
         1 => (0u8..3, 0usize..3).prop_map(|(what, k)| G::Timeline { what, k }),
         1 => (0u8..3, 0usize..3, 0i64..200).prop_map(|(what, k, at)| G::Marker { what, k, at }),
         1 => (0u8..3, 0usize..3, 0usize..3).prop_map(|(what, k, x)| G::Bin { what, k, x }),
-        1 => (0u8..5, 0usize..6, 0usize..3).prop_map(|(what, k, x)| G::Asset { what, k, x }),
+        1 => (0u8..6, 0usize..6, 0usize..3).prop_map(|(what, k, x)| G::Asset { what, k, x }),
     ]
 }
 
@@ -1377,11 +1378,42 @@ impl World {
             3 => Op::AssetRemove {
                 id: self.key(pick(&assets, k)?),
             },
-            _ => AssetMove {
+            4 => AssetMove {
                 asset: self.key(pick(&assets, k)?),
                 bin: pick(&bins, x).map(|b| self.key(b)),
             }
             .into(),
+            // A reprobe keeps the asset's streams and fills (or, at x = 2, clears) the display:
+            // every rotation (by k and x), square pixels or 4:3 (anamorphic) ones.
+            _ => {
+                let id = pick(&assets, k)?;
+                let a = &self.state.assets[id];
+                let rotation =
+                    [Rotation::R0, Rotation::R90, Rotation::R180, Rotation::R270][(k + x) % 4];
+                let aspect = if x == 1 {
+                    Rational::new(4, 3).unwrap()
+                } else {
+                    secs(1)
+                };
+                let video = a.video.clone().map(|v| {
+                    let w = (v.width as i64 * aspect.num() / aspect.den()) as u32;
+                    VideoInfo {
+                        display: (x < 2).then_some(DisplaySize {
+                            width: if rotation.swaps() { v.height } else { w },
+                            height: if rotation.swaps() { w } else { v.height },
+                        }),
+                        rotation: (x < 2).then_some(rotation),
+                        pixel_aspect: (x < 2).then_some(aspect),
+                        ..VideoInfo::coded(v.width, v.height, v.rate)
+                    }
+                });
+                AssetReprobe {
+                    asset: self.key(id),
+                    video,
+                    audio: a.audio.clone(),
+                }
+                .into()
+            }
         })
     }
 }
@@ -1399,6 +1431,7 @@ pub const OP_NAMES: &[&str] = &[
     "asset.add",
     "asset.move",
     "asset.remove",
+    "asset.reprobe",
     "bin.add",
     "bin.move",
     "bin.remove",

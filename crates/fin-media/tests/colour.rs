@@ -1,7 +1,7 @@
 //! Colour conversion against hand-computed values (spec §13.1 unit layer).
 
 use fin_media::colour::convert::{
-    convert_gamut, decode, expand, from_linear, primaries_to_709, to_linear, to_rgb,
+    convert_gamut, decode, expand, from_linear, gamut_to_709, primaries_to_709, to_linear, to_rgb,
 };
 use fin_media::{Matrix, Primaries, Range};
 
@@ -92,20 +92,17 @@ fn transfer_and_gamut() {
         primaries_to_709(Primaries::Bt709).is_none()
             && primaries_to_709(Primaries::Bt601_625).is_none()
     );
-    // White stays white; BT.2020 pure green is out of Rec.709's gamut and clips.
-    let m = primaries_to_709(Primaries::Bt2020).unwrap();
-    assert!(near(
-        convert_gamut([1.0, 1.0, 1.0], &m),
-        [1.0, 1.0, 1.0],
-        1e-3
-    ));
+    // White stays white (the gamut compression keeps the neutral axis); BT.2020 pure green is
+    // outside Rec.709: G = 1.1329 clips at 1.0, and R and B (negative after the matrix) are
+    // compressed onto the boundary's side, small but above 0 (tests/gamut.rs has the curve).
+    let m = gamut_to_709(Primaries::Bt2020).unwrap();
+    assert!(near(convert_gamut([1.0, 1.0, 1.0], &m), [1.0; 3], 1e-6));
     let g = convert_gamut([0.0, 1.0, 0.0], &m);
-    assert_eq!((g[0], g[2]), (0.0, 0.0));
-    assert!((g[1] - 1.0).abs() < 1e-6);
-    let p3 = primaries_to_709(Primaries::DisplayP3).unwrap();
-    assert!(near(
-        convert_gamut([1.0, 1.0, 1.0], &p3),
-        [1.0, 1.0, 1.0],
-        1e-3
-    ));
+    assert_eq!(g[1], 1.0);
+    assert!(
+        g[0] > 0.0 && g[0] < 0.2 && g[2] > 0.0 && g[2] < 0.2,
+        "{g:?}"
+    );
+    let p3 = gamut_to_709(Primaries::DisplayP3).unwrap();
+    assert!(near(convert_gamut([1.0, 1.0, 1.0], &p3), [1.0; 3], 1e-6));
 }

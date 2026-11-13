@@ -210,8 +210,8 @@ impl<'e> Applier<'e> {
                  transition.set, transition.remove, track.add, track.remove, track.move, \
                  track.set, timeline.add, timeline.set, timeline.remove, marker.add, \
                  marker.set, marker.remove, bin.add, bin.move, bin.remove, asset.move, \
-                 asset.remove, param.set, effect.add, effect.remove, effect.move, \
-                 keyframe.set, keyframe.remove, style.add, style.set, style.remove, font.pin, \
+                 asset.remove, asset.reprobe, param.set, effect.add, effect.remove, \
+                 effect.move, keyframe.set, keyframe.remove, style.add, style.set, style.remove, font.pin, \
                  font.unpin, font.repin, caption.setText, caption.split, caption.merge or \
                  caption.setStyle",
             ))

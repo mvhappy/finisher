@@ -130,22 +130,23 @@ describe("host calls", () => {
     const onCall = s.registry.family("library")!.onCall!;
     const ctx: CallCtx = { job: view, role: "worker", owner: view.owner };
     const probe = { kind: "image", fingerprint: "fp1:ab", size: 10, image: { width: 4, height: 3 } };
-    await Effect.runPromise(onCall(ctx, "library.probed", { results: [{ file: 7, fingerprint: "fp1:ab", probe, probeVersion: 1, state: "present" }] }));
+    const v = libraryProbeVersion();
+    await Effect.runPromise(onCall(ctx, "library.probed", { results: [{ file: 7, fingerprint: "fp1:ab", probe, probeVersion: v, state: "present" }] }));
     const applied = s.rec.calls.find((c) => c.method === "applyProbed")!;
     expect(applied.args[1]).toEqual([
-      { fileId: 7, size: 10, mtimeNs: "5", fp: "fp1:ab", probe, probeVersion: 1, state: "present", code: null, kind: "image", durationMs: null, width: 4, height: 3 },
+      { fileId: 7, size: 10, mtimeNs: "5", fp: "fp1:ab", probe, probeVersion: v, state: "present", code: null, kind: "image", durationMs: null, width: 4, height: 3 },
     ]);
     // A changed file is never stored: its directory is rescanned.
-    await Effect.runPromise(onCall(ctx, "library.probed", { results: [{ file: 7, probeVersion: 1, state: "changed", code: "FILE_CHANGED" }] }));
+    await Effect.runPromise(onCall(ctx, "library.probed", { results: [{ file: 7, probeVersion: v, state: "changed", code: "FILE_CHANGED" }] }));
     expect(s.rescans).toEqual([[{ components: ["YQ=="] }]]);
     // Untrusted: a file outside the job, an unknown state, too many results.
-    expect(await failCode(onCall(ctx, "library.probed", { results: [{ file: 8, probeVersion: 1, state: "present" }] }))).toBe("INVALID_REQUEST");
-    expect(await failCode(onCall(ctx, "library.probed", { results: [{ file: 7, probeVersion: 1, state: "cancelled" }] }))).toBe("INVALID_REQUEST");
+    expect(await failCode(onCall(ctx, "library.probed", { results: [{ file: 8, probeVersion: v, state: "present" }] }))).toBe("INVALID_REQUEST");
+    expect(await failCode(onCall(ctx, "library.probed", { results: [{ file: 7, probeVersion: v, state: "cancelled" }] }))).toBe("INVALID_REQUEST");
     // A worker cannot claim another probe version (a higher one would keep the file from being probed again).
     for (const probeVersion of [libraryProbeVersion() + 1, libraryProbeVersion() - 1, 1_000_000]) {
       expect(await failCode(onCall(ctx, "library.probed", { results: [{ file: 7, probeVersion, state: "present" }] }))).toBe("INVALID_REQUEST");
     }
-    const many = Array.from({ length: 33 }, () => ({ file: 7, probeVersion: 1, state: "present" }));
+    const many = Array.from({ length: 33 }, () => ({ file: 7, probeVersion: v, state: "present" }));
     expect(await failCode(onCall(ctx, "library.probed", { results: many }))).toBe("INVALID_REQUEST");
   });
 });

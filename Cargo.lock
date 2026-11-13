@@ -1272,6 +1272,7 @@ dependencies = [
 name = "fin-media"
 version = "0.0.0"
 dependencies = [
+ "blake3",
  "fin-core",
  "fin-media",
  "libm",
@@ -1311,6 +1312,7 @@ dependencies = [
  "rcgen",
  "ring",
  "rqrr",
+ "rusqlite",
  "secret-service",
  "semver",
  "serde",

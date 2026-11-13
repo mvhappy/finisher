@@ -9,15 +9,31 @@ use fin_compositor::{LayerIssue, SourceFrame, SourceProvider};
 use fin_core::Rational;
 use fin_core::eval::{FramePlan, Layer};
 use fin_media::testing::{Yuv420, pattern};
-use fin_media::{ColourTags, FrameEntry, PixelFormat, Rotation, SampleTable, Size, frame_at};
+use fin_media::{
+    ColourTags, FrameEntry, HdrInfo, PixelFormat, Rotation, SampleTable, Size, frame_at,
+};
 use serde::Deserialize;
 use serde_json::json;
 
-pub const CORPUS: [&str; 4] = [
+pub const CORPUS: [&str; 5] = [
     include_str!("../corpus/basic.json"),
     include_str!("../corpus/blend.json"),
     include_str!("../corpus/transitions.json"),
     include_str!("../corpus/geometry.json"),
+    include_str!("../corpus/colour.json"),
+];
+
+/// The cases that convert colour (wide-gamut SDR and HDR, `RENDER_VERSION` 2): the gamut
+/// compression and the tone mapping (spec §10.1).
+pub const COLOUR_CASES: [&str; 8] = [
+    "bt2020-gamut",
+    "p3-gamut",
+    "pq-default-peak",
+    "pq-clli-4000",
+    "pq-mdcv-600",
+    "pq-bt709-primaries",
+    "hlg-1000",
+    "hlg-full-range",
 ];
 
 #[derive(Debug, Deserialize)]
@@ -33,6 +49,9 @@ pub struct SourceSpec {
     pub rate: Rational,
     pub rotation: Rotation,
     pub colour: ColourTags,
+    /// HDR metadata (`clli`, `mdcv`): the tone mapping's source peak.
+    #[serde(default)]
+    pub hdr: Option<HdrInfo>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -97,6 +116,7 @@ impl SourceProvider for Patterns<'_> {
             planes: [&p.y, &p.u, &p.v],
             strides: [w as usize, w.div_ceil(2) as usize, w.div_ceil(2) as usize],
             colour: spec.colour.resolve_defaults(h),
+            hdr: spec.hdr,
             rotation: spec.rotation,
             pixel_aspect: Rational::from_int(1),
         })

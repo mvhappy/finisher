@@ -98,6 +98,9 @@ pub(super) const VALIDATION_CODES: &[&str] = &[
     "UNSUPPORTED_TRANSFORM",
     "MEDIA_CORRUPT",
     "MEDIA_LIMIT",
+    // An asset's content changed between a request and the job that serves it (6B-1 Task 11:
+    // `media.probeDeep`'s fingerprint check).
+    "ASSET_CHANGED",
     // A look's or export's destination is not writable or lies inside `.finisher/` or
     // `assets/` (spec §17): the request names it.
     "EXPORT_DESTINATION",
@@ -459,9 +462,16 @@ pub(super) const UNAVAILABLE_CODES: &[&str] = &[
     "GPU_UNAVAILABLE",
     "GPU_DEVICE_LOST",
     "GPU_OUT_OF_MEMORY",
+    // No decoder for an asset's codec, profile or bit depth on this machine (spec §17;
+    // `fin asset reprobe --deep`, 6B-1 Task 11): `details.codec`, `failure`.
+    "CODEC_UNAVAILABLE",
     // An encoder stopped producing output twice in one job, or with no other encoder left
     // (6B-1 plan Decision 20): `details.backend`, `details.adapter` (numeric ids or null).
     "ENCODER_HUNG",
+    // The media cache could not take or keep an entry (6B-1 plan Decision 12): its volume is
+    // full (`details.reason: full`, `freeBytes`, `neededBytes`; the job fails without a retry),
+    // or its directory or index failed (`reason: io | index`).
+    "CACHE_IO",
     // A job's mapped file failed `fin-shm`'s checks (a link, a hard link, a special file, a
     // size against its ring header or cap, a truncation while read; sub-project 6 spec §17):
     // the job failed, not the request.

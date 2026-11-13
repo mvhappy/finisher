@@ -138,7 +138,7 @@ export const ConflictSchema = Schema.Struct({
   txId: Schema.String,
 });
 export const conflictMatches: Same<typeof ConflictSchema.Type, T.Conflict> = true;
-export const ContainerKindSchema = Schema.Union([Schema.Literal("mp4"), Schema.Literal("mov")], { mode: "oneOf" });
+export const ContainerKindSchema = Schema.Union([Schema.Literal("mp4"), Schema.Literal("mov"), Schema.Literal("webm"), Schema.Literal("matroska")], { mode: "oneOf" });
 export const containerKindMatches: Same<typeof ContainerKindSchema.Type, T.ContainerKind> = true;
 export const ContentLightSchema = Schema.Struct({
   maxCll: Schema.Number.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(0), Schema.isLessThanOrEqualTo(65535)),
@@ -152,6 +152,11 @@ export const CoreErrorSchema = Schema.Struct({
   message: Schema.String,
 });
 export const coreErrorMatches: Same<typeof CoreErrorSchema.Type, T.CoreError> = true;
+export const DisplaySizeSchema = Schema.Struct({
+  height: Schema.Number.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(0)),
+  width: Schema.Number.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(0)),
+});
+export const displaySizeMatches: Same<typeof DisplaySizeSchema.Type, T.DisplaySize> = true;
 export const DolbyVisionSchema = Schema.Struct({
   baseLayer: Schema.Boolean,
   compatibility: Schema.Number.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(0), Schema.isLessThanOrEqualTo(255)),
@@ -383,8 +388,11 @@ export const MergeReportSchema = Schema.Struct({
 });
 export const mergeReportMatches: Same<typeof MergeReportSchema.Type, T.MergeReport> = true;
 export const VideoInfoSchema = Schema.Struct({
+  display: Schema.optionalKey(DisplaySizeSchema),
   height: Schema.Number.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(0)),
+  pixelAspect: Schema.optionalKey(RationalSchema),
   rate: RationalSchema,
+  rotation: Schema.optionalKey(RotationSchema),
   width: Schema.Number.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(0)),
 });
 export const videoInfoMatches: Same<typeof VideoInfoSchema.Type, T.VideoInfo> = true;

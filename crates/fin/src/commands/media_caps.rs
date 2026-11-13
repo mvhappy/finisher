@@ -9,6 +9,8 @@ use clap::Subcommand;
 use fin_core::CoreError;
 use serde_json::{Value, json};
 
+use super::Globals;
+use super::media_probe::{self, ProbeArgs};
 use crate::backend::Backend;
 use crate::output::unavailable;
 
@@ -16,10 +18,13 @@ use crate::output::unavailable;
 pub enum MediaCmd {
     /// Codecs, GPU and worker versions of this machine's media worker.
     Caps,
+    /// Decode an asset's first frame and read its in-band HDR metadata (6B-1).
+    Probe(ProbeArgs),
 }
 
-pub fn run(backend: &dyn Backend, cmd: &MediaCmd) -> Result<Value, CoreError> {
+pub fn run(backend: &dyn Backend, globals: &Globals, cmd: &MediaCmd) -> Result<Value, CoreError> {
     match cmd {
+        MediaCmd::Probe(a) => media_probe::run(backend, globals, a),
         MediaCmd::Caps => {
             if backend.dry_run_only() {
                 return Err(unavailable(

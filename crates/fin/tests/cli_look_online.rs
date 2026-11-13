@@ -1,7 +1,7 @@
-//! `fin look` and `fin media caps` against a real finisherd and its `fin-workers media` (plan
+//! `fin look`, `fin media caps` and `fin media probe` against a real finisherd and its `fin-workers media` (plan
 //! 6A Task 13): three times of a project rendered to PNGs, what a frame left out in `skipped`
 //! (the fixture clip is H.264, which 6A cannot decode), the error exits, `--no-wait`, and the
-//! worker's capabilities. Rendering needs a GPU adapter: `FIN_GPU=software` (lavapipe, WARP)
+//! worker's capabilities, the decode-level probe of an asset and `fin asset reprobe` (6B-1 Task 11). Rendering needs a GPU adapter: `FIN_GPU=software` (lavapipe, WARP)
 //! is set for the server; a machine with none skips the rendering checks unless
 //! `FIN_REQUIRE_GPU=1`.
 
@@ -137,10 +137,132 @@ fn media_caps_reports_codecs_gpu_and_versions() {
         (av1["decode"].clone(), av1["encode"].clone()),
         (json!("software"), json!("software"))
     );
-    assert_eq!(doc["worker"]["renderVersion"], 1);
+    assert_eq!(doc["worker"]["renderVersion"], 2);
     assert!(
         doc["gpu"].is_null() || doc["gpu"]["vendor"].is_number(),
         "{doc}"
+    );
+}
+
+#[test]
+fn media_probe_reports_the_decoder_and_commits_nothing() {
+    let Some(server) = Server::start_with("media_probe", Vec::new(), None) else {
+        return;
+    };
+    let (sd, root) = (&server.sd, &server.root);
+    ok(fin(
+        sd,
+        root,
+        &["project", "create", "film", "--name", "Film"],
+    ));
+    let dir = root.join("film");
+    media(&dir.join("clip.mp4"), 1);
+    ok(fin(sd, &dir, &["asset", "add", "clip.mp4"]));
+    let rev = ok(fin(sd, &dir, &["status"]))["rev"].clone();
+
+    let doc = ok(fin(sd, &dir, &["media", "probe", "a1"]));
+    assert_eq!(
+        (&doc["asset"], &doc["codec"]),
+        (&json!("a1"), &json!("h264"))
+    );
+    assert!(doc["fingerprint"].is_string(), "{doc}");
+    if doc["decodable"] == true {
+        // An OS decoder took it (macOS, Windows): it says which and of what class.
+        assert!(
+            doc["backend"].is_string() && doc["class"].is_string(),
+            "{doc}"
+        );
+        assert!(doc["firstFrame"]["width"].is_number(), "{doc}");
+    } else {
+        // No H.264 decoder here (Linux until 6B-2): an answer, not an error.
+        assert_eq!(doc["failure"]["code"], "CODEC_UNAVAILABLE", "{doc}");
+        assert!(doc.get("backend").is_none(), "{doc}");
+    }
+    // Nothing was committed.
+    assert_eq!(ok(fin(sd, &dir, &["status"]))["rev"], rev);
+
+    assert_error(
+        &fin(sd, &dir, &["media", "probe", "a9"]),
+        3,
+        "ASSET_NOT_FOUND",
+    );
+}
+
+/// `fin asset reprobe` (6B-1 Task 11): `fin asset add` of a portrait clip (a 90° `tkhd`
+/// matrix) already records it 180x320, rotated 90, so a reprobe finds nothing new and commits
+/// nothing (`unchanged`; `apps/finisherd/test/asset-reprobe.test.ts` shows one filling a
+/// schema 3 asset). `--deep` decodes first: a codec this machine cannot decode is
+/// `CODEC_UNAVAILABLE` (exit 5). A changed file is `ASSET_CHANGED` (exit 3).
+#[test]
+fn asset_reprobe_reports_the_display_geometry() {
+    let Some(server) = Server::start_with("asset_reprobe", Vec::new(), None) else {
+        return;
+    };
+    let (sd, root) = (&server.sd, &server.root);
+    ok(fin(
+        sd,
+        root,
+        &["project", "create", "film", "--name", "Film"],
+    ));
+    let dir = root.join("film");
+    let clip = dir.join("portrait.mp4");
+    fin_probe::fixtures::write_fixture_mp4_rotated(
+        &clip,
+        fin_probe::fixtures::FixtureOpts::default(),
+        fin_core::Rotation::R90,
+    );
+    ok(fin(sd, &dir, &["asset", "add", "portrait.mp4"]));
+    let rev = ok(fin(sd, &dir, &["status"]))["rev"].as_u64().unwrap();
+
+    let doc = ok(fin(sd, &dir, &["asset", "reprobe", "a1"]));
+    assert_eq!(doc["asset"], "a1", "{doc}");
+    assert_eq!(
+        (&doc["video"]["rotation"], &doc["video"]["display"]),
+        (&json!(90), &json!({ "width": 180, "height": 320 })),
+        "{doc}"
+    );
+    assert_eq!(
+        (&doc["video"]["width"], &doc["video"]["height"]),
+        (&json!(320), &json!(180))
+    );
+    assert_eq!(
+        (&doc["unchanged"], &doc["rev"]),
+        (&json!(true), &json!(rev)),
+        "{doc}"
+    );
+    assert_eq!(ok(fin(sd, &dir, &["status"]))["rev"], rev);
+
+    // A dry run probes and commits nothing.
+    let dry = ok(fin(sd, &dir, &["asset", "reprobe", "a1", "--dry-run"]));
+    assert_eq!(dry["dryRun"], true, "{dry}");
+    assert_eq!(ok(fin(sd, &dir, &["status"]))["rev"], rev);
+
+    // The fixture is H.264: decodable here or not, the answer is typed.
+    let deep = fin(sd, &dir, &["asset", "reprobe", "a1", "--deep"]);
+    if deep.code == 0 {
+        assert_eq!(deep.json["deep"]["decodable"], true, "{}", deep.stdout);
+        assert_eq!(deep.json["unchanged"], true, "{}", deep.stdout);
+    } else {
+        assert_error(&deep, 5, "CODEC_UNAVAILABLE");
+        assert_eq!(
+            deep.json["error"]["details"]["asset"], "a1",
+            "{}",
+            deep.stdout
+        );
+    }
+    assert_eq!(ok(fin(sd, &dir, &["status"]))["rev"], rev);
+
+    assert_error(
+        &fin(sd, &dir, &["asset", "reprobe", "a9"]),
+        3,
+        "ASSET_NOT_FOUND",
+    );
+    // Another file at the asset's path: a relink, not a reprobe.
+    media(&clip, 3);
+    assert_error(
+        &fin(sd, &dir, &["asset", "reprobe", "a1"]),
+        3,
+        "ASSET_CHANGED",
     );
 }
 
@@ -150,6 +272,10 @@ fn look_and_caps_are_unavailable_offline() {
     let r = support::offline(&snapshot, &["look", "--at", "0"]);
     assert_error(&r, 5, "SERVER_UNAVAILABLE");
     let r = support::offline(&snapshot, &["media", "caps"]);
+    assert_error(&r, 5, "SERVER_UNAVAILABLE");
+    let r = support::offline(&snapshot, &["media", "probe", "a1"]);
+    assert_error(&r, 5, "SERVER_UNAVAILABLE");
+    let r = support::offline(&snapshot, &["asset", "reprobe", "a1"]);
     assert_error(&r, 5, "SERVER_UNAVAILABLE");
 }
 

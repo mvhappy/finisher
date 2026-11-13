@@ -247,16 +247,21 @@ fn co64_offsets_work_and_past_the_end_are_corrupt() {
 
 #[test]
 fn not_an_mp4_is_unsupported() {
-    for bytes in [
-        b"RIFF\0\0\0\0WAVEfmt ".to_vec(),
-        b"\x1aE\xdf\xa3matroska".to_vec(),
-        vec![0; 3],
-    ] {
+    for bytes in [b"RIFF\0\0\0\0WAVEfmt ".to_vec(), vec![0; 3]] {
         let e = Demuxer::open(Cursor::new(bytes), &Limits::default())
             .err()
             .unwrap();
         assert_eq!(e.code, "UNSUPPORTED_CONTAINER");
     }
+    // The EBML magic goes to the WebM/Matroska demuxer (6B-1 Task 12): a header cut short there
+    // is a broken file.
+    let e = Demuxer::open(
+        Cursor::new(b"\x1aE\xdf\xa3matroska".to_vec()),
+        &Limits::default(),
+    )
+    .err()
+    .unwrap();
+    assert_eq!(e.code, "MEDIA_CORRUPT");
 }
 
 /// Without an edit list, pts is the composition time itself, negative ones included (they

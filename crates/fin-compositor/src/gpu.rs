@@ -9,8 +9,6 @@
 //! pool. Each frame runs inside out-of-memory, internal and validation error scopes. After
 //! `GPU_DEVICE_LOST`, make a new [`Gpu`] and a new `Compositor`.
 
-use std::collections::HashMap;
-
 use fin_core::eval::{FramePlan, Layer, Role};
 use fin_core::{CoreError, Resolution, TransitionKind};
 use fin_media::Size;
@@ -22,120 +20,15 @@ use crate::ingest::{self, level_key};
 use crate::layer;
 use crate::mipgen::{chain_sizes, pick};
 use crate::output::RenderOutput;
+use crate::pipelines::Pipelines;
+pub use crate::pipelines::Stage;
 use crate::placement::{place, weight};
 use crate::pool::{Key, Pool, PoolStats};
 use crate::readback::{self, Readback};
 use crate::source::{SourceFrame, SourceProvider, walk};
 
-const ACC: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
-const OUT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
-const COMMON: &str = include_str!("shaders/common.wgsl");
-
-/// A pipeline's identity: one per (stage, blend mode); every target format is fixed by stage.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum Stage {
-    /// Ingest of I420 (`IngestNv12`, `IngestP010`: of the platform decoders' layouts).
-    Ingest,
-    IngestNv12,
-    IngestP010,
-    Mip,
-    /// The layer pass, fused with the blend of mode `Some(index)`, or to a scratch target.
-    Layer(Option<u32>),
-    /// `blend.wgsl` for mode `index` (`blend::index`).
-    Blend(u32),
-    Output,
-}
-
-struct Pipelines {
-    /// By `ingest::SHADERS` index.
-    ingest: [wgpu::ShaderModule; 3],
-    mip: wgpu::ShaderModule,
-    layer: wgpu::ShaderModule,
-    blend: wgpu::ShaderModule,
-    map: HashMap<Stage, wgpu::RenderPipeline>,
-    created: usize,
-}
-
-fn module(device: &wgpu::Device, label: &str, body: &str) -> wgpu::ShaderModule {
-    device.create_shader_module(wgpu::ShaderModuleDescriptor {
-        label: Some(label),
-        source: wgpu::ShaderSource::Wgsl(format!("{COMMON}\n{body}").into()),
-    })
-}
-
-impl Pipelines {
-    fn new(device: &wgpu::Device) -> Pipelines {
-        Pipelines {
-            ingest: ingest::SHADERS
-                .map(|(l, fetch)| module(device, l, &[fetch, ingest::BODY].concat())),
-            mip: module(device, "mip", include_str!("shaders/mip.wgsl")),
-            layer: module(device, "layer", include_str!("shaders/layer.wgsl")),
-            blend: module(device, "blend", include_str!("shaders/blend.wgsl")),
-            map: HashMap::new(),
-            created: 0,
-        }
-    }
-
-    fn get(&mut self, device: &wgpu::Device, stage: Stage) -> wgpu::RenderPipeline {
-        if let Some(p) = self.map.get(&stage) {
-            return p.clone();
-        }
-        let (module, entry, format, blend, constants): (_, _, _, _, &[(&str, f64)]) = match stage {
-            Stage::Ingest | Stage::IngestNv12 | Stage::IngestP010 => {
-                let m = &self.ingest[ingest::shader_index(stage)];
-                (m, "fs_main", ACC, None, &[])
-            }
-            Stage::Mip => (&self.mip, "fs_main", ACC, None, &[]),
-            Stage::Layer(fused) => (
-                &self.layer,
-                "fs_main",
-                ACC,
-                fused.and_then(|m| blend::fused(blend::MODES[m as usize])),
-                &[],
-            ),
-            Stage::Blend(m) => (
-                &self.blend,
-                "fs_blend",
-                ACC,
-                None,
-                &[("MODE", f64::from(m))],
-            ),
-            Stage::Output => (&self.blend, "fs_output", OUT, None, &[]),
-        };
-        let p = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some(entry),
-            layout: None,
-            vertex: wgpu::VertexState {
-                module,
-                entry_point: Some("vs_main"),
-                buffers: &[],
-                compilation_options: Default::default(),
-            },
-            primitive: wgpu::PrimitiveState::default(),
-            depth_stencil: None,
-            multisample: wgpu::MultisampleState::default(),
-            fragment: Some(wgpu::FragmentState {
-                module,
-                entry_point: Some(entry),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format,
-                    blend,
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-                compilation_options: wgpu::PipelineCompilationOptions {
-                    constants,
-                    ..Default::default()
-                },
-            }),
-            multiview_mask: None,
-            cache: None,
-        });
-        self.created += 1;
-        self.map.insert(stage, p.clone());
-        p
-    }
-}
-
+pub(crate) const ACC: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
+pub(crate) const OUT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 fn floats(v: &[f32]) -> Vec<u8> {
     v.iter().flat_map(|f| f.to_ne_bytes()).collect()
 }

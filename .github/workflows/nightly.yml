@@ -30,8 +30,8 @@ jobs:
         run: rustup show active-toolchain || rustup toolchain install
       - name: Install cargo-fuzz
         run: cargo install cargo-fuzz --locked --version 0.13.1
-      - name: Seed the demux corpus with the muxer's files
-        run: cargo run -p fin-container --example fuzz_seeds --features testing -- crates/fin-container/fuzz/corpus/demux
+      - name: Seed the demux and webm corpora with the writers' files
+        run: cargo run -p fin-container --example fuzz_seeds --features testing -- crates/fin-container/fuzz/corpus/demux crates/fin-container/fuzz/corpus/webm
       - name: Check the fuzz lockfiles are committed and current
         run: |
           cargo fetch --locked --manifest-path crates/fin-container/fuzz/Cargo.toml
@@ -39,6 +39,9 @@ jobs:
       - name: Fuzz fin-container (demux)
         working-directory: crates/fin-container/fuzz
         run: cargo fuzz run demux -s none -- -max_total_time="$FUZZ_SECONDS"
+      - name: Fuzz fin-container (webm)
+        working-directory: crates/fin-container/fuzz
+        run: cargo fuzz run webm -s none -- -max_total_time="$FUZZ_SECONDS"
       - name: Fuzz fin-shm (ring_header)
         working-directory: crates/fin-shm/fuzz
         run: cargo fuzz run ring_header -s none -- -max_total_time="$FUZZ_SECONDS"

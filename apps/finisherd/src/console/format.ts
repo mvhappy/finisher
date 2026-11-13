@@ -36,6 +36,8 @@ export interface Args {
 const VALUED = new Set([
   "server-data", "since", "kind", "limit", "before", "project", "label", "scope", "branch", "idle", "absolute", "out",
   "dir", "root", "root-sha256", "registry", "store",
+  // The media cache (6B-1 Task 13).
+  "to",
   // Agent sessions (7A Task 12).
   "model", "role", "mode", "base", "title", "prompt", "prompt-file", "budget-usd", "budget-tokens", "provider", "harness", "status", "add",
   // Command rules (7B Task 2).

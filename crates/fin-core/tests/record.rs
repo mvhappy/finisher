@@ -612,9 +612,9 @@ fn drop_record_golden() {
         bytes,
         concat!(
             r#"{"txId":"tx-test","seq":7,"kind":"drop","from":"br2","drops":["o1","o2"],"#,
-            r#""undrops":["o3"],"schemaVersion":4,"parentHash":null,"author":"test","#,
+            r#""undrops":["o3"],"schemaVersion":5,"parentHash":null,"author":"test","#,
             r#""committedAt":1700000000000,"intent":{"txId":"tx-test","author":"test","#,
-            r#""branch":"main","baseRev":0,"schemaVersion":4,"ops":[]},"resolved":[],"#,
+            r#""branch":"main","baseRev":0,"schemaVersion":5,"ops":[]},"resolved":[],"#,
             r#""inverse":[],"bindings":{}}"#
         )
     );
@@ -896,6 +896,36 @@ proptest::proptest! {
                 other => panic!("{other:?}"),
             }
         }
+        proptest::prop_assert_eq!(encode_record(&read), bytes);
+    }
+
+    /// 6B-1 Task 11: an `asset.reprobe` (schema 5) comes back from record bytes as it was
+    /// written, display, rotation and pixel aspect included, and re-encodes to the same bytes.
+    #[test]
+    fn reprobe_values_round_trip_through_record_bytes(
+        w in 1u32..=16_384, h in 1u32..=16_384, rot in 0usize..4,
+        pa in (1i64..=1000, 1i64..=1000), known in proptest::bool::ANY,
+    ) {
+        use fin_core::{AssetReprobe, AudioInfo, DisplaySize, Rational, Rotation, VideoInfo};
+        let rotation = [Rotation::R0, Rotation::R90, Rotation::R180, Rotation::R270][rot];
+        let video = VideoInfo {
+            display: known.then_some(DisplaySize { width: h, height: w }),
+            rotation: known.then_some(rotation),
+            pixel_aspect: known.then(|| Rational::new(pa.0, pa.1).unwrap()),
+            ..VideoInfo::coded(w, h, Rational::new(30_000, 1001).unwrap())
+        };
+        let op: Op = AssetReprobe {
+            asset: "a1".into(),
+            video: Some(video),
+            audio: Some(AudioInfo { sample_rate: 48_000, channels: 2 }),
+        }
+        .into();
+        let mut record = sample();
+        record.resolved = vec![op.clone()];
+        record.inverse = vec![op.clone()];
+        let bytes = encode_record(&record);
+        let read = upcast_record(serde_json::from_slice(&bytes).unwrap()).unwrap();
+        proptest::prop_assert_eq!(&read.resolved, &vec![op]);
         proptest::prop_assert_eq!(encode_record(&read), bytes);
     }
 }

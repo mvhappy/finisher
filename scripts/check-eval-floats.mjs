@@ -8,8 +8,9 @@
 // literals are not checked.
 //
 // Render determinism (sub-project 6 spec §13.4, plan 6A Task 7): the hashed render modules
-// (`fin-media`'s colour conversion and sampling rule, `fin-compositor`'s geometry, coverage, mip
-// levels and CPU reference) refuse the same platform transcendental and fused calls (methods
+// (`fin-media`'s colour conversion, HDR tone mapping and gamut compression (`colour/tonemap.rs`,
+// `colour/softclip.rs`, plan 6B-1 Task 10) and sampling rule, `fin-compositor`'s geometry,
+// coverage, mip levels and CPU reference) refuse the same platform transcendental and fused calls (methods
 // and paths), the metavariable forms and SIMD intrinsics (`std::arch`/`core::arch`), but must
 // use the pinned `libm::` for transcendentals, so `libm::sin` and the float constants pass there.
 import { readFileSync } from "node:fs";
@@ -19,6 +20,8 @@ import { report, rootArg, walk } from "./walk.mjs";
 const SCOPE = /^crates\/fin-core\/src\/.*\.rs$/;
 const RENDER =
   /^crates\/(fin-media\/src\/(colour\/.*|sample)|fin-compositor\/src\/(geometry|coverage|mips|reference\/.*))\.rs$/;
+// Render modules that must exist: a rename out of the scope above fails instead of escaping it.
+const REQUIRED = ["crates/fin-media/src/colour/tonemap.rs", "crates/fin-media/src/colour/softclip.rs"];
 const FNS =
   "sin|cos|tan|sin_cos|asin|acos|atan|atan2|sinh|cosh|tanh|asinh|acosh|atanh|exp|exp2|exp_m1|ln|ln_1p|log|log2|log10|powf|powi|cbrt|hypot|mul_add|gamma|ln_gamma|erf|erfc";
 const RULES = [
@@ -95,7 +98,10 @@ function violations(path, src, rules = RULES, what = "eval floats: + − × ÷ s
 
 const root = rootArg();
 const found = [];
-for (const path of walk(root)) {
+const paths = [...walk(root)];
+// Checked where `fin-media`'s colour module exists (fixture trees without it skip the check).
+if (paths.includes("crates/fin-media/src/colour/mod.rs")) for (const r of REQUIRED) if (!paths.includes(r)) found.push(`${r}: missing (a hashed render module; render floats)`);
+for (const path of paths) {
   if (SCOPE.test(path)) found.push(...violations(path, readFileSync(join(root, path), "utf8")));
   else if (RENDER.test(path)) found.push(...violations(path, readFileSync(join(root, path), "utf8"), RENDER_RULES, "render floats: libm:: for transcendentals"));
 }

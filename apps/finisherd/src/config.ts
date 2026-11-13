@@ -238,6 +238,29 @@ export function readSettings(serverData: string, last?: Settings): { settings: S
 }
 
 /**
+ * `settings.json` `media.cacheMaxGiB` (6B-1 plan Decision 12): the media cache's cap in GiB, a
+ * number above 0 (fractions allowed). Absent (or no file): `cacheMaxGiB` is undefined and the
+ * cache uses its default, `min(50 GiB, 15 % of the volume)`. A present file that cannot be
+ * used, or a value that is not a positive number, is `error` (the caller keeps what it has).
+ */
+export function readMediaSettings(serverData: string): { cacheMaxGiB?: number; error?: string } {
+  let raw: unknown;
+  try {
+    raw = JSON.parse(readFileSync(settingsPath(serverData), "utf8"));
+  } catch (e) {
+    return (e as { code?: unknown }).code === "ENOENT" ? {} : { error: (e as Error).message ?? String(e) };
+  }
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) return { error: "settings must be a JSON object" };
+  const media = (raw as { media?: unknown }).media;
+  if (media === undefined) return {};
+  if (media === null || typeof media !== "object" || Array.isArray(media)) return { error: "media must be an object" };
+  const gib = (media as { cacheMaxGiB?: unknown }).cacheMaxGiB;
+  if (gib === undefined) return {};
+  if (typeof gib !== "number" || !Number.isFinite(gib) || gib <= 0) return { error: "media.cacheMaxGiB must be a number of GiB above 0" };
+  return { cacheMaxGiB: gib };
+}
+
+/**
  * `settings.json`'s raw `privacy` section (plan D, Decision 8): `privacy` is what the file
  * holds (`undefined` when the file or the key is absent); `error` says why a present file can't
  * be used (unreadable, invalid JSON, not an object), which keeps the last good privacy
